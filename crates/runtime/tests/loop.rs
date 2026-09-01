@@ -12,7 +12,7 @@ use std::rc::Rc;
 
 use viso_platform::backend::headless::HeadlessApp;
 use viso_platform::{AcceptCell, RawEvent, WindowConfig, WindowId};
-use viso_runtime::{FrameDriver, FramePhase, RuntimeCx, Scheduler};
+use viso_runtime::{FrameDriver, FramePhase, InputSample, RuntimeCx, Scheduler};
 
 /// Shared, observable record of what the driver was asked to do.
 #[derive(Default)]
@@ -51,7 +51,7 @@ impl FrameDriver for CountingDriver {
         self.log.borrow_mut().geometries += 1;
     }
 
-    fn on_input(&mut self) {
+    fn on_input(&mut self, _sample: InputSample) {
         self.log.borrow_mut().inputs += 1;
     }
 
@@ -115,7 +115,7 @@ fn n_beats_drive_exactly_n_frames() {
 #[test]
 fn idle_beats_do_no_work() {
     // Animation off and no dirtying event: a bare beat finds an idle reason set
-    // and must run zero phases (§12.1 "idle does no work").
+    // and must run zero phases (idle does no work).
     let script = vec![
         RawEvent::RedrawRequested {
             window: WindowId(1),
@@ -230,7 +230,7 @@ impl FrameDriver for NoWindowDriver {
         self.log.borrow_mut().launches += 1;
     }
     fn on_geometry(&mut self, _window: WindowId, _scale: f64, _width: u32, _height: u32) {}
-    fn on_input(&mut self) {}
+    fn on_input(&mut self, _sample: InputSample) {}
     fn run_phase(&mut self, phase: FramePhase, _cx: &mut RuntimeCx<'_>) {
         let mut log = self.log.borrow_mut();
         log.phase_calls += 1;
@@ -243,7 +243,7 @@ impl FrameDriver for NoWindowDriver {
 #[test]
 fn launch_without_a_window_drives_no_frame() {
     // No window opened on launch: nothing to draw, so the scheduler stays idle
-    // and runs zero frames (§12.1 idle zero-CPU is preserved).
+    // and runs zero frames (idle zero-CPU is preserved).
     let log = Rc::new(RefCell::new(Log::default()));
     let app = Box::new(HeadlessApp::scripted(vec![]));
     let driver = NoWindowDriver {

@@ -1,4 +1,4 @@
-//! Frame-loop microbenchmarks and the idle-cost invariant (§12.1).
+//! Frame-loop microbenchmarks and the idle-cost invariant.
 //!
 //! Two things are measured here, both through the public API (benches are an
 //! external crate and cannot touch `pub(crate)` internals like `RuntimeCx::new`,
@@ -16,7 +16,8 @@ use criterion::{Criterion, criterion_group, criterion_main};
 use viso_platform::backend::headless::HeadlessApp;
 use viso_platform::{RawEvent, WindowConfig, WindowId};
 use viso_runtime::{
-    FrameDecision, FrameDriver, FramePhase, RedrawReason, RedrawReasons, RuntimeCx, Scheduler,
+    FrameDecision, FrameDriver, FramePhase, InputSample, RedrawReason, RedrawReasons, RuntimeCx,
+    Scheduler,
 };
 
 /// The Phase 1 blank-frame driver: opens one window, every phase a no-op.
@@ -27,7 +28,7 @@ impl FrameDriver for BlankDriver {
         let _ = cx.create_window(WindowConfig::default());
     }
     fn on_geometry(&mut self, _w: WindowId, _s: f64, _width: u32, _height: u32) {}
-    fn on_input(&mut self) {}
+    fn on_input(&mut self, _sample: InputSample) {}
     fn run_phase(&mut self, phase: FramePhase, _cx: &mut RuntimeCx<'_>) {
         // Keep the phase from being optimized away entirely.
         black_box(phase);
@@ -49,14 +50,14 @@ fn drive_frames(n: u32) {
     Scheduler::new(app, BlankDriver).run();
 }
 
-/// The §12.1 invariant, checked before benchmarking: idle ⇒ no frame.
+/// The zero-CPU-when-idle invariant, checked before benchmarking: idle ⇒ no frame.
 fn assert_idle_does_no_work() {
     let idle = RedrawReasons::new();
     assert!(idle.is_idle());
     assert_eq!(
         idle.decide(),
         FrameDecision::NoFrame,
-        "an idle reason set must decide NoFrame (§12.1)"
+        "an idle reason set must decide NoFrame"
     );
     // A single ordinary reason must escalate off idle.
     let mut dirty = RedrawReasons::new();
