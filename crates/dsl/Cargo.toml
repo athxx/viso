@@ -1,0 +1,15 @@
+[package]
+name = "viso-dsl"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+# Viso DSL for `.vs` (§9/Part XIV): tokenizer/CST/AST/HIR, type checker,
+# module graph, UI IR, hot-reload diff, state-migration metadata, source map,
+# optional dynamic VM adapter.
+#
+# `dsl -> concrete widget implementation` is forbidden — it works against a
+# schema/registry, so it must NOT depend on viso-widgets.
+[dependencies]
+viso-ui = { workspace = true }

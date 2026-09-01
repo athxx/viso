@@ -1,0 +1,14 @@
+[package]
+name = "viso-ui"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+# UI runtime (§9/§14-16): NodeArena, component runtime, state slots, reactive
+# invalidation, layout, style, input/focus/gesture, semantics, animation,
+# paint-node bridge. Retained tree + generational IDs, NOT Rc<RefCell<dyn
+# Widget>>. `ui -> widgets` is forbidden.
+[dependencies]
+viso-render = { workspace = true }
+viso-runtime = { workspace = true }

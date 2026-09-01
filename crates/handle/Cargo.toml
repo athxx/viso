@@ -1,0 +1,16 @@
+[package]
+name = "viso-handle"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+# LEAF, below viso-platform. A single shared vocabulary type: the OS-native
+# window handle, produced by viso-platform (`Window::raw_handle`) and consumed
+# by viso-gpu (`GpuBackend::create_surface`). It lives in its own crate so both
+# can name it without viso-gpu having to depend on viso-platform directly.
+#
+# Dependency-free by design: we do NOT pull in the `raw-window-handle` crate.
+# Viso's RHI is the sole consumer, so a small owned enum avoids coupling the
+# workspace to that crate's version cadence.
+[dependencies]

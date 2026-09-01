@@ -1,0 +1,25 @@
+name: viso-ci
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  build-and-gate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      # Phase 0 exit criterion: dependency direction is machine-checked.
+      - name: Check crate dependency DAG (§10)
+        run: cargo xtask check-deps
+      - name: Format
+        run: cargo fmt --all --check
+      - name: Build (minimal shell must compile, zero makepad types)
+        run: cargo build --workspace
+      - name: Test
+        run: cargo test --workspace
+      - name: Clippy
+        run: cargo clippy --workspace -- -D warnings

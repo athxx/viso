@@ -1,0 +1,15 @@
+[package]
+name = "viso-text"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+# Text system (§13/Part XIII): font DB, fallback, shaping, BiDi, line
+# breaking, paragraph layout, glyph cache/atlas integration metadata.
+[dependencies]
+viso-gpu = { workspace = true }
+ttf-parser = { workspace = true }
+rustybuzz = { workspace = true }
+ab_glyph_rasterizer = { workspace = true }
+sdfer = { workspace = true }

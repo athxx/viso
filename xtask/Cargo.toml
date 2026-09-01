@@ -1,0 +1,10 @@
+[package]
+name = "xtask"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+# Build/CI automation. `cargo xtask check-deps` enforces the architecture DAG
+# (§10) so a forbidden dependency edge fails CI rather than review.
+[dependencies]

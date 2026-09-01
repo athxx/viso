@@ -1,0 +1,59 @@
+[package]
+name = "viso-platform"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+# BOTTOM OF DAG. viso-platform is a pure OS abstraction: window/surface,
+# raw pointer/keyboard/IME events, clipboard, cursor, system appearance,
+# lifecycle, native handles, accessibility bridge hook.
+#
+# FORBIDDEN dependencies (architecture §10.1): ui, widgets, dsl, studio.
+# Unlike legacy makepad's `platform` crate, this MUST NOT pull in script,
+# network, video, or live-reload.
+#
+# Native backends are the only external deps, each behind a target cfg so
+# headless/CI on a non-matching target pulls zero external crates. These are
+# published, memory-safe bindings — Viso's "native rewrite" is the window/event
+# /loop *semantics*, not reinventing makepad's vendored FFI scaffolding.
+[dependencies]
+# The shared native-window-handle vocabulary (leaf crate). Produced here by
+# `Window::raw_handle`, consumed by viso-gpu — kept in its own crate so gpu
+# needn't depend on platform (§10 DAG).
+viso-handle = { workspace = true }
+
+# macOS: AppKit via objc2.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+objc2-foundation = { version = "0.3", features = [
+    "NSDate",
+    "NSString",
+    "NSRunLoop",
+    "NSObjCRuntime",
+    "NSNotification",
+    "NSGeometry",
+    "NSThread",
+] }
+objc2-app-kit = { version = "0.3", features = [
+    "NSApplication",
+    "NSWindow",
+    "NSView",
+    "NSResponder",
+    "NSEvent",
+    "NSGraphicsContext",
+    "NSRunningApplication",
+] }
+
+# Windows: Win32 via the windows crate.
+[target.'cfg(target_os = "windows")'.dependencies]
+windows = { version = "0.62", features = [
+    "Win32_Foundation",
+    "Win32_System_LibraryLoader",
+    "Win32_UI_WindowsAndMessaging",
+    "Win32_Graphics_Gdi",
+] }
+
+# Linux/X11 via x11rb (Wayland deferred).
+[target.'cfg(all(unix, not(target_os = "macos")))'.dependencies]
+x11rb = "0.14"

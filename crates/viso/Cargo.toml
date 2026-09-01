@@ -1,0 +1,30 @@
+[package]
+name = "viso"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Rust-native, GPU-first, cross-platform application framework."
+
+# The single public facade (AGENTS §3.1). Normal apps depend only on `viso`.
+# It implements essentially no hot-path logic; it aggregates features,
+# curates the prelude, and re-exports advanced modules.
+[dependencies]
+viso-runtime = { workspace = true }
+viso-ui = { workspace = true }
+viso-widgets = { workspace = true }
+viso-dsl = { workspace = true }
+viso-services = { workspace = true }
+viso-render = { workspace = true }
+viso-gpu = { workspace = true }
+viso-platform = { workspace = true }
+viso-text = { workspace = true }
+viso-shader = { workspace = true }
+viso-macros = { workspace = true }
+
+[features]
+default = []
+# Kept small and stable on purpose — no giant feature cartesian product
+# (§5). Backends resolve from the target, not from user feature combos.
+mobile = []
+hot-reload = []

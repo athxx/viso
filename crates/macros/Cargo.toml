@@ -1,0 +1,24 @@
+[package]
+name = "viso-macros"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+# Proc macros (§9 viso-macros): #[component], state/binding metadata, shader
+# instance layout (GpuInstance derive), .vs schema, static template
+# generation, compile-time diagnostics.
+#
+# A proc-macro crate is a leaf with no viso deps by construction.
+[lib]
+proc-macro = true
+
+[dependencies]
+# Standard proc-macro toolchain. External crates only — a proc-macro crate is a
+# DAG leaf with no viso-* edges. The `#[derive(GpuInstance)]` output refers to
+# `viso_gpu::...` paths, but macros itself does NOT depend on viso-gpu: the edge
+# is the other way (viso-gpu depends on viso-macros and re-exports the derive),
+# so integration tests of generated code live in viso-gpu, keeping this a leaf.
+proc-macro2 = "1"
+quote = "1"
+syn = { version = "2", features = ["full", "extra-traits"] }
