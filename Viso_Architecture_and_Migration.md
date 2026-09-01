@@ -1210,6 +1210,12 @@ struct Binding {
 
 对于 Viso DSL UI，使用 compact bytecode/IR function。
 
+> **As built (Slice B) — 见 ADR 0005。** `BindingTable` 落地为混合两条路径：
+> 静态边按 `StateId` 存为 dense contiguous run，并做 same-node class folding
+> （一个 cell 变化对每个受影响节点只 dirty 一次）；动态脚本走 `bind_dynamic`
+> 运行时回退（§10.3）。`Computed` **不**走 `bind_dynamic`——binding flush 会
+> 无条件 dirty 每条动态边，绕过 memo 边界——而是自持反向索引唤醒（见 §21 注）。
+
 ---
 
 ## 19. Dirty flags
@@ -1230,6 +1236,11 @@ bitflags! {
     }
 }
 ```
+
+> **As built (Slice B) — 见 ADR 0005。** 实际落地为 `DirtyClass`：`u8` 位集，
+> 恰好八个类（此草图写的是 `DirtyMask: u16`，多出的位未使用，故收敛为 u8）。
+> 类的语义与顺序不变，一位一义。`Computed`/`Effect` 刻意**不**占用其中的位
+> （见 §21 注），保持八位干净。
 
 属性需要定义自己的 invalidation contract。
 
@@ -1328,6 +1339,20 @@ Effect 必须支持：
 - Viso hot reload 时不重复产生无约束副作用。
 
 Render/View 默认保持纯净，不在 view evaluation 内启动 I/O。
+
+> **As built (Slice B) — 见 ADR 0005。** `Computed` 与 `Effect` 各自持有一条
+> `StateId → Vec<Id>` 反向索引（**不**是 dirty 位集）来唤醒，二者唤醒方式因
+> 输出不同而不同：`Computed` 的输出**就是**节点的一个 dirty class，
+> `ComputedStore::wake_computed` 重算受影响的派生，**仅当派生值真的变化**时才
+> `mark_dirty` 下游节点——memo 边界落在唤醒本身；`Effect` 无 dirty class，
+> 其输出是副作用，`EffectStore::wake` 直接重跑 body（依赖变化时先跑上一次
+> cleanup 再跑 body），`cancel`/`cancel_for_node` 在 unmount 时跑 cleanup。
+> 每次 eval/run 通过 `deindex → 刷新 deps → reindex` 维护反向索引，故停止读取
+> 某 cell 的派生/effect 会停止被它唤醒。三个 reactor 在帧的
+> `FlushStateTransactions` 阶段按 wake_computed → 静态/动态 binding flush →
+> effects.wake 顺序运行，共享同一次 drain 的 `changed` 集合。
+> 已知后续（超出本 slice）：`StateId` slot 复用时唤醒的 generation 检查；
+> Computed 依赖 Computed 的级联。
 
 ---
 
