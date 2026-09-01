@@ -10,6 +10,7 @@
 //! backs the object-oriented external API.
 
 use crate::binding::BindingTable;
+use crate::context::EventCx;
 use crate::dirty::DirtyClass;
 use crate::layout::{self, Align, Axis, Inset, LayoutInput, LayoutTree, Length, Measured, Size};
 use crate::node::{NodeArena, NodeId};
@@ -88,6 +89,12 @@ impl Default for LeafStyle {
     }
 }
 
+/// A node's pointer handler: an `FnMut` driven with the event context when the
+/// node is on the dispatch chain of a hit. Boxed because handlers are cold —
+/// touched only on an actual hit, never in the per-node hot traversal — so the
+/// fat pointer never rides in the hot SoA columns.
+pub type PointerHandler = Box<dyn FnMut(&mut EventCx<'_>)>;
+
 /// The retained node store: the arena plus parallel side-storage arrays, all
 /// indexed by [`NodeId::index`]. Allocation pushes to every array in lockstep
 /// so the index stays aligned; freeing leaves stale values in place and relies
@@ -112,6 +119,10 @@ pub struct NodeStore {
     /// (so a point in its padding/gap resolves to it). Flipping it to `false`
     /// makes a node pass-through without a structural change.
     hittable: Vec<bool>,
+    /// Cold: per-node pointer handler, index-aligned but mostly `None`. Read
+    /// only when a node lands on a hit's dispatch chain, so it lives off the hot
+    /// columns as an owned box rather than an inline fat pointer.
+    handlers: Vec<Option<PointerHandler>>,
 }
 
 impl NodeStore {
@@ -131,6 +142,7 @@ impl NodeStore {
         self.style.clear();
         self.measured.clear();
         self.hittable.clear();
+        self.handlers.clear();
     }
 
     /// The arena backing the tree.
@@ -177,6 +189,44 @@ impl NodeStore {
             return;
         }
         self.hittable[id.index() as usize] = hit;
+    }
+
+    /// Attach a pointer handler to a node, replacing any prior one. A
+    /// live-guarded write, so a stale handle is a no-op.
+    pub fn set_pointer_handler(&mut self, id: NodeId, handler: PointerHandler) {
+        if !self.arena.is_live(id) {
+            return;
+        }
+        self.handlers[id.index() as usize] = Some(handler);
+    }
+
+    /// Whether a live node currently carries a pointer handler.
+    #[inline]
+    pub fn has_handler(&self, id: NodeId) -> bool {
+        self.arena.is_live(id) && self.handlers[id.index() as usize].is_some()
+    }
+
+    /// Move a node's handler out of the store so the router can call it while
+    /// still lending the store's reactive state to an [`EventCx`] — the boxed
+    /// closure and the state stores would otherwise alias the same borrow. The
+    /// router pairs each `take` with a [`restore_handler`](Self::restore_handler)
+    /// once the call returns. `None` for a stale handle or an empty slot.
+    #[inline]
+    pub fn take_handler(&mut self, id: NodeId) -> Option<PointerHandler> {
+        if !self.arena.is_live(id) {
+            return None;
+        }
+        self.handlers[id.index() as usize].take()
+    }
+
+    /// Put a handler moved out by [`take_handler`](Self::take_handler) back in
+    /// its slot. A live-guarded write; a stale handle drops the handler.
+    #[inline]
+    pub fn restore_handler(&mut self, id: NodeId, handler: PointerHandler) {
+        if !self.arena.is_live(id) {
+            return;
+        }
+        self.handlers[id.index() as usize] = Some(handler);
     }
 
     /// Mark `class` dirty on `id` and propagate each class up the parent chain
@@ -296,6 +346,7 @@ impl NodeStore {
             self.style[i] = style;
             self.measured[i] = Measured::default();
             self.hittable[i] = true;
+            self.handlers[i] = None;
         } else {
             debug_assert_eq!(i, self.bounds.len(), "arena index must stay dense");
             self.bounds.push(Rect {
@@ -309,6 +360,7 @@ impl NodeStore {
             self.style.push(style);
             self.measured.push(Measured::default());
             self.hittable.push(true);
+            self.handlers.push(None);
         }
         id
     }
@@ -566,6 +618,20 @@ impl<'a> BuildCx<'a> {
         Handle { id }
     }
 
+    /// Attach a pointer handler to an already-declared node and return the
+    /// handle so registration chains inline (`cx.on_pointer(cx.leaf(..), |ev| ..)`).
+    /// The mirror of how a binding associates state to a node: this associates a
+    /// node to an action. The closure is stored cold and driven only when the
+    /// node is on a hit's dispatch chain.
+    pub fn on_pointer(
+        &mut self,
+        handle: Handle,
+        handler: impl FnMut(&mut EventCx<'_>) + 'static,
+    ) -> Handle {
+        self.store.set_pointer_handler(handle.id, Box::new(handler));
+        handle
+    }
+
     /// Allocate a node, attach it under the current parent (or record it as the
     /// root), and return its id.
     fn push_node(&mut self, input: LayoutInput, style: BoxStyle) -> NodeId {
@@ -787,5 +853,44 @@ mod tests {
         assert_eq!(store.bounds(leaf_id).x, 0.0);
         assert_eq!(store.bounds(leaf_id).y, 0.0);
         assert_eq!(store.bounds(leaf_id).w, 30.0);
+    }
+
+    #[test]
+    fn on_pointer_registers_cold_handler_and_take_restore_round_trips() {
+        use crate::binding::BindingTable;
+        use crate::state::{StateStore, StateValue};
+
+        let mut store = NodeStore::new();
+        let mut states = StateStore::new();
+        let count = states.alloc(StateValue::Int(0));
+        let bindings = BindingTable::new();
+
+        let leaf;
+        {
+            let mut cx = BuildCx::new(&mut store);
+            let h = cx.leaf(LeafStyle::default());
+            leaf = cx
+                .on_pointer(h, move |ev| {
+                    let now = match ev.get(count) {
+                        Some(StateValue::Int(n)) => n,
+                        _ => 0,
+                    };
+                    ev.set(count, StateValue::Int(now + 1));
+                })
+                .id();
+        }
+        assert!(store.has_handler(leaf));
+
+        // The router discipline: move the handler out, drive it with an EventCx
+        // borrowing the state stores (no alias with the store), then restore.
+        let mut handler = store.take_handler(leaf).expect("handler present");
+        assert!(!store.has_handler(leaf), "slot empty while borrowed");
+        {
+            let mut ev = EventCx::__new(&mut states, &bindings);
+            handler(&mut ev);
+        }
+        store.restore_handler(leaf, handler);
+        assert!(store.has_handler(leaf), "handler restored");
+        assert_eq!(states.get(count), Some(StateValue::Int(1)));
     }
 }
