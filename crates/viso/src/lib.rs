@@ -42,8 +42,8 @@ use viso_render::{Primitive, Rect, Renderer, Rgba};
 use viso_runtime::{FramePhase, RuntimeCx, Scheduler};
 use viso_ui::{
     Align, Axis, BindingTable, BoxStyle, BuildCx, Component, ComputedStore, DirtyClass,
-    EffectStore, FlexStyle, FrameRecompute, Inset, LeafStyle, NodeId, NodeStore, Size, StateId,
-    StateStore,
+    EffectStore, FlexStyle, FrameRecompute, Inset, LeafStyle, Modifiers, NodeId, NodeStore,
+    PointerButtons, PointerEvent, PointerPhase, PointerRouter, Size, StateId, StateStore,
 };
 
 pub use viso_ui::context::AppCx;
@@ -110,6 +110,9 @@ struct AppDriver<A: Application> {
     changed: Vec<StateId>,
     /// The tree root declared by [`Scene`], if the build succeeded.
     root: Option<NodeId>,
+    /// Reusable ancestry buffer the pointer router fills each event, owned here
+    /// so routing a pointer allocates nothing on the steady path.
+    route_chain: Vec<NodeId>,
     /// Reusable primitive buffer. Rebuilt only on a paint-affecting frame; reused
     /// verbatim (and re-uploaded) on frames with no paint invalidation.
     primitives: Vec<Primitive>,
@@ -155,6 +158,7 @@ impl<A: Application> AppDriver<A> {
             effects: EffectStore::new(),
             changed: Vec::new(),
             root: None,
+            route_chain: Vec::new(),
             primitives: Vec::new(),
             scratch: Vec::new(),
             redo_roots: Vec::new(),
@@ -324,9 +328,45 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
         }
     }
 
-    fn on_input(&mut self, _sample: viso_runtime::InputSample) {
-        // Hit-test + capture/target/bubble routing lands in the next step; the
-        // scheduler already aggregates the input into a redraw reason.
+    fn on_input(&mut self, sample: viso_runtime::InputSample) {
+        // The sample is already in physical pixels (the scheduler resolved the
+        // window scale), so it maps straight onto the UI-tier `PointerEvent` —
+        // the same space as node bounds and hit testing. Route it along the hit
+        // node's ancestry; any state a handler writes lands in this frame's
+        // pending set and is turned into targeted dirtying by the next frame's
+        // flush (the scheduler already flagged the frame input-dirty).
+        let Some(root) = self.root else {
+            return;
+        };
+        match sample {
+            viso_runtime::InputSample::Pointer(p) => {
+                let ev = PointerEvent {
+                    x: p.x,
+                    y: p.y,
+                    phase: match p.phase {
+                        viso_runtime::PointerPhase::Down => PointerPhase::Down,
+                        viso_runtime::PointerPhase::Move => PointerPhase::Move,
+                        viso_runtime::PointerPhase::Up => PointerPhase::Up,
+                        viso_runtime::PointerPhase::Leave => PointerPhase::Leave,
+                    },
+                    buttons: PointerButtons(p.buttons),
+                    modifiers: Modifiers {
+                        shift: p.modifiers.shift,
+                        control: p.modifiers.control,
+                        alt: p.modifiers.alt,
+                        logo: p.modifiers.logo,
+                    },
+                };
+                PointerRouter::route(
+                    &mut self.store,
+                    &mut self.states,
+                    &self.bindings,
+                    root,
+                    ev,
+                    &mut self.route_chain,
+                );
+            }
+        }
     }
 
     fn run_phase(&mut self, phase: FramePhase, _cx: &mut RuntimeCx<'_>) {
