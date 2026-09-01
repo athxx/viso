@@ -8,8 +8,8 @@
 //!   read-only [`ComputeCx`] (no `set`, so purity is a type-level guarantee),
 //!   and every read is recorded against a [`DepCursor`] passed into the eval —
 //!   an explicit cursor, not a thread-local, so dependency tracking stays
-//!   local, testable, and free of hidden global state. The first eval turns the
-//!   recorded dependency set into dynamic bindings so a later write to any
+//!   local, testable, and free of hidden global state. Each eval refreshes the
+//!   recorded dependency set into a reverse index so a later write to any
 //!   dependency schedules a re-eval. On re-eval the new result is compared to
 //!   the cached one and the downstream node is marked dirty *only if the value
 //!   actually changed* — the memo boundary that keeps an unchanged derivation
@@ -22,21 +22,23 @@
 //!   is cancelled. This slice runs effects synchronously — no timers or async
 //!   yet; those layer on later without changing this contract.
 //!
-//! The two constructs wake by different routes because their outputs are
-//! different in kind. A [`Computed`]'s output *is* a node's dirty class, so it
-//! registers its dependencies as dynamic bindings and rides the same
-//! state→binding→dirty flush a plain bound value does. An [`Effect`] has no
-//! dirty class — its output is the side effect — so routing it through the dirty
-//! bitset would overload a bit that means "recompute layout/paint for this
-//! node". Instead the [`EffectStore`] keeps its own compact reverse index from
-//! [`StateId`] to the effects that read it, and the flush hands the frame's
-//! changed ids straight to [`EffectStore::wake`]. The dirty classes stay a clean
-//! eight, one meaning each.
+//! Both constructs wake off their own compact reverse index from [`StateId`] to
+//! the ids that read it — not the dirty bitset — but their wakes differ in kind
+//! because their outputs do. A [`Computed`]'s output *is* a node's dirty class,
+//! so [`ComputedStore::wake_computed`] re-evaluates each affected derivation and
+//! marks its downstream node dirty *only when the value actually changed* — the
+//! memo boundary in the wake itself. An [`Effect`] has no dirty class — its
+//! output is the side effect — so routing it through the dirty bitset would
+//! overload a bit that means "recompute layout/paint for this node"; instead
+//! [`EffectStore::wake`] re-runs each affected effect body. Keeping both off the
+//! bitset leaves the dirty classes a clean eight, one meaning each; the compiled
+//! [`BindingTable`](crate::binding::BindingTable) stays reserved for direct
+//! state→node value bindings and the dynamic-script fallback.
 //!
 //! Both stores are keyed by compact generational ids so a stale handle is
 //! detectable, matching [`crate::node::NodeId`] and [`StateId`].
 
-use crate::binding::BindingTable;
+use crate::component::NodeStore;
 use crate::dirty::DirtyClass;
 use crate::node::NodeId;
 use crate::state::{StateId, StateStore, StateValue};
@@ -195,13 +197,30 @@ struct EffectSlot {
 
 /// The store of pure cached derivations, keyed by generational [`ComputedId`].
 ///
-/// Sits beside the [`StateStore`] and [`BindingTable`] in the app driver. Values
-/// are evaluated lazily on first read and re-evaluated only when a recorded
-/// dependency changes; an unchanged re-evaluation marks nothing dirty.
+/// Sits beside the [`StateStore`] in the app driver. Values are evaluated lazily
+/// on first read and re-evaluated only when a recorded dependency changes; an
+/// unchanged re-evaluation marks nothing dirty.
+///
+/// Waking is driven by a reverse index rather than the dirty bitset, mirroring
+/// [`EffectStore`]: [`wake_computed`] looks up the derivations that read a
+/// changed [`StateId`] and re-evaluates each, marking its downstream node dirty
+/// only when the value changed. The index is `dep_index[state.index()] -> the
+/// derivations depending on it`, refreshed for a derivation's dependencies on
+/// every [`eval`] so a dependency it stops reading stops waking it.
+///
+/// [`wake_computed`]: ComputedStore::wake_computed
+/// [`eval`]: ComputedStore::eval
 #[derive(Default)]
 pub struct ComputedStore {
     slots: Vec<ComputedSlot>,
     free: Vec<u32>,
+    /// Reverse dependency index, aligned to [`StateStore`] dense indices:
+    /// `dep_index[i]` holds every derivation that read the state at dense index
+    /// `i` at its last eval.
+    dep_index: Vec<Vec<ComputedId>>,
+    /// Reused buffer of derivations to re-evaluate this wake, so a wake allocates
+    /// nothing on the steady path.
+    wake_scratch: Vec<ComputedId>,
 }
 
 impl ComputedStore {
@@ -254,8 +273,12 @@ impl ComputedStore {
     /// Free a derivation, bumping its generation so surviving handles go stale.
     /// Returns whether the id was live.
     pub fn free(&mut self, id: ComputedId) -> bool {
-        match self.slots.get_mut(id.index as usize) {
+        match self.slots.get(id.index as usize) {
             Some(slot) if slot.occupied && slot.generation == id.generation => {
+                // Drop reverse-index entries before the slot dies so a later
+                // write to a former dependency cannot name a stale derivation.
+                self.deindex(id);
+                let slot = &mut self.slots[id.index as usize];
                 slot.occupied = false;
                 slot.generation = slot.generation.wrapping_add(1);
                 slot.deps.clear();
@@ -286,8 +309,8 @@ impl ComputedStore {
             .flatten()
     }
 
-    /// Evaluate a derivation, recording its dependency set and registering the
-    /// dynamic bindings that will wake it when any dependency later changes.
+    /// Evaluate a derivation, refreshing its recorded dependency set into the
+    /// reverse index that [`wake_computed`] reads.
     ///
     /// Returns whether the result changed from the cached value: `true` on the
     /// first evaluation and on any later one that produced a different value,
@@ -295,16 +318,13 @@ impl ComputedStore {
     /// marks the downstream node dirty exactly when this returns `true` — an
     /// unchanged derivation propagates nothing (the memo boundary).
     ///
-    /// Dependency bindings are registered into the dynamic region so the static
-    /// compiled edges stay dense; each recorded dependency gets an edge to the
-    /// derivation's node carrying its dirty class. Re-registration is idempotent
-    /// because the binding table folds a repeated `(node, class)` into one edge.
-    pub fn eval(
-        &mut self,
-        id: ComputedId,
-        states: &StateStore,
-        bindings: &mut BindingTable,
-    ) -> bool {
+    /// The freshly observed dependencies replace the derivation's prior entries
+    /// in the reverse index (deindex → refresh → reindex, matching
+    /// [`EffectStore::run`]), so a dependency it stops reading stops waking it
+    /// and a newly read one starts.
+    ///
+    /// [`wake_computed`]: ComputedStore::wake_computed
+    pub fn eval(&mut self, id: ComputedId, states: &StateStore) -> bool {
         let Some(slot) = self.slots.get_mut(id.index as usize) else {
             return false;
         };
@@ -318,17 +338,104 @@ impl ComputedStore {
             (slot.eval)(&mut cx)
         };
 
-        // Refresh the recorded dependency set and (re)register its dynamic
-        // bindings. Folding in the table keeps repeated registration a no-op.
-        slot.deps.clear();
-        slot.deps.extend_from_slice(cursor.deps());
-        for &dep in &slot.deps {
-            bindings.bind_dynamic(dep, slot.node, slot.class);
+        // Drop the derivation's old reverse-index entries, record the freshly
+        // observed dependency set, then reindex against it.
+        self.deindex(id);
+        {
+            let slot = &mut self.slots[id.index as usize];
+            slot.deps.clear();
+            slot.deps.extend_from_slice(cursor.deps());
         }
+        self.reindex(id);
 
+        let slot = &mut self.slots[id.index as usize];
         let changed = slot.value != Some(next);
         slot.value = Some(next);
         changed
+    }
+
+    /// Re-evaluate every derivation that read any of the `changed` states and
+    /// mark its downstream node dirty when its value changed — the flush's
+    /// computed pass. Each affected derivation re-evaluates once even if several
+    /// of its dependencies changed in the same transaction. Returns how many
+    /// derivations produced a changed value (and so dirtied their node).
+    ///
+    /// The memo boundary lives here: [`eval`] returns whether the value changed,
+    /// and only then does the node's dirty class get set — an unchanged
+    /// derivation touches no node. A re-eval may itself change a derivation's
+    /// dependency set (recorded fresh in [`eval`]); the newly gathered set takes
+    /// effect for the *next* wake, so a single wake is a fixed pass over the
+    /// derivations the current index names — no cascade within one flush.
+    ///
+    /// [`eval`]: ComputedStore::eval
+    pub fn wake_computed(
+        &mut self,
+        changed: &[StateId],
+        states: &StateStore,
+        nodes: &mut NodeStore,
+    ) -> u32 {
+        // Gather the affected derivations into the reused scratch, deduplicating
+        // so a derivation reading two changed states re-evaluates once.
+        self.wake_scratch.clear();
+        for &state in changed {
+            let Some(deps) = self.dep_index.get(state.index() as usize) else {
+                continue;
+            };
+            for &c in deps {
+                if !self.wake_scratch.contains(&c) {
+                    self.wake_scratch.push(c);
+                }
+            }
+        }
+
+        // Take the scratch out so `eval` can borrow `self` mutably; put it back
+        // (empty) afterward to keep its capacity for the next wake.
+        let mut targets = core::mem::take(&mut self.wake_scratch);
+        let mut dirtied = 0;
+        for &c in &targets {
+            // A stale id here means the derivation was freed since indexing;
+            // `eval` rejects it, so nothing dirties on a dead derivation.
+            if self.eval(c, states)
+                && let Some(slot) = self.slots.get(c.index as usize)
+                && slot.occupied
+                && slot.generation == c.generation
+            {
+                let (node, class) = (slot.node, slot.class);
+                nodes.mark_dirty(node, class);
+                dirtied += 1;
+            }
+        }
+        targets.clear();
+        self.wake_scratch = targets;
+        dirtied
+    }
+
+    /// Add `id` to the reverse index for each of its currently recorded
+    /// dependencies. Call after refreshing `slot.deps`.
+    fn reindex(&mut self, id: ComputedId) {
+        let deps = core::mem::take(&mut self.slots[id.index as usize].deps);
+        for &dep in &deps {
+            let i = dep.index() as usize;
+            if i >= self.dep_index.len() {
+                self.dep_index.resize_with(i + 1, Vec::new);
+            }
+            if !self.dep_index[i].contains(&id) {
+                self.dep_index[i].push(id);
+            }
+        }
+        self.slots[id.index as usize].deps = deps;
+    }
+
+    /// Remove `id` from the reverse index for each of its recorded dependencies.
+    /// Leaves `slot.deps` intact (the caller clears it if the derivation dies).
+    fn deindex(&mut self, id: ComputedId) {
+        let deps = core::mem::take(&mut self.slots[id.index as usize].deps);
+        for &dep in &deps {
+            if let Some(bucket) = self.dep_index.get_mut(dep.index() as usize) {
+                bucket.retain(|&c| c != id);
+            }
+        }
+        self.slots[id.index as usize].deps = deps;
     }
 }
 
@@ -574,6 +681,7 @@ impl EffectStore {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::component::{BuildCx, LeafStyle};
     use crate::node::NodeArena;
     use std::cell::RefCell;
     use std::rc::Rc;
@@ -585,13 +693,19 @@ mod tests {
         arena.alloc()
     }
 
+    /// Build a single leaf into `store` and return its id — a real
+    /// `NodeStore`-resident node so `mark_dirty`/`dirty` have somewhere to land
+    /// (a bare `NodeArena` id has no SoA row).
+    fn sink_node(store: &mut NodeStore) -> NodeId {
+        BuildCx::new(store).leaf(LeafStyle::default()).id()
+    }
+
     // --- Computed -----------------------------------------------------------
 
     #[test]
-    fn computed_first_eval_registers_deps_and_reports_change() {
+    fn computed_first_eval_records_deps_and_reports_change() {
         let mut states = StateStore::new();
         let mut arena = NodeArena::new();
-        let mut bindings = BindingTable::new();
         let mut computed = ComputedStore::new();
 
         let n = state(&mut states, StateValue::Int(2));
@@ -604,20 +718,15 @@ mod tests {
         });
 
         // First eval: value goes from "unset" to 4, so it reports changed, and
-        // it registers a dynamic binding from `n` to the sink's PAINT.
-        assert!(computed.eval(c, &states, &mut bindings));
+        // records `n` as a dependency so a later wake finds it.
+        assert!(computed.eval(c, &states));
         assert_eq!(computed.value(c), Some(StateValue::Int(4)));
-        let edges = bindings.dynamic_for_state(n);
-        assert_eq!(edges.len(), 1, "dependency registered as one dynamic edge");
-        assert_eq!(edges[0].node, sink);
-        assert!(edges[0].class.contains(DirtyClass::PAINT));
     }
 
     #[test]
     fn computed_reeval_after_dep_change_reports_change() {
         let mut states = StateStore::new();
         let mut arena = NodeArena::new();
-        let mut bindings = BindingTable::new();
         let mut computed = ComputedStore::new();
 
         let n = state(&mut states, StateValue::Int(2));
@@ -627,10 +736,10 @@ mod tests {
             _ => StateValue::Int(0),
         });
 
-        computed.eval(c, &states, &mut bindings);
+        computed.eval(c, &states);
         states.set(n, StateValue::Int(5));
         assert!(
-            computed.eval(c, &states, &mut bindings),
+            computed.eval(c, &states),
             "a dependency change that alters the result reports changed"
         );
         assert_eq!(computed.value(c), Some(StateValue::Int(10)));
@@ -640,7 +749,6 @@ mod tests {
     fn unchanged_computed_result_propagates_nothing() {
         let mut states = StateStore::new();
         let mut arena = NodeArena::new();
-        let mut bindings = BindingTable::new();
         let mut computed = ComputedStore::new();
 
         // Result is a step function: 0 for n < 10, else 1. Bumping n within the
@@ -652,18 +760,15 @@ mod tests {
             _ => StateValue::Int(0),
         });
 
-        assert!(
-            computed.eval(c, &states, &mut bindings),
-            "first eval changes"
-        );
+        assert!(computed.eval(c, &states), "first eval changes");
         states.set(n, StateValue::Int(3));
         assert!(
-            !computed.eval(c, &states, &mut bindings),
+            !computed.eval(c, &states),
             "same step → unchanged result → no propagation"
         );
         states.set(n, StateValue::Int(42));
         assert!(
-            computed.eval(c, &states, &mut bindings),
+            computed.eval(c, &states),
             "crossing the step boundary changes the result"
         );
     }
@@ -672,7 +777,6 @@ mod tests {
     fn freed_computed_is_stale() {
         let mut states = StateStore::new();
         let mut arena = NodeArena::new();
-        let mut bindings = BindingTable::new();
         let mut computed = ComputedStore::new();
         let n = state(&mut states, StateValue::Int(1));
         let sink = node(&mut arena);
@@ -685,8 +789,119 @@ mod tests {
         assert!(!computed.is_live(c));
         assert!(!computed.free(c), "double free is rejected");
         assert!(
-            !computed.eval(c, &states, &mut bindings),
+            !computed.eval(c, &states),
             "a stale handle evaluates nothing"
+        );
+    }
+
+    #[test]
+    fn computed_wake_dirties_node_only_on_change() {
+        let mut states = StateStore::new();
+        let mut store = NodeStore::new();
+        let mut computed = ComputedStore::new();
+
+        // A real node so `mark_dirty` has somewhere to land; a step function so a
+        // write can leave the derived value unchanged.
+        let sink = sink_node(&mut store);
+        let n = state(&mut states, StateValue::Int(2));
+        let c = computed.alloc(sink, DirtyClass::PAINT, move |cx| match cx.get(n) {
+            Some(StateValue::Int(v)) if v >= 10 => StateValue::Int(1),
+            _ => StateValue::Int(0),
+        });
+
+        // Seed: first eval records the dependency (its value is irrelevant here).
+        computed.eval(c, &states);
+        store.clear_dirty();
+
+        // Same-step write: wake re-evaluates, value is unchanged, node stays clean.
+        states.set(n, StateValue::Int(3));
+        let mut changed = Vec::new();
+        states.take_pending(&mut changed);
+        assert_eq!(
+            computed.wake_computed(&changed, &states, &mut store),
+            0,
+            "unchanged derivation dirties nothing"
+        );
+        assert!(
+            store.dirty(sink).is_empty(),
+            "node untouched on unchanged eval"
+        );
+
+        // Step-crossing write: wake re-evaluates, value changes, node goes dirty.
+        states.set(n, StateValue::Int(42));
+        changed.clear();
+        states.take_pending(&mut changed);
+        assert_eq!(computed.wake_computed(&changed, &states, &mut store), 1);
+        assert!(
+            store.dirty(sink).contains(DirtyClass::PAINT),
+            "changed derivation dirties its node's class"
+        );
+    }
+
+    #[test]
+    fn computed_stops_waking_on_dropped_dependency() {
+        let mut states = StateStore::new();
+        let mut store = NodeStore::new();
+        let mut computed = ComputedStore::new();
+
+        let sink = sink_node(&mut store);
+        let gate = state(&mut states, StateValue::Bool(true));
+        let inner = state(&mut states, StateValue::Int(0));
+
+        // Reads `inner` only while `gate` is true. Once `gate` flips false the
+        // body stops reading `inner`, so `inner` must stop waking it.
+        let c = computed.alloc(sink, DirtyClass::PAINT, move |cx| {
+            if matches!(cx.get(gate), Some(StateValue::Bool(true))) {
+                cx.get(inner)
+            } else {
+                Some(StateValue::Int(-1))
+            }
+            .unwrap_or(StateValue::Int(0))
+        });
+        computed.eval(c, &states); // deps = {gate, inner}
+        store.clear_dirty();
+
+        // Flip the gate: wakes via `gate`, value changes, and this eval does NOT
+        // read `inner`, so `inner` drops out of the reverse index.
+        states.set(gate, StateValue::Bool(false));
+        let mut changed = Vec::new();
+        states.take_pending(&mut changed);
+        assert_eq!(computed.wake_computed(&changed, &states, &mut store), 1);
+        store.clear_dirty();
+
+        // Writing `inner` now wakes nothing — it is no longer a dependency.
+        states.set(inner, StateValue::Int(99));
+        changed.clear();
+        states.take_pending(&mut changed);
+        assert_eq!(
+            computed.wake_computed(&changed, &states, &mut store),
+            0,
+            "dropped dep stops waking"
+        );
+    }
+
+    #[test]
+    fn freed_computed_drops_from_reverse_index() {
+        let mut states = StateStore::new();
+        let mut store = NodeStore::new();
+        let mut computed = ComputedStore::new();
+
+        let sink = sink_node(&mut store);
+        let n = state(&mut states, StateValue::Int(0));
+        let c = computed.alloc(sink, DirtyClass::PAINT, move |cx| {
+            cx.get(n).unwrap_or(StateValue::Int(0))
+        });
+        computed.eval(c, &states);
+        assert!(computed.free(c));
+
+        // A write to a former dependency of the freed derivation wakes nothing.
+        states.set(n, StateValue::Int(7));
+        let mut changed = Vec::new();
+        states.take_pending(&mut changed);
+        assert_eq!(
+            computed.wake_computed(&changed, &states, &mut store),
+            0,
+            "a freed derivation is out of the reverse index"
         );
     }
 
