@@ -210,19 +210,40 @@ Doc §69 item 4.
 - **Semantics of focus** — accessibility focus / SEMANTICS dirtying on focus change is Slice G;
   this slice's focus change is PAINT-only (the focus ring).
 
-### Slice F — Style token
+### Slice F — Style token  ✅
 Doc §69 item 9 (§14). Compile source style names to IDs; no runtime string lookup on the
 hot path.
-- [ ] `TokenId`/`StyleId` interning: semantic token namespaces (`color.*`, `spacing.*`,
-      `radius.*`, `typography.*`, `elevation.*`, `motion.*`) compiled to compact ids. A theme
-      is a token→value table; resolution is an id index, not a string map (§14/§29).
-- [ ] Node style references a resolved token id, not a literal, so a theme swap re-resolves
-      without touching node structure. A token change dirties only STYLE/PAINT of nodes bound
-      to it (reuse the binding/dirty machinery; a token is a state-like source).
-- [ ] A normal frame with no token change recomputes no style cascade (§14 exit).
-- [ ] Headless tests: token resolves to value; theme swap re-resolves bound nodes only;
-      unrelated node untouched; token change dirties STYLE/PAINT not LAYOUT.
-- [ ] Strip `§`/Makepad refs from every file touched. Commit.
+- [x] `TokenId`/`StyleId` interning: six semantic namespaces (`color.*`, `spacing.*`,
+      `radius.*`, `typography.*`, `elevation.*`, `motion.*`) fold to compact ids via
+      `TokenInterner` (cold string map, build-time only). A `Theme` maps each `TokenId` to a
+      `StateStore` cell — so a token's *value* lives in a normal state cell and resolution is
+      a `Vec` index plus a state read, never a string map (§14/§29). (`crates/ui/src/token.rs`)
+- [x] A node's `StyleId` references resolved tokens (`fill`/`radius`), not literals, folding
+      onto its warm `BoxStyle` in place — so a theme swap re-resolves without touching node
+      structure. A theme swap is a `StateStore::set` on the token's backing cell, riding the
+      ordinary pending/flush path: it dirties only STYLE/PAINT of the nodes bound to that cell
+      through the existing `BindingTable`. `NodeStore::resolve_styles` is the incremental STYLE
+      pass; no new invalidation machinery. (`crates/ui/src/style.rs`, `component.rs`)
+- [x] A normal frame with no token change recomputes no style cascade — `resolve_styles`
+      returns 0 when nothing is STYLE-dirty (§14 exit), proven by `clean_frame_runs_no_style_cascade`.
+- [x] Headless facade tests (`crates/viso/tests/style_token.rs`): token resolves to value;
+      theme swap re-resolves bound nodes only; unrelated untokenized node untouched; token
+      change dirties STYLE/PAINT not MEASURE/LAYOUT; clean frame runs no cascade.
+- [x] Struck `§`/Makepad refs from every touched file. Committed per section.
+
+**Deferred from Slice F**
+- **Non-color/radius tokens** — only `fill` (a `color.*` token) and `radius` are tokenizable
+  this slice, since those are all `BoxStyle` carries. `border`, and the `spacing`/`typography`/
+  `elevation`/`motion` namespaces, stay literal until a consumer (a bordered widget, a text
+  control, a shadow layer, an animator) lands; the namespaces already exist in the interner.
+- **Cached dirty-node list for resolve** — `resolve_styles` scans all nodes for the STYLE mark
+  each swap. A swap touches few nodes, so a cached bound-node list (like a future focus index)
+  is the optimization if a huge tree ever makes the scan hot; deferred until measured.
+- **Compile-time `theme.vs`** — tokens are interned at runtime here; the `.vs` theme source →
+  AOT token table (§21.5/§32 `theme.vs`) is a DSL-slice concern, not this slice.
+- **Style version / measure-affecting tokens** — a tokenized field that feeds MEASURE (e.g. a
+  future `spacing` on a container) must dirty MEASURE+LAYOUT, not just STYLE+PAINT; the binding
+  class is per-field and lands with the first such token's consumer.
 
 ### Slice G — Semantics
 Doc §69 item 10 (§15). Accessibility tree generated from the Node model, incrementally.
