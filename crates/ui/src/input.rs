@@ -231,8 +231,9 @@ fn pointer_dispatch(
 /// Advance focus to the next (`forward`) or previous focusable node in tree
 /// pre-order, wrapping. A `None` current focus starts at the first focusable
 /// node (or the last, going backward). Returns the new focused id, or `None` if
-/// no node is focusable. Marks PAINT dirty on both the old and new focused nodes
-/// (the focus-ring repaint) and updates the focus slot.
+/// no node is focusable. Marks PAINT + SEMANTICS dirty on both the old and new
+/// focused nodes (the focus-ring repaint and the accessibility re-fold) and
+/// updates the focus slot.
 ///
 /// The focusable list is collected into a small local `Vec`: focus traversal is
 /// a cold, once-per-Tab action, not a per-frame hot path, so the allocation is
@@ -285,17 +286,19 @@ pub fn focus_next(store: &mut NodeStore, root: NodeId, forward: bool) -> Option<
 }
 
 /// Move the focus slot from `old` to `new`, repainting both (the focus-ring
-/// leaves the old node and lands on the new). Either may be `None`. Shared by
-/// the focus ring and by a handler's deferred focus request.
+/// leaves the old node and lands on the new) and marking both semantically
+/// changed (a focus move is a semantic event, so the derived accessibility tree
+/// re-folds). Either may be `None`. Shared by the focus ring and by a handler's
+/// deferred focus request. SEMANTICS bubbles to the root; PAINT stays local.
 fn apply_focus(store: &mut NodeStore, old: Option<NodeId>, new: Option<NodeId>) {
     if old == new {
         return;
     }
     if let Some(o) = old {
-        store.mark_dirty(o, DirtyClass::PAINT);
+        store.mark_dirty(o, DirtyClass::PAINT | DirtyClass::SEMANTICS);
     }
     if let Some(n) = new {
-        store.mark_dirty(n, DirtyClass::PAINT);
+        store.mark_dirty(n, DirtyClass::PAINT | DirtyClass::SEMANTICS);
     }
     store.set_focused(new);
 }
@@ -716,12 +719,21 @@ mod tests {
         assert!(store.dirty(a).is_empty());
         assert!(store.dirty(b).is_empty());
 
-        // Move a -> b: exactly a and b repaint, nothing else.
+        // Move a -> b: exactly a and b repaint and re-fold their semantics.
         focus_next(&mut store, root, true);
         assert_eq!(store.focused(), Some(b));
-        assert!(store.dirty(a).contains(DirtyClass::PAINT));
-        assert!(store.dirty(b).contains(DirtyClass::PAINT));
-        assert!(store.dirty(root).is_empty(), "the parent does not repaint");
+        assert!(store.dirty(a).contains(DirtyClass::PAINT | DirtyClass::SEMANTICS));
+        assert!(store.dirty(b).contains(DirtyClass::PAINT | DirtyClass::SEMANTICS));
+        // The parent never repaints; it only learns via the bubbling SEMANTICS
+        // mark that its subtree's accessibility changed.
+        assert!(
+            !store.dirty(root).intersects(DirtyClass::PAINT),
+            "the parent does not repaint"
+        );
+        assert!(
+            store.dirty(root).contains(DirtyClass::SEMANTICS),
+            "SEMANTICS bubbles to the parent"
+        );
     }
 
     #[test]
