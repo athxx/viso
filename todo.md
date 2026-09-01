@@ -247,16 +247,40 @@ hot path.
 
 ### Slice G — Semantics
 Doc §69 item 10 (§15). Accessibility tree generated from the Node model, incrementally.
-- [ ] `SemanticsTree` derived from nodes: role, label, state (focused/checked/…), bounds.
+- [x] `SemanticsTree` derived from nodes: role, label, state (focused), bounds.
       Generated from the Node model (§69 exit: "semantics 从 Node 模型天然生成"), not a
-      parallel hand-maintained tree.
-- [ ] Incremental: the existing SEMANTICS dirty class drives re-derivation of only changed
-      subtrees; a focus/label/role change dirties SEMANTICS on that node.
-- [ ] Interactive nodes (the ones with pointer/key handlers from Slices D/E) carry default
-      semantics so a keyboard/AT path exists (§15).
-- [ ] Headless semantics-snapshot tests (§35/§66): tree shape + roles for the demo scene;
-      a focus change updates only that node's semantics; a label change re-derives one node.
-- [ ] Strip `§`/Makepad refs from every file touched. Commit.
+      parallel hand-maintained tree. `semantics.rs` value types (`Role`/`Semantics`/
+      `SemanticsNode`/`SemanticsTree`); a cold authored column + `set_semantics` on
+      `NodeStore`; `derive_semantics` folds the authored column with live state (focus
+      slot, handler-derived roles, bounds) in a pre-order walk mirroring `paint_tree`.
+- [x] Incremental: the existing SEMANTICS dirty class drives re-derivation; a
+      focus/label/role change dirties SEMANTICS on that node and it bubbles to the root
+      (`BUBBLING`), so `derive_semantics_dirty` re-derives on a semantic change and does
+      nothing on a clean frame. (Whole-tree rebuild this slice — see deferral below.)
+- [x] Interactive nodes (pointer/key handlers from Slices D/E) get a default `Button`
+      role so a keyboard/AT path exists (§15); authored role wins over the default.
+- [x] Headless semantics-snapshot tests (§35/§66) in `crates/viso/tests/semantics_snapshot.rs`:
+      tree shape + roles for the demo scene; a focus change updates only that node's
+      semantics; a label change re-derives one node; a clean frame derives nothing. Plus
+      `BuildCx::semantics` authoring, the `viso::ui` exports, and the focus→SEMANTICS
+      wiring in `input.rs` (focus move now marks `PAINT | SEMANTICS`).
+- [x] Stripped `§`/Makepad refs from every file touched. Committed per section.
+
+**Deferred from Slice G**
+- **Per-subtree incremental caching** — the whole tree re-derives on any SEMANTICS dirt
+  (SEMANTICS bubbles to root, so any change reaches `root`). A cached previous tree +
+  per-subtree rebuild lands when a large tree makes the full walk hot — a §37 perf-measured
+  refinement, not now. The exit criterion is met at the *invalidation* level: a clean frame
+  derives nothing; only a semantic change triggers a rebuild.
+- **Text-node label invalidation** — a label on a *text* node is MEASURE+LAYOUT+PAINT+SEMANTICS
+  (§11); this slice's label is SEMANTICS-only because there is no text node yet. The MEASURE/
+  LAYOUT classes join `set_semantics` (or the text widget's own setter) when the first text
+  control lands.
+- **Richer roles / state** — `Role` is `Group`/`Button`/`Label`; checked/expanded/value/range
+  and the rest grow with the widgets that need them.
+- **Platform AT bridge** — feeding the OS accessibility API from the `SemanticsTree` is a
+  platform-tier concern (kept out of `viso-ui` per the §10 DAG); lands with a platform a11y
+  slice, no `accesskit` dependency in the ui tier.
 
 ### Wrap-up for Phase 4
 - [ ] `01-counter` example: a real interactive counter (button click → `set` → bound label
