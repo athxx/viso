@@ -32,8 +32,6 @@ macro_rules! phase_cx {
 
 phase_cx!(/// Application-scope context: create windows, register services.
     AppCx);
-phase_cx!(/// Input dispatch context.
-    EventCx);
 phase_cx!(/// Layout context. No network, no window creation, no GPU submit.
     LayoutCx);
 phase_cx!(/// Paint-data production context.
@@ -99,5 +97,62 @@ impl<'a> UpdateCx<'a> {
     #[inline]
     pub fn bindings(&self) -> &BindingTable {
         self.bindings
+    }
+}
+
+/// Input-dispatch context handed to a pointer/key handler.
+///
+/// Like [`UpdateCx`] it holds the reactive stores so a handler can read and
+/// write state; writes are deferred ([`EventCx::set`] records the change in the
+/// per-frame pending set, and the frame's flush turns it into targeted node
+/// dirtying via the [`BindingTable`]). It deliberately holds no node store and
+/// exposes no `mark_dirty`: a handler declares intent by writing state, and
+/// invalidation follows from the compiled bindings.
+pub struct EventCx<'a> {
+    states: &'a mut StateStore,
+    #[allow(dead_code)]
+    bindings: &'a BindingTable,
+}
+
+impl<'a> EventCx<'a> {
+    /// Assemble the event context from the frame's reactive stores.
+    #[doc(hidden)]
+    pub fn __new(states: &'a mut StateStore, bindings: &'a BindingTable) -> Self {
+        Self { states, bindings }
+    }
+
+    /// Read the current value of a state cell. `None` for a stale handle.
+    #[inline]
+    pub fn get(&self, id: StateId) -> Option<StateValue> {
+        self.states.get(id)
+    }
+
+    /// Write a state value. Deferred: recorded in this frame's pending set and
+    /// applied to bound nodes by the flush phase, not here. Returns whether the
+    /// write landed (the handle was live). Setting the current value is a no-op.
+    #[inline]
+    pub fn set(&mut self, id: StateId, value: StateValue) -> bool {
+        self.states.set(id, value)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::binding::BindingTable;
+    use crate::state::{StateStore, StateValue};
+
+    #[test]
+    fn event_cx_reads_and_defers_writes() {
+        let mut states = StateStore::new();
+        let id = states.alloc(StateValue::Int(1));
+        let bindings = BindingTable::new();
+        {
+            let mut cx = EventCx::__new(&mut states, &bindings);
+            assert_eq!(cx.get(id), Some(StateValue::Int(1)));
+            assert!(cx.set(id, StateValue::Int(2)));
+        }
+        assert_eq!(states.get(id), Some(StateValue::Int(2)));
+        assert!(states.has_pending());
     }
 }
