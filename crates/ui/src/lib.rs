@@ -23,7 +23,10 @@ pub mod state;
 pub mod style;
 
 pub use binding::{Binding, BindingTable};
-pub use component::{BuildCx, Component, FlexStyle, FrameRecompute, Handle, LeafStyle, NodeStore};
+pub use component::{
+    BuildCx, Component, FlexStyle, FrameRecompute, Handle, LeafStyle, NodeStore, PointerHandler,
+};
+pub use context::EventCx;
 pub use dirty::DirtyClass;
 pub use hit_test::{HitTestTree, hit_test};
 pub use input::{Modifiers, PointerButtons, PointerEvent, PointerPhase};
