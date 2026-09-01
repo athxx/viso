@@ -879,8 +879,14 @@ mod tests {
             cx.leaf(LeafStyle::default()).id()
         };
         assert_eq!(reused.index(), 0, "index 0 is allocated again");
-        assert!(!store.focusable(reused), "alloc defaults focusable to false");
-        assert!(!store.has_key_handler(reused), "alloc leaves the key slot empty");
+        assert!(
+            !store.focusable(reused),
+            "alloc defaults focusable to false"
+        );
+        assert!(
+            !store.has_key_handler(reused),
+            "alloc leaves the key slot empty"
+        );
     }
 
     #[test]

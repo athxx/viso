@@ -62,6 +62,46 @@ pub struct PointerEvent {
     pub modifiers: Modifiers,
 }
 
+/// A minimal platform-independent key identity (UI-tier mirror of the runtime
+/// key, kept crate-local so no transport vocabulary rides down into the tree).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Key {
+    Escape,
+    Enter,
+    Space,
+    Tab,
+    Backspace,
+    /// Any key not in the minimal set, carrying its raw platform scancode.
+    Other(u32),
+}
+
+/// A normalized key event (UI tier). Coordinate-free: routed to the focused
+/// node, not by hit testing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct KeyEvent {
+    pub key: Key,
+    /// True on press, false on release.
+    pub pressed: bool,
+    /// True if this press is an OS auto-repeat.
+    pub repeat: bool,
+    pub modifiers: Modifiers,
+}
+
+/// A normalized IME event: an in-progress composition (preedit) or a committed
+/// segment. Like [`KeyEvent`] it routes to the focused node.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ImeEvent {
+    /// The composing string, shown inline and replaced on each update. An empty
+    /// preedit signals cancel/clear.
+    Preedit {
+        text: String,
+        /// Caret position within `text`, in bytes.
+        caret: usize,
+    },
+    /// A committed segment: the composition finished and this text is final.
+    Commit { text: String },
+}
+
 use crate::binding::BindingTable;
 use crate::component::NodeStore;
 use crate::context::EventCx;
