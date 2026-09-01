@@ -1,9 +1,9 @@
 //! `viso-runtime` — the application execution kernel.
 //!
-//! Owns the highest-level control of the UI main loop and frame scheduler
-//! (§11.1): OS event pump, timers, task completions, animation tick, UI
-//! update, render/vsync. An external async runtime (tokio/smol) is an
-//! *adapter* that plugs in here — it never owns the frame lifecycle.
+//! Owns the highest-level control of the UI main loop and frame scheduler:
+//! OS event pump, timers, task completions, animation tick, UI update,
+//! render/vsync. An external async runtime (tokio/smol) is an *adapter* that
+//! plugs in here — it never owns the frame lifecycle.
 //!
 //! This crate defines the frame-phase and scheduling *contract* only. Widget
 //! implementation, layout, and paint live above it and are not visible here.
@@ -18,6 +18,7 @@
 pub mod context;
 pub mod driver;
 pub mod frame;
+pub mod input;
 pub mod phase;
 pub mod schedule;
 pub mod scheduler;
@@ -25,6 +26,7 @@ pub mod scheduler;
 pub use context::RuntimeCx;
 pub use driver::FrameDriver;
 pub use frame::run_frame;
+pub use input::{InputSample, Modifiers, PointerPhase, PointerSample};
 pub use phase::FramePhase;
 pub use schedule::{FrameDecision, RedrawReason, RedrawReasons};
 pub use scheduler::Scheduler;

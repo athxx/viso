@@ -324,9 +324,9 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
         }
     }
 
-    fn on_input(&mut self) {
-        // Input is aggregated into a redraw reason by the scheduler; hit-testing
-        // and dispatch land with the input subsystem.
+    fn on_input(&mut self, _sample: viso_runtime::InputSample) {
+        // Hit-test + capture/target/bubble routing lands in the next step; the
+        // scheduler already aggregates the input into a redraw reason.
     }
 
     fn run_phase(&mut self, phase: FramePhase, _cx: &mut RuntimeCx<'_>) {

@@ -11,11 +11,12 @@
 //!    when a frame is pending,
 //!    `Exit` when the last window closed.
 
-use viso_platform::{AppHandler, ControlFlow, PlatformApp, RawEvent};
+use viso_platform::{AppHandler, ControlFlow, PlatformApp, RawEvent, RawPointer};
 
 use crate::context::RuntimeCx;
 use crate::driver::FrameDriver;
 use crate::frame::run_frame;
+use crate::input::{InputSample, Modifiers, PointerPhase, PointerSample};
 use crate::schedule::{RedrawReason, RedrawReasons};
 
 /// Owns the run loop's mutable state and routes every platform event.
@@ -169,11 +170,51 @@ impl<D: FrameDriver> AppHandler for Scheduler<D> {
                 // frame runs to observe whatever it delivered.
                 self.reasons.add(RedrawReason::AsyncCompletion);
             }
-            RawEvent::Pointer(_) | RawEvent::Scroll(_) | RawEvent::Key(_) | RawEvent::Text(_) => {
-                self.driver.on_input();
+            RawEvent::Pointer(p) => {
+                // Resolve the window scale here — the scheduler owns the window,
+                // so it is the one place that can — and normalize the logical
+                // point sample into physical pixels before the driver sees it.
+                let scale = self
+                    .app
+                    .window(p.window)
+                    .map(|w| w.scale_factor())
+                    .unwrap_or(1.0) as f32;
+                let sample = normalize_pointer(p, scale);
+                self.driver.on_input(InputSample::Pointer(sample));
+                self.reasons.add(RedrawReason::InputDirty);
+            }
+            RawEvent::Scroll(_) | RawEvent::Key(_) | RawEvent::Text(_) => {
+                // Scroll/key/text route with the keyboard/focus/IME subsystem;
+                // for now they still flag the frame dirty so nothing regresses.
                 self.reasons.add(RedrawReason::InputDirty);
             }
         }
         self.resolve_control_flow()
+    }
+}
+
+/// Convert a raw pointer sample (logical points) into the runtime-tier
+/// physical-pixel sample the driver routes. Logical → physical is a single
+/// multiply by the window scale; the phase and modifier meaning is preserved.
+fn normalize_pointer(p: RawPointer, scale: f32) -> PointerSample {
+    use viso_platform::PointerPhase as RawPhase;
+    let phase = match p.phase {
+        RawPhase::Down => PointerPhase::Down,
+        RawPhase::Moved => PointerPhase::Move,
+        RawPhase::Up => PointerPhase::Up,
+        RawPhase::Left => PointerPhase::Leave,
+    };
+    PointerSample {
+        window: p.window,
+        x: p.x as f32 * scale,
+        y: p.y as f32 * scale,
+        buttons: p.buttons.0,
+        modifiers: Modifiers {
+            shift: p.modifiers.shift,
+            control: p.modifiers.control,
+            alt: p.modifiers.alt,
+            logo: p.modifiers.logo,
+        },
+        phase,
     }
 }
