@@ -38,10 +38,14 @@
 
 #![forbid(unsafe_op_in_unsafe_fn)]
 
-use viso_gpu::{Backend, GpuBackend, SurfaceId, TextureDesc, TextureFormat, TextureId};
+use viso_gpu::{Backend, GpuBackend, SurfaceId};
 use viso_platform::{WindowConfig, WindowId};
-use viso_render::Renderer;
+use viso_render::{Primitive, Rect, Renderer, Rgba};
 use viso_runtime::{FramePhase, RuntimeCx, Scheduler};
+use viso_ui::{
+    Align, Axis, BoxStyle, BuildCx, Component, FlexStyle, Inset, LeafStyle, NodeId, NodeStore,
+    Size, paint_tree,
+};
 
 pub use viso_ui::context::AppCx;
 
@@ -88,6 +92,16 @@ struct AppDriver<A: Application> {
     /// exists. `None` until then, or when surface creation is unavailable
     /// (headless platform with no window handle).
     gpu: Option<GpuState>,
+    /// The retained UI tree: real nodes built once on launch, laid out each
+    /// frame, and painted to primitives. This replaces the fixed test scene
+    /// (§8 retained tree, §9 component/node/primitive).
+    store: NodeStore,
+    /// The tree root declared by [`build_scene`], if the build succeeded.
+    root: Option<NodeId>,
+    /// Reusable primitive buffer, refilled each frame by [`paint_tree`] (§7.1).
+    primitives: Vec<Primitive>,
+    /// Reusable child-id scratch for the layout passes (§7.1).
+    scratch: Vec<u32>,
 }
 
 /// The facade-owned GPU state: the concrete backend, the renderer, and the
@@ -100,15 +114,6 @@ struct GpuState {
     backend: Backend,
     renderer: Renderer,
     surface: SurfaceId,
-    /// The Image test-scene texture (a small checkerboard), created once at
-    /// launch and sampled by the scene's [`viso_render::Primitive::Image`].
-    test_texture: TextureId,
-    /// The R8 SDF glyph atlas for the test scene's text run, created and
-    /// uploaded once at launch.
-    glyph_atlas: TextureId,
-    /// The positioned glyphs and color for the test scene's text run, prepared
-    /// once at launch and re-wrapped into a [`GlyphRunDraw`] each frame.
-    glyphs: viso_render::TestGlyphs,
     /// Current surface size in physical pixels `(width, height)`.
     size: (u32, u32),
 }
@@ -120,7 +125,90 @@ impl<A: Application> AppDriver<A> {
             cx: AppCx::__new(),
             window: None,
             gpu: None,
+            store: NodeStore::new(),
+            root: None,
+            primitives: Vec::new(),
+            scratch: Vec::new(),
         }
+    }
+
+    /// Run measure + layout over the tree against the current surface size and
+    /// refill the primitive buffer. A no-op if the tree or GPU is absent.
+    fn relayout_and_paint(&mut self) {
+        let (Some(root), Some(gpu)) = (self.root, &self.gpu) else {
+            return;
+        };
+        let (w, h) = gpu.size;
+        let surface = Rect {
+            x: 0.0,
+            y: 0.0,
+            w: w as f32,
+            h: h as f32,
+        };
+        self.store.layout(root, surface, &mut self.scratch);
+        self.primitives.clear();
+        paint_tree(&self.store, root, &mut self.primitives);
+    }
+}
+
+/// The demo scene, built as a real retained tree: a padded Row of three boxes —
+/// two fixed and one that fills the leftover width — centered on the cross axis.
+/// This replaces the fixed `test_scene` primitive list; the same visual now
+/// flows from Component → Node → Flex layout → paint.
+struct Scene;
+
+impl Component for Scene {
+    fn build(&self, cx: &mut BuildCx<'_>) {
+        cx.flex(
+            FlexStyle {
+                axis: Axis::Row,
+                gap: 8.0,
+                padding: Inset::all(12.0),
+                align: Align::Center,
+                size: Size::fill(),
+                style: BoxStyle::solid(Rgba {
+                    r: 0.15,
+                    g: 0.16,
+                    b: 0.20,
+                    a: 1.0,
+                }),
+            },
+            |cx| {
+                cx.leaf(LeafStyle {
+                    size: Size::fixed(48.0, 40.0),
+                    style: BoxStyle::solid(Rgba {
+                        r: 0.9,
+                        g: 0.1,
+                        b: 0.1,
+                        a: 1.0,
+                    })
+                    .with_radius(8.0),
+                });
+                cx.leaf(LeafStyle {
+                    size: Size {
+                        width: viso_ui::Length::fill(),
+                        height: viso_ui::Length::Fixed(56.0),
+                    },
+                    style: BoxStyle::solid(Rgba {
+                        r: 0.1,
+                        g: 0.7,
+                        b: 0.3,
+                        a: 1.0,
+                    })
+                    .with_radius(4.0),
+                });
+                cx.leaf(LeafStyle {
+                    size: Size::fixed(64.0, 48.0),
+                    style: BoxStyle::solid(Rgba {
+                        r: 0.2,
+                        g: 0.4,
+                        b: 0.95,
+                        a: 1.0,
+                    })
+                    .with_radius(6.0),
+                });
+            },
+        );
     }
 }
 
@@ -148,49 +236,26 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
         let format = backend.surface_format(surface);
         let renderer = Renderer::new(&mut backend, format);
 
-        // Create the Image test-scene texture (a 4×4 checkerboard) and upload it.
-        let (tw, th, texels) = viso_render::test_texture();
-        let test_texture = backend.create_texture(&TextureDesc {
-            width: tw,
-            height: th,
-            format: TextureFormat::Bgra8Unorm,
-            render_target: false,
-            label: "test-checkerboard",
-        });
-        backend.write_texture(test_texture, 0, 0, tw, th, &texels);
-
-        // Prepare the test text run and upload its R8 SDF atlas.
-        let glyphs = viso_render::test_glyphs([16.0, 16.0], 28.0);
-        let glyph_atlas = backend.create_texture(&TextureDesc {
-            width: glyphs.atlas_size,
-            height: glyphs.atlas_size,
-            format: TextureFormat::R8Unorm,
-            render_target: false,
-            label: "test-glyph-atlas",
-        });
-        backend.write_texture(
-            glyph_atlas,
-            0,
-            0,
-            glyphs.atlas_size,
-            glyphs.atlas_size,
-            &glyphs.atlas_pixels,
-        );
-
         self.gpu = Some(GpuState {
             backend,
             renderer,
             surface,
-            test_texture,
-            glyph_atlas,
-            glyphs,
             size: (w.max(1), h.max(1)),
         });
+
+        // Build the retained UI tree once, now that we have a surface size. The
+        // structure is fixed this slice; targeted structural rebuilds land with
+        // reactive state. Layout runs per frame in `run_phase`.
+        self.store.clear();
+        let mut build = BuildCx::new(&mut self.store);
+        Scene.build(&mut build);
+        self.root = build.root();
     }
 
     fn on_geometry(&mut self, _window: WindowId, _scale: f64, width: u32, height: u32) {
         // Resize the swapchain so the next frame maps pixel-space to the new
-        // extent. Layout consumes the geometry once the layout subsystem lands.
+        // extent, then relayout the tree against the new surface. This slice
+        // reruns layout wholesale; targeted relayout lands with dirty tracking.
         if let Some(gpu) = &mut self.gpu {
             let (w, h) = (width.max(1), height.max(1));
             gpu.backend.resize_surface(gpu.surface, w, h);
@@ -199,38 +264,34 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
     }
 
     fn on_input(&mut self) {
-        // Phase 2: input is aggregated into a redraw reason by the scheduler;
-        // hit-testing and dispatch land with the input subsystem (Phase 3+).
+        // Input is aggregated into a redraw reason by the scheduler; hit-testing
+        // and dispatch land with the input subsystem (§13).
     }
 
     fn run_phase(&mut self, phase: FramePhase, _cx: &mut RuntimeCx<'_>) {
-        // Phase 2 vertical slice: the render phases drive the GPU. The app's
-        // real widget tree (Phase 3) will feed primitives into BuildPaintChanges;
-        // for now the phases render a fixed test scene so pixels reach the
-        // window. Phases other than the render trio remain no-ops here.
-        let Some(gpu) = &mut self.gpu else {
-            return;
-        };
+        // The render phases drive the GPU from the real retained tree: Measure +
+        // Layout resolve node boxes, then paint lowers them to primitives which
+        // the renderer batches and submits. Non-render phases are no-ops here.
         match phase {
+            FramePhase::Layout => {
+                // Resolve boxes and refill the primitive buffer for this frame.
+                self.relayout_and_paint();
+            }
             FramePhase::UploadGpuChanges => {
-                // Build this frame's primitives (test scene) and stage their
-                // instances into the persistent buffer.
-                let glyphs = viso_render::GlyphRunDraw {
-                    glyphs: gpu.glyphs.glyphs.clone(),
-                    atlas: gpu.glyph_atlas,
-                    color: gpu.glyphs.color,
-                };
-                let scene = viso_render::test_scene(gpu.test_texture, glyphs);
-                gpu.renderer.upload(&mut gpu.backend, &scene);
+                if let Some(gpu) = &mut self.gpu {
+                    gpu.renderer.upload(&mut gpu.backend, &self.primitives);
+                }
             }
             FramePhase::Submit => {
-                let (w, h) = gpu.size;
-                gpu.renderer.submit(
-                    &mut gpu.backend,
-                    gpu.surface,
-                    [0.1, 0.1, 0.1, 1.0],
-                    [w as f32, h as f32],
-                );
+                if let Some(gpu) = &mut self.gpu {
+                    let (w, h) = gpu.size;
+                    gpu.renderer.submit(
+                        &mut gpu.backend,
+                        gpu.surface,
+                        [0.1, 0.1, 0.1, 1.0],
+                        [w as f32, h as f32],
+                    );
+                }
             }
             _ => {}
         }

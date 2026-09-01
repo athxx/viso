@@ -99,6 +99,18 @@ impl NodeArena {
         }
     }
 
+    /// The live [`NodeId`] for a slot index, pairing the index with the slot's
+    /// current generation. `None` if the slot is empty or out of range. Lets a
+    /// caller working in bare indices (dense side-storage) recover a full id.
+    #[inline]
+    pub fn live_id(&self, index: u32) -> Option<NodeId> {
+        let slot = self.slots.get(index as usize)?;
+        slot.occupied.then_some(NodeId {
+            index,
+            generation: slot.generation,
+        })
+    }
+
     /// Whether an id refers to a currently-live node (generation + occupancy).
     #[inline]
     pub fn is_live(&self, id: NodeId) -> bool {
@@ -112,6 +124,39 @@ impl NodeArena {
     pub fn links(&self, id: NodeId) -> Option<&NodeLinks> {
         let slot = self.slots.get(id.index as usize)?;
         (slot.occupied && slot.generation == id.generation).then_some(&slot.links)
+    }
+
+    /// Mutable ancestry links for a live node, so the tree builder can attach
+    /// parent/child/sibling relationships after allocation.
+    pub fn links_mut(&mut self, id: NodeId) -> Option<&mut NodeLinks> {
+        let slot = self.slots.get_mut(id.index as usize)?;
+        (slot.occupied && slot.generation == id.generation).then_some(&mut slot.links)
+    }
+
+    /// Append `child` as the last child of `parent`, wiring the sibling chain.
+    /// Both must be live; a no-op returning `false` otherwise.
+    pub fn append_child(&mut self, parent: NodeId, child: NodeId) -> bool {
+        if !self.is_live(parent) || !self.is_live(child) {
+            return false;
+        }
+        let prev_last = self.links(parent).and_then(|l| l.last_child);
+        if let Some(prev) = prev_last
+            && let Some(prev_links) = self.links_mut(prev)
+        {
+            prev_links.next_sibling = Some(child);
+        }
+        if let Some(child_links) = self.links_mut(child) {
+            child_links.parent = Some(parent);
+            child_links.prev_sibling = prev_last;
+            child_links.next_sibling = None;
+        }
+        if let Some(parent_links) = self.links_mut(parent) {
+            if parent_links.first_child.is_none() {
+                parent_links.first_child = Some(child);
+            }
+            parent_links.last_child = Some(child);
+        }
+        true
     }
 }
 
