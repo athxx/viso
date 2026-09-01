@@ -95,6 +95,14 @@ impl Default for LeafStyle {
 /// fat pointer never rides in the hot SoA columns.
 pub type PointerHandler = Box<dyn FnMut(&mut EventCx<'_>)>;
 
+/// A node's keyboard/IME handler: an `FnMut` driven with the event context when
+/// the node is on the focused node's dispatch chain. Cold like
+/// [`PointerHandler`] — touched only when a key or IME event routes to focus,
+/// never in the per-node hot traversal — so it lives off the hot SoA columns as
+/// an owned box. Parallel to (and independent of) the pointer handler column:
+/// pointer events fire only pointer handlers, key/IME events only key handlers.
+pub type KeyHandler = Box<dyn FnMut(&mut EventCx<'_>)>;
+
 /// The retained node store: the arena plus parallel side-storage arrays, all
 /// indexed by [`NodeId::index`]. Allocation pushes to every array in lockstep
 /// so the index stays aligned; freeing leaves stale values in place and relies
@@ -123,6 +131,18 @@ pub struct NodeStore {
     /// only when a node lands on a hit's dispatch chain, so it lives off the hot
     /// columns as an owned box rather than an inline fat pointer.
     handlers: Vec<Option<PointerHandler>>,
+    /// The single focused node, or `None` when nothing holds focus. Keyboard and
+    /// IME events route to this node (not hit testing). One slot per store — a
+    /// window has one focus — reset to `None` on a structural rebuild.
+    focused: Option<NodeId>,
+    /// Cold flag column: whether a node can hold focus. Default `false` — unlike
+    /// `hittable`, a node opts *in* to focus (only interactive nodes participate
+    /// in the focus ring). Maintained index-aligned with the arena.
+    focusable: Vec<bool>,
+    /// Cold: per-node keyboard/IME handler, index-aligned but mostly `None`.
+    /// Parallel to `handlers` but a distinct column: read only when a key/IME
+    /// event routes through the focused node's dispatch chain.
+    key_handlers: Vec<Option<KeyHandler>>,
 }
 
 impl NodeStore {
@@ -143,6 +163,9 @@ impl NodeStore {
         self.measured.clear();
         self.hittable.clear();
         self.handlers.clear();
+        self.focused = None;
+        self.focusable.clear();
+        self.key_handlers.clear();
     }
 
     /// The arena backing the tree.
@@ -227,6 +250,78 @@ impl NodeStore {
             return;
         }
         self.handlers[id.index() as usize] = Some(handler);
+    }
+
+    /// The currently focused node, or `None` when nothing holds focus.
+    #[inline]
+    pub fn focused(&self) -> Option<NodeId> {
+        self.focused
+    }
+
+    /// Set the focus slot. Focusing `Some(id)` is live-guarded — a stale handle
+    /// leaves focus unchanged rather than pointing the slot at a dead slot;
+    /// `None` always clears. This only moves the slot: dirtying the old and new
+    /// nodes for the focus-ring repaint is the router's job (see the input tier).
+    pub fn set_focused(&mut self, id: Option<NodeId>) {
+        match id {
+            Some(node) if !self.arena.is_live(node) => {}
+            other => self.focused = other,
+        }
+    }
+
+    /// Whether a node can hold focus (default `false`).
+    #[inline]
+    pub fn focusable(&self, id: NodeId) -> bool {
+        self.focusable[id.index() as usize]
+    }
+
+    /// Set whether a node can hold focus. A live-guarded write, so a stale handle
+    /// is a no-op rather than an out-of-bounds write.
+    pub fn set_focusable(&mut self, id: NodeId, focusable: bool) {
+        if !self.arena.is_live(id) {
+            return;
+        }
+        self.focusable[id.index() as usize] = focusable;
+    }
+
+    /// Attach a keyboard/IME handler to a node, replacing any prior one. A
+    /// live-guarded write, so a stale handle is a no-op.
+    pub fn set_key_handler(&mut self, id: NodeId, handler: KeyHandler) {
+        if !self.arena.is_live(id) {
+            return;
+        }
+        self.key_handlers[id.index() as usize] = Some(handler);
+    }
+
+    /// Whether a live node currently carries a key handler.
+    #[inline]
+    pub fn has_key_handler(&self, id: NodeId) -> bool {
+        self.arena.is_live(id) && self.key_handlers[id.index() as usize].is_some()
+    }
+
+    /// Move a node's key handler out of the store so the router can call it while
+    /// still lending the store's reactive state to an [`EventCx`], mirroring
+    /// [`take_handler`](Self::take_handler) for the pointer column. The router
+    /// pairs each `take` with a
+    /// [`restore_key_handler`](Self::restore_key_handler). `None` for a stale
+    /// handle or an empty slot.
+    #[inline]
+    pub fn take_key_handler(&mut self, id: NodeId) -> Option<KeyHandler> {
+        if !self.arena.is_live(id) {
+            return None;
+        }
+        self.key_handlers[id.index() as usize].take()
+    }
+
+    /// Put a key handler moved out by
+    /// [`take_key_handler`](Self::take_key_handler) back in its slot. A
+    /// live-guarded write; a stale handle drops the handler.
+    #[inline]
+    pub fn restore_key_handler(&mut self, id: NodeId, handler: KeyHandler) {
+        if !self.arena.is_live(id) {
+            return;
+        }
+        self.key_handlers[id.index() as usize] = Some(handler);
     }
 
     /// Mark `class` dirty on `id` and propagate each class up the parent chain
@@ -347,6 +442,8 @@ impl NodeStore {
             self.measured[i] = Measured::default();
             self.hittable[i] = true;
             self.handlers[i] = None;
+            self.focusable[i] = false;
+            self.key_handlers[i] = None;
         } else {
             debug_assert_eq!(i, self.bounds.len(), "arena index must stay dense");
             self.bounds.push(Rect {
@@ -361,6 +458,8 @@ impl NodeStore {
             self.measured.push(Measured::default());
             self.hittable.push(true);
             self.handlers.push(None);
+            self.focusable.push(false);
+            self.key_handlers.push(None);
         }
         id
     }
@@ -694,6 +793,94 @@ mod tests {
         assert_eq!(store.layout.len(), 2);
         assert_eq!(store.style.len(), 2);
         assert_eq!(store.measured.len(), 2);
+        assert_eq!(store.focusable.len(), 2);
+        assert_eq!(store.key_handlers.len(), 2);
+    }
+
+    #[test]
+    fn a_fresh_node_is_not_focusable_and_has_no_key_handler() {
+        let mut store = NodeStore::new();
+        let id = {
+            let mut cx = BuildCx::new(&mut store);
+            cx.leaf(LeafStyle::default()).id()
+        };
+        assert!(!store.focusable(id), "focus is opt-in, default false");
+        assert!(!store.has_key_handler(id), "no key handler by default");
+        assert_eq!(store.focused(), None, "nothing focused in a fresh store");
+    }
+
+    #[test]
+    fn set_focusable_round_trips() {
+        let mut store = NodeStore::new();
+        let id = {
+            let mut cx = BuildCx::new(&mut store);
+            cx.leaf(LeafStyle::default()).id()
+        };
+        store.set_focusable(id, true);
+        assert!(store.focusable(id));
+        store.set_focusable(id, false);
+        assert!(!store.focusable(id));
+    }
+
+    #[test]
+    fn set_focused_round_trips_and_guards_stale_handles() {
+        let mut store = NodeStore::new();
+        let id = {
+            let mut cx = BuildCx::new(&mut store);
+            cx.leaf(LeafStyle::default()).id()
+        };
+        store.set_focused(Some(id));
+        assert_eq!(store.focused(), Some(id));
+        store.set_focused(None);
+        assert_eq!(store.focused(), None);
+
+        // A stale handle (bumped generation on a freed slot) never lands in the
+        // slot: clearing the tree frees `id`, so focusing it is a no-op.
+        store.set_focused(Some(id));
+        store.clear();
+        assert_eq!(store.focused(), None, "clear() resets the focus slot");
+        store.set_focused(Some(id));
+        assert_eq!(store.focused(), None, "focusing a dead handle is a no-op");
+    }
+
+    #[test]
+    fn clear_resets_focus_slot_and_the_two_columns() {
+        let mut store = NodeStore::new();
+        let id = {
+            let mut cx = BuildCx::new(&mut store);
+            cx.leaf(LeafStyle::default()).id()
+        };
+        store.set_focusable(id, true);
+        store.set_key_handler(id, Box::new(|_| {}));
+        store.set_focused(Some(id));
+
+        store.clear();
+        assert_eq!(store.focused(), None);
+        assert_eq!(store.focusable.len(), 0);
+        assert_eq!(store.key_handlers.len(), 0);
+    }
+
+    #[test]
+    fn realloc_after_clear_defaults_focusable_and_key_handler() {
+        // Set focus + a handler, rebuild wholesale (this slice frees by
+        // clearing), then alloc a fresh node into index 0: it comes back with
+        // focus off and no handler, proving the alloc path defaults both columns.
+        let mut store = NodeStore::new();
+        let first = {
+            let mut cx = BuildCx::new(&mut store);
+            cx.leaf(LeafStyle::default()).id()
+        };
+        store.set_focusable(first, true);
+        store.set_key_handler(first, Box::new(|_| {}));
+
+        store.clear();
+        let reused = {
+            let mut cx = BuildCx::new(&mut store);
+            cx.leaf(LeafStyle::default()).id()
+        };
+        assert_eq!(reused.index(), 0, "index 0 is allocated again");
+        assert!(!store.focusable(reused), "alloc defaults focusable to false");
+        assert!(!store.has_key_handler(reused), "alloc leaves the key slot empty");
     }
 
     #[test]

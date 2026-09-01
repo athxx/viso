@@ -366,6 +366,12 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
                     &mut self.route_chain,
                 );
             }
+            // Keyboard/IME routing to the focused node is wired in a following
+            // section; the scheduler already flagged these frames input-dirty, so
+            // dropping them here changes nothing until that routing lands.
+            viso_runtime::InputSample::Key(_)
+            | viso_runtime::InputSample::Text(_)
+            | viso_runtime::InputSample::ImePreedit(_) => {}
         }
     }
 
