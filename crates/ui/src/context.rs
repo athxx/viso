@@ -1,9 +1,9 @@
-//! Phase-specific contexts (§11.3, AGENTS §6.4).
+//! Phase-specific contexts.
 //!
-//! Instead of one omnipotent `Cx`, each frame phase gets a purpose-specific
-//! context. This is both an architectural constraint and a performance /
-//! reasoning tool: a `LayoutCx` cannot launch a network request, create a
-//! window, or submit arbitrary GPU work.
+//! Instead of one omnipotent context, each frame phase gets a purpose-specific
+//! one. This is both an architectural constraint and a performance / reasoning
+//! tool: a `LayoutCx` cannot launch a network request, create a window, or
+//! submit arbitrary GPU work.
 //!
 //! Phase 0 defines these as marker types so signatures like
 //! `fn layout(&mut self, cx: &mut LayoutCx<'_>, ..)` can be written against a

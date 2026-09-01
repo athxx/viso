@@ -1,30 +1,30 @@
-//! Component model and the retained node store (§9 component/node split,
-//! §8.4 hot/warm/cold side-storage).
+//! Component model and the retained node store: the component/node split, and
+//! hot/warm/cold side-storage.
 //!
 //! A [`Component`] declares its subtree imperatively into a [`BuildCx`]; the
-//! tree *is* the [`NodeArena`] — there is no intermediate element layer (§8.1
+//! tree *is* the [`NodeArena`] — there is no intermediate element layer (a
 //! retained tree, not a virtual DOM). Per-node data lives in parallel arrays
-//! indexed by [`NodeId::index`], split by traversal frequency (§8.4): `bounds`
-//! and `dirty` are hot (touched every frame), `layout`/`style`/`measured` are
-//! warm (read by measure/layout/paint). This is the data-oriented internal
-//! that backs the object-oriented external API.
+//! indexed by [`NodeId::index`], split by traversal frequency: `bounds` and
+//! `dirty` are hot (touched every frame), `layout`/`style`/`measured` are warm
+//! (read by measure/layout/paint). This is the data-oriented internal that
+//! backs the object-oriented external API.
 
 use crate::dirty::DirtyClass;
-use crate::layout::{self, Align, Axis, Inset, LayoutInput, LayoutTree, Measured, Size};
+use crate::layout::{self, Align, Axis, Inset, LayoutInput, LayoutTree, Length, Measured, Size};
 use crate::node::{NodeArena, NodeId};
 use crate::style::BoxStyle;
 use viso_render::Rect;
 
 /// The application entry into the tree: a component declares its children into
 /// the [`BuildCx`]. This slice has no reactive state, so `build` takes `&self`;
-/// state and incremental rebuild arrive with the reactive slice (§10).
+/// state and incremental rebuild arrive with the reactive slice.
 pub trait Component {
     /// Declare this component's subtree into the build context.
     fn build(&self, cx: &mut BuildCx<'_>);
 }
 
-/// A typed handle onto a built node (§6.3). This slice carries only the
-/// [`NodeId`]; the typed payload lands with real widgets.
+/// A typed handle onto a built node. This slice carries only the [`NodeId`];
+/// the typed payload lands with real widgets.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Handle {
     id: NodeId,
@@ -87,16 +87,17 @@ impl Default for LeafStyle {
 }
 
 /// The retained node store: the arena plus parallel side-storage arrays, all
-/// indexed by [`NodeId::index`] (§8.4). Allocation pushes to every array in
-/// lockstep so the index stays aligned; freeing leaves stale values in place
-/// and relies on the arena's generation check for liveness.
+/// indexed by [`NodeId::index`]. Allocation pushes to every array in lockstep
+/// so the index stays aligned; freeing leaves stale values in place and relies
+/// on the arena's generation check for liveness.
 #[derive(Default)]
 pub struct NodeStore {
-    /// Identity + ancestry links + free list (§16).
+    /// Identity + ancestry links + free list.
     arena: NodeArena,
     /// Hot: resolved layout box, written by layout, read by paint.
     bounds: Vec<Rect>,
-    /// Hot: pending invalidation. Stored this slice; propagation lands later.
+    /// Hot: pending invalidation per node, set by `mark_dirty` and consumed by
+    /// the incremental measure/layout/paint passes, cleared at frame end.
     dirty: Vec<DirtyClass>,
     /// Warm: layout parameters (Flex container or leaf size).
     layout: Vec<LayoutInput>,
@@ -142,6 +143,83 @@ impl NodeStore {
         self.style[id.index() as usize]
     }
 
+    /// A node's current pending invalidation set.
+    #[inline]
+    pub fn dirty(&self, id: NodeId) -> DirtyClass {
+        self.dirty[id.index() as usize]
+    }
+
+    /// Mark `class` dirty on `id` and propagate each class up the parent chain
+    /// to its own boundary.
+    ///
+    /// The bubbling classes are STRUCTURE and SEMANTICS (up to the root — a
+    /// structural or semantic change reaches every ancestor) and MEASURE (up
+    /// only while an ancestor's size still depends on its content). Every other
+    /// class — STYLE, LAYOUT, TRANSFORM, PAINT, HIT_TEST — stays on the node
+    /// itself. In particular a PAINT-only change never touches an ancestor, so
+    /// it can never make ancestor layout dirty.
+    ///
+    /// Propagation walks the existing `parent` links, folding the class into
+    /// each ancestor with an idempotent bit-or, so a repeat mark that adds
+    /// nothing new stops early. No allocation; worst case is the tree depth.
+    pub fn mark_dirty(&mut self, id: NodeId, class: DirtyClass) {
+        if !self.arena.is_live(id) {
+            return;
+        }
+        // Everything lands on the node itself.
+        self.dirty[id.index() as usize] |= class;
+
+        let bubbling = class & DirtyClass::BUBBLING;
+        if bubbling.is_empty() {
+            return;
+        }
+        // Unconditional bubblers reach the root; MEASURE stops at the first
+        // ancestor whose own size is fixed on both axes (its box cannot change
+        // when a descendant's natural size does).
+        let unconditional = bubbling & (DirtyClass::STRUCTURE | DirtyClass::SEMANTICS);
+        let mut measure_alive = bubbling.intersects(DirtyClass::MEASURE);
+
+        let mut current = id;
+        while let Some(parent) = self.arena.links(current).and_then(|l| l.parent) {
+            let mut add = unconditional;
+            if measure_alive {
+                if fixed_on_both_axes(self.layout[parent.index() as usize]) {
+                    // Boundary: this ancestor's size is content-independent, so
+                    // MEASURE stops rising here (it is not folded into `parent`).
+                    measure_alive = false;
+                } else {
+                    add |= DirtyClass::MEASURE;
+                }
+            }
+            if add.is_empty() {
+                break;
+            }
+            let slot = &mut self.dirty[parent.index() as usize];
+            let before = *slot;
+            *slot |= add;
+            // If this ancestor already carried everything we add and MEASURE is
+            // no longer rising, higher ancestors were reached on a prior mark.
+            if *slot == before && !measure_alive {
+                break;
+            }
+            current = parent;
+        }
+    }
+
+    /// Clear every node's pending invalidation. Run at frame end once the
+    /// incremental passes have consumed the dirty set.
+    #[inline]
+    pub fn clear_dirty(&mut self) {
+        self.dirty.fill(DirtyClass::EMPTY);
+    }
+
+    /// Whether any node currently carries any dirty class. Lets a frame skip
+    /// the incremental passes entirely when nothing changed.
+    #[inline]
+    pub fn any_dirty(&self) -> bool {
+        self.dirty.iter().any(|d| !d.is_empty())
+    }
+
     /// Allocate a node and push its side-storage in lockstep so array indices
     /// stay aligned with the arena. Newly reused slots overwrite stale values.
     fn alloc(&mut self, input: LayoutInput, style: BoxStyle) -> NodeId {
@@ -184,10 +262,146 @@ impl NodeStore {
         scratch.clear();
         layout::layout(self, root.index(), surface, scratch);
     }
+
+    /// Re-measure and re-place only the subtrees carrying MEASURE or LAYOUT
+    /// invalidation, reusing the last frame's `measured`/`bounds` everywhere
+    /// else, and report how many nodes each pass touched.
+    ///
+    /// A node whose MEASURE rose to it can change its own box, so its redo
+    /// starts one level up at its (size-stable) parent; a LAYOUT-only container
+    /// keeps its box and re-places its own children. The shallowest such node
+    /// subsumes its descendants, so each subtree is recomputed once. `scratch`
+    /// (child ids) and `redo_roots` are caller-owned so a redo allocates
+    /// nothing. With no MEASURE/LAYOUT dirt the counts are zero and the tree is
+    /// untouched.
+    pub fn relayout_dirty(
+        &mut self,
+        root: NodeId,
+        surface: Rect,
+        scratch: &mut Vec<u32>,
+        redo_roots: &mut Vec<NodeId>,
+    ) -> (u32, u32) {
+        redo_roots.clear();
+        if !self.arena.is_live(root) {
+            return (0, 0);
+        }
+
+        // Roots for the redo: the shallowest nodes whose subtree must be
+        // recomputed. A MEASURE change flows through its parent's child
+        // distribution, so redo from the parent (clamped to `root`, which owns
+        // the whole surface); a LAYOUT-only container redoes itself.
+        let relayout = DirtyClass::MEASURE | DirtyClass::LAYOUT;
+        for index in 0..self.dirty.len() as u32 {
+            let Some(id) = self.arena.live_id(index) else {
+                continue;
+            };
+            if !self.dirty[index as usize].intersects(relayout) {
+                continue;
+            }
+            let redo_from = if self.dirty[index as usize].intersects(DirtyClass::MEASURE) {
+                self.arena.links(id).and_then(|l| l.parent).unwrap_or(root)
+            } else {
+                id
+            };
+            if !self.is_ancestor_in(redo_roots, redo_from) {
+                redo_roots.retain(|&r| !self.is_ancestor(redo_from, r));
+                redo_roots.push(redo_from);
+            }
+        }
+
+        let mut measured = 0;
+        let mut laid_out = 0;
+        for redo in redo_roots.iter().copied() {
+            let bounds = if redo == root {
+                surface
+            } else {
+                self.bounds(redo)
+            };
+            scratch.clear();
+            layout::measure(self, redo.index(), scratch);
+            measured += self.subtree_len(redo);
+            scratch.clear();
+            layout::layout(self, redo.index(), bounds, scratch);
+            laid_out += self.subtree_len(redo);
+        }
+        (measured, laid_out)
+    }
+
+    /// Rebuild the primitive list when any paint-affecting invalidation is
+    /// pending, and report how many primitives were emitted (0 when skipped).
+    ///
+    /// Paint is coarse this slice: a paint-affecting change anywhere re-emits
+    /// the whole tree into `out`. Relayout implies repaint (moved boxes must
+    /// re-emit their quads); an isolated PAINT or TRANSFORM mark repaints
+    /// without any relayout. The renderer still reuses `out` frame to frame.
+    pub fn repaint_dirty(&self, root: NodeId, out: &mut Vec<viso_render::Primitive>) -> u32 {
+        if !self.arena.is_live(root) {
+            return 0;
+        }
+        let paint_classes =
+            DirtyClass::PAINT | DirtyClass::TRANSFORM | DirtyClass::MEASURE | DirtyClass::LAYOUT;
+        if !self.dirty.iter().any(|d| d.intersects(paint_classes)) {
+            return 0;
+        }
+        out.clear();
+        crate::paint::paint_tree(self, root, out);
+        out.len() as u32
+    }
+
+    /// Whether any node in `roots` is `node` itself or an ancestor of it.
+    fn is_ancestor_in(&self, roots: &[NodeId], node: NodeId) -> bool {
+        roots
+            .iter()
+            .any(|&r| r == node || self.is_ancestor(r, node))
+    }
+
+    /// Whether `ancestor` lies strictly above `node` on the parent chain.
+    fn is_ancestor(&self, ancestor: NodeId, node: NodeId) -> bool {
+        let mut cur = self.arena.links(node).and_then(|l| l.parent);
+        while let Some(p) = cur {
+            if p == ancestor {
+                return true;
+            }
+            cur = self.arena.links(p).and_then(|l| l.parent);
+        }
+        false
+    }
+
+    /// Count of live nodes in the subtree rooted at `id` (inclusive). Used to
+    /// report recompute work; walks ancestry links, no allocation.
+    fn subtree_len(&self, id: NodeId) -> u32 {
+        let mut count = 1;
+        let mut child = self.arena.links(id).and_then(|l| l.first_child);
+        while let Some(c) = child {
+            count += self.subtree_len(c);
+            child = self.arena.links(c).and_then(|l| l.next_sibling);
+        }
+        count
+    }
+}
+
+/// How much work each incremental layer did in one frame — the recompute
+/// counters an inspector or test reads to confirm only the dirty subtree moved.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct FrameRecompute {
+    /// Nodes whose natural size was re-measured.
+    pub measured: u32,
+    /// Nodes whose box was re-placed by layout.
+    pub laid_out: u32,
+    /// Primitives emitted by the paint rebuild (0 when paint was skipped).
+    pub painted: u32,
+}
+
+impl FrameRecompute {
+    /// Whether no layer did any work this frame (a fully idle frame).
+    #[inline]
+    pub fn is_idle(self) -> bool {
+        self.measured == 0 && self.laid_out == 0 && self.painted == 0
+    }
 }
 
 /// The measure/layout passes read the store through this bridge, keeping the
-/// algorithm decoupled from the concrete array layout (§12.2).
+/// algorithm decoupled from the concrete array layout.
 impl LayoutTree for NodeStore {
     #[inline]
     fn input(&self, index: u32) -> LayoutInput {
@@ -230,8 +444,17 @@ impl NodeStore {
     }
 }
 
+/// Whether a node's own size request is a hard pixel size on both axes. Such a
+/// node's box cannot change when a descendant's natural size does, so it is the
+/// boundary where a rising MEASURE invalidation stops.
+#[inline]
+fn fixed_on_both_axes(input: LayoutInput) -> bool {
+    let size = input.size();
+    matches!(size.width, Length::Fixed(_)) && matches!(size.height, Length::Fixed(_))
+}
+
 /// Build-time context: declares nodes into a [`NodeStore`] while tracking the
-/// current parent via a cursor stack (§6.4 phase-specific context). A `flex`
+/// current parent via a cursor stack (a phase-specific context). A `flex`
 /// call pushes its node as the parent for the duration of its child closure,
 /// then pops — so the closure's `leaf`/`flex` calls attach beneath it.
 pub struct BuildCx<'a> {

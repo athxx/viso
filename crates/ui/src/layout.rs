@@ -1,12 +1,12 @@
-//! Flex layout: sizing vocabulary plus the two-pass measure/layout algorithm
-//! (§12.2 direct algorithm, not a generic constraint solver).
+//! Flex layout: sizing vocabulary plus the two-pass measure/layout algorithm,
+//! a direct algorithm rather than a generic constraint solver.
 //!
-//! A bottom-up measure pass (phase 5) computes each node's natural size, then a
-//! top-down layout pass (phase 6) hands each container its box and places
-//! children along one axis. Both passes walk the retained tree over the
-//! [`crate::node::NodeArena`] and read/write the parallel side-storage arrays in
-//! [`crate::component::NodeStore`] (§8.4 hot/warm/cold), so the hot path touches
-//! compact ids and flat data with no heap allocation per node (§7.1).
+//! A bottom-up measure pass computes each node's natural size, then a top-down
+//! layout pass hands each container its box and places children along one axis.
+//! Both passes walk the retained tree over the [`crate::node::NodeArena`] and
+//! read/write the parallel hot/warm side-storage arrays in
+//! [`crate::component::NodeStore`], so the hot path touches compact ids and flat
+//! data with no heap allocation per node.
 
 use viso_render::Rect;
 

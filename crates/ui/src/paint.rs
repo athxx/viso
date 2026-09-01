@@ -1,12 +1,12 @@
-//! Paint: lower a laid-out subtree to renderer primitives (§9 node → primitive,
-//! §16 UI produces paint data, renderer owns batching).
+//! Paint: lower a laid-out subtree to renderer primitives. UI produces paint
+//! data; the renderer owns batching and ordering downstream.
 //!
 //! [`paint_tree`] walks the tree in pre-order (parent before children, so a
 //! container's background paints behind its contents) and emits one
 //! [`viso_render::Primitive::Quad`] per visible node from its resolved `bounds`
 //! and [`crate::style::BoxStyle`]. A node with a transparent, borderless style
 //! contributes nothing — a pure layout container. The walk pushes into a
-//! caller-owned `Vec` so frames reuse the buffer (§7.1). The renderer decides
+//! caller-owned `Vec` so frames reuse the buffer. The renderer decides
 //! batching/ordering downstream; this only produces the primitive data.
 
 use crate::component::NodeStore;

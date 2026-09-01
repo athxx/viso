@@ -1,6 +1,6 @@
-//! Node identity and the retained tree arena (§14, §16).
+//! Node identity and the retained tree arena.
 
-/// Compact generational node identity (§14, AGENTS §8.2).
+/// Compact generational node identity.
 ///
 /// Using an integer id + generation instead of a heap pointer buys us: fewer
 /// per-node allocations, no pointer chasing, no runtime borrow panics, dense
@@ -23,9 +23,8 @@ impl NodeId {
     }
 }
 
-/// Explicit UI ancestry (§8.3, §14.1). Layout, focus, clipping, semantics, and
-/// event propagation all depend on this — the tree is a tree, not a generic
-/// ECS.
+/// Explicit UI ancestry. Layout, focus, clipping, semantics, and event
+/// propagation all depend on this — the tree is a tree, not a generic ECS.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct NodeLinks {
     pub parent: Option<NodeId>,
@@ -37,14 +36,14 @@ pub struct NodeLinks {
 
 /// A slot in the arena. Real optimized storage will split
 /// generation/occupied/links/flags into separate arrays; this shape fixes the
-/// contract (§16).
+/// contract.
 struct NodeSlot {
     generation: u32,
     occupied: bool,
     links: NodeLinks,
 }
 
-/// Generational arena backing the retained UI tree (§16).
+/// Generational arena backing the retained UI tree.
 ///
 /// Phase 0 implements only allocate / free / id-validation so the identity
 /// contract can be tested. Hot side-storage arrays (bounds, transform, dirty
