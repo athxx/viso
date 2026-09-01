@@ -14,6 +14,7 @@ use crate::context::EventCx;
 use crate::dirty::DirtyClass;
 use crate::layout::{self, Align, Axis, Inset, LayoutInput, LayoutTree, Length, Measured, Size};
 use crate::node::{NodeArena, NodeId};
+use crate::semantics::Semantics;
 use crate::state::{StateId, StateStore};
 use crate::style::{BoxStyle, StyleId};
 use crate::token::Theme;
@@ -150,6 +151,13 @@ pub struct NodeStore {
     /// Read only by the STYLE-resolve pass over style-dirty nodes, never in the
     /// hot per-node traversal — so it sits off the warm `style` column.
     styled: Vec<Option<StyleId>>,
+    /// Cold: per-node authored accessibility semantics (role + label),
+    /// index-aligned but mostly `None`. Holds the only heap data in the store
+    /// (the label `String`); read only by the SEMANTICS-derive pass, never in
+    /// the hot per-node traversal — so it sits off the hot columns like
+    /// `handlers`/`styled`. A `None` entry means a plain layout/decoration node
+    /// (the derive pass still gives an interactive node a default role).
+    semantics: Vec<Option<Semantics>>,
 }
 
 impl NodeStore {
@@ -174,6 +182,7 @@ impl NodeStore {
         self.focusable.clear();
         self.key_handlers.clear();
         self.styled.clear();
+        self.semantics.clear();
     }
 
     /// The arena backing the tree.
@@ -217,6 +226,25 @@ impl NodeStore {
         }
         self.styled[id.index() as usize] = Some(style);
         self.mark_dirty(id, DirtyClass::STYLE | DirtyClass::PAINT);
+    }
+
+    /// A node's authored semantics, if any. `None` = a plain layout/decoration
+    /// node (the derive pass still gives an interactive node a default role).
+    #[inline]
+    pub fn semantics(&self, id: NodeId) -> Option<&Semantics> {
+        self.semantics[id.index() as usize].as_ref()
+    }
+
+    /// Set a node's authored semantics, replacing any prior value, and mark it
+    /// SEMANTICS-dirty so the next derive re-folds it. A live-guarded write — a
+    /// stale handle is a no-op. SEMANTICS bubbles, so ancestors learn their
+    /// subtree changed without a separate mark.
+    pub fn set_semantics(&mut self, id: NodeId, semantics: Semantics) {
+        if !self.arena.is_live(id) {
+            return;
+        }
+        self.semantics[id.index() as usize] = Some(semantics);
+        self.mark_dirty(id, DirtyClass::SEMANTICS);
     }
 
     /// A node's current pending invalidation set.
@@ -478,6 +506,7 @@ impl NodeStore {
             self.focusable[i] = false;
             self.key_handlers[i] = None;
             self.styled[i] = None;
+            self.semantics[i] = None;
         } else {
             debug_assert_eq!(i, self.bounds.len(), "arena index must stay dense");
             self.bounds.push(Rect {
@@ -495,6 +524,7 @@ impl NodeStore {
             self.focusable.push(false);
             self.key_handlers.push(None);
             self.styled.push(None);
+            self.semantics.push(None);
         }
         id
     }
@@ -858,6 +888,76 @@ mod tests {
         assert_eq!(store.measured.len(), 2);
         assert_eq!(store.focusable.len(), 2);
         assert_eq!(store.key_handlers.len(), 2);
+        assert_eq!(store.semantics.len(), 2);
+    }
+
+    #[test]
+    fn a_fresh_node_has_no_authored_semantics() {
+        let mut store = NodeStore::new();
+        let id = {
+            let mut cx = BuildCx::new(&mut store);
+            cx.leaf(LeafStyle::default()).id()
+        };
+        assert!(
+            store.semantics(id).is_none(),
+            "a node carries no authored semantics until set"
+        );
+    }
+
+    #[test]
+    fn set_semantics_round_trips_and_bubbles_semantics_dirty() {
+        use crate::semantics::{Role, Semantics};
+        let mut store = NodeStore::new();
+        // A flex parent with one leaf child; set semantics on the leaf.
+        let sink: std::rc::Rc<std::cell::RefCell<Vec<NodeId>>> =
+            std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let parent = {
+            let capture = std::rc::Rc::clone(&sink);
+            let mut cx = BuildCx::new(&mut store);
+            cx.flex(FlexStyle::default(), |cx| {
+                capture
+                    .borrow_mut()
+                    .push(cx.leaf(LeafStyle::default()).id());
+            })
+            .id()
+        };
+        let leaf = sink.borrow()[0];
+        store.clear_dirty();
+
+        store.set_semantics(leaf, Semantics::role(Role::Button).with_label("Add"));
+
+        assert_eq!(
+            store.semantics(leaf).map(|s| s.role),
+            Some(Role::Button),
+            "the authored role round-trips"
+        );
+        assert_eq!(
+            store.semantics(leaf).and_then(|s| s.label.as_deref()),
+            Some("Add"),
+            "the authored label round-trips"
+        );
+        assert!(
+            store.dirty(leaf).intersects(DirtyClass::SEMANTICS),
+            "setting semantics marks the node SEMANTICS-dirty"
+        );
+        assert!(
+            store.dirty(parent).intersects(DirtyClass::SEMANTICS),
+            "SEMANTICS bubbles to the parent so a subtree change reaches ancestors"
+        );
+    }
+
+    #[test]
+    fn set_semantics_guards_stale_handles() {
+        use crate::semantics::{Role, Semantics};
+        let mut store = NodeStore::new();
+        let id = {
+            let mut cx = BuildCx::new(&mut store);
+            cx.leaf(LeafStyle::default()).id()
+        };
+        store.clear();
+        // A stale handle after a rebuild is a no-op, not an out-of-bounds write.
+        store.set_semantics(id, Semantics::role(Role::Button));
+        // Nothing to observe on the dead handle; the guard simply must not panic.
     }
 
     #[test]
