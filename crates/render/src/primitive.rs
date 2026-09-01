@@ -1,4 +1,4 @@
-//! Paint primitives and their GPU instance layouts (§15.3, §32).
+//! Paint primitives and their GPU instance layouts.
 //!
 //! A [`Primitive`] is the renderer-facing *description* of something to draw —
 //! high-level Viso geometry (a rounded rect, a glyph run, …), independent of any
@@ -51,6 +51,15 @@ impl Rect {
             w: (x1 - x0).max(0.0),
             h: (y1 - y0).max(0.0),
         }
+    }
+
+    /// Whether the point `(px, py)` (physical px, same space as the rect) lies
+    /// inside this rect. Near edges are inclusive, far edges exclusive
+    /// (`[x, x+w)` / `[y, y+h)`), so two rects tiling a shared boundary do not
+    /// both claim a point on that seam.
+    #[inline]
+    pub fn contains(self, px: f32, py: f32) -> bool {
+        px >= self.x && px < self.x + self.w && py >= self.y && py < self.y + self.h
     }
 }
 
@@ -160,7 +169,7 @@ pub struct LayerClip {
 /// `uv` is in **normalized** texture coordinates (`0..1` over the full texture),
 /// so an atlas caller passes the sub-region occupied by its image; a whole-image
 /// draw passes `Rect { x: 0, y: 0, w: 1, h: 1 }`. Carrying an explicit UV
-/// sub-rect (rather than makepad's derive-from-corner) is what lets the same
+/// sub-rect (rather than deriving it from a corner) is what lets the same
 /// path serve glyph/atlas sub-regions in the text step.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ImageDraw {
@@ -324,12 +333,11 @@ pub struct Mesh {
 }
 
 /// Renderer-facing primitive. This expresses *only* what the renderer needs —
-/// it is neither a component nor a node (§9, §15). One node may emit several
+/// it is neither a component nor a node. One node may emit several
 /// primitives; primitives of the same kind may batch into one draw call.
 ///
 /// The primitive stream is **flat**: [`Primitive::Layer`] pushes a clip and
-/// [`Primitive::LayerEnd`] pops it (a push/pop clip stack, mirroring makepad's
-/// draw-list clip semantics — native rewrite). Nested layers intersect their
+/// [`Primitive::LayerEnd`] pops it (a push/pop clip stack). Nested layers intersect their
 /// clip rects. This keeps `Vec<Primitive>` batchable rather than a recursive
 /// tree.
 ///
@@ -855,6 +863,39 @@ fn mesh_vert(p: Point, color: [f32; 4], edge: f32) -> MeshVertex {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn contains_is_inclusive_near_exclusive_far() {
+        let r = Rect {
+            x: 10.0,
+            y: 20.0,
+            w: 30.0,
+            h: 40.0,
+        };
+        // Interior point hits.
+        assert!(r.contains(15.0, 25.0));
+        // Near corner is inclusive.
+        assert!(r.contains(10.0, 20.0));
+        // Far edges are exclusive (a point on x+w / y+h misses).
+        assert!(!r.contains(40.0, 25.0));
+        assert!(!r.contains(15.0, 60.0));
+        assert!(!r.contains(40.0, 60.0));
+        // Outside on any side misses.
+        assert!(!r.contains(9.0, 25.0));
+        assert!(!r.contains(15.0, 19.0));
+    }
+
+    #[test]
+    fn zero_size_rect_contains_nothing() {
+        let r = Rect {
+            x: 5.0,
+            y: 5.0,
+            w: 0.0,
+            h: 0.0,
+        };
+        // Its own origin is on the (coincident) far edge, so it never hits.
+        assert!(!r.contains(5.0, 5.0));
+    }
 
     #[test]
     fn quad_instance_layout_matches_schema() {

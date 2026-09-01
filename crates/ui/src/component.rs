@@ -107,6 +107,11 @@ pub struct NodeStore {
     style: Vec<BoxStyle>,
     /// Warm: measured natural size cache (recomputed each frame this slice).
     measured: Vec<Measured>,
+    /// Hot: whether a node participates in hit testing. Default `true` — a
+    /// laid-out node is hittable, including a transparent pure-layout container
+    /// (so a point in its padding/gap resolves to it). Flipping it to `false`
+    /// makes a node pass-through without a structural change.
+    hittable: Vec<bool>,
 }
 
 impl NodeStore {
@@ -125,6 +130,7 @@ impl NodeStore {
         self.layout.clear();
         self.style.clear();
         self.measured.clear();
+        self.hittable.clear();
     }
 
     /// The arena backing the tree.
@@ -149,6 +155,28 @@ impl NodeStore {
     #[inline]
     pub fn dirty(&self, id: NodeId) -> DirtyClass {
         self.dirty[id.index() as usize]
+    }
+
+    /// Whether a node participates in hit testing (default `true`).
+    #[inline]
+    pub fn hittable(&self, id: NodeId) -> bool {
+        self.hittable[id.index() as usize]
+    }
+
+    /// Set whether a node participates in hit testing. A live-guarded write, so
+    /// a stale handle is a no-op rather than an out-of-bounds write.
+    ///
+    /// Because `bounds` is currently the hittable rect, a MEASURE/LAYOUT change
+    /// that re-places a node already updates what it will hit — no extra
+    /// recompute pass is needed here. When scroll/clip/transform containers
+    /// arrive, a distinct world rect (recomputed on the HIT_TEST/TRANSFORM-dirty
+    /// subtree) will diverge from layout `bounds`; that column is deferred until
+    /// then rather than added speculatively now.
+    pub fn set_hittable(&mut self, id: NodeId, hit: bool) {
+        if !self.arena.is_live(id) {
+            return;
+        }
+        self.hittable[id.index() as usize] = hit;
     }
 
     /// Mark `class` dirty on `id` and propagate each class up the parent chain
@@ -267,6 +295,7 @@ impl NodeStore {
             self.layout[i] = input;
             self.style[i] = style;
             self.measured[i] = Measured::default();
+            self.hittable[i] = true;
         } else {
             debug_assert_eq!(i, self.bounds.len(), "arena index must stay dense");
             self.bounds.push(Rect {
@@ -279,6 +308,7 @@ impl NodeStore {
             self.layout.push(input);
             self.style.push(style);
             self.measured.push(Measured::default());
+            self.hittable.push(true);
         }
         id
     }
