@@ -18,10 +18,9 @@
 //! }
 //! ```
 //!
-//! This crate is the single public facade (AGENTS §3.1). Ordinary apps depend
-//! only on `viso` and never on the internal crates (`viso-ui`,
-//! `viso-render`, `viso-runtime`, …). Internal complexity is allowed; public
-//! accidental complexity is not.
+//! This crate is the single public facade. Ordinary apps depend only on `viso`
+//! and never on the internal crates (`viso-ui`, `viso-render`, `viso-runtime`,
+//! …). Internal complexity is allowed; public accidental complexity is not.
 //!
 //! Design summary:
 //! > External declarative, internal retained.
@@ -29,12 +28,11 @@
 //! > Dynamic in development, AOT in release.
 //! > Abstraction on cold paths, flat data on hot paths.
 //!
-//! ## Phase 1 status
-//!
-//! [`run`] now owns a real platform event pump and frame scheduler. It opens a
-//! native window (headless when no native backend is available), handles
-//! resize, receives input, and drives blank 12-phase frames — with no makepad
-//! `AppMain` adapter. Pixels (the GPU swapchain) arrive in Phase 2.
+//! [`run`] owns the platform event pump and frame scheduler. It opens a native
+//! window (headless when no native backend is available), handles resize,
+//! receives input, and drives the 12-phase frame. A real retained UI tree flows
+//! Component → Node → Flex layout → paint → renderer to the GPU, and each frame
+//! recomputes only the invalidated subtree rather than the whole tree.
 
 #![forbid(unsafe_op_in_unsafe_fn)]
 
@@ -43,8 +41,8 @@ use viso_platform::{WindowConfig, WindowId};
 use viso_render::{Primitive, Rect, Renderer, Rgba};
 use viso_runtime::{FramePhase, RuntimeCx, Scheduler};
 use viso_ui::{
-    Align, Axis, BoxStyle, BuildCx, Component, FlexStyle, Inset, LeafStyle, NodeId, NodeStore,
-    Size, paint_tree,
+    Align, Axis, BoxStyle, BuildCx, Component, DirtyClass, FlexStyle, FrameRecompute, Inset,
+    LeafStyle, NodeId, NodeStore, Size,
 };
 
 pub use viso_ui::context::AppCx;
@@ -52,8 +50,8 @@ pub use viso_ui::context::AppCx;
 /// The application entry-point contract implemented by every Viso app.
 ///
 /// The single generic entry point is [`run`]. An `Application` owns top-level
-/// state; it is not forced to contain a Router or a global Store (§6.1) —
-/// those are opt-in.
+/// state; it is not forced to contain a Router or a global Store — those are
+/// opt-in.
 pub trait Application: Sized + 'static {
     /// Construct the application. Windows and services are created via `cx`.
     fn new(cx: &mut AppCx) -> Self;
@@ -61,8 +59,8 @@ pub trait Application: Sized + 'static {
 
 /// Run a Viso application to completion.
 ///
-/// Owns the platform event pump and the frame scheduler (§11.1). It creates the
-/// native platform app (falling back to a headless app where no native backend
+/// Owns the platform event pump and the frame scheduler. It creates the native
+/// platform app (falling back to a headless app where no native backend
 /// exists — CI, tests), builds an [`AppDriver`] that bridges the runtime's
 /// UI-agnostic [`viso_runtime::FrameDriver`] to the user's [`Application`] and
 /// its [`AppCx`], and runs the scheduler until the last window closes.
@@ -92,16 +90,22 @@ struct AppDriver<A: Application> {
     /// exists. `None` until then, or when surface creation is unavailable
     /// (headless platform with no window handle).
     gpu: Option<GpuState>,
-    /// The retained UI tree: real nodes built once on launch, laid out each
-    /// frame, and painted to primitives. This replaces the fixed test scene
-    /// (§8 retained tree, §9 component/node/primitive).
+    /// The retained UI tree: real nodes built once on launch, then relaid only
+    /// where invalidated each frame and painted to primitives.
     store: NodeStore,
-    /// The tree root declared by [`build_scene`], if the build succeeded.
+    /// The tree root declared by [`Scene`], if the build succeeded.
     root: Option<NodeId>,
-    /// Reusable primitive buffer, refilled each frame by [`paint_tree`] (§7.1).
+    /// Reusable primitive buffer. Rebuilt only on a paint-affecting frame; reused
+    /// verbatim (and re-uploaded) on frames with no paint invalidation.
     primitives: Vec<Primitive>,
-    /// Reusable child-id scratch for the layout passes (§7.1).
+    /// Reusable child-id scratch for the layout passes.
     scratch: Vec<u32>,
+    /// Reusable buffer of redo roots for incremental relayout, owned here so a
+    /// relayout allocates nothing on the hot path.
+    redo_roots: Vec<NodeId>,
+    /// How much each layer recomputed on the most recent frame — surfaced for
+    /// diagnostics and asserted by tests to confirm only the dirty subtree moved.
+    recompute: FrameRecompute,
     /// True until the first frame has been submitted. Lets the Submit phase emit
     /// a one-shot diagnostic (gated on `VISO_FRAME_TRACE`) proving the first
     /// frame reached the GPU, then fall dark for every steady-state frame.
@@ -111,9 +115,9 @@ struct AppDriver<A: Application> {
 /// The facade-owned GPU state: the concrete backend, the renderer, and the
 /// per-window surface.
 ///
-/// ADR-007: the backend is the compile-time-selected concrete [`Backend`]
-/// (Metal on macOS, software raster elsewhere), held by value so the frame hot
-/// path is monomorphized — no `dyn GpuBackend`.
+/// The backend is the compile-time-selected concrete [`Backend`] (Metal on
+/// macOS, software raster elsewhere), held by value so the frame hot path is
+/// monomorphized — no `dyn GpuBackend`.
 struct GpuState {
     backend: Backend,
     renderer: Renderer,
@@ -133,12 +137,17 @@ impl<A: Application> AppDriver<A> {
             root: None,
             primitives: Vec::new(),
             scratch: Vec::new(),
+            redo_roots: Vec::new(),
+            recompute: FrameRecompute::default(),
             awaiting_first_frame: true,
         }
     }
 
-    /// Run measure + layout over the tree against the current surface size and
-    /// refill the primitive buffer. A no-op if the tree or GPU is absent.
+    /// Incrementally relayout and repaint against the current surface size,
+    /// recording how much each layer touched. Only the subtrees carrying
+    /// measure/layout invalidation are re-placed; paint is rebuilt only when a
+    /// paint-affecting class is pending, otherwise the primitive buffer is left
+    /// intact for reuse. A no-op if the tree or GPU is absent.
     fn relayout_and_paint(&mut self) {
         let (Some(root), Some(gpu)) = (self.root, &self.gpu) else {
             return;
@@ -150,9 +159,15 @@ impl<A: Application> AppDriver<A> {
             w: w as f32,
             h: h as f32,
         };
-        self.store.layout(root, surface, &mut self.scratch);
-        self.primitives.clear();
-        paint_tree(&self.store, root, &mut self.primitives);
+        let (measured, laid_out) =
+            self.store
+                .relayout_dirty(root, surface, &mut self.scratch, &mut self.redo_roots);
+        let painted = self.store.repaint_dirty(root, &mut self.primitives);
+        self.recompute = FrameRecompute {
+            measured,
+            laid_out,
+            painted,
+        };
     }
 }
 
@@ -250,27 +265,42 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
 
         // Build the retained UI tree once, now that we have a surface size. The
         // structure is fixed this slice; targeted structural rebuilds land with
-        // reactive state. Layout runs per frame in `run_phase`.
+        // reactive state. Layout runs incrementally per frame in `run_phase`.
         self.store.clear();
         let mut build = BuildCx::new(&mut self.store);
         Scene.build(&mut build);
         self.root = build.root();
+
+        // Seed the first frame: mark the root fully dirty so the incremental
+        // passes do the initial measure/layout/paint for the whole tree.
+        if let Some(root) = self.root {
+            self.store.mark_dirty(
+                root,
+                DirtyClass::MEASURE | DirtyClass::LAYOUT | DirtyClass::PAINT,
+            );
+        }
     }
 
     fn on_geometry(&mut self, _window: WindowId, _scale: f64, width: u32, height: u32) {
         // Resize the swapchain so the next frame maps pixel-space to the new
-        // extent, then relayout the tree against the new surface. This slice
-        // reruns layout wholesale; targeted relayout lands with dirty tracking.
+        // extent, and mark the root for relayout so the next incremental frame
+        // re-places the tree against the new surface and repaints.
         if let Some(gpu) = &mut self.gpu {
             let (w, h) = (width.max(1), height.max(1));
             gpu.backend.resize_surface(gpu.surface, w, h);
             gpu.size = (w, h);
         }
+        if let Some(root) = self.root {
+            self.store.mark_dirty(
+                root,
+                DirtyClass::MEASURE | DirtyClass::LAYOUT | DirtyClass::PAINT,
+            );
+        }
     }
 
     fn on_input(&mut self) {
         // Input is aggregated into a redraw reason by the scheduler; hit-testing
-        // and dispatch land with the input subsystem (§13).
+        // and dispatch land with the input subsystem.
     }
 
     fn run_phase(&mut self, phase: FramePhase, _cx: &mut RuntimeCx<'_>) {
@@ -279,7 +309,8 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
         // the renderer batches and submits. Non-render phases are no-ops here.
         match phase {
             FramePhase::Layout => {
-                // Resolve boxes and refill the primitive buffer for this frame.
+                // Incrementally re-place invalidated subtrees and repaint if any
+                // paint-affecting class is pending; a clean frame touches nothing.
                 self.relayout_and_paint();
             }
             FramePhase::UploadGpuChanges => {
@@ -298,7 +329,10 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
                         self.awaiting_first_frame = false;
                         if std::env::var_os("VISO_FRAME_TRACE").is_some() {
                             let stats = gpu.renderer.frame_stats();
-                            eprintln!("viso: first frame submitting {w}x{h} {stats:?}");
+                            let recompute = self.recompute;
+                            eprintln!(
+                                "viso: first frame submitting {w}x{h} {stats:?} {recompute:?}"
+                            );
                         }
                     }
                     gpu.renderer.submit(
@@ -309,13 +343,19 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
                     );
                 }
             }
+            FramePhase::PostFrameCleanup => {
+                // The incremental passes have consumed this frame's invalidation;
+                // clear every node's dirty set so the next frame starts clean and
+                // an idle frame recomputes nothing.
+                self.store.clear_dirty();
+            }
             _ => {}
         }
     }
 }
 
-/// The curated default prelude (§5.1). Kept to a small, stable, low-ambiguity
-/// set — GPU/backend/internal-compiler types never appear here.
+/// The curated default prelude. Kept to a small, stable, low-ambiguity set —
+/// GPU/backend/internal-compiler types never appear here.
 pub mod prelude {
     pub use crate::{Application, run};
     pub use viso_ui::context::AppCx;
@@ -327,7 +367,7 @@ pub mod prelude {
     // as their subsystems land in later phases.
 }
 
-// -- Advanced escape hatches. Opt-in, clearly namespaced (§5.1, §6.1). --
+// -- Advanced escape hatches. Opt-in, clearly namespaced. --
 pub mod ui {
     pub use viso_ui::*;
 }

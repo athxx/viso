@@ -1,15 +1,15 @@
-//! Dirty invalidation classes (§11, AGENTS §11).
+//! Dirty invalidation classes.
 //!
 //! Every property/state binding must declare what it invalidates, using these
 //! explicit classes rather than a single coarse `dirty = true`. Propagation
 //! must stop at valid boundaries — a paint-only change must not make ancestors
 //! layout-dirty.
 
-use core::ops::{BitOr, BitOrAssign};
+use core::ops::{BitAnd, BitOr, BitOrAssign};
 
 /// A set of invalidation classes, stored as a bitset.
 ///
-/// Examples of what bindings map to (AGENTS §11):
+/// Examples of what bindings map to:
 /// - text content → MEASURE | LAYOUT | PAINT | SEMANTICS
 /// - text color   → PAINT
 /// - width        → MEASURE | LAYOUT
@@ -28,14 +28,34 @@ impl DirtyClass {
     pub const HIT_TEST: Self = Self(1 << 6);
     pub const SEMANTICS: Self = Self(1 << 7);
 
+    /// The classes that propagate up the parent chain when a node is marked.
+    /// STRUCTURE, MEASURE, and SEMANTICS bubble; the rest stay local — most
+    /// importantly PAINT, so a paint-only change never dirties ancestor layout.
+    pub const BUBBLING: Self = Self(Self::STRUCTURE.0 | Self::MEASURE.0 | Self::SEMANTICS.0);
+
+    /// Whether every class in `other` is set.
     #[inline]
     pub fn contains(self, other: Self) -> bool {
         self.0 & other.0 == other.0
     }
 
+    /// Whether any class in `other` is also set here.
+    #[inline]
+    pub fn intersects(self, other: Self) -> bool {
+        self.0 & other.0 != 0
+    }
+
     #[inline]
     pub fn is_empty(self) -> bool {
         self.0 == 0
+    }
+}
+
+impl BitAnd for DirtyClass {
+    type Output = Self;
+    #[inline]
+    fn bitand(self, rhs: Self) -> Self {
+        Self(self.0 & rhs.0)
     }
 }
 

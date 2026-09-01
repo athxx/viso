@@ -1,9 +1,9 @@
-//! Warm-tier paint style for a node (§8.4 warm, §16 paint-facing data).
+//! Warm-tier paint style for a node: paint-facing data read by the paint walk.
 //!
 //! [`BoxStyle`] is the paint-time description a leaf (or a container with a
 //! background) lowers to a [`viso_render::Quad`]. It is a plain value copied
 //! into the node's warm side-storage; it carries no behavior and no heap data,
-//! so the paint walk reads flat structs (§7.1).
+//! so the paint walk reads flat structs.
 
 use viso_render::{Border, Rgba};
 
