@@ -14,8 +14,9 @@ use crate::context::EventCx;
 use crate::dirty::DirtyClass;
 use crate::layout::{self, Align, Axis, Inset, LayoutInput, LayoutTree, Length, Measured, Size};
 use crate::node::{NodeArena, NodeId};
-use crate::state::StateId;
-use crate::style::BoxStyle;
+use crate::state::{StateId, StateStore};
+use crate::style::{BoxStyle, StyleId};
+use crate::token::Theme;
 use viso_render::Rect;
 
 /// The application entry into the tree: a component declares its children into
@@ -143,6 +144,12 @@ pub struct NodeStore {
     /// Parallel to `handlers` but a distinct column: read only when a key/IME
     /// event routes through the focused node's dispatch chain.
     key_handlers: Vec<Option<KeyHandler>>,
+    /// Cold: per-node style-token binding, index-aligned but mostly `None`. A
+    /// node with a binding derives its warm `style` from theme tokens; a `None`
+    /// entry means the node's `style` is a literal that no theme swap touches.
+    /// Read only by the STYLE-resolve pass over style-dirty nodes, never in the
+    /// hot per-node traversal — so it sits off the warm `style` column.
+    styled: Vec<Option<StyleId>>,
 }
 
 impl NodeStore {
@@ -166,6 +173,7 @@ impl NodeStore {
         self.focused = None;
         self.focusable.clear();
         self.key_handlers.clear();
+        self.styled.clear();
     }
 
     /// The arena backing the tree.
@@ -184,6 +192,31 @@ impl NodeStore {
     #[inline]
     pub fn style(&self, id: NodeId) -> BoxStyle {
         self.style[id.index() as usize]
+    }
+
+    /// A node's style-token binding, if it has one. `None` means the node's
+    /// `style` is a literal untouched by theme swaps.
+    #[inline]
+    pub fn style_id(&self, id: NodeId) -> Option<StyleId> {
+        self.styled[id.index() as usize]
+    }
+
+    /// Bind a node's `style` to theme tokens, replacing any prior binding. A
+    /// live-guarded write, so a stale handle is a no-op.
+    ///
+    /// This records the binding and marks the node STYLE + PAINT so the next
+    /// frame's [`resolve_styles`](Self::resolve_styles) pass folds the tokens'
+    /// current values onto the node's `style` and the paint walk re-emits it.
+    /// The caller separately binds each of the [`StyleId`]'s tokens' backing
+    /// state cells (via the theme) to this node in the [`BindingTable`], so a
+    /// later theme swap re-marks the node through the ordinary flush — this
+    /// method only establishes the binding and the first resolve.
+    pub fn set_style_token(&mut self, id: NodeId, style: StyleId) {
+        if !self.arena.is_live(id) {
+            return;
+        }
+        self.styled[id.index() as usize] = Some(style);
+        self.mark_dirty(id, DirtyClass::STYLE | DirtyClass::PAINT);
     }
 
     /// A node's current pending invalidation set.
@@ -444,6 +477,7 @@ impl NodeStore {
             self.handlers[i] = None;
             self.focusable[i] = false;
             self.key_handlers[i] = None;
+            self.styled[i] = None;
         } else {
             debug_assert_eq!(i, self.bounds.len(), "arena index must stay dense");
             self.bounds.push(Rect {
@@ -460,6 +494,7 @@ impl NodeStore {
             self.handlers.push(None);
             self.focusable.push(false);
             self.key_handlers.push(None);
+            self.styled.push(None);
         }
         id
     }
@@ -472,6 +507,34 @@ impl NodeStore {
         layout::measure(self, root.index(), scratch);
         scratch.clear();
         layout::layout(self, root.index(), surface, scratch);
+    }
+
+    /// Re-resolve the warm `style` of every STYLE-dirty node that carries a
+    /// style-token binding, folding the tokens' current theme values onto the
+    /// node's style, and report how many nodes were re-resolved (0 when no
+    /// bound node is style-dirty).
+    ///
+    /// This is the incremental STYLE layer: it runs after the state flush has
+    /// marked STYLE on nodes bound to a swapped theme token (and the setter
+    /// marks STYLE on a freshly bound node), before the paint rebuild. A node
+    /// whose STYLE is dirty but has no binding is skipped — its `style` is a
+    /// literal. Only tokenized fields (`fill`, `radius`) are overwritten from
+    /// the token; untokenized fields stay as the node's existing style, so the
+    /// fold is idempotent across frames and needs no separate base column.
+    /// Allocation-free; touches only the dirty bound nodes.
+    pub fn resolve_styles(&mut self, theme: &Theme, states: &StateStore) -> u32 {
+        let mut resolved = 0;
+        for index in 0..self.dirty.len() {
+            if !self.dirty[index].intersects(DirtyClass::STYLE) {
+                continue;
+            }
+            let Some(style_id) = self.styled[index] else {
+                continue;
+            };
+            self.style[index] = style_id.resolve(self.style[index], theme, states);
+            resolved += 1;
+        }
+        resolved
     }
 
     /// Re-measure and re-place only the subtrees carrying MEASURE or LAYOUT
@@ -1085,5 +1148,152 @@ mod tests {
         store.restore_handler(leaf, handler);
         assert!(store.has_handler(leaf), "handler restored");
         assert_eq!(states.get(count), Some(StateValue::Int(1)));
+    }
+
+    #[test]
+    fn set_style_token_records_binding_and_marks_style_paint() {
+        use crate::state::{StateStore, StateValue};
+        use crate::style::StyleId;
+        use crate::token::{Theme, TokenInterner, TokenNamespace};
+
+        let mut store = NodeStore::new();
+        let mut states = StateStore::new();
+        let mut interner = TokenInterner::new();
+        let mut theme = Theme::new();
+        let bg = interner.intern(TokenNamespace::Color, "bg");
+        let cell = states.alloc(StateValue::Color(0.2, 0.4, 0.6, 1.0));
+        theme.define(bg, cell);
+
+        let leaf = {
+            let mut cx = BuildCx::new(&mut store);
+            cx.leaf(LeafStyle::default()).id()
+        };
+        assert_eq!(store.style_id(leaf), None, "no binding until set");
+        store.clear_dirty();
+
+        store.set_style_token(leaf, StyleId::fill(bg));
+        assert_eq!(store.style_id(leaf), Some(StyleId::fill(bg)));
+        assert!(
+            store
+                .dirty(leaf)
+                .intersects(DirtyClass::STYLE | DirtyClass::PAINT),
+            "binding a token marks the node style + paint"
+        );
+
+        // The resolve pass folds the token's value onto the node's style.
+        let count = store.resolve_styles(&theme, &states);
+        assert_eq!(count, 1, "one bound style-dirty node re-resolved");
+        assert_eq!(
+            store.style(leaf).fill,
+            Rgba {
+                r: 0.2,
+                g: 0.4,
+                b: 0.6,
+                a: 1.0
+            }
+        );
+    }
+
+    #[test]
+    fn resolve_styles_skips_unbound_and_clean_nodes() {
+        use crate::state::{StateStore, StateValue};
+        use crate::style::StyleId;
+        use crate::token::{Theme, TokenInterner, TokenNamespace};
+
+        let mut store = NodeStore::new();
+        let mut states = StateStore::new();
+        let mut interner = TokenInterner::new();
+        let mut theme = Theme::new();
+        let bg = interner.intern(TokenNamespace::Color, "bg");
+        let cell = states.alloc(StateValue::Color(0.1, 0.1, 0.1, 1.0));
+        theme.define(bg, cell);
+
+        let (bound, literal) = {
+            let mut cx = BuildCx::new(&mut store);
+            let a = cx
+                .leaf(LeafStyle {
+                    size: Size::fixed(1.0, 1.0),
+                    style: BoxStyle::solid(RED),
+                })
+                .id();
+            let b = cx
+                .leaf(LeafStyle {
+                    size: Size::fixed(1.0, 1.0),
+                    style: BoxStyle::solid(GREEN),
+                })
+                .id();
+            (a, b)
+        };
+        store.set_style_token(bound, StyleId::fill(bg));
+        // A literal-styled node is style-dirty but carries no binding: skipped.
+        store.mark_dirty(literal, DirtyClass::STYLE);
+
+        let count = store.resolve_styles(&theme, &states);
+        assert_eq!(count, 1, "only the bound node re-resolves");
+        assert_eq!(
+            store.style(bound).fill,
+            Rgba {
+                r: 0.1,
+                g: 0.1,
+                b: 0.1,
+                a: 1.0
+            }
+        );
+        assert_eq!(store.style(literal).fill, GREEN, "literal style untouched");
+
+        // A clean frame (no STYLE dirt) resolves nothing.
+        store.clear_dirty();
+        assert_eq!(store.resolve_styles(&theme, &states), 0);
+    }
+
+    #[test]
+    fn a_theme_swap_reresolves_the_bound_node() {
+        use crate::binding::BindingTable;
+        use crate::state::{StateStore, StateValue};
+        use crate::style::StyleId;
+        use crate::token::{Theme, TokenInterner, TokenNamespace};
+
+        let mut store = NodeStore::new();
+        let mut states = StateStore::new();
+        let mut interner = TokenInterner::new();
+        let mut theme = Theme::new();
+        let bg = interner.intern(TokenNamespace::Color, "bg");
+        let cell = states.alloc(StateValue::Color(0.0, 0.0, 0.0, 1.0));
+        theme.define(bg, cell);
+
+        let leaf = {
+            let mut cx = BuildCx::new(&mut store);
+            cx.leaf(LeafStyle::default()).id()
+        };
+        store.set_style_token(leaf, StyleId::fill(bg));
+
+        // Bind the token's backing cell to the node so a swap re-marks it, then
+        // do the initial resolve and clear the frame's dirt.
+        let mut bindings = BindingTable::new();
+        bindings.bind(cell, leaf, DirtyClass::STYLE | DirtyClass::PAINT);
+        store.resolve_styles(&theme, &states);
+        store.clear_dirty();
+
+        // A theme swap is a state write on the token's cell.
+        states.set(cell, StateValue::Color(1.0, 1.0, 1.0, 1.0));
+        let mut pending = Vec::new();
+        states.take_pending(&mut pending);
+        store.flush_state_transactions(&pending, &bindings);
+        assert!(
+            store.dirty(leaf).intersects(DirtyClass::STYLE),
+            "the swap re-marked the bound node style"
+        );
+
+        let count = store.resolve_styles(&theme, &states);
+        assert_eq!(count, 1);
+        assert_eq!(
+            store.style(leaf).fill,
+            Rgba {
+                r: 1.0,
+                g: 1.0,
+                b: 1.0,
+                a: 1.0
+            }
+        );
     }
 }
