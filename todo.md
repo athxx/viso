@@ -102,24 +102,37 @@ subsystem (hit-test/finger/pointer, focus/key/next-frame, area/DrawList bounds) 
 is coarse (event walk over the widget tree, area-compare); Viso takes the target-route
 semantics (capture→target→bubble, focus ring, IME preedit) not the coarse walk.
 
-### Slice C — Input: bounds/transform + hit test
-Doc §69 items 1–2. World bounds are the prerequisite for hit-testing; Slice A resolves
-local layout boxes but not accumulated world transform.
-- [ ] World bounds/transform: accumulate parent transform down the tree into a per-node
-      world rect (hot column on `NodeStore`, aligned to existing `bounds`). Recomputed only
-      for the TRANSFORM/LAYOUT-dirty subtree (reuse the incremental relayout walk); a
-      paint-only frame does not recompute world bounds.
-- [ ] `HitTestTree`: given a point, return the topmost hit `NodeId`. Front-to-back
-      descent using ancestry + world rect + a per-node HIT_TEST flag (opaque/pass-through/
-      clip); respects paint/z order and clip rects. NOT a full-tree scan per event — descend
-      only into children whose world rect contains the point (the §13 route: no whole-tree
-      walk when a target route suffices).
-- [ ] `HIT_TEST` dirty class already exists (one of the 8); wire world-bounds recompute so a
-      TRANSFORM/LAYOUT change re-derives the hittable rect. No new dirty class.
-- [ ] Headless tests: point over a leaf returns that leaf; overlapping siblings return the
-      topmost; a point in padding/gap returns the container (or nothing if pass-through);
-      a translated subtree hit-tests at its world position; clip rect excludes outside points.
-- [ ] Strip `§`/Makepad refs from every file touched. Commit.
+### Slice C — Input: bounds/transform + hit test  ✅
+Doc items: world bounds/transform → hit test. Layout already bakes *absolute* positions into
+`NodeStore::bounds` (top-down placement), so `bounds` is already the world rect for the current
+model — no local→world transform to accumulate, and no read-back indirection. Slice C ships the
+direct forward path; a distinct world/transform column earns its place only once scroll/clip/
+transform containers exist (deferred to the Scroll slice, see below).
+- [x] `Rect::contains(px, py)` point-in-rect primitive: near edges inclusive, far edges
+      exclusive (`[x, x+w)` / `[y, y+h)`) so tiling siblings do not both claim a shared seam.
+- [x] Per-node `hittable` flag: hot SoA column on `NodeStore` aligned to `bounds`/`dirty`,
+      default `true`, maintained in lockstep in `clear()`/`alloc()`. `hittable`/`set_hittable`
+      accessors (the latter guarded on liveness). A pass-through node opts out without a
+      structural change.
+- [x] `HitTestTree` (stateless query over `&NodeStore`) + free fn `hit_test`: descends children
+      in **reverse** sibling order (the mirror of `paint_tree`'s forward walk, so the visually
+      topmost child wins) and prunes any subtree whose box does not contain the point — a
+      targeted route, not a full-tree scan. Zero allocation, depth-bounded recursion.
+- [x] `HIT_TEST` dirty class already exists (one of the 8); no new class. Because `bounds` *is*
+      the hittable rect this slice, the incremental relayout that writes `bounds` already
+      re-derives what a node hits — no extra recompute pass.
+- [x] Headless tests: point over a leaf returns that leaf; nested overlap returns the topmost;
+      point in padding returns the container (or nothing after `set_hittable(_, false)`); point
+      outside the root box returns `None` (prune proof); seam between tiling siblings hits
+      exactly one. Plus a facade integration test through `viso::ui`.
+- [x] `§`/Makepad refs stripped from every touched file (incl. pre-existing ones in
+      `primitive.rs`). Committed.
+- Deferred to the **Scroll slice** (not built now — would be a duplicate column that is pure
+  overhead while `bounds` is already absolute): a distinct world/transform column recomputed on
+  HIT_TEST/TRANSFORM/LAYOUT dirt; clip folding carried down the descent; the "translated subtree
+  hit-tests at its world position" and "clip rect excludes outside points" cases. The descent is
+  written so the swap is localized (read a `world(id)` accessor instead of `bounds(id)`, intersect
+  against a clip carried down the recursion).
 
 ### Slice D — Input: pointer routing (capture → target → bubble)
 Doc §69 item 3. The normalized-event → route pipeline (§13).
