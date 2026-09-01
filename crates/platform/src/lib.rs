@@ -1,12 +1,12 @@
 //! `viso-platform` — OS abstraction layer (bottom of the dependency DAG).
 //!
-//! Responsibilities (architecture §9 `viso-platform`):
+//! Responsibilities (the `viso-platform` boundary):
 //! window/surface, raw pointer/keyboard/IME events, clipboard, cursor,
 //! system appearance, lifecycle, app activation, native handles,
 //! accessibility bridge hook.
 //!
-//! This crate MUST NOT depend on ui/widgets/dsl/studio, and — unlike legacy
-//! makepad — MUST NOT pull in script, network, video, or live-reload.
+//! This crate MUST NOT depend on ui/widgets/dsl/studio, and MUST NOT pull in
+//! script, network, video, or live-reload.
 //!
 //! Phase 1 status: the event vocabulary, loop-control types, and the
 //! window/app traits are defined, with a deterministic headless backend and
@@ -23,12 +23,12 @@ pub mod handler;
 
 pub use control::{ControlFlow, DEFAULT_FRAME_BUDGET, PlatformError, WindowConfig, WindowId};
 pub use event::{
-    AcceptCell, KeyCode, Modifiers, PointerButtons, PointerPhase, RawEvent, RawKey, RawPointer,
-    RawScroll, RawText,
+    AcceptCell, KeyCode, Modifiers, PointerButtons, PointerPhase, RawEvent, RawImePreedit, RawKey,
+    RawPointer, RawScroll, RawText,
 };
 pub use handler::AppHandler;
 // The native window handle lives in the `viso-handle` leaf crate so `viso-gpu`
-// can name it without depending on `viso-platform` (§10 DAG). Re-exported here
+// can name it without depending on `viso-platform` (the DAG rule). Re-exported here
 // because platform is where it's produced (`Window::raw_handle`).
 pub use viso_handle::RawWindowHandle;
 
@@ -36,7 +36,7 @@ pub use viso_handle::RawWindowHandle;
 ///
 /// Distinct from [`WindowId`]: a window is an OS shell; a surface is the
 /// drawable it hosts. In Phase 1 they map 1:1, but the split lets a window host
-/// several surfaces later (§17) without churning event routing.
+/// several surfaces later without churning event routing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct SurfaceId(pub u32);
 
@@ -79,7 +79,7 @@ pub trait Window {
     /// The content area size in physical pixels.
     fn inner_size(&self) -> (u32, u32);
 
-    /// The OS-native handle for GPU surface creation (§9 "native handles").
+    /// The OS-native handle for GPU surface creation (a native handle).
     ///
     /// `viso-gpu` uses this to attach a swapchain/drawable layer to the window.
     /// The returned handle borrows from `self` and must not outlive this window.
