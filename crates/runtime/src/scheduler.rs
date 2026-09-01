@@ -2,12 +2,13 @@
 //!
 //! `Scheduler` owns the live platform app, the driver, and the aggregated
 //! redraw reasons. It implements [`AppHandler`] — so it *is* the callback the
-//! platform pump calls for every raw event (§11.1). Its job each event:
+//! platform pump calls for every raw event. Its job each event:
 //!
 //! 1. classify the event into a [`RedrawReason`] (or run a frame, or exit),
 //! 2. when a redraw beat arrives, run one frame through all phases,
 //! 3. return a [`ControlFlow`] derived from the pending reasons — `Wait` when
-//!    idle so the app spends zero CPU (§12.1), `Poll` when a frame is pending,
+//!    idle so the app spends zero CPU (the zero-CPU-when-idle contract), `Poll`
+//!    when a frame is pending,
 //!    `Exit` when the last window closed.
 
 use viso_platform::{AppHandler, ControlFlow, PlatformApp, RawEvent};
@@ -59,16 +60,23 @@ impl<D: FrameDriver> Scheduler<D> {
 
     /// Run one frame if the pending reasons call for it, then reset them.
     fn maybe_run_frame(&mut self) {
-        // Only spend a frame when something is actually pending (§12.1).
+        // Only spend a frame when something is actually pending — the
+        // zero-CPU-when-idle contract.
         if self.reasons.is_idle() {
             return;
         }
-        let created = {
+        let (created, state_dirty) = {
             let mut cx = RuntimeCx::new(self.app.as_mut());
             run_frame(&mut self.driver, &mut cx);
-            cx.windows_created()
+            (cx.windows_created(), cx.state_dirty_requested())
         };
         self.open_windows += created;
+        // A write made during this frame (e.g. an input handler that ran in an
+        // earlier phase) leaves state pending for the next frame's flush; carry
+        // the reason forward so that frame actually runs.
+        if state_dirty {
+            self.reasons.add(RedrawReason::StateDirty);
+        }
     }
 
     /// After handling an event, decide how the pump should proceed.
@@ -89,18 +97,27 @@ impl<D: FrameDriver> AppHandler for Scheduler<D> {
         match event {
             RawEvent::AppLaunched => {
                 self.launched = true;
-                let (created, first) = {
+                let (created, first, state_dirty) = {
                     let mut cx = RuntimeCx::new(self.app.as_mut());
                     self.driver.on_launch(&mut cx);
-                    (cx.windows_created(), cx.first_window())
+                    (
+                        cx.windows_created(),
+                        cx.first_window(),
+                        cx.state_dirty_requested(),
+                    )
                 };
+                // A launch-time write leaves state pending; carry the reason so
+                // the first frame's flush observes it.
+                if state_dirty {
+                    self.reasons.add(RedrawReason::StateDirty);
+                }
                 // Count the windows the driver opened so the loop knows to keep
                 // running until they all close.
                 self.open_windows += created;
                 // If a window opened, the first frame needs a reason *and* a beat,
                 // paired like the resize path — the beat alone would be dropped by
                 // the idle guard. An app that opened no window stays idle → Wait,
-                // so the zero-CPU-when-idle contract holds (§12.1).
+                // so the zero-CPU-when-idle contract holds.
                 if created > 0 {
                     self.reasons.add(RedrawReason::FirstFrame);
                     if let Some(window) = first {

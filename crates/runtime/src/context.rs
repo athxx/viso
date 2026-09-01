@@ -1,4 +1,4 @@
-//! The runtime-scope context handed to a [`crate::FrameDriver`] (§11.3).
+//! The runtime-scope context handed to a [`crate::FrameDriver`].
 //!
 //! `RuntimeCx` is the *UI-agnostic* capability handle: it lets a driver create
 //! windows and request redraws through the live platform app, without the
@@ -21,6 +21,11 @@ pub struct RuntimeCx<'a> {
     /// The first window created during this callback, if any. The scheduler
     /// reads it to target the launch redraw at the initial window.
     first_window: Option<WindowId>,
+    /// Set when the driver made a reactive state write during this callback.
+    /// The scheduler reads it back and folds a state-dirty redraw reason into
+    /// its bookkeeping, so a write that happens outside a running frame (e.g.
+    /// from an input handler) still schedules exactly one frame to flush it.
+    state_dirty_requested: bool,
 }
 
 impl<'a> RuntimeCx<'a> {
@@ -30,6 +35,7 @@ impl<'a> RuntimeCx<'a> {
             app,
             windows_created: 0,
             first_window: None,
+            state_dirty_requested: false,
         }
     }
 
@@ -41,6 +47,11 @@ impl<'a> RuntimeCx<'a> {
     /// The first window created through this context, if any.
     pub(crate) fn first_window(&self) -> Option<WindowId> {
         self.first_window
+    }
+
+    /// Whether the driver requested a state flush during this callback.
+    pub(crate) fn state_dirty_requested(&self) -> bool {
+        self.state_dirty_requested
     }
 
     /// Create a native window; returns its stable id.
@@ -55,6 +66,18 @@ impl<'a> RuntimeCx<'a> {
 
     /// Ask the platform to schedule a redraw beat for `window`.
     pub fn request_redraw(&mut self, window: WindowId) {
+        self.app.request_redraw(window);
+    }
+
+    /// Signal that reactive state changed and a frame must run to flush it.
+    ///
+    /// Records a state-dirty request the scheduler folds into its redraw
+    /// reasons, and schedules the redraw beat for `window` so the frame
+    /// actually runs. Called by the facade the first time a transaction records
+    /// a pending write; subsequent writes in the same transaction need no
+    /// further signal (the frame flushes them all at once).
+    pub fn request_state_flush(&mut self, window: WindowId) {
+        self.state_dirty_requested = true;
         self.app.request_redraw(window);
     }
 

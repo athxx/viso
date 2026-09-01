@@ -9,17 +9,21 @@
 
 #![forbid(unsafe_op_in_unsafe_fn)]
 
+pub mod binding;
 pub mod component;
 pub mod context;
 pub mod dirty;
 pub mod layout;
 pub mod node;
 pub mod paint;
+pub mod state;
 pub mod style;
 
+pub use binding::{Binding, BindingTable};
 pub use component::{BuildCx, Component, FlexStyle, FrameRecompute, Handle, LeafStyle, NodeStore};
 pub use dirty::DirtyClass;
 pub use layout::{Align, Axis, Inset, Length, Size};
 pub use node::{NodeArena, NodeId, NodeLinks};
 pub use paint::paint_tree;
+pub use state::{StateId, StateStore, StateValue};
 pub use style::BoxStyle;
