@@ -1,0 +1,24 @@
+[package]
+name = "viso-render"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+# Renderer (§16): paint primitive, retained paint cache, clip/layer, batch
+# builder, image/glyph atlas management, render graph, GPU upload plan,
+# frame packet. Decides batching/atlas/clip/passes; UI never owns backend
+# command submission (§16.1). `render -> widgets` is forbidden.
+[dependencies]
+viso-text = { workspace = true }
+viso-shader = { workspace = true }
+viso-gpu = { workspace = true }
+
+# Benches only. criterion is a dev-dependency: it never ships in the renderer and
+# is not an architecture DAG edge (external crate, ignored by `xtask check-deps`).
+[dev-dependencies]
+criterion = "0.7"
+
+[[bench]]
+name = "renderer_steady_state"
+harness = false

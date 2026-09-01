@@ -1,0 +1,60 @@
+[package]
+name = "viso-gpu"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+# Thin GPU RHI (§17): device, queue, buffer, texture, sampler, pipeline,
+# bind group, command encoder, surface, fence. Backend is selected at
+# compile time — no per-primitive `dyn GpuBackend` dispatch.
+#
+# MUST NOT leak widgets/layout/state (§17.1). `gpu -> ui` is forbidden.
+[dependencies]
+viso-runtime = { workspace = true }
+# The shared native-window-handle vocabulary (leaf crate) consumed by
+# `GpuBackend::create_surface`. Not a platform dependency — see §10 DAG.
+viso-handle = { workspace = true }
+# Typed bitflags for resource-usage descriptors (BufferUsage). External crate,
+# not a viso-* edge, so it doesn't affect `xtask check-deps`.
+bitflags = "2"
+# The `#[derive(GpuInstance)]` proc macro. gpu owns the `GpuInstance` trait +
+# layout types, so it re-exports the derive that generates their impls; this is
+# the single allowed viso-gpu -> viso-macros edge (§10).
+viso-macros = { workspace = true }
+
+# macOS: the native Metal backend (objc2). External crates, not viso-* edges,
+# so they don't affect `xtask check-deps`. The concrete backend is chosen by
+# `cfg` (ADR-007); on other targets only the headless raster compiles.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+objc2-foundation = { version = "0.3", features = ["NSString", "NSRange"] }
+# `CGSize` / `CGFloat` for CAMetalLayer drawable-size and contents-scale. Pulled
+# in transitively by objc2-quartz-core; named directly so we can build the types.
+objc2-core-foundation = { version = "0.3", features = ["CFCGTypes"] }
+objc2-metal = { version = "0.3", features = [
+    "MTLDevice",
+    "MTLCommandQueue",
+    "MTLCommandBuffer",
+    "MTLCommandEncoder",
+    "MTLRenderCommandEncoder",
+    "MTLRenderPass",
+    "MTLRenderPipeline",
+    "MTLLibrary",
+    "MTLBuffer",
+    "MTLTexture",
+    "MTLResource",
+    "MTLPixelFormat",
+    "MTLDrawable",
+    "MTLTypes",
+] }
+objc2-quartz-core = { version = "0.3", features = [
+    "CAMetalLayer",
+    "CALayer",
+    "objc2-metal",
+] }
+
+[dev-dependencies]
+# Compile-fail tests proving `#[derive(GpuInstance)]` rejects unsupported field
+# types and non-`#[repr(C)]` structs. External crate; not a viso-* edge.
+trybuild = "1"

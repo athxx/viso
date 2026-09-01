@@ -1,0 +1,12 @@
+[package]
+name = "viso-shader"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+# Shader compiler (§19): source -> parsed syntax -> typed IR -> validation ->
+# backend codegen. May share diagnostic/source infrastructure with the DSL
+# but does NOT share a runtime VM with it.
+[dependencies]
+viso-gpu = { workspace = true }

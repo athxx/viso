@@ -1,0 +1,11 @@
+[package]
+name = "viso-example-hello-world"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+# The minimal shell that proves the Phase 0 exit criterion: it compiles and
+# runs the canonical entry point without referencing any makepad runtime type.
+[dependencies]
+viso = { workspace = true }

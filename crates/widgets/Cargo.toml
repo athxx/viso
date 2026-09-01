@@ -1,0 +1,13 @@
+[package]
+name = "viso-widgets"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+# Official UI kit (§9 viso-widgets): primitive controls, layout containers,
+# navigation, overlays, adaptive UI, desktop shell, theme defaults.
+# PDF/browser/chart/map are NOT base widgets — they belong in optional
+# integrations, not here.
+[dependencies]
+viso-ui = { workspace = true }

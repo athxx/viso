@@ -1,0 +1,13 @@
+[package]
+name = "viso-services"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+# App service protocol (§9 viso-services): file, share, notifications,
+# permissions, camera, location, secure storage, haptics, media, networking
+# adapter. These are cold-path services — trait objects are acceptable here
+# (§7.2) so this OS logic stays out of platform/runtime.
+[dependencies]
+viso-runtime = { workspace = true }

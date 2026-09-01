@@ -1,0 +1,23 @@
+[package]
+name = "viso-runtime"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+# App execution kernel: main loop, frame scheduler, task wakeup, timers,
+# lifecycle, resource lifetime, cross-thread mailbox, frame-phase
+# orchestration. Owns the top-level control of the UI main loop (§11.1).
+#
+# Depends only downward on platform. MUST NOT depend on ui/widgets/dsl/studio.
+[dependencies]
+viso-platform = { workspace = true }
+
+# Benches only. criterion is a dev-dependency: it never ships in the runtime and
+# is not an architecture DAG edge (external crate, ignored by `xtask check-deps`).
+[dev-dependencies]
+criterion = "0.7"
+
+[[bench]]
+name = "frame_loop"
+harness = false
