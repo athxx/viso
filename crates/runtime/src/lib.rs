@@ -26,7 +26,10 @@ pub mod scheduler;
 pub use context::RuntimeCx;
 pub use driver::FrameDriver;
 pub use frame::run_frame;
-pub use input::{InputSample, Modifiers, PointerPhase, PointerSample};
+pub use input::{
+    ImePreeditSample, InputSample, Key, KeySample, Modifiers, PointerPhase, PointerSample,
+    TextSample,
+};
 pub use phase::FramePhase;
 pub use schedule::{FrameDecision, RedrawReason, RedrawReasons};
 pub use scheduler::Scheduler;

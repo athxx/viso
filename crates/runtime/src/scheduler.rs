@@ -11,12 +11,17 @@
 //!    when a frame is pending,
 //!    `Exit` when the last window closed.
 
-use viso_platform::{AppHandler, ControlFlow, PlatformApp, RawEvent, RawPointer};
+use viso_platform::{
+    AppHandler, ControlFlow, KeyCode, Modifiers as RawModifiers, PlatformApp, RawEvent, RawPointer,
+};
 
 use crate::context::RuntimeCx;
 use crate::driver::FrameDriver;
 use crate::frame::run_frame;
-use crate::input::{InputSample, Modifiers, PointerPhase, PointerSample};
+use crate::input::{
+    ImePreeditSample, InputSample, Key, KeySample, Modifiers, PointerPhase, PointerSample,
+    TextSample,
+};
 use crate::schedule::{RedrawReason, RedrawReasons};
 
 /// Owns the run loop's mutable state and routes every platform event.
@@ -183,9 +188,40 @@ impl<D: FrameDriver> AppHandler for Scheduler<D> {
                 self.driver.on_input(InputSample::Pointer(sample));
                 self.reasons.add(RedrawReason::InputDirty);
             }
-            RawEvent::Scroll(_) | RawEvent::Key(_) | RawEvent::Text(_) => {
-                // Scroll/key/text route with the keyboard/focus/IME subsystem;
-                // for now they still flag the frame dirty so nothing regresses.
+            RawEvent::Key(k) => {
+                // Keys carry no coordinates, so no scale resolution is needed:
+                // just drop the OS vocabulary and hand the driver a KeySample.
+                let sample = KeySample {
+                    window: k.window,
+                    key: normalize_key(k.code),
+                    pressed: k.pressed,
+                    repeat: k.repeat,
+                    modifiers: normalize_modifiers(k.modifiers),
+                };
+                self.driver.on_input(InputSample::Key(sample));
+                self.reasons.add(RedrawReason::InputDirty);
+            }
+            RawEvent::Text(t) => {
+                // A committed (post-IME) text segment.
+                self.driver.on_input(InputSample::Text(TextSample {
+                    window: t.window,
+                    text: t.text,
+                }));
+                self.reasons.add(RedrawReason::InputDirty);
+            }
+            RawEvent::ImePreedit(p) => {
+                // An in-progress IME composition update.
+                self.driver
+                    .on_input(InputSample::ImePreedit(ImePreeditSample {
+                        window: p.window,
+                        text: p.text,
+                        caret: p.caret,
+                    }));
+                self.reasons.add(RedrawReason::InputDirty);
+            }
+            RawEvent::Scroll(_) => {
+                // Scroll routes with its own future slice; for now it still flags
+                // the frame dirty so nothing regresses.
                 self.reasons.add(RedrawReason::InputDirty);
             }
         }
@@ -209,12 +245,30 @@ fn normalize_pointer(p: RawPointer, scale: f32) -> PointerSample {
         x: p.x as f32 * scale,
         y: p.y as f32 * scale,
         buttons: p.buttons.0,
-        modifiers: Modifiers {
-            shift: p.modifiers.shift,
-            control: p.modifiers.control,
-            alt: p.modifiers.alt,
-            logo: p.modifiers.logo,
-        },
+        modifiers: normalize_modifiers(p.modifiers),
         phase,
+    }
+}
+
+/// Map a platform key code onto the runtime-tier [`Key`] mirror, dropping the OS
+/// vocabulary so no platform type rides up to the driver.
+fn normalize_key(code: KeyCode) -> Key {
+    match code {
+        KeyCode::Escape => Key::Escape,
+        KeyCode::Enter => Key::Enter,
+        KeyCode::Space => Key::Space,
+        KeyCode::Tab => Key::Tab,
+        KeyCode::Backspace => Key::Backspace,
+        KeyCode::Other(scancode) => Key::Other(scancode),
+    }
+}
+
+/// Copy platform modifier state into the runtime-tier mirror.
+fn normalize_modifiers(m: RawModifiers) -> Modifiers {
+    Modifiers {
+        shift: m.shift,
+        control: m.control,
+        alt: m.alt,
+        logo: m.logo,
     }
 }
