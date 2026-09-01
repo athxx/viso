@@ -89,14 +89,24 @@ impl<D: FrameDriver> AppHandler for Scheduler<D> {
         match event {
             RawEvent::AppLaunched => {
                 self.launched = true;
-                let created = {
+                let (created, first) = {
                     let mut cx = RuntimeCx::new(self.app.as_mut());
                     self.driver.on_launch(&mut cx);
-                    cx.windows_created()
+                    (cx.windows_created(), cx.first_window())
                 };
                 // Count the windows the driver opened so the loop knows to keep
                 // running until they all close.
                 self.open_windows += created;
+                // If a window opened, the first frame needs a reason *and* a beat,
+                // paired like the resize path — the beat alone would be dropped by
+                // the idle guard. An app that opened no window stays idle → Wait,
+                // so the zero-CPU-when-idle contract holds (§12.1).
+                if created > 0 {
+                    self.reasons.add(RedrawReason::FirstFrame);
+                    if let Some(window) = first {
+                        self.app.request_redraw(window);
+                    }
+                }
             }
             RawEvent::RedrawRequested { .. } => {
                 // A beat: run the frame the pending reasons ask for. Requesting

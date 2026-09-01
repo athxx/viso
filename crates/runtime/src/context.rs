@@ -18,6 +18,9 @@ pub struct RuntimeCx<'a> {
     /// How many windows the driver created during this callback. The scheduler
     /// reads it back to keep its open-window count accurate.
     windows_created: u32,
+    /// The first window created during this callback, if any. The scheduler
+    /// reads it to target the launch redraw at the initial window.
+    first_window: Option<WindowId>,
 }
 
 impl<'a> RuntimeCx<'a> {
@@ -26,6 +29,7 @@ impl<'a> RuntimeCx<'a> {
         Self {
             app,
             windows_created: 0,
+            first_window: None,
         }
     }
 
@@ -34,10 +38,18 @@ impl<'a> RuntimeCx<'a> {
         self.windows_created
     }
 
+    /// The first window created through this context, if any.
+    pub(crate) fn first_window(&self) -> Option<WindowId> {
+        self.first_window
+    }
+
     /// Create a native window; returns its stable id.
     pub fn create_window(&mut self, config: WindowConfig) -> Result<WindowId, PlatformError> {
         let id = self.app.create_window(config)?;
         self.windows_created += 1;
+        if self.first_window.is_none() {
+            self.first_window = Some(id);
+        }
         Ok(id)
     }
 
@@ -61,5 +73,28 @@ impl<'a> RuntimeCx<'a> {
     /// on launch. The handle borrows the window; use it immediately.
     pub fn raw_handle(&self, window: WindowId) -> Option<RawWindowHandle> {
         self.app.window(window).map(|w| w.raw_handle())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use viso_platform::backend::headless::HeadlessApp;
+
+    #[test]
+    fn first_window_records_the_first_created_window() {
+        let mut app = HeadlessApp::scripted(vec![]);
+        let mut cx = RuntimeCx::new(&mut app);
+        assert_eq!(cx.first_window(), None, "no window yet");
+
+        let a = cx.create_window(WindowConfig::default()).unwrap();
+        let b = cx.create_window(WindowConfig::default()).unwrap();
+        assert_ne!(a, b, "each window gets a distinct id");
+        assert_eq!(
+            cx.first_window(),
+            Some(a),
+            "first_window stays the first created, not the latest"
+        );
+        assert_eq!(cx.windows_created(), 2);
     }
 }
