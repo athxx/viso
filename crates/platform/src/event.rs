@@ -1,11 +1,11 @@
-//! The raw event tier (§13, makepad two-tier event model — semantics only).
+//! The raw event tier: a two-tier event model, transport semantics only.
 //!
 //! This is the *transport* tier: OS-normalized samples with positions already
 //! in logical points, but **not yet hit-tested** against any UI tree. Hit
 //! resolution and widget-facing events live above the platform layer (Phase 3+,
 //! against the `NodeArena`); this crate only reports what the OS delivered.
 //!
-//! Design points carried over from the makepad behavior study:
+//! Design points, decided by the behavior study:
 //! - DPI/scale is *window geometry state*, delivered via one geometry event
 //!   ([`RawEvent::ScaleFactorChanged`]) rather than a dedicated DPI channel.
 //! - `Draw`/redraw is a distinct event, separate from input and from the
@@ -26,7 +26,7 @@ use crate::control::WindowId;
 /// The platform layer creates it defaulting to `accept = true`, hands a clone
 /// out with a [`RawEvent::CloseRequested`], and — after the handler returns —
 /// reads it back. A handler that wants to keep the window open calls
-/// [`AcceptCell::deny`]. Mirrors makepad's `Rc<Cell<bool>>` accept cell.
+/// [`AcceptCell::deny`]. A shared `Rc<Cell<bool>>` accept cell.
 #[derive(Debug, Clone)]
 pub struct AcceptCell(Rc<Cell<bool>>);
 
@@ -187,6 +187,19 @@ pub struct RawText {
     pub text: String,
 }
 
+/// An in-progress IME composition (preedit). Unlike [`RawText`], this is not yet
+/// committed: the composing string is shown inline and replaced on each update,
+/// then cleared when the IME commits (a [`RawText`]) or cancels (an empty
+/// preedit).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RawImePreedit {
+    pub window: WindowId,
+    /// The current composing string (may be empty to signal cancel/clear).
+    pub text: String,
+    /// Caret position within `text`, in bytes (a `text.len()` caret = end).
+    pub caret: usize,
+}
+
 /// A raw, un-normalized platform event.
 ///
 /// Not `Copy`: some variants ([`RawEvent::CloseRequested`], [`RawEvent::Text`])
@@ -229,4 +242,39 @@ pub enum RawEvent {
     Key(RawKey),
     /// A committed text/IME segment.
     Text(RawText),
+    /// An in-progress IME composition update (preedit); commit arrives as `Text`.
+    ImePreedit(RawImePreedit),
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ime_preedit_round_trips_through_the_raw_event() {
+        let preedit = RawImePreedit {
+            window: WindowId(1),
+            text: "にほ".to_string(),
+            caret: "にほ".len(),
+        };
+        let event = RawEvent::ImePreedit(preedit.clone());
+        // The event is still `Clone` with the new String-carrying variant.
+        let cloned = event.clone();
+        match cloned {
+            RawEvent::ImePreedit(p) => assert_eq!(p, preedit),
+            other => panic!("expected ImePreedit, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn empty_preedit_is_the_cancel_signal() {
+        // A zero-length composing string is representable — the IME cancel/clear.
+        let cancel = RawImePreedit {
+            window: WindowId(1),
+            text: String::new(),
+            caret: 0,
+        };
+        assert!(cancel.text.is_empty());
+        let _ = RawEvent::ImePreedit(cancel);
+    }
 }
