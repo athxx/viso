@@ -21,6 +21,7 @@ pub mod paint;
 pub mod reactive;
 pub mod state;
 pub mod style;
+pub mod token;
 
 pub use binding::{Binding, BindingTable};
 pub use component::{
