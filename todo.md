@@ -134,26 +134,48 @@ transform containers exist (deferred to the Scroll slice, see below).
   written so the swap is localized (read a `world(id)` accessor instead of `bounds(id)`, intersect
   against a clip carried down the recursion).
 
-### Slice D — Input: pointer routing (capture → target → bubble)
-Doc §69 item 3. The normalized-event → route pipeline (§13).
-- [ ] Normalize platform pointer events (down/move/up/scroll) into a Viso `PointerEvent`
-      (position in logical px, button, modifiers, phase) at the platform/scheduler seam —
-      no Makepad `FingerDown`/`Cx` vocabulary in Viso code.
-- [ ] Route: hit-test the target, then dispatch capture (root→target), target, bubble
-      (target→root) along the ancestry chain. Pointer **capture**: a node can hold capture so
-      subsequent moves/up route to it regardless of hit (drag). Handlers live on the
-      Component; the route carries a phase-specific `EventCx` (per §6.4 — `get`/`set` state,
-      request focus/capture; NOT layout or GPU).
-- [ ] Handler registration: a Component declares pointer handlers; stored as compact
-      per-node handler ids/edges (no per-event `dyn` walk of the whole tree, no string child
-      lookup — §13/§45). A click that `set`s state flows into the existing Slice B flush.
-- [ ] Facade: `on_input` stops being empty — normalize, route, and let a resulting `set`
-      drive the next frame's flush. Wire the scheduler's input beat to routing.
-- [ ] Headless tests (input tape, §66): a down+up on a leaf fires its click; capture
-      redirects moves to the holder; bubble reaches an ancestor handler; a click that sets
-      state produces exactly the bound node's dirty class next flush (end-to-end
-      input→state→dirty). First `01-counter` interaction proven headless.
-- [ ] Strip `§`/Makepad refs from every file touched. Commit.
+### Slice D — Input: pointer routing (capture → target → bubble)  ✅
+The normalized-event → route pipeline: hit-test picks the target, dispatch walks the
+ancestry, a handler's `set` lands pending, and the existing flush turns it into targeted
+node invalidation.
+- [x] Normalize platform pointer events into a runtime-tier `PointerSample` at the scheduler
+      seam: the scheduler owns the window, so it is the one place that resolves scale and
+      converts the logical-point raw sample into physical-pixel space once, before the driver
+      sees it. Phases map down/move/up/leave; modifiers/buttons carried through. Runtime uses
+      its own value mirrors, not platform's — no OS vocabulary leaks up.
+- [x] Route: hit-test the target once, build the root→target ancestry chain, then dispatch
+      capture (root→below-target), target (once), bubble (below-target→root). Each ancestor
+      handler runs twice, the target's once; a lone target (chain of 1) runs only target. The
+      route carries a phase-specific `EventCx` that reads state and defers writes (get/set),
+      nothing layout or GPU.
+- [x] Handler registration: a node declares a pointer handler through `BuildCx::on_pointer`;
+      stored in a compact cold per-node handler column keyed by node index — no per-event
+      `dyn` walk of the whole tree, no string child lookup. The router moves the handler box
+      out to call it (`take_handler`/`restore_handler`), so no interior mutability. A click
+      that `set`s state flows into the existing flush.
+- [x] Facade: `on_input` is no longer empty — it lowers the runtime sample into the ui-tier
+      `PointerEvent`, routes it through the retained tree with a reusable ancestry buffer
+      owned on the driver (zero steady-state alloc), and lets the resulting `set` ride the
+      next frame's flush. The scheduler flags the input frame dirty, so that flush runs.
+- [x] Headless tests: unit tests over the router prove capture/target/bubble order and the
+      lone-target case; a facade integration test (`crates/viso/tests/pointer_routing.rs`)
+      proves the full chain end to end — a synthetic click flips a bound state cell, the write
+      lands pending, and the flush dirties exactly the bound node (PAINT) and leaves the
+      unbound container clean. A miss dispatches nothing.
+- [x] Stripped section/Makepad refs from every file touched; committed per section.
+
+**Deferred from Slice D (recorded, not built — no over-engineering ahead of need):**
+- **Pointer capture (drag).** No cross-frame capture holder yet: a node cannot yet claim
+  subsequent moves/up regardless of hit. Lands when the first draggable control (or the
+  Scroll slice's drag-to-scroll) actually needs a held target across frames.
+- **`stop_propagation`.** The route currently always runs the full capture+target+bubble
+  walk. A handler cannot yet halt propagation. Lands with the first widget that must swallow
+  an event (e.g. a modal backdrop, a button consuming its click).
+- **Scroll / key / text samples.** Only the `Pointer` `InputSample` variant exists; the
+  scheduler still flags scroll/key/text frames dirty but threads no sample. Scroll lands with
+  the Scroll slice; key/text with Slice E.
+- **hover / enter / leave.** No pointer-tracking state to synthesize enter/leave transitions
+  from move samples yet. Lands with hover styling / cursor feedback.
 
 ### Slice E — Input: keyboard / focus / IME
 Doc §69 item 4.
