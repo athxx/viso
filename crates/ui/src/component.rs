@@ -884,6 +884,14 @@ impl<'a> BuildCx<'a> {
         handle
     }
 
+    /// Attach authored semantics (role + label) to an already-declared node, for
+    /// an accessible tree. Mirrors `on_pointer`: associates a node with its
+    /// accessible facts. Returns the handle so authoring chains inline.
+    pub fn semantics(&mut self, handle: Handle, semantics: Semantics) -> Handle {
+        self.store.set_semantics(handle.id, semantics);
+        handle
+    }
+
     /// Allocate a node, attach it under the current parent (or record it as the
     /// root), and return its id.
     fn push_node(&mut self, input: LayoutInput, style: BoxStyle) -> NodeId {
@@ -1577,5 +1585,36 @@ mod tests {
                 a: 1.0
             }
         );
+    }
+
+    #[test]
+    fn build_cx_semantics_attaches_authored_facts_and_derives() {
+        let mut store = NodeStore::new();
+        let sink: std::rc::Rc<std::cell::RefCell<Vec<NodeId>>> =
+            std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let root;
+        {
+            let capture = std::rc::Rc::clone(&sink);
+            let mut cx = BuildCx::new(&mut store);
+            root = cx
+                .flex(FlexStyle::default(), |cx| {
+                    let h = cx.leaf(LeafStyle::default());
+                    let h = cx.semantics(h, Semantics::role(Role::Button).with_label("Add"));
+                    capture.borrow_mut().push(h.id());
+                })
+                .id();
+        }
+        let leaf = sink.borrow()[0];
+
+        // The builder wrote the authored column.
+        let authored = store.semantics(leaf).expect("authored semantics present");
+        assert_eq!(authored.role, Role::Button);
+        assert_eq!(authored.label.as_deref(), Some("Add"));
+
+        // And it flows through the derive pass unchanged.
+        let tree = store.derive_semantics(root);
+        let node = tree.get(leaf).expect("leaf in derived tree");
+        assert_eq!(node.role, Role::Button);
+        assert_eq!(node.label.as_deref(), Some("Add"));
     }
 }

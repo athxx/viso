@@ -41,6 +41,7 @@ pub use paint::paint_tree;
 pub use reactive::{
     Cleanup, ComputeCx, ComputedId, ComputedStore, DepCursor, EffectId, EffectStore,
 };
+pub use semantics::{Role, Semantics, SemanticsNode, SemanticsTree};
 pub use state::{StateId, StateStore, StateValue};
 pub use style::{BoxStyle, StyleId};
 pub use token::{Theme, TokenId, TokenInterner, TokenNamespace};
