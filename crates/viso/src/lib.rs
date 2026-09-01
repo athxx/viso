@@ -102,6 +102,10 @@ struct AppDriver<A: Application> {
     primitives: Vec<Primitive>,
     /// Reusable child-id scratch for the layout passes (§7.1).
     scratch: Vec<u32>,
+    /// True until the first frame has been submitted. Lets the Submit phase emit
+    /// a one-shot diagnostic (gated on `VISO_FRAME_TRACE`) proving the first
+    /// frame reached the GPU, then fall dark for every steady-state frame.
+    awaiting_first_frame: bool,
 }
 
 /// The facade-owned GPU state: the concrete backend, the renderer, and the
@@ -129,6 +133,7 @@ impl<A: Application> AppDriver<A> {
             root: None,
             primitives: Vec::new(),
             scratch: Vec::new(),
+            awaiting_first_frame: true,
         }
     }
 
@@ -285,6 +290,17 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
             FramePhase::Submit => {
                 if let Some(gpu) = &mut self.gpu {
                     let (w, h) = gpu.size;
+                    // One-shot proof the first frame reached the GPU, gated on an
+                    // env var so it costs a single bool check per steady-state
+                    // frame and nothing else. Read once, then the branch dies.
+                    // Stats must be read before `submit` consumes the segments.
+                    if self.awaiting_first_frame {
+                        self.awaiting_first_frame = false;
+                        if std::env::var_os("VISO_FRAME_TRACE").is_some() {
+                            let stats = gpu.renderer.frame_stats();
+                            eprintln!("viso: first frame submitting {w}x{h} {stats:?}");
+                        }
+                    }
                     gpu.renderer.submit(
                         &mut gpu.backend,
                         gpu.surface,

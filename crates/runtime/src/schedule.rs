@@ -20,11 +20,15 @@ pub enum RedrawReason {
     ExternalSurfaceInvalidation,
     /// Live editing / hot reload requested a redraw.
     HotReload,
+    /// The first frame after a window is created on launch. Escalated to an
+    /// immediate frame so the initial content appears without waiting for an
+    /// OS expose event.
+    FirstFrame,
 }
 
 impl RedrawReason {
     /// The bit this reason occupies in a [`RedrawReasons`] set.
-    const fn bit(self) -> u8 {
+    const fn bit(self) -> u16 {
         match self {
             RedrawReason::InputDirty => 1 << 0,
             RedrawReason::StateDirty => 1 << 1,
@@ -34,6 +38,7 @@ impl RedrawReason {
             RedrawReason::WindowResize => 1 << 5,
             RedrawReason::ExternalSurfaceInvalidation => 1 << 6,
             RedrawReason::HotReload => 1 << 7,
+            RedrawReason::FirstFrame => 1 << 8,
         }
     }
 }
@@ -74,7 +79,7 @@ impl FrameDecision {
 /// a compare-with-zero. `take` clears the set and returns what was pending, so
 /// each reason drives exactly one decision.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub struct RedrawReasons(u8);
+pub struct RedrawReasons(u16);
 
 impl RedrawReasons {
     /// An empty set (idle).
@@ -113,8 +118,9 @@ impl RedrawReasons {
         if self.is_idle() {
             return FrameDecision::NoFrame;
         }
-        let immediate =
-            RedrawReason::WindowResize.bit() | RedrawReason::ExternalSurfaceInvalidation.bit();
+        let immediate = RedrawReason::WindowResize.bit()
+            | RedrawReason::ExternalSurfaceInvalidation.bit()
+            | RedrawReason::FirstFrame.bit();
         if self.0 & immediate != 0 {
             FrameDecision::ImmediateFrame
         } else {
@@ -177,6 +183,14 @@ mod tests {
         reasons.add(RedrawReason::InputDirty);
         reasons.add(RedrawReason::WindowResize);
         assert_eq!(reasons.decide(), FrameDecision::ImmediateFrame);
+    }
+
+    #[test]
+    fn first_frame_is_immediate() {
+        let mut reasons = RedrawReasons::new();
+        reasons.add(RedrawReason::FirstFrame);
+        assert_eq!(reasons.decide(), FrameDecision::ImmediateFrame);
+        assert_eq!(reasons.decide().to_control_flow(), ControlFlow::Poll);
     }
 
     #[test]

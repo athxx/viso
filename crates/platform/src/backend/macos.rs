@@ -135,8 +135,8 @@ impl PlatformApp for MacApp {
             content_view,
             _delegate: delegate,
         });
-        // A fresh window needs its first frame.
-        self.shared.borrow_mut().redraws.push_back(id);
+        // The first frame is scheduled by the runtime after launch (paired with a
+        // FirstFrame redraw reason), keeping a single beat source across backends.
         Ok(id)
     }
 

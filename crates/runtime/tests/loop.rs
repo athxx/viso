@@ -84,13 +84,18 @@ fn launch_opens_a_window_exactly_once() {
     // No scripted events: the headless pump fires AppLaunched, then drains empty.
     let log = run(vec![], false);
     assert_eq!(log.launches, 1, "on_launch fires exactly once");
-    assert_eq!(log.frames, 0, "launch alone drives no frame");
-    assert_eq!(log.phase_calls, 0);
+    assert_eq!(
+        log.frames, 1,
+        "opening a window on launch schedules the first frame"
+    );
+    assert_eq!(log.phase_calls, PHASES, "the first frame walks all phases");
 }
 
 #[test]
 fn n_beats_drive_exactly_n_frames() {
     // With animation on, every beat has a pending reason and runs a full frame.
+    // The window opened on launch also draws its first frame, so N scripted
+    // beats yield N+1 frames: the launch frame plus one per beat.
     let n = 5u32;
     let script: Vec<RawEvent> = (0..n)
         .map(|_| RawEvent::RedrawRequested {
@@ -99,10 +104,10 @@ fn n_beats_drive_exactly_n_frames() {
         .collect();
     let log = run(script, true);
 
-    assert_eq!(log.frames, n, "N beats run exactly N frames");
+    assert_eq!(log.frames, n + 1, "the first frame plus N beat frames");
     assert_eq!(
         log.phase_calls,
-        n * PHASES,
+        (n + 1) * PHASES,
         "each frame walks all 12 phases in order"
     );
 }
@@ -121,8 +126,13 @@ fn idle_beats_do_no_work() {
     ];
     let log = run(script, false);
 
-    assert_eq!(log.frames, 0, "idle beats run no frames");
-    assert_eq!(log.phase_calls, 0);
+    // The launch frame is the only one: after it drains, each bare beat finds an
+    // idle reason set and runs nothing more.
+    assert_eq!(
+        log.frames, 1,
+        "only the first frame runs; idle beats add none"
+    );
+    assert_eq!(log.phase_calls, PHASES, "just the first frame's phases");
 }
 
 #[test]
@@ -146,8 +156,10 @@ fn input_dirties_then_next_beat_runs_a_frame() {
     let log = run(script, false);
 
     assert_eq!(log.inputs, 1, "the input callback fired once");
-    assert_eq!(log.frames, 1, "the beat after input runs one frame");
-    assert_eq!(log.phase_calls, PHASES);
+    // The launch frame draws first; then the input dirties the tree and the
+    // following beat drains it — two frames total.
+    assert_eq!(log.frames, 2, "first frame plus the post-input frame");
+    assert_eq!(log.phase_calls, 2 * PHASES);
 }
 
 #[test]
@@ -162,7 +174,9 @@ fn geometry_change_is_observed_and_drives_a_frame() {
     let log = run(script, false);
 
     assert_eq!(log.geometries, 1, "on_geometry observed the resize");
-    assert_eq!(log.frames, 1, "the requested redraw ran one frame");
+    // The launch frame draws first; the resize then requests its own redraw —
+    // two frames total.
+    assert_eq!(log.frames, 2, "first frame plus the resize frame");
 }
 
 #[test]
@@ -203,4 +217,42 @@ fn close_requested_is_accepted_in_phase_1() {
     }];
     let _ = run(script, false);
     assert!(accept.is_accepted(), "Phase 1 never vetoes a close request");
+}
+
+/// A `FrameDriver` that opens no window on launch — an app with nothing to show
+/// yet. Used to prove launch alone (without a window) drives no frame.
+struct NoWindowDriver {
+    log: Rc<RefCell<Log>>,
+}
+
+impl FrameDriver for NoWindowDriver {
+    fn on_launch(&mut self, _cx: &mut RuntimeCx<'_>) {
+        self.log.borrow_mut().launches += 1;
+    }
+    fn on_geometry(&mut self, _window: WindowId, _scale: f64, _width: u32, _height: u32) {}
+    fn on_input(&mut self) {}
+    fn run_phase(&mut self, phase: FramePhase, _cx: &mut RuntimeCx<'_>) {
+        let mut log = self.log.borrow_mut();
+        log.phase_calls += 1;
+        if phase == FramePhase::CollectInput {
+            log.frames += 1;
+        }
+    }
+}
+
+#[test]
+fn launch_without_a_window_drives_no_frame() {
+    // No window opened on launch: nothing to draw, so the scheduler stays idle
+    // and runs zero frames (§12.1 idle zero-CPU is preserved).
+    let log = Rc::new(RefCell::new(Log::default()));
+    let app = Box::new(HeadlessApp::scripted(vec![]));
+    let driver = NoWindowDriver {
+        log: Rc::clone(&log),
+    };
+    Scheduler::new(app, driver).run();
+    let log = Rc::try_unwrap(log).ok().unwrap().into_inner();
+
+    assert_eq!(log.launches, 1, "on_launch still fires once");
+    assert_eq!(log.frames, 0, "no window means no first frame");
+    assert_eq!(log.phase_calls, 0);
 }

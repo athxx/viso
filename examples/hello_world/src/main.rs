@@ -1,8 +1,9 @@
 //! The canonical minimal Viso application (AGENTS §1).
 //!
-//! Phase 0: this compiles and runs against the contract skeleton. It opens no
-//! window yet — that arrives in Phase 1 — but proves the facade, prelude, and
-//! `Application` lifecycle exist with zero makepad runtime types involved.
+//! Opens the default window on launch and draws its first frame without waiting
+//! for any external OS expose event: the facade builds the scene, brings up the
+//! GPU, and the scheduler drives the initial frame to the surface. Proves the
+//! facade, prelude, and `Application` lifecycle with zero makepad runtime types.
 
 use viso::prelude::*;
 
