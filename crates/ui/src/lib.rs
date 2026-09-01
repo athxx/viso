@@ -30,7 +30,8 @@ pub use context::EventCx;
 pub use dirty::DirtyClass;
 pub use hit_test::{HitTestTree, hit_test};
 pub use input::{
-    Modifiers, PointerButtons, PointerEvent, PointerPhase, PointerRouter, route_pointer,
+    ImeEvent, Key, KeyEvent, KeyRouter, Modifiers, PointerButtons, PointerEvent, PointerPhase,
+    PointerRouter, focus_next, route_pointer,
 };
 pub use layout::{Align, Axis, Inset, Length, Size};
 pub use node::{NodeArena, NodeId, NodeLinks};
