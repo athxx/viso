@@ -104,8 +104,12 @@ fn tab_moves_focus_in_order_and_wraps() {
         "new focus repaints"
     );
     assert!(
-        store.dirty(root).is_empty(),
+        !store.dirty(root).intersects(DirtyClass::PAINT),
         "the container is not on the focus ring — PAINT does not bubble"
+    );
+    assert!(
+        store.dirty(root).contains(DirtyClass::SEMANTICS),
+        "a focus move is a semantic change, and SEMANTICS bubbles to the container"
     );
 
     // Forward from the last focusable wraps back to the first.
