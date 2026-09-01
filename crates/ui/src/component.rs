@@ -14,7 +14,7 @@ use crate::context::EventCx;
 use crate::dirty::DirtyClass;
 use crate::layout::{self, Align, Axis, Inset, LayoutInput, LayoutTree, Length, Measured, Size};
 use crate::node::{NodeArena, NodeId};
-use crate::semantics::Semantics;
+use crate::semantics::{Role, Semantics, SemanticsNode, SemanticsTree};
 use crate::state::{StateId, StateStore};
 use crate::style::{BoxStyle, StyleId};
 use crate::token::Theme;
@@ -652,6 +652,66 @@ impl NodeStore {
         out.len() as u32
     }
 
+    /// Derive the full accessibility tree from the node model, pre-order from
+    /// `root`. Reads authored semantics (the cold column) folded with live state
+    /// (the focus slot, handler presence, bounds) — the node model is the single
+    /// source, nothing is stored twice. Cold: run on a SEMANTICS-dirty frame,
+    /// not every frame. Its allocation is the returned tree (a snapshot,
+    /// inherently owned). Empty when `root` is a stale handle.
+    pub fn derive_semantics(&self, root: NodeId) -> SemanticsTree {
+        let mut tree = SemanticsTree::default();
+        if self.arena.is_live(root) {
+            self.derive_into(root, &mut tree);
+        }
+        tree
+    }
+
+    /// Push `id`'s derived row, recurse its children in sibling order, and
+    /// record their indices on the row. Returns `id`'s own index in `tree.nodes`
+    /// so the parent can link it. Pre-order, mirroring the paint walk.
+    fn derive_into(&self, id: NodeId, tree: &mut SemanticsTree) -> usize {
+        let my_index = tree.nodes.len();
+        // Resolve role/label: authored wins; else an interactive node (a pointer
+        // or key handler present) defaults to Button so an assistive-technology
+        // path always exists; else Group.
+        let authored = self.semantics(id);
+        let interactive = self.has_handler(id) || self.has_key_handler(id);
+        let role = match authored.map(|s| s.role) {
+            Some(r) => r,
+            None if interactive => Role::Button,
+            None => Role::Group,
+        };
+        let label = authored.and_then(|s| s.label.clone());
+        let focused = self.focused == Some(id);
+        tree.nodes.push(SemanticsNode {
+            id,
+            role,
+            label,
+            focused,
+            bounds: self.bounds(id),
+            children: Vec::new(),
+        });
+        let mut child = self.arena.links(id).and_then(|l| l.first_child);
+        while let Some(c) = child {
+            let ci = self.derive_into(c, tree);
+            tree.nodes[my_index].children.push(ci);
+            child = self.arena.links(c).and_then(|l| l.next_sibling);
+        }
+        my_index
+    }
+
+    /// Re-derive the accessibility tree only when a SEMANTICS invalidation is
+    /// pending, returning the new tree (or `None` when SEMANTICS is clean, so a
+    /// frame with no semantic change does no work). The whole tree is rebuilt
+    /// this slice — SEMANTICS bubbles to the root, so any change reaches `root`;
+    /// per-subtree caching is a later refinement once a consumer needs it.
+    pub fn derive_semantics_dirty(&self, root: NodeId) -> Option<SemanticsTree> {
+        if !self.dirty.iter().any(|d| d.intersects(DirtyClass::SEMANTICS)) {
+            return None;
+        }
+        Some(self.derive_semantics(root))
+    }
+
     /// Whether any node in `roots` is `node` itself or an ancestor of it.
     fn is_ancestor_in(&self, roots: &[NodeId], node: NodeId) -> bool {
         roots
@@ -943,6 +1003,128 @@ mod tests {
         assert!(
             store.dirty(parent).intersects(DirtyClass::SEMANTICS),
             "SEMANTICS bubbles to the parent so a subtree change reaches ancestors"
+        );
+    }
+
+    #[test]
+    fn derive_builds_a_flat_pre_order_tree_with_child_indices() {
+        use crate::semantics::Role;
+        let mut store = NodeStore::new();
+        let sink: std::rc::Rc<std::cell::RefCell<Vec<NodeId>>> =
+            std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let root = {
+            let capture = std::rc::Rc::clone(&sink);
+            let mut cx = BuildCx::new(&mut store);
+            cx.flex(FlexStyle::default(), |cx| {
+                capture
+                    .borrow_mut()
+                    .push(cx.leaf(LeafStyle::default()).id());
+                capture
+                    .borrow_mut()
+                    .push(cx.leaf(LeafStyle::default()).id());
+            })
+            .id()
+        };
+        let (a, b) = {
+            let ids = sink.borrow();
+            (ids[0], ids[1])
+        };
+
+        let tree = store.derive_semantics(root);
+        assert_eq!(tree.len(), 3, "root + two leaves");
+        let r = tree.root().unwrap();
+        assert_eq!(r.id, root);
+        assert_eq!(r.children, vec![1, 2], "children recorded by index, in order");
+        assert_eq!(tree.nodes[1].id, a);
+        assert_eq!(tree.nodes[2].id, b);
+        // A plain leaf with no handler and no authored semantics is a Group.
+        assert_eq!(tree.nodes[1].role, Role::Group);
+    }
+
+    #[test]
+    fn an_interactive_node_defaults_to_button() {
+        use crate::semantics::Role;
+        let mut store = NodeStore::new();
+        let (interactive, plain) = {
+            let mut cx = BuildCx::new(&mut store);
+            let a = cx.leaf(LeafStyle::default());
+            cx.on_pointer(a, |_| {});
+            let b = cx.leaf(LeafStyle::default());
+            (a.id(), b.id())
+        };
+        // A single-root store: derive from each leaf directly.
+        assert_eq!(
+            store.derive_semantics(interactive).root().unwrap().role,
+            Role::Button,
+            "a node with a pointer handler defaults to Button"
+        );
+        assert_eq!(
+            store.derive_semantics(plain).root().unwrap().role,
+            Role::Group,
+            "a plain leaf defaults to Group"
+        );
+    }
+
+    #[test]
+    fn authored_semantics_win_over_the_interactive_default() {
+        use crate::semantics::{Role, Semantics};
+        let mut store = NodeStore::new();
+        let leaf = {
+            let mut cx = BuildCx::new(&mut store);
+            cx.leaf(LeafStyle::default()).id()
+        };
+        store.set_semantics(leaf, Semantics::role(Role::Label).with_label("Hi"));
+        let node = store.derive_semantics(leaf);
+        let n = node.root().unwrap();
+        assert_eq!(n.role, Role::Label);
+        assert_eq!(n.label.as_deref(), Some("Hi"));
+    }
+
+    #[test]
+    fn focus_is_derived_from_the_focus_slot() {
+        let mut store = NodeStore::new();
+        let sink: std::rc::Rc<std::cell::RefCell<Vec<NodeId>>> =
+            std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let root = {
+            let capture = std::rc::Rc::clone(&sink);
+            let mut cx = BuildCx::new(&mut store);
+            cx.flex(FlexStyle::default(), |cx| {
+                capture
+                    .borrow_mut()
+                    .push(cx.leaf(LeafStyle::default()).id());
+                capture
+                    .borrow_mut()
+                    .push(cx.leaf(LeafStyle::default()).id());
+            })
+            .id()
+        };
+        let (a, b) = {
+            let ids = sink.borrow();
+            (ids[0], ids[1])
+        };
+        store.set_focused(Some(a));
+        let tree = store.derive_semantics(root);
+        assert!(tree.get(a).unwrap().focused, "the focused node is marked");
+        assert!(!tree.get(b).unwrap().focused, "its sibling is not");
+    }
+
+    #[test]
+    fn derive_dirty_skips_a_clean_frame_and_fires_after_a_change() {
+        use crate::semantics::{Role, Semantics};
+        let mut store = NodeStore::new();
+        let leaf = {
+            let mut cx = BuildCx::new(&mut store);
+            cx.leaf(LeafStyle::default()).id()
+        };
+        store.clear_dirty();
+        assert!(
+            store.derive_semantics_dirty(leaf).is_none(),
+            "a frame with nothing SEMANTICS-dirty re-derives nothing"
+        );
+        store.set_semantics(leaf, Semantics::role(Role::Button));
+        assert!(
+            store.derive_semantics_dirty(leaf).is_some(),
+            "a semantic change triggers a re-derive"
         );
     }
 
