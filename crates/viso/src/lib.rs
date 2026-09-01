@@ -42,8 +42,9 @@ use viso_render::{Primitive, Rect, Renderer, Rgba};
 use viso_runtime::{FramePhase, RuntimeCx, Scheduler};
 use viso_ui::{
     Align, Axis, BindingTable, BoxStyle, BuildCx, Component, ComputedStore, DirtyClass,
-    EffectStore, FlexStyle, FrameRecompute, Inset, LeafStyle, Modifiers, NodeId, NodeStore,
-    PointerButtons, PointerEvent, PointerPhase, PointerRouter, Size, StateId, StateStore,
+    EffectStore, FlexStyle, FrameRecompute, ImeEvent, Inset, Key, KeyEvent, KeyRouter, LeafStyle,
+    Modifiers, NodeId, NodeStore, PointerButtons, PointerEvent, PointerPhase, PointerRouter, Size,
+    StateId, StateStore, focus_next,
 };
 
 pub use viso_ui::context::AppCx;
@@ -366,12 +367,60 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
                     &mut self.route_chain,
                 );
             }
-            // Keyboard/IME routing to the focused node is wired in a following
-            // section; the scheduler already flagged these frames input-dirty, so
-            // dropping them here changes nothing until that routing lands.
-            viso_runtime::InputSample::Key(_)
-            | viso_runtime::InputSample::Text(_)
-            | viso_runtime::InputSample::ImePreedit(_) => {}
+            viso_runtime::InputSample::Key(k) => {
+                // Lower the runtime-tier key sample onto the UI-tier event, then
+                // route by focus (not hit test). Tab is a framework-level
+                // focus-traversal command: on a Tab press we advance the focus
+                // ring instead of routing the key to a handler (Shift-Tab goes
+                // backward). Every other key routes to the focused node's
+                // ancestry so a control can react to it.
+                let modifiers = lower_modifiers(k.modifiers);
+                if matches!(k.key, viso_runtime::Key::Tab) && k.pressed {
+                    focus_next(&mut self.store, root, !modifiers.shift);
+                } else {
+                    let ev = KeyEvent {
+                        key: lower_key(k.key),
+                        pressed: k.pressed,
+                        repeat: k.repeat,
+                        modifiers,
+                    };
+                    KeyRouter::route_key(
+                        &mut self.store,
+                        &mut self.states,
+                        &self.bindings,
+                        root,
+                        ev,
+                        &mut self.route_chain,
+                    );
+                }
+            }
+            viso_runtime::InputSample::Text(t) => {
+                // A committed (post-IME) segment routes to the focused node as an
+                // IME commit — the text a control appends to its buffer.
+                KeyRouter::route_ime(
+                    &mut self.store,
+                    &mut self.states,
+                    &self.bindings,
+                    root,
+                    ImeEvent::Commit { text: t.text },
+                    &mut self.route_chain,
+                );
+            }
+            viso_runtime::InputSample::ImePreedit(p) => {
+                // An in-progress composition routes as a preedit; a control shows
+                // it inline and replaces it on each update until the commit.
+                KeyRouter::route_ime(
+                    &mut self.store,
+                    &mut self.states,
+                    &self.bindings,
+                    root,
+                    ImeEvent::Preedit {
+                        text: p.text,
+                        caret: p.caret,
+                    },
+                    &mut self.route_chain,
+                );
+            }
         }
     }
 
@@ -449,6 +498,31 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
             }
             _ => {}
         }
+    }
+}
+
+/// Lower a runtime-tier key identity onto the UI-tier one. The two enums are
+/// deliberate value mirrors (the UI layer must not depend on the runtime), so
+/// the facade — which sees both — is the one place that maps between them.
+fn lower_key(key: viso_runtime::Key) -> Key {
+    match key {
+        viso_runtime::Key::Escape => Key::Escape,
+        viso_runtime::Key::Enter => Key::Enter,
+        viso_runtime::Key::Space => Key::Space,
+        viso_runtime::Key::Tab => Key::Tab,
+        viso_runtime::Key::Backspace => Key::Backspace,
+        viso_runtime::Key::Other(code) => Key::Other(code),
+    }
+}
+
+/// Lower runtime-tier modifier state onto the UI-tier mirror (same fields, a
+/// crate-boundary copy — see [`lower_key`]).
+fn lower_modifiers(m: viso_runtime::Modifiers) -> Modifiers {
+    Modifiers {
+        shift: m.shift,
+        control: m.control,
+        alt: m.alt,
+        logo: m.logo,
     }
 }
 
