@@ -73,6 +73,131 @@ wake by DIFFERENT routes because their outputs differ in kind (see below).
 
 ---
 
+## Phase 4 — Input / Style / Semantics
+
+> **Numbering reconciliation (read once).** The architecture doc (Part XXV, §69–70) is
+> the authority. The old "Phase 3" section above was an *execution* label that bundled
+> the doc's Phase 3 (NodeArena — done as Slice A's `NodeStore`/arena), the doc's Phase 4
+> *layout* (Slice A: Component→Node→Flex→Paint, i.e. doc-§69 items 5–6 box-constraints +
+> Row/Column) and the whole doc Phase 5 Reactive (Slice B). Measured against the doc's
+> exit criteria, Slice B satisfies **doc Phase 5** in full (§70: counter without `render()`,
+> single-property targeted phases, one flush per transaction, profileable dep graph). The
+> remaining unfinished doc-**Phase 4** work is **Input, Style token, Semantics** (§69 items
+> 1–4, 9, 10). From here TODO section headers align to the doc's phase numbers so the two
+> stop drifting. Doc-§69 items 7–8 (Scroll, VirtualList) and 11 (Grid/Adaptive) are layout
+> containers that ride on Input's hit-test; they are deferred to a follow-up Phase 4 slice
+> after the input→state→layout→paint→GPU chain is closed and interactive.
+
+This closes the one break in the vertical chain: today `on_input` is empty, nothing is
+hit-testable, and state can only change from code. Completing Input makes the first
+interactive example (`01-counter`) real — a click routes to a target that `set`s state,
+which the Slice B flush already turns into targeted invalidation.
+
+Order follows the doc §69: **bounds/transform → hit test → pointer routing → keyboard/
+focus/IME**, then style token, then semantics.
+
+**Before each subsystem:** read the Makepad reference at `/Users/x/code/makepad` for that
+subsystem (hit-test/finger/pointer, focus/key/next-frame, area/DrawList bounds) as a
+*semantics* reference only, then design on Viso Node/State/Dirty contracts. Makepad's model
+is coarse (event walk over the widget tree, area-compare); Viso takes the target-route
+semantics (capture→target→bubble, focus ring, IME preedit) not the coarse walk.
+
+### Slice C — Input: bounds/transform + hit test
+Doc §69 items 1–2. World bounds are the prerequisite for hit-testing; Slice A resolves
+local layout boxes but not accumulated world transform.
+- [ ] World bounds/transform: accumulate parent transform down the tree into a per-node
+      world rect (hot column on `NodeStore`, aligned to existing `bounds`). Recomputed only
+      for the TRANSFORM/LAYOUT-dirty subtree (reuse the incremental relayout walk); a
+      paint-only frame does not recompute world bounds.
+- [ ] `HitTestTree`: given a point, return the topmost hit `NodeId`. Front-to-back
+      descent using ancestry + world rect + a per-node HIT_TEST flag (opaque/pass-through/
+      clip); respects paint/z order and clip rects. NOT a full-tree scan per event — descend
+      only into children whose world rect contains the point (the §13 route: no whole-tree
+      walk when a target route suffices).
+- [ ] `HIT_TEST` dirty class already exists (one of the 8); wire world-bounds recompute so a
+      TRANSFORM/LAYOUT change re-derives the hittable rect. No new dirty class.
+- [ ] Headless tests: point over a leaf returns that leaf; overlapping siblings return the
+      topmost; a point in padding/gap returns the container (or nothing if pass-through);
+      a translated subtree hit-tests at its world position; clip rect excludes outside points.
+- [ ] Strip `§`/Makepad refs from every file touched. Commit.
+
+### Slice D — Input: pointer routing (capture → target → bubble)
+Doc §69 item 3. The normalized-event → route pipeline (§13).
+- [ ] Normalize platform pointer events (down/move/up/scroll) into a Viso `PointerEvent`
+      (position in logical px, button, modifiers, phase) at the platform/scheduler seam —
+      no Makepad `FingerDown`/`Cx` vocabulary in Viso code.
+- [ ] Route: hit-test the target, then dispatch capture (root→target), target, bubble
+      (target→root) along the ancestry chain. Pointer **capture**: a node can hold capture so
+      subsequent moves/up route to it regardless of hit (drag). Handlers live on the
+      Component; the route carries a phase-specific `EventCx` (per §6.4 — `get`/`set` state,
+      request focus/capture; NOT layout or GPU).
+- [ ] Handler registration: a Component declares pointer handlers; stored as compact
+      per-node handler ids/edges (no per-event `dyn` walk of the whole tree, no string child
+      lookup — §13/§45). A click that `set`s state flows into the existing Slice B flush.
+- [ ] Facade: `on_input` stops being empty — normalize, route, and let a resulting `set`
+      drive the next frame's flush. Wire the scheduler's input beat to routing.
+- [ ] Headless tests (input tape, §66): a down+up on a leaf fires its click; capture
+      redirects moves to the holder; bubble reaches an ancestor handler; a click that sets
+      state produces exactly the bound node's dirty class next flush (end-to-end
+      input→state→dirty). First `01-counter` interaction proven headless.
+- [ ] Strip `§`/Makepad refs from every file touched. Commit.
+
+### Slice E — Input: keyboard / focus / IME
+Doc §69 item 4.
+- [ ] Focus: a single focused `NodeId` per window; focus ring traversal (next/prev in DOM/
+      tab order over focusable nodes), programmatic focus request via `EventCx`. Focus change
+      is its own targeted invalidation (PAINT for focus ring; SEMANTICS later).
+- [ ] Keyboard: normalized key events routed to the focused node with capture/target/bubble
+      (same route machinery as pointer, target chosen by focus not hit-test).
+- [ ] IME: preedit/commit events routed to the focused node; a text-input-shaped handler
+      surface (composition string + caret) even before a real text widget — enough for
+      `07-text-input` later. Keep IME plumbing in platform→facade normalized form.
+- [ ] Headless tests: tab moves focus in order and wraps; a key event reaches the focused
+      node's handler and bubbles; focus change dirties only the two nodes' focus-ring paint;
+      an IME preedit/commit sequence routes to the focused node.
+- [ ] Strip `§`/Makepad refs from every file touched. Commit.
+
+### Slice F — Style token
+Doc §69 item 9 (§14). Compile source style names to IDs; no runtime string lookup on the
+hot path.
+- [ ] `TokenId`/`StyleId` interning: semantic token namespaces (`color.*`, `spacing.*`,
+      `radius.*`, `typography.*`, `elevation.*`, `motion.*`) compiled to compact ids. A theme
+      is a token→value table; resolution is an id index, not a string map (§14/§29).
+- [ ] Node style references a resolved token id, not a literal, so a theme swap re-resolves
+      without touching node structure. A token change dirties only STYLE/PAINT of nodes bound
+      to it (reuse the binding/dirty machinery; a token is a state-like source).
+- [ ] A normal frame with no token change recomputes no style cascade (§14 exit).
+- [ ] Headless tests: token resolves to value; theme swap re-resolves bound nodes only;
+      unrelated node untouched; token change dirties STYLE/PAINT not LAYOUT.
+- [ ] Strip `§`/Makepad refs from every file touched. Commit.
+
+### Slice G — Semantics
+Doc §69 item 10 (§15). Accessibility tree generated from the Node model, incrementally.
+- [ ] `SemanticsTree` derived from nodes: role, label, state (focused/checked/…), bounds.
+      Generated from the Node model (§69 exit: "semantics 从 Node 模型天然生成"), not a
+      parallel hand-maintained tree.
+- [ ] Incremental: the existing SEMANTICS dirty class drives re-derivation of only changed
+      subtrees; a focus/label/role change dirties SEMANTICS on that node.
+- [ ] Interactive nodes (the ones with pointer/key handlers from Slices D/E) carry default
+      semantics so a keyboard/AT path exists (§15).
+- [ ] Headless semantics-snapshot tests (§35/§66): tree shape + roles for the demo scene;
+      a focus change updates only that node's semantics; a label change re-derives one node.
+- [ ] Strip `§`/Makepad refs from every file touched. Commit.
+
+### Wrap-up for Phase 4
+- [ ] `01-counter` example: a real interactive counter (button click → `set` → bound label
+      repaints), the first end-to-end interactive Viso app. Headless input-tape test asserts
+      the click drives exactly the counter's dirty class.
+- [ ] ADR 0006 — Input & focus routing (target/capture/bubble, focus/IME, hit-test world
+      bounds) + style-token resolution + semantics derivation. Records the §13 target-route
+      divergence from Makepad's event-walk and the §14 id-not-string style contract.
+- [ ] Reconcile architecture doc §69 with "As built" notes pointing at ADR 0006; confirm
+      Phase 4 exit criteria (§69) except deferred Scroll/VirtualList/Grid.
+- [ ] Deferred to a follow-up Phase 4 slice (tracked, not this pass): Scroll (§69 item 7),
+      VirtualList (item 8), Grid/Adaptive (item 11).
+
+---
+
 ## Open design note — driver → scheduler StateDirty channel
 `RuntimeCx` currently exposes only `request_redraw(window)` (a platform beat), not
 `add(RedrawReason::StateDirty)`. The scheduler adds reasons itself from raw events;
