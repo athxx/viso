@@ -245,6 +245,25 @@ Do not let `lib.rs` become an implementation dump. `lib.rs` should mostly contai
 - public re-exports;
 - minimal crate initialization.
 
+## 5.1 Source & Comment Hygiene
+
+Two rules apply to every line of code and every comment you write:
+
+1. **No Makepad-keyword references.** Code and comments must not carry Makepad
+   terminology as if it were Viso's own vocabulary (`AppMain`, `Cx`, `DrawList`,
+   `Turtle`, `live_design!`, `#[live]`, `nav_stop`, and the like). Viso has its
+   own names; use them. The name "Makepad" appears only in explicitly-scoped
+   migration, legacy-comparison, or benchmark contexts (see Mission) — never as a
+   throwaway "this is like makepad's X" annotation on production code. When you
+   port a concept, name it the Viso way and drop the origin comment.
+
+2. **No section-reference symbols.** Do not write `§` followed by numbers (e.g.
+   `§12.2`, `§8.4`) in code or comments. Those cross-references belong in design
+   docs and ADRs, not in source — they rot the moment a doc is renumbered.
+   Reference the concept by name instead ("the two-pass Flex layout", "the
+   hot-path contract"). This applies when you touch a file: strip any `§` you
+   pass, don't reintroduce them.
+
 ---
 
 # 6. Public API Rules
