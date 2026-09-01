@@ -179,18 +179,36 @@ node invalidation.
 
 ### Slice E — Input: keyboard / focus / IME
 Doc §69 item 4.
-- [ ] Focus: a single focused `NodeId` per window; focus ring traversal (next/prev in DOM/
-      tab order over focusable nodes), programmatic focus request via `EventCx`. Focus change
-      is its own targeted invalidation (PAINT for focus ring; SEMANTICS later).
-- [ ] Keyboard: normalized key events routed to the focused node with capture/target/bubble
-      (same route machinery as pointer, target chosen by focus not hit-test).
-- [ ] IME: preedit/commit events routed to the focused node; a text-input-shaped handler
-      surface (composition string + caret) even before a real text widget — enough for
-      `07-text-input` later. Keep IME plumbing in platform→facade normalized form.
-- [ ] Headless tests: tab moves focus in order and wraps; a key event reaches the focused
-      node's handler and bubbles; focus change dirties only the two nodes' focus-ring paint;
-      an IME preedit/commit sequence routes to the focused node.
-- [ ] Strip `§`/Makepad refs from every file touched. Commit.
+- [x] Focus: a single focused `NodeId` slot on `NodeStore` + a `focusable` cold flag column
+      (opt-in, default false); `focus_next(store, root, forward)` pre-order ring traversal that
+      wraps; programmatic focus request via `EventCx::request_focus`/`clear_focus`, applied by
+      the router after the handler returns. Focus change is targeted PAINT on old+new only
+      (PAINT is non-bubbling, so the container is never over-invalidated).
+- [x] Keyboard: normalized key events routed to the focused node with capture/target/bubble
+      via a shared `dispatch_chain` — the exact ancestry walk pointer routing uses, factored
+      out; only the target source (focus vs hit-test) and the handler column (`key_handlers`
+      vs `handlers`) differ. `KeyRouter::route_key`.
+- [x] IME: preedit/commit events routed to the focused node via `KeyRouter::route_ime`; the
+      handler reads the composition string + caret through `EventCx::ime()` (and key transitions
+      through `EventCx::key()`) — enough of a text-input-shaped surface for `07-text-input` later.
+      IME plumbed platform (`RawEvent::ImePreedit`) → runtime (`InputSample::ImePreedit`/`Text`)
+      → facade → ui in normalized form.
+- [x] Headless tests: `focus_next` steps in order and wraps + skips non-focusable; a key event
+      reaches the focused node's handler and bubbles (`[0,1,0]`); no focus ⇒ no dispatch; focus
+      change dirties only the two nodes' focus-ring paint; an IME preedit/commit sequence routes
+      to the focused node; pointer/key handler columns are isolated; a focus request from a
+      handler moves focus. (viso-ui unit tests + `crates/viso/tests/keyboard_routing.rs`.)
+- [x] Strip `§`/Makepad refs from every file touched. Commit.
+
+**Deferred from Slice E**
+- **`stop_propagation`** — still deferred (shared with Slice D). Key/IME routing runs the full
+  capture+target+bubble walk; a handler cannot yet halt it. Lands with the first widget that
+  must swallow an event.
+- **Focus on pointer-down** — clicking a focusable node does not yet focus it; focus moves only
+  via Tab (`focus_next`) or programmatic `request_focus`. Lands with the first click-to-focus
+  control.
+- **Semantics of focus** — accessibility focus / SEMANTICS dirtying on focus change is Slice G;
+  this slice's focus change is PAINT-only (the focus ring).
 
 ### Slice F — Style token
 Doc §69 item 9 (§14). Compile source style names to IDs; no runtime string lookup on the
