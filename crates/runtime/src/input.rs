@@ -52,14 +52,61 @@ pub struct Modifiers {
     pub logo: bool,
 }
 
+/// A physical key transition, normalized (window-scoped, OS vocabulary dropped).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct KeySample {
+    /// The window the sample belongs to.
+    pub window: WindowId,
+    pub key: Key,
+    /// True on press, false on release.
+    pub pressed: bool,
+    /// True if this press is an OS auto-repeat.
+    pub repeat: bool,
+    pub modifiers: Modifiers,
+}
+
+/// A minimal platform-independent key identity (runtime-tier mirror of the
+/// platform key code — kept crate-local so no OS vocabulary rides upward).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Key {
+    Escape,
+    Enter,
+    Space,
+    Tab,
+    Backspace,
+    /// Any key not in the minimal set, carrying its raw platform scancode.
+    Other(u32),
+}
+
+/// A committed text segment (post-IME).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TextSample {
+    pub window: WindowId,
+    pub text: String,
+}
+
+/// An in-progress IME composition update.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ImePreeditSample {
+    pub window: WindowId,
+    pub text: String,
+    /// Caret position within `text`, in bytes.
+    pub caret: usize,
+}
+
 /// A normalized input sample handed to the driver.
 ///
-/// Only the pointer channel is routed this slice; scroll, key, and text arrive
-/// as their own variants when the keyboard/focus/IME subsystem lands. Each new
-/// variant carries data already normalized for its channel, so the driver never
-/// touches raw platform types or resolves a scale factor itself.
-#[derive(Debug, Clone, Copy, PartialEq)]
+/// Each variant carries data already normalized for its channel, so the driver
+/// never touches raw platform types or resolves a scale factor itself. Not
+/// `Copy`: the text/preedit variants own a `String`.
+#[derive(Debug, Clone, PartialEq)]
 pub enum InputSample {
     /// A pointer (mouse/touch/pen) sample in physical pixels.
     Pointer(PointerSample),
+    /// A key transition routed to the focused node.
+    Key(KeySample),
+    /// A committed text segment (the IME commit).
+    Text(TextSample),
+    /// An in-progress IME composition update (preedit).
+    ImePreedit(ImePreeditSample),
 }

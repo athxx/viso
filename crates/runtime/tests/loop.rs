@@ -163,6 +163,41 @@ fn input_dirties_then_next_beat_runs_a_frame() {
 }
 
 #[test]
+fn key_text_and_ime_preedit_each_reach_the_driver() {
+    // Key, committed text, and an in-progress IME preedit each normalize to an
+    // InputSample and hit on_input; each also dirties the frame so the following
+    // beat drains them.
+    use viso_platform::{KeyCode, Modifiers, RawImePreedit, RawKey, RawText};
+    let script = vec![
+        RawEvent::Key(RawKey {
+            window: WindowId(1),
+            code: KeyCode::Enter,
+            pressed: true,
+            repeat: false,
+            modifiers: Modifiers::default(),
+        }),
+        RawEvent::Text(RawText {
+            window: WindowId(1),
+            text: "a".to_string(),
+        }),
+        RawEvent::ImePreedit(RawImePreedit {
+            window: WindowId(1),
+            text: "に".to_string(),
+            caret: "に".len(),
+        }),
+        RawEvent::RedrawRequested {
+            window: WindowId(1),
+        },
+    ];
+    let log = run(script, false);
+
+    assert_eq!(log.inputs, 3, "key, text, and preedit each fired on_input");
+    // The launch frame draws first; the three inputs dirty the tree and the
+    // following beat drains them into one frame — two frames total.
+    assert_eq!(log.frames, 2, "first frame plus the post-input frame");
+}
+
+#[test]
 fn geometry_change_is_observed_and_drives_a_frame() {
     // A resize calls on_geometry, marks WindowResize, requests a redraw; the
     // headless backend turns that request into a beat that runs the frame.
