@@ -31,17 +31,19 @@ Three focused commits:
 - [x] Wire `PostFrameCleanup` → `clear_dirty`; seed root dirty on launch/resize.
 - [x] Headless tests (`crates/viso/tests/incremental_dirty.rs`, 5): idle=0 recompute; LAYOUT-only re-places just that subtree; PAINT-only never bubbles LAYOUT/MEASURE to ancestors; MEASURE bubbles through flexible ancestor and stops below a fixed-on-both-axes container.
 - [x] Strip `§`/Makepad refs from every file touched (dirty.rs, node.rs, component.rs, layout.rs, paint.rs, context.rs, style.rs, ui lib.rs, facade lib.rs).
-- [ ] Commit.
+- [x] Commit. (997f9e0)
 
-#### B2 — State + StateStore + BindingTable + per-frame transactions
-- [ ] `crates/ui/src/state.rs`: `StateId` (generational), `StateStore` SoA (values + generation + free list + frame pending write-set), `StateValue` scalar set (i32/f32/bool/color), `alloc/get/set/take_pending/has_pending`.
-- [ ] `crates/ui/src/binding.rs`: `Binding { node, class }`, `BindingTable` (index-aligned to StateId; `bind`/`for_state`), plus dynamic region for B3.
-- [ ] `UpdateCx` gains `states`/`bindings`/`nodes` access + `set`/`get`.
-- [ ] Facade `FlushStateTransactions` phase: consume pending write-set → `for_state` → `mark_dirty`.
-- [ ] First-write signal: on first pending write, facade adds `StateDirty` reason + requests redraw. (Resolve driver→scheduler reason channel — see design note below.)
-- [ ] Expose a public write entry for tests/examples.
-- [ ] Headless tests: write State → flush → correct nodes dirtied; only dirty subtree recomputes; idle = zero recompute.
-- [ ] Commit.
+#### B2 — State + StateStore + BindingTable + per-frame transactions (DONE)
+- [x] `crates/ui/src/state.rs`: `StateId` (generational), `StateStore` SoA (values + generation + free list + frame pending write-set), `StateValue` scalar set (i32/f32/bool/color), `alloc/get/set/free/is_live/take_pending/has_pending`. No-op writes schedule nothing; pending dedupes.
+- [x] `crates/ui/src/binding.rs`: `Binding { node, class }`, `BindingTable` (index-aligned to StateId; `bind`/`for_state`, folds same-node edges, contiguous runs regardless of registration order), plus dynamic region (`bind_dynamic`/`dynamic_for_state`) for B3.
+- [x] `NodeStore::flush_state_transactions(changed, bindings)` turns each changed id into targeted `mark_dirty` via static + dynamic edges.
+- [x] `UpdateCx` promoted to a real context holding `states`/`bindings`/`nodes` + `get`/`set`/`bindings`; deliberately no `mark_dirty` escape hatch.
+- [x] Facade `FlushStateTransactions` phase: `take_pending` into a reused buffer → `flush_state_transactions`; one pass/frame, empty transaction inert.
+- [x] First-write signal: `RuntimeCx::request_state_flush(window)` sets a flag + issues the beat; scheduler reads `state_dirty_requested()` back at launch and after each frame, folding `RedrawReason::StateDirty` into its reasons. Zero-CPU-when-idle preserved.
+- [x] Tests drive the reactive stores directly through public `viso::ui` (no new facade write API needed this slice).
+- [x] Headless tests (`crates/viso/tests/reactive_flush.rs`, 4): write→flush dirties only bound nodes with bound classes (paint-only stays local); many writes collapse into one flush; idle transaction recomputes nothing; MEASURE binding bubbles through a flexible ancestor. Plus 5 state + 5 binding unit tests.
+- [x] Strip `§`/Makepad refs from every file touched (scheduler.rs, context.rs runtime + ui, state.rs, binding.rs, component.rs, facade lib.rs, ui lib.rs).
+- [x] Commit.
 
 #### B3 — Computed + Effect
 - [ ] `Computed` (pure; runtime dep collection via flush-context cursor, not thread-local; read-only state access enforces purity). First eval registers dynamic bindings; on dep change re-eval; if result changed, mark downstream dirty.

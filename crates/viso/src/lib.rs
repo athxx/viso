@@ -41,8 +41,8 @@ use viso_platform::{WindowConfig, WindowId};
 use viso_render::{Primitive, Rect, Renderer, Rgba};
 use viso_runtime::{FramePhase, RuntimeCx, Scheduler};
 use viso_ui::{
-    Align, Axis, BoxStyle, BuildCx, Component, DirtyClass, FlexStyle, FrameRecompute, Inset,
-    LeafStyle, NodeId, NodeStore, Size,
+    Align, Axis, BindingTable, BoxStyle, BuildCx, Component, DirtyClass, FlexStyle, FrameRecompute,
+    Inset, LeafStyle, NodeId, NodeStore, Size, StateId, StateStore,
 };
 
 pub use viso_ui::context::AppCx;
@@ -93,6 +93,14 @@ struct AppDriver<A: Application> {
     /// The retained UI tree: real nodes built once on launch, then relaid only
     /// where invalidated each frame and painted to primitives.
     store: NodeStore,
+    /// Reactive state cells. Writes record a pending change; the frame's flush
+    /// phase turns each changed cell into targeted node dirtying via `bindings`.
+    states: StateStore,
+    /// Compiled state→node edges. Built alongside the tree; read every flush.
+    bindings: BindingTable,
+    /// Reusable buffer the flush drains this frame's pending state ids into, so
+    /// the steady path allocates nothing while draining the transaction.
+    changed: Vec<StateId>,
     /// The tree root declared by [`Scene`], if the build succeeded.
     root: Option<NodeId>,
     /// Reusable primitive buffer. Rebuilt only on a paint-affecting frame; reused
@@ -134,6 +142,9 @@ impl<A: Application> AppDriver<A> {
             window: None,
             gpu: None,
             store: NodeStore::new(),
+            states: StateStore::new(),
+            bindings: BindingTable::new(),
+            changed: Vec::new(),
             root: None,
             primitives: Vec::new(),
             scratch: Vec::new(),
@@ -308,6 +319,18 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
         // Layout resolve node boxes, then paint lowers them to primitives which
         // the renderer batches and submits. Non-render phases are no-ops here.
         match phase {
+            FramePhase::FlushStateTransactions => {
+                // Drain this frame's pending state writes and turn each changed
+                // cell into targeted node dirtying through the compiled bindings.
+                // One pass per frame — many writes in one transaction collapse
+                // here — and a frame with no writes touches nothing.
+                if self.states.has_pending() {
+                    self.states.take_pending(&mut self.changed);
+                    self.store
+                        .flush_state_transactions(&self.changed, &self.bindings);
+                    self.changed.clear();
+                }
+            }
             FramePhase::Layout => {
                 // Incrementally re-place invalidated subtrees and repaint if any
                 // paint-affecting class is pending; a clean frame touches nothing.

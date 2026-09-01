@@ -9,9 +9,11 @@
 //! (read by measure/layout/paint). This is the data-oriented internal that
 //! backs the object-oriented external API.
 
+use crate::binding::BindingTable;
 use crate::dirty::DirtyClass;
 use crate::layout::{self, Align, Axis, Inset, LayoutInput, LayoutTree, Length, Measured, Size};
 use crate::node::{NodeArena, NodeId};
+use crate::state::StateId;
 use crate::style::BoxStyle;
 use viso_render::Rect;
 
@@ -218,6 +220,34 @@ impl NodeStore {
     #[inline]
     pub fn any_dirty(&self) -> bool {
         self.dirty.iter().any(|d| !d.is_empty())
+    }
+
+    /// Apply a frame's batch of changed states to the tree: for each changed
+    /// [`StateId`], walk its bindings (static then dynamic) and mark the bound
+    /// node dirty with the edge's classes. This is the flush phase's core —
+    /// one pass over the deduplicated pending set turns many writes into
+    /// targeted, layered invalidation. Returns how many bindings were applied
+    /// (a steady-state counter; zero means no reactive work this frame).
+    ///
+    /// `changed` is the drained pending write-set (see
+    /// [`StateStore::take_pending`]); `bindings` is the compiled edge table.
+    pub fn flush_state_transactions(
+        &mut self,
+        changed: &[StateId],
+        bindings: &BindingTable,
+    ) -> u32 {
+        let mut applied = 0;
+        for &state in changed {
+            for edge in bindings.for_state(state) {
+                self.mark_dirty(edge.node, edge.class);
+                applied += 1;
+            }
+            for edge in bindings.dynamic_for_state(state) {
+                self.mark_dirty(edge.node, edge.class);
+                applied += 1;
+            }
+        }
+        applied
     }
 
     /// Allocate a node and push its side-storage in lockstep so array indices
