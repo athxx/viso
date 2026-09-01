@@ -41,8 +41,9 @@ use viso_platform::{WindowConfig, WindowId};
 use viso_render::{Primitive, Rect, Renderer, Rgba};
 use viso_runtime::{FramePhase, RuntimeCx, Scheduler};
 use viso_ui::{
-    Align, Axis, BindingTable, BoxStyle, BuildCx, Component, DirtyClass, FlexStyle, FrameRecompute,
-    Inset, LeafStyle, NodeId, NodeStore, Size, StateId, StateStore,
+    Align, Axis, BindingTable, BoxStyle, BuildCx, Component, ComputedStore, DirtyClass,
+    EffectStore, FlexStyle, FrameRecompute, Inset, LeafStyle, NodeId, NodeStore, Size, StateId,
+    StateStore,
 };
 
 pub use viso_ui::context::AppCx;
@@ -98,6 +99,12 @@ struct AppDriver<A: Application> {
     states: StateStore,
     /// Compiled state→node edges. Built alongside the tree; read every flush.
     bindings: BindingTable,
+    /// Pure cached derivations. The flush wakes those whose dependencies changed
+    /// and dirties their downstream nodes only when the derived value changed.
+    computeds: ComputedStore,
+    /// Side effects scoped to nodes. The flush re-runs those whose dependencies
+    /// changed; freeing a node cancels its effects (cleanup then drop).
+    effects: EffectStore,
     /// Reusable buffer the flush drains this frame's pending state ids into, so
     /// the steady path allocates nothing while draining the transaction.
     changed: Vec<StateId>,
@@ -144,6 +151,8 @@ impl<A: Application> AppDriver<A> {
             store: NodeStore::new(),
             states: StateStore::new(),
             bindings: BindingTable::new(),
+            computeds: ComputedStore::new(),
+            effects: EffectStore::new(),
             changed: Vec::new(),
             root: None,
             primitives: Vec::new(),
@@ -277,6 +286,12 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
         // Build the retained UI tree once, now that we have a surface size. The
         // structure is fixed this slice; targeted structural rebuilds land with
         // reactive state. Layout runs incrementally per frame in `run_phase`.
+        //
+        // When structural teardown arrives (a targeted rebuild that frees nodes),
+        // each freed node must run `self.effects.cancel_for_node(id)` before its
+        // slot is reused, so scoped effects release their resources (cleanup then
+        // drop) at unmount. The current Scene frees nothing, so there is no live
+        // call site yet; this is where it will hook.
         self.store.clear();
         let mut build = BuildCx::new(&mut self.store);
         Scene.build(&mut build);
@@ -320,14 +335,28 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
         // the renderer batches and submits. Non-render phases are no-ops here.
         match phase {
             FramePhase::FlushStateTransactions => {
-                // Drain this frame's pending state writes and turn each changed
-                // cell into targeted node dirtying through the compiled bindings.
-                // One pass per frame — many writes in one transaction collapse
-                // here — and a frame with no writes touches nothing.
+                // Drain this frame's pending state writes once and fan the same
+                // changed set through the three downstream reactors, in order.
+                // Many writes in one transaction collapse here; a frame with no
+                // writes touches nothing.
                 if self.states.has_pending() {
                     self.states.take_pending(&mut self.changed);
+                    // 1. Derivations first: a memo-gated re-eval dirties a node
+                    //    only when its derived value actually changed, so any
+                    //    dirtying it produces is in place before Measure/Layout.
+                    self.computeds
+                        .wake_computed(&self.changed, &self.states, &mut self.store);
+                    // 2. Direct bindings: turn each changed cell into targeted
+                    //    node dirtying through the compiled static + dynamic-script
+                    //    edges. (Computed no longer registers dynamic edges, so a
+                    //    derivation's node is dirtied once, by the pass above.)
                     self.store
                         .flush_state_transactions(&self.changed, &self.bindings);
+                    // 3. Effects: re-run those whose dependencies changed. An
+                    //    effect that writes state records it as pending for the
+                    //    next frame; the scheduler carries state-dirty forward, so
+                    //    a follow-up frame runs — no in-frame cascade.
+                    self.effects.wake(&self.changed, &self.states);
                     self.changed.clear();
                 }
             }
