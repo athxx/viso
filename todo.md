@@ -46,9 +46,25 @@ Three focused commits:
 - [x] Commit.
 
 #### B3 — Computed + Effect
-- [ ] `Computed` (pure; runtime dep collection via flush-context cursor, not thread-local; read-only state access enforces purity). First eval registers dynamic bindings; on dep change re-eval; if result changed, mark downstream dirty.
-- [ ] `Effect` (lifecycle: dependency restart runs prior cleanup then re-runs body; cleanup closure; cancellation on node free/unmount). Synchronous this slice.
-- [ ] Headless tests: State → Computed re-eval → downstream dirty; Effect dep change runs cleanup + re-run; node unmount runs effect cleanup.
+Design (locked, after reading the makepad reference — which has NO reactive
+derivation system: it uses redraw_id generation + explicit invalidation queue +
+draw-cache memo; Effect-equivalent is imperative handle_* hooks + apply-reload
+re-eval + async drop→GC cancellation; Animator = NextFrame self-requeue loop
+that snapshots start values, restarts on state switch, stops when done). Viso
+deliberately diverges to compiled/tracked fine-grained reactivity; we take the
+*semantics* (re-eval only on dep change, propagate only if result changed;
+dep-change restart = cleanup-then-rerun; unmount cleanup) not the coarse model.
+New file `crates/ui/src/reactive.rs` (Computed + Effect are one subsystem).
+Since makepad has no reactive-derivation system to preserve, we chose the better
+fine-grained design outright rather than fitting a coarse model: compiled binding
+fast path + runtime `DepCursor` fallback, and — decisively — Computed and Effect
+wake by DIFFERENT routes because their outputs differ in kind (see below).
+- [x] `Computed` (pure; runtime dep collection via a `DepCursor` passed into eval — not thread-local; a read-only `ComputeCx` exposes `get` only, so purity is enforced by the type, no `set`). SoA `ComputedStore` keyed by generational `ComputedId`: cached last `StateValue` + dep set. `eval` records deps → registers dynamic bindings (`bind_dynamic`) from each dep `StateId` to the computed's downstream node + class. Returns `changed`; caller marks downstream dirty ONLY when it does (the memo boundary). A Computed's output *is* a node dirty class, so it rides the same state→binding→dirty flush a plain bound value does.
+- [x] `Effect` (lifecycle: SoA `EffectStore` keyed by generational `EffectId`; each holds dep set + body + prior `cleanup: Option<Cleanup>` + owning `NodeId`). Dependency restart = prior cleanup THEN re-run body. Cancellation runs cleanup on `cancel`/`cancel_for_node` (node free = unmount). Synchronous this slice; no timers/async yet.
+- [x] DESIGN DIVERGENCE (deliberate, better-than-coarse): an Effect has NO dirty class — its output is the side effect — so routing it through the 8-bit `DirtyClass` would overload a bit meaning "recompute layout/paint". Instead `EffectStore` owns a compact reverse index `StateId -> Vec<EffectId>`, rebuilt every run (a dropped dep stops waking; a new dep starts). The flush hands the frame's changed ids to `EffectStore::wake`, which dedupes and re-runs each affected effect once. `DirtyClass` stays a clean eight, one meaning each. `wake` reuses a scratch buffer → zero steady-state alloc.
+- [x] Unit tests (`reactive.rs`, 9): computed first-eval registers deps + reports change; re-eval on dep change; unchanged result propagates nothing (memo boundary, step function); freed computed is stale; effect dep change runs cleanup THEN re-run (ordered log); effect only wakes on its own deps; two changed deps re-run once; node unmount runs cleanup + drops from reverse index; effect that stops reading a dep stops being woken by it.
+- [x] No `§`/Makepad refs in any file touched (reactive.rs, ui lib.rs).
+- [ ] Wire into the facade flush phase (Computed eval + Effect wake) — deferred to the Slice B wrap-up so this commit stays the pure reactive-primitive subsystem; the facade currently drives only the binding flush. `ComputedStore`/`EffectStore` are public through `viso::ui` and unit-covered.
 - [ ] Commit.
 
 ### Wrap-up for Slice B

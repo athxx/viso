@@ -16,6 +16,7 @@ pub mod dirty;
 pub mod layout;
 pub mod node;
 pub mod paint;
+pub mod reactive;
 pub mod state;
 pub mod style;
 
@@ -25,5 +26,8 @@ pub use dirty::DirtyClass;
 pub use layout::{Align, Axis, Inset, Length, Size};
 pub use node::{NodeArena, NodeId, NodeLinks};
 pub use paint::paint_tree;
+pub use reactive::{
+    Cleanup, ComputeCx, ComputedId, ComputedStore, DepCursor, EffectId, EffectStore,
+};
 pub use state::{StateId, StateStore, StateValue};
 pub use style::BoxStyle;
