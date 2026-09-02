@@ -15,7 +15,7 @@ use crate::dirty::DirtyClass;
 use crate::layout::{self, Align, Axis, Inset, LayoutInput, LayoutTree, Length, Measured, Size};
 use crate::node::{NodeArena, NodeId};
 use crate::semantics::{Role, Semantics, SemanticsNode, SemanticsTree};
-use crate::state::{StateId, StateStore};
+use crate::state::{StateId, StateStore, StateValue};
 use crate::style::{BoxStyle, StyleId};
 use crate::token::Theme;
 use viso_render::Rect;
@@ -706,7 +706,11 @@ impl NodeStore {
     /// this slice — SEMANTICS bubbles to the root, so any change reaches `root`;
     /// per-subtree caching is a later refinement once a consumer needs it.
     pub fn derive_semantics_dirty(&self, root: NodeId) -> Option<SemanticsTree> {
-        if !self.dirty.iter().any(|d| d.intersects(DirtyClass::SEMANTICS)) {
+        if !self
+            .dirty
+            .iter()
+            .any(|d| d.intersects(DirtyClass::SEMANTICS))
+        {
             return None;
         }
         Some(self.derive_semantics(root))
@@ -821,8 +825,20 @@ fn fixed_on_both_axes(input: LayoutInput) -> bool {
 /// current parent via a cursor stack (a phase-specific context). A `flex`
 /// call pushes its node as the parent for the duration of its child closure,
 /// then pops — so the closure's `leaf`/`flex` calls attach beneath it.
+///
+/// It optionally also borrows the reactive stores: a cx built with
+/// [`BuildCx::with_reactive`] can allocate state cells and wire state→node
+/// bindings, so a user application authors its whole interactive scene here. A
+/// cx built with [`BuildCx::new`] has no reactive stores — it declares a pure
+/// node tree (the shape most tests want) and its `state`/`bind` methods are
+/// unreachable by construction.
 pub struct BuildCx<'a> {
     store: &'a mut NodeStore,
+    /// Reactive state cells, present only for a `with_reactive` cx. `None` for
+    /// a `new`-built (node-only) cx.
+    states: Option<&'a mut StateStore>,
+    /// Compiled state→node edges, present only for a `with_reactive` cx.
+    bindings: Option<&'a mut BindingTable>,
     /// Parent cursor stack; the top is the current insertion parent.
     stack: Vec<NodeId>,
     /// The tree root, set by the first declared node.
@@ -830,11 +846,32 @@ pub struct BuildCx<'a> {
 }
 
 impl<'a> BuildCx<'a> {
-    /// Start a build against `store`. The store should be empty or freshly
-    /// [`NodeStore::clear`]ed.
+    /// Start a node-only build against `store`. The store should be empty or
+    /// freshly [`NodeStore::clear`]ed. The cx has no reactive stores; calling
+    /// `state`/`bind` on it panics (a facade-construction invariant — a user
+    /// only ever receives a `with_reactive` cx, through `Application::build`).
     pub fn new(store: &'a mut NodeStore) -> Self {
         BuildCx {
             store,
+            states: None,
+            bindings: None,
+            stack: Vec::new(),
+            root: None,
+        }
+    }
+
+    /// Start a build that can also author reactive state and bindings. The
+    /// facade builds the user application's scene through this constructor so
+    /// `state`/`bind` reach the driver-owned stores.
+    pub fn with_reactive(
+        store: &'a mut NodeStore,
+        states: &'a mut StateStore,
+        bindings: &'a mut BindingTable,
+    ) -> Self {
+        BuildCx {
+            store,
+            states: Some(states),
+            bindings: Some(bindings),
             stack: Vec::new(),
             root: None,
         }
@@ -890,6 +927,31 @@ impl<'a> BuildCx<'a> {
     pub fn semantics(&mut self, handle: Handle, semantics: Semantics) -> Handle {
         self.store.set_semantics(handle.id, semantics);
         handle
+    }
+
+    /// Allocate a reactive state cell with an initial value, returning its id.
+    /// App-scoped: the app stashes the id and reads/writes it from handlers via
+    /// an event context. Cold, build-time — not a hot path. Requires a cx built
+    /// with [`BuildCx::with_reactive`]; a node-only cx has no state store and
+    /// this panics (a facade-construction invariant — a user only ever receives
+    /// a reactive cx, through `Application::build`).
+    pub fn state(&mut self, initial: StateValue) -> StateId {
+        self.states
+            .as_mut()
+            .expect("state() requires a with_reactive BuildCx")
+            .alloc(initial)
+    }
+
+    /// Wire a state cell to a node: when the cell changes, the frame's flush
+    /// marks `class` on `node`. This is the compiled static binding edge — the
+    /// same one the transaction flush reads. Returns the handle so wiring chains
+    /// inline. Requires a [`BuildCx::with_reactive`] cx (see [`BuildCx::state`]).
+    pub fn bind(&mut self, state: StateId, node: Handle, class: DirtyClass) -> Handle {
+        self.bindings
+            .as_mut()
+            .expect("bind() requires a with_reactive BuildCx")
+            .bind(state, node.id, class);
+        node
     }
 
     /// Allocate a node, attach it under the current parent (or record it as the
@@ -1042,7 +1104,11 @@ mod tests {
         assert_eq!(tree.len(), 3, "root + two leaves");
         let r = tree.root().unwrap();
         assert_eq!(r.id, root);
-        assert_eq!(r.children, vec![1, 2], "children recorded by index, in order");
+        assert_eq!(
+            r.children,
+            vec![1, 2],
+            "children recorded by index, in order"
+        );
         assert_eq!(tree.nodes[1].id, a);
         assert_eq!(tree.nodes[2].id, b);
         // A plain leaf with no handler and no authored semantics is a Group.
@@ -1616,5 +1682,49 @@ mod tests {
         let node = tree.get(leaf).expect("leaf in derived tree");
         assert_eq!(node.role, Role::Button);
         assert_eq!(node.label.as_deref(), Some("Add"));
+    }
+
+    #[test]
+    fn build_cx_state_allocates_and_reads() {
+        let mut store = NodeStore::new();
+        let mut states = StateStore::new();
+        let mut bindings = BindingTable::new();
+        let mut cx = BuildCx::with_reactive(&mut store, &mut states, &mut bindings);
+        let id = cx.state(StateValue::Int(0));
+        assert_eq!(states.get(id), Some(StateValue::Int(0)));
+    }
+
+    #[test]
+    fn build_cx_bind_wires_a_static_edge() {
+        let mut store = NodeStore::new();
+        let mut states = StateStore::new();
+        let mut bindings = BindingTable::new();
+        let node;
+        let count;
+        {
+            let mut cx = BuildCx::with_reactive(&mut store, &mut states, &mut bindings);
+            count = cx.state(StateValue::Int(0));
+            node = cx.leaf(LeafStyle::default());
+            let returned = cx.bind(count, node, DirtyClass::PAINT);
+            assert_eq!(returned.id(), node.id(), "bind returns the same handle");
+        }
+        // The bound edge is the one `flush_state_transactions` reads.
+        assert!(states.set(count, StateValue::Int(1)));
+        let mut changed = Vec::new();
+        states.take_pending(&mut changed);
+        let applied = store.flush_state_transactions(&changed, &bindings);
+        assert_eq!(applied, 1, "the single bound edge applies");
+        assert!(store.dirty(node.id()).contains(DirtyClass::PAINT));
+    }
+
+    #[test]
+    #[should_panic]
+    fn build_cx_new_has_no_reactive_stores() {
+        // A `new`-built cx has no reactive stores; `state()` is a facade-
+        // construction invariant violation (a user only ever gets a
+        // `with_reactive` cx through `build`), documented and asserted here.
+        let mut store = NodeStore::new();
+        let mut cx = BuildCx::new(&mut store);
+        let _ = cx.state(StateValue::Int(0));
     }
 }
