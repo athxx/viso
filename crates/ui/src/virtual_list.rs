@@ -282,6 +282,447 @@ impl Default for HeightCache {
     }
 }
 
+use crate::binding::BindingTable;
+use crate::component::{BuildCx, NodeStore};
+use crate::dirty::DirtyClass;
+use crate::layout::Axis;
+use crate::node::NodeId;
+use crate::reactive::EffectStore;
+use crate::state::StateStore;
+
+/// Builds the body of one list item under a host node. Called only when a row is
+/// mounted or re-bound (a cold path — a steady scroll never invokes it), so it is
+/// a boxed `FnMut` rather than a monomorphized generic: one list owns one builder
+/// and its cost is amortized over the ~40 mounted rows, not per frame.
+pub type ItemBuilder = Box<dyn FnMut(usize, &mut BuildCx<'_>)>;
+
+/// One currently-mounted row: the logical item it shows, the host node whose body
+/// holds its widgets, and the main-axis offset the host sits at inside the canvas.
+#[derive(Debug, Clone, Copy)]
+struct MountedItem {
+    /// The logical index this host is currently bound to.
+    logical_index: usize,
+    /// The host node parked in the tree; its body is the item's widgets.
+    host: NodeId,
+    /// The host's main-axis top inside the canvas (`heights.prefix_sum(index)`).
+    item_top: f32,
+}
+
+/// Per-list side state driving the reconcile: the height model, the mounted
+/// window, a pool of recyclable hosts, and the reused scratch buffers. Boxed and
+/// held in [`VirtualLists`] off to the side of the node store — this is heap-heavy
+/// warm state that would pollute the hot/warm SoA columns if it rode a node, and
+/// only a handful of nodes are lists.
+pub struct VirtualListState {
+    /// Per-item heights (a Fenwick tree): prefix sums place rows, the inverse
+    /// query maps a scroll offset back to the row at the viewport top.
+    heights: HeightTree,
+    /// Running mean of measured heights, seeding unmeasured rows' estimate.
+    height_cache: HeightCache,
+    /// The currently mounted logical range `[range_start, range_end)`.
+    range_start: usize,
+    range_end: usize,
+    /// The mounted hosts, one per row in `[range_start, range_end)`, in index
+    /// order. Reused in place across reconciles; never reallocated on the steady
+    /// path.
+    mounted: Vec<MountedItem>,
+    /// Detached hosts parked for reuse — a recycle pops from here before it ever
+    /// allocates a fresh arena node, so churn is bounded and the tree does not
+    /// grow row by row.
+    pool: Vec<NodeId>,
+    /// Total logical item count (may exceed the mounted count by orders of
+    /// magnitude — the whole point of virtualizing).
+    item_count: usize,
+    /// Extra rows mounted on each side of the visible window, so a small scroll
+    /// reveals an already-built row instead of a mount stall.
+    overscan: usize,
+    /// The scroll axis (matches the viewport's `Scroll` axis).
+    axis: Axis,
+    /// Builds one item's body; cold, invoked only on mount/rebind.
+    builder: ItemBuilder,
+    /// The `AbsoluteRows` canvas node: the viewport's single content child, sized
+    /// to the full logical extent so the scroll range is correct without mounting
+    /// every row. Mounted hosts are its children.
+    canvas: NodeId,
+    /// The last scroll offset a reconcile ran at, so a frame whose scroll has not
+    /// moved (and whose data is clean) skips the whole pass.
+    last_reconciled_scroll: f32,
+    /// Set when the height model or item count changed since the last reconcile,
+    /// forcing a re-anchor even if the scroll offset is unchanged.
+    dirty_data: bool,
+    /// Whether an initial mount has happened yet (the build mounts no rows; the
+    /// first reconcile against the real viewport size does).
+    mounted_once: bool,
+    /// Reused scratch: hosts freed from the tree during `free_subtree`.
+    scratch_free: Vec<NodeId>,
+    /// Reused scratch: the newly-mounted hosts this reconcile, swept for their
+    /// measured heights after the following layout pass.
+    scratch_mounted: Vec<(usize, NodeId)>,
+}
+
+impl VirtualListState {
+    /// A fresh list of `item_count` rows, each estimated at `estimated_row` px,
+    /// stacked along `axis`, with `overscan` extra rows mounted per side. `canvas`
+    /// is the `AbsoluteRows` node the reconcile mounts hosts under; `builder`
+    /// authors each row's body. No rows are mounted yet — the first reconcile
+    /// mounts against the real viewport size.
+    pub fn new(
+        item_count: usize,
+        estimated_row: f32,
+        overscan: usize,
+        axis: Axis,
+        canvas: NodeId,
+        builder: ItemBuilder,
+    ) -> Self {
+        VirtualListState {
+            heights: HeightTree::new(item_count, estimated_row),
+            height_cache: HeightCache::with_fallback(estimated_row),
+            range_start: 0,
+            range_end: 0,
+            mounted: Vec::new(),
+            pool: Vec::new(),
+            item_count,
+            overscan,
+            axis,
+            builder,
+            canvas,
+            last_reconciled_scroll: f32::NAN,
+            dirty_data: true,
+            mounted_once: false,
+            scratch_free: Vec::new(),
+            scratch_mounted: Vec::new(),
+        }
+    }
+
+    /// The `AbsoluteRows` canvas node (the viewport's content child).
+    #[inline]
+    pub fn canvas(&self) -> NodeId {
+        self.canvas
+    }
+
+    /// The current total logical extent along the scroll axis.
+    #[inline]
+    pub fn total_extent(&self) -> f32 {
+        self.heights.total()
+    }
+
+    /// How many rows are currently mounted (≈ visible + 2·overscan, not the
+    /// logical `item_count`). The core virtualization invariant asserts on this.
+    #[inline]
+    pub fn mounted_count(&self) -> usize {
+        self.mounted.len()
+    }
+
+    /// The pool's current length (parked, reusable hosts). Conserved across a
+    /// steady window slide — a recycle pops as many as it pushes.
+    #[inline]
+    pub fn pool_len(&self) -> usize {
+        self.pool.len()
+    }
+
+    /// Mark the height model / item count dirty so the next reconcile re-anchors
+    /// even when the scroll offset has not moved.
+    #[inline]
+    pub fn mark_data_dirty(&mut self) {
+        self.dirty_data = true;
+    }
+}
+
+/// The driver-owned registry of virtual lists, indexed by the list viewport's
+/// [`NodeId::index`]. A dense `Vec` (not a per-node HashMap and not a NodeStore
+/// column): reconcile looks a list up by one index, the hot-path contract's
+/// "0 global HashMap lookup per node" holds, and the heap-heavy state stays off
+/// the node store's SoA columns. Mirrors how [`StateStore`]/[`EffectStore`] are
+/// owned beside the store rather than woven into it.
+#[derive(Default)]
+pub struct VirtualLists {
+    /// `lists[viewport_index]` is the state for the list whose viewport is that
+    /// node, or `None` for a non-list node (the common case).
+    lists: Vec<Option<Box<VirtualListState>>>,
+}
+
+impl VirtualLists {
+    /// An empty registry.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Drop every registered list, resetting to empty. Called beside
+    /// `NodeStore::clear` when the tree is rebuilt wholesale.
+    pub fn clear(&mut self) {
+        self.lists.clear();
+    }
+
+    /// Register `state` for the list viewport `viewport`, growing the dense index
+    /// as needed. Replaces any prior registration at that slot.
+    pub fn register(&mut self, viewport: NodeId, state: Box<VirtualListState>) {
+        let i = viewport.index() as usize;
+        if i >= self.lists.len() {
+            self.lists.resize_with(i + 1, || None);
+        }
+        self.lists[i] = Some(state);
+    }
+
+    /// The list state registered for `viewport`, if any.
+    #[inline]
+    pub fn get(&self, viewport: NodeId) -> Option<&VirtualListState> {
+        self.lists
+            .get(viewport.index() as usize)
+            .and_then(|s| s.as_deref())
+    }
+
+    /// Mutable access to the list state registered for `viewport`, if any.
+    #[inline]
+    pub fn get_mut(&mut self, viewport: NodeId) -> Option<&mut VirtualListState> {
+        self.lists
+            .get_mut(viewport.index() as usize)
+            .and_then(|s| s.as_deref_mut())
+    }
+
+    /// Whether any list is registered (lets a frame skip the reconcile entirely).
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        self.lists.iter().all(|s| s.is_none())
+    }
+}
+
+/// Reconcile every registered virtual list against the current scroll offset:
+/// per list, compute the visible index window (plus overscan), and recycle the
+/// handful of hosts that crossed a row boundary. Runs once per frame **before**
+/// the layout pass, so a remount's canvas invalidation is picked up the same
+/// frame.
+///
+/// The steady path is a no-op: a list whose scroll offset is unchanged and whose
+/// data is clean returns before touching the tree, so a scroll within a mounted
+/// row stays on the pure transform path with zero relayout — the hot-path
+/// contract's "0 full-tree rebuild for a local state update" and "0 per-frame
+/// heap alloc in steady scroll" both hold (the scratch buffers never grow once
+/// warmed).
+///
+/// Returns the number of rows (re)bound across all lists this frame — a
+/// steady-state counter: `0` means every list was on its steady path.
+pub fn reconcile(
+    store: &mut NodeStore,
+    lists: &mut VirtualLists,
+    states: &mut StateStore,
+    bindings: &mut BindingTable,
+    effects: &mut EffectStore,
+) -> u32 {
+    let mut bound = 0;
+    // Walk the dense index; each occupied slot's viewport id is recoverable from
+    // the slot index paired with the arena's live generation.
+    for i in 0..lists.lists.len() {
+        if lists.lists[i].is_none() {
+            continue;
+        }
+        let Some(viewport) = store.arena().live_id(i as u32) else {
+            // The viewport was freed (whole-tree rebuild races the registry
+            // clear); drop the stale entry defensively.
+            lists.lists[i] = None;
+            continue;
+        };
+        bound += reconcile_one(viewport, store, lists, states, bindings, effects);
+    }
+    bound
+}
+
+/// Reconcile a single list. Split out so the borrow of `lists` is a short scoped
+/// `get_mut` and the per-list scratch lives on the state.
+fn reconcile_one(
+    viewport: NodeId,
+    store: &mut NodeStore,
+    lists: &mut VirtualLists,
+    states: &mut StateStore,
+    bindings: &mut BindingTable,
+    effects: &mut EffectStore,
+) -> u32 {
+    let Some(state) = lists.get_mut(viewport) else {
+        return 0;
+    };
+    let axis = state.axis;
+    let scroll_main = store.scroll(viewport).on(axis);
+    debug_assert!(store.is_scroll(viewport), "virtual list viewport must be a scroll node");
+
+    // Steady-path gate: scroll unchanged and data clean → nothing to do. The
+    // scroll itself already moved the world rects (TRANSFORM class); no relayout.
+    if state.mounted_once && scroll_main == state.last_reconciled_scroll && !state.dirty_data {
+        return 0;
+    }
+
+    // The visible window: the row at the viewport top, through the row at its
+    // bottom, widened by overscan on each side and clamped to the item range.
+    let viewport_main = store.bounds_main(viewport, axis);
+    let first = state.heights.find_position(scroll_main).0;
+    let last = state
+        .heights
+        .find_position(scroll_main + viewport_main)
+        .0;
+    let new_start = first.saturating_sub(state.overscan);
+    let new_end = (last + state.overscan + 1).min(state.item_count);
+
+    // No structural change and clean data → commit the offset and leave (a scroll
+    // that stayed within the mounted window, or a first reconcile that landed on
+    // the same empty range).
+    if state.mounted_once
+        && new_start == state.range_start
+        && new_end == state.range_end
+        && !state.dirty_data
+    {
+        state.last_reconciled_scroll = scroll_main;
+        return 0;
+    }
+
+    let mut bound = 0;
+    let total_before = state.heights.total();
+
+    // Diff the window. Any currently-mounted row now outside `[new_start,new_end)`
+    // leaves: detach its host to the pool. Then walk the new range: a row already
+    // mounted keeps its host (rewrite its offset if it moved); a row entering pops
+    // a host from the pool (or allocates one), clears its old body, and rebuilds.
+    state.scratch_mounted.clear();
+
+    // 1. Any currently-mounted row now outside the window leaves: detach its host
+    //    from the tree (kept live) and park it in the pool for reuse. Take the old
+    //    mounted list out first so the new one is rebuilt fresh below.
+    let old_mounted = std::mem::take(&mut state.mounted);
+    for m in &old_mounted {
+        if m.logical_index < new_start || m.logical_index >= new_end {
+            store.arena_detach(m.host);
+            store.clear_row_offset(m.host);
+            state.pool.push(m.host);
+        }
+    }
+
+    // 2. Build the new mounted set in index order, reusing kept hosts. A kept row
+    //    is found by scanning the (small, ~40-entry) old list.
+    for logical in new_start..new_end {
+        let item_top = state.heights.prefix_sum(logical);
+        if let Some(existing) = old_mounted.iter().find(|m| m.logical_index == logical) {
+            // Kept in range: reuse the host, updating its offset if it moved.
+            let host = existing.host;
+            if existing.item_top != item_top {
+                store.set_row_offset(host, item_top);
+                store.mark_dirty(host, DirtyClass::LAYOUT | DirtyClass::PAINT);
+            }
+            state.mounted.push(MountedItem {
+                logical_index: logical,
+                host,
+                item_top,
+            });
+        } else {
+            // Entering: pop a parked host (or allocate a fresh one under the
+            // canvas), clear its old body, rebuild it for this row.
+            let host = match state.pool.pop() {
+                Some(parked) => {
+                    store.arena_append_child(state.canvas, parked);
+                    // Empty the parked host's body so it can hold a new item.
+                    store.free_subtree(parked, effects, &mut state.scratch_free);
+                    parked
+                }
+                None => store.alloc_row_host(state.canvas, axis),
+            };
+            store.set_row_offset(host, item_top);
+            // Author the item body under the host.
+            {
+                let mut cx = BuildCx::with_parent(store, states, bindings, host);
+                (state.builder)(logical, &mut cx);
+            }
+            store.mark_dirty(
+                host,
+                DirtyClass::MEASURE | DirtyClass::LAYOUT | DirtyClass::PAINT,
+            );
+            state.mounted.push(MountedItem {
+                logical_index: logical,
+                host,
+                item_top,
+            });
+            state.scratch_mounted.push((logical, host));
+            bound += 1;
+        }
+    }
+
+    // 3. If the total logical extent changed, rewrite the canvas's fixed extent so
+    //    the scroll range stays correct, and mark the canvas LAYOUT (never
+    //    STRUCTURE — that would bubble to root and force a full-tree relayout; the
+    //    canvas is fixed on both axes so a MEASURE mark inside it already stops
+    //    here). MEASURE too, so the canvas re-measures its own new fixed size.
+    let total_after = state.heights.total();
+    if total_after != total_before {
+        store.set_absolute_rows_extent(state.canvas, axis, total_after);
+        store.mark_dirty(
+            state.canvas,
+            DirtyClass::MEASURE | DirtyClass::LAYOUT,
+        );
+    }
+
+    // 4. Commit the window.
+    state.range_start = new_start;
+    state.range_end = new_end;
+    state.last_reconciled_scroll = scroll_main;
+    state.dirty_data = false;
+    state.mounted_once = true;
+    bound
+}
+
+/// Fold the measured heights of this frame's newly-mounted rows back into the
+/// height model, run after the layout pass has measured them. A real change to
+/// any row's height sets the list's `dirty_data` so the next reconcile
+/// re-anchors (scroll correction / anchor preservation for variable heights).
+/// Bounded to the rows mounted this frame; no allocation.
+///
+/// Returns the number of rows whose measured height differed from the model.
+pub fn absorb_measurements(store: &NodeStore, lists: &mut VirtualLists) -> u32 {
+    let mut changed = 0;
+    for slot in &mut lists.lists {
+        let Some(state) = slot.as_deref_mut() else {
+            continue;
+        };
+        if state.scratch_mounted.is_empty() {
+            continue;
+        }
+        let axis = state.axis;
+        let mut any = false;
+        // Drain the freshly-mounted set: each host's measured main extent is its
+        // real row height now that layout has run.
+        for k in 0..state.scratch_mounted.len() {
+            let (logical, host) = state.scratch_mounted[k];
+            if !store.arena().is_live(host) {
+                continue;
+            }
+            let h = store.measured_main(host, axis);
+            if h > 0.0 {
+                state.height_cache.push_measured(h);
+                if state.heights.update(logical, h) {
+                    any = true;
+                }
+            }
+        }
+        state.scratch_mounted.clear();
+        // Re-estimate not-yet-seen rows from the refreshed running mean.
+        if state.heights.update_default_height(state.height_cache.estimate()) {
+            any = true;
+        }
+        if any {
+            state.dirty_data = true;
+            changed += 1;
+        }
+    }
+    changed
+}
+
+/// Grow or shrink a list's logical item count, resizing the height model and
+/// marking the list data-dirty so the next reconcile re-anchors and rewrites the
+/// canvas extent. A data change, not a per-frame path.
+pub fn set_item_count(lists: &mut VirtualLists, viewport: NodeId, item_count: usize) {
+    if let Some(state) = lists.get_mut(viewport)
+        && item_count != state.item_count
+    {
+        state.item_count = item_count;
+        state.heights.resize(item_count);
+        state.dirty_data = true;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
