@@ -43,7 +43,8 @@ use viso_runtime::{FramePhase, RuntimeCx, Scheduler};
 use viso_ui::{
     BindingTable, BuildCx, ComputedStore, DirtyClass, EffectStore, FrameRecompute, ImeEvent, Key,
     KeyEvent, KeyRouter, Modifiers, NodeId, NodeStore, PointerButtons, PointerEvent, PointerPhase,
-    PointerRouter, ScrollEvent, ScrollRouter, StateId, StateStore, focus_next,
+    PointerRouter, ScrollEvent, ScrollRouter, StateId, StateStore, VirtualLists, focus_next,
+    virtual_list,
 };
 
 pub use viso_ui::context::AppCx;
@@ -114,6 +115,12 @@ struct AppDriver<A: Application> {
     /// Side effects scoped to nodes. The flush re-runs those whose dependencies
     /// changed; freeing a node cancels its effects (cleanup then drop).
     effects: EffectStore,
+    /// Virtualized lists keyed by viewport node. Reconciled each frame before
+    /// layout: reads each list's scroll, remounts only the visible range's hosts,
+    /// keeps the content extent (so `scroll_range` is right) with ~40 mounted
+    /// nodes instead of one per logical item. Driver-owned so a with-reactive
+    /// build cx can register lists and the frame can drive reconcile.
+    virtual_lists: VirtualLists,
     /// Reusable buffer the flush drains this frame's pending state ids into, so
     /// the steady path allocates nothing while draining the transaction.
     changed: Vec<StateId>,
@@ -165,6 +172,7 @@ impl<A: Application> AppDriver<A> {
             bindings: BindingTable::new(),
             computeds: ComputedStore::new(),
             effects: EffectStore::new(),
+            virtual_lists: VirtualLists::new(),
             changed: Vec::new(),
             root: None,
             route_chain: Vec::new(),
@@ -248,9 +256,14 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
         // drop) at unmount. `build` runs once and frees nothing, so there is no
         // live call site yet; this is where it will hook.
         self.store.clear();
+        self.virtual_lists.clear();
         if let Some(app) = &mut self.app {
-            let mut build =
-                BuildCx::with_reactive(&mut self.store, &mut self.states, &mut self.bindings);
+            let mut build = BuildCx::with_reactive(
+                &mut self.store,
+                &mut self.states,
+                &mut self.bindings,
+                &mut self.virtual_lists,
+            );
             app.build(&mut build);
             self.root = build.root();
         }
@@ -426,9 +439,26 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
                 }
             }
             FramePhase::Layout => {
+                // Reconcile virtualized lists first: each list reads its viewport's
+                // current scroll, and only when the visible range crossed a row
+                // boundary does it recycle/rebind a handful of hosts and mark the
+                // canvas LAYOUT|MEASURE. Steady scroll within a row is a no-op here
+                // (the scroll's TRANSFORM already moved the mounted rows), so the
+                // relayout below stays confined to the changed canvas subtree.
+                virtual_list::reconcile(
+                    &mut self.store,
+                    &mut self.virtual_lists,
+                    &mut self.states,
+                    &mut self.bindings,
+                    &mut self.effects,
+                );
                 // Incrementally re-place invalidated subtrees and repaint if any
                 // paint-affecting class is pending; a clean frame touches nothing.
                 self.relayout_and_paint();
+                // Feed measured row heights back into each list's height model so a
+                // variable-height list corrects its extent and anchor next frame.
+                // Bounded to this frame's newly-mounted rows — no full-list sweep.
+                virtual_list::absorb_measurements(&self.store, &mut self.virtual_lists);
             }
             FramePhase::UploadGpuChanges => {
                 if let Some(gpu) = &mut self.gpu {
@@ -507,7 +537,9 @@ pub mod prelude {
     // declaring nodes and wiring reactive state, so the authoring context, the
     // layout styles, the semantics facts, and the state cell handles belong in
     // the default set (commonly used, stable, unambiguous).
-    pub use viso_ui::{BuildCx, FlexStyle, LeafStyle, Role, Semantics, StateId, StateValue};
+    pub use viso_ui::{
+        BuildCx, FlexStyle, LeafStyle, Role, Semantics, StateId, StateValue, VirtualListStyle,
+    };
     // View, Window, Button, Label, Text, Image, List, Scroll, Computed, Event,
     // Task, Route, Theme, Color, Vec2, Rect, Constraints and the
     // component!/ui!/view!/routes! macros join this as their subsystems land in
