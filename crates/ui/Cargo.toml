@@ -21,3 +21,7 @@ criterion = "0.7"
 [[bench]]
 name = "large_list"
 harness = false
+
+[[bench]]
+name = "grid_layout"
+harness = false
