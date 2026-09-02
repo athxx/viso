@@ -12,3 +12,12 @@ rust-version.workspace = true
 [dependencies]
 viso-render = { workspace = true }
 viso-runtime = { workspace = true }
+
+# Benches only. criterion is a dev-dependency: it never ships in the ui crate and
+# is not an architecture DAG edge (external crate, ignored by `xtask check-deps`).
+[dev-dependencies]
+criterion = "0.7"
+
+[[bench]]
+name = "large_list"
+harness = false

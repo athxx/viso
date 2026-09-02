@@ -1032,6 +1032,7 @@ dependencies = [
 name = "viso-ui"
 version = "0.0.0"
 dependencies = [
+ "criterion",
  "viso-render",
  "viso-runtime",
 ]
