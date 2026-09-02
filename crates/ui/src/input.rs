@@ -158,7 +158,7 @@ pub fn route_pointer(
         return false;
     };
     dispatch_chain(store, root, target, chain, |s, n| {
-        pointer_dispatch(s, states, bindings, n)
+        pointer_dispatch(s, states, bindings, n, &ev)
     })
 }
 
@@ -216,12 +216,13 @@ fn pointer_dispatch(
     states: &mut StateStore,
     bindings: &BindingTable,
     node: NodeId,
+    event: &PointerEvent,
 ) -> bool {
     let Some(mut handler) = store.take_handler(node) else {
         return false;
     };
     {
-        let mut ev = EventCx::__new(states, bindings);
+        let mut ev = EventCx::__new_pointer(states, bindings, event);
         handler(&mut ev);
     }
     store.restore_handler(node, handler);
