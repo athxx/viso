@@ -13,6 +13,7 @@ pub mod binding;
 pub mod component;
 pub mod context;
 pub mod dirty;
+pub mod grid;
 pub mod hit_test;
 pub mod input;
 pub mod layout;
@@ -32,6 +33,7 @@ pub use component::{
 };
 pub use context::EventCx;
 pub use dirty::DirtyClass;
+pub use grid::{GridPlacement, GridStyle, TrackSizing};
 pub use hit_test::{HitTestTree, hit_test};
 pub use input::{
     ImeEvent, Key, KeyEvent, KeyRouter, Modifiers, PointerButtons, PointerEvent, PointerPhase,
