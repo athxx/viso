@@ -1,0 +1,13 @@
+[package]
+name = "viso-example-01-counter"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+# The first end-to-end interactive Viso app: a button click increments a
+# reactive state cell, which is bound to a node so exactly that node re-derives
+# its semantics and repaints. Built entirely on the public facade — no internal
+# crate imports, no runtime shims.
+[dependencies]
+viso = { workspace = true }

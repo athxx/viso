@@ -16,6 +16,7 @@ members = [
     "crates/services",
     "xtask",
     "examples/hello_world",
+    "examples/01-counter",
 ]
 
 # viso-ext/ is a user-maintained plugin library and is intentionally NOT a
