@@ -47,8 +47,8 @@ const BLUE: Rgba = Rgba {
 
 /// Build the demo tree: a padded, cross-centered Row with a dark background,
 /// holding a fixed red box, a width-filling green box, and a fixed blue box.
-/// Mirrors the facade's `Scene`, assembled from public API so the test proves
-/// the same pipeline without reaching into facade internals.
+/// A self-contained scene, assembled from public API so the test proves the
+/// same pipeline without reaching into facade internals.
 fn build(store: &mut NodeStore) -> viso::ui::NodeId {
     let mut cx = BuildCx::new(store);
     cx.flex(

@@ -38,13 +38,12 @@
 
 use viso_gpu::{Backend, GpuBackend, SurfaceId};
 use viso_platform::{WindowConfig, WindowId};
-use viso_render::{Primitive, Rect, Renderer, Rgba};
+use viso_render::{Primitive, Rect, Renderer};
 use viso_runtime::{FramePhase, RuntimeCx, Scheduler};
 use viso_ui::{
-    Align, Axis, BindingTable, BoxStyle, BuildCx, Component, ComputedStore, DirtyClass,
-    EffectStore, FlexStyle, FrameRecompute, ImeEvent, Inset, Key, KeyEvent, KeyRouter, LeafStyle,
-    Modifiers, NodeId, NodeStore, PointerButtons, PointerEvent, PointerPhase, PointerRouter, Size,
-    StateId, StateStore, focus_next,
+    BindingTable, BuildCx, ComputedStore, DirtyClass, EffectStore, FrameRecompute, ImeEvent, Key,
+    KeyEvent, KeyRouter, Modifiers, NodeId, NodeStore, PointerButtons, PointerEvent, PointerPhase,
+    PointerRouter, StateId, StateStore, focus_next,
 };
 
 pub use viso_ui::context::AppCx;
@@ -118,7 +117,7 @@ struct AppDriver<A: Application> {
     /// Reusable buffer the flush drains this frame's pending state ids into, so
     /// the steady path allocates nothing while draining the transaction.
     changed: Vec<StateId>,
-    /// The tree root declared by [`Scene`], if the build succeeded.
+    /// The tree root declared by the application's `build`, if it authored one.
     root: Option<NodeId>,
     /// Reusable ancestry buffer the pointer router fills each event, owned here
     /// so routing a pointer allocates nothing on the steady path.
@@ -205,67 +204,6 @@ impl<A: Application> AppDriver<A> {
     }
 }
 
-/// The demo scene, built as a real retained tree: a padded Row of three boxes —
-/// two fixed and one that fills the leftover width — centered on the cross axis.
-/// This replaces the fixed `test_scene` primitive list; the same visual now
-/// flows from Component → Node → Flex layout → paint.
-struct Scene;
-
-impl Component for Scene {
-    fn build(&self, cx: &mut BuildCx<'_>) {
-        cx.flex(
-            FlexStyle {
-                axis: Axis::Row,
-                gap: 8.0,
-                padding: Inset::all(12.0),
-                align: Align::Center,
-                size: Size::fill(),
-                style: BoxStyle::solid(Rgba {
-                    r: 0.15,
-                    g: 0.16,
-                    b: 0.20,
-                    a: 1.0,
-                }),
-            },
-            |cx| {
-                cx.leaf(LeafStyle {
-                    size: Size::fixed(48.0, 40.0),
-                    style: BoxStyle::solid(Rgba {
-                        r: 0.9,
-                        g: 0.1,
-                        b: 0.1,
-                        a: 1.0,
-                    })
-                    .with_radius(8.0),
-                });
-                cx.leaf(LeafStyle {
-                    size: Size {
-                        width: viso_ui::Length::fill(),
-                        height: viso_ui::Length::Fixed(56.0),
-                    },
-                    style: BoxStyle::solid(Rgba {
-                        r: 0.1,
-                        g: 0.7,
-                        b: 0.3,
-                        a: 1.0,
-                    })
-                    .with_radius(4.0),
-                });
-                cx.leaf(LeafStyle {
-                    size: Size::fixed(64.0, 48.0),
-                    style: BoxStyle::solid(Rgba {
-                        r: 0.2,
-                        g: 0.4,
-                        b: 0.95,
-                        a: 1.0,
-                    })
-                    .with_radius(6.0),
-                });
-            },
-        );
-    }
-}
-
 impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
     fn on_launch(&mut self, cx: &mut RuntimeCx<'_>) {
         // Construct the user application now that the pump is live.
@@ -297,19 +235,25 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
             size: (w.max(1), h.max(1)),
         });
 
-        // Build the retained UI tree once, now that we have a surface size. The
-        // structure is fixed this slice; targeted structural rebuilds land with
-        // reactive state. Layout runs incrementally per frame in `run_phase`.
+        // Build the user application's retained UI tree once, now that we have a
+        // surface size. The driver owns `store`, `states`, and `bindings` as
+        // sibling fields, so all three can be borrowed together into a reactive
+        // build context — this is why scene authoring works here where new-time
+        // allocation could not (the session-long `AppCx` marker cannot retain a
+        // live store borrow). Layout runs incrementally per frame in `run_phase`.
         //
         // When structural teardown arrives (a targeted rebuild that frees nodes),
         // each freed node must run `self.effects.cancel_for_node(id)` before its
         // slot is reused, so scoped effects release their resources (cleanup then
-        // drop) at unmount. The current Scene frees nothing, so there is no live
-        // call site yet; this is where it will hook.
+        // drop) at unmount. `build` runs once and frees nothing, so there is no
+        // live call site yet; this is where it will hook.
         self.store.clear();
-        let mut build = BuildCx::new(&mut self.store);
-        Scene.build(&mut build);
-        self.root = build.root();
+        if let Some(app) = &mut self.app {
+            let mut build =
+                BuildCx::with_reactive(&mut self.store, &mut self.states, &mut self.bindings);
+            app.build(&mut build);
+            self.root = build.root();
+        }
 
         // Seed the first frame: mark the root fully dirty so the incremental
         // passes do the initial measure/layout/paint for the whole tree.
