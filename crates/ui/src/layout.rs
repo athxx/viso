@@ -228,6 +228,18 @@ pub enum LayoutInput {
         /// The viewport's own size request within its parent.
         size: Size,
     },
+    /// A canvas of absolutely-positioned rows along `axis`: each child is placed
+    /// at its own row offset (read via [`LayoutTree::row_offset`]) rather than
+    /// flowed. Its box is its own fixed `size` — the full logical extent of a
+    /// virtualized collection — so it need not enumerate or sum the sparse set of
+    /// mounted children to know its size. The scroll viewport above it reads that
+    /// fixed extent as the scroll range; only the mounted rows are laid out.
+    AbsoluteRows {
+        /// The axis along which rows are stacked (row offsets are on this axis).
+        axis: Axis,
+        /// The canvas's own size request — fixed on both axes.
+        size: Size,
+    },
 }
 
 impl LayoutInput {
@@ -237,7 +249,8 @@ impl LayoutInput {
         match self {
             LayoutInput::Flex { size, .. }
             | LayoutInput::Leaf { size }
-            | LayoutInput::Scroll { size, .. } => size,
+            | LayoutInput::Scroll { size, .. }
+            | LayoutInput::AbsoluteRows { size, .. } => size,
         }
     }
 }
@@ -299,6 +312,10 @@ pub trait LayoutTree {
     /// A no-op for non-scroll nodes; the [`LayoutInput::Scroll`] layout arm is
     /// the only caller.
     fn set_content(&mut self, index: u32, content: Vec2);
+    /// The main-axis offset at which a positioned row sits inside an
+    /// [`LayoutInput::AbsoluteRows`] canvas, or `None` when the node is not a
+    /// positioned row. The `AbsoluteRows` layout arm is the only caller.
+    fn row_offset(&self, index: u32) -> Option<f32>;
 }
 
 /// Bottom-up measure pass: compute every node's natural size.
@@ -382,6 +399,16 @@ pub fn measure(tree: &mut impl LayoutTree, root: u32, scratch: &mut Vec<u32>) {
             };
             Measured { w, h }
         }
+        LayoutInput::AbsoluteRows { size, .. } => {
+            // The canvas measures to its own declared size — the full logical
+            // extent — never the sum of its sparse mounted children. Both axes
+            // are Fixed in normal use; a non-Fixed axis falls back to 0 (there is
+            // no content sum to hug, by design).
+            Measured {
+                w: natural_length(size.width, 0.0),
+                h: natural_length(size.height, 0.0),
+            }
+        }
     };
 
     tree.set_measured(root, measured);
@@ -409,6 +436,10 @@ pub fn layout(tree: &mut impl LayoutTree, root: u32, bounds: Rect, scratch: &mut
         } => (axis, gap, padding, align),
         LayoutInput::Scroll { axis, .. } => {
             layout_scroll(tree, root, bounds, axis, scratch);
+            return;
+        }
+        LayoutInput::AbsoluteRows { axis, .. } => {
+            layout_absolute_rows(tree, root, bounds, axis, scratch);
             return;
         }
         LayoutInput::Leaf { .. } => return, // Leaf: bounds are final.
@@ -538,6 +569,56 @@ fn layout_scroll(
     );
     tree.set_content(root, axis_pack_vec(axis, main_size, cross_size));
     layout(tree, content, content_box, scratch);
+}
+
+/// Lay out an [`LayoutInput::AbsoluteRows`] canvas: place each mounted child at
+/// its own row offset along `axis` rather than flowing them. The canvas already
+/// has its (fixed, full-extent) box; each positioned child is placed at
+/// `main = canvas_start + row_offset(child)`, takes its measured natural main
+/// extent, and fills the canvas across. A child with no row offset (not a
+/// positioned row) is skipped. Only the mounted children are touched, so the
+/// pass cost scales with the mounted window, not the logical item count.
+fn layout_absolute_rows(
+    tree: &mut impl LayoutTree,
+    root: u32,
+    bounds: Rect,
+    axis: Axis,
+    scratch: &mut Vec<u32>,
+) {
+    let start = scratch.len();
+    tree.children(root, scratch);
+    let child_count = scratch.len() - start;
+    if child_count == 0 {
+        scratch.truncate(start);
+        return;
+    }
+
+    let cross = cross_of(axis);
+    let main_origin = rect_start(bounds, axis);
+    let cross_origin = rect_start(bounds, cross);
+    let cross_size = rect_len(bounds, cross);
+
+    // The child ids sit in `scratch[start..start + child_count]`. A recursive
+    // `layout` leaves `scratch` at the length it entered with (every arm pushes
+    // its own children and truncates them back), so that window stays intact
+    // across the loop — we index it directly and never snapshot, keeping the
+    // pass allocation-free.
+    for k in 0..child_count {
+        let child = scratch[start + k];
+        let Some(offset) = tree.row_offset(child) else {
+            continue;
+        };
+        let main_size = tree.measured(child).on(axis);
+        let child_box = axis_rect(
+            axis,
+            main_origin + offset,
+            cross_origin,
+            main_size,
+            cross_size,
+        );
+        layout(tree, child, child_box, scratch);
+    }
+    scratch.truncate(start);
 }
 
 /// A [`Vec2`] from a main/cross pair for a given axis.

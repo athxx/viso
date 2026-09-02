@@ -16,6 +16,7 @@ use crate::layout::{
     self, Align, Axis, Inset, LayoutInput, LayoutTree, Length, Measured, Size, Vec2,
 };
 use crate::node::{NodeArena, NodeId};
+use crate::reactive::EffectStore;
 use crate::semantics::{Role, Semantics, SemanticsNode, SemanticsTree};
 use crate::state::{StateId, StateStore, StateValue};
 use crate::style::{BoxStyle, StyleId};
@@ -153,6 +154,12 @@ pub struct NodeStore {
     /// along each axis), written by the scroll layout arm. `(0,0)` for non-scroll
     /// nodes. Read by the scroll clamp (range = content − viewport, per axis).
     content: Vec<Vec2>,
+    /// Warm: the main-axis offset of a positioned row inside an
+    /// [`LayoutInput::AbsoluteRows`] canvas. The sentinel `f32::NAN` means "not a
+    /// positioned row" — the common case, so an ordinary node reads back `None`.
+    /// Written by the virtual-list reconcile step, read by the `AbsoluteRows`
+    /// layout arm.
+    row_offset: Vec<f32>,
     /// Hot: pending invalidation per node, set by `mark_dirty` and consumed by
     /// the incremental measure/layout/paint passes, cleared at frame end.
     dirty: Vec<DirtyClass>,
@@ -218,6 +225,7 @@ impl NodeStore {
         self.world.clear();
         self.scroll.clear();
         self.content.clear();
+        self.row_offset.clear();
         self.dirty.clear();
         self.layout.clear();
         self.style.clear();
@@ -266,6 +274,22 @@ impl NodeStore {
     #[inline]
     pub fn content(&self, id: NodeId) -> Vec2 {
         self.content[id.index() as usize]
+    }
+
+    /// Set a node's main-axis offset inside an [`LayoutInput::AbsoluteRows`]
+    /// canvas, the position the row is placed at when its parent lays out. The
+    /// virtual-list reconcile writes this when it mounts or re-anchors a row.
+    #[inline]
+    pub fn set_row_offset(&mut self, id: NodeId, offset: f32) {
+        self.row_offset[id.index() as usize] = offset;
+    }
+
+    /// Clear a node's positioned-row offset back to the "not a row" sentinel, so
+    /// it is skipped when an `AbsoluteRows` canvas lays out. Used when a host is
+    /// recycled out of the mounted window.
+    #[inline]
+    pub fn clear_row_offset(&mut self, id: NodeId) {
+        self.row_offset[id.index() as usize] = f32::NAN;
     }
 
     /// Whether a node is a scroll viewport — it clips its content to its box and
@@ -603,6 +627,66 @@ impl NodeStore {
         self.dirty.iter().any(|d| !d.is_empty())
     }
 
+    /// Free every **descendant** of `root`, leaving `root` itself live. Each
+    /// freed node has its scoped effects cancelled (their cleanups run — the
+    /// unmount hook) before its arena slot is released back to the free list.
+    /// `root`'s own links are left as-is: it keeps whatever parent it had and
+    /// ends with no children.
+    ///
+    /// This is the clear half of node recycling: a virtual list empties a mounted
+    /// host's body so the host can be re-bound to a different item, without
+    /// freeing the host or disturbing the tree above it. Freed slots are reused by
+    /// the next [`alloc`](Self::alloc), so churn is bounded — no growth.
+    ///
+    /// `scratch` is a caller-owned stack reused across calls so a recycle allocates
+    /// nothing. Returns the number of nodes freed.
+    pub fn free_subtree(
+        &mut self,
+        root: NodeId,
+        effects: &mut EffectStore,
+        scratch: &mut Vec<NodeId>,
+    ) -> u32 {
+        if !self.arena.is_live(root) {
+            return 0;
+        }
+        // Detach the body from `root` up front, then free it: collect the child
+        // subtree in pre-order onto the stack (children pushed as we pop), and
+        // free on the way. Order within a freed set does not matter for the arena
+        // (each free is independent), so a simple stack walk suffices; effect
+        // cleanup is per-node and order-independent too.
+        let base = scratch.len();
+        let mut child = self.arena.links(root).and_then(|l| l.first_child);
+        while let Some(c) = child {
+            let next = self.arena.links(c).and_then(|l| l.next_sibling);
+            scratch.push(c);
+            child = next;
+        }
+        // `root` now conceptually has no children; clear its child endpoints.
+        if let Some(links) = self.arena.links_mut(root) {
+            links.first_child = None;
+            links.last_child = None;
+        }
+
+        let mut freed = 0;
+        while scratch.len() > base {
+            let node = scratch.pop().unwrap();
+            // Push this node's children before freeing it (we still can read its
+            // links while it is live).
+            let mut c = self.arena.links(node).and_then(|l| l.first_child);
+            while let Some(cc) = c {
+                let next = self.arena.links(cc).and_then(|l| l.next_sibling);
+                scratch.push(cc);
+                c = next;
+            }
+            effects.cancel_for_node(node);
+            if self.arena.free(node) {
+                freed += 1;
+            }
+        }
+        scratch.truncate(base);
+        freed
+    }
+
     /// Derive every node's `world` rect from its `bounds` and the scroll of its
     /// ancestors, in a pre-order walk from `root`. A node's world rect is its
     /// layout box shifted by the accumulated scroll of all scrolling ancestors;
@@ -695,6 +779,7 @@ impl NodeStore {
             };
             self.scroll[i] = Vec2::ZERO;
             self.content[i] = Vec2::ZERO;
+            self.row_offset[i] = f32::NAN;
             self.dirty[i] = DirtyClass::EMPTY;
             self.layout[i] = input;
             self.style[i] = style;
@@ -721,6 +806,7 @@ impl NodeStore {
             });
             self.scroll.push(Vec2::ZERO);
             self.content.push(Vec2::ZERO);
+            self.row_offset.push(f32::NAN);
             self.dirty.push(DirtyClass::EMPTY);
             self.layout.push(input);
             self.style.push(style);
@@ -1016,6 +1102,15 @@ impl LayoutTree for NodeStore {
     #[inline]
     fn set_content(&mut self, index: u32, content: Vec2) {
         self.content[index as usize] = content;
+    }
+
+    #[inline]
+    fn row_offset(&self, index: u32) -> Option<f32> {
+        let off = self.row_offset[index as usize];
+        // The sentinel `f32::NAN` marks a node that is not a positioned row, so a
+        // NaN reads back as "no offset" — an ordinary node is skipped by the
+        // `AbsoluteRows` layout arm.
+        (!off.is_nan()).then_some(off)
     }
 }
 
