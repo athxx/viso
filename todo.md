@@ -283,14 +283,24 @@ Doc §69 item 10 (§15). Accessibility tree generated from the Node model, incre
   slice, no `accesskit` dependency in the ui tier.
 
 ### Wrap-up for Phase 4
-- [ ] `01-counter` example: a real interactive counter (button click → `set` → bound label
-      repaints), the first end-to-end interactive Viso app. Headless input-tape test asserts
-      the click drives exactly the counter's dirty class.
-- [ ] ADR 0006 — Input & focus routing (target/capture/bubble, focus/IME, hit-test world
-      bounds) + style-token resolution + semantics derivation. Records the §13 target-route
-      divergence from Makepad's event-walk and the §14 id-not-string style contract.
-- [ ] Reconcile architecture doc §69 with "As built" notes pointing at ADR 0006; confirm
-      Phase 4 exit criteria (§69) except deferred Scroll/VirtualList/Grid.
+- [x] `01-counter` example: a real interactive counter (button click → `set` → bound label
+      re-derives / bar repaints), the first end-to-end interactive Viso app. Headless input-tape
+      test (`crates/viso/tests/counter.rs`) asserts the click drives exactly the counter's dirty
+      classes (button SEMANTICS, bar PAINT), a miss is inert, and the semantics react.
+      As built: shipped via the `Application::build` scene seam + `BuildCx::with_reactive`
+      reactive reach + `EventCx::pointer()` phase access — see ADR 0006.
+- [x] ADR 0006 — Application scene seam (`Application::build`, default empty, replacing the
+      hardcoded demo `Scene`), `BuildCx::with_reactive` build-time reach into the reactive
+      stores, and the `EventCx::pointer()` pointer-phase access decision (gate a click on
+      `PointerPhase::Up`). Records the §13 target-route divergence from Makepad's event-walk and
+      the §6.4 phase-specific-context contract. (Scope narrowed from the earlier broad
+      "input & focus + style + semantics" framing to exactly what this wrap-up shipped; focus/IME
+      routing, style-token resolution, and semantics derivation are already covered by their own
+      slices and ADR 0005 / Slice G.)
+- [x] Reconcile architecture doc §69 with "As built" notes pointing at ADR 0006 (above): the
+      Phase 4 interactive-scene exit is met — an app authors its retained tree in `build`, a
+      pointer click drives targeted reactive invalidation with no full-tree rebuild, verified
+      headlessly. Deferred Scroll/VirtualList/Grid remain the only §69 items outstanding (below).
 - [ ] Deferred to a follow-up Phase 4 slice (tracked, not this pass): Scroll (§69 item 7),
       VirtualList (item 8), Grid/Adaptive (item 11).
 
