@@ -107,6 +107,7 @@ use crate::component::NodeStore;
 use crate::context::EventCx;
 use crate::dirty::DirtyClass;
 use crate::hit_test::HitTestTree;
+use crate::layout::{Axis, Vec2};
 use crate::node::NodeId;
 use crate::state::StateStore;
 
@@ -143,6 +144,16 @@ impl PointerRouter {
     }
 }
 
+/// One node's dispatch outcome: whether a handler ran, and whether it asked the
+/// router to stop walking the rest of the chain. The two are independent — a
+/// handler can run without stopping, and (in principle) stop without appearing
+/// to "run" — so they are reported separately.
+#[derive(Clone, Copy, Default)]
+struct Dispatched {
+    ran: bool,
+    stop: bool,
+}
+
 /// Free-function form of [`PointerRouter::route`] (the struct is a stable home
 /// for future capture/gesture state).
 pub fn route_pointer(
@@ -153,13 +164,122 @@ pub fn route_pointer(
     ev: PointerEvent,
     chain: &mut Vec<NodeId>,
 ) -> bool {
-    let Some(target) = HitTestTree::hit(store, root, ev.x, ev.y) else {
-        chain.clear();
-        return false;
+    // A captured pointer routes straight to the capturing node's chain,
+    // bypassing hit testing — a drag or slider grab keeps receiving samples even
+    // when the pointer leaves the node's box. On pointer-up the capture is
+    // released (below), so the next sample hit-tests normally again.
+    let target = match store.capture() {
+        Some(captured) => captured,
+        None => {
+            let Some(hit) = HitTestTree::hit(store, root, ev.x, ev.y) else {
+                chain.clear();
+                return false;
+            };
+            hit
+        }
     };
     dispatch_chain(store, root, target, chain, |s, n| {
         pointer_dispatch(s, states, bindings, n, &ev)
     })
+}
+
+/// A normalized scroll (wheel/trackpad) sample in physical pixels: the point
+/// under the pointer and a per-axis delta added to the target viewport's scroll
+/// offset. UI-tier mirror of the runtime scroll sample, kept crate-local so no
+/// transport vocabulary rides down into the tree. A positive `delta_y` increases
+/// the viewport's vertical offset (reveals later content); a positive `delta_x`
+/// increases the horizontal offset. The facade decides the wheel-to-offset sign
+/// when it lowers the platform sample.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ScrollEvent {
+    pub x: f32,
+    pub y: f32,
+    pub delta_x: f32,
+    pub delta_y: f32,
+    pub modifiers: Modifiers,
+}
+
+/// Routes a scroll sample to the innermost scroll viewport under the pointer
+/// that can absorb it. A stable home for future momentum/rubber-band state,
+/// mirroring [`PointerRouter`].
+pub struct ScrollRouter;
+
+impl ScrollRouter {
+    /// Hit-test `ev`'s point, then walk up the target's ancestry to the first
+    /// scroll viewport whose axis carries a nonzero delta component *and* still
+    /// has range left in the direction of travel, and apply that component via
+    /// [`NodeStore::scroll_by`]. A viewport scrolls only along its own axis, so a
+    /// vertical list absorbs the vertical delta and passes a horizontal one to an
+    /// enclosing horizontal scroller (nested-scroll chaining). Returns whether a
+    /// viewport consumed any of the delta.
+    ///
+    /// Allocation-free: hit test plus a parent-link walk, no scratch buffer. A
+    /// miss, or a point over no scrollable ancestor, consumes nothing and returns
+    /// `false`.
+    pub fn route(store: &mut NodeStore, root: NodeId, ev: ScrollEvent) -> bool {
+        route_scroll(store, root, ev)
+    }
+}
+
+/// Free-function form of [`ScrollRouter::route`].
+pub fn route_scroll(store: &mut NodeStore, root: NodeId, ev: ScrollEvent) -> bool {
+    let Some(target) = HitTestTree::hit(store, root, ev.x, ev.y) else {
+        return false;
+    };
+
+    // Remaining delta to place; each viewport consumes its own axis's component.
+    let mut remaining = Vec2 {
+        x: ev.delta_x,
+        y: ev.delta_y,
+    };
+    let mut consumed = false;
+
+    // Walk from the target up to the root, letting each scroll viewport absorb
+    // the delta on its axis if it has range left in the direction of travel.
+    let mut node = Some(target);
+    while let Some(n) = node {
+        if let Some(axis) = store.scroll_axis(n) {
+            let component = remaining.on(axis);
+            if component != 0.0 {
+                let offset = store.scroll(n).on(axis);
+                let range = store.scroll_range(n, axis);
+                // Range left to travel in this delta's direction: toward `range`
+                // for a positive delta, toward `0` for a negative one.
+                let room = if component > 0.0 {
+                    range - offset
+                } else {
+                    offset
+                };
+                if room > 0.0 {
+                    let step = axis_vec(axis, component);
+                    store.scroll_by(n, step);
+                    consumed = true;
+                    // This axis is now placed on this viewport; zero it so an
+                    // enclosing same-axis viewport does not double-apply it.
+                    match axis {
+                        Axis::Row => remaining.x = 0.0,
+                        Axis::Column => remaining.y = 0.0,
+                    }
+                    if remaining == Vec2::ZERO {
+                        break;
+                    }
+                }
+            }
+        }
+        node = store.arena().links(n).and_then(|l| l.parent);
+    }
+
+    consumed
+}
+
+/// A [`Vec2`] with `value` on `axis` and zero on the other — the per-axis delta
+/// handed to [`NodeStore::scroll_by`].
+#[inline]
+fn axis_vec(axis: Axis, value: f32) -> Vec2 {
+    match axis {
+        Axis::Row => Vec2 { x: value, y: 0.0 },
+        Axis::Column => Vec2 { x: 0.0, y: value },
+    }
 }
 
 /// Build `target`'s root-first ancestry chain and dispatch capture → target →
@@ -176,7 +296,7 @@ fn dispatch_chain(
     _root: NodeId,
     target: NodeId,
     chain: &mut Vec<NodeId>,
-    mut dispatch: impl FnMut(&mut NodeStore, NodeId) -> bool,
+    mut dispatch: impl FnMut(&mut NodeStore, NodeId) -> Dispatched,
 ) -> bool {
     chain.clear();
     // Build the chain root-first by walking parent links up from the target and
@@ -195,15 +315,31 @@ fn dispatch_chain(
 
     // The ancestor ids are Copy; iterating the scratch slice while calling
     // `dispatch(&mut store, ..)` is sound because `dispatch` borrows the state
-    // stores, never `chain`. Capture: root down to, but not including, target.
+    // stores, never `chain`. `stop_propagation` in any handler ends the walk
+    // after that handler returns — the current handler still completes, but no
+    // further node on the chain is visited (in this phase or the next).
+    //
+    // Capture: root down to, but not including, target.
     for &node in &chain[..n - 1] {
-        ran |= dispatch(store, node);
+        let d = dispatch(store, node);
+        ran |= d.ran;
+        if d.stop {
+            return ran;
+        }
     }
     // Target: exactly once.
-    ran |= dispatch(store, target);
+    let d = dispatch(store, target);
+    ran |= d.ran;
+    if d.stop {
+        return ran;
+    }
     // Bubble: the node just below the target, up to root.
     for &node in chain[..n - 1].iter().rev() {
-        ran |= dispatch(store, node);
+        let d = dispatch(store, node);
+        ran |= d.ran;
+        if d.stop {
+            return ran;
+        }
     }
     ran
 }
@@ -217,16 +353,23 @@ fn pointer_dispatch(
     bindings: &BindingTable,
     node: NodeId,
     event: &PointerEvent,
-) -> bool {
+) -> Dispatched {
     let Some(mut handler) = store.take_handler(node) else {
-        return false;
+        return Dispatched::default();
     };
-    {
+    let (capture, stop) = {
         let mut ev = EventCx::__new_pointer(states, bindings, event);
         handler(&mut ev);
-    }
+        (ev.__take_capture_request(), ev.__stop_requested())
+    };
     store.restore_handler(node, handler);
-    true
+    // A capture request is applied against this node: `Some(id)` captures to the
+    // requested node, `None` releases. Applied after the handler returns because
+    // the cx holds no node store to touch the capture slot directly.
+    if let Some(request) = capture {
+        store.set_capture(request);
+    }
+    Dispatched { ran: true, stop }
 }
 
 /// Advance focus to the next (`forward`) or previous focusable node in tree
@@ -363,20 +506,20 @@ fn key_dispatch(
     bindings: &BindingTable,
     node: NodeId,
     ev: &KeyEvent,
-) -> bool {
+) -> Dispatched {
     let Some(mut handler) = store.take_key_handler(node) else {
-        return false;
+        return Dispatched::default();
     };
-    let request = {
+    let (request, stop) = {
         let mut cx = EventCx::__new_key(states, bindings, ev);
         handler(&mut cx);
-        cx.__take_focus_request()
+        (cx.__take_focus_request(), cx.__stop_requested())
     };
     store.restore_key_handler(node, handler);
     if let Some(target) = request {
         apply_focus(store, store.focused(), target);
     }
-    true
+    Dispatched { ran: true, stop }
 }
 
 /// IME twin of [`key_dispatch`]: drives the key handler with the IME event so a
@@ -387,20 +530,20 @@ fn ime_dispatch(
     bindings: &BindingTable,
     node: NodeId,
     ev: &ImeEvent,
-) -> bool {
+) -> Dispatched {
     let Some(mut handler) = store.take_key_handler(node) else {
-        return false;
+        return Dispatched::default();
     };
-    let request = {
+    let (request, stop) = {
         let mut cx = EventCx::__new_ime(states, bindings, ev);
         handler(&mut cx);
-        cx.__take_focus_request()
+        (cx.__take_focus_request(), cx.__stop_requested())
     };
     store.restore_key_handler(node, handler);
     if let Some(target) = request {
         apply_focus(store, store.focused(), target);
     }
-    true
+    Dispatched { ran: true, stop }
 }
 
 #[cfg(test)]
@@ -983,5 +1126,161 @@ mod tests {
     /// Key-handler twin of `log_handler`: push a label each time it runs.
     fn key_log(log: Rc<RefCell<Vec<u32>>>, label: u32) -> impl FnMut(&mut EventCx<'_>) + 'static {
         move |_ev| log.borrow_mut().push(label)
+    }
+
+    // ---- scroll routing ----
+
+    use crate::component::ScrollStyle;
+
+    fn wheel(x: f32, y: f32, dx: f32, dy: f32) -> ScrollEvent {
+        ScrollEvent {
+            x,
+            y,
+            delta_x: dx,
+            delta_y: dy,
+            modifiers: Modifiers::default(),
+        }
+    }
+
+    /// A 100×100 vertical viewport whose content child is 100×300 (200px of
+    /// vertical range), laid out at the origin. Returns the store, the viewport,
+    /// and its inner content node.
+    fn scroll_scene() -> (NodeStore, NodeId, NodeId) {
+        let mut store = NodeStore::new();
+        let mut content_id = None;
+        let root = {
+            let mut cx = BuildCx::new(&mut store);
+            cx.scroll(
+                ScrollStyle {
+                    axis: Axis::Column,
+                    size: Size::fixed(100.0, 100.0),
+                    ..Default::default()
+                },
+                |cx| {
+                    let inner = cx.leaf(LeafStyle {
+                        size: Size::fixed(100.0, 300.0),
+                        ..Default::default()
+                    });
+                    content_id = Some(inner.id());
+                },
+            );
+            cx.root().unwrap()
+        };
+        let mut scratch = Vec::new();
+        store.layout(
+            root,
+            Rect {
+                x: 0.0,
+                y: 0.0,
+                w: 100.0,
+                h: 100.0,
+            },
+            &mut scratch,
+        );
+        (store, root, content_id.unwrap())
+    }
+
+    #[test]
+    fn scroll_absorbs_axis_delta_and_marks_transform() {
+        let (mut store, viewport, _content) = scroll_scene();
+        store.clear_dirty();
+        let consumed = route_scroll(&mut store, viewport, wheel(50.0, 50.0, 0.0, 40.0));
+        assert!(consumed);
+        assert_eq!(store.scroll(viewport), Vec2 { x: 0.0, y: 40.0 });
+        // A scroll dirties only transform/hit-test/paint, never layout/measure.
+        let d = store.dirty(viewport);
+        assert!(d.contains(DirtyClass::TRANSFORM));
+        assert!(d.contains(DirtyClass::HIT_TEST));
+        assert!(d.contains(DirtyClass::PAINT));
+        assert!(!d.intersects(DirtyClass::LAYOUT | DirtyClass::MEASURE));
+    }
+
+    #[test]
+    fn scroll_clamps_to_range() {
+        let (mut store, viewport, _content) = scroll_scene();
+        // Range is content(300) − viewport(100) = 200; a huge delta clamps there.
+        route_scroll(&mut store, viewport, wheel(50.0, 50.0, 0.0, 10_000.0));
+        assert_eq!(store.scroll(viewport), Vec2 { x: 0.0, y: 200.0 });
+        // Scrolling further down past the clamp moves nothing.
+        store.clear_dirty();
+        let consumed = route_scroll(&mut store, viewport, wheel(50.0, 50.0, 0.0, 50.0));
+        assert!(!consumed, "no room past the clamp");
+        assert_eq!(store.scroll(viewport), Vec2 { x: 0.0, y: 200.0 });
+    }
+
+    #[test]
+    fn scroll_ignores_cross_axis_and_offaxis_only() {
+        let (mut store, viewport, _content) = scroll_scene();
+        // A column viewport does not scroll horizontally; a pure-x delta is left
+        // unconsumed (no horizontal range on this viewport).
+        let consumed = route_scroll(&mut store, viewport, wheel(50.0, 50.0, 40.0, 0.0));
+        assert!(!consumed);
+        assert_eq!(store.scroll(viewport), Vec2::ZERO);
+    }
+
+    #[test]
+    fn scroll_miss_consumes_nothing() {
+        let (mut store, viewport, _content) = scroll_scene();
+        let consumed = route_scroll(&mut store, viewport, wheel(500.0, 500.0, 0.0, 40.0));
+        assert!(!consumed);
+        assert_eq!(store.scroll(viewport), Vec2::ZERO);
+    }
+
+    /// Outer horizontal viewport containing an inner vertical viewport: a diagonal
+    /// wheel places its vertical component on the inner and its horizontal on the
+    /// outer (nested-scroll chaining, each axis to its own scroller).
+    #[test]
+    fn nested_scroll_splits_delta_by_axis() {
+        let mut store = NodeStore::new();
+        let mut inner_id = None;
+        let root = {
+            let mut cx = BuildCx::new(&mut store);
+            // Outer: horizontal 100×100 viewport, content 300 wide → 200px x-range.
+            cx.scroll(
+                ScrollStyle {
+                    axis: Axis::Row,
+                    size: Size::fixed(100.0, 100.0),
+                    ..Default::default()
+                },
+                |cx| {
+                    // The outer's single content child is the inner vertical
+                    // viewport, sized to the outer content extent (300 wide).
+                    let inner = cx.scroll(
+                        ScrollStyle {
+                            axis: Axis::Column,
+                            size: Size::fixed(300.0, 100.0),
+                            ..Default::default()
+                        },
+                        |cx| {
+                            cx.leaf(LeafStyle {
+                                size: Size::fixed(300.0, 300.0),
+                                ..Default::default()
+                            });
+                        },
+                    );
+                    inner_id = Some(inner.id());
+                },
+            );
+            cx.root().unwrap()
+        };
+        let mut scratch = Vec::new();
+        store.layout(
+            root,
+            Rect {
+                x: 0.0,
+                y: 0.0,
+                w: 100.0,
+                h: 100.0,
+            },
+            &mut scratch,
+        );
+        let inner = inner_id.unwrap();
+
+        // A point inside the inner viewport, diagonal wheel.
+        let consumed = route_scroll(&mut store, root, wheel(50.0, 50.0, 30.0, 40.0));
+        assert!(consumed);
+        // Inner (vertical) took the y; outer (horizontal) took the x.
+        assert_eq!(store.scroll(inner), Vec2 { x: 0.0, y: 40.0 });
+        assert_eq!(store.scroll(root), Vec2 { x: 30.0, y: 0.0 });
     }
 }

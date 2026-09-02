@@ -35,6 +35,18 @@ pub struct Rect {
 }
 
 impl Rect {
+    /// An effectively unbounded rect — the identity for [`intersect`](Self::intersect):
+    /// intersecting any finite rect with `INFINITE` yields that rect back. Useful
+    /// as the top-level clip when nothing above encloses a subtree. Its origin is
+    /// far negative and its extent huge, chosen so `x + w` stays finite (no
+    /// overflow) while covering every realistic coordinate.
+    pub const INFINITE: Rect = Rect {
+        x: -f32::MAX / 4.0,
+        y: -f32::MAX / 4.0,
+        w: f32::MAX / 2.0,
+        h: f32::MAX / 2.0,
+    };
+
     /// The intersection of two rects (both top-left-origin, physical pixels).
     ///
     /// Used to combine nested [`Primitive::Layer`] clip rects: a child clip is

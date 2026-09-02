@@ -11,15 +11,16 @@
 //! recurses into a subtree whose box contains the point, so it is a targeted
 //! route, not a full-tree scan.
 //!
-//! This slice uses `bounds` directly as the hittable rect: layout already bakes
-//! absolute positions into `bounds`, so a placed subtree hit-tests at its world
-//! position with no separate transform to accumulate. When scroll/clip/transform
-//! containers arrive, the descent gains a distinct world rect and a clip carried
-//! down the recursion; that is localized to the two reads below (the `bounds`
-//! lookup and the `contains` test) and deferred until those containers exist.
+//! Hit testing reads a node's `world` rect (not `bounds`): a scrolling ancestor
+//! shifts the world rect, so a scrolled child hit-tests where it visibly sits.
+//! The descent also carries a `clip` rect — the intersection of every enclosing
+//! scroll viewport's world box — so a point over content scrolled past a
+//! viewport's edge misses, matching what paint clips away. Entering a scroll
+//! viewport narrows the clip to its world box before descending.
 
 use crate::component::NodeStore;
 use crate::node::NodeId;
+use viso_render::Rect;
 
 /// A stateless hit-test query over a [`NodeStore`].
 ///
@@ -28,28 +29,51 @@ use crate::node::NodeId;
 pub struct HitTestTree;
 
 impl HitTestTree {
-    /// The topmost hittable node whose rect contains `(px, py)`, or `None` if
-    /// the point misses the whole subtree at `root`.
+    /// The topmost hittable node whose world rect contains `(px, py)`, or `None`
+    /// if the point misses the whole subtree at `root`.
     ///
     /// Descends topmost-first (reverse sibling order) and prunes any subtree
-    /// whose box does not contain the point — no allocation, worst case the tree
-    /// depth.
+    /// whose (clipped) box does not contain the point — no allocation, worst
+    /// case the tree depth.
     pub fn hit(store: &NodeStore, root: NodeId, px: f32, py: f32) -> Option<NodeId> {
+        // The initial clip is unbounded: nothing above the root clips it.
+        Self::hit_clipped(store, root, px, py, Rect::INFINITE)
+    }
+
+    /// Descend `root` for the topmost hit, with the point required to fall inside
+    /// `clip` (the running intersection of enclosing scroll viewports).
+    fn hit_clipped(
+        store: &NodeStore,
+        root: NodeId,
+        px: f32,
+        py: f32,
+        clip: Rect,
+    ) -> Option<NodeId> {
         let arena = store.arena();
         if !arena.is_live(root) {
             return None;
         }
-        // A child cannot escape its container's box, so a point outside this box
-        // is outside the whole subtree — prune without recursing.
-        if !store.bounds(root).contains(px, py) {
+        // A child cannot escape its container's box, so a point outside this
+        // box — clipped by any enclosing viewport — is outside the whole
+        // subtree. Prune without recursing.
+        let visible = store.world(root).intersect(clip);
+        if !visible.contains(px, py) {
             return None;
         }
+
+        // A scroll viewport clips its children to its own box: narrow the clip
+        // handed to the descent so content scrolled past the edge is unhittable.
+        let child_clip = if store.is_scroll(root) {
+            store.world(root).intersect(clip)
+        } else {
+            clip
+        };
 
         // Test children topmost-first: the last-painted (last) child is tested
         // first, walking back toward the first-painted (bottom) one.
         let mut child = arena.links(root).and_then(|l| l.last_child);
         while let Some(c) = child {
-            if let Some(hit) = Self::hit(store, c, px, py) {
+            if let Some(hit) = Self::hit_clipped(store, c, px, py, child_clip) {
                 return Some(hit);
             }
             child = arena.links(c).and_then(|l| l.prev_sibling);
@@ -281,5 +305,60 @@ mod tests {
         // On the seam: the far edge of the first is exclusive, so the second wins.
         assert_eq!(hit_test(&store, root, 40.0, 20.0), Some(second.id()));
         assert_eq!(hit_test(&store, root, 60.0, 20.0), Some(second.id()));
+    }
+
+    #[test]
+    fn scroll_clips_hits_to_the_viewport_and_follows_the_offset() {
+        use crate::component::ScrollStyle;
+        use crate::layout::Vec2;
+
+        // A 100×100 vertical viewport over a 100×300 content leaf.
+        let mut store = NodeStore::new();
+        let mut content = None;
+        let root = {
+            let mut cx = BuildCx::new(&mut store);
+            cx.scroll(
+                ScrollStyle {
+                    axis: Axis::Column,
+                    size: Size::fixed(100.0, 100.0),
+                    ..Default::default()
+                },
+                |cx| {
+                    content = Some(
+                        cx.leaf(LeafStyle {
+                            size: Size::fixed(100.0, 300.0),
+                            style: BoxStyle::solid(SOLID),
+                        })
+                        .id(),
+                    );
+                },
+            );
+            cx.root().unwrap()
+        };
+        let content = content.unwrap();
+        let mut scratch = Vec::new();
+        store.layout(
+            root,
+            Rect {
+                x: 0.0,
+                y: 0.0,
+                w: 100.0,
+                h: 100.0,
+            },
+            &mut scratch,
+        );
+
+        // Unscrolled: a point inside the viewport hits the content; a point below
+        // the viewport (content overflows there) is clipped away — a miss.
+        assert_eq!(hit_test(&store, root, 50.0, 50.0), Some(content));
+        assert_eq!(hit_test(&store, root, 50.0, 150.0), None);
+
+        // Scroll down 100px: content y-range [100,200) now shows at [0,100). A
+        // hit at viewport y=10 lands on content world-y 110, still the content.
+        store.scroll_by(root, Vec2 { x: 0.0, y: 100.0 });
+        store.resolve_transforms(root);
+        assert_eq!(hit_test(&store, root, 50.0, 10.0), Some(content));
+        // Above the viewport (negative side) stays a miss.
+        assert_eq!(hit_test(&store, root, 50.0, 150.0), None);
     }
 }

@@ -13,6 +13,7 @@
 
 use viso_platform::{
     AppHandler, ControlFlow, KeyCode, Modifiers as RawModifiers, PlatformApp, RawEvent, RawPointer,
+    RawScroll,
 };
 
 use crate::context::RuntimeCx;
@@ -20,7 +21,7 @@ use crate::driver::FrameDriver;
 use crate::frame::run_frame;
 use crate::input::{
     ImePreeditSample, InputSample, Key, KeySample, Modifiers, PointerPhase, PointerSample,
-    TextSample,
+    ScrollSample, TextSample,
 };
 use crate::schedule::{RedrawReason, RedrawReasons};
 
@@ -219,9 +220,18 @@ impl<D: FrameDriver> AppHandler for Scheduler<D> {
                     }));
                 self.reasons.add(RedrawReason::InputDirty);
             }
-            RawEvent::Scroll(_) => {
-                // Scroll routes with its own future slice; for now it still flags
-                // the frame dirty so nothing regresses.
+            RawEvent::Scroll(s) => {
+                // Resolve the window scale here (the scheduler owns the window)
+                // and normalize the logical-point sample into physical pixels —
+                // both the pointer position and the delta — before the driver
+                // routes it to the scrollable target under the cursor.
+                let scale = self
+                    .app
+                    .window(s.window)
+                    .map(|w| w.scale_factor())
+                    .unwrap_or(1.0) as f32;
+                let sample = normalize_scroll(s, scale);
+                self.driver.on_input(InputSample::Scroll(sample));
                 self.reasons.add(RedrawReason::InputDirty);
             }
         }
@@ -247,6 +257,20 @@ fn normalize_pointer(p: RawPointer, scale: f32) -> PointerSample {
         buttons: p.buttons.0,
         modifiers: normalize_modifiers(p.modifiers),
         phase,
+    }
+}
+
+/// Convert a raw scroll sample (logical points) into the runtime-tier
+/// physical-pixel sample the driver routes. Both the pointer position and the
+/// scroll delta scale by the same window factor.
+fn normalize_scroll(s: RawScroll, scale: f32) -> ScrollSample {
+    ScrollSample {
+        window: s.window,
+        x: s.x as f32 * scale,
+        y: s.y as f32 * scale,
+        delta_x: s.delta_x as f32 * scale,
+        delta_y: s.delta_y as f32 * scale,
+        modifiers: normalize_modifiers(s.modifiers),
     }
 }
 
