@@ -538,7 +538,8 @@ pub mod prelude {
     // layout styles, the semantics facts, and the state cell handles belong in
     // the default set (commonly used, stable, unambiguous).
     pub use viso_ui::{
-        BuildCx, FlexStyle, LeafStyle, Role, Semantics, StateId, StateValue, VirtualListStyle,
+        BuildCx, FlexStyle, GridPlacement, GridStyle, LeafStyle, Role, Semantics, StateId,
+        StateValue, TrackSizing, VirtualListStyle,
     };
     // View, Window, Button, Label, Text, Image, List, Scroll, Computed, Event,
     // Task, Route, Theme, Color, Vec2, Rect, Constraints and the
