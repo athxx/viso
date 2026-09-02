@@ -14,7 +14,7 @@
 
 use viso::prelude::*;
 use viso::render::Rgba;
-use viso::ui::{Axis, BoxStyle, Inset, Size};
+use viso::ui::{Axis, BoxStyle, Inset, PointerPhase, Size};
 
 struct Counter {
     // Allocated in `build`, where the state store is reachable — not in `new`
@@ -36,6 +36,11 @@ impl Application for Counter {
             // The button: clicking it increments the count.
             let button = cx.leaf(button_style());
             let button = cx.on_pointer(button, move |ev| {
+                // Act on release, so one press/release pair counts as one click;
+                // the router runs the handler on every phase of the gesture.
+                if ev.pointer().map(|p| p.phase) != Some(PointerPhase::Up) {
+                    return;
+                }
                 let now = match ev.get(count) {
                     Some(StateValue::Int(n)) => n,
                     _ => 0,

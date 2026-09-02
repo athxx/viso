@@ -931,6 +931,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "viso-example-01-counter"
+version = "0.0.0"
+dependencies = [
+ "viso",
+]
+
+[[package]]
 name = "viso-example-hello-world"
 version = "0.0.0"
 dependencies = [

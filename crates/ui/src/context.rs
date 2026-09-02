@@ -13,7 +13,7 @@ use core::marker::PhantomData;
 
 use crate::binding::BindingTable;
 use crate::component::NodeStore;
-use crate::input::{ImeEvent, KeyEvent};
+use crate::input::{ImeEvent, KeyEvent, PointerEvent};
 use crate::node::NodeId;
 use crate::state::{StateId, StateStore, StateValue};
 
@@ -111,17 +111,21 @@ impl<'a> UpdateCx<'a> {
 /// exposes no `mark_dirty`: a handler declares intent by writing state, and
 /// invalidation follows from the compiled bindings.
 ///
-/// On a key or IME dispatch the cx also carries a borrow of the event being
-/// dispatched, so the handler can read *which* key transition or composition
-/// string it is reacting to — the payload a real text control needs. A pointer
-/// dispatch leaves both `None` (pointer handlers read the pointer event through
-/// their own path). A handler may also request a focus change: the request is
+/// Whichever of the three input kinds is under dispatch, the cx carries a borrow
+/// of that event so the handler can read *which* sample it is reacting to: the
+/// pointer sample (its phase, position, buttons — so a handler acts on release,
+/// not on every phase), the key transition, or the composition string a text
+/// control needs. Exactly one of the three is `Some` per dispatch; the others
+/// are `None`. A handler may also request a focus change: the request is
 /// recorded here and applied by the router after the handler returns, since the
 /// cx holds no node store to mutate the focus slot directly.
 pub struct EventCx<'a> {
     states: &'a mut StateStore,
     #[allow(dead_code)]
     bindings: &'a BindingTable,
+    /// The pointer event currently being dispatched, if this is a pointer
+    /// dispatch.
+    pointer: Option<&'a PointerEvent>,
     /// The key event currently being dispatched, if this is a key dispatch.
     key: Option<&'a KeyEvent>,
     /// The IME event currently being dispatched, if this is an IME dispatch.
@@ -133,13 +137,34 @@ pub struct EventCx<'a> {
 }
 
 impl<'a> EventCx<'a> {
-    /// Assemble the event context for the pointer path (no key/IME event, no
-    /// pending focus request).
+    /// Assemble the event context for the pointer path with no borrowed sample —
+    /// a handler here can read and write state but not inspect the pointer. Used
+    /// by state-only tests; the live router uses [`EventCx::__new_pointer`].
     #[doc(hidden)]
     pub fn __new(states: &'a mut StateStore, bindings: &'a BindingTable) -> Self {
         Self {
             states,
             bindings,
+            pointer: None,
+            key: None,
+            ime: None,
+            focus_request: None,
+        }
+    }
+
+    /// Assemble the event context for a pointer dispatch, injecting the borrowed
+    /// pointer sample so the handler can read it via [`EventCx::pointer`] — its
+    /// phase in particular, so a click acts on `Up` rather than every sample.
+    #[doc(hidden)]
+    pub fn __new_pointer(
+        states: &'a mut StateStore,
+        bindings: &'a BindingTable,
+        pointer: &'a PointerEvent,
+    ) -> Self {
+        Self {
+            states,
+            bindings,
+            pointer: Some(pointer),
             key: None,
             ime: None,
             focus_request: None,
@@ -157,6 +182,7 @@ impl<'a> EventCx<'a> {
         Self {
             states,
             bindings,
+            pointer: None,
             key: Some(key),
             ime: None,
             focus_request: None,
@@ -174,6 +200,7 @@ impl<'a> EventCx<'a> {
         Self {
             states,
             bindings,
+            pointer: None,
             key: None,
             ime: Some(ime),
             focus_request: None,
@@ -192,6 +219,15 @@ impl<'a> EventCx<'a> {
     #[inline]
     pub fn set(&mut self, id: StateId, value: StateValue) -> bool {
         self.states.set(id, value)
+    }
+
+    /// The pointer sample under dispatch, if this is a pointer dispatch; `None`
+    /// on the key and IME paths. A pointer handler reads it to gate on phase —
+    /// e.g. act on `PointerPhase::Up` so a down/up pair counts as one click —
+    /// or to read the position, buttons, or modifiers of the sample.
+    #[inline]
+    pub fn pointer(&self) -> Option<&PointerEvent> {
+        self.pointer
     }
 
     /// The key event under dispatch, if this is a key dispatch; `None` on the
@@ -235,7 +271,7 @@ mod tests {
     use super::*;
     use crate::binding::BindingTable;
     use crate::component::{BuildCx, LeafStyle, NodeStore};
-    use crate::input::{ImeEvent, Key, KeyEvent};
+    use crate::input::{ImeEvent, Key, KeyEvent, PointerButtons, PointerEvent, PointerPhase};
     use crate::layout::Size;
     use crate::state::{StateStore, StateValue};
 
@@ -270,10 +306,29 @@ mod tests {
     }
 
     #[test]
-    fn pointer_cx_carries_no_key_or_ime_event() {
+    fn no_event_cx_carries_no_sample() {
         let mut states = StateStore::new();
         let bindings = BindingTable::new();
         let cx = EventCx::__new(&mut states, &bindings);
+        assert!(cx.pointer().is_none());
+        assert!(cx.key().is_none());
+        assert!(cx.ime().is_none());
+    }
+
+    #[test]
+    fn pointer_cx_exposes_the_pointer_event_only() {
+        let mut states = StateStore::new();
+        let bindings = BindingTable::new();
+        let ev = PointerEvent {
+            x: 3.0,
+            y: 4.0,
+            phase: PointerPhase::Up,
+            buttons: PointerButtons::PRIMARY,
+            modifiers: Default::default(),
+        };
+        let cx = EventCx::__new_pointer(&mut states, &bindings, &ev);
+        assert_eq!(cx.pointer(), Some(&ev));
+        assert_eq!(cx.pointer().map(|p| p.phase), Some(PointerPhase::Up));
         assert!(cx.key().is_none());
         assert!(cx.ime().is_none());
     }
@@ -290,6 +345,7 @@ mod tests {
         };
         let cx = EventCx::__new_key(&mut states, &bindings, &ev);
         assert_eq!(cx.key(), Some(&ev));
+        assert!(cx.pointer().is_none());
         assert!(cx.ime().is_none());
     }
 
@@ -302,6 +358,7 @@ mod tests {
         };
         let cx = EventCx::__new_ime(&mut states, &bindings, &ev);
         assert_eq!(cx.ime(), Some(&ev));
+        assert!(cx.pointer().is_none());
         assert!(cx.key().is_none());
     }
 
