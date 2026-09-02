@@ -23,6 +23,7 @@ pub mod semantics;
 pub mod state;
 pub mod style;
 pub mod token;
+pub mod virtual_list;
 
 pub use binding::{Binding, BindingTable};
 pub use component::{
@@ -46,3 +47,4 @@ pub use semantics::{Role, Semantics, SemanticsNode, SemanticsTree};
 pub use state::{StateId, StateStore, StateValue};
 pub use style::{BoxStyle, StyleId};
 pub use token::{Theme, TokenId, TokenInterner, TokenNamespace};
+pub use virtual_list::{HeightCache, HeightTree};
