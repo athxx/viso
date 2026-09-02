@@ -78,6 +78,22 @@ pub enum Key {
     Other(u32),
 }
 
+/// A scroll sample resolved to physical pixels (window-top-left origin), the
+/// same space node bounds use. Carries both the pointer position (so routing can
+/// pick the scroll target under the cursor) and the scroll delta.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ScrollSample {
+    /// The window the sample belongs to.
+    pub window: WindowId,
+    /// Pointer position in physical pixels, origin at the window's top-left.
+    pub x: f32,
+    pub y: f32,
+    /// Scroll delta in physical pixels (positive = content moves down/right).
+    pub delta_x: f32,
+    pub delta_y: f32,
+    pub modifiers: Modifiers,
+}
+
 /// A committed text segment (post-IME).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TextSample {
@@ -103,6 +119,9 @@ pub struct ImePreeditSample {
 pub enum InputSample {
     /// A pointer (mouse/touch/pen) sample in physical pixels.
     Pointer(PointerSample),
+    /// A scroll (wheel/trackpad) delta in physical pixels, positioned at the
+    /// pointer so routing can find the scrollable target under the cursor.
+    Scroll(ScrollSample),
     /// A key transition routed to the focused node.
     Key(KeySample),
     /// A committed text segment (the IME commit).

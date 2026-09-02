@@ -134,6 +134,14 @@ pub struct EventCx<'a> {
     /// `id`, `Some(None)` clears focus, `None` = no request. Applied by the
     /// router after the handler returns.
     focus_request: Option<Option<NodeId>>,
+    /// A pointer-capture request a handler made this dispatch: `Some(Some(id))`
+    /// captures the pointer to `id`, `Some(None)` releases capture, `None` = no
+    /// request. Applied by the router after the handler returns.
+    capture_request: Option<Option<NodeId>>,
+    /// Set by [`EventCx::stop_propagation`]: when true, the router stops walking
+    /// the remaining dispatch chain after this handler returns. Shared by the
+    /// pointer, key, and IME paths.
+    stop: bool,
 }
 
 impl<'a> EventCx<'a> {
@@ -149,6 +157,8 @@ impl<'a> EventCx<'a> {
             key: None,
             ime: None,
             focus_request: None,
+            capture_request: None,
+            stop: false,
         }
     }
 
@@ -168,6 +178,8 @@ impl<'a> EventCx<'a> {
             key: None,
             ime: None,
             focus_request: None,
+            capture_request: None,
+            stop: false,
         }
     }
 
@@ -186,6 +198,8 @@ impl<'a> EventCx<'a> {
             key: Some(key),
             ime: None,
             focus_request: None,
+            capture_request: None,
+            stop: false,
         }
     }
 
@@ -204,6 +218,8 @@ impl<'a> EventCx<'a> {
             key: None,
             ime: Some(ime),
             focus_request: None,
+            capture_request: None,
+            stop: false,
         }
     }
 
@@ -263,6 +279,44 @@ impl<'a> EventCx<'a> {
     #[doc(hidden)]
     pub fn __take_focus_request(&mut self) -> Option<Option<NodeId>> {
         self.focus_request.take()
+    }
+
+    /// Request that the pointer be captured to `id` after this handler returns.
+    /// While captured, subsequent pointer samples route straight to `id` (a
+    /// drag, a slider grab) instead of hit-testing. The router applies it; the
+    /// cx holds no node store, so nothing moves at call time.
+    #[inline]
+    pub fn capture_pointer(&mut self, id: NodeId) {
+        self.capture_request = Some(Some(id));
+    }
+
+    /// Request that pointer capture be released after this handler returns.
+    #[inline]
+    pub fn release_pointer(&mut self) {
+        self.capture_request = Some(None);
+    }
+
+    /// Take the pending capture request out of the cx for the router to apply.
+    /// `None` means the handler made no request this dispatch.
+    #[doc(hidden)]
+    pub fn __take_capture_request(&mut self) -> Option<Option<NodeId>> {
+        self.capture_request.take()
+    }
+
+    /// Stop the event from propagating to the rest of the dispatch chain. The
+    /// current handler still finishes; the router walks no further ancestors (or
+    /// descendants) for this event. Shared by the pointer, key, and IME paths.
+    #[inline]
+    pub fn stop_propagation(&mut self) {
+        self.stop = true;
+    }
+
+    /// Whether a handler called [`stop_propagation`](Self::stop_propagation) this
+    /// dispatch. The router checks it after each handler to decide whether to
+    /// continue the chain.
+    #[doc(hidden)]
+    pub fn __stop_requested(&self) -> bool {
+        self.stop
     }
 }
 

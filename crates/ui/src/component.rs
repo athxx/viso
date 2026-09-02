@@ -12,7 +12,9 @@
 use crate::binding::BindingTable;
 use crate::context::EventCx;
 use crate::dirty::DirtyClass;
-use crate::layout::{self, Align, Axis, Inset, LayoutInput, LayoutTree, Length, Measured, Size};
+use crate::layout::{
+    self, Align, Axis, Inset, LayoutInput, LayoutTree, Length, Measured, Size, Vec2,
+};
 use crate::node::{NodeArena, NodeId};
 use crate::semantics::{Role, Semantics, SemanticsNode, SemanticsTree};
 use crate::state::{StateId, StateStore, StateValue};
@@ -91,6 +93,27 @@ impl Default for LeafStyle {
     }
 }
 
+/// Parameters for a scroll viewport declared via [`BuildCx::scroll`].
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ScrollStyle {
+    /// The axis the viewport scrolls along.
+    pub axis: Axis,
+    /// The viewport's own size request within its parent (its visible box).
+    pub size: Size,
+    /// The viewport's own background/border (transparent = pure clip box).
+    pub style: BoxStyle,
+}
+
+impl Default for ScrollStyle {
+    fn default() -> Self {
+        ScrollStyle {
+            axis: Axis::Column,
+            size: Size::fill(),
+            style: BoxStyle::NONE,
+        }
+    }
+}
+
 /// A node's pointer handler: an `FnMut` driven with the event context when the
 /// node is on the dispatch chain of a hit. Boxed because handlers are cold —
 /// touched only on an actual hit, never in the per-node hot traversal — so the
@@ -113,8 +136,23 @@ pub type KeyHandler = Box<dyn FnMut(&mut EventCx<'_>)>;
 pub struct NodeStore {
     /// Identity + ancestry links + free list.
     arena: NodeArena,
-    /// Hot: resolved layout box, written by layout, read by paint.
+    /// Hot: resolved layout box, written by layout, read by measure caching.
+    /// This is the *unscrolled* layout truth; a scroll offset never rewrites it.
     bounds: Vec<Rect>,
+    /// Hot: the scrolled, world-space rect — `bounds` shifted by the accumulated
+    /// ancestor scroll. Derived by [`resolve_transforms`](NodeStore::resolve_transforms)
+    /// on a TRANSFORM-dirty frame; equals `bounds` for any node with no scrolling
+    /// ancestor (the common case). Paint clip and hit testing read this, not
+    /// `bounds`.
+    world: Vec<Rect>,
+    /// Hot: per-node scroll offset, nonzero only on [`LayoutInput::Scroll`]
+    /// nodes; default `(0,0)`. A scroll node shifts its content subtree's world
+    /// rect by `-scroll` without a relayout (TRANSFORM-class, not LAYOUT).
+    scroll: Vec<Vec2>,
+    /// Warm: a scroll viewport's content extent (the laid-out size of its content
+    /// along each axis), written by the scroll layout arm. `(0,0)` for non-scroll
+    /// nodes. Read by the scroll clamp (range = content − viewport, per axis).
+    content: Vec<Vec2>,
     /// Hot: pending invalidation per node, set by `mark_dirty` and consumed by
     /// the incremental measure/layout/paint passes, cleared at frame end.
     dirty: Vec<DirtyClass>,
@@ -137,6 +175,11 @@ pub struct NodeStore {
     /// IME events route to this node (not hit testing). One slot per store — a
     /// window has one focus — reset to `None` on a structural rebuild.
     focused: Option<NodeId>,
+    /// The node currently holding pointer capture, or `None`. While set, the
+    /// pointer router redirects Move/Up to this node regardless of what the
+    /// pointer is over (drag-to-scroll, thumb drag). One slot per store — a
+    /// single pointer this slice — reset to `None` on a structural rebuild.
+    capture: Option<NodeId>,
     /// Cold flag column: whether a node can hold focus. Default `false` — unlike
     /// `hittable`, a node opts *in* to focus (only interactive nodes participate
     /// in the focus ring). Maintained index-aligned with the arena.
@@ -172,17 +215,21 @@ impl NodeStore {
     pub fn clear(&mut self) {
         self.arena = NodeArena::new();
         self.bounds.clear();
+        self.world.clear();
+        self.scroll.clear();
+        self.content.clear();
         self.dirty.clear();
         self.layout.clear();
         self.style.clear();
         self.measured.clear();
         self.hittable.clear();
         self.handlers.clear();
-        self.focused = None;
         self.focusable.clear();
         self.key_handlers.clear();
         self.styled.clear();
         self.semantics.clear();
+        self.focused = None;
+        self.capture = None;
     }
 
     /// The arena backing the tree.
@@ -191,10 +238,111 @@ impl NodeStore {
         &self.arena
     }
 
-    /// A node's resolved layout box (valid after a layout pass).
+    /// A node's resolved layout box (valid after a layout pass). This is the
+    /// unscrolled layout truth; for the scrolled, clip/hit-test-facing rect use
+    /// [`world`](Self::world).
     #[inline]
     pub fn bounds(&self, id: NodeId) -> Rect {
         self.bounds[id.index() as usize]
+    }
+
+    /// A node's scrolled, world-space rect (valid after
+    /// [`resolve_transforms`](Self::resolve_transforms)). Equals
+    /// [`bounds`](Self::bounds) when the node has no scrolling ancestor. Paint
+    /// clip and hit testing read this.
+    #[inline]
+    pub fn world(&self, id: NodeId) -> Rect {
+        self.world[id.index() as usize]
+    }
+
+    /// A node's scroll offset (nonzero only on scroll viewports).
+    #[inline]
+    pub fn scroll(&self, id: NodeId) -> Vec2 {
+        self.scroll[id.index() as usize]
+    }
+
+    /// A scroll viewport's content extent (the laid-out size of its content).
+    /// `(0,0)` for non-scroll nodes.
+    #[inline]
+    pub fn content(&self, id: NodeId) -> Vec2 {
+        self.content[id.index() as usize]
+    }
+
+    /// Whether a node is a scroll viewport — it clips its content to its box and
+    /// carries a scroll offset. Paint and hit testing branch on this to push a
+    /// clip and narrow the descent.
+    #[inline]
+    pub fn is_scroll(&self, id: NodeId) -> bool {
+        matches!(self.layout[id.index() as usize], LayoutInput::Scroll { .. })
+    }
+
+    /// The axis a scroll viewport scrolls along, or `None` for a non-scroll node.
+    /// A viewport scrolls only along its own axis; the router uses this to pick
+    /// which ancestor absorbs a scroll delta.
+    #[inline]
+    pub fn scroll_axis(&self, id: NodeId) -> Option<Axis> {
+        match self.layout[id.index() as usize] {
+            LayoutInput::Scroll { axis, .. } => Some(axis),
+            _ => None,
+        }
+    }
+
+    /// The scrollable range of a node on `axis`: `max(0, content − viewport)`.
+    /// Zero when the content does not exceed the viewport (nothing to scroll).
+    #[inline]
+    pub fn scroll_range(&self, id: NodeId, axis: Axis) -> f32 {
+        let i = id.index() as usize;
+        let b = self.bounds[i];
+        let viewport = match axis {
+            Axis::Row => b.w,
+            Axis::Column => b.h,
+        };
+        (self.content[i].on(axis) - viewport).max(0.0)
+    }
+
+    /// The node holding pointer capture, if any.
+    #[inline]
+    pub fn capture(&self) -> Option<NodeId> {
+        self.capture
+    }
+
+    /// Set (or clear, with `None`) the pointer-capture holder. A live-guarded
+    /// write: capturing a stale handle is a no-op, so a released/freed node
+    /// never holds capture. Clearing is always honored.
+    pub fn set_capture(&mut self, id: Option<NodeId>) {
+        match id {
+            Some(node) if self.arena.is_live(node) => self.capture = Some(node),
+            Some(_) => {}
+            None => self.capture = None,
+        }
+    }
+
+    /// Add `delta` to a scroll viewport's offset, clamped per axis to
+    /// `[0, scroll_range]`, and mark the node `TRANSFORM | HIT_TEST | PAINT` so
+    /// the next frame re-derives its subtree's world rects and repaints — a
+    /// scroll never dirties MEASURE/LAYOUT and never bubbles to ancestors. A
+    /// live-guarded write; a stale handle is a no-op. A delta that does not move
+    /// the (already-clamped) offset schedules nothing.
+    pub fn scroll_by(&mut self, id: NodeId, delta: Vec2) {
+        if !self.arena.is_live(id) {
+            return;
+        }
+        let i = id.index() as usize;
+        let range_x = self.scroll_range(id, Axis::Row);
+        let range_y = self.scroll_range(id, Axis::Column);
+        let prev = self.scroll[i];
+        let next = Vec2 {
+            x: (prev.x + delta.x).clamp(0.0, range_x),
+            y: (prev.y + delta.y).clamp(0.0, range_y),
+        };
+        if next == prev {
+            return;
+        }
+        self.scroll[i] = next;
+        self.mark_dirty(
+            id,
+            DirtyClass::TRANSFORM | DirtyClass::HIT_TEST | DirtyClass::PAINT,
+        );
     }
 
     /// A node's paint style.
@@ -262,12 +410,11 @@ impl NodeStore {
     /// Set whether a node participates in hit testing. A live-guarded write, so
     /// a stale handle is a no-op rather than an out-of-bounds write.
     ///
-    /// Because `bounds` is currently the hittable rect, a MEASURE/LAYOUT change
-    /// that re-places a node already updates what it will hit — no extra
-    /// recompute pass is needed here. When scroll/clip/transform containers
-    /// arrive, a distinct world rect (recomputed on the HIT_TEST/TRANSFORM-dirty
-    /// subtree) will diverge from layout `bounds`; that column is deferred until
-    /// then rather than added speculatively now.
+    /// Hit testing reads a node's [`world`](Self::world) rect, not `bounds`, so a
+    /// scroll offset shifts what a node hits without disturbing its layout. That
+    /// world rect is re-derived by [`resolve_transforms`](Self::resolve_transforms)
+    /// on the TRANSFORM-dirty subtree; flipping the hittable flag here only gates
+    /// participation and needs no recompute of its own.
     pub fn set_hittable(&mut self, id: NodeId, hit: bool) {
         if !self.arena.is_live(id) {
             return;
@@ -456,6 +603,49 @@ impl NodeStore {
         self.dirty.iter().any(|d| !d.is_empty())
     }
 
+    /// Derive every node's `world` rect from its `bounds` and the scroll of its
+    /// ancestors, in a pre-order walk from `root`. A node's world rect is its
+    /// layout box shifted by the accumulated scroll of all scrolling ancestors;
+    /// entering a scroll viewport adds that viewport's own `scroll` to the offset
+    /// carried into its subtree. Paint clip and hit testing read this.
+    ///
+    /// Runs only when the tree carries a TRANSFORM-dirty node — a clean frame
+    /// skips it entirely (the caller gates on [`any_dirty`](Self::any_dirty) /
+    /// the TRANSFORM class). Mirrors [`paint_tree`](crate::paint::paint_tree)'s
+    /// recursive pre-order descent; no allocation, worst case the tree depth.
+    pub fn resolve_transforms(&mut self, root: NodeId) {
+        self.resolve_transforms_from(root, Vec2::ZERO);
+    }
+
+    /// Pre-order recursion carrying `offset`, the summed scroll of `root`'s
+    /// scrolling ancestors. Writes `world[root] = bounds[root] − offset`, then
+    /// folds `root`'s own scroll into the offset handed to its children.
+    fn resolve_transforms_from(&mut self, root: NodeId, offset: Vec2) {
+        if !self.arena.is_live(root) {
+            return;
+        }
+        let i = root.index() as usize;
+        let b = self.bounds[i];
+        self.world[i] = Rect {
+            x: b.x - offset.x,
+            y: b.y - offset.y,
+            w: b.w,
+            h: b.h,
+        };
+        // A scroll viewport shifts its own content: fold its scroll into the
+        // offset its subtree sees (nonzero only on scroll nodes, so this is an
+        // add of zero for ordinary containers).
+        let child_offset = Vec2 {
+            x: offset.x + self.scroll[i].x,
+            y: offset.y + self.scroll[i].y,
+        };
+        let mut child = self.arena.links(root).and_then(|l| l.first_child);
+        while let Some(c) = child {
+            self.resolve_transforms_from(c, child_offset);
+            child = self.arena.links(c).and_then(|l| l.next_sibling);
+        }
+    }
+
     /// Apply a frame's batch of changed states to the tree: for each changed
     /// [`StateId`], walk its bindings (static then dynamic) and mark the bound
     /// node dirty with the edge's classes. This is the flush phase's core —
@@ -497,6 +687,14 @@ impl NodeStore {
                 w: 0.0,
                 h: 0.0,
             };
+            self.world[i] = Rect {
+                x: 0.0,
+                y: 0.0,
+                w: 0.0,
+                h: 0.0,
+            };
+            self.scroll[i] = Vec2::ZERO;
+            self.content[i] = Vec2::ZERO;
             self.dirty[i] = DirtyClass::EMPTY;
             self.layout[i] = input;
             self.style[i] = style;
@@ -515,6 +713,14 @@ impl NodeStore {
                 w: 0.0,
                 h: 0.0,
             });
+            self.world.push(Rect {
+                x: 0.0,
+                y: 0.0,
+                w: 0.0,
+                h: 0.0,
+            });
+            self.scroll.push(Vec2::ZERO);
+            self.content.push(Vec2::ZERO);
             self.dirty.push(DirtyClass::EMPTY);
             self.layout.push(input);
             self.style.push(style);
@@ -532,11 +738,18 @@ impl NodeStore {
     /// Run the bottom-up measure pass then the top-down layout pass over the
     /// subtree at `root`, placing the root into `surface`. `scratch` is a
     /// reusable child-id buffer owned by the caller so frames allocate nothing.
+    ///
+    /// Layout writes `bounds` (the unscrolled layout truth); this then derives
+    /// the `world` rects from it so paint and hit testing — which read `world` —
+    /// are consistent immediately after a layout, without a scroll offset (any
+    /// existing scroll is re-applied). A later scroll updates `world` on its own
+    /// via [`resolve_transforms`](Self::resolve_transforms) without re-laying out.
     pub fn layout(&mut self, root: NodeId, surface: Rect, scratch: &mut Vec<u32>) {
         scratch.clear();
         layout::measure(self, root.index(), scratch);
         scratch.clear();
         layout::layout(self, root.index(), surface, scratch);
+        self.resolve_transforms(root);
     }
 
     /// Re-resolve the warm `style` of every STYLE-dirty node that carries a
@@ -799,6 +1012,11 @@ impl LayoutTree for NodeStore {
     fn set_bounds(&mut self, index: u32, r: Rect) {
         self.bounds[index as usize] = r;
     }
+
+    #[inline]
+    fn set_content(&mut self, index: u32, content: Vec2) {
+        self.content[index as usize] = content;
+    }
 }
 
 impl NodeStore {
@@ -892,6 +1110,27 @@ impl<'a> BuildCx<'a> {
             gap: style.gap,
             padding: style.padding,
             align: style.align,
+            size: style.size,
+        };
+        let id = self.push_node(input, style.style);
+        self.stack.push(id);
+        children(self);
+        self.stack.pop();
+        Handle { id }
+    }
+
+    /// Declare a scroll viewport and its content. Like [`BuildCx::flex`] the
+    /// `children` closure runs with the viewport as the active parent; the
+    /// viewport lays out a single content child at its natural extent along
+    /// `axis` (so overflow becomes scrollable) and clips to its own box. Author a
+    /// single container child to hold the scrollable content.
+    pub fn scroll(
+        &mut self,
+        style: ScrollStyle,
+        children: impl FnOnce(&mut BuildCx<'_>),
+    ) -> Handle {
+        let input = LayoutInput::Scroll {
+            axis: style.axis,
             size: style.size,
         };
         let id = self.push_node(input, style.style);
@@ -1013,6 +1252,9 @@ mod tests {
         assert_eq!(b.index(), 1);
         // Every parallel array grew in lockstep with the arena.
         assert_eq!(store.bounds.len(), 2);
+        assert_eq!(store.world.len(), 2);
+        assert_eq!(store.scroll.len(), 2);
+        assert_eq!(store.content.len(), 2);
         assert_eq!(store.layout.len(), 2);
         assert_eq!(store.style.len(), 2);
         assert_eq!(store.measured.len(), 2);
@@ -1726,5 +1968,84 @@ mod tests {
         let mut store = NodeStore::new();
         let mut cx = BuildCx::new(&mut store);
         let _ = cx.state(StateValue::Int(0));
+    }
+
+    // ---- scroll ----
+
+    /// A 100×100 vertical viewport over a 100×300 content child (200px range),
+    /// laid out and transform-resolved at the origin.
+    fn scroll_scene() -> (NodeStore, NodeId, NodeId) {
+        let mut store = NodeStore::new();
+        let mut content_id = None;
+        let root = {
+            let mut cx = BuildCx::new(&mut store);
+            cx.scroll(
+                ScrollStyle {
+                    axis: Axis::Column,
+                    size: Size::fixed(100.0, 100.0),
+                    ..Default::default()
+                },
+                |cx| {
+                    content_id = Some(
+                        cx.leaf(LeafStyle {
+                            size: Size::fixed(100.0, 300.0),
+                            ..Default::default()
+                        })
+                        .id(),
+                    );
+                },
+            );
+            cx.root().unwrap()
+        };
+        let mut scratch = Vec::new();
+        store.layout(root, surface(100.0, 100.0), &mut scratch);
+        (store, root, content_id.unwrap())
+    }
+
+    #[test]
+    fn scroll_range_is_content_minus_viewport() {
+        let (store, viewport, _content) = scroll_scene();
+        assert_eq!(store.scroll_range(viewport, Axis::Column), 200.0);
+        // No horizontal overflow: content and viewport are both 100 wide.
+        assert_eq!(store.scroll_range(viewport, Axis::Row), 0.0);
+    }
+
+    #[test]
+    fn scroll_by_clamps_and_a_stale_delta_is_a_noop() {
+        let (mut store, viewport, _content) = scroll_scene();
+        store.clear_dirty();
+        store.scroll_by(viewport, Vec2 { x: 0.0, y: 250.0 });
+        assert_eq!(store.scroll(viewport), Vec2 { x: 0.0, y: 200.0 }, "clamped");
+        assert!(store.dirty(viewport).contains(DirtyClass::TRANSFORM));
+
+        // Already at the clamp: another downward delta moves nothing and
+        // schedules no work.
+        store.clear_dirty();
+        store.scroll_by(viewport, Vec2 { x: 0.0, y: 50.0 });
+        assert_eq!(store.scroll(viewport), Vec2 { x: 0.0, y: 200.0 });
+        assert!(store.dirty(viewport).is_empty(), "no-op schedules nothing");
+    }
+
+    #[test]
+    fn resolve_transforms_shifts_content_by_scroll() {
+        let (mut store, viewport, content) = scroll_scene();
+        // Before scrolling, world equals bounds everywhere.
+        assert_eq!(store.world(content), store.bounds(content));
+
+        store.scroll_by(viewport, Vec2 { x: 0.0, y: 40.0 });
+        store.resolve_transforms(viewport);
+
+        // The viewport itself does not move; its content shifts up by the offset.
+        assert_eq!(store.world(viewport), store.bounds(viewport));
+        let b = store.bounds(content);
+        assert_eq!(
+            store.world(content),
+            Rect {
+                x: b.x,
+                y: b.y - 40.0,
+                w: b.w,
+                h: b.h,
+            }
+        );
     }
 }

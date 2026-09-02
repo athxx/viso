@@ -10,6 +10,35 @@
 
 use viso_render::Rect;
 
+/// A two-component vector in physical pixels — a scroll offset or a
+/// translation. Kept in the ui tier because `viso_render` carries only `Rect`
+/// and `Point`; a scroll offset is a ui-model quantity, not a render primitive.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct Vec2 {
+    pub x: f32,
+    pub y: f32,
+}
+
+impl Vec2 {
+    /// The zero vector (no offset).
+    pub const ZERO: Vec2 = Vec2 { x: 0.0, y: 0.0 };
+
+    /// A vector from its two components.
+    #[inline]
+    pub const fn new(x: f32, y: f32) -> Self {
+        Vec2 { x, y }
+    }
+
+    /// This vector's component along `axis` (x for Row, y for Column).
+    #[inline]
+    pub fn on(self, axis: Axis) -> f32 {
+        match axis {
+            Axis::Row => self.x,
+            Axis::Column => self.y,
+        }
+    }
+}
+
 /// The main axis a Flex container lays its children along.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Axis {
@@ -189,6 +218,16 @@ pub enum LayoutInput {
         /// Size request within the parent.
         size: Size,
     },
+    /// A scroll viewport: a container whose box is its own requested [`Size`]
+    /// but whose single content child is laid out at the content's natural main
+    /// extent (not clamped to the viewport), so content exceeding the viewport
+    /// along `axis` becomes scrollable overflow.
+    Scroll {
+        /// The scrollable axis.
+        axis: Axis,
+        /// The viewport's own size request within its parent.
+        size: Size,
+    },
 }
 
 impl LayoutInput {
@@ -196,7 +235,9 @@ impl LayoutInput {
     #[inline]
     pub fn size(self) -> Size {
         match self {
-            LayoutInput::Flex { size, .. } | LayoutInput::Leaf { size } => size,
+            LayoutInput::Flex { size, .. }
+            | LayoutInput::Leaf { size }
+            | LayoutInput::Scroll { size, .. } => size,
         }
     }
 }
@@ -253,6 +294,11 @@ pub trait LayoutTree {
     fn set_measured(&mut self, index: u32, m: Measured);
     /// Write a node's resolved layout box.
     fn set_bounds(&mut self, index: u32, r: Rect);
+    /// Record a scroll viewport's content extent (the laid-out size of its
+    /// content along each axis) so the scroll clamp reads it without re-walking.
+    /// A no-op for non-scroll nodes; the [`LayoutInput::Scroll`] layout arm is
+    /// the only caller.
+    fn set_content(&mut self, index: u32, content: Vec2);
 }
 
 /// Bottom-up measure pass: compute every node's natural size.
@@ -314,6 +360,28 @@ pub fn measure(tree: &mut impl LayoutTree, root: u32, scratch: &mut Vec<u32>) {
             };
             axis_pack(axis, main_natural, cross_natural)
         }
+        LayoutInput::Scroll { size, .. } => {
+            // A viewport's natural size is its own request: a Fixed axis is its
+            // pixel value; a Fit/Fill axis hugs the single content child's
+            // natural extent (the content can still exceed the resolved box —
+            // that overflow is what scrolls, decided at layout time).
+            let child_natural = |axis: Axis| -> f32 {
+                if child_count > 0 {
+                    tree.measured(scratch[start]).on(axis)
+                } else {
+                    0.0
+                }
+            };
+            let w = match size.width {
+                Length::Fixed(v) => v,
+                _ => child_natural(Axis::Row),
+            };
+            let h = match size.height {
+                Length::Fixed(v) => v,
+                _ => child_natural(Axis::Column),
+            };
+            Measured { w, h }
+        }
     };
 
     tree.set_measured(root, measured);
@@ -331,15 +399,19 @@ pub fn measure(tree: &mut impl LayoutTree, root: u32, scratch: &mut Vec<u32>) {
 pub fn layout(tree: &mut impl LayoutTree, root: u32, bounds: Rect, scratch: &mut Vec<u32>) {
     tree.set_bounds(root, bounds);
 
-    let LayoutInput::Flex {
-        axis,
-        gap,
-        padding,
-        align,
-        ..
-    } = tree.input(root)
-    else {
-        return; // Leaf: bounds are final.
+    let (axis, gap, padding, align) = match tree.input(root) {
+        LayoutInput::Flex {
+            axis,
+            gap,
+            padding,
+            align,
+            ..
+        } => (axis, gap, padding, align),
+        LayoutInput::Scroll { axis, .. } => {
+            layout_scroll(tree, root, bounds, axis, scratch);
+            return;
+        }
+        LayoutInput::Leaf { .. } => return, // Leaf: bounds are final.
     };
 
     let start = scratch.len();
@@ -419,6 +491,61 @@ pub fn layout(tree: &mut impl LayoutTree, root: u32, bounds: Rect, scratch: &mut
         layout(tree, child, child_box, scratch);
 
         cursor += main_size + gap;
+    }
+}
+
+/// Lay out a scroll viewport's single content child. The viewport already has
+/// its own box (`bounds`); its content is placed at the viewport origin with its
+/// natural main extent — deliberately *not* clamped to the viewport, so content
+/// longer than the viewport along `axis` overflows and becomes scrollable. The
+/// cross extent fills the viewport (content is only scrollable on `axis` this
+/// slice). The scroll offset is not applied here: `bounds` stays the unscrolled
+/// layout truth and the world transform pass shifts the subtree by `-scroll`.
+///
+/// The content extent (what the scroll clamp needs) is recorded via
+/// [`LayoutTree::set_content`]; with no content child the extent is zero.
+fn layout_scroll(
+    tree: &mut impl LayoutTree,
+    root: u32,
+    bounds: Rect,
+    axis: Axis,
+    scratch: &mut Vec<u32>,
+) {
+    let start = scratch.len();
+    tree.children(root, scratch);
+    let child_count = scratch.len() - start;
+    if child_count == 0 {
+        scratch.truncate(start);
+        tree.set_content(root, Vec2::ZERO);
+        return;
+    }
+
+    let cross = cross_of(axis);
+    // Content takes its natural main extent (unclamped → overflow scrolls) and
+    // fills the viewport across. A viewport hosts a single content subtree; if
+    // more than one child was declared, only the first is the scrolled content.
+    let content = scratch[start];
+    let main_size = tree.measured(content).on(axis);
+    let cross_size = rect_len(bounds, cross);
+    scratch.truncate(start);
+
+    let content_box = axis_rect(
+        axis,
+        rect_start(bounds, axis),
+        rect_start(bounds, cross),
+        main_size,
+        cross_size,
+    );
+    tree.set_content(root, axis_pack_vec(axis, main_size, cross_size));
+    layout(tree, content, content_box, scratch);
+}
+
+/// A [`Vec2`] from a main/cross pair for a given axis.
+#[inline]
+fn axis_pack_vec(axis: Axis, main: f32, cross: f32) -> Vec2 {
+    match axis {
+        Axis::Row => Vec2 { x: main, y: cross },
+        Axis::Column => Vec2 { x: cross, y: main },
     }
 }
 

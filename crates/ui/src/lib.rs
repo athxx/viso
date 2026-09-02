@@ -27,15 +27,16 @@ pub mod token;
 pub use binding::{Binding, BindingTable};
 pub use component::{
     BuildCx, Component, FlexStyle, FrameRecompute, Handle, LeafStyle, NodeStore, PointerHandler,
+    ScrollStyle,
 };
 pub use context::EventCx;
 pub use dirty::DirtyClass;
 pub use hit_test::{HitTestTree, hit_test};
 pub use input::{
     ImeEvent, Key, KeyEvent, KeyRouter, Modifiers, PointerButtons, PointerEvent, PointerPhase,
-    PointerRouter, focus_next, route_pointer,
+    PointerRouter, ScrollEvent, ScrollRouter, focus_next, route_pointer, route_scroll,
 };
-pub use layout::{Align, Axis, Inset, Length, Size};
+pub use layout::{Align, Axis, Inset, Length, Size, Vec2};
 pub use node::{NodeArena, NodeId, NodeLinks};
 pub use paint::paint_tree;
 pub use reactive::{

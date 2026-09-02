@@ -43,7 +43,7 @@ use viso_runtime::{FramePhase, RuntimeCx, Scheduler};
 use viso_ui::{
     BindingTable, BuildCx, ComputedStore, DirtyClass, EffectStore, FrameRecompute, ImeEvent, Key,
     KeyEvent, KeyRouter, Modifiers, NodeId, NodeStore, PointerButtons, PointerEvent, PointerPhase,
-    PointerRouter, StateId, StateStore, focus_next,
+    PointerRouter, ScrollEvent, ScrollRouter, StateId, StateStore, focus_next,
 };
 
 pub use viso_ui::context::AppCx;
@@ -373,6 +373,23 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
                     },
                     &mut self.route_chain,
                 );
+            }
+            viso_runtime::InputSample::Scroll(s) => {
+                // A wheel/trackpad sample routes to the innermost scroll viewport
+                // under the pointer. The runtime reports the delta as content
+                // motion (positive = content moves down/right, revealing later
+                // content), which is exactly the direction the viewport's offset
+                // grows, so it maps straight onto the offset delta. The router
+                // clamps per axis and marks only TRANSFORM/HIT_TEST/PAINT — a
+                // scroll never relayouts — so no state flush is involved.
+                let ev = ScrollEvent {
+                    x: s.x,
+                    y: s.y,
+                    delta_x: s.delta_x,
+                    delta_y: s.delta_y,
+                    modifiers: lower_modifiers(s.modifiers),
+                };
+                ScrollRouter::route(&mut self.store, root, ev);
             }
         }
     }

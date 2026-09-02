@@ -3,8 +3,9 @@
 > Working memory so progress survives interruption. Update as sections land.
 > Authority order: accepted ADR > architecture doc > AGENTS.md > crate docs > convention.
 > Standing constraints (do not drop):
+>
 > - No Makepad-keyword comments in code. No `§`+number section symbols in code/comments; strip any you pass.
-> - Reference `/Users/x/code/makepad` code when designing a subsystem; don't invent alone.
+> - Reference `/Users/x/code/vizo/makepad` code when designing a subsystem; don't invent alone.
 > - Performance-first: prefer SIMD + zerocopy; unsafe allowed (with `SAFETY:` note).
 > - Commit per section; keep changes focused.
 > - Verify: `cargo xtask check-deps` (stays 13 crates) + build + clippy `-D warnings` + fmt + test; headless integration where UI; real-machine Metal when shaders change.
@@ -14,16 +15,19 @@
 ## Phase 3 — retained widget tree + reactive state
 
 ### Slice A — Component → Node → Flex → Paint (DONE)
+
 - [x] `Component`/`BuildCx`, `NodeStore` SoA, generational `NodeArena`.
 - [x] Two-pass Flex measure/layout; `paint_tree`.
 - [x] Facade drives real retained tree through the frame phases.
 - ADR 0003 (retained widget tree Flex slice). Committed.
 
 ### Slice B — reactive state + dirty true-propagation + incremental recompute
+
 Spec: `docs/superpowers/specs/2026-09-01-reactive-state-dirty-propagation-design.md` (complete, no supplement needed).
 Three focused commits:
 
 #### B1 — dirty layered propagation + incremental recompute (no State dep) (DONE)
+
 - [x] `NodeStore::mark_dirty(id, class)` — per-class layered propagation up the `parent` chain to each class's boundary (rules table in spec). Idempotent bit-or, stop at boundary, O(tree depth), zero alloc.
 - [x] `NodeStore::dirty(id) -> DirtyClass`, `NodeStore::clear_dirty()`, `any_dirty()`.
 - [x] Facade `relayout_and_paint` drives incremental `relayout_dirty` (measure+layout, only invalidated subtrees) + `repaint_dirty` (paint rebuilt only when a paint class is pending); clean subtrees skipped.
@@ -34,6 +38,7 @@ Three focused commits:
 - [x] Commit. (997f9e0)
 
 #### B2 — State + StateStore + BindingTable + per-frame transactions (DONE)
+
 - [x] `crates/ui/src/state.rs`: `StateId` (generational), `StateStore` SoA (values + generation + free list + frame pending write-set), `StateValue` scalar set (i32/f32/bool/color), `alloc/get/set/free/is_live/take_pending/has_pending`. No-op writes schedule nothing; pending dedupes.
 - [x] `crates/ui/src/binding.rs`: `Binding { node, class }`, `BindingTable` (index-aligned to StateId; `bind`/`for_state`, folds same-node edges, contiguous runs regardless of registration order), plus dynamic region (`bind_dynamic`/`dynamic_for_state`) for B3.
 - [x] `NodeStore::flush_state_transactions(changed, bindings)` turns each changed id into targeted `mark_dirty` via static + dynamic edges.
@@ -46,20 +51,22 @@ Three focused commits:
 - [x] Commit.
 
 #### B3 — Computed + Effect
+
 Design (locked, after reading the makepad reference — which has NO reactive
-derivation system: it uses redraw_id generation + explicit invalidation queue +
-draw-cache memo; Effect-equivalent is imperative handle_* hooks + apply-reload
+derivation system: it uses redraw*id generation + explicit invalidation queue +
+draw-cache memo; Effect-equivalent is imperative handle\*\* hooks + apply-reload
 re-eval + async drop→GC cancellation; Animator = NextFrame self-requeue loop
 that snapshots start values, restarts on state switch, stops when done). Viso
 deliberately diverges to compiled/tracked fine-grained reactivity; we take the
-*semantics* (re-eval only on dep change, propagate only if result changed;
+*semantics\* (re-eval only on dep change, propagate only if result changed;
 dep-change restart = cleanup-then-rerun; unmount cleanup) not the coarse model.
 New file `crates/ui/src/reactive.rs` (Computed + Effect are one subsystem).
 Since makepad has no reactive-derivation system to preserve, we chose the better
 fine-grained design outright rather than fitting a coarse model: compiled binding
 fast path + runtime `DepCursor` fallback, and — decisively — Computed and Effect
 wake by DIFFERENT routes because their outputs differ in kind (see below).
-- [x] `Computed` (pure; runtime dep collection via a `DepCursor` passed into eval — not thread-local; a read-only `ComputeCx` exposes `get` only, so purity is enforced by the type, no `set`). SoA `ComputedStore` keyed by generational `ComputedId`: cached last `StateValue` + dep set. `eval` records deps → refreshes them into `ComputedStore`'s own `StateId -> Vec<ComputedId>` reverse index (NOT `bind_dynamic` — the wrap-up dropped that route because the binding flush dirties dynamic edges unconditionally, bypassing the memo boundary). Returns `changed`. `wake_computed` re-evals affected derivations and marks the downstream node dirty ONLY when the value changed (the memo boundary in the wake). A Computed's output *is* a node dirty class.
+
+- [x] `Computed` (pure; runtime dep collection via a `DepCursor` passed into eval — not thread-local; a read-only `ComputeCx` exposes `get` only, so purity is enforced by the type, no `set`). SoA `ComputedStore` keyed by generational `ComputedId`: cached last `StateValue` + dep set. `eval` records deps → refreshes them into `ComputedStore`'s own `StateId -> Vec<ComputedId>` reverse index (NOT `bind_dynamic` — the wrap-up dropped that route because the binding flush dirties dynamic edges unconditionally, bypassing the memo boundary). Returns `changed`. `wake_computed` re-evals affected derivations and marks the downstream node dirty ONLY when the value changed (the memo boundary in the wake). A Computed's output _is_ a node dirty class.
 - [x] `Effect` (lifecycle: SoA `EffectStore` keyed by generational `EffectId`; each holds dep set + body + prior `cleanup: Option<Cleanup>` + owning `NodeId`). Dependency restart = prior cleanup THEN re-run body. Cancellation runs cleanup on `cancel`/`cancel_for_node` (node free = unmount). Synchronous this slice; no timers/async yet.
 - [x] DESIGN DIVERGENCE (deliberate, better-than-coarse): an Effect has NO dirty class — its output is the side effect — so routing it through the 8-bit `DirtyClass` would overload a bit meaning "recompute layout/paint". Instead `EffectStore` owns a compact reverse index `StateId -> Vec<EffectId>`, rebuilt every run (a dropped dep stops waking; a new dep starts). The flush hands the frame's changed ids to `EffectStore::wake`, which dedupes and re-runs each affected effect once. `DirtyClass` stays a clean eight, one meaning each. `wake` reuses a scratch buffer → zero steady-state alloc.
 - [x] Unit tests (`reactive.rs`, 9): computed first-eval registers deps + reports change; re-eval on dep change; unchanged result propagates nothing (memo boundary, step function); freed computed is stale; effect dep change runs cleanup THEN re-run (ordered log); effect only wakes on its own deps; two changed deps re-run once; node unmount runs cleanup + drops from reverse index; effect that stops reading a dep stops being woken by it.
@@ -68,6 +75,7 @@ wake by DIFFERENT routes because their outputs differ in kind (see below).
 - [x] Commit.
 
 ### Wrap-up for Slice B
+
 - [x] Append ADR: `docs/adr/0005-reactive-state-dirty-incremental.md` — hybrid dep tracking (compile-time binding table fast path + runtime dynamic fallback), centralized SoA StateStore + StateId, memo-gated Computed + scoped Effect each on their own reverse index, per-class layered per-node dirty (paint-only never bubbles layout), per-frame one-shot flush, incremental recompute. Records tradeoff vs Makepad's coarse redraw_id + area-compare manual redraw.
 - [x] Update architecture doc reactive/dirty/incremental sections: appended "As built (Slice B)" notes to §18.1 (hybrid binding), §19 (DirtyMask u16 sketch → shipped DirtyClass u8/8 classes), §21 (Computed/Effect reverse-index wake), each pointing at ADR 0005.
 
@@ -76,9 +84,9 @@ wake by DIFFERENT routes because their outputs differ in kind (see below).
 ## Phase 4 — Input / Style / Semantics
 
 > **Numbering reconciliation (read once).** The architecture doc (Part XXV, §69–70) is
-> the authority. The old "Phase 3" section above was an *execution* label that bundled
+> the authority. The old "Phase 3" section above was an _execution_ label that bundled
 > the doc's Phase 3 (NodeArena — done as Slice A's `NodeStore`/arena), the doc's Phase 4
-> *layout* (Slice A: Component→Node→Flex→Paint, i.e. doc-§69 items 5–6 box-constraints +
+> _layout_ (Slice A: Component→Node→Flex→Paint, i.e. doc-§69 items 5–6 box-constraints +
 > Row/Column) and the whole doc Phase 5 Reactive (Slice B). Measured against the doc's
 > exit criteria, Slice B satisfies **doc Phase 5** in full (§70: counter without `render()`,
 > single-property targeted phases, one flush per transaction, profileable dep graph). The
@@ -96,18 +104,20 @@ which the Slice B flush already turns into targeted invalidation.
 Order follows the doc §69: **bounds/transform → hit test → pointer routing → keyboard/
 focus/IME**, then style token, then semantics.
 
-**Before each subsystem:** read the Makepad reference at `/Users/x/code/makepad` for that
+**Before each subsystem:** read the Makepad reference at `/Users/x/code/vizo/makepad` for that
 subsystem (hit-test/finger/pointer, focus/key/next-frame, area/DrawList bounds) as a
-*semantics* reference only, then design on Viso Node/State/Dirty contracts. Makepad's model
+_semantics_ reference only, then design on Viso Node/State/Dirty contracts. Makepad's model
 is coarse (event walk over the widget tree, area-compare); Viso takes the target-route
 semantics (capture→target→bubble, focus ring, IME preedit) not the coarse walk.
 
-### Slice C — Input: bounds/transform + hit test  ✅
-Doc items: world bounds/transform → hit test. Layout already bakes *absolute* positions into
+### Slice C — Input: bounds/transform + hit test ✅
+
+Doc items: world bounds/transform → hit test. Layout already bakes _absolute_ positions into
 `NodeStore::bounds` (top-down placement), so `bounds` is already the world rect for the current
 model — no local→world transform to accumulate, and no read-back indirection. Slice C ships the
 direct forward path; a distinct world/transform column earns its place only once scroll/clip/
 transform containers exist (deferred to the Scroll slice, see below).
+
 - [x] `Rect::contains(px, py)` point-in-rect primitive: near edges inclusive, far edges
       exclusive (`[x, x+w)` / `[y, y+h)`) so tiling siblings do not both claim a shared seam.
 - [x] Per-node `hittable` flag: hot SoA column on `NodeStore` aligned to `bounds`/`dirty`,
@@ -118,7 +128,7 @@ transform containers exist (deferred to the Scroll slice, see below).
       in **reverse** sibling order (the mirror of `paint_tree`'s forward walk, so the visually
       topmost child wins) and prunes any subtree whose box does not contain the point — a
       targeted route, not a full-tree scan. Zero allocation, depth-bounded recursion.
-- [x] `HIT_TEST` dirty class already exists (one of the 8); no new class. Because `bounds` *is*
+- [x] `HIT_TEST` dirty class already exists (one of the 8); no new class. Because `bounds` _is_
       the hittable rect this slice, the incremental relayout that writes `bounds` already
       re-derives what a node hits — no extra recompute pass.
 - [x] Headless tests: point over a leaf returns that leaf; nested overlap returns the topmost;
@@ -134,10 +144,12 @@ transform containers exist (deferred to the Scroll slice, see below).
   written so the swap is localized (read a `world(id)` accessor instead of `bounds(id)`, intersect
   against a clip carried down the recursion).
 
-### Slice D — Input: pointer routing (capture → target → bubble)  ✅
+### Slice D — Input: pointer routing (capture → target → bubble) ✅
+
 The normalized-event → route pipeline: hit-test picks the target, dispatch walks the
 ancestry, a handler's `set` lands pending, and the existing flush turns it into targeted
 node invalidation.
+
 - [x] Normalize platform pointer events into a runtime-tier `PointerSample` at the scheduler
       seam: the scheduler owns the window, so it is the one place that resolves scale and
       converts the logical-point raw sample into physical-pixel space once, before the driver
@@ -165,6 +177,7 @@ node invalidation.
 - [x] Stripped section/Makepad refs from every file touched; committed per section.
 
 **Deferred from Slice D (recorded, not built — no over-engineering ahead of need):**
+
 - **Pointer capture (drag).** No cross-frame capture holder yet: a node cannot yet claim
   subsequent moves/up regardless of hit. Lands when the first draggable control (or the
   Scroll slice's drag-to-scroll) actually needs a held target across frames.
@@ -178,7 +191,9 @@ node invalidation.
   from move samples yet. Lands with hover styling / cursor feedback.
 
 ### Slice E — Input: keyboard / focus / IME
+
 Doc §69 item 4.
+
 - [x] Focus: a single focused `NodeId` slot on `NodeStore` + a `focusable` cold flag column
       (opt-in, default false); `focus_next(store, root, forward)` pre-order ring traversal that
       wraps; programmatic focus request via `EventCx::request_focus`/`clear_focus`, applied by
@@ -201,6 +216,7 @@ Doc §69 item 4.
 - [x] Strip `§`/Makepad refs from every file touched. Commit.
 
 **Deferred from Slice E**
+
 - **`stop_propagation`** — still deferred (shared with Slice D). Key/IME routing runs the full
   capture+target+bubble walk; a handler cannot yet halt it. Lands with the first widget that
   must swallow an event.
@@ -210,13 +226,15 @@ Doc §69 item 4.
 - **Semantics of focus** — accessibility focus / SEMANTICS dirtying on focus change is Slice G;
   this slice's focus change is PAINT-only (the focus ring).
 
-### Slice F — Style token  ✅
+### Slice F — Style token ✅
+
 Doc §69 item 9 (§14). Compile source style names to IDs; no runtime string lookup on the
 hot path.
+
 - [x] `TokenId`/`StyleId` interning: six semantic namespaces (`color.*`, `spacing.*`,
       `radius.*`, `typography.*`, `elevation.*`, `motion.*`) fold to compact ids via
       `TokenInterner` (cold string map, build-time only). A `Theme` maps each `TokenId` to a
-      `StateStore` cell — so a token's *value* lives in a normal state cell and resolution is
+      `StateStore` cell — so a token's _value_ lives in a normal state cell and resolution is
       a `Vec` index plus a state read, never a string map (§14/§29). (`crates/ui/src/token.rs`)
 - [x] A node's `StyleId` references resolved tokens (`fill`/`radius`), not literals, folding
       onto its warm `BoxStyle` in place — so a theme swap re-resolves without touching node
@@ -232,6 +250,7 @@ hot path.
 - [x] Struck `§`/Makepad refs from every touched file. Committed per section.
 
 **Deferred from Slice F**
+
 - **Non-color/radius tokens** — only `fill` (a `color.*` token) and `radius` are tokenizable
   this slice, since those are all `BoxStyle` carries. `border`, and the `spacing`/`typography`/
   `elevation`/`motion` namespaces, stay literal until a consumer (a bordered widget, a text
@@ -246,7 +265,9 @@ hot path.
   class is per-field and lands with the first such token's consumer.
 
 ### Slice G — Semantics
+
 Doc §69 item 10 (§15). Accessibility tree generated from the Node model, incrementally.
+
 - [x] `SemanticsTree` derived from nodes: role, label, state (focused), bounds.
       Generated from the Node model (§69 exit: "semantics 从 Node 模型天然生成"), not a
       parallel hand-maintained tree. `semantics.rs` value types (`Role`/`Semantics`/
@@ -267,12 +288,13 @@ Doc §69 item 10 (§15). Accessibility tree generated from the Node model, incre
 - [x] Stripped `§`/Makepad refs from every file touched. Committed per section.
 
 **Deferred from Slice G**
+
 - **Per-subtree incremental caching** — the whole tree re-derives on any SEMANTICS dirt
   (SEMANTICS bubbles to root, so any change reaches `root`). A cached previous tree +
   per-subtree rebuild lands when a large tree makes the full walk hot — a §37 perf-measured
-  refinement, not now. The exit criterion is met at the *invalidation* level: a clean frame
+  refinement, not now. The exit criterion is met at the _invalidation_ level: a clean frame
   derives nothing; only a semantic change triggers a rebuild.
-- **Text-node label invalidation** — a label on a *text* node is MEASURE+LAYOUT+PAINT+SEMANTICS
+- **Text-node label invalidation** — a label on a _text_ node is MEASURE+LAYOUT+PAINT+SEMANTICS
   (§11); this slice's label is SEMANTICS-only because there is no text node yet. The MEASURE/
   LAYOUT classes join `set_semantics` (or the text widget's own setter) when the first text
   control lands.
@@ -283,6 +305,7 @@ Doc §69 item 10 (§15). Accessibility tree generated from the Node model, incre
   slice, no `accesskit` dependency in the ui tier.
 
 ### Wrap-up for Phase 4
+
 - [x] `01-counter` example: a real interactive counter (button click → `set` → bound label
       re-derives / bar repaints), the first end-to-end interactive Viso app. Headless input-tape
       test (`crates/viso/tests/counter.rs`) asserts the click drives exactly the counter's dirty
@@ -301,12 +324,34 @@ Doc §69 item 10 (§15). Accessibility tree generated from the Node model, incre
       Phase 4 interactive-scene exit is met — an app authors its retained tree in `build`, a
       pointer click drives targeted reactive invalidation with no full-tree rebuild, verified
       headlessly. Deferred Scroll/VirtualList/Grid remain the only §69 items outstanding (below).
-- [ ] Deferred to a follow-up Phase 4 slice (tracked, not this pass): Scroll (§69 item 7),
-      VirtualList (item 8), Grid/Adaptive (item 11).
+- [x] Slice H — Scroll (§69 item 7). DONE.
+      Spec: `docs/superpowers/specs/2026-09-02-phase4-slice-h-scroll-design.md`.
+      As built: `LayoutInput::Scroll { axis, size }` viewport laying out a single content child at
+      its natural extent along `axis` (overflow scrolls); `NodeStore` scroll columns `scroll`
+      (offset, nonzero only on viewports), `world` (scrolled world rect, derived), `content`
+      (viewport content extent), and `capture` (pointer-capture holder). `scroll_by(id, delta)`
+      clamps per axis to `[0, scroll_range]` and marks `TRANSFORM | HIT_TEST | PAINT` — never
+      LAYOUT/MEASURE, never bubbles. `resolve_transforms(root)` (run at the end of `layout()`)
+      pre-order derives `world = bounds − accumulated ancestor scroll`. Paint wraps viewport
+      children in a `Layer{clip: world}` / `LayerEnd`; hit testing reads `world` and narrows the
+      clip on entering a viewport. `ScrollEvent` + `ScrollRouter::route` select the innermost
+      viewport under the pointer and chain nested scrollers per axis (allocation-free hit test +
+      parent-link walk). Facade `on_input` lowers `InputSample::Scroll`. Pointer capture: the
+      pointer router routes to the captured node when set, releasing only on explicit
+      `release_pointer()`; `EventCx` gained capture/`stop_propagation` requests threaded through
+      a shared `Dispatched { ran, stop }` return across the pointer/key/IME dispatch chain.
+      Verified: `cargo xtask check-deps` (13 crates), fmt, clippy `-D warnings`, full `cargo test`
+      (101 ui unit tests incl. scroll_by clamping, resolve_transforms world shift, scroll-clip
+      paint layer, hit-test under scroll clip, axis-delta absorption, clamp, cross-axis, miss,
+      nested-scroll split; 3 facade `scroll_routing` integration tests). No shader change, so no
+      Metal validation needed.
+- [ ] Deferred to a follow-up Phase 4 slice (tracked, not this pass): VirtualList (§69 item 8),
+      Grid/Adaptive (item 11).
 
 ---
 
 ## Open design note — driver → scheduler StateDirty channel
+
 `RuntimeCx` currently exposes only `request_redraw(window)` (a platform beat), not
 `add(RedrawReason::StateDirty)`. The scheduler adds reasons itself from raw events;
 a `RedrawRequested` beat drains whatever reasons are pending. Cleanest fit for B2:
