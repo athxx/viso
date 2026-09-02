@@ -105,11 +105,15 @@ fn focus_change_updates_only_that_nodes_semantics() {
     store.clear_dirty();
     assert_eq!(focus_next(&mut store, root, true), Some(b));
     assert!(
-        store.dirty(a).contains(DirtyClass::PAINT | DirtyClass::SEMANTICS),
+        store
+            .dirty(a)
+            .contains(DirtyClass::PAINT | DirtyClass::SEMANTICS),
         "the focus move marked both PAINT and SEMANTICS on the old node"
     );
     assert!(
-        store.dirty(b).contains(DirtyClass::PAINT | DirtyClass::SEMANTICS),
+        store
+            .dirty(b)
+            .contains(DirtyClass::PAINT | DirtyClass::SEMANTICS),
         "and on the new node"
     );
     let tree = store

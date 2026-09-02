@@ -722,8 +722,16 @@ mod tests {
         // Move a -> b: exactly a and b repaint and re-fold their semantics.
         focus_next(&mut store, root, true);
         assert_eq!(store.focused(), Some(b));
-        assert!(store.dirty(a).contains(DirtyClass::PAINT | DirtyClass::SEMANTICS));
-        assert!(store.dirty(b).contains(DirtyClass::PAINT | DirtyClass::SEMANTICS));
+        assert!(
+            store
+                .dirty(a)
+                .contains(DirtyClass::PAINT | DirtyClass::SEMANTICS)
+        );
+        assert!(
+            store
+                .dirty(b)
+                .contains(DirtyClass::PAINT | DirtyClass::SEMANTICS)
+        );
         // The parent never repaints; it only learns via the bubbling SEMANTICS
         // mark that its subtree's accessibility changed.
         assert!(
