@@ -157,6 +157,57 @@ impl NodeArena {
         }
         true
     }
+
+    /// Unlink `child` from its parent and siblings, leaving it a live orphan
+    /// (parent/prev/next cleared, but the slot stays occupied and its generation
+    /// is untouched — the id remains valid). This is the detach half of node
+    /// recycling: a virtual list parks a mounted host out of the tree without
+    /// freeing it, then re-attaches it elsewhere with [`append_child`]. A no-op
+    /// returning `false` if `child` is not live or has no parent.
+    ///
+    /// [`append_child`]: Self::append_child
+    pub fn detach_child(&mut self, child: NodeId) -> bool {
+        if !self.is_live(child) {
+            return false;
+        }
+        let Some(links) = self.links(child) else {
+            return false;
+        };
+        let parent = links.parent;
+        let prev = links.prev_sibling;
+        let next = links.next_sibling;
+        let Some(parent) = parent else {
+            return false; // already an orphan / root — nothing to unlink.
+        };
+
+        // Splice the sibling chain closed across the removed child.
+        if let Some(prev) = prev
+            && let Some(prev_links) = self.links_mut(prev)
+        {
+            prev_links.next_sibling = next;
+        }
+        if let Some(next) = next
+            && let Some(next_links) = self.links_mut(next)
+        {
+            next_links.prev_sibling = prev;
+        }
+        // Repair the parent's endpoints if the child was first/last.
+        if let Some(parent_links) = self.links_mut(parent) {
+            if parent_links.first_child == Some(child) {
+                parent_links.first_child = next;
+            }
+            if parent_links.last_child == Some(child) {
+                parent_links.last_child = prev;
+            }
+        }
+        // Clear the child's own links so it is a clean orphan.
+        if let Some(child_links) = self.links_mut(child) {
+            child_links.parent = None;
+            child_links.prev_sibling = None;
+            child_links.next_sibling = None;
+        }
+        true
+    }
 }
 
 #[cfg(test)]
@@ -181,6 +232,47 @@ mod tests {
         assert!(!arena.is_live(a), "stale handle must be detectable");
         // Double free is rejected.
         assert!(!arena.free(a));
+    }
+
+    #[test]
+    fn detach_child_unlinks_but_keeps_alive() {
+        let mut arena = NodeArena::new();
+        let parent = arena.alloc();
+        let a = arena.alloc();
+        let b = arena.alloc();
+        let c = arena.alloc();
+        arena.append_child(parent, a);
+        arena.append_child(parent, b);
+        arena.append_child(parent, c);
+
+        // Detach the middle child: siblings splice, child stays live, orphaned.
+        assert!(arena.detach_child(b));
+        assert!(arena.is_live(b), "detach must not free the slot");
+        let bl = *arena.links(b).unwrap();
+        assert_eq!(bl.parent, None);
+        assert_eq!(bl.prev_sibling, None);
+        assert_eq!(bl.next_sibling, None);
+        // a <-> c are now adjacent.
+        assert_eq!(arena.links(a).unwrap().next_sibling, Some(c));
+        assert_eq!(arena.links(c).unwrap().prev_sibling, Some(a));
+        assert_eq!(arena.links(parent).unwrap().first_child, Some(a));
+        assert_eq!(arena.links(parent).unwrap().last_child, Some(c));
+
+        // Detach the first child: parent's first_child advances.
+        assert!(arena.detach_child(a));
+        assert_eq!(arena.links(parent).unwrap().first_child, Some(c));
+        assert_eq!(arena.links(c).unwrap().prev_sibling, None);
+
+        // Detach the last remaining child: parent becomes childless.
+        assert!(arena.detach_child(c));
+        assert_eq!(arena.links(parent).unwrap().first_child, None);
+        assert_eq!(arena.links(parent).unwrap().last_child, None);
+
+        // A detached orphan / root has nothing to unlink.
+        assert!(!arena.detach_child(b));
+        // Re-attaching a parked host works.
+        assert!(arena.append_child(parent, b));
+        assert_eq!(arena.links(parent).unwrap().first_child, Some(b));
     }
 
     #[test]
