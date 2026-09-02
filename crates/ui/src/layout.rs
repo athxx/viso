@@ -780,7 +780,13 @@ fn layout_grid(tree: &mut impl LayoutTree, root: u32, bounds: Rect, scratch: &mu
     // Solve both axes.
     let mut col_sizes: Vec<f32> = Vec::new();
     let mut row_sizes: Vec<f32> = Vec::new();
-    crate::grid::solve_tracks(&col_tracks, column_gap, content_w, &col_auto, &mut col_sizes);
+    crate::grid::solve_tracks(
+        &col_tracks,
+        column_gap,
+        content_w,
+        &col_auto,
+        &mut col_sizes,
+    );
     crate::grid::solve_tracks(&row_tracks, row_gap, content_h, &row_auto, &mut row_sizes);
 
     // Prefix-sum track offsets (with gaps) from the padded content origin.
@@ -816,7 +822,12 @@ fn layout_grid(tree: &mut impl LayoutTree, root: u32, bounds: Rect, scratch: &mu
             Length::Fit => tree.measured(child).on(Axis::Column),
             Length::Fill { .. } => cell.h,
         };
-        let child_box = Rect { x: cell.x, y: cell.y, w: cw, h: ch };
+        let child_box = Rect {
+            x: cell.x,
+            y: cell.y,
+            w: cw,
+            h: ch,
+        };
         layout(tree, child, child_box, scratch);
     }
 }
@@ -843,12 +854,15 @@ fn prefix_offsets(sizes: &[f32], gap: f32) -> Vec<f32> {
 /// interior gaps belong to the cell, the gap after it does not).
 fn span_end(offsets: &[f32], sizes: &[f32], start: u16, span: u16, gap: f32) -> f32 {
     let end_track = (start + span) as usize;
-    if end_track >= offsets.len() {
-        // Span runs to (or past) the last track: end at the final offset.
+    // The final offset entry is the content end: it carries no trailing gap
+    // (`prefix_offsets` omits the gap after the last track), so a span reaching
+    // it ends there directly with nothing to subtract.
+    if end_track >= offsets.len() - 1 {
         return *offsets.last().unwrap_or(&0.0);
     }
-    // offsets[end_track] includes the gap before end_track; subtract it so the
-    // cell's far edge sits at the end of the last covered track.
+    // A span ending on an interior track: offsets[end_track] includes the gap
+    // before end_track; subtract it so the cell's far edge sits at the end of
+    // the last covered track, not into the following gap.
     let _ = sizes;
     offsets[end_track] - gap
 }
@@ -971,12 +985,214 @@ mod tests {
         crate::layout::layout(
             &mut store,
             grid.index(),
-            Rect { x: 0.0, y: 0.0, w: 200.0, h: 200.0 },
+            Rect {
+                x: 0.0,
+                y: 0.0,
+                w: 200.0,
+                h: 200.0,
+            },
             &mut scratch,
         );
-        assert_eq!(store.bounds(kids[0]), Rect { x: 0.0, y: 0.0, w: 100.0, h: 100.0 });
-        assert_eq!(store.bounds(kids[1]), Rect { x: 100.0, y: 0.0, w: 100.0, h: 100.0 });
-        assert_eq!(store.bounds(kids[2]), Rect { x: 0.0, y: 100.0, w: 100.0, h: 100.0 });
-        assert_eq!(store.bounds(kids[3]), Rect { x: 100.0, y: 100.0, w: 100.0, h: 100.0 });
+        assert_eq!(
+            store.bounds(kids[0]),
+            Rect {
+                x: 0.0,
+                y: 0.0,
+                w: 100.0,
+                h: 100.0
+            }
+        );
+        assert_eq!(
+            store.bounds(kids[1]),
+            Rect {
+                x: 100.0,
+                y: 0.0,
+                w: 100.0,
+                h: 100.0
+            }
+        );
+        assert_eq!(
+            store.bounds(kids[2]),
+            Rect {
+                x: 0.0,
+                y: 100.0,
+                w: 100.0,
+                h: 100.0
+            }
+        );
+        assert_eq!(
+            store.bounds(kids[3]),
+            Rect {
+                x: 100.0,
+                y: 100.0,
+                w: 100.0,
+                h: 100.0
+            }
+        );
+    }
+
+    /// A surface-local box at the origin with the given extent — the root bounds
+    /// a caller hands `layout` for a top-level container.
+    fn surface_local(w: f32, h: f32) -> Rect {
+        Rect {
+            x: 0.0,
+            y: 0.0,
+            w,
+            h,
+        }
+    }
+
+    /// Allocate a track-less grid node of a given size as a grid child. A grid
+    /// node with no tracks measures to its own `Size` request and is placed by
+    /// its parent's grid arm exactly like a sized leaf: a `Fill` size stretches
+    /// to the cell, a `Fixed` size hugs top-left. This is the same leaf-stand-in
+    /// the sibling placement test relies on.
+    fn cell_child(store: &mut crate::component::NodeStore, size: Size) -> crate::NodeId {
+        use crate::grid::GridStyle;
+        store.alloc_grid(GridStyle {
+            columns: Vec::new(),
+            rows: Vec::new(),
+            size,
+            ..Default::default()
+        })
+    }
+
+    #[test]
+    fn gap_and_padding_offset_cells_and_shrink_free_space() {
+        use crate::component::NodeStore;
+        use crate::grid::{GridStyle, TrackSizing};
+        use crate::layout::Inset;
+        let mut store = NodeStore::new();
+        // 2 cols 1fr, 20px column gap, 10px uniform padding, box 250 wide.
+        // content width = 250 - 20(padding) = 230; free = 230 - 20(gap) = 210;
+        // each col = 105. Second col starts at pad(10) + 105 + gap(20) = 135.
+        let grid = store.alloc_grid(GridStyle {
+            columns: vec![TrackSizing::Fr(1.0), TrackSizing::Fr(1.0)],
+            rows: vec![TrackSizing::Fixed(50.0)],
+            column_gap: 20.0,
+            padding: Inset::all(10.0),
+            size: Size::fixed(250.0, 70.0),
+            ..Default::default()
+        });
+        let a = cell_child(&mut store, Size::fill());
+        let b = cell_child(&mut store, Size::fill());
+        store.arena_append_child(grid, a);
+        store.arena_append_child(grid, b);
+        let mut scratch = Vec::new();
+        crate::layout::measure(&mut store, grid.index(), &mut scratch);
+        crate::layout::layout(
+            &mut store,
+            grid.index(),
+            surface_local(250.0, 70.0),
+            &mut scratch,
+        );
+        assert_eq!(store.bounds(a).x, 10.0);
+        assert_eq!(store.bounds(a).w, 105.0);
+        assert_eq!(store.bounds(b).x, 135.0);
+        assert_eq!(store.bounds(b).w, 105.0);
+    }
+
+    #[test]
+    fn a_fit_child_hugs_its_content_within_the_cell() {
+        use crate::component::NodeStore;
+        use crate::grid::{GridStyle, TrackSizing};
+        let mut store = NodeStore::new();
+        let grid = store.alloc_grid(GridStyle {
+            columns: vec![TrackSizing::Fixed(100.0)],
+            rows: vec![TrackSizing::Fixed(100.0)],
+            size: Size::fixed(100.0, 100.0),
+            ..Default::default()
+        });
+        // A fixed 30x40 child hugs top-left of the 100x100 cell.
+        let c = cell_child(&mut store, Size::fixed(30.0, 40.0));
+        store.arena_append_child(grid, c);
+        let mut scratch = Vec::new();
+        crate::layout::measure(&mut store, grid.index(), &mut scratch);
+        crate::layout::layout(
+            &mut store,
+            grid.index(),
+            surface_local(100.0, 100.0),
+            &mut scratch,
+        );
+        assert_eq!(
+            store.bounds(c),
+            Rect {
+                x: 0.0,
+                y: 0.0,
+                w: 30.0,
+                h: 40.0
+            }
+        );
+    }
+
+    #[test]
+    fn adding_children_creates_implicit_rows() {
+        use crate::component::NodeStore;
+        use crate::grid::{GridStyle, TrackSizing};
+        let mut store = NodeStore::new();
+        // 2 cols, explicit rows empty → all rows implicit at auto_rows = Fixed(40).
+        // Five children → 3 rows (2,2,1). Fifth child at (0, row 2) → y = 80.
+        let grid = store.alloc_grid(GridStyle {
+            columns: vec![TrackSizing::Fixed(50.0), TrackSizing::Fixed(50.0)],
+            rows: vec![],
+            auto_rows: TrackSizing::Fixed(40.0),
+            size: Size::fixed(100.0, 120.0),
+            ..Default::default()
+        });
+        let mut kids = Vec::new();
+        for _ in 0..5 {
+            let k = cell_child(&mut store, Size::fill());
+            store.arena_append_child(grid, k);
+            kids.push(k);
+        }
+        let mut scratch = Vec::new();
+        crate::layout::measure(&mut store, grid.index(), &mut scratch);
+        crate::layout::layout(
+            &mut store,
+            grid.index(),
+            surface_local(100.0, 120.0),
+            &mut scratch,
+        );
+        assert_eq!(store.bounds(kids[4]).y, 80.0);
+        assert_eq!(store.bounds(kids[4]).h, 40.0);
+    }
+
+    #[test]
+    fn repeated_layout_of_a_stable_grid_grows_no_scratch() {
+        use crate::component::NodeStore;
+        use crate::grid::{GridStyle, TrackSizing};
+        let mut store = NodeStore::new();
+        let grid = store.alloc_grid(GridStyle {
+            columns: vec![TrackSizing::Fr(1.0), TrackSizing::Fr(1.0)],
+            rows: vec![TrackSizing::Fr(1.0), TrackSizing::Fr(1.0)],
+            size: Size::fixed(200.0, 200.0),
+            ..Default::default()
+        });
+        for _ in 0..4 {
+            let k = cell_child(&mut store, Size::fill());
+            store.arena_append_child(grid, k);
+        }
+        let mut scratch = Vec::new();
+        // Warm up, then assert the shared scratch capacity is stable across frames.
+        crate::layout::layout(
+            &mut store,
+            grid.index(),
+            surface_local(200.0, 200.0),
+            &mut scratch,
+        );
+        let cap = scratch.capacity();
+        for _ in 0..50 {
+            crate::layout::layout(
+                &mut store,
+                grid.index(),
+                surface_local(200.0, 200.0),
+                &mut scratch,
+            );
+        }
+        assert_eq!(
+            scratch.capacity(),
+            cap,
+            "shared layout scratch must not grow per frame"
+        );
     }
 }
