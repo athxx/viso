@@ -345,8 +345,45 @@ Doc §69 item 10 (§15). Accessibility tree generated from the Node model, incre
       paint layer, hit-test under scroll clip, axis-delta absorption, clamp, cross-axis, miss,
       nested-scroll split; 3 facade `scroll_routing` integration tests). No shader change, so no
       Metal validation needed.
-- [ ] Deferred to a follow-up Phase 4 slice (tracked, not this pass): VirtualList (§69 item 8),
-      Grid/Adaptive (item 11).
+- [x] Slice I — VirtualList (§69 item 8, §12.4). DONE.
+      ADR: `docs/adr/0008-virtual-list-viewport-reconcile-and-recycle.md`.
+      As built: a VirtualList *is* a `LayoutInput::Scroll { axis, size }` viewport (so ADR 0007's
+      `scroll_by`/`scroll_range`/`ScrollRouter`/clip/hit-test are reused unchanged) over a single
+      content child = an `AbsoluteRows { axis, size }` canvas sized `Fixed(total_extent)` main /
+      `Fixed(cross)` — the canvas's own fixed extent is the spacer, so `scroll_range == total −
+      viewport` is correct without mounting all items. New `NodeStore` warm column `row_offset:
+      Vec<f32>` (sentinel = not a positioned row), read via a `LayoutTree::row_offset` hook; the
+      `AbsoluteRows` layout arm places each mounted child at `main = row_offset(child)`, cross =
+      fill. Data model in `crates/ui/src/virtual_list.rs`: `HeightTree` (Fenwick/BIT over f32,
+      O(log n) `prefix_sum`/`point_query`/`update`/`total`/`find_position`/`resize`/
+      `update_default_height`), `HeightCache` (running mean, fallback = estimate),
+      `VirtualListState` (height tree+cache, index anchor, window, `mounted`, `pool`, boxed
+      builder, canvas id, reused scratch), and `VirtualLists` (`Vec<Option<Box<..>>>` keyed by
+      viewport `NodeId::index()` — dense index, no hash; driver-owned, not a NodeStore column, not
+      a per-node HashMap). `virtual_list::reconcile(store, lists, states, bindings, effects)` runs
+      in `FramePhase::Layout` **before** `relayout_and_paint`, gated to a no-op when
+      `scroll == last_reconciled_scroll && !dirty_data` (steady within-row scroll = pure ADR 0007
+      transform, 0 rebind, no LAYOUT); on a crossing it recycles leaving hosts to `pool`, pops/
+      builds entering hosts, rewrites `row_offset`, and marks the canvas `LAYOUT` — **never
+      `STRUCTURE`** (which bubbles) — so relayout stays contained to the canvas subtree.
+      `absorb_measurements` (after relayout) feeds measured heights back into the height tree and
+      sets `dirty_data` for anchor renormalization (variable-height scroll correction). Recycle
+      API: `NodeArena::detach_child` (unlink, keep slot valid+parked), `NodeStore::free_subtree`
+      (post-order free descendants only, `effects.cancel_for_node` per node so scoped effects
+      clean up on unmount), `BuildCx::with_parent` (author a body under a host). Public
+      `VirtualListStyle` + `BuildCx::virtual_list(style, item_count, item_fn)` mounts no items at
+      build; logical index = identity this slice (`key_of` hook reserved for Phase 7 reorder).
+      `AppDriver` gained a `virtual_lists` field, reset in `on_launch`, reconciled each Layout
+      phase. Measured (§7.3 / §36): release `crates/ui/benches/large_list.rs` over a 100k-row list
+      — steady within-row frame ≈ 357 ns, boundary-crossing frame ≈ 5.4 µs; the bench's startup
+      assertion proves the steady path rebinds 0 rows and grows no reused scratch.
+      Verified: `cargo xtask check-deps` (13 crates; criterion is a dev-dep, not a DAG edge), fmt,
+      clippy `-D warnings`, full `cargo test` (121 ui unit tests incl. height-tree round-trips,
+      the Appendix C mount-window assertion, steady 0-churn, 3-in/3-out recycle with pool
+      conserved, variable-height anchor preservation, scroll-to-end clamp, item-count growth, the
+      allocation guard, and effect-cleanup-on-unmount; 3 facade `virtual_list_seam` integration
+      tests). No shader change, so no Metal validation needed.
+- [ ] Deferred to a follow-up Phase 4 slice (tracked, not this pass): Grid/Adaptive (§69 item 11).
 
 ---
 
