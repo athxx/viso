@@ -156,7 +156,8 @@ fn a_sub_window_scroll_stays_on_the_steady_path() {
     let mounted_before = seam.lists.get(seam.viewport).unwrap().mounted_count();
 
     // Scroll 10px — less than a row — the visible window is unchanged.
-    seam.store.scroll_by(seam.viewport, Vec2 { x: 0.0, y: 10.0 });
+    seam.store
+        .scroll_by(seam.viewport, Vec2 { x: 0.0, y: 10.0 });
     let bound = seam.frame();
     assert_eq!(bound, 0, "a sub-row scroll rebinds nothing");
     assert_eq!(
@@ -174,12 +175,19 @@ fn crossing_a_boundary_recycles_a_bounded_handful() {
     let mut seam = Seam::build();
     seam.frame();
     // Scroll deep into the middle so the window is overscan-bounded on both sides.
-    seam.store.scroll_by(seam.viewport, Vec2 { x: 0.0, y: 30_000.0 });
+    seam.store.scroll_by(
+        seam.viewport,
+        Vec2 {
+            x: 0.0,
+            y: 30_000.0,
+        },
+    );
     seam.frame();
     let mounted_before = seam.lists.get(seam.viewport).unwrap().mounted_count();
 
     // Advance exactly three rows.
-    seam.store.scroll_by(seam.viewport, Vec2 { x: 0.0, y: 90.0 });
+    seam.store
+        .scroll_by(seam.viewport, Vec2 { x: 0.0, y: 90.0 });
     let bound = seam.frame();
     assert_eq!(bound, 3, "advancing by 3 rows binds exactly 3");
     assert_eq!(
