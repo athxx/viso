@@ -383,7 +383,41 @@ Doc §69 item 10 (§15). Accessibility tree generated from the Node model, incre
       conserved, variable-height anchor preservation, scroll-to-end clamp, item-count growth, the
       allocation guard, and effect-cleanup-on-unmount; 3 facade `virtual_list_seam` integration
       tests). No shader change, so no Metal validation needed.
-- [ ] Deferred to a follow-up Phase 4 slice (tracked, not this pass): Grid/Adaptive (§69 item 11).
+- [x] Slice J — Grid (§69 item 11). DONE (full version: Fixed/Fr/Auto/Percent tracks, spanning,
+      auto-flow + explicit placement). ADR: `docs/adr/0009-grid-layout-track-sizing-and-placement.md`.
+      As built: the reference framework has no true grid, so Grid is designed from first principles —
+      only the re-normalizing Fr free-space sweep is reused. New `LayoutInput::Grid { column_count,
+      row_count, column_gap, row_gap, padding, auto_rows, size }` carries only `Copy` scalars; the
+      variable-length column/row `TrackSizing` templates + per-child `GridPlacement` ride in two
+      `NodeStore` warm side-columns (`grid_tracks: Vec<Option<Box<GridTracks>>>`, `grid_placement:
+      Vec<GridPlacement>`), read via `LayoutTree::{grid_column_tracks, grid_row_tracks,
+      grid_placement}` hooks — so `LayoutInput` stays `Copy` and the pass stays registry-free (same
+      pattern as Scroll/VirtualList). `TrackSizing { Fixed(f32), Fr(f32), Auto, Percent(f32) }` is a
+      deliberately separate enum from `Length` (a track slot resolved against the grid content extent,
+      with `Percent` having no `Length` analogue) so no Flex/Leaf/Scroll/AbsoluteRows match site
+      reasons about grid semantics. `crates/ui/src/grid.rs`: `place_children` (explicit-first, then
+      auto-flow row-major over a `Vec<u64>` occupied bitset, implicit rows via `auto_rows`, returns
+      row count) and `solve_tracks` (pass 1 Fixed/Percent/Auto; pass 2 re-normalizing Fr sweep). The
+      `layout_grid` arm in `crates/ui/src/layout.rs` places children, solves both axes, computes cell
+      rects by `prefix_offsets`/`span_end` (interior span gaps belong to the cell, trailing gap does
+      not), and lays each child into its cell honoring its own `Size` (a `Fill` child stretches, a
+      `Fixed`/`Fit` child hugs — so a nested `flex` composes inside a cell). Authoring API:
+      `BuildCx::grid(style, children)` + `BuildCx::place(placement)` (pins the next child, cleared
+      after use, never leaks to a sibling). Facade re-exports `GridStyle`/`TrackSizing`/`GridPlacement`
+      via `viso_ui`; `grid_seam` guards the surface. Measured (§7.3 / §36): release
+      `crates/ui/benches/grid_layout.rs` — `grid_relayout_12x20` (240-cell Fr grid, full re-layout)
+      ≈ 8.33 µs median (`[8.13, 8.33, 8.51] µs`); the bench asserts scratch capacity does not grow
+      across frames.
+      Verified: `cargo xtask check-deps` (13 crates), fmt, clippy `-D warnings`, full `cargo test`
+      (grid.rs 11 unit tests — placement defaults, auto-flow wrap, explicit routing, span-2, and the
+      6 solver cases; layout.rs 6 arm tests incl. `a_two_by_two_fr_grid_places_children_in_cells`,
+      `gap_and_padding_offset_cells_and_shrink_free_space`, `a_fit_child_hugs_its_content_within_the_cell`,
+      `adding_children_creates_implicit_rows`, `repeated_layout_of_a_stable_grid_grows_no_scratch`;
+      `build_cx_grid_places_an_explicit_child`; facade `grid_seam`). No shader change, so no Metal
+      validation needed.
+      Deferred (per ADR 0009): `minmax`/`repeat`/`fit-content`, named lines/template-areas, subgrid,
+      baseline alignment, spanning-item contribution to Auto track sizing, per-grid-node `GridScratch`
+      hoisting, and Adaptive (the other half of §69 item 11) — each its own later slice.
 
 ---
 
