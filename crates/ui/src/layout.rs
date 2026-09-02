@@ -515,9 +515,10 @@ pub fn layout(tree: &mut impl LayoutTree, root: u32, bounds: Rect, scratch: &mut
             return;
         }
         LayoutInput::Leaf { .. } => return, // Leaf: bounds are final.
-        // The grid box's own bounds are set above; placing children into cells
-        // is the grid layout pass, which lands in a later task.
-        LayoutInput::Grid { .. } => return,
+        LayoutInput::Grid { .. } => {
+            layout_grid(tree, root, bounds, scratch);
+            return;
+        }
     };
 
     let start = scratch.len();
@@ -696,6 +697,162 @@ fn layout_absolute_rows(
     scratch.truncate(start);
 }
 
+/// Lay out a grid: place children into cells (auto-flow + explicit), solve the
+/// column and row track extents (Fixed/Percent/Auto/Fr), then lay each child
+/// into its cell rect honoring its own `Size`. The grid's inner content area is
+/// its box minus padding; cell offsets are prefix sums of the resolved tracks
+/// with the gap between adjacent tracks. Auto tracks use the max natural main
+/// size of the single-track children on them.
+fn layout_grid(tree: &mut impl LayoutTree, root: u32, bounds: Rect, scratch: &mut Vec<u32>) {
+    let LayoutInput::Grid {
+        column_count,
+        column_gap,
+        row_gap,
+        padding,
+        auto_rows,
+        ..
+    } = tree.input(root)
+    else {
+        return;
+    };
+
+    // Snapshot children and their placements (the solver reads all children
+    // before recursing, and recursion reuses `scratch`).
+    let start = scratch.len();
+    tree.children(root, scratch);
+    let child_count = scratch.len() - start;
+    if child_count == 0 {
+        scratch.truncate(start);
+        return;
+    }
+    let children: Vec<u32> = scratch[start..start + child_count].to_vec();
+    scratch.truncate(start);
+
+    let cols = column_count.max(1);
+    let placements: Vec<crate::grid::GridPlacement> =
+        children.iter().map(|&c| tree.grid_placement(c)).collect();
+
+    // Placement pass.
+    let mut occupied: Vec<u64> = Vec::new();
+    let mut regions: Vec<crate::grid::CellRegion> = Vec::new();
+    let row_used = crate::grid::place_children(cols, &placements, &mut occupied, &mut regions);
+
+    // Inner content area (box minus padding).
+    let content_w = (rect_len(bounds, Axis::Row) - padding.main(Axis::Row)).max(0.0);
+    let content_h = (rect_len(bounds, Axis::Column) - padding.main(Axis::Column)).max(0.0);
+
+    // Build the column track template (explicit) and the row template extended
+    // with implicit `auto_rows` up to `row_used`.
+    let col_tracks: Vec<crate::grid::TrackSizing> = match tree.grid_column_tracks(root) {
+        Some(t) if !t.is_empty() => t.to_vec(),
+        _ => vec![crate::grid::TrackSizing::Auto; cols as usize],
+    };
+    let mut row_tracks: Vec<crate::grid::TrackSizing> = tree
+        .grid_row_tracks(root)
+        .map(|t| t.to_vec())
+        .unwrap_or_default();
+    while (row_tracks.len() as u16) < row_used {
+        row_tracks.push(auto_rows);
+    }
+
+    // Auto maxes: for each track, the max natural main size of the span-1 items
+    // whose start lies on that track (a spanning item is not attributed to a
+    // single track here — a deferred refinement noted in the ADR).
+    let mut col_auto = vec![0.0f32; col_tracks.len()];
+    let mut row_auto = vec![0.0f32; row_tracks.len()];
+    for (i, &child) in children.iter().enumerate() {
+        let r = regions[i];
+        let cm = tree.measured(child);
+        if r.col_span == 1 {
+            let c = r.col as usize;
+            if c < col_auto.len() {
+                col_auto[c] = col_auto[c].max(cm.on(Axis::Row));
+            }
+        }
+        if r.row_span == 1 {
+            let rr = r.row as usize;
+            if rr < row_auto.len() {
+                row_auto[rr] = row_auto[rr].max(cm.on(Axis::Column));
+            }
+        }
+    }
+
+    // Solve both axes.
+    let mut col_sizes: Vec<f32> = Vec::new();
+    let mut row_sizes: Vec<f32> = Vec::new();
+    crate::grid::solve_tracks(&col_tracks, column_gap, content_w, &col_auto, &mut col_sizes);
+    crate::grid::solve_tracks(&row_tracks, row_gap, content_h, &row_auto, &mut row_sizes);
+
+    // Prefix-sum track offsets (with gaps) from the padded content origin.
+    let origin_x = rect_start(bounds, Axis::Row) + padding.main_start(Axis::Row);
+    let origin_y = rect_start(bounds, Axis::Column) + padding.main_start(Axis::Column);
+    let col_offsets = prefix_offsets(&col_sizes, column_gap);
+    let row_offsets = prefix_offsets(&row_sizes, row_gap);
+
+    // Lay each child into its cell rect. A cell spanning k tracks measures
+    // offset(start) .. offset(start+span) minus the trailing gap.
+    for (i, &child) in children.iter().enumerate() {
+        let r = regions[i];
+        let cx0 = col_offsets[r.col as usize];
+        let cx1 = span_end(&col_offsets, &col_sizes, r.col, r.col_span, column_gap);
+        let ry0 = row_offsets[r.row as usize];
+        let ry1 = span_end(&row_offsets, &row_sizes, r.row, r.row_span, row_gap);
+        let cell = Rect {
+            x: origin_x + cx0,
+            y: origin_y + ry0,
+            w: (cx1 - cx0).max(0.0),
+            h: (ry1 - ry0).max(0.0),
+        };
+        // The child fills its cell when it requests Fill/Stretch; a Fixed/Fit
+        // child hugs its own size, top-left within the cell.
+        let size = tree.input(child).size();
+        let cw = match size.width {
+            Length::Fixed(v) => v,
+            Length::Fit => tree.measured(child).on(Axis::Row),
+            Length::Fill { .. } => cell.w,
+        };
+        let ch = match size.height {
+            Length::Fixed(v) => v,
+            Length::Fit => tree.measured(child).on(Axis::Column),
+            Length::Fill { .. } => cell.h,
+        };
+        let child_box = Rect { x: cell.x, y: cell.y, w: cw, h: ch };
+        layout(tree, child, child_box, scratch);
+    }
+}
+
+/// Prefix-sum track start offsets: track `i` starts at the sum of tracks
+/// `0..i` plus `i` gaps. Length = `sizes.len() + 1` (the trailing entry is the
+/// end of the last track, used for span math).
+fn prefix_offsets(sizes: &[f32], gap: f32) -> Vec<f32> {
+    let mut out = Vec::with_capacity(sizes.len() + 1);
+    let mut acc = 0.0f32;
+    for (i, &s) in sizes.iter().enumerate() {
+        out.push(acc);
+        acc += s;
+        if i + 1 < sizes.len() {
+            acc += gap;
+        }
+    }
+    out.push(acc);
+    out
+}
+
+/// The far edge of a span starting at `start` covering `span` tracks: the start
+/// offset of the track just past the span, minus the trailing gap (a span's
+/// interior gaps belong to the cell, the gap after it does not).
+fn span_end(offsets: &[f32], sizes: &[f32], start: u16, span: u16, gap: f32) -> f32 {
+    let end_track = (start + span) as usize;
+    if end_track >= offsets.len() {
+        // Span runs to (or past) the last track: end at the final offset.
+        return *offsets.last().unwrap_or(&0.0);
+    }
+    // offsets[end_track] includes the gap before end_track; subtract it so the
+    // cell's far edge sits at the end of the last covered track.
+    let _ = sizes;
+    offsets[end_track] - gap
+}
+
 /// A [`Vec2`] from a main/cross pair for a given axis.
 #[inline]
 fn axis_pack_vec(axis: Axis, main: f32, cross: f32) -> Vec2 {
@@ -781,5 +938,45 @@ mod tests {
         let m = crate::layout::LayoutTree::measured(&store, grid.index());
         assert_eq!(m.w, 100.0);
         assert_eq!(m.h, 100.0);
+    }
+
+    #[test]
+    fn a_two_by_two_fr_grid_places_children_in_cells() {
+        use crate::component::NodeStore;
+        use crate::grid::{GridStyle, TrackSizing};
+        let mut store = NodeStore::new();
+        // 2x2 grid of 1fr tracks in a 200x200 box → four 100x100 cells.
+        let grid = store.alloc_grid(GridStyle {
+            columns: vec![TrackSizing::Fr(1.0), TrackSizing::Fr(1.0)],
+            rows: vec![TrackSizing::Fr(1.0), TrackSizing::Fr(1.0)],
+            size: Size::fixed(200.0, 200.0),
+            ..Default::default()
+        });
+        // Four fill children auto-flow into the four cells. Each child is a
+        // track-less grid node with a fill size, which behaves as a fill leaf
+        // (it fills its cell and, having no children, adds no further layout).
+        let mut kids = Vec::new();
+        for _ in 0..4 {
+            let k = store.alloc_grid(GridStyle {
+                columns: Vec::new(),
+                rows: Vec::new(),
+                size: Size::fill(),
+                ..Default::default()
+            });
+            store.arena_append_child(grid, k);
+            kids.push(k);
+        }
+        let mut scratch = Vec::new();
+        crate::layout::measure(&mut store, grid.index(), &mut scratch);
+        crate::layout::layout(
+            &mut store,
+            grid.index(),
+            Rect { x: 0.0, y: 0.0, w: 200.0, h: 200.0 },
+            &mut scratch,
+        );
+        assert_eq!(store.bounds(kids[0]), Rect { x: 0.0, y: 0.0, w: 100.0, h: 100.0 });
+        assert_eq!(store.bounds(kids[1]), Rect { x: 100.0, y: 0.0, w: 100.0, h: 100.0 });
+        assert_eq!(store.bounds(kids[2]), Rect { x: 0.0, y: 100.0, w: 100.0, h: 100.0 });
+        assert_eq!(store.bounds(kids[3]), Rect { x: 100.0, y: 100.0, w: 100.0, h: 100.0 });
     }
 }
