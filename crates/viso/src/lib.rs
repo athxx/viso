@@ -57,6 +57,15 @@ pub use viso_ui::context::AppCx;
 pub trait Application: Sized + 'static {
     /// Construct the application. Windows and services are created via `cx`.
     fn new(cx: &mut AppCx) -> Self;
+
+    /// Author the app's retained scene: declare nodes, allocate reactive state,
+    /// register handlers, and wire state→node bindings through `cx`. Runs once
+    /// on launch and replaces the framework's default (empty) scene. `&mut self`
+    /// so the app can stash the [`StateId`](viso_ui::StateId)s / node handles it
+    /// reads from its handlers. The default builds nothing — an empty window.
+    fn build(&mut self, cx: &mut BuildCx<'_>) {
+        let _ = cx;
+    }
 }
 
 /// Run a Viso application to completion.
@@ -533,10 +542,15 @@ pub mod prelude {
     pub use viso_ui::context::AppCx;
     pub use viso_ui::dirty::DirtyClass;
     pub use viso_ui::node::NodeId;
-    // Application, Component, View, Window, Button, Label, Text, Image, List,
-    // Scroll, State, Computed, Event, Task, Route, Theme, Color, Vec2, Rect,
-    // Size, Constraints and the component!/ui!/view!/routes! macros join this
-    // as their subsystems land in later phases.
+    // Scene authoring: the mental model for a real app is `Application::build`
+    // declaring nodes and wiring reactive state, so the authoring context, the
+    // layout styles, the semantics facts, and the state cell handles belong in
+    // the default set (commonly used, stable, unambiguous).
+    pub use viso_ui::{BuildCx, FlexStyle, LeafStyle, Role, Semantics, StateId, StateValue};
+    // View, Window, Button, Label, Text, Image, List, Scroll, Computed, Event,
+    // Task, Route, Theme, Color, Vec2, Rect, Constraints and the
+    // component!/ui!/view!/routes! macros join this as their subsystems land in
+    // later phases.
 }
 
 // -- Advanced escape hatches. Opt-in, clearly namespaced. --
