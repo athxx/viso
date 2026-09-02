@@ -1358,6 +1358,9 @@ pub struct BuildCx<'a> {
     lists: Option<&'a mut crate::virtual_list::VirtualLists>,
     /// Parent cursor stack; the top is the current insertion parent.
     stack: Vec<NodeId>,
+    /// The placement to apply to the next child authored inside the current
+    /// grid closure, then cleared. `None` outside a grid or once consumed.
+    pending_placement: Option<GridPlacement>,
     /// The tree root, set by the first declared node.
     root: Option<NodeId>,
 }
@@ -1374,6 +1377,7 @@ impl<'a> BuildCx<'a> {
             bindings: None,
             lists: None,
             stack: Vec::new(),
+            pending_placement: None,
             root: None,
         }
     }
@@ -1393,6 +1397,7 @@ impl<'a> BuildCx<'a> {
             bindings: Some(bindings),
             lists: Some(lists),
             stack: Vec::new(),
+            pending_placement: None,
             root: None,
         }
     }
@@ -1418,6 +1423,7 @@ impl<'a> BuildCx<'a> {
             bindings: Some(bindings),
             lists: None,
             stack: vec![parent],
+            pending_placement: None,
             root: None,
         }
     }
@@ -1444,6 +1450,47 @@ impl<'a> BuildCx<'a> {
         children(self);
         self.stack.pop();
         Handle { id }
+    }
+
+    /// Declare a grid container and its children. The `children` closure runs
+    /// with this grid as the active parent; each child lands in a cell (auto-flow
+    /// unless a preceding [`BuildCx::place`] pinned it). A child inside a cell
+    /// still honors its own `Size`: a fill child stretches to the cell, a fit or
+    /// fixed child hugs its content — so a nested `flex` composes inside a cell.
+    pub fn grid(&mut self, style: GridStyle, children: impl FnOnce(&mut BuildCx<'_>)) -> Handle {
+        let column_count = style.columns.len().max(1) as u16;
+        let row_count = style.rows.len() as u16;
+        let input = LayoutInput::Grid {
+            column_count,
+            row_count,
+            column_gap: style.column_gap,
+            row_gap: style.row_gap,
+            padding: style.padding,
+            auto_rows: style.auto_rows,
+            size: style.size,
+        };
+        let id = self.push_node(input, style.style);
+        self.store.set_grid_tracks(
+            id,
+            GridTracks {
+                columns: style.columns,
+                rows: style.rows,
+                auto_rows: style.auto_rows,
+            },
+        );
+        self.stack.push(id);
+        children(self);
+        self.stack.pop();
+        // A stray placement not consumed by a child does not leak to a sibling.
+        self.pending_placement = None;
+        Handle { id }
+    }
+
+    /// Declare the placement and span of the next child authored inside a grid.
+    /// With no `place` call the next child auto-flows with span 1. Ignored for a
+    /// child whose parent is not a grid.
+    pub fn place(&mut self, placement: GridPlacement) {
+        self.pending_placement = Some(placement);
     }
 
     /// Declare a scroll viewport and its content. Like [`BuildCx::flex`] the
@@ -1610,6 +1657,9 @@ impl<'a> BuildCx<'a> {
         } else {
             self.root = Some(id);
         }
+        if let Some(p) = self.pending_placement.take() {
+            self.store.set_grid_placement(id, p);
+        }
         id
     }
 }
@@ -1639,6 +1689,44 @@ mod tests {
             w,
             h,
         }
+    }
+
+    #[test]
+    fn build_cx_grid_places_an_explicit_child() {
+        use crate::grid::{GridPlacement, GridStyle, TrackSizing};
+        let mut store = NodeStore::new();
+        let (grid, child) = {
+            let mut cx = BuildCx::new(&mut store);
+            let mut child_id = None;
+            let g = cx.grid(
+                GridStyle {
+                    columns: vec![TrackSizing::Fixed(50.0), TrackSizing::Fixed(50.0)],
+                    rows: vec![TrackSizing::Fixed(50.0)],
+                    size: Size::fixed(100.0, 50.0),
+                    ..Default::default()
+                },
+                |cx| {
+                    cx.place(GridPlacement {
+                        column: Some(1),
+                        row: Some(0),
+                        column_span: 1,
+                        row_span: 1,
+                    });
+                    child_id = Some(cx.leaf(LeafStyle { size: Size::fill(), ..Default::default() }).id());
+                },
+            );
+            (g.id(), child_id.unwrap())
+        };
+        let mut scratch = Vec::new();
+        crate::layout::measure(&mut store, grid.index(), &mut scratch);
+        crate::layout::layout(
+            &mut store,
+            grid.index(),
+            surface(100.0, 50.0),
+            &mut scratch,
+        );
+        // Placed in column 1 → x starts at 50.
+        assert_eq!(store.bounds(child), Rect { x: 50.0, y: 0.0, w: 50.0, h: 50.0 });
     }
 
     #[test]
