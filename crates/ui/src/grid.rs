@@ -102,6 +102,160 @@ pub(crate) struct GridTracks {
     pub auto_rows: TrackSizing,
 }
 
+/// A child's resolved cell block: its start column/row and its span.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct CellRegion {
+    /// 0-based start column.
+    pub col: u16,
+    /// 0-based start row.
+    pub row: u16,
+    /// Column span (>= 1).
+    pub col_span: u16,
+    /// Row span (>= 1).
+    pub row_span: u16,
+}
+
+/// Whether the `col_span` x `row_span` block at `(col, row)` is fully free in the
+/// row-major `occupied` bitset (`column_count` bits per row). Bits beyond the
+/// current bitset length read as free — implicit rows are always free until
+/// marked. A block extending past `column_count` is never free.
+fn block_free(
+    occupied: &[u64],
+    column_count: u16,
+    col: u16,
+    row: u16,
+    col_span: u16,
+    row_span: u16,
+) -> bool {
+    if col + col_span > column_count {
+        return false;
+    }
+    for r in row..row + row_span {
+        for c in col..col + col_span {
+            let bit = r as usize * column_count as usize + c as usize;
+            let word = bit / 64;
+            if word < occupied.len() && (occupied[word] >> (bit % 64)) & 1 == 1 {
+                return false;
+            }
+        }
+    }
+    true
+}
+
+/// Grow `occupied` if needed, then set every bit of the block at `(col, row)`.
+fn mark_block(
+    occupied: &mut Vec<u64>,
+    column_count: u16,
+    col: u16,
+    row: u16,
+    col_span: u16,
+    row_span: u16,
+) {
+    let max_bit = (row + row_span) as usize * column_count as usize;
+    let words = max_bit.div_ceil(64);
+    if occupied.len() < words {
+        occupied.resize(words, 0);
+    }
+    for r in row..row + row_span {
+        for c in col..col + col_span {
+            let bit = r as usize * column_count as usize + c as usize;
+            occupied[bit / 64] |= 1u64 << (bit % 64);
+        }
+    }
+}
+
+/// Place every child into the grid: explicit placements first (so auto-flow
+/// routes around them), then auto-flow children row-major into the first free
+/// block that fits their span. Returns the number of rows used (>= 1). `occupied`
+/// and `out` are reusable scratch buffers, cleared at entry; the pass allocates
+/// only when growing them.
+// Consumed by the grid layout pass in a later task.
+#[allow(dead_code)]
+pub(crate) fn place_children(
+    column_count: u16,
+    placements: &[GridPlacement],
+    occupied: &mut Vec<u64>,
+    out: &mut Vec<CellRegion>,
+) -> u16 {
+    let cols = column_count.max(1);
+    occupied.clear();
+    out.clear();
+    out.resize(
+        placements.len(),
+        CellRegion {
+            col: 0,
+            row: 0,
+            col_span: 1,
+            row_span: 1,
+        },
+    );
+
+    // Explicit children first: an item with both column and row pinned claims its
+    // block (clamped into range) so auto-flow sees it as occupied.
+    for (i, p) in placements.iter().enumerate() {
+        if let (Some(c), Some(r)) = (p.column, p.row) {
+            let col_span = p.column_span.max(1);
+            let row_span = p.row_span.max(1);
+            let col = c.min(cols.saturating_sub(1));
+            let region = CellRegion {
+                col,
+                row: r,
+                col_span: col_span.min(cols - col),
+                row_span,
+            };
+            mark_block(
+                occupied,
+                cols,
+                region.col,
+                region.row,
+                region.col_span,
+                region.row_span,
+            );
+            out[i] = region;
+        }
+    }
+
+    // Auto-flow children: a row-major cursor scans for the first free block that
+    // fits the span, creating implicit rows as needed. A partially-explicit
+    // placement (only one axis pinned) is treated as auto-flow this slice.
+    let mut cursor_col: u16 = 0;
+    let mut cursor_row: u16 = 0;
+    for (i, p) in placements.iter().enumerate() {
+        if p.column.is_some() && p.row.is_some() {
+            continue;
+        }
+        let col_span = p.column_span.max(1).min(cols);
+        let row_span = p.row_span.max(1);
+        loop {
+            if cursor_col + col_span > cols {
+                cursor_col = 0;
+                cursor_row += 1;
+                continue;
+            }
+            if block_free(occupied, cols, cursor_col, cursor_row, col_span, row_span) {
+                let region = CellRegion {
+                    col: cursor_col,
+                    row: cursor_row,
+                    col_span,
+                    row_span,
+                };
+                mark_block(occupied, cols, region.col, region.row, col_span, row_span);
+                out[i] = region;
+                cursor_col += col_span;
+                break;
+            }
+            cursor_col += 1;
+        }
+    }
+
+    // Row count = one past the highest occupied row (at least 1).
+    let mut max_row = 0u16;
+    for region in out.iter() {
+        max_row = max_row.max(region.row + region.row_span);
+    }
+    max_row.max(1)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -123,5 +277,112 @@ mod tests {
         assert_eq!(s.auto_rows, TrackSizing::Auto);
         assert_eq!(s.column_gap, 0.0);
         assert_eq!(s.row_gap, 0.0);
+    }
+
+    fn auto(span_c: u16, span_r: u16) -> GridPlacement {
+        GridPlacement {
+            column: None,
+            row: None,
+            column_span: span_c,
+            row_span: span_r,
+        }
+    }
+
+    #[test]
+    fn auto_flow_fills_row_major_and_wraps() {
+        // 2 columns, 3 span-1 auto children → (0,0) (1,0) (0,1).
+        let placements = [auto(1, 1), auto(1, 1), auto(1, 1)];
+        let mut occ = Vec::new();
+        let mut out = Vec::new();
+        let rows = place_children(2, &placements, &mut occ, &mut out);
+        assert_eq!(
+            out,
+            vec![
+                CellRegion {
+                    col: 0,
+                    row: 0,
+                    col_span: 1,
+                    row_span: 1
+                },
+                CellRegion {
+                    col: 1,
+                    row: 0,
+                    col_span: 1,
+                    row_span: 1
+                },
+                CellRegion {
+                    col: 0,
+                    row: 1,
+                    col_span: 1,
+                    row_span: 1
+                },
+            ]
+        );
+        assert_eq!(rows, 2);
+    }
+
+    #[test]
+    fn explicit_placement_lands_exactly_and_auto_flows_around_it() {
+        // Child 0 explicitly at (col 1, row 0); child 1 auto-flows → must take
+        // (0,0), the free cell before the occupied one.
+        let placements = [
+            GridPlacement {
+                column: Some(1),
+                row: Some(0),
+                column_span: 1,
+                row_span: 1,
+            },
+            auto(1, 1),
+        ];
+        let mut occ = Vec::new();
+        let mut out = Vec::new();
+        place_children(2, &placements, &mut occ, &mut out);
+        assert_eq!(
+            out[0],
+            CellRegion {
+                col: 1,
+                row: 0,
+                col_span: 1,
+                row_span: 1
+            }
+        );
+        assert_eq!(
+            out[1],
+            CellRegion {
+                col: 0,
+                row: 0,
+                col_span: 1,
+                row_span: 1
+            }
+        );
+    }
+
+    #[test]
+    fn a_span_two_item_occupies_two_cells_and_pushes_auto_flow() {
+        // 2 columns. Child 0 auto span-2 → fills row 0 entirely; child 1 auto
+        // span-1 → wraps to (0,1).
+        let placements = [auto(2, 1), auto(1, 1)];
+        let mut occ = Vec::new();
+        let mut out = Vec::new();
+        let rows = place_children(2, &placements, &mut occ, &mut out);
+        assert_eq!(
+            out[0],
+            CellRegion {
+                col: 0,
+                row: 0,
+                col_span: 2,
+                row_span: 1
+            }
+        );
+        assert_eq!(
+            out[1],
+            CellRegion {
+                col: 0,
+                row: 1,
+                col_span: 1,
+                row_span: 1
+            }
+        );
+        assert_eq!(rows, 2);
     }
 }
