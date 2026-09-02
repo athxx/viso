@@ -115,6 +115,38 @@ impl Default for ScrollStyle {
     }
 }
 
+/// Parameters for a virtual list declared via [`BuildCx::virtual_list`]. The
+/// list is a [`ScrollStyle`] viewport whose content is a fixed-extent canvas
+/// sized to the whole logical collection, so only a window of rows is ever
+/// mounted while the scroll range still spans every item.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct VirtualListStyle {
+    /// The axis the list scrolls and stacks rows along.
+    pub axis: Axis,
+    /// The viewport's own size request within its parent (its visible box).
+    pub size: Size,
+    /// Extra rows mounted on each side of the visible window, so a small scroll
+    /// reveals an already-built row rather than stalling on a mount.
+    pub overscan: u32,
+    /// The initial per-row main extent used to size the canvas and seed the
+    /// height model before any row is measured.
+    pub estimated_row: f32,
+    /// The viewport's own background/border (transparent = pure clip box).
+    pub style: BoxStyle,
+}
+
+impl Default for VirtualListStyle {
+    fn default() -> Self {
+        VirtualListStyle {
+            axis: Axis::Column,
+            size: Size::fill(),
+            overscan: 4,
+            estimated_row: crate::virtual_list::DEFAULT_ROW_HEIGHT,
+            style: BoxStyle::NONE,
+        }
+    }
+}
+
 /// A node's pointer handler: an `FnMut` driven with the event context when the
 /// node is on the dispatch chain of a hit. Boxed because handlers are cold —
 /// touched only on an actual hit, never in the per-node hot traversal — so the
@@ -322,6 +354,102 @@ impl NodeStore {
             Axis::Column => b.h,
         };
         (self.content[i].on(axis) - viewport).max(0.0)
+    }
+
+    /// A node's laid-out box extent along `axis` (its `bounds` width for Row,
+    /// height for Column). The virtual-list reconcile reads the viewport's own
+    /// main extent to size the visible window.
+    #[inline]
+    pub fn bounds_main(&self, id: NodeId, axis: Axis) -> f32 {
+        let b = self.bounds[id.index() as usize];
+        match axis {
+            Axis::Row => b.w,
+            Axis::Column => b.h,
+        }
+    }
+
+    /// A node's measured natural extent along `axis`. The virtual-list
+    /// measurement feedback reads a freshly-laid-out row's main extent to fold it
+    /// back into the height model.
+    #[inline]
+    pub fn measured_main(&self, id: NodeId, axis: Axis) -> f32 {
+        let m = self.measured[id.index() as usize];
+        match axis {
+            Axis::Row => m.w,
+            Axis::Column => m.h,
+        }
+    }
+
+    /// Detach `child` from its parent and siblings without freeing it, parking it
+    /// as a live orphan the caller can re-attach later. The recycle half of
+    /// virtual-list host reuse. Returns `false` (a no-op) for a stale handle or a
+    /// child with no parent.
+    #[inline]
+    pub fn arena_detach(&mut self, child: NodeId) -> bool {
+        self.arena.detach_child(child)
+    }
+
+    /// Re-attach a parked host as the last child of `parent`, wiring the sibling
+    /// chain. The mount half of virtual-list host reuse. Returns `false` if
+    /// either node is stale.
+    #[inline]
+    pub fn arena_append_child(&mut self, parent: NodeId, child: NodeId) -> bool {
+        self.arena.append_child(parent, child)
+    }
+
+    /// Allocate a fresh host node and append it under `canvas`, returning its id.
+    /// Used by the virtual-list reconcile only when the recycle pool is empty
+    /// (bounded first-fill growth); steady scroll reuses parked hosts and never
+    /// calls this. The host's body is authored separately via a
+    /// [`BuildCx::with_parent`]; the host itself is a positioned row placed by the
+    /// `AbsoluteRows` canvas at its `row_offset`.
+    ///
+    /// The host is a `Flex` stacking along the list `axis`: it **fits** its body
+    /// on the main axis (so its measured main extent is the real row height the
+    /// canvas places and the height model absorbs) and **fills** the cross axis
+    /// (so it spans the canvas width for a Column list). It is not a bare `Leaf`,
+    /// which would measure to zero and collapse the row.
+    pub fn alloc_row_host(&mut self, canvas: NodeId, axis: Axis) -> NodeId {
+        let size = match axis {
+            Axis::Column => Size {
+                width: Length::fill(),
+                height: Length::Fit,
+            },
+            Axis::Row => Size {
+                width: Length::Fit,
+                height: Length::fill(),
+            },
+        };
+        let host = self.alloc(
+            LayoutInput::Flex {
+                axis,
+                gap: 0.0,
+                padding: Inset::default(),
+                align: Align::Stretch,
+                size,
+            },
+            BoxStyle::default(),
+        );
+        self.arena.append_child(canvas, host);
+        host
+    }
+
+    /// Rewrite an [`LayoutInput::AbsoluteRows`] canvas's own fixed extent along
+    /// `axis` to `extent`, keeping the cross axis unchanged. The virtual-list
+    /// reconcile calls this when the total logical extent changes so the scroll
+    /// viewport above reads the correct scroll range. A no-op for a stale handle
+    /// or a non-canvas node.
+    pub fn set_absolute_rows_extent(&mut self, canvas: NodeId, axis: Axis, extent: f32) {
+        if !self.arena.is_live(canvas) {
+            return;
+        }
+        let i = canvas.index() as usize;
+        if let LayoutInput::AbsoluteRows { size, .. } = &mut self.layout[i] {
+            match axis {
+                Axis::Row => size.width = Length::Fixed(extent),
+                Axis::Column => size.height = Length::Fixed(extent),
+            }
+        }
     }
 
     /// The node holding pointer capture, if any.
@@ -1152,6 +1280,11 @@ pub struct BuildCx<'a> {
     states: Option<&'a mut StateStore>,
     /// Compiled state→node edges, present only for a `with_reactive` cx.
     bindings: Option<&'a mut BindingTable>,
+    /// Driver-owned virtual-list registry, present only for a `with_reactive`
+    /// cx. A `virtual_list` call registers its per-list state here keyed by the
+    /// viewport's node index; `None` for a node-only or child-body cx (neither
+    /// declares a top-level virtual list).
+    lists: Option<&'a mut crate::virtual_list::VirtualLists>,
     /// Parent cursor stack; the top is the current insertion parent.
     stack: Vec<NodeId>,
     /// The tree root, set by the first declared node.
@@ -1168,6 +1301,7 @@ impl<'a> BuildCx<'a> {
             store,
             states: None,
             bindings: None,
+            lists: None,
             stack: Vec::new(),
             root: None,
         }
@@ -1180,12 +1314,39 @@ impl<'a> BuildCx<'a> {
         store: &'a mut NodeStore,
         states: &'a mut StateStore,
         bindings: &'a mut BindingTable,
+        lists: &'a mut crate::virtual_list::VirtualLists,
     ) -> Self {
         BuildCx {
             store,
             states: Some(states),
             bindings: Some(bindings),
+            lists: Some(lists),
             stack: Vec::new(),
+            root: None,
+        }
+    }
+
+    /// Start a reactive build whose declarations attach beneath an existing
+    /// `parent` node rather than forming a new root. The parent cursor is seeded
+    /// with `parent`, so the first `leaf`/`flex`/… lands as its child. Used by the
+    /// virtual-list reconcile to author an item body under a recycled host: the
+    /// host is already in the tree, and its body nodes hang off it.
+    ///
+    /// Unlike [`with_reactive`](Self::with_reactive), this does **not** clear the
+    /// store — it appends to a live tree. `root()` stays `None` (nothing new is a
+    /// root here).
+    pub fn with_parent(
+        store: &'a mut NodeStore,
+        states: &'a mut StateStore,
+        bindings: &'a mut BindingTable,
+        parent: NodeId,
+    ) -> Self {
+        BuildCx {
+            store,
+            states: Some(states),
+            bindings: Some(bindings),
+            lists: None,
+            stack: vec![parent],
             root: None,
         }
     }
@@ -1233,6 +1394,87 @@ impl<'a> BuildCx<'a> {
         children(self);
         self.stack.pop();
         Handle { id }
+    }
+
+    /// Declare a virtualized list of `item_count` logical rows that mounts only a
+    /// window of visible rows (plus overscan), never the whole collection — the
+    /// answer to a 100k-item list that must not build 100k nodes.
+    ///
+    /// The list is a [`LayoutInput::Scroll`] viewport whose single content child
+    /// is a fixed-extent [`LayoutInput::AbsoluteRows`] **canvas**: the canvas is
+    /// `Fixed` on the scroll axis at the whole collection's estimated extent
+    /// (`estimated_row * item_count`) and `Fixed` on the cross axis, so the
+    /// viewport's scroll range spans every item while no per-item node is mounted.
+    /// The canvas being fixed on **both** axes is load-bearing — it is the boundary
+    /// where a row's `MEASURE` invalidation stops rising, so a row remount never
+    /// forces the ancestors above the list to relayout.
+    ///
+    /// No rows are mounted here at build time. The per-frame virtual-list reconcile
+    /// (run before layout) mounts the first window against the real viewport size,
+    /// then recycles a handful of hosts on each scroll-boundary crossing. `item`
+    /// authors one row's body given its logical index; it is cold, called only when
+    /// a row is (re)mounted. Requires a [`BuildCx::with_reactive`] cx — the driver
+    /// owns the list registry (see [`BuildCx::state`]).
+    pub fn virtual_list(
+        &mut self,
+        style: VirtualListStyle,
+        item_count: usize,
+        item: impl FnMut(usize, &mut BuildCx<'_>) + 'static,
+    ) -> Handle {
+        // The viewport is an ordinary scroll node: it reuses the whole scroll
+        // machinery (range, scroll_by, hit-test narrowing, the scroll router)
+        // unchanged.
+        let viewport = self.push_node(
+            LayoutInput::Scroll {
+                axis: style.axis,
+                size: style.size,
+            },
+            style.style,
+        );
+
+        // The canvas is the viewport's single content child: fixed on the main
+        // axis at the full estimated collection extent (so the scroll range is
+        // correct), fixed at zero on the cross axis (a pure MEASURE boundary
+        // marker — the real cross extent comes from the viewport at layout time).
+        let total = style.estimated_row * item_count as f32;
+        let canvas_size = match style.axis {
+            Axis::Column => Size {
+                width: Length::Fixed(0.0),
+                height: Length::Fixed(total),
+            },
+            Axis::Row => Size {
+                width: Length::Fixed(total),
+                height: Length::Fixed(0.0),
+            },
+        };
+        let canvas = self.store.alloc(
+            LayoutInput::AbsoluteRows {
+                axis: style.axis,
+                size: canvas_size,
+            },
+            BoxStyle::NONE,
+        );
+        self.store.arena.append_child(viewport, canvas);
+
+        // Register the per-list state with the driver-owned registry, keyed by the
+        // viewport index. `dirty_data` starts set, so the first reconcile mounts.
+        let lists = self
+            .lists
+            .as_mut()
+            .expect("virtual_list() requires a with_reactive BuildCx");
+        lists.register(
+            viewport,
+            Box::new(crate::virtual_list::VirtualListState::new(
+                item_count,
+                style.estimated_row,
+                style.overscan as usize,
+                style.axis,
+                canvas,
+                Box::new(item),
+            )),
+        );
+
+        Handle { id: viewport }
     }
 
     /// Declare a leaf node.
@@ -2026,7 +2268,8 @@ mod tests {
         let mut store = NodeStore::new();
         let mut states = StateStore::new();
         let mut bindings = BindingTable::new();
-        let mut cx = BuildCx::with_reactive(&mut store, &mut states, &mut bindings);
+        let mut lists = crate::virtual_list::VirtualLists::new();
+        let mut cx = BuildCx::with_reactive(&mut store, &mut states, &mut bindings, &mut lists);
         let id = cx.state(StateValue::Int(0));
         assert_eq!(states.get(id), Some(StateValue::Int(0)));
     }
@@ -2036,10 +2279,11 @@ mod tests {
         let mut store = NodeStore::new();
         let mut states = StateStore::new();
         let mut bindings = BindingTable::new();
+        let mut lists = crate::virtual_list::VirtualLists::new();
         let node;
         let count;
         {
-            let mut cx = BuildCx::with_reactive(&mut store, &mut states, &mut bindings);
+            let mut cx = BuildCx::with_reactive(&mut store, &mut states, &mut bindings, &mut lists);
             count = cx.state(StateValue::Int(0));
             node = cx.leaf(LeafStyle::default());
             let returned = cx.bind(count, node, DirtyClass::PAINT);

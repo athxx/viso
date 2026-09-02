@@ -28,7 +28,7 @@ pub mod virtual_list;
 pub use binding::{Binding, BindingTable};
 pub use component::{
     BuildCx, Component, FlexStyle, FrameRecompute, Handle, LeafStyle, NodeStore, PointerHandler,
-    ScrollStyle,
+    ScrollStyle, VirtualListStyle,
 };
 pub use context::EventCx;
 pub use dirty::DirtyClass;
@@ -47,4 +47,7 @@ pub use semantics::{Role, Semantics, SemanticsNode, SemanticsTree};
 pub use state::{StateId, StateStore, StateValue};
 pub use style::{BoxStyle, StyleId};
 pub use token::{Theme, TokenId, TokenInterner, TokenNamespace};
-pub use virtual_list::{HeightCache, HeightTree};
+pub use virtual_list::{
+    HeightCache, HeightTree, ItemBuilder, VirtualListState, VirtualLists, absorb_measurements,
+    reconcile, set_item_count,
+};
