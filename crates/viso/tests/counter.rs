@@ -42,8 +42,7 @@ fn scene() -> Scene {
     let mut button = None;
     let mut bar = None;
     let (root, count) = {
-        let mut cx =
-            BuildCx::with_reactive(&mut store, &mut states, &mut bindings, &mut lists);
+        let mut cx = BuildCx::with_reactive(&mut store, &mut states, &mut bindings, &mut lists);
         let count = cx.state(StateValue::Int(0));
         cx.flex(
             FlexStyle {
