@@ -12,6 +12,7 @@
 use crate::binding::BindingTable;
 use crate::context::EventCx;
 use crate::dirty::DirtyClass;
+use crate::grid::{GridPlacement, GridStyle, GridTracks, TrackSizing};
 use crate::layout::{
     self, Align, Axis, Inset, LayoutInput, LayoutTree, Length, Measured, Size, Vec2,
 };
@@ -192,6 +193,14 @@ pub struct NodeStore {
     /// Written by the virtual-list reconcile step, read by the `AbsoluteRows`
     /// layout arm.
     row_offset: Vec<f32>,
+    /// Warm: a grid node's column/row track templates, boxed because only grid
+    /// nodes carry them — an ordinary node's entry is `None`. Read by the grid
+    /// layout arm through [`LayoutTree::grid_column_tracks`] /
+    /// [`grid_row_tracks`](LayoutTree::grid_row_tracks).
+    grid_tracks: Vec<Option<Box<GridTracks>>>,
+    /// Warm: a grid child's placement/span. `GridPlacement::default()` (auto-flow,
+    /// span 1) for every non-explicitly-placed node — the common case.
+    grid_placement: Vec<GridPlacement>,
     /// Hot: pending invalidation per node, set by `mark_dirty` and consumed by
     /// the incremental measure/layout/paint passes, cleared at frame end.
     dirty: Vec<DirtyClass>,
@@ -258,6 +267,8 @@ impl NodeStore {
         self.scroll.clear();
         self.content.clear();
         self.row_offset.clear();
+        self.grid_tracks.clear();
+        self.grid_placement.clear();
         self.dirty.clear();
         self.layout.clear();
         self.style.clear();
@@ -322,6 +333,43 @@ impl NodeStore {
     #[inline]
     pub fn clear_row_offset(&mut self, id: NodeId) {
         self.row_offset[id.index() as usize] = f32::NAN;
+    }
+
+    /// Store a grid node's resolved track templates (its warm side payload).
+    /// Crate-internal because [`GridTracks`] is an internal warm payload type.
+    pub(crate) fn set_grid_tracks(&mut self, id: NodeId, tracks: GridTracks) {
+        self.grid_tracks[id.index() as usize] = Some(Box::new(tracks));
+    }
+
+    /// Set a grid child's placement/span. Absent = auto-flow with span 1.
+    pub fn set_grid_placement(&mut self, id: NodeId, placement: GridPlacement) {
+        self.grid_placement[id.index() as usize] = placement;
+    }
+
+    /// Test/facade support: allocate a standalone grid node from a [`GridStyle`],
+    /// storing its track templates. Does not attach it to a parent.
+    pub fn alloc_grid(&mut self, style: GridStyle) -> NodeId {
+        let column_count = style.columns.len().max(1) as u16;
+        let row_count = style.rows.len() as u16;
+        let input = LayoutInput::Grid {
+            column_count,
+            row_count,
+            column_gap: style.column_gap,
+            row_gap: style.row_gap,
+            padding: style.padding,
+            auto_rows: style.auto_rows,
+            size: style.size,
+        };
+        let id = self.alloc(input, style.style);
+        self.set_grid_tracks(
+            id,
+            GridTracks {
+                columns: style.columns,
+                rows: style.rows,
+                auto_rows: style.auto_rows,
+            },
+        );
+        id
     }
 
     /// Whether a node is a scroll viewport — it clips its content to its box and
@@ -908,6 +956,8 @@ impl NodeStore {
             self.scroll[i] = Vec2::ZERO;
             self.content[i] = Vec2::ZERO;
             self.row_offset[i] = f32::NAN;
+            self.grid_tracks[i] = None;
+            self.grid_placement[i] = GridPlacement::default();
             self.dirty[i] = DirtyClass::EMPTY;
             self.layout[i] = input;
             self.style[i] = style;
@@ -935,6 +985,8 @@ impl NodeStore {
             self.scroll.push(Vec2::ZERO);
             self.content.push(Vec2::ZERO);
             self.row_offset.push(f32::NAN);
+            self.grid_tracks.push(None);
+            self.grid_placement.push(GridPlacement::default());
             self.dirty.push(DirtyClass::EMPTY);
             self.layout.push(input);
             self.style.push(style);
@@ -1239,6 +1291,25 @@ impl LayoutTree for NodeStore {
         // NaN reads back as "no offset" — an ordinary node is skipped by the
         // `AbsoluteRows` layout arm.
         (!off.is_nan()).then_some(off)
+    }
+
+    #[inline]
+    fn grid_column_tracks(&self, index: u32) -> Option<&[TrackSizing]> {
+        self.grid_tracks[index as usize]
+            .as_ref()
+            .map(|t| t.columns.as_slice())
+    }
+
+    #[inline]
+    fn grid_row_tracks(&self, index: u32) -> Option<&[TrackSizing]> {
+        self.grid_tracks[index as usize]
+            .as_ref()
+            .map(|t| t.rows.as_slice())
+    }
+
+    #[inline]
+    fn grid_placement(&self, index: u32) -> GridPlacement {
+        self.grid_placement[index as usize]
     }
 }
 

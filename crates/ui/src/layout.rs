@@ -8,6 +8,7 @@
 //! [`crate::component::NodeStore`], so the hot path touches compact ids and flat
 //! data with no heap allocation per node.
 
+use crate::grid::{GridPlacement, TrackSizing};
 use viso_render::Rect;
 
 /// A two-component vector in physical pixels — a scroll offset or a
@@ -240,6 +241,28 @@ pub enum LayoutInput {
         /// The canvas's own size request — fixed on both axes.
         size: Size,
     },
+    /// A two-dimensional grid: children are placed into cells of a column/row
+    /// track model. Only `Copy` scalars ride here — the variable-length column
+    /// and row `TrackSizing` templates live in warm side-columns read through
+    /// [`LayoutTree::grid_column_tracks`] / [`LayoutTree::grid_row_tracks`], and
+    /// each child's [`GridPlacement`] through [`LayoutTree::grid_placement`], so
+    /// the layout pass stays allocation-free and `LayoutInput` stays `Copy`.
+    Grid {
+        /// Explicit column count (>= 1 after build resolves an empty template).
+        column_count: u16,
+        /// Explicit row count; implicit rows are discovered during placement.
+        row_count: u16,
+        /// Gap between adjacent columns.
+        column_gap: f32,
+        /// Gap between adjacent rows.
+        row_gap: f32,
+        /// Inner padding on all four edges.
+        padding: Inset,
+        /// Sizing rule for implicitly created rows.
+        auto_rows: TrackSizing,
+        /// The grid box's own size request within its parent.
+        size: Size,
+    },
 }
 
 impl LayoutInput {
@@ -250,7 +273,8 @@ impl LayoutInput {
             LayoutInput::Flex { size, .. }
             | LayoutInput::Leaf { size }
             | LayoutInput::Scroll { size, .. }
-            | LayoutInput::AbsoluteRows { size, .. } => size,
+            | LayoutInput::AbsoluteRows { size, .. }
+            | LayoutInput::Grid { size, .. } => size,
         }
     }
 }
@@ -316,6 +340,13 @@ pub trait LayoutTree {
     /// [`LayoutInput::AbsoluteRows`] canvas, or `None` when the node is not a
     /// positioned row. The `AbsoluteRows` layout arm is the only caller.
     fn row_offset(&self, index: u32) -> Option<f32>;
+    /// The resolved column track template for a grid node, or `None` when the
+    /// node is not a grid. The grid layout arm is the only caller.
+    fn grid_column_tracks(&self, index: u32) -> Option<&[TrackSizing]>;
+    /// The resolved row track template for a grid node, or `None` when not a grid.
+    fn grid_row_tracks(&self, index: u32) -> Option<&[TrackSizing]>;
+    /// A child's placement inside its grid parent (default = auto-flow, span 1).
+    fn grid_placement(&self, index: u32) -> GridPlacement;
 }
 
 /// Bottom-up measure pass: compute every node's natural size.
@@ -409,6 +440,47 @@ pub fn measure(tree: &mut impl LayoutTree, root: u32, scratch: &mut Vec<u32>) {
                 h: natural_length(size.height, 0.0),
             }
         }
+        LayoutInput::Grid {
+            column_count,
+            column_gap,
+            row_gap,
+            padding,
+            size,
+            ..
+        } => {
+            // A grid measures to its own request. A Fixed axis is its pixel value.
+            // A non-Fixed axis hugs the summed explicit tracks (Fixed/Percent-of-0
+            // contribute their base; gaps included). Auto/Fr tracks contribute
+            // their children's naturals via the full solver at layout time; the
+            // measure-time natural of a flexible grid is a lower bound here.
+            let sum_axis = |tracks: Option<&[TrackSizing]>, gap: f32| -> f32 {
+                let Some(tracks) = tracks else { return 0.0 };
+                let mut s = 0.0f32;
+                for t in tracks {
+                    if let TrackSizing::Fixed(v) = *t {
+                        s += v;
+                    }
+                }
+                if tracks.len() > 1 {
+                    s += gap * (tracks.len() as f32 - 1.0);
+                }
+                s
+            };
+            let _ = column_count;
+            let main_cols =
+                sum_axis(tree.grid_column_tracks(root), column_gap) + padding.main(Axis::Row);
+            let main_rows =
+                sum_axis(tree.grid_row_tracks(root), row_gap) + padding.main(Axis::Column);
+            let w = match size.width {
+                Length::Fixed(v) => v,
+                _ => main_cols,
+            };
+            let h = match size.height {
+                Length::Fixed(v) => v,
+                _ => main_rows,
+            };
+            Measured { w, h }
+        }
     };
 
     tree.set_measured(root, measured);
@@ -443,6 +515,9 @@ pub fn layout(tree: &mut impl LayoutTree, root: u32, bounds: Rect, scratch: &mut
             return;
         }
         LayoutInput::Leaf { .. } => return, // Leaf: bounds are final.
+        // The grid box's own bounds are set above; placing children into cells
+        // is the grid layout pass, which lands in a later task.
+        LayoutInput::Grid { .. } => return,
     };
 
     let start = scratch.len();
@@ -682,5 +757,29 @@ fn axis_rect(axis: Axis, main_pos: f32, cross_pos: f32, main_len: f32, cross_len
             w: cross_len,
             h: main_len,
         },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_grid_box_measures_to_its_fixed_size() {
+        use crate::component::NodeStore;
+        use crate::grid::{GridStyle, TrackSizing};
+        let mut store = NodeStore::new();
+        // A 2x2 fixed grid of 100x100 → measures to its own Fixed size.
+        let grid = store.alloc_grid(GridStyle {
+            columns: vec![TrackSizing::Fixed(50.0), TrackSizing::Fixed(50.0)],
+            rows: vec![TrackSizing::Fixed(50.0), TrackSizing::Fixed(50.0)],
+            size: Size::fixed(100.0, 100.0),
+            ..Default::default()
+        });
+        let mut scratch = Vec::new();
+        crate::layout::measure(&mut store, grid.index(), &mut scratch);
+        let m = crate::layout::LayoutTree::measured(&store, grid.index());
+        assert_eq!(m.w, 100.0);
+        assert_eq!(m.h, 100.0);
     }
 }
