@@ -1712,21 +1712,30 @@ mod tests {
                         column_span: 1,
                         row_span: 1,
                     });
-                    child_id = Some(cx.leaf(LeafStyle { size: Size::fill(), ..Default::default() }).id());
+                    child_id = Some(
+                        cx.leaf(LeafStyle {
+                            size: Size::fill(),
+                            ..Default::default()
+                        })
+                        .id(),
+                    );
                 },
             );
             (g.id(), child_id.unwrap())
         };
         let mut scratch = Vec::new();
         crate::layout::measure(&mut store, grid.index(), &mut scratch);
-        crate::layout::layout(
-            &mut store,
-            grid.index(),
-            surface(100.0, 50.0),
-            &mut scratch,
-        );
+        crate::layout::layout(&mut store, grid.index(), surface(100.0, 50.0), &mut scratch);
         // Placed in column 1 → x starts at 50.
-        assert_eq!(store.bounds(child), Rect { x: 50.0, y: 0.0, w: 50.0, h: 50.0 });
+        assert_eq!(
+            store.bounds(child),
+            Rect {
+                x: 50.0,
+                y: 0.0,
+                w: 50.0,
+                h: 50.0
+            }
+        );
     }
 
     #[test]
