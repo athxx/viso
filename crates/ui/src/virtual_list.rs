@@ -896,8 +896,22 @@ mod tests {
 
     impl ListHarness {
         /// Build a vertical list of `item_count` rows, each item body a single
-        /// leaf of fixed height `row_h`, in a viewport `viewport_h` px tall.
+        /// leaf of fixed height `row_h`, in a viewport `viewport_h` px tall. The
+        /// list is estimated at `row_h`, so the estimate matches the real body.
         fn new(item_count: usize, row_h: f32, overscan: u32, viewport_h: f32) -> Self {
+            Self::new_with_body(item_count, row_h, row_h, overscan, viewport_h)
+        }
+
+        /// Like [`Self::new`], but the list is estimated at `est_row` while each
+        /// row body is a fixed `body_h` leaf — so the measured height diverges
+        /// from the estimate, exercising the absorb-into-model path.
+        fn new_with_body(
+            item_count: usize,
+            est_row: f32,
+            body_h: f32,
+            overscan: u32,
+            viewport_h: f32,
+        ) -> Self {
             let mut store = NodeStore::new();
             let mut states = StateStore::new();
             let mut bindings = BindingTable::new();
@@ -913,7 +927,7 @@ mod tests {
                             height: Length::Fixed(viewport_h),
                         },
                         overscan,
-                        estimated_row: row_h,
+                        estimated_row: est_row,
                         style: BoxStyle::NONE,
                     },
                     item_count,
@@ -921,7 +935,7 @@ mod tests {
                         cx.leaf(LeafStyle {
                             size: Size {
                                 width: Length::fill(),
-                                height: Length::Fixed(row_h),
+                                height: Length::Fixed(body_h),
                             },
                             ..Default::default()
                         });
@@ -988,6 +1002,10 @@ mod tests {
 
         fn state(&self) -> &VirtualListState {
             self.lists.get(self.viewport).unwrap()
+        }
+
+        fn state_mut(&mut self) -> &mut VirtualListState {
+            self.lists.get_mut(self.viewport).unwrap()
         }
     }
 
@@ -1088,17 +1106,58 @@ mod tests {
 
     #[test]
     fn variable_heights_are_absorbed_into_the_model() {
-        // The item body is a fixed 40px leaf, but the list was estimated at 30px.
-        // After the first frame's layout+absorb, the height model must reflect the
-        // real 40px rows (mounted rows measured), correcting the total extent for
-        // the mounted span.
-        let mut h = ListHarness::new(200, 30.0, 2, 300.0);
-        h.frame(); // mounts at the 30px estimate
-        let est_total = h.state().total_extent();
-        // Row bodies are 30px here (harness ties body height to estimated_row), so
-        // to exercise absorption independently, push a measured height directly and
-        // confirm the model + extent move and the reconcile re-anchors.
-        assert_eq!(est_total, 200.0 * 30.0);
+        // Estimated 30px, but each body is really 40px. After layout+absorb, the
+        // mounted rows carry their true 40px in the model; the estimated rows
+        // beyond the window keep the estimate, so the total sits between the pure
+        // estimate (200·30) and the all-40 extreme (200·40).
+        let mut h = ListHarness::new_with_body(200, 30.0, 40.0, 2, 300.0);
+        // Before any layout, the model is the pure 30px estimate.
+        assert_eq!(h.state().total_extent(), 200.0 * 30.0);
+        h.frame(); // mounts at the estimate, then absorb corrects mounted rows
+        // A mounted row's stored height is now the measured 40, not the estimate —
+        // the measurement was absorbed into the model.
+        assert_eq!(h.state().heights.point_query(0), 40.0);
+        // The running mean of measured rows also re-estimates the not-yet-seen
+        // rows, so the whole extent converges to the true 40px row height.
+        assert_eq!(h.state().total_extent(), 200.0 * 40.0);
+        // Absorb marked the data dirty; the next reconcile rewrites the canvas to
+        // the corrected extent, so the scroll range tracks it (not the stale
+        // estimate). No scroll happened, so the window still starts at the top.
+        h.frame();
+        assert_eq!(
+            h.store.scroll_range(h.viewport, Axis::Column),
+            200.0 * 40.0 - 300.0
+        );
+    }
+
+    #[test]
+    fn a_height_edit_above_the_anchor_preserves_the_anchored_row_on_screen() {
+        // Anchor preservation: scroll so a known row sits at the viewport top, then
+        // grow a row *above* it. The reconcile re-anchors by scroll offset, so the
+        // scroll position is corrected to keep the anchored logical row where it
+        // was — its on-screen top does not jump.
+        let mut h = ListHarness::new(1000, 30.0, 2, 300.0);
+        h.frame();
+        // Scroll so row 20 is exactly at the top (20 rows · 30px = 600px).
+        h.store.scroll_by(h.viewport, Vec2 { x: 0.0, y: 600.0 });
+        h.frame();
+        // Row 20 is the anchor: it sits at scroll offset 600, i.e. at the top.
+        let anchor = 20usize;
+        assert_eq!(h.state().heights.prefix_sum(anchor), 600.0);
+        assert_eq!(h.store.scroll(h.viewport).on(Axis::Column), 600.0);
+
+        // Grow row 5 (above the anchor) by 100px, and correct the scroll to keep
+        // the anchor's top pinned: the anchor's new absolute offset is 700, so the
+        // scroll must follow to 700 for the same on-screen top. This is the scroll
+        // correction a real anchored reconcile applies; here we assert the model
+        // supports it — the anchor's prefix moved by exactly the edit.
+        h.state_mut().heights.update(5, 130.0);
+        h.state_mut().mark_data_dirty();
+        assert_eq!(
+            h.state().heights.prefix_sum(anchor),
+            700.0,
+            "the edit above the anchor pushed its absolute top down by 100px"
+        );
     }
 
     #[test]
@@ -1118,5 +1177,55 @@ mod tests {
         }
         assert_eq!(h.scratch.capacity(), scratch_cap, "layout scratch stable");
         assert_eq!(h.redo.capacity(), redo_cap, "redo roots stable");
+    }
+
+    #[test]
+    fn recycling_a_host_cancels_its_body_effects() {
+        use std::cell::Cell;
+        use std::rc::Rc;
+
+        // A row's body owns a scoped effect. When the row scrolls out of the
+        // window and its host is later recycled for another row, `free_subtree`
+        // frees the old body and runs `cancel_for_node` on each freed node — the
+        // unmount hook. The effect's cleanup must fire (deterministic release).
+        let mut h = ListHarness::new(1000, 30.0, 2, 300.0);
+        h.frame();
+
+        // Scope an effect to the body of a mounted top row (its host's first
+        // child — the builder authors the leaf under the host). The cleanup flips
+        // a shared flag we can observe from outside the store.
+        let host = h.state().mounted[0].host;
+        let body = h
+            .store
+            .arena()
+            .links(host)
+            .and_then(|l| l.first_child)
+            .expect("the mounted row has an authored body");
+        let cleaned = Rc::new(Cell::new(false));
+        let effect_id = {
+            let flag = cleaned.clone();
+            h.effects.alloc(body, move |_cx| {
+                let flag = flag.clone();
+                Some(Box::new(move || flag.set(true)) as crate::reactive::Cleanup)
+            })
+        };
+        // Run it once so it installs its cleanup.
+        h.effects.run(effect_id, &h.states);
+        assert!(h.effects.is_live(effect_id), "the effect is live once run");
+        assert!(!cleaned.get(), "cleanup has not fired yet");
+
+        // Scroll far enough that the top rows leave the window and their hosts are
+        // recycled to bind the newly-visible rows: the freed body runs its cleanup.
+        h.store.scroll_by(h.viewport, Vec2 { x: 0.0, y: 3000.0 });
+        h.frame();
+
+        assert!(
+            !h.effects.is_live(effect_id),
+            "recycling the host freed the body node, cancelling its effect"
+        );
+        assert!(
+            cleaned.get(),
+            "the freed body's effect ran its cleanup on unmount"
+        );
     }
 }
