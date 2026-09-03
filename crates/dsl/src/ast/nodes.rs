@@ -550,6 +550,10 @@ ast_node!(
     TwoWayBinding = TwoWayBinding
 );
 ast_node!(
+    /// `IDENT ("." IDENT | "[" Expr "]")*` — the mutable target of a two-way bind.
+    AssignablePath = AssignablePath
+);
+ast_node!(
     /// `on EventPhase? IDENT ( Pattern )? Block` — an event handler.
     EventHandler = EventHandler
 );
@@ -573,6 +577,41 @@ ast_node!(
     /// `fill IDENT ViewBlock`.
     FillClause = FillClause
 );
+ast_node!(
+    /// A pattern: a wildcard `_`, a binding name, an enum-variant path, or a
+    /// literal. The grammar wraps every pattern in one `Pattern` node; the finer
+    /// pattern productions (tuple/record/range/alternatives) land with their slice.
+    Pattern = Pattern
+);
+
+impl Pattern {
+    /// Every identifier token in the pattern, in order. For a bare binding
+    /// (`item`) this is the single bound name; for an enum-variant path
+    /// (`Status::Active`) these are the path segments, not bindings.
+    pub fn names(&self) -> impl Iterator<Item = SyntaxToken> + '_ {
+        self.syntax
+            .children_with_tokens()
+            .into_iter()
+            .filter_map(|e| e.as_token().cloned())
+            .filter(|t| matches!(t.kind(), SyntaxKind::Ident | SyntaxKind::RawIdent))
+    }
+
+    /// The bound binding name when this pattern is a bare identifier (a `for`
+    /// loop variable or an event payload binding). `None` for a path pattern
+    /// (which has a `::` separator), a wildcard, or a literal.
+    pub fn binding_name(&self) -> Option<SyntaxToken> {
+        let has_path_sep = self
+            .syntax
+            .children_with_tokens()
+            .into_iter()
+            .filter_map(|e| e.as_token().cloned())
+            .any(|t| t.kind() == SyntaxKind::ColonColon);
+        if has_path_sep {
+            return None;
+        }
+        self.names().next()
+    }
+}
 
 impl ViewBlock {
     /// The structure items directly under this block.
@@ -641,9 +680,21 @@ impl PropertyPath {
 }
 
 impl EventHandler {
+    /// The optional capture/bubble phase marker preceding the event name.
+    pub fn phase(&self) -> Option<SyntaxToken> {
+        support::token(&self.syntax, |k| {
+            matches!(k, SyntaxKind::CaptureKw | SyntaxKind::BubbleKw)
+        })
+    }
+
     /// The event name this handler binds.
     pub fn event(&self) -> Option<SyntaxToken> {
         support::name_token(&self.syntax)
+    }
+
+    /// The optional `( Pattern )` payload binding.
+    pub fn payload(&self) -> Option<Pattern> {
+        support::child(&self.syntax)
     }
 
     /// The handler's block body.
@@ -652,7 +703,100 @@ impl EventHandler {
     }
 }
 
+impl TwoWayBinding {
+    /// The bound property path (the left side, before `<=>`).
+    pub fn target(&self) -> Option<PropertyPath> {
+        support::child(&self.syntax)
+    }
+
+    /// The mutable source path (the right side, after `<=>`).
+    pub fn source(&self) -> Option<AssignablePath> {
+        support::child(&self.syntax)
+    }
+
+    /// The optional `using TypePath` coercion type.
+    pub fn using_ty(&self) -> Option<TypePath> {
+        support::child(&self.syntax)
+    }
+}
+
+impl AssignablePath {
+    /// The path's leading name and dotted field segments, in order. Index
+    /// suffixes (`[ Expr ]`) carry their own expression child and are not names.
+    pub fn segments(&self) -> impl Iterator<Item = SyntaxToken> + '_ {
+        self.syntax
+            .children_with_tokens()
+            .into_iter()
+            .filter_map(|e| e.as_token().cloned())
+            .filter(|t| matches!(t.kind(), SyntaxKind::Ident | SyntaxKind::RawIdent))
+    }
+}
+
+impl FillClause {
+    /// The name of the slot this clause fills.
+    pub fn name(&self) -> Option<SyntaxToken> {
+        support::name_token(&self.syntax)
+    }
+
+    /// The projected content block.
+    pub fn body(&self) -> Option<ViewBlock> {
+        support::child(&self.syntax)
+    }
+}
+
+impl ViewIf {
+    /// The condition head expression.
+    pub fn condition(&self) -> Option<Expr> {
+        support::child(&self.syntax)
+    }
+
+    /// The optional `preserve "..."` identity string literal.
+    pub fn preserve(&self) -> Option<SyntaxToken> {
+        support::token(&self.syntax, |k| {
+            matches!(k, SyntaxKind::StringLiteral | SyntaxKind::RawStringLiteral)
+        })
+    }
+
+    /// The `then` view block (the first block child).
+    pub fn then_block(&self) -> Option<ViewBlock> {
+        support::child(&self.syntax)
+    }
+
+    /// The `else` branch: either a chained `else if` ([`ElseBranch::If`]) or a
+    /// trailing `else` block ([`ElseBranch::Block`]).
+    pub fn else_branch(&self) -> Option<ElseBranch> {
+        // A chained `else if` nests a `ViewIf`; a plain `else` adds a second
+        // `ViewBlock`. Prefer the nested `ViewIf`, else the block after the first.
+        if let Some(nested) = support::child::<ViewIf>(&self.syntax) {
+            return Some(ElseBranch::If(nested));
+        }
+        support::nth_child::<ViewBlock>(&self.syntax, 1).map(ElseBranch::Block)
+    }
+}
+
+/// The `else` branch of a [`ViewIf`]: a chained `else if` or a trailing block.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ElseBranch {
+    If(ViewIf),
+    Block(ViewBlock),
+}
+
 impl ViewFor {
+    /// The loop pattern (the binding introduced for each item).
+    pub fn pattern(&self) -> Option<Pattern> {
+        support::child(&self.syntax)
+    }
+
+    /// The iterable head expression (the first head expression).
+    pub fn iterable(&self) -> Option<Expr> {
+        support::nth_child(&self.syntax, 0)
+    }
+
+    /// The stable-key head expression (the second head expression).
+    pub fn key(&self) -> Option<Expr> {
+        support::nth_child(&self.syntax, 1)
+    }
+
     /// The loop body's view block.
     pub fn body(&self) -> Option<ViewBlock> {
         support::child(&self.syntax)
@@ -660,9 +804,31 @@ impl ViewFor {
 }
 
 impl ViewMatch {
+    /// The scrutinee head expression.
+    pub fn scrutinee(&self) -> Option<Expr> {
+        support::child(&self.syntax)
+    }
+
     /// The match arms, in order.
     pub fn arms(&self) -> impl Iterator<Item = ViewMatchArm> {
         support::children(&self.syntax)
+    }
+}
+
+impl ViewMatchArm {
+    /// The arm's pattern.
+    pub fn pattern(&self) -> Option<Pattern> {
+        support::child(&self.syntax)
+    }
+
+    /// The optional `if Expr` guard.
+    pub fn guard(&self) -> Option<Expr> {
+        support::child(&self.syntax)
+    }
+
+    /// The arm's view block body.
+    pub fn body(&self) -> Option<ViewBlock> {
+        support::child(&self.syntax)
     }
 }
 
@@ -736,6 +902,93 @@ ast_node!(
     /// A closure `move? |params| body`.
     ClosureExpr = ClosureExpr
 );
+
+impl LiteralExpr {
+    /// The single literal token this expression wraps (int/float/unit/string/
+    /// char/color/bool/none).
+    pub fn token(&self) -> Option<SyntaxToken> {
+        support::token(&self.syntax, |k| {
+            matches!(
+                k,
+                SyntaxKind::IntLiteral
+                    | SyntaxKind::FloatLiteral
+                    | SyntaxKind::UnitLiteral
+                    | SyntaxKind::StringLiteral
+                    | SyntaxKind::RawStringLiteral
+                    | SyntaxKind::CharLiteral
+                    | SyntaxKind::ColorLiteral
+                    | SyntaxKind::TrueKw
+                    | SyntaxKind::FalseKw
+                    | SyntaxKind::NoneKw
+            )
+        })
+    }
+}
+
+/// Whether a token kind is one of the infix binary operators the parser places
+/// bare between a `BinaryExpr`'s two operand children.
+fn is_binary_op(k: SyntaxKind) -> bool {
+    matches!(
+        k,
+        SyntaxKind::Plus
+            | SyntaxKind::Minus
+            | SyntaxKind::Star
+            | SyntaxKind::Slash
+            | SyntaxKind::Percent
+            | SyntaxKind::Amp
+            | SyntaxKind::Pipe
+            | SyntaxKind::Caret
+            | SyntaxKind::Shl
+            | SyntaxKind::Shr
+            | SyntaxKind::EqEq
+            | SyntaxKind::Neq
+            | SyntaxKind::Lt
+            | SyntaxKind::Le
+            | SyntaxKind::Gt
+            | SyntaxKind::Ge
+            | SyntaxKind::AmpAmp
+            | SyntaxKind::PipePipe
+            | SyntaxKind::QuestionQuestion
+    )
+}
+
+impl BinaryExpr {
+    /// The left operand (the first expression child).
+    pub fn lhs(&self) -> Option<Expr> {
+        support::nth_child(&self.syntax, 0)
+    }
+
+    /// The operator token between the operands.
+    pub fn op(&self) -> Option<SyntaxToken> {
+        support::token(&self.syntax, is_binary_op)
+    }
+
+    /// The right operand (the second expression child).
+    pub fn rhs(&self) -> Option<Expr> {
+        support::nth_child(&self.syntax, 1)
+    }
+}
+
+impl UnaryExpr {
+    /// The prefix operator token (`-`, `!`, `~`, `&`, `*`).
+    pub fn op(&self) -> Option<SyntaxToken> {
+        support::token(&self.syntax, |k| {
+            matches!(
+                k,
+                SyntaxKind::Minus
+                    | SyntaxKind::Bang
+                    | SyntaxKind::Tilde
+                    | SyntaxKind::Amp
+                    | SyntaxKind::Star
+            )
+        })
+    }
+
+    /// The operand expression.
+    pub fn operand(&self) -> Option<Expr> {
+        support::child(&self.syntax)
+    }
+}
 
 impl FieldExpr {
     /// The receiver expression (`a` in `a.b`).
