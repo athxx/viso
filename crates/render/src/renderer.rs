@@ -14,7 +14,9 @@
 //! frame needs more capacity, so a steady-state frame performs zero GPU buffer
 //! allocations (exit criterion).
 
-use viso_gpu::backend::{DrawCommand, DrawList, Geometry, RenderPass, RenderTarget};
+use viso_gpu::backend::{
+    DrawCommand, DrawList, Geometry, InlineUniforms, RenderPass, RenderTarget,
+};
 use viso_gpu::{AddressMode, BindGroupId, FilterMode, SamplerId};
 use viso_gpu::{
     BindGroupDesc, Binding, BlendMode, BufferDesc, BufferUsage, BuiltinShader, Frame, GpuBackend,
@@ -228,6 +230,18 @@ pub struct Renderer {
     /// How many pooled textures are already claimed by this frame's passes,
     /// reset each frame so successive same-size layers each get a distinct one.
     offscreen_pool_used: usize,
+    /// Per-pass viewports for this frame, reused each frame. Index 0 is the
+    /// surface; the rest map 1:1 to `offscreen_passes`. Their bytes feed each
+    /// command's inline uniform (copied by value, no borrow).
+    viewports: Vec<[f32; 2]>,
+    /// The frame's draw commands, flat across all passes in execution order,
+    /// reused each frame. `passes` slices this by range. Borrow-free, so its
+    /// backing allocation is retained across frames via `clear` (0 steady-state
+    /// heap allocations in `encode`, §7.1).
+    commands: Vec<DrawCommand>,
+    /// The frame's render passes (offscreen layers first, then surface), reused
+    /// each frame. Each references its commands by range into `commands`.
+    passes: Vec<RenderPass>,
 }
 
 /// A reusable render-target texture in [`Renderer::offscreen_pool`].
@@ -375,6 +389,9 @@ impl Renderer {
             offscreen_passes: Vec::with_capacity(4),
             offscreen_pool: Vec::with_capacity(4),
             offscreen_pool_used: 0,
+            viewports: Vec::with_capacity(4),
+            commands: Vec::with_capacity(8),
+            passes: Vec::with_capacity(4),
         }
     }
 
@@ -871,72 +888,89 @@ impl Renderer {
     /// contract (offscreen layers first, then main). Each offscreen pass uses its
     /// own texture-extent viewport uniform; the surface pass uses `viewport`.
     fn encode<B: GpuBackend>(
-        &self,
+        &mut self,
         backend: &mut B,
         frame: Frame,
         clear: [f32; 4],
         viewport: [f32; 2],
     ) {
-        // Per-pass viewports, kept alive for the borrowed uniform bytes below.
-        // Index 0 is the surface; the rest map 1:1 to `offscreen_passes`.
-        let mut viewports: Vec<[f32; 2]> = Vec::with_capacity(self.offscreen_passes.len() + 1);
+        // All three scratch buffers are `Renderer`-owned and borrow-free
+        // (`DrawCommand`/`RenderPass` carry no lifetime — uniforms are stored by
+        // value). We take them out with `mem::take`, clear them (retaining their
+        // backing allocations), refill, and put them back: 0 heap allocations on
+        // a steady frame. Taking them out lets the fill loops borrow `&self`
+        // (segments, offscreen passes) without aliasing the buffers being filled.
+        let mut viewports = std::mem::take(&mut self.viewports);
+        let mut commands = std::mem::take(&mut self.commands);
+        let mut passes = std::mem::take(&mut self.passes);
+        viewports.clear();
+        commands.clear();
+        passes.clear();
+
+        // Per-pass viewports. Index 0 is the surface; the rest map 1:1 to
+        // `offscreen_passes`. Their bytes are copied by value into each command.
         viewports.push(viewport);
         for pass in &self.offscreen_passes {
             viewports.push(pass.viewport);
         }
 
-        // Build each pass's command list (borrowing the matching viewport bytes),
-        // offscreen passes first, then the surface pass. These Vecs must outlive
-        // the `RenderPass` slices that borrow them, so they live in locals.
-        let mut command_lists: Vec<Vec<DrawCommand>> =
-            Vec::with_capacity(self.offscreen_passes.len() + 1);
-        for (i, _pass) in self.offscreen_passes.iter().enumerate() {
-            let uniform_bytes = bytemuck_viewport(&viewports[i + 1]);
+        // Offscreen passes first (textures cleared transparent), then the surface
+        // pass (cleared to the background). Each pass appends its commands to the
+        // flat `commands` buffer and records its range in a `RenderPass`.
+        for (i, pass) in self.offscreen_passes.iter().enumerate() {
             let vp = viewports[i + 1];
-            let commands = self
+            let uniforms = InlineUniforms::new(bytemuck_viewport(&vp));
+            let first_command = commands.len() as u32;
+            for seg in self
                 .segments
                 .iter()
                 .filter(|seg| seg.target == PassTarget::Offscreen(i))
-                .map(|seg| self.command_for(seg, uniform_bytes, vp))
-                .collect();
-            command_lists.push(commands);
-        }
-        let main_uniform = bytemuck_viewport(&viewports[0]);
-        let main_commands: Vec<DrawCommand> = self
-            .segments
-            .iter()
-            .filter(|seg| seg.target == PassTarget::Main)
-            .map(|seg| self.command_for(seg, main_uniform, viewport))
-            .collect();
-        command_lists.push(main_commands);
-
-        // Assemble the passes: offscreen textures cleared transparent, then the
-        // surface cleared to the background.
-        let mut passes: Vec<RenderPass> = Vec::with_capacity(command_lists.len());
-        for (i, pass) in self.offscreen_passes.iter().enumerate() {
+            {
+                commands.push(self.command_for(seg, uniforms, vp));
+            }
             passes.push(RenderPass {
                 target: RenderTarget::Texture(pass.texture),
                 load: LoadOp::Clear([0.0, 0.0, 0.0, 0.0]),
-                commands: &command_lists[i],
+                first_command,
+                command_count: commands.len() as u32 - first_command,
             });
+        }
+
+        let main_uniforms = InlineUniforms::new(bytemuck_viewport(&viewports[0]));
+        let first_command = commands.len() as u32;
+        for seg in self
+            .segments
+            .iter()
+            .filter(|seg| seg.target == PassTarget::Main)
+        {
+            commands.push(self.command_for(seg, main_uniforms, viewport));
         }
         passes.push(RenderPass {
             target: RenderTarget::Surface(frame),
             load: LoadOp::Clear(clear),
-            commands: &command_lists[self.offscreen_passes.len()],
+            first_command,
+            command_count: commands.len() as u32 - first_command,
         });
 
-        backend.encode(&DrawList { passes: &passes });
+        backend.encode(&DrawList {
+            commands: &commands,
+            passes: &passes,
+        });
+
+        // Return the buffers so their capacity is reused next frame.
+        self.viewports = viewports;
+        self.commands = commands;
+        self.passes = passes;
     }
 
     /// Map one [`Segment`] to its [`DrawCommand`], given the pass's inline
     /// viewport uniform bytes and the viewport its scissor is clamped to.
-    fn command_for<'a>(
+    fn command_for(
         &self,
         seg: &Segment,
-        uniform_bytes: &'a [u8],
+        uniforms: InlineUniforms,
         viewport: [f32; 2],
-    ) -> DrawCommand<'a> {
+    ) -> DrawCommand {
         let scissor = seg.clip.map(|c| clip_to_scissor(c, viewport));
         match seg.kind {
             SegmentKind::Quad => DrawCommand {
@@ -945,7 +979,7 @@ impl Renderer {
                 geometry: Geometry::Generated { count: seg.count },
                 instance_buffer: self.quad_buffer,
                 instance_offset: seg.start as usize * QUAD_STRIDE,
-                uniforms: uniform_bytes,
+                uniforms,
                 scissor,
             },
             SegmentKind::Image { bind_group } => DrawCommand {
@@ -954,7 +988,7 @@ impl Renderer {
                 geometry: Geometry::Generated { count: seg.count },
                 instance_buffer: self.image_buffer,
                 instance_offset: seg.start as usize * IMAGE_STRIDE,
-                uniforms: uniform_bytes,
+                uniforms,
                 scissor,
             },
             SegmentKind::GlyphRun { bind_group } => DrawCommand {
@@ -963,7 +997,7 @@ impl Renderer {
                 geometry: Geometry::Generated { count: seg.count },
                 instance_buffer: self.glyph_buffer,
                 instance_offset: seg.start as usize * GLYPH_STRIDE,
-                uniforms: uniform_bytes,
+                uniforms,
                 scissor,
             },
             SegmentKind::Mesh => DrawCommand {
@@ -980,7 +1014,7 @@ impl Renderer {
                 // buffer is passed only to fill the field).
                 instance_buffer: self.mesh_vertex_buffer,
                 instance_offset: 0,
-                uniforms: uniform_bytes,
+                uniforms,
                 scissor,
             },
         }

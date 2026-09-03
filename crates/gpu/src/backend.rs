@@ -48,14 +48,85 @@ pub enum RenderTarget {
     Texture(TextureId),
 }
 
-/// A render pass: one target, one load action, a list of draw commands.
-pub struct RenderPass<'a> {
+/// A render pass: one target, one load action, and a contiguous range of draw
+/// commands inside the frame's flat [`DrawList::commands`] buffer.
+///
+/// The commands are referenced by range rather than by a borrowed slice so a
+/// pass carries no lifetime and can live in a renderer-owned scratch buffer that
+/// is cleared and refilled each frame (0 steady-state heap allocations, §7.1).
+#[derive(Debug, Clone, Copy)]
+pub struct RenderPass {
     /// Where this pass renders.
     pub target: RenderTarget,
     /// What to do with the target's prior contents.
     pub load: LoadOp,
-    /// The draw commands, in submission order.
-    pub commands: &'a [DrawCommand<'a>],
+    /// Index of this pass's first command in [`DrawList::commands`].
+    pub first_command: u32,
+    /// Number of commands this pass draws, starting at `first_command`.
+    pub command_count: u32,
+}
+
+impl RenderPass {
+    /// This pass's command range into [`DrawList::commands`].
+    #[inline]
+    pub fn command_range(&self) -> core::ops::Range<usize> {
+        let start = self.first_command as usize;
+        start..start + self.command_count as usize
+    }
+}
+
+/// Inline per-draw uniform bytes, stored by value so a [`DrawCommand`] carries no
+/// borrow. The backends read [`Self::as_bytes`] and hand it to Metal's
+/// `setVertexBytes`/`setFragmentBytes` (headless ignores it), preserving the
+/// arbitrary-length inline-byte uniform semantics — capped at [`Self::MAX`] bytes,
+/// which comfortably fits the built-ins' viewport uniform.
+#[derive(Debug, Clone, Copy)]
+pub struct InlineUniforms {
+    bytes: [u8; Self::MAX],
+    len: u8,
+}
+
+impl InlineUniforms {
+    /// Maximum inline uniform payload in bytes.
+    pub const MAX: usize = 16;
+
+    /// Empty uniforms (no inline bytes bound).
+    pub const EMPTY: Self = Self {
+        bytes: [0; Self::MAX],
+        len: 0,
+    };
+
+    /// Build inline uniforms from `src`.
+    ///
+    /// # Panics
+    /// Panics if `src.len() > Self::MAX`.
+    #[inline]
+    pub fn new(src: &[u8]) -> Self {
+        assert!(
+            src.len() <= Self::MAX,
+            "inline uniform payload {} exceeds {} bytes",
+            src.len(),
+            Self::MAX
+        );
+        let mut bytes = [0u8; Self::MAX];
+        bytes[..src.len()].copy_from_slice(src);
+        Self {
+            bytes,
+            len: src.len() as u8,
+        }
+    }
+
+    /// The inline uniform bytes.
+    #[inline]
+    pub fn as_bytes(&self) -> &[u8] {
+        &self.bytes[..self.len as usize]
+    }
+
+    /// Whether there are any inline uniform bytes.
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        self.len == 0
+    }
 }
 
 /// How a [`DrawCommand`] sources its geometry — the two shapes Viso draws.
@@ -97,9 +168,9 @@ pub enum Geometry {
 ///
 /// [`Self::geometry`] selects the geometry source: `vertex_id`-generated
 /// instanced quads, or a real indexed vertex/index buffer for vector meshes.
-/// Uniforms are passed inline as bytes (Metal `setVertexBytes`/`setFragmentBytes`),
-/// matching makepad's per-draw-call uniform path.
-pub struct DrawCommand<'a> {
+/// Uniforms are passed inline as bytes (Metal `setVertexBytes`/`setFragmentBytes`).
+#[derive(Debug, Clone, Copy)]
+pub struct DrawCommand {
     /// The pipeline (shader + blend + formats) for this draw.
     pub pipeline: PipelineId,
     /// Optional bind group (textures + samplers + uniform buffers).
@@ -111,8 +182,9 @@ pub struct DrawCommand<'a> {
     pub instance_buffer: BufferId,
     /// Byte offset into the instance buffer for the first instance of this draw.
     pub instance_offset: usize,
-    /// Inline uniform bytes for this draw (bound at a fixed uniform index).
-    pub uniforms: &'a [u8],
+    /// Inline uniform bytes for this draw (bound at a fixed uniform index),
+    /// stored by value so the command carries no borrow.
+    pub uniforms: InlineUniforms,
     /// Scissor rect in physical pixels `(x, y, w, h)`, if the batch is clipped.
     pub scissor: Option<(u32, u32, u32, u32)>,
 }
@@ -120,8 +192,12 @@ pub struct DrawCommand<'a> {
 /// A flat, backend-neutral draw list for one frame: the packet `viso-render`
 /// hands to [`GpuBackend::encode`].
 pub struct DrawList<'a> {
-    /// The passes, in execution order (offscreen layers first, then main).
-    pub passes: &'a [RenderPass<'a>],
+    /// All draw commands for the frame, concatenated across passes in execution
+    /// order. Each [`RenderPass`] in `passes` indexes a contiguous range here.
+    pub commands: &'a [DrawCommand],
+    /// The passes, in execution order (offscreen layers first, then main). Each
+    /// references its commands by range into `commands`.
+    pub passes: &'a [RenderPass],
 }
 
 /// The single RHI trait. Cold-path methods create resources; the hot path is

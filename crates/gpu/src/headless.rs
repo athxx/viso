@@ -263,7 +263,7 @@ impl GpuBackend for HeadlessRaster {
 
     fn encode(&mut self, list: &DrawList<'_>) {
         for pass in list.passes {
-            self.encode_pass(pass);
+            self.encode_pass(pass, &list.commands[pass.command_range()]);
         }
     }
 
@@ -294,7 +294,7 @@ enum FbTarget {
 impl HeadlessRaster {
     /// Rasterize one render pass into its target framebuffer — the swapchain
     /// surface, or an offscreen texture for a translucent Layer.
-    fn encode_pass(&mut self, pass: &RenderPass<'_>) {
+    fn encode_pass(&mut self, pass: &RenderPass, commands: &[DrawCommand]) {
         let (target, width, height) = match pass.target {
             RenderTarget::Surface(frame) => {
                 let s = &self.surfaces[frame.surface.0 as usize];
@@ -313,7 +313,7 @@ impl HeadlessRaster {
             }
         }
 
-        for cmd in pass.commands {
+        for cmd in commands {
             self.encode_command(target, width, height, cmd);
         }
     }
@@ -329,7 +329,7 @@ impl HeadlessRaster {
     }
 
     /// Rasterize one draw command's instances into the target framebuffer.
-    fn encode_command(&mut self, target: FbTarget, width: u32, height: u32, cmd: &DrawCommand<'_>) {
+    fn encode_command(&mut self, target: FbTarget, width: u32, height: u32, cmd: &DrawCommand) {
         // Copy the pipeline metadata (both `Copy`) so the per-pixel fill can take
         // `&mut self` for blending without aliasing the pipeline/buffer tables.
         let pipeline = &self.pipelines[cmd.pipeline.0 as usize];

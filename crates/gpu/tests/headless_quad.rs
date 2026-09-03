@@ -5,7 +5,9 @@
 //! → write_buffer → create_pipeline (with layout validation) → encode →
 //! read_pixels) that golden tests will build on, without needing a GPU.
 
-use viso_gpu::backend::{DrawCommand, DrawList, Geometry, RenderPass, RenderTarget};
+use viso_gpu::backend::{
+    DrawCommand, DrawList, Geometry, InlineUniforms, RenderPass, RenderTarget,
+};
 use viso_gpu::{
     AttrFormat, BlendMode, BufferDesc, BufferUsage, BuiltinShader, GpuBackend, GpuInstance,
     HeadlessRaster, InstanceSchema, LoadOp, PipelineDesc, RawWindowHandle, SchemaAttr,
@@ -114,15 +116,17 @@ fn draws_a_solid_rect_over_a_cleared_background() {
         geometry: Geometry::Generated { count: 1 },
         instance_buffer: inst_buf,
         instance_offset: 0,
-        uniforms: &[],
+        uniforms: InlineUniforms::EMPTY,
         scissor: None,
     };
     gpu.encode(&DrawList {
+        commands: &[cmd],
         passes: &[RenderPass {
             target: RenderTarget::Surface(frame),
             // Clear to opaque blue.
             load: LoadOp::Clear([0.0, 0.0, 1.0, 1.0]),
-            commands: &[cmd],
+            first_command: 0,
+            command_count: 1,
         }],
     });
     gpu.present(frame);
