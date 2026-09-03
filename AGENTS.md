@@ -1,6 +1,6 @@
 # AGENTS.md — Viso Engineering Guide
 
-> This file defines mandatory engineering rules for humans and coding agents working on Viso.
+> This file defines mandatory engineering rules for humans and coding agents working on Viso 1.0 Draft.
 > It is intentionally opinionated. When a local implementation preference conflicts with this document, follow this document unless an accepted ADR explicitly changes the rule.
 
 ---
@@ -12,9 +12,10 @@ Viso is a **Rust-native, GPU-first, cross-platform application framework**.
 Canonical naming rules:
 
 - framework/repository/facade crate: `Viso` / `viso`;
-- canonical user UI/DSL source extension: `.vs`;
-- `.vs` MUST be used by generators, examples, docs, diagnostics, formatter, LSP, Studio, and migration output;
-- `Makepad` is reserved for legacy-source, migration, historical-reference, or benchmark-baseline references only;
+- canonical external UI/DSL source extension: `.vs`;
+- Rust-side DSL entry points are `ui! { ... }`, `component! { ... }`, and `view!("...vs")`; they MUST share the same schema/type/effect checking, Typed HIR, Reactive/UI/Shader IR, and runtime contracts;
+- `.vs` MUST be used by generators, examples, docs, diagnostics, formatter, LSP, Studio, and migration output whenever an external DSL file is emitted;
+- `Makepad` is used only for migration input, behavior/algorithm reference, source comparison, and benchmark baselines;
 - current Makepad migration input MUST be modeled as Rust source containing `script_mod!`, `ScriptVm`, `App::from_script_mod`, widget registration, and script module initialization; do NOT model `.live` files as the current Makepad source format;
 - use “hot reload” or “live editing” for the capability, not as a source-format name.
 
@@ -76,7 +77,7 @@ Normal applications depend on:
 
 ```toml
 [dependencies]
-viso = "1"
+viso = "1.0"
 ```
 
 Do not require ordinary app code to import internal crates such as:
@@ -170,6 +171,33 @@ runtime  -> studio
 
 Studio and Inspector are clients of the framework, never dependencies of framework runtime crates.
 
+## 3.6 Architecture boundaries are machine-enforced
+
+Do not rely on this file or code review alone to preserve layering.
+
+Architecture-sensitive changes MUST keep the machine-readable policy and CI checker passing:
+
+```text
+architecture.toml
+cargo xtask arch-check
+```
+
+The checker should enforce crate dependency allow/deny edges and selected module-level forbidden imports. `cargo-modules` or similar tools may be used for visualization, but the repository-owned checker is the source of truth.
+
+## 3.7 Self-build vs dependency policy
+
+Use the Ownership Ladder:
+
+**Viso must own:** Node identity/lifecycle, reactive invalidation, layout contract, render batching/upload semantics, `.vs` + `ui!`/`component!`/`view!` HIR+AOT+hot reload semantics, Shader ABI, frame scheduler, semantics tree.
+
+**Viso owns integration but should prefer proven algorithms:** Unicode/BiDi/shaping primitives, font rasterization, media codecs, accessibility OS bridge, platform bindings.
+
+**Adapters/external by default:** async executors, HTTP/TLS, databases, telemetry, wgpu reference/experimental backend.
+
+Do not reimplement a standards-heavy subsystem merely for repository purity. Fork/replace only when capability, profiling, security, or maintenance evidence justifies it.
+
+A target architecture contract may be Viso-owned while its first implementation is dependency-backed. Prefer a narrow provisional adapter over blocking a measurable vertical slice. When replacing an adapter with a custom implementation, remove the old path instead of keeping permanent dual implementations.
+
 ---
 
 # 4. Repository Layout
@@ -177,6 +205,8 @@ Studio and Inspector are clients of the framework, never dependencies of framewo
 Target top-level layout:
 
 ```text
+architecture.toml
+
 crates/
     viso/
     macros/
@@ -244,25 +274,6 @@ Do not let `lib.rs` become an implementation dump. `lib.rs` should mostly contai
 - module declarations;
 - public re-exports;
 - minimal crate initialization.
-
-## 5.1 Source & Comment Hygiene
-
-Two rules apply to every line of code and every comment you write:
-
-1. **No Makepad-keyword references.** Code and comments must not carry Makepad
-   terminology as if it were Viso's own vocabulary (`AppMain`, `Cx`, `DrawList`,
-   `Turtle`, `live_design!`, `#[live]`, `nav_stop`, and the like). Viso has its
-   own names; use them. The name "Makepad" appears only in explicitly-scoped
-   migration, legacy-comparison, or benchmark contexts (see Mission) — never as a
-   throwaway "this is like makepad's X" annotation on production code. When you
-   port a concept, name it the Viso way and drop the origin comment.
-
-2. **No section-reference symbols.** Do not write `§` followed by numbers (e.g.
-   `§12.2`, `§8.4`) in code or comments. Those cross-references belong in design
-   docs and ADRs, not in source — they rot the moment a doc is renumbered.
-   Reference the concept by name instead ("the two-pass Flex layout", "the
-   hot-path contract"). This applies when you touch a file: strip any `§` you
-   pass, don't reintroduce them.
 
 ---
 
@@ -440,6 +451,26 @@ inspector-only strings
 
 Do not put cold Strings in structures traversed for every node every frame.
 
+## 8.5 Node hot storage is fixed-index hybrid SoA
+
+The target storage model is not open-ended:
+
+- compact `NodeMeta[index]` AoS for hierarchy/type/flags;
+- layout/transform/paint/interaction hot stores indexed directly by the same `NodeIndex`;
+- cold/optional data in sparse side tables;
+- no per-node HashMap lookup in steady-state traversal;
+- no archetype migration as the default UI-node lifecycle.
+
+Changing this model requires an ADR plus benchmark evidence.
+
+## 8.6 `Handle<T>` is identity/capability, not a state borrow
+
+Public `Handle<T>` MUST NOT expose long-lived `&T`/`&mut T` access to component internals. Reads/writes go through context-scoped query, generated property access, typed actions, or update APIs that preserve lifetime and invalidation accounting. Internal guards may exist but must not survive the frame/borrow scope.
+
+## 8.7 Transform invalidation is separate from layout invalidation
+
+Scroll/translate/scale/transform-only animation MUST be able to update `TRANSFORM/HIT_TEST/PAINT` without marking `MEASURE/LAYOUT` dirty by default. Layout and transform share `NodeId` but use separate hot stores and propagation rules.
+
 ---
 
 # 9. Component Model
@@ -495,11 +526,22 @@ StateId(count)
 
 Do not build the entire normal reactive model around per-signal `Rc<Vec<Box<dyn Subscriber>>>`.
 
-## 10.3 Dynamic fallback is allowed
+## 10.3 Dynamic fallback is explicit and observable
 
-Dynamic scripts may register dependencies at runtime.
+Dynamic scripts may register dependencies at runtime, but a compiler-known typed binding MUST NOT silently fall back to runtime dynamic dependency tracking.
 
-The dynamic fallback must not define the cost of the static fast path.
+Dynamic binding requires an explicit dynamic construct/API or a compiler diagnostic. The dynamic path must not define the cost of the static fast path.
+
+Profiler/CI counters must distinguish at least:
+
+```text
+static_binding_eval
+dynamic_binding_eval
+dynamic_subscribe
+dynamic_fallback_nodes
+```
+
+Maintain benchmarks for static, mixed, and fully dynamic dependency paths. New dynamic fallback in strict typed examples should fail CI unless explicitly approved.
 
 ## 10.4 Transaction batching
 
@@ -810,6 +852,8 @@ Text editing must be grapheme-aware and IME-aware.
 
 # 21. Viso DSL / Hot Reload Rules
 
+[DSL DESIGN](./Viso_DSL_1.0.md)
+
 ## 21.1 Dependency direction
 
 `viso-dsl` depends on schemas/UI interfaces.
@@ -845,13 +889,92 @@ Module dependencies must be resolved by the compiler/module graph.
 
 Do not require application authors to know that module A must be manually registered before module B.
 
-## 21.5 Release AOT
+## 21.5 DSL source forms
+
+Canonical Rust-side entry points are:
+
+```rust
+ui! { Button { text: "Save"; } }       // ViewFragment
+view!("view.vs")                        // external .vs
+component! { Tiny { view { Text {} } } } // ComponentDecl
+```
+
+Rules:
+
+- `ui!` MUST parse only the ViewFragment entry grammar;
+- `component!` MUST parse only the ComponentDecl entry grammar;
+- `view!` MUST compile an external `.vs` source through the normal module/file frontend;
+- all three forms MUST share component/native schema, name resolution, type/effect/capability checking, Typed HIR, Reactive/UI/Shader IR, and diagnostics semantics;
+- do not create a mini inline DSL or macro-only runtime semantics;
+- `.vs` is the canonical external file format;
+- external `.vs` files are preferred for page/theme/large-component hot reload;
+- `ui!` is preferred for small local view fragments/tests/examples;
+- `component!` is for small Rust-adjacent complete components, not a replacement for normal `.vs` component modules;
+- changes to inline macros normally require Rust incremental compilation; the runtime is not required to parse Rust source to hot-reload inline macros.
+
+### 21.5.1 Surface complexity budget
+
+Viso DSL is NOT a second Rust language by default.
+
+Core/normal authoring MUST remain usable without understanding user-defined traits, impl blocks, const generics, trait objects, hand-written native declarations, or compiler plugins.
+
+Treat language features as:
+
+```text
+Core: component/input/state/computed/action/view, record/enum,
+      node/property/event/control-flow/keyed-list,
+      system hooks, basic functions, shader surface
+
+Standard: effect/task/resource/slot/style/theme
+
+Advanced/preview: user trait/impl/general generics/const generics,
+                  template/part metaprogramming,
+                  hand-written native declarations,
+                  fine-grained capability annotations
+```
+
+Advanced features MUST NOT block the first production vertical slice and MUST NOT appear in Quick Start examples unless the task specifically needs them.
+
+### 21.5.2 Declarative property syntax
+
+In View/Style authoring, property binding uses `:` and a terminating semicolon:
+
+```viso
+Text {
+    text: label;
+    color: theme.colors.foreground;
+}
+```
+
+Imperative behavior assignment continues to use `=` / `+=` / etc.
+
+Do not reintroduce Makepad's `:=`, `+:`, `<:`, `>:` or other assignment-family syntax. Named node identity is explicit with `node name: Type { ... }`; merge/override behavior uses explicit typed constructs.
+
+### 21.5.3 Source headers and type ceremony
+
+Normal app `.vs` files derive language version from `Viso.toml`/lock metadata and module path from package + source path. Do not require every normal file to begin with `language viso ...; module ...;`.
+
+Private `state` MAY infer its type from a stable initializer. Public/exported boundaries, inputs/events/slots/native/shader interfaces remain explicitly typed.
+
+### 21.5.4 Native and capability authoring
+
+Normal native APIs come from generated Rust/native schema. Do not make application authors duplicate every native signature in `.vs`.
+
+Capability requirements should be inferred from the typed call graph and checked against package/profile grants. Explicit `requires` clauses are contracts/assertions for public APIs, not mandatory boilerplate on every callable.
+
+### 21.5.5 Game support is a core vertical slice
+
+Game/system support MUST NOT wait for user-defined trait/impl/general-generic support. The compiler may consume scheduler/system traits provided by Native Schema (for example `FixedUpdate`) before the language supports author-defined traits.
+
+Keep the parser domain-neutral: do not add `game`, `physics`, `ecs`, `audio`, or engine-specific keywords. Provide these through typed schema/profile APIs.
+
+## 21.6 Release AOT
 
 Release builds should not require parsing `.vs` source at startup.
 
 Build output should contain compact typed IR/assets.
 
-## 21.6 Hot reload is transactional
+## 21.7 Hot reload is transactional
 
 Hot reload should:
 
@@ -865,7 +988,7 @@ commit atomically
 
 On failure, keep last-good UI/runtime state when possible.
 
-## 21.7 Stable keys
+## 21.8 Stable keys
 
 Dynamic repeated UI must use stable keys when identity matters.
 
@@ -948,6 +1071,8 @@ Business pages should not scatter `#[cfg(target_os = ...)]` branches for standar
 Viso owns the UI frame loop.
 
 External runtimes such as Tokio are adapters, not the owner of the application frame scheduler.
+
+Viso owns a UI task protocol (task identity, wakeup, cancellation, timers/lifecycle integration, scoped ownership), not a general-purpose async executor, I/O reactor, HTTP stack, or TLS stack. Prefer adapters to mature executors and I/O libraries.
 
 Default application API should be simple:
 
@@ -1279,12 +1404,12 @@ Production crates MUST NOT introduce or depend on:
 
 ```text
 Makepad WidgetRef wrappers
-legacy Widget-in-Node hosts
-legacy UI-runtime feature flags
+Makepad Widget-in-Node hosts
+Makepad UI-runtime compatibility feature flags
 dual Makepad/Viso widget runtimes
 ```
 
-Do not keep an old runtime abstraction alive merely to make migration easier.
+Do not keep an Makepad runtime abstraction alive merely to make migration easier.
 
 ## 38.2 Migration belongs to tooling
 
@@ -1311,7 +1436,23 @@ viso-dsl
 
 The migration tool may parse and understand Makepad. The Viso runtime must not.
 
-## 38.3 Migrate semantics, not architecture
+## 38.3 Migration autofix must be conservative
+
+Treat migration output as:
+
+```text
+Auto      proven local semantic rewrite
+Assisted  generated Viso skeleton + precise diagnostics/TODOs
+Manual    architecture/lifecycle rewrite required
+```
+
+`--apply` may only perform idempotent, high-confidence Auto fixes. Do not create runtime wrappers to inflate migration automation coverage. The primary value of `viso migrate` is structural analysis and a trustworthy migration plan.
+
+The Rust-side DSL entry points are `ui!`, `component!`, and `view!`. Do not add an alternative general-purpose DSL entry-point macro; keep their parser-entry contracts explicit and route all three through the same schema/HIR/IR pipeline.
+
+At least one real Makepad crate must be kept as a migration canary. Track `script_mod!` recognition, ScriptVm/module-graph recovery, mapping coverage, Auto/Assisted/Manual distribution, and characterization-test parity. Do not promise an auto-migration percentage before canary data exists.
+
+## 38.4 Migrate semantics, not architecture
 
 When porting an existing subsystem, preserve useful:
 
@@ -1326,7 +1467,7 @@ Do not preserve obsolete ownership, lifecycle, or API structure.
 
 A Makepad widget should be used as a behavior/performance reference and then reimplemented directly on Viso Node/State/Layout/Input/Paint contracts.
 
-## 38.4 Prefer vertical native slices
+## 38.5 Prefer vertical native slices
 
 Prefer making one small Viso slice fully native:
 
@@ -1336,12 +1477,11 @@ input -> state -> layout -> paint -> GPU
 
 rather than creating compatibility wrappers across many subsystems.
 
-## 38.5 Keep the old baseline measurable
+## 38.6 Keep the Makepad baseline measurable
 
 Do not delete Makepad characterization fixtures or benchmark data until the corresponding Viso implementation can be compared.
 
 The baseline is a measurement reference, not a runtime dependency.
-
 
 # 39. Legacy-to-Next Mapping
 
@@ -1393,7 +1533,6 @@ Rust source
 ```
 
 The migration tool MUST parse or structurally inspect these sources and reconstruct their dependency graph. It MUST NOT assume a `.live` file exists. Historical `live_design!` code is outside the default current-source migration path unless a task explicitly targets archived Makepad code.
-
 
 ---
 
@@ -1556,7 +1695,7 @@ Maintain a progression such as:
 99-full-app
 ```
 
-New examples should demonstrate recommended architecture, not legacy convenience patterns.
+New examples should demonstrate the Viso 1.0 architecture, not Makepad compatibility patterns.
 
 Do not copy internal APIs into examples because public APIs are missing; fix the public API or clearly label the example advanced/internal.
 
@@ -1636,7 +1775,7 @@ When assigned a task:
 
 1. Identify the owning subsystem/crate.
 2. Read its crate docs and relevant architecture section.
-3. Search for current recommended patterns before copying legacy patterns.
+3. Search for the Viso 1.0 recommended pattern before copying Makepad-specific patterns.
 4. Determine whether the change touches a hot path.
 5. If hot, identify the benchmark/profile needed before implementation.
 6. Make the smallest architecture-correct change.
@@ -1666,7 +1805,7 @@ When two approaches are reasonable:
 
 # 56. Do Not Preserve Legacy Accidents
 
-Source migration does not mean preserving every legacy internal concept.
+Source migration does not mean preserving every Makepad internal concept.
 
 Do not carry forward an old pattern merely because many files use it.
 
@@ -1850,6 +1989,20 @@ Split only when:
 
 This rule applies to platform and GPU backend organization.
 
+## 65.1 Backend support tiers
+
+Tier-1 target paths are:
+
+```text
+macOS/iOS -> Metal
+Windows   -> D3D12
+Linux     -> Vulkan
+Android   -> Vulkan
+Web       -> WebGPU
+```
+
+This is a performance/support baseline, not a lowest-common-denominator contract. Compatibility backends (for example GL/GLES or a reduced Web path) may be added as Tier-2 when adoption data justifies them. They must not weaken Tier-1 RHI/render semantics; capability differences must be explicit and testable.
+
 ---
 
 # 66. Headless Backend
@@ -1872,7 +2025,13 @@ Tests should not require physical pointer interaction when a deterministic input
 
 # 67. CI Architecture Gates
 
-The repository should eventually enforce:
+The repository MUST enforce architecture policy in CI. The baseline command is:
+
+```text
+cargo xtask arch-check
+```
+
+The repository should also enforce:
 
 - forbidden crate dependency edges;
 - formatting/lints;
@@ -1901,7 +2060,11 @@ Create/update an ADR when changing any of these:
 - Viso DSL language/module semantics;
 - async runtime ownership;
 - public application/component lifecycle;
-- migration-boundary policy.
+- migration-boundary policy;
+- self-build vs external-dependency ownership for a major subsystem;
+- `Handle<T>` state-access semantics;
+- transform/layout invalidation relationship;
+- canonical DSL source-form semantics.
 
 Minor implementation details do not need ADRs.
 
@@ -1916,6 +2079,7 @@ Completion means the relevant combination of:
 - implementation complete;
 - tests added/updated;
 - format/lint clean;
+- `cargo xtask arch-check` clean for architecture-sensitive changes;
 - runtime behavior verified;
 - performance measured if claimed or hot-path-affecting;
 - docs/ADR updated when architecture changes;
