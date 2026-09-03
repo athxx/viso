@@ -25,3 +25,7 @@ harness = false
 [[bench]]
 name = "grid_layout"
 harness = false
+
+[[bench]]
+name = "node_arena"
+harness = false
