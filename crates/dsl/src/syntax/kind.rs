@@ -314,6 +314,9 @@ pub enum SyntaxKind {
     ImportItem,
     /// The renamed-import tail `"as" IDENT` on an import or item (A.2).
     RenameClause,
+    /// An `export`-prefixed top-level declaration; visibility travels with the
+    /// wrapped declaration (A.2).
+    ExportDecl,
     /// A leading `@Path(args)` attribute (A.2).
     Attribute,
     /// The parenthesized argument list of an attribute (A.2).
