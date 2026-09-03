@@ -16,3 +16,12 @@ rust-version.workspace = true
 # layout is NOT a GPU wire ABI — uploads go through the validated explicit layout
 # in viso-shader / viso-gpu, and the wire representation is defined by viso-ende.
 [dependencies]
+
+# Benches only. criterion is a dev-dependency: it never ships in viso-math and is
+# not an architecture DAG edge (external crate, ignored by `xtask check-deps`).
+[dev-dependencies]
+criterion = "0.7"
+
+[[bench]]
+name = "math"
+harness = false
