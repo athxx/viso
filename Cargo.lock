@@ -920,6 +920,7 @@ dependencies = [
  "viso-shader",
  "viso-text",
  "viso-ui",
+ "viso-ui-macros",
  "viso-widgets",
 ]
 
@@ -1046,6 +1047,16 @@ dependencies = [
  "criterion",
  "viso-render",
  "viso-runtime",
+]
+
+[[package]]
+name = "viso-ui-macros"
+version = "0.0.0"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
+ "viso-dsl",
 ]
 
 [[package]]

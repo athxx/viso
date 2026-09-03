@@ -108,6 +108,9 @@ pub fn resolve(
             refs: Vec::new(),
             errors: std::mem::take(&mut early_errors[i]),
             scopes: ScopeStack::new(),
+            // The component frontend has declarations/imports; a genuinely missing
+            // user type is a real error here.
+            defer_unresolved_types: false,
         };
         if let Some(cu) = &cu {
             pass.resolve_unit(cu);
@@ -389,6 +392,13 @@ struct ModulePass<'a> {
     refs: Vec<ResolvedRef>,
     errors: Vec<Diagnostic>,
     scopes: ScopeStack,
+    /// When set, an unresolved node/type name is treated as native/schema-provided
+    /// and left undiagnosed instead of raising [`E2001`]. A bare `ui!` fragment has
+    /// no compilation unit and no import mechanism, so its node types (`Column`, …)
+    /// come from the native/widget schema exactly as value refs already do (see the
+    /// deferred value-path head in [`ModulePass::resolve_value_path`]); the component
+    /// frontend keeps `false` so a genuinely missing user type still surfaces.
+    defer_unresolved_types: bool,
 }
 
 impl ModulePass<'_> {
@@ -724,7 +734,9 @@ impl ModulePass<'_> {
         }
         // Built-in/native types (Int, Text, Color, ...) are provided by schema, not
         // by a user declaration, so only a name that looks user-defined is flagged.
-        if is_user_type_name(&text) {
+        // In a fragment there is no compilation unit to declare it and no import, so
+        // the name is a native/schema widget type — deferred, never diagnosed here.
+        if is_user_type_name(&text) && !self.defer_unresolved_types {
             self.errors.push(
                 ResolveErrorKind::UnresolvedModule.to_diagnostic(Some(head.text_range()), &text),
             );
@@ -801,6 +813,9 @@ pub fn resolve_fragment(
         refs: Vec::new(),
         errors: Vec::new(),
         scopes: ScopeStack::new(),
+        // A fragment's node types are native/schema-provided (no imports, no unit),
+        // so an unresolved PascalCase name defers instead of raising E2001.
+        defer_unresolved_types: true,
     };
     // A fragment's items are top-level (no `ViewBlock` wrapper); open one scope for
     // node-name / loop-pattern locals, matching `resolve_view_block`.

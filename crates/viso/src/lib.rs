@@ -49,6 +49,13 @@ use viso_ui::{
 
 pub use viso_ui::context::AppCx;
 
+// The `ui!` proc-macro lives in the compile-time-only `viso-ui-macros` crate; it
+// emits `::viso_ui::…` builder tokens but does not itself depend on `viso-ui`. The
+// facade re-exports it and already depends on `viso-ui`, so those emitted paths
+// resolve at the call site — the same reverse-re-export shape `viso-gpu` uses for
+// `viso_macros::GpuInstance`.
+pub use viso_ui_macros::ui;
+
 /// The application entry-point contract implemented by every Viso app.
 ///
 /// The single generic entry point is [`run`]. An `Application` owns top-level
@@ -541,10 +548,12 @@ pub mod prelude {
         BuildCx, FlexStyle, GridPlacement, GridStyle, LeafStyle, Role, Semantics, StateId,
         StateValue, TrackSizing, VirtualListStyle,
     };
+    // The declarative view-fragment entry point (§21.5): a small local `ui! { … }`
+    // fragment lowers, at Rust compile time, to a static `BuildCx` builder closure.
+    pub use crate::ui;
     // View, Window, Button, Label, Text, Image, List, Scroll, Computed, Event,
-    // Task, Route, Theme, Color, Vec2, Rect, Constraints and the
-    // component!/ui!/view!/routes! macros join this as their subsystems land in
-    // later phases.
+    // Task, Route, Theme, Color, Vec2, Rect, Constraints and the component!/view!/
+    // routes! macros join this as their subsystems land in later phases.
 }
 
 // -- Advanced escape hatches. Opt-in, clearly namespaced. --
