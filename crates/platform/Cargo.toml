@@ -29,10 +29,14 @@ objc2 = "0.6"
 objc2-foundation = { version = "0.3", features = [
     "NSDate",
     "NSString",
+    "NSArray",
+    "NSAttributedString",
     "NSRunLoop",
     "NSObjCRuntime",
     "NSNotification",
     "NSGeometry",
+    "NSRange",
+    "NSValue",
     "NSThread",
 ] }
 objc2-app-kit = { version = "0.3", features = [
@@ -43,6 +47,11 @@ objc2-app-kit = { version = "0.3", features = [
     "NSEvent",
     "NSGraphicsContext",
     "NSRunningApplication",
+    "NSTrackingArea",
+    "NSText",
+    "NSTextInputClient",
+    "NSTextInputContext",
+    "NSAttributedString",
 ] }
 
 # Windows: Win32 via the windows crate.
