@@ -18,4 +18,12 @@
 
 #![forbid(unsafe_op_in_unsafe_fn)]
 
-// Modules land in the ende commit: encode + decode + wire + json.
+mod decode;
+mod encode;
+mod json;
+mod wire;
+
+pub use decode::{Decode, DecodeError, Decoder};
+pub use encode::{Encode, Encoder};
+pub use json::JsonWriter;
+pub use wire::{IdKind, ProtocolTag, WIRE_VERSION, WireId};
