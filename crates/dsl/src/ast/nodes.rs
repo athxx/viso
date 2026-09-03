@@ -439,6 +439,11 @@ macro_rules! callable_accessors {
             pub fn body(&self) -> Option<Block> {
                 support::child(&self.syntax)
             }
+
+            /// The `requires { ... }` capability clause, if declared.
+            pub fn capability_clause(&self) -> Option<CapabilityClause> {
+                support::child(&self.syntax)
+            }
         }
     };
 }
@@ -446,6 +451,19 @@ macro_rules! callable_accessors {
 callable_accessors!(FnDecl);
 callable_accessors!(ActionDecl);
 callable_accessors!(TaskDecl);
+
+ast_node!(
+    /// A `requires { CapabilityPath,* }` clause on a callable — its public capability
+    /// contract / upper bound. Each capability is a plain type path.
+    CapabilityClause = CapabilityClause
+);
+
+impl CapabilityClause {
+    /// The declared capability paths, in source order.
+    pub fn capabilities(&self) -> impl Iterator<Item = TypePath> + '_ {
+        support::children(&self.syntax)
+    }
+}
 
 ast_node!(
     /// A `( Param,* )` parameter list.

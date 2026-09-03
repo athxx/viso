@@ -16,13 +16,13 @@ mod nodes;
 mod support;
 
 pub use nodes::{
-    ActionDecl, AdvancedItem, AnonymousNode, AstNode, BinaryExpr, Block, CallExpr, CastExpr,
-    ClosureExpr, CompilationUnit, ComponentDecl, ComponentEntry, ComputedDecl, ConstDecl, EnumDecl,
-    EnumVariant, EventDecl, EventHandler, ExportDecl, Expr, FieldExpr, FillClause, FnDecl, IfExpr,
-    ImportDecl, ImportItem, IndexExpr, InputDecl, Item, ListExpr, LiteralExpr, MatchExpr, Member,
-    ModulePath, NamedNode, NodeBody, NodeMember, Param, ParamList, ParenExpr, PathExpr,
-    PropertyBinding, PropertyPath, RangeExpr, RecordDecl, RecordExpr, RecordField, RenameClause,
-    ReturnType, StateDecl, SystemDecl, TaskDecl, TryExpr, TupleExpr, TwoWayBinding, TypeAliasDecl,
-    TypePath, UnaryExpr, ViewBlock, ViewDecl, ViewFor, ViewFragment, ViewIf, ViewItem, ViewMatch,
-    ViewMatchArm,
+    ActionDecl, AdvancedItem, AnonymousNode, AstNode, BinaryExpr, Block, CallExpr,
+    CapabilityClause, CastExpr, ClosureExpr, CompilationUnit, ComponentDecl, ComponentEntry,
+    ComputedDecl, ConstDecl, EnumDecl, EnumVariant, EventDecl, EventHandler, ExportDecl, Expr,
+    FieldExpr, FillClause, FnDecl, IfExpr, ImportDecl, ImportItem, IndexExpr, InputDecl, Item,
+    ListExpr, LiteralExpr, MatchExpr, Member, ModulePath, NamedNode, NodeBody, NodeMember, Param,
+    ParamList, ParenExpr, PathExpr, PropertyBinding, PropertyPath, RangeExpr, RecordDecl,
+    RecordExpr, RecordField, RenameClause, ReturnType, StateDecl, SystemDecl, TaskDecl, TryExpr,
+    TupleExpr, TwoWayBinding, TypeAliasDecl, TypePath, UnaryExpr, ViewBlock, ViewDecl, ViewFor,
+    ViewFragment, ViewIf, ViewItem, ViewMatch, ViewMatchArm,
 };

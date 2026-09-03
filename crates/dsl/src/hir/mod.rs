@@ -29,6 +29,7 @@ mod capability;
 mod component;
 mod effect;
 mod infer;
+mod lower;
 mod nodes;
 mod reads;
 mod ty;
@@ -37,6 +38,7 @@ pub use capability::CapabilitySet;
 pub use component::{MemberEnv, lower_component};
 pub use effect::{BodyContext, EffectClass, EffectCx, EffectEnv};
 pub use infer::{InferCx, TypeEnv};
+pub use lower::{LoweredPackage, lower};
 pub use nodes::{
     CallableKind, ComponentSchema, ConstValue, HirCallable, HirComponent, HirComputed, HirEvent,
     HirInput, HirMeta, HirState, OwnershipMode,
