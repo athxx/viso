@@ -39,7 +39,9 @@ use super::kind::SyntaxKind;
 use super::span::{TextRange, TextSize};
 use super::token::Token;
 
-pub use super::parser::{Parse, ParseError, ParseErrorKind};
+use crate::diag::Diagnostic;
+
+pub use super::parser::{Parse, ParseErrorKind};
 
 /// Parses `tokens` (the full stream, trivia and the trailing [`SyntaxKind::Eof`]
 /// included) over `source` into a lossless typed CST rooted at
@@ -185,7 +187,7 @@ struct Parser<'t, 's> {
     /// Cursor into `significant`.
     pos: usize,
     events: Vec<Event>,
-    errors: Vec<ParseError>,
+    errors: Vec<Diagnostic>,
 }
 
 impl<'t, 's> Parser<'t, 's> {
@@ -206,7 +208,7 @@ impl<'t, 's> Parser<'t, 's> {
         }
     }
 
-    fn finish(self) -> (Vec<Event>, Vec<ParseError>) {
+    fn finish(self) -> (Vec<Event>, Vec<Diagnostic>) {
         (self.events, self.errors)
     }
 
@@ -313,10 +315,7 @@ impl<'t, 's> Parser<'t, 's> {
     /// Records a structural error at the current offset.
     fn error(&mut self, kind: ParseErrorKind) {
         let at = self.offset();
-        self.errors.push(ParseError {
-            range: TextRange::new(at, at),
-            kind,
-        });
+        self.errors.push(kind.to_diagnostic(TextRange::new(at, at)));
     }
 
     /// Wraps the current token in an `ErrorNode` and advances, so recovery always

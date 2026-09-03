@@ -21,6 +21,7 @@
 use std::collections::BTreeMap;
 
 use crate::ast::{AstNode, CompilationUnit};
+use crate::diag::Diagnostic;
 use crate::syntax::SyntaxNode;
 use crate::syntax::grammar::Parse;
 use crate::syntax::span::TextRange;
@@ -93,28 +94,18 @@ impl SourceUnit {
     }
 }
 
-/// A resolution-level diagnostic (module-graph phase).
-///
-/// Mirrors the parser's `code()`/`message()` style; the shared `Diagnostic` type
-/// (AGENTS section 30) is consolidated in a later commit, at which point these fold
-/// into it. Codes match the spec's `E2xxx` resolution namespace.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ResolveError {
-    /// The source span the error points at, when one is available.
-    pub range: Option<TextRange>,
-    /// What went wrong.
-    pub kind: ResolveErrorKind,
-    /// The module-path text the error concerns, for the rendered message.
-    pub subject: String,
-}
-
-/// The kind of a module-graph resolution error.
+/// The kind of a resolution error: the single source of the resolver's stable
+/// diagnostic codes and message templates. Each kind lifts into the shared
+/// [`Diagnostic`] via [`ResolveErrorKind::to_diagnostic`]. Codes match the spec's
+/// `E2xxx` resolution namespace.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum ResolveErrorKind {
-    /// An `import` named a module not present in the graph.
+    /// An `import` named a module not present in the graph, or a type/value path
+    /// named a symbol that resolves to nothing.
     UnresolvedModule,
-    /// Two source units declared the same module path.
+    /// Two source units declared the same module path, or a name was defined twice
+    /// within one namespace.
     AmbiguousModule,
     /// The import graph contains a cycle.
     CyclicImport,
@@ -137,6 +128,20 @@ impl ResolveErrorKind {
             ResolveErrorKind::AmbiguousModule => "two source units declare the same module",
             ResolveErrorKind::CyclicImport => "modules form an import cycle",
         }
+    }
+
+    /// Lifts this kind into the shared [`Diagnostic`], folding `subject` (the module
+    /// path or name the error concerns) into the rendered message so a reader sees
+    /// *which* name failed, and pointing the primary span at `range` — or a
+    /// zero-width span at the start of source when the error is a whole-graph fact
+    /// (a duplicate module path, a cycle member) with no single token to blame.
+    pub fn to_diagnostic(self, range: Option<TextRange>, subject: &str) -> Diagnostic {
+        let primary = range.unwrap_or_else(|| TextRange::empty(crate::syntax::TextSize::ZERO));
+        Diagnostic::error(
+            self.code(),
+            primary,
+            format!("{}: `{}`", self.message(), subject),
+        )
     }
 }
 
@@ -166,7 +171,7 @@ pub struct ModuleGraph {
     /// Modules in sorted module-path order; [`ModuleIndex`] indexes this.
     modules: Vec<GraphModule>,
     /// Diagnostics gathered during the build, in a deterministic order.
-    errors: Vec<ResolveError>,
+    errors: Vec<Diagnostic>,
 }
 
 impl ModuleGraph {
@@ -192,11 +197,7 @@ impl ModuleGraph {
         for unit in sorted {
             let key = unit.path.display(interner);
             if index_of.contains_key(&key) {
-                errors.push(ResolveError {
-                    range: None,
-                    kind: ResolveErrorKind::AmbiguousModule,
-                    subject: key,
-                });
+                errors.push(ResolveErrorKind::AmbiguousModule.to_diagnostic(None, &key));
                 continue;
             }
             index_of.insert(key, ModuleIndex(kept.len() as u32));
@@ -215,11 +216,10 @@ impl ModuleGraph {
                     let target = module_path_text(&path_node);
                     match index_of.get(&target) {
                         Some(&idx) => imports.push(idx),
-                        None => errors.push(ResolveError {
-                            range: Some(path_node.syntax().text_range()),
-                            kind: ResolveErrorKind::UnresolvedModule,
-                            subject: target,
-                        }),
+                        None => errors.push(
+                            ResolveErrorKind::UnresolvedModule
+                                .to_diagnostic(Some(path_node.syntax().text_range()), &target),
+                        ),
                     }
                 }
             }
@@ -285,11 +285,10 @@ impl ModuleGraph {
 
         for (i, &on_cycle) in in_cycle.iter().enumerate() {
             if on_cycle {
-                self.errors.push(ResolveError {
-                    range: None,
-                    kind: ResolveErrorKind::CyclicImport,
-                    subject: self.modules[i].path.display(interner),
-                });
+                self.errors.push(
+                    ResolveErrorKind::CyclicImport
+                        .to_diagnostic(None, &self.modules[i].path.display(interner)),
+                );
             }
         }
         self
@@ -301,7 +300,7 @@ impl ModuleGraph {
     }
 
     /// The build diagnostics, in deterministic order.
-    pub fn errors(&self) -> &[ResolveError] {
+    pub fn errors(&self) -> &[Diagnostic] {
         &self.errors
     }
 
@@ -383,7 +382,7 @@ mod tests {
             graph
                 .errors()
                 .iter()
-                .any(|e| e.kind == ResolveErrorKind::UnresolvedModule && e.subject == "a"),
+                .any(|d| d.code == "E2001" && d.message.contains("`a`")),
             "importing an absent module is E2001"
         );
     }
@@ -401,7 +400,7 @@ mod tests {
             graph
                 .errors()
                 .iter()
-                .any(|e| e.kind == ResolveErrorKind::AmbiguousModule && e.subject == "dup"),
+                .any(|d| d.code == "E2002" && d.message.contains("`dup`")),
             "a repeated module path is E2002"
         );
     }
@@ -417,11 +416,11 @@ mod tests {
         let cyclic: Vec<&str> = graph
             .errors()
             .iter()
-            .filter(|e| e.kind == ResolveErrorKind::CyclicImport)
-            .map(|e| e.subject.as_str())
+            .filter(|d| d.code == "E2003")
+            .map(|d| d.message.as_str())
             .collect();
         assert!(
-            cyclic.contains(&"a") && cyclic.contains(&"b"),
+            cyclic.iter().any(|m| m.contains("`a`")) && cyclic.iter().any(|m| m.contains("`b`")),
             "both modules on the a<->b cycle are reported as E2003, got {cyclic:?}"
         );
     }
@@ -438,10 +437,7 @@ mod tests {
         ];
         let graph = ModuleGraph::build(&units, &interner);
         assert!(
-            !graph
-                .errors()
-                .iter()
-                .any(|e| e.kind == ResolveErrorKind::CyclicImport),
+            !graph.errors().iter().any(|d| d.code == "E2003"),
             "a diamond is acyclic"
         );
     }

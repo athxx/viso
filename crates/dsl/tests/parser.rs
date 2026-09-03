@@ -77,7 +77,7 @@ fn unclosed_block_is_flagged_but_lossless() {
         parsed
             .errors
             .iter()
-            .any(|e| e.kind == ParseErrorKind::UnclosedDelimiter),
+            .any(|e| e.code == ParseErrorKind::UnclosedDelimiter.code()),
         "expected an unclosed-delimiter error, got {:?}",
         parsed.errors
     );
@@ -93,7 +93,7 @@ fn stray_closer_at_top_level_recovers() {
         parsed
             .errors
             .iter()
-            .any(|e| e.kind == ParseErrorKind::UnmatchedCloser),
+            .any(|e| e.code == ParseErrorKind::UnmatchedCloser.code()),
         "expected an unmatched-closer error, got {:?}",
         parsed.errors
     );
@@ -111,7 +111,7 @@ fn error_run_synchronizes_and_reports_each() {
     let unexpected = parsed
         .errors
         .iter()
-        .filter(|e| e.kind == ParseErrorKind::UnexpectedTokens)
+        .filter(|e| e.code == ParseErrorKind::UnexpectedTokens.code())
         .count();
     assert!(
         unexpected >= 2,

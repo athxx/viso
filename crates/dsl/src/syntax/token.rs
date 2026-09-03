@@ -11,6 +11,7 @@
 
 use super::kind::SyntaxKind;
 use super::span::TextRange;
+use crate::diag::Diagnostic;
 
 /// One lexed token: what it is, where it is, and whether it was malformed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -170,5 +171,17 @@ impl LexError {
     #[inline]
     pub const fn is_warning(self) -> bool {
         matches!(self, LexError::ConfusableIdent)
+    }
+
+    /// Lifts this lexical error, at `range`, into the shared [`Diagnostic`], picking
+    /// its [`Severity`] from [`LexError::is_warning`]. Lex errors ride on the green
+    /// tokens themselves; this is the uniform way a caller assembling a unit's full
+    /// diagnostic list folds them in alongside parse and resolve diagnostics.
+    pub fn to_diagnostic(self, range: TextRange) -> Diagnostic {
+        if self.is_warning() {
+            Diagnostic::warning(self.code(), range, self.message())
+        } else {
+            Diagnostic::error(self.code(), range, self.message())
+        }
     }
 }

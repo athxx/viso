@@ -17,12 +17,14 @@
 #![forbid(unsafe_op_in_unsafe_fn)]
 
 pub mod ast;
+pub mod diag;
 pub mod resolve;
 pub mod syntax;
 
+pub use diag::{Diagnostic, Severity};
 pub use syntax::{
-    Edit, GreenBuilder, GreenNode, LexError, Lexer, LineIndex, Parse, ParseError, SyntaxKind,
-    TextRange, TextSize, Token, parse, reparse_tokens, tokenize,
+    Edit, GreenBuilder, GreenNode, LexError, Lexer, LineIndex, Parse, SyntaxKind, TextRange,
+    TextSize, Token, parse, reparse_tokens, tokenize,
 };
 
 /// The canonical DSL source-file extension.

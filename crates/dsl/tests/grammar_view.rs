@@ -24,7 +24,7 @@ fn unit_has_error(src: &str, kind: ParseErrorKind) -> bool {
     parse(&tokenize(src), src)
         .errors
         .iter()
-        .any(|e| e.kind == kind)
+        .any(|e| e.code == kind.code())
 }
 
 /// The first descendant node of `root` whose kind is `kind`.
