@@ -14,10 +14,14 @@
 
 mod module;
 mod name;
+mod resolver;
+mod scope;
 mod symbol;
 
 pub use module::{
     GraphModule, ModuleGraph, ModuleIndex, ModulePath, ResolveError, ResolveErrorKind, SourceUnit,
 };
 pub use name::{NameId, NameInterner};
+pub use resolver::{Resolution, ResolvedModule, ResolvedRef, resolve};
+pub use scope::{LocalSlot, ModuleSymbol, Namespace, ScopeStack, SymbolTable};
 pub use symbol::{FINGERPRINT_VERSION, SymbolId, SymbolIdentity, SymbolKind, fingerprint};

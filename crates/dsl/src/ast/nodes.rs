@@ -750,6 +750,39 @@ impl CastExpr {
     }
 }
 
+impl PathExpr {
+    /// The path's identifier segments, root first. A `PathExpr` holds its
+    /// `IDENT ("::" IDENT)*` sequence as bare tokens, so the segments are the
+    /// direct identifier children.
+    pub fn segments(&self) -> impl Iterator<Item = SyntaxToken> + '_ {
+        self.syntax
+            .children_with_tokens()
+            .into_iter()
+            .filter_map(|e| e.as_token().cloned())
+            .filter(|t| {
+                matches!(
+                    t.kind(),
+                    SyntaxKind::Ident
+                        | SyntaxKind::RawIdent
+                        | SyntaxKind::SelfValueKw
+                        | SyntaxKind::SelfTypeKw
+                )
+            })
+    }
+}
+
+impl TypePath {
+    /// The path's segment names, root first. Each `TypePathSegment` child owns a
+    /// leading name token; this projects that name, skipping generic arguments.
+    pub fn segments(&self) -> impl Iterator<Item = SyntaxToken> + '_ {
+        self.syntax
+            .children()
+            .into_iter()
+            .filter(|n| n.kind() == SyntaxKind::TypePathSegment)
+            .filter_map(|seg| support::name_token(&seg))
+    }
+}
+
 // --- Enum wrappers -----------------------------------------------------------
 
 /// Any expression node. The catch-all typed view over the expression grammar;
