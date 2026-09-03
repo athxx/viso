@@ -229,16 +229,23 @@ DSL language/module semantics, §68):
       generic arity, native schema (the eventual source of capability conferrals + property/event
       schema — this slice infers capabilities from the call graph and uses each component's own
       declarations as its schema), shader, resource, task-async.
-- [ ] **Slice N — UI IR + Binding IR (lower to the retained tree).**
-      Lower Typed HIR → UI IR (static templates + retained-node instantiation, NOT a per-frame
-      rebuild, §59) + Binding IR (compiled `StateId -> (node, class)` edges feeding the existing
-      `BindingTable` static fast path, §10.2). A compiler-known typed binding must NOT silently
-      fall back to dynamic tracking; `dynamic` is an explicit escape hatch that trips
-      `dynamic_fallback_nodes` (§10.3). This is where the deferred **static/mixed/dynamic reactive
-      benchmark** lands (pair it with the first `dynamic` consumer). Keyed lists get stable keys
-      (§21.8). Tests: `ui! { ... }` lowers to a retained tree a headless frame renders; a bound
-      `set` drives targeted invalidation through the compiled edges; strict typed example emits no
-      dynamic fallback.
+- [x] **Slice N — UI IR + Binding IR + the `ui!` proc-macro (lower to the retained tree).**
+      DONE (ADR 0014). Lowered Typed HIR → UI IR (static templates + retained-node instantiation,
+      NOT a per-frame rebuild, §59) + Binding IR (compiled `StateId -> (node, class)` edges feeding
+      the existing `BindingTable` static fast path, §10.2), in a new independent `crates/dsl/src/ir/`
+      pass that does not touch the frozen Slice M `ComponentSchema` contract. Built a real `ui!`
+      proc-macro in a new `viso-ui-macros` crate (option C, the one crate-count exception 15→16):
+      it runs the shared frontend at Rust compile time and emits static `viso_ui` builder tokens —
+      no runtime parse, no VDOM. A compiler-known typed binding never silently falls back; `dynamic`
+      is the explicit escape hatch that trips `dynamic_fallback_nodes` (§10.3). Real property→
+      DirtyClass table (§11) in `ir/dirty_map.rs`. Keyed lists get stable keys, keyless stateful
+      repeats flagged (§21.8). The four reactive counters live on `BindingTable`. The deferred
+      **static/mixed/dynamic reactive benchmark** landed (`crates/ui/benches/reactive_binding.rs`).
+      Control-flow region reconciliation, TwoWayBinding deep semantics, slot/style/theme source
+      origin, native-schema property/event validation, and FillClause full semantics are recorded
+      structurally and DEFERRED to their consumer slice (the emitter surfaces an explicit
+      `compile_error!` for a control-flow region rather than mount it wrong). `component!`/`view!`
+      reuse the pass + emitter; only `ui!` shipped this slice.
 - [ ] **Slice O — dev hot reload (transactional).**
       compile → validate → prepare migration → diff → commit atomically (§21.7). On compile/
       validate failure keep last-good UI (§19/§30). state/focus/scroll migration rules on a
