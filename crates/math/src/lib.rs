@@ -30,10 +30,14 @@
 
 #![forbid(unsafe_op_in_unsafe_fn)]
 
-// Further modules land per commit: matrices + quaternion, then transforms +
-// rect/insets + geometry, then the internal SIMD kernels.
+// Further modules land per commit: transforms + rect/insets + geometry next.
 mod dvec;
+mod mat;
+mod quat;
+mod simd;
 mod vec;
 
 pub use dvec::{DVec2, dvec2};
+pub use mat::{Mat2, Mat3, Mat4};
+pub use quat::Quat;
 pub use vec::{Vec2, Vec3, Vec4, vec2, vec3, vec4};
