@@ -44,6 +44,21 @@ pub enum ParseErrorKind {
     /// Tokens appeared at the top level that did not start a declaration and
     /// were grouped into an error node during recovery.
     UnexpectedTokens,
+    /// A token the grammar required was absent; a zero-width `MissingToken`
+    /// stands in its place so the tree keeps the shape the production expects.
+    MissingToken,
+    /// An expression was expected (e.g. after a binary operator) but the next
+    /// token could not start one.
+    ExpectedExpr,
+    /// Comparison or equality operators were chained (`a < b < c`); the spec
+    /// makes these non-associative, so the chain needs explicit parentheses.
+    NonAssocChain,
+    /// Range operators (`..`/`..=`) were chained; they are non-associative.
+    NonAssocRange,
+    /// A record-construction expression (`Name { field: .. }`) appeared in a
+    /// control-flow head (`if`/`match`/`for`/`while` scrutinee), where it is
+    /// ambiguous with the following block and must be parenthesized.
+    RecordExprInHead,
 }
 
 impl ParseErrorKind {
@@ -54,6 +69,12 @@ impl ParseErrorKind {
             ParseErrorKind::UnclosedDelimiter => "Parse0001",
             ParseErrorKind::UnmatchedCloser => "Parse0002",
             ParseErrorKind::UnexpectedTokens => "Parse0003",
+            ParseErrorKind::MissingToken => "Parse0004",
+            ParseErrorKind::ExpectedExpr => "Parse0005",
+            // Grammar-level codes from the spec's diagnostic table.
+            ParseErrorKind::NonAssocChain => "E2701",
+            ParseErrorKind::NonAssocRange => "E2702",
+            ParseErrorKind::RecordExprInHead => "E2801",
         }
     }
 
@@ -63,6 +84,15 @@ impl ParseErrorKind {
             ParseErrorKind::UnclosedDelimiter => "unclosed delimiter",
             ParseErrorKind::UnmatchedCloser => "unmatched closing delimiter",
             ParseErrorKind::UnexpectedTokens => "unexpected tokens",
+            ParseErrorKind::MissingToken => "missing required token",
+            ParseErrorKind::ExpectedExpr => "expected an expression",
+            ParseErrorKind::NonAssocChain => {
+                "comparison operators cannot be chained; add parentheses"
+            }
+            ParseErrorKind::NonAssocRange => "range operators cannot be chained; add parentheses",
+            ParseErrorKind::RecordExprInHead => {
+                "a record expression here needs parentheses to separate it from the block"
+            }
         }
     }
 }

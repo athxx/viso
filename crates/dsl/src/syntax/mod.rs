@@ -19,17 +19,21 @@
 //! coordinate systems they need.
 
 pub mod cst;
+pub mod grammar;
 pub mod kind;
 pub mod lexer;
 pub mod parser;
+pub mod red;
 pub mod reparse;
 pub mod span;
 pub mod token;
 
 pub use cst::{GreenBuilder, GreenChild, GreenNode, GreenToken, flat_tree};
+pub use grammar::{Entry, parse_entry};
 pub use kind::SyntaxKind;
 pub use lexer::{LexState, Lexer, tokenize};
 pub use parser::{Parse, ParseError, ParseErrorKind, parse};
+pub use red::{Ancestors, SyntaxElement, SyntaxNode, SyntaxToken};
 pub use reparse::{Edit, reparse_tokens};
 pub use span::{LineCol, LineIndex, TextRange, TextSize};
 pub use token::{LexError, Token};
