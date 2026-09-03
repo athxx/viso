@@ -17,6 +17,7 @@
 #![forbid(unsafe_op_in_unsafe_fn)]
 
 pub mod ast;
+pub mod resolve;
 pub mod syntax;
 
 pub use syntax::{
