@@ -18,10 +18,12 @@
 
 pub mod ast;
 pub mod diag;
+pub mod hir;
 pub mod resolve;
 pub mod syntax;
 
 pub use diag::{Diagnostic, Severity};
+pub use hir::{Ty, TypeError, WidenError};
 pub use syntax::{
     Edit, GreenBuilder, GreenNode, LexError, Lexer, LineIndex, Parse, SyntaxKind, TextRange,
     TextSize, Token, parse, reparse_tokens, tokenize,
