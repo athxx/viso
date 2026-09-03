@@ -980,6 +980,9 @@ dependencies = [
 [[package]]
 name = "viso-math"
 version = "0.0.0"
+dependencies = [
+ "criterion",
+]
 
 [[package]]
 name = "viso-platform"
