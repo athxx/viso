@@ -8,11 +8,13 @@
 > - Reference `/Users/x/code/vizo/makepad` code when designing a subsystem; don't invent alone.
 > - Performance-first: prefer SIMD + zerocopy; unsafe allowed (with `SAFETY:` note).
 > - Commit per section; keep changes focused.
-> - Verify: `cargo xtask check-deps` (stays 13 crates) + build + clippy `-D warnings` + fmt + test; headless integration where UI; real-machine Metal when shaders change.
-> - `viso-ende` (doc §9/§10.5) is a planned 14th crate but is **deferred until a consumer needs it**
->   (Studio/Inspector/Hot-Reload transport, cache/snapshot — all Phase 9+). It is NOT built for
->   Phase 6 DSL; the frontend/HIR/UI-IR slices don't touch it. When it lands, bump the check-deps
->   count and add its forbidden edges (§10.1). Until then, 13 crates is correct.
+> - Verify: `cargo xtask check-deps` (stays 15 crates) + build + clippy `-D warnings` + fmt + test; headless integration where UI; real-machine Metal when shaders change.
+> - `viso-math` + `viso-ende` landed as Tier-A leaf foundations (ADR 0012). Both are DAG leaves
+>   (empty allowed-edges, no third-party deps). No consumer wired yet: migrating the existing
+>   f32 geometry (`viso_render::{Rect,Point}`, `viso_ui::Vec2`) onto `viso-math`, and wiring
+>   `viso-ende`'s advanced transport / schema-registry / Studio-Inspector protocol + cache/snapshot,
+>   are separate later tasks (Phase 9+ for the ende consumers). Until those land the crates just
+>   exist as owned foundations. Crate count is now 15.
 
 ---
 
@@ -181,6 +183,23 @@ DSL language/module semantics, §68):
       SPEC BUGS flagged in ADR 0011 for the owner: (1) §54/§56/§65/§E.1 show property binding with
       `=`, contradicting Appendix A's `:` (colon is authoritative); (2) §21.5.2's `color: theme.…`
       example uses reserved keyword `theme` as a value-path head with no carve-out.
+
+- **Tier-A owned foundations — `viso-math` + `viso-ende` (ADR 0012).** Two dependency-free DAG
+  leaves, self-built per the Ownership Ladder. No consumer wired yet (migration onto them is a
+  separate later task). Crate count 13 → 15; both registered in xtask with empty allowed-edges.
+  - `viso-math`: f32-primary vec/mat/quat/transform/rect/geom (`Vec2/3/4`, `Mat2/3/4` uniform flat
+    `[f32;N]`, `Quat`, `Affine2` + `Insets` [reference gaps], `Transform3`, `Point/Size/Rect/Insets`,
+    `Ray/Plane/Aabb`) with f64 `DVec2`/`DPoint`/`DRect` scoped to the UI accuracy path. Divergences:
+    methods not assoc fns; **half-open `Rect::contains`** (strict `intersects`) vs **inclusive
+    `Aabb`** — deliberate contrast. Internal cfg-gated Mat4 SIMD (SSE2/NEON/wasm128 + scalar),
+    bit-exact vs scalar (verified aarch64/NEON). `#[repr(C)]`+Copy, no usize/String/dyn/heap/serde
+    on public types. 61 tests + 6 release benches.
+  - `viso-ende`: bounded decoder (single `read_raw` gate, never panics / never over-reads —
+    20k-iter fuzz smoke), mirrored LE + LEB128-varint + zig-zag codec, heap-free `Copy`
+    `DecodeError`, `WireId`/`ProtocolTag` (format not identity → stays a leaf), hand-rolled JSON
+    emitter. No serde, no RON, no media codecs (serde compat → `integrations/serde`). 16 tests.
+    DEFERRED to Phase 9 consumers: advanced transport / schema-registry / Studio-Inspector protocol
+    + cache/snapshot wiring.
 - [ ] **Slice M — Typed HIR: schema + type/effect/capability checking.**
       Component/native schema (§21.5.4 — native APIs from generated schema, authors don't
       re-declare signatures); typed properties/events/state; `view` is side-effect-free,
