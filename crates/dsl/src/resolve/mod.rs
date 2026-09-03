@@ -20,6 +20,8 @@ mod symbol;
 
 pub use module::{GraphModule, ModuleGraph, ModuleIndex, ModulePath, ResolveErrorKind, SourceUnit};
 pub use name::{NameId, NameInterner};
-pub use resolver::{Resolution, ResolvedModule, ResolvedRef, resolve};
+pub use resolver::{
+    Resolution, ResolvedFragment, ResolvedModule, ResolvedRef, resolve, resolve_fragment,
+};
 pub use scope::{LocalSlot, ModuleSymbol, Namespace, ScopeStack, SymbolTable};
 pub use symbol::{FINGERPRINT_VERSION, SymbolId, SymbolIdentity, SymbolKind, fingerprint};

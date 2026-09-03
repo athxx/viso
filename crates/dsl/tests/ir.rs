@@ -244,72 +244,56 @@ mod binding {
     use std::collections::BTreeSet;
 
     use viso_dsl::ast::{AstNode, ViewFragment};
-    use viso_dsl::hir::ReadEnv;
+    use viso_dsl::hir::SourceSet;
     use viso_dsl::ir::binding_ir::BindingKind;
     use viso_dsl::ir::keys::KEYLESS_STATEFUL_FOR;
     use viso_dsl::ir::{
         BindingIr, DirtyClass, NodeKey, UiTree, analyze_keys, lower_bindings, lower_fragment_items,
     };
-    use viso_dsl::resolve::{Resolution, ResolvedRef, SymbolId};
+    use viso_dsl::resolve::{NameInterner, ResolvedRef, SymbolId, resolve_fragment};
     use viso_dsl::syntax::grammar::{Entry, parse_entry};
-    use viso_dsl::syntax::{SyntaxKind, SyntaxNode, TextRange, tokenize};
+    use viso_dsl::syntax::{SyntaxNode, TextRange, tokenize};
 
-    /// A reactive-source environment keyed by symbol id, exactly like the
-    /// `collect_reads` stub: a resolution is a source iff its symbol is in the set.
-    struct StubEnv {
-        sources: BTreeSet<SymbolId>,
-    }
-
-    impl ReadEnv for StubEnv {
-        fn reactive_source(&self, to: &Resolution) -> Option<SymbolId> {
-            match to {
-                Resolution::Symbol(id) if self.sources.contains(id) => Some(*id),
-                _ => None,
-            }
-        }
-    }
-
-    /// A synthetic reactive source: a name and the symbol id it resolves to. Every
-    /// `Ident` token spelled `name` in the fragment is treated as reading `id`.
+    /// A named reactive source, mirroring what a `ui!` macro captures from the Rust
+    /// scope: the caller supplies names, the frontend mints the symbols.
     struct Source {
         name: &'static str,
-        id: SymbolId,
     }
 
-    /// Parses a `ui!` fragment, lowers its UI tree, and builds a resolver `refs`
-    /// table plus a `ReadEnv` from the given synthetic reactive sources: every
-    /// `Ident` token matching a source name is mapped to that source's symbol.
-    fn setup(src: &str, sources: &[Source]) -> (UiTree, SyntaxNode, Vec<ResolvedRef>, StubEnv) {
+    /// Parses a `ui!` fragment, lowers its UI tree, and runs the real fragment
+    /// frontend entry over the given reactive-source names: `resolve_fragment` mints
+    /// a symbol per name and produces the `refs` table, and `SourceSet` is the
+    /// `ReadEnv` the Binding IR / keys passes classify reads against — the exact
+    /// path the `ui!` macro drives, with no hand-rolled resolution.
+    fn setup(src: &str, sources: &[Source]) -> (UiTree, SyntaxNode, Vec<ResolvedRef>, SourceSet) {
         let root = SyntaxNode::new_root(parse_entry(&tokenize(src), src, Entry::ViewFragment).root);
         let fragment = ViewFragment::cast(root.clone()).expect("a ViewFragment root");
         let tree = lower_fragment_items(fragment.items());
 
-        let mut refs = Vec::new();
-        for tok in root
-            .descendants_with_tokens()
-            .into_iter()
-            .filter_map(|e| e.as_token().cloned())
-            .filter(|t| t.kind() == SyntaxKind::Ident)
-        {
-            if let Some(s) = sources.iter().find(|s| s.name == tok.text()) {
-                refs.push(ResolvedRef {
-                    range: tok.text_range(),
-                    to: Resolution::Symbol(s.id),
-                });
-            }
-        }
-        let env = StubEnv {
-            sources: sources.iter().map(|s| s.id).collect(),
-        };
-        (tree, root, refs, env)
+        let names: Vec<&str> = sources.iter().map(|s| s.name).collect();
+        let mut interner = NameInterner::new();
+        let resolved = resolve_fragment(&fragment, &names, &mut interner, "<ui!>");
+        let env = SourceSet::new(resolved.sources.iter().copied());
+        (tree, root, resolved.refs, env)
     }
 
-    /// The reactive source `name` reads, given synthetic id `hi`.
-    fn source(name: &'static str, hi: u64) -> Source {
-        Source {
-            name,
-            id: SymbolId::from_parts(hi, 0),
-        }
+    /// The reactive source `name` resolves to after `resolve_fragment` mints it: a
+    /// `State`-kind fingerprint over the synthetic package, empty module path, and
+    /// the source name — the same identity `setup`'s `resolve_fragment` produces.
+    fn source_id(name: &str) -> SymbolId {
+        use viso_dsl::resolve::{SymbolIdentity, SymbolKind, fingerprint};
+        fingerprint(SymbolIdentity {
+            package: "<ui!>",
+            module_path: "",
+            kind: SymbolKind::State,
+            decl_path: name,
+        })
+    }
+
+    /// A reactive source named `name`. `hi` is retained for call-site clarity but the
+    /// real symbol id now comes from the frontend fingerprint, not a synthetic seed.
+    fn source(name: &'static str, _hi: u64) -> Source {
+        Source { name }
     }
 
     #[test]
@@ -320,7 +304,7 @@ mod binding {
 
         assert_eq!(ir.edges.len(), 1, "one binding edge");
         let edge = &ir.edges[0];
-        assert_eq!(edge.source, label.id, "the edge fires on `label`");
+        assert_eq!(edge.source, source_id("label"), "the edge fires on `label`");
         assert_eq!(edge.node, NodeKey(0), "the sole node is pre-order 0");
         assert_eq!(edge.property, "text");
         assert_eq!(
@@ -339,17 +323,13 @@ mod binding {
     fn a_property_reading_several_sources_emits_an_edge_per_source() {
         // `width: base + delta` reads two states; each independently invalidates
         // the node, so it becomes two static edges carrying the width dirty class.
-        let base = source("base", 1);
-        let delta = source("delta", 2);
-        let (tree, root, refs, env) = setup(
-            "Leaf { width: base + delta; }",
-            &[base.clone_marker(), delta.clone_marker()],
-        );
+        let sources = [source("base", 1), source("delta", 2)];
+        let (tree, root, refs, env) = setup("Leaf { width: base + delta; }", &sources);
         let ir = lower_bindings(&tree, &root, &refs, &env);
 
         assert_eq!(ir.edges.len(), 2, "one edge per reactive source read");
-        let sources: BTreeSet<_> = ir.edges.iter().map(|e| e.source).collect();
-        assert_eq!(sources, BTreeSet::from([base.id, delta.id]));
+        let got: BTreeSet<_> = ir.edges.iter().map(|e| e.source).collect();
+        assert_eq!(got, BTreeSet::from([source_id("base"), source_id("delta")]));
         for edge in &ir.edges {
             assert_eq!(edge.node, NodeKey(0));
             assert_eq!(edge.class, DirtyClass::MEASURE | DirtyClass::LAYOUT);
@@ -361,11 +341,10 @@ mod binding {
     fn a_strict_typed_fragment_has_zero_dynamic_fallback() {
         // A nested fragment whose every reactive property resolves to a known
         // source produces only static edges — the strict-typed invariant.
-        let label = source("label", 1);
-        let count = source("count", 2);
+        let sources = [source("label", 1), source("count", 2)];
         let (tree, root, refs, env) = setup(
             "Column { Text { text: label; } Text { text: count; } }",
-            &[label.clone_marker(), count.clone_marker()],
+            &sources,
         );
         let ir = lower_bindings(&tree, &root, &refs, &env);
 
@@ -437,17 +416,6 @@ mod binding {
             key.diagnostics.is_empty(),
             "a static keyless for is not a finding"
         );
-    }
-
-    // A tiny convenience so a `Source` can seed several `setup` calls without the
-    // tests cloning fields by hand.
-    impl Source {
-        fn clone_marker(&self) -> Source {
-            Source {
-                name: self.name,
-                id: self.id,
-            }
-        }
     }
 
     // Keep `BindingIr`/`TextRange` referenced so the imports document the pass's

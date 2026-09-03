@@ -43,5 +43,5 @@ pub use nodes::{
     CallableKind, ComponentSchema, ConstValue, HirCallable, HirComponent, HirComputed, HirEvent,
     HirInput, HirMeta, HirState, OwnershipMode,
 };
-pub use reads::{ReadEnv, collect_reads};
+pub use reads::{ReadEnv, SourceSet, collect_reads};
 pub use ty::{Ty, TypeError, WidenError};
