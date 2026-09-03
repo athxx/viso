@@ -25,9 +25,12 @@
 //! events and emits each trivia token in place, so no whitespace or comment is
 //! lost and none changes the grammatical structure.
 
+mod decl;
 mod expr;
 mod patterns;
+mod stmt;
 mod types;
+mod view;
 
 use std::rc::Rc;
 
@@ -45,8 +48,18 @@ pub fn parse(tokens: &[Token], source: &str) -> Parse {
     parse_entry(tokens, source, Entry::CompilationUnit)
 }
 
-/// The three DSL entry productions (AGENTS 21.5). All route through one grammar
-/// so `ui!` / `component!` / `view!` share resolution downstream.
+/// Parses `tokens` over `source` as a single bare expression, rooted at
+/// [`SyntaxKind::ExprStmt`]. This is not one of the three DSL source forms; it is
+/// the fragment entry a formatter/REPL or a `computed`/property-value editing path
+/// parses an isolated expression through, and the direct way to test the
+/// expression grammar in isolation.
+pub fn parse_expr(tokens: &[Token], source: &str) -> Parse {
+    parse_entry(tokens, source, Entry::Expr)
+}
+
+/// The DSL entry productions. The three source forms (AGENTS 21.5) route through
+/// one grammar so `ui!` / `component!` / `view!` share resolution downstream;
+/// [`Entry::Expr`] is a fragment entry for an isolated expression.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Entry {
     /// A `.vs` file or `view!("...")`: `ImportDecl* TopLevelDecl* EOF`.
@@ -55,11 +68,13 @@ pub enum Entry {
     ViewFragment,
     /// `component! { ... }`: `ImportDecl* ComponentDecl EOF`.
     ComponentEntry,
+    /// A single bare expression fragment (not a source form): `Expr EOF`.
+    Expr,
 }
 
 /// Parses `tokens` over `source` using the given [`Entry`] production.
 pub fn parse_entry(tokens: &[Token], source: &str, entry: Entry) -> Parse {
-    let mut parser = Parser::new(tokens);
+    let mut parser = Parser::new(tokens, source);
     parser.parse_entry(entry);
     let (events, errors) = parser.finish();
     let root = build_tree(tokens, source, events);
@@ -158,9 +173,12 @@ struct CompletedMarker {
 
 /// The event-driven parser state. Drives over significant tokens; trivia are
 /// re-attached at tree-build time.
-struct Parser<'t> {
+struct Parser<'t, 's> {
     /// Every token (trivia included), used only for kind/text lookups by index.
     tokens: &'t [Token],
+    /// The original source, so a production can peek at a token's text where the
+    /// grammar keys on a context word (e.g. the callable keywords `Fn`/`FnMut`).
+    source: &'s str,
     /// Indices into `tokens` of the significant (non-trivia, non-Eof) tokens, in
     /// order. The parser's cursor `pos` indexes *this* list.
     significant: Vec<usize>,
@@ -170,8 +188,8 @@ struct Parser<'t> {
     errors: Vec<ParseError>,
 }
 
-impl<'t> Parser<'t> {
-    fn new(tokens: &'t [Token]) -> Parser<'t> {
+impl<'t, 's> Parser<'t, 's> {
+    fn new(tokens: &'t [Token], source: &'s str) -> Parser<'t, 's> {
         let significant = tokens
             .iter()
             .enumerate()
@@ -180,6 +198,7 @@ impl<'t> Parser<'t> {
             .collect();
         Parser {
             tokens,
+            source,
             significant,
             pos: 0,
             events: Vec::new(),
@@ -204,6 +223,17 @@ impl<'t> Parser<'t> {
     /// The kind at the cursor.
     fn current(&self) -> SyntaxKind {
         self.nth(0)
+    }
+
+    /// The source text of the significant token `n` positions ahead of the
+    /// cursor, or `""` past the end. Used only where the grammar keys on a
+    /// context word (callable keywords, `empty`) that lexes as a bare
+    /// identifier — never on the hot path.
+    fn token_text(&self, n: usize) -> &'s str {
+        self.significant.get(self.pos + n).map_or("", |&i| {
+            let r = self.tokens[i].range;
+            &self.source[r.start().to_u32() as usize..r.end().to_u32() as usize]
+        })
     }
 
     /// Whether the cursor is at end of significant input.
@@ -317,47 +347,40 @@ impl<'t> Parser<'t> {
                 self.component_entry();
                 SyntaxKind::ComponentEntry
             }
+            Entry::Expr => {
+                self.expr_fragment();
+                SyntaxKind::ExprStmt
+            }
         };
         m.complete(self, root_kind);
     }
 
-    /// `.vs` / `view!`: a run of top-level items until end of input. The typed
-    /// declaration grammar lands in the next commit; for now every top-level
-    /// construct is parsed as an expression statement or recovered, so the
-    /// expression parser and its tests stand on their own.
+    /// `.vs` / `view!`: `ImportDecl* TopLevelDecl* EOF` — imports followed by
+    /// top-level declarations.
     fn compilation_unit(&mut self) {
-        while !self.at_end() {
-            self.top_level_item();
-        }
+        decl::compilation_unit(self);
     }
 
-    /// `ui!`: a bare view fragment — same placeholder body as the compilation
-    /// unit until the view grammar lands next commit.
+    /// `ui!`: a bare view fragment — `ViewStructureItem* EOF` with no surrounding
+    /// `view { }` wrapper.
     fn view_fragment(&mut self) {
-        while !self.at_end() {
-            self.top_level_item();
-        }
+        view::view_fragment_items(self);
     }
 
-    /// `component!`: a single component declaration — placeholder until the
-    /// declaration grammar lands next commit.
+    /// `component!`: `ImportDecl* ComponentDecl EOF` — imports followed by a single
+    /// component declaration.
     fn component_entry(&mut self) {
-        while !self.at_end() {
-            self.top_level_item();
-        }
+        decl::component_entry(self);
     }
 
-    /// A single top-level construct. This is a **placeholder** body for commit 1:
-    /// it parses an expression (so the expression parser is exercised end to end)
-    /// terminated by an optional `;`, and recovers on anything it cannot start.
-    /// Commit 2 replaces this with the real declaration/view grammar.
-    fn top_level_item(&mut self) {
+    /// A single bare expression fragment. Any tokens past the expression are wrapped
+    /// as an `ErrorNode` so recovery stays total and the tree stays lossless even
+    /// on garbage input.
+    fn expr_fragment(&mut self) {
         if expr::at_expr_start(self) {
-            let m = self.start();
             expr::expr(self);
-            self.eat(SyntaxKind::Semi);
-            m.complete(self, SyntaxKind::ExprStmt);
-        } else {
+        }
+        while !self.at_end() {
             self.err_and_bump(ParseErrorKind::UnexpectedTokens);
         }
     }

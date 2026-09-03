@@ -59,6 +59,17 @@ pub enum ParseErrorKind {
     /// control-flow head (`if`/`match`/`for`/`while` scrutinee), where it is
     /// ambiguous with the following block and must be parenthesized.
     RecordExprInHead,
+    /// The reserved word `child` was used as a node/identifier; bare `Type {}` is
+    /// an anonymous node and `node id: Type {}` a named one, so `child` is gone.
+    ChildReserved,
+    /// A view event handler used arrow syntax (`on click => ...`); handlers must
+    /// use a block body (`on click { ... }` / `on click(event) { ... }`).
+    HandlerNotArrow,
+    /// A view `for` loop omitted its required `key` clause; keyed identity is
+    /// mandatory for repeated view content.
+    ForMissingKey,
+    /// A reserved word was used where an identifier was required.
+    ReservedIdent,
 }
 
 impl ParseErrorKind {
@@ -75,6 +86,10 @@ impl ParseErrorKind {
             ParseErrorKind::NonAssocChain => "E2701",
             ParseErrorKind::NonAssocRange => "E2702",
             ParseErrorKind::RecordExprInHead => "E2801",
+            ParseErrorKind::ChildReserved => "E3001",
+            ParseErrorKind::HandlerNotArrow => "E3201",
+            ParseErrorKind::ForMissingKey => "E3401",
+            ParseErrorKind::ReservedIdent => "E1301",
         }
     }
 
@@ -93,6 +108,17 @@ impl ParseErrorKind {
             ParseErrorKind::RecordExprInHead => {
                 "a record expression here needs parentheses to separate it from the block"
             }
+            ParseErrorKind::ChildReserved => {
+                "`child` is reserved and no longer a node; write the type directly for an \
+                 anonymous node, or `node name: Type {}` for a named one"
+            }
+            ParseErrorKind::HandlerNotArrow => {
+                "an event handler needs a block body: `on event { ... }`, not `=>`"
+            }
+            ParseErrorKind::ForMissingKey => {
+                "a view `for` loop requires a `key` clause giving each item a stable identity"
+            }
+            ParseErrorKind::ReservedIdent => "a reserved word cannot be used as an identifier",
         }
     }
 }

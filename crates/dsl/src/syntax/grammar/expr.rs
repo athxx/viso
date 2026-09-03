@@ -321,8 +321,8 @@ fn generic_call_args(p: &mut Parser) {
 }
 
 /// A `( arg, ... )` call argument list. Each argument is either positional
-/// (`expr`) or named (`ident: expr`).
-fn arg_list(p: &mut Parser) {
+/// (`expr`) or named (`ident: expr`). Shared with the `emit` statement.
+pub(super) fn arg_list(p: &mut Parser) {
     let m = p.start();
     p.bump_any(); // `(`
     while !p.at(SyntaxKind::RParen) && !p.at_end() {
@@ -391,6 +391,14 @@ fn path_or_record_expr(p: &mut Parser, r: Restrictions) -> CompletedMarker {
         return m.complete(p, SyntaxKind::RecordExpr);
     }
     m.complete(p, SyntaxKind::PathExpr)
+}
+
+/// A bare `IDENT ("::" IDENT)*` path wrapped in a `PathExpr`, used by the
+/// declaration grammar for attribute names (`@ Path`).
+pub(super) fn path_only(p: &mut Parser) {
+    let m = p.start();
+    path(p);
+    m.complete(p, SyntaxKind::PathExpr);
 }
 
 /// A `IDENT ("::" IDENT)*` path (segment turbofish is handled as a postfix).
@@ -486,7 +494,7 @@ fn closure_expr(p: &mut Parser) -> CompletedMarker {
     }
     // The body is a block or a bare expression.
     if p.at(SyntaxKind::LBrace) {
-        block(p);
+        super::stmt::block(p);
     } else {
         expr(p);
     }
@@ -523,12 +531,12 @@ fn if_expr(p: &mut Parser) -> CompletedMarker {
     let m = p.start();
     p.bump_any(); // `if`
     head_expr(p);
-    block(p);
+    super::stmt::block(p);
     if p.eat(SyntaxKind::ElseKw) {
         if p.at(SyntaxKind::IfKw) {
             if_expr(p);
         } else {
-            block(p);
+            super::stmt::block(p);
         }
     }
     m.complete(p, SyntaxKind::IfExpr)
@@ -547,8 +555,9 @@ fn match_expr(p: &mut Parser) -> CompletedMarker {
     m.complete(p, SyntaxKind::MatchExpr)
 }
 
-/// One `pattern (if guard)? => (expr | block)` match arm.
-fn match_arm(p: &mut Parser) {
+/// One `pattern (if guard)? => (expr | block)` match arm. Shared with the
+/// statement grammar's `match` statement, which parses the same arm shape.
+pub(super) fn match_arm(p: &mut Parser) {
     let m = p.start();
     super::patterns::pattern(p);
     if p.eat(SyntaxKind::IfKw) {
@@ -556,30 +565,10 @@ fn match_arm(p: &mut Parser) {
     }
     p.expect(SyntaxKind::FatArrow);
     if p.at(SyntaxKind::LBrace) {
-        block(p);
+        super::stmt::block(p);
     } else {
         expr(p);
     }
     p.eat(SyntaxKind::Comma);
     m.complete(p, SyntaxKind::MatchArm);
-}
-
-/// A `{ stmt* }` block used as an expression body. The full statement grammar
-/// lands with the declaration grammar; here a block parses its interior as a
-/// sequence of expression statements so expression bodies stand on their own.
-fn block(p: &mut Parser) {
-    let m = p.start();
-    p.expect(SyntaxKind::LBrace);
-    while !p.at(SyntaxKind::RBrace) && !p.at_end() {
-        if at_expr_start(p) {
-            let s = p.start();
-            expr(p);
-            p.eat(SyntaxKind::Semi);
-            s.complete(p, SyntaxKind::ExprStmt);
-        } else {
-            p.err_and_bump(ParseErrorKind::UnexpectedTokens);
-        }
-    }
-    p.expect(SyntaxKind::RBrace);
-    m.complete(p, SyntaxKind::Block);
 }

@@ -1,26 +1,28 @@
 //! Commit-1 grammar tests: the precedence-correct expression parser and the
 //! red-tree navigation layer built over the typed CST.
 //!
-//! The expression parser is exercised through the compilation-unit entry, whose
-//! commit-1 placeholder body parses each top-level construct as an expression
-//! statement, so a bare expression like `a + b * c` parses to an `ExprStmt`
-//! wrapping the expression tree. These tests assert the *shape* of that tree
-//! (associativity, precedence, postfix folding), the non-associativity and
-//! record-in-head diagnostics, and that the red tree navigates the same tree
-//! with absolute positions while staying byte-for-byte lossless.
+//! The expression parser is exercised through the bare-expression fragment entry
+//! ([`parse_expr`]), which parses a single expression rooted at an `ExprStmt`, so
+//! `a + b * c` parses to an `ExprStmt` wrapping the expression tree. These tests
+//! assert the *shape* of that tree (associativity, precedence, postfix folding),
+//! the non-associativity and record-in-head diagnostics, and that the red tree
+//! navigates the same tree with absolute positions while staying byte-for-byte
+//! lossless.
 
-use viso_dsl::syntax::grammar::parse;
+use viso_dsl::syntax::grammar::{Entry, parse_entry, parse_expr};
 use viso_dsl::syntax::{ParseErrorKind, SyntaxKind, SyntaxNode, tokenize};
 
-/// Parses `src` through the compilation-unit entry and returns the red root.
+/// Parses `src` through the bare-expression fragment entry and returns the red
+/// root (an `ExprStmt` wrapping the expression tree).
 fn red_root(src: &str) -> SyntaxNode {
-    let parse = parse(&tokenize(src), src);
+    let parse = parse_expr(&tokenize(src), src);
     SyntaxNode::new_root(parse.root)
 }
 
-/// Whether `src` produces at least one structural error of `kind`.
+/// Whether `src`, parsed as an expression fragment, produces at least one
+/// structural error of `kind`.
 fn has_error(src: &str, kind: ParseErrorKind) -> bool {
-    parse(&tokenize(src), src)
+    parse_expr(&tokenize(src), src)
         .errors
         .iter()
         .any(|e| e.kind == kind)
@@ -32,12 +34,24 @@ fn first(root: &SyntaxNode, kind: SyntaxKind) -> Option<SyntaxNode> {
 }
 
 #[test]
-fn root_is_a_compilation_unit_and_lossless() {
-    let src = "a + b;";
+fn expr_fragment_root_and_compilation_unit_are_both_lossless() {
+    // The expression fragment entry roots at an `ExprStmt` and round-trips.
+    let src = "a + b";
     let root = red_root(src);
-    assert_eq!(root.kind(), SyntaxKind::CompilationUnit);
-    // The red root reconstructs the source byte-for-byte, trivia included.
-    assert_eq!(root.text(), src);
+    assert_eq!(root.kind(), SyntaxKind::ExprStmt);
+    assert_eq!(
+        root.text(),
+        src,
+        "the fragment root round-trips byte-for-byte"
+    );
+
+    // The `.vs` source form roots at a `CompilationUnit` and is equally lossless.
+    let unit_src = "import a::b;";
+    let unit = SyntaxNode::new_root(
+        parse_entry(&tokenize(unit_src), unit_src, Entry::CompilationUnit).root,
+    );
+    assert_eq!(unit.kind(), SyntaxKind::CompilationUnit);
+    assert_eq!(unit.text(), unit_src);
 }
 
 #[test]
@@ -143,9 +157,9 @@ fn red_tree_navigation_round_trips() {
         })
         .expect("the inner `*` BinaryExpr");
 
-    // Walking up from the inner node reaches the CompilationUnit root.
+    // Walking up from the inner node reaches the ExprStmt fragment root.
     let top = mul.ancestors().last().expect("an ancestor chain");
-    assert_eq!(top.kind(), SyntaxKind::CompilationUnit);
+    assert_eq!(top.kind(), SyntaxKind::ExprStmt);
     assert!(top.ptr_eq(&root), "ancestor walk returns to the same root");
 
     // Each node's absolute range indexes back into the exact source slice.
@@ -238,8 +252,8 @@ fn recovery_never_panics_and_round_trips() {
         let s: String = (0..len)
             .map(|_| alphabet[(next() as usize) % alphabet.len()] as char)
             .collect();
-        let parsed = parse(&tokenize(&s), &s);
-        assert_eq!(parsed.root.kind(), SyntaxKind::CompilationUnit);
+        let parsed = parse_expr(&tokenize(&s), &s);
+        assert_eq!(parsed.root.kind(), SyntaxKind::ExprStmt);
         assert_eq!(parsed.root.text(), s, "parser must round-trip {s:?}");
     }
 }
