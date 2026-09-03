@@ -293,6 +293,241 @@ pub enum SyntaxKind {
     Item,
     /// A `{ ... }`-delimited block, children between the braces preserved.
     Block,
+
+    // --- Grammar node kinds (Appendix A). The typed parser produces these; the
+    // coarse `Item` is superseded by the specific declaration nodes below. New
+    // kinds are appended at the end so earlier discriminants stay put within a
+    // build (the value is never serialized). ---
+    /// The `.vs` file entry: `ImportDecl* TopLevelDecl* EOF` (A.2).
+    CompilationUnit,
+    /// The `ui!` entry: `ViewStructureItem* EOF` (A.2) — a bare view fragment.
+    ViewFragment,
+    /// The `component!` entry: `ImportDecl* ComponentDecl EOF` (A.2).
+    ComponentEntry,
+
+    // Declarations.
+    /// `import ModulePath ImportSuffix? ";"` (A.2).
+    ImportDecl,
+    /// A `::`-separated module path `IDENT ("::" IDENT)*` (A.2).
+    ModulePath,
+    /// One `{ a, b as c }` selective-import item (A.2).
+    ImportItem,
+    /// The renamed-import tail `"as" IDENT` on an import or item (A.2).
+    RenameClause,
+    /// A leading `@Path(args)` attribute (A.2).
+    Attribute,
+    /// The parenthesized argument list of an attribute (A.2).
+    AttributeArgs,
+    /// `record IDENT ... "{" RecordField* "}"` (A.4).
+    RecordDecl,
+    /// `Attribute* IDENT ":" Type ("=" Expr)? ";"` inside a record (A.4).
+    RecordField,
+    /// `enum IDENT ... "{" EnumVariant* "}"` (A.4).
+    EnumDecl,
+    /// `Attribute* IDENT VariantPayload? ";"` inside an enum (A.4).
+    EnumVariant,
+    /// A tuple or record payload attached to an enum variant (A.4).
+    VariantPayload,
+    /// `const IDENT ":" Type "=" Expr ";"` (A.4).
+    ConstDecl,
+    /// `type IDENT GenericParams? "=" Type ";"` (A.4).
+    TypeAliasDecl,
+    /// `component IDENT ... "{" ComponentMember* "}"` (A.6).
+    ComponentDecl,
+    /// `system IDENT ... "{" ... "}"` — a scheduler system declaration.
+    SystemDecl,
+    /// `fn IDENT GenericParams? "(" ParamList ")" ReturnType? ... Block` (A.5).
+    FnDecl,
+    /// `action IDENT "(" ParamList ")" ReturnType? Block` (A.5).
+    ActionDecl,
+    /// `task IDENT "(" ParamList ")" ReturnType? Block` (A.5).
+    TaskDecl,
+    /// `input IDENT ":" Type ("=" Expr)? ";"` (A.6).
+    InputDecl,
+    /// `state IDENT (":" Type)? "=" Expr ";"` (A.6) — `=` is initialization.
+    StateDecl,
+    /// `computed IDENT (":" Type)? "=" Expr ";"` (A.6).
+    ComputedDecl,
+    /// `event IDENT "(" EventParam* ")" ";"` (A.6).
+    EventDecl,
+    /// One `IDENT ":" Type` inside an event parameter list (A.6).
+    EventParam,
+    /// `slot IDENT ":" Type ("=" SlotDefault)? ";"` (A.6).
+    SlotDecl,
+
+    // Generics / parameters / types.
+    /// A `< ... >` list of generic parameters on a declaration (A.4).
+    GenericParams,
+    /// One generic parameter (a type or const parameter) (A.4).
+    GenericParam,
+    /// An `implements Trait (+ Trait)*` clause (A.4).
+    ImplementsClause,
+    /// A `where` clause (A.4).
+    WhereClause,
+    /// A `requires { ... }` capability clause (A.5).
+    CapabilityClause,
+    /// A `"(" Parameter,* ")"` parameter list (A.5).
+    ParamList,
+    /// One `"mut"? IDENT ":" Type ("=" Expr)?` parameter (A.5).
+    Param,
+    /// A `"->" Type` return type (A.5).
+    ReturnType,
+    /// A `TypePathSegment ("::" TypePathSegment)*` type path (A.3).
+    TypePath,
+    /// One `IDENT GenericArgs?` segment of a type path (A.3).
+    TypePathSegment,
+    /// A `< GenericArg,* >` list of generic arguments (A.3).
+    GenericArgs,
+    /// A tuple type `"(" Type,* ")"` (A.3).
+    TupleType,
+    /// An array or slice type `"[" Type (";" Expr)? "]"` (A.3).
+    ArrayType,
+
+    // View.
+    /// `view ViewBlock` (A.8).
+    ViewDecl,
+    /// A `"{" ViewStructureItem* "}"` view block (A.8).
+    ViewBlock,
+    /// `node IDENT ":" ComponentType NodeBody` (A.8).
+    NamedNode,
+    /// `ComponentType NodeBody` — an anonymous child node (A.8).
+    AnonymousNode,
+    /// `part IDENT ":" ComponentType NodeBody` (A.8).
+    PartNode,
+    /// A `"{" NodeMember* "}"` node body (A.8).
+    NodeBody,
+    /// `PropertyPath ":" Expr ";"` — a property binding (A.8).
+    PropertyBinding,
+    /// An `IDENT ("." IDENT)*` property path (A.8).
+    PropertyPath,
+    /// `bind PropertyPath "<=>" AssignablePath ("using" TypePath)? ";"` (A.8).
+    TwoWayBinding,
+    /// `on EventPhase? IDENT ("(" Pattern ")")? Block` (A.8).
+    EventHandler,
+    /// `fill IDENT ViewBlock` (A.8).
+    FillClause,
+    /// `if HeadExpr ("preserve" STRING)? ViewBlock ("else" ...)?` (A.8).
+    ViewIf,
+    /// `for Pattern "in" HeadExpr "key" HeadExpr ViewBlock` (A.8).
+    ViewFor,
+    /// `match HeadExpr "{" ViewMatchArm,* "}"` (A.8).
+    ViewMatch,
+    /// `Pattern ("if" Expr)? "=>" ViewBlock` inside a view match (A.8).
+    ViewMatchArm,
+
+    // Statements.
+    /// `let "mut"? Pattern (":" Type)? "=" Expr ";"` (A.11).
+    LetStmt,
+    /// `AssignablePath AssignmentOperator Expr ";"` (A.11).
+    AssignStmt,
+    /// An `AssignablePath` (the left side of an assignment) (A.11).
+    AssignablePath,
+    /// `Expr ";"` — an expression statement (A.11).
+    ExprStmt,
+    /// `return Expr? ";"` (A.11).
+    ReturnStmt,
+    /// `break Expr? ";"` (A.11).
+    BreakStmt,
+    /// `continue ";"` (A.11).
+    ContinueStmt,
+    /// `emit IDENT "(" ArgumentList ")" ";"` (A.11).
+    EmitStmt,
+    /// `transaction Block` (A.11).
+    TransactionStmt,
+    /// `while HeadExpr Block` (A.11).
+    WhileStmt,
+    /// `for Pattern "in" HeadExpr Block` — a behavior loop (no key) (A.11).
+    ForStmt,
+    /// `loop Block` (A.11).
+    LoopStmt,
+    /// `if HeadExpr Block ("else" (IfStmt | Block))?` — statement form (A.11).
+    IfStmt,
+    /// A `match` used in statement position (A.11).
+    MatchStmt,
+
+    // Expressions.
+    /// A literal expression (int/float/string/color/bool/None/…) (A.12).
+    LiteralExpr,
+    /// A path expression `Path` / `self` / `Self` (A.12).
+    PathExpr,
+    /// A binary operator expression `lhs op rhs` (A.12).
+    BinaryExpr,
+    /// A prefix unary expression `op expr` (A.12).
+    UnaryExpr,
+    /// A `expr "as" Type` cast (A.12).
+    CastExpr,
+    /// A range expression `lo (".." | "..=") hi` (A.12).
+    RangeExpr,
+    /// A call `callee GenericCallArgs? "(" ArgumentList ")"` (A.12).
+    CallExpr,
+    /// An index `expr "[" Expr "]"` (A.12).
+    IndexExpr,
+    /// A field access `expr "." IDENT` (A.12).
+    FieldExpr,
+    /// An optional field access `expr "?." IDENT` (A.12).
+    OptionalFieldExpr,
+    /// A try `expr "?"` (A.12).
+    TryExpr,
+    /// A turbofish `"::" GenericArgs` on a call (A.12).
+    GenericCallArgs,
+    /// A `"(" Expr,* ")"` — parenthesized expr or tuple (A.12).
+    ParenExpr,
+    /// A tuple expression `"(" Expr "," ... ")"` (A.12).
+    TupleExpr,
+    /// A list expression `"[" Expr,* "]"` (A.12).
+    ListExpr,
+    /// A record expression `Path GenericCallArgs? "{" RecordInitializer,* "}"` (A.12).
+    RecordExpr,
+    /// One `IDENT (":" Expr)?` or `".." Expr` record initializer (A.12).
+    RecordExprField,
+    /// An `if ... else ...` expression (both arms required) (A.12).
+    IfExpr,
+    /// A `match` expression (A.12).
+    MatchExpr,
+    /// `Pattern ("if" Expr)? "=>" (Expr | Block)` in a match expression (A.12).
+    MatchArm,
+    /// A closure `"move"? (ClosureParams | "||") ... (Expr | Block)` (A.12).
+    ClosureExpr,
+    /// A `"|" ClosureParameter,* "|"` closure parameter list (A.12).
+    ClosureParams,
+    /// One `"mut"? Pattern (":" Type)?` closure parameter (A.12).
+    ClosureParam,
+    /// An `IDENT ":" Expr` or positional `Expr` call argument (A.12).
+    Argument,
+    /// The argument list inside a call `"(" Argument,* ")"` (A.12).
+    ArgumentList,
+
+    // Patterns.
+    /// A top-level pattern; wraps the specific pattern shapes below (A.13).
+    Pattern,
+    /// An `a | b | c` or-pattern (A.13).
+    OrPattern,
+    /// An `IDENT "@" Pattern` binding pattern (A.13).
+    BindingPattern,
+    /// A `lo (".." | "..=") hi` range pattern (A.13).
+    RangePattern,
+    /// The wildcard `_` pattern (A.13).
+    WildcardPattern,
+    /// A literal pattern (A.13).
+    LiteralPattern,
+    /// An `"mut"? IDENT` identifier (binding) pattern (A.13).
+    IdentPattern,
+    /// A `"(" Pattern,* ")"` tuple pattern (A.13).
+    TuplePattern,
+    /// A `"[" ListPatternItem,* "]"` list pattern (A.13).
+    ListPattern,
+    /// A `TypePath (…)`/`{…}` constructor pattern (A.13).
+    ConstructorPattern,
+    /// A `IDENT "::" IDENT (…)` qualified-variant pattern (A.13).
+    QualifiedVariantPattern,
+    /// One `IDENT (":" Pattern)?` / `".."` field in a record constructor pattern (A.13).
+    RecordPatternField,
+
+    // Advanced (parsed, not resolved this slice).
+    /// A declaration in the Advanced tier (`trait`/`impl`/`template`/`style`/
+    /// `theme`/`shader`/`native`) parsed to a placeholder wrapper: its interior
+    /// is grouped losslessly but it gets no name resolution yet.
+    AdvancedItem,
 }
 
 impl SyntaxKind {
@@ -321,12 +556,15 @@ impl SyntaxKind {
     }
 
     /// Whether this kind is a CST-only node kind (never emitted by the lexer).
+    ///
+    /// The node kinds occupy the tail of the enum: the coarse skeleton set
+    /// (`Root`..=`Block`) followed by the grammar node kinds
+    /// (`CompilationUnit`..=`AdvancedItem`). Everything below `CompilationUnit`
+    /// is a token kind. A single lower-bound comparison covers the whole tail
+    /// because no token kind is appended after the nodes.
     #[inline]
     pub fn is_node(self) -> bool {
-        matches!(
-            self,
-            Self::Root | Self::ErrorNode | Self::MissingToken | Self::Item | Self::Block
-        )
+        self as u16 >= Self::Root as u16
     }
 
     /// Whether this kind is one of the declaration keywords the skeleton parser
