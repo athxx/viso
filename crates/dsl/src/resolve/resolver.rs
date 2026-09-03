@@ -22,7 +22,8 @@
 
 use crate::ast::{
     AstNode, Block, CompilationUnit, ComponentDecl, EventHandler, Expr, Item, Member, NamedNode,
-    NodeBody, PathExpr, PropertyBinding, SystemDecl, TypePath, ViewBlock, ViewFor, ViewItem,
+    NodeBody, PathExpr, PropertyBinding, SystemDecl, TypePath, ViewBlock, ViewFor, ViewIf,
+    ViewItem,
 };
 use crate::diag::Diagnostic;
 use crate::syntax::SyntaxNode;
@@ -521,12 +522,12 @@ impl ModulePass<'_> {
             ViewItem::Property(p) => self.resolve_property(&p),
             ViewItem::Handler(h) => self.resolve_handler(&h),
             ViewItem::For(f) => self.resolve_for(&f),
-            ViewItem::If(i) => {
-                if let Some(block) = i.syntax().children().into_iter().find_map(ViewBlock::cast) {
-                    self.resolve_view_block(&block);
-                }
-            }
+            ViewItem::If(i) => self.resolve_if(&i),
             ViewItem::Match(m) => {
+                // The scrutinee is read once, in the enclosing scope.
+                if let Some(scrutinee) = m.scrutinee() {
+                    self.resolve_expr(&scrutinee);
+                }
                 for block in m
                     .syntax()
                     .descendants()
@@ -591,6 +592,11 @@ impl ModulePass<'_> {
 
     fn resolve_for(&mut self, for_item: &ViewFor) {
         use crate::syntax::SyntaxKind;
+        // The iterable is evaluated in the outer scope — it cannot see the loop
+        // pattern it is about to bind, so resolve it before pushing the loop scope.
+        if let Some(iterable) = for_item.iterable() {
+            self.resolve_expr(&iterable);
+        }
         self.scopes.push();
         // Bind the loop pattern's identifiers (the pattern precedes `in`).
         if let Some(pat) = for_item
@@ -612,10 +618,31 @@ impl ModulePass<'_> {
                 });
             }
         }
+        // The key is evaluated per item, so it resolves in the loop scope — it may
+        // read the loop pattern (`key item.id`).
+        if let Some(key) = for_item.key() {
+            self.resolve_expr(&key);
+        }
         if let Some(body) = for_item.body() {
             self.resolve_view_block(&body);
         }
         self.scopes.pop();
+    }
+
+    /// Resolves an `if / else if / else` region: each arm's condition (in the
+    /// enclosing scope) and then-block, chaining through the `else` branch.
+    fn resolve_if(&mut self, view_if: &ViewIf) {
+        if let Some(condition) = view_if.condition() {
+            self.resolve_expr(&condition);
+        }
+        if let Some(then_block) = view_if.then_block() {
+            self.resolve_view_block(&then_block);
+        }
+        match view_if.else_branch() {
+            Some(crate::ast::ElseBranch::If(nested)) => self.resolve_if(&nested),
+            Some(crate::ast::ElseBranch::Block(block)) => self.resolve_view_block(&block),
+            None => {}
+        }
     }
 
     /// Resolves an expression, descending into it and resolving each path head.
@@ -702,6 +729,91 @@ impl ModulePass<'_> {
                 ResolveErrorKind::UnresolvedModule.to_diagnostic(Some(head.text_range()), &text),
             );
         }
+    }
+}
+
+/// The resolution of a bare `ui!` [`ViewFragment`] against a caller-supplied set of
+/// reactive-source names (AGENTS section 21.5).
+///
+/// A `ui!` fragment has no surrounding component and no `CompilationUnit`: its
+/// reactive sources are Rust `state`/signals captured into the builder closure, named
+/// only by the caller. [`resolve_fragment`] runs the *same* view walker the component
+/// frontend uses ([`ModulePass::resolve_view_item`]) so a fragment is checked
+/// identically — node-name and loop-pattern locals bind to [`Resolution::Local`],
+/// unknown names stay unresolved (native/schema, deferred), and each caller-named
+/// reactive source resolves to a durable [`SymbolId`]. The `sources` map is what a
+/// caller turns into a [`crate::hir::ReadEnv`] for the Binding IR / keys passes.
+pub struct ResolvedFragment {
+    /// Every name use the walk resolved, in source order — the `refs` table the
+    /// Binding IR and keys passes read.
+    pub refs: Vec<ResolvedRef>,
+    /// The [`SymbolId`] minted for each reactive-source name, in the order the caller
+    /// supplied them. A caller builds its [`crate::hir::ReadEnv`] from these ids.
+    pub sources: Vec<SymbolId>,
+    /// Diagnostics gathered resolving the fragment (an unresolved user type, etc.).
+    pub errors: Vec<Diagnostic>,
+}
+
+/// Resolves a bare `ui!` [`ViewFragment`]'s items, treating `sources` as the reactive
+/// state names captured from the surrounding Rust scope (AGENTS section 21.5).
+///
+/// Each source name is seeded into a fresh value-namespace [`SymbolTable`] with a
+/// durable [`SymbolId`] (a [`SymbolKind::State`] fingerprint over `package`, an empty
+/// module path, and the source name), so a property value reading that name resolves
+/// to [`Resolution::Symbol`] — exactly as a component `state` read would. Imports are
+/// empty (a fragment has none), so any other free name is left unresolved for the
+/// caller's `ReadEnv` to treat as non-reactive. This reuses the component view walker
+/// verbatim; the fragment path adds no second set of resolution rules.
+pub fn resolve_fragment(
+    fragment: &crate::ast::ViewFragment,
+    sources: &[&str],
+    interner: &mut NameInterner,
+    package: &str,
+) -> ResolvedFragment {
+    // Seed one value-namespace symbol per reactive source. A duplicate name keeps the
+    // first (the table reports the clash) so `source_ids` stays 1:1 with `sources`.
+    let mut table = SymbolTable::new();
+    let mut source_ids = Vec::with_capacity(sources.len());
+    for name in sources {
+        let id = fingerprint(SymbolIdentity {
+            package,
+            module_path: "",
+            kind: SymbolKind::State,
+            decl_path: name,
+        });
+        let name_id = interner.intern(name);
+        let _ = table.define(
+            name_id,
+            Namespace::Value,
+            ModuleSymbol {
+                id,
+                exported: false,
+            },
+        );
+        source_ids.push(id);
+    }
+
+    let imports = std::collections::HashMap::new();
+    let mut pass = ModulePass {
+        table: &table,
+        imports: &imports,
+        interner,
+        refs: Vec::new(),
+        errors: Vec::new(),
+        scopes: ScopeStack::new(),
+    };
+    // A fragment's items are top-level (no `ViewBlock` wrapper); open one scope for
+    // node-name / loop-pattern locals, matching `resolve_view_block`.
+    pass.scopes.push();
+    for item in fragment.items() {
+        pass.resolve_view_item(item);
+    }
+    pass.scopes.pop();
+
+    ResolvedFragment {
+        refs: pass.refs,
+        sources: source_ids,
+        errors: pass.errors,
     }
 }
 
@@ -870,6 +982,89 @@ mod tests {
         assert!(
             resolved,
             "`computed doubled = count` resolves `count` to its state symbol"
+        );
+    }
+
+    // --- `ui!` fragment resolution ------------------------------------------
+
+    /// Parses `src` as a bare `ui!` view fragment.
+    fn fragment(src: &str) -> crate::ast::ViewFragment {
+        use crate::ast::AstNode;
+        use crate::syntax::grammar::{Entry, parse_entry};
+        let root = crate::syntax::SyntaxNode::new_root(
+            parse_entry(&tokenize(src), src, Entry::ViewFragment).root,
+        );
+        crate::ast::ViewFragment::cast(root).expect("a ViewFragment root")
+    }
+
+    #[test]
+    fn a_fragment_property_reading_a_source_resolves_to_its_symbol() {
+        let mut interner = NameInterner::new();
+        let frag = fragment("Text { text: label; }");
+        let out = resolve_fragment(&frag, &["label"], &mut interner, "<ui!>");
+
+        assert_eq!(out.sources.len(), 1, "one seeded reactive source");
+        assert!(out.errors.is_empty(), "a bare source read is not an error");
+        // The `label` value read resolves to the minted state symbol.
+        let label = out.sources[0];
+        assert!(
+            out.refs.iter().any(|r| r.to == Resolution::Symbol(label)),
+            "the `label` read resolves to its seeded symbol"
+        );
+    }
+
+    #[test]
+    fn a_fragment_source_symbol_matches_a_state_fingerprint() {
+        // The minted id is a `State`-kind fingerprint over the synthetic package and
+        // the source name — stable and independent of resolution order.
+        let mut interner = NameInterner::new();
+        let frag = fragment("Text { text: label; }");
+        let out = resolve_fragment(&frag, &["label"], &mut interner, "<ui!>");
+        let expected = fingerprint(SymbolIdentity {
+            package: "<ui!>",
+            module_path: "",
+            kind: SymbolKind::State,
+            decl_path: "label",
+        });
+        assert_eq!(out.sources[0], expected);
+    }
+
+    #[test]
+    fn a_fragment_loop_pattern_binds_a_local_not_a_source() {
+        let mut interner = NameInterner::new();
+        let frag = fragment("for item in items key item.id { Row { } }");
+        // `items` is a reactive source; `item` is a loop local.
+        let out = resolve_fragment(&frag, &["items"], &mut interner, "<ui!>");
+        let items = out.sources[0];
+        assert!(
+            out.refs.iter().any(|r| r.to == Resolution::Symbol(items)),
+            "the iterable `items` resolves to its source symbol"
+        );
+        assert!(
+            out.refs
+                .iter()
+                .any(|r| matches!(r.to, Resolution::Local(_))),
+            "the loop pattern `item` binds a local slot"
+        );
+    }
+
+    #[test]
+    fn a_fragment_free_name_is_left_unresolved() {
+        // A name that is neither a seeded source nor a local is left unresolved for
+        // the caller's ReadEnv to treat as non-reactive — no diagnostic.
+        let mut interner = NameInterner::new();
+        let frag = fragment("Text { text: helper; }");
+        let out = resolve_fragment(&frag, &[], &mut interner, "<ui!>");
+        assert!(out.sources.is_empty(), "no sources seeded");
+        assert!(
+            out.errors.is_empty(),
+            "an unresolved free name is not an error here"
+        );
+        assert!(
+            !out.refs
+                .iter()
+                .any(|r| matches!(r.to, Resolution::Symbol(_))),
+            "no free name resolves to a symbol"
         );
     }
 }
