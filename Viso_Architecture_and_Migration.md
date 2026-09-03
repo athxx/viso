@@ -1,8 +1,8 @@
 # Viso 架构设计与重构迁移方案
 
-> 文档状态：Draft / Architecture Baseline 1.0  
+> 文档状态：Viso 1.0 Draft / Architecture Specification  
 > 目标读者：Viso 核心维护者、负责 Makepad→Viso 迁移的工程师、Renderer/GPU 工程师、UI/Widget 工程师、工具链工程师、AI Coding Agent  
-> 基线日期：2026-08-31  
+> 基线日期：2026-09-03  
 > 适用范围：假设可以从现有 Makepad 重新设计一代框架，不以兼容成本和工作量为第一约束，但要求提供可执行迁移路径。
 
 ---
@@ -31,9 +31,9 @@ fn main() {
 
 ### 0.1 品牌与源码格式约定
 
-本设计中的新框架正式命名为 **Viso**。`Makepad` 仅用于描述迁移来源、旧 API、旧行为和性能基线，不是 Viso 的运行时兼容目标。
+本设计中的新框架正式命名为 **Viso**。`Makepad` 仅用于描述迁移来源、行为参考、算法参考和性能基线，不是 Viso 的运行时兼容目标。
 
-Viso UI/DSL 源文件的唯一规范扩展名统一为 **`.vs`**：
+Viso UI/DSL **外部源文件**的唯一规范扩展名统一为 **`.vs`**：
 
 ```text
 app.vs
@@ -41,8 +41,64 @@ theme.vs
 features/home/view.vs
 ```
 
+Viso 的 Rust 集成提供**按语义命名的三个宏入口**：
 
-Makepad 的当前迁移来源是 Rust 源码中的 `script_mod!` 宏、`ScriptVm` 初始化/执行路径以及相关脚本模块注册关系，而不是 `.live` 文件。Viso 的 DSL 输出格式只使用 `.vs`。`Live` 只描述 live editing / hot reload 能力，不作为 Viso 的语言、crate、目录或文件格式名称。
+```rust
+// 1. 内联 View Fragment：小组件、测试、示例、局部静态 UI
+let content = ui! {
+    Column {
+        Label { text: "Hello"; }
+    }
+};
+
+// 2. 外部 .vs View：页面、主题、大组件，获得独立 hot reload
+let page = view!("features/home/view.vs");
+
+// 3. 内联完整 Component：适合很小、与 Rust 紧密耦合的组件
+component! {
+    Counter {
+        state count = 0;
+        view {
+            Column {
+                Text { text: count; }
+            }
+        }
+    }
+}
+```
+
+这三个宏**不是三套语言**，而是同一个 Viso compiler 的三个明确 parser entry point：
+
+```text
+ui!         -> ViewFragment
+component!  -> ComponentDecl
+view!(...)  -> external .vs CompilationUnit / exported View
+                    ↓
+          Name Resolution / Schema
+                    ↓
+                 Typed HIR
+                    ↓
+         UI IR / Reactive IR / Shader IR
+```
+
+宏层只决定 source origin 与合法的顶层语法范围，不复制 type checker、schema、HIR、binding 或 runtime 语义。外部 `.vs` 可由 watcher 独立增量编译和 hot reload；`ui!` / `component!` 默认随 Rust 增量编译更新。Release 中三者都降低为相同的 typed/AOT IR，Viso runtime 不需要解析 Rust 源码。
+
+Makepad 的当前迁移来源是 Rust 源码中的 `script_mod!` 宏、`ScriptVm` 初始化/执行路径以及相关脚本模块注册关系，而不是 `.live` 文件。Viso 的外部 DSL 输出格式只使用 `.vs`。`Live` 只描述 live editing / hot reload 能力，不作为 Viso 的语言、crate、目录或文件格式名称。
+
+### 0.2 Viso 1.0 的硬决策
+
+Viso 1.0 将以下地基问题定义为正式架构决策：
+
+1. **Node hot storage：采用 hybrid indexed SoA。** `NodeMeta` 保持紧凑 AoS 以服务树遍历；Layout/Transform/Paint/Interaction 等高频字段使用与 `NodeIndex` 同索引的连续数组；低频/可选数据进入 sparse cold side tables。暂不采用全 ECS/chunked archetype。
+2. **`Handle<T>`：只表达 typed identity/capability，不直接暴露跨帧 `&T`/`&mut T`。** 读写必须通过受 context 约束的 query/action/property API，避免绕过 reactive invalidation 和生命周期检查。
+3. **Transform：与 Layout 使用独立的失效/传播平面。** 二者默认共享 `NodeId` 和结构语义，但 transform/scroll/animation 可在不触发布局的情况下局部更新。
+4. **自研与依赖必须分级。** Viso 只在决定差异化、热路径和语义所有权的部分强制自研；Unicode/shaping、accessibility bridge、async executor、网络/TLS、codec 等优先复用成熟实现，并由 Viso 自己掌握 integration/cache/ABI contract。
+5. **模块边界必须机器化验证。** crate DAG 与关键 module import 规则进入 `cargo xtask arch-check`/CI，不再只依赖 AGENTS.md 和 code review。
+6. **Reactive dynamic fallback 必须显式、可计数、可 benchmark。** 编译器能够静态解析的绑定不得静默掉入动态路径。
+7. **Web/Mobile/Linux backend 采用 tier + capability 模型。** Tier-1 明确优化现代主后端；兼容后端可追加，但不得反向把 renderer 设计压成最低公分母。
+8. **Viso DSL 使用 `ui!` / `view!` / `component!` 三个语义化 Rust 入口。** `ui!` 解析 View Fragment，`component!` 解析 Component，`view!("...vs")` 编译外部 `.vs`；三者共享同一 schema/HIR/IR/runtime 语义。`.vs` 是唯一 canonical 外部 DSL 文件扩展名。
+
+这些条目属于 Viso 1.0 的架构合同；如果要改变，必须新增/修改 ADR 并附 benchmark 或实现证据。
 
 ---
 
@@ -61,7 +117,7 @@ Viso 不应该变成一个“更像 Web 框架的 Rust UI”，也不应该复�
 - Studio / Inspector / AI 辅助开发能力；
 - 框架自己掌握关键渲染链路，而不是被浏览器、DOM 或通用 Widget toolkit 限制。
 
-当前 Makepad 官方 README 已将自身描述为 Rust-first、跨平台、高性能 UI runtime、live-editable design language、Studio 与 AI-accelerated workflow 的组合。当前 dev 分支也已经从旧 `live_design!` 迁移到以 `script_mod!` 为中心的运行时脚本方向。Viso 的目标不是否定这些方向，而是把它们重新放入更清晰的边界中。
+当前 Makepad 官方 README 已将自身描述为 Rust-first、跨平台、高性能 UI runtime、live-editable design language、Studio 与 AI-accelerated workflow 的组合。Viso 对 Makepad 的参考对象统一为当前 `script_mod!` / `ScriptVm` 运行时脚本体系。Viso 的目标是保留其中有价值的方向，并把它们放入更清晰的边界中。
 
 ### 1.1 当前结构中值得重构的信号
 
@@ -182,7 +238,7 @@ Viso 必须做到：
 8. Async 有官方模式，但不把 Tokio/Smol 绑死在核心。
 9. Mobile lifecycle / safe area / keyboard / deep link / permissions 有标准模型。
 10. Studio/Inspector 只能通过 public/internal-tools API 观察系统，不能反向污染 runtime 核心。
-11. 迁移工具和兼容层有明确退出时间。
+11. 迁移工具边界必须明确：生产 runtime 永远没有 Makepad 兼容层；迁移只发生在 source/tooling 层。
 12. 性能回归进入 CI，不能只依靠人工感知。
 
 ### 3.2 非目标
@@ -233,6 +289,71 @@ Viso 使用四层性能模型：
 - Reactive 层优先静态 dependency metadata 和小型 slot；
 - UI runtime 优先整数 ID、arena、dirty bit、连续内存；
 - Render/GPU 优先分桶、instance buffer、ring buffer、pipeline/cache reuse。
+
+### 4.1 自研 vs 外部依赖：Ownership Ladder
+
+Viso 不以“全部自研”为荣，也不以“尽量依赖现成库”为目标。判据是：**谁必须拥有语义、谁必须控制热路径、谁只是实现细节。**
+
+#### Tier A — Viso 必须拥有
+
+这些能力直接决定 Viso 的性能模型、用户语义或长期差异化，不应由通用第三方抽象反向定义：
+
+- NodeArena / identity / lifecycle；
+- reactive invalidation / binding metadata / transaction；
+- UI layout contract 与增量算法；
+- paint primitive、batching、GPU upload plan；
+- `.vs` 与 `ui!` / `view!` / `component!` 的 CST/AST→HIR→UI IR、AOT 与 hot reload 协议；
+- Shader IR、Viso shader ABI 与 UI/GPU schema bridge；
+- frame scheduler / phase ownership / main-loop integration；
+- Viso semantics tree；
+- ResourceId / asset lifetime / framework-level profiling counters。
+
+#### Tier B — Viso 拥有 integration，优先复用成熟算法
+
+这些领域很重要，但重新发明标准算法通常不能形成足够差异化：
+
+- Unicode segmentation / BiDi / shaping primitive；
+- font rasterization primitives；
+- image/audio/video codec；
+- accessibility OS bridge；
+- platform bindings；
+- cryptography / TLS。
+
+Viso 在这些领域拥有的是 **cache policy、数据布局、生命周期、增量接口、性能 instrumentation 与替换边界**。例如 `viso-text` 可以使用成熟 shaping/Unicode crate，但 paragraph cache、glyph atlas、增量 line layout 与 UI invalidation 仍属于 Viso。
+
+Accessibility 的 canonical model 是 Viso 自有 semantics tree；平台 adapter 优先复用 AccessKit 等成熟桥接能力，只在能力或性能不满足时实现平台专用 adapter。
+
+#### Tier C — Adapter / 可替换依赖
+
+- Tokio / Smol / 其他 async executor；
+- wgpu reference/experimental backend；
+- tracing / serde 等生态集成；
+- HTTP client / database / telemetry。
+
+它们必须位于 adapter/service 边界，不拥有 Viso main loop、frame semantics、UI identity 或 renderer architecture。
+
+#### Tier D — 默认不自研
+
+除非 benchmark、平台能力或安全审计给出明确理由，否则不自研：
+
+- 通用 async executor；
+- HTTP/TLS stack；
+- 通用压缩/图片/媒体 codec；
+- Unicode 标准算法；
+- 业务数据库。
+
+#### 采用或替换第三方依赖的判据
+
+每个重要依赖 ADR 至少回答：
+
+1. 它是否位于每帧热路径？
+2. 它是否决定 Viso 的 public semantics？
+3. 是否阻碍 AOT、增量失效或 GPU batching？
+4. 是否能通过窄 adapter 隔离？
+5. 维护/安全成本与自研成本哪个更高？
+6. 是否已有真实 benchmark 证明需要 fork/替换？
+
+没有数据时，优先“复用算法 + 掌握边界”，而不是复制一个完整生态项目进仓库。
 
 ---
 
@@ -286,12 +407,12 @@ Size
 Constraints
 ```
 
-以及必要宏：
+以及必要宏/属性宏：
 
 ```text
-component!
-ui!
-view!
+#[component]
+ui! { ... }
+view!("...vs")
 routes!
 ```
 
@@ -465,6 +586,7 @@ viso/
 ├── README.md
 ├── ARCHITECTURE.md
 ├── AGENTS.md
+├── architecture.toml
 ├── rustfmt.toml
 │
 ├── crates/
@@ -480,6 +602,9 @@ viso/
 │   ├── widgets/
 │   ├── dsl/
 │   └── services/
+│
+├── integrations/
+├── extras/
 │
 ├── tools/
 │   ├── cli/
@@ -550,11 +675,15 @@ Facade。基本不实现热路径逻辑。
 Proc macros：
 
 - `#[component]`；
+- `ui! { ... }` inline DSL frontend；
+- `view!("...vs")` external DSL module reference/build integration；
 - state/binding metadata；
 - shader instance layout；
 - Viso DSL schema；
 - static template 生成；
 - compile-time diagnostics。
+
+`viso-macros` 不拥有第二套 DSL parser。inline/file source 都必须复用 `viso-dsl` 的 frontend/HIR 语义；宏层只负责 Rust token/span、build artifact 与 typed API glue。
 
 ### `viso-runtime`
 
@@ -737,7 +866,25 @@ PDF/browser/chart/map 等不是基础 widget，放 optional package/integration�
 - `viso-dsl -> concrete widget implementation`：原则上禁止，使用 schema/registry；
 - framework core crate 依赖 app/example：绝对禁止。
 
-### 10.2 允许的反向通知
+### 10.2 边界必须由 CI 机器化验证
+
+AGENTS.md 里的 dependency 规则不是“建议”。仓库应维护机器可读的 architecture policy（例如 `architecture.toml`），并由：
+
+```text
+cargo xtask arch-check
+```
+
+至少验证：
+
+- crate allow/deny edge（基于 `cargo metadata`）；
+- framework crate 不得反向依赖 `tools/`、`examples/`、Studio；
+- `platform/ui/render/gpu/dsl` 等关键 module 的 forbidden import；
+- target-only dependency 不得泄漏到其他 target；
+- public facade re-export 不得绕过稳定性等级。
+
+module-level 规则初期可以通过 first-party AST/import scanner 实现；`cargo-modules` 等工具可用于可视化和辅助诊断，但 CI 的最终合同应由 Viso 自己控制，避免边界只存在于文档。
+
+### 10.3 允许的反向通知
 
 当底层需要向上层通知时，使用：
 
@@ -914,14 +1061,17 @@ Scope 被销毁时自动取消或 detach，策略显式。
 
 ### 13.1 核心协议
 
-Viso 自己拥有：
+Viso 自己拥有的是 **UI task protocol，而不是一套通用 async runtime**：
 
 - task ID；
 - wakeup queue；
 - cancellation token；
 - main-thread dispatch；
-- timer source；
-- worker pool（默认实现可很小）。
+- timer/lifecycle integration；
+- scoped-task ownership；
+- executor adapter contract。
+
+通用 work-stealing executor、I/O reactor、HTTP/TLS 等不进入 Viso 核心。默认发行版可以绑定一个经过验证的 executor adapter，但它不能拥有 UI main loop。
 
 Tokio/Smol 作为 adapter：
 
@@ -1069,6 +1219,29 @@ enum Primitive {
 
 ## 16. Node Arena 设计建议
 
+### 16.0 Viso 1.0：hot storage 采用 hybrid indexed SoA
+
+不再把“纯 SoA / hybrid / chunked archetype”留到后期决定。Viso 采用 **hybrid indexed SoA**：
+
+```text
+NodeId(index,generation)
+        │
+        ├── NodeMeta[index]          // compact AoS: parent/child/sibling/type/flags
+        ├── LayoutStore.*[index]     // hot SoA
+        ├── TransformStore.*[index]  // hot SoA
+        ├── PaintStore.*[index]      // hot SoA / compact handles
+        ├── InteractionStore.*[index]
+        └── SparseColdTables         // semantics detail/debug/rare extension data
+```
+
+关键约束：
+
+- hot store 以同一个 `NodeIndex` 直接寻址，热遍历不经过 per-node HashMap；
+- `NodeMeta` 保留为紧凑 AoS，因为 parent/child/sibling 通常一起访问；
+- 低频、可选、大对象不强迫所有 node 支付固定空间；
+- 不采用 archetype migration 作为默认节点变更机制；UI identity 和 hierarchy 比 ECS 组件组合更稳定；
+- 后续可以在单个 store 内优化 chunk/page，但不能改变 `NodeId -> fixed index stores` 这一基线语义，除非新 ADR 证明收益。
+
 概念结构：
 
 ```rust
@@ -1210,12 +1383,6 @@ struct Binding {
 
 对于 Viso DSL UI，使用 compact bytecode/IR function。
 
-> **As built (Slice B) — 见 ADR 0005。** `BindingTable` 落地为混合两条路径：
-> 静态边按 `StateId` 存为 dense contiguous run，并做 same-node class folding
-> （一个 cell 变化对每个受影响节点只 dirty 一次）；动态脚本走 `bind_dynamic`
-> 运行时回退（§10.3）。`Computed` **不**走 `bind_dynamic`——binding flush 会
-> 无条件 dirty 每条动态边，绕过 memo 边界——而是自持反向索引唤醒（见 §21 注）。
-
 ---
 
 ## 19. Dirty flags
@@ -1236,11 +1403,6 @@ bitflags! {
     }
 }
 ```
-
-> **As built (Slice B) — 见 ADR 0005。** 实际落地为 `DirtyClass`：`u8` 位集，
-> 恰好八个类（此草图写的是 `DirtyMask: u16`，多出的位未使用，故收敛为 u8）。
-> 类的语义与顺序不变，一位一义。`Computed`/`Effect` 刻意**不**占用其中的位
-> （见 §21 注），保持八位干净。
 
 属性需要定义自己的 invalidation contract。
 
@@ -1269,6 +1431,24 @@ bitflags! {
 - `SEMANTICS` 只更新 semantics tree 对应分支。
 
 需要专门的 propagation rules，而不是简单 `parent.redraw()`。
+
+### 19.2 Viso 1.0：Transform 是独立失效平面
+
+Layout tree 定义结构与几何约束；Transform plane 定义最终局部/世界变换、滚动偏移和动画变换。两者使用同一个 `NodeId` 索引，但 dirty propagation 分离：
+
+```text
+Layout change
+  -> MEASURE/LAYOUT
+  -> may update transform base rect
+
+Scroll / translate / scale / opacity-only animation
+  -> TRANSFORM / HIT_TEST / PAINT bounds
+  -> no MEASURE/LAYOUT by default
+```
+
+默认 transform parent 跟随 UI parent；overlay、portal、独立 layer 等场景可以显式拥有不同的 transform/paint parent。该能力必须通过受控 API 表达，不能靠任意矩阵引用形成不可追踪图。
+
+这样做的主要目的不是“架构漂亮”，而是保证滚动和 transform animation 不因为层级传播而触发布局。
 
 ---
 
@@ -1339,20 +1519,6 @@ Effect 必须支持：
 - Viso hot reload 时不重复产生无约束副作用。
 
 Render/View 默认保持纯净，不在 view evaluation 内启动 I/O。
-
-> **As built (Slice B) — 见 ADR 0005。** `Computed` 与 `Effect` 各自持有一条
-> `StateId → Vec<Id>` 反向索引（**不**是 dirty 位集）来唤醒，二者唤醒方式因
-> 输出不同而不同：`Computed` 的输出**就是**节点的一个 dirty class，
-> `ComputedStore::wake_computed` 重算受影响的派生，**仅当派生值真的变化**时才
-> `mark_dirty` 下游节点——memo 边界落在唤醒本身；`Effect` 无 dirty class，
-> 其输出是副作用，`EffectStore::wake` 直接重跑 body（依赖变化时先跑上一次
-> cleanup 再跑 body），`cancel`/`cancel_for_node` 在 unmount 时跑 cleanup。
-> 每次 eval/run 通过 `deindex → 刷新 deps → reindex` 维护反向索引，故停止读取
-> 某 cell 的派生/effect 会停止被它唤醒。三个 reactor 在帧的
-> `FlushStateTransactions` 阶段按 wake_computed → 静态/动态 binding flush →
-> effects.wake 顺序运行，共享同一次 drain 的 `changed` 集合。
-> 已知后续（超出本 slice）：`StateId` slot 复用时唤醒的 generation 检查；
-> Computed 依赖 Computed 的级联。
 
 ---
 
@@ -1441,7 +1607,7 @@ child intrinsic version
 
 未变化时直接复用。
 
-不要仅以“上一帧算过”作为 cache 条件。
+不要仅以“前一帧已经计算”作为 cache 条件。
 
 ### 23.1 Layout boundary
 
@@ -1911,24 +2077,6 @@ Graph compiler 负责：
 
 普通 UI 不要求业务开发者接触 render graph。
 
-### 34.1 Layer 裁剪与 offscreen 合成
-
-`Layer` 有两条互斥路径，由 `LayerClip.opacity` 决定：
-
-- **`opacity == 1`（矩形裁剪）**：`Layer..LayerEnd` 子树在**主 pass 内**用硬件
-  scissor 裁到 layer rect，不创建任何 offscreen 目标。绝大多数 Layer 走此路径，
-  零额外 pass / 零额外纹理。
-- **`opacity < 1`（offscreen 合成）**：子树先渲染进一张 offscreen 纹理
-  （`RenderTarget::Texture`，clear 成透明 `[0,0,0,0]`），再在主 pass 用一个
-  composite 段把该纹理以 layer rect 为目标矩形整幅采样贴回，tint = `(1,1,1,opacity)`
-  （premultiplied over-blend，故整层按 opacity 混合）。composite 复用 `Image`
-  pipeline / sampler，不引入新 shader。
-
-`DrawList.passes` 顺序恒为 **offscreen 全部在前、主 pass 在后**。offscreen pass 的
-viewport = layer rect 尺寸；该区间内图元的坐标在 lowering 时减去 layer rect 原点，
-使 layer 左上角映射到纹理 `(0,0)`，因此 offscreen 与主 pass 共用同一套 pixel→NDC
-约定，无需 Y 翻转。offscreen 纹理按尺寸池化复用（稳态不新增分配）。
-
 ---
 
 ## 35. GPU memory / upload
@@ -2046,6 +2194,12 @@ TextInput/CodeEditor 使用专门的数据结构：
 
 不要让大型代码编辑器通过“每个字符一个 UI Node”实现。
 
+### 37.4 Text ownership boundary
+
+`viso-text` 必须拥有 paragraph/shaping cache、glyph atlas contract、增量失效、UI integration 与 profiler；但 **不要求 Viso 重写 Unicode/BiDi/shaping 标准算法**。
+
+优先策略是复用经过验证的 shaping/Unicode/font primitives（必要时 vendor/fork），并用 Viso 自己的数据布局与 cache API 包裹。只有在 profiler 证明通用实现阻碍关键性能或缺失必要能力时，才把对应算法纳入自研范围。
+
 ---
 
 # Part XIV — Viso DSL、热更新与语言工程
@@ -2070,22 +2224,216 @@ Script VM
 
 纯 Rust 应用即使完全关闭 `hot-reload` feature，UI runtime、layout、renderer、widgets 的基础能力仍然成立。
 
-### 38.1 默认语言职责
+### 38.1 三个 Rust 入口，一套语言语义
 
-`.vs` 默认负责：
+Viso DSL 正式支持三个 Rust-side authoring entry point：
 
-- UI structure；
-- typed properties；
-- style/theme；
-- binding；
-- event declaration；
-- small pure expressions；
-- animation；
-- shader declaration/引用。
+```rust
+// View Fragment grammar
+let toolbar = ui! {
+    Row {
+        Button { text: "Save"; }
+    }
+};
 
-通用动态脚本能力可以保留，但作为明确的扩展层，而不是所有 UI 节点的默认执行模型。
+// External .vs source
+let page = view!("features/home/view.vs");
 
----
+// Inline Component grammar
+component! {
+    Counter {
+        state count = 0;
+        view {
+            Column {
+                Text { text: count; }
+            }
+        }
+    }
+}
+```
+
+三者必须共享：
+
+```text
+lexer/token model
+component/native schema
+name resolution
+type/effect/capability checking
+Typed HIR
+Reactive IR
+UI IR
+Shader IR
+diagnostics/source maps
+```
+
+允许 parser 有不同**入口 production**，不允许有不同**语言语义**：
+
+```text
+ui!          -> ViewFragment entry
+component!   -> ComponentDecl entry
+view!(path)  -> .vs CompilationUnit entry
+```
+
+`ui!` 和 `component!` 是 Rust proc-macro/compiler frontend；它们不代表运行时宏系统，也不允许每次 frame 展开/rebuild UI。`view!` 在构建期把外部 `.vs` 纳入 module graph；Dev watcher 可以独立重新编译该文件并进行 transactional hot reload。
+
+Release 中所有入口都必须生成相同的 compact AOT descriptors/IR，不在启动时 parse `.vs`，也不要求 runtime 解析 Rust source。
+
+### 38.2 DSL 的定位：不是 Rust 2，也不是纯模板语言
+
+Viso 必须吸收 Makepad 当前 Script 的两个优点：**极低 authoring 摩擦**和**足够开放的实时脚本/游戏能力**；同时不能把 `.vs` 做成第二门必须重新实现完整 Rust 的通用语言。
+
+因此语言能力按 Surface 分层：
+
+**Core Surface（必须先稳定）**
+
+```text
+import
+component / input / state / computed / action / view
+record / enum
+node / property / event / if / match / keyed for
+system + imported scheduler traits
+basic fn / expression / pattern
+shader interface + shader body
+```
+
+**Standard Surface（应用工程能力）**
+
+```text
+effect / task / resource
+slot
+style / theme
+structured async + cancellation
+hot-reload migration metadata
+```
+
+**Advanced Surface（不得阻塞 1.0 vertical slice）**
+
+```text
+user-defined trait / impl
+general generics / const generics
+trait objects
+Template / Part meta-programming
+hand-written native declarations
+fine-grained capability annotations
+compiler plugins
+```
+
+Advanced Surface 可以长期存在，但在实现顺序、Quick Start、默认 formatter examples 和 AI context 中必须被隔离。普通 UI 和普通游戏脚本不应要求理解这些能力。
+
+### 38.3 从 Makepad 当前 Script 保留什么、删除什么
+
+当前 Makepad `script_mod!` 的价值不只在“动态”，还在于它非常紧凑：属性使用 `name: value`、命名实例使用 `:=`、对象 merge 使用 `+:`，Rust/native bridge 使用 `#(...)`；同时 ScriptVm 支持控制流、闭包和宿主对象，游戏文档直接通过 `game.on_tick(|dt, input| ...)` 表达固定步长逻辑。
+
+Viso 的取舍：
+
+| Makepad 当前 Script | Viso 取舍 |
+|---|---|
+| `property: value` | **保留其可读性**：Viso View property canonical 也使用 `property: expr;` |
+| `name := Type{}` | 删除特殊身份运算符；使用 `node name: Type {}` |
+| `object +: {}` | 删除隐式 merge 运算符；使用 typed style/override/record update |
+| `#(Rust expr)` / registration | 删除作者可见 bridge 标点；Rust derive/schema 生成 typed native surface |
+| `mod.widgets.*` 全局共享 | 正式 module graph/import/export |
+| 手工 script registration order | compiler topo sort；cycle diagnostics |
+| ScriptVm 动态 property lookup | typed PropertyId/EventId/MethodId；dynamic 仅显式 fallback |
+| 任意小脚本很快上手 | Core Surface 和 `ui!` 必须保持同等级低摩擦 |
+| `game.on_tick` 小游戏极快 | 保留轻量 Game API；大型游戏推荐 `system implements FixedUpdate` |
+
+这里最重要的语法调整是：**View Property Binding 不再使用 `=`。**
+
+```viso
+Text {
+    text: label;
+    color: theme.colors.foreground;
+}
+```
+
+行为域继续使用真正的赋值：
+
+```viso
+count += 1;
+settings.volume = value;
+```
+
+这样 Property Binding 和 imperative assignment 在 AST/视觉上都天然分离，同时保留 Makepad 最容易读的 UI 表面语法；`:` 不再承担 `:=`/`+:` 那类隐藏 Apply 语义。
+
+### 38.4 普通 `.vs` 文件不强迫写语言头和 module 头
+
+语言版本由 `Viso.toml` / package lock 决定；module path 默认由 package + source path 决定。普通文件因此可以直接从 import/declaration 开始：
+
+```viso
+import viso::widgets::{Column, Text, Button};
+
+export component Counter {
+    state count = 0;
+
+    view {
+        Column {
+            Text { text: count; }
+            Button {
+                text: "Add";
+                on click { count += 1; }
+            }
+        }
+    }
+}
+```
+
+显式 language/module header 可以保留给 compiler conformance fixtures、generated standalone modules 或未来 package interchange，但不应成为正常 app authoring 的必写 ceremony。
+
+### 38.5 类型显式度：边界严格，私有局部允许推断
+
+必须显式类型：
+
+```text
+public/exported API
+input/event/slot/native/shader interface
+persistent external schema boundary
+```
+
+可以推断：
+
+```text
+private state (from stable initializer)
+private computed
+local let
+closure parameters with expected type
+numeric literal width from typed property/schema
+```
+
+因此 Counter 可以写 `state count = 0;`。编译器仍把最终推断类型写入 schema；若热重载时 inferred type 改变，按普通 schema migration 规则处理，不能静默重解释内存。
+
+### 38.6 Capability 与 Native：默认推导，不把安全机制变成样板代码
+
+Native surface 默认由 Rust derive/schema 或 generated interface 提供；普通用户不应手写 `native fn/action/task` 声明来连接每个 Rust API。
+
+Capability 从实际 native call graph 推导，并与 package/profile grant 比较。`requires { ... }` 只作为 public API 的显式 contract/assertion，而不是每个函数都必须重复的 ceremony。
+
+### 38.7 游戏支持必须早于“完整通用类型系统”
+
+Game support 是 Viso 的一等 vertical slice，不等待 user-defined Trait/Impl/Const Generic 完成。
+
+MVP 只要求 compiler 能消费 Native Schema 已定义的 scheduler traits：
+
+```viso
+system PlayerController implements FixedUpdate {
+    input world: Handle<GameWorld>;
+    state speed = 6.0f32;
+
+    action fixed_update(frame: FixedFrame) {
+        world.walk(player, frame.input.move_x * speed, frame.input.move_z * speed);
+    }
+}
+```
+
+第三方 Rust crate 可以通过 schema 提供新的 system traits。**用户定义新 Trait/Impl 是 Advanced Surface，不是 Game Profile 的前置条件。**
+
+同时标准库应提供适合原型的小型 game facade，让几十行 demo 不必先设计完整 ECS/System graph；该 facade 最终 lower/注册到相同 scheduler/runtime，不新增 parser 关键字。
+
+### 38.8 Viso DSL 1.0 的形式化规范与实现范围
+
+Viso DSL 1.0 的形式化规范必须覆盖：Lossless CST→AST→Typed HIR、多执行域 IR、State/Computed/Action/Task 区分、Keyed List、Transactional Hot Reload、Shader Descriptor ABI、Schema/JSON diagnostics、System/Game Profile。
+
+Viso 1.0 不把所有高级 production 都当成首个可运行 vertical slice 的前置条件。语言团队应维护 `Core / Standard / Advanced` feature matrix，并为每个 production 标注 maturity：`stable / preview / reserved`。
 
 ## 39. Viso 编译管线
 
@@ -2231,8 +2579,8 @@ release hot path 不做字符串属性查找。
 默认构建步骤：
 
 ```text
-.vs source
-    ↓ build time
+.vs source / ui! ViewFragment / component! ComponentDecl
+    ↓ build time (same frontend/HIR)
 Typed HIR
     ↓
 Compact UI IR / Shader blobs
@@ -2286,7 +2634,7 @@ rollback / keep last-good UI
 - input focus 是否保持；
 - scroll position 是否保持；
 - animation 如何继续；
-- shader compile failure 是否保持旧 pipeline；
+- shader compile failure 是否保持 last-good pipeline；
 - effect 是否重新执行。
 
 ### 42.2 Stable key
@@ -2534,7 +2882,27 @@ crates/platform/src/
 
 当某 backend 依赖、构建或维护成本足够大时再拆。
 
-### 48.1 Platform 不负责
+### 48.1 Backend 支持等级与 capability contract
+
+Viso 不把“跨平台”理解成所有设备都走同一个最低能力后端。Viso 1.0 定义以下主路径：
+
+| Platform | Tier-1 backend | 目标 |
+|---|---|---|
+| macOS / iOS | Metal | first-class / performance baseline |
+| Windows | D3D12 | first-class / performance baseline |
+| Linux | Vulkan | first-class |
+| Android | Vulkan | first-class；设备能力不足时由兼容策略处理 |
+| Web | WebGPU | first-class |
+
+Tier-2 compatibility backend 可以存在，例如 Linux OpenGL、Android GLES 或 Web compatibility renderer，但遵循三条规则：
+
+1. 不得降低 Tier-1 renderer/RHI 的能力模型；
+2. 允许声明 reduced capability profile，并由 tooling 给出清晰诊断；
+3. 是否投入 Tier-2 由真实 adoption/device telemetry、维护成本和 benchmark 决定，而不是为了纸面“全覆盖”提前背负多个后端。
+
+因此 Viso 的长期策略是 **WebGPU-first，不把 public architecture 写死成 WebGPU-only**；Linux 同理是 Vulkan-first，而不是永远禁止兼容后端。
+
+### 48.2 Platform 不负责
 
 - Widget；
 - Viso DSL compiler；
@@ -2776,14 +3144,30 @@ domain/
 
 ---
 
-## 53. 文件类型
+## 53. 文件类型与 DSL 引入方式
 
-默认只要求：
+默认只要求两种文件：
 
 ```text
 .rs
 .vs
 ```
+
+其中 `.vs` 是唯一 canonical **外部 DSL 文件格式**。Rust 侧使用按语义命名的入口：
+
+```rust
+let small = ui! { Button { text: "Save"; } };
+let page = view!("features/home/view.vs");
+
+component! {
+    TinyBadge {
+        input text: String;
+        view { Text { text: text; } }
+    }
+}
+```
+
+这不会引入第三种文件类型，也不能形成多套 type/runtime 语义。`.vs` 走完整 formatter/LSP；`ui!` / `component!` 由 proc-macro/frontend 提供 span 映射和编译诊断；`view!` 把外部文件纳入同一个 module graph。
 
 Theme：
 
@@ -3005,6 +3389,10 @@ animation_layout_1k
 hit_test_100k
 state_update_1_binding
 state_update_1k_bindings
+reactive_static_10k
+reactive_mixed_dynamic_10pct
+reactive_dynamic_10k
+reactive_hot_reload_rebind
 paint_10k_quads
 batch_10k_quads
 hot_reload_small_component
@@ -3138,20 +3526,20 @@ Viso DSL、Shader、Layout strict lint、Migration 共用 diagnostics 基础设�
 
 ## 63. 迁移基本原则
 
-Viso 是 clean-slate framework。迁移目标不是让旧 Makepad runtime 能“寄生”在 Viso 中，而是把已经验证过的行为、算法、平台经验和性能特征迁移到新的架构模型。
+Viso 是 clean-slate framework。迁移目标不是让 Makepad runtime 寄生在 Viso 中，而是把已经验证过的行为、算法、平台经验和性能特征迁移到新的架构模型。
 
 最重要的迁移原则是：
 
 > **Migrate semantics, not architecture.**
 >
-> **迁移能力、行为、算法、测试和性能基线，不迁移旧运行时抽象。**
+> **迁移能力、行为、算法、测试和性能基线，不迁移 Makepad 运行时抽象。**
 
 因此 Viso 生产运行时明确禁止：
 
 - Makepad `WidgetRef` runtime wrapper；
-- 在 Viso Node tree 中托管旧 Makepad Widget；
-- 让旧 `Cx` / `Walk` / `DrawStep` / `Event` 生命周期继续存在于 Viso runtime；
-- 为兼容旧 Makepad 而在 `viso-ui`、`viso-render`、`viso-runtime`、`viso-dsl` 中增加 legacy feature flag；
+- 在 Viso Node tree 中托管 Makepad Widget；
+- 让 Makepad `Cx` / `Walk` / `DrawStep` / `Event` 生命周期继续存在于 Viso runtime；
+- 为兼容 Makepad runtime 而在 `viso-ui`、`viso-render`、`viso-runtime`、`viso-dsl` 中增加 compatibility feature flag；
 - 双 UI runtime 长期共存。
 
 迁移支持只允许出现在：
@@ -3201,7 +3589,32 @@ Viso NodeArena
 
 迁移工具可以认识 Makepad；Viso runtime 不认识 Makepad。
 
-### 63.2 迁移分三类
+### 63.2 迁移工具的现实目标
+
+`viso migrate` 的首要产品价值是 **理解、报告、分层和保守重写**，而不是承诺把任意 Makepad crate 一键翻译成完整 Viso 应用。
+
+迁移结果必须分为：
+
+```text
+Auto      可以证明语义等价的局部机械转换
+Assisted  工具生成目标骨架 + 精确 TODO/diagnostic
+Manual    需要重新设计生命周期/绘制/脚本语义
+```
+
+`--apply` 只允许执行幂等、可回滚、置信度高的 Auto fix。遇到 custom draw lifecycle、动态 ScriptVm 行为、复杂 native bridge 时，宁可输出结构化 Manual plan，也不要生成隐藏兼容层的“能编译代码”。
+
+在 Phase 0 就选取至少一个真实 Makepad crate 作为 **migration canary**，记录：
+
+- `script_mod!` block 识别率；
+- ScriptVm/module edge 恢复率；
+- widget/property/shader mapping coverage；
+- Auto/Assisted/Manual 分布；
+- 工具误改/漏改类型；
+- 迁移后 characterization test 对齐率。
+
+在有 canary 数据前，文档不承诺自动迁移百分比。
+
+### 63.3 迁移分三类
 
 #### A. 可以复用算法或底层实现思想
 
@@ -3215,7 +3628,7 @@ Viso NodeArena
 - OS backend 中稳定的平台调用；
 - 高性能滚动、命中测试、批处理中的算法思想。
 
-要求：先定义 Viso 边界和数据模型，再迁实现。不得为了复用代码反向修改 Viso API 去适应旧结构。
+要求：先定义 Viso 边界和数据模型，再迁实现。不得为了复用代码反向修改 Viso API 去适应 Makepad 结构。
 
 #### B. 参考行为并重新实现
 
@@ -3234,7 +3647,7 @@ CheckBox
 PortalList
 ```
 
-旧实现只作为：
+Makepad 实现只作为：
 
 - behavior reference；
 - UX reference；
@@ -3257,7 +3670,7 @@ Render Primitive
 
 模型上。
 
-#### C. 明确舍弃的旧抽象
+#### C. 明确舍弃的Makepad 抽象
 
 默认不迁移：
 
@@ -3280,7 +3693,7 @@ script_mod! 手工注册顺序
 
 ## 64. 迁移前建立 Characterization Baseline
 
-虽然 Viso 不提供 runtime compatibility，仍然必须对 Makepad 做可测量的行为与性能冻结。迁移是否成功，以这些基线作为参照，而不是以“旧代码是否还能直接运行”为标准。
+虽然 Viso 不提供 runtime compatibility，仍然必须对 Makepad 做可测量的行为与性能冻结。迁移是否成功，以这些基线作为参照，而不是以“Makepad 代码是否还能直接运行”为标准。
 
 ### 64.1 基准场景
 
@@ -3349,7 +3762,7 @@ multi_window
 
 ### 目标
 
-在复制任何旧实现前，先锁定 Viso 的目标约束。
+在复制任何 Makepad 实现前，先锁定 Viso 的目标约束。
 
 ### 工作
 
@@ -3362,12 +3775,16 @@ multi_window
 7. 固定 renderer primitive contract；
 8. 固定 GPU instance ABI；
 9. 建立 benchmark 与 characterization suite；
-10. 建立 dependency/unsafe/perf CI gates。
+10. 锁定 hybrid indexed SoA、`Handle<T>` state access policy、独立 transform invalidation plane；
+11. 建立 `architecture.toml` + `cargo xtask arch-check` 机器化依赖边界；
+12. 建立自研/依赖 Ownership Ladder 并为首批关键依赖写 ADR；
+13. 选一个真实 Makepad crate 做 migration canary，只测 report/coverage，不引入 runtime compat；
+14. 建立 dependency/unsafe/perf CI gates。
 
 ### 退出标准
 
 - 新架构可以在没有任何 Makepad runtime 类型的情况下编译最小空壳；
-- CI 可验证依赖方向；
+- CI 通过 `cargo xtask arch-check` 自动验证 crate/module 依赖方向；
 - baseline 数据已记录；
 
 ---
@@ -3401,7 +3818,7 @@ fn main() {
 
 可以打开窗口、处理 resize、接收输入、驱动空白帧。
 
-此阶段不允许通过旧 `AppMain` adapter 实现。
+此阶段不允许通过 Makepad `AppMain` adapter 实现。
 
 ---
 
@@ -3409,7 +3826,7 @@ fn main() {
 
 ### 目标
 
-建立与 Makepad 旧 Draw API 无关的新 GPU 与渲染协议。
+建立与 Makepad Draw API 无关的新 GPU 与渲染协议。
 
 ### 工作
 
@@ -3426,7 +3843,7 @@ fn main() {
 
 ### 迁移方式
 
-可把旧 renderer 的算法、shader lowering、atlas 逻辑作为参考或移植来源，但 Viso public/runtime 类型必须先定义。
+可把 Makepad renderer 的算法、shader lowering、atlas 逻辑作为参考或移植来源，但 Viso public/runtime 类型必须先定义。
 
 禁止让：
 
@@ -3452,7 +3869,7 @@ new_batch
 
 ### 目标
 
-从第一天使用 Viso 最终 UI identity，不经历旧 Widget host 过渡期。
+从第一天使用 Viso 最终 UI identity，不经历Makepad Widget host 过渡期。
 
 ### 基础结构
 
@@ -3525,7 +3942,7 @@ Grid
 Absolute
 ```
 
-内部可以保留 Makepad Turtle 类算法中已经证明高效的单遍 cursor 思想，但不保留旧 `Walk/Turtle` public abstraction。
+内部可以保留 Makepad Turtle 类算法中已经证明高效的单遍 cursor 思想，但不保留 Makepad `Walk/Turtle` public abstraction。
 
 ### 退出标准
 
@@ -3577,6 +3994,7 @@ aria label change
 - 单属性变化只触发必要 phase；
 - transaction 内多次 set 只 flush 一次；
 - 依赖图和 dirty reason 可 profile。
+- static/mixed/dynamic reactive benchmark 均有基线；普通 typed UI 不发生静默 dynamic fallback。
 
 ---
 
@@ -3608,8 +4026,9 @@ Dev hot reload or Release AOT package
 
 ### 语言规则
 
-- `.vs` 是唯一 canonical 扩展名；
-- `.vs` 是 Viso 唯一的 DSL 源格式；迁移器不得假设当前 Makepad 项目存在 `.live` 文件；
+- `.vs` 是唯一 canonical **外部 DSL 文件扩展名**；
+- Rust 入口使用 `ui! { ... }`、`component! { ... }` 与 `view!("...vs")`；三者使用不同 parser entry production，但进入同一 schema/HIR/IR/runtime；
+- `.vs` 是 Viso 唯一的外部 DSL 文件格式；迁移器不得假设当前 Makepad 项目存在 `.live` 文件；
 - component/schema 可静态检查；
 - module/import/export 不依赖注册调用顺序；
 - view 默认无副作用；
@@ -3658,7 +4077,7 @@ Viso:
 - formatter/LSP/goto/rename/reference 可用；
 - release 不需要启动时 parse `.vs`；
 - hot reload 是 compile → validate → atomic patch；
-- 新版本失败保留 last-good UI；
+- 当前设计本失败保留 last-good UI；
 - state/focus/scroll migration 有明确规则。
 
 ---
@@ -3759,11 +4178,11 @@ Studio 是 Viso public/tooling API 的客户，不是 core runtime 特例。
 
 ---
 
-## 75. Phase 10 — Makepad 源码迁移工具与历史清理
+## 75. Phase 10 — Makepad 源码迁移工具与隔离收尾
 
 ### 目标
 
-让需要迁移的旧项目通过离线工具转换到纯 Viso，而不是维持旧 runtime。
+让需要迁移的 Makepad 项目通过离线工具转换到纯 Viso，而不是维持 Makepad runtime。
 
 ### `viso migrate` 至少识别
 
@@ -3827,7 +4246,7 @@ Rewrite as:
 - Viso 默认及完整功能构建均不依赖 Makepad runtime；
 - migration fixtures 以当前 Makepad 的 `script_mod!` / `ScriptVm` 源码形态为准，不以 `.live` 文件作为迁移输入；
 - 新示例只使用 `.rs + .vs`；
-- Makepad 仅作为历史参考、算法来源和性能 baseline。
+- Makepad 仅作为行为参考、算法来源和性能 baseline。
 
 
 # Part XXVI — API 迁移映射
@@ -3995,7 +4414,7 @@ viso migrate check
 扫描并输出：
 
 ```text
-legacy app_main!           3
+Makepad app_main!          3
 WidgetRef                 81
 Rc<RefCell<dyn Widget>>    2 custom copies
 manual render()           17
@@ -4298,6 +4717,25 @@ pub trait Application: Sized + 'static {
 
 ## 90. Typed Handle
 
+Viso 1.0 明确：`Handle<T>` 是 **typed identity/capability**，不是组件对象引用。
+
+禁止：
+
+```rust
+let state: &T = handle.borrow(cx);         // no long-lived direct borrow
+let state: &mut T = handle.borrow_mut(cx); // no mutation bypassing invalidation
+```
+
+允许的 public direction：
+
+- `handle.is_alive(cx)` / `handle.node_id()`；
+- typed action/event dispatch；
+- schema 生成的 property getter/setter；
+- context-scoped read query，返回短生命周期 snapshot/ref；
+- 只有 `UpdateCx`/生成的 mutation API 可以改变受 reactive 管理的 state。
+
+内部可以存在 `ComponentRef<'a, T>` / `ComponentMut<'a, T>` 之类受生命周期约束的临时 guard，但不得把它们存储到下一帧，也不得允许绕过 dirty/version accounting。
+
 普通 Widget API 可以提供：
 
 ```rust
@@ -4431,6 +4869,47 @@ trait Painter {
 
 ---
 
+## ADR-011：Node hot storage 使用 hybrid indexed SoA
+
+**决定**：compact `NodeMeta` AoS + 同索引 hot SoA stores + sparse cold tables。
+
+**理由**：兼顾树遍历 locality、直接 index、可选数据空间效率和实现可控性；避免 pure object graph 与 archetype migration 的复杂度。
+
+**代价**：store schema 演进需要更严格的 memory accounting；部分 node 会在 hot store 中保留 sentinel/compact slot。
+
+## ADR-012：`Handle<T>` 不直接暴露组件内部 state 借用
+
+**决定**：Handle 表达 identity/capability；状态读写通过 context-scoped query、typed property/action/update API。
+
+**理由**：保持 lifetime、reactive tracking、hot reload state migration 与 invalidation 的可验证性。
+
+**代价**：某些内部高级代码比直接 `&mut T` 多一层显式 API。
+
+## ADR-013：Transform 与 Layout 使用独立失效平面
+
+**决定**：共享 `NodeId`，独立 TransformStore/dirty propagation；scroll/transform animation 默认不触发布局。
+
+**理由**：保证高频滚动/动画走窄路径。
+
+**代价**：hit-test、clip、world transform cache 需要明确同步规则。
+
+## ADR-014：自研范围使用 Ownership Ladder
+
+**决定**：UI runtime/reactive/render integration/DSL/HIR/Shader ABI 等核心语义自研；标准算法和通用基础设施优先依赖成熟实现并通过窄边界隔离。
+
+**理由**：把有限工程资源集中在 Viso 的性能和产品差异化上。
+
+**代价**：需要持续维护依赖评估、替换层和版本兼容测试。
+
+## ADR-015：Viso DSL 使用 `ui!` / `view!` / `component!` 与 `.vs` 文件
+
+**决定**：`ui!` 使用 ViewFragment parser entry，`component!` 使用 ComponentDecl entry，`view!("...vs")` 使用外部 `.vs` CompilationUnit；三者共享同一 schema/type/effect checker、Typed HIR、Reactive/UI/Shader IR 和 runtime contracts。`.vs` 是唯一 canonical 外部文件扩展名。
+
+**理由**：宏名直接表达作者意图，避免 `ui!` / `component!` 同时承担 fragment/component/file 的语义模糊；小型 Rust-native 使用场景保持零文件跳转，大型 UI/设计系统获得独立语言服务与 hot reload。
+
+**代价**：compiler/source-map 必须支持 Rust macro span 与 file span 两种 source origin，并维护少量明确 parser entry points。
+
+
 # Part XXXI — 风险与取舍
 
 ## 93. 风险：NodeArena 可能使 API 变得“过底层”
@@ -4458,6 +4937,14 @@ Dynamic fallback path
 
 静态 Rust/Viso DSL binding 使用 compact dependency table；动态 scripting 可以运行时注册 dependency，但不得让动态路径定义整个框架成本。
 
+Viso 1.0 进一步规定：
+
+- compiler 已知 schema/依赖的绑定 **不得静默 fallback** 到动态订阅；
+- 动态依赖必须由 `bind_dynamic` / `dynamic` 语义显式产生，或给出 compiler diagnostic；
+- profiler 必须暴露 `static_binding_eval`、`dynamic_binding_eval`、`dynamic_subscribe`、`dynamic_fallback_nodes` 等计数；
+- Strict CI 场景中，普通 typed widget/page 出现新的 dynamic fallback 可以直接失败；
+- benchmark 必须同时覆盖 100% static、mixed 10% dynamic、100% dynamic，量化性能悬崖，而不是只测静态 happy path。
+
 ---
 
 ## 95. 风险：过度 AOT 损害 live-editing / hot-reload 特性
@@ -4477,8 +4964,11 @@ Dynamic fallback path
 
 拆分依据必须是测量/依赖边界，而不是目录美学。
 
-每半年检查：
+边界不能只靠人工复盘。Viso 1.0 要求 CI 每次运行 `cargo xtask arch-check`；周期性架构复盘只负责评估是否需要拆 crate。
 
+持续检查：
+
+- forbidden crate/module edges；
 - compile timings；
 - dependency fan-in/out；
 - unsafe boundary；
@@ -4488,13 +4978,43 @@ Dynamic fallback path
 
 ## 97. 风险：自己维护 GPU RHI 成本高
 
-这是有意取舍。
+这是有意取舍，但 Viso 1.0 不把“所有 GPU 代码都必须从零自研”当成目标。
 
-Viso 的核心差异化之一就是控制 rendering stack。若完全让渡给通用 abstraction，工程成本下降但长期性能/能力上限受限。
+Viso **必须拥有 RHI contract、resource lifetime、render batching、Shader ABI 与性能语义**，因为这些会直接约束 UI/render hot path；backend 的具体实现则可以来自：
 
-仍可以提供 experimental wgpu backend/integration，但不让其定义 public renderer architecture。
+- 从 Makepad 已验证 backend 中提炼；
+- Viso 自研；
+- experimental/reference wgpu adapter；
+- 对特定平台的成熟底层依赖。
+
+是否替换某个 backend 的判据是 capability、profile 和维护成本，不是意识形态。通用 abstraction 可以作为参考/兼容路径，但不能反向定义 Viso public renderer architecture 或迫使 Tier-1 backend 退化到最低公分母。
 
 ---
+
+## 97.1 风险：同时自研过多基础设施导致范围失控
+
+这是 Viso 1.0 最需要主动管理的结构性风险之一。
+
+Viso 的目标架构可以拥有 RHI、Shader IR、DSL、text integration、reactive runtime、a11y semantics，但 **目标所有权不等于第一天全部从零实现**。执行策略：
+
+1. 先定义 Viso-owned contract；
+2. 能用成熟依赖/Makepad 已验证实现完成 vertical slice 的，先通过窄 adapter 接入；
+3. profiler/capability 证明成为瓶颈后，再 fork、替换或自研对应实现；
+4. 不允许“为了最终纯自研”阻塞从 input → state → layout → paint → GPU 的可测量 native vertical slice；
+5. 每个替换项目必须同时删除被替换 adapter/Makepad 路径，避免永久双实现。
+
+优先做到 100 分的部分是：
+
+```text
+Node/identity
+incremental invalidation
+layout/scroll hot path
+paint/batching/upload
+DSL typed HIR + AOT/hot reload contract
+profiling/diagnostics
+```
+
+标准算法和通用基础设施优先达到“可靠、可替换、可测”，而不是追求仓库内全部自有实现。
 
 ## 98. 风险：Service 层变成另一个 God Object
 
@@ -4762,7 +5282,7 @@ pub mod prelude {
         Image,
     };
     pub use crate::{Color, Rect, Size, Vec2}; // facade 统一导出基础几何类型
-    pub use viso_macros::{component, ui, view, routes};
+    pub use viso_macros::{component, vs, vs_file, routes};
 }
 ```
 
@@ -4824,27 +5344,36 @@ Box<dyn HitTestNode>
 
 ---
 
-# Appendix G — 需要后续 ADR 决定的问题
+# Appendix G — 已决地基问题与剩余 Open Questions
 
-以下问题不应在没有 prototype/benchmark 前武断定死：
+## G.1 Viso 1.0 已决地基问题
 
-1. Node hot storage 最终采用纯 SoA、hybrid SoA 还是 chunked archetype；
-2. `Handle<T>` 是否允许直接读取组件 typed state；
-3. transform tree 是否独立于 layout tree；
-4. clip cache 的最佳结构；
-5. text shaping cache key 与跨 paragraph 共享粒度；
-6. GPU instance buffer 是 per-type persistent pool 还是 frame ring + retained ranges 混合；
-7. Web 是否长期使用 WebGPU-only，是否保留兼容后端；
-8. Linux Vulkan/OpenGL 兼容策略；
-9. dynamic scripting VM 的保留范围；
-10. 是否拆 `viso-text` 为独立 crate（本文建议是）；
-11. platform backend 何时从 module 升格独立 crate；
-12. accessibility 是否直接基于 AccessKit 或保持 Viso 自有 semantics + platform adapter；
-13. Rust declarative UI 采用 proc macro、builder、函数式 DSL 的最终语法；
-14. `.vs` 已确定为 Viso DSL 的唯一 canonical 扩展名；生成器、示例、文档、LSP、Formatter、Studio 与迁移工具均只输出 `.vs`；
-15. 3D scene graph 放 render、extras 还是独立 crate。
+以下问题不再属于 open questions：
 
-原则：**先确定不可妥协的性能/边界语义，再通过 benchmark 和实现经验决定具体容器与语法。**
+1. Node hot storage：**hybrid indexed SoA**（ADR-011）；
+2. `Handle<T>`：**不直接暴露跨帧 typed state borrow/mutation**（ADR-012）；
+3. Transform：**与 Layout 使用独立失效平面，共享 NodeId**（ADR-013）；
+4. 自研/依赖：**使用 Ownership Ladder**（ADR-014）；
+5. DSL source form：**`ui!` / `component!` / `view!("...vs")` 共享 schema/HIR/IR/runtime，`.vs` 为唯一 canonical 外部格式**（ADR-015）。
+
+这些决定应尽早被 prototype/benchmark 验证，但验证的默认动作是调整实现参数，而不是重新打开核心语义。若要推翻，必须新 ADR。
+
+## G.2 仍需 prototype/benchmark 的问题
+
+1. clip cache 的最佳结构；
+2. text shaping cache key 与跨 paragraph 共享粒度；
+3. GPU instance buffer 是 per-type persistent pool 还是 frame ring + retained ranges 混合；
+4. Tier-2 Web compatibility backend（例如 reduced-profile fallback）是否值得长期维护；
+5. Linux/OpenGL 与 Android/GLES compatibility backend 的投入时机；
+6. dynamic scripting VM 的保留范围；
+7. platform backend 何时从 module 升格独立 crate；
+8. AccessKit adapter 能覆盖多少目标平台/能力缺口；Viso semantics tree 本身已确定为 canonical model；
+9. Rust declarative API 除 `ui!` / `component!` / `view!` 外是否还需要 builder/function syntax；
+10. 3D scene graph 放 render、extras 还是独立 crate；
+11. paragraph cache 是否跨 component 共享以及内存上限；
+12. GPU retained instance range 的碎片整理策略。
+
+原则：**先确定不可妥协的性能/边界语义，再通过 benchmark 和实现经验决定具体容器、cache 和兼容层级。**
 
 ---
 
