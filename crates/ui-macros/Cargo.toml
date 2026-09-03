@@ -1,0 +1,26 @@
+[package]
+name = "viso-ui-macros"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+# The `ui!` procedural macro (AGENTS §21.5). A proc-macro crate is a compile-time
+# dylib, so — unlike the leaf `viso-macros` derive crate — it MAY carry an ordinary
+# (non-proc-macro) library dependency. `ui!` uses that to drive the *shared* Viso
+# DSL frontend at Rust compile time: it depends on `viso-dsl` to tokenize/parse/
+# resolve/lower a `ui! { … }` body through the exact same pipeline `component!`/
+# `view!` use, then emits a static `viso_ui` builder closure. No runtime parse, no
+# VDOM (§59), no macro-only DSL semantics (§21.5).
+#
+# The emitted tokens name `viso_ui::…` paths; this crate does not depend on viso-ui.
+# The facade `viso` re-exports `ui!` and already depends on viso-ui, so the emitted
+# paths resolve at the call site (mirroring the `GpuInstance` re-export precedent).
+[lib]
+proc-macro = true
+
+[dependencies]
+proc-macro2 = "1"
+quote = "1"
+syn = { version = "2", features = ["full"] }
+viso-dsl = { workspace = true }

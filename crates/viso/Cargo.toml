@@ -12,6 +12,7 @@ description = "Rust-native, GPU-first, cross-platform application framework."
 [dependencies]
 viso-runtime = { workspace = true }
 viso-ui = { workspace = true }
+viso-ui-macros = { workspace = true }
 viso-widgets = { workspace = true }
 viso-dsl = { workspace = true }
 viso-services = { workspace = true }

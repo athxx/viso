@@ -25,6 +25,7 @@ fn allowed_edges() -> BTreeMap<&'static str, &'static [&'static str]> {
             &[
                 "viso-runtime",
                 "viso-ui",
+                "viso-ui-macros",
                 "viso-widgets",
                 "viso-dsl",
                 "viso-services",
@@ -38,6 +39,12 @@ fn allowed_edges() -> BTreeMap<&'static str, &'static [&'static str]> {
             ][..],
         ),
         ("viso-macros", &[][..]),
+        // The `ui!` proc-macro crate. A proc-macro crate is a compile-time dylib,
+        // so it MAY carry an ordinary library dependency (unlike the leaf
+        // `viso-macros`): it drives the shared DSL frontend via `viso-dsl` and
+        // emits `viso_ui::` builder tokens. The `viso-dsl -> viso-ui` edge above
+        // keeps the emitted paths within the allowed DAG.
+        ("viso-ui-macros", &["viso-dsl"][..]),
         // Two owned foundations, both DAG leaves (section 10.1 forbidden edges):
         // math is the numeric/geometry base, ende is the encode/decode base.
         // Neither may depend on any framework crate, and they do not depend on
