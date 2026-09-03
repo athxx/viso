@@ -25,8 +25,10 @@
 //! Viso-owned, built on the resolver's slot-based local scopes and durable symbol
 //! identities.
 
+mod effect;
 mod infer;
 mod ty;
 
+pub use effect::{BodyContext, EffectClass, EffectCx, EffectEnv};
 pub use infer::{InferCx, TypeEnv};
 pub use ty::{Ty, TypeError, WidenError};
