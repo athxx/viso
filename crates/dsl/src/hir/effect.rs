@@ -171,6 +171,13 @@ impl<'a> EffectCx<'a> {
         self.walk(expr.syntax());
     }
 
+    /// Walks an arbitrary syntax node — a callable's `Block` body or a `view` body, which
+    /// are not single `Expr`s — with the same call-matrix check as [`Self::check_expr`].
+    /// Every call nested anywhere under `node` is checked against the body's context.
+    pub fn check_node(&mut self, node: &SyntaxNode) {
+        self.walk(node);
+    }
+
     /// Recursively walks a syntax node, applying the call-matrix check at each call and
     /// descending into every child expression.
     fn walk(&mut self, node: &SyntaxNode) {
