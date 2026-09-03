@@ -19,7 +19,9 @@ pub mod instance;
 pub mod metal;
 pub mod resource;
 
-pub use backend::{DrawCommand, DrawList, Frame, GpuBackend, LoadOp, RenderPass, RenderTarget};
+pub use backend::{
+    DrawCommand, DrawList, Frame, GpuBackend, InlineUniforms, LoadOp, RenderPass, RenderTarget,
+};
 pub use headless::HeadlessRaster;
 #[cfg(target_os = "macos")]
 pub use metal::MetalBackend;

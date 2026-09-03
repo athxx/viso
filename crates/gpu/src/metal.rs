@@ -400,7 +400,7 @@ impl GpuBackend for MetalBackend {
     fn encode(&mut self, list: &DrawList<'_>) {
         autoreleasepool(|_| {
             for pass in list.passes {
-                self.encode_pass(pass);
+                self.encode_pass(pass, &list.commands[pass.command_range()]);
             }
         });
     }
@@ -434,7 +434,7 @@ impl MetalBackend {
     /// texture (a translucent Layer's render-to-texture target); the viewport is
     /// sized to whichever is bound. A drawable target is kept alive by
     /// `MetalSurface::current` until `present`.
-    fn encode_pass(&mut self, pass: &RenderPass<'_>) {
+    fn encode_pass(&mut self, pass: &RenderPass, commands: &[DrawCommand]) {
         // Resolve the color attachment texture and its size. The drawable is only
         // ready after `begin_frame`; bail if the surface has none yet.
         let (color_tex, width, height) = match pass.target {
@@ -486,7 +486,7 @@ impl MetalBackend {
             zfar: 1.0,
         });
 
-        for c in pass.commands {
+        for c in commands {
             self.encode_command(&encoder, c, width, height);
         }
 
@@ -504,7 +504,7 @@ impl MetalBackend {
     fn encode_command(
         &self,
         encoder: &ProtocolObject<dyn MTLRenderCommandEncoder>,
-        c: &DrawCommand<'_>,
+        c: &DrawCommand,
         surface_w: u32,
         surface_h: u32,
     ) {
@@ -560,13 +560,14 @@ impl MetalBackend {
             Geometry::Generated { count } => {
                 // Inline uniforms at buffer index 0 (both stages): the quad/image
                 // built-ins put the instance buffer at index 1 and uniforms at 0.
-                if !c.uniforms.is_empty() {
-                    let ptr = NonNull::new(c.uniforms.as_ptr() as *mut c_void).unwrap();
-                    // SAFETY: `ptr` points at `c.uniforms.len()` valid bytes for
+                let uniforms = c.uniforms.as_bytes();
+                if !uniforms.is_empty() {
+                    let ptr = NonNull::new(uniforms.as_ptr() as *mut c_void).unwrap();
+                    // SAFETY: `ptr` points at `uniforms.len()` valid bytes for
                     // the duration of the call; Metal copies them immediately.
                     unsafe {
-                        encoder.setVertexBytes_length_atIndex(ptr, c.uniforms.len(), 0);
-                        encoder.setFragmentBytes_length_atIndex(ptr, c.uniforms.len(), 0);
+                        encoder.setVertexBytes_length_atIndex(ptr, uniforms.len(), 0);
+                        encoder.setFragmentBytes_length_atIndex(ptr, uniforms.len(), 0);
                     }
                 }
 
@@ -611,12 +612,13 @@ impl MetalBackend {
                 // inline uniforms move to index 1 (the mesh MSL binds uniforms at
                 // `[[buffer(1)]]`). Only the vertex stage reads the mesh vertices;
                 // the fragment stage needs no per-vertex buffer.
-                if !c.uniforms.is_empty() {
-                    let ptr = NonNull::new(c.uniforms.as_ptr() as *mut c_void).unwrap();
-                    // SAFETY: `ptr` points at `c.uniforms.len()` valid bytes for
+                let uniforms = c.uniforms.as_bytes();
+                if !uniforms.is_empty() {
+                    let ptr = NonNull::new(uniforms.as_ptr() as *mut c_void).unwrap();
+                    // SAFETY: `ptr` points at `uniforms.len()` valid bytes for
                     // the duration of the call; Metal copies them immediately.
                     unsafe {
-                        encoder.setVertexBytes_length_atIndex(ptr, c.uniforms.len(), 1);
+                        encoder.setVertexBytes_length_atIndex(ptr, uniforms.len(), 1);
                     }
                 }
 

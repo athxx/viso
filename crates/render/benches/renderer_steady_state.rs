@@ -21,7 +21,9 @@
 //! criterion defaults to a release profile. Debug timing is not a perf result
 //! (§36).
 
+use std::alloc::{GlobalAlloc, Layout, System};
 use std::hint::black_box;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use criterion::{Criterion, criterion_group, criterion_main};
 use viso_gpu::{
@@ -30,6 +32,37 @@ use viso_gpu::{
 use viso_render::{
     FrameStats, GlyphRunDraw, Primitive, Renderer, test_glyphs, test_scene, test_texture,
 };
+
+/// A global allocator that counts heap allocations while `ARMED`, so a steady
+/// frame's allocation behavior can be asserted directly (not just GPU-resource
+/// growth). Off by default so criterion's own allocations are never counted.
+struct CountingAlloc;
+
+static ALLOCS: AtomicUsize = AtomicUsize::new(0);
+static ARMED: AtomicBool = AtomicBool::new(false);
+
+// SAFETY: forwards every call to the system allocator unchanged; the only added
+// behavior is a relaxed counter increment on allocation while armed.
+unsafe impl GlobalAlloc for CountingAlloc {
+    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+        if ARMED.load(Ordering::Relaxed) {
+            ALLOCS.fetch_add(1, Ordering::Relaxed);
+        }
+        unsafe { System.alloc(layout) }
+    }
+    unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+        unsafe { System.dealloc(ptr, layout) }
+    }
+    unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
+        if ARMED.load(Ordering::Relaxed) {
+            ALLOCS.fetch_add(1, Ordering::Relaxed);
+        }
+        unsafe { System.realloc(ptr, layout, new_size) }
+    }
+}
+
+#[global_allocator]
+static ALLOCATOR: CountingAlloc = CountingAlloc;
 
 /// Surface size, large enough to hold the whole test scene.
 const W: u32 = 128;
@@ -119,9 +152,16 @@ fn assert_steady_state_is_allocation_free() {
     let bind_groups = h.gpu.bind_group_count();
     let stats = h.renderer.frame_stats();
 
+    // Per-frame heap-allocation counts for `submit` (which runs `encode`),
+    // captured under the counting allocator. In steady state the renderer's
+    // `encode` scratch (viewports/commands/passes) is reused via `Vec::clear`, so
+    // the only heap traffic left is the headless backend's fixed per-command
+    // instance-byte copy — a constant that must not grow frame to frame (§7.1).
+    let mut submit_allocs = [0usize; 2];
+
     // Two more identical frames must not create any GPU resource, and must lower
     // to the same segments (draw calls) and instances.
-    for i in 0..2 {
+    for (i, slot) in submit_allocs.iter_mut().enumerate() {
         h.renderer.upload(&mut h.gpu, &h.scene);
         let frame_stats = h.renderer.frame_stats();
         assert_eq!(
@@ -129,8 +169,12 @@ fn assert_steady_state_is_allocation_free() {
             "frame {i}: frame_stats changed for an unchanged scene \
              (draw-call/instance dispatch is not steady)"
         );
+        ALLOCS.store(0, Ordering::Relaxed);
+        ARMED.store(true, Ordering::Relaxed);
         h.renderer
             .submit(&mut h.gpu, h.surface, CLEAR, [W as f32, H as f32]);
+        ARMED.store(false, Ordering::Relaxed);
+        *slot = ALLOCS.load(Ordering::Relaxed);
 
         assert_eq!(
             h.gpu.buffer_count(),
@@ -151,6 +195,21 @@ fn assert_steady_state_is_allocation_free() {
              (per-texture bind groups must be cached)"
         );
     }
+
+    // Steady-state allocation invariant. `submit` runs the renderer's `encode`
+    // (which reuses its viewports/commands/passes scratch via `Vec::clear`) plus
+    // the headless backend's `encode` (which copies each draw's instance bytes
+    // and any sampled texture — backend-internal work outside `encode`'s scope).
+    // Because the renderer's scratch is reused, the *only* frame-to-frame heap
+    // traffic is that fixed backend baseline, so two identical steady frames must
+    // allocate exactly the same amount. Any per-frame growth here (as with the
+    // old per-frame `Vec`s in `encode`) would make the counts diverge (§7.1).
+    assert_eq!(
+        submit_allocs[0], submit_allocs[1],
+        "submit allocated a different amount on two identical steady frames \
+         ({} vs {}): the renderer's encode scratch is not being reused",
+        submit_allocs[0], submit_allocs[1]
+    );
 
     // Sanity: the scene actually draws something, so the invariant is not
     // trivially satisfied by an empty frame.
