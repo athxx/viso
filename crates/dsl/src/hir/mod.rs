@@ -25,6 +25,8 @@
 //! Viso-owned, built on the resolver's slot-based local scopes and durable symbol
 //! identities.
 
+mod infer;
 mod ty;
 
+pub use infer::{InferCx, TypeEnv};
 pub use ty::{Ty, TypeError, WidenError};
