@@ -310,7 +310,8 @@ Viso 不以“全部自研”为荣，也不以“尽量依赖现成库”为目
 - Viso semantics tree；
 - ResourceId / asset lifetime / framework-level profiling counters。
 - Identity/Symbol lowering contract：`NameId -> SymbolId -> typed dense runtime ID`；
-- `viso-ende` Binary/JSON internal encoding、wire schema、protocol/version contract。
+- `viso-ende` Binary/JSON internal encoding、wire schema、protocol/version contract；
+- `viso-math` 基础数值/几何 ABI 与 allocation-free hot math primitives。
 
 #### Tier B — Viso 拥有 integration，优先复用成熟算法
 
@@ -597,6 +598,7 @@ viso/
 │   ├── viso/
 │   ├── macros/
 │   ├── ende/
+│   ├── math/
 │   ├── runtime/
 │   ├── platform/
 │   ├── gpu/
@@ -703,6 +705,39 @@ Viso-owned Encode/Decode infrastructure：
 - core typed ID 的 canonical wire representation。
 
 不支持 RON；不承担 image/audio/video media codec；不作为 frame 内部数据模型。Serde compatibility 位于 `integrations/serde`。
+
+### `viso-math`
+
+Viso-owned allocation-free numeric and geometry foundation。它不是 draw helper，也不是新的 `core/utils`；它定义 UI、Render、Shader interface、Text geometry、Input、Animation、Game 等子系统共享的基础数值/几何语义。
+
+负责：
+
+- `Vec2` / `Vec3` / `Vec4` 与明确精度的向量类型；
+- `Mat2` / `Mat3` / `Mat4`；
+- quaternion / affine / 2D/3D transform；
+- `Point` / `Size` / `Rect` / `Insets`；
+- `Ray` / `Plane` / `Aabb` 等基础空间几何；
+- dot/cross/normalize/intersection/containment 等 allocation-free primitive；
+- target-specific SIMD specialization 的内部实现边界。
+
+不负责：
+
+- UI `Constraints`、layout policy；
+- `Color` / color space / premultiplied-alpha 语义；
+- tessellation/path flattening/render primitive；
+- GPU buffer/uniform/instance ABI；
+- shader compiler；
+- Node/Resource/Property identity；
+- animation timeline 或 game-world 语义。
+
+性能与 ABI 规则：
+
+- hot math operation 不分配堆内存，不使用 `String` / `HashMap` / `Rc` / `Arc` / trait-object virtual dispatch；
+- public data layout 不依赖 `usize`，32-bit/64-bit/wasm32 语义一致；
+- SIMD 是实现优化，不泄漏为 public API contract；
+- Rust math layout 不等于 GPU ABI，上传必须通过 `viso-shader` / `viso-gpu` 已验证的显式布局；
+- `viso-math` 不依赖 runtime/platform/gpu/shader/text/render/ui/widgets/dsl/services；
+- Ende wire representation 由 `viso-ende` 定义，不直接 dump Rust struct memory。
 
 ### `viso-runtime`
 
@@ -868,6 +903,16 @@ PDF/browser/chart/map 等不是基础 widget，放 optional package/integration�
                           │
                           ↓
                        platform
+
+`viso-math` 位于数值/几何依赖底层，被 gpu/shader/text/render/ui 等按需单向依赖：
+
+    gpu ─────┐
+    shader ──┤
+    text ────┤
+    render ──┼──> viso-math
+    ui ──────┤
+    widgets ─┤
+    game/extras ┘
 ```
 
 `viso-ende` 是低层共享基础设施，不位于 frame 数据流主链：
@@ -879,7 +924,7 @@ PDF/browser/chart/map 等不是基础 widget，放 optional package/integration�
                      ↓           ↓
                  viso-ende   (typed runtime memory)
 
-Ende 不依赖 ui/render/gpu/widgets/platform/dsl/runtime；上层按需单向依赖 Ende。
+Ende 不依赖 math/ui/render/gpu/widgets/platform/dsl/runtime；上层按需单向依赖 Ende。`viso-math` 与 `viso-ende` 彼此不形成强制依赖。
 ```
 
 实际 Rust DAG 可以微调，例如 runtime/platform/gpu 的底部关系因 surface creation 需要通过小接口反转，但必须保持以下禁令：
@@ -896,7 +941,10 @@ Ende 不依赖 ui/render/gpu/widgets/platform/dsl/runtime；上层按需单向�
 - `runtime -> Studio`：禁止；
 - `viso-dsl -> concrete widget implementation`：原则上禁止，使用 schema/registry；
 - framework core crate 依赖 app/example：绝对禁止。
-- `viso-ende -> runtime/ui/render/gpu/widgets/platform/dsl`：禁止；Ende 必须保持低层、无框架反向依赖。
+- `viso-ende -> math/runtime/ui/render/gpu/widgets/platform/dsl`：禁止；Ende 必须保持低层、无框架反向依赖；
+- `viso-math -> ende/runtime/platform/gpu/shader/text/render/ui/widgets/dsl/services`：禁止；Math 必须保持纯数值/几何底层；
+- `viso-math` public ABI 依赖 pointer width、`usize` 或 backend SIMD type：禁止；
+- `viso-math` struct 内存布局直接作为 GPU uniform/instance wire ABI：禁止；
 - frame hot path 通过 Ende encode/decode 传递 Node/Layout/Paint 数据：禁止。
 
 ### 10.2 边界必须由 CI 机器化验证
@@ -4485,6 +4533,20 @@ because:
 
 重点是不要把这些变成每帧固定成本。
 
+### 58.3 Math 热路径合同
+
+`viso-math` 是 draw/layout/input/transform/game 等路径共享的底层计算层，默认按 hot-path 标准实现：
+
+```text
+0 heap allocation
+0 string/hash lookup
+0 virtual dispatch
+0 hidden synchronization
+0 pointer-width-dependent semantic layout
+```
+
+对 `Vec*`、`Mat*`、`Rect`、Affine/Transform、intersection 等批量运算，优先保持连续值语义和可内联实现。SIMD specialization 必须由 benchmark 驱动，并保持 scalar fallback 与 public ABI 一致。
+
 ---
 
 ## 59. 基准测试矩阵
@@ -4515,6 +4577,13 @@ hot_reload_large_module
 startup_minimal
 startup_complex_app
 memory_10k_nodes
+
+math_vec2_ops_10m
+math_mat4_mul_1m
+math_affine2_transform_points_10m
+math_rect_hit_test_10m
+math_aabb_intersection_1m
+math_transform_chain_100k
 
 identity_symbol_link_100k
 identity_dense_property_lookup_1m
@@ -4750,7 +4819,8 @@ Manual    需要重新设计生命周期/绘制/脚本语义
 
 - 字体 shaping / fallback / glyph cache；
 - shader compiler 中已验证的 backend lowering；
-- geometry / tessellation；
+- Makepad math 中经过验证的向量/矩阵/几何/transform 热路径算法，可作为 `viso-math` 的行为与性能参考；Viso 保留自己的类型/ABI/模块边界；
+- geometry / tessellation（tessellation 仍归 render/geometry，而不是 `viso-math`）；
 - texture atlas；
 - image/audio/video decode 中可独立复用的部分；
 - Makepad `makepad-micro-serde` 中经过验证的轻量 Encode/Decode、低依赖和 derive 实现思想，可作为 `viso-ende` 的算法/性能参考；Viso Ende 使用自己的 API/wire contract，且不包含 RON。
@@ -5604,6 +5674,26 @@ viso/
 │   │       ├── binding.rs
 │   │       └── gpu_instance.rs
 │   │
+│   ├── ende/
+│   │   ├── Cargo.toml
+│   │   └── src/
+│   │       ├── lib.rs
+│   │       ├── encode.rs
+│   │       ├── decode.rs
+│   │       ├── error.rs
+│   │       ├── bin/
+│   │       └── json/
+│   │
+│   ├── math/
+│   │   ├── Cargo.toml              # package = "viso-math"
+│   │   └── src/
+│   │       ├── lib.rs
+│   │       ├── scalar.rs
+│   │       ├── vector.rs
+│   │       ├── matrix.rs
+│   │       ├── geometry.rs
+│   │       └── transform.rs
+│   │
 │   ├── runtime/
 │   │   └── src/
 │   │       ├── lib.rs
@@ -6410,8 +6500,9 @@ pub mod prelude {
         TextInput,
         Image,
     };
-    pub use crate::{Color, Rect, Size, Vec2}; // facade 统一导出基础几何类型
-    pub use viso_macros::{component, vs, vs_file, routes};
+    pub use viso_math::{Rect, Size, Vec2};
+    pub use viso_render::Color;
+    pub use viso_macros::{component, ui, view, routes};
 }
 ```
 

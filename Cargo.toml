@@ -3,6 +3,8 @@ resolver = "2"
 members = [
     "crates/viso",
     "crates/macros",
+    "crates/math",
+    "crates/ende",
     "crates/runtime",
     "crates/platform",
     "crates/handle",
@@ -37,6 +39,8 @@ repository = "https://github.com/makepad/viso"
 [workspace.dependencies]
 viso = { path = "crates/viso", version = "0.0.0" }
 viso-macros = { path = "crates/macros", version = "0.0.0" }
+viso-math = { path = "crates/math", version = "0.0.0" }
+viso-ende = { path = "crates/ende", version = "0.0.0" }
 viso-runtime = { path = "crates/runtime", version = "0.0.0" }
 viso-platform = { path = "crates/platform", version = "0.0.0" }
 viso-handle = { path = "crates/handle", version = "0.0.0" }
