@@ -200,15 +200,35 @@ DSL language/module semantics, §68):
     emitter. No serde, no RON, no media codecs (serde compat → `integrations/serde`). 16 tests.
     DEFERRED to Phase 9 consumers: advanced transport / schema-registry / Studio-Inspector protocol
     + cache/snapshot wiring.
-- [ ] **Slice M — Typed HIR: schema + type/effect/capability checking.**
-      Component/native schema (§21.5.4 — native APIs from generated schema, authors don't
-      re-declare signatures); typed properties/events/state; `view` is side-effect-free,
-      `effect`/`event` carry effects, `state`/`computed` enter the incremental dep graph;
-      `Computed` purity enforced by type. Private `state` may infer type from a stable initializer;
-      public/exported boundaries stay explicitly typed (§21.5.3). Capabilities inferred from the
-      typed call graph, checked against package/profile grants (§21.5.4, §22). Diagnostics carry
-      severity + stable code + primary/related spans + notes + fix suggestions (§30). Tests:
-      positive type-check, diagnostic tests, effect/capability violations.
+- [x] **Slice M — Typed HIR: schema + type/effect/capability checking.**
+      DONE (ADR 0013). Self-built static Typed HIR layer (`hir/`) that re-walks each resolved
+      module's AST behind the resolver's module-path→`CompilationUnit` matching, consumes `refs`
+      + cross-module `table`s, and emits typed HIR carrying the §116 eight-field node contract
+      (resolved symbol / inferred type / effect class / capability set / ownership mode /
+      reactive reads / source origin / constant value), with a debug HIR-complete assertion that
+      rejects any undetermined type residue (`InferInt`/`InferFloat`/`Unknown`) the source did
+      not annotate. Three static checks: (1) TYPE (`ty`+`infer`) — fixed scalar list (no
+      `Int`/`UInt`/`Float`/platform-width int, §73), literals type at the expected type under
+      context else host default (§75), implicit widening same-family upward only (§76); `Float`
+      annotation E2101, illegal implicit conversion E2102, mismatch / non-unique / out-of-range
+      E2103. (2) EFFECT (`effect`) — `Pure`/`Read`/`Action`/`Task` × the §81 call matrix per
+      `BodyContext`; matrix violation E2501, side effect in a reactive View/Computed E2502.
+      (3) STATE/COMPUTED (`component`) — state init reads source-preceding state only (forward
+      read E2104, no exception), omitted private `state`/`computed` types infer to a unique
+      concrete type (else compile error), all `computed` topologically sorted with cycle path in
+      related spans E2105. (4) CAPABILITY (`capability`) — deterministic `BTreeSet`, inferred =
+      union of direct conferrals + transitive callee sets via a fixed-point index-based call
+      graph; `requires {}` is a public upper-bound contract (inferred must be a subset, else
+      E2601). Checks decoupled via `&self` env traits; `lower(graph, units, resolved, interner,
+      package) → LoweredPackage` ties it together with one `ModuleEnv` per module (per-component
+      symbol focus via a `Cell`). 160 tests (90 unit + 70 Slice-L integration). 15 crates, no new
+      deps; no dependency on `viso-widgets`.
+      DEFERRED to their consumer slice (lowered to placeholder now — source origin + symbol
+      recorded, no deep inference/monomorphization/effect refinement): `system` declarations
+      (system hooks / scheduler schema), module-level `fn`/`action`/`task`, `trait`/`impl`,
+      generic arity, native schema (the eventual source of capability conferrals + property/event
+      schema — this slice infers capabilities from the call graph and uses each component's own
+      declarations as its schema), shader, resource, task-async.
 - [ ] **Slice N — UI IR + Binding IR (lower to the retained tree).**
       Lower Typed HIR → UI IR (static templates + retained-node instantiation, NOT a per-frame
       rebuild, §59) + Binding IR (compiled `StateId -> (node, class)` edges feeding the existing
