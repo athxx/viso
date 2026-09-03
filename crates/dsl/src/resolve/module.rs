@@ -145,8 +145,9 @@ impl ResolveErrorKind {
 pub struct ModuleIndex(u32);
 
 impl ModuleIndex {
+    /// The raw index into [`ModuleGraph::modules`].
     #[inline]
-    fn get(self) -> usize {
+    pub fn as_usize(self) -> usize {
         self.0 as usize
     }
 }
@@ -176,17 +177,18 @@ impl ModuleGraph {
     /// [`ResolveErrorKind::AmbiguousModule`], import edges resolved by path lookup
     /// (unknown targets → [`ResolveErrorKind::UnresolvedModule`]), then any cycle in
     /// the resulting edge set reported as [`ResolveErrorKind::CyclicImport`].
-    pub fn build(units: Vec<SourceUnit>, interner: &NameInterner) -> Self {
+    pub fn build(units: &[SourceUnit], interner: &NameInterner) -> Self {
         let mut errors = Vec::new();
 
-        // Deterministic order: sort units by module-path text. Ties (duplicate
-        // module paths) are ambiguities, reported once per extra unit.
-        let mut sorted: Vec<SourceUnit> = units;
+        // Deterministic order: sort units by module-path text (borrowing, so the
+        // caller keeps the units). Ties (duplicate module paths) are ambiguities,
+        // reported once per extra unit.
+        let mut sorted: Vec<&SourceUnit> = units.iter().collect();
         sorted.sort_by_cached_key(|u| u.path.display(interner));
 
         // Assign each distinct module path an index; a repeat is an ambiguity.
         let mut index_of: BTreeMap<String, ModuleIndex> = BTreeMap::new();
-        let mut kept: Vec<SourceUnit> = Vec::with_capacity(sorted.len());
+        let mut kept: Vec<&SourceUnit> = Vec::with_capacity(sorted.len());
         for unit in sorted {
             let key = unit.path.display(interner);
             if index_of.contains_key(&key) {
@@ -258,7 +260,7 @@ impl ModuleGraph {
             while let Some(&(node, cursor)) = stack.last() {
                 if cursor < self.modules[node].imports.len() {
                     stack.last_mut().unwrap().1 += 1;
-                    let next = self.modules[node].imports[cursor].get();
+                    let next = self.modules[node].imports[cursor].as_usize();
                     match mark[next] {
                         Mark::Unvisited => {
                             mark[next] = Mark::OnStack;
@@ -347,11 +349,11 @@ mod tests {
                 (vec!["b"], "import a; component B { }"),
                 (vec!["c"], "import b; component C { }"),
             ];
-            let units = order
+            let units: Vec<SourceUnit> = order
                 .iter()
                 .map(|&i| unit(&mut interner, &sources[i].0, sources[i].1))
                 .collect();
-            let graph = ModuleGraph::build(units, &interner);
+            let graph = ModuleGraph::build(&units, &interner);
             let paths: Vec<String> = graph
                 .modules()
                 .iter()
@@ -376,7 +378,7 @@ mod tests {
     fn a_missing_import_target_is_e2001() {
         let mut interner = NameInterner::new();
         let units = vec![unit(&mut interner, &["b"], "import a; component B { }")];
-        let graph = ModuleGraph::build(units, &interner);
+        let graph = ModuleGraph::build(&units, &interner);
         assert!(
             graph
                 .errors()
@@ -393,7 +395,7 @@ mod tests {
             unit(&mut interner, &["dup"], "component A { }"),
             unit(&mut interner, &["dup"], "component B { }"),
         ];
-        let graph = ModuleGraph::build(units, &interner);
+        let graph = ModuleGraph::build(&units, &interner);
         assert_eq!(graph.modules().len(), 1, "the duplicate is dropped");
         assert!(
             graph
@@ -411,7 +413,7 @@ mod tests {
             unit(&mut interner, &["a"], "import b; component A { }"),
             unit(&mut interner, &["b"], "import a; component B { }"),
         ];
-        let graph = ModuleGraph::build(units, &interner);
+        let graph = ModuleGraph::build(&units, &interner);
         let cyclic: Vec<&str> = graph
             .errors()
             .iter()
@@ -434,7 +436,7 @@ mod tests {
             unit(&mut interner, &["c"], "import d; component C { }"),
             unit(&mut interner, &["d"], "component D { }"),
         ];
-        let graph = ModuleGraph::build(units, &interner);
+        let graph = ModuleGraph::build(&units, &interner);
         assert!(
             !graph
                 .errors()

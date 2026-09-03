@@ -85,8 +85,11 @@ fn module_path(p: &mut Parser) {
 fn import_item(p: &mut Parser) {
     let m = p.start();
     name(p);
-    if p.eat(SyntaxKind::AsKw) {
+    if p.at(SyntaxKind::AsKw) {
+        let r = p.start();
+        p.bump_any(); // `as`
         name(p);
+        r.complete(p, SyntaxKind::RenameClause);
     }
     m.complete(p, SyntaxKind::ImportItem);
 }
