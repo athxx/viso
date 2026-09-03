@@ -1,0 +1,17 @@
+[package]
+name = "viso-ende"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+# LEAF, depends on no other viso-* crate. Viso-owned Encode/Decode
+# infrastructure: the binary wire format, a bounded decoder, a minimal JSON
+# emitter for diagnostics / tool interchange, and the canonical wire
+# representation of core typed IDs. It is a low-level shared facility and is NOT
+# on the frame data-flow main chain.
+#
+# Dependency-free by design: no serde and no third-party codec. Serde
+# compatibility lives in integrations/serde, not here; RON and image/audio/video
+# media codecs are out of scope. It must never depend on any framework crate.
+[dependencies]

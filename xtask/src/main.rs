@@ -38,6 +38,12 @@ fn allowed_edges() -> BTreeMap<&'static str, &'static [&'static str]> {
             ][..],
         ),
         ("viso-macros", &[][..]),
+        // Two owned foundations, both DAG leaves (section 10.1 forbidden edges):
+        // math is the numeric/geometry base, ende is the encode/decode base.
+        // Neither may depend on any framework crate, and they do not depend on
+        // each other.
+        ("viso-math", &[][..]),
+        ("viso-ende", &[][..]),
         ("viso-widgets", &["viso-ui"][..]),
         // dsl works against a schema/registry, NOT concrete widgets (section 10.1).
         ("viso-dsl", &["viso-ui"][..]),

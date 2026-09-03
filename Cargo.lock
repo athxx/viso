@@ -931,6 +931,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "viso-ende"
+version = "0.0.0"
+
+[[package]]
 name = "viso-example-01-counter"
 version = "0.0.0"
 dependencies = [
@@ -972,6 +976,10 @@ dependencies = [
  "quote",
  "syn 2.0.119",
 ]
+
+[[package]]
+name = "viso-math"
+version = "0.0.0"
 
 [[package]]
 name = "viso-platform"

@@ -1,0 +1,18 @@
+[package]
+name = "viso-math"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+# LEAF, depends on no other viso-* crate. The allocation-free numeric and
+# geometry foundation shared by the ui / render / shader-interface / text /
+# input / animation subsystems: vectors, matrices, quaternion, 2D/3D transform,
+# rect/insets, and basic spatial geometry.
+#
+# Dependency-free by design: it uses only `core`/`std` math (`f32::sqrt` etc.),
+# no third-party math crate. SIMD is an internal implementation detail behind a
+# scalar-matching public ABI; it never leaks into a public type. Its Rust memory
+# layout is NOT a GPU wire ABI — uploads go through the validated explicit layout
+# in viso-shader / viso-gpu, and the wire representation is defined by viso-ende.
+[dependencies]
