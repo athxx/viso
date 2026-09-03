@@ -5,7 +5,7 @@ edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
 
-# Viso DSL for `.vs` (§9/Part XIV): tokenizer/CST/AST/HIR, type checker,
+# Viso DSL for `.vs` (section 9/Part XIV): tokenizer/CST/AST/HIR, type checker,
 # module graph, UI IR, hot-reload diff, state-migration metadata, source map,
 # optional dynamic VM adapter.
 #

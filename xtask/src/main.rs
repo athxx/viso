@@ -1,12 +1,12 @@
 //! Viso build/CI automation.
 //!
 //! `cargo xtask check-deps` enforces the crate dependency DAG from
-//! `Viso_Architecture_and_Migration.md` §10. It is dependency-free (no
+//! `Viso_Architecture_and_Migration.md` section 10. It is dependency-free (no
 //! third-party crates) so it stays a trivial leaf of the workspace.
 //!
 //! The check is *allowlist-based*: each crate declares exactly which internal
 //! `viso-*` crates it may depend on. Any edge not in the allowlist — including
-//! every forbidden edge in §10.1 (platform→ui, gpu→ui, ui→widgets, …) — is a
+//! every forbidden edge in section 10.1 (platform→ui, gpu→ui, ui→widgets, …) — is a
 //! failure. This is stricter than a blocklist and cannot silently rot.
 
 use std::collections::BTreeMap;
@@ -15,7 +15,7 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 /// Allowed internal dependency edges. Key = crate, value = crates it MAY
-/// depend on. Anything outside this set fails. This encodes the §10 DAG.
+/// depend on. Anything outside this set fails. This encodes the section 10 DAG.
 fn allowed_edges() -> BTreeMap<&'static str, &'static [&'static str]> {
     use std::iter::FromIterator;
     BTreeMap::from_iter([
@@ -39,7 +39,7 @@ fn allowed_edges() -> BTreeMap<&'static str, &'static [&'static str]> {
         ),
         ("viso-macros", &[][..]),
         ("viso-widgets", &["viso-ui"][..]),
-        // dsl works against a schema/registry, NOT concrete widgets (§10.1).
+        // dsl works against a schema/registry, NOT concrete widgets (section 10.1).
         ("viso-dsl", &["viso-ui"][..]),
         ("viso-services", &["viso-runtime"][..]),
         ("viso-ui", &["viso-render", "viso-runtime"][..]),
@@ -87,14 +87,14 @@ fn check_deps() -> ExitCode {
         for dep in internal_deps(&text) {
             if !allowed_deps.contains(&dep.as_str()) {
                 violations.push(format!(
-                    "FORBIDDEN EDGE: `{name}` depends on `{dep}` (not in the §10 allowlist)"
+                    "FORBIDDEN EDGE: `{name}` depends on `{dep}` (not in the section 10 allowlist)"
                 ));
             }
         }
     }
 
     if violations.is_empty() {
-        println!("check-deps: OK — {checked} crates, all edges within the §10 DAG");
+        println!("check-deps: OK — {checked} crates, all edges within the section 10 DAG");
         ExitCode::SUCCESS
     } else {
         eprintln!("check-deps: {} violation(s):", violations.len());
