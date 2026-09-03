@@ -23,10 +23,14 @@
 //! `viso-ui`; the length/axis/dirty mirrors carry just enough for the emitter to
 //! rebuild the runtime style structs.
 
+pub mod binding_ir;
 pub mod dirty_map;
+pub mod keys;
 pub mod ui_ir;
 
+pub use binding_ir::{BindingEdge, BindingIr, BindingKind, NodeKey, lower_bindings};
 pub use dirty_map::{DirtyClass, property_dirty_class};
+pub use keys::{KEYLESS_STATEFUL_FOR, KeyIr, KeyedFor, analyze_keys};
 pub use ui_ir::{
     AxisIr, LengthIr, NodeKind, PendingProperty, StyleIr, UiFor, UiHandler, UiIf, UiIfArm, UiItem,
     UiMatch, UiMatchArm, UiNode, UiTree,

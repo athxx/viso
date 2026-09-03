@@ -229,3 +229,229 @@ fn dirty_class_bit_positions_are_stable() {
     assert!(set.contains(DirtyClass::PAINT));
     assert!(!set.contains(DirtyClass::LAYOUT));
 }
+
+// --- Section 3: Binding IR + keyed lists -------------------------------------
+//
+// The Binding IR pass turns each pending property into `source -> (node, class)`
+// edges, and the keys pass flags stateful repeated content without a stable key.
+// Both need a `ReadEnv` classifying which resolved symbols are reactive sources
+// and a `refs` table mapping name spans to resolutions. There is no component
+// context around a bare `ui!` fragment yet, so — mirroring the collect_reads unit
+// tests — the tests build both by hand: a set of names that are reactive sources,
+// mapped to synthetic `SymbolId`s, applied to every matching `Ident` token.
+
+mod binding {
+    use std::collections::BTreeSet;
+
+    use viso_dsl::ast::{AstNode, ViewFragment};
+    use viso_dsl::hir::ReadEnv;
+    use viso_dsl::ir::binding_ir::BindingKind;
+    use viso_dsl::ir::keys::KEYLESS_STATEFUL_FOR;
+    use viso_dsl::ir::{
+        BindingIr, DirtyClass, NodeKey, UiTree, analyze_keys, lower_bindings, lower_fragment_items,
+    };
+    use viso_dsl::resolve::{Resolution, ResolvedRef, SymbolId};
+    use viso_dsl::syntax::grammar::{Entry, parse_entry};
+    use viso_dsl::syntax::{SyntaxKind, SyntaxNode, TextRange, tokenize};
+
+    /// A reactive-source environment keyed by symbol id, exactly like the
+    /// `collect_reads` stub: a resolution is a source iff its symbol is in the set.
+    struct StubEnv {
+        sources: BTreeSet<SymbolId>,
+    }
+
+    impl ReadEnv for StubEnv {
+        fn reactive_source(&self, to: &Resolution) -> Option<SymbolId> {
+            match to {
+                Resolution::Symbol(id) if self.sources.contains(id) => Some(*id),
+                _ => None,
+            }
+        }
+    }
+
+    /// A synthetic reactive source: a name and the symbol id it resolves to. Every
+    /// `Ident` token spelled `name` in the fragment is treated as reading `id`.
+    struct Source {
+        name: &'static str,
+        id: SymbolId,
+    }
+
+    /// Parses a `ui!` fragment, lowers its UI tree, and builds a resolver `refs`
+    /// table plus a `ReadEnv` from the given synthetic reactive sources: every
+    /// `Ident` token matching a source name is mapped to that source's symbol.
+    fn setup(src: &str, sources: &[Source]) -> (UiTree, SyntaxNode, Vec<ResolvedRef>, StubEnv) {
+        let root = SyntaxNode::new_root(parse_entry(&tokenize(src), src, Entry::ViewFragment).root);
+        let fragment = ViewFragment::cast(root.clone()).expect("a ViewFragment root");
+        let tree = lower_fragment_items(fragment.items());
+
+        let mut refs = Vec::new();
+        for tok in root
+            .descendants_with_tokens()
+            .into_iter()
+            .filter_map(|e| e.as_token().cloned())
+            .filter(|t| t.kind() == SyntaxKind::Ident)
+        {
+            if let Some(s) = sources.iter().find(|s| s.name == tok.text()) {
+                refs.push(ResolvedRef {
+                    range: tok.text_range(),
+                    to: Resolution::Symbol(s.id),
+                });
+            }
+        }
+        let env = StubEnv {
+            sources: sources.iter().map(|s| s.id).collect(),
+        };
+        (tree, root, refs, env)
+    }
+
+    /// The reactive source `name` reads, given synthetic id `hi`.
+    fn source(name: &'static str, hi: u64) -> Source {
+        Source {
+            name,
+            id: SymbolId::from_parts(hi, 0),
+        }
+    }
+
+    #[test]
+    fn text_bound_to_state_becomes_one_static_edge() {
+        let label = source("label", 1);
+        let (tree, root, refs, env) = setup("Text { text: label; }", std::slice::from_ref(&label));
+        let ir = lower_bindings(&tree, &root, &refs, &env);
+
+        assert_eq!(ir.edges.len(), 1, "one binding edge");
+        let edge = &ir.edges[0];
+        assert_eq!(edge.source, label.id, "the edge fires on `label`");
+        assert_eq!(edge.node, NodeKey(0), "the sole node is pre-order 0");
+        assert_eq!(edge.property, "text");
+        assert_eq!(
+            edge.class,
+            DirtyClass::MEASURE | DirtyClass::LAYOUT | DirtyClass::PAINT | DirtyClass::SEMANTICS,
+            "text content invalidates measure/layout/paint/semantics"
+        );
+        assert_eq!(edge.kind, BindingKind::Static, "a typed binding is static");
+        assert_eq!(
+            ir.dynamic_fallback_nodes, 0,
+            "a compiler-known typed binding never falls back to dynamic"
+        );
+    }
+
+    #[test]
+    fn a_property_reading_several_sources_emits_an_edge_per_source() {
+        // `width: base + delta` reads two states; each independently invalidates
+        // the node, so it becomes two static edges carrying the width dirty class.
+        let base = source("base", 1);
+        let delta = source("delta", 2);
+        let (tree, root, refs, env) = setup(
+            "Leaf { width: base + delta; }",
+            &[base.clone_marker(), delta.clone_marker()],
+        );
+        let ir = lower_bindings(&tree, &root, &refs, &env);
+
+        assert_eq!(ir.edges.len(), 2, "one edge per reactive source read");
+        let sources: BTreeSet<_> = ir.edges.iter().map(|e| e.source).collect();
+        assert_eq!(sources, BTreeSet::from([base.id, delta.id]));
+        for edge in &ir.edges {
+            assert_eq!(edge.node, NodeKey(0));
+            assert_eq!(edge.class, DirtyClass::MEASURE | DirtyClass::LAYOUT);
+            assert_eq!(edge.kind, BindingKind::Static);
+        }
+    }
+
+    #[test]
+    fn a_strict_typed_fragment_has_zero_dynamic_fallback() {
+        // A nested fragment whose every reactive property resolves to a known
+        // source produces only static edges — the strict-typed invariant.
+        let label = source("label", 1);
+        let count = source("count", 2);
+        let (tree, root, refs, env) = setup(
+            "Column { Text { text: label; } Text { text: count; } }",
+            &[label.clone_marker(), count.clone_marker()],
+        );
+        let ir = lower_bindings(&tree, &root, &refs, &env);
+
+        assert_eq!(ir.static_edges().count(), 2, "both texts bound statically");
+        assert_eq!(ir.dynamic_edges().count(), 0);
+        assert_eq!(ir.dynamic_fallback_nodes, 0, "zero dynamic fallback");
+        // Pre-order: Column=0, first Text=1, second Text=2.
+        let nodes: BTreeSet<_> = ir.edges.iter().map(|e| e.node).collect();
+        assert_eq!(nodes, BTreeSet::from([NodeKey(1), NodeKey(2)]));
+    }
+
+    #[test]
+    fn a_property_reading_no_reactive_source_is_left_unbound() {
+        // `text: helper` where `helper` is not a reactive source: no edge, and no
+        // silent dynamic subscription.
+        let (tree, root, refs, env) = setup("Text { text: helper; }", &[]);
+        let ir = lower_bindings(&tree, &root, &refs, &env);
+        assert!(ir.edges.is_empty(), "no reactive read, no edge");
+        assert_eq!(ir.dynamic_fallback_nodes, 0, "and never a dynamic fallback");
+    }
+
+    #[test]
+    fn a_keyed_for_records_its_key_reads() {
+        // `for item in items key item.id`: the key reads `item` (a loop-local, not
+        // reactive here) — a keyed for with a stateful body draws no warning.
+        let items = source("items", 1);
+        let src = "for item in items key item.id { Button { on click { } } }";
+        let (tree, root, refs, env) = setup(src, std::slice::from_ref(&items));
+        let key = analyze_keys(&tree, &root, &refs, &env);
+
+        assert_eq!(key.fors.len(), 1, "one for region");
+        let f = &key.fors[0];
+        assert!(f.keyed, "the for carries a key clause");
+        assert!(f.stateful, "the body has a handler");
+        assert!(
+            key.diagnostics.is_empty(),
+            "a keyed stateful for draws no warning"
+        );
+        assert_eq!(f.node, NodeKey(0), "the for occupies pre-order node 0");
+    }
+
+    #[test]
+    fn a_keyless_stateful_for_warns() {
+        // The parser recovers a keyless `for` (it also hard-errors E3401); the IR
+        // pass adds the strict E3402 semantic warning because the body is stateful.
+        let items = source("items", 1);
+        let src = "for row in items { Button { on click { } } }";
+        let (tree, root, refs, env) = setup(src, std::slice::from_ref(&items));
+        let key = analyze_keys(&tree, &root, &refs, &env);
+
+        let f = &key.fors[0];
+        assert!(!f.keyed, "no key clause");
+        assert!(f.stateful, "the body has a handler");
+        assert_eq!(key.diagnostics.len(), 1, "one strict finding");
+        assert_eq!(key.diagnostics[0].code, KEYLESS_STATEFUL_FOR);
+    }
+
+    #[test]
+    fn a_keyless_static_for_does_not_warn() {
+        // A keyless for whose body is purely static carries no per-item identity,
+        // so there is nothing to preserve across reorders — no strict finding.
+        let items = source("items", 1);
+        let src = "for row in items { Text { } }";
+        let (tree, root, refs, env) = setup(src, std::slice::from_ref(&items));
+        let key = analyze_keys(&tree, &root, &refs, &env);
+
+        assert!(!key.fors[0].stateful, "a plain Text body is not stateful");
+        assert!(
+            key.diagnostics.is_empty(),
+            "a static keyless for is not a finding"
+        );
+    }
+
+    // A tiny convenience so a `Source` can seed several `setup` calls without the
+    // tests cloning fields by hand.
+    impl Source {
+        fn clone_marker(&self) -> Source {
+            Source {
+                name: self.name,
+                id: self.id,
+            }
+        }
+    }
+
+    // Keep `BindingIr`/`TextRange` referenced so the imports document the pass's
+    // public surface even as assertions evolve.
+    #[allow(dead_code)]
+    fn _surface(_: &BindingIr, _: TextRange) {}
+}

@@ -15,9 +15,84 @@
 //! their dense, compiled layout — the dynamic fallback must never define the
 //! cost of the static path.
 
+use core::cell::Cell;
+
 use crate::dirty::DirtyClass;
 use crate::node::NodeId;
 use crate::state::StateId;
+
+/// The reactive-binding observability counters (AGENTS section 10.3).
+///
+/// A compiler-known typed binding must never silently fall back to runtime
+/// dynamic tracking, and the dynamic path must never define the cost of the
+/// static fast path — so the two paths are counted apart. These are strippable
+/// observability counters (an inspector/CI reads them to confirm a strict typed
+/// example does zero dynamic fallback); they never gate correctness and never
+/// ride a hot inner loop beyond a single increment per edge evaluated.
+///
+/// The evaluation counters are `Cell`s so a `&BindingTable` flush can bump them
+/// while the table stays shared-borrowed.
+#[derive(Debug, Default)]
+pub struct ReactiveCounters {
+    /// Static edges evaluated (a compiled `for_state` edge walked on flush).
+    static_binding_eval: Cell<u64>,
+    /// Dynamic edges evaluated (a runtime `dynamic_for_state` edge walked).
+    dynamic_binding_eval: Cell<u64>,
+    /// Runtime dynamic subscriptions registered (each `bind_dynamic` call).
+    dynamic_subscribe: Cell<u64>,
+    /// Distinct nodes that took a dynamic edge — the fallback surface a strict
+    /// typed example must keep at zero.
+    dynamic_fallback_nodes: Cell<u64>,
+}
+
+impl ReactiveCounters {
+    /// Static edges evaluated since the last reset.
+    #[inline]
+    pub fn static_binding_eval(&self) -> u64 {
+        self.static_binding_eval.get()
+    }
+    /// Dynamic edges evaluated since the last reset.
+    #[inline]
+    pub fn dynamic_binding_eval(&self) -> u64 {
+        self.dynamic_binding_eval.get()
+    }
+    /// Runtime dynamic subscriptions registered since the last reset.
+    #[inline]
+    pub fn dynamic_subscribe(&self) -> u64 {
+        self.dynamic_subscribe.get()
+    }
+    /// Distinct nodes that took a dynamic edge since the last reset.
+    #[inline]
+    pub fn dynamic_fallback_nodes(&self) -> u64 {
+        self.dynamic_fallback_nodes.get()
+    }
+
+    /// Zero every counter — call at frame or benchmark-iteration boundaries so a
+    /// count reflects one measured window.
+    pub fn reset(&self) {
+        self.static_binding_eval.set(0);
+        self.dynamic_binding_eval.set(0);
+        self.dynamic_subscribe.set(0);
+        self.dynamic_fallback_nodes.set(0);
+    }
+
+    /// Record `n` static edges as evaluated. Called at the flush edge-walk site
+    /// (each state's `for_state` slice length), so the count reflects one flush's
+    /// compiled-path work without threading a `&mut` counter through the shared
+    /// `flush_state_transactions` signature.
+    #[inline]
+    pub fn record_static_eval(&self, n: u64) {
+        self.static_binding_eval
+            .set(self.static_binding_eval.get() + n);
+    }
+    /// Record `n` dynamic edges as evaluated, the dynamic-path counterpart of
+    /// [`Self::record_static_eval`].
+    #[inline]
+    pub fn record_dynamic_eval(&self, n: u64) {
+        self.dynamic_binding_eval
+            .set(self.dynamic_binding_eval.get() + n);
+    }
+}
 
 /// One reactive edge: when the source state changes, mark `node` dirty with
 /// `class`. A single state may have many bindings (one per dependent node /
@@ -51,6 +126,10 @@ pub struct BindingTable {
     /// way via `dynamic_runs`.
     dynamic: Vec<Binding>,
     dynamic_runs: Vec<Run>,
+    /// Reactive-path observability (section 10.3). Bumped at bind time (dynamic
+    /// subscriptions / fallback nodes) and at evaluation time (static/dynamic
+    /// edges walked). Strippable; never gates correctness.
+    counters: ReactiveCounters,
 }
 
 /// A contiguous slice `[start, start+len)` into a binding array.
@@ -98,7 +177,25 @@ impl BindingTable {
         if idx >= self.dynamic_runs.len() {
             self.dynamic_runs.resize(idx + 1, Run::default());
         }
+        // A subscription is registered on every dynamic bind; a *new* node edge
+        // (not a fold into an existing one) is a fresh fallback node.
+        self.counters
+            .dynamic_subscribe
+            .set(self.counters.dynamic_subscribe.get() + 1);
+        let before = self.dynamic.len();
         Self::insert_edge(&mut self.dynamic, &mut self.dynamic_runs, idx, node, class);
+        if self.dynamic.len() > before {
+            self.counters
+                .dynamic_fallback_nodes
+                .set(self.counters.dynamic_fallback_nodes.get() + 1);
+        }
+    }
+
+    /// The reactive-path counters (section 10.3), for an inspector, a test, or a
+    /// benchmark comparing the static / mixed / dynamic paths.
+    #[inline]
+    pub fn counters(&self) -> &ReactiveCounters {
+        &self.counters
     }
 
     /// Insert `(node, class)` into the run owned by dense state index `idx`,
@@ -259,6 +356,59 @@ mod tests {
         let table = BindingTable::new();
         let s = state(&mut states);
         assert!(table.for_state(s).is_empty());
+    }
+
+    #[test]
+    fn bind_dynamic_counts_subscribe_and_fallback_nodes() {
+        let mut states = StateStore::new();
+        let mut arena = NodeArena::new();
+        let mut table = BindingTable::new();
+
+        let s = state(&mut states);
+        let a = node(&mut arena);
+        let b = node(&mut arena);
+
+        table.bind_dynamic(s, a, DirtyClass::PAINT);
+        // A second edge to a *new* node is a fresh fallback node.
+        table.bind_dynamic(s, b, DirtyClass::LAYOUT);
+        // Re-binding an existing node folds its class — a subscription, not a
+        // new fallback node.
+        table.bind_dynamic(s, a, DirtyClass::MEASURE);
+
+        let c = table.counters();
+        assert_eq!(c.dynamic_subscribe(), 3, "one per bind_dynamic call");
+        assert_eq!(c.dynamic_fallback_nodes(), 2, "two distinct dynamic nodes");
+    }
+
+    #[test]
+    fn counters_reset_zeroes_all() {
+        let mut states = StateStore::new();
+        let mut arena = NodeArena::new();
+        let mut table = BindingTable::new();
+
+        let s = state(&mut states);
+        let a = node(&mut arena);
+        table.bind_dynamic(s, a, DirtyClass::PAINT);
+        table.counters().record_static_eval(4);
+        table.counters().record_dynamic_eval(2);
+
+        table.counters().reset();
+        let c = table.counters();
+        assert_eq!(c.static_binding_eval(), 0);
+        assert_eq!(c.dynamic_binding_eval(), 0);
+        assert_eq!(c.dynamic_subscribe(), 0);
+        assert_eq!(c.dynamic_fallback_nodes(), 0);
+    }
+
+    #[test]
+    fn record_eval_accumulates_each_path_separately() {
+        let table = BindingTable::new();
+        let c = table.counters();
+        c.record_static_eval(3);
+        c.record_static_eval(2);
+        c.record_dynamic_eval(1);
+        assert_eq!(c.static_binding_eval(), 5, "static edges accumulate");
+        assert_eq!(c.dynamic_binding_eval(), 1, "counted apart from static");
     }
 
     #[test]
