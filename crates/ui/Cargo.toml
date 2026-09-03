@@ -29,3 +29,7 @@ harness = false
 [[bench]]
 name = "node_arena"
 harness = false
+
+[[bench]]
+name = "reactive_binding"
+harness = false
