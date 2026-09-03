@@ -92,11 +92,13 @@ Viso 1.0 将以下地基问题定义为正式架构决策：
 1. **Node hot storage：采用 hybrid indexed SoA。** `NodeMeta` 保持紧凑 AoS 以服务树遍历；Layout/Transform/Paint/Interaction 等高频字段使用与 `NodeIndex` 同索引的连续数组；低频/可选数据进入 sparse cold side tables。暂不采用全 ECS/chunked archetype。
 2. **`Handle<T>`：只表达 typed identity/capability，不直接暴露跨帧 `&T`/`&mut T`。** 读写必须通过受 context 约束的 query/action/property API，避免绕过 reactive invalidation 和生命周期检查。
 3. **Transform：与 Layout 使用独立的失效/传播平面。** 二者默认共享 `NodeId` 和结构语义，但 transform/scroll/animation 可在不触发布局的情况下局部更新。
-4. **自研与依赖必须分级。** Viso 只在决定差异化、热路径和语义所有权的部分强制自研；Unicode/shaping、accessibility bridge、async executor、网络/TLS、codec 等优先复用成熟实现，并由 Viso 自己掌握 integration/cache/ABI contract。
+4. **自研与依赖必须分级。** Viso 只在决定差异化、热路径和语义所有权的部分强制自研；Unicode/shaping、accessibility bridge、async executor、网络/TLS、媒体 codec 等优先复用成熟实现，并由 Viso 自己掌握 integration/cache/ABI contract。
 5. **模块边界必须机器化验证。** crate DAG 与关键 module import 规则进入 `cargo xtask arch-check`/CI，不再只依赖 AGENTS.md 和 code review。
 6. **Reactive dynamic fallback 必须显式、可计数、可 benchmark。** 编译器能够静态解析的绑定不得静默掉入动态路径。
 7. **Web/Mobile/Linux backend 采用 tier + capability 模型。** Tier-1 明确优化现代主后端；兼容后端可追加，但不得反向把 renderer 设计压成最低公分母。
 8. **Viso DSL 使用 `ui!` / `view!` / `component!` 三个语义化 Rust 入口。** `ui!` 解析 View Fragment，`component!` 解析 Component，`view!("...vs")` 编译外部 `.vs`；三者共享同一 schema/HIR/IR/runtime 语义。`.vs` 是唯一 canonical 外部 DSL 文件扩展名。
+9. **Identity 分层。** 源码名字使用 compiler-local `NameId`，跨编译稳定身份使用 128-bit `SymbolId`，运行时热路径 lower 为 `PropertyId`/`EventId`/`ComponentTypeId` 等 typed dense ID，实例使用 generational `NodeId`；禁止一个万能 ID 贯穿所有 subsystem。
+10. **Viso 自研 Ende。** `viso-ende` 负责内部 Binary/JSON Encode/Decode、wire schema、协议版本、cache/snapshot/tool transport；RON 不属于 Viso；Serde 只作为生态 integration。
 
 这些条目属于 Viso 1.0 的架构合同；如果要改变，必须新增/修改 ADR 并附 benchmark 或实现证据。
 
@@ -307,6 +309,8 @@ Viso 不以“全部自研”为荣，也不以“尽量依赖现成库”为目
 - frame scheduler / phase ownership / main-loop integration；
 - Viso semantics tree；
 - ResourceId / asset lifetime / framework-level profiling counters。
+- Identity/Symbol lowering contract：`NameId -> SymbolId -> typed dense runtime ID`；
+- `viso-ende` Binary/JSON internal encoding、wire schema、protocol/version contract。
 
 #### Tier B — Viso 拥有 integration，优先复用成熟算法
 
@@ -314,7 +318,7 @@ Viso 不以“全部自研”为荣，也不以“尽量依赖现成库”为目
 
 - Unicode segmentation / BiDi / shaping primitive；
 - font rasterization primitives；
-- image/audio/video codec；
+- image/audio/video media codec；
 - accessibility OS bridge；
 - platform bindings；
 - cryptography / TLS。
@@ -338,7 +342,7 @@ Accessibility 的 canonical model 是 Viso 自有 semantics tree；平台 adapte
 
 - 通用 async executor；
 - HTTP/TLS stack；
-- 通用压缩/图片/媒体 codec；
+- 通用压缩/图片/音频/视频 media codec；
 - Unicode 标准算法；
 - 业务数据库。
 
@@ -592,6 +596,7 @@ viso/
 ├── crates/
 │   ├── viso/
 │   ├── macros/
+│   ├── ende/
 │   ├── runtime/
 │   ├── platform/
 │   ├── gpu/
@@ -684,6 +689,20 @@ Proc macros：
 - compile-time diagnostics。
 
 `viso-macros` 不拥有第二套 DSL parser。inline/file source 都必须复用 `viso-dsl` 的 frontend/HIR 语义；宏层只负责 Rust token/span、build artifact 与 typed API glue。
+
+### `viso-ende`
+
+Viso-owned Encode/Decode infrastructure：
+
+- Binary wire format；
+- JSON diagnostics/tool interchange；
+- bounded decoder；
+- protocol/schema metadata；
+- cache/snapshot encoding；
+- Studio/Inspector/Profiler/Hot Reload transport；
+- core typed ID 的 canonical wire representation。
+
+不支持 RON；不承担 image/audio/video media codec；不作为 frame 内部数据模型。Serde compatibility 位于 `integrations/serde`。
 
 ### `viso-runtime`
 
@@ -851,6 +870,18 @@ PDF/browser/chart/map 等不是基础 widget，放 optional package/integration�
                        platform
 ```
 
+`viso-ende` 是低层共享基础设施，不位于 frame 数据流主链：
+
+```text
+             dsl        runtime       tools
+              │            │            │
+              └──────┬─────┴─────┬──────┘
+                     ↓           ↓
+                 viso-ende   (typed runtime memory)
+
+Ende 不依赖 ui/render/gpu/widgets/platform/dsl/runtime；上层按需单向依赖 Ende。
+```
+
 实际 Rust DAG 可以微调，例如 runtime/platform/gpu 的底部关系因 surface creation 需要通过小接口反转，但必须保持以下禁令：
 
 ### 10.1 禁止依赖
@@ -865,6 +896,8 @@ PDF/browser/chart/map 等不是基础 widget，放 optional package/integration�
 - `runtime -> Studio`：禁止；
 - `viso-dsl -> concrete widget implementation`：原则上禁止，使用 schema/registry；
 - framework core crate 依赖 app/example：绝对禁止。
+- `viso-ende -> runtime/ui/render/gpu/widgets/platform/dsl`：禁止；Ende 必须保持低层、无框架反向依赖。
+- frame hot path 通过 Ende encode/decode 传递 Node/Layout/Paint 数据：禁止。
 
 ### 10.2 边界必须由 CI 机器化验证
 
@@ -895,6 +928,1088 @@ module-level 规则初期可以通过 first-party AST/import scanner 实现；`c
 - compile-time generic；
 
 而不是直接引入上层 crate。
+
+---
+
+## 10.4 Identity & Symbol Architecture
+
+Viso 1.0 不使用一个“万能 ID”贯穿编译器、UI、Shader、资源、事件和运行时实例。不同身份具有不同的稳定性、生命周期和性能要求，必须由不同 Rust 类型表达。
+
+核心原则：
+
+> **Names are for source code. Symbols are for compilation and persistence. Dense typed IDs are for runtime. Generational IDs are for instances.**
+>
+> **源码使用名字，编译与持久身份使用 Symbol，运行时热路径使用 typed dense ID，实例生命周期使用 generational ID。**
+
+这条规则同时服务三个目标：
+
+1. 保留类似 Makepad `LiveId` 的“字符串只解析/哈希一次、运行时不做字符串比较”的性能价值；
+2. 避免 Property、Event、Shader、Node、Resource、Source 等概念全部退化成同一个整数类型；
+3. 让稳定身份和热路径身份分别针对正确性与执行性能优化，而不是强迫一个 ID 同时承担两个目标。
+
+### 10.4.1 ID taxonomy
+
+Viso 1.0 的标准身份类型如下：
+
+| 类型 | 语义 | 建议表示 | 跨编译稳定 | 主要路径 |
+|---|---|---:|---:|---|
+| `NameId` | 当前编译会话中的 interned identifier | `u32` | 否 | compiler |
+| `SymbolId` | 稳定源码/Schema/声明身份 | 128 bit | 是 | compile/link/hot reload |
+| `ComponentTypeId` | 当前 runtime image 中的组件类型索引 | `u32` | 否 | hot |
+| `PropertyId` | Property Schema 的稠密索引 | `u16/u32` | 否 | hot |
+| `EventId` | Typed Event 的稠密索引 | `u16/u32` | 否 | hot |
+| `StyleId` | 编译后的 Style 索引 | `u32` | 否 | hot/warm |
+| `ShaderId` | runtime shader table 索引 | `u32` | 否 | hot/warm |
+| `PipelineId` | GPU pipeline resource handle | generational integer handle | 否 | hot |
+| `NodeId` | 具体 Runtime Node 实例身份 | `u32 index + u32 generation` | 否 | hot |
+| `StableKey` | 动态集合中业务对象身份 | typed value | 由业务语义决定 | reconciliation |
+| `SourceId` | 当前 artifact/source-map 中的源码文件身份 | `u32` | artifact 内 | cold/warm |
+| `ResourceId` | asset/resource identity | 独立 typed ID | 按资源合同 | warm |
+
+禁止创建如下通用类型并让所有 subsystem 共用：
+
+```rust
+pub struct Id(u64);
+pub struct VisoId(u128);
+```
+
+类型系统必须能阻止：
+
+```text
+PropertyId 被传入 Shader lookup
+EventId 被当作 NodeId
+SourceId 被当作 ResourceId
+SymbolId 被直接当作 Runtime array index
+```
+
+### 10.4.2 `NameId`：只属于 compiler interner
+
+源码中的：
+
+```text
+Button
+text
+click
+save_button
+```
+
+首先进入 compiler interner：
+
+```text
+"Button"      -> NameId(21)
+"text"        -> NameId(44)
+"click"       -> NameId(62)
+"save_button" -> NameId(91)
+```
+
+建议：
+
+```rust
+#[repr(transparent)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub struct NameId(u32);
+```
+
+规则：
+
+- `NameId` 只保证当前 compiler/database session 内有效；
+- 不写入持久 cache 作为稳定 ABI；
+- 不跨进程直接传输；
+- 不作为 Runtime Property/Event/Node identity；
+- string interning 发生在 parser/name-resolution 冷路径；
+- AST/HIR 中优先携带 `NameId`/resolved symbol，而不是重复存储 `String`。
+
+Compiler 可以保留反查：
+
+```text
+NameId -> UTF-8 spelling
+```
+
+用于 diagnostics、formatter、LSP 和 debug dump。
+
+### 10.4.3 `SymbolId`：稳定语义身份
+
+`SymbolId` 表示“这个语义声明是谁”，而不是“当前进程把它放在数组的第几个位置”。
+
+典型对象：
+
+```text
+app::home::HomePage
+app::home::HomePage::count
+app::home::HomePage::view::save_button
+viso::widgets::Button::text
+viso::widgets::Button::click
+shader::RoundedRect::fragment
+```
+
+推荐物理表示：
+
+```rust
+#[repr(C)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub struct SymbolId {
+    lo: u64,
+    hi: u64,
+}
+```
+
+也可以在内部使用等价的 `[u8; 16]` 表示，但 public/internal ABI 不应把 `SymbolId` 定义成“需要 128 位整数算术”的数值类型。
+
+`SymbolId` 只需要支持：
+
+- equality；
+- hashing；
+- ordering（需要 deterministic output 时）；
+- Encode/Decode；
+- debug formatting；
+- stable cache key composition。
+
+禁止：
+
+```rust
+symbol + 1
+symbol * 2
+```
+
+#### Stable Symbol 生成输入
+
+Canonical symbol identity 至少由以下信息组成：
+
+```text
+package identity
+module path
+declaration kind
+canonical declaration path
+explicit stable annotation (optional)
+generic arity / schema kind when required
+```
+
+例如：
+
+```text
+my_app
++ features::home
++ ComponentNode
++ HomePage::view::save_button
+```
+
+经过**固定、版本化、跨平台确定**的 128-bit fingerprint 算法生成 `SymbolId`。
+
+硬规则：
+
+- 禁止使用 `std::collections::hash_map::DefaultHasher` 生成持久 Symbol；
+- 禁止使用进程随机 seed；
+- 禁止把源码 byte offset 作为主要稳定身份；
+- 普通格式化不改变 Symbol；
+- 文件物理移动但 canonical module path 不变时不应改变 Symbol；
+- 显式 stable annotation 可以在受控 rename/move 中保持身份；
+- compiler/linker 必须检测同一 artifact 内的 Symbol collision，并将其视为构建错误；
+- fingerprint algorithm/version 必须进入 artifact metadata，不能静默改变。
+
+### 10.4.4 128-bit Symbol 与 32-bit target
+
+128-bit `SymbolId` **不要求 128-bit CPU，也不要求 64-bit pointer width**。
+
+在 64-bit CPU 上，它通常由两个 `u64` load/compare 表示；在 32-bit CPU 上，编译器可以拆成多个 32-bit 操作。它只是固定 16-byte value，不是指针。
+
+因此核心设计必须支持：
+
+```text
+x86_64
+AArch64
+x86 32-bit
+ARM 32-bit
+wasm32
+```
+
+是否真正启用某个 32-bit 平台由 platform/GPU/backend 支持矩阵决定，而不是由 `SymbolId` 限制。
+
+禁止：
+
+- `SymbolId(usize)`；
+- 假设 `usize == u64`；
+- 假设指针是 64 bit；
+- 假设 `AtomicU128` 存在；
+- 假设 128-bit load/store lock-free；
+- 把 `SymbolId` 当作指针或直接 memory-map 为平台 ABI。
+
+Viso 不要求对 `SymbolId` 做原子 128-bit 更新。Symbol 是 immutable value；共享 symbol table 的并发通过 table generation、message passing、RCU/lock 或更高层协议解决。
+
+### 10.4.5 Stable ID 不进入 steady-state hot storage
+
+`SymbolId` 为稳定正确性优化；`PropertyId`、`EventId`、`ComponentTypeId` 等 dense ID 为执行性能优化。
+
+加载/AOT link 阶段：
+
+```text
+Stable SymbolId
+      ↓ resolve once
+Dense process-local ID
+      ↓
+array index / compact table index
+```
+
+例如：
+
+```text
+viso::widgets::Button::text
+        ↓ SymbolId(128)
+        ↓ link
+PropertyId(3)
+```
+
+每帧执行：
+
+```rust
+let slot = properties[property_id.index()];
+```
+
+而不是：
+
+```text
+SymbolId
+  ↓ hash
+HashMap bucket probe
+  ↓
+property
+```
+
+**稳态帧禁止因源码身份而执行全局 Symbol HashMap lookup。**
+
+允许 Symbol lookup 的场景：
+
+- module load/link；
+- Hot Reload patch linking；
+- Inspector query；
+- Schema negotiation；
+- migration；
+- debug/source map；
+- cache/artifact loading。
+
+### 10.4.6 Typed dense runtime IDs
+
+Runtime dense ID 必须用 Rust newtype 隔离语义：
+
+```rust
+#[repr(transparent)]
+pub struct ComponentTypeId(u32);
+
+#[repr(transparent)]
+pub struct PropertyId(u32);
+
+#[repr(transparent)]
+pub struct EventId(u32);
+
+#[repr(transparent)]
+pub struct StyleId(u32);
+
+#[repr(transparent)]
+pub struct ShaderId(u32);
+```
+
+这些 newtype 在 optimized build 中没有额外 runtime abstraction cost。
+
+具体宽度由每个 subsystem 的真实上限决定：
+
+- 可证明单组件属性数远小于 65535 时，内部 `PropertySlot` MAY 使用 `u16`；
+- public/runtime artifact ID 默认优先 `u32`，减少 overflow/转换分支；
+- 不为节省 2 bytes 就在 hot loop 引入频繁 widen/narrow；
+- 宽度改变属于 artifact/ABI decision，必须有 benchmark 和上限证明。
+
+### 10.4.7 `NodeId`：运行时实例身份
+
+`NodeId` 与 `SymbolId` 的语义完全不同：
+
+```text
+SymbolId = 源码/Schema 中“这个声明是谁”
+NodeId   = 当前 Runtime 中“这个实例是谁”
+```
+
+继续采用：
+
+```rust
+#[repr(C)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub struct NodeId {
+    index: u32,
+    generation: u32,
+}
+```
+
+一个源码模板可以产生任意多个 Runtime Node：
+
+```text
+TodoRow template SymbolId
+    ├── key=100 -> NodeId(27, 1)
+    ├── key=101 -> NodeId(28, 1)
+    └── key=102 -> NodeId(29, 1)
+```
+
+`NodeId.index` 直接索引 NodeArena/hot stores；`generation` 防止 remove/reuse 后的 stale handle 误访问。
+
+Node hot arrays **不得为每个 Node 固定携带 16-byte `SymbolId`**。需要 debug/hot-reload reverse mapping 时使用：
+
+- cold side table；
+- template descriptor；
+- optional debug metadata；
+- sparse mapping；
+- development-only reverse index。
+
+Release 在不需要 Inspector/source diagnostics 时可以 strip 大部分 reverse symbol metadata。
+
+### 10.4.8 `StableKey`：动态集合身份
+
+动态列表：
+
+```viso
+for item in items key item.id {
+    TodoRow {
+        item: item;
+    }
+}
+```
+
+`item.id` 是 `StableKey`，不是 `SymbolId`，也不是 `NodeId`。
+
+关系：
+
+```text
+Repeat template SymbolId
+       + StableKey(value)
+              ↓ reconciliation
+          existing/new NodeId
+```
+
+规则：
+
+- `StableKey` 必须有稳定 Eq/Hash 语义；
+- Float 默认不得实现 `StableKey`；
+- 列表排序变化不改变同 key child 的 Node identity；
+- key lookup 只存在于 keyed reconciliation，不得扩散成所有 Node 的通用身份机制；
+- reconciliation 完成后，后续 hot traversal 使用 `NodeId`。
+
+### 10.4.9 Source、Resource、GPU handle 不复用 SymbolId
+
+`SourceId` 表示 source-map/artifact 中的文件或 source unit；`ResourceId` 表示 asset/resource；`BufferId`、`TextureId`、`PipelineId` 表示 GPU resource。
+
+它们可能在 debug metadata 中关联 `SymbolId`，但不得直接 typedef/alias 为 `SymbolId`。
+
+尤其 GPU resource handle 推荐 generational typed handle：
+
+```rust
+pub struct TextureId {
+    index: u32,
+    generation: u32,
+}
+```
+
+从而把：
+
+```text
+stable semantic identity
+runtime object identity
+GPU lifetime identity
+```
+
+保持为三个不同的概念。
+
+### 10.4.10 Hot Reload identity
+
+Hot Reload 使用 stable Symbol 做“新旧声明是否同一语义实体”的匹配，然后把结果应用到 retained runtime instance。
+
+```text
+new .vs / ui! / component!
+        ↓
+new Symbol graph
+        ↓ compare stable SymbolId
+old Symbol graph
+        ↓
+Migration Plan
+        ↓
+keep / patch / replace Runtime NodeId + state slots
+```
+
+Named node：
+
+```viso
+node save_button: Button {
+    text: "Save";
+}
+```
+
+拥有稳定 source symbol。若 Hot Reload 插入一个无关兄弟节点，`save_button` 的 symbol 应保持稳定，从而焦点、局部状态、动画等可按 Widget/Node migration contract 保留。
+
+Anonymous decorative node 可以使用 structural symbol/fingerprint，但文档和诊断必须明确：结构位置大改时其身份不保证和具名节点相同强度。
+
+### 10.4.11 Rust API 不要求用户手写通用 ID 宏
+
+普通 Viso 用户不应该频繁写：
+
+```text
+id!(save_button)
+ids!(root.panel.button)
+live_id!(text)
+```
+
+对于编译期可知的具名节点：
+
+```viso
+node save_button: Button { ... }
+```
+
+`view!` / `ui!` / `component!` 和 schema codegen 应生成 typed access：
+
+```rust
+nodes.save_button
+```
+
+其类型可以是：
+
+```rust
+NodeHandle<Button>
+```
+
+或等价的 compile-time typed key/handle，而不是“字符串/LiveId lookup + dynamic downcast”。
+
+这条规则的目标不是隐藏 ID，而是**不要把编译期已知信息丢掉，再让运行时重新查找一次**。
+
+### 10.4.12 Dev metadata 与 Release stripping
+
+Development artifact 可以保留：
+
+```text
+DenseId -> SymbolId
+SymbolId -> canonical name
+SymbolId -> SourceSpan
+NodeId -> template/debug Symbol
+PropertyId -> readable property name
+EventId -> readable event name
+```
+
+因此 Inspector 能回答：
+
+```text
+NodeId(381, 4)
+Component: app::home::TodoRow
+Source: features/home/view.vs:82
+Property: Button::text
+Dirty reason: StateSymbol(todo.title)
+```
+
+Release 默认只保留运行所需的 dense/generational table；source name、reverse map、完整 Symbol path 和 debug spans 可按 profile strip。
+
+### 10.4.13 Identity 性能合同
+
+Identity benchmark 至少包含：
+
+```text
+identity_name_intern_100k
+identity_symbol_build_100k
+identity_symbol_link_100k
+identity_dense_property_lookup_1m
+identity_dense_event_lookup_1m
+identity_node_generation_check_1m
+identity_keyed_reconcile_100k
+```
+
+重点比较：
+
+```text
+stable Symbol HashMap lookup
+vs
+dense array lookup
+```
+
+不要把 benchmark 重点放在 `u64 == u64` 与 `u32 == u32`；真正的收益来自：
+
+> **hash/probe/pointer chasing -> direct indexed access**。
+
+稳态 frame benchmark 必须证明 local property/event/node hot path 不依赖字符串或 stable-symbol hash lookup。
+
+---
+
+## 10.5 Ende — Encode / Decode Infrastructure
+
+Viso 1.0 自研并拥有 `viso-ende`，作为框架内部 typed encode/decode、wire protocol、artifact/cache serialization 的基础设施。
+
+名称来自：
+
+```text
+EnDe = Encode + Decode
+```
+
+`Ende` 与媒体领域的 `codec` 必须严格区分：
+
+```text
+Ende
+  -> structured data encode/decode
+
+image/audio/video codec
+  -> media compression/decompression
+```
+
+因此 Viso 文档中的 “codec” 默认指 PNG/JPEG/WebP/audio/video/compression 等媒体或压缩算法；结构化序列化一律称 **Ende**。
+
+### 10.5.1 为什么 Ende 属于 Viso-owned infrastructure
+
+Ende 位于 Ownership Ladder 的 Tier A，因为它直接影响：
+
+- Studio ↔ Runtime protocol；
+- Compiler ↔ Runtime Hot Reload artifact；
+- Inspector / Profiler transport；
+- remote preview；
+- snapshot/cache；
+- build protocol；
+- schema/version compatibility；
+- `SymbolId` / typed dense ID 的 wire representation；
+- allocation behavior；
+- malformed input 的安全边界；
+- mobile/Web 二进制体积与编译时间。
+
+Viso 自研 Ende 的目标不是“替代整个 Rust Serde 生态”，而是：
+
+> **Viso 必须拥有自己的内部协议 ABI、数据布局、分配策略和版本语义。**
+
+Serde 继续作为 ecosystem integration；Ende 是 Viso internal architecture。
+
+### 10.5.2 crate 与 public namespace
+
+Workspace：
+
+```text
+crates/
+├── ende/
+│   ├── Cargo.toml        # package = "viso-ende"
+│   └── src/
+│       ├── lib.rs
+│       ├── encode.rs
+│       ├── decode.rs
+│       ├── error.rs
+│       ├── limits.rs
+│       ├── bin/
+│       │   ├── mod.rs
+│       │   ├── encoder.rs
+│       │   └── decoder.rs
+│       └── json/
+│           ├── mod.rs
+│           ├── encoder.rs
+│           └── decoder.rs
+```
+
+Derive proc macros 放在现有 `viso-macros`，不额外制造一串 derive/core/schema crate：
+
+```rust
+#[derive(Encode, Decode)]
+struct BuildMessage {
+    build_id: BuildId,
+    target: TargetId,
+}
+```
+
+普通应用通过 facade 使用：
+
+```rust
+use viso::ende::{Encode, Decode};
+```
+
+`Encode/Decode` 不默认塞进 `viso::prelude::*`；只有确实高频且不会制造命名冲突时才考虑 re-export derive macro。
+
+### 10.5.3 Ende 只支持两类一等格式
+
+Viso 1.0 一等支持：
+
+```text
+Binary
+JSON
+```
+
+用途：
+
+| 格式 | 主要用途 |
+|---|---|
+| Ende Binary | runtime/tool IPC、Hot Reload、cache、snapshot、profiler、remote preview |
+| Ende JSON | diagnostics、Schema dump、CLI/LSP/AI、外部工具互操作 |
+
+**RON 不属于 Viso。**
+
+硬规则：
+
+- 不提供 `ende::ron`；
+- core protocol 不允许引入 RON；
+- Viso 配置不因为 Ende 再增加 RON 文件类型；
+- `.vs` 负责 Viso 人类可读 DSL/config authoring；
+- JSON 负责通用工具交换；
+- binary 负责高效内部协议；
+- 第三方库若自行使用 RON，不得让它成为 framework core dependency 或 canonical Viso format。
+
+### 10.5.4 Ende 不是 frame data model
+
+Ende 可以高频使用，但**不能成为 UI frame 内部数据模型**。
+
+禁止：
+
+```text
+State
+  -> Encode
+  -> Decode
+  -> UI
+```
+
+禁止：
+
+```text
+NodeArena
+  -> serialize every frame
+  -> Renderer
+```
+
+Frame 内必须继续使用直接 typed memory：
+
+```text
+NodeArena
+LayoutStore
+TransformStore
+PaintStore
+RenderPrimitive[]
+InstanceBuffer
+```
+
+Ende 主要用于边界：
+
+```text
+process boundary
+thread/message boundary
+persistent cache
+Studio protocol
+remote preview
+snapshot
+Hot Reload artifact
+build protocol
+diagnostics/schema JSON
+```
+
+若同一进程内 producer/consumer 已共享安全 typed memory，禁止为了“统一协议”强行插入 Ende roundtrip。
+
+### 10.5.5 API 设计：直接，不复制复杂通用 visitor surface
+
+目标 public contract：
+
+```rust
+pub trait Encode {
+    fn encode<E: Encoder>(&self, encoder: &mut E) -> Result<(), EncodeError>;
+}
+
+pub trait Decode<'de>: Sized {
+    fn decode<D: Decoder<'de>>(decoder: &mut D) -> Result<Self, DecodeError>;
+}
+```
+
+具体 trait 可以根据实现收敛，但必须保持：
+
+- derive-generated direct field code；
+- format-specific encoder/decoder；
+- 不要求 runtime reflection；
+- Binary field loop 不要求字符串 lookup；
+- Binary field loop 不要求 per-field HashMap；
+- 不依赖 `dyn Trait` 进行每字段动态派发；
+- 可在复用 buffer 下做到零 heap allocation encode；
+- decoder 有明确 lifetime/borrow 模型。
+
+方便 API 可以存在：
+
+```rust
+let bytes = ende::bin::encode(&message)?;
+let message: BuildMessage = ende::bin::decode(&bytes)?;
+```
+
+性能敏感内部代码优先：
+
+```rust
+buffer.clear();
+message.encode(&mut BinEncoder::new(&mut buffer))?;
+```
+
+使已有 capacity 被复用。
+
+### 10.5.6 Binary format 原则
+
+第一版 Ende Binary 优先**简单、确定、容易 fuzz、容易跨平台验证**，而不是追求每个 byte 的极限压缩。
+
+默认原则：
+
+```text
+canonical little-endian
+fixed-width integer for core IDs/counters
+IEEE-754 fixed-width float representation
+explicit enum discriminant
+length-prefixed UTF-8 string/bytes
+known struct field order
+bounded collection lengths
+no field-name strings in normal struct payload
+```
+
+例如：
+
+```rust
+#[derive(Encode, Decode)]
+struct PropertyChanged {
+    node: NodeId,
+    property: PropertyId,
+    revision: Revision,
+}
+```
+
+Binary payload 不写：
+
+```text
+"node"
+"property"
+"revision"
+```
+
+这些字段名属于 Schema/debug metadata，不属于每条 hot protocol message。
+
+如果两端已经共享 message schema，wire 应直接编码固定字段值。
+
+### 10.5.7 不直接序列化 Rust struct memory
+
+Ende Binary 禁止：
+
+```rust
+unsafe { write_bytes_of(&value) }
+```
+
+作为普通 wire contract。
+
+原因：
+
+- Rust field layout 不稳定；
+- padding 不稳定；
+- endian 不同；
+- pointer width 不同；
+- `usize`/pointer 不能形成跨目标稳定 ABI；
+- enum niche/layout 不是协议；
+- 32-bit/64-bit build 必须互通。
+
+每个 primitive 和 framework ID 都必须显式定义 wire representation。
+
+例如 `SymbolId`：
+
+```text
+16 bytes canonical representation
+```
+
+逻辑上等价于：
+
+```rust
+encode_u64_le(symbol.lo);
+encode_u64_le(symbol.hi);
+```
+
+因此 32-bit、64-bit、wasm32 可以得到同一 wire value。
+
+### 10.5.8 `usize`、pointer 与 platform handle
+
+Ende stable wire schema 中禁止直接编码：
+
+```text
+usize
+isize
+raw pointer
+process-local address
+OS handle numeric value as portable identity
+```
+
+若业务值本身需要“长度/索引”：
+
+- 明确选择 `u32` 或 `u64` wire type；
+- decode 时检查是否可转换为当前 `usize`；
+- 超出目标地址空间时返回结构化错误，不截断。
+
+Native/OS handle 跨边界必须通过专门的 handle-transfer protocol，而不是把指针/FD/HANDLE 当普通整数 Ende。
+
+### 10.5.9 Schema、message tag 与稳定身份
+
+Ende 不要求每条消息携带 128-bit `SymbolId`。
+
+推荐：
+
+```text
+stable protocol/schema identity
+        ↓ handshake/load
+process/session-local MessageId / TypeId
+        ↓
+hot message stream
+```
+
+与 UI identity 相同：
+
+> stable identity 用于协商和正确性，dense ID 用于执行。
+
+协议 artifact 至少定义：
+
+```text
+protocol id/version
+message tag
+schema fingerprint
+field order/type
+optional/required policy
+limits
+compatibility policy
+```
+
+Hot Reload/Studio 可以在建立连接或载入 artifact 时校验 stable schema fingerprint，随后用紧凑 message tag 传输。
+
+### 10.5.10 Versioning 与兼容策略
+
+Ende 的“版本”是**协议/Schema 数据的一部分**，不是靠“decoder 猜字段”。
+
+每个长期持久或跨版本 protocol 必须定义：
+
+- protocol/schema version；
+- compatible additive change；
+- incompatible change；
+- unknown message policy；
+- unknown enum tag policy；
+- optional field/default semantics；
+- cache invalidation policy。
+
+Runtime/Studio/Compiler protocol 不允许静默把不兼容数据按旧布局解释。
+
+对于短生命周期 process-local IPC，可以选择严格 exact-version handshake，换取更简单更快的 payload。
+
+### 10.5.11 Decoder 安全预算
+
+所有外部或可损坏输入必须经过 bounded decoder。
+
+至少限制：
+
+```text
+max message bytes
+max nesting depth
+max string bytes
+max bytes payload
+max collection length
+max map entries
+max allocation bytes
+max recursion / decode stack
+```
+
+错误至少区分：
+
+```text
+UnexpectedEof
+InvalidUtf8
+InvalidTag
+InvalidLength
+DepthLimitExceeded
+AllocationLimitExceeded
+SchemaMismatch
+ProtocolMismatch
+TrailingBytes (strict mode)
+```
+
+Decoder：
+
+- MUST NOT panic on malformed input；
+- MUST NOT blindly preallocate attacker-controlled length；
+- MUST check integer overflow；
+- MUST preserve byte offset for diagnostics；
+- fuzz target 必须覆盖所有 public decode entry。
+
+### 10.5.12 Borrowed / zero-copy decode
+
+对于只读短生命周期 payload，Ende MAY 支持 borrowed decode：
+
+```text
+&'de str
+&'de [u8]
+BorrowedMessage<'de>
+```
+
+要求：
+
+- lifetime 与输入 buffer 绑定；
+- borrowed value 不跨越输入 buffer 生命周期；
+- Hot Reload/async queue 若需要长期持有，必须显式 own/copy/retain；
+- 不为了 zero-copy 引入 unsafe dangling reference；
+- benchmark 证明收益后再扩展复杂 borrowed collection surface。
+
+### 10.5.13 JSON 的定位
+
+Ende JSON 优先：
+
+- human inspectable diagnostics；
+- machine-readable compiler messages；
+- LSP/AI Schema；
+- `viso schema/hir/ir` dump；
+- test golden；
+- 外部工具互操作。
+
+JSON 不作为 frame/runtime 内部高速消息的默认格式。
+
+JSON encoder/decoder 必须共享 Ende 的：
+
+- type/schema metadata；
+- limits/error model；
+- derive contract；
+- deterministic test infrastructure。
+
+需要 canonical JSON 的 snapshot/test 场景必须定义稳定 field ordering；普通 JSON object 语义仍不依赖 map insertion order。
+
+### 10.5.14 Serde integration
+
+Serde 继续位于：
+
+```text
+integrations/serde/
+```
+
+用途：
+
+- Rust 生态已有数据模型；
+- third-party API；
+- 用户后端/network/database；
+- 需要 Serde-specific crate 的场景。
+
+边界：
+
+```text
+Viso internal protocol -> Ende
+Rust ecosystem interop -> Serde adapter
+```
+
+禁止让 `serde::Serialize/Deserialize` 成为 Viso Runtime、Node、Hot Reload 或 Studio protocol 的硬依赖。
+
+同样，Viso 不要求用户业务数据全部改为 Ende；Ende 只拥有 Viso 自己必须稳定控制的内部边界。
+
+### 10.5.15 Ende 与 `viso-macros`
+
+现有 `viso-macros` 提供：
+
+```text
+#[derive(Encode)]
+#[derive(Decode)]
+```
+
+derive 必须生成直接 field encode/decode，不建立运行时 reflection map。
+
+Macro expansion 必须：
+
+- 给字段/variant 生成稳定 schema metadata；
+- 在编译期拒绝不支持的裸 pointer/reference lifetime；
+- 对 `usize/isize` 的持久 wire 使用给出诊断或要求显式 adapter；
+- 支持 `#[ende(...)]` 一类受控 attribute 时，attribute 集合必须小且有明确 Schema；
+- 不允许 attribute 改变基础 tokenization 或引入运行时字段名查找。
+
+### 10.5.16 Ende 与 Identity Architecture
+
+Ende 必须为 Viso 核心 ID 提供显式实现：
+
+```text
+NameId          通常不持久编码
+SymbolId        fixed 16 bytes
+NodeId          u32 index + u32 generation
+PropertyId      fixed u32 (artifact contract)
+EventId         fixed u32
+ComponentTypeId fixed u32
+SourceId        fixed u32
+```
+
+注意：某 subsystem 内部即使把 `PropertySlot` 压缩为 `u16`，跨 artifact/wire 的 `PropertyId` 表示也必须由协议明确，不允许直接 memcpy 内部 struct。
+
+Development protocol 可以附带：
+
+```text
+SymbolId + source/name metadata
+```
+
+Release/runtime hot protocol 应尽量使用协商后的 dense ID/message tag。
+
+### 10.5.17 Ende 性能合同
+
+Ende Binary steady-state encode（buffer capacity 已满足）目标：
+
+```text
+0 heap allocation
+0 runtime reflection
+0 field-name string lookup
+0 per-field HashMap lookup
+0 per-field dyn dispatch
+```
+
+Decode 是否零分配取决于目标值是否拥有 String/Vec 等 owned data；对于 borrowed/预分配目标路径，应提供零或接近零分配选项。
+
+Benchmark 至少：
+
+```text
+ende_bin_small_message
+ende_bin_1k_messages
+ende_bin_100k_messages
+ende_bin_encode_reused_buffer
+ende_bin_decode_owned
+ende_bin_decode_borrowed
+ende_json_diagnostic_1k
+ende_schema_load
+ende_studio_protocol_roundtrip
+ende_hot_reload_patch_roundtrip
+ende_profiler_trace_encode
+```
+
+记录：
+
+- ns/message；
+- MB/s；
+- allocations/message；
+- bytes allocated；
+- bytes/message；
+- peak memory；
+- code size；
+- compile time（derive-heavy fixture）。
+
+### 10.5.18 Ende correctness / fuzz contract
+
+测试至少覆盖：
+
+```text
+encode -> decode roundtrip
+cross 32/64-bit golden bytes
+endianness golden bytes
+all primitive boundaries
+NaN/Inf/-0 float bit behavior
+invalid UTF-8
+truncated input
+huge declared length
+unknown enum tag
+nesting limit
+schema mismatch
+old/new compatible message fixtures
+```
+
+Fuzz：
+
+```text
+bin decoder never panics
+json decoder never panics
+bounded decoder never exceeds configured allocation budget
+encode(decode(valid_bytes)) preserves semantic value
+```
+
+### 10.5.19 Ende 的非目标
+
+Viso Ende 不追求：
+
+- 成为 Rust 通用 Serde 替代生态；
+- 支持任意 serialization format plugin；
+- RON；
+- YAML/XML 等核心格式；
+- 通过 reflection 在运行时自动发现未知字段；
+- 直接序列化 Rust memory layout；
+- 给 GPU buffer layout 提供通用 serialization；
+- 让 frame data 在 Encode/Decode 后才能流转；
+- 为极限 wire size 默认引入复杂 varint/delta/compression。
+
+如果 benchmark 表明特定 remote/snapshot 流量需要压缩，应把 compression 作为 Ende payload 外层或专用协议层处理，而不是污染基础 field encoding。
 
 ---
 
@@ -3400,6 +4515,19 @@ hot_reload_large_module
 startup_minimal
 startup_complex_app
 memory_10k_nodes
+
+identity_symbol_link_100k
+identity_dense_property_lookup_1m
+identity_node_generation_check_1m
+identity_keyed_reconcile_100k
+
+ende_bin_small_message
+ende_bin_100k_messages
+ende_bin_encode_reused_buffer
+ende_bin_decode_borrowed
+ende_json_diagnostic_1k
+ende_hot_reload_patch_roundtrip
+ende_profiler_trace_encode
 ```
 
 ### 59.1 CI regression policy
@@ -3625,6 +4753,7 @@ Manual    需要重新设计生命周期/绘制/脚本语义
 - geometry / tessellation；
 - texture atlas；
 - image/audio/video decode 中可独立复用的部分；
+- Makepad `makepad-micro-serde` 中经过验证的轻量 Encode/Decode、低依赖和 derive 实现思想，可作为 `viso-ende` 的算法/性能参考；Viso Ende 使用自己的 API/wire contract，且不包含 RON。
 - OS backend 中稳定的平台调用；
 - 高性能滚动、命中测试、批处理中的算法思想。
 
