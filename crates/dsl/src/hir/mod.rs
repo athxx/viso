@@ -25,10 +25,21 @@
 //! Viso-owned, built on the resolver's slot-based local scopes and durable symbol
 //! identities.
 
+mod capability;
+mod component;
 mod effect;
 mod infer;
+mod nodes;
+mod reads;
 mod ty;
 
+pub use capability::CapabilitySet;
+pub use component::{MemberEnv, lower_component};
 pub use effect::{BodyContext, EffectClass, EffectCx, EffectEnv};
 pub use infer::{InferCx, TypeEnv};
+pub use nodes::{
+    CallableKind, ComponentSchema, ConstValue, HirCallable, HirComponent, HirComputed, HirEvent,
+    HirInput, HirMeta, HirState, OwnershipMode,
+};
+pub use reads::{ReadEnv, collect_reads};
 pub use ty::{Ty, TypeError, WidenError};
