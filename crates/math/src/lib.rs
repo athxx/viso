@@ -30,14 +30,19 @@
 
 #![forbid(unsafe_op_in_unsafe_fn)]
 
-// Further modules land per commit: transforms + rect/insets + geometry next.
 mod dvec;
+mod geom;
 mod mat;
 mod quat;
+mod rect;
 mod simd;
+mod transform;
 mod vec;
 
 pub use dvec::{DVec2, dvec2};
+pub use geom::{Aabb, Plane, Ray};
 pub use mat::{Mat2, Mat3, Mat4};
 pub use quat::Quat;
+pub use rect::{DPoint, DRect, Insets, Point, Rect, Size};
+pub use transform::{Affine2, Transform3};
 pub use vec::{Vec2, Vec3, Vec4, vec2, vec3, vec4};
