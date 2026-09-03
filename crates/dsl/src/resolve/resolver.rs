@@ -24,10 +24,11 @@ use crate::ast::{
     AstNode, Block, CompilationUnit, ComponentDecl, EventHandler, Expr, Item, Member, NamedNode,
     NodeBody, PathExpr, PropertyBinding, SystemDecl, TypePath, ViewBlock, ViewFor, ViewItem,
 };
+use crate::diag::Diagnostic;
 use crate::syntax::SyntaxNode;
 use crate::syntax::span::TextRange;
 
-use super::module::{ModuleGraph, ResolveError, ResolveErrorKind, SourceUnit};
+use super::module::{ModuleGraph, ResolveErrorKind, SourceUnit};
 use super::name::{NameId, NameInterner};
 use super::scope::{LocalSlot, ModuleSymbol, Namespace, ScopeStack, SymbolTable};
 use super::symbol::{SymbolId, SymbolIdentity, SymbolKind, fingerprint};
@@ -58,7 +59,7 @@ pub struct ResolvedModule {
     /// Every name use the pass resolved, in source order.
     pub refs: Vec<ResolvedRef>,
     /// Diagnostics from this module's resolution.
-    pub errors: Vec<ResolveError>,
+    pub errors: Vec<Diagnostic>,
 }
 
 /// One import binding: a local name mapped to the exported symbol it names.
@@ -84,7 +85,7 @@ pub fn resolve(
     // First pass: every module's public symbol table, so cross-module imports can be
     // resolved before any module body is walked.
     let mut tables: Vec<SymbolTable> = Vec::with_capacity(graph.modules().len());
-    let mut early_errors: Vec<Vec<ResolveError>> = Vec::with_capacity(graph.modules().len());
+    let mut early_errors: Vec<Vec<Diagnostic>> = Vec::with_capacity(graph.modules().len());
     for gm in graph.modules() {
         let module_text = gm.path.display(interner);
         let cu = unit_for(units, &module_text, interner);
@@ -148,7 +149,7 @@ fn build_symbol_table(
     package: &str,
     module_text: &str,
     interner: &mut NameInterner,
-) -> (SymbolTable, Vec<ResolveError>) {
+) -> (SymbolTable, Vec<Diagnostic>) {
     let mut table = SymbolTable::new();
     let mut errors = Vec::new();
     let Some(cu) = cu else {
@@ -175,11 +176,9 @@ fn build_symbol_table(
         });
         let symbol = ModuleSymbol { id, exported };
         if let Err(_existing) = table.define(name, ns, symbol) {
-            errors.push(ResolveError {
-                range: Some(name_tok.text_range()),
-                kind: ResolveErrorKind::AmbiguousModule,
-                subject: text.clone(),
-            });
+            errors.push(
+                ResolveErrorKind::AmbiguousModule.to_diagnostic(Some(name_tok.text_range()), &text),
+            );
         }
         // A component's/system's members (state, computed, input, event, and the
         // callables) are named module symbols too: an intra-component reference such
@@ -210,7 +209,7 @@ fn define_members(
     module_text: &str,
     interner: &mut NameInterner,
     table: &mut SymbolTable,
-    errors: &mut Vec<ResolveError>,
+    errors: &mut Vec<Diagnostic>,
 ) {
     let members: Vec<crate::ast::Member> = match decl {
         Item::Component(c) => c.members().collect(),
@@ -235,11 +234,10 @@ fn define_members(
             exported: false,
         };
         if let Err(_existing) = table.define(name, ns, symbol) {
-            errors.push(ResolveError {
-                range: Some(name_tok.text_range()),
-                kind: ResolveErrorKind::AmbiguousModule,
-                subject: member_text,
-            });
+            errors.push(
+                ResolveErrorKind::AmbiguousModule
+                    .to_diagnostic(Some(name_tok.text_range()), &member_text),
+            );
         }
     }
 }
@@ -388,7 +386,7 @@ struct ModulePass<'a> {
     imports: &'a std::collections::HashMap<NameId, ImportBinding>,
     interner: &'a mut NameInterner,
     refs: Vec<ResolvedRef>,
-    errors: Vec<ResolveError>,
+    errors: Vec<Diagnostic>,
     scopes: ScopeStack,
 }
 
@@ -700,11 +698,9 @@ impl ModulePass<'_> {
         // Built-in/native types (Int, Text, Color, ...) are provided by schema, not
         // by a user declaration, so only a name that looks user-defined is flagged.
         if is_user_type_name(&text) {
-            self.errors.push(ResolveError {
-                range: Some(head.text_range()),
-                kind: ResolveErrorKind::UnresolvedModule,
-                subject: text,
-            });
+            self.errors.push(
+                ResolveErrorKind::UnresolvedModule.to_diagnostic(Some(head.text_range()), &text),
+            );
         }
     }
 }
@@ -807,9 +803,9 @@ mod tests {
         );
         let mods = resolve_all(vec![app], &mut interner);
         assert!(
-            mods.iter().flat_map(|m| m.errors.iter()).any(|e| {
-                e.kind == ResolveErrorKind::UnresolvedModule && e.subject == "Missing"
-            }),
+            mods.iter()
+                .flat_map(|m| m.errors.iter())
+                .any(|d| d.code == "E2001" && d.message.contains("`Missing`")),
             "an unknown PascalCase type is E2001"
         );
     }
@@ -827,7 +823,7 @@ mod tests {
         assert!(
             mods.iter()
                 .flat_map(|m| m.errors.iter())
-                .any(|e| e.kind == ResolveErrorKind::AmbiguousModule && e.subject == "Dup"),
+                .any(|d| d.code == "E2002" && d.message.contains("`Dup`")),
             "a repeated type name in one module is a collision"
         );
     }

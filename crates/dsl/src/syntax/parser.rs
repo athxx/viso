@@ -19,19 +19,12 @@
 
 use std::rc::Rc;
 
+use crate::diag::Diagnostic;
+
 use super::cst::{GreenBuilder, GreenNode};
 use super::kind::SyntaxKind;
 use super::span::{TextRange, TextSize};
 use super::token::Token;
-
-/// A structural (non-lexical) diagnostic the skeleton parser emits.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ParseError {
-    /// The byte span the error covers.
-    pub range: TextRange,
-    /// What went wrong.
-    pub kind: ParseErrorKind,
-}
 
 /// The kind of a structural parse error.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -121,6 +114,12 @@ impl ParseErrorKind {
             ParseErrorKind::ReservedIdent => "a reserved word cannot be used as an identifier",
         }
     }
+
+    /// Lifts this kind, at `range`, into the shared [`Diagnostic`]. Every parse
+    /// error is a hard error; the code and message come from this kind's tables.
+    pub fn to_diagnostic(self, range: TextRange) -> Diagnostic {
+        Diagnostic::error(self.code(), range, self.message())
+    }
 }
 
 /// The result of a parse: the lossless CST root plus any structural diagnostics.
@@ -133,7 +132,7 @@ pub struct Parse {
     /// The lossless CST root. `root.text()` equals the original source.
     pub root: Rc<GreenNode>,
     /// Structural diagnostics, in source order.
-    pub errors: Vec<ParseError>,
+    pub errors: Vec<Diagnostic>,
 }
 
 /// Parses `tokens` (the full stream from the lexer, including trivia and the
@@ -154,7 +153,7 @@ struct Parser<'t, 's> {
     /// Index of the next token to consume.
     pos: usize,
     builder: GreenBuilder,
-    errors: Vec<ParseError>,
+    errors: Vec<Diagnostic>,
 }
 
 impl<'t, 's> Parser<'t, 's> {
@@ -363,10 +362,8 @@ impl<'t, 's> Parser<'t, 's> {
         self.builder.finish_node();
         // The error node always spans at least the token(s) we consumed.
         let end = self.offset();
-        self.errors.push(ParseError {
-            range: TextRange::new(start, end),
-            kind: ParseErrorKind::UnexpectedTokens,
-        });
+        self.errors
+            .push(ParseErrorKind::UnexpectedTokens.to_diagnostic(TextRange::new(start, end)));
     }
 
     /// Records a structural error spanning from `offset` to the current cursor
@@ -378,9 +375,7 @@ impl<'t, 's> Parser<'t, 's> {
         } else {
             offset
         };
-        self.errors.push(ParseError {
-            range: TextRange::new(offset, end),
-            kind,
-        });
+        self.errors
+            .push(kind.to_diagnostic(TextRange::new(offset, end)));
     }
 }

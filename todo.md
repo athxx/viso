@@ -154,17 +154,33 @@ DSL language/module semantics, §68):
       incremental, never-hang/panic fuzz). 13 crates, no new deps. NOTE: the *typed grammar*
       (`:` vs `=` context split per §21.5.2, `node name: Type {}` identity, precedence-correct
       expressions) is Slice L — K only groups tokens at declaration/brace granularity.
-- [ ] **Slice L — AST + Name Resolution + module graph.**
-      *Before starting L–N: read doc §10.4 Identity & Symbol Architecture and follow its ID model —*
-      *`NameId` (compiler interner) for source names, `SymbolId` (128-bit) for stable declaration*
-      *identity across compile/link/hot-reload, dense typed IDs (`ComponentTypeId`/`PropertyId`/…)*
-      *for hot lookup, `NodeId` (generational) for instances, `StableKey` for keyed collections.*
-      *No universal `Id(u64)`. This is a prerequisite read, same standing as "read makepad first."*
-      Lower CST → AST; resolve names/imports/exports via a deterministic module graph (§21.4 —
-      no registration-order API; module dependencies resolved by the compiler). Language-version
-      from `Viso.toml`/lock + module path from package + source path (§21.5.3 — no per-file
-      `language`/`module` header ceremony). Tests: import resolution, deterministic graph, cyclic
-      import diagnostic, `ui!`/`component!`/`view!` entry productions all route to one resolver.
+- [x] **Slice L — typed AST + Name Resolution + module graph.**
+      DONE (ADR 0011). Upgraded the coarse Slice-K parser to an event-driven recursive-descent +
+      Pratt typed parser (`syntax/grammar/`, event buffer + `build_tree`, precedence-correct
+      expressions, `:` property-binding vs `=` assignment split per §21.5.2, `node name: Type {}`
+      identity, `for..key`/`on {}`/`child` grammar rules), keeping losslessness + total recovery;
+      the coarse parser is retained for the shared `Parse`/`ParseErrorKind` types. Full rust-analyzer
+      red tree (`syntax/red.rs`: cached `Rc` `SyntaxNode`/`SyntaxToken`/`SyntaxElement`, parent/offset/
+      index identity, bidirectional + ancestor/descendant navigation). Typed AST as red-tree views
+      (`ast/`, `AstNode::cast`, no owned duplication). Identity per §10.4: `NameId`/`NameInterner`,
+      128-bit `SymbolId` from a self-owned fixed FNV-1a-128 (versioned, known-answer-pinned; no
+      `DefaultHasher`/process-seed/byte-offset identity). Deterministic `ModuleGraph::build` from an
+      in-memory `SourceUnit` set (sorted by module-path text, not registration order — §21.4), import
+      edges, cycle detection (E2003) + ambiguity (E2002). Full cross-module resolver (`resolve/`):
+      per-module symbol tables → `SymbolId` + `export` visibility, import alias/selective import,
+      cross-module symbol resolution (unresolved E2001), slot-based local scopes with Value/Type/Event
+      namespaces (§40), view-local `node`/`for` bindings, `let`/param scopes; resolution only (types
+      are Slice M). Unified diagnostics (`diag.rs`): one shared `Diagnostic { severity, code, primary,
+      related, notes, message }` + `Severity`, the three `*Kind` enums kept as the single code/message
+      vocabulary with uniform `to_diagnostic()`, wrapper structs `ParseError`/`ResolveError` deleted,
+      all accumulators `Vec<Diagnostic>`. 93 tests (23 unit + 7 ast + 11 decl + 15 expr + 11 view +
+      18 lexer + 8 coarse-parser). 13 crates, no new deps.
+      DEFERRED to their consumer slice (parsed to placeholder AST now, no resolution): Advanced
+      productions — `trait`/`impl`, general/const generics, `template`/`part`, `style`/`theme`,
+      `shader`, `native` schema. Type/effect/capability checking is Slice M.
+      SPEC BUGS flagged in ADR 0011 for the owner: (1) §54/§56/§65/§E.1 show property binding with
+      `=`, contradicting Appendix A's `:` (colon is authoritative); (2) §21.5.2's `color: theme.…`
+      example uses reserved keyword `theme` as a value-path head with no carve-out.
 - [ ] **Slice M — Typed HIR: schema + type/effect/capability checking.**
       Component/native schema (§21.5.4 — native APIs from generated schema, authors don't
       re-declare signatures); typed properties/events/state; `view` is side-effect-free,
