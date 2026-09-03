@@ -557,11 +557,12 @@ pub fn layout(tree: &mut impl LayoutTree, root: u32, bounds: Rect, scratch: &mut
     let cross_origin = rect_start(bounds, cross) + padding.cross_start(axis);
     let mut cursor = main_origin;
 
-    // Snapshot child ids before recursing (recursion reuses `scratch`).
-    let children: Vec<u32> = scratch[start..start + child_count].to_vec();
-    scratch.truncate(start);
-
-    for &child in &children {
+    // The child ids live in `scratch[start..start + child_count]`. Recursion
+    // appends past that range and truncates back to its own start, so the ids
+    // stay valid across the loop — no per-container snapshot allocation. Each
+    // id is `Copy`d out before the recursive `&mut scratch` borrow.
+    for i in 0..child_count {
+        let child = scratch[start + i];
         let size = tree.input(child).size();
         let main_size = match size.on(axis) {
             Length::Fixed(v) => v,
@@ -599,6 +600,9 @@ pub fn layout(tree: &mut impl LayoutTree, root: u32, bounds: Rect, scratch: &mut
 
         cursor += main_size + gap;
     }
+
+    // Release the child-id slice back to the caller's scratch high-water mark.
+    scratch.truncate(start);
 }
 
 /// Lay out a scroll viewport's single content child. The viewport already has
@@ -716,8 +720,10 @@ fn layout_grid(tree: &mut impl LayoutTree, root: u32, bounds: Rect, scratch: &mu
         return;
     };
 
-    // Snapshot children and their placements (the solver reads all children
-    // before recursing, and recursion reuses `scratch`).
+    // The child ids stay in `scratch[start..start + child_count]` for the whole
+    // pass. Recursion (final loop) appends past that range and truncates back,
+    // so the slice remains valid — no snapshot allocation, matching the flex
+    // path. Each id is `Copy`d out before any `&mut scratch` recursion.
     let start = scratch.len();
     tree.children(root, scratch);
     let child_count = scratch.len() - start;
@@ -725,12 +731,11 @@ fn layout_grid(tree: &mut impl LayoutTree, root: u32, bounds: Rect, scratch: &mu
         scratch.truncate(start);
         return;
     }
-    let children: Vec<u32> = scratch[start..start + child_count].to_vec();
-    scratch.truncate(start);
 
     let cols = column_count.max(1);
-    let placements: Vec<crate::grid::GridPlacement> =
-        children.iter().map(|&c| tree.grid_placement(c)).collect();
+    let placements: Vec<crate::grid::GridPlacement> = (0..child_count)
+        .map(|i| tree.grid_placement(scratch[start + i]))
+        .collect();
 
     // Placement pass.
     let mut occupied: Vec<u64> = Vec::new();
@@ -760,7 +765,8 @@ fn layout_grid(tree: &mut impl LayoutTree, root: u32, bounds: Rect, scratch: &mu
     // single track here — a deferred refinement noted in the ADR).
     let mut col_auto = vec![0.0f32; col_tracks.len()];
     let mut row_auto = vec![0.0f32; row_tracks.len()];
-    for (i, &child) in children.iter().enumerate() {
+    for i in 0..child_count {
+        let child = scratch[start + i];
         let r = regions[i];
         let cm = tree.measured(child);
         if r.col_span == 1 {
@@ -797,7 +803,8 @@ fn layout_grid(tree: &mut impl LayoutTree, root: u32, bounds: Rect, scratch: &mu
 
     // Lay each child into its cell rect. A cell spanning k tracks measures
     // offset(start) .. offset(start+span) minus the trailing gap.
-    for (i, &child) in children.iter().enumerate() {
+    for i in 0..child_count {
+        let child = scratch[start + i];
         let r = regions[i];
         let cx0 = col_offsets[r.col as usize];
         let cx1 = span_end(&col_offsets, &col_sizes, r.col, r.col_span, column_gap);
@@ -830,6 +837,9 @@ fn layout_grid(tree: &mut impl LayoutTree, root: u32, bounds: Rect, scratch: &mu
         };
         layout(tree, child, child_box, scratch);
     }
+
+    // Release the child-id slice back to the caller's scratch high-water mark.
+    scratch.truncate(start);
 }
 
 /// Prefix-sum track start offsets: track `i` starts at the sum of tracks
