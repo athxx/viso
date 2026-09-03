@@ -921,15 +921,21 @@ impl NodeStore {
         bindings: &BindingTable,
     ) -> u32 {
         let mut applied = 0;
+        let counters = bindings.counters();
         for &state in changed {
-            for edge in bindings.for_state(state) {
+            let statics = bindings.for_state(state);
+            for edge in statics {
                 self.mark_dirty(edge.node, edge.class);
-                applied += 1;
             }
-            for edge in bindings.dynamic_for_state(state) {
+            counters.record_static_eval(statics.len() as u64);
+            applied += statics.len() as u32;
+
+            let dynamics = bindings.dynamic_for_state(state);
+            for edge in dynamics {
                 self.mark_dirty(edge.node, edge.class);
-                applied += 1;
             }
+            counters.record_dynamic_eval(dynamics.len() as u64);
+            applied += dynamics.len() as u32;
         }
         applied
     }
@@ -2464,6 +2470,48 @@ mod tests {
         let applied = store.flush_state_transactions(&changed, &bindings);
         assert_eq!(applied, 1, "the single bound edge applies");
         assert!(store.dirty(node.id()).contains(DirtyClass::PAINT));
+        // The flush counted its work on the static path, not the dynamic one.
+        let counters = bindings.counters();
+        assert_eq!(counters.static_binding_eval(), 1, "one static edge walked");
+        assert_eq!(counters.dynamic_binding_eval(), 0, "no dynamic edge walked");
+    }
+
+    #[test]
+    fn flush_counts_static_and_dynamic_paths_apart() {
+        let mut store = NodeStore::new();
+        let mut states = StateStore::new();
+        let mut bindings = BindingTable::new();
+        let mut lists = crate::virtual_list::VirtualLists::new();
+        let s;
+        let a;
+        let b;
+        {
+            let mut cx = BuildCx::with_reactive(&mut store, &mut states, &mut bindings, &mut lists);
+            s = cx.state(StateValue::Int(0));
+            a = cx.leaf(LeafStyle::default());
+            b = cx.leaf(LeafStyle::default());
+            cx.bind(s, a, DirtyClass::PAINT);
+        }
+        // A dynamic edge on the same state is the explicit fallback path.
+        bindings.bind_dynamic(s, b.id(), DirtyClass::LAYOUT);
+
+        assert!(states.set(s, StateValue::Int(1)));
+        let mut changed = Vec::new();
+        states.take_pending(&mut changed);
+        let applied = store.flush_state_transactions(&changed, &bindings);
+        assert_eq!(applied, 2, "one static + one dynamic edge apply");
+        assert!(store.dirty(a.id()).contains(DirtyClass::PAINT));
+        assert!(store.dirty(b.id()).contains(DirtyClass::LAYOUT));
+
+        let counters = bindings.counters();
+        assert_eq!(counters.static_binding_eval(), 1, "one static edge walked");
+        assert_eq!(
+            counters.dynamic_binding_eval(),
+            1,
+            "one dynamic edge walked"
+        );
+        assert_eq!(counters.dynamic_subscribe(), 1, "one dynamic subscription");
+        assert_eq!(counters.dynamic_fallback_nodes(), 1, "one fallback node");
     }
 
     #[test]
