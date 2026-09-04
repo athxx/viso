@@ -42,6 +42,16 @@ pub enum DecodeError {
         /// Number of unconsumed bytes.
         remaining: usize,
     },
+    /// The bytes were present and well-formed as raw scalars, but they did not
+    /// spell a valid value for the type being decoded — an out-of-range enum
+    /// discriminant, an incompatible protocol version, or a similar semantic
+    /// violation. Distinct from [`UnexpectedEof`](Self::UnexpectedEof) (which
+    /// means the input ran short) so a caller can tell a truncated stream from a
+    /// corrupt one.
+    Malformed {
+        /// Cursor position where the invalid value began.
+        offset: usize,
+    },
 }
 
 impl core::fmt::Display for DecodeError {
@@ -63,6 +73,9 @@ impl core::fmt::Display for DecodeError {
             }
             DecodeError::TrailingBytes { remaining } => {
                 write!(f, "{remaining} trailing byte(s) after value")
+            }
+            DecodeError::Malformed { offset } => {
+                write!(f, "malformed value at offset {offset}")
             }
         }
     }

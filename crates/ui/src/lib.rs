@@ -9,6 +9,7 @@
 
 #![forbid(unsafe_op_in_unsafe_fn)]
 
+pub mod aot;
 pub mod binding;
 pub mod component;
 pub mod context;
