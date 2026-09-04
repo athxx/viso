@@ -266,10 +266,37 @@ DSL language/module semantics, §68):
       scroll/leaf); a control-flow region is rejected before commit as in Slice N. Per-slot instance
       reuse across a *structural* edit, `@migrate(from:)` + value-level safe widening, and
       `component!`/`view!` reload entries are recorded and DEFERRED.
-- [ ] **Slice P — release AOT package.**
-      Release build emits compact typed IR/assets; no `.vs` parse at startup (§21.6). Dev metadata
-      (source maps, inspector strings) stripped from the steady-state release path (§60). Tests:
-      an AOT-packaged app boots + renders with the DSL compiler absent from the release graph.
+- [x] **Slice P — release AOT package.**
+      DONE (ADR 0016). The third lowering target of the one shared frontend (after Slice N's builder
+      tokens and Slice O's live commit): `build_package(source)` runs `plan` and serializes the
+      static template into a compact `viso-ende`-framed blob, and a release app instantiates it with
+      **no `.vs` parse at startup** (§21.6). The exit criterion is a dependency-graph fact — the
+      release load path must not reach `viso-dsl` — so the package types + loader live in **viso-ui**
+      (`crates/ui/src/aot/`, release-path resident, zero `viso-dsl` dep) while the build-time emitter
+      lives in **viso-dsl** (`crates/dsl/src/aot.rs`); the wire format has a single source (the
+      `Encode`/`Decode` impls are viso-ui-side, the emitter just constructs that type and encodes).
+      The package binds by durable `StateKey` identity (`from_parts(hi, lo)`, the `SymbolId` layout
+      twin) and references nodes by pre-order `NodeKey` index, so property names / type names /
+      local names / spans are stripped from the steady-state release path (§60). `viso-ende` frames
+      it with a bounded, panic-free decode — the safety precondition for loading an untrusted asset
+      (§30). Two `→ viso-ende` **leaf** edges keep the DAG at 16 crates; the load path imports
+      nothing from `viso-dsl`, so the exit criterion holds at the type-system level. Proven end to
+      end headless (`crates/dsl/tests/aot_package.rs`): a packaged app boots + renders with the
+      compiler absent from the load path, a corrupt blob is a decode error not a panic, and the
+      AOT-loaded tree is structurally identical to the Slice O live-commit tree from one source
+      (the three targets are one frontend). Static-node subset only; a control-flow region is
+      rejected before packaging, as in Slice N/O. Shader-blob AOT, the "generated Rust data" variant,
+      control-flow AOT, and `component!`/`view!` AOT entries are recorded and DEFERRED.
+  - **Deferred from Slice P (recorded, not swallowed):**
+    - Shader-blob AOT packaging — §41 lists "Shader blobs" in the release output, but Slice P's exit
+      criterion is the UI IR loop; this is Slice Q-adjacent (shader hot reload) and waits for it.
+    - The "generated Rust data" package variant (§41's "embedded asset *or* generated Rust data").
+      Slice P shipped the embedded-asset blob path (single format source, `viso-ende`-framed); the
+      Rust-const codegen variant is a later option that would reuse the same emitter output.
+    - Control-flow (`if`/`for`/`match`) AOT — the same static-node-subset boundary as Slice N/O;
+      rejected at `plan` before packaging until a consumer slice adds control-flow lowering.
+    - `component!`/`view!` AOT entry points — they reuse this emitter + the shared frontend; only
+      the fragment source path was wired this slice.
 - [ ] **Slice Q — Shader IR (if in scope this phase, else defer to a shader slice).**
       `shader` surface → typed IR → strict layout validation → backend codegen (§19); hot-reload
       shader error keeps last-good pipeline. May split to its own phase; keep it out of the first
