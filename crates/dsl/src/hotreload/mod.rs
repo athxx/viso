@@ -19,6 +19,8 @@
 //! the migration reference while going further: a full atomic transaction with
 //! explicit identity-keyed migration of state, focus, and scroll.
 
+pub mod diff;
 pub mod plan;
 
+pub use diff::{InsertedNode, KeptNode, RemovedNode, ReplacedNode, StructuralPatch, diff};
 pub use plan::{CandidatePlan, plan};
