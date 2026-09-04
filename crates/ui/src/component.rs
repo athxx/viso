@@ -545,6 +545,38 @@ impl NodeStore {
         );
     }
 
+    /// Set a scroll viewport's offset to an absolute `offset`, clamped per axis
+    /// to `[0, scroll_range]`, marking the node `TRANSFORM | HIT_TEST | PAINT`
+    /// exactly like [`scroll_by`](Self::scroll_by) — the absolute-value sibling of
+    /// that delta setter, sharing its clamp, its dirty classes, and its no-bubble
+    /// rule.
+    ///
+    /// A hot reload uses this to restore a surviving viewport's prior offset:
+    /// the container may have re-laid-out (so its range shifted), and clamping to
+    /// the *new* range keeps the restored offset in bounds. A live-guarded write;
+    /// a stale handle is a no-op, and an offset that resolves to the current
+    /// (clamped) value schedules nothing. Cold path (reload / programmatic seek).
+    pub fn set_scroll(&mut self, id: NodeId, offset: Vec2) {
+        if !self.arena.is_live(id) {
+            return;
+        }
+        let i = id.index() as usize;
+        let range_x = self.scroll_range(id, Axis::Row);
+        let range_y = self.scroll_range(id, Axis::Column);
+        let next = Vec2 {
+            x: offset.x.clamp(0.0, range_x),
+            y: offset.y.clamp(0.0, range_y),
+        };
+        if next == self.scroll[i] {
+            return;
+        }
+        self.scroll[i] = next;
+        self.mark_dirty(
+            id,
+            DirtyClass::TRANSFORM | DirtyClass::HIT_TEST | DirtyClass::PAINT,
+        );
+    }
+
     /// A node's paint style.
     #[inline]
     pub fn style(&self, id: NodeId) -> BoxStyle {
@@ -860,6 +892,54 @@ impl NodeStore {
             }
         }
         scratch.truncate(base);
+        freed
+    }
+
+    /// Replace `old` — a child of `parent` — with the already-built `new`, the
+    /// atomic "change type → rebuild that subtree" step of a directed structural
+    /// patch. `old` and its whole subtree are freed (effect cleanups run, unmount
+    /// order), then `new` is appended under `parent`. Returns the number of nodes
+    /// freed (0 for a stale handle or a non-child `old`, in which case nothing is
+    /// mounted either).
+    ///
+    /// This composes the existing recycle primitives — [`free_subtree`] empties
+    /// `old`'s body, then `old` itself is detached, its effects cancelled, and its
+    /// slot released, then [`arena_append_child`] mounts `new` — so it introduces
+    /// no new mechanism. It does not preserve `old`'s sibling position: `new` lands
+    /// last under `parent`, matching how the reconcile authors a fresh subtree.
+    /// The hot-reload engine calls this only where a node's *type* changed (so its
+    /// runtime state is intentionally lost); an unchanged-type node is patched in
+    /// place and never routed here. Cold path (reload / structural edit).
+    ///
+    /// [`free_subtree`]: Self::free_subtree
+    /// [`arena_append_child`]: Self::arena_append_child
+    pub fn replace_child(
+        &mut self,
+        parent: NodeId,
+        old: NodeId,
+        new: NodeId,
+        effects: &mut EffectStore,
+        scratch: &mut Vec<NodeId>,
+    ) -> u32 {
+        // Guard the whole operation up front: a stale `old`, a stale `parent`, or
+        // an `old` that is not actually a child of `parent` must leave the tree
+        // untouched (no partial free, no orphaned mount).
+        if !self.arena.is_live(old) || !self.arena.is_live(parent) {
+            return 0;
+        }
+        if self.arena.links(old).and_then(|l| l.parent) != Some(parent) {
+            return 0;
+        }
+        // Free `old`'s subtree (descendants + their effect cleanups), then unlink,
+        // clean up, and free `old` itself. Order matches `free_subtree`'s own
+        // per-node teardown (cancel effects before releasing the slot).
+        let mut freed = self.free_subtree(old, effects, scratch);
+        self.arena.detach_child(old);
+        effects.cancel_for_node(old);
+        if self.arena.free(old) {
+            freed += 1;
+        }
+        self.arena.append_child(parent, new);
         freed
     }
 
@@ -2601,6 +2681,119 @@ mod tests {
                 w: b.w,
                 h: b.h,
             }
+        );
+    }
+
+    #[test]
+    fn set_scroll_clamps_absolute_and_a_repeat_is_a_noop() {
+        let (mut store, viewport, _content) = scroll_scene();
+        store.clear_dirty();
+
+        // An absolute offset past the range clamps to the max, like `scroll_by`.
+        store.set_scroll(viewport, Vec2 { x: 20.0, y: 250.0 });
+        assert_eq!(
+            store.scroll(viewport),
+            Vec2 { x: 0.0, y: 200.0 },
+            "x clamps to 0 (no horizontal range), y clamps to 200"
+        );
+        assert!(store.dirty(viewport).contains(DirtyClass::TRANSFORM));
+        assert!(store.dirty(viewport).contains(DirtyClass::HIT_TEST));
+        assert!(store.dirty(viewport).contains(DirtyClass::PAINT));
+
+        // Setting the same (clamped) offset again moves nothing and schedules
+        // no work — the reload restore of an unchanged offset is free.
+        store.clear_dirty();
+        store.set_scroll(viewport, Vec2 { x: 0.0, y: 200.0 });
+        assert!(store.dirty(viewport).is_empty(), "no-op schedules nothing");
+
+        // A lower absolute offset moves the viewport back up and re-dirties it.
+        store.set_scroll(viewport, Vec2 { x: 0.0, y: 50.0 });
+        assert_eq!(store.scroll(viewport), Vec2 { x: 0.0, y: 50.0 });
+        assert!(store.dirty(viewport).contains(DirtyClass::TRANSFORM));
+    }
+
+    // ---- replace_child ----
+
+    #[test]
+    fn replace_child_frees_old_subtree_and_mounts_new() {
+        let mut store = NodeStore::new();
+        let sink: std::rc::Rc<std::cell::RefCell<Vec<NodeId>>> =
+            std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        // parent { old { grandchild } }
+        let parent = {
+            let capture = std::rc::Rc::clone(&sink);
+            let mut cx = BuildCx::new(&mut store);
+            cx.flex(FlexStyle::default(), |cx| {
+                cx.flex(FlexStyle::default(), |cx| {
+                    capture
+                        .borrow_mut()
+                        .push(cx.leaf(LeafStyle::default()).id());
+                });
+            })
+            .id()
+        };
+        let old = store
+            .arena()
+            .links(parent)
+            .and_then(|l| l.first_child)
+            .unwrap();
+        let grandchild = sink.borrow()[0];
+
+        // A freshly built replacement, parked as an orphan until it is mounted.
+        let new = {
+            let mut cx = BuildCx::new(&mut store);
+            cx.leaf(LeafStyle::default()).id()
+        };
+
+        let mut effects = EffectStore::new();
+        let mut scratch = Vec::new();
+        let freed = store.replace_child(parent, old, new, &mut effects, &mut scratch);
+
+        assert_eq!(freed, 2, "old and its grandchild are freed");
+        assert!(!store.arena().is_live(old), "old is gone");
+        assert!(!store.arena().is_live(grandchild), "old's subtree is gone");
+        assert!(store.arena().is_live(new), "the replacement stays live");
+        assert_eq!(
+            store.arena().links(parent).and_then(|l| l.first_child),
+            Some(new),
+            "new is mounted under parent",
+        );
+    }
+
+    #[test]
+    fn replace_child_rejects_a_non_child_and_touches_nothing() {
+        let mut store = NodeStore::new();
+        // Two unrelated roots; `stray` is not a child of `parent`.
+        let parent = {
+            let mut cx = BuildCx::new(&mut store);
+            cx.flex(FlexStyle::default(), |_| {}).id()
+        };
+        let stray = {
+            let mut cx = BuildCx::new(&mut store);
+            cx.leaf(LeafStyle::default()).id()
+        };
+        let new = {
+            let mut cx = BuildCx::new(&mut store);
+            cx.leaf(LeafStyle::default()).id()
+        };
+
+        let mut effects = EffectStore::new();
+        let mut scratch = Vec::new();
+        let freed = store.replace_child(parent, stray, new, &mut effects, &mut scratch);
+
+        assert_eq!(freed, 0, "a non-child old frees nothing");
+        assert!(
+            store.arena().is_live(stray),
+            "the wrongly-named node survives"
+        );
+        assert!(store.arena().is_live(new), "the replacement is not mounted");
+        assert!(
+            store
+                .arena()
+                .links(parent)
+                .and_then(|l| l.first_child)
+                .is_none(),
+            "parent is left untouched",
         );
     }
 }

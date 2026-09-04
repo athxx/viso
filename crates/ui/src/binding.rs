@@ -191,6 +191,33 @@ impl BindingTable {
         }
     }
 
+    /// Drop every static edge, leaving the dynamic region and counters intact.
+    ///
+    /// A transactional hot reload replaces the compiled binding set wholesale:
+    /// the recompiled Binding IR is the new source of truth, so the prior static
+    /// edges must be voided before the new ones are installed (there is no
+    /// unbind — a compiled edge set is rebuilt, not patched). The dynamic region
+    /// is left untouched because it is an explicit runtime escape hatch (section
+    /// 10.3),
+    /// not part of the compiled template. Cold path (reload only).
+    pub fn clear_static(&mut self) {
+        self.edges.clear();
+        self.runs.clear();
+    }
+
+    /// Replace the static region with a fresh compiled edge set.
+    ///
+    /// Equivalent to [`Self::clear_static`] followed by a [`Self::bind`] for each
+    /// edge, but reserving once. Edges may arrive in any order; grouping and
+    /// same-node class folding match `bind`, so the resulting `for_state` slices
+    /// keep their dense, contiguous layout. Cold path (reload only).
+    pub fn rebuild_static(&mut self, edges: impl IntoIterator<Item = (StateId, Binding)>) {
+        self.clear_static();
+        for (state, binding) in edges {
+            self.bind(state, binding.node, binding.class);
+        }
+    }
+
     /// The reactive-path counters (section 10.3), for an inspector, a test, or a
     /// benchmark comparing the static / mixed / dynamic paths.
     #[inline]
@@ -427,5 +454,53 @@ mod tests {
         assert_eq!(table.for_state(s)[0].node, a);
         assert_eq!(table.dynamic_for_state(s).len(), 1);
         assert_eq!(table.dynamic_for_state(s)[0].node, b);
+    }
+
+    #[test]
+    fn rebuild_static_replaces_edges_and_keeps_dynamic() {
+        let mut states = StateStore::new();
+        let mut arena = NodeArena::new();
+        let mut table = BindingTable::new();
+
+        let s = state(&mut states);
+        let old = node(&mut arena);
+        let dynamic_node = node(&mut arena);
+        table.bind(s, old, DirtyClass::PAINT);
+        table.bind_dynamic(s, dynamic_node, DirtyClass::LAYOUT);
+
+        // A reload installs a fresh compiled edge set for the same state.
+        let fresh = node(&mut arena);
+        table.rebuild_static([(
+            s,
+            Binding {
+                node: fresh,
+                class: DirtyClass::MEASURE | DirtyClass::LAYOUT,
+            },
+        )]);
+
+        let edges = table.for_state(s);
+        assert_eq!(edges.len(), 1, "old static edge dropped");
+        assert_eq!(edges[0].node, fresh);
+        assert!(
+            edges[0]
+                .class
+                .contains(DirtyClass::MEASURE | DirtyClass::LAYOUT)
+        );
+        // Dynamic region is untouched by a static rebuild.
+        assert_eq!(table.dynamic_for_state(s).len(), 1);
+        assert_eq!(table.dynamic_for_state(s)[0].node, dynamic_node);
+    }
+
+    #[test]
+    fn clear_static_leaves_no_edges() {
+        let mut states = StateStore::new();
+        let mut arena = NodeArena::new();
+        let mut table = BindingTable::new();
+
+        let s = state(&mut states);
+        let a = node(&mut arena);
+        table.bind(s, a, DirtyClass::PAINT);
+        table.clear_static();
+        assert!(table.for_state(s).is_empty());
     }
 }
