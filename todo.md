@@ -297,10 +297,41 @@ DSL language/module semantics, §68):
       rejected at `plan` before packaging until a consumer slice adds control-flow lowering.
     - `component!`/`view!` AOT entry points — they reuse this emitter + the shared frontend; only
       the fragment source path was wired this slice.
-- [ ] **Slice Q — Shader IR (if in scope this phase, else defer to a shader slice).**
-      `shader` surface → typed IR → strict layout validation → backend codegen (§19); hot-reload
-      shader error keeps last-good pipeline. May split to its own phase; keep it out of the first
-      DSL vertical slice unless a consumer needs it.
+- [x] **Slice Q — Shader IR.**
+      DONE (ADR 0017). A real typed shader IR (`crates/shader/src/ir/`) is now the single source of
+      truth: one `ShaderIr` per built-in emits **both** the MSL `InstanceIn`/`VertexIn` struct
+      (`emit_msl`) **and** the validated `InstanceSchema` (`emit_schema_attrs`), so the `msl.rs`
+      hand-written duplication — the "implicit shader instance field-order ABI" §56 targets — is
+      gone; a strengthened three-leg test proves MSL struct order == schema order == IR attribute
+      order cannot drift. The four `quad_ir`/`image_ir`/`glyphrun_ir`/`mesh_ir` constructors are the
+      only remaining hand-written field contract; the `*_MSL()`/`*_schema()` re-exports keep their
+      `&'static` contract via a cold `OnceLock` cache, so `viso-render` is unchanged. Added the
+      §36.1 explicit CPU↔GPU cross-check: `InstanceLayout::validate_against` now compares byte offset
+      and stride (not just count/name/format) against the `#[repr(C)]` `offset_of!` truth, with new
+      `LayoutError::{OffsetMismatch, StrideMismatch}` — turning the silent-memory-corruption gap
+      Makepad leaves into a registration-time error (§30/53). A VM-free last-good holder
+      (`ShaderPipeline`, `crates/shader/src/reload.rs`) compiles → validates → replaces `last_good`
+      atomically only on success; a failed ABI reload returns `Vec<Diagnostic>` and leaves
+      `last_good` byte-for-byte intact (§19 keep-last-good, structurally the DSL `hotreload`
+      invariant but independent, no shared VM). Diagnostics are self-contained (`crates/shader/
+      src/diag.rs`): a `Severity`/`Diagnostic` parallel to the DSL shape but keyed by `CompileStage`
+      (no text span yet), because `viso-shader` is below `viso-dsl` in the DAG and cannot import its
+      `Diagnostic`. Codegen is **MSL only**; the built-in bodies are byte-identical to the prior
+      hand-written MSL (asserted by derivation tests), so no on-device Metal run was required. No
+      crate, no new DAG edge (16 crates); all work inside the existing `viso-shader → viso-gpu` edge.
+      Proven headless: the `viso-render` golden test passes (all four real built-in layouts clear the
+      new offset/stride guard at registration), the reload tests prove keep-last-good field for
+      field, and `viso-ende` is unaffected.
+  - **Deferred from Slice Q (recorded, not swallowed):**
+    - Shader text frontend (source → token → CST parser) — the built-ins use a Rust-side structured
+      IR builder; a text path would prematurely duplicate the `viso-dsl` frontend and §36 does not
+      require built-ins to travel it. When it lands, `Diagnostic` gains a primary source span.
+    - HLSL / SPIR-V / WGSL backend codegen — §36's "broader/deferred targets"; this slice emits MSL.
+    - Shader-blob AOT packaging (the Slice P deferred item, §41) — there is now an IR to serialize,
+      but it is not in this slice's exit criterion.
+    - Body expression-level shader AST / swizzle type system — the built-in bodies use existing MSL
+      fragments; the full swizzle/function type system is only needed once users author shader logic
+      rather than the built-in primitives.
 
 **Phase 6 exit criteria (doc §71):** formatter/LSP/goto/rename/reference usable; release needs
 no startup `.vs` parse; hot reload is compile → validate → atomic patch; a failed compile keeps

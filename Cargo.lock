@@ -928,6 +928,7 @@ dependencies = [
 name = "viso-dsl"
 version = "0.0.0"
 dependencies = [
+ "viso-ende",
  "viso-ui",
 ]
 
