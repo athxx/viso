@@ -16,6 +16,7 @@
 
 #![forbid(unsafe_op_in_unsafe_fn)]
 
+pub mod aot;
 pub mod ast;
 pub mod diag;
 pub mod hir;
