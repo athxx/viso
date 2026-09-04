@@ -246,11 +246,26 @@ DSL language/module semantics, §68):
       structurally and DEFERRED to their consumer slice (the emitter surfaces an explicit
       `compile_error!` for a control-flow region rather than mount it wrong). `component!`/`view!`
       reuse the pass + emitter; only `ui!` shipped this slice.
-- [ ] **Slice O — dev hot reload (transactional).**
-      compile → validate → prepare migration → diff → commit atomically (§21.7). On compile/
-      validate failure keep last-good UI (§19/§30). state/focus/scroll migration rules on a
-      structural change (§71 exit, §52). Tests: a valid edit atomically patches the retained tree;
-      an invalid edit keeps last-good; a structural edit migrates state/focus/scroll per the rule.
+- [x] **Slice O — dev hot reload (transactional).**
+      DONE (ADR 0015). Hot reload is a transaction, not a rebuild (§42/§21.7): the entry
+      `hot_reload` runs `plan → diff → migrate → commit`, where the three fallible stages are pure
+      functions producing plain data and only `commit` touches the live tree. So a compile/validate
+      failure short-circuits at `plan(source)?` **before** commit and the live tree stays at
+      last-good — keep-last-good is an invariant of the pipeline shape, no snapshot/rollback (§19/
+      §30). Structure changes apply as a directed minimal `StructuralPatch` keyed by the Slice N
+      pre-order `NodeKey` numbering (same identity → reuse live instance; type change → rebuild);
+      state migrates by durable `SymbolId` identity so editing one line never disturbs another cell;
+      focus/scroll survive iff their slot is kept, and what cannot survive is *reported*, not
+      silently dropped (§52/§71 exit). The engine lives in `crates/dsl/src/hotreload/` inside the
+      existing `viso-dsl → viso-ui` edge — no new crate/edge, still 16 crates; `viso-ui` gained a
+      `#[repr(C)]` `StateKey` (layout twin of `SymbolId`) plus `migrate_state` / `set_scroll` /
+      `clear_static`/`rebuild_static`, importing nothing from `viso-dsl` (§21.1). Takes the
+      reference framework's live-editing *semantics* (template-is-truth, same-identity-reuse /
+      type-change-rebuild) and exceeds them into a full atomic transaction with explicit identity-
+      keyed migration (§38.4). This slice commits the static-node subset (single-root flex/grid/
+      scroll/leaf); a control-flow region is rejected before commit as in Slice N. Per-slot instance
+      reuse across a *structural* edit, `@migrate(from:)` + value-level safe widening, and
+      `component!`/`view!` reload entries are recorded and DEFERRED.
 - [ ] **Slice P — release AOT package.**
       Release build emits compact typed IR/assets; no `.vs` parse at startup (§21.6). Dev metadata
       (source maps, inspector strings) stripped from the steady-state release path (§60). Tests:
