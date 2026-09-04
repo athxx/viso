@@ -57,6 +57,13 @@ fn allowed_edges() -> BTreeMap<&'static str, &'static [&'static str]> {
         // compiled fragment into a compact `viso_ende`-serialized package. Leaf edge,
         // no cycle.
         ("viso-dsl", &["viso-ui", "viso-ende"][..]),
+        // The formatter / language-server tooling for `.vs` (Slice R). A pure
+        // analysis engine plus a thin stdio JSON-RPC bin, both reusing the
+        // `viso-dsl` frontend (CST / resolver / LineIndex). A clean new leaf edge;
+        // `.vs` (section 32) lists formatter/LSP as long-term standalone tools, so
+        // this earns its own crate (AGENTS 3.3: independent executable + protocol
+        // deps that must not pollute the compiler library).
+        ("viso-lsp", &["viso-dsl"][..]),
         ("viso-services", &["viso-runtime"][..]),
         // `viso-ende` is the AOT package codec: the release loader (Slice P) decodes a
         // compact package and instantiates it through `BuildCx`, so the release path
