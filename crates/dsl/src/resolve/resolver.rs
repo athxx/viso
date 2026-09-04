@@ -35,7 +35,11 @@ use super::scope::{LocalSlot, ModuleSymbol, Namespace, ScopeStack, SymbolTable};
 use super::symbol::{SymbolId, SymbolIdentity, SymbolKind, fingerprint};
 
 /// What a name use resolves to.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+///
+/// `Hash`/`Ord` let tooling key an index by resolution target (both payloads —
+/// [`SymbolId`] and [`LocalSlot`] — are themselves hashable and ordered); the
+/// compiler proper compares by equality only.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Resolution {
     /// A durable declaration identity, in this module or an imported one.
     Symbol(SymbolId),
@@ -52,6 +56,23 @@ pub struct ResolvedRef {
     pub to: Resolution,
 }
 
+/// The definition site of one module symbol: its id paired with the span of the
+/// declaration's name token.
+///
+/// The resolver mints a [`SymbolId`] from a declaration's *canonical identity*
+/// (never its position), so the id alone cannot locate the declaration in source.
+/// Recording the name-token span here — captured at the single mint site, no
+/// second tree walk — is what lets goto-definition and rename find and rewrite the
+/// definition. This is a cold-path tooling aid (AGENTS 7.2); the compiler proper
+/// does not consult it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SymbolDecl {
+    /// The declaration's durable identity.
+    pub id: SymbolId,
+    /// The span of the declaration's name token.
+    pub name_range: TextRange,
+}
+
 /// The result of resolving one module: its symbol table, its resolved references,
 /// and any diagnostics gathered along the way.
 pub struct ResolvedModule {
@@ -59,6 +80,9 @@ pub struct ResolvedModule {
     pub table: SymbolTable,
     /// Every name use the pass resolved, in source order.
     pub refs: Vec<ResolvedRef>,
+    /// The definition site (name-token span) of every module symbol this module
+    /// declares, in declaration order. The goto/rename target for a [`SymbolId`].
+    pub decls: Vec<SymbolDecl>,
     /// Diagnostics from this module's resolution.
     pub errors: Vec<Diagnostic>,
 }
@@ -86,12 +110,15 @@ pub fn resolve(
     // First pass: every module's public symbol table, so cross-module imports can be
     // resolved before any module body is walked.
     let mut tables: Vec<SymbolTable> = Vec::with_capacity(graph.modules().len());
+    let mut all_decls: Vec<Vec<SymbolDecl>> = Vec::with_capacity(graph.modules().len());
     let mut early_errors: Vec<Vec<Diagnostic>> = Vec::with_capacity(graph.modules().len());
     for gm in graph.modules() {
         let module_text = gm.path.display(interner);
         let cu = unit_for(units, &module_text, interner);
-        let (table, errors) = build_symbol_table(cu.as_ref(), package, &module_text, interner);
+        let (table, decls, errors) =
+            build_symbol_table(cu.as_ref(), package, &module_text, interner);
         tables.push(table);
+        all_decls.push(decls);
         early_errors.push(errors);
     }
 
@@ -121,6 +148,7 @@ pub fn resolve(
         resolved.push(ResolvedModule {
             table: std::mem::take(&mut tables[i]),
             refs,
+            decls: std::mem::take(&mut all_decls[i]),
             errors,
         });
     }
@@ -148,16 +176,20 @@ fn compilation_unit_of(unit: &SourceUnit) -> Option<CompilationUnit> {
 }
 
 /// Builds a module's public symbol table from its top-level declarations.
+///
+/// Alongside the table it returns one [`SymbolDecl`] per minted symbol — the
+/// name-token span of each declaration, in declaration order — captured at the
+/// mint site so tooling (goto/rename) can locate a definition from its
+/// [`SymbolId`] without a second walk.
 fn build_symbol_table(
     cu: Option<&CompilationUnit>,
     package: &str,
     module_text: &str,
     interner: &mut NameInterner,
-) -> (SymbolTable, Vec<Diagnostic>) {
-    let mut table = SymbolTable::new();
-    let mut errors = Vec::new();
+) -> (SymbolTable, Vec<SymbolDecl>, Vec<Diagnostic>) {
+    let mut out = SymbolTableBuild::default();
     let Some(cu) = cu else {
-        return (table, errors);
+        return out.into_parts();
     };
     for item in cu.items() {
         let (decl, exported) = match item {
@@ -179,8 +211,12 @@ fn build_symbol_table(
             decl_path: &text,
         });
         let symbol = ModuleSymbol { id, exported };
-        if let Err(_existing) = table.define(name, ns, symbol) {
-            errors.push(
+        out.decls.push(SymbolDecl {
+            id,
+            name_range: name_tok.text_range(),
+        });
+        if let Err(_existing) = out.table.define(name, ns, symbol) {
+            out.errors.push(
                 ResolveErrorKind::AmbiguousModule.to_diagnostic(Some(name_tok.text_range()), &text),
             );
         }
@@ -190,18 +226,26 @@ fn build_symbol_table(
         // fingerprint is keyed by the enclosing declaration's name so two components
         // may each declare a `count` without colliding.
         if let Item::Component(_) | Item::System(_) = decl {
-            define_members(
-                &decl,
-                &text,
-                package,
-                module_text,
-                interner,
-                &mut table,
-                &mut errors,
-            );
+            define_members(&decl, &text, package, module_text, interner, &mut out);
         }
     }
-    (table, errors)
+    out.into_parts()
+}
+
+/// The in-progress output of [`build_symbol_table`]: the module symbol table, the
+/// declaration name-token spans (which goto/rename tooling keys on), and the collision
+/// diagnostics. Threaded as one sink through the member-defining pass.
+#[derive(Default)]
+struct SymbolTableBuild {
+    table: SymbolTable,
+    decls: Vec<SymbolDecl>,
+    errors: Vec<Diagnostic>,
+}
+
+impl SymbolTableBuild {
+    fn into_parts(self) -> (SymbolTable, Vec<SymbolDecl>, Vec<Diagnostic>) {
+        (self.table, self.decls, self.errors)
+    }
 }
 
 /// Defines a component's or system's members into the module symbol table, each
@@ -212,8 +256,7 @@ fn define_members(
     package: &str,
     module_text: &str,
     interner: &mut NameInterner,
-    table: &mut SymbolTable,
-    errors: &mut Vec<Diagnostic>,
+    out: &mut SymbolTableBuild,
 ) {
     let members: Vec<crate::ast::Member> = match decl {
         Item::Component(c) => c.members().collect(),
@@ -237,8 +280,12 @@ fn define_members(
             id,
             exported: false,
         };
-        if let Err(_existing) = table.define(name, ns, symbol) {
-            errors.push(
+        out.decls.push(SymbolDecl {
+            id,
+            name_range: name_tok.text_range(),
+        });
+        if let Err(_existing) = out.table.define(name, ns, symbol) {
+            out.errors.push(
                 ResolveErrorKind::AmbiguousModule
                     .to_diagnostic(Some(name_tok.text_range()), &member_text),
             );
