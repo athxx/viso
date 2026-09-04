@@ -9,6 +9,8 @@
 //! `viso-dsl`, so the format has a single source of truth (the types are defined
 //! here, the emitter merely constructs them and encodes).
 
+pub mod load;
 pub mod package;
 
+pub use load::{instantiate, load_from_bytes};
 pub use package::{AotAxis, AotEdge, AotLength, AotNode, AotNodeKind, AotPackage, AotStyle};
