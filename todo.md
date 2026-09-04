@@ -531,5 +531,35 @@ old Phase 10 `viso migrate` migration tooling was **removed** from the doc (see 
       仅用 viso-ui(paint 输出元素类型由 `paint_tree` 推断,不必命名 `viso_render::Primitive`),零新 dev-dep 边。
       数字后续片补(本片先立骨架)。
 
-后续片(不做,记此):Label(静态文字 content,走已在的 `text_request`+facade shaping)、Image(纹理)、
-Icon(Path);View 的 child-list / keyed children 抽象(本片单 builder 闭包);widget microbench 记录基线数字。
+### Slice 3 — Tier 1 widget:Label(已收官 2026-09-05)
+
+- [x] `crates/widgets/src/lib.rs`:声明 `mod text` + `pub use text::{Label, LabelStyle, label}`(简单控件单文件)。
+- [x] `crates/widgets/src/text.rs`:`Label`/`LabelStyle`/`label()`;链式 `.font_size`/`.color`/`.size`;
+      `LabelStyle::default()` 两轴 `Fit`、font_size 14.0、color 近黑。`impl Component`——一个 `LeafStyle{ size,
+      style: BoxStyle::NONE }` leaf + `text_request(TextRequest{text,font_size,color})` + `Semantics::role(Label)
+      .with_label(text)`;shaping 由 facade `shape_pending_text` 那一步完成(不动 viso-ui/render/facade 底层)。
+      `build(&self)` 取引用故 text `.clone()` 喂 request/label(冷路径 build-time,非热帧)。3 单测(单 leaf +
+      text_request + Label 语义;setters 覆写 + 默认 Fit;非交互无 handler→Label 非 Button)+ 1 doctest。
+- [x] facade prelude:`pub use viso_widgets::{Label, LabelStyle, View, ViewStyle, label, view}`;删注释里已兑现的 Label。
+- [x] Label 的 section 71 validation pack:widget 单测在 `text.rs`(仅 viso-ui);golden+measure/a11y/alloc 集成放
+      `crates/viso/tests/label_widget.rs`(facade 侧)。**Fit 测量硬约束**:Fit 叶子**作为 layout 根会填满 surface**,
+      Fit-to-content 只在作为子节点时成立——故 golden 把 Label 包进一个 `view()` 容器,经 `store.arena().links(root)
+      .first_child` 定位 label leaf,断言其 bounds 量到 glyph natural。shaping 走既有 test_glyphs fixture 旁路
+      (`TextShaper` 是 `pub(crate)` 不可从集成测调),`set_content_payload(Content::Text{...})` 直接喂确定性字形。
+      golden `label_widget.bgra8` 经 BLESS=1 生成、gitignore 不提交;alloc 4 帧预热 + 两帧相等 + `frame_stats`/
+      `*_count()` 不变。
+- [x] microbench 骨架:`crates/widgets/benches/label_build.rs`(criterion),measure `label(..).build`/layout/paint_tree
+      单帧,仅 viso-ui(label leaf 承载**未 shape** 的 text_request,bench 计的是 widget 声明/布局/paint 成本,非
+      shaping);Cargo.toml 加 `[[bench]] name = "label_build"`。烟测数字 build≈876ns / layout≈21.6ns /
+      paint_tree≈9.2ns(短时长烟测,**非记录基线**;基线数字与 View 一起后续片补)。
+
+后续片(不做,记此):
+- Image(纹理 content,现成 `TextureId`)、Icon(Path content),各附同款 validation pack。
+- **响应式 Label**:文字内容绑 state → 重建 text_request + MEASURE/LAYOUT/PAINT/SEMANTICS 失效;本片只静态文字
+  (`StateValue::Text` 破 `Copy` 的连锁改动已在 Slice 1 被否,走重建路径)。
+- 文字 **wrap / max_lines / overflow 截断 / BiDi / 多字体**:`viso-text` 现单 face/LTR/硬 `\n`,LabelStyle 暂不含 wrap 字段。
+- 通过**公共 API** 真正驱动 facade `TextShaper` 的端到端 shape 集成(需 `Application` frame flow 或把 shape 接缝公开);
+  本片 golden 沿用 test_glyphs 确定性惯例,不阻塞。
+- **widget microbench 记录基线数字**(View + Label 一起补)。
+- View 的 child-list / keyed children 抽象(现单 builder 闭包)。
+- **B1 宏表层**(`component!`/`view!`/`#[component]`);Tier 1 先手写 `Component`。

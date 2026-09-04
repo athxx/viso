@@ -20,3 +20,7 @@ criterion = "0.7"
 [[bench]]
 name = "view_build"
 harness = false
+
+[[bench]]
+name = "label_build"
+harness = false
