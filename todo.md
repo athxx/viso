@@ -512,8 +512,24 @@ old Phase 10 `viso migrate` migration tooling was **removed** from the doc (see 
       文字子系统成型后,默认 face + fallback 链应归 `viso-text` 拥有,facade 只选择而非内嵌资产。
 - [ ] **B1 宏表层**(`component!`/`view!`/`#[component]`):Tier 1 先手写 `Component` struct,宏表层保持 DEFERRED。
 
-### Slice 2+ — Tier 1 widgets(后续片)
+### Slice 2 — Tier 1 widgets 框架 + View/Container(当前片)
 
-- [ ] `crates/widgets` 按 `Component` 模型落地:先 View/Container(底层今天就够),再 Label/Image/Icon。
-      每个 widget 附 §71 validation pack(行为清单/golden/input tape/a11y 快照/microbench/alloc profile)。
-- [ ] **清理**:动 `crates/widgets/src/lib.rs` 时移除其中的 Makepad 关键字注释(违 no-Makepad-comment 约束)。
+- [x] 接缝补口:`crates/ui/src/lib.rs` re-export `viso_render::{Rgba,Rect,TextureId,PathCmd,Point,Stroke}`
+      —— 已在 `viso-ui` 公开签名里(`Content`/`TextRequest.color`/`BoxStyle.fill`),让只依赖 viso-ui 的
+      widget 能命名它们;零新 DAG 边(viso-render 已是 viso-ui 依赖)。check-deps 仍 17 crates 零变化。
+- [x] `crates/widgets`:移除 lib.rs 里的 Makepad 关键字注释(违 no-Makepad-comment 约束);声明 `mod containers`
+      + `pub use containers::{View, ViewStyle, view}`。
+- [x] `crates/widgets/src/containers.rs`:`View`/`ViewStyle`/`view()`,`impl Component`(无 scroll→flex,有
+      scroll→scroll),默认 `Role::Group`;子内容用单 `Box<dyn Fn(&mut BuildCx)>` builder 闭包(`Component::build`
+      取 `&self` 故须 `Fn` 非 `FnOnce`,在 flex/scroll 调用点包一层);build/语义/layout 3 单测 + 1 doctest。
+- [x] facade:prelude 加 `View`/`ViewStyle`/`view`;加 `pub mod widgets { pub use viso_widgets::*; }` escape hatch。
+- [x] View 的 section 71 validation pack:build/语义/layout 单测在 `crates/widgets/src/containers.rs`(仅 viso-ui);
+      golden/alloc/a11y/input-tape 集成放 `crates/viso/tests/view_widget.rs`(facade 侧,依赖已全)—— golden/alloc
+      需 `viso::render`/`viso::gpu`,widgets dev-dep 反指 facade 会引循环,故取计划的退路落点。golden `*.bgra8`
+      经 BLESS=1 生成、gitignore 不提交;alloc 稳态两帧相等(需 4 帧预热到 headless framebuffer 稳态,单帧不够)。
+- [x] microbench 骨架:`crates/widgets/benches/view_build.rs`(criterion),measure build/layout/paint_tree 单帧;
+      仅用 viso-ui(paint 输出元素类型由 `paint_tree` 推断,不必命名 `viso_render::Primitive`),零新 dev-dep 边。
+      数字后续片补(本片先立骨架)。
+
+后续片(不做,记此):Label(静态文字 content,走已在的 `text_request`+facade shaping)、Image(纹理)、
+Icon(Path);View 的 child-list / keyed children 抽象(本片单 builder 闭包);widget microbench 记录基线数字。

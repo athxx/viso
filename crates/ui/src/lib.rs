@@ -45,6 +45,13 @@ pub use input::{
 pub use layout::{Align, Axis, Inset, Length, Size, Vec2};
 pub use node::{NodeArena, NodeId, NodeLinks};
 pub use paint::paint_tree;
+// Render primitive data types that already appear in this crate's public API —
+// `Content`'s payload fields (content.rs), `TextRequest::color`, and
+// `BoxStyle::fill` (style.rs) are all typed with them. Re-export the exact set
+// so a downstream crate depending only on `viso-ui` (e.g. `viso-widgets`, which
+// the DAG allows to reach `viso-ui` alone) can name them to construct a
+// `BoxStyle`, `TextRequest`, or `Content`. `viso-render` is already a `viso-ui`
+// dependency, so this adds no new edge.
 pub use reactive::{
     Cleanup, ComputeCx, ComputedId, ComputedStore, DepCursor, EffectId, EffectStore,
 };
@@ -56,3 +63,4 @@ pub use virtual_list::{
     HeightCache, HeightTree, ItemBuilder, VirtualListState, VirtualLists, absorb_measurements,
     reconcile, set_item_count,
 };
+pub use viso_render::{PathCmd, Point, Rect, Rgba, Stroke, TextureId};
