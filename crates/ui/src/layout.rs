@@ -347,12 +347,16 @@ pub trait LayoutTree {
     fn grid_row_tracks(&self, index: u32) -> Option<&[TrackSizing]>;
     /// A child's placement inside its grid parent (default = auto-flow, span 1).
     fn grid_placement(&self, index: u32) -> GridPlacement;
+    /// A node's content intrinsic size, or `None` when it carries no drawable
+    /// content. A `Fit`/`Fill` leaf axis resolves against this; a `None` leaf
+    /// measures to `0` on both axes (a bare layout leaf, the prior behavior).
+    fn content_natural(&self, index: u32) -> Option<Vec2>;
 }
 
 /// Bottom-up measure pass: compute every node's natural size.
 ///
-/// A leaf's natural size resolves each axis's [`Length`] against its measured
-/// content (0 for a bare fill/fit leaf in this slice). A Flex container's main
+/// A leaf's natural size resolves each axis's [`Length`] against its content
+/// intrinsic size (0 for a bare layout leaf with no content). A Flex container's main
 /// natural size is the sum of children's main naturals plus `gap` between each
 /// adjacent pair plus main padding; its cross natural is the max child cross
 /// plus cross padding. The recursion is post-order so children are measured
@@ -371,10 +375,16 @@ pub fn measure(tree: &mut impl LayoutTree, root: u32, scratch: &mut Vec<u32>) {
     }
 
     let measured = match tree.input(root) {
-        LayoutInput::Leaf { size } => Measured {
-            w: natural_length(size.width, 0.0),
-            h: natural_length(size.height, 0.0),
-        },
+        LayoutInput::Leaf { size } => {
+            // A content leaf (text/image/path) resolves a Fit/Fill axis against
+            // its measured intrinsic size; a bare layout leaf has none and reads
+            // back 0 on both axes.
+            let content = tree.content_natural(root).unwrap_or(Vec2::ZERO);
+            Measured {
+                w: natural_length(size.width, content.x),
+                h: natural_length(size.height, content.y),
+            }
+        }
         LayoutInput::Flex {
             axis,
             gap,

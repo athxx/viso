@@ -12,6 +12,7 @@
 pub mod aot;
 pub mod binding;
 pub mod component;
+pub mod content;
 pub mod context;
 pub mod dirty;
 pub mod grid;
@@ -32,6 +33,7 @@ pub use component::{
     BuildCx, Component, FlexStyle, FrameRecompute, Handle, LeafStyle, NodeStore, PointerHandler,
     ScrollStyle, VirtualListStyle,
 };
+pub use content::Content;
 pub use context::EventCx;
 pub use dirty::DirtyClass;
 pub use grid::{GridPlacement, GridStyle, TrackSizing};

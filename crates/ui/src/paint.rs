@@ -18,8 +18,12 @@
 //! pushed, so it fills the whole box regardless of scroll.
 
 use crate::component::NodeStore;
+use crate::content::Content;
 use crate::node::NodeId;
-use viso_render::{LayerClip, Primitive, Quad};
+use viso_render::{
+    GlyphInstanceData, GlyphRunDraw, ImageDraw, LayerClip, Path, PathCmd, Point, Primitive, Quad,
+    Rect,
+};
 
 /// Emit primitives for the subtree rooted at `root` into `out`, in pre-order.
 /// `out` is not cleared — append semantics let a caller compose multiple trees.
@@ -38,6 +42,13 @@ pub fn paint_tree(store: &NodeStore, root: NodeId, out: &mut Vec<Primitive>) {
             radius: style.radius,
             border: style.border,
         }));
+    }
+
+    // Drawable content (text/image/path) paints over the node's background. Its
+    // coordinates are node-local, so shift them by the node's world origin — a
+    // scrolled or repositioned node then draws its content in the right place.
+    if let Some(content) = store.content_payload(root) {
+        paint_content(content, world, out);
     }
 
     // A scroll viewport clips its content to its own box: push a clip layer
@@ -60,6 +71,74 @@ pub fn paint_tree(store: &NodeStore, root: NodeId, out: &mut Vec<Primitive>) {
 
     if scroll_clip {
         out.push(Primitive::LayerEnd);
+    }
+}
+
+/// Lower one node's [`Content`] to a primitive, translating its node-local
+/// coordinates by the node's `world` origin. The image variant fills the node's
+/// whole `world` box (a content leaf sizes to the image's intrinsic size, so the
+/// box already matches unless a fixed size overrides it).
+fn paint_content(content: &Content, world: Rect, out: &mut Vec<Primitive>) {
+    let ox = world.x;
+    let oy = world.y;
+    match content {
+        Content::Text {
+            glyphs,
+            atlas,
+            color,
+            ..
+        } => {
+            let glyphs = glyphs
+                .iter()
+                .map(|g| GlyphInstanceData {
+                    rect: Rect {
+                        x: g.rect.x + ox,
+                        y: g.rect.y + oy,
+                        w: g.rect.w,
+                        h: g.rect.h,
+                    },
+                    ..*g
+                })
+                .collect();
+            out.push(Primitive::GlyphRun(GlyphRunDraw {
+                glyphs,
+                atlas: *atlas,
+                color: *color,
+            }));
+        }
+        Content::Image {
+            texture, uv, tint, ..
+        } => {
+            out.push(Primitive::Image(ImageDraw {
+                rect: world,
+                uv: *uv,
+                tint: *tint,
+                texture: *texture,
+            }));
+        }
+        Content::Path {
+            cmds, fill, stroke, ..
+        } => {
+            let cmds = cmds.iter().map(|c| translate_cmd(*c, ox, oy)).collect();
+            out.push(Primitive::Path(Path {
+                cmds,
+                fill: *fill,
+                stroke: *stroke,
+            }));
+        }
+    }
+}
+
+/// Translate a path command's points by `(dx, dy)`.
+#[inline]
+fn translate_cmd(cmd: PathCmd, dx: f32, dy: f32) -> PathCmd {
+    let t = |p: Point| Point::new(p.x + dx, p.y + dy);
+    match cmd {
+        PathCmd::MoveTo(p) => PathCmd::MoveTo(t(p)),
+        PathCmd::LineTo(p) => PathCmd::LineTo(t(p)),
+        PathCmd::QuadTo(c, p) => PathCmd::QuadTo(t(c), t(p)),
+        PathCmd::CubicTo(c1, c2, p) => PathCmd::CubicTo(t(c1), t(c2), t(p)),
+        PathCmd::Close => PathCmd::Close,
     }
 }
 
@@ -180,5 +259,172 @@ mod tests {
         assert!(matches!(out[2], Primitive::Quad(q) if q.rect == cw));
         assert_eq!(cw.y, store.bounds(content.unwrap()).y - 40.0);
         assert!(matches!(out[3], Primitive::LayerEnd));
+    }
+
+    #[test]
+    fn content_emits_after_background_and_offsets_by_world() {
+        use crate::content::Content;
+        use crate::layout::{Length, Vec2};
+        use viso_render::{GlyphInstanceData, PathCmd, Point, TextureId};
+
+        // A row so the leaf sits at a nonzero world x, exercising the local→world
+        // translation of glyph and path coordinates.
+        let mut store = NodeStore::new();
+        let mut text_id = None;
+        let mut path_id = None;
+        let mut image_id = None;
+        let root = {
+            let mut cx = BuildCx::new(&mut store);
+            cx.flex(FlexStyle::default(), |cx| {
+                text_id = Some(
+                    cx.leaf(LeafStyle {
+                        size: Size::fixed(30.0, 20.0),
+                        style: BoxStyle::solid(RED),
+                    })
+                    .id(),
+                );
+                image_id = Some(
+                    cx.leaf(LeafStyle {
+                        size: Size {
+                            width: Length::Fit,
+                            height: Length::Fit,
+                        },
+                        style: BoxStyle::NONE,
+                    })
+                    .id(),
+                );
+                path_id = Some(
+                    cx.leaf(LeafStyle {
+                        size: Size::fixed(16.0, 16.0),
+                        style: BoxStyle::NONE,
+                    })
+                    .id(),
+                );
+            });
+            cx.root().unwrap()
+        };
+        let text_id = text_id.unwrap();
+        let image_id = image_id.unwrap();
+        let path_id = path_id.unwrap();
+
+        // A one-glyph run positioned at local (2,3).
+        store.set_content_payload(
+            text_id,
+            Content::Text {
+                glyphs: vec![GlyphInstanceData {
+                    rect: Rect {
+                        x: 2.0,
+                        y: 3.0,
+                        w: 8.0,
+                        h: 10.0,
+                    },
+                    uv: Rect {
+                        x: 0.0,
+                        y: 0.0,
+                        w: 1.0,
+                        h: 1.0,
+                    },
+                    px_range: 2.0,
+                }],
+                atlas: TextureId(7),
+                color: RED,
+                natural: Vec2 { x: 30.0, y: 20.0 },
+            },
+        );
+        // An image whose Fit box comes from its intrinsic size.
+        store.set_content_payload(
+            image_id,
+            Content::Image {
+                texture: TextureId(9),
+                uv: Rect {
+                    x: 0.0,
+                    y: 0.0,
+                    w: 1.0,
+                    h: 1.0,
+                },
+                tint: Rgba {
+                    r: 1.0,
+                    g: 1.0,
+                    b: 1.0,
+                    a: 1.0,
+                },
+                natural: Vec2 { x: 40.0, y: 20.0 },
+            },
+        );
+        // A path with one moveto/lineto at local coords.
+        store.set_content_payload(
+            path_id,
+            Content::Path {
+                cmds: vec![
+                    PathCmd::MoveTo(Point::new(1.0, 1.0)),
+                    PathCmd::LineTo(Point::new(5.0, 5.0)),
+                ],
+                fill: Some(RED),
+                stroke: None,
+                natural: Vec2 { x: 16.0, y: 16.0 },
+            },
+        );
+
+        let mut scratch = Vec::new();
+        store.layout(
+            root,
+            Rect {
+                x: 0.0,
+                y: 0.0,
+                w: 200.0,
+                h: 100.0,
+            },
+            &mut scratch,
+        );
+
+        // The image leaf's box is its intrinsic size (Fit both axes).
+        let img_box = store.bounds(image_id);
+        assert_eq!(img_box.w, 40.0);
+        assert_eq!(img_box.h, 20.0);
+
+        let mut out = Vec::new();
+        paint_tree(&store, root, &mut out);
+
+        // text leaf: background quad, then a glyph run shifted to world origin.
+        let text_world = store.world(text_id);
+        let run = out
+            .iter()
+            .find_map(|p| match p {
+                Primitive::GlyphRun(r) => Some(r),
+                _ => None,
+            })
+            .expect("a glyph run");
+        assert_eq!(run.atlas, TextureId(7));
+        assert_eq!(run.glyphs[0].rect.x, text_world.x + 2.0);
+        assert_eq!(run.glyphs[0].rect.y, text_world.y + 3.0);
+
+        // image: fills its world box.
+        let image = out
+            .iter()
+            .find_map(|p| match p {
+                Primitive::Image(i) => Some(i),
+                _ => None,
+            })
+            .expect("an image");
+        assert_eq!(image.texture, TextureId(9));
+        assert_eq!(image.rect, store.world(image_id));
+
+        // path: commands translated by the path leaf's world origin.
+        let path_world = store.world(path_id);
+        let path = out
+            .iter()
+            .find_map(|p| match p {
+                Primitive::Path(p) => Some(p),
+                _ => None,
+            })
+            .expect("a path");
+        assert_eq!(
+            path.cmds[0],
+            PathCmd::MoveTo(Point::new(path_world.x + 1.0, path_world.y + 1.0))
+        );
+        assert_eq!(
+            path.cmds[1],
+            PathCmd::LineTo(Point::new(path_world.x + 5.0, path_world.y + 5.0))
+        );
     }
 }

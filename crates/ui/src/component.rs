@@ -10,6 +10,7 @@
 //! backs the object-oriented external API.
 
 use crate::binding::BindingTable;
+use crate::content::Content;
 use crate::context::EventCx;
 use crate::dirty::DirtyClass;
 use crate::grid::{GridPlacement, GridStyle, GridTracks, TrackSizing};
@@ -249,6 +250,13 @@ pub struct NodeStore {
     /// `handlers`/`styled`. A `None` entry means a plain layout/decoration node
     /// (the derive pass still gives an interactive node a default role).
     semantics: Vec<Option<Semantics>>,
+    /// Cold: per-node drawable content (text/image/path) plus its measured
+    /// intrinsic size, index-aligned but mostly `None` — only content-bearing
+    /// nodes carry it, boxed off the hot columns like `semantics`. The measure
+    /// pass reads its `natural()` for a `Fit` axis; paint lowers it to a
+    /// glyph-run/image/path primitive. Named `content_payload` to avoid the
+    /// scroll `content` extent column above.
+    content_payload: Vec<Option<Box<Content>>>,
 }
 
 impl NodeStore {
@@ -279,6 +287,7 @@ impl NodeStore {
         self.key_handlers.clear();
         self.styled.clear();
         self.semantics.clear();
+        self.content_payload.clear();
         self.focused = None;
         self.capture = None;
     }
@@ -625,6 +634,28 @@ impl NodeStore {
         }
         self.semantics[id.index() as usize] = Some(semantics);
         self.mark_dirty(id, DirtyClass::SEMANTICS);
+    }
+
+    /// A node's drawable content (text/image/path), if any. `None` = a node that
+    /// draws only its background quad (the common case).
+    #[inline]
+    pub fn content_payload(&self, id: NodeId) -> Option<&Content> {
+        self.content_payload[id.index() as usize].as_deref()
+    }
+
+    /// Set a node's drawable content, replacing any prior value, and mark it
+    /// MEASURE | LAYOUT | PAINT dirty: content carries an intrinsic size, so a
+    /// changed payload can resize a `Fit` node and must re-measure, re-lay-out,
+    /// and repaint. A live-guarded write — a stale handle is a no-op.
+    pub fn set_content_payload(&mut self, id: NodeId, content: Content) {
+        if !self.arena.is_live(id) {
+            return;
+        }
+        self.content_payload[id.index() as usize] = Some(Box::new(content));
+        self.mark_dirty(
+            id,
+            DirtyClass::MEASURE | DirtyClass::LAYOUT | DirtyClass::PAINT,
+        );
     }
 
     /// A node's current pending invalidation set.
@@ -1054,6 +1085,7 @@ impl NodeStore {
             self.key_handlers[i] = None;
             self.styled[i] = None;
             self.semantics[i] = None;
+            self.content_payload[i] = None;
         } else {
             debug_assert_eq!(i, self.bounds.len(), "arena index must stay dense");
             self.bounds.push(Rect {
@@ -1083,6 +1115,7 @@ impl NodeStore {
             self.key_handlers.push(None);
             self.styled.push(None);
             self.semantics.push(None);
+            self.content_payload.push(None);
         }
         id
     }
@@ -1396,6 +1429,13 @@ impl LayoutTree for NodeStore {
     #[inline]
     fn grid_placement(&self, index: u32) -> GridPlacement {
         self.grid_placement[index as usize]
+    }
+
+    #[inline]
+    fn content_natural(&self, index: u32) -> Option<Vec2> {
+        self.content_payload[index as usize]
+            .as_ref()
+            .map(|c| c.natural())
     }
 }
 
