@@ -12,6 +12,10 @@ rust-version.workspace = true
 [dependencies]
 viso-render = { workspace = true }
 viso-runtime = { workspace = true }
+# AOT package codec (Slice P, architecture section 41): the release loader decodes a
+# compact serialized UI package and instantiates it through `BuildCx`, so the release
+# path carries no DSL compiler. `viso-ende` is a dependency-free DAG leaf.
+viso-ende = { workspace = true }
 
 # Benches only. criterion is a dev-dependency: it never ships in the ui crate and
 # is not an architecture DAG edge (external crate, ignored by `xtask check-deps`).

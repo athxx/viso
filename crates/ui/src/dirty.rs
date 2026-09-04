@@ -49,6 +49,37 @@ impl DirtyClass {
     pub fn is_empty(self) -> bool {
         self.0 == 0
     }
+
+    /// The raw bitset byte.
+    ///
+    /// This is the stable wire form of a class set: the release AOT package
+    /// (architecture section 41) stores a binding's invalidation classes as this
+    /// byte and rebuilds them with [`from_bits`](Self::from_bits) at load time. The
+    /// bit positions are the `1 << n` constants above; they are the format's own
+    /// contract, so the emitter and loader read and write the same byte directly.
+    #[inline]
+    pub fn bits(self) -> u8 {
+        self.0
+    }
+
+    /// A class set from a raw bitset byte, keeping only defined bits.
+    ///
+    /// The inverse of [`bits`](Self::bits): any bit not backing a named class is
+    /// dropped, so a corrupt or forward-versioned byte can never smuggle in an
+    /// undefined class. This is what the AOT loader uses to reconstruct a binding's
+    /// classes without reinterpreting an untrusted byte wholesale.
+    #[inline]
+    pub fn from_bits(bits: u8) -> Self {
+        const DEFINED: u8 = DirtyClass::STRUCTURE.0
+            | DirtyClass::STYLE.0
+            | DirtyClass::MEASURE.0
+            | DirtyClass::LAYOUT.0
+            | DirtyClass::TRANSFORM.0
+            | DirtyClass::PAINT.0
+            | DirtyClass::HIT_TEST.0
+            | DirtyClass::SEMANTICS.0;
+        Self(bits & DEFINED)
+    }
 }
 
 impl BitAnd for DirtyClass {

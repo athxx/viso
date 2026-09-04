@@ -53,9 +53,15 @@ fn allowed_edges() -> BTreeMap<&'static str, &'static [&'static str]> {
         ("viso-ende", &[][..]),
         ("viso-widgets", &["viso-ui"][..]),
         // dsl works against a schema/registry, NOT concrete widgets (section 10.1).
-        ("viso-dsl", &["viso-ui"][..]),
+        // `viso-ende` is the AOT package codec: the release emitter (Slice P) turns a
+        // compiled fragment into a compact `viso_ende`-serialized package. Leaf edge,
+        // no cycle.
+        ("viso-dsl", &["viso-ui", "viso-ende"][..]),
         ("viso-services", &["viso-runtime"][..]),
-        ("viso-ui", &["viso-render", "viso-runtime"][..]),
+        // `viso-ende` is the AOT package codec: the release loader (Slice P) decodes a
+        // compact package and instantiates it through `BuildCx`, so the release path
+        // carries no DSL compiler. Leaf edge, no cycle.
+        ("viso-ui", &["viso-render", "viso-runtime", "viso-ende"][..]),
         ("viso-render", &["viso-text", "viso-shader", "viso-gpu"][..]),
         ("viso-text", &["viso-gpu"][..]),
         ("viso-shader", &["viso-gpu"][..]),

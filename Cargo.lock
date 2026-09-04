@@ -1045,6 +1045,7 @@ name = "viso-ui"
 version = "0.0.0"
 dependencies = [
  "criterion",
+ "viso-ende",
  "viso-render",
  "viso-runtime",
 ]
