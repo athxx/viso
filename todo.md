@@ -333,9 +333,43 @@ DSL language/module semantics, §68):
       fragments; the full swizzle/function type system is only needed once users author shader logic
       rather than the built-in primitives.
 
-**Phase 6 exit criteria (doc §71):** formatter/LSP/goto/rename/reference usable; release needs
-no startup `.vs` parse; hot reload is compile → validate → atomic patch; a failed compile keeps
-last-good UI; state/focus/scroll migration has explicit rules.
+- [x] **Slice R — formatter + LSP.**
+      DONE (ADR 0018). Delivers the last Phase 6 exit criterion (§71 item 1) — formatter, goto-
+      definition, find-references, rename, publishDiagnostics for `.vs` — as a new `viso-lsp` crate
+      with one clean leaf edge `("viso-lsp", &["viso-dsl"])` (17 crates). Two layers: a **pure
+      analysis engine** (`index.rs`/`source_map.rs`/`position.rs`/`engine.rs`) with zero protocol
+      dependencies, every operation a plain function from source + position to spans/edits and fully
+      headless-unit-tested; plus a **thin synchronous stdio JSON-RPC frontend** (`rpc/` self-contained
+      JSON + `Content-Length` framing, `server.rs` dispatcher, `src/bin/viso-lsp.rs` read→handle→write
+      loop) with **no async runtime** — tower-lsp + tokio was rejected (AGENTS 25 "adapters, not
+      owner"; also blocks headless engine testing). Two net-new frontend pieces in `viso-dsl`: the
+      resolver now emits `SymbolDecl { id, name_range }` at the single `SymbolId`-mint site (no second
+      tree walk) so goto/rename can locate the definition, and `Resolution` gains `Hash`/`Ord` so the
+      reverse `def → use` index keys off it (compiler proper still compares by equality only). The
+      formatter is a CST-driven normalizing re-layout per the DSL style rules (§21.5.2: unified
+      indent, `:` binding + `;` terminator, block-brace placement, folded blank lines, **comments
+      preserved**), anchored by `format(format(x)) == format(x)` idempotence + golden tests. All
+      cold-path tooling (§7.2: HashMap/String/Vec are the right tools). Proven headless: 36 `viso-lsp`
+      tests (engine goto/references/rename + formatter idempotence/golden + transport round-trips) and
+      114 `viso-dsl` tests pass; `check-deps`/clippy/fmt clean.
+  - **Deferred from Slice R (recorded, not swallowed):**
+    - **Viso CLI** (`viso` command-line tool) — Phase 9 Studio/Inspector/CLI. This slice ships only a
+      narrow `.vs` formatter/language-server bin, not a full `viso` CLI.
+    - **`viso migrate`** — Phase 10 source-level Makepad migration tooling.
+    - **Extended LSP methods** — hover / completion / signature help / semantic tokens / code actions
+      / folding. This slice ships the minimal usable set: goto-definition / find-references / rename /
+      formatting / publishDiagnostics.
+    - **Cross-package reference indexing** — `SourceMap` handles multiple open documents, but the
+      reverse index is per-module; cross-package references wait for a workspace-wide index.
+
+**Phase 6 exit criteria (doc §71) — ALL GREEN:**
+- [x] formatter/LSP/goto/rename/reference usable — Slice R.
+- [x] release needs no startup `.vs` parse — Slice P (AOT package).
+- [x] hot reload is compile → validate → atomic patch — Slices K–O.
+- [x] a failed compile keeps last-good UI — Slices K–O / Slice Q (shader last-good).
+- [x] state/focus/scroll migration has explicit rules — Slices K–O.
+
+**Phase 6 is complete.**
 
 **Deferred past Phase 6 (doc §72+):** Phase 7 native widget rewrites (Tier 1–6); Phase 8
 platform services / async / app framework; Phase 9 Studio / Inspector / CLI (the deferred state
