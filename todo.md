@@ -474,9 +474,15 @@ old Phase 10 `viso migrate` migration tooling was **removed** from the doc (see 
 
 ### 待做(本片剩余)
 
-- [ ] **1.5 `crates/viso/src/lib.rs` facade 文字 content 生产接缝**:paint_tree 之前,对声明为文字的节点用
-      `Renderer` 持有的 `TextSystem` shape/度量,产出 `GlyphRunDraw` + `natural`,`set_content_payload` 写回;
-      窄 facade/prelude 入口(供 Slice 2 Label 用)。本片只做**静态文字**,不做响应式。
+- [x] **1.5 facade 文字 content 生产接缝**(已验证:2 新单测 + 166 tests / check-deps 17 crates 零变化 / clippy / fmt 全绿):
+      **采用 Option 1「viso-ui cold `TextRequest` 请求列」**(用户「你按判据定」授权):`viso-ui` 新增 cold 侧列
+      `text_request: Vec<Option<Box<TextRequest>>>`(`TextRequest { text, font_size, color }`,mostly `None`,不进热遍历);
+      `BuildCx::text_request(handle, req)` 授权入口;facade `AppDriver` 持 `TextShaper`(`crates/viso/src/text_content.rs`:
+      内嵌 `DejaVuSans-subset.ttf` + `TextSystem` + 持久 R8 atlas 纹理),build 后 `shape_pending_text()` 排干请求列、
+      逐个 `TextSystem::prepare` shape、`set_content_payload` 写回(其 `MEASURE|LAYOUT|PAINT` 失效)。**理由**:请求是
+      描述该节点内容的单一真相源、keyed by node;响应式重建只需重设请求→重 shape→重设 content→失效。接缝跑在 measure/layout
+      **之前**(on_launch build 后;Layout phase reconcile 后、relayout 前)。本片只做**静态文字**,不做响应式。
+      **新增 follow-up**:`shape_pending_text` 现 `dpi=1.0` 硬编码,DPI 应从 surface 密度取(见下 DEFERRED「DPI plumbing」)。
 - [ ] **1.6a headless 集成 + golden**:复用 `crates/viso/tests/headless_scene.rs` + `crates/render/tests/golden.rs`
       BLESS 机制,跑「静态文字 + 一张纹理图」场景像素断言。
 - [ ] **1.6b allocation/steady-state**:复用 `crates/render/benches/renderer_steady_state.rs` CountingAlloc +
@@ -490,6 +496,10 @@ old Phase 10 `viso migrate` migration tooling was **removed** from the doc (see 
 - [ ] **图片解码 / 图片 atlas**:全工作区无解码路径;本片 Image content 只接**现成 `TextureId`**。png/jpeg/svg
       栅格解码 + 图片 atlas 归属后续小节 or Tier 6 可选集成(doc §46)。
 - [ ] **文字换行 / BiDi / 多字体**:`viso-text` 现为单 face、LTR、硬 `\n`;wrap/`max_lines`/overflow 留待文字子系统扩展。
+- [ ] **DPI plumbing**:`AppDriver::shape_pending_text` 现 `dpi=1.0` 硬编码。应从 surface 的设备像素密度取真实
+      `dpi_factor` 传给 `TextShaper::shape`(glyph 按该密度栅格化)。窗口 resize/移屏改密度时须重 shape 文字节点。
+- [ ] **默认 UI 字体归属**:`crates/viso/fixtures/DejaVuSans-subset.ttf` 现由 facade 自持(`text_content.rs` include_bytes)。
+      文字子系统成型后,默认 face + fallback 链应归 `viso-text` 拥有,facade 只选择而非内嵌资产。
 - [ ] **B1 宏表层**(`component!`/`view!`/`#[component]`):Tier 1 先手写 `Component` struct,宏表层保持 DEFERRED。
 
 ### Slice 2+ — Tier 1 widgets(后续片)

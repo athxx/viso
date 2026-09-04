@@ -43,9 +43,12 @@ use viso_runtime::{FramePhase, RuntimeCx, Scheduler};
 use viso_ui::{
     BindingTable, BuildCx, ComputedStore, DirtyClass, EffectStore, FrameRecompute, ImeEvent, Key,
     KeyEvent, KeyRouter, Modifiers, NodeId, NodeStore, PointerButtons, PointerEvent, PointerPhase,
-    PointerRouter, ScrollEvent, ScrollRouter, StateId, StateStore, VirtualLists, focus_next,
-    virtual_list,
+    PointerRouter, ScrollEvent, ScrollRouter, StateId, StateStore, TextRequest, VirtualLists,
+    focus_next, virtual_list,
 };
+
+mod text_content;
+use text_content::TextShaper;
 
 pub use viso_ui::context::AppCx;
 
@@ -151,6 +154,13 @@ struct AppDriver<A: Application> {
     /// a one-shot diagnostic (gated on `VISO_FRAME_TRACE`) proving the first
     /// frame reached the GPU, then fall dark for every steady-state frame.
     awaiting_first_frame: bool,
+    /// The facade's font stack + glyph atlas. Shapes each node's `TextRequest`
+    /// into a `Content::Text` payload (`viso-ui` holds no font stack). `None`
+    /// until launch, when the embedded UI font is loaded.
+    text: Option<TextShaper>,
+    /// Reusable buffer the text seam drains pending requests into, so re-shaping
+    /// text allocates only the shaped payloads, not the request list.
+    text_scratch: Vec<(NodeId, Box<TextRequest>)>,
 }
 
 /// The facade-owned GPU state: the concrete backend, the renderer, and the
@@ -188,6 +198,30 @@ impl<A: Application> AppDriver<A> {
             redo_roots: Vec::new(),
             recompute: FrameRecompute::default(),
             awaiting_first_frame: true,
+            text: None,
+            text_scratch: Vec::new(),
+        }
+    }
+
+    /// Shape every node that carries a pending [`TextRequest`] into a
+    /// `Content::Text` payload, uploading newly-packed glyphs to the atlas.
+    /// Runs after a build/rebuild and before layout, so a `Fit` text node
+    /// measures against the shaped run's natural size. A no-op with no GPU
+    /// (headless-without-surface) or no shaper (pre-launch).
+    fn shape_pending_text(&mut self) {
+        let (Some(gpu), Some(text)) = (self.gpu.as_mut(), self.text.as_mut()) else {
+            return;
+        };
+        self.store.take_text_requests(&mut self.text_scratch);
+        if self.text_scratch.is_empty() {
+            return;
+        }
+        // DPI factor 1.0 for now: the surface density plumbs through with the
+        // scale-aware input path later; the embedded font rasterizes at 1x.
+        let dpi = 1.0;
+        for (id, request) in self.text_scratch.drain(..) {
+            let content = text.shape(&mut gpu.backend, &request, dpi);
+            self.store.set_content_payload(id, content);
         }
     }
 
@@ -249,6 +283,8 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
             surface,
             size: (w.max(1), h.max(1)),
         });
+        // Load the font stack now that a backend exists to allocate the atlas.
+        self.text = Some(TextShaper::new());
 
         // Build the user application's retained UI tree once, now that we have a
         // surface size. The driver owns `store`, `states`, and `bindings` as
@@ -274,6 +310,10 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
             app.build(&mut build);
             self.root = build.root();
         }
+
+        // Shape any static text declared during build into content payloads,
+        // before the first measure so a `Fit` text node sizes to its run.
+        self.shape_pending_text();
 
         // Seed the first frame: mark the root fully dirty so the incremental
         // passes do the initial measure/layout/paint for the whole tree.
@@ -459,6 +499,11 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
                     &mut self.bindings,
                     &mut self.effects,
                 );
+                // Shape any text (re)declared this frame — a rebuilt list row or a
+                // future reactive text update leaves a pending `TextRequest` — into
+                // a content payload before measure, so a `Fit` text node sizes to
+                // its run. A no-op when nothing declared text (the steady case).
+                self.shape_pending_text();
                 // Incrementally re-place invalidated subtrees and repaint if any
                 // paint-affecting class is pending; a clean frame touches nothing.
                 self.relayout_and_paint();
@@ -546,7 +591,7 @@ pub mod prelude {
     // the default set (commonly used, stable, unambiguous).
     pub use viso_ui::{
         BuildCx, FlexStyle, GridPlacement, GridStyle, LeafStyle, Role, Semantics, StateId,
-        StateValue, TrackSizing, VirtualListStyle,
+        StateValue, TextRequest, TrackSizing, VirtualListStyle,
     };
     // The declarative view-fragment entry point (§21.5): a small local `ui! { … }`
     // fragment lowers, at Rust compile time, to a static `BuildCx` builder closure.

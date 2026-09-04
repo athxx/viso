@@ -33,7 +33,7 @@ pub use component::{
     BuildCx, Component, FlexStyle, FrameRecompute, Handle, LeafStyle, NodeStore, PointerHandler,
     ScrollStyle, VirtualListStyle,
 };
-pub use content::Content;
+pub use content::{Content, TextRequest};
 pub use context::EventCx;
 pub use dirty::DirtyClass;
 pub use grid::{GridPlacement, GridStyle, TrackSizing};
