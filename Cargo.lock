@@ -971,6 +971,13 @@ name = "viso-handle"
 version = "0.0.0"
 
 [[package]]
+name = "viso-lsp"
+version = "0.0.0"
+dependencies = [
+ "viso-dsl",
+]
+
+[[package]]
 name = "viso-macros"
 version = "0.0.0"
 dependencies = [
