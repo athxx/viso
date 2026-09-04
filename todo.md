@@ -490,8 +490,13 @@ old Phase 10 `viso migrate` migration tooling was **removed** from the doc (see 
       `test_texture` 棋盘纹理),baseline `tests/golden/content_scene.bgra8`(160×96×4=61440B,**同 render golden
       `quad_scene` 惯例:`*.bgra*` gitignore、BLESS=1 本地重生,不入库**)。ASCII dump 核实文字双行 + 棋盘块均正确
       栅格,dark-bg 角像素 (26,26,31) 符合 0.1/0.1/0.12。
-- [ ] **1.6b allocation/steady-state**:复用 `crates/render/benches/renderer_steady_state.rs` CountingAlloc +
-      frame_stats,确认加 content 列后正常 paint 无按帧堆分配(§47 契约)。
+- [x] **1.6b allocation/steady-state**(已验证:稳态两帧 alloc 恒为 [12,12]、frame_stats/buffer/texture/bind_group
+      count 不增 / fmt / clippy 全绿):新增 `crates/viso/tests/content_alloc.rs` —— render bench 是手搭 `test_scene`,
+      这个从 **UI 侧**驱动(与 1.6a 同场景:dark Row + `Fit` 文字叶 + 48×48 图片叶),每帧 `paint_tree` lower 进复用
+      primitive buffer → `upload` → `submit`,装本文件私有 `#[global_allocator]`(集成测试独立 binary,计数器不串)。断言:
+      两次相同稳态帧 alloc 数**相等**(paint/encode scratch + content 列无按帧堆分配,§7.1/§47);GPU buffer/texture/
+      bind_group count 帧间不增;draw_calls/instances > 0(非空帧,断言非平凡)。实测每帧 12 次 alloc = headless backend
+      定长 per-command instance-byte copy,帧间恒定不增长。**Slice 1 五节全绿,退出门通过。**
 
 ### 本片 DEFERRED(记进 backlog,不吞)
 
