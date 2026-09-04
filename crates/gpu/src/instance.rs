@@ -181,16 +181,27 @@ impl InstanceLayout {
     /// explicit cross-check; it relies on both sides happening to apply the same
     /// packing rule.
     pub fn validate_against(&self, schema: &InstanceSchema) -> Result<(), LayoutError> {
-        if self.fields.len() != schema.attributes.len() {
+        self.validate_attrs(schema.attributes)
+    }
+
+    /// Like [`validate_against`](Self::validate_against) but takes a borrowed
+    /// attribute slice of any lifetime rather than the `'static`-bound
+    /// [`InstanceSchema`]. The hot-reload holder in `viso-shader` owns its
+    /// candidate schema attributes (so a rejected reload can be dropped without
+    /// leaking to `'static`) and validates them through here; the pipeline
+    /// registration path calls [`validate_against`](Self::validate_against) with a
+    /// `'static` schema. Both share this one implementation.
+    pub fn validate_attrs(&self, attrs: &[SchemaAttr]) -> Result<(), LayoutError> {
+        if self.fields.len() != attrs.len() {
             return Err(LayoutError::CountMismatch {
                 layout: self.fields.len(),
-                schema: schema.attributes.len(),
+                schema: attrs.len(),
             });
         }
         // The offset the shader reads the next attribute at: the running sum of the
         // sizes of the attributes before it, with no padding.
         let mut shader_offset = 0usize;
-        for (index, (field, attr)) in self.fields.iter().zip(schema.attributes).enumerate() {
+        for (index, (field, attr)) in self.fields.iter().zip(attrs).enumerate() {
             if field.name != attr.name {
                 return Err(LayoutError::NameMismatch {
                     index,

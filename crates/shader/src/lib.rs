@@ -19,13 +19,17 @@
 
 #![forbid(unsafe_op_in_unsafe_fn)]
 
+pub mod diag;
 pub mod ir;
 pub mod msl;
+pub mod reload;
 
+pub use diag::{Diagnostic, Severity};
 pub use msl::{
     GLYPHRUN_MSL, IMAGE_MSL, MESH_MSL, PrimitiveKind, QUAD_MSL, glyphrun_schema, image_schema,
     instance_schema, mesh_schema, quad_schema, shader_source,
 };
+pub use reload::{CompiledShader, ShaderPipeline};
 
 /// The stages a shader source passes through, in order (architecture section 36
 /// / AGENTS 19).
