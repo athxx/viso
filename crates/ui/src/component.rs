@@ -10,7 +10,7 @@
 //! backs the object-oriented external API.
 
 use crate::binding::BindingTable;
-use crate::content::Content;
+use crate::content::{Content, TextRequest};
 use crate::context::EventCx;
 use crate::dirty::DirtyClass;
 use crate::grid::{GridPlacement, GridStyle, GridTracks, TrackSizing};
@@ -257,6 +257,13 @@ pub struct NodeStore {
     /// glyph-run/image/path primitive. Named `content_payload` to avoid the
     /// scroll `content` extent column above.
     content_payload: Vec<Option<Box<Content>>>,
+    /// Cold: per-node unshaped text request, index-aligned but mostly `None`.
+    /// `viso-ui` cannot shape text (no font stack), so a text node records what
+    /// it wants drawn here and an upper tier that owns a `TextSystem` drains
+    /// these, shapes each, and writes the result back into `content_payload`.
+    /// Boxed off the hot columns like `semantics`; a cold `String` in sparse
+    /// side storage, never touched by the hot per-node traversal.
+    text_request: Vec<Option<Box<TextRequest>>>,
 }
 
 impl NodeStore {
@@ -288,6 +295,7 @@ impl NodeStore {
         self.styled.clear();
         self.semantics.clear();
         self.content_payload.clear();
+        self.text_request.clear();
         self.focused = None;
         self.capture = None;
     }
@@ -656,6 +664,44 @@ impl NodeStore {
             id,
             DirtyClass::MEASURE | DirtyClass::LAYOUT | DirtyClass::PAINT,
         );
+    }
+
+    /// A node's pending unshaped text request, if any. Set by authoring, read
+    /// and cleared by the upper tier that shapes text (see
+    /// [`Self::take_text_requests`]).
+    #[inline]
+    pub fn text_request(&self, id: NodeId) -> Option<&TextRequest> {
+        self.text_request[id.index() as usize].as_deref()
+    }
+
+    /// Record an unshaped text request on a node, replacing any prior request.
+    /// `viso-ui` cannot shape it; the request waits in a cold side column until
+    /// an upper tier drains it via [`Self::take_text_requests`], shapes it, and
+    /// writes the shaped [`Content`] back with [`Self::set_content_payload`]. A
+    /// live-guarded write — a stale handle is a no-op.
+    pub fn set_text_request(&mut self, id: NodeId, request: TextRequest) {
+        if !self.arena.is_live(id) {
+            return;
+        }
+        self.text_request[id.index() as usize] = Some(Box::new(request));
+    }
+
+    /// Move every pending text request out into `out` as `(NodeId, request)`
+    /// pairs, clearing the column. The shaping tier calls this, shapes each
+    /// request, and writes the result back with [`Self::set_content_payload`] —
+    /// splitting the read (here) from the write avoids borrowing the store for
+    /// the shape step. `out` is cleared first; only live nodes are yielded.
+    /// This is a cold path — it runs only when text is (re)declared, not per
+    /// frame — so moving the boxed requests out is fine.
+    pub fn take_text_requests(&mut self, out: &mut Vec<(NodeId, Box<TextRequest>)>) {
+        out.clear();
+        for (i, slot) in self.text_request.iter_mut().enumerate() {
+            if let Some(req) = slot.take()
+                && let Some(id) = self.arena.live_id(i as u32)
+            {
+                out.push((id, req));
+            }
+        }
     }
 
     /// A node's current pending invalidation set.
@@ -1086,6 +1132,7 @@ impl NodeStore {
             self.styled[i] = None;
             self.semantics[i] = None;
             self.content_payload[i] = None;
+            self.text_request[i] = None;
         } else {
             debug_assert_eq!(i, self.bounds.len(), "arena index must stay dense");
             self.bounds.push(Rect {
@@ -1116,6 +1163,7 @@ impl NodeStore {
             self.styled.push(None);
             self.semantics.push(None);
             self.content_payload.push(None);
+            self.text_request.push(None);
         }
         id
     }
@@ -1746,6 +1794,16 @@ impl<'a> BuildCx<'a> {
     /// accessible facts. Returns the handle so authoring chains inline.
     pub fn semantics(&mut self, handle: Handle, semantics: Semantics) -> Handle {
         self.store.set_semantics(handle.id, semantics);
+        handle
+    }
+
+    /// Declare text to draw on an already-declared node. Mirrors `semantics`:
+    /// associates a node with an unshaped [`TextRequest`], which the shaping
+    /// tier drains and turns into a [`Content::Text`] payload after build (see
+    /// [`NodeStore::take_text_requests`]). `viso-ui` never shapes it itself.
+    /// Returns the handle so authoring chains inline.
+    pub fn text_request(&mut self, handle: Handle, request: TextRequest) -> Handle {
+        self.store.set_text_request(handle.id, request);
         handle
     }
 

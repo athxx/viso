@@ -85,6 +85,27 @@ impl Content {
     }
 }
 
+/// An unshaped request to render text on a node, the input counterpart to a
+/// shaped [`Content::Text`]. `viso-ui` cannot shape text (it holds no font
+/// stack — see the module docs), so a node declares *what* it wants drawn and an
+/// upper tier that owns a `TextSystem` shapes the request into a [`Content`] and
+/// writes it back with [`crate::component::NodeStore::set_content_payload`].
+///
+/// This lives in its own cold, mostly-`None` side column next to
+/// [`Content`]: it is the single source of truth for a text node's declared
+/// content, keyed by the node it describes, so a later reactive rebuild just
+/// re-sets the request and re-shapes — no facade-side bookkeeping to keep in
+/// sync with the tree.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TextRequest {
+    /// The text to shape and draw.
+    pub text: String,
+    /// The font size in logical pixels (scaled by DPI at shape time).
+    pub font_size: f32,
+    /// Straight linear RGBA run color (a = opacity).
+    pub color: Rgba,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
