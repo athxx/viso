@@ -592,7 +592,7 @@ State Dependency Table
 viso/
 ├── Cargo.toml
 ├── README.md
-├── Viso_Architecture.md
+├── ARCHITECTURE.md
 ├── Viso_CLI.md
 ├── AGENTS.md
 ├── architecture.toml
@@ -1003,20 +1003,20 @@ Viso 1.0 不使用一个“万能 ID”贯穿编译器、UI、Shader、资源、
 
 Viso 1.0 的标准身份类型如下：
 
-| 类型              | 语义                                      |                     建议表示 |     跨编译稳定 | 主要路径                |
-| ----------------- | ----------------------------------------- | ---------------------------: | -------------: | ----------------------- |
-| `NameId`          | 当前编译会话中的 interned identifier      |                        `u32` |             否 | compiler                |
-| `SymbolId`        | 稳定源码/Schema/声明身份                  |                      128 bit |             是 | compile/link/hot reload |
-| `ComponentTypeId` | 当前 runtime image 中的组件类型索引       |                        `u32` |             否 | hot                     |
-| `PropertyId`      | Property Schema 的稠密索引                |                    `u16/u32` |             否 | hot                     |
-| `EventId`         | Typed Event 的稠密索引                    |                    `u16/u32` |             否 | hot                     |
-| `StyleId`         | 编译后的 Style 索引                       |                        `u32` |             否 | hot/warm                |
-| `ShaderId`        | runtime shader table 索引                 |                        `u32` |             否 | hot/warm                |
-| `PipelineId`      | GPU pipeline resource handle              |  generational integer handle |             否 | hot                     |
-| `NodeId`          | 具体 Runtime Node 实例身份                | `u32 index + u32 generation` |             否 | hot                     |
-| `StableKey`       | 动态集合中业务对象身份                    |                  typed value | 由业务语义决定 | reconciliation          |
-| `SourceId`        | 当前 artifact/source-map 中的源码文件身份 |                        `u32` |    artifact 内 | cold/warm               |
-| `ResourceId`      | asset/resource identity                   |                独立 typed ID |     按资源合同 | warm                    |
+| 类型 | 语义 | 建议表示 | 跨编译稳定 | 主要路径 |
+|---|---|---:|---:|---|
+| `NameId` | 当前编译会话中的 interned identifier | `u32` | 否 | compiler |
+| `SymbolId` | 稳定源码/Schema/声明身份 | 128 bit | 是 | compile/link/hot reload |
+| `ComponentTypeId` | 当前 runtime image 中的组件类型索引 | `u32` | 否 | hot |
+| `PropertyId` | Property Schema 的稠密索引 | `u16/u32` | 否 | hot |
+| `EventId` | Typed Event 的稠密索引 | `u16/u32` | 否 | hot |
+| `StyleId` | 编译后的 Style 索引 | `u32` | 否 | hot/warm |
+| `ShaderId` | runtime shader table 索引 | `u32` | 否 | hot/warm |
+| `PipelineId` | GPU pipeline resource handle | generational integer handle | 否 | hot |
+| `NodeId` | 具体 Runtime Node 实例身份 | `u32 index + u32 generation` | 否 | hot |
+| `StableKey` | 动态集合中业务对象身份 | typed value | 由业务语义决定 | reconciliation |
+| `SourceId` | 当前 artifact/source-map 中的源码文件身份 | `u32` | artifact 内 | cold/warm |
+| `ResourceId` | asset/resource identity | 独立 typed ID | 按资源合同 | warm |
 
 禁止创建如下通用类型并让所有 subsystem 共用：
 
@@ -1580,7 +1580,7 @@ JSON
 | 格式 | 主要用途 |
 |---|---|
 | Ende Binary | runtime/tool IPC、Hot Reload、cache、snapshot、profiler、remote preview |
-| Ende JSON   | diagnostics、Schema dump、CLI/LSP/AI、外部工具互操作                    |
+| Ende JSON | diagnostics、Schema dump、CLI/LSP/AI、外部工具互操作 |
 
 **RON 不属于 Viso。**
 
@@ -2575,16 +2575,16 @@ bitflags! {
 
 例：
 
-| 变化        | Dirty                                           |
-| ----------- | ----------------------------------------------- |
-| text 内容   | MEASURE + LAYOUT + PAINT + SEMANTICS            |
-| text color  | PAINT                                           |
-| background  | PAINT                                           |
-| width       | MEASURE + LAYOUT                                |
-| transform   | TRANSFORM + HIT_TEST + PAINT bounds             |
-| aria/label  | SEMANTICS                                       |
-| hover state | STYLE，随后由 style diff 决定 PAINT/LAYOUT      |
-| visibility  | LAYOUT/PAINT/HIT_TEST/SEMANTICS，具体取决于模式 |
+| 变化 | Dirty |
+|---|---|
+| text 内容 | MEASURE + LAYOUT + PAINT + SEMANTICS |
+| text color | PAINT |
+| background | PAINT |
+| width | MEASURE + LAYOUT |
+| transform | TRANSFORM + HIT_TEST + PAINT bounds |
+| aria/label | SEMANTICS |
+| hover state | STYLE，随后由 style diff 决定 PAINT/LAYOUT |
+| visibility | LAYOUT/PAINT/HIT_TEST/SEMANTICS，具体取决于模式 |
 
 ### 19.1 Dirty propagation
 
@@ -4047,13 +4047,13 @@ crates/platform/src/
 
 Viso 不把“跨平台”理解成所有设备都走同一个最低能力后端。Viso 1.0 定义以下主路径：
 
-| Platform    | Tier-1 backend | 目标                                      |
-| ----------- | -------------- | ----------------------------------------- |
-| macOS / iOS | Metal          | first-class / performance baseline        |
-| Windows     | D3D12          | first-class / performance baseline        |
-| Linux       | Vulkan         | first-class                               |
-| Android     | Vulkan         | first-class；设备能力不足时由兼容策略处理 |
-| Web         | WebGPU         | first-class                               |
+| Platform | Tier-1 backend | 目标 |
+|---|---|---|
+| macOS / iOS | Metal | first-class / performance baseline |
+| Windows | D3D12 | first-class / performance baseline |
+| Linux | Vulkan | first-class |
+| Android | Vulkan | first-class；设备能力不足时由兼容策略处理 |
+| Web | WebGPU | first-class |
 
 Tier-2 compatibility backend 可以存在，例如 Linux OpenGL、Android GLES 或 Web compatibility renderer，但遵循三条规则：
 
@@ -4754,9 +4754,9 @@ ende_profiler_trace_encode
 
 建议：
 
-- > 3%：标记趋势；
-- > 5%：CI warning / 需要说明；
-- > 10%：默认阻止合并，除非明确批准。
+- >3%：标记趋势；
+- >5%：CI warning / 需要说明；
+- >10%：默认阻止合并，除非明确批准。
 
 具体阈值按 benchmark 稳定性调整。
 
@@ -5821,6 +5821,7 @@ trait Painter {
 **理由**：减少平台命令碎片，给人类和 AI 提供一致入口，并防止 Studio/CLI 分叉出重复 build/compiler 逻辑。
 
 **代价**：需要稳定 command grammar、Ende JSON machine protocol、exit codes 和 target/device abstraction。
+
 
 # Part XXIX — 风险与取舍
 

@@ -8,13 +8,14 @@
 > - Reference `/Users/x/code/vizo/makepad` code when designing a subsystem; don't invent alone.
 > - Performance-first: prefer SIMD + zerocopy; unsafe allowed (with `SAFETY:` note).
 > - Commit per section; keep changes focused.
-> - Verify: `cargo xtask check-deps` (stays 15 crates) + build + clippy `-D warnings` + fmt + test; headless integration where UI; real-machine Metal when shaders change.
+> - Verify: `cargo xtask check-deps` (now 17 crates) + build + clippy `-D warnings` + fmt + test; headless integration where UI; real-machine Metal when shaders change.
 > - `viso-math` + `viso-ende` landed as Tier-A leaf foundations (ADR 0012). Both are DAG leaves
 >   (empty allowed-edges, no third-party deps). No consumer wired yet: migrating the existing
 >   f32 geometry (`viso_render::{Rect,Point}`, `viso_ui::Vec2`) onto `viso-math`, and wiring
 >   `viso-ende`'s advanced transport / schema-registry / Studio-Inspector protocol + cache/snapshot,
 >   are separate later tasks (Phase 9+ for the ende consumers). Until those land the crates just
->   exist as owned foundations. Crate count is now 15.
+>   exist as owned foundations.
+> - Crate count is now 17 (added `viso-ui-macros` in Slice N, `viso-lsp` in Slice R).
 
 ---
 
@@ -371,7 +372,128 @@ DSL language/module semantics, §68):
 
 **Phase 6 is complete.**
 
-**Deferred past Phase 6 (doc §72+):** Phase 7 native widget rewrites (Tier 1–6); Phase 8
-platform services / async / app framework; Phase 9 Studio / Inspector / CLI (the deferred state
-inspector rejoins here); Phase 10 `viso migrate` source-level Makepad migration tooling +
-isolation finish. These are out of scope until Phase 6 lands.
+**Deferred past Phase 6 (doc §71+, renumbered — see doc-sync note below):** Phase 7 native widget
+rewrites (Tier 1–6, doc §71); Phase 8 platform services / async / app framework (doc §72); Phase 9
+CLI / Studio / Inspector / Web Delivery (doc §73 — the deferred state inspector rejoins here). The
+old Phase 10 `viso migrate` migration tooling was **removed** from the doc (see doc-sync note).
+
+---
+
+## Doc-sync — 2026-09-05 文档更新对 Phase 1–6 代码的影响核对
+
+> 用户 2026-09-05 用一份"去迁移化"的架构文档替换旧版(标题从「架构设计与重构迁移方案」→「架构
+> 设计」),并把 CLI 拆到独立 `Viso_CLI.md`、把架构主体另存 `Viso_Architecture.md`(与
+> `Viso_Architecture_and_Migration.md` 内容等同,仅表格 markdown 重排)。核对结论 + 由此产生的
+> 代码改动清单如下。**核心结论:本次文档变化没有推翻任何 Phase 1–6 已完成代码的逻辑合同**——
+> DAG / Identity / Ende / Node / Reactive / Layout / DSL 管线 / AOT / hot-reload 全部仍与代码一致。
+> 需要跟进的只有「命名/编号/工具链设施」层面,以及一批**本就存在的 DEFERRED**(文档一直要求、
+> 本次未新增,只是重新确认)。
+
+### 文档本身发生了什么(不改代码,仅记录)
+
+- **去 Makepad 迁移化**:删除 Part XXIV 迁移总策略、旧 §65–75 里的迁移叙述、Part XXVI API 迁移映射、
+  Part XXVII Migration Tooling(`viso migrate` 整块)。改为 Part XXIV「Makepad 参考实现与设计经验」
+  (§63,纯参考、不迁移、不建兼容层)。
+- **Phase 重新编号 + 合并**(11 phase → 10 phase):Phase 0=§64 … Phase 9=§73。旧 Phase 9(Studio)+
+  Phase 10(`viso migrate` 收尾)合并为新 **Phase 9 = CLI / Studio / Inspector / Web Delivery**;
+  **`viso migrate` 被删除**(不再是路线图项)。已完成的 **Phase 6 现在是 §70**(旧 §71),Phase 7=§71。
+- **CLI 大幅扩写**并独立成 `Viso_CLI.md`(§54.1–54.6):完整命令组、target 模型、`--json` 协议。属 Phase 9。
+- 新增 §63 参考边界、Part XXVIII ADR 摘要(ADR-016..019)、Part XXIX 风险、Part XXX Definition of Done(§87)。
+- 编译管线图(§70 / §38.1)把 IR 列表写作 **`UI IR / Reactive IR / Shader IR / System IR`**
+  (旧版是 `UI IR / Binding IR / Shader IR`):"Binding IR"→"Reactive IR"改名 + 新增 "System IR";
+  `viso dump` 子命令(§54)相应列 `ui-ir | reactive-ir | shader-ir | system-ir`。
+
+### A. 由本次文档变化【直接】引入、应跟进的代码改动(命名/编号/设施)
+
+- [ ] **A1 — 源码内旧 `§`/section 编号漂移,3 处需改**(Phase 重编号导致):
+      - `crates/render/src/lib.rs:126` 注释 `§67 exit criterion "test scene 可绘制"` → 新 **§66**(Phase 2)。
+      - `crates/ui/benches/node_arena.rs:1` 注释 `§68 exit criterion` → 新 **§67**(Phase 3)。
+      - `crates/lsp/src/lib.rs:3` 注释 `doc section 71` → 新 **§70**(Phase 6)。
+      注意:遵守"新 Rust 源不用 `§`+数字"约束——改的同时把 `§NN` 写成「section NN」/「doc section NN」。
+- [ ] **A2 — `check-deps` → `arch-check` + `architecture.toml`**(doc §10.2 / §64 Phase 0 第 13 条):
+      文档现在明确要求 `cargo xtask arch-check` + 一份机器可读的 `architecture.toml` 作为边界合同真值,
+      而代码是 `cargo xtask check-deps` 且边界硬编码在 `xtask/src/main.rs allowed_edges()`,无
+      `architecture.toml`。跟进:抽 `allowed_edges()` 到 `architecture.toml`、加 `arch-check` 子命令
+      (可与 `check-deps` 并存/别名过渡),并同步全仓注释与本 todo 的 `check-deps` 措辞。
+      **决策(2026-09-05 用户拍板):DEFERRED**——不阻塞 Phase 7,排到后续工具链设施小节;现阶段保持
+      `check-deps` + 硬编码 `allowed_edges()` 不变。
+- [ ] **A3 — IR 命名对齐 "Reactive IR"**(doc §70 / §38.1 / §54 `viso dump reactive-ir`):
+      `crates/dsl/src/ir/binding_ir.rs` 及相关注释叫 "Binding IR",文档统一为 "Reactive IR"。纯改名
+      (模块 + 注释 + `viso dump` 未来子命令名),不改逻辑。语义等同,低风险。**决策点**:改名 vs 保留
+      "Binding IR" 作内部名并只在 `viso dump` 表层用 `reactive-ir`。
+- [ ] **A4 — 本 todo / ADR 里过时的 Phase/§ 引用清理**:todo.md 里 "Phase 10 / §72+" 已按新编号更新;
+      `docs/adr/{0008,0011,0012,0018}` 等含旧 §7x 引用(docs 被 gitignore,可选、非阻塞)。
+
+### B. 文档一直要求、代码尚未做的既存缺口(本次文档【未新增】,只是重新确认;不是本次变化产物)
+
+> 这些在旧文档同样存在,且多数已在旧 Slice ADR 里记为 DEFERRED。列在此处是为完整回答"文档 vs 代码"
+> 的差,但它们不是"因文档变化才要改"。是否现在做需单独排期。
+
+- [ ] **B1(旧 H1)— `component!` / `view!("...vs")` proc-macro 与 `#[component]` attribute 未实现。**
+      doc §38.1 / §70 语言规则要求三个 Rust 入口共享同一 schema/HIR/IR;DSL 前端三种 grammar
+      (CompilationUnit / ViewFragment / ComponentDecl)+ AOT + hot-reload 均已就绪,**只缺 Rust 宏表层**。
+      `crates/ui-macros/src/lib.rs:57` 仅 `ui!`;`crates/macros/src/lib.rs:8` 标 "Planned #[component]";
+      facade `crates/viso/src/lib.rs:57` 仅 re-export `ui!`。**Slice N 已明确 DEFERRED**。严格看这是 Phase 6
+      语言规则第 2 条唯一未满足项。**决策(2026-09-05 用户拍板):保持 DEFERRED,先进 Phase 7**——
+      承认 Phase 6 有此已知缺口,不阻塞 Tier 1 widgets;宏表层补齐留待专门回填。
+- [ ] **B2(旧 H2)— 运行时 Computed/Effect 环检测(doc §20.1)未实现。**
+      §20.1(Runtime 章节,旧版即有)要求运行时 computed/effect 图有 version stamp / evaluation stack /
+      cycle diagnostic / debug source mapping,开发模式发现环给完整链路而非 hang。`crates/ui/src/reactive.rs`
+      有依赖图 + wake 但无 evaluation-stack / 环诊断。**注意**:DSL **编译期** `computed` 环检测已存在
+      (`crates/dsl/src/hir/component.rs` 拓扑排序 + E2105 带完整路径),缺的是**运行时动态图**的环诊断。
+- [ ] **B3(旧 M1)— dense typed runtime IDs 部分缺失**:`PropertyId` / `EventId` / `ComponentTypeId` /
+      `ShaderId`(doc §10.4.6)未定义(现仅 `StyleId` / `TokenId`)。多服务 Phase 7 widgets/paint/shader,
+      归属后续阶段。
+- [ ] **B4(旧 M3)— dsl/ir 无 Shader IR / System IR**:doc §70 管线要求 DSL 产出 Shader IR / System IR;
+      Shader IR 现由独立 `crates/shader/src/ir/` 承载(Slice Q),System IR 无对应物。`system` 声明在
+      Slice M 已 DEFERRED。System IR 是否属 Phase 6 收尾 or Phase 8 待定。
+- [ ] **B5(旧 M2/L1/L2/L3)— 结构字段/ABI 属性与文档字面不符(低优先)**:NodeSlot 无 `flags: NodeFlags`
+      (§16,注释标 Phase 0 只做 allocate/free/id);`NodeId` 未标 `#[repr(C)]`(§10.4.7);`StateId` 代码是
+      generational `{index,generation}` 而文档写 `#[repr(transparent)] u32`(§18)——代码更强(带 stale 检测),
+      **建议反向修文档而非改代码**;`StateSlot` 字段模型与 §18 字面不同。均本次未改动、非逻辑缺陷。
+
+---
+
+## Phase 7 — 官方 Widgets(doc §71):Slice 1 = viso-ui paint 全原语底层
+
+> 用户拍板「先铺底层再做 widget」。把 `viso-ui` 的 paint 从「只画矩形」扩到「全原语(文字/图片/矢量)」+
+> 内容驱动的 intrinsic-size 度量,使 `Length::Fit` 能按内容尺寸测量。下一片再集中写 Tier 1 控件
+> (View/Container、Label、Image、Icon)。**架构 DAG 保持 `ui → render`,`viso-ui` 不引 `viso-text`**:
+> `viso-ui` 只**存储 + lowering**,文字由上层(持 `TextSystem` 的 render/facade 层)算好塞进 content 列。
+> **用户拍板「存测量结果 + paint payload」**:content 列存已测固有尺寸 + paint 载荷。crate 数不变(17)。
+
+### 已完成(本片核心,已验证:166 tests / check-deps 17 crates 零变化 / clippy / fmt 全绿)
+
+- [x] **1.1 `crates/ui/src/content.rs`(新)**:`enum Content { Text/Image/Path }`,各变体载 render 原语数据 +
+      `natural: Vec2` 固有尺寸;`Content::natural()` 供 measure 读。坐标为节点-local,paint 时平移到 world。
+- [x] **1.2 NodeStore content 列**:`content_payload: Vec<Option<Box<Content>>>`(cold,仿 semantics/grid_tracks
+      的 `Option<Box>` 惯例);`alloc` 两臂锁步 reset/push `None`;`clear` 清空;访问器 `content_payload(id)` /
+      `set_content_payload(id, Content)`(live-guarded,mark `MEASURE|LAYOUT|PAINT`);`LayoutTree::content_natural`。
+- [x] **1.3 layout measure Leaf 臂**:硬编码 `0.0` → 读 `content_natural(root)`,`Length::Fit` 叶子测到真实内容尺寸。
+- [x] **1.4 paint_tree emit 全原语**:背景 Quad 之后按 content 变体追加 `GlyphRun`/`Image`/`Path`(坐标平移到 world)。
+
+### 待做(本片剩余)
+
+- [ ] **1.5 `crates/viso/src/lib.rs` facade 文字 content 生产接缝**:paint_tree 之前,对声明为文字的节点用
+      `Renderer` 持有的 `TextSystem` shape/度量,产出 `GlyphRunDraw` + `natural`,`set_content_payload` 写回;
+      窄 facade/prelude 入口(供 Slice 2 Label 用)。本片只做**静态文字**,不做响应式。
+- [ ] **1.6a headless 集成 + golden**:复用 `crates/viso/tests/headless_scene.rs` + `crates/render/tests/golden.rs`
+      BLESS 机制,跑「静态文字 + 一张纹理图」场景像素断言。
+- [ ] **1.6b allocation/steady-state**:复用 `crates/render/benches/renderer_steady_state.rs` CountingAlloc +
+      frame_stats,确认加 content 列后正常 paint 无按帧堆分配(§47 契约)。
+
+### 本片 DEFERRED(记进 backlog,不吞)
+
+- [ ] **响应式文字**:**不**加 `StateValue::Text`(会破其 `Copy` 标量核心,克隆连锁进 `ComputeCx::get`/`EvalFn`
+      等所有热路径,违「资源最省」)。改走**重建路径**:文字内容绑定变 → 目标节点重建 content 载荷 +
+      MEASURE/LAYOUT/PAINT/SEMANTICS 失效。拆独立后续小节。
+- [ ] **图片解码 / 图片 atlas**:全工作区无解码路径;本片 Image content 只接**现成 `TextureId`**。png/jpeg/svg
+      栅格解码 + 图片 atlas 归属后续小节 or Tier 6 可选集成(doc §46)。
+- [ ] **文字换行 / BiDi / 多字体**:`viso-text` 现为单 face、LTR、硬 `\n`;wrap/`max_lines`/overflow 留待文字子系统扩展。
+- [ ] **B1 宏表层**(`component!`/`view!`/`#[component]`):Tier 1 先手写 `Component` struct,宏表层保持 DEFERRED。
+
+### Slice 2+ — Tier 1 widgets(后续片)
+
+- [ ] `crates/widgets` 按 `Component` 模型落地:先 View/Container(底层今天就够),再 Label/Image/Icon。
+      每个 widget 附 §71 validation pack(行为清单/golden/input tape/a11y 快照/microbench/alloc profile)。
+- [ ] **清理**:动 `crates/widgets/src/lib.rs` 时移除其中的 Makepad 关键字注释(违 no-Makepad-comment 约束)。
