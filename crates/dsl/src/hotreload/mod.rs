@@ -20,7 +20,11 @@
 //! explicit identity-keyed migration of state, focus, and scroll.
 
 pub mod diff;
+pub mod migrate;
 pub mod plan;
 
 pub use diff::{InsertedNode, KeptNode, RemovedNode, ReplacedNode, StructuralPatch, diff};
+pub use migrate::{
+    LiveAnchors, MigrationPlan, ScrollMigration, StateAction, StateMigration, migrate,
+};
 pub use plan::{CandidatePlan, plan};
