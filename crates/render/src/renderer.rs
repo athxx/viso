@@ -263,7 +263,7 @@ impl Renderer {
                 &PipelineDesc {
                     label: "quad",
                     builtin: BuiltinShader::Quad,
-                    shader_source: QUAD_MSL,
+                    shader_source: QUAD_MSL(),
                     vertex_entry: "vertex_main",
                     fragment_entry: "fragment_main",
                     color_format: surface_format,
@@ -280,7 +280,7 @@ impl Renderer {
                 &PipelineDesc {
                     label: "image",
                     builtin: BuiltinShader::Image,
-                    shader_source: IMAGE_MSL,
+                    shader_source: IMAGE_MSL(),
                     vertex_entry: "vertex_main",
                     fragment_entry: "fragment_main",
                     color_format: surface_format,
@@ -297,7 +297,7 @@ impl Renderer {
                 &PipelineDesc {
                     label: "glyph",
                     builtin: BuiltinShader::GlyphRun,
-                    shader_source: GLYPHRUN_MSL,
+                    shader_source: GLYPHRUN_MSL(),
                     vertex_entry: "vertex_main",
                     fragment_entry: "fragment_main",
                     color_format: surface_format,
@@ -314,7 +314,7 @@ impl Renderer {
                 &PipelineDesc {
                     label: "mesh",
                     builtin: BuiltinShader::Path,
-                    shader_source: MESH_MSL,
+                    shader_source: MESH_MSL(),
                     vertex_entry: "vertex_main",
                     fragment_entry: "fragment_main",
                     color_format: surface_format,
