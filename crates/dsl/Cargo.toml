@@ -13,3 +13,4 @@ rust-version.workspace = true
 # schema/registry, so it must NOT depend on viso-widgets.
 [dependencies]
 viso-ui = { workspace = true }
+viso-ende = { workspace = true }
