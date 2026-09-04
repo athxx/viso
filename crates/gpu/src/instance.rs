@@ -136,14 +136,50 @@ pub enum LayoutError {
         /// Format from the shader schema.
         schema: AttrFormat,
     },
+    /// An attribute's real byte offset in the `#[repr(C)]` struct (from
+    /// `offset_of!`) does not match the offset the shader reads it at (the tight
+    /// prefix-sum of preceding attribute sizes). This is the section-36.1 CPU↔GPU
+    /// cross-check: a name/format match is not enough if padding, field reordering,
+    /// or a wrong `repr` shifts a field, so the two sides would read different bytes
+    /// for the same attribute.
+    OffsetMismatch {
+        /// The attribute name (shared).
+        name: &'static str,
+        /// Real byte offset in the derived instance layout (`offset_of!`).
+        cpu_offset: usize,
+        /// Byte offset the shader reads the attribute at (packed prefix-sum).
+        shader_offset: usize,
+    },
+    /// The struct's byte stride (`size_of`) does not match the size the shader
+    /// reads one instance as (the tight sum of all attribute sizes). Trailing
+    /// padding or a stride mismatch would make the backend advance the wrong
+    /// number of bytes between instances.
+    StrideMismatch {
+        /// Real byte stride of the derived instance layout (`size_of`).
+        cpu_stride: usize,
+        /// Byte stride the shader assumes (packed total of attribute sizes).
+        shader_stride: usize,
+    },
 }
 
 impl InstanceLayout {
     /// Check that this derived layout matches a shader's declared schema.
     ///
-    /// Compares attribute count, names, and formats in declaration order. Called
-    /// at pipeline-registration time (cold path), satisfying the exit criterion
-    /// "GPU instance layout has compile-time/registration validation".
+    /// Compares attribute count, names, formats, **byte offsets, and stride** in
+    /// declaration order. Called at pipeline-registration time (cold path),
+    /// satisfying the exit criterion "GPU instance layout has
+    /// compile-time/registration validation".
+    ///
+    /// The offset/stride cross-check is the section-36.1 CPU↔GPU ABI guard: the
+    /// shader reads each attribute at the tight prefix-sum of preceding attribute
+    /// sizes (all GPU attributes are 4-byte-aligned, so a shader packs them with no
+    /// gaps), while the CPU offset is the real `#[repr(C)]` `offset_of!` value. If
+    /// padding, field reordering, or a wrong `repr` shifts any field — or leaves
+    /// trailing padding in the stride — the two sides read different bytes for the
+    /// same attribute; catching that here turns silent memory corruption into a
+    /// registration-time error (architecture section 30 / 53). Makepad has no such
+    /// explicit cross-check; it relies on both sides happening to apply the same
+    /// packing rule.
     pub fn validate_against(&self, schema: &InstanceSchema) -> Result<(), LayoutError> {
         if self.fields.len() != schema.attributes.len() {
             return Err(LayoutError::CountMismatch {
@@ -151,6 +187,9 @@ impl InstanceLayout {
                 schema: schema.attributes.len(),
             });
         }
+        // The offset the shader reads the next attribute at: the running sum of the
+        // sizes of the attributes before it, with no padding.
+        let mut shader_offset = 0usize;
         for (index, (field, attr)) in self.fields.iter().zip(schema.attributes).enumerate() {
             if field.name != attr.name {
                 return Err(LayoutError::NameMismatch {
@@ -166,7 +205,123 @@ impl InstanceLayout {
                     schema: attr.format,
                 });
             }
+            if field.offset != shader_offset {
+                return Err(LayoutError::OffsetMismatch {
+                    name: field.name,
+                    cpu_offset: field.offset,
+                    shader_offset,
+                });
+            }
+            // Formats match here, so either side's size is the attribute's size.
+            shader_offset += attr.format.size();
+        }
+        // After the loop `shader_offset` is the packed total of all attributes — the
+        // stride the shader assumes. It must equal the real `#[repr(C)]` stride.
+        if self.stride != shader_offset {
+            return Err(LayoutError::StrideMismatch {
+                cpu_stride: self.stride,
+                shader_stride: shader_offset,
+            });
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // A two-field schema the layouts below are validated against: a `float2` at
+    // the tight offset 0 and a `float4` at the tight offset 8.
+    const SCHEMA: InstanceSchema = InstanceSchema {
+        attributes: &[
+            SchemaAttr {
+                name: "a",
+                format: AttrFormat::Float2,
+            },
+            SchemaAttr {
+                name: "b",
+                format: AttrFormat::Float4,
+            },
+        ],
+    };
+
+    #[test]
+    fn tightly_packed_layout_validates() {
+        // Offsets 0/8 and stride 24 are exactly the packed prefix-sums, so the
+        // CPU and shader sides read identical bytes.
+        let layout = InstanceLayout {
+            stride: 24,
+            fields: &[
+                InstanceField {
+                    name: "a",
+                    offset: 0,
+                    format: AttrFormat::Float2,
+                },
+                InstanceField {
+                    name: "b",
+                    offset: 8,
+                    format: AttrFormat::Float4,
+                },
+            ],
+        };
+        assert_eq!(layout.validate_against(&SCHEMA), Ok(()));
+    }
+
+    #[test]
+    fn shifted_field_is_an_offset_mismatch() {
+        // `b` sits at 16 (as if 8 bytes of padding preceded it) while the shader
+        // reads it at the packed offset 8: a name/format match is not enough.
+        let layout = InstanceLayout {
+            stride: 32,
+            fields: &[
+                InstanceField {
+                    name: "a",
+                    offset: 0,
+                    format: AttrFormat::Float2,
+                },
+                InstanceField {
+                    name: "b",
+                    offset: 16,
+                    format: AttrFormat::Float4,
+                },
+            ],
+        };
+        assert_eq!(
+            layout.validate_against(&SCHEMA),
+            Err(LayoutError::OffsetMismatch {
+                name: "b",
+                cpu_offset: 16,
+                shader_offset: 8,
+            })
+        );
+    }
+
+    #[test]
+    fn trailing_padding_is_a_stride_mismatch() {
+        // Every field offset is tight, but the struct's stride carries 8 bytes of
+        // trailing padding the shader does not account for.
+        let layout = InstanceLayout {
+            stride: 32,
+            fields: &[
+                InstanceField {
+                    name: "a",
+                    offset: 0,
+                    format: AttrFormat::Float2,
+                },
+                InstanceField {
+                    name: "b",
+                    offset: 8,
+                    format: AttrFormat::Float4,
+                },
+            ],
+        };
+        assert_eq!(
+            layout.validate_against(&SCHEMA),
+            Err(LayoutError::StrideMismatch {
+                cpu_stride: 32,
+                shader_stride: 24,
+            })
+        );
     }
 }
