@@ -593,16 +593,16 @@ pub mod prelude {
         BuildCx, FlexStyle, GridPlacement, GridStyle, LeafStyle, Role, Semantics, StateId,
         StateValue, TextRequest, TrackSizing, VirtualListStyle,
     };
-    // Tier 1 widgets: the base layout container. A widget is a `Component` an app
-    // authors and builds into its `BuildCx`, so `View` belongs in the default set
-    // as it lands.
-    pub use viso_widgets::{View, ViewStyle, view};
+    // Tier 1 widgets: the base layout container plus the static text control. A
+    // widget is a `Component` an app authors and builds into its `BuildCx`, so
+    // `View` and `Label` belong in the default set as they land.
+    pub use viso_widgets::{Label, LabelStyle, View, ViewStyle, label, view};
     // The declarative view-fragment entry point (§21.5): a small local `ui! { … }`
     // fragment lowers, at Rust compile time, to a static `BuildCx` builder closure.
     pub use crate::ui;
-    // Window, Button, Label, Text, Image, List, Scroll, Computed, Event, Task,
-    // Route, Theme, Color, Vec2, Rect, Constraints and the component!/view!/
-    // routes! macros join this as their subsystems land in later phases.
+    // Window, Button, Text, Image, List, Scroll, Computed, Event, Task, Route,
+    // Theme, Color, Vec2, Rect, Constraints and the component!/view!/routes!
+    // macros join this as their subsystems land in later phases.
 }
 
 // -- Advanced escape hatches. Opt-in, clearly namespaced. --

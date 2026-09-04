@@ -12,5 +12,7 @@
 #![forbid(unsafe_op_in_unsafe_fn)]
 
 pub mod containers;
+pub mod text;
 
 pub use containers::{View, ViewStyle, view};
+pub use text::{Label, LabelStyle, label};
