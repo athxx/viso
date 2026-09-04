@@ -11,3 +11,12 @@ rust-version.workspace = true
 # integrations, not here.
 [dependencies]
 viso-ui = { workspace = true }
+
+# Widget microbenches drive build/layout/paint_tree through viso-ui only, so no
+# facade or render dev-dep is needed and no dependency edge is added.
+[dev-dependencies]
+criterion = "0.7"
+
+[[bench]]
+name = "view_build"
+harness = false
