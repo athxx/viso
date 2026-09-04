@@ -483,8 +483,13 @@ old Phase 10 `viso migrate` migration tooling was **removed** from the doc (see 
       描述该节点内容的单一真相源、keyed by node;响应式重建只需重设请求→重 shape→重设 content→失效。接缝跑在 measure/layout
       **之前**(on_launch build 后;Layout phase reconcile 后、relayout 前)。本片只做**静态文字**,不做响应式。
       **新增 follow-up**:`shape_pending_text` 现 `dpi=1.0` 硬编码,DPI 应从 surface 密度取(见下 DEFERRED「DPI plumbing」)。
-- [ ] **1.6a headless 集成 + golden**:复用 `crates/viso/tests/headless_scene.rs` + `crates/render/tests/golden.rs`
-      BLESS 机制,跑「静态文字 + 一张纹理图」场景像素断言。
+- [x] **1.6a headless 集成 + golden**(已验证:blessed + 逐通道 TOL=2 比对通过 / fmt / clippy 全绿):新增
+      `crates/viso/tests/content_scene.rs` —— 从 **UI 侧**驱动的 golden(render golden 是手搭 `test_scene`,这个走
+      `NodeStore → measure/layout → paint_tree → renderer → raster`,证明 content-bearing 节点端到端正确):Row 容器
+      (dark bg)holding 一个 `Fit` 文字叶(共享 `test_glyphs` 字形串 + R8 atlas)+ 一个 48×48 图片叶(共享
+      `test_texture` 棋盘纹理),baseline `tests/golden/content_scene.bgra8`(160×96×4=61440B,**同 render golden
+      `quad_scene` 惯例:`*.bgra*` gitignore、BLESS=1 本地重生,不入库**)。ASCII dump 核实文字双行 + 棋盘块均正确
+      栅格,dark-bg 角像素 (26,26,31) 符合 0.1/0.1/0.12。
 - [ ] **1.6b allocation/steady-state**:复用 `crates/render/benches/renderer_steady_state.rs` CountingAlloc +
       frame_stats,确认加 content 列后正常 paint 无按帧堆分配(§47 契约)。
 
