@@ -19,6 +19,7 @@
 pub mod ast;
 pub mod diag;
 pub mod hir;
+pub mod hotreload;
 pub mod ir;
 pub mod resolve;
 pub mod syntax;
