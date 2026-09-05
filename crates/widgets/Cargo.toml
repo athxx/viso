@@ -40,3 +40,7 @@ harness = false
 [[bench]]
 name = "checkbox_build"
 harness = false
+
+[[bench]]
+name = "toggle_build"
+harness = false
