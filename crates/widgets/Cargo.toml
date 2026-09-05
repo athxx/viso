@@ -36,3 +36,7 @@ harness = false
 [[bench]]
 name = "button_build"
 harness = false
+
+[[bench]]
+name = "checkbox_build"
+harness = false
