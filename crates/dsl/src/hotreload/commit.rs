@@ -43,7 +43,7 @@ use viso_ui::state::{StateKey, StateMigration};
 use viso_ui::virtual_list::VirtualLists;
 use viso_ui::{
     Axis, Binding, BindingTable, BuildCx, DirtyClass, EffectStore, FlexStyle, Handle, LeafStyle,
-    Length, NodeId, NodeStore, ScrollStyle, Size, StateId, StateStore, StateValue,
+    Length, NodeId, NodeStore, ScrollStyle, Size, StateId, StateStore, StateValue, TextEdits,
 };
 
 /// What the commit did to the live runtime, for introspection and tests
@@ -81,6 +81,9 @@ pub struct LiveRuntime<'a> {
     pub effects: &'a mut EffectStore,
     /// The virtual-list registry, needed to author any freshly built subtree.
     pub lists: &'a mut VirtualLists,
+    /// The edit-buffer registry, needed to author any freshly built `text_input`
+    /// subtree (its retained [`Buffer`](viso_ui::Buffer) registers here).
+    pub text_edits: &'a mut TextEdits,
     /// The current tree root, produced by the last-good build. Updated in place if
     /// the root node is itself re-typed.
     pub root: Option<NodeId>,
@@ -224,7 +227,7 @@ fn build_tree(
     tree: &UiTree,
     map: &mut Vec<(NodeKey, NodeId)>,
 ) -> Option<NodeId> {
-    let mut cx = BuildCx::with_reactive(rt.store, rt.states, rt.bindings, rt.lists);
+    let mut cx = BuildCx::with_reactive(rt.store, rt.states, rt.bindings, rt.lists, rt.text_edits);
     let mut next: u32 = 0;
     for item in &tree.items {
         build_item(&mut cx, item, &mut next, map);

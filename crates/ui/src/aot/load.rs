@@ -75,8 +75,12 @@ pub fn instantiate(
     // to phase two. The map is pre-sized and each slot is filled at its own index,
     // so a container's id lands before its children's regardless of author order.
     let mut node_ids: Vec<Option<NodeId>> = vec![None; pkg.nodes.len()];
+    // The AOT package has no editable-text node yet (the compiler does not lower a
+    // `text_input`), so a throwaway registry satisfies the reactive-cx contract
+    // without threading an edit registry through the public loader API.
+    let mut text_edits = crate::text_edit::TextEdits::new();
     let root = {
-        let mut cx = BuildCx::with_reactive(store, states, bindings, lists);
+        let mut cx = BuildCx::with_reactive(store, states, bindings, lists, &mut text_edits);
         let mut cursor = 0usize;
         while cursor < pkg.nodes.len() {
             build_node(&mut cx, &pkg.nodes, &mut cursor, &mut node_ids);

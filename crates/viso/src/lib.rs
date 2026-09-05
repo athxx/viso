@@ -314,6 +314,7 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
                 &mut self.states,
                 &mut self.bindings,
                 &mut self.virtual_lists,
+                &mut self.text_edits,
             );
             app.build(&mut build);
             self.root = build.root();

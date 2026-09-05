@@ -16,7 +16,7 @@
 //!
 //! ```
 //! use viso_widgets::button;
-//! use viso_ui::{BuildCx, BindingTable, Component, NodeStore, StateStore, VirtualLists};
+//! use viso_ui::{BuildCx, BindingTable, Component, NodeStore, StateStore, TextEdits, VirtualLists};
 //!
 //! let ok = button("Save").on_click(|_ev| {
 //!     // handle the click — e.g. write app state through the event context
@@ -27,7 +27,8 @@
 //! let mut states = StateStore::new();
 //! let mut bindings = BindingTable::new();
 //! let mut lists = VirtualLists::new();
-//! let mut cx = BuildCx::with_reactive(&mut store, &mut states, &mut bindings, &mut lists);
+//! let mut text_edits = TextEdits::new();
+//! let mut cx = BuildCx::with_reactive(&mut store, &mut states, &mut bindings, &mut lists, &mut text_edits);
 //! ok.build(&mut cx);
 //! ```
 
@@ -258,7 +259,7 @@ mod tests {
     use std::cell::Cell;
     use std::rc::Rc;
     use viso_ui::{
-        BindingTable, KeyEvent, Modifiers, NodeId, NodeStore, PointerEvent, StateStore,
+        BindingTable, KeyEvent, Modifiers, NodeId, NodeStore, PointerEvent, StateStore, TextEdits,
         VirtualLists,
     };
 
@@ -269,6 +270,7 @@ mod tests {
         states: StateStore,
         bindings: BindingTable,
         lists: VirtualLists,
+        text_edits: TextEdits,
     }
 
     impl Reactive {
@@ -278,6 +280,7 @@ mod tests {
                 states: StateStore::new(),
                 bindings: BindingTable::new(),
                 lists: VirtualLists::new(),
+                text_edits: TextEdits::new(),
             }
         }
 
@@ -289,6 +292,7 @@ mod tests {
                 &mut self.states,
                 &mut self.bindings,
                 &mut self.lists,
+                &mut self.text_edits,
             );
             btn.build(&mut cx);
             cx.root().expect("button declares a root node")

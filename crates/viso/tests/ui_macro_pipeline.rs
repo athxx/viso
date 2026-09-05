@@ -25,7 +25,8 @@
 use viso::gpu::{GpuBackend, HeadlessRaster, RawWindowHandle};
 use viso::render::{Rect, Renderer};
 use viso::ui::{
-    BindingTable, BuildCx, DirtyClass, NodeStore, StateStore, StateValue, VirtualLists, paint_tree,
+    BindingTable, BuildCx, DirtyClass, NodeStore, StateStore, StateValue, TextEdits, VirtualLists,
+    paint_tree,
 };
 
 const W: u32 = 160;
@@ -117,6 +118,7 @@ fn ui_fragment_reactive_flush_hits_only_the_static_edge() {
     let mut states = StateStore::new();
     let mut bindings = BindingTable::new();
     let mut lists = VirtualLists::new();
+    let mut text_edits = TextEdits::new();
 
     let count = states.alloc(StateValue::Int(0));
 
@@ -127,7 +129,13 @@ fn ui_fragment_reactive_flush_hits_only_the_static_edge() {
     };
 
     let root = {
-        let mut cx = BuildCx::with_reactive(&mut store, &mut states, &mut bindings, &mut lists);
+        let mut cx = BuildCx::with_reactive(
+            &mut store,
+            &mut states,
+            &mut bindings,
+            &mut lists,
+            &mut text_edits,
+        );
         build(&mut cx).id()
     };
     let text_leaf = store

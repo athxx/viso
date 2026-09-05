@@ -94,6 +94,7 @@ fn build_scene(store: &mut NodeStore) -> (NodeId, NodeId, NodeId) {
     let mut states = StateStore::new();
     let mut bindings = BindingTable::new();
     let mut lists = VirtualLists::new();
+    let mut text_edits = TextEdits::new();
 
     let container = view(ViewStyle {
         axis: Axis::Row,
@@ -107,7 +108,13 @@ fn build_scene(store: &mut NodeStore) -> (NodeId, NodeId, NodeId) {
     });
 
     let root = {
-        let mut cx = BuildCx::with_reactive(store, &mut states, &mut bindings, &mut lists);
+        let mut cx = BuildCx::with_reactive(
+            store,
+            &mut states,
+            &mut bindings,
+            &mut lists,
+            &mut text_edits,
+        );
         container.build(&mut cx);
         cx.root().expect("scene has a root")
     };
@@ -245,6 +252,7 @@ impl Interactive {
         let mut states = StateStore::new();
         let mut bindings = BindingTable::new();
         let mut lists = VirtualLists::new();
+        let mut text_edits = TextEdits::new();
 
         let widget = checkbox("Sound")
             .size(Size::fill())
@@ -254,7 +262,13 @@ impl Interactive {
             });
 
         let checkbox = {
-            let mut cx = BuildCx::with_reactive(&mut store, &mut states, &mut bindings, &mut lists);
+            let mut cx = BuildCx::with_reactive(
+                &mut store,
+                &mut states,
+                &mut bindings,
+                &mut lists,
+                &mut text_edits,
+            );
             widget.build(&mut cx);
             cx.root().expect("checkbox declares a root")
         };
@@ -396,10 +410,17 @@ fn checkbox_derives_a_checkbox_semantics_node_named_by_its_caption() {
     let mut states = StateStore::new();
     let mut bindings = BindingTable::new();
     let mut lists = VirtualLists::new();
+    let mut text_edits = TextEdits::new();
 
     let root = {
         let widget = checkbox("Sound");
-        let mut cx = BuildCx::with_reactive(&mut store, &mut states, &mut bindings, &mut lists);
+        let mut cx = BuildCx::with_reactive(
+            &mut store,
+            &mut states,
+            &mut bindings,
+            &mut lists,
+            &mut text_edits,
+        );
         widget.build(&mut cx);
         cx.root().expect("checkbox declares a root")
     };

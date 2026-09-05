@@ -1530,6 +1530,11 @@ pub struct BuildCx<'a> {
     /// viewport's node index; `None` for a node-only or child-body cx (neither
     /// declares a top-level virtual list).
     lists: Option<&'a mut crate::virtual_list::VirtualLists>,
+    /// Driver-owned edit-buffer registry, present only for a `with_reactive` cx.
+    /// A `text_input` call registers the editable node's retained [`Buffer`] here
+    /// keyed by that node's index (mirroring `lists`); `None` for a node-only or
+    /// child-body cx.
+    text_edits: Option<&'a mut crate::text_edit::TextEdits>,
     /// Parent cursor stack; the top is the current insertion parent.
     stack: Vec<NodeId>,
     /// The placement to apply to the next child authored inside the current
@@ -1550,6 +1555,7 @@ impl<'a> BuildCx<'a> {
             states: None,
             bindings: None,
             lists: None,
+            text_edits: None,
             stack: Vec::new(),
             pending_placement: None,
             root: None,
@@ -1564,12 +1570,14 @@ impl<'a> BuildCx<'a> {
         states: &'a mut StateStore,
         bindings: &'a mut BindingTable,
         lists: &'a mut crate::virtual_list::VirtualLists,
+        text_edits: &'a mut crate::text_edit::TextEdits,
     ) -> Self {
         BuildCx {
             store,
             states: Some(states),
             bindings: Some(bindings),
             lists: Some(lists),
+            text_edits: Some(text_edits),
             stack: Vec::new(),
             pending_placement: None,
             root: None,
@@ -1596,6 +1604,7 @@ impl<'a> BuildCx<'a> {
             states: Some(states),
             bindings: Some(bindings),
             lists: None,
+            text_edits: None,
             stack: vec![parent],
             pending_placement: None,
             root: None,
@@ -1772,6 +1781,27 @@ impl<'a> BuildCx<'a> {
     /// Declare a leaf node.
     pub fn leaf(&mut self, style: LeafStyle) -> Handle {
         let id = self.push_node(LayoutInput::Leaf { size: style.size }, style.style);
+        Handle { id }
+    }
+
+    /// Declare an editable text leaf: a leaf node plus a retained edit
+    /// [`Buffer`](crate::text_edit::Buffer) seeded from `request` and registered
+    /// in the driver-owned [`TextEdits`](crate::text_edit::TextEdits) registry,
+    /// keyed by this node. Mirrors `virtual_list`: the heap-heavy buffer lives in
+    /// the driver registry beside the store, not in a hot node column, and
+    /// [`reconcile`](crate::text_edit::reconcile) folds queued intents into it and
+    /// re-declares its text each frame. The initial `request` is also declared on
+    /// the node so the first frame shapes the seed text. Requires a
+    /// [`BuildCx::with_reactive`] cx (the driver owns the registry); returns the
+    /// handle so the widget body chains focus/handler/semantics onto it.
+    pub fn text_input(&mut self, style: LeafStyle, request: TextRequest) -> Handle {
+        let id = self.push_node(LayoutInput::Leaf { size: style.size }, style.style);
+        let buffer = crate::text_edit::Buffer::with_request(&request);
+        self.text_edits
+            .as_mut()
+            .expect("text_input() requires a with_reactive BuildCx")
+            .register(id, Box::new(buffer));
+        self.store.set_text_request(id, request);
         Handle { id }
     }
 
@@ -2759,7 +2789,14 @@ mod tests {
         let mut states = StateStore::new();
         let mut bindings = BindingTable::new();
         let mut lists = crate::virtual_list::VirtualLists::new();
-        let mut cx = BuildCx::with_reactive(&mut store, &mut states, &mut bindings, &mut lists);
+        let mut text_edits = crate::text_edit::TextEdits::new();
+        let mut cx = BuildCx::with_reactive(
+            &mut store,
+            &mut states,
+            &mut bindings,
+            &mut lists,
+            &mut text_edits,
+        );
         let id = cx.state(StateValue::Int(0));
         assert_eq!(states.get(id), Some(StateValue::Int(0)));
     }
@@ -2770,10 +2807,17 @@ mod tests {
         let mut states = StateStore::new();
         let mut bindings = BindingTable::new();
         let mut lists = crate::virtual_list::VirtualLists::new();
+        let mut text_edits = crate::text_edit::TextEdits::new();
         let node;
         let count;
         {
-            let mut cx = BuildCx::with_reactive(&mut store, &mut states, &mut bindings, &mut lists);
+            let mut cx = BuildCx::with_reactive(
+                &mut store,
+                &mut states,
+                &mut bindings,
+                &mut lists,
+                &mut text_edits,
+            );
             count = cx.state(StateValue::Int(0));
             node = cx.leaf(LeafStyle::default());
             let returned = cx.bind(count, node, DirtyClass::PAINT);
@@ -2798,11 +2842,18 @@ mod tests {
         let mut states = StateStore::new();
         let mut bindings = BindingTable::new();
         let mut lists = crate::virtual_list::VirtualLists::new();
+        let mut text_edits = crate::text_edit::TextEdits::new();
         let s;
         let a;
         let b;
         {
-            let mut cx = BuildCx::with_reactive(&mut store, &mut states, &mut bindings, &mut lists);
+            let mut cx = BuildCx::with_reactive(
+                &mut store,
+                &mut states,
+                &mut bindings,
+                &mut lists,
+                &mut text_edits,
+            );
             s = cx.state(StateValue::Int(0));
             a = cx.leaf(LeafStyle::default());
             b = cx.leaf(LeafStyle::default());

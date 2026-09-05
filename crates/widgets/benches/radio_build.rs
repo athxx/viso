@@ -26,7 +26,8 @@ use std::hint::black_box;
 
 use criterion::{Criterion, criterion_group, criterion_main};
 use viso_ui::{
-    BindingTable, BuildCx, Component, NodeStore, Rect, StateStore, VirtualLists, paint_tree,
+    BindingTable, BuildCx, Component, NodeStore, Rect, StateStore, TextEdits, VirtualLists,
+    paint_tree,
 };
 use viso_widgets::radio_group;
 
@@ -39,6 +40,7 @@ struct Reactive {
     states: StateStore,
     bindings: BindingTable,
     lists: VirtualLists,
+    text_edits: TextEdits,
 }
 
 impl Reactive {
@@ -47,6 +49,7 @@ impl Reactive {
             states: StateStore::new(),
             bindings: BindingTable::new(),
             lists: VirtualLists::new(),
+            text_edits: TextEdits::new(),
         }
     }
 }
@@ -58,8 +61,13 @@ fn build_scene() -> (NodeStore, viso_ui::NodeId) {
     let mut store = NodeStore::new();
     let mut r = Reactive::new();
     let root = {
-        let mut cx =
-            BuildCx::with_reactive(&mut store, &mut r.states, &mut r.bindings, &mut r.lists);
+        let mut cx = BuildCx::with_reactive(
+            &mut store,
+            &mut r.states,
+            &mut r.bindings,
+            &mut r.lists,
+            &mut r.text_edits,
+        );
         radio_group(["Small", "Medium", "Large"])
             .on_change(|_, _| {})
             .build(&mut cx);
@@ -83,8 +91,13 @@ fn bench_radio(c: &mut Criterion) {
         b.iter(|| {
             let mut store = NodeStore::new();
             let mut r = Reactive::new();
-            let mut cx =
-                BuildCx::with_reactive(&mut store, &mut r.states, &mut r.bindings, &mut r.lists);
+            let mut cx = BuildCx::with_reactive(
+                &mut store,
+                &mut r.states,
+                &mut r.bindings,
+                &mut r.lists,
+                &mut r.text_edits,
+            );
             radio_group(["Small", "Medium", "Large"])
                 .on_change(|_, _| {})
                 .build(&mut cx);

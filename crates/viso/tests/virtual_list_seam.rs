@@ -13,8 +13,8 @@
 use viso::prelude::*;
 use viso::render::Rect;
 use viso::ui::{
-    Axis, BindingTable, BoxStyle, EffectStore, Length, NodeStore, Size, StateStore, Vec2,
-    VirtualListStyle, VirtualLists, virtual_list,
+    Axis, BindingTable, BoxStyle, EffectStore, Length, NodeStore, Size, StateStore, TextEdits,
+    Vec2, VirtualListStyle, VirtualLists, virtual_list,
 };
 
 const VIEWPORT_H: f32 = 300.0;
@@ -45,8 +45,15 @@ impl Seam {
         let mut states = StateStore::new();
         let mut bindings = BindingTable::new();
         let mut lists = VirtualLists::new();
+        let mut text_edits = TextEdits::new();
         let viewport = {
-            let mut cx = BuildCx::with_reactive(&mut store, &mut states, &mut bindings, &mut lists);
+            let mut cx = BuildCx::with_reactive(
+                &mut store,
+                &mut states,
+                &mut bindings,
+                &mut lists,
+                &mut text_edits,
+            );
             cx.virtual_list(
                 VirtualListStyle {
                     axis: Axis::Column,
