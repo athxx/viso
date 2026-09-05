@@ -372,10 +372,14 @@ fn pointer_dispatch(
     let Some(mut handler) = store.take_handler(node) else {
         return Dispatched::default();
     };
-    let (capture, stop) = {
+    let (capture, focus, stop) = {
         let mut ev = EventCx::__new_pointer(states, bindings, event);
         handler(&mut ev);
-        (ev.__take_capture_request(), ev.__stop_requested())
+        (
+            ev.__take_capture_request(),
+            ev.__take_focus_request(),
+            ev.__stop_requested(),
+        )
     };
     store.restore_handler(node, handler);
     // A capture request is applied against this node: `Some(id)` captures to the
@@ -383,6 +387,12 @@ fn pointer_dispatch(
     // the cx holds no node store to touch the capture slot directly.
     if let Some(request) = capture {
         store.set_capture(request);
+    }
+    // A focus request from a pointer handler is the click-to-focus path: a press
+    // on a text field or button focuses it. Applied the same deferred way as the
+    // key route's, so the focus-ring/semantics invalidation is shared.
+    if let Some(target) = focus {
+        apply_focus(store, store.focused(), target);
     }
     Dispatched { ran: true, stop }
 }
@@ -1169,6 +1179,52 @@ mod tests {
         assert_eq!(store.focused(), Some(b));
         assert!(store.dirty(a).contains(DirtyClass::PAINT));
         assert!(store.dirty(b).contains(DirtyClass::PAINT));
+    }
+
+    #[test]
+    fn focus_request_from_a_pointer_handler_moves_focus() {
+        // Click-to-focus: a pointer handler that requests focus (a press on a
+        // text field or button) must actually move focus, the same deferred way
+        // the key route applies a handler's request. Nothing focused to start.
+        let mut store = NodeStore::new();
+        let mut states = StateStore::new();
+        let bindings = BindingTable::new();
+        let root = {
+            let mut cx = BuildCx::new(&mut store);
+            let h = cx.leaf(LeafStyle {
+                size: Size::fixed(10.0, 10.0),
+                ..Default::default()
+            });
+            let id = h.id();
+            cx.on_pointer(h, move |cx: &mut EventCx<'_>| cx.request_focus(id));
+            cx.focusable(h, true);
+            cx.root().unwrap()
+        };
+        let mut scratch = Vec::new();
+        store.layout(
+            root,
+            Rect {
+                x: 0.0,
+                y: 0.0,
+                w: 10.0,
+                h: 10.0,
+            },
+            &mut scratch,
+        );
+        store.clear_dirty();
+
+        let mut chain = Vec::new();
+        let ran = route_pointer(
+            &mut store,
+            &mut states,
+            &bindings,
+            root,
+            down(5.0, 5.0),
+            &mut chain,
+        );
+        assert!(ran);
+        assert_eq!(store.focused(), Some(root));
+        assert!(store.dirty(root).contains(DirtyClass::PAINT));
     }
 
     fn key(k: Key) -> KeyEvent {
