@@ -12,9 +12,11 @@
 #![forbid(unsafe_op_in_unsafe_fn)]
 
 pub mod containers;
+pub mod icon;
 pub mod image;
 pub mod text;
 
 pub use containers::{View, ViewStyle, view};
+pub use icon::{Icon, IconStyle, icon};
 pub use image::{Image, ImageStyle, image};
 pub use text::{Label, LabelStyle, label};
