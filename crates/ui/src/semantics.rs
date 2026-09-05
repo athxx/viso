@@ -24,6 +24,13 @@ pub enum Role {
     /// An activatable control (the default role an interactive node takes when
     /// it has a handler but no authored role).
     Button,
+    /// A two-state toggle: checked or unchecked. Carries a boolean state an
+    /// assistive technology announces. The live checked value is held in a
+    /// reactive cell, not this cold role; wiring that value into the derived
+    /// tree is a later slice (the derive pass has no state store today), so this
+    /// slice announces the role and name and proves the state through the
+    /// control's own reactive cell and input tapes.
+    CheckBox,
     /// A static text label.
     Label,
 }
