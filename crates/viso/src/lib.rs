@@ -43,8 +43,8 @@ use viso_runtime::{FramePhase, RuntimeCx, Scheduler};
 use viso_ui::{
     BindingTable, BuildCx, ComputedStore, DirtyClass, EffectStore, FrameRecompute, ImeEvent, Key,
     KeyEvent, KeyRouter, Modifiers, NodeId, NodeStore, PointerButtons, PointerEvent, PointerPhase,
-    PointerRouter, ScrollEvent, ScrollRouter, StateId, StateStore, TextRequest, VirtualLists,
-    focus_next, virtual_list,
+    PointerRouter, ScrollEvent, ScrollRouter, StateId, StateStore, TextEdits, TextRequest,
+    VirtualLists, focus_next, text_edit, virtual_list,
 };
 
 mod text_content;
@@ -131,6 +131,12 @@ struct AppDriver<A: Application> {
     /// nodes instead of one per logical item. Driver-owned so a with-reactive
     /// build cx can register lists and the frame can drive reconcile.
     virtual_lists: VirtualLists,
+    /// Retained text-edit buffers keyed by text-control node. A control registers
+    /// its buffer at build time; a key/IME handler records `EditIntent`s that the
+    /// router queues onto the node's buffer, and `text_edit::reconcile` (before
+    /// text shaping each layout phase) applies them and re-declares the node's
+    /// `TextRequest` when the text changed. Driver-owned, mirroring `virtual_lists`.
+    text_edits: TextEdits,
     /// Reusable buffer the flush drains this frame's pending state ids into, so
     /// the steady path allocates nothing while draining the transaction.
     changed: Vec<StateId>,
@@ -190,6 +196,7 @@ impl<A: Application> AppDriver<A> {
             computeds: ComputedStore::new(),
             effects: EffectStore::new(),
             virtual_lists: VirtualLists::new(),
+            text_edits: TextEdits::new(),
             changed: Vec::new(),
             root: None,
             route_chain: Vec::new(),
@@ -300,6 +307,7 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
         // live call site yet; this is where it will hook.
         self.store.clear();
         self.virtual_lists.clear();
+        self.text_edits.clear();
         if let Some(app) = &mut self.app {
             let mut build = BuildCx::with_reactive(
                 &mut self.store,
@@ -401,6 +409,7 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
                         &mut self.store,
                         &mut self.states,
                         &self.bindings,
+                        &mut self.text_edits,
                         root,
                         ev,
                         &mut self.route_chain,
@@ -414,6 +423,7 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
                     &mut self.store,
                     &mut self.states,
                     &self.bindings,
+                    &mut self.text_edits,
                     root,
                     ImeEvent::Commit { text: t.text },
                     &mut self.route_chain,
@@ -426,6 +436,7 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
                     &mut self.store,
                     &mut self.states,
                     &self.bindings,
+                    &mut self.text_edits,
                     root,
                     ImeEvent::Preedit {
                         text: p.text,
@@ -499,10 +510,17 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
                     &mut self.bindings,
                     &mut self.effects,
                 );
-                // Shape any text (re)declared this frame — a rebuilt list row or a
-                // future reactive text update leaves a pending `TextRequest` — into
-                // a content payload before measure, so a `Fit` text node sizes to
-                // its run. A no-op when nothing declared text (the steady case).
+                // Apply any text edits queued this frame by the key/IME router into
+                // each control's retained buffer: a buffer whose text actually
+                // changed re-declares its `TextRequest` so the shaping step below
+                // re-shapes the new string. A no-op when no control took an edit
+                // this frame (the steady case), so a non-text frame pays nothing.
+                text_edit::reconcile(&mut self.store, &mut self.text_edits);
+                // Shape any text (re)declared this frame — a rebuilt list row, an
+                // applied text edit, or a future reactive text update leaves a
+                // pending `TextRequest` — into a content payload before measure, so
+                // a `Fit` text node sizes to its run. A no-op when nothing declared
+                // text (the steady case).
                 self.shape_pending_text();
                 // Incrementally re-place invalidated subtrees and repaint if any
                 // paint-affecting class is pending; a clean frame touches nothing.

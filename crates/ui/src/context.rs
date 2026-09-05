@@ -16,6 +16,7 @@ use crate::component::NodeStore;
 use crate::input::{ImeEvent, KeyEvent, PointerEvent};
 use crate::node::NodeId;
 use crate::state::{StateId, StateStore, StateValue};
+use crate::text_edit::EditIntent;
 
 macro_rules! phase_cx {
     ($(#[$m:meta])* $name:ident) => {
@@ -142,6 +143,12 @@ pub struct EventCx<'a> {
     /// the remaining dispatch chain after this handler returns. Shared by the
     /// pointer, key, and IME paths.
     stop: bool,
+    /// Edit intents a text-control handler recorded this dispatch, applied by the
+    /// router to the dispatching node's edit buffer after the handler returns —
+    /// the same deferred shape as [`focus_request`](Self::focus_request), since
+    /// the cx holds no edit buffer to mutate directly. Empty (and allocation-free)
+    /// for the overwhelmingly common non-text dispatch.
+    edits: Vec<EditIntent>,
 }
 
 impl<'a> EventCx<'a> {
@@ -159,6 +166,7 @@ impl<'a> EventCx<'a> {
             focus_request: None,
             capture_request: None,
             stop: false,
+            edits: Vec::new(),
         }
     }
 
@@ -180,6 +188,7 @@ impl<'a> EventCx<'a> {
             focus_request: None,
             capture_request: None,
             stop: false,
+            edits: Vec::new(),
         }
     }
 
@@ -200,6 +209,7 @@ impl<'a> EventCx<'a> {
             focus_request: None,
             capture_request: None,
             stop: false,
+            edits: Vec::new(),
         }
     }
 
@@ -220,6 +230,7 @@ impl<'a> EventCx<'a> {
             focus_request: None,
             capture_request: None,
             stop: false,
+            edits: Vec::new(),
         }
     }
 
@@ -279,6 +290,24 @@ impl<'a> EventCx<'a> {
     #[doc(hidden)]
     pub fn __take_focus_request(&mut self) -> Option<Option<NodeId>> {
         self.focus_request.take()
+    }
+
+    /// Record a text edit for the dispatching node. Deferred exactly like
+    /// [`request_focus`](Self::request_focus): the cx holds no edit buffer, so the
+    /// router applies the recorded intents to the node's buffer after the handler
+    /// returns, and the layout phase folds them into the text. A text control's
+    /// key/IME handler calls this to insert, delete, move the caret, or drive an
+    /// IME composition without needing to read the buffer here.
+    #[inline]
+    pub fn record_edit(&mut self, intent: EditIntent) {
+        self.edits.push(intent);
+    }
+
+    /// Take the edit intents recorded this dispatch for the router to apply to the
+    /// dispatching node's buffer. Empty when the handler recorded none.
+    #[doc(hidden)]
+    pub fn __take_edits(&mut self) -> Vec<EditIntent> {
+        std::mem::take(&mut self.edits)
     }
 
     /// Request that the pointer be captured to `id` after this handler returns.
