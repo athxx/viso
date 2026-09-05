@@ -44,6 +44,7 @@
 
 use crate::content::TextRequest;
 use crate::node::NodeId;
+use viso_render::Rgba;
 
 /// A caret or range selection over a buffer, as byte offsets into its text.
 ///
@@ -132,18 +133,40 @@ pub enum EditIntent {
     CommitCompose(String),
 }
 
-/// The retained state of one editable node: its text, the selection over it, and
-/// the byte range currently held by an in-progress IME composition.
+/// The retained state of one editable node: its text, the selection over it, the
+/// byte range currently held by an in-progress IME composition, and the text
+/// style ([`font_size`](Buffer::font_size), [`color`](Buffer::color)) the node
+/// was declared with.
+///
+/// The style is resident here on purpose. [`NodeStore::take_text_requests`] drains
+/// a node's pending [`TextRequest`] once it is shaped, and the shaped
+/// [`Content::Text`](crate::content::Content) carries no font size — so after the
+/// first frame neither source can re-derive the style for a re-declared request.
+/// Keeping the style on the buffer (which already lives beside the store, keyed by
+/// node, and is touched only when that node is edited) lets [`reconcile`]
+/// re-declare a complete request from the buffer alone, with no lookup into the
+/// store and no extra allocation (both fields are `Copy`).
 ///
 /// Single-line: the text holds no `'\n'` (Enter submits, it does not insert), and
 /// there is no wrap or vertical motion. Byte offsets index into `text`; all edit
 /// ops keep the selection and composition range on `char` boundaries.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+///
+/// `PartialEq` (not `Eq`) because [`color`](Buffer::color) holds `f32` channels;
+/// `Default` is hand-written because [`Rgba`] has no `Default` impl (its zero is
+/// [`Rgba::TRANSPARENT`]).
+#[derive(Debug, Clone, PartialEq)]
 pub struct Buffer {
     /// The current text content.
     pub text: String,
     /// The caret / range selection over `text`.
     pub sel: Selection,
+    /// The font size the node was declared with, in logical pixels. Resident so
+    /// [`reconcile`] can re-declare the node's [`TextRequest`] after the original
+    /// request was drained by shaping. See the type-level note.
+    pub font_size: f32,
+    /// The run color the node was declared with. Resident for the same reason as
+    /// [`font_size`](Buffer::font_size).
+    pub color: Rgba,
     /// Start byte of the active IME composition, or `composition_end` when none.
     composition_start: usize,
     /// End byte of the active IME composition; `> composition_start` while
@@ -155,19 +178,54 @@ pub struct Buffer {
     pending: Vec<EditIntent>,
 }
 
+impl Default for Buffer {
+    fn default() -> Self {
+        Self {
+            text: String::new(),
+            sel: Selection::default(),
+            font_size: 0.0,
+            color: Rgba::TRANSPARENT,
+            composition_start: 0,
+            composition_end: 0,
+            pending: Vec::new(),
+        }
+    }
+}
+
 impl Buffer {
-    /// An empty buffer with the caret at the start.
+    /// An empty buffer with the caret at the start and a zeroed style. Prefer
+    /// [`with_request`](Buffer::with_request) so the buffer carries the node's
+    /// real font size and color for later re-declaration.
     pub fn new() -> Self {
         Self::default()
     }
 
-    /// A buffer holding `text` with the caret at its end.
+    /// A buffer holding `text` with the caret at its end and a zeroed style.
     pub fn with_text(text: impl Into<String>) -> Self {
         let text = text.into();
         let at = text.len();
         Self {
             text,
             sel: Selection::caret(at),
+            font_size: 0.0,
+            color: Rgba::TRANSPARENT,
+            composition_start: at,
+            composition_end: at,
+            pending: Vec::new(),
+        }
+    }
+
+    /// A buffer seeded from a [`TextRequest`]: its text with the caret at the end,
+    /// and its font size and color kept resident so [`reconcile`] can re-declare
+    /// the request after an edit. This is how the text-input widget registers a
+    /// buffer at build time.
+    pub fn with_request(request: &TextRequest) -> Self {
+        let at = request.text.len();
+        Self {
+            text: request.text.clone(),
+            sel: Selection::caret(at),
+            font_size: request.font_size,
+            color: request.color,
             composition_start: at,
             composition_end: at,
             pending: Vec::new(),
@@ -436,9 +494,10 @@ impl TextEdits {
 /// number of nodes whose text was re-declared this frame — a steady-state
 /// counter, `0` when nothing typed.
 ///
-/// The re-declared [`TextRequest`] reuses the node's existing font size and
-/// color from its current request, so an edit does not disturb styling; a node
-/// with no prior request (never declared as text) is skipped defensively.
+/// The re-declared [`TextRequest`] is built from the buffer's own resident style
+/// ([`Buffer::font_size`] / [`Buffer::color`]), so an edit does not disturb
+/// styling and needs no lookup into the store — the request the node was declared
+/// with was already drained by a prior frame's shaping. See [`Buffer`].
 pub fn reconcile(store: &mut crate::component::NodeStore, edits: &mut TextEdits) -> u32 {
     let mut redeclared = 0;
     for i in 0..edits.buffers.len() {
@@ -458,35 +517,17 @@ pub fn reconcile(store: &mut crate::component::NodeStore, edits: &mut TextEdits)
         if !text_changed {
             continue;
         }
-        // Re-declare the text, carrying the node's existing style. A node that
-        // was never declared as text has no style to carry — skip it.
-        let Some(req) = store
-            .text_request(node)
-            .or_else(|| current_request(store, node))
-        else {
-            continue;
-        };
+        // Re-declare the text self-contained from the buffer's resident style;
+        // the original request was consumed by shaping and cannot be read back.
         let request = TextRequest {
             text: buffer.text.clone(),
-            font_size: req.font_size,
-            color: req.color,
+            font_size: buffer.font_size,
+            color: buffer.color,
         };
         store.set_text_request(node, request);
         redeclared += 1;
     }
     redeclared
-}
-
-/// Recover a node's font size and color from its already-shaped content, for the
-/// common case where the pending text request was drained by a prior frame's
-/// shaping and only the [`Content`](crate::content::Content) remains.
-fn current_request(store: &crate::component::NodeStore, node: NodeId) -> Option<&TextRequest> {
-    // The shaped Content carries color but not font size; without a live request
-    // we cannot recover font size, so a node whose request was already drained
-    // must keep a request alive for editing. This returns `None` here and the
-    // widget layer keeps the request resident; see the text_input widget.
-    let _ = (store, node);
-    None
 }
 
 #[cfg(test)]
