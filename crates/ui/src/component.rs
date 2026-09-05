@@ -1789,6 +1789,30 @@ impl<'a> BuildCx<'a> {
         handle
     }
 
+    /// Attach a key handler to an already-declared node and return the handle so
+    /// registration chains inline. The mirror of `on_pointer` for the focused-node
+    /// key route: the closure is stored cold and driven by the key router only
+    /// while this node is on the focused node's ancestry chain (not hit-tested).
+    /// An interactive control uses it to give a pointer action a keyboard
+    /// equivalent (Enter/Space activation).
+    pub fn on_key(
+        &mut self,
+        handle: Handle,
+        handler: impl FnMut(&mut EventCx<'_>) + 'static,
+    ) -> Handle {
+        self.store.set_key_handler(handle.id, Box::new(handler));
+        handle
+    }
+
+    /// Mark an already-declared node focusable (default: not focusable), so it can
+    /// receive keyboard focus and thus key events. Returns the handle so authoring
+    /// chains inline. Moving focus and repainting the focus ring are the input
+    /// router's job; this only declares the node eligible.
+    pub fn focusable(&mut self, handle: Handle, focusable: bool) -> Handle {
+        self.store.set_focusable(handle.id, focusable);
+        handle
+    }
+
     /// Attach authored semantics (role + label) to an already-declared node, for
     /// an accessible tree. Mirrors `on_pointer`: associates a node with its
     /// accessible facts. Returns the handle so authoring chains inline.
@@ -2490,6 +2514,65 @@ mod tests {
         store.restore_handler(leaf, handler);
         assert!(store.has_handler(leaf), "handler restored");
         assert_eq!(states.get(count), Some(StateValue::Int(1)));
+    }
+
+    #[test]
+    fn on_key_and_focusable_declare_a_keyboard_activatable_node() {
+        use crate::binding::BindingTable;
+        use crate::input::{Key, KeyEvent, Modifiers};
+        use crate::state::{StateStore, StateValue};
+
+        let mut store = NodeStore::new();
+        let mut states = StateStore::new();
+        // A cell the key handler bumps, standing in for a control's action.
+        let fired = states.alloc(StateValue::Int(0));
+        let bindings = BindingTable::new();
+
+        let leaf;
+        {
+            let mut cx = BuildCx::new(&mut store);
+            let h = cx.leaf(LeafStyle::default());
+            // Both authoring seams chain off the same handle: mark focusable so
+            // the node can receive key events, then attach the key handler.
+            let h = cx.focusable(h, true);
+            leaf = cx
+                .on_key(h, move |ev| {
+                    if let Some(k) = ev.key()
+                        && k.pressed
+                        && matches!(k.key, Key::Enter)
+                    {
+                        let now = match ev.get(fired) {
+                            Some(StateValue::Int(n)) => n,
+                            _ => 0,
+                        };
+                        ev.set(fired, StateValue::Int(now + 1));
+                    }
+                })
+                .id();
+        }
+        assert!(store.focusable(leaf), "focusable seam marked the node");
+        assert!(
+            store.has_key_handler(leaf),
+            "on_key seam registered a handler"
+        );
+
+        // Same take/restore router discipline as the pointer path: move the key
+        // handler out, drive it with an EventCx over the state stores, restore.
+        let mut handler = store.take_key_handler(leaf).expect("key handler present");
+        assert!(!store.has_key_handler(leaf), "slot empty while borrowed");
+        {
+            let key = KeyEvent {
+                key: Key::Enter,
+                pressed: true,
+                repeat: false,
+                modifiers: Modifiers::default(),
+            };
+            let mut ev = EventCx::__new_key(&mut states, &bindings, &key);
+            handler(&mut ev);
+        }
+        store.restore_key_handler(leaf, handler);
+        assert!(store.has_key_handler(leaf), "key handler restored");
+        assert_eq!(states.get(fired), Some(StateValue::Int(1)));
     }
 
     #[test]
