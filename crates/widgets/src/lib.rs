@@ -6,17 +6,20 @@
 //! [`viso_ui::Component`] that declares its subtree into a `BuildCx`, mapping to
 //! retained nodes — never an `Rc<RefCell<dyn Widget>>` object.
 //!
-//! Tier 1 (this phase): layout [`containers`] first (View), then the primitive
-//! label/image/icon controls.
+//! Tier 1: the primitive presentational controls — layout [`containers`] (View),
+//! [`text`] (Label), [`image`] (Image), and [`icon`] (Icon). Tier 2 begins the
+//! interactive controls under [`controls`] (Button first).
 
 #![forbid(unsafe_op_in_unsafe_fn)]
 
 pub mod containers;
+pub mod controls;
 pub mod icon;
 pub mod image;
 pub mod text;
 
 pub use containers::{View, ViewStyle, view};
+pub use controls::{Button, ButtonStyle, button};
 pub use icon::{Icon, IconStyle, icon};
 pub use image::{Image, ImageStyle, image};
 pub use text::{Label, LabelStyle, label};
