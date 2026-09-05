@@ -74,6 +74,14 @@ pub enum Key {
     Space,
     Tab,
     Backspace,
+    /// Left arrow — directional navigation.
+    Left,
+    /// Right arrow — directional navigation.
+    Right,
+    /// Up arrow — directional navigation.
+    Up,
+    /// Down arrow — directional navigation.
+    Down,
     /// Any key not in the minimal set, carrying its raw platform scancode.
     Other(u32),
 }

@@ -175,6 +175,14 @@ pub enum KeyCode {
     Space,
     Tab,
     Backspace,
+    /// Left arrow — directional navigation (slider decrement, caret motion).
+    Left,
+    /// Right arrow — directional navigation (slider increment, caret motion).
+    Right,
+    /// Up arrow — directional navigation (slider increment, vertical motion).
+    Up,
+    /// Down arrow — directional navigation (slider decrement, vertical motion).
+    Down,
     /// Any key not yet in the minimal set, carrying its raw platform scancode.
     Other(u32),
 }

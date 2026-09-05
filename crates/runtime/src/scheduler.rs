@@ -283,6 +283,10 @@ fn normalize_key(code: KeyCode) -> Key {
         KeyCode::Space => Key::Space,
         KeyCode::Tab => Key::Tab,
         KeyCode::Backspace => Key::Backspace,
+        KeyCode::Left => Key::Left,
+        KeyCode::Right => Key::Right,
+        KeyCode::Up => Key::Up,
+        KeyCode::Down => Key::Down,
         KeyCode::Other(scancode) => Key::Other(scancode),
     }
 }

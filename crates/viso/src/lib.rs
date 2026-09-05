@@ -563,6 +563,10 @@ fn lower_key(key: viso_runtime::Key) -> Key {
         viso_runtime::Key::Space => Key::Space,
         viso_runtime::Key::Tab => Key::Tab,
         viso_runtime::Key::Backspace => Key::Backspace,
+        viso_runtime::Key::Left => Key::Left,
+        viso_runtime::Key::Right => Key::Right,
+        viso_runtime::Key::Up => Key::Up,
+        viso_runtime::Key::Down => Key::Down,
         viso_runtime::Key::Other(code) => Key::Other(code),
     }
 }
