@@ -82,6 +82,12 @@ pub enum Key {
     Up,
     /// Down arrow — directional navigation.
     Down,
+    /// Forward delete — removes the character after the caret.
+    Delete,
+    /// Home — moves the caret to the start of the line.
+    Home,
+    /// End — moves the caret to the end of the line.
+    End,
     /// Any key not in the minimal set, carrying its raw platform scancode.
     Other(u32),
 }

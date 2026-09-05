@@ -567,6 +567,9 @@ fn lower_key(key: viso_runtime::Key) -> Key {
         viso_runtime::Key::Right => Key::Right,
         viso_runtime::Key::Up => Key::Up,
         viso_runtime::Key::Down => Key::Down,
+        viso_runtime::Key::Delete => Key::Delete,
+        viso_runtime::Key::Home => Key::Home,
+        viso_runtime::Key::End => Key::End,
         viso_runtime::Key::Other(code) => Key::Other(code),
     }
 }

@@ -183,6 +183,12 @@ pub enum KeyCode {
     Up,
     /// Down arrow — directional navigation (slider decrement, vertical motion).
     Down,
+    /// Forward delete — removes the character after the caret (text editing).
+    Delete,
+    /// Home — moves the caret to the start of the line (text editing).
+    Home,
+    /// End — moves the caret to the end of the line (text editing).
+    End,
     /// Any key not yet in the minimal set, carrying its raw platform scancode.
     Other(u32),
 }

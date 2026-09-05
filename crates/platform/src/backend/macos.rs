@@ -729,6 +729,9 @@ fn keycode_of(event: &NSEvent) -> KeyCode {
         0x7c => KeyCode::Right,
         0x7d => KeyCode::Down,
         0x7e => KeyCode::Up,
+        0x75 => KeyCode::Delete, // forward delete
+        0x73 => KeyCode::Home,
+        0x77 => KeyCode::End,
         other => KeyCode::Other(other),
     }
 }
