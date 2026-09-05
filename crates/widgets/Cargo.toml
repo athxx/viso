@@ -24,3 +24,7 @@ harness = false
 [[bench]]
 name = "label_build"
 harness = false
+
+[[bench]]
+name = "image_build"
+harness = false
