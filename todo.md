@@ -634,3 +634,45 @@ old Phase 10 `viso migrate` migration tooling was **removed** from the doc (see 
 - **ObjectFit 式 path 适配**(把几何缩放/居中进 leaf box):Icon 现按作者给的固有尺寸原样绘;fit 拆后续小节。
 - View 的 child-list / keyed children 抽象(现单 builder 闭包)。
 - **B1 宏表层**(`component!`/`view!`/`#[component]`);Tier 1 先手写 `Component`。
+
+### Slice 6 — Tier 2 widget:Button(已收官 2026-09-05,第一个交互控件)
+
+- [x] `crates/ui/src/component.rs`:`BuildCx` 加两个薄接缝(紧邻 `on_pointer`)——`on_key(handle, impl FnMut(&mut
+      EventCx)+'static) -> Handle`(`set_key_handler`,焦点链 key 路由)、`focusable(handle, bool) -> Handle`
+      (`set_focusable`)。与 `on_pointer` 完全同构,零新概念/依赖/DAG 边。
+- [x] `crates/widgets/src/lib.rs`:`pub mod controls;` + `pub use controls::{Button, ButtonStyle, button}`;
+      Tier 2 起交互控件进 `controls/` 目录(为后续 CheckBox/Toggle/Radio/Slider/TextInput 立目录),Tier 1 呈现
+      控件仍单文件在 crate 根。`crates/widgets/src/controls/mod.rs`:`mod button; pub use button::{...}`。
+- [x] `crates/widgets/src/controls/button.rs`:`Button`/`ButtonStyle`/`button()`——全交互控件 v1。
+      `button(label: impl Into<String>) -> Button`;链式 `.on_click(impl FnMut(&mut EventCx)+'static)`/`.style`/
+      `.size`/`.background`。`ButtonStyle{ size, background, pressed }`(全 `Copy`)。点击=键盘激活=同一 `on_click`:
+      回调用 `Rc<RefCell<Option<Box<dyn FnMut(&mut EventCx)>>>>`(`SharedClick`)在 build 里 clone 进指针 + key 两个
+      闭包(build 时无法 clone `dyn FnMut`,故共享;运行时指针/键盘不并发,`RefCell` borrow 安全)。`build`:背景盒
+      leaf + `cx.state(Bool(false))` pressed 态 + `cx.bind(pressed, root, PAINT)`(按下只触发该节点 PAINT,不重建);
+      指针 handler Down(PRIMARY)置 pressed、Up(PRIMARY)复位并 fire、Cancel/Leave 复位;`cx.focusable(root, true)` +
+      key handler Enter/Space 按下(非 repeat)fire;`Semantics::role(Role::Button).with_label(label)`;可见文字子用
+      既有 `Label::build` 组合(零新文字路径)。无 `on_click` 时 build 不 panic、handler no-op。
+- [x] facade prelude:`pub use viso_widgets::{Button, ButtonStyle, ..., button, ...}`;`widgets` escape hatch
+      自动带上。
+- [x] Button 的 section 71 validation pack:widget 单测在 `controls/button.rs`(仅 viso-ui);golden/a11y/alloc/
+      **input-tape** 集成放 `crates/viso/tests/button_widget.rs`(facade 侧,`PointerRouter`/`KeyRouter` 可达)。
+      6 集成测:golden+measure(文字子沿用 test_glyphs 确定性惯例绕 shaper;`button_widget.bgra8` 走 BLESS、
+      TOL=2、gitignore 不提交)、指针 press→release fire 一次(press 单独不算)、非 PRIMARY 不触发、键盘 Enter+Space
+      各 fire 一次(repeat/up/未聚焦不触发)、a11y role==Button label=="OK"、稳态帧(4 预热 + 两帧相等 +
+      buffer/texture/bind_group/frame_stats 不变 + draw_calls>0 + instances>0 零按帧堆分配)。
+- [x] microbench 骨架:`crates/widgets/benches/button_build.rs`(criterion,照 icon_build.rs;Button 走
+      `BuildCx::with_reactive` 因 `cx.state`,并 `.on_click(|_|{})` 含 handler-boxing 成本),measure
+      `button(..).build`/layout/paint_tree 单帧,仅 viso-ui;Cargo.toml 加 `[[bench]] name = "button_build"
+      harness = false`。基线数字与 View+Label+Image+Icon 一起后续片补。
+- [x] 退出门全绿:`check-deps` 17 crates 零变化、`build --workspace`、`clippy --all-targets -D warnings`、
+      `fmt --check`、`cargo test -p viso-ui -p viso-widgets -p viso`(button_widget 6 集成测 + 全套单测)全过。
+
+后续片(不做,记此):
+- **hover / enter / leave 合成 + click-to-focus**([todo.md:91](todo.md#L91),[93-94](todo.md#L93-L94)):Button 的
+  pressed 现只由 Down/Up/Cancel/Leave 驱动;hover 高亮态、指针进出合成、点击自动聚焦拆后续小节(需 input 层合成
+  enter/leave 事件)。
+- **disabled 态**:`Semantics` 现无 disabled/pressed/action 字段;加语义化 disabled(禁用不接事件 + 语义标记)
+  拆后续片。
+- **Tab / Shift-Tab 焦点遍历**:`KeyRouter` 注明遍历是 caller policy,未内建;焦点环遍历拆 input 子系统后续片。
+- **回调 / action bus**:Button 现 `on_click(FnMut(&mut EventCx))` 直连;统一 action/message 总线(若需要)拆后续。
+- **widget microbench 记录基线数字**(View + Label + Image + Icon + Button 一起补)。
