@@ -20,7 +20,7 @@ use viso::render::{Rect, Rgba};
 use viso::ui::{
     Axis, BindingTable, BoxStyle, BuildCx, DirtyClass, FlexStyle, ImeEvent, Key, KeyEvent,
     KeyRouter, LeafStyle, Modifiers, NodeId, NodeStore, Size, StateId, StateStore, StateValue,
-    focus_next,
+    TextEdits, focus_next,
 };
 
 const SURFACE: Rect = Rect {
@@ -143,6 +143,7 @@ fn key_reaches_focused_node_and_bubbles() {
         &mut store,
         &mut states,
         &bindings,
+        &mut TextEdits::new(),
         root,
         key(Key::Enter),
         &mut chain,
@@ -175,6 +176,7 @@ fn key_with_no_focus_dispatches_nothing() {
         &mut store,
         &mut states,
         &bindings,
+        &mut TextEdits::new(),
         root,
         key(Key::Enter),
         &mut chain,
@@ -215,6 +217,7 @@ fn ime_preedit_then_commit_route_to_focused() {
         &mut store,
         &mut states,
         &bindings,
+        &mut TextEdits::new(),
         root,
         ImeEvent::Preedit {
             text: "n".to_string(),
@@ -226,6 +229,7 @@ fn ime_preedit_then_commit_route_to_focused() {
         &mut store,
         &mut states,
         &bindings,
+        &mut TextEdits::new(),
         root,
         ImeEvent::Commit {
             text: "你".to_string(),
@@ -272,6 +276,7 @@ fn focus_request_from_a_handler_moves_focus() {
         &mut store,
         &mut states,
         &bindings,
+        &mut TextEdits::new(),
         root,
         key(Key::Tab),
         &mut chain,

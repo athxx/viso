@@ -124,6 +124,7 @@ use crate::hit_test::HitTestTree;
 use crate::layout::{Axis, Vec2};
 use crate::node::NodeId;
 use crate::state::StateStore;
+use crate::text_edit::TextEdits;
 
 /// Routes one pointer event along the retained ancestry chain of the node it
 /// hits: capture (root → just above target), target (once), bubble (just above
@@ -476,6 +477,7 @@ impl KeyRouter {
         store: &mut NodeStore,
         states: &mut StateStore,
         bindings: &BindingTable,
+        edits: &mut TextEdits,
         root: NodeId,
         ev: KeyEvent,
         chain: &mut Vec<NodeId>,
@@ -485,7 +487,7 @@ impl KeyRouter {
             return false;
         };
         dispatch_chain(store, root, target, chain, |s, n| {
-            key_dispatch(s, states, bindings, n, &ev)
+            key_dispatch(s, states, bindings, edits, n, &ev)
         })
     }
 
@@ -496,6 +498,7 @@ impl KeyRouter {
         store: &mut NodeStore,
         states: &mut StateStore,
         bindings: &BindingTable,
+        edits: &mut TextEdits,
         root: NodeId,
         ev: ImeEvent,
         chain: &mut Vec<NodeId>,
@@ -505,7 +508,7 @@ impl KeyRouter {
             return false;
         };
         dispatch_chain(store, root, target, chain, |s, n| {
-            ime_dispatch(s, states, bindings, n, &ev)
+            ime_dispatch(s, states, bindings, edits, n, &ev)
         })
     }
 }
@@ -518,18 +521,24 @@ fn key_dispatch(
     store: &mut NodeStore,
     states: &mut StateStore,
     bindings: &BindingTable,
+    edits: &mut TextEdits,
     node: NodeId,
     ev: &KeyEvent,
 ) -> Dispatched {
     let Some(mut handler) = store.take_key_handler(node) else {
         return Dispatched::default();
     };
-    let (request, stop) = {
+    let (request, stop, recorded) = {
         let mut cx = EventCx::__new_key(states, bindings, ev);
         handler(&mut cx);
-        (cx.__take_focus_request(), cx.__stop_requested())
+        (
+            cx.__take_focus_request(),
+            cx.__stop_requested(),
+            cx.__take_edits(),
+        )
     };
     store.restore_key_handler(node, handler);
+    queue_edits(edits, node, recorded);
     if let Some(target) = request {
         apply_focus(store, store.focused(), target);
     }
@@ -542,22 +551,45 @@ fn ime_dispatch(
     store: &mut NodeStore,
     states: &mut StateStore,
     bindings: &BindingTable,
+    edits: &mut TextEdits,
     node: NodeId,
     ev: &ImeEvent,
 ) -> Dispatched {
     let Some(mut handler) = store.take_key_handler(node) else {
         return Dispatched::default();
     };
-    let (request, stop) = {
+    let (request, stop, recorded) = {
         let mut cx = EventCx::__new_ime(states, bindings, ev);
         handler(&mut cx);
-        (cx.__take_focus_request(), cx.__stop_requested())
+        (
+            cx.__take_focus_request(),
+            cx.__stop_requested(),
+            cx.__take_edits(),
+        )
     };
     store.restore_key_handler(node, handler);
+    queue_edits(edits, node, recorded);
     if let Some(target) = request {
         apply_focus(store, store.focused(), target);
     }
     Dispatched { ran: true, stop }
+}
+
+/// Queue the intents a key/IME handler recorded onto the dispatching node's edit
+/// buffer, applied by `text_edit::reconcile` in the layout phase. Intents for a
+/// node with no registered buffer are dropped — a control registers its buffer
+/// at build time, so recording without one is a bug in the control, not a case
+/// to fold silently into someone else's text. Empty `recorded` is the common
+/// non-text dispatch and does nothing.
+fn queue_edits(edits: &mut TextEdits, node: NodeId, recorded: Vec<crate::text_edit::EditIntent>) {
+    if recorded.is_empty() {
+        return;
+    }
+    if let Some(buffer) = edits.get_mut(node) {
+        for intent in recorded {
+            buffer.queue(intent);
+        }
+    }
 }
 
 #[cfg(test)]
@@ -937,10 +969,12 @@ mod tests {
         store.set_focused(Some(child_id));
 
         let mut chain = Vec::new();
+        let mut edits = TextEdits::new();
         let ran = KeyRouter::route_key(
             &mut store,
             &mut states,
             &bindings,
+            &mut edits,
             root,
             key(Key::Enter),
             &mut chain,
@@ -968,10 +1002,12 @@ mod tests {
         store.set_key_handler(root, Box::new(move |_| *flag.borrow_mut() = true));
         // No focus set.
         let mut chain = Vec::new();
+        let mut edits = TextEdits::new();
         let dispatched = KeyRouter::route_key(
             &mut store,
             &mut states,
             &bindings,
+            &mut edits,
             root,
             key(Key::Enter),
             &mut chain,
@@ -1030,10 +1066,12 @@ mod tests {
 
         // Key route: only the key handler fires.
         *pointer_ran.borrow_mut() = false;
+        let mut edits = TextEdits::new();
         KeyRouter::route_key(
             &mut store,
             &mut states,
             &bindings,
+            &mut edits,
             root,
             key(Key::Enter),
             &mut chain,
@@ -1077,10 +1115,12 @@ mod tests {
         store.set_focused(Some(root));
 
         let mut chain = Vec::new();
+        let mut edits = TextEdits::new();
         KeyRouter::route_ime(
             &mut store,
             &mut states,
             &bindings,
+            &mut edits,
             root,
             ImeEvent::Preedit {
                 text: "n".to_string(),
@@ -1092,6 +1132,7 @@ mod tests {
             &mut store,
             &mut states,
             &bindings,
+            &mut edits,
             root,
             ImeEvent::Commit {
                 text: "你".to_string(),
@@ -1115,10 +1156,12 @@ mod tests {
         store.clear_dirty();
 
         let mut chain = Vec::new();
+        let mut edits = TextEdits::new();
         KeyRouter::route_key(
             &mut store,
             &mut states,
             &bindings,
+            &mut edits,
             root,
             key(Key::Tab),
             &mut chain,

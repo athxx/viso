@@ -40,7 +40,7 @@ use viso::render::{FrameStats, GlyphInstanceData, Rect, Renderer, Rgba, test_gly
 use viso::ui::{
     Axis, BindingTable, BoxStyle, BuildCx, Component, Content, Inset, Key, KeyEvent, KeyRouter,
     Modifiers, NodeId, NodeStore, PointerButtons, PointerEvent, PointerPhase, PointerRouter, Role,
-    Size, StateStore, Vec2, VirtualLists, paint_tree,
+    Size, StateStore, TextEdits, Vec2, VirtualLists, paint_tree,
 };
 use viso::widgets::{ViewStyle, toggle, view};
 
@@ -293,6 +293,7 @@ impl Interactive {
             &mut self.store,
             &mut self.states,
             &self.bindings,
+            &mut TextEdits::new(),
             self.toggle,
             ev,
             &mut self.chain,
