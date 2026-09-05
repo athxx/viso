@@ -8,7 +8,8 @@
 //!
 //! Tier 1: the primitive presentational controls — layout [`containers`] (View),
 //! [`text`] (Label), [`image`] (Image), and [`icon`] (Icon). Tier 2 begins the
-//! interactive controls under [`controls`] (Button, CheckBox, Toggle).
+//! interactive controls under [`controls`] (Button, CheckBox, Toggle,
+//! RadioGroup, Slider).
 
 #![forbid(unsafe_op_in_unsafe_fn)]
 
@@ -20,8 +21,8 @@ pub mod text;
 
 pub use containers::{View, ViewStyle, view};
 pub use controls::{
-    Button, ButtonStyle, CheckBox, CheckBoxStyle, RadioGroup, RadioStyle, Toggle, ToggleStyle,
-    button, checkbox, radio_group, toggle,
+    Button, ButtonStyle, CheckBox, CheckBoxStyle, RadioGroup, RadioStyle, Slider, SliderStyle,
+    Toggle, ToggleStyle, button, checkbox, radio_group, slider, toggle,
 };
 pub use icon::{Icon, IconStyle, icon};
 pub use image::{Image, ImageStyle, image};
