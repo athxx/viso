@@ -20,7 +20,8 @@ pub mod text;
 
 pub use containers::{View, ViewStyle, view};
 pub use controls::{
-    Button, ButtonStyle, CheckBox, CheckBoxStyle, Toggle, ToggleStyle, button, checkbox, toggle,
+    Button, ButtonStyle, CheckBox, CheckBoxStyle, RadioGroup, RadioStyle, Toggle, ToggleStyle,
+    button, checkbox, radio_group, toggle,
 };
 pub use icon::{Icon, IconStyle, icon};
 pub use image::{Image, ImageStyle, image};

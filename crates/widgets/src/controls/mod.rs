@@ -4,13 +4,15 @@
 //! single files in the crate root, interactive controls are grouped here: they
 //! share the pattern of a focusable node with pointer and key handlers plus a
 //! reactive visual state, and this directory is where the family grows
-//! (Radio, Slider, TextInput). The members so far are [`Button`], [`CheckBox`],
-//! and [`Toggle`].
+//! (Slider, TextInput). The members so far are [`Button`], [`CheckBox`],
+//! [`Toggle`], and [`RadioGroup`].
 
 mod button;
 mod checkbox;
+mod radio;
 mod toggle;
 
 pub use button::{Button, ButtonStyle, button};
 pub use checkbox::{CheckBox, CheckBoxStyle, checkbox};
+pub use radio::{RadioGroup, RadioStyle, radio_group};
 pub use toggle::{Toggle, ToggleStyle, toggle};

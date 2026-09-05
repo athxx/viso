@@ -595,13 +595,13 @@ pub mod prelude {
     };
     // Tier 1 widgets: the base layout container, the static text control, the
     // texture-backed image control, and the vector icon control — plus the Tier 2
-    // interactive controls, Button, CheckBox, and Toggle. A widget is a
-    // `Component` an app authors and builds into its `BuildCx`, so these belong in
-    // the default set as they land.
+    // interactive controls, Button, CheckBox, Toggle, and RadioGroup. A widget is
+    // a `Component` an app authors and builds into its `BuildCx`, so these belong
+    // in the default set as they land.
     pub use viso_widgets::{
         Button, ButtonStyle, CheckBox, CheckBoxStyle, Icon, IconStyle, Image, ImageStyle, Label,
-        LabelStyle, Toggle, ToggleStyle, View, ViewStyle, button, checkbox, icon, image, label,
-        toggle, view,
+        LabelStyle, RadioGroup, RadioStyle, Toggle, ToggleStyle, View, ViewStyle, button, checkbox,
+        icon, image, label, radio_group, toggle, view,
     };
     // The declarative view-fragment entry point (§21.5): a small local `ui! { … }`
     // fragment lowers, at Rust compile time, to a static `BuildCx` builder closure.
