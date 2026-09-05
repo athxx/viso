@@ -287,6 +287,9 @@ fn normalize_key(code: KeyCode) -> Key {
         KeyCode::Right => Key::Right,
         KeyCode::Up => Key::Up,
         KeyCode::Down => Key::Down,
+        KeyCode::Delete => Key::Delete,
+        KeyCode::Home => Key::Home,
+        KeyCode::End => Key::End,
         KeyCode::Other(scancode) => Key::Other(scancode),
     }
 }
