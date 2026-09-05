@@ -594,12 +594,13 @@ pub mod prelude {
         StateValue, TextRequest, TrackSizing, VirtualListStyle,
     };
     // Tier 1 widgets: the base layout container, the static text control, the
-    // texture-backed image control, and the vector icon control — plus the first
-    // Tier 2 interactive control, Button. A widget is a `Component` an app authors
-    // and builds into its `BuildCx`, so these belong in the default set as they land.
+    // texture-backed image control, and the vector icon control — plus the Tier 2
+    // interactive controls, Button and CheckBox. A widget is a `Component` an app
+    // authors and builds into its `BuildCx`, so these belong in the default set as
+    // they land.
     pub use viso_widgets::{
-        Button, ButtonStyle, Icon, IconStyle, Image, ImageStyle, Label, LabelStyle, View,
-        ViewStyle, button, icon, image, label, view,
+        Button, ButtonStyle, CheckBox, CheckBoxStyle, Icon, IconStyle, Image, ImageStyle, Label,
+        LabelStyle, View, ViewStyle, button, checkbox, icon, image, label, view,
     };
     // The declarative view-fragment entry point (§21.5): a small local `ui! { … }`
     // fragment lowers, at Rust compile time, to a static `BuildCx` builder closure.
