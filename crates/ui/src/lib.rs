@@ -63,4 +63,4 @@ pub use virtual_list::{
     HeightCache, HeightTree, ItemBuilder, VirtualListState, VirtualLists, absorb_measurements,
     reconcile, set_item_count,
 };
-pub use viso_render::{PathCmd, Point, Rect, Rgba, Stroke, TextureId};
+pub use viso_render::{LineJoin, PathCmd, Point, Rect, Rgba, Stroke, TextureId};
