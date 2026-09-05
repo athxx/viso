@@ -916,9 +916,15 @@ mod tests {
             let mut states = StateStore::new();
             let mut bindings = BindingTable::new();
             let mut lists = VirtualLists::new();
+            let mut text_edits = crate::text_edit::TextEdits::new();
             let viewport = {
-                let mut cx =
-                    BuildCx::with_reactive(&mut store, &mut states, &mut bindings, &mut lists);
+                let mut cx = BuildCx::with_reactive(
+                    &mut store,
+                    &mut states,
+                    &mut bindings,
+                    &mut lists,
+                    &mut text_edits,
+                );
                 cx.virtual_list(
                     VirtualListStyle {
                         axis: Axis::Column,

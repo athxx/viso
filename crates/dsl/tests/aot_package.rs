@@ -19,7 +19,7 @@ use viso_ui::aot::load_from_bytes;
 use viso_ui::dirty::DirtyClass;
 use viso_ui::state::StateKey;
 use viso_ui::virtual_list::VirtualLists;
-use viso_ui::{BindingTable, NodeId, NodeStore, StateStore, StateValue};
+use viso_ui::{BindingTable, NodeId, NodeStore, StateStore, StateValue, TextEdits};
 
 /// The four stores a release app instantiates a package into — the whole runtime the
 /// load path needs, and nothing from the compiler.
@@ -209,6 +209,7 @@ fn live_commit_child_counts(source: &str) -> Vec<usize> {
     let mut bindings = BindingTable::new();
     let mut effects = EffectStore::new();
     let mut lists = VirtualLists::new();
+    let mut text_edits = TextEdits::new();
     let mut scratch: Vec<NodeId> = Vec::new();
 
     // An empty last-good baseline: the empty→candidate diff is all-inserts, so the
@@ -226,6 +227,7 @@ fn live_commit_child_counts(source: &str) -> Vec<usize> {
         bindings: &mut bindings,
         effects: &mut effects,
         lists: &mut lists,
+        text_edits: &mut text_edits,
         root: None,
         scratch: &mut scratch,
     };

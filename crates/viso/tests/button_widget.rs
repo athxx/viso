@@ -92,6 +92,7 @@ fn build_scene(store: &mut NodeStore) -> (NodeId, NodeId, NodeId) {
     let mut states = StateStore::new();
     let mut bindings = BindingTable::new();
     let mut lists = VirtualLists::new();
+    let mut text_edits = TextEdits::new();
 
     let container = view(ViewStyle {
         axis: Axis::Row,
@@ -105,7 +106,13 @@ fn build_scene(store: &mut NodeStore) -> (NodeId, NodeId, NodeId) {
     });
 
     let root = {
-        let mut cx = BuildCx::with_reactive(store, &mut states, &mut bindings, &mut lists);
+        let mut cx = BuildCx::with_reactive(
+            store,
+            &mut states,
+            &mut bindings,
+            &mut lists,
+            &mut text_edits,
+        );
         container.build(&mut cx);
         cx.root().expect("scene has a root")
     };
@@ -235,13 +242,20 @@ impl Interactive {
         let mut states = StateStore::new();
         let mut bindings = BindingTable::new();
         let mut lists = VirtualLists::new();
+        let mut text_edits = TextEdits::new();
 
         let widget = button("OK")
             .size(Size::fill())
             .on_click(move |_ev| counter.set(counter.get() + 1));
 
         let button = {
-            let mut cx = BuildCx::with_reactive(&mut store, &mut states, &mut bindings, &mut lists);
+            let mut cx = BuildCx::with_reactive(
+                &mut store,
+                &mut states,
+                &mut bindings,
+                &mut lists,
+                &mut text_edits,
+            );
             widget.build(&mut cx);
             cx.root().expect("button declares a root")
         };
@@ -376,10 +390,17 @@ fn button_derives_a_button_semantics_node_named_by_its_caption() {
     let mut states = StateStore::new();
     let mut bindings = BindingTable::new();
     let mut lists = VirtualLists::new();
+    let mut text_edits = TextEdits::new();
 
     let root = {
         let widget = button("OK");
-        let mut cx = BuildCx::with_reactive(&mut store, &mut states, &mut bindings, &mut lists);
+        let mut cx = BuildCx::with_reactive(
+            &mut store,
+            &mut states,
+            &mut bindings,
+            &mut lists,
+            &mut text_edits,
+        );
         widget.build(&mut cx);
         cx.root().expect("button declares a root")
     };

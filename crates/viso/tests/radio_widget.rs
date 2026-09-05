@@ -99,6 +99,7 @@ fn build_scene(store: &mut NodeStore) -> (NodeId, NodeId, Vec<NodeId>) {
     let mut states = StateStore::new();
     let mut bindings = BindingTable::new();
     let mut lists = VirtualLists::new();
+    let mut text_edits = TextEdits::new();
 
     let container = view(ViewStyle {
         axis: Axis::Row,
@@ -112,7 +113,13 @@ fn build_scene(store: &mut NodeStore) -> (NodeId, NodeId, Vec<NodeId>) {
     });
 
     let root = {
-        let mut cx = BuildCx::with_reactive(store, &mut states, &mut bindings, &mut lists);
+        let mut cx = BuildCx::with_reactive(
+            store,
+            &mut states,
+            &mut bindings,
+            &mut lists,
+            &mut text_edits,
+        );
         container.build(&mut cx);
         cx.root().expect("scene has a root")
     };
@@ -256,6 +263,7 @@ impl Interactive {
         let mut states = StateStore::new();
         let mut bindings = BindingTable::new();
         let mut lists = VirtualLists::new();
+        let mut text_edits = TextEdits::new();
 
         let widget = radio_group(OPTIONS)
             .size(Size::fill())
@@ -265,7 +273,13 @@ impl Interactive {
             });
 
         let group = {
-            let mut cx = BuildCx::with_reactive(&mut store, &mut states, &mut bindings, &mut lists);
+            let mut cx = BuildCx::with_reactive(
+                &mut store,
+                &mut states,
+                &mut bindings,
+                &mut lists,
+                &mut text_edits,
+            );
             widget.build(&mut cx);
             cx.root().expect("group declares a root")
         };
@@ -435,10 +449,17 @@ fn radio_group_derives_a_group_over_named_checkbox_options() {
     let mut states = StateStore::new();
     let mut bindings = BindingTable::new();
     let mut lists = VirtualLists::new();
+    let mut text_edits = TextEdits::new();
 
     let root = {
         let widget = radio_group(OPTIONS);
-        let mut cx = BuildCx::with_reactive(&mut store, &mut states, &mut bindings, &mut lists);
+        let mut cx = BuildCx::with_reactive(
+            &mut store,
+            &mut states,
+            &mut bindings,
+            &mut lists,
+            &mut text_edits,
+        );
         widget.build(&mut cx);
         cx.root().expect("group declares a root")
     };
