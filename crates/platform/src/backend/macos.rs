@@ -725,6 +725,10 @@ fn keycode_of(event: &NSEvent) -> KeyCode {
         0x31 => KeyCode::Space,
         0x30 => KeyCode::Tab,
         0x33 => KeyCode::Backspace,
+        0x7b => KeyCode::Left,
+        0x7c => KeyCode::Right,
+        0x7d => KeyCode::Down,
+        0x7e => KeyCode::Up,
         other => KeyCode::Other(other),
     }
 }
