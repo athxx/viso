@@ -553,13 +553,84 @@ old Phase 10 `viso migrate` migration tooling was **removed** from the doc (see 
       shaping);Cargo.toml 加 `[[bench]] name = "label_build"`。烟测数字 build≈876ns / layout≈21.6ns /
       paint_tree≈9.2ns(短时长烟测,**非记录基线**;基线数字与 View 一起后续片补)。
 
+### Slice 4 — Tier 1 widget:Image(已收官 2026-09-05)
+
+- [x] `crates/ui/src/component.rs`:新增 `BuildCx::image(handle, texture, uv, tint, natural) -> Handle` 声明接缝
+      (仿 `text_request`,直接 `set_content_payload(handle.id, Content::Image{..})`)。Image 无 shaping 阶段——
+      纹理已 resident,故 build 时直接写 content 最合理(零额外 facade 步骤);`set_content_payload` 已 mark
+      MEASURE|LAYOUT|PAINT,widget 侧无需再失效。四元入参(`texture/uv/tint/natural`)不引 ImageSource/解码。
+- [x] `crates/widgets/src/lib.rs`:声明 `pub mod image` + `pub use image::{Image, ImageStyle, image}`(简单控件单文件)。
+- [x] `crates/widgets/src/image.rs`:`Image`/`ImageStyle`/`image()`;`image(texture, width, height)` 的
+      `(width,height)` 是纹理固有像素尺寸,合一入参同时作默认 `size: Fixed(w,h)` 和 `Content::Image.natural`;
+      链式 `.uv(Rect)`/`.tint(Rgba)`/`.size(Size)`。`ImageStyle` 无 `Default`(默认在 `image()` 内联:uv 全幅
+      `FULL_UV={0,0,1,1}`、tint 白 `NO_TINT`、size `Fixed(natural)`)。`impl Component`——一个 `LeafStyle{ size,
+      style: BoxStyle::NONE }` leaf + `cx.image(h, texture, uv, tint, natural)` + `Semantics::role(Role::Group)`
+      (`Role::Image` 变体拆后续片)。`TextureId`/`Rect`/`Rgba` 是 `Copy`,`build(&self)` 无 `.clone()` 开销。
+      3 单测(单 leaf + `Content::Image` 各字段 + Group 语义;setters 覆写 + 默认 size Fixed=natural;非交互无
+      handler)+ 1 doctest(`TextureId(0)` dummy + `.tint(..)`)。
+- [x] facade prelude:`pub use viso_widgets::{Image, ImageStyle, Label, LabelStyle, View, ViewStyle, image,
+      label, view}`;删注释里已兑现的 Image。`viso::ui` 已 `pub use viso_ui::*` 故 `TextureId` 可达。
+- [x] Image 的 section 71 validation pack:widget 单测在 `image.rs`(仅 viso-ui);golden+measure/a11y/alloc 集成放
+      `crates/viso/tests/image_widget.rs`(facade 侧)。纹理走 **test_texture 棋盘格 fixture 惯例**——
+      `gpu.create_texture(Bgra8Unorm) + write_texture(viso::render::test_texture())` 拿 resident `TextureId`,
+      Image 的 `.build` 走**真实 `cx.image` 接缝**写 content(不绕),但纹理本身用 fixture 而非解码,像素确定。
+      **Fit 测量硬约束同 Label**:Image leaf 包进 padded `view()` 容器(闭包捕获 `Copy` 值须 `move`),经
+      `arena().links(root).first_child` 定位 image leaf,断言其 bounds 量到纹理 natural。golden `image_widget.bgra8`
+      经 BLESS=1 生成、gitignore 不提交;alloc 4 帧预热 + 两帧相等 + `frame_stats`/`*_count()` 不变 +
+      draw_calls>0 + instances>0。
+- [x] microbench 骨架:`crates/widgets/benches/image_build.rs`(criterion),measure `image(..).build`/layout/
+      paint_tree 单帧,仅 viso-ui(dummy `TextureId(0)`,不 raster;Image 无 shaping,bench 计的是 widget
+      声明/布局/paint 成本);Cargo.toml 加 `[[bench]] name = "image_build" harness = false`。基线数字与
+      View+Label 一起后续片补。
+
+### Slice 5 — Tier 1 widget:Icon(已收官 2026-09-05)
+
+- [x] `crates/ui/src/lib.rs`:re-export 行加 `LineJoin`(widget 要构造 `Stroke{ join: LineJoin }` 须能命名它;
+      viso-render 已导出,零新 DAG 边;check-deps 仍 17 crates)。
+- [x] `crates/ui/src/component.rs`:新增 `BuildCx::path(handle, cmds, fill, stroke, natural) -> Handle` 声明接缝
+      (仿 Slice 4 的 `BuildCx::image`,直接 `set_content_payload(handle.id, Content::Path{..})`)。Icon 同为无
+      shaping 呈现控件,载荷是几何而非纹理——build 时直接写 content 最优;`set_content_payload` 已 mark
+      MEASURE|LAYOUT|PAINT,widget 侧无需再失效。
+- [x] `crates/widgets/src/lib.rs`:声明 `pub mod icon` + `pub use icon::{Icon, IconStyle, icon}`(简单控件单文件)。
+- [x] `crates/widgets/src/icon.rs`:`Icon`/`IconStyle`/`icon()`;`icon(cmds, width, height)` 的 `cmds:
+      impl Into<Vec<PathCmd>>` 是矢量几何,`(width,height)` 合一入参同时作默认 `size: Fixed(w,h)` 和
+      `Content::Path.natural`;链式 `.fill(Rgba)`/`.stroke(Stroke)`/`.size(Size)`。`IconStyle` 有 `Copy`+`PartialEq`
+      derive;默认在 `icon()` 内联(fill=`Some(FOREGROUND)` 近黑不透明、stroke `None`、size Fixed)——图标默认
+      「填充无描边」。`build` = `LeafStyle{ size, style: BoxStyle::NONE }` leaf + `cx.path(h, self.cmds.clone(),
+      fill, stroke, natural)` + `Semantics::role(Role::Group)`(`Role::Icon` 变体拆后续片)。`build(&self)` 取引用
+      故 `cmds` 用 `.clone()`(冷路径 build-time,非热帧;`fill`/`stroke`/`natural` 是 `Copy`)。3 单测(单 leaf +
+      `Content::Path` 各字段 + Group 语义;setters 覆写 + 默认 size Fixed=natural;非交互无 pointer/key handler)
+      + 1 doctest。
+- [x] facade prelude:`pub use viso_widgets::{Icon, IconStyle, Image, ImageStyle, Label, LabelStyle, View,
+      ViewStyle, icon, image, label, view}`;注释提及矢量图标控件。`widgets` escape hatch 自动带上。
+- [x] Icon 的 section 71 validation pack:widget 单测在 `icon.rs`(仅 viso-ui);golden+measure/a11y/alloc 集成放
+      `crates/viso/tests/icon_widget.rs`(facade 侧)。**与 Image 不同——不需 texture fixture**:cmds 用内联确定性
+      几何(一个填充菱形),`Icon::build` 走**真实 `cx.path` 接缝**写 content,renderer 真栅格化(renderer.rs
+      tessellate),golden 画出真实像素。Icon leaf 包进 padded 暗 `view()` 容器(闭包 `move`),经
+      `arena().links(root).first_child` 定位 icon leaf,断言其 bounds 量到 natural。golden `icon_widget.bgra8`
+      走 BLESS 机制(BLESS=1 生成、否则逐通道 TOL=2 比对),`*.bgra8` gitignore 不提交。3 集成测(golden+measure、
+      Group 语义、稳态帧 4 预热+两帧相等+draw_calls>0+instances>0 零按帧堆分配)全绿。
+- [x] microbench 骨架:`crates/widgets/benches/icon_build.rs`(criterion,照 image_build.rs),measure
+      `icon(..).build`/layout/paint_tree 单帧,仅 viso-ui(内联三角几何,不 raster);Cargo.toml 加
+      `[[bench]] name = "icon_build" harness = false`。基线数字与 View+Label+Image 一起后续片补。
+- [x] 退出门全绿:`check-deps` 17 crates 零变化、`build --workspace`、`clippy --all-targets -D warnings`、
+      `fmt --check`、`cargo test -p viso-ui -p viso-widgets -p viso`(viso-ui 166、viso-widgets 12 单测+4 doctest、
+      viso icon_widget 3)全过。commit `eed516a`。
+
 后续片(不做,记此):
-- Image(纹理 content,现成 `TextureId`)、Icon(Path content),各附同款 validation pack。
+- **`Role::Icon` / `Role::Image` 语义变体**:Icon/Image 现用 `Role::Group`;补专属 role(动 role enum + derive 臂 + 快照测)拆后续片。
+- **ImageSource enum / 图片解码(png/jpeg/svg 栅格) / 图片 atlas**:全工作区无解码路径;Image 只接**现成 `TextureId`**。
+  解码与 atlas 归属后续小节 or Tier 6 可选集成(architecture section 46 / DEFERRED)。
+- **ObjectFit**(contain / cover / scale-down / none):Image 现只 Fill/stretch(paint 的 Image 臂把纹理拉满 world
+  box);contain/cover 需 paint 侧算 uv 或 world 子矩形,拆后续小节。
 - **响应式 Label**:文字内容绑 state → 重建 text_request + MEASURE/LAYOUT/PAINT/SEMANTICS 失效;本片只静态文字
   (`StateValue::Text` 破 `Copy` 的连锁改动已在 Slice 1 被否,走重建路径)。
 - 文字 **wrap / max_lines / overflow 截断 / BiDi / 多字体**:`viso-text` 现单 face/LTR/硬 `\n`,LabelStyle 暂不含 wrap 字段。
 - 通过**公共 API** 真正驱动 facade `TextShaper` 的端到端 shape 集成(需 `Application` frame flow 或把 shape 接缝公开);
   本片 golden 沿用 test_glyphs 确定性惯例,不阻塞。
-- **widget microbench 记录基线数字**(View + Label 一起补)。
+- **widget microbench 记录基线数字**(View + Label + Image + Icon 一起补)。
+- **图标字体 / SVG path 解析**:Icon 的 cmds 现由作者直接给出确定性 `Vec<PathCmd>`;icon-font(codepoint→glyph
+  outline)与 SVG `d=` 属性解析归属后续小节。
+- **ObjectFit 式 path 适配**(把几何缩放/居中进 leaf box):Icon 现按作者给的固有尺寸原样绘;fit 拆后续小节。
 - View 的 child-list / keyed children 抽象(现单 builder 闭包)。
 - **B1 宏表层**(`component!`/`view!`/`#[component]`);Tier 1 先手写 `Component`。
