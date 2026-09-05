@@ -44,3 +44,7 @@ harness = false
 [[bench]]
 name = "toggle_build"
 harness = false
+
+[[bench]]
+name = "radio_build"
+harness = false
