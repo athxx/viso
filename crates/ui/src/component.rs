@@ -23,7 +23,7 @@ use crate::semantics::{Role, Semantics, SemanticsNode, SemanticsTree};
 use crate::state::{StateId, StateStore, StateValue};
 use crate::style::{BoxStyle, StyleId};
 use crate::token::Theme;
-use viso_render::{Rect, Rgba, TextureId};
+use viso_render::{PathCmd, Rect, Rgba, Stroke, TextureId};
 
 /// The application entry into the tree: a component declares its children into
 /// the [`BuildCx`]. This slice has no reactive state, so `build` takes `&self`;
@@ -1828,6 +1828,34 @@ impl<'a> BuildCx<'a> {
                 texture,
                 uv,
                 tint,
+                natural,
+            },
+        );
+        handle
+    }
+
+    /// Declare a vector path to draw on an already-declared node. Mirrors
+    /// `image` but carries geometry instead of a texture: there is no
+    /// shaping/decode step, so this writes the [`Content::Path`] payload
+    /// directly. `cmds` are the outline commands in the node's local space
+    /// (paint shifts them to the node's world origin), `fill`/`stroke` paint the
+    /// interior/outline, and `natural` is the path's intrinsic size — what a
+    /// `Length::Fit` axis on this node measures against. Returns the handle so
+    /// authoring chains inline.
+    pub fn path(
+        &mut self,
+        handle: Handle,
+        cmds: Vec<PathCmd>,
+        fill: Option<Rgba>,
+        stroke: Option<Stroke>,
+        natural: Vec2,
+    ) -> Handle {
+        self.store.set_content_payload(
+            handle.id,
+            Content::Path {
+                cmds,
+                fill,
+                stroke,
                 natural,
             },
         );
