@@ -23,7 +23,7 @@ use crate::semantics::{Role, Semantics, SemanticsNode, SemanticsTree};
 use crate::state::{StateId, StateStore, StateValue};
 use crate::style::{BoxStyle, StyleId};
 use crate::token::Theme;
-use viso_render::Rect;
+use viso_render::{Rect, Rgba, TextureId};
 
 /// The application entry into the tree: a component declares its children into
 /// the [`BuildCx`]. This slice has no reactive state, so `build` takes `&self`;
@@ -1804,6 +1804,33 @@ impl<'a> BuildCx<'a> {
     /// Returns the handle so authoring chains inline.
     pub fn text_request(&mut self, handle: Handle, request: TextRequest) -> Handle {
         self.store.set_text_request(handle.id, request);
+        handle
+    }
+
+    /// Declare an image to draw on an already-declared node. Mirrors
+    /// `text_request` but needs no shaping step: the texture is already resident,
+    /// so this writes the [`Content::Image`] payload directly. `uv` selects the
+    /// source sub-rect (normalized `0..1`), `tint` modulates it (white = as-is),
+    /// and `natural` is the image's intrinsic pixel size — what a `Length::Fit`
+    /// axis on this node measures against. Returns the handle so authoring chains
+    /// inline.
+    pub fn image(
+        &mut self,
+        handle: Handle,
+        texture: TextureId,
+        uv: Rect,
+        tint: Rgba,
+        natural: Vec2,
+    ) -> Handle {
+        self.store.set_content_payload(
+            handle.id,
+            Content::Image {
+                texture,
+                uv,
+                tint,
+                natural,
+            },
+        );
         handle
     }
 
