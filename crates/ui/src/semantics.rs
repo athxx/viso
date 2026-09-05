@@ -33,6 +33,13 @@ pub enum Role {
     CheckBox,
     /// A static text label.
     Label,
+    /// An editable text field: accepts typed characters and IME composition,
+    /// carries a caret and an optional selection. The live text value, caret,
+    /// and selection are held in the control's own reactive cells, not this cold
+    /// role; this slice announces the role and name and proves the editing state
+    /// through the control's cells and input tapes (the derive pass has no state
+    /// store today — the same treatment as [`CheckBox`](Role::CheckBox)).
+    TextField,
 }
 
 /// A node's *authored* semantics: the facts a builder sets, distinct from the
@@ -128,6 +135,13 @@ mod tests {
         let s = Semantics::role(Role::Button).with_label("Add");
         assert_eq!(s.role, Role::Button);
         assert_eq!(s.label.as_deref(), Some("Add"));
+    }
+
+    #[test]
+    fn textfield_role_carries_name() {
+        let s = Semantics::role(Role::TextField).with_label("Email");
+        assert_eq!(s.role, Role::TextField);
+        assert_eq!(s.label.as_deref(), Some("Email"));
     }
 
     #[test]
