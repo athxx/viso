@@ -765,8 +765,11 @@ TextInput ✅(单行编辑骨架,后续片见上文 deferral 清单)。全部 �
         +`WindowState::open`(抽 on_launch GPU 起+build 复用路径)/`cx.close_window`(仅关,经 `WindowClosed`→单一
         拆卸);`WindowConfig` mirror + `WindowOpenRequest`(§3.5 viso-ui 不依赖 platform);headless 两窗集成测
         (开→2 独立 store/root、关→1、全关→loop 退)+ `DrivenApp` window_count/store_at/root_at/window_id_at。
-      - [ ] 提交 5 公共 `window()`/`WindowBuilder`/`WindowHandle`/`WindowConfig`(facade 应用级句柄,非节点控件,
-        prelude 一点)+ id 回填 slot;widget 单测。
+      - [x] 提交 5 公共 `window()`/`WindowBuilder`/`WindowHandle`/`WindowConfig`(facade 应用级句柄,非节点控件,
+        prelude 一点)+ id 回填 slot(`EventCx::request_open_window_tracked` + `WindowIdSlot` +
+        `WindowOpenRequest.id_slot`,facade `create_window` 后回填 `id.0`);`WindowConfig` 重导 viso_ui,
+        `viso_platform::WindowConfig` 私有留 drain 翻译点;widget 单测 5(open 记 tracked+id 未定、回填后 id()=Some、
+        open 后 close 记请求、未开先 close no-op、无 content 也能开)。全 gauntlet 绿(check-deps/build/clippy/fmt/test)。
       - [ ] 提交 6 facade 验证包(viso/tests/window_multi.rs:golden、多窗 tape、per-window 路由、a11y、alloc)+
         **ADR 0020**(§68 多重触发:frame phase 语义 / node ownership / 公共生命周期)。
       - [ ] 提交 7 microbench(window/open、window/close、window/fan_out/N,N∈{1,4,16})+ Cargo.toml 条目。
