@@ -9,7 +9,8 @@
 //! Tier 1: the primitive presentational controls — layout [`containers`] (View),
 //! [`text`] (Label), [`image`] (Image), and [`icon`] (Icon). Tier 2 begins the
 //! interactive controls under [`controls`] (Button, CheckBox, Toggle,
-//! RadioGroup, Slider, TextInput).
+//! RadioGroup, Slider, TextInput). Tier 3 begins the layout structures —
+//! [`scroll`] (Scroll).
 
 #![forbid(unsafe_op_in_unsafe_fn)]
 
@@ -17,6 +18,7 @@ pub mod containers;
 pub mod controls;
 pub mod icon;
 pub mod image;
+pub mod scroll;
 pub mod text;
 
 pub use containers::{View, ViewStyle, view};
@@ -27,4 +29,5 @@ pub use controls::{
 };
 pub use icon::{Icon, IconStyle, icon};
 pub use image::{Image, ImageStyle, image};
+pub use scroll::{Scroll, ScrollViewStyle, scroll};
 pub use text::{Label, LabelStyle, label};
