@@ -76,3 +76,7 @@ harness = false
 [[bench]]
 name = "tabs_build"
 harness = false
+
+[[bench]]
+name = "navigation_stack_build"
+harness = false
