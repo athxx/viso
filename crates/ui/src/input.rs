@@ -372,12 +372,13 @@ fn pointer_dispatch(
     let Some(mut handler) = store.take_handler(node) else {
         return Dispatched::default();
     };
-    let (capture, focus, hidden, stop) = {
+    let (capture, focus, scope, hidden, stop) = {
         let mut ev = EventCx::__new_pointer(states, bindings, event);
         handler(&mut ev);
         (
             ev.__take_capture_request(),
             ev.__take_focus_request(),
+            ev.__take_focus_scope_request(),
             ev.__take_hidden_requests(),
             ev.__stop_requested(),
         )
@@ -394,6 +395,11 @@ fn pointer_dispatch(
     // key route's, so the focus-ring/semantics invalidation is shared.
     if let Some(target) = focus {
         apply_focus(store, store.focused(), target);
+    }
+    // A focus-scope request installs or releases the focus trap (an opening or
+    // closing modal): `Some(id)` confines Tab to `id`'s subtree, `None` releases.
+    if let Some(scope_req) = scope {
+        store.set_focus_scope(scope_req);
     }
     // Visibility flips from a hide/show control (Tabs panel swap): applied the
     // same deferred way, each marking the node LAYOUT | PAINT dirty.
@@ -415,10 +421,19 @@ fn pointer_dispatch(
 /// acceptable. If a huge focusable set ever makes this hot, it moves to a cached
 /// ordered index — a style/semantics concern, not this path's.
 pub fn focus_next(store: &mut NodeStore, root: NodeId, forward: bool) -> Option<NodeId> {
+    // When a focus scope is installed (an open modal traps the ring), traverse
+    // its subtree instead of the passed root, so Tab cycles only inside the
+    // dialog. A scope pointing at a freed node falls back to the whole tree —
+    // never trap focus in a dead subtree. `focus_next` already confines the walk
+    // to its starting node's subtree, so swapping the start is the whole trap.
+    let scope_root = store
+        .focus_scope()
+        .filter(|s| store.arena().is_live(*s))
+        .unwrap_or(root);
     // Pre-order walk (first_child, then next_sibling), collecting focusables in
     // the tree's natural order.
     let mut order: Vec<NodeId> = Vec::new();
-    let mut stack: Vec<NodeId> = vec![root];
+    let mut stack: Vec<NodeId> = vec![scope_root];
     while let Some(node) = stack.pop() {
         if store.focusable(node) {
             order.push(node);
@@ -544,7 +559,7 @@ fn key_dispatch(
     let Some(mut handler) = store.take_key_handler(node) else {
         return Dispatched::default();
     };
-    let (request, stop, recorded, hidden) = {
+    let (request, stop, recorded, hidden, scope) = {
         let mut cx = EventCx::__new_key(states, bindings, ev);
         handler(&mut cx);
         (
@@ -552,12 +567,16 @@ fn key_dispatch(
             cx.__stop_requested(),
             cx.__take_edits(),
             cx.__take_hidden_requests(),
+            cx.__take_focus_scope_request(),
         )
     };
     store.restore_key_handler(node, handler);
     queue_edits(edits, node, recorded);
     if let Some(target) = request {
         apply_focus(store, store.focused(), target);
+    }
+    if let Some(scope_req) = scope {
+        store.set_focus_scope(scope_req);
     }
     for (id, h) in hidden {
         store.set_hidden(id, h);
@@ -578,7 +597,7 @@ fn ime_dispatch(
     let Some(mut handler) = store.take_key_handler(node) else {
         return Dispatched::default();
     };
-    let (request, stop, recorded, hidden) = {
+    let (request, stop, recorded, hidden, scope) = {
         let mut cx = EventCx::__new_ime(states, bindings, ev);
         handler(&mut cx);
         (
@@ -586,12 +605,16 @@ fn ime_dispatch(
             cx.__stop_requested(),
             cx.__take_edits(),
             cx.__take_hidden_requests(),
+            cx.__take_focus_scope_request(),
         )
     };
     store.restore_key_handler(node, handler);
     queue_edits(edits, node, recorded);
     if let Some(target) = request {
         apply_focus(store, store.focused(), target);
+    }
+    if let Some(scope_req) = scope {
+        store.set_focus_scope(scope_req);
     }
     for (id, h) in hidden {
         store.set_hidden(id, h);
@@ -923,6 +946,158 @@ mod tests {
         assert_eq!(store.focused(), None);
     }
 
+    /// Build flex { leaf outside, flex scope { leaf s0, leaf s1 } } with all
+    /// three leaves focusable, returning (store, root, outside, scope, [s0, s1]).
+    /// The `scope` flex is the subtree a modal traps focus in; `outside` is the
+    /// focusable that must be unreachable while the scope is installed.
+    fn scoped_scene() -> (NodeStore, NodeId, NodeId, NodeId, [NodeId; 2]) {
+        let mut store = NodeStore::new();
+        let outside = Rc::new(RefCell::new(None));
+        let scope = Rc::new(RefCell::new(None));
+        let inner = Rc::new(RefCell::new(Vec::new()));
+        let root = {
+            let mut cx = BuildCx::new(&mut store);
+            let outside2 = outside.clone();
+            let scope2 = scope.clone();
+            let inner2 = inner.clone();
+            cx.flex(
+                FlexStyle {
+                    axis: Axis::Row,
+                    size: Size::fixed(200.0, 100.0),
+                    ..Default::default()
+                },
+                |cx| {
+                    let o = cx.leaf(LeafStyle {
+                        size: Size::fixed(10.0, 10.0),
+                        ..Default::default()
+                    });
+                    *outside2.borrow_mut() = Some(o.id());
+                    let s = cx.flex(
+                        FlexStyle {
+                            axis: Axis::Row,
+                            size: Size::fixed(100.0, 100.0),
+                            ..Default::default()
+                        },
+                        |cx| {
+                            for _ in 0..2 {
+                                let leaf = cx.leaf(LeafStyle {
+                                    size: Size::fixed(10.0, 10.0),
+                                    ..Default::default()
+                                });
+                                inner2.borrow_mut().push(leaf.id());
+                            }
+                        },
+                    );
+                    *scope2.borrow_mut() = Some(s.id());
+                },
+            );
+            cx.root().unwrap()
+        };
+        let outside = outside.borrow().unwrap();
+        let scope = scope.borrow().unwrap();
+        let inner = inner.borrow();
+        let ids = [inner[0], inner[1]];
+        store.set_focusable(outside, true);
+        store.set_focusable(ids[0], true);
+        store.set_focusable(ids[1], true);
+        (store, root, outside, scope, ids)
+    }
+
+    #[test]
+    fn focus_scope_confines_tab_to_the_scoped_subtree() {
+        let (mut store, root, outside, scope, [s0, s1]) = scoped_scene();
+        // With no scope, Tab reaches the outside leaf first (pre-order).
+        assert_eq!(focus_next(&mut store, root, true), Some(outside));
+
+        // Install the scope: focus traversal is now confined to the scope subtree.
+        store.set_focus_scope(Some(scope));
+        // Current focus (`outside`) is not in the scoped ring, so forward enters
+        // at the first focusable inside the scope, then cycles only s0 <-> s1 —
+        // the outside leaf is never reached again.
+        assert_eq!(focus_next(&mut store, root, true), Some(s0));
+        assert_eq!(focus_next(&mut store, root, true), Some(s1));
+        assert_eq!(focus_next(&mut store, root, true), Some(s0));
+        assert_eq!(focus_next(&mut store, root, false), Some(s1));
+        assert_ne!(store.focused(), Some(outside));
+    }
+
+    #[test]
+    fn focus_scope_none_is_the_whole_tree() {
+        // With no scope set, focus_next behaves exactly as the unscoped default:
+        // it walks the whole tree in pre-order (outside, then the scoped leaves).
+        let (mut store, root, outside, _scope, [s0, s1]) = scoped_scene();
+        assert_eq!(store.focus_scope(), None);
+        assert_eq!(focus_next(&mut store, root, true), Some(outside));
+        assert_eq!(focus_next(&mut store, root, true), Some(s0));
+        assert_eq!(focus_next(&mut store, root, true), Some(s1));
+        assert_eq!(focus_next(&mut store, root, true), Some(outside));
+    }
+
+    #[test]
+    fn dead_focus_scope_falls_back_to_the_whole_tree() {
+        // A scope pointing at a node that is not live in this store must not trap
+        // focus in a dead subtree. The live-guard on set_focus_scope rejects it,
+        // so the slot stays None and focus_next walks the whole tree.
+        let (mut store, root, outside, _scope, _inner) = scoped_scene();
+        // A handle from a different, larger arena: its index is out of range here,
+        // so is_live is false — a stand-in for a scope whose node was freed.
+        let mut other = NodeStore::new();
+        let mut stale = None;
+        {
+            let mut cx = BuildCx::new(&mut other);
+            cx.flex(
+                FlexStyle {
+                    axis: Axis::Row,
+                    size: Size::fixed(10.0, 10.0),
+                    ..Default::default()
+                },
+                |cx| {
+                    for _ in 0..64 {
+                        let leaf = cx.leaf(LeafStyle {
+                            size: Size::fixed(1.0, 1.0),
+                            ..Default::default()
+                        });
+                        stale = Some(leaf.id());
+                    }
+                },
+            );
+        }
+        let stale = stale.unwrap();
+        store.set_focus_scope(Some(stale));
+        assert_eq!(
+            store.focus_scope(),
+            None,
+            "a non-live scope handle is rejected by the live guard"
+        );
+        // Focus traversal falls back to the whole tree — the outside leaf is
+        // reachable again.
+        assert_eq!(focus_next(&mut store, root, true), Some(outside));
+    }
+
+    #[test]
+    fn event_cx_focus_scope_request_is_three_state() {
+        let mut states = StateStore::new();
+        let bindings = BindingTable::new();
+        // Any NodeId works: EventCx only records the request; liveness is the
+        // store's concern when the router applies it. Borrow a real one.
+        let (_store, _root, _outside, scope, _inner) = scoped_scene();
+
+        // No request by default.
+        let mut cx = EventCx::__new(&mut states, &bindings);
+        assert_eq!(cx.__take_focus_scope_request(), None);
+
+        // set_focus_scope records Some(Some(id)).
+        let mut cx = EventCx::__new(&mut states, &bindings);
+        cx.set_focus_scope(scope);
+        assert_eq!(cx.__take_focus_scope_request(), Some(Some(scope)));
+        assert_eq!(cx.__take_focus_scope_request(), None, "taken once");
+
+        // clear_focus_scope records Some(None).
+        let mut cx = EventCx::__new(&mut states, &bindings);
+        cx.clear_focus_scope();
+        assert_eq!(cx.__take_focus_scope_request(), Some(None));
+    }
+
     #[test]
     fn focus_change_marks_paint_on_old_and_new_only() {
         let (mut store, root, [a, b, _c]) = three_focusable_leaves();
@@ -1006,6 +1181,91 @@ mod tests {
         assert!(ran);
         // capture: flex(0). target: child(1). bubble: flex(0).
         assert_eq!(*log.borrow(), vec![0, 1, 0]);
+    }
+
+    #[test]
+    fn route_key_applies_a_handlers_focus_scope_request() {
+        // A key handler on the focused node records a focus-scope request through
+        // `cx.set_focus_scope`; the router must drain it and install the scope on
+        // the store (the deferred-request seam Modal open uses). A second route
+        // whose handler calls `cx.clear_focus_scope` must clear it again (the seam
+        // Modal close uses). This proves the router drain, end to end.
+        let mut store = NodeStore::new();
+        let mut states = StateStore::new();
+        let bindings = BindingTable::new();
+        let scope = Rc::new(RefCell::new(None));
+        let focused = Rc::new(RefCell::new(None));
+        let root = {
+            let mut cx = BuildCx::new(&mut store);
+            let scope2 = scope.clone();
+            let focused2 = focused.clone();
+            let flex = cx.flex(
+                FlexStyle {
+                    axis: Axis::Row,
+                    size: Size::fixed(100.0, 100.0),
+                    ..Default::default()
+                },
+                |cx| {
+                    let content = cx.leaf(LeafStyle {
+                        size: Size::fixed(40.0, 40.0),
+                        ..Default::default()
+                    });
+                    *scope2.borrow_mut() = Some(content.id());
+                },
+            );
+            *focused2.borrow_mut() = Some(flex.id());
+            cx.root().unwrap()
+        };
+        let scope_id = scope.borrow().unwrap();
+        let focused_id = focused.borrow().unwrap();
+        store.set_focusable(focused_id, true);
+        store.set_focused(Some(focused_id));
+
+        // First route: the handler requests the scope, the router installs it.
+        {
+            let scope3 = scope_id;
+            store.set_key_handler(
+                focused_id,
+                Box::new(move |cx: &mut EventCx<'_>| cx.set_focus_scope(scope3)),
+            );
+        }
+        let mut chain = Vec::new();
+        let mut edits = TextEdits::new();
+        assert!(KeyRouter::route_key(
+            &mut store,
+            &mut states,
+            &bindings,
+            &mut edits,
+            root,
+            key(Key::Enter),
+            &mut chain,
+        ));
+        assert_eq!(
+            store.focus_scope(),
+            Some(scope_id),
+            "the router drains the handler's set_focus_scope request"
+        );
+
+        // Second route: the handler clears the scope, the router clears the slot.
+        store.set_key_handler(
+            focused_id,
+            Box::new(|cx: &mut EventCx<'_>| cx.clear_focus_scope()),
+        );
+        chain.clear();
+        assert!(KeyRouter::route_key(
+            &mut store,
+            &mut states,
+            &bindings,
+            &mut edits,
+            root,
+            key(Key::Escape),
+            &mut chain,
+        ));
+        assert_eq!(
+            store.focus_scope(),
+            None,
+            "the router drains the handler's clear_focus_scope request"
+        );
     }
 
     #[test]

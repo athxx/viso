@@ -246,6 +246,16 @@ pub struct NodeStore {
     /// pointer is over (drag-to-scroll, thumb drag). One slot per store — a
     /// single pointer this slice — reset to `None` on a structural rebuild.
     capture: Option<NodeId>,
+    /// The subtree focus traversal is confined to, or `None` for the whole tree.
+    /// When set (an open modal/dialog traps the ring), [`focus_next`] starts its
+    /// pre-order from this node instead of the passed root, so Tab cycles only
+    /// within the scoped subtree. One slot per store — a single active trap this
+    /// slice — reset to `None` on a structural rebuild. Mirrors [`focused`]: a
+    /// single retained slot, zero steady-state cost, not a per-Tab recomputation.
+    ///
+    /// [`focus_next`]: crate::input::focus_next
+    /// [`focused`]: Self::focused
+    focus_scope: Option<NodeId>,
     /// Cold flag column: whether a node can hold focus. Default `false` — unlike
     /// `hittable`, a node opts *in* to focus (only interactive nodes participate
     /// in the focus ring). Maintained index-aligned with the arena.
@@ -317,6 +327,7 @@ impl NodeStore {
         self.text_request.clear();
         self.focused = None;
         self.capture = None;
+        self.focus_scope = None;
     }
 
     /// The arena backing the tree.
@@ -856,6 +867,26 @@ impl NodeStore {
         match id {
             Some(node) if !self.arena.is_live(node) => {}
             other => self.focused = other,
+        }
+    }
+
+    /// The subtree focus traversal is confined to, or `None` for the whole tree.
+    /// While `Some`, [`focus_next`](crate::input::focus_next) cycles Tab only
+    /// within this node's subtree — the focus trap an open modal installs.
+    #[inline]
+    pub fn focus_scope(&self) -> Option<NodeId> {
+        self.focus_scope
+    }
+
+    /// Set (or clear, with `None`) the focus scope. Scoping to `Some(id)` is
+    /// live-guarded — a stale handle leaves the scope unchanged rather than
+    /// trapping focus in a dead subtree; `None` always clears. Only moves the
+    /// slot; it does not itself move focus (a control pairs it with a
+    /// `request_focus` into the scope when opening).
+    pub fn set_focus_scope(&mut self, id: Option<NodeId>) {
+        match id {
+            Some(node) if !self.arena.is_live(node) => {}
+            other => self.focus_scope = other,
         }
     }
 

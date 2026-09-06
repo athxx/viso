@@ -139,6 +139,13 @@ pub struct EventCx<'a> {
     /// captures the pointer to `id`, `Some(None)` releases capture, `None` = no
     /// request. Applied by the router after the handler returns.
     capture_request: Option<Option<NodeId>>,
+    /// A focus-scope request a handler made this dispatch: `Some(Some(id))`
+    /// confines focus traversal to `id`'s subtree (an opening modal traps the
+    /// ring), `Some(None)` clears the scope (a closing modal releases it),
+    /// `None` = no request. Applied by the router after the handler returns —
+    /// the same deferred shape as [`focus_request`](Self::focus_request), since
+    /// the cx holds no node store to touch the scope slot directly.
+    focus_scope_request: Option<Option<NodeId>>,
     /// Set by [`EventCx::stop_propagation`]: when true, the router stops walking
     /// the remaining dispatch chain after this handler returns. Shared by the
     /// pointer, key, and IME paths.
@@ -172,6 +179,7 @@ impl<'a> EventCx<'a> {
             ime: None,
             focus_request: None,
             capture_request: None,
+            focus_scope_request: None,
             stop: false,
             edits: Vec::new(),
             hidden_requests: Vec::new(),
@@ -195,6 +203,7 @@ impl<'a> EventCx<'a> {
             ime: None,
             focus_request: None,
             capture_request: None,
+            focus_scope_request: None,
             stop: false,
             edits: Vec::new(),
             hidden_requests: Vec::new(),
@@ -217,6 +226,7 @@ impl<'a> EventCx<'a> {
             ime: None,
             focus_request: None,
             capture_request: None,
+            focus_scope_request: None,
             stop: false,
             edits: Vec::new(),
             hidden_requests: Vec::new(),
@@ -239,6 +249,7 @@ impl<'a> EventCx<'a> {
             ime: Some(ime),
             focus_request: None,
             capture_request: None,
+            focus_scope_request: None,
             stop: false,
             edits: Vec::new(),
             hidden_requests: Vec::new(),
@@ -301,6 +312,30 @@ impl<'a> EventCx<'a> {
     #[doc(hidden)]
     pub fn __take_focus_request(&mut self) -> Option<Option<NodeId>> {
         self.focus_request.take()
+    }
+
+    /// Request that focus traversal be confined to `id`'s subtree after this
+    /// handler returns — the focus trap an opening modal installs so Tab cycles
+    /// only inside the dialog. Deferred exactly like
+    /// [`request_focus`](Self::request_focus): the cx holds no node store, so the
+    /// router applies it to the scope slot after the handler returns.
+    #[inline]
+    pub fn set_focus_scope(&mut self, id: NodeId) {
+        self.focus_scope_request = Some(Some(id));
+    }
+
+    /// Request that the focus scope be cleared after this handler returns — a
+    /// closing modal releasing the trap so Tab returns to the whole tree.
+    #[inline]
+    pub fn clear_focus_scope(&mut self) {
+        self.focus_scope_request = Some(None);
+    }
+
+    /// Take the pending focus-scope request out of the cx for the router to
+    /// apply. `None` means the handler made no request this dispatch.
+    #[doc(hidden)]
+    pub fn __take_focus_scope_request(&mut self) -> Option<Option<NodeId>> {
+        self.focus_scope_request.take()
     }
 
     /// Record a text edit for the dispatching node. Deferred exactly like
