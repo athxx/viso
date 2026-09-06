@@ -87,6 +87,28 @@ impl<D: FrameDriver, C: FrameClock> Scheduler<D, C> {
         unsafe { (*app).run(handler) };
     }
 
+    /// Run to completion and hand the driver back, for headless inspection.
+    ///
+    /// Identical to [`run`](Self::run) but returns the owned driver once the
+    /// pump exits (a scripted headless app drains its queue and returns, or the
+    /// last window closes). The point is section 66: a headless test drives the
+    /// *real* frame loop end to end and then reads the driver's final state —
+    /// the animation registry emptied, the store's world rects re-derived — with
+    /// no manually-driven `NodeStore` shim standing in for the loop.
+    ///
+    /// A native pump blocks forever on an empty queue, so this is only useful
+    /// with the headless backend; there is no way to observe the return under a
+    /// real display link.
+    pub fn run_returning(mut self) -> D {
+        // SAFETY: identical aliasing argument to `run` — `app` and the handler
+        // (`self`) share this stack frame for the whole call, and the pump's
+        // accesses to each are strictly interleaved, never simultaneous.
+        let app: *mut dyn PlatformApp = &mut *self.app;
+        let handler: &mut dyn AppHandler = &mut self;
+        unsafe { (*app).run(handler) };
+        self.driver
+    }
+
     /// Run one frame if the pending reasons call for it, then reset them.
     fn maybe_run_frame(&mut self) {
         // Only spend a frame when something is actually pending — the

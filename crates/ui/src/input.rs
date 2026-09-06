@@ -372,7 +372,7 @@ fn pointer_dispatch(
     let Some(mut handler) = store.take_handler(node) else {
         return Dispatched::default();
     };
-    let (capture, focus, scope, hidden, stop) = {
+    let (capture, focus, scope, hidden, anims, stop) = {
         let mut ev = EventCx::__new_pointer(states, bindings, event);
         ev.__set_focused(store.focused());
         handler(&mut ev);
@@ -381,6 +381,7 @@ fn pointer_dispatch(
             ev.__take_focus_request(),
             ev.__take_focus_scope_request(),
             ev.__take_hidden_requests(),
+            ev.__take_animation_requests(),
             ev.__stop_requested(),
         )
     };
@@ -406,6 +407,12 @@ fn pointer_dispatch(
     // same deferred way, each marking the node LAYOUT | PAINT dirty.
     for (id, h) in hidden {
         store.set_hidden(id, h);
+    }
+    // Transform animations a handler started (a sheet's slide): queued on the
+    // store, drained by the driver into its registry next frame. Applied the
+    // same deferred way — the router holds no animation registry.
+    for anim in anims {
+        store.queue_animation(anim);
     }
     Dispatched { ran: true, stop }
 }
@@ -560,7 +567,7 @@ fn key_dispatch(
     let Some(mut handler) = store.take_key_handler(node) else {
         return Dispatched::default();
     };
-    let (request, stop, recorded, hidden, scope) = {
+    let (request, stop, recorded, hidden, scope, anims) = {
         let mut cx = EventCx::__new_key(states, bindings, ev);
         cx.__set_focused(store.focused());
         handler(&mut cx);
@@ -570,6 +577,7 @@ fn key_dispatch(
             cx.__take_edits(),
             cx.__take_hidden_requests(),
             cx.__take_focus_scope_request(),
+            cx.__take_animation_requests(),
         )
     };
     store.restore_key_handler(node, handler);
@@ -582,6 +590,9 @@ fn key_dispatch(
     }
     for (id, h) in hidden {
         store.set_hidden(id, h);
+    }
+    for anim in anims {
+        store.queue_animation(anim);
     }
     Dispatched { ran: true, stop }
 }
@@ -599,7 +610,7 @@ fn ime_dispatch(
     let Some(mut handler) = store.take_key_handler(node) else {
         return Dispatched::default();
     };
-    let (request, stop, recorded, hidden, scope) = {
+    let (request, stop, recorded, hidden, scope, anims) = {
         let mut cx = EventCx::__new_ime(states, bindings, ev);
         cx.__set_focused(store.focused());
         handler(&mut cx);
@@ -609,6 +620,7 @@ fn ime_dispatch(
             cx.__take_edits(),
             cx.__take_hidden_requests(),
             cx.__take_focus_scope_request(),
+            cx.__take_animation_requests(),
         )
     };
     store.restore_key_handler(node, handler);
@@ -621,6 +633,9 @@ fn ime_dispatch(
     }
     for (id, h) in hidden {
         store.set_hidden(id, h);
+    }
+    for anim in anims {
+        store.queue_animation(anim);
     }
     Dispatched { ran: true, stop }
 }

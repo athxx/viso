@@ -24,7 +24,7 @@ pub mod phase;
 pub mod schedule;
 pub mod scheduler;
 
-pub use clock::{FrameClock, ManualClock, WallClock};
+pub use clock::{FixedStepClock, FrameClock, ManualClock, WallClock};
 pub use context::RuntimeCx;
 pub use driver::FrameDriver;
 pub use frame::run_frame;

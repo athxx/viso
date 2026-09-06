@@ -9,6 +9,7 @@
 //! (read by measure/layout/paint). This is the data-oriented internal that
 //! backs the object-oriented external API.
 
+use crate::animation::TranslateAnim;
 use crate::binding::BindingTable;
 use crate::content::{Content, TextRequest};
 use crate::context::EventCx;
@@ -300,6 +301,16 @@ pub struct NodeStore {
     /// Boxed off the hot columns like `semantics`; a cold `String` in sparse
     /// side storage, never touched by the hot per-node traversal.
     text_request: Vec<Option<Box<TextRequest>>>,
+    /// Cold, transient handoff buffer (not index-aligned): transform animations
+    /// a handler requested this frame, sitting here between the router (which
+    /// drains them off the [`EventCx`](crate::context::EventCx) after a dispatch
+    /// and enqueues them via [`queue_animation`](Self::queue_animation)) and the
+    /// driver (which drains this via [`take_animation_requests`](Self::take_animation_requests)
+    /// into its live registry, before ticking). Empty and allocation-free in the
+    /// overwhelmingly common frame that starts no animation; the router holds the
+    /// store, not the driver's registry, so the animation cannot be applied in
+    /// place — the same deferral the text-request queue uses.
+    animation_requests: Vec<TranslateAnim>,
 }
 
 impl NodeStore {
@@ -335,6 +346,7 @@ impl NodeStore {
         self.semantics.clear();
         self.content_payload.clear();
         self.text_request.clear();
+        self.animation_requests.clear();
         self.focused = None;
         self.capture = None;
         self.focus_scope = None;
@@ -810,6 +822,29 @@ impl NodeStore {
         }
     }
 
+    /// Enqueue a transform animation the router drained off an
+    /// [`EventCx`](crate::context::EventCx) this frame. It sits in the store's
+    /// transient handoff buffer until the driver drains it with
+    /// [`take_animation_requests`](Self::take_animation_requests) into its live
+    /// registry (the store holds no registry of its own — the driver owns that).
+    /// A cold path: it runs only when a handler starts a slide, not per frame.
+    #[inline]
+    pub fn queue_animation(&mut self, anim: TranslateAnim) {
+        self.animation_requests.push(anim);
+    }
+
+    /// Move every queued animation out into `out`, clearing the buffer. The
+    /// driver calls this each frame and hands the drained slides to its
+    /// [`AnimationRegistry`](crate::animation::AnimationRegistry) before ticking.
+    /// `out` is cleared first. Unlike [`take_text_requests`](Self::take_text_requests)
+    /// the queue is not index-aligned (an animation names its own node), so this
+    /// is a flat move with no per-node scan — empty and allocation-free in the
+    /// common frame that queued nothing.
+    pub fn take_animation_requests(&mut self, out: &mut Vec<TranslateAnim>) {
+        out.clear();
+        out.append(&mut self.animation_requests);
+    }
+
     /// A node's current pending invalidation set.
     #[inline]
     pub fn dirty(&self, id: NodeId) -> DirtyClass {
@@ -1081,6 +1116,15 @@ impl NodeStore {
     #[inline]
     pub fn any_dirty(&self) -> bool {
         self.dirty.iter().any(|d| !d.is_empty())
+    }
+
+    /// Whether any node carries a dirty class intersecting `class`. Lets a frame
+    /// gate a specific pass precisely — the facade runs `resolve_transforms`
+    /// only when a `TRANSFORM`-dirty node exists, so a pure paint-only frame
+    /// (a color change, no motion) never re-derives world rects.
+    #[inline]
+    pub fn any_dirty_class(&self, class: DirtyClass) -> bool {
+        self.dirty.iter().any(|d| d.intersects(class))
     }
 
     /// Free every **descendant** of `root`, leaving `root` itself live. Each
@@ -1458,6 +1502,17 @@ impl NodeStore {
             scratch.clear();
             layout::layout(self, redo.index(), bounds, scratch);
             laid_out += self.subtree_len(redo);
+        }
+        // Re-place `bounds` into `world`, exactly as the whole-tree
+        // `NodeStore::layout` does after its passes: a relaid subtree wrote fresh
+        // `bounds` but `world` (which paint and hit testing read) is derived only
+        // by `resolve_transforms`. A redo root can sit under scrolling/translating
+        // ancestors, so its correct world needs their accumulated offset — hence
+        // resolving from the tree root, not from each redo root in isolation.
+        // Skipped entirely on a redo-free frame (a pure TRANSFORM/PAINT frame,
+        // whose world the facade resolves through its own TRANSFORM-gated call).
+        if !redo_roots.is_empty() {
+            self.resolve_transforms(root);
         }
         (measured, laid_out)
     }

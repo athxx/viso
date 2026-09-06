@@ -37,14 +37,15 @@
 #![forbid(unsafe_op_in_unsafe_fn)]
 
 use viso_gpu::{Backend, GpuBackend, SurfaceId};
-use viso_platform::{WindowConfig, WindowId};
+use viso_platform::{RawWindowHandle, WindowConfig, WindowId};
 use viso_render::{Primitive, Rect, Renderer};
 use viso_runtime::{FramePhase, RuntimeCx, Scheduler};
 use viso_ui::{
-    BindingTable, BuildCx, ComputedStore, DirtyClass, EffectStore, FrameRecompute, ImeEvent, Key,
-    KeyEvent, KeyRouter, Modifiers, NodeId, NodeStore, PointerButtons, PointerEvent, PointerPhase,
-    PointerRouter, ScrollEvent, ScrollRouter, StateId, StateStore, TextEdits, TextRequest,
-    VirtualLists, focus_next, text_edit, virtual_list,
+    AnimationRegistry, BindingTable, BuildCx, ComputedStore, DirtyClass, EffectStore,
+    FrameRecompute, ImeEvent, Key, KeyEvent, KeyRouter, Modifiers, NodeId, NodeStore,
+    PointerButtons, PointerEvent, PointerPhase, PointerRouter, ScrollEvent, ScrollRouter, StateId,
+    StateStore, TextEdits, TextRequest, TranslateAnim, VirtualLists, focus_next, text_edit,
+    virtual_list,
 };
 
 mod text_content;
@@ -92,6 +93,78 @@ pub fn run<A: Application>() {
     Scheduler::new(platform_app, driver).run();
 }
 
+/// Deterministic headless-loop harness for facade integration tests.
+///
+/// Not part of the public API — this is the section 66 first-class headless
+/// seam, hidden from docs and only meant to be reached by this crate's own
+/// integration tests. It drives the *real* [`AppDriver`] frame loop (the same
+/// one [`run`] uses) through a [`Scheduler`] over a scripted [`HeadlessApp`],
+/// injecting a self-stepping [`FixedStepClock`] so every animation frame
+/// observes a fixed, reproducible delta with no test intervention between
+/// beats (the pump loops internally while `wants_animation` holds). It returns
+/// the driver after the pump exits so a test can inspect the settled retained
+/// tree — world rects, per-frame recompute counts, and whether the loop halted.
+#[doc(hidden)]
+pub mod __test_support {
+    use super::AppDriver;
+    use crate::Application;
+    use std::time::{Duration, Instant};
+    use viso_runtime::{FixedStepClock, Scheduler};
+
+    /// Inspection view over a settled [`AppDriver`], returned from
+    /// [`drive_scripted`]. Exposes exactly what the Commit-4 facade tests read:
+    /// the retained store (for `world`/`dirty`/`translate`), the tree root, the
+    /// last frame's recompute counts, and the loop's animation state.
+    pub struct DrivenApp<A: Application> {
+        driver: AppDriver<A>,
+    }
+
+    impl<A: Application> DrivenApp<A> {
+        /// The retained tree. Read `world`/`bounds`/`translate` off it.
+        pub fn store(&self) -> &super::NodeStore {
+            &self.driver.store
+        }
+
+        /// The application's declared root node, if any.
+        pub fn root(&self) -> Option<super::NodeId> {
+            self.driver.root
+        }
+
+        /// How much each layer recomputed on the most recent frame. A pure
+        /// TRANSFORM animation frame has `laid_out == 0` yet `painted > 0` —
+        /// the observable proof that world moved without a relayout.
+        pub fn recompute(&self) -> super::FrameRecompute {
+            self.driver.recompute
+        }
+
+        /// Whether the driver still wants animation frames — false once every
+        /// slide has settled (the frame-halt / zero-CPU-when-idle contract).
+        pub fn wants_animation(&self) -> bool {
+            use viso_runtime::FrameDriver;
+            self.driver.wants_animation()
+        }
+    }
+
+    /// Build application `A`, replay `script` through a headless pump driven by
+    /// a [`FixedStepClock`] stepping `step` per frame, and return the settled
+    /// driver once the loop exits. `script` is a sequence of raw platform events
+    /// (an input that triggers a handler, followed by redraw beats to advance
+    /// the animation); a driver that `wants_animation` self-reschedules further
+    /// beats until its registry empties, so the tail need only prime the pump.
+    pub fn drive_scripted<A: Application>(
+        script: Vec<viso_platform::RawEvent>,
+        step: Duration,
+    ) -> DrivenApp<A> {
+        let app = Box::new(viso_platform::backend::headless::HeadlessApp::scripted(
+            script,
+        ));
+        let driver = AppDriver::<A>::new();
+        let clock = FixedStepClock::new(Instant::now(), step);
+        let driver = Scheduler::with_clock(app, driver, clock).run_returning();
+        DrivenApp { driver }
+    }
+}
+
 /// Bridges the UI-agnostic runtime [`viso_runtime::FrameDriver`] to the user's
 /// [`Application`].
 ///
@@ -107,10 +180,18 @@ struct AppDriver<A: Application> {
     /// here. (In Phase 1 it is a marker type; real capabilities land later.)
     cx: AppCx<'static>,
     window: Option<WindowId>,
-    /// The GPU state, created on launch once the window (and its native handle)
-    /// exists. `None` until then, or when surface creation is unavailable
-    /// (headless platform with no window handle).
+    /// The GPU state, created on launch once the window exposes a native
+    /// windowing handle. `None` until then, and `None` for the whole session
+    /// under a headless window (a `RawWindowHandle::Headless`): the tree still
+    /// builds and lays out against `surface_size`, it just paints to no surface.
     gpu: Option<GpuState>,
+    /// The current surface size in physical pixels, held independently of
+    /// [`gpu`](Self::gpu). Layout resolves against this every frame, so the
+    /// retained tree is measured/placed and its world rects re-derived even
+    /// when there is no GPU (a headless window on any platform, including the
+    /// Metal target where a headless surface cannot be created). `on_geometry`
+    /// keeps it and the swapchain in step; seeded from the window's launch size.
+    surface_size: (u32, u32),
     /// The retained UI tree: real nodes built once on launch, then relaid only
     /// where invalidated each frame and painted to primitives.
     store: NodeStore,
@@ -137,6 +218,18 @@ struct AppDriver<A: Application> {
     /// text shaping each layout phase) applies them and re-declares the node's
     /// `TextRequest` when the text changed. Driver-owned, mirroring `virtual_lists`.
     text_edits: TextEdits,
+    /// Live transform-only animations (a sheet sliding in, a scroll settling).
+    /// Ticked once per frame at the head of the flush phase with the frame delta,
+    /// writing each animating node's interpolated world-space translate before
+    /// layout/transform/paint consume it that same frame. Empty in steady state,
+    /// which is what `wants_animation` reads to let the frame loop halt.
+    /// Driver-owned so a build cx can register no animations directly — they are
+    /// requested through `EventCx` and handed off via the store's queue.
+    animations: AnimationRegistry,
+    /// Reusable buffer the flush drains the store's queued animation requests
+    /// into before starting each on `animations`, so handing a frame's slide-in
+    /// requests to the registry allocates nothing on the steady path.
+    anim_requests: Vec<TranslateAnim>,
     /// Reusable buffer the flush drains this frame's pending state ids into, so
     /// the steady path allocates nothing while draining the transaction.
     changed: Vec<StateId>,
@@ -190,6 +283,7 @@ impl<A: Application> AppDriver<A> {
             cx: AppCx::__new(),
             window: None,
             gpu: None,
+            surface_size: (1, 1),
             store: NodeStore::new(),
             states: StateStore::new(),
             bindings: BindingTable::new(),
@@ -197,6 +291,8 @@ impl<A: Application> AppDriver<A> {
             effects: EffectStore::new(),
             virtual_lists: VirtualLists::new(),
             text_edits: TextEdits::new(),
+            animations: AnimationRegistry::new(),
+            anim_requests: Vec::new(),
             changed: Vec::new(),
             root: None,
             route_chain: Vec::new(),
@@ -236,12 +332,14 @@ impl<A: Application> AppDriver<A> {
     /// recording how much each layer touched. Only the subtrees carrying
     /// measure/layout invalidation are re-placed; paint is rebuilt only when a
     /// paint-affecting class is pending, otherwise the primitive buffer is left
-    /// intact for reuse. A no-op if the tree or GPU is absent.
+    /// intact for reuse. A no-op if the tree is absent. Runs with no GPU too (a
+    /// headless window): layout/transform resolve against `surface_size` and
+    /// paint fills `primitives`; only the GPU upload/submit phases skip.
     fn relayout_and_paint(&mut self) {
-        let (Some(root), Some(gpu)) = (self.root, &self.gpu) else {
+        let Some(root) = self.root else {
             return;
         };
-        let (w, h) = gpu.size;
+        let (w, h) = self.surface_size;
         let surface = Rect {
             x: 0.0,
             y: 0.0,
@@ -251,6 +349,20 @@ impl<A: Application> AppDriver<A> {
         let (measured, laid_out) =
             self.store
                 .relayout_dirty(root, surface, &mut self.scratch, &mut self.redo_roots);
+        // Re-derive world rects when a transform-only class is pending. A frame
+        // that relaid anything already resolved transforms inside `relayout_dirty`
+        // (which folds fresh `bounds` into `world` from the root, as the whole-tree
+        // `NodeStore::layout` does), but a pure TRANSFORM frame (a scroll step, an
+        // animation tick) marks no MEASURE/LAYOUT and so triggers no redo — its
+        // moved translate would otherwise not reach `world`, and paint/hit-test
+        // read only world. Gated on the TRANSFORM class so a paint-only frame (a
+        // colour change) skips it; harmlessly idempotent on a layout frame that
+        // also carried TRANSFORM. This is the wiring that makes section 8.7
+        // transform-only updates land in a real frame loop, for scroll and
+        // animation alike.
+        if self.store.any_dirty_class(DirtyClass::TRANSFORM) {
+            self.store.resolve_transforms(root);
+        }
         let painted = self.store.repaint_dirty(root, &mut self.primitives);
         self.recompute = FrameRecompute {
             measured,
@@ -271,27 +383,40 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
         };
         self.window = Some(id);
 
-        // Bring up the GPU for this window: create the device, attach a surface
-        // to the window's native handle, and build the renderer for that
-        // surface's format. If the platform exposes no native handle (headless
-        // app with no window backend), we stay `gpu = None` and draw nothing.
-        let Some(raw) = cx.raw_handle(id) else {
-            return;
-        };
+        // Record the launch surface size up front, independent of the GPU: the
+        // tree lays out against this every frame, so a headless window (no GPU)
+        // still measures and places the whole tree, it just paints to nothing.
         let (w, h) = cx.inner_size(id).unwrap_or((1, 1));
-        let mut backend = viso_gpu::create_device();
-        let surface = backend.create_surface(raw, w.max(1), h.max(1));
-        let format = backend.surface_format(surface);
-        let renderer = Renderer::new(&mut backend, format);
+        self.surface_size = (w.max(1), h.max(1));
 
-        self.gpu = Some(GpuState {
-            backend,
-            renderer,
-            surface,
-            size: (w.max(1), h.max(1)),
-        });
-        // Load the font stack now that a backend exists to allocate the atlas.
-        self.text = Some(TextShaper::new());
+        // Bring up the GPU for this window when it exposes a real windowing
+        // handle: create the device, attach a surface to that handle, and build
+        // the renderer for its format. A headless window reports a
+        // `RawWindowHandle::Headless` (or no handle at all) — there is no
+        // surface to attach, and on a real-GPU target such as Metal
+        // `create_surface` would reject the non-native handle — so we stay
+        // `gpu = None` for the session and draw nothing. The retained tree below
+        // is built and driven regardless; this is section 66's headless backend
+        // as a first-class path, not a degraded one.
+        let native_handle = match cx.raw_handle(id) {
+            Some(RawWindowHandle::Headless) | None => None,
+            Some(handle) => Some(handle),
+        };
+        if let Some(raw) = native_handle {
+            let mut backend = viso_gpu::create_device();
+            let surface = backend.create_surface(raw, w.max(1), h.max(1));
+            let format = backend.surface_format(surface);
+            let renderer = Renderer::new(&mut backend, format);
+
+            self.gpu = Some(GpuState {
+                backend,
+                renderer,
+                surface,
+                size: (w.max(1), h.max(1)),
+            });
+            // Load the font stack now that a backend exists to allocate the atlas.
+            self.text = Some(TextShaper::new());
+        }
 
         // Build the user application's retained UI tree once, now that we have a
         // surface size. The driver owns `store`, `states`, and `bindings` as
@@ -337,9 +462,12 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
     fn on_geometry(&mut self, _window: WindowId, _scale: f64, width: u32, height: u32) {
         // Resize the swapchain so the next frame maps pixel-space to the new
         // extent, and mark the root for relayout so the next incremental frame
-        // re-places the tree against the new surface and repaints.
+        // re-places the tree against the new surface and repaints. Record the
+        // new extent on `surface_size` regardless of GPU: layout resolves
+        // against it, so a headless window still re-places the tree on resize.
+        let (w, h) = (width.max(1), height.max(1));
+        self.surface_size = (w, h);
         if let Some(gpu) = &mut self.gpu {
-            let (w, h) = (width.max(1), height.max(1));
             gpu.backend.resize_surface(gpu.surface, w, h);
             gpu.size = (w, h);
         }
@@ -466,12 +594,29 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
         }
     }
 
-    fn run_phase(&mut self, phase: FramePhase, _cx: &mut RuntimeCx<'_>) {
+    fn run_phase(&mut self, phase: FramePhase, cx: &mut RuntimeCx<'_>) {
         // The render phases drive the GPU from the real retained tree: Measure +
         // Layout resolve node boxes, then paint lowers them to primitives which
         // the renderer batches and submits. Non-render phases are no-ops here.
         match phase {
             FramePhase::FlushStateTransactions => {
+                // Start any animations a handler requested this frame — a sheet
+                // sliding in queued a `TranslateAnim` through `EventCx`, which the
+                // router handed to the store's queue; drain it into the registry
+                // now. Then advance every live animation by this frame's delta,
+                // writing each node's interpolated translate through
+                // `set_translate` (a TRANSFORM|HIT_TEST|PAINT write). This runs
+                // before the state flush and the Layout phase below, so the moved
+                // translate is resolved into `world` and painted this same frame.
+                // Both steps are no-ops when nothing is animating (the steady
+                // case) — the queue is empty and the registry has nothing to tick.
+                self.store.take_animation_requests(&mut self.anim_requests);
+                for anim in self.anim_requests.drain(..) {
+                    self.animations.start(anim);
+                }
+                if !self.animations.is_empty() {
+                    self.animations.tick(&mut self.store, cx.frame_delta());
+                }
                 // Drain this frame's pending state writes once and fan the same
                 // changed set through the three downstream reactors, in order.
                 // Many writes in one transaction collapse here; a frame with no
@@ -566,9 +711,30 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
                 // clear every node's dirty set so the next frame starts clean and
                 // an idle frame recomputes nothing.
                 self.store.clear_dirty();
+                // Keep the loop beating while animations are live. `wants_animation`
+                // already tells the scheduler to stay in `Poll`, but on a headless
+                // backend `Poll` produces no beat on its own — a beat comes only
+                // from a `request_redraw`. So self-reschedule the next frame here
+                // whenever the registry is non-empty; the moment it empties (the
+                // last slide settled) this stops firing and the loop falls idle,
+                // holding the zero-CPU-when-idle contract.
+                if !self.animations.is_empty()
+                    && let Some(window) = self.window
+                {
+                    cx.request_redraw(window);
+                }
             }
             _ => {}
         }
+    }
+
+    fn wants_animation(&self) -> bool {
+        // A non-empty registry means at least one node is mid-slide, so the
+        // scheduler should keep requesting frames (the flush phase ticks the
+        // registry each one). Empties itself as animations finish, at which
+        // point the loop is free to idle — the counterpart to the
+        // `request_redraw` self-reschedule in `PostFrameCleanup`.
+        !self.animations.is_empty()
     }
 }
 
