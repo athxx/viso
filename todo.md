@@ -749,9 +749,9 @@ TextInput ✅(单行编辑骨架,后续片见上文 deferral 清单)。全部 �
       /1024 1.27µs、fire_due/1 5.5ns、/1024 1.78µs(均线性、无 per-timer 隐藏开销)。
       稳态帧不变量取"确定性 + GPU 资源复用 + frame_stats 不变"(整帧经 HeadlessRaster 会重编码像素缓冲,
       非零 alloc);零 alloc 只断言在隔离的 `fire_due` 步。
-- [ ] **Window** —— 完整多窗口。scope 已定(用户明确):per-window state 重构 **+** 公共 `window()`/`WindowHandle`
+- [x] **Window** ✅ —— 完整多窗口。scope 已定(用户明确):per-window state 重构 **+** 公共 `window()`/`WindowHandle`
       可**会话中开/关** OS 窗口 **+** 平台 close seam(`PlatformApp::close_window`,三后端 + headless,
-      `WindowHandle::close()` 可程序主动关活窗)。七提交,进行中:
+      `WindowHandle::close()` 可程序主动关活窗)。七提交,已全部完成:
       - [x] 提交 1 平台 close seam(`PlatformApp::close_window` + 三后端 + headless 入队 `WindowClosed` +
         `RuntimeCx::close_window` + 单测)。
       - [x] 提交 2 `FrameDriver::on_window_closed` hook + scheduler 递减前调用(单一拆卸路径,OS 关与程序关同路)+
@@ -776,9 +776,14 @@ TextInput ✅(单行编辑骨架,后续片见上文 deferral 清单)。全部 �
         + **ADR 0020**(§68 多重触发:frame phase 语义 fan-out / node ownership = per-window NodeId 空间 / 公共
         window()/WindowHandle 生命周期;`Vec<WindowState>` 小 N 线性非 map 附 §45 依据 + 平台 close seam 单一拆卸路径)。
         golden `.bgra8` gitignore 永不提交。
-      - [ ] 提交 7 microbench(window/open、window/close、window/fan_out/N,N∈{1,4,16})+ Cargo.toml 条目。
+      - [x] 提交 7 microbench(`viso/benches/window_frame.rs`,criterion):window/open、window/close、
+        window/fan_out/N(N∈{1,4,16},经 `__test_support::drive_scripted` 真 AppDriver 帧循环驱动,
+        window 非节点控件无 BuildCx 可测)+ `crates/viso/Cargo.toml` `[[bench]] window_frame`。release 实测
+        fan_out 每窗边际 ~1.55µs 恒定(N=1:2.8µs / N=4:7.5µs / N=16:26µs)—— 线性 fan-out,无隐藏 per-window 开销,
+        坐实 `Vec<WindowState>` 线性选择(§45 / ADR 0020)。`083d8b8`。
+    ✅ **Window 收官 → Tier 4 全部完成**(Tabs / NavigationStack / Popup / Modal / Sheet / Toast / Window)。
 
-**Tier 5 / Tier 6** —— 待做(Tier 4 收完再排)。
+**Tier 5 / Tier 6** —— 待做(Tier 4 已收完,下一步开排)。
 
 ### Tier 4 后续片(记进 backlog,不吞)
 - 动画时钟扩展:scale/opacity/color 动画(现只 translate);spring 物理曲线;动画序列/编排;
