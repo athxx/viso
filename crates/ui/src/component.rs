@@ -23,6 +23,7 @@ use crate::reactive::EffectStore;
 use crate::semantics::{Role, Semantics, SemanticsNode, SemanticsTree};
 use crate::state::{StateId, StateStore, StateValue};
 use crate::style::{BoxStyle, StyleId};
+use crate::timer::TimerRequest;
 use crate::token::Theme;
 use viso_render::{PathCmd, Rect, Rgba, Stroke, TextureId};
 
@@ -311,6 +312,15 @@ pub struct NodeStore {
     /// store, not the driver's registry, so the animation cannot be applied in
     /// place — the same deferral the text-request queue uses.
     animation_requests: Vec<TranslateAnim>,
+    /// Cold, transient handoff buffer (not index-aligned): one-shot timer arms a
+    /// handler requested this frame, sitting here between the router (which drains
+    /// them off the [`EventCx`](crate::context::EventCx) after a dispatch and
+    /// enqueues them via [`queue_timer`](Self::queue_timer)) and the driver (which
+    /// drains this via [`take_timer_requests`](Self::take_timer_requests) and arms
+    /// each on its live [`TimerRegistry`](crate::timer::TimerRegistry), against the
+    /// frame's `now`). Empty and allocation-free in the overwhelmingly common
+    /// frame that arms no timer; the same deferral the animation queue uses.
+    timer_requests: Vec<TimerRequest>,
 }
 
 impl NodeStore {
@@ -347,6 +357,7 @@ impl NodeStore {
         self.content_payload.clear();
         self.text_request.clear();
         self.animation_requests.clear();
+        self.timer_requests.clear();
         self.focused = None;
         self.capture = None;
         self.focus_scope = None;
@@ -843,6 +854,29 @@ impl NodeStore {
     pub fn take_animation_requests(&mut self, out: &mut Vec<TranslateAnim>) {
         out.clear();
         out.append(&mut self.animation_requests);
+    }
+
+    /// Enqueue a one-shot timer arm the router drained off an
+    /// [`EventCx`](crate::context::EventCx) this frame. It sits in the store's
+    /// transient handoff buffer until the driver drains it with
+    /// [`take_timer_requests`](Self::take_timer_requests) and arms it on its live
+    /// [`TimerRegistry`](crate::timer::TimerRegistry) (the store holds no registry
+    /// of its own — the driver owns that). A cold path: it runs only when a
+    /// handler arms a timer (a toast's show), not per frame.
+    #[inline]
+    pub fn queue_timer(&mut self, req: TimerRequest) {
+        self.timer_requests.push(req);
+    }
+
+    /// Move every queued timer arm out into `out`, clearing the buffer. The
+    /// driver calls this each frame and arms the drained requests on its
+    /// [`TimerRegistry`](crate::timer::TimerRegistry) against the frame's `now`.
+    /// `out` is cleared first; the queue is not index-aligned (a request names its
+    /// own node), so this is a flat move with no per-node scan — empty and
+    /// allocation-free in the common frame that armed nothing.
+    pub fn take_timer_requests(&mut self, out: &mut Vec<TimerRequest>) {
+        out.clear();
+        out.append(&mut self.timer_requests);
     }
 
     /// A node's current pending invalidation set.

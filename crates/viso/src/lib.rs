@@ -44,8 +44,8 @@ use viso_ui::{
     AnimationRegistry, BindingTable, BuildCx, ComputedStore, DirtyClass, EffectStore,
     FrameRecompute, ImeEvent, Key, KeyEvent, KeyRouter, Modifiers, NodeId, NodeStore,
     PointerButtons, PointerEvent, PointerPhase, PointerRouter, ScrollEvent, ScrollRouter, StateId,
-    StateStore, TextEdits, TextRequest, TranslateAnim, VirtualLists, focus_next, text_edit,
-    virtual_list,
+    StateStore, TextEdits, TextRequest, TimerRegistry, TimerRequest, TranslateAnim, VirtualLists,
+    focus_next, text_edit, virtual_list,
 };
 
 mod text_content;
@@ -143,6 +143,15 @@ pub mod __test_support {
             use viso_runtime::FrameDriver;
             self.driver.wants_animation()
         }
+
+        /// The driver's earliest live timer deadline, or `None` when no timer is
+        /// armed. `Some` while a toast waits (the scheduler blocks on it via
+        /// `WaitUntil`); `None` once every timer has fired — the timer-side
+        /// frame-halt contract, the counterpart to `wants_animation`.
+        pub fn next_timer_deadline(&self) -> Option<Instant> {
+            use viso_runtime::FrameDriver;
+            self.driver.next_timer_deadline()
+        }
     }
 
     /// Build application `A`, replay `script` through a headless pump driven by
@@ -230,6 +239,17 @@ struct AppDriver<A: Application> {
     /// into before starting each on `animations`, so handing a frame's slide-in
     /// requests to the registry allocates nothing on the steady path.
     anim_requests: Vec<TranslateAnim>,
+    /// Live one-shot UI timers (a toast's auto-dismiss). Unlike `animations`, a
+    /// live timer costs *no* frame while it waits: the driver surfaces its
+    /// earliest deadline through `next_timer_deadline`, which the scheduler turns
+    /// into a `ControlFlow::WaitUntil` so the loop blocks until the deadline
+    /// instead of spinning. Fired once at the head of the flush phase with the
+    /// frame instant; empties itself as timers fire so the loop can halt again.
+    timers: TimerRegistry,
+    /// Reusable buffer the flush drains the store's queued timer requests into
+    /// before arming each on `timers` against the frame instant, so handing a
+    /// frame's toast timer to the registry allocates nothing on the steady path.
+    timer_requests: Vec<TimerRequest>,
     /// Reusable buffer the flush drains this frame's pending state ids into, so
     /// the steady path allocates nothing while draining the transaction.
     changed: Vec<StateId>,
@@ -293,6 +313,8 @@ impl<A: Application> AppDriver<A> {
             text_edits: TextEdits::new(),
             animations: AnimationRegistry::new(),
             anim_requests: Vec::new(),
+            timers: TimerRegistry::new(),
+            timer_requests: Vec::new(),
             changed: Vec::new(),
             root: None,
             route_chain: Vec::new(),
@@ -617,6 +639,22 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
                 if !self.animations.is_empty() {
                     self.animations.tick(&mut self.store, cx.frame_delta());
                 }
+                // Arm any one-shot timers a handler requested this frame (a toast's
+                // auto-dismiss), then fire every timer whose deadline this frame's
+                // instant has crossed. Arming resolves each request's `delay`
+                // against `frame_now` (not a stray `Instant::now`), so a headless
+                // `ManualClock` stays deterministic. `fire_due` runs each due
+                // callback with the live store and removes it, so the registry
+                // empties itself and the loop can halt again — a timer costs no
+                // frame while it waits, only the one frame it fires on. Both steps
+                // are no-ops when no timer is armed or pending (the steady case).
+                self.store.take_timer_requests(&mut self.timer_requests);
+                for req in self.timer_requests.drain(..) {
+                    self.timers.arm_request(req, cx.frame_now());
+                }
+                if !self.timers.is_empty() {
+                    self.timers.fire_due(&mut self.store, cx.frame_now());
+                }
                 // Drain this frame's pending state writes once and fan the same
                 // changed set through the three downstream reactors, in order.
                 // Many writes in one transaction collapse here; a frame with no
@@ -735,6 +773,17 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
         // point the loop is free to idle — the counterpart to the
         // `request_redraw` self-reschedule in `PostFrameCleanup`.
         !self.animations.is_empty()
+    }
+
+    fn next_timer_deadline(&self) -> Option<std::time::Instant> {
+        // The earliest live timer deadline (a toast's auto-dismiss instant), or
+        // `None` when no timer is armed. The scheduler turns `Some(deadline)`
+        // into a `ControlFlow::WaitUntil(deadline)` so an idle loop blocks until
+        // the timer is due instead of spinning — unlike `wants_animation`, this
+        // does *not* keep beating frames. The registry empties itself as timers
+        // fire, so once the last toast dismisses this returns `None` and the loop
+        // falls fully idle (the zero-CPU-when-idle contract).
+        self.timers.earliest()
     }
 }
 

@@ -63,7 +63,7 @@ pub use semantics::{Role, Semantics, SemanticsNode, SemanticsTree};
 pub use state::{StateId, StateStore, StateValue};
 pub use style::{BoxStyle, StyleId};
 pub use text_edit::{Buffer, EditIntent, Motion, Selection, TextEdits};
-pub use timer::{TimerId, TimerRegistry};
+pub use timer::{TimerId, TimerRegistry, TimerRequest};
 pub use token::{Theme, TokenId, TokenInterner, TokenNamespace};
 pub use virtual_list::{
     HeightCache, HeightTree, ItemBuilder, VirtualListState, VirtualLists, absorb_measurements,

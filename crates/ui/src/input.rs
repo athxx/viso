@@ -372,7 +372,7 @@ fn pointer_dispatch(
     let Some(mut handler) = store.take_handler(node) else {
         return Dispatched::default();
     };
-    let (capture, focus, scope, hidden, anims, stop) = {
+    let (capture, focus, scope, hidden, anims, timers, stop) = {
         let mut ev = EventCx::__new_pointer(states, bindings, event);
         ev.__set_focused(store.focused());
         handler(&mut ev);
@@ -382,6 +382,7 @@ fn pointer_dispatch(
             ev.__take_focus_scope_request(),
             ev.__take_hidden_requests(),
             ev.__take_animation_requests(),
+            ev.__take_timer_requests(),
             ev.__stop_requested(),
         )
     };
@@ -413,6 +414,13 @@ fn pointer_dispatch(
     // same deferred way — the router holds no animation registry.
     for anim in anims {
         store.queue_animation(anim);
+    }
+    // One-shot timers a handler armed (a toast's auto-dismiss): queued the same
+    // deferred way, drained by the driver into its timer registry next frame and
+    // resolved against that frame's `now`. The router holds no registry and no
+    // frame clock, so it only forwards the request.
+    for req in timers {
+        store.queue_timer(req);
     }
     Dispatched { ran: true, stop }
 }
@@ -567,7 +575,7 @@ fn key_dispatch(
     let Some(mut handler) = store.take_key_handler(node) else {
         return Dispatched::default();
     };
-    let (request, stop, recorded, hidden, scope, anims) = {
+    let (request, stop, recorded, hidden, scope, anims, timers) = {
         let mut cx = EventCx::__new_key(states, bindings, ev);
         cx.__set_focused(store.focused());
         handler(&mut cx);
@@ -578,6 +586,7 @@ fn key_dispatch(
             cx.__take_hidden_requests(),
             cx.__take_focus_scope_request(),
             cx.__take_animation_requests(),
+            cx.__take_timer_requests(),
         )
     };
     store.restore_key_handler(node, handler);
@@ -593,6 +602,13 @@ fn key_dispatch(
     }
     for anim in anims {
         store.queue_animation(anim);
+    }
+    // One-shot timers a handler armed (a toast's auto-dismiss): queued the same
+    // deferred way, drained by the driver into its timer registry next frame and
+    // resolved against that frame's `now`. The router holds no registry and no
+    // frame clock, so it only forwards the request.
+    for req in timers {
+        store.queue_timer(req);
     }
     Dispatched { ran: true, stop }
 }
@@ -610,7 +626,7 @@ fn ime_dispatch(
     let Some(mut handler) = store.take_key_handler(node) else {
         return Dispatched::default();
     };
-    let (request, stop, recorded, hidden, scope, anims) = {
+    let (request, stop, recorded, hidden, scope, anims, timers) = {
         let mut cx = EventCx::__new_ime(states, bindings, ev);
         cx.__set_focused(store.focused());
         handler(&mut cx);
@@ -621,6 +637,7 @@ fn ime_dispatch(
             cx.__take_hidden_requests(),
             cx.__take_focus_scope_request(),
             cx.__take_animation_requests(),
+            cx.__take_timer_requests(),
         )
     };
     store.restore_key_handler(node, handler);
@@ -636,6 +653,13 @@ fn ime_dispatch(
     }
     for anim in anims {
         store.queue_animation(anim);
+    }
+    // One-shot timers a handler armed (a toast's auto-dismiss): queued the same
+    // deferred way, drained by the driver into its timer registry next frame and
+    // resolved against that frame's `now`. The router holds no registry and no
+    // frame clock, so it only forwards the request.
+    for req in timers {
+        store.queue_timer(req);
     }
     Dispatched { ran: true, stop }
 }
