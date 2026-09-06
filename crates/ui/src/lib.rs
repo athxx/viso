@@ -9,6 +9,7 @@
 
 #![forbid(unsafe_op_in_unsafe_fn)]
 
+pub mod animation;
 pub mod aot;
 pub mod binding;
 pub mod component;
@@ -29,6 +30,7 @@ pub mod text_edit;
 pub mod token;
 pub mod virtual_list;
 
+pub use animation::{AnimationRegistry, Easing, TranslateAnim};
 pub use binding::{Binding, BindingTable};
 pub use component::{
     BuildCx, Component, FlexStyle, FrameRecompute, Handle, LeafStyle, NodeStore, PointerHandler,

@@ -38,6 +38,17 @@ impl Vec2 {
             Axis::Column => self.y,
         }
     }
+
+    /// Linearly interpolate toward `to` by `t`: `t == 0` returns `self`,
+    /// `t == 1` returns `to`. Used to advance a translate animation from its
+    /// start offset to its target as the eased progress sweeps `[0, 1]`.
+    #[inline]
+    pub fn lerp(self, to: Vec2, t: f32) -> Vec2 {
+        Vec2 {
+            x: self.x + (to.x - self.x) * t,
+            y: self.y + (to.y - self.y) * t,
+        }
+    }
 }
 
 /// The main axis a Flex container lays its children along.
