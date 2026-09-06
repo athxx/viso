@@ -37,3 +37,7 @@ harness = false
 [[bench]]
 name = "reactive_binding"
 harness = false
+
+[[bench]]
+name = "animation_tick"
+harness = false

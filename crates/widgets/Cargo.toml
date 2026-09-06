@@ -88,3 +88,7 @@ harness = false
 [[bench]]
 name = "modal_build"
 harness = false
+
+[[bench]]
+name = "sheet_build"
+harness = false
