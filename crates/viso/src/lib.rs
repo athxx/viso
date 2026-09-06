@@ -164,6 +164,14 @@ pub mod __test_support {
             self.driver.windows[index].window
         }
 
+        /// The physical surface extent the window at `index` lays out against.
+        /// A resize event names one window, so this is how the multi-window
+        /// facade tests prove per-window geometry isolation: resizing one window
+        /// changes only that window's `surface_size`, never a sibling's.
+        pub fn surface_size_at(&self, index: usize) -> (u32, u32) {
+            self.driver.windows[index].surface_size
+        }
+
         /// How much each layer recomputed on the first window's most recent
         /// frame. A pure TRANSFORM animation frame has `laid_out == 0` yet
         /// `painted > 0` — the observable proof that world moved without a
