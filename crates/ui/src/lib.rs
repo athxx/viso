@@ -30,6 +30,7 @@ pub mod text_edit;
 pub mod timer;
 pub mod token;
 pub mod virtual_list;
+pub mod window;
 
 pub use animation::{AnimationRegistry, Easing, TranslateAnim};
 pub use binding::{Binding, BindingTable};
@@ -70,3 +71,4 @@ pub use virtual_list::{
     reconcile, set_item_count,
 };
 pub use viso_render::{Border, LineJoin, PathCmd, Point, Rect, Rgba, Stroke, TextureId};
+pub use window::{WindowConfig, WindowOpenRequest};

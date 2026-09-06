@@ -45,7 +45,7 @@ use viso_ui::{
     FrameRecompute, ImeEvent, Key, KeyEvent, KeyRouter, Modifiers, NodeId, NodeStore,
     PointerButtons, PointerEvent, PointerPhase, PointerRouter, ScrollEvent, ScrollRouter, StateId,
     StateStore, TextEdits, TextRequest, TimerRegistry, TimerRequest, TranslateAnim, VirtualLists,
-    focus_next, text_edit, virtual_list,
+    WindowOpenRequest, focus_next, text_edit, virtual_list,
 };
 
 mod text_content;
@@ -131,6 +131,30 @@ pub mod __test_support {
             self.driver.windows[0].root
         }
 
+        /// How many windows are open on the settled driver. One for a
+        /// single-window app; two once a handler opened a second through the
+        /// `window()` seam; back to one after a `WindowHandle::close` tore it
+        /// down. The multi-window facade tests read this to prove open/close.
+        pub fn window_count(&self) -> usize {
+            self.driver.windows.len()
+        }
+
+        /// The retained store of the window at `index` (open order; `0` is the
+        /// launch window), for asserting per-window state isolation.
+        pub fn store_at(&self, index: usize) -> &super::NodeStore {
+            &self.driver.windows[index].store
+        }
+
+        /// The declared root of the window at `index`, if any.
+        pub fn root_at(&self, index: usize) -> Option<super::NodeId> {
+            self.driver.windows[index].root
+        }
+
+        /// The [`WindowId`](viso_platform::WindowId) of the window at `index`.
+        pub fn window_id_at(&self, index: usize) -> viso_platform::WindowId {
+            self.driver.windows[index].window
+        }
+
         /// How much each layer recomputed on the first window's most recent
         /// frame. A pure TRANSFORM animation frame has `laid_out == 0` yet
         /// `painted > 0` — the observable proof that world moved without a
@@ -199,6 +223,15 @@ struct AppDriver<A: Application> {
     /// and a heap bucket per access with nothing to lookup against (section 45).
     /// Ordered by open time; `windows[0]` is the launch window.
     windows: Vec<WindowState>,
+    /// Reusable scratch the flush phase drains each window's queued window-open
+    /// requests into, so collecting a frame's `window()` requests off every
+    /// window's store releases the `&mut windows` borrow before the driver opens
+    /// the new windows (which needs `windows` mutably again to push). Empty on
+    /// the steady path — a frame that opens no window allocates nothing.
+    pending_opens: Vec<WindowOpenRequest>,
+    /// Reusable scratch the flush phase drains each window's queued window-close
+    /// requests into (raw ids from the UI tier), mirroring `pending_opens`.
+    pending_closes: Vec<u32>,
 }
 
 /// Everything one window owns: its retained tree, reactive state, GPU surface,
@@ -302,6 +335,14 @@ struct WindowState {
     /// Reusable buffer the text seam drains pending requests into, so re-shaping
     /// text allocates only the shaped payloads, not the request list.
     text_scratch: Vec<(NodeId, Box<TextRequest>)>,
+    /// Reusable buffer the flush drains this window's queued window-open requests
+    /// into before the driver appends them to its session-level pending list, so
+    /// servicing a `window()` call reuses this window's own scratch rather than
+    /// allocating one per frame. Empty on the steady path.
+    scratch_opens: Vec<WindowOpenRequest>,
+    /// Reusable buffer for this window's queued window-close ids, mirroring
+    /// [`scratch_opens`](Self::scratch_opens).
+    scratch_closes: Vec<u32>,
 }
 
 /// The facade-owned GPU state: the concrete backend, the renderer, and the
@@ -324,6 +365,8 @@ impl<A: Application> AppDriver<A> {
             app: None,
             cx: AppCx::__new(),
             windows: Vec::new(),
+            pending_opens: Vec::new(),
+            pending_closes: Vec::new(),
         }
     }
 
@@ -365,7 +408,105 @@ impl WindowState {
             awaiting_first_frame: true,
             text: None,
             text_scratch: Vec::new(),
+            scratch_opens: Vec::new(),
+            scratch_closes: Vec::new(),
         }
+    }
+
+    /// Open a fresh window's state: resolve its launch size, bring the GPU up
+    /// against its native handle (staying headless without one), run `build`
+    /// against its brand-new store to author the retained tree, and seed the
+    /// first frame's dirty. This is the single window-bring-up path — the launch
+    /// window and every window opened mid-session through the `window()` seam
+    /// both flow through it, differing only in *which* build closure authors the
+    /// tree (the application's `build` for the launch window, the deferred
+    /// `WindowOpenRequest::build` for a later one). Requires a live scheduling
+    /// context (`RuntimeCx`), so it is only reachable from `on_launch`/`run_phase`
+    /// — the two phases the facade holds one.
+    fn open(
+        cx: &mut RuntimeCx<'_>,
+        window: WindowId,
+        build: impl FnOnce(&mut BuildCx) -> Option<NodeId>,
+    ) -> Self {
+        let mut ws = WindowState::new(window);
+
+        // Record the launch surface size up front, independent of the GPU: the
+        // tree lays out against this every frame, so a headless window (no GPU)
+        // still measures and places the whole tree, it just paints to nothing.
+        let (w, h) = cx.inner_size(window).unwrap_or((1, 1));
+        ws.surface_size = (w.max(1), h.max(1));
+
+        // Bring up the GPU for this window when it exposes a real windowing
+        // handle: create the device, attach a surface to that handle, and build
+        // the renderer for its format. A headless window reports a
+        // `RawWindowHandle::Headless` (or no handle at all) — there is no
+        // surface to attach, and on a real-GPU target such as Metal
+        // `create_surface` would reject the non-native handle — so we stay
+        // `gpu = None` for the session and draw nothing. The retained tree below
+        // is built and driven regardless; this is section 66's headless backend
+        // as a first-class path, not a degraded one.
+        let native_handle = match cx.raw_handle(window) {
+            Some(RawWindowHandle::Headless) | None => None,
+            Some(handle) => Some(handle),
+        };
+        if let Some(raw) = native_handle {
+            let mut backend = viso_gpu::create_device();
+            let surface = backend.create_surface(raw, w.max(1), h.max(1));
+            let format = backend.surface_format(surface);
+            let renderer = Renderer::new(&mut backend, format);
+
+            ws.gpu = Some(GpuState {
+                backend,
+                renderer,
+                surface,
+                size: (w.max(1), h.max(1)),
+            });
+            // Load the font stack now that a backend exists to allocate the atlas.
+            ws.text = Some(TextShaper::new());
+        }
+
+        // Build the retained UI tree once, now that we have a surface size. The
+        // window owns `store`, `states`, and `bindings` as sibling fields, so
+        // all three can be borrowed together into a reactive build context —
+        // this is why scene authoring works here where new-time allocation could
+        // not (the session-long `AppCx` marker cannot retain a live store
+        // borrow). Layout runs incrementally per frame in `run_phase`.
+        //
+        // When structural teardown arrives (a targeted rebuild that frees nodes),
+        // each freed node must run `ws.effects.cancel_for_node(id)` before its
+        // slot is reused, so scoped effects release their resources (cleanup then
+        // drop) at unmount. Whole-window teardown at close runs the same cleanups
+        // through `EffectStore::cancel_all` in `on_window_closed`; a per-node
+        // rebuild has no live call site yet, so `build` runs once and frees
+        // nothing here.
+        ws.store.clear();
+        ws.virtual_lists.clear();
+        ws.text_edits.clear();
+        {
+            let mut build_cx = BuildCx::with_reactive(
+                &mut ws.store,
+                &mut ws.states,
+                &mut ws.bindings,
+                &mut ws.virtual_lists,
+                &mut ws.text_edits,
+            );
+            ws.root = build(&mut build_cx);
+        }
+
+        // Shape any static text declared during build into content payloads,
+        // before the first measure so a `Fit` text node sizes to its run.
+        ws.shape_pending_text();
+
+        // Seed the first frame: mark the root fully dirty so the incremental
+        // passes do the initial measure/layout/paint for the whole tree.
+        if let Some(root) = ws.root {
+            ws.store.mark_dirty(
+                root,
+                DirtyClass::MEASURE | DirtyClass::LAYOUT | DirtyClass::PAINT,
+            );
+        }
+
+        ws
     }
 
     /// Shape every node that carries a pending [`TextRequest`] into a
@@ -443,85 +584,17 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
         let Ok(id) = cx.create_window(WindowConfig::default()) else {
             return;
         };
-        let mut ws = WindowState::new(id);
-
-        // Record the launch surface size up front, independent of the GPU: the
-        // tree lays out against this every frame, so a headless window (no GPU)
-        // still measures and places the whole tree, it just paints to nothing.
-        let (w, h) = cx.inner_size(id).unwrap_or((1, 1));
-        ws.surface_size = (w.max(1), h.max(1));
-
-        // Bring up the GPU for this window when it exposes a real windowing
-        // handle: create the device, attach a surface to that handle, and build
-        // the renderer for its format. A headless window reports a
-        // `RawWindowHandle::Headless` (or no handle at all) — there is no
-        // surface to attach, and on a real-GPU target such as Metal
-        // `create_surface` would reject the non-native handle — so we stay
-        // `gpu = None` for the session and draw nothing. The retained tree below
-        // is built and driven regardless; this is section 66's headless backend
-        // as a first-class path, not a degraded one.
-        let native_handle = match cx.raw_handle(id) {
-            Some(RawWindowHandle::Headless) | None => None,
-            Some(handle) => Some(handle),
-        };
-        if let Some(raw) = native_handle {
-            let mut backend = viso_gpu::create_device();
-            let surface = backend.create_surface(raw, w.max(1), h.max(1));
-            let format = backend.surface_format(surface);
-            let renderer = Renderer::new(&mut backend, format);
-
-            ws.gpu = Some(GpuState {
-                backend,
-                renderer,
-                surface,
-                size: (w.max(1), h.max(1)),
-            });
-            // Load the font stack now that a backend exists to allocate the atlas.
-            ws.text = Some(TextShaper::new());
-        }
-
-        // Build the user application's retained UI tree once, now that we have a
-        // surface size. The window owns `store`, `states`, and `bindings` as
-        // sibling fields, so all three can be borrowed together into a reactive
-        // build context — this is why scene authoring works here where new-time
-        // allocation could not (the session-long `AppCx` marker cannot retain a
-        // live store borrow). Layout runs incrementally per frame in `run_phase`.
-        //
-        // When structural teardown arrives (a targeted rebuild that frees nodes),
-        // each freed node must run `ws.effects.cancel_for_node(id)` before its
-        // slot is reused, so scoped effects release their resources (cleanup then
-        // drop) at unmount. Whole-window teardown at close runs the same cleanups
-        // through `EffectStore::cancel_all` in `on_window_closed`; a per-node
-        // rebuild has no live call site yet, so `build` runs once and frees
-        // nothing here.
-        ws.store.clear();
-        ws.virtual_lists.clear();
-        ws.text_edits.clear();
-        if let Some(app) = &mut self.app {
-            let mut build = BuildCx::with_reactive(
-                &mut ws.store,
-                &mut ws.states,
-                &mut ws.bindings,
-                &mut ws.virtual_lists,
-                &mut ws.text_edits,
-            );
-            app.build(&mut build);
-            ws.root = build.root();
-        }
-
-        // Shape any static text declared during build into content payloads,
-        // before the first measure so a `Fit` text node sizes to its run.
-        ws.shape_pending_text();
-
-        // Seed the first frame: mark the root fully dirty so the incremental
-        // passes do the initial measure/layout/paint for the whole tree.
-        if let Some(root) = ws.root {
-            ws.store.mark_dirty(
-                root,
-                DirtyClass::MEASURE | DirtyClass::LAYOUT | DirtyClass::PAINT,
-            );
-        }
-
+        // Open the launch window through the shared bring-up path, authoring its
+        // tree with the application's own `build`. A window opened later through
+        // the `window()` seam runs the identical path with the request's deferred
+        // build closure instead — the launch window is not a special case.
+        let app = self.app.as_mut();
+        let ws = WindowState::open(cx, id, |build| {
+            app.and_then(|app| {
+                app.build(build);
+                build.root()
+            })
+        });
         self.windows.push(ws);
     }
 
@@ -747,6 +820,57 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
                         ws.effects.wake(&ws.changed, &ws.states);
                         ws.changed.clear();
                     }
+                }
+
+                // Session-level window open/close drain, once per frame after
+                // every window has flushed its own transaction. A `window(...)`
+                // handler or a `WindowHandle::close` recorded its request through
+                // `EventCx`, the router handed it to the *originating* window's
+                // store queue, and here — the one phase holding a live
+                // `RuntimeCx` — the driver services it. It runs after the
+                // per-window loop, not inside it, because opening a window pushes
+                // to `self.windows` (which the loop borrows) and needs the live
+                // `cx` to create the OS window; draining every window's queue
+                // into driver-owned scratch first releases that borrow.
+                //
+                // Collect this frame's requests off every open window's store
+                // into the reusable driver scratch. `take_*` clears the scratch
+                // and appends, so a window that queued nothing contributes
+                // nothing; a frame with no `window()` call leaves both empty and
+                // the two loops below run zero iterations (steady-path no-op).
+                self.pending_opens.clear();
+                self.pending_closes.clear();
+                for ws in &mut self.windows {
+                    ws.store.take_window_opens(&mut ws.scratch_opens);
+                    self.pending_opens.append(&mut ws.scratch_opens);
+                    ws.store.take_window_closes(&mut ws.scratch_closes);
+                    self.pending_closes.append(&mut ws.scratch_closes);
+                }
+                // Open each requested window through the shared bring-up path:
+                // create the OS window (bumping the scheduler's open count so the
+                // loop stays alive), then author its tree with the deferred build
+                // closure the handler passed to `window(...).content(...)`. The
+                // new window's root is marked dirty, so it renders next frame with
+                // no self-scheduled spin. A `create_window` failure drops the
+                // request — the app simply gets no window, no panic.
+                for req in self.pending_opens.drain(..) {
+                    let config = WindowConfig {
+                        title: req.config.title,
+                        logical_size: req.config.size,
+                    };
+                    if let Ok(id) = cx.create_window(config) {
+                        let ws = WindowState::open(cx, id, req.build);
+                        self.windows.push(ws);
+                    }
+                }
+                // Close each requested window through the platform seam only:
+                // `close_window` destroys the OS window, which delivers a
+                // `WindowClosed` event, which routes to `on_window_closed` — the
+                // single teardown path shared with a user-driven OS close. We do
+                // *not* retain-drop the `WindowState` here: doing both would tear
+                // the window down twice and desync the scheduler's open count.
+                for raw in self.pending_closes.drain(..) {
+                    cx.close_window(WindowId(raw));
                 }
             }
             FramePhase::Layout => {
