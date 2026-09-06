@@ -40,6 +40,16 @@ pub enum Role {
     /// through the control's cells and input tapes (the derive pass has no state
     /// store today — the same treatment as [`CheckBox`](Role::CheckBox)).
     TextField,
+    /// One selectable tab in a [`TabList`](Role::TabList): activating it shows
+    /// its associated panel and hides the others. Which tab is selected is held
+    /// in the control's own reactive cell, not this cold role; this slice
+    /// announces the role and name and proves the selection through the control's
+    /// cell and input tapes (the derive pass has no state store today — the same
+    /// treatment as [`CheckBox`](Role::CheckBox)).
+    Tab,
+    /// The container of a set of [`Tab`](Role::Tab)s — the tab strip. Groups the
+    /// tabs so an assistive technology can present them as one selectable set.
+    TabList,
 }
 
 /// A node's *authored* semantics: the facts a builder sets, distinct from the
@@ -142,6 +152,16 @@ mod tests {
         let s = Semantics::role(Role::TextField).with_label("Email");
         assert_eq!(s.role, Role::TextField);
         assert_eq!(s.label.as_deref(), Some("Email"));
+    }
+
+    #[test]
+    fn tab_and_tablist_roles_carry_names() {
+        let list = Semantics::role(Role::TabList);
+        assert_eq!(list.role, Role::TabList);
+        assert_eq!(list.label, None, "the strip itself needs no name");
+        let tab = Semantics::role(Role::Tab).with_label("Details");
+        assert_eq!(tab.role, Role::Tab);
+        assert_eq!(tab.label.as_deref(), Some("Details"));
     }
 
     #[test]
