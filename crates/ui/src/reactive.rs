@@ -649,6 +649,35 @@ impl EffectStore {
         cancelled
     }
 
+    /// Cancel *every* live effect, running each pending cleanup — the
+    /// whole-store teardown path. A window owns exactly one node tree's effects
+    /// in its own [`EffectStore`], so dropping that window closes them all
+    /// through here, releasing their resources deterministically before the
+    /// store is discarded. Returns how many effects were cancelled.
+    pub fn cancel_all(&mut self) -> u32 {
+        let mut cancelled = 0;
+        for index in 0..self.slots.len() {
+            if !self.slots[index].occupied {
+                continue;
+            }
+            let id = EffectId {
+                index: index as u32,
+                generation: self.slots[index].generation,
+            };
+            if let Some(cleanup) = self.slots[index].cleanup.take() {
+                cleanup();
+            }
+            self.deindex(id);
+            let slot = &mut self.slots[index];
+            slot.occupied = false;
+            slot.generation = slot.generation.wrapping_add(1);
+            slot.deps.clear();
+            self.free.push(index as u32);
+            cancelled += 1;
+        }
+        cancelled
+    }
+
     /// Add `id` to the reverse index for each of its currently recorded
     /// dependencies. Call after refreshing `slot.deps`.
     fn reindex(&mut self, id: EffectId) {
