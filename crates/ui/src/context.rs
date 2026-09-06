@@ -149,6 +149,13 @@ pub struct EventCx<'a> {
     /// the cx holds no edit buffer to mutate directly. Empty (and allocation-free)
     /// for the overwhelmingly common non-text dispatch.
     edits: Vec<EditIntent>,
+    /// Node visibility flips a handler recorded this dispatch, applied by the
+    /// router to the node store after the handler returns — the same deferred
+    /// shape as [`edits`](Self::edits), since the cx holds no node store to flip
+    /// the flag directly. A hide/show control (Tabs and the wider Tier 4 family)
+    /// records `(panel, hidden)` pairs to swap which panel shows. Empty (and
+    /// allocation-free) for the overwhelmingly common dispatch that shows nothing.
+    hidden_requests: Vec<(NodeId, bool)>,
 }
 
 impl<'a> EventCx<'a> {
@@ -167,6 +174,7 @@ impl<'a> EventCx<'a> {
             capture_request: None,
             stop: false,
             edits: Vec::new(),
+            hidden_requests: Vec::new(),
         }
     }
 
@@ -189,6 +197,7 @@ impl<'a> EventCx<'a> {
             capture_request: None,
             stop: false,
             edits: Vec::new(),
+            hidden_requests: Vec::new(),
         }
     }
 
@@ -210,6 +219,7 @@ impl<'a> EventCx<'a> {
             capture_request: None,
             stop: false,
             edits: Vec::new(),
+            hidden_requests: Vec::new(),
         }
     }
 
@@ -231,6 +241,7 @@ impl<'a> EventCx<'a> {
             capture_request: None,
             stop: false,
             edits: Vec::new(),
+            hidden_requests: Vec::new(),
         }
     }
 
@@ -308,6 +319,23 @@ impl<'a> EventCx<'a> {
     #[doc(hidden)]
     pub fn __take_edits(&mut self) -> Vec<EditIntent> {
         std::mem::take(&mut self.edits)
+    }
+
+    /// Request that node `id` be shown or hidden after this handler returns.
+    /// Deferred exactly like [`record_edit`](Self::record_edit): the cx holds no
+    /// node store, so the router applies the recorded flips (each marking the node
+    /// LAYOUT | PAINT dirty) after the handler returns. A hide/show control swaps
+    /// panels by hiding the old and showing the new.
+    #[inline]
+    pub fn set_hidden(&mut self, id: NodeId, hidden: bool) {
+        self.hidden_requests.push((id, hidden));
+    }
+
+    /// Take the visibility flips recorded this dispatch for the router to apply to
+    /// the node store. Empty when the handler recorded none.
+    #[doc(hidden)]
+    pub fn __take_hidden_requests(&mut self) -> Vec<(NodeId, bool)> {
+        std::mem::take(&mut self.hidden_requests)
     }
 
     /// Request that the pointer be captured to `id` after this handler returns.
@@ -464,5 +492,34 @@ mod tests {
         let mut cx = EventCx::__new(&mut states, &bindings);
         cx.clear_focus();
         assert_eq!(cx.__take_focus_request(), Some(None));
+    }
+
+    #[test]
+    fn set_hidden_records_deferred_visibility_flips() {
+        let (mut store, a) = a_live_node();
+        // A second live node so the test drains an ordered pair.
+        let b = {
+            let mut cx = BuildCx::new(&mut store);
+            let h = cx.leaf(LeafStyle {
+                size: Size::fixed(1.0, 1.0),
+                ..Default::default()
+            });
+            cx.root();
+            h.id()
+        };
+        let mut states = StateStore::new();
+        let bindings = BindingTable::new();
+        let mut cx = EventCx::__new(&mut states, &bindings);
+        assert!(
+            cx.__take_hidden_requests().is_empty(),
+            "no flips recorded by default"
+        );
+        cx.set_hidden(a, true);
+        cx.set_hidden(b, false);
+        assert_eq!(cx.__take_hidden_requests(), vec![(a, true), (b, false)]);
+        assert!(
+            cx.__take_hidden_requests().is_empty(),
+            "taking drains the recorded flips"
+        );
     }
 }

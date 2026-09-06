@@ -32,6 +32,10 @@ pub fn paint_tree(store: &NodeStore, root: NodeId, out: &mut Vec<Primitive>) {
     if !arena.is_live(root) {
         return;
     }
+    // A hidden node paints neither its own quad/content nor any descendant.
+    if store.hidden(root) {
+        return;
+    }
 
     let world = store.world(root);
     let style = store.style(root);
@@ -196,6 +200,52 @@ mod tests {
         let mut out = Vec::new();
         paint_tree(&store, root, &mut out);
         // Only the one solid leaf paints.
+        assert_eq!(out.len(), 1);
+        assert!(matches!(out[0], Primitive::Quad(q) if q.color == RED));
+    }
+
+    #[test]
+    fn a_hidden_node_emits_no_primitive_for_itself_or_its_subtree() {
+        // A row of two solid leaves; hiding the first must drop both its own quad
+        // and (were it a container) its descendants — the paint walk early-returns.
+        let mut store = NodeStore::new();
+        let mut first = None;
+        let root = {
+            let mut cx = BuildCx::new(&mut store);
+            cx.flex(
+                FlexStyle {
+                    axis: Axis::Row,
+                    ..Default::default()
+                },
+                |cx| {
+                    let h = cx.leaf(LeafStyle {
+                        size: Size::fixed(10.0, 10.0),
+                        style: BoxStyle::solid(RED),
+                    });
+                    first = Some(h.id());
+                    cx.leaf(LeafStyle {
+                        size: Size::fixed(10.0, 10.0),
+                        style: BoxStyle::solid(RED),
+                    });
+                },
+            );
+            cx.root().unwrap()
+        };
+        store.set_hidden(first.unwrap(), true);
+        let mut scratch = Vec::new();
+        store.layout(
+            root,
+            Rect {
+                x: 0.0,
+                y: 0.0,
+                w: 100.0,
+                h: 100.0,
+            },
+            &mut scratch,
+        );
+        let mut out = Vec::new();
+        paint_tree(&store, root, &mut out);
+        // Only the still-shown leaf paints; the hidden one contributes nothing.
         assert_eq!(out.len(), 1);
         assert!(matches!(out[0], Primitive::Quad(q) if q.color == RED));
     }
