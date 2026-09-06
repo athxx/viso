@@ -143,3 +143,19 @@ pub enum InputSample {
     /// An in-progress IME composition update (preedit).
     ImePreedit(ImePreeditSample),
 }
+
+impl InputSample {
+    /// The window this sample belongs to. Every variant is window-scoped (the
+    /// scheduler resolved it from the raw event's `window` field), so a
+    /// multi-window driver reads this to route the sample to the right window's
+    /// tree without matching on the variant.
+    pub fn window(&self) -> WindowId {
+        match self {
+            InputSample::Pointer(p) => p.window,
+            InputSample::Scroll(s) => s.window,
+            InputSample::Key(k) => k.window,
+            InputSample::Text(t) => t.window,
+            InputSample::ImePreedit(p) => p.window,
+        }
+    }
+}
