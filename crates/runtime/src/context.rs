@@ -109,6 +109,17 @@ impl<'a> RuntimeCx<'a> {
         self.app.request_redraw(window);
     }
 
+    /// Programmatically close `window`, destroying its OS shell.
+    ///
+    /// The counterpart to [`create_window`](Self::create_window). The platform
+    /// delivers a [`WindowClosed`](viso_platform::RawEvent::WindowClosed) for
+    /// `window`, so the scheduler decrements its open-window count and the driver
+    /// tears the window's state down through the one close path — the same one a
+    /// user-driven close takes. Closing an unknown id is a no-op.
+    pub fn close_window(&mut self, window: WindowId) {
+        self.app.close_window(window);
+    }
+
     /// Signal that reactive state changed and a frame must run to flush it.
     ///
     /// Records a state-dirty request the scheduler folds into its redraw

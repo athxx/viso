@@ -60,6 +60,17 @@ pub trait PlatformApp {
     /// Schedule a redraw beat for `window` (delivered as
     /// [`RawEvent::RedrawRequested`]).
     fn request_redraw(&mut self, window: WindowId);
+
+    /// Programmatically close `window`, destroying its OS shell.
+    ///
+    /// The counterpart to [`create_window`](Self::create_window): it lets the
+    /// app tear down a window it opened without waiting for the user to click
+    /// the close button. Closing follows the *same* path as a user-driven
+    /// close — the backend delivers a [`RawEvent::WindowClosed`] for `window`,
+    /// so the runtime decrements its open-window count and the driver tears
+    /// down that window's state through one code path, whichever side initiated
+    /// the close. Closing an id that does not exist is a no-op.
+    fn close_window(&mut self, window: WindowId);
 }
 
 /// A single native window / drawable shell.

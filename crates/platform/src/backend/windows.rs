@@ -19,10 +19,10 @@ use std::time::Instant;
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::WindowsAndMessaging::{
-    CW_USEDEFAULT, CreateWindowExW, DefWindowProcW, DispatchMessageW, GetMessageW, MSG,
-    MWMO_INPUTAVAILABLE, MsgWaitForMultipleObjectsEx, PM_REMOVE, PeekMessageW, PostQuitMessage,
-    QS_ALLINPUT, RegisterClassW, SW_SHOW, ShowWindow, TranslateMessage, WINDOW_EX_STYLE, WM_CLOSE,
-    WM_DESTROY, WM_PAINT, WM_SIZE, WNDCLASSW, WS_OVERLAPPEDWINDOW,
+    CW_USEDEFAULT, CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetMessageW,
+    MSG, MWMO_INPUTAVAILABLE, MsgWaitForMultipleObjectsEx, PM_REMOVE, PeekMessageW,
+    PostQuitMessage, QS_ALLINPUT, RegisterClassW, SW_SHOW, ShowWindow, TranslateMessage,
+    WINDOW_EX_STYLE, WM_CLOSE, WM_DESTROY, WM_PAINT, WM_SIZE, WNDCLASSW, WS_OVERLAPPEDWINDOW,
 };
 use windows::core::{PCWSTR, w};
 
@@ -212,6 +212,31 @@ impl PlatformApp for WinApp {
 
     fn request_redraw(&mut self, window: WindowId) {
         self.shared.borrow_mut().redraws.push_back(window);
+    }
+
+    fn close_window(&mut self, window: WindowId) {
+        // Same close path as a user-driven close, initiated by the app: destroy
+        // the HWND and enqueue `WindowClosed` so the scheduler decrements its
+        // open-window count and the driver tears the window down through the one
+        // close path. Enqueue directly (rather than relying on the WM_DESTROY
+        // handler) so delivery is deterministic and identical to the other
+        // backends. Unknown id is a no-op. We do NOT set `should_exit`: closing
+        // one window in a multi-window session must not end the pump; the
+        // scheduler's open-window gate owns exit.
+        let Some(pos) = self.windows.iter().position(|w| w.id == window) else {
+            return;
+        };
+        let closed = self.windows.remove(pos);
+        // SAFETY: `hwnd` is a valid window handle we created and still own; it has
+        // not been destroyed (we just removed it from `windows`). DestroyWindow on
+        // a live HWND is sound.
+        unsafe {
+            let _ = DestroyWindow(closed.hwnd);
+        }
+        self.shared
+            .borrow_mut()
+            .events
+            .push_back(RawEvent::WindowClosed { window });
     }
 }
 

@@ -158,6 +158,55 @@ fn accept_cell_veto_handshake() {
 }
 
 #[test]
+fn close_window_removes_it_and_delivers_window_closed() {
+    // The programmatic-close seam: `close_window` drops the OS-side window and
+    // queues a `WindowClosed` beat, so a caller-initiated close follows the exact
+    // same delivery path as a user-driven one.
+    let mut app = HeadlessApp::new();
+    let w1 = app.create_window(WindowConfig::default()).unwrap();
+    let w2 = app.create_window(WindowConfig::default()).unwrap();
+    assert_ne!(w1, w2, "each window gets a distinct id");
+    assert!(app.window(w1).is_some());
+    assert!(app.window(w2).is_some());
+
+    app.close_window(w1);
+    assert!(app.window(w1).is_none(), "the closed window is gone");
+    assert!(app.window(w2).is_some(), "the other window survives");
+
+    let seen = Rc::new(RefCell::new(Vec::new()));
+    let mut handler = Recorder::new(Rc::clone(&seen), vec![]);
+    app.run(&mut handler);
+
+    let seen = seen.borrow();
+    assert_eq!(seen[0], RawEvent::AppLaunched);
+    assert_eq!(
+        seen[1],
+        RawEvent::WindowClosed { window: w1 },
+        "the close is delivered as a WindowClosed beat"
+    );
+}
+
+#[test]
+fn close_window_on_unknown_id_is_a_noop() {
+    let mut app = HeadlessApp::new();
+    let w1 = app.create_window(WindowConfig::default()).unwrap();
+    // Closing an id that was never created must not remove the live window nor
+    // synthesize a spurious WindowClosed.
+    app.close_window(WindowId(999));
+    assert!(app.window(w1).is_some(), "the live window is untouched");
+
+    let seen = Rc::new(RefCell::new(Vec::new()));
+    let mut handler = Recorder::new(Rc::clone(&seen), vec![]);
+    app.run(&mut handler);
+
+    assert_eq!(
+        *seen.borrow(),
+        vec![RawEvent::AppLaunched],
+        "no WindowClosed is synthesized for an unknown id"
+    );
+}
+
+#[test]
 fn empty_script_drains_after_launch() {
     // With nothing scripted and no redraw requested, the pump delivers only the
     // launch event, then the queue drains and run returns.

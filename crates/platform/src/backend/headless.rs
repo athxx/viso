@@ -108,6 +108,21 @@ impl PlatformApp for HeadlessApp {
     fn request_redraw(&mut self, id: WindowId) {
         self.pending_redraws.push_back(id);
     }
+
+    fn close_window(&mut self, id: WindowId) {
+        // Same path as a user-driven close: drop the OS-side window state and
+        // deliver a `WindowClosed` beat. Front of the script queue so it lands
+        // before any subsequent scripted events, exactly as a real backend would
+        // report the destruction it just performed. Closing an unknown id is a
+        // no-op (no window removed, no event synthesized), matching native
+        // backends that ignore stale handles.
+        let existed = self.windows.iter().any(|w| w.id == id);
+        self.windows.retain(|w| w.id != id);
+        if existed {
+            self.script
+                .push_front(RawEvent::WindowClosed { window: id });
+        }
+    }
 }
 
 /// A headless window: pure state, no OS resource.
