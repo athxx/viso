@@ -27,8 +27,8 @@ pub mod text;
 pub use containers::{View, ViewStyle, view};
 pub use controls::{
     Button, ButtonStyle, CheckBox, CheckBoxStyle, RadioGroup, RadioStyle, Slider, SliderStyle,
-    Splitter, SplitterStyle, TextInput, TextInputStyle, Toggle, ToggleStyle, button, checkbox,
-    radio_group, slider, splitter, text_input, toggle,
+    Splitter, SplitterStyle, Tabs, TabsStyle, TextInput, TextInputStyle, Toggle, ToggleStyle,
+    button, checkbox, radio_group, slider, splitter, tabs, text_input, toggle,
 };
 pub use grid::{Grid, GridViewStyle, grid};
 pub use icon::{Icon, IconStyle, icon};
