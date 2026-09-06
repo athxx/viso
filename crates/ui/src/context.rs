@@ -18,6 +18,7 @@ use crate::input::{ImeEvent, KeyEvent, PointerEvent};
 use crate::node::NodeId;
 use crate::state::{StateId, StateStore, StateValue};
 use crate::text_edit::EditIntent;
+use crate::timer::TimerRequest;
 
 macro_rules! phase_cx {
     ($(#[$m:meta])* $name:ident) => {
@@ -173,6 +174,15 @@ pub struct EventCx<'a> {
     /// frame, before ticking. Empty (and allocation-free) for the overwhelmingly
     /// common dispatch that starts no animation.
     animation_requests: Vec<TranslateAnim>,
+    /// One-shot timer arms a handler asked to start this dispatch, applied by the
+    /// router to the node store's timer queue after the handler returns — the
+    /// same deferred shape as [`animation_requests`](Self::animation_requests),
+    /// since the cx holds neither the store's queue nor the driver's registry. A
+    /// toast's show records one auto-dismiss arm here; the router hands it to the
+    /// store queue, and the driver arms it on its live registry the next frame
+    /// (against that frame's `now`). Empty (and allocation-free) for the
+    /// overwhelmingly common dispatch that arms no timer.
+    timer_requests: Vec<TimerRequest>,
     /// The node that holds focus at the moment this dispatch began, lent by value
     /// from the node store's focus slot so a handler can read it via
     /// [`EventCx::focused`] without the cx holding the store. A `Copy` snapshot,
@@ -203,6 +213,7 @@ impl<'a> EventCx<'a> {
             edits: Vec::new(),
             hidden_requests: Vec::new(),
             animation_requests: Vec::new(),
+            timer_requests: Vec::new(),
             focused: None,
         }
     }
@@ -229,6 +240,7 @@ impl<'a> EventCx<'a> {
             edits: Vec::new(),
             hidden_requests: Vec::new(),
             animation_requests: Vec::new(),
+            timer_requests: Vec::new(),
             focused: None,
         }
     }
@@ -254,6 +266,7 @@ impl<'a> EventCx<'a> {
             edits: Vec::new(),
             hidden_requests: Vec::new(),
             animation_requests: Vec::new(),
+            timer_requests: Vec::new(),
             focused: None,
         }
     }
@@ -279,6 +292,7 @@ impl<'a> EventCx<'a> {
             edits: Vec::new(),
             hidden_requests: Vec::new(),
             animation_requests: Vec::new(),
+            timer_requests: Vec::new(),
             focused: None,
         }
     }
@@ -437,6 +451,35 @@ impl<'a> EventCx<'a> {
     #[doc(hidden)]
     pub fn __take_animation_requests(&mut self) -> Vec<TranslateAnim> {
         std::mem::take(&mut self.animation_requests)
+    }
+
+    /// Arm a one-shot timer on `node` that fires `on_fire` once, `delay` after
+    /// the frame that arms it. Deferred exactly like
+    /// [`request_animation`](Self::request_animation): the cx holds neither the
+    /// store's timer queue nor the driver's live registry, so the router hands
+    /// the recorded arm to the store queue after the handler returns, and the
+    /// driver arms it on its registry the next frame — against that frame's `now`,
+    /// so the deadline stays deterministic under a headless clock.
+    ///
+    /// The callback receives only `&mut NodeStore` (an animation's `on_done`
+    /// discipline): it may hide a node or restore state, but cannot itself arm
+    /// another timer or animation. A toast's auto-dismiss records its hide here.
+    #[inline]
+    pub fn request_timer(
+        &mut self,
+        node: NodeId,
+        delay: core::time::Duration,
+        on_fire: impl FnOnce(&mut NodeStore) + 'static,
+    ) {
+        self.timer_requests
+            .push(TimerRequest::new(node, delay, on_fire));
+    }
+
+    /// Take the timer arms requested this dispatch for the router to enqueue on
+    /// the node store. Empty when the handler armed none.
+    #[doc(hidden)]
+    pub fn __take_timer_requests(&mut self) -> Vec<TimerRequest> {
+        std::mem::take(&mut self.timer_requests)
     }
 
     /// Request that the pointer be captured to `id` after this handler returns.

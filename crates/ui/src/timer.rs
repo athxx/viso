@@ -38,6 +38,43 @@ use crate::node::NodeId;
 /// from inside its own fire.
 type OnFire = Box<dyn FnOnce(&mut NodeStore)>;
 
+/// A deferred request to arm a timer, produced by a handler through
+/// [`EventCx::request_timer`](crate::context::EventCx::request_timer) and carried
+/// — like a [`TranslateAnim`](crate::animation::TranslateAnim) request — through
+/// the store's handoff queue to the driver, which arms it on its live
+/// [`TimerRegistry`] the next frame (against that frame's `now`).
+///
+/// It holds the `delay` rather than a resolved `deadline`: the handler that
+/// records it has no notion of the frame clock's "now", so the deadline is
+/// computed where the timer is armed, from the driver's frame instant. This
+/// keeps a request produced under a headless
+/// [`ManualClock`](../../viso_runtime/clock/struct.ManualClock.html) deterministic
+/// — its deadline is `arm-frame now + delay`, not a stray `Instant::now()`.
+pub struct TimerRequest {
+    /// The node the timer is scoped to (dropped unfired if the node dies first).
+    pub node: NodeId,
+    /// How long after the arming frame's `now` the timer fires.
+    pub delay: Duration,
+    /// Run once when the deadline is crossed, with the live store.
+    pub on_fire: OnFire,
+}
+
+impl TimerRequest {
+    /// A one-shot timer request on `node`, firing `on_fire` once `delay` after
+    /// the frame that arms it.
+    pub fn new(
+        node: NodeId,
+        delay: Duration,
+        on_fire: impl FnOnce(&mut NodeStore) + 'static,
+    ) -> Self {
+        Self {
+            node,
+            delay,
+            on_fire: Box::new(on_fire),
+        }
+    }
+}
+
 /// A transient, monotonic timer identity. Unlike [`NodeId`], a timer is
 /// short-lived and never reused, so a plain incrementing counter suffices for
 /// cancellation — there is no ABA hazard to guard against.
@@ -131,6 +168,25 @@ impl TimerRegistry {
             node,
             deadline,
             on_fire: Some(Box::new(on_fire)),
+        });
+        id
+    }
+
+    /// Arm a request the driver drained from the store's handoff queue, resolving
+    /// its `delay` against this frame's `now`. The counterpart to
+    /// [`arm`](Self::arm) that takes the pre-boxed callback out of a
+    /// [`TimerRequest`] rather than a fresh closure.
+    pub fn arm_request(&mut self, req: TimerRequest, now: Instant) -> TimerId {
+        let id = TimerId(self.next_id);
+        self.next_id = self.next_id.wrapping_add(1);
+        let deadline = now
+            .checked_add(req.delay)
+            .unwrap_or_else(|| now + Duration::from_secs(3600));
+        self.timers.push(Timer {
+            id,
+            node: req.node,
+            deadline,
+            on_fire: Some(req.on_fire),
         });
         id
     }
