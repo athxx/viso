@@ -676,3 +676,88 @@ old Phase 10 `viso migrate` migration tooling was **removed** from the doc (see 
 - **Tab / Shift-Tab 焦点遍历**:`KeyRouter` 注明遍历是 caller policy,未内建;焦点环遍历拆 input 子系统后续片。
 - **回调 / action bus**:Button 现 `on_click(FnMut(&mut EventCx))` 直连;统一 action/message 总线(若需要)拆后续。
 - **widget microbench 记录基线数字**(View + Label + Image + Icon + Button 一起补)。
+
+TextInput 后续片(源码审计确认的缺口,不吞,留待专门的文本编辑片):
+当前 TextInput 是单行编辑骨架——已通:键盘输入/退格删除、Left/Right/Home/End、Shift+方向键键盘选区、聚焦、
+IME preedit/commit 上屏 + 光标在 preedit 内。以下均 DEFERRED(`text_input.rs:39-42` 模块 docstring 已列):
+- **on_change 接编辑后文本**:`on_change` 现只存不调;buffer 在 handler 返回后才 re-shape,handler 拿不到编辑后
+  文本(`SharedChange` 注释 `text_input.rs:71-76`)。需在 reconcile 产出 post-edit 文本后回调——优先补的一项。
+- **剪贴板 cut/copy/paste**:全工作区无实现,`platform` 只有一句 doc 列了 clipboard 职责。需 `Cut/Copy/Paste`
+  意图 + 平台剪贴板服务接线。
+- **指针拖拽选区 + 双/三击选词**:pointer handler 现只在 Down 时 `request_focus`,无字符命中测试;需 shaped glyph
+  几何做 hit-test(`text_input.rs:34-36`)。
+- **grapheme 簇步进升级**:`prev/next_boundary` 现走 `is_char_boundary`(码点步进);rustybuzz 有 cluster 信息
+  (`text/src/shape.rs`)但编辑引擎未用。升级为按簇步进(`text_edit.rs:36-43`)。
+- **词级移动**:`Motion` 无 word 变体;key handler 只读 shift,不看 ctrl/alt。加 Ctrl/Alt+方向词跳。
+- **placeholder / password 掩码**:无字段、无掩码 paint。
+- **水平滚动裁剪**:无 per-field scroll offset/clip(长单行溢出不滚动)。
+- **光标闪烁**:无 timer/blink 状态(依赖动画/定时子系统)。
+- **完整状态 IME 同步**:preedit/commit + 光标在 preedit 内已通;缺向 OS 上报的 set-composing-region /
+  cursor-rect(平台权威全状态,Android/iOS,`text_input.rs:41-42`)。
+- **多行 / 换行 / wrap**:`Buffer` 明确单行(`text_edit.rs:150`),Enter 不插入;`Motion` 无 Up/Down。依赖
+  `viso-text` wrap/多行(现单 face/LTR/硬 `\n`),与既有文本子系统 deferral 合并。
+
+---
+
+## Phase 7 — 官方 Widgets 进度总账(Tier 1–6,doc §71)
+
+> 每个控件出一套完整 section-71 验证包(widget 单测 + golden 截图 + input tape + a11y 语义快照 +
+> microbench + allocation profile),**每小节一提交**,做完接着下一个不停顿。golden `.bgra8` 一律 gitignore
+> 永不提交(本地 `BLESS=1` 重新生成)。以下按 git 历史核实的实际状态,不是计划。
+
+**Tier 1 — 呈现控件(单文件,crate 根):** View / Label / Image / Icon —— 全部 ✅ 收官(Slice 2–6 见上)。
+
+**Tier 2 — 基础交互控件(`controls/` 目录):** Button ✅ / CheckBox ✅ / Toggle ✅ / Radio ✅ / Slider ✅ /
+TextInput ✅(单行编辑骨架,后续片见上文 deferral 清单)。全部 ✅ 收官。
+
+**Tier 3 — 布局 / 结构容器:** Scroll ✅ / VirtualList ✅ / Grid ✅(Slice H/I/J,见上「已完成」)/ Splitter ✅
+(`splitter_build` bench)。全部 ✅ 收官。
+
+**Tier 4 — 导航 / 浮层:**
+
+- [x] **Tabs** ✅ —— 分段切换 + `Role`;facade 验证包 + microbench(`79ed737`)。
+- [x] **NavigationStack** ✅ —— 页栈 push/pop + `Role::Navigation`(`50da50f` role / `e8f64c0` 控件 /
+      `30513a0` 验证包 / `53b1fbf` bench)。
+- [x] **Popup** ✅ —— overlay 顶层序 seam(`f3007e3` 顶层 paint 序 / `617e845` 控件 / `7551307` 验证包 /
+      `29aa647` bench)。
+- [x] **Modal** ✅ —— 全表面对话框 + focus-trap + restore-focus + `Role::Dialog`(`9c7c8ce` focus-scope /
+      `96d4599` 控件 / `d77950a` 验证包 / `6e81a27` bench)。
+- [x] **Sheet** ✅ —— 边缘滑入抽屉;**同时建成完整动画时钟子系统**(Sheet 是其第一个消费者)。七提交:
+      `3b83a17` 无夹取 world-space translate 槽(viso-ui)/ `cc27995` 可注入 `FrameClock` + 每帧 delta
+      (runtime seam)/ `ff81c09` `AnimationRegistry` + `Easing` 缓动(viso-ui)/ `2c223cc` facade 经 frame
+      loop 消费动画时钟(`FlushStateTransactions` 臂 tick + `wants_animation` + TRANSFORM-gated
+      `resolve_transforms` 缺口修正 + 动画活跃自续 beat + `EventCx::request_animation` 延迟 seam)/
+      `71ef946` Sheet 控件 + 单测(`SheetEdge`/`SheetHandle`/滑入滑出 + `on_done` 完成回调隐藏回焦)/
+      `2aa429f` facade 验证包 / `1b616c2` Sheet + animation-tick microbench。
+      bench 基线:sheet/build 2.72µs、layout 289ns、paint_tree 102ns;animation_tick/1 13.8ns、/64 984ns、
+      /1024 14.7µs(线性,无 per-anim 开销)。
+- [x] **Toast** ✅ —— 自动消失通知浮层;**同时建成真 section-25 一次性 timer 协议**(Toast 是其第一个消费者,
+      等待期 0 帧空转,非动画时钟捎带的 ~240 帧)。判据("资源最省 + 稳态帧停",
+      [[viso-macos-pump-autoreleasepool]] 教训)选真 timer 而非 `TranslateAnim` 便车。七提交:
+      `3966771` 一次性 timer store `TimerRegistry`(viso-ui:arm/arm_request/earliest/fire_due/cancel,
+      one-shot、on_fire 只拿 `&mut NodeStore`)/ `b2796b0` `FrameDriver::next_timer_deadline` +
+      `resolve_control_flow` idle 发 `WaitUntil(deadline)` + `RuntimeCx::frame_now`(runtime seam)/ `e1d2906`
+      macOS `untilDate`=deadline + 超时合成 `Wakeup`(Windows/X11 结构对称,真机验证留 CI;headless 视
+      `WaitUntil`==`Wait`,测试用 ManualClock 手动跨越)/ `2f9a99e` `AppDriver` 持 timers +
+      `FlushStateTransactions` drain+arm+fire_due + `EventCx::request_timer` 延迟 seam(facade 消费)/
+      `9fc0eae` Toast 控件
+      + 单测(= Modal 去 scrim/focus-trap/restore-focus,content `Role::Status` polite live region、非
+      focusable、贴边 + 生成号守卫的自动消隐;`on_dismiss` 只在手动 dismiss 触发)/ `ded688b` facade 验证包
+      + **ADR 0019**(`WaitUntil` 阻塞到 deadline、driver 拥有 timer store 的调度语义,§68 触发)/
+      `85f9c8d` toast + timer microbench。
+      bench 基线:toast/build 1.30µs、layout 124ns、paint_tree 52ns;timer/arm 19ns、earliest/1 1.5ns、
+      /1024 1.27µs、fire_due/1 5.5ns、/1024 1.78µs(均线性、无 per-timer 隐藏开销)。
+      稳态帧不变量取"确定性 + GPU 资源复用 + frame_stats 不变"(整帧经 HeadlessRaster 会重编码像素缓冲,
+      非零 alloc);零 alloc 只断言在隔离的 `fire_due` 步。
+- [ ] **Window** —— 多顶层窗口支持。可能是小控件也可能是大 runtime 改动(per-window store/renderer/frame
+      loop)。scoping 中(Explore agent 追踪)。出验证包;每小节提交。
+
+**Tier 5 / Tier 6** —— 待做(Tier 4 收完再排)。
+
+### Tier 4 后续片(记进 backlog,不吞)
+- 动画时钟扩展:scale/opacity/color 动画(现只 translate);spring 物理曲线;动画序列/编排;
+  `prefers-reduced-motion` 无障碍(§15,减弱动画时直接跳到位)。
+- 独立 `UpdateCx` FramePhase 相(若动画/timer 消费者增多需专相,开 ADR)。
+- Sheet 拖拽消隐(下拉超阈值 dismiss);嵌套 sheet / sheet 栈。
+- §25 UI task 协议完整化:`cx.spawn(async)` + 任务身份/唤醒/取消/scoped 所有权(Toast timer 若走路 (2)
+  会先落地 `WaitUntil` 唤醒这一半,余下 async executor adapter 拆后续 Phase 8)。
