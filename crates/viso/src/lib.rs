@@ -624,18 +624,20 @@ pub mod prelude {
     // interactive controls, Button, CheckBox, Toggle, RadioGroup, Slider, and
     // TextInput, the Tier 3 layout structures — the Scroll viewport, the
     // virtualized VirtualList, the two-dimensional Grid, and the draggable-pane
-    // Splitter — and the Tier 4 navigation controls, the panel-switching Tabs and
-    // the page-stack NavigationStack (with its app-captured NavHandle for
-    // programmatic push/pop). A widget is a `Component` an app authors and builds
-    // into its `BuildCx`, so these belong in the default set as they land.
+    // Splitter — and the Tier 4 navigation/overlay controls, the panel-switching
+    // Tabs, the page-stack NavigationStack (with its app-captured NavHandle for
+    // programmatic push/pop), and the Popup (a persistent anchor with a floating
+    // top-layer content, with its app-captured PopupHandle for programmatic
+    // open/close/toggle). A widget is a `Component` an app authors and builds into
+    // its `BuildCx`, so these belong in the default set as they land.
     pub use viso_widgets::{
         Button, ButtonStyle, CheckBox, CheckBoxStyle, Grid, GridViewStyle, Icon, IconStyle, Image,
         ImageStyle, Label, LabelStyle, NavHandle, NavHandleSlot, NavigationStack,
-        NavigationStackStyle, RadioGroup, RadioStyle, Scroll, ScrollViewStyle, Slider, SliderStyle,
-        Splitter, SplitterStyle, Tabs, TabsStyle, TextInput, TextInputStyle, Toggle, ToggleStyle,
-        View, ViewStyle, VirtualList, VirtualListViewStyle, button, checkbox, grid, icon, image,
-        label, navigation_stack, radio_group, scroll, slider, splitter, tabs, text_input, toggle,
-        view, virtual_list,
+        NavigationStackStyle, Popup, PopupHandle, PopupHandleSlot, PopupStyle, RadioGroup,
+        RadioStyle, Scroll, ScrollViewStyle, Slider, SliderStyle, Splitter, SplitterStyle, Tabs,
+        TabsStyle, TextInput, TextInputStyle, Toggle, ToggleStyle, View, ViewStyle, VirtualList,
+        VirtualListViewStyle, button, checkbox, grid, icon, image, label, navigation_stack, popup,
+        radio_group, scroll, slider, splitter, tabs, text_input, toggle, view, virtual_list,
     };
     // The declarative view-fragment entry point (§21.5): a small local `ui! { … }`
     // fragment lowers, at Rust compile time, to a static `BuildCx` builder closure.

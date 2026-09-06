@@ -5,11 +5,12 @@
 //! share the pattern of a focusable node with pointer and key handlers plus a
 //! reactive visual state. The members so far are [`Button`], [`CheckBox`],
 //! [`Toggle`], [`RadioGroup`], [`Slider`], [`TextInput`], [`Splitter`],
-//! [`Tabs`], and [`NavigationStack`].
+//! [`Tabs`], [`NavigationStack`], and [`Popup`].
 
 mod button;
 mod checkbox;
 mod navigation_stack;
+mod popup;
 mod radio;
 mod slider;
 mod splitter;
@@ -22,6 +23,7 @@ pub use checkbox::{CheckBox, CheckBoxStyle, checkbox};
 pub use navigation_stack::{
     NavHandle, NavHandleSlot, NavigationStack, NavigationStackStyle, navigation_stack,
 };
+pub use popup::{Popup, PopupHandle, PopupHandleSlot, PopupStyle, popup};
 pub use radio::{RadioGroup, RadioStyle, radio_group};
 pub use slider::{Slider, SliderStyle, slider};
 pub use splitter::{Splitter, SplitterStyle, splitter};
