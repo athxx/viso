@@ -68,3 +68,7 @@ harness = false
 [[bench]]
 name = "grid_build"
 harness = false
+
+[[bench]]
+name = "splitter_build"
+harness = false
