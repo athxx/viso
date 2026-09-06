@@ -92,3 +92,7 @@ harness = false
 [[bench]]
 name = "sheet_build"
 harness = false
+
+[[bench]]
+name = "toast_build"
+harness = false
