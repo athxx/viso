@@ -50,6 +50,14 @@ pub enum Role {
     /// The container of a set of [`Tab`](Role::Tab)s — the tab strip. Groups the
     /// tabs so an assistive technology can present them as one selectable set.
     TabList,
+    /// A navigation container holding a stack of pages, of which only the top is
+    /// visible. Pushing a page reveals it and hides the one below; popping does
+    /// the reverse. Which page is on top is held in the control's own reactive
+    /// cell, not this cold role; this slice announces the role and proves the
+    /// stack depth through the control's cell and input tapes (the derive pass
+    /// has no state store today — the same treatment as
+    /// [`CheckBox`](Role::CheckBox)).
+    Navigation,
 }
 
 /// A node's *authored* semantics: the facts a builder sets, distinct from the
@@ -162,6 +170,13 @@ mod tests {
         let tab = Semantics::role(Role::Tab).with_label("Details");
         assert_eq!(tab.role, Role::Tab);
         assert_eq!(tab.label.as_deref(), Some("Details"));
+    }
+
+    #[test]
+    fn navigation_role_needs_no_name() {
+        let nav = Semantics::role(Role::Navigation);
+        assert_eq!(nav.role, Role::Navigation);
+        assert_eq!(nav.label, None, "the stack container itself needs no name");
     }
 
     #[test]
