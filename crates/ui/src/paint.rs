@@ -27,7 +27,39 @@ use viso_render::{
 
 /// Emit primitives for the subtree rooted at `root` into `out`, in pre-order.
 /// `out` is not cleared — append semantics let a caller compose multiple trees.
+///
+/// Overlay nodes (see [`NodeStore::is_overlay`]) paint in a deferred top layer:
+/// the main walk skips an overlay subtree where it meets it and records the root;
+/// once the main walk finishes, each recorded overlay root paints, in the order
+/// they were met (author order). So a popup declared deep in the tree still draws
+/// over the whole scene, with no z-index sort. A tree with no overlay node emits
+/// exactly the pre-order stream it did before — the deferred pass is empty.
 pub fn paint_tree(store: &NodeStore, root: NodeId, out: &mut Vec<Primitive>) {
+    // The top-layer roots met during the main walk. A thread/scene-local scratch
+    // that a hot caller could hoist; here it is a small once-per-paint Vec, empty
+    // (never heap-allocating) in the common no-overlay case.
+    let mut overlays: Vec<NodeId> = Vec::new();
+    // The `root` itself paints even if flagged overlay — it is the entry, not a
+    // child boundary — so the main walk starts unconditionally.
+    paint_subtree(store, root, out, &mut overlays);
+    // Deferred top layer: paint each overlay root in the order it was met. An
+    // overlay's own subtree may in turn contain further overlays, appended past
+    // the current end, so the index walk naturally drains nested ones too.
+    let mut i = 0;
+    while i < overlays.len() {
+        paint_subtree(store, overlays[i], out, &mut overlays);
+        i += 1;
+    }
+}
+
+/// Paint one subtree in pre-order, diverting any overlay child into `overlays`
+/// instead of descending into it (the caller drains that list into a top layer).
+fn paint_subtree(
+    store: &NodeStore,
+    root: NodeId,
+    out: &mut Vec<Primitive>,
+    overlays: &mut Vec<NodeId>,
+) {
     let arena = store.arena();
     if !arena.is_live(root) {
         return;
@@ -67,9 +99,15 @@ pub fn paint_tree(store: &NodeStore, root: NodeId, out: &mut Vec<Primitive>) {
     }
 
     // Recurse into children in sibling order (pre-order: parent already painted).
+    // An overlay child is diverted to the deferred top layer rather than painted
+    // in place — it draws after the whole scene, so it must not descend here.
     let mut child = arena.links(root).and_then(|l| l.first_child);
     while let Some(c) = child {
-        paint_tree(store, c, out);
+        if store.is_overlay(c) {
+            overlays.push(c);
+        } else {
+            paint_subtree(store, c, out, overlays);
+        }
         child = arena.links(c).and_then(|l| l.next_sibling);
     }
 
@@ -150,6 +188,7 @@ fn translate_cmd(cmd: PathCmd, dx: f32, dy: f32) -> PathCmd {
 mod tests {
     use super::*;
     use crate::component::{BuildCx, FlexStyle, LeafStyle, NodeStore};
+    use crate::dirty::DirtyClass;
     use crate::layout::{Axis, Size};
     use crate::style::BoxStyle;
     use viso_render::{Rect, Rgba};
@@ -475,6 +514,193 @@ mod tests {
         assert_eq!(
             path.cmds[1],
             PathCmd::LineTo(Point::new(path_world.x + 5.0, path_world.y + 5.0))
+        );
+    }
+
+    const GREEN: Rgba = Rgba {
+        r: 0.0,
+        g: 1.0,
+        b: 0.0,
+        a: 1.0,
+    };
+    const BLUE: Rgba = Rgba {
+        r: 0.0,
+        g: 0.0,
+        b: 1.0,
+        a: 1.0,
+    };
+
+    // The fill colors of every quad in the primitive stream, in paint order —
+    // enough to assert draw order for the overlay tests below.
+    fn quad_colors(out: &[Primitive]) -> Vec<Rgba> {
+        out.iter()
+            .filter_map(|p| match p {
+                Primitive::Quad(q) => Some(q.color),
+                _ => None,
+            })
+            .collect()
+    }
+
+    // Author a row of three solid leaves (RED, GREEN, BLUE) into a fresh store,
+    // returning the store, the root, and the three leaf ids in author order. The
+    // caller flags whichever leaves it wants as overlay before laying out.
+    fn three_leaf_row() -> (NodeStore, NodeId, [NodeId; 3]) {
+        let mut store = NodeStore::new();
+        let mut ids = [None; 3];
+        let root = {
+            let mut cx = BuildCx::new(&mut store);
+            cx.flex(
+                FlexStyle {
+                    axis: Axis::Row,
+                    ..Default::default()
+                },
+                |cx| {
+                    for (i, color) in [RED, GREEN, BLUE].into_iter().enumerate() {
+                        ids[i] = Some(
+                            cx.leaf(LeafStyle {
+                                size: Size::fixed(10.0, 10.0),
+                                style: BoxStyle::solid(color),
+                            })
+                            .id(),
+                        );
+                    }
+                },
+            );
+            cx.root().unwrap()
+        };
+        (store, root, ids.map(|id| id.unwrap()))
+    }
+
+    fn layout_full(store: &mut NodeStore, root: NodeId) {
+        let mut scratch = Vec::new();
+        store.layout(
+            root,
+            Rect {
+                x: 0.0,
+                y: 0.0,
+                w: 100.0,
+                h: 100.0,
+            },
+            &mut scratch,
+        );
+    }
+
+    #[test]
+    fn an_overlay_child_paints_after_its_later_siblings() {
+        // Flag the first leaf (RED) as overlay: it is authored before GREEN and
+        // BLUE, so pre-order would paint it first — instead it must paint last,
+        // after both later siblings, in the deferred top layer.
+        let (mut store, root, [red, _green, _blue]) = three_leaf_row();
+        store.set_overlay(red, true);
+        layout_full(&mut store, root);
+
+        let mut out = Vec::new();
+        paint_tree(&store, root, &mut out);
+        assert_eq!(quad_colors(&out), vec![GREEN, BLUE, RED]);
+    }
+
+    #[test]
+    fn an_overlay_paints_over_an_earlier_non_overlay_node() {
+        // Flag only the last leaf (BLUE) as overlay. It already paints last in
+        // pre-order, so the stream is unchanged — but this pins the guarantee
+        // that a top-layer node draws over the nodes authored before it.
+        let (mut store, root, [_red, _green, blue]) = three_leaf_row();
+        store.set_overlay(blue, true);
+        layout_full(&mut store, root);
+
+        let mut out = Vec::new();
+        paint_tree(&store, root, &mut out);
+        let colors = quad_colors(&out);
+        assert_eq!(*colors.last().unwrap(), BLUE, "overlay draws on top");
+        assert_eq!(colors, vec![RED, GREEN, BLUE]);
+    }
+
+    #[test]
+    fn no_overlay_emits_the_same_stream_as_the_plain_pre_order_walk() {
+        // The regression guard: with no node flagged overlay, the primitive
+        // stream must be byte-identical to the pre-order walk it produced before
+        // the top-layer pass existed.
+        let (mut store, root, _ids) = three_leaf_row();
+        layout_full(&mut store, root);
+
+        let mut out = Vec::new();
+        paint_tree(&store, root, &mut out);
+        assert_eq!(quad_colors(&out), vec![RED, GREEN, BLUE]);
+        // No layer/clip primitives crept in for a plain row.
+        assert_eq!(out.len(), 3);
+    }
+
+    #[test]
+    fn nested_overlays_paint_in_author_order() {
+        // A top-layer node whose own subtree contains a further overlay: the
+        // outer overlay is collected during the main walk and drained; draining
+        // it re-enters paint_subtree, which collects the inner overlay past the
+        // current end, so the index walk paints it after — author (collection)
+        // order, with no z sort.
+        let mut store = NodeStore::new();
+        let mut outer = None;
+        let mut inner = None;
+        let root = {
+            let mut cx = BuildCx::new(&mut store);
+            cx.flex(
+                FlexStyle {
+                    axis: Axis::Column,
+                    ..Default::default()
+                },
+                |cx| {
+                    // A plain in-place leaf, painted in the main walk.
+                    cx.leaf(LeafStyle {
+                        size: Size::fixed(10.0, 10.0),
+                        style: BoxStyle::solid(RED),
+                    });
+                    // An overlay panel (GREEN) that itself holds an overlay child
+                    // (BLUE) — both must land in the deferred top layer.
+                    let panel = cx.flex(
+                        FlexStyle {
+                            axis: Axis::Column,
+                            style: BoxStyle::solid(GREEN),
+                            ..Default::default()
+                        },
+                        |cx| {
+                            inner = Some(
+                                cx.leaf(LeafStyle {
+                                    size: Size::fixed(10.0, 10.0),
+                                    style: BoxStyle::solid(BLUE),
+                                })
+                                .id(),
+                            );
+                        },
+                    );
+                    outer = Some(panel.id());
+                },
+            );
+            cx.root().unwrap()
+        };
+        store.set_overlay(outer.unwrap(), true);
+        store.set_overlay(inner.unwrap(), true);
+        layout_full(&mut store, root);
+
+        let mut out = Vec::new();
+        paint_tree(&store, root, &mut out);
+        // RED (in place) first, then the outer overlay panel GREEN, then its
+        // nested overlay BLUE — the whole top layer over the main content.
+        assert_eq!(quad_colors(&out), vec![RED, GREEN, BLUE]);
+    }
+
+    #[test]
+    fn set_overlay_marks_paint_only_not_layout() {
+        // An overlay lays out in place; flipping the flag must repaint but must
+        // not force a re-measure/re-layout of the node. Contrast set_hidden,
+        // which marks LAYOUT | PAINT.
+        let (mut store, root, [red, _green, _blue]) = three_leaf_row();
+        layout_full(&mut store, root);
+        // Layout clears the dirty flags; a fresh set_overlay is the only mark.
+        store.set_overlay(red, true);
+        let d = store.dirty(red);
+        assert!(d.contains(DirtyClass::PAINT), "overlay flip repaints");
+        assert!(
+            !d.intersects(DirtyClass::LAYOUT | DirtyClass::MEASURE),
+            "overlay lays out in place — no relayout"
         );
     }
 }
