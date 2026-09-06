@@ -29,3 +29,12 @@ default = []
 # (§5). Backends resolve from the target, not from user feature combos.
 mobile = []
 hot-reload = []
+
+[dev-dependencies]
+criterion = "0.7"
+
+# Multi-window microbenchmarks: window open/close cost and the per-frame
+# `run_phase` fan-out over N windows (validating the linear `Vec<WindowState>`).
+[[bench]]
+name = "window_frame"
+harness = false
