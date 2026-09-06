@@ -37,7 +37,7 @@
 #![forbid(unsafe_op_in_unsafe_fn)]
 
 use viso_gpu::{Backend, GpuBackend, SurfaceId};
-use viso_platform::{RawWindowHandle, WindowConfig, WindowId};
+use viso_platform::{RawWindowHandle, WindowId};
 use viso_render::{Primitive, Rect, Renderer};
 use viso_runtime::{FramePhase, RuntimeCx, Scheduler};
 use viso_ui::{
@@ -51,7 +51,16 @@ use viso_ui::{
 mod text_content;
 use text_content::TextShaper;
 
+mod window;
+pub use window::{WindowBuilder, WindowHandle, window};
+
 pub use viso_ui::context::AppCx;
+// The UI-tier window configuration is the shape a `window(...)` author fills in
+// (title + logical size) — the facade translates it into the platform config at
+// the open-drain point. Re-export it under the facade so app code names one
+// `viso::WindowConfig`, never the internal `viso_platform::WindowConfig` (kept
+// private to this module for the drain translation).
+pub use viso_ui::WindowConfig;
 
 // The `ui!` proc-macro lives in the compile-time-only `viso-ui-macros` crate; it
 // emits `::viso_ui::…` builder tokens but does not itself depend on `viso-ui`. The
@@ -581,7 +590,7 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
         self.app = Some(A::new(&mut self.cx));
         // Open the initial window. Later phases let the app request its own
         // windows via `AppCx`; Phase 2 opens one canonical window.
-        let Ok(id) = cx.create_window(WindowConfig::default()) else {
+        let Ok(id) = cx.create_window(viso_platform::WindowConfig::default()) else {
             return;
         };
         // Open the launch window through the shared bring-up path, authoring its
@@ -854,11 +863,19 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
                 // no self-scheduled spin. A `create_window` failure drops the
                 // request — the app simply gets no window, no panic.
                 for req in self.pending_opens.drain(..) {
-                    let config = WindowConfig {
+                    let config = viso_platform::WindowConfig {
                         title: req.config.title,
                         logical_size: req.config.size,
                     };
+                    let id_slot = req.id_slot;
                     if let Ok(id) = cx.create_window(config) {
+                        // Back-fill the tracking handle's slot with the raw id
+                        // so a `WindowHandle` can observe and later close this
+                        // window. `create_window` is the one place the id is
+                        // known; an untracked open (`id_slot == None`) skips it.
+                        if let Some(slot) = &id_slot {
+                            slot.set(Some(id.0));
+                        }
                         let ws = WindowState::open(cx, id, req.build);
                         self.windows.push(ws);
                     }
@@ -1087,10 +1104,17 @@ pub mod prelude {
         grid, icon, image, label, modal, navigation_stack, popup, radio_group, scroll, sheet,
         slider, splitter, tabs, text_input, toast, toggle, view, virtual_list,
     };
+    // The top-level Window control (§68 public application lifecycle): a window
+    // is not a node control — it does not enter the UI tree — so it appears as an
+    // application-level handle, not a `Component`. `window(cfg).content(..).open(ev)`
+    // opens another OS window mid-session and hands back a `WindowHandle` to close
+    // it. `WindowConfig` is the (title, size) shape the author fills in. These are
+    // commonly used, stable, and unambiguous, so they belong in the default set.
+    pub use crate::{WindowBuilder, WindowConfig, WindowHandle, window};
     // The declarative view-fragment entry point (§21.5): a small local `ui! { … }`
     // fragment lowers, at Rust compile time, to a static `BuildCx` builder closure.
     pub use crate::ui;
-    // Window, Text, List, Computed, Event, Task, Route, Theme, Color, Vec2, Rect,
+    // Text, List, Computed, Event, Task, Route, Theme, Color, Vec2, Rect,
     // Constraints and the component!/view!/routes! macros join this as their
     // subsystems land in later phases.
 }

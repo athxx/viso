@@ -71,4 +71,4 @@ pub use virtual_list::{
     reconcile, set_item_count,
 };
 pub use viso_render::{Border, LineJoin, PathCmd, Point, Rect, Rgba, Stroke, TextureId};
-pub use window::{WindowConfig, WindowOpenRequest};
+pub use window::{WindowConfig, WindowIdSlot, WindowOpenRequest};
