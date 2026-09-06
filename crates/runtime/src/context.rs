@@ -6,6 +6,8 @@
 //! `viso-ui` `AppCx` to give the user a full application context; the runtime
 //! itself sees only this.
 
+use std::time::Duration;
+
 use viso_platform::{PlatformApp, PlatformError, RawWindowHandle, WindowConfig, WindowId};
 
 /// Capabilities available to a frame driver for the duration of one callback.
@@ -26,16 +28,26 @@ pub struct RuntimeCx<'a> {
     /// its bookkeeping, so a write that happens outside a running frame (e.g.
     /// from an input handler) still schedules exactly one frame to flush it.
     state_dirty_requested: bool,
+    /// Real time elapsed since the previous frame ran, sampled from the
+    /// scheduler's [`crate::clock::FrameClock`] at the head of this frame. The
+    /// driver reads it through [`frame_delta`](Self::frame_delta) to advance
+    /// time-based animations by exactly the elapsed interval. The very first
+    /// frame has no predecessor, so its delta is [`Duration::ZERO`].
+    frame_delta: Duration,
 }
 
 impl<'a> RuntimeCx<'a> {
-    /// Wrap a live platform app. Called by the scheduler per callback.
-    pub(crate) fn new(app: &'a mut dyn PlatformApp) -> Self {
+    /// Wrap a live platform app, tagging the frame with the time elapsed since
+    /// the previous frame. Called by the scheduler per callback; `delta` is
+    /// [`Duration::ZERO`] on the first frame (no predecessor to diff against)
+    /// and for callbacks that run no frame body (launch, input routing).
+    pub(crate) fn new(app: &'a mut dyn PlatformApp, delta: Duration) -> Self {
         Self {
             app,
             windows_created: 0,
             first_window: None,
             state_dirty_requested: false,
+            frame_delta: delta,
         }
     }
 
@@ -52,6 +64,13 @@ impl<'a> RuntimeCx<'a> {
     /// Whether the driver requested a state flush during this callback.
     pub(crate) fn state_dirty_requested(&self) -> bool {
         self.state_dirty_requested
+    }
+
+    /// Real time elapsed since the previous frame, for advancing time-based
+    /// animation. [`Duration::ZERO`] on the first frame and on non-frame
+    /// callbacks (launch, input), so a tick against it is a well-defined no-op.
+    pub fn frame_delta(&self) -> Duration {
+        self.frame_delta
     }
 
     /// Create a native window; returns its stable id.
@@ -107,7 +126,7 @@ mod tests {
     #[test]
     fn first_window_records_the_first_created_window() {
         let mut app = HeadlessApp::scripted(vec![]);
-        let mut cx = RuntimeCx::new(&mut app);
+        let mut cx = RuntimeCx::new(&mut app, Duration::ZERO);
         assert_eq!(cx.first_window(), None, "no window yet");
 
         let a = cx.create_window(WindowConfig::default()).unwrap();
@@ -119,5 +138,21 @@ mod tests {
             "first_window stays the first created, not the latest"
         );
         assert_eq!(cx.windows_created(), 2);
+    }
+
+    #[test]
+    fn frame_delta_is_the_value_the_scheduler_tagged() {
+        let mut app = HeadlessApp::scripted(vec![]);
+        let dt = Duration::from_millis(16);
+        let cx = RuntimeCx::new(&mut app, dt);
+        assert_eq!(cx.frame_delta(), dt, "the reader returns the tagged delta");
+
+        let mut app = HeadlessApp::scripted(vec![]);
+        let cx = RuntimeCx::new(&mut app, Duration::ZERO);
+        assert_eq!(
+            cx.frame_delta(),
+            Duration::ZERO,
+            "a zero delta (first frame / non-frame callback) reads back as zero"
+        );
     }
 }
