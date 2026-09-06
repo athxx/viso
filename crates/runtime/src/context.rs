@@ -6,7 +6,7 @@
 //! `viso-ui` `AppCx` to give the user a full application context; the runtime
 //! itself sees only this.
 
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use viso_platform::{PlatformApp, PlatformError, RawWindowHandle, WindowConfig, WindowId};
 
@@ -34,20 +34,31 @@ pub struct RuntimeCx<'a> {
     /// time-based animations by exactly the elapsed interval. The very first
     /// frame has no predecessor, so its delta is [`Duration::ZERO`].
     frame_delta: Duration,
+    /// The wall-clock instant sampled at the head of this frame, from the
+    /// scheduler's [`crate::clock::FrameClock`]. The driver reads it through
+    /// [`frame_now`](Self::frame_now) to fire one-shot timers whose deadline the
+    /// frame has crossed — using the *same* sampled instant that produced
+    /// [`frame_delta`](Self::frame_delta), so timer expiry and animation advance
+    /// agree on "now".
+    frame_now: Instant,
 }
 
 impl<'a> RuntimeCx<'a> {
     /// Wrap a live platform app, tagging the frame with the time elapsed since
-    /// the previous frame. Called by the scheduler per callback; `delta` is
-    /// [`Duration::ZERO`] on the first frame (no predecessor to diff against)
-    /// and for callbacks that run no frame body (launch, input routing).
-    pub(crate) fn new(app: &'a mut dyn PlatformApp, delta: Duration) -> Self {
+    /// the previous frame (`delta`) and the instant sampled at its head (`now`).
+    /// Called by the scheduler per callback; `delta` is [`Duration::ZERO`] on the
+    /// first frame (no predecessor to diff against) and for callbacks that run no
+    /// frame body (launch, input routing), while `now` is always the scheduler
+    /// clock's reading for this callback — so a driver can fire timers against
+    /// the same instant that produced `delta`.
+    pub(crate) fn new(app: &'a mut dyn PlatformApp, delta: Duration, now: Instant) -> Self {
         Self {
             app,
             windows_created: 0,
             first_window: None,
             state_dirty_requested: false,
             frame_delta: delta,
+            frame_now: now,
         }
     }
 
@@ -71,6 +82,16 @@ impl<'a> RuntimeCx<'a> {
     /// callbacks (launch, input), so a tick against it is a well-defined no-op.
     pub fn frame_delta(&self) -> Duration {
         self.frame_delta
+    }
+
+    /// The instant sampled at the head of this frame, from the scheduler clock.
+    /// The driver fires one-shot timers against it (the deadline it compares to
+    /// `now`), so timer expiry uses the same reading that produced
+    /// [`frame_delta`](Self::frame_delta) — never a fresh `Instant::now()`,
+    /// which would drift from the frame's notion of time and break the headless
+    /// [`ManualClock`](crate::clock::ManualClock) determinism.
+    pub fn frame_now(&self) -> Instant {
+        self.frame_now
     }
 
     /// Create a native window; returns its stable id.
@@ -126,7 +147,7 @@ mod tests {
     #[test]
     fn first_window_records_the_first_created_window() {
         let mut app = HeadlessApp::scripted(vec![]);
-        let mut cx = RuntimeCx::new(&mut app, Duration::ZERO);
+        let mut cx = RuntimeCx::new(&mut app, Duration::ZERO, Instant::now());
         assert_eq!(cx.first_window(), None, "no window yet");
 
         let a = cx.create_window(WindowConfig::default()).unwrap();
@@ -144,11 +165,13 @@ mod tests {
     fn frame_delta_is_the_value_the_scheduler_tagged() {
         let mut app = HeadlessApp::scripted(vec![]);
         let dt = Duration::from_millis(16);
-        let cx = RuntimeCx::new(&mut app, dt);
+        let now = Instant::now();
+        let cx = RuntimeCx::new(&mut app, dt, now);
         assert_eq!(cx.frame_delta(), dt, "the reader returns the tagged delta");
+        assert_eq!(cx.frame_now(), now, "the reader returns the tagged instant");
 
         let mut app = HeadlessApp::scripted(vec![]);
-        let cx = RuntimeCx::new(&mut app, Duration::ZERO);
+        let cx = RuntimeCx::new(&mut app, Duration::ZERO, now);
         assert_eq!(
             cx.frame_delta(),
             Duration::ZERO,

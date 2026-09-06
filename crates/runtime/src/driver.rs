@@ -8,6 +8,8 @@
 //! `Application` and its `AppCx`). The scheduler is generic over this trait, so
 //! the runtime orchestrates frames while staying UI-agnostic.
 
+use std::time::Instant;
+
 use viso_platform::WindowId;
 
 use crate::context::RuntimeCx;
@@ -42,5 +44,17 @@ pub trait FrameDriver {
     /// true, the scheduler keeps requesting redraw beats even with no input.
     fn wants_animation(&self) -> bool {
         false
+    }
+
+    /// The earliest instant at which a one-shot UI timer is due, or `None` when
+    /// the driver holds no live timer.
+    ///
+    /// Consulted only when the driver is otherwise idle: the scheduler turns a
+    /// `Some(deadline)` into [`ControlFlow::WaitUntil`](viso_platform::ControlFlow::WaitUntil),
+    /// so the pump blocks until the nearest timer is due rather than polling.
+    /// This is what keeps a waiting toast at zero frames — unlike animation,
+    /// which spins a beat every frame, a timer costs nothing until it fires.
+    fn next_timer_deadline(&self) -> Option<Instant> {
+        None
     }
 }
