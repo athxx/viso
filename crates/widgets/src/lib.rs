@@ -26,11 +26,12 @@ pub mod text;
 
 pub use containers::{View, ViewStyle, view};
 pub use controls::{
-    Button, ButtonStyle, CheckBox, CheckBoxStyle, NavHandle, NavHandleSlot, NavigationStack,
-    NavigationStackStyle, Popup, PopupHandle, PopupHandleSlot, PopupStyle, RadioGroup, RadioStyle,
-    Slider, SliderStyle, Splitter, SplitterStyle, Tabs, TabsStyle, TextInput, TextInputStyle,
-    Toggle, ToggleStyle, button, checkbox, navigation_stack, popup, radio_group, slider, splitter,
-    tabs, text_input, toggle,
+    Button, ButtonStyle, CheckBox, CheckBoxStyle, Modal, ModalHandle, ModalHandleSlot, ModalStyle,
+    NavHandle, NavHandleSlot, NavigationStack, NavigationStackStyle, Popup, PopupHandle,
+    PopupHandleSlot, PopupStyle, RadioGroup, RadioStyle, Slider, SliderStyle, Splitter,
+    SplitterStyle, Tabs, TabsStyle, TextInput, TextInputStyle, Toggle, ToggleStyle, button,
+    checkbox, modal, navigation_stack, popup, radio_group, slider, splitter, tabs, text_input,
+    toggle,
 };
 pub use grid::{Grid, GridViewStyle, grid};
 pub use icon::{Icon, IconStyle, icon};

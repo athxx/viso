@@ -163,6 +163,15 @@ pub struct EventCx<'a> {
     /// records `(panel, hidden)` pairs to swap which panel shows. Empty (and
     /// allocation-free) for the overwhelmingly common dispatch that shows nothing.
     hidden_requests: Vec<(NodeId, bool)>,
+    /// The node that holds focus at the moment this dispatch began, lent by value
+    /// from the node store's focus slot so a handler can read it via
+    /// [`EventCx::focused`] without the cx holding the store. A `Copy` snapshot,
+    /// not a live view: a `request_focus` this same dispatch does not change it
+    /// (the router applies focus after the handler returns). `None` on the
+    /// state-only [`__new`](Self::__new) path, and on any dispatch where nothing
+    /// was focused. A modal reads it on open to remember where to send focus back
+    /// when it closes (the WAI-ARIA dialog focus-restore contract).
+    focused: Option<NodeId>,
 }
 
 impl<'a> EventCx<'a> {
@@ -183,6 +192,7 @@ impl<'a> EventCx<'a> {
             stop: false,
             edits: Vec::new(),
             hidden_requests: Vec::new(),
+            focused: None,
         }
     }
 
@@ -207,6 +217,7 @@ impl<'a> EventCx<'a> {
             stop: false,
             edits: Vec::new(),
             hidden_requests: Vec::new(),
+            focused: None,
         }
     }
 
@@ -230,6 +241,7 @@ impl<'a> EventCx<'a> {
             stop: false,
             edits: Vec::new(),
             hidden_requests: Vec::new(),
+            focused: None,
         }
     }
 
@@ -253,6 +265,7 @@ impl<'a> EventCx<'a> {
             stop: false,
             edits: Vec::new(),
             hidden_requests: Vec::new(),
+            focused: None,
         }
     }
 
@@ -291,6 +304,27 @@ impl<'a> EventCx<'a> {
     #[inline]
     pub fn ime(&self) -> Option<&ImeEvent> {
         self.ime
+    }
+
+    /// The node that held focus when this dispatch began, or `None` if nothing
+    /// was focused (or on the state-only test path). A `Copy` snapshot taken
+    /// before the handler runs: a [`request_focus`](Self::request_focus) made in
+    /// this same dispatch does not change what this returns, because the router
+    /// applies the focus move only after the handler returns. A modal reads this
+    /// on open to remember where focus was, so it can send focus back there when
+    /// it closes.
+    #[inline]
+    pub fn focused(&self) -> Option<NodeId> {
+        self.focused
+    }
+
+    /// Lend the current focus slot into the cx so a handler can read it via
+    /// [`focused`](Self::focused). The router calls this right after constructing
+    /// the cx for a real dispatch; the state-only paths leave it `None`.
+    #[doc(hidden)]
+    #[inline]
+    pub fn __set_focused(&mut self, focused: Option<NodeId>) {
+        self.focused = focused;
     }
 
     /// Request that focus move to `id` after this handler returns. The router
@@ -527,6 +561,58 @@ mod tests {
         let mut cx = EventCx::__new(&mut states, &bindings);
         cx.clear_focus();
         assert_eq!(cx.__take_focus_request(), Some(None));
+    }
+
+    #[test]
+    fn focused_defaults_none_and_reflects_the_router_lent_value() {
+        let (_store, id) = a_live_node();
+        let mut states = StateStore::new();
+        let bindings = BindingTable::new();
+        let mut cx = EventCx::__new(&mut states, &bindings);
+        assert_eq!(cx.focused(), None, "no focus lent in by default");
+        // The router lends the live focus slot right after constructing the cx; a
+        // handler (e.g. a modal snapshotting the pre-open focus) reads it back.
+        cx.__set_focused(Some(id));
+        assert_eq!(cx.focused(), Some(id));
+        cx.__set_focused(None);
+        assert_eq!(
+            cx.focused(),
+            None,
+            "clearing the lent value reads back None"
+        );
+    }
+
+    #[test]
+    fn set_focus_scope_records_a_deferred_scope_request() {
+        let (_store, id) = a_live_node();
+        let mut states = StateStore::new();
+        let bindings = BindingTable::new();
+        let mut cx = EventCx::__new(&mut states, &bindings);
+        assert_eq!(
+            cx.__take_focus_scope_request(),
+            None,
+            "no scope request by default"
+        );
+        cx.set_focus_scope(id);
+        assert_eq!(cx.__take_focus_scope_request(), Some(Some(id)));
+        assert_eq!(
+            cx.__take_focus_scope_request(),
+            None,
+            "taking clears the request"
+        );
+    }
+
+    #[test]
+    fn clear_focus_scope_records_a_clear_request() {
+        let mut states = StateStore::new();
+        let bindings = BindingTable::new();
+        let mut cx = EventCx::__new(&mut states, &bindings);
+        cx.clear_focus_scope();
+        assert_eq!(
+            cx.__take_focus_scope_request(),
+            Some(None),
+            "clearing the scope is a Some(None) request"
+        );
     }
 
     #[test]

@@ -374,6 +374,7 @@ fn pointer_dispatch(
     };
     let (capture, focus, scope, hidden, stop) = {
         let mut ev = EventCx::__new_pointer(states, bindings, event);
+        ev.__set_focused(store.focused());
         handler(&mut ev);
         (
             ev.__take_capture_request(),
@@ -561,6 +562,7 @@ fn key_dispatch(
     };
     let (request, stop, recorded, hidden, scope) = {
         let mut cx = EventCx::__new_key(states, bindings, ev);
+        cx.__set_focused(store.focused());
         handler(&mut cx);
         (
             cx.__take_focus_request(),
@@ -599,6 +601,7 @@ fn ime_dispatch(
     };
     let (request, stop, recorded, hidden, scope) = {
         let mut cx = EventCx::__new_ime(states, bindings, ev);
+        cx.__set_focused(store.focused());
         handler(&mut cx);
         (
             cx.__take_focus_request(),
