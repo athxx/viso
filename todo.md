@@ -749,8 +749,25 @@ TextInput ✅(单行编辑骨架,后续片见上文 deferral 清单)。全部 �
       /1024 1.27µs、fire_due/1 5.5ns、/1024 1.78µs(均线性、无 per-timer 隐藏开销)。
       稳态帧不变量取"确定性 + GPU 资源复用 + frame_stats 不变"(整帧经 HeadlessRaster 会重编码像素缓冲,
       非零 alloc);零 alloc 只断言在隔离的 `fire_due` 步。
-- [ ] **Window** —— 多顶层窗口支持。可能是小控件也可能是大 runtime 改动(per-window store/renderer/frame
-      loop)。scoping 中(Explore agent 追踪)。出验证包;每小节提交。
+- [ ] **Window** —— 完整多窗口。scope 已定(用户明确):per-window state 重构 **+** 公共 `window()`/`WindowHandle`
+      可**会话中开/关** OS 窗口 **+** 平台 close seam(`PlatformApp::close_window`,三后端 + headless,
+      `WindowHandle::close()` 可程序主动关活窗)。七提交,进行中:
+      - [x] 提交 1 平台 close seam(`PlatformApp::close_window` + 三后端 + headless 入队 `WindowClosed` +
+        `RuntimeCx::close_window` + 单测)。
+      - [x] 提交 2 `FrameDriver::on_window_closed` hook + scheduler 递减前调用(单一拆卸路径,OS 关与程序关同路)+
+        loop.rs 单测。
+      - [x] 提交 3 facade per-window state 重构(纯机械,零行为变化):`AppDriver{app,cx,windows:Vec<WindowState>}`
+        (小 N 线性 Vec 非 map,§45),run_phase 逐窗迭代,wants_animation/next_timer_deadline 跨窗 fold,
+        on_window_closed 先 `effects.cancel_all()`(cleanup then drop)再 retain 拆卸;+ `InputSample::window()`
+        accessor + `EffectStore::cancel_all()`。既有单窗测试全绿证明零行为变化。
+      - [ ] 提交 4 window-open/close 延迟 seam(viso+viso-ui):`EventCx::request_open_window`/`request_close_window`
+        + store queue/take + router drain + facade `run_phase` drain→`cx.create_window`/`cx.close_window`;headless
+        两窗集成测。
+      - [ ] 提交 5 公共 `window()`/`WindowBuilder`/`WindowHandle`/`WindowConfig`(facade 应用级句柄,非节点控件,
+        prelude 一点)+ id 回填 slot;widget 单测。
+      - [ ] 提交 6 facade 验证包(viso/tests/window_multi.rs:golden、多窗 tape、per-window 路由、a11y、alloc)+
+        **ADR 0020**(§68 多重触发:frame phase 语义 / node ownership / 公共生命周期)。
+      - [ ] 提交 7 microbench(window/open、window/close、window/fan_out/N,N∈{1,4,16})+ Cargo.toml 条目。
 
 **Tier 5 / Tier 6** —— 待做(Tier 4 收完再排)。
 
