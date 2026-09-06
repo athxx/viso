@@ -207,6 +207,30 @@ impl PlatformApp for X11App {
     fn request_redraw(&mut self, window: WindowId) {
         self.shared.borrow_mut().redraws.push_back(window);
     }
+
+    fn close_window(&mut self, window: WindowId) {
+        // Same close path as a user-driven close (the WM_DELETE_WINDOW handshake
+        // in `translate`), initiated by the app: destroy the X window and enqueue
+        // `WindowClosed` so the scheduler decrements its open-window count and the
+        // driver tears the window down through the one close path. Enqueue
+        // directly for deterministic delivery identical to the other backends.
+        // Unknown id is a no-op. We do NOT set `should_exit`: closing one window
+        // in a multi-window session must not end the pump; the scheduler's
+        // open-window gate owns exit.
+        let Some(pos) = self.windows.iter().position(|w| w.id == window) else {
+            return;
+        };
+        let closed = self.windows.remove(pos);
+        // Best-effort: ignore protocol errors from a server-side race (the window
+        // may already be gone). The queued `WindowClosed` is what the runtime acts
+        // on, regardless.
+        let _ = self.conn.destroy_window(closed.xid);
+        let _ = self.conn.flush();
+        self.shared
+            .borrow_mut()
+            .events
+            .push_back(RawEvent::WindowClosed { window });
+    }
 }
 
 impl X11App {

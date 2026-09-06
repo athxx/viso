@@ -255,6 +255,32 @@ impl PlatformApp for MacApp {
     fn request_redraw(&mut self, window: WindowId) {
         self.shared.borrow_mut().redraws.push_back(window);
     }
+
+    fn close_window(&mut self, window: WindowId) {
+        // Same close path as a user-driven close, initiated by the app: order the
+        // NSWindow out (dropping its Retained releases the OS shell) and enqueue a
+        // `WindowClosed` so the scheduler decrements its open-window count and the
+        // driver tears the window's state down through the one close path.
+        //
+        // We synthesize `WindowClosed` here rather than leaning on a
+        // `windowWillClose:` delegate callback: `-[NSWindow close]` bypasses
+        // `windowShouldClose:`, and routing every close (user- or app-driven)
+        // through this one enqueue keeps delivery deterministic and identical to
+        // the headless backend. We do NOT set `should_exit` — closing one window
+        // in a multi-window session must not terminate the pump; the scheduler's
+        // open-window gate owns the exit decision. (The Phase-1 `should_exit`
+        // shortcut in `windowShouldClose:` predates multi-window and is a
+        // single-window wart to revisit when native multi-window lands.)
+        let Some(pos) = self.windows.iter().position(|w| w.id == window) else {
+            return; // Unknown id: no-op, matching headless.
+        };
+        let closed = self.windows.remove(pos);
+        closed.window.close();
+        self.shared
+            .borrow_mut()
+            .events
+            .push_back(RawEvent::WindowClosed { window });
+    }
 }
 
 /// A native macOS window plus its retained content view and delegate.
