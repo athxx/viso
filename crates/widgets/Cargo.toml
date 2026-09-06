@@ -60,3 +60,7 @@ harness = false
 [[bench]]
 name = "scroll_build"
 harness = false
+
+[[bench]]
+name = "virtual_list_build"
+harness = false
