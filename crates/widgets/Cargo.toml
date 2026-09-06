@@ -64,3 +64,7 @@ harness = false
 [[bench]]
 name = "virtual_list_build"
 harness = false
+
+[[bench]]
+name = "grid_build"
+harness = false

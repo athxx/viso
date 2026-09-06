@@ -10,12 +10,14 @@
 //! [`text`] (Label), [`image`] (Image), and [`icon`] (Icon). Tier 2 begins the
 //! interactive controls under [`controls`] (Button, CheckBox, Toggle,
 //! RadioGroup, Slider, TextInput). Tier 3 begins the layout structures —
-//! [`scroll`] (Scroll) and the virtualized [`list`] (VirtualList).
+//! [`scroll`] (Scroll), the virtualized [`list`] (VirtualList), and the
+//! two-dimensional track [`grid`] (Grid).
 
 #![forbid(unsafe_op_in_unsafe_fn)]
 
 pub mod containers;
 pub mod controls;
+pub mod grid;
 pub mod icon;
 pub mod image;
 pub mod list;
@@ -28,6 +30,7 @@ pub use controls::{
     TextInput, TextInputStyle, Toggle, ToggleStyle, button, checkbox, radio_group, slider,
     text_input, toggle,
 };
+pub use grid::{Grid, GridViewStyle, grid};
 pub use icon::{Icon, IconStyle, icon};
 pub use image::{Image, ImageStyle, image};
 pub use list::{VirtualList, VirtualListViewStyle, virtual_list};
