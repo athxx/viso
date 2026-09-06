@@ -23,8 +23,20 @@
 //! [`Application::build`](../../viso/trait.Application.html) does for the first
 //! window, deferred until the store is ready.
 
+use std::cell::Cell;
+use std::rc::Rc;
+
 use crate::component::BuildCx;
 use crate::node::NodeId;
+
+/// The id-backfill slot a tracked open request carries: a shared cell the facade
+/// writes the new window's raw id into once it creates the OS window. A
+/// facade-level `WindowHandle` holds the *same* cell, so reading it back yields
+/// the opened window's id (and lets the handle close it later). The id is raw
+/// (`u32`) because the UI tier cannot name the platform `WindowId` (section 3.5);
+/// the facade wraps it back. `None` inside the cell means "not opened yet"; the
+/// facade fills it at the drain point.
+pub type WindowIdSlot = Rc<Cell<Option<u32>>>;
 
 /// UI-tier mirror of the platform window configuration. The UI tier cannot name
 /// the platform `WindowConfig` (section 3.5 forbids the `viso-ui -> viso-platform`
@@ -78,11 +90,19 @@ pub struct WindowOpenRequest {
     pub config: WindowConfig,
     /// Builds the new window's tree once its store exists, returning its root.
     pub build: BuildFn,
+    /// Where to write the opened window's raw id, if a facade-level handle is
+    /// tracking it. `None` for a bare `request_open_window` (no handle wanted);
+    /// `Some` when opened through `window(...).open(...)`, whose returned
+    /// `WindowHandle` shares this cell so it can read the id back and close the
+    /// window later. The facade fills it at the drain point, right after
+    /// `create_window`.
+    pub id_slot: Option<WindowIdSlot>,
 }
 
 impl WindowOpenRequest {
     /// A request to open a window configured by `config`, whose tree `build`
-    /// constructs once the facade has created the window's store.
+    /// constructs once the facade has created the window's store. Untracked: no
+    /// handle observes the resulting id.
     pub fn new(
         config: WindowConfig,
         build: impl FnOnce(&mut BuildCx) -> Option<NodeId> + 'static,
@@ -90,6 +110,22 @@ impl WindowOpenRequest {
         Self {
             config,
             build: Box::new(build),
+            id_slot: None,
+        }
+    }
+
+    /// A request whose opened window id the facade writes into `id_slot` — the
+    /// cell a facade-level `WindowHandle` shares to observe and later close the
+    /// window.
+    pub fn tracked(
+        config: WindowConfig,
+        build: impl FnOnce(&mut BuildCx) -> Option<NodeId> + 'static,
+        id_slot: WindowIdSlot,
+    ) -> Self {
+        Self {
+            config,
+            build: Box::new(build),
+            id_slot: Some(id_slot),
         }
     }
 }

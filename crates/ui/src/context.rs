@@ -19,7 +19,7 @@ use crate::node::NodeId;
 use crate::state::{StateId, StateStore, StateValue};
 use crate::text_edit::EditIntent;
 use crate::timer::TimerRequest;
-use crate::window::{WindowConfig, WindowOpenRequest};
+use crate::window::{WindowConfig, WindowIdSlot, WindowOpenRequest};
 
 macro_rules! phase_cx {
     ($(#[$m:meta])* $name:ident) => {
@@ -530,6 +530,24 @@ impl<'a> EventCx<'a> {
     ) {
         self.window_opens
             .push(WindowOpenRequest::new(config, build));
+    }
+
+    /// Record a tracked open request: identical to
+    /// [`request_open_window`](Self::request_open_window) but the facade writes
+    /// the opened window's raw id into `id_slot`, the cell a facade-level
+    /// `WindowHandle` shares so it can read the id back and close the window
+    /// later. Used by the facade's `window(...).open(...)` builder; ordinary app
+    /// code opens through that builder rather than calling this directly.
+    #[doc(hidden)]
+    #[inline]
+    pub fn request_open_window_tracked(
+        &mut self,
+        config: WindowConfig,
+        build: impl FnOnce(&mut crate::component::BuildCx) -> Option<NodeId> + 'static,
+        id_slot: WindowIdSlot,
+    ) {
+        self.window_opens
+            .push(WindowOpenRequest::tracked(config, build, id_slot));
     }
 
     /// Take the window-open requests recorded this dispatch for the router to
