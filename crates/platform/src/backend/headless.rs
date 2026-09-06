@@ -90,6 +90,11 @@ impl PlatformApp for HeadlessApp {
             }
             // Poll/Wait/WaitUntil all continue draining: there is no OS to
             // block on. `request_redraw` refills the queue via pending_redraws.
+            // A `WaitUntil(deadline)` carries no meaning here — headless has no
+            // clock to sleep against — so a test that exercises a one-shot timer
+            // crosses the deadline itself: it advances the scheduler's
+            // `ManualClock` past the deadline and enqueues a `Wakeup`/redraw,
+            // which runs a frame whose `fire_due` sees the elapsed deadline.
         }
     }
 

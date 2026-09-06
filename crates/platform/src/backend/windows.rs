@@ -14,13 +14,15 @@
 use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::rc::Rc;
+use std::time::Instant;
 
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::WindowsAndMessaging::{
-    CW_USEDEFAULT, CreateWindowExW, DefWindowProcW, DispatchMessageW, GetMessageW, MSG, PM_REMOVE,
-    PeekMessageW, PostQuitMessage, RegisterClassW, SW_SHOW, ShowWindow, TranslateMessage,
-    WINDOW_EX_STYLE, WM_CLOSE, WM_DESTROY, WM_PAINT, WM_SIZE, WNDCLASSW, WS_OVERLAPPEDWINDOW,
+    CW_USEDEFAULT, CreateWindowExW, DefWindowProcW, DispatchMessageW, GetMessageW, MSG,
+    MWMO_INPUTAVAILABLE, MsgWaitForMultipleObjectsEx, PM_REMOVE, PeekMessageW, PostQuitMessage,
+    QS_ALLINPUT, RegisterClassW, SW_SHOW, ShowWindow, TranslateMessage, WINDOW_EX_STYLE, WM_CLOSE,
+    WM_DESTROY, WM_PAINT, WM_SIZE, WNDCLASSW, WS_OVERLAPPEDWINDOW,
 };
 use windows::core::{PCWSTR, w};
 
@@ -154,21 +156,48 @@ impl PlatformApp for WinApp {
                 continue;
             }
 
-            let block = matches!(flow, ControlFlow::Wait | ControlFlow::WaitUntil(_));
             let mut msg = MSG::default();
             // SAFETY: standard Win32 message pump.
             unsafe {
-                if block {
-                    if !GetMessageW(&mut msg, None, 0, 0).as_bool() {
-                        break; // WM_QUIT
+                match flow {
+                    // A live one-shot timer: block only until its deadline, then
+                    // wake to fire it. `MsgWaitForMultipleObjectsEx` sleeps up to
+                    // `dwMilliseconds` or until input arrives; on timeout with no
+                    // message drained we synthesize a `Wakeup` beat so the runtime
+                    // runs one frame and fires the due timer. This keeps a waiting
+                    // toast at zero frames until exactly its deadline.
+                    ControlFlow::WaitUntil(deadline) => {
+                        let ms = deadline
+                            .saturating_duration_since(Instant::now())
+                            .as_millis()
+                            .min(u32::MAX as u128) as u32;
+                        MsgWaitForMultipleObjectsEx(None, ms, QS_ALLINPUT, MWMO_INPUTAVAILABLE);
+                        if PeekMessageW(&mut msg, None, 0, 0, PM_REMOVE).as_bool() {
+                            let _ = TranslateMessage(&msg);
+                            DispatchMessageW(&msg);
+                        } else {
+                            // Timed out with no OS event: the deadline arrived.
+                            flow = handler.handle(RawEvent::Wakeup);
+                            if flow == ControlFlow::Exit {
+                                break;
+                            }
+                        }
                     }
-                    let _ = TranslateMessage(&msg);
-                    DispatchMessageW(&msg);
-                } else if PeekMessageW(&mut msg, None, 0, 0, PM_REMOVE).as_bool() {
-                    let _ = TranslateMessage(&msg);
-                    DispatchMessageW(&msg);
-                } else {
-                    flow = ControlFlow::Wait;
+                    ControlFlow::Wait => {
+                        if !GetMessageW(&mut msg, None, 0, 0).as_bool() {
+                            break; // WM_QUIT
+                        }
+                        let _ = TranslateMessage(&msg);
+                        DispatchMessageW(&msg);
+                    }
+                    _ => {
+                        if PeekMessageW(&mut msg, None, 0, 0, PM_REMOVE).as_bool() {
+                            let _ = TranslateMessage(&msg);
+                            DispatchMessageW(&msg);
+                        } else {
+                            flow = ControlFlow::Wait;
+                        }
+                    }
                 }
             }
         }

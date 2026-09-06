@@ -4,9 +4,12 @@
 //! once, then loop pulling one event at a time with
 //! `nextEventMatchingMask:untilDate:inMode:dequeue:` and `sendEvent:`. The
 //! `untilDate` is `distantFuture` when the runtime returns [`ControlFlow::Wait`]
-//! (block, zero CPU) and `distantPast` when it returns [`ControlFlow::Poll`]
-//! (spin so the next display beat arrives promptly). This keeps the frame loop
-//! fully under Viso's control — no hidden AppKit run loop.
+//! (block, zero CPU), `distantPast` when it returns [`ControlFlow::Poll`]
+//! (spin so the next display beat arrives promptly), and the timer's remaining
+//! seconds when it returns [`ControlFlow::WaitUntil`] (block until a one-shot
+//! timer is due, then synthesize a [`RawEvent::Wakeup`] so the scheduler fires
+//! it in one frame). This keeps the frame loop fully under Viso's control — no
+//! hidden AppKit run loop.
 //!
 //! Two AppKit objects feed the pump's shared queue:
 //! - an `NSWindowDelegate` for resize/close/geometry, and
@@ -23,6 +26,7 @@ use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::rc::Rc;
+use std::time::Instant;
 
 use objc2::rc::{Retained, autoreleasepool};
 use objc2::runtime::{AnyObject, ProtocolObject, Sel};
@@ -186,10 +190,19 @@ impl PlatformApp for MacApp {
             // `distantFuture`).
             let block = matches!(flow, ControlFlow::Wait | ControlFlow::WaitUntil(_));
             let got_event = autoreleasepool(|_| {
-                let until = if block {
-                    NSDate::distantFuture()
-                } else {
-                    NSDate::distantPast()
+                let until = match flow {
+                    // A one-shot timer's deadline: block only until it is due, so
+                    // the pump wakes to fire it and otherwise spends zero CPU.
+                    // `NSDate` from the remaining seconds (clamped at zero for a
+                    // deadline already in the past, which fires on the next turn).
+                    ControlFlow::WaitUntil(deadline) => {
+                        let secs = deadline
+                            .saturating_duration_since(Instant::now())
+                            .as_secs_f64();
+                        NSDate::dateWithTimeIntervalSinceNow(secs)
+                    }
+                    ControlFlow::Wait => NSDate::distantFuture(),
+                    _ => NSDate::distantPast(),
                 };
                 // SAFETY: main-thread event pump; standard AppKit calls.
                 let event = unsafe {
@@ -211,10 +224,23 @@ impl PlatformApp for MacApp {
                     None => false,
                 }
             });
-            // Timed out (poll with no event) — if nothing is pending and we're
-            // not animating, drop to blocking on the next turn.
-            if !got_event && !block {
-                flow = ControlFlow::Wait;
+            if !got_event {
+                match flow {
+                    // A `WaitUntil` that returned no OS event means the timer
+                    // deadline elapsed: synthesize a wakeup so the scheduler runs
+                    // one frame and fires the due timer. The frame's own decision
+                    // then re-arms the next deadline (or drops to `Wait`).
+                    ControlFlow::WaitUntil(_) => {
+                        flow = handler.handle(RawEvent::Wakeup);
+                        if flow == ControlFlow::Exit {
+                            break;
+                        }
+                    }
+                    // Timed out on a poll with nothing pending and no animation:
+                    // drop to blocking on the next turn.
+                    _ if !block => flow = ControlFlow::Wait,
+                    _ => {}
+                }
             }
         }
     }
