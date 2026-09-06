@@ -40,6 +40,15 @@ pub trait FrameDriver {
     /// for each frame the scheduler decides to run.
     fn run_phase(&mut self, phase: FramePhase, cx: &mut RuntimeCx<'_>);
 
+    /// A window was closed — by the user (OS close button) or programmatically
+    /// (via [`RuntimeCx::close_window`](crate::RuntimeCx::close_window)). Both
+    /// arrive as the same [`WindowClosed`](viso_platform::RawEvent::WindowClosed)
+    /// event, so the driver tears down that window's per-window state through
+    /// this one hook. Called *before* the scheduler decrements its open-window
+    /// count, so the teardown observes the pre-decrement state. Default no-op:
+    /// a single-window driver holds no per-window state to release.
+    fn on_window_closed(&mut self, _window: WindowId) {}
+
     /// Whether the driver wants continuous animation frames right now. When
     /// true, the scheduler keeps requesting redraw beats even with no input.
     fn wants_animation(&self) -> bool {

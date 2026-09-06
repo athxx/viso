@@ -25,6 +25,8 @@ struct Log {
     geometries: u32,
     /// The `frame_delta` each frame observed, in order (one entry per frame).
     deltas: Vec<Duration>,
+    /// The windows the driver was told closed, in the order the hook fired.
+    closed: Vec<WindowId>,
 }
 
 /// A `FrameDriver` that opens one window on launch and counts every callback.
@@ -71,6 +73,10 @@ impl FrameDriver for CountingDriver {
 
     fn wants_animation(&self) -> bool {
         self.animate
+    }
+
+    fn on_window_closed(&mut self, window: WindowId) {
+        self.log.borrow_mut().closed.push(window);
     }
 }
 
@@ -267,6 +273,64 @@ fn window_closed_stops_the_loop() {
     ];
     let log = run(script, false);
 
+    assert_eq!(
+        log.geometries, 0,
+        "no event is processed after the last window closes"
+    );
+}
+
+/// A driver that opens *two* windows on launch, so the loop tracks two open
+/// windows and only exits after both close.
+struct TwoWindowDriver {
+    log: Rc<RefCell<Log>>,
+}
+
+impl FrameDriver for TwoWindowDriver {
+    fn on_launch(&mut self, cx: &mut RuntimeCx<'_>) {
+        self.log.borrow_mut().launches += 1;
+        cx.create_window(WindowConfig::default()).unwrap();
+        cx.create_window(WindowConfig::default()).unwrap();
+    }
+    fn on_geometry(&mut self, _window: WindowId, _scale: f64, _width: u32, _height: u32) {}
+    fn on_input(&mut self, _sample: InputSample) {}
+    fn run_phase(&mut self, _phase: FramePhase, _cx: &mut RuntimeCx<'_>) {}
+    fn on_window_closed(&mut self, window: WindowId) {
+        self.log.borrow_mut().closed.push(window);
+    }
+}
+
+#[test]
+fn on_window_closed_fires_per_window_and_the_last_close_exits() {
+    // Two windows open on launch. Each WindowClosed drives on_window_closed in
+    // order; the loop stays alive after the first close and exits only when the
+    // second brings open_windows to zero.
+    let log = Rc::new(RefCell::new(Log::default()));
+    let script = vec![
+        RawEvent::WindowClosed {
+            window: WindowId(1),
+        },
+        RawEvent::WindowClosed {
+            window: WindowId(2),
+        },
+        // Must never be delivered: the loop exited when the second window closed.
+        RawEvent::Resized {
+            window: WindowId(2),
+            width: 9,
+            height: 9,
+        },
+    ];
+    let app = Box::new(HeadlessApp::scripted(script));
+    let driver = TwoWindowDriver {
+        log: Rc::clone(&log),
+    };
+    Scheduler::new(app, driver).run();
+    let log = Rc::try_unwrap(log).ok().unwrap().into_inner();
+
+    assert_eq!(
+        log.closed,
+        vec![WindowId(1), WindowId(2)],
+        "the hook fires once per window, in close order"
+    );
     assert_eq!(
         log.geometries, 0,
         "no event is processed after the last window closes"

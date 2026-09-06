@@ -237,7 +237,12 @@ impl<D: FrameDriver, C: FrameClock> AppHandler for Scheduler<D, C> {
                 let _ = window;
                 let _ = accept.is_accepted();
             }
-            RawEvent::WindowClosed { .. } => {
+            RawEvent::WindowClosed { window } => {
+                // Tear the window's per-window state down *before* decrementing,
+                // so the driver's teardown observes the pre-decrement count and
+                // the exit gate (`launched && open_windows == 0`) reads the
+                // post-teardown state on the next resolve.
+                self.driver.on_window_closed(window);
                 self.open_windows = self.open_windows.saturating_sub(1);
             }
             RawEvent::Wakeup => {
