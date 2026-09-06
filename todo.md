@@ -760,9 +760,11 @@ TextInput ✅(单行编辑骨架,后续片见上文 deferral 清单)。全部 �
         (小 N 线性 Vec 非 map,§45),run_phase 逐窗迭代,wants_animation/next_timer_deadline 跨窗 fold,
         on_window_closed 先 `effects.cancel_all()`(cleanup then drop)再 retain 拆卸;+ `InputSample::window()`
         accessor + `EffectStore::cancel_all()`。既有单窗测试全绿证明零行为变化。
-      - [ ] 提交 4 window-open/close 延迟 seam(viso+viso-ui):`EventCx::request_open_window`/`request_close_window`
-        + store queue/take + router drain + facade `run_phase` drain→`cx.create_window`/`cx.close_window`;headless
-        两窗集成测。
+      - [x] 提交 4 window-open/close 延迟 seam(viso+viso-ui):`EventCx::request_open_window`/`request_close_window`
+        + store queue/take + router 三站 drain + facade `run_phase` FlushStateTransactions drain→`cx.create_window`
+        +`WindowState::open`(抽 on_launch GPU 起+build 复用路径)/`cx.close_window`(仅关,经 `WindowClosed`→单一
+        拆卸);`WindowConfig` mirror + `WindowOpenRequest`(§3.5 viso-ui 不依赖 platform);headless 两窗集成测
+        (开→2 独立 store/root、关→1、全关→loop 退)+ `DrivenApp` window_count/store_at/root_at/window_id_at。
       - [ ] 提交 5 公共 `window()`/`WindowBuilder`/`WindowHandle`/`WindowConfig`(facade 应用级句柄,非节点控件,
         prelude 一点)+ id 回填 slot;widget 单测。
       - [ ] 提交 6 facade 验证包(viso/tests/window_multi.rs:golden、多窗 tape、per-window 路由、a11y、alloc)+
