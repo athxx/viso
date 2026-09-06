@@ -10,7 +10,9 @@
 
 use std::cell::RefCell;
 use std::collections::VecDeque;
+use std::os::fd::AsRawFd;
 use std::rc::Rc;
+use std::time::Instant;
 
 use x11rb::connection::Connection;
 use x11rb::protocol::Event as XEvent;
@@ -156,18 +158,39 @@ impl PlatformApp for X11App {
                 continue;
             }
 
-            let block = matches!(flow, ControlFlow::Wait | ControlFlow::WaitUntil(_));
-            let xevent = if block {
-                self.conn.wait_for_event().ok()
-            } else {
-                match self.conn.poll_for_event() {
+            let xevent = match flow {
+                // A live one-shot timer: sleep on the X connection's fd only
+                // until the deadline, then wake to fire it. If an X event is
+                // already buffered we take it; otherwise we `poll(2)` the fd
+                // with a `deadline - now` timeout. On timeout with nothing
+                // readable we synthesize a `Wakeup` beat so the runtime runs one
+                // frame and fires the due timer — zero frames until the deadline.
+                ControlFlow::WaitUntil(deadline) => match self.conn.poll_for_event() {
+                    Ok(Some(e)) => Some(e),
+                    Ok(None) => {
+                        let ms = deadline
+                            .saturating_duration_since(Instant::now())
+                            .as_millis()
+                            .min(i32::MAX as u128) as i32;
+                        if !wait_readable(self.conn.stream().as_raw_fd(), ms) {
+                            flow = handler.handle(RawEvent::Wakeup);
+                            if flow == ControlFlow::Exit {
+                                break;
+                            }
+                        }
+                        None
+                    }
+                    Err(_) => None,
+                },
+                ControlFlow::Wait => self.conn.wait_for_event().ok(),
+                _ => match self.conn.poll_for_event() {
                     Ok(Some(e)) => Some(e),
                     Ok(None) => {
                         flow = ControlFlow::Wait;
                         None
                     }
                     Err(_) => None,
-                }
+                },
             };
             let Some(xevent) = xevent else { continue };
             self.translate(xevent);
@@ -220,6 +243,25 @@ impl X11App {
             _ => {}
         }
     }
+}
+
+/// Block until `fd` is readable or `timeout_ms` elapses, whichever comes first.
+///
+/// Returns `true` when the fd became readable (an X event is waiting), `false`
+/// on timeout (the caller's timer deadline arrived). A negative `timeout_ms`
+/// would mean "block forever" to `poll(2)`; the caller only passes a
+/// non-negative `deadline - now`, and a zero timeout returns immediately.
+fn wait_readable(fd: std::os::fd::RawFd, timeout_ms: i32) -> bool {
+    let mut pfd = libc::pollfd {
+        fd,
+        events: libc::POLLIN,
+        revents: 0,
+    };
+    // SAFETY: `pfd` is a single valid, initialized `pollfd` and we pass a count
+    // of 1, matching the pointer. `poll` only reads `fd`/`events` and writes
+    // `revents`; no memory outside `pfd` is touched.
+    let n = unsafe { libc::poll(&mut pfd, 1, timeout_ms) };
+    n > 0 && (pfd.revents & libc::POLLIN) != 0
 }
 
 /// A native X11 window.
