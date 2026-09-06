@@ -125,7 +125,7 @@ impl<D: FrameDriver, C: FrameClock> Scheduler<D, C> {
             .unwrap_or(Duration::ZERO);
         self.last_frame = Some(now);
         let (created, state_dirty) = {
-            let mut cx = RuntimeCx::new(self.app.as_mut(), delta);
+            let mut cx = RuntimeCx::new(self.app.as_mut(), delta, now);
             run_frame(&mut self.driver, &mut cx);
             (cx.windows_created(), cx.state_dirty_requested())
         };
@@ -147,7 +147,20 @@ impl<D: FrameDriver, C: FrameClock> Scheduler<D, C> {
         if self.driver.wants_animation() {
             self.reasons.add(RedrawReason::AnimationActive);
         }
-        self.reasons.decide().to_control_flow()
+        let flow = self.reasons.decide().to_control_flow();
+        // An otherwise-idle loop with a live one-shot timer must not simply block
+        // forever ([`ControlFlow::Wait`]) — it has to wake when the timer is due.
+        // Turn the driver's earliest deadline into a bounded
+        // [`ControlFlow::WaitUntil`] so the pump sleeps until exactly that instant
+        // and then wakes to fire it. Only when the decision is `Wait` (nothing
+        // else is pending, no animation): a frame is already coming under `Poll`,
+        // and the driver will fire the timer inside it, so no deadline is needed.
+        if matches!(flow, ControlFlow::Wait)
+            && let Some(deadline) = self.driver.next_timer_deadline()
+        {
+            return ControlFlow::WaitUntil(deadline);
+        }
+        flow
     }
 }
 
@@ -157,8 +170,11 @@ impl<D: FrameDriver, C: FrameClock> AppHandler for Scheduler<D, C> {
             RawEvent::AppLaunched => {
                 self.launched = true;
                 let (created, first, state_dirty) = {
-                    // Launch runs no frame body, so it carries no elapsed time.
-                    let mut cx = RuntimeCx::new(self.app.as_mut(), Duration::ZERO);
+                    // Launch runs no frame body, so it carries no elapsed time,
+                    // but it still gets the clock's reading for `frame_now` so a
+                    // driver that arms a timer at launch dates it correctly.
+                    let mut cx =
+                        RuntimeCx::new(self.app.as_mut(), Duration::ZERO, self.clock.now());
                     self.driver.on_launch(&mut cx);
                     (
                         cx.windows_created(),
@@ -354,5 +370,79 @@ fn normalize_modifiers(m: RawModifiers) -> Modifiers {
         control: m.control,
         alt: m.alt,
         logo: m.logo,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::phase::FramePhase;
+    use viso_platform::WindowId;
+    use viso_platform::backend::headless::HeadlessApp;
+
+    /// A driver that reports fixed animation/timer state, so the timer seam in
+    /// `resolve_control_flow` can be exercised without the full facade.
+    struct SeamDriver {
+        animate: bool,
+        deadline: Option<Instant>,
+    }
+
+    impl FrameDriver for SeamDriver {
+        fn on_launch(&mut self, _cx: &mut RuntimeCx<'_>) {}
+        fn on_geometry(&mut self, _window: WindowId, _scale: f64, _width: u32, _height: u32) {}
+        fn on_input(&mut self, _sample: InputSample) {}
+        fn run_phase(&mut self, _phase: FramePhase, _cx: &mut RuntimeCx<'_>) {}
+        fn wants_animation(&self) -> bool {
+            self.animate
+        }
+        fn next_timer_deadline(&self) -> Option<Instant> {
+            self.deadline
+        }
+    }
+
+    /// Build an idle scheduler (one open window, no pending reasons) over a
+    /// driver with the given animation/timer state.
+    fn idle_scheduler(animate: bool, deadline: Option<Instant>) -> Scheduler<SeamDriver> {
+        let app = Box::new(HeadlessApp::scripted(vec![]));
+        let mut sched = Scheduler::new(app, SeamDriver { animate, deadline });
+        // Pretend a window is open and launch has run, so `resolve_control_flow`
+        // does not short-circuit to `Exit`.
+        sched.launched = true;
+        sched.open_windows = 1;
+        sched
+    }
+
+    #[test]
+    fn an_idle_loop_with_a_live_timer_waits_until_its_deadline() {
+        let deadline = Instant::now() + Duration::from_secs(4);
+        let mut sched = idle_scheduler(false, Some(deadline));
+        assert_eq!(
+            sched.resolve_control_flow(),
+            ControlFlow::WaitUntil(deadline),
+            "an otherwise-idle loop blocks exactly until the earliest timer is due"
+        );
+    }
+
+    #[test]
+    fn an_idle_loop_with_no_timer_waits_indefinitely() {
+        let mut sched = idle_scheduler(false, None);
+        assert_eq!(
+            sched.resolve_control_flow(),
+            ControlFlow::Wait,
+            "with nothing pending and no timer, the loop blocks with no deadline"
+        );
+    }
+
+    #[test]
+    fn an_animating_loop_polls_even_with_a_timer() {
+        // Animation already wakes every beat, and the driver fires the timer
+        // inside that frame — so the loop polls rather than arming a deadline.
+        let deadline = Instant::now() + Duration::from_secs(4);
+        let mut sched = idle_scheduler(true, Some(deadline));
+        assert_eq!(
+            sched.resolve_control_flow(),
+            ControlFlow::Poll,
+            "an animating loop keeps polling; the timer rides its beats"
+        );
     }
 }
