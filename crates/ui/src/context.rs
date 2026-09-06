@@ -11,6 +11,7 @@
 
 use core::marker::PhantomData;
 
+use crate::animation::TranslateAnim;
 use crate::binding::BindingTable;
 use crate::component::NodeStore;
 use crate::input::{ImeEvent, KeyEvent, PointerEvent};
@@ -163,6 +164,15 @@ pub struct EventCx<'a> {
     /// records `(panel, hidden)` pairs to swap which panel shows. Empty (and
     /// allocation-free) for the overwhelmingly common dispatch that shows nothing.
     hidden_requests: Vec<(NodeId, bool)>,
+    /// Transform animations a handler asked to start this dispatch, applied by
+    /// the router to the node store's animation queue after the handler returns
+    /// — the same deferred shape as [`hidden_requests`](Self::hidden_requests),
+    /// since the cx holds neither the store's queue nor the driver's registry.
+    /// A sheet's open/close records one slide here; the router hands it to the
+    /// store queue, and the driver drains that into its live registry the next
+    /// frame, before ticking. Empty (and allocation-free) for the overwhelmingly
+    /// common dispatch that starts no animation.
+    animation_requests: Vec<TranslateAnim>,
     /// The node that holds focus at the moment this dispatch began, lent by value
     /// from the node store's focus slot so a handler can read it via
     /// [`EventCx::focused`] without the cx holding the store. A `Copy` snapshot,
@@ -192,6 +202,7 @@ impl<'a> EventCx<'a> {
             stop: false,
             edits: Vec::new(),
             hidden_requests: Vec::new(),
+            animation_requests: Vec::new(),
             focused: None,
         }
     }
@@ -217,6 +228,7 @@ impl<'a> EventCx<'a> {
             stop: false,
             edits: Vec::new(),
             hidden_requests: Vec::new(),
+            animation_requests: Vec::new(),
             focused: None,
         }
     }
@@ -241,6 +253,7 @@ impl<'a> EventCx<'a> {
             stop: false,
             edits: Vec::new(),
             hidden_requests: Vec::new(),
+            animation_requests: Vec::new(),
             focused: None,
         }
     }
@@ -265,6 +278,7 @@ impl<'a> EventCx<'a> {
             stop: false,
             edits: Vec::new(),
             hidden_requests: Vec::new(),
+            animation_requests: Vec::new(),
             focused: None,
         }
     }
@@ -405,6 +419,24 @@ impl<'a> EventCx<'a> {
     #[doc(hidden)]
     pub fn __take_hidden_requests(&mut self) -> Vec<(NodeId, bool)> {
         std::mem::take(&mut self.hidden_requests)
+    }
+
+    /// Request that a transform animation start after this handler returns.
+    /// Deferred exactly like [`set_hidden`](Self::set_hidden): the cx holds
+    /// neither the store's animation queue nor the driver's live registry, so
+    /// the router hands the recorded slides to the store queue after the handler
+    /// returns, and the driver drains that queue into its registry the next
+    /// frame (before ticking). A sheet's open/close records one slide here.
+    #[inline]
+    pub fn request_animation(&mut self, anim: TranslateAnim) {
+        self.animation_requests.push(anim);
+    }
+
+    /// Take the animations requested this dispatch for the router to enqueue on
+    /// the node store. Empty when the handler requested none.
+    #[doc(hidden)]
+    pub fn __take_animation_requests(&mut self) -> Vec<TranslateAnim> {
+        std::mem::take(&mut self.animation_requests)
     }
 
     /// Request that the pointer be captured to `id` after this handler returns.

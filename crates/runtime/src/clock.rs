@@ -10,7 +10,7 @@
 //! injectable, deterministic time source) over the coarse mechanism (a
 //! hard-coded wall clock) — animation tests are non-deterministic otherwise.
 
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 /// A source of monotonic time, sampled once at the head of each frame.
 ///
@@ -68,6 +68,48 @@ impl FrameClock for ManualClock {
     }
 }
 
+/// A deterministic clock that advances a fixed `step` on every read.
+///
+/// Where [`ManualClock`] needs the test to `advance` it between beats, this one
+/// steps itself: each `now` moves the cursor forward by `step`, so every frame
+/// the scheduler runs observes exactly that delta with no test intervention.
+/// That is what a headless *animation* test needs — the pump loops internally
+/// (a driver that `wants_animation` keeps requesting beats), and the test
+/// cannot reach in between frames to advance a manual cursor. A fixed step per
+/// frame drives a slide to completion at a known, reproducible rate.
+///
+/// The first read still yields the base instant (delta `ZERO`, matching the
+/// scheduler's first-frame contract); the step applies from the second read on.
+#[derive(Debug, Clone, Copy)]
+pub struct FixedStepClock {
+    cursor: Instant,
+    step: Duration,
+    started: bool,
+}
+
+impl FixedStepClock {
+    /// Start at `base`, advancing `step` on every read after the first.
+    pub fn new(base: Instant, step: Duration) -> Self {
+        Self {
+            cursor: base,
+            step,
+            started: false,
+        }
+    }
+}
+
+impl FrameClock for FixedStepClock {
+    #[inline]
+    fn now(&mut self) -> Instant {
+        if self.started {
+            self.cursor += self.step;
+        } else {
+            self.started = true;
+        }
+        self.cursor
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -87,6 +129,23 @@ mod tests {
         let mut clock = ManualClock::new(base);
         assert_eq!(clock.now(), base, "an un-advanced manual clock is frozen");
         assert_eq!(clock.now(), base, "repeated reads return the same cursor");
+    }
+
+    #[test]
+    fn fixed_step_clock_first_read_is_the_base_then_steps() {
+        let base = Instant::now();
+        let step = Duration::from_millis(16);
+        let mut clock = FixedStepClock::new(base, step);
+        // First read is the base, so the scheduler's first frame sees a ZERO
+        // delta (diff against the launch sample), matching the run contract.
+        assert_eq!(clock.now(), base, "the first read yields the base instant");
+        // Every read after steps by exactly `step`.
+        assert_eq!(clock.now() - base, step, "the second read steps by one dt");
+        assert_eq!(
+            clock.now() - base,
+            step * 2,
+            "each further read adds another dt"
+        );
     }
 
     #[test]
