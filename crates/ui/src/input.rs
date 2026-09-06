@@ -372,12 +372,13 @@ fn pointer_dispatch(
     let Some(mut handler) = store.take_handler(node) else {
         return Dispatched::default();
     };
-    let (capture, focus, stop) = {
+    let (capture, focus, hidden, stop) = {
         let mut ev = EventCx::__new_pointer(states, bindings, event);
         handler(&mut ev);
         (
             ev.__take_capture_request(),
             ev.__take_focus_request(),
+            ev.__take_hidden_requests(),
             ev.__stop_requested(),
         )
     };
@@ -393,6 +394,11 @@ fn pointer_dispatch(
     // key route's, so the focus-ring/semantics invalidation is shared.
     if let Some(target) = focus {
         apply_focus(store, store.focused(), target);
+    }
+    // Visibility flips from a hide/show control (Tabs panel swap): applied the
+    // same deferred way, each marking the node LAYOUT | PAINT dirty.
+    for (id, h) in hidden {
+        store.set_hidden(id, h);
     }
     Dispatched { ran: true, stop }
 }
@@ -538,19 +544,23 @@ fn key_dispatch(
     let Some(mut handler) = store.take_key_handler(node) else {
         return Dispatched::default();
     };
-    let (request, stop, recorded) = {
+    let (request, stop, recorded, hidden) = {
         let mut cx = EventCx::__new_key(states, bindings, ev);
         handler(&mut cx);
         (
             cx.__take_focus_request(),
             cx.__stop_requested(),
             cx.__take_edits(),
+            cx.__take_hidden_requests(),
         )
     };
     store.restore_key_handler(node, handler);
     queue_edits(edits, node, recorded);
     if let Some(target) = request {
         apply_focus(store, store.focused(), target);
+    }
+    for (id, h) in hidden {
+        store.set_hidden(id, h);
     }
     Dispatched { ran: true, stop }
 }
@@ -568,19 +578,23 @@ fn ime_dispatch(
     let Some(mut handler) = store.take_key_handler(node) else {
         return Dispatched::default();
     };
-    let (request, stop, recorded) = {
+    let (request, stop, recorded, hidden) = {
         let mut cx = EventCx::__new_ime(states, bindings, ev);
         handler(&mut cx);
         (
             cx.__take_focus_request(),
             cx.__stop_requested(),
             cx.__take_edits(),
+            cx.__take_hidden_requests(),
         )
     };
     store.restore_key_handler(node, handler);
     queue_edits(edits, node, recorded);
     if let Some(target) = request {
         apply_focus(store, store.focused(), target);
+    }
+    for (id, h) in hidden {
+        store.set_hidden(id, h);
     }
     Dispatched { ran: true, stop }
 }
@@ -1225,6 +1239,68 @@ mod tests {
         assert!(ran);
         assert_eq!(store.focused(), Some(root));
         assert!(store.dirty(root).contains(DirtyClass::PAINT));
+    }
+
+    #[test]
+    fn hidden_request_from_a_pointer_handler_flips_the_node_via_the_router() {
+        // A tab-strip in miniature: a click on the strip hides a panel. The
+        // handler holds no store, so it records the flip on the cx; the router
+        // applies it (marking the panel LAYOUT | PAINT) after the handler returns.
+        let mut store = NodeStore::new();
+        let mut states = StateStore::new();
+        let bindings = BindingTable::new();
+        let mut panel = None;
+        let root = {
+            let mut cx = BuildCx::new(&mut store);
+            cx.flex(
+                FlexStyle {
+                    axis: Axis::Column,
+                    ..Default::default()
+                },
+                |cx| {
+                    let strip = cx.leaf(LeafStyle {
+                        size: Size::fixed(10.0, 10.0),
+                        ..Default::default()
+                    });
+                    let p = cx.leaf(LeafStyle {
+                        size: Size::fixed(10.0, 10.0),
+                        ..Default::default()
+                    });
+                    let pid = p.id();
+                    panel = Some(pid);
+                    cx.on_pointer(strip, move |cx: &mut EventCx<'_>| cx.set_hidden(pid, true));
+                },
+            );
+            cx.root().unwrap()
+        };
+        let panel = panel.unwrap();
+        let mut scratch = Vec::new();
+        store.layout(
+            root,
+            Rect {
+                x: 0.0,
+                y: 0.0,
+                w: 10.0,
+                h: 10.0,
+            },
+            &mut scratch,
+        );
+        store.clear_dirty();
+        assert!(!store.hidden(panel), "panel starts shown");
+
+        let mut chain = Vec::new();
+        let ran = route_pointer(
+            &mut store,
+            &mut states,
+            &bindings,
+            root,
+            down(5.0, 5.0),
+            &mut chain,
+        );
+        assert!(ran);
+        assert!(store.hidden(panel), "the router applied the deferred flip");
+        assert!(store.dirty(panel).contains(DirtyClass::LAYOUT));
+        assert!(store.dirty(panel).contains(DirtyClass::PAINT));
     }
 
     fn key(k: Key) -> KeyEvent {

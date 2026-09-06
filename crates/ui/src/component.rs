@@ -216,6 +216,14 @@ pub struct NodeStore {
     /// (so a point in its padding/gap resolves to it). Flipping it to `false`
     /// makes a node pass-through without a structural change.
     hittable: Vec<bool>,
+    /// Hot: whether a node (and its subtree) is folded out of layout and paint.
+    /// Default `false` — unlike `hittable`, a node opts *in* to hiding (the
+    /// hide/show family of controls flips it on demand). A hidden node measures
+    /// to zero (contributing nothing to a parent's main-axis sum), lays out to a
+    /// zero rect, and emits no paint primitive for itself or any descendant — all
+    /// without a structural rebuild. Shared substrate for Tabs and the wider
+    /// Tier 4 hide/show family (NavigationStack/Modal/Popup/Sheet).
+    hidden: Vec<bool>,
     /// Cold: per-node pointer handler, index-aligned but mostly `None`. Read
     /// only when a node lands on a hit's dispatch chain, so it lives off the hot
     /// columns as an owned box rather than an inline fat pointer.
@@ -289,6 +297,7 @@ impl NodeStore {
         self.style.clear();
         self.measured.clear();
         self.hittable.clear();
+        self.hidden.clear();
         self.handlers.clear();
         self.focusable.clear();
         self.key_handlers.clear();
@@ -740,6 +749,28 @@ impl NodeStore {
         self.hittable[id.index() as usize] = hit;
     }
 
+    /// Whether a node is folded out of layout and paint (default `false`).
+    #[inline]
+    pub fn hidden(&self, id: NodeId) -> bool {
+        self.hidden[id.index() as usize]
+    }
+
+    /// Set whether a node (and its subtree) is folded out of layout and paint. A
+    /// live-guarded write, so a stale handle is a no-op.
+    ///
+    /// Hiding a node changes both its parent's main-axis measure sum (a hidden
+    /// subtree contributes zero) and what paints, so this marks the node
+    /// LAYOUT | PAINT dirty; the incremental passes re-measure/re-lay-out the
+    /// affected subtree and repaint. Flipping the flag needs no structural
+    /// rebuild — every panel is built once and shown or hidden on demand.
+    pub fn set_hidden(&mut self, id: NodeId, hidden: bool) {
+        if !self.arena.is_live(id) {
+            return;
+        }
+        self.hidden[id.index() as usize] = hidden;
+        self.mark_dirty(id, DirtyClass::LAYOUT | DirtyClass::PAINT);
+    }
+
     /// Attach a pointer handler to a node, replacing any prior one. A
     /// live-guarded write, so a stale handle is a no-op.
     pub fn set_pointer_handler(&mut self, id: NodeId, handler: PointerHandler) {
@@ -1135,6 +1166,7 @@ impl NodeStore {
             self.style[i] = style;
             self.measured[i] = Measured::default();
             self.hittable[i] = true;
+            self.hidden[i] = false;
             self.handlers[i] = None;
             self.focusable[i] = false;
             self.key_handlers[i] = None;
@@ -1166,6 +1198,7 @@ impl NodeStore {
             self.style.push(style);
             self.measured.push(Measured::default());
             self.hittable.push(true);
+            self.hidden.push(false);
             self.handlers.push(None);
             self.focusable.push(false);
             self.key_handlers.push(None);
@@ -1493,6 +1526,11 @@ impl LayoutTree for NodeStore {
         self.content_payload[index as usize]
             .as_ref()
             .map(|c| c.natural())
+    }
+
+    #[inline]
+    fn hidden(&self, index: u32) -> bool {
+        self.hidden[index as usize]
     }
 }
 
@@ -1849,6 +1887,16 @@ impl<'a> BuildCx<'a> {
     /// router's job; this only declares the node eligible.
     pub fn focusable(&mut self, handle: Handle, focusable: bool) -> Handle {
         self.store.set_focusable(handle.id, focusable);
+        handle
+    }
+
+    /// Mark an already-declared node hidden (default: shown), folding it and its
+    /// subtree out of layout and paint without a structural rebuild. Returns the
+    /// handle so authoring chains inline. A hide/show control builds every panel
+    /// once and hides all but the selected one here; the input router flips the
+    /// flag at runtime via [`EventCx::set_hidden`].
+    pub fn set_hidden(&mut self, handle: Handle, hidden: bool) -> Handle {
+        self.store.set_hidden(handle.id, hidden);
         handle
     }
 
@@ -2288,6 +2336,56 @@ mod tests {
         assert!(store.focusable(id));
         store.set_focusable(id, false);
         assert!(!store.focusable(id));
+    }
+
+    #[test]
+    fn a_fresh_node_is_not_hidden() {
+        let mut store = NodeStore::new();
+        let id = {
+            let mut cx = BuildCx::new(&mut store);
+            cx.leaf(LeafStyle::default()).id()
+        };
+        assert!(!store.hidden(id), "hiding is opt-in, default false");
+    }
+
+    #[test]
+    fn set_hidden_round_trips_and_marks_layout_and_paint() {
+        let mut store = NodeStore::new();
+        let id = {
+            let mut cx = BuildCx::new(&mut store);
+            cx.leaf(LeafStyle::default()).id()
+        };
+        store.clear_dirty();
+        store.set_hidden(id, true);
+        assert!(store.hidden(id));
+        let d = store.dirty(id);
+        assert!(
+            d.contains(DirtyClass::LAYOUT),
+            "hiding re-lays-out the parent"
+        );
+        assert!(d.contains(DirtyClass::PAINT), "hiding repaints");
+        assert!(
+            !d.contains(DirtyClass::MEASURE),
+            "a hidden node's own box request is unchanged; only the sum shifts"
+        );
+        store.set_hidden(id, false);
+        assert!(!store.hidden(id));
+    }
+
+    #[test]
+    fn set_hidden_guards_stale_handles() {
+        let mut store = NodeStore::new();
+        let id = {
+            let mut cx = BuildCx::new(&mut store);
+            cx.leaf(LeafStyle::default()).id()
+        };
+        store.clear();
+        store.set_hidden(id, true); // dead handle: no-op, no panic
+        let reused = {
+            let mut cx = BuildCx::new(&mut store);
+            cx.leaf(LeafStyle::default()).id()
+        };
+        assert!(!store.hidden(reused), "alloc defaults hidden to false");
     }
 
     #[test]

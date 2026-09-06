@@ -351,6 +351,10 @@ pub trait LayoutTree {
     /// content. A `Fit`/`Fill` leaf axis resolves against this; a `None` leaf
     /// measures to `0` on both axes (a bare layout leaf, the prior behavior).
     fn content_natural(&self, index: u32) -> Option<Vec2>;
+    /// Whether a node (and its subtree) is folded out of layout. A hidden node
+    /// measures to zero on both axes and lays out to a zero rect, contributing
+    /// nothing to a parent's main-axis sum, without a structural rebuild.
+    fn hidden(&self, index: u32) -> bool;
 }
 
 /// Bottom-up measure pass: compute every node's natural size.
@@ -363,6 +367,13 @@ pub trait LayoutTree {
 /// before their parent reads them. `scratch` is a reusable child-id buffer so
 /// the walk allocates nothing per node.
 pub fn measure(tree: &mut impl LayoutTree, root: u32, scratch: &mut Vec<u32>) {
+    // A hidden subtree folds out of layout: it measures to zero (contributing
+    // nothing to a parent's main-axis sum) and its children are never walked, so
+    // it reserves no scratch and does not recurse.
+    if tree.hidden(root) {
+        tree.set_measured(root, Measured { w: 0.0, h: 0.0 });
+        return;
+    }
     let start = scratch.len();
     tree.children(root, scratch);
     let child_count = scratch.len() - start;
@@ -506,6 +517,22 @@ pub fn measure(tree: &mut impl LayoutTree, root: u32, scratch: &mut Vec<u32>) {
 /// laid recursively into the boxes computed here. `scratch` is a reusable
 /// child-id buffer.
 pub fn layout(tree: &mut impl LayoutTree, root: u32, bounds: Rect, scratch: &mut Vec<u32>) {
+    // A hidden subtree lays out to a zero rect at the parent-assigned origin and
+    // its children are never placed — it measured to zero, so the parent already
+    // gave it a zero-extent slot; short-circuiting here also spares the whole
+    // subtree's layout recursion.
+    if tree.hidden(root) {
+        tree.set_bounds(
+            root,
+            Rect {
+                x: bounds.x,
+                y: bounds.y,
+                w: 0.0,
+                h: 0.0,
+            },
+        );
+        return;
+    }
     tree.set_bounds(root, bounds);
 
     let (axis, gap, padding, align) = match tree.input(root) {
@@ -1214,5 +1241,101 @@ mod tests {
             cap,
             "shared layout scratch must not grow per frame"
         );
+    }
+
+    #[test]
+    fn a_hidden_subtree_measures_zero_and_contributes_nothing_to_the_parent() {
+        use crate::component::{BuildCx, FlexStyle, LeafStyle, NodeStore};
+        use crate::style::BoxStyle;
+
+        // A row of two 40x40 leaves. Hiding the second must fold it out of the
+        // row's main-axis sum: the row measures to one leaf, not two.
+        let mut store = NodeStore::new();
+        let mut hidden_leaf = None;
+        let root = {
+            let mut cx = BuildCx::new(&mut store);
+            cx.flex(
+                FlexStyle {
+                    axis: Axis::Row,
+                    ..Default::default()
+                },
+                |cx| {
+                    cx.leaf(LeafStyle {
+                        size: Size::fixed(40.0, 40.0),
+                        style: BoxStyle::NONE,
+                    });
+                    let h = cx.leaf(LeafStyle {
+                        size: Size::fixed(40.0, 40.0),
+                        style: BoxStyle::NONE,
+                    });
+                    hidden_leaf = Some(h.id());
+                },
+            );
+            cx.root().unwrap()
+        };
+        let hidden_leaf = hidden_leaf.unwrap();
+        let mut scratch = Vec::new();
+
+        // Shown: the row's natural main extent spans both leaves.
+        measure(&mut store, root.index(), &mut scratch);
+        assert_eq!(LayoutTree::measured(&store, root.index()).w, 80.0);
+
+        // Hide the second leaf: it measures to zero and drops out of the sum.
+        store.set_hidden(hidden_leaf, true);
+        measure(&mut store, root.index(), &mut scratch);
+        assert_eq!(
+            LayoutTree::measured(&store, hidden_leaf.index()),
+            Measured { w: 0.0, h: 0.0 },
+            "a hidden subtree measures to zero"
+        );
+        assert_eq!(
+            LayoutTree::measured(&store, root.index()).w,
+            40.0,
+            "the hidden leaf contributes nothing to the row's main sum"
+        );
+    }
+
+    #[test]
+    fn a_hidden_fill_subtree_lays_out_to_a_zero_rect_without_panicking() {
+        use crate::component::{BuildCx, FlexStyle, LeafStyle, NodeStore};
+        use crate::style::BoxStyle;
+
+        // A column with a single fill leaf. Hidden, its layout must early-return
+        // to a zero rect at the parent origin — never dividing free space among
+        // zero visible weights.
+        let mut store = NodeStore::new();
+        let mut fill_leaf = None;
+        let root = {
+            let mut cx = BuildCx::new(&mut store);
+            cx.flex(
+                FlexStyle {
+                    axis: Axis::Column,
+                    ..Default::default()
+                },
+                |cx| {
+                    let h = cx.leaf(LeafStyle {
+                        size: Size::fill(),
+                        style: BoxStyle::NONE,
+                    });
+                    fill_leaf = Some(h.id());
+                },
+            );
+            cx.root().unwrap()
+        };
+        let fill_leaf = fill_leaf.unwrap();
+        store.set_hidden(fill_leaf, true);
+
+        let mut scratch = Vec::new();
+        measure(&mut store, root.index(), &mut scratch);
+        layout(
+            &mut store,
+            root.index(),
+            surface_local(100.0, 100.0),
+            &mut scratch,
+        );
+
+        let b = store.bounds(fill_leaf);
+        assert_eq!(b.w, 0.0);
+        assert_eq!(b.h, 0.0);
     }
 }
