@@ -372,7 +372,7 @@ fn pointer_dispatch(
     let Some(mut handler) = store.take_handler(node) else {
         return Dispatched::default();
     };
-    let (capture, focus, scope, hidden, anims, timers, stop) = {
+    let (capture, focus, scope, hidden, anims, timers, opens, closes, stop) = {
         let mut ev = EventCx::__new_pointer(states, bindings, event);
         ev.__set_focused(store.focused());
         handler(&mut ev);
@@ -383,6 +383,8 @@ fn pointer_dispatch(
             ev.__take_hidden_requests(),
             ev.__take_animation_requests(),
             ev.__take_timer_requests(),
+            ev.__take_window_opens(),
+            ev.__take_window_closes(),
             ev.__stop_requested(),
         )
     };
@@ -421,6 +423,18 @@ fn pointer_dispatch(
     // frame clock, so it only forwards the request.
     for req in timers {
         store.queue_timer(req);
+    }
+    // Window-open requests a handler produced (a menu item opening a new window):
+    // queued the same deferred way, drained by the facade next frame — where it
+    // holds a scheduling context — to create the OS window and build its tree.
+    // The router holds no platform seam, so it only forwards the request.
+    for req in opens {
+        store.queue_window_open(req);
+    }
+    // Window-close requests (raw ids): queued the same deferred way, drained by
+    // the facade next frame to ask the platform to close each window.
+    for id in closes {
+        store.queue_window_close(id);
     }
     Dispatched { ran: true, stop }
 }
@@ -575,7 +589,7 @@ fn key_dispatch(
     let Some(mut handler) = store.take_key_handler(node) else {
         return Dispatched::default();
     };
-    let (request, stop, recorded, hidden, scope, anims, timers) = {
+    let (request, stop, recorded, hidden, scope, anims, timers, opens, closes) = {
         let mut cx = EventCx::__new_key(states, bindings, ev);
         cx.__set_focused(store.focused());
         handler(&mut cx);
@@ -587,6 +601,8 @@ fn key_dispatch(
             cx.__take_focus_scope_request(),
             cx.__take_animation_requests(),
             cx.__take_timer_requests(),
+            cx.__take_window_opens(),
+            cx.__take_window_closes(),
         )
     };
     store.restore_key_handler(node, handler);
@@ -609,6 +625,12 @@ fn key_dispatch(
     // frame clock, so it only forwards the request.
     for req in timers {
         store.queue_timer(req);
+    }
+    for req in opens {
+        store.queue_window_open(req);
+    }
+    for id in closes {
+        store.queue_window_close(id);
     }
     Dispatched { ran: true, stop }
 }
@@ -626,7 +648,7 @@ fn ime_dispatch(
     let Some(mut handler) = store.take_key_handler(node) else {
         return Dispatched::default();
     };
-    let (request, stop, recorded, hidden, scope, anims, timers) = {
+    let (request, stop, recorded, hidden, scope, anims, timers, opens, closes) = {
         let mut cx = EventCx::__new_ime(states, bindings, ev);
         cx.__set_focused(store.focused());
         handler(&mut cx);
@@ -638,6 +660,8 @@ fn ime_dispatch(
             cx.__take_focus_scope_request(),
             cx.__take_animation_requests(),
             cx.__take_timer_requests(),
+            cx.__take_window_opens(),
+            cx.__take_window_closes(),
         )
     };
     store.restore_key_handler(node, handler);
@@ -660,6 +684,12 @@ fn ime_dispatch(
     // frame clock, so it only forwards the request.
     for req in timers {
         store.queue_timer(req);
+    }
+    for req in opens {
+        store.queue_window_open(req);
+    }
+    for id in closes {
+        store.queue_window_close(id);
     }
     Dispatched { ran: true, stop }
 }

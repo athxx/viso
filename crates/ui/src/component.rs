@@ -25,6 +25,7 @@ use crate::state::{StateId, StateStore, StateValue};
 use crate::style::{BoxStyle, StyleId};
 use crate::timer::TimerRequest;
 use crate::token::Theme;
+use crate::window::WindowOpenRequest;
 use viso_render::{PathCmd, Rect, Rgba, Stroke, TextureId};
 
 /// The application entry into the tree: a component declares its children into
@@ -321,6 +322,21 @@ pub struct NodeStore {
     /// frame's `now`). Empty and allocation-free in the overwhelmingly common
     /// frame that arms no timer; the same deferral the animation queue uses.
     timer_requests: Vec<TimerRequest>,
+    /// Cold, transient handoff buffer (not index-aligned): window-open requests a
+    /// handler produced this frame, sitting here between the router (which drains
+    /// them off the [`EventCx`](crate::context::EventCx) after a dispatch and
+    /// enqueues them via [`queue_window_open`](Self::queue_window_open)) and the
+    /// facade (which drains this via [`take_window_opens`](Self::take_window_opens)
+    /// to create the OS window and build its store). Empty and allocation-free in
+    /// the overwhelmingly common frame that opens no window; the same deferral the
+    /// animation and timer queues use.
+    window_opens: Vec<WindowOpenRequest>,
+    /// Cold, transient handoff buffer (not index-aligned): raw ids of windows a
+    /// handler asked to close this frame, sitting here between the router and the
+    /// facade (which drains this via [`take_window_closes`](Self::take_window_closes)
+    /// and asks the platform to close each). Empty and allocation-free in the
+    /// overwhelmingly common frame that closes no window.
+    window_closes: Vec<u32>,
 }
 
 impl NodeStore {
@@ -358,6 +374,8 @@ impl NodeStore {
         self.text_request.clear();
         self.animation_requests.clear();
         self.timer_requests.clear();
+        self.window_opens.clear();
+        self.window_closes.clear();
         self.focused = None;
         self.capture = None;
         self.focus_scope = None;
@@ -877,6 +895,46 @@ impl NodeStore {
     pub fn take_timer_requests(&mut self, out: &mut Vec<TimerRequest>) {
         out.clear();
         out.append(&mut self.timer_requests);
+    }
+
+    /// Enqueue a window-open request the router drained off an
+    /// [`EventCx`](crate::context::EventCx) this frame. It sits in the store's
+    /// transient handoff buffer until the facade drains it with
+    /// [`take_window_opens`](Self::take_window_opens) — where it holds a
+    /// scheduling context — to create the OS window and build its tree. A cold
+    /// path: it runs only when a handler opens a window, not per frame.
+    #[inline]
+    pub fn queue_window_open(&mut self, req: WindowOpenRequest) {
+        self.window_opens.push(req);
+    }
+
+    /// Move every queued window-open request out into `out`, clearing the buffer.
+    /// The facade calls this each frame and opens a window per request. `out` is
+    /// cleared first; the queue is not index-aligned, so this is a flat move with
+    /// no per-node scan — empty and allocation-free in the common frame that
+    /// opened no window.
+    pub fn take_window_opens(&mut self, out: &mut Vec<WindowOpenRequest>) {
+        out.clear();
+        out.append(&mut self.window_opens);
+    }
+
+    /// Enqueue a window-close request (a raw window id) the router drained off an
+    /// [`EventCx`](crate::context::EventCx) this frame. It sits in the store's
+    /// transient handoff buffer until the facade drains it with
+    /// [`take_window_closes`](Self::take_window_closes) and asks the platform to
+    /// close that window. A cold path: it runs only when a handler closes a
+    /// window, not per frame.
+    #[inline]
+    pub fn queue_window_close(&mut self, window: u32) {
+        self.window_closes.push(window);
+    }
+
+    /// Move every queued window-close id out into `out`, clearing the buffer. The
+    /// facade calls this each frame and closes a window per id. `out` is cleared
+    /// first; empty and allocation-free in the common frame that closed no window.
+    pub fn take_window_closes(&mut self, out: &mut Vec<u32>) {
+        out.clear();
+        out.append(&mut self.window_closes);
     }
 
     /// A node's current pending invalidation set.

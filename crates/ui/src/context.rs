@@ -19,6 +19,7 @@ use crate::node::NodeId;
 use crate::state::{StateId, StateStore, StateValue};
 use crate::text_edit::EditIntent;
 use crate::timer::TimerRequest;
+use crate::window::{WindowConfig, WindowOpenRequest};
 
 macro_rules! phase_cx {
     ($(#[$m:meta])* $name:ident) => {
@@ -183,6 +184,25 @@ pub struct EventCx<'a> {
     /// (against that frame's `now`). Empty (and allocation-free) for the
     /// overwhelmingly common dispatch that arms no timer.
     timer_requests: Vec<TimerRequest>,
+    /// Window-open requests a handler recorded this dispatch, applied by the
+    /// router to the node store's window queue after the handler returns — the
+    /// same deferred shape as [`timer_requests`](Self::timer_requests), since the
+    /// cx holds neither the store's queue nor the facade's platform seam. A
+    /// handler that opens another top-level window records one request here; the
+    /// router hands it to the store queue, and the facade drains it the next
+    /// frame — where it holds a scheduling context — to create the OS window and
+    /// build its tree. Empty (and allocation-free) for the overwhelmingly common
+    /// dispatch that opens no window.
+    window_opens: Vec<WindowOpenRequest>,
+    /// Window-close requests a handler recorded this dispatch, carried as raw
+    /// window ids (the UI tier has no platform `WindowId`), applied by the router
+    /// to the node store's window queue after the handler returns — the same
+    /// deferred shape as [`window_opens`](Self::window_opens). A handler that
+    /// closes a window it opened records the window's id here; the facade drains
+    /// it the next frame and asks the platform to close that window, which routes
+    /// back through the single teardown path. Empty (and allocation-free) for the
+    /// overwhelmingly common dispatch that closes no window.
+    window_closes: Vec<u32>,
     /// The node that holds focus at the moment this dispatch began, lent by value
     /// from the node store's focus slot so a handler can read it via
     /// [`EventCx::focused`] without the cx holding the store. A `Copy` snapshot,
@@ -214,6 +234,8 @@ impl<'a> EventCx<'a> {
             hidden_requests: Vec::new(),
             animation_requests: Vec::new(),
             timer_requests: Vec::new(),
+            window_opens: Vec::new(),
+            window_closes: Vec::new(),
             focused: None,
         }
     }
@@ -241,6 +263,8 @@ impl<'a> EventCx<'a> {
             hidden_requests: Vec::new(),
             animation_requests: Vec::new(),
             timer_requests: Vec::new(),
+            window_opens: Vec::new(),
+            window_closes: Vec::new(),
             focused: None,
         }
     }
@@ -267,6 +291,8 @@ impl<'a> EventCx<'a> {
             hidden_requests: Vec::new(),
             animation_requests: Vec::new(),
             timer_requests: Vec::new(),
+            window_opens: Vec::new(),
+            window_closes: Vec::new(),
             focused: None,
         }
     }
@@ -293,6 +319,8 @@ impl<'a> EventCx<'a> {
             hidden_requests: Vec::new(),
             animation_requests: Vec::new(),
             timer_requests: Vec::new(),
+            window_opens: Vec::new(),
+            window_closes: Vec::new(),
             focused: None,
         }
     }
@@ -480,6 +508,54 @@ impl<'a> EventCx<'a> {
     #[doc(hidden)]
     pub fn __take_timer_requests(&mut self) -> Vec<TimerRequest> {
         std::mem::take(&mut self.timer_requests)
+    }
+
+    /// Request that a new top-level window open after this handler returns.
+    /// Deferred exactly like [`request_timer`](Self::request_timer): the cx holds
+    /// neither the store's window queue nor the facade's platform seam, so the
+    /// router hands the recorded request to the store queue after the handler
+    /// returns, and the facade drains it the next frame — where it holds a
+    /// scheduling context — to create the OS window, build its store, and run
+    /// `build` against that store.
+    ///
+    /// `build` is deferred because the new window's store does not exist yet: it
+    /// runs later, with a [`BuildCx`](crate::component::BuildCx) over the fresh
+    /// store, exactly as the first window's build does, and returns the new
+    /// tree's root.
+    #[inline]
+    pub fn request_open_window(
+        &mut self,
+        config: WindowConfig,
+        build: impl FnOnce(&mut crate::component::BuildCx) -> Option<NodeId> + 'static,
+    ) {
+        self.window_opens
+            .push(WindowOpenRequest::new(config, build));
+    }
+
+    /// Take the window-open requests recorded this dispatch for the router to
+    /// enqueue on the node store. Empty when the handler opened none.
+    #[doc(hidden)]
+    pub fn __take_window_opens(&mut self) -> Vec<WindowOpenRequest> {
+        std::mem::take(&mut self.window_opens)
+    }
+
+    /// Request that the window with raw id `window` close after this handler
+    /// returns. Deferred exactly like [`request_open_window`](Self::request_open_window):
+    /// the facade drains it the next frame and asks the platform to close that
+    /// window, which routes back through the single teardown path (the
+    /// `WindowClosed` event → `on_window_closed`) — the same path an OS-driven
+    /// close takes, so no double teardown. The id is raw because the UI tier has
+    /// no platform `WindowId`; the facade wraps it back.
+    #[inline]
+    pub fn request_close_window(&mut self, window: u32) {
+        self.window_closes.push(window);
+    }
+
+    /// Take the window-close requests recorded this dispatch for the router to
+    /// enqueue on the node store. Empty when the handler closed none.
+    #[doc(hidden)]
+    pub fn __take_window_closes(&mut self) -> Vec<u32> {
+        std::mem::take(&mut self.window_closes)
     }
 
     /// Request that the pointer be captured to `id` after this handler returns.
