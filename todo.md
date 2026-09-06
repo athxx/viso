@@ -770,8 +770,12 @@ TextInput ✅(单行编辑骨架,后续片见上文 deferral 清单)。全部 �
         `WindowOpenRequest.id_slot`,facade `create_window` 后回填 `id.0`);`WindowConfig` 重导 viso_ui,
         `viso_platform::WindowConfig` 私有留 drain 翻译点;widget 单测 5(open 记 tracked+id 未定、回填后 id()=Some、
         open 后 close 记请求、未开先 close no-op、无 content 也能开)。全 gauntlet 绿(check-deps/build/clippy/fmt/test)。
-      - [ ] 提交 6 facade 验证包(viso/tests/window_multi.rs:golden、多窗 tape、per-window 路由、a11y、alloc)+
-        **ADR 0020**(§68 多重触发:frame phase 语义 / node ownership / 公共生命周期)。
+      - [x] 提交 6 facade 验证包(`viso/tests/window_multi.rs` 8 测:双窗独立 golden、多窗 tape(window() seam 开第二窗
+        →两独立树、per-window pointer 路由、per-window resize 几何、`WindowHandle::close` 拆卸、跨窗 idle fold 零 CPU)、
+        per-window a11y 快照、alloc profile(`--test-threads=1` 稳态 `frame_allocs[0]==[1]`+GPU 计数/frame_stats 不变))
+        + **ADR 0020**(§68 多重触发:frame phase 语义 fan-out / node ownership = per-window NodeId 空间 / 公共
+        window()/WindowHandle 生命周期;`Vec<WindowState>` 小 N 线性非 map 附 §45 依据 + 平台 close seam 单一拆卸路径)。
+        golden `.bgra8` gitignore 永不提交。
       - [ ] 提交 7 microbench(window/open、window/close、window/fan_out/N,N∈{1,4,16})+ Cargo.toml 条目。
 
 **Tier 5 / Tier 6** —— 待做(Tier 4 收完再排)。
