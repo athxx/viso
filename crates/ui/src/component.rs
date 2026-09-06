@@ -184,6 +184,15 @@ pub struct NodeStore {
     /// nodes; default `(0,0)`. A scroll node shifts its content subtree's world
     /// rect by `-scroll` without a relayout (TRANSFORM-class, not LAYOUT).
     scroll: Vec<Vec2>,
+    /// Hot: per-node world-space translate, nonzero only on nodes being moved by
+    /// a transform-only animation or an edge-anchored slide (a sheet drawer);
+    /// default `(0,0)`. Unlike `scroll` — which shifts only the *content subtree*
+    /// and is clamped to the scrollable range — a translate shifts the *node
+    /// itself* (its own world rect *and* its subtree) and is never clamped: a
+    /// slide-in starts fully off-screen. TRANSFORM-class, not LAYOUT: moving a
+    /// node never re-measures or re-lays it out. Set through
+    /// [`set_translate`](Self::set_translate) / [`translate_by`](Self::translate_by).
+    translate: Vec<Vec2>,
     /// Warm: a scroll viewport's content extent (the laid-out size of its content
     /// along each axis), written by the scroll layout arm. `(0,0)` for non-scroll
     /// nodes. Read by the scroll clamp (range = content − viewport, per axis).
@@ -307,6 +316,7 @@ impl NodeStore {
         self.bounds.clear();
         self.world.clear();
         self.scroll.clear();
+        self.translate.clear();
         self.content.clear();
         self.row_offset.clear();
         self.grid_tracks.clear();
@@ -357,6 +367,13 @@ impl NodeStore {
     #[inline]
     pub fn scroll(&self, id: NodeId) -> Vec2 {
         self.scroll[id.index() as usize]
+    }
+
+    /// A node's world-space translate (nonzero only on nodes being slid/animated).
+    /// See [`set_translate`](Self::set_translate).
+    #[inline]
+    pub fn translate(&self, id: NodeId) -> Vec2 {
+        self.translate[id.index() as usize]
     }
 
     /// A scroll viewport's content extent (the laid-out size of its content).
@@ -627,6 +644,56 @@ impl NodeStore {
             return;
         }
         self.scroll[i] = next;
+        self.mark_dirty(
+            id,
+            DirtyClass::TRANSFORM | DirtyClass::HIT_TEST | DirtyClass::PAINT,
+        );
+    }
+
+    /// Set a node's world-space translate to an absolute `offset`, moving the
+    /// node itself (and its subtree) without a relayout, and mark it
+    /// `TRANSFORM | HIT_TEST | PAINT` so the next frame re-derives its world rect
+    /// and repaints — a translate never dirties MEASURE/LAYOUT and never bubbles
+    /// to ancestors.
+    ///
+    /// Unlike [`set_scroll`](Self::set_scroll) this is **not clamped**: a
+    /// transform-only slide starts a node fully off-screen (a translate of one
+    /// full extent past the surface edge) and animates it to `(0,0)`, so the
+    /// setter must accept arbitrarily large or negative offsets. A live-guarded
+    /// write; a stale handle is a no-op, and an offset equal to the current value
+    /// schedules nothing.
+    pub fn set_translate(&mut self, id: NodeId, offset: Vec2) {
+        if !self.arena.is_live(id) {
+            return;
+        }
+        let i = id.index() as usize;
+        if offset == self.translate[i] {
+            return;
+        }
+        self.translate[i] = offset;
+        self.mark_dirty(
+            id,
+            DirtyClass::TRANSFORM | DirtyClass::HIT_TEST | DirtyClass::PAINT,
+        );
+    }
+
+    /// Add `delta` to a node's world-space translate — the delta sibling of
+    /// [`set_translate`](Self::set_translate), sharing its unclamped write, dirty
+    /// classes, and no-bubble rule. A live-guarded write; a stale handle is a
+    /// no-op, and a zero delta schedules nothing.
+    pub fn translate_by(&mut self, id: NodeId, delta: Vec2) {
+        if !self.arena.is_live(id) {
+            return;
+        }
+        let i = id.index() as usize;
+        let next = Vec2 {
+            x: self.translate[i].x + delta.x,
+            y: self.translate[i].y + delta.y,
+        };
+        if next == self.translate[i] {
+            return;
+        }
+        self.translate[i] = next;
         self.mark_dirty(
             id,
             DirtyClass::TRANSFORM | DirtyClass::HIT_TEST | DirtyClass::PAINT,
@@ -1138,27 +1205,35 @@ impl NodeStore {
         self.resolve_transforms_from(root, Vec2::ZERO);
     }
 
-    /// Pre-order recursion carrying `offset`, the summed scroll of `root`'s
-    /// scrolling ancestors. Writes `world[root] = bounds[root] − offset`, then
-    /// folds `root`'s own scroll into the offset handed to its children.
+    /// Pre-order recursion carrying `offset`, the summed scroll+translate of
+    /// `root`'s ancestors. Writes `world[root] = bounds[root] − offset −
+    /// translate[root]`, then folds `root`'s own scroll and translate into the
+    /// offset handed to its children.
     fn resolve_transforms_from(&mut self, root: NodeId, offset: Vec2) {
         if !self.arena.is_live(root) {
             return;
         }
         let i = root.index() as usize;
         let b = self.bounds[i];
+        // A translate moves the node itself (and its subtree), so it subtracts
+        // from this node's own world rect — unlike scroll, which shifts only the
+        // content subtree and leaves the viewport's own rect in place. Nonzero
+        // only on a sliding/animated node, so this is a subtract of zero for the
+        // common case.
+        let t = self.translate[i];
         self.world[i] = Rect {
-            x: b.x - offset.x,
-            y: b.y - offset.y,
+            x: b.x - offset.x - t.x,
+            y: b.y - offset.y - t.y,
             w: b.w,
             h: b.h,
         };
-        // A scroll viewport shifts its own content: fold its scroll into the
-        // offset its subtree sees (nonzero only on scroll nodes, so this is an
-        // add of zero for ordinary containers).
+        // Fold this node's own scroll and translate into the offset its subtree
+        // sees: a scroll viewport shifts its content, and a translate carries its
+        // whole subtree along with it. Both are zero for an ordinary container,
+        // so this is an add of zero in the common case.
         let child_offset = Vec2 {
-            x: offset.x + self.scroll[i].x,
-            y: offset.y + self.scroll[i].y,
+            x: offset.x + self.scroll[i].x + t.x,
+            y: offset.y + self.scroll[i].y + t.y,
         };
         let mut child = self.arena.links(root).and_then(|l| l.first_child);
         while let Some(c) = child {
@@ -1221,6 +1296,7 @@ impl NodeStore {
                 h: 0.0,
             };
             self.scroll[i] = Vec2::ZERO;
+            self.translate[i] = Vec2::ZERO;
             self.content[i] = Vec2::ZERO;
             self.row_offset[i] = f32::NAN;
             self.grid_tracks[i] = None;
@@ -1254,6 +1330,7 @@ impl NodeStore {
                 h: 0.0,
             });
             self.scroll.push(Vec2::ZERO);
+            self.translate.push(Vec2::ZERO);
             self.content.push(Vec2::ZERO);
             self.row_offset.push(f32::NAN);
             self.grid_tracks.push(None);
@@ -3181,6 +3258,135 @@ mod tests {
         store.set_scroll(viewport, Vec2 { x: 0.0, y: 50.0 });
         assert_eq!(store.scroll(viewport), Vec2 { x: 0.0, y: 50.0 });
         assert!(store.dirty(viewport).contains(DirtyClass::TRANSFORM));
+    }
+
+    // ---- translate ----
+
+    /// A single 100×100 leaf laid out at the origin — the subject of a slide.
+    fn translate_scene() -> (NodeStore, NodeId) {
+        let mut store = NodeStore::new();
+        let root = {
+            let mut cx = BuildCx::new(&mut store);
+            cx.leaf(LeafStyle {
+                size: Size::fixed(100.0, 100.0),
+                ..Default::default()
+            });
+            cx.root().unwrap()
+        };
+        let mut scratch = Vec::new();
+        store.layout(root, surface(100.0, 100.0), &mut scratch);
+        (store, root)
+    }
+
+    #[test]
+    fn set_translate_moves_the_node_itself_and_its_subtree() {
+        // A viewport-with-content scene lets us assert that a translate on the
+        // container moves the container's *own* world rect — the key asymmetry
+        // versus scroll, which leaves the viewport's rect in place.
+        let (mut store, viewport, content) = scroll_scene();
+        // Before translating, world equals bounds everywhere.
+        assert_eq!(store.world(viewport), store.bounds(viewport));
+        assert_eq!(store.world(content), store.bounds(content));
+
+        store.set_translate(viewport, Vec2 { x: 12.0, y: -34.0 });
+        store.resolve_transforms(viewport);
+
+        // Both the node itself and its subtree shift by −translate (the node
+        // moves, carrying its content along).
+        let vb = store.bounds(viewport);
+        assert_eq!(
+            store.world(viewport),
+            Rect {
+                x: vb.x - 12.0,
+                y: vb.y + 34.0,
+                w: vb.w,
+                h: vb.h,
+            },
+            "the translated node's own world rect moves by −translate"
+        );
+        let cb = store.bounds(content);
+        assert_eq!(
+            store.world(content),
+            Rect {
+                x: cb.x - 12.0,
+                y: cb.y + 34.0,
+                w: cb.w,
+                h: cb.h,
+            },
+            "the subtree moves with the node"
+        );
+    }
+
+    #[test]
+    fn set_translate_is_never_clamped() {
+        // Unlike scroll, a translate accepts arbitrarily large or negative
+        // offsets — a slide starts a node fully off-screen.
+        let (mut store, root) = translate_scene();
+        let off = Vec2 {
+            x: -500.0,
+            y: 800.0,
+        };
+        store.set_translate(root, off);
+        assert_eq!(
+            store.translate(root),
+            off,
+            "large/negative offsets are stored verbatim, not clamped"
+        );
+    }
+
+    #[test]
+    fn translate_marks_transform_hit_test_paint_only() {
+        let (mut store, root) = translate_scene();
+        store.clear_dirty();
+        store.set_translate(root, Vec2 { x: 0.0, y: 50.0 });
+        let d = store.dirty(root);
+        assert!(d.contains(DirtyClass::TRANSFORM));
+        assert!(d.contains(DirtyClass::HIT_TEST));
+        assert!(d.contains(DirtyClass::PAINT));
+        assert!(
+            !d.intersects(DirtyClass::MEASURE | DirtyClass::LAYOUT),
+            "a translate never re-measures or re-lays out"
+        );
+    }
+
+    #[test]
+    fn zero_translate_leaves_world_equal_to_bounds() {
+        let (mut store, root) = translate_scene();
+        // A never-translated node resolves world byte-equal to bounds.
+        store.resolve_transforms(root);
+        assert_eq!(store.world(root), store.bounds(root));
+    }
+
+    #[test]
+    fn translate_by_accumulates_and_a_zero_delta_is_a_noop() {
+        let (mut store, root) = translate_scene();
+        store.translate_by(root, Vec2 { x: 10.0, y: 20.0 });
+        store.translate_by(root, Vec2 { x: 5.0, y: -4.0 });
+        assert_eq!(store.translate(root), Vec2 { x: 15.0, y: 16.0 });
+
+        store.clear_dirty();
+        store.translate_by(root, Vec2::ZERO);
+        assert!(
+            store.dirty(root).is_empty(),
+            "a zero delta schedules nothing"
+        );
+
+        // Setting the same absolute value is likewise a no-op.
+        store.set_translate(root, Vec2 { x: 15.0, y: 16.0 });
+        assert!(
+            store.dirty(root).is_empty(),
+            "an unchanged set schedules nothing"
+        );
+    }
+
+    #[test]
+    fn translate_writers_no_op_on_a_stale_handle() {
+        let (mut store, root) = translate_scene();
+        // Free the node, invalidating the handle.
+        store.clear();
+        // A stale write neither panics nor schedules.
+        store.set_translate(root, Vec2 { x: 1.0, y: 1.0 });
+        store.translate_by(root, Vec2 { x: 1.0, y: 1.0 });
     }
 
     // ---- replace_child ----
