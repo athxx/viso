@@ -397,6 +397,15 @@ impl NodeStore {
         matches!(self.layout[id.index() as usize], LayoutInput::Scroll { .. })
     }
 
+    /// Whether a node is a two-dimensional track grid — it sizes its children
+    /// into the cells of a column/row template rather than stacking them along a
+    /// single axis. Introspection/tests branch on this to distinguish a grid
+    /// container from a flex box.
+    #[inline]
+    pub fn is_grid(&self, id: NodeId) -> bool {
+        matches!(self.layout[id.index() as usize], LayoutInput::Grid { .. })
+    }
+
     /// The axis a scroll viewport scrolls along, or `None` for a non-scroll node.
     /// A viewport scrolls only along its own axis; the router uses this to pick
     /// which ancestor absorbs a scroll delta.
