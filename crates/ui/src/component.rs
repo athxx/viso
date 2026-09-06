@@ -224,6 +224,15 @@ pub struct NodeStore {
     /// without a structural rebuild. Shared substrate for Tabs and the wider
     /// Tier 4 hide/show family (NavigationStack/Modal/Popup/Sheet).
     hidden: Vec<bool>,
+    /// Hot: whether a node is an overlay — painted in a deferred top layer, after
+    /// every non-overlay node, regardless of its position in the tree. Default
+    /// `false` — a node opts *in* to the top layer (the Tier 4 overlay family:
+    /// Popup/Modal/Sheet/Toast). Unlike `hidden` it does not touch layout: an
+    /// overlay still lays out in place (a popup is anchored to its parent's box),
+    /// so flipping it marks PAINT only, not LAYOUT. Paint collects overlay subtrees
+    /// during the main walk and emits them last, so top-layer content draws over
+    /// the rest of the scene without a z-index sort.
+    overlay: Vec<bool>,
     /// Cold: per-node pointer handler, index-aligned but mostly `None`. Read
     /// only when a node lands on a hit's dispatch chain, so it lives off the hot
     /// columns as an owned box rather than an inline fat pointer.
@@ -298,6 +307,7 @@ impl NodeStore {
         self.measured.clear();
         self.hittable.clear();
         self.hidden.clear();
+        self.overlay.clear();
         self.handlers.clear();
         self.focusable.clear();
         self.key_handlers.clear();
@@ -771,6 +781,29 @@ impl NodeStore {
         self.mark_dirty(id, DirtyClass::LAYOUT | DirtyClass::PAINT);
     }
 
+    /// Whether a node is an overlay — painted in the deferred top layer, over
+    /// every non-overlay node regardless of tree position (default `false`).
+    #[inline]
+    pub fn is_overlay(&self, id: NodeId) -> bool {
+        self.overlay[id.index() as usize]
+    }
+
+    /// Set whether a node (and its subtree) paints in the top layer. A
+    /// live-guarded write, so a stale handle is a no-op.
+    ///
+    /// Unlike [`set_hidden`](Self::set_hidden), an overlay still lays out in place
+    /// — it only changes paint *order*, not measure or geometry (a popup is
+    /// anchored to its parent's box and simply draws on top). So this marks PAINT
+    /// only, never LAYOUT: flipping the flag re-emits the primitive stream in the
+    /// new order without re-measuring anything.
+    pub fn set_overlay(&mut self, id: NodeId, overlay: bool) {
+        if !self.arena.is_live(id) {
+            return;
+        }
+        self.overlay[id.index() as usize] = overlay;
+        self.mark_dirty(id, DirtyClass::PAINT);
+    }
+
     /// Attach a pointer handler to a node, replacing any prior one. A
     /// live-guarded write, so a stale handle is a no-op.
     pub fn set_pointer_handler(&mut self, id: NodeId, handler: PointerHandler) {
@@ -1167,6 +1200,7 @@ impl NodeStore {
             self.measured[i] = Measured::default();
             self.hittable[i] = true;
             self.hidden[i] = false;
+            self.overlay[i] = false;
             self.handlers[i] = None;
             self.focusable[i] = false;
             self.key_handlers[i] = None;
@@ -1199,6 +1233,7 @@ impl NodeStore {
             self.measured.push(Measured::default());
             self.hittable.push(true);
             self.hidden.push(false);
+            self.overlay.push(false);
             self.handlers.push(None);
             self.focusable.push(false);
             self.key_handlers.push(None);
@@ -1897,6 +1932,17 @@ impl<'a> BuildCx<'a> {
     /// flag at runtime via [`EventCx::set_hidden`].
     pub fn set_hidden(&mut self, handle: Handle, hidden: bool) -> Handle {
         self.store.set_hidden(handle.id, hidden);
+        handle
+    }
+
+    /// Mark an already-declared node an overlay (default: not an overlay), so it
+    /// and its subtree paint in the top layer, over every non-overlay node
+    /// regardless of tree position. Returns the handle so authoring chains inline.
+    /// The overlay family (Popup/Modal/Sheet/Toast) authors its floating content
+    /// once and marks it here; unlike hiding, it changes only paint order, not
+    /// layout.
+    pub fn set_overlay(&mut self, handle: Handle, overlay: bool) -> Handle {
+        self.store.set_overlay(handle.id, overlay);
         handle
     }
 
