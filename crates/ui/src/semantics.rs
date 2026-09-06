@@ -58,6 +58,15 @@ pub enum Role {
     /// has no state store today — the same treatment as
     /// [`CheckBox`](Role::CheckBox)).
     Navigation,
+    /// A modal dialog: a window layered over the scene that takes focus and, while
+    /// open, confines keyboard navigation to its own subtree (a focus scope) so
+    /// the background is inert until it closes. An assistive technology announces
+    /// it as a dialog and scopes its reading to the dialog's content. Whether the
+    /// dialog is open is held in the control's own reactive cell, not this cold
+    /// role; this slice announces the role and proves the open state and focus
+    /// trap through the control's cell and input tapes (the derive pass has no
+    /// state store today — the same treatment as [`CheckBox`](Role::CheckBox)).
+    Dialog,
 }
 
 /// A node's *authored* semantics: the facts a builder sets, distinct from the
