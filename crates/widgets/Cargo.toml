@@ -84,3 +84,7 @@ harness = false
 [[bench]]
 name = "popup_build"
 harness = false
+
+[[bench]]
+name = "modal_build"
+harness = false
