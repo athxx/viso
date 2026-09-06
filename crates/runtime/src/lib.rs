@@ -15,6 +15,7 @@
 
 #![forbid(unsafe_op_in_unsafe_fn)]
 
+pub mod clock;
 pub mod context;
 pub mod driver;
 pub mod frame;
@@ -23,6 +24,7 @@ pub mod phase;
 pub mod schedule;
 pub mod scheduler;
 
+pub use clock::{FrameClock, ManualClock, WallClock};
 pub use context::RuntimeCx;
 pub use driver::FrameDriver;
 pub use frame::run_frame;

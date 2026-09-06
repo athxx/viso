@@ -11,11 +11,14 @@
 //!    when a frame is pending,
 //!    `Exit` when the last window closed.
 
+use std::time::{Duration, Instant};
+
 use viso_platform::{
     AppHandler, ControlFlow, KeyCode, Modifiers as RawModifiers, PlatformApp, RawEvent, RawPointer,
     RawScroll,
 };
 
+use crate::clock::{FrameClock, WallClock};
 use crate::context::RuntimeCx;
 use crate::driver::FrameDriver;
 use crate::frame::run_frame;
@@ -26,24 +29,43 @@ use crate::input::{
 use crate::schedule::{RedrawReason, RedrawReasons};
 
 /// Owns the run loop's mutable state and routes every platform event.
-pub struct Scheduler<D: FrameDriver> {
+///
+/// Generic over the frame [`FrameClock`] so headless tests can inject a
+/// deterministic clock; production uses [`WallClock`] via [`Scheduler::new`].
+pub struct Scheduler<D: FrameDriver, C: FrameClock = WallClock> {
     app: Box<dyn PlatformApp>,
     driver: D,
     reasons: RedrawReasons,
     /// Windows currently open. When this empties after a close, we exit.
     open_windows: u32,
     launched: bool,
+    /// The time source sampled once at the head of each frame.
+    clock: C,
+    /// When the previous frame ran, for the delta the next frame observes.
+    /// `None` before the first frame, so that frame's delta is `ZERO`.
+    last_frame: Option<Instant>,
 }
 
-impl<D: FrameDriver> Scheduler<D> {
-    /// Build a scheduler over a platform app and a frame driver.
+impl<D: FrameDriver> Scheduler<D, WallClock> {
+    /// Build a scheduler over a platform app and a frame driver, using the
+    /// production [`WallClock`] as its time source.
     pub fn new(app: Box<dyn PlatformApp>, driver: D) -> Self {
+        Self::with_clock(app, driver, WallClock)
+    }
+}
+
+impl<D: FrameDriver, C: FrameClock> Scheduler<D, C> {
+    /// Build a scheduler with an explicit clock. Headless tests inject a
+    /// [`crate::clock::ManualClock`] here to step frame time deterministically.
+    pub fn with_clock(app: Box<dyn PlatformApp>, driver: D, clock: C) -> Self {
         Self {
             app,
             driver,
             reasons: RedrawReasons::new(),
             open_windows: 0,
             launched: false,
+            clock,
+            last_frame: None,
         }
     }
 
@@ -72,8 +94,16 @@ impl<D: FrameDriver> Scheduler<D> {
         if self.reasons.is_idle() {
             return;
         }
+        // Sample the clock at the frame head and diff against the previous
+        // frame; the first frame has no predecessor, so its delta is ZERO.
+        let now = self.clock.now();
+        let delta = self
+            .last_frame
+            .map(|prev| now.saturating_duration_since(prev))
+            .unwrap_or(Duration::ZERO);
+        self.last_frame = Some(now);
         let (created, state_dirty) = {
-            let mut cx = RuntimeCx::new(self.app.as_mut());
+            let mut cx = RuntimeCx::new(self.app.as_mut(), delta);
             run_frame(&mut self.driver, &mut cx);
             (cx.windows_created(), cx.state_dirty_requested())
         };
@@ -99,13 +129,14 @@ impl<D: FrameDriver> Scheduler<D> {
     }
 }
 
-impl<D: FrameDriver> AppHandler for Scheduler<D> {
+impl<D: FrameDriver, C: FrameClock> AppHandler for Scheduler<D, C> {
     fn handle(&mut self, event: RawEvent) -> ControlFlow {
         match event {
             RawEvent::AppLaunched => {
                 self.launched = true;
                 let (created, first, state_dirty) = {
-                    let mut cx = RuntimeCx::new(self.app.as_mut());
+                    // Launch runs no frame body, so it carries no elapsed time.
+                    let mut cx = RuntimeCx::new(self.app.as_mut(), Duration::ZERO);
                     self.driver.on_launch(&mut cx);
                     (
                         cx.windows_created(),

@@ -9,10 +9,11 @@
 
 use std::cell::RefCell;
 use std::rc::Rc;
+use std::time::{Duration, Instant};
 
 use viso_platform::backend::headless::HeadlessApp;
 use viso_platform::{AcceptCell, RawEvent, WindowConfig, WindowId};
-use viso_runtime::{FrameDriver, FramePhase, InputSample, RuntimeCx, Scheduler};
+use viso_runtime::{FrameClock, FrameDriver, FramePhase, InputSample, RuntimeCx, Scheduler};
 
 /// Shared, observable record of what the driver was asked to do.
 #[derive(Default)]
@@ -22,6 +23,8 @@ struct Log {
     frames: u32,
     inputs: u32,
     geometries: u32,
+    /// The `frame_delta` each frame observed, in order (one entry per frame).
+    deltas: Vec<Duration>,
 }
 
 /// A `FrameDriver` that opens one window on launch and counts every callback.
@@ -55,17 +58,45 @@ impl FrameDriver for CountingDriver {
         self.log.borrow_mut().inputs += 1;
     }
 
-    fn run_phase(&mut self, phase: FramePhase, _cx: &mut RuntimeCx<'_>) {
+    fn run_phase(&mut self, phase: FramePhase, cx: &mut RuntimeCx<'_>) {
         let mut log = self.log.borrow_mut();
         log.phase_calls += 1;
-        // Count a whole frame exactly once, on its first phase.
+        // Count a whole frame exactly once, on its first phase, and record the
+        // delta the scheduler tagged this frame with.
         if phase == FramePhase::CollectInput {
             log.frames += 1;
+            log.deltas.push(cx.frame_delta());
         }
     }
 
     fn wants_animation(&self) -> bool {
         self.animate
+    }
+}
+
+/// A clock that advances a fixed `dt` on every read. Because the scheduler
+/// samples the clock once per frame (and never on launch/input callbacks), each
+/// consecutive frame sees exactly `dt` of elapsed time after the first — a
+/// deterministic stand-in for a display link ticking at a steady rate.
+struct FixedStepClock {
+    cursor: Instant,
+    step: Duration,
+}
+
+impl FixedStepClock {
+    fn new(step: Duration) -> Self {
+        Self {
+            cursor: Instant::now(),
+            step,
+        }
+    }
+}
+
+impl FrameClock for FixedStepClock {
+    fn now(&mut self) -> Instant {
+        let at = self.cursor;
+        self.cursor += self.step;
+        at
     }
 }
 
@@ -290,4 +321,54 @@ fn launch_without_a_window_drives_no_frame() {
     assert_eq!(log.launches, 1, "on_launch still fires once");
     assert_eq!(log.frames, 0, "no window means no first frame");
     assert_eq!(log.phase_calls, 0);
+}
+
+#[test]
+fn injected_clock_gives_each_frame_the_scripted_delta() {
+    // A fixed-step clock advances a constant dt per frame. With animation on,
+    // N scripted beats plus the launch frame run N+1 frames; the first frame
+    // has no predecessor (delta ZERO), and every subsequent frame sees exactly
+    // the injected dt.
+    let n = 4u32;
+    let step = Duration::from_millis(16);
+    let script: Vec<RawEvent> = (0..n)
+        .map(|_| RawEvent::RedrawRequested {
+            window: WindowId(1),
+        })
+        .collect();
+
+    let log = Rc::new(RefCell::new(Log::default()));
+    let app = Box::new(HeadlessApp::scripted(script));
+    let driver = CountingDriver::new(Rc::clone(&log), true);
+    Scheduler::with_clock(app, driver, FixedStepClock::new(step)).run();
+    let log = Rc::try_unwrap(log).ok().unwrap().into_inner();
+
+    assert_eq!(log.frames, n + 1, "launch frame plus one per beat");
+    assert_eq!(
+        log.deltas.len() as u32,
+        n + 1,
+        "one recorded delta per frame"
+    );
+    assert_eq!(
+        log.deltas[0],
+        Duration::ZERO,
+        "the first frame has no predecessor, so its delta is zero"
+    );
+    for (i, d) in log.deltas.iter().enumerate().skip(1) {
+        assert_eq!(*d, step, "frame {i} observes exactly the injected step");
+    }
+}
+
+#[test]
+fn default_wall_clock_first_frame_delta_is_zero() {
+    // The production path (Scheduler::new -> WallClock) still tags the first
+    // frame with a ZERO delta: there is no earlier frame to diff against. This
+    // is the smoke test that the default clock wiring is intact.
+    let log = run(vec![], false);
+    assert_eq!(log.frames, 1, "the launch frame runs");
+    assert_eq!(
+        log.deltas,
+        vec![Duration::ZERO],
+        "the sole (first) frame carries a zero delta under the wall clock"
+    );
 }
