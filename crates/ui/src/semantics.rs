@@ -67,6 +67,17 @@ pub enum Role {
     /// trap through the control's cell and input tapes (the derive pass has no
     /// state store today — the same treatment as [`CheckBox`](Role::CheckBox)).
     Dialog,
+    /// A polite live region: a transient status message layered over the scene
+    /// that announces itself without moving focus (WAI-ARIA `role=status`). The
+    /// [`Toast`](../../viso_widgets/index.html) control's content carries this
+    /// role. Unlike a [`Dialog`](Role::Dialog) it neither takes focus nor traps
+    /// keyboard navigation — an assistive technology reads it when it appears and
+    /// the user keeps working. Whether the status is showing is held in the
+    /// control's own reactive cell, not this cold role; this slice announces the
+    /// role and proves the show/auto-dismiss through the control's cell, input
+    /// tapes, and the one-shot timer (the derive pass has no state store today —
+    /// the same treatment as [`CheckBox`](Role::CheckBox)).
+    Status,
 }
 
 /// A node's *authored* semantics: the facts a builder sets, distinct from the

@@ -855,10 +855,10 @@ pub mod prelude {
         NavHandleSlot, NavigationStack, NavigationStackStyle, Popup, PopupHandle, PopupHandleSlot,
         PopupStyle, RadioGroup, RadioStyle, Scroll, ScrollViewStyle, Sheet, SheetEdge, SheetHandle,
         SheetHandleSlot, SheetStyle, Slider, SliderStyle, Splitter, SplitterStyle, Tabs, TabsStyle,
-        TextInput, TextInputStyle, Toggle, ToggleStyle, View, ViewStyle, VirtualList,
-        VirtualListViewStyle, button, checkbox, grid, icon, image, label, modal, navigation_stack,
-        popup, radio_group, scroll, sheet, slider, splitter, tabs, text_input, toggle, view,
-        virtual_list,
+        TextInput, TextInputStyle, Toast, ToastEdge, ToastHandle, ToastHandleSlot, ToastStyle,
+        Toggle, ToggleStyle, View, ViewStyle, VirtualList, VirtualListViewStyle, button, checkbox,
+        grid, icon, image, label, modal, navigation_stack, popup, radio_group, scroll, sheet,
+        slider, splitter, tabs, text_input, toast, toggle, view, virtual_list,
     };
     // The declarative view-fragment entry point (§21.5): a small local `ui! { … }`
     // fragment lowers, at Rust compile time, to a static `BuildCx` builder closure.
