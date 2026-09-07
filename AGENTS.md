@@ -11,6 +11,7 @@ Viso is a **Rust-native, GPU-first, cross-platform application framework**.
 
 Canonical naming rules:
 
+- Code only, no preamble or explanation. If questions or reports are necessary, provide only ultra-concise key points.
 - framework/repository/facade crate: `Viso` / `viso`;
 - canonical external UI/DSL source extension: `.vs`;
 - Rust-side DSL entry points are `ui! { ... }`, `component! { ... }`, and `view!("...vs")`; they MUST share the same schema/type/effect checking, Typed HIR, Reactive/UI/Shader IR, and runtime contracts;

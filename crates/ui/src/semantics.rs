@@ -25,12 +25,23 @@ pub enum Role {
     /// it has a handler but no authored role).
     Button,
     /// A two-state toggle: checked or unchecked. Carries a boolean state an
-    /// assistive technology announces. The live checked value is held in a
-    /// reactive cell, not this cold role; wiring that value into the derived
-    /// tree is a later slice (the derive pass has no state store today), so this
-    /// slice announces the role and name and proves the state through the
-    /// control's own reactive cell and input tapes.
+    /// assistive technology announces. The live checked value reaches the
+    /// derived tree through the node's [`SemanticState`] side column (projected
+    /// from the control's reactive cell in the flush phase), so a snapshot
+    /// announces `checked`, not just the role and name.
     CheckBox,
+    /// A slider: a continuous value picked from a range. Announces the current
+    /// value and its `[min, max]` bounds. The live value reaches the derived
+    /// tree through the node's [`SemanticState`] side column (`value` + `range`,
+    /// projected from the control's reactive cell in the flush phase); the cold
+    /// role carries neither.
+    Slider,
+    /// One option in a radio group: exactly one of the group is selected.
+    /// Announces its selected state as `checked` (WAI-ARIA `role=radio` uses the
+    /// checked state for selection). The live selection reaches the derived tree
+    /// through the node's [`SemanticState`] side column, projected from the
+    /// group's reactive cell in the flush phase.
+    Radio,
     /// A static text label.
     Label,
     /// An editable text field: accepts typed characters and IME composition,
@@ -104,6 +115,66 @@ impl Semantics {
     }
 }
 
+/// A node's *live* accessibility state — the reactive facts an assistive
+/// technology announces alongside the role and name: whether a checkbox is
+/// checked, a slider's current value and range, whether a disclosure is
+/// expanded. Distinct from authored [`Semantics`] (cold, static role + label)
+/// and derived at flush time.
+///
+/// This is the projection target that keeps the derive pass single-layer: a
+/// control's reactive cell drives a parallel binding that writes this struct
+/// into the node's side column during the flush phase (where both stores are
+/// live); the derive pass then reads only the node column (`&self`), never the
+/// state store, preserving the one-way dependency direction (AGENTS section
+/// 3.5). Mirrors the `focused` slot precedent — live state reaches semantics
+/// through a node column, not a cross-layer read.
+///
+/// `Copy` and heap-free: every field is a small scalar, so the side column
+/// reuses its slots with no per-frame allocation. Fields are `Option` so a node
+/// carries only the facets its role defines (a checkbox sets `checked`; a slider
+/// sets `value` + `range`; a plain container sets none and stores `None` in the
+/// column).
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct SemanticState {
+    /// Two-state checked value: a [`CheckBox`](Role::CheckBox) / toggle, or the
+    /// selected state of a [`Radio`](Role::Radio) option.
+    pub checked: Option<bool>,
+    /// A [`Slider`](Role::Slider)'s current value, resolved to the real range
+    /// (not the relative 0..1 the control stores internally).
+    pub value: Option<f32>,
+    /// A [`Slider`](Role::Slider)'s inclusive `(min, max)` bounds.
+    pub range: Option<(f32, f32)>,
+    /// Whether a disclosure/expandable node is expanded. Reserved for later
+    /// wiring (Navigation/Dialog disclosure); carried in the model now so the
+    /// column and snapshot shape are stable.
+    pub expanded: Option<bool>,
+}
+
+impl SemanticState {
+    /// A checked/unchecked state (checkbox, toggle, or radio-option selection).
+    pub fn checked(checked: bool) -> Self {
+        Self {
+            checked: Some(checked),
+            ..Self::default()
+        }
+    }
+
+    /// A slider state: a current `value` within inclusive `(min, max)` bounds.
+    pub fn slider(value: f32, min: f32, max: f32) -> Self {
+        Self {
+            value: Some(value),
+            range: Some((min, max)),
+            ..Self::default()
+        }
+    }
+
+    /// This with an `expanded` disclosure flag.
+    pub fn with_expanded(mut self, expanded: bool) -> Self {
+        self.expanded = Some(expanded);
+        self
+    }
+}
+
 /// One node's place in the derived tree: its identity, resolved role and label,
 /// live state, bounds, and its children (indices into the owning
 /// [`SemanticsTree::nodes`]). Snapshottable.
@@ -117,6 +188,10 @@ pub struct SemanticsNode {
     pub label: Option<String>,
     /// Whether this node currently holds focus (derived from the focus slot).
     pub focused: bool,
+    /// The node's live accessibility state (checked / value / range / expanded),
+    /// derived from the node's [`SemanticState`] side column. `None` for a node
+    /// that carries no live state (a plain container or label).
+    pub state: Option<SemanticState>,
     /// The node's layout box.
     pub bounds: Rect,
     /// Indices of this node's children within [`SemanticsTree::nodes`], in tree
@@ -200,6 +275,58 @@ mod tests {
     }
 
     #[test]
+    fn slider_and_radio_roles_are_distinct() {
+        // The two roles added this slice — a slider no longer borrows CheckBox,
+        // and a radio option no longer borrows CheckBox.
+        let slider = Semantics::role(Role::Slider).with_label("Volume");
+        assert_eq!(slider.role, Role::Slider);
+        assert_eq!(slider.label.as_deref(), Some("Volume"));
+        let radio = Semantics::role(Role::Radio).with_label("Small");
+        assert_eq!(radio.role, Role::Radio);
+        assert_ne!(Role::Slider, Role::CheckBox);
+        assert_ne!(Role::Radio, Role::CheckBox);
+    }
+
+    #[test]
+    fn semantic_state_default_is_all_none() {
+        let s = SemanticState::default();
+        assert_eq!(s.checked, None);
+        assert_eq!(s.value, None);
+        assert_eq!(s.range, None);
+        assert_eq!(s.expanded, None);
+    }
+
+    #[test]
+    fn semantic_state_checked_sets_only_checked() {
+        let s = SemanticState::checked(true);
+        assert_eq!(s.checked, Some(true));
+        assert_eq!(s.value, None);
+        assert_eq!(s.range, None);
+        assert_eq!(s.expanded, None);
+        assert_eq!(SemanticState::checked(false).checked, Some(false));
+    }
+
+    #[test]
+    fn semantic_state_slider_sets_value_and_range() {
+        let s = SemanticState::slider(42.0, 0.0, 100.0);
+        assert_eq!(s.value, Some(42.0));
+        assert_eq!(s.range, Some((0.0, 100.0)));
+        assert_eq!(s.checked, None);
+        assert_eq!(s.expanded, None);
+    }
+
+    #[test]
+    fn semantic_state_with_expanded_composes() {
+        let s = SemanticState::default().with_expanded(true);
+        assert_eq!(s.expanded, Some(true));
+        assert_eq!(s.checked, None);
+        // Composable onto a checked state without clobbering it.
+        let both = SemanticState::checked(true).with_expanded(false);
+        assert_eq!(both.checked, Some(true));
+        assert_eq!(both.expanded, Some(false));
+    }
+
+    #[test]
     fn default_semantics_is_group_no_label() {
         let s = Semantics::default();
         assert_eq!(s.role, Role::Group);
@@ -227,6 +354,7 @@ mod tests {
                     role: Role::Group,
                     label: None,
                     focused: false,
+                    state: None,
                     bounds: ZERO_RECT,
                     children: vec![1],
                 },
@@ -235,6 +363,7 @@ mod tests {
                     role: Role::Button,
                     label: Some("Add".to_string()),
                     focused: true,
+                    state: None,
                     bounds: ZERO_RECT,
                     children: Vec::new(),
                 },
