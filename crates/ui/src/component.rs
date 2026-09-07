@@ -839,15 +839,24 @@ impl NodeStore {
     /// MEASURE | LAYOUT | PAINT dirty: content carries an intrinsic size, so a
     /// changed payload can resize a `Fit` node and must re-measure, re-lay-out,
     /// and repaint. A live-guarded write — a stale handle is a no-op.
+    ///
+    /// Text content additionally marks SEMANTICS (AGENTS section 11:
+    /// `text content -> MEASURE + LAYOUT + PAINT + SEMANTICS`). A text node's
+    /// visible run is its accessible name when no separate label is authored, so
+    /// replacing that run in place (a reactive text change re-shaped by the upper
+    /// tier) must re-derive the accessibility tree. Image and path content carry
+    /// no intrinsic accessible name, so they stay MEASURE | LAYOUT | PAINT — an
+    /// image's alt text lives in authored [`Semantics`], not in its pixels.
     pub fn set_content_payload(&mut self, id: NodeId, content: Content) {
         if !self.arena.is_live(id) {
             return;
         }
+        let mut classes = DirtyClass::MEASURE | DirtyClass::LAYOUT | DirtyClass::PAINT;
+        if matches!(content, Content::Text { .. }) {
+            classes |= DirtyClass::SEMANTICS;
+        }
         self.content_payload[id.index() as usize] = Some(Box::new(content));
-        self.mark_dirty(
-            id,
-            DirtyClass::MEASURE | DirtyClass::LAYOUT | DirtyClass::PAINT,
-        );
+        self.mark_dirty(id, classes);
     }
 
     /// A node's pending unshaped text request, if any. Set by authoring, read
@@ -2560,6 +2569,97 @@ mod tests {
         assert!(
             store.dirty(parent).intersects(DirtyClass::SEMANTICS),
             "SEMANTICS bubbles to the parent so a subtree change reaches ancestors"
+        );
+    }
+
+    #[test]
+    fn set_text_content_marks_semantics_but_image_content_does_not() {
+        // AGENTS section 11: `text content -> MEASURE + LAYOUT + PAINT + SEMANTICS`
+        // but image/path content carries no intrinsic accessible name, so it
+        // stays MEASURE | LAYOUT | PAINT. A reactive text change re-shaped in
+        // place must re-derive the accessibility tree; an image swap must not.
+        use viso_render::GlyphInstanceData;
+        let mut store = NodeStore::new();
+        let sink: std::rc::Rc<std::cell::RefCell<Vec<NodeId>>> =
+            std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        {
+            let capture = std::rc::Rc::clone(&sink);
+            let mut cx = BuildCx::new(&mut store);
+            cx.flex(FlexStyle::default(), |cx| {
+                capture
+                    .borrow_mut()
+                    .push(cx.leaf(LeafStyle::default()).id());
+                capture
+                    .borrow_mut()
+                    .push(cx.leaf(LeafStyle::default()).id());
+            });
+        }
+        let (text_leaf, image_leaf) = {
+            let ids = sink.borrow();
+            (ids[0], ids[1])
+        };
+
+        // A one-glyph text run: SEMANTICS joins the paint/measure classes.
+        store.clear_dirty();
+        store.set_content_payload(
+            text_leaf,
+            Content::Text {
+                glyphs: vec![GlyphInstanceData {
+                    rect: Rect {
+                        x: 0.0,
+                        y: 0.0,
+                        w: 8.0,
+                        h: 10.0,
+                    },
+                    uv: Rect {
+                        x: 0.0,
+                        y: 0.0,
+                        w: 1.0,
+                        h: 1.0,
+                    },
+                    px_range: 2.0,
+                }],
+                atlas: TextureId(1),
+                color: RED,
+                natural: Vec2 { x: 8.0, y: 10.0 },
+            },
+        );
+        assert!(
+            store.dirty(text_leaf).intersects(DirtyClass::SEMANTICS),
+            "replacing a text run in place marks SEMANTICS (section 11)"
+        );
+        assert!(
+            store
+                .dirty(text_leaf)
+                .intersects(DirtyClass::MEASURE | DirtyClass::LAYOUT | DirtyClass::PAINT),
+            "and still marks the layout/paint classes content always carries"
+        );
+
+        // An image swap: only MEASURE | LAYOUT | PAINT — no accessible name.
+        store.clear_dirty();
+        store.set_content_payload(
+            image_leaf,
+            Content::Image {
+                texture: TextureId(2),
+                uv: Rect {
+                    x: 0.0,
+                    y: 0.0,
+                    w: 1.0,
+                    h: 1.0,
+                },
+                tint: RED,
+                natural: Vec2 { x: 16.0, y: 16.0 },
+            },
+        );
+        assert!(
+            !store.dirty(image_leaf).intersects(DirtyClass::SEMANTICS),
+            "image content carries no intrinsic accessible name, so no SEMANTICS mark"
+        );
+        assert!(
+            store
+                .dirty(image_leaf)
+                .intersects(DirtyClass::MEASURE | DirtyClass::LAYOUT | DirtyClass::PAINT),
+            "image content still re-measures, re-lays-out, and repaints"
         );
     }
 
