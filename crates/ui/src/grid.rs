@@ -363,6 +363,85 @@ pub(crate) fn solve_tracks(
     }
 }
 
+/// Whether a track grows to fit item content — the intrinsically-sized tracks
+/// (`Auto`, `Minmax`, `FitContent`) that read the `auto_maxes` channel. `Fixed`,
+/// `Percent`, and `Fr` do not: a spanning item's excess is never attributed to
+/// them (they are, respectively, exact, extent-relative, or free-space share).
+fn track_grows_to_content(track: TrackSizing) -> bool {
+    matches!(
+        track,
+        TrackSizing::Auto | TrackSizing::Minmax(..) | TrackSizing::FitContent(..)
+    )
+}
+
+/// The extent a track already accounts for when apportioning a spanning item's
+/// content, evaluated *before* the `Fr` sweep. `Fixed` is its value; `Percent` a
+/// fraction of the content extent; a content-sized track its current span-1
+/// baseline in `auto` (0 if none); `Fr` contributes 0 pre-solve (its share is the
+/// leftover, not a content need). Used to compute how much of a spanning item's
+/// size the covered tracks do not yet cover.
+fn track_prebase(track: TrackSizing, content_extent: f32, auto: f32) -> f32 {
+    match track {
+        TrackSizing::Fixed(v) => v,
+        TrackSizing::Percent(frac) => content_extent * frac,
+        TrackSizing::Auto | TrackSizing::Minmax(..) | TrackSizing::FitContent(..) => auto,
+        TrackSizing::Fr(_) => 0.0,
+    }
+}
+
+/// Refine the `auto_maxes` channel for the tracks along one axis with the
+/// contribution of items that span more than one track (CSS Grid "distribute
+/// extra space to spanned tracks", §11.5). Run *after* the span-1 baselines are
+/// in `auto_maxes`: for each spanning item, the space its content still needs
+/// beyond what the covered tracks already account for
+/// (`measured − Σ track_prebase − interior gaps`, floored at 0) is spread equally
+/// across the growable tracks it covers and `max`-ed into each. Fixed/Percent/Fr
+/// tracks absorb none of it. A span with no growable track contributes nothing
+/// (its content is honored by the cell rect, not by growing a fixed track).
+///
+/// `spans` yields `(start, span, measured)` for every item on this axis;
+/// callers pass the item's covered track range and its natural main size.
+pub(crate) fn distribute_spanning_auto(
+    tracks: &[TrackSizing],
+    gap: f32,
+    content_extent: f32,
+    spans: impl Iterator<Item = (u16, u16, f32)>,
+    auto_maxes: &mut [f32],
+) {
+    for (start, span, measured) in spans {
+        if span <= 1 {
+            continue;
+        }
+        let s = start as usize;
+        let end = (s + span as usize).min(tracks.len());
+        if s >= end {
+            continue;
+        }
+        let mut covered_base = 0.0f32;
+        let mut growable = 0u32;
+        for i in s..end {
+            covered_base += track_prebase(tracks[i], content_extent, auto_maxes[i]);
+            if track_grows_to_content(tracks[i]) {
+                growable += 1;
+            }
+        }
+        if growable == 0 {
+            continue;
+        }
+        let interior_gaps = gap * (span.saturating_sub(1) as f32);
+        let excess = (measured - covered_base - interior_gaps).max(0.0);
+        if excess <= 0.0 {
+            continue;
+        }
+        let share = excess / growable as f32;
+        for i in s..end {
+            if track_grows_to_content(tracks[i]) {
+                auto_maxes[i] = auto_maxes[i].max(share);
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -693,5 +772,101 @@ mod tests {
         let mut empty = Vec::new();
         repeat(0, TrackSizing::Fr(1.0), &mut empty);
         assert!(empty.is_empty());
+    }
+
+    #[test]
+    fn a_span_2_item_splits_its_content_across_two_auto_columns() {
+        // Two Auto columns, no span-1 baseline. A span-2 item measuring 300 wide,
+        // no gap, spreads 300/2 = 150 into each Auto track.
+        let tracks = [TrackSizing::Auto, TrackSizing::Auto];
+        let mut auto = vec![0.0f32; 2];
+        distribute_spanning_auto(
+            &tracks,
+            0.0,
+            1000.0,
+            [(0u16, 2u16, 300.0)].into_iter(),
+            &mut auto,
+        );
+        assert_eq!(auto, vec![150.0, 150.0]);
+    }
+
+    #[test]
+    fn spanning_excess_is_measured_over_the_span_after_subtracting_a_fixed_track() {
+        // [Fixed(100), Auto]: a span-2 item of 260 covers the fixed 100, so only
+        // 160 is attributed — all of it to the single growable Auto track.
+        let tracks = [TrackSizing::Fixed(100.0), TrackSizing::Auto];
+        let mut auto = vec![0.0f32; 2];
+        distribute_spanning_auto(
+            &tracks,
+            0.0,
+            1000.0,
+            [(0u16, 2u16, 260.0)].into_iter(),
+            &mut auto,
+        );
+        assert_eq!(auto, vec![0.0, 160.0]);
+    }
+
+    #[test]
+    fn a_span_item_narrower_than_its_tracks_baseline_adds_nothing() {
+        // Auto tracks already at 200 each from span-1 items; a span-2 item of 150
+        // needs less than the 400 the tracks already provide → no growth.
+        let tracks = [TrackSizing::Auto, TrackSizing::Auto];
+        let mut auto = vec![200.0f32, 200.0];
+        distribute_spanning_auto(
+            &tracks,
+            0.0,
+            1000.0,
+            [(0u16, 2u16, 150.0)].into_iter(),
+            &mut auto,
+        );
+        assert_eq!(auto, vec![200.0, 200.0]);
+    }
+
+    #[test]
+    fn interior_gaps_are_subtracted_before_distributing_across_the_span() {
+        // Two Auto columns with a 20px gap: a span-2 item of 220 spends 20 on the
+        // interior gap, leaving 200 split as 100 into each track.
+        let tracks = [TrackSizing::Auto, TrackSizing::Auto];
+        let mut auto = vec![0.0f32; 2];
+        distribute_spanning_auto(
+            &tracks,
+            20.0,
+            1000.0,
+            [(0u16, 2u16, 220.0)].into_iter(),
+            &mut auto,
+        );
+        assert_eq!(auto, vec![100.0, 100.0]);
+    }
+
+    #[test]
+    fn a_span_over_only_fixed_and_fr_tracks_grows_nothing() {
+        // No growable track in the span (Fixed + Fr) → the item's content is left
+        // to the cell rect, no auto growth attributed.
+        let tracks = [TrackSizing::Fixed(50.0), TrackSizing::Fr(1.0)];
+        let mut auto = vec![0.0f32; 2];
+        distribute_spanning_auto(
+            &tracks,
+            0.0,
+            1000.0,
+            [(0u16, 2u16, 400.0)].into_iter(),
+            &mut auto,
+        );
+        assert_eq!(auto, vec![0.0, 0.0]);
+    }
+
+    #[test]
+    fn span_1_items_are_ignored_by_the_spanning_distribution() {
+        // The span-1 pass owns single-track items; distribute_spanning_auto must
+        // leave them untouched even if handed one.
+        let tracks = [TrackSizing::Auto, TrackSizing::Auto];
+        let mut auto = vec![0.0f32; 2];
+        distribute_spanning_auto(
+            &tracks,
+            0.0,
+            1000.0,
+            [(0u16, 1u16, 300.0)].into_iter(),
+            &mut auto,
+        );
+        assert_eq!(auto, vec![0.0, 0.0]);
     }
 }

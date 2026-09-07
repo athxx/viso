@@ -111,10 +111,17 @@ just past the span **minus the trailing gap** (a span's interior gaps belong to 
 cell; the gap *after* it does not). Each child is then laid into its cell rect honoring
 its own `Size` (see Decision 1).
 
-**Spanning-item Auto attribution:** a spanning child's natural size is *not* attributed
-to any single `Auto` track in this slice — only span-1 children contribute to `Auto`
-maxes. This keeps the solver a single linear pass; the refinement (distributing a
-spanning item's excess across its Auto tracks) is deferred.
+**Spanning-item Auto attribution:** span-1 children set each intrinsic track's baseline;
+a spanning child then distributes its content across the growable tracks it covers
+(`grid::distribute_spanning_auto`, CSS Grid §11.5 "distribute extra space to spanned
+tracks"). The space a spanning item still needs — `measured − Σ track_prebase(covered) −
+interior gaps`, floored at 0 — is spread equally over the growable (`Auto` / `Minmax` /
+`FitContent`) tracks it covers and `max`-ed into each; `Fixed` / `Percent` / `Fr` tracks
+absorb none of it (`track_prebase` accounts for their pre-solve extent, so only the
+genuine shortfall is attributed). A span over no growable track grows nothing — its
+content is honored by the cell rect, not by inflating a fixed track. This runs before
+`solve_tracks`, as a second pass over the same `auto_maxes` channel, so the solver stays a
+single linear pass with no fixed-point iteration.
 
 ## Consequences
 
@@ -167,9 +174,16 @@ spanning item's excess across its Auto tracks) is deferred.
     fixed-track-then-Fr split, repeat≡hand-written) + layout.rs bounds goldens (minmax
     column clamps content and leaves the rest to Fr, floors small content at its min) +
     the `grid_relayout_12x20_minmax` bench baselining the new arms against the pure-Fr grid.
+  - Spanning-item contribution to intrinsic track sizing (Decision 4 refinement) —
+    `grid::distribute_spanning_auto` runs after the span-1 baseline pass and, for each
+    item spanning >1 track, apportions its content shortfall equally across the growable
+    (`Auto` / `Minmax` / `FitContent`) tracks it covers (see Decision 4). Verified by
+    grid.rs unit tests (span-2 splits across two Auto columns, shortfall measured after a
+    Fixed track, a narrow span adds nothing, interior gaps subtracted first, a span over
+    only Fixed+Fr grows nothing, span-1 ignored) + a layout.rs bounds golden (a span-2
+    item widens the two Auto columns it covers so the trailing Fr track lands at x=300).
 - **Known follow-ups, out of scope:**
   - Named grid lines and template-areas placement.
   - Subgrid (a grid child adopting its parent's tracks).
   - Baseline alignment of cell contents.
-  - Spanning-item contribution to `Auto` track sizing (Decision 4 refinement).
   - Per-grid-node `GridScratch` hoisting if a profile ever demands it.
