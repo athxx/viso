@@ -18,9 +18,13 @@
 //! given (it rewrites two `Length`s per seam in place); it is not a per-frame path
 //! — it runs when a seam's fraction changed.
 
-use viso_ui::{NodeStore, StateStore, StateValue};
+use std::collections::HashMap;
 
-use super::build::{MIN_PANE, SEAM_SIZE, SeamRec};
+use viso_ui::{NodeId, NodeStore, StateStore, StateValue};
+
+use super::build::{MIN_PANE, RedockIntents, SEAM_SIZE, SeamRec, SharedZones};
+use super::drag::RedockIntent;
+use super::tree::{DockTree, DropPart, PanelKey};
 
 /// Rewrite every seam's pane weights from its current `fraction` cell, clamping the
 /// fraction to the minimum-pane floor against each seam container's resolved extent.
@@ -66,6 +70,72 @@ fn clamp_to_floor(store: &NodeStore, seam: &SeamRec, raw: f32) -> f32 {
     let lo = MIN_PANE / free;
     let hi = 1.0 - lo;
     raw.clamp(lo, hi)
+}
+
+/// Drain every committed [`RedockIntent`] the drag handlers pushed, apply its pure
+/// tree edit, remount the moved panel's built-once node under its new region, then
+/// hide the drop hint and refresh the zone rects from resolved bounds.
+///
+/// This is the structural half of the reconcile step (a redock genuinely changes
+/// tree structure, AGENTS section 8.1), run before [`reconcile_seams`] rewrites the
+/// live geometry. Unlike the seam path it does not rebuild anything: a panel keeps
+/// its identity — its built-once content subtree and its reactive cells — as it
+/// moves, so a **center/tab-bar join** is a pure arena move (detach the panel node,
+/// re-append it under the target group's panel-area flex — the same bounded-alloc
+/// node move the recycle path uses, never a rebuild). An **edge split** part records
+/// the logical tree edit (so the tree stays the source of truth), but authoring the
+/// new split container and wiring its seam needs the build walk's `BuildCx`, which a
+/// store-only reconcile step does not hold; the container authoring rides the next
+/// build, leaving the moved node's identity and state intact meanwhile.
+///
+/// After applying every intent the drop hint is hidden (a drop is done, so the
+/// transient highlight leaves layout) and each zone's rect is refreshed from its
+/// node's resolved world bounds, so the next drag hit-tests live geometry rather
+/// than a stale build-time rect.
+///
+/// A no-op when the queue is empty — the common case — so a reconcile with no
+/// pending redock touches nothing.
+pub(super) fn reconcile_redock(
+    store: &mut NodeStore,
+    tree: &mut DockTree,
+    panels: &HashMap<PanelKey, NodeId>,
+    intents: &RedockIntents,
+    zones: &SharedZones,
+    hint: NodeId,
+) {
+    let drained: Vec<RedockIntent> = intents.borrow_mut().drain(..).collect();
+    if drained.is_empty() {
+        return;
+    }
+
+    for intent in drained {
+        let RedockIntent::Dock { key, target, part } = intent;
+        // Apply the pure tree edit first; a false return (absent target or a
+        // self-drop) leaves the tree and the nodes untouched.
+        if !tree.dock(key, target, part) {
+            continue;
+        }
+        // A center/tab-bar join moves the panel into the target's group in place:
+        // detach the moving panel's node and re-append it under the same parent the
+        // target's node lives under (the target group's panel-area flex). An edge
+        // split part changes containers the build walk must author, so the node move
+        // rides the next build — the logical edit above already recorded it.
+        if matches!(part, DropPart::Center | DropPart::TabBar)
+            && let (Some(&moved), Some(&anchor)) = (panels.get(&key), panels.get(&target))
+            && let Some(area) = store.parent(anchor)
+        {
+            store.arena_detach(moved);
+            store.arena_append_child(area, moved);
+        }
+    }
+
+    // The drop is done: hide the transient hint and refresh each zone's rect from its
+    // node's resolved world bounds so the next drag hit-tests live geometry.
+    store.set_hidden(hint, true);
+    let mut reg = zones.borrow_mut();
+    for zone in reg.iter_mut() {
+        zone.rect = store.world(zone.node);
+    }
 }
 
 #[cfg(test)]
@@ -127,10 +197,6 @@ mod tests {
             let mut projectors = SemanticProjector::new();
             let seams;
             {
-                let mut out = BuildOut {
-                    seams: Vec::new(),
-                    zones: Vec::new(),
-                };
                 let panels: PanelNodes = Rc::new(RefCell::new(HashMap::new()));
                 let style = DockStyle::default();
                 let mut cx = BuildCx::with_reactive(
@@ -141,6 +207,7 @@ mod tests {
                     &mut text_edits,
                     &mut projectors,
                 );
+                let mut out = BuildOut::empty(&mut cx);
                 crate::controls::dock::build::build_tree(
                     &mut cx, &tree.root, &style, contents, &panels, &mut out,
                 );

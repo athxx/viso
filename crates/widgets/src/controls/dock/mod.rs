@@ -205,13 +205,13 @@ impl Component for Dock {
         // (AGENTS section 45).
         let panels: PanelNodes = Rc::new(RefCell::new(HashMap::new()));
 
-        // The walk's side-records: the seams a live drag will drive and the zones a
-        // panel drag will hit-test. Section 1 fills them; the drag/reconcile
-        // sections consume them.
-        let mut out = BuildOut {
-            seams: Vec::new(),
-            zones: Vec::new(),
-        };
+        // The walk's side-records: the seams a live drag drives, the zones a panel
+        // drag hit-tests, the shared drag channel (drop-hint overlay, redock intent
+        // queue, shared zone registry) the drag-to-redock handlers close over.
+        // `empty` also mints the pre-authored drop-hint overlay leaf now, before the
+        // region so it paints above the docked tree; the build walk fills the seams
+        // and zones as it recurses.
+        let mut out = BuildOut::empty(cx);
 
         // The dock is a named landmark region wrapping the docked tree, so an
         // assistive technology can navigate to it. The docked region tree is
@@ -239,15 +239,29 @@ impl Component for Dock {
         );
         cx.semantics(region, semantics::dock_container());
 
+        // Share the zones the walk collected with the drag handlers, which close over
+        // `zones_shared` (empty at wire time) and hit-test whatever it holds. The
+        // reconcile step refreshes each zone's rect from its node's resolved bounds
+        // before a drag resolves against it.
+        *out.zones_shared.borrow_mut() = out.zones.clone();
+
         // If the app supplied a handle slot, fill it now that the retained nodes,
-        // seams, and panel-node map exist. The handle takes the dock's warm state
-        // forward: its own copy of the tree (which the build walk has finished
-        // reading) plus the seams and the shared panel-node map, so a command edits
-        // the same arrangement the build authored. The deferred-fill idiom the
-        // navigation stack uses — a builder chain cannot return ids minted inside
-        // `build`.
+        // seams, zones, the drop-hint overlay, the intent queue, and the panel-node
+        // map exist. The handle takes the dock's warm state forward: its own copy of
+        // the tree (which the build walk has finished reading), the seams, the shared
+        // drag channel (zones/hint/intents), and the shared panel-node map, so a
+        // command or a drag drop edits the same arrangement the build authored. The
+        // deferred-fill idiom the navigation stack uses — a builder chain cannot
+        // return ids minted inside `build`.
         if let Some(slot) = &self.handle_slot {
-            let handle = command::make_handle(self.tree.clone(), out.seams, panels);
+            let handle = command::make_handle(
+                self.tree.clone(),
+                out.seams,
+                panels,
+                out.zones_shared,
+                out.hint,
+                out.intents,
+            );
             *slot.borrow_mut() = Some(handle);
         }
     }

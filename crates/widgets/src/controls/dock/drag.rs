@@ -12,12 +12,21 @@
 //! step's job (the handler-writes-intent / reconcile-mutates-store split the
 //! virtual list uses).
 //!
-//! The panel drag-to-redock half of the drag subsystem lands in a later section;
-//! this file is the seam half only.
+//! The panel drag-to-redock half lives alongside it (section 4): [`wire_panel_drag`]
+//! attaches a pointer handler to each tab leaf that, on a primary drag, resolves the
+//! pointer against the warm drop-zone rectangles the build walk recorded, toggles a
+//! pre-authored drop-hint overlay over the zone the pointer is over, and on release
+//! pushes a [`RedockIntent`] onto the shared queue the reconcile step drains. Like
+//! the seam handler it holds no node store — it reads warm rects, toggles a node's
+//! visibility through the deferred `set_hidden`, and writes an intent; the tree edit
+//! and the node remount are the reconcile step's job.
 
-use viso_ui::{Axis, BuildCx, EventCx, Key, PointerButtons, PointerPhase, StateId, StateValue};
+use viso_ui::{
+    Axis, BuildCx, EventCx, Key, PointerButtons, PointerPhase, Rect, StateId, StateValue,
+};
 
-use super::build::SeamRec;
+use super::build::{RedockIntents, SeamRec, SharedZones};
+use super::tree::{DropPart, PanelKey};
 
 /// The fraction step one arrow-key press moves a seam — the keyboard equivalent of
 /// a drag (AGENTS section 15), matching the reference splitter's `KEY_STEP_FRACTION`
@@ -117,6 +126,157 @@ pub(super) fn wire_seam(cx: &mut BuildCx<'_>, bar: viso_ui::Handle, seam: &SeamR
         let next = (read_f32(ev, fraction) + dir * KEY_STEP_FRACTION).clamp(0.0, 1.0);
         ev.set(fraction, StateValue::Float(next));
     });
+}
+
+/// The fraction of a drop zone's shorter edge that forms an edge band. A pointer
+/// within this fraction of the target's left/right/top/bottom edge resolves to the
+/// matching split; anywhere more central resolves to a center (tab) drop. Matches
+/// the reference dock's edge-band proportion so the drop feel is identical.
+const DROP_EDGE_BAND: f32 = 0.25;
+
+/// A committed redock: what a panel drop asks the reconcile step to do to the tree.
+/// A panel-drag handler cannot edit the tree itself (a tree edit needs
+/// `&mut NodeStore`, which an [`EventCx`](viso_ui::EventCx) does not hold), so on
+/// drop it pushes one of these onto the shared [`RedockIntents`] queue and the
+/// reconcile step drains it — the same handler-writes-intent / reconcile-mutates-
+/// store split the seam drag uses for its `fraction` cell.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum RedockIntent {
+    /// Redock `key` relative to `target` per `part` (an edge splits, a center/tab
+    /// joins the target's group). The reconcile step edits the tree, re-authorizes
+    /// the changed subtree, and remounts `key`'s existing panel node.
+    Dock {
+        /// The dragged panel.
+        key: PanelKey,
+        /// The panel whose zone the pointer was over at drop.
+        target: PanelKey,
+        /// Where in the target's zone the pointer dropped.
+        part: DropPart,
+    },
+}
+
+/// Resolve a pointer at `(x, y)` against a drop zone rectangle into a [`DropPart`]:
+/// the nearest edge band splits, and the central region joins the target's tab
+/// group. Returns `None` when the pointer is outside the rectangle. The edge bands
+/// are proportional (a fraction of the zone's shorter side, [`DROP_EDGE_BAND`]) so a
+/// small and a large zone read alike; ties between an over-corner's two edges resolve
+/// to whichever band the pointer is proportionally deepest into.
+fn resolve_part(rect: Rect, x: f32, y: f32) -> Option<DropPart> {
+    if x < rect.x || x > rect.x + rect.w || y < rect.y || y > rect.y + rect.h {
+        return None;
+    }
+    // Proportional depth into each edge (0 at the edge, 1 at the far side); the band
+    // is the same fraction of the shorter side on both axes so the bands stay square.
+    let left = (x - rect.x) / rect.w;
+    let right = (rect.x + rect.w - x) / rect.w;
+    let top = (y - rect.y) / rect.h;
+    let bottom = (rect.y + rect.h - y) / rect.h;
+    let nearest = left.min(right).min(top).min(bottom);
+    if nearest >= DROP_EDGE_BAND {
+        // Central region: join the target's tab group.
+        return Some(DropPart::Center);
+    }
+    // Whichever edge the pointer is proportionally closest to.
+    Some(if nearest == left {
+        DropPart::Left
+    } else if nearest == right {
+        DropPart::Right
+    } else if nearest == top {
+        DropPart::Top
+    } else {
+        DropPart::Bottom
+    })
+}
+
+/// The panel-drag half of the drag subsystem: attach a pointer handler to a tab leaf
+/// that drags its panel to a new dock. Called once per tab during the build walk,
+/// after the shared drag channel (the drop-hint node, the intent queue, the zone
+/// registry) exists.
+///
+/// The handler mirrors the seam handler's guard/capture-release lifecycle but drives
+/// a *structural* drop instead of a scalar fraction: a primary press captures the
+/// pointer to the tab so subsequent samples route here; each move resolves the
+/// pointer against the warm drop-zone rectangles (an `EventCx` cannot hit-test
+/// arbitrary nodes, so it reads the rects the reconcile step refreshed into `zones`),
+/// and toggles the pre-authored drop-hint overlay visible over the resolved zone (a
+/// deferred `set_hidden`, the only visibility face a handler has); the release hides
+/// the hint, frees the capture, and — if the pointer was over a zone — pushes a
+/// [`RedockIntent::Dock`] onto `intents` for the reconcile step to apply. The handler
+/// never touches the tree or any node geometry; the tree edit and the node remount
+/// are the reconcile step's job.
+pub(super) fn wire_panel_drag(
+    cx: &mut BuildCx<'_>,
+    tab: viso_ui::Handle,
+    key: PanelKey,
+    hint: viso_ui::NodeId,
+    intents: &RedockIntents,
+    zones: &SharedZones,
+) {
+    let tab_id = tab.id();
+    let intents = intents.clone();
+    let zones = zones.clone();
+
+    cx.on_pointer(tab, move |ev| {
+        // Copy the sample's fields up front: the Up arm calls `set_hidden` (a mutable
+        // borrow of `ev`) and then reads the pointer coords, so it cannot hold the
+        // `ev.pointer()` borrow across that call.
+        let (phase, buttons, px, py) = match ev.pointer() {
+            Some(p) => (p.phase, p.buttons, p.x, p.y),
+            None => return,
+        };
+        // A primary drag, or a release of one; other samples are not drag input.
+        if !buttons.contains(PointerButtons::PRIMARY) && phase != PointerPhase::Up {
+            return;
+        }
+        match phase {
+            PointerPhase::Down => {
+                // Capture so a drag that leaves the tab keeps routing here; the hint
+                // stays hidden until the first move resolves a zone.
+                ev.capture_pointer(tab_id);
+            }
+            PointerPhase::Move => {
+                // Resolve the pointer against the warm zones. Show the hint over the
+                // resolved zone (the reconcile step positions the hint node); hide it
+                // when the pointer is over no zone or over the dragged panel's own.
+                let over = resolve_zone(&zones.borrow(), key, px, py);
+                ev.set_hidden(hint, over.is_none());
+            }
+            PointerPhase::Up => {
+                ev.set_hidden(hint, true);
+                if let Some((target, part)) = resolve_zone(&zones.borrow(), key, px, py) {
+                    intents
+                        .borrow_mut()
+                        .push(RedockIntent::Dock { key, target, part });
+                }
+                ev.release_pointer();
+            }
+            // Hover enter/leave are not drag input; the no-button early return above
+            // already skips them, but the match stays exhaustive.
+            PointerPhase::Enter | PointerPhase::Leave => {}
+        }
+    });
+}
+
+/// Resolve a pointer at `(x, y)` against the warm zone registry into the target panel
+/// and drop part it is over, skipping the dragged panel's own zone (a panel does not
+/// redock onto itself). The first zone the pointer hits wins — zones do not overlap
+/// (each covers a distinct tab-group region), so order does not matter beyond the
+/// self-skip.
+fn resolve_zone(
+    zones: &[super::build::ZoneRec],
+    dragged: PanelKey,
+    x: f32,
+    y: f32,
+) -> Option<(PanelKey, DropPart)> {
+    for zone in zones {
+        if zone.target == dragged {
+            continue;
+        }
+        if let Some(part) = resolve_part(zone.rect, x, y) {
+            return Some((zone.target, part));
+        }
+    }
+    None
 }
 
 #[cfg(test)]
@@ -382,6 +542,204 @@ mod tests {
         assert!(
             (rx.read(seam.fraction) - 0.5).abs() < 1e-6,
             "a no-button move does not drag"
+        );
+    }
+
+    /// The outcome of feeding one pointer sample to a panel-drag handler: any capture
+    /// request it made, and every deferred visibility request it queued. Test 4 asserts
+    /// against both — the hint toggles as the pointer enters and leaves a zone.
+    struct DragStep {
+        capture: Option<Option<NodeId>>,
+        hidden: Vec<(NodeId, bool)>,
+    }
+
+    /// A wired panel drag: the tab node its handler hangs on, the drop-hint node it
+    /// toggles, and the intent queue it pushes onto. The handler owns its own clones of
+    /// the zone registry and the intent queue, so the test reads back through `intents`
+    /// while the seeded zones live inside the handler's clone.
+    struct WiredPanel {
+        tab: NodeId,
+        hint: NodeId,
+        intents: RedockIntents,
+    }
+
+    impl Reactive {
+        /// Author a bare tab leaf and a drop-hint leaf, seed the shared zone registry
+        /// with one target zone, wire the panel-drag handler onto the tab, and return
+        /// the handle bundle. `dragged` is the key the tab drags; `target`/`rect` name
+        /// the one zone the pointer can drop onto.
+        fn wire_panel(&mut self, dragged: PanelKey, target: PanelKey, rect: Rect) -> WiredPanel {
+            let intents: RedockIntents = Default::default();
+            let zones: SharedZones = Default::default();
+            let (tab_id, hint_id);
+            {
+                let mut cx = BuildCx::with_reactive(
+                    &mut self.store,
+                    &mut self.states,
+                    &mut self.bindings,
+                    &mut self.lists,
+                    &mut self.text_edits,
+                    &mut self.projectors,
+                );
+                let hint = cx.leaf(LeafStyle {
+                    size: Size::fill(),
+                    style: BoxStyle::NONE,
+                });
+                let tab = cx.leaf(LeafStyle {
+                    size: Size::fixed(60.0, 24.0),
+                    style: BoxStyle::NONE,
+                });
+                hint_id = hint.id();
+                tab_id = tab.id();
+                wire_panel_drag(&mut cx, tab, dragged, hint_id, &intents, &zones);
+            }
+            // Seed the one drop zone the handler hit-tests against (the build walk's
+            // ZoneRec, here for the target panel only).
+            zones.borrow_mut().push(super::super::build::ZoneRec {
+                node: tab_id,
+                target,
+                rect,
+            });
+            WiredPanel {
+                tab: tab_id,
+                hint: hint_id,
+                intents,
+            }
+        }
+
+        /// Feed a pointer sample to the tab's panel-drag handler, restoring it after,
+        /// and return the capture request plus the deferred visibility requests it made.
+        fn panel_pointer(&mut self, tab: NodeId, ev: PointerEvent) -> DragStep {
+            let mut handler = self.store.take_handler(tab).expect("panel pointer handler");
+            let (capture, hidden) = {
+                let mut cx = EventCx::__new_pointer(&mut self.states, &self.bindings, &ev);
+                handler(&mut cx);
+                (cx.__take_capture_request(), cx.__take_hidden_requests())
+            };
+            self.store.restore_handler(tab, handler);
+            DragStep { capture, hidden }
+        }
+    }
+
+    /// Test 4 — the panel drag-to-redock tape. A primary press on a tab captures the
+    /// pointer to the tab (the hint stays hidden). A move into the target zone's central
+    /// region shows the hint; a move back outside every zone hides it again. A release
+    /// over the zone hides the hint, frees the capture, and pushes the resolved
+    /// [`RedockIntent::Dock`] for the reconcile step to apply — the handler itself never
+    /// touches the tree or any node, only writes the intent (verified by the empty queue
+    /// staying empty until release, then holding exactly the resolved drop).
+    #[test]
+    fn panel_drag_shows_hint_and_pushes_the_redock_intent() {
+        let mut rx = Reactive::new();
+        let dragged = PanelKey(0);
+        let target = PanelKey(1);
+        // A zone well away from the origin so a press at the origin is over no zone.
+        let zone = Rect {
+            x: 100.0,
+            y: 100.0,
+            w: 400.0,
+            h: 300.0,
+        };
+        let panel = rx.wire_panel(dragged, target, zone);
+
+        // Press: captures to the tab, queues no visibility change, pushes no intent.
+        let down = rx.panel_pointer(panel.tab, primary_at(20.0, 20.0, PointerPhase::Down));
+        assert_eq!(
+            down.capture,
+            Some(Some(panel.tab)),
+            "the press captures the pointer to the tab"
+        );
+        assert!(
+            down.hidden.is_empty(),
+            "the press queues no visibility change"
+        );
+        assert!(
+            panel.intents.borrow().is_empty(),
+            "the press pushes no redock intent"
+        );
+
+        // Move into the zone's centre: the hint is requested visible over the zone.
+        let center = rx.panel_pointer(panel.tab, primary_at(300.0, 250.0, PointerPhase::Move));
+        assert_eq!(
+            center.hidden,
+            vec![(panel.hint, false)],
+            "a move over a zone shows the hint"
+        );
+
+        // Move back outside every zone: the hint is requested hidden again.
+        let outside = rx.panel_pointer(panel.tab, primary_at(10.0, 10.0, PointerPhase::Move));
+        assert_eq!(
+            outside.hidden,
+            vec![(panel.hint, true)],
+            "a move off every zone hides the hint"
+        );
+        assert!(
+            panel.intents.borrow().is_empty(),
+            "no intent is pushed until the release"
+        );
+
+        // Release over the zone's centre: hides the hint, frees the capture, and pushes
+        // the resolved Center-join intent.
+        let up = rx.panel_pointer(panel.tab, primary_at(300.0, 250.0, PointerPhase::Up));
+        assert_eq!(up.capture, Some(None), "the release frees the capture");
+        assert_eq!(
+            up.hidden,
+            vec![(panel.hint, true)],
+            "the release hides the hint"
+        );
+        assert_eq!(
+            &*panel.intents.borrow(),
+            &[RedockIntent::Dock {
+                key: dragged,
+                target,
+                part: DropPart::Center,
+            }],
+            "the release pushes the resolved Center-join redock intent"
+        );
+    }
+
+    /// A release over an edge band resolves to that edge's split part, and a release
+    /// over no zone pushes nothing — the drop is discarded when the pointer is off
+    /// every zone.
+    #[test]
+    fn panel_drag_resolves_the_edge_band_and_discards_an_off_zone_drop() {
+        let mut rx = Reactive::new();
+        let dragged = PanelKey(0);
+        let target = PanelKey(1);
+        let zone = Rect {
+            x: 100.0,
+            y: 100.0,
+            w: 400.0,
+            h: 300.0,
+        };
+
+        // A press then a release deep in the left band: resolves to a Left split.
+        let mut rx_left = Reactive::new();
+        let left = rx_left.wire_panel(dragged, target, zone);
+        rx_left.panel_pointer(left.tab, primary_at(20.0, 20.0, PointerPhase::Down));
+        rx_left.panel_pointer(left.tab, primary_at(110.0, 250.0, PointerPhase::Up));
+        assert_eq!(
+            &*left.intents.borrow(),
+            &[RedockIntent::Dock {
+                key: dragged,
+                target,
+                part: DropPart::Left,
+            }],
+            "a release in the left band resolves to a Left split"
+        );
+
+        // A press then a release outside every zone: nothing is pushed.
+        let off = rx.wire_panel(dragged, target, zone);
+        rx.panel_pointer(off.tab, primary_at(20.0, 20.0, PointerPhase::Down));
+        let up = rx.panel_pointer(off.tab, primary_at(10.0, 10.0, PointerPhase::Up));
+        assert_eq!(
+            up.capture,
+            Some(None),
+            "the release still frees the capture"
+        );
+        assert!(
+            off.intents.borrow().is_empty(),
+            "a drop off every zone pushes no intent"
         );
     }
 }

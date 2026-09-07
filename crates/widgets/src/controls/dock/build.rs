@@ -80,29 +80,88 @@ pub(super) struct SeamRec {
 }
 
 /// One built dock region and its screen node, for drop-target hit resolution. A
-/// panel drag resolves the pointer against these warm rectangles at reconcile time
-/// (an `EventCx` cannot hit-test arbitrary nodes); section 1 records the region
-/// node and the primary panel key it holds, and the reconcile section fills the
-/// live rect. Recorded per tab group (the smallest droppable region).
-// `node`/`target` are read by the drag-to-redock hit resolution in section 4;
-// section 1 records the zones so that section need not re-walk the tree.
-#[allow(dead_code)]
+/// panel drag resolves the pointer against these warm rectangles (an `EventCx`
+/// cannot hit-test arbitrary nodes): section 1 records the region node and the
+/// primary panel key it holds, and the drag-to-redock section fills `rect` from the
+/// node's resolved bounds before a drag begins. Recorded per tab group (the smallest
+/// droppable region).
 #[derive(Debug, Clone, Copy)]
 pub(super) struct ZoneRec {
     /// The tab-group container node this zone covers.
     pub node: NodeId,
     /// A representative panel in the group — the drop's target for a redock edit.
     pub target: PanelKey,
+    /// The zone's screen rectangle, refreshed from the node's resolved bounds when
+    /// a panel drag begins. Zero until first filled — a drag reads the live bounds
+    /// through the store rather than trusting a stale build-time rect.
+    pub rect: viso_ui::Rect,
 }
 
+/// The shared drop-zone registry a panel-drag handler hit-tests against. Filled from
+/// [`BuildOut::zones`] after the walk (the walk collects the zones in order; the
+/// registry is shared with the built handlers so a drag reads the live rects the
+/// reconcile step refreshes). Written on a discrete action (a drag start), read on a
+/// drag move — never a per-frame path.
+pub(super) type SharedZones = Rc<RefCell<Vec<ZoneRec>>>;
+
+/// The queue a panel-drag handler pushes a redock intent onto at drop; the reconcile
+/// step drains it, edits the tree, and remounts the moved panel node. The
+/// handler-writes-intent / reconcile-mutates-store split (a tree edit needs
+/// `&mut NodeStore`, which an [`EventCx`](viso_ui::EventCx) does not hold), the same
+/// shape the seam drag uses for its `fraction` cell — a structural edit cannot ride
+/// a scalar state cell, so it rides this queue instead.
+pub(super) type RedockIntents = Rc<RefCell<Vec<super::drag::RedockIntent>>>;
+
 /// What the build walk records for the sections that follow: the seams to drive,
-/// the zones to hit-test, and the keyed panel nodes to remount. All warm (written
-/// once at build, read on discrete actions), never per-frame hot state.
+/// the zones to hit-test, the keyed panel nodes to remount, plus the shared drag
+/// channel (drop-hint node, redock intent queue, shared zone registry) the
+/// drag-to-redock handlers close over. All warm (written once at build, read on
+/// discrete actions), never per-frame hot state.
 pub(super) struct BuildOut {
     /// Every split's seam record, in walk order.
     pub seams: Vec<SeamRec>,
     /// Every tab group's drop-zone record, in walk order.
     pub zones: Vec<ZoneRec>,
+    /// The pre-authored drop-hint overlay leaf a drag toggles visible over the zone
+    /// the pointer is over. Hidden at build; shown by a deferred `set_hidden`.
+    pub hint: NodeId,
+    /// The redock intent queue a drop pushes onto; the reconcile step drains it.
+    pub intents: RedockIntents,
+    /// The shared zone registry the handlers hit-test; filled after the walk.
+    pub zones_shared: SharedZones,
+}
+
+/// The drop-hint overlay's translucent tint — a faint highlight the drag toggles
+/// visible over the zone the pointer is over, the same shape the modal's scrim uses
+/// (an overlay leaf, hidden at build, shown by a deferred `set_hidden`).
+const HINT_TINT: viso_ui::Rgba = viso_ui::Rgba {
+    r: 0.30,
+    g: 0.55,
+    b: 0.95,
+    a: 0.30,
+};
+
+impl BuildOut {
+    /// Mint an empty walk record: no seams or zones yet, empty intent/zone queues,
+    /// and the pre-authored drop-hint overlay leaf (a fill-size overlay, hidden at
+    /// build — the modal scrim shape). The build walk fills the seams and zones as it
+    /// recurses; after the walk the caller copies `zones` into `zones_shared` so the
+    /// drag handlers hit-test the same rects the reconcile step refreshes.
+    pub fn empty(cx: &mut BuildCx<'_>) -> Self {
+        let hint = cx.leaf(LeafStyle {
+            size: Size::fill(),
+            style: BoxStyle::solid(HINT_TINT),
+        });
+        cx.set_overlay(hint, true);
+        cx.set_hidden(hint, true);
+        BuildOut {
+            seams: Vec::new(),
+            zones: Vec::new(),
+            hint: hint.id(),
+            intents: Rc::new(RefCell::new(Vec::new())),
+            zones_shared: Rc::new(RefCell::new(Vec::new())),
+        }
+    }
 }
 
 /// Author the node subtree for `node` into `cx`, returning the built region's
@@ -290,6 +349,11 @@ fn build_tabs(
 
     let show_strip = strip && keys.len() > 1;
 
+    // Each tab leaf, paired with its panel key, so the drag-to-redock handlers can
+    // be wired after the zone container's node id is known (a panel drag reports
+    // its destination against the group container, built below).
+    let mut tab_handles: Vec<(PanelKey, viso_ui::Handle)> = Vec::new();
+
     let container = cx.flex(
         FlexStyle {
             axis: viso_ui::Axis::Column,
@@ -327,6 +391,7 @@ fn build_tabs(
                             });
                             cx.focusable(tab, true);
                             cx.semantics(tab, semantics::tab(contents, key));
+                            tab_handles.push((key, tab));
                         }
                     },
                 );
@@ -381,7 +446,22 @@ fn build_tabs(
     out.zones.push(ZoneRec {
         node: container.id(),
         target,
+        rect: viso_ui::Rect {
+            x: 0.0,
+            y: 0.0,
+            w: 0.0,
+            h: 0.0,
+        },
     });
+
+    // Wire drag-to-redock onto each tab leaf now that the group container exists:
+    // dragging a tab records a redock intent against the drop zone the pointer ends
+    // over, resolved by the drag section from the warm zone rects. The strip shows
+    // no tabs when a group is lone, so a lone panel has nothing to grab — its redock
+    // path is a future section's floating-panel chrome.
+    for (key, tab) in tab_handles {
+        super::drag::wire_panel_drag(cx, tab, key, out.hint, &out.intents, &out.zones_shared);
+    }
 
     container
 }
@@ -502,10 +582,6 @@ mod tests {
         // Capture the walk's side-records by rebuilding the tree directly, so the
         // test sees the same `out` the `Component::build` fills internally.
         let (seams, zones) = {
-            let mut out = BuildOut {
-                seams: Vec::new(),
-                zones: Vec::new(),
-            };
             let panels: PanelNodes = Rc::new(RefCell::new(HashMap::new()));
             let tree = DockTree::new(DockNode::split(
                 Axis::Row,
@@ -523,6 +599,7 @@ mod tests {
                 &mut rx.text_edits,
                 &mut rx.projectors,
             );
+            let mut out = BuildOut::empty(&mut cx);
             build_tree(&mut cx, &tree.root, &style, &contents, &panels, &mut out);
             (out.seams, out.zones)
         };
@@ -576,10 +653,6 @@ mod tests {
         // Rebuild capturing the panel map (Component::build drops it internally).
         let panels: PanelNodes = Rc::new(RefCell::new(HashMap::new()));
         {
-            let mut out = BuildOut {
-                seams: Vec::new(),
-                zones: Vec::new(),
-            };
             let mut cx = BuildCx::with_reactive(
                 &mut rx.store,
                 &mut rx.states,
@@ -588,6 +661,7 @@ mod tests {
                 &mut rx.text_edits,
                 &mut rx.projectors,
             );
+            let mut out = BuildOut::empty(&mut cx);
             let contents = {
                 let mut c: HashMap<PanelKey, PanelContent> = HashMap::new();
                 c.insert(left, Box::new(|_cx: &mut BuildCx<'_>| {}));
