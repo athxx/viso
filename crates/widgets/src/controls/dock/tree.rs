@@ -165,6 +165,24 @@ impl DockNode {
             DockNode::Tabs { panels, .. } => panels.contains(&key),
         }
     }
+
+    /// Select `key` in the tab group that holds it, returning that group's panel
+    /// keys in tab order alongside the newly selected index — enough for a command
+    /// to flip each sibling panel node's visibility so only `key` shows. Returns
+    /// `None` if `key` is not in any tab group under this node. Walks the tree once
+    /// on a discrete command action (`O(depth)`), never a per-frame path.
+    pub fn select(&mut self, key: PanelKey) -> Option<(Vec<PanelKey>, usize)> {
+        match self {
+            DockNode::Tabs {
+                panels, selected, ..
+            } => {
+                let i = panels.iter().position(|&k| k == key)?;
+                *selected = i;
+                Some((panels.clone(), i))
+            }
+            DockNode::Split { a, b, .. } => a.select(key).or_else(|| b.select(key)),
+        }
+    }
 }
 
 /// The axis and leading/trailing side a [`DropPart`] edge implies, or `None` for a
