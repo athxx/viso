@@ -268,6 +268,17 @@ pub struct NodeStore {
     /// [`focus_next`]: crate::input::focus_next
     /// [`focused`]: Self::focused
     focus_scope: Option<NodeId>,
+    /// The node the pointer is currently over, or `None` when the pointer is over
+    /// no interactive node (or has left the window). The router diffs this slot
+    /// against each pointer-move hit to synthesize per-node enter/leave; it is a
+    /// pure move-time projection of the hit target, never a hot per-node column.
+    /// One slot per store — a single pointer this slice — reset to `None` on a
+    /// structural rebuild. Mirrors [`capture`]/[`focused`]: a single retained
+    /// slot, zero steady-state cost when the hover target does not change.
+    ///
+    /// [`capture`]: Self::capture
+    /// [`focused`]: Self::focused
+    hovered: Option<NodeId>,
     /// Cold flag column: whether a node can hold focus. Default `false` — unlike
     /// `hittable`, a node opts *in* to focus (only interactive nodes participate
     /// in the focus ring). Maintained index-aligned with the arena.
@@ -389,6 +400,7 @@ impl NodeStore {
         self.window_closes.clear();
         self.focused = None;
         self.capture = None;
+        self.hovered = None;
         self.focus_scope = None;
     }
 
@@ -639,6 +651,29 @@ impl NodeStore {
             Some(node) if self.arena.is_live(node) => self.capture = Some(node),
             Some(_) => {}
             None => self.capture = None,
+        }
+    }
+
+    /// The node the pointer is currently over, if any. The router reads this to
+    /// diff against each move-time hit target and synthesize per-node
+    /// enter/leave; it is never a hot per-node column.
+    #[inline]
+    pub fn hovered(&self) -> Option<NodeId> {
+        self.hovered
+    }
+
+    /// Set (or clear, with `None`) the hovered node. A live-guarded write:
+    /// pointing hover at a stale handle is a no-op, so a released/freed node
+    /// never appears hovered. Clearing is always honored. The router calls this
+    /// once per move, after dispatching the enter/leave pair, to commit the new
+    /// hover target — mirroring [`set_capture`].
+    ///
+    /// [`set_capture`]: Self::set_capture
+    pub fn set_hovered(&mut self, id: Option<NodeId>) {
+        match id {
+            Some(node) if self.arena.is_live(node) => self.hovered = Some(node),
+            Some(_) => {}
+            None => self.hovered = None,
         }
     }
 
