@@ -144,8 +144,12 @@ use crate::text_edit::TextEdits;
 /// A single-node chain (the target is the root) runs only the target phase, so
 /// its handler fires exactly once. Every ancestor's handler fires twice (once
 /// capturing, once bubbling); the target's fires once — the standard
-/// capture/target/bubble contract. Consume/`stop_propagation` is a later slice;
-/// for now every phase runs.
+/// capture/target/bubble contract. A handler that calls
+/// [`EventCx::stop_propagation`](crate::EventCx::stop_propagation) consumes the
+/// event: it still finishes, but [`dispatch_chain`] visits no further node on
+/// the chain (in this phase or the next). Modal's scrim is the canonical
+/// consumer — a click on the backdrop is swallowed rather than bubbling to any
+/// app-level ancestor behind the dialog.
 pub struct PointerRouter;
 
 impl PointerRouter {
@@ -923,6 +927,19 @@ mod tests {
         move |_ev| log.borrow_mut().push(label)
     }
 
+    /// Like [`log_handler`] but also calls [`EventCx::stop_propagation`] — a handler
+    /// that logs its label and then consumes the event, so a test can assert the
+    /// router walks no further node once it runs.
+    fn consuming_log_handler(
+        log: Rc<RefCell<Vec<u32>>>,
+        label: u32,
+    ) -> impl FnMut(&mut EventCx<'_>) + 'static {
+        move |ev| {
+            log.borrow_mut().push(label);
+            ev.stop_propagation();
+        }
+    }
+
     #[test]
     fn miss_dispatches_nothing() {
         let mut store = NodeStore::new();
@@ -1057,6 +1074,62 @@ mod tests {
         assert!(ran);
         // capture: root(0). target: child(1). bubble: root(0).
         assert_eq!(*log.borrow(), vec![0, 1, 0]);
+    }
+
+    #[test]
+    fn stop_propagation_swallows_the_pointer_chain() {
+        // root (label 0) > child (label 1); target is the child, which consumes.
+        // Compare with `capture_target_bubble_order` (same tree, non-consuming child):
+        // there the log is [0, 1, 0]; here the child's stop_propagation ends the walk
+        // after the target phase, so the root's bubble (the trailing 0) never fires.
+        let mut store = NodeStore::new();
+        let mut states = StateStore::new();
+        let bindings = BindingTable::new();
+        let log = Rc::new(RefCell::new(Vec::new()));
+        let root = {
+            let mut cx = BuildCx::new(&mut store);
+            let flex = cx.flex(
+                FlexStyle {
+                    axis: Axis::Row,
+                    size: Size::fixed(100.0, 100.0),
+                    ..Default::default()
+                },
+                |cx| {
+                    let c = cx.leaf(LeafStyle {
+                        size: Size::fixed(40.0, 40.0),
+                        ..Default::default()
+                    });
+                    cx.on_pointer(c, consuming_log_handler(log.clone(), 1));
+                },
+            );
+            cx.on_pointer(flex, log_handler(log.clone(), 0));
+            cx.root().unwrap()
+        };
+        let mut scratch = Vec::new();
+        store.layout(
+            root,
+            Rect {
+                x: 0.0,
+                y: 0.0,
+                w: 100.0,
+                h: 100.0,
+            },
+            &mut scratch,
+        );
+
+        let mut chain = Vec::new();
+        let ran = route_pointer(
+            &mut store,
+            &mut states,
+            &bindings,
+            root,
+            down(10.0, 10.0),
+            &mut chain,
+        );
+        assert!(ran, "the consuming target still counts as a dispatch");
+        // capture: root(0). target: child(1) consumes → the walk ends. The root's
+        // bubble is swallowed: no trailing 0.
+        assert_eq!(*log.borrow(), vec![0, 1]);
     }
 
     // ---- hover: per-node enter/leave synthesis (section 8.4) ----
@@ -1765,6 +1838,60 @@ mod tests {
     }
 
     #[test]
+    fn stop_propagation_swallows_the_key_chain() {
+        // Same tree as `route_key_reaches_focused_node_and_bubbles`, but the focused
+        // child consumes the key. There the log is [0, 1, 0]; here the child's
+        // stop_propagation ends the walk after the target phase, so the ancestor's
+        // bubble (the trailing 0) never fires — the key router honors stop the same
+        // way the pointer router does.
+        let mut store = NodeStore::new();
+        let mut states = StateStore::new();
+        let bindings = BindingTable::new();
+        let log = Rc::new(RefCell::new(Vec::new()));
+        let child = Rc::new(RefCell::new(None));
+        let root = {
+            let mut cx = BuildCx::new(&mut store);
+            let child2 = child.clone();
+            let flex = cx.flex(
+                FlexStyle {
+                    axis: Axis::Row,
+                    size: Size::fixed(100.0, 100.0),
+                    ..Default::default()
+                },
+                |cx| {
+                    let c = cx.leaf(LeafStyle {
+                        size: Size::fixed(40.0, 40.0),
+                        ..Default::default()
+                    });
+                    *child2.borrow_mut() = Some(c.id());
+                },
+            );
+            (flex.id(), cx.root().unwrap())
+        };
+        let (flex_id, root) = root;
+        let child_id = child.borrow().unwrap();
+        store.set_key_handler(flex_id, Box::new(key_log(log.clone(), 0)));
+        store.set_key_handler(child_id, Box::new(consuming_key_log(log.clone(), 1)));
+        store.set_focusable(child_id, true);
+        store.set_focused(Some(child_id));
+
+        let mut chain = Vec::new();
+        let mut edits = TextEdits::new();
+        let ran = KeyRouter::route_key(
+            &mut store,
+            &mut states,
+            &bindings,
+            &mut edits,
+            root,
+            key(Key::Enter),
+            &mut chain,
+        );
+        assert!(ran, "the consuming target still counts as a dispatch");
+        // capture: flex(0). target: child(1) consumes → the walk ends. No trailing 0.
+        assert_eq!(*log.borrow(), vec![0, 1]);
+    }
+
+    #[test]
     fn route_key_applies_a_handlers_focus_scope_request() {
         // A key handler on the focused node records a focus-scope request through
         // `cx.set_focus_scope`; the router must drain it and install the scope on
@@ -2156,6 +2283,18 @@ mod tests {
     /// Key-handler twin of `log_handler`: push a label each time it runs.
     fn key_log(log: Rc<RefCell<Vec<u32>>>, label: u32) -> impl FnMut(&mut EventCx<'_>) + 'static {
         move |_ev| log.borrow_mut().push(label)
+    }
+
+    /// Key-handler twin of `consuming_log_handler`: log the label then consume the
+    /// event, so a test can assert the key router honors `stop_propagation` too.
+    fn consuming_key_log(
+        log: Rc<RefCell<Vec<u32>>>,
+        label: u32,
+    ) -> impl FnMut(&mut EventCx<'_>) + 'static {
+        move |ev| {
+            log.borrow_mut().push(label);
+            ev.stop_propagation();
+        }
     }
 
     // ---- scroll routing ----

@@ -915,11 +915,13 @@ enter/leave 合成、无 hover 追踪、无控件用 hover 反馈。落 `crates/
 且 `input.rs:137` 头注释仍写"Consume/stop_propagation is a later slice"(过时)。落 `crates/ui/src/input.rs` 注释 +
 控件消费者 + 测试。
 
-- [ ] 让一个控件真正 consume:Modal backdrop 或 Button —— 点击 backdrop 应 stop_propagation(不穿透到背后),
-      Button 按下应 consume(不冒泡到父)。选最合理的第一个消费者。
-- [ ] 加 dispatch 级 swallow 集成测试:事件到某节点 consume 后,祖先/后续 handler 不触发。
-- [ ] 更新 `input.rs:137` 过时注释(机制已落地,非 later slice)。
-- [ ] 验证包:swallow 单测(pointer 链 + key 链各一)。无需 golden/bench(纯逻辑)。
+- [x] 让一个控件真正 consume:Modal scrim —— scrim pointer handler 无条件 `stop_propagation`(隔断背后),
+      并按 `dismiss_on_scrim`(默认开)在 Down 上走 `set_open(false)` 关闭;强制对话框可 `dismiss_on_scrim(false)`。
+- [x] 加 dispatch 级 swallow 集成测试:事件到某节点 consume 后,祖先/后续 handler 不触发(pointer + key 链各一,
+      对照 `capture_target_bubble_order` / `route_key_reaches_focused_node_and_bubbles` 的 `[0,1,0]` → 消费后 `[0,1]`)。
+- [x] 更新 `input.rs` 过时注释(机制已落地,非 later slice)。
+- [x] 验证包:swallow 单测(pointer 链 + key 链各一)+ Modal scrim 单测(swallow+close / disabled 时 swallow-only)。
+      无需 golden/bench(纯逻辑)。
 
 **8.6 — VirtualList 稳定 key(key_of reorder)** —— 今天 logical_index 即 identity,数据 reorder 时行按位置重建而非按
 身份保持(virtual_list.rs reconcile 按 `logical_index` 匹配 mounted)。落 `crates/ui/src/virtual_list.rs`。
