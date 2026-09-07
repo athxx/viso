@@ -89,6 +89,15 @@ pub enum Role {
     /// tapes, and the one-shot timer (the derive pass has no state store today —
     /// the same treatment as [`CheckBox`](Role::CheckBox)).
     Status,
+    /// A named landmark region: a perceivable, standalone section of the scene an
+    /// assistive technology can navigate to and announce by name (WAI-ARIA
+    /// `role=region`). Stronger than [`Group`](Role::Group), which is a mute
+    /// structural container, and distinct from [`Navigation`](Role::Navigation),
+    /// which is specifically a page stack. The [`Dock`](../../viso_widgets/index.html)
+    /// container and each detached floating panel carry this role so a screen
+    /// reader can jump between docked areas by name. Purely structural — it carries
+    /// no live reactive state, only its role and label.
+    Region,
 }
 
 /// A node's *authored* semantics: the facts a builder sets, distinct from the
