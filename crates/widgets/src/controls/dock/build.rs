@@ -181,6 +181,7 @@ fn build_split(
     // by node id, not index, so the order is not load-bearing).
     let mut pane_a_id: Option<NodeId> = None;
     let mut pane_b_id: Option<NodeId> = None;
+    let mut bar_handle: Option<viso_ui::Handle> = None;
 
     let container = cx.flex(
         FlexStyle {
@@ -216,6 +217,7 @@ fn build_split(
             });
             cx.focusable(bar, true);
             cx.semantics(bar, semantics::seam());
+            bar_handle = Some(bar);
 
             // Pane B: a fill container holding the trailing region's subtree.
             let pane_b = cx.flex(
@@ -241,7 +243,7 @@ fn build_split(
 
     // Record the seam now that the pane ids are known. Both panes always build
     // (the closure runs synchronously), so the ids are present.
-    out.seams.push(SeamRec {
+    let seam = SeamRec {
         container: container.id(),
         pane_a: pane_a_id.expect("pane A built"),
         pane_b: pane_b_id.expect("pane B built"),
@@ -249,7 +251,15 @@ fn build_split(
         fraction: cell_fraction,
         down_pos: cell_down,
         start_frac: cell_start,
-    });
+    };
+
+    // Wire the seam's pointer and key drag handlers to its bar (built above, so its
+    // handle is in scope). The handlers write only the drag cells; the reconcile
+    // step turns the committed fraction into live pane geometry. The bar always
+    // builds (the closure ran synchronously), so its handle is present.
+    super::drag::wire_seam(cx, bar_handle.expect("bar built"), &seam);
+
+    out.seams.push(seam);
 
     container
 }

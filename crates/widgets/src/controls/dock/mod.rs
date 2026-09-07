@@ -65,6 +65,8 @@
 //! beyond the primary pointer.
 
 mod build;
+mod drag;
+mod reconcile;
 mod semantics;
 mod tree;
 

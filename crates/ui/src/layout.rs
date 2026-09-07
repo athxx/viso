@@ -325,6 +325,20 @@ impl LayoutInput {
             | LayoutInput::Grid { size, .. } => size,
         }
     }
+
+    /// A mutable borrow of the node's own size request, for a reconcile step that
+    /// rewrites a live node's length in place (see
+    /// [`NodeStore::set_flex_child_weight`](crate::NodeStore::set_flex_child_weight)).
+    #[inline]
+    pub fn size_mut(&mut self) -> &mut Size {
+        match self {
+            LayoutInput::Flex { size, .. }
+            | LayoutInput::Leaf { size }
+            | LayoutInput::Scroll { size, .. }
+            | LayoutInput::AbsoluteRows { size, .. }
+            | LayoutInput::Grid { size, .. } => size,
+        }
+    }
 }
 
 /// The natural (content) size a node measures to, in physical pixels.
