@@ -26,7 +26,8 @@ mod toggle;
 pub use button::{Button, ButtonStyle, button};
 pub use checkbox::{CheckBox, CheckBoxStyle, checkbox};
 pub use dock::{
-    Dock, DockNode, DockStyle, DockTree, DropPart, Floating, PanelContent, PanelKey, dock,
+    Dock, DockHandle, DockHandleSlot, DockNode, DockStyle, DockTree, DropPart, Floating,
+    PanelContent, PanelKey, dock,
 };
 pub use modal::{Modal, ModalHandle, ModalHandleSlot, ModalStyle, modal};
 pub use navigation_stack::{

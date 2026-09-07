@@ -35,9 +35,9 @@ use super::build::{MIN_PANE, SEAM_SIZE, SeamRec};
 /// A seam whose container is not yet laid out (zero extent) is clamped to the plain
 /// `[0, 1]` range, so an initial reconcile before the first layout still produces a
 /// sane split; the next reconcile after layout applies the true floor.
-// Driven by the imperative reconcile step wired in section 3 (imperative commands);
-// section 2 defines and tests the geometry rewrite it performs.
-#[allow(dead_code)]
+///
+/// Driven by [`DockHandle::reconcile`](super::command::DockHandle::reconcile), the
+/// imperative reconcile intent-drain a host runs after an input transaction.
 pub(super) fn reconcile_seams(store: &mut NodeStore, states: &StateStore, seams: &[SeamRec]) {
     for seam in seams {
         let raw = match states.get(seam.fraction) {

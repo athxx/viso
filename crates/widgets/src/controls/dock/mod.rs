@@ -65,6 +65,7 @@
 //! beyond the primary pointer.
 
 mod build;
+mod command;
 mod drag;
 mod reconcile;
 mod semantics;
@@ -78,6 +79,7 @@ use viso_ui::{BoxStyle, BuildCx, Component, Rgba, Size};
 
 use build::{BuildOut, PanelNodes};
 
+pub use command::{DockHandle, DockHandleSlot};
 pub use tree::{DockNode, DockTree, DropPart, Floating, PanelKey};
 
 /// A panel's build-time content builder: it authors the panel's subtree into the
@@ -144,6 +146,11 @@ pub struct Dock {
     /// well-formed dock registers every key it names).
     contents: HashMap<PanelKey, PanelContent>,
     style: DockStyle,
+    /// The optional handle slot an application supplies to capture a [`DockHandle`]:
+    /// `build` fills it once the tree, seams, and panel-node map exist, the same
+    /// deferred-fill idiom the navigation stack uses. `None` when the app does not
+    /// need imperative control.
+    handle_slot: Option<DockHandleSlot>,
 }
 
 /// Construct a [`Dock`] over an initial [`DockTree`], with no panel content
@@ -154,6 +161,7 @@ pub fn dock(tree: DockTree) -> Dock {
         tree,
         contents: HashMap::new(),
         style: DockStyle::default(),
+        handle_slot: None,
     }
 }
 
@@ -175,6 +183,16 @@ impl Dock {
     /// Set the control's own size request within its parent (defaults to `Fill`).
     pub fn size(mut self, size: Size) -> Self {
         self.style.size = size;
+        self
+    }
+
+    /// Capture a [`DockHandle`] through a shared slot the application owns, to drive
+    /// the dock imperatively (select a tab, redock, undock, float, or close a
+    /// panel). `build` fills the slot once the retained nodes exist; the app reads
+    /// `slot.borrow().clone()` after building. Without this the dock still renders
+    /// and its seams still drag — only programmatic control is unavailable.
+    pub fn handle(mut self, slot: &DockHandleSlot) -> Self {
+        self.handle_slot = Some(Rc::clone(slot));
         self
     }
 }
@@ -220,5 +238,17 @@ impl Component for Dock {
             },
         );
         cx.semantics(region, semantics::dock_container());
+
+        // If the app supplied a handle slot, fill it now that the retained nodes,
+        // seams, and panel-node map exist. The handle takes the dock's warm state
+        // forward: its own copy of the tree (which the build walk has finished
+        // reading) plus the seams and the shared panel-node map, so a command edits
+        // the same arrangement the build authored. The deferred-fill idiom the
+        // navigation stack uses — a builder chain cannot return ids minted inside
+        // `build`.
+        if let Some(slot) = &self.handle_slot {
+            let handle = command::make_handle(self.tree.clone(), out.seams, panels);
+            *slot.borrow_mut() = Some(handle);
+        }
     }
 }
