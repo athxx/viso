@@ -943,7 +943,9 @@ spanning 放置 + auto-flow;ADR 0009 明列六项高级能力全未做。落 `cr
 - [ ] named lines / template-areas(`GridPlacement` 加命名放置)。
 - [ ] subgrid(子 grid 继承父轨道)。
 - [ ] baseline 对齐(跨 grid item 基线对齐)。
-- [ ] spanning-item 对 Auto sizing 的贡献(现 span-1 才贡献 Auto,ADR 0009 Decision 4 deferred)。
+- [x] spanning-item 对 Auto sizing 的贡献(`grid::distribute_spanning_auto`:span-1 定基线后,span>1 item 把
+      `measured − Σtrack_prebase − 内部 gap` 的余量均分进它覆盖的 growable(Auto/Minmax/FitContent)轨道,max 进各轨道;
+      Fixed/Percent/Fr 不吸收)。ADR 0009 Decision 4 refinement 落地。
 - [ ] Adaptive(doc §69 item 11 的另一半:响应式列数)。
 - [ ] 每项验证包:布局单测(golden 布局 dump / bounds 断言)+ 复杂 grid golden 截图 + microbench(§36 layout 类目)。
       更新 ADR 0009 把对应项从 out-of-scope 移入 + §68 触发(layout sizing model 变化,ADR 必更)。

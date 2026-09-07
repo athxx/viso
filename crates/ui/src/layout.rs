@@ -809,8 +809,10 @@ fn layout_grid(tree: &mut impl LayoutTree, root: u32, bounds: Rect, scratch: &mu
     }
 
     // Auto maxes: for each track, the max natural main size of the span-1 items
-    // whose start lies on that track (a spanning item is not attributed to a
-    // single track here — a deferred refinement noted in the ADR).
+    // whose start lies on that track. Span-1 items set the baseline; spanning
+    // items then distribute their content across the growable tracks they cover
+    // (see `distribute_spanning_auto`), so a wide 2-column item is not left to
+    // collapse the intrinsic tracks under it.
     let mut col_auto = vec![0.0f32; col_tracks.len()];
     let mut row_auto = vec![0.0f32; row_tracks.len()];
     for i in 0..child_count {
@@ -830,6 +832,34 @@ fn layout_grid(tree: &mut impl LayoutTree, root: u32, bounds: Rect, scratch: &mu
             }
         }
     }
+    crate::grid::distribute_spanning_auto(
+        &col_tracks,
+        column_gap,
+        content_w,
+        (0..child_count).map(|i| {
+            let r = regions[i];
+            (
+                r.col,
+                r.col_span,
+                tree.measured(scratch[start + i]).on(Axis::Row),
+            )
+        }),
+        &mut col_auto,
+    );
+    crate::grid::distribute_spanning_auto(
+        &row_tracks,
+        row_gap,
+        content_h,
+        (0..child_count).map(|i| {
+            let r = regions[i];
+            (
+                r.row,
+                r.row_span,
+                tree.measured(scratch[start + i]).on(Axis::Column),
+            )
+        }),
+        &mut row_auto,
+    );
 
     // Solve both axes.
     let mut col_sizes: Vec<f32> = Vec::new();
@@ -1197,6 +1227,79 @@ mod tests {
                 x: 80.0,
                 y: 0.0,
                 w: 320.0,
+                h: 100.0
+            }
+        );
+    }
+
+    #[test]
+    fn a_span_2_item_widens_the_two_auto_columns_it_covers() {
+        use crate::component::NodeStore;
+        use crate::grid::{GridPlacement, GridStyle, TrackSizing};
+        // Three columns [Auto, Auto, Fr(1)] in a 500x100 box. A span-2 item of
+        // 300 wide covers the two Auto columns: with no span-1 baseline they were
+        // 0, so the 300 (no gap) splits 150/150 into the two Auto tracks. The Fr
+        // track then takes the remaining 500 - 300 = 200. A filler on the Fr track
+        // proves the split: it must start at x=300 and be 200 wide.
+        let mut store = NodeStore::new();
+        let grid = store.alloc_grid(GridStyle {
+            columns: vec![TrackSizing::Auto, TrackSizing::Auto, TrackSizing::Fr(1.0)],
+            rows: vec![TrackSizing::Fixed(100.0)],
+            size: Size::fixed(500.0, 100.0),
+            ..Default::default()
+        });
+        let wide = {
+            let k = store.alloc_grid(GridStyle {
+                size: Size::fixed(300.0, 40.0),
+                ..Default::default()
+            });
+            store.set_grid_placement(
+                k,
+                GridPlacement {
+                    column: Some(0),
+                    row: Some(0),
+                    column_span: 2,
+                    row_span: 1,
+                },
+            );
+            store.arena_append_child(grid, k);
+            k
+        };
+        let filler = {
+            let k = store.alloc_grid(GridStyle {
+                size: Size::fill(),
+                ..Default::default()
+            });
+            store.set_grid_placement(
+                k,
+                GridPlacement {
+                    column: Some(2),
+                    row: Some(0),
+                    column_span: 1,
+                    row_span: 1,
+                },
+            );
+            store.arena_append_child(grid, k);
+            k
+        };
+        let mut scratch = Vec::new();
+        crate::layout::measure(&mut store, grid.index(), &mut scratch);
+        crate::layout::layout(
+            &mut store,
+            grid.index(),
+            surface_local(500.0, 100.0),
+            &mut scratch,
+        );
+        // The span-2 item's cell spans columns 0..2 → x=0, and its Fixed child
+        // hugs top-left at x=0.
+        assert_eq!(store.bounds(wide).x, 0.0);
+        // The Fr track sits after the two 150-wide Auto columns and fills 200.
+        assert_eq!(
+            store.bounds(filler),
+            Rect {
+                x: 300.0,
+                y: 0.0,
+                w: 200.0,
                 h: 100.0
             }
         );
