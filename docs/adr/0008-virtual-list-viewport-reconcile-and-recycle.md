@@ -179,12 +179,24 @@ the first frame's reconcile mounts against the real viewport size. `AppDriver`
 gains a `virtual_lists: VirtualLists` field, reset in `on_launch`, reconciled each
 Layout phase.
 
-Stable-key contract (§12.4): the logical index `i` is identity this slice — correct
-for scroll and append; a row that stays in range keeps its host, its state, its
-focus. A `key_of: Fn(usize) -> u64` hook is reserved on the style for reorder; a
-full keyed reconciler is deferred to Phase 7. Input is untouched — the viewport is
-a Scroll, so `ScrollRouter` already routes wheels and hit-test already narrows at
-the viewport, touching only mounted rows.
+Stable-key contract (§12.4): identity is the logical index `i` by default —
+correct for scroll and append; a row that stays in range keeps its host, its
+state, its focus. When a list is built keyed (`virtual_list_keyed`, an optional
+`key_of: Fn(usize) -> ItemKey` on the state, `ItemKey(u64)` a §29 compact ID, not
+a String), identity is the *key*: the reconcile diffs the visible window by
+`ItemKey` (each `MountedItem` carries its key), so a reorder or a mid-list
+insert/delete **re-anchors the surviving host** — rewrites its `row_offset` and
+marks `LAYOUT|PAINT`, no `free_subtree`/rebuild — and rebuilds only the rows whose
+keys are new to the window. `key_of == None` degrades byte-for-byte to the index
+match (regression-guarded by `unkeyed_reconcile_matches_index_identity`). The diff
+holds two persistent scratch buffers on the state (`new_keys`, and
+`scratch_old_mounted` — swapped, not `take`n, out of `mounted` so both keep their
+capacity), so a warmed within-window reorder touches no heap
+(`keyed_reorder_alloc.rs`, `--test-threads=1`) and costs ~1.4µs on the 100k-row
+bench versus ~5µs for a boundary-crossing rebuild
+(`large_list.rs::reconcile_keyed_reorder_within_window`). Input is untouched — the
+viewport is a Scroll, so `ScrollRouter` already routes wheels and hit-test already
+narrows at the viewport, touching only mounted rows.
 
 ## Consequences
 
@@ -223,10 +235,15 @@ the viewport, touching only mounted rows.
   tests driving reconcile over a facade-built tree). No shader change, so no
   real-machine Metal pass was needed; no visual/Studio verification beyond the
   headless mount-count, scroll-range, and dirty-class assertions.
+- **Landed since this ADR was first accepted**:
+  - **Full keyed reconciliation** for mid-list insert/delete/reorder (Phase 8.6):
+    the reserved `key_of` hook is now realized as `ItemKey`/`virtual_list_keyed`,
+    the reconcile diffs the visible window by key and re-anchors survivors instead
+    of rebuilding, and the diff path is allocation-free warm. See the Stable-key
+    contract paragraph above (§68: this changed node-identity semantics from
+    "index is identity" to "index by default, key when `key_of` is provided").
 - **Known follow-ups, out of scope this pass**:
   - **Multi-template recycle pools** for heterogeneous rows — one flat pool this
     slice.
-  - **Full keyed reconciliation** for mid-list insert/delete/reorder (the reserved
-    `key_of` hook) — deferred to Phase 7's `widgets::List`.
   - **Virtual-range accessibility semantics** — how a screen reader sees 100k
     logical rows when only ~40 are mounted is its own slice.
