@@ -33,13 +33,14 @@ use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use viso::gpu::{GpuBackend, HeadlessRaster, RawWindowHandle, TextureDesc, TextureFormat};
+use viso::render::Primitive;
 use viso::render::{FrameStats, GlyphInstanceData, Rect, Renderer, Rgba, test_glyphs};
 use viso::ui::{
     Axis, BindingTable, BoxStyle, BuildCx, Component, Content, Inset, Key, KeyEvent, KeyRouter,
     Modifiers, NodeId, NodeStore, PointerButtons, PointerEvent, PointerPhase, PointerRouter, Role,
     SemanticProjector, Size, StateStore, TextEdits, Vec2, VirtualLists, paint_tree,
 };
-use viso::widgets::{ViewStyle, button, view};
+use viso::widgets::{ButtonStyle, ViewStyle, button, view};
 
 const W: u32 = 160;
 const H: u32 = 96;
@@ -221,6 +222,192 @@ fn button_renders_background_and_caption_and_matches_golden() {
 
 fn golden_path() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/golden/button_widget.bgra8")
+}
+
+// --- three-state paint list --------------------------------------------------
+
+/// A gray box at the given level, so the three interaction variants are visibly
+/// distinct and a painted quad's color unambiguously names which one won.
+fn gray_box(level: f32) -> BoxStyle {
+    BoxStyle::solid(Rgba {
+        r: level,
+        g: level,
+        b: level,
+        a: 1.0,
+    })
+}
+
+/// The first painted `Quad`'s straight linear RGBA — the button's own background
+/// box, since the button is the root of this scene and its background leaf paints
+/// before its caption. Panics if the paint list has no quad, which would itself
+/// be a regression (a visible button always paints its box).
+fn first_quad_color(primitives: &[Primitive]) -> Rgba {
+    primitives
+        .iter()
+        .find_map(|p| match p {
+            Primitive::Quad(q) => Some(q.color),
+            _ => None,
+        })
+        .expect("the button paints a background quad")
+}
+
+/// The full facade paint path for a button driven through interaction states:
+/// the button is the root (so its background quad is the paint list's first),
+/// and the harness drives the *public* `PointerRouter` — which synthesizes the
+/// per-node enter/leave the frame loop relies on — then runs the frame's
+/// STYLE-gated interaction-style resolve and `paint_tree`, exactly as
+/// `relayout_and_paint` does. Asserting the emitted quad color per state proves
+/// the whole chain (router hover synthesis → cell flip → flush → interaction
+/// resolve → paint) lowers three distinct pixels, not just the flat `style`
+/// value the widget-level unit tests read.
+struct Painted {
+    gpu: HeadlessRaster,
+    surface: viso::gpu::SurfaceId,
+    store: NodeStore,
+    states: StateStore,
+    bindings: BindingTable,
+    root: NodeId,
+    chain: Vec<NodeId>,
+    primitives: Vec<Primitive>,
+}
+
+impl Painted {
+    /// Build a fill button with three distinct interaction boxes as the root of
+    /// its own tree, laid out over the surface so a center sample hits it.
+    fn new() -> Self {
+        let mut gpu = HeadlessRaster::new();
+        let surface = gpu.create_surface(RawWindowHandle::Headless, W, H);
+
+        let mut store = NodeStore::new();
+        let mut states = StateStore::new();
+        let mut bindings = BindingTable::new();
+        let mut lists = VirtualLists::new();
+        let mut text_edits = TextEdits::new();
+        let mut projectors = SemanticProjector::new();
+
+        let widget = button("OK").size(Size::fill()).style(ButtonStyle {
+            background: gray_box(0.1),
+            hover: gray_box(0.5),
+            pressed: gray_box(0.9),
+            ..ButtonStyle::default()
+        });
+
+        let root = {
+            let mut cx = BuildCx::with_reactive(
+                &mut store,
+                &mut states,
+                &mut bindings,
+                &mut lists,
+                &mut text_edits,
+                &mut projectors,
+            );
+            widget.build(&mut cx);
+            cx.root().expect("button declares a root")
+        };
+
+        let mut scratch = Vec::new();
+        store.layout(root, surface_rect(), &mut scratch);
+
+        Painted {
+            gpu,
+            surface,
+            store,
+            states,
+            bindings,
+            root,
+            chain: Vec::new(),
+            primitives: Vec::new(),
+        }
+    }
+
+    /// Route a pointer sample through the public `PointerRouter`, exactly as the
+    /// facade's `on_input` does — so a `Move` synthesizes the per-node enter/leave.
+    fn pointer(&mut self, ev: PointerEvent) {
+        PointerRouter::route(
+            &mut self.store,
+            &mut self.states,
+            &self.bindings,
+            self.root,
+            ev,
+            &mut self.chain,
+        );
+    }
+
+    /// Run the frame's STYLE-gated interaction resolve, mirroring
+    /// `relayout_and_paint`: drain the pending writes the handlers made, flush
+    /// them so the bound node is STYLE-dirty, then re-select the painted box.
+    fn resolve(&mut self) {
+        let mut changed = Vec::new();
+        self.states.take_pending(&mut changed);
+        self.store
+            .flush_state_transactions(&changed, &self.bindings);
+        self.store.resolve_interaction_styles(&self.states);
+    }
+
+    /// Paint the tree into the reused buffer and return the button's background
+    /// quad color, exactly what the GPU would upload for this frame.
+    fn paint_and_read(&mut self) -> Rgba {
+        self.primitives.clear();
+        paint_tree(&self.store, self.root, &mut self.primitives);
+        // Prove the paint list also survives an upload+submit, so the color is a
+        // real frame's output rather than a paint-walk artifact.
+        let format = self.gpu.surface_format(self.surface);
+        let mut renderer = Renderer::new(&mut self.gpu, format);
+        renderer.upload(&mut self.gpu, &self.primitives);
+        renderer.submit(&mut self.gpu, self.surface, CLEAR, [W as f32, H as f32]);
+        first_quad_color(&self.primitives)
+    }
+}
+
+/// A pointer sample at the surface center in the given phase, with the given
+/// buttons held.
+fn sample(phase: PointerPhase, buttons: PointerButtons) -> PointerEvent {
+    PointerEvent {
+        x: W as f32 / 2.0,
+        y: H as f32 / 2.0,
+        phase,
+        buttons,
+        modifiers: Modifiers::default(),
+    }
+}
+
+/// The button lowers a distinct background quad for each interaction state,
+/// driven end-to-end through the public router + frame resolve + paint. This is
+/// the paint-list golden the plan calls for: three states, three colors.
+#[test]
+fn button_paints_three_distinct_quads_across_interaction_states() {
+    let mut p = Painted::new();
+
+    // Resting: the build binds the cells and marks STYLE, so the first resolve
+    // selects the resting box.
+    p.resolve();
+    let resting = p.paint_and_read();
+    assert_eq!(
+        resting,
+        gray_box(0.1).fill,
+        "resting paints the resting box"
+    );
+
+    // A Move over the button synthesizes a per-node Enter → hovered → hover box.
+    p.pointer(sample(PointerPhase::Move, PointerButtons::NONE));
+    p.resolve();
+    let hovered = p.paint_and_read();
+    assert_eq!(hovered, gray_box(0.5).fill, "hover paints the hover box");
+
+    // A primary Down while hovered → pressed wins over hover.
+    p.pointer(sample(PointerPhase::Down, PointerButtons::PRIMARY));
+    p.resolve();
+    let pressed = p.paint_and_read();
+    assert_eq!(pressed, gray_box(0.9).fill, "press paints the pressed box");
+
+    // The three emitted quad colors are mutually distinct — the paint list, not
+    // just the flat style, differs per state.
+    assert_ne!(resting, hovered, "resting and hover paint different quads");
+    assert_ne!(hovered, pressed, "hover and pressed paint different quads");
+    assert_ne!(
+        resting, pressed,
+        "resting and pressed paint different quads"
+    );
 }
 
 // --- interactive input tapes ------------------------------------------------

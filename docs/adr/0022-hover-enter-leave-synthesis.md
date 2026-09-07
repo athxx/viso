@@ -94,6 +94,54 @@ passes under it. Hover follows the free-moving pointer, exactly as the platform'
 own hover cycle is move-driven. A window Leave still clears hover regardless of
 capture — the pointer is gone.
 
+### 6. Interaction-state box selection: a warm column + a STYLE-gated pass
+
+A hover cell flip has to become a *different painted box*. Nothing in the tree did
+that yet: the paint walk reads a single flat `style[i]` per node, and the only
+existing style-resolution pass — `resolve_styles`, which folds theme tokens onto a
+base box — needs a `Theme` the live `WindowState` does not hold and is not wired
+into the frame loop. Interaction selection is a different concern from token
+folding anyway: token folding derives *field values* from `color.*`/`radius.*`
+tokens; interaction selection picks *one whole box* from a fixed set (resting /
+hover / pressed) by reading Bool cells, with no theme involved. Forcing it into
+`resolve_styles` (against §55's smaller-API instinct, whose correct reading here is
+"don't overload one pass with two orthogonal jobs") would have required standing up
+a `Theme` on `WindowState` — a larger, separable change out of this slice's scope.
+
+So interaction selection is its own theme-free mechanism:
+
+- **`InteractionStyle`** (`ui/src/style.rs`): the three boxes plus the two driving
+  cells (`pressed_cell`, `hover_cell: Option<StateId>`), with
+  `resolve(&self, &StateStore) -> BoxStyle` selecting priority pressed > hover >
+  resting. A `None` or non-`Bool(true)` cell is inactive. `Copy`, allocation-free,
+  no `Theme` argument.
+- **A warm side column** `interaction: Vec<Option<InteractionStyle>>` on
+  `NodeStore` (§8.4): `None` for the overwhelming majority of nodes, which keep
+  painting their flat `style[i]` at zero added cost. Allocated and cleared in lockstep
+  with the existing per-node warm stores.
+- **`resolve_interaction_styles(&mut self, &StateStore) -> u32`**, mirroring
+  `resolve_styles`'s shape but with **no theme parameter**: it walks the STYLE-dirty
+  nodes that carry an `interaction[i]` and writes `style[i] = interaction.resolve(states)`.
+  It re-selects from the stored variants (not from the possibly-already-mutated
+  `style[i]`), so it is idempotent across frames and needs no separate base column.
+- **`BuildCx::interaction_style(node, InteractionStyle)`** is the shared authoring
+  API — `Button` uses it now; `Toggle`/`Slider` will call it the same way — binding
+  each present cell to **STYLE | PAINT**.
+
+The **STYLE | PAINT** binding (vs. today's PAINT-only pressed cell) is the one
+behavior change to the existing Button path: the resolve pass is gated on STYLE, so
+a cell flip must mark STYLE to trigger re-selection, and PAINT to satisfy the
+repaint gate.
+
+### 7. The resolve pass runs as a STYLE-gated frame phase
+
+`relayout_and_paint` runs `resolve_interaction_styles(&self.states)` after the
+transform pass and before `repaint_dirty`, wrapped in `if any_dirty_class(STYLE)`.
+This is a frame-phase behavior change (§68): a new pass in the frame pipeline. It is
+free in steady state — no hover/press change means no STYLE dirt means the whole
+pass is skipped. The theme-folding `resolve_styles` pass stays **unwired** this
+slice (it needs a `Theme` on `WindowState`); wiring it is a separate future change.
+
 ## Consequences
 
 - The tree gains per-node hover with one enum variant, one store slot, and one

@@ -899,10 +899,14 @@ enter/leave 合成、无 hover 追踪、无控件用 hover 反馈。落 `crates/
       新目标,与上一帧差分,合成 enter(进入新节点链)/ leave(离开旧节点链)派发给对应节点 handler。
 - [x] `PointerPhase` 加 `Enter`(per-node,区别于现窗口级 `Leave`);或设计 hover 专用事件 —— 按最合理设计定(节点 enter/
       leave 与窗口 leave 语义不同,评估枚举 vs 独立)。DirtyClass:hover 状态变更默认 PAINT(hover 样式反馈)。
-- [ ] 第一个 hover 消费控件:给 Button 加 hover 样式反馈(hover 时背景变化),作为真实消费者验证合成正确。
-- [ ] 验证包:input tape(move 进入/离开节点 → 断言 enter/leave 按序合成、hover 节点追踪正确、嵌套节点链差分)+
-      Button hover golden + a11y(hover 非语义,不入树)+ microbench(move 差分开销)+ alloc(稳态零 alloc)。§68?
-      (frame phase / 输入语义,评估 ADR)。
+- [x] 第一个 hover 消费控件:给 Button 加 hover 样式反馈(hover 时背景变化),作为真实消费者验证合成正确。
+      交互态盒子选择机制:ui `InteractionStyle` + warm `interaction` 列 + STYLE 门控 `resolve_interaction_styles`
+      pass(免 theme,接进 `relayout_and_paint`);`resolve_styles`(theme token 折叠)因 WindowState 无 Theme 暂不接
+      —— 记 ADR 0022 section 6/7。
+- [x] 验证包(Button hover golden + a11y):golden 三态 —— `button_paints_three_distinct_quads_across_interaction_states`
+      驱 resting/hover/pressed 三相位断言 root `Quad.color` 各异;a11y —— hover 非语义(ADR 0022 section 4)。
+- [ ] 验证包(收尾):input tape(move 进入/离开节点 → 断言 enter/leave 按序合成、hover 节点追踪正确、嵌套节点链差分)+
+      microbench(move 差分开销)+ alloc(稳态零 alloc)。§68(frame phase / 输入语义)→ ADR 0022 已记。
 
 **8.5 — stop_propagation 收尾(输入,机制已通)** —— 核实:`Dispatched{ran,stop}` + `dispatch_chain` 三段 honor +
 `EventCx::stop_propagation` 三链(pointer/key/ime)全通,但**无任何控件真正 consume 事件、无 dispatch 级 swallow 测试**,
