@@ -855,8 +855,11 @@ derive 路径 + 四控件接线。
       驱动 flush+derive:勾选/拖动/换选项前后)。microbench(derive + flush 投影成本,`crates/ui/benches/semantic_projection.rs`:
       project_wake ~90.7µs / derive_with_state ~4.2µs)+ alloc profile(`crates/ui/tests/semantic_projection_alloc.rs` 稳态
       零 alloc,实证 SemanticProjector 复用 DepCursor 后 wake 零分配 —— 修掉 project 里 per-eval `DepCursor::new()`)。
-- [ ] 提交 4(text-node label 失效,backlog #4,viso-ui):content-payload-as-label 路径补 SEMANTICS 失效(读代码确认范围,
-      只给"内容即可访问名"路径加,不全加)。单测:改文本内容 → 语义树 label 更新。
+- [x] 提交 4(text-node label 失效,backlog #4,viso-ui):`set_content_payload` 仅当 `Content::Text` 时补 `| SEMANTICS`
+      (§11 `text content -> MEASURE+LAYOUT+PAINT+SEMANTICS`);Image/Path 无内在可访问名,保持 MEASURE|LAYOUT|PAINT 不加。
+      读代码确认:`Content::Text` 只存已 shape 的 glyphs 非源串,可访问名仍来自 authored `Semantics.label`(TextRequest 被
+      take 后清列不留),故不做 name-from-glyphs 伪回退,只做诚实的 SEMANTICS 失效。单测:改文本内容 → 标 SEMANTICS(冒泡);
+      换图片 → 不标 SEMANTICS。
 - [ ] 提交 5(ADR,§68 触发 reactive semantics):记录活状态经节点侧列投影进派生语义树(不跨层读 StateStore)、SEMANTICS
       失效契约、Role::Slider/Radio。
 
