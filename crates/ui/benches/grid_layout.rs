@@ -9,7 +9,7 @@ use std::hint::black_box;
 
 use criterion::{Criterion, criterion_group, criterion_main};
 use viso_render::Rect;
-use viso_ui::grid::{GridStyle, TrackSizing};
+use viso_ui::grid::{AdaptiveColumns, GridStyle, TrackMax, TrackSizing};
 use viso_ui::layout::{layout, measure};
 use viso_ui::{NodeStore, Size};
 
@@ -99,6 +99,37 @@ fn grid_relayout(c: &mut Criterion) {
                 black_box(mgrid),
                 black_box(surface),
                 &mut mscratch,
+            );
+        });
+    });
+
+    // An `auto-fill minmax(100px, 1fr)` adaptive grid: at 1200px content width the
+    // column count solves to 12, so 240 cells over 20 rows — the same shape as the
+    // pure-Fr baseline. This times the per-frame extra: the count solve from the
+    // container width plus rebuilding the `col_tracks` template each pass.
+    let mut astore = NodeStore::new();
+    let agrid = astore.alloc_grid(GridStyle {
+        columns: Vec::new(),
+        rows: vec![TrackSizing::Fr(1.0); 20],
+        adaptive_columns: Some(AdaptiveColumns::auto_fill(100.0, TrackMax::Fr(1.0))),
+        size: Size::fixed(1200.0, 800.0),
+        ..Default::default()
+    });
+    for _ in 0..12 * 20 {
+        let k = fill_cell(&mut astore);
+        astore.arena_append_child(agrid, k);
+    }
+    let agrid = agrid.index();
+    let mut ascratch = Vec::new();
+    measure(&mut astore, agrid, &mut ascratch);
+    layout(&mut astore, agrid, surface, &mut ascratch);
+    c.bench_function("grid_relayout_adaptive", |b| {
+        b.iter(|| {
+            layout(
+                &mut astore,
+                black_box(agrid),
+                black_box(surface),
+                &mut ascratch,
             );
         });
     });

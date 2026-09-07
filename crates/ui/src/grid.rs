@@ -35,6 +35,52 @@ pub enum TrackSizing {
     /// Content size capped at a pixel limit: `content.min(limit)`. A fixed-size
     /// track, resolved like `Auto` but bounded above.
     FitContent(f32),
+    /// A flexible track with a pixel floor: `minmax(min, <fr>fr)`. Unlike the
+    /// fixed-size `Minmax`, its upper bound is a free-space share, so it takes
+    /// `min` first (counted as consumed) and then grows by an `Fr(fr)` share of
+    /// the leftover — the CSS `minmax(min, 1fr)` semantics behind the responsive
+    /// `repeat(auto-fill/auto-fit, minmax(min, 1fr))` grid. It participates in the
+    /// `Fr` sweep; a track that gets no leftover share still holds at `min`.
+    FlexMin(f32, f32),
+}
+
+/// The trailing-empty-track rule for a responsive `repeat(auto-*, …)` column
+/// template: `Fill` keeps every computed track (empty ones hold their place and
+/// their gap); `Fit` collapses trailing tracks that hold no single-track item to
+/// zero width and folds away the gap they would have introduced.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AutoRepeat {
+    /// `auto-fill`: keep the computed empty trailing tracks.
+    Fill,
+    /// `auto-fit`: collapse the computed empty trailing tracks.
+    Fit,
+}
+
+/// The upper bound of a responsive `minmax(min, max)` track: a pixel cap
+/// (fixed-size, resolved like [`TrackSizing::Minmax`]) or an `Fr` share
+/// (flexible, resolved like [`TrackSizing::FlexMin`]).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum TrackMax {
+    /// A pixel upper bound: the track is content-clamped into `[min, px]`.
+    Px(f32),
+    /// A free-space share: the track takes `min` then an `fr` share of leftover.
+    Fr(f32),
+}
+
+/// A responsive column template `repeat(auto-fill | auto-fit, minmax(min, max))`:
+/// the *number* of columns is not fixed at build time but computed from the
+/// container's inner width during layout, and every column is a `minmax(min, max)`
+/// track. Kept as a `Copy` scalar so it rides on the grid's `LayoutInput` with no
+/// heap; the common (non-adaptive) grid carries `None`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct AdaptiveColumns {
+    /// Trailing-empty-track rule (`auto-fill` vs `auto-fit`).
+    pub mode: AutoRepeat,
+    /// Per-column pixel floor (`min` of `minmax(min, max)`); also the divisor of
+    /// the column-count formula.
+    pub min: f32,
+    /// Per-column upper bound (`max` of `minmax(min, max)`).
+    pub max: TrackMax,
 }
 
 /// Expand a `repeat(count, inner)` track function into `count` copies of `inner`,
@@ -55,6 +101,30 @@ pub fn repeated(count: u16, inner: TrackSizing) -> Vec<TrackSizing> {
     let mut out = Vec::with_capacity(count as usize);
     repeat(count, inner, &mut out);
     out
+}
+
+impl AdaptiveColumns {
+    /// `repeat(auto-fill, minmax(min, max))`: fit as many `minmax(min, max)`
+    /// columns as the container's inner width allows, keeping computed empty
+    /// trailing columns (they hold their place and their gap).
+    pub fn auto_fill(min: f32, max: TrackMax) -> Self {
+        AdaptiveColumns {
+            mode: AutoRepeat::Fill,
+            min,
+            max,
+        }
+    }
+
+    /// `repeat(auto-fit, minmax(min, max))`: like [`AdaptiveColumns::auto_fill`]
+    /// but trailing columns that hold no single-track item collapse to zero width,
+    /// folding away the gap they would have introduced (CSS collapsed tracks).
+    pub fn auto_fit(min: f32, max: TrackMax) -> Self {
+        AdaptiveColumns {
+            mode: AutoRepeat::Fit,
+            min,
+            max,
+        }
+    }
 }
 
 /// The style of a grid container declared via [`crate::component::BuildCx::grid`].
@@ -100,6 +170,13 @@ pub struct GridStyle {
     pub subgrid_columns: bool,
     /// This grid is a subgrid on the row (block) axis (see `subgrid_columns`).
     pub subgrid_rows: bool,
+    /// A responsive `repeat(auto-fill | auto-fit, minmax(min, max))` column
+    /// template: the *number* of columns is computed from the container's inner
+    /// width during layout rather than fixed by `columns`. `Some` replaces the
+    /// explicit `columns` template on the inline axis (rows are unaffected).
+    /// Cold: a fixed-length `Copy` scalar with `None` on the common grid, so the
+    /// non-adaptive path pays nothing. Ignored on an axis inherited by a subgrid.
+    pub adaptive_columns: Option<AdaptiveColumns>,
 }
 
 impl Default for GridStyle {
@@ -119,6 +196,7 @@ impl Default for GridStyle {
             areas: None,
             subgrid_columns: false,
             subgrid_rows: false,
+            adaptive_columns: None,
         }
     }
 }
@@ -478,34 +556,53 @@ pub(crate) fn solve_tracks(
                 consumed += v;
             }
             TrackSizing::Fr(w) => fr_total += w.max(0.0),
+            TrackSizing::FlexMin(min, fr) => {
+                // A flexible track with a pixel floor (`minmax(min, <fr>fr)`): the
+                // `min` is consumed up front (like a fixed base) and the `fr`
+                // weight joins the sweep, so pass 2 adds its leftover share on top
+                // of the base already written here.
+                let base = min.max(0.0);
+                out[i] = base;
+                consumed += base;
+                fr_total += fr.max(0.0);
+            }
         }
     }
 
-    // Pass 2: distribute the remaining free space across the Fr tracks with a
-    // re-normalizing sweep.
+    // Pass 2: distribute the remaining free space across the flexible tracks
+    // (`Fr` and the `fr` part of `FlexMin`) with a re-normalizing sweep. A
+    // `FlexMin` track keeps its `min` base already in `out` and only adds its
+    // leftover share, so a track that gets no share still holds at `min`.
     if fr_total > 0.0 {
         let mut remaining_free = (content_extent - consumed - gaps_total).max(0.0);
         let mut remaining_fr = fr_total;
         for (i, t) in tracks.iter().enumerate() {
-            if let TrackSizing::Fr(w) = *t {
-                let w = w.max(0.0);
-                let size = if remaining_fr > 0.0 {
-                    remaining_free * (w / remaining_fr)
-                } else {
-                    0.0
-                };
+            let (w, add_to_base) = match *t {
+                TrackSizing::Fr(w) => (w.max(0.0), false),
+                TrackSizing::FlexMin(_, fr) => (fr.max(0.0), true),
+                _ => continue,
+            };
+            let size = if remaining_fr > 0.0 {
+                remaining_free * (w / remaining_fr)
+            } else {
+                0.0
+            };
+            if add_to_base {
+                out[i] += size;
+            } else {
                 out[i] = size;
-                remaining_free -= size;
-                remaining_fr -= w;
             }
+            remaining_free -= size;
+            remaining_fr -= w;
         }
     }
 }
 
 /// Whether a track grows to fit item content — the intrinsically-sized tracks
 /// (`Auto`, `Minmax`, `FitContent`) that read the `auto_maxes` channel. `Fixed`,
-/// `Percent`, and `Fr` do not: a spanning item's excess is never attributed to
-/// them (they are, respectively, exact, extent-relative, or free-space share).
+/// `Percent`, `Fr`, and `FlexMin` do not: a spanning item's excess is never
+/// attributed to them (they are, respectively, exact, extent-relative, a
+/// free-space share, and a floored free-space share).
 fn track_grows_to_content(track: TrackSizing) -> bool {
     matches!(
         track,
@@ -517,14 +614,16 @@ fn track_grows_to_content(track: TrackSizing) -> bool {
 /// content, evaluated *before* the `Fr` sweep. `Fixed` is its value; `Percent` a
 /// fraction of the content extent; a content-sized track its current span-1
 /// baseline in `auto` (0 if none); `Fr` contributes 0 pre-solve (its share is the
-/// leftover, not a content need). Used to compute how much of a spanning item's
-/// size the covered tracks do not yet cover.
+/// leftover, not a content need); `FlexMin` contributes its `min` floor (the base
+/// consumed before the sweep). Used to compute how much of a spanning item's size
+/// the covered tracks do not yet cover.
 fn track_prebase(track: TrackSizing, content_extent: f32, auto: f32) -> f32 {
     match track {
         TrackSizing::Fixed(v) => v,
         TrackSizing::Percent(frac) => content_extent * frac,
         TrackSizing::Auto | TrackSizing::Minmax(..) | TrackSizing::FitContent(..) => auto,
         TrackSizing::Fr(_) => 0.0,
+        TrackSizing::FlexMin(min, _) => min.max(0.0),
     }
 }
 
@@ -1109,5 +1208,105 @@ mod tests {
                 row_span: 1,
             })
         );
+    }
+
+    #[test]
+    fn flexmin_single_track_takes_min_then_all_leftover() {
+        // A lone `minmax(200, 1fr)` over 500px, no gap: min=200 consumed, the whole
+        // 300 leftover is its Fr share → 200 + 300 = 500. Content channel unused
+        // (a FlexMin does not read auto_maxes).
+        let mut out = Vec::new();
+        solve_tracks(
+            &[TrackSizing::FlexMin(200.0, 1.0)],
+            0.0,
+            500.0,
+            &[0.0],
+            &mut out,
+        );
+        assert_eq!(out, vec![500.0]);
+    }
+
+    #[test]
+    fn flexmin_multiple_tracks_split_leftover_after_each_min() {
+        // Three `minmax(100, 1fr)` over 600px, no gap: 3×100 = 300 consumed, 300
+        // leftover split equally by weight → each 100 + 100 = 200.
+        let mut out = Vec::new();
+        solve_tracks(
+            &[
+                TrackSizing::FlexMin(100.0, 1.0),
+                TrackSizing::FlexMin(100.0, 1.0),
+                TrackSizing::FlexMin(100.0, 1.0),
+            ],
+            0.0,
+            600.0,
+            &[0.0, 0.0, 0.0],
+            &mut out,
+        );
+        assert_eq!(out, vec![200.0, 200.0, 200.0]);
+    }
+
+    #[test]
+    fn flexmin_holds_at_min_when_no_leftover() {
+        // Two `minmax(200, 1fr)` over 300px: 2×200 = 400 already exceeds the extent,
+        // so leftover is floored at 0 and each track holds at its 200 min (the row
+        // overflows — a solved track never shrinks below its floor).
+        let mut out = Vec::new();
+        solve_tracks(
+            &[
+                TrackSizing::FlexMin(200.0, 1.0),
+                TrackSizing::FlexMin(200.0, 1.0),
+            ],
+            0.0,
+            300.0,
+            &[0.0, 0.0],
+            &mut out,
+        );
+        assert_eq!(out, vec![200.0, 200.0]);
+    }
+
+    #[test]
+    fn flexmin_and_fr_share_the_sweep_by_weight() {
+        // `minmax(100, 1fr)` beside a bare `Fr(1)` over 500px: the FlexMin takes its
+        // 100 min first (consumed), then the 400 leftover splits by equal weight →
+        // FlexMin 100 + 200 = 300, Fr 200.
+        let mut out = Vec::new();
+        solve_tracks(
+            &[TrackSizing::FlexMin(100.0, 1.0), TrackSizing::Fr(1.0)],
+            0.0,
+            500.0,
+            &[0.0, 0.0],
+            &mut out,
+        );
+        assert_eq!(out, vec![300.0, 200.0]);
+    }
+
+    #[test]
+    fn flexmin_min_gets_gaps_subtracted_from_the_leftover() {
+        // Two `minmax(100, 1fr)` over 500px with a 20px gap: 2×100 consumed + 20 gap
+        // → 280 leftover, split → each 100 + 140 = 240.
+        let mut out = Vec::new();
+        solve_tracks(
+            &[
+                TrackSizing::FlexMin(100.0, 1.0),
+                TrackSizing::FlexMin(100.0, 1.0),
+            ],
+            20.0,
+            500.0,
+            &[0.0, 0.0],
+            &mut out,
+        );
+        assert_eq!(out, vec![240.0, 240.0]);
+    }
+
+    #[test]
+    fn adaptive_columns_constructors_set_the_mode() {
+        let fill = AdaptiveColumns::auto_fill(200.0, TrackMax::Fr(1.0));
+        assert_eq!(fill.mode, AutoRepeat::Fill);
+        assert_eq!(fill.min, 200.0);
+        assert_eq!(fill.max, TrackMax::Fr(1.0));
+        let fit = AdaptiveColumns::auto_fit(150.0, TrackMax::Px(300.0));
+        assert_eq!(fit.mode, AutoRepeat::Fit);
+        assert_eq!(fit.min, 150.0);
+        assert_eq!(fit.max, TrackMax::Px(300.0));
     }
 }

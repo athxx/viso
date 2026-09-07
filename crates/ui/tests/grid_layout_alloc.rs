@@ -21,7 +21,7 @@
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
-use viso_ui::grid::{GridStyle, TrackSizing};
+use viso_ui::grid::{AdaptiveColumns, GridStyle, TrackMax, TrackSizing};
 use viso_ui::layout::{layout, measure};
 use viso_ui::{NodeStore, Rect, Size};
 
@@ -91,6 +91,57 @@ fn build_grid(cols: usize, rows: usize) -> (NodeStore, u32) {
     let mut scratch = Vec::new();
     measure(&mut store, idx, &mut scratch);
     (store, idx)
+}
+
+/// Build an `auto-fill minmax(min, 1fr)` adaptive grid of `child_count` cells in
+/// a fixed-width container, and run the initial measure pass. The column *count*
+/// is solved from the container width each layout pass — this pins that the extra
+/// count solve + per-pass `col_tracks` rebuild still touch no heap once warmed.
+fn build_adaptive_grid(child_count: usize) -> (NodeStore, u32) {
+    let mut store = NodeStore::new();
+    let grid = store.alloc_grid(GridStyle {
+        columns: Vec::new(),
+        rows: vec![TrackSizing::Fixed(60.0)],
+        adaptive_columns: Some(AdaptiveColumns::auto_fill(120.0, TrackMax::Fr(1.0))),
+        size: Size::fixed(1200.0, 800.0),
+        ..Default::default()
+    });
+    for _ in 0..child_count {
+        let k = fill_cell(&mut store);
+        store.arena_append_child(grid, k);
+    }
+    let idx = grid.index();
+    let mut scratch = Vec::new();
+    measure(&mut store, idx, &mut scratch);
+    (store, idx)
+}
+
+#[test]
+fn steady_adaptive_grid_relayout_is_allocation_free() {
+    // 1200px / (120 + 0) = 10 columns; 40 cells wrap onto 4 implicit rows.
+    let (mut store, grid) = build_adaptive_grid(40);
+    let mut scratch = Vec::new();
+
+    // Warm the id scratch and the pooled `GridScratch` buffers to steady capacity.
+    for _ in 0..8 {
+        layout(&mut store, grid, SURFACE, &mut scratch);
+    }
+
+    let mut frame_allocs = [0usize; 2];
+    for slot in frame_allocs.iter_mut() {
+        ALLOCS.store(0, Ordering::Relaxed);
+        ARMED.store(true, Ordering::Relaxed);
+        layout(&mut store, grid, SURFACE, &mut scratch);
+        ARMED.store(false, Ordering::Relaxed);
+        *slot = ALLOCS.load(Ordering::Relaxed);
+    }
+
+    assert_eq!(
+        frame_allocs,
+        [0, 0],
+        "a warmed adaptive grid re-layout solves the column count and rebuilds the \
+         track template into pooled buffers with no heap"
+    );
 }
 
 #[test]

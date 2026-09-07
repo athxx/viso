@@ -501,6 +501,7 @@ impl NodeStore {
             align_items: style.align_items,
             subgrid_columns: style.subgrid_columns,
             subgrid_rows: style.subgrid_rows,
+            adaptive_columns: style.adaptive_columns,
             size: style.size,
         };
         let id = self.alloc(input, style.style);
@@ -2211,6 +2212,7 @@ impl<'a> BuildCx<'a> {
             align_items: style.align_items,
             subgrid_columns: style.subgrid_columns,
             subgrid_rows: style.subgrid_rows,
+            adaptive_columns: style.adaptive_columns,
             size: style.size,
         };
         let id = self.push_node(input, style.style);

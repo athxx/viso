@@ -969,7 +969,16 @@ spanning 放置 + auto-flow;ADR 0009 明列六项高级能力全未做。落 `cr
       验证(§7.3 有数才宣称):alloc pack `grid_layout_alloc`(counting global allocator,`--test-threads=1`)—— 暖机后稳态
       12×20 grid relayout **零 alloc**;同机 A/B bench `grid_relayout_12x20` 前后:~11.20µs → ~10.44µs(criterion −6.4%,p<0.05,
       Performance improved)。ADR 0009 第六项从 Known follow-up 移入 Landed follow-ups。
-- [ ] Adaptive(doc §69 item 11 的另一半:响应式列数)。
+- [x] Adaptive(doc §69 item 11 的另一半:响应式列数)。列数由容器宽度布局期解算:`GridStyle.adaptive_columns:
+      Option<AdaptiveColumns>`(冷可选 Copy,挂 `LayoutInput::Grid`),`AdaptiveColumns{ mode: Fill|Fit, min, max: Px|Fr }`,
+      构造 `auto_fill`/`auto_fit`。count 公式 `adaptive_column_count`:`floor((content_w+gap)/(min+gap))` clamp ≥1。
+      `Fr` max 新增 `TrackSizing::FlexMin(min,fr)` 带下限 flex 轨道(pass1 min 进 consumed + fr 进 fr_total,pass2 只补增量
+      share),故 `minmax(min,1fr)` 单趟精确拉满;`Px` max 复用 `Minmax`。auto-fit 在 solve 前据 placement 定尾部塌陷、只对
+      存活列 solve(回收空列宽+gap,末列右边界=content 右边界),事后补零宽尾列保持索引;auto-fill 保留全部空列。边界(§55
+      主导用例取舍):纯 Adaptive 列模板 / 行不做 / 不与 subgrid 列叠加。验证:grid.rs FlexMin solve 5 例+构造;layout.rs count
+      公式+bounds golden(窄/宽/整除/gap 边界、minmax(min,1fr) 拉满、Px max 留白、auto-fit 塌陷、auto-fill 保留);alloc pack
+      稳态零 alloc;bench `grid_relayout_adaptive` ~11.37µs 与纯 Fr baseline(~11.25µs)同噪声无可测开销。ADR 0009 第七项
+      Landed follow-up。
 - [ ] 每项验证包:布局单测(golden 布局 dump / bounds 断言)+ 复杂 grid golden 截图 + microbench(§36 layout 类目)。
       更新 ADR 0009 把对应项从 out-of-scope 移入 + §68 触发(layout sizing model 变化,ADR 必更)。
 

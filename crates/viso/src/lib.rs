@@ -1108,8 +1108,8 @@ pub mod prelude {
     // layout styles, the semantics facts, and the state cell handles belong in
     // the default set (commonly used, stable, unambiguous).
     pub use viso_ui::{
-        BuildCx, FlexStyle, GridPlacement, GridStyle, LeafStyle, Role, Semantics, StateId,
-        StateValue, TextRequest, TrackSizing, VirtualListStyle,
+        AdaptiveColumns, BuildCx, FlexStyle, GridPlacement, GridStyle, LeafStyle, Role, Semantics,
+        StateId, StateValue, TextRequest, TrackMax, TrackSizing, VirtualListStyle,
     };
     // Tier 1 widgets: the base layout container, the static text control, the
     // texture-backed image control, and the vector icon control — plus the Tier 2
