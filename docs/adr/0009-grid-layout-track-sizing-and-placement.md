@@ -139,9 +139,10 @@ single linear pass with no fixed-point iteration.
   not per ordinary node and not per frame per child. A grid node is rare; these are
   bounded by that grid's track and child counts, and the non-growing steady-state
   contract (§7.1) is checked by the `repeated_layout_of_a_stable_grid_grows_no_scratch`
-  guard test over repeated whole-frame re-layout. If a future profile shows this
-  matters, the follow-up is to hoist these into a reusable `GridScratch` threaded
-  through the `layout` pass — noted below, not done now (correctness first).
+  guard test over repeated whole-frame re-layout. **These have since been hoisted**
+  into a reusable `GridScratch` checked out of a thread-local free-list pool (see the
+  landed follow-up below), so a warmed steady-state grid re-layout now allocates
+  nothing — pinned by the `grid_layout_alloc` counting-allocator test.
 - **Baseline.** `cargo bench -p viso-ui --bench grid_layout` establishes
   `grid_relayout_12x20` (a 12×20 = 240-cell Fr grid, full re-layout) at a **~8.33 µs
   median** (measured `[8.13 µs, 8.33 µs, 8.51 µs]`). This is the number any later
@@ -235,5 +236,20 @@ single linear pass with no fixed-point iteration.
     span-at-offset subgrid adopting only the parent's `k..k+n` tracks, a both-axis subgrid landing
     every inner cell corner on the parent's lines, and a mixed-axis subgrid inheriting columns
     while self-solving its own Fr rows.
-- **Known follow-ups, out of scope:**
-  - Per-grid-node `GridScratch` hoisting if a profile ever demands it.
+  - Per-grid-node `GridScratch` hoisting — `layout_grid` allocated ~12 per-call `Vec`s
+    (placements, occupied bitset, cell regions, per-axis track / auto / size / offset buffers)
+    every frame. These are now hoisted into a single `GridScratch` struct checked out of a
+    **thread-local free-list pool** (`with_grid_scratch`): a call pops a buffer (or a fresh
+    default), clears — does **not** free — its twelve `Vec`s, runs, and returns it to the pool.
+    A pool (not one shared buffer) is required because `layout_grid` is **reentrant**: a subgrid
+    child recurses into `layout_grid` from inside the parent's per-child loop while the parent
+    still holds live slices of its own `col_sizes` / `row_sizes`, so a nested call must check out
+    a *distinct* buffer — the pool grows only to the deepest grid nesting seen. `prefix_offsets`
+    became `prefix_offsets_into` (writes a reused buffer instead of returning a fresh `Vec`). The
+    UI tree / layout pass is main-thread-owned (§26), so the thread-local carries no locking.
+    Verified by the `grid_layout_alloc` alloc pack (counting global allocator,
+    `--test-threads=1`): a warmed steady-state 12×20 grid re-layout is **zero-alloc**. Same-machine
+    A/B on `grid_relayout_12x20`: **~11.20 µs → ~10.44 µs** (criterion **−6.4%**, p < 0.05,
+    "Performance has improved"). The prior `~8.33 µs` figure in Baseline was measured on a
+    different machine/session and is not directly comparable; the A/B above is the authoritative
+    before/after.

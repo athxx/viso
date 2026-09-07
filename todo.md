@@ -962,6 +962,13 @@ spanning 放置 + auto-flow;ADR 0009 明列六项高级能力全未做。落 `cr
 - [x] spanning-item 对 Auto sizing 的贡献(`grid::distribute_spanning_auto`:span-1 定基线后,span>1 item 把
       `measured − Σtrack_prebase − 内部 gap` 的余量均分进它覆盖的 growable(Auto/Minmax/FitContent)轨道,max 进各轨道;
       Fixed/Percent/Fr 不吸收)。ADR 0009 Decision 4 refinement 落地。
+- [x] per-node `GridScratch` hoisting(消除 `layout_grid` 每趟 ~12 个临时 `Vec`)。加 `GridScratch` 复用缓冲(12 buffer)+
+      thread-local free-list 池 `with_grid_scratch`:每次借出即 clear-不-free、跑完归还;`layout_grid` 可重入(subgrid 递归时
+      父仍持自身轨道切片),故用池而非单缓冲——嵌套调用借到独立 buffer,不会踩到祖先;池只增长到见过的最深 grid 嵌套。
+      `prefix_offsets` → `prefix_offsets_into`(写入复用缓冲而非返回新 Vec)。UI 树/布局主线程独占(§26),thread-local 无锁开销。
+      验证(§7.3 有数才宣称):alloc pack `grid_layout_alloc`(counting global allocator,`--test-threads=1`)—— 暖机后稳态
+      12×20 grid relayout **零 alloc**;同机 A/B bench `grid_relayout_12x20` 前后:~11.20µs → ~10.44µs(criterion −6.4%,p<0.05,
+      Performance improved)。ADR 0009 第六项从 Known follow-up 移入 Landed follow-ups。
 - [ ] Adaptive(doc §69 item 11 的另一半:响应式列数)。
 - [ ] 每项验证包:布局单测(golden 布局 dump / bounds 断言)+ 复杂 grid golden 截图 + microbench(§36 layout 类目)。
       更新 ADR 0009 把对应项从 out-of-scope 移入 + §68 触发(layout sizing model 变化,ADR 必更)。
