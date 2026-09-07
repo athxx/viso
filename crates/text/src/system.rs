@@ -65,6 +65,14 @@ impl TextSystem {
         self.atlas.take_dirty()
     }
 
+    /// The first-line baseline of a run in `font` at `font_size_px`: the distance
+    /// in logical pixels from the top of the layout box down to the baseline of
+    /// the first line (one ascender below the top, matching [`layout`]). This is
+    /// the vertical anchor cross-line/cross-cell baseline alignment aligns on.
+    pub fn first_baseline(&self, font: FontId, font_size_px: f32) -> f32 {
+        self.store.face(font).ascender_em * font_size_px
+    }
+
     /// Shape and lay out `text` with `font` at `font_size_px`, rasterizing at
     /// `dpi_factor` density, and return one [`GlyphQuad`] per visible glyph.
     ///

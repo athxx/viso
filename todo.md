@@ -945,7 +945,13 @@ spanning 放置 + auto-flow;ADR 0009 明列六项高级能力全未做。落 `cr
       从 area 名网格解析每名的 bounding `CellRegion`,`.` 为空格)。facade `place_named` / `place_area` 在 grid 闭包内解析成
       `GridPlacement`(name 表 stash 在 BuildCx 上,冷/boxed,嵌套 grid save/restore);运行期 `place_children`/`GridPlacement` 零改动。
 - [ ] subgrid(子 grid 继承父轨道)。
-- [ ] baseline 对齐(跨 grid item 基线对齐)。
+- [x] baseline 对齐(跨 grid item 基线对齐)。`GridStyle` 加 `align_items: AlignItems { Stretch(默认)/Start/Center/End/Baseline }`
+      (共用 `layout::AlignItems`,Copy 标量,带上 `LayoutInput::Grid`)。`layout_grid` 按 align_items 在 cell block 轴就位:
+      Stretch 把 Fill child 撑到 cell 高(旧隐含行为)/ Start·Center·End 贴自身 measured 高的顶·中·底 / Baseline 使同 row 各 cell
+      首行基线重合。基线来源:`Content::Text` 加 `baseline: f32`(空 run 为 0),经 `Content::baseline()` + `content_baseline` hook 暴露;
+      Image/Path 返 `None` 退化顶对齐。row 共享基线取各 cell max,child block 偏移 = `shared − child_baseline`。
+      验证:layout.rs 单测(混合高文本 cell 落一条基线;fixed child 在 Start/Center/End 偏移、Stretch 不动;Fill child 仅 Stretch 撑开),
+      走新增 `alloc_leaf` + `set_content_payload` 测试路径。
 - [x] spanning-item 对 Auto sizing 的贡献(`grid::distribute_spanning_auto`:span-1 定基线后,span>1 item 把
       `measured − Σtrack_prebase − 内部 gap` 的余量均分进它覆盖的 growable(Auto/Minmax/FitContent)轨道,max 进各轨道;
       Fixed/Percent/Fr 不吸收)。ADR 0009 Decision 4 refinement 落地。

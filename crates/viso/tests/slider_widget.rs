@@ -167,6 +167,7 @@ fn attach_caption(gpu: &mut HeadlessRaster, store: &mut NodeStore, caption_id: N
             atlas,
             color: WHITE,
             natural,
+            baseline: 0.0,
         },
     );
 }

@@ -175,6 +175,7 @@ fn setup() -> Harness {
             atlas,
             color: WHITE,
             natural: glyph_run_natural(&tg.glyphs),
+            baseline: 0.0,
         },
     );
     store.set_content_payload(
