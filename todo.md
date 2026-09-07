@@ -940,7 +940,10 @@ spanning 放置 + auto-flow;ADR 0009 明列六项高级能力全未做。落 `cr
 
 - [x] `minmax()` / `repeat()` / `fit-content()` track sizing(`TrackSizing` 加 `Minmax`/`FitContent` 变体;`repeat` 为创作期展开辅助)。
       顺带删 grid.rs 三处陈旧 `#[allow(dead_code)]`(GridTracks/place_children/solve_tracks 已被 layout.rs 调用)+ 删 GridTracks 死字段 `auto_rows`。
-- [ ] named lines / template-areas(`GridPlacement` 加命名放置)。
+- [x] named lines / template-areas(创作期命名放置,降解成数值 placement,运行期不碰 String §29)。`GridStyle` 加冷字段
+      `column_line_names`/`row_line_names`(`LineNames = Vec<(Box<str>, u16)>`)+ `areas: Option<GridAreas>`(`GridAreas::from_rows`
+      从 area 名网格解析每名的 bounding `CellRegion`,`.` 为空格)。facade `place_named` / `place_area` 在 grid 闭包内解析成
+      `GridPlacement`(name 表 stash 在 BuildCx 上,冷/boxed,嵌套 grid save/restore);运行期 `place_children`/`GridPlacement` 零改动。
 - [ ] subgrid(子 grid 继承父轨道)。
 - [ ] baseline 对齐(跨 grid item 基线对齐)。
 - [x] spanning-item 对 Auto sizing 的贡献(`grid::distribute_spanning_auto`:span-1 定基线后,span>1 item 把

@@ -2041,8 +2041,26 @@ pub struct BuildCx<'a> {
     /// The placement to apply to the next child authored inside the current
     /// grid closure, then cleared. `None` outside a grid or once consumed.
     pending_placement: Option<GridPlacement>,
+    /// The active grid's creation-time name tables (line names + template areas),
+    /// so `place_named`/`place_area` inside the grid closure resolve names to
+    /// indices. Cold and boxed — set on entering a `grid()` closure, restored to
+    /// the enclosing grid's tables (or `None`) on exit, so nested grids resolve
+    /// against their own names. `None` outside any grid.
+    grid_names: Option<Box<GridNames>>,
     /// The tree root, set by the first declared node.
     root: Option<NodeId>,
+}
+
+/// The creation-time name tables of one grid, cloned out of its [`GridStyle`] so
+/// `place_named`/`place_area` can resolve names while the grid closure runs. Cold:
+/// only grids with named lines or template areas allocate one.
+struct GridNames {
+    /// Column line names → 0-based line indices.
+    column_line_names: crate::grid::LineNames,
+    /// Row line names → 0-based line indices.
+    row_line_names: crate::grid::LineNames,
+    /// Template-areas table, if the grid declared one.
+    areas: Option<crate::grid::GridAreas>,
 }
 
 impl<'a> BuildCx<'a> {
@@ -2060,6 +2078,7 @@ impl<'a> BuildCx<'a> {
             projectors: None,
             stack: Vec::new(),
             pending_placement: None,
+            grid_names: None,
             root: None,
         }
     }
@@ -2084,6 +2103,7 @@ impl<'a> BuildCx<'a> {
             projectors: Some(projectors),
             stack: Vec::new(),
             pending_placement: None,
+            grid_names: None,
             root: None,
         }
     }
@@ -2112,6 +2132,7 @@ impl<'a> BuildCx<'a> {
             projectors: None,
             stack: vec![parent],
             pending_placement: None,
+            grid_names: None,
             root: None,
         }
     }
@@ -2165,11 +2186,28 @@ impl<'a> BuildCx<'a> {
                 rows: style.rows,
             },
         );
+        // Stash this grid's creation-time name tables so `place_named`/`place_area`
+        // resolve against them, saving the enclosing grid's tables so a nested grid
+        // resolves against its own names and the outer grid is restored on exit.
+        // Only a grid that actually declared names allocates a `GridNames`.
+        let has_names = !style.column_line_names.is_empty()
+            || !style.row_line_names.is_empty()
+            || style.areas.is_some();
+        let outer_names = self.grid_names.take();
+        if has_names {
+            self.grid_names = Some(Box::new(GridNames {
+                column_line_names: style.column_line_names,
+                row_line_names: style.row_line_names,
+                areas: style.areas,
+            }));
+        }
         self.stack.push(id);
         children(self);
         self.stack.pop();
         // A stray placement not consumed by a child does not leak to a sibling.
         self.pending_placement = None;
+        // Restore the enclosing grid's name tables (or clear, at the outermost grid).
+        self.grid_names = outer_names;
         Handle { id }
     }
 
@@ -2178,6 +2216,52 @@ impl<'a> BuildCx<'a> {
     /// child whose parent is not a grid.
     pub fn place(&mut self, placement: GridPlacement) {
         self.pending_placement = Some(placement);
+    }
+
+    /// Place the next grid child by **line name**, spanning `column_span` columns
+    /// and `row_span` rows from the named start lines. Names come from the grid's
+    /// [`GridStyle::column_line_names`] / [`GridStyle::row_line_names`], resolved to
+    /// 0-based line indices at build time — the stored placement is the same
+    /// `Option<u16>` a numeric [`place`](Self::place) produces, so the runtime path
+    /// never carries a `String` (see section 29). An unknown name auto-flows that
+    /// axis (`None`), the same as omitting it. Pass `None` for an axis to auto-flow
+    /// it explicitly.
+    pub fn place_named(
+        &mut self,
+        column: Option<&str>,
+        row: Option<&str>,
+        column_span: u16,
+        row_span: u16,
+    ) {
+        let names = self.grid_names.as_deref();
+        let column = column.and_then(|name| {
+            names.and_then(|n| crate::grid::resolve_line(&n.column_line_names, name))
+        });
+        let row = row.and_then(|name| {
+            names.and_then(|n| crate::grid::resolve_line(&n.row_line_names, name))
+        });
+        self.pending_placement = Some(GridPlacement {
+            column,
+            row,
+            column_span: column_span.max(1),
+            row_span: row_span.max(1),
+        });
+    }
+
+    /// Place the next grid child into a named **template area** declared in the
+    /// grid's [`GridStyle::areas`]. The area name resolves to an explicit
+    /// [`GridPlacement`] (start column/row + spans) at build time; the runtime path
+    /// stays `String`-free (section 29). An unknown area name (or a grid with no
+    /// `areas` table) leaves the child to auto-flow, the same as no `place` call.
+    pub fn place_area(&mut self, name: &str) {
+        if let Some(placement) = self
+            .grid_names
+            .as_deref()
+            .and_then(|n| n.areas.as_ref())
+            .and_then(|areas| areas.placement(name))
+        {
+            self.pending_placement = Some(placement);
+        }
     }
 
     /// Declare a scroll viewport and its content. Like [`BuildCx::flex`] the
@@ -2656,6 +2740,130 @@ mod tests {
                 y: 0.0,
                 w: 50.0,
                 h: 50.0
+            }
+        );
+    }
+
+    #[test]
+    fn build_cx_place_named_resolves_a_column_line_to_its_index() {
+        use crate::grid::{GridStyle, TrackSizing};
+        let mut store = NodeStore::new();
+        let (grid, child) = {
+            let mut cx = BuildCx::new(&mut store);
+            let mut child_id = None;
+            let g = cx.grid(
+                GridStyle {
+                    columns: vec![TrackSizing::Fixed(50.0), TrackSizing::Fixed(50.0)],
+                    rows: vec![TrackSizing::Fixed(50.0)],
+                    size: Size::fixed(100.0, 50.0),
+                    // Line 1 is the boundary before the second column.
+                    column_line_names: vec![("content".into(), 1)],
+                    row_line_names: vec![("top".into(), 0)],
+                    ..Default::default()
+                },
+                |cx| {
+                    cx.place_named(Some("content"), Some("top"), 1, 1);
+                    child_id = Some(
+                        cx.leaf(LeafStyle {
+                            size: Size::fill(),
+                            ..Default::default()
+                        })
+                        .id(),
+                    );
+                },
+            );
+            (g.id(), child_id.unwrap())
+        };
+        let mut scratch = Vec::new();
+        crate::layout::measure(&mut store, grid.index(), &mut scratch);
+        crate::layout::layout(&mut store, grid.index(), surface(100.0, 50.0), &mut scratch);
+        // "content" == line 1 → column 1 → x starts at 50.
+        assert_eq!(store.bounds(child).x, 50.0);
+    }
+
+    #[test]
+    fn build_cx_place_area_resolves_to_the_named_block() {
+        use crate::grid::{GridAreas, GridStyle, TrackSizing};
+        let mut store = NodeStore::new();
+        let (grid, child) = {
+            let mut cx = BuildCx::new(&mut store);
+            let mut child_id = None;
+            let g = cx.grid(
+                GridStyle {
+                    columns: vec![TrackSizing::Fixed(50.0), TrackSizing::Fixed(50.0)],
+                    rows: vec![TrackSizing::Fixed(40.0), TrackSizing::Fixed(40.0)],
+                    size: Size::fixed(100.0, 80.0),
+                    // "head" spans both columns on row 0; "main" is the bottom-right cell.
+                    areas: Some(GridAreas::from_rows([["head", "head"], ["side", "main"]])),
+                    ..Default::default()
+                },
+                |cx| {
+                    cx.place_area("main");
+                    child_id = Some(
+                        cx.leaf(LeafStyle {
+                            size: Size::fill(),
+                            ..Default::default()
+                        })
+                        .id(),
+                    );
+                },
+            );
+            (g.id(), child_id.unwrap())
+        };
+        let mut scratch = Vec::new();
+        crate::layout::measure(&mut store, grid.index(), &mut scratch);
+        crate::layout::layout(&mut store, grid.index(), surface(100.0, 80.0), &mut scratch);
+        // "main" == column 1, row 1 → x=50, y=40, single cell 50x40.
+        assert_eq!(
+            store.bounds(child),
+            Rect {
+                x: 50.0,
+                y: 40.0,
+                w: 50.0,
+                h: 40.0
+            }
+        );
+    }
+
+    #[test]
+    fn build_cx_place_area_spans_a_multi_column_area() {
+        use crate::grid::{GridAreas, GridStyle, TrackSizing};
+        let mut store = NodeStore::new();
+        let (grid, child) = {
+            let mut cx = BuildCx::new(&mut store);
+            let mut child_id = None;
+            let g = cx.grid(
+                GridStyle {
+                    columns: vec![TrackSizing::Fixed(50.0), TrackSizing::Fixed(50.0)],
+                    rows: vec![TrackSizing::Fixed(40.0), TrackSizing::Fixed(40.0)],
+                    size: Size::fixed(100.0, 80.0),
+                    areas: Some(GridAreas::from_rows([["head", "head"], ["side", "main"]])),
+                    ..Default::default()
+                },
+                |cx| {
+                    cx.place_area("head");
+                    child_id = Some(
+                        cx.leaf(LeafStyle {
+                            size: Size::fill(),
+                            ..Default::default()
+                        })
+                        .id(),
+                    );
+                },
+            );
+            (g.id(), child_id.unwrap())
+        };
+        let mut scratch = Vec::new();
+        crate::layout::measure(&mut store, grid.index(), &mut scratch);
+        crate::layout::layout(&mut store, grid.index(), surface(100.0, 80.0), &mut scratch);
+        // "head" spans both columns on row 0 → x=0, y=0, full width 100, one row tall.
+        assert_eq!(
+            store.bounds(child),
+            Rect {
+                x: 0.0,
+                y: 0.0,
+                w: 100.0,
+                h: 40.0
             }
         );
     }

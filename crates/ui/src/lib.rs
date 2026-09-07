@@ -41,7 +41,7 @@ pub use component::{
 pub use content::{Content, TextRequest};
 pub use context::EventCx;
 pub use dirty::DirtyClass;
-pub use grid::{GridPlacement, GridStyle, TrackSizing, repeat, repeated};
+pub use grid::{GridAreas, GridPlacement, GridStyle, LineNames, TrackSizing, repeat, repeated};
 pub use hit_test::{HitTestTree, hit_test};
 pub use input::{
     ImeEvent, Key, KeyEvent, KeyRouter, Modifiers, PointerButtons, PointerEvent, PointerPhase,

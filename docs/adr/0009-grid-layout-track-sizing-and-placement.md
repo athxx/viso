@@ -182,8 +182,24 @@ single linear pass with no fixed-point iteration.
     Fixed track, a narrow span adds nothing, interior gaps subtracted first, a span over
     only Fixed+Fr grows nothing, span-1 ignored) + a layout.rs bounds golden (a span-2
     item widens the two Auto columns it covers so the trailing Fr track lands at x=300).
+  - Named grid lines and template-areas placement — both are **creation-time** naming
+    features that lower to the existing numeric placement path, so the runtime carries no
+    `String` (section 29). `GridStyle` gains three cold, optional fields:
+    `column_line_names` / `row_line_names` (`LineNames` = `Vec<(Box<str>, u16)>`, a line
+    name → 0-based line index table) and `areas: Option<GridAreas>` (a
+    `grid-template-areas` table built once from a rectangular grid of area-name cells via
+    `GridAreas::from_rows`, each name resolving to the bounding `CellRegion` of its cells;
+    the `.` cell is the intentionally-empty marker). The facade resolves them while the
+    grid closure runs: `BuildCx::place_named(col, row, col_span, row_span)` maps names
+    through `grid::resolve_line` into an `Option<u16>` placement, and
+    `BuildCx::place_area(name)` maps an area name into an explicit `GridPlacement`. The
+    active grid's name tables are stashed on `BuildCx` (cold, boxed, saved/restored around
+    nested grids) only when a grid declares names; an unknown name auto-flows that axis.
+    **Runtime `place_children` and `GridPlacement` are unchanged** — pure `u16`. Verified by
+    grid.rs unit tests (`resolve_line` hit/miss, `GridAreas::from_rows` column-span /
+    both-axis span / `.` skip) + component.rs facade goldens (named line → column x,
+    `place_area` single cell and multi-column span through full measure+layout).
 - **Known follow-ups, out of scope:**
-  - Named grid lines and template-areas placement.
   - Subgrid (a grid child adopting its parent's tracks).
   - Baseline alignment of cell contents.
   - Per-grid-node `GridScratch` hoisting if a profile ever demands it.

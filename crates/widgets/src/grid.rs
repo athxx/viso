@@ -178,6 +178,9 @@ impl Component for Grid {
                 padding: self.style.padding,
                 size: self.style.size,
                 style: self.style.background,
+                // Named lines / template areas are a facade-level authoring
+                // feature not surfaced through this widget; leave them empty.
+                ..Default::default()
             },
             |cx| {
                 if let Some(children) = &self.children {
