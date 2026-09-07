@@ -8,7 +8,7 @@
 //! [`crate::component::NodeStore`], so the hot path touches compact ids and flat
 //! data with no heap allocation per node.
 
-use crate::grid::{GridPlacement, TrackSizing};
+use crate::grid::{AdaptiveColumns, AutoRepeat, GridPlacement, TrackMax, TrackSizing};
 use viso_render::Rect;
 
 /// A two-component vector in physical pixels — a scroll offset or a
@@ -301,6 +301,13 @@ pub enum LayoutInput {
         subgrid_columns: bool,
         /// This grid is a subgrid on the row (block) axis (see `subgrid_columns`).
         subgrid_rows: bool,
+        /// Responsive column template `repeat(auto-fill | auto-fit, minmax(min,
+        /// max))`: when `Some`, the column *count* is solved from the container's
+        /// inner width at layout time and every column is a `minmax(min, max)`
+        /// track, replacing the explicit `column_count`/column template on the
+        /// inline axis. A `Copy` scalar, `None` on the common grid. Ignored when
+        /// the column axis is inherited by a subgrid.
+        adaptive_columns: Option<AdaptiveColumns>,
         /// The grid box's own size request within its parent.
         size: Size,
     },
@@ -896,10 +903,18 @@ fn layout_grid(
         padding,
         auto_rows,
         align_items,
+        adaptive_columns,
         ..
     } = tree.input(root)
     else {
         return;
+    };
+    // A subgrid inherits its parent's columns, so adaptive column-count solving is
+    // ignored on an inherited column axis (the parent's resolved tracks win).
+    let adaptive_columns = if inherited_cols.is_some() {
+        None
+    } else {
+        adaptive_columns
     };
     // On a subgrid axis, adopt the parent's gap so interior cell lines land on
     // the parent's grid lines; a self-solved axis keeps its own gap.
@@ -923,12 +938,24 @@ fn layout_grid(
         return;
     }
 
+    // Inner content area (box minus padding). Hoisted above the column-count
+    // solve because an adaptive template derives its column count from the inner
+    // width; both depend only on `bounds`/`padding`, so this has no side effects.
+    let content_w = (rect_len(bounds, Axis::Row) - padding.main(Axis::Row)).max(0.0);
+    let content_h = (rect_len(bounds, Axis::Column) - padding.main(Axis::Column)).max(0.0);
+
     // On a column-subgrid axis the inherited slice length is the authoritative
     // column count (the node's own column template is ignored), so placement and
     // auto-flow wrap over the parent's columns, not the child's declared count.
+    // An adaptive template instead fits `floor((width + gap) / (min + gap))`
+    // columns into the inner width (at least one), the CSS `repeat(auto-*,
+    // minmax(min, …))` count. Otherwise the explicit `column_count` stands.
     let cols = match inherited_cols {
         Some((sizes, _)) => (sizes.len() as u16).max(1),
-        None => column_count.max(1),
+        None => match adaptive_columns {
+            Some(a) => adaptive_column_count(a.min, column_gap, content_w),
+            None => column_count.max(1),
+        },
     };
 
     // Check a `GridScratch` out of the thread-local pool for the ~dozen working
@@ -943,20 +970,51 @@ fn layout_grid(
         let row_used =
             crate::grid::place_children(cols, &s.placements, &mut s.occupied, &mut s.regions);
 
-        // Inner content area (box minus padding).
-        let content_w = (rect_len(bounds, Axis::Row) - padding.main(Axis::Row)).max(0.0);
-        let content_h = (rect_len(bounds, Axis::Column) - padding.main(Axis::Column)).max(0.0);
+        // `auto-fit`: collapse the trailing columns that hold no item at all to
+        // zero width. A column is occupied if any child's column span covers it
+        // (span-1 or wider) — not merely if a span-1 item starts on it — so a
+        // spanning item pins its trailing tracks open. The collapse is decided
+        // here, before the solve, so the surviving tracks divide the whole
+        // content width (a `1fr` max then stretches the occupied columns to fill
+        // it). `auto-fill` keeps every column, so its collapsed tail is zero.
+        let collapsed_tail = if matches!(adaptive_columns, Some(a) if a.mode == AutoRepeat::Fit) {
+            let ncols = cols as usize;
+            let mut occupied_to = 0usize; // one past the last occupied column
+            for i in 0..child_count {
+                let r = s.regions[i];
+                let end = (r.col as usize + r.col_span as usize).min(ncols);
+                occupied_to = occupied_to.max(end);
+            }
+            ncols - occupied_to
+        } else {
+            0
+        };
+        // The solve runs over only the surviving (non-collapsed) columns.
+        let solved_cols = cols as usize - collapsed_tail;
 
         // Build the column track template (explicit) and the row template extended
         // with implicit `auto_rows` up to `row_used`. A subgrid axis skips its own
-        // template entirely — it will adopt the parent's resolved sizes below.
+        // template entirely — it will adopt the parent's resolved sizes below. An
+        // adaptive template emits `solved_cols` identical `minmax(min, max)`
+        // tracks: a pixel `max` reuses the fixed-size `Minmax`, an `Fr` `max`
+        // becomes a `FlexMin` so it takes `min` then a share of the leftover free
+        // space.
         if inherited_cols.is_none() {
-            match tree.grid_column_tracks(root) {
-                Some(t) if !t.is_empty() => s.col_tracks.extend_from_slice(t),
-                _ => s.col_tracks.extend(std::iter::repeat_n(
-                    crate::grid::TrackSizing::Auto,
-                    cols as usize,
-                )),
+            match adaptive_columns {
+                Some(a) => {
+                    let track = match a.max {
+                        TrackMax::Px(hi) => TrackSizing::Minmax(a.min, hi),
+                        TrackMax::Fr(fr) => TrackSizing::FlexMin(a.min, fr),
+                    };
+                    s.col_tracks.extend(std::iter::repeat_n(track, solved_cols));
+                }
+                None => match tree.grid_column_tracks(root) {
+                    Some(t) if !t.is_empty() => s.col_tracks.extend_from_slice(t),
+                    _ => s.col_tracks.extend(std::iter::repeat_n(
+                        crate::grid::TrackSizing::Auto,
+                        cols as usize,
+                    )),
+                },
             }
         }
         if inherited_rows.is_none() {
@@ -1050,10 +1108,17 @@ fn layout_grid(
             ),
         }
 
+        // The `auto-fit` solve ran over only the surviving columns; pad the
+        // collapsed trailing columns back in as zero-width tracks so downstream
+        // span/offset index math still addresses every original column.
+        if collapsed_tail > 0 && inherited_cols.is_none() {
+            s.col_sizes.resize(cols as usize, 0.0);
+        }
+
         // Prefix-sum track offsets (with gaps) from the padded content origin.
         let origin_x = rect_start(bounds, Axis::Row) + padding.main_start(Axis::Row);
         let origin_y = rect_start(bounds, Axis::Column) + padding.main_start(Axis::Column);
-        prefix_offsets_into(&mut s.col_offsets, &s.col_sizes, column_gap);
+        prefix_offsets_into_collapsed(&mut s.col_offsets, &s.col_sizes, column_gap, collapsed_tail);
         prefix_offsets_into(&mut s.row_offsets, &s.row_sizes, row_gap);
 
         // For `AlignItems::Baseline` each row shares a baseline: the max first-line
@@ -1165,19 +1230,57 @@ fn layout_grid(
     scratch.truncate(start);
 }
 
+/// The number of columns a `repeat(auto-fill | auto-fit, minmax(min, …))`
+/// template fits into `content_w`: `floor((content_w + gap) / (min + gap))`,
+/// clamped to at least one. Adding one `gap` to both terms models that `n` tracks
+/// carry `n − 1` interior gaps, so `n` columns of `min` fit when `n·min + (n−1)·gap
+/// ≤ content_w`. A non-positive `min` degrades to a single column.
+fn adaptive_column_count(min: f32, gap: f32, content_w: f32) -> u16 {
+    let min = min.max(0.0);
+    let gap = gap.max(0.0);
+    let denom = min + gap;
+    if denom <= 0.0 {
+        return 1;
+    }
+    let n = ((content_w + gap) / denom).floor();
+    if n.is_finite() && n >= 1.0 {
+        (n as u32).min(u16::MAX as u32) as u16
+    } else {
+        1
+    }
+}
+
 /// Prefix-sum track start offsets into `out` (cleared first): track `i` starts
 /// at the sum of tracks `0..i` plus `i` gaps. Final length = `sizes.len() + 1`
 /// (the trailing entry is the end of the last track, used for span math).
 /// Writes into a caller-owned buffer so the grid scratch pool reuses its
 /// allocation across frames rather than allocating a fresh `Vec` per call.
+///
+/// `collapsed_tail` marks a count of trailing tracks that are collapsed to zero
+/// width (CSS `auto-fit`): the gap *before* each collapsed track is dropped too,
+/// so a run of empty trailing tracks folds onto the used edge and the last
+/// non-empty track's cell reaches the reclaimed extent.
 fn prefix_offsets_into(out: &mut Vec<f32>, sizes: &[f32], gap: f32) {
+    prefix_offsets_into_collapsed(out, sizes, gap, 0);
+}
+
+fn prefix_offsets_into_collapsed(
+    out: &mut Vec<f32>,
+    sizes: &[f32],
+    gap: f32,
+    collapsed_tail: usize,
+) {
     out.clear();
     out.reserve(sizes.len() + 1);
+    // The first collapsed trailing track index: gaps at or after it are dropped.
+    let first_collapsed = sizes.len().saturating_sub(collapsed_tail);
     let mut acc = 0.0f32;
     for (i, &s) in sizes.iter().enumerate() {
         out.push(acc);
         acc += s;
-        if i + 1 < sizes.len() {
+        // Add the gap after track `i` only when a later track follows AND the
+        // boundary is not into the collapsed tail (its gaps are reclaimed).
+        if i + 1 < sizes.len() && i + 1 < first_collapsed {
             acc += gap;
         }
     }
@@ -2340,5 +2443,140 @@ mod tests {
         let b = store.bounds(fill_leaf);
         assert_eq!(b.w, 0.0);
         assert_eq!(b.h, 0.0);
+    }
+
+    #[test]
+    fn adaptive_column_count_fits_by_min_width_and_gap() {
+        // No gap: floor(width / min), at least one.
+        assert_eq!(adaptive_column_count(200.0, 0.0, 100.0), 1); // narrower than one min
+        assert_eq!(adaptive_column_count(200.0, 0.0, 200.0), 1); // exactly one
+        assert_eq!(adaptive_column_count(200.0, 0.0, 850.0), 4); // floor(4.25)
+        // With a gap, `n` tracks carry `n-1` gaps: floor((w + gap) / (min + gap)).
+        // 3×200 + 2×20 = 640 fits in 640; a fourth would need 860.
+        assert_eq!(adaptive_column_count(200.0, 20.0, 640.0), 3);
+        assert_eq!(adaptive_column_count(200.0, 20.0, 859.0), 3);
+        assert_eq!(adaptive_column_count(200.0, 20.0, 860.0), 4);
+        // Degenerate min: one column, never a divide-by-zero.
+        assert_eq!(adaptive_column_count(0.0, 0.0, 500.0), 1);
+    }
+
+    /// Build a grid whose children are fill leaves and lay it out at `w`x`h`,
+    /// returning the store and child ids so a golden can read cell rects.
+    fn adaptive_grid(
+        adaptive: AdaptiveColumns,
+        child_count: usize,
+        column_gap: f32,
+        w: f32,
+        h: f32,
+    ) -> (crate::component::NodeStore, Vec<crate::node::NodeId>) {
+        use crate::component::NodeStore;
+        use crate::grid::{GridStyle, TrackSizing};
+        let mut store = NodeStore::new();
+        let grid = store.alloc_grid(GridStyle {
+            columns: Vec::new(),
+            rows: vec![TrackSizing::Fixed(50.0)],
+            adaptive_columns: Some(adaptive),
+            column_gap,
+            size: Size::fixed(w, h),
+            ..Default::default()
+        });
+        let mut kids = Vec::new();
+        for _ in 0..child_count {
+            let k = store.alloc_grid(GridStyle {
+                columns: Vec::new(),
+                rows: Vec::new(),
+                size: Size::fill(),
+                ..Default::default()
+            });
+            store.arena_append_child(grid, k);
+            kids.push(k);
+        }
+        let mut scratch = Vec::new();
+        measure(&mut store, grid.index(), &mut scratch);
+        layout(
+            &mut store,
+            grid.index(),
+            Rect {
+                x: 0.0,
+                y: 0.0,
+                w,
+                h,
+            },
+            &mut scratch,
+        );
+        (store, kids)
+    }
+
+    #[test]
+    fn adaptive_fill_scales_column_count_with_container_width() {
+        // minmax(100, 1fr), auto-fill. Narrow (150) → 1 column stretched to 150.
+        let a = AdaptiveColumns::auto_fill(100.0, TrackMax::Fr(1.0));
+        let (store, kids) = adaptive_grid(a, 3, 0.0, 150.0, 50.0);
+        let b0 = store.bounds(kids[0]);
+        assert_eq!(b0.x, 0.0);
+        assert_eq!(b0.w, 150.0);
+        // The other two children wrap onto implicit rows in the single column.
+        assert_eq!(store.bounds(kids[1]).x, 0.0);
+
+        // Wide (600) → 6 columns of 100, each child in its own column on row 0.
+        let (store, kids) = adaptive_grid(a, 3, 0.0, 600.0, 50.0);
+        assert_eq!(store.bounds(kids[0]).x, 0.0);
+        assert_eq!(store.bounds(kids[0]).w, 100.0);
+        assert_eq!(store.bounds(kids[1]).x, 100.0);
+        assert_eq!(store.bounds(kids[2]).x, 200.0);
+        assert_eq!(store.bounds(kids[2]).y, 0.0);
+    }
+
+    #[test]
+    fn adaptive_fill_minmax_1fr_stretches_columns_to_fill_width() {
+        // minmax(200, 1fr) in 500px → floor(500/200) = 2 columns, each stretched to
+        // 250 (min 200 + 50 leftover share), so the row exactly fills the width.
+        let a = AdaptiveColumns::auto_fill(200.0, TrackMax::Fr(1.0));
+        let (store, kids) = adaptive_grid(a, 2, 0.0, 500.0, 50.0);
+        assert_eq!(store.bounds(kids[0]).x, 0.0);
+        assert_eq!(store.bounds(kids[0]).w, 250.0);
+        assert_eq!(store.bounds(kids[1]).x, 250.0);
+        assert_eq!(store.bounds(kids[1]).w, 250.0);
+    }
+
+    #[test]
+    fn adaptive_fill_px_max_leaves_the_remainder_free() {
+        // minmax(100, 150px) in 500px → 5 columns; content is a fill leaf (0 natural
+        // width) so each track clamps to its 100 min, not the 150 cap. The trailing
+        // columns stay open (auto-fill), so a 2-child grid still has 5 columns and
+        // the second child lands at x=100.
+        let a = AdaptiveColumns::auto_fill(100.0, TrackMax::Px(150.0));
+        let (store, kids) = adaptive_grid(a, 2, 0.0, 500.0, 50.0);
+        assert_eq!(store.bounds(kids[0]).w, 100.0);
+        assert_eq!(store.bounds(kids[1]).x, 100.0);
+    }
+
+    #[test]
+    fn adaptive_fit_collapses_trailing_empty_columns() {
+        // minmax(100, 1fr), auto-fit in 600px → 6 computed columns. Only 2 children,
+        // so columns 2..6 are empty and collapse to zero width; their free-space
+        // share is reclaimed by the two occupied columns, which split the whole
+        // 600px → 300 each. (auto-fill would instead keep six 100px columns.)
+        let a = AdaptiveColumns::auto_fit(100.0, TrackMax::Fr(1.0));
+        let (store, kids) = adaptive_grid(a, 2, 0.0, 600.0, 50.0);
+        assert_eq!(store.bounds(kids[0]).x, 0.0);
+        assert_eq!(store.bounds(kids[0]).w, 300.0);
+        assert_eq!(store.bounds(kids[1]).x, 300.0);
+        assert_eq!(store.bounds(kids[1]).w, 300.0);
+        // Right edge of the last occupied cell = the container's content width.
+        let b1 = store.bounds(kids[1]);
+        assert_eq!(b1.x + b1.w, 600.0);
+    }
+
+    #[test]
+    fn adaptive_fill_keeps_trailing_empty_columns() {
+        // Same shape as the auto-fit case but auto-fill: the six 100px columns all
+        // stay, so the two children hold their 100px cells at x=0 and x=100 and the
+        // trailing four columns keep their width (row does not collapse).
+        let a = AdaptiveColumns::auto_fill(100.0, TrackMax::Fr(1.0));
+        let (store, kids) = adaptive_grid(a, 2, 0.0, 600.0, 50.0);
+        assert_eq!(store.bounds(kids[0]).w, 100.0);
+        assert_eq!(store.bounds(kids[1]).x, 100.0);
+        assert_eq!(store.bounds(kids[1]).w, 100.0);
     }
 }

@@ -169,8 +169,8 @@ single linear pass with no fixed-point iteration.
     template-expansion helper (`grid::repeat` / `repeated`), not a runtime `TrackSizing`
     variant — the solver only ever sees the flat expanded list. **Boundary:** `Minmax`'s
     `max` does not participate in `Fr` free-space distribution (CSS flexible-track
-    semantics), and `repeat`'s `count` is a fixed integer here (`auto-fill`/`auto-fit`,
-    which depend on the container extent, remain out of scope — §69 item 11). Verified by
+    semantics), and `repeat`'s `count` is a fixed integer here (container-extent-driven
+    `auto-fill`/`auto-fit` land in the Adaptive follow-up below — §69 item 11). Verified by
     grid.rs solver unit tests (minmax lo/mid/hi clamp, inverted band, fit-content cap,
     fixed-track-then-Fr split, repeat≡hand-written) + layout.rs bounds goldens (minmax
     column clamps content and leaves the rest to Fr, floors small content at its min) +
@@ -253,3 +253,45 @@ single linear pass with no fixed-point iteration.
     "Performance has improved"). The prior `~8.33 µs` figure in Baseline was measured on a
     different machine/session and is not directly comparable; the A/B above is the authoritative
     before/after.
+  - Adaptive columns — `repeat(auto-fill, minmax(min, max))` / `auto-fit` (§69 item 11, the
+    other half of the `repeat` story: the container-extent-driven column **count**). The count
+    is not fixed at creation; it is solved from the container width at layout time. **Data
+    model:** `GridStyle` gains one cold, optional `Copy` field `adaptive_columns:
+    Option<AdaptiveColumns>` (default `None`), carried on `LayoutInput::Grid` (two `f32` + two
+    1-byte enums — still `Copy`, common `None` path zero-cost). `AdaptiveColumns { mode:
+    AutoRepeat (Fill | Fit), min: f32, max: TrackMax (Px(f32) | Fr(f32)) }`; constructed with
+    `AdaptiveColumns::auto_fill(min, max)` / `auto_fit(min, max)`. **Count formula** (in
+    `adaptive_column_count`): `n = floor((content_w + gap) / (min + gap))`, clamped to `≥ 1` —
+    the standard "how many `min`-wide tracks (with their interior gaps) fit the content box".
+    **Stretch:** a `Px` `max` reuses the fixed-size `Minmax(min, hi)`; an `Fr` `max` becomes a
+    new `TrackSizing::FlexMin(min, fr)` `Copy` variant — a **flex track with a floor**: pass 1
+    counts its `min` into `consumed` *and* its `fr` into `fr_total`, pass 2's re-normalizing
+    sweep adds only the incremental `fr` share on top of the already-seated `min`. This makes
+    `minmax(min, 1fr)` exact in a single solve pass with no fixed-point iteration, so adaptive
+    columns stretch to fill the whole content width (the responsive-card effect). **auto-fit
+    collapse:** with `mode == Fit`, the trailing columns that **no child's column span covers**
+    (span-1 or wider — a spanning item pins its trailing tracks open) are collapsed. The
+    collapse is decided from placement *before* the solve, and the solve runs over only the
+    surviving columns, so the freed space (including the dropped gaps) is redistributed to the
+    occupied columns — the last non-empty cell's right edge reaches the content's right edge.
+    `col_sizes` is then re-padded with zero-width trailing tracks so downstream span/offset
+    index math still addresses every original column; `prefix_offsets_into_collapsed` drops the
+    gaps at the collapsed boundary. `auto-fill` keeps every computed column (empty trailing
+    tracks retain their width). **Boundaries** (the "most reasonable / usable" dominant-use-case
+    take, per §55, not capability gaps): only a **pure** adaptive column template (a whole
+    `repeat(auto-*, minmax)` column list), not the general "fixed columns + an auto-repeat
+    segment" CSS mix; **rows are not adaptive** (implicit `auto_rows` already covers row
+    growth; `auto-fill` rows are vanishingly rare); and adaptive **does not stack with subgrid
+    columns** (an inherited-columns axis takes precedence and clears `adaptive_columns`).
+    Verified by grid.rs solver unit tests (`FlexMin`: single track takes min then all leftover,
+    multiple split leftover after each min, hold at min when no leftover, `FlexMin`+`Fr` share
+    the sweep by weight, gaps subtracted from the leftover; constructor mode) + layout.rs tests
+    (count formula: narrow→1, exact divisor, gap boundary, wide→N, degenerate min→1; bounds
+    goldens: count scales with width, `minmax(min,1fr)` stretches columns to fill, `Px` max
+    leaves the remainder free, auto-fit collapses trailing empty columns so the last cell's
+    right edge = content width, auto-fill keeps them) + the `grid_layout_alloc` pack (a warmed
+    adaptive re-layout — count solve + per-pass `col_tracks` rebuild into pooled buffers — is
+    **zero-alloc**) + the `grid_relayout_adaptive` bench (auto-fill `minmax(100px,1fr)`, 12×20
+    shape): **~11.37 µs**, within criterion noise of the pure-Fr `grid_relayout_12x20`
+    (~11.25 µs) and `grid_relayout_12x20_minmax` (~11.38 µs) on the same session — the extra
+    count solve + template rebuild add no measurable per-frame cost.
