@@ -92,6 +92,14 @@ pub struct GridStyle {
     /// `place_area` call resolves a name to an explicit placement at build time.
     /// `None` for the common grid.
     pub areas: Option<GridAreas>,
+    /// This grid is a subgrid on the column (inline) axis: when it is itself a
+    /// child cell of another grid, it adopts that parent grid's resolved column
+    /// tracks over its cell span instead of solving its own `columns` template,
+    /// so its inner column lines coincide exactly with the parent's. Ignored
+    /// when the grid is not a child of another grid. Default `false`.
+    pub subgrid_columns: bool,
+    /// This grid is a subgrid on the row (block) axis (see `subgrid_columns`).
+    pub subgrid_rows: bool,
 }
 
 impl Default for GridStyle {
@@ -109,6 +117,8 @@ impl Default for GridStyle {
             column_line_names: Vec::new(),
             row_line_names: Vec::new(),
             areas: None,
+            subgrid_columns: false,
+            subgrid_rows: false,
         }
     }
 }

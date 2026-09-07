@@ -214,6 +214,26 @@ single linear pass with no fixed-point iteration.
     Verified by layout.rs unit tests (mixed-height text cells land on one baseline; a fixed
     child offsets under Start/Center/End and ignores Stretch; a `Fill` child grows only
     under Stretch) exercised through a new `alloc_leaf` + `set_content_payload` test path.
+  - Subgrid (a grid child adopting its parent's tracks on one or both axes) — `GridStyle`
+    gains two `Copy` scalars `subgrid_columns` / `subgrid_rows` (default `false`), carried on
+    `LayoutInput::Grid` and read through the `subgrid_axes(index) -> (bool, bool)` layout hook.
+    The mechanism is a **dedicated recursive entry**, not a change to the public `layout()`
+    signature: `layout_grid` is parameterized with `inherited_cols` / `inherited_rows:
+    Option<(&[f32], f32)>` (the parent's resolved track sizes over the child's cell span, plus
+    the parent's gap on that axis). The public dispatcher always passes `(None, None)`; only the
+    per-child loop passes inherited slices, and only for a grid child that declares itself a
+    subgrid. On an inherited axis the child **skips** its own template build, auto-max collection,
+    and `solve_tracks`, adopts the parent's sizes verbatim, uses the parent's gap for its
+    prefix-offset math, and takes the inherited slice length as its authoritative column count for
+    placement — so its inner cell lines coincide with the parent's grid lines **exactly, interior
+    gaps included**. A non-subgrid axis self-solves as before (`None` degenerates to the prior
+    path with zero behavior change and zero overhead on the common path). Rejected alternatives:
+    threading inherited tracks through the whole `layout()` signature (taxes every call site and
+    the hot dispatcher); overwriting the child's `GridTracks` template (a template cannot
+    reproduce the parent's exact resolved Fr/Auto/Minmax line positions). Verified by layout.rs
+    bounds goldens — a column-only subgrid reproducing the parent's gapped column lines, a
+    span-at-offset subgrid adopting only the parent's `k..k+n` tracks, a both-axis subgrid landing
+    every inner cell corner on the parent's lines, and a mixed-axis subgrid inheriting columns
+    while self-solving its own Fr rows.
 - **Known follow-ups, out of scope:**
-  - Subgrid (a grid child adopting its parent's tracks).
   - Per-grid-node `GridScratch` hoisting if a profile ever demands it.

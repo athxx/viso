@@ -944,7 +944,14 @@ spanning 放置 + auto-flow;ADR 0009 明列六项高级能力全未做。落 `cr
       `column_line_names`/`row_line_names`(`LineNames = Vec<(Box<str>, u16)>`)+ `areas: Option<GridAreas>`(`GridAreas::from_rows`
       从 area 名网格解析每名的 bounding `CellRegion`,`.` 为空格)。facade `place_named` / `place_area` 在 grid 闭包内解析成
       `GridPlacement`(name 表 stash 在 BuildCx 上,冷/boxed,嵌套 grid save/restore);运行期 `place_children`/`GridPlacement` 零改动。
-- [ ] subgrid(子 grid 继承父轨道)。
+- [x] subgrid(子 grid 继承父轨道)。`GridStyle` 加 `subgrid_columns`/`subgrid_rows`(Copy 标量,默认 false),
+      随 `LayoutInput::Grid` 下带,经 `subgrid_axes(index) -> (bool, bool)` hook 读。机制 = 专用递归入口:`layout_grid`
+      参数化 `inherited_cols`/`inherited_rows: Option<(&[f32], f32)>`(父在子 cell span 上已解的轨道尺寸切片 + 父在该轴的 gap)。
+      公有 `layout()` 分发器恒传 `(None, None)`;逐 child 循环仅对声明 subgrid 的 grid child 切父 `col_sizes`/`row_sizes` 递归调 `layout_grid`。
+      subgrid 轴跳过模板构建 / auto-max / `solve_tracks`,原样采用父尺寸,用父 gap 算 prefix offset,以继承切片长度为权威列数,
+      使内 cell 线与父线逐像素重合(含内部 gap);非 subgrid 轴照常自解(None 退化为旧路径,常见路径零开销)。
+      验证:layout.rs bounds golden(列 subgrid 复现父 gapped 列线、span-at-offset 只取父 k..k+n 段、双轴 subgrid 内角落父线、
+      混合轴继承列自解 Fr 行)。更新 ADR 0009(Subgrid 从 Known follow-up 移入 Landed follow-ups)。
 - [x] baseline 对齐(跨 grid item 基线对齐)。`GridStyle` 加 `align_items: AlignItems { Stretch(默认)/Start/Center/End/Baseline }`
       (共用 `layout::AlignItems`,Copy 标量,带上 `LayoutInput::Grid`)。`layout_grid` 按 align_items 在 cell block 轴就位:
       Stretch 把 Fill child 撑到 cell 高(旧隐含行为)/ Start·Center·End 贴自身 measured 高的顶·中·底 / Baseline 使同 row 各 cell

@@ -499,6 +499,8 @@ impl NodeStore {
             padding: style.padding,
             auto_rows: style.auto_rows,
             align_items: style.align_items,
+            subgrid_columns: style.subgrid_columns,
+            subgrid_rows: style.subgrid_rows,
             size: style.size,
         };
         let id = self.alloc(input, style.style);
@@ -1994,6 +1996,18 @@ impl LayoutTree for NodeStore {
     }
 
     #[inline]
+    fn subgrid_axes(&self, index: u32) -> (bool, bool) {
+        match self.layout[index as usize] {
+            LayoutInput::Grid {
+                subgrid_columns,
+                subgrid_rows,
+                ..
+            } => (subgrid_columns, subgrid_rows),
+            _ => (false, false),
+        }
+    }
+
+    #[inline]
     fn hidden(&self, index: u32) -> bool {
         self.hidden[index as usize]
     }
@@ -2195,6 +2209,8 @@ impl<'a> BuildCx<'a> {
             padding: style.padding,
             auto_rows: style.auto_rows,
             align_items: style.align_items,
+            subgrid_columns: style.subgrid_columns,
+            subgrid_rows: style.subgrid_rows,
             size: style.size,
         };
         let id = self.push_node(input, style.style);
