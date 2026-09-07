@@ -20,9 +20,10 @@
 //! - **keyboard step input tape** — with the slider focused, `KeyRouter::route_key`
 //!   steps the value on the arrow keys (Right/Up up, Left/Down down) and fires
 //!   `on_change`; an unfocused slider receives no key dispatch;
-//! - **a11y snapshot** — a `Slider`'s derived semantics node is `Role::CheckBox`
-//!   (a dedicated `Slider` role is a later slice) and its accessible name is the
-//!   visible caption;
+//! - **a11y snapshot** — a `Slider`'s derived semantics node is `Role::Slider`,
+//!   its accessible name is the visible caption, and it carries the live value
+//!   and range on the real scale, projected from the reactive value cell
+//!   (section 8.1);
 //! - **allocation profile** — a warmed-up `Slider` frame allocates nothing per
 //!   frame (architecture section 47 hot-path contract), same CountingAlloc +
 //!   `frame_stats`/`*_count()` steady-state asserts as `toggle_widget.rs`.
@@ -427,7 +428,7 @@ fn keyboard_step_requires_focus_and_moves_the_value() {
 // --- a11y snapshot ----------------------------------------------------------
 
 #[test]
-fn slider_derives_a_checkbox_semantics_node_named_by_its_caption() {
+fn slider_derives_a_slider_semantics_node_named_by_its_caption_with_live_value() {
     let mut store = NodeStore::new();
     let mut states = StateStore::new();
     let mut bindings = BindingTable::new();
@@ -435,8 +436,12 @@ fn slider_derives_a_checkbox_semantics_node_named_by_its_caption() {
     let mut text_edits = TextEdits::new();
     let mut projectors = SemanticProjector::new();
 
+    // A named slider over an explicit range, seeded at a value inside it: the
+    // build writes the semantic-state column immediately, so the first derive
+    // reports the live value and range on the real scale (section 8.1) rather
+    // than the internal 0..1 relative fraction.
     let root = {
-        let widget = slider("Volume");
+        let widget = slider("Volume").range(0.0, 100.0).value(25.0);
         let mut cx = BuildCx::with_reactive(
             &mut store,
             &mut states,
@@ -455,13 +460,27 @@ fn slider_derives_a_checkbox_semantics_node_named_by_its_caption() {
     let node = tree.root().expect("the derived tree has a root");
     assert_eq!(
         node.role,
-        Role::CheckBox,
-        "a Slider derives Role::CheckBox for now (a dedicated Slider role is a later slice)"
+        Role::Slider,
+        "a Slider derives the dedicated Role::Slider"
     );
     assert_eq!(
         node.label.as_deref(),
         Some("Volume"),
         "the accessible name is the visible caption"
+    );
+
+    let state = node
+        .state
+        .expect("a Slider carries a live semantic state after build");
+    let value = state.value.expect("the state reports the current value");
+    assert!(
+        (value - 25.0).abs() < 1e-3,
+        "the derived value is the seeded value on the real scale, got {value}"
+    );
+    assert_eq!(
+        state.range,
+        Some((0.0, 100.0)),
+        "the derived range is the slider's real min/max, not the 0..1 fraction"
     );
 }
 

@@ -19,7 +19,9 @@
 //!   toggles on Enter and Space; an auto-repeat does not, and an unfocused
 //!   checkbox receives no key dispatch;
 //! - **a11y snapshot** — a `CheckBox`'s derived semantics node is
-//!   `Role::CheckBox` and its accessible name is the visible caption;
+//!   `Role::CheckBox`, its accessible name is the visible caption, and it
+//!   carries the live checked state projected from the reactive cell
+//!   (section 8.1);
 //! - **allocation profile** — a warmed-up `CheckBox` frame allocates nothing per
 //!   frame (architecture section 47 hot-path contract), same CountingAlloc +
 //!   `frame_stats`/`*_count()` steady-state asserts as `button_widget.rs`.
@@ -417,8 +419,11 @@ fn checkbox_derives_a_checkbox_semantics_node_named_by_its_caption() {
     let mut text_edits = TextEdits::new();
     let mut projectors = SemanticProjector::new();
 
+    // Seed the box checked so the derived `checked` state is a non-default
+    // value: the build writes the semantic-state column immediately, so the
+    // first derive already carries the live checked state (section 8.1).
     let root = {
-        let widget = checkbox("Sound");
+        let widget = checkbox("Sound").checked(true);
         let mut cx = BuildCx::with_reactive(
             &mut store,
             &mut states,
@@ -444,6 +449,11 @@ fn checkbox_derives_a_checkbox_semantics_node_named_by_its_caption() {
         node.label.as_deref(),
         Some("Sound"),
         "the accessible name is the visible caption"
+    );
+    assert_eq!(
+        node.state.and_then(|s| s.checked),
+        Some(true),
+        "the derived tree carries the live checked state seeded at build"
     );
 }
 

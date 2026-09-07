@@ -45,3 +45,7 @@ harness = false
 [[bench]]
 name = "timer_arm"
 harness = false
+
+[[bench]]
+name = "semantic_projection"
+harness = false

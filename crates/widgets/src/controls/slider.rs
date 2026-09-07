@@ -23,11 +23,15 @@
 //! rounded *track* holding a circular *thumb* leaf, and an optional
 //! [`Label`](crate::Label) child for the caption. Dragging writes the `value`
 //! cell, repainting the row alone (a targeted invalidation — no rebuild,
-//! architecture section 47). Its accessible role is [`Role::CheckBox`] (a
-//! dedicated `Slider` role is a later slice) with the caption as its name; the
-//! live value is proven through the reactive cell and input tapes. A thumb that
-//! *slides* in paint with the cell (rather than sitting at its build-time
-//! position) is a later slice, matching the [`Toggle`](crate::Toggle) precedent.
+//! architecture section 47). Its accessible role is [`Role::Slider`] with the
+//! caption as its name, and the live value reaches the derived semantics tree
+//! through a semantic-state projection: the internal relative fraction is mapped
+//! back to the external `[min, max]` value (with the step grid applied) and
+//! carried alongside the range on the node's side column, seeded at build and
+//! re-run in the flush phase on every move — the derive pass reads only that
+//! column, never the state store. A thumb that *slides* in paint with the cell
+//! (rather than sitting at its build-time position) is a later slice, matching
+//! the [`Toggle`](crate::Toggle) precedent.
 //!
 //! ```
 //! use viso_widgets::slider;
@@ -54,8 +58,8 @@ use std::rc::Rc;
 
 use viso_ui::{
     Align, Axis, BoxStyle, BuildCx, Component, DirtyClass, EventCx, FlexStyle, Inset, Key,
-    LeafStyle, Length, PointerButtons, PointerPhase, Rgba, Role, Semantics, Size, StateId,
-    StateValue,
+    LeafStyle, Length, PointerButtons, PointerPhase, Rgba, Role, SemanticState, Semantics, Size,
+    StateId, StateValue,
 };
 
 use crate::label;
@@ -353,6 +357,23 @@ impl Component for Slider {
         // Bind the relative-value cell to the row's PAINT so a move repaints just
         // this subtree.
         cx.bind(value, root, DirtyClass::PAINT);
+
+        // Project the relative-value cell into the node's semantic-state column as
+        // the external value plus the range, so the derived accessibility tree
+        // announces the live position on the real `[min, max]` scale (seeded now
+        // for the first frame, then re-run in the flush phase on every move). The
+        // cell holds a 0..1 fraction; `to_external` maps it back through the step
+        // grid, exactly as `on_change` reports it. This is the SEMANTICS side of
+        // the same cell that drives PAINT — the derive pass reads only the node
+        // column, never the state store.
+        let max = self.max;
+        cx.bind_semantic_state(root, move |cx| {
+            let rel = match cx.get(value) {
+                Some(StateValue::Float(v)) => v,
+                _ => 0.0,
+            };
+            SemanticState::slider(to_external(rel, min, span, step), min, max)
+        });
         cx.focusable(root, true);
 
         // Pointer drag: a primary press records the anchor (down-x + the relative
@@ -416,15 +437,14 @@ impl Component for Slider {
             }
         });
 
-        // A slider is a continuous/stepped value picker; a dedicated `Slider` role
-        // is a later slice, so it derives `Role::CheckBox` for now. The caption is
-        // its accessible name, so the name matches the visible label (AGENTS
-        // section 15). The live value is proven by the reactive cell and input
-        // tapes; wiring it into the derived tree is a later slice (the derive pass
-        // has no state store).
+        // A slider is a continuous/stepped value picker, role `Slider`. The caption
+        // is its accessible name, so the name matches the visible label (AGENTS
+        // section 15). The live value reaches the derived tree via the
+        // semantic-state projection registered above, not this authored (static)
+        // semantics.
         cx.semantics(
             root,
-            Semantics::role(Role::CheckBox).with_label(self.label.clone()),
+            Semantics::role(Role::Slider).with_label(self.label.clone()),
         );
     }
 }
@@ -436,7 +456,7 @@ mod tests {
     use std::rc::Rc;
     use viso_ui::{
         BindingTable, KeyEvent, Modifiers, NodeId, NodeStore, PointerEvent, SemanticProjector,
-        StateStore, TextEdits, VirtualLists,
+        SemanticState, StateStore, TextEdits, VirtualLists,
     };
 
     /// The reactive stores a slider build writes into, kept together so a test can
@@ -509,6 +529,21 @@ mod tests {
                 Some(StateValue::Float(v)) => v,
                 _ => f32::NAN,
             }
+        }
+
+        /// Run the flush phase (drain pending state writes, wake the projections
+        /// that read them) and derive the semantics tree, returning the root
+        /// node's live `SemanticState`. This is exactly the frame's flush + derive
+        /// sequence, so a snapshot taken here is what an assistive technology sees.
+        fn derive_state(&mut self, root: NodeId) -> Option<SemanticState> {
+            let mut changed = Vec::new();
+            self.states.take_pending(&mut changed);
+            self.projectors
+                .wake(&changed, &self.states, &mut self.store);
+            self.store
+                .derive_semantics(root)
+                .get(root)
+                .and_then(|n| n.state)
         }
     }
 
@@ -600,7 +635,7 @@ mod tests {
         );
 
         let sem = rx.store.semantics(root).expect("slider authors semantics");
-        assert_eq!(sem.role, Role::CheckBox);
+        assert_eq!(sem.role, Role::Slider);
         assert_eq!(sem.label.as_deref(), Some("Volume"));
     }
 
@@ -803,5 +838,61 @@ mod tests {
         rx.pointer(root, primary_at(60.0, PointerPhase::Move)); // no panic with no callback
         assert!((rx.relative() - 0.5).abs() < 1e-6, "still moves the value");
         assert!(rx.store.focusable(root), "still focusable");
+    }
+
+    /// The live value reaches the derived accessibility tree as a slider state on
+    /// the real `[min, max]` scale: seeded at build from the initial value, and
+    /// tracking a drag — each snapshot taken after a flush + derive, exactly as
+    /// the frame runs it. Dragging is delta-based (each move adds the pixel delta
+    /// over the 120px track to the value at press), so a 60px drag from a slider
+    /// resting at min advances it half the range: 50 on a 0..100 slider.
+    #[test]
+    fn semantics_snapshot_tracks_the_live_value_on_the_real_scale() {
+        let mut rx = Reactive::new();
+        let root = rx.build(slider("Volume").range(0.0, 100.0).value(30.0));
+
+        let seeded = rx
+            .derive_state(root)
+            .expect("slider seeds a semantic state");
+        assert_eq!(seeded.range, Some((0.0, 100.0)), "the range is carried");
+        assert!(
+            (seeded.value.unwrap() - 30.0).abs() < 1e-3,
+            "the first frame carries the seeded external value, got {:?}",
+            seeded.value
+        );
+
+        // Press then drag +60px along the 120px track: a +0.5 relative delta on
+        // top of the initial 0.3 -> relative 0.8 -> external 80.
+        rx.pointer(root, primary_at(0.0, PointerPhase::Down));
+        rx.pointer(root, primary_at(60.0, PointerPhase::Move));
+        let dragged = rx.derive_state(root).expect("still has a semantic state");
+        assert_eq!(dragged.range, Some((0.0, 100.0)));
+        assert!(
+            (dragged.value.unwrap() - 80.0).abs() < 1e-3,
+            "a +half-track drag advances the derived value by half the range, got {:?}",
+            dragged.value
+        );
+    }
+
+    /// A discrete slider announces the step-quantized external value: the
+    /// projection maps through the same `to_external` grid as `on_change`, so an
+    /// arrow step of 10 on a 0..100 slider reads exactly 10.
+    #[test]
+    fn semantics_snapshot_quantizes_a_discrete_slider() {
+        let mut rx = Reactive::new();
+        let root = rx.build(slider("v").range(0.0, 100.0).step(10.0));
+
+        assert_eq!(
+            rx.derive_state(root).and_then(|s| s.value),
+            Some(0.0),
+            "starts at the range minimum"
+        );
+
+        rx.key(root, key_ev(Key::Right, true, false));
+        assert_eq!(
+            rx.derive_state(root).and_then(|s| s.value),
+            Some(10.0),
+            "one Right step reads the quantized external value"
+        );
     }
 }

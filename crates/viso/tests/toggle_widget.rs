@@ -19,8 +19,9 @@
 //!   toggles on Enter and Space; an auto-repeat does not, and an unfocused toggle
 //!   receives no key dispatch;
 //! - **a11y snapshot** — a `Toggle`'s derived semantics node is `Role::CheckBox`
-//!   (a switch is a two-state boolean toggle) and its accessible name is the
-//!   visible caption;
+//!   (a switch is a two-state boolean toggle), its accessible name is the
+//!   visible caption, and it carries the live on/off state projected from the
+//!   reactive cell (section 8.1);
 //! - **allocation profile** — a warmed-up `Toggle` frame allocates nothing per
 //!   frame (architecture section 47 hot-path contract), same CountingAlloc +
 //!   `frame_stats`/`*_count()` steady-state asserts as `checkbox_widget.rs`.
@@ -420,8 +421,11 @@ fn toggle_derives_a_checkbox_semantics_node_named_by_its_caption() {
     let mut text_edits = TextEdits::new();
     let mut projectors = SemanticProjector::new();
 
+    // Seed the switch on so the derived `checked` state is a non-default value:
+    // the build writes the semantic-state column immediately, so the first
+    // derive already carries the live on/off state (section 8.1).
     let root = {
-        let widget = toggle("Wi-Fi");
+        let widget = toggle("Wi-Fi").on(true);
         let mut cx = BuildCx::with_reactive(
             &mut store,
             &mut states,
@@ -447,6 +451,11 @@ fn toggle_derives_a_checkbox_semantics_node_named_by_its_caption() {
         node.label.as_deref(),
         Some("Wi-Fi"),
         "the accessible name is the visible caption"
+    );
+    assert_eq!(
+        node.state.and_then(|s| s.checked),
+        Some(true),
+        "the derived tree carries the live on/off state seeded at build"
     );
 }
 

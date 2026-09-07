@@ -21,7 +21,10 @@
 //!   on Enter and Space; an auto-repeat does not, and an unfocused group receives
 //!   no key dispatch;
 //! - **a11y snapshot** — a `RadioGroup`'s derived semantics root is `Role::Group`
-//!   and each option is a `Role::CheckBox` named by its caption;
+//!   and each option is a `Role::Radio` named by its caption; the derived tree
+//!   also carries each option's live `checked` state, projected from the shared
+//!   selection cell (section 8.1), so an assistive technology reads which option
+//!   is currently chosen — and mutual exclusion is visible after a selection;
 //! - **allocation profile** — a warmed-up `RadioGroup` frame allocates nothing
 //!   per frame (architecture section 47 hot-path contract), same CountingAlloc +
 //!   `frame_stats`/`*_count()` steady-state asserts as `toggle_widget.rs`.
@@ -448,7 +451,7 @@ fn keyboard_select_requires_focus_and_ignores_repeat() {
 // --- a11y snapshot ----------------------------------------------------------
 
 #[test]
-fn radio_group_derives_a_group_over_named_checkbox_options() {
+fn radio_group_derives_a_group_over_named_radio_options_carrying_live_selection() {
     let mut store = NodeStore::new();
     let mut states = StateStore::new();
     let mut bindings = BindingTable::new();
@@ -456,6 +459,9 @@ fn radio_group_derives_a_group_over_named_checkbox_options() {
     let mut text_edits = TextEdits::new();
     let mut projectors = SemanticProjector::new();
 
+    // Default selection is the first option; the build seeds each row's
+    // semantic-state column immediately, so the very first derive carries the
+    // live `checked` state without waiting for an interaction.
     let root = {
         let widget = radio_group(OPTIONS);
         let mut cx = BuildCx::with_reactive(
@@ -480,24 +486,27 @@ fn radio_group_derives_a_group_over_named_checkbox_options() {
         "a RadioGroup derives Role::Group as its accessible wrapper"
     );
 
-    // `children` holds indices into the flat pre-order `tree.nodes`.
-    let labels: Vec<Option<&str>> = node
-        .children
-        .iter()
-        .map(|&i| {
-            let c = &tree.nodes[i];
-            assert_eq!(
-                c.role,
-                Role::CheckBox,
-                "each option derives Role::CheckBox (no radio variant yet)"
-            );
-            c.label.as_deref()
-        })
-        .collect();
+    // `children` holds indices into the flat pre-order `tree.nodes`. Each option
+    // derives Role::Radio, is named by its caption, and carries its live checked
+    // state projected from the shared selection cell.
+    let mut labels: Vec<Option<&str>> = Vec::new();
+    let mut checked: Vec<Option<bool>> = Vec::new();
+    for &i in &node.children {
+        let c = &tree.nodes[i];
+        assert_eq!(c.role, Role::Radio, "each option derives Role::Radio");
+        labels.push(c.label.as_deref());
+        checked.push(c.state.and_then(|s| s.checked));
+    }
     assert_eq!(
         labels,
         vec![Some("Small"), Some("Medium"), Some("Large")],
         "each option's accessible name is its visible caption, in order"
+    );
+    assert_eq!(
+        checked,
+        vec![Some(true), Some(false), Some(false)],
+        "the derived tree carries the live selection: only the default option \
+         (index 0) reads checked"
     );
 }
 

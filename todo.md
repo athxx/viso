@@ -850,9 +850,11 @@ derive 路径 + 四控件接线。
 - [x] 提交 2(节点侧列 + 投影 binding,component.rs + binding.rs):`semantic_state` 侧列 + getter/setter(live-guard +
       赋值 + mark_dirty SEMANTICS),随 alloc 对齐;投影 binding(flush 阶段读值 → set_semantic_state);`derive_into` 读列
       填 `SemanticsNode.state`。单测:set 标 SEMANTICS;flush 投影后 derive 带 state;binding 变更 → 语义树随之变。
-- [ ] 提交 3(四控件接线,viso-widgets):CheckBox/Toggle `checked`;Slider `value`+`range`(role→Slider);Radio 每 option
+- [x] 提交 3(四控件接线,viso-widgets):CheckBox/Toggle `checked`;Slider `value`+`range`(role→Slider);Radio 每 option
       `checked`(role→Radio)+ 容器 Group;build 时写初值 + 登记投影 binding;删过时注释;每控件 a11y 快照测试(input tape
-      驱动 flush+derive:勾选/拖动/换选项前后)。microbench(derive + flush 投影成本)+ alloc profile(稳态零 alloc)。
+      驱动 flush+derive:勾选/拖动/换选项前后)。microbench(derive + flush 投影成本,`crates/ui/benches/semantic_projection.rs`:
+      project_wake ~90.7µs / derive_with_state ~4.2µs)+ alloc profile(`crates/ui/tests/semantic_projection_alloc.rs` 稳态
+      零 alloc,实证 SemanticProjector 复用 DepCursor 后 wake 零分配 —— 修掉 project 里 per-eval `DepCursor::new()`)。
 - [ ] 提交 4(text-node label 失效,backlog #4,viso-ui):content-payload-as-label 路径补 SEMANTICS 失效(读代码确认范围,
       只给"内容即可访问名"路径加,不全加)。单测:改文本内容 → 语义树 label 更新。
 - [ ] 提交 5(ADR,§68 触发 reactive semantics):记录活状态经节点侧列投影进派生语义树(不跨层读 StateStore)、SEMANTICS

@@ -22,9 +22,10 @@
 //! repainting the row alone (a targeted invalidation — no rebuild, architecture
 //! section 47). Its accessible role is [`Role::CheckBox`] (a switch is a
 //! two-state boolean toggle; a dedicated `Switch` role is a later slice) with the
-//! caption as its name; the live on value is proven through the reactive cell and
-//! input tapes (wiring it into the derived semantics tree is a later slice — the
-//! derive pass has no state store).
+//! caption as its name, and the live on value reaches the derived semantics tree
+//! through a semantic-state projection (the node's side column, seeded at build
+//! and re-run on every toggle — the derive pass reads only that column, never the
+//! state store).
 //!
 //! ```
 //! use viso_widgets::toggle;
@@ -51,7 +52,8 @@ use std::rc::Rc;
 
 use viso_ui::{
     Align, Axis, BoxStyle, BuildCx, Component, DirtyClass, EventCx, FlexStyle, Inset, Key,
-    LeafStyle, Length, PointerButtons, PointerPhase, Rgba, Role, Semantics, Size, StateValue,
+    LeafStyle, Length, PointerButtons, PointerPhase, Rgba, Role, SemanticState, Semantics, Size,
+    StateValue,
 };
 
 use crate::label;
@@ -311,6 +313,16 @@ impl Component for Toggle {
         // paint via the cell; this slice paints the initial-state track and marks
         // PAINT dirty on toggle so the frame re-emits the node.
         cx.bind(on, root, DirtyClass::PAINT);
+
+        // Project the same cell into the node's semantic-state column, so the
+        // derived accessibility tree carries the live on value (seeded now for the
+        // first frame, then re-run in the flush phase on every toggle). This is the
+        // SEMANTICS side of the one cell that also drives PAINT — the derive pass
+        // reads only the node column, never the state store.
+        cx.bind_semantic_state(root, move |cx| match cx.get(on) {
+            Some(StateValue::Bool(b)) => SemanticState::checked(b),
+            _ => SemanticState::checked(false),
+        });
         cx.focusable(root, true);
 
         // Pointer activation: a primary press-then-release toggles the on cell
@@ -345,9 +357,8 @@ impl Component for Toggle {
         // A switch is a two-state boolean toggle, semantically a checkbox; a
         // dedicated `Switch` role is a later slice. The caption is its accessible
         // name, so the name matches the visible label (AGENTS section 15). The
-        // live on value is proven by the reactive cell and input tapes; wiring it
-        // into the derived tree is a later slice (the derive pass has no state
-        // store).
+        // live on value reaches the derived tree via the semantic-state projection
+        // registered above, not this authored (static) semantics.
         cx.semantics(
             root,
             Semantics::role(Role::CheckBox).with_label(self.label.clone()),
@@ -362,7 +373,7 @@ mod tests {
     use std::rc::Rc;
     use viso_ui::{
         BindingTable, KeyEvent, Modifiers, NodeId, NodeStore, PointerEvent, SemanticProjector,
-        StateId, StateStore, TextEdits, VirtualLists,
+        SemanticState, StateId, StateStore, TextEdits, VirtualLists,
     };
 
     /// The reactive stores a toggle build writes into, kept together so a test can
@@ -435,6 +446,21 @@ mod tests {
             };
             let cx = EventCx::__new_pointer(&mut self.states, &self.bindings, &ev);
             matches!(cx.get(cell), Some(StateValue::Bool(true)))
+        }
+
+        /// Run the flush phase (drain pending state writes, wake the projections
+        /// that read them) and derive the semantics tree, returning the root
+        /// node's live `SemanticState`. This is exactly the frame's flush + derive
+        /// sequence, so a snapshot taken here is what an assistive technology sees.
+        fn derive_state(&mut self, root: NodeId) -> Option<SemanticState> {
+            let mut changed = Vec::new();
+            self.states.take_pending(&mut changed);
+            self.projectors
+                .wake(&changed, &self.states, &mut self.store);
+            self.store
+                .derive_semantics(root)
+                .get(root)
+                .and_then(|n| n.state)
         }
     }
 
@@ -622,5 +648,50 @@ mod tests {
         rx.pointer(root, primary(PointerPhase::Up)); // must not panic with no callback
         assert!(rx.on(cell), "still toggles the visible state");
         assert!(rx.store.focusable(root), "still focusable");
+    }
+
+    /// The live on value reaches the derived accessibility tree as a checked
+    /// state: `checked=false` from the first frame (seeded at build), flips to
+    /// `true` after a click, and back to `false` after a second — each snapshot
+    /// taken after a flush + derive, exactly as the frame runs it.
+    #[test]
+    fn semantics_snapshot_tracks_the_live_on_state() {
+        let mut rx = Reactive::new();
+        let root = rx.build(toggle("Wi-Fi"));
+
+        assert_eq!(
+            rx.derive_state(root),
+            Some(SemanticState::checked(false)),
+            "the first frame already carries the seeded off state"
+        );
+
+        rx.pointer(root, primary(PointerPhase::Down));
+        rx.pointer(root, primary(PointerPhase::Up));
+        assert_eq!(
+            rx.derive_state(root),
+            Some(SemanticState::checked(true)),
+            "a click drives the derived tree to on"
+        );
+
+        rx.pointer(root, primary(PointerPhase::Down));
+        rx.pointer(root, primary(PointerPhase::Up));
+        assert_eq!(
+            rx.derive_state(root),
+            Some(SemanticState::checked(false)),
+            "a second click drives it back off"
+        );
+    }
+
+    /// A toggle built `on(true)` seeds the derived tree on from the first frame —
+    /// the projection reads the cell's initial value at build.
+    #[test]
+    fn semantics_snapshot_seeds_an_initially_on_switch() {
+        let mut rx = Reactive::new();
+        let root = rx.build(toggle("Wi-Fi").on(true));
+        assert_eq!(
+            rx.derive_state(root),
+            Some(SemanticState::checked(true)),
+            "on(true) seeds the derived tree on without any input"
+        );
     }
 }
