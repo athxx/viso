@@ -18,8 +18,9 @@
 //! caption. Toggling flips the `checked` cell, repainting the row alone (a
 //! targeted invalidation — no rebuild, architecture section 47). Its accessible
 //! role is [`Role::CheckBox`] with the caption as its name; the live checked
-//! value is proven through the reactive cell and input tapes (wiring it into the
-//! derived semantics tree is a later slice — the derive pass has no state store).
+//! value reaches the derived semantics tree through a semantic-state projection
+//! (the node's side column, seeded at build and re-run on every toggle — the
+//! derive pass reads only that column, never the state store).
 //!
 //! ```
 //! use viso_widgets::checkbox;
@@ -46,7 +47,8 @@ use std::rc::Rc;
 
 use viso_ui::{
     Align, Axis, Border, BoxStyle, BuildCx, Component, DirtyClass, EventCx, FlexStyle, Inset, Key,
-    LeafStyle, Length, PointerButtons, PointerPhase, Rgba, Role, Semantics, Size, StateValue,
+    LeafStyle, Length, PointerButtons, PointerPhase, Rgba, Role, SemanticState, Semantics, Size,
+    StateValue,
 };
 
 use crate::label;
@@ -260,6 +262,17 @@ impl Component for CheckBox {
         // paint via the cell; this slice paints the unchecked box and marks PAINT
         // dirty on toggle so the frame re-emits the node.
         cx.bind(checked, root, DirtyClass::PAINT);
+
+        // Project the same cell into the node's semantic-state column, so the
+        // derived accessibility tree carries the live checked value (seeded now
+        // for the first frame, then re-run in the flush phase on every toggle).
+        // This is the SEMANTICS side of the one cell that also drives PAINT — the
+        // derive pass reads only the node column, never the state store.
+        cx.bind_semantic_state(root, move |cx| match cx.get(checked) {
+            Some(StateValue::Bool(b)) => SemanticState::checked(b),
+            _ => SemanticState::checked(false),
+        });
+
         cx.focusable(root, true);
 
         // Pointer activation: a primary press-then-release toggles the checked
@@ -293,8 +306,8 @@ impl Component for CheckBox {
 
         // Explicit CheckBox role with the caption as its accessible name, so the
         // name matches the visible label (AGENTS section 15). The live checked
-        // value is proven by the reactive cell and input tapes; wiring it into
-        // the derived tree is a later slice (the derive pass has no state store).
+        // value reaches the derived tree through the semantic-state projection
+        // registered above (the node column, not a cross-layer state read).
         cx.semantics(
             root,
             Semantics::role(Role::CheckBox).with_label(self.label.clone()),
@@ -309,7 +322,7 @@ mod tests {
     use std::rc::Rc;
     use viso_ui::{
         BindingTable, KeyEvent, Modifiers, NodeId, NodeStore, PointerEvent, SemanticProjector,
-        StateId, StateStore, TextEdits, VirtualLists,
+        SemanticState, StateId, StateStore, TextEdits, VirtualLists,
     };
 
     /// The reactive stores a checkbox build writes into, kept together so a test
@@ -382,6 +395,22 @@ mod tests {
             };
             let cx = EventCx::__new_pointer(&mut self.states, &self.bindings, &ev);
             matches!(cx.get(cell), Some(StateValue::Bool(true)))
+        }
+
+        /// Run the flush phase (drain pending state writes, wake the projections
+        /// that read them) and derive the semantics tree, returning the root
+        /// node's live `SemanticState`. This is what the frame does between an
+        /// input transaction and an accessibility snapshot: the projection writes
+        /// the node column, then the single-layer derive reads it.
+        fn derive_state(&mut self, root: NodeId) -> Option<SemanticState> {
+            let mut changed = Vec::new();
+            self.states.take_pending(&mut changed);
+            self.projectors
+                .wake(&changed, &self.states, &mut self.store);
+            self.store
+                .derive_semantics(root)
+                .get(root)
+                .and_then(|n| n.state)
         }
     }
 
@@ -561,5 +590,50 @@ mod tests {
         rx.pointer(root, primary(PointerPhase::Up)); // must not panic with no callback
         assert!(rx.checked(cell), "still toggles the visible state");
         assert!(rx.store.focusable(root), "still focusable");
+    }
+
+    /// The live checked value reaches the derived accessibility tree: it is
+    /// `checked=false` from the first frame (seeded at build, before any input),
+    /// flips to `true` after a click, and back to `false` after a second click —
+    /// each snapshot taken after a flush + derive, exactly as the frame runs it.
+    #[test]
+    fn semantics_snapshot_tracks_the_live_checked_state() {
+        let mut rx = Reactive::new();
+        let root = rx.build(checkbox("Sound"));
+
+        assert_eq!(
+            rx.derive_state(root),
+            Some(SemanticState::checked(false)),
+            "the first frame already carries the seeded unchecked state"
+        );
+
+        rx.pointer(root, primary(PointerPhase::Down));
+        rx.pointer(root, primary(PointerPhase::Up));
+        assert_eq!(
+            rx.derive_state(root),
+            Some(SemanticState::checked(true)),
+            "a click drives the derived tree to checked"
+        );
+
+        rx.pointer(root, primary(PointerPhase::Down));
+        rx.pointer(root, primary(PointerPhase::Up));
+        assert_eq!(
+            rx.derive_state(root),
+            Some(SemanticState::checked(false)),
+            "a second click drives it back to unchecked"
+        );
+    }
+
+    /// A checkbox built `checked(true)` seeds the derived tree checked from the
+    /// first frame — the projection reads the cell's initial value at build.
+    #[test]
+    fn semantics_snapshot_seeds_an_initially_checked_box() {
+        let mut rx = Reactive::new();
+        let root = rx.build(checkbox("Sound").checked(true));
+        assert_eq!(
+            rx.derive_state(root),
+            Some(SemanticState::checked(true)),
+            "checked(true) seeds the derived tree checked without any input"
+        );
     }
 }

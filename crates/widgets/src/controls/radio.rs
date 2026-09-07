@@ -19,11 +19,13 @@
 //! the callback is shared between both handlers rather than duplicated.
 //!
 //! Its accessible role is [`Role::Group`] for the container with a
-//! [`Role::CheckBox`] per option named by its caption (a dedicated radio role is
-//! a later slice — the `Role` enum has no radio variant yet); the live selection
-//! is proven through the shared reactive cell and the input tapes (wiring it into
-//! the derived semantics tree is a later slice — the derive pass has no state
-//! store).
+//! [`Role::Radio`] per option named by its caption. Each option projects its live
+//! selection into the derived semantics tree: a per-option binding reads the
+//! shared `selected` cell in the flush phase (both stores live) and writes the
+//! option's node `semantic_state` column with `checked = (selected == index)`,
+//! which the `&self` derive pass reads without ever touching the state store
+//! (dependency direction, architecture section 3.5). The first frame carries the
+//! seeded selection because the binding writes an initial value at build.
 //!
 //! ```
 //! use viso_widgets::radio_group;
@@ -52,8 +54,8 @@ use std::rc::Rc;
 
 use viso_ui::{
     Align, Axis, Border, BoxStyle, BuildCx, Component, DirtyClass, EventCx, FlexStyle, Inset, Key,
-    LeafStyle, Length, PointerButtons, PointerPhase, Rgba, Role, Semantics, Size, StateId,
-    StateValue,
+    LeafStyle, Length, PointerButtons, PointerPhase, Rgba, Role, SemanticState, Semantics, Size,
+    StateId, StateValue,
 };
 
 use crate::label;
@@ -300,6 +302,19 @@ impl Component for RadioGroup {
                     // slice paints the deselected dot and marks PAINT dirty on
                     // selection so the frame re-emits the node.
                     cx.bind(selected, row, DirtyClass::PAINT);
+
+                    // Project the shared selection into this option's semantic
+                    // state: in the flush phase (both stores live) read the shared
+                    // cell and write this node's `checked = (selected == index)`,
+                    // which the `&self` derive pass reads without touching the
+                    // state store. Seeded at build so the first frame is correct.
+                    cx.bind_semantic_state(row, move |cx| {
+                        let chosen = match cx.get(selected) {
+                            Some(StateValue::Int(i)) => i as usize == index,
+                            _ => false,
+                        };
+                        SemanticState::checked(chosen)
+                    });
                     cx.focusable(row, true);
 
                     // Pointer activation: a primary press-then-release selects this
@@ -330,14 +345,13 @@ impl Component for RadioGroup {
                         }
                     });
 
-                    // Each option is an interactive, named node. The `Role` enum
-                    // has no radio variant yet, so an option uses `Role::CheckBox`
-                    // (a selectable named state) with its caption as its accessible
-                    // name (AGENTS section 15); a dedicated radio role is a later
-                    // slice.
+                    // Each option is an interactive, named node with the dedicated
+                    // `Role::Radio` and its caption as its accessible name (AGENTS
+                    // section 15). The live checked state is carried by the
+                    // projection above, not the authored (static) semantics.
                     cx.semantics(
                         row,
-                        Semantics::role(Role::CheckBox).with_label(caption.clone()),
+                        Semantics::role(Role::Radio).with_label(caption.clone()),
                     );
                 }
             },
@@ -356,7 +370,7 @@ mod tests {
     use std::rc::Rc;
     use viso_ui::{
         BindingTable, KeyEvent, Modifiers, NodeId, NodeStore, PointerEvent, SemanticProjector,
-        StateId, StateStore, TextEdits, VirtualLists,
+        SemanticState, StateId, StateStore, TextEdits, VirtualLists,
     };
 
     /// The reactive stores a group build writes into, kept together so a test can
@@ -434,6 +448,21 @@ mod tests {
                 _ => None,
             }
         }
+
+        /// Flush the pending state changes through the semantic-state projectors
+        /// (the flush phase, both stores live), then derive the semantics tree and
+        /// return the given node's live `SemanticState` — exactly the frame's
+        /// project-then-derive order.
+        fn derive_state(&mut self, node: NodeId, root: NodeId) -> Option<SemanticState> {
+            let mut changed = Vec::new();
+            self.states.take_pending(&mut changed);
+            self.projectors
+                .wake(&changed, &self.states, &mut self.store);
+            self.store
+                .derive_semantics(root)
+                .get(node)
+                .and_then(|n| n.state)
+        }
     }
 
     /// A primary-button pointer sample in the given phase.
@@ -508,7 +537,7 @@ mod tests {
         }
     }
 
-    /// The container's semantics is `Group`; each option's is `CheckBox` named by
+    /// The container's semantics is `Group`; each option's is `Radio` named by
     /// its caption.
     #[test]
     fn radio_group_derives_group_over_named_options() {
@@ -522,7 +551,7 @@ mod tests {
         let labels = ["Low", "High"];
         for (row, expected) in rows.iter().zip(labels) {
             let sem = rx.store.semantics(*row).expect("option has semantics");
-            assert_eq!(sem.role, Role::CheckBox, "each option is a CheckBox role");
+            assert_eq!(sem.role, Role::Radio, "each option is a Radio role");
             assert_eq!(
                 sem.label.as_deref(),
                 Some(expected),
@@ -661,6 +690,46 @@ mod tests {
             rx.selected(cell),
             Some(2),
             "the initial index seeds the cell"
+        );
+    }
+
+    /// The live selection reaches the derived accessibility tree: exactly one
+    /// option carries `checked = true`, the rest `false`, and selecting a
+    /// different option moves that checked flag — mutual exclusion is visible in
+    /// the semantics, not just the paint. Each snapshot is taken after a flush +
+    /// derive, exactly as the frame runs it.
+    #[test]
+    fn semantics_snapshot_tracks_the_live_selection() {
+        let mut rx = Reactive::new();
+        let root = rx.build(radio_group(["Low", "Medium", "High"]).selected(1));
+        let cell = shared_cell();
+        let rows = children(&rx.store, root);
+
+        // Seeded selection: option 1 is checked, the others are not.
+        let checked: Vec<Option<bool>> = rows
+            .iter()
+            .map(|row| rx.derive_state(*row, root).and_then(|s| s.checked))
+            .collect();
+        assert_eq!(
+            checked,
+            vec![Some(false), Some(true), Some(false)],
+            "the seeded selection marks exactly the chosen option checked"
+        );
+
+        // Select the third option; the checked flag moves off option 1 onto it.
+        rx.pointer(rows[2], primary(PointerPhase::Down));
+        rx.pointer(rows[2], primary(PointerPhase::Up));
+        assert_eq!(rx.selected(cell), Some(2), "the shared cell moved to 2");
+
+        let checked: Vec<Option<bool>> = rows
+            .iter()
+            .map(|row| rx.derive_state(*row, root).and_then(|s| s.checked))
+            .collect();
+        assert_eq!(
+            checked,
+            vec![Some(false), Some(false), Some(true)],
+            "selecting a new option moves the checked flag — mutual exclusion is \
+             visible in the derived semantics"
         );
     }
 }

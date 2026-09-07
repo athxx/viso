@@ -105,6 +105,13 @@ impl DepCursor {
         Self { deps: Vec::new() }
     }
 
+    /// Clear the recorded dependencies, keeping the backing capacity so a reused
+    /// cursor does not reallocate on the next evaluation.
+    #[inline]
+    fn reset(&mut self) {
+        self.deps.clear();
+    }
+
     /// Record a dependency, deduplicating.
     #[inline]
     fn record(&mut self, id: StateId) {
@@ -763,6 +770,11 @@ pub struct SemanticProjector {
     /// Reused buffer of projections to re-run this wake, so a wake allocates
     /// nothing on the steady path.
     wake_scratch: Vec<ProjectId>,
+    /// Reused dependency cursor for the projection body's reads. Held here (rather
+    /// than freshly constructed per `project`) so its backing `Vec` keeps its
+    /// capacity across projections and wakes — the last piece that makes a
+    /// steady-state wake allocate nothing.
+    cursor: DepCursor,
 }
 
 /// A compact generational handle to a stored semantic-state projection.
@@ -853,7 +865,12 @@ impl SemanticProjector {
             return false;
         }
 
-        let mut cursor = DepCursor::new();
+        // Reuse the projector's cursor so the body's dependency reads recycle a
+        // buffer instead of allocating a fresh `Vec` per projection. Take it out
+        // so `project` can borrow `slot` mutably; put it back afterward.
+        let mut cursor = core::mem::take(&mut self.cursor);
+        cursor.reset();
+        let slot = &mut self.slots[id.index as usize];
         let state = {
             let mut cx = ComputeCx::new(states, &mut cursor);
             (slot.project)(&mut cx)
@@ -870,6 +887,7 @@ impl SemanticProjector {
             slot.deps.extend_from_slice(cursor.deps());
         }
         self.reindex(id);
+        self.cursor = cursor;
         true
     }
 
