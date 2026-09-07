@@ -655,6 +655,57 @@ impl NodeStore {
         host
     }
 
+    /// Allocate a fixed-size floating host under an [`LayoutInput::AbsoluteRows`]
+    /// `canvas` and return `(host, mount)`: `host` is the positioned outer node the
+    /// canvas places (give it a `row_offset` for its Y and a `set_translate` for its
+    /// X), and `mount` is the inner exactly-`size` box a floating panel attaches
+    /// under. The sibling of [`alloc_row_host`](Self::alloc_row_host) for a canvas
+    /// whose children carry their own rectangle rather than fitting content.
+    ///
+    /// Two nodes are needed because an `AbsoluteRows` canvas *cross-forces* every row
+    /// to its own full cross extent (a virtual list's rows are full-width by design):
+    /// a lone host sized `Fixed(w) × Fixed(h)` would keep its main extent but have its
+    /// cross extent overwritten to the canvas width, so a single node cannot pin both
+    /// `w` and `h`. Instead the outer `host` **fits** its body on the canvas main axis
+    /// (so its measured main extent is exactly `h`, which the canvas places at the
+    /// `row_offset`) and lets the cross be forced; its `Align::Start` keeps the body
+    /// at the cross origin rather than stretching it; and the inner `mount`, sized
+    /// exactly `size`, holds the true `w × h` rectangle at that origin. The panel keeps
+    /// its identity across a redock; [`set_fixed_size`](Self::set_fixed_size) re-sizes
+    /// the `mount` when the float rect changes.
+    pub fn alloc_fixed_host(&mut self, canvas: NodeId, size: Size) -> (NodeId, NodeId) {
+        // The outer host fits its body on the AbsoluteRows main axis (so its measured
+        // main extent is the float's main extent the canvas places) and pins the body
+        // to the cross origin with Align::Start, since the canvas forces the cross.
+        let host = self.alloc(
+            LayoutInput::Flex {
+                axis: Axis::Column,
+                gap: 0.0,
+                padding: Inset::default(),
+                align: Align::Start,
+                size: Size {
+                    width: Length::Fit,
+                    height: Length::Fit,
+                },
+            },
+            BoxStyle::default(),
+        );
+        // The inner mount is the exact w × h rectangle the panel lives in.
+        let mount = self.alloc(
+            LayoutInput::Flex {
+                axis: Axis::Column,
+                gap: 0.0,
+                padding: Inset::default(),
+                align: Align::Stretch,
+                size,
+            },
+            BoxStyle::default(),
+        );
+        self.arena.append_child(canvas, host);
+        self.arena.append_child(host, mount);
+        (host, mount)
+    }
+
     /// Rewrite an [`LayoutInput::AbsoluteRows`] canvas's own fixed extent along
     /// `axis` to `extent`, keeping the cross axis unchanged. The virtual-list
     /// reconcile calls this when the total logical extent changes so the scroll
@@ -700,6 +751,21 @@ impl NodeStore {
             *w = weight;
             self.mark_dirty(child, DirtyClass::LAYOUT | DirtyClass::PAINT);
         }
+    }
+
+    /// Rewrite a node's own [`Size`] in place, marking it `LAYOUT | PAINT` so its
+    /// parent re-lays it out at the new extent. The same-class in-place `LayoutInput`
+    /// size rewrite as [`set_flex_child_weight`](Self::set_flex_child_weight) and
+    /// [`set_absolute_rows_extent`](Self::set_absolute_rows_extent), but general over
+    /// both axes and any length kind — a reconcile step holding `&mut NodeStore` calls
+    /// this to size a host it owns (a floating dock panel's fixed-size host) to a
+    /// runtime rectangle without rebuilding the subtree. A no-op for a stale handle.
+    pub fn set_fixed_size(&mut self, id: NodeId, size: Size) {
+        if !self.arena.is_live(id) {
+            return;
+        }
+        *self.layout[id.index() as usize].size_mut() = size;
+        self.mark_dirty(id, DirtyClass::LAYOUT | DirtyClass::PAINT);
     }
 
     /// The node holding pointer capture, if any.
@@ -2285,6 +2351,32 @@ impl<'a> BuildCx<'a> {
         self.pending_placement = None;
         // Restore the enclosing grid's name tables (or clear, at the outermost grid).
         self.grid_names = outer_names;
+        Handle { id }
+    }
+
+    /// Declare an [`LayoutInput::AbsoluteRows`] canvas and its children. The canvas
+    /// places each child at its own [`set_row_offset`](NodeStore::set_row_offset)
+    /// along `axis` (skipping any child with no row offset) and forces every placed
+    /// child to the canvas's full cross extent; `size` fixes the canvas's own
+    /// extent. The general authoring counterpart to the absolute-row placement the
+    /// virtualized list drives internally — a control that positions a small set of
+    /// children by an owned coordinate (a floating dock panel, a placed overlay)
+    /// authors the canvas here and drives each child's offset from its reconcile
+    /// step, rather than through a flex or grid flow.
+    ///
+    /// Children authored in the closure start with no row offset (so an
+    /// un-positioned child is skipped by the canvas until its offset is set); the
+    /// reconcile step assigns each mounted child its offset.
+    pub fn absolute_rows(
+        &mut self,
+        axis: Axis,
+        size: Size,
+        children: impl FnOnce(&mut BuildCx<'_>),
+    ) -> Handle {
+        let id = self.push_node(LayoutInput::AbsoluteRows { axis, size }, BoxStyle::NONE);
+        self.stack.push(id);
+        children(self);
+        self.stack.pop();
         Handle { id }
     }
 

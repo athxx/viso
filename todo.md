@@ -787,7 +787,7 @@ TextInput ✅(单行编辑骨架,后续片见上文 deferral 清单)。全部 �
 每个仍出完整 section-71 验证包(单测 + golden + input tape + a11y 快照 + microbench + alloc profile),每小节一提交,
 todo 随做随标、与源码同 commit(不独立提)。开工第一个控件时先读 makepad 对应实现([[viso-read-makepad-first]])。
 
-- [ ] **Dock** —— 可停靠 / 可拖拽重排的面板容器(停靠区 + 拖出浮动 + 拖回吸附 + 分隔拖拽调宽)。
+- [x] **Dock** —— 可停靠 / 可拖拽重排的面板容器(停靠区 + 拖出浮动 + 拖回吸附 + 分隔拖拽调宽)。
       吃 Tier 3 `Splitter`(分隔条)做区内分割;pointer capture/drag 是核心(复用 Slice H 的 capture holder,
       §13 pointer capture);状态 = 停靠布局树(哪块面板停哪、比例);a11y `Role` 待定(landmark/region)。
       落 `viso-widgets/src/controls/dock/`(子目录,§5 复杂子系统)。
