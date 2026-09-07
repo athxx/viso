@@ -783,7 +783,38 @@ TextInput ✅(单行编辑骨架,后续片见上文 deferral 清单)。全部 �
         坐实 `Vec<WindowState>` 线性选择(§45 / ADR 0020)。`083d8b8`。
     ✅ **Window 收官 → Tier 4 全部完成**(Tabs / NavigationStack / Popup / Modal / Sheet / Toast / Window)。
 
-**Tier 5 / Tier 6** —— 待做(Tier 4 已收完,下一步开排)。
+**Tier 5 — 编辑器 / 结构工具类控件(doc §71,`viso-widgets` 内节点控件):** 待做,Tier 4 收完下一步开排。
+每个仍出完整 section-71 验证包(单测 + golden + input tape + a11y 快照 + microbench + alloc profile),每小节一提交,
+todo 随做随标、与源码同 commit(不独立提)。开工第一个控件时先读 makepad 对应实现([[viso-read-makepad-first]])。
+
+- [ ] **Dock** —— 可停靠 / 可拖拽重排的面板容器(停靠区 + 拖出浮动 + 拖回吸附 + 分隔拖拽调宽)。
+      吃 Tier 3 `Splitter`(分隔条)做区内分割;pointer capture/drag 是核心(复用 Slice H 的 capture holder,
+      §13 pointer capture);状态 = 停靠布局树(哪块面板停哪、比例);a11y `Role` 待定(landmark/region)。
+      落 `viso-widgets/src/controls/dock/`(子目录,§5 复杂子系统)。
+- [ ] **FileTree** —— 树形文件浏览器(展开/折叠节点、缩进层级、单选/多选、键盘导航)。
+      大目录吃 Tier 3 `VirtualList` 虚拟化(§12.4,不为 100k 文件挂 100k 节点);展开/折叠 = 结构 reconcile;
+      稳定 key(路径)保持展开态([[viso-diverge-from-makepad]] 若 makepad 无对应取 Viso 更优);
+      a11y `Role::Tree`/`TreeItem` + `aria-expanded` 语义。落 `viso-widgets/src/controls/file_tree/`。
+- [ ] **code-editor primitives** —— 代码编辑器基础件(**primitives 非成品编辑器**):gutter 行号、
+      语法高亮 span(样式区间,非 tokenizer 本体)、光标/选区渲染、可选 minimap。吃 Tier 2 `TextInput`
+      的编辑骨架 + `viso-text` 子系统(shaping/行布局缓存,§20 不把每字符当节点);多行编辑、grapheme/IME
+      感知。体量最大,可能自成子目录甚至独立 crate(§3.3 触发条件,动手前评估)。落 `viso-widgets/src/controls/code_editor/`(暂定)。
+
+**Tier 6 — 重型 / 富媒体控件(doc §71):** 待做。**关键约束(§33/§4/§5/§7.2/§3.7):重型富媒体不进默认
+`viso-widgets` 依赖图** —— 原文点名 "PDF/browser/map/chart should not be added to the default widget crate
+dependency graph",大功能属 `extras/` 或 `integrations/`,靠冷路径 trait object / adapter 接入(§3.7 所有权阶梯:
+媒体 codec = 集成 proven 实现,Browser = 纯 adapter)。每个仍需 section-71 验证包(能 headless 的维度)。
+
+- [ ] **Markdown** —— Markdown 渲染(解析 + 排版到 Node 树)。落点待定:轻则 `extras/viso-markdown`,
+      重(表格/代码块/嵌图)倾向 `extras/`;解析用 proven crate(§3.7 adapter),渲染走 Viso Node/Layout/text。
+- [ ] **PDF** —— PDF 查看。`extras/` 或 `integrations/`(§33 明确排除默认 widgets);codec/解析 adapter。
+- [ ] **Browser** —— 内嵌浏览视图。`integrations/`(纯平台 adapter,§3.7);各平台原生 webview 桥接。
+- [ ] **Charts** —— 图表。`extras/`(§33 明确排除默认 widgets);GPU 直绘走 Viso render/paint。
+- [ ] **Map** —— 地图。`extras/` 或 `integrations/`;瓦片加载 adapter + GPU 绘制。
+- [ ] **Video** —— 视频播放。`integrations/`;平台解码 adapter + GPU 纹理上屏。
+
+> Tier 6 每个控件的 crate 落点(`extras/` vs `integrations/`)与 adapter 边界,在其开工时按 §3.3/§3.7 定夺并开 ADR
+> (跨 crate 依赖方向变化 = §68 触发)。当前仅登记,不预先建 crate。
 
 ### Tier 4 后续片(记进 backlog,不吞)
 - 动画时钟扩展:scale/opacity/color 动画(现只 translate);spring 物理曲线;动画序列/编排;
@@ -792,3 +823,106 @@ TextInput ✅(单行编辑骨架,后续片见上文 deferral 清单)。全部 �
 - Sheet 拖拽消隐(下拉超阈值 dismiss);嵌套 sheet / sheet 栈。
 - §25 UI task 协议完整化:`cx.spawn(async)` + 任务身份/唤醒/取消/scoped 所有权(Toast timer 若走路 (2)
   会先落地 `WaitUntil` 唤醒这一半,余下 async executor adapter 拆后续 Phase 8)。
+
+---
+
+## Phase 8 — 主线增量地基(Deferred backlog B 类:改 viso-ui/render 核心,非插件)
+
+> 用户 2026-09-07 指示:先做 deferred backlog(B 类 = 主线增量能力,触发本是某控件),再回 Tier 5(Dock)。
+> 已用两组核实 agent 逐项读实际代码判定真实状态(backlog 是历史快照,后续 Tier 2/3/4 控件已消化部分)。
+> **已完成、不做**:World/transform column + clip folding(已泛化全节点,hit-test 折 clip)、Pointer capture/drag
+> (Splitter + Slider 在用)、Focus on pointer-down(TextInput 在用)—— 三项主线机制均已随控件落地,核实有据。
+> 每项仍出 section-71 验证包(能 headless 的维度)+ 每小节一提交,todo 随做随标、与源码同 commit(不独立提)。
+> 性能类断言遵 §7.3(先测再改,benchmark/alloc profile 为准)。
+
+**8.1 — Richer roles / state(a11y 地基;含 text-node label 失效)** —— 语义树今天只有 `role + label`(唯一派生态
+`focused`);Tier 2 的 CheckBox/Toggle/Radio/Slider 收官时把 checked/value/range 藏在各自 reactive cell,**从未进语义
+树**(derive 无状态 store)。补齐后这四个控件的 a11y 快照才真实完整。落 `crates/ui/src/semantics.rs` + component.rs
+derive 路径 + 四控件接线。
+
+设计定稿(§3.5 红线):活状态 **不** 进冷静态 `Semantics`,而是节点侧列 `Option<SemanticState>`;控件 build 登记一条
+与 `bind` 平行的投影 binding,在 flush 阶段(两 store live)读 cell 值 → `set_semantic_state`(标 SEMANTICS);derive
+只持 `&self` 读该列,镜像 `focused` 单槽先例。5 提交拆分:
+- [x] 提交 1(semantics.rs 数据模型):加 `SemanticState`(Copy struct:`checked`/`value`/`range`/`expanded`)+ builder
+      (`checked`/`slider`/`with_expanded`);加 `Role::Slider`/`Role::Radio`;`SemanticsNode` 加 `state: Option<SemanticState>`
+      (默认 None);`Semantics` **不** 加活状态字段(保持冷静态)。删过时 "no state store today / borrow CheckBox" 注释。
+      单测:新 role 区分 + SemanticState 构造/默认。
+- [ ] 提交 2(节点侧列 + 投影 binding,component.rs + binding.rs):`semantic_state` 侧列 + getter/setter(live-guard +
+      赋值 + mark_dirty SEMANTICS),随 alloc 对齐;投影 binding(flush 阶段读值 → set_semantic_state);`derive_into` 读列
+      填 `SemanticsNode.state`。单测:set 标 SEMANTICS;flush 投影后 derive 带 state;binding 变更 → 语义树随之变。
+- [ ] 提交 3(四控件接线,viso-widgets):CheckBox/Toggle `checked`;Slider `value`+`range`(role→Slider);Radio 每 option
+      `checked`(role→Radio)+ 容器 Group;build 时写初值 + 登记投影 binding;删过时注释;每控件 a11y 快照测试(input tape
+      驱动 flush+derive:勾选/拖动/换选项前后)。microbench(derive + flush 投影成本)+ alloc profile(稳态零 alloc)。
+- [ ] 提交 4(text-node label 失效,backlog #4,viso-ui):content-payload-as-label 路径补 SEMANTICS 失效(读代码确认范围,
+      只给"内容即可访问名"路径加,不全加)。单测:改文本内容 → 语义树 label 更新。
+- [ ] 提交 5(ADR,§68 触发 reactive semantics):记录活状态经节点侧列投影进派生语义树(不跨层读 StateStore)、SEMANTICS
+      失效契约、Role::Slider/Radio。
+
+**8.2 — Per-subtree 增量语义(性能地基)** —— 今天任一 SEMANTICS 脏即从 root 全树重建 `SemanticsTree`(component.rs
+derive_semantics),无上一棵缓存、无 per-subtree 增量。落 `crates/ui/src/component.rs` derive 路径 + semantics.rs。
+
+- [ ] 缓存上一棵 `SemanticsTree`;SEMANTICS 脏时只重建受影响子树,未脏子树复用缓存节点。
+- [ ] 设计:per-subtree dirty 传播边界(SEMANTICS 脏冒泡到 root 但重建只在脏子树);确认与 focus 变更(apply_focus 标
+      SEMANTICS)的交互不导致全树重建。
+- [ ] 验证包:语义快照不变(增量与全建结果一致)+ **microbench**(大树单节点 label 改 → 增量 vs 全建,§7.3 先测基线证明
+      热)+ alloc profile(增量重建的 alloc < 全建)。§68 触发(reactive/semantics 增量语义,评估 ADR)。
+
+**8.3 — resolve_styles bound-node 缓存(性能地基)** —— 今天 `resolve_styles` 对整个 dirty 数组 `0..dirty.len()` 全扫找
+STYLE 标记(component.rs)。落 `crates/ui/src/component.rs`。
+
+- [ ] 缓存"绑定了 style token 的节点列表",STYLE resolve 只遍历该列表而非全 dirty 数组。
+- [ ] 设计:列表随 bind/unbind 维护(增删节点时更新);确认与节点生死(generation)一致,死节点不残留。
+- [ ] 验证包:样式解析结果不变 + **microbench**(大树少量 styled 节点:全扫 vs 缓存列表,§7.3 先测证明扫描热才做)+
+      alloc profile(稳态零 alloc)。**注(§7.3):backlog 原文写"cache when a huge tree makes the scan hot (measured,
+      not now)"—— 先加 microbench 量到扫描确实热,再决定是否值得缓存;若基线不热,记录测量结论后跳过,不无据加复杂度。**
+
+**8.4 — hover / enter / leave(输入地基,从零)** —— 今天只有窗口级 `PointerPhase::Leave`(离开窗口边界),无 per-node
+enter/leave 合成、无 hover 追踪、无控件用 hover 反馈。落 `crates/ui/src/input.rs` router + component.rs hover 追踪状态。
+
+- [ ] router 加"上一帧 hover 节点"追踪(NodeStore 上的 `hovered: Option<NodeId>` 或 hover 链);pointer Move 时 hit-test
+      新目标,与上一帧差分,合成 enter(进入新节点链)/ leave(离开旧节点链)派发给对应节点 handler。
+- [ ] `PointerPhase` 加 `Enter`(per-node,区别于现窗口级 `Leave`);或设计 hover 专用事件 —— 按最合理设计定(节点 enter/
+      leave 与窗口 leave 语义不同,评估枚举 vs 独立)。DirtyClass:hover 状态变更默认 PAINT(hover 样式反馈)。
+- [ ] 第一个 hover 消费控件:给 Button 加 hover 样式反馈(hover 时背景变化),作为真实消费者验证合成正确。
+- [ ] 验证包:input tape(move 进入/离开节点 → 断言 enter/leave 按序合成、hover 节点追踪正确、嵌套节点链差分)+
+      Button hover golden + a11y(hover 非语义,不入树)+ microbench(move 差分开销)+ alloc(稳态零 alloc)。§68?
+      (frame phase / 输入语义,评估 ADR)。
+
+**8.5 — stop_propagation 收尾(输入,机制已通)** —— 核实:`Dispatched{ran,stop}` + `dispatch_chain` 三段 honor +
+`EventCx::stop_propagation` 三链(pointer/key/ime)全通,但**无任何控件真正 consume 事件、无 dispatch 级 swallow 测试**,
+且 `input.rs:137` 头注释仍写"Consume/stop_propagation is a later slice"(过时)。落 `crates/ui/src/input.rs` 注释 +
+控件消费者 + 测试。
+
+- [ ] 让一个控件真正 consume:Modal backdrop 或 Button —— 点击 backdrop 应 stop_propagation(不穿透到背后),
+      Button 按下应 consume(不冒泡到父)。选最合理的第一个消费者。
+- [ ] 加 dispatch 级 swallow 集成测试:事件到某节点 consume 后,祖先/后续 handler 不触发。
+- [ ] 更新 `input.rs:137` 过时注释(机制已落地,非 later slice)。
+- [ ] 验证包:swallow 单测(pointer 链 + key 链各一)。无需 golden/bench(纯逻辑)。
+
+**8.6 — VirtualList 稳定 key(key_of reorder)** —— 今天 logical_index 即 identity,数据 reorder 时行按位置重建而非按
+身份保持(virtual_list.rs reconcile 按 `logical_index` 匹配 mounted)。落 `crates/ui/src/virtual_list.rs`。
+
+- [ ] `MountedItem` 加稳定 key;reconcile 按 key 匹配复用(同一 item 换 index 时保持挂载/状态,不 rebind)。
+- [ ] API:`key_of(logical_index) -> Key`(数据侧提供稳定 key)。设计 key 类型(§29 用 ID 非 String 热路径)。
+- [ ] 验证包:input tape(reorder 数据 → 断言同 key 行复用、滚动锚点保持)+ microbench(reorder reconcile 开销)+
+      alloc(稳态零 alloc)。§12.4 虚拟化契约"stable item keys"—— 补齐这一条。
+
+**8.7 — Grid advanced(体量最大;ADR 0009 列的 out-of-scope 六项)** —— 今天只 Fixed/Fr/Auto/Percent 四 track +
+spanning 放置 + auto-flow;ADR 0009 明列六项高级能力全未做。落 `crates/ui/src/grid.rs` + 更新 ADR 0009(或开新 ADR)。
+按子能力拆多小节,每节一提交:
+
+- [ ] `minmax()` / `repeat()` / `fit-content()` track sizing(`TrackSizing` 加变体)。
+- [ ] named lines / template-areas(`GridPlacement` 加命名放置)。
+- [ ] subgrid(子 grid 继承父轨道)。
+- [ ] baseline 对齐(跨 grid item 基线对齐)。
+- [ ] spanning-item 对 Auto sizing 的贡献(现 span-1 才贡献 Auto,ADR 0009 Decision 4 deferred)。
+- [ ] Adaptive(doc §69 item 11 的另一半:响应式列数)。
+- [ ] 每项验证包:布局单测(golden 布局 dump / bounds 断言)+ 复杂 grid golden 截图 + microbench(§36 layout 类目)。
+      更新 ADR 0009 把对应项从 out-of-scope 移入 + §68 触发(layout sizing model 变化,ADR 必更)。
+
+> **触发型、暂不强做(记此,待消费者到达再拉入切片):**
+> - **measure-affecting token**:机制(per-edge DirtyClass)已具备,但当前唯一 token 消费者 `StyleId` 只有 paint-only 字段
+>   (fill/radius),硬编码 STYLE|PAINT。需要一个真实 tokenized measure 字段(font-size/spacing/padding)的消费者才有
+>   意义 —— 随第一个 text/spacing token 控件(Tier 5 code-editor 或主题化 spacing)落地。§68 触发(dirty 契约扩展)。
+
+**Phase 8 收官后 → 回 Tier 5(Dock,已备两份调研:makepad Dock 设计 + Viso Splitter/capture/Tabs 基础)。**

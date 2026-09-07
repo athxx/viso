@@ -1666,6 +1666,9 @@ impl NodeStore {
             role,
             label,
             focused,
+            // Live state is filled from the `semantic_state` side column in a
+            // later slice; a plain derive carries no live state yet.
+            state: None,
             bounds: self.bounds(id),
             children: Vec::new(),
         });
