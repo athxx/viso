@@ -35,9 +35,9 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use viso_ui::{EventCx, NodeStore, StateStore};
+use viso_ui::{EventCx, NodeId, NodeStore, StateStore};
 
-use super::build::{PanelNodes, SeamRec};
+use super::build::{PanelNodes, RedockIntents, SeamRec, SharedZones};
 use super::tree::{DockTree, DropPart, PanelKey};
 
 /// The dock's warm, owned state, shared between the build walk (which fills it),
@@ -52,6 +52,24 @@ pub(super) struct DockState {
     /// The seam records a live drag drives; the reconcile step rewrites each seam's
     /// pane weights from its fraction cell.
     pub(super) seams: Vec<SeamRec>,
+}
+
+/// The shared drag channel a drag-to-redock drop writes into and the reconcile step
+/// drains: the redock intent queue, the shared drop-zone registry (whose rects the
+/// reconcile step refreshes from resolved bounds so a drag hit-tests live geometry),
+/// and the pre-authored drop-hint overlay node the reconcile step hides once a drop
+/// is applied. Held beside the warm [`DockState`] on the handle rather than inside
+/// it: the tree and seams are the handle's owned state; these are shared cells the
+/// build walk minted and the built drag handlers already close over.
+#[derive(Clone)]
+pub(super) struct DragChannel {
+    /// The redock intents a drop pushed; the reconcile step drains and applies them.
+    pub(super) intents: RedockIntents,
+    /// The shared drop-zone registry; the reconcile step refreshes each rect from its
+    /// node's resolved bounds so a subsequent drag hit-tests live geometry.
+    pub(super) zones: SharedZones,
+    /// The drop-hint overlay node the reconcile step hides after applying a drop.
+    pub(super) hint: NodeId,
 }
 
 /// A shared handle to the dock's warm state.
@@ -78,9 +96,14 @@ pub struct DockHandle {
     /// The dock's warm state: the layout tree and the seam records.
     state: DockStateCell,
     /// The keyed panel-node map, filled by the build walk. A command resolves a
-    /// panel's built-once node here to flip its visibility (a discrete-action cold
-    /// lookup, AGENTS section 45).
+    /// panel's built-once node here to flip its visibility, or to remount its
+    /// built-once node when a redock moves it (a discrete-action cold lookup, AGENTS
+    /// section 45).
     panels: PanelNodes,
+    /// The shared drag channel a drag-to-redock drop writes into; the reconcile step
+    /// drains its intents, applies the tree edits, remounts the moved panel nodes,
+    /// hides the hint, and refreshes the zone rects.
+    drag: DragChannel,
 }
 
 impl DockHandle {
@@ -136,23 +159,58 @@ impl DockHandle {
         self.close(ev, key);
     }
 
-    /// The reconcile intent-drain: rewrite every seam's pane weights from its
-    /// committed fraction against the store's resolved extents. A host calls this
-    /// after an input transaction with `&mut NodeStore` and the state store the drag
-    /// handlers wrote into. This is the caller [`reconcile_seams`](super::reconcile::reconcile_seams)
-    /// needs — the handler-writes-intent / reconcile-mutates-store split (ADR 0023).
+    /// The reconcile intent-drain: apply every committed drag intent against the
+    /// store, then rewrite every seam's pane weights from its committed fraction. A
+    /// host calls this after an input transaction with `&mut NodeStore` and the state
+    /// store the drag handlers wrote into — the handler-writes-intent /
+    /// reconcile-mutates-store split (ADR 0023).
+    ///
+    /// Two effects, in order:
+    ///
+    /// - **Redock drain** ([`reconcile_redock`](super::reconcile::reconcile_redock)):
+    ///   drain each [`RedockIntent`](super::drag::RedockIntent) a drop pushed, apply
+    ///   the pure tree edit ([`DockTree::dock`]), remount the moved panel's built-once
+    ///   node under its new region (an arena detach + re-append, never a rebuild), hide
+    ///   the drop hint, and refresh the zone rects from resolved bounds. A structural
+    ///   change (AGENTS section 8.1), so it runs before the geometry pass.
+    /// - **Seam weights** ([`reconcile_seams`](super::reconcile::reconcile_seams)):
+    ///   rewrite every seam's pane weights from its committed fraction against the
+    ///   store's resolved extents — the live seam-drag path.
     pub fn reconcile(&self, store: &mut NodeStore, states: &StateStore) {
-        super::reconcile::reconcile_seams(store, states, &self.state.borrow().seams);
+        let mut state = self.state.borrow_mut();
+        super::reconcile::reconcile_redock(
+            store,
+            &mut state.tree,
+            &self.panels.borrow(),
+            &self.drag.intents,
+            &self.drag.zones,
+            self.drag.hint,
+        );
+        super::reconcile::reconcile_seams(store, states, &state.seams);
     }
 }
 
 /// Build the handle the [`Dock`](super::Dock) fills its slot with, taking ownership
 /// of the warm tree and seams the build walk produced and sharing the panel-node
-/// map. Called once at the end of `build`, when the ids exist.
-pub(super) fn make_handle(tree: DockTree, seams: Vec<SeamRec>, panels: PanelNodes) -> DockHandle {
+/// map plus the drag channel (redock intent queue, drop-zone registry, drop-hint
+/// overlay) the drag handlers close over. Called once at the end of `build`, when
+/// the ids exist.
+pub(super) fn make_handle(
+    tree: DockTree,
+    seams: Vec<SeamRec>,
+    panels: PanelNodes,
+    zones: SharedZones,
+    hint: NodeId,
+    intents: RedockIntents,
+) -> DockHandle {
     DockHandle {
         state: Rc::new(RefCell::new(DockState { tree, seams })),
         panels,
+        drag: DragChannel {
+            intents,
+            zones,
+            hint,
+        },
     }
 }
 
@@ -217,11 +275,10 @@ mod tests {
             let mut projectors = SemanticProjector::new();
             let panels: PanelNodes = Rc::new(RefCell::new(HashMap::new()));
             let seams;
+            let zones_shared;
+            let hint;
+            let intents;
             {
-                let mut out = BuildOut {
-                    seams: Vec::new(),
-                    zones: Vec::new(),
-                };
                 let style = DockStyle::default();
                 let mut cx = BuildCx::with_reactive(
                     &mut store,
@@ -231,10 +288,15 @@ mod tests {
                     &mut text_edits,
                     &mut projectors,
                 );
+                let mut out = BuildOut::empty(&mut cx);
                 build_tree(&mut cx, &tree.root, &style, contents, &panels, &mut out);
+                *out.zones_shared.borrow_mut() = out.zones.clone();
                 seams = out.seams;
+                zones_shared = out.zones_shared;
+                hint = out.hint;
+                intents = out.intents;
             }
-            let handle = make_handle(tree, seams, panels);
+            let handle = make_handle(tree, seams, panels, zones_shared, hint, intents);
             Reactive {
                 store,
                 states,

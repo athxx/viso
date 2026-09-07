@@ -607,6 +607,17 @@ impl NodeStore {
         self.arena.append_child(parent, child)
     }
 
+    /// The parent of `child` in the arena, or `None` for a root or a stale handle.
+    /// A read-only ancestry query the sibling of [`arena_detach`](Self::arena_detach)
+    /// / [`arena_append_child`](Self::arena_append_child) needs: to re-home a node
+    /// under the same parent another node already lives under, a caller resolves that
+    /// parent from the sibling. A discrete-action lookup off the compact link store,
+    /// never a per-frame path (AGENTS section 8.3).
+    #[inline]
+    pub fn parent(&self, child: NodeId) -> Option<NodeId> {
+        self.arena.links(child).and_then(|l| l.parent)
+    }
+
     /// Allocate a fresh host node and append it under `canvas`, returning its id.
     /// Used by the virtual-list reconcile only when the recycle pool is empty
     /// (bounded first-fill growth); steady scroll reuses parked hosts and never
