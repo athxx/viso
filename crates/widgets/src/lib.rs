@@ -26,13 +26,14 @@ pub mod text;
 
 pub use containers::{View, ViewStyle, view};
 pub use controls::{
-    Button, ButtonStyle, CheckBox, CheckBoxStyle, Modal, ModalHandle, ModalHandleSlot, ModalStyle,
-    NavHandle, NavHandleSlot, NavigationStack, NavigationStackStyle, Popup, PopupHandle,
+    Button, ButtonStyle, CheckBox, CheckBoxStyle, Dock, DockNode, DockStyle, DockTree, DropPart,
+    Floating, Modal, ModalHandle, ModalHandleSlot, ModalStyle, NavHandle, NavHandleSlot,
+    NavigationStack, NavigationStackStyle, PanelContent, PanelKey, Popup, PopupHandle,
     PopupHandleSlot, PopupStyle, RadioGroup, RadioStyle, Sheet, SheetEdge, SheetHandle,
     SheetHandleSlot, SheetStyle, Slider, SliderStyle, Splitter, SplitterStyle, Tabs, TabsStyle,
     TextInput, TextInputStyle, Toast, ToastEdge, ToastHandle, ToastHandleSlot, ToastStyle, Toggle,
-    ToggleStyle, button, checkbox, modal, navigation_stack, popup, radio_group, sheet, slider,
-    splitter, tabs, text_input, toast, toggle,
+    ToggleStyle, button, checkbox, dock, modal, navigation_stack, popup, radio_group, sheet,
+    slider, splitter, tabs, text_input, toast, toggle,
 };
 pub use grid::{Grid, GridViewStyle, grid};
 pub use icon::{Icon, IconStyle, icon};
