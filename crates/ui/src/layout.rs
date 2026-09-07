@@ -792,6 +792,78 @@ fn layout_absolute_rows(
 }
 
 /// Lay out a grid: place children into cells (auto-flow + explicit), solve the
+/// The reusable per-`layout_grid`-call buffers. `layout_grid` needs about a
+/// dozen temporary `Vec`s (placements, the occupied bitset, cell regions, the
+/// two track templates, per-track auto maxes, resolved sizes, prefix offsets,
+/// and row baselines). Allocating them fresh on every call would heap-allocate
+/// on the layout hot path for every grid node every frame; instead each call
+/// checks a `GridScratch` out of a thread-local pool ([`with_grid_scratch`]),
+/// clears the buffers (retaining capacity — clear, not free), and returns it on
+/// exit, so a warmed-up steady-state grid relayout does no per-frame allocation.
+///
+/// A pool rather than a single threaded buffer because `layout_grid` is
+/// *reentrant*: a subgrid child recurses into `layout_grid` from inside the
+/// parent's per-child loop while the parent still holds live slices of its own
+/// `col_sizes`/`row_sizes`. The recursive call checks out a *distinct*
+/// `GridScratch`, so nested grids never clobber an ancestor's buffers, and the
+/// pool grows only to the deepest grid nesting seen (one entry for the common
+/// non-nested case).
+#[derive(Default)]
+struct GridScratch {
+    placements: Vec<GridPlacement>,
+    occupied: Vec<u64>,
+    regions: Vec<crate::grid::CellRegion>,
+    col_tracks: Vec<TrackSizing>,
+    row_tracks: Vec<TrackSizing>,
+    col_auto: Vec<f32>,
+    row_auto: Vec<f32>,
+    col_sizes: Vec<f32>,
+    row_sizes: Vec<f32>,
+    col_offsets: Vec<f32>,
+    row_offsets: Vec<f32>,
+    row_baselines: Vec<f32>,
+}
+
+impl GridScratch {
+    /// Drop every buffer's contents while keeping its capacity, so the next
+    /// checkout reuses the same allocations (clear, not free).
+    fn clear(&mut self) {
+        self.placements.clear();
+        self.occupied.clear();
+        self.regions.clear();
+        self.col_tracks.clear();
+        self.row_tracks.clear();
+        self.col_auto.clear();
+        self.row_auto.clear();
+        self.col_sizes.clear();
+        self.row_sizes.clear();
+        self.col_offsets.clear();
+        self.row_offsets.clear();
+        self.row_baselines.clear();
+    }
+}
+
+thread_local! {
+    /// Free-list of grid scratch buffers, one per live grid nesting level. The
+    /// layout pass is main-thread-owned (section 26), so a thread-local pool
+    /// carries no locking and no cross-frame allocation once warm.
+    static GRID_SCRATCH_POOL: std::cell::RefCell<Vec<GridScratch>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Run `f` with a cleared `GridScratch` checked out of the thread-local pool,
+/// returning it to the pool afterward. Reentrant: a nested call checks out a
+/// distinct buffer, so a subgrid recursion never aliases its ancestor's scratch.
+fn with_grid_scratch<R>(f: impl FnOnce(&mut GridScratch) -> R) -> R {
+    let mut s = GRID_SCRATCH_POOL
+        .with(|p| p.borrow_mut().pop())
+        .unwrap_or_default();
+    s.clear();
+    let r = f(&mut s);
+    GRID_SCRATCH_POOL.with(|p| p.borrow_mut().push(s));
+    r
+}
+
 /// column and row track extents (Fixed/Percent/Auto/Fr), then lay each child
 /// into its cell rect honoring its own `Size`. The grid's inner content area is
 /// its box minus padding; cell offsets are prefix sums of the resolved tracks
@@ -858,239 +930,249 @@ fn layout_grid(
         Some((sizes, _)) => (sizes.len() as u16).max(1),
         None => column_count.max(1),
     };
-    let placements: Vec<crate::grid::GridPlacement> = (0..child_count)
-        .map(|i| tree.grid_placement(scratch[start + i]))
-        .collect();
 
-    // Placement pass.
-    let mut occupied: Vec<u64> = Vec::new();
-    let mut regions: Vec<crate::grid::CellRegion> = Vec::new();
-    let row_used = crate::grid::place_children(cols, &placements, &mut occupied, &mut regions);
+    // Check a `GridScratch` out of the thread-local pool for the ~dozen working
+    // buffers, instead of allocating them fresh per call. `with_grid_scratch`
+    // clears (not frees) and returns it on exit; a subgrid recursion below
+    // checks out a distinct buffer, so it never clobbers `s`.
+    with_grid_scratch(|s| {
+        s.placements
+            .extend((0..child_count).map(|i| tree.grid_placement(scratch[start + i])));
 
-    // Inner content area (box minus padding).
-    let content_w = (rect_len(bounds, Axis::Row) - padding.main(Axis::Row)).max(0.0);
-    let content_h = (rect_len(bounds, Axis::Column) - padding.main(Axis::Column)).max(0.0);
+        // Placement pass.
+        let row_used =
+            crate::grid::place_children(cols, &s.placements, &mut s.occupied, &mut s.regions);
 
-    // Build the column track template (explicit) and the row template extended
-    // with implicit `auto_rows` up to `row_used`. A subgrid axis skips its own
-    // template entirely — it will adopt the parent's resolved sizes below.
-    let col_tracks: Vec<crate::grid::TrackSizing> = if inherited_cols.is_some() {
-        Vec::new()
-    } else {
-        match tree.grid_column_tracks(root) {
-            Some(t) if !t.is_empty() => t.to_vec(),
-            _ => vec![crate::grid::TrackSizing::Auto; cols as usize],
-        }
-    };
-    let mut row_tracks: Vec<crate::grid::TrackSizing> = if inherited_rows.is_some() {
-        Vec::new()
-    } else {
-        tree.grid_row_tracks(root)
-            .map(|t| t.to_vec())
-            .unwrap_or_default()
-    };
-    if inherited_rows.is_none() {
-        while (row_tracks.len() as u16) < row_used {
-            row_tracks.push(auto_rows);
-        }
-    }
+        // Inner content area (box minus padding).
+        let content_w = (rect_len(bounds, Axis::Row) - padding.main(Axis::Row)).max(0.0);
+        let content_h = (rect_len(bounds, Axis::Column) - padding.main(Axis::Column)).max(0.0);
 
-    // Auto maxes: for each track, the max natural main size of the span-1 items
-    // whose start lies on that track. Span-1 items set the baseline; spanning
-    // items then distribute their content across the growable tracks they cover
-    // (see `distribute_spanning_auto`), so a wide 2-column item is not left to
-    // collapse the intrinsic tracks under it. Skipped on a subgrid axis, whose
-    // sizes come from the parent, not from its own content.
-    let mut col_auto = vec![0.0f32; col_tracks.len()];
-    let mut row_auto = vec![0.0f32; row_tracks.len()];
-    for i in 0..child_count {
-        let child = scratch[start + i];
-        let r = regions[i];
-        let cm = tree.measured(child);
-        if r.col_span == 1 {
-            let c = r.col as usize;
-            if c < col_auto.len() {
-                col_auto[c] = col_auto[c].max(cm.on(Axis::Row));
+        // Build the column track template (explicit) and the row template extended
+        // with implicit `auto_rows` up to `row_used`. A subgrid axis skips its own
+        // template entirely — it will adopt the parent's resolved sizes below.
+        if inherited_cols.is_none() {
+            match tree.grid_column_tracks(root) {
+                Some(t) if !t.is_empty() => s.col_tracks.extend_from_slice(t),
+                _ => s.col_tracks.extend(std::iter::repeat_n(
+                    crate::grid::TrackSizing::Auto,
+                    cols as usize,
+                )),
             }
         }
-        if r.row_span == 1 {
-            let rr = r.row as usize;
-            if rr < row_auto.len() {
-                row_auto[rr] = row_auto[rr].max(cm.on(Axis::Column));
+        if inherited_rows.is_none() {
+            if let Some(t) = tree.grid_row_tracks(root) {
+                s.row_tracks.extend_from_slice(t);
+            }
+            while (s.row_tracks.len() as u16) < row_used {
+                s.row_tracks.push(auto_rows);
             }
         }
-    }
-    if inherited_cols.is_none() {
-        crate::grid::distribute_spanning_auto(
-            &col_tracks,
-            column_gap,
-            content_w,
-            (0..child_count).map(|i| {
-                let r = regions[i];
-                (
-                    r.col,
-                    r.col_span,
-                    tree.measured(scratch[start + i]).on(Axis::Row),
-                )
-            }),
-            &mut col_auto,
-        );
-    }
-    if inherited_rows.is_none() {
-        crate::grid::distribute_spanning_auto(
-            &row_tracks,
-            row_gap,
-            content_h,
-            (0..child_count).map(|i| {
-                let r = regions[i];
-                (
-                    r.row,
-                    r.row_span,
-                    tree.measured(scratch[start + i]).on(Axis::Column),
-                )
-            }),
-            &mut row_auto,
-        );
-    }
 
-    // Solve each self-solved axis; a subgrid axis instead adopts the parent's
-    // resolved track sizes over its cell span verbatim, so its cell boundaries
-    // land exactly on the parent's grid lines.
-    let mut col_sizes: Vec<f32> = Vec::new();
-    let mut row_sizes: Vec<f32> = Vec::new();
-    match inherited_cols {
-        Some((sizes, _)) => col_sizes.extend_from_slice(sizes),
-        None => crate::grid::solve_tracks(
-            &col_tracks,
-            column_gap,
-            content_w,
-            &col_auto,
-            &mut col_sizes,
-        ),
-    }
-    match inherited_rows {
-        Some((sizes, _)) => row_sizes.extend_from_slice(sizes),
-        None => {
-            crate::grid::solve_tracks(&row_tracks, row_gap, content_h, &row_auto, &mut row_sizes)
-        }
-    }
-
-    // Prefix-sum track offsets (with gaps) from the padded content origin.
-    let origin_x = rect_start(bounds, Axis::Row) + padding.main_start(Axis::Row);
-    let origin_y = rect_start(bounds, Axis::Column) + padding.main_start(Axis::Column);
-    let col_offsets = prefix_offsets(&col_sizes, column_gap);
-    let row_offsets = prefix_offsets(&row_sizes, row_gap);
-
-    // For `AlignItems::Baseline` each row shares a baseline: the max first-line
-    // baseline of the cells starting on that row. A cell aligns its own baseline
-    // to that shared line, so mixed-font-size cells sit on one text line. A cell
-    // whose content has no text baseline contributes none and falls back to Start.
-    let row_baselines: Vec<f32> = if align_items == AlignItems::Baseline {
-        let mut b = vec![0.0f32; row_sizes.len()];
+        // Auto maxes: for each track, the max natural main size of the span-1 items
+        // whose start lies on that track. Span-1 items set the baseline; spanning
+        // items then distribute their content across the growable tracks they cover
+        // (see `distribute_spanning_auto`), so a wide 2-column item is not left to
+        // collapse the intrinsic tracks under it. Skipped on a subgrid axis, whose
+        // sizes come from the parent, not from its own content.
+        s.col_auto.resize(s.col_tracks.len(), 0.0);
+        s.row_auto.resize(s.row_tracks.len(), 0.0);
         for i in 0..child_count {
             let child = scratch[start + i];
-            if let Some(base) = tree.content_baseline(child) {
-                let row = regions[i].row as usize;
-                if base > b[row] {
-                    b[row] = base;
+            let r = s.regions[i];
+            let cm = tree.measured(child);
+            if r.col_span == 1 {
+                let c = r.col as usize;
+                if c < s.col_auto.len() {
+                    s.col_auto[c] = s.col_auto[c].max(cm.on(Axis::Row));
+                }
+            }
+            if r.row_span == 1 {
+                let rr = r.row as usize;
+                if rr < s.row_auto.len() {
+                    s.row_auto[rr] = s.row_auto[rr].max(cm.on(Axis::Column));
                 }
             }
         }
-        b
-    } else {
-        Vec::new()
-    };
-
-    // Lay each child into its cell rect. A cell spanning k tracks measures
-    // offset(start) .. offset(start+span) minus the trailing gap.
-    for i in 0..child_count {
-        let child = scratch[start + i];
-        let r = regions[i];
-        let cx0 = col_offsets[r.col as usize];
-        let cx1 = span_end(&col_offsets, &col_sizes, r.col, r.col_span, column_gap);
-        let ry0 = row_offsets[r.row as usize];
-        let ry1 = span_end(&row_offsets, &row_sizes, r.row, r.row_span, row_gap);
-        let cell = Rect {
-            x: origin_x + cx0,
-            y: origin_y + ry0,
-            w: (cx1 - cx0).max(0.0),
-            h: (ry1 - ry0).max(0.0),
-        };
-        // Horizontal (inline axis): the child fills its cell when it requests
-        // Fill; a Fixed/Fit child hugs its own size at the cell's left edge.
-        let size = tree.input(child).size();
-        let cw = match size.width {
-            Length::Fixed(v) => v,
-            Length::Fit => tree.measured(child).on(Axis::Row),
-            Length::Fill { .. } => cell.w,
-        };
-        // Vertical (block axis): a `Fill` child stretches to the cell unless the
-        // grid overrides with a non-Stretch `align_items`; a Fixed/Fit child
-        // always hugs its own size and is then positioned by `align_items`.
-        let stretch =
-            matches!(size.height, Length::Fill { .. }) && align_items == AlignItems::Stretch;
-        let ch = if stretch {
-            cell.h
-        } else {
-            match size.height {
-                Length::Fixed(v) => v,
-                Length::Fit | Length::Fill { .. } => tree.measured(child).on(Axis::Column),
-            }
-        };
-        // Block-axis offset of the child within its cell per `align_items`.
-        // Baseline aligns the child's own baseline to the row's shared baseline,
-        // falling back to Start when the child has no text baseline.
-        let dy = match align_items {
-            AlignItems::Stretch | AlignItems::Start => 0.0,
-            AlignItems::Center => (cell.h - ch) * 0.5,
-            AlignItems::End => cell.h - ch,
-            AlignItems::Baseline => match tree.content_baseline(child) {
-                Some(base) => row_baselines[r.row as usize] - base,
-                None => 0.0,
-            },
-        };
-        let child_box = Rect {
-            x: cell.x,
-            y: cell.y + dy,
-            w: cw,
-            h: ch,
-        };
-        // A grid child that declares itself a subgrid adopts this grid's
-        // resolved tracks over its own cell span, so its inner cell lines
-        // coincide with this grid's lines. We slice `col_sizes`/`row_sizes` at
-        // the child's region and hand them to a dedicated `layout_grid` entry
-        // (the child never routes through the generic `layout()` dispatcher, so
-        // the public layout signature is untouched). A non-subgrid child, and
-        // any non-grid child, takes the ordinary path.
-        let (sub_cols, sub_rows) = match tree.input(child) {
-            LayoutInput::Grid { .. } => tree.subgrid_axes(child),
-            _ => (false, false),
-        };
-        if sub_cols || sub_rows {
-            let ci = |axis_start: u16, span: u16, sizes: &[f32]| {
-                let a = (axis_start as usize).min(sizes.len());
-                let b = (a + span as usize).min(sizes.len());
-                a..b
-            };
-            let col_slice =
-                sub_cols.then(|| (&col_sizes[ci(r.col, r.col_span, &col_sizes)], column_gap));
-            let row_slice =
-                sub_rows.then(|| (&row_sizes[ci(r.row, r.row_span, &row_sizes)], row_gap));
-            layout_grid(tree, child, child_box, col_slice, row_slice, scratch);
-        } else {
-            layout(tree, child, child_box, scratch);
+        if inherited_cols.is_none() {
+            crate::grid::distribute_spanning_auto(
+                &s.col_tracks,
+                column_gap,
+                content_w,
+                (0..child_count).map(|i| {
+                    let r = s.regions[i];
+                    (
+                        r.col,
+                        r.col_span,
+                        tree.measured(scratch[start + i]).on(Axis::Row),
+                    )
+                }),
+                &mut s.col_auto,
+            );
         }
-    }
+        if inherited_rows.is_none() {
+            crate::grid::distribute_spanning_auto(
+                &s.row_tracks,
+                row_gap,
+                content_h,
+                (0..child_count).map(|i| {
+                    let r = s.regions[i];
+                    (
+                        r.row,
+                        r.row_span,
+                        tree.measured(scratch[start + i]).on(Axis::Column),
+                    )
+                }),
+                &mut s.row_auto,
+            );
+        }
+
+        // Solve each self-solved axis; a subgrid axis instead adopts the parent's
+        // resolved track sizes over its cell span verbatim, so its cell boundaries
+        // land exactly on the parent's grid lines.
+        match inherited_cols {
+            Some((sizes, _)) => s.col_sizes.extend_from_slice(sizes),
+            None => crate::grid::solve_tracks(
+                &s.col_tracks,
+                column_gap,
+                content_w,
+                &s.col_auto,
+                &mut s.col_sizes,
+            ),
+        }
+        match inherited_rows {
+            Some((sizes, _)) => s.row_sizes.extend_from_slice(sizes),
+            None => crate::grid::solve_tracks(
+                &s.row_tracks,
+                row_gap,
+                content_h,
+                &s.row_auto,
+                &mut s.row_sizes,
+            ),
+        }
+
+        // Prefix-sum track offsets (with gaps) from the padded content origin.
+        let origin_x = rect_start(bounds, Axis::Row) + padding.main_start(Axis::Row);
+        let origin_y = rect_start(bounds, Axis::Column) + padding.main_start(Axis::Column);
+        prefix_offsets_into(&mut s.col_offsets, &s.col_sizes, column_gap);
+        prefix_offsets_into(&mut s.row_offsets, &s.row_sizes, row_gap);
+
+        // For `AlignItems::Baseline` each row shares a baseline: the max first-line
+        // baseline of the cells starting on that row. A cell aligns its own baseline
+        // to that shared line, so mixed-font-size cells sit on one text line. A cell
+        // whose content has no text baseline contributes none and falls back to Start.
+        if align_items == AlignItems::Baseline {
+            s.row_baselines.resize(s.row_sizes.len(), 0.0);
+            for i in 0..child_count {
+                let child = scratch[start + i];
+                if let Some(base) = tree.content_baseline(child) {
+                    let row = s.regions[i].row as usize;
+                    if base > s.row_baselines[row] {
+                        s.row_baselines[row] = base;
+                    }
+                }
+            }
+        }
+
+        // Lay each child into its cell rect. A cell spanning k tracks measures
+        // offset(start) .. offset(start+span) minus the trailing gap.
+        for i in 0..child_count {
+            let child = scratch[start + i];
+            let r = s.regions[i];
+            let cx0 = s.col_offsets[r.col as usize];
+            let cx1 = span_end(&s.col_offsets, &s.col_sizes, r.col, r.col_span, column_gap);
+            let ry0 = s.row_offsets[r.row as usize];
+            let ry1 = span_end(&s.row_offsets, &s.row_sizes, r.row, r.row_span, row_gap);
+            let cell = Rect {
+                x: origin_x + cx0,
+                y: origin_y + ry0,
+                w: (cx1 - cx0).max(0.0),
+                h: (ry1 - ry0).max(0.0),
+            };
+            // Horizontal (inline axis): the child fills its cell when it requests
+            // Fill; a Fixed/Fit child hugs its own size at the cell's left edge.
+            let size = tree.input(child).size();
+            let cw = match size.width {
+                Length::Fixed(v) => v,
+                Length::Fit => tree.measured(child).on(Axis::Row),
+                Length::Fill { .. } => cell.w,
+            };
+            // Vertical (block axis): a `Fill` child stretches to the cell unless the
+            // grid overrides with a non-Stretch `align_items`; a Fixed/Fit child
+            // always hugs its own size and is then positioned by `align_items`.
+            let stretch =
+                matches!(size.height, Length::Fill { .. }) && align_items == AlignItems::Stretch;
+            let ch = if stretch {
+                cell.h
+            } else {
+                match size.height {
+                    Length::Fixed(v) => v,
+                    Length::Fit | Length::Fill { .. } => tree.measured(child).on(Axis::Column),
+                }
+            };
+            // Block-axis offset of the child within its cell per `align_items`.
+            // Baseline aligns the child's own baseline to the row's shared baseline,
+            // falling back to Start when the child has no text baseline.
+            let dy = match align_items {
+                AlignItems::Stretch | AlignItems::Start => 0.0,
+                AlignItems::Center => (cell.h - ch) * 0.5,
+                AlignItems::End => cell.h - ch,
+                AlignItems::Baseline => match tree.content_baseline(child) {
+                    Some(base) => s.row_baselines[r.row as usize] - base,
+                    None => 0.0,
+                },
+            };
+            let child_box = Rect {
+                x: cell.x,
+                y: cell.y + dy,
+                w: cw,
+                h: ch,
+            };
+            // A grid child that declares itself a subgrid adopts this grid's
+            // resolved tracks over its own cell span, so its inner cell lines
+            // coincide with this grid's lines. We slice `col_sizes`/`row_sizes` at
+            // the child's region and hand them to a dedicated `layout_grid` entry
+            // (the child never routes through the generic `layout()` dispatcher, so
+            // the public layout signature is untouched). That recursive call checks
+            // out a distinct `GridScratch` from the pool, so these slices of `s`
+            // stay valid across it. A non-subgrid child, and any non-grid child,
+            // takes the ordinary path.
+            let (sub_cols, sub_rows) = match tree.input(child) {
+                LayoutInput::Grid { .. } => tree.subgrid_axes(child),
+                _ => (false, false),
+            };
+            if sub_cols || sub_rows {
+                let ci = |axis_start: u16, span: u16, sizes: &[f32]| {
+                    let a = (axis_start as usize).min(sizes.len());
+                    let b = (a + span as usize).min(sizes.len());
+                    a..b
+                };
+                let col_slice = sub_cols.then(|| {
+                    (
+                        &s.col_sizes[ci(r.col, r.col_span, &s.col_sizes)],
+                        column_gap,
+                    )
+                });
+                let row_slice =
+                    sub_rows.then(|| (&s.row_sizes[ci(r.row, r.row_span, &s.row_sizes)], row_gap));
+                layout_grid(tree, child, child_box, col_slice, row_slice, scratch);
+            } else {
+                layout(tree, child, child_box, scratch);
+            }
+        }
+    });
 
     // Release the child-id slice back to the caller's scratch high-water mark.
     scratch.truncate(start);
 }
 
-/// Prefix-sum track start offsets: track `i` starts at the sum of tracks
-/// `0..i` plus `i` gaps. Length = `sizes.len() + 1` (the trailing entry is the
-/// end of the last track, used for span math).
-fn prefix_offsets(sizes: &[f32], gap: f32) -> Vec<f32> {
-    let mut out = Vec::with_capacity(sizes.len() + 1);
+/// Prefix-sum track start offsets into `out` (cleared first): track `i` starts
+/// at the sum of tracks `0..i` plus `i` gaps. Final length = `sizes.len() + 1`
+/// (the trailing entry is the end of the last track, used for span math).
+/// Writes into a caller-owned buffer so the grid scratch pool reuses its
+/// allocation across frames rather than allocating a fresh `Vec` per call.
+fn prefix_offsets_into(out: &mut Vec<f32>, sizes: &[f32], gap: f32) {
+    out.clear();
+    out.reserve(sizes.len() + 1);
     let mut acc = 0.0f32;
     for (i, &s) in sizes.iter().enumerate() {
         out.push(acc);
@@ -1100,7 +1182,6 @@ fn prefix_offsets(sizes: &[f32], gap: f32) -> Vec<f32> {
         }
     }
     out.push(acc);
-    out
 }
 
 /// The far edge of a span starting at `start` covering `span` tracks: the start
