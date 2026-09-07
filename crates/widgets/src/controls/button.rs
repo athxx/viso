@@ -37,8 +37,8 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use viso_ui::{
-    Align, Axis, BoxStyle, BuildCx, Component, DirtyClass, EventCx, FlexStyle, Inset, Key, Length,
-    PointerButtons, PointerPhase, Rgba, Role, Semantics, Size, StateValue,
+    Align, Axis, BoxStyle, BuildCx, Component, EventCx, FlexStyle, Inset, InteractionStyle, Key,
+    Length, PointerButtons, PointerPhase, Rgba, Role, Semantics, Size, StateValue,
 };
 
 use crate::label;
@@ -54,6 +54,15 @@ const RESTING: Rgba = Rgba {
     r: 0.22,
     g: 0.45,
     b: 0.85,
+    a: 1.0,
+};
+
+/// The button's hover fill — a lighter shade of [`RESTING`] so mouse-over reads
+/// visually without changing layout.
+const HOVER: Rgba = Rgba {
+    r: 0.28,
+    g: 0.52,
+    b: 0.92,
     a: 1.0,
 };
 
@@ -94,6 +103,9 @@ pub struct ButtonStyle {
     pub size: Size,
     /// The resting background box (fill, radius, border).
     pub background: BoxStyle,
+    /// The background box painted while the pointer hovers the button (and it
+    /// is not pressed).
+    pub hover: BoxStyle,
     /// The background box painted while the button is pressed.
     pub pressed: BoxStyle,
 }
@@ -106,6 +118,7 @@ impl Default for ButtonStyle {
                 height: Length::Fit,
             },
             background: BoxStyle::solid(RESTING).with_radius(RADIUS),
+            hover: BoxStyle::solid(HOVER).with_radius(RADIUS),
             pressed: BoxStyle::solid(PRESSED).with_radius(RADIUS),
         }
     }
@@ -166,6 +179,13 @@ impl Button {
         self.style.background = background;
         self
     }
+
+    /// Set the hover background box (defaults to a lighter shade of the resting
+    /// fill).
+    pub fn hover(mut self, hover: BoxStyle) -> Self {
+        self.style.hover = hover;
+        self
+    }
 }
 
 /// Drive the shared callback if one is set; a handler-less button is a no-op.
@@ -178,10 +198,14 @@ fn fire(cb: &SharedClick, ev: &mut EventCx<'_>) {
 
 impl Component for Button {
     fn build(&self, cx: &mut BuildCx<'_>) {
-        // A reactive `pressed` cell bound to PAINT: pressing repaints the button
-        // alone (targeted invalidation, not a rebuild). The bound style is chosen
-        // in paint from this cell — the node's box swaps to `pressed` while held.
+        // Two reactive cells drive the button's interaction feedback: `pressed`
+        // (armed while the primary pointer is held down over the button) and
+        // `hovered` (set while the pointer is over the button and not pressed).
+        // Both are bound through the interaction-style column below, so flipping
+        // either re-selects the painted box and repaints this node alone (targeted
+        // invalidation, not a rebuild) — priority pressed > hover > resting.
         let pressed = cx.state(StateValue::Bool(false));
+        let hovered = cx.state(StateValue::Bool(false));
 
         // The visible background box; a flex row centering the caption inside the
         // padding. `build` takes `&self`, so the styles (`Copy`) are read by value
@@ -202,16 +226,30 @@ impl Component for Button {
             },
         );
 
-        // Bind the pressed cell to the root's PAINT so a press/release repaints
-        // just this node. The pressed-state fill swap is expressed by rebinding
-        // the box in paint via the cell; this slice paints the resting box and
-        // marks PAINT dirty on press so the frame re-emits the node.
-        cx.bind(pressed, root, DirtyClass::PAINT);
+        // Attach the interaction-style column: the root selects one of three
+        // whole boxes (resting / hover / pressed) from the current cell values
+        // each STYLE-dirty frame, priority pressed > hover > resting. This binds
+        // both cells to STYLE | PAINT, so flipping either re-selects the painted
+        // box (STYLE gates the re-selection pass) and re-emits the node (PAINT
+        // satisfies the repaint gate) — a targeted invalidation, no rebuild.
+        cx.interaction_style(
+            root,
+            InteractionStyle {
+                resting,
+                hover: self.style.hover,
+                pressed: self.style.pressed,
+                pressed_cell: Some(pressed),
+                hover_cell: Some(hovered),
+            },
+        );
         cx.focusable(root, true);
 
-        // Pointer activation: primary press arms `pressed`; primary release over
-        // the button fires `on_click` and disarms; leaving disarms. One
-        // press-then-release is one click (the counter-example click semantics).
+        // Pointer activation and hover feedback. Primary press arms `pressed`;
+        // primary release over the button fires `on_click` and disarms. `Enter`
+        // (synthesized per-node by the router on pointer-over) sets `hovered`;
+        // `Leave` means the pointer left this node (ADR 0022 merged the old
+        // window-level leave into per-node leave), so it clears both `hovered`
+        // and any armed `pressed`. One press-then-release is one click.
         let pointer_cb = self.on_click.clone();
         cx.on_pointer(root, move |ev| {
             let Some(p) = ev.pointer() else { return };
@@ -225,7 +263,11 @@ impl Component for Button {
                     ev.set(pressed, StateValue::Bool(false));
                     fire(&pointer_cb, ev);
                 }
+                PointerPhase::Enter => {
+                    ev.set(hovered, StateValue::Bool(true));
+                }
                 PointerPhase::Leave => {
+                    ev.set(hovered, StateValue::Bool(false));
                     ev.set(pressed, StateValue::Bool(false));
                 }
                 _ => {}
@@ -322,6 +364,19 @@ mod tests {
             }
             self.store.restore_key_handler(root, handler);
         }
+
+        /// Run the frame's style resolution the way the live loop does: drain the
+        /// pending state writes the handlers made, flush them through the binding
+        /// table to mark the bound nodes STYLE-dirty, then re-select each
+        /// interactive node's painted box. After this the flat `store.style(node)`
+        /// holds the box paint will read — the same value the real frame produces.
+        fn resolve(&mut self) {
+            let mut changed = Vec::new();
+            self.states.take_pending(&mut changed);
+            self.store
+                .flush_state_transactions(&changed, &self.bindings);
+            self.store.resolve_interaction_styles(&self.states);
+        }
     }
 
     /// A primary-button pointer sample in the given phase.
@@ -341,6 +396,18 @@ mod tests {
             key,
             pressed,
             repeat,
+            modifiers: Modifiers::default(),
+        }
+    }
+
+    /// A synthesized per-node hover sample (no buttons held), as the router emits
+    /// on pointer enter/leave.
+    fn hover(phase: PointerPhase) -> PointerEvent {
+        PointerEvent {
+            x: 0.0,
+            y: 0.0,
+            phase,
+            buttons: PointerButtons::NONE,
             modifiers: Modifiers::default(),
         }
     }
@@ -474,5 +541,112 @@ mod tests {
         rx.key(root, key_ev(Key::Enter, true, false));
 
         assert!(rx.store.focusable(root), "still focusable");
+    }
+
+    /// A gray at the given level — three of these give visibly distinct boxes so
+    /// a resolved `style` unambiguously names which interaction variant won.
+    fn gray(level: f32) -> BoxStyle {
+        BoxStyle::solid(Rgba {
+            r: level,
+            g: level,
+            b: level,
+            a: 1.0,
+        })
+    }
+
+    /// A button whose resting / hover / pressed boxes are three distinct grays.
+    fn tri_state_button() -> Button {
+        button("OK").style(ButtonStyle {
+            background: gray(0.1),
+            hover: gray(0.5),
+            pressed: gray(0.9),
+            ..ButtonStyle::default()
+        })
+    }
+
+    /// The interaction-style column swaps the painted box across the resting →
+    /// hover → pressed → hover → resting lifecycle, with pressed winning over a
+    /// concurrent hover. Each assertion reads the flat `style(root)` — the exact
+    /// value the paint walk lowers — after running the frame's resolve.
+    #[test]
+    fn interaction_style_swaps_box_across_hover_and_press() {
+        let btn = tri_state_button();
+        let resting = btn.style.background;
+        let hover_box = btn.style.hover;
+        let pressed_box = btn.style.pressed;
+        assert_ne!(resting, hover_box);
+        assert_ne!(hover_box, pressed_box);
+        assert_ne!(resting, pressed_box);
+
+        let mut rx = Reactive::new();
+        let root = rx.build(btn);
+
+        // The build binds and marks STYLE, so the first resolve selects resting
+        // from the freshly bound cells (both false).
+        rx.resolve();
+        assert_eq!(rx.store.style(root), resting, "starts resting");
+
+        // Enter → hover.
+        rx.pointer(root, hover(PointerPhase::Enter));
+        rx.resolve();
+        assert_eq!(rx.store.style(root), hover_box, "hover after enter");
+
+        // Primary Down while hovered → pressed wins over hover.
+        rx.pointer(root, primary(PointerPhase::Down));
+        rx.resolve();
+        assert_eq!(rx.store.style(root), pressed_box, "pressed beats hover");
+
+        // Primary Up (still hovered) → back to hover.
+        rx.pointer(root, primary(PointerPhase::Up));
+        rx.resolve();
+        assert_eq!(rx.store.style(root), hover_box, "hover after release");
+
+        // Leave → resting (Leave clears both hovered and pressed).
+        rx.pointer(root, hover(PointerPhase::Leave));
+        rx.resolve();
+        assert_eq!(rx.store.style(root), resting, "resting after leave");
+    }
+
+    /// Leaving while the button is still pressed (pointer dragged off during a
+    /// press) clears both states, so the box returns to resting rather than
+    /// sticking on pressed or hover.
+    #[test]
+    fn leave_while_pressed_returns_to_resting() {
+        let btn = tri_state_button();
+        let resting = btn.style.background;
+        let mut rx = Reactive::new();
+        let root = rx.build(btn);
+
+        rx.pointer(root, hover(PointerPhase::Enter));
+        rx.pointer(root, primary(PointerPhase::Down));
+        rx.pointer(root, hover(PointerPhase::Leave));
+        rx.resolve();
+        assert_eq!(
+            rx.store.style(root),
+            resting,
+            "leave clears both hovered and pressed"
+        );
+    }
+
+    /// Hover is a paint-only visual: entering and leaving the button never
+    /// changes its accessible semantics — the snapshot is byte-identical across
+    /// resting, hover, and pressed (ADR 0022: hover is not a semantic state).
+    #[test]
+    fn hover_and_press_do_not_change_semantics() {
+        let mut rx = Reactive::new();
+        let root = rx.build(tri_state_button());
+
+        let resting_sem = rx.store.semantics(root).expect("semantics").clone();
+
+        rx.pointer(root, hover(PointerPhase::Enter));
+        rx.resolve();
+        let hover_sem = rx.store.semantics(root).expect("semantics").clone();
+
+        rx.pointer(root, primary(PointerPhase::Down));
+        rx.resolve();
+        let pressed_sem = rx.store.semantics(root).expect("semantics").clone();
+
+        assert_eq!(resting_sem, hover_sem, "hover does not alter semantics");
+        assert_eq!(resting_sem, pressed_sem, "press does not alter semantics");
     }
 }

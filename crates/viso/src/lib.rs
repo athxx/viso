@@ -591,6 +591,17 @@ impl WindowState {
         if self.store.any_dirty_class(DirtyClass::TRANSFORM) {
             self.store.resolve_transforms(root);
         }
+        // Re-select interaction-state boxes when a STYLE class is pending. A
+        // press/hover flip marks its node STYLE (and PAINT) through the flush;
+        // this folds the winning variant (pressed > hover > resting) into the
+        // warm `style` the paint walk reads, before the repaint below. Theme-free
+        // (it reads only the reactive cells), so it runs here in the live loop
+        // where the theme-token `resolve_styles` pass does not yet. Gated on
+        // STYLE so a pure paint/transform frame skips it; a steady frame with no
+        // interaction change carries no STYLE dirt and pays nothing.
+        if self.store.any_dirty_class(DirtyClass::STYLE) {
+            self.store.resolve_interaction_styles(&self.states);
+        }
         let painted = self.store.repaint_dirty(root, &mut self.primitives);
         self.recompute = FrameRecompute {
             measured,

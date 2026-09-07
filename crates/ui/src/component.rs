@@ -22,7 +22,7 @@ use crate::node::{NodeArena, NodeId};
 use crate::reactive::{ComputeCx, EffectStore, SemanticProjector};
 use crate::semantics::{Role, SemanticState, Semantics, SemanticsNode, SemanticsTree};
 use crate::state::{StateId, StateStore, StateValue};
-use crate::style::{BoxStyle, StyleId};
+use crate::style::{BoxStyle, InteractionStyle, StyleId};
 use crate::timer::TimerRequest;
 use crate::token::Theme;
 use crate::window::WindowOpenRequest;
@@ -293,6 +293,17 @@ pub struct NodeStore {
     /// Read only by the STYLE-resolve pass over style-dirty nodes, never in the
     /// hot per-node traversal — so it sits off the warm `style` column.
     styled: Vec<Option<StyleId>>,
+    /// Warm: per-node interaction-state box selection, index-aligned but mostly
+    /// `None`. An interactive node (a button, a toggle) keeps its resting /
+    /// hover / pressed boxes plus the cells driving them here; a `None` entry
+    /// means the node paints its literal `style` unconditionally. Read only by
+    /// the STYLE-resolve pass over style-dirty nodes (via
+    /// [`resolve_interaction_styles`](Self::resolve_interaction_styles)), which
+    /// selects the winning box into the warm `style` column — never in the hot
+    /// per-node traversal, so it sits off the `style` column like `styled`.
+    /// Distinct from `styled`: token folding derives field values from theme
+    /// tokens, this picks one whole box from a fixed set by interaction state.
+    interaction: Vec<Option<InteractionStyle>>,
     /// Cold: per-node authored accessibility semantics (role + label),
     /// index-aligned but mostly `None`. Holds the only heap data in the store
     /// (the label `String`); read only by the SEMANTICS-derive pass, never in
@@ -390,6 +401,7 @@ impl NodeStore {
         self.focusable.clear();
         self.key_handlers.clear();
         self.styled.clear();
+        self.interaction.clear();
         self.semantics.clear();
         self.semantic_state.clear();
         self.content_payload.clear();
@@ -815,6 +827,32 @@ impl NodeStore {
             return;
         }
         self.styled[id.index() as usize] = Some(style);
+        self.mark_dirty(id, DirtyClass::STYLE | DirtyClass::PAINT);
+    }
+
+    /// A node's interaction-state box selection, if it has one. `None` means the
+    /// node paints its literal `style` unconditionally.
+    #[inline]
+    pub fn interaction_style(&self, id: NodeId) -> Option<InteractionStyle> {
+        self.interaction[id.index() as usize]
+    }
+
+    /// Bind a node's `style` to an interaction-state box selection, replacing
+    /// any prior selection. A live-guarded write, so a stale handle is a no-op.
+    ///
+    /// This records the variants + driving cells and marks the node STYLE +
+    /// PAINT so the next frame's
+    /// [`resolve_interaction_styles`](Self::resolve_interaction_styles) pass
+    /// selects the current winning box into the node's warm `style` and the
+    /// paint walk re-emits it. The caller separately binds each driving cell to
+    /// this node STYLE (so a press/hover flip re-marks the node through the
+    /// ordinary flush); this method only establishes the selection and the
+    /// first resolve.
+    pub fn set_interaction_style(&mut self, id: NodeId, interaction: InteractionStyle) {
+        if !self.arena.is_live(id) {
+            return;
+        }
+        self.interaction[id.index() as usize] = Some(interaction);
         self.mark_dirty(id, DirtyClass::STYLE | DirtyClass::PAINT);
     }
 
@@ -1529,6 +1567,7 @@ impl NodeStore {
             self.focusable[i] = false;
             self.key_handlers[i] = None;
             self.styled[i] = None;
+            self.interaction[i] = None;
             self.semantics[i] = None;
             self.semantic_state[i] = None;
             self.content_payload[i] = None;
@@ -1564,6 +1603,7 @@ impl NodeStore {
             self.focusable.push(false);
             self.key_handlers.push(None);
             self.styled.push(None);
+            self.interaction.push(None);
             self.semantics.push(None);
             self.semantic_state.push(None);
             self.content_payload.push(None);
@@ -1612,6 +1652,37 @@ impl NodeStore {
                 continue;
             };
             self.style[index] = style_id.resolve(self.style[index], theme, states);
+            resolved += 1;
+        }
+        resolved
+    }
+
+    /// Re-select the warm `style` of every STYLE-dirty node that carries an
+    /// interaction-state box selection, from that selection's variants and the
+    /// current cell values, and report how many nodes were re-selected (0 when
+    /// no interactive node is style-dirty).
+    ///
+    /// This is the interaction-state STYLE layer, a sibling of
+    /// [`resolve_styles`](Self::resolve_styles): it runs after the state flush
+    /// has marked STYLE on nodes whose pressed/hover cell flipped (and the
+    /// setter marks STYLE on a freshly bound node), before the paint rebuild. A
+    /// node whose STYLE is dirty but carries no selection is skipped — its
+    /// `style` is a literal (or a token fold). Theme-free: the selection reads
+    /// only the reactive cells, so it needs no [`Theme`], which is why it can run
+    /// in the live frame loop where `resolve_styles` (theme-dependent) does not
+    /// yet. The chosen box is one of the stored variants, so the selection is
+    /// idempotent across frames and needs no separate base column.
+    /// Allocation-free; touches only the dirty selecting nodes.
+    pub fn resolve_interaction_styles(&mut self, states: &StateStore) -> u32 {
+        let mut resolved = 0;
+        for index in 0..self.dirty.len() {
+            if !self.dirty[index].intersects(DirtyClass::STYLE) {
+                continue;
+            }
+            let Some(interaction) = self.interaction[index] else {
+                continue;
+            };
+            self.style[index] = interaction.resolve(states);
             resolved += 1;
         }
         resolved
@@ -2397,6 +2468,34 @@ impl<'a> BuildCx<'a> {
         node
     }
 
+    /// Give `node` an interaction-state box selection: record the resting /
+    /// hover / pressed variants on the node and bind each present driving cell
+    /// so a press/hover flip re-selects and repaints just this node.
+    ///
+    /// This is the shared control primitive for interaction feedback — a button
+    /// uses it now, a toggle/slider the same way later. It sets the node's
+    /// [`InteractionStyle`](crate::InteractionStyle) (marking STYLE + PAINT so the
+    /// first [`resolve_interaction_styles`](NodeStore::resolve_interaction_styles)
+    /// picks the current box) and binds each of the selection's `Some` cells to
+    /// the node with `STYLE | PAINT`: STYLE drives the re-selection pass, PAINT
+    /// re-emits the node. Returns the handle so wiring chains inline. Requires a
+    /// [`BuildCx::with_reactive`] cx (see [`BuildCx::state`]).
+    pub fn interaction_style(&mut self, node: Handle, interaction: InteractionStyle) -> Handle {
+        self.store.set_interaction_style(node.id, interaction);
+        let bindings = self
+            .bindings
+            .as_mut()
+            .expect("interaction_style() requires a with_reactive BuildCx");
+        let class = DirtyClass::STYLE | DirtyClass::PAINT;
+        for cell in [interaction.pressed_cell, interaction.hover_cell]
+            .into_iter()
+            .flatten()
+        {
+            bindings.bind(cell, node.id, class);
+        }
+        node
+    }
+
     /// Register a semantic-state projection for `node`: `project` reads the
     /// control's reactive cell(s) through the read-only [`ComputeCx`] and returns
     /// the live accessibility [`SemanticState`] to write into the node's side
@@ -2463,6 +2562,12 @@ mod tests {
         r: 0.0,
         g: 1.0,
         b: 0.0,
+        a: 1.0,
+    };
+    const BLUE: Rgba = Rgba {
+        r: 0.0,
+        g: 0.0,
+        b: 1.0,
         a: 1.0,
     };
 
@@ -3382,6 +3487,106 @@ mod tests {
                 a: 1.0
             }
         );
+    }
+
+    #[test]
+    fn resolve_interaction_styles_gates_on_style_and_selection() {
+        use crate::state::{StateStore, StateValue};
+        use crate::style::InteractionStyle;
+
+        let mut store = NodeStore::new();
+        let mut states = StateStore::new();
+        let pressed_cell = states.alloc(StateValue::Bool(false));
+        let hover_cell = states.alloc(StateValue::Bool(false));
+
+        // Two literal leaves; only the first carries an interaction selection.
+        let (interactive, literal) = {
+            let mut cx = BuildCx::new(&mut store);
+            let a = cx
+                .leaf(LeafStyle {
+                    size: Size::fixed(1.0, 1.0),
+                    style: BoxStyle::solid(RED),
+                })
+                .id();
+            let b = cx
+                .leaf(LeafStyle {
+                    size: Size::fixed(1.0, 1.0),
+                    style: BoxStyle::solid(GREEN),
+                })
+                .id();
+            (a, b)
+        };
+        let selection = InteractionStyle {
+            resting: BoxStyle::solid(RED),
+            hover: BoxStyle::solid(GREEN),
+            pressed: BoxStyle::solid(BLUE),
+            pressed_cell: Some(pressed_cell),
+            hover_cell: Some(hover_cell),
+        };
+        store.set_interaction_style(interactive, selection);
+        // The literal leaf is STYLE-dirty but carries no selection: skipped.
+        store.mark_dirty(literal, DirtyClass::STYLE);
+
+        // set_interaction_style marked STYLE, so the pass selects resting now.
+        let count = store.resolve_interaction_styles(&states);
+        assert_eq!(count, 1, "only the selecting node re-resolves");
+        assert_eq!(store.style(interactive).fill, RED, "resting selected");
+        assert_eq!(store.style(literal).fill, GREEN, "literal untouched");
+
+        // A clean frame (no STYLE dirt) re-selects nothing.
+        store.clear_dirty();
+        assert_eq!(store.resolve_interaction_styles(&states), 0);
+        assert_eq!(store.style(interactive).fill, RED, "unchanged when clean");
+    }
+
+    #[test]
+    fn resolve_interaction_styles_reselects_on_cell_flip() {
+        use crate::binding::BindingTable;
+        use crate::state::{StateStore, StateValue};
+        use crate::style::InteractionStyle;
+
+        let mut store = NodeStore::new();
+        let mut states = StateStore::new();
+        let mut bindings = BindingTable::new();
+        let pressed_cell = states.alloc(StateValue::Bool(false));
+        let hover_cell = states.alloc(StateValue::Bool(false));
+
+        let node = {
+            let mut cx = BuildCx::new(&mut store);
+            cx.leaf(LeafStyle::default()).id()
+        };
+        let selection = InteractionStyle {
+            resting: BoxStyle::solid(RED),
+            hover: BoxStyle::solid(GREEN),
+            pressed: BoxStyle::solid(BLUE),
+            pressed_cell: Some(pressed_cell),
+            hover_cell: Some(hover_cell),
+        };
+        store.set_interaction_style(node, selection);
+        for cell in [pressed_cell, hover_cell] {
+            bindings.bind(cell, node, DirtyClass::STYLE | DirtyClass::PAINT);
+        }
+        store.resolve_interaction_styles(&states);
+        assert_eq!(store.style(node).fill, RED, "starts resting");
+        store.clear_dirty();
+
+        // Flip hover on: the flush re-marks the bound node STYLE, the pass swaps.
+        states.set(hover_cell, StateValue::Bool(true));
+        let mut pending = Vec::new();
+        states.take_pending(&mut pending);
+        store.flush_state_transactions(&pending, &bindings);
+        assert!(store.dirty(node).intersects(DirtyClass::STYLE));
+        assert_eq!(store.resolve_interaction_styles(&states), 1);
+        assert_eq!(store.style(node).fill, GREEN, "hover selected after flip");
+
+        // Flip pressed on too: pressed wins.
+        store.clear_dirty();
+        states.set(pressed_cell, StateValue::Bool(true));
+        pending.clear();
+        states.take_pending(&mut pending);
+        store.flush_state_transactions(&pending, &bindings);
+        store.resolve_interaction_styles(&states);
+        assert_eq!(store.style(node).fill, BLUE, "pressed wins over hover");
     }
 
     #[test]
