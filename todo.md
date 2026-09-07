@@ -905,8 +905,10 @@ enter/leave 合成、无 hover 追踪、无控件用 hover 反馈。落 `crates/
       —— 记 ADR 0022 section 6/7。
 - [x] 验证包(Button hover golden + a11y):golden 三态 —— `button_paints_three_distinct_quads_across_interaction_states`
       驱 resting/hover/pressed 三相位断言 root `Quad.color` 各异;a11y —— hover 非语义(ADR 0022 section 4)。
-- [ ] 验证包(收尾):input tape(move 进入/离开节点 → 断言 enter/leave 按序合成、hover 节点追踪正确、嵌套节点链差分)+
-      microbench(move 差分开销)+ alloc(稳态零 alloc)。§68(frame phase / 输入语义)→ ADR 0022 已记。
+- [x] 验证包(收尾):input tape(`viso/tests/hover_tape.rs` 6 步 move-tape 经 `PointerRouter::route`:enter/leave
+      按序合成、hover 节点追踪、嵌套链差分——含填充容器上移到 root 的间隙情形)+ microbench(`ui/benches/hover_diff.rs`:
+      within-node ~83ns vs cross-node ~173ns,启动断言 pin 行为)+ alloc(`ui/tests/hover_diff_alloc.rs` 单线程:稳态
+      within-node move `frame_allocs==[0,0]`)。§68(frame phase / 输入语义)→ ADR 0022 已记。
 
 **8.5 — stop_propagation 收尾(输入,机制已通)** —— 核实:`Dispatched{ran,stop}` + `dispatch_chain` 三段 honor +
 `EventCx::stop_propagation` 三链(pointer/key/ime)全通,但**无任何控件真正 consume 事件、无 dispatch 级 swallow 测试**,
