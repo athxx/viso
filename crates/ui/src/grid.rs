@@ -77,6 +77,16 @@ pub struct GridStyle {
     pub size: Size,
     /// The grid box's own background/border (transparent = pure layout box).
     pub style: BoxStyle,
+    /// Author-declared column line names, resolved to 0-based line indices at
+    /// build time. Cold: consumed only while authoring a named `place` inside the
+    /// grid closure, never on the layout hot path. Empty for the common grid.
+    pub column_line_names: LineNames,
+    /// Author-declared row line names (see [`GridStyle::column_line_names`]).
+    pub row_line_names: LineNames,
+    /// Optional template-areas table (CSS `grid-template-areas`). Cold: a
+    /// `place_area` call resolves a name to an explicit placement at build time.
+    /// `None` for the common grid.
+    pub areas: Option<GridAreas>,
 }
 
 impl Default for GridStyle {
@@ -90,6 +100,9 @@ impl Default for GridStyle {
             padding: Inset::default(),
             size: Size::fill(),
             style: BoxStyle::NONE,
+            column_line_names: Vec::new(),
+            row_line_names: Vec::new(),
+            areas: None,
         }
     }
 }
@@ -116,6 +129,116 @@ impl Default for GridPlacement {
             column_span: 1,
             row_span: 1,
         }
+    }
+}
+
+/// A creation-time table mapping author line names to 0-based grid line indices.
+///
+/// A "line" is the boundary between two tracks: an axis with `n` tracks has
+/// `n + 1` lines (0 = the leading edge, `n` = the trailing edge). Names are
+/// resolved to indices **once, at build time** (see [`resolve_line`]) so the
+/// runtime placement path never carries a `String` — a named `place` call lowers
+/// to the same `Option<u16>` a numeric `place` produces.
+///
+/// The natural authoring form is the CSS `[name]` line marker interleaved with
+/// the track template; here the resolved `(name, index)` pairs are supplied
+/// directly, so the same list serves columns and rows.
+pub type LineNames = Vec<(Box<str>, u16)>;
+
+/// Resolve a line name against a [`LineNames`] table, returning its 0-based line
+/// index. A creation-time helper: called while authoring a grid child's
+/// placement, never on the layout hot path. Returns `None` for an unknown name.
+pub fn resolve_line(names: &[(Box<str>, u16)], name: &str) -> Option<u16> {
+    names
+        .iter()
+        .find(|(candidate, _)| candidate.as_ref() == name)
+        .map(|(_, index)| *index)
+}
+
+/// A creation-time table mapping template-area names to the cell block each area
+/// covers. Built once from a rectangular grid of area-name cells (CSS
+/// `grid-template-areas`) via [`GridAreas::from_rows`]; each distinct name
+/// becomes the bounding [`CellRegion`] of the cells that carry it. Like
+/// [`LineNames`] this is a cold, build-time structure — `place_area` resolves a
+/// name to an explicit [`GridPlacement`] before the node is stored, so the
+/// runtime placement path stays `String`-free.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct GridAreas {
+    /// `(area name, bounding cell block)`, one entry per distinct named area.
+    areas: Vec<(Box<str>, CellRegion)>,
+}
+
+impl GridAreas {
+    /// Build an area table from a rectangular grid of area-name cells, row-major
+    /// (`rows[r][c]` is the area name occupying cell `(col = c, row = r)`). Each
+    /// distinct name resolves to the **bounding block** of every cell carrying it,
+    /// so `[["nav", "nav"], ["side", "main"]]` gives `nav` a span-2 column block on
+    /// row 0, `side` a single cell at `(0, 1)`, and `main` at `(1, 1)`.
+    ///
+    /// A well-formed template names a contiguous rectangle per area; a
+    /// non-rectangular or gapped name still resolves to its bounding block (the
+    /// smallest rectangle covering all its cells) rather than panicking — malformed
+    /// input degrades to a defined placement instead of a build failure. The `.`
+    /// cell name marks an intentionally empty cell and is never registered as an
+    /// area. Rows of differing length are honored as authored (a short row simply
+    /// contributes fewer cells).
+    pub fn from_rows<R, C>(rows: R) -> Self
+    where
+        R: IntoIterator<Item = C>,
+        C: IntoIterator,
+        C::Item: AsRef<str>,
+    {
+        // Accumulate each name's min/max column and row as cells are visited, then
+        // fold those extents into a bounding CellRegion. Insertion order of first
+        // appearance is preserved so resolution is deterministic.
+        let mut bounds: Vec<(Box<str>, u16, u16, u16, u16)> = Vec::new();
+        for (r, cols) in rows.into_iter().enumerate() {
+            for (c, name) in cols.into_iter().enumerate() {
+                let name = name.as_ref();
+                if name == "." || name.is_empty() {
+                    continue;
+                }
+                let (col, row) = (c as u16, r as u16);
+                if let Some(entry) = bounds.iter_mut().find(|(n, ..)| n.as_ref() == name) {
+                    entry.1 = entry.1.min(col);
+                    entry.2 = entry.2.max(col);
+                    entry.3 = entry.3.min(row);
+                    entry.4 = entry.4.max(row);
+                } else {
+                    bounds.push((name.into(), col, col, row, row));
+                }
+            }
+        }
+        let areas = bounds
+            .into_iter()
+            .map(|(name, min_col, max_col, min_row, max_row)| {
+                (
+                    name,
+                    CellRegion {
+                        col: min_col,
+                        row: min_row,
+                        col_span: max_col - min_col + 1,
+                        row_span: max_row - min_row + 1,
+                    },
+                )
+            })
+            .collect();
+        GridAreas { areas }
+    }
+
+    /// Resolve an area name to the explicit [`GridPlacement`] it covers. A
+    /// creation-time helper called while authoring a child's placement; returns
+    /// `None` for an unknown area.
+    pub fn placement(&self, name: &str) -> Option<GridPlacement> {
+        self.areas
+            .iter()
+            .find(|(candidate, _)| candidate.as_ref() == name)
+            .map(|(_, region)| GridPlacement {
+                column: Some(region.col),
+                row: Some(region.row),
+                column_span: region.col_span,
+                row_span: region.row_span,
+            })
     }
 }
 
@@ -868,5 +991,107 @@ mod tests {
             &mut auto,
         );
         assert_eq!(auto, vec![0.0, 0.0]);
+    }
+
+    #[test]
+    fn resolve_line_maps_a_known_name_to_its_index_and_none_otherwise() {
+        let names: LineNames = vec![("nav-start".into(), 0), ("nav-end".into(), 2)];
+        assert_eq!(resolve_line(&names, "nav-start"), Some(0));
+        assert_eq!(resolve_line(&names, "nav-end"), Some(2));
+        assert_eq!(resolve_line(&names, "missing"), None);
+    }
+
+    #[test]
+    fn grid_areas_from_rows_bounds_each_name_and_spans_across_cells() {
+        // [["nav", "nav"], ["side", "main"]]: nav spans both columns on row 0;
+        // side and main are single cells on row 1.
+        let areas = GridAreas::from_rows([["nav", "nav"], ["side", "main"]]);
+        assert_eq!(
+            areas.placement("nav"),
+            Some(GridPlacement {
+                column: Some(0),
+                row: Some(0),
+                column_span: 2,
+                row_span: 1,
+            })
+        );
+        assert_eq!(
+            areas.placement("side"),
+            Some(GridPlacement {
+                column: Some(0),
+                row: Some(1),
+                column_span: 1,
+                row_span: 1,
+            })
+        );
+        assert_eq!(
+            areas.placement("main"),
+            Some(GridPlacement {
+                column: Some(1),
+                row: Some(1),
+                column_span: 1,
+                row_span: 1,
+            })
+        );
+        assert_eq!(areas.placement("unknown"), None);
+    }
+
+    #[test]
+    fn grid_areas_span_a_name_across_both_rows_and_columns() {
+        // A 2x2 block where "main" fills the bottom-right 2x1 and "side" the whole
+        // left column: exercises row spanning and column spanning at once.
+        let areas = GridAreas::from_rows([["side", "head", "head"], ["side", "main", "main"]]);
+        assert_eq!(
+            areas.placement("side"),
+            Some(GridPlacement {
+                column: Some(0),
+                row: Some(0),
+                column_span: 1,
+                row_span: 2,
+            })
+        );
+        assert_eq!(
+            areas.placement("head"),
+            Some(GridPlacement {
+                column: Some(1),
+                row: Some(0),
+                column_span: 2,
+                row_span: 1,
+            })
+        );
+        assert_eq!(
+            areas.placement("main"),
+            Some(GridPlacement {
+                column: Some(1),
+                row: Some(1),
+                column_span: 2,
+                row_span: 1,
+            })
+        );
+    }
+
+    #[test]
+    fn grid_areas_ignores_the_empty_dot_cell() {
+        // "." is the intentionally-empty cell and is never registered as an area.
+        let areas = GridAreas::from_rows([["a", "."], [".", "b"]]);
+        assert_eq!(areas.placement("."), None);
+        assert_eq!(
+            areas.placement("a"),
+            Some(GridPlacement {
+                column: Some(0),
+                row: Some(0),
+                column_span: 1,
+                row_span: 1,
+            })
+        );
+        assert_eq!(
+            areas.placement("b"),
+            Some(GridPlacement {
+                column: Some(1),
+                row: Some(1),
+                column_span: 1,
+                row_span: 1,
+            })
+        );
     }
 }
