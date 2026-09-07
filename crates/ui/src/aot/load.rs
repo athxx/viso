@@ -79,8 +79,19 @@ pub fn instantiate(
     // `text_input`), so a throwaway registry satisfies the reactive-cx contract
     // without threading an edit registry through the public loader API.
     let mut text_edits = crate::text_edit::TextEdits::new();
+    // Likewise the AOT package lowers no semantic-state projection yet, so a
+    // throwaway projector registry satisfies the reactive-cx contract without
+    // threading one through the public loader API.
+    let mut projectors = crate::reactive::SemanticProjector::new();
     let root = {
-        let mut cx = BuildCx::with_reactive(store, states, bindings, lists, &mut text_edits);
+        let mut cx = BuildCx::with_reactive(
+            store,
+            states,
+            bindings,
+            lists,
+            &mut text_edits,
+            &mut projectors,
+        );
         let mut cursor = 0usize;
         while cursor < pkg.nodes.len() {
             build_node(&mut cx, &pkg.nodes, &mut cursor, &mut node_ids);

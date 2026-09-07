@@ -33,6 +33,7 @@ fn default_build_declares_no_scene() {
     let mut bindings = BindingTable::new();
     let mut lists = viso::ui::VirtualLists::new();
     let mut text_edits = viso::ui::TextEdits::new();
+    let mut projectors = viso::ui::SemanticProjector::new();
     let root = {
         let mut cx = BuildCx::with_reactive(
             &mut store,
@@ -40,6 +41,7 @@ fn default_build_declares_no_scene() {
             &mut bindings,
             &mut lists,
             &mut text_edits,
+            &mut projectors,
         );
         app.build(&mut cx);
         cx.root()
@@ -74,6 +76,7 @@ fn custom_build_authors_a_reactive_scene() {
     let mut bindings = BindingTable::new();
     let mut lists = viso::ui::VirtualLists::new();
     let mut text_edits = viso::ui::TextEdits::new();
+    let mut projectors = viso::ui::SemanticProjector::new();
     let root = {
         let mut cx = BuildCx::with_reactive(
             &mut store,
@@ -81,6 +84,7 @@ fn custom_build_authors_a_reactive_scene() {
             &mut bindings,
             &mut lists,
             &mut text_edits,
+            &mut projectors,
         );
         app.build(&mut cx);
         cx.root()

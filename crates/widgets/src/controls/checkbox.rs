@@ -23,7 +23,7 @@
 //!
 //! ```
 //! use viso_widgets::checkbox;
-//! use viso_ui::{BuildCx, BindingTable, Component, NodeStore, StateStore, TextEdits, VirtualLists};
+//! use viso_ui::{SemanticProjector, BuildCx, BindingTable, Component, NodeStore, StateStore, TextEdits, VirtualLists};
 //!
 //! let toggle = checkbox("Enable sound").on_change(|_ev, checked| {
 //!     // handle the new state — e.g. write app state through the event context
@@ -36,7 +36,8 @@
 //! let mut bindings = BindingTable::new();
 //! let mut lists = VirtualLists::new();
 //! let mut text_edits = TextEdits::new();
-//! let mut cx = BuildCx::with_reactive(&mut store, &mut states, &mut bindings, &mut lists, &mut text_edits);
+//! let mut projectors = SemanticProjector::new();
+//! let mut cx = BuildCx::with_reactive(&mut store, &mut states, &mut bindings, &mut lists, &mut text_edits, &mut projectors);
 //! toggle.build(&mut cx);
 //! ```
 
@@ -307,8 +308,8 @@ mod tests {
     use std::cell::Cell;
     use std::rc::Rc;
     use viso_ui::{
-        BindingTable, KeyEvent, Modifiers, NodeId, NodeStore, PointerEvent, StateId, StateStore,
-        TextEdits, VirtualLists,
+        BindingTable, KeyEvent, Modifiers, NodeId, NodeStore, PointerEvent, SemanticProjector,
+        StateId, StateStore, TextEdits, VirtualLists,
     };
 
     /// The reactive stores a checkbox build writes into, kept together so a test
@@ -319,6 +320,7 @@ mod tests {
         bindings: BindingTable,
         lists: VirtualLists,
         text_edits: TextEdits,
+        projectors: SemanticProjector,
     }
 
     impl Reactive {
@@ -329,6 +331,7 @@ mod tests {
                 bindings: BindingTable::new(),
                 lists: VirtualLists::new(),
                 text_edits: TextEdits::new(),
+                projectors: SemanticProjector::new(),
             }
         }
 
@@ -341,6 +344,7 @@ mod tests {
                 &mut self.bindings,
                 &mut self.lists,
                 &mut self.text_edits,
+                &mut self.projectors,
             );
             cb.build(&mut cx);
             cx.root().expect("checkbox declares a root node")

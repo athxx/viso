@@ -43,9 +43,9 @@ use viso_runtime::{FramePhase, RuntimeCx, Scheduler};
 use viso_ui::{
     AnimationRegistry, BindingTable, BuildCx, ComputedStore, DirtyClass, EffectStore,
     FrameRecompute, ImeEvent, Key, KeyEvent, KeyRouter, Modifiers, NodeId, NodeStore,
-    PointerButtons, PointerEvent, PointerPhase, PointerRouter, ScrollEvent, ScrollRouter, StateId,
-    StateStore, TextEdits, TextRequest, TimerRegistry, TimerRequest, TranslateAnim, VirtualLists,
-    WindowOpenRequest, focus_next, text_edit, virtual_list,
+    PointerButtons, PointerEvent, PointerPhase, PointerRouter, ScrollEvent, ScrollRouter,
+    SemanticProjector, StateId, StateStore, TextEdits, TextRequest, TimerRegistry, TimerRequest,
+    TranslateAnim, VirtualLists, WindowOpenRequest, focus_next, text_edit, virtual_list,
 };
 
 mod text_content;
@@ -287,6 +287,12 @@ struct WindowState {
     /// Side effects scoped to nodes. The flush re-runs those whose dependencies
     /// changed; freeing a node cancels its effects (cleanup then drop).
     effects: EffectStore,
+    /// Semantic-state projections keyed by node. A control registers one at build
+    /// time (`bind_semantic_state`); the flush wakes those whose dependencies
+    /// changed and writes each affected node's `semantic_state` column, so the
+    /// semantics derive pass reads live accessibility state (checked / value /
+    /// range) from a node column without a cross-layer read (AGENTS section 3.5).
+    projectors: SemanticProjector,
     /// Virtualized lists keyed by viewport node. Reconciled each frame before
     /// layout: reads each list's scroll, remounts only the visible range's hosts,
     /// keeps the content extent (so `scroll_range` is right) with ~40 mounted
@@ -409,6 +415,7 @@ impl WindowState {
             bindings: BindingTable::new(),
             computeds: ComputedStore::new(),
             effects: EffectStore::new(),
+            projectors: SemanticProjector::new(),
             virtual_lists: VirtualLists::new(),
             text_edits: TextEdits::new(),
             animations: AnimationRegistry::new(),
@@ -506,6 +513,7 @@ impl WindowState {
                 &mut ws.bindings,
                 &mut ws.virtual_lists,
                 &mut ws.text_edits,
+                &mut ws.projectors,
             );
             ws.root = build(&mut build_cx);
         }
@@ -829,7 +837,13 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
                         //    dynamic edges, so a derivation's node is dirtied
                         //    once, by the pass above.)
                         ws.store.flush_state_transactions(&ws.changed, &ws.bindings);
-                        // 3. Effects: re-run those whose dependencies changed. An
+                        // 3. Semantic-state projections: re-run those whose cells
+                        //    changed, each writing its node's `semantic_state`
+                        //    column (and marking SEMANTICS) — both stores are live
+                        //    here, so a control's checked/value/range reaches the
+                        //    node column without the derive pass reading state.
+                        ws.projectors.wake(&ws.changed, &ws.states, &mut ws.store);
+                        // 4. Effects: re-run those whose dependencies changed. An
                         //    effect that writes state records it as pending for
                         //    the next frame; the scheduler carries state-dirty
                         //    forward, so a follow-up frame runs — no in-frame

@@ -25,8 +25,8 @@
 use viso::gpu::{GpuBackend, HeadlessRaster, RawWindowHandle};
 use viso::render::{Rect, Renderer};
 use viso::ui::{
-    BindingTable, BuildCx, DirtyClass, NodeStore, StateStore, StateValue, TextEdits, VirtualLists,
-    paint_tree,
+    BindingTable, BuildCx, DirtyClass, NodeStore, SemanticProjector, StateStore, StateValue,
+    TextEdits, VirtualLists, paint_tree,
 };
 
 const W: u32 = 160;
@@ -119,6 +119,7 @@ fn ui_fragment_reactive_flush_hits_only_the_static_edge() {
     let mut bindings = BindingTable::new();
     let mut lists = VirtualLists::new();
     let mut text_edits = TextEdits::new();
+    let mut projectors = SemanticProjector::new();
 
     let count = states.alloc(StateValue::Int(0));
 
@@ -135,6 +136,7 @@ fn ui_fragment_reactive_flush_hits_only_the_static_edge() {
             &mut bindings,
             &mut lists,
             &mut text_edits,
+            &mut projectors,
         );
         build(&mut cx).id()
     };

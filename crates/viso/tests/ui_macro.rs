@@ -14,7 +14,8 @@
 //! `use viso::prelude::*;`.
 
 use viso::ui::{
-    BindingTable, BuildCx, DirtyClass, NodeStore, StateStore, StateValue, TextEdits, VirtualLists,
+    BindingTable, BuildCx, DirtyClass, NodeStore, SemanticProjector, StateStore, StateValue,
+    TextEdits, VirtualLists,
 };
 
 /// A static-only fragment expands to a builder closure that mounts a real retained
@@ -56,6 +57,7 @@ fn reactive_fragment_compiles_a_static_binding_edge() {
     let mut bindings = BindingTable::new();
     let mut lists = VirtualLists::new();
     let mut text_edits = TextEdits::new();
+    let mut projectors = SemanticProjector::new();
 
     // The reactive source the fragment names. `count` is an ordinary in-scope Rust
     // `StateId`; the macro emits `cx.bind(count, …)` and Rust hygiene resolves it to
@@ -75,6 +77,7 @@ fn reactive_fragment_compiles_a_static_binding_edge() {
             &mut bindings,
             &mut lists,
             &mut text_edits,
+            &mut projectors,
         );
         build(&mut cx).id()
     };

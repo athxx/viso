@@ -78,8 +78,8 @@ use viso::render::{FrameStats, Rect, Renderer, Rgba};
 use viso::ui::{
     AnimationRegistry, BindingTable, BoxStyle, BuildCx, Component, EventCx, Key, KeyEvent,
     KeyRouter, LeafStyle, Modifiers, NodeId, NodeStore, PointerButtons, PointerEvent, PointerPhase,
-    Role, Size, StateId, StateStore, StateValue, TextEdits, TranslateAnim, VirtualLists,
-    focus_next, paint_tree,
+    Role, SemanticProjector, Size, StateId, StateStore, StateValue, TextEdits, TranslateAnim,
+    VirtualLists, focus_next, paint_tree,
 };
 use viso::widgets::{SheetEdge, SheetHandle, SheetHandleSlot, sheet};
 
@@ -182,6 +182,7 @@ impl Sheeted {
         let mut bindings = BindingTable::new();
         let mut lists = VirtualLists::new();
         let mut text_edits = TextEdits::new();
+        let mut projectors = SemanticProjector::new();
 
         let slot: SheetHandleSlot = Rc::new(RefCell::new(None));
         let widget = sheet()
@@ -202,6 +203,7 @@ impl Sheeted {
                 &mut bindings,
                 &mut lists,
                 &mut text_edits,
+                &mut projectors,
             );
             widget.build(&mut cx);
             cx.root().expect("sheet declares a root")
@@ -931,6 +933,7 @@ fn setup_alloc() -> Harness {
     let mut bindings = BindingTable::new();
     let mut lists = VirtualLists::new();
     let mut text_edits = TextEdits::new();
+    let mut projectors = SemanticProjector::new();
 
     let slot: SheetHandleSlot = Rc::new(RefCell::new(None));
     let widget = sheet()
@@ -948,6 +951,7 @@ fn setup_alloc() -> Harness {
             &mut bindings,
             &mut lists,
             &mut text_edits,
+            &mut projectors,
         );
         widget.build(&mut cx);
         cx.root().expect("sheet declares a root")

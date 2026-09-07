@@ -202,7 +202,7 @@ fn child_counts_walk(store: &NodeStore, node: NodeId, out: &mut Vec<usize>) {
 /// shape — the reference the AOT tree is compared against.
 fn live_commit_child_counts(source: &str) -> Vec<usize> {
     use viso_dsl::hotreload::{CandidatePlan, LiveAnchors, LiveRuntime, hot_reload};
-    use viso_ui::EffectStore;
+    use viso_ui::{EffectStore, SemanticProjector};
 
     let mut store = NodeStore::new();
     let mut states = StateStore::new();
@@ -210,6 +210,7 @@ fn live_commit_child_counts(source: &str) -> Vec<usize> {
     let mut effects = EffectStore::new();
     let mut lists = VirtualLists::new();
     let mut text_edits = TextEdits::new();
+    let mut projectors = SemanticProjector::new();
     let mut scratch: Vec<NodeId> = Vec::new();
 
     // An empty last-good baseline: the empty→candidate diff is all-inserts, so the
@@ -228,6 +229,7 @@ fn live_commit_child_counts(source: &str) -> Vec<usize> {
         effects: &mut effects,
         lists: &mut lists,
         text_edits: &mut text_edits,
+        projectors: &mut projectors,
         root: None,
         scratch: &mut scratch,
     };

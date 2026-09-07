@@ -19,8 +19,8 @@ use crate::layout::{
     self, Align, Axis, Inset, LayoutInput, LayoutTree, Length, Measured, Size, Vec2,
 };
 use crate::node::{NodeArena, NodeId};
-use crate::reactive::EffectStore;
-use crate::semantics::{Role, Semantics, SemanticsNode, SemanticsTree};
+use crate::reactive::{ComputeCx, EffectStore, SemanticProjector};
+use crate::semantics::{Role, SemanticState, Semantics, SemanticsNode, SemanticsTree};
 use crate::state::{StateId, StateStore, StateValue};
 use crate::style::{BoxStyle, StyleId};
 use crate::timer::TimerRequest;
@@ -289,6 +289,16 @@ pub struct NodeStore {
     /// `handlers`/`styled`. A `None` entry means a plain layout/decoration node
     /// (the derive pass still gives an interactive node a default role).
     semantics: Vec<Option<Semantics>>,
+    /// Cold: per-node *live* accessibility state (checked / value / range /
+    /// expanded), index-aligned but mostly `None`. Unlike authored `semantics`,
+    /// this is reactive: a control registers a parallel projection binding whose
+    /// flush writes the current cell value here (via
+    /// [`set_semantic_state`](Self::set_semantic_state)), and the SEMANTICS-derive
+    /// pass reads it (`&self`) — so live state reaches the derived tree through a
+    /// node column, never a cross-layer StateStore read (AGENTS section 3.5),
+    /// mirroring the `focused` slot. Heap-free ([`SemanticState`] is `Copy`), so
+    /// the column reuses its slots with no per-frame allocation.
+    semantic_state: Vec<Option<SemanticState>>,
     /// Cold: per-node drawable content (text/image/path) plus its measured
     /// intrinsic size, index-aligned but mostly `None` — only content-bearing
     /// nodes carry it, boxed off the hot columns like `semantics`. The measure
@@ -370,6 +380,7 @@ impl NodeStore {
         self.key_handlers.clear();
         self.styled.clear();
         self.semantics.clear();
+        self.semantic_state.clear();
         self.content_payload.clear();
         self.text_request.clear();
         self.animation_requests.clear();
@@ -788,6 +799,32 @@ impl NodeStore {
             return;
         }
         self.semantics[id.index() as usize] = Some(semantics);
+        self.mark_dirty(id, DirtyClass::SEMANTICS);
+    }
+
+    /// A node's live accessibility state (checked / value / range / expanded),
+    /// if any. `None` = a node that carries no reactive semantic state (a plain
+    /// container, a label, or a control before its projection binding has run).
+    #[inline]
+    pub fn semantic_state(&self, id: NodeId) -> Option<SemanticState> {
+        self.semantic_state[id.index() as usize]
+    }
+
+    /// Set a node's live accessibility state, replacing any prior value, and mark
+    /// it SEMANTICS-dirty so the next derive re-folds it (AGENTS section 11: an
+    /// accessibility-state change invalidates SEMANTICS). A live-guarded write —
+    /// a stale handle is a no-op. SEMANTICS bubbles, so ancestors learn their
+    /// subtree changed without a separate mark.
+    ///
+    /// This is the write end of the reactive-state projection: a control's cell
+    /// drives a parallel binding whose flush computes the new [`SemanticState`]
+    /// and calls this (in the flush phase, where the state store is live), so the
+    /// `&self` derive pass never reads the state store itself.
+    pub fn set_semantic_state(&mut self, id: NodeId, state: SemanticState) {
+        if !self.arena.is_live(id) {
+            return;
+        }
+        self.semantic_state[id.index() as usize] = Some(state);
         self.mark_dirty(id, DirtyClass::SEMANTICS);
     }
 
@@ -1449,6 +1486,7 @@ impl NodeStore {
             self.key_handlers[i] = None;
             self.styled[i] = None;
             self.semantics[i] = None;
+            self.semantic_state[i] = None;
             self.content_payload[i] = None;
             self.text_request[i] = None;
         } else {
@@ -1483,6 +1521,7 @@ impl NodeStore {
             self.key_handlers.push(None);
             self.styled.push(None);
             self.semantics.push(None);
+            self.semantic_state.push(None);
             self.content_payload.push(None);
             self.text_request.push(None);
         }
@@ -1666,9 +1705,10 @@ impl NodeStore {
             role,
             label,
             focused,
-            // Live state is filled from the `semantic_state` side column in a
-            // later slice; a plain derive carries no live state yet.
-            state: None,
+            // Live state comes from the node's own side column (`&self`), never
+            // a cross-layer state-store read: a control's projection binding
+            // wrote it in the flush phase (AGENTS section 3.5).
+            state: self.semantic_state(id),
             bounds: self.bounds(id),
             children: Vec::new(),
         });
@@ -1875,6 +1915,13 @@ pub struct BuildCx<'a> {
     /// keyed by that node's index (mirroring `lists`); `None` for a node-only or
     /// child-body cx.
     text_edits: Option<&'a mut crate::text_edit::TextEdits>,
+    /// Driver-owned semantic-state projections, present only for a `with_reactive`
+    /// cx. A control registers a projection here through
+    /// [`bind_semantic_state`](BuildCx::bind_semantic_state); the projection reads
+    /// the control's reactive cell in the flush phase and writes the node's
+    /// `semantic_state` column, so the semantics derive pass stays single-layer.
+    /// `None` for a node-only or child-body cx.
+    projectors: Option<&'a mut SemanticProjector>,
     /// Parent cursor stack; the top is the current insertion parent.
     stack: Vec<NodeId>,
     /// The placement to apply to the next child authored inside the current
@@ -1896,6 +1943,7 @@ impl<'a> BuildCx<'a> {
             bindings: None,
             lists: None,
             text_edits: None,
+            projectors: None,
             stack: Vec::new(),
             pending_placement: None,
             root: None,
@@ -1911,6 +1959,7 @@ impl<'a> BuildCx<'a> {
         bindings: &'a mut BindingTable,
         lists: &'a mut crate::virtual_list::VirtualLists,
         text_edits: &'a mut crate::text_edit::TextEdits,
+        projectors: &'a mut SemanticProjector,
     ) -> Self {
         BuildCx {
             store,
@@ -1918,6 +1967,7 @@ impl<'a> BuildCx<'a> {
             bindings: Some(bindings),
             lists: Some(lists),
             text_edits: Some(text_edits),
+            projectors: Some(projectors),
             stack: Vec::new(),
             pending_placement: None,
             root: None,
@@ -1945,6 +1995,7 @@ impl<'a> BuildCx<'a> {
             bindings: Some(bindings),
             lists: None,
             text_edits: None,
+            projectors: None,
             stack: vec![parent],
             pending_placement: None,
             root: None,
@@ -2299,6 +2350,41 @@ impl<'a> BuildCx<'a> {
             .as_mut()
             .expect("bind() requires a with_reactive BuildCx")
             .bind(state, node.id, class);
+        node
+    }
+
+    /// Register a semantic-state projection for `node`: `project` reads the
+    /// control's reactive cell(s) through the read-only [`ComputeCx`] and returns
+    /// the live accessibility [`SemanticState`] to write into the node's side
+    /// column. The projection re-runs in the flush phase whenever a cell it read
+    /// changes, keeping the semantics derive pass single-layer — the derive reads
+    /// only the node column (`&self`), never the state store (AGENTS section 3.5).
+    ///
+    /// This runs the projection once now, so the node carries its live state from
+    /// the first frame (before any interaction). Returns the handle so wiring
+    /// chains inline. A control pairs this with its [`bind`](Self::bind) PAINT
+    /// edge: one cell drives both the visual repaint and the semantic-state
+    /// column. Requires a [`BuildCx::with_reactive`] cx (see [`BuildCx::state`]).
+    pub fn bind_semantic_state(
+        &mut self,
+        node: Handle,
+        project: impl FnMut(&mut ComputeCx<'_>) -> SemanticState + 'static,
+    ) -> Handle {
+        // Borrow the three fields disjointly so the projection can run against the
+        // live state store and node store at build time.
+        let projectors = self
+            .projectors
+            .as_deref_mut()
+            .expect("bind_semantic_state() requires a with_reactive BuildCx");
+        let states = self
+            .states
+            .as_deref()
+            .expect("bind_semantic_state() requires a with_reactive BuildCx");
+        let id = projectors.alloc(node.id, project);
+        // Seed the first-frame value: both stores are live here at build time, so
+        // the projection can run immediately and its result lands in the node's
+        // `semantic_state` column before the first derive.
+        projectors.project(id, states, self.store);
         node
     }
 
@@ -3201,12 +3287,14 @@ mod tests {
         let mut bindings = BindingTable::new();
         let mut lists = crate::virtual_list::VirtualLists::new();
         let mut text_edits = crate::text_edit::TextEdits::new();
+        let mut projectors = crate::reactive::SemanticProjector::new();
         let mut cx = BuildCx::with_reactive(
             &mut store,
             &mut states,
             &mut bindings,
             &mut lists,
             &mut text_edits,
+            &mut projectors,
         );
         let id = cx.state(StateValue::Int(0));
         assert_eq!(states.get(id), Some(StateValue::Int(0)));
@@ -3219,6 +3307,7 @@ mod tests {
         let mut bindings = BindingTable::new();
         let mut lists = crate::virtual_list::VirtualLists::new();
         let mut text_edits = crate::text_edit::TextEdits::new();
+        let mut projectors = crate::reactive::SemanticProjector::new();
         let node;
         let count;
         {
@@ -3228,6 +3317,7 @@ mod tests {
                 &mut bindings,
                 &mut lists,
                 &mut text_edits,
+                &mut projectors,
             );
             count = cx.state(StateValue::Int(0));
             node = cx.leaf(LeafStyle::default());
@@ -3254,6 +3344,7 @@ mod tests {
         let mut bindings = BindingTable::new();
         let mut lists = crate::virtual_list::VirtualLists::new();
         let mut text_edits = crate::text_edit::TextEdits::new();
+        let mut projectors = crate::reactive::SemanticProjector::new();
         let s;
         let a;
         let b;
@@ -3264,6 +3355,7 @@ mod tests {
                 &mut bindings,
                 &mut lists,
                 &mut text_edits,
+                &mut projectors,
             );
             s = cx.state(StateValue::Int(0));
             a = cx.leaf(LeafStyle::default());

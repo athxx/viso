@@ -39,6 +39,7 @@ fn scene() -> Scene {
     let mut bindings = BindingTable::new();
     let mut lists = viso::ui::VirtualLists::new();
     let mut text_edits = viso::ui::TextEdits::new();
+    let mut projectors = viso::ui::SemanticProjector::new();
 
     let mut button = None;
     let mut bar = None;
@@ -49,6 +50,7 @@ fn scene() -> Scene {
             &mut bindings,
             &mut lists,
             &mut text_edits,
+            &mut projectors,
         );
         let count = cx.state(StateValue::Int(0));
         cx.flex(

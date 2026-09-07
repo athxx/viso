@@ -87,8 +87,8 @@ impl Default for VirtualListViewStyle {
 /// ```
 /// use viso_widgets::{virtual_list, VirtualListViewStyle};
 /// use viso_ui::{
-///     Axis, BindingTable, BuildCx, Component, LeafStyle, Length, NodeStore, Size,
-///     StateStore, TextEdits, VirtualLists,
+///     Axis, BindingTable, BuildCx, Component, LeafStyle, Length, NodeStore,
+///     SemanticProjector, Size, StateStore, TextEdits, VirtualLists,
 /// };
 ///
 /// let list = virtual_list(VirtualListViewStyle {
@@ -114,12 +114,14 @@ impl Default for VirtualListViewStyle {
 /// let mut bindings = BindingTable::new();
 /// let mut lists = VirtualLists::new();
 /// let mut text_edits = TextEdits::new();
+/// let mut projectors = SemanticProjector::new();
 /// let mut cx = BuildCx::with_reactive(
 ///     &mut store,
 ///     &mut states,
 ///     &mut bindings,
 ///     &mut lists,
 ///     &mut text_edits,
+///     &mut projectors,
 /// );
 /// list.build(&mut cx);
 /// ```
@@ -234,7 +236,8 @@ impl Component for VirtualList {
 mod tests {
     use super::*;
     use viso_ui::{
-        BindingTable, LeafStyle, Length, NodeId, NodeStore, StateStore, TextEdits, VirtualLists,
+        BindingTable, LeafStyle, Length, NodeId, NodeStore, SemanticProjector, StateStore,
+        TextEdits, VirtualLists,
     };
 
     /// The reactive stores a virtual-list build writes into, kept together so a
@@ -246,6 +249,7 @@ mod tests {
         bindings: BindingTable,
         lists: VirtualLists,
         text_edits: TextEdits,
+        projectors: SemanticProjector,
     }
 
     impl Reactive {
@@ -256,6 +260,7 @@ mod tests {
                 bindings: BindingTable::new(),
                 lists: VirtualLists::new(),
                 text_edits: TextEdits::new(),
+                projectors: SemanticProjector::new(),
             }
         }
 
@@ -267,6 +272,7 @@ mod tests {
                 &mut self.bindings,
                 &mut self.lists,
                 &mut self.text_edits,
+                &mut self.projectors,
             );
             list.build(&mut cx);
             cx.root().expect("virtual list declares a root node")

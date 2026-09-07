@@ -53,7 +53,7 @@
 //! use std::cell::RefCell;
 //! use std::rc::Rc;
 //! use viso_widgets::{ToastEdge, ToastHandleSlot, toast};
-//! use viso_ui::{BuildCx, BindingTable, Component, LeafStyle, NodeStore, StateStore, TextEdits, VirtualLists};
+//! use viso_ui::{SemanticProjector, BuildCx, BindingTable, Component, LeafStyle, NodeStore, StateStore, TextEdits, VirtualLists};
 //! use viso_ui::{BoxStyle, Size};
 //!
 //! let handle: ToastHandleSlot = Rc::new(RefCell::new(None));
@@ -69,7 +69,8 @@
 //! let mut bindings = BindingTable::new();
 //! let mut lists = VirtualLists::new();
 //! let mut text_edits = TextEdits::new();
-//! let mut cx = BuildCx::with_reactive(&mut store, &mut states, &mut bindings, &mut lists, &mut text_edits);
+//! let mut projectors = SemanticProjector::new();
+//! let mut cx = BuildCx::with_reactive(&mut store, &mut states, &mut bindings, &mut lists, &mut text_edits, &mut projectors);
 //! control.build(&mut cx);
 //! // `handle` is now filled; the app can `handle.borrow().clone().unwrap().show(ev)` from anywhere.
 //! ```
@@ -443,7 +444,7 @@ mod tests {
     use std::cell::Cell;
     use viso_ui::{
         BindingTable, LeafStyle, Modifiers, NodeStore, PointerButtons, PointerEvent, PointerPhase,
-        Rect, StateStore, TextEdits, TimerRegistry, TimerRequest, VirtualLists,
+        Rect, SemanticProjector, StateStore, TextEdits, TimerRegistry, TimerRequest, VirtualLists,
     };
 
     /// The reactive stores a toast build writes into, kept together so a test can
@@ -457,6 +458,7 @@ mod tests {
         bindings: BindingTable,
         lists: VirtualLists,
         text_edits: TextEdits,
+        projectors: SemanticProjector,
         timers: TimerRegistry,
     }
 
@@ -468,6 +470,7 @@ mod tests {
                 bindings: BindingTable::new(),
                 lists: VirtualLists::new(),
                 text_edits: TextEdits::new(),
+                projectors: SemanticProjector::new(),
                 timers: TimerRegistry::new(),
             }
         }
@@ -481,6 +484,7 @@ mod tests {
                 &mut self.bindings,
                 &mut self.lists,
                 &mut self.text_edits,
+                &mut self.projectors,
             );
             control.build(&mut cx);
             let root = cx.root().expect("toast declares a root node");

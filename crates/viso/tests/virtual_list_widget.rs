@@ -37,8 +37,8 @@ use viso::gpu::{GpuBackend, HeadlessRaster, RawWindowHandle};
 use viso::render::{FrameStats, Rect, Renderer, Rgba};
 use viso::ui::{
     Axis, BindingTable, BoxStyle, BuildCx, Component, DirtyClass, EffectStore, LeafStyle, Length,
-    NodeId, NodeStore, Role, Size, StateStore, TextEdits, Vec2, VirtualLists, paint_tree,
-    virtual_list as vl_driver,
+    NodeId, NodeStore, Role, SemanticProjector, Size, StateStore, TextEdits, Vec2, VirtualLists,
+    paint_tree, virtual_list as vl_driver,
 };
 use viso::widgets::{VirtualListViewStyle, virtual_list};
 
@@ -91,6 +91,7 @@ impl Seam {
         let mut bindings = BindingTable::new();
         let mut lists = VirtualLists::new();
         let mut text_edits = TextEdits::new();
+        let mut projectors = SemanticProjector::new();
         let viewport = {
             let mut cx = BuildCx::with_reactive(
                 &mut store,
@@ -98,6 +99,7 @@ impl Seam {
                 &mut bindings,
                 &mut lists,
                 &mut text_edits,
+                &mut projectors,
             );
             virtual_list(VirtualListViewStyle {
                 axis: Axis::Column,
@@ -326,6 +328,7 @@ fn virtual_list_derives_a_group_semantics_node_with_label() {
     let mut bindings = BindingTable::new();
     let mut lists = VirtualLists::new();
     let mut text_edits = TextEdits::new();
+    let mut projectors = SemanticProjector::new();
     let root = {
         let mut cx = BuildCx::with_reactive(
             &mut store,
@@ -333,6 +336,7 @@ fn virtual_list_derives_a_group_semantics_node_with_label() {
             &mut bindings,
             &mut lists,
             &mut text_edits,
+            &mut projectors,
         );
         virtual_list(VirtualListViewStyle::default())
             .items(10, |_i, cx| {

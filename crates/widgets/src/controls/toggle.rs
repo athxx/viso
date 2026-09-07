@@ -28,7 +28,7 @@
 //!
 //! ```
 //! use viso_widgets::toggle;
-//! use viso_ui::{BuildCx, BindingTable, Component, NodeStore, StateStore, TextEdits, VirtualLists};
+//! use viso_ui::{SemanticProjector, BuildCx, BindingTable, Component, NodeStore, StateStore, TextEdits, VirtualLists};
 //!
 //! let sw = toggle("Wi-Fi").on(true).on_change(|_ev, on| {
 //!     // handle the new state — e.g. write app state through the event context
@@ -41,7 +41,8 @@
 //! let mut bindings = BindingTable::new();
 //! let mut lists = VirtualLists::new();
 //! let mut text_edits = TextEdits::new();
-//! let mut cx = BuildCx::with_reactive(&mut store, &mut states, &mut bindings, &mut lists, &mut text_edits);
+//! let mut projectors = SemanticProjector::new();
+//! let mut cx = BuildCx::with_reactive(&mut store, &mut states, &mut bindings, &mut lists, &mut text_edits, &mut projectors);
 //! sw.build(&mut cx);
 //! ```
 
@@ -360,8 +361,8 @@ mod tests {
     use std::cell::Cell;
     use std::rc::Rc;
     use viso_ui::{
-        BindingTable, KeyEvent, Modifiers, NodeId, NodeStore, PointerEvent, StateId, StateStore,
-        TextEdits, VirtualLists,
+        BindingTable, KeyEvent, Modifiers, NodeId, NodeStore, PointerEvent, SemanticProjector,
+        StateId, StateStore, TextEdits, VirtualLists,
     };
 
     /// The reactive stores a toggle build writes into, kept together so a test can
@@ -372,6 +373,7 @@ mod tests {
         bindings: BindingTable,
         lists: VirtualLists,
         text_edits: TextEdits,
+        projectors: SemanticProjector,
     }
 
     impl Reactive {
@@ -382,6 +384,7 @@ mod tests {
                 bindings: BindingTable::new(),
                 lists: VirtualLists::new(),
                 text_edits: TextEdits::new(),
+                projectors: SemanticProjector::new(),
             }
         }
 
@@ -394,6 +397,7 @@ mod tests {
                 &mut self.bindings,
                 &mut self.lists,
                 &mut self.text_edits,
+                &mut self.projectors,
             );
             sw.build(&mut cx);
             cx.root().expect("toggle declares a root node")

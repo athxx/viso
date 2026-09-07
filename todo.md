@@ -847,7 +847,7 @@ derive 路径 + 四控件接线。
       (`checked`/`slider`/`with_expanded`);加 `Role::Slider`/`Role::Radio`;`SemanticsNode` 加 `state: Option<SemanticState>`
       (默认 None);`Semantics` **不** 加活状态字段(保持冷静态)。删过时 "no state store today / borrow CheckBox" 注释。
       单测:新 role 区分 + SemanticState 构造/默认。
-- [ ] 提交 2(节点侧列 + 投影 binding,component.rs + binding.rs):`semantic_state` 侧列 + getter/setter(live-guard +
+- [x] 提交 2(节点侧列 + 投影 binding,component.rs + binding.rs):`semantic_state` 侧列 + getter/setter(live-guard +
       赋值 + mark_dirty SEMANTICS),随 alloc 对齐;投影 binding(flush 阶段读值 → set_semantic_state);`derive_into` 读列
       填 `SemanticsNode.state`。单测:set 标 SEMANTICS;flush 投影后 derive 带 state;binding 变更 → 语义树随之变。
 - [ ] 提交 3(四控件接线,viso-widgets):CheckBox/Toggle `checked`;Slider `value`+`range`(role→Slider);Radio 每 option
