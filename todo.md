@@ -860,8 +860,10 @@ derive 路径 + 四控件接线。
       读代码确认:`Content::Text` 只存已 shape 的 glyphs 非源串,可访问名仍来自 authored `Semantics.label`(TextRequest 被
       take 后清列不留),故不做 name-from-glyphs 伪回退,只做诚实的 SEMANTICS 失效。单测:改文本内容 → 标 SEMANTICS(冒泡);
       换图片 → 不标 SEMANTICS。
-- [ ] 提交 5(ADR,§68 触发 reactive semantics):记录活状态经节点侧列投影进派生语义树(不跨层读 StateStore)、SEMANTICS
-      失效契约、Role::Slider/Radio。
+- [x] 提交 5(ADR,§68 触发 reactive semantics):`docs/adr/0021-reactive-semantic-state-projection.md`。记录 SemanticState
+      节点侧列 + bind_semantic_state 投影 binding(flush 阶段两 store live 读值 → set_semantic_state,`&self` derive 只读列,
+      不跨层读 StateStore,镜像 focused 先例)、SEMANTICS 失效契约(含 text-content-as-name)、Role::Slider/Radio、稳态零 alloc
+      (SemanticProjector 复用 cursor,实证)。
 
 **8.2 — Per-subtree 增量语义(性能地基)** —— 今天任一 SEMANTICS 脏即从 root 全树重建 `SemanticsTree`(component.rs
 derive_semantics),无上一棵缓存、无 per-subtree 增量。落 `crates/ui/src/component.rs` derive 路径 + semantics.rs。
