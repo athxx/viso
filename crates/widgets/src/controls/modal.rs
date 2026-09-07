@@ -64,7 +64,7 @@ use std::rc::Rc;
 
 use viso_ui::{
     Align, Axis, BoxStyle, BuildCx, Component, DirtyClass, EventCx, FlexStyle, Inset, Key, Length,
-    NodeId, Rgba, Role, Semantics, Size, StateId, StateValue,
+    NodeId, PointerPhase, Rgba, Role, Semantics, Size, StateId, StateValue,
 };
 
 /// A shared, mutable dismiss callback, fired when the modal closes (Escape, or a
@@ -148,7 +148,8 @@ const DEFAULT_SCRIM: Rgba = Rgba {
 /// [`Length::Fill`] on both axes so the dialog (and its scrim) cover the surface.
 /// `scrim` is the dimming color painted over the surface while open; unlike a
 /// [`Popup`](crate::Popup) it defaults to a translucent dark wash ([`Some`]), the
-/// modal backdrop. All fields are `Copy`.
+/// modal backdrop. `dismiss_on_scrim` chooses whether a click on that backdrop
+/// closes the modal. All fields are `Copy`.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ModalStyle {
     /// The modal's own size request within its parent. Defaults to `Fill` on both
@@ -157,6 +158,17 @@ pub struct ModalStyle {
     /// The dimming color painted over the surface while open, under the content.
     /// Defaults to a translucent dark wash; `None` paints no scrim.
     pub scrim: Option<Rgba>,
+    /// Whether a pointer press on the scrim closes the modal (click-outside to
+    /// dismiss). Defaults to `true` — the conventional, expected modal behavior.
+    /// Set `false` for a forced dialog (a destructive-action confirmation) that
+    /// must be answered rather than dismissed by clicking away.
+    ///
+    /// This is orthogonal to the scrim *swallowing* the event: whenever a scrim is
+    /// present its handler always calls
+    /// [`EventCx::stop_propagation`](viso_ui::EventCx::stop_propagation), so a
+    /// backdrop click never falls through to app behavior behind the dialog. This
+    /// flag only decides whether that same click *also* closes the modal.
+    pub dismiss_on_scrim: bool,
 }
 
 impl Default for ModalStyle {
@@ -164,6 +176,7 @@ impl Default for ModalStyle {
         ModalStyle {
             size: Size::fill(),
             scrim: Some(DEFAULT_SCRIM),
+            dismiss_on_scrim: true,
         }
     }
 }
@@ -218,6 +231,15 @@ impl Modal {
     /// transparent color to suppress the backdrop while keeping the modal semantics.
     pub fn scrim(mut self, scrim: Rgba) -> Self {
         self.style.scrim = Some(scrim);
+        self
+    }
+
+    /// Choose whether a pointer press on the scrim closes the modal (defaults to
+    /// `true`). Pass `false` for a forced dialog that must be answered rather than
+    /// dismissed by clicking away. The scrim always swallows the click regardless;
+    /// this only decides whether it also closes.
+    pub fn dismiss_on_scrim(mut self, dismiss: bool) -> Self {
+        self.style.dismiss_on_scrim = dismiss;
         self
     }
 
@@ -322,9 +344,11 @@ impl Component for Modal {
         // before the content, so the top-layer pass paints it first (under) and the
         // content after (over).
         let scrim_color = self.style.scrim;
+        let dismiss_on_scrim = self.style.dismiss_on_scrim;
         let dismiss_cb = self.on_dismiss.clone();
         let restore_focus: RestoreFocus = Rc::new(Cell::new(None));
         let mut content_id = None;
+        let mut scrim_handle = None;
         let root = cx.flex(
             FlexStyle {
                 axis: Axis::Column,
@@ -345,6 +369,7 @@ impl Component for Modal {
                     });
                     cx.set_overlay(scrim, true);
                     cx.set_hidden(scrim, true);
+                    scrim_handle = Some(scrim);
                 }
 
                 // The dialog content: authored once, flagged overlay (top layer), and
@@ -402,6 +427,37 @@ impl Component for Modal {
         let content = content_id.expect("modal authors its content node");
         cx.bind(open, root, DirtyClass::PAINT);
         cx.semantics(root, Semantics::role(Role::Group));
+
+        // The scrim swallows every pointer event that lands on it: a click on the
+        // backdrop is consumed rather than bubbling to any app-level ancestor
+        // behind the dialog — the scrim's whole purpose is to seal off the scene
+        // underneath. That swallow is unconditional and independent of dismissal.
+        // Whether a backdrop click also closes the modal is `dismiss_on_scrim`
+        // (default on, the standard modal interaction; a forced dialog turns it
+        // off): when set, a Down on the scrim drives the same close path as Escape
+        // and the handle (scope release + focus restore + on_dismiss). Attached
+        // here rather than at scrim-authoring time because the close handle needs
+        // the content node id, which is only minted after the content is built.
+        if let Some(scrim) = scrim_handle {
+            let scrim_cb = dismiss_cb.clone();
+            let scrim_restore = restore_focus.clone();
+            cx.on_pointer(scrim, move |ev| {
+                ev.stop_propagation();
+                if !dismiss_on_scrim {
+                    return;
+                }
+                let Some(p) = ev.pointer() else { return };
+                if matches!(p.phase, PointerPhase::Down) {
+                    let h = ModalHandle {
+                        open,
+                        content,
+                        restore_focus: scrim_restore.clone(),
+                        on_dismiss: scrim_cb.clone(),
+                    };
+                    set_open(&h, ev, false);
+                }
+            });
+        }
 
         // Fill the app-supplied handle slot (if any) with a handle bound to the
         // just-minted cell, content id, and restore-focus cell, so the app can
@@ -484,6 +540,29 @@ mod tests {
             self.apply(hidden, focus, scope);
         }
 
+        /// Feed a pointer sample to a node's pointer handler, restoring it after, then
+        /// apply every deferred request it recorded — the same take/drive/restore/apply
+        /// router discipline as [`key`](Self::key), for the scrim's pointer handler.
+        /// Returns whether the handler asked to stop propagation, so a test can assert
+        /// the scrim swallowed the event.
+        fn pointer(&mut self, node: NodeId, ev: PointerEvent) -> bool {
+            let mut handler = self.store.take_handler(node).expect("pointer handler");
+            let (hidden, focus, scope, stop) = {
+                let mut cx = EventCx::__new_pointer(&mut self.states, &self.bindings, &ev);
+                cx.__set_focused(self.store.focused());
+                handler(&mut cx);
+                (
+                    cx.__take_hidden_requests(),
+                    cx.__take_focus_request(),
+                    cx.__take_focus_scope_request(),
+                    cx.__stop_requested(),
+                )
+            };
+            self.store.restore_handler(node, handler);
+            self.apply(hidden, focus, scope);
+            stop
+        }
+
         /// Drive a `ModalHandle` action (open/close/toggle) as a router would: run it
         /// inside a throwaway pointer `EventCx` (lending the current focus slot in),
         /// take the deferred requests, and apply them to the store.
@@ -541,6 +620,31 @@ mod tests {
             buttons: PointerButtons::NONE,
             modifiers: Modifiers::default(),
         }
+    }
+
+    /// A pointer sample at a phase, over the scrim (which fills the surface, so any
+    /// coordinate lands on it — the harness drives the handler directly, so the exact
+    /// point is immaterial).
+    fn scrim_pointer(phase: PointerPhase) -> PointerEvent {
+        PointerEvent {
+            x: 5.0,
+            y: 5.0,
+            phase,
+            buttons: PointerButtons::PRIMARY,
+            modifiers: Modifiers::default(),
+        }
+    }
+
+    fn down_on_scrim() -> PointerEvent {
+        scrim_pointer(PointerPhase::Down)
+    }
+
+    fn move_on_scrim() -> PointerEvent {
+        scrim_pointer(PointerPhase::Move)
+    }
+
+    fn up_on_scrim() -> PointerEvent {
+        scrim_pointer(PointerPhase::Up)
     }
 
     /// A key press/release sample.
@@ -830,6 +934,93 @@ mod tests {
         assert_eq!(count.get(), before, "and does not fire again");
     }
 
+    /// A press on the scrim of an open modal swallows the event (the scrim's whole
+    /// purpose is to seal off the scene behind it) and, by default, closes the modal
+    /// through the same close path as Escape — hides the content, releases the trap,
+    /// restores focus, fires `on_dismiss`.
+    #[test]
+    fn scrim_click_swallows_and_closes() {
+        let count = Rc::new(Cell::new(0u32));
+        let c = count.clone();
+
+        let slot: ModalHandleSlot = Rc::new(RefCell::new(None));
+        let mut rx = Reactive::new();
+        let root = rx.build(basic(&slot).on_dismiss(move |_ev| {
+            c.set(c.get() + 1);
+        }));
+        let cell = open_cell();
+        let kids = children(&rx.store, root);
+        let (scrim, content) = (kids[0], kids[1]);
+        let h = slot.borrow().clone().expect("build fills the handle slot");
+
+        // A pre-open focus target, so the scrim close can restore it.
+        let trigger = children(&rx.store, content)[0];
+        rx.store.set_focusable(trigger, true);
+        rx.store.set_focused(Some(trigger));
+
+        // Open, then a Down on the scrim: it swallows the press and closes.
+        let n = h.clone();
+        rx.drive(|ev| n.open(ev));
+        let stopped = rx.pointer(scrim, down_on_scrim());
+        assert!(stopped, "the scrim swallows the backdrop press");
+        assert_eq!(rx.is_open(cell), Some(false), "a scrim press closes");
+        assert!(rx.store.hidden(content), "the content is hidden");
+        assert_eq!(rx.store.focus_scope(), None, "the trap is released");
+        assert_eq!(
+            rx.store.focused(),
+            Some(trigger),
+            "focus returns to the pre-open node"
+        );
+        assert_eq!(count.get(), 1, "the scrim dismiss fires on_dismiss");
+
+        // Reopen; a Move/Up on the scrim is swallowed but does not close (only Down
+        // closes, so a click's release does not re-close a modal it just opened over).
+        let n = h.clone();
+        rx.drive(|ev| n.open(ev));
+        let before = count.get();
+        assert!(
+            rx.pointer(scrim, move_on_scrim()),
+            "a scrim move is still swallowed"
+        );
+        assert!(
+            rx.pointer(scrim, up_on_scrim()),
+            "a scrim release is still swallowed"
+        );
+        assert_eq!(rx.is_open(cell), Some(true), "move/up do not close");
+        assert_eq!(count.get(), before, "and do not fire on_dismiss");
+    }
+
+    /// With `dismiss_on_scrim(false)` (a forced dialog) the scrim still swallows every
+    /// press — the backdrop always seals off the scene — but a press does not close
+    /// the modal.
+    #[test]
+    fn scrim_click_swallows_without_closing_when_disabled() {
+        let count = Rc::new(Cell::new(0u32));
+        let c = count.clone();
+
+        let slot: ModalHandleSlot = Rc::new(RefCell::new(None));
+        let mut rx = Reactive::new();
+        let root = rx.build(basic(&slot).dismiss_on_scrim(false).on_dismiss(move |_ev| {
+            c.set(c.get() + 1);
+        }));
+        let cell = open_cell();
+        let kids = children(&rx.store, root);
+        let (scrim, content) = (kids[0], kids[1]);
+        let h = slot.borrow().clone().expect("build fills the handle slot");
+
+        let n = h.clone();
+        rx.drive(|ev| n.open(ev));
+        let stopped = rx.pointer(scrim, down_on_scrim());
+        assert!(stopped, "the scrim still swallows the press");
+        assert_eq!(
+            rx.is_open(cell),
+            Some(true),
+            "a forced dialog stays open on a scrim press"
+        );
+        assert!(!rx.store.hidden(content), "the content is still shown");
+        assert_eq!(count.get(), 0, "no dismiss fires");
+    }
+
     /// With no pre-open focus (nothing focused when the modal opens), close clears
     /// focus rather than restoring a stale node.
     #[test]
@@ -867,6 +1058,7 @@ mod tests {
                 .style(ModalStyle {
                     size: Size::fill(),
                     scrim: None,
+                    dismiss_on_scrim: true,
                 })
                 .handle(&slot),
         );
