@@ -662,6 +662,35 @@ impl NodeStore {
         }
     }
 
+    /// Rewrite a flex child's own main-axis [`Length`] to `Fill { weight }` in
+    /// place, marking it `LAYOUT | PAINT` so the parent re-runs its leftover-space
+    /// distribution and the pane repaints at its new size. The general form of
+    /// [`set_absolute_rows_extent`](Self::set_absolute_rows_extent): a reconcile
+    /// step holding `&mut NodeStore` calls this to turn a committed drag fraction
+    /// into live geometry, the same handler-writes-intent / reconcile-mutates-store
+    /// split the virtual list uses.
+    ///
+    /// A fill child contributes zero natural size, so changing only its weight
+    /// never changes its measured extent — marking the child `LAYOUT` re-runs the
+    /// parent's fill sweep without a re-measure of the subtree. A no-op for a stale
+    /// handle, or for a node whose main-axis length is not already `Fill` (a fixed
+    /// or fit pane has no weight to rewrite).
+    pub fn set_flex_child_weight(&mut self, child: NodeId, axis: Axis, weight: f32) {
+        if !self.arena.is_live(child) {
+            return;
+        }
+        let i = child.index() as usize;
+        let size = self.layout[i].size_mut();
+        let slot = match axis {
+            Axis::Row => &mut size.width,
+            Axis::Column => &mut size.height,
+        };
+        if let Length::Fill { weight: w } = slot {
+            *w = weight;
+            self.mark_dirty(child, DirtyClass::LAYOUT | DirtyClass::PAINT);
+        }
+    }
+
     /// The node holding pointer capture, if any.
     #[inline]
     pub fn capture(&self) -> Option<NodeId> {
