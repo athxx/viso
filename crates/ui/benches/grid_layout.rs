@@ -25,9 +25,16 @@ fn fill_cell(store: &mut NodeStore) -> viso_ui::NodeId {
 }
 
 fn build_grid(cols: usize, rows: usize) -> (NodeStore, u32) {
+    build_grid_with(vec![TrackSizing::Fr(1.0); cols], rows)
+}
+
+/// Build a `columns.len() x rows` grid with an explicit column template, filling
+/// every cell with a fill-leaf stand-in and running the initial measure pass.
+fn build_grid_with(columns: Vec<TrackSizing>, rows: usize) -> (NodeStore, u32) {
+    let cols = columns.len();
     let mut store = NodeStore::new();
     let grid = store.alloc_grid(GridStyle {
-        columns: vec![TrackSizing::Fr(1.0); cols],
+        columns,
         rows: vec![TrackSizing::Fr(1.0); rows],
         size: Size::fixed(1200.0, 800.0),
         ..Default::default()
@@ -70,6 +77,28 @@ fn grid_relayout(c: &mut Criterion) {
                 black_box(grid),
                 black_box(surface),
                 &mut scratch,
+            );
+        });
+    });
+
+    // A mixed template with Minmax / FitContent columns among the Fr tracks: the
+    // fixed-size arms resolve from the content channel before the Fr sweep. Same
+    // 12x20 shape, so it baselines the new arms' cost against the pure-Fr grid.
+    let mut mixed_cols = vec![
+        TrackSizing::Minmax(40.0, 120.0),
+        TrackSizing::FitContent(90.0),
+    ];
+    mixed_cols.extend(std::iter::repeat_n(TrackSizing::Fr(1.0), 10));
+    let (mut mstore, mgrid) = build_grid_with(mixed_cols, 20);
+    let mut mscratch = Vec::new();
+    layout(&mut mstore, mgrid, surface, &mut mscratch);
+    c.bench_function("grid_relayout_12x20_minmax", |b| {
+        b.iter(|| {
+            layout(
+                &mut mstore,
+                black_box(mgrid),
+                black_box(surface),
+                &mut mscratch,
             );
         });
     });

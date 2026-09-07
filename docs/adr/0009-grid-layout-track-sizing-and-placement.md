@@ -27,8 +27,9 @@ separate from `Length`. This ADR records those decisions.
 
 ### 1. `TrackSizing` is a separate enum from `Length`
 
-A grid track is sized by `TrackSizing { Fixed(f32), Fr(f32), Auto, Percent(f32) }`,
-defined in `crates/ui/src/grid.rs` — **not** reusing the node `Length`
+A grid track is sized by `TrackSizing { Fixed(f32), Fr(f32), Auto, Percent(f32),
+Minmax(f32, f32), FitContent(f32) }`, defined in `crates/ui/src/grid.rs` — **not**
+reusing the node `Length`
 (`Fixed`/`Fill`/`Fit`). The two look similar (`Fr` ~ `Fill`, `Auto` ~ `Fit`) but
 mean different things: `Length` is one node's request within one parent's single
 main axis; `TrackSizing` is a *column-or-row template slot* resolved against the
@@ -91,7 +92,12 @@ in two passes:
 
 1. **Pass 1** — `Fixed` → its value; `Percent(frac)` → `content_extent * frac`;
    `Auto` → `auto_maxes[i]` (the max natural main size of the *span-1* children whose
-   start lies on that track). Tally consumed extent and total `Fr` weight.
+   start lies on that track). `Minmax(lo, hi)` → the content channel `auto_maxes[i]`
+   clamped into `[lo, hi]` (an inverted band lets `lo` win, no panic); `FitContent(lim)`
+   → `auto_maxes[i]` capped at `lim`, floored at 0. `Minmax` and `FitContent` are
+   **fixed-size** content-sized tracks: they consume from `auto_maxes` in pass 1 and do
+   **not** enter the pass-2 `Fr` sweep — the `Fr` sweep then splits whatever remains.
+   Tally consumed extent and total `Fr` weight.
 2. **Pass 2** — the re-normalizing `Fr` sweep: `remaining_free = content_extent −
    consumed − gaps_total`, then each `Fr(w)` track in order takes
    `remaining_free * w / remaining_fr`, decrementing both — so the split stays exact
@@ -148,8 +154,20 @@ spanning item's excess across its Auto tracks) is deferred.
   - `component.rs`: `build_cx_grid_places_an_explicit_child` (authoring API).
   - facade: `grid_seam` (re-export surface).
 - **No shader change** → no real-machine Metal pass needed this slice.
+- **Landed follow-ups (Phase 8.7):**
+  - `minmax()` / `fit-content()` track functions — added as `TrackSizing::Minmax(f32,
+    f32)` / `FitContent(f32)` (still `Copy`), resolved in pass 1 as fixed-size
+    content-sized tracks (see Decision 4). `repeat(count, inner)` is a **creation-time**
+    template-expansion helper (`grid::repeat` / `repeated`), not a runtime `TrackSizing`
+    variant — the solver only ever sees the flat expanded list. **Boundary:** `Minmax`'s
+    `max` does not participate in `Fr` free-space distribution (CSS flexible-track
+    semantics), and `repeat`'s `count` is a fixed integer here (`auto-fill`/`auto-fit`,
+    which depend on the container extent, remain out of scope — §69 item 11). Verified by
+    grid.rs solver unit tests (minmax lo/mid/hi clamp, inverted band, fit-content cap,
+    fixed-track-then-Fr split, repeat≡hand-written) + layout.rs bounds goldens (minmax
+    column clamps content and leaves the rest to Fr, floors small content at its min) +
+    the `grid_relayout_12x20_minmax` bench baselining the new arms against the pure-Fr grid.
 - **Known follow-ups, out of scope:**
-  - `minmax()`, `repeat()`, `fit-content()` track functions (contained to `TrackSizing`).
   - Named grid lines and template-areas placement.
   - Subgrid (a grid child adopting its parent's tracks).
   - Baseline alignment of cell contents.

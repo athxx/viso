@@ -14,6 +14,11 @@ use crate::style::BoxStyle;
 /// natural main size among the single-track items on the track. `Fr` claims a
 /// share of the free space left after the fixed/percent/auto tracks, resolved by
 /// a re-normalizing sweep so a clamp on one flexible track cascades to the rest.
+/// `Minmax` clamps the track's content size into a `[min, max]` pixel band;
+/// `FitContent` caps the content size at a pixel limit. Both resolve like a
+/// content-sized track (they read the same natural-max channel as `Auto`) and
+/// are fixed-size tracks — they consume space before the `Fr` sweep, they never
+/// take a share of the free space.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum TrackSizing {
     /// Exact pixel extent.
@@ -24,6 +29,32 @@ pub enum TrackSizing {
     Auto,
     /// Fraction (0.0..=1.0) of the grid content extent along the track axis.
     Percent(f32),
+    /// Content size clamped to a `[min, max]` pixel band. A fixed-size track: it
+    /// resolves to `content.clamp(min, max)` and does not enter the `Fr` sweep.
+    Minmax(f32, f32),
+    /// Content size capped at a pixel limit: `content.min(limit)`. A fixed-size
+    /// track, resolved like `Auto` but bounded above.
+    FitContent(f32),
+}
+
+/// Expand a `repeat(count, inner)` track function into `count` copies of `inner`,
+/// appended to `out`. `repeat` is a creation-time template macro, not a runtime
+/// track type: the grid solver only ever sees the expanded, flat track list, so a
+/// `repeat(3, Fr(1))` column template is byte-for-byte a hand-written
+/// `[Fr(1), Fr(1), Fr(1)]`. A `count` of 0 appends nothing.
+pub fn repeat(count: u16, inner: TrackSizing, out: &mut Vec<TrackSizing>) {
+    out.reserve(count as usize);
+    for _ in 0..count {
+        out.push(inner);
+    }
+}
+
+/// Convenience form of [`repeat`] that returns a fresh `Vec` — for building a
+/// column/row template inline (`columns: repeated(4, TrackSizing::Fr(1.0))`).
+pub fn repeated(count: u16, inner: TrackSizing) -> Vec<TrackSizing> {
+    let mut out = Vec::with_capacity(count as usize);
+    repeat(count, inner, &mut out);
+    out
 }
 
 /// The style of a grid container declared via [`crate::component::BuildCx::grid`].
@@ -91,15 +122,11 @@ impl Default for GridPlacement {
 /// The warm, boxed per-grid-node payload: the two variable-length track
 /// templates. Kept off the hot node arrays because only grid nodes carry it; an
 /// ordinary node's column entry is `None`.
-// Consumed by the grid warm side-column in a later task.
-#[allow(dead_code)]
 pub(crate) struct GridTracks {
     /// Explicit column template.
     pub columns: Vec<TrackSizing>,
     /// Explicit row template.
     pub rows: Vec<TrackSizing>,
-    /// Sizing rule for implicitly created rows.
-    pub auto_rows: TrackSizing,
 }
 
 /// A child's resolved cell block: its start column/row and its span.
@@ -169,8 +196,6 @@ fn mark_block(
 /// block that fits their span. Returns the number of rows used (>= 1). `occupied`
 /// and `out` are reusable scratch buffers, cleared at entry; the pass allocates
 /// only when growing them.
-// Consumed by the grid layout pass in a later task.
-#[allow(dead_code)]
 pub(crate) fn place_children(
     column_count: u16,
     placements: &[GridPlacement],
@@ -261,10 +286,8 @@ pub(crate) fn place_children(
 /// resolved non-Fr tracks minus the inter-track gaps) by a re-normalizing sweep:
 /// each Fr track, resolved in order, takes `remaining_free * its_fr /
 /// remaining_fr_total`, so the split stays exact as it proceeds. `auto_maxes[i]`
-/// supplies the content size for an `Auto` track (0.0 elsewhere). Writes
-/// `tracks.len()` extents into `out` (cleared first).
-// Consumed by the grid layout pass in a later task.
-#[allow(dead_code)]
+/// supplies the content size for an `Auto`/`Minmax`/`FitContent` track (0.0
+/// elsewhere). Writes `tracks.len()` extents into `out` (cleared first).
 pub(crate) fn solve_tracks(
     tracks: &[TrackSizing],
     gap: f32,
@@ -297,6 +320,21 @@ pub(crate) fn solve_tracks(
             }
             TrackSizing::Auto => {
                 let v = auto_maxes.get(i).copied().unwrap_or(0.0);
+                out[i] = v;
+                consumed += v;
+            }
+            TrackSizing::Minmax(lo, hi) => {
+                // Clamp the content size into the band. `hi < lo` is a malformed
+                // template; `clamp` would panic, so order the bounds first and
+                // let `min` win (CSS treats an inverted max as ignored).
+                let content = auto_maxes.get(i).copied().unwrap_or(0.0);
+                let v = content.max(lo).min(hi.max(lo));
+                out[i] = v;
+                consumed += v;
+            }
+            TrackSizing::FitContent(limit) => {
+                let content = auto_maxes.get(i).copied().unwrap_or(0.0);
+                let v = content.min(limit.max(0.0)).max(0.0);
                 out[i] = v;
                 consumed += v;
             }
@@ -539,5 +577,121 @@ mod tests {
             &mut out,
         );
         assert_eq!(out, vec![100.0, 100.0]);
+    }
+
+    #[test]
+    fn minmax_clamps_content_below_min_up_to_min() {
+        // Content 20 < min 50 → the track floors at 50.
+        let mut out = Vec::new();
+        solve_tracks(
+            &[TrackSizing::Minmax(50.0, 200.0)],
+            0.0,
+            1000.0,
+            &[20.0],
+            &mut out,
+        );
+        assert_eq!(out, vec![50.0]);
+    }
+
+    #[test]
+    fn minmax_passes_content_inside_the_band_through() {
+        // Content 120 is within [50, 200] → taken as-is.
+        let mut out = Vec::new();
+        solve_tracks(
+            &[TrackSizing::Minmax(50.0, 200.0)],
+            0.0,
+            1000.0,
+            &[120.0],
+            &mut out,
+        );
+        assert_eq!(out, vec![120.0]);
+    }
+
+    #[test]
+    fn minmax_clamps_content_above_max_down_to_max() {
+        // Content 350 > max 200 → the track caps at 200.
+        let mut out = Vec::new();
+        solve_tracks(
+            &[TrackSizing::Minmax(50.0, 200.0)],
+            0.0,
+            1000.0,
+            &[350.0],
+            &mut out,
+        );
+        assert_eq!(out, vec![200.0]);
+    }
+
+    #[test]
+    fn minmax_with_inverted_bounds_lets_min_win() {
+        // A malformed band (max < min): min is authoritative, no panic.
+        let mut out = Vec::new();
+        solve_tracks(
+            &[TrackSizing::Minmax(120.0, 40.0)],
+            0.0,
+            1000.0,
+            &[500.0],
+            &mut out,
+        );
+        assert_eq!(out, vec![120.0]);
+    }
+
+    #[test]
+    fn fit_content_caps_content_at_the_limit() {
+        // Content 90 under the 150 limit passes; content 300 over it caps at 150.
+        let mut out = Vec::new();
+        solve_tracks(
+            &[
+                TrackSizing::FitContent(150.0),
+                TrackSizing::FitContent(150.0),
+            ],
+            0.0,
+            1000.0,
+            &[90.0, 300.0],
+            &mut out,
+        );
+        assert_eq!(out, vec![90.0, 150.0]);
+    }
+
+    #[test]
+    fn minmax_is_a_fixed_track_the_fr_sweep_splits_the_remainder() {
+        // [Minmax(50,200) content 300 → 200, Fr(1)] over 500px, no gap → 200,
+        // then 300 free to the single Fr track.
+        let mut out = Vec::new();
+        solve_tracks(
+            &[TrackSizing::Minmax(50.0, 200.0), TrackSizing::Fr(1.0)],
+            0.0,
+            500.0,
+            &[300.0, 0.0],
+            &mut out,
+        );
+        assert_eq!(out, vec![200.0, 300.0]);
+    }
+
+    #[test]
+    fn repeat_expands_to_a_hand_written_template() {
+        // repeat(3, Fr(1)) is byte-for-byte three Fr(1) tracks.
+        assert_eq!(
+            repeated(3, TrackSizing::Fr(1.0)),
+            vec![
+                TrackSizing::Fr(1.0),
+                TrackSizing::Fr(1.0),
+                TrackSizing::Fr(1.0)
+            ]
+        );
+        // Appending onto an existing template keeps the leading tracks.
+        let mut cols = vec![TrackSizing::Fixed(80.0)];
+        repeat(2, TrackSizing::Auto, &mut cols);
+        assert_eq!(
+            cols,
+            vec![
+                TrackSizing::Fixed(80.0),
+                TrackSizing::Auto,
+                TrackSizing::Auto
+            ]
+        );
+        // A zero count appends nothing.
+        let mut empty = Vec::new();
+        repeat(0, TrackSizing::Fr(1.0), &mut empty);
+        assert!(empty.is_empty());
     }
 }

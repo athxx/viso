@@ -1089,6 +1089,119 @@ mod tests {
         );
     }
 
+    #[test]
+    fn a_minmax_column_clamps_its_content_and_leaves_the_rest_to_fr() {
+        use crate::component::NodeStore;
+        use crate::grid::{GridStyle, TrackSizing};
+        // [Minmax(40, 120), Fr(1)] in a 400x100 box. The first cell holds a fixed
+        // 300-wide child (natural 300 > max 120 → clamps to 120); the Fr track
+        // takes the remaining 280. A second child (fill) rides the Fr track.
+        let mut store = NodeStore::new();
+        let grid = store.alloc_grid(GridStyle {
+            columns: vec![TrackSizing::Minmax(40.0, 120.0), TrackSizing::Fr(1.0)],
+            rows: vec![TrackSizing::Fixed(100.0)],
+            size: Size::fixed(400.0, 100.0),
+            ..Default::default()
+        });
+        let big = {
+            let k = store.alloc_grid(GridStyle {
+                size: Size::fixed(300.0, 40.0),
+                ..Default::default()
+            });
+            store.arena_append_child(grid, k);
+            k
+        };
+        let filler = {
+            let k = store.alloc_grid(GridStyle {
+                size: Size::fill(),
+                ..Default::default()
+            });
+            store.arena_append_child(grid, k);
+            k
+        };
+        let mut scratch = Vec::new();
+        crate::layout::measure(&mut store, grid.index(), &mut scratch);
+        crate::layout::layout(
+            &mut store,
+            grid.index(),
+            Rect {
+                x: 0.0,
+                y: 0.0,
+                w: 400.0,
+                h: 100.0,
+            },
+            &mut scratch,
+        );
+        // The Minmax column is clamped to 120; a Fixed-size child hugs top-left,
+        // so `big` sits at x=0 with its own 300 width (the cell clamp sizes the
+        // TRACK, not the child — the child keeps its requested extent).
+        assert_eq!(store.bounds(big).x, 0.0);
+        // The Fr track starts at 120 and fills the remaining 280.
+        assert_eq!(
+            store.bounds(filler),
+            Rect {
+                x: 120.0,
+                y: 0.0,
+                w: 280.0,
+                h: 100.0
+            }
+        );
+    }
+
+    #[test]
+    fn a_minmax_column_floors_a_small_content_at_its_min() {
+        use crate::component::NodeStore;
+        use crate::grid::{GridStyle, TrackSizing};
+        // [Minmax(80, 200), Fr(1)] in a 400x100 box. A fixed 30-wide child in the
+        // first cell (natural 30 < min 80 → the track floors at 80); the Fr track
+        // takes 320.
+        let mut store = NodeStore::new();
+        let grid = store.alloc_grid(GridStyle {
+            columns: vec![TrackSizing::Minmax(80.0, 200.0), TrackSizing::Fr(1.0)],
+            rows: vec![TrackSizing::Fixed(100.0)],
+            size: Size::fixed(400.0, 100.0),
+            ..Default::default()
+        });
+        let _small = {
+            let k = store.alloc_grid(GridStyle {
+                size: Size::fixed(30.0, 40.0),
+                ..Default::default()
+            });
+            store.arena_append_child(grid, k);
+            k
+        };
+        let filler = {
+            let k = store.alloc_grid(GridStyle {
+                size: Size::fill(),
+                ..Default::default()
+            });
+            store.arena_append_child(grid, k);
+            k
+        };
+        let mut scratch = Vec::new();
+        crate::layout::measure(&mut store, grid.index(), &mut scratch);
+        crate::layout::layout(
+            &mut store,
+            grid.index(),
+            Rect {
+                x: 0.0,
+                y: 0.0,
+                w: 400.0,
+                h: 100.0,
+            },
+            &mut scratch,
+        );
+        assert_eq!(
+            store.bounds(filler),
+            Rect {
+                x: 80.0,
+                y: 0.0,
+                w: 320.0,
+                h: 100.0
+            }
+        );
+    }
+
     /// A surface-local box at the origin with the given extent — the root bounds
     /// a caller hands `layout` for a top-level container.
     fn surface_local(w: f32, h: f32) -> Rect {
