@@ -18,10 +18,13 @@
 //! Run release (`cargo bench -p viso-ui`); criterion defaults to a release
 //! profile. Debug timing is not a performance result.
 
+use std::cell::RefCell;
 use std::hint::black_box;
+use std::rc::Rc;
 
 use criterion::{Criterion, criterion_group, criterion_main};
 use viso_render::Rect;
+use viso_ui::virtual_list::ItemKey;
 use viso_ui::{
     Axis, BindingTable, BoxStyle, BuildCx, DirtyClass, EffectStore, Length, NodeId, NodeStore,
     SemanticProjector, Size, StateStore, TextEdits, Vec2, VirtualListStyle, VirtualLists,
@@ -115,6 +118,83 @@ fn setup() -> Harness {
     h
 }
 
+/// A keyed variant of the harness: same 100k-row list, but the row identity is a
+/// caller-supplied `key_of` reading a shared index→key mapping the bench rewrites
+/// per iteration to drive a within-window reorder.
+struct KeyedHarness {
+    inner: Harness,
+    keys: Rc<RefCell<Vec<u64>>>,
+}
+
+/// Author a keyed 100k-row list (identity mapping initially) and warm it.
+fn setup_keyed() -> KeyedHarness {
+    let keys = Rc::new(RefCell::new((0..ITEM_COUNT as u64).collect::<Vec<_>>()));
+    let mut store = NodeStore::new();
+    let mut states = StateStore::new();
+    let mut bindings = BindingTable::new();
+    let mut lists = VirtualLists::new();
+    let mut text_edits = TextEdits::new();
+    let mut projectors = SemanticProjector::new();
+    let viewport = {
+        let mut cx = BuildCx::with_reactive(
+            &mut store,
+            &mut states,
+            &mut bindings,
+            &mut lists,
+            &mut text_edits,
+            &mut projectors,
+        );
+        let key_src = keys.clone();
+        cx.virtual_list_keyed(
+            VirtualListStyle {
+                axis: Axis::Column,
+                size: Size {
+                    width: Length::Fixed(300.0),
+                    height: Length::Fixed(VIEWPORT_H),
+                },
+                overscan: OVERSCAN,
+                estimated_row: ROW_H,
+                style: BoxStyle::NONE,
+            },
+            ITEM_COUNT,
+            move |i| ItemKey(key_src.borrow()[i]),
+            move |_i, cx| {
+                cx.leaf(viso_ui::LeafStyle {
+                    size: Size {
+                        width: Length::fill(),
+                        height: Length::Fixed(ROW_H),
+                    },
+                    ..Default::default()
+                });
+            },
+        )
+        .id()
+    };
+    store.mark_dirty(
+        viewport,
+        DirtyClass::MEASURE | DirtyClass::LAYOUT | DirtyClass::PAINT,
+    );
+    let mut h = Harness {
+        store,
+        states,
+        bindings,
+        effects: EffectStore::new(),
+        lists,
+        viewport,
+        surface: Rect {
+            x: 0.0,
+            y: 0.0,
+            w: 300.0,
+            h: VIEWPORT_H,
+        },
+        scratch: Vec::new(),
+        redo: Vec::new(),
+    };
+    h.store.layout(h.viewport, h.surface, &mut h.scratch);
+    frame(&mut h);
+    KeyedHarness { inner: h, keys }
+}
+
 /// One frame's Layout phase: reconcile, incremental relayout, absorb. Returns the
 /// number of rows (re)bound this frame.
 fn frame(h: &mut Harness) -> u32 {
@@ -200,6 +280,29 @@ fn bench_large_list(c: &mut Criterion) {
         b.iter(|| {
             h.store.scroll_by(h.viewport, Vec2 { x: 0.0, y: ROW_H });
             black_box(frame(black_box(&mut h)));
+        });
+    });
+
+    // Keyed within-window reorder: every iteration swaps two visible keys and
+    // remarks the list data-dirty, so the keyed reconcile re-anchors the two
+    // survivor hosts (no rebuild). Baselines the cost of the stable-key diff path
+    // relative to the index-identity reconcile above.
+    c.bench_function("reconcile_keyed_reorder_within_window", |b| {
+        let mut kh = setup_keyed();
+        // A window's worth of rows is mounted at the top; swap two indices that are
+        // safely inside the visible window.
+        let (a, z) = (2usize, 3usize);
+        b.iter(|| {
+            {
+                let mut keys = kh.keys.borrow_mut();
+                keys.swap(a, z);
+            }
+            kh.inner
+                .lists
+                .get_mut(kh.inner.viewport)
+                .unwrap()
+                .mark_data_dirty();
+            black_box(frame(black_box(&mut kh.inner)));
         });
     });
 }

@@ -926,10 +926,13 @@ enter/leave 合成、无 hover 追踪、无控件用 hover 反馈。落 `crates/
 **8.6 — VirtualList 稳定 key(key_of reorder)** —— 今天 logical_index 即 identity,数据 reorder 时行按位置重建而非按
 身份保持(virtual_list.rs reconcile 按 `logical_index` 匹配 mounted)。落 `crates/ui/src/virtual_list.rs`。
 
-- [ ] `MountedItem` 加稳定 key;reconcile 按 key 匹配复用(同一 item 换 index 时保持挂载/状态,不 rebind)。
-- [ ] API:`key_of(logical_index) -> Key`(数据侧提供稳定 key)。设计 key 类型(§29 用 ID 非 String 热路径)。
-- [ ] 验证包:input tape(reorder 数据 → 断言同 key 行复用、滚动锚点保持)+ microbench(reorder reconcile 开销)+
-      alloc(稳态零 alloc)。§12.4 虚拟化契约"stable item keys"—— 补齐这一条。
+- [x] `MountedItem` 加稳定 key(`ItemKey(u64)`,§29 ID 非 String);reconcile 按 key 匹配复用(同一 item 换 index 时
+      保持挂载/状态/focus,只 re-anchor row_offset 不 rebuild)。`key_of == None` 逐字节退化为 index 匹配。
+- [x] API:`virtual_list_keyed(style, item_count, key_of, item)`,`key_of: Fn(usize) -> ItemKey`(数据侧提供稳定 key)。
+- [x] 验证包:单测(reorder → 同 key 行复用 bound==0、insert 只重建新 key、reorder 后锚点稳定、unkeyed 与 index 一致)+
+      microbench(`reconcile_keyed_reorder_within_window` ~1.4µs vs crossing ~5µs)+ alloc(稳态 within-window reorder 零 alloc,
+      `keyed_reorder_alloc.rs` `--test-threads=1`;顺带修 `scratch_old_mounted` swap 让 crossing 路径也零 alloc)。
+      更新 ADR 0008(§7 hook 落地 + §68 identity 语义)。§12.4 虚拟化契约"stable item keys"—— 补齐这一条。
 
 **8.7 — Grid advanced(体量最大;ADR 0009 列的 out-of-scope 六项)** —— 今天只 Fixed/Fr/Auto/Percent 四 track +
 spanning 放置 + auto-flow;ADR 0009 明列六项高级能力全未做。落 `crates/ui/src/grid.rs` + 更新 ADR 0009(或开新 ADR)。

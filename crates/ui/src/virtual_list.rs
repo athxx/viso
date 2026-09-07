@@ -296,12 +296,41 @@ use crate::state::StateStore;
 /// and its cost is amortized over the ~40 mounted rows, not per frame.
 pub type ItemBuilder = Box<dyn FnMut(usize, &mut BuildCx<'_>)>;
 
+/// A stable, data-defined identity for a logical item, independent of its current
+/// position in the list. When a list is given a `key_of`, reconcile matches a
+/// mounted host to a logical row by this key rather than by index — so a reorder
+/// re-anchors the surviving host (keeping its body, per-row widget state, and
+/// focus) instead of rebuilding the row that now sits at that position.
+///
+/// A `u64` (not a `String`): item identity is a warm-path comparison during the
+/// reconcile diff, so it obeys the compact-ID contract — the data side computes
+/// its record id / hash into a `u64` once, and the list compares those. Without a
+/// `key_of`, the logical index *is* the identity (`ItemKey(index)`), matching the
+/// list's original index-identity behavior byte for byte.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ItemKey(pub u64);
+
+/// Maps a logical index to its stable [`ItemKey`]. Cold/warm: invoked only during
+/// a reconcile diff (once per row in the new window, ~40 rows per boundary
+/// crossing), never on the steady scroll path, so it is a boxed `Fn` — one per
+/// list, its cost amortized over the diffed window. Pure by contract (a logical
+/// index maps to a stable identity with no side effect).
+pub type KeyOf = Box<dyn Fn(usize) -> ItemKey>;
+
 /// One currently-mounted row: the logical item it shows, the host node whose body
 /// holds its widgets, and the main-axis offset the host sits at inside the canvas.
 #[derive(Debug, Clone, Copy)]
 struct MountedItem {
-    /// The logical index this host is currently bound to.
+    /// The logical index this host is currently bound to. Retained as the row's
+    /// observable position for tests and debug introspection; the reconcile itself
+    /// now matches survivors by `key`, so production reads it only through those
+    /// seams.
+    #[cfg_attr(not(test), allow(dead_code))]
     logical_index: usize,
+    /// The stable identity of the item this host currently shows. Equal to
+    /// `ItemKey(logical_index)` for an index-identity (keyless) list; the row's
+    /// data key for a keyed list. Reconcile matches a survivor by this.
+    key: ItemKey,
     /// The host node parked in the tree; its body is the item's widgets.
     host: NodeId,
     /// The host's main-axis top inside the canvas (`heights.prefix_sum(index)`).
@@ -340,6 +369,12 @@ pub struct VirtualListState {
     axis: Axis,
     /// Builds one item's body; cold, invoked only on mount/rebind.
     builder: ItemBuilder,
+    /// Optional stable-identity map. `None` = the logical index is identity (the
+    /// original behavior: a survivor is matched by index, so a reorder rebuilds
+    /// the row at each position). `Some` = keyed: a survivor is matched by its
+    /// [`ItemKey`], so a reorder re-anchors the surviving host instead of
+    /// rebuilding it.
+    key_of: Option<KeyOf>,
     /// The `AbsoluteRows` canvas node: the viewport's single content child, sized
     /// to the full logical extent so the scroll range is correct without mounting
     /// every row. Mounted hosts are its children.
@@ -363,6 +398,17 @@ pub struct VirtualListState {
     /// Reused scratch: the newly-mounted hosts this reconcile, swept for their
     /// measured heights after the following layout pass.
     scratch_mounted: Vec<(usize, NodeId)>,
+    /// Reused scratch for a keyed reconcile: the `(logical, key)` of every row in
+    /// the new window, computed once per reconcile and shared by the leave step
+    /// (a host whose key is absent here has left) and the build step (a survivor
+    /// is matched by key). Empty and untouched for a keyless list. Grows to the
+    /// window size once, then reused in place.
+    new_keys: Vec<(usize, ItemKey)>,
+    /// Reused scratch: the previous frame's mounted set, held while the new set is
+    /// rebuilt into `mounted`. Swapped (not `take`n) out of `mounted` so both
+    /// buffers keep their capacity — the diff path (a scroll crossing or a keyed
+    /// reorder) then rebuilds the window with zero heap growth once warmed.
+    scratch_old_mounted: Vec<MountedItem>,
 }
 
 impl VirtualListState {
@@ -378,6 +424,7 @@ impl VirtualListState {
         axis: Axis,
         canvas: NodeId,
         builder: ItemBuilder,
+        key_of: Option<KeyOf>,
     ) -> Self {
         VirtualListState {
             heights: HeightTree::new(item_count, estimated_row),
@@ -390,6 +437,7 @@ impl VirtualListState {
             overscan,
             axis,
             builder,
+            key_of,
             canvas,
             last_reconciled_scroll: f32::NAN,
             // The build sized the canvas to `estimated_row * item_count`; keep it
@@ -400,6 +448,19 @@ impl VirtualListState {
             mounted_once: false,
             scratch_free: Vec::new(),
             scratch_mounted: Vec::new(),
+            new_keys: Vec::new(),
+            scratch_old_mounted: Vec::new(),
+        }
+    }
+
+    /// The stable key of logical row `i`: the data key for a keyed list, or
+    /// `ItemKey(i)` when keyless (the logical index is identity). Cold/warm —
+    /// invoked only inside the reconcile diff.
+    #[inline]
+    fn key_at(&self, i: usize) -> ItemKey {
+        match &self.key_of {
+            Some(f) => f(i),
+            None => ItemKey(i as u64),
         }
     }
 
@@ -583,30 +644,59 @@ fn reconcile_one(
 
     let mut bound = 0;
 
-    // Diff the window. Any currently-mounted row now outside `[new_start,new_end)`
-    // leaves: detach its host to the pool. Then walk the new range: a row already
-    // mounted keeps its host (rewrite its offset if it moved); a row entering pops
-    // a host from the pool (or allocates one), clears its old body, and rebuilds.
+    // Diff the window. Any currently-mounted row whose identity is no longer in
+    // `[new_start,new_end)` leaves: detach its host to the pool. Then walk the new
+    // range: a row whose identity is still mounted keeps its host (rewrite its
+    // offset / rebind its index if it moved); a row entering pops a host from the
+    // pool (or allocates one), clears its old body, and rebuilds.
+    //
+    // Identity is by [`ItemKey`]: `ItemKey(logical)` for a keyless list (so the
+    // predicates below degrade to the original index match, byte for byte), or the
+    // data key for a keyed list (so a reorder re-anchors the surviving host rather
+    // than rebuilding the row that now sits at that index).
     state.scratch_mounted.clear();
 
-    // 1. Any currently-mounted row now outside the window leaves: detach its host
-    //    from the tree (kept live) and park it in the pool for reuse. Take the old
-    //    mounted list out first so the new one is rebuilt fresh below.
-    let old_mounted = std::mem::take(&mut state.mounted);
+    // Compute the identity of every row in the new window once. The leave step
+    // uses it to decide which hosts have truly left (their key is absent here —
+    // not merely shifted to another index), and the build step uses it to find the
+    // survivor for each new-window key. Reused in place: grows to the window size
+    // on the first crossing, then never reallocates on the steady path.
+    // Taken out of `state` so the build loop below can borrow it while it mutates
+    // the other list fields; restored (reused, capacity kept) at the end.
+    let mut new_keys = std::mem::take(&mut state.new_keys);
+    new_keys.clear();
+    for logical in new_start..new_end {
+        let key = state.key_at(logical);
+        new_keys.push((logical, key));
+    }
+
+    // 1. Any currently-mounted row whose key is absent from the new window leaves:
+    //    detach its host from the tree (kept live) and park it in the pool for
+    //    reuse. Keying the leave decision (not the raw index range) is what keeps a
+    //    reordered-but-still-visible row from being wrongly pooled — and, crucially,
+    //    guarantees a pooled host is never key-matched as a survivor in step 2.
+    //    Swap the old mounted list into a persistent scratch (keeping both
+    //    buffers' capacity) so the new set is rebuilt fresh into `mounted` below
+    //    without reallocating it. `mounted` starts this pass empty-but-capacious.
+    let mut old_mounted = std::mem::take(&mut state.scratch_old_mounted);
+    std::mem::swap(&mut old_mounted, &mut state.mounted);
     for m in &old_mounted {
-        if m.logical_index < new_start || m.logical_index >= new_end {
+        let still_present = new_keys.iter().any(|(_, k)| *k == m.key);
+        if !still_present {
             store.arena_detach(m.host);
             store.clear_row_offset(m.host);
             state.pool.push(m.host);
         }
     }
 
-    // 2. Build the new mounted set in index order, reusing kept hosts. A kept row
-    //    is found by scanning the (small, ~40-entry) old list.
-    for logical in new_start..new_end {
+    // 2. Build the new mounted set in index order, reusing survivors. A survivor is
+    //    found by scanning the (small, ~40-entry) old list for a matching key.
+    for &(logical, key) in &new_keys {
         let item_top = state.heights.prefix_sum(logical);
-        if let Some(existing) = old_mounted.iter().find(|m| m.logical_index == logical) {
-            // Kept in range: reuse the host, updating its offset if it moved.
+        if let Some(existing) = old_mounted.iter().find(|m| m.key == key) {
+            // Survivor: reuse the host. Re-anchor it if its offset moved, and
+            // rebind its logical index if a reorder placed it at a new position —
+            // no rebuild, so its body / per-row state / focus are preserved.
             let host = existing.host;
             if existing.item_top != item_top {
                 store.set_row_offset(host, item_top);
@@ -614,6 +704,7 @@ fn reconcile_one(
             }
             state.mounted.push(MountedItem {
                 logical_index: logical,
+                key,
                 host,
                 item_top,
             });
@@ -641,6 +732,7 @@ fn reconcile_one(
             );
             state.mounted.push(MountedItem {
                 logical_index: logical,
+                key,
                 host,
                 item_top,
             });
@@ -648,6 +740,13 @@ fn reconcile_one(
             bound += 1;
         }
     }
+
+    // Give the scratches back to the state so their capacity is reused next
+    // reconcile: `new_keys` as-is (it is cleared at the top of each pass), and the
+    // drained old-mounted buffer (cleared here) as the swap target for next time.
+    state.new_keys = new_keys;
+    old_mounted.clear();
+    state.scratch_old_mounted = old_mounted;
 
     // 3. If the total logical extent changed, rewrite the canvas's fixed extent so
     //    the scroll range stays correct, and mark the canvas LAYOUT (never
@@ -1015,6 +1114,320 @@ mod tests {
         fn state_mut(&mut self) -> &mut VirtualListState {
             self.lists.get_mut(self.viewport).unwrap()
         }
+
+        /// The host currently bound to logical row `logical`, if mounted.
+        fn host_of(&self, logical: usize) -> Option<NodeId> {
+            self.state()
+                .mounted
+                .iter()
+                .find(|m| m.logical_index == logical)
+                .map(|m| m.host)
+        }
+
+        /// The host currently showing the item with stable key `key`, if mounted.
+        fn host_for_key(&self, key: ItemKey) -> Option<NodeId> {
+            self.state()
+                .mounted
+                .iter()
+                .find(|m| m.key == key)
+                .map(|m| m.host)
+        }
+    }
+
+    /// A shared, mutable index→key mapping a test can rewrite between frames to
+    /// simulate a data reorder / splice. `key_of` closes over a clone of the inner
+    /// `Rc`, so a rewrite is observed by the next reconcile.
+    #[derive(Clone)]
+    struct KeyMap(std::rc::Rc<std::cell::RefCell<Vec<u64>>>);
+
+    impl KeyMap {
+        /// The identity permutation: logical `i` has key `i`.
+        fn identity(n: usize) -> Self {
+            KeyMap(std::rc::Rc::new(std::cell::RefCell::new(
+                (0..n as u64).collect(),
+            )))
+        }
+
+        fn key_of(&self) -> impl Fn(usize) -> ItemKey + 'static {
+            let inner = self.0.clone();
+            move |i| ItemKey(inner.borrow()[i])
+        }
+
+        fn set(&self, keys: Vec<u64>) {
+            *self.0.borrow_mut() = keys;
+        }
+    }
+
+    /// A keyed variant of [`ListHarness`], carrying the shared [`KeyMap`] the list
+    /// was built with so a test can rewrite the mapping and re-reconcile.
+    struct KeyedHarness {
+        inner: ListHarness,
+        keys: KeyMap,
+    }
+
+    impl KeyedHarness {
+        /// A keyed vertical list of `item_count` fixed-`row_h` rows in a
+        /// `viewport_h`-tall viewport, keyed by the identity permutation.
+        fn new(item_count: usize, row_h: f32, overscan: u32, viewport_h: f32) -> Self {
+            let keys = KeyMap::identity(item_count);
+            let mut store = NodeStore::new();
+            let mut states = StateStore::new();
+            let mut bindings = BindingTable::new();
+            let mut lists = VirtualLists::new();
+            let mut text_edits = crate::text_edit::TextEdits::new();
+            let mut projectors = crate::reactive::SemanticProjector::new();
+            let viewport = {
+                let mut cx = BuildCx::with_reactive(
+                    &mut store,
+                    &mut states,
+                    &mut bindings,
+                    &mut lists,
+                    &mut text_edits,
+                    &mut projectors,
+                );
+                cx.virtual_list_keyed(
+                    VirtualListStyle {
+                        axis: Axis::Column,
+                        size: Size {
+                            width: Length::Fixed(100.0),
+                            height: Length::Fixed(viewport_h),
+                        },
+                        overscan,
+                        estimated_row: row_h,
+                        style: BoxStyle::NONE,
+                    },
+                    item_count,
+                    keys.key_of(),
+                    move |_i, cx| {
+                        cx.leaf(LeafStyle {
+                            size: Size {
+                                width: Length::fill(),
+                                height: Length::Fixed(row_h),
+                            },
+                            ..Default::default()
+                        });
+                    },
+                )
+                .id()
+            };
+            store.mark_dirty(
+                viewport,
+                DirtyClass::MEASURE | DirtyClass::LAYOUT | DirtyClass::PAINT,
+            );
+            KeyedHarness {
+                inner: ListHarness {
+                    store,
+                    states,
+                    bindings,
+                    effects: EffectStore::new(),
+                    lists,
+                    viewport,
+                    surface: Rect {
+                        x: 0.0,
+                        y: 0.0,
+                        w: 100.0,
+                        h: viewport_h,
+                    },
+                    scratch: Vec::new(),
+                    redo: Vec::new(),
+                },
+                keys,
+            }
+        }
+
+        /// Rewrite the shared index→key mapping and mark the list's data dirty so
+        /// the next [`Self::frame`] re-reconciles against the new mapping. This is
+        /// the headless stand-in for a data reorder / splice.
+        fn reorder(&mut self, keys: Vec<u64>) {
+            self.keys.set(keys);
+            self.inner.state_mut().mark_data_dirty();
+        }
+
+        fn frame(&mut self) -> u32 {
+            self.inner.frame()
+        }
+
+        fn state(&self) -> &VirtualListState {
+            self.inner.state()
+        }
+
+        fn host_of(&self, logical: usize) -> Option<NodeId> {
+            self.inner.host_of(logical)
+        }
+
+        fn host_for_key(&self, key: ItemKey) -> Option<NodeId> {
+            self.inner.host_for_key(key)
+        }
+    }
+
+    #[test]
+    fn keyed_reorder_moves_host_not_rebuild() {
+        // A keyed list, mounted at the top. Reordering the visible window (a pure
+        // permutation of the same key set) must MOVE each host to its new position,
+        // not rebuild the rows: the same-key host id is unchanged, its logical index
+        // follows the new mapping, and no row is (re)built (`bound == 0`).
+        let mut h = KeyedHarness::new(1000, 30.0, 2, 300.0);
+        h.frame();
+
+        // The window starts at the top: rows 0.. with identity keys 0.. mounted.
+        // Snapshot the host bound to each of the first few keys before the reorder.
+        let host_key0 = h.host_for_key(ItemKey(0)).expect("key 0 is mounted");
+        let host_key1 = h.host_for_key(ItemKey(1)).expect("key 1 is mounted");
+        let host_key2 = h.host_for_key(ItemKey(2)).expect("key 2 is mounted");
+        let mounted_before = h.state().mounted_count();
+        let pool_before = h.state().pool_len();
+
+        // Reverse the first three items: logical 0 now holds key 2, logical 2 holds
+        // key 0. The rest of the mapping is unchanged, so the key SET in the window
+        // is identical — a pure within-window permutation.
+        let mut keys: Vec<u64> = (0..1000).collect();
+        keys.swap(0, 2);
+        h.reorder(keys);
+        let bound = h.frame();
+
+        // No row was rebuilt: a reorder is a re-anchor, never a rebuild.
+        assert_eq!(bound, 0, "a within-window reorder rebuilds nothing");
+        // The mounted window and pool are unchanged in size — no host churn.
+        assert_eq!(h.state().mounted_count(), mounted_before);
+        assert_eq!(h.state().pool_len(), pool_before);
+
+        // The very same hosts still show the very same keys — moved, not rebuilt.
+        assert_eq!(
+            h.host_for_key(ItemKey(0)),
+            Some(host_key0),
+            "key 0 kept its original host across the reorder"
+        );
+        assert_eq!(h.host_for_key(ItemKey(2)), Some(host_key2));
+        assert_eq!(
+            h.host_for_key(ItemKey(1)),
+            Some(host_key1),
+            "the unmoved key kept its host too"
+        );
+
+        // The logical positions followed the new mapping: key 2 now sits at logical
+        // 0, key 0 at logical 2, and each host is re-anchored to its new top.
+        assert_eq!(
+            h.host_of(0),
+            Some(host_key2),
+            "logical 0 now shows key 2's host after the swap"
+        );
+        assert_eq!(h.host_of(2), Some(host_key0));
+    }
+
+    #[test]
+    fn unkeyed_reconcile_matches_index_identity() {
+        // Regression guard: a keyless list (key_of == None) must behave byte for
+        // byte like the original index-identity reconcile. Two lists — one keyless,
+        // one keyed by the identity permutation — driven identically must agree on
+        // every observable: mounted window, bound counts, and per-logical hosts'
+        // relative positions.
+        let mut plain = ListHarness::new(1000, 30.0, 2, 300.0);
+        let mut keyed = KeyedHarness::new(1000, 30.0, 2, 300.0);
+        let b0_plain = plain.frame();
+        let b0_keyed = keyed.frame();
+        assert_eq!(b0_plain, b0_keyed, "first mount binds the same row count");
+        assert_eq!(plain.state().mounted_count(), keyed.state().mounted_count());
+        assert_eq!(plain.state().range_start, keyed.state().range_start);
+        assert_eq!(plain.state().range_end, keyed.state().range_end);
+
+        // Scroll both by three rows: the identity-keyed list advances exactly like
+        // the index-keyed one — 3 rows leave, 3 enter.
+        plain
+            .store
+            .scroll_by(plain.viewport, Vec2 { x: 0.0, y: 90.0 });
+        keyed
+            .inner
+            .store
+            .scroll_by(keyed.inner.viewport, Vec2 { x: 0.0, y: 90.0 });
+        let b1_plain = plain.frame();
+        let b1_keyed = keyed.frame();
+        assert_eq!(b1_plain, 3, "index list binds 3 on a 3-row advance");
+        assert_eq!(b1_keyed, 3, "identity-keyed list binds the same 3");
+        assert_eq!(plain.state().range_start, keyed.state().range_start);
+        assert_eq!(plain.state().range_end, keyed.state().range_end);
+    }
+
+    #[test]
+    fn keyed_insert_shifts_without_rebuilding_survivors() {
+        // Insert a brand-new item at the front. Every previously-visible item keeps
+        // its stable key (they just shift down one logical position), so their hosts
+        // are reused; only the new key's row is built. The freshly-built count is
+        // bounded by how many genuinely-new keys entered the window, not the whole
+        // window.
+        let mut h = KeyedHarness::new(1000, 30.0, 2, 300.0);
+        h.frame();
+        let host_key0 = h.host_for_key(ItemKey(0)).expect("key 0 mounted");
+        let host_key5 = h.host_for_key(ItemKey(5)).expect("key 5 mounted");
+
+        // Insert new key 9999 at logical 0; every old item keeps its key but shifts
+        // to logical+1. item_count grows by one.
+        let mut keys: Vec<u64> = vec![9999];
+        keys.extend(0u64..1000);
+        set_item_count(&mut h.inner.lists, h.inner.viewport, 1001);
+        h.reorder(keys);
+        let bound = h.frame();
+
+        // The survivors that are still in the (top) window kept their hosts — only
+        // the genuinely-new key entered, and the row that scrolled off the bottom of
+        // the window (a survivor pushed out by the shift) may pool a host. So the
+        // number built is small and bounded, and specifically the new key's host is
+        // freshly built while the survivors are not.
+        assert!(
+            bound <= 1,
+            "only the newly-inserted key is built, got {bound}"
+        );
+        assert_eq!(
+            h.host_for_key(ItemKey(0)),
+            Some(host_key0),
+            "key 0 survived the insert on its original host, shifted down"
+        );
+        assert_eq!(h.host_for_key(ItemKey(5)), Some(host_key5));
+        // Key 0 now sits at logical 1 (pushed down by the inserted item at 0).
+        assert_eq!(h.host_of(1), Some(host_key0));
+        // The new key 9999 is mounted at the front.
+        assert!(
+            h.host_for_key(ItemKey(9999)).is_some(),
+            "the inserted key is mounted at the front"
+        );
+        assert_eq!(h.state().total_extent(), 1001.0 * 30.0);
+    }
+
+    #[test]
+    fn keyed_reorder_preserves_the_anchored_rows_screen_position() {
+        // Scroll so a known row sits at the viewport top, then reorder rows *within*
+        // the visible window. A pure permutation neither changes the total extent nor
+        // the scroll offset, so the anchor's on-screen position (the row occupying
+        // the top of the viewport) is preserved: the row now anchored at the top is
+        // whichever key the new mapping placed at that logical slot, mounted and
+        // positioned at the scroll offset.
+        let mut h = KeyedHarness::new(1000, 30.0, 2, 300.0);
+        h.frame();
+        h.inner
+            .store
+            .scroll_by(h.inner.viewport, Vec2 { x: 0.0, y: 600.0 });
+        h.frame();
+        // Row 20 sits at the top (20 · 30 = 600).
+        let top_logical = 20usize;
+        assert_eq!(h.state().heights.prefix_sum(top_logical), 600.0);
+        let extent_before = h.state().total_extent();
+
+        // Swap keys at logical 20 and 21 — both inside the window.
+        let mut keys: Vec<u64> = (0..1000).collect();
+        keys.swap(20, 21);
+        h.reorder(keys);
+        h.frame();
+
+        // A pure permutation leaves the extent and the scroll offset untouched, so
+        // the row at logical 20 is still anchored at absolute top 600 — its screen
+        // position did not jump.
+        assert_eq!(h.state().total_extent(), extent_before);
+        assert_eq!(h.state().heights.prefix_sum(top_logical), 600.0);
+        assert_eq!(
+            h.inner.store.scroll(h.inner.viewport).on(Axis::Column),
+            600.0
+        );
+        // Logical 20 now shows key 21's host (the swap), still on screen.
+        assert_eq!(h.host_of(20), h.host_for_key(ItemKey(21)));
     }
 
     #[test]

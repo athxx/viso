@@ -2228,6 +2228,40 @@ impl<'a> BuildCx<'a> {
         item_count: usize,
         item: impl FnMut(usize, &mut BuildCx<'_>) + 'static,
     ) -> Handle {
+        self.virtual_list_inner(style, item_count, Box::new(item), None)
+    }
+
+    /// Like [`Self::virtual_list`], but with stable item keys: `key_of` maps a
+    /// logical index to a data-defined [`ItemKey`](crate::virtual_list::ItemKey)
+    /// that identifies the row independent of its position. On a reorder or a
+    /// mid-list insert/delete, the reconcile matches a mounted host to a row by
+    /// this key and re-anchors the surviving host — preserving its body, per-row
+    /// widget state (in-row scroll, text caret, expand/collapse), and focus —
+    /// instead of rebuilding whichever row now sits at that index.
+    ///
+    /// Prefer this whenever the list's data can reorder or splice and rows carry
+    /// per-row state. A keyless [`Self::virtual_list`] treats the logical index as
+    /// identity, which is correct and cheaper for append-only / scroll-only lists.
+    pub fn virtual_list_keyed(
+        &mut self,
+        style: VirtualListStyle,
+        item_count: usize,
+        key_of: impl Fn(usize) -> crate::virtual_list::ItemKey + 'static,
+        item: impl FnMut(usize, &mut BuildCx<'_>) + 'static,
+    ) -> Handle {
+        self.virtual_list_inner(style, item_count, Box::new(item), Some(Box::new(key_of)))
+    }
+
+    /// Shared body of the keyless and keyed constructors: builds the scroll
+    /// viewport + fixed-extent canvas and registers the list state, with `key_of`
+    /// deciding index-identity (`None`) vs keyed (`Some`).
+    fn virtual_list_inner(
+        &mut self,
+        style: VirtualListStyle,
+        item_count: usize,
+        item: crate::virtual_list::ItemBuilder,
+        key_of: Option<crate::virtual_list::KeyOf>,
+    ) -> Handle {
         // The viewport is an ordinary scroll node: it reuses the whole scroll
         // machinery (range, scroll_by, hit-test narrowing, the scroll router)
         // unchanged.
@@ -2277,7 +2311,8 @@ impl<'a> BuildCx<'a> {
                 style.overscan as usize,
                 style.axis,
                 canvas,
-                Box::new(item),
+                item,
+                key_of,
             )),
         );
 
