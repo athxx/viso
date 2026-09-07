@@ -125,6 +125,11 @@ pub(super) struct BuildOut {
     /// The pre-authored drop-hint overlay leaf a drag toggles visible over the zone
     /// the pointer is over. Hidden at build; shown by a deferred `set_hidden`.
     pub hint: NodeId,
+    /// The pre-authored overlay canvas that floating panels mount into. An
+    /// [`LayoutInput::AbsoluteRows`] canvas over the whole dock, marked overlay so a
+    /// floated panel paints above the docked tree; empty at build, the float
+    /// reconcile step re-parents a floated panel's node under it and positions it.
+    pub floats: NodeId,
     /// The redock intent queue a drop pushes onto; the reconcile step drains it.
     pub intents: RedockIntents,
     /// The shared zone registry the handlers hit-test; filled after the walk.
@@ -143,10 +148,18 @@ const HINT_TINT: viso_ui::Rgba = viso_ui::Rgba {
 
 impl BuildOut {
     /// Mint an empty walk record: no seams or zones yet, empty intent/zone queues,
-    /// and the pre-authored drop-hint overlay leaf (a fill-size overlay, hidden at
-    /// build — the modal scrim shape). The build walk fills the seams and zones as it
-    /// recurses; after the walk the caller copies `zones` into `zones_shared` so the
-    /// drag handlers hit-test the same rects the reconcile step refreshes.
+    /// the pre-authored drop-hint overlay leaf (a fill-size overlay, hidden at
+    /// build — the modal scrim shape), and the pre-authored floating-panel overlay
+    /// canvas. The build walk fills the seams and zones as it recurses; after the
+    /// walk the caller copies `zones` into `zones_shared` so the drag handlers
+    /// hit-test the same rects the reconcile step refreshes.
+    ///
+    /// The floats canvas is an [`LayoutInput::AbsoluteRows`] container over the whole
+    /// dock, marked overlay so a floated panel paints above the docked tree. It is
+    /// empty at build — a panel floats by the float reconcile step re-parenting the
+    /// panel's built-once node under this canvas and driving its row offset — so an
+    /// un-floated dock authors the canvas but mounts nothing in it (the canvas skips
+    /// any child with no row offset, so an empty canvas lays out to nothing).
     pub fn empty(cx: &mut BuildCx<'_>) -> Self {
         let hint = cx.leaf(LeafStyle {
             size: Size::fill(),
@@ -154,10 +167,16 @@ impl BuildOut {
         });
         cx.set_overlay(hint, true);
         cx.set_hidden(hint, true);
+        // The floating-panel overlay canvas: an absolute-rows canvas filling the
+        // dock, over the docked tree. Empty until a panel floats; the float reconcile
+        // step remounts a floated panel's node here and positions it by row offset.
+        let floats = cx.absolute_rows(viso_ui::Axis::Column, Size::fill(), |_cx| {});
+        cx.set_overlay(floats, true);
         BuildOut {
             seams: Vec::new(),
             zones: Vec::new(),
             hint: hint.id(),
+            floats: floats.id(),
             intents: Rc::new(RefCell::new(Vec::new())),
             zones_shared: Rc::new(RefCell::new(Vec::new())),
         }

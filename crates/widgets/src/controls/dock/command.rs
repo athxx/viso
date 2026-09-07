@@ -52,6 +52,15 @@ pub(super) struct DockState {
     /// The seam records a live drag drives; the reconcile step rewrites each seam's
     /// pane weights from its fraction cell.
     pub(super) seams: Vec<SeamRec>,
+    /// The pre-authored overlay canvas floating panels mount into (an
+    /// `AbsoluteRows` canvas over the docked tree). The float reconcile step
+    /// re-parents a floated panel's built-once node under a host it mints in here.
+    pub(super) floats: NodeId,
+    /// The live float hosts, one per currently-floating panel — minted on the
+    /// reconcile that first sees the panel floating, torn down when it docks back
+    /// or closes. Warm state (a discrete-action map, never a per-frame path) the
+    /// float reconcile step owns so hosts survive across reconciles.
+    pub(super) float_hosts: super::reconcile::FloatHosts,
 }
 
 /// The shared drag channel a drag-to-redock drop writes into and the reconcile step
@@ -124,10 +133,17 @@ impl DockHandle {
     }
 
     /// Redock `key` relative to `target` per `part` (an edge splits, a center/tab
-    /// joins a tab group). Edits the tree; the reconcile step turns the edit into
-    /// live geometry. A no-op if `target` is absent or `key == target`.
+    /// joins a tab group). Pushes a redock intent onto the same queue a drag-to-redock
+    /// drop writes into, so the [`reconcile`](DockHandle::reconcile) step applies the
+    /// tree edit *and* remounts `key`'s built-once node through one path — a command
+    /// and a drag redock share the reconcile remount, never diverging. A no-op (once
+    /// reconciled) if `target` is absent or `key == target`. Call from within an event
+    /// handler.
     pub fn dock(&self, _ev: &mut EventCx<'_>, key: PanelKey, target: PanelKey, part: DropPart) {
-        self.state.borrow_mut().tree.dock(key, target, part);
+        self.drag
+            .intents
+            .borrow_mut()
+            .push(super::drag::RedockIntent::Dock { key, target, part });
     }
 
     /// Detach `key` into a floating panel at `rect`, removing it from its current
@@ -178,14 +194,27 @@ impl DockHandle {
     ///   store's resolved extents — the live seam-drag path.
     pub fn reconcile(&self, store: &mut NodeStore, states: &StateStore) {
         let mut state = self.state.borrow_mut();
+        let panels = self.panels.borrow();
         super::reconcile::reconcile_redock(
             store,
             &mut state.tree,
-            &self.panels.borrow(),
+            &panels,
             &self.drag.intents,
             &self.drag.zones,
             self.drag.hint,
         );
+        // The float step runs after the redock drain (which, for a center/tab-bar
+        // re-dock of a floating panel, has already removed it from `tree.floating`
+        // and remounted its node under the docked area) and before the seam pass:
+        // it mounts every currently-floating panel into the overlay and tears down
+        // the host of any panel that stopped floating.
+        let DockState {
+            tree,
+            floats,
+            float_hosts,
+            ..
+        } = &mut *state;
+        super::reconcile::reconcile_floats(store, tree, &panels, *floats, float_hosts);
         super::reconcile::reconcile_seams(store, states, &state.seams);
     }
 }
@@ -195,16 +224,23 @@ impl DockHandle {
 /// map plus the drag channel (redock intent queue, drop-zone registry, drop-hint
 /// overlay) the drag handlers close over. Called once at the end of `build`, when
 /// the ids exist.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn make_handle(
     tree: DockTree,
     seams: Vec<SeamRec>,
+    floats: NodeId,
     panels: PanelNodes,
     zones: SharedZones,
     hint: NodeId,
     intents: RedockIntents,
 ) -> DockHandle {
     DockHandle {
-        state: Rc::new(RefCell::new(DockState { tree, seams })),
+        state: Rc::new(RefCell::new(DockState {
+            tree,
+            seams,
+            floats,
+            float_hosts: super::reconcile::FloatHosts::new(),
+        })),
         panels,
         drag: DragChannel {
             intents,
@@ -275,6 +311,7 @@ mod tests {
             let mut projectors = SemanticProjector::new();
             let panels: PanelNodes = Rc::new(RefCell::new(HashMap::new()));
             let seams;
+            let floats;
             let zones_shared;
             let hint;
             let intents;
@@ -292,11 +329,12 @@ mod tests {
                 build_tree(&mut cx, &tree.root, &style, contents, &panels, &mut out);
                 *out.zones_shared.borrow_mut() = out.zones.clone();
                 seams = out.seams;
+                floats = out.floats;
                 zones_shared = out.zones_shared;
                 hint = out.hint;
                 intents = out.intents;
             }
-            let handle = make_handle(tree, seams, panels, zones_shared, hint, intents);
+            let handle = make_handle(tree, seams, floats, panels, zones_shared, hint, intents);
             Reactive {
                 store,
                 states,
@@ -447,6 +485,9 @@ mod tests {
         let mut rx = Reactive::build(tree, &contents);
 
         rx.drive(|h, ev| h.dock(ev, C, B, DropPart::Left));
+        // `dock` defers to the reconcile step (the same path a drag-to-redock drop
+        // takes), so the tree edit lands when the host reconciles the intent queue.
+        rx.handle.reconcile(&mut rx.store, &rx.states);
         let st = rx.handle.state.borrow();
         let DockNode::Split { b: right, .. } = &st.tree.root else {
             panic!("root stays a split");
@@ -486,6 +527,84 @@ mod tests {
         assert_eq!(st.tree.root, DockNode::panel(B), "A left the docked tree");
         assert_eq!(st.tree.floating.len(), 1, "A is now floating");
         assert_eq!(st.tree.floating[0].panel, A);
+    }
+
+    /// Float A out and reconcile: A's built-once node re-parents under a host in the
+    /// floats overlay canvas — its identity intact — and the float host is named a
+    /// floating region. Then dock A back onto B (a center join) and reconcile: the
+    /// redock drain remounts A under B's area, the float step tears the now-orphaned
+    /// host down, and A keeps **the same node id and state** across the round trip —
+    /// the keyed-identity proof (test 4): a float and re-dock is an arena move, never
+    /// a rebuild.
+    #[test]
+    fn float_round_trip_preserves_the_panel_node() {
+        let tree = DockTree::new(DockNode::split(
+            Axis::Row,
+            0.5,
+            DockNode::panel(A),
+            DockNode::panel(B),
+        ));
+        let mut contents = HashMap::new();
+        contents.insert(A, fill_panel());
+        contents.insert(B, fill_panel());
+        let mut rx = Reactive::build(tree, &contents);
+
+        // A's built-once node, captured before it floats — the identity the round
+        // trip must preserve.
+        let node_a = rx.handle.node_of(A).expect("A has a built node");
+        let floats = rx.handle.state.borrow().floats;
+
+        // Float A out to a rect, then reconcile: A mounts into the overlay.
+        let rect = viso_ui::Rect {
+            x: 30.0,
+            y: 40.0,
+            w: 200.0,
+            h: 150.0,
+        };
+        rx.drive(|h, ev| h.float(ev, A, rect));
+        rx.handle.reconcile(&mut rx.store, &rx.states);
+
+        assert_eq!(
+            rx.handle.node_of(A),
+            Some(node_a),
+            "floating A did not rebuild its node",
+        );
+        // A's node sits under a mount, whose host sits under the floats canvas.
+        let mount = rx.store.parent(node_a).expect("A is mounted");
+        let host = rx.store.parent(mount).expect("the mount has a host");
+        assert_eq!(
+            rx.store.parent(host),
+            Some(floats),
+            "A's host hangs off the floats overlay canvas",
+        );
+        assert!(
+            rx.handle.state.borrow().float_hosts.contains_key(&A),
+            "a live float host was recorded for A",
+        );
+
+        // Dock A back onto B (a center join), then reconcile: the redock drain
+        // remounts A under B's area and the float step tears the host down.
+        rx.drive(|h, ev| h.dock(ev, A, B, DropPart::Center));
+        rx.handle.reconcile(&mut rx.store, &rx.states);
+
+        assert_eq!(
+            rx.handle.node_of(A),
+            Some(node_a),
+            "re-docking A did not rebuild its node — same identity as before floating",
+        );
+        assert!(
+            !rx.handle.state.borrow().float_hosts.contains_key(&A),
+            "A's float host was torn down once it stopped floating",
+        );
+        // A is no longer parented under the overlay: the redock drain remounted it
+        // under B's docked area (a center join re-parents in place).
+        let parent_a = rx.store.parent(node_a).expect("A is remounted");
+        assert_ne!(parent_a, mount, "A left the float mount");
+        assert_eq!(
+            rx.store.parent(node_a),
+            rx.store.parent(rx.handle.node_of(B).expect("B has a node")),
+            "A rejoined B's tab area",
+        );
     }
 
     /// The reconcile intent-drain rewrites the seam's pane weights from its fraction

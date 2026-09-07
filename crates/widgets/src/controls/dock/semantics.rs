@@ -96,13 +96,12 @@ pub(super) fn seam() -> Semantics {
 }
 
 /// The semantics for a floating panel's container — a detached named landmark
-/// [`Region`](Role::Region), named by the panel it holds.
-// Called by the floating-panel build in section 5; defined here so the whole a11y
-// contract (docked and floating) reads as one policy, and the snapshot below pins
-// it now.
-#[allow(dead_code)]
-pub(super) fn floating(contents: &HashMap<PanelKey, PanelContent>, key: PanelKey) -> Semantics {
-    Semantics::role(Role::Region).with_label(panel_label(contents, key))
+/// [`Region`](Role::Region), named by the panel it holds. Called from the float
+/// reconcile step (which holds the panel key but not the content map, so it names
+/// by key like [`panel_label`] does); defined here so the whole a11y contract
+/// (docked and floating) reads as one policy the snapshot below pins.
+pub(super) fn floating(key: PanelKey) -> Semantics {
+    Semantics::role(Role::Region).with_label(format!("Panel {}", key.0))
 }
 
 #[cfg(test)]
@@ -179,8 +178,7 @@ mod tests {
 
     #[test]
     fn floating_panel_is_a_named_region() {
-        let c = no_contents();
-        let s = floating(&c, PanelKey(9));
+        let s = floating(PanelKey(9));
         assert_eq!(s.role, Role::Region);
         assert_eq!(s.label.as_deref(), Some("Panel 9"));
     }

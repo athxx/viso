@@ -20,10 +20,11 @@
 
 use std::collections::HashMap;
 
-use viso_ui::{NodeId, NodeStore, StateStore, StateValue};
+use viso_ui::{NodeId, NodeStore, Size, StateStore, StateValue, Vec2};
 
 use super::build::{MIN_PANE, RedockIntents, SEAM_SIZE, SeamRec, SharedZones};
 use super::drag::RedockIntent;
+use super::semantics;
 use super::tree::{DockTree, DropPart, PanelKey};
 
 /// Rewrite every seam's pane weights from its current `fraction` cell, clamping the
@@ -136,6 +137,130 @@ pub(super) fn reconcile_redock(
     for zone in reg.iter_mut() {
         zone.rect = store.world(zone.node);
     }
+}
+
+/// A live floating-panel host the float reconcile step mints and reuses across
+/// reconciles: the two overlay nodes ([`NodeStore::alloc_fixed_host`] returns a
+/// host/mount pair — the outer host the canvas positions, the inner mount holding
+/// the panel's exact rectangle) plus the last rect it was positioned at, so a
+/// reconcile only re-touches geometry when the float actually moved or resized.
+///
+/// Warm state (one entry per floating panel, minted on the reconcile that first
+/// sees the panel in [`DockTree::floating`], torn down when it leaves), never a
+/// per-frame path.
+pub(super) struct FloatHost {
+    /// The outer host under the floats canvas; the canvas positions it by row offset
+    /// (vertical) and a translate (horizontal), since the canvas only lays rows out
+    /// on its main axis.
+    host: NodeId,
+    /// The inner mount holding the panel's exact `w × h` rectangle; the panel node
+    /// re-parents under it. Resized in place when the float's rect changes.
+    mount: NodeId,
+    /// The rect the host was last positioned/sized at; a reconcile skips the geometry
+    /// writes when it is unchanged.
+    rect: viso_ui::Rect,
+}
+
+/// The keyed live float-host map — one [`FloatHost`] per currently-floating panel,
+/// keyed by the panel it holds. Owned beside the tree as warm state so hosts survive
+/// across reconciles rather than being re-authored every drain.
+pub(super) type FloatHosts = HashMap<PanelKey, FloatHost>;
+
+/// Mount every floating panel into the overlay canvas and position it, and un-mount
+/// every panel that stopped floating.
+///
+/// The docked half of the tree is nodes the build walk authored; a floating panel,
+/// by contrast, has no build-time home — the float overlay canvas is authored empty
+/// ([`BuildOut::empty`](super::build::BuildOut::empty)) and this step re-parents a
+/// floated panel's built-once node under a freshly-minted host in it. This mirrors
+/// the redock path's arena move (never a rebuild — the panel keeps its identity, its
+/// content subtree, and its reactive cells as it floats and docks back), extended to
+/// the overlay: the tree's [`DockTree::floating`] list is the source of truth and
+/// this step reconciles the store to it.
+///
+/// For each panel in `tree.floating`:
+/// - **not yet hosted** — mint a host/mount pair under `floats_canvas` via
+///   [`NodeStore::alloc_fixed_host`], re-parent the panel's node under the mount,
+///   name the host a floating [`Region`](viso_ui::Role::Region)
+///   ([`semantics::floating`]), and position + size it;
+/// - **already hosted at a changed rect** — re-position the host and resize the mount
+///   in place (a moved/resized float);
+/// - **already hosted, unchanged** — nothing.
+///
+/// For each hosted panel no longer in `tree.floating` (it docked back or closed):
+/// tear the host down. The redock drain runs first and, for a center/tab-bar join,
+/// has already re-parented the panel node under its new docked area — so this step
+/// detaches the panel from the mount **only if it is still parented there** (an edge
+/// re-dock, or a close, that left it under the mount), leaving an already-remounted
+/// node untouched, then removes the empty host chrome.
+///
+/// A no-op when nothing floats and nothing was hosted — the common case.
+pub(super) fn reconcile_floats(
+    store: &mut NodeStore,
+    tree: &DockTree,
+    panels: &HashMap<PanelKey, NodeId>,
+    floats_canvas: NodeId,
+    hosts: &mut FloatHosts,
+) {
+    // Mount / reposition every currently-floating panel.
+    for float in &tree.floating {
+        let Some(&panel_node) = panels.get(&float.panel) else {
+            continue;
+        };
+        match hosts.get_mut(&float.panel) {
+            Some(existing) => {
+                if existing.rect != float.rect {
+                    position_host(store, existing, float.rect);
+                }
+            }
+            None => {
+                let (host, mount) =
+                    store.alloc_fixed_host(floats_canvas, Size::fixed(float.rect.w, float.rect.h));
+                store.arena_detach(panel_node);
+                store.arena_append_child(mount, panel_node);
+                store.set_semantics(host, semantics::floating(float.panel));
+                let mut rec = FloatHost {
+                    host,
+                    mount,
+                    rect: float.rect,
+                };
+                position_host(store, &mut rec, float.rect);
+                hosts.insert(float.panel, rec);
+            }
+        }
+    }
+
+    // Tear down hosts whose panel stopped floating (docked back or closed).
+    hosts.retain(|key, rec| {
+        if tree.floating.iter().any(|f| f.panel == *key) {
+            return true;
+        }
+        // The panel left the floating list. If its node is still parented under this
+        // host's mount, the redock drain has not remounted it (an edge re-dock or a
+        // close), so detach it here — a close hid it, an edge re-dock's build will
+        // remount it. If it is parented elsewhere, the redock drain already remounted
+        // it; leave it be. Either way remove the now-empty host chrome.
+        if let Some(&panel_node) = panels.get(key)
+            && store.parent(panel_node) == Some(rec.mount)
+        {
+            store.arena_detach(panel_node);
+        }
+        store.arena_detach(rec.host);
+        false
+    });
+}
+
+/// Position a float host at `rect`: the floats canvas is an `AbsoluteRows` canvas
+/// that lays each hosted row out along its main axis by a per-row offset and forces
+/// the cross extent, so the vertical position is the host's row offset and the
+/// horizontal position a translate the canvas does not itself apply. The mount is
+/// resized to the rect's `w × h` (a no-op inside the store if unchanged). Records the
+/// applied rect so a later reconcile can skip an unchanged float.
+fn position_host(store: &mut NodeStore, rec: &mut FloatHost, rect: viso_ui::Rect) {
+    store.set_fixed_size(rec.mount, Size::fixed(rect.w, rect.h));
+    store.set_row_offset(rec.host, rect.y);
+    store.set_translate(rec.host, Vec2 { x: rect.x, y: 0.0 });
+    rec.rect = rect;
 }
 
 #[cfg(test)]

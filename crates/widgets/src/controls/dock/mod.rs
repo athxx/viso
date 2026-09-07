@@ -257,6 +257,7 @@ impl Component for Dock {
             let handle = command::make_handle(
                 self.tree.clone(),
                 out.seams,
+                out.floats,
                 panels,
                 out.zones_shared,
                 out.hint,
