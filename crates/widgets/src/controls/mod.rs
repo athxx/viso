@@ -11,6 +11,7 @@
 mod button;
 mod checkbox;
 mod dock;
+mod file_tree;
 mod modal;
 mod navigation_stack;
 mod popup;
@@ -28,6 +29,9 @@ pub use checkbox::{CheckBox, CheckBoxStyle, checkbox};
 pub use dock::{
     Dock, DockHandle, DockHandleSlot, DockNode, DockStyle, DockTree, DropPart, Floating,
     PanelContent, PanelKey, dock,
+};
+pub use file_tree::{
+    FileTree, FileTreeStyle, NodeKey, SelectMode, TreeNode, VisibleRow, file_tree,
 };
 pub use modal::{Modal, ModalHandle, ModalHandleSlot, ModalStyle, modal};
 pub use navigation_stack::{
