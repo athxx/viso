@@ -917,6 +917,7 @@ mod tests {
             let mut bindings = BindingTable::new();
             let mut lists = VirtualLists::new();
             let mut text_edits = crate::text_edit::TextEdits::new();
+            let mut projectors = crate::reactive::SemanticProjector::new();
             let viewport = {
                 let mut cx = BuildCx::with_reactive(
                     &mut store,
@@ -924,6 +925,7 @@ mod tests {
                     &mut bindings,
                     &mut lists,
                     &mut text_edits,
+                    &mut projectors,
                 );
                 cx.virtual_list(
                     VirtualListStyle {

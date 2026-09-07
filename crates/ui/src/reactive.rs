@@ -41,6 +41,7 @@
 use crate::component::NodeStore;
 use crate::dirty::DirtyClass;
 use crate::node::NodeId;
+use crate::semantics::SemanticState;
 use crate::state::{StateId, StateStore, StateValue};
 
 /// A compact generational handle to a stored [`Computed`] cell.
@@ -707,6 +708,274 @@ impl EffectStore {
     }
 }
 
+/// The boxed body of a semantic-state projection: reads the control's reactive
+/// cell(s) through the read-only context and returns the live accessibility
+/// state to write into the node's side column. `FnMut` so a body may own mutable
+/// scratch, but its reads are pure with respect to the store (the same read-only
+/// [`ComputeCx`] a [`Computed`] uses — no `set`).
+type ProjectFn = Box<dyn FnMut(&mut ComputeCx<'_>) -> SemanticState>;
+
+/// One semantic-state projection: derives a node's live accessibility state from
+/// its control's reactive cell(s). Structurally a [`Computed`] whose downstream
+/// effect is *writing a node column* (`set_semantic_state`) rather than marking a
+/// dirty class — so it lives apart from [`ComputedStore`], whose slot caches a
+/// [`StateValue`] and whose contract is pure derivation to a dirty class (AGENTS
+/// section 10.5). The projection carries no value cache: its output lands in the
+/// node's [`SemanticState`](crate::semantics::SemanticState) column, and
+/// `set_semantic_state` marks `SEMANTICS`, so the memo boundary is "only the
+/// cells in this frame's `changed` set wake it" — an unchanged frame projects
+/// nothing.
+struct ProjectSlot {
+    /// The node whose `semantic_state` column this projection writes.
+    node: NodeId,
+    /// The dependency set recorded at the last projection.
+    deps: Vec<StateId>,
+    /// The pure projection body.
+    project: ProjectFn,
+    generation: u32,
+    occupied: bool,
+}
+
+/// The store of semantic-state projections, keyed by generational [`ProjectId`].
+///
+/// This is the parallel binding that keeps the semantics derive pass single-layer
+/// (AGENTS section 3.5): a control's reactive cell drives a projection here that,
+/// in the flush phase where both the [`StateStore`] and [`NodeStore`] are live,
+/// reads the cell value and writes the node's `semantic_state` column via
+/// [`NodeStore::set_semantic_state`]. The semantics derive pass then reads only
+/// that node column (`&self`), never the state store — mirroring the `focused`
+/// slot precedent (live state reaches semantics through a node column, not a
+/// cross-layer read).
+///
+/// Waking is driven by a reverse index, exactly like [`ComputedStore`] and
+/// [`EffectStore`]: [`wake`](SemanticProjector::wake) looks up the projections
+/// that read a changed [`StateId`] and re-runs each. The index is
+/// `dep_index[state.index()] -> the projections depending on it`, refreshed for a
+/// projection's dependencies on every run.
+#[derive(Default)]
+pub struct SemanticProjector {
+    slots: Vec<ProjectSlot>,
+    free: Vec<u32>,
+    /// Reverse dependency index, aligned to [`StateStore`] dense indices:
+    /// `dep_index[i]` holds every projection that read the state at dense index
+    /// `i` at its last run.
+    dep_index: Vec<Vec<ProjectId>>,
+    /// Reused buffer of projections to re-run this wake, so a wake allocates
+    /// nothing on the steady path.
+    wake_scratch: Vec<ProjectId>,
+}
+
+/// A compact generational handle to a stored semantic-state projection.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ProjectId {
+    index: u32,
+    generation: u32,
+}
+
+impl ProjectId {
+    /// The dense slot index.
+    #[inline]
+    pub fn index(self) -> u32 {
+        self.index
+    }
+    /// The generation this handle was minted at.
+    #[inline]
+    pub fn generation(self) -> u32 {
+        self.generation
+    }
+}
+
+impl SemanticProjector {
+    /// A fresh, empty store.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Register a projection that writes `node`'s live semantic state. The
+    /// `project` body is stored but not run until [`project`](Self::project); the
+    /// returned [`ProjectId`] is the handle.
+    pub fn alloc(
+        &mut self,
+        node: NodeId,
+        project: impl FnMut(&mut ComputeCx<'_>) -> SemanticState + 'static,
+    ) -> ProjectId {
+        let project: ProjectFn = Box::new(project);
+        if let Some(index) = self.free.pop() {
+            let slot = &mut self.slots[index as usize];
+            debug_assert!(!slot.occupied);
+            slot.occupied = true;
+            slot.node = node;
+            slot.deps.clear();
+            slot.project = project;
+            ProjectId {
+                index,
+                generation: slot.generation,
+            }
+        } else {
+            let index = self.slots.len() as u32;
+            self.slots.push(ProjectSlot {
+                node,
+                deps: Vec::new(),
+                project,
+                generation: 0,
+                occupied: true,
+            });
+            ProjectId {
+                index,
+                generation: 0,
+            }
+        }
+    }
+
+    /// Whether `id` refers to a currently-live projection.
+    #[inline]
+    pub fn is_live(&self, id: ProjectId) -> bool {
+        matches!(
+            self.slots.get(id.index as usize),
+            Some(slot) if slot.occupied && slot.generation == id.generation
+        )
+    }
+
+    /// Run (or re-run) a projection: evaluate its body against `states` and write
+    /// the result into `node`'s `semantic_state` column, recording its dependency
+    /// set into the reverse index that [`wake`](Self::wake) reads.
+    ///
+    /// This is both the initial projection (a control's first frame carries its
+    /// live state) and the dependency restart. The recorded dependencies replace
+    /// the projection's prior entries in the reverse index, so a dependency the
+    /// body stops reading stops waking it and a newly read one starts. Returns
+    /// whether the projection ran (a live id).
+    pub fn project(&mut self, id: ProjectId, states: &StateStore, nodes: &mut NodeStore) -> bool {
+        let Some(slot) = self.slots.get_mut(id.index as usize) else {
+            return false;
+        };
+        if !slot.occupied || slot.generation != id.generation {
+            return false;
+        }
+
+        let mut cursor = DepCursor::new();
+        let state = {
+            let mut cx = ComputeCx::new(states, &mut cursor);
+            (slot.project)(&mut cx)
+        };
+        let node = slot.node;
+        nodes.set_semantic_state(node, state);
+
+        // Drop the projection's old reverse-index entries, record the freshly
+        // observed dependency set, then reindex against it.
+        self.deindex(id);
+        {
+            let slot = &mut self.slots[id.index as usize];
+            slot.deps.clear();
+            slot.deps.extend_from_slice(cursor.deps());
+        }
+        self.reindex(id);
+        true
+    }
+
+    /// Re-run every projection that read any of the `changed` states, writing each
+    /// affected node's `semantic_state` column — the flush's semantic-projection
+    /// pass. Each affected projection re-runs once even if several of its
+    /// dependencies changed in the same transaction. Returns how many projections
+    /// ran (and so touched a node column).
+    pub fn wake(&mut self, changed: &[StateId], states: &StateStore, nodes: &mut NodeStore) -> u32 {
+        // Gather the affected projections into the reused scratch, deduplicating
+        // so a projection reading two changed states re-runs once.
+        self.wake_scratch.clear();
+        for &state in changed {
+            let Some(deps) = self.dep_index.get(state.index() as usize) else {
+                continue;
+            };
+            for &p in deps {
+                if !self.wake_scratch.contains(&p) {
+                    self.wake_scratch.push(p);
+                }
+            }
+        }
+
+        // Take the scratch out so `project` can borrow `self` mutably; put it back
+        // (empty) afterward to keep its capacity for the next wake.
+        let mut targets = core::mem::take(&mut self.wake_scratch);
+        let mut ran = 0;
+        for &p in &targets {
+            if self.project(p, states, nodes) {
+                ran += 1;
+            }
+        }
+        targets.clear();
+        self.wake_scratch = targets;
+        ran
+    }
+
+    /// Free a projection, bumping its generation so surviving handles go stale.
+    /// Returns whether the id was live.
+    pub fn free(&mut self, id: ProjectId) -> bool {
+        match self.slots.get(id.index as usize) {
+            Some(slot) if slot.occupied && slot.generation == id.generation => {
+                self.deindex(id);
+                let slot = &mut self.slots[id.index as usize];
+                slot.occupied = false;
+                slot.generation = slot.generation.wrapping_add(1);
+                slot.deps.clear();
+                self.free.push(id.index);
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// Free every projection scoped to `node` — the node-teardown path, mirroring
+    /// [`EffectStore::cancel_for_node`]. Returns how many projections were freed.
+    pub fn free_for_node(&mut self, node: NodeId) -> u32 {
+        let mut freed = 0;
+        for index in 0..self.slots.len() {
+            if !self.slots[index].occupied || self.slots[index].node != node {
+                continue;
+            }
+            let id = ProjectId {
+                index: index as u32,
+                generation: self.slots[index].generation,
+            };
+            self.deindex(id);
+            let slot = &mut self.slots[index];
+            slot.occupied = false;
+            slot.generation = slot.generation.wrapping_add(1);
+            slot.deps.clear();
+            self.free.push(index as u32);
+            freed += 1;
+        }
+        freed
+    }
+
+    /// Add `id` to the reverse index for each of its currently recorded
+    /// dependencies. Call after refreshing `slot.deps`.
+    fn reindex(&mut self, id: ProjectId) {
+        let deps = core::mem::take(&mut self.slots[id.index as usize].deps);
+        for &dep in &deps {
+            let i = dep.index() as usize;
+            if i >= self.dep_index.len() {
+                self.dep_index.resize_with(i + 1, Vec::new);
+            }
+            if !self.dep_index[i].contains(&id) {
+                self.dep_index[i].push(id);
+            }
+        }
+        self.slots[id.index as usize].deps = deps;
+    }
+
+    /// Remove `id` from the reverse index for each of its recorded dependencies.
+    /// Leaves `slot.deps` intact (the caller clears it if the projection is dying).
+    fn deindex(&mut self, id: ProjectId) {
+        let deps = core::mem::take(&mut self.slots[id.index as usize].deps);
+        for &dep in &deps {
+            if let Some(bucket) = self.dep_index.get_mut(dep.index() as usize) {
+                bucket.retain(|&p| p != id);
+            }
+        }
+        self.slots[id.index as usize].deps = deps;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1116,5 +1385,90 @@ mod tests {
             "dropped dep stops waking"
         );
         assert_eq!(*runs.borrow(), 2);
+    }
+
+    // --- SemanticProjector --------------------------------------------------
+
+    #[test]
+    fn set_semantic_state_marks_semantics_dirty() {
+        // The write end of the projection: a live-guarded assign that marks the
+        // node SEMANTICS-dirty (AGENTS section 11: an accessibility-state change
+        // invalidates SEMANTICS), and a stale handle is a no-op.
+        let mut store = NodeStore::new();
+        let leaf = sink_node(&mut store);
+        assert!(store.dirty(leaf).is_empty(), "a fresh build starts clean");
+
+        store.set_semantic_state(leaf, SemanticState::checked(true));
+        assert!(
+            store.dirty(leaf).contains(DirtyClass::SEMANTICS),
+            "a semantic-state write invalidates SEMANTICS"
+        );
+        assert_eq!(
+            store.semantic_state(leaf),
+            Some(SemanticState::checked(true))
+        );
+    }
+
+    #[test]
+    fn projection_seeds_first_frame_state_into_the_derived_tree() {
+        // A control registers a projection reading its `checked` cell; the very
+        // first `project` writes the node column, so the first derive already
+        // carries the live state — no toggle needed.
+        let mut states = StateStore::new();
+        let mut store = NodeStore::new();
+        let mut projectors = SemanticProjector::new();
+
+        let root = sink_node(&mut store);
+        let checked = state(&mut states, StateValue::Bool(true));
+
+        let id = projectors.alloc(root, move |cx| match cx.get(checked) {
+            Some(StateValue::Bool(b)) => SemanticState::checked(b),
+            _ => SemanticState::default(),
+        });
+        assert!(projectors.project(id, &states, &mut store));
+
+        let tree = store.derive_semantics(root);
+        assert_eq!(
+            tree.root().and_then(|n| n.state),
+            Some(SemanticState::checked(true)),
+            "the first projection seeds the derived tree's live state"
+        );
+    }
+
+    #[test]
+    fn cell_change_wakes_the_projection_and_updates_the_tree() {
+        // The steady-state path: flipping the bound cell wakes exactly the
+        // projection that read it, which rewrites the node column, so the next
+        // derive reflects the new live state.
+        let mut states = StateStore::new();
+        let mut store = NodeStore::new();
+        let mut projectors = SemanticProjector::new();
+
+        let root = sink_node(&mut store);
+        let checked = state(&mut states, StateValue::Bool(false));
+        let id = projectors.alloc(root, move |cx| match cx.get(checked) {
+            Some(StateValue::Bool(b)) => SemanticState::checked(b),
+            _ => SemanticState::default(),
+        });
+        projectors.project(id, &states, &mut store);
+        assert_eq!(
+            store.derive_semantics(root).root().and_then(|n| n.state),
+            Some(SemanticState::checked(false)),
+        );
+
+        // Flip the cell and wake, exactly as the flush phase does.
+        states.set(checked, StateValue::Bool(true));
+        let mut changed = Vec::new();
+        states.take_pending(&mut changed);
+        assert_eq!(
+            projectors.wake(&changed, &states, &mut store),
+            1,
+            "the cell's one projection re-runs"
+        );
+        assert_eq!(
+            store.derive_semantics(root).root().and_then(|n| n.state),
+            Some(SemanticState::checked(true)),
+            "the derived tree tracks the new live state"
+        );
     }
 }

@@ -40,8 +40,8 @@ use viso::gpu::{GpuBackend, HeadlessRaster, RawWindowHandle};
 use viso::render::{FrameStats, Rect, Renderer, Rgba};
 use viso::ui::{
     BindingTable, BoxStyle, BuildCx, Component, Key, KeyEvent, KeyRouter, LeafStyle, Modifiers,
-    NodeId, NodeStore, PointerButtons, PointerEvent, PointerPhase, PointerRouter, Role, Size,
-    StateStore, TextEdits, VirtualLists, paint_tree,
+    NodeId, NodeStore, PointerButtons, PointerEvent, PointerPhase, PointerRouter, Role,
+    SemanticProjector, Size, StateStore, TextEdits, VirtualLists, paint_tree,
 };
 use viso::widgets::splitter;
 
@@ -97,6 +97,7 @@ fn build_scene(store: &mut NodeStore) -> NodeId {
     let mut bindings = BindingTable::new();
     let mut lists = VirtualLists::new();
     let mut text_edits = TextEdits::new();
+    let mut projectors = SemanticProjector::new();
 
     let widget = splitter("Editor / Preview")
         .fraction(0.4)
@@ -110,6 +111,7 @@ fn build_scene(store: &mut NodeStore) -> NodeId {
         &mut bindings,
         &mut lists,
         &mut text_edits,
+        &mut projectors,
     );
     widget.build(&mut cx);
     cx.root().expect("splitter declares a root")
@@ -205,6 +207,7 @@ impl Interactive {
         let mut bindings = BindingTable::new();
         let mut lists = VirtualLists::new();
         let mut text_edits = TextEdits::new();
+        let mut projectors = SemanticProjector::new();
 
         let widget = splitter("Editor / Preview")
             .fraction(0.0)
@@ -223,6 +226,7 @@ impl Interactive {
                 &mut bindings,
                 &mut lists,
                 &mut text_edits,
+                &mut projectors,
             );
             widget.build(&mut cx);
             cx.root().expect("splitter declares a root")

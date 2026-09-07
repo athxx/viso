@@ -63,8 +63,8 @@ use viso::prelude::*;
 use viso::render::{FrameStats, Rect, Renderer, Rgba};
 use viso::ui::{
     BindingTable, BoxStyle, BuildCx, Component, EventCx, LeafStyle, Modifiers, NodeId, NodeStore,
-    PointerButtons, PointerEvent, PointerPhase, Role, Size, StateStore, TextEdits, TimerRegistry,
-    VirtualLists, paint_tree,
+    PointerButtons, PointerEvent, PointerPhase, Role, SemanticProjector, Size, StateStore,
+    TextEdits, TimerRegistry, VirtualLists, paint_tree,
 };
 use viso::widgets::{ToastEdge, ToastHandle, ToastHandleSlot, toast};
 
@@ -121,6 +121,7 @@ fn build_shown_scene(store: &mut NodeStore) -> NodeId {
     let mut bindings = BindingTable::new();
     let mut lists = VirtualLists::new();
     let mut text_edits = TextEdits::new();
+    let mut projectors = SemanticProjector::new();
 
     let widget = toast()
         .edge(ToastEdge::Top)
@@ -134,6 +135,7 @@ fn build_shown_scene(store: &mut NodeStore) -> NodeId {
             &mut bindings,
             &mut lists,
             &mut text_edits,
+            &mut projectors,
         );
         widget.build(&mut cx);
         cx.root().expect("toast declares a root")
@@ -424,6 +426,7 @@ impl Interactive {
         let mut bindings = BindingTable::new();
         let mut lists = VirtualLists::new();
         let mut text_edits = TextEdits::new();
+        let mut projectors = SemanticProjector::new();
 
         let slot: ToastHandleSlot = Rc::new(RefCell::new(None));
         let widget = toast()
@@ -442,6 +445,7 @@ impl Interactive {
                 &mut bindings,
                 &mut lists,
                 &mut text_edits,
+                &mut projectors,
             );
             widget.build(&mut cx);
             cx.root().expect("toast declares a root")
@@ -661,6 +665,7 @@ fn setup_alloc() -> Harness {
     let mut bindings = BindingTable::new();
     let mut lists = VirtualLists::new();
     let mut text_edits = TextEdits::new();
+    let mut projectors = SemanticProjector::new();
 
     let slot: ToastHandleSlot = Rc::new(RefCell::new(None));
     let widget = toast()
@@ -676,6 +681,7 @@ fn setup_alloc() -> Harness {
             &mut bindings,
             &mut lists,
             &mut text_edits,
+            &mut projectors,
         );
         widget.build(&mut cx);
         cx.root().expect("toast declares a root")

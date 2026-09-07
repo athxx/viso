@@ -26,7 +26,7 @@
 //!
 //! ```
 //! use viso_widgets::tabs;
-//! use viso_ui::{BuildCx, BindingTable, Component, LeafStyle, NodeStore, StateStore, TextEdits, VirtualLists};
+//! use viso_ui::{SemanticProjector, BuildCx, BindingTable, Component, LeafStyle, NodeStore, StateStore, TextEdits, VirtualLists};
 //! use viso_ui::{BoxStyle, Size};
 //!
 //! let control = tabs()
@@ -44,7 +44,8 @@
 //! let mut bindings = BindingTable::new();
 //! let mut lists = VirtualLists::new();
 //! let mut text_edits = TextEdits::new();
-//! let mut cx = BuildCx::with_reactive(&mut store, &mut states, &mut bindings, &mut lists, &mut text_edits);
+//! let mut projectors = SemanticProjector::new();
+//! let mut cx = BuildCx::with_reactive(&mut store, &mut states, &mut bindings, &mut lists, &mut text_edits, &mut projectors);
 //! control.build(&mut cx);
 //! ```
 
@@ -490,8 +491,8 @@ mod tests {
     use std::cell::Cell;
     use std::rc::Rc;
     use viso_ui::{
-        BindingTable, KeyEvent, LeafStyle, Modifiers, NodeId, NodeStore, PointerEvent, StateStore,
-        TextEdits, VirtualLists,
+        BindingTable, KeyEvent, LeafStyle, Modifiers, NodeId, NodeStore, PointerEvent,
+        SemanticProjector, StateStore, TextEdits, VirtualLists,
     };
 
     /// The reactive stores a tabs build writes into, kept together so a test can
@@ -502,6 +503,7 @@ mod tests {
         bindings: BindingTable,
         lists: VirtualLists,
         text_edits: TextEdits,
+        projectors: SemanticProjector,
     }
 
     impl Reactive {
@@ -512,6 +514,7 @@ mod tests {
                 bindings: BindingTable::new(),
                 lists: VirtualLists::new(),
                 text_edits: TextEdits::new(),
+                projectors: SemanticProjector::new(),
             }
         }
 
@@ -524,6 +527,7 @@ mod tests {
                 &mut self.bindings,
                 &mut self.lists,
                 &mut self.text_edits,
+                &mut self.projectors,
             );
             control.build(&mut cx);
             cx.root().expect("tabs declares a root node")

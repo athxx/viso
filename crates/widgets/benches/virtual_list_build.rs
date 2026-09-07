@@ -25,8 +25,8 @@ use std::hint::black_box;
 
 use criterion::{Criterion, criterion_group, criterion_main};
 use viso_ui::{
-    Axis, BindingTable, BuildCx, Component, LeafStyle, Length, NodeStore, Rect, Size, StateStore,
-    TextEdits, VirtualLists, paint_tree,
+    Axis, BindingTable, BuildCx, Component, LeafStyle, Length, NodeStore, Rect, SemanticProjector,
+    Size, StateStore, TextEdits, VirtualLists, paint_tree,
 };
 use viso_widgets::{VirtualListViewStyle, virtual_list};
 
@@ -42,6 +42,7 @@ struct Reactive {
     bindings: BindingTable,
     lists: VirtualLists,
     text_edits: TextEdits,
+    projectors: SemanticProjector,
 }
 
 impl Reactive {
@@ -51,6 +52,7 @@ impl Reactive {
             bindings: BindingTable::new(),
             lists: VirtualLists::new(),
             text_edits: TextEdits::new(),
+            projectors: SemanticProjector::new(),
         }
     }
 }
@@ -89,6 +91,7 @@ fn build_scene() -> (NodeStore, viso_ui::NodeId) {
             &mut r.bindings,
             &mut r.lists,
             &mut r.text_edits,
+            &mut r.projectors,
         );
         virtual_list(list_style())
             .items(ITEM_COUNT, row)
@@ -119,6 +122,7 @@ fn bench_virtual_list(c: &mut Criterion) {
                 &mut r.bindings,
                 &mut r.lists,
                 &mut r.text_edits,
+                &mut r.projectors,
             );
             virtual_list(list_style())
                 .items(ITEM_COUNT, row)

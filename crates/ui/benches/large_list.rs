@@ -24,7 +24,8 @@ use criterion::{Criterion, criterion_group, criterion_main};
 use viso_render::Rect;
 use viso_ui::{
     Axis, BindingTable, BoxStyle, BuildCx, DirtyClass, EffectStore, Length, NodeId, NodeStore,
-    Size, StateStore, TextEdits, Vec2, VirtualListStyle, VirtualLists, virtual_list,
+    SemanticProjector, Size, StateStore, TextEdits, Vec2, VirtualListStyle, VirtualLists,
+    virtual_list,
 };
 
 const VIEWPORT_H: f32 = 600.0;
@@ -54,6 +55,7 @@ fn setup() -> Harness {
     let mut bindings = BindingTable::new();
     let mut lists = VirtualLists::new();
     let mut text_edits = TextEdits::new();
+    let mut projectors = SemanticProjector::new();
     let viewport = {
         let mut cx = BuildCx::with_reactive(
             &mut store,
@@ -61,6 +63,7 @@ fn setup() -> Harness {
             &mut bindings,
             &mut lists,
             &mut text_edits,
+            &mut projectors,
         );
         cx.virtual_list(
             VirtualListStyle {

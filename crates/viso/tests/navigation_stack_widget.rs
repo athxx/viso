@@ -47,8 +47,8 @@ use viso::gpu::{GpuBackend, HeadlessRaster, RawWindowHandle};
 use viso::render::{FrameStats, Rect, Renderer, Rgba};
 use viso::ui::{
     BindingTable, BoxStyle, BuildCx, Component, EventCx, Key, KeyEvent, KeyRouter, LeafStyle,
-    Modifiers, NodeId, NodeStore, PointerButtons, PointerEvent, PointerPhase, Role, Size, StateId,
-    StateStore, StateValue, TextEdits, VirtualLists, paint_tree,
+    Modifiers, NodeId, NodeStore, PointerButtons, PointerEvent, PointerPhase, Role,
+    SemanticProjector, Size, StateId, StateStore, StateValue, TextEdits, VirtualLists, paint_tree,
 };
 use viso::widgets::{NavHandle, NavHandleSlot, navigation_stack};
 
@@ -104,6 +104,7 @@ fn build_scene(store: &mut NodeStore) -> NodeId {
     let mut bindings = BindingTable::new();
     let mut lists = VirtualLists::new();
     let mut text_edits = TextEdits::new();
+    let mut projectors = SemanticProjector::new();
 
     let widget = navigation_stack()
         .page(page_fill(PAGE_A))
@@ -116,6 +117,7 @@ fn build_scene(store: &mut NodeStore) -> NodeId {
         &mut bindings,
         &mut lists,
         &mut text_edits,
+        &mut projectors,
     );
     widget.build(&mut cx);
     cx.root().expect("navigation stack declares a root")
@@ -224,6 +226,7 @@ impl Interactive {
         let mut bindings = BindingTable::new();
         let mut lists = VirtualLists::new();
         let mut text_edits = TextEdits::new();
+        let mut projectors = SemanticProjector::new();
 
         let slot: NavHandleSlot = Rc::new(RefCell::new(None));
         let widget = navigation_stack()
@@ -244,6 +247,7 @@ impl Interactive {
                 &mut bindings,
                 &mut lists,
                 &mut text_edits,
+                &mut projectors,
             );
             widget.build(&mut cx);
             cx.root().expect("navigation stack declares a root")

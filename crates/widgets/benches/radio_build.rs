@@ -26,8 +26,8 @@ use std::hint::black_box;
 
 use criterion::{Criterion, criterion_group, criterion_main};
 use viso_ui::{
-    BindingTable, BuildCx, Component, NodeStore, Rect, StateStore, TextEdits, VirtualLists,
-    paint_tree,
+    BindingTable, BuildCx, Component, NodeStore, Rect, SemanticProjector, StateStore, TextEdits,
+    VirtualLists, paint_tree,
 };
 use viso_widgets::radio_group;
 
@@ -41,6 +41,7 @@ struct Reactive {
     bindings: BindingTable,
     lists: VirtualLists,
     text_edits: TextEdits,
+    projectors: SemanticProjector,
 }
 
 impl Reactive {
@@ -50,6 +51,7 @@ impl Reactive {
             bindings: BindingTable::new(),
             lists: VirtualLists::new(),
             text_edits: TextEdits::new(),
+            projectors: SemanticProjector::new(),
         }
     }
 }
@@ -67,6 +69,7 @@ fn build_scene() -> (NodeStore, viso_ui::NodeId) {
             &mut r.bindings,
             &mut r.lists,
             &mut r.text_edits,
+            &mut r.projectors,
         );
         radio_group(["Small", "Medium", "Large"])
             .on_change(|_, _| {})
@@ -97,6 +100,7 @@ fn bench_radio(c: &mut Criterion) {
                 &mut r.bindings,
                 &mut r.lists,
                 &mut r.text_edits,
+                &mut r.projectors,
             );
             radio_group(["Small", "Medium", "Large"])
                 .on_change(|_, _| {})

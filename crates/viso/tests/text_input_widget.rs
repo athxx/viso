@@ -42,7 +42,8 @@ use viso::render::{FrameStats, GlyphInstanceData, Rect, Renderer, Rgba, test_gly
 use viso::ui::{
     Axis, BindingTable, BoxStyle, BuildCx, Component, Content, ImeEvent, Inset, Key, KeyEvent,
     KeyRouter, Modifiers, NodeId, NodeStore, PointerButtons, PointerEvent, PointerPhase,
-    PointerRouter, Role, Size, StateStore, TextEdits, Vec2, VirtualLists, paint_tree, text_edit,
+    PointerRouter, Role, SemanticProjector, Size, StateStore, TextEdits, Vec2, VirtualLists,
+    paint_tree, text_edit,
 };
 use viso::widgets::{ViewStyle, text_input, view};
 
@@ -93,6 +94,7 @@ fn build_scene(store: &mut NodeStore) -> (NodeId, NodeId) {
     let mut bindings = BindingTable::new();
     let mut lists = VirtualLists::new();
     let mut text_edits = TextEdits::new();
+    let mut projectors = SemanticProjector::new();
 
     let container = view(ViewStyle {
         axis: Axis::Row,
@@ -112,6 +114,7 @@ fn build_scene(store: &mut NodeStore) -> (NodeId, NodeId) {
             &mut bindings,
             &mut lists,
             &mut text_edits,
+            &mut projectors,
         );
         container.build(&mut cx);
         cx.root().expect("scene has a root")
@@ -243,6 +246,7 @@ impl Interactive {
         let mut bindings = BindingTable::new();
         let mut lists = VirtualLists::new();
         let mut text_edits = TextEdits::new();
+        let mut projectors = SemanticProjector::new();
 
         let widget = text_input("Name").value(seed).size(Size::fill());
 
@@ -253,6 +257,7 @@ impl Interactive {
                 &mut bindings,
                 &mut lists,
                 &mut text_edits,
+                &mut projectors,
             );
             widget.build(&mut cx);
             cx.root().expect("text input declares a root")
@@ -449,6 +454,7 @@ fn text_input_derives_a_textfield_semantics_node_named_by_its_label() {
     let mut bindings = BindingTable::new();
     let mut lists = VirtualLists::new();
     let mut text_edits = TextEdits::new();
+    let mut projectors = SemanticProjector::new();
 
     let root = {
         let widget = text_input("Name");
@@ -458,6 +464,7 @@ fn text_input_derives_a_textfield_semantics_node_named_by_its_label() {
             &mut bindings,
             &mut lists,
             &mut text_edits,
+            &mut projectors,
         );
         widget.build(&mut cx);
         cx.root().expect("text input declares a root")

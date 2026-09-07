@@ -58,9 +58,10 @@ pub use paint::paint_tree;
 // `BoxStyle`, `TextRequest`, or `Content`. `viso-render` is already a `viso-ui`
 // dependency, so this adds no new edge.
 pub use reactive::{
-    Cleanup, ComputeCx, ComputedId, ComputedStore, DepCursor, EffectId, EffectStore,
+    Cleanup, ComputeCx, ComputedId, ComputedStore, DepCursor, EffectId, EffectStore, ProjectId,
+    SemanticProjector,
 };
-pub use semantics::{Role, Semantics, SemanticsNode, SemanticsTree};
+pub use semantics::{Role, SemanticState, Semantics, SemanticsNode, SemanticsTree};
 pub use state::{StateId, StateStore, StateValue};
 pub use style::{BoxStyle, StyleId};
 pub use text_edit::{Buffer, EditIntent, Motion, Selection, TextEdits};

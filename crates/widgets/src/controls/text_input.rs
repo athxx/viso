@@ -43,7 +43,7 @@
 //!
 //! ```
 //! use viso_widgets::text_input;
-//! use viso_ui::{BuildCx, BindingTable, Component, NodeStore, StateStore, TextEdits, VirtualLists};
+//! use viso_ui::{SemanticProjector, BuildCx, BindingTable, Component, NodeStore, StateStore, TextEdits, VirtualLists};
 //!
 //! let name = text_input("Name").value("Ada").on_change(|_ev, text| {
 //!     // handle the new text — e.g. write app state through the cx
@@ -56,7 +56,8 @@
 //! let mut bindings = BindingTable::new();
 //! let mut lists = VirtualLists::new();
 //! let mut text_edits = TextEdits::new();
-//! let mut cx = BuildCx::with_reactive(&mut store, &mut states, &mut bindings, &mut lists, &mut text_edits);
+//! let mut projectors = SemanticProjector::new();
+//! let mut cx = BuildCx::with_reactive(&mut store, &mut states, &mut bindings, &mut lists, &mut text_edits, &mut projectors);
 //! name.build(&mut cx);
 //! ```
 
@@ -296,8 +297,8 @@ impl Component for TextInput {
 mod tests {
     use super::*;
     use viso_ui::{
-        BindingTable, KeyEvent, Modifiers, NodeId, NodeStore, PointerEvent, StateStore, TextEdits,
-        VirtualLists,
+        BindingTable, KeyEvent, Modifiers, NodeId, NodeStore, PointerEvent, SemanticProjector,
+        StateStore, TextEdits, VirtualLists,
     };
 
     /// The reactive stores a text-input build writes into, kept together so a test
@@ -309,6 +310,7 @@ mod tests {
         bindings: BindingTable,
         lists: VirtualLists,
         text_edits: TextEdits,
+        projectors: SemanticProjector,
     }
 
     impl Reactive {
@@ -319,6 +321,7 @@ mod tests {
                 bindings: BindingTable::new(),
                 lists: VirtualLists::new(),
                 text_edits: TextEdits::new(),
+                projectors: SemanticProjector::new(),
             }
         }
 
@@ -330,6 +333,7 @@ mod tests {
                 &mut self.bindings,
                 &mut self.lists,
                 &mut self.text_edits,
+                &mut self.projectors,
             );
             t.build(&mut cx);
             cx.root().expect("text input declares a root node")

@@ -43,7 +43,8 @@ use viso_ui::state::{StateKey, StateMigration};
 use viso_ui::virtual_list::VirtualLists;
 use viso_ui::{
     Axis, Binding, BindingTable, BuildCx, DirtyClass, EffectStore, FlexStyle, Handle, LeafStyle,
-    Length, NodeId, NodeStore, ScrollStyle, Size, StateId, StateStore, StateValue, TextEdits,
+    Length, NodeId, NodeStore, ScrollStyle, SemanticProjector, Size, StateId, StateStore,
+    StateValue, TextEdits,
 };
 
 /// What the commit did to the live runtime, for introspection and tests
@@ -84,6 +85,9 @@ pub struct LiveRuntime<'a> {
     /// The edit-buffer registry, needed to author any freshly built `text_input`
     /// subtree (its retained [`Buffer`](viso_ui::Buffer) registers here).
     pub text_edits: &'a mut TextEdits,
+    /// The semantic-state projection registry, needed to author any freshly built
+    /// stateful subtree (a control's projection registers here).
+    pub projectors: &'a mut SemanticProjector,
     /// The current tree root, produced by the last-good build. Updated in place if
     /// the root node is itself re-typed.
     pub root: Option<NodeId>,
@@ -227,7 +231,14 @@ fn build_tree(
     tree: &UiTree,
     map: &mut Vec<(NodeKey, NodeId)>,
 ) -> Option<NodeId> {
-    let mut cx = BuildCx::with_reactive(rt.store, rt.states, rt.bindings, rt.lists, rt.text_edits);
+    let mut cx = BuildCx::with_reactive(
+        rt.store,
+        rt.states,
+        rt.bindings,
+        rt.lists,
+        rt.text_edits,
+        rt.projectors,
+    );
     let mut next: u32 = 0;
     for item in &tree.items {
         build_item(&mut cx, item, &mut next, map);

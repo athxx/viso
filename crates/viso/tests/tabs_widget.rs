@@ -45,7 +45,7 @@ use viso::render::{FrameStats, GlyphInstanceData, Rect, Renderer, Rgba, test_gly
 use viso::ui::{
     BindingTable, BoxStyle, BuildCx, Component, Content, Key, KeyEvent, KeyRouter, LeafStyle,
     Modifiers, NodeId, NodeStore, PointerButtons, PointerEvent, PointerPhase, PointerRouter, Role,
-    Size, StateStore, TextEdits, Vec2, VirtualLists, paint_tree,
+    SemanticProjector, Size, StateStore, TextEdits, Vec2, VirtualLists, paint_tree,
 };
 use viso::widgets::tabs;
 
@@ -108,6 +108,7 @@ fn build_scene(store: &mut NodeStore) -> NodeId {
     let mut bindings = BindingTable::new();
     let mut lists = VirtualLists::new();
     let mut text_edits = TextEdits::new();
+    let mut projectors = SemanticProjector::new();
 
     let widget = tabs()
         .tab("Details", panel_fill(PANEL_A))
@@ -121,6 +122,7 @@ fn build_scene(store: &mut NodeStore) -> NodeId {
         &mut bindings,
         &mut lists,
         &mut text_edits,
+        &mut projectors,
     );
     widget.build(&mut cx);
     cx.root().expect("tabs declares a root")
@@ -266,6 +268,7 @@ impl Interactive {
         let mut bindings = BindingTable::new();
         let mut lists = VirtualLists::new();
         let mut text_edits = TextEdits::new();
+        let mut projectors = SemanticProjector::new();
 
         let widget = tabs()
             .tab("Details", panel_fill(PANEL_A))
@@ -284,6 +287,7 @@ impl Interactive {
                 &mut bindings,
                 &mut lists,
                 &mut text_edits,
+                &mut projectors,
             );
             widget.build(&mut cx);
             cx.root().expect("tabs declares a root")

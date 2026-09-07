@@ -24,8 +24,8 @@ use std::hint::black_box;
 
 use criterion::{Criterion, criterion_group, criterion_main};
 use viso_ui::{
-    BindingTable, BuildCx, Component, NodeStore, Rect, StateStore, TextEdits, VirtualLists,
-    paint_tree,
+    BindingTable, BuildCx, Component, NodeStore, Rect, SemanticProjector, StateStore, TextEdits,
+    VirtualLists, paint_tree,
 };
 use viso_widgets::slider;
 
@@ -39,6 +39,7 @@ struct Reactive {
     bindings: BindingTable,
     lists: VirtualLists,
     text_edits: TextEdits,
+    projectors: SemanticProjector,
 }
 
 impl Reactive {
@@ -48,6 +49,7 @@ impl Reactive {
             bindings: BindingTable::new(),
             lists: VirtualLists::new(),
             text_edits: TextEdits::new(),
+            projectors: SemanticProjector::new(),
         }
     }
 }
@@ -64,6 +66,7 @@ fn build_scene() -> (NodeStore, viso_ui::NodeId) {
             &mut r.bindings,
             &mut r.lists,
             &mut r.text_edits,
+            &mut r.projectors,
         );
         slider("Volume")
             .range(0.0, 100.0)
@@ -96,6 +99,7 @@ fn bench_slider(c: &mut Criterion) {
                 &mut r.bindings,
                 &mut r.lists,
                 &mut r.text_edits,
+                &mut r.projectors,
             );
             slider("Volume")
                 .range(0.0, 100.0)

@@ -30,7 +30,7 @@
 //! use std::cell::RefCell;
 //! use std::rc::Rc;
 //! use viso_widgets::{NavHandleSlot, navigation_stack};
-//! use viso_ui::{BuildCx, BindingTable, Component, LeafStyle, NodeStore, StateStore, TextEdits, VirtualLists};
+//! use viso_ui::{SemanticProjector, BuildCx, BindingTable, Component, LeafStyle, NodeStore, StateStore, TextEdits, VirtualLists};
 //! use viso_ui::{BoxStyle, Size};
 //!
 //! let handle: NavHandleSlot = Rc::new(RefCell::new(None));
@@ -49,7 +49,8 @@
 //! let mut bindings = BindingTable::new();
 //! let mut lists = VirtualLists::new();
 //! let mut text_edits = TextEdits::new();
-//! let mut cx = BuildCx::with_reactive(&mut store, &mut states, &mut bindings, &mut lists, &mut text_edits);
+//! let mut projectors = SemanticProjector::new();
+//! let mut cx = BuildCx::with_reactive(&mut store, &mut states, &mut bindings, &mut lists, &mut text_edits, &mut projectors);
 //! control.build(&mut cx);
 //! // `handle` is now filled; the app can `handle.borrow().clone().unwrap().push(ev)` from a page.
 //! ```
@@ -377,7 +378,7 @@ mod tests {
     use std::cell::Cell;
     use viso_ui::{
         BindingTable, KeyEvent, LeafStyle, Modifiers, NodeStore, PointerButtons, PointerEvent,
-        PointerPhase, StateStore, TextEdits, VirtualLists,
+        PointerPhase, SemanticProjector, StateStore, TextEdits, VirtualLists,
     };
 
     /// The reactive stores a navigation-stack build writes into, kept together so a
@@ -389,6 +390,7 @@ mod tests {
         bindings: BindingTable,
         lists: VirtualLists,
         text_edits: TextEdits,
+        projectors: SemanticProjector,
     }
 
     impl Reactive {
@@ -399,6 +401,7 @@ mod tests {
                 bindings: BindingTable::new(),
                 lists: VirtualLists::new(),
                 text_edits: TextEdits::new(),
+                projectors: SemanticProjector::new(),
             }
         }
 
@@ -411,6 +414,7 @@ mod tests {
                 &mut self.bindings,
                 &mut self.lists,
                 &mut self.text_edits,
+                &mut self.projectors,
             );
             control.build(&mut cx);
             cx.root().expect("navigation stack declares a root node")

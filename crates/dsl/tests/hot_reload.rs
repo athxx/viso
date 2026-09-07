@@ -20,7 +20,10 @@
 use viso_dsl::hotreload::{CandidatePlan, HotReloadReport, LiveAnchors, LiveRuntime, hot_reload};
 use viso_ui::state::StateKey;
 use viso_ui::virtual_list::VirtualLists;
-use viso_ui::{BindingTable, EffectStore, NodeId, NodeStore, StateStore, StateValue, TextEdits};
+use viso_ui::{
+    BindingTable, EffectStore, NodeId, NodeStore, SemanticProjector, StateStore, StateValue,
+    TextEdits,
+};
 
 /// The mutable live runtime a headless reload commits into, owned by the test so it
 /// outlives the borrows a `LiveRuntime` bundles.
@@ -31,6 +34,7 @@ struct Live {
     effects: EffectStore,
     lists: VirtualLists,
     text_edits: TextEdits,
+    projectors: SemanticProjector,
     root: Option<NodeId>,
     scratch: Vec<NodeId>,
 }
@@ -44,6 +48,7 @@ impl Live {
             effects: EffectStore::new(),
             lists: VirtualLists::new(),
             text_edits: TextEdits::new(),
+            projectors: SemanticProjector::new(),
             root: None,
             scratch: Vec::new(),
         }
@@ -58,6 +63,7 @@ impl Live {
             effects: &mut self.effects,
             lists: &mut self.lists,
             text_edits: &mut self.text_edits,
+            projectors: &mut self.projectors,
             root: self.root,
             scratch: &mut self.scratch,
         }

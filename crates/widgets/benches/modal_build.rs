@@ -31,8 +31,8 @@ use std::rc::Rc;
 
 use criterion::{Criterion, criterion_group, criterion_main};
 use viso_ui::{
-    BindingTable, BoxStyle, BuildCx, Component, LeafStyle, NodeId, NodeStore, Rect, Rgba, Size,
-    StateStore, TextEdits, VirtualLists, paint_tree,
+    BindingTable, BoxStyle, BuildCx, Component, LeafStyle, NodeId, NodeStore, Rect, Rgba,
+    SemanticProjector, Size, StateStore, TextEdits, VirtualLists, paint_tree,
 };
 use viso_widgets::{ModalHandleSlot, modal};
 
@@ -55,6 +55,7 @@ struct Reactive {
     bindings: BindingTable,
     lists: VirtualLists,
     text_edits: TextEdits,
+    projectors: SemanticProjector,
 }
 
 impl Reactive {
@@ -64,6 +65,7 @@ impl Reactive {
             bindings: BindingTable::new(),
             lists: VirtualLists::new(),
             text_edits: TextEdits::new(),
+            projectors: SemanticProjector::new(),
         }
     }
 }
@@ -93,6 +95,7 @@ fn build_scene() -> (NodeStore, NodeId) {
             &mut r.bindings,
             &mut r.lists,
             &mut r.text_edits,
+            &mut r.projectors,
         );
         modal()
             .scrim(SCRIM)
@@ -145,6 +148,7 @@ fn bench_modal(c: &mut Criterion) {
                 &mut r.bindings,
                 &mut r.lists,
                 &mut r.text_edits,
+                &mut r.projectors,
             );
             modal()
                 .scrim(SCRIM)
