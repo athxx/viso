@@ -938,7 +938,8 @@ enter/leave 合成、无 hover 追踪、无控件用 hover 反馈。落 `crates/
 spanning 放置 + auto-flow;ADR 0009 明列六项高级能力全未做。落 `crates/ui/src/grid.rs` + 更新 ADR 0009(或开新 ADR)。
 按子能力拆多小节,每节一提交:
 
-- [ ] `minmax()` / `repeat()` / `fit-content()` track sizing(`TrackSizing` 加变体)。
+- [x] `minmax()` / `repeat()` / `fit-content()` track sizing(`TrackSizing` 加 `Minmax`/`FitContent` 变体;`repeat` 为创作期展开辅助)。
+      顺带删 grid.rs 三处陈旧 `#[allow(dead_code)]`(GridTracks/place_children/solve_tracks 已被 layout.rs 调用)+ 删 GridTracks 死字段 `auto_rows`。
 - [ ] named lines / template-areas(`GridPlacement` 加命名放置)。
 - [ ] subgrid(子 grid 继承父轨道)。
 - [ ] baseline 对齐(跨 grid item 基线对齐)。

@@ -506,7 +506,6 @@ impl NodeStore {
             GridTracks {
                 columns: style.columns,
                 rows: style.rows,
-                auto_rows: style.auto_rows,
             },
         );
         id
@@ -2164,7 +2163,6 @@ impl<'a> BuildCx<'a> {
             GridTracks {
                 columns: style.columns,
                 rows: style.rows,
-                auto_rows: style.auto_rows,
             },
         );
         self.stack.push(id);
