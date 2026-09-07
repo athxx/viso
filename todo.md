@@ -881,11 +881,16 @@ derive_semantics),无上一棵缓存、无 per-subtree 增量。落 `crates/ui/s
 **8.3 — resolve_styles bound-node 缓存(性能地基)** —— 今天 `resolve_styles` 对整个 dirty 数组 `0..dirty.len()` 全扫找
 STYLE 标记(component.rs)。落 `crates/ui/src/component.rs`。
 
-- [ ] 缓存"绑定了 style token 的节点列表",STYLE resolve 只遍历该列表而非全 dirty 数组。
-- [ ] 设计:列表随 bind/unbind 维护(增删节点时更新);确认与节点生死(generation)一致,死节点不残留。
-- [ ] 验证包:样式解析结果不变 + **microbench**(大树少量 styled 节点:全扫 vs 缓存列表,§7.3 先测证明扫描热才做)+
-      alloc profile(稳态零 alloc)。**注(§7.3):backlog 原文写"cache when a huge tree makes the scan hot (measured,
-      not now)"—— 先加 microbench 量到扫描确实热,再决定是否值得缓存;若基线不热,记录测量结论后跳过,不无据加复杂度。**
+- [x] microbench(§7.3 先测):`crates/ui/benches/style_resolve.rs` —— 大树少量 styled 节点(6101 节点,每 20 个叶 1 个带
+      style token 绑定 = 305 绑定叶),theme 换值 → flush 标 STYLE → `resolve_styles` 全扫 `0..dirty.len()`。启动断言 pin:恰好
+      重解析 305 个绑定叶、绑定集 < 树 1/4。**基线实测:swap+flush+resolve 全程 ~10.7µs**(内含 6101 次 bitflag `intersects`
+      全扫 + 305 次 `StyleId::resolve` 真实工作)。
+- [x] **决策门 → Gate A(跳过缓存):不加 bound-node 列表。** 判据:(1) `resolve_styles` 帧循环**零 live 消费者** ——
+      `crates/viso/src/lib.rs::relayout_and_paint` 做 relayout/transform/repaint,**无 STYLE resolve 阶段**,`resolve_styles`
+      仅被 component.rs 单测调用(STYLE 增量层已实现未接入帧循环);(2) **全扫不热** —— 整个 swap+resolve 才 10.7µs,6101 次
+      bitflag `intersects` 全扫是其中极小一部分,缓存省掉的正是这部分、收益微乎其微,却要引入随 bind/unbind + 节点生死维护的列表
+      (§8.2 冷数据/一致性负担)。按 §7.3 及 backlog 原文「cache when a huge tree makes the scan hot (measured, not now)」——
+      **记录基线、跳过、无 ADR 变更**。~~bound-node 列表 + alloc profile~~ 仅扫描测热才做,未测热。
 
 **8.4 — hover / enter / leave(输入地基,从零)** —— 今天只有窗口级 `PointerPhase::Leave`(离开窗口边界),无 per-node
 enter/leave 合成、无 hover 追踪、无控件用 hover 反馈。落 `crates/ui/src/input.rs` router + component.rs hover 追踪状态。
