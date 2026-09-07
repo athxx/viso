@@ -868,11 +868,15 @@ derive 路径 + 四控件接线。
 **8.2 — Per-subtree 增量语义(性能地基)** —— 今天任一 SEMANTICS 脏即从 root 全树重建 `SemanticsTree`(component.rs
 derive_semantics),无上一棵缓存、无 per-subtree 增量。落 `crates/ui/src/component.rs` derive 路径 + semantics.rs。
 
-- [ ] 缓存上一棵 `SemanticsTree`;SEMANTICS 脏时只重建受影响子树,未脏子树复用缓存节点。
-- [ ] 设计:per-subtree dirty 传播边界(SEMANTICS 脏冒泡到 root 但重建只在脏子树);确认与 focus 变更(apply_focus 标
-      SEMANTICS)的交互不导致全树重建。
-- [ ] 验证包:语义快照不变(增量与全建结果一致)+ **microbench**(大树单节点 label 改 → 增量 vs 全建,§7.3 先测基线证明
-      热)+ alloc profile(增量重建的 alloc < 全建)。§68 触发(reactive/semantics 增量语义,评估 ADR)。
+- [x] 提交 1(microbench + 基线 + 决策门,`crates/ui/benches/semantic_projection.rs`):加 CONTAINERS×LEAVES 大树(6101 节点:
+      root + 100 容器 × 60 带非平凡 String label 叶子)+ `derive_full_single_label_change` bench(改一叶 label 冒泡到 root →
+      计时 `derive_semantics_dirty(root)`)+ 启动断言 pin 规模 + 改动 label 确实入树。**基线实测:~317µs**(6101 节点全量重建)。
+- [x] **决策门 → Gate A(预期结局):STOP,不建增量机器。** 判据:(1) 帧循环**零 live 消费者** —— `crates/viso/src` 无任何
+      `derive_semantics*` 调用,widgets/reactive/component 的全部调用均在 `#[cfg(test)]`(toggle/checkbox/slider/radio 的
+      `derive_state` 测试 helper、reactive.rs/component.rs 单测),出货帧支付 0 次/帧;(2) 扁平表示(`children: Vec<usize>` 绝对
+      索引)无法廉价拼接复用子树,增量唯一可回收的是 label String clone,而 id→index map + 定位重建本身仍 O(n) 走树 —— 收益上限
+      仅省 clone、不省走树。按 §7.3/§37 及 ADR 0021 已记的 deferral(0021 Consequences:「deferred until a live consumer needs
+      it」),**记录基线、不加复杂度、无 ADR 变更**。~~提交 2/3(SemanticsCache + 增量派生 + 对比 alloc)~~ 仅 Gate B 触发,未触发。
 
 **8.3 — resolve_styles bound-node 缓存(性能地基)** —— 今天 `resolve_styles` 对整个 dirty 数组 `0..dirty.len()` 全扫找
 STYLE 标记(component.rs)。落 `crates/ui/src/component.rs`。

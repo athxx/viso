@@ -29,6 +29,97 @@ use viso_ui::{
     SemanticState, Semantics, StateId, StateStore, StateValue, TextEdits, VirtualLists,
 };
 
+/// The section 8.2 decision-gate baseline: a wide, labeled tree so the
+/// full-rebuild cost center — a `String` label clone per labeled node in
+/// `derive_semantics` — is real, not hidden in a 256-node flat fan-out. A single
+/// leaf's label changes (marking SEMANTICS, which bubbles to the root), then the
+/// *whole* tree is re-derived from the root, exactly as today's
+/// `derive_semantics_dirty` does. This measures whether the full rebuild on a
+/// one-node change is hot enough to justify per-subtree incremental derivation
+/// before any incremental machinery is written (AGENTS section 7.3).
+const CONTAINERS: usize = 100;
+
+/// Labeled leaves per container. `CONTAINERS * LEAVES` labeled nodes carry a
+/// non-trivial `String` each, so the per-node clone dominates the derive walk.
+const LEAVES: usize = 60;
+
+/// A labeled scene: one flex root over `CONTAINERS` flex containers, each holding
+/// `LEAVES` labeled leaves — `CONTAINERS * LEAVES` labeled nodes, every label a
+/// distinct non-trivial `String` so the clone cost in `derive_semantics` is
+/// visible. Returns the store, the root, and one deep leaf whose label the bench
+/// mutates.
+fn labeled_scene() -> (NodeStore, NodeId, NodeId) {
+    let mut store = NodeStore::new();
+    let mut states = StateStore::new();
+    let mut bindings = BindingTable::new();
+    let mut lists = VirtualLists::new();
+    let mut text_edits = TextEdits::new();
+    let mut projectors = SemanticProjector::new();
+
+    let mut probe = None;
+    let root = {
+        let mut cx = BuildCx::with_reactive(
+            &mut store,
+            &mut states,
+            &mut bindings,
+            &mut lists,
+            &mut text_edits,
+            &mut projectors,
+        );
+        let root = cx.flex(FlexStyle::default(), |cx| {
+            for c in 0..CONTAINERS {
+                cx.flex(FlexStyle::default(), |cx| {
+                    for l in 0..LEAVES {
+                        let leaf = cx.leaf(LeafStyle::default());
+                        cx.semantics(
+                            leaf,
+                            Semantics::role(Role::Label)
+                                .with_label(format!("item {c}-{l} accessible label")),
+                        );
+                        // Keep one deep leaf to mutate in the bench.
+                        if c == CONTAINERS / 2 && l == LEAVES / 2 {
+                            probe = Some(leaf.id());
+                        }
+                    }
+                });
+            }
+        });
+        root.id()
+    };
+
+    (store, root, probe.expect("a probe leaf was recorded"))
+}
+
+/// The startup guard for the baseline bench: the labeled scene has the expected
+/// node count and the mutated probe leaf's label actually reaches the derived
+/// tree — so a regression that drops the label (or the tree) fails loud rather
+/// than timing a no-op walk. Mirrors `assert_projection_reaches_the_tree`.
+fn assert_labeled_scene_derives() {
+    let (mut store, root, probe) = labeled_scene();
+    let tree = store.derive_semantics(root);
+    // root + CONTAINERS containers + CONTAINERS*LEAVES leaves.
+    let expected = 1 + CONTAINERS + CONTAINERS * LEAVES;
+    assert_eq!(
+        tree.len(),
+        expected,
+        "the labeled scene derives one node per live node"
+    );
+
+    store.clear_dirty();
+    store.set_semantics(
+        probe,
+        Semantics::role(Role::Label).with_label("changed label"),
+    );
+    let tree = store
+        .derive_semantics_dirty(root)
+        .expect("a label change is a semantic change");
+    assert_eq!(
+        tree.get(probe).and_then(|n| n.label.as_deref()),
+        Some("changed label"),
+        "the changed label reaches the derived tree"
+    );
+}
+
 /// One shared state fans out to this many bound option nodes — wide enough that
 /// the per-node projection/derive walk dominates the per-state bookkeeping, so a
 /// regression in either shows up in the timing rather than hiding in setup.
@@ -153,5 +244,41 @@ fn bench_semantic_projection(c: &mut Criterion) {
     });
 }
 
-criterion_group!(benches, bench_semantic_projection);
+/// The section 8.2 decision-gate baseline: on a wide labeled tree, change a single
+/// leaf's label (marking SEMANTICS, which bubbles to the root) and time the full
+/// re-derive from the root — today's `derive_semantics_dirty` behavior. This is the
+/// cost per-subtree incremental derivation would try to beat; the number decides
+/// whether that machinery is worth writing (Gate A: not hot / no live consumer →
+/// record and stop; Gate B: hot and consumed → build it).
+fn bench_derive_full_single_label_change(c: &mut Criterion) {
+    assert_labeled_scene_derives();
+
+    c.bench_function("derive_full_single_label_change", |b| {
+        let (mut store, root, probe) = labeled_scene();
+        // Prime the derive path once so any first-touch growth is out of the timing.
+        black_box(store.derive_semantics(root));
+        let mut counter = 0u64;
+        b.iter(|| {
+            // A distinct label each iteration so every wake is a real change that
+            // marks SEMANTICS and bubbles to the root.
+            counter += 1;
+            store.clear_dirty();
+            store.set_semantics(
+                probe,
+                Semantics::role(Role::Label).with_label(format!("label {counter}")),
+            );
+            black_box(
+                store
+                    .derive_semantics_dirty(black_box(root))
+                    .expect("a label change is a semantic change"),
+            )
+        });
+    });
+}
+
+criterion_group!(
+    benches,
+    bench_semantic_projection,
+    bench_derive_full_single_label_change
+);
 criterion_main!(benches);
