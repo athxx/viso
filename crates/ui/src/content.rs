@@ -45,6 +45,11 @@ pub enum Content {
         color: Rgba,
         /// The run's intrinsic size in physical pixels.
         natural: Vec2,
+        /// The first-line baseline: the distance in physical pixels from the top
+        /// of the run down to the baseline of its first line (one ascender below
+        /// the top). Layout containers that align on the text baseline (grid
+        /// `AlignItems::Baseline`) read this; it is `0` for an empty run.
+        baseline: f32,
     },
     /// A textured image drawn into the node's box. `uv` selects the source
     /// sub-rect in normalized texture coordinates, `tint` modulates it.
@@ -81,6 +86,17 @@ impl Content {
             Content::Text { natural, .. }
             | Content::Image { natural, .. }
             | Content::Path { natural, .. } => *natural,
+        }
+    }
+
+    /// The content's first-line baseline in physical pixels, or `None` when it
+    /// has no text baseline (image/path). A grid cell aligned on the baseline
+    /// falls back to the child's full extent when this is `None`.
+    #[inline]
+    pub fn baseline(&self) -> Option<f32> {
+        match self {
+            Content::Text { baseline, .. } => Some(*baseline),
+            Content::Image { .. } | Content::Path { .. } => None,
         }
     }
 }
@@ -122,8 +138,10 @@ mod tests {
                 a: 1.0,
             },
             natural: Vec2 { x: 42.0, y: 12.0 },
+            baseline: 9.0,
         };
         assert_eq!(text.natural(), Vec2 { x: 42.0, y: 12.0 });
+        assert_eq!(text.baseline(), Some(9.0));
 
         let image = Content::Image {
             texture: TextureId(2),
@@ -142,6 +160,7 @@ mod tests {
             natural: Vec2 { x: 64.0, y: 64.0 },
         };
         assert_eq!(image.natural(), Vec2 { x: 64.0, y: 64.0 });
+        assert_eq!(image.baseline(), None, "an image has no text baseline");
 
         let path = Content::Path {
             cmds: Vec::new(),

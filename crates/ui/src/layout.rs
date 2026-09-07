@@ -146,6 +146,27 @@ pub enum Align {
     Stretch,
 }
 
+/// How a grid cell's content is aligned within the cell along the block (row /
+/// vertical) axis. `Stretch` (the default) grows a fillable child to the cell
+/// height; the others place the child at its natural height and shift it.
+/// `Baseline` aligns each cell's first-line text baseline to the tallest
+/// baseline in its row, so mixed-size labels sit on a common baseline; a cell
+/// with no text baseline falls back to `Start`.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub enum AlignItems {
+    /// Grow a fillable child to the full cell height (CSS default).
+    #[default]
+    Stretch,
+    /// Pin the child to the top of the cell at its natural height.
+    Start,
+    /// Center the child vertically at its natural height.
+    Center,
+    /// Pin the child to the bottom of the cell at its natural height.
+    End,
+    /// Align the child's first-line baseline to its row's tallest baseline.
+    Baseline,
+}
+
 /// Four-edge inset in pixels (padding for a container).
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct Inset {
@@ -271,6 +292,8 @@ pub enum LayoutInput {
         padding: Inset,
         /// Sizing rule for implicitly created rows.
         auto_rows: TrackSizing,
+        /// Block-axis (vertical) alignment of each cell's content within its cell.
+        align_items: AlignItems,
         /// The grid box's own size request within its parent.
         size: Size,
     },
@@ -362,6 +385,10 @@ pub trait LayoutTree {
     /// content. A `Fit`/`Fill` leaf axis resolves against this; a `None` leaf
     /// measures to `0` on both axes (a bare layout leaf, the prior behavior).
     fn content_natural(&self, index: u32) -> Option<Vec2>;
+    /// A node's first-line text baseline in physical pixels, or `None` when it
+    /// carries no text content. Read only by a grid cell aligned on the baseline
+    /// (`AlignItems::Baseline`); the common node never touches it.
+    fn content_baseline(&self, index: u32) -> Option<f32>;
     /// Whether a node (and its subtree) is folded out of layout. A hidden node
     /// measures to zero on both axes and lays out to a zero rect, contributing
     /// nothing to a parent's main-axis sum, without a structural rebuild.
@@ -762,6 +789,7 @@ fn layout_grid(tree: &mut impl LayoutTree, root: u32, bounds: Rect, scratch: &mu
         row_gap,
         padding,
         auto_rows,
+        align_items,
         ..
     } = tree.input(root)
     else {
@@ -879,6 +907,26 @@ fn layout_grid(tree: &mut impl LayoutTree, root: u32, bounds: Rect, scratch: &mu
     let col_offsets = prefix_offsets(&col_sizes, column_gap);
     let row_offsets = prefix_offsets(&row_sizes, row_gap);
 
+    // For `AlignItems::Baseline` each row shares a baseline: the max first-line
+    // baseline of the cells starting on that row. A cell aligns its own baseline
+    // to that shared line, so mixed-font-size cells sit on one text line. A cell
+    // whose content has no text baseline contributes none and falls back to Start.
+    let row_baselines: Vec<f32> = if align_items == AlignItems::Baseline {
+        let mut b = vec![0.0f32; row_sizes.len()];
+        for i in 0..child_count {
+            let child = scratch[start + i];
+            if let Some(base) = tree.content_baseline(child) {
+                let row = regions[i].row as usize;
+                if base > b[row] {
+                    b[row] = base;
+                }
+            }
+        }
+        b
+    } else {
+        Vec::new()
+    };
+
     // Lay each child into its cell rect. A cell spanning k tracks measures
     // offset(start) .. offset(start+span) minus the trailing gap.
     for i in 0..child_count {
@@ -894,22 +942,42 @@ fn layout_grid(tree: &mut impl LayoutTree, root: u32, bounds: Rect, scratch: &mu
             w: (cx1 - cx0).max(0.0),
             h: (ry1 - ry0).max(0.0),
         };
-        // The child fills its cell when it requests Fill/Stretch; a Fixed/Fit
-        // child hugs its own size, top-left within the cell.
+        // Horizontal (inline axis): the child fills its cell when it requests
+        // Fill; a Fixed/Fit child hugs its own size at the cell's left edge.
         let size = tree.input(child).size();
         let cw = match size.width {
             Length::Fixed(v) => v,
             Length::Fit => tree.measured(child).on(Axis::Row),
             Length::Fill { .. } => cell.w,
         };
-        let ch = match size.height {
-            Length::Fixed(v) => v,
-            Length::Fit => tree.measured(child).on(Axis::Column),
-            Length::Fill { .. } => cell.h,
+        // Vertical (block axis): a `Fill` child stretches to the cell unless the
+        // grid overrides with a non-Stretch `align_items`; a Fixed/Fit child
+        // always hugs its own size and is then positioned by `align_items`.
+        let stretch =
+            matches!(size.height, Length::Fill { .. }) && align_items == AlignItems::Stretch;
+        let ch = if stretch {
+            cell.h
+        } else {
+            match size.height {
+                Length::Fixed(v) => v,
+                Length::Fit | Length::Fill { .. } => tree.measured(child).on(Axis::Column),
+            }
+        };
+        // Block-axis offset of the child within its cell per `align_items`.
+        // Baseline aligns the child's own baseline to the row's shared baseline,
+        // falling back to Start when the child has no text baseline.
+        let dy = match align_items {
+            AlignItems::Stretch | AlignItems::Start => 0.0,
+            AlignItems::Center => (cell.h - ch) * 0.5,
+            AlignItems::End => cell.h - ch,
+            AlignItems::Baseline => match tree.content_baseline(child) {
+                Some(base) => row_baselines[r.row as usize] - base,
+                None => 0.0,
+            },
         };
         let child_box = Rect {
             x: cell.x,
-            y: cell.y,
+            y: cell.y + dy,
             w: cw,
             h: ch,
         };
@@ -1397,6 +1465,167 @@ mod tests {
                 h: 40.0
             }
         );
+    }
+
+    /// A `Fit` text leaf of a given intrinsic height and first-line baseline,
+    /// appended as a grid child. It measures to `natural.y` on the block axis and
+    /// reports `baseline` through `content_baseline`, so a row's baseline math is
+    /// exercised with real per-child values. The glyph run and atlas are empty —
+    /// only the content's `natural`/`baseline` fields matter to layout.
+    fn text_cell_child(
+        store: &mut crate::component::NodeStore,
+        height: f32,
+        baseline: f32,
+    ) -> crate::NodeId {
+        use crate::content::Content;
+        use viso_render::{Rgba, TextureId};
+        let id = store.alloc_leaf(Size {
+            width: Length::Fit,
+            height: Length::Fit,
+        });
+        store.set_content_payload(
+            id,
+            Content::Text {
+                glyphs: Vec::new(),
+                atlas: TextureId(0),
+                color: Rgba {
+                    r: 1.0,
+                    g: 1.0,
+                    b: 1.0,
+                    a: 1.0,
+                },
+                natural: Vec2 { x: 20.0, y: height },
+                baseline,
+            },
+        );
+        id
+    }
+
+    #[test]
+    fn baseline_align_seats_mixed_cells_on_one_baseline() {
+        use crate::component::NodeStore;
+        use crate::grid::{GridStyle, TrackSizing};
+        // One row, two auto-flow columns, 100px tall row. Two text cells of
+        // different heights and different first-line baselines. With
+        // `AlignItems::Baseline` each child's own baseline lands on the row's
+        // shared baseline (the max of the two), so their baselines coincide.
+        let mut store = NodeStore::new();
+        let grid = store.alloc_grid(GridStyle {
+            columns: vec![TrackSizing::Fixed(50.0), TrackSizing::Fixed(50.0)],
+            rows: vec![TrackSizing::Fixed(100.0)],
+            align_items: AlignItems::Baseline,
+            size: Size::fixed(100.0, 100.0),
+            ..Default::default()
+        });
+        // Tall cell: 40px run, baseline 30 below its top.
+        let tall = text_cell_child(&mut store, 40.0, 30.0);
+        // Short cell: 24px run, baseline 18 below its top.
+        let short = text_cell_child(&mut store, 24.0, 18.0);
+        store.arena_append_child(grid, tall);
+        store.arena_append_child(grid, short);
+        let mut scratch = Vec::new();
+        crate::layout::measure(&mut store, grid.index(), &mut scratch);
+        crate::layout::layout(
+            &mut store,
+            grid.index(),
+            surface_local(100.0, 100.0),
+            &mut scratch,
+        );
+        // Shared baseline = max(30, 18) = 30, measured from the row's top (y=0).
+        // Tall child sits at its full baseline (dy = 30 - 30 = 0) → top y = 0,
+        // its baseline at 0 + 30 = 30.
+        let tb = store.bounds(tall);
+        assert_eq!(
+            tb.y, 0.0,
+            "tall cell anchors the shared baseline at its top"
+        );
+        // Short child offsets down (dy = 30 - 18 = 12) → top y = 12, its baseline
+        // at 12 + 18 = 30. Both baselines coincide at y = 30.
+        let sb = store.bounds(short);
+        assert_eq!(
+            sb.y, 12.0,
+            "short cell drops so its baseline meets the row's"
+        );
+        assert_eq!(
+            tb.y + 30.0,
+            sb.y + 18.0,
+            "both cells' first-line baselines land on the same y"
+        );
+    }
+
+    #[test]
+    fn align_items_offsets_a_fixed_cell_in_its_row() {
+        use crate::component::NodeStore;
+        use crate::grid::{GridStyle, TrackSizing};
+        // A 40px-tall fixed child in a 100px row, laid out under each non-baseline
+        // align_items. Start hugs the top, Center splits the slack, End drops to
+        // the bottom; Stretch (the default) still hugs its own height for a Fixed
+        // child (only Fill children grow), so it matches Start.
+        let cases = [
+            (AlignItems::Start, 0.0),
+            (AlignItems::Center, 30.0),
+            (AlignItems::End, 60.0),
+            (AlignItems::Stretch, 0.0),
+        ];
+        for (align, want_y) in cases {
+            let mut store = NodeStore::new();
+            let grid = store.alloc_grid(GridStyle {
+                columns: vec![TrackSizing::Fixed(50.0)],
+                rows: vec![TrackSizing::Fixed(100.0)],
+                align_items: align,
+                size: Size::fixed(50.0, 100.0),
+                ..Default::default()
+            });
+            let child = cell_child(&mut store, Size::fixed(30.0, 40.0));
+            store.arena_append_child(grid, child);
+            let mut scratch = Vec::new();
+            crate::layout::measure(&mut store, grid.index(), &mut scratch);
+            crate::layout::layout(
+                &mut store,
+                grid.index(),
+                surface_local(50.0, 100.0),
+                &mut scratch,
+            );
+            let b = store.bounds(child);
+            assert_eq!(b.h, 40.0, "{align:?}: a fixed child keeps its own height");
+            assert_eq!(b.y, want_y, "{align:?}: child block offset within the row");
+        }
+    }
+
+    #[test]
+    fn align_items_stretch_grows_a_fill_child_to_the_cell() {
+        use crate::component::NodeStore;
+        use crate::grid::{GridStyle, TrackSizing};
+        // A Fill child stretches to the cell only under the default Stretch; any
+        // other align_items makes it hug its measured height (0 here) and seats it
+        // per the alignment instead of filling.
+        for (align, want_h, want_y) in [
+            (AlignItems::Stretch, 100.0, 0.0),
+            (AlignItems::Start, 0.0, 0.0),
+            (AlignItems::End, 0.0, 100.0),
+        ] {
+            let mut store = NodeStore::new();
+            let grid = store.alloc_grid(GridStyle {
+                columns: vec![TrackSizing::Fixed(50.0)],
+                rows: vec![TrackSizing::Fixed(100.0)],
+                align_items: align,
+                size: Size::fixed(50.0, 100.0),
+                ..Default::default()
+            });
+            let child = cell_child(&mut store, Size::fill());
+            store.arena_append_child(grid, child);
+            let mut scratch = Vec::new();
+            crate::layout::measure(&mut store, grid.index(), &mut scratch);
+            crate::layout::layout(
+                &mut store,
+                grid.index(),
+                surface_local(50.0, 100.0),
+                &mut scratch,
+            );
+            let b = store.bounds(child);
+            assert_eq!(b.h, want_h, "{align:?}: fill child block extent");
+            assert_eq!(b.y, want_y, "{align:?}: fill child block offset");
+        }
     }
 
     #[test]

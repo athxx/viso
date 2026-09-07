@@ -114,6 +114,7 @@ fn attach_glyphs(gpu: &mut HeadlessRaster, store: &mut NodeStore, label_id: Node
             atlas,
             color: WHITE,
             natural,
+            baseline: 0.0,
         },
     );
     natural

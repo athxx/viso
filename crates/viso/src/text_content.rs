@@ -114,11 +114,16 @@ impl TextShaper {
             })
             .collect();
 
+        // The first-line baseline in the same logical-pixel space as `natural`
+        // and the glyph rects, so a grid cell can align this run on its baseline.
+        let baseline = self.text.first_baseline(self.font, request.font_size);
+
         Content::Text {
             glyphs,
             atlas,
             color: request.color,
             natural,
+            baseline,
         }
     }
 }

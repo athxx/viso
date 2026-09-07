@@ -4,7 +4,7 @@
 //! pure functions over plain slices so they test without a node store, and the
 //! layout pass drives them through the warm side-columns on the node store.
 
-use crate::layout::{Inset, Size};
+use crate::layout::{AlignItems, Inset, Size};
 use crate::style::BoxStyle;
 
 /// How one grid track (a column or a row) is sized.
@@ -75,6 +75,11 @@ pub struct GridStyle {
     pub padding: Inset,
     /// The grid box's own size request within its parent.
     pub size: Size,
+    /// Block-axis (vertical) alignment of each cell's content within its cell.
+    /// `Stretch` (the default) makes a `Fill`-height child fill its cell; the
+    /// other modes position a hugged child at the top/center/bottom, and
+    /// `Baseline` aligns cells in a row on their shared text baseline.
+    pub align_items: AlignItems,
     /// The grid box's own background/border (transparent = pure layout box).
     pub style: BoxStyle,
     /// Author-declared column line names, resolved to 0-based line indices at
@@ -99,6 +104,7 @@ impl Default for GridStyle {
             row_gap: 0.0,
             padding: Inset::default(),
             size: Size::fill(),
+            align_items: AlignItems::Stretch,
             style: BoxStyle::NONE,
             column_line_names: Vec::new(),
             row_line_names: Vec::new(),

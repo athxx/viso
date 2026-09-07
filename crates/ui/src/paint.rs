@@ -418,6 +418,7 @@ mod tests {
                 atlas: TextureId(7),
                 color: RED,
                 natural: Vec2 { x: 30.0, y: 20.0 },
+                baseline: 16.0,
             },
         );
         // An image whose Fit box comes from its intrinsic size.

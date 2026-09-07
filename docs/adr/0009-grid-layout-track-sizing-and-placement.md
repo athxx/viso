@@ -199,7 +199,21 @@ single linear pass with no fixed-point iteration.
     grid.rs unit tests (`resolve_line` hit/miss, `GridAreas::from_rows` column-span /
     both-axis span / `.` skip) + component.rs facade goldens (named line → column x,
     `place_area` single cell and multi-column span through full measure+layout).
+  - Cell cross-axis alignment, including baseline — `GridStyle` gains
+    `align_items: AlignItems { Stretch (default) / Start / Center / End / Baseline }`
+    (the shared `layout::AlignItems`, a `Copy` scalar), carried on `LayoutInput::Grid`.
+    `layout_grid` seats each child in its cell by this alignment on the block axis:
+    `Stretch` grows a `Fill` child to the cell height (the previous implicit behavior),
+    `Start` / `Center` / `End` hug the child's own measured height at the top / center /
+    bottom, and `Baseline` shifts every cell in a row so their first-line baselines
+    coincide. Baseline needs a per-child first-line baseline: `Content::Text` carries a
+    `baseline: f32` field (`0` for an empty run), surfaced through
+    `Content::baseline() -> Option<f32>` and the `content_baseline` layout hook; `Image` /
+    `Path` report `None` and fall back to top alignment. A row's shared baseline is the max
+    of its cells' baselines, and each child's block offset is `shared − child_baseline`.
+    Verified by layout.rs unit tests (mixed-height text cells land on one baseline; a fixed
+    child offsets under Start/Center/End and ignores Stretch; a `Fill` child grows only
+    under Stretch) exercised through a new `alloc_leaf` + `set_content_payload` test path.
 - **Known follow-ups, out of scope:**
   - Subgrid (a grid child adopting its parent's tracks).
-  - Baseline alignment of cell contents.
   - Per-grid-node `GridScratch` hoisting if a profile ever demands it.

@@ -498,6 +498,7 @@ impl NodeStore {
             row_gap: style.row_gap,
             padding: style.padding,
             auto_rows: style.auto_rows,
+            align_items: style.align_items,
             size: style.size,
         };
         let id = self.alloc(input, style.style);
@@ -509,6 +510,16 @@ impl NodeStore {
             },
         );
         id
+    }
+
+    /// Allocate a bare leaf node of a given size, unattached. A leaf measures to
+    /// its `Size` request against any content payload attached with
+    /// [`Self::set_content_payload`] (a `Fit` axis resolves to the content's
+    /// natural extent). Used by the grid arm's cell-alignment tests, which seat a
+    /// content-bearing leaf in a cell and read back its baseline.
+    #[cfg(test)]
+    pub(crate) fn alloc_leaf(&mut self, size: Size) -> NodeId {
+        self.alloc(LayoutInput::Leaf { size }, BoxStyle::NONE)
     }
 
     /// Whether a node is a scroll viewport — it clips its content to its box and
@@ -1976,6 +1987,13 @@ impl LayoutTree for NodeStore {
     }
 
     #[inline]
+    fn content_baseline(&self, index: u32) -> Option<f32> {
+        self.content_payload[index as usize]
+            .as_ref()
+            .and_then(|c| c.baseline())
+    }
+
+    #[inline]
     fn hidden(&self, index: u32) -> bool {
         self.hidden[index as usize]
     }
@@ -2176,6 +2194,7 @@ impl<'a> BuildCx<'a> {
             row_gap: style.row_gap,
             padding: style.padding,
             auto_rows: style.auto_rows,
+            align_items: style.align_items,
             size: style.size,
         };
         let id = self.push_node(input, style.style);
@@ -3003,6 +3022,7 @@ mod tests {
                 atlas: TextureId(1),
                 color: RED,
                 natural: Vec2 { x: 8.0, y: 10.0 },
+                baseline: 8.0,
             },
         );
         assert!(
