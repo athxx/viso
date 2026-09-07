@@ -13,7 +13,17 @@ pub enum PointerPhase {
     Down,
     Move,
     Up,
-    /// The pointer left the window bounds.
+    /// The pointer entered a node: synthesized by the router and delivered to a
+    /// single node when a move first lands the pointer on it (see
+    /// [`PointerRouter::route`]). Not produced by the transport tier — it is a
+    /// per-node hover-tracking phase, the enter half of the enter/leave pair.
+    Enter,
+    /// The pointer left a node. Synthesized and delivered to a single node — the
+    /// previously hovered one — when a move lands elsewhere (or on nothing), and
+    /// when the pointer leaves the window entirely (a window leave clears hover,
+    /// so the old hovered node receives a `Leave`). This carries the dual
+    /// meaning "the pointer left me": the router never delivers a bare
+    /// window-level leave to the tree, only per-node `Leave`.
     Leave,
 }
 
@@ -183,13 +193,41 @@ pub fn route_pointer(
     // bypassing hit testing — a drag or slider grab keeps receiving samples even
     // when the pointer leaves the node's box. On pointer-up the capture is
     // released (below), so the next sample hit-tests normally again.
+    //
+    // Hover tracking is a move-time projection of the hit target, not a captured
+    // concern: while a pointer is captured, no other node lights up hover (a drag
+    // must not hover-highlight whatever passes under it), so hover is synthesized
+    // only on the non-capture Move branch below. A window Leave — the pointer
+    // left the window entirely — always clears hover regardless of capture.
     let target = match store.capture() {
         Some(captured) => captured,
         None => {
+            // The pointer left the window: no node is under it, so force the
+            // hover target to nothing. This synthesizes a per-node `Leave` to the
+            // previously hovered node (mirroring a broadcast "clear all hover")
+            // and clears the slot — then there is no dispatch target for the
+            // window leave itself, so return once hover is settled.
+            if ev.phase == PointerPhase::Leave {
+                sync_hover(store, states, bindings, None, &ev);
+                chain.clear();
+                return false;
+            }
             let Some(hit) = HitTestTree::hit(store, root, ev.x, ev.y) else {
+                // A move over no node (a gap between children, past the root):
+                // this too is a hover change — leave whatever was hovered.
+                if ev.phase == PointerPhase::Move {
+                    sync_hover(store, states, bindings, None, &ev);
+                }
                 chain.clear();
                 return false;
             };
+            // A move that landed on a node diffs the hover target: leave the old
+            // node, enter the new one, commit the slot. A non-move sample (Down /
+            // Up) does not drive hover — hover follows the moving pointer, like
+            // the platform's own move-driven hover cycle.
+            if ev.phase == PointerPhase::Move {
+                sync_hover(store, states, bindings, Some(hit), &ev);
+            }
             hit
         }
     };
@@ -389,6 +427,124 @@ fn pointer_dispatch(
         )
     };
     store.restore_handler(node, handler);
+    apply_pointer_side_effects(
+        store, capture, focus, scope, hidden, anims, timers, opens, closes,
+    );
+    Dispatched { ran: true, stop }
+}
+
+/// Deliver a synthesized per-node hover phase ([`PointerPhase::Enter`] /
+/// [`PointerPhase::Leave`]) to a *single* node's pointer handler. Unlike
+/// [`pointer_dispatch`] this walks no chain and honors no capture/bubble: hover
+/// is single-leaf (only the entered/left node is notified), so there is nothing
+/// to bubble and no `stop` to respect. The same take/restore borrow dance and
+/// the same deferred side-effect apply as `pointer_dispatch` — a hover handler
+/// almost always only writes reactive state (a PAINT-only feedback cell), but
+/// applying the full set keeps one code path with no special cases.
+fn hover_dispatch(
+    store: &mut NodeStore,
+    states: &mut StateStore,
+    bindings: &BindingTable,
+    node: NodeId,
+    phase: PointerPhase,
+    sample: &PointerEvent,
+) {
+    let Some(mut handler) = store.take_handler(node) else {
+        return;
+    };
+    // Synthesize the hover event from the driving move sample: the pointer's
+    // current position, no buttons held (hover is a no-button concept), and the
+    // given enter/leave phase.
+    let event = PointerEvent {
+        x: sample.x,
+        y: sample.y,
+        phase,
+        buttons: PointerButtons::NONE,
+        modifiers: sample.modifiers,
+    };
+    let (capture, focus, scope, hidden, anims, timers, opens, closes, _stop) = {
+        let mut ev = EventCx::__new_pointer(states, bindings, &event);
+        ev.__set_focused(store.focused());
+        handler(&mut ev);
+        (
+            ev.__take_capture_request(),
+            ev.__take_focus_request(),
+            ev.__take_focus_scope_request(),
+            ev.__take_hidden_requests(),
+            ev.__take_animation_requests(),
+            ev.__take_timer_requests(),
+            ev.__take_window_opens(),
+            ev.__take_window_closes(),
+            ev.__stop_requested(),
+        )
+    };
+    store.restore_handler(node, handler);
+    apply_pointer_side_effects(
+        store, capture, focus, scope, hidden, anims, timers, opens, closes,
+    );
+}
+
+/// Diff the hover target against the store's currently hovered node and, when it
+/// changed, synthesize the enter/leave pair: `Leave` to the old node, `Enter` to
+/// the new one, then commit the new target (live-guarded). When `new == old`
+/// nothing is dispatched and the slot is untouched — the steady-state move
+/// within one node does zero hover work and allocates nothing. Called only from
+/// the move / window-leave path in [`route_pointer`], never while captured.
+fn sync_hover(
+    store: &mut NodeStore,
+    states: &mut StateStore,
+    bindings: &BindingTable,
+    new: Option<NodeId>,
+    sample: &PointerEvent,
+) {
+    let old = store.hovered();
+    if new == old {
+        return;
+    }
+    // Leave the old node first, then enter the new — the platform-conventional
+    // order (a control's leave feedback settles before the next control's enter).
+    if let Some(old_node) = old {
+        hover_dispatch(
+            store,
+            states,
+            bindings,
+            old_node,
+            PointerPhase::Leave,
+            sample,
+        );
+    }
+    if let Some(new_node) = new {
+        hover_dispatch(
+            store,
+            states,
+            bindings,
+            new_node,
+            PointerPhase::Enter,
+            sample,
+        );
+    }
+    // Commit after dispatching (the platform's own hover cycle commits the new
+    // area only after the move is delivered). Live-guarded: a freed target is
+    // never recorded as hovered.
+    store.set_hovered(new);
+}
+
+/// Apply the deferred side-effects a pointer handler produced. Shared by the
+/// chain dispatch ([`pointer_dispatch`]) and the single-node hover dispatch
+/// ([`hover_dispatch`]) so both settle capture/focus/visibility/queued requests
+/// through one path.
+#[allow(clippy::too_many_arguments)]
+fn apply_pointer_side_effects(
+    store: &mut NodeStore,
+    capture: Option<Option<NodeId>>,
+    focus: Option<Option<NodeId>>,
+    scope: Option<Option<NodeId>>,
+    hidden: Vec<(NodeId, bool)>,
+    anims: Vec<crate::animation::TranslateAnim>,
+    timers: Vec<crate::timer::TimerRequest>,
+    opens: Vec<crate::window::WindowOpenRequest>,
+    closes: Vec<u32>,
+) {
     // A capture request is applied against this node: `Some(id)` captures to the
     // requested node, `None` releases. Applied after the handler returns because
     // the cx holds no node store to touch the capture slot directly.
@@ -436,7 +592,6 @@ fn pointer_dispatch(
     for id in closes {
         store.queue_window_close(id);
     }
-    Dispatched { ran: true, stop }
 }
 
 /// Advance focus to the next (`forward`) or previous focusable node in tree
@@ -902,6 +1057,360 @@ mod tests {
         assert!(ran);
         // capture: root(0). target: child(1). bubble: root(0).
         assert_eq!(*log.borrow(), vec![0, 1, 0]);
+    }
+
+    // ---- hover: per-node enter/leave synthesis (section 8.4) ----
+
+    fn move_to(x: f32, y: f32) -> PointerEvent {
+        PointerEvent {
+            x,
+            y,
+            phase: PointerPhase::Move,
+            buttons: PointerButtons::NONE,
+            modifiers: Modifiers::default(),
+        }
+    }
+
+    fn window_leave() -> PointerEvent {
+        PointerEvent {
+            x: -1.0,
+            y: -1.0,
+            phase: PointerPhase::Leave,
+            buttons: PointerButtons::NONE,
+            modifiers: Modifiers::default(),
+        }
+    }
+
+    /// Log `(label, phase)` for each dispatched sample, so a hover test can
+    /// assert exactly which nodes saw Enter vs Leave and in what order.
+    fn phase_log_handler(
+        log: Rc<RefCell<Vec<(u32, PointerPhase)>>>,
+        label: u32,
+    ) -> impl FnMut(&mut EventCx<'_>) + 'static {
+        move |ev| {
+            if let Some(p) = ev.pointer() {
+                log.borrow_mut().push((label, p.phase));
+            }
+        }
+    }
+
+    #[test]
+    fn move_into_node_synthesizes_enter() {
+        let mut store = NodeStore::new();
+        let mut states = StateStore::new();
+        let bindings = BindingTable::new();
+        let log = Rc::new(RefCell::new(Vec::new()));
+        let root = {
+            let mut cx = BuildCx::new(&mut store);
+            let h = cx.leaf(LeafStyle {
+                size: Size::fixed(10.0, 10.0),
+                ..Default::default()
+            });
+            cx.on_pointer(h, phase_log_handler(log.clone(), 0));
+            cx.root().unwrap()
+        };
+        let mut scratch = Vec::new();
+        store.layout(
+            root,
+            Rect {
+                x: 0.0,
+                y: 0.0,
+                w: 10.0,
+                h: 10.0,
+            },
+            &mut scratch,
+        );
+
+        let mut chain = Vec::new();
+        assert_eq!(store.hovered(), None);
+        route_pointer(
+            &mut store,
+            &mut states,
+            &bindings,
+            root,
+            move_to(5.0, 5.0),
+            &mut chain,
+        );
+        // The node saw an Enter (synthesized) then the Move itself, and is now
+        // recorded as hovered.
+        assert_eq!(
+            *log.borrow(),
+            vec![(0, PointerPhase::Enter), (0, PointerPhase::Move)]
+        );
+        assert_eq!(store.hovered(), Some(root));
+    }
+
+    #[test]
+    fn move_between_nodes_synthesizes_leave_then_enter() {
+        // Two side-by-side leaves under a row; move from A into B.
+        let mut store = NodeStore::new();
+        let mut states = StateStore::new();
+        let bindings = BindingTable::new();
+        let log = Rc::new(RefCell::new(Vec::new()));
+        let mut a = None;
+        let mut b = None;
+        let root = {
+            let mut cx = BuildCx::new(&mut store);
+            cx.flex(
+                FlexStyle {
+                    axis: Axis::Row,
+                    size: Size::fixed(100.0, 40.0),
+                    ..Default::default()
+                },
+                |cx| {
+                    let ah = cx.leaf(LeafStyle {
+                        size: Size::fixed(40.0, 40.0),
+                        ..Default::default()
+                    });
+                    cx.on_pointer(ah, phase_log_handler(log.clone(), 0));
+                    a = Some(ah.id());
+                    let bh = cx.leaf(LeafStyle {
+                        size: Size::fixed(40.0, 40.0),
+                        ..Default::default()
+                    });
+                    cx.on_pointer(bh, phase_log_handler(log.clone(), 1));
+                    b = Some(bh.id());
+                },
+            );
+            cx.root().unwrap()
+        };
+        let mut scratch = Vec::new();
+        store.layout(
+            root,
+            Rect {
+                x: 0.0,
+                y: 0.0,
+                w: 100.0,
+                h: 40.0,
+            },
+            &mut scratch,
+        );
+        let (a, b) = (a.unwrap(), b.unwrap());
+
+        let mut chain = Vec::new();
+        // Land in A first.
+        route_pointer(
+            &mut store,
+            &mut states,
+            &bindings,
+            root,
+            move_to(10.0, 10.0),
+            &mut chain,
+        );
+        assert_eq!(store.hovered(), Some(a));
+        log.borrow_mut().clear();
+        // Move into B (placed at x=40).
+        route_pointer(
+            &mut store,
+            &mut states,
+            &bindings,
+            root,
+            move_to(60.0, 10.0),
+            &mut chain,
+        );
+        // A leaves first, then B enters, then B receives the Move itself.
+        assert_eq!(
+            *log.borrow(),
+            vec![
+                (0, PointerPhase::Leave),
+                (1, PointerPhase::Enter),
+                (1, PointerPhase::Move),
+            ]
+        );
+        assert_eq!(store.hovered(), Some(b));
+    }
+
+    #[test]
+    fn move_within_same_node_synthesizes_nothing() {
+        let mut store = NodeStore::new();
+        let mut states = StateStore::new();
+        let bindings = BindingTable::new();
+        let log = Rc::new(RefCell::new(Vec::new()));
+        let root = {
+            let mut cx = BuildCx::new(&mut store);
+            let h = cx.leaf(LeafStyle {
+                size: Size::fixed(40.0, 40.0),
+                ..Default::default()
+            });
+            cx.on_pointer(h, phase_log_handler(log.clone(), 0));
+            cx.root().unwrap()
+        };
+        let mut scratch = Vec::new();
+        store.layout(
+            root,
+            Rect {
+                x: 0.0,
+                y: 0.0,
+                w: 40.0,
+                h: 40.0,
+            },
+            &mut scratch,
+        );
+
+        let mut chain = Vec::new();
+        route_pointer(
+            &mut store,
+            &mut states,
+            &bindings,
+            root,
+            move_to(5.0, 5.0),
+            &mut chain,
+        );
+        log.borrow_mut().clear();
+        // A second move that stays inside the same node: no enter/leave, only
+        // the Move itself — the steady-state zero-hover-work path.
+        route_pointer(
+            &mut store,
+            &mut states,
+            &bindings,
+            root,
+            move_to(20.0, 20.0),
+            &mut chain,
+        );
+        assert_eq!(*log.borrow(), vec![(0, PointerPhase::Move)]);
+        assert_eq!(store.hovered(), Some(root));
+    }
+
+    #[test]
+    fn window_leave_clears_hover() {
+        let mut store = NodeStore::new();
+        let mut states = StateStore::new();
+        let bindings = BindingTable::new();
+        let log = Rc::new(RefCell::new(Vec::new()));
+        let root = {
+            let mut cx = BuildCx::new(&mut store);
+            let h = cx.leaf(LeafStyle {
+                size: Size::fixed(40.0, 40.0),
+                ..Default::default()
+            });
+            cx.on_pointer(h, phase_log_handler(log.clone(), 0));
+            cx.root().unwrap()
+        };
+        let mut scratch = Vec::new();
+        store.layout(
+            root,
+            Rect {
+                x: 0.0,
+                y: 0.0,
+                w: 40.0,
+                h: 40.0,
+            },
+            &mut scratch,
+        );
+
+        let mut chain = Vec::new();
+        route_pointer(
+            &mut store,
+            &mut states,
+            &bindings,
+            root,
+            move_to(5.0, 5.0),
+            &mut chain,
+        );
+        assert_eq!(store.hovered(), Some(root));
+        log.borrow_mut().clear();
+        // Pointer leaves the window entirely: the hovered node gets a per-node
+        // Leave and the slot clears. No target for the window leave itself.
+        let ran = route_pointer(
+            &mut store,
+            &mut states,
+            &bindings,
+            root,
+            window_leave(),
+            &mut chain,
+        );
+        assert!(!ran);
+        assert_eq!(*log.borrow(), vec![(0, PointerPhase::Leave)]);
+        assert_eq!(store.hovered(), None);
+    }
+
+    #[test]
+    fn capture_suppresses_hover() {
+        // A captured pointer (a drag) routes to the captor and lights up no
+        // hover on nodes it passes over.
+        let mut store = NodeStore::new();
+        let mut states = StateStore::new();
+        let bindings = BindingTable::new();
+        let log = Rc::new(RefCell::new(Vec::new()));
+        let mut a = None;
+        let mut b = None;
+        let root = {
+            let mut cx = BuildCx::new(&mut store);
+            cx.flex(
+                FlexStyle {
+                    axis: Axis::Row,
+                    size: Size::fixed(100.0, 40.0),
+                    ..Default::default()
+                },
+                |cx| {
+                    let ah = cx.leaf(LeafStyle {
+                        size: Size::fixed(40.0, 40.0),
+                        ..Default::default()
+                    });
+                    cx.on_pointer(ah, phase_log_handler(log.clone(), 0));
+                    a = Some(ah.id());
+                    let bh = cx.leaf(LeafStyle {
+                        size: Size::fixed(40.0, 40.0),
+                        ..Default::default()
+                    });
+                    cx.on_pointer(bh, phase_log_handler(log.clone(), 1));
+                    b = Some(bh.id());
+                },
+            );
+            cx.root().unwrap()
+        };
+        let mut scratch = Vec::new();
+        store.layout(
+            root,
+            Rect {
+                x: 0.0,
+                y: 0.0,
+                w: 100.0,
+                h: 40.0,
+            },
+            &mut scratch,
+        );
+        let (a, b) = (a.unwrap(), b.unwrap());
+
+        // A captures the pointer (as if a drag began on it).
+        store.set_capture(Some(a));
+        let mut chain = Vec::new();
+        // Move over B's area while captured.
+        route_pointer(
+            &mut store,
+            &mut states,
+            &bindings,
+            root,
+            move_to(60.0, 10.0),
+            &mut chain,
+        );
+        // No hover was synthesized: the slot stays empty and B saw no Enter. The
+        // captor A receives the move (routed straight to it).
+        assert_eq!(store.hovered(), None);
+        assert_eq!(*log.borrow(), vec![(0, PointerPhase::Move)]);
+        let _ = b;
+    }
+
+    #[test]
+    fn stale_hovered_guarded() {
+        // A hover slot pointing at a freed node is never treated as hovered: the
+        // live-guarded setter refuses the write.
+        let mut store = NodeStore::new();
+        let root = {
+            let mut cx = BuildCx::new(&mut store);
+            let h = cx.leaf(LeafStyle {
+                size: Size::fixed(10.0, 10.0),
+                ..Default::default()
+            });
+            cx.on_pointer(h, log_handler(Rc::new(RefCell::new(Vec::new())), 0));
+            cx.root().unwrap()
+        };
+        // Fabricate a dangling id from a rebuilt store: clearing drops all nodes,
+        // so the previously-live `root` is now stale.
+        store.clear();
+        store.set_hovered(Some(root));
+        // The guard rejected the stale handle.
+        assert_eq!(store.hovered(), None);
     }
 
     #[test]

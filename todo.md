@@ -895,9 +895,9 @@ STYLE 标记(component.rs)。落 `crates/ui/src/component.rs`。
 **8.4 — hover / enter / leave(输入地基,从零)** —— 今天只有窗口级 `PointerPhase::Leave`(离开窗口边界),无 per-node
 enter/leave 合成、无 hover 追踪、无控件用 hover 反馈。落 `crates/ui/src/input.rs` router + component.rs hover 追踪状态。
 
-- [ ] router 加"上一帧 hover 节点"追踪(NodeStore 上的 `hovered: Option<NodeId>` 或 hover 链);pointer Move 时 hit-test
+- [x] router 加"上一帧 hover 节点"追踪(NodeStore 上的 `hovered: Option<NodeId>` 或 hover 链);pointer Move 时 hit-test
       新目标,与上一帧差分,合成 enter(进入新节点链)/ leave(离开旧节点链)派发给对应节点 handler。
-- [ ] `PointerPhase` 加 `Enter`(per-node,区别于现窗口级 `Leave`);或设计 hover 专用事件 —— 按最合理设计定(节点 enter/
+- [x] `PointerPhase` 加 `Enter`(per-node,区别于现窗口级 `Leave`);或设计 hover 专用事件 —— 按最合理设计定(节点 enter/
       leave 与窗口 leave 语义不同,评估枚举 vs 独立)。DirtyClass:hover 状态变更默认 PAINT(hover 样式反馈)。
 - [ ] 第一个 hover 消费控件:给 Button 加 hover 样式反馈(hover 时背景变化),作为真实消费者验证合成正确。
 - [ ] 验证包:input tape(move 进入/离开节点 → 断言 enter/leave 按序合成、hover 节点追踪正确、嵌套节点链差分)+

@@ -410,7 +410,10 @@ impl Component for Splitter {
                 PointerPhase::Up => {
                     ev.release_pointer();
                 }
-                PointerPhase::Leave => {}
+                // Hover enter/leave and window leave are not drag input — the
+                // early return above already skips no-button samples, but the
+                // match stays exhaustive.
+                PointerPhase::Enter | PointerPhase::Leave => {}
             }
         });
 
