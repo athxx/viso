@@ -87,15 +87,18 @@ impl TextSystem {
     ) -> Vec<GlyphQuad> {
         let dpx_per_em = font_size_px * dpi_factor;
         let positioned = layout(&self.store, font, text, font_size_px);
-        // Split borrows: `store` (shared) feeds the face while `atlas` (unique)
-        // packs — taking them as separate fields keeps the borrow checker happy.
+        // Split borrows: `store` (shared) feeds each glyph's face while `atlas`
+        // (unique) packs — taking them as separate fields keeps the borrow
+        // checker happy.
         let store = &self.store;
         let atlas = &mut self.atlas;
-        let face = store.face(font);
 
         let mut quads = Vec::with_capacity(positioned.len());
         for g in positioned {
-            let Some(entry) = atlas.glyph(face, font, g.id, dpx_per_em) else {
+            // A fallback glyph rasters from the face it resolved to, not the
+            // requested primary — the atlas keys on that face.
+            let face = store.face(g.font);
+            let Some(entry) = atlas.glyph(face, g.font, g.id, dpx_per_em) else {
                 continue;
             };
             // The SDF bitmap was rasterized at `dpi_factor` density; convert its

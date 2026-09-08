@@ -1005,8 +1005,13 @@ spanning 放置 + auto-flow;ADR 0009 明列六项高级能力全未做。落 `cr
       `has_char(c)`(cmap 覆盖探针,shaping 仍是覆盖权威)。attempted-set/负缓存推到 A4(依赖 unicode-script,只在
       facade 缝消费,§57/§40)。验证:text_system.rs 4 单测(seed primary / cmap 覆盖 / first_covering 走链 /
       push_fallback 扩链去重)。
-- [ ] **A2 `text: itemized bidi + script shaping`** —— facade 缝按 unicode-bidi(LTR 快路径)分段 + unicode-script
-      脚本分项 + 回退递归;`ShapedGlyph` 加 `font: FontId`。
+- [x] **A2 `text: itemized bidi + script shaping`** —— 整形改为链感知递归 itemizer:`shape(store, text)` LTR 快路径
+      (`is_definitely_ltr` 廉价 RTL 扫描,纯 LTR 跳过 BiDi)+ `unicode_bidi::ParagraphBidiInfo`/`visual_runs` 混排分段;
+      `shape_run` 按 cluster 分组,`.notdef` run 递归 reshape 到 `chain[1..]`(镜像 makepad,LTR/RTL 逻辑字节范围各自算);
+      `ShapedGlyph` 加 `font: FontId`。**偏离计划字面「facade 缝」**:itemization+BiDi+回退递归是纯算法无平台依赖,
+      落 viso-text(§3.5/§3.7),facade 从不整形。签名改动顺带穿 layout(`PositionedGlyph` 加 `font`,按 primary 取行度量)
+      + `TextSystem::prepare`(逐 glyph 按 `g.font` 光栅,atlas key 已含 font 无改)。加 unicode-bidi/unicode-script 依赖。
+      验证:5 新测(空链→空、无回退→.notdef、回退递归命中 tail face、LTR 快路径 cluster、单 face 全归 primary)+ 既有全绿。
 - [ ] **A3 `text: layout over itemized runs`** —— 排版消费分项 run(不再 `split('\n')` 单 face);`PositionedGlyph` 加 `font`。
 - [ ] **A4 `text: system font provider`** —— viso-text `SystemFontProvider` trait + 负缓存(attempted-set 落此);
       facade `system_fonts.rs` CoreText 实现;按脚本/emoji 样本串动态回退。

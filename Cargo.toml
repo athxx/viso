@@ -68,6 +68,8 @@ ttf-parser = "0.24"
 rustybuzz = "0.18"
 ab_glyph_rasterizer = "0.1"
 sdfer = "0.2"
+unicode-bidi = "0.3"
+unicode-script = "0.5"
 
 [profile.release]
 lto = "thin"
