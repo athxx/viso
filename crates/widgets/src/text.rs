@@ -45,6 +45,11 @@ pub struct LabelStyle {
     /// The label's own size request within its parent. Defaults to `Fit` on
     /// both axes.
     pub size: Size,
+    /// Whether the label soft-wraps its text to the assigned box width.
+    /// Defaults to `false` (single line). Only bites once the width axis is
+    /// `Fill`/`Fixed`: a `Fit` label sizes to the shaped run and is never
+    /// width-constrained, so wrapping never engages regardless of this flag.
+    pub soft_wrap: bool,
 }
 
 impl Default for LabelStyle {
@@ -56,6 +61,7 @@ impl Default for LabelStyle {
                 width: Length::Fit,
                 height: Length::Fit,
             },
+            soft_wrap: false,
         }
     }
 }
@@ -114,6 +120,14 @@ impl Label {
         self.style.size = size;
         self
     }
+
+    /// Enable soft wrapping: the label wraps its text to the width assigned by
+    /// its parent. Only takes effect when the width axis is `Fill`/`Fixed` (a
+    /// `Fit` label sizes to its content and is never width-constrained).
+    pub fn wrap(mut self) -> Self {
+        self.style.soft_wrap = true;
+        self
+    }
 }
 
 impl Component for Label {
@@ -133,6 +147,7 @@ impl Component for Label {
                 text: self.text.clone(),
                 font_size: self.style.font_size,
                 color: self.style.color,
+                soft_wrap: self.style.soft_wrap,
             },
         );
         cx.semantics(

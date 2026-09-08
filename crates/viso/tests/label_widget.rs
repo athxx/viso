@@ -117,6 +117,8 @@ fn attach_glyphs(gpu: &mut HeadlessRaster, store: &mut NodeStore, label_id: Node
             color: WHITE,
             natural,
             baseline: 0.0,
+            shaped_at_width: None,
+            soft_wrap: false,
         },
     );
     natural

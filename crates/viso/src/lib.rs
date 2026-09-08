@@ -374,6 +374,24 @@ struct WindowState {
     /// Reusable buffer the text seam drains pending requests into, so re-shaping
     /// text allocates only the shaped payloads, not the request list.
     text_scratch: Vec<(NodeId, Box<TextRequest>)>,
+    /// Retained source requests for `soft_wrap` runs, keyed by node — the one
+    /// place the facade keeps a shaped run's declaration after the store's
+    /// request column is drained (`take_text_requests` consumes it, and the
+    /// store treats the request as write-once: an edit re-declares it, see
+    /// `text_edit::reconcile`). The two-phase reflow (DL1) needs the source text
+    /// to reshape a wrap-eligible leaf at the width layout assigned it, which is
+    /// not known until after the first shape; this holds exactly that subset —
+    /// only runs that opted into wrapping, a small minority of text nodes — so
+    /// the store's hot columns and the general drain contract stay untouched. A
+    /// pure single-line label never lands here. Entries are pruned when a node
+    /// is freed (checked live at drain time) and overwritten when a wrap run is
+    /// re-declared.
+    wrap_sources: std::collections::HashMap<NodeId, Box<TextRequest>>,
+    /// Reusable buffer the Layout phase drains the store's queued text reflows
+    /// into (`take_text_reflows`), so servicing a reflow allocates only the
+    /// reshaped payloads. Empty and allocation-free on the steady path with no
+    /// wrap-eligible text whose assigned width changed.
+    reflow_scratch: Vec<(NodeId, f32)>,
     /// Reusable buffer the flush drains this window's queued window-open requests
     /// into before the driver appends them to its session-level pending list, so
     /// servicing a `window()` call reuses this window's own scratch rather than
@@ -450,6 +468,8 @@ impl WindowState {
             awaiting_first_frame: true,
             text: None,
             text_scratch: Vec::new(),
+            wrap_sources: std::collections::HashMap::new(),
+            reflow_scratch: Vec::new(),
             scratch_opens: Vec::new(),
             scratch_closes: Vec::new(),
         }
@@ -593,7 +613,19 @@ impl WindowState {
         // crisp SDFs instead of 1x coverage upscaled by the compositor.
         let dpi = self.dpi;
         for (id, request) in self.text_scratch.drain(..) {
-            let content = text.shape(&mut gpu.backend, &request, dpi);
+            // First shape is unconstrained: the run's `natural` extent is the
+            // unwrapped single-line width. If layout later assigns a
+            // wrap-eligible leaf a narrower box, it enqueues a reflow that the
+            // Layout phase drains and reshapes at `Some(width)`.
+            let content = text.shape(&mut gpu.backend, &request, dpi, None);
+            // A run that opted into wrapping keeps its source here so the reflow
+            // pass can reshape it at the assigned width (the store drops the
+            // request on drain). A single-line run needs no source retained and
+            // never enters this map. Re-declaring a run (edit/rebuild) overwrites
+            // its entry; the drain below prunes freed nodes.
+            if request.soft_wrap {
+                self.wrap_sources.insert(id, request);
+            }
             self.store.set_content_payload(id, content);
         }
     }
@@ -650,6 +682,81 @@ impl WindowState {
             laid_out,
             painted,
         };
+    }
+
+    /// Phase B of width-aware text reflow (DL1): drain the reflow requests the
+    /// just-finished layout recorded, reshape each wrap-eligible run at the
+    /// width layout assigned it, write the wrapped run back, and relayout — a
+    /// run whose height grew now re-places its Flex siblings. Loops until the
+    /// queue drains empty (layout assigned no new mismatched widths) or a small
+    /// iteration cap, whichever comes first.
+    ///
+    /// Convergence: a reshape only ever changes a run's height and can only
+    /// shrink or hold its natural width (wrapping never widens a run), and the
+    /// recorder excludes `Fit`-width leaves — the one case that could feed width
+    /// back into width. So each pass either settles the run at its assigned
+    /// width (mismatch gone → not re-enqueued) or the run's width monotonically
+    /// shrinks toward the box; there is no width→height→width oscillation. The
+    /// cap is a safety net, not the mechanism — a normal Column/Row paragraph
+    /// settles in one reshape pass (the second pass observes no mismatch and the
+    /// loop exits). Returns the number of reshape passes run, for the caller's
+    /// first-frame double-shape counter (§61); `0` on the steady frame that
+    /// enqueued nothing.
+    ///
+    /// The first appearance of a wrapped `Fill` paragraph is shaped twice — once
+    /// unconstrained in Phase A, once at its width here — inherent to the premise
+    /// that text height depends on a width that is a layout *output*. This is a
+    /// one-time cost on the frame the paragraph appears or its width changes, not
+    /// a steady-state per-frame cost: once shaped at a width, an unchanged width
+    /// enqueues no reflow (the recorder's quantize+epsilon guard), so a static
+    /// paragraph pays nothing on subsequent frames.
+    fn reflow_wrapped_text(&mut self) -> u32 {
+        // Bounded so a pathological feedback (should be impossible given the
+        // eligibility rule, but a cap keeps a bug from spinning the frame) can
+        // never loop unboundedly. Three passes is generous — real content
+        // settles in one.
+        const MAX_REFLOW_PASSES: u32 = 3;
+        let mut passes = 0;
+        while passes < MAX_REFLOW_PASSES {
+            self.store.take_text_reflows(&mut self.reflow_scratch);
+            if self.reflow_scratch.is_empty() {
+                break;
+            }
+            // Drop retained sources for wrap runs whose node is gone (removed
+            // from the tree, or its index reused with a fresh generation). Only
+            // on a frame that actually reflows — never a steady frame — and the
+            // map holds only wrap paragraphs, so this stays small. Keeps a long
+            // session that churns wrapped paragraphs from leaking their sources.
+            if passes == 0 {
+                let arena = self.store.arena();
+                self.wrap_sources.retain(|id, _| arena.is_live(*id));
+            }
+            let (Some(gpu), Some(text)) = (self.gpu.as_mut(), self.text.as_mut()) else {
+                // No shaper/GPU (headless-without-surface, pre-launch): nothing
+                // can reshape, so drop the drained requests and stop rather than
+                // spin re-enqueuing them.
+                self.reflow_scratch.clear();
+                break;
+            };
+            let dpi = self.dpi;
+            for (id, width) in self.reflow_scratch.drain(..) {
+                // The source is retained only for `soft_wrap` runs; a missing
+                // entry means the node was freed or never opted in, so skip it.
+                let Some(request) = self.wrap_sources.get(&id) else {
+                    continue;
+                };
+                let content = text.shape(&mut gpu.backend, request, dpi, Some(width));
+                // Width-only reshape: mark MEASURE|LAYOUT|PAINT but not
+                // SEMANTICS — the accessible name is unchanged by wrapping.
+                self.store.set_reflowed_content(id, content);
+            }
+            // Re-place the tree so a run whose height grew pushes its siblings;
+            // the next pass's layout may assign a still-different width (nested
+            // wrap-in-wrap), which re-enqueues and reshapes again until settled.
+            self.relayout_and_paint();
+            passes += 1;
+        }
+        passes
     }
 }
 
@@ -1007,6 +1114,24 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
                     // any paint-affecting class is pending; a clean frame touches
                     // nothing.
                     ws.relayout_and_paint();
+                    // Width-aware text reflow (DL1): the layout just above records
+                    // a reflow for each wrap-eligible leaf whose assigned box width
+                    // differs from the width it was shaped at. Drain and reshape
+                    // those at their assigned width, then relayout so a run whose
+                    // wrapped height grew re-places its siblings — bounded, and a
+                    // no-op on the steady frame that enqueued none. Runs before
+                    // `absorb_measurements` so a virtualized list's height model
+                    // sees the final wrapped row heights, not the unconstrained
+                    // single-line ones.
+                    let reflow_passes = ws.reflow_wrapped_text();
+                    // First-frame double-shape visibility (§61): a wrapped `Fill`
+                    // paragraph is shaped once unconstrained then once at its width
+                    // on the frame it appears/resizes; this surfaces that one-time
+                    // cost, gated so a steady frame (zero passes) pays only the
+                    // env-var check and nothing prints.
+                    if reflow_passes > 0 && std::env::var_os("VISO_FRAME_TRACE").is_some() {
+                        eprintln!("[viso] text reflow: {reflow_passes} pass(es)");
+                    }
                     // Feed measured row heights back into each list's height model
                     // so a variable-height list corrects its extent and anchor
                     // next frame. Bounded to this frame's newly-mounted rows — no

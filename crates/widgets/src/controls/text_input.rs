@@ -211,6 +211,8 @@ impl Component for TextInput {
                 text: self.value.clone(),
                 font_size: self.style.font_size,
                 color: self.style.color,
+                // A text field is single-line: it scrolls horizontally, never wraps.
+                soft_wrap: false,
             },
         );
 

@@ -374,6 +374,19 @@ pub struct NodeStore {
     /// and asks the platform to close each). Empty and allocation-free in the
     /// overwhelmingly common frame that closes no window.
     window_closes: Vec<u32>,
+    /// Cold, transient handoff buffer (not index-aligned): text leaves the
+    /// layout pass assigned a width their run was not shaped/wrapped at, sitting
+    /// here between layout (which records `(id, width)` via
+    /// [`request_text_reflow`](LayoutTree::request_text_reflow) as it places each
+    /// wrap-eligible Flex child) and the facade (which owns the font stack and
+    /// drains this via [`take_text_reflows`](Self::take_text_reflows), reshapes
+    /// each at its assigned width, and writes the wrapped run back). `viso-ui`
+    /// cannot shape text, so the reflow cannot happen in place — the same
+    /// deferral the text-request queue uses. Width is physical px, already
+    /// quantized to an integer by the recorder so drag-resize does not reshape
+    /// every sub-pixel frame. Empty and allocation-free in the overwhelmingly
+    /// common frame with no wrap-eligible text whose width changed.
+    text_reflows: Vec<(NodeId, f32)>,
 }
 
 impl NodeStore {
@@ -415,6 +428,7 @@ impl NodeStore {
         self.timer_requests.clear();
         self.window_opens.clear();
         self.window_closes.clear();
+        self.text_reflows.clear();
         self.focused = None;
         self.capture = None;
         self.hovered = None;
@@ -1059,6 +1073,25 @@ impl NodeStore {
         self.mark_dirty(id, classes);
     }
 
+    /// Write back a run reshaped at a layout-assigned width, marking
+    /// MEASURE | LAYOUT | PAINT but **not** SEMANTICS. Used only by the facade's
+    /// reflow drain: a width-only reshape wraps the same text to a new height, so
+    /// it must re-measure/re-lay-out/repaint, but the accessible name is
+    /// unchanged — dirtying the semantics tree on every resize frame would be
+    /// spurious (AGENTS section 11/15 invalidation contract). The text-*content*
+    /// change path ([`Self::set_content_payload`]) still marks SEMANTICS; this is
+    /// the reflow-only sibling. A live-guarded write — a stale handle is a no-op.
+    pub fn set_reflowed_content(&mut self, id: NodeId, content: Content) {
+        if !self.arena.is_live(id) {
+            return;
+        }
+        self.content_payload[id.index() as usize] = Some(Box::new(content));
+        self.mark_dirty(
+            id,
+            DirtyClass::MEASURE | DirtyClass::LAYOUT | DirtyClass::PAINT,
+        );
+    }
+
     /// A node's pending unshaped text request, if any. Set by authoring, read
     /// and cleared by the upper tier that shapes text (see
     /// [`Self::take_text_requests`]).
@@ -1095,6 +1128,20 @@ impl NodeStore {
                 out.push((id, req));
             }
         }
+    }
+
+    /// Move every queued text reflow out into `out` as `(NodeId, width)` pairs,
+    /// clearing the buffer. The facade calls this after a layout pass, reshapes
+    /// each run at its assigned width, and writes the wrapped run back with
+    /// [`Self::set_reflowed_content`]. `out` is cleared first. Like
+    /// [`take_animation_requests`](Self::take_animation_requests) the queue is
+    /// not index-aligned (each entry names its own node), so this is a flat move
+    /// with no per-node scan — empty and allocation-free in the common frame
+    /// with no width-changed wrap-eligible text. The recorder already
+    /// live-guards each id, so no re-validation is needed here.
+    pub fn take_text_reflows(&mut self, out: &mut Vec<(NodeId, f32)>) {
+        out.clear();
+        out.append(&mut self.text_reflows);
     }
 
     /// Enqueue a transform animation the router drained off an
@@ -2125,6 +2172,52 @@ impl LayoutTree for NodeStore {
     #[inline]
     fn hidden(&self, index: u32) -> bool {
         self.hidden[index as usize]
+    }
+
+    fn request_text_reflow(&mut self, index: u32, width: f32) {
+        // Eligibility lives entirely here (the trait method is a pure data
+        // write). A reflow is enqueued only for a soft-wrapping text run whose
+        // width axis is layout-derived (`Fill`/`Fixed`, never `Fit`) and whose
+        // assigned width differs from the width it was last shaped at.
+        let Some(Content::Text {
+            natural,
+            shaped_at_width,
+            soft_wrap,
+            ..
+        }) = self.content_payload[index as usize].as_deref()
+        else {
+            return;
+        };
+        if !soft_wrap {
+            return;
+        }
+        // A `Fit` width sizes to content and is never constrained, so it never
+        // wraps; only `Fill`/`Fixed` feed a box width down. (`Fit` runs never
+        // reach here in practice — a Fit leaf's assigned width equals its
+        // natural — but guard explicitly so the monotonicity argument holds.)
+        if matches!(self.layout[index as usize].size().width, Length::Fit) {
+            return;
+        }
+        // Quantize the assigned width to integer physical px before comparing:
+        // a continuous drag-resize assigns a slightly different sub-pixel width
+        // every frame, and reshaping on every one would defeat the text cache
+        // (AGENTS section 20 / ADR 0025 "unchanged width must not reshape").
+        let qwidth = width.round();
+        let natural_x = natural.x;
+        const EPS: f32 = 0.5;
+        let changed = match shaped_at_width {
+            // Not yet wrapped: reflow only if the box is actually narrower than
+            // the unconstrained natural run (a wider box needs no wrapping).
+            None => qwidth < natural_x - EPS,
+            // Already wrapped at some width: reflow if the assigned width moved.
+            Some(w) => (w - qwidth).abs() > EPS,
+        };
+        if !changed {
+            return;
+        }
+        if let Some(id) = self.arena.live_id(index) {
+            self.text_reflows.push((id, qwidth));
+        }
     }
 }
 
@@ -3199,6 +3292,8 @@ mod tests {
                 color: RED,
                 natural: Vec2 { x: 8.0, y: 10.0 },
                 baseline: 8.0,
+                shaped_at_width: None,
+                soft_wrap: false,
             },
         );
         assert!(
