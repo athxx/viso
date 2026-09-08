@@ -71,6 +71,10 @@ ab_glyph_rasterizer = "0.1"
 sdfer = "0.2"
 unicode-bidi = "0.3"
 unicode-script = "0.5"
+# UAX#29 grapheme/word segmentation for width-aware line breaking: word
+# boundaries give the primary break opportunities, graphemes the fallback when a
+# single word overflows. Same source the reference layouter uses for wrapping.
+unicode-segmentation = "1"
 # Pure-Rust PNG decoder for color-bitmap emoji strikes (sbix/CBDT PNG data that
 # ttf-parser hands back as raw bytes). Same decoder family makepad's color-emoji
 # path uses; decoded RGBA is premultiplied into the color glyph atlas.

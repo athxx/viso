@@ -90,7 +90,7 @@ pub fn test_glyphs(origin: [f32; 2], font_size: f32) -> TestGlyphs {
         .load_font(TEST_FONT, 0)
         .expect("embedded test font parses");
     // Two lines to exercise the layout's `\n` handling and baseline advance.
-    let quads = text.prepare(font, "Viso\ngpu", font_size, 1.0, None);
+    let quads = text.prepare(font, "Viso\ngpu", font_size, None, 1.0, None);
     let glyphs = quads
         .iter()
         .map(|q| GlyphInstanceData {

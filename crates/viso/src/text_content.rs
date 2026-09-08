@@ -132,10 +132,15 @@ impl TextShaper {
         self.text
             .resolve_missing(font, &request.text, &self.provider, &mut self.fallback);
 
+        // `None` width: no soft wrapping yet. Wiring the layout engine's
+        // available content width through to here is a measure-pipeline change
+        // (constraint downflow) tracked separately; the text layer already
+        // supports it via `prepare`'s `max_width_px`.
         let quads = self.text.prepare(
             font,
             &request.text,
             request.font_size,
+            None,
             dpi_factor,
             Some(&self.color_raster),
         );
