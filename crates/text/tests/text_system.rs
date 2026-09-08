@@ -1,7 +1,12 @@
 //! Behavioral tests for the text subsystem, driven by an embedded ASCII subset
 //! of DejaVu Sans (`tests/fixtures/DejaVuSans-subset.ttf`).
 
-use viso_text::{FontStore, TextSystem, layout, rasterize_glyph, shape};
+use std::cell::RefCell;
+
+use viso_text::{
+    FontRole, FontStore, SystemFallback, SystemFontProvider, SystemFontQuery, SystemFontResult,
+    TextSystem, layout, rasterize_glyph, shape,
+};
 
 const FONT: &[u8] = include_bytes!("fixtures/DejaVuSans-subset.ttf");
 
@@ -225,6 +230,119 @@ fn first_covering_walks_the_chain() {
     // nothing (it will shape to .notdef and become a system-font candidate).
     assert_eq!(store.first_covering('A'), Some(id));
     assert_eq!(store.first_covering('中'), None);
+}
+
+/// A provider that records every query it receives and hands back a fixed set
+/// of bytes (the ASCII subset) so the driver's chain-growth path exercises. The
+/// returned face does not cover CJK — this test asserts the *provider protocol*
+/// (query shape, chain growth, negative cache), not final glyph coverage.
+struct MockProvider {
+    queries: RefCell<Vec<SystemFontQuery>>,
+    hand_back: Option<SystemFontResult>,
+}
+
+impl MockProvider {
+    fn covering() -> Self {
+        Self {
+            queries: RefCell::new(Vec::new()),
+            hand_back: Some(SystemFontResult {
+                bytes: FONT.to_vec(),
+                index: 0,
+            }),
+        }
+    }
+    fn empty() -> Self {
+        Self {
+            queries: RefCell::new(Vec::new()),
+            hand_back: None,
+        }
+    }
+}
+
+impl SystemFontProvider for MockProvider {
+    fn load(&self, query: &SystemFontQuery) -> Option<SystemFontResult> {
+        self.queries.borrow_mut().push(query.clone());
+        self.hand_back.clone()
+    }
+}
+
+#[test]
+fn missing_script_queries_provider_with_a_representative_sample() {
+    // A run of uncovered CJK shapes to .notdef on the ASCII primary; resolving
+    // fallback queries the provider once for the Han script with a Han sample
+    // and the "zh" language hint, then appends the returned face to the chain.
+    let (mut store, _) = store();
+    let shaped = shape(&store, "中文");
+    assert!(shaped.iter().any(|g| g.id == 0), "CJK is .notdef here");
+
+    let provider = MockProvider::covering();
+    let mut fallback = SystemFallback::new();
+    let grew = fallback.resolve_missing(&mut store, &provider, "中文", &shaped);
+
+    assert!(grew, "a resolved face grows the chain");
+    assert_eq!(store.chain().len(), 2, "primary + one system face");
+    let queries = provider.queries.borrow();
+    assert_eq!(queries.len(), 1, "the two Han chars dedupe to one query");
+    assert_eq!(queries[0].role, FontRole::Cjk);
+    assert_eq!(queries[0].sample, "中");
+    assert_eq!(queries[0].lang, "zh");
+}
+
+#[test]
+fn emoji_queries_the_emoji_role_separately_from_scripts() {
+    // A mixed run of CJK + emoji issues a Cjk query for Han and an Emoji query
+    // for the emoji — emoji are Script::Common but resolve to the emoji face.
+    let (mut store, _) = store();
+    let text = "中🎉";
+    let shaped = shape(&store, text);
+
+    let provider = MockProvider::covering();
+    let mut fallback = SystemFallback::new();
+    fallback.resolve_missing(&mut store, &provider, text, &shaped);
+
+    let queries = provider.queries.borrow();
+    let roles: Vec<FontRole> = queries.iter().map(|q| q.role).collect();
+    assert!(roles.contains(&FontRole::Cjk), "Han queried as Cjk");
+    assert!(roles.contains(&FontRole::Emoji), "emoji queried as Emoji");
+}
+
+#[test]
+fn negative_cache_does_not_requery_an_uncoverable_script() {
+    // A provider that resolves nothing: the first resolve queries the OS, marks
+    // the script attempted, and grows nothing; a second resolve of the same
+    // uncovered run must not query again.
+    let (mut store, _) = store();
+    let shaped = shape(&store, "中");
+
+    let provider = MockProvider::empty();
+    let mut fallback = SystemFallback::new();
+
+    let first = fallback.resolve_missing(&mut store, &provider, "中", &shaped);
+    assert!(!first, "an unresolved query grows nothing");
+    assert_eq!(provider.queries.borrow().len(), 1);
+    assert_eq!(store.chain().len(), 1, "chain unchanged");
+
+    let second = fallback.resolve_missing(&mut store, &provider, "中", &shaped);
+    assert!(!second);
+    assert_eq!(
+        provider.queries.borrow().len(),
+        1,
+        "the negative cache suppresses the repeat query"
+    );
+}
+
+#[test]
+fn covered_text_never_queries_the_provider() {
+    // Pure ASCII resolves entirely on the primary — no .notdef, so the driver
+    // issues no system-font query at all.
+    let (mut store, _) = store();
+    let shaped = shape(&store, "Hello");
+    let provider = MockProvider::covering();
+    let mut fallback = SystemFallback::new();
+
+    let grew = fallback.resolve_missing(&mut store, &provider, "Hello", &shaped);
+    assert!(!grew);
+    assert!(provider.queries.borrow().is_empty());
 }
 
 #[test]

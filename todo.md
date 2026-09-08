@@ -1018,8 +1018,14 @@ spanning 放置 + auto-flow;ADR 0009 明列六项高级能力全未做。落 `cr
       primary 高,只留 primary ascent 会切顶)。基线推进 = 上行 descent 深度 + 两行 line-gap 取大 + 本行 ascent,故拉入
       高 face 的行把下一行相应下推。`PositionedGlyph.font` A2 已加,单 face→链整形 A2 已通;本节只补每行度量扩张。
       验证:2 新测(首基线=primary ascent、单 face 行距=face line height)+ 既有 multiline 步进/pen 推进全绿(16 单测)。
-- [ ] **A4 `text: system font provider`** —— viso-text `SystemFontProvider` trait + 负缓存(attempted-set 落此);
-      facade `system_fonts.rs` CoreText 实现;按脚本/emoji 样本串动态回退。
+- [x] **A4 `text: system font provider`** —— viso-text `SystemFontProvider` trait + `SystemFallback` 负缓存
+      (attempted-set 落此,`resolve_missing` 扫 `.notdef` → 按脚本/emoji 分组 → 查 provider → 扩链);facade
+      `system_fonts.rs` CoreText 实现(objc2-core-text 族,`CFRetained` RAII 免手动 CFRelease):按角色+样本串查
+      (`new_ui_font_for_language`+`for_string` 级联)、`glyph_count<=16` 拒 LastResort、sfnt 重组(SKIP_TAGS 跳
+      sbix/CBDT/CBLC/COLR/CPAL,glyf 存在时丢 VAR_TAGS,tag-as-pointer 取表标签,checkSum/checkSumAdjustment 留零)。
+      非 macOS 编译为返 `None` 的 stub(trait 缝已留)。provider→shaper 活线接入(遍历链+reshape)推到 A5「prepare
+      over chain」。验证:viso-text 4 provider 测(覆盖不查、缺脚本查样本、emoji 单独查、负缓存不重问)全绿(20 测);
+      viso 3 sfnt 测(LastResort 阈值、checksum 补零、重组目录 ttf-parser 可解析)全绿。
 - [ ] **A5 `text: prepare over chain + dpi`** —— glyph 准备遍历回退链;修 `crates/viso/src/lib.rs:552` dpi 硬编码。
 
 **Phase B —— 彩色 emoji(复用 Image 管线)**
