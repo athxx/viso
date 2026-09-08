@@ -100,3 +100,7 @@ harness = false
 [[bench]]
 name = "dock"
 harness = false
+
+[[bench]]
+name = "file_tree"
+harness = false

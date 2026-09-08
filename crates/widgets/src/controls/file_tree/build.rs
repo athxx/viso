@@ -15,11 +15,14 @@
 //! directory (blank for a file), and the node's label — the label fetched from the
 //! warm tree by key at mount time, kept off the hot [`VisibleRow`] (section 8.4).
 //!
-//! This section renders a **fixed** expansion state: the row builder reads the
-//! flattened rows captured at build time and authors them with no interaction. The
-//! expand/collapse reconcile that edits the open set and re-drives the list is a
-//! later section; the keyed list and the `row_nodes` map this walk fills are the
-//! substrate that reconcile step drives.
+//! The row builder reads the flattened rows through a **shared** warm cell
+//! ([`VisibleRows`]) rather than an owned snapshot: the substrate invokes the
+//! keyed `key_of` and the row body live during each reconcile, so a later
+//! expand/collapse that reflattens into that same cell and grows/shrinks the item
+//! count lets the substrate diff by [`NodeKey`] — mounting the rows that entered,
+//! recycling those that left, and reusing every survivor's host. The keyed list,
+//! the shared `visible` cell, the shared label index, and the `row_nodes` map this
+//! walk fills are the substrate the reconcile step (a later section) drives.
 
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -31,42 +34,41 @@ use viso_ui::{
 
 use crate::text::label;
 
-use super::model::{NodeKey, TreeNode, VisibleRow, flatten};
-use super::{FileTreeStyle, RowNodes};
+use super::model::{NodeKey, TreeNode, VisibleRow};
+use super::{FileTreeStyle, Labels, RowNodes, VisibleRows};
 
 /// Author the file tree's subtree: a keyed virtual list over the currently
 /// visible rows, filling `row_nodes` with each mounted row's host node so the
 /// reconcile step (a later section) can find a row by key. Returns the list
-/// viewport node so the caller can attach the tree's container semantics to it.
+/// viewport node so the caller can attach the tree's container semantics to it and
+/// so the reconcile step can drive this list's item count.
 ///
-/// The visible rows are the flatten of `roots` under `open`, captured once here;
-/// the keyed row builder closes over an owned copy so the substrate can rebuild a
-/// row on recycle. `labels` maps a node key to its display string, resolved once
-/// from the tree so a row body does not walk the tree at mount time.
+/// `visible` is the flatten of `roots` under `open`, held in a **shared** warm cell
+/// the reconcile step rewrites in place on an expand/collapse; the keyed `key_of`
+/// and the row body both read that cell live, so a reflatten plus a `set_item_count`
+/// is all it takes for the substrate to diff by key and reuse survivors. `labels`
+/// maps a node key to its display string, resolved once from the tree so a row body
+/// never walks the tree at mount time.
 pub fn build_tree(
     cx: &mut BuildCx<'_>,
-    roots: &[TreeNode],
-    open: &std::collections::HashSet<NodeKey>,
+    visible: &VisibleRows,
+    labels: &Labels,
     style: &FileTreeStyle,
     row_nodes: &RowNodes,
 ) -> NodeId {
-    // The rows the list mounts from, and the cold label lookup a row resolves at
-    // mount. Both are captured once and moved into the row builder; the list is
-    // keyed by the row's NodeKey so a later reflatten reuses surviving rows.
-    let visible = flatten(roots, open);
-    let labels = label_index(roots);
-
     let row_nodes = Rc::clone(row_nodes);
     let style = *style;
 
     // Key the list by the row's stable NodeKey, so an expand/collapse that shifts
-    // every row below the toggle still reuses each surviving row's host node. The
-    // key closure gets its own copy of the row keys; the row builder moves the
-    // full `visible` list.
-    let row_keys: Vec<NodeKey> = visible.iter().map(|r| r.key).collect();
-    let key_of = move |index: usize| ItemKey(row_keys[index].0);
+    // every row below the toggle still reuses each surviving row's host node. Both
+    // closures read the shared `visible` cell live: the reconcile step reflattens
+    // into it, so the substrate sees the new keys and rows on its next pass.
+    let key_visible = Rc::clone(visible);
+    let key_of = move |index: usize| ItemKey(key_visible.borrow()[index].key.0);
 
-    let item_count = visible.len();
+    let row_visible = Rc::clone(visible);
+    let labels = Rc::clone(labels);
+    let item_count = visible.borrow().len();
     cx.virtual_list_keyed(
         VirtualListStyle {
             axis: Axis::Column,
@@ -78,7 +80,7 @@ pub fn build_tree(
         item_count,
         key_of,
         move |index, cx| {
-            let row = visible[index];
+            let row = row_visible.borrow()[index];
             let node = build_row(cx, row, &labels, &style);
             // Record this row's host by key, so the reconcile step can address it
             // directly rather than searching the arena (section 45).
@@ -154,8 +156,9 @@ fn disclosure_glyph(row: VisibleRow) -> &'static str {
 /// Build the key-to-label index by walking the tree once. The label is cold — read
 /// only when a row mounts — so it lives in the tree, not the hot [`VisibleRow`];
 /// this pre-resolves it into a flat map the row builder can index without a tree
-/// walk per mount.
-fn label_index(roots: &[TreeNode]) -> HashMap<NodeKey, String> {
+/// walk per mount. Resolved once when the control is authored and shared with the
+/// row builder through a [`Labels`] cell.
+pub(super) fn label_index(roots: &[TreeNode]) -> HashMap<NodeKey, String> {
     fn walk(node: &TreeNode, out: &mut HashMap<NodeKey, String>) {
         out.insert(node.key, node.label.clone());
         for child in &node.children {
@@ -224,6 +227,9 @@ mod tests {
             open: &HashSet<NodeKey>,
             row_nodes: &RowNodes,
         ) -> NodeId {
+            let visible: VisibleRows =
+                Rc::new(RefCell::new(super::super::model::flatten(roots, open)));
+            let labels: Labels = Rc::new(label_index(roots));
             let mut cx = BuildCx::with_reactive(
                 &mut self.store,
                 &mut self.states,
@@ -233,7 +239,7 @@ mod tests {
                 &mut self.projectors,
             );
             let style = FileTreeStyle::default();
-            let node = build_tree(&mut cx, roots, open, &style, row_nodes);
+            let node = build_tree(&mut cx, &visible, &labels, &style, row_nodes);
             let _ = cx.root();
             node
         }

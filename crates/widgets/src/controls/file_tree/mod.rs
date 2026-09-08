@@ -63,7 +63,9 @@
 //! arbitration beyond the primary pointer.
 
 mod build;
+mod command;
 pub mod model;
+mod reconcile;
 
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
@@ -71,13 +73,30 @@ use std::rc::Rc;
 
 use viso_ui::{BoxStyle, BuildCx, Component, NodeId, Size, VirtualListStyle};
 
+pub use command::{FileTreeHandle, FileTreeHandleSlot};
 pub use model::{NodeKey, TreeNode, VisibleRow};
+
+use model::flatten;
 
 /// The keyed map from a row's [`NodeKey`] to the host node the build walk mounted
 /// for it, shared with the reconcile step (a later section) so it can address a
 /// row by key rather than searching the arena — a discrete-action lookup, never a
 /// per-frame path (AGENTS section 45).
 pub(crate) type RowNodes = Rc<RefCell<HashMap<NodeKey, NodeId>>>;
+
+/// The flattened visible-row list, shared between the build walk (whose keyed
+/// `key_of` and row body read it live) and the reconcile step (which reflattens
+/// into it on an expand/collapse, then drives the list's item count). A **warm**
+/// cell: rewritten only on a discrete toggle, never a per-frame path — the shared
+/// cell is what lets the substrate diff by [`NodeKey`] and reuse surviving rows'
+/// hosts across a structural reconcile (architecture section 12.4).
+pub(crate) type VisibleRows = Rc<RefCell<Vec<VisibleRow>>>;
+
+/// The key-to-label index, resolved once from the tree and shared with the row
+/// builder so a row body never walks the tree at mount time. Cold data (the
+/// display strings) behind an [`Rc`], read only when a row mounts (AGENTS
+/// section 8.4).
+pub(crate) type Labels = Rc<HashMap<NodeKey, String>>;
 
 /// How many rows a [`FileTree`] lets the user select at once.
 ///
@@ -159,6 +178,10 @@ pub struct FileTree {
     /// Whether the tree allows single or multiple selection.
     select_mode: SelectMode,
     style: FileTreeStyle,
+    /// An optional slot the build fills with the control's [`FileTreeHandle`], so
+    /// an application can drive expand/collapse programmatically. `None` when the
+    /// app never asked for a handle (a display-only tree).
+    handle: Option<FileTreeHandleSlot>,
 }
 
 /// Construct a [`FileTree`] over a [`TreeNode`] forest, with every folder
@@ -171,6 +194,7 @@ pub fn file_tree(roots: Vec<TreeNode>) -> FileTree {
         open: HashSet::new(),
         select_mode: SelectMode::default(),
         style: FileTreeStyle::default(),
+        handle: None,
     }
 }
 
@@ -200,17 +224,50 @@ impl FileTree {
         self.style.size = size;
         self
     }
+
+    /// Ask the build to fill `slot` with this control's [`FileTreeHandle`], so an
+    /// application can drive expand/collapse programmatically. Create the slot with
+    /// [`FileTreeHandleSlot::default`], pass it here, then read it after `build`.
+    /// The handle is minted inside `build` (it owns the warm state the walk
+    /// produces), so it cannot be returned by the builder chain — the app supplies
+    /// this slot up front and `build` fills it once, the same deferred-fill idiom
+    /// the dock's `DockHandleSlot` uses.
+    pub fn handle(mut self, slot: FileTreeHandleSlot) -> Self {
+        self.handle = Some(slot);
+        self
+    }
 }
 
 impl Component for FileTree {
     fn build(&self, cx: &mut BuildCx<'_>) {
-        // The keyed row-node map, filled by the build walk and read by the
-        // reconcile step (a later section) to address a row by key. `select_mode`
-        // is stored on the warm model in a later section; this version renders a
-        // fixed expansion state with no interaction, so it is read only to keep
-        // the field live.
-        let _ = self.select_mode;
+        // The warm cells the build walk and the reconcile step share: the
+        // flattened visible rows (the keyed list's `key_of` and row body read this
+        // live, so a reconcile can reflatten into it and grow/shrink the item
+        // count), the key-to-label index (resolved once, so a row body never walks
+        // the tree at mount), and the keyed row-node map the reconcile step
+        // addresses a row by. Cloning the roots into the handle's warm state below
+        // hands the reconcile step an owned tree to reflatten against, mirroring the
+        // dock's owned `DockTree` (module docs).
+        let visible: VisibleRows = Rc::new(RefCell::new(flatten(&self.roots, &self.open)));
+        let labels: Labels = Rc::new(build::label_index(&self.roots));
         let row_nodes: RowNodes = Rc::new(RefCell::new(HashMap::new()));
-        build::build_tree(cx, &self.roots, &self.open, &self.style, &row_nodes);
+
+        let viewport = build::build_tree(cx, &visible, &labels, &self.style, &row_nodes);
+
+        // Mint the handle over the warm state the walk produced, and fill the app's
+        // slot if it asked for one. `select_mode` rides on the warm state so the
+        // keyboard/selection section can read it; this version wires expand/collapse
+        // only.
+        if let Some(slot) = &self.handle {
+            let handle = command::make_handle(
+                self.roots.clone(),
+                self.open.clone(),
+                self.select_mode,
+                viewport,
+                visible,
+                row_nodes,
+            );
+            *slot.borrow_mut() = Some(handle);
+        }
     }
 }
