@@ -48,6 +48,7 @@ use viso_ui::{
     TranslateAnim, VirtualLists, WindowOpenRequest, focus_next, text_edit, virtual_list,
 };
 
+pub mod system_fonts;
 mod text_content;
 use text_content::TextShaper;
 

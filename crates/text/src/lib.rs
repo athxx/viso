@@ -7,18 +7,22 @@
 //! R8 atlas pixels for the caller to upload.
 //!
 //! Scope: the [`FontStore`] holds an ordered **fallback chain** of faces plus
-//! per-face coverage metadata ([`FontFace::has_char`], `glyph_count`), so the
-//! facade can resolve a face for a character before shaping. Shaping and layout
-//! are still single-run, left-to-right, with hard `\n` line breaks and SDF
-//! coverage via `sdfer` ESDT; itemized BiDi/script shaping over the chain,
-//! automatic word wrapping, and system-font resolution are built on top of this
-//! store in later sections.
+//! per-face coverage metadata ([`FontFace::has_char`], `glyph_count`). Shaping
+//! ([`shape`]) itemizes a run over the chain with BiDi + script analysis and
+//! reshapes `.notdef` spans against later faces; layout ([`layout`]) places the
+//! itemized glyphs over lines, sizing each line over the faces it resolved to.
+//! When the chain still cannot cover a character, [`SystemFallback`] turns the
+//! uncovered scripts/emoji into [`SystemFontProvider`] queries and grows the
+//! chain on demand — the provider (a platform binding) lives in the facade, so
+//! this crate stays a pure algorithm layer. Automatic word wrapping and color
+//! bitmap emoji are built on top of this store in later sections.
 
 #![forbid(unsafe_op_in_unsafe_fn)]
 
 mod atlas;
 mod font;
 mod layout;
+mod provider;
 mod raster;
 mod shape;
 mod system;
@@ -26,6 +30,9 @@ mod system;
 pub use atlas::{ATLAS_SIZE, Atlas, AtlasEntry, DirtyRect};
 pub use font::{Command, FontFace, FontStore};
 pub use layout::{PositionedGlyph, layout};
+pub use provider::{
+    FontRole, SystemFallback, SystemFontProvider, SystemFontQuery, SystemFontResult,
+};
 pub use raster::{RasterGlyph, SDF_EDGE, SDF_RADIUS, rasterize_glyph};
 pub use shape::{ShapedGlyph, shape};
 pub use system::{GlyphQuad, TextSystem};

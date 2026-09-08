@@ -71,6 +71,14 @@ sdfer = "0.2"
 unicode-bidi = "0.3"
 unicode-script = "0.5"
 
+# macOS system-font resolution. The facade binds CoreText through the objc2
+# family (same generation as viso-platform's objc2 0.6 stack), asking the OS for
+# a face that covers a sample string and reassembling its sfnt tables for
+# ttf-parser/rustybuzz. Only linked on macOS via a target-gated dependency.
+objc2-core-text = "0.3"
+objc2-core-foundation = "0.3"
+objc2-core-graphics = "0.3"
+
 [profile.release]
 lto = "thin"
 codegen-units = 1
