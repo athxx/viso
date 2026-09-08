@@ -988,3 +988,40 @@ spanning 放置 + auto-flow;ADR 0009 明列六项高级能力全未做。落 `cr
 >   意义 —— 随第一个 text/spacing token 控件(Tier 5 code-editor 或主题化 spacing)落地。§68 触发(dirty 契约扩展)。
 
 **Phase 8 收官后 → 回 Tier 5(Dock,已备两份调研:makepad Dock 设计 + Viso Splitter/capture/Tabs 基础)。**
+
+---
+
+### 字体子系统 —— 系统字体 + 回退链 + 复杂整形 + 彩色 emoji(当前片)
+
+目标:Hello World 居中混排英/中/泰/彩色 emoji + 真·系统字体,把字体子系统未通处全部打通。
+判据 = 性能/资源/效果/设计/易用;缓存原则参考 makepad。整形只在 facade 缝 `text_content.rs`(§3.5)。
+彩色 emoji 复用现有 Image 管线(白 tint 透传预乘 RGBA),无新 GpuInstance/shader/ABI/真机 Metal。
+
+**Phase A —— 系统字体 + 回退链 + 复杂整形(shader/ABI 全程不动)**
+
+- [x] **A1 `text: fallback font store`** —— viso-text `FontStore` 持多 face 回退链(`chain: Vec<FontId>`,`chain[0]`
+      为 primary;`load` 空链时 seed primary,单 face 行为不变);`push_fallback` 显式追加去重(load 不隐式扩链);
+      `chain()`/`primary()`/`first_covering(c)` 查询。每 face 加 `glyph_count`(粗覆盖权重,仅排序回退候选)+
+      `has_char(c)`(cmap 覆盖探针,shaping 仍是覆盖权威)。attempted-set/负缓存推到 A4(依赖 unicode-script,只在
+      facade 缝消费,§57/§40)。验证:text_system.rs 4 单测(seed primary / cmap 覆盖 / first_covering 走链 /
+      push_fallback 扩链去重)。
+- [ ] **A2 `text: itemized bidi + script shaping`** —— facade 缝按 unicode-bidi(LTR 快路径)分段 + unicode-script
+      脚本分项 + 回退递归;`ShapedGlyph` 加 `font: FontId`。
+- [ ] **A3 `text: layout over itemized runs`** —— 排版消费分项 run(不再 `split('\n')` 单 face);`PositionedGlyph` 加 `font`。
+- [ ] **A4 `text: system font provider`** —— viso-text `SystemFontProvider` trait + 负缓存(attempted-set 落此);
+      facade `system_fonts.rs` CoreText 实现;按脚本/emoji 样本串动态回退。
+- [ ] **A5 `text: prepare over chain + dpi`** —— glyph 准备遍历回退链;修 `crates/viso/src/lib.rs:552` dpi 硬编码。
+
+**Phase B —— 彩色 emoji(复用 Image 管线)**
+
+- [ ] **B1 `text: color bitmap raster`** —— 加 zune-png;`ttf-parser::glyph_raster_image` 取 PNG → RGBA 预乘;
+      size-bucket 量化;不做 COLR/SVG。
+- [ ] **B2 `text: rgba color atlas`** —— 第二张 `Rgba8Unorm` 图集;`GlyphKey` 加 `kind`。
+- [ ] **B3 `text: per-glyph kind in prepare`** —— prepare 输出每 glyph 的 kind(SDF vs ColorBitmap)。
+- [ ] **B4 `viso: two textures + color glyph run`** —— facade 建两张纹理(R8 SDF + RGBA color);`Content` 携彩色 glyph run。
+- [ ] **B5 `render: lower color glyphs to Image`** —— 彩色 glyph 降为 `Primitive::Image`(白 tint);headless golden。
+- [ ] **B6 `viso: bundle emoji fallback face`** —— 内嵌 `NotoColorEmoji.ttf` 作 emoji 回退 face。
+
+**Hello World(末节)**:`examples/hello_world/main.rs` 居中 `label("Hello 世界 สวัสดี 🎉").font_size(48.)`。
+
+**ADR(git add -f)**:0024 Text subsystem ownership;0025 System-font provider seam。彩色 emoji GPU ADR 不需。

@@ -6,9 +6,13 @@
 //! a font + string into per-glyph screen quads with atlas UVs, and exposes the
 //! R8 atlas pixels for the caller to upload.
 //!
-//! Scope (Phase 2): single face per run, left-to-right, hard `\n` line breaks,
-//! SDF coverage via `sdfer` ESDT. BiDi, font fallback, automatic word wrapping,
-//! and complex-script shaping are deferred.
+//! Scope: the [`FontStore`] holds an ordered **fallback chain** of faces plus
+//! per-face coverage metadata ([`FontFace::has_char`], `glyph_count`), so the
+//! facade can resolve a face for a character before shaping. Shaping and layout
+//! are still single-run, left-to-right, with hard `\n` line breaks and SDF
+//! coverage via `sdfer` ESDT; itemized BiDi/script shaping over the chain,
+//! automatic word wrapping, and system-font resolution are built on top of this
+//! store in later sections.
 
 #![forbid(unsafe_op_in_unsafe_fn)]
 
