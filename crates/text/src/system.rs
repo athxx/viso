@@ -10,8 +10,9 @@
 use crate::FontId;
 use crate::FontStore;
 use crate::atlas::{ATLAS_SIZE, Atlas, DirtyRect, GlyphKind};
+use crate::color_raster::ColorGlyphRasterizer;
 use crate::layout::layout;
-use crate::provider::{SystemFallback, SystemFontProvider};
+use crate::provider::{FontRole, SystemFallback, SystemFontProvider, SystemFontQuery};
 use crate::shape::shape;
 
 /// A single positioned glyph ready for the GPU: where it lands on screen, where
@@ -59,6 +60,36 @@ impl TextSystem {
     /// Load a face from raw sfnt bytes. Returns `None` if unparseable.
     pub fn load_font(&mut self, bytes: impl Into<Box<[u8]>>, index: u32) -> Option<FontId> {
         self.store.load(bytes, index)
+    }
+
+    /// The primary (chain-head) face id, or `None` if no face has been loaded or
+    /// resolved yet. This is the face a request shapes against; a `None` primary
+    /// means an empty chain (no bundled default, no system face resolved) and a
+    /// run shapes to no glyphs.
+    pub fn primary(&self) -> Option<FontId> {
+        self.store.primary()
+    }
+
+    /// Seed the primary face from the system, if the chain is empty: query
+    /// `provider` for the platform default UI face ([`FontRole::Ui`]) and load it
+    /// as the chain head. Returns the primary face id (the freshly resolved one,
+    /// or the existing one if the chain was already populated), or `None` if the
+    /// chain is empty and the provider has no UI face (e.g. wasm) — in which case
+    /// the run shapes to nothing.
+    ///
+    /// Cold path: runs on the first shape (and any later shape while the chain is
+    /// still empty), not per frame in steady state.
+    pub fn resolve_primary(&mut self, provider: &dyn SystemFontProvider) -> Option<FontId> {
+        if let Some(id) = self.store.primary() {
+            return Some(id);
+        }
+        let query = SystemFontQuery {
+            role: FontRole::Ui,
+            sample: String::new(),
+            lang: String::new(),
+        };
+        let result = provider.load(&query)?;
+        self.store.load(result.bytes, result.index)
     }
 
     /// Atlas edge length in texels.
@@ -135,12 +166,20 @@ impl TextSystem {
     ///
     /// Glyphs with no outline (whitespace) contribute layout advance but no
     /// quad. Handles multi-line text (hard `\n` breaks) via [`layout`].
+    ///
+    /// `color_raster` is the platform color-emoji rasterizer used for faces whose
+    /// strikes were stripped at load ([`FontFace::is_color_emoji`]); pass `None`
+    /// on platforms with no binding (wasm), where such faces yield no color glyph
+    /// and fall through to the outline path.
+    ///
+    /// [`FontFace::is_color_emoji`]: crate::FontFace::is_color_emoji
     pub fn prepare(
         &mut self,
         font: FontId,
         text: &str,
         font_size_px: f32,
         dpi_factor: f32,
+        color_raster: Option<&dyn ColorGlyphRasterizer>,
     ) -> Vec<GlyphQuad> {
         let dpx_per_em = font_size_px * dpi_factor;
         let positioned = layout(&self.store, font, text, font_size_px);
@@ -159,11 +198,15 @@ impl TextSystem {
             let face = store.face(g.font);
 
             // Color-emoji faces get a bitmap-strike probe first; a strike wins
-            // and lands in the color atlas. Faces with no strike table skip the
-            // probe entirely (no per-glyph raster-image lookup) and any glyph
-            // without a strike falls through to the SDF outline path.
-            if face.has_color_strikes()
-                && let Some(entry) = color_atlas.color_glyph(face, g.font, g.id, dpx_per_em)
+            // and lands in the color atlas. A face qualifies either because it
+            // carries readable strikes (`has_color_strikes`, the `ttf-parser`
+            // path) or because the provider marked it a platform-rasterized
+            // emoji face (`is_color_emoji`, strikes stripped at load). Any other
+            // face skips the probe entirely (no per-glyph raster-image lookup)
+            // and every glyph falls through to the SDF outline path.
+            if (face.has_color_strikes() || face.is_color_emoji())
+                && let Some(entry) =
+                    color_atlas.color_glyph(face, g.font, g.id, dpx_per_em, color_raster)
             {
                 let w = entry.width as f32 * inv;
                 let h = entry.height as f32 * inv;

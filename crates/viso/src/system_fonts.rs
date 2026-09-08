@@ -19,8 +19,12 @@
 //! learned from the makepad reference and reproduced here:
 //!
 //!   - **Skip color-bitmap tables** (`sbix`, `CBDT`, `CBLC`, `COLR`, `CPAL`).
-//!     AppleColorEmoji's `sbix` table is ~179 MB; we render color emoji through
-//!     the bundled Noto face, not the system one, so copying it is pure waste.
+//!     AppleColorEmoji's `sbix` table is ~179 MB, and even copied ttf-parser
+//!     could not decode its private image format; instead the emoji face is
+//!     marked [`is_color_emoji`](viso_text::FontFace::is_color_emoji) and its
+//!     color glyphs are rasterized on demand by [`CoreTextColorRaster`] — handing
+//!     the stripped glyph back to CoreText, keyed on the face's PostScript name.
+//!     So copying the strike would be pure waste.
 //!   - **Drop variable-font tables** (`gvar`, `fvar`, ...) when a `glyf` table is
 //!     present. ttf-parser cannot resolve Apple's `gvar` deltas, so leaving them
 //!     in yields blank glyphs; we consume only the default instance.
@@ -55,6 +59,282 @@ impl Default for CoreTextProvider {
 impl viso_text::SystemFontProvider for CoreTextProvider {
     fn load(&self, _query: &viso_text::SystemFontQuery) -> Option<viso_text::SystemFontResult> {
         None
+    }
+}
+
+#[cfg(target_os = "macos")]
+pub use color::CoreTextColorRaster;
+
+/// A no-op color rasterizer for platforms without a native binding. Always
+/// declines, so a color-emoji face yields no color glyph and the shaper falls
+/// through to the outline path (no color output, no panic).
+#[cfg(not(target_os = "macos"))]
+pub struct CoreTextColorRaster;
+
+#[cfg(not(target_os = "macos"))]
+impl CoreTextColorRaster {
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+impl Default for CoreTextColorRaster {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+impl viso_text::ColorGlyphRasterizer for CoreTextColorRaster {
+    fn rasterize(
+        &self,
+        _ps_name: &str,
+        _expected_glyph_count: u16,
+        _glyph_id: u16,
+        _dpx_per_em: f32,
+    ) -> Option<viso_text::ColorGlyph> {
+        None
+    }
+}
+
+/// CoreText color-emoji rasterizer: the macOS binding behind
+/// [`viso_text::ColorGlyphRasterizer`].
+///
+/// A system emoji face reaches viso-text with its color strikes stripped (see
+/// [`system_fonts`](self)), so ttf-parser cannot draw its glyphs. This module
+/// hands the glyph back to CoreText — re-opening the face by its PostScript name
+/// and rasterizing with `CTFontDrawGlyphs` into a premultiplied RGBA bitmap the
+/// color atlas packs directly.
+///
+/// ## Divergence from the reference
+///
+/// The makepad reference un-premultiplies the CoreText bitmap into straight
+/// alpha (its atlas stores straight coverage). Viso keeps the bitmap
+/// **premultiplied**: the color-glyph GPU path lowers to an image draw with a
+/// white tint (`texel * tint` with `tint = [1,1,1,1]`), which passes a
+/// premultiplied texel through unchanged. So we only swizzle BGRA→RGBA and never
+/// un-premultiply.
+#[cfg(target_os = "macos")]
+mod color {
+    use std::cell::RefCell;
+    use std::collections::HashMap;
+    use std::ptr::NonNull;
+
+    use objc2_core_foundation::{CFRetained, CFString, CGFloat, CGPoint, CGRect};
+    use objc2_core_graphics::{
+        CGBitmapContextCreate, CGBitmapContextGetData, CGColorSpace, CGContext,
+    };
+    use objc2_core_text::{CTFont, CTFontOrientation};
+
+    use viso_text::{ColorGlyph, ColorGlyphRasterizer};
+
+    /// CoreText raster info flags: premultiplied-first alpha byte-ordered
+    /// little-endian, i.e. the context's memory layout is `[B, G, R, A]` with the
+    /// color channels premultiplied by alpha. `PremultipliedFirst = 2`,
+    /// `ByteOrder32Little = 0x2000`.
+    const BITMAP_INFO: u32 = 2 | 0x2000;
+
+    /// Rasterize color glyphs by handing them back to CoreText. Holds a per-ppem
+    /// `CTFont` cache keyed on the quantized pixels-per-em; the face is re-opened
+    /// by PostScript name on the first miss. Cold path — one `dyn` call per
+    /// uncached color glyph — so interior-mutable `RefCell`/`HashMap` is fine
+    /// (see AGENTS.md section 42).
+    pub struct CoreTextColorRaster {
+        /// Per-requested-PostScript-name face caches, populated on the first color
+        /// glyph of each emoji face.
+        faces: RefCell<HashMap<String, FaceCache>>,
+    }
+
+    /// The resolved font name a requested PostScript name binds to, plus that
+    /// face's per-ppem `CTFont` instances.
+    struct FaceCache {
+        /// The candidate name that matched the expected glyph count — reused when
+        /// creating each per-ppem instance so all sizes bind the same face.
+        resolved_name: String,
+        /// Per-ppem instances (`CTFontCreateWithName` at each size).
+        by_ppem: HashMap<u16, CFRetained<CTFont>>,
+    }
+
+    impl CoreTextColorRaster {
+        pub fn new() -> Self {
+            Self {
+                faces: RefCell::new(HashMap::new()),
+            }
+        }
+    }
+
+    impl Default for CoreTextColorRaster {
+        fn default() -> Self {
+            Self::new()
+        }
+    }
+
+    impl ColorGlyphRasterizer for CoreTextColorRaster {
+        fn rasterize(
+            &self,
+            ps_name: &str,
+            expected_glyph_count: u16,
+            glyph_id: u16,
+            dpx_per_em: f32,
+        ) -> Option<ColorGlyph> {
+            let ppem = quantize_ppem(dpx_per_em);
+
+            let mut faces = self.faces.borrow_mut();
+            // Resolve the candidate name for this face once (probing against the
+            // expected glyph count), then cache a CTFont per ppem under it.
+            let entry = match faces.get_mut(ps_name) {
+                Some(e) => e,
+                None => {
+                    let resolved_name = resolve_name(ps_name, expected_glyph_count)?;
+                    faces.entry(ps_name.to_string()).or_insert(FaceCache {
+                        resolved_name,
+                        by_ppem: HashMap::new(),
+                    })
+                }
+            };
+            let font = match entry.by_ppem.get(&ppem) {
+                Some(f) => f.clone(),
+                None => {
+                    let f = with_name(&entry.resolved_name, ppem as f64);
+                    entry.by_ppem.insert(ppem, f.clone());
+                    f
+                }
+            };
+            drop(faces);
+
+            rasterize_glyph(&font, glyph_id, ppem)
+        }
+    }
+
+    /// Quantize a device-pixels-per-em request to an integer ppem, clamped to a
+    /// sane strike range so a runaway size cannot ask CoreText for a giant bitmap.
+    fn quantize_ppem(dpx_per_em: f32) -> u16 {
+        (dpx_per_em.round() as i32).clamp(1, 512) as u16
+    }
+
+    /// Open a font by name via `CTFontCreateWithName` at `size` points.
+    fn with_name(name: &str, size: f64) -> CFRetained<CTFont> {
+        let cf = CFString::from_str(name);
+        // SAFETY: CoreText FFI. `with_name` returns a retained font; the name
+        // string outlives the call and the null matrix means identity.
+        unsafe { CTFont::with_name(&cf, size as CGFloat, std::ptr::null()) }
+    }
+
+    /// Resolve the emoji face's re-open name, mirroring the reference's candidate
+    /// probing: try the PostScript name, then the name with a leading `.`
+    /// stripped, then a trailing `UI` stripped, then the well-known
+    /// `AppleColorEmoji`. Return the first candidate whose glyph count matches the
+    /// face viso-text parsed (so we bind the *same* face, not a lookalike).
+    fn resolve_name(ps_name: &str, expected_glyph_count: u16) -> Option<String> {
+        let mut candidates: Vec<String> = Vec::new();
+        let mut push = |c: String| {
+            if !c.is_empty() && !c.starts_with('.') && !candidates.contains(&c) {
+                candidates.push(c);
+            }
+        };
+        push(ps_name.to_string());
+        push(ps_name.trim_start_matches('.').to_string());
+        push(ps_name.trim_end_matches("UI").to_string());
+        push("AppleColorEmoji".to_string());
+
+        candidates.into_iter().find(|cand| {
+            let font = with_name(cand, 16.0);
+            // SAFETY: CoreText FFI, reads the glyph count of a live font.
+            let count = unsafe { font.glyph_count() };
+            count == expected_glyph_count as isize
+        })
+    }
+
+    /// Rasterize `glyph_id` from `font` at `ppem` into a premultiplied RGBA
+    /// [`ColorGlyph`], mirroring the reference: measure the y-up ink bbox, floor
+    /// the origin and ceil the extent to integer pixels, draw into a BGRA
+    /// premultiplied bitmap at identity CTM, then swizzle BGRA→RGBA (keeping the
+    /// premultiplied alpha; see the module divergence note).
+    fn rasterize_glyph(font: &CTFont, glyph_id: u16, ppem: u16) -> Option<ColorGlyph> {
+        let glyph = glyph_id;
+        let mut bbox = CGRect::default();
+        // SAFETY: CoreText FFI. `glyph` and `bbox` are single-element buffers; the
+        // count of 1 matches, and the pointers are valid for the call.
+        let _ = unsafe {
+            font.bounding_rects_for_glyphs(
+                CTFontOrientation::Horizontal,
+                NonNull::from(&glyph),
+                &mut bbox,
+                1,
+            )
+        };
+
+        if !bbox.origin.x.is_finite()
+            || !bbox.origin.y.is_finite()
+            || !bbox.size.width.is_finite()
+            || !bbox.size.height.is_finite()
+        {
+            return None;
+        }
+
+        let x0 = bbox.origin.x.floor();
+        let y0 = bbox.origin.y.floor();
+        let w = ((bbox.origin.x + bbox.size.width).ceil() - x0) as i32;
+        let h = ((bbox.origin.y + bbox.size.height).ceil() - y0) as i32;
+        if w <= 0 || h <= 0 {
+            return None;
+        }
+        let (w, h) = (w as usize, h as usize);
+
+        let space = CGColorSpace::new_device_rgb()?;
+        // SAFETY: CoreText/CoreGraphics FFI. A null data pointer asks CG to
+        // allocate the backing store (freed with the context); `space` is a valid
+        // device-RGB space that outlives the context.
+        let ctx = unsafe {
+            CGBitmapContextCreate(std::ptr::null_mut(), w, h, 8, 0, Some(&space), BITMAP_INFO)
+        }?;
+
+        let pos = CGPoint {
+            x: -x0 as CGFloat,
+            y: -y0 as CGFloat,
+        };
+        // SAFETY: CoreText FFI. Single-element glyph/position buffers matching the
+        // count of 1; `ctx` is the bitmap context just created.
+        unsafe {
+            font.draw_glyphs(NonNull::from(&glyph), NonNull::from(&pos), 1, &ctx);
+        }
+
+        let rgba = read_back_rgba(&ctx, w, h)?;
+        Some(ColorGlyph {
+            width: w as u32,
+            height: h as u32,
+            rgba,
+            pixels_per_em: ppem,
+            // The strike origin offset from the pen, in strike pixels: the atlas
+            // scales it by `dpx_per_em / pixels_per_em` when placing the quad.
+            origin_px: [x0 as f32, y0 as f32],
+        })
+    }
+
+    /// Read the context's BGRA premultiplied pixels back and swizzle to RGBA,
+    /// keeping the premultiplied alpha (Viso's image path expects premultiplied).
+    fn read_back_rgba(ctx: &CGContext, w: usize, h: usize) -> Option<Vec<u8>> {
+        // Returns the context's backing store pointer, valid for `w * h * 4`
+        // bytes (bytes-per-row 0 asked for a tight buffer).
+        let data = CGBitmapContextGetData(Some(ctx));
+        if data.is_null() {
+            return None;
+        }
+        let len = w * h * 4;
+        // SAFETY: the backing store holds `len` bytes as established above.
+        let src = unsafe { std::slice::from_raw_parts(data as *const u8, len) };
+        let mut rgba = vec![0u8; len];
+        let (dst_px, _) = rgba.as_chunks_mut::<4>();
+        let (src_px, _) = src.as_chunks::<4>();
+        for (dst, px) in dst_px.iter_mut().zip(src_px) {
+            // Source is [B, G, R, A]; write [R, G, B, A].
+            dst[0] = px[2];
+            dst[1] = px[1];
+            dst[2] = px[0];
+            dst[3] = px[3];
+        }
+        Some(rgba)
     }
 }
 
@@ -140,7 +420,13 @@ mod imp {
     }
 
     /// Color-bitmap tables we never copy: they are huge (Apple's `sbix` is
-    /// ~179 MB) and we render color emoji through the bundled Noto face instead.
+    /// ~179 MB) and ttf-parser cannot decode Apple's private strike format
+    /// anyway. The emoji face is flagged [`is_color_emoji`] and its color glyphs
+    /// are rasterized on demand by [`CoreTextColorRaster`], which hands the glyph
+    /// back to CoreText keyed on the face's PostScript name.
+    ///
+    /// [`is_color_emoji`]: viso_text::FontFace::is_color_emoji
+    /// [`CoreTextColorRaster`]: super::CoreTextColorRaster
     const SKIP_TAGS: &[u32] = &[
         tag(b"sbix"),
         tag(b"CBDT"),

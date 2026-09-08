@@ -17,7 +17,7 @@
 //! The caller creates the texture and uploads [`Atlas::take_dirty`] rows.
 
 use crate::FontId;
-use crate::color_raster::{ColorGlyph, rasterize_color_glyph};
+use crate::color_raster::{ColorGlyph, ColorGlyphRasterizer, rasterize_color_glyph};
 use crate::font::FontFace;
 use crate::raster::rasterize_glyph;
 use std::collections::HashMap;
@@ -203,12 +203,20 @@ impl Atlas {
     /// then treats the glyph as an SDF outline). For a color entry `bearing_px`
     /// is the strike origin offset scaled to `dpx_per_em`, and `px_range` is
     /// unused (the color path samples RGBA directly, no coverage ramp).
+    ///
+    /// A face marked [`FontFace::is_color_emoji`] has its strikes stripped and
+    /// cannot be decoded by `ttf-parser`, so its color glyphs come from
+    /// `color_raster` (the platform text engine, keyed on the face's PostScript
+    /// name). Any other face keeps the in-crate `ttf-parser` strike path. When
+    /// `color_raster` is `None` (no platform binding, e.g. wasm) an emoji face
+    /// simply yields no color glyph and falls through to the outline path.
     pub fn color_glyph(
         &mut self,
         face: &FontFace,
         font: FontId,
         glyph_id: u16,
         dpx_per_em: f32,
+        color_raster: Option<&dyn ColorGlyphRasterizer>,
     ) -> Option<AtlasEntry> {
         debug_assert_eq!(self.kind, GlyphKind::Color);
         let key = GlyphKey {
@@ -220,7 +228,12 @@ impl Atlas {
         if let Some(e) = self.entries.get(&key) {
             return Some(*e);
         }
-        let color: ColorGlyph = rasterize_color_glyph(face, glyph_id, dpx_per_em)?;
+        let color: ColorGlyph = if face.is_color_emoji() {
+            let ps_name = face.postscript_name()?;
+            color_raster?.rasterize(&ps_name, face.glyph_count, glyph_id, dpx_per_em)?
+        } else {
+            rasterize_color_glyph(face, glyph_id, dpx_per_em)?
+        };
         // Scale the strike's origin offset from its own ppem to the request.
         let scale = dpx_per_em / color.pixels_per_em as f32;
         let bearing = [color.origin_px[0] * scale, color.origin_px[1] * scale];
