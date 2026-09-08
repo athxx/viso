@@ -35,6 +35,7 @@ use viso_ui::{
 use crate::text::label;
 
 use super::model::{NodeKey, TreeNode, VisibleRow};
+use super::semantics::{row_state, tree_container, tree_item};
 use super::{FileTreeStyle, Labels, RowNodes, VisibleRows};
 
 /// Author the file tree's subtree: a keyed virtual list over the currently
@@ -69,7 +70,7 @@ pub fn build_tree(
     let row_visible = Rc::clone(visible);
     let labels = Rc::clone(labels);
     let item_count = visible.borrow().len();
-    cx.virtual_list_keyed(
+    let viewport = cx.virtual_list_keyed(
         VirtualListStyle {
             axis: Axis::Column,
             size: style.size,
@@ -86,8 +87,11 @@ pub fn build_tree(
             // directly rather than searching the arena (section 45).
             row_nodes.borrow_mut().insert(row.key, node);
         },
-    )
-    .id()
+    );
+    // Author the container's Role::Tree so an assistive technology presents the
+    // rows as one navigable hierarchy. The viewport carries no live state — the
+    // per-row expanded/selected facts live on the rows.
+    cx.semantics(viewport, tree_container("")).id()
 }
 
 /// Author one row: a horizontal strip of an indent spacer (sized to the row's
@@ -106,8 +110,9 @@ fn build_row(
         .unwrap_or_default()
         .to_owned();
     let glyph = disclosure_glyph(row);
+    let text_for_role = text.clone();
 
-    cx.flex(
+    let handle = cx.flex(
         viso_ui::FlexStyle {
             axis: Axis::Row,
             gap: style.gap,
@@ -135,8 +140,13 @@ fn build_row(
             // The node's display name.
             label(text).build(cx);
         },
-    )
-    .id()
+    );
+    // Author the row as a Role::TreeItem named by its label, and seed its live
+    // state so the first accessibility snapshot carries expanded (a directory) and
+    // selected without needing an interaction first. A freshly built row is not yet
+    // selected; the reconcile step refreshes selected/expanded as they change.
+    cx.semantics(handle, tree_item(&text_for_role));
+    cx.semantic_state(handle, row_state(row, false)).id()
 }
 
 /// The disclosure glyph for a row: a right-pointing arrow for a collapsed

@@ -98,6 +98,20 @@ pub enum Role {
     /// reader can jump between docked areas by name. Purely structural — it carries
     /// no live reactive state, only its role and label.
     Region,
+    /// The container of a hierarchical set of [`TreeItem`](Role::TreeItem)s — a tree
+    /// browser (WAI-ARIA `role=tree`). The [`FileTree`](../../viso_widgets/index.html)
+    /// control's viewport carries this role so an assistive technology presents its
+    /// rows as one navigable hierarchy. Structural — it carries its role and label,
+    /// no live reactive state.
+    Tree,
+    /// One node in a [`Tree`](Role::Tree) — a row in the tree browser (WAI-ARIA
+    /// `role=treeitem`). Announces its expanded state (a directory row, via
+    /// `aria-expanded`) and whether it is selected (via `aria-selected`). The live
+    /// expanded/selected facts reach the derived tree through the node's
+    /// [`SemanticState`] side column (`expanded` + `selected`), written by the
+    /// control's structural reconcile step from its warm flattened-row model — not a
+    /// reactive scalar cell, so the write is direct rather than projected.
+    TreeItem,
 }
 
 /// A node's *authored* semantics: the facts a builder sets, distinct from the
@@ -157,6 +171,12 @@ pub struct SemanticState {
     /// wiring (Navigation/Dialog disclosure); carried in the model now so the
     /// column and snapshot shape are stable.
     pub expanded: Option<bool>,
+    /// Whether a selectable node is selected — a [`TreeItem`](Role::TreeItem) row
+    /// (WAI-ARIA `aria-selected`). Distinct from [`checked`](Self::checked): a
+    /// checkbox/radio announces a boolean *value*, whereas a tree row announces
+    /// whether it is part of the current *selection*. `None` for a node whose role
+    /// carries no selection.
+    pub selected: Option<bool>,
 }
 
 impl SemanticState {
@@ -180,6 +200,12 @@ impl SemanticState {
     /// This with an `expanded` disclosure flag.
     pub fn with_expanded(mut self, expanded: bool) -> Self {
         self.expanded = Some(expanded);
+        self
+    }
+
+    /// This with a `selected` flag (a tree row's `aria-selected`).
+    pub fn with_selected(mut self, selected: bool) -> Self {
+        self.selected = Some(selected);
         self
     }
 }
@@ -303,6 +329,7 @@ mod tests {
         assert_eq!(s.value, None);
         assert_eq!(s.range, None);
         assert_eq!(s.expanded, None);
+        assert_eq!(s.selected, None);
     }
 
     #[test]
@@ -312,6 +339,7 @@ mod tests {
         assert_eq!(s.value, None);
         assert_eq!(s.range, None);
         assert_eq!(s.expanded, None);
+        assert_eq!(s.selected, None);
         assert_eq!(SemanticState::checked(false).checked, Some(false));
     }
 
@@ -322,6 +350,7 @@ mod tests {
         assert_eq!(s.range, Some((0.0, 100.0)));
         assert_eq!(s.checked, None);
         assert_eq!(s.expanded, None);
+        assert_eq!(s.selected, None);
     }
 
     #[test]
@@ -333,6 +362,32 @@ mod tests {
         let both = SemanticState::checked(true).with_expanded(false);
         assert_eq!(both.checked, Some(true));
         assert_eq!(both.expanded, Some(false));
+    }
+
+    #[test]
+    fn semantic_state_with_selected_composes() {
+        let s = SemanticState::default().with_selected(true);
+        assert_eq!(s.selected, Some(true));
+        assert_eq!(s.expanded, None);
+        assert_eq!(s.checked, None);
+        // A tree row carries expanded (directory) and selected together without
+        // either clobbering the other — the treeitem shape.
+        let row = SemanticState::default()
+            .with_expanded(true)
+            .with_selected(false);
+        assert_eq!(row.expanded, Some(true));
+        assert_eq!(row.selected, Some(false));
+    }
+
+    #[test]
+    fn tree_and_treeitem_roles_are_distinct() {
+        let tree = Semantics::role(Role::Tree).with_label("Files");
+        assert_eq!(tree.role, Role::Tree);
+        assert_eq!(tree.label.as_deref(), Some("Files"));
+        let item = Semantics::role(Role::TreeItem).with_label("main.rs");
+        assert_eq!(item.role, Role::TreeItem);
+        assert_ne!(Role::Tree, Role::TreeItem);
+        assert_ne!(Role::Tree, Role::Region);
     }
 
     #[test]

@@ -21,15 +21,23 @@
 //! host node — the tree is never rebuilt, and a row that stayed visible keeps its host,
 //! its state, and (a later section) its focus.
 //!
-//! Writing per-row `Role::TreeItem` semantics (expanded/selected) is deferred to the
-//! accessibility section; this version reflattens and re-drives the count only, so the
-//! `store` argument is threaded through but unused here.
+//! After the arrangement settles, the step refreshes each visible row's live
+//! `Role::TreeItem` accessibility state — `aria-expanded` for a directory and
+//! `aria-selected` for the current selection — by writing the node's
+//! [`SemanticState`](viso_ui::SemanticState) side column directly through
+//! [`set_semantic_state`](viso_ui::NodeStore::set_semantic_state). These facts are
+//! warm model data (fields of the flattened rows and the selection set), not a
+//! reactive scalar cell, so the write is direct rather than routed through the
+//! flush-phase projector the scalar-cell controls use. The refresh runs whenever an
+//! expansion or a selection changed; a bare focus-cursor move touches neither and
+//! so writes nothing.
 
 use viso_ui::virtual_list::set_item_count;
 use viso_ui::{NodeStore, VirtualLists};
 
 use super::command::{FileTreeState, Intent};
 use super::model::{apply_select, flatten};
+use super::semantics::row_state;
 
 /// Apply the committed intents, then — only if the tree's structure changed —
 /// reflatten and re-drive the list.
@@ -52,12 +60,17 @@ use super::model::{apply_select, flatten};
 /// the reflatten, so the keyboard's cheapest gesture (moving the cursor) stays cheap and
 /// does not disturb the mounted rows.
 ///
+/// Then, whenever an expansion *or* a selection changed, refreshes every visible row's
+/// [`Role::TreeItem`](viso_ui::Role::TreeItem) live state — `expanded` for a directory
+/// and `selected` for the selection — through [`refresh_row_semantics`]. A bare
+/// focus-cursor move changes neither, so it writes no semantics.
+///
 /// Skips the whole drain when no intents were pending (the common per-frame case), so a
 /// frame with no interaction does no work here.
 pub(super) fn reconcile_open(
     state: &mut FileTreeState,
     intents: &std::rc::Rc<std::cell::RefCell<Vec<Intent>>>,
-    _store: &mut NodeStore,
+    store: &mut NodeStore,
     lists: &mut VirtualLists,
 ) {
     let mut queue = intents.borrow_mut();
@@ -67,6 +80,9 @@ pub(super) fn reconcile_open(
     // Whether any intent changed the open set — the only thing that changes the visible
     // rows. A focus/select-only frame leaves this false and skips the reflatten below.
     let mut structural = false;
+    // Whether any intent changed the selection — an aria-selected change that must reach
+    // the rows even on a frame that moved no row.
+    let mut selection_changed = false;
     for intent in queue.drain(..) {
         match intent {
             Intent::Toggle(key) => {
@@ -94,21 +110,44 @@ pub(super) fn reconcile_open(
                 drop(visible);
                 state.anchor = anchor;
                 state.focus = Some(key);
+                selection_changed = true;
             }
         }
     }
     drop(queue);
 
-    if !structural {
-        // Focus/selection moved but no row entered or left — the mounted list is still
-        // correct, so leave it untouched.
-        return;
+    if structural {
+        // Reflatten into the shared cell the keyed list reads live, then tell the list
+        // how many rows it now has — the one call that drives the whole structural diff.
+        let rows = flatten(&state.roots, &state.open);
+        let count = rows.len();
+        *state.visible.borrow_mut() = rows;
+        set_item_count(lists, state.viewport, count);
     }
 
-    // Reflatten into the shared cell the keyed list reads live, then tell the list how
-    // many rows it now has — the one call that drives the whole structural diff.
-    let rows = flatten(&state.roots, &state.open);
-    let count = rows.len();
-    *state.visible.borrow_mut() = rows;
-    set_item_count(lists, state.viewport, count);
+    // Refresh per-row accessibility state whenever an expansion or a selection changed. A
+    // structural change can flip a directory's expanded glyph and shift which rows are
+    // visible; a selection change flips aria-selected without moving a row. A focus-only
+    // frame changes neither and writes nothing.
+    if structural || selection_changed {
+        refresh_row_semantics(state, store);
+    }
+}
+
+/// Rewrite each currently-visible row's live [`SemanticState`](viso_ui::SemanticState) —
+/// `expanded` (a directory) and `selected` (in the selection) — onto its mounted host
+/// node, addressed by key through `state.row_nodes`. Only rows the build walk has
+/// mounted appear in that map, so a row scrolled out of the window (whose host was
+/// recycled) is skipped; it re-authors its state from `row_state` when it next mounts.
+/// A direct column write ([`set_semantic_state`]), not a projector: the expanded/selected
+/// facts are warm model data, not a reactive scalar cell.
+fn refresh_row_semantics(state: &FileTreeState, store: &mut NodeStore) {
+    let visible = state.visible.borrow();
+    let row_nodes = state.row_nodes.borrow();
+    for row in visible.iter() {
+        if let Some(&node) = row_nodes.get(&row.key) {
+            let selected = state.selection.contains(&row.key);
+            store.set_semantic_state(node, row_state(*row, selected));
+        }
+    }
 }
