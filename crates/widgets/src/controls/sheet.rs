@@ -61,8 +61,9 @@ use std::rc::Rc;
 use std::time::Duration;
 
 use viso_ui::{
-    Align, Axis, BoxStyle, BuildCx, Component, DirtyClass, Easing, EventCx, FlexStyle, Inset, Key,
-    Length, NodeId, Rgba, Role, Semantics, Size, StateId, StateValue, TranslateAnim, Vec2,
+    Align, Axis, BoxStyle, BuildCx, Component, DirtyClass, Easing, EventCx, FlexStyle, Inset,
+    Justify, Key, Length, NodeId, Rgba, Role, Semantics, Size, StateId, StateValue, TranslateAnim,
+    Vec2,
 };
 
 /// A shared, mutable dismiss callback, fired when the sheet closes (Escape, or a
@@ -469,6 +470,7 @@ impl Component for Sheet {
                 gap: 0.0,
                 padding: Inset::all(0.0),
                 align: Align::Stretch,
+                justify: Justify::Start,
                 size: Size::fill(),
                 style: BoxStyle::NONE,
             },
@@ -516,6 +518,7 @@ impl Component for Sheet {
                         gap: 0.0,
                         padding: Inset::all(0.0),
                         align: Align::Stretch,
+                        justify: Justify::Start,
                         size: content_size,
                         style: BoxStyle::NONE,
                     },

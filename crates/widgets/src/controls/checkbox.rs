@@ -46,9 +46,9 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use viso_ui::{
-    Align, Axis, Border, BoxStyle, BuildCx, Component, DirtyClass, EventCx, FlexStyle, Inset, Key,
-    LeafStyle, Length, PointerButtons, PointerPhase, Rgba, Role, SemanticState, Semantics, Size,
-    StateValue,
+    Align, Axis, Border, BoxStyle, BuildCx, Component, DirtyClass, EventCx, FlexStyle, Inset,
+    Justify, Key, LeafStyle, Length, PointerButtons, PointerPhase, Rgba, Role, SemanticState,
+    Semantics, Size, StateValue,
 };
 
 use crate::label;
@@ -245,6 +245,7 @@ impl Component for CheckBox {
                 gap: GAP,
                 padding: Inset::all(0.0),
                 align: Align::Center,
+                justify: Justify::Start,
                 size: self.style.size,
                 style: BoxStyle::NONE,
             },

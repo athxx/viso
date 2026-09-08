@@ -223,6 +223,7 @@ impl Component for Dock {
                 gap: 0.0,
                 padding: viso_ui::Inset::all(0.0),
                 align: viso_ui::Align::Stretch,
+                justify: viso_ui::Justify::Start,
                 size: self.style.size,
                 style: BoxStyle::NONE,
             },

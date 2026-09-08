@@ -50,7 +50,7 @@ pub use input::{
     ImeEvent, Key, KeyEvent, KeyRouter, Modifiers, PointerButtons, PointerEvent, PointerPhase,
     PointerRouter, ScrollEvent, ScrollRouter, focus_next, route_pointer, route_scroll,
 };
-pub use layout::{Align, Axis, Inset, Length, Size, Vec2};
+pub use layout::{Align, Axis, Inset, Justify, Length, Size, Vec2};
 pub use node::{NodeArena, NodeId, NodeLinks};
 pub use paint::paint_tree;
 // Render primitive data types that already appear in this crate's public API —

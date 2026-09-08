@@ -13,7 +13,7 @@ use viso::gpu::{GpuBackend, HeadlessRaster, RawWindowHandle};
 use viso::render::Rect;
 use viso::render::{Renderer, Rgba};
 use viso::ui::{
-    Align, Axis, BoxStyle, BuildCx, FlexStyle, Inset, LeafStyle, Length, NodeStore, Size,
+    Align, Axis, BoxStyle, BuildCx, FlexStyle, Inset, Justify, LeafStyle, Length, NodeStore, Size,
     paint_tree,
 };
 
@@ -57,6 +57,7 @@ fn build(store: &mut NodeStore) -> viso::ui::NodeId {
             gap: 8.0,
             padding: Inset::all(12.0),
             align: Align::Center,
+            justify: Justify::Start,
             size: Size::fill(),
             style: BoxStyle::solid(DARK),
         },

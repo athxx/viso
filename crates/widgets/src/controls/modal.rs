@@ -63,8 +63,8 @@ use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use viso_ui::{
-    Align, Axis, BoxStyle, BuildCx, Component, DirtyClass, EventCx, FlexStyle, Inset, Key, Length,
-    NodeId, PointerPhase, Rgba, Role, Semantics, Size, StateId, StateValue,
+    Align, Axis, BoxStyle, BuildCx, Component, DirtyClass, EventCx, FlexStyle, Inset, Justify, Key,
+    Length, NodeId, PointerPhase, Rgba, Role, Semantics, Size, StateId, StateValue,
 };
 
 /// A shared, mutable dismiss callback, fired when the modal closes (Escape, or a
@@ -355,6 +355,7 @@ impl Component for Modal {
                 gap: 0.0,
                 padding: Inset::all(0.0),
                 align: Align::Stretch,
+                justify: Justify::Start,
                 size: self.style.size,
                 style: BoxStyle::NONE,
             },
@@ -382,6 +383,7 @@ impl Component for Modal {
                         gap: 0.0,
                         padding: Inset::all(0.0),
                         align: Align::Stretch,
+                        justify: Justify::Start,
                         size: Size {
                             width: Length::Fit,
                             height: Length::Fit,

@@ -8,8 +8,8 @@
 
 use viso::render::{Rect, Rgba};
 use viso::ui::{
-    Align, Axis, BoxStyle, BuildCx, DirtyClass, FlexStyle, Inset, LeafStyle, NodeId, NodeStore,
-    Size,
+    Align, Axis, BoxStyle, BuildCx, DirtyClass, FlexStyle, Inset, Justify, LeafStyle, NodeId,
+    NodeStore, Size,
 };
 
 const W: f32 = 200.0;
@@ -40,6 +40,7 @@ fn flex_style() -> FlexStyle {
         gap: 8.0,
         padding: Inset::all(12.0),
         align: Align::Center,
+        justify: Justify::Start,
         size: Size::fill(),
         style: BoxStyle::solid(FILL),
     }

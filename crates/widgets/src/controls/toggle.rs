@@ -51,7 +51,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use viso_ui::{
-    Align, Axis, BoxStyle, BuildCx, Component, DirtyClass, EventCx, FlexStyle, Inset, Key,
+    Align, Axis, BoxStyle, BuildCx, Component, DirtyClass, EventCx, FlexStyle, Inset, Justify, Key,
     LeafStyle, Length, PointerButtons, PointerPhase, Rgba, Role, SemanticState, Semantics, Size,
     StateValue,
 };
@@ -277,6 +277,7 @@ impl Component for Toggle {
                 gap: GAP,
                 padding: Inset::all(0.0),
                 align: Align::Center,
+                justify: Justify::Start,
                 size: self.style.size,
                 style: BoxStyle::NONE,
             },
@@ -294,6 +295,7 @@ impl Component for Toggle {
                             bottom: thumb_inset,
                         },
                         align: Align::Center,
+                        justify: Justify::Start,
                         size: Size::fixed(track_w, track_h),
                         style: track_box,
                     },

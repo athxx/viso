@@ -53,9 +53,9 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use viso_ui::{
-    Align, Axis, Border, BoxStyle, BuildCx, Component, DirtyClass, EventCx, FlexStyle, Inset, Key,
-    LeafStyle, Length, PointerButtons, PointerPhase, Rgba, Role, SemanticState, Semantics, Size,
-    StateId, StateValue,
+    Align, Axis, Border, BoxStyle, BuildCx, Component, DirtyClass, EventCx, FlexStyle, Inset,
+    Justify, Key, LeafStyle, Length, PointerButtons, PointerPhase, Rgba, Role, SemanticState,
+    Semantics, Size, StateId, StateValue,
 };
 
 use crate::label;
@@ -269,6 +269,7 @@ impl Component for RadioGroup {
                 gap: ROW_GAP,
                 padding: Inset::all(0.0),
                 align: Align::Start,
+                justify: Justify::Start,
                 size: self.style.size,
                 style: BoxStyle::NONE,
             },
@@ -281,6 +282,7 @@ impl Component for RadioGroup {
                             gap: GAP,
                             padding: Inset::all(0.0),
                             align: Align::Center,
+                            justify: Justify::Start,
                             size: Size {
                                 width: Length::Fit,
                                 height: Length::Fit,

@@ -58,8 +58,8 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use viso_ui::{
-    Align, Axis, BoxStyle, BuildCx, Component, DirtyClass, EventCx, FlexStyle, Inset, Key, Length,
-    NodeId, Rgba, Role, Semantics, Size, StateId, StateValue,
+    Align, Axis, BoxStyle, BuildCx, Component, DirtyClass, EventCx, FlexStyle, Inset, Justify, Key,
+    Length, NodeId, Rgba, Role, Semantics, Size, StateId, StateValue,
 };
 
 /// A shared, mutable dismiss callback, fired when the popup closes (Escape, or a
@@ -303,6 +303,7 @@ impl Component for Popup {
                 gap: 0.0,
                 padding: Inset::all(0.0),
                 align: Align::Stretch,
+                justify: Justify::Start,
                 size: self.style.size,
                 style: BoxStyle::NONE,
             },
@@ -335,6 +336,7 @@ impl Component for Popup {
                         gap: 0.0,
                         padding: Inset::all(0.0),
                         align: Align::Stretch,
+                        justify: Justify::Start,
                         size: Size {
                             width: Length::Fit,
                             height: Length::Fit,

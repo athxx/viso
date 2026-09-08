@@ -21,8 +21,8 @@ use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use viso_ui::{
-    Align, Axis, BindingTable, BoxStyle, BuildCx, FlexStyle, Inset, LeafStyle, Length, NodeId,
-    NodeStore, Rect, SemanticProjector, Size, StateStore, TextEdits, VirtualLists,
+    Align, Axis, BindingTable, BoxStyle, BuildCx, FlexStyle, Inset, Justify, LeafStyle, Length,
+    NodeId, NodeStore, Rect, SemanticProjector, Size, StateStore, TextEdits, VirtualLists,
 };
 
 /// Counts heap allocations while `ARMED`; off by default so setup allocations are
@@ -114,6 +114,7 @@ fn setup() -> Harness {
                 gap: 0.0,
                 padding: Inset::all(0.0),
                 align: Align::Stretch,
+                justify: Justify::Start,
                 size: Size::fill(),
                 style: BoxStyle::NONE,
             },

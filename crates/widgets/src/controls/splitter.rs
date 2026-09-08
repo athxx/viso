@@ -62,7 +62,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use viso_ui::{
-    Align, Axis, BoxStyle, BuildCx, Component, DirtyClass, EventCx, FlexStyle, Inset, Key,
+    Align, Axis, BoxStyle, BuildCx, Component, DirtyClass, EventCx, FlexStyle, Inset, Justify, Key,
     LeafStyle, Length, PointerButtons, PointerPhase, Rgba, Role, Semantics, Size, StateId,
     StateValue,
 };
@@ -329,6 +329,7 @@ impl Component for Splitter {
                 gap: 0.0,
                 padding: Inset::all(0.0),
                 align: Align::Stretch,
+                justify: Justify::Start,
                 size: self.style.size,
                 style: BoxStyle::NONE,
             },
@@ -341,6 +342,7 @@ impl Component for Splitter {
                         gap: 0.0,
                         padding: Inset::all(0.0),
                         align: Align::Stretch,
+                        justify: Justify::Start,
                         size: pane_a_size,
                         style: BoxStyle::NONE,
                     },
@@ -363,6 +365,7 @@ impl Component for Splitter {
                         gap: 0.0,
                         padding: Inset::all(0.0),
                         align: Align::Stretch,
+                        justify: Justify::Start,
                         size: pane_b_size,
                         style: BoxStyle::NONE,
                     },

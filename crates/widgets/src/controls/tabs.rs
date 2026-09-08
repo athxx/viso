@@ -53,8 +53,9 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use viso_ui::{
-    Align, Axis, Border, BoxStyle, BuildCx, Component, DirtyClass, EventCx, FlexStyle, Inset, Key,
-    Length, PointerButtons, PointerPhase, Rgba, Role, Semantics, Size, StateId, StateValue,
+    Align, Axis, Border, BoxStyle, BuildCx, Component, DirtyClass, EventCx, FlexStyle, Inset,
+    Justify, Key, Length, PointerButtons, PointerPhase, Rgba, Role, Semantics, Size, StateId,
+    StateValue,
 };
 
 use crate::label;
@@ -327,6 +328,7 @@ impl Component for Tabs {
                 gap: AREA_GAP,
                 padding: Inset::all(0.0),
                 align: Align::Stretch,
+                justify: Justify::Start,
                 size: self.style.size,
                 style: BoxStyle::NONE,
             },
@@ -339,6 +341,7 @@ impl Component for Tabs {
                         gap: TAB_GAP,
                         padding: Inset::all(0.0),
                         align: Align::Center,
+                        justify: Justify::Start,
                         size: Size {
                             width: Length::Fill { weight: 1.0 },
                             height: Length::Fit,
@@ -354,6 +357,7 @@ impl Component for Tabs {
                                     gap: 0.0,
                                     padding: Inset::all(TAB_PADDING),
                                     align: Align::Center,
+                                    justify: Justify::Start,
                                     size: Size {
                                         width: Length::Fit,
                                         height: Length::Fit,
@@ -443,6 +447,7 @@ impl Component for Tabs {
                         gap: 0.0,
                         padding: Inset::all(0.0),
                         align: Align::Stretch,
+                        justify: Justify::Start,
                         size: Size {
                             width: Length::Fill { weight: 1.0 },
                             height: Length::Fill { weight: 1.0 },
@@ -458,6 +463,7 @@ impl Component for Tabs {
                                     gap: 0.0,
                                     padding: Inset::all(0.0),
                                     align: Align::Stretch,
+                                    justify: Justify::Start,
                                     size: Size {
                                         width: Length::Fill { weight: 1.0 },
                                         height: Length::Fill { weight: 1.0 },

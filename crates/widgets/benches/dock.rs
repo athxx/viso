@@ -29,8 +29,9 @@ use std::hint::black_box;
 
 use criterion::{Criterion, criterion_group, criterion_main};
 use viso_ui::{
-    Align, Axis, BindingTable, BoxStyle, BuildCx, Component, FlexStyle, Inset, LeafStyle, NodeId,
-    NodeStore, Rect, SemanticProjector, Size, StateStore, TextEdits, VirtualLists, paint_tree,
+    Align, Axis, BindingTable, BoxStyle, BuildCx, Component, FlexStyle, Inset, Justify, LeafStyle,
+    NodeId, NodeStore, Rect, SemanticProjector, Size, StateStore, TextEdits, VirtualLists,
+    paint_tree,
 };
 use viso_widgets::{Dock, DockNode, DockTree, PanelKey, dock};
 
@@ -136,6 +137,7 @@ fn build_split_scene() -> (NodeStore, NodeId, NodeId, NodeId) {
                 gap: 0.0,
                 padding: Inset::all(0.0),
                 align: Align::Stretch,
+                justify: Justify::Start,
                 size: Size::fill(),
                 style: BoxStyle::NONE,
             },
