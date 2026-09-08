@@ -4,8 +4,8 @@
 use std::cell::RefCell;
 
 use viso_text::{
-    FontRole, FontStore, SystemFallback, SystemFontProvider, SystemFontQuery, SystemFontResult,
-    TextSystem, layout, rasterize_glyph, shape,
+    FontRole, FontStore, GlyphKind, SystemFallback, SystemFontProvider, SystemFontQuery,
+    SystemFontResult, TextSystem, layout, rasterize_glyph, shape,
 };
 
 const FONT: &[u8] = include_bytes!("fixtures/DejaVuSans-subset.ttf");
@@ -189,6 +189,31 @@ fn atlas_caches_repeated_glyphs() {
     assert!(
         sys.take_atlas_dirty().is_none(),
         "cache hit must not re-dirty"
+    );
+}
+
+#[test]
+fn outline_face_has_no_color_strikes() {
+    // The DejaVu subset is a pure-outline face: no CBDT/sbix table, so the
+    // color path is never probed for it.
+    let (store, id) = store();
+    assert!(!store.face(id).has_color_strikes());
+}
+
+#[test]
+fn outline_glyphs_prepare_as_sdf_and_leave_color_atlas_clean() {
+    let mut sys = TextSystem::new();
+    let id = sys.load_font(FONT.to_vec(), 0).unwrap();
+
+    let quads = sys.prepare(id, "AB", 32.0, 2.0);
+    assert_eq!(quads.len(), 2);
+    // Every glyph from an outline face routes to the SDF atlas.
+    assert!(quads.iter().all(|q| q.kind == GlyphKind::Sdf));
+    // The SDF atlas got written; the color atlas was never touched.
+    assert!(sys.take_atlas_dirty().is_some());
+    assert!(
+        sys.take_color_atlas_dirty().is_none(),
+        "a pure-outline run must not write the color atlas"
     );
 }
 

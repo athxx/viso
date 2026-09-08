@@ -9,27 +9,35 @@
 
 use crate::FontId;
 use crate::FontStore;
-use crate::atlas::{ATLAS_SIZE, Atlas, DirtyRect};
+use crate::atlas::{ATLAS_SIZE, Atlas, DirtyRect, GlyphKind};
 use crate::layout::layout;
 use crate::provider::{SystemFallback, SystemFontProvider};
 use crate::shape::shape;
 
 /// A single positioned glyph ready for the GPU: where it lands on screen, where
-/// it lives in the atlas, and how to decode its SDF.
+/// it lives in its atlas, how to decode it, and which atlas it lives in.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct GlyphQuad {
     /// Screen rectangle `[x, y, w, h]` in top-left pixel coordinates.
     pub rect_px: [f32; 4],
     /// Atlas UV sub-rectangle `[u_min, v_min, u_max, v_max]`.
     pub uv: [f32; 4],
-    /// SDF coverage-ramp width for the shader (see [`crate::raster`]).
+    /// SDF coverage-ramp width for the shader (see [`crate::raster`]); `0.0` for
+    /// color glyphs, which sample RGBA directly with no coverage ramp.
     pub px_range: f32,
+    /// Which atlas this quad samples: [`GlyphKind::Sdf`] (R8 outline, decoded via
+    /// the coverage ramp) or [`GlyphKind::Color`] (RGBA bitmap, sampled direct).
+    /// The caller routes each quad to the matching texture.
+    pub kind: GlyphKind,
 }
 
-/// Loading + shaping + layout + atlas, behind one `prepare` entry point.
+/// Loading + shaping + layout + atlases, behind one `prepare` entry point. Holds
+/// two atlases: an R8 SDF atlas for outline glyphs and an RGBA8 color atlas for
+/// bitmap-emoji strikes. Each prepared glyph names which it lives in.
 pub struct TextSystem {
     store: FontStore,
     atlas: Atlas,
+    color_atlas: Atlas,
 }
 
 impl Default for TextSystem {
@@ -39,11 +47,12 @@ impl Default for TextSystem {
 }
 
 impl TextSystem {
-    /// A text system with an empty font store and a default-size atlas.
+    /// A text system with an empty font store and default-size SDF + color atlases.
     pub fn new() -> Self {
         Self {
             store: FontStore::new(),
             atlas: Atlas::new(ATLAS_SIZE),
+            color_atlas: Atlas::new_color(ATLAS_SIZE),
         }
     }
 
@@ -65,6 +74,22 @@ impl TextSystem {
     /// Take the atlas region written since the last call, if any.
     pub fn take_atlas_dirty(&mut self) -> Option<DirtyRect> {
         self.atlas.take_dirty()
+    }
+
+    /// Color-atlas edge length in texels (currently the same as the SDF atlas).
+    pub fn color_atlas_size(&self) -> u32 {
+        self.color_atlas.size()
+    }
+
+    /// The full RGBA8 color-atlas pixel buffer (`color_atlas_size² * 4` bytes,
+    /// premultiplied RGBA).
+    pub fn color_atlas_pixels(&self) -> &[u8] {
+        self.color_atlas.pixels()
+    }
+
+    /// Take the color-atlas region written since the last call, if any.
+    pub fn take_color_atlas_dirty(&mut self) -> Option<DirtyRect> {
+        self.color_atlas.take_dirty()
     }
 
     /// The first-line baseline of a run in `font` at `font_size_px`: the distance
@@ -119,23 +144,45 @@ impl TextSystem {
     ) -> Vec<GlyphQuad> {
         let dpx_per_em = font_size_px * dpi_factor;
         let positioned = layout(&self.store, font, text, font_size_px);
-        // Split borrows: `store` (shared) feeds each glyph's face while `atlas`
-        // (unique) packs — taking them as separate fields keeps the borrow
-        // checker happy.
+        // Split borrows: `store` (shared) feeds each glyph's face while the two
+        // atlases (unique) pack — taking them as separate fields keeps the
+        // borrow checker happy.
         let store = &self.store;
         let atlas = &mut self.atlas;
+        let color_atlas = &mut self.color_atlas;
 
+        let inv = 1.0 / dpi_factor;
         let mut quads = Vec::with_capacity(positioned.len());
         for g in positioned {
             // A fallback glyph rasters from the face it resolved to, not the
             // requested primary — the atlas keys on that face.
             let face = store.face(g.font);
+
+            // Color-emoji faces get a bitmap-strike probe first; a strike wins
+            // and lands in the color atlas. Faces with no strike table skip the
+            // probe entirely (no per-glyph raster-image lookup) and any glyph
+            // without a strike falls through to the SDF outline path.
+            if face.has_color_strikes()
+                && let Some(entry) = color_atlas.color_glyph(face, g.font, g.id, dpx_per_em)
+            {
+                let w = entry.width as f32 * inv;
+                let h = entry.height as f32 * inv;
+                let x = g.origin_px[0] + entry.bearing_px[0] * inv;
+                let y = g.origin_px[1] + entry.bearing_px[1] * inv;
+                quads.push(GlyphQuad {
+                    rect_px: [x, y, w, h],
+                    uv: entry.uv(color_atlas.size()),
+                    px_range: 0.0,
+                    kind: GlyphKind::Color,
+                });
+                continue;
+            }
+
             let Some(entry) = atlas.glyph(face, g.font, g.id, dpx_per_em) else {
                 continue;
             };
             // The SDF bitmap was rasterized at `dpi_factor` density; convert its
             // texel extents and bearing back to logical pixels for placement.
-            let inv = 1.0 / dpi_factor;
             let w = entry.width as f32 * inv;
             let h = entry.height as f32 * inv;
             let x = g.origin_px[0] + entry.bearing_px[0] * inv;
@@ -144,6 +191,7 @@ impl TextSystem {
                 rect_px: [x, y, w, h],
                 uv: entry.uv(atlas.size()),
                 px_range: entry.px_range,
+                kind: GlyphKind::Sdf,
             });
         }
         quads
