@@ -4,8 +4,8 @@
 use std::cell::RefCell;
 
 use viso_text::{
-    FontRole, FontStore, GlyphKind, SystemFallback, SystemFontProvider, SystemFontQuery,
-    SystemFontResult, TextSystem, layout, rasterize_glyph, shape,
+    FontRole, FontStore, GlyphKind, PositionedGlyph, SystemFallback, SystemFontProvider,
+    SystemFontQuery, SystemFontResult, TextSystem, layout, rasterize_glyph, shape,
 };
 
 const FONT: &[u8] = include_bytes!("fixtures/DejaVuSans-subset.ttf");
@@ -108,7 +108,7 @@ fn ltr_fast_path_and_bidi_agree_on_pure_ltr() {
 #[test]
 fn multiline_layout_steps_baseline_down() {
     let (store, id) = store();
-    let placed = layout(&store, id, "ab\ncd", 32.0);
+    let placed = layout(&store, id, "ab\ncd", 32.0, None);
     // Two glyphs per line, four total.
     assert_eq!(placed.len(), 4);
     let line0_y = placed[0].origin_px[1];
@@ -127,7 +127,7 @@ fn first_baseline_sits_one_primary_ascent_below_the_top() {
     let (store, id) = store();
     let face = store.face(id);
     let size = 40.0f32;
-    let placed = layout(&store, id, "Ag", size);
+    let placed = layout(&store, id, "Ag", size, None);
     assert!(!placed.is_empty());
     let expected = face.ascender_em * size;
     assert!(
@@ -145,7 +145,7 @@ fn line_pitch_matches_the_primary_face_when_single_face() {
     let (store, id) = store();
     let face = store.face(id);
     let size = 32.0f32;
-    let placed = layout(&store, id, "ab\ncd", size);
+    let placed = layout(&store, id, "ab\ncd", size, None);
     let line0 = placed[0].origin_px[1];
     let line1 = placed[2].origin_px[1];
     let pitch = face.line_height_em() * size;
@@ -177,14 +177,14 @@ fn atlas_caches_repeated_glyphs() {
     let mut sys = TextSystem::new();
     let id = sys.load_font(FONT.to_vec(), 0).unwrap();
 
-    let quads = sys.prepare(id, "AA", 32.0, 2.0, None);
+    let quads = sys.prepare(id, "AA", 32.0, None, 2.0, None);
     assert_eq!(quads.len(), 2, "both A glyphs produce quads");
     // The two 'A's are identical, so they share one atlas cell (same UV).
     assert_eq!(quads[0].uv, quads[1].uv);
     // After preparing, the atlas has a dirty region to upload.
     assert!(sys.take_atlas_dirty().is_some());
     // A second identical prepare hits the cache — no new dirty region.
-    let again = sys.prepare(id, "AA", 32.0, 2.0, None);
+    let again = sys.prepare(id, "AA", 32.0, None, 2.0, None);
     assert_eq!(again[0].uv, quads[0].uv);
     assert!(
         sys.take_atlas_dirty().is_none(),
@@ -205,7 +205,7 @@ fn outline_glyphs_prepare_as_sdf_and_leave_color_atlas_clean() {
     let mut sys = TextSystem::new();
     let id = sys.load_font(FONT.to_vec(), 0).unwrap();
 
-    let quads = sys.prepare(id, "AB", 32.0, 2.0, None);
+    let quads = sys.prepare(id, "AB", 32.0, None, 2.0, None);
     assert_eq!(quads.len(), 2);
     // Every glyph from an outline face routes to the SDF atlas.
     assert!(quads.iter().all(|q| q.kind == GlyphKind::Sdf));
@@ -222,7 +222,7 @@ fn whitespace_advances_without_quad() {
     let mut sys = TextSystem::new();
     let id = sys.load_font(FONT.to_vec(), 0).unwrap();
     // "a b" — the space has no outline, so only 2 quads for 'a' and 'b'.
-    let quads = sys.prepare(id, "a b", 24.0, 1.0, None);
+    let quads = sys.prepare(id, "a b", 24.0, None, 1.0, None);
     assert_eq!(quads.len(), 2);
     // 'b' sits to the right of 'a' with the space's advance between them.
     assert!(quads[1].rect_px[0] > quads[0].rect_px[0]);
@@ -425,7 +425,7 @@ fn text_system_resolve_missing_grows_chain_then_prepare_covers_the_run() {
     // Preparing after the resolve reshapes over the grown chain and lays out the
     // ASCII portion of a mixed run without panicking (glyphs for the covered
     // characters are produced; the mock face does not truly cover Han).
-    let quads = sys.prepare(font, "Hi 中", 24.0, 1.0, None);
+    let quads = sys.prepare(font, "Hi 中", 24.0, None, 1.0, None);
     assert!(
         !quads.is_empty(),
         "prepare over the grown chain still lays out the covered glyphs"
@@ -446,5 +446,203 @@ fn text_system_resolve_missing_is_a_noop_for_fully_covered_text() {
     assert!(
         provider.queries.borrow().is_empty(),
         "covered text issues no provider query"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Width-aware line breaking (D1). `layout`'s `max_width_px` splits each hard
+// line into rows no wider than the limit, using word breaks first and grapheme
+// breaks when a single word overflows; `None` keeps the hard-break-only
+// behavior. Driven by the ASCII subset so widths are deterministic.
+// ---------------------------------------------------------------------------
+
+/// The distinct baselines the placed glyphs sit on — the row count.
+fn row_count(glyphs: &[PositionedGlyph]) -> usize {
+    let mut ys: Vec<f32> = glyphs.iter().map(|g| g.origin_px[1]).collect();
+    ys.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    ys.dedup();
+    ys.len()
+}
+
+/// Every glyph's baseline paired with its pen origin x, grouped into rows keyed
+/// by a quantized baseline so a row's rightmost origin can be checked.
+fn row_right_edges(glyphs: &[PositionedGlyph]) -> Vec<f32> {
+    use std::collections::BTreeMap;
+    let mut by_row: BTreeMap<i32, f32> = BTreeMap::new();
+    for g in glyphs {
+        let key = (g.origin_px[1] * 4.0).round() as i32;
+        let e = by_row.entry(key).or_insert(0.0);
+        *e = e.max(g.origin_px[0]);
+    }
+    by_row.into_values().collect()
+}
+
+#[test]
+fn no_max_width_keeps_a_hard_line_as_one_row() {
+    let (store, f) = store();
+    // With no width limit a long single line stays one row (the width-unaware
+    // behavior — zero change from before D1).
+    let text = "hello world this is a long single line";
+    let glyphs = layout(&store, f, text, 16.0, None);
+    assert_eq!(row_count(&glyphs), 1, "no max width means no soft wrap");
+}
+
+#[test]
+fn zero_or_negative_width_does_not_wrap() {
+    let (store, f) = store();
+    let text = "hello world foo bar";
+    // A non-positive limit is treated as "no wrap", not "wrap after nothing".
+    assert_eq!(row_count(&layout(&store, f, text, 16.0, Some(0.0))), 1);
+    assert_eq!(row_count(&layout(&store, f, text, 16.0, Some(-5.0))), 1);
+}
+
+#[test]
+fn narrow_width_wraps_into_multiple_rows() {
+    let (store, f) = store();
+    let text = "hello world foo bar baz";
+    let wide = layout(&store, f, text, 16.0, Some(10_000.0));
+    let narrow = layout(&store, f, text, 16.0, Some(40.0));
+    assert_eq!(row_count(&wide), 1, "a wide limit does not wrap");
+    assert!(
+        row_count(&narrow) > 1,
+        "a narrow limit wraps, got {} row(s)",
+        row_count(&narrow)
+    );
+}
+
+/// The pen x of the last glyph of `text` laid out unwrapped — a lower bound on
+/// the line's true pixel width (it omits the final glyph's own advance). Used
+/// only to bracket a test wrap limit between one- and two-word widths.
+fn last_origin_x(store: &FontStore, f: viso_text::FontId, text: &str, size: f32) -> f32 {
+    layout(store, f, text, size, None)
+        .iter()
+        .map(|p| p.origin_px[0])
+        .fold(0.0, f32::max)
+}
+
+#[test]
+fn wrapped_rows_break_at_word_boundaries() {
+    let (store, f) = store();
+    // Three equal-width words. Bracket a limit strictly between the width of one
+    // word (with its trailing space) and two words, so a whole word plus space
+    // always fits a row but a second word never joins it — forcing a break at
+    // each word boundary, never mid-word.
+    let text = "aaaa bbbb cccc";
+    let one_word = last_origin_x(&store, f, "aaaa ", 16.0);
+    let two_words = last_origin_x(&store, f, "aaaa bbbb", 16.0);
+    let limit = (one_word + two_words) / 2.0;
+    let glyphs = layout(&store, f, text, 16.0, Some(limit));
+    assert_eq!(
+        row_count(&glyphs),
+        3,
+        "each word lands on its own row at limit {limit}, got {} row(s)",
+        row_count(&glyphs)
+    );
+    // And no glyph was dropped or duplicated by the word breaking.
+    assert_eq!(
+        glyphs.len(),
+        layout(&store, f, text, 16.0, None).len(),
+        "word-boundary wrapping preserves every glyph"
+    );
+}
+
+#[test]
+fn no_row_exceeds_the_width_limit() {
+    let (store, f) = store();
+    let text = "aaaa bbbb cccc dddd eeee ffff";
+    let max = 60.0;
+    let glyphs = layout(&store, f, text, 16.0, Some(max));
+    for right in row_right_edges(&glyphs) {
+        // A row's last glyph *origin* stays within the limit (a trailing space
+        // can push the pen to the edge, but no visible glyph starts past it by
+        // more than a single glyph's width at this size).
+        assert!(
+            right <= max + 16.0,
+            "a row's rightmost glyph origin {right} overflows the {max} limit"
+        );
+    }
+}
+
+#[test]
+fn an_over_wide_word_falls_back_to_grapheme_breaks() {
+    let (store, f) = store();
+    // One unbreakable word far wider than the row must still wrap mid-word
+    // rather than overflow unboundedly onto a single row.
+    let text = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    let glyphs = layout(&store, f, text, 16.0, Some(50.0));
+    assert!(
+        row_count(&glyphs) > 1,
+        "an over-wide word breaks by grapheme, got {} row(s)",
+        row_count(&glyphs)
+    );
+}
+
+#[test]
+fn a_tiny_width_terminates_and_places_every_grapheme() {
+    let (store, f) = store();
+    // A width smaller than one glyph must not loop forever: each grapheme is
+    // force-placed on its own row and every glyph is still emitted.
+    let text = "abc";
+    let glyphs = layout(&store, f, text, 16.0, Some(1.0));
+    assert_eq!(glyphs.len(), 3, "force-placement still emits every glyph");
+    assert_eq!(row_count(&glyphs), 3, "each grapheme lands on its own row");
+}
+
+#[test]
+fn hard_breaks_still_split_rows_under_wrap() {
+    let (store, f) = store();
+    // Explicit newlines split rows even when every line fits the width.
+    let glyphs = layout(&store, f, "a\nb\nc", 16.0, Some(10_000.0));
+    assert_eq!(row_count(&glyphs), 3, "hard \\n forces new rows under wrap");
+}
+
+#[test]
+fn wrapping_preserves_every_glyph() {
+    let (store, f) = store();
+    // Wrapping only changes where glyphs sit, never how many: the wrapped row
+    // count of visible glyphs matches the unwrapped layout (rows partition the
+    // line, so no glyph is dropped or duplicated).
+    let text = "the quick brown fox jumps";
+    let flat = layout(&store, f, text, 16.0, None);
+    let wrapped = layout(&store, f, text, 16.0, Some(50.0));
+    assert_eq!(
+        flat.len(),
+        wrapped.len(),
+        "wrapping neither drops nor duplicates glyphs"
+    );
+}
+
+#[test]
+fn prepare_forwards_max_width_to_wrapping() {
+    // The façade passthrough: `prepare(.., Some(w), ..)` must actually wrap. A
+    // narrow width produces glyph quads spread over more vertical rows than the
+    // same text with no limit.
+    let mut sys = TextSystem::new();
+    let font = sys.load_font(FONT.to_vec(), 0).expect("primary face");
+    let text = "hello world foo bar baz";
+
+    let flat = sys.prepare(font, text, 16.0, None, 1.0, None);
+    let wrapped = sys.prepare(font, text, 16.0, Some(40.0), 1.0, None);
+
+    let rows_of = |quads: &[viso_text::GlyphQuad]| {
+        // Count rows by clustering quad top edges: within a row, top edges vary
+        // only by per-glyph ascent differences (< the font size); consecutive
+        // rows are a full line height apart. So sort the tops and count gaps
+        // larger than the font size — one more than the gaps is the row count.
+        let mut tops: Vec<f32> = quads.iter().map(|q| q.rect_px[1]).collect();
+        tops.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        let font_size = 16.0;
+        let mut rows = if tops.is_empty() { 0 } else { 1 };
+        for w in tops.windows(2) {
+            if w[1] - w[0] > font_size {
+                rows += 1;
+            }
+        }
+        rows
+    };
+    assert_eq!(rows_of(&flat), 1, "no width limit stays one row of quads");
+    assert!(
+        rows_of(&wrapped) > 1,
+        "prepare with a narrow width wraps into multiple rows of quads"
     );
 }
