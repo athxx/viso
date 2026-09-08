@@ -1,23 +1,50 @@
-//! Glyph atlas: an online MaxRects packer over a single R8 SDF texture.
+//! Glyph atlas: an online MaxRects packer over a single fixed-format texture.
 //!
-//! Scope for Phase 2: one fixed-size single-channel (R8) atlas. Glyphs are
-//! rasterized to SDF bitmaps (see [`crate::raster`]) and packed with a MaxRects
-//! best-short-side-fit heuristic. Successful packs are recorded so repeated
-//! requests hit the cache. Writes accumulate into a single dirty rectangle so
-//! the caller can upload one contiguous region per frame. When the atlas fills
-//! up it is cleared and rebuilt from scratch (no grow, no per-glyph eviction) —
-//! a size-growable / LRU-evicting atlas is deferred past Phase 2.
+//! An atlas is built for one texel format — either single-channel R8 (SDF
+//! outline glyphs, see [`crate::raster`]) or 4-channel RGBA8 (premultiplied
+//! color-bitmap emoji, see [`crate::color_raster`]). Glyphs are packed with a
+//! MaxRects best-short-side-fit heuristic; successful packs are recorded so
+//! repeated requests hit the cache. Writes accumulate into a single dirty
+//! rectangle so the caller can upload one contiguous region per frame. When the
+//! atlas fills up it is cleared and rebuilt from scratch (no grow, no per-glyph
+//! eviction) — a size-growable / LRU-evicting atlas is deferred.
+//!
+//! The packer itself is format-agnostic: only the pixel buffer size and the
+//! per-row byte copy depend on the atlas's bytes-per-texel, so the SDF and color
+//! atlases share one implementation and differ only in `bpp`.
 //!
 //! The atlas owns only CPU pixels and packing state; it never touches the GPU.
-//! The caller creates the R8 texture and uploads [`Atlas::dirty`] rows.
+//! The caller creates the texture and uploads [`Atlas::take_dirty`] rows.
 
 use crate::FontId;
+use crate::color_raster::{ColorGlyph, rasterize_color_glyph};
 use crate::font::FontFace;
-use crate::raster::{RasterGlyph, rasterize_glyph};
+use crate::raster::rasterize_glyph;
 use std::collections::HashMap;
 
 /// Default square atlas edge, in texels.
 pub const ATLAS_SIZE: u32 = 512;
+
+/// Which raster kind an atlas / cache entry holds. SDF and color glyphs live in
+/// separate atlases and never share a texel format, so the kind is part of the
+/// cache key to keep the two glyph populations distinct.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum GlyphKind {
+    /// Single-channel R8 SDF outline glyph.
+    Sdf,
+    /// 4-channel premultiplied-RGBA color-bitmap glyph.
+    Color,
+}
+
+impl GlyphKind {
+    /// Bytes per texel for this kind's atlas format.
+    const fn bpp(self) -> u32 {
+        match self {
+            GlyphKind::Sdf => 1,
+            GlyphKind::Color => 4,
+        }
+    }
+}
 
 /// A packed glyph's placement within the atlas.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -49,12 +76,15 @@ impl AtlasEntry {
     }
 }
 
-/// Cache key: a face, glyph id, and quantized raster density. Two requests at
-/// nearly the same size share one raster (density is rounded to whole `dpx`).
+/// Cache key: a face, glyph id, raster kind, and quantized raster density. Two
+/// requests at nearly the same size share one raster (density is rounded to
+/// whole `dpx`) — this rounding is the color size-bucket the plan calls for, so
+/// many display sizes reuse one decoded emoji strike.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 struct GlyphKey {
     font: FontId,
     glyph_id: u16,
+    kind: GlyphKind,
     /// `dpx_per_em` rounded to the nearest texel — the quantization bucket.
     dpx_q: u32,
 }
@@ -77,10 +107,13 @@ pub struct DirtyRect {
     pub h: u32,
 }
 
-/// A single-channel SDF glyph atlas with an online MaxRects packer.
+/// A fixed-format glyph atlas with an online MaxRects packer. The texel format
+/// (R8 SDF or RGBA8 color) is fixed at construction; see [`GlyphKind`].
 pub struct Atlas {
     size: u32,
-    /// R8 pixels, row-major, `size * size` long.
+    /// Which raster kind this atlas holds (fixes the texel format / `bpp`).
+    kind: GlyphKind,
+    /// Pixels, row-major, `size * size * kind.bpp()` long.
     pixels: Vec<u8>,
     /// Maximal free rectangles not yet occupied.
     free: Vec<FreeRect>,
@@ -91,11 +124,21 @@ pub struct Atlas {
 }
 
 impl Atlas {
-    /// A fresh empty atlas of `size` texels per side.
+    /// A fresh empty R8 SDF atlas of `size` texels per side.
     pub fn new(size: u32) -> Self {
+        Self::with_kind(size, GlyphKind::Sdf)
+    }
+
+    /// A fresh empty RGBA8 color-bitmap atlas of `size` texels per side.
+    pub fn new_color(size: u32) -> Self {
+        Self::with_kind(size, GlyphKind::Color)
+    }
+
+    fn with_kind(size: u32, kind: GlyphKind) -> Self {
         Self {
             size,
-            pixels: vec![0u8; (size * size) as usize],
+            kind,
+            pixels: vec![0u8; (size * size * kind.bpp()) as usize],
             free: vec![FreeRect {
                 x: 0,
                 y: 0,
@@ -112,7 +155,7 @@ impl Atlas {
         self.size
     }
 
-    /// The full R8 pixel buffer.
+    /// The full pixel buffer (`size² * bpp` bytes; `bpp` is 1 for SDF, 4 for color).
     pub fn pixels(&self) -> &[u8] {
         &self.pixels
     }
@@ -135,22 +178,81 @@ impl Atlas {
         glyph_id: u16,
         dpx_per_em: f32,
     ) -> Option<AtlasEntry> {
+        debug_assert_eq!(self.kind, GlyphKind::Sdf);
         let key = GlyphKey {
             font,
             glyph_id,
+            kind: GlyphKind::Sdf,
             dpx_q: dpx_per_em.round() as u32,
         };
         if let Some(e) = self.entries.get(&key) {
             return Some(*e);
         }
         let raster = rasterize_glyph(face, glyph_id, dpx_per_em)?;
-        if let Some(entry) = self.insert(&raster) {
-            self.entries.insert(key, entry);
-            return Some(entry);
+        self.insert_cached(key, raster.width, raster.height, &raster.sdf, |r| {
+            AtlasEntry {
+                bearing_px: raster.bearing_px,
+                px_range: raster.px_range,
+                ..*r
+            }
+        })
+    }
+
+    /// Get (rasterizing + packing on a miss) the color-atlas placement for a
+    /// glyph. Returns `None` for glyphs with no color-bitmap strike (the caller
+    /// then treats the glyph as an SDF outline). For a color entry `bearing_px`
+    /// is the strike origin offset scaled to `dpx_per_em`, and `px_range` is
+    /// unused (the color path samples RGBA directly, no coverage ramp).
+    pub fn color_glyph(
+        &mut self,
+        face: &FontFace,
+        font: FontId,
+        glyph_id: u16,
+        dpx_per_em: f32,
+    ) -> Option<AtlasEntry> {
+        debug_assert_eq!(self.kind, GlyphKind::Color);
+        let key = GlyphKey {
+            font,
+            glyph_id,
+            kind: GlyphKind::Color,
+            dpx_q: dpx_per_em.round() as u32,
+        };
+        if let Some(e) = self.entries.get(&key) {
+            return Some(*e);
         }
-        // Full: clear and retry once from a clean slate.
-        self.reset();
-        let entry = self.insert(&raster)?;
+        let color: ColorGlyph = rasterize_color_glyph(face, glyph_id, dpx_per_em)?;
+        // Scale the strike's origin offset from its own ppem to the request.
+        let scale = dpx_per_em / color.pixels_per_em as f32;
+        let bearing = [color.origin_px[0] * scale, color.origin_px[1] * scale];
+        self.insert_cached(key, color.width, color.height, &color.rgba, |r| {
+            AtlasEntry {
+                bearing_px: bearing,
+                px_range: 0.0,
+                ..*r
+            }
+        })
+    }
+
+    /// Pack `pixels` (a `w * h` bitmap of `kind.bpp()` bytes per texel), then
+    /// build and cache its [`AtlasEntry`] via `make`, retrying once against a
+    /// cleared atlas if the first pack fails. `make` receives a placed entry
+    /// carrying the chosen `(x, y)` and fills in the glyph-specific fields.
+    fn insert_cached(
+        &mut self,
+        key: GlyphKey,
+        w: u32,
+        h: u32,
+        pixels: &[u8],
+        make: impl Fn(&AtlasEntry) -> AtlasEntry,
+    ) -> Option<AtlasEntry> {
+        let entry = match self.insert(w, h, pixels, &make) {
+            Some(e) => e,
+            None => {
+                // Full: clear and retry once from a clean slate.
+                self.reset();
+                self.insert(w, h, pixels, &make)?
+            }
+        };
         self.entries.insert(key, entry);
         Some(entry)
     }
@@ -173,19 +275,26 @@ impl Atlas {
         });
     }
 
-    /// Pack a rasterized glyph, copy its pixels in, and record the placement.
-    /// Returns `None` if it does not fit the current free space.
-    fn insert(&mut self, raster: &RasterGlyph) -> Option<AtlasEntry> {
-        let (x, y) = self.pack(raster.width, raster.height)?;
-        self.blit(x, y, raster);
-        Some(AtlasEntry {
+    /// Pack a `w * h` bitmap, copy its pixels in, and build its entry via `make`
+    /// (given a placeholder carrying the chosen `(x, y)`). Returns `None` if it
+    /// does not fit the current free space.
+    fn insert(
+        &mut self,
+        w: u32,
+        h: u32,
+        pixels: &[u8],
+        make: impl Fn(&AtlasEntry) -> AtlasEntry,
+    ) -> Option<AtlasEntry> {
+        let (x, y) = self.pack(w, h)?;
+        self.blit(x, y, w, h, pixels);
+        Some(make(&AtlasEntry {
             x,
             y,
-            width: raster.width,
-            height: raster.height,
-            bearing_px: raster.bearing_px,
-            px_range: raster.px_range,
-        })
+            width: w,
+            height: h,
+            bearing_px: [0.0, 0.0],
+            px_range: 0.0,
+        }))
     }
 
     /// MaxRects best-short-side-fit: pick the free rect whose leftover short
@@ -239,20 +348,17 @@ impl Atlas {
         Some((px, py))
     }
 
-    /// Copy a glyph's SDF rows into the atlas at `(x, y)` and grow the dirty rect.
-    fn blit(&mut self, x: u32, y: u32, raster: &RasterGlyph) {
-        for row in 0..raster.height {
-            let src = (row * raster.width) as usize;
-            let dst = ((y + row) * self.size + x) as usize;
-            let n = raster.width as usize;
-            self.pixels[dst..dst + n].copy_from_slice(&raster.sdf[src..src + n]);
+    /// Copy a `w * h` bitmap's rows into the atlas at texel `(x, y)` and grow the
+    /// dirty rect. Byte offsets scale by the atlas's bytes-per-texel.
+    fn blit(&mut self, x: u32, y: u32, w: u32, h: u32, pixels: &[u8]) {
+        let bpp = self.kind.bpp();
+        let row_bytes = (w * bpp) as usize;
+        for row in 0..h {
+            let src = (row * w * bpp) as usize;
+            let dst = ((y + row) * self.size * bpp + x * bpp) as usize;
+            self.pixels[dst..dst + row_bytes].copy_from_slice(&pixels[src..src + row_bytes]);
         }
-        self.grow_dirty(DirtyRect {
-            x,
-            y,
-            w: raster.width,
-            h: raster.height,
-        });
+        self.grow_dirty(DirtyRect { x, y, w, h });
     }
 
     /// Union `r` into the accumulated dirty rectangle.
@@ -330,4 +436,47 @@ fn split_free(r: FreeRect, used: FreeRect) -> Option<Vec<FreeRect>> {
         });
     }
     Some(pieces)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn color_atlas_allocates_four_bytes_per_texel() {
+        let a = Atlas::new_color(8);
+        assert_eq!(a.pixels().len(), 8 * 8 * 4);
+        // SDF atlas stays one byte per texel.
+        assert_eq!(Atlas::new(8).pixels().len(), 8 * 8);
+    }
+
+    #[test]
+    fn color_blit_places_rgba_rows_at_texel_offset() {
+        let mut a = Atlas::new_color(4);
+        // A 2x2 RGBA bitmap: four distinct opaque texels.
+        let bmp: Vec<u8> = vec![
+            1, 2, 3, 255, 4, 5, 6, 255, // row 0
+            7, 8, 9, 255, 10, 11, 12, 255, // row 1
+        ];
+        let entry = a
+            .insert(2, 2, &bmp, |r| AtlasEntry {
+                bearing_px: [1.0, -2.0],
+                px_range: 0.0,
+                ..*r
+            })
+            .unwrap();
+        assert_eq!((entry.width, entry.height), (2, 2));
+        assert_eq!(entry.bearing_px, [1.0, -2.0]);
+        // At top-left the first texel's four bytes land at buffer start.
+        let (x, y) = (entry.x, entry.y);
+        let bpp = 4u32;
+        let base = ((y * 4 + x) * bpp) as usize;
+        assert_eq!(&a.pixels()[base..base + 4], &[1, 2, 3, 255]);
+        // Second row is a full stride (4 texels * 4 bytes) down.
+        let row1 = (((y + 1) * 4 + x) * bpp) as usize;
+        assert_eq!(&a.pixels()[row1..row1 + 4], &[7, 8, 9, 255]);
+        // The whole 2x2 region is dirty.
+        let d = a.take_dirty().unwrap();
+        assert_eq!((d.w, d.h), (2, 2));
+    }
 }

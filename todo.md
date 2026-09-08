@@ -1033,7 +1033,9 @@ spanning 放置 + auto-flow;ADR 0009 明列六项高级能力全未做。落 `cr
 - [x] **B1 `text: color bitmap raster`** —— 加 zune-png;`ttf-parser::glyph_raster_image` 取 PNG(+CBDT premul BGRA)
       → RGBA 预乘,带 ppem/origin 放置元数据;不做 COLR/SVG。size-bucket 量化留给 B2 图集层(B1 只解码到原生尺寸)。
       落 `crates/text/src/color_raster.rs`(`ColorGlyph` + `rasterize_color_glyph`),单测覆盖 premul 数学 + RGBA/RGB PNG 往返 + 损坏 PNG 拒绝。
-- [ ] **B2 `text: rgba color atlas`** —— 第二张 `Rgba8Unorm` 图集;`GlyphKey` 加 `kind`。
+- [x] **B2 `text: rgba color atlas`** —— `GlyphKind{Sdf,Color}`(`bpp()` 1/4);`Atlas` 持 `kind`,像素缓冲按 `size²*bpp`,
+      MaxRects packer 与 R8/RGBA8 共用一份实现(仅每行字节步长差 bpp)。`new_color()` 建 `Rgba8Unorm` 图集,`color_glyph()`
+      走 `rasterize_color_glyph` 并把 strike origin 从 ppem 缩放到请求;`GlyphKey` 加 `kind`(dpx_q 复用作 size-bucket)。单测覆盖 4 bpp 分配 + RGBA blit 字节布局。
 - [ ] **B3 `text: per-glyph kind in prepare`** —— prepare 输出每 glyph 的 kind(SDF vs ColorBitmap)。
 - [ ] **B4 `viso: two textures + color glyph run`** —— facade 建两张纹理(R8 SDF + RGBA color);`Content` 携彩色 glyph run。
 - [ ] **B5 `render: lower color glyphs to Image`** —— 彩色 glyph 降为 `Primitive::Image`(白 tint);headless golden。
