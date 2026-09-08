@@ -25,17 +25,18 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use viso_ui::{EventCx, NodeId, NodeStore, VirtualLists};
+use viso_ui::{EventCx, Key, NodeId, NodeStore, VirtualLists};
 
-use super::model::{NodeKey, TreeNode};
+use super::model::{self, Nav, NodeKey, SelectOp, TreeNode};
 use super::{RowNodes, SelectMode, VisibleRows};
 
-/// One committed expand/collapse edit, pushed by a command and drained by the
-/// reconcile step. `Toggle` flips a folder's open state, `Expand` opens it, and
-/// `Collapse` closes it — an intent naming a file or an absent key is a harmless
-/// no-op once the reconcile reflattens (a file never discloses, so opening it adds no
-/// rows). Kept a small `Copy` value: an intent is a discrete action, never a
-/// per-frame allocation.
+/// One committed edit, pushed by a command and drained by the reconcile step in
+/// order. The first three are the expand/collapse structural edits; the last two are
+/// the focus/selection edits the keyboard and mouse produce. An intent naming a file
+/// or an absent key is a harmless no-op once the reconcile applies it (a file never
+/// discloses, so opening it adds no rows; focusing/selecting an off-list key is
+/// dropped when the reconcile can't place it). Kept a small `Copy` value: an intent
+/// is a discrete action, never a per-frame allocation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum Intent {
     /// Flip the folder's open state: open it if closed, close it if open.
@@ -44,6 +45,11 @@ pub(super) enum Intent {
     Expand(NodeKey),
     /// Close the folder (a no-op if already closed).
     Collapse(NodeKey),
+    /// Move the focus cursor to this row.
+    SetFocus(NodeKey),
+    /// Edit the selection for this row with the given gesture (replace / toggle /
+    /// range). Also moves the focus cursor to the row.
+    Select(NodeKey, SelectOp),
 }
 
 /// The file tree's warm, owned state, shared between the build walk (which fills the
@@ -58,10 +64,19 @@ pub(super) struct FileTreeState {
     /// The open folders, by key: which directories the flatten descends into. Edited
     /// by the reconcile step from drained intents.
     pub(super) open: std::collections::HashSet<NodeKey>,
-    /// Whether the tree allows single or multiple selection. Carried on the warm
-    /// state so the keyboard/selection section can read it; unused by this version's
-    /// expand/collapse-only reconcile.
-    #[allow(dead_code)]
+    /// The selected rows, by key: the set the reconcile step edits from `Select`
+    /// intents and (a later section) writes to each row's `aria-selected`. A stable
+    /// key, so a row keeps its selected state across a collapse/reopen or a reorder.
+    pub(super) selection: std::collections::HashSet<NodeKey>,
+    /// The focus cursor — the row the keyboard steps from and a `Select` last touched.
+    /// `None` before the first navigation. Warm, edited only on a discrete action.
+    pub(super) focus: Option<NodeKey>,
+    /// The range anchor — the fixed end a `Shift` range grows from, so a run of
+    /// `Shift`+arrow extends one range from where it began. Set by every non-range
+    /// selection, left in place by a range.
+    pub(super) anchor: Option<NodeKey>,
+    /// Whether the tree allows single or multiple selection. Read when a keyboard or
+    /// mouse gesture chooses which [`SelectOp`] to apply.
     pub(super) select_mode: SelectMode,
     /// The keyed virtual-list viewport node the build walk produced, so the reconcile
     /// step can drive this list's item count.
@@ -128,6 +143,114 @@ impl FileTreeHandle {
         self.intents.borrow_mut().push(Intent::Collapse(key));
     }
 
+    /// Interpret a keyboard event against the tree, pushing the resulting intents —
+    /// the keyboard half of navigation and selection. Call it with the tree's
+    /// [`KeyEvent`](viso_ui::KeyEvent) when the tree holds focus; it reads the current
+    /// focus cursor and visible rows from the warm state (a borrow, no store) to
+    /// decide the step, then records intents the [`reconcile`](FileTreeHandle::reconcile)
+    /// step applies. Does nothing for a key release or a key the tree doesn't bind.
+    ///
+    /// The bindings (every one with a mouse equivalent, AGENTS section 15):
+    /// - `Up`/`Down` move the focus cursor one visible row (skipping collapsed
+    ///   subtrees, since a hidden row isn't visible);
+    /// - `Right` discloses a collapsed folder, or steps into an open folder's first
+    ///   child; `Left` collapses an open folder, or steps out to the parent;
+    /// - `Home`/`End` focus the first/last visible row;
+    /// - `Space` toggles the focused row's selection (in `Single` mode, replaces it);
+    /// - holding `Shift` with an arrow/Home/End moves focus **and** range-selects from
+    ///   the anchor to the new focus (only in `Multi` mode; a plain move otherwise).
+    pub fn on_key(&self, _ev: &mut EventCx<'_>, key_event: &viso_ui::KeyEvent) {
+        if !key_event.pressed {
+            return;
+        }
+        let shift = key_event.modifiers.shift;
+        // Read the warm state to resolve the step; borrow only, never mutate here.
+        let state = self.state.borrow();
+        let rows = state.visible.borrow();
+        let focus = state.focus;
+        let multi = matches!(state.select_mode, SelectMode::Multi);
+
+        // Space selects/toggles the focused row in place; it never navigates.
+        if key_event.key == Key::Space {
+            if let Some(f) = focus {
+                let op = if multi {
+                    SelectOp::Toggle
+                } else {
+                    SelectOp::Replace
+                };
+                drop(rows);
+                drop(state);
+                self.intents.borrow_mut().push(Intent::Select(f, op));
+            }
+            return;
+        }
+
+        let nav = match key_event.key {
+            Key::Up => model::focus_up(&rows, focus),
+            Key::Down => model::focus_down(&rows, focus),
+            Key::Right => model::focus_right(&rows, focus),
+            Key::Left => model::focus_left(&rows, &state.roots, focus),
+            Key::Home => model::focus_home(&rows),
+            Key::End => model::focus_end(&rows),
+            _ => return,
+        };
+        drop(rows);
+        drop(state);
+        let Some(nav) = nav else { return };
+        let mut queue = self.intents.borrow_mut();
+        match nav {
+            // A move: focus the row, and if Shift is held in Multi mode, range-select
+            // from the anchor to it in the same step.
+            Nav::Focus(key) => {
+                if shift && multi {
+                    queue.push(Intent::Select(key, SelectOp::Range));
+                } else {
+                    queue.push(Intent::SetFocus(key));
+                }
+            }
+            Nav::Expand(key) => queue.push(Intent::Expand(key)),
+            Nav::Collapse(key) => queue.push(Intent::Collapse(key)),
+        }
+    }
+
+    /// Move the focus cursor to `key` without changing the selection. The programmatic
+    /// / mouse-hover equivalent of an arrow key that only moves focus. Pushes a
+    /// [`SetFocus`](Intent::SetFocus) intent; a no-op (once reconciled) if `key` is not
+    /// currently visible.
+    pub fn focus(&self, _ev: &mut EventCx<'_>, key: NodeKey) {
+        self.intents.borrow_mut().push(Intent::SetFocus(key));
+    }
+
+    /// Edit the selection for `key` with an explicit [`SelectOp`] — the general
+    /// selection command every mouse/keyboard selection gesture funnels through.
+    /// Pushes a [`Select`](Intent::Select) intent, which also moves the focus cursor to
+    /// the row. Call from within an event handler.
+    pub fn select(&self, _ev: &mut EventCx<'_>, key: NodeKey, op: SelectOp) {
+        self.intents.borrow_mut().push(Intent::Select(key, op));
+    }
+
+    /// Handle a mouse click on the row `key` with the event's modifiers — the mouse
+    /// equivalent of the keyboard selection gestures (AGENTS section 15). Chooses the
+    /// [`SelectOp`] the way a file browser does: `Shift` extends a range; a platform
+    /// multi-select modifier (`Ctrl`/`Cmd`) toggles the one row; a plain click replaces
+    /// the selection. In `Single` mode every click replaces (only `Replace` is
+    /// allowed). Pushes the corresponding [`Select`](Intent::Select) intent.
+    pub fn click(&self, ev: &mut EventCx<'_>, key: NodeKey) {
+        let op = if matches!(self.state.borrow().select_mode, SelectMode::Single) {
+            SelectOp::Replace
+        } else {
+            let m = ev.pointer().map(|p| p.modifiers).unwrap_or_default();
+            if m.shift {
+                SelectOp::Range
+            } else if m.control || m.logo {
+                SelectOp::Toggle
+            } else {
+                SelectOp::Replace
+            }
+        };
+        self.intents.borrow_mut().push(Intent::Select(key, op));
+    }
+
     /// The reconcile intent-drain: apply every committed expand/collapse intent
     /// against the warm open set, reflatten the visible rows into the shared cell, and
     /// drive the keyed virtual list's item count so the substrate diffs by
@@ -163,6 +286,9 @@ pub(super) fn make_handle(
         state: Rc::new(RefCell::new(FileTreeState {
             roots,
             open,
+            selection: std::collections::HashSet::new(),
+            focus: None,
+            anchor: None,
             select_mode,
             viewport,
             visible,
@@ -233,6 +359,12 @@ mod tests {
         /// and the keyed row map) and wrap it in a handle, so a test drives commands
         /// against the same warm state the build authored.
         fn build(roots: &[TreeNode], open: &HashSet<NodeKey>) -> Self {
+            Self::build_mode(roots, open, SelectMode::default())
+        }
+
+        /// Same as [`build`](Self::build) but with an explicit [`SelectMode`], so a test
+        /// can exercise `Multi` selection (Space toggles, Shift ranges).
+        fn build_mode(roots: &[TreeNode], open: &HashSet<NodeKey>, mode: SelectMode) -> Self {
             let mut store = NodeStore::new();
             let mut states = StateStore::new();
             let mut bindings = BindingTable::new();
@@ -259,7 +391,7 @@ mod tests {
             let handle = make_handle(
                 roots.to_vec(),
                 open.clone(),
-                SelectMode::default(),
+                mode,
                 viewport,
                 Rc::clone(&visible),
                 Rc::clone(&row_nodes),
@@ -310,6 +442,43 @@ mod tests {
                 act(&self.handle, &mut cx);
             }
             self.handle.reconcile(&mut self.store, &mut self.lists);
+        }
+
+        /// Press one key (with the given modifiers) through a throwaway key `EventCx`,
+        /// let the handle interpret it into intents, then reconcile — the keyboard
+        /// counterpart of [`drive`](Self::drive), so a test can play an input tape of
+        /// key presses and read the focus/selection the reconcile applied.
+        fn press(&mut self, key: viso_ui::Key, modifiers: viso_ui::Modifiers) {
+            let ev = viso_ui::KeyEvent {
+                key,
+                pressed: true,
+                repeat: false,
+                modifiers,
+            };
+            {
+                let mut cx = EventCx::__new_key(&mut self.states, &self.bindings, &ev);
+                self.handle.on_key(&mut cx, &ev);
+            }
+            self.handle.reconcile(&mut self.store, &mut self.lists);
+        }
+
+        /// The focus cursor's current key, as the reconcile last set it.
+        fn focus(&self) -> Option<NodeKey> {
+            self.handle.state.borrow().focus
+        }
+
+        /// The current selection set, sorted by key for a stable assertion.
+        fn selection(&self) -> Vec<NodeKey> {
+            let mut keys: Vec<NodeKey> = self
+                .handle
+                .state
+                .borrow()
+                .selection
+                .iter()
+                .copied()
+                .collect();
+            keys.sort_by_key(|k| k.0);
+            keys
         }
 
         /// Run the frame's virtual-list reconcile + incremental layout the way the
@@ -460,6 +629,89 @@ mod tests {
             depths,
             vec![(ROOT, 0), (A, 1), (A1, 2), (A2, 2), (B, 1)],
             "pre-order depths drive the per-row indent"
+        );
+    }
+
+    /// Test 4 (input tape): the keyboard half. Direction keys move the focus cursor over
+    /// the visible rows, `Right`/`Left` disclose or collapse, `Home`/`End` jump to the
+    /// extremes, and `Space`/`Shift` drive selection — every gesture reconciled into the
+    /// warm focus/selection sets a semantics pass later reads.
+    #[test]
+    fn keyboard_navigates_focus_and_selects() {
+        use viso_ui::{Key, Modifiers};
+        let none = Modifiers::default();
+        let shift = Modifiers {
+            shift: true,
+            ..Modifiers::default()
+        };
+
+        let roots = fixture();
+        // ROOT and A both open: visible rows are ROOT, A, A1, A2, B.
+        let open: HashSet<NodeKey> = [ROOT, A].into_iter().collect();
+        let mut rx = Reactive::build_mode(&roots, &open, SelectMode::Multi);
+        rx.frame();
+        assert_eq!(rx.rows().len(), 5, "ROOT and A open => 5 visible rows");
+
+        // Home focuses the first visible row; Down/End walk the flattened order.
+        rx.press(Key::Home, none);
+        assert_eq!(rx.focus(), Some(ROOT), "Home focuses the first row");
+        rx.press(Key::Down, none);
+        assert_eq!(rx.focus(), Some(A), "Down steps to the next visible row");
+        rx.press(Key::End, none);
+        assert_eq!(rx.focus(), Some(B), "End focuses the last visible row");
+        rx.press(Key::Up, none);
+        assert_eq!(rx.focus(), Some(A2), "Up steps back one visible row");
+
+        // Left on an open dir collapses it; the rows shrink and focus stays put.
+        rx.press(Key::Home, none);
+        rx.press(Key::Down, none);
+        assert_eq!(rx.focus(), Some(A), "focus on the open dir A");
+        rx.press(Key::Left, none);
+        assert_eq!(
+            rx.rows().len(),
+            3,
+            "Left collapses the open dir A, hiding a1/a2"
+        );
+        // Right re-expands it; Right again descends into the first child.
+        rx.press(Key::Right, none);
+        assert_eq!(rx.rows().len(), 5, "Right re-expands A");
+        rx.press(Key::Right, none);
+        assert_eq!(
+            rx.focus(),
+            Some(A1),
+            "Right on an open dir descends to first child"
+        );
+        // Left on a leaf steps out to the parent.
+        rx.press(Key::Left, none);
+        assert_eq!(
+            rx.focus(),
+            Some(A),
+            "Left on a leaf steps out to the parent"
+        );
+
+        // Space toggles the focused row into the selection (Multi mode).
+        rx.press(Key::Space, none);
+        assert_eq!(rx.selection(), vec![A], "Space selects the focused row");
+        // Move focus and Shift+Down range-selects from the anchor (A) to the new focus.
+        rx.press(Key::Down, shift);
+        assert_eq!(rx.focus(), Some(A1), "Shift+Down moves focus");
+        assert_eq!(
+            rx.selection(),
+            vec![A, A1],
+            "Shift+Down range-selects from the anchor to the new focus"
+        );
+        rx.press(Key::Down, shift);
+        assert_eq!(
+            rx.selection(),
+            vec![A, A1, A2],
+            "a second Shift+Down grows the same range from the fixed anchor"
+        );
+        // Space again toggles the focused row back out of the selection.
+        rx.press(Key::Space, none);
+        assert_eq!(
+            rx.selection(),
+            vec![A, A1],
+            "Space toggles the focused row (A2) back out"
         );
     }
 

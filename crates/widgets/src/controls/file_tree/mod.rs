@@ -74,7 +74,7 @@ use std::rc::Rc;
 use viso_ui::{BoxStyle, BuildCx, Component, NodeId, Size, VirtualListStyle};
 
 pub use command::{FileTreeHandle, FileTreeHandleSlot};
-pub use model::{NodeKey, TreeNode, VisibleRow};
+pub use model::{NodeKey, SelectOp, TreeNode, VisibleRow};
 
 use model::flatten;
 

@@ -31,8 +31,8 @@ pub use dock::{
     PanelContent, PanelKey, dock,
 };
 pub use file_tree::{
-    FileTree, FileTreeHandle, FileTreeHandleSlot, FileTreeStyle, NodeKey, SelectMode, TreeNode,
-    VisibleRow, file_tree,
+    FileTree, FileTreeHandle, FileTreeHandleSlot, FileTreeStyle, NodeKey, SelectMode, SelectOp,
+    TreeNode, VisibleRow, file_tree,
 };
 pub use modal::{Modal, ModalHandle, ModalHandleSlot, ModalStyle, modal};
 pub use navigation_stack::{
