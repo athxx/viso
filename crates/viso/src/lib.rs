@@ -52,6 +52,8 @@ pub mod system_fonts;
 mod text_content;
 use text_content::TextShaper;
 
+pub mod woff2;
+
 mod window;
 pub use window::{WindowBuilder, WindowHandle, window};
 
@@ -512,12 +514,20 @@ impl WindowState {
             // Stand up the font stack now that a backend exists to allocate the
             // atlas, then register the app's own faces (from `AppCx::load_font`)
             // into it in call order — the first becomes the primary, ahead of any
-            // system fallback resolved later. A face whose bytes do not parse is
-            // skipped, leaving the system default in place. An app that loaded no
-            // font gets an empty chain the first shape seeds from the system.
+            // system fallback resolved later. Each face's bytes may be a raw sfnt
+            // (`.ttf`/`.otf`) or a WOFF2 web font; a `wOF2` signature is
+            // decompressed to sfnt first (`woff2::decompress`), so a developer can
+            // load bytes fetched from the network in either form. A face whose
+            // bytes are neither a valid sfnt nor a decodable WOFF2 is skipped,
+            // leaving the system default in place. An app that loaded no font gets
+            // an empty chain the first shape seeds from the system.
             let mut shaper = TextShaper::new();
             for face in fonts {
-                shaper.load_font(face.clone(), 0);
+                // A face whose bytes are neither valid sfnt nor decodable WOFF2 is
+                // skipped, keeping the system default in place.
+                if let Some(sfnt) = woff2::to_sfnt(face) {
+                    shaper.load_font(sfnt, 0);
+                }
             }
             ws.text = Some(shaper);
         }

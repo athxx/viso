@@ -75,6 +75,11 @@ unicode-script = "0.5"
 # path uses; decoded RGBA is premultiplied into the color glyph atlas.
 zune-png = "0.5"
 zune-core = "0.5"
+# WOFF2 web fonts embed their sfnt tables as one brotli stream (WOFF2 §4). The
+# facade's `load_font_bytes` detects the `wOF2` signature and decompresses to
+# sfnt before parsing; the decode itself is a vendored module. Pure-Rust, builds
+# for wasm32; `std` gives the reader that wraps std::io::Read.
+brotli-decompressor = { version = "5.0", default-features = false, features = ["std"] }
 
 # macOS system-font resolution. The facade binds CoreText through the objc2
 # family (same generation as viso-platform's objc2 0.6 stack), asking the OS for

@@ -1056,8 +1056,9 @@ spanning 放置 + auto-flow;ADR 0009 明列六项高级能力全未做。落 `cr
 - [x] **C2 `viso: user font API (bytes / path)`** —— facade 公开 init 期 API 加载用户字体(字节 / 磁盘路径),入 chain 居前。
       `AppCx::load_font(bytes)` / `load_font_file(path)` 记录到 session-scoped 字节表,`AppDriver` 于 `A::new` 后 drain,
       每个 `WindowState::open`(启动 + 延迟 `window()`)把它们按序装入新 `TextShaper` 居首,先于系统回退。
-- [ ] **C3 `viso: WOFF2 decode + load capability`** —— vendor `makepad/libs/woff2`;公开 `load_font_bytes`(sfnt 直载,
-      `wOF2` 签名则先 `decompress` 再载);只做库不接网络。
+- [x] **C3 `viso: WOFF2 decode + load capability`** —— vendor `makepad/libs/woff2` 为 `viso::woff2` 模块(`decompress`
+      + `to_sfnt`);`load_font` 在 facade 消费点经 `to_sfnt` 自动探测 `wOF2` 签名先解压再载(sfnt 原样透传),
+      公开面 `pub mod woff2` 供开发者对自取字节直接调用;只做库不接网络。
 
 **Hello World(末节)**:`examples/hello_world/main.rs` 居中 `label("Hello 世界 สวัสดี 🎉").font_size(48.)`,全走系统字体。
 

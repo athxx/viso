@@ -23,6 +23,10 @@ viso-text = { workspace = true }
 viso-shader = { workspace = true }
 viso-macros = { workspace = true }
 
+# WOFF2 → sfnt decompression for the facade's `load_font_bytes` (src/woff2.rs, a
+# vendored decoder). Brotli is the one stream compressor WOFF2 mandates.
+brotli-decompressor = { workspace = true }
+
 # CoreText system-font provider (crates/viso/src/system_fonts.rs). macOS only;
 # other targets fall back to bundled faces. objc2-core-* returns CFRetained<T>
 # RAII wrappers, so the provider drops CoreFoundation objects without manual
@@ -41,9 +45,11 @@ hot-reload = []
 
 [dev-dependencies]
 criterion = "0.7"
-# The CoreText provider's sfnt-reassembly tests parse their output to prove the
-# directory is valid. Only used in tests, so it stays a dev-dependency.
+# The CoreText provider's sfnt-reassembly tests and the WOFF2 decode test parse
+# their output to prove the directory is valid; the WOFF2 test also shapes the
+# decoded face. Only used in tests, so they stay dev-dependencies.
 ttf-parser = { workspace = true }
+rustybuzz = { workspace = true }
 
 # Multi-window microbenchmarks: window open/close cost and the per-frame
 # `run_phase` fan-out over N windows (validating the linear `Vec<WindowState>`).
