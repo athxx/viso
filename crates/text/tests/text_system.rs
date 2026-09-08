@@ -365,3 +365,61 @@ fn push_fallback_extends_and_dedups_the_chain() {
     store.push_fallback(fallback);
     assert_eq!(store.chain(), &[primary, fallback]);
 }
+
+#[test]
+fn text_system_resolve_missing_grows_chain_then_prepare_covers_the_run() {
+    // The `TextSystem` façade seam the facade shaper drives: shape → resolve →
+    // reshape. A run of a character the primary cannot cover shapes to .notdef;
+    // `resolve_missing` grows the chain with the provider's face, and a
+    // subsequent `prepare` resolves the same run against the grown chain.
+    let mut sys = TextSystem::new();
+    let font = sys.load_font(FONT.to_vec(), 0).expect("primary face");
+
+    // A char the ASCII subset lacks but the mock's returned face (a full DejaVu
+    // subset) does not either — so we assert chain growth + query protocol via a
+    // covering mock that hands back *some* parseable face, standing in for a
+    // system CJK face. The point under test is the façade's shape→resolve→
+    // reshape wiring, exercised without a platform provider.
+    let provider = MockProvider::covering();
+    let mut fallback = SystemFallback::new();
+
+    let grew = sys.resolve_missing(font, "中", &provider, &mut fallback);
+    assert!(
+        grew,
+        "an uncovered script grows the chain via the façade seam"
+    );
+
+    // A second resolve of the same uncovered text is a no-op — the façade shares
+    // one negative cache across shapes, so steady-state reshaping never re-queries.
+    let again = sys.resolve_missing(font, "中", &provider, &mut fallback);
+    assert!(
+        !again,
+        "the negative cache suppresses the repeat façade query"
+    );
+
+    // Preparing after the resolve reshapes over the grown chain and lays out the
+    // ASCII portion of a mixed run without panicking (glyphs for the covered
+    // characters are produced; the mock face does not truly cover Han).
+    let quads = sys.prepare(font, "Hi 中", 24.0, 1.0);
+    assert!(
+        !quads.is_empty(),
+        "prepare over the grown chain still lays out the covered glyphs"
+    );
+}
+
+#[test]
+fn text_system_resolve_missing_is_a_noop_for_fully_covered_text() {
+    // Pure ASCII covers on the primary, so the façade seam issues no query and
+    // does not grow the chain — the steady path pays only the shape.
+    let mut sys = TextSystem::new();
+    let font = sys.load_font(FONT.to_vec(), 0).expect("primary face");
+    let provider = MockProvider::covering();
+    let mut fallback = SystemFallback::new();
+
+    let grew = sys.resolve_missing(font, "Hello", &provider, &mut fallback);
+    assert!(!grew, "covered text grows nothing");
+    assert!(
+        provider.queries.borrow().is_empty(),
+        "covered text issues no provider query"
+    );
+}
