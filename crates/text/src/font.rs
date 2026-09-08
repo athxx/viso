@@ -58,6 +58,11 @@ pub struct FontFace {
     /// order fallback candidates when several cover a character (a face with a
     /// larger glyph repertoire is a better general fallback).
     pub glyph_count: u16,
+    /// Whether the face carries color-bitmap strikes (`CBDT`/`CBLC` or `sbix`).
+    /// Decided once at load so the glyph path only probes the color atlas for
+    /// faces that could have a strike — pure-text faces stay on the SDF path
+    /// with no per-glyph raster-image lookup.
+    has_color: bool,
 }
 
 impl FontFace {
@@ -70,6 +75,8 @@ impl FontFace {
         let descender_em = face.descender() as f32 / upem;
         let line_gap_em = face.line_gap() as f32 / upem;
         let glyph_count = face.number_of_glyphs();
+        let tables = face.tables();
+        let has_color = tables.cbdt.is_some() || tables.sbix.is_some();
         Some(Self {
             bytes,
             index,
@@ -78,7 +85,15 @@ impl FontFace {
             descender_em,
             line_gap_em,
             glyph_count,
+            has_color,
         })
+    }
+
+    /// Whether the face has color-bitmap strikes worth probing. When `false`,
+    /// every glyph rasters as an SDF outline and the color atlas is never
+    /// touched for this face.
+    pub fn has_color_strikes(&self) -> bool {
+        self.has_color
     }
 
     /// Baseline-to-baseline advance for successive lines, in em.

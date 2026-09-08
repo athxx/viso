@@ -1036,7 +1036,10 @@ spanning 放置 + auto-flow;ADR 0009 明列六项高级能力全未做。落 `cr
 - [x] **B2 `text: rgba color atlas`** —— `GlyphKind{Sdf,Color}`(`bpp()` 1/4);`Atlas` 持 `kind`,像素缓冲按 `size²*bpp`,
       MaxRects packer 与 R8/RGBA8 共用一份实现(仅每行字节步长差 bpp)。`new_color()` 建 `Rgba8Unorm` 图集,`color_glyph()`
       走 `rasterize_color_glyph` 并把 strike origin 从 ppem 缩放到请求;`GlyphKey` 加 `kind`(dpx_q 复用作 size-bucket)。单测覆盖 4 bpp 分配 + RGBA blit 字节布局。
-- [ ] **B3 `text: per-glyph kind in prepare`** —— prepare 输出每 glyph 的 kind(SDF vs ColorBitmap)。
+- [x] **B3 `text: per-glyph kind in prepare`** —— `FontFace` 加 `has_color_strikes()`(载入时判 CBDT/sbix,纯文本 face 零探测);
+      `TextSystem` 持第二张 color atlas + `color_atlas_pixels/size/take_color_atlas_dirty`;`GlyphQuad` 加 `kind`。
+      `prepare`:彩色 face 先探 `color_glyph` 命中出 `Color` quad,否则落 SDF `atlas.glyph` 出 `Sdf` quad。
+      集测:outline face `has_color_strikes()==false`、纯文本 run 全 `Sdf` 且 color atlas 不脏。
 - [ ] **B4 `viso: two textures + color glyph run`** —— facade 建两张纹理(R8 SDF + RGBA color);`Content` 携彩色 glyph run。
 - [ ] **B5 `render: lower color glyphs to Image`** —— 彩色 glyph 降为 `Primitive::Image`(白 tint);headless golden。
 - [ ] **B6 `viso: bundle emoji fallback face`** —— 内嵌 `NotoColorEmoji.ttf` 作 emoji 回退 face。
