@@ -116,6 +116,43 @@ fn multiline_layout_steps_baseline_down() {
 }
 
 #[test]
+fn first_baseline_sits_one_primary_ascent_below_the_top() {
+    // With a single face, the first line's baseline is exactly the primary
+    // ascent below the box top — no fallback face expands it.
+    let (store, id) = store();
+    let face = store.face(id);
+    let size = 40.0f32;
+    let placed = layout(&store, id, "Ag", size);
+    assert!(!placed.is_empty());
+    let expected = face.ascender_em * size;
+    assert!(
+        (placed[0].origin_px[1] - expected).abs() < 1e-3,
+        "first baseline {} should equal primary ascent {}",
+        placed[0].origin_px[1],
+        expected
+    );
+}
+
+#[test]
+fn line_pitch_matches_the_primary_face_when_single_face() {
+    // Two lines of a single face step down by exactly that face's line height
+    // (ascent - descent + line_gap): the seed metrics, unexpanded.
+    let (store, id) = store();
+    let face = store.face(id);
+    let size = 32.0f32;
+    let placed = layout(&store, id, "ab\ncd", size);
+    let line0 = placed[0].origin_px[1];
+    let line1 = placed[2].origin_px[1];
+    let pitch = face.line_height_em() * size;
+    assert!(
+        ((line1 - line0) - pitch).abs() < 1e-3,
+        "single-face line pitch {} should equal face line height {}",
+        line1 - line0,
+        pitch
+    );
+}
+
+#[test]
 fn rasterized_glyph_is_nonempty_sdf() {
     let (store, id) = store();
     let face = store.face(id);
