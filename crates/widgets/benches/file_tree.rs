@@ -20,6 +20,11 @@
 //!   drains the intent, edits the open set, reflattens, and calls `set_item_count`.
 //!   This is the interactive hot path, driven through the same public handle an
 //!   application uses.
+//! - `file_tree/keyboard_frame` times one arrow-key frame: press `Down`, then run
+//!   `reconcile`. This is the cheapest interactive gesture — a focus-cursor move
+//!   that changes no visible row — so its reconcile skips the reflatten entirely
+//!   (the `structural` gate). It measures the keyboard path stays cheap and does
+//!   not pay the toggle's reflatten cost.
 //!
 //! It drives only `viso-ui` + `viso-widgets`, so it needs no facade or render
 //! dev-dependency and adds no dependency edge. Run release
@@ -144,6 +149,34 @@ fn bench_file_tree(c: &mut Criterion) {
             black_box(&store);
         });
     });
+
+    // keyboard_frame: one Down-arrow frame — dispatch the key through the public
+    // `on_key` (which pushes a focus/select intent), then run the public reconcile.
+    // The tree stays open with the cursor stepping down its rows, so every frame is a
+    // pure focus move: no row enters or leaves, the reflatten is skipped, and this
+    // times the keyboard path against the toggle path above.
+    c.bench_function("file_tree/keyboard_frame", |b| {
+        let (mut store, mut r, handle) = build_tree_scene();
+        let key = down_key();
+        b.iter(|| {
+            {
+                let mut cx = viso_ui::EventCx::__new_key(&mut r.states, &r.bindings, &key);
+                handle.on_key(&mut cx, &key);
+            }
+            handle.reconcile(&mut store, &mut r.lists);
+            black_box(&store);
+        });
+    });
+}
+
+/// A `Down`-arrow key-press sample for driving the keyboard navigation path.
+fn down_key() -> viso_ui::KeyEvent {
+    viso_ui::KeyEvent {
+        key: viso_ui::Key::Down,
+        pressed: true,
+        repeat: false,
+        modifiers: viso_ui::Modifiers::default(),
+    }
 }
 
 /// A still (no-button) pointer sample for driving a command that reads no pointer.
