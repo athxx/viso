@@ -7,15 +7,17 @@
 //! hands the finished [`viso_ui::Content`] back to the node store. This is the
 //! single seam where a font stack meets the retained tree.
 //!
-//! The glyph SDF atlas is a persistent GPU texture: created once on the first
-//! shape and grown incrementally by re-uploading only the region
-//! [`TextSystem::take_atlas_dirty`] reports after each shape. New glyphs pack
-//! into the same atlas across the whole session, so steady-state text (a fixed
-//! label set) uploads the atlas once and never again.
+//! Two persistent GPU textures back the run: an R8 SDF atlas for outline glyphs
+//! and an RGBA8 color atlas for bitmap-emoji strikes. Each is created once on the
+//! first shape that needs it and grown incrementally by re-uploading only the
+//! region the text system reports dirty after each shape. New glyphs pack into
+//! the same atlas across the whole session, so steady-state text (a fixed label
+//! set) uploads each atlas once and never again. A pure-text run never allocates
+//! or touches the color atlas.
 
 use viso_gpu::{GpuBackend, TextureDesc, TextureFormat};
 use viso_render::{GlyphInstanceData, Rect, TextureId};
-use viso_text::{FontId, SystemFallback, TextSystem};
+use viso_text::{FontId, GlyphKind, SystemFallback, TextSystem};
 use viso_ui::{Content, TextRequest, Vec2};
 
 use crate::system_fonts::CoreTextProvider;
@@ -31,9 +33,13 @@ const UI_FONT: &[u8] = include_bytes!("../fixtures/DejaVuSans-subset.ttf");
 pub(crate) struct TextShaper {
     text: TextSystem,
     font: FontId,
-    /// The persistent glyph atlas texture, created lazily on the first shape
-    /// (once a backend exists to allocate it). `None` until then.
+    /// The persistent R8 SDF glyph atlas texture, created lazily on the first
+    /// shape (once a backend exists to allocate it). `None` until then.
     atlas: Option<TextureId>,
+    /// The persistent RGBA8 color atlas texture for bitmap-emoji glyphs, created
+    /// lazily on the first shape that packs a color glyph. `None` until then —
+    /// a pure-text session never allocates it.
+    color_atlas: Option<TextureId>,
     /// The platform system-font provider (CoreText on macOS, a no-op elsewhere):
     /// consulted when a run has characters the loaded chain cannot render, to
     /// pull a covering system face into the fallback chain.
@@ -55,6 +61,7 @@ impl TextShaper {
             text,
             font,
             atlas: None,
+            color_atlas: None,
             provider: CoreTextProvider::new(),
             fallback: SystemFallback::new(),
         }
@@ -109,31 +116,63 @@ impl TextShaper {
             backend.write_texture(atlas, 0, d.y, size, d.h, band);
         }
 
-        // Map each quad to a node-local glyph instance and track the run extent.
+        // Route each quad to its atlas run by kind: SDF outlines decode through
+        // the coverage ramp against `atlas`; color-bitmap glyphs sample RGBA
+        // directly against the color atlas and paint as image quads. Both runs
+        // share the node-local coordinate space and feed the one run extent.
         let mut natural = Vec2::ZERO;
-        let glyphs: Vec<GlyphInstanceData> = quads
-            .iter()
-            .map(|q| {
-                let rect = Rect {
-                    x: q.rect_px[0],
-                    y: q.rect_px[1],
-                    w: q.rect_px[2],
-                    h: q.rect_px[3],
-                };
-                natural.x = natural.x.max(rect.x + rect.w);
-                natural.y = natural.y.max(rect.y + rect.h);
-                GlyphInstanceData {
-                    rect,
-                    uv: Rect {
-                        x: q.uv[0],
-                        y: q.uv[1],
-                        w: q.uv[2] - q.uv[0],
-                        h: q.uv[3] - q.uv[1],
-                    },
-                    px_range: q.px_range,
-                }
-            })
-            .collect();
+        let mut glyphs: Vec<GlyphInstanceData> = Vec::with_capacity(quads.len());
+        let mut color_glyphs: Vec<GlyphInstanceData> = Vec::new();
+        for q in &quads {
+            let rect = Rect {
+                x: q.rect_px[0],
+                y: q.rect_px[1],
+                w: q.rect_px[2],
+                h: q.rect_px[3],
+            };
+            natural.x = natural.x.max(rect.x + rect.w);
+            natural.y = natural.y.max(rect.y + rect.h);
+            let instance = GlyphInstanceData {
+                rect,
+                uv: Rect {
+                    x: q.uv[0],
+                    y: q.uv[1],
+                    w: q.uv[2] - q.uv[0],
+                    h: q.uv[3] - q.uv[1],
+                },
+                px_range: q.px_range,
+            };
+            match q.kind {
+                GlyphKind::Sdf => glyphs.push(instance),
+                GlyphKind::Color => color_glyphs.push(instance),
+            }
+        }
+
+        // Only if the run packed color glyphs: ensure the RGBA color atlas
+        // texture exists and upload its newly-rasterized band. Its buffer is
+        // row-major RGBA with stride `size * 4` bytes, so a dirty band spans
+        // `[d.y, d.y + d.h)` rows at that wider stride.
+        let color_atlas = if color_glyphs.is_empty() {
+            None
+        } else {
+            let csize = self.text.color_atlas_size();
+            let ctex = *self.color_atlas.get_or_insert_with(|| {
+                backend.create_texture(&TextureDesc {
+                    width: csize,
+                    height: csize,
+                    format: TextureFormat::Rgba8Unorm,
+                    render_target: false,
+                    label: "ui-glyph-color-atlas",
+                })
+            });
+            if let Some(d) = self.text.take_color_atlas_dirty() {
+                let row = csize as usize * 4;
+                let pixels = self.text.color_atlas_pixels();
+                let band = &pixels[d.y as usize * row..(d.y + d.h) as usize * row];
+                backend.write_texture(ctex, 0, d.y, csize, d.h, band);
+            }
+            Some(ctex)
+        };
 
         // The first-line baseline in the same logical-pixel space as `natural`
         // and the glyph rects, so a grid cell can align this run on its baseline.
@@ -142,6 +181,8 @@ impl TextShaper {
         Content::Text {
             glyphs,
             atlas,
+            color_glyphs,
+            color_atlas,
             color: request.color,
             natural,
             baseline,

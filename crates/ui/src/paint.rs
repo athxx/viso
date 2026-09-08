@@ -416,6 +416,8 @@ mod tests {
                     px_range: 2.0,
                 }],
                 atlas: TextureId(7),
+                color_glyphs: Vec::new(),
+                color_atlas: None,
                 color: RED,
                 natural: Vec2 { x: 30.0, y: 20.0 },
                 baseline: 16.0,

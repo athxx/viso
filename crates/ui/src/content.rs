@@ -36,12 +36,26 @@ pub enum Content {
     /// A shaped run of glyphs. `glyphs` are positioned in the node's local space
     /// (origin at the node's top-left); paint shifts them to the node's world
     /// origin. `atlas` is the SDF atlas they sample, `color` the run color.
+    ///
+    /// Color-bitmap glyphs (emoji) do not decode through the coverage ramp, so
+    /// they ride in a parallel `color_glyphs` run sampling their own RGBA
+    /// `color_atlas`; paint lowers each to an image quad rather than a glyph
+    /// quad. A pure-text run leaves `color_glyphs` empty and `color_atlas`
+    /// `None`, and pays nothing for the color path.
     Text {
-        /// The positioned glyphs, one screen quad each, in node-local space.
+        /// The positioned outline glyphs, one screen quad each, in node-local
+        /// space. Decoded through the SDF coverage ramp against `atlas`.
         glyphs: Vec<GlyphInstanceData>,
-        /// The single-channel R8 SDF atlas the glyphs sample.
+        /// The single-channel R8 SDF atlas the outline glyphs sample.
         atlas: TextureId,
-        /// Straight linear RGBA color applied to the whole run (a = opacity).
+        /// The positioned color-bitmap glyphs (emoji), in node-local space,
+        /// sampling `color_atlas` as premultiplied RGBA. Empty for pure text.
+        color_glyphs: Vec<GlyphInstanceData>,
+        /// The RGBA color atlas the `color_glyphs` sample, or `None` when the
+        /// run has no color glyphs.
+        color_atlas: Option<TextureId>,
+        /// Straight linear RGBA color applied to the whole outline run (a =
+        /// opacity). Color glyphs sample their own RGBA and ignore this.
         color: Rgba,
         /// The run's intrinsic size in physical pixels.
         natural: Vec2,
@@ -131,6 +145,8 @@ mod tests {
         let text = Content::Text {
             glyphs: Vec::new(),
             atlas: TextureId(1),
+            color_glyphs: Vec::new(),
+            color_atlas: None,
             color: Rgba {
                 r: 0.0,
                 g: 0.0,

@@ -172,6 +172,8 @@ fn attach_captions(gpu: &mut HeadlessRaster, store: &mut NodeStore, captions: &[
             Content::Text {
                 glyphs: tg.glyphs.clone(),
                 atlas,
+                color_glyphs: Vec::new(),
+                color_atlas: None,
                 color: WHITE,
                 natural,
                 baseline: 0.0,

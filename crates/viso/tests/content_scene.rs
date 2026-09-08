@@ -91,6 +91,8 @@ fn render_scene() -> Vec<u8> {
         Content::Text {
             glyphs: tg.glyphs.clone(),
             atlas,
+            color_glyphs: Vec::new(),
+            color_atlas: None,
             color: WHITE,
             natural: glyph_run_natural(&tg.glyphs),
             baseline: 0.0,
