@@ -96,3 +96,53 @@ fn whitespace_advances_without_quad() {
     // 'b' sits to the right of 'a' with the space's advance between them.
     assert!(quads[1].rect_px[0] > quads[0].rect_px[0]);
 }
+
+#[test]
+fn first_load_seeds_the_chain_as_primary() {
+    let (store, id) = store();
+    // Loading a single face makes it the chain head; a single-face store shapes
+    // with it exactly as before, so the chain is just [id].
+    assert_eq!(store.chain(), &[id]);
+    assert_eq!(store.primary(), Some(id));
+}
+
+#[test]
+fn face_coverage_reports_cmap_membership() {
+    let (store, id) = store();
+    let face = store.face(id);
+    // The ASCII subset covers Latin but not CJK.
+    assert!(face.has_char('A'), "DejaVu subset covers Latin 'A'");
+    assert!(!face.has_char('中'), "DejaVu subset does not cover CJK");
+    // glyph_count is a coarse coverage weight, > 0 for any real face.
+    assert!(face.glyph_count > 0);
+}
+
+#[test]
+fn first_covering_walks_the_chain() {
+    let (store, id) = store();
+    // A covered character resolves to the primary; an uncovered one resolves to
+    // nothing (it will shape to .notdef and become a system-font candidate).
+    assert_eq!(store.first_covering('A'), Some(id));
+    assert_eq!(store.first_covering('中'), None);
+}
+
+#[test]
+fn push_fallback_extends_and_dedups_the_chain() {
+    let mut store = FontStore::new();
+    let primary = store.load(FONT.to_vec(), 0).expect("primary");
+    // A second load registers a face but does not touch the chain — resolving a
+    // fallback is explicit. (Reusing the same fixture bytes yields a distinct id.)
+    let fallback = store.load(FONT.to_vec(), 0).expect("fallback");
+    assert_eq!(
+        store.chain(),
+        &[primary],
+        "load alone does not extend the chain"
+    );
+
+    store.push_fallback(fallback);
+    assert_eq!(store.chain(), &[primary, fallback]);
+
+    // Re-resolving the same face is a no-op — the chain never grows a duplicate.
+    store.push_fallback(fallback);
+    assert_eq!(store.chain(), &[primary, fallback]);
+}
