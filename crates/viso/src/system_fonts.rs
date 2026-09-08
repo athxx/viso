@@ -388,7 +388,14 @@ mod color {
                         g.width as usize * g.height as usize * 4,
                         "readback must be tightly packed w*h*4 regardless of CG's padded stride"
                     );
-                    let max_a = g.rgba.chunks_exact(4).map(|px| px[3]).max().unwrap_or(0);
+                    let max_a = g
+                        .rgba
+                        .as_chunks::<4>()
+                        .0
+                        .iter()
+                        .map(|px| px[3])
+                        .max()
+                        .unwrap_or(0);
                     best_alpha = best_alpha.max(max_a);
                     if best_alpha > 200 {
                         break;

@@ -1061,9 +1061,11 @@ spanning 放置 + auto-flow;ADR 0009 明列六项高级能力全未做。落 `cr
 - [x] **C2 `viso: user font API (bytes / path)`** —— facade 公开 init 期 API 加载用户字体(字节 / 磁盘路径),入 chain 居前。
       `AppCx::load_font(bytes)` / `load_font_file(path)` 记录到 session-scoped 字节表,`AppDriver` 于 `A::new` 后 drain,
       每个 `WindowState::open`(启动 + 延迟 `window()`)把它们按序装入新 `TextShaper` 居首,先于系统回退。
-- [x] **C3 `viso: WOFF2 decode + load capability`** —— vendor `makepad/libs/woff2` 为 `viso::woff2` 模块(`decompress`
-      + `to_sfnt`);`load_font` 在 facade 消费点经 `to_sfnt` 自动探测 `wOF2` 签名先解压再载(sfnt 原样透传),
-      公开面 `pub mod woff2` 供开发者对自取字节直接调用;只做库不接网络。
+- [x] **C3 `viso: WOFF2 是外部独立库,核心只吃 sfnt`** —— WOFF2 不写进核心:`libs/woff2`(vendor,workspace 成员
+      `viso-woff2`,单 API `decompress(&[u8]) -> Option<Vec<u8>>` WOFF2→sfnt)是开发者自调的独立库,核心 `viso` 不依赖它。
+      facade 完全移除旧 WOFF2 缝(删 `crates/viso/src/woff2.rs` 手写解码器、`pub mod woff2`、`to_sfnt` 自动探测、
+      `brotli-decompressor` 依赖、`.woff2` fixture);`WindowState::open` 直接 `shaper.load_font(face, 0)`,`load_font`/
+      `AppCx::load_font` 只吃 sfnt。开发者用法:`let sfnt = viso_woff2::decompress(&woff2_bytes)?; cx.load_font(sfnt);`。
 
 - [x] **Hello World(末节)**:`examples/hello_world/src/main.rs` 改为居中 `label("Hello 世界 สวัสดี 🎉").font_size(48.)`,
       全走系统字体(无内嵌)。验证:macOS smoke `hello_world_shapes_all_scripts_from_system_fonts`——空 chain 经 provider
@@ -1077,3 +1079,35 @@ spanning 放置 + auto-flow;ADR 0009 明列六项高级能力全未做。落 `cr
       600×400 与放大到 1000×800 均居中(证不再右下角漂移);viso-ui + viso 全套 503 测试绿。
 
 **ADR(git add -f)**:0024 已被 file-tree 占用 → 文本 ADR 顺延为 **0025 Text subsystem ownership**(external-backed 算法 + 缓存边界)与 **0026 System-font provider + color-glyph seam**(trait 在 viso-text、CoreText 实现在 facade;含彩色光栅缝)。彩色 emoji GPU ADR 不需。
+
+---
+
+**Phase D —— 文字层缓存 / 失效 / 换行地基(§37.11/§37.13 契约补齐,当前片)**
+
+> 缘由:一次「Architecture 文字契约 vs 现有 viso-text 代码」符合性核对(2026-09-09)发现,Phase A–C 打通了 shaping/
+> BiDi/fallback/system-provider/彩色 emoji(名实相符、有测试),但 §37.11(cache 失效规则)/§37.13(ownership 清单)
+> 里**明确「必须拥有」、代码却根本不存在**的三处能力尚未落位:paragraph/shaping cache、按宽度 line-break、font
+> revision/incremental invalidation + profiler counters。远端渐进 font provider(§37.13)同样缺失。当前 `TextSystem::prepare`
+> 每次从零 `layout→shape`,§37.11 的"Text/宽度未变则不 reshape/re-linebreak"只靠 facade 节点 pending-request 粗门
+> (crates/viso/src/lib.rs:583-599)间接达成,text 层自身无缓存边界。这些是 Tier 5 code-editor(§37.12 编辑数据结构)
+> 的前置地基,故先于 Tier 5 补齐。
+> 每小节仍出验证包(§7.3 先测再宣称:cache 命中/失效单测 + microbench + 稳态 alloc profile)+ 每小节一提交,
+> todo 随做随标、与源码同 commit(不独立提)。动手前先读 makepad 对应缓存实现([[viso-read-makepad-first]]),
+> 缺口/更优处按 Viso 方案走([[viso-diverge-from-makepad]])。
+
+- [ ] **D1 `text: width-aware line breaking`** —— §37.11「可用宽度未变则不重新 line-break」的前置:今天 layout.rs:83 只
+      `text.split('\n')` 硬断行,`layout()` 连可用宽度参数都不收。补按可用宽度自动换行(word/grapheme break;复用 proven
+      unicode line-break primitive,§37.13 不自研标准算法);`layout(store, text, max_width)` 带宽度约束。这是 D2 缓存
+      失效键(宽度)的语义前提,故排最前。
+- [ ] **D2 `text: paragraph / shaping-run cache`** —— §37.11/§37.13 的 paragraph/shaping cache:viso-text 持 paragraph 级
+      缓存(键 = text + font/feature/revision + 可用宽度),命中则跳过 reshape + re-linebreak;把「不 reshape」的边界从
+      facade 粗门下沉到 text 层自身。依赖 D1(宽度是失效键之一)。
+- [ ] **D3 `text: font revision + incremental invalidation + profiler counters`** —— §37.13 ownership 清单里代码零命中的一条
+      (grep `revision`/`counter`/`invalidat` 全 crate 无)。font/chain 变更 bump revision → 精准失效 D2 缓存(而非全清);
+      §37.11「新增无关 coverage 不失效」在此兑现(revision 携失效范围);text profiler counters(reshape/re-linebreak/raster/
+      atlas-upload 次数)接入 §36 profiler。与 D2 缓存耦合,D2 落地时一并带出 revision,counters 并入本节。
+- [ ] **D4 `text: progressive / remote font provider seam`** —— §37.13「ExternalFontSource 实际网络传输经 service/integration
+      注入,Text runtime 只拥有请求语义、去重、优先级、revision 和 cache contract」。今天只有本地 bytes + 同步系统 provider,
+      远端渐进那层完全没有。补 request 语义 + 去重 + 优先级 + revision(§37.12「远端渐进字体加载不能破坏编辑模型」——
+      selection/caret 用文本索引 + shaping run mapping,不绑 glyph atlas slot)。**不拥有 HTTP/TLS**(§37.13),网络传输经
+      service 注入。依赖 D3 的 revision 机制,且远端字体真实消费者最晚(TextInput/富文本才需要),故排最后。

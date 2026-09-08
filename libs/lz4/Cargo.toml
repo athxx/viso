@@ -1,0 +1,11 @@
+[package]
+name = "viso-lz4"
+version = "0.1.0"
+edition = "2024"
+license = "BSD-2-Clause"
+description = "Rust port of the core LZ4 block compressor and decompressor"
+
+[features]
+force-scalar = []
+
+[dependencies]

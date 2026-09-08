@@ -19,6 +19,7 @@ members = [
     "crates/lsp",
     "crates/services",
     "xtask",
+    "libs/woff2",
     "examples/hello_world",
     "examples/01-counter",
 ]
@@ -75,11 +76,18 @@ unicode-script = "0.5"
 # path uses; decoded RGBA is premultiplied into the color glyph atlas.
 zune-png = "0.5"
 zune-core = "0.5"
-# WOFF2 web fonts embed their sfnt tables as one brotli stream (WOFF2 §4). The
-# facade's `load_font_bytes` detects the `wOF2` signature and decompresses to
-# sfnt before parsing; the decode itself is a vendored module. Pure-Rust, builds
-# for wasm32; `std` gives the reader that wraps std::io::Read.
+# WOFF2 web fonts embed their sfnt tables as one brotli stream (WOFF2 §4).
+# `viso-woff2` (libs/woff2) decompresses them to sfnt; the core facade never
+# touches WOFF2 (it only accepts sfnt), so this is only depended on by that
+# standalone library. Pure-Rust, builds for wasm32; `std` gives the reader that
+# wraps std::io::Read.
 brotli-decompressor = { version = "5.0", default-features = false, features = ["std"] }
+
+# Standalone WOFF2 → sfnt decompression library (libs/woff2, vendored, §3.7
+# prefer-proven-algorithms). NOT a core dependency: a developer with WOFF2 bytes
+# calls `viso_woff2::decompress` themselves, then passes the resulting sfnt to
+# `AppCx::load_font`. Kept a workspace member so it builds/tests/releases here.
+viso-woff2 = { path = "libs/woff2", version = "1.0.0" }
 
 # macOS system-font resolution. The facade binds CoreText through the objc2
 # family (same generation as viso-platform's objc2 0.6 stack), asking the OS for

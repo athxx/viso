@@ -3,8 +3,8 @@
 > 文档状态：Viso DSL 1.0 Draft / Not Final  
 > 规范级别：语言语法、静态语义、运行时语义与编译器 Lowering 合同  
 > 目标读者：Viso 编译器、运行时、Widget、Shader、游戏 Profile、LSP 与 AI 编码代理实现者  
-> 基线日期：2026-09-02  
-> Makepad 对照统一基于当前 `script_mod!` / `ScriptVm` / `App::from_script_mod` 路径；Viso 外部 DSL 文件统一使用 `.vs`。
+> 基线日期：2026-09-08  
+> Viso 是独立设计与实现的语言/运行时体系；Makepad 只作为外部 authoring、实时编辑、渲染与游戏体验参考，不参与 Viso 的 public syntax、ABI、runtime contract 或项目模型。Viso 外部 DSL 文件统一使用 `.vs`。
 
 ---
 
@@ -22,15 +22,15 @@
 本文完整定义：
 
 1. Viso DSL 1.0 的设计目标与可用性判断；
-2. 对 Makepad 当前 `script_mod!` / `ScriptVm` 脚本体系进行语义与迁移对照；
+2. 记录 Makepad 等外部实现中值得参考的 authoring、实时编辑与游戏经验，并明确 Viso 自身的取舍；
 3. UTF-8、标识符、注释、保留字、字面量与单位的词法规范；
 4. 模块、类型、组件、System、函数、行为、资源、View 与 Shader 的形式文法；
 5. 表达式、运算符优先级、结合性、闭包与 Pattern 文法；
 6. 类型推断、泛型、Trait、约束、转换和子类型规则；
-7. 响应式状态、节点身份、事件、异步、热重载和游戏循环语义；
+7. 响应式状态、节点身份、事件、异步、热重载、自适应环境与游戏循环语义；
 8. CST、AST、HIR、UI IR、Reactive IR、Script IR 与 Shader IR 的 Lowering 规则；
 9. 编译器、Formatter、LSP、Schema 和 AI Vibe Coding 的交付合同；
-10. 解析、类型、运行时、热重载、游戏和 AI 生成的验收标准。
+10. 解析、类型、运行时、自适应、热重载、游戏和 AI 生成的验收标准。
 
 本文不定义：
 
@@ -250,9 +250,9 @@ Viso DSL 1.0 对 AI 生成是友好的，但前提是实现下列工具合同，
 - GPU Shader；
 - Hot Reload 状态迁移。
 
-### 4.2 是否能像 Makepad 那样做游戏
+### 4.2 是否适合做游戏
 
-**可以。** 但必须区分“语言能力”和“游戏引擎能力”。
+**适合。** 但必须区分“语言能力”和“游戏引擎能力”。Viso DSL 负责提供可静态检查的游戏执行语义，具体物理、ECS、音频和资产系统由 Rust Runtime/Profile 提供。
 
 Viso DSL 提供：
 
@@ -275,7 +275,7 @@ Viso DSL 提供：
 - 固定步长 Scheduler；
 - GPU 绘制。
 
-因此 Viso 不需要把 `game` 设成语法关键字。它可以通过导入 `viso::game` 和实现 `FixedUpdate` Trait 获得与宿主注入式游戏 API 等价、但类型更明确的能力。
+因此 Viso 不需要把 `game` 设成语法关键字。它通过导入 `viso::game`、实现标准 Scheduler Trait，以及可选的 Quick Game Profile 获得游戏能力；所有路径最终进入同一套 typed scheduler/runtime。
 
 ### 4.3 游戏能力边界
 
@@ -291,11 +291,11 @@ Viso DSL 提供：
 
 ---
 
-# 第二部分：Makepad 当前 Script 语义对照
+# 第二部分：外部参考——Makepad Authoring 与 Game 经验
 
-## 5. 对照范围与证据等级
+## 5. 参考范围与证据等级
 
-Viso 的 Makepad 对照对象统一为当前 `dev` 分支中的 Rust 内嵌脚本体系：
+本文仅把 Makepad 当前 `dev` 分支中的 Rust 内嵌脚本体系作为外部实现参考：
 
 ```text
 Rust source
@@ -310,7 +310,7 @@ Rust source
 
 重要说明：
 
-> Makepad 仓库没有把当前 Script Surface 发布成一份单一、权威、完整的 EBNF。本文只记录迁移和架构对照所需的实现推导语义，不把它声明为 Makepad 官方语言标准。
+> Makepad 仓库没有把当前 Script Surface 发布成一份单一、权威、完整的 EBNF。本文只记录公开源码中可观察到、且对 Viso authoring/runtime 设计有参考价值的语义，不把它声明为 Makepad 官方语言标准。
 
 主要源码依据：
 
@@ -325,7 +325,7 @@ splashgame.md
 
 ## 6. 当前 Makepad Script 的核心 authoring surface
 
-迁移器和 Viso 设计需要特别理解以下语义：
+Viso 设计主要参考以下 authoring surface：
 
 ```text
 property: value       普通属性/字段应用
@@ -355,7 +355,7 @@ mod.widgets.*         脚本 namespace / 注册后符号访问
 
 ---
 
-## 7. Makepad 当前 Script 与 Viso 1.0 的取舍
+## 7. Makepad 参考经验与 Viso 1.0 的取舍
 
 Viso 保留 Makepad authoring surface 中最容易读、最有生产力的部分，但不保留隐藏语义的 Assignment-family。
 
@@ -378,26 +378,33 @@ Viso 的原则是：**保留紧凑度，不保留隐式语义；保留宿主扩�
 
 ---
 
-## 8. 迁移器的最小 Makepad Script 语义模型
+## 8. 外部参考边界
 
-迁移工具应针对 Rust 源码中的 `script_mod!` token stream、`ScriptVm` 创建/传递、Widget/Native 注册、`App::from_script_mod` 与脚本 namespace 构建关系做结构化分析。
+Makepad 只作为实现经验参考。本文只提取对 Viso 设计有价值的可观察经验。
 
-迁移器至少需要识别：
+允许参考：
 
 ```text
-property binding/application
-named instance identity
-merge/apply operation
-Rust/native bridge
-module/namespace dependency
-state-like persistent values
-closures and event callbacks
-game tick callbacks
-shader declarations/usages
-manual render/update calls
+紧凑 property authoring
+实时编辑与 Last-good 体验
+shader / UI / game 的工具链联动
+固定步长 game update 的开发体验
+轻量 Native API 暴露方式
+Studio/AI 自动化体验
 ```
 
-能够证明语义等价的转换才允许自动修改源码；其余输出 Assisted/Manual 诊断。Viso runtime 不包含 Makepad compatibility host。
+禁止由参考实现反向决定：
+
+```text
+Viso public syntax
+Viso module system
+Viso identity model
+Viso reactive semantics
+Viso ABI
+Viso runtime lifecycle
+```
+
+原则：**参考有效经验，不继承兼容负担。**
 
 ---
 
@@ -531,20 +538,20 @@ self Self dyn
 
 ### 12.6 预留但当前禁止使用
 
-以下单词被保留以便迁移诊断或未来扩展，当前语法不会生成对应 AST：
+以下单词被保留以便提供稳定诊断或未来扩展，当前语法不会生成对应 AST：
 
 ```text
 child store merge extend inherit class
 macro unsafe extern static yield try
 ```
 
-`child` 被保留是为了让编译器输出明确迁移提示，而不是把它当作普通组件名。
+`child` 被保留是为了让编译器输出明确的非法 View 语法诊断，而不是把它当作普通组件名。
 
 ### 12.7 上下文词、标准库符号与后缀
 
 以下不是全局保留字：
 
-- `viso`：只在 `` 的固定位置被 Parser 识别；其他位置可以通过 Raw Identifier 引用同名外部符号，但不推荐；
+- `viso`：标准库根 Module 名，不是 Parser 关键字；应用代码 SHOULD NOT 声明同名顶层 Module，以避免导入歧义；
 - `empty`：只在 `slot ... = empty;` 的 Slot Default 上下文中具有特殊含义；
 - `Bool`、`I64`、`F32`、`String` 等是 Prelude 类型符号，不是 Lexer Keyword；
 - `EffectRun::mount`、`ResourcePolicy::keep_latest` 等是普通限定路径；
@@ -896,38 +903,6 @@ module_path      = identifier, { "::", identifier } ;
 - Import Resolution 不依赖运行时注册顺序；
 - 编译器、Formatter、LSP 和 Hot Reload 都必须从同一 Source Context 获得 package/module identity；
 - 独立 conformance fixture 若需要显式 module identity，应由测试 harness 提供，不扩展普通 source grammar。
-
-### 22.1 三个规范入口：`.vs` 文件、`ui!` 与 `component!`
-
-Viso DSL 有且仅有三个规范 Parser 入口。三者共享**完全相同**的 lexer、name resolution、type/effect/capability checker、Typed HIR、Reactive IR、UI IR、Shader IR、diagnostics 与 runtime 语义；差异只在顶层 production，不在语言语义。
-
-```ebnf
-(* 外部 .vs 源文件入口：view!("path.vs") 或 package source *)
-compilation_unit = { import_decl }, { top_level_decl }, EOF ;
-
-(* Rust 宿主 view 片段入口：ui! { ... } 的 body *)
-view_fragment    = { view_item }, EOF ;
-
-(* Rust 宿主组件入口：component! { ... } 的 body *)
-component_entry  = { import_decl }, component_decl, EOF ;
-```
-
-入口与 Rust 宿主宏的对应关系：
-
-```text
-ui!          -> view_fragment      片段，无 component 外壳
-component!   -> component_entry     单个组件声明
-view!(path)  -> compilation_unit    外部 .vs 文件
-```
-
-规则：
-
-- `ui!` / `component!` 是构建期 proc-macro / compiler frontend，不是运行时宏；它们不得在每帧展开或 rebuild UI；
-- 三个入口产出的 Typed HIR 及后续 IR 必须与等价的 `.vs` 写法完全一致；同一段 view 无论来自 `ui!` 还是 `.vs`，lowering 结果必须相同；
-- **根节点规则**：`view_fragment` 复用第 48 节的 `view_item`，因此文法层允许零个或多个根项；当它被用作某个 Component 的 `view` 主体或被要求产出单一挂载点时，仍受"View 必须产生恰好一个根 Node，多根需显式 `Fragment`"约束（第 48 节），该约束在 lowering / 宿主挂载点检查，而非 `view_fragment` 文法层；
-- `component_entry` 允许在组件前写 `import`，语义与 `.vs` 文件顶层 `import_decl` 一致；
-- Release 中所有入口都必须生成相同的 compact AOT descriptor/IR，不在启动时 parse `.vs`，也不在 runtime 解析 Rust source；
-- 该三入口约定同时是架构文档 §0.2 第 8 条硬决策与 ADR-015 的形式化对应。
 
 ---
 
@@ -1942,13 +1917,17 @@ view_item            = { attribute },
                        ( named_node
                        | anonymous_node
                        | part_node
+                       | property_binding
+                       | two_way_binding
+                       | event_handler
+                       | fill_clause
                        | view_if
                        | view_for
                        | view_match
-                       | template_use ) ;
+                       | template_use
+                       | part_override
+                       | part_replace ) ;
 ```
-
-`view_block` 顶层只接受结构性项（节点、`part`、条件/列表/`match`、`template use`）。Property Binding、Two-way Binding、Event Handler、`fill`、Part Override/Replace 只能出现在 Node Body 内部（见 [§49](#49-子节点语法删除-child) 的 `node_item`），不能直接写在 `view {}` 根层。此约束与权威附录 [§A.8](#a8-view-和节点) 的 `ViewStructureItem` / `NodeMember` 拆分完全一致。
 
 规则：
 
@@ -1957,7 +1936,8 @@ view_item            = { attribute },
 - 多个根节点必须显式包裹 `Fragment`；
 - View 是纯执行域；
 - View 中禁止普通 `let`、赋值、`return`、`emit`、`start`、I/O 和 Native Action；
-- View 可以读取 Input、State、Computed 和 Resource State；
+- View 可以读取 Input、State、Computed、Resource State 和当前 typed `env`；
+- `env` 只在 View 执行域注入，普通 State/Computed 初始化器不得隐式依赖局部 Layout Environment；
 - View 可以调用纯 `fn`；
 - View 构建产生 UI IR，不直接执行 OS/GPU 副作用。
 
@@ -1973,25 +1953,8 @@ anonymous_node       = component_type, node_body ;
 
 component_type       = type_path ;
 
-node_body            = "{", { node_item }, "}" ;
-
-node_item            = { attribute },
-                       ( property_binding
-                       | two_way_binding
-                       | event_handler
-                       | fill_clause
-                       | named_node
-                       | anonymous_node
-                       | part_node
-                       | view_if
-                       | view_for
-                       | view_match
-                       | template_use
-                       | part_override
-                       | part_replace ) ;
+node_body            = "{", { view_item }, "}" ;
 ```
-
-Node Body 是 `view_item` 之外唯一允许 Property Binding、Two-way Binding、Event Handler、`fill`、Part Override/Replace 的位置；它同时允许全部结构性子项（嵌套节点、`part`、条件/列表/`match`、`template use`）。该产生式与权威附录 [§A.8](#a8-view-和节点) 的 `NodeMember` 逐项对应。
 
 唯一规则：
 
@@ -2686,7 +2649,7 @@ a == b && b == c;
 数字越小优先级越高。
 
 | 级别 | 构造                   | 结合性   | 说明                                     |
-| ---: | ---------------------- | -------- | ---------------------------------------- |
+| ---: | ---------------------- | -------- | ---------------------------------------- | -------- | ------ |
 |    1 | `()` `[]` `.` `?.` `?` | 左       | Call、Index、Member、Optional Chain、Try |
 |    2 | `! ~ + - await`        | 右       | Prefix Unary                             |
 |    3 | `as`                   | 左       | 显式转换                                 |
@@ -2695,11 +2658,11 @@ a == b && b == c;
 |    6 | `<< >>`                | 左       | 位移                                     |
 |    7 | `&`                    | 左       | 位与                                     |
 |    8 | `^`                    | 左       | 位异或                                   |
-|    9 | `\|`                   | 左       | 位或                                     |
+|    9 | `                      | `        | 左                                       | 位或     |
 |   10 | `< <= > >=`            | 不结合   | 比较                                     |
 |   11 | `== !=`                | 不结合   | 相等                                     |
 |   12 | `&&`                   | 左、短路 | 逻辑与                                   |
-|   13 | `\|\|`                 | 左、短路 | 逻辑或                                   |
+|   13 | `                      |          | `                                        | 左、短路 | 逻辑或 |
 |   14 | `??`                   | 右、短路 | Option/Nullable Coalesce                 |
 |   15 | `.. ..=`               | 不结合   | Range                                    |
 
@@ -3471,6 +3434,7 @@ State Cell
 Resource State Cell
 Theme Context Cell
 System Observable Cell
+Adaptive Environment Cell
 ```
 
 Reactive Derived：
@@ -3831,7 +3795,315 @@ resource cache budget
 
 ---
 
-# 第十一部分：Shader、Native ABI 与多执行域边界
+# 第十一部分：自适应布局与环境语义
+
+## 96.1 设计原则
+
+Viso 的自适应设计以 **可用空间和能力** 为核心，而不是以设备名称为核心。普通 UI 禁止把 `phone`、`tablet`、`desktop` 当成语言内建布局类别。
+
+推荐决策顺序：
+
+```text
+Local Constraints
+-> Adaptive Scope / Size Class
+-> Safe Area / Keyboard / Display Features
+-> Input & Accessibility Capabilities
+-> 结构或属性响应
+```
+
+`Orientation` 可以查询，但普通应用布局 SHOULD 优先依赖可用宽高或 `SizeClass`。横屏只是几何变化的一种结果，不是默认布局策略。
+
+---
+
+## 96.2 Typed Adaptive Environment
+
+每个 Component View 都可以读取只读、Typed、Reactive 的 `env`。`env` 不是动态字典，也不允许字符串查询。标准环境至少包含：
+
+```text
+env.window            : WindowMetrics
+env.constraints       : LocalConstraints
+env.size_class        : SizeClass
+env.safe_area         : Insets
+env.keyboard_inset    : KeyboardInset
+env.display_features  : ReadOnlyList<DisplayFeature>
+env.input             : InputCapabilities
+env.text_scale        : F32
+env.reduced_motion    : Bool
+env.orientation       : Orientation
+```
+
+这些符号由标准 Native Schema 注入，Parser 不新增专用关键字。`env` 是 View 执行域的上下文绑定，只能在 View item 的表达式、Property Binding、View `if`/`match`/`for` 条件和调用的纯函数参数中使用；Component 的普通 `state` / `computed` 初始化器不能隐式读取局部 Layout Environment。
+
+典型类型：
+
+```viso
+record WindowMetrics {
+    logical_size: Size;
+    scale_factor: F32;
+}
+
+record LocalConstraints {
+    min_width: Dp;
+    max_width: Option<Dp>;
+    min_height: Dp;
+    max_height: Option<Dp>;
+}
+
+enum SizeClass {
+    Compact,
+    Medium,
+    Expanded,
+}
+
+enum Orientation {
+    Portrait,
+    Landscape,
+}
+
+enum DisplayFeature {
+    Hinge { bounds: Rect },
+    Fold { bounds: Rect },
+    Cutout { bounds: Rect },
+}
+```
+
+`WindowMetrics` 描述整个应用窗口；`LocalConstraints` 描述当前 Component 从父布局接收到的局部约束。两者语义不同，禁止互相替代。
+
+---
+
+## 96.3 Adaptive Scope 与 SizeClass
+
+`env.size_class` 来自最近的 Adaptive Scope。根 Scope 默认以应用可用内容区域建立；标准 `AdaptiveScope` Widget 可以在局部重新建立 Scope，使侧栏、面板、分屏区域根据自己的实际宽度适配，而不是错误使用整个窗口宽度。
+
+默认标准库可以提供 Compact/Medium/Expanded 策略，但 breakpoint 数值属于 Theme/Profile/Design System，不属于语言语法常量。应用可以提供自己的 `SizeClassPolicy`。
+
+根 Adaptive Scope 必须有有限的可用宽度。局部 `AdaptiveScope` 若收到 `max_width = None` 的无界约束，默认继承父 Scope 的 `SizeClass`；只有显式提供有限 `basis` 时才建立新的 SizeClass。实现不得偷偷用设备型号或全局 Window Width 代替无界局部约束。
+
+推荐：
+
+```viso
+view {
+    match env.size_class {
+        SizeClass::Compact => {
+            CompactShell {}
+        },
+        SizeClass::Medium => {
+            MediumShell {}
+        },
+        SizeClass::Expanded => {
+            ExpandedShell {}
+        },
+    }
+}
+```
+
+局部组件需要更精确的约束时，可以直接读取：
+
+```viso
+view {
+    match env.constraints.max_width {
+        Option::Some(width) if width < 520dp => {
+            CompactToolbar {}
+        },
+        _ => {
+            FullToolbar {}
+        },
+    }
+}
+```
+
+禁止把平台名或硬件型号作为普通响应式布局的主要分支条件。
+
+---
+
+## 96.4 Reactive Dependency 与失效
+
+Adaptive Environment Read 必须进入 Reactive HIR。编译器必须区分原始环境值和派生环境值。
+
+最低失效合同：
+
+| 环境值 | 默认影响 |
+|---|---|
+| `env.constraints` | `MEASURE / LAYOUT`，结构分支读取时可追加 `STRUCTURE` |
+| `env.size_class` | 类别变化时 `STRUCTURE / MEASURE / LAYOUT` |
+| `env.safe_area` | `MEASURE / LAYOUT` |
+| `env.keyboard_inset` | `MEASURE / LAYOUT` |
+| `env.display_features` | 消费者声明的 `STRUCTURE / LAYOUT / HIT_TEST` |
+| `env.input` | `STYLE / INTERACTION` |
+| `env.text_scale` | `MEASURE / LAYOUT / SEMANTICS` |
+| `env.reduced_motion` | `STYLE / PAINT`，不得强制 Layout |
+| `env.orientation` | 仅通知显式读取者 |
+
+关键优化：如果 Window 从 1200dp 缩到 1100dp，但 `env.size_class` 仍为 `Expanded`，只读取 `size_class` 的结构分支 **不得** 因原始宽度变化重新构建。
+
+---
+
+## 96.5 Layout Phase 与自适应求值顺序
+
+`LocalConstraints` 是父布局传入当前节点的 **incoming constraints snapshot**，不是当前节点测量后的输出尺寸。
+
+推荐管线：
+
+```text
+Parent computes incoming constraints
+-> Resolve Adaptive Environment
+-> Re-evaluate affected adaptive bindings/branches
+-> Measure affected subtree
+-> Layout
+-> Publish final geometry
+```
+
+### 结构级响应 vs 属性级响应
+
+自适应求值区分两类响应，边界由「该值在本节点测量之前是否已确定」划定：
+
+- **结构级响应**：`if` / `match` / `for` 等增删节点、改变子树形状的分支。
+- **属性级响应**：树形状不变，只改已存在节点的属性（尺寸、间距、颜色等）。
+
+规则：
+
+1. **结构级分支只能依赖父级已确定的 incoming 值**——即 `env.constraints`（父布局传入的 `LocalConstraints` snapshot），以及由最近一层已求解 Adaptive Scope 导出的 `env.size_class`、`env.orientation`、`env.safe_area`、`env.input` 等。这些量在本节点进入 Measure 之前一定已知，用它们切结构不会形成循环。
+2. **本节点自身测量之后才知道的尺寸**——measured/content size、子节点撑开的尺寸、Layout 中途才定的最终 geometry——**只能驱动属性级响应，不得驱动结构级分支**。
+3. `AdaptiveScope` 的 `basis` 必须来自父级已确定的 incoming constraints，不得取该 Scope 自身测量内容的输出尺寸；否则 Scope 会依赖它自己所决定的结构，构成隐式循环。
+
+因此结构在一次布局中「先由 incoming 值定形，再测量、再布局」是单向的：结构级分支的输入在 Measure 前已冻结，Measure 只能反过来影响属性，不能倒推回结构。
+
+禁止 View 结构直接依赖其自身尚未完成的 measured output。`AdaptiveCycle` 检测是对以上规则违例的诊断安全网，而非切换结构的主要机制——实现必须检测有限布局周期内的 `AdaptiveCycle`，并产生结构化诊断，而不是无限反复 Measure。
+
+---
+
+## 96.6 Safe Area、Keyboard 与 Foldable
+
+标准 Widget/Profile 至少提供：
+
+```text
+SafeArea
+KeyboardAvoiding
+AdaptiveScope
+AdaptiveSplit
+AdaptiveNavigation
+ResponsiveGrid
+```
+
+这些是 Widget/Native Schema，不是语言关键字。
+
+示例：
+
+```viso
+view {
+    SafeArea {
+        KeyboardAvoiding {
+            AdaptiveNavigation {
+                fill content {
+                    RouterView {}
+                }
+            }
+        }
+    }
+}
+```
+
+Fold/Hinge/Cutout 必须通过 `env.display_features` 暴露为 typed geometry。业务代码不应直接解析平台私有字符串。
+
+---
+
+## 96.7 Input 与 Accessibility Adaptive
+
+自适应不仅是宽度。标准 `InputCapabilities` SHOULD 至少描述：
+
+```text
+primary_pointer_precision
+hover_available
+keyboard_available
+touch_available
+pen_available
+gamepad_available
+```
+
+因此组件可以做能力适配：
+
+```viso
+if env.input.touch_available && !env.input.hover_available {
+    TouchToolbar {}
+} else {
+    PointerToolbar {}
+}
+
+if env.input.hover_available {
+    HoverHints {}
+}
+```
+
+`text_scale` 和 `reduced_motion` 必须作为环境依赖进入相应失效平面，不能通过平台 `cfg` 分支绕过 UI 语义。
+
+---
+
+## 96.8 State Preservation Across Adaptive Branches
+
+响应式切换不能把业务状态和局部交互状态混在一起处理。规范要求：
+
+- 需要跨 Compact/Expanded 长期存在的业务状态 SHOULD 提升到分支外的 Component/System State；
+- 离开某个布局模式后返回仍需恢复该分支局部状态时，使用该分支自己的 `preserve`；
+- 官方 `AdaptiveNavigation` / `AdaptiveSplit` 等容器 SHOULD 在模式变化时保留传入 Content Slot 的 Stable Node Identity，而不是无条件销毁子树；
+- focus、selection、scroll、text editing 等局部状态只有在 Widget Schema 声明可迁移/可重挂载时才能跨 Shell 保留。
+
+合法示例：
+
+```viso
+view {
+    if env.size_class == SizeClass::Compact preserve "compact-shell" {
+        CompactShell {
+            MainContent { model: model; }
+        }
+    } else {
+        ExpandedShell {
+            MainContent { model: model; }
+        }
+    }
+}
+```
+
+这里 `model` 属于分支外状态，所以切换布局不会丢失业务数据；`compact-shell` 自己的局部 UI 状态在离开后可以进入 Preserve Cache。需要真正跨 Shell 维持同一个 Child Node 实例时，应使用具备 identity-preserving slot contract 的标准 Adaptive Container，而不是依赖两个不同 Conditional Branch 自动合并身份。
+
+---
+
+## 96.9 Adaptive Authoring 规则
+
+人类和 AI SHOULD：
+
+1. 优先使用 `env.size_class` 或 `env.constraints`；
+2. 只有确实与方向本身相关时使用 `env.orientation`；
+3. 不用 `platform == ios/android` 决定普通页面结构；
+4. 使用 `SafeArea`、`KeyboardAvoiding` 处理系统 Insets；
+5. 对 Foldable 使用 `display_features`，不猜测设备型号；
+6. 共享内容在不同 Shell 间切换时显式考虑 identity/preserve；
+7. breakpoint 集中到 Theme/Profile/Design System，而不是散落 magic numbers。
+
+---
+
+## 96.10 Adaptive 验收场景
+
+标准测试矩阵至少覆盖：
+
+```text
+phone portrait
+phone landscape
+tablet full screen
+tablet split screen
+desktop narrow window
+desktop wide window
+keyboard shown/hidden
+safe-area change
+fold/hinge geometry
+text scale change
+mouse+keyboard vs touch input
+```
+
+同一组件在不同窗口宽度和父容器宽度下必须可以独立测试，不允许只依赖真实设备型号。
+
+---
+
+# 第十二部分：Shader、Native ABI 与多执行域边界
 
 ## 97. Shader 声明文法
 
@@ -4123,11 +4395,11 @@ NativeMethodSchema {
 
 ---
 
-# 第十二部分：游戏表达能力与 Game Profile
+# 第十三部分：游戏表达能力与 Game Profile
 
 ## 104. 结论
 
-Viso DSL 1.0 的语言表达能力足以实现与 Makepad 宿主注入式游戏脚本相同类型的游戏逻辑，包括：
+Viso DSL 1.0 的语言表达能力足以承载从快速原型到结构化游戏 Runtime 的核心游戏逻辑，包括：
 
 - 固定步长更新；
 - 输入快照；
@@ -4184,6 +4456,91 @@ collision
 ```
 
 这些来自 `viso::game` Native Schema。第三方可替换物理、ECS 或渲染实现而不修改语法。
+
+---
+
+
+### 105.1 Quick Game Profile
+
+小型游戏、教学 Demo 和 AI/Vibe Coding 不应该被迫先设计完整的多 System graph。标准库提供 `viso::game::quick`，但它仍然 **不是 Parser 特例**。
+
+Quick Game 的规范目标：
+
+```text
+更少 imports
+单一 typed frame context
+固定步长
+默认确定性
+同一 InputSnapshot
+同一 GameWorld / physics / render backend
+同一 replay / hot reload / profiler
+可无语义损失地拆成多个完整 System
+```
+
+标准 Native Schema 可以定义：
+
+```viso
+export trait QuickGame {
+    action start(cx: QuickStart);
+    action fixed(frame: QuickFrame);
+}
+
+// QuickStart / QuickFrame 是 viso::game::quick Native Schema 提供的 typed context。
+// QuickStart: spawn(desc) -> EntityId，以及 startup-only 资源初始化能力。
+// QuickFrame: world, input, dt, tick，以及受控 game action surface。
+```
+
+最小游戏：
+
+```viso
+import viso::game::quick::{QuickGame, QuickStart, QuickFrame};
+import viso::game::{EntityId, SpawnDesc, InputAction, InputAxis};
+
+export system TinyGame implements QuickGame {
+    state player: Option<EntityId> = Option::None;
+    state score: I64 = 0;
+
+    action start(cx: QuickStart) {
+        player = Option::Some(cx.spawn(SpawnDesc::player()));
+    }
+
+    action fixed(frame: QuickFrame) {
+        match player {
+            Option::Some(id) => {
+                let move = frame.input.axis(InputAxis::move_x);
+                frame.world.walk(id, move * 6.0f32, 0.0f32);
+
+                if frame.input.pressed(InputAction::jump)
+                    && frame.world.on_floor(id) {
+                    frame.world.jump(id, 10.0f32);
+                }
+            },
+            Option::None => {},
+        }
+    }
+}
+```
+
+Lowering 要求：
+
+```text
+QuickGame.start -> scheduler startup hook
+QuickGame.fixed -> FixedUpdate system entry
+QuickFrame      -> typed facade over FixedFrame + GameWorld
+QuickStart.spawn -> startup transaction committed before first fixed tick
+```
+
+Quick Game **不得** 通过 UI frame callback、任意 wall clock、全局 mutable singleton 或长期捕获可变闭包实现。它只是完整 Game Profile 的 low-ceremony surface。
+
+生命周期：
+
+- `start` 在 Quick Game System 首次创建或 World Rebuild 时运行一次；
+- Logic-only Hot Reload 不重新运行 `start`；
+- `fixed` 每个固定 Tick 运行；
+- `start` 失败则回滚启动事务，不进入第一个 Tick；
+- `QuickStart.spawn` 的初始化命令必须在第一个 Tick 前提交，所以返回的 `EntityId` 在首次 `fixed` 时已经有效。
+
+当游戏需要独立 Physics/AI/Combat/Audio/Networking 等生命周期时，SHOULD 拆成多个标准 `system ... implements FixedUpdate/FrameUpdate/...`。
 
 ---
 
@@ -4300,7 +4657,7 @@ export system PlayerController implements FixedUpdate + CollisionListener {
 - 碰撞是 Typed Event；
 - 没有隐藏全局变量；
 - Hot Reload 可以按 System/State Stable ID 迁移；
-- AI 可以通过 `cargo viso schema viso::game::GameWorld` 查询方法。
+- AI 可以通过 `viso schema viso::game::GameWorld` 查询方法。
 
 ---
 
@@ -4401,6 +4758,7 @@ Game Profile 支持两层热重载：
 
 | 能力         |                  语言支持 | Runtime/Profile 支持 | 结论       |
 | ------------ | ------------------------: | -------------------: | ---------- |
+| Quick Game   | `system implements QuickGame` | 同一 Fixed Scheduler | 完整       |
 | 固定 Tick    | `system + trait + action` |            Scheduler | 完整       |
 | 持久状态     |            `system state` |          State Store | 完整       |
 | 输入         |           Typed Value/API |         Input Mapper | 完整       |
@@ -4417,7 +4775,7 @@ Game Profile 支持两层热重载：
 
 ---
 
-# 第十三部分：编译器架构与逐构造 Lowering
+# 第十四部分：编译器架构与逐构造 Lowering
 
 ## 112. 编译管线
 
@@ -4555,6 +4913,7 @@ effect_class
 capability_set
 ownership_mode
 reactive_reads
+environment_reads
 source_origin
 constant_value_if_any
 ```
@@ -4843,6 +5202,58 @@ Compiler 对两个 Branch 分配不同 Identity Namespace，避免相同结构�
 
 ---
 
+
+### 125.1 Adaptive Environment Read Lowering
+
+读取：
+
+```viso
+if env.size_class == SizeClass::Compact {
+    CompactShell {}
+}
+```
+
+Lower 为 typed environment dependency：
+
+```text
+EnvironmentRead {
+    kind: SizeClass,
+    scope: NearestAdaptiveScope,
+    value_type: SizeClass,
+    revision_source: AdaptiveScopeRevision,
+}
+```
+
+`env.constraints`、`env.safe_area`、`env.keyboard_inset`、`env.input` 等必须使用不同的 Environment Kind 和 revision source；禁止把整个环境对象作为一个粗粒度全局 revision。
+
+### 125.2 Adaptive Branch Lowering
+
+```viso
+match env.size_class {
+    SizeClass::Compact => {
+        CompactShell {}
+    },
+    _ => {
+        WideShell {}
+    },
+}
+```
+
+Lower 为普通 `ConditionalIr/MatchIr` + Environment Dependency。只有 `SizeClassRevision` 变化时才重新求值结构分支；原始 Window Width 改变但 SizeClass 未变，不得触发该结构 patch。
+
+如果结构变化，引发：
+
+```text
+STRUCTURE
+-> MEASURE
+-> LAYOUT
+-> affected PAINT/HIT_TEST/SEMANTICS
+```
+
+若只读取 `env.safe_area` 绑定 Padding，则禁止无条件标记 `STRUCTURE`。
+
+---
+
 ## 126. Keyed List Lowering
 
 ```viso
@@ -5020,27 +5431,15 @@ Shader Expression 的纯语义允许 Backend 重排，但不能改变可观察�
 
 ```text
 primary source span
-source origin kind
 definition origin
 template expansion callsite
 macro/schema generated origin
 inlined function origin
 ```
 
-其中 `source origin kind` 至少区分两种宿主来源，对应 §22.1 的三个入口：
-
-```text
-vs-file span      来自外部 .vs 文件（view!(path) / package source）
-rust-macro span   来自 Rust 宿主 ui! / component! 宏调用
-```
-
-- 来自 `ui!` / `component!` 的 span 必须能回指 Rust 源文件中的宏调用位置（Rust macro span），不能只指向展开后的中间产物；
-- 来自 `.vs` 的 span 指向 `.vs` 文件内的字符区间；
-- Hot Reload 只重编 `.vs` 时，`rust-macro` 来源的节点保持原 origin 不变。
-
 诊断展示：
 
-1. 用户最接近的 Primary Span（`.vs` 文件位置或 Rust 宏调用位置）；
+1. 用户最接近的 Primary Span；
 2. “由此 Template 展开”；
 3. “属性在此 Schema 声明”；
 4. 必要时展示 Native/Shader Backend Origin。
@@ -5068,7 +5467,7 @@ shader backend set
 
 ---
 
-# 第十四部分：AI Vibe Coding 合同
+# 第十五部分：AI Vibe Coding 合同
 
 ## 136. 目标
 
@@ -5092,17 +5491,16 @@ AI 不应依赖“看起来像对的”语法。标准循环：
 必须提供：
 
 ```text
-cargo viso fmt <paths>
-cargo viso check <package> --message-format=json
-cargo viso schema <symbol> --format=json
-cargo viso explain <error-code> --format=json
-cargo viso ast <file> --format=json
-cargo viso hir <file> --format=json
-cargo viso ir <file> --domain=ui|behavior|shader|system --format=json
-cargo viso migrate <file> --from=makepad-script --dry-run
-cargo viso test <package>
-cargo viso preview <component> --snapshot=<path>
-cargo viso game test <scenario> --frames=<n> --seed=<seed>
+viso fmt <paths>
+viso check [package] --json
+viso schema <symbol> --json
+viso explain <error-code> --json
+viso dump ast <file> --json
+viso dump hir <file> --json
+viso dump ui-ir|reactive-ir|behavior-ir|shader-ir|system-ir <file> --json
+viso test [package] --json
+viso snapshot <component> --output=<path>
+viso test game <scenario> --frames=<n> --seed=<seed> --json
 ```
 
 命令退出码：
@@ -5168,7 +5566,7 @@ cargo viso game test <scenario> --frames=<n> --seed=<seed>
 ## 139. Schema 查询
 
 ```bash
-cargo viso schema viso::widgets::Button --format=json
+viso schema viso::widgets::Button --json
 ```
 
 至少返回：
@@ -5236,11 +5634,13 @@ AI 应：
 5. 动态列表始终写 Key；
 6. 异步工作使用 Task/Resource；
 7. 状态变化依赖自动响应式，不手工全树 Render；
-8. 游戏逻辑使用 System/Trait；
-9. Shader 使用定宽类型；
-10. 每次改动后运行 Formatter 和 Check；
-11. 根据 JSON Fix 修复；
-12. 运行最小测试和 Snapshot。
+8. 响应式布局优先使用 `env.size_class` / `env.constraints`，不按设备名称硬编码；
+9. Safe Area、Keyboard、Foldable 使用 typed adaptive environment；
+10. 小型游戏可使用 `QuickGame`，多子系统游戏使用完整 System/Trait；
+11. Shader 使用定宽类型；
+12. 每次改动后运行 Formatter 和 Check；
+13. 根据 JSON Fix 修复；
+14. 运行最小测试和 Snapshot。
 
 AI 禁止：
 
@@ -5251,7 +5651,7 @@ AI 禁止：
 - 在 View 内执行副作用；
 - 用索引替代真实 Stable Key；
 - 在错误时显示空白替代 Last-good UI；
-- 修改 EBNF 却不升级 Language Version 和测试。
+- 修改 EBNF 却不同时更新规范、Parser Golden、Formatter 与测试。
 
 ---
 
@@ -5297,110 +5697,6 @@ AddTraitImpl
 
 ---
 
-# 第十五部分：从 Makepad 当前 Script 迁移
-
-## 144. 迁移原则
-
-Viso 的迁移输入是 Rust 源码中的 `script_mod!`、`ScriptVm`、`App::from_script_mod`、Widget/Native 注册和脚本 namespace 关系。迁移器必须先理解 Rust AST 与宏 token stream，再建立 Makepad Script Semantic Model，最后生成 Viso Rust/`.vs` 源码。禁止用正则全局替换 Assignment-family 符号。
-
-```text
-Rust AST / macro token stream
--> Makepad Script parser
--> Script/registration semantic graph
--> Migration IR
--> Viso Rust AST + Viso DSL AST
--> Formatter
--> Type/Schema/Effect Check
-```
-
-无法确定的语义必须生成结构化诊断，不得猜测。
-
----
-
-## 145. 迁移分类
-
-```text
-Auto      可以证明局部语义等价的机械转换
-Assisted  生成 Viso skeleton，并附精确诊断/TODO
-Manual    生命周期、所有权、绘制、事件或架构模型需要重新实现
-```
-
-`--apply` 只允许执行幂等、高置信度的 Auto rewrite。迁移工具的目标是可信分析与规划，不以制造运行时兼容层提高自动化率。
-
----
-
-## 146. 常见语义映射
-
-| Makepad 当前 Script / Runtime | Viso 1.0 |
-| --- | --- |
-| `property: value` | `property: expression;` |
-| `name := Type { ... }` | `node name: Type { ... }` |
-| `object +: { ... }` | 根据语义转换为 `style` / `override` / `replace` / Record Update；无法证明时 Assisted |
-| `#(rust_expr)` | 导入 Rust 生成的 Native/Component Schema |
-| `mod.widgets.*` / 注册顺序 | 编译期 import/module graph |
-| Script 持久变量 | Component/System `state`，由生命周期分析决定归属 |
-| 手工 render/update | Reactive Binding + targeted invalidation；命令式特殊绘制需 Manual |
-| `game.on_tick(...)` / 宿主 tick callback | `system` + `FixedUpdate` Profile |
-| 长期闭包捕获游戏状态 | `system state` 或明确 Runtime Handle |
-| 动态 Native method/property | Typed Native Schema；只有显式 dynamic surface 可以保留动态调用 |
-| Shader 数据布局约定 | Viso Shader Descriptor ABI |
-
----
-
-## 147. 迁移器必须恢复的依赖图
-
-迁移器需要分析：
-
-```text
-script_mod! 定义与调用
-ScriptVm 创建、传递与生命周期
-makepad_widgets::script_mod(vm) 等基础模块注册
-Struct::register_widget(vm) / Native 注册
-App::from_script_mod(...) 入口
-mod namespace 写入与读取
-组件/Shader/资源引用
-事件 callback / closure capture
-手工 render/update 调用
-```
-
-迁移结果必须能解释“为什么某一段被归类为 Auto/Assisted/Manual”。
-
----
-
-## 148. Runtime 兼容层禁止
-
-Viso production runtime 不包含：
-
-```text
-LegacyWidgetHost
-WidgetRef compatibility wrapper
-Makepad Cx adapter
-Makepad draw/event lifecycle adapter
-dual Makepad/Viso widget runtime
-```
-
-Makepad-aware 代码只存在于迁移工具、fixture、characterization test 和迁移文档中。原则是：**迁移语义、行为、算法、测试和性能基线，不迁移 Makepad runtime architecture。**
-
----
-
-## 149. 迁移 canary
-
-至少选择一个真实 Makepad crate 作为迁移 canary，并记录：
-
-```text
-script_mod! recognition rate
-ScriptVm/module graph recovery
-property/widget/shader mapping coverage
-Auto / Assisted / Manual 分布
-characterization-test parity
-performance parity / regression
-人工迁移时间
-```
-
-在 canary 数据出现之前，不对自动迁移比例做承诺。
-
----
-
 # 第十六部分：实现阶段与验收
 
 ## 151. 实现阶段
@@ -5418,7 +5714,7 @@ performance parity / regression
 - Formatter；
 - JSON Diagnostic。
 
-### P1：响应式和结构 UI
+### P1：响应式、自适应和结构 UI
 
 - Reactive Graph；
 - Transaction；
@@ -5426,9 +5722,13 @@ performance parity / regression
 - Conditional Preserve；
 - Slot；
 - UI Diff/Patch；
-- Last-good Hot Reload。
+- Last-good Hot Reload；
+- Typed Adaptive Environment；
+- LocalConstraints / AdaptiveScope / SizeClass；
+- SafeArea / KeyboardInset / DisplayFeature；
+- Adaptive branch dependency tests。
 
-### P2：行为与扩展
+### P2：行为、System 与 Game Core
 
 - Effect；
 - Task；
@@ -5436,18 +5736,20 @@ performance parity / regression
 - Trait/Generic；
 - System；
 - Typed Native Schema；
-- Capability。
+- Capability；
+- `FixedUpdate` / `FrameUpdate`；
+- Quick Game Profile；
+- Deterministic InputSnapshot / replay contract。
 
 ### P3：高级能力
 
 - Template/Part/Style/Theme；
 - Shader IR 和 ABI；
-- Game Profile；
-- Full Migration；
+- 多 System Game Profile / physics integration contract；
 - AI Structured Edit；
 - Cross-backend Validation。
 
-每一阶段都必须通过规范、Parser Golden、Formatter、迁移器和测试共同锁定已声明为 stable 的语义；任何 breaking 变更必须先更新规范与 ADR。
+每一阶段都必须通过规范、Parser Golden、Formatter、Schema Golden 和测试共同锁定已声明为 stable 的语义；任何语义变更必须先更新规范、诊断与测试。
 
 ---
 
@@ -5467,7 +5769,7 @@ performance parity / regression
 - Numeric Separator、Escape、Raw String Hash 数量的边界测试；
 - `=>` 只在 Match；
 - `<=>` 只在 Bind；
-- `child` 定向迁移错误；
+- `child` 作为非法 View 语法产生稳定诊断；
 - Resource 重复 Item；
 - 深度和 Token 数预算；
 - 未闭合字符串/注释/Block 恢复；
@@ -5521,12 +5823,20 @@ parse(format(parse(valid_x))) AST-equivalent
 - State Migration 成功/失败路径；
 - Native Panic 被隔离；
 - Capability Denied 不触发宿主调用；
-- Budget 超限可恢复。
+- Budget 超限可恢复；
+- Window Width 改变但 SizeClass 不变时，仅订阅 SizeClass 的结构分支不 Patch；
+- SizeClass 跨 breakpoint 时只 Patch 受影响 subtree；
+- Local AdaptiveScope 使用局部宽度而不是 Window Width；
+- SafeArea / KeyboardInset 改变只失效声明依赖者；
+- TextScale 改变触发必要 Measure/Layout/Semantics；
+- Adaptive branch preserve 保留声明可迁移的 focus/scroll/text state。
 
 ---
 
 ## 155. 游戏验收
 
+- QuickGame 和等价单 System FixedUpdate 在相同输入下得到相同 simulation result；
+- QuickGame 不依赖 UI frame callback 或 wall clock；
 - 固定 Seed + Input Tape 结果可重放；
 - 60Hz Tick 不依赖显示刷新率；
 - Catch-up Step 有上限；
@@ -5550,9 +5860,12 @@ parse(format(parse(valid_x))) AST-equivalent
 3. 添加 Keyed Todo List；
 4. 添加异步搜索 Resource；
 5. 创建带 Slot 的复用 Component；
-6. 编写一个 FixedUpdate Game System；
-7. 修复一个 Compiler Diagnostic；
-8. 执行 Hot Reload 并保留输入焦点。
+6. 用 `SizeClass` 实现手机/平板/窄桌面三种布局；
+7. 在局部侧栏中使用 `AdaptiveScope` 验证组件不依赖 Window Width；
+8. 编写一个 Quick Game；
+9. 把 Quick Game 中一个子系统拆成独立 FixedUpdate System；
+10. 修复一个 Compiler Diagnostic；
+11. 执行 Hot Reload 并保留输入焦点。
 
 记录：
 
@@ -5576,11 +5889,13 @@ parse(format(parse(valid_x))) AST-equivalent
 ```text
 100 个基础 UI Prompt
 100 个状态/列表 Prompt
+50 个 Adaptive/Responsive Prompt
+50 个 SafeArea/Keyboard/Foldable Prompt
 50 个异步 Resource Prompt
 50 个组件抽取 Prompt
 50 个 Shader Prompt
-50 个游戏逻辑 Prompt
-50 个迁移 Prompt
+50 个 Quick Game Prompt
+50 个多 System 游戏逻辑 Prompt
 ```
 
 指标：
@@ -5647,20 +5962,9 @@ Trivia 不进入普通 Production，但保留在 Lossless CST。
 
 ## A.2 Compilation Unit 和 Declaration
 
-Parser 有三个规范入口（见 §22.1），共享全部后续语义：
-
 ```ebnf
-(* view!(path) / package source *)
 CompilationUnit
     ::= ImportDecl* TopLevelDecl* END_OF_FILE
-
-(* ui! { ... } body — 见 §A.8 ViewStructureItem *)
-ViewFragment
-    ::= ViewStructureItem* END_OF_FILE
-
-(* component! { ... } body *)
-ComponentEntry
-    ::= ImportDecl* ComponentDecl END_OF_FILE
 
 ModulePath
     ::= IDENT ( "::" IDENT )*
@@ -6599,10 +6903,10 @@ RecordPatternField
 - 简单语句一律有分号；
 - `=>` 只属于 Match；
 - `<=>` 只属于 Two-way Binding；
-- `:` 只承载规范定义的类型/字段/Property Binding 语义，不承载 Makepad Assignment-family 的隐藏 apply 语义；
+- `:` 只承载规范定义的类型/字段/Property Binding 语义，不承载隐藏的 apply/merge 语义；
 - `:=`、`+:`、`<:`、`>:`、`^:` 不属于 Viso 1.0；
 - View `for` 强制 Key；Behavior `for` 不允许 Key；
-- `Float` 不作为兼容别名保留，以避免Makepad 代码悄悄编译成错误精度。
+- `Float` 不作为模糊兼容别名；需要明确使用 `F32` / `F64`。
 
 ---
 
@@ -6701,7 +7005,7 @@ RecordPatternField
    - Formatter round-trip 测试；
    - 必要的 JSON Diagnostic Golden Test。
 8. 每个功能 PR 要小且可回滚，不得一次全库重写。
-9. 修改语法前先更新规范、版本、Parser Golden 和迁移器；未经批准不得偏离规范。
+9. 修改语法前先更新规范、Parser Golden、Formatter、Schema Golden 和测试；未经批准不得偏离规范。
 10. UI 状态更新必须通过 Transaction 和 Reactive Graph，不得要求用户手工 render 全树。
 11. 动态 View List 强制 Stable Key；Branch Cache 使用 Preserve Literal，二者不得共用实现入口。
 12. Native 调用必须通过 Typed Schema、Capability、Ownership 和 Thread Domain 检查。
@@ -6802,7 +7106,7 @@ Viso 的灵活性来自：
 
 ### E.4 游戏能力的关键判断
 
-Viso 可以承载 Makepad 式游戏脚本的关键原因是：
+Viso 可以同时承载快速游戏原型与结构化 System 游戏逻辑的关键原因是：
 
 - Behavior Language 有控制流、Pattern、Closure 和 Typed Call；
 - System 有长期 State；
@@ -6818,9 +7122,9 @@ Viso 可以承载 Makepad 式游戏脚本的关键原因是：
 
 # 附录 F：资料与证据说明
 
-## F.1 Makepad 当前 Script 对照依据
+## F.1 Makepad 外部参考依据
 
-本文对 Makepad 的对照仅基于当前 `script_mod!` / `ScriptVm` 路径及公开源码中可观察到的 tokenizer、parser、注册、namespace、游戏脚本和 Shader/Widget 使用方式。
+本文把 Makepad 当前公开源码中可观察到的 Script、实时编辑、游戏 authoring、Shader/Widget 与工具链经验作为外部参考。
 
 主要源码入口：
 
@@ -6831,7 +7135,7 @@ Viso 可以承载 Makepad 式游戏脚本的关键原因是：
 ## F.2 证据边界
 
 - 本文没有声称 Makepad 官方发布过一份当前 Script 的完整 EBNF；
-- Makepad Script 的文法/语义描述仅用于迁移与架构对照；
+- Makepad Script 的文法/语义描述仅用于外部实现经验参考；
 - Viso EBNF 是 Viso DSL 1.0 Draft 的 Parser 合同；
 - Game Profile 示例证明的是语言承载能力，不代表物理、ECS、音频和资产系统已经自动实现；
 - 性能结论必须由 Viso 实现后的 Benchmark 验证。

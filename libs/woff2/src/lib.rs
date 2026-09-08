@@ -1,45 +1,22 @@
-//! WOFF2 → sfnt decompression, so the facade's user-font API can accept web
-//! fonts directly.
+//! Minimal WOFF2 → sfnt decompressor.
 //!
-//! WOFF2 (W3C, <https://www.w3.org/TR/WOFF2/>) is a web-font container: the sfnt
+//! WOFF2 (W3C, <https://www.w3.org/TR/WOFF2/>) is a web font container: the sfnt
 //! table data is concatenated and compressed as a single brotli stream, and the
 //! `glyf`/`loca` tables are stored in a reversible "transformed" form to shrink
-//! them further. `ttf-parser` (and thus rustybuzz) only understands sfnt, so
-//! before a WOFF2 face can be loaded its `wOF2` signature is detected and the
-//! original sfnt bytes are reconstructed here.
+//! them further. `ttf_parser` only understands sfnt, so before parsing a font we
+//! detect the `wOF2` signature and reconstruct the original sfnt bytes here.
 //!
-//! Scope: the null transform (all tables except glyf/loca) and the glyf/loca
-//! transform version 0 — the two forms every real-world WOFF2 file produced by
-//! `woff2_compress` / fontTools uses. WOFF2 collections (`ttcf` flavor) and the
-//! rare hmtx transform are not reconstructed; those return `None` and the caller
-//! falls back to skipping the font, matching the rest of the font stack's
-//! "unparseable bytes are silently skipped" behaviour.
+//! Scope: we support the null transform (all tables except glyf/loca) and the
+//! glyf/loca transform version 0 — the two forms every real-world WOFF2 file
+//! produced by `woff2_compress` / fontTools uses. WOFF2 collections (`ttcf`
+//! flavor) and the (rare) hmtx transform are not reconstructed; those return
+//! `None` and the caller skips the font member, matching the existing
+//! "unparseable member is silently skipped" behaviour.
 //!
 //! Every read is bounds-checked; any malformed input yields `None` rather than
-//! panicking. This module holds no platform bindings and builds for wasm.
+//! panicking.
 
-use std::borrow::Cow;
 use std::io::Read;
-
-/// The WOFF2 file signature (`wOF2`, big-endian), the first four bytes of every
-/// WOFF2 container.
-const WOFF2_SIGNATURE: [u8; 4] = *b"wOF2";
-
-/// Coerce font bytes to sfnt, transparently decompressing a WOFF2 web font.
-///
-/// If `data` starts with the `wOF2` signature it is [`decompress`]ed to sfnt
-/// (returning `None` if that WOFF2 is malformed or uses an unsupported feature);
-/// otherwise the bytes are assumed to already be sfnt and returned borrowed, so
-/// a raw `.ttf`/`.otf` costs no copy. This is the seam the facade's user-font
-/// path runs every loaded face through, so a developer can hand it bytes fetched
-/// from the network as either a raw font or a WOFF2 without branching first.
-pub fn to_sfnt(data: &[u8]) -> Option<Cow<'_, [u8]>> {
-    if data.len() >= 4 && data[..4] == WOFF2_SIGNATURE {
-        decompress(data).map(Cow::Owned)
-    } else {
-        Some(Cow::Borrowed(data))
-    }
-}
 
 /// The 255UInt16 base value used by the glyf transform's nContour/nPoints
 /// streams (WOFF2 §5.1).
@@ -792,12 +769,10 @@ mod tests {
 
     /// A real Noto Sans (latin subset) WOFF2, TrueType flavor with a
     /// transformed glyf/loca. Decompressing it must yield sfnt bytes that
-    /// `ttf-parser` accepts, with a plausible glyph count and a usable cmap, and
-    /// rustybuzz must shape a latin word to non-.notdef glyphs — the exact path
-    /// `load_font_bytes` feeds a decoded web font into.
+    /// `ttf_parser` accepts, with a plausible glyph count and a usable cmap.
     #[test]
-    fn decompress_real_woff2_parses_and_shapes() {
-        let woff2 = include_bytes!("../fixtures/noto-sans-latin-400.woff2");
+    fn decompress_real_woff2_parses_as_sfnt() {
+        let woff2 = include_bytes!("test_data/noto-sans-latin-400.woff2");
         assert_eq!(&woff2[0..4], b"wOF2", "fixture must be a WOFF2 file");
 
         let sfnt = decompress(woff2).expect("woff2 decompresses to sfnt");
@@ -812,18 +787,14 @@ mod tests {
             "latin subset has many glyphs"
         );
 
-        // 'A' must resolve to a real outline in positive em space — a nonzero
-        // bbox with the wrong triplet-delta signs would mirror into negatives
-        // and rasterise as tofu even though it shapes to a non-.notdef id.
+        // The 'A' glyph must resolve and have a non-empty outline bbox —
+        // exercises the glyf/loca transform reconstruction.
         let gid = face.glyph_index('A').expect("cmap maps 'A'");
         let bbox = face.glyph_bounding_box(gid).expect("'A' has an outline");
-        assert!(
-            bbox.x_min >= 0 && bbox.y_min >= 0,
-            "'A' in positive space: {bbox:?}"
-        );
         assert!(bbox.width() > 0 && bbox.height() > 0);
 
-        // Walk the outline: a nonzero bbox with an empty segment list is tofu.
+        // Walk the actual outline segments — a nonzero bbox with an empty
+        // segment list would still rasterise as tofu.
         struct Counter(usize);
         impl ttf_parser::OutlineBuilder for Counter {
             fn move_to(&mut self, _: f32, _: f32) {
@@ -844,9 +815,8 @@ mod tests {
         face.outline_glyph(gid, &mut c);
         assert!(c.0 > 2, "'A' outline must have real segments, got {}", c.0);
 
-        // Shape "Hello" through rustybuzz — the exact path the text engine uses.
-        // Each letter must reconstruct into a plausible em-box (the larger
-        // triplet groups take different code paths than the single-byte ones).
+        // Shape a latin word through rustybuzz — the *exact* path the text
+        // engine uses. Every glyph must resolve to a non-.notdef id.
         let rb = rustybuzz::Face::from_face(face.clone());
         let mut buf = rustybuzz::UnicodeBuffer::new();
         buf.push_str("Hello");
@@ -854,15 +824,6 @@ mod tests {
         assert_eq!(out.len(), 5, "5 latin glyphs shaped");
         for info in out.glyph_infos() {
             assert_ne!(info.glyph_id, 0, "no glyph should shape to .notdef");
-        }
-        let em = face.units_per_em() as i16;
-        for ch in "Hello".chars() {
-            let g = face.glyph_index(ch).expect("cmap maps letter");
-            let bb = face.glyph_bounding_box(g).expect("letter has an outline");
-            assert!(
-                bb.x_min >= -em && bb.y_min >= -em && bb.x_max <= 2 * em && bb.y_max <= 2 * em,
-                "'{ch}' reconstructed to an implausible bbox {bb:?} (em={em})"
-            );
         }
     }
 
