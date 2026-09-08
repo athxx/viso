@@ -1012,7 +1012,12 @@ spanning 放置 + auto-flow;ADR 0009 明列六项高级能力全未做。落 `cr
       落 viso-text(§3.5/§3.7),facade 从不整形。签名改动顺带穿 layout(`PositionedGlyph` 加 `font`,按 primary 取行度量)
       + `TextSystem::prepare`(逐 glyph 按 `g.font` 光栅,atlas key 已含 font 无改)。加 unicode-bidi/unicode-script 依赖。
       验证:5 新测(空链→空、无回退→.notdef、回退递归命中 tail face、LTR 快路径 cluster、单 face 全归 primary)+ 既有全绿。
-- [ ] **A3 `text: layout over itemized runs`** —— 排版消费分项 run(不再 `split('\n')` 单 face);`PositionedGlyph` 加 `font`。
+- [x] **A3 `text: layout over itemized runs`** —— 排版消费分项 run:`layout` 每行先 `shape(store, line)` 拿到分项
+      glyph(可跨 face),行垂直度量**每行独立**——从 primary face 的 ascent/descent/line-gap 播种,再对该行落到的每个
+      face 取 max ascent / min(最深)descent / max line-gap 扩张(镜像 makepad layouter:高的回退 face 如 emoji/CJK 比
+      primary 高,只留 primary ascent 会切顶)。基线推进 = 上行 descent 深度 + 两行 line-gap 取大 + 本行 ascent,故拉入
+      高 face 的行把下一行相应下推。`PositionedGlyph.font` A2 已加,单 face→链整形 A2 已通;本节只补每行度量扩张。
+      验证:2 新测(首基线=primary ascent、单 face 行距=face line height)+ 既有 multiline 步进/pen 推进全绿(16 单测)。
 - [ ] **A4 `text: system font provider`** —— viso-text `SystemFontProvider` trait + 负缓存(attempted-set 落此);
       facade `system_fonts.rs` CoreText 实现;按脚本/emoji 样本串动态回退。
 - [ ] **A5 `text: prepare over chain + dpi`** —— glyph 准备遍历回退链;修 `crates/viso/src/lib.rs:552` dpi 硬编码。
