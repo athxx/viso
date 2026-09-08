@@ -81,9 +81,8 @@ impl TextShaper {
     ///
     /// This is the internal seam the facade's public user-font API and the tests
     /// build on; it does not fetch anything, only registers already-in-hand bytes.
-    /// The public init-time font API lands next and will drive it from non-test
-    /// code — until then only the tests exercise it, hence the `allow`.
-    #[cfg_attr(not(test), allow(dead_code))]
+    /// The driver drives it from `WindowState::open` for each face the app
+    /// registered through [`AppCx::load_font`](viso_ui::context::AppCx::load_font).
     pub(crate) fn load_font(&mut self, bytes: impl Into<Box<[u8]>>, index: u32) -> Option<FontId> {
         let id = self.text.load_font(bytes, index)?;
         self.font.get_or_insert(id);

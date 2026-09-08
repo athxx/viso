@@ -1053,7 +1053,9 @@ spanning 放置 + auto-flow;ADR 0009 明列六项高级能力全未做。落 `cr
       `CoreTextColorRaster`(预乘 RGBA,BGRA→RGBA swizzle 不 un-premul);`TextShaper` 持一个并作 `Some(..)` 传入
       `prepare`。`load_font` 内部缝供 C2 公开 API + 测试注入。三个 `text_content.rs` 单测改经 `load_font` 注入
       `DejaVuSans-subset.ttf`(纯测试 fixture,非默认)。
-- [ ] **C2 `viso: user font API (bytes / path)`** —— facade 公开 init 期 API 加载用户字体(字节 / 磁盘路径),入 chain 居前。
+- [x] **C2 `viso: user font API (bytes / path)`** —— facade 公开 init 期 API 加载用户字体(字节 / 磁盘路径),入 chain 居前。
+      `AppCx::load_font(bytes)` / `load_font_file(path)` 记录到 session-scoped 字节表,`AppDriver` 于 `A::new` 后 drain,
+      每个 `WindowState::open`(启动 + 延迟 `window()`)把它们按序装入新 `TextShaper` 居首,先于系统回退。
 - [ ] **C3 `viso: WOFF2 decode + load capability`** —— vendor `makepad/libs/woff2`;公开 `load_font_bytes`(sfnt 直载,
       `wOF2` 签名则先 `decompress` 再载);只做库不接网络。
 
