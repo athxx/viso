@@ -23,7 +23,7 @@
 
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::Ordering;
 
 use viso::gpu::{GpuBackend, HeadlessRaster, RawWindowHandle};
 use viso::render::{FrameStats, Rect, Renderer, Rgba};
@@ -206,8 +206,44 @@ fn icon_derives_a_group_semantics_node() {
 /// Counts heap allocations while `ARMED`; off by default so the harness's own
 /// allocations are never counted. Mirrors `image_widget.rs`.
 struct CountingAlloc;
-static ALLOCS: AtomicUsize = AtomicUsize::new(0);
-static ARMED: AtomicBool = AtomicBool::new(false);
+// Thread-local counters: cargo runs the `#[test]`s in this binary in parallel
+// on separate threads, all sharing this one process-global allocator. A
+// process-global armed flag / counter would let a sibling test's allocations,
+// happening on another thread while this test is inside its armed measurement
+// window, race into this test's count and make the steady-state assertion
+// flaky. Scoping arm state and the count to the measuring thread makes each
+// test see only its own allocations — the frame path under test is
+// synchronous, so every allocation it performs is on the arming thread. The
+// `.load`/`.store`/`.fetch_add` API and its `Ordering` argument are kept so the
+// call sites and the `GlobalAlloc` impl below are unchanged (the ordering is
+// irrelevant for thread-local state and is ignored).
+thread_local! {
+    static ALLOCS_CELL: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    static ARMED_CELL: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+struct TlsBool;
+struct TlsUsize;
+impl TlsBool {
+    fn load(&self, _: Ordering) -> bool {
+        ARMED_CELL.with(std::cell::Cell::get)
+    }
+    fn store(&self, v: bool, _: Ordering) {
+        ARMED_CELL.with(|c| c.set(v));
+    }
+}
+impl TlsUsize {
+    fn load(&self, _: Ordering) -> usize {
+        ALLOCS_CELL.with(std::cell::Cell::get)
+    }
+    fn store(&self, v: usize, _: Ordering) {
+        ALLOCS_CELL.with(|c| c.set(v));
+    }
+    fn fetch_add(&self, v: usize, _: Ordering) {
+        ALLOCS_CELL.with(|c| c.set(c.get() + v));
+    }
+}
+static ALLOCS: TlsUsize = TlsUsize;
+static ARMED: TlsBool = TlsBool;
 
 // SAFETY: forwards every call to the system allocator unchanged; the only added
 // behavior is a relaxed counter increment on allocation while armed.
