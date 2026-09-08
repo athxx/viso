@@ -22,7 +22,17 @@ use crate::content::Content;
 use crate::node::NodeId;
 use viso_render::{
     GlyphInstanceData, GlyphRunDraw, ImageDraw, LayerClip, Path, PathCmd, Point, Primitive, Quad,
-    Rect,
+    Rect, Rgba,
+};
+
+/// The opaque white tint that passes a premultiplied color-atlas texel through
+/// the Image shader unchanged (`texel * float4(1,1,1,1)`), so a color-bitmap
+/// glyph paints exactly as its emoji artwork stores it.
+const WHITE: Rgba = Rgba {
+    r: 1.0,
+    g: 1.0,
+    b: 1.0,
+    a: 1.0,
 };
 
 /// Emit primitives for the subtree rooted at `root` into `out`, in pre-order.
@@ -127,6 +137,8 @@ fn paint_content(content: &Content, world: Rect, out: &mut Vec<Primitive>) {
         Content::Text {
             glyphs,
             atlas,
+            color_glyphs,
+            color_atlas,
             color,
             ..
         } => {
@@ -147,6 +159,26 @@ fn paint_content(content: &Content, world: Rect, out: &mut Vec<Primitive>) {
                 atlas: *atlas,
                 color: *color,
             }));
+            // Color-bitmap glyphs (emoji) reuse the Image pipeline: each is one
+            // textured quad sampling the RGBA color atlas at its glyph sub-rect.
+            // A white, opaque tint leaves the premultiplied emoji texel unchanged
+            // (`texel * float4(1,1,1,1)`), so the color glyph paints as authored.
+            // `color_atlas` is `Some` whenever `color_glyphs` is non-empty.
+            if let Some(color_atlas) = color_atlas {
+                for g in color_glyphs {
+                    out.push(Primitive::Image(ImageDraw {
+                        rect: Rect {
+                            x: g.rect.x + ox,
+                            y: g.rect.y + oy,
+                            w: g.rect.w,
+                            h: g.rect.h,
+                        },
+                        uv: g.uv,
+                        tint: WHITE,
+                        texture: *color_atlas,
+                    }));
+                }
+            }
         }
         Content::Image {
             texture, uv, tint, ..
@@ -517,6 +549,197 @@ mod tests {
         assert_eq!(
             path.cmds[1],
             PathCmd::LineTo(Point::new(path_world.x + 5.0, path_world.y + 5.0))
+        );
+    }
+
+    #[test]
+    fn color_glyphs_lower_to_white_tinted_images() {
+        use crate::content::Content;
+        use crate::layout::Vec2;
+        use viso_render::{GlyphInstanceData, TextureId};
+
+        // A text run mixing one SDF outline glyph and one color-bitmap glyph.
+        // The SDF glyph must still emit the single GlyphRun; the color glyph must
+        // additionally lower to one white-tinted Image sampling the color atlas,
+        // both shifted to the node's world origin.
+        let mut store = NodeStore::new();
+        let mut text_id = None;
+        let root = {
+            let mut cx = BuildCx::new(&mut store);
+            cx.flex(FlexStyle::default(), |cx| {
+                text_id = Some(
+                    cx.leaf(LeafStyle {
+                        size: Size::fixed(40.0, 20.0),
+                        style: BoxStyle::NONE,
+                    })
+                    .id(),
+                );
+            });
+            cx.root().unwrap()
+        };
+        let text_id = text_id.unwrap();
+
+        store.set_content_payload(
+            text_id,
+            Content::Text {
+                glyphs: vec![GlyphInstanceData {
+                    rect: Rect {
+                        x: 1.0,
+                        y: 2.0,
+                        w: 8.0,
+                        h: 10.0,
+                    },
+                    uv: Rect {
+                        x: 0.0,
+                        y: 0.0,
+                        w: 0.1,
+                        h: 0.1,
+                    },
+                    px_range: 2.0,
+                }],
+                atlas: TextureId(3),
+                color_glyphs: vec![GlyphInstanceData {
+                    rect: Rect {
+                        x: 12.0,
+                        y: 4.0,
+                        w: 16.0,
+                        h: 16.0,
+                    },
+                    uv: Rect {
+                        x: 0.25,
+                        y: 0.5,
+                        w: 0.125,
+                        h: 0.125,
+                    },
+                    // A color glyph carries no SDF decode factor; paint ignores it.
+                    px_range: 0.0,
+                }],
+                color_atlas: Some(TextureId(5)),
+                color: RED,
+                natural: Vec2 { x: 40.0, y: 20.0 },
+                baseline: 16.0,
+            },
+        );
+
+        let mut scratch = Vec::new();
+        store.layout(
+            root,
+            Rect {
+                x: 0.0,
+                y: 0.0,
+                w: 200.0,
+                h: 100.0,
+            },
+            &mut scratch,
+        );
+
+        let mut out = Vec::new();
+        paint_tree(&store, root, &mut out);
+        let world = store.world(text_id);
+
+        // The SDF run still lands once, sampling the R8 atlas.
+        let run = out
+            .iter()
+            .find_map(|p| match p {
+                Primitive::GlyphRun(r) => Some(r),
+                _ => None,
+            })
+            .expect("the outline run");
+        assert_eq!(run.atlas, TextureId(3));
+        assert_eq!(run.glyphs.len(), 1);
+
+        // The one color glyph lowers to one Image: white opaque tint (passes the
+        // premultiplied emoji texel through unchanged), the color atlas texture,
+        // its UV sub-rect verbatim, and its rect shifted to the world origin.
+        let images: Vec<_> = out
+            .iter()
+            .filter_map(|p| match p {
+                Primitive::Image(i) => Some(i),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(images.len(), 1, "one color glyph → one image quad");
+        let img = images[0];
+        assert_eq!(img.texture, TextureId(5));
+        assert_eq!(img.tint, WHITE);
+        assert_eq!(img.uv.x, 0.25);
+        assert_eq!(img.uv.y, 0.5);
+        assert_eq!(img.uv.w, 0.125);
+        assert_eq!(img.uv.h, 0.125);
+        assert_eq!(img.rect.x, world.x + 12.0);
+        assert_eq!(img.rect.y, world.y + 4.0);
+        assert_eq!(img.rect.w, 16.0);
+        assert_eq!(img.rect.h, 16.0);
+    }
+
+    #[test]
+    fn pure_text_run_emits_no_image() {
+        use crate::content::Content;
+        use crate::layout::Vec2;
+        use viso_render::{GlyphInstanceData, TextureId};
+
+        // A pure-text run (empty color_glyphs, no color atlas) must not emit any
+        // Image primitive — the color path costs nothing when unused.
+        let mut store = NodeStore::new();
+        let mut text_id = None;
+        let root = {
+            let mut cx = BuildCx::new(&mut store);
+            cx.flex(FlexStyle::default(), |cx| {
+                text_id = Some(
+                    cx.leaf(LeafStyle {
+                        size: Size::fixed(20.0, 20.0),
+                        style: BoxStyle::NONE,
+                    })
+                    .id(),
+                );
+            });
+            cx.root().unwrap()
+        };
+        let text_id = text_id.unwrap();
+        store.set_content_payload(
+            text_id,
+            Content::Text {
+                glyphs: vec![GlyphInstanceData {
+                    rect: Rect {
+                        x: 0.0,
+                        y: 0.0,
+                        w: 8.0,
+                        h: 10.0,
+                    },
+                    uv: Rect {
+                        x: 0.0,
+                        y: 0.0,
+                        w: 0.1,
+                        h: 0.1,
+                    },
+                    px_range: 2.0,
+                }],
+                atlas: TextureId(3),
+                color_glyphs: Vec::new(),
+                color_atlas: None,
+                color: RED,
+                natural: Vec2 { x: 20.0, y: 20.0 },
+                baseline: 16.0,
+            },
+        );
+
+        let mut scratch = Vec::new();
+        store.layout(
+            root,
+            Rect {
+                x: 0.0,
+                y: 0.0,
+                w: 100.0,
+                h: 100.0,
+            },
+            &mut scratch,
+        );
+
+        let mut out = Vec::new();
+        paint_tree(&store, root, &mut out);
+        assert!(
+            !out.iter().any(|p| matches!(p, Primitive::Image(_))),
+            "a pure-text run emits no image quad"
         );
     }
 
