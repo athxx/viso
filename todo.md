@@ -1060,6 +1060,9 @@ spanning 放置 + auto-flow;ADR 0009 明列六项高级能力全未做。落 `cr
       + `to_sfnt`);`load_font` 在 facade 消费点经 `to_sfnt` 自动探测 `wOF2` 签名先解压再载(sfnt 原样透传),
       公开面 `pub mod woff2` 供开发者对自取字节直接调用;只做库不接网络。
 
-**Hello World(末节)**:`examples/hello_world/main.rs` 居中 `label("Hello 世界 สวัสดี 🎉").font_size(48.)`,全走系统字体。
+- [x] **Hello World(末节)**:`examples/hello_world/src/main.rs` 改为居中 `label("Hello 世界 สวัสดี 🎉").font_size(48.)`,
+      全走系统字体(无内嵌)。双 cross-center 嵌套(外 Row + 内 Column 各 `Align::Center`,flex 引擎只有 cross 居中)实现两轴居中。
+      验证:macOS smoke `hello_world_shapes_all_scripts_from_system_fonts`——空 chain 经 provider 拉系统面,英/中/泰出轮廓 SDF、
+      emoji 出 RGBA color glyph,宽单行 `natural.x > 3·natural.y`;真机 CoreText 路径。
 
 **ADR(git add -f)**:0024 已被 file-tree 占用 → 文本 ADR 顺延为 **0025 Text subsystem ownership**(external-backed 算法 + 缓存边界)与 **0026 System-font provider + color-glyph seam**(trait 在 viso-text、CoreText 实现在 facade;含彩色光栅缝)。彩色 emoji GPU ADR 不需。

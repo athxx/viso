@@ -361,4 +361,65 @@ mod tests {
             "logical extent is dpi-invariant within quantization: {n1:?} vs {n2:?}"
         );
     }
+
+    /// End-to-end proof of the Hello World greeting on a real macOS system: with
+    /// no bundled font, an empty shaper resolves the mixed English / Chinese /
+    /// Thai / emoji run entirely from system faces. English seeds the primary UI
+    /// face, the CJK and Thai spans pull covering fallbacks, and the emoji
+    /// rasterizes through CoreText into the color atlas. A pass means every
+    /// script produced outline glyphs (a non-empty SDF run whose extent spans a
+    /// wide multi-script line) and the emoji produced a color glyph on its own
+    /// RGBA atlas — the exact pipeline the example drives.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn hello_world_shapes_all_scripts_from_system_fonts() {
+        let mut gpu = HeadlessRaster::new();
+        let _ = gpu.create_surface(RawWindowHandle::Headless, 512, 128);
+
+        // Empty chain: no fixture loaded, so the primary and every fallback come
+        // from the system provider — exactly what the example relies on.
+        let mut shaper = TextShaper::new();
+        let content = shaper.shape(
+            &mut gpu,
+            &TextRequest {
+                text: "Hello 世界 สวัสดี 🎉".to_string(),
+                font_size: 48.0,
+                color: WHITE,
+            },
+            2.0,
+        );
+
+        match content {
+            Content::Text {
+                glyphs,
+                color_glyphs,
+                color_atlas,
+                natural,
+                ..
+            } => {
+                // Outline glyphs for the Latin, Han, and Thai spans. The run is a
+                // wide single line, so its natural width dwarfs its height — a
+                // coarse guard that the three scripts all shaped rather than one
+                // covering face swallowing the rest as tofu.
+                assert!(
+                    !glyphs.is_empty(),
+                    "the multi-script run shapes outline glyphs from system faces"
+                );
+                assert!(
+                    natural.x > natural.y * 3.0,
+                    "a mixed one-line run is far wider than tall, got {natural:?}"
+                );
+                // The emoji rasterized to color on its own RGBA atlas.
+                assert!(
+                    !color_glyphs.is_empty(),
+                    "the emoji shapes into a color glyph"
+                );
+                assert!(
+                    color_atlas.is_some(),
+                    "a color glyph allocates the RGBA color atlas"
+                );
+            }
+            _ => panic!("the greeting shapes into Content::Text"),
+        }
+    }
 }
