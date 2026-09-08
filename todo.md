@@ -1030,8 +1030,9 @@ spanning 放置 + auto-flow;ADR 0009 明列六项高级能力全未做。落 `cr
 
 **Phase B —— 彩色 emoji(复用 Image 管线)**
 
-- [ ] **B1 `text: color bitmap raster`** —— 加 zune-png;`ttf-parser::glyph_raster_image` 取 PNG → RGBA 预乘;
-      size-bucket 量化;不做 COLR/SVG。
+- [x] **B1 `text: color bitmap raster`** —— 加 zune-png;`ttf-parser::glyph_raster_image` 取 PNG(+CBDT premul BGRA)
+      → RGBA 预乘,带 ppem/origin 放置元数据;不做 COLR/SVG。size-bucket 量化留给 B2 图集层(B1 只解码到原生尺寸)。
+      落 `crates/text/src/color_raster.rs`(`ColorGlyph` + `rasterize_color_glyph`),单测覆盖 premul 数学 + RGBA/RGB PNG 往返 + 损坏 PNG 拒绝。
 - [ ] **B2 `text: rgba color atlas`** —— 第二张 `Rgba8Unorm` 图集;`GlyphKey` 加 `kind`。
 - [ ] **B3 `text: per-glyph kind in prepare`** —— prepare 输出每 glyph 的 kind(SDF vs ColorBitmap)。
 - [ ] **B4 `viso: two textures + color glyph run`** —— facade 建两张纹理(R8 SDF + RGBA color);`Content` 携彩色 glyph run。
