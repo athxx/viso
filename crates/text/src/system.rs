@@ -167,6 +167,11 @@ impl TextSystem {
     /// Glyphs with no outline (whitespace) contribute layout advance but no
     /// quad. Handles multi-line text (hard `\n` breaks) via [`layout`].
     ///
+    /// `max_width_px` is the available content width for soft wrapping, forwarded
+    /// to [`layout`]: `Some(w)` wraps each hard line into rows no wider than `w`;
+    /// `None` disables soft wrapping (only hard `\n` breaks split the text). The
+    /// layout engine passes `None` until measure-time constraint downflow lands.
+    ///
     /// `color_raster` is the platform color-emoji rasterizer used for faces whose
     /// strikes were stripped at load ([`FontFace::is_color_emoji`]); pass `None`
     /// on platforms with no binding (wasm), where such faces yield no color glyph
@@ -178,11 +183,12 @@ impl TextSystem {
         font: FontId,
         text: &str,
         font_size_px: f32,
+        max_width_px: Option<f32>,
         dpi_factor: f32,
         color_raster: Option<&dyn ColorGlyphRasterizer>,
     ) -> Vec<GlyphQuad> {
         let dpx_per_em = font_size_px * dpi_factor;
-        let positioned = layout(&self.store, font, text, font_size_px);
+        let positioned = layout(&self.store, font, text, font_size_px, max_width_px);
         // Split borrows: `store` (shared) feeds each glyph's face while the two
         // atlases (unique) pack — taking them as separate fields keeps the
         // borrow checker happy.

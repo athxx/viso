@@ -1095,10 +1095,34 @@ spanning 放置 + auto-flow;ADR 0009 明列六项高级能力全未做。落 `cr
 > todo 随做随标、与源码同 commit(不独立提)。动手前先读 makepad 对应缓存实现([[viso-read-makepad-first]]),
 > 缺口/更优处按 Viso 方案走([[viso-diverge-from-makepad]])。
 
-- [ ] **D1 `text: width-aware line breaking`** —— §37.11「可用宽度未变则不重新 line-break」的前置:今天 layout.rs:83 只
-      `text.split('\n')` 硬断行,`layout()` 连可用宽度参数都不收。补按可用宽度自动换行(word/grapheme break;复用 proven
-      unicode line-break primitive,§37.13 不自研标准算法);`layout(store, text, max_width)` 带宽度约束。这是 D2 缓存
-      失效键(宽度)的语义前提,故排最前。
+- [x] **D1 `text: width-aware line breaking`(纯 text 层能力,不碰 measure 管线)** —— §37.11「可用宽度未变则不重新
+      line-break」的前置:今天 layout.rs:83 只 `text.split('\n')` 硬断行,`layout()` 连可用宽度参数都不收。补按可用宽度
+      自动换行(word/grapheme/forced-overflow 三级回退,参照 makepad layouter 语义;复用 proven unicode 分词 primitive,
+      §37.13 不自研标准算法);`layout(store, font, text, size, max_width: Option<f32>)` 收可选宽度约束,`None` 时退化为
+      今天的硬断行(零行为变化)。`TextSystem::prepare` / facade `shape` 相应加 `max_width: Option<f32>` 直穿,调用点先
+      传 `None`。**范围严格限定在 text crate + facade 直穿**,可完整 headless 验证(给定宽度→行数/行宽/断点断言),
+      **不引入 measure 期约束下行**。这是 D2 缓存失效键(宽度)的语义前提,也是 DL1(measure 接线)的被消费能力,故排最前。
+      - **DONE 2026-09-09**:D1a `linebreak.rs`(`word_break_offsets`/`grapheme_break_offsets`,复用 unicode-segmentation,
+        标点粘连规则,6 单测);D1b `layout.rs` 全量重写——整行一次 shape 量出 per-cluster advance 前缀和(bidi-run-order
+        无关),按前缀和选行字节边界,每接受行再对其字节区间 shape 一次做摆放(全段每字节 measure 一次 + placement 一次,
+        绝不 per-candidate reshape;比 makepad 的 per-segment shape 且 wrapping 无 bidi 更优);word→grapheme→force-place
+        三级回退保证终止;`LineMetrics` 按行 seed/expand 跨 fallback face 取 max ascent/min descent/max line-gap。D1c
+        `prepare`/facade `shape` 加 `max_width_px: Option<f32>` 直穿,调用点(text_content.rs / render/lib.rs)传 `None`。
+        验证包:`tests/text_system.rs` 集成测试(宽度→行数/行宽≤限/断点在词界/回退/每字形保全,共 34 通过)+ 6 linebreak
+        单测 + `benches/wrap_line.rs`(criterion microbench:24 词段落 no_wrap≈15.6µs vs wrap≈98µs;`CountingAlloc` 断言
+        wrap 分配 ≤ 8× 未换行基线,守 §20「measure 一次 + 每行一次」不退化为 per-candidate reshape)。fmt/clippy(--all-targets)
+        /workspace test 全清。真正的 measure 期约束下行接线见 DL1。
+
+- [ ] **DL1 `layout: measure 期约束下行 + 文本 Leaf width-aware 求解 + resize reflow`(布局引擎地基,独立 ADR)** ——
+      2026-09-09 measure 管线核对发现:measure 是纯 post-order、**无约束下行**(`fn measure(tree, root, scratch)` 无约束
+      参数,§96 `LocalConstraints` 至今是 spec-only),文本一次 shape 定型、natural 固定;可用宽度只在其后 layout 期以
+      `bounds` 出现(layout.rs:634),比"决定文本高度的时机"晚一拍;resize 只重跑 measure/layout **不 reshape**,故当前
+      soft-wrap 无从触发。要让「约束宽 → 换行 → 高度」成立,须给 measure 引入约束下行(把 §96 `LocalConstraints` 从
+      spec 落成真实 measure 输入)+ 文本 Leaf 的 width-aware 求解回调(类比 content_natural,facade 回接 D1 的
+      `shape(max_width)`)+ on_geometry/缓存把宽度并入 reflow 触发维度。**这是布局引擎级改动,牵动每个 widget 的 measure
+      契约,不属于文字子系统**,故从原 D1 拆出、开自己的 ADR(§96 自适应布局落地开端)。消费 D1 的宽度换行能力,排在
+      D1 之后;是否早于 D2–D4 视 §96 落地节奏定(D2 缓存的宽度失效键在 DL1 接线后才有真实来源,但 D2 缓存本身可先以
+      `max_width` 入键就位)。
 - [ ] **D2 `text: paragraph / shaping-run cache`** —— §37.11/§37.13 的 paragraph/shaping cache:viso-text 持 paragraph 级
       缓存(键 = text + font/feature/revision + 可用宽度),命中则跳过 reshape + re-linebreak;把「不 reshape」的边界从
       facade 粗门下沉到 text 层自身。依赖 D1(宽度是失效键之一)。

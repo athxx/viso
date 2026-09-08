@@ -23,6 +23,7 @@ mod atlas;
 mod color_raster;
 mod font;
 mod layout;
+mod linebreak;
 mod provider;
 mod raster;
 mod shape;
