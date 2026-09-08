@@ -38,6 +38,32 @@ pub struct ColorGlyph {
     pub origin_px: [f32; 2],
 }
 
+/// A platform text-engine rasterizer for color-emoji glyphs whose strikes are
+/// not readable through `ttf-parser` (Apple's system emoji face arrives with its
+/// `sbix` strikes stripped and uses a private image format `ttf-parser` cannot
+/// decode). The platform binding lives in the facade; this crate holds only the
+/// trait so it stays a pure algorithm layer with no platform dependency.
+///
+/// Cold path — invoked once per (glyph, size-bucket) miss when packing the color
+/// atlas, so `dyn` dispatch is fine (see AGENTS section 42).
+pub trait ColorGlyphRasterizer {
+    /// Rasterize `glyph_id` of the face named `ps_name` at `dpx_per_em` density.
+    /// `expected_glyph_count` disambiguates candidate faces the platform may
+    /// return for the name (the face whose glyph count matches is the one this
+    /// `glyph_id` indexes). Returns `None` if no matching face is found or the
+    /// glyph has no color bitmap; the caller then falls back to the outline path.
+    ///
+    /// The returned [`ColorGlyph`] uses the same premultiplied-RGBA, top-left
+    /// convention as [`rasterize_color_glyph`].
+    fn rasterize(
+        &self,
+        ps_name: &str,
+        expected_glyph_count: u16,
+        glyph_id: u16,
+        dpx_per_em: f32,
+    ) -> Option<ColorGlyph>;
+}
+
 /// Decode the color-bitmap image for `glyph_id` in `face` at (or above)
 /// `dpx_per_em` density, if the face has one in a supported format. Returns
 /// `None` for glyphs with no strike or an unsupported strike format (the caller

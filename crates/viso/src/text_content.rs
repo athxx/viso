@@ -20,19 +20,23 @@ use viso_render::{GlyphInstanceData, Rect, TextureId};
 use viso_text::{FontId, GlyphKind, SystemFallback, TextSystem};
 use viso_ui::{Content, TextRequest, Vec2};
 
-use crate::system_fonts::CoreTextProvider;
-
-/// The embedded UI font: the same DejaVu Sans subset the renderer's test scene
-/// uses, kept in-tree so text renders deterministically with no system-font
-/// dependency. A real font stack (system fonts, fallback chains) lands later;
-/// this is the single default face for the first widget slice.
-const UI_FONT: &[u8] = include_bytes!("../fixtures/DejaVuSans-subset.ttf");
+use crate::system_fonts::{CoreTextColorRaster, CoreTextProvider};
 
 /// Owns the facade's font stack and glyph atlas, shaping [`TextRequest`]s into
 /// [`Content::Text`] payloads. One per app; created on launch.
+///
+/// No font is bundled: the chain starts empty and the platform
+/// [`CoreTextProvider`] pulls a covering system face into it on the first shape
+/// (a system-default UI face, plus per-script / emoji fallbacks on demand).
+/// Users may also load their own faces up front, which sit ahead of the system
+/// fallbacks. On platforms with no provider (wasm), the chain stays empty and a
+/// run shapes to no glyphs rather than panicking.
 pub(crate) struct TextShaper {
     text: TextSystem,
-    font: FontId,
+    /// The primary face id once the chain has one — the request's font. `None`
+    /// until a face is loaded (a user face, or a system face the provider
+    /// resolves on the first shape). A `None` primary shapes to no glyphs.
+    font: Option<FontId>,
     /// The persistent R8 SDF glyph atlas texture, created lazily on the first
     /// shape (once a backend exists to allocate it). `None` until then.
     atlas: Option<TextureId>,
@@ -44,6 +48,10 @@ pub(crate) struct TextShaper {
     /// consulted when a run has characters the loaded chain cannot render, to
     /// pull a covering system face into the fallback chain.
     provider: CoreTextProvider,
+    /// The platform color-emoji rasterizer (CoreText on macOS, a no-op
+    /// elsewhere): draws a system emoji face's glyphs — whose strikes were
+    /// stripped at load — into premultiplied RGBA for the color atlas.
+    color_raster: CoreTextColorRaster,
     /// Negative cache for system-font resolution — records which scripts / emoji
     /// have already been queried so an uncoverable run does not re-ask the OS
     /// every time it is (re)shaped.
@@ -51,20 +59,35 @@ pub(crate) struct TextShaper {
 }
 
 impl TextShaper {
-    /// Build the shaper, loading the embedded UI font. Panics if the embedded
-    /// font fails to parse — an in-tree asset, so a parse failure is a build
-    /// bug, not a runtime condition.
+    /// Build the shaper with an empty font chain. No face is bundled; the first
+    /// shape resolves a system face through the provider (or, on wasm, shapes to
+    /// nothing).
     pub(crate) fn new() -> Self {
-        let mut text = TextSystem::new();
-        let font = text.load_font(UI_FONT, 0).expect("embedded UI font parses");
         Self {
-            text,
-            font,
+            text: TextSystem::new(),
+            font: None,
             atlas: None,
             color_atlas: None,
             provider: CoreTextProvider::new(),
+            color_raster: CoreTextColorRaster::new(),
             fallback: SystemFallback::new(),
         }
+    }
+
+    /// Load a user face from raw sfnt bytes, registering it in the chain. If the
+    /// chain was empty, this face becomes the primary — so a user-loaded face
+    /// sits ahead of any system fallback resolved later. Returns `None` if the
+    /// bytes do not parse as an sfnt face.
+    ///
+    /// This is the internal seam the facade's public user-font API and the tests
+    /// build on; it does not fetch anything, only registers already-in-hand bytes.
+    /// The public init-time font API lands next and will drive it from non-test
+    /// code — until then only the tests exercise it, hence the `allow`.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn load_font(&mut self, bytes: impl Into<Box<[u8]>>, index: u32) -> Option<FontId> {
+        let id = self.text.load_font(bytes, index)?;
+        self.font.get_or_insert(id);
+        Some(id)
     }
 
     /// Shape one request into a [`Content::Text`], uploading any newly-packed
@@ -80,6 +103,27 @@ impl TextShaper {
         request: &TextRequest,
         dpi_factor: f32,
     ) -> Content {
+        // Seed the primary face from the system if the chain is still empty (no
+        // user face loaded): the first shape pulls the platform default UI face.
+        // On a platform with no provider (wasm) this stays `None` and the run
+        // shapes to no glyphs — an empty text content, not a panic.
+        let font = self.font.or_else(|| {
+            let id = self.text.resolve_primary(&self.provider);
+            self.font = id;
+            id
+        });
+        let Some(font) = font else {
+            return Content::Text {
+                glyphs: Vec::new(),
+                atlas: self.atlas.unwrap_or(TextureId(0)),
+                color_glyphs: Vec::new(),
+                color_atlas: None,
+                color: request.color,
+                natural: Vec2::ZERO,
+                baseline: 0.0,
+            };
+        };
+
         // Before laying out, extend the fallback chain with system faces for any
         // script / emoji the loaded chain cannot render, so the run resolves
         // against the grown chain rather than boxing uncovered characters. The
@@ -87,11 +131,15 @@ impl TextShaper {
         // so steady-state reshapes of the same text pay only the shape, not an OS
         // query. `prepare` below reshapes from scratch, picking up new faces.
         self.text
-            .resolve_missing(self.font, &request.text, &self.provider, &mut self.fallback);
+            .resolve_missing(font, &request.text, &self.provider, &mut self.fallback);
 
-        let quads = self
-            .text
-            .prepare(self.font, &request.text, request.font_size, dpi_factor);
+        let quads = self.text.prepare(
+            font,
+            &request.text,
+            request.font_size,
+            dpi_factor,
+            Some(&self.color_raster),
+        );
 
         // Ensure the atlas texture exists, then upload whatever region this
         // shape newly rasterized. The atlas is single-channel R8 SDF coverage.
@@ -176,7 +224,7 @@ impl TextShaper {
 
         // The first-line baseline in the same logical-pixel space as `natural`
         // and the glyph rects, so a grid cell can align this run on its baseline.
-        let baseline = self.text.first_baseline(self.font, request.font_size);
+        let baseline = self.text.first_baseline(font, request.font_size);
 
         Content::Text {
             glyphs,
@@ -196,6 +244,22 @@ mod tests {
     use viso_gpu::{HeadlessRaster, RawWindowHandle};
     use viso_render::Rgba;
 
+    /// A DejaVu Sans subset used only to give the tests a deterministic face:
+    /// production bundles no font (the chain is seeded from the system), so the
+    /// tests inject this through the same [`TextShaper::load_font`] seam a user
+    /// font uses, making it the primary. It is a test fixture, not a default.
+    const TEST_FONT: &[u8] = include_bytes!("../fixtures/DejaVuSans-subset.ttf");
+
+    /// A shaper with the test fixture loaded as its primary face — the setup
+    /// every shaping test shares now that no face is bundled.
+    fn shaper_with_test_font() -> TextShaper {
+        let mut shaper = TextShaper::new();
+        shaper
+            .load_font(TEST_FONT, 0)
+            .expect("test fixture font parses");
+        shaper
+    }
+
     const WHITE: Rgba = Rgba {
         r: 1.0,
         g: 1.0,
@@ -210,7 +274,7 @@ mod tests {
         // for texture allocation, so create one to keep the backend consistent.
         let _ = gpu.create_surface(RawWindowHandle::Headless, 64, 64);
 
-        let mut shaper = TextShaper::new();
+        let mut shaper = shaper_with_test_font();
         let content = shaper.shape(
             &mut gpu,
             &TextRequest {
@@ -239,7 +303,7 @@ mod tests {
     fn reuses_one_atlas_across_shapes() {
         let mut gpu = HeadlessRaster::new();
         let _ = gpu.create_surface(RawWindowHandle::Headless, 64, 64);
-        let mut shaper = TextShaper::new();
+        let mut shaper = shaper_with_test_font();
 
         let a = shaper.shape(
             &mut gpu,
@@ -278,7 +342,7 @@ mod tests {
         // roughly double the extent, which this tolerance rejects.
         let mut gpu = HeadlessRaster::new();
         let _ = gpu.create_surface(RawWindowHandle::Headless, 128, 128);
-        let mut shaper = TextShaper::new();
+        let mut shaper = shaper_with_test_font();
 
         let request = TextRequest {
             text: "Viso".to_string(),

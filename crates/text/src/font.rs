@@ -63,6 +63,14 @@ pub struct FontFace {
     /// faces that could have a strike — pure-text faces stay on the SDF path
     /// with no per-glyph raster-image lookup.
     has_color: bool,
+    /// Whether this face is a color-emoji face that must be rasterized through
+    /// the platform text engine rather than `ttf-parser`. Set by the provider
+    /// when it resolves an emoji face: a system emoji face arrives with its
+    /// `sbix`/`CBDT` strikes stripped (they are ~180 MB and dropped at load), so
+    /// `has_color` reads `false` and the glyph path cannot detect it as color.
+    /// This flag is the out-of-band signal that its color glyphs come from the
+    /// platform rasterizer keyed on [`postscript_name`](Self::postscript_name).
+    is_color_emoji: bool,
 }
 
 impl FontFace {
@@ -86,7 +94,47 @@ impl FontFace {
             line_gap_em,
             glyph_count,
             has_color,
+            is_color_emoji: false,
         })
+    }
+
+    /// Mark this face as a color-emoji face whose color glyphs are rasterized
+    /// through the platform text engine. Called by the provider when it resolves
+    /// an emoji face (its strikes are stripped at load, so it cannot be detected
+    /// from the table set); see [`is_color_emoji`](Self::is_color_emoji).
+    pub fn set_color_emoji(&mut self, yes: bool) {
+        self.is_color_emoji = yes;
+    }
+
+    /// Whether this face is a platform-rasterized color-emoji face. When `true`,
+    /// the glyph path routes its color glyphs to the [`ColorGlyphRasterizer`]
+    /// (keyed on [`postscript_name`](Self::postscript_name)) instead of the
+    /// `ttf-parser` raster-image path.
+    ///
+    /// [`ColorGlyphRasterizer`]: crate::ColorGlyphRasterizer
+    pub fn is_color_emoji(&self) -> bool {
+        self.is_color_emoji
+    }
+
+    /// The PostScript name (name id 6) of this face, if present, used to re-open
+    /// the face in the platform text engine for color rasterization.
+    ///
+    /// `ttf-parser`'s own name decoding only accepts Unicode/Windows records
+    /// (UTF-16BE); Apple's color-emoji face records its PostScript name only on a
+    /// Macintosh/Roman record, which that decoder rejects, so we read the raw
+    /// bytes and decode them as ASCII directly — the PostScript name is
+    /// constrained to printable ASCII, so any all-printable record is the name.
+    pub fn postscript_name(&self) -> Option<String> {
+        let face = self.ttf();
+        face.names()
+            .into_iter()
+            .filter(|n| n.name_id == ttf_parser::name_id::POST_SCRIPT_NAME)
+            .find_map(|n| {
+                let raw = n.name;
+                raw.iter()
+                    .all(|&b| (0x20..0x7f).contains(&b))
+                    .then(|| String::from_utf8_lossy(raw).into_owned())
+            })
     }
 
     /// Whether the face has color-bitmap strikes worth probing. When `false`,
@@ -209,6 +257,15 @@ impl FontStore {
     /// Borrow a loaded face by id.
     pub fn face(&self, id: FontId) -> &FontFace {
         &self.faces[id.0 as usize]
+    }
+
+    /// Mark a loaded face as a platform-rasterized color-emoji face. Called by
+    /// [`SystemFallback`](crate::SystemFallback) right after it loads a face for
+    /// the [`FontRole::Emoji`](crate::FontRole) branch: the system emoji face
+    /// arrives with its strikes stripped, so it cannot be detected from the table
+    /// set and must be flagged out of band (see [`FontFace::is_color_emoji`]).
+    pub fn mark_color_emoji(&mut self, id: FontId) {
+        self.faces[id.0 as usize].set_color_emoji(true);
     }
 }
 

@@ -1042,8 +1042,21 @@ spanning 放置 + auto-flow;ADR 0009 明列六项高级能力全未做。落 `cr
       集测:outline face `has_color_strikes()==false`、纯文本 run 全 `Sdf` 且 color atlas 不脏。
 - [x] **B4 `viso: two textures + color glyph run`** —— facade 建两张纹理(R8 SDF + RGBA color);`Content` 携彩色 glyph run。
 - [x] **B5 `render: lower color glyphs to Image`** —— 彩色 glyph 降为 `Primitive::Image`(白 tint);headless golden。
-- [ ] **B6 `viso: bundle emoji fallback face`** —— 内嵌 `NotoColorEmoji.ttf` 作 emoji 回退 face。
 
-**Hello World(末节)**:`examples/hello_world/main.rs` 居中 `label("Hello 世界 สวัสดี 🎉").font_size(48.)`。
+**Phase C —— 字体来源重定向(取代旧 B6「内嵌 NotoColorEmoji」)** —— 不内嵌任何默认字体;默认读系统;用户可 init 自定义;网络字体由开发者自取字节后调库;wasm 默认不加载。
 
-**ADR(git add -f)**:0024 Text subsystem ownership;0025 System-font provider seam。彩色 emoji GPU ADR 不需。
+- [x] **C1 `viso: drop embedded default face, system-default UI`** —— 删 `text_content.rs` 的 `UI_FONT`
+      (`include_bytes!(DejaVuSans-subset)`)与内嵌默认 face;`TextShaper` chain 起始为空,首 shape 经 provider
+      用 `FontRole::Ui` 拉系统 UI face;无 provider(wasm)则空、不出字不 panic。同节落 CoreText 彩色 emoji 光栅缝:
+      viso-text `trait ColorGlyphRasterizer` + `FontFace.is_color_emoji`/`postscript_name()` + `prepare` 加
+      `Option<&dyn ColorGlyphRasterizer>` 形参 + `atlas.rs::color_glyph` 选择逻辑;facade objc2-core-text 实现
+      `CoreTextColorRaster`(预乘 RGBA,BGRA→RGBA swizzle 不 un-premul);`TextShaper` 持一个并作 `Some(..)` 传入
+      `prepare`。`load_font` 内部缝供 C2 公开 API + 测试注入。三个 `text_content.rs` 单测改经 `load_font` 注入
+      `DejaVuSans-subset.ttf`(纯测试 fixture,非默认)。
+- [ ] **C2 `viso: user font API (bytes / path)`** —— facade 公开 init 期 API 加载用户字体(字节 / 磁盘路径),入 chain 居前。
+- [ ] **C3 `viso: WOFF2 decode + load capability`** —— vendor `makepad/libs/woff2`;公开 `load_font_bytes`(sfnt 直载,
+      `wOF2` 签名则先 `decompress` 再载);只做库不接网络。
+
+**Hello World(末节)**:`examples/hello_world/main.rs` 居中 `label("Hello 世界 สวัสดี 🎉").font_size(48.)`,全走系统字体。
+
+**ADR(git add -f)**:0024 已被 file-tree 占用 → 文本 ADR 顺延为 **0025 Text subsystem ownership**(external-backed 算法 + 缓存边界)与 **0026 System-font provider + color-glyph seam**(trait 在 viso-text、CoreText 实现在 facade;含彩色光栅缝)。彩色 emoji GPU ADR 不需。

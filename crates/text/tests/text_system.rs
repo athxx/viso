@@ -177,14 +177,14 @@ fn atlas_caches_repeated_glyphs() {
     let mut sys = TextSystem::new();
     let id = sys.load_font(FONT.to_vec(), 0).unwrap();
 
-    let quads = sys.prepare(id, "AA", 32.0, 2.0);
+    let quads = sys.prepare(id, "AA", 32.0, 2.0, None);
     assert_eq!(quads.len(), 2, "both A glyphs produce quads");
     // The two 'A's are identical, so they share one atlas cell (same UV).
     assert_eq!(quads[0].uv, quads[1].uv);
     // After preparing, the atlas has a dirty region to upload.
     assert!(sys.take_atlas_dirty().is_some());
     // A second identical prepare hits the cache — no new dirty region.
-    let again = sys.prepare(id, "AA", 32.0, 2.0);
+    let again = sys.prepare(id, "AA", 32.0, 2.0, None);
     assert_eq!(again[0].uv, quads[0].uv);
     assert!(
         sys.take_atlas_dirty().is_none(),
@@ -205,7 +205,7 @@ fn outline_glyphs_prepare_as_sdf_and_leave_color_atlas_clean() {
     let mut sys = TextSystem::new();
     let id = sys.load_font(FONT.to_vec(), 0).unwrap();
 
-    let quads = sys.prepare(id, "AB", 32.0, 2.0);
+    let quads = sys.prepare(id, "AB", 32.0, 2.0, None);
     assert_eq!(quads.len(), 2);
     // Every glyph from an outline face routes to the SDF atlas.
     assert!(quads.iter().all(|q| q.kind == GlyphKind::Sdf));
@@ -222,7 +222,7 @@ fn whitespace_advances_without_quad() {
     let mut sys = TextSystem::new();
     let id = sys.load_font(FONT.to_vec(), 0).unwrap();
     // "a b" — the space has no outline, so only 2 quads for 'a' and 'b'.
-    let quads = sys.prepare(id, "a b", 24.0, 1.0);
+    let quads = sys.prepare(id, "a b", 24.0, 1.0, None);
     assert_eq!(quads.len(), 2);
     // 'b' sits to the right of 'a' with the space's advance between them.
     assert!(quads[1].rect_px[0] > quads[0].rect_px[0]);
@@ -425,7 +425,7 @@ fn text_system_resolve_missing_grows_chain_then_prepare_covers_the_run() {
     // Preparing after the resolve reshapes over the grown chain and lays out the
     // ASCII portion of a mixed run without panicking (glyphs for the covered
     // characters are produced; the mock face does not truly cover Han).
-    let quads = sys.prepare(font, "Hi 中", 24.0, 1.0);
+    let quads = sys.prepare(font, "Hi 中", 24.0, 1.0, None);
     assert!(
         !quads.is_empty(),
         "prepare over the grown chain still lays out the covered glyphs"

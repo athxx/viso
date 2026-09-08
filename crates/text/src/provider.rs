@@ -136,6 +136,11 @@ impl SystemFallback {
             if let Some(result) = provider.load(&query)
                 && let Some(id) = store.load(result.bytes, result.index)
             {
+                // A system emoji face arrives with its color strikes stripped
+                // (~180 MB, dropped at load), so the table set cannot reveal it as
+                // color; flag it so the glyph path routes it to the platform
+                // color rasterizer instead of the SDF outline path.
+                store.mark_color_emoji(id);
                 store.push_fallback(id);
                 grew = true;
             }
