@@ -173,6 +173,8 @@ fn setup() -> Harness {
         Content::Text {
             glyphs: tg.glyphs.clone(),
             atlas,
+            color_glyphs: Vec::new(),
+            color_atlas: None,
             color: WHITE,
             natural: glyph_run_natural(&tg.glyphs),
             baseline: 0.0,

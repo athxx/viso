@@ -1040,7 +1040,7 @@ spanning 放置 + auto-flow;ADR 0009 明列六项高级能力全未做。落 `cr
       `TextSystem` 持第二张 color atlas + `color_atlas_pixels/size/take_color_atlas_dirty`;`GlyphQuad` 加 `kind`。
       `prepare`:彩色 face 先探 `color_glyph` 命中出 `Color` quad,否则落 SDF `atlas.glyph` 出 `Sdf` quad。
       集测:outline face `has_color_strikes()==false`、纯文本 run 全 `Sdf` 且 color atlas 不脏。
-- [ ] **B4 `viso: two textures + color glyph run`** —— facade 建两张纹理(R8 SDF + RGBA color);`Content` 携彩色 glyph run。
+- [x] **B4 `viso: two textures + color glyph run`** —— facade 建两张纹理(R8 SDF + RGBA color);`Content` 携彩色 glyph run。
 - [ ] **B5 `render: lower color glyphs to Image`** —— 彩色 glyph 降为 `Primitive::Image`(白 tint);headless golden。
 - [ ] **B6 `viso: bundle emoji fallback face`** —— 内嵌 `NotoColorEmoji.ttf` 作 emoji 回退 face。
 
