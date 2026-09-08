@@ -37,8 +37,8 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use viso_ui::{
-    Align, Axis, BoxStyle, BuildCx, Component, EventCx, FlexStyle, Inset, InteractionStyle, Key,
-    Length, PointerButtons, PointerPhase, Rgba, Role, Semantics, Size, StateValue,
+    Align, Axis, BoxStyle, BuildCx, Component, EventCx, FlexStyle, Inset, InteractionStyle,
+    Justify, Key, Length, PointerButtons, PointerPhase, Rgba, Role, Semantics, Size, StateValue,
 };
 
 use crate::label;
@@ -218,6 +218,7 @@ impl Component for Button {
                 gap: 0.0,
                 padding: Inset::all(PADDING),
                 align: Align::Center,
+                justify: Justify::Start,
                 size: self.style.size,
                 style: resting,
             },

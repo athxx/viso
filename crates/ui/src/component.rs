@@ -16,7 +16,7 @@ use crate::context::EventCx;
 use crate::dirty::DirtyClass;
 use crate::grid::{GridPlacement, GridStyle, GridTracks, TrackSizing};
 use crate::layout::{
-    self, Align, Axis, Inset, LayoutInput, LayoutTree, Length, Measured, Size, Vec2,
+    self, Align, Axis, Inset, Justify, LayoutInput, LayoutTree, Length, Measured, Size, Vec2,
 };
 use crate::node::{NodeArena, NodeId};
 use crate::reactive::{ComputeCx, EffectStore, SemanticProjector};
@@ -62,6 +62,10 @@ pub struct FlexStyle {
     pub padding: Inset,
     /// Cross-axis alignment of children.
     pub align: Align,
+    /// Main-axis placement of the packed child group. Only has a visible effect
+    /// when no child is `Fill` (a Fill child consumes the main slack, leaving
+    /// nothing to distribute).
+    pub justify: Justify,
     /// The container's own size request within its parent.
     pub size: Size,
     /// The container's own background/border (transparent = pure layout box).
@@ -75,6 +79,7 @@ impl Default for FlexStyle {
             gap: 0.0,
             padding: Inset::default(),
             align: Align::Start,
+            justify: Justify::Start,
             size: Size::fill(),
             style: BoxStyle::NONE,
         }
@@ -647,6 +652,7 @@ impl NodeStore {
                 gap: 0.0,
                 padding: Inset::default(),
                 align: Align::Stretch,
+                justify: Justify::Start,
                 size,
             },
             BoxStyle::default(),
@@ -683,6 +689,7 @@ impl NodeStore {
                 gap: 0.0,
                 padding: Inset::default(),
                 align: Align::Start,
+                justify: Justify::Start,
                 size: Size {
                     width: Length::Fit,
                     height: Length::Fit,
@@ -697,6 +704,7 @@ impl NodeStore {
                 gap: 0.0,
                 padding: Inset::default(),
                 align: Align::Stretch,
+                justify: Justify::Start,
                 size,
             },
             BoxStyle::default(),
@@ -2291,6 +2299,7 @@ impl<'a> BuildCx<'a> {
             gap: style.gap,
             padding: style.padding,
             align: style.align,
+            justify: style.justify,
             size: style.size,
         };
         let id = self.push_node(input, style.style);

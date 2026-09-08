@@ -8,14 +8,14 @@
 //! through CoreText; on a platform with no system-font provider the paragraph
 //! still lays out but draws no glyphs (it never panics).
 //!
-//! Centering uses only cross-axis alignment, the one form the flex engine
-//! offers: an outer Row fills the window and centers its child vertically, and
-//! that child — a full-width Column — centers the label horizontally. The
-//! label's own box is `Fit`, so it measures to the shaped run.
+//! Centering is a single fill container that centers its one `Fit`-sized child
+//! on both axes: `justify: Center` places the packed child group along the main
+//! axis, `align: Center` along the cross axis. Because the label's box is `Fit`
+//! (it measures to the shaped run), both axes have slack to center against.
 
 use viso::prelude::*;
 use viso::render::Rgba;
-use viso::ui::{Align, Axis, Component, Size};
+use viso::ui::{Align, Component, Justify, Size};
 
 struct Hello;
 
@@ -25,36 +25,25 @@ impl Application for Hello {
     }
 
     fn build(&mut self, cx: &mut BuildCx<'_>) {
-        // Outer Row fills the window and centers its child on the cross (vertical)
-        // axis; the child Column fills the width and centers the label on its
-        // cross (horizontal) axis. Two cross-axis centers = centered on both.
+        // A window-filling container centers its single Fit-sized label on both
+        // axes: main axis via `justify`, cross axis via `align`.
         cx.flex(
             FlexStyle {
-                axis: Axis::Row,
                 align: Align::Center,
+                justify: Justify::Center,
                 size: Size::fill(),
                 ..Default::default()
             },
             |cx| {
-                cx.flex(
-                    FlexStyle {
-                        axis: Axis::Column,
-                        align: Align::Center,
-                        size: Size::fill(),
-                        ..Default::default()
-                    },
-                    |cx| {
-                        label("Hello 世界 สวัสดี 🎉")
-                            .font_size(48.0)
-                            .color(Rgba {
-                                r: 0.93,
-                                g: 0.94,
-                                b: 0.97,
-                                a: 1.0,
-                            })
-                            .build(cx);
-                    },
-                );
+                label("Hello 世界 สวัสดี 🎉")
+                    .font_size(48.0)
+                    .color(Rgba {
+                        r: 0.93,
+                        g: 0.94,
+                        b: 0.97,
+                        a: 1.0,
+                    })
+                    .build(cx);
             },
         );
     }

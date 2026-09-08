@@ -14,7 +14,8 @@
 //! plain container is to an assistive technology.
 
 use viso_ui::{
-    Align, Axis, BoxStyle, BuildCx, Component, FlexStyle, Inset, Role, ScrollStyle, Semantics, Size,
+    Align, Axis, BoxStyle, BuildCx, Component, FlexStyle, Inset, Justify, Role, ScrollStyle,
+    Semantics, Size,
 };
 
 /// The visual and layout parameters of a [`View`]. A small, flat description of
@@ -150,6 +151,7 @@ impl Component for View {
                     gap: self.style.gap,
                     padding: self.style.padding,
                     align: self.style.align,
+                    justify: Justify::Start,
                     size: self.style.size,
                     style: self.style.background,
                 };

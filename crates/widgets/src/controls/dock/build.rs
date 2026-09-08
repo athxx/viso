@@ -21,8 +21,8 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use viso_ui::{
-    Align, BoxStyle, BuildCx, DirtyClass, FlexStyle, Inset, LeafStyle, Length, NodeId, Size,
-    StateValue,
+    Align, BoxStyle, BuildCx, DirtyClass, FlexStyle, Inset, Justify, LeafStyle, Length, NodeId,
+    Size, StateValue,
 };
 
 use super::semantics;
@@ -267,6 +267,7 @@ fn build_split(
             gap: 0.0,
             padding: Inset::all(0.0),
             align: Align::Stretch,
+            justify: Justify::Start,
             size: Size::fill(),
             style: BoxStyle::NONE,
         },
@@ -278,6 +279,7 @@ fn build_split(
                     gap: 0.0,
                     padding: Inset::all(0.0),
                     align: Align::Stretch,
+                    justify: Justify::Start,
                     size: pane_a_size,
                     style: BoxStyle::NONE,
                 },
@@ -304,6 +306,7 @@ fn build_split(
                     gap: 0.0,
                     padding: Inset::all(0.0),
                     align: Align::Stretch,
+                    justify: Justify::Start,
                     size: pane_b_size,
                     style: BoxStyle::NONE,
                 },
@@ -379,6 +382,7 @@ fn build_tabs(
             gap: if show_strip { 4.0 } else { 0.0 },
             padding: Inset::all(0.0),
             align: Align::Stretch,
+            justify: Justify::Start,
             size: Size::fill(),
             style: BoxStyle::NONE,
         },
@@ -393,6 +397,7 @@ fn build_tabs(
                         gap: 4.0,
                         padding: Inset::all(0.0),
                         align: Align::Center,
+                        justify: Justify::Start,
                         size: Size {
                             width: Length::fill(),
                             height: Length::Fit,
@@ -424,6 +429,7 @@ fn build_tabs(
                     gap: 0.0,
                     padding: Inset::all(0.0),
                     align: Align::Stretch,
+                    justify: Justify::Start,
                     size: Size::fill(),
                     style: BoxStyle::NONE,
                 },
@@ -436,6 +442,7 @@ fn build_tabs(
                                 gap: 0.0,
                                 padding: Inset::all(0.0),
                                 align: Align::Stretch,
+                                justify: Justify::Start,
                                 size: Size::fill(),
                                 style: BoxStyle::NONE,
                             },

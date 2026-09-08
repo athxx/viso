@@ -118,6 +118,7 @@ fn build_row(
             gap: style.gap,
             padding: Inset::default(),
             align: viso_ui::Align::Center,
+            justify: viso_ui::Justify::Start,
             size: Size {
                 width: Length::fill(),
                 height: Length::Fixed(style.row_height),

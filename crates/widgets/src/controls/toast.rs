@@ -80,8 +80,8 @@ use std::rc::Rc;
 use std::time::Duration;
 
 use viso_ui::{
-    Align, Axis, BoxStyle, BuildCx, Component, DirtyClass, EventCx, FlexStyle, Inset, Length,
-    NodeId, Role, Semantics, Size, StateId, StateValue,
+    Align, Axis, BoxStyle, BuildCx, Component, DirtyClass, EventCx, FlexStyle, Inset, Justify,
+    Length, NodeId, Role, Semantics, Size, StateId, StateValue,
 };
 
 /// A shared, mutable dismiss callback, fired when the toast is **manually**
@@ -370,6 +370,7 @@ impl Component for Toast {
                 // Cross-axis center: the notification is centered along the edge it
                 // pins to (a bottom toast is centered horizontally).
                 align: Align::Center,
+                justify: Justify::Start,
                 size: Size::fill(),
                 style: BoxStyle::NONE,
             },
@@ -401,6 +402,7 @@ impl Component for Toast {
                         gap: 0.0,
                         padding: Inset::all(0.0),
                         align: Align::Center,
+                        justify: Justify::Start,
                         size: Size {
                             width: Length::Fit,
                             height: Length::Fit,

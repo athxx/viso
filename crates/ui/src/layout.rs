@@ -149,6 +149,30 @@ pub enum Align {
 /// How a grid cell's content is aligned within the cell along the block (row /
 /// vertical) axis. `Stretch` (the default) grows a fillable child to the cell
 /// height; the others place the child at its natural height and shift it.
+/// Main-axis placement of the children as a group within a container.
+///
+/// [`Align`] handles the cross axis (each child within the line); `Justify`
+/// handles the main axis (the whole packed group within the container's main
+/// extent). It only has a visible effect when the children leave main-axis
+/// slack — i.e. none of them is [`Length::Fill`], since a Fill child consumes
+/// the free space and leaves nothing to distribute (the same relationship
+/// [`Align::Center`] has with [`Align::Stretch`]). `Center`/`End` shift the
+/// group by the leftover free space; `Start` (the default) pins it to the near
+/// edge, preserving the historical near-edge packing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Justify {
+    /// Pack the group at the near main edge (left for Row, top for Column).
+    #[default]
+    Start,
+    /// Center the group within the container's main extent.
+    Center,
+    /// Pack the group at the far main edge.
+    End,
+}
+
+/// How a grid cell's content is aligned within the cell along the block (row /
+/// vertical) axis. `Stretch` (the default) grows a fillable child to the cell
+/// height; the others place the child at its natural height and shift it.
 /// `Baseline` aligns each cell's first-line text baseline to the tallest
 /// baseline in its row, so mixed-size labels sit on a common baseline; a cell
 /// with no text baseline falls back to `Start`.
@@ -243,6 +267,8 @@ pub enum LayoutInput {
         padding: Inset,
         /// Cross-axis alignment of children.
         align: Align,
+        /// Main-axis placement of the packed child group.
+        justify: Justify,
         /// The container's own size request within its parent.
         size: Size,
     },
@@ -607,14 +633,15 @@ pub fn layout(tree: &mut impl LayoutTree, root: u32, bounds: Rect, scratch: &mut
     }
     tree.set_bounds(root, bounds);
 
-    let (axis, gap, padding, align) = match tree.input(root) {
+    let (axis, gap, padding, align, justify) = match tree.input(root) {
         LayoutInput::Flex {
             axis,
             gap,
             padding,
             align,
+            justify,
             ..
-        } => (axis, gap, padding, align),
+        } => (axis, gap, padding, align, justify),
         LayoutInput::Scroll { axis, .. } => {
             layout_scroll(tree, root, bounds, axis, scratch);
             return;
@@ -664,9 +691,22 @@ pub fn layout(tree: &mut impl LayoutTree, root: u32, bounds: Rect, scratch: &mut
     let free = (main_extent - fixed_main - gaps_total).max(0.0);
 
     // Place children along the main axis, advancing a cursor from the near edge.
+    // `Justify` shifts the whole packed group by the leftover main slack, but
+    // only when no Fill child claimed it: a Fill child expands to absorb `free`,
+    // so `weight_total > 0` means there is no slack left to distribute and the
+    // group stays pinned to the near edge regardless of `justify`.
     let main_origin = rect_start(bounds, axis) + padding.main_start(axis);
     let cross_origin = rect_start(bounds, cross) + padding.cross_start(axis);
-    let mut cursor = main_origin;
+    let justify_off = if weight_total > 0.0 {
+        0.0
+    } else {
+        match justify {
+            Justify::Start => 0.0,
+            Justify::Center => free * 0.5,
+            Justify::End => free,
+        }
+    };
+    let mut cursor = main_origin + justify_off;
 
     // The child ids live in `scratch[start..start + child_count]`. Recursion
     // appends past that range and truncates back to its own start, so the ids
@@ -2459,6 +2499,60 @@ mod tests {
         let b = store.bounds(fill_leaf);
         assert_eq!(b.w, 0.0);
         assert_eq!(b.h, 0.0);
+    }
+
+    #[test]
+    fn justify_and_align_center_a_fit_child_on_both_axes() {
+        use crate::component::{BuildCx, FlexStyle, LeafStyle, NodeStore};
+        use crate::style::BoxStyle;
+
+        // A window-filling container that centers its single Fit-sized child on
+        // both axes: `justify: Center` on the main (Row → horizontal), `align:
+        // Center` on the cross (vertical). This is the Hello World construct;
+        // the child must land exactly centered, and — the regression the user
+        // hit — a *larger* box must keep it centered, not drift it to a corner.
+        fn centered_leaf_bounds(w: f32, h: f32) -> Rect {
+            let mut store = NodeStore::new();
+            let mut leaf = None;
+            let root = {
+                let mut cx = BuildCx::new(&mut store);
+                cx.flex(
+                    FlexStyle {
+                        axis: Axis::Row,
+                        align: Align::Center,
+                        justify: Justify::Center,
+                        size: Size::fill(),
+                        ..Default::default()
+                    },
+                    |cx| {
+                        let l = cx.leaf(LeafStyle {
+                            // A Fit-measured 200x40 body, so both axes have slack.
+                            size: Size::fixed(200.0, 40.0),
+                            style: BoxStyle::NONE,
+                        });
+                        leaf = Some(l.id());
+                    },
+                );
+                cx.root().unwrap()
+            };
+            let leaf = leaf.unwrap();
+            let mut scratch = Vec::new();
+            measure(&mut store, root.index(), &mut scratch);
+            layout(&mut store, root.index(), surface_local(w, h), &mut scratch);
+            store.bounds(leaf)
+        }
+
+        // 600x400 box: child centered at ((600-200)/2, (400-40)/2) = (200, 180).
+        let b = centered_leaf_bounds(600.0, 400.0);
+        assert_eq!(b.x, 200.0, "centered on the main (horizontal) axis");
+        assert_eq!(b.y, 180.0, "centered on the cross (vertical) axis");
+        assert_eq!((b.w, b.h), (200.0, 40.0), "child keeps its Fit size");
+
+        // Growing the box keeps the child centered (it does not drift to a
+        // corner): a 1000x800 box centers at ((1000-200)/2, (800-40)/2).
+        let big = centered_leaf_bounds(1000.0, 800.0);
+        assert_eq!(big.x, 400.0, "still centered horizontally when enlarged");
+        assert_eq!(big.y, 380.0, "still centered vertically when enlarged");
     }
 
     #[test]

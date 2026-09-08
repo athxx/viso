@@ -1061,8 +1061,14 @@ spanning 放置 + auto-flow;ADR 0009 明列六项高级能力全未做。落 `cr
       公开面 `pub mod woff2` 供开发者对自取字节直接调用;只做库不接网络。
 
 - [x] **Hello World(末节)**:`examples/hello_world/src/main.rs` 改为居中 `label("Hello 世界 สวัสดี 🎉").font_size(48.)`,
-      全走系统字体(无内嵌)。双 cross-center 嵌套(外 Row + 内 Column 各 `Align::Center`,flex 引擎只有 cross 居中)实现两轴居中。
-      验证:macOS smoke `hello_world_shapes_all_scripts_from_system_fonts`——空 chain 经 provider 拉系统面,英/中/泰出轮廓 SDF、
-      emoji 出 RGBA color glyph,宽单行 `natural.x > 3·natural.y`;真机 CoreText 路径。
+      全走系统字体(无内嵌)。验证:macOS smoke `hello_world_shapes_all_scripts_from_system_fonts`——空 chain 经 provider
+      拉系统面,英/中/泰出轮廓 SDF、emoji 出 RGBA color glyph,宽单行 `natural.x > 3·natural.y`;真机 CoreText 路径。
+
+- [x] **flex 主轴居中(`Justify`)**:此前 flex 只有 cross 轴 `Align`,居中要靠外 Row + 内 Column 双嵌套凑,且窗口放大时子节点
+      漂向右下角。补主轴分布 `Justify { Start(默认)/Center/End }`(`FlexStyle.justify`),arrange 在无 Fill child 吃掉余量
+      (`weight_total == 0`)时按分数分配主轴空隙——语义取自 makepad Turtle 的 `Align{x,y}` 分数分布,落进 Viso retained
+      arrange。Hello World 收敛为单个 fill 容器 `justify: Center` + `align: Center` 两轴居中一个 Fit 子节点。所有 `FlexStyle`
+      字面量补 `justify: Justify::Start,`(行为不变)。验证:`justify_and_align_center_a_fit_child_on_both_axes` 单测——
+      600×400 与放大到 1000×800 均居中(证不再右下角漂移);viso-ui + viso 全套 503 测试绿。
 
 **ADR(git add -f)**:0024 已被 file-tree 占用 → 文本 ADR 顺延为 **0025 Text subsystem ownership**(external-backed 算法 + 缓存边界)与 **0026 System-font provider + color-glyph seam**(trait 在 viso-text、CoreText 实现在 facade;含彩色光栅缝)。彩色 emoji GPU ADR 不需。
