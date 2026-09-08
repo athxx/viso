@@ -791,7 +791,7 @@ todo 随做随标、与源码同 commit(不独立提)。开工第一个控件时
       吃 Tier 3 `Splitter`(分隔条)做区内分割;pointer capture/drag 是核心(复用 Slice H 的 capture holder,
       §13 pointer capture);状态 = 停靠布局树(哪块面板停哪、比例);a11y `Role` 待定(landmark/region)。
       落 `viso-widgets/src/controls/dock/`(子目录,§5 复杂子系统)。
-- [ ] **FileTree** —— 树形文件浏览器(展开/折叠节点、缩进层级、单选/多选、键盘导航)。
+- [x] **FileTree** —— 树形文件浏览器(展开/折叠节点、缩进层级、单选/多选、键盘导航)。
       大目录吃 Tier 3 `VirtualList` 虚拟化(§12.4,不为 100k 文件挂 100k 节点);展开/折叠 = 结构 reconcile;
       稳定 key(路径)保持展开态([[viso-diverge-from-makepad]] 若 makepad 无对应取 Viso 更优);
       a11y `Role::Tree`/`TreeItem` + `aria-expanded` 语义。落 `viso-widgets/src/controls/file_tree/`。

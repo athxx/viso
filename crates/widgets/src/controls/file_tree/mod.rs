@@ -66,6 +66,7 @@ mod build;
 mod command;
 pub mod model;
 mod reconcile;
+mod semantics;
 
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};

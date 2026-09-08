@@ -2664,6 +2664,21 @@ impl<'a> BuildCx<'a> {
         handle
     }
 
+    /// Attach an initial live [`SemanticState`] (checked / value / expanded /
+    /// selected) to an already-declared node, so its first accessibility snapshot
+    /// carries the state and not only the authored role. Mirrors [`semantics`],
+    /// which authors the cold role + label; this authors the live facet the derive
+    /// pass reads from the node's side column. A control whose state later changes
+    /// through a reactive cell reaches the same column via the flush-phase
+    /// projection; a control whose state is warm model data (a tree row) refreshes
+    /// it from its own reconcile step. Returns the handle so authoring chains inline.
+    ///
+    /// [`semantics`]: Self::semantics
+    pub fn semantic_state(&mut self, handle: Handle, state: SemanticState) -> Handle {
+        self.store.set_semantic_state(handle.id, state);
+        handle
+    }
+
     /// Declare text to draw on an already-declared node. Mirrors `semantics`:
     /// associates a node with an unshaped [`TextRequest`], which the shaping
     /// tier drains and turns into a [`Content::Text`] payload after build (see
