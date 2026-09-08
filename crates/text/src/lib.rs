@@ -20,6 +20,7 @@
 #![forbid(unsafe_op_in_unsafe_fn)]
 
 mod atlas;
+mod color_raster;
 mod font;
 mod layout;
 mod provider;
@@ -28,6 +29,7 @@ mod shape;
 mod system;
 
 pub use atlas::{ATLAS_SIZE, Atlas, AtlasEntry, DirtyRect};
+pub use color_raster::{ColorGlyph, rasterize_color_glyph};
 pub use font::{Command, FontFace, FontStore};
 pub use layout::{PositionedGlyph, layout};
 pub use provider::{

@@ -15,3 +15,5 @@ ab_glyph_rasterizer = { workspace = true }
 sdfer = { workspace = true }
 unicode-bidi = { workspace = true }
 unicode-script = { workspace = true }
+zune-png = { workspace = true }
+zune-core = { workspace = true }

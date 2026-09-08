@@ -70,6 +70,11 @@ ab_glyph_rasterizer = "0.1"
 sdfer = "0.2"
 unicode-bidi = "0.3"
 unicode-script = "0.5"
+# Pure-Rust PNG decoder for color-bitmap emoji strikes (sbix/CBDT PNG data that
+# ttf-parser hands back as raw bytes). Same decoder family makepad's color-emoji
+# path uses; decoded RGBA is premultiplied into the color glyph atlas.
+zune-png = "0.5"
+zune-core = "0.5"
 
 # macOS system-font resolution. The facade binds CoreText through the objc2
 # family (same generation as viso-platform's objc2 0.6 stack), asking the OS for
