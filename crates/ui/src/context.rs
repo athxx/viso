@@ -36,8 +36,73 @@ macro_rules! phase_cx {
     };
 }
 
-phase_cx!(/// Application-scope context: create windows, register services.
-    AppCx);
+/// Application-scope context: create windows, register services, and load the
+/// fonts the app wants to render with.
+///
+/// Unlike the marker phase contexts, `AppCx` holds live session state: the raw
+/// font faces the app registers at init. Viso bundles no default font — the
+/// default UI text is resolved from the OS at runtime — so an app that wants a
+/// specific typeface loads it here, ahead of the system fallbacks. A loaded face
+/// applies to every window the session opens, including windows opened later.
+///
+/// Requests are *recorded*, not applied: [`load_font`](Self::load_font) pushes
+/// the bytes onto a queue the facade drains after [`Application::new`] returns,
+/// mirroring how every other init/handler intent (window opens, timers) reaches
+/// the driver. The cx holds no font stack itself — that lives per window, one
+/// layer down, which the cx cannot reach.
+///
+/// [`Application::new`]: the app entry point that receives this context.
+pub struct AppCx<'a> {
+    _life: PhantomData<&'a mut ()>,
+    /// Raw sfnt face bytes the app asked to load, in call order. The facade
+    /// drains this after `Application::new` and loads each into every window's
+    /// shaper as the window opens, so the first-loaded face becomes the primary
+    /// (a user face sits ahead of any system fallback). Empty for an app that
+    /// loads no font and relies entirely on the system default.
+    fonts: Vec<Box<[u8]>>,
+}
+
+impl<'a> AppCx<'a> {
+    #[doc(hidden)]
+    pub fn __new() -> Self {
+        Self {
+            _life: PhantomData,
+            fonts: Vec::new(),
+        }
+    }
+
+    /// Register a font face from raw sfnt bytes (a `.ttf` / `.otf`, or the
+    /// decompressed bytes of a web font), to render with instead of the system
+    /// default. The first face loaded becomes the primary; later faces and the
+    /// system fallbacks sit behind it, covering scripts the primary lacks.
+    ///
+    /// The bytes are taken now and parsed later, once a window exists to hold the
+    /// font stack — so this cannot report a parse error here. A face whose bytes
+    /// are not a valid sfnt is skipped when the window loads it, leaving the
+    /// system default in place. This applies to every window the session opens.
+    pub fn load_font(&mut self, bytes: impl Into<Vec<u8>>) {
+        self.fonts.push(bytes.into().into_boxed_slice());
+    }
+
+    /// Register a font face read from a file on disk. Reads the whole file now
+    /// and records its bytes like [`load_font`](Self::load_font); the parse
+    /// happens later when a window loads the stack. Returns the read error if the
+    /// file cannot be read, so a missing path surfaces at the call site rather
+    /// than silently falling back to the system default.
+    pub fn load_font_file(&mut self, path: impl AsRef<std::path::Path>) -> std::io::Result<()> {
+        let bytes = std::fs::read(path)?;
+        self.fonts.push(bytes.into_boxed_slice());
+        Ok(())
+    }
+
+    /// Take the registered font faces for the facade to load into each window's
+    /// shaper. Called once after `Application::new`; leaves the queue empty.
+    #[doc(hidden)]
+    pub fn __take_fonts(&mut self) -> Vec<Box<[u8]>> {
+        core::mem::take(&mut self.fonts)
+    }
+}
+
 phase_cx!(/// Layout context. No network, no window creation, no GPU submit.
     LayoutCx);
 phase_cx!(/// Paint-data production context.
@@ -638,6 +703,27 @@ mod tests {
             h.id()
         };
         (store, id)
+    }
+
+    #[test]
+    fn app_cx_records_fonts_in_call_order_and_drains_once() {
+        let mut cx = AppCx::__new();
+        // An app with no font registered hands the facade an empty queue — it
+        // relies entirely on the system default.
+        assert!(cx.__take_fonts().is_empty());
+
+        // Faces load in call order: the facade makes the first one the primary,
+        // so the order the app registers them in is the fallback order.
+        cx.load_font(vec![1u8, 2, 3]);
+        cx.load_font(vec![4u8, 5]);
+        let fonts = cx.__take_fonts();
+        assert_eq!(fonts.len(), 2);
+        assert_eq!(&*fonts[0], &[1, 2, 3]);
+        assert_eq!(&*fonts[1], &[4, 5]);
+
+        // Draining empties the queue: a second window opened later gets the same
+        // faces from the facade's own copy, not by re-draining the cx.
+        assert!(cx.__take_fonts().is_empty());
     }
 
     #[test]

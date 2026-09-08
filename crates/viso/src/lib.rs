@@ -250,6 +250,13 @@ struct AppDriver<A: Application> {
     /// Reusable scratch the flush phase drains each window's queued window-close
     /// requests into (raw ids from the UI tier), mirroring `pending_opens`.
     pending_closes: Vec<u32>,
+    /// The raw sfnt faces the app registered at init through `AppCx::load_font`,
+    /// drained from the cx once after `Application::new`. Session-scoped: loaded
+    /// into every window's shaper as the window opens (ahead of the system
+    /// fallbacks), so a face registered at init applies to the launch window and
+    /// to any window opened later alike. Empty for an app that loads no font and
+    /// relies on the system default.
+    fonts: Vec<Box<[u8]>>,
 }
 
 /// Everything one window owns: its retained tree, reactive state, GPU surface,
@@ -360,7 +367,9 @@ struct WindowState {
     awaiting_first_frame: bool,
     /// The facade's font stack + glyph atlas. Shapes each node's `TextRequest`
     /// into a `Content::Text` payload (`viso-ui` holds no font stack). `None`
-    /// until launch, when the embedded UI font is loaded.
+    /// until launch, when a GPU backend exists to allocate the atlas; the app's
+    /// own faces (from `AppCx::load_font`) are loaded into it then, ahead of the
+    /// system fallbacks the first shape resolves. No font is bundled.
     text: Option<TextShaper>,
     /// Reusable buffer the text seam drains pending requests into, so re-shaping
     /// text allocates only the shaped payloads, not the request list.
@@ -397,6 +406,7 @@ impl<A: Application> AppDriver<A> {
             windows: Vec::new(),
             pending_opens: Vec::new(),
             pending_closes: Vec::new(),
+            fonts: Vec::new(),
         }
     }
 
@@ -458,6 +468,7 @@ impl WindowState {
     fn open(
         cx: &mut RuntimeCx<'_>,
         window: WindowId,
+        fonts: &[Box<[u8]>],
         build: impl FnOnce(&mut BuildCx) -> Option<NodeId>,
     ) -> Self {
         let mut ws = WindowState::new(window);
@@ -498,8 +509,17 @@ impl WindowState {
                 surface,
                 size: (w.max(1), h.max(1)),
             });
-            // Load the font stack now that a backend exists to allocate the atlas.
-            ws.text = Some(TextShaper::new());
+            // Stand up the font stack now that a backend exists to allocate the
+            // atlas, then register the app's own faces (from `AppCx::load_font`)
+            // into it in call order — the first becomes the primary, ahead of any
+            // system fallback resolved later. A face whose bytes do not parse is
+            // skipped, leaving the system default in place. An app that loaded no
+            // font gets an empty chain the first shape seeds from the system.
+            let mut shaper = TextShaper::new();
+            for face in fonts {
+                shaper.load_font(face.clone(), 0);
+            }
+            ws.text = Some(shaper);
         }
 
         // Build the retained UI tree once, now that we have a surface size. The
@@ -627,8 +647,11 @@ impl WindowState {
 
 impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
     fn on_launch(&mut self, cx: &mut RuntimeCx<'_>) {
-        // Construct the user application now that the pump is live.
+        // Construct the user application now that the pump is live, then take the
+        // faces it registered through `AppCx::load_font` so every window opened
+        // this session loads them ahead of the system fallbacks.
         self.app = Some(A::new(&mut self.cx));
+        self.fonts = self.cx.__take_fonts();
         // Open the initial window. Later phases let the app request its own
         // windows via `AppCx`; Phase 2 opens one canonical window.
         let Ok(id) = cx.create_window(viso_platform::WindowConfig::default()) else {
@@ -639,7 +662,7 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
         // the `window()` seam runs the identical path with the request's deferred
         // build closure instead — the launch window is not a special case.
         let app = self.app.as_mut();
-        let ws = WindowState::open(cx, id, |build| {
+        let ws = WindowState::open(cx, id, &self.fonts, |build| {
             app.and_then(|app| {
                 app.build(build);
                 build.root()
@@ -929,7 +952,7 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
                         if let Some(slot) = &id_slot {
                             slot.set(Some(id.0));
                         }
-                        let ws = WindowState::open(cx, id, req.build);
+                        let ws = WindowState::open(cx, id, &self.fonts, req.build);
                         self.windows.push(ws);
                     }
                 }
