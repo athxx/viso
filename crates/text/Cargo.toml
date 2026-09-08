@@ -18,3 +18,12 @@ unicode-script = { workspace = true }
 unicode-segmentation = { workspace = true }
 zune-png = { workspace = true }
 zune-core = { workspace = true }
+
+# Benches only. criterion is a dev-dependency: it never ships in the text crate
+# and is not an architecture DAG edge (external crate, ignored by dep checks).
+[dev-dependencies]
+criterion = "0.7"
+
+[[bench]]
+name = "wrap_line"
+harness = false
