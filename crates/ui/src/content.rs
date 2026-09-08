@@ -64,6 +64,21 @@ pub enum Content {
         /// the top). Layout containers that align on the text baseline (grid
         /// `AlignItems::Baseline`) read this; it is `0` for an empty run.
         baseline: f32,
+        /// The `max_width` (physical px) this run was shaped/wrapped at, or `None`
+        /// when shaped unconstrained (single-line natural). The layout pass
+        /// compares a wrap-eligible leaf's assigned box width against this to
+        /// decide whether the run must reflow to a narrower width (DL1
+        /// constraint downflow); `viso-ui` records the mismatch as data and the
+        /// facade — which owns the font stack — does the reshape.
+        shaped_at_width: Option<f32>,
+        /// Whether this run opts into soft wrapping, copied from its
+        /// [`TextRequest`] at shape time. The layout pass reads it to decide
+        /// reflow eligibility: only a `soft_wrap` run whose width axis is
+        /// `Fill`/`Fixed` reflows to its assigned box; a non-wrapping run stays
+        /// single-line and clips. Carried on the payload (rather than read back
+        /// from the request, which is drained at shape time) so the recorder
+        /// needs only the content column.
+        soft_wrap: bool,
     },
     /// A textured image drawn into the node's box. `uv` selects the source
     /// sub-rect in normalized texture coordinates, `tint` modulates it.
@@ -134,6 +149,12 @@ pub struct TextRequest {
     pub font_size: f32,
     /// Straight linear RGBA run color (a = opacity).
     pub color: Rgba,
+    /// Whether the run may soft-wrap to a width-constrained box. When `false`
+    /// (the default) a width-constrained (`Fill`/`Fixed`) leaf stays single-line
+    /// and clips/overflows its box; when `true` the shaper wraps it to the box
+    /// width the layout pass assigns. A `Fit`-width leaf ignores this — it sizes
+    /// to its content and is never width-constrained, so it never wraps.
+    pub soft_wrap: bool,
 }
 
 #[cfg(test)]
@@ -155,6 +176,8 @@ mod tests {
             },
             natural: Vec2 { x: 42.0, y: 12.0 },
             baseline: 9.0,
+            shaped_at_width: None,
+            soft_wrap: false,
         };
         assert_eq!(text.natural(), Vec2 { x: 42.0, y: 12.0 });
         assert_eq!(text.baseline(), Some(9.0));

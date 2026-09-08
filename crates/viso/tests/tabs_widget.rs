@@ -180,6 +180,8 @@ fn attach_captions(gpu: &mut HeadlessRaster, store: &mut NodeStore, root: NodeId
                 color: WHITE,
                 natural,
                 baseline: 0.0,
+                shaped_at_width: None,
+                soft_wrap: false,
             },
         );
     }

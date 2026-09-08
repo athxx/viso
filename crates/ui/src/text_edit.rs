@@ -523,6 +523,8 @@ pub fn reconcile(store: &mut crate::component::NodeStore, edits: &mut TextEdits)
             text: buffer.text.clone(),
             font_size: buffer.font_size,
             color: buffer.color,
+            // An edit buffer is single-line here: it clips/scrolls, never wraps.
+            soft_wrap: false,
         };
         store.set_text_request(node, request);
         redeclared += 1;

@@ -96,6 +96,8 @@ fn render_scene() -> Vec<u8> {
             color: WHITE,
             natural: glyph_run_natural(&tg.glyphs),
             baseline: 0.0,
+            shaped_at_width: None,
+            soft_wrap: false,
         },
     );
     store.set_content_payload(

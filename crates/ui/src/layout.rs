@@ -453,6 +453,18 @@ pub trait LayoutTree {
     /// measures to zero on both axes and lays out to a zero rect, contributing
     /// nothing to a parent's main-axis sum, without a structural rebuild.
     fn hidden(&self, index: u32) -> bool;
+    /// Record that a child was assigned `width` (physical px) by its Flex
+    /// parent, so a wrap-eligible text leaf can be reshaped at that width in a
+    /// later pass. A pure data write: the implementation decides eligibility
+    /// (text content, width `Fill`/`Fixed`, `soft_wrap`, width actually changed)
+    /// and drops the request otherwise. The layout engine calls it
+    /// unconditionally for every Flex child; it never reads text back, so the
+    /// measure/layout passes stay ignorant of shaping. A no-op by default so
+    /// containers that do not opt into reflow (and non-store `LayoutTree`
+    /// impls) need not implement it.
+    fn request_text_reflow(&mut self, index: u32, width: f32) {
+        let _ = (index, width);
+    }
 }
 
 /// Bottom-up measure pass: compute every node's natural size.
@@ -747,6 +759,15 @@ pub fn layout(tree: &mut impl LayoutTree, root: u32, bounds: Rect, scratch: &mut
             main_size,
             cross_size,
         );
+        // The child's assigned box width is main on a Row, cross on a Column.
+        // Record it so a wrap-eligible text child can reflow to it later; the
+        // recorder is a no-op for every non-text / non-wrapping child.
+        let assigned_width = if axis == Axis::Row {
+            main_size
+        } else {
+            cross_size
+        };
+        tree.request_text_reflow(child, assigned_width);
         layout(tree, child, child_box, scratch);
 
         cursor += main_size + gap;
@@ -1834,6 +1855,8 @@ mod tests {
                 },
                 natural: Vec2 { x: 20.0, y: height },
                 baseline,
+                shaped_at_width: None,
+                soft_wrap: false,
             },
         );
         id

@@ -453,6 +453,8 @@ mod tests {
                 color: RED,
                 natural: Vec2 { x: 30.0, y: 20.0 },
                 baseline: 16.0,
+                shaped_at_width: None,
+                soft_wrap: false,
             },
         );
         // An image whose Fit box comes from its intrinsic size.
@@ -618,6 +620,8 @@ mod tests {
                 color: RED,
                 natural: Vec2 { x: 40.0, y: 20.0 },
                 baseline: 16.0,
+                shaped_at_width: None,
+                soft_wrap: false,
             },
         );
 
@@ -720,6 +724,8 @@ mod tests {
                 color: RED,
                 natural: Vec2 { x: 20.0, y: 20.0 },
                 baseline: 16.0,
+                shaped_at_width: None,
+                soft_wrap: false,
             },
         );
 

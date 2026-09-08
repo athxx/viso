@@ -1123,6 +1123,21 @@ spanning 放置 + auto-flow;ADR 0009 明列六项高级能力全未做。落 `cr
       契约,不属于文字子系统**,故从原 D1 拆出、开自己的 ADR(§96 自适应布局落地开端)。消费 D1 的宽度换行能力,排在
       D1 之后;是否早于 D2–D4 视 §96 落地节奏定(D2 缓存的宽度失效键在 DL1 接线后才有真实来源,但 D2 缓存本身可先以
       `max_width` 入键就位)。
+      - **进行中 2026-09-09**:采用**两阶段 facade 驱动 reflow**(非给 measure 引入约束下行——measure 保持纯 post-order、
+        对文本无知)。Phase A `shape_pending_text(None)` → measure → layout;layout 的 Flex 摆放循环里子节点宽度确定后调
+        `LayoutTree::request_text_reflow(index, assigned_width)`(纯数据写,eligibility 全在 NodeStore impl:width 轴
+        `Fill`/`Fixed` 非 `Fit` + `soft_wrap` + 宽度量化到整数物理 px 后与 `shaped_at_width` 差 >0.5px)。Phase B(lib.rs
+        `FramePhase::Layout` 臂,`relayout_and_paint` 后、`absorb_measurements` 前)`reflow_wrapped_text`:drain 队列→按
+        retained source 在 `Some(width)` reshape→`set_reflowed_content`(标 MEASURE|LAYOUT|PAINT **不标 SEMANTICS**,宽度
+        reshape 不改可访问名)→relayout,循环上限 3(收敛靠 eligibility+单调性:reshape 只改高、只缩不增 natural 宽,Fit
+        排除;cap 只是安全网)。收敛证明与 §20/ADR 0025 量化+epsilon 守卫见新 ADR。数据模型:`Content::Text` 加
+        `shaped_at_width: Option<f32>` + `soft_wrap: bool`(shape 期从 TextRequest 拷到 payload,recorder 只读 content 列);
+        `TextRequest` 加 `soft_wrap`。facade 为 wrap 运行保留 `wrap_sources: HashMap<NodeId, TextRequest>`(store 的 request
+        列 drain 后 Phase B 靠它 reshape;仅 wrap 子集、freed 节点 reflow 时 `retain(is_live)` 清理)。widget:`LabelStyle`
+        加 `soft_wrap` + `.wrap()` setter。resize 被 subsumed(`on_geometry` 标 root MEASURE|LAYOUT|PAINT→下帧宽度失配重触)。
+        §61 counter:reflow pass 数经 `VISO_FRAME_TRACE` gate 打印首帧 double-shape。**剩:headless 测试(Column/Row wrap+高度、
+        Fixed+soft_wrap=false 不 reflow、默认 Fit 队列空、resize 重触 + 亚像素抖动不 reshape、收敛 ≤2 iter、嵌套传播)+ ADR
+        `docs/adr/00NN-width-aware-text-reflow.md` + fmt/clippy/arch-check/example 眼验/bench 复核。**
 - [ ] **D2 `text: paragraph / shaping-run cache`** —— §37.11/§37.13 的 paragraph/shaping cache:viso-text 持 paragraph 级
       缓存(键 = text + font/feature/revision + 可用宽度),命中则跳过 reshape + re-linebreak;把「不 reshape」的边界从
       facade 粗门下沉到 text 层自身。依赖 D1(宽度是失效键之一)。

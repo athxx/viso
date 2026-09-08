@@ -96,11 +96,18 @@ impl TextShaper {
     /// Glyph positions are node-local (origin at `(0, 0)`); the paint step
     /// shifts them to the node's world origin. `natural` is the run's bounding
     /// extent, which the measure pass reads for a `Fit` axis.
+    /// `max_width` is the box width (physical px) the layout pass assigned this
+    /// run, or `None` to shape unconstrained (single-line natural). It is only
+    /// ever `Some` on a reflow pass for a wrap-eligible leaf (DL1 constraint
+    /// downflow); the first shape of any run passes `None`. The produced
+    /// `Content::Text` records it as `shaped_at_width` so the layout pass can
+    /// tell whether a later assigned width still matches.
     pub(crate) fn shape<B: GpuBackend>(
         &mut self,
         backend: &mut B,
         request: &TextRequest,
         dpi_factor: f32,
+        max_width: Option<f32>,
     ) -> Content {
         // Seed the primary face from the system if the chain is still empty (no
         // user face loaded): the first shape pulls the platform default UI face.
@@ -120,6 +127,8 @@ impl TextShaper {
                 color: request.color,
                 natural: Vec2::ZERO,
                 baseline: 0.0,
+                shaped_at_width: max_width,
+                soft_wrap: request.soft_wrap,
             };
         };
 
@@ -132,15 +141,17 @@ impl TextShaper {
         self.text
             .resolve_missing(font, &request.text, &self.provider, &mut self.fallback);
 
-        // `None` width: no soft wrapping yet. Wiring the layout engine's
-        // available content width through to here is a measure-pipeline change
-        // (constraint downflow) tracked separately; the text layer already
-        // supports it via `prepare`'s `max_width_px`.
+        // Soft wrap only when the run opted in *and* the layout pass handed down
+        // a constraining width (DL1 constraint downflow). A run that did not opt
+        // in, or that was shaped unconstrained (`max_width == None`, the first
+        // shape), stays single-line — `prepare` with `None` produces the natural
+        // one-line extent the measure pass reads for a `Fit` axis.
+        let wrap_width = if request.soft_wrap { max_width } else { None };
         let quads = self.text.prepare(
             font,
             &request.text,
             request.font_size,
-            None,
+            wrap_width,
             dpi_factor,
             Some(&self.color_raster),
         );
@@ -238,6 +249,11 @@ impl TextShaper {
             color: request.color,
             natural,
             baseline,
+            // The width this run actually wrapped at: `None` when it stayed
+            // single-line (not opted in, or shaped unconstrained). The layout
+            // pass reflows only when its assigned width disagrees with this.
+            shaped_at_width: wrap_width,
+            soft_wrap: request.soft_wrap,
         }
     }
 }
@@ -285,8 +301,10 @@ mod tests {
                 text: "Viso".to_string(),
                 font_size: 22.0,
                 color: WHITE,
+                soft_wrap: false,
             },
             1.0,
+            None,
         );
 
         match content {
@@ -315,8 +333,10 @@ mod tests {
                 text: "Vi".to_string(),
                 font_size: 18.0,
                 color: WHITE,
+                soft_wrap: false,
             },
             1.0,
+            None,
         );
         let b = shaper.shape(
             &mut gpu,
@@ -324,8 +344,10 @@ mod tests {
                 text: "so".to_string(),
                 font_size: 18.0,
                 color: WHITE,
+                soft_wrap: false,
             },
             1.0,
+            None,
         );
         let (Content::Text { atlas: at_a, .. }, Content::Text { atlas: at_b, .. }) = (a, b) else {
             panic!("both shape into text");
@@ -352,9 +374,10 @@ mod tests {
             text: "Viso".to_string(),
             font_size: 24.0,
             color: WHITE,
+            soft_wrap: false,
         };
-        let one = shaper.shape(&mut gpu, &request, 1.0);
-        let two = shaper.shape(&mut gpu, &request, 2.0);
+        let one = shaper.shape(&mut gpu, &request, 1.0, None);
+        let two = shaper.shape(&mut gpu, &request, 2.0, None);
 
         let (Content::Text { natural: n1, .. }, Content::Text { natural: n2, .. }) = (one, two)
         else {
@@ -390,8 +413,10 @@ mod tests {
                 text: "Hello 世界 สวัสดี 🎉".to_string(),
                 font_size: 48.0,
                 color: WHITE,
+                soft_wrap: false,
             },
             2.0,
+            None,
         );
 
         match content {
