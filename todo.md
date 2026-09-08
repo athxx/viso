@@ -1026,7 +1026,7 @@ spanning 放置 + auto-flow;ADR 0009 明列六项高级能力全未做。落 `cr
       非 macOS 编译为返 `None` 的 stub(trait 缝已留)。provider→shaper 活线接入(遍历链+reshape)推到 A5「prepare
       over chain」。验证:viso-text 4 provider 测(覆盖不查、缺脚本查样本、emoji 单独查、负缓存不重问)全绿(20 测);
       viso 3 sfnt 测(LastResort 阈值、checksum 补零、重组目录 ttf-parser 可解析)全绿。
-- [ ] **A5 `text: prepare over chain + dpi`** —— glyph 准备遍历回退链;修 `crates/viso/src/lib.rs:552` dpi 硬编码。
+- [x] **A5 `text: prepare over chain + dpi`** —— glyph 准备遍历回退链;修 `crates/viso/src/lib.rs:552` dpi 硬编码。
 
 **Phase B —— 彩色 emoji(复用 Image 管线)**
 

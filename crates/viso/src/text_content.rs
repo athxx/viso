@@ -15,8 +15,10 @@
 
 use viso_gpu::{GpuBackend, TextureDesc, TextureFormat};
 use viso_render::{GlyphInstanceData, Rect, TextureId};
-use viso_text::{FontId, TextSystem};
+use viso_text::{FontId, SystemFallback, TextSystem};
 use viso_ui::{Content, TextRequest, Vec2};
+
+use crate::system_fonts::CoreTextProvider;
 
 /// The embedded UI font: the same DejaVu Sans subset the renderer's test scene
 /// uses, kept in-tree so text renders deterministically with no system-font
@@ -32,6 +34,14 @@ pub(crate) struct TextShaper {
     /// The persistent glyph atlas texture, created lazily on the first shape
     /// (once a backend exists to allocate it). `None` until then.
     atlas: Option<TextureId>,
+    /// The platform system-font provider (CoreText on macOS, a no-op elsewhere):
+    /// consulted when a run has characters the loaded chain cannot render, to
+    /// pull a covering system face into the fallback chain.
+    provider: CoreTextProvider,
+    /// Negative cache for system-font resolution — records which scripts / emoji
+    /// have already been queried so an uncoverable run does not re-ask the OS
+    /// every time it is (re)shaped.
+    fallback: SystemFallback,
 }
 
 impl TextShaper {
@@ -45,6 +55,8 @@ impl TextShaper {
             text,
             font,
             atlas: None,
+            provider: CoreTextProvider::new(),
+            fallback: SystemFallback::new(),
         }
     }
 
@@ -61,6 +73,15 @@ impl TextShaper {
         request: &TextRequest,
         dpi_factor: f32,
     ) -> Content {
+        // Before laying out, extend the fallback chain with system faces for any
+        // script / emoji the loaded chain cannot render, so the run resolves
+        // against the grown chain rather than boxing uncovered characters. The
+        // negative cache makes an uncoverable (or already-resolved) run a no-op,
+        // so steady-state reshapes of the same text pay only the shape, not an OS
+        // query. `prepare` below reshapes from scratch, picking up new faces.
+        self.text
+            .resolve_missing(self.font, &request.text, &self.provider, &mut self.fallback);
+
         let quads = self
             .text
             .prepare(self.font, &request.text, request.font_size, dpi_factor);
@@ -201,5 +222,39 @@ mod tests {
             panic!("both shape into text");
         };
         assert_eq!(at_a, at_b, "the atlas texture is created once and reused");
+    }
+
+    #[test]
+    fn dpi_factor_preserves_logical_extent() {
+        // Glyphs rasterize at the surface density, but positions/extents are in
+        // logical pixels: shaping the same run at 1x and 2x lands the run in
+        // essentially the same logical box (the higher-density SDF is decoded
+        // back to logical space in `prepare`; only the final glyph's integer
+        // bitmap extent quantizes differently per density, a sub-glyph delta).
+        // This is the invariant the threaded real dpi relies on — a HiDPI window
+        // lays text out at the same size, only crisper. The wrong behavior
+        // (ignoring dpi and emitting the 2x bitmap into logical space) would
+        // roughly double the extent, which this tolerance rejects.
+        let mut gpu = HeadlessRaster::new();
+        let _ = gpu.create_surface(RawWindowHandle::Headless, 128, 128);
+        let mut shaper = TextShaper::new();
+
+        let request = TextRequest {
+            text: "Viso".to_string(),
+            font_size: 24.0,
+            color: WHITE,
+        };
+        let one = shaper.shape(&mut gpu, &request, 1.0);
+        let two = shaper.shape(&mut gpu, &request, 2.0);
+
+        let (Content::Text { natural: n1, .. }, Content::Text { natural: n2, .. }) = (one, two)
+        else {
+            panic!("both shape into text");
+        };
+        // Within a few logical pixels (glyph-extent quantization), not doubled.
+        assert!(
+            (n1.x - n2.x).abs() < 4.0 && (n1.y - n2.y).abs() < 4.0,
+            "logical extent is dpi-invariant within quantization: {n1:?} vs {n2:?}"
+        );
     }
 }

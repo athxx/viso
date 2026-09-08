@@ -11,6 +11,8 @@ use crate::FontId;
 use crate::FontStore;
 use crate::atlas::{ATLAS_SIZE, Atlas, DirtyRect};
 use crate::layout::layout;
+use crate::provider::{SystemFallback, SystemFontProvider};
+use crate::shape::shape;
 
 /// A single positioned glyph ready for the GPU: where it lands on screen, where
 /// it lives in the atlas, and how to decode its SDF.
@@ -71,6 +73,36 @@ impl TextSystem {
     /// the vertical anchor cross-line/cross-cell baseline alignment aligns on.
     pub fn first_baseline(&self, font: FontId, font_size_px: f32) -> f32 {
         self.store.face(font).ascender_em * font_size_px
+    }
+
+    /// Extend the fallback chain with system faces covering any character in
+    /// `text` the currently-loaded chain cannot render, so a subsequent
+    /// [`prepare`](Self::prepare) resolves the run against the grown chain.
+    ///
+    /// Shapes `text` with the current chain, then hands the shaped run to
+    /// `fallback` — which scans it for uncovered scripts / emoji, queries
+    /// `provider` for a covering face per missing script not already attempted,
+    /// and appends each resolved face to the store's chain. Returns `true` if the
+    /// chain grew (a caller may reshape/relay out; `prepare` already reshapes from
+    /// scratch, so calling it after this suffices).
+    ///
+    /// This is the seam the pure algorithm layer exposes for the facade's
+    /// platform provider: the resolution *policy* and negative cache live in
+    /// [`SystemFallback`], the platform binding behind the `provider` trait
+    /// object, and this method only drives one shape → resolve step. Cold path —
+    /// it runs when text is (re)declared, not per frame in steady state.
+    pub fn resolve_missing(
+        &mut self,
+        font: FontId,
+        text: &str,
+        provider: &dyn SystemFontProvider,
+        fallback: &mut SystemFallback,
+    ) -> bool {
+        // The store owns the chain; `font` is the request's primary face, which
+        // is already the chain head, so shaping over the whole chain covers it.
+        let _ = font;
+        let shaped = shape(&self.store, text);
+        fallback.resolve_missing(&mut self.store, provider, text, &shaped)
     }
 
     /// Shape and lay out `text` with `font` at `font_size_px`, rasterizing at

@@ -274,6 +274,12 @@ struct WindowState {
     /// Metal target where a headless surface cannot be created). `on_geometry`
     /// keeps it and the swapchain in step; seeded from the window's launch size.
     surface_size: (u32, u32),
+    /// The window's device-pixel density (logical→physical scale), seeded from
+    /// the platform at open and refreshed on every geometry change. Text shapes
+    /// and rasterizes glyphs at this density, so a HiDPI surface gets crisp
+    /// glyphs instead of 1x SDFs upscaled by the compositor. Independent of the
+    /// GPU: a headless window still carries its reported scale.
+    dpi: f32,
     /// The retained UI tree: real nodes built once on launch, then relaid only
     /// where invalidated each frame and painted to primitives.
     store: NodeStore,
@@ -411,6 +417,7 @@ impl WindowState {
             window,
             gpu: None,
             surface_size: (1, 1),
+            dpi: 1.0,
             store: NodeStore::new(),
             states: StateStore::new(),
             bindings: BindingTable::new(),
@@ -460,6 +467,11 @@ impl WindowState {
         // still measures and places the whole tree, it just paints to nothing.
         let (w, h) = cx.inner_size(window).unwrap_or((1, 1));
         ws.surface_size = (w.max(1), h.max(1));
+
+        // Record the window's device-pixel density up front so the first shape
+        // rasterizes glyphs at the surface's real scale. A window with no scale
+        // reported (or a value the platform cannot supply) falls back to 1x.
+        ws.dpi = cx.scale_factor(window).unwrap_or(1.0) as f32;
 
         // Bring up the GPU for this window when it exposes a real windowing
         // handle: create the device, attach a surface to that handle, and build
@@ -548,9 +560,10 @@ impl WindowState {
         if self.text_scratch.is_empty() {
             return;
         }
-        // DPI factor 1.0 for now: the surface density plumbs through with the
-        // scale-aware input path later; the embedded font rasterizes at 1x.
-        let dpi = 1.0;
+        // Rasterize glyphs at the window's real device-pixel density (seeded at
+        // open, refreshed on every geometry change), so a HiDPI surface gets
+        // crisp SDFs instead of 1x coverage upscaled by the compositor.
+        let dpi = self.dpi;
         for (id, request) in self.text_scratch.drain(..) {
             let content = text.shape(&mut gpu.backend, &request, dpi);
             self.store.set_content_payload(id, content);
@@ -635,7 +648,7 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
         self.windows.push(ws);
     }
 
-    fn on_geometry(&mut self, window: WindowId, _scale: f64, width: u32, height: u32) {
+    fn on_geometry(&mut self, window: WindowId, scale: f64, width: u32, height: u32) {
         // Resize the named window's swapchain so its next frame maps pixel-space
         // to the new extent, and mark its root for relayout so the next
         // incremental frame re-places the tree against the new surface and
@@ -648,6 +661,12 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
         };
         let (w, h) = (width.max(1), height.max(1));
         ws.surface_size = (w, h);
+        // Track the window's current density so text (re)declared after a
+        // scale change rasterizes at the new density. A non-positive scale
+        // (unreported) keeps the prior value rather than collapsing to zero.
+        if scale > 0.0 {
+            ws.dpi = scale as f32;
+        }
         if let Some(gpu) = &mut ws.gpu {
             gpu.backend.resize_surface(gpu.surface, w, h);
             gpu.size = (w, h);
