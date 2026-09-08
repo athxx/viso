@@ -13,3 +13,5 @@ ttf-parser = { workspace = true }
 rustybuzz = { workspace = true }
 ab_glyph_rasterizer = { workspace = true }
 sdfer = { workspace = true }
+unicode-bidi = { workspace = true }
+unicode-script = { workspace = true }

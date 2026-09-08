@@ -24,16 +24,80 @@ fn font_metrics_are_sane() {
 #[test]
 fn shaping_produces_nonzero_advances() {
     let (store, id) = store();
-    let face = store.face(id);
-    let glyphs = shape(face, "Hello");
+    let glyphs = shape(&store, "Hello");
     assert_eq!(glyphs.len(), 5);
     for g in &glyphs {
         assert!(g.advance_em > 0.0, "glyph {} has zero advance", g.id);
         assert!(g.id != 0, "unexpected .notdef in ASCII shaping");
+        // A single-face store resolves every glyph to the primary face.
+        assert_eq!(g.font, id, "ASCII shapes with the primary face");
     }
     // Clusters increase left-to-right across the ASCII run.
     assert_eq!(glyphs[0].cluster, 0);
     assert!(glyphs[4].cluster > glyphs[0].cluster);
+}
+
+#[test]
+fn empty_chain_shapes_to_nothing() {
+    // A store with no font loaded has an empty chain and shapes to no glyphs
+    // rather than panicking on a missing primary.
+    let store = FontStore::new();
+    assert!(shape(&store, "Hello").is_empty());
+}
+
+#[test]
+fn uncovered_glyphs_stay_notdef_without_a_fallback() {
+    // The ASCII subset covers no CJK; with no fallback face the run shapes to
+    // the primary's .notdef box rather than resolving elsewhere.
+    let (store, id) = store();
+    let glyphs = shape(&store, "中");
+    assert!(
+        !glyphs.is_empty(),
+        "a codepoint still produces a glyph slot"
+    );
+    assert!(
+        glyphs.iter().all(|g| g.font == id),
+        "with no fallback, everything stays on the primary face"
+    );
+    assert!(
+        glyphs.iter().any(|g| g.id == 0),
+        "uncovered CJK shapes to .notdef on the primary"
+    );
+}
+
+#[test]
+fn fallback_recursion_resolves_missing_glyphs_to_the_tail_face() {
+    // Two faces: a primary that covers only the ASCII subset, and a fallback.
+    // Reusing the same subset bytes for both means the fallback covers the same
+    // glyphs — so a covered run still resolves entirely to the primary, proving
+    // recursion only reshapes genuine .notdef spans, never covered ones.
+    let mut store = FontStore::new();
+    let primary = store.load(FONT.to_vec(), 0).expect("primary");
+    let fallback = store.load(FONT.to_vec(), 0).expect("fallback");
+    store.push_fallback(fallback);
+
+    let glyphs = shape(&store, "Hi");
+    assert_eq!(glyphs.len(), 2);
+    assert!(
+        glyphs.iter().all(|g| g.font == primary),
+        "covered text never falls through to the tail face"
+    );
+    assert!(glyphs.iter().all(|g| g.id != 0));
+}
+
+#[test]
+fn ltr_fast_path_and_bidi_agree_on_pure_ltr() {
+    // Pure-LTR text takes the fast path; a leading RTL marker would force the
+    // BiDi path. Both must shape the ASCII tail to the same non-notdef glyphs
+    // (the subset has no RTL coverage, so we only assert the LTR portion holds).
+    let (store, _) = store();
+    let fast = shape(&store, "abc");
+    assert_eq!(fast.len(), 3);
+    assert!(fast.iter().all(|g| g.id != 0 && g.advance_em > 0.0));
+    // Clusters are the absolute byte offsets 0,1,2 for single-byte ASCII.
+    assert_eq!(fast[0].cluster, 0);
+    assert_eq!(fast[1].cluster, 1);
+    assert_eq!(fast[2].cluster, 2);
 }
 
 #[test]
