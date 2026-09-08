@@ -952,7 +952,6 @@ checksum = "383ad40bb927465ec0ce7720e033cb4ca06912855fc35db31b5755d0de75b1ee"
 name = "viso"
 version = "0.0.0"
 dependencies = [
- "brotli-decompressor",
  "criterion",
  "objc2-core-foundation",
  "objc2-core-graphics",
@@ -1128,6 +1127,14 @@ version = "0.0.0"
 dependencies = [
  "criterion",
  "viso-ui",
+]
+
+[[package]]
+name = "viso-woff2"
+version = "1.0.0"
+dependencies = [
+ "brotli-decompressor",
+ "rustybuzz",
 ]
 
 [[package]]

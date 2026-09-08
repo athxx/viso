@@ -801,13 +801,17 @@ OS abstraction：
 
 ### `viso-text`
 
-- font DB；
-- fallback；
+- App/System/External font source registry；
+- font source 解析：按 sample string 解析系统面（by sample string, not family name，makepad 语义，ADR 0026 §1），而非维护 family-name 索引的 font DB；用户面居前、系统面居后的回退链排序；
+- character/cluster coverage fallback；
+- native system-font adapter contract；
+- WASM external/progressive font provider contract；
 - shaping；
 - BiDi；
 - line breaking；
 - paragraph layout；
-- glyph cache/atlas integration metadata。
+- font/shaping/glyph cache 与 atlas integration metadata；
+- font revision/incremental invalidation 与 profiler counters。
 
 ### `viso-render`
 
@@ -3312,13 +3316,16 @@ Mismatch 在编译/热重载时失败，不允许 silent memory corruption。
 
 ## 37. Text 是独立性能子系统
 
-`viso-text` 不是普通 Widget 辅助库。
+`viso-text` 不是普通 Widget 辅助库。它同时拥有字体来源解析、字符覆盖 fallback、shaping、paragraph layout、渐进字体加载和 glyph cache 的运行时合同。
 
 负责：
 
 ```text
+Font Source Registry
 Font Database
-Fallback
+Family / Face Resolution
+Character Coverage Fallback
+Progressive Font Loading
 Unicode Script Detection
 BiDi
 Shaping
@@ -3328,28 +3335,382 @@ Glyph Cache
 Glyph Atlas Metadata
 ```
 
-### 37.1 三级缓存
+Text 系统必须把以下概念严格分开：
+
+```text
+Font Source
+    字体数据从哪里来
+
+Font Face
+    某个 family + weight + style + stretch 的具体 face
+
+Character Coverage
+    某个 face 当前是否能够覆盖所需字符/cluster
+
+Shaping
+    字符序列如何变成 glyph sequence / positions
+
+Glyph Raster / Atlas
+    已确定 glyph 如何变成 GPU 可绘制数据
+```
+
+禁止把“找字体”“下载字体”“shaping”“raster glyph”混成一个同步热路径。
+
+### 37.1 字体来源与优先级
+
+Viso 定义三类一等字体来源：
+
+```text
+AppFontSource
+SystemFontSource
+ExternalFontSource
+```
+
+其中：
+
+- `AppFontSource`：应用通过 `assets/fonts/`、build manifest、运行时注册或内存输入提供的字体；
+- `SystemFontSource`：平台操作系统可访问的已安装字体；
+- `ExternalFontSource`：由开发者提供的外部字体来源，例如网络、宿主桥接、插件或远程字体服务。
+
+字体来源有严格优先级。Native 平台默认：
+
+```text
+1. App fonts matching requested family/style
+2. App fallback fonts
+3. System fonts matching requested family/style
+4. System fallback fonts for script/language/coverage
+5. Missing-glyph policy
+```
+
+这意味着：
+
+- App 注册了与系统同名的 family 时，App face 优先；
+- App 指定了自定义字体但该字体缺少某个字符时，不要求整段失败，可以继续进入 fallback；
+- App 没有注册任何字体时，Native 默认直接使用系统字体解析；
+- App 可以显式限制 fallback source，但默认策略是 App-first、System-second；
+- 字体来源优先级是 Font Resolver 合同，不允许 Widget 各自实现一套搜索规则。
+
+### 37.2 Family resolution 与字符 fallback 是两步
+
+Viso 不把 `font-family` 查找和缺字 fallback 当成同一件事。
+
+第一步是 face resolution：
+
+```text
+FontRequest {
+    family_stack
+    weight
+    style
+    stretch
+    language
+    script_hint
+}
+        ↓
+App Font DB
+        ↓ miss
+System Font DB (Native only)
+        ↓
+Resolved Face Candidates
+```
+
+第二步才是 character/cluster coverage：
+
+```text
+text run / shaping cluster
+        ↓
+selected app face covers it?
+        ├─ yes -> shape
+        └─ no
+            ↓
+        app fallback covers it?
+            ├─ yes -> shape
+            └─ no
+                ↓
+        native system fallback covers it?
+            ├─ yes -> shape
+            └─ no -> missing glyph / async external request
+```
+
+对 CJK、Arabic、Indic、emoji sequence 等场景，fallback 单位不能机械地假定为“单个 Unicode code point”；resolver/shaper 必须允许以 script run、grapheme 或 shaping cluster 为单位选择 face。
+
+### 37.3 Native 平台默认系统字体策略
+
+macOS、iOS、Windows、Linux、Android 的默认策略是：
+
+```text
+AppFontSource
+    ↓ preferred
+SystemFontSource
+    ↓ fallback
+Missing Glyph
+```
+
+Native `SystemFontSource` 必须由 `viso-text` 通过 platform adapter 使用，而不是让 UI 直接调用 CoreText/DirectWrite/Fontconfig/Android font API。
+
+系统字体解析要求：
+
+- 按需查询，不要求启动时完整扫描并解析所有字体文件；
+- 缓存 family/style/coverage 查询结果；
+- system font database 变化时通过 revision 失效；
+- 系统 font handle/path 不进入稳定 wire ABI；
+- 不把平台 font object 泄漏到 `viso-ui` / `viso-render` public API；
+- 平台字体读取失败必须退化为可诊断的 missing-font/missing-glyph，而不是 panic。
+
+### 37.4 WASM / Web 默认没有系统字体源
+
+WASM/WebGPU 目标默认 **不注册 `SystemFontSource`**。
+
+默认链路：
+
+```text
+AppFontSource
+    ↓
+ExternalFontSource (only when developer provides one)
+    ↓
+Missing Glyph
+```
+
+硬规则：
+
+- Viso WASM runtime 不默认扫描、枚举或隐式依赖浏览器/操作系统安装字体；
+- 不因为某个浏览器恰好提供 CSS/system font 能力，就把它变成 Canvas/WebGPU renderer 的隐式 ABI；
+- 没有 App fonts 且没有 ExternalFontSource 时，缺失字符按 missing-glyph policy 处理；
+- 如果宿主环境希望提供本地字体，必须显式注册 Host/External Font Provider；
+- 同一个 Viso Web artifact 在不同用户机器上不应因为不可见的系统字体集合而产生无法解释的字体选择差异。
+
+这使 WebGPU/Canvas 文本结果具有更高的可预测性，也让离线包、远程字体和协作型画布可以使用同一套 provider contract。
+
+### 37.5 External Font Provider 与渐进字符加载
+
+Web/WASM 必须支持开发者注入异步 `ExternalFontSource`。它可以来自：
+
+```text
+HTTP/CDN
+application font server
+host JavaScript bridge
+plugin/extension
+in-memory stream
+custom binary protocol
+```
+
+概念接口：
+
+```rust
+pub trait FontProvider {
+    fn query(&self, request: &FontRequest, out: &mut FaceCandidates);
+
+    fn request_coverage(
+        &self,
+        face: FontFaceId,
+        chars: CharacterSet,
+        priority: FontLoadPriority,
+    ) -> FontLoadTicket;
+}
+```
+
+实际异步实现可以由 runtime/task 层承载；接口重点是语义，而不是强制使用某一种 Future ABI。
+
+`request_coverage` 的请求粒度允许非常细：
+
+```text
+one Unicode scalar for simple scripts
+small character set
+shaping cluster
+script range
+font subset page
+```
+
+但 Runtime 必须自动：
+
+- deduplicate 同一 face/coverage 的并发请求；
+- 合并同一帧/短时间窗口内的小请求；
+- 设置最大并发请求数与最大下载预算；
+- 允许 provider 返回 full face、subset font 或等价的可 shaping 数据；
+- 对已请求但尚未返回的 coverage 记录 pending state；
+- 支持 cancellation / priority downgrade；
+- 支持 memory/disk/browser cache policy；
+- 将网络错误与“字体确实不覆盖该字符”区分开。
+
+Viso 不规定远端协议必须“一字符一个 HTTP 请求”。“按字符加载”描述的是 **coverage 可以按需要增量获得**；真正传输必须允许 batching/subsetting。
+
+### 37.6 Shaping metadata 与远程 subset
+
+远程字体不能只返回一个没有上下文的 bitmap glyph 就假定所有文字都能正确排版。正确 shaping 可能依赖：
+
+```text
+face metrics
+cmap
+variation axes
+GSUB
+GPOS
+GDEF
+script/language features
+emoji/ligature sequence data
+```
+
+因此 ExternalFontSource 至少选择一种明确能力模型：
+
+```text
+A. Local shaping provider
+   - 客户端拥有足够的 face/shaping metadata
+   - provider 渐进提供 outline/font subset
+   - viso-text 本地 shaping
+
+B. Shaped-run provider
+   - provider/host 返回已解析的 glyph ids + advances/offsets + face revision
+   - 客户端验证并缓存 shaped run / glyph payload
+```
+
+Viso 1.0 默认推荐 A：保持 shaping 逻辑在 `viso-text`，远端只负责按需提供字体数据/subset。
+
+无论采用哪一种，必须保证：
+
+- font/subset revision 可识别；
+- 同一 paragraph 不混用不兼容 face revision；
+- 新 coverage 到达后只失效受影响的 runs/paragraphs；
+- 不允许异步字体返回结果覆盖更新后的 text/font request。
+
+### 37.7 字体加载完成后的增量失效
+
+字体是异步 Resource，但字体到达不能触发全 App rebuild。
+
+依赖链：
+
+```text
+FontSourceRevision
+      ↓
+Face/Coverage Revision
+      ↓
+Affected Shaping Runs
+      ↓
+Affected Paragraphs
+      ↓
+MEASURE/LAYOUT when metrics changed
+PAINT when only glyph image/atlas changed
+```
+
+典型 Web 流程：
+
+```text
+Text requests characters
+    ↓
+App font coverage miss
+    ↓
+ExternalFontSource request queued
+    ↓
+current frame uses fallback / placeholder according to policy
+    ↓
+font subset arrives
+    ↓
+FontRevision increments
+    ↓
+reshape only affected run
+    ↓
+if advances changed -> MEASURE/LAYOUT + PAINT
+if advances unchanged -> PAINT only
+    ↓
+glyph atlas upload
+```
+
+禁止：
+
+```text
+font arrived -> clear every text cache
+font arrived -> rebuild full UI tree
+font arrived -> re-layout unrelated windows/pages
+```
+
+### 37.8 Missing glyph policy
+
+Missing glyph 必须是可配置且可观测的策略，不是 silent failure。
+
+至少支持：
+
+```text
+FallbackToNextSource
+PlaceholderGlyph
+InvisibleButMeasured
+BlockUntilRequiredFont     # only explicit workflows, never default UI hot path
+ErrorInStrictMode
+```
+
+默认交互式 UI 不允许因为远端缺少一个字符无限阻塞 frame。Inspector/Profiler 必须能够显示：
+
+```text
+requested family
+resolved face
+font source kind
+fallback chain
+missing codepoints/clusters
+pending external requests
+font revision
+reshape count
+font bytes loaded
+```
+
+### 37.9 Font identity 与 Resource identity
+
+字体不能只靠 path/string 作为 runtime identity。
 
 建议：
 
 ```text
-Font/Face Cache
-      ↓
+FontSourceId
+FontFamilyId
+FontFaceId
+FontRevision
+FontSubsetRevision
+```
+
+`FontFaceId` 表示当前 runtime image 中的 typed face identity；它不等于文件路径，也不等于 platform native handle。
+
+App/External font 的稳定 cache key 至少考虑：
+
+```text
+content hash
+face index
+variation coordinates
+provider namespace
+subset/coverage revision
+```
+
+System font cache key 由 platform adapter 生成 artifact-local identity，不进入跨设备稳定 ABI。
+
+### 37.10 三级缓存
+
+基础缓存层级：
+
+```text
+Font Source / Face / Coverage Cache
+          ↓
 Shaping Cache
-      ↓
+          ↓
 Glyph Atlas Cache
 ```
 
 Key 必须可增量失效。
 
-### 37.2 Paragraph cache
+对于渐进字体，Font Cache 不能只有“loaded/not loaded”二态，而要表达：
+
+```text
+metadata ready
+coverage known
+coverage pending
+subset ready
+failed/retryable
+revision
+```
+
+### 37.11 Paragraph cache
 
 Text 未变：不 reshape。  
-Font/feature 未变：不 reshape。  
+Font/feature/revision 未变：不 reshape。  
 可用宽度未变：不重新 line-break。  
 Glyph 已在 atlas：不 raster/upload。
 
-### 37.3 文本编辑
+若只新增与当前 paragraph 无关的字体 coverage，该 paragraph cache 不失效。
+
+### 37.12 文本编辑
 
 TextInput/CodeEditor 使用专门的数据结构：
 
@@ -3361,11 +3722,30 @@ TextInput/CodeEditor 使用专门的数据结构：
 
 不要让大型代码编辑器通过“每个字符一个 UI Node”实现。
 
-### 37.4 Text ownership boundary
+远端渐进字体加载不能破坏编辑模型：selection/caret 使用文本索引和 shaping run mapping，不绑定 glyph atlas slot。
 
-`viso-text` 必须拥有 paragraph/shaping cache、glyph atlas contract、增量失效、UI integration 与 profiler；但 **不要求 Viso 重写 Unicode/BiDi/shaping 标准算法**。
+### 37.13 Text ownership boundary
 
-优先策略是复用经过验证的 shaping/Unicode/font primitives（必要时 vendor/fork），并用 Viso 自己的数据布局与 cache API 包裹。只有在 profiler 证明通用实现阻碍关键性能或缺失必要能力时，才把对应算法纳入自研范围。
+`viso-text` 必须拥有：
+
+```text
+font source/provider contract
+font resolution (by sample string, not family name — makepad 语义，ADR 0026 §1)
+coverage fallback policy
+paragraph/shaping cache
+glyph atlas contract
+progressive font revision/invalidation
+UI integration
+text profiler counters
+```
+
+> 注：font 解析走 sample-string 级联（provider 拿 role + 样本串查系统面，见 ADR 0026 §1），**不**是 family-name 索引的 font DB —— 这是对参考实现的刻意沿用；权威顺位以 ADR 0026 为准。
+
+但 **不要求 Viso 重写 Unicode/BiDi/shaping/font-raster 标准算法**。
+
+优先策略是复用经过验证的 shaping/Unicode/font primitives（必要时 vendor/fork），并用 Viso 自己的数据布局、provider、cache 和 invalidation API 包裹。只有在 profiler 证明通用实现阻碍关键性能或缺失必要能力时，才把对应算法纳入自研范围。
+
+`viso-text` 不拥有 HTTP/TLS。ExternalFontSource 的实际网络传输通过 service/integration 注入；Text runtime 只拥有请求语义、去重、优先级、revision 和 cache contract。
 
 ---
 
@@ -4198,6 +4578,8 @@ assets/
 
 需要高级 manifest 时再增加声明能力。
 
+`assets/fonts/` 中发现的字体进入 `AppFontSource`，其 family/face 优先级高于 Native 系统字体。字体文件不是必须项：Native App 不提供自定义字体时默认使用 `SystemFontSource`；WASM App 不提供自定义字体时不会自动获得系统字体，必须显式提供 `ExternalFontSource` 才能加载额外字体。
+
 ### 51.2 Resource lifecycle
 
 支持：
@@ -4701,6 +5083,13 @@ list_100k_scroll
 list_variable_height_scroll
 text_10k_labels_static
 text_dynamic_1k
+font_resolve_app_hit_100k
+font_resolve_app_miss_system_hit_100k
+font_fallback_mixed_script_10k
+font_progressive_request_dedup_10k
+font_progressive_subset_arrival_1k_paragraphs
+font_wasm_no_system_source_startup
+font_cache_revision_targeted_invalidation
 animation_transform_5k
 animation_layout_1k
 hit_test_100k
@@ -5409,7 +5798,12 @@ viso/
 │   │   └── src/
 │   │       ├── lib.rs
 │   │       ├── font_db.rs
+│   │       ├── font_source.rs
+│   │       ├── font_provider.rs
+│   │       ├── font_request.rs
 │   │       ├── fallback.rs
+│   │       ├── coverage.rs
+│   │       ├── progressive.rs
 │   │       ├── shaping.rs
 │   │       ├── bidi.rs
 │   │       ├── line_break.rs
