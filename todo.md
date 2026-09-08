@@ -1053,6 +1053,11 @@ spanning 放置 + auto-flow;ADR 0009 明列六项高级能力全未做。落 `cr
       `CoreTextColorRaster`(预乘 RGBA,BGRA→RGBA swizzle 不 un-premul);`TextShaper` 持一个并作 `Some(..)` 传入
       `prepare`。`load_font` 内部缝供 C2 公开 API + 测试注入。三个 `text_content.rs` 单测改经 `load_font` 注入
       `DejaVuSans-subset.ttf`(纯测试 fixture,非默认)。
+      **修复彩色 emoji readback stride**:`CGBitmapContextCreate(..,bytes_per_row=0,..)` 让 CG 自选行对齐(补齐)stride,
+      旧 `read_back_rgba` 按紧凑 `w*4` 连续读 → 首行之后全部错位(倾斜/透明)。改为查 `CGBitmapContextGetBytesPerRow`
+      逐行走(照 makepad `color_emoji_render.rs`,保持预乘不 un-premul)。回归测试
+      `color::tests::color_glyph_readback_has_opaque_pixels`——真机 CoreText 路径扫 emoji glyph,断言 readback 紧凑
+      `w*h*4` 且有不透明像素(修前必挂)。
 - [x] **C2 `viso: user font API (bytes / path)`** —— facade 公开 init 期 API 加载用户字体(字节 / 磁盘路径),入 chain 居前。
       `AppCx::load_font(bytes)` / `load_font_file(path)` 记录到 session-scoped 字节表,`AppDriver` 于 `A::new` 后 drain,
       每个 `WindowState::open`(启动 + 延迟 `window()`)把它们按序装入新 `TextShaper` 居首,先于系统回退。

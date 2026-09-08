@@ -123,7 +123,8 @@ mod color {
 
     use objc2_core_foundation::{CFRetained, CFString, CGFloat, CGPoint, CGRect};
     use objc2_core_graphics::{
-        CGBitmapContextCreate, CGBitmapContextGetData, CGColorSpace, CGContext,
+        CGBitmapContextCreate, CGBitmapContextGetBytesPerRow, CGBitmapContextGetData, CGColorSpace,
+        CGContext,
     };
     use objc2_core_text::{CTFont, CTFontOrientation};
 
@@ -314,27 +315,93 @@ mod color {
 
     /// Read the context's BGRA premultiplied pixels back and swizzle to RGBA,
     /// keeping the premultiplied alpha (Viso's image path expects premultiplied).
+    ///
+    /// `CGBitmapContextCreate` was called with `bytes_per_row = 0`, which asks
+    /// CoreGraphics to pick its own row stride — and it aligns that stride up
+    /// (commonly to a 16/32/64-byte multiple), so for many glyph widths the
+    /// backing store's row stride is *larger* than a tight `w * 4`. The source
+    /// must therefore be walked row-by-row at the context's real
+    /// `CGBitmapContextGetBytesPerRow` stride; only the tight-packed `w * 4`
+    /// output the atlas expects is produced here. (Assuming a tight source stride
+    /// skewed every row after the first, yielding garbage/transparent bitmaps.)
     fn read_back_rgba(ctx: &CGContext, w: usize, h: usize) -> Option<Vec<u8>> {
-        // Returns the context's backing store pointer, valid for `w * h * 4`
-        // bytes (bytes-per-row 0 asked for a tight buffer).
         let data = CGBitmapContextGetData(Some(ctx));
         if data.is_null() {
             return None;
         }
-        let len = w * h * 4;
-        // SAFETY: the backing store holds `len` bytes as established above.
-        let src = unsafe { std::slice::from_raw_parts(data as *const u8, len) };
-        let mut rgba = vec![0u8; len];
-        let (dst_px, _) = rgba.as_chunks_mut::<4>();
-        let (src_px, _) = src.as_chunks::<4>();
-        for (dst, px) in dst_px.iter_mut().zip(src_px) {
-            // Source is [B, G, R, A]; write [R, G, B, A].
-            dst[0] = px[2];
-            dst[1] = px[1];
-            dst[2] = px[0];
-            dst[3] = px[3];
+        let stride = CGBitmapContextGetBytesPerRow(Some(ctx));
+        if stride < w * 4 {
+            return None;
+        }
+        let mut rgba = vec![0u8; w * h * 4];
+        for y in 0..h {
+            // SAFETY: the backing store holds `stride` bytes per row for `h` rows,
+            // so `data + y * stride` points to `w * 4` valid source bytes (the row
+            // is at least `w * 4` wide, checked above).
+            let row =
+                unsafe { std::slice::from_raw_parts(data.add(y * stride) as *const u8, w * 4) };
+            let dst_row = &mut rgba[y * w * 4..(y + 1) * w * 4];
+            let (dst_px, _) = dst_row.as_chunks_mut::<4>();
+            let (src_px, _) = row.as_chunks::<4>();
+            for (dst, px) in dst_px.iter_mut().zip(src_px) {
+                // Source is [B, G, R, A]; write [R, G, B, A].
+                dst[0] = px[2];
+                dst[1] = px[1];
+                dst[2] = px[0];
+                dst[3] = px[3];
+            }
         }
         Some(rgba)
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        /// The color-glyph readback must return real, opaque emoji pixels — not a
+        /// transparent or skewed bitmap. This drives the full CoreText path
+        /// (`resolve_name` → `CTFontDrawGlyphs` → `read_back_rgba`) against the live
+        /// system emoji face and asserts some pixel is meaningfully opaque. It is
+        /// the guard for the stride bug: `read_back_rgba` must walk the source at
+        /// `CGBitmapContextGetBytesPerRow` (CG pads it), not at a tight `w * 4`;
+        /// the tight assumption produced fully-transparent/garbage rows that this
+        /// assertion would catch.
+        #[test]
+        fn color_glyph_readback_has_opaque_pixels() {
+            // Open the well-known system emoji face directly and read its glyph
+            // count, so `rasterize`'s `resolve_name` binds the same face (its probe
+            // matches candidates by glyph count).
+            let font = with_name("AppleColorEmoji", 16.0);
+            // SAFETY: CoreText FFI, reads the glyph count of a live font.
+            let count = unsafe { font.glyph_count() };
+            assert!(count > 0, "AppleColorEmoji must resolve on macOS");
+            let expected = count as u16;
+
+            let raster = CoreTextColorRaster::new();
+            // Scan a handful of low glyph ids; at least one is a painted color
+            // emoji whose readback must contain an opaque pixel.
+            let mut best_alpha = 0u8;
+            for glyph_id in 1u16..40 {
+                if let Some(g) = raster.rasterize("AppleColorEmoji", expected, glyph_id, 64.0) {
+                    assert_eq!(
+                        g.rgba.len(),
+                        g.width as usize * g.height as usize * 4,
+                        "readback must be tightly packed w*h*4 regardless of CG's padded stride"
+                    );
+                    let max_a = g.rgba.chunks_exact(4).map(|px| px[3]).max().unwrap_or(0);
+                    best_alpha = best_alpha.max(max_a);
+                    if best_alpha > 200 {
+                        break;
+                    }
+                }
+            }
+            assert!(
+                best_alpha > 200,
+                "a scanned color emoji glyph must read back with an opaque pixel \
+                 (got max alpha {best_alpha}); a tight-stride readback yields \
+                 transparent/garbage rows"
+            );
+        }
     }
 }
 
