@@ -24,6 +24,7 @@ mod color_raster;
 mod font;
 mod layout;
 mod linebreak;
+mod paragraph_cache;
 mod provider;
 mod raster;
 mod shape;

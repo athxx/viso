@@ -1145,9 +1145,17 @@ spanning 放置 + auto-flow;ADR 0009 明列六项高级能力全未做。落 `cr
         (Accepted)。已验证:`cargo test --workspace` 绿、`cargo fmt --all -- --check` 净、`cargo clippy --workspace
         --all-targets -- -D warnings` 净、`cargo xtask check-deps` OK(17 crates,边全在 §10 DAG 内)。**未做**:macOS
         example 眼验实际换行段落、`cargo bench -p viso-text` wrap 复核(引擎未改、仅传入宽度变,列为可选)。
-- [ ] **D2 `text: paragraph / shaping-run cache`** —— §37.11/§37.13 的 paragraph/shaping cache:viso-text 持 paragraph 级
+- [x] **D2 `text: paragraph / shaping-run cache`** —— §37.11/§37.13 的 paragraph/shaping cache:viso-text 持 paragraph 级
       缓存(键 = text + font/feature/revision + 可用宽度),命中则跳过 reshape + re-linebreak;把「不 reshape」的边界从
       facade 粗门下沉到 text 层自身。依赖 D1(宽度是失效键之一)。
+      —— 落地:`paragraph_cache.rs` 有界 LRU(cap 512,cap 0 停用)缓存 `layout()` 的 `Rc<Vec<PositionedGlyph>>`;键
+      `ParagraphKey{font,text,font_size_bits,wrap_bits,revision}`,`wrap_bits` 用 NaN 哨兵折叠 `None`,DPI 不入键(位置为逻辑
+      像素、密度无关,1x/2x 共享一条)。feature 轴留空(shaper 目前无 per-run features,doc 标 seam)。`FontStore` 带
+      monotonic `revision`(load/push_fallback/mark_color_emoji bump),D2 一并带出、折进键作粗失效(D3 再做精准/scoped)。
+      `TextSystem::prepare` 经 split-borrow 走缓存。验证:6 单元(命中/各轴独立 miss/None-vs-Some 不 alias/revision 强制重算/
+      LRU 驱逐/cap0 停用)+ 3 facade 集成 + `benches/paragraph_cache.rs`(命中 ~17.9µs vs miss ~58.6µs ~3.3×,
+      startup 分配不变量 hit*2<miss)。全 workspace test/clippy/fmt/check-deps 绿。纯 text 层内部缓存、无跨 crate/架构变更,
+      不触发 ADR。
 - [ ] **D3 `text: font revision + incremental invalidation + profiler counters`** —— §37.13 ownership 清单里代码零命中的一条
       (grep `revision`/`counter`/`invalidat` 全 crate 无)。font/chain 变更 bump revision → 精准失效 D2 缓存(而非全清);
       §37.11「新增无关 coverage 不失效」在此兑现(revision 携失效范围);text profiler counters(reshape/re-linebreak/raster/

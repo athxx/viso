@@ -12,6 +12,7 @@ use crate::FontStore;
 use crate::atlas::{ATLAS_SIZE, Atlas, DirtyRect, GlyphKind};
 use crate::color_raster::ColorGlyphRasterizer;
 use crate::layout::layout;
+use crate::paragraph_cache::ParagraphCache;
 use crate::provider::{FontRole, SystemFallback, SystemFontProvider, SystemFontQuery};
 use crate::shape::shape;
 
@@ -32,13 +33,29 @@ pub struct GlyphQuad {
     pub kind: GlyphKind,
 }
 
+/// The paragraph layout cache bound: at most this many distinct laid-out
+/// paragraphs are retained, least-recently-used evicted past it. Sized to hold a
+/// large on-screen label set (each visible run is one entry) with headroom, so
+/// steady-state repaint of a fixed UI is all cache hits, while scrolling through
+/// unbounded distinct text ages out the stragglers rather than growing without
+/// bound. See [`ParagraphCache`].
+const PARAGRAPH_CACHE_CAPACITY: usize = 512;
+
 /// Loading + shaping + layout + atlases, behind one `prepare` entry point. Holds
 /// two atlases: an R8 SDF atlas for outline glyphs and an RGBA8 color atlas for
 /// bitmap-emoji strikes. Each prepared glyph names which it lives in.
+///
+/// A [`ParagraphCache`] memoizes the shape + line-break + placement work of
+/// [`prepare`](Self::prepare): a re-request with the same text, font, size, wrap
+/// width, and font revision returns the cached glyph positions without
+/// reshaping. Glyph rasterization/packing is deduplicated separately by the
+/// atlases, so the two caches compose — a repeated paragraph pays neither
+/// reshape nor re-raster.
 pub struct TextSystem {
     store: FontStore,
     atlas: Atlas,
     color_atlas: Atlas,
+    cache: ParagraphCache,
 }
 
 impl Default for TextSystem {
@@ -54,6 +71,7 @@ impl TextSystem {
             store: FontStore::new(),
             atlas: Atlas::new(ATLAS_SIZE),
             color_atlas: Atlas::new_color(ATLAS_SIZE),
+            cache: ParagraphCache::new(PARAGRAPH_CACHE_CAPACITY),
         }
     }
 
@@ -188,17 +206,30 @@ impl TextSystem {
         color_raster: Option<&dyn ColorGlyphRasterizer>,
     ) -> Vec<GlyphQuad> {
         let dpx_per_em = font_size_px * dpi_factor;
-        let positioned = layout(&self.store, font, text, font_size_px, max_width_px);
-        // Split borrows: `store` (shared) feeds each glyph's face while the two
-        // atlases (unique) pack — taking them as separate fields keeps the
-        // borrow checker happy.
+        // Split borrows: `store` (shared) feeds the layout miss and each glyph's
+        // face; `cache` and the two atlases (unique) are separate fields, so
+        // binding each independently lets the shared `store` borrow coexist with
+        // the unique cache/atlas borrows.
         let store = &self.store;
         let atlas = &mut self.atlas;
         let color_atlas = &mut self.color_atlas;
 
+        // Shape + line-break + place through the paragraph cache: an identical
+        // re-request (same text/font/size/wrap width, and font revision) returns
+        // the cached glyph positions without reshaping. A font mutation bumps the
+        // revision, so a stale entry from before the chain grew never matches.
+        let positioned = self.cache.get_or_compute(
+            font,
+            text,
+            font_size_px,
+            max_width_px,
+            store.revision(),
+            || layout(store, font, text, font_size_px, max_width_px),
+        );
+
         let inv = 1.0 / dpi_factor;
         let mut quads = Vec::with_capacity(positioned.len());
-        for g in positioned {
+        for g in positioned.iter() {
             // A fallback glyph rasters from the face it resolved to, not the
             // requested primary — the atlas keys on that face.
             let face = store.face(g.font);
@@ -244,5 +275,92 @@ impl TextSystem {
             });
         }
         quads
+    }
+
+    /// The number of paragraphs currently held in the layout cache. For tests —
+    /// asserts that an identical re-`prepare` is a hit (does not grow the cache)
+    /// and that an invalidating change (width, revision) adds an entry.
+    #[cfg(test)]
+    fn cache_len(&self) -> usize {
+        self.cache.len()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The same ASCII-subset DejaVu Sans fixture the integration tests and the
+    /// wrap bench use, embedded so this lib test needs no system font.
+    const FONT: &[u8] = include_bytes!("../tests/fixtures/DejaVuSans-subset.ttf");
+
+    /// A text system with the fixture loaded as its primary face, plus that face
+    /// id — the shared setup for the cache-boundary tests.
+    fn system_with_font() -> (TextSystem, FontId) {
+        let mut sys = TextSystem::new();
+        let id = sys.load_font(FONT.to_vec(), 0).expect("fixture parses");
+        (sys, id)
+    }
+
+    #[test]
+    fn identical_prepare_is_a_cache_hit() {
+        // The §37.11 contract at the text layer: text/font/size/width unchanged →
+        // no reshape. Two identical `prepare` calls leave exactly one cache entry
+        // (the second hit reused it) and return identical quads.
+        let (mut sys, font) = system_with_font();
+        let first = sys.prepare(font, "hello world", 16.0, None, 1.0, None);
+        assert_eq!(sys.cache_len(), 1, "the first prepare populated one entry");
+        let second = sys.prepare(font, "hello world", 16.0, None, 1.0, None);
+        assert_eq!(
+            sys.cache_len(),
+            1,
+            "the identical second prepare hit, no new entry"
+        );
+        assert_eq!(first, second, "a hit reproduces the same quads");
+    }
+
+    #[test]
+    fn a_different_width_misses_and_adds_an_entry() {
+        // Width is a key axis: the same text at a new wrap width reshapes (a
+        // narrower box wraps differently), so it is a distinct cache entry.
+        let (mut sys, font) = system_with_font();
+        let _ = sys.prepare(font, "hello world", 16.0, None, 1.0, None);
+        let _ = sys.prepare(font, "hello world", 16.0, Some(40.0), 1.0, None);
+        assert_eq!(
+            sys.cache_len(),
+            2,
+            "unconstrained and width-limited are distinct"
+        );
+        // Re-requesting the unconstrained layout still hits (the width miss did
+        // not evict it) — no third entry.
+        let _ = sys.prepare(font, "hello world", 16.0, None, 1.0, None);
+        assert_eq!(
+            sys.cache_len(),
+            2,
+            "the first layout survived the width miss"
+        );
+    }
+
+    #[test]
+    fn loading_a_face_bumps_revision_and_invalidates() {
+        // A font mutation (loading a second face) bumps the store revision, so a
+        // previously-cached paragraph reshapes against the new store rather than
+        // serving a layout that predates it. Observable as a fresh cache entry
+        // under the new revision, not a hit on the old one.
+        let (mut sys, font) = system_with_font();
+        let _ = sys.prepare(font, "hello", 16.0, None, 1.0, None);
+        assert_eq!(sys.cache_len(), 1);
+
+        // Load another face — even though this paragraph does not use it, the
+        // revision bump is the coarse D2 invalidation (D3 makes it scoped).
+        let _ = sys
+            .load_font(FONT.to_vec(), 0)
+            .expect("fixture parses again");
+        let _ = sys.prepare(font, "hello", 16.0, None, 1.0, None);
+        assert_eq!(
+            sys.cache_len(),
+            2,
+            "the revision bump made the same paragraph a fresh entry"
+        );
     }
 }

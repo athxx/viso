@@ -27,3 +27,7 @@ criterion = "0.7"
 [[bench]]
 name = "wrap_line"
 harness = false
+
+[[bench]]
+name = "paragraph_cache"
+harness = false
