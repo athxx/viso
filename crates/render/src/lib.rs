@@ -22,7 +22,13 @@ pub use primitive::{
     Stroke, glyphrun_schema, image_schema, mesh_schema, quad_schema,
 };
 pub use renderer::{FrameStats, Renderer};
-pub use viso_gpu::TextureId;
+// GPU handles that appear in this crate's public API. `TextureId` is carried by
+// `ImageDraw`/`GlyphRunDraw`; `BindGroupId`/`PipelineId` are the resource handles
+// on `InspectBatch`'s public fields (architecture 62: `BatchId -> pipeline/
+// resources` must be nameable). Re-export the exact set so a crate depending only
+// on `viso-render` (the DAG lets `viso-ui`/tools reach it) can name them without a
+// direct `viso-gpu` edge. `viso-gpu` is already a `viso-render` dependency.
+pub use viso_gpu::{BindGroupId, PipelineId, TextureId};
 use viso_text::TextSystem;
 
 /// A compact batch key. Batch keys use integer IDs, never strings (§16.2),

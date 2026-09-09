@@ -1219,7 +1219,7 @@ spanning 放置 + auto-flow;ADR 0009 明列六项高级能力全未做。落 `cr
       `crates/ui/src/inspect.rs` `paint_ranges(store, root, out) -> PaintRanges`(NodeId→后代包含式 span,冷路径 twin
       of `paint_subtree`,热路径 `paint_tree` 不动)。验收:batch 快照 `draw_calls()/instances()` 与既有 FrameStats
       交叉校验一致(含 translucent composite);paint span 与 `paint_tree` 产出逐一致 + 子 span 嵌套于父。
-- [ ] **9.A4 `viso: Inspector facade + JSON 快照`** —— facade 聚合 A1–A3 + 已有 semantics/counters 成单一
+- [x] **9.A4 `viso: Inspector facade + JSON 快照`** —— facade 聚合 A1–A3 + 已有 semantics/counters 成单一
       `cx.inspect()` 只读表面,并可序列化为 Ende JSON(§非-serde 硬依赖,走 §1583 Ende JSON dump)。为 Studio transport
       与 `viso inspect --json`(Slice C)共用同一模型(§34「同一底层模型」)。验收:JSON schema 稳定性单测 + headless 快照。
 - [ ] **9.A5 `bench: identity / inspect 开销`** —— §10.4.13 identity bench 类目 + 证明 inspect 表面 cold(不拖稳态帧)。

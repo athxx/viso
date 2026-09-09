@@ -56,6 +56,14 @@ mod window;
 pub use window::{WindowBuilder, WindowHandle, window};
 
 pub use viso_ui::context::AppCx;
+
+// The introspection snapshot model (architecture section 34/62), re-exported so
+// a tool depending only on the `viso` facade — Studio transport (Slice B), the
+// `viso inspect --json` CLI (Slice C) — names one `viso::InspectSnapshot` and
+// its `snapshot_ui` builder rather than reaching into `viso-ui`. A cold-path
+// tooling surface: deliberately kept out of the default prelude (section 6.2).
+pub use viso_ui::{InspectSnapshot, snapshot_ui};
+
 // The UI-tier window configuration is the shape a `window(...)` author fills in
 // (title + logical size) — the facade translates it into the platform config at
 // the open-drain point. Re-export it under the facade so app code names one
@@ -195,6 +203,44 @@ pub mod __test_support {
         pub fn next_timer_deadline(&self) -> Option<Instant> {
             use viso_runtime::FrameDriver;
             self.driver.next_timer_deadline()
+        }
+
+        /// A single read-only introspection snapshot of the first window's
+        /// settled frame — the node tree, per-node paint spans, semantics tree,
+        /// draw batches, and frame counters, aggregated by
+        /// [`viso_ui::snapshot_ui`] (architecture section 34/62). This is the
+        /// one model Studio transport and `viso inspect --json` will share.
+        ///
+        /// A cold-path readout off `&self` accessors; it mutates nothing and
+        /// never runs on the steady frame path. The render-side batches/stats
+        /// come from the window's live [`Renderer`](super::Renderer) when it has
+        /// a GPU surface; a headless window has none, so those degrade to an
+        /// empty batch list and zeroed counters — the JSON shape is stable
+        /// either way (empty `batches`, zero `draw_calls`/`instances`), and the
+        /// UI-side tree/paint/semantics are always present.
+        pub fn inspect(&self) -> viso_ui::InspectSnapshot {
+            let ws = &self.driver.windows[0];
+            let (batches, stats) = match &ws.gpu {
+                Some(gpu) => (gpu.renderer.inspect_batches(), gpu.renderer.frame_stats()),
+                None => (
+                    viso_render::InspectBatches::default(),
+                    viso_render::FrameStats {
+                        draw_calls: 0,
+                        instances: 0,
+                    },
+                ),
+            };
+            match ws.root {
+                Some(root) => viso_ui::snapshot_ui(&ws.store, root, batches, stats),
+                // No declared root: an empty tree still yields a valid snapshot.
+                None => viso_ui::InspectSnapshot {
+                    tree: viso_ui::InspectTree::default(),
+                    paint_ranges: viso_ui::PaintRanges::default(),
+                    semantics: viso_ui::SemanticsTree::default(),
+                    batches,
+                    stats,
+                },
+            }
         }
     }
 

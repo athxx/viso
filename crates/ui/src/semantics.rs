@@ -114,6 +114,31 @@ pub enum Role {
     TreeItem,
 }
 
+impl Role {
+    /// The lowercase label used in an inspector dump / JSON snapshot (`group`,
+    /// `button`, …), the readable discriminator for the role. A cold-path
+    /// readout only, mirroring `InspectKind::label` and `BatchPipeline::label`.
+    pub fn label(self) -> &'static str {
+        match self {
+            Role::Group => "group",
+            Role::Button => "button",
+            Role::CheckBox => "checkbox",
+            Role::Slider => "slider",
+            Role::Radio => "radio",
+            Role::Label => "label",
+            Role::TextField => "textfield",
+            Role::Tab => "tab",
+            Role::TabList => "tablist",
+            Role::Navigation => "navigation",
+            Role::Dialog => "dialog",
+            Role::Status => "status",
+            Role::Region => "region",
+            Role::Tree => "tree",
+            Role::TreeItem => "treeitem",
+        }
+    }
+}
+
 /// A node's *authored* semantics: the facts a builder sets, distinct from the
 /// live state derived from other columns. Cold — holds the only heap data (the
 /// label), read only by the derive pass.

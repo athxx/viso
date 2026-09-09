@@ -52,7 +52,8 @@ pub use input::{
     PointerRouter, ScrollEvent, ScrollRouter, focus_next, route_pointer, route_scroll,
 };
 pub use inspect::{
-    InspectFlags, InspectKind, InspectNode, InspectTree, PaintRange, PaintRanges, paint_ranges,
+    InspectFlags, InspectKind, InspectNode, InspectSnapshot, InspectTree, PaintRange, PaintRanges,
+    paint_ranges, snapshot_ui,
 };
 pub use layout::{Align, Axis, Inset, Justify, Length, Size, Vec2};
 pub use node::{NodeArena, NodeId, NodeLinks};
