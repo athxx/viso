@@ -82,6 +82,7 @@ const WRAP: f32 = 120.0;
 
 fn paragraph_cache(c: &mut Criterion) {
     assert_cache_hit_does_not_reshape();
+    assert_unused_face_keeps_the_hit();
 
     let (mut sys, font) = system();
     // Warm the entry so the benched call is a hit.
@@ -154,6 +155,51 @@ fn assert_cache_hit_does_not_reshape() {
         hit_allocs * 2 < miss_allocs,
         "a cache hit allocated {hit_allocs}, expected well under half the miss's \
          {miss_allocs}; a hit that reshaped would lose the cache (§20)"
+    );
+    assert!(
+        !hit.is_empty() && !miss.is_empty(),
+        "both prepares produced quads, so the comparison is meaningful"
+    );
+}
+
+/// The scoped-invalidation win: registering an unrelated face between two
+/// prepares of a fully-covered paragraph must not reshape the second one. The
+/// coverage generation bumps only on chain *growth*, and a fully-covered
+/// paragraph is append-independent regardless — so the second prepare stays a
+/// cache hit, allocating a small fraction of a forced miss. A regression that
+/// invalidated the whole cache on any font mutation (the coarse pre-D3 behavior)
+/// would reshape here and blow the budget.
+fn assert_unused_face_keeps_the_hit() {
+    let (mut sys, font) = system();
+
+    // Warm the fixture parse and the cache entry (fully covered by the ASCII
+    // fixture — no boxed `.notdef`) before arming.
+    let _ = sys.prepare(font, PARAGRAPH, SIZE, Some(WRAP), 1.0, None);
+    let _ = sys.prepare(font, PARAGRAPH, SIZE, Some(WRAP), 1.0, None);
+
+    // Register another face into the now non-empty chain. This appends nothing
+    // (the chain already has a primary), so the coverage generation is unchanged;
+    // even a growth would not touch this covered paragraph.
+    let _ = sys
+        .load_font(FONT.to_vec(), 0)
+        .expect("fixture font parses again");
+
+    // The re-prepare after the unrelated registration must still be a hit.
+    ARMED.store(true, Ordering::Relaxed);
+    ALLOCS.store(0, Ordering::Relaxed);
+    let hit = sys.prepare(font, PARAGRAPH, SIZE, Some(WRAP), 1.0, None);
+    let hit_allocs = ALLOCS.load(Ordering::Relaxed);
+
+    ALLOCS.store(0, Ordering::Relaxed);
+    let miss = sys.prepare(font, PARAGRAPH, SIZE, Some(WRAP + 41.0), 1.0, None);
+    let miss_allocs = ALLOCS.load(Ordering::Relaxed);
+    ARMED.store(false, Ordering::Relaxed);
+
+    assert!(
+        hit_allocs * 2 < miss_allocs,
+        "after registering an unused face a covered paragraph allocated \
+         {hit_allocs}, expected well under half the miss's {miss_allocs}; the \
+         coarse cache-clear would have reshaped it (scoped invalidation, D3)"
     );
     assert!(
         !hit.is_empty() && !miss.is_empty(),

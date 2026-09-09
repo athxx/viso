@@ -17,7 +17,7 @@
 
 use viso_gpu::{GpuBackend, TextureDesc, TextureFormat};
 use viso_render::{GlyphInstanceData, Rect, TextureId};
-use viso_text::{FontId, GlyphKind, SystemFallback, TextSystem};
+use viso_text::{FontId, GlyphKind, SystemFallback, TextCounters, TextSystem};
 use viso_ui::{Content, TextRequest, Vec2};
 
 use crate::system_fonts::{CoreTextColorRaster, CoreTextProvider};
@@ -87,6 +87,19 @@ impl TextShaper {
         let id = self.text.load_font(bytes, index)?;
         self.font.get_or_insert(id);
         Some(id)
+    }
+
+    /// The text subsystem's per-frame work counters (reshapes, re-linebreaks,
+    /// fresh rasters, atlas-upload bytes). The driver reads these into the
+    /// `VISO_FRAME_TRACE` dump and zeroes them at the frame boundary via
+    /// [`reset_counters`](Self::reset_counters).
+    pub(crate) fn counters(&self) -> &TextCounters {
+        self.text.counters()
+    }
+
+    /// Zero the text counters at a frame boundary so each count reflects one frame.
+    pub(crate) fn reset_counters(&self) {
+        self.text.reset_counters();
     }
 
     /// Shape one request into a [`Content::Text`], uploading any newly-packed
@@ -176,6 +189,7 @@ impl TextShaper {
             let row = size as usize;
             let pixels = self.text.atlas_pixels();
             let band = &pixels[d.y as usize * row..(d.y + d.h) as usize * row];
+            self.text.counters().record_atlas_upload(band.len() as u64);
             backend.write_texture(atlas, 0, d.y, size, d.h, band);
         }
 
@@ -232,6 +246,7 @@ impl TextShaper {
                 let row = csize as usize * 4;
                 let pixels = self.text.color_atlas_pixels();
                 let band = &pixels[d.y as usize * row..(d.y + d.h) as usize * row];
+                self.text.counters().record_atlas_upload(band.len() as u64);
                 backend.write_texture(ctex, 0, d.y, csize, d.h, band);
             }
             Some(ctex)

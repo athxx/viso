@@ -171,13 +171,17 @@ impl Atlas {
     /// Returns `None` for glyphs with no outline (whitespace). If the glyph does
     /// not fit, the atlas is cleared and rebuilt once; a second failure (a glyph
     /// larger than the whole atlas) also returns `None`.
+    ///
+    /// The `bool` is glyph freshness: `true` when this call rasterized and packed
+    /// the glyph (an atlas miss), `false` on a dedup hit against an already-packed
+    /// entry. The caller counts fresh rasters without a second lookup.
     pub fn glyph(
         &mut self,
         face: &FontFace,
         font: FontId,
         glyph_id: u16,
         dpx_per_em: f32,
-    ) -> Option<AtlasEntry> {
+    ) -> Option<(AtlasEntry, bool)> {
         debug_assert_eq!(self.kind, GlyphKind::Sdf);
         let key = GlyphKey {
             font,
@@ -186,16 +190,17 @@ impl Atlas {
             dpx_q: dpx_per_em.round() as u32,
         };
         if let Some(e) = self.entries.get(&key) {
-            return Some(*e);
+            return Some((*e, false));
         }
         let raster = rasterize_glyph(face, glyph_id, dpx_per_em)?;
-        self.insert_cached(key, raster.width, raster.height, &raster.sdf, |r| {
+        let entry = self.insert_cached(key, raster.width, raster.height, &raster.sdf, |r| {
             AtlasEntry {
                 bearing_px: raster.bearing_px,
                 px_range: raster.px_range,
                 ..*r
             }
-        })
+        })?;
+        Some((entry, true))
     }
 
     /// Get (rasterizing + packing on a miss) the color-atlas placement for a
@@ -210,6 +215,10 @@ impl Atlas {
     /// name). Any other face keeps the in-crate `ttf-parser` strike path. When
     /// `color_raster` is `None` (no platform binding, e.g. wasm) an emoji face
     /// simply yields no color glyph and falls through to the outline path.
+    ///
+    /// The `bool` is glyph freshness: `true` when this call rasterized and packed
+    /// the glyph (an atlas miss), `false` on a dedup hit — the same contract as
+    /// [`Self::glyph`].
     pub fn color_glyph(
         &mut self,
         face: &FontFace,
@@ -217,7 +226,7 @@ impl Atlas {
         glyph_id: u16,
         dpx_per_em: f32,
         color_raster: Option<&dyn ColorGlyphRasterizer>,
-    ) -> Option<AtlasEntry> {
+    ) -> Option<(AtlasEntry, bool)> {
         debug_assert_eq!(self.kind, GlyphKind::Color);
         let key = GlyphKey {
             font,
@@ -226,7 +235,7 @@ impl Atlas {
             dpx_q: dpx_per_em.round() as u32,
         };
         if let Some(e) = self.entries.get(&key) {
-            return Some(*e);
+            return Some((*e, false));
         }
         let color: ColorGlyph = if face.is_color_emoji() {
             let ps_name = face.postscript_name()?;
@@ -237,13 +246,14 @@ impl Atlas {
         // Scale the strike's origin offset from its own ppem to the request.
         let scale = dpx_per_em / color.pixels_per_em as f32;
         let bearing = [color.origin_px[0] * scale, color.origin_px[1] * scale];
-        self.insert_cached(key, color.width, color.height, &color.rgba, |r| {
+        let entry = self.insert_cached(key, color.width, color.height, &color.rgba, |r| {
             AtlasEntry {
                 bearing_px: bearing,
                 px_range: 0.0,
                 ..*r
             }
-        })
+        })?;
+        Some((entry, true))
     }
 
     /// Pack `pixels` (a `w * h` bitmap of `kind.bpp()` bytes per texel), then

@@ -199,15 +199,17 @@ pub struct FontStore {
     faces: Vec<FontFace>,
     /// The fallback chain: faces to try in order. `chain[0]` is the primary.
     chain: Vec<FontId>,
-    /// Monotonic counter bumped on every mutation that can change how a run
-    /// shapes or lays out: loading a face, extending the chain, or flagging a
-    /// face as color-emoji. It is the freshness token the paragraph layout
-    /// cache folds into its key, so a cache entry produced before the chain grew
-    /// never matches after — a run that could not cover a script (boxed
-    /// `.notdef`) reshapes once a covering fallback is appended, without the
-    /// cache having to be cleared. A `u64` never wraps in practice (one bump per
-    /// font mutation, not per frame).
-    revision: u64,
+    /// Monotonic counter bumped only when the fallback chain *grows* — a face
+    /// appended (`push_fallback`) or the first face loaded into an empty chain.
+    /// It is the coverage token the paragraph layout cache uses to scope
+    /// invalidation: a run that resolved entirely within the chain (boxed no
+    /// `.notdef`) is independent of any later append and stays a cache hit across
+    /// generations, while a run that boxed a `.notdef` reshapes once the chain
+    /// grows, since the new face may now cover the boxed character. Face
+    /// registration that does not extend the chain and color-emoji flagging are
+    /// cache-neutral (they change no laid-out glyph position) and do not bump it.
+    /// A `u64` never wraps in practice (one bump per chain growth, not per frame).
+    coverage_generation: u64,
 }
 
 impl FontStore {
@@ -224,9 +226,12 @@ impl FontStore {
         let id = FontId(self.faces.len() as u32);
         self.faces.push(face);
         if self.chain.is_empty() {
+            // First face into an empty chain becomes the primary — the chain
+            // grew, so bump. A later `load` into a non-empty chain only registers
+            // a face (no chain change, no reshape) and stays cache-neutral.
             self.chain.push(id);
+            self.coverage_generation += 1;
         }
-        self.revision += 1;
         Some(id)
     }
 
@@ -238,7 +243,7 @@ impl FontStore {
         debug_assert!((id.0 as usize) < self.faces.len(), "unregistered FontId");
         if !self.chain.contains(&id) {
             self.chain.push(id);
-            self.revision += 1;
+            self.coverage_generation += 1;
         }
     }
 
@@ -276,17 +281,23 @@ impl FontStore {
     /// arrives with its strikes stripped, so it cannot be detected from the table
     /// set and must be flagged out of band (see [`FontFace::is_color_emoji`]).
     pub fn mark_color_emoji(&mut self, id: FontId) {
+        // Cache-neutral: the color flag only re-routes rasterization (SDF vs.
+        // color atlas), which `prepare` recomputes from the live face every call.
+        // It changes no laid-out glyph position, so it does not bump the coverage
+        // generation and never invalidates a cached paragraph.
         self.faces[id.0 as usize].set_color_emoji(true);
-        self.revision += 1;
     }
 
-    /// The current revision: a monotonic token bumped on every mutation that can
-    /// change how a run shapes or lays out (face load, chain extension,
-    /// color-emoji flagging). Callers that cache shaped/laid-out results fold
-    /// this into their cache key so a stale entry produced before the chain grew
-    /// never matches after (see the paragraph layout cache in [`crate::system`]).
-    pub fn revision(&self) -> u64 {
-        self.revision
+    /// The current coverage generation: a monotonic token bumped only when the
+    /// fallback chain grows (a face appended, or the first face loaded into an
+    /// empty chain). Callers that cache laid-out results use it to scope
+    /// invalidation — an entry that boxed a `.notdef` reshapes once this advances
+    /// (a new face may cover the boxed character), while a fully-covered entry
+    /// stays valid across generations (see the paragraph layout cache in
+    /// [`crate::system`]). Face registration and color-emoji flagging leave it
+    /// unchanged.
+    pub fn coverage_generation(&self) -> u64 {
+        self.coverage_generation
     }
 }
 
