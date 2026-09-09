@@ -56,3 +56,7 @@ harness = false
 [[bench]]
 name = "hover_diff"
 harness = false
+
+[[bench]]
+name = "inspect_identity"
+harness = false

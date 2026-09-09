@@ -1222,7 +1222,7 @@ spanning 放置 + auto-flow;ADR 0009 明列六项高级能力全未做。落 `cr
 - [x] **9.A4 `viso: Inspector facade + JSON 快照`** —— facade 聚合 A1–A3 + 已有 semantics/counters 成单一
       `cx.inspect()` 只读表面,并可序列化为 Ende JSON(§非-serde 硬依赖,走 §1583 Ende JSON dump)。为 Studio transport
       与 `viso inspect --json`(Slice C)共用同一模型(§34「同一底层模型」)。验收:JSON schema 稳定性单测 + headless 快照。
-- [ ] **9.A5 `bench: identity / inspect 开销`** —— §10.4.13 identity bench 类目 + 证明 inspect 表面 cold(不拖稳态帧)。
+- [x] **9.A5 `bench: identity / inspect 开销`** —— §10.4.13 identity bench 类目 + 证明 inspect 表面 cold(不拖稳态帧)。
       验收:release bench;稳态帧 counter 不因 inspect 存在而变。
 
 ### Slice B —— Studio(Inspector 协议的可视化 client)
