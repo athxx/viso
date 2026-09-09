@@ -1121,7 +1121,7 @@ spanning 放置 + auto-flow;ADR 0009 明列六项高级能力全未做。落 `cr
       spec 落成真实 measure 输入)+ 文本 Leaf 的 width-aware 求解回调(类比 content_natural,facade 回接 D1 的
       `shape(max_width)`)+ on_geometry/缓存把宽度并入 reflow 触发维度。**这是布局引擎级改动,牵动每个 widget 的 measure
       契约,不属于文字子系统**,故从原 D1 拆出、开自己的 ADR(§96 自适应布局落地开端)。消费 D1 的宽度换行能力,排在
-      D1 之后;是否早于 D2–D4 视 §96 落地节奏定(D2 缓存的宽度失效键在 DL1 接线后才有真实来源,但 D2 缓存本身可先以
+      D1 之后;是否早于 D2–D3 视 §96 落地节奏定(D2 缓存的宽度失效键在 DL1 接线后才有真实来源,但 D2 缓存本身可先以
       `max_width` 入键就位)。
       - **进行中 2026-09-09**:采用**两阶段 facade 驱动 reflow**(非给 measure 引入约束下行——measure 保持纯 post-order、
         对文本无知)。Phase A `shape_pending_text(None)` → measure → layout;layout 的 Flex 摆放循环里子节点宽度确定后调
@@ -1169,8 +1169,3 @@ spanning 放置 + auto-flow;ADR 0009 明列六项高级能力全未做。落 `cr
       counters_track_reshape_raster_and_reset)+ bench 新增 assert_unused_face_keeps_the_hit(hit*2<miss)。全 workspace test/clippy/fmt/
       check-deps(17 crates)绿;bench hit ~16.2µs vs miss ~52.3µs ~3×;VISO_FRAME_TRACE 首帧 text-counter 行无 panic。纯 text 层内部
       缓存语义 + counter,不触发 ADR。
-- [ ] **D4 `text: progressive / remote font provider seam`** —— §37.13「ExternalFontSource 实际网络传输经 service/integration
-      注入,Text runtime 只拥有请求语义、去重、优先级、revision 和 cache contract」。今天只有本地 bytes + 同步系统 provider,
-      远端渐进那层完全没有。补 request 语义 + 去重 + 优先级 + revision(§37.12「远端渐进字体加载不能破坏编辑模型」——
-      selection/caret 用文本索引 + shaping run mapping,不绑 glyph atlas slot)。**不拥有 HTTP/TLS**(§37.13),网络传输经
-      service 注入。依赖 D3 的 revision 机制,且远端字体真实消费者最晚(TextInput/富文本才需要),故排最后。
