@@ -4587,4 +4587,248 @@ mod tests {
             "parent is left untouched",
         );
     }
+
+    // --- DL1: width-aware text reflow recorder + queue ----------------------
+    //
+    // These drive the `viso-ui` half of the two-phase reflow (ADR 0027): the
+    // Flex layout pass records a reflow request for a wrap-eligible text leaf
+    // whose assigned box width disagrees with the width its run was shaped at,
+    // the store queues it, and the facade (not exercised here) drains and
+    // reshapes. We stand in for the facade's shaper with a hand-built
+    // `Content::Text` whose `natural`/`shaped_at_width`/`soft_wrap` we control,
+    // so the recorder's eligibility and the queue's contents are observable
+    // without a font stack.
+
+    const CLR: Rgba = Rgba {
+        r: 1.0,
+        g: 1.0,
+        b: 1.0,
+        a: 1.0,
+    };
+
+    /// A stand-in shaped run: `natural` is the run's current extent, `at` the
+    /// width it was shaped at (`None` = unconstrained single line), `wrap`
+    /// whether it opted into soft wrapping. This is exactly the subset of a real
+    /// `Content::Text` the reflow recorder reads.
+    fn text_run(natural: Vec2, at: Option<f32>, wrap: bool) -> Content {
+        Content::Text {
+            glyphs: Vec::new(),
+            atlas: TextureId(1),
+            color_glyphs: Vec::new(),
+            color_atlas: None,
+            color: CLR,
+            natural,
+            baseline: 0.0,
+            shaped_at_width: at,
+            soft_wrap: wrap,
+        }
+    }
+
+    /// Build `Column { leaf(width) }` filling `surf`, attach `content` to the
+    /// leaf, run measure+layout once, and return `(store, column, leaf)`.
+    fn wrap_scene(width: Length, content: Content, surf: Rect) -> (NodeStore, NodeId, NodeId) {
+        let mut store = NodeStore::new();
+        let (col, leaf) = {
+            let mut cx = BuildCx::new(&mut store);
+            let mut leaf_id = None;
+            let c = cx.flex(
+                FlexStyle {
+                    axis: Axis::Column,
+                    size: Size::fill(),
+                    // Stretch so a Fill-width child takes the column's cross
+                    // extent (the surface width) rather than hugging its own
+                    // natural run width — the realistic wrapped-paragraph setup.
+                    align: Align::Stretch,
+                    ..Default::default()
+                },
+                |cx| {
+                    leaf_id = Some(
+                        cx.leaf(LeafStyle {
+                            size: Size {
+                                width,
+                                height: Length::Fit,
+                            },
+                            ..Default::default()
+                        })
+                        .id(),
+                    );
+                },
+            );
+            (c.id(), leaf_id.unwrap())
+        };
+        store.set_content_payload(leaf, content);
+        let mut scratch = Vec::new();
+        crate::layout::measure(&mut store, col.index(), &mut scratch);
+        crate::layout::layout(&mut store, col.index(), surf, &mut scratch);
+        (store, col, leaf)
+    }
+
+    #[test]
+    fn fill_soft_wrap_text_narrower_than_natural_enqueues_its_box_width() {
+        // A 300px single-line run in a 100px-wide Fill column: the assigned box
+        // (100) is narrower than the natural (300), so the leaf must reflow.
+        let (mut store, _col, leaf) = wrap_scene(
+            Length::fill(),
+            text_run(Vec2 { x: 300.0, y: 20.0 }, None, true),
+            surface(100.0, 400.0),
+        );
+        let mut q = Vec::new();
+        store.take_text_reflows(&mut q);
+        assert_eq!(
+            q,
+            vec![(leaf, 100.0)],
+            "a soft-wrap Fill leaf narrower than its run enqueues its box width"
+        );
+    }
+
+    #[test]
+    fn non_wrapping_fill_text_never_enqueues_a_reflow() {
+        // Same geometry, but the run did not opt into wrapping: it clips
+        // single-line and no reflow is recorded.
+        let (mut store, _col, _leaf) = wrap_scene(
+            Length::fill(),
+            text_run(Vec2 { x: 300.0, y: 20.0 }, None, false),
+            surface(100.0, 400.0),
+        );
+        let mut q = Vec::new();
+        store.take_text_reflows(&mut q);
+        assert!(q.is_empty(), "a non-wrapping run never reflows");
+    }
+
+    #[test]
+    fn fit_width_soft_wrap_text_never_enqueues_a_reflow() {
+        // A Fit width sizes to content and is never box-constrained, so even a
+        // soft-wrap run is excluded from eligibility (the one width->width
+        // hazard ADR 0027 guards against).
+        let (mut store, _col, _leaf) = wrap_scene(
+            Length::Fit,
+            text_run(Vec2 { x: 300.0, y: 20.0 }, None, true),
+            surface(100.0, 400.0),
+        );
+        let mut q = Vec::new();
+        store.take_text_reflows(&mut q);
+        assert!(q.is_empty(), "a Fit-width leaf never reflows");
+    }
+
+    #[test]
+    fn fill_soft_wrap_text_wider_than_box_does_not_reflow_when_box_is_wide() {
+        // The box (400) is wider than the natural single-line run (300): no
+        // wrapping is needed, so nothing is enqueued.
+        let (mut store, _col, _leaf) = wrap_scene(
+            Length::fill(),
+            text_run(Vec2 { x: 300.0, y: 20.0 }, None, true),
+            surface(400.0, 400.0),
+        );
+        let mut q = Vec::new();
+        store.take_text_reflows(&mut q);
+        assert!(
+            q.is_empty(),
+            "a box wider than the single-line run needs no wrap"
+        );
+    }
+
+    #[test]
+    fn reflow_writeback_marks_layout_not_semantics_and_converges() {
+        // Full Phase-A -> queue -> (facade stand-in reshape) -> Phase-A loop,
+        // asserting: the write-back dirties MEASURE|LAYOUT|PAINT but not
+        // SEMANTICS, and a second layout pass enqueues nothing (convergence).
+        let surf = surface(100.0, 400.0);
+        let (mut store, col, leaf) = wrap_scene(
+            Length::fill(),
+            text_run(Vec2 { x: 300.0, y: 20.0 }, None, true),
+            surf,
+        );
+
+        let mut q = Vec::new();
+        store.take_text_reflows(&mut q);
+        assert_eq!(q, vec![(leaf, 100.0)], "first pass enqueues the box width");
+
+        // Stand in for the facade: reshape the run at width 100 — three rows of
+        // ~100px each, so the natural shrinks to <=100 wide and grows to 60 tall
+        // — and write it back via the reflow-only path.
+        store.clear_dirty();
+        store.set_reflowed_content(
+            leaf,
+            text_run(Vec2 { x: 100.0, y: 60.0 }, Some(100.0), true),
+        );
+
+        let d = store.dirty(leaf);
+        assert!(
+            d.contains(DirtyClass::MEASURE)
+                && d.contains(DirtyClass::LAYOUT)
+                && d.contains(DirtyClass::PAINT),
+            "a reflow write-back re-measures/lays-out/paints, got {d:?}"
+        );
+        assert!(
+            !d.contains(DirtyClass::SEMANTICS),
+            "a width-only reshape must not dirty the semantics tree, got {d:?}"
+        );
+
+        // Re-run layout: the leaf is now shaped at exactly its assigned width, so
+        // the recorder finds no mismatch and the queue settles empty.
+        let mut scratch = Vec::new();
+        crate::layout::measure(&mut store, col.index(), &mut scratch);
+        crate::layout::layout(&mut store, col.index(), surf, &mut scratch);
+        store.take_text_reflows(&mut q);
+        assert!(
+            q.is_empty(),
+            "after reshaping at the assigned width, the reflow queue converges"
+        );
+
+        // The wrapped leaf grew to the reshaped run's height.
+        assert!(
+            (store.bounds(leaf).h - 60.0).abs() <= 0.5,
+            "the wrapped Fill leaf takes the reshaped run height, got {}",
+            store.bounds(leaf).h
+        );
+    }
+
+    #[test]
+    fn subpixel_width_jitter_does_not_reenqueue_a_settled_reflow() {
+        // A run already shaped at 100 sits in a box whose width jitters by a
+        // sub-pixel amount (a drag-resize frame). The quantize-to-integer +
+        // 0.5px guard (ADR 0025 / §20) must not re-enqueue a reshape.
+        let (mut store, col, _leaf) = wrap_scene(
+            Length::fill(),
+            text_run(Vec2 { x: 100.0, y: 60.0 }, Some(100.0), true),
+            surface(100.3, 400.0),
+        );
+        let mut q = Vec::new();
+        store.take_text_reflows(&mut q);
+        assert!(
+            q.is_empty(),
+            "a sub-pixel width change must not reflow a settled run, got {q:?}"
+        );
+
+        // A whole-pixel narrowing past the guard *does* re-fire.
+        let surf2 = surface(80.0, 400.0);
+        let mut scratch = Vec::new();
+        crate::layout::measure(&mut store, col.index(), &mut scratch);
+        crate::layout::layout(&mut store, col.index(), surf2, &mut scratch);
+        store.take_text_reflows(&mut q);
+        assert_eq!(
+            q.len(),
+            1,
+            "a whole-pixel narrowing re-fires the reflow, got {q:?}"
+        );
+        assert_eq!(q[0].1, 80.0, "the new box width is recorded");
+    }
+
+    #[test]
+    fn fixed_width_soft_wrap_text_reflows_to_the_fixed_box() {
+        // A Fixed width is layout-derived (a hard box), so a soft-wrap run
+        // narrower than the box wraps to it just like Fill.
+        let (mut store, _col, leaf) = wrap_scene(
+            Length::Fixed(120.0),
+            text_run(Vec2 { x: 300.0, y: 20.0 }, None, true),
+            surface(400.0, 400.0),
+        );
+        let mut q = Vec::new();
+        store.take_text_reflows(&mut q);
+        assert_eq!(
+            q,
+            vec![(leaf, 120.0)],
+            "a Fixed-width soft-wrap leaf reflows to its fixed box"
+        );
+    }
 }

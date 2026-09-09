@@ -452,4 +452,112 @@ mod tests {
             _ => panic!("the greeting shapes into Content::Text"),
         }
     }
+
+    /// The DL1 shaper contract: a `soft_wrap` run shaped at a narrow `max_width`
+    /// wraps — its natural extent gets narrower and taller than the same run
+    /// shaped unconstrained — and it records the width it was shaped at, which
+    /// the layout-side reflow recorder reads to decide the run has settled.
+    #[test]
+    fn soft_wrap_run_shaped_at_a_narrow_width_wraps_and_records_it() {
+        let mut gpu = HeadlessRaster::new();
+        let _ = gpu.create_surface(RawWindowHandle::Headless, 256, 256);
+        let mut shaper = shaper_with_test_font();
+
+        // A run with several breakable spaces, so a narrow box has somewhere to
+        // wrap. Same request both times — only the assigned width differs.
+        let request = TextRequest {
+            text: "wrap this paragraph onto several lines".to_string(),
+            font_size: 20.0,
+            color: WHITE,
+            soft_wrap: true,
+        };
+
+        let wide = shaper.shape(&mut gpu, &request, 1.0, None);
+        let Content::Text {
+            natural: wide_n,
+            shaped_at_width: wide_at,
+            ..
+        } = wide
+        else {
+            panic!("shapes into text");
+        };
+        assert_eq!(wide_at, None, "an unconstrained shape records no width");
+
+        // Constrain to a fraction of the single-line width so it must wrap.
+        let box_w = wide_n.x * 0.4;
+        let narrow = shaper.shape(&mut gpu, &request, 1.0, Some(box_w));
+        let Content::Text {
+            natural: narrow_n,
+            shaped_at_width: narrow_at,
+            ..
+        } = narrow
+        else {
+            panic!("shapes into text");
+        };
+        assert_eq!(
+            narrow_at,
+            Some(box_w),
+            "a wrapped run records the width it was shaped at"
+        );
+        // The wrapped run is much narrower than the unconstrained single line.
+        // It need not fit `box_w` exactly — a single word longer than the box
+        // cannot be broken, so the run is only as narrow as its longest word —
+        // but it must have collapsed well below the one-line width.
+        assert!(
+            narrow_n.x < wide_n.x * 0.75,
+            "wrapping collapses the run well below its single-line width: {} !< {}",
+            narrow_n.x,
+            wide_n.x * 0.75
+        );
+        assert!(
+            narrow_n.y > wide_n.y,
+            "wrapping onto more lines makes the run taller: {} !> {}",
+            narrow_n.y,
+            wide_n.y
+        );
+    }
+
+    /// A run that did not opt into wrapping ignores `max_width` entirely: it
+    /// stays a single line and its natural extent is unchanged, so a
+    /// width-constrained non-wrapping leaf clips rather than reflows.
+    #[test]
+    fn non_wrapping_run_ignores_the_assigned_width() {
+        let mut gpu = HeadlessRaster::new();
+        let _ = gpu.create_surface(RawWindowHandle::Headless, 256, 256);
+        let mut shaper = shaper_with_test_font();
+
+        let request = TextRequest {
+            text: "single line stays single".to_string(),
+            font_size: 20.0,
+            color: WHITE,
+            soft_wrap: false,
+        };
+
+        let unconstrained = shaper.shape(&mut gpu, &request, 1.0, None);
+        let Content::Text { natural: n0, .. } = unconstrained else {
+            panic!("shapes into text");
+        };
+        // Pass a box far narrower than the single line: a non-wrapping run must
+        // ignore it and keep the same one-line extent.
+        let constrained = shaper.shape(&mut gpu, &request, 1.0, Some(n0.x * 0.3));
+        let Content::Text {
+            natural: n1,
+            shaped_at_width: at1,
+            ..
+        } = constrained
+        else {
+            panic!("shapes into text");
+        };
+        assert!(
+            (n0.x - n1.x).abs() <= 0.5 && (n0.y - n1.y).abs() <= 0.5,
+            "a non-wrapping run keeps its single-line extent: {n0:?} vs {n1:?}"
+        );
+        // A non-wrapping run is never width-constrained, so it records no shaped
+        // width regardless of the box handed down — the recorder's `soft_wrap`
+        // guard means it never reaches the width comparison anyway.
+        assert_eq!(
+            at1, None,
+            "a non-wrapping run records no shaped-at width even when a box is passed"
+        );
+    }
 }
