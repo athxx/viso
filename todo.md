@@ -1255,3 +1255,93 @@ spanning 放置 + auto-flow;ADR 0009 明列六项高级能力全未做。落 `cr
 
 > Phase 9 收官条件(§69):四块 Slice 全绿 + arch-check 无 Studio/tools 反向依赖泄漏 + Web 在真实浏览器渲染验证
 > (§35「cargo check 不算视觉验证」)+ 关键路径 release bench 有基线。BiDi 仍留后续(独立子系统,非 Phase 9 阻塞项)。
+
+---
+
+## Phase 10 —— 核心能力补全(backlog 收尾,草案 2026-09-09)
+
+> 把 backlog 里属于 framework 自身能力、有明确 trigger 的收尾件排成 phase。这些不属 Phase 9 四块主线,
+> 但都是「消费者一到就该有」的核心能力(§8/§10/§11/§13/§14/§20/§46)。按子系统分组;组内 Slice 顺序即依赖顺序。
+> 部分项与 Phase 9 有协同:State inspector / reactive bench 与 Phase 9 Inspector-Studio 同源(§34/§62),
+> 可在那时一并带出——此处保留独立 Slice 以免遗漏。
+
+### Slice A —— Reactive 遗留(Phase 5)
+
+- [ ] **10.A1 State inspector(`StateId -> bindings` + dep-edge introspection)** —— §34/§62 tooling client,非热路径。
+      与 Phase 9 Inspector 同底层模型;binding/dep 边可序列化入 9.A4 的 JSON 快照。验收:单测断言 StateId→bindings
+      边正确;cold-path(稳态帧 counter 不变)。
+- [ ] **10.A2 static / mixed / dynamic reactive benchmark(§70 exit + §10.3)** —— 证明 typed binding 不静默落
+      dynamic 路径;`static_binding_eval` / `dynamic_binding_eval` / `dynamic_subscribe` / `dynamic_fallback_nodes`
+      counters。**trigger:** `.vs` `dynamic` 逃生舱被实际行使(Phase 6 动态路径)时配一个真实 dynamic 消费者一起落。
+      验收:release bench;strict typed example 若新增 dynamic fallback 则 CI 红(§10.3)。
+
+### Slice B —— Input(Slices C/D/E 遗留)
+
+- [ ] **10.B1 World/transform column + clip folding** —— 独立 world rect 在 HIT_TEST/TRANSFORM/LAYOUT 脏时重算
+      (Scroll 已有 `world`,泛化 + hit-test 下行折叠 clip)。验收:平移子树按 world 命中;clip rect 外点被排除。
+- [ ] **10.B2 Pointer capture / drag(泛化)** —— 跨帧持有 target(Slice H 已为 scroll 落 capture holder,泛化到
+      可拖拽控件)。验收:拖拽控件跨帧持有并正确释放。
+- [ ] **10.B3 Focus on pointer-down(click-to-focus)** —— 今 focus 仅 Tab/programmatic;补点击聚焦。**trigger:** 首个
+      click-to-focus 控件。验收:点击控件获焦,焦点语义(见 10.C 若已落)同步。
+- [ ] **10.B4 stop_propagation 全链核验** —— Slice H 已落 `Dispatched { ran, stop }`;核验 pointer/key/IME 三链均尊重,
+      补首个必须吞事件的控件(modal backdrop / button)的 swallow 测试。验收:事件被消费后不冒泡的断言。
+
+### Slice C —— Style / Semantics(Slices F/G 遗留)
+
+- [ ] **10.C1 非 color/radius tokens** —— `border` + `spacing`/`typography`/`elevation`/`motion` 命名空间(今为字面量)。
+      **trigger:** 首个消费者(bordered widget / 文本控件 / 阴影 / animator)。验收:token→值解析单测。
+- [ ] **10.C2 Style-version / measure-affecting tokens** —— 喂 MEASURE 的 tokenized 字段须脏 MEASURE+LAYOUT(非仅
+      STYLE+PAINT);per-field binding class。**trigger:** 首个此类 token。验收:该 token 变更触发 measure 重算断言。
+- [ ] **10.C3 resolve_styles 的 cached bound-node list** —— 今扫全节点找 STYLE mark;大树使扫描变热时缓存(§12.3)。
+      **trigger:** 实测扫描热(非现在)。验收:大树 bench 证明缓存后扫描不再 O(n)。
+- [ ] **10.C4 Per-subtree incremental semantics** —— 今任一 SEMANTICS 脏则整树重导;缓存上次树 + 逐子树重建。
+      **trigger:** 大树使 walk 变热。验收:局部改仅重建该子树的断言 + bench。
+- [ ] **10.C5 Richer roles / state + platform AT bridge** —— `checked`/`expanded`/`value`/`range` 随控件长;
+      平台 AT 桥从 `SemanticsTree` 喂 OS a11y(platform-tier,ui-tier 不引 `accesskit`)。**trigger:** 首个 AT 消费。
+      验收:语义快照 + 平台 a11y 树对拍(能测的平台)。
+
+### Slice D —— 图片解码 / 图片 atlas
+
+- [ ] **10.D1 图片解码路径(png/jpeg/svg)** —— 今全工作区无解码,Image content 只吃现成 `TextureId`。加解码
+      (background 线程,§26)→ 上屏纹理。codec 取 proven 实现(§3.7 集成非自造)。验收:解码 golden(各格式一张)。
+- [ ] **10.D2 图片 atlas 归属** —— 多小图打 atlas(复用文字 atlas 的打包思路,§16/§17.4 持久资源)。验收:atlas 打包
+      单测 + 上传字节 counter(§61 gpu_upload_bytes)。
+
+### Slice E —— Layout 容器进阶
+
+- [ ] **10.E1 VirtualList `key_of` reorder** —— 今逻辑索引=身份;稳定 key 重排(§12.4)。验收:重排后节点复用/身份保持断言。
+- [ ] **10.E2 Grid advanced(ADR 0009)** —— `minmax`/`repeat`/`fit-content`、named lines/template-areas、subgrid、
+      baseline 对齐、spanning-item 对 Auto sizing 的贡献、per-node `GridScratch` hoisting、**Adaptive**(doc §69 item 11 另一半)。
+      验收:各特性 golden 布局 dump + 复杂 grid 截图 + microbench(§36 layout 类目)。
+
+> 开放设计点(driver → scheduler StateDirty channel):`RuntimeCx` 现暴露 `request_redraw`/`request_state_flush`;
+> 若要更窄的 `StateDirty` 记录让 scheduler decide/idle 记账更诚实,在需要时定 seam,保持 zero-CPU-when-idle 契约不破。
+
+---
+
+## Phase 11 —— 富媒体 / 扩展控件(Tier 5–6,草案 2026-09-09)
+
+> Tier 5 编辑器件 + Tier 6 重媒体。**核心约束(§33/§4/§5/§7.2/§3.7):重媒体不进默认 `viso-widgets` 依赖图**
+> ——doc §33 原文点名「PDF/browser/map/chart should not be added to the default widget crate dependency graph」。
+> 落点 `extras/`(可选功能)或 `integrations/`(平台 adapter);每个开工时按 §3.3/§3.7 定 crate 落点与 adapter 边界并开 ADR。
+> 每控件仍需 doc §71 验证包(能 headless 的维度)。
+
+### Slice A —— Tier 5 编辑器 / 结构工具件(`viso-widgets` 内)
+
+- [ ] **11.A1 code-editor primitives** —— 代码编辑器基础件(**primitives 非成品编辑器**):gutter 行号、语法高亮 span
+      (样式区间,非 tokenizer 本体)、光标/选区渲染、可选 minimap。吃 Tier 2 `TextInput` + 文字子系统(A–D 已成)。
+      验收:选区/光标 golden + 高亮 span 渲染快照 + 大文件滚动 microbench。
+
+### Slice B —— Tier 6 重型 / 富媒体控件(`extras/` / `integrations/`)
+
+- [ ] **11.B1 Markdown** —— 解析 + 排版到 Node 树。落点 `extras/viso-markdown`(轻)。codec/解析 adapter。
+      验收:markdown→Node 树 golden。
+- [ ] **11.B2 Charts** —— GPU 直绘走 Viso render/paint。`extras/`(§33 排除默认 widgets)。验收:图表 golden 截图。
+- [ ] **11.B3 PDF** —— PDF 查看。`extras/` 或 `integrations/`;codec/解析 adapter。验收:渲染首页 golden。
+- [ ] **11.B4 Map** —— 瓦片加载 adapter + GPU 绘制。`extras/` 或 `integrations/`。验收:瓦片拼接渲染快照。
+- [ ] **11.B5 Video** —— 平台解码 adapter + GPU 纹理上屏。`integrations/`。验收:一帧解码上屏(能测的平台)。
+- [ ] **11.B6 Browser** —— 内嵌浏览视图。`integrations/`(纯平台 adapter,§3.7);各平台原生 webview 桥接。
+      验收:webview 桥接冒烟(能测的平台)。
+
+> Phase 11 每控件 crate 落点(`extras/` vs `integrations/`)与 adapter 边界在其开工时按 §3.3/§3.7 定夺并开 ADR。
+> 收官条件(§69):不得让任一重媒体件进入默认 `viso-widgets` 依赖图(arch-check 强制);各件有 headless 可测维度的验证包。
