@@ -1199,9 +1199,12 @@ spanning 放置 + auto-flow;ADR 0009 明列六项高级能力全未做。落 `cr
 
 ### Slice A —— Inspector(§62 统一 introspection 聚合表面)
 
-- [ ] **9.A1 `ui: dirty-reason 可读表面`** —— 现有 dirty flags 是 bitmask;§62 要求 `NodeId -> dirty flags/reasons`。
-      在 ui crate 暴露 `fn dirty_reasons(id) -> DirtyReasons`(STRUCTURE/STYLE/MEASURE/LAYOUT/TRANSFORM/PAINT/HIT_TEST/
-      SEMANTICS 逐位可读),cold-path(§7.2)、不进稳态遍历。验收:单测断言各类失效后位正确;不动热路径(counter 稳态零变化)。
+- [x] **9.A1 `ui: dirty-reason 可读表面`** —— 现有 dirty flags 是 bitmask;§62 要求 `NodeId -> dirty flags/reasons`。
+      原始位已由 `Tree::dirty(id) -> DirtyClass` 暴露(不重复造查询入口);缺的是可读呈现,故直接挂在 `DirtyClass` 上:
+      `iter_names()`(置位逐位低位优先、返回 STRUCTURE/STYLE/MEASURE/LAYOUT/TRANSFORM/PAINT/HIT_TEST/SEMANTICS 静态名)
+      + `Display`(`MEASURE | LAYOUT`,空集 `EMPTY`)。JSON 快照 / Studio transport 复用同一命名。比草案的独立 `DirtyReasons`
+      类型更小的公共面(§55)。cold-path(§7.2),纯新增、不碰 `mark_dirty`/遍历,稳态 counter 零变化。验收:单测断言各类
+      单独渲染自身名、乱序组合仍低位优先、空集 `EMPTY`、经 wire byte 往返命名一致(5 passed)。
 - [ ] **9.A2 `ui: 节点树 / 布局盒 dump`** —— `fn inspect_tree(root) -> InspectNode{ id, parent, children, kind,
       bounds, dirty }` 递归快照(cold String 名走 §8.4 sparse 侧表,不进 NodeMeta)。复用已有 `bounds()`。验收:headless
       golden 树 dump;无 unsafe 内存窥探(§34)。
