@@ -1169,3 +1169,89 @@ spanning 放置 + auto-flow;ADR 0009 明列六项高级能力全未做。落 `cr
       counters_track_reshape_raster_and_reset)+ bench 新增 assert_unused_face_keeps_the_hit(hit*2<miss)。全 workspace test/clippy/fmt/
       check-deps(17 crates)绿;bench hit ~16.2µs vs miss ~52.3µs ~3×;VISO_FRAME_TRACE 首帧 text-counter 行无 panic。纯 text 层内部
       缓存语义 + counter,不触发 ADR。
+
+---
+
+## Phase 9 —— CLI / Studio / Inspector / Web Delivery(§73;草案 2026-09-09)
+
+> 主线四块。开工顺序 **Inspector → Studio → CLI → Web**:Inspector 地基已在(`bounds()`/`semantics()`/
+> `derive_semantics()`),缺的是 §62 的统一聚合表面;Studio 是 Inspector 协议的可视化 client;CLI 是把
+> 已有的 compiler/inspector/packager 收拢成单一 `viso` facade(§54);Web(WASM/WebGPU)体量最大、压轴。
+> 契约锚点:§34/§62(debug introspection)、§54 + `Viso_CLI.md`(命令面/target/JSON 协议)、§65.1(Web→WebGPU
+> first-class)、Architecture §3.5「Studio/Inspector 是 framework 的 client,永不成为 runtime crate 依赖」。
+> 依赖方向红线:`ui -> Studio` 禁止、`runtime -> Studio` 禁止、framework crate 不得反依赖 `tools/`。
+> 每块细分到可开工 Slice;每 Slice 自带验收点(§35/§69)。Slice 顺序即依赖顺序,不代表现在动手。
+
+### Slice 0 —— 前置清理(文档同步,近零风险,无代码)
+
+- [ ] **9.0a 修订 backlog 过时描述** —— todo.md 文字 deferred 两条已被 Phase A–D 实现却仍写"未做",纠为实况:
+      (1) 「文字换行 / 多字体」条:wrap/`max_lines` 回退、fallback 链、复杂 shaping **已完成**(A1–A3/D1/DL1),
+      仅 **BiDi 双向重排**仍未做(需 unicode-bidi 集成 + 逻辑↔视觉重排,是独立子系统,留 Tier/后续);
+      改写该条为「仅 BiDi 待做」。(2) 「DPI plumbing」条:核实已**完全通**——`system.rs:prepare(dpi_factor)` →
+      `dpx_per_em = font_size_px * dpi_factor` → `raster::rasterize_glyph(face, id, dpx_per_em)` 按显示密度栅格化,
+      窗口 resize/移屏经 `cx.scale_factor()` 重取(lib.rs:505/806),`shape()` 不吃 dpi 是对的(shaping 与密度无关);
+      **删除该 deferral**。验收:仅 todo.md 文本变更,与本 Slice 首个代码 commit 分离或同 commit 皆可,无需测试。
+
+### Slice A —— Inspector(§62 统一 introspection 聚合表面)
+
+- [ ] **9.A1 `ui: dirty-reason 可读表面`** —— 现有 dirty flags 是 bitmask;§62 要求 `NodeId -> dirty flags/reasons`。
+      在 ui crate 暴露 `fn dirty_reasons(id) -> DirtyReasons`(STRUCTURE/STYLE/MEASURE/LAYOUT/TRANSFORM/PAINT/HIT_TEST/
+      SEMANTICS 逐位可读),cold-path(§7.2)、不进稳态遍历。验收:单测断言各类失效后位正确;不动热路径(counter 稳态零变化)。
+- [ ] **9.A2 `ui: 节点树 / 布局盒 dump`** —— `fn inspect_tree(root) -> InspectNode{ id, parent, children, kind,
+      bounds, dirty }` 递归快照(cold String 名走 §8.4 sparse 侧表,不进 NodeMeta)。复用已有 `bounds()`。验收:headless
+      golden 树 dump;无 unsafe 内存窥探(§34)。
+- [ ] **9.A3 `render: paint-range / batch introspection`** —— §62 `NodeId -> paint primitive ranges`、`BatchId ->
+      pipeline/resources`。render 暴露只读 `fn paint_ranges(id)`、`fn batches() -> &[BatchInfo]`。验收:golden 场景下
+      range/batch 计数与既有 FrameStats 一致(交叉校验)。
+- [ ] **9.A4 `viso: Inspector facade + JSON 快照`** —— facade 聚合 A1–A3 + 已有 semantics/counters 成单一
+      `cx.inspect()` 只读表面,并可序列化为 Ende JSON(§非-serde 硬依赖,走 §1583 Ende JSON dump)。为 Studio transport
+      与 `viso inspect --json`(Slice C)共用同一模型(§34「同一底层模型」)。验收:JSON schema 稳定性单测 + headless 快照。
+- [ ] **9.A5 `bench: identity / inspect 开销`** —— §10.4.13 identity bench 类目 + 证明 inspect 表面 cold(不拖稳态帧)。
+      验收:release bench;稳态帧 counter 不因 inspect 存在而变。
+
+### Slice B —— Studio(Inspector 协议的可视化 client)
+
+- [ ] **9.B1 `tools/studio: crate 骨架 + 依赖红线`** —— 新建 `tools/studio`(client,**非** runtime 依赖);arch-check
+      加边 `studio -> viso(public/inspector API)` 允许、`* -> studio` 禁止。验收:`cargo xtask arch-check` 绿;空跑连通。
+- [ ] **9.B2 `studio: Runtime↔Studio protocol`** —— 复用 9.A4 的 Ende JSON 模型 + 紧凑 message tag(§1813 stable schema
+      fingerprint 握手)。传输:node tree / dirty reasons / semantics / frame timings / counters。验收:协议往返单测;
+      fingerprint 不匹配拒绝静默旧布局解释(§1829)。
+- [ ] **9.B3 `studio: 树 / 布局 / dirty / semantics 可视化`** —— 消费 9.B2 流渲染树视图 + 选中节点面板(bounds/dirty
+      reason/组件/源码 span,对齐 §1441 清单)。验收:对一 headless 会话回放,面板字段与 dump 一致。
+- [ ] **9.B4 `studio: hot-reload / live preview 挂接`** —— 接 §21.7 事务式 hot reload(compile→validate→diff→commit),
+      失败保留 last-good(§19/§21.7)。验收:改一 `.vs`,preview 事务提交;注入编译错验证 last-good 不崩。
+
+### Slice C —— CLI(§54 单一 `viso` facade + `Viso_CLI.md` 协议)
+
+- [ ] **9.C1 `tools/viso-cli: 命令面骨架 + --json 协议`** —— 按 §54.1 命令组建 clap(或等价)骨架;全命令支持
+      `--json`(Ende JSON,§54 协议)。命令名取 Viso 产品语义,禁映射平台历史命令(§54.1)。验收:`viso --help` 覆盖
+      PROJECT/ENVIRONMENT/DEVELOP/LANGUAGE/TEST-DEBUG/DELIVERY/MAINTENANCE 七组;`--json` schema 单测。
+- [ ] **9.C2 `viso: LANGUAGE 组(fmt/check/schema/dump/explain)`** —— 收拢已有 compiler 表面:`viso fmt`、`viso check`、
+      `viso dump ast|hir|ui-ir|reactive-ir|shader-ir|system-ir`(§54.1)。验收:各 dump 对 fixture 产稳定输出;
+      `check` 复用 §30 诊断(severity/code/span)。
+- [ ] **9.C3 `viso: TEST/DEBUG 组(test/snapshot/inspect/profile/studio)`** —— `viso inspect --json` 复用 9.A4 模型;
+      `viso snapshot` 复用 headless golden;`viso studio` 起 9.B。验收:`viso inspect` 输出与 Studio transport 同源
+      (§246「复用同一 inspection service」);`viso test`/`snapshot` 跑现有 headless 套件。
+- [ ] **9.C4 `viso: DEVELOP 组(run/build/serve)+ watcher`** —— `viso run` 拥开发期 watcher(§54.3);`build [target]`
+      按 §54.2 target model(host/macos/.../web-gpu/web-dom/headless)。验收:`viso run` host 起 example 并热改;
+      `build headless` 产 artifact。
+- [ ] **9.C5 `viso: DELIVERY 组(package/export)`** —— `package` 产可分发物、`export html|solid`(§54.2;SolidJS 是
+      exporter 非 IR/核心依赖)。验收:`export html` 产静态资产;`package` 产物结构单测。**注:export 依赖 Slice D 的
+      Web runtime 成型,标 dep(D)。**
+
+### Slice D —— Web Delivery(WASM / WebGPU,§65.1 Web→WebGPU first-class)
+
+- [ ] **9.D1 `gpu: WebGPU 后端`** —— gpu crate 加 WebGPU 后端(§17 RHI 不变;§65.1 Tier-1 Web→WebGPU)。静态后端特化
+      (§17.2,编译期选后端,无 per-primitive dyn)。验收:WebGPU 后端过 gpu crate 现有 RHI 单测;capability 差异显式可测。
+- [ ] **9.D2 `platform: wasm target(surface/input/lifecycle)`** —— platform crate wasm 分支:canvas surface、
+      normalized input(§13)、lifecycle。§7.1 手动 pump/事件循环在 wasm 用 rAF 驱动。验收:wasm-pack 构建通;headless
+      逻辑测不回归。
+- [ ] **9.D3 `viso: web build 管线(web-gpu / web-dom / web-hybrid)`** —— 打通 `viso build web-gpu`(纯 WebGPU canvas,
+      对齐你的 Figma-式画布用例)+ `web-hybrid`(DOM + WebGPU islands,§4430)。**字体入口在此兑现 canvas 用例**:上层取
+      woff2 → `libs/woff2` 解压 → `AppCx::load_font(sfnt bytes)` → 画布绘制(入口已就绪,本 Slice 只验证 wasm 端到端)。
+      验收:web-gpu 产物在浏览器渲染 hello_world;load_font 注入的 web 字体在 canvas 正确整形绘制。
+- [ ] **9.D4 `bench: web 首帧 / 包体 / 上传`** —— §36 startup/memory/paint 类目的 web 变体:wasm 包体大小、首帧时延、
+      atlas 上传字节(复用 D3 TextCounters)。验收:release web 构建的基线数据入 bench 趋势(§67)。
+
+> Phase 9 收官条件(§69):四块 Slice 全绿 + arch-check 无 Studio/tools 反向依赖泄漏 + Web 在真实浏览器渲染验证
+> (§35「cargo check 不算视觉验证」)+ 关键路径 release bench 有基线。BiDi 仍留后续(独立子系统,非 Phase 9 阻塞项)。
