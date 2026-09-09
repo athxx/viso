@@ -1163,6 +1163,16 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
                                 eprintln!(
                                     "viso: first frame submitting {w}x{h} {stats:?} {recompute:?}"
                                 );
+                                if let Some(text) = &ws.text {
+                                    let c = text.counters();
+                                    eprintln!(
+                                        "viso: text reshapes={} relinebreaks={} rasters={} atlas_upload_bytes={}",
+                                        c.reshapes(),
+                                        c.relinebreaks(),
+                                        c.rasters(),
+                                        c.atlas_upload_bytes(),
+                                    );
+                                }
                             }
                         }
                         gpu.renderer.submit(
@@ -1180,6 +1190,12 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
                     // invalidation; clear every node's dirty set so the next frame
                     // starts clean and an idle frame recomputes nothing.
                     ws.store.clear_dirty();
+                    // Zero the text counters at the frame boundary so each frame's
+                    // trace reflects only that frame's shaping / raster / upload
+                    // work (a steady-state repaint reads back all zeros).
+                    if let Some(text) = &ws.text {
+                        text.reset_counters();
+                    }
                     // Keep the loop beating while this window has live animations.
                     // `wants_animation` already tells the scheduler to stay in
                     // `Poll`, but on a headless backend `Poll` produces no beat on

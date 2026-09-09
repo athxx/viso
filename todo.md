@@ -1156,10 +1156,19 @@ spanning 放置 + auto-flow;ADR 0009 明列六项高级能力全未做。落 `cr
       LRU 驱逐/cap0 停用)+ 3 facade 集成 + `benches/paragraph_cache.rs`(命中 ~17.9µs vs miss ~58.6µs ~3.3×,
       startup 分配不变量 hit*2<miss)。全 workspace test/clippy/fmt/check-deps 绿。纯 text 层内部缓存、无跨 crate/架构变更,
       不触发 ADR。
-- [ ] **D3 `text: font revision + incremental invalidation + profiler counters`** —— §37.13 ownership 清单里代码零命中的一条
+- [x] **D3 `text: font revision + incremental invalidation + profiler counters`** —— §37.13 ownership 清单里代码零命中的一条
       (grep `revision`/`counter`/`invalidat` 全 crate 无)。font/chain 变更 bump revision → 精准失效 D2 缓存(而非全清);
       §37.11「新增无关 coverage 不失效」在此兑现(revision 携失效范围);text profiler counters(reshape/re-linebreak/raster/
       atlas-upload 次数)接入 §36 profiler。与 D2 缓存耦合,D2 落地时一并带出 revision,counters 并入本节。
+      落地取 coverage-scoped generation(Option B):缓存只存位置,三类 font 变更按能否改变缓存位置分类 —— mark_color_emoji
+      (只翻 SDF↔color 路由,shaping 不读,零失效)/ load 注册进非空 chain(只登记 face,零失效)/ chain append(唯一能改位置,
+      且只对 box 了 .notdef 的段)只此 bump coverage_generation。失效范围收敛到「本段是否 box 过 .notdef」一 bit:全覆盖段跨代恒命中,
+      box 段下次 append 时重算(保守安全)。TextCounters(Cell<u64> reshapes/relinebreaks/rasters/atlas_upload_bytes)接入
+      TextSystem → TextShaper → VISO_FRAME_TRACE 首帧 dump,帧边界 reset。验证:paragraph_cache 单元(unrelated_coverage_does_not_invalidate/
+      boxed_paragraph_reshapes_on_new_generation 等)+ 3 facade(registering_an_unused_face_is_a_cache_hit/mark_color_emoji_does_not_invalidate/
+      counters_track_reshape_raster_and_reset)+ bench 新增 assert_unused_face_keeps_the_hit(hit*2<miss)。全 workspace test/clippy/fmt/
+      check-deps(17 crates)绿;bench hit ~16.2µs vs miss ~52.3µs ~3×;VISO_FRAME_TRACE 首帧 text-counter 行无 panic。纯 text 层内部
+      缓存语义 + counter,不触发 ADR。
 - [ ] **D4 `text: progressive / remote font provider seam`** —— §37.13「ExternalFontSource 实际网络传输经 service/integration
       注入,Text runtime 只拥有请求语义、去重、优先级、revision 和 cache contract」。今天只有本地 bytes + 同步系统 provider,
       远端渐进那层完全没有。补 request 语义 + 去重 + 优先级 + revision(§37.12「远端渐进字体加载不能破坏编辑模型」——

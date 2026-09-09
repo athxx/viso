@@ -21,6 +21,7 @@
 
 mod atlas;
 mod color_raster;
+mod counters;
 mod font;
 mod layout;
 mod linebreak;
@@ -32,6 +33,7 @@ mod system;
 
 pub use atlas::{ATLAS_SIZE, Atlas, AtlasEntry, DirtyRect, GlyphKind};
 pub use color_raster::{ColorGlyph, ColorGlyphRasterizer, rasterize_color_glyph};
+pub use counters::TextCounters;
 pub use font::{Command, FontFace, FontStore};
 pub use layout::{PositionedGlyph, layout};
 pub use provider::{

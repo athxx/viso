@@ -11,6 +11,7 @@ use crate::FontId;
 use crate::FontStore;
 use crate::atlas::{ATLAS_SIZE, Atlas, DirtyRect, GlyphKind};
 use crate::color_raster::ColorGlyphRasterizer;
+use crate::counters::TextCounters;
 use crate::layout::layout;
 use crate::paragraph_cache::ParagraphCache;
 use crate::provider::{FontRole, SystemFallback, SystemFontProvider, SystemFontQuery};
@@ -46,16 +47,24 @@ const PARAGRAPH_CACHE_CAPACITY: usize = 512;
 /// bitmap-emoji strikes. Each prepared glyph names which it lives in.
 ///
 /// A [`ParagraphCache`] memoizes the shape + line-break + placement work of
-/// [`prepare`](Self::prepare): a re-request with the same text, font, size, wrap
-/// width, and font revision returns the cached glyph positions without
-/// reshaping. Glyph rasterization/packing is deduplicated separately by the
+/// [`prepare`](Self::prepare): a re-request with the same text, font, size, and
+/// wrap width returns the cached glyph positions without reshaping. Coverage
+/// growth invalidates only the entries that boxed a `.notdef` (see the cache
+/// docs), so adding an unrelated fallback face never reshapes a covered
+/// paragraph. Glyph rasterization/packing is deduplicated separately by the
 /// atlases, so the two caches compose — a repeated paragraph pays neither
 /// reshape nor re-raster.
+///
+/// A [`TextCounters`] records the per-frame work (reshapes, re-linebreaks, fresh
+/// rasters, atlas-upload bytes) for the profiler surface; read it with
+/// [`counters`](Self::counters) and zero it at the frame boundary with
+/// [`reset_counters`](Self::reset_counters).
 pub struct TextSystem {
     store: FontStore,
     atlas: Atlas,
     color_atlas: Atlas,
     cache: ParagraphCache,
+    counters: TextCounters,
 }
 
 impl Default for TextSystem {
@@ -72,6 +81,7 @@ impl TextSystem {
             atlas: Atlas::new(ATLAS_SIZE),
             color_atlas: Atlas::new_color(ATLAS_SIZE),
             cache: ParagraphCache::new(PARAGRAPH_CACHE_CAPACITY),
+            counters: TextCounters::default(),
         }
     }
 
@@ -141,6 +151,21 @@ impl TextSystem {
         self.color_atlas.take_dirty()
     }
 
+    /// The text subsystem's per-window work counters (reshapes, re-linebreaks,
+    /// fresh rasters, atlas-upload bytes). The caller records atlas-upload bytes
+    /// through this handle at its texture-write sites and reads all four for the
+    /// profiler surface; [`reset_counters`](Self::reset_counters) zeroes them at
+    /// the frame boundary.
+    pub fn counters(&self) -> &TextCounters {
+        &self.counters
+    }
+
+    /// Zero the text counters — call at the frame boundary so each count reflects
+    /// one frame's text work.
+    pub fn reset_counters(&self) {
+        self.counters.reset();
+    }
+
     /// The first-line baseline of a run in `font` at `font_size_px`: the distance
     /// in logical pixels from the top of the layout box down to the baseline of
     /// the first line (one ascender below the top, matching [`layout`]). This is
@@ -207,25 +232,30 @@ impl TextSystem {
     ) -> Vec<GlyphQuad> {
         let dpx_per_em = font_size_px * dpi_factor;
         // Split borrows: `store` (shared) feeds the layout miss and each glyph's
-        // face; `cache` and the two atlases (unique) are separate fields, so
+        // face; `cache`, `counters`, and the two atlases are separate fields, so
         // binding each independently lets the shared `store` borrow coexist with
         // the unique cache/atlas borrows.
         let store = &self.store;
         let atlas = &mut self.atlas;
         let color_atlas = &mut self.color_atlas;
+        let counters = &self.counters;
 
         // Shape + line-break + place through the paragraph cache: an identical
-        // re-request (same text/font/size/wrap width, and font revision) returns
-        // the cached glyph positions without reshaping. A font mutation bumps the
-        // revision, so a stale entry from before the chain grew never matches.
-        let positioned = self.cache.get_or_compute(
+        // re-request (same text/font/size/wrap width) returns the cached glyph
+        // positions without reshaping. The coverage generation scopes
+        // invalidation: only an entry that boxed a `.notdef` reshapes when the
+        // fallback chain grows, so adding an unrelated face is still a hit.
+        let (positioned, was_miss) = self.cache.get_or_compute(
             font,
             text,
             font_size_px,
             max_width_px,
-            store.revision(),
+            store.coverage_generation(),
             || layout(store, font, text, font_size_px, max_width_px),
         );
+        if was_miss {
+            counters.record_reshape(max_width_px.is_some());
+        }
 
         let inv = 1.0 / dpi_factor;
         let mut quads = Vec::with_capacity(positioned.len());
@@ -242,9 +272,12 @@ impl TextSystem {
             // face skips the probe entirely (no per-glyph raster-image lookup)
             // and every glyph falls through to the SDF outline path.
             if (face.has_color_strikes() || face.is_color_emoji())
-                && let Some(entry) =
+                && let Some((entry, fresh)) =
                     color_atlas.color_glyph(face, g.font, g.id, dpx_per_em, color_raster)
             {
+                if fresh {
+                    counters.record_raster();
+                }
                 let w = entry.width as f32 * inv;
                 let h = entry.height as f32 * inv;
                 let x = g.origin_px[0] + entry.bearing_px[0] * inv;
@@ -258,9 +291,12 @@ impl TextSystem {
                 continue;
             }
 
-            let Some(entry) = atlas.glyph(face, g.font, g.id, dpx_per_em) else {
+            let Some((entry, fresh)) = atlas.glyph(face, g.font, g.id, dpx_per_em) else {
                 continue;
             };
+            if fresh {
+                counters.record_raster();
+            }
             // The SDF bitmap was rasterized at `dpi_factor` density; convert its
             // texel extents and bearing back to logical pixels for placement.
             let w = entry.width as f32 * inv;
@@ -279,7 +315,7 @@ impl TextSystem {
 
     /// The number of paragraphs currently held in the layout cache. For tests —
     /// asserts that an identical re-`prepare` is a hit (does not grow the cache)
-    /// and that an invalidating change (width, revision) adds an entry.
+    /// and that an invalidating change (width) adds an entry.
     #[cfg(test)]
     fn cache_len(&self) -> usize {
         self.cache.len()
@@ -342,25 +378,91 @@ mod tests {
     }
 
     #[test]
-    fn loading_a_face_bumps_revision_and_invalidates() {
-        // A font mutation (loading a second face) bumps the store revision, so a
-        // previously-cached paragraph reshapes against the new store rather than
-        // serving a layout that predates it. Observable as a fresh cache entry
-        // under the new revision, not a hit on the old one.
+    fn registering_an_unused_face_is_a_cache_hit() {
+        // Loading a second face into a non-empty chain only registers it — the
+        // chain does not grow, so the coverage generation is unchanged and a
+        // fully-covered paragraph laid out before the load stays a hit. This is
+        // the scoped-invalidation contract: adding an unrelated face does not
+        // reshape a covered paragraph.
         let (mut sys, font) = system_with_font();
         let _ = sys.prepare(font, "hello", 16.0, None, 1.0, None);
         assert_eq!(sys.cache_len(), 1);
 
-        // Load another face — even though this paragraph does not use it, the
-        // revision bump is the coarse D2 invalidation (D3 makes it scoped).
+        // Register another face; the ASCII paragraph is fully covered by the
+        // primary, so it must not reshape or add a second entry.
         let _ = sys
             .load_font(FONT.to_vec(), 0)
             .expect("fixture parses again");
         let _ = sys.prepare(font, "hello", 16.0, None, 1.0, None);
         assert_eq!(
             sys.cache_len(),
-            2,
-            "the revision bump made the same paragraph a fresh entry"
+            1,
+            "registering an unused face left the covered paragraph a hit"
         );
+    }
+
+    #[test]
+    fn mark_color_emoji_does_not_invalidate() {
+        // Marking a face color-emoji only re-routes rasterization; it changes no
+        // laid-out position and does not bump the coverage generation, so a
+        // cached paragraph stays a hit.
+        let (mut sys, font) = system_with_font();
+        let _ = sys.prepare(font, "hello", 16.0, None, 1.0, None);
+        assert_eq!(sys.cache_len(), 1);
+
+        sys.store.mark_color_emoji(font);
+        let _ = sys.prepare(font, "hello", 16.0, None, 1.0, None);
+        assert_eq!(sys.cache_len(), 1, "color-emoji flagging is cache-neutral");
+    }
+
+    #[test]
+    fn counters_track_reshape_raster_and_reset() {
+        // A first prepare reshapes once and rasters its visible glyphs; an
+        // identical second prepare hits the paragraph cache (no reshape) and
+        // dedups every glyph in the atlas (no fresh raster). `reset_counters`
+        // zeroes the window.
+        let (mut sys, font) = system_with_font();
+
+        let _ = sys.prepare(font, "hello", 16.0, None, 1.0, None);
+        assert_eq!(sys.counters().reshapes(), 1, "the first prepare reshaped");
+        assert_eq!(
+            sys.counters().relinebreaks(),
+            0,
+            "an unwrapped (max_width None) reshape is not a re-linebreak"
+        );
+        // "hello" has four distinct rasterizable glyphs (the two 'l's dedupe to
+        // one atlas entry), so the first prepare packs exactly four fresh glyphs.
+        let first_rasters = sys.counters().rasters();
+        assert!(
+            first_rasters > 0,
+            "the first prepare rastered its glyphs, got {first_rasters}"
+        );
+
+        let _ = sys.prepare(font, "hello", 16.0, None, 1.0, None);
+        assert_eq!(
+            sys.counters().reshapes(),
+            1,
+            "the identical second prepare hit the cache, no new reshape"
+        );
+        assert_eq!(
+            sys.counters().rasters(),
+            first_rasters,
+            "the second prepare deduped every glyph, no fresh raster"
+        );
+
+        // A wrapped prepare records a re-linebreak alongside the reshape.
+        let _ = sys.prepare(font, "hello world", 16.0, Some(40.0), 1.0, None);
+        assert_eq!(sys.counters().reshapes(), 2, "the wrapped prepare reshaped");
+        assert_eq!(
+            sys.counters().relinebreaks(),
+            1,
+            "a wrapped reshape counts a re-linebreak"
+        );
+
+        sys.reset_counters();
+        assert_eq!(sys.counters().reshapes(), 0);
+        assert_eq!(sys.counters().relinebreaks(), 0);
+        assert_eq!(sys.counters().rasters(), 0);
+        assert_eq!(sys.counters().atlas_upload_bytes(), 0);
     }
 }
