@@ -505,9 +505,14 @@ old Phase 10 `viso migrate` migration tooling was **removed** from the doc (see 
       MEASURE/LAYOUT/PAINT/SEMANTICS 失效。拆独立后续小节。
 - [ ] **图片解码 / 图片 atlas**:全工作区无解码路径;本片 Image content 只接**现成 `TextureId`**。png/jpeg/svg
       栅格解码 + 图片 atlas 归属后续小节 or Tier 6 可选集成(doc §46)。
-- [ ] **文字换行 / BiDi / 多字体**:`viso-text` 现为单 face、LTR、硬 `\n`;wrap/`max_lines`/overflow 留待文字子系统扩展。
-- [ ] **DPI plumbing**:`AppDriver::shape_pending_text` 现 `dpi=1.0` 硬编码。应从 surface 的设备像素密度取真实
-      `dpi_factor` 传给 `TextShaper::shape`(glyph 按该密度栅格化)。窗口 resize/移屏改密度时须重 shape 文字节点。
+- [ ] **文字双向排版(BiDi)** —— 仅此项待做:wrap / `max_lines`(注:`max_lines`/省略号截断本身也尚未做)/ 多字体
+      fallback / 复杂 shaping 已由文字子系统 Phase A–D 实现(A1–A3 链感知 itemized shaping + fallback 链;D1/DL1
+      width-aware 换行 + 约束下行)。剩 **BiDi**:逻辑↔视觉重排(需 unicode-bidi 集成),是独立子系统,非近期主线,Phase 9
+      收官注已标为非阻塞。(原「单 face、LTR、硬 `\n`」描述已过时,2026-09-09 核查纠正。)
+- [x] **DPI plumbing** —— 已完全通,非待办(2026-09-09 核查):`system.rs::prepare(dpi_factor)` →
+      `dpx_per_em = font_size_px * dpi_factor` → `raster::rasterize_glyph(face, id, dpx_per_em)` 按显示密度栅格化;
+      窗口 resize/移屏经 `cx.scale_factor()` 重取密度(`lib.rs:505/806`)并重 shape。`shape()` 不吃 dpi 是对的——shaping
+      只算字形序列与 advance,与密度无关,栅格化才吃 dpi 且已吃(见 A5)。原「`shape_pending_text` dpi=1.0 硬编码」已不成立。
 - [ ] **默认 UI 字体归属**:`crates/viso/fixtures/DejaVuSans-subset.ttf` 现由 facade 自持(`text_content.rs` include_bytes)。
       文字子系统成型后,默认 face + fallback 链应归 `viso-text` 拥有,facade 只选择而非内嵌资产。
 - [ ] **B1 宏表层**(`component!`/`view!`/`#[component]`):Tier 1 先手写 `Component` struct,宏表层保持 DEFERRED。
@@ -1184,7 +1189,7 @@ spanning 放置 + auto-flow;ADR 0009 明列六项高级能力全未做。落 `cr
 
 ### Slice 0 —— 前置清理(文档同步,近零风险,无代码)
 
-- [ ] **9.0a 修订 backlog 过时描述** —— todo.md 文字 deferred 两条已被 Phase A–D 实现却仍写"未做",纠为实况:
+- [x] **9.0a 修订 backlog 过时描述** —— todo.md 文字 deferred 两条已被 Phase A–D 实现却仍写"未做",纠为实况:
       (1) 「文字换行 / 多字体」条:wrap/`max_lines` 回退、fallback 链、复杂 shaping **已完成**(A1–A3/D1/DL1),
       仅 **BiDi 双向重排**仍未做(需 unicode-bidi 集成 + 逻辑↔视觉重排,是独立子系统,留 Tier/后续);
       改写该条为「仅 BiDi 待做」。(2) 「DPI plumbing」条:核实已**完全通**——`system.rs:prepare(dpi_factor)` →
