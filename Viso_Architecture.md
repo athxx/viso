@@ -99,6 +99,8 @@ Viso 1.0 将以下地基问题定义为正式架构决策：
 8. **Viso DSL 使用 `ui!` / `view!` / `component!` 三个语义化 Rust 入口。** `ui!` 解析 View Fragment，`component!` 解析 Component，`view!("...vs")` 编译外部 `.vs`；三者共享同一 schema/HIR/IR/runtime 语义。`.vs` 是唯一 canonical 外部 DSL 文件扩展名。
 9. **Identity 分层。** 源码名字使用 compiler-local `NameId`，跨编译稳定身份使用 128-bit `SymbolId`，运行时热路径 lower 为 `PropertyId`/`EventId`/`ComponentTypeId` 等 typed dense ID，实例使用 generational `NodeId`；禁止一个万能 ID 贯穿所有 subsystem。
 10. **Viso 自研 Ende。** `viso-ende` 负责内部 Binary/JSON Encode/Decode、wire schema、协议版本、cache/snapshot/tool transport；RON 不属于 Viso；Serde 只作为生态 integration。
+11. **Hot Reload 是 Dev-only build capability。** Dev Runtime、patch transport、DevSnapshot endpoint 与 hot-reload-only metadata 只编入 Dev artifact；Release/Shipping 完全不编入这些路径，不能靠运行时配置重新开启，release frame hot path 不承担热更税。
+12. **`viso run` 的 desktop host 是隐式且唯一的。** macOS/Windows/Linux 开发统一使用无参数 `viso run`；`viso run ios/android` 只面向 Simulator/Emulator；Android/iOS 开发环境分别由 `viso android` / `viso ios` 管理，不把 physical-device debugging 作为 Viso 1.0 开发闭环的一部分。
 
 这些条目属于 Viso 1.0 的架构合同；如果要改变，必须新增/修改 ADR 并附 benchmark 或实现证据。
 
@@ -594,6 +596,8 @@ viso/
 ├── README.md
 ├── ARCHITECTURE.md
 ├── Viso_CLI.md
+├── Viso_Hot_Reload.md
+├── Viso_Text_Font_Runtime.md
 ├── AGENTS.md
 ├── architecture.toml
 ├── rustfmt.toml
@@ -770,7 +774,8 @@ OS abstraction：
 - lifecycle；
 - app activation；
 - native handles；
-- accessibility bridge hook。
+- accessibility bridge hook；
+- Native system-font query/load primitive（按需、无 framework-owned FontDB）。
 
 平台实现初期放在同一 crate 的 `os/` 目录，必要时再拆独立 backend crate。
 
@@ -801,17 +806,20 @@ OS abstraction：
 
 ### `viso-text`
 
-- App/System/External font source registry；
-- font source 解析：按 sample string 解析系统面（by sample string, not family name，makepad 语义，ADR 0026 §1），而非维护 family-name 索引的 font DB；用户面居前、系统面居后的回退链排序；
-- character/cluster coverage fallback；
-- native system-font adapter contract；
-- WASM external/progressive font provider contract；
-- shaping；
-- BiDi；
-- line breaking；
-- paragraph layout；
-- font/shaping/glyph cache 与 atlas integration metadata；
+- `FontResolver`：App packaged/dynamic font 优先、Native system fallback 其次；
+- build-time `FontManifest`：自动登记 `assets/fonts/`，Runtime 仍 lazy load；
+- Native system font 按需 query/load，不启动扫描系统字体，不建立 framework-owned FontDB；
+- CJK/Emoji 使用 locale-aware、cluster/run-aware 的系统 fallback，不逐字符扫描字体；
+- WASM/Canvas 无隐式系统字体；packaged font 与 External FontProvider 均可用；
+- TTF/OTF/TTC/OTC/WOFF2 输入归一到统一 FontFace；
+- byte-budgeted Segmented LRU Font Face Cache；
+- 独立 shaping / paragraph cache；
+- BiDi / line breaking；
+- glyph raster 与 page-aged/CLOCK atlas residency contract；
+- 120/144/240Hz 稳态文本零 resolve/parse/shape/raster 合同；
 - font revision/incremental invalidation 与 profiler counters。
+
+完整实现规范见 `Viso_Text_Font_Runtime.md`。
 
 ### `viso-render`
 
@@ -3316,436 +3324,457 @@ Mismatch 在编译/热重载时失败，不允许 silent memory corruption。
 
 ## 37. Text 是独立性能子系统
 
-`viso-text` 不是普通 Widget 辅助库。它同时拥有字体来源解析、字符覆盖 fallback、shaping、paragraph layout、渐进字体加载和 glyph cache 的运行时合同。
+`viso-text` 的详细实现规范独立定义在 `Viso_Text_Font_Runtime.md`。Architecture 只固定以下不可违反的合同。
 
-负责：
+### 37.1 不建立 framework-owned FontDB
 
-```text
-Font Source Registry
-Font Database
-Family / Face Resolution
-Character Coverage Fallback
-Progressive Font Loading
-Unicode Script Detection
-BiDi
-Shaping
-Line Break
-Paragraph Layout
-Glyph Cache
-Glyph Atlas Metadata
-```
+Native App 普通启动和普通文字绘制**不得扫描、枚举、解析整台机器的系统字体集合**。
 
-Text 系统必须把以下概念严格分开：
+默认流程：
 
 ```text
-Font Source
-    字体数据从哪里来
-
-Font Face
-    某个 family + weight + style + stretch 的具体 face
-
-Character Coverage
-    某个 face 当前是否能够覆盖所需字符/cluster
-
-Shaping
-    字符序列如何变成 glyph sequence / positions
-
-Glyph Raster / Atlas
-    已确定 glyph 如何变成 GPU 可绘制数据
-```
-
-禁止把“找字体”“下载字体”“shaping”“raster glyph”混成一个同步热路径。
-
-### 37.1 字体来源与优先级
-
-Viso 定义三类一等字体来源：
-
-```text
-AppFontSource
-SystemFontSource
-ExternalFontSource
-```
-
-其中：
-
-- `AppFontSource`：应用通过 `assets/fonts/`、build manifest、运行时注册或内存输入提供的字体；
-- `SystemFontSource`：平台操作系统可访问的已安装字体；
-- `ExternalFontSource`：由开发者提供的外部字体来源，例如网络、宿主桥接、插件或远程字体服务。
-
-字体来源有严格优先级。Native 平台默认：
-
-```text
-1. App fonts matching requested family/style
-2. App fallback fonts
-3. System fonts matching requested family/style
-4. System fallback fonts for script/language/coverage
-5. Missing-glyph policy
-```
-
-这意味着：
-
-- App 注册了与系统同名的 family 时，App face 优先；
-- App 指定了自定义字体但该字体缺少某个字符时，不要求整段失败，可以继续进入 fallback；
-- App 没有注册任何字体时，Native 默认直接使用系统字体解析；
-- App 可以显式限制 fallback source，但默认策略是 App-first、System-second；
-- 字体来源优先级是 Font Resolver 合同，不允许 Widget 各自实现一套搜索规则。
-
-### 37.2 Family resolution 与字符 fallback 是两步
-
-Viso 不把 `font-family` 查找和缺字 fallback 当成同一件事。
-
-第一步是 face resolution：
-
-```text
-FontRequest {
-    family_stack
-    weight
-    style
-    stretch
-    language
-    script_hint
-}
-        ↓
-App Font DB
-        ↓ miss
-System Font DB (Native only)
-        ↓
-Resolved Face Candidates
-```
-
-第二步才是 character/cluster coverage：
-
-```text
-text run / shaping cluster
-        ↓
-selected app face covers it?
-        ├─ yes -> shape
-        └─ no
-            ↓
-        app fallback covers it?
-            ├─ yes -> shape
-            └─ no
-                ↓
-        native system fallback covers it?
-            ├─ yes -> shape
-            └─ no -> missing glyph / async external request
-```
-
-对 CJK、Arabic、Indic、emoji sequence 等场景，fallback 单位不能机械地假定为“单个 Unicode code point”；resolver/shaper 必须允许以 script run、grapheme 或 shaping cluster 为单位选择 face。
-
-### 37.3 Native 平台默认系统字体策略
-
-macOS、iOS、Windows、Linux、Android 的默认策略是：
-
-```text
-AppFontSource
-    ↓ preferred
-SystemFontSource
-    ↓ fallback
-Missing Glyph
-```
-
-Native `SystemFontSource` 必须由 `viso-text` 通过 platform adapter 使用，而不是让 UI 直接调用 CoreText/DirectWrite/Fontconfig/Android font API。
-
-系统字体解析要求：
-
-- 按需查询，不要求启动时完整扫描并解析所有字体文件；
-- 缓存 family/style/coverage 查询结果；
-- system font database 变化时通过 revision 失效；
-- 系统 font handle/path 不进入稳定 wire ABI；
-- 不把平台 font object 泄漏到 `viso-ui` / `viso-render` public API；
-- 平台字体读取失败必须退化为可诊断的 missing-font/missing-glyph，而不是 panic。
-
-### 37.4 WASM / Web 默认没有系统字体源
-
-WASM/WebGPU 目标默认 **不注册 `SystemFontSource`**。
-
-默认链路：
-
-```text
-AppFontSource
+FontRequest
     ↓
-ExternalFontSource (only when developer provides one)
+small Resolve Cache
+    ↓ miss
+App packaged/dynamic fonts
+    ↓ miss / coverage miss
+Native OS font/fallback resolver
     ↓
-Missing Glyph
+Resolved FontFaceId
+```
+
+系统字体由 `viso-platform` 的窄 adapter 按需查询：
+
+```text
+macOS / iOS  -> CoreText cascade/fallback
+Windows      -> DirectWrite matching/fallback
+Linux        -> fontconfig-backed matching/coverage
+Android      -> platform font matcher/configuration adapter
+```
+
+这些系统设施是 resolver backend，不是 Viso public FontDB。系统路径、native handle、pointer 不进入稳定 ABI。
+
+完整系统字体枚举只允许作为明确请求的异步 `SystemFontCatalog` cold service，例如 Font Picker；它不属于 App startup 或普通 Text resolution。
+
+### 37.2 Native 默认不要求 App 打包字体
+
+Native `Text` 没有指定 family，且 App/theme 没有显式 default family 时：
+
+```text
+SystemUi
+    ↓
+OS default UI face
+    ↓
+OS locale/script/character fallback
+```
+
+因此普通 Native App 可以完全没有 `assets/fonts/`，仍正确使用系统 Latin、CJK、Emoji 和其他系统 fallback 字体。
+
+如果 App 提供自己的字体：
+
+```text
+App exact family/style
+    ↓ coverage miss
+App fallback chain
+    ↓ miss
+OS system fallback
+    ↓
+Missing Glyph policy
+```
+
+App 字体优先，但缺字默认继续进入系统 fallback。
+
+### 37.3 `assets/fonts/` build-time 自动登记，runtime lazy load
+
+Viso build scanner 自动识别：
+
+```text
+assets/fonts/*.ttf
+assets/fonts/*.otf
+assets/fonts/*.ttc
+assets/fonts/*.otc
+assets/fonts/*.woff2
+```
+
+构建时只提取必要 metadata 并生成 compact `FontManifest`：
+
+```text
+family / style / weight / stretch / face index / variation metadata
+        ↓
+AssetId / content hash
+```
+
+**自动登记不等于启动时自动解析。**
+
+Runtime 只有第一次真正使用某个 face 时才读/解码/解析并进入 Font Face Cache。
+
+不在 build asset graph 中的网络字体、用户字体、文档内嵌字体仍通过显式 runtime API / `FontProvider` 注入。
+
+### 37.4 CJK fallback 必须按 run/cluster，不逐字符找字体
+
+错误实现：
+
+```text
+U+4F60
+    ↓
+scan all system fonts
+    ↓
+find one cmap containing it
+```
+
+Viso 禁止这种路径。
+
+正确流程：
+
+```text
+Unicode/BiDi segmentation
+    ↓
+script/language shaping run
+    ↓
+requested/App face coverage check
+    ↓ contiguous coverage miss
+OS fallback resolver(text range, locale, style, base face)
+    ↓
+fallback face + mapped run length
+    ↓
+shape mapped run
+```
+
+`zh-Hans`、`zh-Hant`、`ja`、`ko` 必须作为 fallback policy 的语言输入，不把所有 Han 字符机械映射到同一个框架字体。
+
+首次 OS fallback 后可以把常用 candidate 放入 bounded `FallbackPlan` cache；后续先用已加载 face 的 local coverage accelerator 验证，能覆盖就直接复用，不能覆盖才再次调用 OS resolver。
+
+### 37.5 Emoji 必须保持 grapheme/ZWJ cluster 原子性
+
+以下序列不能拆到多个字体：
+
+```text
+VS15 / VS16
+ZWJ sequence
+skin-tone modifier
+regional-indicator flag
+keycap sequence
+family/person emoji sequence
+```
+
+Native 默认把完整 Emoji cluster 交给 OS fallback，系统选择当前平台 Emoji face。
+
+Glyph representation 至少区分：
+
+```text
+MaskA8          stable ordinary UI / small text / CJK
+ScalableMtsdf   sustained zoom / scale / rotation / world-space text
+OutlineVector   extreme zoom / high-precision vector text
+ColorRgba8      rasterized color emoji / color glyph
+ColorVector     retained vector color glyph when source/backend supports it
+```
+
+普通 UI 默认是 `MaskA8`。可缩放路径使用 `ScalableMtsdf`；极端放大或精确 vector 场景允许 `OutlineVector`；Color Glyph 使用独立 RGBA/Vector 路径。
+
+### 37.5.1 Glyph 渲染采用 Quality/Performance-first Adaptive Pipeline
+
+Viso 1.0 的核心不是“统一使用一种 glyph atlas”，而是根据**稳定/运动状态和有效屏幕尺寸**选择成本最低且质量最高的 representation：
+
+```text
+Stable UI / small text / CJK
+    -> exact A8 Coverage
+
+Continuous zoom / scale animation / rotation
+    -> lazy MTSDF
+
+Transform settles
+    -> async exact Coverage at settled raster bucket
+    -> frame-boundary switch back
+
+Extreme zoom / high-precision vector
+    -> retained OutlineVector
+
+Color Emoji / Color Glyph
+    -> source-aware RGBA / ColorVector
 ```
 
 硬规则：
 
-- Viso WASM runtime 不默认扫描、枚举或隐式依赖浏览器/操作系统安装字体；
-- 不因为某个浏览器恰好提供 CSS/system font 能力，就把它变成 Canvas/WebGPU renderer 的隐式 ABI；
-- 没有 App fonts 且没有 ExternalFontSource 时，缺失字符按 missing-glyph policy 处理；
-- 如果宿主环境希望提供本地字体，必须显式注册 Host/External Font Provider；
-- 同一个 Viso Web artifact 在不同用户机器上不应因为不可见的系统字体集合而产生无法解释的字体选择差异。
+- `Label` / `Button` / `TextInput` / Editor / Document / 正常 CJK 默认使用目标 device-pixel bucket 的高质量 A8 Coverage；
+- sustained transform 才异步 promotion 到 MTSDF；FontFace load 时禁止为整套字体预生成 distance field；
+- MTSDF 的 RGB 保存 multi-channel distance，Alpha 保存 true signed distance；距离通道按 linear value 使用；
+- promotion 在 worker/staging 中完成，pending 时继续绘制 last-good representation，不能阻塞当前 frame；
+- transform 稳定后，后台准备新尺寸的 exact Coverage，并在安全 frame boundary 切回，以恢复最佳小字/CJK 清晰度并释放冷 MTSDF residency；
+- policy 必须有 hysteresis，不因瞬时 scale 抖动在 Coverage/MTSDF 间来回切换；纯 scroll translation、opacity、color、clip 变化不触发 promotion；
+- MTSDF entry 有明确 quality window；超出后异步生成更合适的 MTSDF bucket，或在极端放大/精确需求下使用 retained OutlineVector；禁止把一个低分辨率 distance field 无限放大；
+- OutlineVector/path/mesh 必须 retained/cache，稳态高刷帧不得重复 tessellate；
+- 普通单通道 SDF 不作为独立常规 lane；可缩放 monochrome glyph 统一使用 MTSDF；
+- 不允许每个 glyph 永久 pin Coverage + MTSDF + Vector 多份表示；只允许切换过渡窗口短暂重叠，随后按各自 residency policy 淘汰；
+- CJK 的 MTSDF/Vector 只对 visible/near-visible 的真实变换工作集按需生成，禁止 whole-font 预生成；
+- A8 Coverage、MTSDF、RGBA Color atlas 和 Vector Glyph cache 使用独立 residency/accounting；
+- representation decision 挂在 retained run/group metadata 上，不在 120/144/240Hz 每帧逐 glyph 重算。
 
-这使 WebGPU/Canvas 文本结果具有更高的可预测性，也让离线包、远程字体和协作型画布可以使用同一套 provider contract。
+详细 promotion/settle-back、MTSDF bucket、OutlineVector、atlas key、page policy 与 benchmark 见 `Viso_Text_Font_Runtime.md`。
 
-### 37.5 External Font Provider 与渐进字符加载
+### 37.6 WASM / Canvas 没有隐式系统字体
 
-Web/WASM 必须支持开发者注入异步 `ExternalFontSource`。它可以来自：
+WASM/Canvas runtime 不拥有：
 
 ```text
-HTTP/CDN
-application font server
-host JavaScript bridge
-plugin/extension
-in-memory stream
-custom binary protocol
+SystemFontResolver
+CSS system-ui implicit fallback
+browser local-font enumeration
+Viso bundled default font
 ```
 
-概念接口：
+但是项目 `assets/fonts/` 与 Native 一样会在 build 时自动进入 `FontManifest`。
 
-```rust
-pub trait FontProvider {
-    fn query(&self, request: &FontRequest, out: &mut FaceCandidates);
+所以：
 
-    fn request_coverage(
-        &self,
-        face: FontFaceId,
-        chars: CharacterSet,
-        priority: FontLoadPriority,
-    ) -> FontLoadTicket;
+```text
+WASM project without packaged/external fonts
+    -> zero available fonts
+
+WASM project with assets/fonts/Inter.woff2
+    -> manifest knows Inter
+    -> first use lazily fetches/decodes Inter
+```
+
+外部/远程字体通过 `FontProvider` 注入；按字符加载描述 coverage 可渐进获得，传输层必须支持 batching/subsetting，而不是强制“一字符一个 HTTP”。
+
+### 37.7 WOFF2 是一等字体输入格式
+
+Viso 1.0 packaged/external 输入至少支持：
+
+```text
+TTF / OTF / TTC / OTC / WOFF2
+```
+
+WOFF2 是 storage/transport container，不是 Text 内部 ABI：
+
+```text
+WOFF2
+    ↓ decode/decompress
+normalized OpenType/SFNT face
+    ↓
+FontFace
+    ↓
+Shaping / Raster
+```
+
+WOFF2 decode、重型 font parse 不进入 UI frame hot path。
+
+### 37.8 分层缓存：Resolve + SLRU Face + Shaping + Atlas
+
+固定四层：
+
+```text
+1. Font Resolve Cache
+       request -> face/fallback/negative result
+
+2. Font Face Cache
+       byte-budgeted Segmented LRU (SLRU)
+
+3. Shaping / Paragraph Cache
+       independent bounded cache
+
+4. Glyph Atlas
+       page + frame-age + CLOCK/second-chance
+```
+
+禁止一个总 LRU 管所有字体相关资源。
+
+#### Font Face SLRU
+
+```text
+new/cold face
+    ↓
+Probation
+    ↓ second meaningful reuse
+Protected
+    ↓ budget pressure
+demote / evict cold Probation
+```
+
+预算按 bytes，不按“font 数量”。Cost 至少考虑 decoded bytes、parsed tables、shaper state、variation/coverage state 和 retained platform cost。
+
+SLRU recency **不得每 glyph 更新**；同一 face 在一个 frame/paragraph epoch 内的多次使用必须合并 touch。
+
+#### Glyph Atlas
+
+GPU glyph atlas 不做逐 glyph LRU：
+
+```text
+AtlasPage {
+    generation
+    last_used_epoch
+    in_flight state
+    occupancy
+    format
 }
 ```
 
-实际异步实现可以由 runtime/task 层承载；接口重点是语义，而不是强制使用某一种 Future ABI。
+空间不足时按 page 做 CLOCK/frame-age eviction，只失效该 page，正常压力下禁止 `atlas full -> clear all glyphs`。
 
-`request_coverage` 的请求粒度允许非常细：
+Atlas residency 至少按 representation 分离：
 
 ```text
-one Unicode scalar for simple scripts
-small character set
-shaping cluster
-script range
-font subset page
+A8 Coverage Pages
+MTSDF Pages
+RGBA Color Pages
+Retained Vector Glyph Cache
 ```
 
-但 Runtime 必须自动：
+不能让偶发 MTSDF/Emoji workload 挤掉普通 UI/CJK 的 Coverage hot set；page key 必须包含 `GlyphImageKind` 与对应 raster/MTSDF bucket。
 
-- deduplicate 同一 face/coverage 的并发请求；
-- 合并同一帧/短时间窗口内的小请求；
-- 设置最大并发请求数与最大下载预算；
-- 允许 provider 返回 full face、subset font 或等价的可 shaping 数据；
-- 对已请求但尚未返回的 coverage 记录 pending state；
-- 支持 cancellation / priority downgrade；
-- 支持 memory/disk/browser cache policy；
-- 将网络错误与“字体确实不覆盖该字符”区分开。
+### 37.9 高刷新率合同
 
-Viso 不规定远端协议必须“一字符一个 HTTP 请求”。“按字符加载”描述的是 **coverage 可以按需要增量获得**；真正传输必须允许 batching/subsetting。
-
-### 37.6 Shaping metadata 与远程 subset
-
-远程字体不能只返回一个没有上下文的 bitmap glyph 就假定所有文字都能正确排版。正确 shaping 可能依赖：
+Frame interval：
 
 ```text
-face metrics
-cmap
-variation axes
-GSUB
-GPOS
-GDEF
-script/language features
-emoji/ligature sequence data
+60Hz    16.67 ms
+120Hz    8.33 ms
+144Hz    6.94 ms
+240Hz    4.17 ms
 ```
 
-因此 ExternalFontSource 至少选择一种明确能力模型：
+Viso 的目标不是“每帧更快地 shape”，而是**稳态帧不 shape**。
+
+Text/font/layout 未变化时，稳态帧必须趋近：
 
 ```text
-A. Local shaping provider
-   - 客户端拥有足够的 face/shaping metadata
-   - provider 渐进提供 outline/font subset
-   - viso-text 本地 shaping
-
-B. Shaped-run provider
-   - provider/host 返回已解析的 glyph ids + advances/offsets + face revision
-   - 客户端验证并缓存 shaped run / glyph payload
+0 system font query
+0 font IO
+0 WOFF2 decode
+0 font parse
+0 coverage build
+0 shaping
+0 glyph raster
+0 MTSDF generation
+0 representation-policy recompute per glyph
+0 Face SLRU mutation per glyph
+0 heap allocation per glyph
+0 synchronization per glyph
 ```
 
-Viso 1.0 默认推荐 A：保持 shaping 逻辑在 `viso-text`，远端只负责按需提供字体数据/subset。
-
-无论采用哪一种，必须保证：
-
-- font/subset revision 可识别；
-- 同一 paragraph 不混用不兼容 face revision；
-- 新 coverage 到达后只失效受影响的 runs/paragraphs；
-- 不允许异步字体返回结果覆盖更新后的 text/font request。
-
-### 37.7 字体加载完成后的增量失效
-
-字体是异步 Resource，但字体到达不能触发全 App rebuild。
-
-依赖链：
+正常路径：
 
 ```text
-FontSourceRevision
-      ↓
-Face/Coverage Revision
-      ↓
-Affected Shaping Runs
-      ↓
-Affected Paragraphs
-      ↓
-MEASURE/LAYOUT when metrics changed
-PAINT when only glyph image/atlas changed
-```
-
-典型 Web 流程：
-
-```text
-Text requests characters
+Retained Paragraph
     ↓
-App font coverage miss
+Retained ShapedRun
     ↓
-ExternalFontSource request queued
+stable GlyphImageKind / representation metadata
     ↓
-current frame uses fallback / placeholder according to policy
+AtlasEntry(page, rect, generation)
     ↓
-font subset arrives
+reused GPU instance/batch
+```
+
+高刷滚动已有文字主要更新 transform/clip；不能因为 scroll 每帧 reshape/raster。
+
+新行进入 VirtualList/CodeEditor viewport 时采用：
+
+```text
+visible-first
+near-viewport prefetch
+background
+```
+
+优先级，尽量在进入屏幕前完成 shaping/raster。
+
+WOFF2 decode、大字体 parse、font catalog、large paragraph shaping、可线程化 raster 等进入 worker/staging；主线程只做有预算的 commit。
+
+详细的 60/120/144/240Hz work budget、TextInput latency 和 benchmark gate 见 `Viso_Text_Font_Runtime.md`。
+
+### 37.10 Cache 生命周期独立
+
+Face SLRU eviction 不等于：
+
+```text
+clear shaping cache
+clear paragraph layout
+clear glyph atlas
+```
+
+已有 paragraph/shaped run/glyph atlas 在 revision/generation 仍有效时可以继续渲染。只有未来真正需要 reshape 或新 glyph raster 时才重新 lazy load face。
+
+Memory pressure 按冷到热逐级释放：
+
+```text
+old resolve entries
     ↓
-FontRevision increments
+global shaping cold entries
     ↓
-reshape only affected run
+Face SLRU Probation
     ↓
-if advances changed -> MEASURE/LAYOUT + PAINT
-if advances unchanged -> PAINT only
+Face Protected cold entries
     ↓
-glyph atlas upload
+non-inflight cold atlas pages
 ```
 
-禁止：
+不得用 `font_cache.clear()` / `glyph_atlas.clear()` 作为普通内存压力策略。
+
+### 37.11 性能与可观测性
+
+至少暴露：
 
 ```text
-font arrived -> clear every text cache
-font arrived -> rebuild full UI tree
-font arrived -> re-layout unrelated windows/pages
+font_resolve_hit/miss
+system_font_query_count/time
+system_fallback_query_count
+fallback_plan_hit/miss
+font_face_slru_hit/miss
+font_face_probation/protected_bytes
+font_face_evictions
+woff2_decode_time
+shaping_hit/miss/time
+glyph_raster_count/time
+atlas_a8/rgba_bytes
+atlas_page_evictions
+glyph_upload_bytes
+missing_cluster_count
+text_main_thread_maintenance_time
 ```
 
-### 37.8 Missing glyph policy
-
-Missing glyph 必须是可配置且可观测的策略，不是 silent failure。
-
-至少支持：
+Benchmark 必须覆盖：
 
 ```text
-FallbackToNextSource
-PlaceholderGlyph
-InvisibleButMeasured
-BlockUntilRequiredFont     # only explicit workflows, never default UI hot path
-ErrorInStrictMode
+Native 无 packaged fonts
+系统安装 3000 fonts 的 startup
+CJK 10k chars cold/warm
+mixed zh/ja/ko
+Emoji ZWJ cluster
+font picker 500 faces scan
+large CJK font memory pressure
+WASM zero-font startup
+WASM WOFF2 first use
+60/120/144/240Hz static/scroll/editor workloads
 ```
 
-默认交互式 UI 不允许因为远端缺少一个字符无限阻塞 frame。Inspector/Profiler 必须能够显示：
+核心 regression gate：
+
+> **系统字体数量不能让普通 App startup 产生线性 font parse 成本；静态文字高刷稳态帧不得重新 resolve/shape/raster。**
+
+### 37.12 Ownership boundary
+
+`viso-text` 拥有：
 
 ```text
-requested family
-resolved face
-font source kind
-fallback chain
-missing codepoints/clusters
-pending external requests
-font revision
-reshape count
-font bytes loaded
-```
-
-### 37.9 Font identity 与 Resource identity
-
-字体不能只靠 path/string 作为 runtime identity。
-
-建议：
-
-```text
-FontSourceId
-FontFamilyId
-FontFaceId
-FontRevision
-FontSubsetRevision
-```
-
-`FontFaceId` 表示当前 runtime image 中的 typed face identity；它不等于文件路径，也不等于 platform native handle。
-
-App/External font 的稳定 cache key 至少考虑：
-
-```text
-content hash
-face index
-variation coordinates
-provider namespace
-subset/coverage revision
-```
-
-System font cache key 由 platform adapter 生成 artifact-local identity，不进入跨设备稳定 ABI。
-
-### 37.10 三级缓存
-
-基础缓存层级：
-
-```text
-Font Source / Face / Coverage Cache
-          ↓
-Shaping Cache
-          ↓
-Glyph Atlas Cache
-```
-
-Key 必须可增量失效。
-
-对于渐进字体，Font Cache 不能只有“loaded/not loaded”二态，而要表达：
-
-```text
-metadata ready
-coverage known
-coverage pending
-subset ready
-failed/retryable
-revision
-```
-
-### 37.11 Paragraph cache
-
-Text 未变：不 reshape。  
-Font/feature/revision 未变：不 reshape。  
-可用宽度未变：不重新 line-break。  
-Glyph 已在 atlas：不 raster/upload。
-
-若只新增与当前 paragraph 无关的字体 coverage，该 paragraph cache 不失效。
-
-### 37.12 文本编辑
-
-TextInput/CodeEditor 使用专门的数据结构：
-
-- rope/piece table（根据编辑器需求）；
-- grapheme-aware cursor；
-- selection spans；
-- shaping segment cache；
-- viewport line cache。
-
-不要让大型代码编辑器通过“每个字符一个 UI Node”实现。
-
-远端渐进字体加载不能破坏编辑模型：selection/caret 使用文本索引和 shaping run mapping，不绑定 glyph atlas slot。
-
-### 37.13 Text ownership boundary
-
-`viso-text` 必须拥有：
-
-```text
-font source/provider contract
-font resolution (by sample string, not family name — makepad 语义，ADR 0026 §1)
-coverage fallback policy
-paragraph/shaping cache
-glyph atlas contract
-progressive font revision/invalidation
-UI integration
+FontManifest semantics
+FontResolver/fallback policy
+Font Face SLRU
+coverage accelerator
+shaping/paragraph cache
+TextWork scheduling
+font revision/invalidation
+glyph identity/residency contract
 text profiler counters
 ```
 
-> 注：font 解析走 sample-string 级联（provider 拿 role + 样本串查系统面，见 ADR 0026 §1），**不**是 family-name 索引的 font DB —— 这是对参考实现的刻意沿用；权威顺位以 ADR 0026 为准。
+`viso-platform` 只拥有 Native 字体 query/load primitive。
 
-但 **不要求 Viso 重写 Unicode/BiDi/shaping/font-raster 标准算法**。
+`viso-render` 拥有 GPU atlas texture/page/upload mechanics。
 
-优先策略是复用经过验证的 shaping/Unicode/font primitives（必要时 vendor/fork），并用 Viso 自己的数据布局、provider、cache 和 invalidation API 包裹。只有在 profiler 证明通用实现阻碍关键性能或缺失必要能力时，才把对应算法纳入自研范围。
+Viso 不要求重写 Unicode/BiDi/shaping/font-raster 标准算法；这些可复用成熟实现，但 resolver、cache、invalidation、GPU residency 和高刷性能合同由 Viso 自己拥有。
 
-`viso-text` 不拥有 HTTP/TLS。ExternalFontSource 的实际网络传输通过 service/integration 注入；Text runtime 只拥有请求语义、去重、优先级、revision 和 cache contract。
+完整规范：`Viso_Text_Font_Runtime.md`。
 
 ---
 
@@ -4104,20 +4133,26 @@ release hot path 不做字符串属性查找。
 
 ## 41. 开发运行与 Release AOT
 
-### Dev
+### Dev artifact
 
-保留：
+`viso run` 构建 Dev artifact。Dev 允许保留：
 
-- CST/HIR cache；
-- source map；
-- debug name；
-- schema reflection；
-- hot reload metadata；
-- inspector hooks。
+```text
+CST/HIR incremental cache
+source map / debug name
+schema reflection
+hot-reload Symbol/source metadata
+Dev Runtime
+PatchBundle receiver/apply path
+DevSnapshot capture/restore endpoint
+Inspector development hooks
+```
 
-### Release
+Dev Runtime 的完整协议见仓库根目录 **`Viso_Hot_Reload.md`**。
 
-默认构建步骤：
+### Release / Shipping artifact
+
+Release 默认构建步骤：
 
 ```text
 .vs source / ui! ViewFragment / component! ComponentDecl
@@ -4131,27 +4166,69 @@ embedded asset / generated Rust data
 
 启动时：
 
-- 不重新 parse source；
+- 不重新 parse `.vs` source；
 - 不重新 type-check；
-- 不需要完整 symbol string table；
-- 直接 instantiate compact IR。
+- 不需要完整 source symbol string table；
+- 直接 instantiate compact AOT IR。
+
+更重要的是，Release/Shipping **完全不编入**：
+
+```text
+Dev transport listener
+PatchBundle decoder/apply engine
+DevSnapshot endpoint
+hot-reload command handlers
+hot-reload-only state-preservation metadata
+remote development control surface
+```
+
+这不是 `hot_reload = false` 的运行时开关，而是 build graph/feature boundary。Release 中不能通过环境变量、配置文件或隐藏端口重新开启 Hot Reload。
+
+Release steady-state frame loop 不允许因为开发期能力保留：
+
+```text
+per-frame dev socket poll
+hot_reload_enabled branch
+hot-reload SymbolId lookup
+patch revision check
+```
+
+Debug symbols/crash source maps是否保留是另一项 build policy，不得因此把 Dev Runtime 带回 Release。
 
 ---
 
-## 42. Hot Reload
+## 42. Development Runtime & Transactional Hot Reload
 
-Hot reload 不是“重新执行整段脚本”这么简单，而应成为事务协议：
+Hot Reload 是 Viso 1.0 的开发期正式架构，但详细实现独立定义在 **`Viso_Hot_Reload.md`**。Architecture 固定以下不可违反的合同。
+
+### 42.1 Multi-lane update
+
+```text
+.vs UI/behavior -> Typed Semantic Patch
+Game System     -> Fixed Tick-boundary System Patch
+Shader          -> Validated Pipeline Patch
+Asset / Font    -> Resource Revision Patch
+Rust            -> Incremental Build + Stateful Warm Restart
+```
+
+不要强迫所有 source change 走同一种 reload mechanism。
+
+### 42.2 Transaction
+
+所有可原地应用的 candidate：
 
 ```text
 Compile candidate
     ↓
-Validate schema
+Validate schema/type/capability
     ↓
-Compute structural diff
+Compute semantic/structural diff
     ↓
-Prepare hot-reload state preservation
+Build state-preservation plan
     ↓
-Validate shader/resources
+Stage shader/resources/runtime descriptors
+    ↓
+Wait correct domain atomic boundary
     ↓
 Atomic commit
     ↓
@@ -4161,34 +4238,64 @@ Targeted dirty propagation
 失败：
 
 ```text
-rollback / keep last-good UI
+NACK / rollback staged candidate
+keep last-good running app
 ```
 
-### 42.1 必须定义状态迁移
+运行中的 retained state 不能在 validation 尚未完成时被半修改。
 
-明确：
-
-- component key 不变时 state 是否保留；
-- state `i32 -> f64` 能否自动转换；
-- 字段删除如何清理；
-- child reorder 如何保持 identity；
-- input focus 是否保持；
-- scroll position 是否保持；
-- animation 如何继续；
-- shader compile failure 是否保持 last-good pipeline；
-- effect 是否重新执行。
-
-### 42.2 Stable key
-
-列表必须推荐/要求：
+### 42.3 Domain atomic boundary
 
 ```text
-for item in items key item.id {
-    ...
-}
+UI / Reactive Patch   -> Frame Boundary
+Game System Patch     -> Fixed Tick Boundary
+Shader Patch          -> GPU-safe Frame Boundary
+Resource Patch        -> Resource-ready + Frame Boundary
+Rust executable       -> Warm Restart Boundary
 ```
 
-无 key 的动态列表在 strict mode 给 warning。
+### 42.4 State preservation
+
+必须有明确规则：
+
+- stable component/state SymbolId；
+- compatible state slot保留；
+- incompatible private state只 reset 最窄 scope；
+- child reorder使用 StableKey/稳定声明身份；
+- focus、scroll、selection、animation各自有 preservation contract；
+- shader failure保留 last-good pipeline；
+- Game logic patch保留 compatible World/System state；
+- Rust Warm Restart只恢复 typed DevSnapshot，不 dump raw process memory。
+
+### 42.5 Rust 不做任意机器码注入
+
+Viso 1.0 不以 JIT arbitrary Rust、随机 machine-code page replacement 或通用 dylib swap 作为跨平台 Hot Reload 方案。
+
+Rust change：
+
+```text
+incremental build while old app keeps running
+    ↓
+build success
+    ↓
+capture typed DevSnapshot
+    ↓
+replace/reinstall/relaunch Dev artifact
+    ↓
+reconnect
+    ↓
+restore compatible state
+```
+
+iOS/Android 的该流程只要求 Simulator/Emulator。
+
+### 42.6 Ende protocol
+
+Host ↔ Dev Runtime patch 使用 `viso-ende` Binary；CLI/Studio diagnostics 使用 Ende JSON。Patch 必须拥有 session/build/revision/schema identity，禁止乱序 blind apply。
+
+### 42.7 Last-good
+
+编辑中的 `.vs`、Shader、Game System 或资源 candidate 失败时，运行中的 App 继续使用最后一次成功 revision。开发错误不能把画面替换成 half-built tree 或 invalid pipeline。
 
 ---
 
@@ -4410,6 +4517,7 @@ crates/platform/src/
 ├── clipboard.rs
 ├── lifecycle.rs
 ├── handles.rs
+├── system_font.rs
 └── os/
     ├── macos/
     ├── ios/
@@ -4578,7 +4686,7 @@ assets/
 
 需要高级 manifest 时再增加声明能力。
 
-`assets/fonts/` 中发现的字体进入 `AppFontSource`，其 family/face 优先级高于 Native 系统字体。字体文件不是必须项：Native App 不提供自定义字体时默认使用 `SystemFontSource`；WASM App 不提供自定义字体时不会自动获得系统字体，必须显式提供 `ExternalFontSource` 才能加载额外字体。
+`assets/fonts/` 是 canonical packaged-font 目录。Build scanner 自动识别 TTF/OTF/TTC/OTC/WOFF2，并只提取必要 metadata 生成 compact `FontManifest`；**runtime 不因此 eager parse/load 全部字体**。第一次真正使用某个 face 时才 lazy load 并进入 Font Face SLRU。Native App 没有 packaged/dynamic font 时直接按需使用系统字体与系统 CJK/Emoji fallback；WASM/Canvas 不拥有系统字体，但 packaged fonts 同样可由 `FontManifest` lazy fetch/decode，外部动态字体通过 `FontProvider` 注入。
 
 ### 51.2 Resource lifecycle
 
@@ -4743,7 +4851,7 @@ Shader 允许嵌入 `.vs`；只有高级复用场景才允许独立 `.shader`。
 
 ### 54.1 Command surface
 
-Viso 1.0 的命令组：
+Viso 1.0 开发命令遵循 **host implicit / mobile explicit**：
 
 ```text
 PROJECT
@@ -4751,14 +4859,21 @@ PROJECT
     viso doctor
     viso config
 
-ENVIRONMENT
-    viso target list|install|info
-    viso device list|info|boot|logs
+MOBILE DEV ENVIRONMENT
+    viso android list|use|doctor
+    viso android emulator list|create|delete|start|stop
+    viso android adb ...
+
+    viso ios list|use|doctor
+    viso ios simulator list|create|delete|start|stop
 
 DEVELOP
-    viso run [target]
-    viso build [target]
-    viso serve [web-target]
+    viso run
+    viso run ios [--device <simulator-profile>]
+    viso run android [--device <emulator-profile>]
+    viso run web-gpu|web-dom|web-hybrid
+    viso build [ios|android|web-*]
+    viso serve [web-*]
 
 LANGUAGE
     viso fmt
@@ -4776,7 +4891,7 @@ TEST / DEBUG
     viso studio
 
 DELIVERY
-    viso package [target]
+    viso package [ios|android|web-*]
     viso export html|solid
 
 MAINTENANCE
@@ -4784,40 +4899,77 @@ MAINTENANCE
     viso completion
 ```
 
-命令名必须描述 Viso 自己的产品语义，禁止把平台工具的历史命令结构直接暴露给用户。
-
-### 54.2 Build target 与 export target 分离
-
-Runtime/build target：
+无参数 `viso run/build/package` 表示当前 desktop host。Public development CLI 不提供：
 
 ```text
-host
-macos
-windows
-linux
-ios
-android
-web-gpu
-web-dom
-web-hybrid
-headless
+viso run macos
+viso run windows
+viso run linux
+viso run host
+viso run --target ...
+viso run ios --simulator
+viso run android --emulator
 ```
 
-`build` 产生仍由 Viso runtime/生成 runtime 负责的 artifact；`package` 产生可分发产物；`export` 产生可脱离 Viso 工程继续维护的外部生态源码/静态资产。
+macOS/Windows/Linux 是 Platform backend resolution，不是普通用户需要选择的 development target。
+
+### 54.2 Mobile dev environment 与 delivery 分离
+
+Viso 1.0 的 `run ios/android` 只面向 Simulator/Emulator：
+
+```text
+viso run ios      -> iOS Simulator
+viso run android  -> Android Emulator
+```
+
+`--device` 只选择 Viso virtual-device profile。
+
+Android 开发环境：
+
+```text
+viso android list
+viso android use <api>
+viso android doctor
+viso android emulator ...
+viso android adb ...
+```
+
+`use <api>` 负责确保 Viso 验证过的 platform-tools/ADB、platform、build-tools、NDK、emulator 与 compatible system image 存在并选为本机默认。它修改 developer-machine state，不修改 Git tracked `Viso.toml`。
+
+iOS Simulator 开发环境：
+
+```text
+viso ios list
+viso ios use <runtime>
+viso ios doctor
+viso ios simulator ...
+```
+
+开发期不要求 signing identity/provisioning/physical device。Signing 和 store distribution 只属于 `viso package ios`。
+
+### 54.3 Build / package / export 与 `run` watcher
+
+```text
+build
+    -> Viso application artifact
+
+package
+    -> distributable artifact
+
+export
+    -> foreign ecosystem source/static artifact
+```
 
 因此：
 
 ```text
-viso build web-dom        # Viso Web DOM runtime
-viso build web-hybrid     # DOM + WebGPU islands
-viso package android      # distributable Android artifact
-viso export html          # HTML/CSS/JS export
-viso export solid         # SolidJS source export
+viso build web-dom
+viso package android
+viso export html
+viso export solid
 ```
 
-SolidJS 是 exporter，不是 Viso 的中间表示或核心依赖。
-
-### 54.3 `run` 拥有开发期 watcher
+SolidJS 是 exporter，不是 Viso 中间表示或核心依赖。
 
 普通开发只需要：
 
@@ -4825,18 +4977,20 @@ SolidJS 是 exporter，不是 Viso 的中间表示或核心依赖。
 viso run
 ```
 
-它负责：
+或移动/Web逻辑 target。`run` 负责：
 
 - Rust incremental build；
 - `.vs` incremental compile；
-- shader/asset watcher；
+- shader/asset/font watcher；
 - transactional hot reload；
+- Rust stateful Warm Restart；
 - Last-good runtime；
-- target install/launch；
+- Simulator/Emulator launch/install；
 - structured diagnostics；
 - optional Inspector/Profile attachment。
 
-不要求普通用户额外运行独立 `watch` 命令。
+不要求普通用户额外运行独立 `watch` 命令。完整 Hot Reload contract 见 `Viso_Hot_Reload.md`。
+
 
 ### 54.4 Machine-readable output 是正式协议
 
@@ -4882,7 +5036,7 @@ CLI command handler 只负责：
 - 人类/JSON 输出；
 - exit code。
 
-不得在 `tools/cli` 内重新实现 DSL compiler、GPU compiler、packager、device protocol 或 Inspector runtime。
+不得在 `tools/cli` 内重新实现 DSL compiler、GPU compiler、packager、Android/iOS simulator protocol 或 Inspector runtime。
 
 ### 54.6 CLI 非目标
 
@@ -5083,13 +5237,23 @@ list_100k_scroll
 list_variable_height_scroll
 text_10k_labels_static
 text_dynamic_1k
+font_native_system_default_cold_start
+font_native_system_default_warm_100k
 font_resolve_app_hit_100k
 font_resolve_app_miss_system_hit_100k
+font_resolve_negative_cache_100k
+font_face_slru_hotset_10_fonts
+font_face_slru_scan_500_fonts_then_hotset
+font_face_slru_byte_budget_large_cjk
+font_face_memory_pressure_shrink
 font_fallback_mixed_script_10k
 font_progressive_request_dedup_10k
 font_progressive_subset_arrival_1k_paragraphs
-font_wasm_no_system_source_startup
+font_wasm_zero_font_startup
+font_wasm_external_font_first_text
 font_cache_revision_targeted_invalidation
+glyph_atlas_page_eviction_scan_100k
+glyph_atlas_hotset_after_cold_scan
 animation_transform_5k
 animation_layout_1k
 hit_test_100k
@@ -5339,11 +5503,13 @@ Makepad 在跨平台构建、Studio、远程 UI 操作、截图、profile 等方
 7. 固定 NodeId/NodeArena identity model；
 8. 固定 frame phases；
 9. 固定 `.vs` 为唯一 canonical DSL 扩展名；
-10. 固定 renderer primitive contract；
-11. 固定 GPU instance ABI；
-12. 建立 benchmark 与 characterization suite；
-13. 建立 `architecture.toml` + `cargo xtask arch-check`；
-14. 建立 dependency/unsafe/perf CI gates。
+10. 固定 Dev-only Hot Reload / Rust Warm Restart contract，并建立 `Viso_Hot_Reload.md`；
+11. 固定 Text/Font Runtime contract，并建立 `Viso_Text_Font_Runtime.md`；
+11. 固定 renderer primitive contract；
+12. 固定 GPU instance ABI；
+13. 建立 benchmark 与 characterization suite；
+14. 建立 `architecture.toml` + `cargo xtask arch-check`；
+15. 建立 dependency/unsafe/perf CI gates。
 
 ### 退出标准
 
@@ -5671,8 +5837,10 @@ CLI、Studio、IDE、CI 都是共享 tooling services 的客户，不允许各�
 ### 工作
 
 - `viso new` / `viso doctor`；
-- `viso target` / `viso device`；
-- `viso run` / `viso build` / `viso serve`；
+- `viso android list|use|doctor|emulator|adb`；
+- `viso ios list|use|doctor|simulator`；
+- host-implicit `viso run` 与 simulator/emulator `viso run ios/android --device ...`；
+- `viso build` / `viso serve`；
 - `viso package`；
 - `viso export html|solid`；
 - `viso fmt` / `viso check` / `viso schema` / `viso explain` / `viso dump`；
@@ -5706,6 +5874,8 @@ viso/
 ├── README.md
 ├── ARCHITECTURE.md
 ├── Viso_CLI.md
+├── Viso_Hot_Reload.md
+├── Viso_Text_Font_Runtime.md
 ├── AGENTS.md
 ├── SECURITY.md
 ├── rustfmt.toml
@@ -5797,10 +5967,14 @@ viso/
 │   ├── text/
 │   │   └── src/
 │   │       ├── lib.rs
-│   │       ├── font_db.rs
-│   │       ├── font_source.rs
-│   │       ├── font_provider.rs
 │   │       ├── font_request.rs
+│   │       ├── font_manifest.rs
+│   │       ├── font_format.rs
+│   │       ├── resolver.rs
+│   │       ├── app_fonts.rs
+│   │       ├── system_fonts.rs
+│   │       ├── font_provider.rs
+│   │       ├── font_cache.rs
 │   │       ├── fallback.rs
 │   │       ├── coverage.rs
 │   │       ├── progressive.rs
@@ -5808,7 +5982,11 @@ viso/
 │   │       ├── bidi.rs
 │   │       ├── line_break.rs
 │   │       ├── paragraph.rs
-│   │       └── cache.rs
+│   │       ├── text_work.rs
+│   │       ├── glyph_representation.rs
+│   │       ├── mtsdf.rs
+│   │       ├── outline_cache.rs
+│   │       └── glyph_cache.rs
 │   │
 │   ├── render/
 │   │   └── src/
@@ -6210,12 +6388,47 @@ trait Painter {
 
 ## ADR-019：`viso` CLI 是统一 Tooling Facade
 
-**决定**：项目创建、环境诊断、target/device、build/run/serve、language tooling、test/inspect/profile、package/export 统一通过 `viso`；CLI、Studio、IDE、CI 复用同一套 tooling services。
+**决定**：项目创建、环境诊断、build/run/serve、language tooling、test/inspect/profile、package/export 统一通过 `viso`；CLI、Studio、IDE、CI 复用同一套 tooling services。Desktop host 由无参数 `viso run` 隐式确定；Android/iOS 开发环境分别使用 `viso android` / `viso ios`。
 
 **理由**：减少平台命令碎片，给人类和 AI 提供一致入口，并防止 Studio/CLI 分叉出重复 build/compiler 逻辑。
 
-**代价**：需要稳定 command grammar、Ende JSON machine protocol、exit codes 和 target/device abstraction。
+**代价**：需要稳定 command grammar、Ende JSON machine protocol、exit codes，以及 Android Emulator/iOS Simulator tooling adapter。
 
+## ADR-020：Hot Reload 只存在于 Dev artifact
+
+**决定**：Dev Runtime、Hot Reload transport、PatchBundle apply、DevSnapshot endpoint 与 hot-reload-only metadata 只编入 Dev artifact；Release/Shipping build graph完全不包含这些路径，不能在运行时重新开启。
+
+**理由**：Hot Reload 是开发工具能力，不是产品 runtime capability。编译期移除可以降低发布包攻击面、体积和复杂度，并保证 release frame hot path 零热更分支税。
+
+**代价**：Rust/native 修改不能在 release artifact 上动态注入；开发期必须通过 Dev artifact，Rust code change使用 Stateful Warm Restart。
+
+## ADR-021：Development CLI 采用 host implicit、mobile simulator/emulator explicit
+
+**决定**：macOS/Windows/Linux开发统一使用 `viso run`；不提供 `viso run macos/windows/linux/host`。`viso run ios/android` 只面向 Simulator/Emulator，`--device` 只选虚拟设备 profile。Android/iOS SDK/runtime环境由平台子命令管理；physical-device debugging不属于 Viso 1.0 development CLI。
+
+**理由**：Desktop target由当前 host唯一决定，显式平台名只制造无效命令组合；移动开发真正需要选择的是 Simulator/Emulator runtime/profile，而不是重复描述 host平台。
+
+**代价**：如果未来加入真机调试，需要单独定义其 security/signing/connection contract，不能偷偷扩展当前 `--device` 语义。
+
+
+## ADR-022：字体系统采用 On-demand OS Fallback + byte-budgeted SLRU + page-aged Atlas
+
+**决定**：Viso 不在启动时扫描系统字体，也不建立 framework-owned FontDB。`assets/fonts/` 在 build-time 自动进入 compact `FontManifest`，Runtime lazy load；Native 无 App font 时直接使用系统 UI/font fallback，CJK/Emoji 以 locale-aware cluster/run 交给 OS resolver；WASM/Canvas 无隐式系统字体，但可使用 packaged WOFF2 或 External FontProvider。Loaded Font Face 使用按字节预算的 Segmented LRU；Shaping Cache 独立；glyph texture atlas 使用 page-level frame-age/CLOCK 淘汰。稳态高刷文字帧不得执行 resolve/parse/shape/raster。
+
+**理由**：避免系统字体数量影响启动，减少常驻内存和一次性 font-picker scan pollution；复用 OS 已有的 CJK/Emoji fallback 能力而不是复制 FontDB；SLRU 保护真正热 face；page-aged atlas 避免逐 glyph LRU 与 full-atlas reset；Retained ShapedRun/AtlasEntry 让 120/144/240Hz 的成本与变化量而不是总 glyph 数相关。
+
+**代价**：首次 cold system fallback、WOFF2 decode 和新 glyph raster 仍有成本，因此必须有 Resolve/FallbackPlan cache、prewarm、worker/staging、viewport prefetch、main-thread work budget、memory-pressure policy 与高刷 benchmark。完整合同见 `Viso_Text_Font_Runtime.md`。
+
+
+## ADR-023：Glyph 渲染使用 Adaptive Coverage + MTSDF + Vector Pipeline
+
+**决定**：稳定 UI、小字号、CJK、编辑器和文档默认使用目标 device-pixel bucket 的 A8 Coverage；持续 zoom/scale/rotation 的 monochrome glyph 按需异步 promotion 为 MTSDF；变换稳定后重新生成精确 Coverage 并切回；极端 zoom/高精度场景使用 retained OutlineVector；Color Glyph 使用独立 RGBA/Vector 路径。MTSDF/Vector 都不是 FontFace load 时的 eager 资源，也不能永久与 Coverage 为所有 glyph 双份常驻。
+
+**理由**：精确 Coverage 在稳定小字/CJK 上拥有更好的像素质量、更低的 texture bandwidth 与内存；MTSDF 在动画/连续 zoom 中摊平重复 raster/upload，并用 RGB multi-channel distance 保持尖角、Alpha true distance 支持距离效果；极端 zoom 不受有限 distance-field resolution 约束时，retained vector geometry 提供最高精度。Temporal promotion/settle-back 让资源只为当前行为付费，同时避免 120/144/240Hz 动画期间的 raster bucket churn。
+
+**代价**：需要 representation state machine、MTSDF generation/bucket、Vector cache、跨 representation revision/generation validation 与独立 residency budget；这些复杂度由内部实现承担，不暴露给普通 App authoring。完整合同见 `Viso_Text_Font_Runtime.md`。
+
+---
 
 # Part XXIX — 风险与取舍
 
@@ -6669,7 +6882,9 @@ Box<dyn HitTestNode>
 6. Identity：**128-bit Stable `SymbolId` + typed dense runtime IDs + generational `NodeId`**（ADR-016）；
 7. Ende：**Viso-owned Binary/JSON，RON 不进入 Viso core，Serde 只做 integration**（ADR-017）；
 8. Math：**独立 `viso-math`，allocation-free 基础数值/几何 ABI，Math ABI 与 GPU ABI 分离**（ADR-018）；
-9. CLI：**`viso` 是统一 Tooling Facade，CLI/Studio/IDE/CI 共用 tooling services**（ADR-019）。
+9. CLI：**`viso` 是统一 Tooling Facade，CLI/Studio/IDE/CI 共用 tooling services**（ADR-019）；
+10. Hot Reload：**仅 Dev artifact 编入，Release/Shipping 完全移除 Dev Runtime/patch/DevSnapshot 路径**（ADR-020）；
+11. Development target：**desktop host implicit；iOS/Android 只面向 Simulator/Emulator，平台开发环境使用 `viso ios/android`**（ADR-021）。
 
 这些决定应尽早被 prototype/benchmark 验证，但验证的默认动作是调整实现参数，而不是重新打开核心语义。若要推翻，必须新 ADR。
 

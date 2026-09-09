@@ -51,10 +51,16 @@ The core design summary is:
 
 Before changing architecture-sensitive code, read:
 
-1. `ARCHITECTURE.md` or `Viso_Architecture_and_Migration.md` if the repository still uses that filename.
+1. `Viso_Architecture.md` — the architecture contract spine. It fixes the non-violable contracts and delegates detailed subsystem specifications to standalone documents:
+   - [`Viso_DSL_1.0.md`](./Viso_DSL_1.0.md) — Viso DSL language design.
+   - [`Viso_Hot_Reload.md`](./Viso_Hot_Reload.md) — development runtime & transactional hot reload.
+   - [`Viso_CLI.md`](./Viso_CLI.md) — CLI command surface, JSON protocol, and tooling contract.
+   - [`Viso_Text_Font_Runtime.md`](./Viso_Text_Font_Runtime.md) — text/font runtime specification.
 2. Relevant crate-level docs.
 3. Any ADR under `docs/adr/`.
 4. This `AGENTS.md`.
+
+A standalone subsystem document ranks at the Architecture-document tier for its subsystem, below any Accepted ADR. Where such a document consolidates or refines an ADR, the ADR still governs the decision; introducing a new decision requires a new/updated ADR.
 
 Order of authority:
 
@@ -834,6 +840,8 @@ Shader compile errors during hot reload must preserve the last-good pipeline whe
 
 # 20. Text Rules
 
+[TEXT RUNTIME](./Viso_Text_Font_Runtime.md)
+
 Text is a dedicated performance subsystem.
 
 Do not implement text-heavy controls by treating every glyph/character as a normal UI node.
@@ -853,7 +861,7 @@ Text editing must be grapheme-aware and IME-aware.
 
 # 21. Viso DSL / Hot Reload Rules
 
-[DSL DESIGN](./Viso_DSL_1.0.md)
+[DSL DESIGN](./Viso_DSL_1.0.md) · [HOT RELOAD](./Viso_Hot_Reload.md)
 
 ## 21.1 Dependency direction
 

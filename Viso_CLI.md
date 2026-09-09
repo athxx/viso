@@ -6,6 +6,15 @@
 > 目标读者：Viso CLI/Tooling 工程师、Platform 工程师、Compiler 工程师、Studio 工程师、AI Coding Agent  
 > 设计目标：让项目从创建、检查、构建、运行、调试、测试到打包与 Web 导出都通过一个稳定入口完成。
 
+## 与 ADR / Architecture 的关系
+
+本文档是 `Viso_Architecture.md` 第 54 节（CLI/工具链合同锚点）的详细命令与协议规范，位于 Architecture-document 权威层级。CLI 是位于 facade 之上的 thin orchestration 层，不拥有第二套 compiler/renderer/packager/inspector；它复用共享 services，并遵循以下相关 ADR：
+
+- [ADR-0016](./docs/adr/0016-release-aot-package.md) — Release AOT package（`build`/`package`/`export` 产物语义、compiler-absent load path 的边界依据）。
+- 开发期 dev-loop（`viso run` 内置 watcher、transactional patch、last-good）的完整协议见 [`Viso_Hot_Reload.md`](./Viso_Hot_Reload.md)（ADR-0015）；CLI 只定义入口 flag 与 Ctrl-C 行为，协议细节 delegate 给该文档。
+
+本文档若引入新的工具链决策（例如新增 public 命令类别、改变依赖方向或产物语义），须回写为新的/更新的 ADR。
+
 ---
 
 ## 0. 定位
@@ -50,7 +59,7 @@ return stable exit code
 
 ## 1. 顶层命令树
 
-Viso 1.0 的命令面固定为：
+Viso 1.0 的 public CLI 以开发流程为中心，固定为：
 
 ```text
 PROJECT
@@ -58,18 +67,23 @@ PROJECT
     viso doctor
     viso config
 
-ENVIRONMENT
-    viso target list
-    viso target info
-    viso target install
+MOBILE DEV ENVIRONMENT
+    viso android list
+    viso android use
+    viso android doctor
+    viso android emulator list|create|delete|start|stop
+    viso android adb ...
 
-    viso device list
-    viso device info
-    viso device boot
-    viso device logs
+    viso ios list
+    viso ios use
+    viso ios doctor
+    viso ios simulator list|create|delete|start|stop
 
 DEVELOP
     viso run
+    viso run ios
+    viso run android
+    viso run web-gpu|web-dom|web-hybrid
     viso build
     viso serve
 
@@ -97,15 +111,24 @@ MAINTENANCE
     viso completion
 ```
 
-不提供平台历史命令树，例如：
+Desktop host 不作为 public positional target 暴露。开发者在 macOS、Windows、Linux 上直接执行：
 
-```text
-apple ios ...
-android adb ...
-wasm toolchain ...
+```bash
+viso run
 ```
 
-平台差异通过 target/device 参数表达。
+CLI 根据当前 host 唯一确定 desktop backend。禁止要求用户写：
+
+```text
+viso run macos
+viso run windows
+viso run linux
+viso run host
+```
+
+移动开发只面向 Simulator / Emulator。Viso 1.0 的开发命令不包含 physical-device deployment、真机 attach、provisioning 或 device signing 流程；这些能力如未来加入，必须作为独立设计，不得改变当前开发命令的简单语义。
+
+Android/iOS 平台命令只管理开发环境，不改变 Viso UI/runtime abstraction。Android 的 `adb` 作为明确的底层 escape hatch 保留；Viso 负责定位正确的 SDK、ADB executable 和 emulator serial，然后转发参数，不重新实现 ADB。
 
 ---
 
@@ -114,43 +137,41 @@ wasm toolchain ...
 ### 2.1 `build`
 
 ```bash
-viso build <target>
-```
-
-产生 **Viso application artifact**。
-
-例如：
-
-```bash
-viso build macos
+viso build
+viso build ios
 viso build android
 viso build web-gpu
 viso build web-dom
 viso build web-hybrid
 ```
 
+产生 **Viso application artifact**。
+
+无 positional target 时构建当前 desktop host。Desktop 不使用 `macos/windows/linux` positional target；移动和 Web 因为不是当前 host process，必须显式指定逻辑 target。
+
 Artifact 仍由 Viso runtime、Viso generated runtime 或对应 backend 负责执行。
 
 ### 2.2 `package`
 
 ```bash
-viso package <target>
+viso package
+viso package ios
+viso package android
+viso package web-gpu
+viso package web-dom
+viso package web-hybrid
 ```
 
 产生 **可分发产物**。
 
-例如：
-
 ```text
-macOS      .app / selected distribution bundle
-Windows    executable / selected installer format
-Linux      executable / selected bundle format
-iOS        signed application artifact
-Android    APK/AAB
-Web        deployment directory/archive
+viso package              current desktop host distributable
+viso package ios          iOS distribution artifact
+viso package android      APK/AAB
+viso package web-*        deployment directory/archive
 ```
 
-`package` 可以隐式执行 release build，但必须复用同一 build graph。
+`package` 可以隐式执行 release/shipping build，但必须复用同一 build graph。Signing、provisioning、store metadata 属于 delivery，不属于 `viso run ios/android` 的 simulator/emulator 开发路径。
 
 ### 2.3 `export`
 
@@ -185,48 +206,64 @@ SolidJS 只属于 exporter，不属于 Viso HIR、UI IR、runtime 或 dependency
 
 ---
 
-## 3. Target 模型
+## 3. Runtime target 模型
 
-标准 target 名称：
+Viso public development target 只暴露真正需要用户选择的运行环境：
 
 ```text
-host
-macos
-windows
-linux
-ios
-android
+desktop host   implicit: `viso run`
+ios            simulator only
+android        emulator only
 web-gpu
 web-dom
 web-hybrid
-headless
+headless        testing/tooling only
 ```
 
-### 3.1 `host`
+内部仍然会把 desktop host resolve 为 macOS/Windows/Linux，并选择 Metal/D3D12/Vulkan backend，但这是 tooling/platform implementation detail，不进入普通 `run` grammar。
 
-`host` 表示当前开发机原生 target：
-
-```text
-macOS   -> macos
-Windows -> windows
-Linux   -> linux
-```
-
-因此：
+### 3.1 Desktop host
 
 ```bash
 viso run
 ```
 
-等价于：
+永远表示：在当前开发机原生运行当前项目。
 
-```bash
-viso run host
+```text
+macOS   -> native macOS + selected Viso backend
+Windows -> native Windows + selected Viso backend
+Linux   -> native Linux + selected Viso backend
 ```
 
-除非 `Viso.toml` 设置了 project default target。
+项目配置不得把 `viso run` 的无参数语义改成 iOS、Android 或 Web；否则同一命令在不同仓库中会失去可预测性。项目可以配置 Web 默认 serve target，但不能重定义 `viso run` 的 desktop-host 含义。
 
-### 3.2 Web target
+### 3.2 Mobile development target
+
+```bash
+viso run ios
+viso run android
+```
+
+两者只表示 simulator/emulator development session：
+
+```text
+ios     -> Apple Simulator
+android -> Android Emulator
+```
+
+没有 `--simulator` / `--emulator` flag，因为 target 已经唯一决定设备类型。
+
+指定本地虚拟设备：
+
+```bash
+viso run ios --device iphone-local
+viso run android --device pixel-local
+```
+
+`--device` 在 Viso 1.0 development CLI 中只接受 Viso 已知的 simulator/emulator profile ID，不接受 physical-device identifier。
+
+### 3.3 Web target
 
 ```text
 web-gpu
@@ -240,26 +277,17 @@ web-dom
     优先 browser semantics / accessibility / SEO-compatible structure
 
 web-hybrid
-    DOM + Viso GPU islands
-    普通 UI 使用 DOM
-    shader/game/custom rendering 使用 WebGPU surface
+    DOM shell + WebGPU islands
 ```
 
-### 3.3 `headless`
+### 3.4 `headless`
 
-用于：
+`headless` 是 testing/tooling target，不作为普通用户的桌面运行方式：
 
-```text
-CI
-UI tests
-layout tests
-snapshot tests
-compiler tests
-automation
-server-side validation
+```bash
+viso test ui --headless
+viso snapshot capture HomePage --target headless
 ```
-
-`headless` 不等价于浏览器 DOM。
 
 ---
 
@@ -484,7 +512,7 @@ viso run headless
 
 ## 9. `viso doctor`
 
-检查 Viso 开发环境。
+检查当前开发机上的 Viso 基础开发环境。
 
 ```bash
 viso doctor
@@ -497,22 +525,27 @@ Rust / rustup / cargo
 Viso CLI/framework compatibility
 Viso.toml
 host compiler/linker
-GPU backend capability
-platform SDKs
-mobile SDKs
-WASM target
-Web build tools
-signing metadata availability
-devices/simulators
+host GPU backend capability
+WASM target / Web build tools
 filesystem permissions
 required external tools
+Android/iOS dev environment summary（只报告，不自动安装）
 ```
 
-### 9.1 Target-specific doctor
+### 9.1 Platform-specific doctor
+
+移动开发环境有自己的 canonical 命令：
 
 ```bash
-viso doctor ios
-viso doctor android
+viso android doctor
+viso ios doctor
+```
+
+为了脚本兼容，`viso doctor android` / `viso doctor ios` 可以作为只读 alias，但文档和 AI 示例统一使用 platform command。
+
+Web 可以：
+
+```bash
 viso doctor web-gpu
 ```
 
@@ -523,15 +556,18 @@ Viso Doctor
 
 [ok] Rust toolchain
 [ok] Viso project
-[ok] Metal backend
+[ok] Host GPU backend
 [ok] WebAssembly target
-[warn] Android SDK not configured
-[fail] iOS signing identity unavailable
+[warn] Android development environment is not selected
+[warn] iOS Simulator runtime is unavailable on this host
 
 Suggested actions:
-  viso target install android
-  open Xcode once to complete iOS setup
+  viso android list
+  viso android use 36
+  viso ios list
 ```
+
+开发期 doctor 不检查 iOS signing identity、provisioning profile 或 physical device。Signing 只在 `viso package ios` / delivery validation 中检查。
 
 ### 9.3 `doctor` 不偷偷做大规模修改
 
@@ -543,10 +579,11 @@ Suggested actions:
 viso doctor --fix
 ```
 
-但 SDK 下载/系统级修改优先交给：
+Android/iOS SDK、runtime、emulator 等下载和安装必须通过明确的平台命令触发：
 
 ```bash
-viso target install <target>
+viso android use <api>
+viso ios use <runtime>
 ```
 
 ### 9.4 JSON
@@ -624,148 +661,244 @@ viso config set arbitrary.deep.key ...
 
 ---
 
-# Part III — Environment commands
+# Part III — Mobile development environment
 
-## 11. `viso target`
+## 11. `viso android`
 
-统一 target/toolchain 管理。
+`viso android` 管理 Viso 的 Android Emulator 开发环境。它不是 Android 通用 SDK manager 的复制品，而是为 Viso 选择并验证一套可工作的 SDK / platform-tools / build-tools / NDK / emulator / system-image 组合。
 
-### 11.1 List
+### 11.1 `viso android list`
 
 ```bash
-viso target list
+viso android list
 ```
+
+列出 Viso 当前支持的 Android API、是否已安装、当前默认版本和推荐 system image：
+
+```text
+API   ANDROID   STATUS       SYSTEM IMAGE            DEFAULT
+36    16        installed    google_apis/arm64-v8a   *
+35    15        available    google_apis/arm64-v8a
+34    14        available    google_apis/arm64-v8a
+```
+
+在 x86_64 host 上 system image 可自动选择 x86_64；在 ARM64 host 上优先 arm64-v8a。开发者不需要为了 emulator 日常运行手写 ABI。
+
+`--json` 必须给出 machine-readable version/component metadata，供 Studio 和 AI agent 选择版本。
+
+### 11.2 `viso android use <api>`
+
+```bash
+viso android use 36
+```
+
+语义：**确保 API 36 的 Viso Android development profile 已安装，并把它设为本机默认开发版本。**
+
+如果不存在于 Viso 支持矩阵：
+
+```text
+error[ANDROID_API_UNSUPPORTED]
+```
+
+如果支持但未安装：
+
+```text
+resolve Viso tested component set
+    ↓
+download/locate command-line tools
+    ↓
+platform-tools / adb
+    ↓
+platform android-36
+    ↓
+build-tools
+    ↓
+Viso tested NDK
+    ↓
+emulator
+    ↓
+default compatible system image
+    ↓
+license/integrity validation
+    ↓
+mark API 36 as machine default
+```
+
+如果已经安装，必须快速切换，不重复下载。
+
+本地选择属于 machine state，默认写入：
+
+```text
+~/.viso/android/
+```
+
+不得为了 `use` 修改 Git tracked `Viso.toml`。项目中的 `min_sdk`、package ABI 等仍由项目配置控制。
+
+### 11.3 `viso android doctor`
+
+```bash
+viso android doctor
+```
+
+检查：
+
+```text
+SDK root
+command-line tools
+selected API/platform
+build-tools
+platform-tools / adb
+NDK
+emulator binary
+system image
+host virtualization capability
+licenses
+Viso component compatibility
+emulator profiles
+```
+
+默认只读；不会偷偷下载几十 GB SDK。
+
+### 11.4 Android emulator profiles
+
+```bash
+viso android emulator list
+viso android emulator create pixel-local
+viso android emulator create pixel35 --api 35
+viso android emulator start pixel-local
+viso android emulator stop pixel-local
+viso android emulator delete pixel35
+```
+
+`create` 未指定 `--api` 时使用 `viso android use` 当前选择的版本。设备 model/viewport 可由预设或显式参数选择，但 ABI、system image family 和 backend 默认由 Viso 根据 host 和 API 兼容矩阵推导。
 
 示例：
 
 ```text
-TARGET       STATUS       DEFAULT BACKEND
-macos        installed    metal
-windows      unavailable  d3d12
-linux        unavailable  vulkan
-ios          installed    metal
-android      missing-sdk  vulkan
-web-gpu      installed    webgpu
-web-dom      installed    dom
-web-hybrid   installed    dom+webgpu
-headless     installed    software/null
+NAME           API   ABI      PROFILE   STATUS
+pixel-local    36    arm64    phone     booted
+pixel-tablet   36    arm64    tablet    stopped
 ```
 
-### 11.2 Info
+### 11.5 `viso android adb ...`
+
+Viso 保留 ADB escape hatch：
 
 ```bash
-viso target info android
+viso android adb devices
+viso android adb --device pixel-local shell getprop
+viso android adb --device pixel-local logcat
+viso android adb -- shell settings list global
 ```
 
-显示：
+实现规则：
 
-- Rust target triple；
-- required SDK；
-- backend；
-- available devices；
-- build capabilities；
-- packaging capabilities；
-- current config overrides。
+```text
+resolve selected Android profile
+    ↓
+resolve verified adb executable
+    ↓
+optional Viso emulator ID -> adb serial
+    ↓
+exec adb with remaining args unchanged
+```
 
-### 11.3 Install
+Viso 不解析/重实现全部 ADB 子命令。`--` 之后的参数必须原样数组转发，避免 shell quoting 差异。
+
+### 11.6 Android logs shortcut
+
+普通开发日志由 `viso run android` 自己汇总；需要底层日志时使用：
 
 ```bash
-viso target install android
-viso target install ios
-viso target install web-gpu
+viso android adb --device pixel-local logcat
 ```
 
-`install` 可以：
-
-- 安装 Rust target；
-- 下载 Viso-owned tool artifacts；
-- 调用/指导官方 SDK 安装器；
-- 验证版本；
-- 缓存 toolchain metadata。
-
-它不是通用 package manager。
-
-### 11.4 Idempotent
-
-重复：
-
-```bash
-viso target install web-gpu
-```
-
-应该快速返回 already-installed，而不是重复下载。
+不再额外维护一套 `viso device logs` grammar。
 
 ---
 
-## 12. `viso device`
+## 12. `viso ios`
 
-统一 physical device、simulator、emulator 的发现与基本控制。
+`viso ios` 只管理 **iOS Simulator** 开发环境。Viso 1.0 不在开发 CLI 中管理 physical device、provisioning、开发证书或真机 attach。
 
-### 12.1 List
+该命令只在 macOS host 上可用；其他 host 必须返回明确的 unsupported-host diagnostic，而不是展示不可执行命令。
+
+### 12.1 `viso ios list`
 
 ```bash
-viso device list
+viso ios list
 ```
 
-示例：
+列出当前 Xcode 可使用/可安装的 Simulator runtime：
 
 ```text
-ID                  PLATFORM  KIND       STATUS
-iphone-local        ios       physical   connected
-ios-sim-18-pro      ios       simulator  booted
-pixel-local         android   physical   connected
-pixel-api-37        android   emulator   stopped
+RUNTIME       STATUS       DEFAULT
+iOS 26.0      installed    *
+iOS 25.4      installed
+iOS 25.0      available
 ```
 
-过滤：
+### 12.2 `viso ios use <runtime>`
 
 ```bash
-viso device list ios
-viso device list android
+viso ios use 26.0
 ```
 
-### 12.2 Info
+语义：确保该 Simulator runtime 可用，并把它设为 Viso 本机默认 iOS development runtime。
+
+下载/安装必须通过 Apple/Xcode 支持的机制；Viso 只负责编排、进度、完整性/可用性验证和本机默认选择，不绕过 Apple toolchain contract。
+
+### 12.3 `viso ios doctor`
 
 ```bash
-viso device info ios-sim-18-pro
+viso ios doctor
 ```
 
-显示：
-
-- OS version；
-- architecture；
-- display scale/size；
-- GPU/capability summary；
-- connection state；
-- debug deployment support。
-
-### 12.3 Boot
-
-```bash
-viso device boot pixel-api-37
-```
-
-只对 simulator/emulator 有意义。
-
-### 12.4 Logs
-
-```bash
-viso device logs iphone-local
-```
-
-过滤 app：
-
-```bash
-viso device logs iphone-local --app com.example.myapp
-```
-
-支持：
+检查：
 
 ```text
---follow
---since <duration>
---level <trace|debug|info|warn|error>
+macOS host
+Xcode installation
+Command Line Tools
+simctl
+selected Simulator runtime
+available simulator profiles
+Rust/iOS simulator target
+Viso Metal backend capability
 ```
+
+开发 doctor 明确不检查 signing identity/provisioning profile。
+
+### 12.4 iOS simulator profiles
+
+```bash
+viso ios simulator list
+viso ios simulator create iphone-local
+viso ios simulator create ipad-local --profile tablet
+viso ios simulator start iphone-local
+viso ios simulator stop iphone-local
+viso ios simulator delete iphone-local
+```
+
+普通运行直接：
+
+```bash
+viso run ios --device iphone-local
+```
+
+如果 profile 存在但未 boot，`viso run` 自动 boot；用户不需要先手动执行 `simulator start`。
+
+### 12.5 本机状态
+
+Android/iOS 选择和 virtual-device profile 都属于 developer-machine state：
+
+```text
+~/.viso/android/
+~/.viso/ios/
+```
+
+项目可有 `.viso/local.toml` 覆盖，但它默认必须被 VCS ignore。SDK path、emulator serial、Simulator UUID 不进入普通 `Viso.toml`。
+
 
 ---
 
@@ -775,67 +908,93 @@ viso device logs iphone-local --app com.example.myapp
 
 这是普通开发的主命令。
 
+### 13.1 Desktop host
+
 ```bash
 viso run
 ```
 
-默认：
+无参数时永远在当前 desktop host 运行。CLI 自动 resolve：
 
 ```text
-resolve project
-resolve target
-check environment
+project
+host OS/backend
+Dev profile
 incremental build
-launch/install
-start .vs/shader/asset watcher
-connect dev transport
-stream diagnostics/logs
-keep last-good app on hot reload errors
+launch process
+Dev Runtime transport
+.vs / shader / asset / Rust watcher
+structured diagnostics/logs
 ```
 
-不要求额外 `watch` 命令。
+不提供：
 
-### 13.1 Target
+```text
+viso run host
+viso run macos
+viso run windows
+viso run linux
+viso run --target ...
+```
+
+### 13.2 iOS / Android emulator development
 
 ```bash
-viso run macos
 viso run ios
 viso run android
+```
+
+Viso 1.0 中两者只运行 simulator/emulator，不发现或部署 physical device。
+
+指定 profile：
+
+```bash
+viso run ios --device iphone-local
+viso run android --device pixel-local
+```
+
+如果没有 `--device`：
+
+1. 存在配置的 platform default profile：使用它；
+2. 只有一个可用 profile：使用它；
+3. 没有 profile但当前是交互 TTY：给出创建建议或确认后创建标准 profile；
+4. 有多个且无默认：交互选择；
+5. `--json` / non-TTY：绝不 prompt，返回稳定 ambiguity/missing-device diagnostic 和 suggested command。
+
+如果所选 profile 未 boot：
+
+```text
+auto boot
+    ↓
+wait ready
+    ↓
+build
+    ↓
+install
+    ↓
+launch
+    ↓
+connect Dev Runtime
+```
+
+不需要 `--simulator` / `--emulator` flag。
+
+### 13.3 Web
+
+```bash
 viso run web-gpu
 viso run web-dom
 viso run web-hybrid
 ```
 
-也支持：
+默认启动 Viso dev server 和浏览器开发 session。可选：
 
 ```bash
-viso run --target ios
+viso run web-gpu --browser chrome
+viso run web-dom --browser safari
 ```
 
-Positional 和 `--target` 最终进入同一 resolved field；两者同时指定且不一致时报 usage error。
-
-### 13.2 Device
-
-```bash
-viso run ios --device iphone-local
-viso run android --device pixel-api-37
-```
-
-如果没有指定 device：
-
-1. 单一可用设备：自动选择；
-2. 多设备：使用项目默认；
-3. 仍有歧义：人类模式交互选择；
-4. `--json`/CI 模式：直接报结构化 ambiguity diagnostic，不进入交互 prompt。
-
-### 13.3 Simulator shortcut
-
-```bash
-viso run ios --simulator
-viso run android --emulator
-```
-
-只作为选择策略，不产生 platform-specific verb。
+浏览器选择不是 mobile `--device` 的复用概念。
 
 ### 13.4 App arguments
 
@@ -845,72 +1004,91 @@ viso run android --emulator
 viso run -- --open demo.vs --safe-mode
 ```
 
-### 13.5 Hot Reload
+移动/ Web 同样遵循 `--` boundary。
 
-`viso run` Dev Session 默认监听：
+### 13.5 Dev Runtime / Hot Reload
+
+`viso run` 永远构建 **Dev artifact**。Dev artifact 默认包含 Viso Dev Runtime，并监听：
 
 ```text
 .vs
 shader source
-assets
+assets / fonts
 Viso.toml relevant dev fields
 Rust source
 ```
 
-处理规则：
+按 source domain 分流：
 
 ```text
-.vs change
-    incremental compile
-    validate
-    build patch
-    atomic apply
-
-shader change
-    compile/validate
-    atomic shader/pipeline replacement
-
-asset change
-    resource version update
-
-Rust change
-    cargo incremental build
-    restart/reload according to supported dev boundary
+.vs            -> typed semantic patch
+shader         -> validated pipeline patch
+asset/font     -> resource revision patch
+game system    -> tick-boundary system patch
+Rust           -> incremental rebuild + stateful warm restart
 ```
 
-任何编译失败：
+任何 candidate 失败：
 
 ```text
-keep last-good running state
+keep last-good running app
 emit diagnostics
-do not replace UI with blank/half-built state
+never commit half-valid patch
 ```
 
-### 13.6 Options
+完整协议、Dev Daemon、PatchBundle、DevSnapshot、原子边界和 Warm Restart contract 见仓库根目录 `Viso_Hot_Reload.md`。
+
+### 13.6 Hot Reload 只属于 Dev build
+
+这是 build-time hard contract，不是 release 中的 runtime toggle。
 
 ```text
---release
---profile <name>
---device <id>
---simulator
---emulator
---no-hot-reload
+Dev artifact:
+    Dev Runtime compiled in
+    hot-reload patch receiver compiled in
+    DevSnapshot endpoint available
+    source/schema hot-reload metadata retained
+
+Release / Shipping artifact:
+    no Dev Runtime
+    no hot-reload transport listener
+    no PatchBundle decoder/apply path
+    no DevSnapshot endpoint
+    hot-reload-only metadata stripped
+```
+
+因此：
+
+- `viso run` 默认支持 Hot Reload；
+- `viso run --no-hot-reload` 只是在 Dev artifact 中关闭当前 session 的自动 patch，用于排查开发问题；
+- `viso build --profile release`、`viso package` 不能通过配置重新开启 Hot Reload；
+- Release steady-state runtime 不允许为了“可能热更”保留每帧分支、listener 或 symbol lookup。
+
+### 13.7 Options
+
+```text
+--device <id>           # ios/android simulator/emulator only
+--browser <name>        # web only
+--no-hot-reload         # Dev session diagnostic switch
 --inspect
 --profile-frame
---open
+--open                  # web convenience
 --env KEY=VALUE
 --cwd <path>
 ```
 
-### 13.7 Ctrl-C
+`viso run` 不提供 `--release`。Release/Shipping 验证使用 `viso build --profile release`、`viso package`、benchmark/profile 工具，而不是把开发主命令变成 delivery frontend。
+
+### 13.8 Ctrl-C
 
 必须：
 
 1. stop watcher；
-2. request child graceful shutdown；
+2. request child/emulator app graceful shutdown or detach dev session；
 3. stop dev transport；
-4. detach device session；
-5. second Ctrl-C force kill。
+4. keep simulator/emulator boot state by default，避免下次开发重复冷启动；
+5. second Ctrl-C force kill owned child processes。
+
 
 ---
 
@@ -920,6 +1098,7 @@ do not replace UI with blank/half-built state
 
 ```bash
 viso build
+viso build ios
 viso build android
 viso build web-dom
 ```
@@ -940,7 +1119,7 @@ shipping
 viso build --profile shipping web-gpu
 ```
 
-`--release` 是 `--profile release` 的便利别名。
+`viso build --release` 可以保留为 `--profile release` 的构建便利别名；它不适用于 `viso run`。
 
 ### 14.2 Build profile 不是 target
 
@@ -1538,7 +1717,7 @@ Studio 必须调用与 CLI 相同的：
 project resolver
 compiler service
 build service
-device service
+Android Emulator / iOS Simulator service
 inspection service
 package service
 ```
@@ -1554,15 +1733,15 @@ package service
 构建可分发 artifact。
 
 ```bash
-viso package macos
-viso package windows
-viso package linux
+viso package
 viso package ios
 viso package android
 viso package web-gpu
 viso package web-dom
 viso package web-hybrid
 ```
+
+无 positional target 时打包当前 desktop host；不提供 `viso package macos/windows/linux` 作为普通 public grammar。
 
 默认使用 `shipping` profile，除非项目另有明确设置。
 
@@ -2093,18 +2272,24 @@ open = true
 ```toml
 [profile.dev]
 opt_level = 0
-hot_reload = true
 source_maps = true
 
 [profile.release]
 opt_level = 3
-hot_reload = false
 
 [profile.shipping]
 opt_level = "size"
 strip = true
-hot_reload = false
 ```
+
+Hot Reload 不是可在 release/shipping profile 中重新打开的普通配置项。Dev Runtime 是否编入 artifact 由 Viso build mode 固定：
+
+```text
+dev               -> Dev Runtime present
+release/shipping  -> Dev Runtime absent
+```
+
+如果 `Viso.toml` 在 release/shipping profile 中声明 `hot_reload = true` 或同义字段，CLI 必须报配置错误，而不是静默生成可远程 patch 的发布包。
 
 ### 38.3 Android
 
@@ -2119,10 +2304,12 @@ backend = "vulkan"
 ```toml
 [target.ios]
 minimum_os = "17.0"
+
+[package.ios]
 team_id = "ABCDE12345"
 ```
 
-Secret 不写进普通 project config。
+Simulator development 不需要 signing。`team_id`、provisioning/signing metadata 只属于 package/delivery configuration。Secret 不写进普通 project config。
 
 ### 38.5 Export
 
@@ -2162,7 +2349,8 @@ tools/cli/
     │   ├── doctor.rs
     │   ├── config.rs
     │   ├── target.rs
-    │   ├── device.rs
+    │   ├── android.rs
+    │   ├── ios.rs
     │   ├── run.rs
     │   ├── build.rs
     │   ├── serve.rs
@@ -2199,8 +2387,9 @@ Project Resolver
 Config Resolver
 Compiler Service
 Build Service
-Target Service
-Device Service
+Target Query Service
+Android Toolchain/Emulator Service
+Apple Simulator Service
 Dev Session Service
 Web Serve Service
 Test Service
@@ -2276,7 +2465,7 @@ test
 profile
 package
 export
-target install
+android/ios runtime install
 ```
 
 Ctrl-C 不能让：
@@ -2284,7 +2473,7 @@ Ctrl-C 不能让：
 ```text
 child process
 server socket
-device install session
+simulator/emulator install session
 temporary package directory
 ```
 
@@ -2430,7 +2619,7 @@ platform signing store
 
 ## 50. Network downloads
 
-`viso target install` 等下载必须：
+`viso android use`、`viso ios use` 以及其他明确的 toolchain/runtime 下载必须：
 
 - HTTPS；
 - hash/signature verification；
@@ -2503,8 +2692,9 @@ Expected one of:
   configured SDK path in Viso.toml
 
 Try:
-  viso target install android
-  viso doctor android
+  viso android list
+  viso android use 36
+  viso android doctor
 ```
 
 ---
@@ -2772,18 +2962,47 @@ viso
   <command>
   [command-options]
   [arguments]
-  [-- app-arguments]
+  [-- app-or-forwarded-arguments]
 ```
 
-Target-taking commands：
+Develop：
 
 ```text
-viso run [target]
-viso build [target]
-viso serve [web-target]
-viso package [target]
-viso test [domain]
+viso run
+viso run ios [--device <simulator-id>]
+viso run android [--device <emulator-id>]
+viso run web-gpu|web-dom|web-hybrid [--browser <name>]
+
+viso build [ios|android|web-gpu|web-dom|web-hybrid]
+viso serve [web-gpu|web-dom|web-hybrid]
+viso package [ios|android|web-gpu|web-dom|web-hybrid]
 ```
+
+无 target 的 `run/build/package` 表示当前 desktop host。
+
+Mobile environment：
+
+```text
+viso android list
+viso android use <api>
+viso android doctor
+viso android emulator <list|create|delete|start|stop> ...
+viso android adb [--device <emulator-id>] [--] <adb-args...>
+
+viso ios list
+viso ios use <runtime>
+viso ios doctor
+viso ios simulator <list|create|delete|start|stop> ...
+```
+
+Query-only target metadata 可以保留给 tooling：
+
+```text
+viso target list
+viso target info <logical-target>
+```
+
+`target` 不负责安装 Android/iOS SDK，也不提供 desktop `run macos/windows/linux` grammar。
 
 Export：
 
@@ -2792,12 +3011,6 @@ viso export html
 viso export solid
 ```
 
-Environment：
-
-```text
-viso target <list|info|install> [target]
-viso device <list|info|boot|logs> [device]
-```
 
 ---
 
@@ -2860,11 +3073,11 @@ viso config show
 
 ```text
 new
-doctor host
+doctor
 check
 fmt
-build host
-run host
+build
+run
 headless
 test
 clean
@@ -2891,18 +3104,21 @@ inspect query
 
 ---
 
-## 72. P3 — Cross-platform environment
+## 72. P3 — Mobile development environment
 
 实现：
 
 ```text
-target list/info/install
-device list/info/boot/logs
-ios run/build
-android run/build
+android list/use/doctor
+android emulator list/create/delete/start/stop
+android adb forwarding
+ios list/use/doctor
+ios simulator list/create/delete/start/stop
+viso run ios/android --device <profile>
+ios/android build
 ```
 
-Device service 与 Platform backend 分离。
+Viso 1.0 这一阶段只要求 simulator/emulator development；不把 physical-device debugging、signing 或 provisioning 作为开发闭环前置条件。Android Toolchain/Emulator service、Apple Simulator service 与 Platform runtime backend 分离。
 
 ---
 
@@ -2965,11 +3181,15 @@ device profile
 - Ctrl-C 正确清理；
 - headless 可用于 CI。
 
-### Cross-platform
+### Mobile development
 
-- target/toolchain 统一 grammar；
-- device discovery 统一；
-- iOS/Android 不要求用户记底层 SDK CLI 语法。
+- `viso run` 只表示当前 desktop host；
+- `viso run ios/android` 只面向 simulator/emulator；
+- `--device` 只接受 Viso virtual-device profile；
+- `viso android list/use/doctor/emulator/adb` 可独立完成 Android 开发环境管理；
+- `viso ios list/use/doctor/simulator` 可独立完成 iOS Simulator 环境管理；
+- 开发闭环不要求 signing/provisioning/physical device；
+- iOS/Android 不要求用户记 `sdkmanager` / `avdmanager` / `simctl` 的普通工作流命令。
 
 ### Web
 
@@ -3020,18 +3240,24 @@ device profile
 viso new my_app
 cd my_app
 
-# Develop
+# Desktop development
 viso check
 viso run
 
-# Mobile
-viso target install ios
-viso device list ios
-viso run ios --device <id>
+# Android development environment
+viso android list
+viso android use 36
+viso android emulator create pixel-local
+viso run android --device pixel-local
 
-viso target install android
-viso device list android
-viso run android --device <id>
+# Android escape hatch
+viso android adb --device pixel-local shell getprop
+
+# iOS Simulator development (macOS)
+viso ios list
+viso ios use 26.0
+viso ios simulator create iphone-local
+viso run ios --device iphone-local
 
 # Web
 viso serve web-dom --open
@@ -3051,7 +3277,7 @@ viso inspect
 viso profile --frames 600
 
 # Delivery
-viso package macos
+viso package
 viso package android
 viso export html --out dist-html
 viso export solid --out web-solid

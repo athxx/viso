@@ -99,17 +99,17 @@ export component Counter {
 
 Viso DSL 1.0 采用以下唯一规范规则：
 
-| 设计问题                                       | Viso DSL 1.0 的唯一规则                                            |
-| ---------------------------------------------- | ------------------------------------------------------------------ |
-| `child Column {}` 与裸 `Column {}` 混用        | 删除 `child`；裸组件节点就是匿名子节点                             |
-| `on click => expr` 与 `on click { ... }` 并存  | 删除事件箭头简写；事件处理器一律使用 block                         |
-| `Float` 有时等于 `F64`，Shader 又要求定宽类型  | 删除 `Float`；只保留 `F32` 与 `F64`                                |
-| Resource 有单行子句和逗号列表两套形式          | Resource 一律使用配置 block；策略一律是 `policy = [ ... ];`        |
-| `ms` 已定义而 `min`、`sp` 只在例子中出现       | 完整枚举全部单位及量纲规则                                         |
-| State 默认值允许“依赖顺序明确”的前向引用       | State 初始化禁止前向引用；Computed 才允许无环前向依赖              |
-| 条件分支与列表都使用 `key`                     | 分支缓存使用 `preserve "static-id"`；列表身份使用 `key expression` |
-| 省略分号依赖换行猜测                           | 简单声明、属性和语句必须以 `;` 结束                                |
-| `:=`, `+:`, `<:`, `>:` 等承担多种隐藏语义      | 从核心语言移除；View 属性只保留 `property: expr;`，其余使用明确关键词 |
+| 设计问题                                      | Viso DSL 1.0 的唯一规则                                               |
+| --------------------------------------------- | --------------------------------------------------------------------- |
+| `child Column {}` 与裸 `Column {}` 混用       | 删除 `child`；裸组件节点就是匿名子节点                                |
+| `on click => expr` 与 `on click { ... }` 并存 | 删除事件箭头简写；事件处理器一律使用 block                            |
+| `Float` 有时等于 `F64`，Shader 又要求定宽类型 | 删除 `Float`；只保留 `F32` 与 `F64`                                   |
+| Resource 有单行子句和逗号列表两套形式         | Resource 一律使用配置 block；策略一律是 `policy = [ ... ];`           |
+| `ms` 已定义而 `min`、`sp` 只在例子中出现      | 完整枚举全部单位及量纲规则                                            |
+| State 默认值允许“依赖顺序明确”的前向引用      | State 初始化禁止前向引用；Computed 才允许无环前向依赖                 |
+| 条件分支与列表都使用 `key`                    | 分支缓存使用 `preserve "static-id"`；列表身份使用 `key expression`    |
+| 省略分号依赖换行猜测                          | 简单声明、属性和语句必须以 `;` 结束                                   |
+| `:=`, `+:`, `<:`, `>:` 等承担多种隐藏语义     | 从核心语言移除；View 属性只保留 `property: expr;`，其余使用明确关键词 |
 
 ### 1.3 学习曲线
 
@@ -359,20 +359,20 @@ mod.widgets.*         脚本 namespace / 注册后符号访问
 
 Viso 保留 Makepad authoring surface 中最容易读、最有生产力的部分，但不保留隐藏语义的 Assignment-family。
 
-| 能力 | Makepad 当前 Script | Viso 1.0 |
-| --- | --- | --- |
-| View 属性 | `property: value` | `property: expression;` |
-| 普通变量赋值 | 多类 assignment | `=` 与普通复合赋值 |
-| 具名节点身份 | `name := Type {}` | `node name: Type {}` |
-| Merge/Apply | `+:` 等 | `style` / `override` / `replace` / 显式 Record Update |
-| Rust bridge | `#(rust_expr)` + runtime registration | 生成的 Typed Native Schema |
-| 模块共享 | `mod.*` + 初始化/注册关系 | 编译期 Module Graph + Import |
-| Property lookup | 动态 surface 为主 | Typed `PropertyId`，动态能力必须显式 |
-| State/派生值 | 脚本变量与宿主约定 | `state` / `computed` |
-| UI 更新 | 运行时脚本/渲染约定 | Reactive Binding + 精确 invalidation |
-| 列表身份 | 由代码/宿主保证 | `for ... key ...` 强制 StableKey |
-| 游戏 Tick | 宿主 `game` API / tick callback | `system` + `FixedUpdate` Profile |
-| Shader | Script/Shader 深度结合 | 独立 Shader Domain + 显式 Descriptor ABI |
+| 能力            | Makepad 当前 Script                   | Viso 1.0                                              |
+| --------------- | ------------------------------------- | ----------------------------------------------------- |
+| View 属性       | `property: value`                     | `property: expression;`                               |
+| 普通变量赋值    | 多类 assignment                       | `=` 与普通复合赋值                                    |
+| 具名节点身份    | `name := Type {}`                     | `node name: Type {}`                                  |
+| Merge/Apply     | `+:` 等                               | `style` / `override` / `replace` / 显式 Record Update |
+| Rust bridge     | `#(rust_expr)` + runtime registration | 生成的 Typed Native Schema                            |
+| 模块共享        | `mod.*` + 初始化/注册关系             | 编译期 Module Graph + Import                          |
+| Property lookup | 动态 surface 为主                     | Typed `PropertyId`，动态能力必须显式                  |
+| State/派生值    | 脚本变量与宿主约定                    | `state` / `computed`                                  |
+| UI 更新         | 运行时脚本/渲染约定                   | Reactive Binding + 精确 invalidation                  |
+| 列表身份        | 由代码/宿主保证                       | `for ... key ...` 强制 StableKey                      |
+| 游戏 Tick       | 宿主 `game` API / tick callback       | `system` + `FixedUpdate` Profile                      |
+| Shader          | Script/Shader 深度结合                | 独立 Shader Domain + 显式 Descriptor ABI              |
 
 Viso 的原则是：**保留紧凑度，不保留隐式语义；保留宿主扩展能力，不让运行时注册顺序成为语言模块系统。**
 
@@ -3922,17 +3922,17 @@ Adaptive Environment Read 必须进入 Reactive HIR。编译器必须区分原�
 
 最低失效合同：
 
-| 环境值 | 默认影响 |
-|---|---|
-| `env.constraints` | `MEASURE / LAYOUT`，结构分支读取时可追加 `STRUCTURE` |
-| `env.size_class` | 类别变化时 `STRUCTURE / MEASURE / LAYOUT` |
-| `env.safe_area` | `MEASURE / LAYOUT` |
-| `env.keyboard_inset` | `MEASURE / LAYOUT` |
-| `env.display_features` | 消费者声明的 `STRUCTURE / LAYOUT / HIT_TEST` |
-| `env.input` | `STYLE / INTERACTION` |
-| `env.text_scale` | `MEASURE / LAYOUT / SEMANTICS` |
-| `env.reduced_motion` | `STYLE / PAINT`，不得强制 Layout |
-| `env.orientation` | 仅通知显式读取者 |
+| 环境值                 | 默认影响                                             |
+| ---------------------- | ---------------------------------------------------- |
+| `env.constraints`      | `MEASURE / LAYOUT`，结构分支读取时可追加 `STRUCTURE` |
+| `env.size_class`       | 类别变化时 `STRUCTURE / MEASURE / LAYOUT`            |
+| `env.safe_area`        | `MEASURE / LAYOUT`                                   |
+| `env.keyboard_inset`   | `MEASURE / LAYOUT`                                   |
+| `env.display_features` | 消费者声明的 `STRUCTURE / LAYOUT / HIT_TEST`         |
+| `env.input`            | `STYLE / INTERACTION`                                |
+| `env.text_scale`       | `MEASURE / LAYOUT / SEMANTICS`                       |
+| `env.reduced_motion`   | `STYLE / PAINT`，不得强制 Layout                     |
+| `env.orientation`      | 仅通知显式读取者                                     |
 
 关键优化：如果 Window 从 1200dp 缩到 1100dp，但 `env.size_class` 仍为 `Expanded`，只读取 `size_class` 的结构分支 **不得** 因原始宽度变化重新构建。
 
@@ -4459,7 +4459,6 @@ collision
 
 ---
 
-
 ### 105.1 Quick Game Profile
 
 小型游戏、教学 Demo 和 AI/Vibe Coding 不应该被迫先设计完整的多 System graph。标准库提供 `viso::game::quick`，但它仍然 **不是 Parser 特例**。
@@ -4756,20 +4755,20 @@ Game Profile 支持两层热重载：
 
 ## 111. 游戏能力验收矩阵
 
-| 能力         |                  语言支持 | Runtime/Profile 支持 | 结论       |
-| ------------ | ------------------------: | -------------------: | ---------- |
+| 能力         |                      语言支持 | Runtime/Profile 支持 | 结论       |
+| ------------ | ----------------------------: | -------------------: | ---------- |
 | Quick Game   | `system implements QuickGame` | 同一 Fixed Scheduler | 完整       |
-| 固定 Tick    | `system + trait + action` |            Scheduler | 完整       |
-| 持久状态     |            `system state` |          State Store | 完整       |
-| 输入         |           Typed Value/API |         Input Mapper | 完整       |
-| 物理         |         Typed Handle Call |       Physics Engine | 需 Runtime |
-| 碰撞         |        Typed Action/Event |         Event Buffer | 完整       |
-| Entity/ECS   |            Generic/Handle |                  ECS | 需 Runtime |
-| HUD          |            Component/View |       Widget Runtime | 完整       |
-| Shader       |             Shader Domain |          GPU Backend | 完整       |
-| 热重载       |          Symbol/Migration |       Reload Runtime | 完整       |
-| AI 生成      |    EBNF/Schema/Diagnostic |              CLI/LSP | 完整       |
-| AAA 资产管线 |                    可调用 |           需专门工具 | 非语言本身 |
+| 固定 Tick    |     `system + trait + action` |            Scheduler | 完整       |
+| 持久状态     |                `system state` |          State Store | 完整       |
+| 输入         |               Typed Value/API |         Input Mapper | 完整       |
+| 物理         |             Typed Handle Call |       Physics Engine | 需 Runtime |
+| 碰撞         |            Typed Action/Event |         Event Buffer | 完整       |
+| Entity/ECS   |                Generic/Handle |                  ECS | 需 Runtime |
+| HUD          |                Component/View |       Widget Runtime | 完整       |
+| Shader       |                 Shader Domain |          GPU Backend | 完整       |
+| 热重载       |              Symbol/Migration |       Reload Runtime | 完整       |
+| AI 生成      |        EBNF/Schema/Diagnostic |              CLI/LSP | 完整       |
+| AAA 资产管线 |                        可调用 |           需专门工具 | 非语言本身 |
 
 因此答案不是“DSL 自己就是游戏引擎”，而是“DSL 有足够语义承载游戏 Runtime，并且不需要牺牲类型和工具能力”。
 
@@ -5201,7 +5200,6 @@ retention: PreserveCache("user-panel")
 Compiler 对两个 Branch 分配不同 Identity Namespace，避免相同结构位置误迁移。
 
 ---
-
 
 ### 125.1 Adaptive Environment Read Lowering
 
@@ -7128,9 +7126,9 @@ Viso 可以同时承载快速游戏原型与结构化 System 游戏逻辑的关�
 
 主要源码入口：
 
-- <https://github.com/makepad/makepad/blob/dev/platform/script/src/tokenizer.rs>
-- <https://github.com/makepad/makepad/blob/dev/platform/script/src/parser.rs>
-- <https://github.com/makepad/makepad/blob/dev/splashgame.md>
+- <https://github.com/visoui/makepad/blob/dev/platform/script/src/tokenizer.rs>
+- <https://github.com/visoui/makepad/blob/dev/platform/script/src/parser.rs>
+- <https://github.com/visoui/makepad/blob/dev/splashgame.md>
 
 ## F.2 证据边界
 

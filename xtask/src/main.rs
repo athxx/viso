@@ -1,9 +1,5 @@
 //! Viso build/CI automation.
 //!
-//! `cargo xtask check-deps` enforces the crate dependency DAG from
-//! `Viso_Architecture_and_Migration.md` section 10. It is dependency-free (no
-//! third-party crates) so it stays a trivial leaf of the workspace.
-//!
 //! The check is *allowlist-based*: each crate declares exactly which internal
 //! `viso-*` crates it may depend on. Any edge not in the allowlist — including
 //! every forbidden edge in section 10.1 (platform→ui, gpu→ui, ui→widgets, …) — is a
