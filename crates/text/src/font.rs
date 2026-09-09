@@ -199,6 +199,15 @@ pub struct FontStore {
     faces: Vec<FontFace>,
     /// The fallback chain: faces to try in order. `chain[0]` is the primary.
     chain: Vec<FontId>,
+    /// Monotonic counter bumped on every mutation that can change how a run
+    /// shapes or lays out: loading a face, extending the chain, or flagging a
+    /// face as color-emoji. It is the freshness token the paragraph layout
+    /// cache folds into its key, so a cache entry produced before the chain grew
+    /// never matches after — a run that could not cover a script (boxed
+    /// `.notdef`) reshapes once a covering fallback is appended, without the
+    /// cache having to be cleared. A `u64` never wraps in practice (one bump per
+    /// font mutation, not per frame).
+    revision: u64,
 }
 
 impl FontStore {
@@ -217,6 +226,7 @@ impl FontStore {
         if self.chain.is_empty() {
             self.chain.push(id);
         }
+        self.revision += 1;
         Some(id)
     }
 
@@ -228,6 +238,7 @@ impl FontStore {
         debug_assert!((id.0 as usize) < self.faces.len(), "unregistered FontId");
         if !self.chain.contains(&id) {
             self.chain.push(id);
+            self.revision += 1;
         }
     }
 
@@ -266,6 +277,16 @@ impl FontStore {
     /// set and must be flagged out of band (see [`FontFace::is_color_emoji`]).
     pub fn mark_color_emoji(&mut self, id: FontId) {
         self.faces[id.0 as usize].set_color_emoji(true);
+        self.revision += 1;
+    }
+
+    /// The current revision: a monotonic token bumped on every mutation that can
+    /// change how a run shapes or lays out (face load, chain extension,
+    /// color-emoji flagging). Callers that cache shaped/laid-out results fold
+    /// this into their cache key so a stale entry produced before the chain grew
+    /// never matches after (see the paragraph layout cache in [`crate::system`]).
+    pub fn revision(&self) -> u64 {
+        self.revision
     }
 }
 
