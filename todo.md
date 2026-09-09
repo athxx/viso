@@ -1205,9 +1205,14 @@ spanning 放置 + auto-flow;ADR 0009 明列六项高级能力全未做。落 `cr
       + `Display`(`MEASURE | LAYOUT`,空集 `EMPTY`)。JSON 快照 / Studio transport 复用同一命名。比草案的独立 `DirtyReasons`
       类型更小的公共面(§55)。cold-path(§7.2),纯新增、不碰 `mark_dirty`/遍历,稳态 counter 零变化。验收:单测断言各类
       单独渲染自身名、乱序组合仍低位优先、空集 `EMPTY`、经 wire byte 往返命名一致(5 passed)。
-- [ ] **9.A2 `ui: 节点树 / 布局盒 dump`** —— `fn inspect_tree(root) -> InspectNode{ id, parent, children, kind,
-      bounds, dirty }` 递归快照(cold String 名走 §8.4 sparse 侧表,不进 NodeMeta)。复用已有 `bounds()`。验收:headless
-      golden 树 dump;无 unsafe 内存窥探(§34)。
+- [x] **9.A2 `ui: 节点树 / 布局盒 dump`** —— 新增 `crates/ui/src/inspect.rs`:`NodeStore::inspect_tree(root) -> InspectTree`
+      递归快照,镜像 `SemanticsTree` 的扁平 Vec + child-index 形状(`nodes[0]` 为根、子节点按索引引用,快照自洽)。
+      `InspectNode{ id, parent, kind, bounds, world, dirty, flags, children }`;`InspectKind` 由 `content_payload` *派生*
+      (节点模型不存 kind 列,不臆造字段);`InspectFlags` 只读既有 flag 列(hittable/hidden/overlay/focusable/focused/
+      has_semantics)。`bounds()`/`world()`/`dirty()` 全复用现有只读 accessor,只借 `&self`、零状态变更、不碰稳态遍历
+      (cold-path §7.2)。`InspectTree::dump()` 输出缩进 golden 文本(每深 2 空格,行带 id/kind/box + 非空 dirty)。
+      验收:headless 5 单测——树形与祖先、kind 由 payload 派生、dirty 经 `DirtyClass` 可读呈现(SEMANTICS 无条件冒泡至根、
+      MEASURE 停在固定尺寸根、PAINT 本地不升)、非活跃根返回空树、缩进 golden dump;无 unsafe 内存窥探(§34)。fmt/clippy 干净。
 - [ ] **9.A3 `render: paint-range / batch introspection`** —— §62 `NodeId -> paint primitive ranges`、`BatchId ->
       pipeline/resources`。render 暴露只读 `fn paint_ranges(id)`、`fn batches() -> &[BatchInfo]`。验收:golden 场景下
       range/batch 计数与既有 FrameStats 一致(交叉校验)。
