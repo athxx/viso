@@ -1113,7 +1113,7 @@ spanning 放置 + auto-flow;ADR 0009 明列六项高级能力全未做。落 `cr
         wrap 分配 ≤ 8× 未换行基线,守 §20「measure 一次 + 每行一次」不退化为 per-candidate reshape)。fmt/clippy(--all-targets)
         /workspace test 全清。真正的 measure 期约束下行接线见 DL1。
 
-- [ ] **DL1 `layout: measure 期约束下行 + 文本 Leaf width-aware 求解 + resize reflow`(布局引擎地基,独立 ADR)** ——
+- [x] **DL1 `layout: measure 期约束下行 + 文本 Leaf width-aware 求解 + resize reflow`(布局引擎地基,独立 ADR)** ——
       2026-09-09 measure 管线核对发现:measure 是纯 post-order、**无约束下行**(`fn measure(tree, root, scratch)` 无约束
       参数,§96 `LocalConstraints` 至今是 spec-only),文本一次 shape 定型、natural 固定;可用宽度只在其后 layout 期以
       `bounds` 出现(layout.rs:634),比"决定文本高度的时机"晚一拍;resize 只重跑 measure/layout **不 reshape**,故当前
@@ -1135,9 +1135,16 @@ spanning 放置 + auto-flow;ADR 0009 明列六项高级能力全未做。落 `cr
         `TextRequest` 加 `soft_wrap`。facade 为 wrap 运行保留 `wrap_sources: HashMap<NodeId, TextRequest>`(store 的 request
         列 drain 后 Phase B 靠它 reshape;仅 wrap 子集、freed 节点 reflow 时 `retain(is_live)` 清理)。widget:`LabelStyle`
         加 `soft_wrap` + `.wrap()` setter。resize 被 subsumed(`on_geometry` 标 root MEASURE|LAYOUT|PAINT→下帧宽度失配重触)。
-        §61 counter:reflow pass 数经 `VISO_FRAME_TRACE` gate 打印首帧 double-shape。**剩:headless 测试(Column/Row wrap+高度、
-        Fixed+soft_wrap=false 不 reflow、默认 Fit 队列空、resize 重触 + 亚像素抖动不 reshape、收敛 ≤2 iter、嵌套传播)+ ADR
-        `docs/adr/00NN-width-aware-text-reflow.md` + fmt/clippy/arch-check/example 眼验/bench 复核。**
+        §61 counter:reflow pass 数经 `VISO_FRAME_TRACE` gate 打印首帧 double-shape。
+      - **完成 2026-09-09**:实现 + headless 测试全绿。测试拆两处(§35/§66):recorder/队列/失效类/收敛在 viso-ui
+        `component.rs` 单测 7 个(Fill 窄于 natural 入队其盒宽、non-wrapping 不入队、Fit 不入队、盒够宽不 reflow、
+        `set_reflowed_content` 标 MEASURE|LAYOUT|PAINT 不标 SEMANTICS + 队列收敛 + 高度增长、亚像素抖动不重入 settled reflow、
+        Fixed 宽 reflow 到定宽);shaper 宽度透传/换行在 `text_content.rs` 单测 2 个(真字体 fixture:soft_wrap 窄宽 reshape
+        换行且记录 shaped_at_width、non-wrapping 忽略 assigned width 记 None)。facade `reflow_wrapped_text` drain 环靠构造 +
+        ADR 佐证(集成测试全走 fixture bypass、无字体栈够不到 reshape 分支)。ADR `docs/adr/0027-width-aware-text-reflow.md`
+        (Accepted)。已验证:`cargo test --workspace` 绿、`cargo fmt --all -- --check` 净、`cargo clippy --workspace
+        --all-targets -- -D warnings` 净、`cargo xtask check-deps` OK(17 crates,边全在 §10 DAG 内)。**未做**:macOS
+        example 眼验实际换行段落、`cargo bench -p viso-text` wrap 复核(引擎未改、仅传入宽度变,列为可选)。
 - [ ] **D2 `text: paragraph / shaping-run cache`** —— §37.11/§37.13 的 paragraph/shaping cache:viso-text 持 paragraph 级
       缓存(键 = text + font/feature/revision + 可用宽度),命中则跳过 reshape + re-linebreak;把「不 reshape」的边界从
       facade 粗门下沉到 text 层自身。依赖 D1(宽度是失效键之一)。
