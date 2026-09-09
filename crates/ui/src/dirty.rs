@@ -80,6 +80,48 @@ impl DirtyClass {
             | DirtyClass::SEMANTICS.0;
         Self(bits & DEFINED)
     }
+
+    /// The set bits paired with their names, low bit first, for introspection.
+    ///
+    /// This is the readable form the debug surfaces render — a NodeId's pending
+    /// invalidation shown as `["MEASURE", "LAYOUT"]` rather than a raw byte, and
+    /// the same list a JSON snapshot or the Studio transport serializes. Names
+    /// are the constant identifiers above; a cleared set yields an empty iterator.
+    pub fn iter_names(self) -> impl Iterator<Item = &'static str> {
+        const NAMES: [(u8, &str); 8] = [
+            (DirtyClass::STRUCTURE.0, "STRUCTURE"),
+            (DirtyClass::STYLE.0, "STYLE"),
+            (DirtyClass::MEASURE.0, "MEASURE"),
+            (DirtyClass::LAYOUT.0, "LAYOUT"),
+            (DirtyClass::TRANSFORM.0, "TRANSFORM"),
+            (DirtyClass::PAINT.0, "PAINT"),
+            (DirtyClass::HIT_TEST.0, "HIT_TEST"),
+            (DirtyClass::SEMANTICS.0, "SEMANTICS"),
+        ];
+        let bits = self.0;
+        NAMES
+            .into_iter()
+            .filter_map(move |(bit, name)| (bits & bit != 0).then_some(name))
+    }
+}
+
+impl core::fmt::Display for DirtyClass {
+    /// Renders the set classes as `MEASURE | LAYOUT`, or `EMPTY` when none are
+    /// set — the one-line form a dirty-reason readout prints.
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        if self.is_empty() {
+            return f.write_str("EMPTY");
+        }
+        let mut first = true;
+        for name in self.iter_names() {
+            if !first {
+                f.write_str(" | ")?;
+            }
+            f.write_str(name)?;
+            first = false;
+        }
+        Ok(())
+    }
 }
 
 impl BitAnd for DirtyClass {
@@ -116,5 +158,50 @@ mod tests {
         assert!(!d.contains(DirtyClass::TRANSFORM));
         assert!(!d.is_empty());
         assert!(DirtyClass::EMPTY.is_empty());
+    }
+
+    #[test]
+    fn each_class_renders_its_own_name() {
+        for (class, name) in [
+            (DirtyClass::STRUCTURE, "STRUCTURE"),
+            (DirtyClass::STYLE, "STYLE"),
+            (DirtyClass::MEASURE, "MEASURE"),
+            (DirtyClass::LAYOUT, "LAYOUT"),
+            (DirtyClass::TRANSFORM, "TRANSFORM"),
+            (DirtyClass::PAINT, "PAINT"),
+            (DirtyClass::HIT_TEST, "HIT_TEST"),
+            (DirtyClass::SEMANTICS, "SEMANTICS"),
+        ] {
+            let names: Vec<_> = class.iter_names().collect();
+            assert_eq!(names, [name], "one class renders exactly its own name");
+            assert_eq!(class.to_string(), name);
+        }
+    }
+
+    #[test]
+    fn names_are_low_bit_first_and_joined() {
+        // Composed out of order; the readout is always low-bit-first.
+        let d = DirtyClass::PAINT | DirtyClass::MEASURE | DirtyClass::LAYOUT;
+        let names: Vec<_> = d.iter_names().collect();
+        assert_eq!(names, ["MEASURE", "LAYOUT", "PAINT"]);
+        assert_eq!(d.to_string(), "MEASURE | LAYOUT | PAINT");
+    }
+
+    #[test]
+    fn empty_has_no_names() {
+        assert_eq!(DirtyClass::EMPTY.iter_names().count(), 0);
+        assert_eq!(DirtyClass::EMPTY.to_string(), "EMPTY");
+    }
+
+    #[test]
+    fn names_round_trip_through_the_wire_byte() {
+        // The readable surface reflects exactly the bits from_bits keeps, so a
+        // reconstructed AOT class set renders the same names it was written with.
+        let d = DirtyClass::STRUCTURE | DirtyClass::SEMANTICS;
+        let back = DirtyClass::from_bits(d.bits());
+        assert_eq!(
+            d.iter_names().collect::<Vec<_>>(),
+            back.iter_names().collect::<Vec<_>>()
+        );
     }
 }
