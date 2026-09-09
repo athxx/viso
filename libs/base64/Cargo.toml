@@ -1,0 +1,13 @@
+[package]
+name = "viso-base64"
+version = "1.0.0"
+authors = ["Athan <info@viso.im>"]
+edition = "2024"
+description = "Makepad base64"
+license = "LGPL-3.0"
+homepage = "https://viso.im"
+repository = "https://github.com/visoui/viso/"
+
+[features]
+
+[dependencies]
