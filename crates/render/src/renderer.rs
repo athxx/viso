@@ -44,7 +44,7 @@ const MESH_INDEX_STRIDE: usize = core::mem::size_of::<u32>();
 
 /// What a [`Segment`] draws, and where its geometry lives.
 #[derive(Debug, Clone, Copy, PartialEq)]
-enum SegmentKind {
+pub(crate) enum SegmentKind {
     /// A run of adjacent quads sharing this segment's clip, in the quad buffer.
     /// `start`/`count` count instances in that buffer.
     Quad,
@@ -73,26 +73,26 @@ enum SegmentKind {
 /// [`SegmentKind::Quad`]/[`SegmentKind::Image`]/[`SegmentKind::GlyphRun`],
 /// indices for [`SegmentKind::Mesh`].
 #[derive(Debug, Clone, Copy, PartialEq)]
-struct Segment {
+pub(crate) struct Segment {
     /// What this segment draws / which buffer its geometry indexes.
-    kind: SegmentKind,
+    pub(crate) kind: SegmentKind,
     /// Offset of the first instance or index (see `kind`) into its buffer.
-    start: u32,
+    pub(crate) start: u32,
     /// Number of instances or indices (see `kind`) in the run.
-    count: u32,
+    pub(crate) count: u32,
     /// The effective clip rect, or `None` for unclipped.
     ///
     /// For a segment in an offscreen pass this clip is already expressed in the
     /// offscreen texture's local space (the layer origin has been subtracted),
     /// so it scissors correctly against that pass's viewport.
-    clip: Option<Rect>,
+    pub(crate) clip: Option<Rect>,
     /// Which render pass this segment belongs to.
-    target: PassTarget,
+    pub(crate) target: PassTarget,
 }
 
 /// Which render pass a [`Segment`] is drawn into.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum PassTarget {
+pub(crate) enum PassTarget {
     /// The final surface pass (drawn last, composited onto the window).
     Main,
     /// An offscreen texture pass, indexed into [`Renderer::offscreen_passes`].
@@ -587,6 +587,33 @@ impl Renderer {
             draw_calls: self.segments.len(),
             instances: self.segments.iter().map(|s| s.count as usize).sum(),
         }
+    }
+
+    /// The frame's draw segments, for the cold-path batch introspection surface
+    /// ([`inspect_batches`](Self::inspect_batches)). Read in the same window as
+    /// [`frame_stats`](Self::frame_stats).
+    pub(crate) fn segments_snapshot(&self) -> &[Segment] {
+        &self.segments
+    }
+
+    /// The Quad pipeline handle, for batch introspection.
+    pub(crate) fn quad_pipeline_id(&self) -> PipelineId {
+        self.quad_pipeline
+    }
+
+    /// The Image pipeline handle, for batch introspection.
+    pub(crate) fn image_pipeline_id(&self) -> PipelineId {
+        self.image_pipeline
+    }
+
+    /// The GlyphRun pipeline handle, for batch introspection.
+    pub(crate) fn glyph_pipeline_id(&self) -> PipelineId {
+        self.glyph_pipeline
+    }
+
+    /// The Mesh pipeline handle, for batch introspection.
+    pub(crate) fn mesh_pipeline_id(&self) -> PipelineId {
+        self.mesh_pipeline
     }
 
     /// Append tessellated geometry via `f`, which writes into the shared mesh

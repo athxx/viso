@@ -130,7 +130,7 @@ fn paint_subtree(
 /// coordinates by the node's `world` origin. The image variant fills the node's
 /// whole `world` box (a content leaf sizes to the image's intrinsic size, so the
 /// box already matches unless a fixed size overrides it).
-fn paint_content(content: &Content, world: Rect, out: &mut Vec<Primitive>) {
+pub(crate) fn paint_content(content: &Content, world: Rect, out: &mut Vec<Primitive>) {
     let ox = world.x;
     let oy = world.y;
     match content {

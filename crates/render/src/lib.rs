@@ -11,9 +11,11 @@
 
 #![forbid(unsafe_op_in_unsafe_fn)]
 
+pub mod inspect;
 pub mod primitive;
 pub mod renderer;
 
+pub use inspect::{BatchId, BatchPipeline, InspectBatch, InspectBatches};
 pub use primitive::{
     Border, GlyphInstance, GlyphInstanceData, GlyphRunDraw, ImageDraw, ImageInstance, LayerClip,
     LineJoin, Mesh, MeshVertex, Path, PathCmd, Point, Primitive, Quad, QuadInstance, Rect, Rgba,
