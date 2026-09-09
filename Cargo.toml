@@ -32,11 +32,11 @@ version = "0.0.0"
 edition = "2024"
 license = "MIT OR Apache-2.0"
 rust-version = "1.98"
-repository = "https://github.com/makepad/viso"
+repository = "https://github.com/visoui/viso"
 
 # ---------------------------------------------------------------------------
 # Internal crates. Every dependency edge declared here is checked against the
-# architecture DAG (Viso_Architecture_and_Migration.md §10) by `cargo xtask
+# architecture DAG (Viso_Architecture.md, architecture 10) by `cargo xtask
 # check-deps`. Do not add an edge without updating that check.
 # ---------------------------------------------------------------------------
 [workspace.dependencies]
