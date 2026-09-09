@@ -1213,9 +1213,12 @@ spanning 放置 + auto-flow;ADR 0009 明列六项高级能力全未做。落 `cr
       (cold-path §7.2)。`InspectTree::dump()` 输出缩进 golden 文本(每深 2 空格,行带 id/kind/box + 非空 dirty)。
       验收:headless 5 单测——树形与祖先、kind 由 payload 派生、dirty 经 `DirtyClass` 可读呈现(SEMANTICS 无条件冒泡至根、
       MEASURE 停在固定尺寸根、PAINT 本地不升)、非活跃根返回空树、缩进 golden dump;无 unsafe 内存窥探(§34)。fmt/clippy 干净。
-- [ ] **9.A3 `render: paint-range / batch introspection`** —— §62 `NodeId -> paint primitive ranges`、`BatchId ->
-      pipeline/resources`。render 暴露只读 `fn paint_ranges(id)`、`fn batches() -> &[BatchInfo]`。验收:golden 场景下
-      range/batch 计数与既有 FrameStats 一致(交叉校验)。
+- [x] **9.A3 `render: paint-range / batch introspection`** —— §62 `NodeId -> paint primitive ranges`、`BatchId ->
+      pipeline/resources`。§3.5 强制拆成两个各归本 crate 的加法只读快照:`crates/render/src/inspect.rs`
+      `Renderer::inspect_batches() -> InspectBatches`(BatchId=segment 序号,pipeline/PipelineId/bind_group 按 kind 派生),
+      `crates/ui/src/inspect.rs` `paint_ranges(store, root, out) -> PaintRanges`(NodeId→后代包含式 span,冷路径 twin
+      of `paint_subtree`,热路径 `paint_tree` 不动)。验收:batch 快照 `draw_calls()/instances()` 与既有 FrameStats
+      交叉校验一致(含 translucent composite);paint span 与 `paint_tree` 产出逐一致 + 子 span 嵌套于父。
 - [ ] **9.A4 `viso: Inspector facade + JSON 快照`** —— facade 聚合 A1–A3 + 已有 semantics/counters 成单一
       `cx.inspect()` 只读表面,并可序列化为 Ende JSON(§非-serde 硬依赖,走 §1583 Ende JSON dump)。为 Studio transport
       与 `viso inspect --json`(Slice C)共用同一模型(§34「同一底层模型」)。验收:JSON schema 稳定性单测 + headless 快照。
