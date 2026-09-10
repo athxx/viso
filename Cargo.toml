@@ -86,6 +86,11 @@ unicode-segmentation = "1"
 # version-matched to that.
 icu_segmenter = "2.3"
 icu_properties = "2.3"
+# BCP-47 locale parsing for CJK line-break tailoring. `line_break_tailoring.rs`
+# resolves a content locale to the ja/zh bucket the way icu_segmenter does
+# internally (language ∈ {ja, zh}), so the public locale choice and the table
+# icu selects never disagree. Already a transitive icu dep; declared direct here.
+icu_locale_core = "2.3"
 # Pure-Rust PNG decoder for color-bitmap emoji strikes (sbix/CBDT PNG data that
 # ttf-parser hands back as raw bytes). Same decoder family makepad's color-emoji
 # path uses; decoded RGBA is premultiplied into the color glyph atlas.

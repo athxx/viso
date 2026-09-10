@@ -1404,7 +1404,7 @@ spanning 放置 + auto-flow;ADR 0009 明列六项高级能力全未做。落 `cr
 - [x] **TF-P2.1 UAX #29 segmentation** —— segment.rs grapheme/word + incremental checkpoints。**验收:** UAX#29 官方 corpus 入 CI。
 - [x] **TF-P2.2 UAX #9 BiDi paragraph + isolates** —— bidi.rs resolve levels;LRI/RLI/FSI/PDI + paired-bracket/neutral/number;visual reorder 在 line formation 后按行(DoD)。**验收:** BidiTest.txt/BidiCharacterTest.txt 入 CI。
 - [x] **TF-P2.3 UAX #14 line break** —— line_break.rs;非 ASCII whitespace heuristic(DoD)。**验收:** LineBreakTest.txt 入 CI。
-- [ ] **TF-P2.4 CJK line-break tailoring** —— line_break_tailoring.rs zh-Hans/zh-Hant/ja/ko + LineBreakStrictness;no-space script(Thai/Lao/Khmer)provider seam。**验收:** 禁则 golden(四 locale)+ segmenter provider 契约测。
+- [x] **TF-P2.4 CJK line-break tailoring** —— line_break_tailoring.rs zh-Hans/zh-Hant/ja/ko + LineBreakStrictness;no-space script(Thai/Lao/Khmer)provider seam。**验收:** 禁则 golden(四 locale)+ segmenter provider 契约测。
 - [ ] **TF-P2.5 shaping-safe boundary reshape** —— shaping.rs safe/unsafe_to_break 元数据;不机械切 unsafe run(DoD)。**验收:** unsafe 边界 reshape 一致性测。
 - [ ] **TF-P2.6 typed text position + logical/visual mapping** —— text_position.rs TextOffset/CaretAffinity/TextPosition + UTF-16 bridge;paragraph.rs logical↔visual;source text 不隐式 normalize(DoD)。**验收:** typed mapping 往返测 + 无隐式 normalize 断言。
 - [ ] **TF-P2.7 BiDi caret / selection / hit test** —— caret.rs 双 caret+affinity + GDEF ligature caret;selection.rs logical range 源真;hit_test.rs 返回 TextPosition+affinity(不按平均宽猜)(DoD)。**验收:** 双 caret / 选区 fragments / hit-test golden。

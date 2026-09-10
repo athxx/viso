@@ -35,6 +35,7 @@ use icu_segmenter::{LineSegmenter, LineSegmenterBorrowed};
 // `LineSegmenter::new_auto` returns the borrowed, `'static` form backed by baked
 // data; `LineSegmenter` itself is only the constructor namespace here.
 
+use crate::line_break_tailoring::LineBreakTailoring;
 use crate::text_position::TextOffset;
 
 /// The class of a line-break opportunity.
@@ -74,16 +75,27 @@ impl Default for LineBreaker {
 }
 
 impl LineBreaker {
-    /// A world-ready analyzer: the auto provider selects dictionary/LSTM
-    /// segmentation for no-space scripts and the pair table elsewhere.
+    /// A world-ready analyzer with the default policy: the auto provider selects
+    /// dictionary/LSTM segmentation for no-space scripts and the pair table
+    /// elsewhere, with no locale tailoring and the strictest level.
     ///
-    /// This is the base candidate set. Strictness levels and CJK tailoring layer
-    /// on top of it (a later concern); the paragraph line-break policy must stay
-    /// stable within one paragraph rather than varying per line, so tailoring is
-    /// chosen once and applied uniformly, not decided here.
+    /// This is the base candidate set. Strictness levels and CJK tailoring are
+    /// chosen through [`LineBreakTailoring`] and applied by
+    /// [`Self::with_tailoring`]; the paragraph line-break policy must stay stable
+    /// within one paragraph rather than varying per line, so the tailoring is
+    /// resolved once and this analyzer holds it for the paragraph's whole extent.
     pub fn new() -> Self {
+        Self::with_tailoring(LineBreakTailoring::default())
+    }
+
+    /// An analyzer for a resolved paragraph policy: the locale bucket,
+    /// strictness, and word-break folded into the provider's tailoring. The
+    /// candidate set and its mandatory/allowed classification are otherwise the
+    /// same as [`Self::new`] — tailoring only adjusts which permitted breaks the
+    /// provider offers, never the mandatory hard breaks.
+    pub fn with_tailoring(tailoring: LineBreakTailoring) -> Self {
         Self {
-            segmenter: LineSegmenter::new_auto(Default::default()),
+            segmenter: LineSegmenter::new_auto(tailoring.to_icu_options()),
             line_break: CodePointMapData::<LineBreak>::new().static_to_owned(),
         }
     }
@@ -397,5 +409,175 @@ mod tests {
             | 0x3400..=0x9FFF // CJK ideographs
             | 0xF900..=0xFAFF // CJK compat ideographs
         )
+    }
+}
+
+#[cfg(test)]
+mod tailoring_tests {
+    use super::*;
+    use crate::line_break_tailoring::{LineBreakStrictness, LineBreakTailoring, WordBreak};
+
+    /// A CJK sample carrying the characters that make strictness observable: a
+    /// small kana (ぁ), a prolonged sound mark (ー), CJK ideographs and CJK
+    /// punctuation, plus a trailing Latin run.
+    const CJK_SAMPLE: &str = "テストぁーテスト、漢字。 abc";
+
+    fn break_offsets(tailoring: LineBreakTailoring, text: &str) -> Vec<usize> {
+        LineBreaker::with_tailoring(tailoring)
+            .break_opportunities(text)
+            .map(|(at, _)| at.0)
+            .collect()
+    }
+
+    /// The four locales the specification names map onto the provider's two
+    /// buckets: `ja`/`zh-Hans`/`zh-Hant` flip the CJK bit, `ko` does not. The
+    /// three CJK locales are indistinguishable at the provider (all `ja_zh`), so
+    /// their break sets are identical; the API still lets a caller name each.
+    #[test]
+    fn locale_selects_cjk_bucket_ja_zh_but_not_ko() {
+        for cjk_locale in ["ja", "zh-Hans", "zh-Hant"] {
+            let t = LineBreakTailoring::for_locale(cjk_locale);
+            assert!(
+                t.to_icu_options().content_locale.is_some(),
+                "{cjk_locale} should select the CJK bucket"
+            );
+        }
+        assert!(
+            LineBreakTailoring::for_locale("ko")
+                .to_icu_options()
+                .content_locale
+                .is_none(),
+            "ko has inter-word spaces and takes the non-CJK path"
+        );
+        assert!(
+            LineBreakTailoring::for_locale("en")
+                .to_icu_options()
+                .content_locale
+                .is_none()
+        );
+        // The three CJK locales collapse to the same provider table, so their
+        // break sets coincide.
+        let ja = break_offsets(LineBreakTailoring::for_locale("ja"), CJK_SAMPLE);
+        let hans = break_offsets(LineBreakTailoring::for_locale("zh-Hans"), CJK_SAMPLE);
+        let hant = break_offsets(LineBreakTailoring::for_locale("zh-Hant"), CJK_SAMPLE);
+        assert_eq!(ja, hans);
+        assert_eq!(ja, hant);
+        assert!(!ja.is_empty());
+    }
+
+    /// Loosening strictness only ever *adds* break opportunities: the strict set
+    /// is a subset of the loose set. On this sample the extra breaks sit exactly
+    /// around the small kana (ぁ) and the prolonged sound mark (ー) — positions
+    /// Strict forbids and Loose permits.
+    #[test]
+    fn loose_is_a_superset_of_strict() {
+        let base = LineBreakTailoring::for_locale("ja");
+        let strict: std::collections::HashSet<usize> = break_offsets(
+            base.with_strictness(LineBreakStrictness::Strict),
+            CJK_SAMPLE,
+        )
+        .into_iter()
+        .collect();
+        let loose: std::collections::HashSet<usize> =
+            break_offsets(base.with_strictness(LineBreakStrictness::Loose), CJK_SAMPLE)
+                .into_iter()
+                .collect();
+        assert!(
+            strict.is_subset(&loose),
+            "strict {strict:?} must be a subset of loose {loose:?}"
+        );
+        // The small kana and prolonged mark positions are the extra breaks.
+        let extra: std::collections::BTreeSet<usize> = loose.difference(&strict).copied().collect();
+        assert_eq!(
+            extra,
+            std::collections::BTreeSet::from([9, 12]),
+            "loose adds breaks around the small kana and prolonged mark"
+        );
+    }
+
+    /// The default policy for a non-CJK locale at strict level is the base
+    /// candidate set: it must match `LineBreaker::new` offset for offset, so the
+    /// tailoring layer does not regress the default path.
+    #[test]
+    fn strict_non_cjk_matches_base_candidate_set() {
+        let text = "one two three\nfour";
+        let base: Vec<usize> = LineBreaker::new()
+            .break_opportunities(text)
+            .map(|(at, _)| at.0)
+            .collect();
+        let tailored = break_offsets(
+            LineBreakTailoring::for_locale("en").with_strictness(LineBreakStrictness::Strict),
+            text,
+        );
+        assert_eq!(base, tailored);
+    }
+
+    /// A resolved policy is stable within the analyzer: repeated queries on the
+    /// same text return identical break sets, so a paragraph's policy does not
+    /// drift line to line.
+    #[test]
+    fn policy_is_stable_within_instance() {
+        let breaker = LineBreaker::with_tailoring(
+            LineBreakTailoring::for_locale("ja").with_strictness(LineBreakStrictness::Normal),
+        );
+        let first: Vec<_> = breaker.break_opportunities(CJK_SAMPLE).collect();
+        let second: Vec<_> = breaker.break_opportunities(CJK_SAMPLE).collect();
+        assert_eq!(first, second);
+    }
+
+    /// The no-space-script dictionary/LSTM seam survives locale tailoring: a
+    /// Thai run still gains interior breaks under a Thai locale, under a CJK
+    /// locale, and under the default policy. Tailoring adjusts CJK punctuation
+    /// rules; it never turns off complex-script segmentation.
+    #[test]
+    fn no_space_script_breaks_under_any_locale() {
+        let thai = "ภาษาไทยง่ายนิดเดียว";
+        for tailoring in [
+            LineBreakTailoring::for_locale("th"),
+            LineBreakTailoring::for_locale("ja"),
+            LineBreakTailoring::default(),
+        ] {
+            let breaker = LineBreaker::with_tailoring(tailoring);
+            let interior_allowed = breaker
+                .break_opportunities(thai)
+                .filter(|(at, class)| *class == BreakOpportunity::Allowed && at.0 < thai.len())
+                .count();
+            assert!(
+                interior_allowed >= 1,
+                "dictionary segmentation must survive tailoring {tailoring:?}, got none"
+            );
+        }
+    }
+
+    /// `word-break` is observable both ways: `keep-all` suppresses the interior
+    /// breaks between continuous CJK ideographs, and `break-all` adds interior
+    /// breaks inside a Latin word.
+    #[test]
+    fn word_break_keep_all_and_break_all_are_observable() {
+        let ideographs = "漢字漢字漢字";
+        let interior = |wb: WordBreak| {
+            break_offsets(
+                LineBreakTailoring::for_locale("ja").with_word_break(wb),
+                ideographs,
+            )
+            .into_iter()
+            .filter(|&o| o < ideographs.len())
+            .count()
+        };
+        assert_eq!(interior(WordBreak::Normal), 5);
+        assert_eq!(interior(WordBreak::KeepAll), 0);
+
+        let latin = "hello";
+        let latin_interior = |wb: WordBreak| {
+            break_offsets(
+                LineBreakTailoring::for_locale("en").with_word_break(wb),
+                latin,
+            )
+            .into_iter()
+            .filter(|&o| o < latin.len())
+            .count()
+        };
+        assert_eq!(latin_interior(WordBreak::Normal), 0);
+        assert_eq!(latin_interior(WordBreak::BreakAll), 4);
     }
 }
