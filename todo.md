@@ -1401,7 +1401,7 @@ spanning 放置 + auto-flow;ADR 0009 明列六项高级能力全未做。落 `cr
 
 ### Slice TF-P2 —— World-Ready paragraph correctness(§28 P2,doc §12 全 23 小节)
 
-- [ ] **TF-P2.1 UAX #29 segmentation** —— segment.rs grapheme/word + incremental checkpoints。**验收:** UAX#29 官方 corpus 入 CI。
+- [x] **TF-P2.1 UAX #29 segmentation** —— segment.rs grapheme/word + incremental checkpoints。**验收:** UAX#29 官方 corpus 入 CI。
 - [ ] **TF-P2.2 UAX #9 BiDi paragraph + isolates** —— bidi.rs resolve levels;LRI/RLI/FSI/PDI + paired-bracket/neutral/number;visual reorder 在 line formation 后按行(DoD)。**验收:** BidiTest.txt/BidiCharacterTest.txt 入 CI。
 - [ ] **TF-P2.3 UAX #14 line break** —— line_break.rs;非 ASCII whitespace heuristic(DoD)。**验收:** LineBreakTest.txt 入 CI。
 - [ ] **TF-P2.4 CJK line-break tailoring** —— line_break_tailoring.rs zh-Hans/zh-Hant/ja/ko + LineBreakStrictness;no-space script(Thai/Lao/Khmer)provider seam。**验收:** 禁则 golden(四 locale)+ segmenter provider 契约测。
