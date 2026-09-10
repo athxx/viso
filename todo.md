@@ -1406,7 +1406,7 @@ spanning 放置 + auto-flow;ADR 0009 明列六项高级能力全未做。落 `cr
 - [x] **TF-P2.3 UAX #14 line break** —— line_break.rs;非 ASCII whitespace heuristic(DoD)。**验收:** LineBreakTest.txt 入 CI。
 - [x] **TF-P2.4 CJK line-break tailoring** —— line_break_tailoring.rs zh-Hans/zh-Hant/ja/ko + LineBreakStrictness;no-space script(Thai/Lao/Khmer)provider seam。**验收:** 禁则 golden(四 locale)+ segmenter provider 契约测。
 - [x] **TF-P2.5 shaping-safe boundary reshape** —— shaping.rs safe/unsafe_to_break 元数据;不机械切 unsafe run(DoD)。**验收:** unsafe 边界 reshape 一致性测。
-- [ ] **TF-P2.6 typed text position + logical/visual mapping** —— text_position.rs TextOffset/CaretAffinity/TextPosition + UTF-16 bridge;paragraph.rs logical↔visual;source text 不隐式 normalize(DoD)。**验收:** typed mapping 往返测 + 无隐式 normalize 断言。
+- [x] **TF-P2.6 typed text position + logical/visual mapping** —— text_position.rs TextOffset/CaretAffinity/TextPosition + UTF-16 bridge;paragraph.rs logical↔visual;source text 不隐式 normalize(DoD)。**验收:** typed mapping 往返测 + 无隐式 normalize 断言。
 - [ ] **TF-P2.7 BiDi caret / selection / hit test** —— caret.rs 双 caret+affinity + GDEF ligature caret;selection.rs logical range 源真;hit_test.rs 返回 TextPosition+affinity(不按平均宽猜)(DoD)。**验收:** 双 caret / 选区 fragments / hit-test golden。
 - [ ] **TF-P2.8 IME composition mapping** —— ime.rs logical range + revision;candidate rect 来自 visual caret map;UTF-16↔UTF-8 映射 composition/paragraph-local(§12.17)。**验收:** CJK/RTL IME 组合 geometry 测。
 - [ ] **TF-P2.9 incremental == full recompute** —— paragraph.rs 增量失效等价全量重算(DoD)。**验收:** 增量 vs 全量结果对拍。
