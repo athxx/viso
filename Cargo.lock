@@ -1268,6 +1268,7 @@ name = "viso-text"
 version = "0.0.0"
 dependencies = [
  "ab_glyph_rasterizer",
+ "criterion",
  "icu_locale_core",
  "icu_properties",
  "icu_segmenter",

@@ -1416,7 +1416,7 @@ spanning 放置 + auto-flow;ADR 0009 明列六项高级能力全未做。落 `cr
 - [x] **TF-P3.1 retained shaped runs** —— 稳态不重 shape(DoD:static text steady frame 不 resolve/shape/raster)。**验收:** 稳态帧 counter 零 shape 断言。
 - [x] **TF-P3.2 page-age/CLOCK atlas eviction** —— glyph_cache.rs 四 pool page-age+CLOCK(非逐 glyph LRU,ADR 0025)。**验收:** 逐出策略单测 + Atlas 满不 whole-reset 断言。
 - [x] **TF-P3.3 TextWork scheduler + prefetch/prewarm** —— text_work.rs 纯 worker + prediction prewarm(押方向,byte/count 上限,命中率低收敛,让位 CriticalVisible/NearViewport,§14.5);miss 兜底:caret 几何推进不 reshape,glyph 延一两帧,主线程零 shaping。**验收:** prewarm 预算上限断言 + miss 主线程零 shaping 断言。
-- [ ] **TF-P3.4 120/144/240Hz regression gate** —— 独立 gate(DoD)。**验收:** 高刷 microbench 三档 regression gate(§36 text 类目)。
+- [x] **TF-P3.4 120/144/240Hz regression gate** —— 独立 gate(DoD)。**验收:** 高刷 microbench 三档 regression gate(§36 text 类目)。
 
 ### Slice TF-P4 —— Packaged formats(§28 P4)
 
