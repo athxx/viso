@@ -78,6 +78,7 @@ pub use font_cache::FontCache;
 pub use font_request::{FontRequest, FontRole, FontSlant, FontTarget, FontWeight, FontWidth};
 pub use glyph_cache::{Admission, GlyphKey, GlyphResidency};
 pub use glyph_representation::GlyphImageKind;
+pub use line_break::{BreakOpportunity, LineBreaker};
 pub use raster_a8::{CoverageBitmap, rasterize_coverage};
 pub use resolver::{FontResolver, Resolved};
 pub use segment::{GraphemeCheckpoint, Segmenter};
