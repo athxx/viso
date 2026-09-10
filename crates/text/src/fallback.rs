@@ -290,7 +290,7 @@ fn fnv1a(bytes: &[u8]) -> u64 {
 
 #[cfg(test)]
 mod tests {
-    use std::cell::Cell;
+    use std::cell::{Cell, RefCell};
 
     use super::*;
     use crate::system_fonts::SystemFontResult;
@@ -323,6 +323,52 @@ mod tests {
                 bytes: DEJAVU.to_vec(),
                 index: 0,
             })
+        }
+    }
+
+    /// A provider that routes by the query's locale, as a real platform matcher
+    /// does: the same Han text resolves to a different face under zh-Hans / ja /
+    /// ko. It records the locale of each query so a test can assert the planner
+    /// threads locale through to the OS. Each locale returns byte-distinct
+    /// fallback bytes, standing in for the distinct faces a platform matcher
+    /// selects per language (PingFang for zh vs Hiragino for ja); the fixture
+    /// carries no real CJK face, so each locale is the Latin-covering DejaVu
+    /// with a per-locale count of trailing padding bytes appended — parsers
+    /// ignore the tail, so all faces parse at index 0 and cover Latin, while
+    /// distinct bytes intern to distinct face identities, which is what the
+    /// plan cache turns on.
+    struct LocaleRoutingProvider {
+        seen_locales: RefCell<Vec<String>>,
+    }
+
+    impl LocaleRoutingProvider {
+        fn new() -> Self {
+            Self {
+                seen_locales: RefCell::new(Vec::new()),
+            }
+        }
+
+        /// The byte-distinct fallback face a locale routes to, mimicking a
+        /// platform matcher's per-language face selection. `None` for a locale
+        /// the matcher has no face for.
+        fn face_bytes_for(locale: &str) -> Option<Vec<u8>> {
+            let pad = match locale {
+                "zh-Hans" => 1,
+                "zh-Hant" => 2,
+                "ja" => 3,
+                "ko" => 4,
+                _ => return None,
+            };
+            let mut bytes = DEJAVU.to_vec();
+            bytes.extend(std::iter::repeat_n(0u8, pad));
+            Some(bytes)
+        }
+    }
+
+    impl SystemFontProvider for LocaleRoutingProvider {
+        fn resolve_system_face(&self, query: &SystemFontQuery) -> Option<SystemFontResult> {
+            self.seen_locales.borrow_mut().push(query.lang.clone());
+            Self::face_bytes_for(&query.lang).map(|bytes| SystemFontResult { bytes, index: 0 })
         }
     }
 
@@ -468,5 +514,71 @@ mod tests {
         let plan = fb.plan_run(&key(0, Script::Han, "zh-Hans"), "\u{4F60}", &provider);
         assert_eq!(plan, FallbackPlan::Unresolved);
         assert_eq!(fb.system_fallback_query_count(), 1);
+    }
+
+    #[test]
+    fn same_han_run_selects_a_different_face_per_locale() {
+        // The CJK locale rule: one base face and one Han script, but zh-Hans /
+        // zh-Hant / ja / ko each resolve to a *different* face, because the same
+        // Unicode Han scalar has a different preferred face per language. The run
+        // text is identical across the four plans; only the locale differs.
+        let provider = LocaleRoutingProvider::new();
+        let mut fb = FontFallback::new(1000);
+
+        let mut faces = Vec::new();
+        for locale in ["zh-Hans", "zh-Hant", "ja", "ko"] {
+            // The fixture is Latin-only, so the covered run stands in for a Han
+            // run; the discriminator under test is locale -> face, not coverage.
+            let plan = fb.plan_run(&key(0, Script::Han, locale), "AV", &provider);
+            match plan {
+                FallbackPlan::Mapped { face, .. } => faces.push(face),
+                FallbackPlan::Unresolved => panic!("{locale} resolves a face"),
+            }
+        }
+
+        // Four distinct faces for the four locales: no two collapse together.
+        let mut deduped = faces.clone();
+        deduped.sort();
+        deduped.dedup();
+        assert_eq!(deduped.len(), 4, "each locale selected a distinct face");
+
+        // The planner faithfully threaded each locale into the OS query rather
+        // than dropping or normalizing it.
+        assert_eq!(
+            *provider.seen_locales.borrow(),
+            ["zh-Hans", "zh-Hant", "ja", "ko"],
+        );
+    }
+
+    #[test]
+    fn per_locale_plans_are_independently_cached() {
+        // Each locale's face is remembered under its own key: a second run of the
+        // same locale hits its plan with no OS query, and does not bleed into
+        // another locale's plan.
+        let provider = LocaleRoutingProvider::new();
+        let mut fb = FontFallback::new(1000);
+
+        let ja = fb.plan_run(&key(0, Script::Han, "ja"), "AV", &provider);
+        let ko = fb.plan_run(&key(0, Script::Han, "ko"), "AV", &provider);
+        let ja_again = fb.plan_run(&key(0, Script::Han, "ja"), "AVn", &provider);
+
+        let (
+            FallbackPlan::Mapped { face: ja_face, .. },
+            FallbackPlan::Mapped { face: ko_face, .. },
+            FallbackPlan::Mapped {
+                face: ja_again_face,
+                ..
+            },
+        ) = (ja, ko, ja_again)
+        else {
+            panic!("all three resolve");
+        };
+
+        assert_ne!(ja_face, ko_face, "ja and ko keep distinct faces");
+        assert_eq!(ja_again_face, ja_face, "the second ja run reused ja's plan");
+        // Two OS queries (ja, ko); the second ja run was a plan-cache hit.
+        assert_eq!(provider.seen_locales.borrow().len(), 2);
+        assert_eq!(fb.fallback_plan_hit(), 1);
+        assert_eq!(fb.fallback_plan_miss(), 2);
     }
 }
