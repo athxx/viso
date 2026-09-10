@@ -1425,7 +1425,7 @@ spanning 放置 + auto-flow;ADR 0009 明列六项高级能力全未做。落 `cr
 
 ### Slice TF-P5 —— WASM(§28 P5)
 
-- [ ] **TF-P5.1 zero system-font runtime** —— WASM 无隐式系统/框架字体(DoD)。**验收:** WASM 无隐式字体断言。
+- [x] **TF-P5.1 zero system-font runtime** —— WASM 无隐式系统/框架字体(DoD)。**验收:** WASM 无隐式字体断言。
 - [ ] **TF-P5.2 packaged font lazy fetch + External FontProvider + progressive subset** —— font_provider.rs + progressive.rs;world-ready paragraph 语义与 Native 共享。**验收:** lazy fetch/decode + 渐进子集测。
 
 ### Slice TF-P6 —— Tool workloads(§28 P6)
