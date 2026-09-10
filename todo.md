@@ -1421,7 +1421,7 @@ spanning 放置 + auto-flow;ADR 0009 明列六项高级能力全未做。落 `cr
 ### Slice TF-P4 —— Packaged formats(§28 P4)
 
 - [x] **TF-P4.1 TTF/OTF/TTC/OTC 容器归一** —— font_format.rs;只吃已解码 SFNT,框架不解码 WOFF2(WOFF2 由调用方自行解压为 SFNT,ADR 0028)。**验收:** 各容器归一单测。
-- [ ] **TF-P4.2 build-time FontManifest 自动发现 + lazy load** —— assets/fonts 自动进 manifest,runtime 不 eager parse(DoD)。**验收:** 3000 fonts 无线性 startup parse 断言。
+- [x] **TF-P4.2 build-time FontManifest 自动发现 + lazy load** —— assets/fonts 自动进 manifest,runtime 不 eager parse(DoD)。**验收:** 3000 fonts 无线性 startup parse 断言。
 
 ### Slice TF-P5 —— WASM(§28 P5)
 
