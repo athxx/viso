@@ -6,8 +6,9 @@
 //! with explicit conversions, so a position from one domain can never be
 //! silently used in another. Source text is never implicitly normalized.
 
-/// A byte offset into the UTF-8 logical source text.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+/// A byte offset into the UTF-8 logical source text. The default is `0`, the
+/// start of any source — matching [`TextPosition::default`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Default)]
 pub struct TextOffset(pub usize);
 
 impl TextOffset {
