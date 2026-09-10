@@ -14,8 +14,9 @@
 //! The module set and the order they are filled in follow the runtime
 //! specification. Font pipeline: [`font_request`], [`font_manifest`],
 //! [`font_format`], [`resolver`], [`app_fonts`], [`system_fonts`],
-//! [`font_provider`], [`fallback`], [`coverage`], [`font_cache`],
-//! [`progressive`]. Shaping and world-ready paragraph correctness: [`shaping`],
+//! [`system_catalog`], [`font_provider`], [`fallback`], [`coverage`],
+//! [`font_cache`], [`progressive`]. Shaping and world-ready paragraph
+//! correctness: [`shaping`],
 //! [`segment`], [`bidi`], [`line_break`], [`line_break_tailoring`],
 //! [`text_position`], [`caret`], [`hit_test`], [`selection`], [`ime`],
 //! [`paragraph`]. Scheduling and glyph representation: [`text_work`],
@@ -50,6 +51,7 @@ pub mod font_provider;
 pub mod font_request;
 pub mod progressive;
 pub mod resolver;
+pub mod system_catalog;
 pub mod system_fonts;
 
 // Shaping and world-ready paragraph correctness.
@@ -89,6 +91,7 @@ pub use raster_a8::{CoverageBitmap, rasterize_coverage};
 pub use resolver::{FontResolver, Resolved};
 pub use segment::{GraphemeCheckpoint, Segmenter};
 pub use shaping::{Direction, ShapedGlyph, ShapedRun, Shaper};
+pub use system_catalog::{CatalogFace, SystemFontCatalog};
 pub use text_position::{CaretAffinity, TextOffset, TextPosition, Utf16Bridge};
 
 /// Stable identity for a resolved font face.
