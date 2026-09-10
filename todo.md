@@ -1361,3 +1361,86 @@ spanning 放置 + auto-flow;ADR 0009 明列六项高级能力全未做。落 `cr
 
 > Phase 11 每控件 crate 落点(`extras/` vs `integrations/`)与 adapter 边界在其开工时按 §3.3/§3.7 定夺并开 ADR。
 > 收官条件(§69):不得让任一重媒体件进入默认 `viso-widgets` 依赖图(arch-check 强制);各件有 headless 可测维度的验证包。
+
+---
+
+# Phase TF —— Text/Font 子系统重构(按 `Viso_Text_Font_Runtime.md` 全量重建)
+
+> 权威依据:`Viso_Text_Font_Runtime.md` §27(模块清单,28 模块)/ §28(实现顺序 P0–P6)/ §29(DoD 46 条),
+> 及 ADR 0025(2026-09-10 就地修订:自适应五态 GlyphImageKind + 四 residency pool + Temporal Promotion)、ADR 0026(system-font/color-glyph seam)。
+> 决策(2026-09-10):**先铲平骨架再填肉**;骨架期只保 `cargo check -p viso-text` 通过,
+> render/viso 两消费方(旧 `TextSystem`/`GlyphKind`/`SystemFontProvider` 等)**暂搁置留错**,填肉阶段逐个收敛;
+> 不引入与旧签名兼容的 shim(§38.1 禁双实现)。玻璃五态命名与 pool 一律以 ADR 0025 为准。
+
+### Slice TF-0 —— 铲平旧实现 + 搭 §27 骨架(编译期空壳)
+
+- [x] **TF-0.1 铲平旧 `crates/text`** —— 删旧 15 源文件(atlas/color_raster/counters/font/layout/linebreak/
+      paragraph_cache/provider/raster/shape/system + 旧 lib.rs)与旧 benches(wrap_line/paragraph_cache);
+      保留 `tests/fixtures/DejaVuSans-subset.ttf`(测试资产)与 `Cargo.toml`(依赖清单本轮不变)。
+- [x] **TF-0.2 搭 §27 全 28 模块空壳** —— 按 §27 建 lib.rs + 27 模块文件(font_request/font_manifest/font_format/
+      resolver/app_fonts/system_fonts/font_provider/fallback/coverage/font_cache/progressive/shaping/segment/bidi/
+      line_break/line_break_tailoring/text_position/caret/hit_test/selection/ime/paragraph/text_work/
+      glyph_representation/mtsdf/outline_cache/glyph_cache),每文件顶部 doc 注释写清 §27 职责;
+      公共类型签名先立(`GlyphImageKind` 五态、四 pool 元数据、typed TextPosition/CaretAffinity/TextOffset 等按 ADR 0025 / §12),
+      函数体 `todo!()` 或最小占位。**验收:** `cargo check -p viso-text` 通过;`cargo xtask check-deps` 通过(唯一内部边仍是 text→gpu)。
+
+### Slice TF-P0 —— Native Latin baseline(§28 P0)
+
+- [ ] **TF-P0.1 FontManifest + FontFaceId + on-demand SystemUi resolver** —— font_manifest/resolver/app_fonts/
+      system_fonts 落地 App-first/System-second 策略;不 eager parse。**验收:** manifest 解析单测 + resolver 策略单测。
+- [ ] **TF-P0.2 Face SLRU(byte-budgeted)** —— font_cache.rs;recency 不按每 glyph 更新(DoD)。**验收:** SLRU 预算逐出单测 + recency 不逐 glyph 断言。
+- [ ] **TF-P0.3 basic shaping(rustybuzz 单 run)** —— shaping.rs Latin LTR 基线。**验收:** Latin run shape golden(advance/glyph id)。
+- [ ] **TF-P0.4 A8 Coverage atlas page cache** —— coverage.rs + glyph_cache.rs A8 pool residency 元数据(render 拥有实际纹理)。
+      **验收:** A8 coverage 光栅 golden + page 上传字节 counter(§61)。
+
+### Slice TF-P1 —— System fallback(§28 P1)
+
+- [ ] **TF-P1.1 run/cluster fallback + FallbackPlan cache** —— fallback.rs 规划 + recent candidate cache;common fallback face 复用避免逐字符 OS query(DoD)。**验收:** fallback 规划单测 + candidate 复用断言。
+- [ ] **TF-P1.2 CJK locale-aware fallback** —— fallback 按 locale 选面。**验收:** zh/ja/ko 同字形不同面选择单测。
+- [ ] **TF-P1.3 Emoji cluster handling** —— ZWJ/VS/skin-tone cluster 不被错误拆 font(DoD)。**验收:** emoji cluster 不拆 font 单测。
+
+### Slice TF-P2 —— World-Ready paragraph correctness(§28 P2,doc §12 全 23 小节)
+
+- [ ] **TF-P2.1 UAX #29 segmentation** —— segment.rs grapheme/word + incremental checkpoints。**验收:** UAX#29 官方 corpus 入 CI。
+- [ ] **TF-P2.2 UAX #9 BiDi paragraph + isolates** —— bidi.rs resolve levels;LRI/RLI/FSI/PDI + paired-bracket/neutral/number;visual reorder 在 line formation 后按行(DoD)。**验收:** BidiTest.txt/BidiCharacterTest.txt 入 CI。
+- [ ] **TF-P2.3 UAX #14 line break** —— line_break.rs;非 ASCII whitespace heuristic(DoD)。**验收:** LineBreakTest.txt 入 CI。
+- [ ] **TF-P2.4 CJK line-break tailoring** —— line_break_tailoring.rs zh-Hans/zh-Hant/ja/ko + LineBreakStrictness;no-space script(Thai/Lao/Khmer)provider seam。**验收:** 禁则 golden(四 locale)+ segmenter provider 契约测。
+- [ ] **TF-P2.5 shaping-safe boundary reshape** —— shaping.rs safe/unsafe_to_break 元数据;不机械切 unsafe run(DoD)。**验收:** unsafe 边界 reshape 一致性测。
+- [ ] **TF-P2.6 typed text position + logical/visual mapping** —— text_position.rs TextOffset/CaretAffinity/TextPosition + UTF-16 bridge;paragraph.rs logical↔visual;source text 不隐式 normalize(DoD)。**验收:** typed mapping 往返测 + 无隐式 normalize 断言。
+- [ ] **TF-P2.7 BiDi caret / selection / hit test** —— caret.rs 双 caret+affinity + GDEF ligature caret;selection.rs logical range 源真;hit_test.rs 返回 TextPosition+affinity(不按平均宽猜)(DoD)。**验收:** 双 caret / 选区 fragments / hit-test golden。
+- [ ] **TF-P2.8 IME composition mapping** —— ime.rs logical range + revision;candidate rect 来自 visual caret map;UTF-16↔UTF-8 映射 composition/paragraph-local(§12.17)。**验收:** CJK/RTL IME 组合 geometry 测。
+- [ ] **TF-P2.9 incremental == full recompute** —— paragraph.rs 增量失效等价全量重算(DoD)。**验收:** 增量 vs 全量结果对拍。
+
+### Slice TF-P3 —— High refresh(§28 P3)
+
+- [ ] **TF-P3.1 retained shaped runs** —— 稳态不重 shape(DoD:static text steady frame 不 resolve/shape/raster)。**验收:** 稳态帧 counter 零 shape 断言。
+- [ ] **TF-P3.2 page-age/CLOCK atlas eviction** —— glyph_cache.rs 四 pool page-age+CLOCK(非逐 glyph LRU,ADR 0025)。**验收:** 逐出策略单测 + Atlas 满不 whole-reset 断言。
+- [ ] **TF-P3.3 TextWork scheduler + prefetch/prewarm** —— text_work.rs 纯 worker + prediction prewarm(押方向,byte/count 上限,命中率低收敛,让位 CriticalVisible/NearViewport,§14.5);miss 兜底:caret 几何推进不 reshape,glyph 延一两帧,主线程零 shaping。**验收:** prewarm 预算上限断言 + miss 主线程零 shaping 断言。
+- [ ] **TF-P3.4 120/144/240Hz regression gate** —— 独立 gate(DoD)。**验收:** 高刷 microbench 三档 regression gate(§36 text 类目)。
+
+### Slice TF-P4 —— Packaged formats(§28 P4)
+
+- [ ] **TF-P4.1 TTF/OTF/TTC/OTC 容器归一** —— font_format.rs。**验收:** 各容器归一单测。
+- [ ] **TF-P4.2 WOFF2 lazy decode** —— 走 `viso-woff2`(libs/woff2)decompress→sfnt;core facade 只吃 sfnt。**验收:** WOFF2→sfnt 解压往返测。
+- [ ] **TF-P4.3 build-time FontManifest 自动发现 + lazy decode** —— assets/fonts 自动进 manifest,runtime 不 eager parse(DoD)。**验收:** 3000 fonts 无线性 startup parse 断言。
+
+### Slice TF-P5 —— WASM(§28 P5)
+
+- [ ] **TF-P5.1 zero system-font runtime** —— WASM 无隐式系统/框架字体(DoD)。**验收:** WASM 无隐式字体断言。
+- [ ] **TF-P5.2 packaged font lazy fetch + External FontProvider + progressive subset** —— font_provider.rs + progressive.rs;world-ready paragraph 语义与 Native 共享。**验收:** lazy fetch/decode + 渐进子集测。
+
+### Slice TF-P6 —— Tool workloads(§28 P6)
+
+- [ ] **TF-P6.1 async SystemFontCatalog + font picker scan resistance** —— font picker/大文档/CJK 不污染常用 cache(cache 生命周期独立,§18)。**验收:** picker 扫描不污染常用 cache 断言。
+- [ ] **TF-P6.2 large CJK/editor + memory-pressure tuning** —— memory pressure 不连锁清空全 Text cache(DoD)。**验收:** 内存压力隔离逐出断言。
+- [ ] **TF-P6.3 very-large paragraph 增量正确性/性能** —— 超大段增量。**验收:** 大段增量正确性对拍 + 增量性能 microbench。
+
+### Slice TF-C —— 消费方收敛(填肉期跨 crate)
+
+- [ ] **TF-C.1 render 收敛** —— `crates/render` 的 `use viso_text::TextSystem`(lib.rs)与 primitive.rs doc 注释对齐新门面 API。**验收:** `cargo check -p viso-render` 通过。
+- [ ] **TF-C.2 viso facade 收敛** —— `crates/viso` text_content.rs / system_fonts.rs 按新 provider trait 形状(ADR 0026)重接;`GlyphKind`→`GlyphImageKind` 等改名跟随。**验收:** `cargo check -p viso` 通过 + 全 workspace `cargo test` 绿。
+- [ ] **TF-C.3 旧 doc 注释同步** —— ui/text_edit.rs、ui/content.rs、shader/msl.rs 里描述旧 viso-text 行为的注释更新到新模型。**验收:** 无残留描述旧「single-face / R8 SDF lane」的注释。
+
+> Phase TF 收官条件(§29 DoD,46 条须全绿)+ ADR 0025/0026 契约:五态 representation 不逐 glyph/逐 frame 重算;
+> 四 residency pool 独立预算;稳态零 resolve/shape/raster;UAX #9/#14/#29 官方 corpus 入 CI;typed logical↔visual 可逆。
+> headless 优先;改 shader 相关须跑真机 Metal 验证([[viso-msl-reserved-half]])。每小节单 commit,todo 行同 commit 内标 `[x]`。

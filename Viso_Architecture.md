@@ -3683,7 +3683,77 @@ WOFF2 decode、大字体 parse、font catalog、large paragraph shaping、可线
 
 详细的 60/120/144/240Hz work budget、TextInput latency 和 benchmark gate 见 `Viso_Text_Font_Runtime.md`。
 
-### 37.10 Cache 生命周期独立
+### 37.10 World-Ready 复杂文字正确性合同
+
+字体能显示出来不等于 Text Runtime 正确。Viso 1.0 把复杂文字、换行和编辑映射定义为独立 correctness contract，完整规范见 `Viso_Text_Font_Runtime.md`。
+
+规范基线至少包括：
+
+```text
+UAX #29  grapheme/word segmentation
+UAX #9   paragraph BiDi / isolate / embedding levels / per-line reorder
+UAX #14  line-break opportunities
++ locale tailoring
++ shaping-safe break boundary
+```
+
+Canonical paragraph pipeline：
+
+```text
+logical UTF text
+    ↓
+grapheme segmentation
+    ↓
+BiDi paragraph analysis
+    ↓
+script/language/style + font itemization
+    ↓
+shaping
+    ↓
+UAX #14 + locale-tailored break candidates
+    ↓
+shaping-safe boundary validation / reshape when needed
+    ↓
+line formation
+    ↓
+per-line BiDi visual reorder
+    ↓
+VisualRuns / CaretMap / HitTestMap / SelectionFragments
+```
+
+硬规则：
+
+- 不把 RTL 文本简单 reverse；logical text 永远是 source truth；
+- 最终 BiDi visual reorder 在 line boundary 确定后按行执行；
+- UTF-8 offset、UTF-16 offset、grapheme、shaping cluster、glyph index 使用不同 typed identity/mapping；
+- renderer 不隐式 normalization source text；
+- CJK line breaking 采用 UAX #14 + `zh-Hans` / `zh-Hant` / `ja` / `ko` locale tailoring；
+- opening/closing punctuation、iteration/prolonged-sound 等禁则由 locale data/policy 决定，不使用一张框架全亚洲硬编码表；
+- Thai/Lao/Khmer 等允许 locale/dictionary segmentation provider；hyphenation 是独立 optional service；
+- Unicode-allowed break 若处于 shaping unsafe boundary，必须在 worker reshape 边界 run，不能直接切 glyph array；
+- BiDi boundary/soft-wrap 处同一 logical offset 可通过 `Upstream/Downstream` affinity 对应不同 visual caret；
+- ligature caret 优先使用 font GDEF/shaper caret metadata，普通 caret 不进入非法 grapheme interior；
+- selection 以 logical range 为 source truth，绘制时允许拆成多个 visual fragments；
+- hit testing 必须 `screen -> visual line/run -> cluster -> logical TextPosition + affinity`，禁止按平均 glyph width 猜 index；
+- IME composition 使用 logical range + revision；平台 UTF-16 offset 通过局部 mapping 转换；candidate rect 使用 visual caret mapping；
+- incremental paragraph result 必须与 full conformant recompute 等价。
+
+性能边界：
+
+```text
+steady frame:
+0 BiDi recompute
+0 line-break recompute
+0 grapheme resegmentation
+0 CaretMap rebuild
+0 hit-test map rebuild
+```
+
+所有 shaping 继续遵守 worker-only 合同。大 paragraph 的 BiDi、line break、boundary reshape、caret/hit-test map build 可以 worker/staged；owner/UI thread 只更新 revision、dirty range、dispatch 和 validated commit。
+
+Unicode official conformance corpus (`BidiTest` / `BidiCharacterTest` / `LineBreakTest` / `GraphemeBreakTest` / `WordBreakTest`) 与 Arabic/Hebrew/CJK/Indic/Thai/IME/BiDi-caret golden corpus 必须进入 CI。
+
+### 37.11 Cache 生命周期独立
 
 Face SLRU eviction 不等于：
 
@@ -3711,7 +3781,7 @@ non-inflight cold atlas pages
 
 不得用 `font_cache.clear()` / `glyph_atlas.clear()` 作为普通内存压力策略。
 
-### 37.11 性能与可观测性
+### 37.12 性能与可观测性
 
 至少暴露：
 
@@ -3725,8 +3795,15 @@ font_face_probation/protected_bytes
 font_face_evictions
 woff2_decode_time
 shaping_hit/miss/time
+grapheme_segment_time
+bidi_resolve_count/time
+line_break_count/time
+paragraph_reflow_lines
+caret_map_build_time
+hit_test_query_count
+ime_composition_revision_drops
 glyph_raster_count/time
-atlas_a8/rgba_bytes
+atlas_a8/mtsdf/rgba_bytes
 atlas_page_evictions
 glyph_upload_bytes
 missing_cluster_count
@@ -3741,6 +3818,12 @@ Native 无 packaged fonts
 CJK 10k chars cold/warm
 mixed zh/ja/ko
 Emoji ZWJ cluster
+UAX #9/#14/#29 conformance corpus
+BiDi mixed RTL/LTR + numbers + isolates
+BiDi dual-caret / multiline selection / hit-test roundtrip
+CJK kinsoku zh-Hans/zh-Hant/ja/ko
+Arabic unsafe-break boundary reshape
+CJK/RTL IME composition
 font picker 500 faces scan
 large CJK font memory pressure
 WASM zero-font startup
@@ -3752,7 +3835,7 @@ WASM WOFF2 first use
 
 > **系统字体数量不能让普通 App startup 产生线性 font parse 成本；静态文字高刷稳态帧不得重新 resolve/shape/raster。**
 
-### 37.12 Ownership boundary
+### 37.13 Ownership boundary
 
 `viso-text` 拥有：
 
@@ -3762,6 +3845,9 @@ FontResolver/fallback policy
 Font Face SLRU
 coverage accelerator
 shaping/paragraph cache
+UAX #9/#14/#29 integration contract
+locale line-break tailoring
+logical/visual TextPosition + caret/selection/hit-test/IME mapping
 TextWork scheduling
 font revision/invalidation
 glyph identity/residency contract
@@ -5979,8 +6065,15 @@ viso/
 │   │       ├── coverage.rs
 │   │       ├── progressive.rs
 │   │       ├── shaping.rs
+│   │       ├── segment.rs
 │   │       ├── bidi.rs
 │   │       ├── line_break.rs
+│   │       ├── line_break_tailoring.rs
+│   │       ├── text_position.rs
+│   │       ├── caret.rs
+│   │       ├── hit_test.rs
+│   │       ├── selection.rs
+│   │       ├── ime.rs
 │   │       ├── paragraph.rs
 │   │       ├── text_work.rs
 │   │       ├── glyph_representation.rs
@@ -6427,6 +6520,17 @@ trait Painter {
 **理由**：精确 Coverage 在稳定小字/CJK 上拥有更好的像素质量、更低的 texture bandwidth 与内存；MTSDF 在动画/连续 zoom 中摊平重复 raster/upload，并用 RGB multi-channel distance 保持尖角、Alpha true distance 支持距离效果；极端 zoom 不受有限 distance-field resolution 约束时，retained vector geometry 提供最高精度。Temporal promotion/settle-back 让资源只为当前行为付费，同时避免 120/144/240Hz 动画期间的 raster bucket churn。
 
 **代价**：需要 representation state machine、MTSDF generation/bucket、Vector cache、跨 representation revision/generation validation 与独立 residency budget；这些复杂度由内部实现承担，不暴露给普通 App authoring。完整合同见 `Viso_Text_Font_Runtime.md`。
+
+
+## ADR-024：World-Ready Text 使用 Unicode 标准基线 + Logical/Visual 双映射
+
+**决定**：复杂文字正确性统一建立在 UAX #9 / #14 / #29、locale-tailored line breaking、shaping-safe break、typed logical position 与 retained visual mapping 上；BiDi caret、selection、hit testing、IME 共享同一 logical↔visual paragraph contract。
+
+**理由**：仅有 `bidi.rs` / `line_break.rs` 模块不能保证组合正确。BiDi 的 final reorder 依赖 line boundary，CJK 禁则依赖 locale，ligature/Arabic break 依赖 shaping context，编辑器又需要从 visual geometry 无损返回 logical text position。集中合同可以同时保证 Native/WASM/headless 一致性并支持 conformance testing。
+
+**性能合同**：稳态帧不重新执行 BiDi、UAX #14、grapheme segmentation 或 caret-map build；所有 shaping 保持 worker-only；大段落 world-ready recompute 使用 staged commit 和 incremental reflow-until-stable。
+
+**代价**：需要维护 Unicode data/version、locale tailoring、logical/visual mapping 和更多 conformance corpus，但这些成本位于 paragraph cold/update path，不进入 steady glyph draw hot path。
 
 ---
 
