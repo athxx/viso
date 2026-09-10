@@ -41,7 +41,7 @@
 //! demand. This module never eagerly reorders the whole paragraph, because a
 //! paragraph spans many lines and each line reorders independently.
 
-use unicode_bidi::{BidiInfo as UnicodeBidiInfo, Level, ParagraphInfo};
+use unicode_bidi::{BidiClass, BidiInfo as UnicodeBidiInfo, Level};
 
 use crate::shaping::Direction;
 use crate::text_position::TextOffset;
@@ -179,25 +179,6 @@ impl BidiInfo {
         }
     }
 
-    /// A borrowed `unicode-bidi` view over the owned parts, for calling its
-    /// per-line facilities (rule L1 / L2). Cheap: clones only the level and
-    /// class vectors the crate's methods need to own.
-    fn view(&self) -> UnicodeBidiInfo<'_> {
-        UnicodeBidiInfo {
-            text: &self.text,
-            original_classes: self.original_classes.clone(),
-            levels: self.levels.clone(),
-            paragraphs: self
-                .paragraphs
-                .iter()
-                .map(|p| ParagraphInfo {
-                    range: p.start.0..p.end.0,
-                    level: Level::new(p.base_level.0).unwrap_or(Level::ltr()),
-                })
-                .collect(),
-        }
-    }
-
     /// The paragraph containing `[start, end)` — the paragraph a line belongs
     /// to. A line never spans paragraphs, so the paragraph of `start` governs.
     fn paragraph_of(&self, start: TextOffset) -> Option<&Paragraph> {
@@ -226,24 +207,33 @@ impl BidiInfo {
     }
 
     /// The line levels of `[start, end)` with UAX#9 rule L1 applied — separators
-    /// and trailing whitespace reset to the paragraph level. Returns the full
-    /// per-byte level vector, adjusted within the line, matching the crate's
-    /// `reordered_levels` contract.
+    /// and trailing whitespace reset to the paragraph level.
+    ///
+    /// Returns *only* the line's per-byte levels (length `end - start`), not the
+    /// whole document: rule L1 is a per-line rule, so it is applied over the
+    /// line's own byte slice against the paragraph's base level. This is O(line),
+    /// never O(document) — a single line query in a ten-thousand-line paragraph
+    /// costs the same as one in a ten-line note (AGENTS.md section 7 hot path).
     fn line_levels(&self, start: TextOffset, end: TextOffset) -> Vec<Level> {
         let lo = start.0.min(self.levels.len());
         let hi = end.0.min(self.levels.len());
-        let view = self.view();
-        let para = self
+        if lo >= hi {
+            return Vec::new();
+        }
+        let para_level = self
             .paragraph_of(start)
-            .map(|p| ParagraphInfo {
-                range: p.start.0..p.end.0,
-                level: Level::new(p.base_level.0).unwrap_or(Level::ltr()),
-            })
-            .unwrap_or(ParagraphInfo {
-                range: 0..self.text.len(),
-                level: Level::ltr(),
-            });
-        view.reordered_levels(&para, lo..hi)
+            .map(|p| Level::new(p.base_level.0).unwrap_or(Level::ltr()))
+            .unwrap_or(Level::ltr());
+        // Clone only the line's slice (line-sized, not document-sized), then apply
+        // rule L1 in place over it. The class slice and text slice are borrowed.
+        let mut levels = self.levels[lo..hi].to_vec();
+        reorder_line_levels_l1(
+            &self.original_classes[lo..hi],
+            &mut levels,
+            &self.text[lo..hi],
+            para_level,
+        );
+        levels
     }
 
     /// The resolved embedding level of the byte at `offset`, with rule L1 applied
@@ -256,7 +246,10 @@ impl BidiInfo {
         };
         let (start, end) = (para.start, para.end);
         let levels = self.line_levels(start, end);
-        let idx = offset.0.min(levels.len().saturating_sub(1));
+        // `line_levels` is now paragraph-local; index relative to the paragraph
+        // start, clamped to the trailing context level at the paragraph end.
+        let rel = offset.0.saturating_sub(start.0);
+        let idx = rel.min(levels.len().saturating_sub(1));
         BidiLevel(levels.get(idx).copied().unwrap_or_else(Level::ltr).number())
     }
 
@@ -313,11 +306,83 @@ impl BidiInfo {
         // whitespace to the paragraph level), then rule L2 to reorder. The
         // corpus reorder is post-L1, and line layout applies L1 per line — so
         // this is exactly the per-line reorder line formation will invoke.
+        // `line_levels` returns the line-local levels (length hi-lo), so
+        // `reorder_visual` maps visual position -> line-relative index; rebase
+        // those back to absolute byte offsets.
         let levels = self.line_levels(TextOffset(lo), TextOffset(hi));
-        // reorder_visual maps visual position -> level index within the slice;
-        // rebase those slice-relative indices back to absolute byte offsets.
-        let visual = UnicodeBidiInfo::reorder_visual(&levels[lo..hi]);
+        let visual = UnicodeBidiInfo::reorder_visual(&levels);
         visual.into_iter().map(|rel| TextOffset(lo + rel)).collect()
+    }
+}
+
+/// UAX#9 rule L1 over a single line's byte slice, in place.
+///
+/// Resets to the paragraph level: (1) segment/paragraph separators, and (2) any
+/// sequence of whitespace and isolate-formatting characters preceding a
+/// separator or the end of the line. `line_classes`, `line_levels`, and
+/// `line_text` are all indexed by byte offset *within the line* (0-based); the
+/// caller has already sliced them to the line and cloned `line_levels`.
+///
+/// This mirrors `unicode-bidi`'s private `reorder_levels`, kept line-local so a
+/// line query never clones the whole document's level/class vectors (rule L1 is
+/// defined per line, and the paragraph base level is the only cross-line input).
+/// <https://www.unicode.org/reports/tr9/#L1>
+fn reorder_line_levels_l1(
+    line_classes: &[BidiClass],
+    line_levels: &mut [Level],
+    line_text: &str,
+    para_level: Level,
+) {
+    use BidiClass::{B, BN, FSI, LRE, LRI, LRO, PDF, PDI, RLE, RLI, RLO, S, WS};
+
+    let mut reset_from: Option<usize> = Some(0);
+    let mut reset_to: Option<usize> = None;
+    let mut prev_level = para_level;
+    for (i, c) in line_text.char_indices() {
+        let length = c.len_utf8();
+        match line_classes[i] {
+            // Segment separator, paragraph separator: reset the separator itself.
+            B | S => {
+                reset_to = Some(i + length);
+                if reset_from.is_none() {
+                    reset_from = Some(i);
+                }
+            }
+            // Whitespace and isolate initiators/terminators: candidates for a
+            // trailing-whitespace reset if a separator or line end follows.
+            WS | FSI | LRI | RLI | PDI => {
+                if reset_from.is_none() {
+                    reset_from = Some(i);
+                }
+            }
+            // Retained explicit formatting characters: same reset candidacy, and
+            // their own level is pinned to the preceding level.
+            // <https://www.unicode.org/reports/tr9/#Retaining_Explicit_Formatting_Characters>
+            RLE | LRE | RLO | LRO | PDF | BN => {
+                if reset_from.is_none() {
+                    reset_from = Some(i);
+                }
+                for level in &mut line_levels[i..i + length] {
+                    *level = prev_level;
+                }
+            }
+            _ => {
+                reset_from = None;
+            }
+        }
+        if let (Some(from), Some(to)) = (reset_from, reset_to) {
+            for level in &mut line_levels[from..to] {
+                *level = para_level;
+            }
+            reset_from = None;
+            reset_to = None;
+        }
+        prev_level = line_levels[i];
+    }
+    if let Some(from) = reset_from {
+        for level in &mut line_levels[from..] {
+            *level = para_level;
+        }
     }
 }
 

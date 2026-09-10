@@ -34,3 +34,7 @@ criterion = "0.7"
 [[bench]]
 name = "high_refresh"
 harness = false
+
+[[bench]]
+name = "incremental_edit"
+harness = false
