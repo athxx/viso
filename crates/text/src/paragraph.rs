@@ -781,7 +781,13 @@ impl Paragraph {
     ) -> (TextOffset, bool) {
         let text = &self.text;
         let mut last_fit: Option<TextOffset> = None;
-        for &(at, class) in breaks.iter().filter(|(at, _)| *at > line_start) {
+        // `breaks` is sorted by offset; skip straight to the first opportunity
+        // past `line_start` instead of rescanning the whole document per line —
+        // otherwise a line near the middle of a huge paragraph scans every prior
+        // break every call, making incremental reflow O(document) (AGENTS.md
+        // section 7 hot path). `partition_point` is the sorted lower bound.
+        let first = breaks.partition_point(|(at, _)| *at <= line_start);
+        for &(at, class) in &breaks[first..] {
             let candidate_w = self.measure(bidi, line_start, at, cache);
             let fits = candidate_w <= width || width <= 0.0;
             if class == BreakOpportunity::Mandatory {
@@ -1345,6 +1351,117 @@ mod tests {
             "incremental edit reshapes ({}) fewer runs than a full recompute ({})",
             incremental_reshape,
             full_count
+        );
+    }
+
+    /// Build a very large multi-line paragraph: `words` space-joined "wordNNNN"
+    /// tokens, which at a wrap width of a few words per line becomes thousands of
+    /// display lines — an editor-document workload, not a label.
+    fn very_large_text(words: usize) -> String {
+        let mut s = String::with_capacity(words * 8);
+        for w in 0..words {
+            if w > 0 {
+                s.push(' ');
+            }
+            // Fixed-width tokens keep line breaking regular and the paragraph big.
+            s.push_str(&format!("word{w:04}"));
+        }
+        s
+    }
+
+    #[test]
+    fn very_large_paragraph_incremental_edit_equals_full_recompute() {
+        // The TF-P6.3 correctness 对拍 on an editor-scale paragraph: an edit deep
+        // inside a several-thousand-line document, relaid incrementally, must be
+        // bit-for-bit identical to laying the whole edited document out from
+        // scratch. This is the guarantee makepad's whole-paragraph layout cache
+        // gets only by doing the full recompute; Viso's per-line stable-stop
+        // reflow must reach the same result without it.
+        let text = very_large_text(4000);
+        // A few words per line — thousands of lines.
+        let width = measured_width("word0000 word0001 ") + 0.01;
+
+        let mut p = Paragraph::new(text.clone(), BaseDirection::LeftToRight, 0);
+        let mut shape = fixture_shaper();
+        p.layout(width, &mut shape);
+        let line_count = p.lines().len();
+        assert!(
+            line_count > 1000,
+            "editor-scale paragraph, got {line_count}"
+        );
+
+        // Edit a word roughly in the middle of the document.
+        let mid = text.find("word2000").expect("token present");
+        let edited_expected = {
+            let mut t = text.clone();
+            t.replace_range(mid..mid + "word2000".len(), "WIDER_WORD_2000");
+            t
+        };
+        p.edit(
+            (TextOffset(mid), TextOffset(mid + "word2000".len())),
+            "WIDER_WORD_2000",
+        );
+        p.layout(width, &mut shape);
+
+        // Full recompute of the edited text as the reference.
+        let mut full = Paragraph::new(edited_expected, BaseDirection::LeftToRight, 0);
+        let mut shape_full = fixture_shaper();
+        let full_lines = full.layout_full(width, &mut shape_full);
+
+        assert!(
+            lines_eq(p.lines(), &full_lines),
+            "incremental relayout of a {line_count}-line paragraph after a mid-document \
+             edit must equal a full recompute bit-for-bit"
+        );
+    }
+
+    #[test]
+    fn very_large_paragraph_edit_reshapes_only_near_the_edit_not_the_document() {
+        // The incremental cost contract on a large paragraph: a one-word edit deep
+        // in a several-thousand-line document reshapes only the lines around the
+        // edit, not the whole document. The reshaped-run count for the incremental
+        // relayout must be a tiny fraction of a full recompute's — this is what
+        // keeps a keystroke O(edited lines) instead of O(document), the property
+        // makepad's whole-paragraph re-layout on any param change gives up.
+        let text = very_large_text(4000);
+        let width = measured_width("word0000 word0001 ") + 0.01;
+
+        let (mut shape, calls) = counting_shaper();
+        let mut p = Paragraph::new(text.clone(), BaseDirection::LeftToRight, 0);
+        p.layout(width, &mut shape);
+        let after_initial = calls.get();
+
+        // Full recompute reshape-count baseline for the same document.
+        let (mut shape_full, calls_full) = counting_shaper();
+        let mut full = Paragraph::new(text.clone(), BaseDirection::LeftToRight, 0);
+        full.layout_full(width, &mut shape_full);
+        let full_count = calls_full.get();
+        assert!(
+            full_count > 1000,
+            "document reshapes many runs when built whole"
+        );
+
+        // Edit one word near the middle and relayout incrementally. The edited
+        // token keeps the same digit width so the line's break structure is
+        // preserved and the reflow restabilizes within a line or two — the
+        // realistic single-token edit that must not re-lay the tail.
+        let mid = text.find("word2000").expect("token present");
+        p.edit(
+            (TextOffset(mid), TextOffset(mid + "word2000".len())),
+            "word9999",
+        );
+        p.layout(width, &mut shape);
+        let incremental_reshape = calls.get() - after_initial;
+
+        // The incremental reshape touches only the lines around the edit — a
+        // small constant (a handful of runs), not the 4000-word document. The
+        // stable-stop restabilizes within a line or two of a same-width token
+        // edit, so the incremental cost is O(edited lines), not O(document):
+        // bound it under 1% of the whole-document reshape cost.
+        assert!(
+            incremental_reshape * 100 < full_count,
+            "edit near the middle of a large document reshaped {incremental_reshape} runs; \
+             a full recompute reshapes {full_count} — incremental cost must be O(edited lines)"
         );
     }
 }

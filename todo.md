@@ -1432,7 +1432,7 @@ spanning 放置 + auto-flow;ADR 0009 明列六项高级能力全未做。落 `cr
 
 - [x] **TF-P6.1 async SystemFontCatalog + font picker scan resistance** —— font picker/大文档/CJK 不污染常用 cache(cache 生命周期独立,§18)。**验收:** picker 扫描不污染常用 cache 断言。
 - [x] **TF-P6.2 large CJK/editor + memory-pressure tuning** —— memory pressure 不连锁清空全 Text cache(DoD)。**验收:** 内存压力隔离逐出断言。
-- [ ] **TF-P6.3 very-large paragraph 增量正确性/性能** —— 超大段增量。**验收:** 大段增量正确性对拍 + 增量性能 microbench。
+- [x] **TF-P6.3 very-large paragraph 增量正确性/性能** —— 超大段增量。**验收:** 大段增量正确性对拍 + 增量性能 microbench。
 
 ### Slice TF-C —— 消费方收敛(填肉期跨 crate)
 
