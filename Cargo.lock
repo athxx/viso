@@ -1097,7 +1097,6 @@ name = "viso-text"
 version = "0.0.0"
 dependencies = [
  "ab_glyph_rasterizer",
- "criterion",
  "rustybuzz",
  "sdfer",
  "ttf-parser",

@@ -25,6 +25,9 @@ Glyph Atlas 满时不全量 reset
 连续 zoom / 大范围 scale / rotation / world-space text 才按需使用 MTSDF；极端缩放/高精度矢量场景可进入 retained Vector Outline
 Color Emoji / Color Glyph 使用独立 RGBA 路径
 120 / 144 / 240 Hz 下静态文字接近零 CPU 维护成本
+UAX #9 / #14 / #29 形成集中 world-ready 正确性合同
+BiDi caret / selection / hit testing / IME 保持 logical↔visual 可逆映射
+CJK 禁则使用 locale tailoring，不使用单一硬编码亚洲规则表
 ```
 
 Text Runtime 不追求：
@@ -471,13 +474,7 @@ Native 默认系统字体路径必须正确命中系统 Emoji font，而不要�
 
 ## 6.1 Color Emoji
 
-Glyph image contract 至少区分：
-
-```text
-MaskA8          normal monochrome glyph
-ColorRgba8      rasterized color glyph / emoji
-VectorColor     optional retained/vector color representation
-```
+Color glyph 的 representation 归入第 13 节的 `ColorRgba8 / ColorVector` lane；完整表示模型见第 13.8、13.9 节。6.1 不另立一套 glyph 表示模型，只规定 color emoji 的最低产品要求。
 
 Native 的最低产品要求是：
 
@@ -485,14 +482,7 @@ Native 的最低产品要求是：
 
 Packaged/WASM color-font 支持由可替换 font primitive 提供；标准能力至少应覆盖现代 OpenType color-font 的主流路径，并对无法解析的 color glyph 给出结构化诊断，而不是崩溃。
 
-Color Emoji 使用独立 atlas budget：
-
-```text
-Glyph Atlas A8
-Glyph Atlas RGBA
-```
-
-避免大量 Emoji RGBA 页面把普通文本 mask atlas 挤掉。
+Color glyph 使用第 13.9 节的 RGBA Color Pages，拥有独立 residency 预算，不挤占 A8 Coverage / MTSDF / Vector pool。这样大量 Emoji RGBA 页面不会把普通文本 mask atlas 挤掉。
 
 ---
 
@@ -707,7 +697,796 @@ size/scale fields that change shaping
 
 ---
 
-# 12. Glyph Representation：Quality/Performance-first Adaptive Pipeline
+# 12. World-Ready 复杂文字、换行与编辑正确性合同
+
+本节定义 Viso Text Runtime 的**跨语言正确性底线**。字体选择、SLRU、Glyph Representation 和高刷新率解决的是性能与资源问题；本节解决的是同一段 Unicode 文本在不同脚本、方向、换行、编辑和 IME 场景下是否保持正确、可预测、可测试。
+
+Viso 不自创 Unicode 算法。Unicode/BiDi/line breaking/segmentation primitive 可以使用经过验证的实现，但 Viso 必须拥有：
+
+```text
+pipeline ordering
+logical/visual identity model
+incremental invalidation boundary
+caret/selection/hit-test semantics
+locale tailoring contract
+worker/staging boundary
+conformance + regression tests
+```
+
+## 12.1 规范基线与 Unicode 数据一致性
+
+至少以以下算法作为基础合同：
+
+```text
+UAX #9   Unicode Bidirectional Algorithm
+UAX #14  Unicode Line Breaking Algorithm
+UAX #29  Unicode Text Segmentation
+```
+
+同时使用同一套 Unicode data release 中的相关属性，例如：
+
+```text
+Bidi_Class
+Bidi_Paired_Bracket / Bidi_Paired_Bracket_Type
+Line_Break
+Grapheme_Cluster_Break
+Word_Break
+Script / Script_Extensions
+East_Asian_Width where needed by tailoring
+```
+
+硬规则：
+
+- 一个 runtime image 不得把不同 Unicode data release 的 `Bidi_Class`、`Line_Break`、`Grapheme_Cluster_Break` 等表随意混用；
+- Native、WASM、headless 应默认使用同一 Viso Unicode algorithm/data contract，不能因为宿主 OS Unicode 版本不同而产生不可解释的 paragraph segmentation/BiDi/line-break 差异；
+- 系统字体 fallback 仍由 OS 负责，但 Unicode paragraph semantics 不外包给系统字体 API；
+- Unicode data 升级必须通过 conformance corpus 和 Viso golden tests，而不是静默替换数据文件；
+- 不为了节省少量静态数据而在每次 layout 时查询 OS Unicode property API。
+
+Viso 1.0 不要求自行实现这些标准算法；允许 ICU4X、unicode-*、HarfBuzz 配套 primitive 或等价成熟实现位于可替换 integration boundary，但 public/runtime 语义由本节固定。
+
+依赖能力缺口（必须在 P2 之前补齐，否则实现会卡住）：
+
+```text
+UAX #14 Line_Break 属性表
+    现有 unicode-segmentation 只覆盖 UAX #29（grapheme/word/sentence），
+    不含 Line_Break property。line-break 基线需要一个提供 UAX #14
+    Line_Break class 的 provider（例如 icu_segmenter / xi-unicode 类），
+    作为待选依赖，落地时评估。
+
+无空格脚本 lexical segmenter
+    Thai / Lao / Khmer 等的有用换行点需要 dictionary/lexical 分词
+    （见 12.11），同样由可替换 provider 提供，不进核心 shaping ABI。
+```
+
+这些 provider 位于 integration boundary、可替换；本节只固定它们必须满足的行为合同，不把具体 crate 名冻结为 public ABI。
+
+## 12.2 文本位置必须 typed，禁止一个整数代表所有索引
+
+Viso 必须严格区分：
+
+```text
+UTF-8 byte offset
+UTF-16 code-unit offset          # OS/IME bridge 常见
+Unicode scalar position
+grapheme-cluster boundary
+word boundary
+shaping cluster
+logical text position
+visual caret position
+glyph index
+```
+
+禁止：
+
+```rust
+// 错误概念示例
+let index: usize = ...; // 同时拿来当 UTF-8 / caret / glyph index
+```
+
+建议核心逻辑身份：
+
+```rust
+#[repr(transparent)]
+pub struct TextOffset(u64);       // canonical logical UTF-8 byte offset
+
+pub enum CaretAffinity {
+    Upstream,
+    Downstream,
+}
+
+pub struct TextPosition {
+    pub offset: TextOffset,
+    pub affinity: CaretAffinity,
+}
+```
+
+精确 public Rust API 可以在实现阶段收敛，但语义固定：
+
+- document/editor 持久位置不使用 pointer-width `usize` 作为稳定 ABI；
+- `TextOffset` 必须落在合法 UTF-8 character boundary；
+- caret stop 进一步受 grapheme/cluster contract 约束；
+- paragraph-local hot index 可以在边界检查后 lower 为 `u32`；
+- platform IME 若使用 UTF-16，必须通过局部 mapping table 转换，不能每次 composition event 对整篇文档 O(n) 扫描。
+
+## 12.3 不隐式 Normalize 用户文本
+
+Viso Text Runtime **不得为了 shaping 或 fallback 静默把 source text NFC/NFKC 化后替换原始字符串**。
+
+原因：
+
+```text
+normalization can change byte offsets
+normalization can change copy/paste/source identity
+NFKC can change semantic distinctions
+IME composition needs source-stable ranges
+editor undo/redo needs source-stable ranges
+```
+
+允许内部为了匹配/算法建立临时 canonical-equivalence accelerator，但：
+
+```text
+source text stays unchanged
+TextOffset stays mapped to source text
+copy / selection / undo uses logical source text
+```
+
+如果应用明确需要 normalization，应由数据层/显式 API 执行，而不是 renderer 隐式修改。
+
+## 12.4 Canonical Paragraph Pipeline
+
+Viso 的普通水平文字 pipeline 固定为：
+
+```text
+Logical UTF text
+    ↓
+Paragraph boundary / newline handling
+    ↓
+UAX #29 grapheme segmentation
+    ↓
+UAX #9 paragraph BiDi analysis / embedding levels
+    ↓
+Script + language + style itemization
+    ↓
+Font resolution / run-cluster fallback
+    ↓
+Shaping per directional/script/font run
+    ↓
+UAX #14 candidate breaks + locale tailoring
+    ↓
+shaping-safe break filtering / boundary reshape when required
+    ↓
+line width fitting / line formation
+    ↓
+UAX #9 final per-line visual reordering
+    ↓
+VisualRuns + CaretMap + HitTestMap + SelectionFragments
+    ↓
+Glyph Representation / GPU residency
+```
+
+关键顺序约束：
+
+> **逻辑顺序是 source truth；BiDi paragraph analysis 先确定 embedding levels，但最终 visual reorder 必须在 line boundaries 确定后按行执行。**
+
+禁止：
+
+```text
+reverse RTL string
+shape visual-order text as if it were logical text
+reorder entire paragraph first, then cut visual text into lines
+line-break by glyph index while ignoring source clusters
+```
+
+## 12.5 UAX #29：Grapheme 与 Word Boundary
+
+默认用户感知字符边界使用 Extended Grapheme Cluster 语义。
+
+以下必须作为单一编辑/导航 cluster 正确处理：
+
+```text
+base + combining marks
+emoji + variation selector
+emoji + skin-tone modifier
+ZWJ emoji sequence
+regional-indicator flag
+Indic conjunct sequences covered by current grapheme rules
+Hangul composition sequences
+```
+
+普通 caret/navigation 不得进入一个不可分割 grapheme cluster 的内部。
+
+Word navigation 使用 UAX #29 word segmentation 作为 base，再允许 locale/editor tailoring。不能把：
+
+```text
+word == split_ascii_whitespace()
+```
+
+作为跨语言合同。
+
+增量实现不能假设“检查前后两个 code point 就一定足够”。例如 RI parity 等规则具有更长上下文；实现应使用 segmenter state/checkpoint 或等价证明正确的增量状态，而不是固定字符窗口的启发式算法。
+
+## 12.6 UAX #9：BiDi Paragraph Contract
+
+每个 paragraph 必须拥有明确 base direction：
+
+```text
+Auto
+LeftToRight
+RightToLeft
+```
+
+`Auto` 使用 UAX #9 paragraph-level 规则/first-strong 语义，不使用“UI locale == Arabic 就把所有段落强制 RTL”的粗糙规则。
+
+`Auto/LeftToRight/RightToLeft` 是概念内部类型；精确 public API 在实现阶段收敛，是否以及如何暴露给 DSL 由后续决定，本节只固定其 BiDi 语义。
+
+必须正确处理：
+
+```text
+Arabic / Hebrew mixed with Latin
+RTL + European/Arabic-Indic numbers
+RTL + punctuation / paired brackets
+RTL + URLs / file paths / code spans
+nested LTR/RTL runs
+LRI / RLI / FSI / PDI isolates
+LRM / RLM / ALM
+legacy embedding/override controls where present
+```
+
+UAX #9 isolate 的隔离语义必须保留；不能把 isolate 当普通 strong character 简化掉。
+
+方向控制字符：
+
+- 参与 BiDi 算法；
+- 不成为普通可见 glyph；
+- 编辑器/Inspector 可以提供“显示不可见控制字符”模式；
+- copy/paste 仍按 logical source text 处理；
+- 不允许 layout 层偷偷删除 source 中存在的控制字符。
+
+## 12.7 BiDi 与 Shaping 的边界
+
+Shaping 输入必须保留 logical text mapping，并为每个 run 提供：
+
+```text
+direction
+script
+language
+font face / variation
+text range
+cluster mapping
+```
+
+Arabic/Hebrew 等不能先把字符数组 reverse 后交给 shaper。
+
+Mirroring/paired-bracket 行为必须由 UAX #9 + shaping contract 协同保证，并且只执行一次。Viso 不应同时在 paragraph 层手工替换 mirrored character、又让 shaper 再次应用同类 feature，造成 double mirroring。
+
+Font fallback 不得破坏 directional run 的 logical mapping。一个 fallback face 返回新的 glyph run 后，其 glyph cluster 仍必须映回原 logical `TextOffset` 区间。
+
+## 12.8 UAX #14：Line Break 基线
+
+换行首先生成 UAX #14 candidate opportunities，再叠加：
+
+```text
+locale tailoring
+paragraph line-break policy
+hyphenation/discretionary break policy
+shaper cluster safety
+inline object constraints
+application no-break spans
+```
+
+UAX #14 是 base，不等于所有语言的完整排版需求。特别是：
+
+- East Asian line-start/line-end prohibition 需要 locale tailoring；
+- Thai/Lao/Khmer 等无空格语言可能需要 dictionary/locale segmenter；
+- hyphenation 需要单独 language data/service；
+- emergency break 不能无视 grapheme/cluster correctness。
+
+## 12.9 Line Break 不能机械切开 ShapedRun
+
+一个 candidate break 即使在 Unicode 层允许，也可能影响 shaping context，例如 Arabic joining、ligature、Indic context。
+
+因此 Shaper 必须提供或 lower 出 break-safety metadata，例如等价于：
+
+```text
+safe_to_break
+unsafe_to_break
+requires_reshape_around_boundary
+```
+
+正确流程：
+
+```text
+candidate break selected
+    ↓
+safe boundary?
+    ├─ yes -> reuse shaped fragments
+    └─ no
+         ↓
+      reshape affected left/right boundary runs on worker
+         ↓
+      apply beginning/end-of-line context
+         ↓
+      metrics changed?
+          ├─ no -> commit line
+          └─ yes -> bounded line-fit correction
+```
+
+禁止把一个 `UNSAFE_TO_BREAK` cluster 的 glyph array 直接切成两半然后继续绘制。
+
+如果字体/shaper 提供 equivalent unsafe-to-break flag，Viso 应保留它进入 paragraph line breaker；如果 provider 没有该能力，必须采取保守策略而不是猜测可安全切断。
+
+## 12.10 CJK 禁则：UAX #14 + Locale Tailoring
+
+Viso 不建立“一张全亚洲共用标点禁则表”。Tailoring 至少区分：
+
+```text
+zh-Hans
+zh-Hant
+ja
+ko
+```
+
+默认 `Auto` line-break policy 根据 locale 选择合适 tailoring。
+
+概念策略：
+
+```rust
+pub enum LineBreakStrictness {
+    Auto,
+    Loose,
+    Normal,
+    Strict,
+}
+```
+
+`LineBreakStrictness` 是概念内部类型；精确 API 名称可后续收敛，是否暴露给 DSL 由后续决定。最低正确性包括：
+
+- 常见 closing punctuation / stop punctuation 不应落在行首；
+- opening punctuation 不应落在行尾；
+- locale-specific iteration/prolonged-sound/connector 类别按对应规则处理；
+- 成对或不可分隔符号不得被机械拆开；
+- CJK 与 Latin/numeric 混排遵循 UAX #14 class + locale tailoring，而不是只看 Unicode block；
+- 一份 paragraph 的 line-break strictness 必须稳定，不能每行随机选择不同禁则级别。
+
+对于中文，参考 CLReq 的行首/行尾禁则与 strictness 思路；对于日文参考 JLReq；韩文参考 KLReq。Viso 只冻结行为合同，不复制这些文档的内部 class 名称为 public ABI。
+
+如果启用 punctuation compression / hanging punctuation：
+
+```text
+punctuation width adjustment
+    ↓
+kinsoku/prohibition evaluation
+    ↓
+final line fit
+```
+
+不能先决定 break，再改变标点宽度导致 line metrics 与禁则结果互相矛盾。
+
+## 12.11 无空格脚本与 Hyphenation
+
+World-ready 不能假设所有语言依靠空格断词。
+
+Viso line breaker 必须允许注入 locale-aware word/line segmentation provider，覆盖至少这类需求：
+
+```text
+Thai
+Lao
+Khmer
+other scripts whose useful line breaks need dictionary/lexical segmentation
+```
+
+Hyphenation 是独立 optional service：
+
+```text
+UAX #14 candidate
+    + language hyphenation dictionary/service
+    + soft-hyphen semantics
+    + shaping-safe boundary validation
+```
+
+插入的 visual hyphen/discretionary glyph **不修改 source text**；copy/selection 仍返回 logical source content。
+
+## 12.12 Logical / Visual Line Model
+
+Paragraph layout 必须同时保留 logical 与 visual 两个视图：
+
+```text
+ParagraphLayout
+    logical text ranges
+    embedding levels
+    shaped logical runs
+    line logical ranges
+    visual run order per line
+    caret stops
+    hit-test map
+```
+
+`VisualRun` 至少知道：
+
+```text
+logical_text_range
+visual_inline_range
+direction
+embedding_level
+font/shaped-run identity
+cluster map
+```
+
+禁止在 layout 完成后只留下视觉 glyph 数组、丢掉 logical mapping；否则 selection、IME、accessibility、copy/paste 和双向 caret 都无法可靠实现。
+
+## 12.13 双向 Caret：同一 logical offset 允许两个视觉位置
+
+在 BiDi boundary 或 soft line wrap 处，一个 logical insertion offset 可能对应两个合理的 visual caret geometry。
+
+因此 caret identity 不是：
+
+```text
+logical offset only
+```
+
+而是：
+
+```text
+TextPosition {
+    offset,
+    affinity: Upstream | Downstream,
+}
+```
+
+`affinity` 用于区分同一 logical boundary 的前后语义，并参与 visual geometry 解析。
+
+最低导航合同：
+
+```text
+Left / Right
+    默认沿当前 visual line 的视觉方向移动到相邻 caret stop
+
+Up / Down
+    移到相邻 visual line，并尽量保持 preferred inline coordinate
+
+Home / End
+    对应当前 visual line 的起止边界
+
+word navigation
+    使用 locale-aware word boundaries，而不是 ASCII whitespace
+```
+
+平台若有强约定可以通过 input policy 调整 modifier 行为，但 logical source identity 和 hit-test result 必须保持确定。
+
+## 12.14 Ligature / Shaping Cluster Caret
+
+必须区分：
+
+```text
+grapheme boundary != glyph boundary
+shaping cluster != glyph count
+```
+
+例如：
+
+```text
+ffi ligature
+Arabic ligature
+Indic shaping
+combining marks
+```
+
+一个 glyph 可以对应多个 logical characters；一个 character 也可以产生多个 glyph。
+
+Caret stop 规则：
+
+1. 默认候选来自合法 grapheme boundaries；
+2. 如果多个 grapheme 被一个 ligature glyph 合并，优先使用字体 GDEF ligature caret positions 或 shaper 提供的等价信息；
+3. 若字体没有 ligature caret metadata，可以按 cluster advance 做可预测 fallback，但不得产生落在非法 grapheme 内部的 caret；
+4. Emoji ZWJ / VS / skin-tone 等完整 grapheme 仍是不可拆编辑单元；
+5. shaper cluster mapping 必须保留到 hit testing，不得在 glyph batching 时丢失。
+
+## 12.15 Hit Testing
+
+指针/触摸命中必须沿视觉结构反查 logical position：
+
+```text
+screen point
+    ↓
+visual line
+    ↓
+visual run
+    ↓
+inline coordinate inside run
+    ↓
+glyph / cluster span
+    ↓
+nearest valid caret stop
+    ↓
+TextPosition { logical offset, affinity }
+```
+
+禁止：
+
+```text
+x / average_glyph_width -> character_index
+```
+
+这种算法在 proportional font、ligature、Arabic、BiDi、CJK punctuation 上都不正确。
+
+HitTestMap 属于 retained paragraph metadata；稳态 pointer move 不得重新 shape paragraph。
+
+## 12.16 Selection
+
+Selection 的 source truth 使用 logical range：
+
+```text
+Selection {
+    anchor: TextPosition,
+    focus: TextPosition,
+}
+```
+
+渲染时一个 logical selection 可以产生多个 visual fragments：
+
+```text
+logical range
+    ↓
+line intersection
+    ↓
+BiDi visual-run intersection
+    ↓
+0..N selection rect/path fragments per line
+```
+
+因此跨 LTR/RTL 的 selection 不能简单画成一个从 `x1` 到 `x2` 的矩形。
+
+必须保证：
+
+- copy/cut 使用 logical order；
+- selection highlight 使用 visual geometry；
+- drag handle/hit test 反向得到 logical `TextPosition`；
+- anchor/focus 方向不因 BiDi visual reorder 被交换；
+- accessibility text range 使用同一 logical mapping。
+
+## 12.17 IME / Composition
+
+IME composition 是逻辑文本上的临时编辑状态，不是单独的 glyph overlay hack。
+
+至少保存：
+
+```text
+composition logical range
+composition segments / clauses when platform provides them
+selected subrange
+replacement range
+candidate-window anchor TextPosition
+```
+
+流程：
+
+```text
+platform IME update (often UTF-16 offsets)
+    ↓
+localized offset conversion
+    ↓
+logical composition transaction
+    ↓
+mark affected paragraph/run dirty
+    ↓
+InteractiveEdit worker shaping
+    ↓
+staged paragraph result
+    ↓
+frame/UI-phase commit
+    ↓
+visual caret/composition underline/candidate rect
+```
+
+硬规则：
+
+- UTF-16↔UTF-8 offset mapping 挂在 composition-local/paragraph-local 范围，随 composition 生命周期建立与丢弃，不对整篇文档维护全局 mapping；
+- composition range 不得通过 visual glyph index 表达；
+- 中日韩 IME composition 不得被自动 normalization 改写 source range；
+- RTL IME caret/candidate rect 必须使用 visual caret mapping；
+- worker 结果必须携带 text/composition revision，旧 composition shaping 不能覆盖新输入；
+- composition underline/segment style 不改变 source text；
+- candidate window geometry 必须来自已提交或明确 last-good 的 visual caret，而不是猜测平均字符宽度。
+
+## 12.18 Inline Object / Embedded Widget 与 BiDi
+
+Paragraph 中的 inline image/widget/object 必须拥有明确的 logical range/placeholder identity，并参与 line layout。
+
+对于方向隔离：
+
+```text
+inline object
+    + explicit/auto direction metadata
+    + isolate semantics
+```
+
+不能允许嵌入的 RTL/LTR 内容意外改变外围 paragraph 的 BiDi resolution。
+
+Inline object 的 baseline、advance、break-before/after policy 进入 line breaker；其内部 UI tree 不变成文字 glyph cluster。
+
+## 12.19 Incremental Invalidation：正确性优先，但不得全篇重算
+
+不同算法拥有不同 invalidation 范围：
+
+```text
+Grapheme segmentation
+    通常局部，但必须保留足够 segmenter state/checkpoint
+
+BiDi
+    paragraph-context-sensitive；默认 invalidation 至少到 paragraph
+
+Shaping
+    dirty script/font/directional run + unsafe-boundary context
+
+Line breaking
+    从受影响 line 开始向后 reflow，直到 line signature 稳定
+
+Visual reorder
+    只重建受影响 line 的 visual-run map
+
+Caret / HitTest / Selection geometry
+    只重建受影响 line/paragraph metadata
+```
+
+对于超长 paragraph，允许 incremental BiDi/segmenter checkpoint，但输出必须与 full conformant algorithm 等价；不允许为了局部更新牺牲 UAX 正确性。
+
+Line reflow 推荐使用稳定停止条件：
+
+```text
+new line end offset == old line end offset
+and
+new line metrics/signature == old signature
+and
+next-line shaping context compatible
+    ↓
+stop forward propagation
+```
+
+这样一次局部编辑不会默认重新 layout 整个 document。
+
+## 12.20 Worker / Main-thread 性能边界
+
+延续第 14 节高刷合同：**所有 shaping 都在 worker。** 本节新增的复杂文字能力也不得成为 UI 主线程热路径负担。
+
+Worker 可以执行：
+
+```text
+paragraph BiDi resolve for large/dirty paragraph
+script/language itemization
+shaping / boundary reshape
+UAX #14 + locale-tailored line computation
+large caret/hit-test map build
+IME dirty-run shaping
+```
+
+Owner/UI thread 允许执行的只是低成本状态操作：
+
+```text
+text transaction / revision update
+small incremental segmentation bookkeeping
+mark paragraph/run dirty
+dispatch worker work
+commit validated staged result
+read retained CaretMap/HitTestMap
+```
+
+稳态文字帧额外要求：
+
+```text
+0 BiDi recomputation
+0 UAX #14 recomputation
+0 grapheme resegmentation
+0 CaretMap rebuild
+0 Selection remap when selection unchanged
+```
+
+滚动、纯 transform、opacity、颜色变化不得触发上述工作。
+
+## 12.21 Last-good Paragraph 与输入延迟
+
+复杂文本 worker 尚未完成时，Runtime 不能阻塞 frame 等待 paragraph 重算。
+
+```text
+new text revision
+    ↓
+dispatch worker paragraph work
+    ↓
+keep last-good committed paragraph for paint where safe
+    ↓
+logical editor state advances immediately
+    ↓
+new staged layout ready
+    ↓
+validate text/font/composition/layout revisions
+    ↓
+atomic paragraph commit
+```
+
+对于可见新增字符，`InteractiveEdit` priority + prewarm 负责尽量在一个 display frame 内提供新 shaped result；如果 miss，允许 glyph 视觉结果延后一两帧，但不得主线程同步 shaping。
+
+涉及 BiDi strong-character 改变、paragraph direction 改变或大范围 reflow 时，必须优先保证 logical caret/selection state 正确；visual geometry 使用 last-good/pending 状态必须可诊断，不能产生 invalid memory mapping。
+
+## 12.22 Conformance / Correctness Tests
+
+Unicode 标准测试至少纳入自动测试：
+
+```text
+BidiTest.txt
+BidiCharacterTest.txt
+LineBreakTest.txt
+GraphemeBreakTest.txt
+WordBreakTest.txt
+```
+
+再增加 Viso world-ready golden corpus：
+
+```text
+Arabic + Latin + numbers + punctuation
+Hebrew + URL/path/code span
+nested isolates / FSI / PDI
+Arabic line break changing joining form
+Indic conjunct + combining marks
+Thai/Lao/Khmer lexical line break
+zh-Hans punctuation prohibition
+zh-Hant punctuation prohibition
+Japanese kinsoku / prolonged sound / iteration marks
+Korean line-head/line-end restrictions
+CJK + Latin + emoji mixed paragraph
+emoji ZWJ / skin tone / flags
+ligature caret with and without GDEF caret data
+BiDi boundary dual caret
+BiDi multiline selection
+RTL IME composition
+CJK IME composition
+inline object inside mixed-direction paragraph
+soft hyphen / discretionary break
+very long mixed-direction paragraph incremental edit
+```
+
+关键 invariants：
+
+```text
+logical -> visual -> hit-test round trip returns a valid equivalent TextPosition
+visual caret traversal never enters illegal grapheme interior
+copy(selection) preserves logical source order
+selection fragments cover exactly selected logical clusters
+line break never directly splits an unsafe shaping boundary
+incremental result == full recompute result
+same Unicode data + same font inputs -> Native/WASM/headless paragraph semantics agree
+```
+
+## 12.23 World-Ready Benchmark / Resource Gates
+
+正确性测试之外必须测性能：
+
+```text
+bidi_mixed_10k_paragraphs
+bidi_single_very_long_paragraph
+bidi_strong_char_incremental_edit
+cjk_kinsoku_100k_chars
+cjk_locale_switch_zh_hans_hant_ja_ko
+thai_dictionary_break_long_article
+caret_visual_walk_100k_stops
+hit_test_100k_queries
+bidi_selection_drag
+ime_cjk_continuous_composition
+ime_rtl_continuous_composition
+line_reflow_until_stable
+```
+
+资源目标：
+
+- BiDi/segment/line-break metadata 按 paragraph/line bounded storage，不复制整份 text；
+- logical↔visual mapping 使用 compact ranges/runs，不为每个 glyph 创建 heap object；
+- caret stops 优先 compact arrays/offset deltas，避免 linked object graph；
+- large editor 只常驻 visible/near-visible paragraph visual metadata，远端 paragraph 保留轻量 logical/index state；
+- worker scratch buffer 可复用，不因每次键盘输入重新分配大型 Vec；
+- 120/144/240Hz steady frame 不访问 world-ready cold algorithms。
+
+---
+
+# 13. Glyph Representation：Quality/Performance-first Adaptive Pipeline
 
 Viso 1.0 不把某一种 glyph image 当成所有场景的万能表示。目标不是减少实现分支，而是让**每一种屏幕行为走质量和成本最合适的表示**。
 
@@ -741,7 +1520,7 @@ enum GlyphImageKind {
 
 这些是 `viso-text` / `viso-render` 内部合同，不是 DSL 关键字，也不要求普通 App 手工选择。普通作者只看到正确、稳定的文字结果；Runtime 根据 retained metadata、transform history、device scale、glyph source capability 与资源预算做选择。
 
-## 12.1 稳定文字优先精确 A8 Coverage
+## 13.1 稳定文字优先精确 A8 Coverage
 
 普通 App 绝大多数文字在一段稳定时间内具有确定的字号、device scale 和 transform。对这类文字，针对最终 device-pixel bucket 直接 raster 出 Coverage 仍是默认最优路径：
 
@@ -781,7 +1560,7 @@ Viso 可以对小字号启用**灰度 Coverage 的 subpixel-position phase quant
 
 禁止为了减少 bucket 数量而把低分辨率 A8 glyph 长期放大。稳定 transform 改变到新的有效像素尺寸后，应异步准备新的精确 Coverage bucket。
 
-## 12.2 可缩放 lane 采用 MTSDF，而不是普通 SDF
+## 13.2 可缩放 lane 采用 MTSDF，而不是普通 SDF
 
 连续缩放、旋转和 world-space text 的问题不是最终静态质量，而是 Coverage 在动画期间不断跨 raster bucket 会造成：
 
@@ -813,7 +1592,7 @@ rotation-heavy transformed text
 缩放手势期间的标题/节点标签
 ```
 
-## 12.3 Temporal Promotion：动画时 MTSDF，稳定后回到精确 Coverage
+## 13.3 Temporal Promotion：动画时 MTSDF，稳定后回到精确 Coverage
 
 这是 Viso 字体渲染与“永久 distance-field-first”方案最重要的区别。
 
@@ -852,7 +1631,7 @@ cold MTSDF residency becomes evictable
 - MTSDF 不必永久占用所有普通文字的多通道 atlas；
 - 同一 glyph 允许在**过渡窗口**短暂拥有两种 representation，但不永久 pin 双份数据。
 
-## 12.4 Promotion / settle policy 必须有 hysteresis
+## 13.4 Promotion / settle policy 必须有 hysteresis
 
 不能：
 
@@ -891,7 +1670,7 @@ refresh rate change itself
 
 具体 scale/时间阈值不是 public ABI；由 benchmark/profile 校准并保留 hysteresis。
 
-## 12.5 MTSDF 也不能无限缩放：使用 quality window + 多分辨率 bucket
+## 13.5 MTSDF 也不能无限缩放：使用 quality window + 多分辨率 bucket
 
 Distance field 有有限纹理分辨率和 distance range。Viso 禁止生成一个很小的 MTSDF glyph 后无限放大。
 
@@ -919,7 +1698,7 @@ frame-boundary swap
 
 这样大范围 zoom 不需要每一档都 Coverage raster，同时也不会为了复用 atlas 牺牲清晰度。
 
-## 12.6 极端缩放/高精度场景使用 Retained OutlineVector
+## 13.6 极端缩放/高精度场景使用 Retained OutlineVector
 
 对于非常大的文字、极端 zoom、几何编辑、精确截图/导出或 MTSDF quality window 不再经济的场景，Viso 可以直接保留 glyph outline 的 vector/path/mesh representation：
 
@@ -945,7 +1724,7 @@ transform regime where MTSDF would require excessive atlas resolution
 
 Vector cache 独立按 bytes 预算，不与 A8/MTSDF Atlas 共用一个 LRU。Retained mesh/path 可以跨帧复用；禁止在 120/144/240Hz 每帧重新 tessellate 相同 glyph。
 
-## 12.7 CJK 的 representation policy
+## 13.7 CJK 的 representation policy
 
 CJK 正常 UI/编辑器/文档仍默认 `MaskA8`，因为复杂笔画在小字号下 exact Coverage 的质量/内存/fragment 成本更好。
 
@@ -970,7 +1749,7 @@ no whole-font pre-generation
 
 绝不因为一个 CJK font 被加载就生成整套 CJK MTSDF atlas。
 
-## 12.8 Color Glyph / Emoji 采用 source-aware lane
+## 13.8 Color Glyph / Emoji 采用 source-aware lane
 
 Color glyph 不强行压入 A8/MTSDF contract。至少区分：
 
@@ -987,7 +1766,7 @@ Native 系统 Emoji 允许平台 adapter 直接提供高质量 color glyph raste
 
 Color atlas/Vector cache 拥有独立预算，避免 Emoji workload 挤掉普通 UI/CJK。
 
-## 12.9 Representation-specific residency pools
+## 13.9 Representation-specific residency pools
 
 GPU/renderer 至少区分：
 
@@ -1022,7 +1801,7 @@ vector mesh workload  -> 占满 glyph texture atlas
 
 各 pool 的预算可以在统一 TextMemoryController 下协调，但 eviction queue / residency accounting 必须分开。
 
-## 12.10 Atlas eviction：page-age + CLOCK，不逐 glyph LRU
+## 13.10 Atlas eviction：page-age + CLOCK，不逐 glyph LRU
 
 A8、MTSDF、RGBA atlas 都使用 page-level residency：
 
@@ -1050,7 +1829,7 @@ atlas full -> clear whole atlas
 
 每个 page 的 `last_used_epoch` 一帧最多更新一次。Renderer 只记录本帧命中的 page set/bitset，在 frame cleanup/submit 边界批量刷新；不能每 glyph draw 修改 LRU/CLOCK 元数据。
 
-## 12.11 Quality fallback 与失败策略
+## 13.11 Quality fallback 与失败策略
 
 MTSDF/Vector 是优化表示，不是文字正确性的单点依赖。
 
@@ -1071,7 +1850,7 @@ exact Coverage at suitable bucket
 
 对于正在动画中的场景，如果新 scalable representation 尚未 ready，可以短暂继续使用现有 Coverage/MTSDF last-good，但不能阻塞 UI thread 等待生成。
 
-## 12.12 高刷性能合同
+## 13.12 高刷性能合同
 
 在 retained representation 已就绪后，120/144/240Hz 的文字绘制热路径不得执行：
 
@@ -1101,7 +1880,7 @@ persistent/reused GPU instance ranges
 GPU batch
 ```
 
-## 12.13 性能与质量最终取舍
+## 13.13 性能与质量最终取舍
 
 ```text
 MaskA8 Coverage
@@ -1129,9 +1908,9 @@ Color Glyph
 
 > **静态时追求目标像素上的精确 Coverage；运动时用 MTSDF 把重复 raster/upload 摊平；极端放大时切到 retained Vector；稳定后再回到精确 Coverage。效果和帧稳定性优先，资源只为当前真正需要的 representation 付费。**
 
-# 13. 高刷新率：60 / 120 / 144 / 240 Hz
+# 14. 高刷新率：60 / 120 / 144 / 240 Hz
 
-## 13.1 Frame budget
+## 14.1 Frame budget
 
 ```text
 60 Hz    16.67 ms
@@ -1146,7 +1925,7 @@ Viso Text Runtime 的目标不是“让 shaping 快到可以每帧做”，而�
 
 > **正常帧根本不做 shaping。**
 
-## 13.2 稳态文字帧合同
+## 14.2 稳态文字帧合同
 
 没有 text/font/layout 变化时：
 
@@ -1182,7 +1961,7 @@ existing GlyphRun/instances
 GPU batch
 ```
 
-## 13.3 高刷滚动
+## 14.3 高刷滚动
 
 滚动已有 paragraph 时：
 
@@ -1216,7 +1995,7 @@ background third priority
 
 在新行真正进入屏幕前尽可能完成 shaping/raster。
 
-## 13.4 Text Work Scheduler
+## 14.4 Text Work Scheduler
 
 Text cold work 分优先级：
 
@@ -1263,21 +2042,44 @@ min(500 us, 5% of current frame interval)
 
 超过 budget 的非关键 atlas upload/cache maintenance 延后，而不是吞掉整个 frame。
 
-## 13.5 输入文字
+## 14.5 输入文字
 
-TextInput 不能因为异步 worker 导致明显的键盘延迟。
+TextInput 不能因为异步 worker 导致明显的键盘延迟。所有 shaping —— 包括短局部编辑 —— 都在 worker 完成；主线程不做 shaping。
 
-已加载 face 的短局部编辑允许：
+短局部编辑时主线程只做：
 
 ```text
-incremental segmentation
-incremental shape dirty run only
-caret/selection update
+mark dirty run (incremental segmentation)
+dispatch dirty run to worker at InteractiveEdit priority
+caret/selection geometry update (不 reshape)
+commit staged shaped result at safe UI phase
 ```
 
-在当前 UI phase 同步完成。
+键盘延迟由**预测预热**吸收：对已加载 face 提前 shape 下一字符/相邻 cluster，使编辑命中 warm 结果，而不是让主线程同步 reshape。`InteractiveEdit` 优先级见第 14.4 节。
 
-以下情况切到 async/staged：
+预热必须押对方向，并受预算约束，避免投机 shaping 反过来浪费 worker CPU：
+
+```text
+预热对象
+    正在编辑处的热字符集 / 常见后继
+    当前 IME composition 候选
+    NOT 无差别预热整个字母表 / 整个 face
+
+预热预算
+    byte / count 上限
+    命中率低时收敛
+    memory / worker 压力下先让位于 CriticalVisible / NearViewport
+```
+
+预热未命中时，主线程绝不同步 reshape 兜底，而是：
+
+```text
+caret/selection 按几何立即推进（不 reshape）
+dirty run 的 glyph 由 worker 补，延后一两帧落地
+视觉上短暂滞后可接受，主线程始终零 shaping
+```
+
+以下情况同样走 async/staged，但属于更冷的 cold path：
 
 ```text
 新字体首次加载
@@ -1287,15 +2089,15 @@ WOFF2 decode
 新的复杂 system fallback cold path
 ```
 
-目标是普通键盘输入在一个 display frame 内出现，同时不让一个大型字体 miss 阻塞 UI thread。
+目标是普通键盘输入在一个 display frame 内出现：靠 worker 的 InteractiveEdit 优先级加预热保证，主线程零 shaping，同时不让一个大型字体 miss 阻塞 UI thread。
 
 ---
 
-# 14. 第一次字体命中与 Prewarm
+# 15. 第一次字体命中与 Prewarm
 
 Lazy load 降低启动资源，但不能把 cold miss 卡顿转移到第一个可见 frame。
 
-## 14.1 Native System UI face
+## 15.1 Native System UI face
 
 Native 默认 UI font 是高概率第一屏依赖。
 
@@ -1309,7 +2111,7 @@ insert/pin in Protected Face Cache
 
 这是“预热一个默认 face”，不是系统字体扫描。
 
-## 14.2 Packaged fonts
+## 15.2 Packaged fonts
 
 Build 可以生成：
 
@@ -1328,7 +2130,7 @@ WarmSet 可异步预取/解析。
 
 禁止把整个 `assets/fonts/` 变成 preload list。
 
-## 14.3 CJK / Emoji prewarm
+## 15.3 CJK / Emoji prewarm
 
 Native 不需要打包 CJK/Emoji。
 
@@ -1347,9 +2149,9 @@ Emoji
 
 ---
 
-# 15. WASM / Canvas
+# 16. WASM / Canvas
 
-## 15.1 零系统字体
+## 16.1 零系统字体
 
 WASM/Canvas runtime 永远没有隐式：
 
@@ -1361,7 +2163,7 @@ OS installed font access
 Viso bundled default font
 ```
 
-## 15.2 Packaged fonts 仍然自动登记
+## 16.2 Packaged fonts 仍然自动登记
 
 如果项目有：
 
@@ -1395,7 +2197,7 @@ Font Face SLRU
 
 > **框架和系统不给你字体；项目显式携带的 font asset 仍然是项目资源，并且 build-time 自动登记、runtime lazy 获取。**
 
-## 15.3 External FontProvider
+## 16.3 External FontProvider
 
 没有 packaged font，或者文档需要动态字体时，可以注入：
 
@@ -1421,7 +2223,7 @@ revision validation
 
 ---
 
-# 16. Progressive / Remote Font
+# 17. Progressive / Remote Font
 
 按需字符描述的是 coverage granularity，而不是网络请求 granularity。
 
@@ -1464,7 +2266,7 @@ PAINT only if geometry unchanged
 
 ---
 
-# 17. Cache 生命周期必须独立
+# 18. Cache 生命周期必须独立
 
 非常重要：
 
@@ -1499,7 +2301,7 @@ new glyph raster
 
 ---
 
-# 18. 内存预算
+# 19. 内存预算
 
 不要用固定 “64 fonts / 4096 glyphs”。
 
@@ -1546,7 +2348,7 @@ Native 可 mmap/read-only reference 的 TTF/OTF 应避免无意义 full copy。
 
 ---
 
-# 19. Resource / CPU / GPU 性能原则
+# 20. Resource / CPU / GPU 性能原则
 
 ## CPU
 
@@ -1585,7 +2387,7 @@ remote fonts request only when needed
 
 ---
 
-# 20. System font revision
+# 21. System font revision
 
 系统字体集合可能变化。
 
@@ -1610,7 +2412,7 @@ invalidate system Resolve/FallbackPlan Cache
 
 ---
 
-# 21. Threading
+# 22. Threading
 
 `FontResolver` 与 cache owner 不允许把 mutex 带进每 glyph draw。
 
@@ -1619,11 +2421,12 @@ invalidate system Resolve/FallbackPlan Cache
 ```text
 UI/Text owner thread
     Resolve metadata / paragraph state / cache commit
+    (no shaping on this thread)
 
 Worker jobs
     WOFF2 decode
     heavy parse
-    large shaping
+    all shaping (including short interactive edits, see 13.5)
     coverage build
     raster
 
@@ -1649,7 +2452,7 @@ Android 等 non-thread-safe matcher object 必须 thread-confined/thread-local�
 
 ---
 
-# 22. Hot-path identity
+# 23. Hot-path identity
 
 Source/API 可以使用：
 
@@ -1678,7 +2481,7 @@ platform font object lookup by string
 
 ---
 
-# 23. Missing font / glyph policy
+# 24. Missing font / glyph policy
 
 至少支持：
 
@@ -1714,7 +2517,7 @@ Placeholder
 
 ---
 
-# 24. Inspector / Profiler
+# 25. Inspector / Profiler
 
 至少记录：
 
@@ -1735,6 +2538,17 @@ font_face_decode_bytes
 woff2_decode_us
 shaping_hit/miss
 shaping_us
+grapheme_segment_us
+bidi_resolve_count
+bidi_resolve_us
+line_break_count
+line_break_us
+line_break_tailoring_count
+paragraph_reflow_lines
+caret_map_build_us
+hit_test_query_count
+selection_fragment_count
+ime_composition_revision_drop_count
 glyph_atlas_hit/miss
 atlas_a8_bytes
 atlas_rgba_bytes
@@ -1753,6 +2567,10 @@ Inspector 某段文字至少显示：
 requested family
 resolved app/system face
 language/script
+paragraph base direction / embedding level
+logical text range / visual run range
+caret affinity / valid caret stops
+line-break policy / locale tailoring
 CJK/emoji fallback chain
 fallback mapped run length
 FontFaceId + revision
@@ -1764,7 +2582,7 @@ pending external request
 
 ---
 
-# 25. Benchmark / Regression Matrix
+# 26. Benchmark / Regression Matrix
 
 ## Startup
 
@@ -1807,6 +2625,38 @@ text_input_incremental
 code_editor_scroll_10k_lines
 long_log_scan
 bidi_arabic_indic
+```
+
+## World-Ready correctness / editing
+
+```text
+unicode_bidi_conformance
+unicode_linebreak_conformance
+unicode_grapheme_conformance
+unicode_wordbreak_conformance
+bidi_mixed_arabic_hebrew_latin_numbers
+bidi_nested_isolates
+bidi_multiline_visual_reorder
+bidi_boundary_dual_caret
+ligature_caret_gdef_and_fallback
+cjk_kinsoku_zh_hans_hant_ja_ko
+arabic_break_boundary_reshape
+thai_lao_khmer_dictionary_break
+hit_test_visual_to_logical_roundtrip
+bidi_selection_fragments
+ime_cjk_composition
+ime_rtl_composition
+incremental_vs_full_paragraph_equivalence
+```
+
+性能断言：
+
+```text
+steady frame: bidi/line-break/grapheme recompute == 0
+caret move on committed paragraph: no shaping
+hit test on committed paragraph: no shaping/font resolve
+local edit: reflow stops after stable line signature when possible
+worker scratch capacity is reused across repeated composition/edit cycles
 ```
 
 ## Glyph Representation / Atlas
@@ -1892,7 +2742,7 @@ no MTSDF generation or vector tessellation in steady frame
 
 ---
 
-# 26. 推荐 `viso-text` 模块
+# 27. 推荐 `viso-text` 模块
 
 ```text
 crates/text/src/
@@ -1909,8 +2759,15 @@ crates/text/src/
 ├── font_cache.rs
 ├── progressive.rs
 ├── shaping.rs
+├── segment.rs
 ├── bidi.rs
 ├── line_break.rs
+├── line_break_tailoring.rs
+├── text_position.rs
+├── caret.rs
+├── hit_test.rs
+├── selection.rs
+├── ime.rs
 ├── paragraph.rs
 ├── text_work.rs
 ├── glyph_representation.rs
@@ -1937,6 +2794,33 @@ system_fonts.rs
 fallback.rs
     cluster/run fallback planning and recent candidate cache
 
+segment.rs
+    UAX #29 grapheme/word segmentation + incremental checkpoints
+
+bidi.rs
+    UAX #9 paragraph levels / isolates / per-line visual reorder
+
+line_break.rs
+    UAX #14 candidate breaks + shaping-safe line formation
+
+line_break_tailoring.rs
+    zh-Hans/zh-Hant/ja/ko + locale/dictionary tailoring boundary
+
+text_position.rs
+    typed logical offsets / UTF-16 bridge / affinity mapping
+
+caret.rs
+    visual caret stops / BiDi dual caret / ligature caret mapping
+
+hit_test.rs
+    screen point -> visual run -> logical TextPosition
+
+selection.rs
+    logical selection source truth -> visual fragments
+
+ime.rs
+    composition ranges / clauses / candidate geometry + revision contract
+
 font_cache.rs
     byte-budgeted Face SLRU
 
@@ -1960,7 +2844,7 @@ glyph_cache.rs
 
 ---
 
-# 27. 实现顺序
+# 28. 实现顺序
 
 ## P0 — Native Latin baseline
 
@@ -1977,12 +2861,26 @@ A8 atlas page cache
 
 ```text
 run/cluster fallback
-CJK locale handling
+CJK locale-aware font fallback
 Emoji cluster handling
 FallbackPlan cache
 ```
 
-## P2 — High refresh
+## P2 — World-Ready paragraph correctness
+
+```text
+UAX #29 grapheme/word segmentation
+UAX #9 BiDi paragraph + isolate handling
+UAX #14 line break
+zh-Hans/zh-Hant/ja/ko line-break tailoring
+shaping-safe boundary reshape
+logical/visual paragraph mapping
+BiDi caret / selection / hit testing
+IME composition mapping
+Unicode conformance suites
+```
+
+## P3 — High refresh
 
 ```text
 retained shaped runs
@@ -1992,7 +2890,7 @@ TextWork scheduler
 120/144/240Hz benchmarks
 ```
 
-## P3 — Packaged formats
+## P4 — Packaged formats
 
 ```text
 TTF/OTF/TTC/OTC
@@ -2001,27 +2899,29 @@ build-time FontManifest automatic discovery
 lazy decode
 ```
 
-## P4 — WASM
+## P5 — WASM
 
 ```text
 zero system-font runtime
 packaged font lazy fetch
 External FontProvider
 progressive subset
+world-ready paragraph semantics shared with Native
 ```
 
-## P5 — Tool workloads
+## P6 — Tool workloads
 
 ```text
 async SystemFontCatalog
 font picker scan resistance
 large CJK/editor workloads
 memory-pressure tuning
+very-large paragraph incremental correctness/perf
 ```
 
 ---
 
-# 28. Definition of Done
+# 29. Definition of Done
 
 Viso Text/Font Runtime 只有同时满足下面条件才算达到 1.0 合同：
 
@@ -2035,6 +2935,22 @@ Viso Text/Font Runtime 只有同时满足下面条件才算达到 1.0 合同：
 [ ] CJK fallback 以 run/cluster + locale 处理
 [ ] Emoji ZWJ/VS/skin-tone cluster 不被错误拆 font
 [ ] common fallback face 可以复用，避免逐字符 OS query
+[ ] UAX #9 / #14 / #29 官方 conformance corpus 进入 CI
+[ ] Unicode algorithm property data 来自一致的数据 release
+[ ] source text 不被 renderer 隐式 normalization
+[ ] UTF-8 / UTF-16 / grapheme / shaping cluster / glyph index 使用 typed mapping
+[ ] BiDi paragraph 先 resolve levels，最终 visual reorder 在 line formation 后按行执行
+[ ] LRI/RLI/FSI/PDI 与 paired-bracket/neutral/number 场景正确
+[ ] line break 使用 UAX #14 + locale tailoring，而不是 ASCII whitespace heuristic
+[ ] zh-Hans / zh-Hant / ja / ko 有独立 CJK line-break tailoring
+[ ] unsafe shaping boundary 不被机械切开；需要时 worker boundary reshape
+[ ] Thai/Lao/Khmer 等允许 locale/dictionary segmenter provider
+[ ] 同一 logical offset 在 BiDi/line-wrap boundary 可用 affinity 表达双视觉 caret
+[ ] ligature caret 优先使用 GDEF/shaper caret metadata，不进入非法 grapheme interior
+[ ] selection 以 logical range 为 source truth，可渲染为多个 visual fragments
+[ ] hit test 返回 logical TextPosition + affinity，不按平均 glyph width 猜 index
+[ ] CJK/RTL IME composition 使用 logical range + revision，candidate rect 来自 visual caret map
+[ ] incremental paragraph result 与 full recompute 结果一致
 [ ] Face Cache 是 byte-budgeted SLRU
 [ ] Face SLRU recency 不按每 glyph 更新
 [ ] Shaping Cache 有独立预算
@@ -2059,7 +2975,7 @@ Viso Text/Font Runtime 只有同时满足下面条件才算达到 1.0 合同：
 
 ---
 
-# 29. 外部平台事实依据
+# 30. 外部平台事实依据
 
 这些资料只用于确定平台 adapter 能力；Viso public API 与 cache policy 不依赖它们的类型：
 
@@ -2081,9 +2997,32 @@ Viso Text/Font Runtime 只有同时满足下面条件才算达到 1.0 合同：
 6. `msdfgen` 当前 API 的 `generateMTSDF`：RGB 保存 multi-channel signed distance，Alpha 保存 true signed distance；Viso 仅参考其 representation semantics，不绑定该库为 runtime hard dependency。  
    https://github.com/Chlumsky/msdfgen
 
+
+7. Unicode UAX #9 — Unicode Bidirectional Algorithm：paragraph embedding levels、isolate、paired bracket 与 per-line visual reordering 的规范基线。  
+   https://www.unicode.org/reports/tr9/
+
+8. Unicode UAX #14 — Unicode Line Breaking Algorithm：跨 Unicode script 的默认 line-break opportunity 基线，并允许 locale/application tailoring。  
+   https://www.unicode.org/reports/tr14/
+
+9. Unicode UAX #29 — Unicode Text Segmentation：Extended Grapheme Cluster 与 word boundary 的默认规范。  
+   https://www.unicode.org/reports/tr29/
+
+10. W3C CLReq — Requirements for Chinese Text Layout：中文行首/行尾禁则、不同 strictness 与标点调整需求参考。  
+    https://www.w3.org/International/clreq/
+
+11. W3C JLReq — Requirements for Japanese Text Layout：日文禁则与行布局需求参考。  
+    https://www.w3.org/TR/jlreq/
+
+12. W3C KLReq — Requirements for Hangul Text Layout and Typography：韩文 line-head/line-end 与 word-break requirements 参考。  
+    https://www.w3.org/International/klreq/
+
+13. HarfBuzz OpenType Layout / Buffer APIs：GDEF ligature caret positions 与 unsafe-to-break cluster metadata 可作为 shaping integration 的能力参考；Viso 不绑定该库为 public ABI。  
+    https://harfbuzz.github.io/harfbuzz-hb-ot-layout.html  
+    https://harfbuzz.github.io/harfbuzz-hb-buffer.html
+
 ---
 
-# 30. 最终决定摘要
+# 31. 最终决定摘要
 
 ```text
 SYSTEM FONT
@@ -2111,6 +3050,18 @@ CACHE
     Face Cache: byte-budgeted SLRU
     Shaping Cache: independent byte budget
     Glyph Atlas: page-age + CLOCK, not glyph LRU
+
+WORLD-READY TEXT
+    UAX #29 grapheme/word segmentation
+    UAX #9 paragraph BiDi + isolate + per-line visual reorder
+    UAX #14 base line breaking + locale tailoring
+    zh-Hans / zh-Hant / ja / ko CJK prohibition rules
+    shaping-safe break / boundary reshape
+    logical TextPosition + affinity -> visual caret mapping
+    logical selection -> multiple visual fragments
+    IME composition remains logical/revisioned
+    no implicit source normalization
+    incremental result must equal full recompute
 
 GLYPH REPRESENTATION
     stable UI / small text / CJK -> exact A8 Coverage

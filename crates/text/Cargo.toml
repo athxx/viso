@@ -5,8 +5,11 @@ edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
 
-# Text system (§13/Part XIII): font DB, fallback, shaping, BiDi, line
-# breaking, paragraph layout, glyph cache/atlas integration metadata.
+# Text/Font runtime: font manifest/resolve/format, fallback, shaping,
+# UAX-9/14/29 world-ready paragraph correctness, adaptive glyph representation
+# (coverage/MTSDF/vector/color) plus residency metadata. Rebuilt module set and
+# implementation order follow Viso_Text_Font_Runtime.md; the GPU texture/page
+# machinery stays in viso-render.
 [dependencies]
 viso-gpu = { workspace = true }
 ttf-parser = { workspace = true }
@@ -18,16 +21,3 @@ unicode-script = { workspace = true }
 unicode-segmentation = { workspace = true }
 zune-png = { workspace = true }
 zune-core = { workspace = true }
-
-# Benches only. criterion is a dev-dependency: it never ships in the text crate
-# and is not an architecture DAG edge (external crate, ignored by dep checks).
-[dev-dependencies]
-criterion = "0.7"
-
-[[bench]]
-name = "wrap_line"
-harness = false
-
-[[bench]]
-name = "paragraph_cache"
-harness = false
