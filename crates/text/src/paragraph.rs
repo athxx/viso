@@ -42,7 +42,8 @@
 //! the retained layout the caret/selection/hit-test readers are written against
 //! and the single-line construction they exercise.
 
-use crate::bidi::{BidiInfo, BidiLevel};
+use crate::bidi::{BaseDirection, BidiInfo, BidiLevel};
+use crate::line_break::{BreakOpportunity, LineBreaker};
 use crate::segment::Segmenter;
 use crate::shaping::{Direction, ShapedRun};
 use crate::text_position::TextOffset;
@@ -157,13 +158,32 @@ impl LineLayout {
     /// shaped entry (an empty or unshaped span) contributes a zero-width run.
     pub fn single_line(text: &str, bidi: &BidiInfo, shaped: &[ShapedRun]) -> Self {
         let whole = (TextOffset(0), TextOffset(text.len()));
-        let logical_runs = bidi.direction_runs_in(whole.0, whole.1);
+        Self::in_range(text, bidi, whole, shaped)
+    }
+
+    /// Lay out one line covering the source sub-range `[range.0, range.1)`,
+    /// slicing into a paragraph-wide `bidi` resolution.
+    ///
+    /// BiDi is paragraph-context-sensitive (spec 12.19), so the embedding levels
+    /// must come from a resolution over the whole paragraph, not the line slice;
+    /// this reuses that shared `bidi` and only restricts the direction-run
+    /// enumeration and visual reorder to the line's range (UAX#9 rule L2 applies
+    /// per display line). `shaped` supplies one [`ShapedRun`] per logical
+    /// direction run *within the range*, in [`BidiInfo::direction_runs_in`]
+    /// order; a missing entry contributes a zero-width run.
+    pub fn in_range(
+        text: &str,
+        bidi: &BidiInfo,
+        range: (TextOffset, TextOffset),
+        shaped: &[ShapedRun],
+    ) -> Self {
+        let logical_runs = bidi.direction_runs_in(range.0, range.1);
 
         // Visual (left-to-right) order of the line's source offsets under rule
         // L2. A run's visual position is the visual position of its logical
         // start; ordering runs by that key reproduces the reordered run
         // sequence without re-running the reorder per run.
-        let visual = bidi.visual_order(whole.0, whole.1);
+        let visual = bidi.visual_order(range.0, range.1);
         let mut visual_rank = std::collections::HashMap::with_capacity(visual.len());
         for (rank, off) in visual.iter().enumerate() {
             visual_rank.insert(*off, rank);
@@ -192,7 +212,7 @@ impl LineLayout {
 
         Self {
             runs,
-            logical_range: whole,
+            logical_range: range,
             width: cursor_x,
         }
     }
@@ -268,18 +288,476 @@ fn build_visual_run(
     }
 }
 
-/// A laid-out paragraph: the cached, world-ready layout result.
-#[derive(Debug, Default)]
+/// Translate a retained line from the pre-edit coordinate space into the
+/// post-edit space by shifting every offset at or after the edit point `from` by
+/// `delta` bytes.
+///
+/// Lines wholly before the edit (`end <= from`) are unchanged: their offsets are
+/// identical in both spaces, so they return a clone. A line at or after the edit
+/// (`start >= from`) shifts wholesale — its logical range and every caret stop's
+/// offset move by `delta`, while inline geometry (widths, inline x) is unaffected
+/// because the shifted text is byte-for-byte the same glyphs. A line straddling
+/// `from` is never a stable-stop match candidate (its own signature changed), so
+/// it is returned unshifted; the reflow recomputes it regardless.
+fn shift_line(line: &LineLayout, from: TextOffset, delta: isize) -> LineLayout {
+    let shift = |o: TextOffset| TextOffset((o.0 as isize + delta) as usize);
+    // Only lines fully at or after the edit translate cleanly.
+    if delta == 0 || line.logical_range.0 < from {
+        return line.clone();
+    }
+    let runs = line
+        .runs
+        .iter()
+        .map(|run| VisualRun {
+            logical_range: (shift(run.logical_range.0), shift(run.logical_range.1)),
+            caret_stops: run
+                .caret_stops
+                .iter()
+                .map(|s| CaretStop {
+                    offset: shift(s.offset),
+                    inline_x: s.inline_x,
+                })
+                .collect(),
+            ..run.clone()
+        })
+        .collect();
+    LineLayout {
+        runs,
+        logical_range: (shift(line.logical_range.0), shift(line.logical_range.1)),
+        width: line.width,
+    }
+}
+
+/// The version key a paragraph's cached layout was computed against.
+///
+/// Layout is reused only when this key is unchanged (spec section 20: unchanged
+/// text/font/features/width must not reshape or reflow). It deliberately excludes
+/// nothing that changes glyph geometry or fit: the source text, the base
+/// direction, a caller-opaque style epoch standing for font + shaping features,
+/// and the target width. Two keys comparing equal guarantees the same laid-out
+/// result, so a cache hit is a true no-op.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct LayoutKey {
+    /// Hash of the source text — cheap to compare, and combined with `text_len`
+    /// makes an accidental collision changing the result astronomically
+    /// unlikely.
+    text_hash: u64,
+    /// Source length in bytes, guarding the hash.
+    text_len: usize,
+    /// The paragraph base direction.
+    base: BaseDirection,
+    /// A caller-opaque epoch standing for the font faces and shaping features in
+    /// effect. The caller bumps it when either changes; equal epoch means equal
+    /// geometry.
+    style_epoch: u64,
+    /// The target wrap width in em units, bit-compared so `NaN`/`-0.0` never
+    /// alias a real width.
+    width_bits: u32,
+}
+
+impl LayoutKey {
+    fn new(text: &str, base: BaseDirection, style_epoch: u64, width: f32) -> Self {
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        text.hash(&mut hasher);
+        Self {
+            text_hash: hasher.finish(),
+            text_len: text.len(),
+            base,
+            style_epoch,
+            width_bits: width.to_bits(),
+        }
+    }
+}
+
+/// A per-line signature used by incremental reflow's stable-stop condition.
+///
+/// When an edit reflows lines forward, propagation stops at the first line whose
+/// signature matches the pre-edit layout's line at the same logical start (spec
+/// 12.19): a matching end offset and inline width means the line, and every line
+/// after it, is unaffected and its old layout can be spliced back unchanged. The
+/// signature is exactly what makes "reflow only what changed" equal a full
+/// recompute — it never stops early on a line that would in fact differ.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct LineSignature {
+    /// The line's logical start offset.
+    start: TextOffset,
+    /// The line's logical end offset.
+    end: TextOffset,
+    /// The line's inline width in em units, bit-compared.
+    width_bits: u32,
+}
+
+impl LineSignature {
+    fn of(line: &LineLayout) -> Self {
+        Self {
+            start: line.logical_range.0,
+            end: line.logical_range.1,
+            width_bits: line.width.to_bits(),
+        }
+    }
+}
+
+/// A laid-out paragraph: the retained, world-ready multi-line layout, with a
+/// version-keyed reuse gate and edit-scoped incremental reflow.
+///
+/// The paragraph owns its source text and base direction and produces a set of
+/// display lines fitted to a target width by breaking at UAX#14 opportunities. It
+/// reshapes/reflows only when its [`LayoutKey`] changes (spec section 20), and an
+/// edit reflows forward only until a line signature restabilizes (spec 12.19) —
+/// but the incremental result is defined to equal a full recompute, and the
+/// [`Self::layout_full`] path exists precisely so the two can be checked against
+/// each other.
+///
+/// Shaping is injected: [`Self::layout`] takes a shaping callback rather than
+/// owning font bytes, so the crate stays headless and a single shaper drives both
+/// the incremental and full paths identically.
+#[derive(Debug)]
 pub struct Paragraph {
-    // TODO(TF-P2): lines, runs, shaped glyphs, and the layout version key that
-    // gates reshape (text/font/features/width).
+    text: String,
+    base: BaseDirection,
+    style_epoch: u64,
+    /// The last laid-out lines, or empty before the first layout.
+    lines: Vec<LineLayout>,
+    /// The key `lines` were computed against, when valid.
+    key: Option<LayoutKey>,
+    /// The lowest byte offset touched since the last layout, if any — the
+    /// incremental reflow entry point. `None` means no edit since the last
+    /// layout (a width-only change still reflows from the top, gated by the key).
+    dirty_from: Option<TextOffset>,
+    /// The net byte-length change of all edits since the last layout. Offsets in
+    /// the cached lines are in the pre-edit coordinate space up to `dirty_from`
+    /// and shifted by this delta from there on; the incremental reflow uses it to
+    /// translate the retained tail into the new coordinate space before matching
+    /// signatures and splicing.
+    dirty_delta: isize,
+    /// The highest byte offset touched by any edit since the last layout, in the
+    /// post-edit coordinate space — the stable-stop floor. A stop may only fire at
+    /// or after this offset: with several disjoint edits, a line between two of
+    /// them can match its old signature yet sit before a later edit, so stopping
+    /// there would splice a stale edited line back. `None` means no edit pending.
+    dirty_to: Option<TextOffset>,
+}
+
+/// A shaping callback: shape a source substring in a resolved direction into a
+/// [`ShapedRun`]. The paragraph calls it once per logical direction run per line;
+/// the caller resolves the face and holds the font bytes.
+pub type ShapeFn<'a> = dyn FnMut(&str, Direction) -> ShapedRun + 'a;
+
+impl Default for Paragraph {
+    /// An empty paragraph resolving under first-strong base direction: base
+    /// direction is a stated input, and `Auto` defers to the text's own first
+    /// strong character rather than an ambient locale.
+    fn default() -> Self {
+        Self::new(String::new(), BaseDirection::Auto, 0)
+    }
 }
 
 impl Paragraph {
-    /// Lay out the paragraph to a target width, reusing cached results when the
-    /// layout version key is unchanged.
-    pub fn layout(&mut self, _width: f32) {
-        todo!("TF-P2: world-ready paragraph layout with cache gate")
+    /// A paragraph over `text` with the given base direction and style epoch.
+    pub fn new(text: impl Into<String>, base: BaseDirection, style_epoch: u64) -> Self {
+        Self {
+            text: text.into(),
+            base,
+            style_epoch,
+            lines: Vec::new(),
+            key: None,
+            dirty_from: None,
+            dirty_delta: 0,
+            dirty_to: None,
+        }
+    }
+
+    /// The paragraph's source text.
+    pub fn text(&self) -> &str {
+        &self.text
+    }
+
+    /// The laid-out lines from the last [`Self::layout`], top to bottom.
+    pub fn lines(&self) -> &[LineLayout] {
+        &self.lines
+    }
+
+    /// Replace the whole source text, marking every line dirty. The style epoch
+    /// is unchanged; use [`Self::set_style_epoch`] when font/features change.
+    pub fn set_text(&mut self, text: impl Into<String>) {
+        self.text = text.into();
+        self.dirty_from = Some(TextOffset(0));
+        // A whole-text replacement reflows from the top; no tail is retained, so
+        // the delta is irrelevant and reset, and the whole text is dirty.
+        self.dirty_delta = 0;
+        self.dirty_to = Some(TextOffset(self.text.len()));
+    }
+
+    /// Record an edit that replaced `range` with `replacement`, updating the
+    /// source and marking the affected region dirty from `range.0`.
+    ///
+    /// The dirty mark is the incremental reflow's entry: the next [`Self::layout`]
+    /// reflows from the line containing `range.0` and stops when a line signature
+    /// restabilizes. Offsets must be char boundaries; the replacement is spliced
+    /// verbatim (no normalization, per spec 12.3).
+    pub fn edit(&mut self, range: (TextOffset, TextOffset), replacement: &str) {
+        let (start, end) = (
+            range.0.0.min(self.text.len()),
+            range.1.0.min(self.text.len()),
+        );
+        let (start, end) = (start.min(end), start.max(end));
+        let removed = end - start;
+        let inserted = replacement.len();
+        self.text.replace_range(start..end, replacement);
+        let delta = inserted as isize - removed as isize;
+        let from = TextOffset(start);
+        self.dirty_from = Some(match self.dirty_from {
+            Some(existing) => existing.min(from),
+            None => from,
+        });
+        // The stop floor is the highest touched offset in current coordinates.
+        // This edit reaches `start + inserted`; a floor recorded by an earlier
+        // edit at a higher offset shifts by this edit's delta so it stays in the
+        // live buffer's coordinate space.
+        let this_end = TextOffset(start + inserted);
+        self.dirty_to = Some(match self.dirty_to {
+            Some(prev) if prev.0 > start => {
+                let shifted = TextOffset((prev.0 as isize + delta) as usize);
+                shifted.max(this_end)
+            }
+            Some(prev) => prev.max(this_end),
+            None => this_end,
+        });
+        // Track the net byte shift of the untouched tail so a later reflow can
+        // translate the retained lines into the new coordinate space.
+        self.dirty_delta += delta;
+    }
+
+    /// Bump the style epoch (font faces / shaping features changed), invalidating
+    /// all cached geometry.
+    pub fn set_style_epoch(&mut self, epoch: u64) {
+        if epoch != self.style_epoch {
+            self.style_epoch = epoch;
+            self.dirty_from = Some(TextOffset(0));
+        }
+    }
+
+    /// Lay out the paragraph to `width`, reusing the cached lines when nothing
+    /// that affects layout changed, and otherwise reflowing incrementally from
+    /// the dirtied region forward until a line signature restabilizes.
+    ///
+    /// Returns `true` when a (re)layout ran, `false` on a pure cache hit (spec
+    /// section 20: unchanged text/font/features/width does no work). The result
+    /// is guaranteed identical to [`Self::layout_full`] with the same inputs.
+    pub fn layout(&mut self, width: f32, shape: &mut ShapeFn<'_>) -> bool {
+        let key = LayoutKey::new(&self.text, self.base, self.style_epoch, width);
+
+        // Cache gate: same key and no pending edit means the retained lines are
+        // still valid — a true no-op, no BiDi, no shaping, no reflow.
+        if self.key == Some(key) && self.dirty_from.is_none() {
+            return false;
+        }
+
+        // A width or style change (key differs) forces reflow from the top; a
+        // pure edit reflows from the dirtied line. When both, the earliest wins.
+        let reflow_from = if self.key.map(|k| k.width_bits) != Some(key.width_bits)
+            || self.key.map(|k| k.style_epoch) != Some(key.style_epoch)
+            || self.key.is_none()
+        {
+            Some(TextOffset(0))
+        } else {
+            self.dirty_from
+        };
+
+        match reflow_from {
+            Some(TextOffset(0)) | None => {
+                self.lines = self.compute_lines(width, TextOffset(0), TextOffset(0), &[], shape);
+            }
+            Some(from) => {
+                // Incremental reflow. `from` is the edit's low offset in the
+                // pre-edit coordinate space; everything before it is byte-for-byte
+                // unchanged.
+                //
+                // The line *containing* the edit must reflow — but so must the line
+                // *before* it: shrinking or growing the edited word can pull the
+                // following word back onto the previous line or push its last word
+                // down. So the retained prefix stops one line earlier than the
+                // dirty line, and reflow restarts at that earlier line's start.
+                let dirty_idx = self
+                    .lines
+                    .iter()
+                    .position(|l| l.logical_range.1 > from)
+                    .unwrap_or(self.lines.len());
+                let reflow_idx = dirty_idx.saturating_sub(1);
+                let prefix: Vec<LineLayout> = self.lines[..reflow_idx].to_vec();
+                // The retained tail (reflow line onward) is in old coordinates;
+                // translate lines at or after the edit into the new coordinate
+                // space so the stable-stop and splice compare like for like.
+                let old_tail: Vec<LineLayout> = self.lines[reflow_idx..]
+                    .iter()
+                    .map(|l| shift_line(l, from, self.dirty_delta))
+                    .collect();
+                let start = prefix
+                    .last()
+                    .map(|l| l.logical_range.1)
+                    .unwrap_or(TextOffset(0));
+                // A stable-stop may only fire once reflow has passed every edited
+                // region: a line before the last edit can match its old signature
+                // yet sit ahead of a later edit, and splicing there would restore a
+                // stale edited line. `dirty_to` is that floor, in new coordinates.
+                let floor = self.dirty_to.unwrap_or(from);
+                let mut relaid = self.compute_lines(width, start, floor, &old_tail, shape);
+                let mut spliced = prefix;
+                spliced.append(&mut relaid);
+                self.lines = spliced;
+            }
+        }
+
+        self.key = Some(key);
+        self.dirty_from = None;
+        self.dirty_to = None;
+        self.dirty_delta = 0;
+        true
+    }
+
+    /// Lay out the whole paragraph from scratch, ignoring any cache. This is the
+    /// reference the incremental path is defined to equal; the equivalence is the
+    /// section's acceptance test.
+    pub fn layout_full(&mut self, width: f32, shape: &mut ShapeFn<'_>) -> Vec<LineLayout> {
+        self.compute_lines(width, TextOffset(0), TextOffset(0), &[], shape)
+    }
+
+    /// Break and lay out lines covering `[from, text.len())` to `width`, greedily
+    /// fitting at UAX#14 opportunities.
+    ///
+    /// `old_tail` lets an incremental reflow stop early: once a freshly-computed
+    /// line's signature matches an old line at the same start, the remaining old
+    /// lines are unaffected and are spliced back verbatim (spec 12.19 stable
+    /// stop). For a full layout `old_tail` is empty and every line is computed.
+    fn compute_lines(
+        &self,
+        width: f32,
+        from: TextOffset,
+        stop_floor: TextOffset,
+        old_tail: &[LineLayout],
+        shape: &mut ShapeFn<'_>,
+    ) -> Vec<LineLayout> {
+        let text = &self.text;
+        if from.0 >= text.len() {
+            return Vec::new();
+        }
+
+        let bidi = BidiInfo::resolve(text, self.base);
+        let breaker = LineBreaker::new();
+        let breaks: Vec<(TextOffset, BreakOpportunity)> =
+            breaker.break_opportunities(text).collect();
+
+        let mut out: Vec<LineLayout> = Vec::new();
+        let mut line_start = from;
+
+        while line_start.0 < text.len() {
+            let (line_end, _mandatory) = self.fit_line(&bidi, line_start, width, &breaks, shape);
+            let line = self.build_line(&bidi, (line_start, line_end), shape);
+
+            // Stable-stop: if this line matches the old layout's line at the same
+            // start, the rest of the old tail is unaffected — splice it back and
+            // stop. This is what keeps incremental reflow O(edited lines), and it
+            // can only fire when the recomputed line is byte-identical to the old
+            // one, so the spliced result equals a full recompute.
+            if !old_tail.is_empty()
+                && line_start >= stop_floor
+                && let Some(idx) = old_tail
+                    .iter()
+                    .position(|l| l.logical_range.0 == line_start)
+                && LineSignature::of(&old_tail[idx]) == LineSignature::of(&line)
+            {
+                out.push(line);
+                out.extend(old_tail[idx + 1..].iter().cloned());
+                return out;
+            }
+
+            line_start = line_end;
+            out.push(line);
+        }
+
+        out
+    }
+
+    /// Find the end offset of the line starting at `line_start` when fitting to
+    /// `width`: the furthest break opportunity whose text fits, or the first
+    /// break past the width when even one segment overflows (never zero-advance),
+    /// and always ending at a mandatory break.
+    fn fit_line(
+        &self,
+        bidi: &BidiInfo,
+        line_start: TextOffset,
+        width: f32,
+        breaks: &[(TextOffset, BreakOpportunity)],
+        shape: &mut ShapeFn<'_>,
+    ) -> (TextOffset, bool) {
+        let text = &self.text;
+        let mut last_fit: Option<TextOffset> = None;
+        for &(at, class) in breaks.iter().filter(|(at, _)| *at > line_start) {
+            let candidate_w = self.measure(bidi, line_start, at, shape);
+            let fits = candidate_w <= width || width <= 0.0;
+            if class == BreakOpportunity::Mandatory {
+                // A mandatory break ends the line. If nothing fit before it and it
+                // overflows, the line still takes the whole segment (a single
+                // unbreakable run is never split to zero width).
+                if fits || last_fit.is_none() {
+                    return (at, true);
+                }
+                return (last_fit.unwrap(), false);
+            }
+            if fits {
+                last_fit = Some(at);
+            } else {
+                // This opportunity overflows: end at the last one that fit, or —
+                // if none did — take this first segment anyway to guarantee
+                // forward progress.
+                return match last_fit {
+                    Some(end) => (end, false),
+                    None => (at, false),
+                };
+            }
+        }
+        // No break past the start: the rest of the text is one line.
+        (TextOffset(text.len()), true)
+    }
+
+    /// The inline width of `[start, end)` under the current style, summed over
+    /// its logical direction runs, using the shared paragraph BiDi resolution.
+    fn measure(
+        &self,
+        bidi: &BidiInfo,
+        start: TextOffset,
+        end: TextOffset,
+        shape: &mut ShapeFn<'_>,
+    ) -> f32 {
+        let text = &self.text;
+        bidi.direction_runs_in(start, end)
+            .iter()
+            .map(|run| {
+                let sub = &text[run.start.0..run.end.0];
+                shape(sub, run.direction).width_ems
+            })
+            .sum()
+    }
+
+    /// Build the [`LineLayout`] for `range`, shaping each of its logical direction
+    /// runs and reusing the shared paragraph BiDi resolution.
+    fn build_line(
+        &self,
+        bidi: &BidiInfo,
+        range: (TextOffset, TextOffset),
+        shape: &mut ShapeFn<'_>,
+    ) -> LineLayout {
+        let text = &self.text;
+        let shaped: Vec<ShapedRun> = bidi
+            .direction_runs_in(range.0, range.1)
+            .iter()
+            .map(|run| {
+                let sub = &text[run.start.0..run.end.0];
+                shape(sub, run.direction)
+            })
+            .collect();
+        LineLayout::in_range(text, bidi, range, &shaped)
     }
 }
 
@@ -409,5 +887,240 @@ mod tests {
         assert!(run.inline_x_of(TextOffset(3)).is_some());
         assert!(run.inline_x_of(TextOffset(6)).is_some());
         assert!(run.inline_x_of(TextOffset(1)).is_none());
+    }
+
+    // --- Paragraph layout: incremental == full recompute ---
+
+    /// A shaping callback over the fixture face, capturing a fresh [`Shaper`] per
+    /// paragraph. Both the incremental and full paths are driven by an identical
+    /// closure so any difference is layout, not shaping.
+    fn fixture_shaper() -> impl FnMut(&str, Direction) -> ShapedRun {
+        move |sub: &str, dir: Direction| shape_run(sub, dir)
+    }
+
+    /// Structural equality of two laid-out line sets: same line count, and each
+    /// line matches in logical range, width, and every visual run (logical range,
+    /// inline extent, direction, level, face, and caret stops). This is the DoD
+    /// comparison — bit-for-bit layout identity, not a coarse signature.
+    fn lines_eq(a: &[LineLayout], b: &[LineLayout]) -> bool {
+        if a.len() != b.len() {
+            return false;
+        }
+        a.iter().zip(b).all(|(x, y)| {
+            x.logical_range == y.logical_range
+                && x.width.to_bits() == y.width.to_bits()
+                && x.runs.len() == y.runs.len()
+                && x.runs.iter().zip(&y.runs).all(|(rx, ry)| {
+                    rx.logical_range == ry.logical_range
+                        && rx.visual_inline_range.0.to_bits() == ry.visual_inline_range.0.to_bits()
+                        && rx.visual_inline_range.1.to_bits() == ry.visual_inline_range.1.to_bits()
+                        && rx.direction == ry.direction
+                        && rx.level == ry.level
+                        && rx.face == ry.face
+                        && rx.caret_stops.len() == ry.caret_stops.len()
+                        && rx.caret_stops.iter().zip(&ry.caret_stops).all(|(cx, cy)| {
+                            cx.offset == cy.offset && cx.inline_x.to_bits() == cy.inline_x.to_bits()
+                        })
+                })
+        })
+    }
+
+    /// The width one fixture-shaped LTR run of `text` occupies, for choosing a
+    /// wrap width that forces a known number of lines without a magic constant.
+    fn measured_width(text: &str) -> f32 {
+        shape_run(text, Direction::LeftToRight).width_ems
+    }
+
+    #[test]
+    fn single_line_paragraph_lays_out_and_caches() {
+        let mut p = Paragraph::new("hello world", BaseDirection::LeftToRight, 0);
+        let mut shape = fixture_shaper();
+        // First layout runs; a second with the same inputs is a pure cache hit.
+        assert!(p.layout(f32::INFINITY, &mut shape));
+        assert!(!p.layout(f32::INFINITY, &mut shape));
+        // Unwrapped, the whole text is one line.
+        assert_eq!(p.lines().len(), 1);
+        assert_eq!(
+            p.lines()[0].logical_range,
+            (TextOffset(0), TextOffset("hello world".len()))
+        );
+    }
+
+    #[test]
+    fn wrapping_breaks_at_opportunities() {
+        // A width that fits "hello " but not "hello world" forces two lines,
+        // breaking at the space (a UAX#14 opportunity), not mid-word.
+        let text = "hello world";
+        let width = measured_width("hello ") + 0.01;
+        let mut p = Paragraph::new(text, BaseDirection::LeftToRight, 0);
+        let mut shape = fixture_shaper();
+        p.layout(width, &mut shape);
+        assert_eq!(p.lines().len(), 2, "wraps into two lines");
+        assert_eq!(p.lines()[0].logical_range.0, TextOffset(0));
+        assert_eq!(
+            p.lines().last().unwrap().logical_range.1,
+            TextOffset(text.len())
+        );
+    }
+
+    #[test]
+    fn incremental_edit_equals_full_recompute() {
+        // The DoD: after an edit, an incremental relayout must produce a line set
+        // identical to laying the edited text out from scratch.
+        let text = "the quick brown fox jumps over the lazy dog";
+        let width = measured_width("the quick brown ") + 0.01;
+
+        let mut incremental = Paragraph::new(text, BaseDirection::LeftToRight, 0);
+        let mut shape = fixture_shaper();
+        incremental.layout(width, &mut shape);
+
+        // Edit a word deep in the paragraph and relayout incrementally.
+        // Replace "lazy" (bytes 35..39) with "sleeping".
+        incremental.edit((TextOffset(35), TextOffset(39)), "sleeping");
+        incremental.layout(width, &mut shape);
+
+        // Lay the same edited text out from scratch.
+        let edited = "the quick brown fox jumps over the sleeping dog";
+        let mut full = Paragraph::new(edited, BaseDirection::LeftToRight, 0);
+        let mut shape2 = fixture_shaper();
+        let full_lines = full.layout_full(width, &mut shape2);
+
+        assert_eq!(incremental.text(), edited);
+        assert!(
+            lines_eq(incremental.lines(), &full_lines),
+            "incremental relayout must equal full recompute\nincremental: {:#?}\nfull: {:#?}",
+            incremental.lines(),
+            full_lines
+        );
+    }
+
+    #[test]
+    fn edit_in_first_line_equals_full_recompute() {
+        // An edit in the very first line reflows from the top; still must equal a
+        // full recompute.
+        let text = "alpha beta gamma delta epsilon zeta eta theta";
+        let width = measured_width("alpha beta ") + 0.01;
+
+        let mut incremental = Paragraph::new(text, BaseDirection::LeftToRight, 0);
+        let mut shape = fixture_shaper();
+        incremental.layout(width, &mut shape);
+
+        // Replace "alpha" (0..5) with "AL".
+        incremental.edit((TextOffset(0), TextOffset(5)), "AL");
+        incremental.layout(width, &mut shape);
+
+        let edited = "AL beta gamma delta epsilon zeta eta theta";
+        let mut full = Paragraph::new(edited, BaseDirection::LeftToRight, 0);
+        let mut shape2 = fixture_shaper();
+        let full_lines = full.layout_full(width, &mut shape2);
+
+        assert!(lines_eq(incremental.lines(), &full_lines));
+    }
+
+    #[test]
+    fn width_change_reflows_and_equals_full() {
+        // Changing the wrap width invalidates the cache key and reflows from the
+        // top; the result must equal a from-scratch layout at the new width.
+        let text = "one two three four five six seven eight nine ten";
+        let mut incremental = Paragraph::new(text, BaseDirection::LeftToRight, 0);
+        let mut shape = fixture_shaper();
+
+        incremental.layout(measured_width("one two three ") + 0.01, &mut shape);
+        let narrow = measured_width("one two ") + 0.01;
+        assert!(
+            incremental.layout(narrow, &mut shape),
+            "width change relays out"
+        );
+
+        let mut full = Paragraph::new(text, BaseDirection::LeftToRight, 0);
+        let mut shape2 = fixture_shaper();
+        let full_lines = full.layout_full(narrow, &mut shape2);
+        assert!(lines_eq(incremental.lines(), &full_lines));
+    }
+
+    #[test]
+    fn multi_edit_before_layout_equals_full_recompute() {
+        // Two edits between layouts: the dirty mark tracks the earliest touched
+        // offset, and the single relayout must still equal a full recompute of the
+        // final text.
+        let text = "red orange yellow green blue indigo violet";
+        let width = measured_width("red orange ") + 0.01;
+
+        let mut incremental = Paragraph::new(text, BaseDirection::LeftToRight, 0);
+        let mut shape = fixture_shaper();
+        incremental.layout(width, &mut shape);
+
+        // Edit a later word, then an earlier word, before relaying out.
+        // "violet" is bytes 36..42; "green" is bytes 18..23.
+        incremental.edit((TextOffset(36), TextOffset(42)), "purple");
+        incremental.edit((TextOffset(18), TextOffset(23)), "GREEN");
+        incremental.layout(width, &mut shape);
+
+        let edited = "red orange yellow GREEN blue indigo purple";
+        let mut full = Paragraph::new(edited, BaseDirection::LeftToRight, 0);
+        let mut shape2 = fixture_shaper();
+        let full_lines = full.layout_full(width, &mut shape2);
+
+        assert_eq!(incremental.text(), edited);
+        assert!(lines_eq(incremental.lines(), &full_lines));
+    }
+
+    #[test]
+    fn rtl_paragraph_incremental_equals_full() {
+        // An RTL paragraph edited mid-text: incremental reflow must equal a full
+        // recompute, so BiDi's paragraph-context sensitivity is honored.
+        let text = "\u{05D0}\u{05D1} \u{05D2}\u{05D3} \u{05D4}\u{05D5} \u{05D6}\u{05D7}";
+        let width = measured_width("\u{05D0}\u{05D1} ") + 0.01;
+
+        let mut incremental = Paragraph::new(text, BaseDirection::RightToLeft, 0);
+        let mut shape = fixture_shaper();
+        incremental.layout(width, &mut shape);
+
+        // Replace the third word (bytes 5..9, "\u{05D2}\u{05D3}") with one letter.
+        incremental.edit((TextOffset(5), TextOffset(9)), "\u{05DA}");
+        incremental.layout(width, &mut shape);
+
+        let mut full = Paragraph::new(incremental.text(), BaseDirection::RightToLeft, 0);
+        let mut shape2 = fixture_shaper();
+        let full_lines = full.layout_full(width, &mut shape2);
+        assert!(lines_eq(incremental.lines(), &full_lines));
+    }
+
+    #[test]
+    fn style_epoch_change_invalidates_and_equals_full() {
+        // Bumping the style epoch (font/features changed) forces a full reflow;
+        // the result must equal a from-scratch layout under the new epoch.
+        let text = "sample paragraph text for layout";
+        let width = measured_width("sample ") + 0.01;
+
+        let mut incremental = Paragraph::new(text, BaseDirection::LeftToRight, 0);
+        let mut shape = fixture_shaper();
+        incremental.layout(width, &mut shape);
+        incremental.set_style_epoch(1);
+        assert!(
+            incremental.layout(width, &mut shape),
+            "epoch bump relays out"
+        );
+
+        let mut full = Paragraph::new(text, BaseDirection::LeftToRight, 1);
+        let mut shape2 = fixture_shaper();
+        let full_lines = full.layout_full(width, &mut shape2);
+        assert!(lines_eq(incremental.lines(), &full_lines));
+    }
+
+    #[test]
+    fn mandatory_break_forces_line_end() {
+        // A hard newline ends a line regardless of width; each side is its own
+        // line and the whole thing equals a full recompute.
+        let text = "first\nsecond";
+        let mut incremental = Paragraph::new(text, BaseDirection::LeftToRight, 0);
+        let mut shape = fixture_shaper();
+        incremental.layout(f32::INFINITY, &mut shape);
+        assert_eq!(incremental.lines().len(), 2, "hard newline splits lines");
+
+        let mut full = Paragraph::new(text, BaseDirection::LeftToRight, 0);
+        let mut shape2 = fixture_shaper();
+        let full_lines = full.layout_full(f32::INFINITY, &mut shape2);
+        assert!(lines_eq(incremental.lines(), &full_lines));
     }
 }
