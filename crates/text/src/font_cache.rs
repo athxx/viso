@@ -34,7 +34,25 @@
 //! evicted while their scope is live. Pinning is scoped, not a permanent
 //! residency API.
 //!
+//! # Memory pressure sheds, never flushes
+//!
+//! An OS low-memory warning must not cascade-flush the whole text cache (spec
+//! section 18): a face upgrade never flushes app-wide text caches, and neither
+//! does transient memory pressure. [`shed_to_pressure_budget`] shrinks the cache
+//! to a smaller *pressure budget* by running the same coldest-first
+//! Probation-then-demote eviction the ordinary budget uses — it is a temporary
+//! lower ceiling, not a `clear()`. Pinned faces (the live working set: default
+//! UI face, in-flight shaping/raster, the focused document face) are never
+//! evicted, so the visible working set keeps rendering untouched while cold
+//! one-shot residency is reclaimed. When pressure clears, [`restore_budget`]
+//! lifts the ceiling back and the working set simply repopulates on demand. The
+//! pressure ceiling never drops below the pinned working set's own cost: if
+//! meeting it would require evicting a pin, eviction stops rather than violate a
+//! live scope, exactly as the ordinary budget does.
+//!
 //! [`advance_epoch`]: FontCache::advance_epoch
+//! [`shed_to_pressure_budget`]: FontCache::shed_to_pressure_budget
+//! [`restore_budget`]: FontCache::restore_budget
 
 use std::collections::HashMap;
 use std::collections::HashSet;
@@ -79,10 +97,16 @@ pub struct FontCache {
     pinned: HashSet<FontFaceId>,
     /// Total resident cost of all entries.
     total_bytes: u64,
-    /// Total byte budget; exceeding it drives demotion/eviction.
+    /// The resting byte budget: the ceiling in effect when not under memory
+    /// pressure. [`restore_budget`](Self::restore_budget) returns the effective
+    /// ceiling to this value.
+    resting_budget_bytes: u64,
+    /// The effective byte budget currently enforced; equals `resting_budget_bytes`
+    /// normally and a smaller pressure budget while shedding under memory
+    /// pressure. Exceeding it drives demotion/eviction.
     budget_bytes: u64,
     /// Byte target for the Protected segment; exceeding it demotes the coldest
-    /// Protected face to Probation.
+    /// Protected face to Probation. Scales with the effective budget.
     protected_target_bytes: u64,
     /// Monotonic epoch counter; advanced once per frame / paragraph pass.
     epoch: u64,
@@ -100,6 +124,7 @@ impl FontCache {
             used_this_epoch: HashSet::new(),
             pinned: HashSet::new(),
             total_bytes: 0,
+            resting_budget_bytes: budget_bytes,
             budget_bytes,
             protected_target_bytes: budget_bytes / 5 * 4,
             epoch: 0,
@@ -209,6 +234,55 @@ impl FontCache {
     /// Whether a face is currently pinned.
     pub fn is_pinned(&self, id: FontFaceId) -> bool {
         self.pinned.contains(&id)
+    }
+
+    /// The effective byte budget currently enforced (the resting budget, or a
+    /// smaller pressure budget while shedding).
+    pub fn budget_bytes(&self) -> u64 {
+        self.budget_bytes
+    }
+
+    /// The total resident cost of the pinned working set — the floor below which
+    /// memory pressure cannot shed, since pins are never evicted.
+    pub fn pinned_bytes(&self) -> u64 {
+        self.entries
+            .iter()
+            .filter(|(id, _)| self.pinned.contains(id))
+            .map(|(_, e)| e.cost_bytes)
+            .sum()
+    }
+
+    /// Shed cold residency down to a smaller *pressure budget* in response to an
+    /// OS low-memory warning, without flushing the working set.
+    ///
+    /// This is spec section 18's guarantee under memory pressure: pressure lowers
+    /// the ceiling, it does not clear the cache. The same coldest-first
+    /// eviction the resting budget uses runs against the reduced ceiling —
+    /// Probation faces evict first, Protected demotes only if Probation is
+    /// exhausted, and pinned faces (the live working set) are never touched. So a
+    /// memory warning reclaims cold one-shot faces while every pinned face and as
+    /// much of the hot Protected set as fits keeps rendering untouched; there is
+    /// no whole-cache flush and no per-paragraph cascade.
+    ///
+    /// The pressure budget is clamped to the resting budget (pressure only ever
+    /// lowers the ceiling, never raises it). It is not clamped up to the pinned
+    /// working set: if the requested ceiling is below the pinned cost, eviction
+    /// stops at the pins rather than violate a live scope, exactly as the resting
+    /// budget does. The lowered ceiling stays in effect until
+    /// [`restore_budget`](Self::restore_budget) lifts it.
+    pub fn shed_to_pressure_budget(&mut self, pressure_budget_bytes: u64) {
+        self.budget_bytes = pressure_budget_bytes.min(self.resting_budget_bytes);
+        self.protected_target_bytes = self.budget_bytes / 5 * 4;
+        self.enforce_protected_target();
+        self.enforce_budget();
+    }
+
+    /// Lift the effective ceiling back to the resting budget when memory pressure
+    /// clears. Nothing is loaded here — the working set repopulates on demand as
+    /// faces are next admitted; this only stops shedding at the pressure ceiling.
+    pub fn restore_budget(&mut self) {
+        self.budget_bytes = self.resting_budget_bytes;
+        self.protected_target_bytes = self.budget_bytes / 5 * 4;
     }
 
     /// Demote the coldest Protected faces to Probation while Protected exceeds
@@ -382,6 +456,102 @@ mod tests {
         cache.unpin(pinned);
         cache.admit(id(3), 200);
         assert!(!cache.contains(pinned));
+    }
+
+    #[test]
+    fn memory_pressure_sheds_cold_residency_but_never_flushes_working_set() {
+        // The acceptance assertion: an OS memory warning must not cascade-flush
+        // the whole text cache. Set up a hot pinned working-set face and a hot
+        // Protected face alongside a crowd of cold one-shot faces, then shed to a
+        // small pressure budget and assert the working set is intact while only
+        // cold residency was reclaimed — no whole-cache clear.
+        let mut cache = FontCache::with_budget(2_000);
+
+        // The live working set: a pinned default UI face (in-flight scope).
+        let ui = id(1);
+        cache.admit(ui, 300);
+        cache.pin(ui);
+        // A hot document face, promoted to Protected via reuse across epochs.
+        let hot = id(2);
+        cache.admit(hot, 300);
+        cache.advance_epoch();
+        cache.admit(hot, 300);
+        cache.advance_epoch();
+        cache.admit(hot, 300);
+        cache.advance_epoch();
+        assert_eq!(cache.segment_of(hot), Some(Segment::Protected));
+
+        // A crowd of cold one-shot faces filling the rest of the resting budget.
+        for n in 10..14 {
+            cache.admit(id(n), 300);
+            cache.advance_epoch();
+        }
+        let faces_before = cache.len();
+        assert!(faces_before >= 6, "working set + cold crowd all resident");
+
+        // An OS low-memory warning: shed to a small pressure budget that fits the
+        // pinned face plus the hot Protected face but not the cold crowd.
+        cache.shed_to_pressure_budget(700);
+
+        // The whole cache was not flushed: the pinned working-set face and the
+        // hot Protected face both survived.
+        assert!(cache.contains(ui), "pinned working-set face never evicted");
+        assert!(cache.is_pinned(ui));
+        assert!(cache.contains(hot), "hot Protected face survived the shed");
+        // Cold one-shot residency was reclaimed to meet the lower ceiling.
+        assert!(cache.len() < faces_before, "cold residency was shed");
+        assert!(
+            cache.total_bytes() <= 700,
+            "shed down to the pressure budget"
+        );
+        // This is a shed, not a clear: real faces remain resident.
+        assert!(cache.total_bytes() > 0 && !cache.is_empty());
+
+        // Pressure clears: the ceiling lifts back to the resting budget and the
+        // working set repopulates on demand (nothing is force-loaded here).
+        cache.restore_budget();
+        assert_eq!(cache.budget_bytes(), 2_000);
+        assert!(cache.contains(ui) && cache.contains(hot));
+    }
+
+    #[test]
+    fn memory_pressure_never_evicts_a_pin_even_below_its_cost() {
+        // A pressure budget below the pinned working set's own cost must stop at
+        // the pins rather than flush a live scope — pressure degrades headroom,
+        // never correctness of an in-flight face.
+        let mut cache = FontCache::with_budget(1_000);
+        let a = id(1);
+        let b = id(2);
+        cache.admit(a, 300);
+        cache.admit(b, 300);
+        cache.pin(a);
+        cache.pin(b);
+        // Some cold churn on top.
+        cache.admit(id(3), 300);
+        cache.advance_epoch();
+
+        // Shed to a budget below the 600 bytes of pinned residency.
+        cache.shed_to_pressure_budget(100);
+
+        // Both pins survive; only the unpinned cold face could be shed.
+        assert!(cache.contains(a) && cache.is_pinned(a));
+        assert!(cache.contains(b) && cache.is_pinned(b));
+        assert!(!cache.contains(id(3)), "the only evictable face was shed");
+        // The floor is the pinned cost: eviction stopped rather than break a pin.
+        assert_eq!(cache.total_bytes(), cache.pinned_bytes());
+    }
+
+    #[test]
+    fn pressure_budget_only_lowers_the_ceiling_never_raises_it() {
+        // Requesting a pressure budget above the resting budget is a no-op on the
+        // ceiling: pressure only sheds, it never grows the cache.
+        let mut cache = FontCache::with_budget(500);
+        cache.shed_to_pressure_budget(10_000);
+        assert_eq!(
+            cache.budget_bytes(),
+            500,
+            "pressure budget is clamped to the resting budget"
+        );
     }
 
     #[test]
