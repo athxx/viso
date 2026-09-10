@@ -19,7 +19,8 @@
 //! [`segment`], [`bidi`], [`line_break`], [`line_break_tailoring`],
 //! [`text_position`], [`caret`], [`hit_test`], [`selection`], [`ime`],
 //! [`paragraph`]. Scheduling and glyph representation: [`text_work`],
-//! [`glyph_representation`], [`mtsdf`], [`outline_cache`], [`glyph_cache`].
+//! [`glyph_representation`], [`mtsdf`], [`outline_cache`], [`raster_a8`],
+//! [`glyph_cache`].
 //!
 //! # Glyph representation
 //!
@@ -69,11 +70,14 @@ pub mod glyph_cache;
 pub mod glyph_representation;
 pub mod mtsdf;
 pub mod outline_cache;
+pub mod raster_a8;
 pub mod text_work;
 
 pub use font_cache::FontCache;
 pub use font_request::{FontRequest, FontRole, FontSlant, FontTarget, FontWeight, FontWidth};
+pub use glyph_cache::{Admission, GlyphKey, GlyphResidency};
 pub use glyph_representation::GlyphImageKind;
+pub use raster_a8::{CoverageBitmap, rasterize_coverage};
 pub use resolver::{FontResolver, Resolved};
 pub use shaping::{Direction, ShapedGlyph, ShapedRun, Shaper};
 pub use text_position::{CaretAffinity, TextOffset, TextPosition};
