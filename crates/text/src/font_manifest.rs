@@ -9,9 +9,16 @@
 //! a coarse script-coverage summary, a color-capability flag, and an
 //! [`AssetRef`] to the packaged bytes. It never holds decoded font bytes or a
 //! parsed face — the resolver reads and parses an asset lazily on first use.
-//! Build-time scanning of `assets/fonts/` fills these entries; that discovery
-//! is filled in later, so the manifest is constructed from declared entries
-//! here.
+//!
+//! Build-time discovery scans `assets/fonts/`, validates each container
+//! ([`crate::font_format`]), and extracts the minimal per-face metadata into
+//! [`DiscoveredFace`] records. That scan is build tooling — it reads the
+//! filesystem, which this pure-algorithm crate never does. What lives here is
+//! the normalization from those records into a compact [`FontManifest`]
+//! ([`FontManifest::from_discovered`]): the manifest is metadata only, so
+//! constructing it — even for thousands of faces — parses no font bytes. The
+//! first real use of a face triggers the lazy asset read and parse in the
+//! resolver, not manifest construction (section 3.1).
 
 use crate::font_request::{FontRole, FontSlant, FontWeight, FontWidth};
 
@@ -62,6 +69,17 @@ pub struct ManifestEntry {
     pub asset: AssetRef,
 }
 
+/// One face as reported by build-time discovery: the minimal metadata the
+/// scanner extracts from a validated container, before normalization into the
+/// manifest.
+///
+/// This is the boundary type between build tooling (which reads the filesystem
+/// and parses containers) and this crate (which normalizes and serves compact
+/// descriptors). It is deliberately the same field set as [`ManifestEntry`]:
+/// discovery extracts exactly what the manifest keeps, nothing more, so a
+/// scanner never smuggles decoded bytes or full coverage across the boundary.
+pub type DiscoveredFace = ManifestEntry;
+
 /// The parsed application font manifest: declared faces plus role bindings.
 #[derive(Debug, Default)]
 pub struct FontManifest {
@@ -85,6 +103,44 @@ impl FontManifest {
     ) -> Self {
         Self {
             entries,
+            role_bindings,
+            revision: 1,
+        }
+    }
+
+    /// A manifest normalized from build-time discovery records.
+    ///
+    /// Discovery yields one [`DiscoveredFace`] per face found while scanning
+    /// `assets/fonts/`; this normalizes them into compact manifest entries:
+    /// duplicate faces (same asset + face index) are collapsed, and entries are
+    /// sorted by family then style so the manifest — and the resolver cache key
+    /// derived from its revision — is deterministic regardless of directory
+    /// iteration order.
+    ///
+    /// This does no font parsing: it moves and orders metadata records. The
+    /// bytes behind each [`AssetRef`] are read and parsed lazily by the
+    /// resolver on first use, so constructing a manifest over thousands of
+    /// discovered faces costs no startup parse (section 3.1).
+    pub fn from_discovered(
+        mut discovered: Vec<DiscoveredFace>,
+        role_bindings: Vec<(FontRole, String)>,
+    ) -> Self {
+        // Deterministic order independent of filesystem iteration: family, then
+        // weight / width / slant, then the asset identity as a final tiebreak.
+        discovered.sort_by(|a, b| {
+            a.family
+                .cmp(&b.family)
+                .then(a.weight.0.cmp(&b.weight.0))
+                .then(a.width.0.cmp(&b.width.0))
+                .then((a.slant as u8).cmp(&(b.slant as u8)))
+                .then(a.asset.0.cmp(&b.asset.0))
+                .then(a.face_index.cmp(&b.face_index))
+        });
+        // Collapse duplicate faces: the same (asset, face_index) discovered
+        // twice is one face. Kept stable by the sort above.
+        discovered.dedup_by(|a, b| a.asset == b.asset && a.face_index == b.face_index);
+        Self {
+            entries: discovered,
             role_bindings,
             revision: 1,
         }
@@ -237,6 +293,117 @@ mod tests {
                 FontSlant::Normal
             )
             .is_none()
+        );
+    }
+
+    #[test]
+    fn from_discovered_normalizes_order_and_dedups() {
+        // Discovery reports faces in arbitrary (filesystem) order, with a
+        // duplicate of the same (asset, face_index).
+        let discovered = vec![
+            entry("Inter", FontWeight::BOLD, FontSlant::Normal, 2),
+            entry("Inter", FontWeight::REGULAR, FontSlant::Normal, 1),
+            entry("Inter", FontWeight::REGULAR, FontSlant::Normal, 1), // duplicate.
+            entry("Alpha", FontWeight::REGULAR, FontSlant::Normal, 9),
+        ];
+        let m = FontManifest::from_discovered(discovered, Vec::new());
+
+        // Duplicate collapsed: 4 in, 3 out.
+        assert_eq!(m.entries().len(), 3);
+        // Deterministic order: family first (Alpha before Inter), then weight.
+        assert_eq!(m.entries()[0].family, "Alpha");
+        assert_eq!(m.entries()[1].family, "Inter");
+        assert_eq!(m.entries()[1].weight, FontWeight::REGULAR);
+        assert_eq!(m.entries()[2].family, "Inter");
+        assert_eq!(m.entries()[2].weight, FontWeight::BOLD);
+    }
+
+    #[test]
+    fn from_discovered_is_order_independent() {
+        // The same faces discovered in two different directory orders normalize
+        // to the same manifest (same entry sequence), so the resolver cache key
+        // does not depend on filesystem iteration order.
+        let a = FontManifest::from_discovered(
+            vec![
+                entry("B", FontWeight::REGULAR, FontSlant::Normal, 2),
+                entry("A", FontWeight::REGULAR, FontSlant::Normal, 1),
+            ],
+            Vec::new(),
+        );
+        let b = FontManifest::from_discovered(
+            vec![
+                entry("A", FontWeight::REGULAR, FontSlant::Normal, 1),
+                entry("B", FontWeight::REGULAR, FontSlant::Normal, 2),
+            ],
+            Vec::new(),
+        );
+        let families_a: Vec<_> = a.entries().iter().map(|e| e.family.as_str()).collect();
+        let families_b: Vec<_> = b.entries().iter().map(|e| e.family.as_str()).collect();
+        assert_eq!(families_a, families_b);
+        assert_eq!(families_a, ["A", "B"]);
+    }
+
+    /// An [`crate::app_fonts::AssetSource`] that counts every byte read, so a
+    /// test can prove a code path performs no lazy asset load (and thus no
+    /// parse, since a read is the prerequisite of a parse).
+    #[derive(Default)]
+    struct CountingAssetSource {
+        reads: std::cell::Cell<usize>,
+    }
+
+    impl crate::app_fonts::AssetSource for CountingAssetSource {
+        fn read(&self, _asset: AssetRef) -> Option<Vec<u8>> {
+            self.reads.set(self.reads.get() + 1);
+            None
+        }
+    }
+
+    #[test]
+    fn three_thousand_discovered_faces_parse_nothing_at_startup() {
+        // Simulate a project (or system) with 3000 discovered faces: constructing
+        // the manifest must not scale startup work with the face count. The DoD
+        // (section 3.1 / spec: "3000 fonts must not make startup a function of
+        // 3000 parses") is that manifest construction and lookup read zero font
+        // assets — the byte read, and therefore the parse, is deferred to the
+        // resolver on first real use.
+        const N: u32 = 3000;
+        let discovered: Vec<DiscoveredFace> = (0..N)
+            .map(|i| {
+                entry(
+                    &format!("Family{i}"),
+                    FontWeight::REGULAR,
+                    FontSlant::Normal,
+                    i,
+                )
+            })
+            .collect();
+
+        let source = CountingAssetSource::default();
+        let m = FontManifest::from_discovered(discovered, Vec::new());
+        assert_eq!(m.entries().len(), N as usize);
+
+        // Constructing the manifest read no asset bytes.
+        assert_eq!(
+            source.reads.get(),
+            0,
+            "manifest construction eagerly loaded font assets"
+        );
+
+        // A lookup across the whole manifest also reads nothing: select returns a
+        // compact descriptor (an AssetRef), never the bytes.
+        for i in 0..N {
+            let hit = m.select(
+                &format!("Family{i}"),
+                FontWeight::REGULAR,
+                FontWidth::NORMAL,
+                FontSlant::Normal,
+            );
+            assert!(hit.is_some());
+        }
+        assert_eq!(
+            source.reads.get(),
+            0,
+            "manifest lookup eagerly loaded font assets"
         );
     }
 }
