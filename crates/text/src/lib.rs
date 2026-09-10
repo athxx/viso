@@ -84,7 +84,7 @@ pub use raster_a8::{CoverageBitmap, rasterize_coverage};
 pub use resolver::{FontResolver, Resolved};
 pub use segment::{GraphemeCheckpoint, Segmenter};
 pub use shaping::{Direction, ShapedGlyph, ShapedRun, Shaper};
-pub use text_position::{CaretAffinity, TextOffset, TextPosition};
+pub use text_position::{CaretAffinity, TextOffset, TextPosition, Utf16Bridge};
 
 /// Stable identity for a resolved font face.
 ///
