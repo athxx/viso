@@ -83,3 +83,130 @@ pub trait ColorGlyphRasterizer {
         pixels_per_em: u16,
     ) -> Option<ColorGlyph>;
 }
+
+/// A [`SystemFontProvider`] that resolves nothing: the explicit "there is no
+/// system-font source" seam.
+///
+/// A WASM/Canvas runtime has no system fonts to draw on — no CSS `system-ui`, no
+/// browser local-font enumeration, no OS installed-font access, and the
+/// framework ships no implicit bundled default face (spec section 16.1). Such a
+/// runtime wires this provider so the App-first / System-second resolution has a
+/// System step that categorically answers nothing: a request the application's
+/// own manifest does not satisfy resolves to [`crate::resolver::Resolved::Missing`],
+/// never to an implicit system or framework face. It is not WASM-specific —
+/// any host that deliberately withholds system fonts uses the same seam.
+///
+/// This is a real closed door, not a stub: resolution stays total and the
+/// missing-font policy runs, rather than a silent default face appearing.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct NoSystemFonts;
+
+impl SystemFontProvider for NoSystemFonts {
+    /// Resolve no system face for any query: this seam owns no fonts.
+    fn resolve_system_face(&self, _query: &SystemFontQuery) -> Option<SystemFontResult> {
+        None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::font_manifest::{AssetRef, FontManifest, ManifestEntry, ScriptCoverageSummary};
+    use crate::font_request::FontRequest;
+    use crate::resolver::{FontResolver, Resolved};
+
+    #[test]
+    fn no_system_fonts_resolves_nothing() {
+        // The zero-provider answers no query, whatever its role or attributes.
+        let provider = NoSystemFonts;
+        assert!(
+            provider
+                .resolve_system_face(&SystemFontQuery {
+                    role: FontRole::Ui,
+                    weight: FontWeight::REGULAR,
+                    width: FontWidth::NORMAL,
+                    slant: FontSlant::Normal,
+                    lang: String::new(),
+                    sample: "hello".to_owned(),
+                })
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn wasm_runtime_has_no_implicit_system_or_framework_font() {
+        // A WASM/Canvas runtime ships no system fonts and no implicit framework
+        // default face (spec section 16.1). Model that runtime as one whose
+        // System step is the zero-provider, then ask for every role with an
+        // empty manifest — the application declares nothing.
+        //
+        // Each role must resolve to Missing, so the missing-font policy runs.
+        // If any role resolved to a face here, the framework would be smuggling
+        // in an implicit system or bundled default face — exactly what section
+        // 16.1 forbids.
+        let manifest = FontManifest::default();
+        let provider = NoSystemFonts;
+        let mut resolver = FontResolver::new();
+
+        for role in [
+            FontRole::Ui,
+            FontRole::Serif,
+            FontRole::Mono,
+            FontRole::Cjk,
+            FontRole::Emoji,
+        ] {
+            let got = resolver.resolve(&FontRequest::role(role), &manifest, &provider, "");
+            assert_eq!(
+                got,
+                Resolved::Missing,
+                "role {role:?} resolved to an implicit face with no system fonts and an empty manifest",
+            );
+        }
+
+        // An explicitly named family the app does not ship is equally Missing:
+        // there is no system source to fall through to.
+        assert_eq!(
+            resolver.resolve(&FontRequest::family("Helvetica"), &manifest, &provider, ""),
+            Resolved::Missing,
+        );
+    }
+
+    #[test]
+    fn packaged_app_font_still_resolves_without_system_fonts() {
+        // "No implicit font" is not "no fonts": a WASM project's own packaged
+        // family still resolves through the App-first step, even though the
+        // System step owns nothing. This keeps section 16.2 honest — packaged
+        // fonts remain a project resource under the zero-system-font runtime.
+        let manifest = FontManifest::from_declared(
+            vec![ManifestEntry {
+                family: "Inter".to_owned(),
+                weight: FontWeight::REGULAR,
+                width: FontWidth::NORMAL,
+                slant: FontSlant::Normal,
+                face_index: 0,
+                color: false,
+                coverage: ScriptCoverageSummary::default(),
+                asset: AssetRef(1),
+            }],
+            vec![(FontRole::Ui, "Inter".to_owned())],
+        );
+        let provider = NoSystemFonts;
+        let mut resolver = FontResolver::new();
+
+        // The app-bound UI role resolves to the packaged face.
+        assert!(matches!(
+            resolver.resolve(&FontRequest::role(FontRole::Ui), &manifest, &provider, ""),
+            Resolved::Face(_),
+        ));
+        // A role the app did not bind still finds no system source.
+        assert_eq!(
+            resolver.resolve(
+                &FontRequest::role(FontRole::Emoji),
+                &manifest,
+                &provider,
+                ""
+            ),
+            Resolved::Missing,
+        );
+    }
+}
