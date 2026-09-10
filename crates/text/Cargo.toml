@@ -19,5 +19,7 @@ sdfer = { workspace = true }
 unicode-bidi = { workspace = true }
 unicode-script = { workspace = true }
 unicode-segmentation = { workspace = true }
+icu_segmenter = { workspace = true }
+icu_properties = { workspace = true }
 zune-png = { workspace = true }
 zune-core = { workspace = true }

@@ -75,6 +75,17 @@ unicode-script = "0.5"
 # boundaries give the primary break opportunities, graphemes the fallback when a
 # single word overflows. Same source the reference layouter uses for wrapping.
 unicode-segmentation = "1"
+# UAX#14 line breaking (architecture 3.7 prefer-proven-algorithms). ICU4X is the
+# world-ready provider: pair-table base plus locale tailoring, CSS strictness
+# (Loose/Normal/Strict/Anywhere), and — the reason we take the heavier dep over a
+# pure pair-table crate — dictionary/LSTM segmentation for the no-space scripts
+# (Thai/Lao/Khmer/CJK) that a pair table cannot break at all. `line_break.rs`
+# wraps `LineSegmenter`; `icu_properties` classifies each break opportunity as
+# mandatory (hard newline) or allowed via the `LineBreak` code-point property.
+# icu_segmenter 2.3 targets UAX#14 Unicode 15.1.0 — the conformance corpus is
+# version-matched to that.
+icu_segmenter = "2.3"
+icu_properties = "2.3"
 # Pure-Rust PNG decoder for color-bitmap emoji strikes (sbix/CBDT PNG data that
 # ttf-parser hands back as raw bytes). Same decoder family makepad's color-emoji
 # path uses; decoded RGBA is premultiplied into the color glyph atlas.
