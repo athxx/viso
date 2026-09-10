@@ -71,6 +71,7 @@ pub mod mtsdf;
 pub mod outline_cache;
 pub mod text_work;
 
+pub use font_cache::FontCache;
 pub use font_request::{FontRequest, FontRole, FontSlant, FontTarget, FontWeight, FontWidth};
 pub use glyph_representation::GlyphImageKind;
 pub use resolver::{FontResolver, Resolved};
