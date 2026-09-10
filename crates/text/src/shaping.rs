@@ -155,7 +155,7 @@ impl ShapedRun {
 }
 
 /// The direction a run is shaped in.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Direction {
     /// Left-to-right (Latin, and the P0 baseline).
     LeftToRight,

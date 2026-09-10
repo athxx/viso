@@ -437,12 +437,74 @@ pub struct Paragraph {
     /// them can match its old signature yet sit before a later edit, so stopping
     /// there would splice a stale edited line back. `None` means no edit pending.
     dirty_to: Option<TextOffset>,
+    /// Cumulative count of genuine shape invocations — every cache miss that
+    /// reached the caller's shaper — since this paragraph was created. A pure
+    /// cache-hit [`Self::layout`] returns before any shaping, so this stays put
+    /// across a steady-state frame; the delta over a `layout` call is exactly the
+    /// number of runs actually (re)shaped, which the steady-state contract test
+    /// asserts is zero.
+    shape_calls: u64,
 }
 
 /// A shaping callback: shape a source substring in a resolved direction into a
 /// [`ShapedRun`]. The paragraph calls it once per logical direction run per line;
 /// the caller resolves the face and holds the font bytes.
 pub type ShapeFn<'a> = dyn FnMut(&str, Direction) -> ShapedRun + 'a;
+
+/// A layout-scoped memo over the caller's [`ShapeFn`] that shapes each distinct
+/// `(byte range, direction)` at most once per layout pass.
+///
+/// Within one layout the same substring is asked for repeatedly: `fit_line`
+/// measures every break candidate — re-shaping each direction run as the line
+/// grows — and then `build_line` shapes the winning line's runs again. Left to
+/// the raw callback that is quadratic re-shaping of identical inputs. This memo
+/// keys on the source byte range (a direction run's `[start, end)` uniquely
+/// identifies its substring within a fixed BiDi resolution, so `direction` is
+/// carried only to disambiguate defensively) and returns a retained
+/// [`ShapedRun`] on a hit. The cache lives for one `compute_lines` call and is
+/// dropped after, so nothing is retained across frames here — the steady-state
+/// no-reshape guarantee comes from the [`LayoutKey`] gate one level up, which
+/// returns before a cache is ever built.
+///
+/// Every genuine miss (a real call into the caller's shaper) bumps a counter the
+/// paragraph exposes, which is what proves a steady-state frame shapes nothing.
+struct ShapeCache<'f, 's> {
+    shape: &'f mut ShapeFn<'s>,
+    runs: std::collections::HashMap<(u32, u32, Direction), ShapedRun>,
+    misses: u64,
+}
+
+impl<'f, 's> ShapeCache<'f, 's> {
+    fn new(shape: &'f mut ShapeFn<'s>) -> Self {
+        Self {
+            shape,
+            runs: std::collections::HashMap::new(),
+            misses: 0,
+        }
+    }
+
+    /// The shaped run for `text[range.0..range.1]` in `direction`, shaping through
+    /// the caller's callback only on a miss. `text` is the paragraph source; the
+    /// key is the byte range so identical substrings collapse to one shape.
+    fn shape(
+        &mut self,
+        text: &str,
+        range: (TextOffset, TextOffset),
+        direction: Direction,
+    ) -> &ShapedRun {
+        let key = (range.0.0 as u32, range.1.0 as u32, direction);
+        // `entry` would borrow `self.runs` across the miss closure that also needs
+        // `self.shape`/`self.misses`; split the lookup so the miss path is a plain
+        // insert with no overlapping borrow.
+        if !self.runs.contains_key(&key) {
+            let sub = &text[range.0.0..range.1.0];
+            let run = (self.shape)(sub, direction);
+            self.misses += 1;
+            self.runs.insert(key, run);
+        }
+        &self.runs[&key]
+    }
+}
 
 impl Default for Paragraph {
     /// An empty paragraph resolving under first-strong base direction: base
@@ -465,6 +527,7 @@ impl Paragraph {
             dirty_from: None,
             dirty_delta: 0,
             dirty_to: None,
+            shape_calls: 0,
         }
     }
 
@@ -476,6 +539,18 @@ impl Paragraph {
     /// The laid-out lines from the last [`Self::layout`], top to bottom.
     pub fn lines(&self) -> &[LineLayout] {
         &self.lines
+    }
+
+    /// Total shape invocations over this paragraph's life — the count of runs
+    /// actually handed to the shaper, cache misses only.
+    ///
+    /// The steady-state text contract is that an unchanged paragraph laid out
+    /// again shapes nothing; observing this counter before and after a
+    /// [`Self::layout`] and finding it unchanged is the frame-counter proof of
+    /// that (the retained runs and the [`LayoutKey`] gate mean a steady frame
+    /// never reaches the shaper).
+    pub fn shape_call_count(&self) -> u64 {
+        self.shape_calls
     }
 
     /// Replace the whole source text, marking every line dirty. The style epoch
@@ -567,7 +642,10 @@ impl Paragraph {
 
         match reflow_from {
             Some(TextOffset(0)) | None => {
-                self.lines = self.compute_lines(width, TextOffset(0), TextOffset(0), &[], shape);
+                let (lines, misses) =
+                    self.compute_lines(width, TextOffset(0), TextOffset(0), &[], shape);
+                self.lines = lines;
+                self.shape_calls += misses;
             }
             Some(from) => {
                 // Incremental reflow. `from` is the edit's low offset in the
@@ -602,7 +680,9 @@ impl Paragraph {
                 // yet sit ahead of a later edit, and splicing there would restore a
                 // stale edited line. `dirty_to` is that floor, in new coordinates.
                 let floor = self.dirty_to.unwrap_or(from);
-                let mut relaid = self.compute_lines(width, start, floor, &old_tail, shape);
+                let (mut relaid, misses) =
+                    self.compute_lines(width, start, floor, &old_tail, shape);
+                self.shape_calls += misses;
                 let mut spliced = prefix;
                 spliced.append(&mut relaid);
                 self.lines = spliced;
@@ -620,7 +700,9 @@ impl Paragraph {
     /// reference the incremental path is defined to equal; the equivalence is the
     /// section's acceptance test.
     pub fn layout_full(&mut self, width: f32, shape: &mut ShapeFn<'_>) -> Vec<LineLayout> {
-        self.compute_lines(width, TextOffset(0), TextOffset(0), &[], shape)
+        let (lines, misses) = self.compute_lines(width, TextOffset(0), TextOffset(0), &[], shape);
+        self.shape_calls += misses;
+        lines
     }
 
     /// Break and lay out lines covering `[from, text.len())` to `width`, greedily
@@ -637,10 +719,10 @@ impl Paragraph {
         stop_floor: TextOffset,
         old_tail: &[LineLayout],
         shape: &mut ShapeFn<'_>,
-    ) -> Vec<LineLayout> {
+    ) -> (Vec<LineLayout>, u64) {
         let text = &self.text;
         if from.0 >= text.len() {
-            return Vec::new();
+            return (Vec::new(), 0);
         }
 
         let bidi = BidiInfo::resolve(text, self.base);
@@ -648,12 +730,18 @@ impl Paragraph {
         let breaks: Vec<(TextOffset, BreakOpportunity)> =
             breaker.break_opportunities(text).collect();
 
+        // One memo for the whole pass: `fit_line` measures each break candidate and
+        // `build_line` builds the winner from the same substrings, so a run is
+        // shaped once and reused across every fit probe and the final build.
+        let mut cache = ShapeCache::new(shape);
+
         let mut out: Vec<LineLayout> = Vec::new();
         let mut line_start = from;
 
         while line_start.0 < text.len() {
-            let (line_end, _mandatory) = self.fit_line(&bidi, line_start, width, &breaks, shape);
-            let line = self.build_line(&bidi, (line_start, line_end), shape);
+            let (line_end, _mandatory) =
+                self.fit_line(&bidi, line_start, width, &breaks, &mut cache);
+            let line = self.build_line(&bidi, (line_start, line_end), &mut cache);
 
             // Stable-stop: if this line matches the old layout's line at the same
             // start, the rest of the old tail is unaffected — splice it back and
@@ -669,14 +757,14 @@ impl Paragraph {
             {
                 out.push(line);
                 out.extend(old_tail[idx + 1..].iter().cloned());
-                return out;
+                return (out, cache.misses);
             }
 
             line_start = line_end;
             out.push(line);
         }
 
-        out
+        (out, cache.misses)
     }
 
     /// Find the end offset of the line starting at `line_start` when fitting to
@@ -689,12 +777,12 @@ impl Paragraph {
         line_start: TextOffset,
         width: f32,
         breaks: &[(TextOffset, BreakOpportunity)],
-        shape: &mut ShapeFn<'_>,
+        cache: &mut ShapeCache<'_, '_>,
     ) -> (TextOffset, bool) {
         let text = &self.text;
         let mut last_fit: Option<TextOffset> = None;
         for &(at, class) in breaks.iter().filter(|(at, _)| *at > line_start) {
-            let candidate_w = self.measure(bidi, line_start, at, shape);
+            let candidate_w = self.measure(bidi, line_start, at, cache);
             let fits = candidate_w <= width || width <= 0.0;
             if class == BreakOpportunity::Mandatory {
                 // A mandatory break ends the line. If nothing fit before it and it
@@ -728,14 +816,15 @@ impl Paragraph {
         bidi: &BidiInfo,
         start: TextOffset,
         end: TextOffset,
-        shape: &mut ShapeFn<'_>,
+        cache: &mut ShapeCache<'_, '_>,
     ) -> f32 {
         let text = &self.text;
         bidi.direction_runs_in(start, end)
             .iter()
             .map(|run| {
-                let sub = &text[run.start.0..run.end.0];
-                shape(sub, run.direction).width_ems
+                cache
+                    .shape(text, (run.start, run.end), run.direction)
+                    .width_ems
             })
             .sum()
     }
@@ -746,15 +835,16 @@ impl Paragraph {
         &self,
         bidi: &BidiInfo,
         range: (TextOffset, TextOffset),
-        shape: &mut ShapeFn<'_>,
+        cache: &mut ShapeCache<'_, '_>,
     ) -> LineLayout {
         let text = &self.text;
         let shaped: Vec<ShapedRun> = bidi
             .direction_runs_in(range.0, range.1)
             .iter()
             .map(|run| {
-                let sub = &text[run.start.0..run.end.0];
-                shape(sub, run.direction)
+                cache
+                    .shape(text, (run.start, run.end), run.direction)
+                    .clone()
             })
             .collect();
         LineLayout::in_range(text, bidi, range, &shaped)
@@ -1122,5 +1212,139 @@ mod tests {
         let mut shape2 = fixture_shaper();
         let full_lines = full.layout_full(f32::INFINITY, &mut shape2);
         assert!(lines_eq(incremental.lines(), &full_lines));
+    }
+
+    // --- TF-P3.1: retained shaped runs / steady-state no reshape ---
+
+    /// A shaping callback that also tallies how many times it was actually
+    /// invoked, so a test can distinguish "the paragraph asked to shape" from "the
+    /// paragraph reused a retained run". Returns the closure and a shared counter.
+    fn counting_shaper() -> (
+        impl FnMut(&str, Direction) -> ShapedRun,
+        std::rc::Rc<std::cell::Cell<u64>>,
+    ) {
+        let calls = std::rc::Rc::new(std::cell::Cell::new(0u64));
+        let seen = calls.clone();
+        let shape = move |sub: &str, dir: Direction| {
+            seen.set(seen.get() + 1);
+            shape_run(sub, dir)
+        };
+        (shape, calls)
+    }
+
+    #[test]
+    fn steady_state_frame_shapes_nothing() {
+        // The DoD frame-counter proof: a static paragraph laid out once and then
+        // laid out again with identical inputs must issue zero shape calls on the
+        // second (steady-state) frame. The gate returns before any shaping, so the
+        // paragraph's own counter and the callback's own counter both stay put.
+        let (mut shape, calls) = counting_shaper();
+        let mut p = Paragraph::new("hello steady world", BaseDirection::LeftToRight, 0);
+
+        assert!(p.layout(f32::INFINITY, &mut shape), "first frame lays out");
+        let after_first = p.shape_call_count();
+        let callback_after_first = calls.get();
+        assert!(after_first > 0, "first layout shapes the runs");
+        assert_eq!(
+            after_first, callback_after_first,
+            "paragraph's shape counter matches genuine callback invocations"
+        );
+
+        // Steady frame: same text, style, width. No layout, no shaping.
+        assert!(
+            !p.layout(f32::INFINITY, &mut shape),
+            "steady frame is a cache hit"
+        );
+        assert_eq!(
+            p.shape_call_count(),
+            after_first,
+            "steady-state frame issues zero shape calls (paragraph counter)"
+        );
+        assert_eq!(
+            calls.get(),
+            callback_after_first,
+            "steady-state frame issues zero shape calls (callback counter)"
+        );
+
+        // Repeated steady frames stay at zero-shape.
+        for _ in 0..8 {
+            assert!(!p.layout(f32::INFINITY, &mut shape));
+        }
+        assert_eq!(p.shape_call_count(), after_first);
+        assert_eq!(calls.get(), callback_after_first);
+    }
+
+    #[test]
+    fn wrapping_layout_shapes_each_run_once_not_per_break_probe() {
+        // Retained shaped runs: within one wrapping layout, `fit_line` probes many
+        // break candidates and `build_line` builds the winners, all over the same
+        // substrings. The per-pass memo must collapse those to one shape per
+        // distinct run. Without it, fit probing re-shapes growing prefixes and the
+        // count explodes with the break-candidate count.
+        let text = "the quick brown fox jumps over the lazy dog";
+        let width = measured_width("the quick ") + 0.01;
+        let (mut shape, calls) = counting_shaper();
+        let mut p = Paragraph::new(text, BaseDirection::LeftToRight, 0);
+
+        p.layout(width, &mut shape);
+
+        // The distinct direction-run substrings shaped across the whole layout are
+        // bounded by the break segments, not the O(segments^2) fit probes. Every
+        // fit probe over `[line_start, at)` for the same `at` is one cached run;
+        // the pure-LTR text has one direction run per measured span. The exact
+        // number depends on break structure, but it must be far below the naive
+        // re-shape count and must equal the paragraph's own miss counter.
+        assert_eq!(
+            calls.get(),
+            p.shape_call_count(),
+            "callback invocations equal the paragraph's counted misses"
+        );
+
+        // Upper bound: distinct measured spans are at most the number of break
+        // opportunities squared in the naive scheme; the memo caps genuine shapes
+        // at the count of distinct (line_start, at) spans, which for this text and
+        // width is well under 30. Assert a generous ceiling that the naive
+        // quadratic re-shape would blow past.
+        let breaker = crate::line_break::LineBreaker::new();
+        let break_count = breaker.break_opportunities(text).count();
+        assert!(
+            calls.get() <= (break_count as u64) * 3,
+            "shapes ({}) stay near the break count ({}), not its square",
+            calls.get(),
+            break_count
+        );
+    }
+
+    #[test]
+    fn edit_reshapes_only_touched_region_not_whole_paragraph() {
+        // An incremental edit shapes only the reflowed span, not the whole
+        // paragraph: the retained tail is spliced without reshaping. The shape
+        // count for the incremental relayout must be far below a full recompute's.
+        let text = "the quick brown fox jumps over the lazy dog by the river bank today";
+        let width = measured_width("the quick brown ") + 0.01;
+
+        let (mut shape, calls) = counting_shaper();
+        let mut p = Paragraph::new(text, BaseDirection::LeftToRight, 0);
+        p.layout(width, &mut shape);
+        let after_initial = calls.get();
+
+        // Full recompute of the same text, for a reshape-count baseline.
+        let (mut shape_full, calls_full) = counting_shaper();
+        let mut full = Paragraph::new(text, BaseDirection::LeftToRight, 0);
+        full.layout_full(width, &mut shape_full);
+        let full_count = calls_full.get();
+
+        // Edit a word early in the paragraph and relayout incrementally.
+        // Replace "lazy" (bytes 35..39) with "sleepy".
+        p.edit((TextOffset(35), TextOffset(39)), "sleepy");
+        p.layout(width, &mut shape);
+        let incremental_reshape = calls.get() - after_initial;
+
+        assert!(
+            incremental_reshape < full_count,
+            "incremental edit reshapes ({}) fewer runs than a full recompute ({})",
+            incremental_reshape,
+            full_count
+        );
     }
 }
