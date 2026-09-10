@@ -71,7 +71,9 @@ pub mod mtsdf;
 pub mod outline_cache;
 pub mod text_work;
 
+pub use font_request::{FontRequest, FontRole, FontSlant, FontTarget, FontWeight, FontWidth};
 pub use glyph_representation::GlyphImageKind;
+pub use resolver::{FontResolver, Resolved};
 pub use text_position::{CaretAffinity, TextOffset, TextPosition};
 
 /// Stable identity for a resolved font face.
