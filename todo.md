@@ -1388,7 +1388,7 @@ spanning 放置 + auto-flow;ADR 0009 明列六项高级能力全未做。落 `cr
 
 - [x] **TF-P0.1 FontManifest + FontFaceId + on-demand SystemUi resolver** —— font_manifest/resolver/app_fonts/
       system_fonts 落地 App-first/System-second 策略;不 eager parse。**验收:** manifest 解析单测 + resolver 策略单测。
-- [ ] **TF-P0.2 Face SLRU(byte-budgeted)** —— font_cache.rs;recency 不按每 glyph 更新(DoD)。**验收:** SLRU 预算逐出单测 + recency 不逐 glyph 断言。
+- [x] **TF-P0.2 Face SLRU(byte-budgeted)** —— font_cache.rs;recency 不按每 glyph 更新(DoD)。**验收:** SLRU 预算逐出单测 + recency 不逐 glyph 断言。
 - [ ] **TF-P0.3 basic shaping(rustybuzz 单 run)** —— shaping.rs Latin LTR 基线。**验收:** Latin run shape golden(advance/glyph id)。
 - [ ] **TF-P0.4 A8 Coverage atlas page cache** —— coverage.rs + glyph_cache.rs A8 pool residency 元数据(render 拥有实际纹理)。
       **验收:** A8 coverage 光栅 golden + page 上传字节 counter(§61)。
