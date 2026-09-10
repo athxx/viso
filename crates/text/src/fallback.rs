@@ -28,10 +28,23 @@
 //! Variation coordinates and presentation mode are part of the plan key's
 //! eventual identity (per the runtime spec) and are added with the color/emoji
 //! and variable-font slices; the key already carries the fields that are live.
+//!
+//! # Cluster atomicity, never a font split inside a grapheme
+//!
+//! Coverage and the mapped boundary are measured over extended grapheme
+//! clusters (UAX#29), not scalars. A cluster is covered only when the face has a
+//! glyph for *every* scalar in it, and the mapped length always lands on a
+//! cluster boundary. An emoji cluster — a ZWJ sequence like `👩‍💻`, a
+//! skin-tone or variation-selector sequence, a regional-indicator flag, a keycap
+//! — is therefore covered as one unit or not at all: it is never split into
+//! `👩` + ZWJ + `💻` and routed to three faces. A face that covers only the
+//! leading scalar of a cluster contributes nothing, so the whole cluster falls
+//! through to the emoji fallback face intact.
 
 use std::collections::HashMap;
 
 use unicode_script::{Script, UnicodeScript};
+use unicode_segmentation::UnicodeSegmentation;
 
 use crate::FontFaceId;
 use crate::font_request::{FontSlant, FontWeight, FontWidth};
@@ -108,18 +121,24 @@ struct Candidate {
 }
 
 impl Candidate {
-    /// Bytes of `run`, from its start, this candidate's `cmap` covers. Stops at
-    /// the first scalar the face lacks, so a partially-covering candidate yields
-    /// the covered prefix and the caller re-plans the rest. Zero means the
-    /// candidate covers nothing of the run.
+    /// Bytes of `run`, from its start, this candidate's `cmap` covers, measured
+    /// over extended grapheme clusters so the boundary never falls inside one.
+    ///
+    /// A cluster counts as covered only when the face has a glyph for *every*
+    /// scalar in it; the first cluster with any missing scalar stops the mapping.
+    /// This keeps emoji ZWJ / skin-tone / variation-selector / flag sequences
+    /// atomic: a face that covers the base emoji but not the joiner or the
+    /// trailing scalar contributes zero for that cluster, so the whole cluster is
+    /// re-planned onto the emoji fallback face rather than split across faces.
+    /// Zero means the candidate covers no leading cluster of the run.
     fn mapped_len(&self, run: &str) -> usize {
         let Ok(face) = ttf_parser::Face::parse(&self.bytes, self.index) else {
             return 0;
         };
         let mut mapped = 0;
-        for (offset, ch) in run.char_indices() {
-            if face.glyph_index(ch).is_some() {
-                mapped = offset + ch.len_utf8();
+        for (offset, cluster) in run.grapheme_indices(true) {
+            if cluster.chars().all(|ch| face.glyph_index(ch).is_some()) {
+                mapped = offset + cluster.len();
             } else {
                 break;
             }
@@ -580,5 +599,77 @@ mod tests {
         assert_eq!(provider.seen_locales.borrow().len(), 2);
         assert_eq!(fb.fallback_plan_hit(), 1);
         assert_eq!(fb.fallback_plan_miss(), 2);
+    }
+
+    #[test]
+    fn emoji_zwj_sequence_is_never_split_across_faces() {
+        // "A" + the woman-technologist ZWJ sequence. The DejaVu fallback covers
+        // the leading "A" but none of the emoji cluster's scalars, so the whole
+        // cluster must fall through as one unit: the mapped length stops exactly
+        // at the emoji cluster boundary, never partway into 👩‍💻 (which would
+        // route 👩 / ZWJ / 💻 to three faces).
+        let provider = CountingProvider::new(true);
+        let mut fb = FontFallback::new(1000);
+        let run = "A\u{1F469}\u{200D}\u{1F4BB}";
+
+        let plan = fb.plan_run(&key(0, Script::Common, ""), run, &provider);
+        let FallbackPlan::Mapped { mapped_len, .. } = plan else {
+            panic!("the leading 'A' maps");
+        };
+        assert_eq!(
+            mapped_len,
+            "A".len(),
+            "mapping stops at the emoji cluster boundary, not inside it"
+        );
+        // The boundary is a real grapheme edge: the remainder is exactly the one
+        // atomic emoji cluster, not a fragment of it.
+        let (_, rest) = run.split_at(mapped_len);
+        assert_eq!(
+            rest.graphemes(true).count(),
+            1,
+            "the unmapped remainder is one whole emoji cluster"
+        );
+    }
+
+    #[test]
+    fn partly_covered_cluster_maps_as_uncovered() {
+        // A base letter the fixture covers, combined with a combining acute it
+        // does not: "a" + U+0301 is one grapheme. A per-scalar walk would map the
+        // 'a' and split the cluster; cluster-atomic coverage rejects the whole
+        // composed cluster, so a leading covered letter followed by such a cluster
+        // maps only the standalone letter and stops at the cluster edge.
+        let provider = CountingProvider::new(true);
+        let mut fb = FontFallback::new(1000);
+        // "e" (standalone, covered) then "a" + combining acute (one cluster).
+        let run = "e\u{0061}\u{0301}";
+
+        let plan = fb.plan_run(&key(0, Script::Latin, ""), run, &provider);
+        let FallbackPlan::Mapped { mapped_len, .. } = plan else {
+            panic!("the leading 'e' maps");
+        };
+        assert_eq!(
+            mapped_len,
+            "e".len(),
+            "the composed cluster is not split: only the standalone letter mapped"
+        );
+    }
+
+    #[test]
+    fn fully_covered_multi_scalar_run_maps_whole() {
+        // Every scalar (each its own grapheme here) is covered, so cluster-atomic
+        // mapping still maps the entire run — atomicity does not shrink coverage
+        // when the face genuinely covers everything.
+        let provider = CountingProvider::new(true);
+        let mut fb = FontFallback::new(1000);
+        let run = "Aenx";
+
+        let plan = fb.plan_run(&key(0, Script::Latin, ""), run, &provider);
+        assert_eq!(
+            plan,
+            FallbackPlan::Mapped {
+                face: FontFaceId(1000),
+                mapped_len: run.len(),
+            }
+        );
     }
 }

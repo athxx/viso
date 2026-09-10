@@ -1397,7 +1397,7 @@ spanning 放置 + auto-flow;ADR 0009 明列六项高级能力全未做。落 `cr
 
 - [x] **TF-P1.1 run/cluster fallback + FallbackPlan cache** —— fallback.rs 规划 + recent candidate cache;common fallback face 复用避免逐字符 OS query(DoD)。**验收:** fallback 规划单测 + candidate 复用断言。
 - [x] **TF-P1.2 CJK locale-aware fallback** —— fallback 按 locale 选面。**验收:** zh/ja/ko 同字形不同面选择单测。
-- [ ] **TF-P1.3 Emoji cluster handling** —— ZWJ/VS/skin-tone cluster 不被错误拆 font(DoD)。**验收:** emoji cluster 不拆 font 单测。
+- [x] **TF-P1.3 Emoji cluster handling** —— ZWJ/VS/skin-tone cluster 不被错误拆 font(DoD)。**验收:** emoji cluster 不拆 font 单测。
 
 ### Slice TF-P2 —— World-Ready paragraph correctness(§28 P2,doc §12 全 23 小节)
 
