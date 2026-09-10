@@ -17,7 +17,7 @@ CJK / Emoji / 多语言默认依赖 OS fallback
 启动不扫描整台机器字体
 项目字体无需写初始化代码即可使用
 WASM/Canvas 不偷偷读取系统字体
-WOFF2 是一等 packaged/external font 格式
+packaged/external font 输入是 SFNT（TTF/OTF/TTC/OTC）；WOFF2 由调用方解压为 SFNT，框架不解码 WOFF2
 长期运行时字体内存有明确预算
 font picker / 大文档 / CJK 不污染常用字体 cache
 Glyph Atlas 满时不全量 reset
@@ -115,9 +115,9 @@ Text Runtime 不追求：
 ```text
 assets/
 └── fonts/
-    ├── Inter-Regular.woff2
-    ├── Inter-Bold.woff2
-    └── NotoSansSC-Regular.woff2
+    ├── Inter-Regular.ttf
+    ├── Inter-Bold.ttf
+    └── NotoSansSC-Regular.otf
 ```
 
 构建时 Viso 自动：
@@ -488,33 +488,30 @@ Color glyph 使用第 13.9 节的 RGBA Color Pages，拥有独立 residency 预�
 
 # 7. 字体格式
 
-Viso 1.0 packaged/external font 输入至少支持：
+Viso 1.0 packaged/external font 输入只接受已解码的 SFNT 容器：
 
 ```text
 .ttf
 .otf
 .ttc
 .otc
-.woff2
 ```
 
-WOFF2 是一等格式，尤其适用于 Web/WASM asset delivery。
+WOFF2 不是框架的一等格式：框架不解码/解压 WOFF2。持有 WOFF2 的调用方必须先自行把它解压成 SFNT（build-time asset pipeline，或运行时），再喂给框架；或者通过 External FontProvider 注入已解码的 SFNT 字节（见 ADR 0026）。
 
-内部不把 WOFF2 当成 shaping ABI：
+内部只处理 SFNT face data：
 
 ```text
-WOFF2
-    ↓ decode/decompress
-normalized OpenType/SFNT face data
+SFNT (TTF/OTF/TTC/OTC)
     ↓
 FontFace
     ↓
 Shaper / Rasterizer
 ```
 
-因此 Font Face Cache 缓存的是可直接使用的 decoded/parsed face state，不是“每次 shaping 都重新解 WOFF2”。
+因此 Font Face Cache 缓存的是可直接使用的 parsed SFNT face state，不是“每次 shaping 都重新解析容器”。
 
-Web 默认推荐源资源使用 WOFF2，但是否由 build pipeline 自动将 TTF/OTF 转换为 WOFF2 属于 packager optimization policy；它不能改变字体许可，也不能静默改写用户资源语义。
+框架从不转换或改写用户的字体资源，也不解码 WOFF2——WOFF2→SFNT 的解压是调用方的责任；框架既不改变字体许可，也不静默改写用户资源语义。
 
 ---
 
@@ -1932,7 +1929,6 @@ Viso Text Runtime 的目标不是“让 shaping 快到可以每帧做”，而�
 ```text
 0 system font resolver calls
 0 font file IO
-0 WOFF2 decode
 0 OpenType parse
 0 new coverage build
 0 shaping
@@ -2010,7 +2006,6 @@ CatalogPreview
 可后台执行的昂贵工作：
 
 ```text
-WOFF2 decode
 large font parse
 coverage accelerator construction
 font catalog enumeration
@@ -2084,7 +2079,6 @@ dirty run 的 glyph 由 worker 补，延后一两帧落地
 ```text
 新字体首次加载
 远程字体
-WOFF2 decode
 大 paragraph 全量重排
 新的复杂 system fallback cold path
 ```
@@ -2168,7 +2162,7 @@ Viso bundled default font
 如果项目有：
 
 ```text
-assets/fonts/Inter.woff2
+assets/fonts/Inter.ttf
 ```
 
 build 仍然生成 FontManifest。
@@ -2187,8 +2181,6 @@ font bytes not necessarily fetched yet
 manifest lookup
     ↓
 lazy fetch packaged asset
-    ↓
-WOFF2 decode on worker
     ↓
 Font Face SLRU
 ```
@@ -2342,8 +2334,6 @@ memory pressure
 6. keep visible/in-flight/pinned state
 ```
 
-临时 WOFF2 decode buffer 在 face publish 后尽快释放。
-
 Native 可 mmap/read-only reference 的 TTF/OTF 应避免无意义 full copy。
 
 ---
@@ -2424,7 +2414,6 @@ UI/Text owner thread
     (no shaping on this thread)
 
 Worker jobs
-    WOFF2 decode
     heavy parse
     all shaping (including short interactive edits, see 13.5)
     coverage build
@@ -2535,7 +2524,6 @@ font_face_probation_bytes
 font_face_protected_bytes
 font_face_promotions/demotions/evictions
 font_face_decode_bytes
-woff2_decode_us
 shaping_hit/miss
 shaping_us
 grapheme_segment_us
@@ -2783,7 +2771,7 @@ font_manifest.rs
     packaged font descriptors / AssetId mapping
 
 font_format.rs
-    TTF/OTF/TTC/OTC/WOFF2 container normalization
+    TTF/OTF/TTC/OTC container normalization
 
 resolver.rs
     App-first / System-second / External policy
@@ -2894,7 +2882,6 @@ TextWork scheduler
 
 ```text
 TTF/OTF/TTC/OTC
-WOFF2
 build-time FontManifest automatic discovery
 lazy decode
 ```
@@ -2931,7 +2918,7 @@ Viso Text/Font Runtime 只有同时满足下面条件才算达到 1.0 合同：
 [ ] 3000 installed fonts 不造成线性 startup parse 成本
 [ ] assets/fonts 自动进入 FontManifest，但 runtime 不 eager parse
 [ ] WASM 没有隐式系统/框架字体
-[ ] WASM packaged WOFF2 可以 lazy fetch/decode
+[ ] WASM packaged SFNT 字体可以 lazy fetch（WOFF2 须由调用方解压为 SFNT）
 [ ] CJK fallback 以 run/cluster + locale 处理
 [ ] Emoji ZWJ/VS/skin-tone cluster 不被错误拆 font
 [ ] common fallback face 可以复用，避免逐字符 OS query
@@ -2991,32 +2978,29 @@ Viso Text/Font Runtime 只有同时满足下面条件才算达到 1.0 合同：
 4. Fontconfig `FcFontMatch` / `FcFontSort`：从系统配置/cache 中选择匹配字体，并可使用 Unicode coverage 做 fallback 排序。  
    https://fontconfig.pages.freedesktop.org/fontconfig/fontconfig-devel/
 
-5. W3C WOFF File Format 2.0 Recommendation：WOFF2 是 OpenType/TrueType 字体的压缩封装格式，支持 variable、color font 和 font collection。  
-   https://www.w3.org/TR/WOFF2/
-
-6. `msdfgen` 当前 API 的 `generateMTSDF`：RGB 保存 multi-channel signed distance，Alpha 保存 true signed distance；Viso 仅参考其 representation semantics，不绑定该库为 runtime hard dependency。  
+5. `msdfgen` 当前 API 的 `generateMTSDF`：RGB 保存 multi-channel signed distance，Alpha 保存 true signed distance；Viso 仅参考其 representation semantics，不绑定该库为 runtime hard dependency。  
    https://github.com/Chlumsky/msdfgen
 
 
-7. Unicode UAX #9 — Unicode Bidirectional Algorithm：paragraph embedding levels、isolate、paired bracket 与 per-line visual reordering 的规范基线。  
+6. Unicode UAX #9 — Unicode Bidirectional Algorithm：paragraph embedding levels、isolate、paired bracket 与 per-line visual reordering 的规范基线。  
    https://www.unicode.org/reports/tr9/
 
-8. Unicode UAX #14 — Unicode Line Breaking Algorithm：跨 Unicode script 的默认 line-break opportunity 基线，并允许 locale/application tailoring。  
+7. Unicode UAX #14 — Unicode Line Breaking Algorithm：跨 Unicode script 的默认 line-break opportunity 基线，并允许 locale/application tailoring。  
    https://www.unicode.org/reports/tr14/
 
-9. Unicode UAX #29 — Unicode Text Segmentation：Extended Grapheme Cluster 与 word boundary 的默认规范。  
+8. Unicode UAX #29 — Unicode Text Segmentation：Extended Grapheme Cluster 与 word boundary 的默认规范。  
    https://www.unicode.org/reports/tr29/
 
-10. W3C CLReq — Requirements for Chinese Text Layout：中文行首/行尾禁则、不同 strictness 与标点调整需求参考。  
-    https://www.w3.org/International/clreq/
+9. W3C CLReq — Requirements for Chinese Text Layout：中文行首/行尾禁则、不同 strictness 与标点调整需求参考。  
+   https://www.w3.org/International/clreq/
 
-11. W3C JLReq — Requirements for Japanese Text Layout：日文禁则与行布局需求参考。  
+10. W3C JLReq — Requirements for Japanese Text Layout：日文禁则与行布局需求参考。  
     https://www.w3.org/TR/jlreq/
 
-12. W3C KLReq — Requirements for Hangul Text Layout and Typography：韩文 line-head/line-end 与 word-break requirements 参考。  
+11. W3C KLReq — Requirements for Hangul Text Layout and Typography：韩文 line-head/line-end 与 word-break requirements 参考。  
     https://www.w3.org/International/klreq/
 
-13. HarfBuzz OpenType Layout / Buffer APIs：GDEF ligature caret positions 与 unsafe-to-break cluster metadata 可作为 shaping integration 的能力参考；Viso 不绑定该库为 public ABI。  
+12. HarfBuzz OpenType Layout / Buffer APIs：GDEF ligature caret positions 与 unsafe-to-break cluster metadata 可作为 shaping integration 的能力参考；Viso 不绑定该库为 public ABI。  
     https://harfbuzz.github.io/harfbuzz-hb-ot-layout.html  
     https://harfbuzz.github.io/harfbuzz-hb-buffer.html
 
@@ -3076,7 +3060,7 @@ GLYPH REPRESENTATION
 WASM
     no implicit system font
     packaged fonts allowed and auto-manifested
-    WOFF2 first-class
+    SFNT only; WOFF2 must be decompressed by the caller
     External FontProvider optional
 
 HIGH REFRESH

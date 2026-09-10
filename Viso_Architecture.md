@@ -811,7 +811,7 @@ OS abstraction：
 - Native system font 按需 query/load，不启动扫描系统字体，不建立 framework-owned FontDB；
 - CJK/Emoji 使用 locale-aware、cluster/run-aware 的系统 fallback，不逐字符扫描字体；
 - WASM/Canvas 无隐式系统字体；packaged font 与 External FontProvider 均可用；
-- TTF/OTF/TTC/OTC/WOFF2 输入归一到统一 FontFace；
+- TTF/OTF/TTC/OTC 输入归一到统一 FontFace；
 - byte-budgeted Segmented LRU Font Face Cache；
 - 独立 shaping / paragraph cache；
 - BiDi / line breaking；
@@ -3394,7 +3394,6 @@ assets/fonts/*.ttf
 assets/fonts/*.otf
 assets/fonts/*.ttc
 assets/fonts/*.otc
-assets/fonts/*.woff2
 ```
 
 构建时只提取必要 metadata 并生成 compact `FontManifest`：
@@ -3531,34 +3530,32 @@ Viso bundled default font
 WASM project without packaged/external fonts
     -> zero available fonts
 
-WASM project with assets/fonts/Inter.woff2
+WASM project with assets/fonts/Inter.ttf
     -> manifest knows Inter
-    -> first use lazily fetches/decodes Inter
+    -> first use lazily fetches Inter
 ```
 
 外部/远程字体通过 `FontProvider` 注入；按字符加载描述 coverage 可渐进获得，传输层必须支持 batching/subsetting，而不是强制“一字符一个 HTTP”。
 
-### 37.7 WOFF2 是一等字体输入格式
+### 37.7 字体输入格式：SFNT-only（WOFF2 由调用方解压）
 
-Viso 1.0 packaged/external 输入至少支持：
+Viso 1.0 packaged/external 输入只接受已解码的 SFNT 容器：
 
 ```text
-TTF / OTF / TTC / OTC / WOFF2
+TTF / OTF / TTC / OTC
 ```
 
-WOFF2 是 storage/transport container，不是 Text 内部 ABI：
+框架不解码/解压 WOFF2。持有 WOFF2 的调用方必须先自行把它解压成 SFNT（build pipeline 或运行时），再喂给框架；或者通过 External FontProvider 注入已解码的 SFNT 字节。归一后的 face 直接进入 Text pipeline：
 
 ```text
-WOFF2
-    ↓ decode/decompress
-normalized OpenType/SFNT face
+SFNT (TTF/OTF/TTC/OTC)
     ↓
 FontFace
     ↓
 Shaping / Raster
 ```
 
-WOFF2 decode、重型 font parse 不进入 UI frame hot path。
+重型 font parse 仍不进入 UI frame hot path。
 
 ### 37.8 分层缓存：Resolve + SLRU Face + Shaping + Atlas
 
@@ -3641,7 +3638,6 @@ Text/font/layout 未变化时，稳态帧必须趋近：
 ```text
 0 system font query
 0 font IO
-0 WOFF2 decode
 0 font parse
 0 coverage build
 0 shaping
@@ -3679,7 +3675,7 @@ background
 
 优先级，尽量在进入屏幕前完成 shaping/raster。
 
-WOFF2 decode、大字体 parse、font catalog、large paragraph shaping、可线程化 raster 等进入 worker/staging；主线程只做有预算的 commit。
+大字体 parse、font catalog、large paragraph shaping、可线程化 raster 等进入 worker/staging；主线程只做有预算的 commit。
 
 详细的 60/120/144/240Hz work budget、TextInput latency 和 benchmark gate 见 `Viso_Text_Font_Runtime.md`。
 
@@ -3793,7 +3789,6 @@ fallback_plan_hit/miss
 font_face_slru_hit/miss
 font_face_probation/protected_bytes
 font_face_evictions
-woff2_decode_time
 shaping_hit/miss/time
 grapheme_segment_time
 bidi_resolve_count/time
@@ -3827,7 +3822,7 @@ CJK/RTL IME composition
 font picker 500 faces scan
 large CJK font memory pressure
 WASM zero-font startup
-WASM WOFF2 first use
+WASM packaged SFNT first use
 60/120/144/240Hz static/scroll/editor workloads
 ```
 
@@ -4772,7 +4767,7 @@ assets/
 
 需要高级 manifest 时再增加声明能力。
 
-`assets/fonts/` 是 canonical packaged-font 目录。Build scanner 自动识别 TTF/OTF/TTC/OTC/WOFF2，并只提取必要 metadata 生成 compact `FontManifest`；**runtime 不因此 eager parse/load 全部字体**。第一次真正使用某个 face 时才 lazy load 并进入 Font Face SLRU。Native App 没有 packaged/dynamic font 时直接按需使用系统字体与系统 CJK/Emoji fallback；WASM/Canvas 不拥有系统字体，但 packaged fonts 同样可由 `FontManifest` lazy fetch/decode，外部动态字体通过 `FontProvider` 注入。
+`assets/fonts/` 是 canonical packaged-font 目录。Build scanner 自动识别 TTF/OTF/TTC/OTC，并只提取必要 metadata 生成 compact `FontManifest`；**runtime 不因此 eager parse/load 全部字体**。第一次真正使用某个 face 时才 lazy load 并进入 Font Face SLRU。Native App 没有 packaged/dynamic font 时直接按需使用系统字体与系统 CJK/Emoji fallback；WASM/Canvas 不拥有系统字体，但 packaged fonts 同样可由 `FontManifest` lazy fetch，外部动态字体通过 `FontProvider` 注入。持有 WOFF2 的调用方须先自行解压为 SFNT 再纳入 `assets/fonts/` 或经 `FontProvider` 注入。
 
 ### 51.2 Resource lifecycle
 
@@ -6506,11 +6501,11 @@ trait Painter {
 
 ## ADR-022：字体系统采用 On-demand OS Fallback + byte-budgeted SLRU + page-aged Atlas
 
-**决定**：Viso 不在启动时扫描系统字体，也不建立 framework-owned FontDB。`assets/fonts/` 在 build-time 自动进入 compact `FontManifest`，Runtime lazy load；Native 无 App font 时直接使用系统 UI/font fallback，CJK/Emoji 以 locale-aware cluster/run 交给 OS resolver；WASM/Canvas 无隐式系统字体，但可使用 packaged WOFF2 或 External FontProvider。Loaded Font Face 使用按字节预算的 Segmented LRU；Shaping Cache 独立；glyph texture atlas 使用 page-level frame-age/CLOCK 淘汰。稳态高刷文字帧不得执行 resolve/parse/shape/raster。
+**决定**：Viso 不在启动时扫描系统字体，也不建立 framework-owned FontDB。`assets/fonts/` 在 build-time 自动进入 compact `FontManifest`，Runtime lazy load；Native 无 App font 时直接使用系统 UI/font fallback，CJK/Emoji 以 locale-aware cluster/run 交给 OS resolver；WASM/Canvas 无隐式系统字体，但可使用 packaged SFNT 字体或 External FontProvider。Loaded Font Face 使用按字节预算的 Segmented LRU；Shaping Cache 独立；glyph texture atlas 使用 page-level frame-age/CLOCK 淘汰。稳态高刷文字帧不得执行 resolve/parse/shape/raster。
 
 **理由**：避免系统字体数量影响启动，减少常驻内存和一次性 font-picker scan pollution；复用 OS 已有的 CJK/Emoji fallback 能力而不是复制 FontDB；SLRU 保护真正热 face；page-aged atlas 避免逐 glyph LRU 与 full-atlas reset；Retained ShapedRun/AtlasEntry 让 120/144/240Hz 的成本与变化量而不是总 glyph 数相关。
 
-**代价**：首次 cold system fallback、WOFF2 decode 和新 glyph raster 仍有成本，因此必须有 Resolve/FallbackPlan cache、prewarm、worker/staging、viewport prefetch、main-thread work budget、memory-pressure policy 与高刷 benchmark。完整合同见 `Viso_Text_Font_Runtime.md`。
+**代价**：首次 cold system fallback 和新 glyph raster 仍有成本，因此必须有 Resolve/FallbackPlan cache、prewarm、worker/staging、viewport prefetch、main-thread work budget、memory-pressure policy 与高刷 benchmark。完整合同见 `Viso_Text_Font_Runtime.md`。本 ADR 的 packaged-WOFF2 条款已被 ADR 0028（packaged/external 字体输入仅接受 SFNT，WOFF2 由调用方解压）取代：框架不再解码 WOFF2。
 
 
 ## ADR-023：Glyph 渲染使用 Adaptive Coverage + MTSDF + Vector Pipeline
