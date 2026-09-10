@@ -73,6 +73,7 @@ pub mod outline_cache;
 pub mod raster_a8;
 pub mod text_work;
 
+pub use bidi::{BaseDirection, BidiInfo, BidiLevel, DirectionRun, Paragraph};
 pub use font_cache::FontCache;
 pub use font_request::{FontRequest, FontRole, FontSlant, FontTarget, FontWeight, FontWidth};
 pub use glyph_cache::{Admission, GlyphKey, GlyphResidency};
