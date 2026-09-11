@@ -861,6 +861,81 @@ mod tests {
         }
     }
 
+    /// The static `ttf-parser` coverage fast path must refuse a CFF2 (variable)
+    /// outline so the pipeline falls through to the authoritative CoreText
+    /// raster. This is the direct guard for the Devanagari-tofu regression: the
+    /// macOS system fallback `.SFDevanagari-Regular` is a CFF2 face whose sfnt
+    /// (reassembled from CoreText tables at a fixed instance) carries only the
+    /// default master. Drawing that bare master with the generic parser produced
+    /// the *wrong* shape — non-empty ink that the shape() loop happily uploaded,
+    /// so the older "glyphs placed + atlas uploaded" assertions passed while the
+    /// runtime showed tofu. Here we shape real Devanagari, and for every placed
+    /// glyph whose face is CFF2 we require the static path to return `None`
+    /// (refuse) while the live CoreText coverage path returns real ink. If the
+    /// refusal regressed, the static path would return `Some` and this fails.
+    ///
+    /// macOS-only: depends on the CoreText provider resolving `.SFDevanagari`.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn cff2_devanagari_routes_through_live_raster_not_static_parser() {
+        let mut gpu = HeadlessRaster::new();
+        let _ = gpu.create_surface(RawWindowHandle::Headless, 512, 128);
+        let mut shaper = TextShaper::new();
+        // Shape once so the CJK/Devanagari fallback face is resolved and its live
+        // handle registered with the color raster.
+        let request = TextRequest {
+            text: "नमस्ते".into(),
+            font_size: 48.0,
+            color: WHITE,
+            soft_wrap: false,
+        };
+        let _ = shaper.shape(&mut gpu, &request, 1.0, None);
+        // Re-derive the per-glyph face/glyph placements (GlyphInstanceData in the
+        // shaped Content carries only rect/uv, not face/glyph).
+        let base = shaper.resolve_primary().expect("primary UI face resolves");
+        let layout = shaper.prepare_layout(base, "नमस्ते", 48.0, None);
+        let glyphs = &layout.glyphs;
+        assert!(!glyphs.is_empty(), "Devanagari must place glyphs");
+
+        // At least one placed glyph must come from a CFF2 face and be served by
+        // the live raster, not the static parser — otherwise the guard is vacuous
+        // (the platform resolved a non-CFF2 face and this regression can't recur).
+        let mut saw_cff2 = false;
+        for g in glyphs {
+            let Some((bytes, index)) = shaper.face_bytes(g.face) else {
+                continue;
+            };
+            let is_cff2 = ttf_parser::Face::parse(bytes, index)
+                .map(|f| f.tables().cff2.is_some())
+                .unwrap_or(false);
+            if !is_cff2 {
+                continue;
+            }
+            saw_cff2 = true;
+
+            // The static fast path must refuse a CFF2 outline...
+            assert!(
+                shaper.rasterize(g.face, g.glyph, 48.0).is_none(),
+                "static parser must refuse CFF2 glyph {} (variable outline)",
+                g.glyph,
+            );
+            // ...and the authoritative live path must render real ink for it.
+            let live = shaper
+                .color_raster
+                .rasterize_coverage_glyph(g.face, g.glyph, 48)
+                .expect("live CoreText coverage for CFF2 glyph");
+            assert!(
+                live.coverage.iter().any(|&v| v > 0),
+                "live raster must produce ink for CFF2 glyph {}",
+                g.glyph,
+            );
+        }
+        assert!(
+            saw_cff2,
+            "expected the macOS Devanagari fallback to be a CFF2 face",
+        );
+    }
+
     #[test]
     fn wrapping_reduces_width_and_increases_height() {
         let mut gpu = HeadlessRaster::new();
