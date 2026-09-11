@@ -37,7 +37,7 @@ fn render_scene() -> Vec<u8> {
     });
     gpu.write_texture(texture, 0, 0, tw, th, &texels);
 
-    // Create and upload the R8 glyph SDF atlas, then assemble the run.
+    // Create and upload the A8 glyph coverage atlas, then assemble the run.
     let tg = test_glyphs([6.0, 4.0], 22.0);
     let atlas = gpu.create_texture(&TextureDesc {
         width: tg.atlas_size,

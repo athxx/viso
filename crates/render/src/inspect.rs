@@ -311,7 +311,6 @@ mod tests {
                     w: 0.1,
                     h: 0.1,
                 },
-                px_range: 2.0,
             }],
             atlas,
             color: Rgba {

@@ -208,21 +208,19 @@ impl ImageDraw {
     }
 }
 
-/// One glyph of a [`GlyphRunDraw`]: where it lands on screen, which atlas
-/// sub-rect holds its SDF, and how wide the SDF's coverage ramp is.
+/// One glyph of a [`GlyphRunDraw`]: where it lands on screen and which atlas
+/// sub-rect holds its coverage.
 ///
 /// The text subsystem ([`viso_text`]) computes these — screen rect and atlas UV
-/// are already resolved — so the renderer never re-runs layout. `px_range` is
-/// the glyph's screen-pixels-per-SDF-unit, consumed by the shader to decode
-/// coverage from the single-channel R8 signed-distance atlas.
+/// are already resolved — so the renderer never re-runs layout. The atlas texel
+/// *is* the glyph's per-pixel coverage (single-channel A8), sampled directly by
+/// the shader; there is no decode factor.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct GlyphInstanceData {
     /// Destination rectangle on screen, in physical pixels.
     pub rect: Rect,
     /// Source sub-rect in the atlas, in normalized texture coordinates (`0..1`).
     pub uv: Rect,
-    /// SDF coverage-ramp width (screen pixels per SDF unit) for shader decode.
-    pub px_range: f32,
 }
 
 /// A run of shaped glyphs sharing one atlas texture and one color.
@@ -234,7 +232,7 @@ pub struct GlyphInstanceData {
 pub struct GlyphRunDraw {
     /// The positioned glyphs, one screen quad each.
     pub glyphs: Vec<GlyphInstanceData>,
-    /// The single-channel R8 SDF atlas the glyphs sample.
+    /// The single-channel A8 coverage atlas the glyphs sample.
     pub atlas: TextureId,
     /// Straight linear RGBA color applied to the entire run (a = opacity).
     pub color: Rgba,
@@ -249,7 +247,6 @@ impl GlyphRunDraw {
             uv_pos: [glyph.uv.x, glyph.uv.y],
             uv_size: [glyph.uv.w, glyph.uv.h],
             color: [self.color.r, self.color.g, self.color.b, self.color.a],
-            px_range: glyph.px_range,
         }
     }
 }
@@ -358,7 +355,7 @@ pub struct Mesh {
 pub enum Primitive {
     /// A rounded/bordered rectangle.
     Quad(Quad),
-    /// A run of shaped glyphs sampling a single-channel SDF atlas.
+    /// A run of shaped glyphs sampling a single-channel A8 coverage atlas.
     GlyphRun(GlyphRunDraw),
     /// A textured image sampled into a rect.
     Image(ImageDraw),
@@ -424,12 +421,12 @@ pub struct ImageInstance {
 /// GPU instance for the GlyphRun built-in shader.
 ///
 /// Field names/formats match [`glyphrun_schema`] and the headless `fill_glyph`
-/// reader. Structurally the same as [`ImageInstance`] plus a `px_range` decode
-/// factor: the sampled texel is a single-channel signed distance (in the R8
-/// atlas's R channel), and the shader turns it into coverage via `px_range`.
-/// `color` is a **straight** (non-premultiplied) linear RGBA; the shader
-/// premultiplies. `#[repr(C)]` with 8-byte `[f32; 2]`/`[f32; 4]` fields and a
-/// trailing 4-byte `f32`, so the derive's `offset_of!` layout has no padding.
+/// reader. Structurally identical to [`ImageInstance`]: the sampled texel is
+/// exact per-pixel coverage (the single-channel A8 atlas's R channel), which the
+/// shader multiplies the run color by directly — no decode factor. `color` is a
+/// **straight** (non-premultiplied) linear RGBA; the shader premultiplies.
+/// `#[repr(C)]` with only 8-byte `[f32; 2]`/`[f32; 4]` fields, so the derive's
+/// `offset_of!`-based layout has no padding surprises.
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, GpuInstance)]
 pub struct GlyphInstance {
@@ -443,8 +440,6 @@ pub struct GlyphInstance {
     pub uv_size: [f32; 2],
     /// Straight linear RGBA color for the whole run (a = opacity).
     pub color: [f32; 4],
-    /// SDF coverage-ramp width (screen pixels per SDF unit).
-    pub px_range: f32,
 }
 
 /// One vertex of the general triangle mesh built-in (shared by [`Path`] and
@@ -960,7 +955,6 @@ mod tests {
                 w: 0.3,
                 h: 0.4,
             },
-            px_range: 8.0,
         };
         let inst = run.instance(&glyph);
         assert_eq!(inst.rect_pos, [5.0, 6.0]);
@@ -969,7 +963,6 @@ mod tests {
         assert_eq!(inst.uv_size, [0.3, 0.4]);
         // The run's color, not per-glyph.
         assert_eq!(inst.color, [0.1, 0.2, 0.3, 0.9]);
-        assert_eq!(inst.px_range, 8.0);
     }
 
     #[test]
