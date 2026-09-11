@@ -11,10 +11,12 @@
 
 #![forbid(unsafe_op_in_unsafe_fn)]
 
+pub mod glyph_atlas;
 pub mod inspect;
 pub mod primitive;
 pub mod renderer;
 
+pub use glyph_atlas::{AtlasAlloc, GlyphAtlas};
 pub use inspect::{BatchId, BatchPipeline, InspectBatch, InspectBatches};
 pub use primitive::{
     Border, GlyphInstance, GlyphInstanceData, GlyphRunDraw, ImageDraw, ImageInstance, LayerClip,
@@ -29,7 +31,7 @@ pub use renderer::{FrameStats, Renderer};
 // on `viso-render` (the DAG lets `viso-ui`/tools reach it) can name them without a
 // direct `viso-gpu` edge. `viso-gpu` is already a `viso-render` dependency.
 pub use viso_gpu::{BindGroupId, PipelineId, TextureId};
-use viso_text::TextSystem;
+use viso_text::{Direction, Shaper, rasterize_coverage};
 
 /// A compact batch key. Batch keys use integer IDs, never strings (§16.2),
 /// and must respect visual order and clipping.
@@ -62,19 +64,20 @@ pub fn test_texture() -> (u32, u32, Vec<u8>) {
 }
 
 /// The prepared text for [`test_scene`]: the positioned glyph quads, the run
-/// color, and the R8 SDF atlas backing them (raw pixels + edge length).
+/// color, and the A8 coverage atlas backing them (raw pixels + edge length).
 ///
 /// Returned separately from [`test_scene`] because the atlas is a real GPU
 /// texture the caller must create and upload (like [`test_texture`]): the
-/// caller creates an `R8Unorm` texture of `atlas_size²`, writes `atlas_pixels`
-/// into it, and passes the resulting [`TextureId`] back into [`test_scene`].
+/// caller creates a [`GlyphAtlas::FORMAT`] texture of `atlas_size²`, writes
+/// `atlas_pixels` into it, and passes the resulting [`TextureId`] back into
+/// [`test_scene`].
 #[derive(Debug, Clone)]
 pub struct TestGlyphs {
-    /// One positioned quad per visible glyph (screen rect + atlas UV + px_range).
+    /// One positioned quad per visible glyph (screen rect + atlas UV).
     pub glyphs: Vec<GlyphInstanceData>,
     /// The single color applied to the whole run.
     pub color: Rgba,
-    /// The full R8 atlas pixel buffer (`atlas_size²` bytes).
+    /// The full single-channel A8 atlas pixel buffer (`atlas_size²` bytes).
     pub atlas_pixels: Vec<u8>,
     /// Atlas edge length in texels.
     pub atlas_size: u32,
@@ -86,37 +89,69 @@ pub struct TestGlyphs {
 const TEST_FONT: &[u8] = include_bytes!("fixtures/DejaVuSans-subset.ttf");
 
 /// Shape and lay out a short two-line string with the embedded [`TEST_FONT`],
-/// producing the glyph quads and R8 SDF atlas for [`test_scene`]'s
+/// producing the glyph quads and A8 coverage atlas for [`test_scene`]'s
 /// [`Primitive::GlyphRun`].
 ///
-/// The `origin` is the top-left the text block is offset to (the layout's own
-/// baseline math places lines relative to it). Multi-line is exercised by a
-/// hard `\n`. The atlas is rasterized once here; the caller uploads it.
+/// The `origin` is the top-left the text block is offset to. Multi-line is
+/// exercised by a hard `\n`. Each line is shaped with [`Shaper`] (em-unit
+/// advances) and each glyph rasterized to exact coverage with
+/// [`rasterize_coverage`], then packed into a fresh [`GlyphAtlas`]; the caller
+/// uploads the resulting pixels once.
+///
+/// This is a self-contained demo path, not the framework's text pipeline (that
+/// lives in the facade, which owns font resolution and the persistent atlas):
+/// the baseline advance is a plain multiple of `font_size` rather than real
+/// face metrics, since this crate has no face-metrics dependency.
 pub fn test_glyphs(origin: [f32; 2], font_size: f32) -> TestGlyphs {
-    let mut text = TextSystem::new();
-    let font = text
-        .load_font(TEST_FONT, 0)
-        .expect("embedded test font parses");
-    // Two lines to exercise the layout's `\n` handling and baseline advance.
-    let quads = text.prepare(font, "Viso\ngpu", font_size, None, 1.0, None);
-    let glyphs = quads
-        .iter()
-        .map(|q| GlyphInstanceData {
-            rect: Rect {
-                x: origin[0] + q.rect_px[0],
-                y: origin[1] + q.rect_px[1],
-                w: q.rect_px[2],
-                h: q.rect_px[3],
-            },
-            uv: Rect {
-                x: q.uv[0],
-                y: q.uv[1],
-                w: q.uv[2] - q.uv[0],
-                h: q.uv[3] - q.uv[1],
-            },
-            px_range: q.px_range,
-        })
-        .collect();
+    // A generous square atlas: the demo string fits with room to spare, so no
+    // overflow wipe occurs and every glyph keeps its first-pass UV.
+    const ATLAS_SIZE: u32 = 256;
+    // Baseline of the first line below `origin.y`, and the advance between
+    // successive baselines — plain `font_size` fractions (typical Latin text
+    // metrics) rather than face-derived, adequate for a fixed demo string.
+    let ascent = font_size * 0.8;
+    let line_height = font_size * 1.2;
+
+    let mut shaper = Shaper::new();
+    let mut atlas = GlyphAtlas::new(ATLAS_SIZE, TextureId(0));
+    let mut glyphs = Vec::new();
+
+    // Two lines to exercise `\n` handling and the baseline advance.
+    for (line_index, line) in "Viso\ngpu".split('\n').enumerate() {
+        let baseline_y = origin[1] + ascent + line_index as f32 * line_height;
+        let Some(run) = shaper.shape_run(
+            viso_text::FontFaceId(0),
+            TEST_FONT,
+            0,
+            line,
+            Direction::LeftToRight,
+        ) else {
+            continue;
+        };
+        // Pen advances in device pixels from the line's left edge.
+        let mut pen_x = origin[0];
+        for g in &run.glyphs {
+            if let Some(bitmap) = rasterize_coverage(TEST_FONT, 0, g.glyph_id, font_size) {
+                if let AtlasAlloc::Placed(uv) = atlas.alloc(&bitmap) {
+                    // `left`/`top` are pen-origin-relative device pixels: `top`
+                    // is the distance up from the baseline to the bitmap's top.
+                    let x = pen_x + g.x_offset * font_size + bitmap.left;
+                    let y = baseline_y - bitmap.top;
+                    glyphs.push(GlyphInstanceData {
+                        rect: Rect {
+                            x,
+                            y,
+                            w: bitmap.width as f32,
+                            h: bitmap.height as f32,
+                        },
+                        uv,
+                    });
+                }
+            }
+            pen_x += g.x_advance * font_size;
+        }
+    }
+
     TestGlyphs {
         glyphs,
         color: Rgba {
@@ -125,8 +160,8 @@ pub fn test_glyphs(origin: [f32; 2], font_size: f32) -> TestGlyphs {
             b: 0.98,
             a: 1.0,
         },
-        atlas_pixels: text.atlas_pixels().to_vec(),
-        atlas_size: text.atlas_size(),
+        atlas_pixels: atlas.pixels().to_vec(),
+        atlas_size: atlas.size(),
     }
 }
 
@@ -143,8 +178,8 @@ pub fn test_glyphs(origin: [f32; 2], font_size: f32) -> TestGlyphs {
 /// a miter corner, exercising curve flattening, fill coverage-AA, and stroke
 /// joins); a caller-supplied [`Primitive::Mesh`] triangle (the direct-geometry
 /// escape hatch, sharing the path pipeline); a multi-line
-/// [`Primitive::GlyphRun`] (`glyphs`, from [`test_glyphs`]) sampling an R8 SDF
-/// atlas, exercising the text vertical slice; and a translucent
+/// [`Primitive::GlyphRun`] (`glyphs`, from [`test_glyphs`]) sampling an A8
+/// coverage atlas, exercising the text vertical slice; and a translucent
 /// [`Primitive::Layer`] (`opacity < 1`) wrapping a solid quad, exercising the
 /// offscreen render-to-texture path and opacity compositing (the subtree is
 /// rendered into a texture and blended back at the layer rect). Coordinates
@@ -154,9 +189,9 @@ pub fn test_glyphs(origin: [f32; 2], font_size: f32) -> TestGlyphs {
 /// [`TextureId`] is carried by `glyphs`.
 pub fn test_scene(texture: TextureId, glyphs: GlyphRunDraw) -> Vec<Primitive> {
     vec![
-        // A multi-line text run in the top-left, sampling the R8 SDF atlas. The
-        // glyphs were shaped/laid-out by the text subsystem; the run carries a
-        // single color and the atlas it samples. Drawn first so later quads can
+        // A multi-line text run in the top-left, sampling the A8 coverage atlas.
+        // The glyphs were shaped/laid-out by the text subsystem; the run carries
+        // a single color and the atlas it samples. Drawn first so later quads can
         // overlap it if positioned to.
         Primitive::GlyphRun(glyphs),
         // Opaque red rounded rect.
