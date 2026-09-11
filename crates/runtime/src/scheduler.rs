@@ -294,6 +294,12 @@ impl<D: FrameDriver, C: FrameClock> AppHandler for Scheduler<D, C> {
                     }));
                 self.reasons.add(RedrawReason::InputDirty);
             }
+            RawEvent::MenuCommand { id } => {
+                // A custom menu pick: dispatch to the driver and run a frame, as
+                // the command typically mutates app state the UI must reflect.
+                self.driver.on_menu_command(id);
+                self.reasons.add(RedrawReason::InputDirty);
+            }
             RawEvent::Scroll(s) => {
                 // Resolve the window scale here (the scheduler owns the window)
                 // and normalize the logical-point sample into physical pixels —

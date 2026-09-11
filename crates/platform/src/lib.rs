@@ -20,6 +20,7 @@ pub mod backend;
 pub mod control;
 pub mod event;
 pub mod handler;
+pub mod menu;
 
 pub use control::{ControlFlow, DEFAULT_FRAME_BUDGET, PlatformError, WindowConfig, WindowId};
 pub use event::{
@@ -27,6 +28,7 @@ pub use event::{
     RawPointer, RawScroll, RawText,
 };
 pub use handler::AppHandler;
+pub use menu::{Accel, Menu, MenuCommandId, SystemAction};
 // The native window handle lives in the `viso-handle` leaf crate so `viso-gpu`
 // can name it without depending on `viso-platform` (the DAG rule). Re-exported here
 // because platform is where it's produced (`Window::raw_handle`).
@@ -60,6 +62,16 @@ pub trait PlatformApp {
     /// Schedule a redraw beat for `window` (delivered as
     /// [`RawEvent::RedrawRequested`]).
     fn request_redraw(&mut self, window: WindowId);
+
+    /// Install (or replace) the application menu bar from a [`Menu`] tree.
+    ///
+    /// Cold path: called once at startup and again only when the menu changes.
+    /// The backend walks the tree to build the OS-native menu; custom
+    /// [`Menu::Item`]s deliver [`RawEvent::MenuCommand`] when picked, while
+    /// [`Menu::System`] items route through the OS responder chain. Passing a
+    /// non-[`Menu::Main`] root, or calling on a backend with no menu concept
+    /// (headless), is a no-op.
+    fn set_menu(&mut self, menu: &Menu);
 
     /// Programmatically close `window`, destroying its OS shell.
     ///

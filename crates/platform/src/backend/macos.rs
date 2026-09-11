@@ -30,16 +30,17 @@ use std::time::Instant;
 
 use objc2::rc::{Retained, autoreleasepool};
 use objc2::runtime::{AnyObject, ProtocolObject, Sel};
-use objc2::{AnyThread, DefinedClass, MainThreadOnly, define_class, msg_send};
+use objc2::{AnyThread, DefinedClass, MainThreadOnly, define_class, msg_send, sel};
 use objc2_app_kit::{
-    NSApplication, NSApplicationActivationPolicy, NSBackingStoreType, NSEvent, NSEventMask,
-    NSEventModifierFlags, NSTextInputClient, NSTrackingArea, NSTrackingAreaOptions, NSView,
-    NSWindow, NSWindowDelegate, NSWindowStyleMask,
+    NSApplication, NSApplicationActivationPolicy, NSApplicationDelegate, NSApplicationTerminateReply,
+    NSBackingStoreType, NSEvent, NSEventMask, NSEventModifierFlags, NSMenu, NSMenuItem,
+    NSTextInputClient, NSTrackingArea, NSTrackingAreaOptions, NSView, NSWindow, NSWindowDelegate,
+    NSWindowStyleMask,
 };
 use objc2_foundation::{
     MainThreadMarker, NSArray, NSAttributedString, NSAttributedStringKey, NSDate,
-    NSDefaultRunLoopMode, NSNotification, NSObject, NSObjectProtocol, NSPoint, NSRange,
-    NSRangePointer, NSRect, NSSize, NSString,
+    NSDefaultRunLoopMode, NSNotification, NSObject, NSObjectProtocol, NSPoint, NSProcessInfo,
+    NSRange, NSRangePointer, NSRect, NSSize, NSString,
 };
 
 use crate::RawWindowHandle;
@@ -49,6 +50,7 @@ use crate::event::{
     RawPointer, RawScroll, RawText,
 };
 use crate::handler::AppHandler;
+use crate::menu::{Accel, Menu, SystemAction};
 use crate::{PlatformApp, Window};
 
 /// Events the delegate/view produce, drained by the pump between OS events.
@@ -73,6 +75,13 @@ pub struct MacApp {
     next_window_id: u32,
     windows: Vec<MacWindow>,
     launched: bool,
+    /// Kept alive: `setDelegate` holds only a weak reference.
+    _app_delegate: Retained<AppDelegate>,
+    /// Kept alive: each custom menu item's `-[NSMenuItem setTarget:]` holds only
+    /// a weak reference, so the per-command target objects must outlive the menu.
+    /// Replaced wholesale on each `set_menu`, dropping the previous menu's
+    /// targets once AppKit has swapped in the new bar.
+    menu_targets: Vec<Retained<MenuTarget>>,
 }
 
 impl MacApp {
@@ -85,13 +94,27 @@ impl MacApp {
         };
         let app = NSApplication::sharedApplication(mtm);
         app.setActivationPolicy(NSApplicationActivationPolicy::Regular);
+        let shared: Shared = Rc::new(RefCell::new(PumpQueue::default()));
+
+        // Standard "AppName" application menu with a "Quit AppName" item bound to
+        // Command-Q. Without a main menu the OS has nowhere to route the Cmd+Q
+        // shortcut, so the app cannot be quit from the keyboard. The Quit item
+        // fires `quit:` on our delegate, which asks the pump to exit cleanly —
+        // draining windows through the normal close path rather than the hard
+        // `-[NSApplication terminate:]` that a manual pump cannot unwind.
+        let app_delegate = AppDelegate::new(mtm, shared.clone());
+        app.setDelegate(Some(ProtocolObject::from_ref(&*app_delegate)));
+        install_main_menu(mtm, &app, &app_delegate);
+
         Ok(Self {
             mtm,
             app,
-            shared: Rc::new(RefCell::new(PumpQueue::default())),
+            shared,
             next_window_id: 1,
             windows: Vec::new(),
             launched: false,
+            _app_delegate: app_delegate,
+            menu_targets: Vec::new(),
         })
     }
 
@@ -256,6 +279,31 @@ impl PlatformApp for MacApp {
         self.shared.borrow_mut().redraws.push_back(window);
     }
 
+    fn set_menu(&mut self, menu: &Menu) {
+        // Only a `Main` root describes a menu bar; anything else is a no-op.
+        let Menu::Main { items } = menu else {
+            return;
+        };
+        // Build a fresh bar and the command targets it needs, then swap both in
+        // atomically: the new targets replace the old only after `setMainMenu:`
+        // has adopted the new bar, so no live menu item is ever left pointing at
+        // a dropped target.
+        let mut targets = Vec::new();
+        let bar = NSMenu::new(self.mtm);
+        for child in items {
+            build_menu_node(
+                self.mtm,
+                &bar,
+                child,
+                &self.shared,
+                &self._app_delegate,
+                &mut targets,
+            );
+        }
+        self.app.setMainMenu(Some(&bar));
+        self.menu_targets = targets;
+    }
+
     fn close_window(&mut self, window: WindowId) {
         // Same close path as a user-driven close, initiated by the app: order the
         // NSWindow out (dropping its Retained releases the OS shell) and enqueue a
@@ -409,6 +457,264 @@ impl WindowDelegate {
         let this = Self::alloc(mtm).set_ivars(DelegateIvars { window, shared });
         unsafe { msg_send![super(this), init] }
     }
+}
+
+/// Ivars for the application delegate: the pump's shared queue, so the menu's
+/// Quit action and a Dock-driven terminate both request a clean pump exit.
+struct AppDelegateIvars {
+    shared: Shared,
+}
+
+define_class!(
+    #[unsafe(super(NSObject))]
+    #[thread_kind = MainThreadOnly]
+    #[name = "VisoAppDelegate"]
+    #[ivars = AppDelegateIvars]
+    struct AppDelegate;
+
+    unsafe impl NSObjectProtocol for AppDelegate {}
+
+    unsafe impl NSApplicationDelegate for AppDelegate {
+        /// A Dock/system-driven quit (right-click Dock → Quit, logout) routes
+        /// through here. Deny AppKit's own `terminate:` — which would call
+        /// `exit()` out from under the manual pump — and instead ask the pump
+        /// to break out, so windows tear down through the one close path.
+        #[unsafe(method(applicationShouldTerminate:))]
+        fn should_terminate(&self, _sender: &NSApplication) -> NSApplicationTerminateReply {
+            let shared = self.ivars().shared.clone();
+            let _ = catch_unwind(AssertUnwindSafe(|| {
+                shared.borrow_mut().should_exit = true;
+            }));
+            NSApplicationTerminateReply::TerminateCancel
+        }
+    }
+
+    impl AppDelegate {
+        /// Target of the "Quit" menu item (Command-Q). Requests a clean pump
+        /// exit rather than a hard terminate.
+        #[unsafe(method(quit:))]
+        fn quit(&self, _sender: Option<&AnyObject>) {
+            let shared = self.ivars().shared.clone();
+            let _ = catch_unwind(AssertUnwindSafe(|| {
+                shared.borrow_mut().should_exit = true;
+            }));
+        }
+    }
+);
+
+impl AppDelegate {
+    fn new(mtm: MainThreadMarker, shared: Shared) -> Retained<Self> {
+        let this = Self::alloc(mtm).set_ivars(AppDelegateIvars { shared });
+        unsafe { msg_send![super(this), init] }
+    }
+}
+
+/// Build and install the minimal main menu: one "AppName" submenu holding a
+/// "Quit AppName" item wired to Command-Q. The item targets the app delegate's
+/// `quit:` so the shortcut ends in a clean pump exit.
+fn install_main_menu(mtm: MainThreadMarker, app: &NSApplication, delegate: &AppDelegate) {
+    let name = NSProcessInfo::processInfo().processName();
+
+    let main_menu = NSMenu::new(mtm);
+    let app_item = NSMenuItem::new(mtm);
+    main_menu.addItem(&app_item);
+
+    let app_submenu = NSMenu::new(mtm);
+    let quit_title = NSString::from_str(&format!("Quit {name}"));
+    // SAFETY: standard AppKit menu construction on the main thread. The target
+    // is the app delegate installed just before this call.
+    let quit_item = unsafe {
+        NSMenuItem::initWithTitle_action_keyEquivalent(
+            NSMenuItem::alloc(mtm),
+            &quit_title,
+            Some(sel!(quit:)),
+            &NSString::from_str("q"),
+        )
+    };
+    unsafe {
+        quit_item.setTarget(Some(delegate));
+    }
+    app_submenu.addItem(&quit_item);
+    app_item.setSubmenu(Some(&app_submenu));
+
+    app.setMainMenu(Some(&main_menu));
+}
+
+/// Ivars for a custom menu-command target: the app-assigned command id and the
+/// pump's shared queue. One instance backs each [`Menu::Item`]; picking the item
+/// fires `menuAction:` here, which enqueues the command for the runtime.
+struct MenuTargetIvars {
+    command: u32,
+    shared: Shared,
+}
+
+define_class!(
+    #[unsafe(super(NSObject))]
+    #[thread_kind = MainThreadOnly]
+    #[name = "VisoMenuTarget"]
+    #[ivars = MenuTargetIvars]
+    struct MenuTarget;
+
+    unsafe impl NSObjectProtocol for MenuTarget {}
+
+    impl MenuTarget {
+        /// Selector wired to a custom menu item. Enqueues the item's command so
+        /// the runtime sees it as a `RawEvent::MenuCommand` on the next pump turn
+        /// — the menu action stays off the OS's synchronous call stack.
+        #[unsafe(method(menuAction:))]
+        fn menu_action(&self, _sender: Option<&AnyObject>) {
+            let ivars = self.ivars();
+            let command = ivars.command;
+            let shared = ivars.shared.clone();
+            let _ = catch_unwind(AssertUnwindSafe(|| {
+                shared
+                    .borrow_mut()
+                    .events
+                    .push_back(RawEvent::MenuCommand {
+                        id: crate::menu::MenuCommandId(command),
+                    });
+            }));
+        }
+    }
+);
+
+impl MenuTarget {
+    fn new(mtm: MainThreadMarker, command: u32, shared: Shared) -> Retained<Self> {
+        let this = Self::alloc(mtm).set_ivars(MenuTargetIvars { command, shared });
+        unsafe { msg_send![super(this), init] }
+    }
+}
+
+/// Recursively translate one [`Menu`] node into AppKit objects, appending it to
+/// `parent`. Custom items get a freshly built [`MenuTarget`] (pushed onto
+/// `targets` so it outlives the menu, since `setTarget:` is weak); system items
+/// wire to the OS responder chain (or the app delegate's clean-exit `quit:`).
+fn build_menu_node(
+    mtm: MainThreadMarker,
+    parent: &NSMenu,
+    node: &Menu,
+    shared: &Shared,
+    delegate: &AppDelegate,
+    targets: &mut Vec<Retained<MenuTarget>>,
+) {
+    match node {
+        // A nested `Main` is meaningless below the root — flatten its children
+        // into the parent so a malformed tree still renders sensibly.
+        Menu::Main { items } => {
+            for child in items {
+                build_menu_node(mtm, parent, child, shared, delegate, targets);
+            }
+        }
+        Menu::Sub { name, items } => {
+            let item = NSMenuItem::new(mtm);
+            item.setTitle(&NSString::from_str(name));
+            let submenu = NSMenu::new(mtm);
+            // The submenu's title drives the bar label AppKit shows for it.
+            submenu.setTitle(&NSString::from_str(name));
+            for child in items {
+                build_menu_node(mtm, &submenu, child, shared, delegate, targets);
+            }
+            item.setSubmenu(Some(&submenu));
+            parent.addItem(&item);
+        }
+        Menu::Item {
+            name,
+            command,
+            accel,
+            enabled,
+        } => {
+            let (key, mask) = accel_to_key_equivalent(accel.as_ref());
+            // SAFETY: standard AppKit menu-item construction on the main thread.
+            let item = unsafe {
+                NSMenuItem::initWithTitle_action_keyEquivalent(
+                    NSMenuItem::alloc(mtm),
+                    &NSString::from_str(name),
+                    Some(sel!(menuAction:)),
+                    &NSString::from_str(&key),
+                )
+            };
+            if let Some(mask) = mask {
+                item.setKeyEquivalentModifierMask(mask);
+            }
+            item.setEnabled(*enabled);
+            let target = MenuTarget::new(mtm, command.0, shared.clone());
+            unsafe {
+                item.setTarget(Some(&target));
+            }
+            targets.push(target);
+            parent.addItem(&item);
+        }
+        Menu::System { action, name } => {
+            let item = build_system_item(mtm, *action, name.as_deref(), delegate);
+            parent.addItem(&item);
+        }
+        Menu::Line => {
+            parent.addItem(&NSMenuItem::separatorItem(mtm));
+        }
+    }
+}
+
+/// Build a standard OS-action menu item. Quit routes to the app delegate's
+/// `quit:` (a clean pump exit, not the hard `terminate:`); the rest use the
+/// conventional responder-chain selectors the OS already implements.
+fn build_system_item(
+    mtm: MainThreadMarker,
+    action: SystemAction,
+    name: Option<&str>,
+    delegate: &AppDelegate,
+) -> Retained<NSMenuItem> {
+    let app_name = NSProcessInfo::processInfo().processName();
+    let (default_title, key, sel) = match action {
+        SystemAction::Quit => (format!("Quit {app_name}"), "q", sel!(quit:)),
+        SystemAction::CloseWindow => ("Close".to_string(), "w", sel!(performClose:)),
+        SystemAction::Hide => (format!("Hide {app_name}"), "h", sel!(hide:)),
+        SystemAction::Minimize => ("Minimize".to_string(), "m", sel!(performMiniaturize:)),
+    };
+    let title = name.map(str::to_string).unwrap_or(default_title);
+    // SAFETY: standard AppKit menu-item construction on the main thread.
+    let item = unsafe {
+        NSMenuItem::initWithTitle_action_keyEquivalent(
+            NSMenuItem::alloc(mtm),
+            &NSString::from_str(&title),
+            Some(sel),
+            &NSString::from_str(key),
+        )
+    };
+    // Quit targets our delegate explicitly (clean pump exit); the others take
+    // nil target so the OS walks the responder chain to the key window / app.
+    if matches!(action, SystemAction::Quit) {
+        unsafe {
+            item.setTarget(Some(delegate));
+        }
+    }
+    item
+}
+
+/// Translate a Viso [`Accel`] into the `(keyEquivalent, modifier mask)` pair
+/// AppKit wants. Returns an empty key (and `None` mask) when the accelerator is
+/// unset, which leaves the item shortcut-free.
+fn accel_to_key_equivalent(accel: Option<&Accel>) -> (String, Option<NSEventModifierFlags>) {
+    let Some(accel) = accel.filter(|a| a.is_set()) else {
+        return (String::new(), None);
+    };
+    let mut mask = NSEventModifierFlags::empty();
+    // The primary accelerator is Command on macOS.
+    if accel.primary || accel.control {
+        // `control` maps to the Control key; `primary` folds to Command here.
+        if accel.primary {
+            mask |= NSEventModifierFlags::Command;
+        }
+        if accel.control {
+            mask |= NSEventModifierFlags::Control;
+        }
+    }
+    if accel.shift {
+        mask |= NSEventModifierFlags::Shift;
+    }
+    if accel.alt {
+        mask |= NSEventModifierFlags::Option;
+    }
+    (accel.key.clone(), Some(mask))
 }
 
 /// Ivars for the content view: window identity, the shared queue, the current

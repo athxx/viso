@@ -208,6 +208,11 @@ impl PlatformApp for X11App {
         self.shared.borrow_mut().redraws.push_back(window);
     }
 
+    fn set_menu(&mut self, _menu: &crate::menu::Menu) {
+        // X11 has no OS-owned menu bar; an in-window menu belongs to the UI
+        // layer above the platform, not here. No-op for interface parity.
+    }
+
     fn close_window(&mut self, window: WindowId) {
         // Same close path as a user-driven close (the WM_DELETE_WINDOW handshake
         // in `translate`), initiated by the app: destroy the X window and enqueue

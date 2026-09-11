@@ -214,6 +214,11 @@ impl PlatformApp for WinApp {
         self.shared.borrow_mut().redraws.push_back(window);
     }
 
+    fn set_menu(&mut self, _menu: &crate::menu::Menu) {
+        // Windows menus are per-window (HMENU), not an app-global bar; wiring
+        // one belongs with native multi-window work. No-op for now, parity only.
+    }
+
     fn close_window(&mut self, window: WindowId) {
         // Same close path as a user-driven close, initiated by the app: destroy
         // the HWND and enqueue `WindowClosed` so the scheduler decrements its
