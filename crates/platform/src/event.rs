@@ -20,6 +20,7 @@ use std::cell::Cell;
 use std::rc::Rc;
 
 use crate::control::WindowId;
+use crate::menu::MenuCommandId;
 
 /// A shared "should this proceed?" cell for veto handshakes.
 ///
@@ -258,6 +259,10 @@ pub enum RawEvent {
     Text(RawText),
     /// An in-progress IME composition update (preedit); commit arrives as `Text`.
     ImePreedit(RawImePreedit),
+    /// The user picked a custom application-menu item; carries the app-assigned
+    /// [`MenuCommandId`](crate::menu::MenuCommandId). Standard actions (Quit,
+    /// Close, …) route through the OS instead and never surface here.
+    MenuCommand { id: MenuCommandId },
 }
 
 #[cfg(test)]

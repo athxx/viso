@@ -109,6 +109,12 @@ impl PlatformApp for HeadlessApp {
         self.pending_redraws.push_back(id);
     }
 
+    fn set_menu(&mut self, _menu: &crate::menu::Menu) {
+        // No OS menu bar in headless: the app menu is a native-shell concept.
+        // Kept as a no-op for interface parity so drivers install a menu
+        // unconditionally without a target-specific branch.
+    }
+
     fn close_window(&mut self, id: WindowId) {
         // Same path as a user-driven close: drop the OS-side window state and
         // deliver a `WindowClosed` beat. Front of the script queue so it lands

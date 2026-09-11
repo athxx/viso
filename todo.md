@@ -788,6 +788,25 @@ TextInput ✅(单行编辑骨架,后续片见上文 deferral 清单)。全部 �
         坐实 `Vec<WindowState>` 线性选择(§45 / ADR 0020)。`083d8b8`。
     ✅ **Window 收官 → Tier 4 全部完成**(Tabs / NavigationStack / Popup / Modal / Sheet / Toast / Window)。
 
+- [x] **应用菜单树** ✅ —— Viso 原生应用菜单系统(照搬 makepad 整套菜单树语义,取语义不取架构,[[viso-diverge-from-makepad]])。
+      端到端一趟贯通,macOS 原生后端真机验证过(自定义命令项鼠标点击 + Cmd+P 加速键均触发 `MENU_COMMAND 42`、
+      子菜单/分隔线渲染、`SystemAction::Quit` 经 Cmd+Q 干净退出;临时 `menucheck.rs` 验后清理)。
+      - platform 层新建 `crates/platform/src/menu.rs`(冷路径 owned 树):`MenuCommandId(u32)` 紧凑命令标识(非字符串,§29);
+        `Accel{key:String,primary/shift/alt/control}`(加速键串 owned 不过 KeyCode——平台按键词表极简,加速键是显示/OS 关切);
+        `SystemAction{Quit,CloseWindow,Hide,Minimize}`(走 responder-chain selector);`Menu{Main,Sub,Item,System,Line}`
+        + builder;3 单测。`event.rs` 加 `RawEvent::MenuCommand{id}`;`lib.rs` 重导 + `PlatformApp::set_menu`(冷路径,
+        非 Main 根 / headless 为 no-op)。
+      - macOS 后端 `backend/macos.rs`:`set_menu` 建 `NSMenu` + 递归 `build_menu_node`(Sub→子菜单、Item→
+        `initWithTitle:action:keyEquivalent:` + sel `menuAction:` + 修饰掩码 + enabled、System→`build_system_item`、
+        Line→`separatorItem`);`MenuTarget` objc 类(`menuAction:` 入队 `RawEvent::MenuCommand`,catch_unwind 包裹);
+        `menu_targets: Vec<Retained<MenuTarget>>` 由 Rust 保活(`setTarget:` 只持弱引用),`setMainMenu` 后再换 targets;
+        `accel_to_key_equivalent` 映射修饰掩码。headless/x11/windows 各 no-op(注明缘由)。
+      - runtime 层:`FrameDriver::on_menu_command` 默认 no-op hook;scheduler `MenuCommand` arm 路由 + `InputDirty`;
+        `RuntimeCx::set_menu`。
+      - viso facade:`Application::menu()`(默认 None)+ `on_menu_command`(默认 no-op);`on_launch` 开窗前 `cx.set_menu`;
+        `AppDriver` 转发;prelude 重导 `{Accel,Menu,MenuCommandId,SystemAction}`。
+      - 全 workspace `cargo build`/`cargo test` 绿(platform 5 单测 + 8 headless 集成、runtime、viso facade 含 doctest)。
+
 **Tier 5 — 编辑器 / 结构工具类控件(doc §71,`viso-widgets` 内节点控件):** 待做,Tier 4 收完下一步开排。
 每个仍出完整 section-71 验证包(单测 + golden + input tape + a11y 快照 + microbench + alloc profile),每小节一提交,
 todo 随做随标、与源码同 commit(不独立提)。开工第一个控件时先读 makepad 对应实现([[viso-read-makepad-first]])。

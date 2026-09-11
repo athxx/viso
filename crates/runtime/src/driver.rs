@@ -10,7 +10,7 @@
 
 use std::time::Instant;
 
-use viso_platform::WindowId;
+use viso_platform::{MenuCommandId, WindowId};
 
 use crate::context::RuntimeCx;
 use crate::input::InputSample;
@@ -48,6 +48,13 @@ pub trait FrameDriver {
     /// count, so the teardown observes the pre-decrement state. Default no-op:
     /// a single-window driver holds no per-window state to release.
     fn on_window_closed(&mut self, _window: WindowId) {}
+
+    /// The user picked a custom application-menu item. `command` is the
+    /// app-assigned [`MenuCommandId`] carried by the menu tree, so the driver
+    /// matches on the small integer it chose when building the menu. Standard
+    /// actions (Quit/Close/…) are performed by the OS and never reach here.
+    /// Default no-op: a driver with no menu holds nothing to dispatch.
+    fn on_menu_command(&mut self, _command: MenuCommandId) {}
 
     /// Whether the driver wants continuous animation frames right now. When
     /// true, the scheduler keeps requesting redraw beats even with no input.

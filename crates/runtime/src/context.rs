@@ -109,6 +109,16 @@ impl<'a> RuntimeCx<'a> {
         self.app.request_redraw(window);
     }
 
+    /// Install (or replace) the application menu bar from a menu tree.
+    ///
+    /// Custom [`Menu::Item`](viso_platform::Menu::Item)s deliver their command
+    /// to the driver's `on_menu_command` when picked; standard actions
+    /// (Quit/Close/…) are performed by the OS. A no-op on backends without a
+    /// native menu bar (headless).
+    pub fn set_menu(&mut self, menu: &viso_platform::Menu) {
+        self.app.set_menu(menu);
+    }
+
     /// Programmatically close `window`, destroying its OS shell.
     ///
     /// The counterpart to [`create_window`](Self::create_window). The platform

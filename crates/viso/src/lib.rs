@@ -95,6 +95,25 @@ pub trait Application: Sized + 'static {
     fn build(&mut self, cx: &mut BuildCx<'_>) {
         let _ = cx;
     }
+
+    /// The application menu bar, installed once on launch. Return a
+    /// [`Menu::Main`](viso_platform::Menu::Main) tree; custom
+    /// [`Menu::Item`](viso_platform::Menu::Item)s deliver their
+    /// [`MenuCommandId`](viso_platform::MenuCommandId) to
+    /// [`on_menu_command`](Self::on_menu_command) when picked, and
+    /// [`Menu::System`](viso_platform::Menu::System) items (Quit/Close/…) are
+    /// performed by the OS. The default returns `None`: the framework installs
+    /// its standard app menu (with a working Quit) and the app adds nothing.
+    fn menu(&self) -> Option<viso_platform::Menu> {
+        None
+    }
+
+    /// Handle a custom menu command the user picked (the id from this app's
+    /// [`menu`](Self::menu) tree). Mutate app/window state here; the frame that
+    /// follows flushes it. The default ignores every command.
+    fn on_menu_command(&mut self, command: viso_platform::MenuCommandId) {
+        let _ = command;
+    }
 }
 
 /// Run a Viso application to completion.
@@ -813,6 +832,12 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
         // this session loads them ahead of the system fallbacks.
         self.app = Some(A::new(&mut self.cx));
         self.fonts = self.cx.__take_fonts();
+        // Install the app's menu bar, if it declares one, before opening any
+        // window. A `None` leaves the framework's standard app menu (with its
+        // working Quit) in place from platform bring-up.
+        if let Some(menu) = self.app.as_ref().and_then(Application::menu) {
+            cx.set_menu(&menu);
+        }
         // Open the initial window. Later phases let the app request its own
         // windows via `AppCx`; Phase 2 opens one canonical window.
         let Ok(id) = cx.create_window(viso_platform::WindowConfig::default()) else {
@@ -981,6 +1006,16 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
                 };
                 ScrollRouter::route(&mut ws.store, root, ev);
             }
+        }
+    }
+
+    fn on_menu_command(&mut self, command: viso_platform::MenuCommandId) {
+        // Hand the pick straight to the user application; the scheduler already
+        // flagged the frame input-dirty, so any state it writes flushes next
+        // frame. A menu command targets the app, not a window, so there is no
+        // per-window routing here.
+        if let Some(app) = self.app.as_mut() {
+            app.on_menu_command(command);
         }
     }
 
@@ -1382,6 +1417,11 @@ pub mod prelude {
     // it. `WindowConfig` is the (title, size) shape the author fills in. These are
     // commonly used, stable, and unambiguous, so they belong in the default set.
     pub use crate::{WindowBuilder, WindowConfig, WindowHandle, window};
+    // The application-menu model (§68 lifecycle): an app returns a `Menu` tree
+    // from `Application::menu`, wiring custom items to `MenuCommandId`s it picks
+    // and shortcuts through `Accel`; standard entries use `SystemAction`. Menus
+    // are an application-level concern like `window`, so they belong here.
+    pub use viso_platform::{Accel, Menu, MenuCommandId, SystemAction};
     // The declarative view-fragment entry point (§21.5): a small local `ui! { … }`
     // fragment lowers, at Rust compile time, to a static `BuildCx` builder closure.
     pub use crate::ui;
