@@ -700,7 +700,11 @@ pub fn layout(tree: &mut impl LayoutTree, root: u32, bounds: Rect, scratch: &mut
         }
     }
 
-    let free = (main_extent - fixed_main - gaps_total).max(0.0);
+    let remaining = main_extent - fixed_main - gaps_total;
+    // Fill allocation cannot be negative, but alignment must retain signed
+    // overflow. Otherwise an oversized centered group silently snaps to Start
+    // instead of overflowing equally on both sides.
+    let fill_free = remaining.max(0.0);
 
     // Place children along the main axis, advancing a cursor from the near edge.
     // `Justify` shifts the whole packed group by the leftover main slack, but
@@ -714,8 +718,8 @@ pub fn layout(tree: &mut impl LayoutTree, root: u32, bounds: Rect, scratch: &mut
     } else {
         match justify {
             Justify::Start => 0.0,
-            Justify::Center => free * 0.5,
-            Justify::End => free,
+            Justify::Center => remaining * 0.5,
+            Justify::End => remaining,
         }
     };
     let mut cursor = main_origin + justify_off;
@@ -732,7 +736,7 @@ pub fn layout(tree: &mut impl LayoutTree, root: u32, bounds: Rect, scratch: &mut
             Length::Fit => tree.measured(child).on(axis),
             Length::Fill { weight } => {
                 if weight_total > 0.0 {
-                    free * (weight.max(0.0) / weight_total)
+                    fill_free * (weight.max(0.0) / weight_total)
                 } else {
                     0.0
                 }
@@ -2534,7 +2538,7 @@ mod tests {
         // Center` on the cross (vertical). This is the Hello World construct;
         // the child must land exactly centered, and — the regression the user
         // hit — a *larger* box must keep it centered, not drift it to a corner.
-        fn centered_leaf_bounds(w: f32, h: f32) -> Rect {
+        fn centered_leaf_bounds(w: f32, h: f32, child_w: f32, child_h: f32) -> Rect {
             let mut store = NodeStore::new();
             let mut leaf = None;
             let root = {
@@ -2549,8 +2553,7 @@ mod tests {
                     },
                     |cx| {
                         let l = cx.leaf(LeafStyle {
-                            // A Fit-measured 200x40 body, so both axes have slack.
-                            size: Size::fixed(200.0, 40.0),
+                            size: Size::fixed(child_w, child_h),
                             style: BoxStyle::NONE,
                         });
                         leaf = Some(l.id());
@@ -2566,16 +2569,25 @@ mod tests {
         }
 
         // 600x400 box: child centered at ((600-200)/2, (400-40)/2) = (200, 180).
-        let b = centered_leaf_bounds(600.0, 400.0);
+        let b = centered_leaf_bounds(600.0, 400.0, 200.0, 40.0);
         assert_eq!(b.x, 200.0, "centered on the main (horizontal) axis");
         assert_eq!(b.y, 180.0, "centered on the cross (vertical) axis");
         assert_eq!((b.w, b.h), (200.0, 40.0), "child keeps its Fit size");
 
         // Growing the box keeps the child centered (it does not drift to a
         // corner): a 1000x800 box centers at ((1000-200)/2, (800-40)/2).
-        let big = centered_leaf_bounds(1000.0, 800.0);
+        let big = centered_leaf_bounds(1000.0, 800.0, 200.0, 40.0);
         assert_eq!(big.x, 400.0, "still centered horizontally when enlarged");
         assert_eq!(big.y, 380.0, "still centered vertically when enlarged");
+
+        // Overflow keeps the same center line instead of snapping to the near
+        // edge: a 700px child in a 600px box overflows 50px on each side.
+        let overflow = centered_leaf_bounds(600.0, 400.0, 700.0, 40.0);
+        assert_eq!(
+            overflow.x, -50.0,
+            "an oversized child remains centered on the main axis"
+        );
+        assert_eq!(overflow.y, 180.0);
     }
 
     #[test]

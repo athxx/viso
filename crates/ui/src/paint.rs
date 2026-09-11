@@ -445,7 +445,6 @@ mod tests {
                         w: 1.0,
                         h: 1.0,
                     },
-                    px_range: 2.0,
                 }],
                 atlas: TextureId(7),
                 color_glyphs: Vec::new(),
@@ -597,7 +596,6 @@ mod tests {
                         w: 0.1,
                         h: 0.1,
                     },
-                    px_range: 2.0,
                 }],
                 atlas: TextureId(3),
                 color_glyphs: vec![GlyphInstanceData {
@@ -613,8 +611,6 @@ mod tests {
                         w: 0.125,
                         h: 0.125,
                     },
-                    // A color glyph carries no SDF decode factor; paint ignores it.
-                    px_range: 0.0,
                 }],
                 color_atlas: Some(TextureId(5)),
                 color: RED,
@@ -716,7 +712,6 @@ mod tests {
                         w: 0.1,
                         h: 0.1,
                     },
-                    px_range: 2.0,
                 }],
                 atlas: TextureId(3),
                 color_glyphs: Vec::new(),

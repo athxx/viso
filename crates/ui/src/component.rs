@@ -335,7 +335,7 @@ pub struct NodeStore {
     content_payload: Vec<Option<Box<Content>>>,
     /// Cold: per-node unshaped text request, index-aligned but mostly `None`.
     /// `viso-ui` cannot shape text (no font stack), so a text node records what
-    /// it wants drawn here and an upper tier that owns a `TextSystem` drains
+    /// it wants drawn here and an upper tier that owns text preparation drains
     /// these, shapes each, and writes the result back into `content_payload`.
     /// Boxed off the hot columns like `semantics`; a cold `String` in sparse
     /// side storage, never touched by the hot per-node traversal.
@@ -3284,7 +3284,6 @@ mod tests {
                         w: 1.0,
                         h: 1.0,
                     },
-                    px_range: 2.0,
                 }],
                 atlas: TextureId(1),
                 color_glyphs: Vec::new(),

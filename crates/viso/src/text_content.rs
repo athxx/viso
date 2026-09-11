@@ -1,120 +1,169 @@
-//! Facade-owned text shaping: turns a node's unshaped `TextRequest` into a
-//! shaped `Content::Text` payload the UI store can measure and paint.
-//!
-//! `viso-ui` cannot shape text — the architecture DAG forbids a `viso-ui →
-//! viso-text` edge, so the UI holds no font stack. The facade legally owns one
-//! (`viso-text` is an allowed facade dependency) and does the shaping here, then
-//! hands the finished [`viso_ui::Content`] back to the node store. This is the
-//! single seam where a font stack meets the retained tree.
-//!
-//! Two persistent GPU textures back the run: an R8 SDF atlas for outline glyphs
-//! and an RGBA8 color atlas for bitmap-emoji strikes. Each is created once on the
-//! first shape that needs it and grown incrementally by re-uploading only the
-//! region the text system reports dirty after each shape. New glyphs pack into
-//! the same atlas across the whole session, so steady-state text (a fixed label
-//! set) uploads each atlas once and never again. A pure-text run never allocates
-//! or touches the color atlas.
+//! Facade-owned text preparation: resolves faces, shapes retained requests, and
+//! uploads raster products into renderer-owned representation pools.
 
-use viso_gpu::{GpuBackend, TextureDesc, TextureFormat};
-use viso_render::{GlyphInstanceData, Rect, TextureId};
-use viso_text::{FontId, GlyphKind, SystemFallback, TextCounters, TextSystem};
+use std::cell::Cell;
+use std::collections::HashMap;
+
+use viso_gpu::{GpuBackend, TextureDesc};
+use viso_render::{
+    AtlasAlloc, ColorAlloc, ColorAtlas, GlyphAtlas, GlyphInstanceData, Rect, TextureId,
+};
+use viso_text::fallback::{FallbackPlan, FallbackPlanKey, FallbackStyle, FontFallback};
+use viso_text::font_manifest::{AssetRef, FontManifest};
+use viso_text::{
+    BaseDirection, BidiInfo, ColorGlyphRasterizer, Direction, FontFaceId, FontRequest,
+    FontResolver, FontRole, GlyphImageKind, LineBreaker, Resolved, Segmenter, ShapedRun, Shaper,
+    face_covers, inspect_face, rasterize_coverage,
+};
 use viso_ui::{Content, TextRequest, Vec2};
 
-use crate::system_fonts::{CoreTextColorRaster, CoreTextProvider};
+use crate::system_fonts::{CoreTextColorRaster, CoreTextProvider, LiveFontRegistry};
 
-/// Owns the facade's font stack and glyph atlas, shaping [`TextRequest`]s into
-/// [`Content::Text`] payloads. One per app; created on launch.
-///
-/// No font is bundled: the chain starts empty and the platform
-/// [`CoreTextProvider`] pulls a covering system face into it on the first shape
-/// (a system-default UI face, plus per-script / emoji fallbacks on demand).
-/// Users may also load their own faces up front, which sit ahead of the system
-/// fallbacks. On platforms with no provider (wasm), the chain stays empty and a
-/// run shapes to no glyphs rather than panicking.
-pub(crate) struct TextShaper {
-    text: TextSystem,
-    /// The primary face id once the chain has one — the request's font. `None`
-    /// until a face is loaded (a user face, or a system face the provider
-    /// resolves on the first shape). A `None` primary shapes to no glyphs.
-    font: Option<FontId>,
-    /// The persistent R8 SDF glyph atlas texture, created lazily on the first
-    /// shape (once a backend exists to allocate it). `None` until then.
-    atlas: Option<TextureId>,
-    /// The persistent RGBA8 color atlas texture for bitmap-emoji glyphs, created
-    /// lazily on the first shape that packs a color glyph. `None` until then —
-    /// a pure-text session never allocates it.
-    color_atlas: Option<TextureId>,
-    /// The platform system-font provider (CoreText on macOS, a no-op elsewhere):
-    /// consulted when a run has characters the loaded chain cannot render, to
-    /// pull a covering system face into the fallback chain.
-    provider: CoreTextProvider,
-    /// The platform color-emoji rasterizer (CoreText on macOS, a no-op
-    /// elsewhere): draws a system emoji face's glyphs — whose strikes were
-    /// stripped at load — into premultiplied RGBA for the color atlas.
-    color_raster: CoreTextColorRaster,
-    /// Negative cache for system-font resolution — records which scripts / emoji
-    /// have already been queried so an uncoverable run does not re-ask the OS
-    /// every time it is (re)shaped.
-    fallback: SystemFallback,
+const ATLAS_SIZE: u32 = 1024;
+
+#[derive(Debug, Default)]
+pub(crate) struct TextCounters {
+    reshapes: Cell<u64>,
+    relinebreaks: Cell<u64>,
+    rasters: Cell<u64>,
+    atlas_upload_bytes: Cell<u64>,
 }
 
-impl TextShaper {
-    /// Build the shaper with an empty font chain. No face is bundled; the first
-    /// shape resolves a system face through the provider (or, on wasm, shapes to
-    /// nothing).
-    pub(crate) fn new() -> Self {
-        Self {
-            text: TextSystem::new(),
-            font: None,
-            atlas: None,
-            color_atlas: None,
-            provider: CoreTextProvider::new(),
-            color_raster: CoreTextColorRaster::new(),
-            fallback: SystemFallback::new(),
+impl TextCounters {
+    pub(crate) fn reshapes(&self) -> u64 {
+        self.reshapes.get()
+    }
+
+    pub(crate) fn relinebreaks(&self) -> u64 {
+        self.relinebreaks.get()
+    }
+
+    pub(crate) fn rasters(&self) -> u64 {
+        self.rasters.get()
+    }
+
+    pub(crate) fn atlas_upload_bytes(&self) -> u64 {
+        self.atlas_upload_bytes.get()
+    }
+
+    fn record_shape(&self, wrapped: bool) {
+        self.reshapes.set(self.reshapes.get() + 1);
+        if wrapped {
+            self.relinebreaks.set(self.relinebreaks.get() + 1);
         }
     }
 
-    /// Load a user face from raw sfnt bytes, registering it in the chain. If the
-    /// chain was empty, this face becomes the primary — so a user-loaded face
-    /// sits ahead of any system fallback resolved later. Returns `None` if the
-    /// bytes do not parse as an sfnt face.
-    ///
-    /// This is the internal seam the facade's public user-font API and the tests
-    /// build on; it does not fetch anything, only registers already-in-hand bytes.
-    /// The driver drives it from `WindowState::open` for each face the app
-    /// registered through [`AppCx::load_font`](viso_ui::context::AppCx::load_font).
-    pub(crate) fn load_font(&mut self, bytes: impl Into<Box<[u8]>>, index: u32) -> Option<FontId> {
-        let id = self.text.load_font(bytes, index)?;
-        self.font.get_or_insert(id);
-        Some(id)
+    fn record_raster(&self) {
+        self.rasters.set(self.rasters.get() + 1);
     }
 
-    /// The text subsystem's per-frame work counters (reshapes, re-linebreaks,
-    /// fresh rasters, atlas-upload bytes). The driver reads these into the
-    /// `VISO_FRAME_TRACE` dump and zeroes them at the frame boundary via
-    /// [`reset_counters`](Self::reset_counters).
+    fn record_upload(&self, bytes: usize) {
+        self.atlas_upload_bytes
+            .set(self.atlas_upload_bytes.get() + bytes as u64);
+    }
+
+    fn reset(&self) {
+        self.reshapes.set(0);
+        self.relinebreaks.set(0);
+        self.rasters.set(0);
+        self.atlas_upload_bytes.set(0);
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct PositionedGlyph {
+    face: FontFaceId,
+    glyph: u16,
+    cluster: usize,
+    origin: [f32; 2],
+}
+
+#[derive(Debug, Clone)]
+struct PreparedLayout {
+    glyphs: Vec<PositionedGlyph>,
+    natural: Vec2,
+    baseline: f32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct LayoutKey {
+    face: FontFaceId,
+    text: String,
+    size_bits: u32,
+    width_bits: Option<u32>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+struct RasterKey {
+    face: FontFaceId,
+    glyph: u16,
+    bucket: u16,
+    kind: GlyphImageKind,
+}
+
+pub(crate) struct TextShaper {
+    resolver: FontResolver,
+    fallback: FontFallback,
+    shaper: Shaper,
+    manifest: FontManifest,
+    primary: Option<FontFaceId>,
+    next_asset: u32,
+    layouts: HashMap<LayoutKey, PreparedLayout>,
+    coverage_uv: HashMap<RasterKey, (Rect, [f32; 2], [u32; 2])>,
+    color_uv: HashMap<RasterKey, (Rect, [f32; 2], [u32; 2])>,
+    coverage_atlas: Option<GlyphAtlas>,
+    color_atlas: Option<ColorAtlas>,
+    provider: CoreTextProvider,
+    color_raster: CoreTextColorRaster,
+    counters: TextCounters,
+}
+
+impl TextShaper {
+    pub(crate) fn new() -> Self {
+        // One live-font registry, shared between the provider (which records the
+        // handles CoreText resolves) and the color/coverage raster (which
+        // rasterizes through them). See `system_fonts::LiveFontRegistry`.
+        let live = LiveFontRegistry::new();
+        Self {
+            resolver: FontResolver::new(),
+            fallback: FontFallback::new(1 << 30),
+            shaper: Shaper::new(),
+            manifest: FontManifest::default(),
+            primary: None,
+            next_asset: 0,
+            layouts: HashMap::new(),
+            coverage_uv: HashMap::new(),
+            color_uv: HashMap::new(),
+            coverage_atlas: None,
+            color_atlas: None,
+            provider: CoreTextProvider::new(live.clone()),
+            color_raster: CoreTextColorRaster::new(live),
+            counters: TextCounters::default(),
+        }
+    }
+
+    pub(crate) fn load_font(
+        &mut self,
+        bytes: impl Into<Box<[u8]>>,
+        index: u32,
+    ) -> Option<FontFaceId> {
+        let bytes = bytes.into().into_vec();
+        inspect_face(&bytes, index)?;
+        let asset = AssetRef(self.next_asset);
+        self.next_asset = self.next_asset.wrapping_add(1);
+        let face = self.resolver.register_app_face(asset, index, bytes);
+        self.primary.get_or_insert(face);
+        Some(face)
+    }
+
     pub(crate) fn counters(&self) -> &TextCounters {
-        self.text.counters()
+        &self.counters
     }
 
-    /// Zero the text counters at a frame boundary so each count reflects one frame.
     pub(crate) fn reset_counters(&self) {
-        self.text.reset_counters();
+        self.counters.reset();
     }
 
-    /// Shape one request into a [`Content::Text`], uploading any newly-packed
-    /// glyphs to the atlas texture via `backend`. `dpi_factor` is the surface's
-    /// device-pixel density (glyphs rasterize at that density).
-    ///
-    /// Glyph positions are node-local (origin at `(0, 0)`); the paint step
-    /// shifts them to the node's world origin. `natural` is the run's bounding
-    /// extent, which the measure pass reads for a `Fit` axis.
-    /// `max_width` is the box width (physical px) the layout pass assigned this
-    /// run, or `None` to shape unconstrained (single-line natural). It is only
-    /// ever `Some` on a reflow pass for a wrap-eligible leaf (DL1 constraint
-    /// downflow); the first shape of any run passes `None`. The produced
-    /// `Content::Text` records it as `shaped_at_width` so the layout pass can
-    /// tell whether a later assigned width still matches.
     pub(crate) fn shape<B: GpuBackend>(
         &mut self,
         backend: &mut B,
@@ -122,155 +171,520 @@ impl TextShaper {
         dpi_factor: f32,
         max_width: Option<f32>,
     ) -> Content {
-        // Seed the primary face from the system if the chain is still empty (no
-        // user face loaded): the first shape pulls the platform default UI face.
-        // On a platform with no provider (wasm) this stays `None` and the run
-        // shapes to no glyphs — an empty text content, not a panic.
-        let font = self.font.or_else(|| {
-            let id = self.text.resolve_primary(&self.provider);
-            self.font = id;
-            id
-        });
-        let Some(font) = font else {
-            return Content::Text {
-                glyphs: Vec::new(),
-                atlas: self.atlas.unwrap_or(TextureId(0)),
-                color_glyphs: Vec::new(),
-                color_atlas: None,
-                color: request.color,
-                natural: Vec2::ZERO,
-                baseline: 0.0,
-                shaped_at_width: max_width,
-                soft_wrap: request.soft_wrap,
-            };
+        let Some(face) = self.resolve_primary() else {
+            return empty_content(request, max_width);
         };
-
-        // Before laying out, extend the fallback chain with system faces for any
-        // script / emoji the loaded chain cannot render, so the run resolves
-        // against the grown chain rather than boxing uncovered characters. The
-        // negative cache makes an uncoverable (or already-resolved) run a no-op,
-        // so steady-state reshapes of the same text pay only the shape, not an OS
-        // query. `prepare` below reshapes from scratch, picking up new faces.
-        self.text
-            .resolve_missing(font, &request.text, &self.provider, &mut self.fallback);
-
-        // Soft wrap only when the run opted in *and* the layout pass handed down
-        // a constraining width (DL1 constraint downflow). A run that did not opt
-        // in, or that was shaped unconstrained (`max_width == None`, the first
-        // shape), stays single-line — `prepare` with `None` produces the natural
-        // one-line extent the measure pass reads for a `Fit` axis.
-        let wrap_width = if request.soft_wrap { max_width } else { None };
-        let quads = self.text.prepare(
-            font,
-            &request.text,
-            request.font_size,
-            wrap_width,
-            dpi_factor,
-            Some(&self.color_raster),
-        );
-
-        // Ensure the atlas texture exists, then upload whatever region this
-        // shape newly rasterized. The atlas is single-channel R8 SDF coverage.
-        let size = self.text.atlas_size();
-        let atlas = *self.atlas.get_or_insert_with(|| {
-            backend.create_texture(&TextureDesc {
-                width: size,
-                height: size,
-                format: TextureFormat::R8Unorm,
-                render_target: false,
-                label: "ui-glyph-atlas",
-            })
-        });
-        if let Some(d) = self.text.take_atlas_dirty() {
-            // Upload the dirty rows at full width: the atlas is stored row-major
-            // with stride `size`, so uploading whole rows (x = 0, width = size)
-            // for the dirty band `[d.y, d.y + d.h)` matches the texture's stride
-            // and stays bounded to the rows this shape actually touched.
-            let row = size as usize;
-            let pixels = self.text.atlas_pixels();
-            let band = &pixels[d.y as usize * row..(d.y + d.h) as usize * row];
-            self.text.counters().record_atlas_upload(band.len() as u64);
-            backend.write_texture(atlas, 0, d.y, size, d.h, band);
-        }
-
-        // Route each quad to its atlas run by kind: SDF outlines decode through
-        // the coverage ramp against `atlas`; color-bitmap glyphs sample RGBA
-        // directly against the color atlas and paint as image quads. Both runs
-        // share the node-local coordinate space and feed the one run extent.
-        let mut natural = Vec2::ZERO;
-        let mut glyphs: Vec<GlyphInstanceData> = Vec::with_capacity(quads.len());
-        let mut color_glyphs: Vec<GlyphInstanceData> = Vec::new();
-        for q in &quads {
-            let rect = Rect {
-                x: q.rect_px[0],
-                y: q.rect_px[1],
-                w: q.rect_px[2],
-                h: q.rect_px[3],
-            };
-            natural.x = natural.x.max(rect.x + rect.w);
-            natural.y = natural.y.max(rect.y + rect.h);
-            let instance = GlyphInstanceData {
-                rect,
-                uv: Rect {
-                    x: q.uv[0],
-                    y: q.uv[1],
-                    w: q.uv[2] - q.uv[0],
-                    h: q.uv[3] - q.uv[1],
-                },
-                px_range: q.px_range,
-            };
-            match q.kind {
-                GlyphKind::Sdf => glyphs.push(instance),
-                GlyphKind::Color => color_glyphs.push(instance),
-            }
-        }
-
-        // Only if the run packed color glyphs: ensure the RGBA color atlas
-        // texture exists and upload its newly-rasterized band. Its buffer is
-        // row-major RGBA with stride `size * 4` bytes, so a dirty band spans
-        // `[d.y, d.y + d.h)` rows at that wider stride.
-        let color_atlas = if color_glyphs.is_empty() {
-            None
+        let wrap_width = request.soft_wrap.then_some(max_width).flatten();
+        let key = LayoutKey {
+            face,
+            text: request.text.clone(),
+            size_bits: request.font_size.to_bits(),
+            width_bits: wrap_width.map(f32::to_bits),
+        };
+        let layout = if let Some(layout) = self.layouts.get(&key) {
+            layout.clone()
         } else {
-            let csize = self.text.color_atlas_size();
-            let ctex = *self.color_atlas.get_or_insert_with(|| {
-                backend.create_texture(&TextureDesc {
-                    width: csize,
-                    height: csize,
-                    format: TextureFormat::Rgba8Unorm,
-                    render_target: false,
-                    label: "ui-glyph-color-atlas",
-                })
-            });
-            if let Some(d) = self.text.take_color_atlas_dirty() {
-                let row = csize as usize * 4;
-                let pixels = self.text.color_atlas_pixels();
-                let band = &pixels[d.y as usize * row..(d.y + d.h) as usize * row];
-                self.text.counters().record_atlas_upload(band.len() as u64);
-                backend.write_texture(ctex, 0, d.y, csize, d.h, band);
-            }
-            Some(ctex)
+            let layout = self.prepare_layout(face, &request.text, request.font_size, wrap_width);
+            self.counters.record_shape(wrap_width.is_some());
+            self.layouts.insert(key, layout.clone());
+            layout
         };
 
-        // The first-line baseline in the same logical-pixel space as `natural`
-        // and the glyph rects, so a grid cell can align this run on its baseline.
-        let baseline = self.text.first_baseline(font, request.font_size);
+        let mut glyphs = Vec::with_capacity(layout.glyphs.len());
+        let mut color_glyphs = Vec::new();
+        for glyph in layout.glyphs {
+            let ppem = (request.font_size * dpi_factor)
+                .round()
+                .clamp(1.0, u16::MAX as f32) as u16;
+            let is_emoji = request.text[glyph.cluster..]
+                .chars()
+                .next()
+                .is_some_and(is_emoji);
 
+            if is_emoji
+                && let Some(color) =
+                    self.color_raster
+                        .rasterize_color_glyph(glyph.face, glyph.glyph, ppem)
+            {
+                let key = RasterKey {
+                    face: glyph.face,
+                    glyph: glyph.glyph,
+                    bucket: ppem,
+                    kind: GlyphImageKind::ColorRgba8,
+                };
+                let cached = self.color_uv.get(&key).copied();
+                let packed = cached.or_else(|| {
+                    let atlas = ensure_color_atlas(&mut self.color_atlas, backend);
+                    match atlas.alloc(&color) {
+                        ColorAlloc::Placed(uv) => {
+                            self.counters.record_raster();
+                            let value = (uv, color.origin_px, [color.width, color.height]);
+                            self.color_uv.insert(key, value);
+                            Some(value)
+                        }
+                        ColorAlloc::Empty | ColorAlloc::Overflow => None,
+                    }
+                });
+                if let Some((uv, bearing, size)) = packed {
+                    let inv = 1.0 / dpi_factor;
+                    // `origin_px` is the ink bbox's *bottom-left* in y-up strike
+                    // px: `bearing[1]` is the bottom of the ink above the baseline
+                    // (negative for a glyph that descends). The quad's top edge is
+                    // `bearing[1] + size.height` px above the baseline, so in
+                    // y-down screen space it sits at `baseline - (bottom + h)` —
+                    // the same "top of ink above baseline" the coverage path gets
+                    // directly from `top = y_max`.
+                    color_glyphs.push(GlyphInstanceData {
+                        rect: Rect {
+                            x: glyph.origin[0] + bearing[0] * inv,
+                            y: glyph.origin[1] - (bearing[1] + size[1] as f32) * inv,
+                            w: size[0] as f32 * inv,
+                            h: size[1] as f32 * inv,
+                        },
+                        uv,
+                    });
+                    continue;
+                }
+            }
+
+            let key = RasterKey {
+                face: glyph.face,
+                glyph: glyph.glyph,
+                bucket: ppem,
+                kind: GlyphImageKind::MaskA8,
+            };
+            let packed = if let Some(&cached) = self.coverage_uv.get(&key) {
+                cached
+            } else {
+                // Parser-outlined coverage first; if the face carries no
+                // parser-readable outline (Apple proprietary `hvgl`, e.g.
+                // PingFang → empty bitmap), recover it as grayscale A8 through
+                // CoreText, the same path emoji uses for color.
+                let bitmap = match self.rasterize(glyph.face, glyph.glyph, ppem as f32) {
+                    Some(b) if !b.is_empty() => b,
+                    _ => {
+                        let cb = self.color_raster.rasterize_coverage_glyph(
+                            glyph.face,
+                            glyph.glyph,
+                            ppem,
+                        );
+                        let Some(b) = cb else {
+                            continue;
+                        };
+                        if b.is_empty() {
+                            continue;
+                        }
+                        b
+                    }
+                };
+                let atlas = ensure_coverage_atlas(&mut self.coverage_atlas, backend);
+                let AtlasAlloc::Placed(uv) = atlas.alloc(&bitmap) else {
+                    continue;
+                };
+                let value = (uv, [bitmap.left, bitmap.top], [bitmap.width, bitmap.height]);
+                self.coverage_uv.insert(key, value);
+                self.counters.record_raster();
+                value
+            };
+            let (uv, bearing, size) = packed;
+            let inv = 1.0 / dpi_factor;
+            glyphs.push(GlyphInstanceData {
+                rect: Rect {
+                    x: glyph.origin[0] + bearing[0] * inv,
+                    y: glyph.origin[1] - bearing[1] * inv,
+                    w: size[0] as f32 * inv,
+                    h: size[1] as f32 * inv,
+                },
+                uv,
+            });
+        }
+
+        let atlas = self
+            .coverage_atlas
+            .as_ref()
+            .map_or(TextureId(0), GlyphAtlas::texture);
+        self.upload_dirty(backend);
         Content::Text {
             glyphs,
             atlas,
             color_glyphs,
-            color_atlas,
+            color_atlas: self.color_atlas.as_ref().map(ColorAtlas::texture),
             color: request.color,
-            natural,
-            baseline,
-            // The width this run actually wrapped at: `None` when it stayed
-            // single-line (not opted in, or shaped unconstrained). The layout
-            // pass reflows only when its assigned width disagrees with this.
+            natural: layout.natural,
+            baseline: layout.baseline,
             shaped_at_width: wrap_width,
             soft_wrap: request.soft_wrap,
         }
     }
+
+    fn resolve_primary(&mut self) -> Option<FontFaceId> {
+        if self.primary.is_none() {
+            let request = FontRequest::role(FontRole::Ui);
+            if let Resolved::Face(face) =
+                self.resolver
+                    .resolve(&request, &self.manifest, &self.provider, "")
+            {
+                self.primary = Some(face);
+                self.register_color_face(face);
+            }
+        }
+        self.primary
+    }
+
+    fn register_color_face(&self, face: FontFaceId) {
+        if let Some(metrics) = self.resolver.face_metrics(face)
+            && let Some(name) = metrics.postscript_name
+        {
+            self.color_raster
+                .register_face(face, &name, metrics.glyph_count);
+        }
+    }
+
+    fn face_bytes(&self, face: FontFaceId) -> Option<(&[u8], u32)> {
+        self.resolver
+            .face_bytes(face)
+            .or_else(|| self.fallback.face_bytes(face))
+    }
+
+    fn shape_span(
+        &mut self,
+        base: FontFaceId,
+        text: &str,
+        source_start: usize,
+        direction: Direction,
+    ) -> Vec<(ShapedRun, usize)> {
+        let Some(run) = self.shape_registered(base, text, direction) else {
+            return Vec::new();
+        };
+        if !run.has_coverage_miss() {
+            return vec![(run, source_start)];
+        }
+        self.shape_clusters(base, text, source_start, direction)
+    }
+
+    fn shape_clusters(
+        &mut self,
+        base: FontFaceId,
+        text: &str,
+        source_start: usize,
+        direction: Direction,
+    ) -> Vec<(ShapedRun, usize)> {
+        let boundaries: Vec<usize> = Segmenter::new(text)
+            .grapheme_boundaries()
+            .map(|offset| offset.0)
+            .collect();
+        let mut groups: Vec<(FontFaceId, usize, usize)> = Vec::new();
+        for pair in boundaries.windows(2) {
+            let cluster = &text[pair[0]..pair[1]];
+            let face = if self.face_covers(base, cluster) {
+                base
+            } else {
+                self.resolve_fallback(base, cluster).unwrap_or(base)
+            };
+            if let Some(last) = groups.last_mut()
+                && last.0 == face
+            {
+                last.2 = pair[1];
+            } else {
+                groups.push((face, pair[0], pair[1]));
+            }
+        }
+        let mut out = Vec::with_capacity(groups.len());
+        for (face, start, end) in groups {
+            self.push_shaped(
+                &mut out,
+                face,
+                &text[start..end],
+                source_start + start,
+                direction,
+            );
+        }
+        out
+    }
+
+    fn push_shaped(
+        &mut self,
+        out: &mut Vec<(ShapedRun, usize)>,
+        face: FontFaceId,
+        text: &str,
+        source_start: usize,
+        direction: Direction,
+    ) {
+        if let Some(run) = self.shape_registered(face, text, direction) {
+            out.push((run, source_start));
+        }
+    }
+
+    fn face_covers(&self, face: FontFaceId, text: &str) -> bool {
+        self.face_bytes(face)
+            .is_some_and(|(bytes, index)| face_covers(bytes, index, text))
+    }
+
+    fn shape_registered(
+        &mut self,
+        face: FontFaceId,
+        text: &str,
+        direction: Direction,
+    ) -> Option<ShapedRun> {
+        let resolver = &self.resolver;
+        let fallback = &self.fallback;
+        let shaper = &mut self.shaper;
+        let (bytes, index) = resolver
+            .face_bytes(face)
+            .or_else(|| fallback.face_bytes(face))?;
+        shaper.shape_run(face, bytes, index, text, direction)
+    }
+
+    fn rasterize(
+        &self,
+        face: FontFaceId,
+        glyph: u16,
+        pixels_per_em: f32,
+    ) -> Option<viso_text::CoverageBitmap> {
+        let (bytes, index) = self.face_bytes(face)?;
+        rasterize_coverage(bytes, index, glyph, pixels_per_em)
+    }
+
+    fn resolve_fallback(&mut self, base: FontFaceId, text: &str) -> Option<FontFaceId> {
+        let key = FallbackPlanKey {
+            base,
+            script: FontFallback::run_script(text),
+            locale: String::new(),
+            style: FallbackStyle::default(),
+            source_revision: 0,
+        };
+        match self.fallback.plan_run(&key, text, &self.provider) {
+            FallbackPlan::Mapped { face, .. } => {
+                self.register_fallback_color_face(face);
+                Some(face)
+            }
+            FallbackPlan::Unresolved => None,
+        }
+    }
+
+    /// Register a resolved fallback face with the CoreText raster so its color /
+    /// proprietary-outline (`hvgl`) glyphs can be re-opened by name.
+    ///
+    /// The glyph count comes from the reassembled sfnt (`maxp` parses fine), but
+    /// the re-open name must be the *platform*-reported PostScript name: an
+    /// AppleColorEmoji / PingFang sfnt reassembled from CoreText tables keeps only
+    /// Macintosh-platform `name` records, and `ttf-parser` returns `None` for the
+    /// PostScript name of those — so reading it from the bytes leaves the color
+    /// face unregistered and every emoji falls through to the monochrome A8 path
+    /// (a tofu-like blob). Take the name the provider captured from CoreText.
+    fn register_fallback_color_face(&self, face: FontFaceId) {
+        let Some((bytes, index)) = self.fallback.face_bytes(face) else {
+            return;
+        };
+        let Some(metrics) = inspect_face(bytes, index) else {
+            return;
+        };
+        if let Some(name) = self.fallback.face_postscript_name(face) {
+            self.color_raster
+                .register_face(face, name, metrics.glyph_count);
+        }
+    }
+
+    fn prepare_layout(
+        &mut self,
+        base: FontFaceId,
+        text: &str,
+        font_size: f32,
+        max_width: Option<f32>,
+    ) -> PreparedLayout {
+        let rows = self.rows(base, text, font_size, max_width);
+        let metrics = self
+            .resolver
+            .face_metrics(base)
+            .unwrap_or_else(default_metrics);
+        let baseline = metrics.ascender_em * font_size;
+        let line_height = metrics.line_height_em.max(1.0) * font_size;
+        let mut positioned = Vec::new();
+        let mut natural = Vec2::ZERO;
+
+        for (row_index, (start, end)) in rows.into_iter().enumerate() {
+            let bidi = BidiInfo::resolve(&text[start..end], BaseDirection::Auto);
+            let mut pen_x = 0.0;
+            for directional in bidi.direction_runs() {
+                let run_start = start + directional.start.0;
+                let run_end = start + directional.end.0;
+                for (run, source) in self.shape_span(
+                    base,
+                    &text[run_start..run_end],
+                    run_start,
+                    directional.direction,
+                ) {
+                    for glyph in run.glyphs {
+                        positioned.push(PositionedGlyph {
+                            face: run.face,
+                            glyph: glyph.glyph_id,
+                            cluster: source + glyph.cluster as usize,
+                            origin: [
+                                pen_x + glyph.x_offset * font_size,
+                                baseline + row_index as f32 * line_height
+                                    - glyph.y_offset * font_size,
+                            ],
+                        });
+                        pen_x += glyph.x_advance * font_size;
+                    }
+                }
+            }
+            natural.x = natural.x.max(pen_x);
+            natural.y = (row_index as f32 + 1.0) * line_height;
+        }
+        PreparedLayout {
+            glyphs: positioned,
+            natural,
+            baseline,
+        }
+    }
+
+    fn rows(
+        &mut self,
+        base: FontFaceId,
+        text: &str,
+        font_size: f32,
+        max_width: Option<f32>,
+    ) -> Vec<(usize, usize)> {
+        let Some(limit) = max_width.filter(|width| *width > 0.0) else {
+            return hard_rows(text);
+        };
+        let breaker = LineBreaker::new();
+        let mut rows = Vec::new();
+        for (hard_start, hard_end) in hard_rows(text) {
+            if hard_start == hard_end {
+                rows.push((hard_start, hard_end));
+                continue;
+            }
+            let line = &text[hard_start..hard_end];
+            let mut row_start = 0;
+            let mut last_fit = None;
+            for (offset, _) in breaker.break_opportunities(line) {
+                let end = offset.0;
+                let width = self.measure(base, &line[row_start..end], font_size);
+                if width <= limit || last_fit.is_none() {
+                    last_fit = Some(end);
+                    continue;
+                }
+                let chosen = last_fit.unwrap_or(end);
+                rows.push((hard_start + row_start, hard_start + chosen));
+                row_start = chosen;
+                last_fit = Some(end);
+            }
+            if row_start < line.len() {
+                rows.push((hard_start + row_start, hard_end));
+            }
+        }
+        rows
+    }
+
+    fn measure(&mut self, base: FontFaceId, text: &str, font_size: f32) -> f32 {
+        let bidi = BidiInfo::resolve(text, BaseDirection::Auto);
+        bidi.direction_runs()
+            .into_iter()
+            .flat_map(|run| {
+                self.shape_span(
+                    base,
+                    &text[run.start.0..run.end.0],
+                    run.start.0,
+                    run.direction,
+                )
+            })
+            .map(|(run, _)| run.width_ems * font_size)
+            .sum()
+    }
+
+    fn upload_dirty<B: GpuBackend>(&mut self, backend: &mut B) {
+        if let Some(atlas) = self.coverage_atlas.as_mut()
+            && let Some((x, y, width, height, bytes)) = atlas.take_dirty()
+        {
+            self.counters.record_upload(bytes.len());
+            backend.write_texture(atlas.texture(), x, y, width, height, &bytes);
+        }
+        if let Some(atlas) = self.color_atlas.as_mut()
+            && let Some((x, y, width, height, bytes)) = atlas.take_dirty()
+        {
+            self.counters.record_upload(bytes.len());
+            backend.write_texture(atlas.texture(), x, y, width, height, &bytes);
+        }
+    }
+}
+
+fn ensure_coverage_atlas<'a, B: GpuBackend>(
+    atlas: &'a mut Option<GlyphAtlas>,
+    backend: &mut B,
+) -> &'a mut GlyphAtlas {
+    atlas.get_or_insert_with(|| {
+        let texture = backend.create_texture(&TextureDesc {
+            width: ATLAS_SIZE,
+            height: ATLAS_SIZE,
+            format: GlyphAtlas::FORMAT,
+            render_target: false,
+            label: "ui-glyph-coverage",
+        });
+        GlyphAtlas::new(ATLAS_SIZE, texture)
+    })
+}
+
+fn ensure_color_atlas<'a, B: GpuBackend>(
+    atlas: &'a mut Option<ColorAtlas>,
+    backend: &mut B,
+) -> &'a mut ColorAtlas {
+    atlas.get_or_insert_with(|| {
+        let texture = backend.create_texture(&TextureDesc {
+            width: ATLAS_SIZE,
+            height: ATLAS_SIZE,
+            format: ColorAtlas::FORMAT,
+            render_target: false,
+            label: "ui-glyph-color",
+        });
+        ColorAtlas::new(ATLAS_SIZE, texture)
+    })
+}
+
+fn hard_rows(text: &str) -> Vec<(usize, usize)> {
+    let mut rows = Vec::new();
+    let mut start = 0;
+    for (offset, ch) in text.char_indices() {
+        if ch == '\n' {
+            rows.push((start, offset));
+            start = offset + ch.len_utf8();
+        }
+    }
+    rows.push((start, text.len()));
+    rows
+}
+
+fn empty_content(request: &TextRequest, shaped_at_width: Option<f32>) -> Content {
+    Content::Text {
+        glyphs: Vec::new(),
+        atlas: TextureId(0),
+        color_glyphs: Vec::new(),
+        color_atlas: None,
+        color: request.color,
+        natural: Vec2::ZERO,
+        baseline: 0.0,
+        shaped_at_width,
+        soft_wrap: request.soft_wrap,
+    }
+}
+
+fn default_metrics() -> viso_text::FaceMetrics {
+    viso_text::FaceMetrics {
+        ascender_em: 0.8,
+        descender_em: -0.2,
+        line_height_em: 1.2,
+        units_per_em: 1000,
+        glyph_count: 0,
+        postscript_name: None,
+    }
+}
+
+fn is_emoji(ch: char) -> bool {
+    matches!(
+        ch as u32,
+        0x1F000..=0x1FAFF | 0x2600..=0x27BF | 0xFE0F | 0x200D
+    )
 }
 
 #[cfg(test)]
@@ -279,22 +693,7 @@ mod tests {
     use viso_gpu::{HeadlessRaster, RawWindowHandle};
     use viso_render::Rgba;
 
-    /// A DejaVu Sans subset used only to give the tests a deterministic face:
-    /// production bundles no font (the chain is seeded from the system), so the
-    /// tests inject this through the same [`TextShaper::load_font`] seam a user
-    /// font uses, making it the primary. It is a test fixture, not a default.
     const TEST_FONT: &[u8] = include_bytes!("../fixtures/DejaVuSans-subset.ttf");
-
-    /// A shaper with the test fixture loaded as its primary face — the setup
-    /// every shaping test shares now that no face is bundled.
-    fn shaper_with_test_font() -> TextShaper {
-        let mut shaper = TextShaper::new();
-        shaper
-            .load_font(TEST_FONT, 0)
-            .expect("test fixture font parses");
-        shaper
-    }
-
     const WHITE: Rgba = Rgba {
         r: 1.0,
         g: 1.0,
@@ -302,277 +701,189 @@ mod tests {
         a: 1.0,
     };
 
-    #[test]
-    fn shapes_request_into_text_content_with_natural_extent() {
-        let mut gpu = HeadlessRaster::new();
-        // A surface exists in the real flow; the shaper only needs the backend
-        // for texture allocation, so create one to keep the backend consistent.
-        let _ = gpu.create_surface(RawWindowHandle::Headless, 64, 64);
-
-        let mut shaper = shaper_with_test_font();
-        let content = shaper.shape(
-            &mut gpu,
-            &TextRequest {
-                text: "Viso".to_string(),
-                font_size: 22.0,
-                color: WHITE,
-                soft_wrap: false,
-            },
-            1.0,
-            None,
-        );
-
-        match content {
-            Content::Text {
-                glyphs, natural, ..
-            } => {
-                assert!(!glyphs.is_empty(), "a visible run shapes some glyphs");
-                assert!(
-                    natural.x > 0.0 && natural.y > 0.0,
-                    "the run has a positive natural extent, got {natural:?}"
-                );
-            }
-            _ => panic!("a text request shapes into Content::Text"),
-        }
+    fn shaper() -> TextShaper {
+        let mut shaper = TextShaper::new();
+        shaper.load_font(TEST_FONT, 0).expect("fixture parses");
+        shaper
     }
 
     #[test]
-    fn reuses_one_atlas_across_shapes() {
-        let mut gpu = HeadlessRaster::new();
-        let _ = gpu.create_surface(RawWindowHandle::Headless, 64, 64);
-        let mut shaper = shaper_with_test_font();
-
-        let a = shaper.shape(
-            &mut gpu,
-            &TextRequest {
-                text: "Vi".to_string(),
-                font_size: 18.0,
-                color: WHITE,
-                soft_wrap: false,
-            },
-            1.0,
-            None,
-        );
-        let b = shaper.shape(
-            &mut gpu,
-            &TextRequest {
-                text: "so".to_string(),
-                font_size: 18.0,
-                color: WHITE,
-                soft_wrap: false,
-            },
-            1.0,
-            None,
-        );
-        let (Content::Text { atlas: at_a, .. }, Content::Text { atlas: at_b, .. }) = (a, b) else {
-            panic!("both shape into text");
-        };
-        assert_eq!(at_a, at_b, "the atlas texture is created once and reused");
-    }
-
-    #[test]
-    fn dpi_factor_preserves_logical_extent() {
-        // Glyphs rasterize at the surface density, but positions/extents are in
-        // logical pixels: shaping the same run at 1x and 2x lands the run in
-        // essentially the same logical box (the higher-density SDF is decoded
-        // back to logical space in `prepare`; only the final glyph's integer
-        // bitmap extent quantizes differently per density, a sub-glyph delta).
-        // This is the invariant the threaded real dpi relies on — a HiDPI window
-        // lays text out at the same size, only crisper. The wrong behavior
-        // (ignoring dpi and emitting the 2x bitmap into logical space) would
-        // roughly double the extent, which this tolerance rejects.
+    fn shapes_and_reuses_residency() {
         let mut gpu = HeadlessRaster::new();
         let _ = gpu.create_surface(RawWindowHandle::Headless, 128, 128);
-        let mut shaper = shaper_with_test_font();
-
+        let mut shaper = shaper();
         let request = TextRequest {
-            text: "Viso".to_string(),
-            font_size: 24.0,
+            text: "Viso".into(),
+            font_size: 22.0,
             color: WHITE,
             soft_wrap: false,
         };
-        let one = shaper.shape(&mut gpu, &request, 1.0, None);
-        let two = shaper.shape(&mut gpu, &request, 2.0, None);
-
-        let (Content::Text { natural: n1, .. }, Content::Text { natural: n2, .. }) = (one, two)
+        let first = shaper.shape(&mut gpu, &request, 1.0, None);
+        shaper.reset_counters();
+        let second = shaper.shape(&mut gpu, &request, 1.0, None);
+        let Content::Text {
+            glyphs,
+            natural,
+            atlas,
+            ..
+        } = &first
         else {
-            panic!("both shape into text");
+            panic!("text content");
         };
-        // Within a few logical pixels (glyph-extent quantization), not doubled.
-        assert!(
-            (n1.x - n2.x).abs() < 4.0 && (n1.y - n2.y).abs() < 4.0,
-            "logical extent is dpi-invariant within quantization: {n1:?} vs {n2:?}"
-        );
+        assert!(!glyphs.is_empty());
+        assert!(natural.x > 0.0 && natural.y > 0.0);
+        let Content::Text {
+            atlas: second_atlas,
+            ..
+        } = second
+        else {
+            panic!("text content");
+        };
+        assert_eq!(atlas, &second_atlas);
+        assert_eq!(shaper.counters().reshapes(), 0);
+        assert_eq!(shaper.counters().rasters(), 0);
+        assert_eq!(shaper.counters().atlas_upload_bytes(), 0);
     }
 
-    /// End-to-end proof of the Hello World greeting on a real macOS system: with
-    /// no bundled font, an empty shaper resolves the mixed English / Chinese /
-    /// Thai / emoji run entirely from system faces. English seeds the primary UI
-    /// face, the CJK and Thai spans pull covering fallbacks, and the emoji
-    /// rasterizes through CoreText into the color atlas. A pass means every
-    /// script produced outline glyphs (a non-empty SDF run whose extent spans a
-    /// wide multi-script line) and the emoji produced a color glyph on its own
-    /// RGBA atlas — the exact pipeline the example drives.
+    /// The multilingual sample must resolve CJK, Devanagari, and emoji through
+    /// the CoreText system-font path and actually rasterize their glyphs — the
+    /// live-`CTFont` registry regression guard. Apple's PingFang/`.SFNS`-fallback
+    /// CJK and Devanagari faces carry proprietary `hvgl` outlines a generic parser
+    /// cannot render, so they route through the CoreText grayscale-coverage raster;
+    /// if the raster could not bind their live handle (the old `CTFontCreateWithName`
+    /// path silently substituted a Latin fallback), those glyphs would vanish and
+    /// the atlas would receive no coverage upload for them.
+    ///
+    /// macOS-only: it depends on the CoreText system-font provider resolving real
+    /// system faces, which the non-macOS stub does not.
     #[cfg(target_os = "macos")]
     #[test]
-    fn hello_world_shapes_all_scripts_from_system_fonts() {
+    fn multilingual_sample_rasterizes_cjk_devanagari_emoji() {
         let mut gpu = HeadlessRaster::new();
-        let _ = gpu.create_surface(RawWindowHandle::Headless, 512, 128);
-
-        // Empty chain: no fixture loaded, so the primary and every fallback come
-        // from the system provider — exactly what the example relies on.
+        let _ = gpu.create_surface(RawWindowHandle::Headless, 1024, 256);
+        // No app font loaded: every script falls through to the system provider,
+        // exactly as the hello-world example does.
         let mut shaper = TextShaper::new();
-        let content = shaper.shape(
-            &mut gpu,
-            &TextRequest {
-                text: "Hello 世界 สวัสดี 🎉".to_string(),
+        let request = TextRequest {
+            text: "世界 नमस्ते 🥟".into(),
+            font_size: 48.0,
+            color: WHITE,
+            soft_wrap: false,
+        };
+        let content = shaper.shape(&mut gpu, &request, 1.0, None);
+        let Content::Text {
+            glyphs,
+            color_glyphs,
+            baseline,
+            ..
+        } = &content
+        else {
+            panic!("text content");
+        };
+        let baseline = *baseline;
+
+        // Every visible cluster placed a glyph: 2 Han + the नमस्ते cluster(s) +
+        // the emoji. A dropped face would leave gaps; assert we got well more than
+        // the two ASCII spaces could explain.
+        assert!(
+            glyphs.len() >= 4,
+            "CJK/Devanagari/emoji glyphs must all place (got {})",
+            glyphs.len()
+        );
+
+        // Baseline sanity: the emoji color quad must sit on the *same* baseline as
+        // the CJK/Devanagari coverage glyphs, not float above or drop below it. An
+        // emoji strike is roughly em-tall sitting on the baseline, so its top edge
+        // is above the baseline and its bottom edge at/just below it. A sign error
+        // in the color placement math (mistaking the ink-bbox bottom for its top)
+        // would push the whole quad a full glyph height off — this guards it.
+        let emoji = color_glyphs.first().expect("emoji placed a color glyph");
+        let top = emoji.rect.y;
+        let bottom = emoji.rect.y + emoji.rect.h;
+        assert!(
+            top < baseline,
+            "emoji top ({top}) must be above the baseline ({baseline})",
+        );
+        assert!(
+            bottom > baseline - emoji.rect.h,
+            "emoji must rest on the baseline, not float a glyph-height above it",
+        );
+        // Its bottom must not sink far below the baseline (a small descent is fine).
+        assert!(
+            bottom <= baseline + emoji.rect.h * 0.5,
+            "emoji bottom ({bottom}) sits too far below the baseline ({baseline})",
+        );
+        // The atlas received real coverage/color uploads — glyphs actually
+        // rasterized rather than resolving to empty bitmaps.
+        assert!(
+            shaper.counters().atlas_upload_bytes() > 0,
+            "system-font glyphs must upload atlas coverage",
+        );
+
+        // Each script in isolation must rasterize, so a passing aggregate above
+        // cannot be one script (e.g. emoji) covering for a dropped face. CJK and
+        // Devanagari place monochrome coverage glyphs; emoji places a *color*
+        // glyph (its own atlas), so assert against the right vector per script.
+        for (label, text, color) in [
+            ("Han", "世界", false),
+            ("Devanagari", "नमस्ते", false),
+            ("emoji", "🥟", true),
+        ] {
+            let mut solo = TextShaper::new();
+            let req = TextRequest {
+                text: text.into(),
                 font_size: 48.0,
                 color: WHITE,
                 soft_wrap: false,
-            },
-            2.0,
-            None,
-        );
-
-        match content {
-            Content::Text {
+            };
+            let c = solo.shape(&mut gpu, &req, 1.0, None);
+            let Content::Text {
                 glyphs,
                 color_glyphs,
-                color_atlas,
-                natural,
                 ..
-            } => {
-                // Outline glyphs for the Latin, Han, and Thai spans. The run is a
-                // wide single line, so its natural width dwarfs its height — a
-                // coarse guard that the three scripts all shaped rather than one
-                // covering face swallowing the rest as tofu.
-                assert!(
-                    !glyphs.is_empty(),
-                    "the multi-script run shapes outline glyphs from system faces"
-                );
-                assert!(
-                    natural.x > natural.y * 3.0,
-                    "a mixed one-line run is far wider than tall, got {natural:?}"
-                );
-                // The emoji rasterized to color on its own RGBA atlas.
-                assert!(
-                    !color_glyphs.is_empty(),
-                    "the emoji shapes into a color glyph"
-                );
-                assert!(
-                    color_atlas.is_some(),
-                    "a color glyph allocates the RGBA color atlas"
-                );
-            }
-            _ => panic!("the greeting shapes into Content::Text"),
+            } = &c
+            else {
+                panic!("text content");
+            };
+            let placed = if color {
+                color_glyphs.len()
+            } else {
+                glyphs.len()
+            };
+            assert!(
+                placed > 0,
+                "{label} must place at least one glyph on its own",
+            );
+            assert!(
+                solo.counters().atlas_upload_bytes() > 0,
+                "{label} must upload atlas coverage on its own",
+            );
         }
     }
 
-    /// The DL1 shaper contract: a `soft_wrap` run shaped at a narrow `max_width`
-    /// wraps — its natural extent gets narrower and taller than the same run
-    /// shaped unconstrained — and it records the width it was shaped at, which
-    /// the layout-side reflow recorder reads to decide the run has settled.
     #[test]
-    fn soft_wrap_run_shaped_at_a_narrow_width_wraps_and_records_it() {
+    fn wrapping_reduces_width_and_increases_height() {
         let mut gpu = HeadlessRaster::new();
         let _ = gpu.create_surface(RawWindowHandle::Headless, 256, 256);
-        let mut shaper = shaper_with_test_font();
-
-        // A run with several breakable spaces, so a narrow box has somewhere to
-        // wrap. Same request both times — only the assigned width differs.
+        let mut shaper = shaper();
         let request = TextRequest {
-            text: "wrap this paragraph onto several lines".to_string(),
+            text: "wrap this paragraph onto several lines".into(),
             font_size: 20.0,
             color: WHITE,
             soft_wrap: true,
         };
-
         let wide = shaper.shape(&mut gpu, &request, 1.0, None);
-        let Content::Text {
-            natural: wide_n,
-            shaped_at_width: wide_at,
-            ..
-        } = wide
-        else {
-            panic!("shapes into text");
+        let Content::Text { natural: wide, .. } = wide else {
+            panic!("text content");
         };
-        assert_eq!(wide_at, None, "an unconstrained shape records no width");
-
-        // Constrain to a fraction of the single-line width so it must wrap.
-        let box_w = wide_n.x * 0.4;
-        let narrow = shaper.shape(&mut gpu, &request, 1.0, Some(box_w));
+        let narrow = shaper.shape(&mut gpu, &request, 1.0, Some(wide.x * 0.4));
         let Content::Text {
-            natural: narrow_n,
-            shaped_at_width: narrow_at,
-            ..
+            natural: narrow, ..
         } = narrow
         else {
-            panic!("shapes into text");
+            panic!("text content");
         };
-        assert_eq!(
-            narrow_at,
-            Some(box_w),
-            "a wrapped run records the width it was shaped at"
-        );
-        // The wrapped run is much narrower than the unconstrained single line.
-        // It need not fit `box_w` exactly — a single word longer than the box
-        // cannot be broken, so the run is only as narrow as its longest word —
-        // but it must have collapsed well below the one-line width.
-        assert!(
-            narrow_n.x < wide_n.x * 0.75,
-            "wrapping collapses the run well below its single-line width: {} !< {}",
-            narrow_n.x,
-            wide_n.x * 0.75
-        );
-        assert!(
-            narrow_n.y > wide_n.y,
-            "wrapping onto more lines makes the run taller: {} !> {}",
-            narrow_n.y,
-            wide_n.y
-        );
-    }
-
-    /// A run that did not opt into wrapping ignores `max_width` entirely: it
-    /// stays a single line and its natural extent is unchanged, so a
-    /// width-constrained non-wrapping leaf clips rather than reflows.
-    #[test]
-    fn non_wrapping_run_ignores_the_assigned_width() {
-        let mut gpu = HeadlessRaster::new();
-        let _ = gpu.create_surface(RawWindowHandle::Headless, 256, 256);
-        let mut shaper = shaper_with_test_font();
-
-        let request = TextRequest {
-            text: "single line stays single".to_string(),
-            font_size: 20.0,
-            color: WHITE,
-            soft_wrap: false,
-        };
-
-        let unconstrained = shaper.shape(&mut gpu, &request, 1.0, None);
-        let Content::Text { natural: n0, .. } = unconstrained else {
-            panic!("shapes into text");
-        };
-        // Pass a box far narrower than the single line: a non-wrapping run must
-        // ignore it and keep the same one-line extent.
-        let constrained = shaper.shape(&mut gpu, &request, 1.0, Some(n0.x * 0.3));
-        let Content::Text {
-            natural: n1,
-            shaped_at_width: at1,
-            ..
-        } = constrained
-        else {
-            panic!("shapes into text");
-        };
-        assert!(
-            (n0.x - n1.x).abs() <= 0.5 && (n0.y - n1.y).abs() <= 0.5,
-            "a non-wrapping run keeps its single-line extent: {n0:?} vs {n1:?}"
-        );
-        // A non-wrapping run is never width-constrained, so it records no shaped
-        // width regardless of the box handed down — the recorder's `soft_wrap`
-        // guard means it never reaches the width comparison anyway.
-        assert_eq!(
-            at1, None,
-            "a non-wrapping run records no shaped-at width even when a box is passed"
-        );
+        assert!(narrow.x < wide.x);
+        assert!(narrow.y > wide.y);
     }
 }

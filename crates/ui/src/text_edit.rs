@@ -35,12 +35,11 @@
 //!
 //! ## Grapheme awareness
 //!
-//! Caret motion and deletion step by whole `char`s through [`prev_boundary`] and
-//! [`next_boundary`]. `viso-text` is single-face with no cluster shaping, so a
-//! multi-`char` grapheme has no single glyph to land a caret between anyway;
-//! char boundaries are a subset of grapheme boundaries, so the [`Selection`] and
-//! edit-op contracts stay unchanged when those two functions are later upgraded
-//! to grapheme stepping.
+//! Caret motion and deletion currently step by Unicode scalar boundaries through
+//! [`prev_boundary`] and [`next_boundary`]. The text runtime already retains
+//! typed grapheme and logical-to-visual mappings; this edit buffer keeps the same
+//! byte-offset [`Selection`] contract so it can adopt those boundaries without
+//! changing stored selection state.
 
 use crate::content::TextRequest;
 use crate::node::NodeId;

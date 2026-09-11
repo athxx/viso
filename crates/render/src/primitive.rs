@@ -208,13 +208,13 @@ impl ImageDraw {
     }
 }
 
-/// One glyph of a [`GlyphRunDraw`]: where it lands on screen and which atlas
-/// sub-rect holds its coverage.
+/// One raster-backed glyph of a [`GlyphRunDraw`]: where it lands on screen and
+/// which representation-pool sub-rect holds its pixels.
 ///
 /// The text subsystem ([`viso_text`]) computes these — screen rect and atlas UV
-/// are already resolved — so the renderer never re-runs layout. The atlas texel
-/// *is* the glyph's per-pixel coverage (single-channel A8), sampled directly by
-/// the shader; there is no decode factor.
+/// are already resolved — so the renderer never re-runs layout. This run uses
+/// exact single-channel A8 coverage; scalable, vector, and color representations
+/// are retained in their own pools and lower through their matching primitives.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct GlyphInstanceData {
     /// Destination rectangle on screen, in physical pixels.

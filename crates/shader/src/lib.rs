@@ -8,8 +8,8 @@
 //! The pipeline is real: a typed shader [`ir`] describes each built-in
 //! primitive's GPU interface once, and both the emitted MSL and the validated
 //! [`InstanceSchema`](viso_gpu::InstanceSchema) project from that single value
-//! (see the [`ir`] module docs). This takes makepad's shader *semantics* — its
-//! packing rule and per-primitive math — and rebuilds them as a genuine IR
+//! (see the [`ir`] module docs). Packing rules and per-primitive math are
+//! represented directly in a typed IR
 //! without sharing a script VM, the divergence AGENTS 19 mandates.
 //!
 //! Diagnostics are self-contained: `viso-shader` sits below `viso-dsl` in the

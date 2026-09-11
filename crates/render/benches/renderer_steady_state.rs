@@ -85,7 +85,7 @@ struct Harness {
 /// Build the backend, upload the test scene's textures, and assemble the scene.
 ///
 /// Mirrors `render/tests/golden.rs::render_scene` up to the point of drawing:
-/// the checkerboard image texture and the R8 glyph SDF atlas are created and
+/// the checkerboard image texture and the A8 glyph coverage pool are created and
 /// written once, and their `TextureId`s feed `test_scene`.
 fn setup() -> Harness {
     let mut gpu = HeadlessRaster::new();
@@ -104,7 +104,7 @@ fn setup() -> Harness {
     });
     gpu.write_texture(texture, 0, 0, tw, th, &texels);
 
-    // R8 glyph SDF atlas + the assembled run.
+    // A8 glyph coverage pool + the assembled run.
     let tg = test_glyphs([6.0, 4.0], 22.0);
     let atlas = gpu.create_texture(&TextureDesc {
         width: tg.atlas_size,

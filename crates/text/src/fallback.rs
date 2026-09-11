@@ -118,6 +118,11 @@ pub enum FallbackPlan {
 struct Candidate {
     bytes: Vec<u8>,
     index: u32,
+    /// The platform-reported PostScript name, if any. Authoritative for
+    /// re-opening the face through the platform raster (color emoji, Apple
+    /// `hvgl`); a synthesized sfnt may carry only platform-specific name records
+    /// that a generic `name`-table reader cannot decode.
+    postscript_name: Option<String>,
 }
 
 impl Candidate {
@@ -239,7 +244,7 @@ impl FontFallback {
             return FallbackPlan::Unresolved;
         };
 
-        let face = self.intern(result.bytes, result.index);
+        let face = self.intern(result.bytes, result.index, result.postscript_name);
         let mapped = self.faces[(face.0 - self.id_base) as usize].mapped_len(run);
         if mapped == 0 {
             return FallbackPlan::Unresolved;
@@ -262,15 +267,36 @@ impl FontFallback {
             .map(|c| (c.bytes.as_slice(), c.index))
     }
 
+    /// The platform-reported PostScript name of a resolved fallback face, if the
+    /// provider supplied one. Authoritative for re-opening the face through the
+    /// platform raster (color emoji, Apple `hvgl`); prefer this over parsing the
+    /// synthesized sfnt's `name` table, which may carry only platform-specific
+    /// records. Cold path only.
+    pub fn face_postscript_name(&self, face: FontFaceId) -> Option<&str> {
+        face.0
+            .checked_sub(self.id_base)
+            .and_then(|i| self.faces.get(i as usize))
+            .and_then(|c| c.postscript_name.as_deref())
+    }
+
     /// Intern a resolved system face to a stable fallback id, deduping identical
     /// bytes so the same face reused across runs keeps one id.
-    fn intern(&mut self, bytes: Vec<u8>, index: u32) -> FontFaceId {
+    fn intern(
+        &mut self,
+        bytes: Vec<u8>,
+        index: u32,
+        postscript_name: Option<String>,
+    ) -> FontFaceId {
         let ident = (fnv1a(&bytes), index);
         if let Some(&id) = self.interned.get(&ident) {
             return id;
         }
         let id = FontFaceId(self.id_base + self.faces.len() as u32);
-        self.faces.push(Candidate { bytes, index });
+        self.faces.push(Candidate {
+            bytes,
+            index,
+            postscript_name,
+        });
         self.interned.insert(ident, id);
         id
     }
@@ -341,6 +367,7 @@ mod tests {
             self.answer.then(|| SystemFontResult {
                 bytes: DEJAVU.to_vec(),
                 index: 0,
+                postscript_name: None,
             })
         }
     }
@@ -387,7 +414,11 @@ mod tests {
     impl SystemFontProvider for LocaleRoutingProvider {
         fn resolve_system_face(&self, query: &SystemFontQuery) -> Option<SystemFontResult> {
             self.seen_locales.borrow_mut().push(query.lang.clone());
-            Self::face_bytes_for(&query.lang).map(|bytes| SystemFontResult { bytes, index: 0 })
+            Self::face_bytes_for(&query.lang).map(|bytes| SystemFontResult {
+                bytes,
+                index: 0,
+                postscript_name: None,
+            })
         }
     }
 

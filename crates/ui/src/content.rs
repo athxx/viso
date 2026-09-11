@@ -5,7 +5,7 @@
 //! `viso-ui` cannot shape text or decode images: the architecture DAG allows it
 //! to depend on `viso-render` (for the primitive data types) but not on
 //! `viso-text`, so it never owns a font stack. Content is therefore produced by
-//! an upper tier that does hold a `TextSystem` (the facade/widget layer): that
+//! an upper tier that owns the font resolver, shaper, and residency pools: that
 //! tier shapes/measures and hands a finished [`Content`] to the node store,
 //! which only *stores* it and *lowers* it to primitives at paint time. Storing
 //! the already-measured [`natural`](Content::natural) size next to the paint
@@ -35,7 +35,7 @@ use viso_render::{GlyphInstanceData, PathCmd, Rect, Rgba, Stroke, TextureId};
 pub enum Content {
     /// A shaped run of glyphs. `glyphs` are positioned in the node's local space
     /// (origin at the node's top-left); paint shifts them to the node's world
-    /// origin. `atlas` is the SDF atlas they sample, `color` the run color.
+    /// origin. `atlas` is the exact-coverage pool they sample, `color` the run color.
     ///
     /// Color-bitmap glyphs (emoji) do not decode through the coverage ramp, so
     /// they ride in a parallel `color_glyphs` run sampling their own RGBA
@@ -44,9 +44,9 @@ pub enum Content {
     /// `None`, and pays nothing for the color path.
     Text {
         /// The positioned outline glyphs, one screen quad each, in node-local
-        /// space. Decoded through the SDF coverage ramp against `atlas`.
+        /// space. Their A8 texels are sampled as exact coverage from `atlas`.
         glyphs: Vec<GlyphInstanceData>,
-        /// The single-channel R8 SDF atlas the outline glyphs sample.
+        /// The single-channel A8 coverage pool the outline glyphs sample.
         atlas: TextureId,
         /// The positioned color-bitmap glyphs (emoji), in node-local space,
         /// sampling `color_atlas` as premultiplied RGBA. Empty for pure text.
@@ -133,8 +133,8 @@ impl Content {
 /// An unshaped request to render text on a node, the input counterpart to a
 /// shaped [`Content::Text`]. `viso-ui` cannot shape text (it holds no font
 /// stack — see the module docs), so a node declares *what* it wants drawn and an
-/// upper tier that owns a `TextSystem` shapes the request into a [`Content`] and
-/// writes it back with [`crate::component::NodeStore::set_content_payload`].
+/// upper tier that owns text preparation shapes the request into a [`Content`]
+/// and writes it back with [`crate::component::NodeStore::set_content_payload`].
 ///
 /// This lives in its own cold, mostly-`None` side column next to
 /// [`Content`]: it is the single source of truth for a text node's declared

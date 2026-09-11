@@ -25,9 +25,8 @@
 //! validation → codegen` is satisfied with a Rust-side structured IR builder as
 //! the "parsed syntax → typed IR" front, which is the right front for built-ins.
 //!
-//! This takes makepad's *semantics* (its packing rule, its per-primitive math)
-//! and rebuilds them as a real typed IR without sharing a script VM — the
-//! `viso-diverge-from-makepad` divergence AGENTS 19 mandates.
+//! Packing rules and per-primitive math are represented as a typed IR rather
+//! than interpreted through a shared script VM.
 
 use viso_gpu::SchemaAttr;
 

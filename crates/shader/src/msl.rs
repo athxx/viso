@@ -105,9 +105,8 @@ pub fn quad_schema() -> InstanceSchema {
 
 /// The instance schema the Image shader declares — projected from [`image_ir`].
 ///
-/// Unlike makepad's `DrawImage` (which derives the UV from the unit-quad corner
-/// and has no atlas sub-rect), Viso carries an explicit per-instance UV sub-rect
-/// (`uv_pos`/`uv_size`) so the same path serves atlas/glyph sub-regions later.
+/// Viso carries an explicit per-instance UV sub-rect (`uv_pos`/`uv_size`) so the
+/// same path serves full textures and atlas sub-regions without shader variants.
 pub fn image_schema() -> InstanceSchema {
     static CELL: OnceLock<Vec<SchemaAttr>> = OnceLock::new();
     cached_schema(&CELL, &image_ir())

@@ -1436,9 +1436,10 @@ spanning 放置 + auto-flow;ADR 0009 明列六项高级能力全未做。落 `cr
 
 ### Slice TF-C —— 消费方收敛(填肉期跨 crate)
 
-- [ ] **TF-C.1 render 收敛** —— `crates/render` 的 `use viso_text::TextSystem`(lib.rs)与 primitive.rs doc 注释对齐新门面 API。**验收:** `cargo check -p viso-render` 通过。
-- [ ] **TF-C.2 viso facade 收敛** —— `crates/viso` text_content.rs / system_fonts.rs 按新 provider trait 形状(ADR 0026)重接;`GlyphKind`→`GlyphImageKind` 等改名跟随。**验收:** `cargo check -p viso` 通过 + 全 workspace `cargo test` 绿。
-- [ ] **TF-C.3 旧 doc 注释同步** —— ui/text_edit.rs、ui/content.rs、shader/msl.rs 里描述旧 viso-text 行为的注释更新到新模型。**验收:** 无残留描述旧「single-face / R8 SDF lane」的注释。
+- [x] **TF-C.1 render 收敛** —— `crates/render` 的 `use viso_text::TextSystem`(lib.rs)与 primitive.rs doc 注释对齐新门面 API。**验收:** `cargo check -p viso-render` 通过。
+- [x] **TF-C.2 viso facade 收敛** —— `crates/viso` text_content.rs / system_fonts.rs 按新 provider trait 形状(ADR 0026)重接;`GlyphKind`→`GlyphImageKind` 等改名跟随。**验收:** `cargo check -p viso` 通过 + 全 workspace `cargo test` 绿。
+- [x] **TF-C.3 消费方 doc 注释与新模型一致** —— ui/text_edit.rs、ui/content.rs、shader/msl.rs 的注释描述当前 text 模型(多态 representation / A8 coverage + RGBA color lane)。**验收:** 三文件无残留单 face / 单一 SDF lane 表述。
+- [x] **TF-C.4 macOS Retina surface 几何同步** —— `CAMetalLayer` 的 point-space frame、contents scale 与 physical drawable size 同步，窗口缩放时重新计算，避免高 DPI drawable 被裁切。**验收:** `cargo check -p viso-gpu`、Hello World 真机运行与 Metal glyph 测试通过。
 
 > Phase TF 收官条件(§29 DoD,46 条须全绿)+ ADR 0025/0026 契约:五态 representation 不逐 glyph/逐 frame 重算;
 > 四 residency pool 独立预算;稳态零 resolve/shape/raster;UAX #9/#14/#29 官方 corpus 入 CI;typed logical↔visual 可逆。
