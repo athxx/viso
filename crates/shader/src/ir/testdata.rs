@@ -179,7 +179,11 @@ fragment float4 fragment_main(VOut in [[stage_in]],
 }
 "##;
 
-/// The original hand-written GLYPHRUN MSL, frozen as a codegen oracle.
+/// The intended GLYPHRUN MSL, frozen as a codegen oracle.
+///
+/// The glyph path samples a single-channel A8 coverage atlas directly (`cov =
+/// texel.r`); there is no signed-distance decode and no per-instance `px_range`.
+/// This text is the on-device-verified target, not a pre-migration baseline.
 pub const GLYPHRUN_MSL_ORIGINAL: &str = r##"
 #include <metal_stdlib>
 using namespace metal;
@@ -190,7 +194,6 @@ struct InstanceIn {
     packed_float2 uv_pos;
     packed_float2 uv_size;
     packed_float4 color;
-    float px_range;
 };
 
 struct Uniforms {
@@ -201,7 +204,6 @@ struct VOut {
     float4 position [[position]];
     float2 uv;
     float4 color;
-    float px_range;
 };
 
 vertex VOut vertex_main(uint vid [[vertex_id]],
@@ -232,18 +234,15 @@ vertex VOut vertex_main(uint vid [[vertex_id]],
     out.position = float4(ndc, 0.0, 1.0);
     out.uv = float2(inst.uv_pos) + corner * float2(inst.uv_size);
     out.color = float4(inst.color);
-    out.px_range = inst.px_range;
     return out;
 }
 
 fragment float4 fragment_main(VOut in [[stage_in]],
                               texture2d<float> tex [[texture(0)]],
                               sampler samp [[sampler(0)]]) {
-    // Decode the ESDT single-channel SDF back to coverage. The glyph edge sits
-    // at stored 0.75 (= 1 - cutoff, cutoff fixed at 0.25 in the rasterizer);
-    // `px_range` stored-units span one screen pixel of the coverage ramp.
-    float sd = tex.sample(samp, in.uv).r;
-    float cov = clamp((sd - 0.75) * in.px_range + 0.5, 0.0, 1.0);
+    // Single-channel A8 coverage sampled directly: the atlas texel's red channel
+    // is exact per-pixel coverage. Modulate the run color by it, premultiplied.
+    float cov = tex.sample(samp, in.uv).r;
     float a = in.color.a * cov;
     return float4(in.color.rgb * a, a);
 }
