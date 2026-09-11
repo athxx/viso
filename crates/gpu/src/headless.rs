@@ -709,16 +709,14 @@ impl HeadlessRaster {
         }
     }
 
-    /// Fill one glyph instance from an R8 single-channel SDF atlas.
+    /// Fill one glyph instance from an R8 single-channel A8 coverage atlas.
     ///
-    /// The instance layout matches [`fill_image`](Self::fill_image) plus a
-    /// `px_range` field. The atlas stores a signed distance field (see the text
-    /// subsystem's `sdfer` encode): the sampled `.r` channel is the stored SDF
-    /// value, with the glyph edge at `SDF_EDGE = 0.75`. Coverage is decoded as
-    /// `clamp((sd - 0.75) * px_range + 0.5, 0, 1)`, matching
-    /// [`GLYPHRUN_MSL`](../../shader). The run color is premultiplied by that
-    /// coverage and blended source-over. A linear sampler gives the SDF its
-    /// smooth (bilinearly interpolated) edge.
+    /// The instance layout matches [`fill_image`](Self::fill_image). The atlas
+    /// stores exact per-pixel coverage: the sampled `.r` channel *is* coverage,
+    /// used directly (`cov = texel.r`), matching [`GLYPHRUN_MSL`](../../shader).
+    /// The run color is premultiplied by that coverage and blended source-over.
+    /// A linear sampler gives the coverage its smooth (bilinearly interpolated)
+    /// edge.
     #[allow(clippy::too_many_arguments)]
     fn fill_glyph(
         &mut self,
@@ -735,7 +733,6 @@ impl HeadlessRaster {
         let uv_pos = read_f2(layout, inst, "uv_pos");
         let uv_size = read_f2(layout, inst, "uv_size");
         let color = read_f4(layout, inst, "color");
-        let px_range = read_f1(layout, inst, "px_range");
 
         // Resolve the bound R8 atlas and sampler.
         let Some(bg) = bind_group else { return };
@@ -784,10 +781,9 @@ impl HeadlessRaster {
                 let u = uv_pos[0] + fx * uv_size[0];
                 let v = uv_pos[1] + fy * uv_size[1];
 
-                // R8 atlas: decode_texel replicated the stored SDF into every
-                // channel, so any channel is the sampled distance.
-                let sd = sample_texel(&texels, tw, th, u, v, &samp)[0];
-                let cov = ((sd - SDF_EDGE) * px_range + 0.5).clamp(0.0, 1.0);
+                // R8 atlas: decode_texel replicated the stored coverage into
+                // every channel, so any channel is the sampled coverage.
+                let cov = sample_texel(&texels, tw, th, u, v, &samp)[0];
                 let a = base_a * cov;
                 if a <= 0.0 {
                     continue;
@@ -798,11 +794,6 @@ impl HeadlessRaster {
         }
     }
 }
-
-/// The SDF edge value stored by the text subsystem's encoder: the glyph
-/// boundary (distance 0) is stored at `1 - cutoff = 0.75`. Coverage decodes
-/// around this threshold. Kept in sync with the text crate and `GLYPHRUN_MSL`.
-const SDF_EDGE: f32 = 0.75;
 
 /// Sample a premultiplied-linear texture at normalized `(u, v)` with the given
 /// filter and address mode, using a texel-center `-0.5` convention (so `u = 0.5

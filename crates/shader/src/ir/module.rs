@@ -290,8 +290,9 @@ pub fn image_ir() -> ShaderIr {
     }
 }
 
-/// Glyph-run built-in: the image contract plus a per-instance `px_range` the
-/// fragment uses to turn the sampled SDF back into coverage.
+/// Glyph-run built-in: the image contract sampling a single-channel A8 coverage
+/// atlas. The fragment reads the texel's coverage directly and modulates the
+/// run color by it — no signed-distance decode.
 pub fn glyphrun_ir() -> ShaderIr {
     static ATTRS: &[IrField] = &[
         IrField::new("rect_pos", IrType::F32X2),
@@ -299,14 +300,12 @@ pub fn glyphrun_ir() -> ShaderIr {
         IrField::new("uv_pos", IrType::F32X2),
         IrField::new("uv_size", IrType::F32X2),
         IrField::new("color", IrType::F32X4),
-        IrField::new("px_range", IrType::F32),
     ];
     static UNIFORMS: &[IrField] = &[IrField::new("viewport", IrType::F32X2)];
     static VARYINGS: &[Varying] = &[
         Varying::new("position", IrType::F32X4, " [[position]]", ""),
         Varying::new("uv", IrType::F32X2, "", ""),
         Varying::new("color", IrType::F32X4, "", ""),
-        Varying::new("px_range", IrType::F32, "", ""),
     ];
     ShaderIr {
         kind: PrimitiveKind::GlyphRun,
@@ -485,15 +484,12 @@ VOut out;
 out.position = float4(ndc, 0.0, 1.0);
 out.uv = float2(inst.uv_pos) + corner * float2(inst.uv_size);
 out.color = float4(inst.color);
-out.px_range = inst.px_range;
 return out;";
 
 const GLYPHRUN_FRAGMENT_BODY: &str = "\
-// Decode the ESDT single-channel SDF back to coverage. The glyph edge sits
-// at stored 0.75 (= 1 - cutoff, cutoff fixed at 0.25 in the rasterizer);
-// `px_range` stored-units span one screen pixel of the coverage ramp.
-float sd = tex.sample(samp, in.uv).r;
-float cov = clamp((sd - 0.75) * in.px_range + 0.5, 0.0, 1.0);
+// Single-channel A8 coverage sampled directly: the atlas texel's red channel
+// is exact per-pixel coverage. Modulate the run color by it, premultiplied.
+float cov = tex.sample(samp, in.uv).r;
 float a = in.color.a * cov;
 return float4(in.color.rgb * a, a);";
 

@@ -116,10 +116,9 @@ pub fn image_schema() -> InstanceSchema {
 /// The instance schema the GlyphRun shader declares — projected from
 /// [`glyphrun_ir`].
 ///
-/// Structurally this is the Image schema plus a per-instance `px_range`: a glyph
-/// is a textured rect sampling the single-channel R8 SDF atlas, and `px_range`
-/// tells the fragment shader how many stored-units span one screen pixel so it can
-/// turn the sampled signed distance back into antialiased coverage.
+/// Structurally identical to the Image schema: a glyph is a textured rect
+/// sampling a single-channel A8 coverage atlas, where the sampled texel is exact
+/// per-pixel coverage and the fragment modulates the run color by it directly.
 pub fn glyphrun_schema() -> InstanceSchema {
     static CELL: OnceLock<Vec<SchemaAttr>> = OnceLock::new();
     cached_schema(&CELL, &glyphrun_ir())
@@ -187,13 +186,11 @@ pub fn IMAGE_MSL() -> &'static str {
 /// `viso-msl-reserved-half`.
 ///
 /// Contract (guaranteed by the shared IR): per-instance data at buffer index 1;
-/// viewport uniform at index 0; the atlas is a single-channel R8 texture at
-/// `[[texture(0)]]` with a linear-clamp sampler at `[[sampler(0)]]`. The atlas
-/// stores an ESDT signed distance with the glyph edge (`d = 0`) at `stored = 0.75`
-/// (`1 - cutoff`, cutoff fixed at 0.25 in `viso-text`'s rasterizer); coverage is
-/// recovered as `clamp((sd - 0.75) * px_range + 0.5, 0, 1)`, matching the headless
-/// `fill_glyph` decode. `color` is **straight** and the fragment outputs
-/// premultiplied.
+/// viewport uniform at index 0; the atlas is a single-channel R8 coverage texture
+/// at `[[texture(0)]]` with a linear-clamp sampler at `[[sampler(0)]]`. The atlas
+/// stores exact A8 coverage; the fragment samples it directly (`cov = texel.r`),
+/// matching the headless `fill_glyph` path. `color` is **straight** and the
+/// fragment outputs premultiplied.
 #[allow(non_snake_case)]
 pub fn GLYPHRUN_MSL() -> &'static str {
     static CELL: OnceLock<String> = OnceLock::new();
@@ -305,14 +302,7 @@ mod tests {
         let ir_names: Vec<&str> = glyphrun_ir().attributes.iter().map(|f| f.name).collect();
         assert_eq!(
             ir_names,
-            [
-                "rect_pos",
-                "rect_size",
-                "uv_pos",
-                "uv_size",
-                "color",
-                "px_range"
-            ]
+            ["rect_pos", "rect_size", "uv_pos", "uv_size", "color"]
         );
         assert_three_legs_agree(GLYPHRUN_MSL(), &glyphrun_schema(), &ir_names);
     }
