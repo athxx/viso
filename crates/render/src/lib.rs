@@ -11,11 +11,14 @@
 
 #![forbid(unsafe_op_in_unsafe_fn)]
 
+pub mod color_atlas;
 pub mod glyph_atlas;
 pub mod inspect;
 pub mod primitive;
+pub mod rect_packer;
 pub mod renderer;
 
+pub use color_atlas::{ColorAlloc, ColorAtlas};
 pub use glyph_atlas::{AtlasAlloc, GlyphAtlas};
 pub use inspect::{BatchId, BatchPipeline, InspectBatch, InspectBatches};
 pub use primitive::{

@@ -51,7 +51,7 @@ pub(crate) enum SegmentKind {
     /// A single image, in the image buffer, sampling `bind_group`'s texture.
     /// `start`/`count` count instances in that buffer.
     Image { bind_group: BindGroupId },
-    /// One run of glyphs, in the glyph buffer, sampling `bind_group`'s SDF atlas.
+    /// One run of glyphs, in the glyph buffer, sampling `bind_group`'s A8 pool.
     /// `start`/`count` count instances in that buffer.
     GlyphRun { bind_group: BindGroupId },
     /// A run of adjacent triangle meshes (Path/Mesh) sharing this segment's
@@ -174,7 +174,7 @@ pub struct Renderer {
     /// The GlyphRun built-in pipeline (registered once).
     glyph_pipeline: PipelineId,
     /// A linear-filter clamp sampler shared by image and glyph draws (Phase 2
-    /// uses one sampler configuration; the SDF atlas needs bilinear filtering,
+    /// uses one sampler configuration; the glyph coverage pool needs bilinear filtering,
     /// which this provides). Per-image sampler variety lands later.
     sampler: SamplerId,
     /// Persistent quad instance buffer, reused across frames.
@@ -1292,8 +1292,8 @@ mod tests {
     /// End-to-end headless glyph raster: a run painted onto a cleared surface
     /// must lay down ink where glyphs cover pixels and leave the background
     /// untouched far outside the text block. This exercises the full
-    /// `SegmentKind::GlyphRun` path — R8 SDF sample → coverage decode →
-    /// premultiplied blend — that the golden also covers, but with an explicit
+    /// `SegmentKind::GlyphRun` path — A8 coverage sample → premultiplied blend —
+    /// that the golden also covers, but with an explicit
     /// assertion on ink-vs-background so a regression names itself.
     #[test]
     fn glyph_run_paints_ink_over_background() {
@@ -1304,7 +1304,7 @@ mod tests {
         let format = gpu.surface_format(surface);
         let mut r = Renderer::new(&mut gpu, format);
 
-        // Prepare a small run and upload its R8 SDF atlas.
+        // Prepare a small run and upload its A8 coverage pool.
         let tg = crate::test_glyphs([8.0, 6.0], 24.0);
         let atlas = gpu.create_texture(&viso_gpu::TextureDesc {
             width: tg.atlas_size,

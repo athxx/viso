@@ -15,8 +15,8 @@
 //!
 //! CoreText hands back a live font object, not a file. `sfnt_bytes_from_ctfont`
 //! walks its table directory (`CTFontCopyAvailableTables`), copies each table
-//! (`CTFontCopyTable`), and rebuilds a valid sfnt container. Two hazards, both
-//! learned from the makepad reference and reproduced here:
+//! (`CTFontCopyTable`), and rebuilds a valid sfnt container. Two constraints
+//! keep this path bounded:
 //!
 //!   - **Skip color-bitmap tables** (`sbix`, `CBDT`, `CBLC`, `COLR`, `CPAL`).
 //!     AppleColorEmoji's `sbix` table is ~179 MB, and even copied ttf-parser
@@ -43,27 +43,90 @@ pub struct CoreTextProvider;
 
 #[cfg(not(target_os = "macos"))]
 impl CoreTextProvider {
-    pub fn new() -> Self {
+    /// Takes the shared registry for signature parity with the macOS provider;
+    /// it owns no fonts to record.
+    pub fn new(_live: LiveFontRegistry) -> Self {
         Self
     }
 }
 
 #[cfg(not(target_os = "macos"))]
-impl Default for CoreTextProvider {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-#[cfg(not(target_os = "macos"))]
 impl viso_text::SystemFontProvider for CoreTextProvider {
-    fn load(&self, _query: &viso_text::SystemFontQuery) -> Option<viso_text::SystemFontResult> {
+    fn resolve_system_face(
+        &self,
+        _query: &viso_text::SystemFontQuery,
+    ) -> Option<viso_text::SystemFontResult> {
         None
     }
 }
 
 #[cfg(target_os = "macos")]
 pub use color::CoreTextColorRaster;
+pub use live_fonts::LiveFontRegistry;
+
+/// A no-op registry stub for platforms without a live-`CTFont` source: the
+/// provider records nothing and the raster reads nothing, so the shared
+/// [`TextShaper`](crate::text_content) wiring compiles unchanged off macOS.
+#[cfg(not(target_os = "macos"))]
+mod live_fonts {
+    /// A zero-sized, cheap-to-clone stub mirroring the macOS registry's shape so
+    /// the same shaper construction works on every platform.
+    #[derive(Clone, Default)]
+    pub struct LiveFontRegistry;
+
+    impl LiveFontRegistry {
+        pub fn new() -> Self {
+            Self
+        }
+    }
+}
+
+/// The shared registry of live CoreText font handles that the system-font
+/// provider resolves and the color/coverage raster reuses.
+///
+/// A face reaches `viso-text` as reassembled sfnt bytes plus a PostScript name,
+/// but its rasterizable identity is the *live* `CTFont` CoreText already
+/// resolved during the cascade. Re-deriving that handle from the name is
+/// unreliable: Apple's system faces report private `.`-prefixed PostScript names
+/// (`.PingFangUITextSC-Regular`) that `CTFontCreateWithName` refuses, silently
+/// substituting a Latin fallback. So the provider stashes the exact handle it
+/// resolved here, keyed by that same name, and the raster copies it to each pixel
+/// size with no name round-trip — correct by construction, and one retained
+/// handle per distinct face rather than one per size.
+#[cfg(target_os = "macos")]
+mod live_fonts {
+    use std::cell::RefCell;
+    use std::collections::HashMap;
+    use std::rc::Rc;
+
+    use objc2_core_foundation::CFRetained;
+    use objc2_core_text::CTFont;
+
+    /// A cheap-to-clone handle onto the shared name → live-`CTFont` map. Cloning
+    /// shares the same map (the provider writes, the raster reads); the whole
+    /// thing is main-thread only, matching the rest of the text runtime.
+    #[derive(Clone, Default)]
+    pub struct LiveFontRegistry {
+        fonts: Rc<RefCell<HashMap<String, CFRetained<CTFont>>>>,
+    }
+
+    impl LiveFontRegistry {
+        pub fn new() -> Self {
+            Self::default()
+        }
+
+        /// Record the live handle CoreText resolved for `ps_name`. Idempotent:
+        /// the first covering face wins, later identical resolutions no-op.
+        pub fn insert(&self, ps_name: String, font: CFRetained<CTFont>) {
+            self.fonts.borrow_mut().entry(ps_name).or_insert(font);
+        }
+
+        /// The live handle previously resolved for `ps_name`, if any.
+        pub fn get(&self, ps_name: &str) -> Option<CFRetained<CTFont>> {
+            self.fonts.borrow().get(ps_name).cloned()
+        }
+    }
+}
 
 /// A no-op color rasterizer for platforms without a native binding. Always
 /// declines, so a color-emoji face yields no color glyph and the shaper falls
@@ -73,26 +136,41 @@ pub struct CoreTextColorRaster;
 
 #[cfg(not(target_os = "macos"))]
 impl CoreTextColorRaster {
-    pub fn new() -> Self {
+    /// Takes the shared registry for signature parity with the macOS raster; it
+    /// reads no handles.
+    pub fn new(_live: LiveFontRegistry) -> Self {
         Self
     }
-}
 
-#[cfg(not(target_os = "macos"))]
-impl Default for CoreTextColorRaster {
-    fn default() -> Self {
-        Self::new()
+    /// Bind a resolved emoji face's identity to the CoreText re-open name and
+    /// glyph count the raster needs. A no-op on platforms without a binding.
+    pub fn register_face(
+        &self,
+        _face: viso_text::FontFaceId,
+        _ps_name: &str,
+        _expected_glyph_count: u16,
+    ) {
+    }
+
+    /// Grayscale-coverage rasterization is a macOS-only recovery path; off macOS
+    /// there is no CoreText, so this always declines.
+    pub fn rasterize_coverage_glyph(
+        &self,
+        _face: viso_text::FontFaceId,
+        _glyph: u16,
+        _pixels_per_em: u16,
+    ) -> Option<viso_text::CoverageBitmap> {
+        None
     }
 }
 
 #[cfg(not(target_os = "macos"))]
 impl viso_text::ColorGlyphRasterizer for CoreTextColorRaster {
-    fn rasterize(
+    fn rasterize_color_glyph(
         &self,
-        _ps_name: &str,
-        _expected_glyph_count: u16,
-        _glyph_id: u16,
-        _dpx_per_em: f32,
+        _face: viso_text::FontFaceId,
+        _glyph: u16,
+        _pixels_per_em: u16,
     ) -> Option<viso_text::ColorGlyph> {
         None
     }
@@ -107,28 +185,23 @@ impl viso_text::ColorGlyphRasterizer for CoreTextColorRaster {
 /// and rasterizing with `CTFontDrawGlyphs` into a premultiplied RGBA bitmap the
 /// color atlas packs directly.
 ///
-/// ## Divergence from the reference
-///
-/// The makepad reference un-premultiplies the CoreText bitmap into straight
-/// alpha (its atlas stores straight coverage). Viso keeps the bitmap
-/// **premultiplied**: the color-glyph GPU path lowers to an image draw with a
-/// white tint (`texel * tint` with `tint = [1,1,1,1]`), which passes a
-/// premultiplied texel through unchanged. So we only swizzle BGRA→RGBA and never
-/// un-premultiply.
+/// The bitmap remains **premultiplied**: the color-glyph GPU path lowers to an
+/// image draw with a white tint, which passes the texel through unchanged. The
+/// conversion therefore only swizzles BGRA to RGBA.
 #[cfg(target_os = "macos")]
 mod color {
     use std::cell::RefCell;
     use std::collections::HashMap;
     use std::ptr::NonNull;
 
-    use objc2_core_foundation::{CFRetained, CFString, CGFloat, CGPoint, CGRect};
+    use objc2_core_foundation::{CFRetained, CGFloat, CGPoint, CGRect};
     use objc2_core_graphics::{
         CGBitmapContextCreate, CGBitmapContextGetBytesPerRow, CGBitmapContextGetData, CGColorSpace,
         CGContext,
     };
     use objc2_core_text::{CTFont, CTFontOrientation};
 
-    use viso_text::{ColorGlyph, ColorGlyphRasterizer};
+    use viso_text::{ColorGlyph, ColorGlyphRasterizer, FontFaceId};
 
     /// CoreText raster info flags: premultiplied-first alpha byte-ordered
     /// little-endian, i.e. the context's memory layout is `[B, G, R, A]` with the
@@ -136,60 +209,70 @@ mod color {
     /// `ByteOrder32Little = 0x2000`.
     const BITMAP_INFO: u32 = 2 | 0x2000;
 
-    /// Rasterize color glyphs by handing them back to CoreText. Holds a per-ppem
-    /// `CTFont` cache keyed on the quantized pixels-per-em; the face is re-opened
-    /// by PostScript name on the first miss. Cold path — one `dyn` call per
+    /// Rasterize color glyphs by handing them back to CoreText, keyed on the
+    /// resolver's [`FontFaceId`]. The trait method no longer carries a PostScript
+    /// name or glyph count, so the facade [`register`](Self::register_face)s each
+    /// resolved emoji face's `(ps_name, expected_glyph_count)` once; from then on
+    /// a `FontFaceId` names it. Per-ppem `CTFont`s are cached under each face; the
+    /// face is re-opened by name on the first miss. Cold path — one `dyn` call per
     /// uncached color glyph — so interior-mutable `RefCell`/`HashMap` is fine
     /// (see AGENTS.md section 42).
     pub struct CoreTextColorRaster {
-        /// Per-requested-PostScript-name face caches, populated on the first color
-        /// glyph of each emoji face.
-        faces: RefCell<HashMap<String, FaceCache>>,
+        /// Shared registry of live `CTFont` handles the provider resolved. A face
+        /// is rasterized through the exact handle CoreText picked during the
+        /// cascade, looked up by the same PostScript name the binding carries.
+        live: super::LiveFontRegistry,
+        /// Facade-supplied binding from a resolved face id to the PostScript name
+        /// its live handle is registered under.
+        bindings: RefCell<HashMap<FontFaceId, String>>,
+        /// Per-face caches, populated on the first glyph of each face.
+        faces: RefCell<HashMap<FontFaceId, FaceCache>>,
     }
 
-    /// The resolved font name a requested PostScript name binds to, plus that
-    /// face's per-ppem `CTFont` instances.
+    /// A face's resolved base handle plus its per-ppem size copies.
     struct FaceCache {
-        /// The candidate name that matched the expected glyph count — reused when
-        /// creating each per-ppem instance so all sizes bind the same face.
-        resolved_name: String,
-        /// Per-ppem instances (`CTFontCreateWithName` at each size).
+        /// The live base handle from the registry, at whatever size it was
+        /// resolved; each ppem instance is a size-copy of it.
+        base: CFRetained<CTFont>,
+        /// Per-ppem instances (`CTFontCreateCopyWithAttributes` at each size).
         by_ppem: HashMap<u16, CFRetained<CTFont>>,
     }
 
     impl CoreTextColorRaster {
-        pub fn new() -> Self {
+        pub fn new(live: super::LiveFontRegistry) -> Self {
             Self {
+                live,
+                bindings: RefCell::new(HashMap::new()),
                 faces: RefCell::new(HashMap::new()),
             }
         }
-    }
 
-    impl Default for CoreTextColorRaster {
-        fn default() -> Self {
-            Self::new()
+        /// Bind a resolved face's id to the PostScript name its live handle is
+        /// registered under. Called by the facade once per resolved color /
+        /// proprietary-outline face, before rasterizing its glyphs. The glyph
+        /// count is no longer needed — the live handle is authoritative.
+        pub fn register_face(&self, face: FontFaceId, ps_name: &str, _expected_glyph_count: u16) {
+            self.bindings.borrow_mut().insert(face, ps_name.to_string());
         }
     }
 
-    impl ColorGlyphRasterizer for CoreTextColorRaster {
-        fn rasterize(
-            &self,
-            ps_name: &str,
-            expected_glyph_count: u16,
-            glyph_id: u16,
-            dpx_per_em: f32,
-        ) -> Option<ColorGlyph> {
-            let ppem = quantize_ppem(dpx_per_em);
-
+    impl CoreTextColorRaster {
+        /// Resolve and cache the per-ppem `CTFont` a registered face rasterizes
+        /// through. Shared by the color and grayscale-coverage raster paths.
+        ///
+        /// The base handle is the live `CTFont` the provider resolved (looked up
+        /// by the face's registered PostScript name), copied to `ppem` with
+        /// `CTFontCreateCopyWithAttributes` — no `CTFontCreateWithName`, so the
+        /// private `.`-prefixed system names that break name lookup never matter.
+        fn font_for(&self, face: FontFaceId, ppem: u16) -> Option<CFRetained<CTFont>> {
             let mut faces = self.faces.borrow_mut();
-            // Resolve the candidate name for this face once (probing against the
-            // expected glyph count), then cache a CTFont per ppem under it.
-            let entry = match faces.get_mut(ps_name) {
+            let entry = match faces.get_mut(&face) {
                 Some(e) => e,
                 None => {
-                    let resolved_name = resolve_name(ps_name, expected_glyph_count)?;
-                    faces.entry(ps_name.to_string()).or_insert(FaceCache {
-                        resolved_name,
+                    let ps_name = self.bindings.borrow().get(&face)?.clone();
+                    let base = self.live.get(&ps_name)?;
+                    faces.entry(face).or_insert(FaceCache {
+                        base,
                         by_ppem: HashMap::new(),
                     })
                 }
@@ -197,54 +280,57 @@ mod color {
             let font = match entry.by_ppem.get(&ppem) {
                 Some(f) => f.clone(),
                 None => {
-                    let f = with_name(&entry.resolved_name, ppem as f64);
+                    // SAFETY: CoreText FFI. A null matrix/descriptor asks for a
+                    // plain size copy of the live base handle; the result is
+                    // returned retained (CFRetained releases it).
+                    let f = unsafe {
+                        entry
+                            .base
+                            .copy_with_attributes(ppem as CGFloat, std::ptr::null(), None)
+                    };
                     entry.by_ppem.insert(ppem, f.clone());
                     f
                 }
             };
-            drop(faces);
+            Some(font)
+        }
 
-            rasterize_glyph(&font, glyph_id, ppem)
+        /// Rasterize a registered face's glyph to grayscale A8 coverage through
+        /// CoreText, for faces whose outlines a generic parser cannot render —
+        /// Apple's proprietary `hvgl` (PingFang, `.SFNS`-fallback CJK) has no
+        /// `glyf`/`CFF`, so `ttf-parser` produces an empty bitmap and the glyph
+        /// silently vanishes. Drawing through CoreText into an alpha-only context
+        /// recovers the coverage the A8 atlas expects. The face must have been
+        /// [`register_face`](Self::register_face)d first.
+        pub fn rasterize_coverage_glyph(
+            &self,
+            face: FontFaceId,
+            glyph: u16,
+            pixels_per_em: u16,
+        ) -> Option<viso_text::CoverageBitmap> {
+            let ppem = clamp_ppem(pixels_per_em);
+            let font = self.font_for(face, ppem)?;
+            rasterize_coverage_glyph(&font, glyph)
         }
     }
 
-    /// Quantize a device-pixels-per-em request to an integer ppem, clamped to a
-    /// sane strike range so a runaway size cannot ask CoreText for a giant bitmap.
-    fn quantize_ppem(dpx_per_em: f32) -> u16 {
-        (dpx_per_em.round() as i32).clamp(1, 512) as u16
+    impl ColorGlyphRasterizer for CoreTextColorRaster {
+        fn rasterize_color_glyph(
+            &self,
+            face: FontFaceId,
+            glyph: u16,
+            pixels_per_em: u16,
+        ) -> Option<ColorGlyph> {
+            let ppem = clamp_ppem(pixels_per_em);
+            let font = self.font_for(face, ppem)?;
+            rasterize_glyph(&font, glyph, ppem)
+        }
     }
 
-    /// Open a font by name via `CTFontCreateWithName` at `size` points.
-    fn with_name(name: &str, size: f64) -> CFRetained<CTFont> {
-        let cf = CFString::from_str(name);
-        // SAFETY: CoreText FFI. `with_name` returns a retained font; the name
-        // string outlives the call and the null matrix means identity.
-        unsafe { CTFont::with_name(&cf, size as CGFloat, std::ptr::null()) }
-    }
-
-    /// Resolve the emoji face's re-open name, mirroring the reference's candidate
-    /// probing: try the PostScript name, then the name with a leading `.`
-    /// stripped, then a trailing `UI` stripped, then the well-known
-    /// `AppleColorEmoji`. Return the first candidate whose glyph count matches the
-    /// face viso-text parsed (so we bind the *same* face, not a lookalike).
-    fn resolve_name(ps_name: &str, expected_glyph_count: u16) -> Option<String> {
-        let mut candidates: Vec<String> = Vec::new();
-        let mut push = |c: String| {
-            if !c.is_empty() && !c.starts_with('.') && !candidates.contains(&c) {
-                candidates.push(c);
-            }
-        };
-        push(ps_name.to_string());
-        push(ps_name.trim_start_matches('.').to_string());
-        push(ps_name.trim_end_matches("UI").to_string());
-        push("AppleColorEmoji".to_string());
-
-        candidates.into_iter().find(|cand| {
-            let font = with_name(cand, 16.0);
-            // SAFETY: CoreText FFI, reads the glyph count of a live font.
-            let count = unsafe { font.glyph_count() };
-            count == expected_glyph_count as isize
-        })
+    /// Clamp a pixels-per-em request to a sane strike range so a runaway size
+    /// cannot ask CoreText for a giant bitmap.
+    fn clamp_ppem(pixels_per_em: u16) -> u16 {
+        pixels_per_em.clamp(1, 512)
     }
 
     /// Rasterize `glyph_id` from `font` at `ppem` into a premultiplied RGBA
@@ -313,6 +399,100 @@ mod color {
         })
     }
 
+    /// `kCGImageAlphaOnly`: an 8-bit, single-component (alpha) bitmap with no
+    /// color channels and no color space. Drawing an opaque glyph into it leaves
+    /// exactly the ink coverage in each byte — the A8 mask the coverage atlas
+    /// wants — with no premultiply or swizzle to undo.
+    const ALPHA_ONLY: u32 = 7;
+
+    /// Rasterize `glyph_id` from `font` to grayscale A8 coverage: measure the
+    /// y-up ink bbox, draw the glyph opaque into an alpha-only context, and read
+    /// the coverage bytes back tightly packed. Mirrors [`rasterize_glyph`]'s
+    /// geometry (floor origin, ceil extent, identity CTM, `-x0/-y0` pen) so a
+    /// face routed here places identically to one that went through `glyf`/`CFF`.
+    ///
+    /// This is the recovery path for Apple proprietary-outline faces (`hvgl`,
+    /// e.g. PingFang) that carry no parser-readable outline: `ttf-parser` returns
+    /// an empty bitmap for them, so without this the glyph draws nothing.
+    fn rasterize_coverage_glyph(font: &CTFont, glyph_id: u16) -> Option<viso_text::CoverageBitmap> {
+        let glyph = glyph_id;
+        let mut bbox = CGRect::default();
+        // SAFETY: CoreText FFI. Single-element glyph/bbox buffers matching count 1.
+        let _ = unsafe {
+            font.bounding_rects_for_glyphs(
+                CTFontOrientation::Horizontal,
+                NonNull::from(&glyph),
+                &mut bbox,
+                1,
+            )
+        };
+        if !bbox.origin.x.is_finite()
+            || !bbox.origin.y.is_finite()
+            || !bbox.size.width.is_finite()
+            || !bbox.size.height.is_finite()
+        {
+            return None;
+        }
+        let x0 = bbox.origin.x.floor();
+        let y0 = bbox.origin.y.floor();
+        let w = ((bbox.origin.x + bbox.size.width).ceil() - x0) as i32;
+        let h = ((bbox.origin.y + bbox.size.height).ceil() - y0) as i32;
+        if w <= 0 || h <= 0 {
+            return None;
+        }
+        let (w, h) = (w as usize, h as usize);
+
+        // Alpha-only context: no color space, one coverage byte per pixel.
+        // SAFETY: CoreGraphics FFI. A null data pointer asks CG to allocate the
+        // backing store (freed with the context); alpha-only takes a null space.
+        let ctx =
+            unsafe { CGBitmapContextCreate(std::ptr::null_mut(), w, h, 8, 0, None, ALPHA_ONLY) }?;
+
+        // Draw the glyph fully opaque so each alpha byte is its ink coverage.
+        CGContext::set_gray_fill_color(Some(&ctx), 1.0, 1.0);
+        let pos = CGPoint {
+            x: -x0 as CGFloat,
+            y: -y0 as CGFloat,
+        };
+        // SAFETY: CoreText FFI. Single-element glyph/position buffers, count 1;
+        // `ctx` is the alpha-only bitmap context just created.
+        unsafe {
+            font.draw_glyphs(NonNull::from(&glyph), NonNull::from(&pos), 1, &ctx);
+        }
+
+        let coverage = read_back_alpha(&ctx, w, h)?;
+        Some(viso_text::CoverageBitmap {
+            width: w as u32,
+            height: h as u32,
+            // y-up bbox: left edge is x0; top edge (y-up) is y0 + h.
+            left: x0 as f32,
+            top: (y0 + h as f64) as f32,
+            coverage,
+        })
+    }
+
+    /// Read an alpha-only context's coverage bytes back tightly packed. Like
+    /// [`read_back_rgba`], the source stride is CG's padded
+    /// `CGBitmapContextGetBytesPerRow`, not a tight `w`.
+    fn read_back_alpha(ctx: &CGContext, w: usize, h: usize) -> Option<Vec<u8>> {
+        let data = CGBitmapContextGetData(Some(ctx));
+        if data.is_null() {
+            return None;
+        }
+        let stride = CGBitmapContextGetBytesPerRow(Some(ctx));
+        if stride < w {
+            return None;
+        }
+        let mut coverage = vec![0u8; w * h];
+        for y in 0..h {
+            // SAFETY: the backing store holds `stride >= w` bytes per row for `h`
+            // rows, so `data + y * stride` points to `w` valid source bytes.
+            let row = unsafe { std::slice::from_raw_parts(data.add(y * stride) as *const u8, w) };
+            coverage[y * w..(y + 1) * w].copy_from_slice(row);
+        }
+        Some(coverage)
+    }
+
     /// Read the context's BGRA premultiplied pixels back and swizzle to RGBA,
     /// keeping the premultiplied alpha (Viso's image path expects premultiplied).
     ///
@@ -356,33 +536,42 @@ mod color {
 
     #[cfg(test)]
     mod tests {
+        use objc2_core_foundation::CGFloat;
+        use objc2_core_text::CTFont;
+
         use super::*;
 
         /// The color-glyph readback must return real, opaque emoji pixels — not a
-        /// transparent or skewed bitmap. This drives the full CoreText path
-        /// (`resolve_name` → `CTFontDrawGlyphs` → `read_back_rgba`) against the live
-        /// system emoji face and asserts some pixel is meaningfully opaque. It is
-        /// the guard for the stride bug: `read_back_rgba` must walk the source at
-        /// `CGBitmapContextGetBytesPerRow` (CG pads it), not at a tight `w * 4`;
-        /// the tight assumption produced fully-transparent/garbage rows that this
-        /// assertion would catch.
+        /// transparent or skewed bitmap. This drives the CoreText raster path
+        /// (`CTFontCreateCopyWithAttributes` → `CTFontDrawGlyphs` → `read_back_rgba`)
+        /// against the live system emoji face and asserts some pixel is meaningfully
+        /// opaque. It is the guard for the stride bug: `read_back_rgba` must walk the
+        /// source at `CGBitmapContextGetBytesPerRow` (CG pads it), not at a tight
+        /// `w * 4`; the tight assumption produced fully-transparent/garbage rows that
+        /// this assertion would catch.
         #[test]
         fn color_glyph_readback_has_opaque_pixels() {
-            // Open the well-known system emoji face directly and read its glyph
-            // count, so `rasterize`'s `resolve_name` binds the same face (its probe
-            // matches candidates by glyph count).
-            let font = with_name("AppleColorEmoji", 16.0);
+            // Open the well-known system emoji face directly and seed the shared
+            // registry with the live handle, exactly as the provider does during a
+            // real cascade. The raster then copies this handle to each ppem.
+            let cf = objc2_core_foundation::CFString::from_str("AppleColorEmoji");
+            // SAFETY: CoreText FFI. Returns a retained font; the name outlives the
+            // call and a null matrix means identity.
+            let font = unsafe { CTFont::with_name(&cf, 16.0 as CGFloat, std::ptr::null()) };
             // SAFETY: CoreText FFI, reads the glyph count of a live font.
             let count = unsafe { font.glyph_count() };
             assert!(count > 0, "AppleColorEmoji must resolve on macOS");
-            let expected = count as u16;
 
-            let raster = CoreTextColorRaster::new();
+            let live = super::super::LiveFontRegistry::new();
+            live.insert("AppleColorEmoji".to_string(), font);
+            let raster = CoreTextColorRaster::new(live);
+            let face = FontFaceId(0);
+            raster.register_face(face, "AppleColorEmoji", count as u16);
             // Scan a handful of low glyph ids; at least one is a painted color
             // emoji whose readback must contain an opaque pixel.
             let mut best_alpha = 0u8;
             for glyph_id in 1u16..40 {
-                if let Some(g) = raster.rasterize("AppleColorEmoji", expected, glyph_id, 64.0) {
+                if let Some(g) = raster.rasterize_color_glyph(face, glyph_id, 64) {
                     assert_eq!(
                         g.rgba.len(),
                         g.width as usize * g.height as usize * 4,
@@ -414,31 +603,42 @@ mod color {
 
 #[cfg(target_os = "macos")]
 mod imp {
-    use objc2_core_foundation::{CFIndex, CFRange, CFString};
+    use objc2_core_foundation::{CFIndex, CFRange, CFRetained, CFString};
     use objc2_core_text::{CTFont, CTFontTableOptions, CTFontTableTag, CTFontUIFontType};
 
     use viso_text::{FontRole, SystemFontProvider, SystemFontQuery, SystemFontResult};
 
-    /// Resolve system fonts through CoreText. Stateless — the negative cache
-    /// lives in `viso_text::SystemFallback`, so this only performs the OS query.
-    pub struct CoreTextProvider;
-
-    impl CoreTextProvider {
-        pub fn new() -> Self {
-            Self
-        }
+    /// Resolve system fonts through CoreText. The negative cache lives in
+    /// `viso_text::SystemFallback`; this performs the OS query and stashes the
+    /// live `CTFont` handle it resolved into the shared [`LiveFontRegistry`], so
+    /// the color/coverage raster rasterizes through that exact handle instead of
+    /// re-deriving it from an unresolvable private PostScript name.
+    ///
+    /// [`LiveFontRegistry`]: super::LiveFontRegistry
+    pub struct CoreTextProvider {
+        live: super::LiveFontRegistry,
     }
 
-    impl Default for CoreTextProvider {
-        fn default() -> Self {
-            Self::new()
+    impl CoreTextProvider {
+        pub fn new(live: super::LiveFontRegistry) -> Self {
+            Self { live }
         }
     }
 
     impl SystemFontProvider for CoreTextProvider {
-        fn load(&self, query: &SystemFontQuery) -> Option<SystemFontResult> {
-            let bytes = load_system_font(query)?;
-            Some(SystemFontResult { bytes, index: 0 })
+        fn resolve_system_face(&self, query: &SystemFontQuery) -> Option<SystemFontResult> {
+            let (bytes, postscript_name, covering) = load_system_font(query)?;
+            // Stash the exact handle CoreText resolved, keyed by the authoritative
+            // PostScript name the raster binds against. The first covering face for
+            // a name wins; identical later resolutions no-op.
+            if let Some(name) = &postscript_name {
+                self.live.insert(name.clone(), covering);
+            }
+            Some(SystemFontResult {
+                bytes,
+                index: 0,
+                postscript_name,
+            })
         }
     }
 
@@ -453,10 +653,18 @@ mod imp {
     }
 
     /// Query CoreText for a face covering `query`'s sample string, reject the
-    /// LastResort fallback, and reassemble its sfnt bytes for ttf-parser.
-    fn load_system_font(query: &SystemFontQuery) -> Option<Vec<u8>> {
+    /// LastResort fallback, and reassemble its sfnt bytes for ttf-parser. Also
+    /// returns the face's CoreText PostScript name: the synthesized sfnt may carry
+    /// only Macintosh-platform `name` records that a generic reader cannot decode,
+    /// so the color/proprietary-outline raster re-opens the face under *this* name
+    /// rather than one parsed back out of the bytes.
+    fn load_system_font(
+        query: &SystemFontQuery,
+    ) -> Option<(Vec<u8>, Option<String>, CFRetained<CTFont>)> {
         let ui_type = match query.role {
             FontRole::Ui | FontRole::Cjk => CTFontUIFontType::System,
+            FontRole::Serif => CTFontUIFontType::System,
+            FontRole::Mono => CTFontUIFontType::UserFixedPitch,
             // Emoji has no dedicated UI type; start from the system font and let
             // `for_string` cascade to the color-emoji face via the sample.
             FontRole::Emoji => CTFontUIFontType::System,
@@ -490,7 +698,21 @@ mod imp {
             return None;
         }
 
-        sfnt_bytes_from_ctfont(&covering)
+        let bytes = sfnt_bytes_from_ctfont(&covering)?;
+        let ps_name = postscript_name(&covering);
+        Some((bytes, ps_name, covering))
+    }
+
+    /// Copy a CoreText font's PostScript name to an owned `String`. This is the
+    /// name the platform raster re-opens the face under, and it is authoritative:
+    /// a reassembled sfnt often keeps only Macintosh-platform `name` records that
+    /// `ttf-parser` returns `None` for, so the color/`hvgl` face would otherwise
+    /// never register.
+    fn postscript_name(font: &CTFont) -> Option<String> {
+        // SAFETY: CoreText FFI. Returns a retained CFString (or null) that the
+        // CFRetained wrapper releases on drop.
+        let name = unsafe { font.post_script_name() };
+        Some(name.to_string())
     }
 
     /// Color-bitmap tables we never copy: they are huge (Apple's `sbix` is

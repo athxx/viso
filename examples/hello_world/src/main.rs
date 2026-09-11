@@ -35,7 +35,7 @@ impl Application for Hello {
                 ..Default::default()
             },
             |cx| {
-                label("Hello 世界 สวัสดี 🎉")
+                label("Hello 世界 🥟 สวัสดี 🎉泰 สวัสดี / 天城 नमस्ते / 阿拉 مرحبا / 韩안녕하세요/ 日 こんにちは")
                     .font_size(48.0)
                     .color(Rgba {
                         r: 0.93,

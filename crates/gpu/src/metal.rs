@@ -1,15 +1,12 @@
 //! `MetalBackend` — the native macOS Metal implementation of [`GpuBackend`].
 //!
-//! This is a *native rewrite* of makepad's Metal command sequence (behavior and
-//! operation order ported from `platform/src/os/apple/metal.rs`), built directly
-//! on `objc2-metal` 0.3 / `objc2-quartz-core` 0.3 — not a port of makepad's RHI
-//! structure. It compiles only on macOS; other targets use [`HeadlessRaster`].
+//! It is built directly on `objc2-metal` 0.3 / `objc2-quartz-core` 0.3 and
+//! compiles only on macOS; other targets use [`HeadlessRaster`].
 //!
-//! ## Design decisions (diverging from makepad where it simplifies)
+//! ## Design decisions
 //!
-//! - **Buffers use `StorageModeShared`** (`contents()` + memcpy), not makepad's
-//!   Managed/`didModifyRange:` path. On Apple-Silicon UMA this is the simple
-//!   modern default and avoids the explicit-flush bookkeeping.
+//! - **Buffers use `StorageModeShared`** (`contents()` + memcpy). On
+//!   Apple-Silicon UMA this avoids explicit-flush bookkeeping.
 //! - **No `MTLVertexDescriptor`.** The Quad vertex shader generates the four
 //!   corner positions from `vertex_id` and reads per-instance data from a raw
 //!   buffer bound at index 1 (the same convention as the RHI's `DrawCommand`).
@@ -21,15 +18,15 @@
 //!   drained each frame rather than piling up (Phase 1 lesson).
 //!
 //! Blend is premultiplied source-over (`src One`, `dst OneMinusSourceAlpha`,
-//! op `Add`), matching the headless raster and the makepad recipe.
+//! op `Add`), matching the headless raster.
 
 use core::ffi::c_void;
 use core::ptr::NonNull;
 
 use objc2::msg_send;
-use objc2::rc::{Retained, autoreleasepool};
+use objc2::rc::{autoreleasepool, Retained};
 use objc2::runtime::{AnyObject, ProtocolObject};
-use objc2_core_foundation::CGSize;
+use objc2_core_foundation::{CGRect, CGSize};
 use objc2_foundation::NSString;
 use objc2_metal::{
     MTLBlendFactor, MTLBlendOperation, MTLBuffer, MTLClearColor, MTLCommandBuffer,
@@ -91,6 +88,8 @@ struct MetalPipeline {
 /// its current drawable size in device pixels.
 struct MetalSurface {
     layer: Retained<CAMetalLayer>,
+    /// The live content view whose point-space bounds determine layer geometry.
+    view: *mut c_void,
     width: u32,
     height: u32,
     format: TextureFormat,
@@ -145,6 +144,43 @@ impl MetalBackend {
             },
         }
     }
+}
+
+/// Keep the layer's point-space frame and pixel-space drawable synchronized.
+///
+/// `NSView::bounds` is expressed in logical points while the drawable uses
+/// physical pixels. The view's backing conversion supplies the scale Core
+/// Animation needs when it composites the drawable into the content area.
+///
+/// # Safety
+///
+/// `view` must be the live NSView that owns `layer`, and this must run on its
+/// AppKit thread.
+unsafe fn configure_layer_geometry(
+    layer: &CAMetalLayer,
+    view: &AnyObject,
+    width: u32,
+    height: u32,
+) {
+    // SAFETY: the caller guarantees `view` is a live NSView.
+    let bounds: CGRect = unsafe { msg_send![view, bounds] };
+    // SAFETY: the caller guarantees `view` is a live NSView.
+    let backing_unit: CGSize = unsafe {
+        msg_send![
+            view,
+            convertSizeToBacking: CGSize {
+                width: 1.0,
+                height: 1.0,
+            }
+        ]
+    };
+    layer.setFrame(bounds);
+    let scale = backing_unit.width.max(backing_unit.height).max(1.0);
+    layer.setContentsScale(scale);
+    layer.setDrawableSize(CGSize {
+        width: width as f64,
+        height: height as f64,
+    });
 }
 
 impl GpuBackend for MetalBackend {
@@ -348,26 +384,23 @@ impl GpuBackend for MetalBackend {
         layer.setPresentsWithTransaction(false);
         layer.setMaximumDrawableCount(3);
         layer.setDisplaySyncEnabled(true);
-        layer.setDrawableSize(CGSize {
-            width: width as f64,
-            height: height as f64,
-        });
 
         // Attach the layer to the content NSView. viso-gpu does not depend on
         // objc2-app-kit, so we message the opaque view pointer directly.
         // SAFETY: `ns_view` is the live content `NSView` the platform layer
         // handed us via `RawWindowHandle::AppKit`; these selectors exist on
-        // NSView. `setLayerContentsPlacement: 11` = NSViewLayerContentsPlacementTopLeft.
+        // NSView.
         unsafe {
             let view = &*(ns_view as *const AnyObject);
             let _: () = msg_send![view, setWantsLayer: true];
             let _: () = msg_send![view, setLayer: &*layer];
-            let _: () = msg_send![view, setLayerContentsPlacement: 11isize];
+            configure_layer_geometry(&layer, view, width, height);
         }
 
         let id = SurfaceId(self.surfaces.len() as u32);
         self.surfaces.push(MetalSurface {
             layer,
+            view: ns_view,
             width,
             height,
             format: TextureFormat::Bgra8Unorm,
@@ -380,10 +413,13 @@ impl GpuBackend for MetalBackend {
         let s = &mut self.surfaces[id.0 as usize];
         s.width = width;
         s.height = height;
-        s.layer.setDrawableSize(CGSize {
-            width: width as f64,
-            height: height as f64,
-        });
+        // SAFETY: the originating platform window outlives its GPU surface.
+        let view = unsafe { &*(s.view as *const AnyObject) };
+        // SAFETY: `view` is a live NSView and layer geometry is updated on the
+        // platform thread that owns it.
+        unsafe {
+            configure_layer_geometry(&s.layer, view, width, height);
+        }
     }
 
     fn begin_frame(&mut self, surface: SurfaceId) -> Frame {
@@ -429,6 +465,51 @@ impl GpuBackend for MetalBackend {
 }
 
 impl MetalBackend {
+    /// Read back a texture's full contents as raw bytes (row-major, tightly
+    /// packed at the texture's native `bytes_per_texel`), blocking until the GPU
+    /// has finished any prior work on this queue.
+    ///
+    /// This is a synchronous, allocating read used by offscreen verification and
+    /// golden tests — never a steady-state frame path. It commits an empty
+    /// command buffer as a serial-queue barrier and waits for it, which
+    /// guarantees a preceding `encode` (whose command buffer committed on the
+    /// same queue) has completed before `getBytes` copies out of the
+    /// shared-storage texture.
+    pub fn read_texture(&self, id: TextureId) -> Vec<u8> {
+        let tex = &self.textures[id.0 as usize];
+        let w = tex.texture.width();
+        let h = tex.texture.height();
+        let bpr = w * tex.format.bytes_per_texel();
+
+        // Serial-queue barrier: an empty command buffer completes only after all
+        // earlier command buffers on this queue have, so the offscreen render is
+        // guaranteed done when this returns.
+        let barrier = self
+            .queue
+            .commandBuffer()
+            .expect("failed to create a read-back barrier command buffer");
+        barrier.commit();
+        barrier.waitUntilCompleted();
+
+        let mut out = vec![0u8; bpr * h];
+        let region = MTLRegion {
+            origin: MTLOrigin { x: 0, y: 0, z: 0 },
+            size: MTLSize {
+                width: w,
+                height: h,
+                depth: 1,
+            },
+        };
+        let ptr = NonNull::new(out.as_mut_ptr() as *mut c_void).unwrap();
+        // SAFETY: `ptr` addresses `bpr * h` writable bytes (asserted by the
+        // Vec allocation); the region is the whole texture at mip 0.
+        unsafe {
+            tex.texture
+                .getBytes_bytesPerRow_fromRegion_mipmapLevel(ptr, bpr, region, 0);
+        }
+        out
+    }
+
     /// Encode one render pass into a command buffer and commit it. The color
     /// attachment is either the surface's drawable (main pass) or an offscreen
     /// texture (a translucent Layer's render-to-texture target); the viewport is

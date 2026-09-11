@@ -61,7 +61,7 @@ fn render_scene() -> Vec<u8> {
     let format = gpu.surface_format(surface);
     let mut renderer = Renderer::new(&mut gpu, format);
 
-    // Upload the shared checkerboard image texture and glyph SDF atlas.
+    // Upload the shared checkerboard image texture and glyph coverage pool.
     let (tw, th, texels) = test_texture();
     let texture = gpu.create_texture(&TextureDesc {
         width: tw,

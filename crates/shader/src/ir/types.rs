@@ -3,13 +3,11 @@
 //! [`AttrFormat`], and sized/aligned for the CPU↔GPU offset cross-check
 //! (architecture section 36 / AGENTS 19).
 //!
-//! This takes makepad's *semantics* — every `[f32; N>=2]` field is `packed_floatN`
-//! so the emitted `struct` matches the CPU `#[repr(C)]` layout with no inter-field
+//! Every `[f32; N>=2]` field is `packed_floatN` so the emitted `struct` matches
+//! the CPU `#[repr(C)]` layout with no inter-field
 //! padding, scalars stay a bare 4-byte-aligned `float`/`uint`, and a `mat4x4` is
 //! four `packed_float4` columns — but expresses them as a real typed tree the
-//! codegen prints, rather than a bytecode walk over a shared script VM (see the
-//! `viso-diverge-from-makepad` note; makepad's `metal_create_instance_struct`
-//! decides packing inline in its transliterator, we decide it here once).
+//! codegen prints, rather than a bytecode walk over a shared script VM.
 //!
 //! Reserved-word caveat: `half` is an MSL type (16-bit float) and must never be
 //! produced as an identifier — the type printer here emits only `float`/`uint`
@@ -79,7 +77,7 @@ impl IrType {
     pub const U32: IrType = IrType::Scalar(ScalarType::U32);
 
     /// The MSL type spelling for a field of this type inside an instance/vertex
-    /// `struct`. This encodes makepad's packing rule: a vector is
+    /// `struct`. Vectors use
     /// `packed_floatN`/`packed_uintN` so the struct has no inter-field padding
     /// versus the CPU `#[repr(C)]` layout; a scalar stays bare (already
     /// 4-byte-aligned). Never emits `half` (see the module note).

@@ -75,6 +75,62 @@ struct ResolveKey {
     lang: String,
 }
 
+/// The per-face metrics a consumer needs to place and identify a resolved
+/// face without parsing the sfnt itself.
+///
+/// The renderer/facade positions glyphs and reconstructs a baseline in device
+/// pixels from em-relative advances, so it needs the face's em-relative
+/// vertical metrics; a platform color rasterizer keyed on the OS font needs the
+/// face's PostScript name and glyph count to bind its own handle. All of this
+/// comes from parsing the sfnt once, which is the text layer's job — the
+/// resolver reads it here so the consumer never links a font parser.
+#[derive(Debug, Clone, PartialEq)]
+pub struct FaceMetrics {
+    /// Distance from the baseline up to the ascent, as a fraction of the em.
+    /// Multiply by device pixels-per-em to get the first-line baseline offset.
+    pub ascender_em: f32,
+    /// Distance from the baseline down to the descent (negative, y-up), as a
+    /// fraction of the em.
+    pub descender_em: f32,
+    /// The recommended line-to-line advance, as a fraction of the em: the sum
+    /// of ascent, descent magnitude, and line gap.
+    pub line_height_em: f32,
+    /// Design units per em; the shaper works in em-relative units, so this is
+    /// rarely needed downstream but is exposed for completeness.
+    pub units_per_em: u16,
+    /// Number of glyphs in the face, for a color rasterizer that validates its
+    /// own glyph indices against the bound face.
+    pub glyph_count: u16,
+    /// The face's PostScript name, when present, for binding a platform font
+    /// handle (a color rasterizer keys its cache on the concrete OS font).
+    pub postscript_name: Option<String>,
+}
+
+/// Parse the placement and platform-binding metrics of one sfnt face.
+///
+/// Consumers use this on font admission and fallback resolution, never on the
+/// steady frame path.
+pub fn inspect_face(sfnt: &[u8], index: u32) -> Option<FaceMetrics> {
+    let face = ttf_parser::Face::parse(sfnt, index).ok()?;
+    let upem = face.units_per_em() as f32;
+    let ascender = face.ascender() as f32;
+    let descender = face.descender() as f32;
+    let line_gap = face.line_gap() as f32;
+    let postscript_name = face
+        .names()
+        .into_iter()
+        .find(|name| name.name_id == ttf_parser::name_id::POST_SCRIPT_NAME)
+        .and_then(|name| name.to_string());
+    Some(FaceMetrics {
+        ascender_em: ascender / upem,
+        descender_em: descender / upem,
+        line_height_em: (ascender - descender + line_gap) / upem,
+        units_per_em: face.units_per_em(),
+        glyph_count: face.number_of_glyphs(),
+        postscript_name,
+    })
+}
+
 /// The outcome of resolving a request.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Resolved {
@@ -152,6 +208,17 @@ impl FontResolver {
         self.faces
             .get(id.0 as usize)
             .and_then(|f| f.bytes.as_ref().map(|b| (b.as_slice(), f.index)))
+    }
+
+    /// Parse and return the placement/identity metrics for a registered face.
+    ///
+    /// A load-time accessor like [`face_bytes`](Self::face_bytes), not a
+    /// steady-state path: it parses the sfnt each call so the consumer never
+    /// links a font parser. Returns `None` for an unknown id, an app face whose
+    /// asset is not yet loaded, or bytes that do not parse.
+    pub fn face_metrics(&self, id: FontFaceId) -> Option<FaceMetrics> {
+        let (bytes, index) = self.face_bytes(id)?;
+        inspect_face(bytes, index)
     }
 
     /// Bump the system-font revision, invalidating cached system resolutions.
@@ -277,6 +344,7 @@ mod tests {
             self.answer.then(|| SystemFontResult {
                 bytes: vec![0u8; 4],
                 index: 0,
+                postscript_name: None,
             })
         }
     }
@@ -377,6 +445,32 @@ mod tests {
         let id = resolver.register_app_face(AssetRef(12), 0, vec![1, 2, 3, 4]);
         assert_eq!(Resolved::Face(id), first);
         assert_eq!(resolver.face_bytes(id).map(|(b, _)| b.len()), Some(4));
+    }
+
+    #[test]
+    fn face_metrics_parses_a_registered_face() {
+        const DEJAVU: &[u8] = include_bytes!("../tests/fixtures/DejaVuSans-subset.ttf");
+        let mut resolver = FontResolver::new();
+        let id = resolver.register_app_face(AssetRef(0), 0, DEJAVU.to_vec());
+
+        let m = resolver.face_metrics(id).expect("real face parses");
+        // Latin ascent is above the baseline and descent below it.
+        assert!(m.ascender_em > 0.0);
+        assert!(m.descender_em < 0.0);
+        // Line height covers ascent-to-descent plus gap.
+        assert!(m.line_height_em >= m.ascender_em - m.descender_em);
+        assert!(m.units_per_em > 0);
+        assert!(m.glyph_count > 0);
+    }
+
+    #[test]
+    fn face_metrics_none_for_unloaded_or_unknown() {
+        let mut resolver = FontResolver::new();
+        // Bytes that do not parse as a face yield None, not a panic.
+        let bogus = resolver.register_app_face(AssetRef(0), 0, vec![0u8; 8]);
+        assert!(resolver.face_metrics(bogus).is_none());
+        // An id past the registry is None.
+        assert!(resolver.face_metrics(FontFaceId(999)).is_none());
     }
 
     #[test]

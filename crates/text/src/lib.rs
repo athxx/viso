@@ -76,6 +76,7 @@ pub mod raster_a8;
 pub mod text_work;
 
 pub use bidi::{BaseDirection, BidiInfo, BidiLevel, DirectionRun, Paragraph};
+pub use coverage::face_covers;
 pub use font_cache::FontCache;
 pub use font_provider::{
     ExternalFaceId, ExternalFetchCoordinator, ExternalFontProvider, FaceSource, FetchedSubset,
@@ -88,10 +89,14 @@ pub use line_break::{BreakOpportunity, LineBreaker};
 pub use line_break_tailoring::{LineBreakStrictness, LineBreakTailoring, WordBreak};
 pub use progressive::{FontRevision, ParagraphId, Progressive, ReflowScope, RevisionEffect, RunId};
 pub use raster_a8::{CoverageBitmap, rasterize_coverage};
-pub use resolver::{FontResolver, Resolved};
+pub use resolver::{FaceMetrics, FontResolver, Resolved, inspect_face};
 pub use segment::{GraphemeCheckpoint, Segmenter};
 pub use shaping::{Direction, ShapedGlyph, ShapedRun, Shaper};
 pub use system_catalog::{CatalogFace, SystemFontCatalog};
+pub use system_fonts::{
+    ColorGlyph, ColorGlyphRasterizer, NoSystemFonts, SystemFontProvider, SystemFontQuery,
+    SystemFontResult,
+};
 pub use text_position::{CaretAffinity, TextOffset, TextPosition, Utf16Bridge};
 
 /// Stable identity for a resolved font face.

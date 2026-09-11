@@ -43,6 +43,14 @@ pub struct SystemFontResult {
     /// Face index within the returned bytes if they form a collection; 0 for a
     /// single face.
     pub index: u32,
+    /// The face's PostScript name as the *platform* reports it, when the platform
+    /// can supply one. This is the name a color/bitmap or proprietary-outline
+    /// (e.g. Apple `hvgl`) face must be re-opened under to rasterize its glyphs
+    /// through the platform, and it is authoritative: a synthesized sfnt may carry
+    /// only platform-specific name records that a generic `name`-table reader
+    /// cannot decode, so the resolver must not fall back to parsing it out of
+    /// `bytes`. `None` when the platform does not report one.
+    pub postscript_name: Option<String>,
 }
 
 /// A rasterized color glyph handed back by the platform: premultiplied RGBA
