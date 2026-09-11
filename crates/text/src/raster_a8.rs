@@ -125,6 +125,22 @@ pub fn rasterize_coverage(
     px_per_em: f32,
 ) -> Option<CoverageBitmap> {
     let face = Face::parse(sfnt, index).ok()?;
+
+    // CFF2 is a *variable* outline format: its charstrings carry only the default
+    // master, and the true glyph shape is that master plus per-axis `blend`
+    // deltas driven by the variation tables (`fvar`/`avar`/`CFF2` item-variation
+    // store). A system face reassembled from CoreText tables at a fixed instance
+    // has those deltas baked into the live handle, not into the sfnt bytes, and a
+    // generic parser drawing the bare default master produces a *wrong* shape (a
+    // different glyph, not the shaped one) — the Devanagari `.SFDevanagari`
+    // regression, where the default master rendered as tofu-like ink. This static
+    // fast path only faithfully serves non-variable outlines (`glyf`/`CFF`);
+    // refuse a CFF2 face so the caller falls through to the authoritative
+    // platform rasterizer, which honours the instance.
+    if face.tables().cff2.is_some() {
+        return None;
+    }
+
     let upem = face.units_per_em() as f32;
     let scale = px_per_em / upem;
 
