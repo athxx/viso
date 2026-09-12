@@ -24,7 +24,7 @@ use core::ffi::c_void;
 use core::ptr::NonNull;
 
 use objc2::msg_send;
-use objc2::rc::{autoreleasepool, Retained};
+use objc2::rc::{Retained, autoreleasepool};
 use objc2::runtime::{AnyObject, ProtocolObject};
 use objc2_core_foundation::{CGRect, CGSize};
 use objc2_foundation::NSString;
