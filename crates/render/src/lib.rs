@@ -134,22 +134,22 @@ pub fn test_glyphs(origin: [f32; 2], font_size: f32) -> TestGlyphs {
         // Pen advances in device pixels from the line's left edge.
         let mut pen_x = origin[0];
         for g in &run.glyphs {
-            if let Some(bitmap) = rasterize_coverage(TEST_FONT, 0, g.glyph_id, font_size) {
-                if let AtlasAlloc::Placed(uv) = atlas.alloc(&bitmap) {
-                    // `left`/`top` are pen-origin-relative device pixels: `top`
-                    // is the distance up from the baseline to the bitmap's top.
-                    let x = pen_x + g.x_offset * font_size + bitmap.left;
-                    let y = baseline_y - bitmap.top;
-                    glyphs.push(GlyphInstanceData {
-                        rect: Rect {
-                            x,
-                            y,
-                            w: bitmap.width as f32,
-                            h: bitmap.height as f32,
-                        },
-                        uv,
-                    });
-                }
+            if let Some(bitmap) = rasterize_coverage(TEST_FONT, 0, g.glyph_id, font_size)
+                && let AtlasAlloc::Placed(uv) = atlas.alloc(&bitmap)
+            {
+                // `left`/`top` are pen-origin-relative device pixels: `top`
+                // is the distance up from the baseline to the bitmap's top.
+                let x = pen_x + g.x_offset * font_size + bitmap.left;
+                let y = baseline_y - bitmap.top;
+                glyphs.push(GlyphInstanceData {
+                    rect: Rect {
+                        x,
+                        y,
+                        w: bitmap.width as f32,
+                        h: bitmap.height as f32,
+                    },
+                    uv,
+                });
             }
             pen_x += g.x_advance * font_size;
         }
