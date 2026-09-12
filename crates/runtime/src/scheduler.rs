@@ -300,6 +300,20 @@ impl<D: FrameDriver, C: FrameClock> AppHandler for Scheduler<D, C> {
                 self.driver.on_menu_command(id);
                 self.reasons.add(RedrawReason::InputDirty);
             }
+            RawEvent::WindowChromeGeom {
+                window,
+                buttons_rect,
+            } => {
+                // The native chrome geometry (traffic-light box) of a self-drawn
+                // window moved. Hand it to the driver with a live context so it can
+                // store the box and push its derived draggable caption region back
+                // to the platform through the same call. This runs no frame body
+                // (it only updates the drag cache the next mouseDown reads), so it
+                // carries a zero delta but still the clock's `now`.
+                let mut cx = RuntimeCx::new(self.app.as_mut(), Duration::ZERO, self.clock.now());
+                self.driver
+                    .on_window_chrome_geom(&mut cx, window, buttons_rect);
+            }
             RawEvent::Scroll(s) => {
                 // Resolve the window scale here (the scheduler owns the window)
                 // and normalize the logical-point sample into physical pixels —

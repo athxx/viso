@@ -37,7 +37,7 @@
 #![forbid(unsafe_op_in_unsafe_fn)]
 
 use viso_gpu::{Backend, GpuBackend, SurfaceId};
-use viso_platform::{RawWindowHandle, WindowId};
+use viso_platform::{LogicalRect, RawWindowHandle, WindowId};
 use viso_render::{Primitive, Rect, Renderer};
 use viso_runtime::{FramePhase, RuntimeCx, Scheduler};
 use viso_ui::{
@@ -200,6 +200,14 @@ pub mod __test_support {
             self.driver.windows[index].surface_size
         }
 
+        /// The native chrome (traffic-light) bounding box last reported for the
+        /// window at `index`, in logical points — `None` for a native-chrome
+        /// window, which never fires the event. The self-drawn-chrome facade test
+        /// reads it to prove a `WindowChromeGeom` event lands on the right window.
+        pub fn chrome_buttons_at(&self, index: usize) -> Option<viso_platform::LogicalRect> {
+            self.driver.windows[index].chrome_buttons
+        }
+
         /// How much each layer recomputed on the first window's most recent
         /// frame. A pure TRANSFORM animation frame has `laid_out == 0` yet
         /// `painted > 0` — the observable proof that world moved without a
@@ -352,6 +360,14 @@ struct WindowState {
     /// glyphs instead of 1x SDFs upscaled by the compositor. Independent of the
     /// GPU: a headless window still carries its reported scale.
     dpi: f32,
+    /// The native chrome affordances' bounding box for a self-drawn-chrome window,
+    /// in logical points (top-left origin, relative to the content area) — on
+    /// macOS the traffic-light buttons. `None` until the platform reports one and
+    /// for the whole life of a native-chrome window (which never fires the event).
+    /// The app reads it to align its own caption around the native buttons; the
+    /// facade also derives the caption's draggable strip from it and pushes that
+    /// back to the platform so a press on the caption begins a native window drag.
+    chrome_buttons: Option<LogicalRect>,
     /// The retained UI tree: real nodes built once on launch, then relaid only
     /// where invalidated each frame and painted to primitives.
     store: NodeStore,
@@ -511,6 +527,7 @@ impl WindowState {
             gpu: None,
             surface_size: (1, 1),
             dpi: 1.0,
+            chrome_buttons: None,
             store: NodeStore::new(),
             states: StateStore::new(),
             bindings: BindingTable::new(),
@@ -1017,6 +1034,36 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
         if let Some(app) = self.app.as_mut() {
             app.on_menu_command(command);
         }
+    }
+
+    fn on_window_chrome_geom(
+        &mut self,
+        cx: &mut RuntimeCx<'_>,
+        window: WindowId,
+        buttons_rect: LogicalRect,
+    ) {
+        // Record the native traffic-light box so the app can align its caption to
+        // it, then push the caption's draggable region back to the platform so the
+        // next primary press on the caption starts a native window drag instead of
+        // routing a pointer event. An event for an unknown window (already closed)
+        // is a no-op.
+        let Some(ws) = self.window_mut(window) else {
+            return;
+        };
+        ws.chrome_buttons = Some(buttons_rect);
+        // This phase draws no caption widget yet (that is a later widgets-layer
+        // phase), so derive one draggable strip spanning the full window width and
+        // the vertical band the buttons occupy — from the content top down to the
+        // buttons' bottom edge. The buttons themselves stay clickable: the
+        // platform's titlebar hitTest lets a press that lands on a traffic light
+        // through to it, so the strip only captures presses on the empty caption
+        // around the buttons. Width comes from the logical surface extent (physical
+        // pixels ÷ scale), so the strip tracks the current window width.
+        let (phys_w, _) = ws.surface_size;
+        let scale = ws.dpi.max(1.0) as f64;
+        let logical_w = phys_w as f64 / scale;
+        let caption = LogicalRect::new(0.0, 0.0, logical_w, buttons_rect.y + buttons_rect.height);
+        cx.set_draggable_regions(window, &[caption]);
     }
 
     fn run_phase(&mut self, phase: FramePhase, cx: &mut RuntimeCx<'_>) {

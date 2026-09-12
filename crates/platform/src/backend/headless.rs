@@ -167,3 +167,25 @@ impl Window for HeadlessWindow {
         RawWindowHandle::Headless
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::control::LogicalRect;
+
+    #[test]
+    fn set_draggable_regions_is_a_no_op_on_headless() {
+        // Headless has no self-drawn chrome, so it takes the trait's default
+        // no-op: the call must neither panic nor disturb window state. A driver
+        // pushes caption regions unconditionally, so this keeps that path safe on
+        // a backend that draws no caption.
+        let mut app = HeadlessApp::new();
+        let id = app.create_window(WindowConfig::default()).unwrap();
+        let before = app.window(id).map(|w| w.inner_size());
+        app.set_draggable_regions(id, &[LogicalRect::new(0.0, 0.0, 400.0, 28.0)]);
+        // An unknown window id is equally inert.
+        app.set_draggable_regions(WindowId(999), &[]);
+        let after = app.window(id).map(|w| w.inner_size());
+        assert_eq!(before, after, "the no-op left the window untouched");
+    }
+}

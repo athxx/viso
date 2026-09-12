@@ -23,7 +23,8 @@ pub mod handler;
 pub mod menu;
 
 pub use control::{
-    ControlFlow, DEFAULT_FRAME_BUDGET, PlatformError, WindowChrome, WindowConfig, WindowId,
+    ControlFlow, DEFAULT_FRAME_BUDGET, LogicalRect, PlatformError, WindowChrome, WindowConfig,
+    WindowId,
 };
 pub use event::{
     AcceptCell, KeyCode, Modifiers, PointerButtons, PointerPhase, RawEvent, RawImePreedit, RawKey,
@@ -74,6 +75,23 @@ pub trait PlatformApp {
     /// non-[`Menu::Main`] root, or calling on a backend with no menu concept
     /// (headless), is a no-op.
     fn set_menu(&mut self, menu: &Menu);
+
+    /// Declare which regions of `window`'s self-drawn caption are draggable, in
+    /// logical points (top-left origin). The backend caches the slice and, on a
+    /// primary press inside one of the regions, starts a native window drag
+    /// instead of routing the press into the app as a pointer event.
+    ///
+    /// This is the one narrow channel the app uses to reclaim the top strip that
+    /// [`WindowChrome::SelfDrawn`](crate::WindowChrome::SelfDrawn) hands over:
+    /// the app knows where its caption is (the OS no longer does), so it tells
+    /// the backend which parts of it behave like a title bar. The regions are
+    /// small compact rects (§29), copied into the window's cache — no callback,
+    /// no UI type crosses the boundary (§3.5). Replaces any prior set; an empty
+    /// slice clears them. A no-op on backends without self-drawn chrome
+    /// (headless/native-only), which is why this carries a default body.
+    fn set_draggable_regions(&mut self, window: WindowId, regions: &[LogicalRect]) {
+        let _ = (window, regions);
+    }
 
     /// Programmatically close `window`, destroying its OS shell.
     ///

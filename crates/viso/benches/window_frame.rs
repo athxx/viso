@@ -120,6 +120,7 @@ impl Application for OpenCloseApp {
                     let handle = window(WindowConfig {
                         title: "child".to_string(),
                         size: (320.0, 240.0),
+                        ..Default::default()
                     })
                     .content(build_child)
                     .open(ev);
@@ -178,6 +179,7 @@ macro_rules! fan_out_app {
                         window(WindowConfig {
                             title: "fan".to_string(),
                             size: (320.0, 240.0),
+                            ..Default::default()
                         })
                         .content(build_child)
                         .open(ev);

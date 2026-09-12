@@ -109,6 +109,7 @@ impl Application for WindowSeamApp {
                         WindowConfig {
                             title: "second".to_string(),
                             size: (SURFACE_W, SURFACE_H),
+                            ..Default::default()
                         },
                         |build| {
                             let r = build.flex(

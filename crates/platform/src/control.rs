@@ -16,6 +16,48 @@ use core::time::Duration;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct WindowId(pub u32);
 
+/// A rectangle in logical (pre-scale) points, top-left origin.
+///
+/// The platform layer holds no general geometry vocabulary (§23 keeps it
+/// narrow) — events carry bare `f64` fields. This is the one shape that crosses
+/// the boundary in both directions for self-drawn chrome: the app pushes
+/// draggable caption regions down as a slice of these
+/// ([`PlatformApp::set_draggable_regions`](crate::PlatformApp::set_draggable_regions)),
+/// and the backend reports the native traffic-light bounding box back up in the
+/// same coordinate space (via a chrome-geometry event). Four `f64` — compact
+/// data, not a shared object (§29), `Copy` so hit-testing a cached slice in
+/// `mouseDown` allocates nothing.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct LogicalRect {
+    /// Left edge, logical points.
+    pub x: f64,
+    /// Top edge, logical points (top-left origin).
+    pub y: f64,
+    /// Width, logical points.
+    pub width: f64,
+    /// Height, logical points.
+    pub height: f64,
+}
+
+impl LogicalRect {
+    /// A rectangle from its top-left corner and size, in logical points.
+    pub const fn new(x: f64, y: f64, width: f64, height: f64) -> Self {
+        Self {
+            x,
+            y,
+            width,
+            height,
+        }
+    }
+
+    /// Whether `(px, py)` (logical points, top-left origin) lies inside the
+    /// rectangle. Left/top edges are inclusive, right/bottom exclusive — the
+    /// half-open convention that keeps adjacent regions from double-hitting.
+    pub fn contains(&self, px: f64, py: f64) -> bool {
+        px >= self.x && px < self.x + self.width && py >= self.y && py < self.y + self.height
+    }
+}
+
 /// What the pump should do after delivering the current event batch.
 ///
 /// The runtime returns this from [`crate::AppHandler::handle`]; the backend
@@ -110,3 +152,36 @@ impl std::error::Error for PlatformError {}
 /// Backends without a real display link (headless) use this to pace synthetic
 /// redraw beats so tests and idle-cost benches stay deterministic.
 pub const DEFAULT_FRAME_BUDGET: Duration = Duration::from_micros(16_666);
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn logical_rect_contains_is_half_open() {
+        let r = LogicalRect::new(10.0, 20.0, 100.0, 30.0);
+        // Interior.
+        assert!(r.contains(10.0, 20.0), "top-left corner is inclusive");
+        assert!(r.contains(50.0, 35.0), "an interior point is inside");
+        // Right/bottom edges are exclusive.
+        assert!(!r.contains(110.0, 35.0), "right edge is exclusive");
+        assert!(!r.contains(50.0, 50.0), "bottom edge is exclusive");
+        assert!(
+            !r.contains(110.0, 50.0),
+            "bottom-right corner is exclusive on both axes"
+        );
+        // Left/top edges just outside.
+        assert!(!r.contains(9.999, 35.0), "left of the left edge is outside");
+        assert!(!r.contains(50.0, 19.999), "above the top edge is outside");
+    }
+
+    #[test]
+    fn window_chrome_defaults_to_native() {
+        assert_eq!(WindowChrome::default(), WindowChrome::Native);
+        assert_eq!(
+            WindowConfig::default().chrome,
+            WindowChrome::Native,
+            "a default window keeps the OS-drawn title bar"
+        );
+    }
+}

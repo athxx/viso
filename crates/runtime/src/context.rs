@@ -8,7 +8,9 @@
 
 use std::time::{Duration, Instant};
 
-use viso_platform::{PlatformApp, PlatformError, RawWindowHandle, WindowConfig, WindowId};
+use viso_platform::{
+    LogicalRect, PlatformApp, PlatformError, RawWindowHandle, WindowConfig, WindowId,
+};
 
 /// Capabilities available to a frame driver for the duration of one callback.
 ///
@@ -117,6 +119,15 @@ impl<'a> RuntimeCx<'a> {
     /// native menu bar (headless).
     pub fn set_menu(&mut self, menu: &viso_platform::Menu) {
         self.app.set_menu(menu);
+    }
+
+    /// Declare `window`'s draggable self-drawn-caption regions (logical points,
+    /// top-left origin). The platform starts a native window drag on a primary
+    /// press inside one instead of routing a pointer event. A no-op on backends
+    /// without self-drawn chrome. Cold path — called when the caption layout
+    /// changes, not per frame.
+    pub fn set_draggable_regions(&mut self, window: WindowId, regions: &[LogicalRect]) {
+        self.app.set_draggable_regions(window, regions);
     }
 
     /// Programmatically close `window`, destroying its OS shell.

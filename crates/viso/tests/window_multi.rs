@@ -257,6 +257,7 @@ impl Application for MultiWindowApp {
                     let handle = window(WindowConfig {
                         title: "aux".to_string(),
                         size: (AUX_LOGICAL_W, AUX_LOGICAL_H),
+                        ..Default::default()
                     })
                     .content(|build| {
                         let r = build.flex(
