@@ -26,16 +26,16 @@ pub mod text;
 
 pub use containers::{View, ViewStyle, view};
 pub use controls::{
-    Button, ButtonStyle, CheckBox, CheckBoxStyle, Dock, DockHandle, DockHandleSlot, DockNode,
-    DockStyle, DockTree, DropPart, FileTree, FileTreeHandle, FileTreeHandleSlot, FileTreeStyle,
-    Floating, Modal, ModalHandle, ModalHandleSlot, ModalStyle, NavHandle, NavHandleSlot,
-    NavigationStack, NavigationStackStyle, NodeKey, PanelContent, PanelKey, Popup, PopupHandle,
-    PopupHandleSlot, PopupStyle, RadioGroup, RadioStyle, SelectMode, SelectOp, Sheet, SheetEdge,
-    SheetHandle, SheetHandleSlot, SheetStyle, Slider, SliderStyle, Splitter, SplitterStyle, Tabs,
-    TabsStyle, TextInput, TextInputStyle, Toast, ToastEdge, ToastHandle, ToastHandleSlot,
-    ToastStyle, Toggle, ToggleStyle, TreeNode, VisibleRow, button, checkbox, dock, file_tree,
-    modal, navigation_stack, popup, radio_group, sheet, slider, splitter, tabs, text_input, toast,
-    toggle,
+    Button, ButtonStyle, CaptionBar, CaptionBarStyle, CheckBox, CheckBoxStyle, Dock, DockHandle,
+    DockHandleSlot, DockNode, DockStyle, DockTree, DropPart, FileTree, FileTreeHandle,
+    FileTreeHandleSlot, FileTreeStyle, Floating, Modal, ModalHandle, ModalHandleSlot, ModalStyle,
+    NavHandle, NavHandleSlot, NavigationStack, NavigationStackStyle, NodeKey, PanelContent,
+    PanelKey, Popup, PopupHandle, PopupHandleSlot, PopupStyle, RadioGroup, RadioStyle, SelectMode,
+    SelectOp, Sheet, SheetEdge, SheetHandle, SheetHandleSlot, SheetStyle, Slider, SliderStyle,
+    Splitter, SplitterStyle, Tabs, TabsStyle, TextInput, TextInputStyle, Toast, ToastEdge,
+    ToastHandle, ToastHandleSlot, ToastStyle, Toggle, ToggleStyle, TreeNode, VisibleRow, button,
+    caption_bar, checkbox, dock, file_tree, modal, navigation_stack, popup, radio_group, sheet,
+    slider, splitter, tabs, text_input, toast, toggle,
 };
 pub use grid::{Grid, GridViewStyle, grid};
 pub use icon::{Icon, IconStyle, icon};

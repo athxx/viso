@@ -856,7 +856,7 @@ TextInput ✅(单行编辑骨架,后续片见上文 deferral 清单)。全部 �
         `WindowState` 加 `chrome:WindowChrome` 字段 + `open()` 加 chrome 参,建树前 `.with_chrome(ChromeContext{chrome,
         buttons_width: chrome_buttons.map(宽)})` 灌入;两 open 调用点(launch=Native、deferred=`req.config.chrome`)。
         单测:headless cx 读回默认 `(Native,None)` 与 seeded `(SelfDrawn,Some)`。`cargo build -p viso-ui -p viso` 绿。
-      - [ ] 步骤 2 — CaptionBar widget 骨架(内容三段,先不自绘按钮):新 `controls/caption_bar.rs`,照 `button.rs` 骨架;
+      - [x] 步骤 2 — CaptionBar widget 骨架(内容三段,先不自绘按钮):新 `controls/caption_bar.rs`,照 `button.rs` 骨架;
         `CaptionBarStyle`(Copy)+ `CaptionBar`;flex 根三段 leading(Fit)/ 中段 title(Fill 居中)/ trailing(Fit);
         读 `cx.chrome()`:`buttons_width` Some ⇒ leading 加等宽 spacer 给红绿灯让位;`Role::Group` 语义;导出。
       - [ ] 步骤 3 — 自绘窗口按钮(min/max/close,PathCmd 矢量,非 macOS):`SelfDrawn && buttons_width.is_none()` ⇒
