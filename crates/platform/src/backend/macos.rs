@@ -29,13 +29,13 @@ use std::rc::Rc;
 use std::time::Instant;
 
 use objc2::rc::{Retained, autoreleasepool};
-use objc2::runtime::{AnyObject, ProtocolObject, Sel};
+use objc2::runtime::{AnyClass, AnyObject, ClassBuilder, ProtocolObject, Sel};
 use objc2::{AnyThread, DefinedClass, MainThreadOnly, define_class, msg_send, sel};
 use objc2_app_kit::{
-    NSApplication, NSApplicationActivationPolicy, NSApplicationDelegate, NSApplicationTerminateReply,
-    NSBackingStoreType, NSEvent, NSEventMask, NSEventModifierFlags, NSMenu, NSMenuItem,
-    NSTextInputClient, NSTrackingArea, NSTrackingAreaOptions, NSView, NSWindow, NSWindowDelegate,
-    NSWindowStyleMask,
+    NSApplication, NSApplicationActivationPolicy, NSApplicationDelegate,
+    NSApplicationTerminateReply, NSBackingStoreType, NSEvent, NSEventMask, NSEventModifierFlags,
+    NSMenu, NSMenuItem, NSTextInputClient, NSTrackingArea, NSTrackingAreaOptions, NSView, NSWindow,
+    NSWindowDelegate, NSWindowStyleMask, NSWindowTitleVisibility,
 };
 use objc2_foundation::{
     MainThreadMarker, NSArray, NSAttributedString, NSAttributedStringKey, NSDate,
@@ -44,7 +44,9 @@ use objc2_foundation::{
 };
 
 use crate::RawWindowHandle;
-use crate::control::{ControlFlow, PlatformError, WindowConfig, WindowId};
+use crate::control::{
+    ControlFlow, LogicalRect, PlatformError, WindowChrome, WindowConfig, WindowId,
+};
 use crate::event::{
     AcceptCell, KeyCode, Modifiers, PointerButtons, PointerPhase, RawEvent, RawImePreedit, RawKey,
     RawPointer, RawScroll, RawText,
@@ -135,10 +137,17 @@ impl PlatformApp for MacApp {
 
         let (w, h) = config.logical_size;
         let content_rect = NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(w, h));
-        let style = NSWindowStyleMask::Titled
+        let mut style = NSWindowStyleMask::Titled
             | NSWindowStyleMask::Closable
             | NSWindowStyleMask::Resizable
             | NSWindowStyleMask::Miniaturizable;
+        // Self-drawn chrome keeps the native window (and its traffic lights) but
+        // extends the content area under the title bar, so the app paints its own
+        // caption over a full-height surface. The affordances stay live — only
+        // the OS title text/background is stripped, below, after creation.
+        if config.chrome == WindowChrome::SelfDrawn {
+            style |= NSWindowStyleMask::FullSizeContentView;
+        }
 
         // SAFETY: standard AppKit window init on the main thread; alloc is
         // main-thread-checked via `mtm`.
@@ -152,9 +161,22 @@ impl PlatformApp for MacApp {
             )
         };
         window.setTitle(&NSString::from_str(&config.title));
+
+        // Self-drawn chrome: strip the OS title bar's text and background so the
+        // full-size content area shows through, then swap the titlebar
+        // container's class so its transparent strip stops eating drags. Strict
+        // order — hide the title, make the bar transparent, then defang the
+        // container — matches AppKit's expectations; each step is a no-op for
+        // native chrome, which keeps the OS-drawn title bar untouched.
+        if config.chrome == WindowChrome::SelfDrawn {
+            window.setTitleVisibility(NSWindowTitleVisibility::Hidden);
+            window.setTitlebarAppearsTransparent(true);
+            defang_titlebar_container(&window);
+        }
+
         window.center();
 
-        let delegate = WindowDelegate::new(self.mtm, id, self.shared.clone());
+        let delegate = WindowDelegate::new(self.mtm, id, self.shared.clone(), config.chrome);
         let proto = ProtocolObject::from_ref(&*delegate);
         window.setDelegate(Some(proto));
 
@@ -166,6 +188,20 @@ impl PlatformApp for MacApp {
         window.makeFirstResponder(Some(&view));
 
         window.makeKeyAndOrderFront(None);
+
+        // Self-drawn chrome: report the initial traffic-light geometry so the app
+        // can align its caption from the first frame, before any resize.
+        if config.chrome == WindowChrome::SelfDrawn
+            && let Some(buttons_rect) = traffic_lights_geom(&window)
+        {
+            self.shared
+                .borrow_mut()
+                .events
+                .push_back(RawEvent::WindowChromeGeom {
+                    window: id,
+                    buttons_rect,
+                });
+        }
 
         self.windows.push(MacWindow {
             id,
@@ -304,6 +340,19 @@ impl PlatformApp for MacApp {
         self.menu_targets = targets;
     }
 
+    fn set_draggable_regions(&mut self, window: WindowId, regions: &[LogicalRect]) {
+        // Replace the target window's cached caption drag regions. Cheap cold
+        // path: called only when the app's caption layout changes, not per frame.
+        // Copy the compact rects into the content view's cache so `mouseDown`
+        // hit-tests them with no cross-boundary call. Unknown id is a no-op.
+        let Some(win) = self.windows.iter().find(|w| w.id == window) else {
+            return;
+        };
+        let mut cache = win.content_view.ivars().draggable_regions.borrow_mut();
+        cache.clear();
+        cache.extend_from_slice(regions);
+    }
+
     fn close_window(&mut self, window: WindowId) {
         // Same close path as a user-driven close, initiated by the app: order the
         // NSWindow out (dropping its Retained releases the OS shell) and enqueue a
@@ -376,10 +425,13 @@ impl Window for MacWindow {
     }
 }
 
-/// Ivars for the window delegate: which window it serves and the shared queue.
+/// Ivars for the window delegate: which window it serves, the shared queue, and
+/// whether the window uses self-drawn chrome (so resize re-reports the native
+/// traffic-light geometry, and native-chrome windows never do).
 struct DelegateIvars {
     window: WindowId,
     shared: Shared,
+    chrome: WindowChrome,
 }
 
 define_class!(
@@ -421,11 +473,14 @@ define_class!(
             let ivars = self.ivars();
             let window = ivars.window;
             let shared = ivars.shared.clone();
+            let chrome = ivars.chrome;
             let _ = catch_unwind(AssertUnwindSafe(|| {
                 // The notification's object is the NSWindow.
-                let obj = notification.object();
-                let (scale, width, height) = obj
-                    .and_then(|o| o.downcast::<NSWindow>().ok())
+                let nswin = notification
+                    .object()
+                    .and_then(|o| o.downcast::<NSWindow>().ok());
+                let (scale, width, height) = nswin
+                    .as_ref()
                     .map(|nswin| {
                         let scale = nswin.backingScaleFactor();
                         let size = nswin
@@ -439,6 +494,14 @@ define_class!(
                         )
                     })
                     .unwrap_or((1.0, 0, 0));
+                // Self-drawn chrome: the traffic lights reposition with the title
+                // bar on resize, so re-measure and re-report so the app can keep
+                // its caption aligned.
+                let buttons_rect = if chrome == WindowChrome::SelfDrawn {
+                    nswin.as_deref().and_then(traffic_lights_geom)
+                } else {
+                    None
+                };
                 let mut q = shared.borrow_mut();
                 q.events.push_back(RawEvent::ScaleFactorChanged {
                     window,
@@ -446,6 +509,12 @@ define_class!(
                     width,
                     height,
                 });
+                if let Some(buttons_rect) = buttons_rect {
+                    q.events.push_back(RawEvent::WindowChromeGeom {
+                        window,
+                        buttons_rect,
+                    });
+                }
                 q.redraws.push_back(window);
             }));
         }
@@ -453,8 +522,17 @@ define_class!(
 );
 
 impl WindowDelegate {
-    fn new(mtm: MainThreadMarker, window: WindowId, shared: Shared) -> Retained<Self> {
-        let this = Self::alloc(mtm).set_ivars(DelegateIvars { window, shared });
+    fn new(
+        mtm: MainThreadMarker,
+        window: WindowId,
+        shared: Shared,
+        chrome: WindowChrome,
+    ) -> Retained<Self> {
+        let this = Self::alloc(mtm).set_ivars(DelegateIvars {
+            window,
+            shared,
+            chrome,
+        });
         unsafe { msg_send![super(this), init] }
     }
 }
@@ -538,6 +616,168 @@ fn install_main_menu(mtm: MainThreadMarker, app: &NSApplication, delegate: &AppD
     app_item.setSubmenu(Some(&app_submenu));
 
     app.setMainMenu(Some(&main_menu));
+}
+
+/// The `hitTest:` override for the swizzled titlebar container. Calls the stock
+/// implementation, then walks the hit view's superview chain looking for an
+/// `NSButton`: a hit inside a traffic-light button keeps working (return the
+/// stock hit), while a hit anywhere else in the transparent titlebar strip
+/// returns `nil` so the event falls through to the full-size content view. That
+/// is what lets the app's own caption own the top strip — drags, clicks, and
+/// custom controls there reach [`VisoContentView`] instead of being swallowed by
+/// AppKit's title bar.
+///
+/// # Safety
+/// Installed only as the `hitTest:` method of a subclass of
+/// `NSTitlebarContainerView`, whose signature is `(NSPoint) -> id`.
+extern "C" fn titlebar_hit_test(this: *mut AnyObject, _sel: Sel, point: NSPoint) -> *mut AnyObject {
+    // SAFETY: `this` is an NSTitlebarContainerView subclass instance; `hitTest:`
+    // takes an NSPoint and returns an autoreleased view (or nil). We only read
+    // the returned view's class and superview chain, never retaining it.
+    unsafe {
+        let this = &*this;
+        let superclass = this.class().superclass().expect("subclass has superclass");
+        let hit: *mut AnyObject = msg_send![super(this, superclass), hitTest: point];
+        let button_class = AnyClass::get(c"NSButton");
+        let mut view = hit;
+        while !view.is_null() {
+            if let Some(button_class) = button_class {
+                let is_button: bool = msg_send![view, isKindOfClass: button_class];
+                if is_button {
+                    return hit;
+                }
+            }
+            view = msg_send![view, superview];
+        }
+        core::ptr::null_mut()
+    }
+}
+
+thread_local! {
+    /// The swizzle subclass, registered once on the main thread. `None` before
+    /// first use or if `NSTitlebarContainerView` is unavailable; `Some(ptr)`
+    /// caches the registered class so every self-drawn window reuses it (a class
+    /// name can be registered only once). Raw pointer because `&'static
+    /// AnyClass` is not `Sync`; only ever touched on the main thread.
+    static TITLEBAR_CONTAINER_SUBCLASS: Cell<Option<*const AnyClass>> = const { Cell::new(None) };
+}
+
+/// Register (once) and return the `NSTitlebarContainerView` subclass whose
+/// `hitTest:` is [`titlebar_hit_test`]. Returns `None` if AppKit has no
+/// `NSTitlebarContainerView` class (it should always exist on macOS, but the
+/// caller stays defensive). Main-thread only — class registration is not
+/// thread-safe, and every window is created on the main thread.
+fn titlebar_container_subclass() -> Option<*const AnyClass> {
+    TITLEBAR_CONTAINER_SUBCLASS.with(|slot| {
+        if let Some(cached) = slot.get() {
+            return Some(cached);
+        }
+        let base = AnyClass::get(c"NSTitlebarContainerView")?;
+        let mut builder = ClassBuilder::new(c"VisoTitlebarContainerView", base)?;
+        // SAFETY: `hitTest:` on an NSView subclass is `(NSPoint) -> id`, matching
+        // `titlebar_hit_test`'s signature; the subclass base is
+        // NSTitlebarContainerView, so the selector's encoding is verified.
+        unsafe {
+            builder.add_method(
+                sel!(hitTest:),
+                titlebar_hit_test as extern "C" fn(*mut AnyObject, Sel, NSPoint) -> *mut AnyObject,
+            );
+        }
+        let cls: *const AnyClass = builder.register();
+        slot.set(Some(cls));
+        Some(cls)
+    })
+}
+
+/// Swap the AppKit titlebar container's class for the Viso subclass whose
+/// `hitTest:` keeps only the traffic-light buttons hittable. With a transparent
+/// full-size-content title bar, the stock container otherwise eats every drag
+/// and click in the top strip — so a control the app draws in its own caption
+/// never sees the mouse. Locates the container by walking two superviews up from
+/// the close button (`standardWindowButton(0)` → `NSTitlebarView` →
+/// `NSTitlebarContainerView`); every step is defensive, so if AppKit's private
+/// view tree ever changes shape the window simply keeps stock behavior instead
+/// of breaking.
+fn defang_titlebar_container(window: &NSWindow) {
+    let Some(subclass) = titlebar_container_subclass() else {
+        return;
+    };
+    // SAFETY: standard AppKit introspection on the main thread. We read the
+    // close button's superview chain and, only after verifying the container's
+    // class, re-point it at our subclass (which differs from the base only in
+    // `hitTest:`). No object is retained past this call.
+    unsafe {
+        use objc2_app_kit::NSWindowButton;
+        let Some(close) = window.standardWindowButton(NSWindowButton::CloseButton) else {
+            return;
+        };
+        let Some(titlebar) = close.superview() else {
+            return;
+        };
+        let Some(container) = titlebar.superview() else {
+            return;
+        };
+        let Some(container_class) = AnyClass::get(c"NSTitlebarContainerView") else {
+            return;
+        };
+        let is_container: bool = msg_send![&*container, isKindOfClass: container_class];
+        if !is_container {
+            return;
+        }
+        let _ = AnyObject::set_class(&container, &*subclass);
+    }
+}
+
+/// The bounding box of the window's three traffic-light buttons, in logical
+/// points relative to the content view (top-left origin), or `None` if the
+/// buttons are absent or the geometry is transiently bogus.
+///
+/// Each button's frame is converted from its superview into the content view's
+/// coordinate space and the three are unioned. The content view is flipped
+/// (top-left origin), so the converted rects are already in the app's
+/// convention — no vertical flip. During a fullscreen transition the content
+/// view can resize a beat before the buttons reposition, momentarily placing
+/// them in the lower half of the view; that geometry is discarded (the buttons
+/// always live near the top) so the app never aligns its caption to a bogus
+/// box.
+fn traffic_lights_geom(window: &NSWindow) -> Option<LogicalRect> {
+    use objc2_app_kit::NSWindowButton;
+    let close = window.standardWindowButton(NSWindowButton::CloseButton)?;
+    let mini = window.standardWindowButton(NSWindowButton::MiniaturizeButton)?;
+    let zoom = window.standardWindowButton(NSWindowButton::ZoomButton)?;
+    let content = window.contentView()?;
+    let h = content.frame().size.height;
+
+    // Convert a button's frame into the content view's (flipped, top-left)
+    // space and return (top, left, right, bottom).
+    let to_edges = |btn: &objc2_app_kit::NSView| -> Option<(f64, f64, f64, f64)> {
+        // SAFETY: standard AppKit view geometry on the main thread — reading a
+        // button's superview and frame and converting the rect between two live
+        // views. All operate on views owned by the live window.
+        let superview = unsafe { btn.superview() }?;
+        let frame = btn.frame();
+        let r: NSRect = unsafe { msg_send![&*content, convertRect: frame, fromView: &*superview] };
+        let top = r.origin.y;
+        let left = r.origin.x;
+        let right = r.origin.x + r.size.width;
+        let bottom = r.origin.y + r.size.height;
+        Some((top, left, right, bottom))
+    };
+
+    let (t0, l0, r0, b0) = to_edges(&close)?;
+    let (t1, l1, r1, b1) = to_edges(&mini)?;
+    let (t2, l2, r2, b2) = to_edges(&zoom)?;
+
+    let top = t0.min(t1).min(t2);
+    let left = l0.min(l1).min(l2);
+    let right = r0.max(r1).max(r2);
+    let bottom = b0.max(b1).max(b2);
+
+    if top > h * 0.5 {
+        return None;
+    }
+
+    Some(LogicalRect::new(left, top, right - left, bottom - top))
 }
 
 /// Ivars for a custom menu-command target: the app-assigned command id and the
@@ -727,6 +967,13 @@ struct ViewIvars {
     /// The current IME composition (marked) text, echoed to the widget as a
     /// preedit. Empty when no composition is active.
     marked: RefCell<String>,
+    /// Draggable caption regions for self-drawn chrome, logical points,
+    /// top-left origin — the cache the app pushes down via
+    /// [`PlatformApp::set_draggable_regions`](crate::PlatformApp::set_draggable_regions).
+    /// A primary press inside one starts a native window drag instead of routing
+    /// a pointer event. Empty (the default) means the whole content area routes
+    /// normally, so native-chrome windows never take the drag path.
+    draggable_regions: RefCell<Vec<LogicalRect>>,
 }
 
 define_class!(
@@ -774,6 +1021,16 @@ define_class!(
 
         #[unsafe(method(mouseDown:))]
         fn mouse_down(&self, event: &NSEvent) {
+            // A primary press inside a declared draggable caption region begins a
+            // native window drag and is *not* routed as a pointer event — the app
+            // asked for that strip to behave like a title bar. Traffic-light
+            // clicks never reach here (the swizzled titlebar container keeps them
+            // to itself), so the two mechanisms don't fight. Everything else,
+            // including every press when no regions are declared, falls through to
+            // the normal pointer path.
+            if self.try_begin_window_drag(event) {
+                return;
+            }
             self.pointer(event, PointerPhase::Down, PointerButtons::PRIMARY, true);
         }
 
@@ -1016,6 +1273,7 @@ impl VisoContentView {
             shared,
             buttons: Cell::new(0),
             marked: RefCell::new(String::new()),
+            draggable_regions: RefCell::new(Vec::new()),
         });
         let this: Retained<Self> = unsafe { msg_send![super(this), initWithFrame: frame] };
         this
@@ -1027,6 +1285,29 @@ impl VisoContentView {
         let window_point = event.locationInWindow();
         let p = self.convertPoint_fromView(window_point, None);
         (p.x, p.y)
+    }
+
+    /// If the press falls inside a declared draggable caption region, start a
+    /// native window drag and report `true` (the caller then skips the normal
+    /// pointer route). Returns `false` — the common case — when no region is
+    /// declared or the press misses them all, so nothing is done and the press
+    /// routes as usual. Hit-testing walks the cached slice with no allocation.
+    fn try_begin_window_drag(&self, event: &NSEvent) -> bool {
+        let (x, y) = self.location(event);
+        let hit = self
+            .ivars()
+            .draggable_regions
+            .borrow()
+            .iter()
+            .any(|r| r.contains(x, y));
+        if !hit {
+            return false;
+        }
+        if let Some(window) = self.window() {
+            // Hand the drag to AppKit; it tracks the mouse until release.
+            window.performWindowDragWithEvent(event);
+        }
+        true
     }
 
     /// Enqueue a pointer sample, folding the button transition into the tracked

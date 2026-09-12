@@ -19,7 +19,7 @@
 use std::cell::Cell;
 use std::rc::Rc;
 
-use crate::control::WindowId;
+use crate::control::{LogicalRect, WindowId};
 use crate::menu::MenuCommandId;
 
 /// A shared "should this proceed?" cell for veto handshakes.
@@ -263,6 +263,17 @@ pub enum RawEvent {
     /// [`MenuCommandId`](crate::menu::MenuCommandId). Standard actions (Quit,
     /// Close, …) route through the OS instead and never surface here.
     MenuCommand { id: MenuCommandId },
+    /// The native chrome affordances the backend keeps for a self-drawn-chrome
+    /// window moved or resized — currently the bounding box of macOS's
+    /// traffic-light buttons, in logical points, top-left origin, relative to the
+    /// content area. The app aligns its own caption around this box (leaves room
+    /// on the correct side, centers the caption to the buttons' height). Fired
+    /// after the window is created and again on resize/scale changes. Never fired
+    /// for [`WindowChrome::Native`](crate::WindowChrome::Native) windows.
+    WindowChromeGeom {
+        window: WindowId,
+        buttons_rect: LogicalRect,
+    },
 }
 
 #[cfg(test)]

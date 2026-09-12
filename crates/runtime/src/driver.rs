@@ -10,7 +10,7 @@
 
 use std::time::Instant;
 
-use viso_platform::{MenuCommandId, WindowId};
+use viso_platform::{LogicalRect, MenuCommandId, WindowId};
 
 use crate::context::RuntimeCx;
 use crate::input::InputSample;
@@ -55,6 +55,23 @@ pub trait FrameDriver {
     /// actions (Quit/Close/…) are performed by the OS and never reach here.
     /// Default no-op: a driver with no menu holds nothing to dispatch.
     fn on_menu_command(&mut self, _command: MenuCommandId) {}
+
+    /// The native chrome geometry of a self-drawn-chrome window changed —
+    /// `buttons_rect` is the traffic-light bounding box in logical points
+    /// (top-left origin, relative to the content area). The driver uses it to
+    /// size/align its own caption around the native affordances, and — through
+    /// `cx` — to push the caption's draggable region back to the platform via
+    /// [`RuntimeCx::set_draggable_regions`] so the next press on the caption
+    /// begins a native window drag. Fired on window creation and on resize/scale
+    /// changes; never for native-chrome windows. Default no-op: a driver drawing
+    /// no custom caption ignores it.
+    fn on_window_chrome_geom(
+        &mut self,
+        _cx: &mut RuntimeCx<'_>,
+        _window: WindowId,
+        _buttons_rect: LogicalRect,
+    ) {
+    }
 
     /// Whether the driver wants continuous animation frames right now. When
     /// true, the scheduler keeps requesting redraw beats even with no input.

@@ -807,7 +807,7 @@ TextInput ✅(单行编辑骨架,后续片见上文 deferral 清单)。全部 �
         `AppDriver` 转发;prelude 重导 `{Accel,Menu,MenuCommandId,SystemAction}`。
       - 全 workspace `cargo build`/`cargo test` 绿(platform 5 单测 + 8 headless 集成、runtime、viso facade 含 doctest)。
 
-- [ ] **macOS 自绘窗口外框(混合外框)** —— 照 makepad `platform/src/os/apple/macos/*` 语义(取语义不取架构,
+- [x] **macOS 自绘窗口外框(混合外框)** —— 照 makepad `platform/src/os/apple/macos/*` 语义(取语义不取架构,
       [[viso-diverge-from-makepad]]):原生 NSWindow(保留原生红绿灯)+ `NSFullSizeContentViewWindowMask` 内容铺满整窗 +
       去装饰(titleVisibility=Hidden、titlebarAppearsTransparent=YES、swizzle `NSTitlebarContainerView.hitTest`)+
       mouseDown 命中可拖拽区 → `performWindowDragWithEvent:`。红绿灯几何由平台层测量回传上层对齐 caption。
@@ -816,15 +816,25 @@ TextInput ✅(单行编辑骨架,后续片见上文 deferral 清单)。全部 �
       异步模型下不抄 makepad 的同步 `WindowDragQuery` 回查,改 UI→platform 预推可拖拽区缓存(compact Rect,§29)。
       - [x] A `WindowConfig` 加 `chrome` 字段:platform `WindowChrome{Native,SelfDrawn}`(默认 Native)+ ui 镜像 enum
         (§3.5 UI 不命名 platform 类型)+ facade 翻译点 + prelude/lib 重导。
-      - [ ] B macOS style mask 按 chrome 分派(SelfDrawn 叠 FullSizeContentView)+ 创建后严格顺序去装饰。
-      - [ ] C swizzle `NSTitlebarContainerView.hitTest`(objc2 subclass + `object_setClass`,防御式):
-        命中 view superview 链找 NSButton→放行(红绿灯可点),否则 nil 穿透到内容区。
-      - [ ] D mouseDown 拖拽夺回 + 可拖拽区缓存:`PlatformApp::set_draggable_regions(window,&[Rect])`(macos 写缓存、
-        其余 no-op)+ `RuntimeCx` 转发(与 set_menu 同构)+ mouseDown 命中缓存 rect → performWindowDragWithEvent。
-      - [ ] E 红绿灯几何测量回传:`traffic_lights_geom`(standardWindowButton 0/1/2、convertRect、按 viso flipped
-        语义重算 Y、三按钮并集、`top>h*0.5` 判脏)+ 新 `RawEvent::WindowChromeGeom{window,buttons_rect}` + scheduler arm
-        + `FrameDriver::on_window_chrome_geom` 默认 no-op + facade 落 WindowState。
-      - macOS 真机验证(headless 测不到 AppKit/objc,[[viso-msl-reserved-half]] 同精神):SelfDrawn 窗——红绿灯在、
+      - [x] B macOS style mask 按 chrome 分派(SelfDrawn 叠 FullSizeContentView)+ 创建后严格顺序去装饰
+        (setTitleVisibility(Hidden)→setTitlebarAppearsTransparent(YES)→defang_titlebar_container)。
+      - [x] C swizzle `NSTitlebarContainerView.hitTest`(objc2 `ClassBuilder` subclass `VisoTitlebarContainerView`
+        + `object_setClass`,`standardWindowButton(0)` 反查两级 superview 定位 container,防御式全程失败保原生):
+        `hitTest:` 先调 super,沿命中 view superview 链找 NSButton→放行(红绿灯可点),否则 nil 穿透到内容区。
+      - [x] D mouseDown 拖拽夺回 + 可拖拽区缓存:`PlatformApp::set_draggable_regions(window,&[LogicalRect])`
+        (macos 写 `content_view.ivars().draggable_regions` RefCell 缓存、headless/其余走 trait 默认 no-op)+
+        `RuntimeCx::set_draggable_regions` 转发(与 set_menu 同构)+ mouseDown 命中缓存 rect(半开 `contains`)→
+        `performWindowDragWithEvent:` return,否则走既有 pointer。异步模型不抄 makepad 同步回查(§29 compact rect)。
+      - [x] E 红绿灯几何测量回传:`traffic_lights_geom`(standardWindowButton 0/1/2、convertRect 到 contentView、
+        **viso VisoContentView `isFlipped=true` 故 Y 直取 `origin.y` 无需翻转**、三按钮并集、`top>h*0.5` 判脏返回 None)
+        + 新 `RawEvent::WindowChromeGeom{window,buttons_rect:LogicalRect}` (create 后 + windowDidResize 推送)+ scheduler
+        arm 建 RuntimeCx + `FrameDriver::on_window_chrome_geom(cx,window,buttons_rect)` 默认 no-op(带 cx 使 facade
+        一次调用既存几何又推回可拖拽 caption 条)+ facade 落 `WindowState.chrome_buttons` + 派生整宽 caption 拖拽条回推。
+      - [x] F 平台单测(`LogicalRect::contains` 半开、`WindowChrome` 默认 Native、headless `set_draggable_regions`
+        no-op)+ facade `chrome_buttons_at` accessor。全 workspace `cargo test`(107 test-result 全绿)/`fmt`/`clippy -D`/
+        `xtask check-deps` 通过。**注:** clippy 顺带修 `render/src/lib.rs` 一处 `collapsible_if`(新 toolchain let-chain,
+        与本 phase 无关,独立提交,§40)。
+      - [ ] macOS 真机验证(headless 测不到 AppKit/objc,[[viso-msl-reserved-half]] 同精神):SelfDrawn 窗——红绿灯在、
         标题栏透明连片、顶部空白可拖窗、红绿灯可点、内容区 Metal 正常。
 
   **后续 phase(本次不做):** Windows 自绘外框(WM_NCCALCSIZE + DwmExtendFrameIntoClientArea + 自绘 min/max/close);

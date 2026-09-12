@@ -26,6 +26,7 @@
 //! let handle = window(WindowConfig {
 //!     title: "Inspector".to_string(),
 //!     size: (480.0, 640.0),
+//!     ..Default::default()
 //! })
 //! .content(|build| {
 //!     let root = build.flex(FlexStyle::default(), |_cx| {});
@@ -151,6 +152,7 @@ mod tests {
         let handle = window(WindowConfig {
             title: "inspector".to_string(),
             size: (480.0, 640.0),
+            ..Default::default()
         })
         .content(|_build| None)
         .open(&mut ev);
