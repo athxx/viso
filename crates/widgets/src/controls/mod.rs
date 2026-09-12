@@ -9,6 +9,7 @@
 //! and [`Dock`].
 
 mod button;
+mod caption_bar;
 mod checkbox;
 mod dock;
 mod file_tree;
@@ -25,6 +26,7 @@ mod toast;
 mod toggle;
 
 pub use button::{Button, ButtonStyle, button};
+pub use caption_bar::{CaptionBar, CaptionBarStyle, caption_bar};
 pub use checkbox::{CheckBox, CheckBoxStyle, checkbox};
 pub use dock::{
     Dock, DockHandle, DockHandleSlot, DockNode, DockStyle, DockTree, DropPart, Floating,
