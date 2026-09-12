@@ -22,7 +22,9 @@ pub mod event;
 pub mod handler;
 pub mod menu;
 
-pub use control::{ControlFlow, DEFAULT_FRAME_BUDGET, PlatformError, WindowConfig, WindowId};
+pub use control::{
+    ControlFlow, DEFAULT_FRAME_BUDGET, PlatformError, WindowChrome, WindowConfig, WindowId,
+};
 pub use event::{
     AcceptCell, KeyCode, Modifiers, PointerButtons, PointerPhase, RawEvent, RawImePreedit, RawKey,
     RawPointer, RawScroll, RawText,
