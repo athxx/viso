@@ -83,6 +83,36 @@ pub enum WindowChrome {
     SelfDrawn,
 }
 
+/// Per-window chrome facts a caption widget reads at build time to decide its
+/// layout. UI-tier only (no `viso-platform` types, section 3.5): the facade
+/// translates the platform traffic-light [`LogicalRect`](viso_platform::control::LogicalRect)
+/// into these scalars before it builds the window's tree.
+///
+/// A caption reads this through [`BuildCx::chrome`](crate::BuildCx::chrome) to
+/// choose whether to reserve a leading spacer for native OS buttons or to draw
+/// its own min/max/close — driven by the data contract, never by `target_os`
+/// (section 24). Two forward-flowing signals:
+///
+/// - `chrome` (the [`WindowChrome`] mode, known when the window opens) decides
+///   whether self-drawn buttons are *allowed* at all;
+/// - `buttons_width` (the native traffic-light box width, delivered on a later
+///   frame by the platform) decides whether they are *superseded*: `Some` means
+///   the OS already draws buttons there, so the caption reserves that width as a
+///   leading spacer and draws none of its own; `None` means either no native
+///   buttons or the geometry has not arrived yet.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct ChromeContext {
+    /// Who draws the window chrome. Known at open time from
+    /// [`WindowConfig::chrome`]; a mirror of the platform choice.
+    pub chrome: WindowChrome,
+    /// Width, in logical points, to reserve as a leading spacer for the OS
+    /// traffic lights, or `None` when the platform has reported no native button
+    /// box (yet). The height/origin of the native buttons stay a platform concern
+    /// (used facade-side for the draggable region), so only the reserve width
+    /// crosses into the UI tier.
+    pub buttons_width: Option<f32>,
+}
+
 /// The deferred build of a new window's tree, run once by the facade after it
 /// creates the OS window and its fresh node store. Boxed because each capture is
 /// distinct (the closure the app author passed to `window(...).content(...)`),

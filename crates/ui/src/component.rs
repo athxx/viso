@@ -25,7 +25,7 @@ use crate::state::{StateId, StateStore, StateValue};
 use crate::style::{BoxStyle, InteractionStyle, StyleId};
 use crate::timer::TimerRequest;
 use crate::token::Theme;
-use crate::window::WindowOpenRequest;
+use crate::window::{ChromeContext, WindowOpenRequest};
 use viso_render::{PathCmd, Rect, Rgba, Stroke, TextureId};
 
 /// The application entry into the tree: a component declares its children into
@@ -2287,6 +2287,12 @@ pub struct BuildCx<'a> {
     /// the enclosing grid's tables (or `None`) on exit, so nested grids resolve
     /// against their own names. `None` outside any grid.
     grid_names: Option<Box<GridNames>>,
+    /// Per-window chrome facts for a caption widget, seeded only on the facade's
+    /// build path through [`with_chrome`](Self::with_chrome). Defaults to
+    /// `(Native, None)` for every other cx (node-only, child-body, tests), so a
+    /// caption authored outside a self-drawn-chrome window reads a sane default.
+    /// Cold and `Copy` — read once at build to choose the caption's structure.
+    chrome: ChromeContext,
     /// The tree root, set by the first declared node.
     root: Option<NodeId>,
 }
@@ -2319,6 +2325,7 @@ impl<'a> BuildCx<'a> {
             stack: Vec::new(),
             pending_placement: None,
             grid_names: None,
+            chrome: ChromeContext::default(),
             root: None,
         }
     }
@@ -2344,6 +2351,7 @@ impl<'a> BuildCx<'a> {
             stack: Vec::new(),
             pending_placement: None,
             grid_names: None,
+            chrome: ChromeContext::default(),
             root: None,
         }
     }
@@ -2373,8 +2381,31 @@ impl<'a> BuildCx<'a> {
             stack: vec![parent],
             pending_placement: None,
             grid_names: None,
+            chrome: ChromeContext::default(),
             root: None,
         }
+    }
+
+    /// Seed the per-window chrome facts a caption widget reads at build time,
+    /// returning the cx so the facade can chain it after
+    /// [`with_reactive`](Self::with_reactive). Only the facade calls this — it
+    /// holds the platform seam that resolves the [`ChromeContext`] — so every
+    /// other build path keeps the `(Native, None)` default. A builder-style
+    /// setter rather than a constructor parameter, so existing `with_reactive`
+    /// call sites (tests, docs, the node-only path) need no change.
+    #[inline]
+    pub fn with_chrome(mut self, chrome: ChromeContext) -> Self {
+        self.chrome = chrome;
+        self
+    }
+
+    /// The per-window chrome facts seeded for this build (default `(Native,
+    /// None)` when unseeded). A caption widget reads this to choose whether to
+    /// reserve a leading spacer for native OS buttons or to draw its own —
+    /// driven by the data contract, not `target_os` (section 24).
+    #[inline]
+    pub fn chrome(&self) -> ChromeContext {
+        self.chrome
     }
 
     /// The root node declared during the build, if any.
@@ -4169,6 +4200,44 @@ mod tests {
         );
         let id = cx.state(StateValue::Int(0));
         assert_eq!(states.get(id), Some(StateValue::Int(0)));
+    }
+
+    #[test]
+    fn build_cx_chrome_defaults_native_and_reads_back_seed() {
+        use crate::window::{ChromeContext, WindowChrome};
+
+        let mut store = NodeStore::new();
+        let mut states = StateStore::new();
+        let mut bindings = BindingTable::new();
+        let mut lists = crate::virtual_list::VirtualLists::new();
+        let mut text_edits = crate::text_edit::TextEdits::new();
+        let mut projectors = crate::reactive::SemanticProjector::new();
+
+        // A cx built without `with_chrome` reads the neutral default: a caption
+        // authored outside a self-drawn-chrome window sees `(Native, None)`.
+        let cx = BuildCx::with_reactive(
+            &mut store,
+            &mut states,
+            &mut bindings,
+            &mut lists,
+            &mut text_edits,
+            &mut projectors,
+        );
+        assert_eq!(cx.chrome(), ChromeContext::default());
+        assert_eq!(cx.chrome().chrome, WindowChrome::Native);
+        assert_eq!(cx.chrome().buttons_width, None);
+
+        // The facade seeds the per-window chrome facts through `with_chrome`; a
+        // caption reads them straight back — the build-time half of the data
+        // contract (mode) plus the later-frame native-button reserve width.
+        let seeded = ChromeContext {
+            chrome: WindowChrome::SelfDrawn,
+            buttons_width: Some(78.0),
+        };
+        let cx = cx.with_chrome(seeded);
+        assert_eq!(cx.chrome(), seeded);
+        assert_eq!(cx.chrome().chrome, WindowChrome::SelfDrawn);
+        assert_eq!(cx.chrome().buttons_width, Some(78.0));
     }
 
     #[test]
