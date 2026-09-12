@@ -43,15 +43,19 @@ pub type WindowIdSlot = Rc<Cell<Option<u32>>>;
 /// edge), so a handler describes the window it wants with this small value and
 /// the facade translates it into the platform config when it opens the window.
 ///
-/// Kept deliberately minimal — title and logical size — matching the platform
-/// config's current surface. Future window attributes (min/max size, resizable)
-/// extend both in step.
+/// Kept deliberately minimal — title, logical size, chrome — matching the
+/// platform config's current surface. Future window attributes (min/max size,
+/// resizable) extend both in step.
 #[derive(Debug, Clone, PartialEq)]
 pub struct WindowConfig {
     /// The window title.
     pub title: String,
     /// The initial logical (pre-scale) size, in points: `(width, height)`.
     pub size: (f64, f64),
+    /// Who draws the window chrome. See [`WindowChrome`]. Because the UI tier
+    /// cannot name the platform `WindowChrome` (section 3.5), this is a mirror
+    /// enum the facade translates at the platform seam.
+    pub chrome: WindowChrome,
 }
 
 impl Default for WindowConfig {
@@ -59,8 +63,24 @@ impl Default for WindowConfig {
         Self {
             title: "Viso".to_string(),
             size: (800.0, 600.0),
+            chrome: WindowChrome::Native,
         }
     }
+}
+
+/// UI-tier mirror of the platform window-chrome choice.
+///
+/// The UI tier cannot name the platform `WindowChrome` (section 3.5 forbids the
+/// `viso-ui -> viso-platform` edge), so a handler picks chrome with this small
+/// value and the facade translates it into the platform enum when it opens the
+/// window. See the platform `WindowChrome` for the semantics of each variant.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum WindowChrome {
+    /// OS-drawn title bar (default).
+    #[default]
+    Native,
+    /// App-drawn caption over a full-size content area.
+    SelfDrawn,
 }
 
 /// The deferred build of a new window's tree, run once by the facade after it

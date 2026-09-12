@@ -43,6 +43,8 @@ pub struct WindowConfig {
     pub title: String,
     /// Inner (content) size in logical points.
     pub logical_size: (f64, f64),
+    /// Who draws the window chrome (title bar / caption). See [`WindowChrome`].
+    pub chrome: WindowChrome,
 }
 
 impl Default for WindowConfig {
@@ -50,8 +52,31 @@ impl Default for WindowConfig {
         Self {
             title: "Viso".to_string(),
             logical_size: (800.0, 600.0),
+            chrome: WindowChrome::Native,
         }
     }
+}
+
+/// Who owns the window's title bar / caption region.
+///
+/// [`Native`](Self::Native) keeps the OS-drawn title bar (default, unchanged
+/// behavior). [`SelfDrawn`](Self::SelfDrawn) asks the backend for a full-size
+/// content area with the native title bar de-decorated (transparent, no title
+/// text), so the app paints its own caption content while the OS keeps native
+/// affordances that cannot be reproduced (on macOS: the traffic-light buttons).
+/// The backend measures those native affordances and reports their geometry so
+/// the app can align its caption bar around them; the app in turn declares which
+/// regions of its caption are draggable (see
+/// [`PlatformApp::set_draggable_regions`](crate::PlatformApp::set_draggable_regions)).
+///
+/// A backend with no self-drawn-chrome support treats this as `Native`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum WindowChrome {
+    /// OS-drawn title bar (default).
+    #[default]
+    Native,
+    /// App-drawn caption over a full-size content area.
+    SelfDrawn,
 }
 
 /// Why the platform layer could not satisfy a request.

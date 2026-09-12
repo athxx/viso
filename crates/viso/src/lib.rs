@@ -69,7 +69,7 @@ pub use viso_ui::{InspectSnapshot, snapshot_ui};
 // the open-drain point. Re-export it under the facade so app code names one
 // `viso::WindowConfig`, never the internal `viso_platform::WindowConfig` (kept
 // private to this module for the drain translation).
-pub use viso_ui::WindowConfig;
+pub use viso_ui::{WindowChrome, WindowConfig};
 
 // The `ui!` proc-macro lives in the compile-time-only `viso-ui-macros` crate; it
 // emits `::viso_ui::…` builder tokens but does not itself depend on `viso-ui`. The
@@ -1138,6 +1138,12 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
                     let config = viso_platform::WindowConfig {
                         title: req.config.title,
                         logical_size: req.config.size,
+                        chrome: match req.config.chrome {
+                            viso_ui::WindowChrome::Native => viso_platform::WindowChrome::Native,
+                            viso_ui::WindowChrome::SelfDrawn => {
+                                viso_platform::WindowChrome::SelfDrawn
+                            }
+                        },
                     };
                     let id_slot = req.id_slot;
                     if let Ok(id) = cx.create_window(config) {
@@ -1416,7 +1422,7 @@ pub mod prelude {
     // opens another OS window mid-session and hands back a `WindowHandle` to close
     // it. `WindowConfig` is the (title, size) shape the author fills in. These are
     // commonly used, stable, and unambiguous, so they belong in the default set.
-    pub use crate::{WindowBuilder, WindowConfig, WindowHandle, window};
+    pub use crate::{WindowBuilder, WindowChrome, WindowConfig, WindowHandle, window};
     // The application-menu model (§68 lifecycle): an app returns a `Menu` tree
     // from `Application::menu`, wiring custom items to `MenuCommandId`s it picks
     // and shortcuts through `Accel`; standard entries use `SystemAction`. Menus
