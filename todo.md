@@ -842,6 +842,31 @@ TextInput ✅(单行编辑骨架,后续片见上文 deferral 清单)。全部 �
   iOS/tvOS 平台集成(生命周期/safe-area/CAMetalLayer/IME/触摸;tvOS focus engine/遥控器);
   Android 平台集成(NativeActivity/JNI、ANativeWindow、density、insets、IME、back 键、生命周期)。
 
+- [ ] **统一 caption bar widget(viso-widgets 层)** —— Chrome 浏览器式标题栏内容(标题/图标/tab)由**一个统一
+      widget** 承载,三家(macOS/Windows/Linux)界面完全一致;窗口按钮按平台惯例分派——macOS 保留原生红绿灯(不自绘),
+      Windows/Linux 自绘 min/max/close。是否自绘由**数据契约驱动**不由 `target_os`(§3.5/§24):`WindowChrome{Native,
+      SelfDrawn}`(config)+ 运行时 `chrome_buttons`(原生按钮几何,macOS 经 `WindowChromeGeom` 回传)。规则:存在
+      `chrome_buttons` ⇒ 让位不自绘;`SelfDrawn` 且无 `chrome_buttons` ⇒ 自绘。取代 `lib.rs` 占位全宽拖拽条。
+      相对 makepad 三点更优([[viso-diverge-from-makepad]]):① 拖拽区异步预推(复用 `set_draggable_regions` back-channel)
+      而非 mouseDown 同步 `WindowDragQuery`;② 矢量 `PathCmd` 图标(§16 `Content::Path`)而非每按钮一段 `Sdf2d` 着色器;
+      ③ DirtyMask + 类型化按钮回调(§11/§15)而非每帧 `event.hits` 轮询。
+      - [x] 步骤 1 — 只读 chrome cx seam:ui 层加 `ChromeContext{chrome:WindowChrome, buttons_width:Option<f32>}`
+        (`window.rs`,§3.5 仅标量不带 platform 类型)+ ui re-export;`BuildCx` 加 `chrome` 字段 + builder `with_chrome()`
+        setter(零改既有 `with_reactive` 调用点)+ 只读 `chrome()` getter,三构造默认 `(Native,None)`;facade
+        `WindowState` 加 `chrome:WindowChrome` 字段 + `open()` 加 chrome 参,建树前 `.with_chrome(ChromeContext{chrome,
+        buttons_width: chrome_buttons.map(宽)})` 灌入;两 open 调用点(launch=Native、deferred=`req.config.chrome`)。
+        单测:headless cx 读回默认 `(Native,None)` 与 seeded `(SelfDrawn,Some)`。`cargo build -p viso-ui -p viso` 绿。
+      - [ ] 步骤 2 — CaptionBar widget 骨架(内容三段,先不自绘按钮):新 `controls/caption_bar.rs`,照 `button.rs` 骨架;
+        `CaptionBarStyle`(Copy)+ `CaptionBar`;flex 根三段 leading(Fit)/ 中段 title(Fill 居中)/ trailing(Fit);
+        读 `cx.chrome()`:`buttons_width` Some ⇒ leading 加等宽 spacer 给红绿灯让位;`Role::Group` 语义;导出。
+      - [ ] 步骤 3 — 自绘窗口按钮(min/max/close,PathCmd 矢量,非 macOS):`SelfDrawn && buttons_width.is_none()` ⇒
+        trailing 放三按钮,几何手写 `PathCmd`(min=水平线/max=矩形框/close=交叉对角线,语义取自 `desktop_button.rs`);
+        每按钮 = button 交互骨架包 `icon()`;回调走 EventCx 窗口 API(`request_close_window` 已存在;min/max 无则标 TODO 或加窄 API)。
+      - [ ] 步骤 4 — 拖拽区声明 + facade 布局后回传:widget 登记空白拖拽子区 NodeId 到 cx 新 `register_chrome_spacer`/
+        draggable 列表;facade layout 后收 world box → `LogicalRect` → `set_draggable_regions`,并对 spacer 调
+        `set_fixed_size`(LAYOUT|PAINT,不重建);**删除 `lib.rs` 占位全宽条**。ChromeSpacers 注册表挪本步(§40)。
+      - [ ] 门禁 + macOS 真机验证([[viso-msl-reserved-half]] 精神):SelfDrawn 示例窗肉眼核对红绿灯在/标题居中/空白可拖窗/Metal 正常。
+
 **Tier 5 — 编辑器 / 结构工具类控件(doc §71,`viso-widgets` 内节点控件):** 待做,Tier 4 收完下一步开排。
 每个仍出完整 section-71 验证包(单测 + golden + input tape + a11y 快照 + microbench + alloc profile),每小节一提交,
 todo 随做随标、与源码同 commit(不独立提)。开工第一个控件时先读 makepad 对应实现([[viso-read-makepad-first]])。

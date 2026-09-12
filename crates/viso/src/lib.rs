@@ -41,8 +41,8 @@ use viso_platform::{LogicalRect, RawWindowHandle, WindowId};
 use viso_render::{Primitive, Rect, Renderer};
 use viso_runtime::{FramePhase, RuntimeCx, Scheduler};
 use viso_ui::{
-    AnimationRegistry, BindingTable, BuildCx, ComputedStore, DirtyClass, EffectStore,
-    FrameRecompute, ImeEvent, Key, KeyEvent, KeyRouter, Modifiers, NodeId, NodeStore,
+    AnimationRegistry, BindingTable, BuildCx, ChromeContext, ComputedStore, DirtyClass,
+    EffectStore, FrameRecompute, ImeEvent, Key, KeyEvent, KeyRouter, Modifiers, NodeId, NodeStore,
     PointerButtons, PointerEvent, PointerPhase, PointerRouter, ScrollEvent, ScrollRouter,
     SemanticProjector, StateId, StateStore, TextEdits, TextRequest, TimerRegistry, TimerRequest,
     TranslateAnim, VirtualLists, WindowOpenRequest, focus_next, text_edit, virtual_list,
@@ -368,6 +368,12 @@ struct WindowState {
     /// facade also derives the caption's draggable strip from it and pushes that
     /// back to the platform so a press on the caption begins a native window drag.
     chrome_buttons: Option<LogicalRect>,
+    /// Who draws this window's chrome, known when the window opens (from its
+    /// `WindowConfig`). Seeded into every (re)build's [`ChromeContext`] so a
+    /// caption widget can decide whether self-drawn min/max/close buttons are
+    /// allowed — the build-time half of the chrome data contract, paired with the
+    /// later-frame [`chrome_buttons`](Self::chrome_buttons) width.
+    chrome: WindowChrome,
     /// The retained UI tree: real nodes built once on launch, then relaid only
     /// where invalidated each frame and painted to primitives.
     store: NodeStore,
@@ -528,6 +534,7 @@ impl WindowState {
             surface_size: (1, 1),
             dpi: 1.0,
             chrome_buttons: None,
+            chrome: WindowChrome::Native,
             store: NodeStore::new(),
             states: StateStore::new(),
             bindings: BindingTable::new(),
@@ -571,9 +578,16 @@ impl WindowState {
         cx: &mut RuntimeCx<'_>,
         window: WindowId,
         fonts: &[Box<[u8]>],
+        chrome: WindowChrome,
         build: impl FnOnce(&mut BuildCx) -> Option<NodeId>,
     ) -> Self {
         let mut ws = WindowState::new(window);
+        // Record who draws this window's chrome. Known at open time from the
+        // window config; the build-time half of the chrome data contract a
+        // caption widget reads through `BuildCx::chrome` (section 24 — driven by
+        // data, not `target_os`). The native traffic-light width arrives later
+        // via `WindowChromeGeom`, so `buttons_width` starts `None` below.
+        ws.chrome = chrome;
 
         // Record the launch surface size up front, independent of the GPU: the
         // tree lays out against this every frame, so a headless window (no GPU)
@@ -657,7 +671,11 @@ impl WindowState {
                 &mut ws.virtual_lists,
                 &mut ws.text_edits,
                 &mut ws.projectors,
-            );
+            )
+            .with_chrome(ChromeContext {
+                chrome: ws.chrome,
+                buttons_width: ws.chrome_buttons.map(|r| r.width as f32),
+            });
             ws.root = build(&mut build_cx);
         }
 
@@ -865,7 +883,7 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
         // the `window()` seam runs the identical path with the request's deferred
         // build closure instead — the launch window is not a special case.
         let app = self.app.as_mut();
-        let ws = WindowState::open(cx, id, &self.fonts, |build| {
+        let ws = WindowState::open(cx, id, &self.fonts, WindowChrome::Native, |build| {
             app.and_then(|app| {
                 app.build(build);
                 build.root()
@@ -1182,10 +1200,15 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
                 // no self-scheduled spin. A `create_window` failure drops the
                 // request — the app simply gets no window, no panic.
                 for req in self.pending_opens.drain(..) {
+                    // Carry the UI-tier chrome mode through to the build below as
+                    // the build-time half of the caption data contract. It is the
+                    // same value translated into the platform config, kept as the
+                    // UI enum so `WindowState::open` seeds `BuildCx::chrome`.
+                    let ui_chrome = req.config.chrome;
                     let config = viso_platform::WindowConfig {
                         title: req.config.title,
                         logical_size: req.config.size,
-                        chrome: match req.config.chrome {
+                        chrome: match ui_chrome {
                             viso_ui::WindowChrome::Native => viso_platform::WindowChrome::Native,
                             viso_ui::WindowChrome::SelfDrawn => {
                                 viso_platform::WindowChrome::SelfDrawn
@@ -1201,7 +1224,7 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
                         if let Some(slot) = &id_slot {
                             slot.set(Some(id.0));
                         }
-                        let ws = WindowState::open(cx, id, &self.fonts, req.build);
+                        let ws = WindowState::open(cx, id, &self.fonts, ui_chrome, req.build);
                         self.windows.push(ws);
                     }
                 }
