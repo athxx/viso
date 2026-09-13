@@ -26,9 +26,13 @@
 //! child eating the slack is what pins the leading and trailing sections to the
 //! two edges; the title centers itself within that middle child.
 
+use std::cell::RefCell;
+use std::rc::Rc;
+
 use viso_ui::{
-    Align, Axis, BoxStyle, BuildCx, ChromeContext, Component, FlexStyle, Inset, Justify, LeafStyle,
-    Length, Rgba, Role, Semantics, Size,
+    Align, Axis, BoxStyle, BuildCx, ChromeContext, Component, EventCx, FlexStyle, Inset,
+    InteractionStyle, Justify, Key, LeafStyle, Length, LineJoin, PathCmd, Point, PointerButtons,
+    PointerPhase, Rgba, Role, Semantics, Size, StateValue, Stroke, Vec2, WindowChrome,
 };
 
 use crate::label;
@@ -55,6 +59,147 @@ const TITLE: Rgba = Rgba {
 
 /// The default horizontal padding at each end of the bar.
 const PADDING: f32 = 8.0;
+
+/// The width of a single self-drawn window button hit box, in logical points.
+/// Matches the desktop convention of a wide, easy-to-hit target (makepad's
+/// desktop button is 46×29); the glyph itself is small and centered within it.
+const BUTTON_WIDTH: f32 = 46.0;
+
+/// The half-extent of a window-button glyph from the button's center, in logical
+/// points. The min line spans `2 * GLYPH` wide; the max box is `2 * GLYPH`
+/// square; the close cross spans `2 * GLYPH` on each diagonal. Mirrors makepad's
+/// `sz = 4.5` in `desktop_button.rs`.
+const GLYPH: f32 = 4.5;
+
+/// The stroke width of a window-button glyph.
+const GLYPH_STROKE: f32 = 1.0;
+
+/// The resting glyph color for the min/max buttons: a muted light gray that reads
+/// against the dark bar without competing with the title.
+const BUTTON_GLYPH: Rgba = Rgba {
+    r: 0.75,
+    g: 0.75,
+    b: 0.80,
+    a: 1.0,
+};
+
+/// The hover background for the min/max buttons: a subtle lightening of the bar.
+const BUTTON_HOVER_BG: Rgba = Rgba {
+    r: 0.24,
+    g: 0.24,
+    b: 0.27,
+    a: 1.0,
+};
+
+/// The pressed background for the min/max buttons: a touch darker than hover.
+const BUTTON_PRESSED_BG: Rgba = Rgba {
+    r: 0.30,
+    g: 0.30,
+    b: 0.34,
+    a: 1.0,
+};
+
+/// The hover background for the close button: the platform-conventional red so
+/// the destructive action reads distinctly from minimize/maximize.
+const CLOSE_HOVER_BG: Rgba = Rgba {
+    r: 0.77,
+    g: 0.16,
+    b: 0.13,
+    a: 1.0,
+};
+
+/// The pressed background for the close button: a darker red.
+const CLOSE_PRESSED_BG: Rgba = Rgba {
+    r: 0.60,
+    g: 0.11,
+    b: 0.09,
+    a: 1.0,
+};
+
+/// A shared, mutable window-action callback, cloned into both the pointer and key
+/// handlers of a self-drawn window button so a click and a keyboard activation
+/// drive the same action. Pointer and key input never overlap, so the borrow is
+/// uncontended. `None` means the action is unwired (an inert but focusable
+/// button) — the facade wires `on_close` to the owning window's close path;
+/// minimize/maximize have no runtime plumbing yet (see [`CaptionBar`]).
+type WindowAction = Rc<RefCell<Option<Box<dyn FnMut(&mut EventCx<'_>)>>>>;
+
+/// Which self-drawn window button this is — selects the glyph geometry, the hover
+/// color, and the accessible name. Only built on `SelfDrawn` windows with no
+/// native traffic-light box.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WindowButtonKind {
+    /// Minimize: a single horizontal line.
+    Minimize,
+    /// Maximize/restore: a square outline.
+    Maximize,
+    /// Close: two crossing diagonals.
+    Close,
+}
+
+impl WindowButtonKind {
+    /// The accessible name for this button.
+    fn label(self) -> &'static str {
+        match self {
+            WindowButtonKind::Minimize => "Minimize",
+            WindowButtonKind::Maximize => "Maximize",
+            WindowButtonKind::Close => "Close",
+        }
+    }
+
+    /// The glyph geometry, in a `2 * GLYPH`-square local space centered on the
+    /// button's own center — stroked, not filled. Mirrors the three makepad
+    /// `desktop_button.rs` SDF paths (line / rect / cross) as `PathCmd` strokes
+    /// (divergence: vector paths, not per-button SDF shaders).
+    fn glyph(self) -> Vec<PathCmd> {
+        // Local space spans [0, 2*GLYPH] on each axis; `c` is its center, so the
+        // geometry matches makepad's center-relative `c.x ± sz` / `c.y ± sz`.
+        let c = GLYPH;
+        match self {
+            WindowButtonKind::Minimize => vec![
+                PathCmd::MoveTo(Point::new(c - GLYPH, c)),
+                PathCmd::LineTo(Point::new(c + GLYPH, c)),
+            ],
+            WindowButtonKind::Maximize => vec![
+                PathCmd::MoveTo(Point::new(c - GLYPH, c - GLYPH)),
+                PathCmd::LineTo(Point::new(c + GLYPH, c - GLYPH)),
+                PathCmd::LineTo(Point::new(c + GLYPH, c + GLYPH)),
+                PathCmd::LineTo(Point::new(c - GLYPH, c + GLYPH)),
+                PathCmd::Close,
+            ],
+            WindowButtonKind::Close => vec![
+                PathCmd::MoveTo(Point::new(c - GLYPH, c - GLYPH)),
+                PathCmd::LineTo(Point::new(c + GLYPH, c + GLYPH)),
+                PathCmd::MoveTo(Point::new(c - GLYPH, c + GLYPH)),
+                PathCmd::LineTo(Point::new(c + GLYPH, c - GLYPH)),
+            ],
+        }
+    }
+
+    /// The hover background box for this button — red for `Close`, a neutral
+    /// lightening for minimize/maximize.
+    fn hover_bg(self) -> Rgba {
+        match self {
+            WindowButtonKind::Close => CLOSE_HOVER_BG,
+            _ => BUTTON_HOVER_BG,
+        }
+    }
+
+    /// The pressed background box for this button.
+    fn pressed_bg(self) -> Rgba {
+        match self {
+            WindowButtonKind::Close => CLOSE_PRESSED_BG,
+            _ => BUTTON_PRESSED_BG,
+        }
+    }
+}
+
+/// Drive a window-action callback if one is wired; an unwired button is a no-op.
+fn fire(cb: &WindowAction, ev: &mut EventCx<'_>) {
+    if let Some(f) = cb.borrow_mut().as_mut() {
+        f(ev);
+    }
+}
 
 /// The visual and layout parameters of a [`CaptionBar`]: the bar height, its
 /// background box, the end padding, and the title color. All fields are `Copy`.
@@ -110,6 +255,19 @@ pub struct CaptionBar {
     /// The window title, shown centered and used as the accessible name.
     title: String,
     style: CaptionBarStyle,
+    /// The minimize-button action. `None` until [`CaptionBar::on_minimize`] is
+    /// called; unwired by default because no runtime minimize plumbing exists yet
+    /// (the button still builds and is focusable, but is inert).
+    on_minimize: WindowAction,
+    /// The maximize/restore-button action. `None` until
+    /// [`CaptionBar::on_maximize`] is called; unwired by default for the same
+    /// reason as [`CaptionBar::on_minimize`].
+    on_maximize: WindowAction,
+    /// The close-button action. `None` until [`CaptionBar::on_close`] is called;
+    /// the facade wires it to the owning window's close path (the widget tier has
+    /// no window id, so the action is injected by whoever holds the window
+    /// handle).
+    on_close: WindowAction,
 }
 
 /// Construct a [`CaptionBar`] with the given title and default style. Chain
@@ -119,6 +277,9 @@ pub fn caption_bar(title: impl Into<String>) -> CaptionBar {
     CaptionBar {
         title: title.into(),
         style: CaptionBarStyle::default(),
+        on_minimize: Rc::new(RefCell::new(None)),
+        on_maximize: Rc::new(RefCell::new(None)),
+        on_close: Rc::new(RefCell::new(None)),
     }
 }
 
@@ -152,6 +313,142 @@ impl CaptionBar {
         self.style.title_color = color;
         self
     }
+
+    /// Set the minimize-button action, fired on a click or keyboard activation of
+    /// the self-drawn minimize button. No-op on windows that don't self-draw
+    /// buttons (macOS, where the native traffic lights handle it).
+    pub fn on_minimize(self, handler: impl FnMut(&mut EventCx<'_>) + 'static) -> Self {
+        *self.on_minimize.borrow_mut() = Some(Box::new(handler));
+        self
+    }
+
+    /// Set the maximize/restore-button action. Same wiring rules as
+    /// [`CaptionBar::on_minimize`].
+    pub fn on_maximize(self, handler: impl FnMut(&mut EventCx<'_>) + 'static) -> Self {
+        *self.on_maximize.borrow_mut() = Some(Box::new(handler));
+        self
+    }
+
+    /// Set the close-button action, fired on a click or keyboard activation of the
+    /// self-drawn close button. The facade wires this to the owning window's close
+    /// path (the widget tier has no window id of its own).
+    pub fn on_close(self, handler: impl FnMut(&mut EventCx<'_>) + 'static) -> Self {
+        *self.on_close.borrow_mut() = Some(Box::new(handler));
+        self
+    }
+}
+
+/// Author one self-drawn window button on `cx`: a focusable, clickable box the
+/// width of a desktop button, carrying a stroked [`PathCmd`] glyph and wired to
+/// `action`. Mirrors the [`crate::Button`] interaction skeleton (two reactive
+/// cells → interaction-style column → focusable → pointer + key handlers →
+/// `Button` semantics), but paints a vector glyph instead of a text caption and
+/// fires a window action instead of a generic click.
+fn window_button(cx: &mut BuildCx<'_>, kind: WindowButtonKind, height: f32, action: WindowAction) {
+    // Pressed/hover cells drive the interaction-style column: flipping either
+    // re-selects the painted box and repaints this button alone (targeted
+    // invalidation, no rebuild), priority pressed > hover > resting.
+    let pressed = cx.state(StateValue::Bool(false));
+    let hovered = cx.state(StateValue::Bool(false));
+
+    // The button box: transparent at rest (the bar shows through), tinted on
+    // hover/press. A row centering the glyph on both axes.
+    let resting = BoxStyle::NONE;
+    let hover = BoxStyle::solid(kind.hover_bg());
+    let pressed_box = BoxStyle::solid(kind.pressed_bg());
+    let glyph = kind.glyph();
+    let root = cx.flex(
+        FlexStyle {
+            axis: Axis::Row,
+            gap: 0.0,
+            padding: Inset::default(),
+            align: Align::Center,
+            justify: Justify::Center,
+            size: Size {
+                width: Length::Fixed(BUTTON_WIDTH),
+                height: Length::Fixed(height),
+            },
+            style: resting,
+        },
+        |cx| {
+            // The glyph: a stroked path leaf in its own `2 * GLYPH`-square box,
+            // centered by the parent row. Authored directly (no `icon()` component
+            // detour) so it lands as this button's single content child.
+            let extent = 2.0 * GLYPH;
+            let leaf = cx.leaf(LeafStyle {
+                size: Size::fixed(extent, extent),
+                style: BoxStyle::NONE,
+            });
+            cx.path(
+                leaf,
+                glyph.clone(),
+                None,
+                Some(Stroke {
+                    width: GLYPH_STROKE,
+                    color: BUTTON_GLYPH,
+                    join: LineJoin::Miter,
+                }),
+                Vec2 {
+                    x: extent,
+                    y: extent,
+                },
+            );
+        },
+    );
+
+    cx.interaction_style(
+        root,
+        InteractionStyle {
+            resting,
+            hover,
+            pressed: pressed_box,
+            pressed_cell: Some(pressed),
+            hover_cell: Some(hovered),
+        },
+    );
+    cx.focusable(root, true);
+
+    // Pointer activation and hover feedback — the same press-arm / release-fire
+    // shape as `Button`.
+    let pointer_cb = action.clone();
+    cx.on_pointer(root, move |ev| {
+        let Some(p) = ev.pointer() else { return };
+        let primary = p.buttons.contains(PointerButtons::PRIMARY);
+        match p.phase {
+            PointerPhase::Down if primary => {
+                ev.set(pressed, StateValue::Bool(true));
+            }
+            PointerPhase::Up if primary => {
+                ev.set(pressed, StateValue::Bool(false));
+                fire(&pointer_cb, ev);
+            }
+            PointerPhase::Enter => {
+                ev.set(hovered, StateValue::Bool(true));
+            }
+            PointerPhase::Leave => {
+                ev.set(hovered, StateValue::Bool(false));
+                ev.set(pressed, StateValue::Bool(false));
+            }
+            _ => {}
+        }
+    });
+
+    // Keyboard activation: Enter/Space (not an auto-repeat) fires the same action.
+    let key_cb = action;
+    cx.on_key(root, move |ev| {
+        if let Some(k) = ev.key()
+            && k.pressed
+            && !k.repeat
+            && matches!(k.key, Key::Enter | Key::Space)
+        {
+            fire(&key_cb, ev);
+        }
+    });
+
+    cx.semantics(
+        root,
+        Semantics::role(Role::Button).with_label(kind.label().to_string()),
+    );
 }
 
 impl Component for CaptionBar {
@@ -172,6 +469,16 @@ impl Component for CaptionBar {
         let title_color = self.style.title_color;
         let padding = self.style.padding;
         let height = self.style.height;
+
+        // Self-drawn min/max/close buttons are built only when the chrome mode
+        // permits them *and* no native traffic-light box was reported — the exact
+        // Windows/Linux case. `SelfDrawn` with a native box (a self-drawn frame that
+        // still keeps OS buttons) yields to those, as does `Native`. The action
+        // cells are cloned so the build closure can move them into the buttons.
+        let self_draw_buttons = chrome == WindowChrome::SelfDrawn && buttons_width.is_none();
+        let on_minimize = self.on_minimize.clone();
+        let on_maximize = self.on_maximize.clone();
+        let on_close = self.on_close.clone();
 
         // The bar: a full-width, fixed-height row centering its three sections on
         // the cross axis. Its own `justify` never fires — the middle `Fill` child
@@ -246,12 +553,11 @@ impl Component for CaptionBar {
                     },
                 );
 
-                // Trailing section (`Fit`). Empty in this slice — self-drawn
-                // min/max/close buttons land here in step 3 when `chrome` is
-                // `SelfDrawn` and no native buttons were reported. Built now so the
-                // three-段 structure is stable across slices; `chrome` is bound here
-                // to document the step-3 gate without yet acting on it.
-                let _ = chrome;
+                // Trailing section (`Fit`). Holds the self-drawn min/max/close
+                // buttons on Windows/Linux (`SelfDrawn` chrome with no native box);
+                // empty on macOS and any window that keeps native buttons, whose
+                // buttons live in the leading spacer instead. Always built so the
+                // three-段 structure is stable regardless of platform.
                 cx.flex(
                     FlexStyle {
                         axis: Axis::Row,
@@ -265,7 +571,13 @@ impl Component for CaptionBar {
                         },
                         style: BoxStyle::NONE,
                     },
-                    |_cx| {},
+                    |cx| {
+                        if self_draw_buttons {
+                            window_button(cx, WindowButtonKind::Minimize, height, on_minimize);
+                            window_button(cx, WindowButtonKind::Maximize, height, on_maximize);
+                            window_button(cx, WindowButtonKind::Close, height, on_close);
+                        }
+                    },
                 );
             },
         );
@@ -388,5 +700,130 @@ mod tests {
         );
         let box_ = store.bounds(spacer[0]);
         assert_eq!(box_.w, 78.0, "spacer laid out to the native button width");
+    }
+
+    /// A `SelfDrawn` window with no native traffic-light box (Windows/Linux) draws
+    /// its own three window buttons in the trailing section, each a focusable node
+    /// with pointer and key handlers and `Button` semantics carrying its name.
+    #[test]
+    fn self_drawn_chrome_builds_three_window_buttons() {
+        let chrome = ChromeContext {
+            chrome: WindowChrome::SelfDrawn,
+            buttons_width: None,
+        };
+        let (store, root) = build_with(chrome, caption_bar("Untitled"));
+
+        let sections = children(&store, root);
+        let trailing = sections[2];
+        let buttons = children(&store, trailing);
+        assert_eq!(buttons.len(), 3, "min / max / close");
+
+        for (button, name) in buttons.iter().zip(["Minimize", "Maximize", "Close"]) {
+            assert!(
+                store.has_handler(*button),
+                "{name} button attaches a pointer handler"
+            );
+            assert!(
+                store.has_key_handler(*button),
+                "{name} button attaches a key handler"
+            );
+            assert!(store.focusable(*button), "{name} button is focusable");
+
+            let sem = store
+                .semantics(*button)
+                .expect("window button authors semantics");
+            assert_eq!(sem.role, Role::Button, "{name} button is a Button");
+            assert_eq!(
+                sem.label.as_deref(),
+                Some(name),
+                "{name} button is named for its action"
+            );
+        }
+    }
+
+    /// A window that keeps native buttons — either `Native` chrome or `SelfDrawn`
+    /// with a reported traffic-light box — draws no window buttons of its own; the
+    /// trailing section stays empty.
+    #[test]
+    fn native_chrome_draws_no_window_buttons() {
+        for chrome in [
+            ChromeContext {
+                chrome: WindowChrome::Native,
+                buttons_width: Some(78.0),
+            },
+            ChromeContext {
+                chrome: WindowChrome::SelfDrawn,
+                buttons_width: Some(78.0),
+            },
+        ] {
+            let (store, root) = build_with(chrome, caption_bar("Untitled"));
+            let sections = children(&store, root);
+            let trailing = sections[2];
+            assert_eq!(
+                children(&store, trailing).len(),
+                0,
+                "native buttons ⇒ no self-drawn window buttons"
+            );
+        }
+    }
+
+    /// The wired `on_close` action fires when the close button is clicked (a primary
+    /// press then release over it), exercising the pointer-activation path.
+    #[test]
+    fn close_button_fires_wired_action_on_click() {
+        use std::cell::Cell;
+        use std::rc::Rc;
+        use viso_ui::{Modifiers, PointerEvent};
+
+        let fired = Rc::new(Cell::new(0u32));
+        let flag = fired.clone();
+        let chrome = ChromeContext {
+            chrome: WindowChrome::SelfDrawn,
+            buttons_width: None,
+        };
+        let bar = caption_bar("Untitled").on_close(move |_ev| flag.set(flag.get() + 1));
+
+        let mut store = NodeStore::new();
+        let mut states = StateStore::new();
+        let mut bindings = BindingTable::new();
+        let mut lists = VirtualLists::new();
+        let mut text_edits = TextEdits::new();
+        let mut projectors = SemanticProjector::new();
+        let root = {
+            let mut cx = BuildCx::with_reactive(
+                &mut store,
+                &mut states,
+                &mut bindings,
+                &mut lists,
+                &mut text_edits,
+                &mut projectors,
+            )
+            .with_chrome(chrome);
+            bar.build(&mut cx);
+            cx.root().expect("caption bar declares a root node")
+        };
+
+        let close = *children(&store, children(&store, root)[2])
+            .last()
+            .expect("close button");
+
+        let primary = |phase| PointerEvent {
+            x: 0.0,
+            y: 0.0,
+            phase,
+            buttons: PointerButtons::PRIMARY,
+            modifiers: Modifiers::default(),
+        };
+        for phase in [PointerPhase::Down, PointerPhase::Up] {
+            let mut handler = store.take_handler(close).expect("pointer handler");
+            {
+                let ev = primary(phase);
+                let mut cx = EventCx::__new_pointer(&mut states, &bindings, &ev);
+                handler(&mut cx);
+            }
+            store.restore_handler(close, handler);
+        }
+
+        assert_eq!(fired.get(), 1, "click fires the wired close action once");
     }
 }
