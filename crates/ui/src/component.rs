@@ -387,6 +387,17 @@ pub struct NodeStore {
     /// every sub-pixel frame. Empty and allocation-free in the overwhelmingly
     /// common frame with no wrap-eligible text whose width changed.
     text_reflows: Vec<(NodeId, f32)>,
+    /// Cold retained slot (not index-aligned): the nodes a caption widget
+    /// declared as draggable self-drawn-caption regions, in declaration order. A
+    /// self-drawn-chrome window's caption registers its blank band here at build
+    /// through [`register_draggable`](BuildCx::register_draggable); the facade
+    /// reads each node's post-layout `world` box, converts to logical points, and
+    /// hands the set to the platform's window-drag back-channel. Empty for every
+    /// window without a self-drawn caption (the common case) and reset on a
+    /// structural rebuild, like [`focused`](Self::focused). A tiny list (one band
+    /// per caption), so a `Vec<NodeId>` beats a per-node flag column that the
+    /// facade would have to sweep the whole arena to read.
+    draggable_regions: Vec<NodeId>,
 }
 
 impl NodeStore {
@@ -433,6 +444,7 @@ impl NodeStore {
         self.capture = None;
         self.hovered = None;
         self.focus_scope = None;
+        self.draggable_regions.clear();
     }
 
     /// The arena backing the tree.
@@ -805,6 +817,28 @@ impl NodeStore {
             Some(_) => {}
             None => self.capture = None,
         }
+    }
+
+    /// Register a node as a draggable self-drawn-caption region. A live-guarded,
+    /// deduplicating append: a stale or already-registered handle is a no-op, so a
+    /// rebuild that re-declares the caption never doubles the list (the list is
+    /// cleared on the wholesale rebuild anyway, but the guard keeps a repeated
+    /// call within one build idempotent). The facade reads
+    /// [`draggable_regions`](Self::draggable_regions) after layout.
+    pub fn push_draggable_region(&mut self, id: NodeId) {
+        if !self.arena.is_live(id) || self.draggable_regions.contains(&id) {
+            return;
+        }
+        self.draggable_regions.push(id);
+    }
+
+    /// The nodes a caption widget declared as draggable regions, in declaration
+    /// order. Empty for every window without a self-drawn caption. The facade
+    /// reads each node's post-layout [`world`](Self::world) box to push the
+    /// window's drag regions to the platform.
+    #[inline]
+    pub fn draggable_regions(&self) -> &[NodeId] {
+        &self.draggable_regions
     }
 
     /// The node the pointer is currently over, if any. The router reads this to
@@ -2765,6 +2799,18 @@ impl<'a> BuildCx<'a> {
     /// router's job; this only declares the node eligible.
     pub fn focusable(&mut self, handle: Handle, focusable: bool) -> Handle {
         self.store.set_focusable(handle.id, focusable);
+        handle
+    }
+
+    /// Declare an already-built node a draggable self-drawn-caption region.
+    /// Returns the handle so authoring chains inline. A self-drawn-chrome caption
+    /// registers its blank band (the bar minus its buttons/interactive controls)
+    /// so the facade, after layout, reads the node's world box and hands it to the
+    /// platform's window-drag back-channel — a press there begins a native window
+    /// drag instead of routing a pointer event. A no-op signal on windows the
+    /// platform never drives with drag regions (native chrome, headless).
+    pub fn register_draggable(&mut self, handle: Handle) -> Handle {
+        self.store.push_draggable_region(handle.id);
         handle
     }
 
