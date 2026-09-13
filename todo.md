@@ -863,9 +863,12 @@ TextInput ✅(单行编辑骨架,后续片见上文 deferral 清单)。全部 �
         trailing 放三按钮,几何手写 `PathCmd`(min=水平线/max=矩形框/close=交叉对角线,描边非 SDF);每按钮 = button
         交互骨架(state→flex→interaction_style→focusable→on_pointer/on_key→Button 语义)包描边 glyph leaf;回调用
         facade 注入的 `WindowAction`(SharedClick,widget 不持窗口 id);close 由 facade 接 `WindowHandle::close`,min/max 暂不接线(可聚焦但 inert)。
-      - [ ] 步骤 4 — 拖拽区声明 + facade 布局后回传:widget 登记空白拖拽子区 NodeId 到 cx 新 `register_chrome_spacer`/
-        draggable 列表;facade layout 后收 world box → `LogicalRect` → `set_draggable_regions`,并对 spacer 调
-        `set_fixed_size`(LAYOUT|PAINT,不重建);**删除 `lib.rs` 占位全宽条**。ChromeSpacers 注册表挪本步(§40)。
+      - [x] 步骤 4 — 拖拽区声明 + facade 布局后回传:widget 把中段标题空白带 `Handle` 经 `BuildCx::register_draggable`
+        登记;NodeStore 用冷保留槽 `Vec<NodeId>`(仿 focused/capture,非 index-aligned,`clear()` 清空)存,不走 BuildCx
+        注册表(避免穿 4 个构造器 + 每层 cx,§40)。facade Layout 相 `absorb_measurements` 后 `draggable_regions_changed`:
+        逐 node world box → ÷dpi 转 `LogicalRect` → 与 `WindowState.draggable_cache` diff,仅变化时调 `set_draggable_regions`
+        (冷通道,稳态帧/无 caption 窗即时短路);**删除 `on_window_chrome_geom` 占位全宽条**(改为仅记 `chrome_buttons`)。
+        spacer 让位宽 build 时已读 `buttons_width` 定死(步骤 2),无需运行时 `set_fixed_size` 增长。
       - [ ] 门禁 + macOS 真机验证([[viso-msl-reserved-half]] 精神):SelfDrawn 示例窗肉眼核对红绿灯在/标题居中/空白可拖窗/Metal 正常。
 
 **Tier 5 — 编辑器 / 结构工具类控件(doc §71,`viso-widgets` 内节点控件):** 待做,Tier 4 收完下一步开排。

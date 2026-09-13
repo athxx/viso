@@ -16,9 +16,12 @@
 //!   none of its own.
 //!
 //! Both signals reach the widget through [`BuildCx::chrome`], read once at build
-//! time. This slice delivers the three-段 content layout and the native-button
-//! leading reserve; self-drawn buttons (step 3) and the draggable-region
-//! back-channel (step 4) build on top of it.
+//! time. On top of the three-段 content layout and native-button leading reserve,
+//! a `SelfDrawn` window with no reported native box draws its own min/max/close
+//! buttons in the trailing section, and the center title band is registered as the
+//! caption's draggable region ([`BuildCx::register_draggable`]) — the facade reads
+//! its post-layout world box and hands it to the platform's window-drag
+//! back-channel, so a press on the blank caption moves the window on every OS.
 //!
 //! The three sections are laid out with a single [`Axis::Row`] flex whose middle
 //! child is [`Length::Fill`]: leading (`Fit`) / centered title (`Fill`) /
@@ -535,7 +538,14 @@ impl Component for CaptionBar {
                 // Centered title (`Fill`). The middle child eats the main-axis
                 // slack, so it spans between the two `Fit` sections; its own
                 // `Justify::Center` centers the reused `Label` within that span.
-                cx.flex(
+                // This middle band is the caption's draggable region: it holds
+                // only the non-interactive title and, spanning the slack between
+                // the (native/self-drawn) button sections, is exactly the blank
+                // area a user grabs to move the window. Registering it hands its
+                // post-layout world box to the facade, which forwards it to the
+                // platform's window-drag back-channel — no `target_os` branch, the
+                // same declaration on every OS (only the platform acts on it).
+                let title_band = cx.flex(
                     FlexStyle {
                         axis: Axis::Row,
                         gap: 0.0,
@@ -552,6 +562,7 @@ impl Component for CaptionBar {
                         label(title.clone()).color(title_color).build(cx);
                     },
                 );
+                cx.register_draggable(title_band);
 
                 // Trailing section (`Fit`). Holds the self-drawn min/max/close
                 // buttons on Windows/Linux (`SelfDrawn` chrome with no native box);
@@ -825,5 +836,52 @@ mod tests {
         }
 
         assert_eq!(fired.get(), 1, "click fires the wired close action once");
+    }
+
+    /// The bar registers exactly one draggable region — the center title band —
+    /// and after layout that band spans the slack between the leading and trailing
+    /// sections, i.e. the blank caption area a user grabs to move the window. The
+    /// interactive trailing buttons sit outside it, so a press on a button is not a
+    /// drag.
+    #[test]
+    fn registers_center_band_as_the_draggable_region() {
+        let chrome = ChromeContext {
+            chrome: WindowChrome::SelfDrawn,
+            buttons_width: None,
+        };
+        let (mut store, root) = build_with(chrome, caption_bar("Untitled"));
+
+        let sections = children(&store, root);
+        let center = sections[1];
+
+        // Exactly the center band is registered, nothing else.
+        assert_eq!(
+            store.draggable_regions(),
+            &[center],
+            "only the center title band is draggable"
+        );
+
+        // Lay out on a wide surface; the draggable band must be non-empty and lie
+        // strictly left of the trailing buttons (its right edge ≤ the trailing
+        // section's left edge), so the buttons stay outside the drag area.
+        let mut scratch = Vec::new();
+        store.layout(
+            root,
+            Rect {
+                x: 0.0,
+                y: 0.0,
+                w: 800.0,
+                h: 38.0,
+            },
+            &mut scratch,
+        );
+        let band = store.bounds(center);
+        assert!(band.w > 0.0, "the draggable band has real width");
+
+        let trailing = store.bounds(sections[2]);
+        assert!(
+            band.x + band.w <= trailing.x + f32::EPSILON,
+            "the draggable band ends at or before the trailing buttons"
+        );
     }
 }

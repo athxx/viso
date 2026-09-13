@@ -368,6 +368,14 @@ struct WindowState {
     /// facade also derives the caption's draggable strip from it and pushes that
     /// back to the platform so a press on the caption begins a native window drag.
     chrome_buttons: Option<LogicalRect>,
+    /// The caption's draggable regions as last pushed to the platform, in logical
+    /// points. The Layout phase collects the world boxes of the nodes a caption
+    /// widget registered as draggable, converts them to logical rects, and pushes
+    /// them through the `set_draggable_regions` back-channel only when they differ
+    /// from this cache — so a steady frame whose caption did not move re-pushes
+    /// nothing (the back-channel is a cold path, section 7.2). Empty until a
+    /// caption first lays out; a window with no caption never fills it.
+    draggable_cache: Vec<LogicalRect>,
     /// Who draws this window's chrome, known when the window opens (from its
     /// `WindowConfig`). Seeded into every (re)build's [`ChromeContext`] so a
     /// caption widget can decide whether self-drawn min/max/close buttons are
@@ -534,6 +542,7 @@ impl WindowState {
             surface_size: (1, 1),
             dpi: 1.0,
             chrome_buttons: None,
+            draggable_cache: Vec::new(),
             chrome: WindowChrome::Native,
             store: NodeStore::new(),
             states: StateStore::new(),
@@ -782,6 +791,64 @@ impl WindowState {
             laid_out,
             painted,
         };
+    }
+
+    /// Recompute the caption's draggable regions from the just-laid-out tree and,
+    /// only when they differ from the last push, hand them to the platform through
+    /// `set_draggable_regions` — the cold back-channel that turns a primary press on
+    /// the caption into a native window drag (section 7.2). A caption widget
+    /// registers its blank band via `BuildCx::register_draggable`; the store keeps
+    /// those node ids in a small retained list, and here we resolve each to its
+    /// world box (physical pixels, valid after the layout above), convert to logical
+    /// points (÷ dpi — the coordinate space the platform's `mouseDown` hit-tests),
+    /// and diff against the cache.
+    ///
+    /// Returns `true` when it pushed a changed set. Skips the platform call — and
+    /// the borrow of `cx` at the call site — on every steady frame whose caption
+    /// held still: the registered set is tiny (one band per caption) so building the
+    /// candidate list and comparing it is a handful of `f32` ops, not a full-tree
+    /// sweep, and a window with no caption registers nothing and returns instantly.
+    fn draggable_regions_changed(&mut self) -> bool {
+        let regions = self.store.draggable_regions();
+        // Fast exit shared by every window without a self-drawn caption: nothing
+        // registered and nothing cached means no work and no push.
+        if regions.is_empty() && self.draggable_cache.is_empty() {
+            return false;
+        }
+        let scale = self.dpi.max(1.0) as f64;
+        let mut changed = regions.len() != self.draggable_cache.len();
+        // Reuse the cache's backing storage: build the new set in place, comparing
+        // element-by-element against the old contents as we overwrite them, so a
+        // held-still caption allocates nothing and reports no change.
+        if !changed {
+            for (i, &id) in regions.iter().enumerate() {
+                let b = self.store.world(id);
+                let next = LogicalRect::new(
+                    b.x as f64 / scale,
+                    b.y as f64 / scale,
+                    b.w as f64 / scale,
+                    b.h as f64 / scale,
+                );
+                if self.draggable_cache[i] != next {
+                    changed = true;
+                    break;
+                }
+            }
+        }
+        if !changed {
+            return false;
+        }
+        self.draggable_cache.clear();
+        for &id in regions {
+            let b = self.store.world(id);
+            self.draggable_cache.push(LogicalRect::new(
+                b.x as f64 / scale,
+                b.y as f64 / scale,
+                b.w as f64 / scale,
+                b.h as f64 / scale,
+            ));
+        }
+        true
     }
 
     /// Phase B of width-aware text reflow (DL1): drain the reflow requests the
@@ -1056,32 +1123,21 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
 
     fn on_window_chrome_geom(
         &mut self,
-        cx: &mut RuntimeCx<'_>,
+        _cx: &mut RuntimeCx<'_>,
         window: WindowId,
         buttons_rect: LogicalRect,
     ) {
-        // Record the native traffic-light box so the app can align its caption to
-        // it, then push the caption's draggable region back to the platform so the
-        // next primary press on the caption starts a native window drag instead of
-        // routing a pointer event. An event for an unknown window (already closed)
-        // is a no-op.
-        let Some(ws) = self.window_mut(window) else {
-            return;
-        };
-        ws.chrome_buttons = Some(buttons_rect);
-        // This phase draws no caption widget yet (that is a later widgets-layer
-        // phase), so derive one draggable strip spanning the full window width and
-        // the vertical band the buttons occupy — from the content top down to the
-        // buttons' bottom edge. The buttons themselves stay clickable: the
-        // platform's titlebar hitTest lets a press that lands on a traffic light
-        // through to it, so the strip only captures presses on the empty caption
-        // around the buttons. Width comes from the logical surface extent (physical
-        // pixels ÷ scale), so the strip tracks the current window width.
-        let (phys_w, _) = ws.surface_size;
-        let scale = ws.dpi.max(1.0) as f64;
-        let logical_w = phys_w as f64 / scale;
-        let caption = LogicalRect::new(0.0, 0.0, logical_w, buttons_rect.y + buttons_rect.height);
-        cx.set_draggable_regions(window, &[caption]);
+        // Record the native traffic-light box so a caption widget can align its
+        // content around the buttons (it reads the width through `BuildCx::chrome`)
+        // and so the app can too. The draggable regions are no longer derived here:
+        // a caption widget declares which of its nodes are draggable, and the Layout
+        // phase pushes their real world boxes to the platform once the tree has been
+        // laid out — the geometry is only half the picture, the widget's own layout
+        // is the other half. An event for an unknown window (already closed) is a
+        // no-op.
+        if let Some(ws) = self.window_mut(window) {
+            ws.chrome_buttons = Some(buttons_rect);
+        }
     }
 
     fn run_phase(&mut self, phase: FramePhase, cx: &mut RuntimeCx<'_>) {
@@ -1294,6 +1350,15 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
                     // next frame. Bounded to this frame's newly-mounted rows — no
                     // full-list sweep.
                     virtual_list::absorb_measurements(&ws.store, &mut ws.virtual_lists);
+                    // Push the caption's draggable regions to the platform, but only
+                    // when this frame's layout moved them (or first established them).
+                    // The world boxes are final now; a caption that held still — the
+                    // steady case, and every window without one — recomputes a tiny
+                    // candidate list, finds it unchanged, and skips the cold
+                    // back-channel entirely.
+                    if ws.draggable_regions_changed() {
+                        cx.set_draggable_regions(ws.window, &ws.draggable_cache);
+                    }
                 }
             }
             FramePhase::UploadGpuChanges => {
@@ -1524,4 +1589,106 @@ pub mod platform {
 }
 pub mod runtime {
     pub use viso_runtime::*;
+}
+
+#[cfg(test)]
+mod draggable_tests {
+    use super::*;
+    use viso_render::Rect;
+    use viso_ui::{BoxStyle, LeafStyle, Size};
+
+    /// Build a `WindowState` whose store holds a single fixed-size leaf registered
+    /// as the caption's draggable region, laid out at `phys` physical pixels under
+    /// `dpi`. Returns the state ready for `draggable_regions_changed`.
+    fn state_with_draggable_leaf(phys: (f32, f32), dpi: f32) -> WindowState {
+        let mut ws = WindowState::new(WindowId(0));
+        ws.dpi = dpi;
+        let root = {
+            let mut cx = BuildCx::new(&mut ws.store);
+            let leaf = cx.leaf(LeafStyle {
+                size: Size::fixed(phys.0, phys.1),
+                style: BoxStyle::NONE,
+            });
+            cx.register_draggable(leaf);
+            leaf.id()
+        };
+        ws.root = Some(root);
+        let mut scratch = Vec::new();
+        ws.store.layout(
+            root,
+            Rect {
+                x: 0.0,
+                y: 0.0,
+                w: phys.0,
+                h: phys.1,
+            },
+            &mut scratch,
+        );
+        ws
+    }
+
+    /// The first call after a layout reports a change and fills the cache with the
+    /// registered node's world box converted to logical points (÷ dpi); an
+    /// immediately following call with the same layout reports no change and so
+    /// would skip the platform push.
+    #[test]
+    fn first_layout_pushes_logical_regions_then_holds_still() {
+        // 200x80 physical at 2x ⇒ 100x40 logical.
+        let mut ws = state_with_draggable_leaf((200.0, 80.0), 2.0);
+
+        assert!(
+            ws.draggable_regions_changed(),
+            "first layout establishes the regions"
+        );
+        assert_eq!(
+            ws.draggable_cache,
+            vec![LogicalRect::new(0.0, 0.0, 100.0, 40.0)],
+            "world box converted to logical points"
+        );
+
+        assert!(
+            !ws.draggable_regions_changed(),
+            "an unchanged layout re-pushes nothing"
+        );
+    }
+
+    /// A window with no caption (nothing registered) never touches the cache and
+    /// always reports no change — the fast exit every plain window takes.
+    #[test]
+    fn no_registered_regions_never_changes() {
+        let mut ws = WindowState::new(WindowId(0));
+        assert!(!ws.draggable_regions_changed());
+        assert!(ws.draggable_cache.is_empty());
+    }
+
+    /// Relaying the same tree at a new size moves the region, which the diff catches
+    /// and the cache follows.
+    #[test]
+    fn relayout_at_new_size_reports_change() {
+        let mut ws = state_with_draggable_leaf((200.0, 80.0), 1.0);
+        assert!(ws.draggable_regions_changed());
+
+        let root = ws.root.unwrap();
+        ws.store.set_fixed_size(root, Size::fixed(300.0, 80.0));
+        let mut scratch = Vec::new();
+        ws.store.layout(
+            root,
+            Rect {
+                x: 0.0,
+                y: 0.0,
+                w: 300.0,
+                h: 80.0,
+            },
+            &mut scratch,
+        );
+
+        assert!(
+            ws.draggable_regions_changed(),
+            "a wider layout moves the region"
+        );
+        assert_eq!(
+            ws.draggable_cache,
+            vec![LogicalRect::new(0.0, 0.0, 300.0, 80.0)]
+        );
+    }
 }
