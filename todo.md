@@ -859,9 +859,10 @@ TextInput ✅(单行编辑骨架,后续片见上文 deferral 清单)。全部 �
       - [x] 步骤 2 — CaptionBar widget 骨架(内容三段,先不自绘按钮):新 `controls/caption_bar.rs`,照 `button.rs` 骨架;
         `CaptionBarStyle`(Copy)+ `CaptionBar`;flex 根三段 leading(Fit)/ 中段 title(Fill 居中)/ trailing(Fit);
         读 `cx.chrome()`:`buttons_width` Some ⇒ leading 加等宽 spacer 给红绿灯让位;`Role::Group` 语义;导出。
-      - [ ] 步骤 3 — 自绘窗口按钮(min/max/close,PathCmd 矢量,非 macOS):`SelfDrawn && buttons_width.is_none()` ⇒
-        trailing 放三按钮,几何手写 `PathCmd`(min=水平线/max=矩形框/close=交叉对角线,语义取自 `desktop_button.rs`);
-        每按钮 = button 交互骨架包 `icon()`;回调走 EventCx 窗口 API(`request_close_window` 已存在;min/max 无则标 TODO 或加窄 API)。
+      - [x] 步骤 3 — 自绘窗口按钮(min/max/close,PathCmd 矢量,非 macOS):`SelfDrawn && buttons_width.is_none()` ⇒
+        trailing 放三按钮,几何手写 `PathCmd`(min=水平线/max=矩形框/close=交叉对角线,描边非 SDF);每按钮 = button
+        交互骨架(state→flex→interaction_style→focusable→on_pointer/on_key→Button 语义)包描边 glyph leaf;回调用
+        facade 注入的 `WindowAction`(SharedClick,widget 不持窗口 id);close 由 facade 接 `WindowHandle::close`,min/max 暂不接线(可聚焦但 inert)。
       - [ ] 步骤 4 — 拖拽区声明 + facade 布局后回传:widget 登记空白拖拽子区 NodeId 到 cx 新 `register_chrome_spacer`/
         draggable 列表;facade layout 后收 world box → `LogicalRect` → `set_draggable_regions`,并对 spacer 调
         `set_fixed_size`(LAYOUT|PAINT,不重建);**删除 `lib.rs` 占位全宽条**。ChromeSpacers 注册表挪本步(§40)。
