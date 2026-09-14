@@ -127,6 +127,26 @@ pub trait Window {
     /// `viso-gpu` uses this to attach a swapchain/drawable layer to the window.
     /// The returned handle borrows from `self` and must not outlive this window.
     fn raw_handle(&self) -> RawWindowHandle;
+
+    /// The window's current native chrome affordances box — the macOS
+    /// traffic-light buttons' bounding rect, in logical points (top-left origin,
+    /// relative to the content area) — or `None` when the platform draws no
+    /// native buttons over this window (its OS/chrome has none, or it is
+    /// `Native`-chromed).
+    ///
+    /// This is the *synchronous* counterpart to the later
+    /// [`RawEvent::WindowChromeGeom`](crate::RawEvent::WindowChromeGeom): the same
+    /// fact, readable the instant the window exists rather than delivered on a
+    /// following frame. The facade queries it right after `create_window` and
+    /// seeds it into the window's build so a self-drawn caption decides *at build
+    /// time* whether to draw its own window buttons or yield to the OS overlay —
+    /// the single build never has to wait for the event. The event still fires
+    /// afterward to refine the box on resize/scale. `Some`/`None` here carries
+    /// the presence of native buttons (§24 data contract, not `target_os`); the
+    /// default is `None` for backends with no self-drawn chrome (headless).
+    fn chrome_geom(&self) -> Option<LogicalRect> {
+        None
+    }
 }
 
 /// Create the native platform app for this target.

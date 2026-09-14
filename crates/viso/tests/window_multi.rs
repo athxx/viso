@@ -228,6 +228,18 @@ impl Application for MultiWindowApp {
         }
     }
 
+    /// Opt out of the default caption wrap: this pack authors its own semantics on
+    /// the launch window's root and asserts the root carries them (and samples a
+    /// center pointer onto it), so it wants that host flex *as* the window root,
+    /// not nested under a caption band. The deferred window opts out the same way.
+    /// The wrap is covered by `caption_default_wrap.rs`.
+    fn window_config(&self) -> WindowConfig {
+        WindowConfig {
+            caption: false,
+            ..Default::default()
+        }
+    }
+
     fn build(&mut self, cx: &mut BuildCx<'_>) {
         let presses = self.presses.clone();
         let aux = self.aux.clone();
@@ -257,6 +269,10 @@ impl Application for MultiWindowApp {
                     let handle = window(WindowConfig {
                         title: "aux".to_string(),
                         size: (AUX_LOGICAL_W, AUX_LOGICAL_H),
+                        // This pack asserts window 2's own authored semantics on
+                        // its root; opt out of the wrap so that root is the
+                        // authored host flex, not a caption Column.
+                        caption: false,
                         ..Default::default()
                     })
                     .content(|build| {

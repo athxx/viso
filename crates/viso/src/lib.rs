@@ -41,12 +41,14 @@ use viso_platform::{LogicalRect, RawWindowHandle, WindowId};
 use viso_render::{Primitive, Rect, Renderer};
 use viso_runtime::{FramePhase, RuntimeCx, Scheduler};
 use viso_ui::{
-    AnimationRegistry, BindingTable, BuildCx, ChromeContext, ComputedStore, DirtyClass,
-    EffectStore, FrameRecompute, ImeEvent, Key, KeyEvent, KeyRouter, Modifiers, NodeId, NodeStore,
-    PointerButtons, PointerEvent, PointerPhase, PointerRouter, ScrollEvent, ScrollRouter,
-    SemanticProjector, StateId, StateStore, TextEdits, TextRequest, TimerRegistry, TimerRequest,
-    TranslateAnim, VirtualLists, WindowOpenRequest, focus_next, text_edit, virtual_list,
+    AnimationRegistry, Axis, BindingTable, BuildCx, ChromeContext, ComputedStore, DirtyClass,
+    EffectStore, FlexStyle, FrameRecompute, ImeEvent, Key, KeyEvent, KeyRouter, Modifiers, NodeId,
+    NodeStore, PointerButtons, PointerEvent, PointerPhase, PointerRouter, ScrollEvent,
+    ScrollRouter, SemanticProjector, Size, StateId, StateStore, TextEdits, TextRequest,
+    TimerRegistry, TimerRequest, TranslateAnim, VirtualLists, WindowOpenRequest, focus_next,
+    text_edit, virtual_list,
 };
+use viso_widgets::caption_bar;
 
 pub mod system_fonts;
 mod text_content;
@@ -86,6 +88,17 @@ pub use viso_ui_macros::ui;
 pub trait Application: Sized + 'static {
     /// Construct the application. Windows and services are created via `cx`.
     fn new(cx: &mut AppCx) -> Self;
+
+    /// Configure the launch window: its title, logical size, chrome, and whether
+    /// the facade wraps the content in a self-drawn caption band. Read once on
+    /// launch, before the window opens. The default — [`WindowConfig::default`] —
+    /// is a self-drawn, captioned window titled "Viso", so an app that does not
+    /// override this still gets a window-centered title with no authoring. Set
+    /// `caption: false` to opt out of the wrap, or `chrome` to change who draws
+    /// the window buttons.
+    fn window_config(&self) -> WindowConfig {
+        WindowConfig::default()
+    }
 
     /// Author the app's retained scene: declare nodes, allocate reactive state,
     /// register handlers, and wire state→node bindings through `cx`. Runs once
@@ -588,15 +601,22 @@ impl WindowState {
         window: WindowId,
         fonts: &[Box<[u8]>],
         chrome: WindowChrome,
+        initial_chrome_geom: Option<LogicalRect>,
         build: impl FnOnce(&mut BuildCx) -> Option<NodeId>,
     ) -> Self {
         let mut ws = WindowState::new(window);
         // Record who draws this window's chrome. Known at open time from the
         // window config; the build-time half of the chrome data contract a
         // caption widget reads through `BuildCx::chrome` (section 24 — driven by
-        // data, not `target_os`). The native traffic-light width arrives later
-        // via `WindowChromeGeom`, so `buttons_width` starts `None` below.
+        // data, not `target_os`).
         ws.chrome = chrome;
+        // Seed the native traffic-light box synchronously, before the single
+        // build reads it: the facade queried `RuntimeCx::window_chrome_geom` the
+        // instant the window existed, so a self-drawn caption decides at build
+        // time whether to draw its own window buttons or yield to the OS overlay
+        // — it never has to wait for the later `WindowChromeGeom` event, which
+        // still fires to refine this box on resize/scale.
+        ws.chrome_buttons = initial_chrome_geom;
 
         // Record the launch surface size up front, independent of the GPU: the
         // tree lays out against this every frame, so a headless window (no GPU)
@@ -927,6 +947,81 @@ impl WindowState {
     }
 }
 
+/// Translate a UI-tier [`WindowConfig`] into the platform config the facade
+/// hands to `create_window`. The one place the `viso-ui -> viso-platform` name
+/// gap is bridged (section 3.5): the app and every handler name only the UI
+/// config; the facade resolves it at the open-drain point. Shared by the launch
+/// path and the deferred `window(...)` path so the translation lives once.
+fn to_platform_config(cfg: &WindowConfig) -> viso_platform::WindowConfig {
+    viso_platform::WindowConfig {
+        title: cfg.title.clone(),
+        logical_size: cfg.size,
+        chrome: match cfg.chrome {
+            WindowChrome::Native => viso_platform::WindowChrome::Native,
+            WindowChrome::SelfDrawn => viso_platform::WindowChrome::SelfDrawn,
+        },
+    }
+}
+
+/// Wrap a window's authored content in the default self-drawn caption band when
+/// `caption` asks for it, mirroring makepad's `show_caption_bar: true` default:
+/// every window gets a window-centered title with no authoring. Called inside a
+/// window's build closure, after the app has declared its own tree.
+///
+/// - `caption == false`: opt out. `build_content` runs at the tree root, so the
+///   app's returned root becomes the window root verbatim — no extra nodes.
+/// - `caption == true`: stack a fixed-height [`caption_bar`] above a fill body,
+///   under a single fill Column that becomes the window root. `build_content`
+///   runs inside the body, so an app root of any size (`Fit`/`Fill`) fills the
+///   remaining height below the caption.
+///
+/// Runs once per window build (the tree is never wholly rebuilt), so the wrap is
+/// a cold, build-time cost. Returns the window root.
+fn wrap_root_with_caption(
+    cx: &mut BuildCx<'_>,
+    title: &str,
+    caption: bool,
+    build_content: impl FnOnce(&mut BuildCx<'_>) -> Option<NodeId>,
+) -> Option<NodeId> {
+    use viso_ui::Component;
+
+    if !caption {
+        return build_content(cx);
+    }
+
+    // A fill Column: caption band on top (its own `Fit`/fixed height), app body
+    // below filling the rest. The Column is the sole parentless node, so it is
+    // recorded as the window root.
+    let root = cx.flex(
+        FlexStyle {
+            axis: Axis::Column,
+            // Stretch children across the cross (horizontal) axis so the
+            // fill-width caption band and body span the whole window width — a
+            // Start cross-align would let them collapse to content width.
+            align: viso_ui::Align::Stretch,
+            size: Size::fill(),
+            ..FlexStyle::default()
+        },
+        |cx| {
+            caption_bar(title.to_string()).build(cx);
+            // Body: a fill container so the app's tree occupies the height left
+            // under the caption regardless of the app root's own size request.
+            cx.flex(
+                FlexStyle {
+                    axis: Axis::Column,
+                    align: viso_ui::Align::Stretch,
+                    size: Size::fill(),
+                    ..FlexStyle::default()
+                },
+                |cx| {
+                    build_content(cx);
+                },
+            );
+        },
+    );
+    Some(root.id())
+}
+
 impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
     fn on_launch(&mut self, cx: &mut RuntimeCx<'_>) {
         // Construct the user application now that the pump is live, then take the
@@ -940,20 +1035,37 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
         if let Some(menu) = self.app.as_ref().and_then(Application::menu) {
             cx.set_menu(&menu);
         }
-        // Open the initial window. Later phases let the app request its own
-        // windows via `AppCx`; Phase 2 opens one canonical window.
-        let Ok(id) = cx.create_window(viso_platform::WindowConfig::default()) else {
+        // Open the initial window with the app's declared configuration
+        // (`window_config`, defaulting to a self-drawn, captioned window). Later
+        // phases let the app request further windows via `AppCx`.
+        let cfg = self
+            .app
+            .as_ref()
+            .map(Application::window_config)
+            .unwrap_or_default();
+        let Ok(id) = cx.create_window(to_platform_config(&cfg)) else {
             return;
         };
         // Open the launch window through the shared bring-up path, authoring its
-        // tree with the application's own `build`. A window opened later through
-        // the `window()` seam runs the identical path with the request's deferred
-        // build closure instead — the launch window is not a special case.
+        // tree with the application's own `build`, wrapped by default in a
+        // self-drawn caption band (window-centered title, no authoring). A window
+        // opened later through the `window()` seam runs the identical path with
+        // the request's deferred build closure — the launch window is not a
+        // special case.
         let app = self.app.as_mut();
-        let ws = WindowState::open(cx, id, &self.fonts, WindowChrome::Native, |build| {
-            app.and_then(|app| {
-                app.build(build);
-                build.root()
+        let ui_chrome = cfg.chrome;
+        let title = cfg.title.clone();
+        let caption = cfg.caption;
+        // Read the native traffic-light box the instant the window exists, so the
+        // single build below sees it and a self-drawn caption yields to the OS
+        // overlay instead of drawing its own buttons (section 24 data contract).
+        let chrome_geom = cx.window_chrome_geom(id);
+        let ws = WindowState::open(cx, id, &self.fonts, ui_chrome, chrome_geom, |build| {
+            wrap_root_with_caption(build, &title, caption, |build| {
+                app.and_then(|app| {
+                    app.build(build);
+                    build.root()
+                })
             })
         });
         self.windows.push(ws);
@@ -1261,16 +1373,12 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
                     // same value translated into the platform config, kept as the
                     // UI enum so `WindowState::open` seeds `BuildCx::chrome`.
                     let ui_chrome = req.config.chrome;
-                    let config = viso_platform::WindowConfig {
-                        title: req.config.title,
-                        logical_size: req.config.size,
-                        chrome: match ui_chrome {
-                            viso_ui::WindowChrome::Native => viso_platform::WindowChrome::Native,
-                            viso_ui::WindowChrome::SelfDrawn => {
-                                viso_platform::WindowChrome::SelfDrawn
-                            }
-                        },
-                    };
+                    let config = to_platform_config(&req.config);
+                    // Values the build closure moves in to wrap the deferred tree
+                    // in the default caption band, exactly as the launch path does.
+                    let title = req.config.title.clone();
+                    let caption = req.config.caption;
+                    let build = req.build;
                     let id_slot = req.id_slot;
                     if let Ok(id) = cx.create_window(config) {
                         // Back-fill the tracking handle's slot with the raw id
@@ -1280,7 +1388,13 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
                         if let Some(slot) = &id_slot {
                             slot.set(Some(id.0));
                         }
-                        let ws = WindowState::open(cx, id, &self.fonts, ui_chrome, req.build);
+                        // Read the native traffic-light box synchronously so the
+                        // deferred build sees it, exactly as the launch path does.
+                        let chrome_geom = cx.window_chrome_geom(id);
+                        let ws =
+                            WindowState::open(cx, id, &self.fonts, ui_chrome, chrome_geom, |cx| {
+                                wrap_root_with_caption(cx, &title, caption, build)
+                            });
                         self.windows.push(ws);
                     }
                 }

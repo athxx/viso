@@ -79,7 +79,7 @@ use viso::ui::{
     AnimationRegistry, BindingTable, BoxStyle, BuildCx, Component, EventCx, Key, KeyEvent,
     KeyRouter, LeafStyle, Modifiers, NodeId, NodeStore, PointerButtons, PointerEvent, PointerPhase,
     Role, SemanticProjector, Size, StateId, StateStore, StateValue, TextEdits, TranslateAnim,
-    VirtualLists, focus_next, paint_tree,
+    VirtualLists, WindowConfig, focus_next, paint_tree,
 };
 use viso::widgets::{SheetEdge, SheetHandle, SheetHandleSlot, sheet};
 
@@ -437,6 +437,17 @@ impl Application for SheetApp {
     fn new(_cx: &mut AppCx) -> Self {
         SheetApp {
             slot: Rc::new(RefCell::new(None)),
+        }
+    }
+
+    /// Opt out of the default caption wrap: this pack pins the sheet against the
+    /// full launch surface (`SURFACE_H − EXTENT`), so it wants the host flex *as*
+    /// the window root, not shifted down under a caption band. The wrap is
+    /// covered by `caption_default_wrap.rs`.
+    fn window_config(&self) -> WindowConfig {
+        WindowConfig {
+            caption: false,
+            ..Default::default()
         }
     }
 

@@ -43,12 +43,13 @@ pub type WindowIdSlot = Rc<Cell<Option<u32>>>;
 /// edge), so a handler describes the window it wants with this small value and
 /// the facade translates it into the platform config when it opens the window.
 ///
-/// Kept deliberately minimal — title, logical size, chrome — matching the
-/// platform config's current surface. Future window attributes (min/max size,
-/// resizable) extend both in step.
+/// Kept deliberately minimal — title, logical size, chrome, caption — matching
+/// the platform config's current surface. Future window attributes (min/max
+/// size, resizable) extend both in step.
 #[derive(Debug, Clone, PartialEq)]
 pub struct WindowConfig {
-    /// The window title.
+    /// The window title. Flows into the default caption bar (when `caption` is
+    /// set) and to the platform window.
     pub title: String,
     /// The initial logical (pre-scale) size, in points: `(width, height)`.
     pub size: (f64, f64),
@@ -56,6 +57,14 @@ pub struct WindowConfig {
     /// cannot name the platform `WindowChrome` (section 3.5), this is a mirror
     /// enum the facade translates at the platform seam.
     pub chrome: WindowChrome,
+    /// Whether the facade wraps the window's content in a self-drawn caption bar
+    /// (a fixed-height title band above a fill body) at build time. `true` — the
+    /// default — gives every window a window-centered title with no authoring;
+    /// `false` opts out, leaving the app's returned root as the window root
+    /// verbatim (the app draws its own chrome, or relies on the native title
+    /// bar). Orthogonal to `chrome`: `chrome` decides who draws the buttons,
+    /// `caption` decides whether the title band is wrapped at all.
+    pub caption: bool,
 }
 
 impl Default for WindowConfig {
@@ -63,7 +72,13 @@ impl Default for WindowConfig {
         Self {
             title: "Viso".to_string(),
             size: (800.0, 600.0),
-            chrome: WindowChrome::Native,
+            // Self-drawn chrome by default: the window uses a full-size content
+            // area with a viso-drawn caption band, and (on macOS) the native
+            // traffic lights float above it as a platform overlay. This is the
+            // framework default so an app that authors no title bar still gets a
+            // window-centered title.
+            chrome: WindowChrome::SelfDrawn,
+            caption: true,
         }
     }
 }
@@ -177,5 +192,22 @@ impl WindowOpenRequest {
             build: Box::new(build),
             id_slot: Some(id_slot),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The framework default gives every window a self-drawn, wrapped caption:
+    /// `SelfDrawn` chrome plus `caption: true`, so an app that authors no title
+    /// bar still gets a window-centered title with no configuration.
+    #[test]
+    fn default_config_is_self_drawn_with_caption() {
+        let cfg = WindowConfig::default();
+        assert_eq!(cfg.chrome, WindowChrome::SelfDrawn);
+        assert!(cfg.caption, "the default wraps a caption bar");
+        assert_eq!(cfg.title, "Viso");
+        assert_eq!(cfg.size, (800.0, 600.0));
     }
 }

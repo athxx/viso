@@ -261,6 +261,7 @@ impl PlatformApp for MacApp {
             window,
             content_view: view,
             _delegate: delegate,
+            chrome: config.chrome,
         });
         // The first frame is scheduled by the runtime after launch (paired with a
         // FirstFrame redraw reason), keeping a single beat source across backends.
@@ -461,6 +462,10 @@ pub struct MacWindow {
     content_view: Retained<VisoContentView>,
     /// Kept alive: `setDelegate` holds only a weak reference.
     _delegate: Retained<WindowDelegate>,
+    /// Who draws this window's chrome. `chrome_geom` reports the traffic-light box
+    /// only for `SelfDrawn` (a `Native` window's OS title bar owns its own
+    /// buttons, outside our layout).
+    chrome: WindowChrome,
 }
 
 impl Window for MacWindow {
@@ -494,6 +499,17 @@ impl Window for MacWindow {
         // layer must not outlive this `MacWindow`.
         let ns_view = Retained::as_ptr(&self.content_view) as *mut core::ffi::c_void;
         RawWindowHandle::AppKit { ns_view }
+    }
+
+    fn chrome_geom(&self) -> Option<LogicalRect> {
+        // Only a self-drawn-chrome window keeps native traffic lights over its
+        // full-size content view; a native-chrome window's buttons live in the OS
+        // title bar, outside the app's layout. Same box the create path enqueues
+        // as the first `WindowChromeGeom`, read synchronously so the build sees it.
+        if self.chrome != WindowChrome::SelfDrawn {
+            return None;
+        }
+        traffic_lights_geom(&self.window)
     }
 }
 

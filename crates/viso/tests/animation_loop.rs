@@ -36,6 +36,7 @@ use viso::platform::{
 use viso::prelude::*;
 use viso::ui::{
     BuildCx, Easing, LeafStyle, PointerButtons, PointerPhase, Size, TranslateAnim, Vec2,
+    WindowConfig,
 };
 
 /// The surface a launch window opens at (`WindowConfig::default` logical size,
@@ -61,6 +62,17 @@ struct SlideApp;
 impl Application for SlideApp {
     fn new(_cx: &mut AppCx) -> Self {
         SlideApp
+    }
+
+    /// Opt out of the default caption wrap: this pack exercises the animation
+    /// frame loop against the app's own fill root, so it wants that root *as* the
+    /// window root (unwrapped), not nested under a caption band. The wrap itself
+    /// is covered by `caption_default_wrap.rs`.
+    fn window_config(&self) -> WindowConfig {
+        WindowConfig {
+            caption: false,
+            ..Default::default()
+        }
     }
 
     fn build(&mut self, cx: &mut BuildCx<'_>) {

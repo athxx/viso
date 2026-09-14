@@ -888,8 +888,28 @@ TextInput ✅(单行编辑骨架,后续片见上文 deferral 清单)。全部 �
         标题 Fill+`Justify::Center` 跨整条 bar → macOS 自然落窗口中心,与红绿灯几何/宽度解耦。Windows/Linux 自绘按钮占 trailing
         实宽,标题在其余空间居中(makepad 平台惯例:居中于按钮左侧余量,非窗口正中——认作"对齐 makepad")。中段仍拖拽区、semantics 不变。
         headless 布局测:Native/overlay 案窗口居中、SelfDrawn 案居中于按钮左侧余量、leading 无让位无交互。
-      - [ ] 门禁 + macOS 真机验证([[viso-msl-reserved-half]] 精神):SelfDrawn 示例窗肉眼核对红绿灯在/标题居中/空白可拖窗/
-        拖窗框内容实时跟随无弹跳/Metal 正常。
+      - [x] 默认包裹 caption(对齐 makepad `show_caption_bar: true`)——真机暴露:hello-world 顶部标题仍偏左。根因非布局:
+        hello-world 用 `Native` chrome 且**根本没实例化 CaptionBar**,左对齐标题是 AppKit 原生窗口标题,widget 管不到。
+        makepad window DSL 默认把内容包在 `flow: Down` 列里(caption_bar 作 body 上方兄弟)。修:facade 私有
+        `wrap_root_with_caption(cx,title,want_caption,app_root)`——`want_caption==false` 直返 app_root(退出口);否则建
+        Column(caption_bar(title) + body 容纳 app 树)成窗口 root。抽 `to_platform_config` 两路(launch/deferred)共用。
+        `WindowConfig`(ui 镜像)加 `caption:bool`,`Default` 改 `SelfDrawn`+`caption:true`(hello-world 零配置即得居中标题)。
+      - [x] `Application::window_config()` 钩子——声明式(对齐 makepad window DSL,任何 app 命名标题/大小/chrome/caption;
+        冷路径每次启动跑一次,零热路径成本);`on_launch` 读它翻译成 platform config 传 `create_window`。
+      - [x] 修真机标题偏移根因(单次 build 早于 `WindowChromeGeom` 事件排空、又从不重建 → macOS SelfDrawn 窗误判无原生按钮
+        而自绘 min/max/close,永不移除 → 标题右偏)。修:`Window::chrome_geom()->Option<LogicalRect>`(默认 None,macOS
+        `SelfDrawn` 时同步测红绿灯框)+ `RuntimeCx::window_chrome_geom` accessor(镜像 `scale_factor`);`WindowState::open`
+        加 `initial_chrome_geom` 参,build 前灌入 `chrome_buttons`——单次 build 即见原生按钮框、让位 OS overlay 不自绘;
+        判定线 `self_draw_buttons = SelfDrawn && buttons_width.is_none()` 不变(§24 数据契约非 `target_os`)。
+        `WindowChromeGeom` 事件保留(resize/scale 精修该框)。headless 无原生 chrome(取 trait 默认 None)→ 自绘按钮,
+        对应 Linux 自绘案;集成测断标题居中于边段间余量,窗口居中是真机(macOS overlay)事实,归 Step D 真机核对。
+      - [x] 门禁(自动):`cargo test --workspace`(1425 测全绿)、`cargo fmt --all -- --check`、
+        clippy `-D warnings`、`cargo xtask check-deps`(arch-check 未注册为 xtask 子命令,check-deps 即依赖边界门禁)全过。
+        默认包裹改动波及的 facade 集成测包(animation_loop/sheet_widget/timer_loop/toast_widget/window_multi)——它们断
+        绝对布局/root 子节点/root 语义,与 caption 包裹正交——各自 `window_config(){ caption:false }` 退出包裹(deferred 窗内联
+        `caption:false`);包裹本身归 `caption_default_wrap.rs` 覆盖。
+      - [ ] macOS 真机验证([[viso-msl-reserved-half]] 精神,headless 测不到 AppKit/Metal,须用户参与):SelfDrawn 示例窗肉眼核对
+        红绿灯在/标题窗口居中/空白可拖窗/拖窗框内容实时跟随无弹跳/Metal 正常。
 
 **Tier 5 — 编辑器 / 结构工具类控件(doc §71,`viso-widgets` 内节点控件):** 待做,Tier 4 收完下一步开排。
 每个仍出完整 section-71 验证包(单测 + golden + input tape + a11y 快照 + microbench + alloc profile),每小节一提交,
