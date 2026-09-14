@@ -31,7 +31,7 @@ use viso::platform::{
     WindowId,
 };
 use viso::prelude::*;
-use viso::ui::{BuildCx, FlexStyle, LeafStyle, PointerButtons, PointerPhase, Size};
+use viso::ui::{BuildCx, FlexStyle, LeafStyle, PointerButtons, PointerPhase, Size, WindowConfig};
 
 /// The launch surface (`WindowConfig::default` logical size, scale 1.0). A
 /// center sample lands on the fill root.
@@ -55,6 +55,17 @@ struct TimerApp;
 impl Application for TimerApp {
     fn new(_cx: &mut AppCx) -> Self {
         TimerApp
+    }
+
+    /// Opt out of the default caption wrap: this pack reads the marker as the
+    /// window root's first child and samples a center pointer onto the app's own
+    /// flex, so it wants that flex *as* the window root, not nested under a
+    /// caption band. The wrap is covered by `caption_default_wrap.rs`.
+    fn window_config(&self) -> WindowConfig {
+        WindowConfig {
+            caption: false,
+            ..Default::default()
+        }
     }
 
     fn build(&mut self, cx: &mut BuildCx<'_>) {

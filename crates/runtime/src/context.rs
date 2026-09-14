@@ -169,6 +169,17 @@ impl<'a> RuntimeCx<'a> {
     pub fn raw_handle(&self, window: WindowId) -> Option<RawWindowHandle> {
         self.app.window(window).map(|w| w.raw_handle())
     }
+
+    /// The window's native chrome affordances box (the macOS traffic-light
+    /// buttons' bounding rect, in logical points), read synchronously the instant
+    /// the window exists — the fast counterpart to the later
+    /// [`RawEvent::WindowChromeGeom`](viso_platform::RawEvent::WindowChromeGeom).
+    /// `None` when the window is gone or the platform draws no native buttons over
+    /// it. The facade queries this right after `create_window` so a self-drawn
+    /// caption can decide at build time whether to yield to the OS overlay.
+    pub fn window_chrome_geom(&self, window: WindowId) -> Option<LogicalRect> {
+        self.app.window(window).and_then(|w| w.chrome_geom())
+    }
 }
 
 #[cfg(test)]
