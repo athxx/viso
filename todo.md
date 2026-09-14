@@ -880,10 +880,14 @@ TextInput ✅(单行编辑骨架,后续片见上文 deferral 清单)。全部 �
         重入安全:modal loop 内同步回调,pump 主循环此刻未借 handler,不与其 `handler.handle` 时间重叠。SAFETY 注释具此不变式。
         单测(不依赖 AppKit):假 handler 记录调用序,验 `drain_and_drive` redraws 先于 events 排空、排完队空、mid-drive 重入队亦排。
         拖动跟随本身靠**真机验证**(headless 测不到 modal loop)。
-      - [ ] 标题真居中(widgets 层)——真机暴露:标题偏左(应窗口居中)。根因:三段流布局中段 `Length::Fill` 只"在剩余
-        空间里居中",macOS 只有左侧红绿灯让位、右段无对称让位 → 中段几何中心 ≠ 窗口中心。修:标题相对整条 bar 居中,
-        与红绿灯让位宽解耦(依 component.rs 容器能力择 overlay 首选 / 对称 spacer 次选);中段仍拖拽区、semantics 不变。
-        headless 布局测:标题几何中心 ≈ bar 宽/2(容差),不对称让位下仍居中。
+      - [x] 标题真居中(widgets 层)——真机暴露:标题偏左(应窗口居中)。首修(对称 spacer 补齐两 `Fit` 段)真机仍偏左,
+        遂读 makepad([[viso-read-makepad-first]])定根因:macOS 原生红绿灯是**平台 overlay**(透明 titlebar 浮在 full-size
+        content view 之上),**不占布局宽**;此前 leading 段却按 `buttons_width` 留了实心让位,把中段 Fill 整体右推 → 标题偏左。
+        makepad `caption_label`(width:Fill+align:Center)从 x=0 起跨整条 bar、对红绿灯不留任何让位。修([[viso-diverge-from-makepad]]
+        取此语义):**删 leading 让位**(及首修的对称 spacer),leading 段留空 `Fit`(占位保三段结构与中段索引稳定),
+        标题 Fill+`Justify::Center` 跨整条 bar → macOS 自然落窗口中心,与红绿灯几何/宽度解耦。Windows/Linux 自绘按钮占 trailing
+        实宽,标题在其余空间居中(makepad 平台惯例:居中于按钮左侧余量,非窗口正中——认作"对齐 makepad")。中段仍拖拽区、semantics 不变。
+        headless 布局测:Native/overlay 案窗口居中、SelfDrawn 案居中于按钮左侧余量、leading 无让位无交互。
       - [ ] 门禁 + macOS 真机验证([[viso-msl-reserved-half]] 精神):SelfDrawn 示例窗肉眼核对红绿灯在/标题居中/空白可拖窗/
         拖窗框内容实时跟随无弹跳/Metal 正常。
 

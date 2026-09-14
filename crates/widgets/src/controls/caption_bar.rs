@@ -10,24 +10,31 @@
 //!   config) decides whether self-drawn min/max/close buttons are *allowed* at all;
 //! - the presence of a native traffic-light box width in
 //!   [`ChromeContext::buttons_width`] (delivered by the platform on a later
-//!   frame) decides whether they are *superseded* — `Some(w)` means the OS
-//!   already draws its own buttons in a `w`-wide leading box (macOS traffic
-//!   lights), so the caption reserves that width as a leading spacer and draws
+//!   frame) decides whether they are *superseded* — `Some(_)` means the OS
+//!   already draws its own buttons (macOS traffic lights), so the caption draws
 //!   none of its own.
 //!
 //! Both signals reach the widget through [`BuildCx::chrome`], read once at build
-//! time. On top of the three-段 content layout and native-button leading reserve,
-//! a `SelfDrawn` window with no reported native box draws its own min/max/close
-//! buttons in the trailing section, and the center title band is registered as the
-//! caption's draggable region ([`BuildCx::register_draggable`]) — the facade reads
-//! its post-layout world box and hands it to the platform's window-drag
-//! back-channel, so a press on the blank caption moves the window on every OS.
+//! time. A `SelfDrawn` window with no reported native box draws its own
+//! min/max/close buttons in the trailing section, and the center title band is
+//! registered as the caption's draggable region
+//! ([`BuildCx::register_draggable`]) — the facade reads its post-layout world box
+//! and hands it to the platform's window-drag back-channel, so a press on the
+//! blank caption moves the window on every OS.
 //!
 //! The three sections are laid out with a single [`Axis::Row`] flex whose middle
 //! child is [`Length::Fill`]: leading (`Fit`) / centered title (`Fill`) /
 //! trailing (`Fit`). [`Justify`] has no `SpaceBetween`, so the middle `Fill`
 //! child eating the slack is what pins the leading and trailing sections to the
 //! two edges; the title centers itself within that middle child.
+//!
+//! The native traffic-light buttons are a platform overlay (a full-size content
+//! view with a transparent titlebar): they float above the caption and take no
+//! layout width, so the caption reserves **no** leading room for them. The
+//! leading section stays empty on macOS, the title band spans the whole bar, and
+//! `Justify::Center` places the title at the window's center. On Windows/Linux
+//! the self-drawn buttons occupy the trailing section and the title centers in
+//! the room that remains — the platform convention, matching the reference.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -505,13 +512,14 @@ impl Component for CaptionBar {
                 style: bar_style,
             },
             |cx| {
-                // Leading section (`Fit`). When the platform has reported a native
-                // traffic-light box (`Some(w)`, macOS), reserve that exact width as
-                // a leading spacer so the caption content yields to the OS buttons
-                // and never overlaps them; a self-drawn-chrome window with no native
-                // box gets no spacer. The spacer is a zero-box leaf whose width the
-                // facade can later grow in place (step 4) when the geometry arrives
-                // after first build.
+                // Leading section (`Fit`). Empty: the native traffic-light buttons
+                // are a platform overlay (transparent titlebar over a full-size
+                // content view) that floats above the caption and takes no layout
+                // width, so nothing is reserved for them here. Keeping this section
+                // empty lets the title band span the whole bar and center on the
+                // window. Held as an explicit (empty) `Fit` section so the
+                // three-section structure — and the title band's index — stays
+                // stable across platforms.
                 cx.flex(
                     FlexStyle {
                         axis: Axis::Row,
@@ -525,14 +533,7 @@ impl Component for CaptionBar {
                         },
                         style: BoxStyle::NONE,
                     },
-                    |cx| {
-                        if let Some(w) = buttons_width {
-                            cx.leaf(LeafStyle {
-                                size: Size::fixed(w, 0.0),
-                                style: BoxStyle::NONE,
-                            });
-                        }
-                    },
+                    |_cx| {},
                 );
 
                 // Centered title (`Fill`). The middle child eats the main-axis
@@ -566,9 +567,9 @@ impl Component for CaptionBar {
 
                 // Trailing section (`Fit`). Holds the self-drawn min/max/close
                 // buttons on Windows/Linux (`SelfDrawn` chrome with no native box);
-                // empty on macOS and any window that keeps native buttons, whose
-                // buttons live in the leading spacer instead. Always built so the
-                // three-段 structure is stable regardless of platform.
+                // empty on macOS and any window that keeps native buttons, which
+                // the OS draws as an overlay outside the layout. Always built so
+                // the three-section structure is stable regardless of platform.
                 cx.flex(
                     FlexStyle {
                         axis: Axis::Row,
@@ -661,10 +662,10 @@ mod tests {
         assert_eq!(sem.role, Role::Group, "the bar is a non-interactive Group");
     }
 
-    /// With no native traffic-light box reported, the leading section is empty —
-    /// no spacer is reserved.
+    /// With no native traffic-light box reported, the leading section stays empty:
+    /// nothing native is yielded and nothing interactive lives here.
     #[test]
-    fn no_native_buttons_reserves_no_leading_spacer() {
+    fn no_native_buttons_reserves_no_leading_yield() {
         let chrome = ChromeContext {
             chrome: WindowChrome::SelfDrawn,
             buttons_width: None,
@@ -673,18 +674,22 @@ mod tests {
 
         let sections = children(&store, root);
         let leading = sections[0];
-        assert_eq!(
-            children(&store, leading).len(),
-            0,
-            "no native box ⇒ no leading spacer"
-        );
+        for child in children(&store, leading) {
+            assert!(
+                !store.has_handler(child) && !store.has_key_handler(child),
+                "the leading section holds only inert spacers, no interactive content"
+            );
+        }
     }
 
     /// When the platform reports a native traffic-light box (macOS), the leading
-    /// section reserves a single spacer whose laid-out width matches the reported
-    /// box, so the caption content yields exactly that much room to the OS buttons.
+    /// section reserves no layout width at all: the native buttons are a platform
+    /// overlay floating above the caption, so they take no room in the flow. The
+    /// leading section stays an empty `Fit` band pinned at x=0 with zero width,
+    /// leaving the title's `Fill` band free to span the whole bar and land at the
+    /// window center.
     #[test]
-    fn native_buttons_reserve_leading_spacer_of_button_width() {
+    fn native_buttons_reserve_no_leading_yield() {
         let chrome = ChromeContext {
             chrome: WindowChrome::Native,
             buttons_width: Some(78.0),
@@ -693,11 +698,13 @@ mod tests {
 
         let sections = children(&store, root);
         let leading = sections[0];
-        let spacer = children(&store, leading);
-        assert_eq!(spacer.len(), 1, "native box ⇒ one leading spacer");
+        assert!(
+            children(&store, leading).is_empty(),
+            "the native box is an overlay ⇒ no leading spacer is reserved"
+        );
 
-        // Lay the bar out on a wide surface and read the spacer's resolved box:
-        // its `Length::Fixed(78)` width must survive to the computed bounds.
+        // Lay the bar out on a wide surface: the empty leading section resolves to
+        // zero width and sits at the bar's origin, yielding nothing to the overlay.
         let mut scratch = Vec::new();
         store.layout(
             root,
@@ -709,8 +716,15 @@ mod tests {
             },
             &mut scratch,
         );
-        let box_ = store.bounds(spacer[0]);
-        assert_eq!(box_.w, 78.0, "spacer laid out to the native button width");
+        let box_ = store.bounds(leading);
+        assert_eq!(
+            box_.x, PADDING,
+            "leading section pinned at the bar's leading padding edge"
+        );
+        assert_eq!(
+            box_.w, 0.0,
+            "leading section yields no width to the overlay"
+        );
     }
 
     /// A `SelfDrawn` window with no native traffic-light box (Windows/Linux) draws
@@ -753,8 +767,9 @@ mod tests {
     }
 
     /// A window that keeps native buttons — either `Native` chrome or `SelfDrawn`
-    /// with a reported traffic-light box — draws no window buttons of its own; the
-    /// trailing section stays empty.
+    /// with a reported traffic-light box — draws no window buttons of its own: the
+    /// OS renders them as an overlay outside the layout, so the trailing section
+    /// holds nothing interactive.
     #[test]
     fn native_chrome_draws_no_window_buttons() {
         for chrome in [
@@ -770,11 +785,12 @@ mod tests {
             let (store, root) = build_with(chrome, caption_bar("Untitled"));
             let sections = children(&store, root);
             let trailing = sections[2];
-            assert_eq!(
-                children(&store, trailing).len(),
-                0,
-                "native buttons ⇒ no self-drawn window buttons"
-            );
+            for child in children(&store, trailing) {
+                assert!(
+                    !store.has_handler(child) && !store.has_key_handler(child),
+                    "native buttons ⇒ no self-drawn interactive window buttons"
+                );
+            }
         }
     }
 
@@ -882,6 +898,101 @@ mod tests {
         assert!(
             band.x + band.w <= trailing.x + f32::EPSILON,
             "the draggable band ends at or before the trailing buttons"
+        );
+    }
+
+    /// On macOS the native traffic-light box is a platform overlay, not layout: the
+    /// leading section yields no width and nothing trails, so the title's `Fill`
+    /// band spans the whole bar and its `Center` justify lands the title at the
+    /// exact window center — regardless of the reported box width.
+    #[test]
+    fn title_band_is_window_centered_under_native_overlay() {
+        let chrome = ChromeContext {
+            chrome: WindowChrome::Native,
+            buttons_width: Some(78.0),
+        };
+        let (mut store, root) = build_with(chrome, caption_bar("Untitled"));
+
+        let bar_width = 800.0;
+        let mut scratch = Vec::new();
+        store.layout(
+            root,
+            Rect {
+                x: 0.0,
+                y: 0.0,
+                w: bar_width,
+                h: 38.0,
+            },
+            &mut scratch,
+        );
+
+        let center = children(&store, root)[1];
+        let band = store.bounds(center);
+        let midpoint = band.x + band.w / 2.0;
+        assert!(
+            (midpoint - bar_width / 2.0).abs() <= 0.5,
+            "center band midpoint {midpoint} ≈ window center {}",
+            bar_width / 2.0
+        );
+    }
+
+    /// On Windows/Linux the self-drawn buttons occupy trailing layout width, so the
+    /// title's `Fill` band spans only the room that remains and centers within it —
+    /// the platform convention (title centered in the space left of the buttons,
+    /// not at the raw window center). The band starts at the bar origin (empty
+    /// leading) and ends where the trailing buttons begin.
+    #[test]
+    fn title_band_centers_in_room_left_of_trailing_buttons() {
+        let chrome = ChromeContext {
+            chrome: WindowChrome::SelfDrawn,
+            buttons_width: None,
+        };
+        let (mut store, root) = build_with(chrome, caption_bar("Untitled"));
+
+        let bar_width = 800.0;
+        let mut scratch = Vec::new();
+        store.layout(
+            root,
+            Rect {
+                x: 0.0,
+                y: 0.0,
+                w: bar_width,
+                h: 38.0,
+            },
+            &mut scratch,
+        );
+
+        let sections = children(&store, root);
+        let center = sections[1];
+        let trailing = sections[2];
+        let band = store.bounds(center);
+        let buttons = store.bounds(trailing);
+
+        // Inside the bar's horizontal padding the content region is
+        // [PADDING, bar_width - PADDING]; the three self-drawn buttons take
+        // 3 × BUTTON_WIDTH of trailing width, so the title band spans the room
+        // that remains and centers within it.
+        let region_start = PADDING;
+        let region_end = bar_width - PADDING;
+        let remaining = (region_end - region_start) - 3.0 * BUTTON_WIDTH;
+        assert_eq!(
+            band.x, region_start,
+            "title band starts at the leading padding edge"
+        );
+        assert!(
+            (band.w - remaining).abs() <= 0.5,
+            "title band spans the room left of the buttons: {} ≈ {remaining}",
+            band.w
+        );
+        let midpoint = band.x + band.w / 2.0;
+        let expected_mid = region_start + remaining / 2.0;
+        assert!(
+            (midpoint - expected_mid).abs() <= 0.5,
+            "title centers in the remaining room: {midpoint} ≈ {expected_mid}"
+        );
+        assert!(
+            band.x + band.w <= buttons.x + f32::EPSILON,
+            "title band ends at or before the trailing buttons"
         );
     }
 }
