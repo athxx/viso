@@ -47,8 +47,15 @@ use viso_ui::{
 
 use crate::label;
 
-/// The default caption-bar height in logical points — tall enough to clear the
-/// macOS traffic lights and read as a standard title bar.
+/// The standard caption-bar height in logical points. It is the height in the
+/// self-drawn (Windows/Linux/headless) case where the bar draws and zooms with
+/// its own buttons, and the floor everywhere else: a reported native
+/// traffic-light box ([`ChromeContext::buttons_height`]) only ever raises the bar
+/// above this, never below. On a full-size self-drawn content view (macOS) the OS
+/// traffic lights hug the top with a tiny inset, so the box the platform derives
+/// is shorter than this — clamping keeps the bar from shrinking under the traffic
+/// lights. Reads as a standard title bar; the ~14pt traffic lights center within
+/// it with comfortable symmetric insets.
 const HEIGHT: f32 = 38.0;
 
 /// The default caption background: a neutral dark bar.
@@ -461,8 +468,14 @@ fn window_button(cx: &mut BuildCx<'_>, kind: WindowButtonKind, height: f32, acti
     );
 }
 
-impl Component for CaptionBar {
-    fn build(&self, cx: &mut BuildCx<'_>) {
+impl CaptionBar {
+    /// Build the caption bar and return a handle to its root node, so a caller
+    /// that needs the node's identity — the facade, to hide the bar in
+    /// fullscreen via `set_hidden` — can capture it. [`Component::build`]
+    /// delegates here and discards the handle. Splitting it this way keeps the
+    /// caption id reachable without widening the `Component` trait's `build`
+    /// return type across every widget (AGENTS section 40).
+    pub fn build_root(&self, cx: &mut BuildCx<'_>) -> viso_ui::Handle {
         // Read the per-window chrome facts once, at build time. Two forward-flowing
         // signals decide the leading reserve and (in later slices) whether to
         // self-draw window buttons — driven by the data contract, never `target_os`
@@ -470,6 +483,7 @@ impl Component for CaptionBar {
         let ChromeContext {
             chrome,
             buttons_width,
+            buttons_height,
         } = cx.chrome();
 
         // `build` takes `&self`, so `Copy` style fields are read by value and the
@@ -478,7 +492,13 @@ impl Component for CaptionBar {
         let title = self.title.clone();
         let title_color = self.style.title_color;
         let padding = self.style.padding;
-        let height = self.style.height;
+        // Bar height. When a native traffic-light box was reported,
+        // `buttons_height` — derived from that box so its fixed-size OS buttons
+        // center vertically — is the bar height verbatim: the OS buttons don't
+        // zoom, so the bar wraps exactly them. `self.style.height` is only the
+        // fallback for the self-drawn (Windows/Linux/headless) case where no
+        // native box exists.
+        let height = buttons_height.unwrap_or(self.style.height);
 
         // Self-drawn min/max/close buttons are built only when the chrome mode
         // permits them *and* no native traffic-light box was reported — the exact
@@ -601,6 +621,14 @@ impl Component for CaptionBar {
             root,
             Semantics::role(Role::Group).with_label(self.title.clone()),
         );
+
+        root
+    }
+}
+
+impl Component for CaptionBar {
+    fn build(&self, cx: &mut BuildCx<'_>) {
+        let _ = self.build_root(cx);
     }
 }
 
@@ -650,6 +678,34 @@ mod tests {
     /// The bar always builds three sections — leading / center / trailing — and
     /// carries a `Group` semantics node with the title as its accessible name.
     #[test]
+    fn build_root_returns_the_bar_root_that_build_records() {
+        // The facade captures this handle to hide the bar in fullscreen, so it
+        // must be exactly the parentless node `Component::build` records as root.
+        let mut store = NodeStore::new();
+        let mut states = StateStore::new();
+        let mut bindings = BindingTable::new();
+        let mut lists = VirtualLists::new();
+        let mut text_edits = TextEdits::new();
+        let mut projectors = SemanticProjector::new();
+        let mut cx = BuildCx::with_reactive(
+            &mut store,
+            &mut states,
+            &mut bindings,
+            &mut lists,
+            &mut text_edits,
+            &mut projectors,
+        )
+        .with_chrome(ChromeContext::default());
+        let handle = caption_bar("Untitled").build_root(&mut cx);
+        let root = cx.root().expect("caption bar declares a root node");
+        assert_eq!(
+            handle.id(),
+            root,
+            "build_root's handle names the same node build records as the tree root"
+        );
+    }
+
+    #[test]
     fn builds_three_sections_with_group_semantics() {
         let (store, root) = build_with(ChromeContext::default(), caption_bar("Untitled"));
 
@@ -669,6 +725,7 @@ mod tests {
         let chrome = ChromeContext {
             chrome: WindowChrome::SelfDrawn,
             buttons_width: None,
+            ..Default::default()
         };
         let (store, root) = build_with(chrome, caption_bar("Untitled"));
 
@@ -693,6 +750,7 @@ mod tests {
         let chrome = ChromeContext {
             chrome: WindowChrome::Native,
             buttons_width: Some(78.0),
+            ..Default::default()
         };
         let (mut store, root) = build_with(chrome, caption_bar("Untitled"));
 
@@ -735,6 +793,7 @@ mod tests {
         let chrome = ChromeContext {
             chrome: WindowChrome::SelfDrawn,
             buttons_width: None,
+            ..Default::default()
         };
         let (store, root) = build_with(chrome, caption_bar("Untitled"));
 
@@ -776,10 +835,12 @@ mod tests {
             ChromeContext {
                 chrome: WindowChrome::Native,
                 buttons_width: Some(78.0),
+                ..Default::default()
             },
             ChromeContext {
                 chrome: WindowChrome::SelfDrawn,
                 buttons_width: Some(78.0),
+                ..Default::default()
             },
         ] {
             let (store, root) = build_with(chrome, caption_bar("Untitled"));
@@ -807,6 +868,7 @@ mod tests {
         let chrome = ChromeContext {
             chrome: WindowChrome::SelfDrawn,
             buttons_width: None,
+            ..Default::default()
         };
         let bar = caption_bar("Untitled").on_close(move |_ev| flag.set(flag.get() + 1));
 
@@ -864,6 +926,7 @@ mod tests {
         let chrome = ChromeContext {
             chrome: WindowChrome::SelfDrawn,
             buttons_width: None,
+            ..Default::default()
         };
         let (mut store, root) = build_with(chrome, caption_bar("Untitled"));
 
@@ -910,6 +973,7 @@ mod tests {
         let chrome = ChromeContext {
             chrome: WindowChrome::Native,
             buttons_width: Some(78.0),
+            ..Default::default()
         };
         let (mut store, root) = build_with(chrome, caption_bar("Untitled"));
 
@@ -946,6 +1010,7 @@ mod tests {
         let chrome = ChromeContext {
             chrome: WindowChrome::SelfDrawn,
             buttons_width: None,
+            ..Default::default()
         };
         let (mut store, root) = build_with(chrome, caption_bar("Untitled"));
 
@@ -994,5 +1059,90 @@ mod tests {
             band.x + band.w <= buttons.x + f32::EPSILON,
             "title band ends at or before the trailing buttons"
         );
+    }
+
+    /// Lays out `caption_bar` on an 800×600 surface and returns each section's
+    /// resolved height. A section carries the bar's chosen height as a `Fixed`
+    /// cross-axis size, so it resolves to that height (not the rect) and faithfully
+    /// witnesses the bar's choice — the root itself fills the rect it is laid into,
+    /// so it cannot. All sections share one height, so the set collapses to a
+    /// witness value the caller asserts on.
+    fn section_heights(chrome: ChromeContext) -> Vec<f32> {
+        let (mut store, root) = build_with(chrome, caption_bar("Untitled"));
+        let mut scratch = Vec::new();
+        store.layout(
+            root,
+            Rect {
+                x: 0.0,
+                y: 0.0,
+                w: 800.0,
+                h: 600.0,
+            },
+            &mut scratch,
+        );
+        children(&store, root)
+            .into_iter()
+            .map(|section| store.bounds(section).h)
+            .collect()
+    }
+
+    /// A reported native box sets the bar height verbatim — even when it is
+    /// shorter than `self.style.height`. On a full-size self-drawn macOS view the
+    /// traffic lights hug the top and `ceil(top*2 + h)` centers them in a compact
+    /// bar; the bar wraps exactly that box (the OS buttons don't zoom), it does
+    /// not clamp up to the self-drawn standard.
+    #[test]
+    fn native_box_sets_the_bar_height_verbatim() {
+        let box_height = 20.0;
+        let chrome = ChromeContext {
+            chrome: WindowChrome::SelfDrawn,
+            buttons_width: Some(78.0),
+            // e.g. `ceil(3*2 + 14) = 20`, the box measured on a full-size content
+            // view — the bar wraps it exactly, not the 38pt self-drawn standard.
+            buttons_height: Some(box_height),
+        };
+        for h in section_heights(chrome) {
+            assert_eq!(
+                h, box_height,
+                "the bar wraps the reported native box height verbatim"
+            );
+        }
+    }
+
+    /// A reported native box taller than the self-drawn standard (a native titled
+    /// window, where the traffic lights sit lower in a real title bar) sets the
+    /// bar height to that box verbatim as well.
+    #[test]
+    fn tall_native_box_raises_the_bar() {
+        let taller = 54.0;
+        let chrome = ChromeContext {
+            chrome: WindowChrome::Native,
+            buttons_width: Some(78.0),
+            buttons_height: Some(taller),
+        };
+        for h in section_heights(chrome) {
+            assert_eq!(
+                h, taller,
+                "a native box taller than the standard bar raises it to wrap the buttons"
+            );
+        }
+    }
+
+    /// With no native box reported (the self-drawn Windows/Linux/headless case),
+    /// the bar keeps its standard height and zooms with the buttons it draws
+    /// itself — `buttons_height` is `None`, so the standard height holds.
+    #[test]
+    fn no_native_box_keeps_the_standard_height() {
+        let chrome = ChromeContext {
+            chrome: WindowChrome::SelfDrawn,
+            buttons_width: None,
+            buttons_height: None,
+        };
+        for h in section_heights(chrome) {
+            assert_eq!(
+                h, HEIGHT,
+                "no native box ⇒ the bar keeps its standard height"
+            );
+        }
     }
 }

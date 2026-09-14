@@ -178,7 +178,9 @@ unsafe fn drain_and_drive(mut handler: NonNull<dyn AppHandler>, shared: &Shared)
         };
         let Some(event) = event else { break };
         // SAFETY: see the function contract — the pointer is live and unaliased
-        // for the duration of this call.
+        // for the duration of this call (the pump's own `handler.handle` is
+        // parked in AppKit while a delegate drives, so the reborrow never
+        // overlaps another live one).
         unsafe { handler.as_mut() }.handle(event);
     }
 }
@@ -513,13 +515,18 @@ impl Window for MacWindow {
     }
 }
 
-/// Ivars for the window delegate: which window it serves, the shared queue, and
+/// Ivars for the window delegate: which window it serves, the shared queue,
 /// whether the window uses self-drawn chrome (so resize re-reports the native
-/// traffic-light geometry, and native-chrome windows never do).
+/// traffic-light geometry, and native-chrome windows never do), and whether it is
+/// currently fullscreen (a `Cell` because the delegate methods take `&self`).
 struct DelegateIvars {
     window: WindowId,
     shared: Shared,
     chrome: WindowChrome,
+    /// Set on the will-enter/will-exit fullscreen transitions. While `true` the
+    /// OS hides the traffic lights and draws its own title bar, so `windowDidResize`
+    /// must not re-measure or re-report the (now absent) traffic-light box.
+    is_fullscreen: Cell<bool>,
 }
 
 define_class!(
@@ -562,6 +569,7 @@ define_class!(
             let window = ivars.window;
             let shared = ivars.shared.clone();
             let chrome = ivars.chrome;
+            let is_fullscreen = ivars.is_fullscreen.get();
             let _ = catch_unwind(AssertUnwindSafe(|| {
                 // The notification's object is the NSWindow.
                 let nswin = notification
@@ -584,8 +592,11 @@ define_class!(
                     .unwrap_or((1.0, 0, 0));
                 // Self-drawn chrome: the traffic lights reposition with the title
                 // bar on resize, so re-measure and re-report so the app can keep
-                // its caption aligned.
-                let buttons_rect = if chrome == WindowChrome::SelfDrawn {
+                // its caption aligned. In fullscreen the OS hides the traffic
+                // lights and draws its own title bar, so there is no box to report
+                // (and the caption is hidden anyway) — skip it; the surface size
+                // still changed, so `ScaleFactorChanged` below fires regardless.
+                let buttons_rect = if chrome == WindowChrome::SelfDrawn && !is_fullscreen {
                     nswin.as_deref().and_then(traffic_lights_geom)
                 } else {
                     None
@@ -622,6 +633,68 @@ define_class!(
                 }
             }));
         }
+
+        #[unsafe(method(windowWillEnterFullScreen:))]
+        fn window_will_enter_full_screen(&self, _notification: &NSNotification) {
+            let ivars = self.ivars();
+            let window = ivars.window;
+            let shared = ivars.shared.clone();
+            // Flip the flag and report the transition at its *start* (the will-hook),
+            // so a self-drawn caption hides as the animation begins rather than after
+            // it settles — matching how the OS auto-hides its own title bar. Gating
+            // `is_fullscreen` here also suppresses the traffic-light re-report from
+            // the resize events the transition animation fires.
+            ivars.is_fullscreen.set(true);
+            let _ = catch_unwind(AssertUnwindSafe(|| {
+                shared
+                    .borrow_mut()
+                    .events
+                    .push_back(RawEvent::FullscreenChanged {
+                        window,
+                        fullscreen: true,
+                    });
+            }));
+        }
+
+        #[unsafe(method(windowWillExitFullScreen:))]
+        fn window_will_exit_full_screen(&self, _notification: &NSNotification) {
+            let ivars = self.ivars();
+            let window = ivars.window;
+            let shared = ivars.shared.clone();
+            // Restore at the start of the exit animation: clear the flag so the
+            // resize events fired during the animation re-report the traffic-light
+            // box, and tell the app to un-hide its caption.
+            ivars.is_fullscreen.set(false);
+            let _ = catch_unwind(AssertUnwindSafe(|| {
+                shared
+                    .borrow_mut()
+                    .events
+                    .push_back(RawEvent::FullscreenChanged {
+                        window,
+                        fullscreen: false,
+                    });
+            }));
+        }
+
+        #[unsafe(method(windowDidFailToEnterFullScreen:))]
+        fn window_did_fail_to_enter_full_screen(&self, _window: &NSWindow) {
+            let ivars = self.ivars();
+            let window = ivars.window;
+            let shared = ivars.shared.clone();
+            // The enter transition was aborted after the will-hook already flipped
+            // the flag and hid the caption. Roll both back so the window is not left
+            // showing OS chrome with the caption still hidden.
+            ivars.is_fullscreen.set(false);
+            let _ = catch_unwind(AssertUnwindSafe(|| {
+                shared
+                    .borrow_mut()
+                    .events
+                    .push_back(RawEvent::FullscreenChanged {
+                        window,
+                        fullscreen: false,
+                    });
+            }));
+        }
     }
 );
 
@@ -636,6 +709,7 @@ impl WindowDelegate {
             window,
             shared,
             chrome,
+            is_fullscreen: Cell::new(false),
         });
         unsafe { msg_send![super(this), init] }
     }
@@ -740,8 +814,19 @@ extern "C" fn titlebar_hit_test(this: *mut AnyObject, _sel: Sel, point: NSPoint)
     // the returned view's class and superview chain, never retaining it.
     unsafe {
         let this = &*this;
-        let superclass = this.class().superclass().expect("subclass has superclass");
-        let hit: *mut AnyObject = msg_send![super(this, superclass), hitTest: point];
+        // The super-class for the `hitTest:` super-call MUST be the stock
+        // `NSTitlebarContainerView`, resolved by name, NOT `this.class().superclass()`.
+        // Entering/leaving fullscreen makes AppKit re-swizzle the container into a
+        // dynamic subclass of ours (its hit-test compatibility layer,
+        // `___setUpHitTestingMethodCompatibility`); `this`'s runtime superclass then
+        // points back at a class that still carries this very method, so a super-call
+        // relative to it re-enters `titlebar_hit_test` forever until the stack
+        // overflows. Anchoring the super-call at the fixed stock base always reaches
+        // AppKit's own implementation and can never re-enter ours.
+        let Some(base) = AnyClass::get(c"NSTitlebarContainerView") else {
+            return core::ptr::null_mut();
+        };
+        let hit: *mut AnyObject = msg_send![super(this, base), hitTest: point];
         let button_class = AnyClass::get(c"NSButton");
         let mut view = hit;
         while !view.is_null() {

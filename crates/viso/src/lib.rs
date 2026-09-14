@@ -36,6 +36,8 @@
 
 #![forbid(unsafe_op_in_unsafe_fn)]
 
+use std::cell::Cell;
+
 use viso_gpu::{Backend, GpuBackend, SurfaceId};
 use viso_platform::{LogicalRect, RawWindowHandle, WindowId};
 use viso_render::{Primitive, Rect, Renderer};
@@ -395,6 +397,13 @@ struct WindowState {
     /// allowed — the build-time half of the chrome data contract, paired with the
     /// later-frame [`chrome_buttons`](Self::chrome_buttons) width.
     chrome: WindowChrome,
+    /// The root node of this window's self-drawn caption bar, captured when the
+    /// tree was built (`None` for a native-chrome window that draws no caption).
+    /// Held so a fullscreen transition can hide the caption in place — on macOS
+    /// the OS draws its own auto-hiding title bar in fullscreen and removes the
+    /// traffic lights — and restore it on exit, by toggling this node's
+    /// visibility rather than rebuilding the tree.
+    caption: Option<NodeId>,
     /// The retained UI tree: real nodes built once on launch, then relaid only
     /// where invalidated each frame and painted to primitives.
     store: NodeStore,
@@ -557,6 +566,7 @@ impl WindowState {
             chrome_buttons: None,
             draggable_cache: Vec::new(),
             chrome: WindowChrome::Native,
+            caption: None,
             store: NodeStore::new(),
             states: StateStore::new(),
             bindings: BindingTable::new(),
@@ -704,6 +714,16 @@ impl WindowState {
             .with_chrome(ChromeContext {
                 chrome: ws.chrome,
                 buttons_width: ws.chrome_buttons.map(|r| r.width as f32),
+                // Derive the caption height the OS traffic lights want from their
+                // measured box: `ceil(top_inset * 2 + box_height)` centers the
+                // fixed-size buttons vertically in the bar. The buttons don't zoom,
+                // so the bar must wrap *them* — not a self-chosen constant that may
+                // fall short of (or overshoot) the traffic-light region. `None`
+                // when no native box was reported, letting the caption keep its own
+                // fixed height for the self-drawn (Windows/Linux/headless) case.
+                buttons_height: ws
+                    .chrome_buttons
+                    .map(|r| (r.y * 2.0 + r.height).ceil() as f32),
             });
             ws.root = build(&mut build_cx);
         }
@@ -759,6 +779,17 @@ impl WindowState {
         }
     }
 
+    /// The surface size in logical points: the physical surface divided by the
+    /// device scale factor. This is the coordinate space layout and paint run in
+    /// (fixed sizes and spacers are authored in logical points), and the space
+    /// the projection viewport describes. `dpi.max(1.0)` guards a degenerate 0.
+    /// On a 1x display (headless seeds dpi = 1) this equals the physical size.
+    fn logical_surface(&self) -> (f32, f32) {
+        let (w, h) = self.surface_size;
+        let scale = self.dpi.max(1.0);
+        (w as f32 / scale, h as f32 / scale)
+    }
+
     /// Incrementally relayout and repaint against the current surface size,
     /// recording how much each layer touched. Only the subtrees carrying
     /// measure/layout invalidation are re-placed; paint is rebuilt only when a
@@ -770,12 +801,19 @@ impl WindowState {
         let Some(root) = self.root else {
             return;
         };
-        let (w, h) = self.surface_size;
+        // Lay out in logical points, not physical pixels: the surface is stored
+        // physical (the GPU needs it), but every layout dimension — a fixed
+        // caption height, a spacer width — is authored in logical points, so the
+        // root box must be the physical surface divided by the scale factor.
+        // Feeding physical pixels here halves absolute sizes on a 2x display.
+        // Glyph rasterization stays physical (text picks its atlas ppem from dpi
+        // independently); only the layout coordinate space is logical.
+        let (lw, lh) = self.logical_surface();
         let surface = Rect {
             x: 0.0,
             y: 0.0,
-            w: w as f32,
-            h: h as f32,
+            w: lw,
+            h: lh,
         };
         let (measured, laid_out) =
             self.store
@@ -819,9 +857,8 @@ impl WindowState {
     /// the caption into a native window drag (section 7.2). A caption widget
     /// registers its blank band via `BuildCx::register_draggable`; the store keeps
     /// those node ids in a small retained list, and here we resolve each to its
-    /// world box (physical pixels, valid after the layout above), convert to logical
-    /// points (÷ dpi — the coordinate space the platform's `mouseDown` hit-tests),
-    /// and diff against the cache.
+    /// world box — already in logical points (layout runs logical), the same space
+    /// the platform's `mouseDown` hit-tests — and diff against the cache.
     ///
     /// Returns `true` when it pushed a changed set. Skips the platform call — and
     /// the borrow of `cx` at the call site — on every steady frame whose caption
@@ -835,7 +872,6 @@ impl WindowState {
         if regions.is_empty() && self.draggable_cache.is_empty() {
             return false;
         }
-        let scale = self.dpi.max(1.0) as f64;
         let mut changed = regions.len() != self.draggable_cache.len();
         // Reuse the cache's backing storage: build the new set in place, comparing
         // element-by-element against the old contents as we overwrite them, so a
@@ -843,12 +879,7 @@ impl WindowState {
         if !changed {
             for (i, &id) in regions.iter().enumerate() {
                 let b = self.store.world(id);
-                let next = LogicalRect::new(
-                    b.x as f64 / scale,
-                    b.y as f64 / scale,
-                    b.w as f64 / scale,
-                    b.h as f64 / scale,
-                );
+                let next = LogicalRect::new(b.x as f64, b.y as f64, b.w as f64, b.h as f64);
                 if self.draggable_cache[i] != next {
                     changed = true;
                     break;
@@ -862,10 +893,7 @@ impl WindowState {
         for &id in regions {
             let b = self.store.world(id);
             self.draggable_cache.push(LogicalRect::new(
-                b.x as f64 / scale,
-                b.y as f64 / scale,
-                b.w as f64 / scale,
-                b.h as f64 / scale,
+                b.x as f64, b.y as f64, b.w as f64, b.h as f64,
             ));
         }
         true
@@ -981,10 +1009,9 @@ fn wrap_root_with_caption(
     cx: &mut BuildCx<'_>,
     title: &str,
     caption: bool,
+    caption_out: &Cell<Option<NodeId>>,
     build_content: impl FnOnce(&mut BuildCx<'_>) -> Option<NodeId>,
 ) -> Option<NodeId> {
-    use viso_ui::Component;
-
     if !caption {
         return build_content(cx);
     }
@@ -1003,7 +1030,10 @@ fn wrap_root_with_caption(
             ..FlexStyle::default()
         },
         |cx| {
-            caption_bar(title.to_string()).build(cx);
+            // Capture the caption root so a later fullscreen transition can hide
+            // it in place; the plain `Component::build` would discard the handle.
+            let cap = caption_bar(title.to_string()).build_root(cx);
+            caption_out.set(Some(cap.id()));
             // Body: a fill container so the app's tree occupies the height left
             // under the caption regardless of the app root's own size request.
             cx.flex(
@@ -1060,14 +1090,18 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
         // single build below sees it and a self-drawn caption yields to the OS
         // overlay instead of drawing its own buttons (section 24 data contract).
         let chrome_geom = cx.window_chrome_geom(id);
-        let ws = WindowState::open(cx, id, &self.fonts, ui_chrome, chrome_geom, |build| {
-            wrap_root_with_caption(build, &title, caption, |build| {
+        // The wrap captures the caption root into this cell during the synchronous
+        // build inside `open`; read it back afterward to hold for fullscreen hide.
+        let caption_cell = Cell::new(None);
+        let mut ws = WindowState::open(cx, id, &self.fonts, ui_chrome, chrome_geom, |build| {
+            wrap_root_with_caption(build, &title, caption, &caption_cell, |build| {
                 app.and_then(|app| {
                     app.build(build);
                     build.root()
                 })
             })
         });
+        ws.caption = caption_cell.get();
         self.windows.push(ws);
     }
 
@@ -1103,14 +1137,15 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
     }
 
     fn on_input(&mut self, sample: viso_runtime::InputSample) {
-        // The sample is already in physical pixels (the scheduler resolved the
-        // window scale), so it maps straight onto the UI-tier `PointerEvent` —
-        // the same space as node bounds and hit testing. Route it to the target
-        // window's tree along the hit node's ancestry; any state a handler writes
-        // lands in that window's pending set and is turned into targeted dirtying
-        // by the next frame's flush (the scheduler already flagged the frame
-        // input-dirty). A sample naming an unknown window (already closed) is
-        // dropped.
+        // The sample arrives in physical pixels (the scheduler resolved the
+        // window scale), but layout and hit testing run in logical points, so
+        // pointer/scroll positions are divided by the scale factor before they
+        // reach the router — the same space as node bounds. Route it to the
+        // target window's tree along the hit node's ancestry; any state a handler
+        // writes lands in that window's pending set and is turned into targeted
+        // dirtying by the next frame's flush (the scheduler already flagged the
+        // frame input-dirty). A sample naming an unknown window (already closed)
+        // is dropped.
         let target = sample.window();
         let Some(ws) = self.window_mut(target) else {
             return;
@@ -1118,11 +1153,12 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
         let Some(root) = ws.root else {
             return;
         };
+        let scale = ws.dpi.max(1.0);
         match sample {
             viso_runtime::InputSample::Pointer(p) => {
                 let ev = PointerEvent {
-                    x: p.x,
-                    y: p.y,
+                    x: p.x / scale,
+                    y: p.y / scale,
                     phase: match p.phase {
                         viso_runtime::PointerPhase::Down => PointerPhase::Down,
                         viso_runtime::PointerPhase::Move => PointerPhase::Move,
@@ -1208,14 +1244,17 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
                 // under the pointer. The runtime reports the delta as content
                 // motion (positive = content moves down/right, revealing later
                 // content), which is exactly the direction the viewport's offset
-                // grows, so it maps straight onto the offset delta. The router
-                // clamps per axis and marks only TRANSFORM/HIT_TEST/PAINT — a
-                // scroll never relayouts — so no state flush is involved.
+                // grows, so it maps straight onto the offset delta. Both the hit
+                // position and the delta are divided by the scale factor into
+                // logical points — the offset lives in the same logical space as
+                // layout. The router clamps per axis and marks only
+                // TRANSFORM/HIT_TEST/PAINT — a scroll never relayouts — so no
+                // state flush is involved.
                 let ev = ScrollEvent {
-                    x: s.x,
-                    y: s.y,
-                    delta_x: s.delta_x,
-                    delta_y: s.delta_y,
+                    x: s.x / scale,
+                    y: s.y / scale,
+                    delta_x: s.delta_x / scale,
+                    delta_y: s.delta_y / scale,
                     modifiers: lower_modifiers(s.modifiers),
                 };
                 ScrollRouter::route(&mut ws.store, root, ev);
@@ -1249,6 +1288,20 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
         // no-op.
         if let Some(ws) = self.window_mut(window) {
             ws.chrome_buttons = Some(buttons_rect);
+        }
+    }
+
+    fn on_fullscreen_changed(&mut self, window: WindowId, fullscreen: bool) {
+        // Hide the self-drawn caption while fullscreen and restore it on exit by
+        // toggling its root's visibility in place — on macOS the OS draws its own
+        // auto-hiding title bar in fullscreen and removes the traffic lights, so
+        // the caption must yield. `set_hidden` marks LAYOUT|PAINT, so the next
+        // frame reflows the body to fill the reclaimed strip. A window with no
+        // caption, or an event for an already-closed window, is a no-op.
+        if let Some(ws) = self.window_mut(window)
+            && let Some(cap) = ws.caption
+        {
+            ws.store.set_hidden(cap, fullscreen);
         }
     }
 
@@ -1391,10 +1444,14 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
                         // Read the native traffic-light box synchronously so the
                         // deferred build sees it, exactly as the launch path does.
                         let chrome_geom = cx.window_chrome_geom(id);
-                        let ws =
+                        // Capture the caption root during the synchronous build, as
+                        // the launch path does, to hold for fullscreen hide.
+                        let caption_cell = Cell::new(None);
+                        let mut ws =
                             WindowState::open(cx, id, &self.fonts, ui_chrome, chrome_geom, |cx| {
-                                wrap_root_with_caption(cx, &title, caption, build)
+                                wrap_root_with_caption(cx, &title, caption, &caption_cell, build)
                             });
+                        ws.caption = caption_cell.get();
                         self.windows.push(ws);
                     }
                 }
@@ -1484,8 +1541,15 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
             }
             FramePhase::Submit => {
                 for ws in &mut self.windows {
+                    // The viewport is the logical size: the projection maps
+                    // primitive positions (logical) into the physical surface,
+                    // which the shader's `pos / viewport * 2 - 1` does correctly
+                    // whatever the scale — the physical surface is still fully
+                    // covered and fragments still rasterize at physical density.
+                    let scale = ws.dpi.max(1.0);
                     if let Some(gpu) = &mut ws.gpu {
                         let (w, h) = gpu.size;
+                        let viewport = [w as f32 / scale, h as f32 / scale];
                         // One-shot proof the first frame reached the GPU, gated on
                         // an env var so it costs a single bool check per
                         // steady-state frame and nothing else. Read once, then the
@@ -1515,7 +1579,7 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
                             &mut gpu.backend,
                             gpu.surface,
                             [0.1, 0.1, 0.1, 1.0],
-                            [w as f32, h as f32],
+                            viewport,
                         );
                     }
                 }
@@ -1712,15 +1776,18 @@ mod draggable_tests {
     use viso_ui::{BoxStyle, LeafStyle, Size};
 
     /// Build a `WindowState` whose store holds a single fixed-size leaf registered
-    /// as the caption's draggable region, laid out at `phys` physical pixels under
-    /// `dpi`. Returns the state ready for `draggable_regions_changed`.
-    fn state_with_draggable_leaf(phys: (f32, f32), dpi: f32) -> WindowState {
+    /// as the caption's draggable region, laid out at `logical` points under `dpi`.
+    /// The pipeline now lays out against the logical surface (physical ÷ dpi), so
+    /// the store's world box is already in logical points; this helper mirrors that
+    /// by laying out against the logical rect directly. Returns the state ready for
+    /// `draggable_regions_changed`.
+    fn state_with_draggable_leaf(logical: (f32, f32), dpi: f32) -> WindowState {
         let mut ws = WindowState::new(WindowId(0));
         ws.dpi = dpi;
         let root = {
             let mut cx = BuildCx::new(&mut ws.store);
             let leaf = cx.leaf(LeafStyle {
-                size: Size::fixed(phys.0, phys.1),
+                size: Size::fixed(logical.0, logical.1),
                 style: BoxStyle::NONE,
             });
             cx.register_draggable(leaf);
@@ -1733,8 +1800,8 @@ mod draggable_tests {
             Rect {
                 x: 0.0,
                 y: 0.0,
-                w: phys.0,
-                h: phys.1,
+                w: logical.0,
+                h: logical.1,
             },
             &mut scratch,
         );
@@ -1742,13 +1809,12 @@ mod draggable_tests {
     }
 
     /// The first call after a layout reports a change and fills the cache with the
-    /// registered node's world box converted to logical points (÷ dpi); an
-    /// immediately following call with the same layout reports no change and so
-    /// would skip the platform push.
+    /// registered node's world box, already in logical points (the whole pipeline
+    /// lays out logically), pushed verbatim; an immediately following call with the
+    /// same layout reports no change and so would skip the platform push.
     #[test]
     fn first_layout_pushes_logical_regions_then_holds_still() {
-        // 200x80 physical at 2x ⇒ 100x40 logical.
-        let mut ws = state_with_draggable_leaf((200.0, 80.0), 2.0);
+        let mut ws = state_with_draggable_leaf((100.0, 40.0), 2.0);
 
         assert!(
             ws.draggable_regions_changed(),
@@ -1757,7 +1823,7 @@ mod draggable_tests {
         assert_eq!(
             ws.draggable_cache,
             vec![LogicalRect::new(0.0, 0.0, 100.0, 40.0)],
-            "world box converted to logical points"
+            "logical world box pushed verbatim"
         );
 
         assert!(
@@ -1803,6 +1869,78 @@ mod draggable_tests {
         assert_eq!(
             ws.draggable_cache,
             vec![LogicalRect::new(0.0, 0.0, 300.0, 80.0)]
+        );
+    }
+}
+
+#[cfg(test)]
+mod fullscreen_tests {
+    use super::*;
+    use viso_ui::{
+        BindingTable, ChromeContext, LeafStyle, SemanticProjector, StateStore, TextEdits,
+        VirtualLists,
+    };
+
+    /// Build a caption-wrapped tree against a fresh reactive cx (as `open` does),
+    /// returning the store and the caption id the wrap captured through the cell.
+    fn wrap_capturing(caption: bool) -> (NodeStore, Option<NodeId>) {
+        let mut store = NodeStore::new();
+        let mut states = StateStore::new();
+        let mut bindings = BindingTable::new();
+        let mut lists = VirtualLists::new();
+        let mut text_edits = TextEdits::new();
+        let mut projectors = SemanticProjector::new();
+        let mut cx = BuildCx::with_reactive(
+            &mut store,
+            &mut states,
+            &mut bindings,
+            &mut lists,
+            &mut text_edits,
+            &mut projectors,
+        )
+        .with_chrome(ChromeContext::default());
+        let caption_cell = Cell::new(None);
+        // An app body: a single leaf so the wrap has content to place under the bar.
+        let _root = wrap_root_with_caption(&mut cx, "Title", caption, &caption_cell, |cx| {
+            Some(cx.leaf(LeafStyle::default()).id())
+        });
+        (store, caption_cell.get())
+    }
+
+    #[test]
+    fn wrap_captures_the_caption_id_when_a_caption_is_drawn() {
+        let (_store, caption) = wrap_capturing(true);
+        assert!(
+            caption.is_some(),
+            "a caption-drawing window exposes its bar root for fullscreen hide"
+        );
+    }
+
+    #[test]
+    fn wrap_leaves_no_caption_id_for_a_captionless_window() {
+        let (_store, caption) = wrap_capturing(false);
+        assert!(
+            caption.is_none(),
+            "a window that draws no caption has nothing to hide in fullscreen"
+        );
+    }
+
+    #[test]
+    fn hiding_and_restoring_the_captured_caption_toggles_its_visibility() {
+        // The exact store mutation `on_fullscreen_changed` performs: flip the
+        // captured node hidden on enter, visible on exit. `set_hidden`'s LAYOUT|PAINT
+        // dirtying and body reflow are covered by ui/paint tests; here we prove the
+        // captured id is the right target and the toggle round-trips.
+        let (mut store, caption) = wrap_capturing(true);
+        let cap = caption.expect("a caption window captures its bar root");
+
+        assert!(!store.hidden(cap), "the caption starts visible");
+        store.set_hidden(cap, true);
+        assert!(store.hidden(cap), "entering fullscreen hides the caption");
+        store.set_hidden(cap, false);
+        assert!(
+            !store.hidden(cap),
+            "leaving fullscreen restores the caption"
         );
     }
 }

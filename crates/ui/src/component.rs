@@ -4279,6 +4279,7 @@ mod tests {
         let seeded = ChromeContext {
             chrome: WindowChrome::SelfDrawn,
             buttons_width: Some(78.0),
+            ..Default::default()
         };
         let cx = cx.with_chrome(seeded);
         assert_eq!(cx.chrome(), seeded);

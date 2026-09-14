@@ -314,6 +314,15 @@ impl<D: FrameDriver, C: FrameClock> AppHandler for Scheduler<D, C> {
                 self.driver
                     .on_window_chrome_geom(&mut cx, window, buttons_rect);
             }
+            RawEvent::FullscreenChanged { window, fullscreen } => {
+                // The window entered/left fullscreen. Hand it to the driver so it
+                // can hide/restore its self-drawn caption. Hiding the caption is a
+                // visible reflow (`set_hidden` marks LAYOUT|PAINT), so flag the
+                // frame input-dirty to pump the redraw — like a menu command, not
+                // like the chrome-geom event (which only refreshes a drag cache).
+                self.driver.on_fullscreen_changed(window, fullscreen);
+                self.reasons.add(RedrawReason::InputDirty);
+            }
             RawEvent::Scroll(s) => {
                 // Resolve the window scale here (the scheduler owns the window)
                 // and normalize the logical-point sample into physical pixels —
@@ -468,6 +477,56 @@ mod tests {
             sched.resolve_control_flow(),
             ControlFlow::Poll,
             "an animating loop keeps polling; the timer rides its beats"
+        );
+    }
+
+    /// A driver that records every `on_fullscreen_changed` it receives, so the
+    /// scheduler's dispatch arm can be exercised end to end.
+    #[derive(Default)]
+    struct RecordingDriver {
+        fullscreen: Vec<(WindowId, bool)>,
+    }
+
+    impl FrameDriver for RecordingDriver {
+        fn on_launch(&mut self, _cx: &mut RuntimeCx<'_>) {}
+        fn on_geometry(&mut self, _window: WindowId, _scale: f64, _width: u32, _height: u32) {}
+        fn on_input(&mut self, _sample: InputSample) {}
+        fn run_phase(&mut self, _phase: FramePhase, _cx: &mut RuntimeCx<'_>) {}
+        fn on_fullscreen_changed(&mut self, window: WindowId, fullscreen: bool) {
+            self.fullscreen.push((window, fullscreen));
+        }
+    }
+
+    #[test]
+    fn a_fullscreen_change_reaches_the_driver_and_schedules_a_redraw() {
+        use viso_platform::AppHandler;
+
+        let app = Box::new(HeadlessApp::scripted(vec![]));
+        let mut sched = Scheduler::new(app, RecordingDriver::default());
+        sched.launched = true;
+        sched.open_windows = 1;
+
+        // Entering fullscreen: the driver is told, and because hiding the caption
+        // is a visible reflow the loop is left non-idle (Poll), not Wait.
+        let flow = sched.handle(RawEvent::FullscreenChanged {
+            window: WindowId(1),
+            fullscreen: true,
+        });
+        assert_eq!(
+            flow,
+            ControlFlow::Poll,
+            "a fullscreen change flags the frame input-dirty, so the loop polls"
+        );
+
+        // Leaving fullscreen is reported the same way, so the driver can restore.
+        let _ = sched.handle(RawEvent::FullscreenChanged {
+            window: WindowId(1),
+            fullscreen: false,
+        });
+        assert_eq!(
+            sched.driver.fullscreen,
+            vec![(WindowId(1), true), (WindowId(1), false)],
+            "each transition reaches the driver in order with its window and state"
         );
     }
 }
