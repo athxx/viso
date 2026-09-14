@@ -25,6 +25,7 @@
 use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;
 use std::panic::{AssertUnwindSafe, catch_unwind};
+use std::ptr::NonNull;
 use std::rc::Rc;
 use std::time::Instant;
 
@@ -63,6 +64,19 @@ struct PumpQueue {
     redraws: VecDeque<WindowId>,
     /// Set true once a window has been asked to close and accepted.
     should_exit: bool,
+    /// The pump's `handler`, exposed to delegates only for the lifetime of
+    /// `run()`. A live-resize drag hands the thread to AppKit's nested modal
+    /// run loop, which suspends our `nextEventMatchingMask:` loop entirely — so
+    /// events the resize delegate enqueues cannot be drained until the drag
+    /// ends. `windowDidResize:`, which AppKit calls *synchronously* inside that
+    /// modal loop, reads this pointer to drive a frame on the spot so the
+    /// content tracks the drag live. `run()` installs the pointer before its
+    /// loop and clears it on the way out (a guard clears it on unwind too), so
+    /// the pointer is valid for exactly as long as the handler borrow lives and
+    /// is never aliased: the pump's own `handler.handle` calls and a delegate's
+    /// re-entrant drive never overlap in time (the pump is parked in AppKit
+    /// when the delegate runs). See `MacApp::run` and `drain_and_drive`.
+    drive: Option<NonNull<dyn AppHandler>>,
 }
 
 /// Shared state the delegate/view mutate and the pump reads. `Rc<RefCell<..>>`
@@ -127,6 +141,45 @@ impl MacApp {
             return Some(RawEvent::RedrawRequested { window: w });
         }
         q.events.pop_front()
+    }
+}
+
+/// Clears `PumpQueue::drive` when `run`'s loop ends, on every path including
+/// unwind, so the erased handler pointer never outlives the `&mut` borrow it
+/// was taken from.
+struct DriveGuard(Shared);
+
+impl Drop for DriveGuard {
+    fn drop(&mut self) {
+        self.0.borrow_mut().drive = None;
+    }
+}
+
+/// Drain every queued synthetic event through the handler, running the frames
+/// they schedule. Called from `windowDidResize:` while AppKit's modal resize
+/// loop owns the thread, so the drag paints live instead of stalling until it
+/// ends. Each event is popped under a short borrow that is released before
+/// `handle` runs, so the handler may re-enter the queue (e.g. request another
+/// redraw) without a borrow conflict.
+///
+/// SAFETY: the caller passes the pointer stored in `PumpQueue::drive`, which is
+/// valid for the whole of `MacApp::run` (installed before its loop, cleared by
+/// `DriveGuard`). This runs synchronously inside AppKit's nested loop, where the
+/// pump's own `handler.handle` is parked, so the `&mut` reborrow is unaliased.
+unsafe fn drain_and_drive(mut handler: NonNull<dyn AppHandler>, shared: &Shared) {
+    loop {
+        let event = {
+            let mut q = shared.borrow_mut();
+            if let Some(w) = q.redraws.pop_front() {
+                Some(RawEvent::RedrawRequested { window: w })
+            } else {
+                q.events.pop_front()
+            }
+        };
+        let Some(event) = event else { break };
+        // SAFETY: see the function contract — the pointer is live and unaliased
+        // for the duration of this call.
+        unsafe { handler.as_mut() }.handle(event);
     }
 }
 
@@ -224,6 +277,25 @@ impl PlatformApp for MacApp {
         if handler.handle(RawEvent::AppLaunched) == ControlFlow::Exit {
             return;
         }
+
+        // Expose the handler to the resize delegate for the duration of the
+        // pump loop so a live-resize drag can drive frames re-entrantly (see
+        // `PumpQueue::drive`). The guard clears the pointer on every exit path,
+        // including unwind, so it never outlives this borrow of `handler`.
+        // SAFETY: `handler` outlives `_drive_guard` (both are bound by this
+        // stack frame) and the guard's `Drop` clears the pointer before `run`
+        // returns, so the stored pointer never outlives this `&mut` borrow. The
+        // `transmute` only erases the handler's lifetime to `'static`; the guard
+        // upholds the true (shorter) lifetime dynamically.
+        let drive: NonNull<dyn AppHandler> = unsafe {
+            let ptr: *mut dyn AppHandler = handler;
+            NonNull::new_unchecked(std::mem::transmute::<
+                *mut dyn AppHandler,
+                *mut (dyn AppHandler + 'static),
+            >(ptr))
+        };
+        self.shared.borrow_mut().drive = Some(drive);
+        let _drive_guard = DriveGuard(self.shared.clone());
 
         let mut flow = ControlFlow::Wait;
         loop {
@@ -502,20 +574,36 @@ define_class!(
                 } else {
                     None
                 };
-                let mut q = shared.borrow_mut();
-                q.events.push_back(RawEvent::ScaleFactorChanged {
-                    window,
-                    scale,
-                    width,
-                    height,
-                });
-                if let Some(buttons_rect) = buttons_rect {
-                    q.events.push_back(RawEvent::WindowChromeGeom {
+                {
+                    let mut q = shared.borrow_mut();
+                    q.events.push_back(RawEvent::ScaleFactorChanged {
                         window,
-                        buttons_rect,
+                        scale,
+                        width,
+                        height,
                     });
+                    if let Some(buttons_rect) = buttons_rect {
+                        q.events.push_back(RawEvent::WindowChromeGeom {
+                            window,
+                            buttons_rect,
+                        });
+                    }
+                    q.redraws.push_back(window);
                 }
-                q.redraws.push_back(window);
+                // AppKit calls this synchronously inside its modal resize loop,
+                // which has parked our pump. Drive the frames right here so the
+                // content tracks the drag live instead of snapping only once the
+                // drag ends. Outside a live resize (e.g. a programmatic resize)
+                // the pump is running normally and `drive` may be absent — then
+                // the events just drain on the next pump turn as before.
+                let drive = shared.borrow().drive;
+                if let Some(drive) = drive {
+                    // SAFETY: `drive` is the pointer `MacApp::run` installed for
+                    // the lifetime of its loop; this callback runs on the main
+                    // thread inside that loop, where the pump's own `handle` is
+                    // suspended, so the reborrow is unaliased. See `drain_and_drive`.
+                    unsafe { drain_and_drive(drive, &shared) };
+                }
             }));
         }
     }
@@ -1386,5 +1474,84 @@ fn any_to_string(string: &AnyObject) -> String {
         a.string().to_string()
     } else {
         String::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A stand-in handler that records the events it receives, so a test can
+    /// assert the order `drain_and_drive` delivers them. It may also re-enqueue
+    /// a redraw on its first call to exercise the re-entrant path the modal
+    /// resize loop relies on (the handler requesting another frame mid-drain).
+    struct RecordingHandler {
+        seen: Vec<RawEvent>,
+        /// A window to re-enqueue once, on the first `handle` call, or `None`.
+        reenqueue_once: Option<(Shared, WindowId)>,
+    }
+
+    impl AppHandler for RecordingHandler {
+        fn handle(&mut self, event: RawEvent) -> ControlFlow {
+            if let Some((shared, window)) = self.reenqueue_once.take() {
+                shared.borrow_mut().redraws.push_back(window);
+            }
+            self.seen.push(event);
+            ControlFlow::Wait
+        }
+    }
+
+    fn is_redraw(event: &RawEvent, window: WindowId) -> bool {
+        matches!(event, RawEvent::RedrawRequested { window: w } if *w == window)
+    }
+
+    #[test]
+    fn drains_redraws_before_events_then_empties() {
+        let shared: Shared = Rc::new(RefCell::new(PumpQueue::default()));
+        {
+            let mut q = shared.borrow_mut();
+            q.events.push_back(RawEvent::Wakeup);
+            q.redraws.push_back(WindowId(7));
+        }
+
+        let mut handler = RecordingHandler {
+            seen: Vec::new(),
+            reenqueue_once: None,
+        };
+        // SAFETY: `handler` outlives the call and no other borrow of it exists,
+        // so the reborrow inside `drain_and_drive` is unaliased.
+        let ptr = NonNull::from(&mut handler as &mut dyn AppHandler);
+        unsafe { drain_and_drive(ptr, &shared) };
+
+        // Redraw is converted and delivered ahead of the plain event, matching
+        // `next_synthetic`'s ordering; nothing is left queued.
+        assert_eq!(handler.seen.len(), 2);
+        assert!(is_redraw(&handler.seen[0], WindowId(7)));
+        assert!(matches!(handler.seen[1], RawEvent::Wakeup));
+        let q = shared.borrow();
+        assert!(q.events.is_empty());
+        assert!(q.redraws.is_empty());
+    }
+
+    #[test]
+    fn drains_events_reenqueued_mid_drive() {
+        let shared: Shared = Rc::new(RefCell::new(PumpQueue::default()));
+        shared.borrow_mut().events.push_back(RawEvent::Wakeup);
+
+        // The first `handle` re-enqueues a redraw, as a frame requesting another
+        // redraw would; the loop must pick it up rather than stop at one event.
+        let mut handler = RecordingHandler {
+            seen: Vec::new(),
+            reenqueue_once: Some((shared.clone(), WindowId(3))),
+        };
+        // SAFETY: as above — `handler` outlives the call, no aliasing borrow.
+        let ptr = NonNull::from(&mut handler as &mut dyn AppHandler);
+        unsafe { drain_and_drive(ptr, &shared) };
+
+        assert_eq!(handler.seen.len(), 2);
+        assert!(matches!(handler.seen[0], RawEvent::Wakeup));
+        assert!(is_redraw(&handler.seen[1], WindowId(3)));
+        assert!(shared.borrow().events.is_empty());
+        assert!(shared.borrow().redraws.is_empty());
     }
 }

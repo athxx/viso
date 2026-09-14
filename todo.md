@@ -869,7 +869,23 @@ TextInput ✅(单行编辑骨架,后续片见上文 deferral 清单)。全部 �
         逐 node world box → ÷dpi 转 `LogicalRect` → 与 `WindowState.draggable_cache` diff,仅变化时调 `set_draggable_regions`
         (冷通道,稳态帧/无 caption 窗即时短路);**删除 `on_window_chrome_geom` 占位全宽条**(改为仅记 `chrome_buttons`)。
         spacer 让位宽 build 时已读 `buttons_width` 定死(步骤 2),无需运行时 `set_fixed_size` 增长。
-      - [ ] 门禁 + macOS 真机验证([[viso-msl-reserved-half]] 精神):SelfDrawn 示例窗肉眼核对红绿灯在/标题居中/空白可拖窗/Metal 正常。
+      - [x] live-resize 同步跟随(平台层)——真机暴露:拖窗框改大小时内容纹丝不动,松手才"弹性"追到终尺寸。
+        根因:AppKit 拖动期跑嵌套 modal event-tracking run loop(`NSEventTrackingRunLoopMode`),而 pump 用
+        `NSDefaultRunLoopMode` 取事件 → modal loop 期外层 pump 全挂起,delegate 入队的 resize/redraw 积压不排,
+        松手退 modal loop 才一次性排完。解([[viso-diverge-from-makepad]] 取 makepad "modal loop 内驱动帧" 语义、
+        弃其常驻 NSTimer 架构):`windowDidResize:` 由 AppKit 在 modal loop 内**同步**调用,当场排空 synthetic
+        队列跑帧——零额外 timer/线程/轮询,只在真 resize 时做功,稳态零开销(§7)。障碍:`handler`(`&mut dyn`)只在
+        `run()` 栈可达,delegate 够不到 → `PumpQueue` 加 `drive: Option<NonNull<dyn AppHandler>>`(裸指针擦生命周期),
+        `run()` 进循环前装、RAII `DriveGuard` 出循环(含 unwind)清;`windowDidResize:` 取指针调 `drain_and_drive`。
+        重入安全:modal loop 内同步回调,pump 主循环此刻未借 handler,不与其 `handler.handle` 时间重叠。SAFETY 注释具此不变式。
+        单测(不依赖 AppKit):假 handler 记录调用序,验 `drain_and_drive` redraws 先于 events 排空、排完队空、mid-drive 重入队亦排。
+        拖动跟随本身靠**真机验证**(headless 测不到 modal loop)。
+      - [ ] 标题真居中(widgets 层)——真机暴露:标题偏左(应窗口居中)。根因:三段流布局中段 `Length::Fill` 只"在剩余
+        空间里居中",macOS 只有左侧红绿灯让位、右段无对称让位 → 中段几何中心 ≠ 窗口中心。修:标题相对整条 bar 居中,
+        与红绿灯让位宽解耦(依 component.rs 容器能力择 overlay 首选 / 对称 spacer 次选);中段仍拖拽区、semantics 不变。
+        headless 布局测:标题几何中心 ≈ bar 宽/2(容差),不对称让位下仍居中。
+      - [ ] 门禁 + macOS 真机验证([[viso-msl-reserved-half]] 精神):SelfDrawn 示例窗肉眼核对红绿灯在/标题居中/空白可拖窗/
+        拖窗框内容实时跟随无弹跳/Metal 正常。
 
 **Tier 5 — 编辑器 / 结构工具类控件(doc §71,`viso-widgets` 内节点控件):** 待做,Tier 4 收完下一步开排。
 每个仍出完整 section-71 验证包(单测 + golden + input tape + a11y 快照 + microbench + alloc profile),每小节一提交,
