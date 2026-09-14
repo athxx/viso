@@ -73,6 +73,16 @@ pub trait FrameDriver {
     ) {
     }
 
+    /// The window entered (`fullscreen = true`) or left (`false`) fullscreen. The
+    /// driver hides its self-drawn caption while fullscreen — on macOS the OS
+    /// draws its own auto-hiding title bar there — and restores it on exit. No
+    /// `RuntimeCx`: this only flips a retained node's visibility in the driver's
+    /// own window state; nothing flows back to the platform (unlike
+    /// [`on_window_chrome_geom`](Self::on_window_chrome_geom), which pushes drag
+    /// regions back through `cx`). Default no-op: a driver with no caption, and
+    /// every backend that never reports fullscreen, ignores it.
+    fn on_fullscreen_changed(&mut self, _window: WindowId, _fullscreen: bool) {}
+
     /// Whether the driver wants continuous animation frames right now. When
     /// true, the scheduler keeps requesting redraw beats even with no input.
     fn wants_animation(&self) -> bool {

@@ -903,13 +903,60 @@ TextInput ✅(单行编辑骨架,后续片见上文 deferral 清单)。全部 �
         判定线 `self_draw_buttons = SelfDrawn && buttons_width.is_none()` 不变(§24 数据契约非 `target_os`)。
         `WindowChromeGeom` 事件保留(resize/scale 精修该框)。headless 无原生 chrome(取 trait 默认 None)→ 自绘按钮,
         对应 Linux 自绘案;集成测断标题居中于边段间余量,窗口居中是真机(macOS overlay)事实,归 Step D 真机核对。
+      - [x] caption 高度对齐红绿灯(widgets+facade)——真机暴露:顶部栏比 macOS 红绿灯还矮。根因:widget 硬编码
+        `HEIGHT=38`,与 OS 红绿灯区不匹配。读 makepad([[viso-read-makepad-first]])定语义:macOS 不硬编码,把 caption
+        高度**钉**到从实测红绿灯框派生的 `system_caption_bar_height=ceil(buttons.pos.y*2 + buttons.size.y)`(上边距对称
+        补到下方,OS 定尺按钮垂直居中于条内);非 macOS 自绘按钮 `height:Fit` 让条随按钮缩放。修([[viso-diverge-from-makepad]]
+        取语义走 viso 一次性构建非每帧同步):`ChromeContext` 加 `buttons_height:Option<f32>`,facade 从 `chrome_buttons`
+        实测框派生 `ceil(r.y*2 + r.height)` 灌入(§24 数据契约非 `target_os`);`caption_bar::build` 取 `buttons_height`
+        钉高、无原生框回落自身 `HEIGHT`(自绘 Windows/Linux/headless 案)。`HEIGHT` doc 改为"自绘回落值"。headless 布局测:
+        有原生框案各段钉派生高、无框案各段守 `HEIGHT`。窗口实际红绿灯几何是真机(macOS)事实,归 Step D 真机核对。
+      - [x] 修"仍太矮"(widgets)——真机复核:上项"钉高"仍矮。再读 makepad([[viso-read-makepad-first]])定差异根源:
+        makepad 公式 `ceil(pos.y*2 + size.y)` 是为**原生 titled 窗**设计(红绿灯坐标题栏内,top≈9-12 → 派生 ~32-38);
+        viso 走 `SelfDrawn`+full-size content view,红绿灯贴内容顶(top≈3-4)→ 同公式派生 ~20,反比 `HEIGHT` 还矮,
+        "钉"住反致缩小。查平台层 `traffic_lights_geom`:content view 是 flipped(top-left origin),坐标转换正确,
+        测量无误——差异纯粹是窗口样式不同致 top_inset 不同,非测量 bug。修([[viso-diverge-from-makepad]] 取语义不取公式):
+        `buttons_height` 语义由"钉"改为"**下限**"——`caption_bar::build` 取 `buttons_height.map_or(HEIGHT, |h| h.max(HEIGHT))`,
+        只上抬不下压:SelfDrawn 贴顶派生偏小时回落 `HEIGHT`(38pt,~14pt 红绿灯居中留对称边距),原生 titled 窗报更高框时撑高。
+        `HEIGHT` doc 改为"标准高度兼下限";`ChromeContext::buttons_height` doc 改"下限非 pin"。headless 布局测:
+        短框(20)clamp 到 `HEIGHT`、高框(54)撑高、无框守 `HEIGHT`。实际 caption 是否包住红绿灯仍归 Step D 真机核对。
+      - [x] 修 HiDPI 下 Fixed 尺寸减半 + 回退上项下限钳制(facade 布局层 + widgets)——真机复核:上项"下限钳到 38"仍矮。
+        逐帧 trace 定真根因:**整条布局跑物理像素**——root 按物理 `surface_size`(2x 屏 1600×1200)排布,`caption_world.w=1600`
+        (物理)但 `h=38` 当物理处理 = **19 逻辑点**;每个 `Length::Fixed`/绝对逻辑尺寸在 2x 屏都减半,caption 只是最显眼症状。
+        查(subagent):文字 extent/quad 已逻辑(`ppem=font_size*dpi` 只定原子图集光栅密度,`inv=1/dpi` 除回逻辑),paint 不施 scale。
+        修(§12 逻辑布局,对齐 makepad):`surface_size`/`gpu.size` 存储仍物理(GPU `resize_surface` 需),但**布局输入**用逻辑
+        `logical_surface()=物理/dpi`、**投影 viewport** 传 `[w/dpi,h/dpi]`、指针/滚动命中坐标 ÷dpi、draggable world 已逻辑删 `/scale`;
+        renderer/shader `pos/viewport*2-1` 对 scale 无感不改,物理表面照样全覆盖、片元仍物理光栅(清晰)。逻辑布局修好后
+        回退上项下限钳制([[viso-diverge-from-makepad]] 回 makepad 原式):`buttons_height.unwrap_or(style.height)`——原生框直接定高
+        (`ceil(9*2+14)=32` 让 14pt 红绿灯完美垂直居中),`style.height` 仅无原生框(自绘)默认;doc/测同步(短框 20→各段 20 verbatim)。
+        headless dpi=1 逻辑==物理,现有测不变。真机效应(2x HiDPI)headless 复现不了,归 Step D 真机核对。
       - [x] 门禁(自动):`cargo test --workspace`(1425 测全绿)、`cargo fmt --all -- --check`、
         clippy `-D warnings`、`cargo xtask check-deps`(arch-check 未注册为 xtask 子命令,check-deps 即依赖边界门禁)全过。
         默认包裹改动波及的 facade 集成测包(animation_loop/sheet_widget/timer_loop/toast_widget/window_multi)——它们断
         绝对布局/root 子节点/root 语义,与 caption 包裹正交——各自 `window_config(){ caption:false }` 退出包裹(deferred 窗内联
         `caption:false`);包裹本身归 `caption_default_wrap.rs` 覆盖。
       - [ ] macOS 真机验证([[viso-msl-reserved-half]] 精神,headless 测不到 AppKit/Metal,须用户参与):SelfDrawn 示例窗肉眼核对
-        红绿灯在/标题窗口居中/空白可拖窗/拖窗框内容实时跟随无弹跳/Metal 正常。
+        红绿灯在/标题窗口居中/**caption 条完整包住红绿灯(逻辑 ~32pt,红绿灯垂直居中于条内,不再比条高/贴顶)**/空白可拖窗
+        (指针命中不偏移)/拖窗框内容实时跟随无弹跳/Metal 正常。这是唯一能确认 HiDPI 修复的验证(2x 屏效应 headless 复现不了)。
+      - [x] 全屏隐藏自绘 caption(对齐 makepad `set_visible(show && !is_fullscreen)`,动态开关保留节点非重建)——macOS 进全屏
+        OS 自绘顶栏、红绿灯消失,viso 自绘 caption 须让位、退出恢复。全平台事件契约仅 macOS 落地(其余后端从不发=从不隐藏=无回归):
+        `RawEvent::FullscreenChanged{window,fullscreen}`(event.rs)→ scheduler arm 调 `on_fullscreen_changed`+加 `InputDirty`
+        → `FrameDriver::on_fullscreen_changed(window,fullscreen)` 默认 no-op(driver.rs,无 `RuntimeCx`:仅翻保留节点可见,无回推平台)
+        → facade `AppDriver` 对 `WindowState.caption:Option<NodeId>` 调 `NodeStore::set_hidden(cap,fullscreen)`(复用 §55,幂等)。
+        caption 根 id 引出:`Component::build` 返 `()`,新增 `CaptionBar::build_root(cx)->Handle`(caption_bar.rs)暴露根,`build` 委托丢弃;
+        `wrap_root_with_caption` 加 `caption_out:&Cell<Option<NodeId>>` 于 build 期填、`open` 返回后 `ws.caption=cell.get()`(两调用点)。
+        macOS 后端:`DelegateIvars` 加 `is_fullscreen:Cell<bool>`;`windowWill{Enter,Exit}FullScreen` 翻标志+发事件(will 回调=动画开始即隐藏)、
+        `windowDidFailToEnterFullScreen` 兜底复位;`windowDidResize` 门控——全屏时不取红绿灯几何、不发 `WindowChromeGeom`(红绿灯已消失,box 无效)。
+        headless 测:事件→driver→set_hidden 路径(runtime RecordingDriver 断 `ControlFlow::Poll`+两迁移有序)、caption-id 捕获(caption/无 caption)、
+        `build_root` 返条根、隐藏/恢复 round-trip(viso fullscreen_tests ×3)、widget `build_root` 记录测。门禁全绿(test/fmt/clippy -D/check-deps)。
+      - [x] 修全屏进/出崩溃(栈溢出,真机崩溃报告 RECURSION LEVEL 8678)——根因非 pump 重入(前次误判已回退):`defang_titlebar_container`
+        用 `object_setClass` 把 `NSTitlebarContainerView` 实例换成 `VisoTitlebarContainerView`(覆写 `hitTest:`);进/出全屏时 AppKit 的
+        hit-test 兼容层 `___setUpHitTestingMethodCompatibility` 又把该实例 re-swizzle 成我方类的**动态子类**,于是 `titlebar_hit_test` 里
+        `this.class().superclass()` 解析回**仍带本方法**的 `VisoTitlebarContainerView`,`super(hitTest:)` 无限自递归到栈溢出。修:super-call
+        锚在**按名解析的固定原生基类** `NSTitlebarContainerView`(`AnyClass::get(c"...")`),永不指向动态运行时超类,必达 AppKit 自身实现、永不重入。
+        最小改(§55):同时回退前次误加的 `PumpQueue.driving` 闩+`DrivingGuard`,`drain_and_drive` 复原。门禁全绿(test/fmt/clippy -D/check-deps)。
+      - [ ] macOS 真机验证(headless 测不到 objc/AppKit,须用户参与):`cargo run -p viso-example-hello-world` 点绿按钮进全屏 →
+        caption 视觉隐藏、body 回流铺满整窗、退出恢复、动画中无残留红绿灯几何、**进出全屏均不崩溃**(本次崩溃修复的唯一验证途径)。
 
 **Tier 5 — 编辑器 / 结构工具类控件(doc §71,`viso-widgets` 内节点控件):** 待做,Tier 4 收完下一步开排。
 每个仍出完整 section-71 验证包(单测 + golden + input tape + a11y 快照 + microbench + alloc profile),每小节一提交,

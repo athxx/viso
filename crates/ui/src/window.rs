@@ -114,7 +114,14 @@ pub enum WindowChrome {
 ///   frame by the platform) decides whether they are *superseded*: `Some` means
 ///   the OS already draws buttons there, so the caption reserves that width as a
 ///   leading spacer and draws none of its own; `None` means either no native
-///   buttons or the geometry has not arrived yet.
+///   buttons or the geometry has not arrived yet;
+/// - `buttons_height` (the caption height the OS traffic lights want, derived
+///   from their measured box) *pins* the bar height so the fixed-size OS buttons
+///   stay wrapped and vertically centered: `Some` is the bar height verbatim (the
+///   buttons don't zoom, so the bar wraps exactly them, whether that is taller or
+///   shorter than the caption's self-drawn standard). `None` when no native box
+///   (yet), so the caption uses its standard height and zooms with the buttons it
+///   draws itself.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct ChromeContext {
     /// Who draws the window chrome. Known at open time from
@@ -122,10 +129,20 @@ pub struct ChromeContext {
     pub chrome: WindowChrome,
     /// Width, in logical points, to reserve as a leading spacer for the OS
     /// traffic lights, or `None` when the platform has reported no native button
-    /// box (yet). The height/origin of the native buttons stay a platform concern
-    /// (used facade-side for the draggable region), so only the reserve width
-    /// crosses into the UI tier.
+    /// box (yet). The origin of the native buttons stays a platform concern
+    /// (used facade-side for the draggable region), so only the derived scalars
+    /// cross into the UI tier.
     pub buttons_width: Option<f32>,
+    /// The caption bar height, in logical points, that pins the OS traffic lights
+    /// wrapped and vertically centered — derived facade-side from the measured
+    /// button box as `ceil(top_inset * 2 + box_height)` (twice the box's top gap
+    /// plus its height), never from `target_os` (section 24). `Some` is the bar
+    /// height verbatim: on a full-size self-drawn content view the buttons hug the
+    /// top and this is a compact bar; a native titled window reports a taller box
+    /// and the bar grows to it. `None` when no native box was reported (yet); the
+    /// caption then uses its standard height. The OS buttons are a fixed-size
+    /// overlay that does not zoom, so the bar pins rather than scales.
+    pub buttons_height: Option<f32>,
 }
 
 /// The deferred build of a new window's tree, run once by the facade after it
