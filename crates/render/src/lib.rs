@@ -15,6 +15,7 @@ pub mod color_atlas;
 pub mod frame;
 pub mod glyph_atlas;
 pub mod inspect;
+pub mod pool;
 pub mod primitive;
 pub mod rect_packer;
 pub mod renderer;

@@ -19,12 +19,13 @@ use viso_gpu::backend::{
 };
 use viso_gpu::{AddressMode, BindGroupId, FilterMode, SamplerId};
 use viso_gpu::{
-    BindGroupDesc, Binding, BlendMode, BufferDesc, BufferUsage, Frame, GpuBackend, LoadOp,
-    PipelineDesc, PipelineId, SamplerDesc, SurfaceId, TextureDesc, TextureFormat, TextureId,
+    BindGroupDesc, Binding, BlendMode, BufferUsage, Frame, GpuBackend, LoadOp, PipelineDesc,
+    PipelineId, SamplerDesc, SurfaceId, TextureDesc, TextureFormat, TextureId,
 };
 
 use viso_shader::{PipelineEntry, PipelineFamily, standard_manifest};
 
+use crate::pool::InstancePool;
 use crate::primitive::{GlyphInstance, ImageInstance, MeshVertex, Primitive, QuadInstance, Rect};
 use crate::scene::store::{StoreRef, glyph_instances};
 use crate::scene::{EmitContext, Scene};
@@ -35,11 +36,6 @@ const QUAD_STRIDE: usize = core::mem::size_of::<QuadInstance>();
 const IMAGE_STRIDE: usize = core::mem::size_of::<ImageInstance>();
 /// Bytes of one glyph instance.
 const GLYPH_STRIDE: usize = core::mem::size_of::<GlyphInstance>();
-/// Bytes of one mesh vertex.
-const MESH_VERTEX_STRIDE: usize = core::mem::size_of::<MeshVertex>();
-/// Bytes of one mesh index (`u32`).
-const MESH_INDEX_STRIDE: usize = core::mem::size_of::<u32>();
-
 /// What a [`Segment`] draws, and where its geometry lives.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) enum SegmentKind {
@@ -188,28 +184,20 @@ pub struct Renderer {
     /// uses one sampler configuration; the glyph coverage pool needs bilinear filtering,
     /// which this provides). Per-image sampler variety lands later.
     sampler: SamplerId,
-    /// Persistent quad instance buffer, reused across frames.
-    quad_buffer: viso_gpu::BufferId,
-    /// Capacity of `quad_buffer`, in instances.
-    quad_capacity: usize,
-    /// Persistent image instance buffer, reused across frames.
-    image_buffer: viso_gpu::BufferId,
-    /// Capacity of `image_buffer`, in instances.
-    image_capacity: usize,
-    /// Persistent glyph instance buffer, reused across frames.
-    glyph_buffer: viso_gpu::BufferId,
-    /// Capacity of `glyph_buffer`, in instances.
-    glyph_capacity: usize,
+    /// Persistent quad instance pool: a long-lived device buffer uploaded per
+    /// changed slot against a CPU shadow (§9.1), so a local paint change costs a
+    /// local upload rather than a full-buffer re-upload.
+    quad_pool: InstancePool<QuadInstance>,
+    /// Persistent image instance pool (same slot-diff upload as `quad_pool`).
+    image_pool: InstancePool<ImageInstance>,
+    /// Persistent glyph instance pool (same slot-diff upload as `quad_pool`).
+    glyph_pool: InstancePool<GlyphInstance>,
     /// The general triangle-mesh pipeline (Path/Mesh), registered once.
     mesh_pipeline: PipelineId,
-    /// Persistent mesh vertex buffer, reused across frames.
-    mesh_vertex_buffer: viso_gpu::BufferId,
-    /// Capacity of `mesh_vertex_buffer`, in vertices.
-    mesh_vertex_capacity: usize,
-    /// Persistent mesh index buffer, reused across frames.
-    mesh_index_buffer: viso_gpu::BufferId,
-    /// Capacity of `mesh_index_buffer`, in indices.
-    mesh_index_capacity: usize,
+    /// Persistent mesh vertex pool (slot-diff upload; vertices, not instances).
+    mesh_vertex_pool: InstancePool<MeshVertex>,
+    /// Persistent mesh index pool (slot-diff upload of the `u32` index stream).
+    mesh_index_pool: InstancePool<u32>,
     /// Cached per-texture bind groups, reused across frames.
     texture_bindings: Vec<TextureBinding>,
     /// Scratch quad instance data, reused each frame.
@@ -331,59 +319,23 @@ impl Renderer {
             address: AddressMode::ClampToEdge,
         });
 
-        let quad_capacity = 256;
-        let quad_buffer = backend.create_buffer(&BufferDesc {
-            size: quad_capacity * QUAD_STRIDE,
-            usage: BufferUsage::INSTANCE | BufferUsage::CPU_WRITE,
-            label: "quad-instances",
-        });
-        let image_capacity = 64;
-        let image_buffer = backend.create_buffer(&BufferDesc {
-            size: image_capacity * IMAGE_STRIDE,
-            usage: BufferUsage::INSTANCE | BufferUsage::CPU_WRITE,
-            label: "image-instances",
-        });
-        let glyph_capacity = 256;
-        let glyph_buffer = backend.create_buffer(&BufferDesc {
-            size: glyph_capacity * GLYPH_STRIDE,
-            usage: BufferUsage::INSTANCE | BufferUsage::CPU_WRITE,
-            label: "glyph-instances",
-        });
-        let mesh_vertex_capacity = 1024;
-        let mesh_vertex_buffer = backend.create_buffer(&BufferDesc {
-            size: mesh_vertex_capacity * MESH_VERTEX_STRIDE,
-            usage: BufferUsage::VERTEX | BufferUsage::CPU_WRITE,
-            label: "mesh-vertices",
-        });
-        let mesh_index_capacity = 2048;
-        let mesh_index_buffer = backend.create_buffer(&BufferDesc {
-            size: mesh_index_capacity * MESH_INDEX_STRIDE,
-            usage: BufferUsage::INDEX | BufferUsage::CPU_WRITE,
-            label: "mesh-indices",
-        });
-
         Self {
             quad_pipeline,
             image_pipeline,
             glyph_pipeline,
             sampler,
-            quad_buffer,
-            quad_capacity,
-            image_buffer,
-            image_capacity,
-            glyph_buffer,
-            glyph_capacity,
+            quad_pool: InstancePool::new(BufferUsage::INSTANCE, "quad-instances"),
+            image_pool: InstancePool::new(BufferUsage::INSTANCE, "image-instances"),
+            glyph_pool: InstancePool::new(BufferUsage::INSTANCE, "glyph-instances"),
             mesh_pipeline,
-            mesh_vertex_buffer,
-            mesh_vertex_capacity,
-            mesh_index_buffer,
-            mesh_index_capacity,
+            mesh_vertex_pool: InstancePool::new(BufferUsage::VERTEX, "mesh-vertices"),
+            mesh_index_pool: InstancePool::new(BufferUsage::INDEX, "mesh-indices"),
             texture_bindings: Vec::with_capacity(8),
-            quad_scratch: Vec::with_capacity(quad_capacity),
-            image_scratch: Vec::with_capacity(image_capacity),
-            glyph_scratch: Vec::with_capacity(glyph_capacity),
-            mesh_vertex_scratch: Vec::with_capacity(mesh_vertex_capacity),
-            mesh_index_scratch: Vec::with_capacity(mesh_index_capacity),
+            quad_scratch: Vec::with_capacity(256),
+            image_scratch: Vec::with_capacity(64),
+            glyph_scratch: Vec::with_capacity(256),
+            mesh_vertex_scratch: Vec::with_capacity(1024),
+            mesh_index_scratch: Vec::with_capacity(2048),
             segments: Vec::with_capacity(8),
             layer_stack: Vec::with_capacity(8),
             offscreen_passes: Vec::with_capacity(4),
@@ -561,10 +513,16 @@ impl Renderer {
         // Derive the frame's scratch + segments from the retained scene.
         self.lower_from_scene(backend);
 
-        self.upload_quads(backend);
-        self.upload_images(backend);
-        self.upload_glyphs(backend);
-        self.upload_mesh(backend);
+        // Reconcile each family's persistent device buffer with the freshly
+        // lowered draw-order scratch, uploading only the slots that changed since
+        // last frame (§9.1) — a local paint change is a local upload, an
+        // unchanged frame uploads nothing.
+        self.quad_pool.sync(backend, &self.quad_scratch);
+        self.image_pool.sync(backend, &self.image_scratch);
+        self.glyph_pool.sync(backend, &self.glyph_scratch);
+        self.mesh_vertex_pool
+            .sync(backend, &self.mesh_vertex_scratch);
+        self.mesh_index_pool.sync(backend, &self.mesh_index_scratch);
     }
 
     /// Lower the retained scene to this frame's instance scratch + submission-
@@ -945,110 +903,6 @@ impl Renderer {
         );
     }
 
-    /// Grow (if needed) and upload the staged quad instances.
-    fn upload_quads<B: GpuBackend>(&mut self, backend: &mut B) {
-        let count = self.quad_scratch.len();
-        if count == 0 {
-            return;
-        }
-        if count > self.quad_capacity {
-            let new_cap = count.next_power_of_two();
-            backend.destroy_buffer(self.quad_buffer);
-            self.quad_buffer = backend.create_buffer(&BufferDesc {
-                size: new_cap * QUAD_STRIDE,
-                usage: BufferUsage::INSTANCE | BufferUsage::CPU_WRITE,
-                label: "quad-instances",
-            });
-            self.quad_capacity = new_cap;
-        }
-        backend.write_buffer(self.quad_buffer, 0, instances_as_bytes(&self.quad_scratch));
-    }
-
-    /// Grow (if needed) and upload the staged image instances.
-    fn upload_images<B: GpuBackend>(&mut self, backend: &mut B) {
-        let count = self.image_scratch.len();
-        if count == 0 {
-            return;
-        }
-        if count > self.image_capacity {
-            let new_cap = count.next_power_of_two();
-            backend.destroy_buffer(self.image_buffer);
-            self.image_buffer = backend.create_buffer(&BufferDesc {
-                size: new_cap * IMAGE_STRIDE,
-                usage: BufferUsage::INSTANCE | BufferUsage::CPU_WRITE,
-                label: "image-instances",
-            });
-            self.image_capacity = new_cap;
-        }
-        backend.write_buffer(
-            self.image_buffer,
-            0,
-            instances_as_bytes(&self.image_scratch),
-        );
-    }
-
-    /// Grow (if needed) and upload the staged glyph instances.
-    fn upload_glyphs<B: GpuBackend>(&mut self, backend: &mut B) {
-        let count = self.glyph_scratch.len();
-        if count == 0 {
-            return;
-        }
-        if count > self.glyph_capacity {
-            let new_cap = count.next_power_of_two();
-            backend.destroy_buffer(self.glyph_buffer);
-            self.glyph_buffer = backend.create_buffer(&BufferDesc {
-                size: new_cap * GLYPH_STRIDE,
-                usage: BufferUsage::INSTANCE | BufferUsage::CPU_WRITE,
-                label: "glyph-instances",
-            });
-            self.glyph_capacity = new_cap;
-        }
-        backend.write_buffer(
-            self.glyph_buffer,
-            0,
-            instances_as_bytes(&self.glyph_scratch),
-        );
-    }
-
-    /// Grow (if needed) and upload the staged mesh vertices and indices.
-    fn upload_mesh<B: GpuBackend>(&mut self, backend: &mut B) {
-        let vcount = self.mesh_vertex_scratch.len();
-        let icount = self.mesh_index_scratch.len();
-        if vcount == 0 || icount == 0 {
-            return;
-        }
-        if vcount > self.mesh_vertex_capacity {
-            let new_cap = vcount.next_power_of_two();
-            backend.destroy_buffer(self.mesh_vertex_buffer);
-            self.mesh_vertex_buffer = backend.create_buffer(&BufferDesc {
-                size: new_cap * MESH_VERTEX_STRIDE,
-                usage: BufferUsage::VERTEX | BufferUsage::CPU_WRITE,
-                label: "mesh-vertices",
-            });
-            self.mesh_vertex_capacity = new_cap;
-        }
-        if icount > self.mesh_index_capacity {
-            let new_cap = icount.next_power_of_two();
-            backend.destroy_buffer(self.mesh_index_buffer);
-            self.mesh_index_buffer = backend.create_buffer(&BufferDesc {
-                size: new_cap * MESH_INDEX_STRIDE,
-                usage: BufferUsage::INDEX | BufferUsage::CPU_WRITE,
-                label: "mesh-indices",
-            });
-            self.mesh_index_capacity = new_cap;
-        }
-        backend.write_buffer(
-            self.mesh_vertex_buffer,
-            0,
-            instances_as_bytes(&self.mesh_vertex_scratch),
-        );
-        backend.write_buffer(
-            self.mesh_index_buffer,
-            0,
-            instances_as_bytes(&self.mesh_index_scratch),
-        );
-    }
-
     /// Encode the staged draws into a draw list against `surface` and present it.
     /// `clear` is the background color (premultiplied RGBA); `viewport` is the
     /// surface size in physical pixels `[width, height]`, which the Metal shaders
@@ -1171,7 +1025,10 @@ impl Renderer {
                 pipeline: self.quad_pipeline,
                 bind_group: None,
                 geometry: Geometry::Generated { count: seg.count },
-                instance_buffer: self.quad_buffer,
+                instance_buffer: self
+                    .quad_pool
+                    .buffer()
+                    .expect("quad pool buffer exists when a quad segment references it"),
                 instance_offset: seg.start as usize * QUAD_STRIDE,
                 uniforms,
                 scissor,
@@ -1180,7 +1037,10 @@ impl Renderer {
                 pipeline: self.image_pipeline,
                 bind_group: Some(bind_group),
                 geometry: Geometry::Generated { count: seg.count },
-                instance_buffer: self.image_buffer,
+                instance_buffer: self
+                    .image_pool
+                    .buffer()
+                    .expect("image pool buffer exists when an image segment references it"),
                 instance_offset: seg.start as usize * IMAGE_STRIDE,
                 uniforms,
                 scissor,
@@ -1189,28 +1049,39 @@ impl Renderer {
                 pipeline: self.glyph_pipeline,
                 bind_group: Some(bind_group),
                 geometry: Geometry::Generated { count: seg.count },
-                instance_buffer: self.glyph_buffer,
+                instance_buffer: self
+                    .glyph_pool
+                    .buffer()
+                    .expect("glyph pool buffer exists when a glyph segment references it"),
                 instance_offset: seg.start as usize * GLYPH_STRIDE,
                 uniforms,
                 scissor,
             },
-            SegmentKind::Mesh => DrawCommand {
-                pipeline: self.mesh_pipeline,
-                bind_group: None,
-                geometry: Geometry::IndexedMesh {
-                    vertex_buffer: self.mesh_vertex_buffer,
-                    index_buffer: self.mesh_index_buffer,
-                    index_offset: seg.start,
-                    index_count: seg.count,
-                },
-                // The mesh draw reads its per-vertex buffer at index 0 and has no
-                // per-instance data; the instance buffer is unused (the vertex
-                // buffer is passed only to fill the field).
-                instance_buffer: self.mesh_vertex_buffer,
-                instance_offset: 0,
-                uniforms,
-                scissor,
-            },
+            SegmentKind::Mesh => {
+                let vertex_buffer = self
+                    .mesh_vertex_pool
+                    .buffer()
+                    .expect("mesh vertex pool buffer exists when a mesh segment references it");
+                DrawCommand {
+                    pipeline: self.mesh_pipeline,
+                    bind_group: None,
+                    geometry: Geometry::IndexedMesh {
+                        vertex_buffer,
+                        index_buffer: self.mesh_index_pool.buffer().expect(
+                            "mesh index pool buffer exists when a mesh segment references it",
+                        ),
+                        index_offset: seg.start,
+                        index_count: seg.count,
+                    },
+                    // The mesh draw reads its per-vertex buffer at index 0 and has
+                    // no per-instance data; the instance buffer is unused (the
+                    // vertex buffer is passed only to fill the field).
+                    instance_buffer: vertex_buffer,
+                    instance_offset: 0,
+                    uniforms,
+                    scissor,
+                }
+            }
         }
     }
 }
@@ -1245,18 +1116,6 @@ fn bytemuck_viewport(viewport: &[f32; 2]) -> &[u8] {
         core::slice::from_raw_parts(
             viewport.as_ptr() as *const u8,
             core::mem::size_of::<[f32; 2]>(),
-        )
-    }
-}
-
-/// View a slice of `#[repr(C)]` `Copy` POD instances as raw bytes for upload.
-fn instances_as_bytes<T: Copy>(instances: &[T]) -> &[u8] {
-    // Safe: `T` is a `GpuPod` (`#[repr(C)]`, `Copy`, only POD scalars), so
-    // its byte representation is a valid contiguous instance buffer.
-    unsafe {
-        core::slice::from_raw_parts(
-            instances.as_ptr() as *const u8,
-            core::mem::size_of_val(instances),
         )
     }
 }
