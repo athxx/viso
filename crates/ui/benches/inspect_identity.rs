@@ -243,6 +243,7 @@ fn assert_inspect_is_cold() {
         FrameStats {
             draw_calls: 0,
             instances: 0,
+            ..Default::default()
         },
     );
     black_box((&ranges, &snap));
@@ -314,6 +315,7 @@ fn steady_frame_with_inspect_between(c: &mut Criterion) {
                 FrameStats {
                     draw_calls: 0,
                     instances: 0,
+                    ..Default::default()
                 },
             );
             black_box(snap);

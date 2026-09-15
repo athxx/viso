@@ -712,6 +712,7 @@ fn steady_tabs_frame_is_allocation_free_including_after_a_tab_flip() {
     let FrameStats {
         draw_calls,
         instances,
+        ..
     } = stats;
     assert!(draw_calls > 0, "the Tabs scene must emit draw calls");
     assert!(instances > 0, "the Tabs scene must emit instances");

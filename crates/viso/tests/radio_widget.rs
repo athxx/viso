@@ -682,6 +682,7 @@ fn steady_radio_frame_is_allocation_free() {
     let FrameStats {
         draw_calls,
         instances,
+        ..
     } = stats;
     assert!(draw_calls > 0, "the RadioGroup scene must emit draw calls");
     assert!(instances > 0, "the RadioGroup scene must emit instances");

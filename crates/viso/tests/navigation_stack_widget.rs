@@ -619,6 +619,7 @@ fn steady_navigation_stack_frame_is_allocation_free_including_after_a_page_flip(
     let FrameStats {
         draw_calls,
         instances,
+        ..
     } = stats;
     assert!(
         draw_calls > 0,

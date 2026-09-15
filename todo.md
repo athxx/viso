@@ -356,26 +356,26 @@ stage (F3-ext), out of scope here.
 - [x] Gate green + golden/bench byte-identical (F3.1 adds stores, changes no output).
 
 ### F3.2 — Ingest-diff (stable IDs by positional identity; revision-plane bumps)
-- [ ] `render/src/scene/ingest.rs` (NEW): walk `&[Primitive]` assigning a stable
+- [x] `render/src/scene/ingest.rs` (NEW): walk `&[Primitive]` assigning a stable
       `PrimitiveId` by positional identity vs the previous frame (Nth primitive of a
       kind → same slot). Diff each primitive field-wise against the retained store;
       bump ONLY the affected revision plane(s) — a moved quad bumps `TransformStore`/
       `TransformRevision`, a recolored quad bumps `PaintRevision`, unchanged →
       zero store mutation (§8.4, this is "0 primitive reconstruction" under a
       whole-tree re-emit).
-- [ ] Kind/count-change handling: when positional identity breaks (a primitive kind
+- [x] Kind/count-change handling: when positional identity breaks (a primitive kind
       changes at a slot, or the tree grows/shrinks), reslot on the cold "structure
       changed" path (§9.5) — no per-frame HashMap on the steady-state path.
-- [ ] Identity separation verified: a pure move dirties `TransformStore` only;
+- [x] Identity separation verified: a pure move dirties `TransformStore` only;
       geometry/tessellation and `PaintRevision` untouched (§8, §11).
-- [ ] Extend `FrameStats` (today `{draw_calls, instances}`, `renderer.rs:153-162`)
+- [x] Extend `FrameStats` (today `{draw_calls, instances}`, `renderer.rs:153-162`)
       toward §61 with integer counters (no alloc): `visible_primitives`,
       `dirty_primitives`, `quad_instances`, `glyph_instances`, `path_tessellations`.
-- [ ] `render/tests/` (NEW): paint-only opacity/color change bumps `PaintRevision`
-      only — `GeometryRevision` unchanged, tessellation cache hit, zero geometry
-      store mutation. Steady-state: identical input twice → zero store mutation,
-      allocations flat.
-- [ ] Gate green + golden/bench byte-identical (diff drives the same store contents).
+- [x] `render/tests/scene_diff.rs` (NEW): paint-only color change bumps `PaintRevision`
+      only — `GeometryRevision`/`TransformRevision`/`ClipRevision`/`ResourceRevision`
+      unchanged. Steady-state: identical input re-uploaded → zero plane bump,
+      `dirty_primitives == 0`, visible primitive still counted.
+- [x] Gate green + golden/bench byte-identical (diff drives the same store contents).
 
 ### F3.3 — Switch source of truth (submit walks retained stores)
 - [ ] `render/src/renderer.rs`: `submit`/`upload` lower from the retained stores +

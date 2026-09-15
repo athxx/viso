@@ -26,7 +26,9 @@ use viso_gpu::{
 use viso_shader::{PipelineEntry, PipelineFamily, standard_manifest};
 
 use crate::primitive::{GlyphInstance, ImageInstance, MeshVertex, Primitive, QuadInstance, Rect};
-use crate::scene::store::{StoreRef, glyph_instances};
+use crate::scene::store::glyph_instances;
+#[cfg(debug_assertions)]
+use crate::scene::store::StoreRef;
 use crate::scene::{EmitContext, Scene};
 
 /// Bytes of one quad instance.
@@ -181,7 +183,7 @@ struct TextureBinding {
 /// offscreen and main passes) but `submit` has not consumed it. Exposed for
 /// tooling/tests/benches (§34, §61); the steady-state bench asserts these stay
 /// constant across identical frames, guarding the dispatch contract (§7.1).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct FrameStats {
     /// Total draw commands this frame will encode, summed over every pass
     /// (offscreen passes plus the main surface pass, including composite draws).
@@ -190,6 +192,19 @@ pub struct FrameStats {
     /// quad/image/glyph/composite segments, indices for mesh segments. A stable
     /// scene keeps this fixed, so it doubles as a change detector for the bench.
     pub instances: usize,
+    /// Retained primitives the ingest walk visited this frame (§61). One per
+    /// `ingest_*` call, composites excluded (they are per-frame derived draws).
+    pub visible_primitives: u32,
+    /// Retained primitives whose diff moved at least one revision plane this
+    /// frame — the steady-state target is 0 for an unchanged scene (§61, §8.4).
+    pub dirty_primitives: u32,
+    /// Quad instances retained this frame (§61).
+    pub quad_instances: u32,
+    /// Glyph instances retained this frame, summed across runs (§61).
+    pub glyph_instances: u32,
+    /// Paths (re-)tessellated this frame — a geometry/paint change or a cold
+    /// append; a cache hit does not count (§61).
+    pub path_tessellations: u32,
 }
 
 /// Turns per-frame primitives into GPU draw commands for one surface.
@@ -469,9 +484,9 @@ impl Renderer {
                 Primitive::Quad(quad) => {
                     let start = self.quad_scratch.len() as u32;
                     let mut inst = quad.to_instance();
-                    // Retain the world-space instance (origin not yet subtracted)
-                    // in the shadow store, then record its paint-order slot.
-                    let slot = self.scene.quads.push(inst);
+                    // Diff the world-space instance (origin not yet subtracted)
+                    // into the retained store, bumping only the moved planes, and
+                    // record its paint-order slot.
                     let bounds = crate::scene::bounds::Bounds::from_world(
                         Rect {
                             x: inst.rect_pos[0],
@@ -483,7 +498,7 @@ impl Renderer {
                         0.0,
                         0.0,
                     );
-                    self.scene.record(StoreRef::Quad(slot), ctx, bounds);
+                    self.scene.ingest_quad(inst, ctx, bounds);
                     inst.rect_pos[0] -= origin[0];
                     inst.rect_pos[1] -= origin[1];
                     self.quad_scratch.push(inst);
@@ -510,7 +525,6 @@ impl Renderer {
                     let bind_group = self.bind_group_for(backend, image.texture);
                     let start = self.image_scratch.len() as u32;
                     let mut inst = image.to_instance();
-                    let slot = self.scene.images.push(inst, image.texture);
                     let bounds = crate::scene::bounds::Bounds::from_world(
                         Rect {
                             x: inst.rect_pos[0],
@@ -522,7 +536,7 @@ impl Renderer {
                         0.0,
                         0.0,
                     );
-                    self.scene.record(StoreRef::Image(slot), ctx, bounds);
+                    self.scene.ingest_image(inst, image.texture, ctx, bounds);
                     inst.rect_pos[0] -= origin[0];
                     inst.rect_pos[1] -= origin[1];
                     self.image_scratch.push(inst);
@@ -541,12 +555,8 @@ impl Renderer {
                     let index_start = self.mesh_index_scratch.len() as u32;
                     let vertex_start = self.mesh_vertex_scratch.len();
                     self.tessellate_into(|verts, idx| path.tessellate(verts, idx));
-                    let slot = self.scene.paths.push(path);
-                    self.scene.record(
-                        StoreRef::Path(slot),
-                        ctx,
-                        crate::scene::bounds::Bounds::default(),
-                    );
+                    self.scene
+                        .ingest_path(path, ctx, crate::scene::bounds::Bounds::default());
                     self.translate_vertices(vertex_start, origin);
                     let count = self.mesh_index_scratch.len() as u32 - index_start;
                     self.push_mesh_segment(index_start, count, clip, target);
@@ -559,9 +569,9 @@ impl Renderer {
                         verts.extend_from_slice(&mesh.vertices);
                         idx.extend(mesh.indices.iter().map(|&i| base + i));
                     });
-                    let slot = self.scene.meshes.push(&mesh.vertices, &mesh.indices);
-                    self.scene.record(
-                        StoreRef::Mesh(slot),
+                    self.scene.ingest_mesh(
+                        &mesh.vertices,
+                        &mesh.indices,
                         ctx,
                         crate::scene::bounds::Bounds::default(),
                     );
@@ -576,12 +586,9 @@ impl Renderer {
                     let bind_group = self.bind_group_for(backend, run.atlas);
                     let start = self.glyph_scratch.len() as u32;
                     let color = [run.color.r, run.color.g, run.color.b, run.color.a];
-                    let slot = self
-                        .scene
-                        .glyph_runs
-                        .push_run(glyph_instances(&run.glyphs, color), run.atlas);
-                    self.scene.record(
-                        StoreRef::GlyphRun(slot),
+                    self.scene.ingest_glyph_run(
+                        glyph_instances(&run.glyphs, color),
+                        run.atlas,
                         ctx,
                         crate::scene::bounds::Bounds::default(),
                     );
@@ -643,6 +650,11 @@ impl Renderer {
                 }
             }
         }
+
+        // Trim any store tail the walk did not revisit (the scene shrank) so the
+        // retained stores hold exactly this frame's primitives before the shadow
+        // re-derivation reads them back.
+        self.scene.finish_frame();
 
         self.upload_quads(backend);
         self.upload_images(backend);
@@ -836,10 +848,28 @@ impl Renderer {
     /// scene whose nodes did not change lowers to the same segments and keeps it
     /// fixed. `instances` sums each segment's `count`. See [`FrameStats`].
     pub fn frame_stats(&self) -> FrameStats {
+        let ingest = self.scene.ingest_stats;
         FrameStats {
             draw_calls: self.segments.len(),
             instances: self.segments.iter().map(|s| s.count as usize).sum(),
+            visible_primitives: ingest.visible_primitives,
+            dirty_primitives: ingest.dirty_primitives,
+            quad_instances: ingest.quad_instances,
+            glyph_instances: ingest.glyph_instances,
+            path_tessellations: ingest.path_tessellations,
         }
+    }
+
+    /// A snapshot of the retained scene's revision planes (§8.4, §62), as they
+    /// stand after the last [`upload`](Self::upload).
+    ///
+    /// Each plane is an independent monotone counter the ingest diff bumps only
+    /// when the change it names actually moved — a recolor advances `paint` and
+    /// leaves `geometry` where it was. Comparing two snapshots across frames
+    /// tells a consumer (or a test, or Studio) exactly which dimension of the
+    /// scene changed. Cold-path introspection only; not read on the hot path.
+    pub fn scene_revisions(&self) -> crate::scene::revision::Revisions {
+        self.scene.revisions
     }
 
     /// The frame's draw segments, for the cold-path batch introspection surface
@@ -1032,8 +1062,8 @@ impl Renderer {
         // emit context is main-pass / no-clip / zero-origin. Re-derivation reads
         // the retained instance straight back.
         let bounds = crate::scene::bounds::Bounds::from_world(pass.rect, None, 0.0, 0.0);
-        self.scene.record(
-            StoreRef::Composite(composite),
+        self.scene.ingest_composite(
+            composite,
             EmitContext {
                 clip: None,
                 offscreen: None,
