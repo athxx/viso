@@ -165,7 +165,7 @@ mod tests {
     fn natural_reads_each_variant() {
         let text = Content::Text {
             glyphs: Vec::new(),
-            atlas: TextureId(1),
+            atlas: TextureId::new(1),
             color_glyphs: Vec::new(),
             color_atlas: None,
             color: Rgba {
@@ -183,7 +183,7 @@ mod tests {
         assert_eq!(text.baseline(), Some(9.0));
 
         let image = Content::Image {
-            texture: TextureId(2),
+            texture: TextureId::new(2),
             uv: Rect {
                 x: 0.0,
                 y: 0.0,

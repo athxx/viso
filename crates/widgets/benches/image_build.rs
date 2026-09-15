@@ -29,7 +29,7 @@ const H: f32 = 96.0;
 
 /// A dummy resident texture id — the bench never paints to a real GPU, so any
 /// id is fine.
-const TEXTURE: TextureId = TextureId(0);
+const TEXTURE: TextureId = TextureId::new(0);
 
 /// Author a single `Image` into a fresh store and return the store plus its
 /// root — the input the layout/paint phases below run on.

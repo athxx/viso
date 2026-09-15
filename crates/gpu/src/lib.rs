@@ -6,8 +6,8 @@
 //!
 //! This crate must never see widgets, layout, or state (§17.1).
 //!
-//! Phase 0 status: typed resource-handle contract + the `GpuInstance` marker.
-//! No backend implementation.
+//! Resource handles are generation-safe (`{index, generation}`): a stale handle
+//! is detectable and never resolves to a different live resource.
 
 #![forbid(unsafe_op_in_unsafe_fn)]
 
@@ -68,11 +68,40 @@ pub use viso_macros::GpuInstance;
 
 /// Typed, cheap-to-copy handles for GPU resources. Backends map these to
 /// their own native objects; users and upper layers never see raw pointers.
+///
+/// Each handle is generation-safe: `index` selects a storage slot and
+/// `generation` is bumped when that slot is reclaimed, so a handle left over
+/// from a destroyed resource is detectable and never resolves to whatever new
+/// resource later took its slot. The `{index, generation}` shape matches the
+/// runtime `NodeId` (§8.2).
 macro_rules! resource_id {
     ($(#[$m:meta])* $name:ident) => {
         $(#[$m])*
+        #[repr(C)]
         #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-        pub struct $name(pub u32);
+        pub struct $name {
+            /// Storage-slot index.
+            pub index: u32,
+            /// Slot generation; bumped on reclaim so stale handles miss.
+            pub generation: u32,
+        }
+
+        impl $name {
+            /// A handle to `index` in generation 0.
+            #[inline]
+            pub const fn new(index: u32) -> Self {
+                Self {
+                    index,
+                    generation: 0,
+                }
+            }
+
+            /// The storage-slot index this handle selects.
+            #[inline]
+            pub const fn index(self) -> u32 {
+                self.index
+            }
+        }
     };
 }
 
@@ -95,9 +124,8 @@ resource_id!(/// Handle to a swapchain/surface.
 /// Host structs and GPU instance data are separate concerns. This trait is
 /// intended to be implemented only by the `#[derive(GpuInstance)]` macro,
 /// which validates field offsets, alignment, types, and the matching shader
-/// declaration — so the framework never relies on the implicit
-/// "everything after field X is GPU memory" assumption that legacy makepad's
-/// `DrawVars` leaned on.
+/// declaration — so the framework never relies on an implicit
+/// "everything after field X is GPU memory" assumption.
 ///
 /// # Safety
 /// Implementors must be `#[repr(C)]` and contain only GPU-uploadable fields

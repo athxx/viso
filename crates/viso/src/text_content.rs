@@ -302,7 +302,7 @@ impl TextShaper {
         let atlas = self
             .coverage_atlas
             .as_ref()
-            .map_or(TextureId(0), GlyphAtlas::texture);
+            .map_or(TextureId::new(0), GlyphAtlas::texture);
         self.upload_dirty(backend);
         Content::Text {
             glyphs,
@@ -658,7 +658,7 @@ fn hard_rows(text: &str) -> Vec<(usize, usize)> {
 fn empty_content(request: &TextRequest, shaped_at_width: Option<f32>) -> Content {
     Content::Text {
         glyphs: Vec::new(),
-        atlas: TextureId(0),
+        atlas: TextureId::new(0),
         color_glyphs: Vec::new(),
         color_atlas: None,
         color: request.color,

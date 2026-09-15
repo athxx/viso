@@ -1848,7 +1848,7 @@ mod tests {
             id,
             Content::Text {
                 glyphs: Vec::new(),
-                atlas: TextureId(0),
+                atlas: TextureId::new(0),
                 color_glyphs: Vec::new(),
                 color_atlas: None,
                 color: Rgba {

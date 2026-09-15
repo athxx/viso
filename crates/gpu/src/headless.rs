@@ -118,7 +118,7 @@ impl HeadlessRaster {
     /// This is the golden-test capture path; it mirrors a Metal texture
     /// readback of a `Bgra8Unorm` swapchain.
     pub fn read_pixels_bgra8(&self, surface: SurfaceId) -> Vec<u8> {
-        let s = &self.surfaces[surface.0 as usize];
+        let s = &self.surfaces[surface.index as usize];
         let mut out = Vec::with_capacity(s.color.len() * 4);
         for &[r, g, b, a] in &s.color {
             let (ur, ug, ub) = unpremultiply(r, g, b, a);
@@ -133,7 +133,7 @@ impl HeadlessRaster {
     /// Sample one texel `[f32; 4]` (premultiplied linear) from `surface` at
     /// pixel `(x, y)`, top-left origin. Convenience for single-pixel assertions.
     pub fn surface_texel(&self, surface: SurfaceId, x: u32, y: u32) -> [f32; 4] {
-        let s = &self.surfaces[surface.0 as usize];
+        let s = &self.surfaces[surface.index as usize];
         s.color[(y * s.width + x) as usize]
     }
 
@@ -168,7 +168,7 @@ impl HeadlessRaster {
 
 impl GpuBackend for HeadlessRaster {
     fn create_buffer(&mut self, desc: &BufferDesc) -> BufferId {
-        let id = BufferId(self.buffers.len() as u32);
+        let id = BufferId::new(self.buffers.len() as u32);
         self.buffers.push(HeadlessBuffer {
             bytes: vec![0u8; desc.size],
         });
@@ -176,7 +176,7 @@ impl GpuBackend for HeadlessRaster {
     }
 
     fn create_texture(&mut self, desc: &TextureDesc) -> TextureId {
-        let id = TextureId(self.textures.len() as u32);
+        let id = TextureId::new(self.textures.len() as u32);
         let count = (desc.width * desc.height) as usize;
         self.textures.push(HeadlessTexture {
             width: desc.width,
@@ -188,7 +188,7 @@ impl GpuBackend for HeadlessRaster {
     }
 
     fn create_sampler(&mut self, desc: &SamplerDesc) -> SamplerId {
-        let id = SamplerId(self.samplers.len() as u32);
+        let id = SamplerId::new(self.samplers.len() as u32);
         self.samplers.push(*desc);
         id
     }
@@ -201,7 +201,7 @@ impl GpuBackend for HeadlessRaster {
         // Registration-time layout check (§32): the derived instance layout must
         // match the shader's declared schema before the pipeline is usable.
         layout.validate_against(&desc.instance_schema)?;
-        let id = PipelineId(self.pipelines.len() as u32);
+        let id = PipelineId::new(self.pipelines.len() as u32);
         self.pipelines.push(HeadlessPipeline {
             builtin: desc.builtin,
             layout: *layout,
@@ -210,7 +210,7 @@ impl GpuBackend for HeadlessRaster {
     }
 
     fn create_bind_group(&mut self, desc: &BindGroupDesc) -> BindGroupId {
-        let id = BindGroupId(self.bind_groups.len() as u32);
+        let id = BindGroupId::new(self.bind_groups.len() as u32);
         self.bind_groups.push(HeadlessBindGroup {
             bindings: desc.bindings.clone(),
         });
@@ -218,12 +218,12 @@ impl GpuBackend for HeadlessRaster {
     }
 
     fn write_buffer(&mut self, id: BufferId, offset: usize, bytes: &[u8]) {
-        let buf = &mut self.buffers[id.0 as usize];
+        let buf = &mut self.buffers[id.index as usize];
         buf.bytes[offset..offset + bytes.len()].copy_from_slice(bytes);
     }
 
     fn write_texture(&mut self, id: TextureId, x: u32, y: u32, w: u32, h: u32, bytes: &[u8]) {
-        let tex = &mut self.textures[id.0 as usize];
+        let tex = &mut self.textures[id.index as usize];
         let bpt = tex.format.bytes_per_texel();
         for row in 0..h {
             for col in 0..w {
@@ -237,7 +237,7 @@ impl GpuBackend for HeadlessRaster {
     fn create_surface(&mut self, _raw: RawWindowHandle, width: u32, height: u32) -> SurfaceId {
         // The headless backend ignores the (Headless) handle; it just allocates
         // a CPU framebuffer of the requested size.
-        let id = SurfaceId(self.surfaces.len() as u32);
+        let id = SurfaceId::new(self.surfaces.len() as u32);
         self.surfaces.push(HeadlessSurface {
             width,
             height,
@@ -248,7 +248,7 @@ impl GpuBackend for HeadlessRaster {
     }
 
     fn resize_surface(&mut self, id: SurfaceId, width: u32, height: u32) {
-        let s = &mut self.surfaces[id.0 as usize];
+        let s = &mut self.surfaces[id.index as usize];
         s.width = width;
         s.height = height;
         s.color = vec![[0.0; 4]; (width * height) as usize];
@@ -277,7 +277,7 @@ impl GpuBackend for HeadlessRaster {
     }
 
     fn surface_format(&self, surface: SurfaceId) -> TextureFormat {
-        self.surfaces[surface.0 as usize].format
+        self.surfaces[surface.index as usize].format
     }
 }
 
@@ -297,19 +297,19 @@ impl HeadlessRaster {
     fn encode_pass(&mut self, pass: &RenderPass, commands: &[DrawCommand]) {
         let (target, width, height) = match pass.target {
             RenderTarget::Surface(frame) => {
-                let s = &self.surfaces[frame.surface.0 as usize];
+                let s = &self.surfaces[frame.surface.index as usize];
                 (FbTarget::Surface(frame.surface), s.width, s.height)
             }
             RenderTarget::Texture(id) => {
-                let t = &self.textures[id.0 as usize];
+                let t = &self.textures[id.index as usize];
                 (FbTarget::Texture(id), t.width, t.height)
             }
         };
 
         if let LoadOp::Clear(rgba) = pass.load {
             match target {
-                FbTarget::Surface(id) => self.surfaces[id.0 as usize].color.fill(rgba),
-                FbTarget::Texture(id) => self.textures[id.0 as usize].texels.fill(rgba),
+                FbTarget::Surface(id) => self.surfaces[id.index as usize].color.fill(rgba),
+                FbTarget::Texture(id) => self.textures[id.index as usize].texels.fill(rgba),
             }
         }
 
@@ -323,8 +323,8 @@ impl HeadlessRaster {
     /// sampled source texture out first, so a texture target never aliases here).
     fn framebuffer(&mut self, target: FbTarget) -> &mut [[f32; 4]] {
         match target {
-            FbTarget::Surface(id) => &mut self.surfaces[id.0 as usize].color,
-            FbTarget::Texture(id) => &mut self.textures[id.0 as usize].texels,
+            FbTarget::Surface(id) => &mut self.surfaces[id.index as usize].color,
+            FbTarget::Texture(id) => &mut self.textures[id.index as usize].texels,
         }
     }
 
@@ -332,7 +332,7 @@ impl HeadlessRaster {
     fn encode_command(&mut self, target: FbTarget, width: u32, height: u32, cmd: &DrawCommand) {
         // Copy the pipeline metadata (both `Copy`) so the per-pixel fill can take
         // `&mut self` for blending without aliasing the pipeline/buffer tables.
-        let pipeline = &self.pipelines[cmd.pipeline.0 as usize];
+        let pipeline = &self.pipelines[cmd.pipeline.index as usize];
         let builtin = pipeline.builtin;
         let layout = pipeline.layout;
 
@@ -341,7 +341,7 @@ impl HeadlessRaster {
                 // Copy this command's instance bytes out for the same aliasing
                 // reason.
                 let span = count as usize * layout.stride;
-                let instances = self.buffers[cmd.instance_buffer.0 as usize].bytes
+                let instances = self.buffers[cmd.instance_buffer.index as usize].bytes
                     [cmd.instance_offset..cmd.instance_offset + span]
                     .to_vec();
 
@@ -386,8 +386,8 @@ impl HeadlessRaster {
                 index_count,
             } => {
                 // Snapshot the vertex + index bytes for the same aliasing reason.
-                let verts = self.buffers[vertex_buffer.0 as usize].bytes.clone();
-                let idx_bytes = self.buffers[index_buffer.0 as usize].bytes.clone();
+                let verts = self.buffers[vertex_buffer.index as usize].bytes.clone();
+                let idx_bytes = self.buffers[index_buffer.index as usize].bytes.clone();
                 self.fill_mesh(
                     target,
                     width,
@@ -640,10 +640,10 @@ impl HeadlessRaster {
                 address: crate::resource::AddressMode::ClampToEdge,
             },
         );
-        for binding in &self.bind_groups[bg.0 as usize].bindings {
+        for binding in &self.bind_groups[bg.index as usize].bindings {
             match binding {
                 crate::resource::Binding::Texture(t) => tex_id = Some(*t),
-                crate::resource::Binding::Sampler(s) => samp = self.samplers[s.0 as usize],
+                crate::resource::Binding::Sampler(s) => samp = self.samplers[s.index as usize],
                 crate::resource::Binding::Uniform(_) => {}
             }
         }
@@ -651,7 +651,7 @@ impl HeadlessRaster {
         // Snapshot the texture (dimensions + premultiplied texels) so the
         // per-pixel loop can take `&mut self.surfaces` without aliasing.
         let (tw, th, texels) = {
-            let t = &self.textures[tex_id.0 as usize];
+            let t = &self.textures[tex_id.index as usize];
             (t.width, t.height, t.texels.clone())
         };
         if tw == 0 || th == 0 {
@@ -743,16 +743,16 @@ impl HeadlessRaster {
                 address: crate::resource::AddressMode::ClampToEdge,
             },
         );
-        for binding in &self.bind_groups[bg.0 as usize].bindings {
+        for binding in &self.bind_groups[bg.index as usize].bindings {
             match binding {
                 crate::resource::Binding::Texture(t) => tex_id = Some(*t),
-                crate::resource::Binding::Sampler(s) => samp = self.samplers[s.0 as usize],
+                crate::resource::Binding::Sampler(s) => samp = self.samplers[s.index as usize],
                 crate::resource::Binding::Uniform(_) => {}
             }
         }
         let Some(tex_id) = tex_id else { return };
         let (tw, th, texels) = {
-            let t = &self.textures[tex_id.0 as usize];
+            let t = &self.textures[tex_id.index as usize];
             (t.width, t.height, t.texels.clone())
         };
         if tw == 0 || th == 0 || size[0] <= 0.0 || size[1] <= 0.0 {

@@ -916,7 +916,7 @@ mod tests {
     fn glyphrun_lowers_to_instance_with_run_color() {
         let run = GlyphRunDraw {
             glyphs: vec![],
-            atlas: TextureId(0),
+            atlas: TextureId::new(0),
             color: Rgba {
                 r: 0.1,
                 g: 0.2,
@@ -968,7 +968,7 @@ mod tests {
                 b: 0.25,
                 a: 0.8,
             },
-            texture: TextureId(0),
+            texture: TextureId::new(0),
         };
         let inst = img.to_instance();
         assert_eq!(inst.rect_pos, [10.0, 20.0]);

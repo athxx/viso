@@ -242,14 +242,14 @@ mod tests {
 
     #[test]
     fn empty_bitmap_allocates_nothing() {
-        let mut atlas = GlyphAtlas::new(64, TextureId(0));
+        let mut atlas = GlyphAtlas::new(64, TextureId::new(0));
         assert_eq!(atlas.alloc(&bitmap(0, 0, 0)), AtlasAlloc::Empty);
         assert!(atlas.take_dirty().is_none());
     }
 
     #[test]
     fn placed_uv_is_normalized_and_gutter_offset() {
-        let mut atlas = GlyphAtlas::new(64, TextureId(0));
+        let mut atlas = GlyphAtlas::new(64, TextureId::new(0));
         let AtlasAlloc::Placed(uv) = atlas.alloc(&bitmap(8, 8, 200)) else {
             panic!("should place");
         };
@@ -262,7 +262,7 @@ mod tests {
 
     #[test]
     fn blit_writes_coverage_and_dirty_rect() {
-        let mut atlas = GlyphAtlas::new(64, TextureId(0));
+        let mut atlas = GlyphAtlas::new(64, TextureId::new(0));
         atlas.alloc(&bitmap(4, 4, 123));
         let (x, y, w, h, bytes) = atlas.take_dirty().expect("dirty after alloc");
         assert_eq!((x, y, w, h), (1, 1, 4, 4));
@@ -274,7 +274,7 @@ mod tests {
 
     #[test]
     fn two_glyphs_do_not_overlap() {
-        let mut atlas = GlyphAtlas::new(64, TextureId(0));
+        let mut atlas = GlyphAtlas::new(64, TextureId::new(0));
         let AtlasAlloc::Placed(a) = atlas.alloc(&bitmap(10, 10, 50)) else {
             panic!()
         };
@@ -288,7 +288,7 @@ mod tests {
     #[test]
     fn overflow_wipes_and_bumps_epoch() {
         // A tiny atlas that fits one padded 8×8 (10×10) but not two.
-        let mut atlas = GlyphAtlas::new(12, TextureId(0));
+        let mut atlas = GlyphAtlas::new(12, TextureId::new(0));
         assert!(matches!(
             atlas.alloc(&bitmap(8, 8, 9)),
             AtlasAlloc::Placed(_)
@@ -309,7 +309,7 @@ mod tests {
 
     #[test]
     fn glyph_larger_than_atlas_is_overflow_without_wipe_loop() {
-        let mut atlas = GlyphAtlas::new(8, TextureId(0));
+        let mut atlas = GlyphAtlas::new(8, TextureId::new(0));
         // 8×8 glyph needs 10×10 with the gutter — never fits an 8-texel atlas.
         assert_eq!(atlas.alloc(&bitmap(8, 8, 1)), AtlasAlloc::Overflow);
         // No wipe happened (epoch unchanged): a wipe would not help.
