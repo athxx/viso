@@ -273,10 +273,35 @@ oracle tests already prove byte-equal to `emit_msl`). The §36.1 CPU↔GPU
 - [x] Gate green + `metal_glyph.rs` green + §36.1 cross-check runs against manifest reflection.
 
 ### Freeze
-- [ ] FREEZE F2: the `PipelineManifest` shape, `PipelineFamily`/`VariantKey`, and the
+- [x] FREEZE F2: the `PipelineManifest` shape, `PipelineFamily`/`VariantKey`, and the
       `GpuPod` ABI of the four instance structs (`QuadInstance`/`ImageInstance`/
       `GlyphInstance`/`MeshVertex`). F3 (stores/instances) and F4 (instance pool/upload
       ring/batch `BatchKey`) bind to these.
+      Frozen contract (stable for F3–F4 and D/C/E/M/A to build on):
+      - `PipelineFamily` (`shader/src/manifest.rs`): `SolidRect` / `AnalyticRRect` /
+        `AnalyticEllipse` / `AnalyticLine` / `Image` / `Gradient` / `PathFill` / `PathStroke` /
+        `MaskComposite` (§7.5). Dynamic params ride the instance/uniform data, not pipeline
+        permutations — no uber-shader, no per-instance variant explosion.
+      - `VariantKey { family, color_target: ColorTargetClass, sample_count: u8, depth_stencil:
+        bool }` with `packed() -> u32` over disjoint bit fields (family 0..8, color 8..16,
+        samples 16..24, depth bit 24). Only dimensions that truly change pipeline/state/code
+        are variant keys.
+      - `PipelineEntry { family, variant, builtin: BuiltinShader, msl: &'static str, schema:
+        InstanceSchema, vertex_entry, fragment_entry }`; `PipelineManifest { entries }` with
+        `.entries()` / `.entry(family)`; `standard_manifest() -> &'static PipelineManifest`
+        (`OnceLock`, the four implemented built-ins: SolidRect→Quad, Image, MaskComposite→
+        GlyphRun, PathFill→mesh). Manifest MSL is the frozen `*_MSL()` oracle byte-for-byte.
+      - `GpuPod` instance/vertex ABI (`render/src/primitive.rs`, `#[repr(C)]`, align 4,
+        pinned in `render/tests/instance_abi_frozen.rs`):
+        - `QuadInstance` stride 56: rect_pos@0, rect_size@8, color@16, radius@32,
+          border_width@36, border_color@40.
+        - `ImageInstance` stride 48: rect_pos@0, rect_size@8, uv_pos@16, uv_size@24, color@32.
+        - `GlyphInstance` stride 48: same shape as `ImageInstance`, frozen independently.
+        - `MeshVertex` stride 28: pos@0, color@8, edge@24 (per-vertex, not per-instance).
+      - Zero-copy upload (§7.4): `&[GpuPod]` → typed byte view → mapped `write_buffer`; no
+        `Vec<Instance>→Vec<f32>→Vec<u8>` chain. Release never compiles MSL on a draw
+        (`render/tests/metal_no_runtime_compile.rs`); dev keep-last-good stays byte-identical
+        to the frozen manifest (`render/tests/dev_shader_pipeline.rs`).
 
 ## F3 — Retained scene under frozen immediate-mode API (`render`)
 (expanded when F2 is frozen)
