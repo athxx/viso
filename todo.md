@@ -1,9 +1,23 @@
-# Viso Rendering Foundation — F0 → F4
+# Viso Rendering — F0 → F4 → D0 → D3 → C0 → E2 → M0 → M1 → A0
 
 Construction order is strict (Viso_Rendering.md §34): each layer's Done gate must be
 green and its contract frozen before the next layer builds on it. The immediate-mode
 boundary (`Primitive` enum + value types, `upload`/`submit` signatures, `paint.rs`,
 `repaint_dirty`, facade prelude) stays frozen through F0–F4.
+
+F0–F4 (the foundation) are complete and frozen. D0 → A0 below are planned but not yet
+started; work them strictly in order, one verifiable sub-unit at a time, never letting an
+upper layer become a prerequisite of a lower one (§3): `M0/M1/A0` must never be listed as
+a completion prerequisite of `D0~E2`; `D0~D3` must never depend on compute; `A0` is
+advanced optimization, not a correctness prerequisite. Crate landing points follow the
+frozen split (§2): `viso-render` owns geometry / bounds / ROI / retained identity /
+instance packing / batching / dirty upload / clip / effect-bounds / backdrop-dependency;
+`viso-shader` owns coverage / blur / distortion / color kernels (knows nothing of widget /
+node / clip-chain / layout); `viso-gpu` owns buffer / pipeline / command / surface /
+texture / dispatch / barrier (knows nothing of rect / text / shadow / glass). No new
+crates. Material *semantics* and platform material *parameters* (M0/M1) are out of scope
+here — deferred to `Viso_Visual_Materials.md`; only the render/shader/gpu-side backdrop /
+ROI / blur / pass / format work belongs in this plan.
 
 Gate for every section: `cargo xtask check-deps` · `cargo fmt --all -- --check` ·
 `cargo clippy --workspace --all-targets -- -D warnings` · `cargo test --workspace` ·
@@ -664,3 +678,584 @@ safety-relevant behavior §9.2 actually cares about — rather than building an 
         retire path and forces one full upload. Capacity is a high-water mark — a shorter
         frame never shrinks it. Contiguous dirty slots route through `coalesce` into few
         `write_buffer` ranges, never per-slot micro-copies (§9.1).
+
+---
+
+## D0 — First complete visible renderer (§10)
+
+The first end-to-end visible renderer, built on the frozen F0–F4 core: retained scene
+(F3) diffed into instance pool + coalescer + order-safe batch planner (F4), submitted
+through the generational RHI (F1) with build-time pipelines (F2). Scope is deliberately
+minimal — Solid Rect only — so the whole visible path is proven before shape variety
+(D1) lands. Every §30 counter is wired here and never removed. All primitive landing is
+`viso-render` unless marked otherwise.
+
+### D0.1 — SolidRect primitive path
+- [ ] Shared unit quad + typed `SolidRectInstance` + `SolidRect` pipeline family (§10.1):
+      one global 4-vertex / 6-index quad, N compact instances, one instanced draw — never
+      four per-rect vertex buffers, never one vertex buffer per rect. `viso-shader` owns
+      the SolidRect coverage program (shortest branch-free fast path, no über-shader);
+      `viso-gpu` owns the pipeline/buffer/surface.
+- [ ] Affine2 transform per rect (`viso-math` Affine2 → instance field).
+- [ ] Primitive opacity multiplied straight into premultiplied color (F0 linear-premul
+      canonical rep; not a group-opacity layer — that is C0).
+- [ ] SrcOver blend baseline through the fixed-function path.
+- [ ] Rect scissor (axis-aligned clip → hardware scissor; the D0 clip form only).
+- [ ] Surface present: acquire → encode → present through the F1 RHI, exercising resize /
+      device-scale / surface-recreate paths already frozen in F1.
+
+### D0.2 — Hot-path structural zeros (§10.2)
+- [ ] Steady-state frame path is structurally: 0 heap alloc per primitive, 0 string
+      lookup, 0 global HashMap per primitive, 0 per-primitive backend virtual dispatch,
+      0 shader compile (build-time only, F2), 0 full-scene upload (local change → coalesced
+      slot upload only, F4). Enforced by the extended steady-state bench, not just asserted.
+
+### D0.3 — §30 perf counters (wired from D0, never removed)
+- [ ] Wire the full §30 counter set into `FrameStats`/§61 as integer counters (no alloc):
+      `visible_primitives`, `culled_primitives`, `render_chunks`, `batches`, `draw_calls`,
+      `pipeline_switches`, `texture_binding_switches`, `uploaded_bytes`, `uploaded_ranges`,
+      `instance_rebuilds`, `path_tessellations`, `clip_mask_builds`, `offscreen_passes`,
+      `transient_target_bytes`, `blur_pixels`, `backdrop_capture_pixels`,
+      `shader_pipeline_creations`, `cpu_render_build_time`, `cpu_encode_time`,
+      `gpu_frame_time`. D0 populates the ones it exercises; later layers light up the rest.
+- [ ] Effect Cost Metadata scaffolding (§30): the enum
+      `Local / Analytic / NeedsMask / NeedsOffscreen / NeedsBackdrop / DestinationRead /
+      ComputePreferred` exists so D-layers tag primitives; Inspector cost fields + dev-only
+      Debug Overlay are stubbed (cold path, strippable in release, §60).
+
+### D0.4 — §31 acceptance / benchmark gate
+- [ ] Acceptance scenarios (§10.3): 1 / 10k / 100k rect; large scrolling list;
+      single-hover dirty; window resize; DPI change; surface recreate. Record per scenario:
+      CPU build/encode time, uploaded bytes, draw calls, pipeline switches, alloc count,
+      GPU frame time.
+- [ ] Benchmark gate (§31 `## D0/D1`): 10k / 100k Rect; scroll transform-only (no paint
+      rebuild); hover paint-only (one instance-range write, same pipeline/geometry/clip/
+      batch). High-refresh regression profile at 60 / 120 / 144 / 240 Hz.
+
+### D0 Done
+- [ ] Solid Rect + SrcOver + Scissor.
+- [ ] Local dirty does not full-upload.
+- [ ] 100k rect benchmark repeatable.
+- [ ] Hot path structurally zero per-primitive heap allocation.
+
+### Freeze
+- [ ] FREEZE D0: `SolidRect` primitive path (shared-quad + instance layout + pipeline
+      family), the §30 counter set + Effect Cost Metadata enum, and the D0 clip/blend/
+      present contract — D1 extends the instance/shader tiers on top of these without
+      reshaping the SolidRect fast path. Machine-enforce the counter set + instance layout
+      in a `render` contract test.
+
+---
+
+## D1 — Analytic UI shapes / border / line (§11)
+
+Mainstream UI shapes as shared-quad + compact-instance + **analytic coverage** (no default
+CPU tessellation): animating size/radius/color patches instance fields only. Shapes land
+in `viso-render` (identity/geometry/bounds/alignment); coverage programs in `viso-shader`;
+pipeline/buffer in `viso-gpu`. Inherits the D0 hot-path zeros and §30 counters.
+
+### D1.1 — Analytic shape primitives
+- [ ] `AnalyticRRect` + per-corner radius, with a unified radius-normalize algorithm when
+      per-corner radii exceed available size (§11.2; individual widgets must not self-clamp).
+- [ ] `RoundedSuperellipse`.
+- [ ] `Circle` and `Ellipse`.
+- [ ] `Capsule`.
+- [ ] Analytic AA correctness proof (coverage routes through F0's single
+      `composite(premul, coverage)`; golden vs baseline).
+
+### D1.2 — Border / line
+- [ ] `RectBorder` / `RRectBorder` with alignment `Inside / Center / Outside` and
+      stroke-consistent bounds inflation (§11.3). Border coverage stays analytic
+      (outer/inner distance) — ordinary rect/rrect border never enters the D3 general path
+      stroker (§13, boundary confirmed).
+- [ ] `Line` with cap `butt/round/square`, join `miter/bevel/round`, `miter_limit` (§11.4).
+- [ ] `Circle/Ellipse Stroke`.
+
+### D1.3 — Tiered analytic shader families (§11, build-time enumerated)
+- [ ] `viso-shader` tiers: A `SolidRect` / B `RRect·Circle·Ellipse` / C `Fill+Border+
+      Gradient` / D `Expanded quad + analytic simple shadow` / E `specialized custom
+      analytic primitive`. Rationale: the commonest primitive must not pay the costliest
+      primitive's ALU / register pressure / branch cost. Pipeline families enumerated at
+      build time (F2 manifest); dynamic color/size/hover stay instance data — no über-shader.
+      SDF/analytic scope is limited to rrect / circle / ellipse / capsule / line / arc /
+      simple icon / border / simple inner-outer shadow (§7.3); arbitrary SVG is not required
+      to become SDF.
+
+### D1.4 — §31 gate
+- [ ] Benchmark gate (§31 `## D0/D1`): 10k RRect; mixed Rect/RRect/Circle; scroll
+      transform-only; hover paint-only. Rounded-card target: RRect fill + border + one
+      shadow → 1 analytic primitive, not multi-level offscreen. High-refresh 60/120/144/240.
+
+### D1 Done
+- [ ] RRect / per-corner / Circle / Ellipse / Capsule.
+- [ ] Border / Line / Cap / Join basics.
+- [ ] analytic AA correctness.
+
+### Freeze
+- [ ] FREEZE D1: the analytic-shape instance layouts + per-corner radius normalize, the
+      border-alignment + bounds-inflation contract, the line cap/join/miter contract, and
+      the A–E shader-tier enumeration. D2 adds brush/image on top; complex path stroke is
+      deferred to D3.
+
+---
+
+## D2 — Brush / gradient / image (§12)
+
+Fill/brush model (solid, gradients, image patterns) + image/sprite/atlas lane with
+explicit color-space / sampling / edge / resource-caching policy, reusing one image
+pipeline family. GPU-internal color is premultiplied alpha (F0). Brush model + resource
+policy in `viso-render`; gradient interpolation + sampling kernels in `viso-shader`;
+texture/sampler/pipeline in `viso-gpu`.
+
+### D2.1 — Brush model
+- [ ] `Brush` enum in `BrushStore` (§12.1 / §10): `Solid`, `LinearGradient`,
+      `RadialGradient`, `SweepGradient`, `ImagePattern`, `ShaderBrush`.
+- [ ] Gradient stop tiers (§12.2): 2-stop → inline instance colors; small stop count →
+      compact shared stop table; many stops / expensive interpolation → cached 1D Gradient
+      LUT Atlas. LUT key ≥ {stop colors, stop offsets, interpolation space, extend/tile
+      mode, target color-profile class}. Static gradient built once; never recreate a
+      gradient texture per frame.
+- [ ] Gradient interpolation color-space policy is explicit (§12.3) — never accidentally
+      decided by texture format.
+
+### D2.2 — Image / sprite / atlas lane
+- [ ] `Image` / `ImageRect` with source rect, destination rect, `fit`, `alignment`,
+      `opacity` (§12.4).
+- [ ] Sampling `Nearest` / `Linear` / `MipmapLinear` (where available/appropriate).
+- [ ] Edge behavior `Clamp` / `Repeat` / `Mirror` (§12.5); atlas/sprite sampling prevents
+      adjacent-texel bleeding.
+- [ ] Interned `SamplerId` (§12) — image sampling never creates a per-widget sampler.
+- [ ] Resource-policy routing (§12): small immutable UI image → atlas candidate;
+      large/frequently-replaced → standalone texture; video/camera → external texture (via
+      a platform image path, not the standard image path); heavy downscale → mipmaps.
+- [ ] `NineSlice`, then `Tile`/`TiledImage`, then `Sprite`/`TextureAtlas` region — added
+      only after basic `ImageRect` is stable, reusing the Image pipeline family (§12.6); no
+      independent high-cost pipeline.
+
+### D2.3 — §31 gate
+- [ ] Benchmark gate (§31 `## D2`): many gradients; image grid; sprite atlas;
+      texture-binding pressure. Steady state: 0 gradient-LUT rebuild unless the gradient
+      changed; no per-primitive texture creation. High-refresh 60/120/144/240.
+
+### D2 Done
+- [ ] Linear / Radial / Sweep Gradient.
+- [ ] Image / ImageRect / Sampling.
+- [ ] NineSlice / Tile / Atlas.
+
+### Freeze
+- [ ] FREEZE D2: the `Brush` enum + gradient-stop tier strategy + LUT key, the image/sprite/
+      atlas lane + sampling/edge policy + interned `SamplerId`, and the resource-policy
+      routing. D3 adds general paths on top.
+
+---
+
+## D3 — Path / bezier / fill / stroke (§13)
+
+General vector paths with compact storage, both fill rules, and a full stroke contract via
+a **retained tessellation cache** so transform/color/opacity changes never retessellate.
+Path storage + retained geometry identity + stroke style in `viso-render` (heavy flatten/
+tessellate/preprocess dispatched to a worker thread, §26); SIMD candidates in `viso-math`/
+`viso-render` with a scalar oracle; GPU geometry buffers in `viso-gpu`. Compute-based
+vector is **not** here — it is a large-dynamic-workload lane (A0), and D0~D3 must never
+depend on compute (§7.2).
+
+### D3.1 — Path storage & commands
+- [ ] `PathArena` (§13.2): `tags` (compact command stream) + `points` (tightly packed f32)
+      — never per-segment vtable/Box objects.
+- [ ] Commands `move_to` / `line_to` / `quad_to` / `cubic_to` / `close`; `Conic`/`Arc`
+      lower to canonical segments (§13.1).
+- [ ] Path-creation-time metadata (§13): bounds, segment count, convexity hint,
+      simple-shape-recognition hint, complexity score — computed once, never re-scanned per
+      render.
+- [ ] Fill rules `NonZero` and `EvenOdd` (§13.3).
+
+### D3.2 — Retained tessellation (vector mesh lane)
+- [ ] Stable-path default lane (§13.4): `Path → worker flatten/preprocess → tessellate →
+      retained GeometryId → cached GPU geometry`. Geometry separated from color/opacity;
+      transform-only never retessellates; scale retessellates only past a flatness/quality
+      bucket, with **hysteresis** to avoid zoom-threshold jitter.
+- [ ] 16-bit index for small geometry, else 32-bit; static device-local geometry is not
+      mixed into the frame upload ring (§13, F4 boundary).
+
+### D3.3 — Stroke
+- [ ] Stroke contract (§13.5): `width`, `alignment` (where semantically supported), `cap`,
+      `join`, `miter_limit`, `dash_array`, `dash_offset`, `hairline`.
+- [ ] General path stroke: `PathRevision + StrokeStyleRevision → worker preprocess →
+      retained stroke geometry` — reprocess only when path or stroke geometry changes; a
+      color change never rebuilds stroke geometry.
+
+### D3.4 — SIMD & SVG input
+- [ ] SIMD candidates (§13.6): bounds, flatness evaluation, segment transform, rect
+      intersection, point classification, stroke preprocessing — scalar implementation kept
+      as the correctness oracle.
+- [ ] SVG lane (§13): `SVG bytes → parse → normalized vector scene → Path/Brush/Stroke →
+      cached Render IR`. SVG is an input format, not a per-frame XML DOM renderer; static
+      assets may pre-parse at build time; runtime dynamic parse goes to a worker.
+
+### D3.5 — §31 gate
+- [ ] Benchmark gate (§31 `## D3`): small stable SVG-like paths; large static path scene;
+      path transform-only (0 retessellate); stroke/dash heavy; path churn. Steady state:
+      0 path tessellation when geometry unchanged; 0 general path parse. High-refresh
+      60/120/144/240.
+
+### D3 Done
+- [ ] Path commands.
+- [ ] NonZero / EvenOdd.
+- [ ] Fill / Stroke / Dash.
+- [ ] retained tessellation cache.
+- [ ] transform/color does not rebuild geometry.
+
+### Freeze
+- [ ] FREEZE D3: `PathArena` storage + command set + creation metadata, fill rules, the
+      retained-tessellation vector-mesh lane (GeometryId cache + hysteresis + index-width +
+      upload-ring separation), the stroke contract + revision-driven stroke-geometry cache,
+      and the SVG-input → cached-Render-IR lane. C0 composes clip/mask/group/blend over the
+      full D0–D3 primitive set.
+
+---
+
+## C0 — Clip / mask / group / blend (§14)
+
+The compositing foundation before any effect: cost by tier, never defaulting to an
+offscreen layer. Clip/mask/composition logic + cache keys in `viso-render`; blend/mask
+shader variants in `viso-shader`; `ClipMaskAtlas` / R8 target allocation in `viso-gpu`.
+
+### C0.1 — Clip ladder / Clip Planner
+- [ ] Clip ladder (§14.1): axis-aligned Rect → merged hardware scissor; simple RRect /
+      simple analytic shape → analytic clip when profitable; complex path → stencil or
+      mask; stable repeated complex clip → retained `R8 ClipMaskAtlas` / cached realization.
+- [ ] Border radius does **not** imply clip-children; ordinary containers default
+      overflow-visible; a scroll viewport gets a scissor, not an offscreen layer just
+      because a parent is rounded (§14).
+
+### C0.2 — ClipChain (retained)
+- [ ] `ClipChain` retained (§14.2): `ClipChainId → pre-resolved clip descriptor`. With
+      geometry unchanged: no path reparse, no mask re-raster, no per-primitive clip-stack
+      tree walk. Nested axis-aligned rects pre-intersected. Complex ClipMask key ≥
+      {geometry revision, effective transform bucket, device scale, fill rule, clip
+      composition}.
+- [ ] Empty clip → immediate subtree reject (§14.3).
+
+### C0.3 — Mask
+- [ ] Baseline `AlphaMask` / `LuminanceMask`; detailed `ImageMask` / `PathMask` (§14.4).
+      Stable mask → independent mask cache. Storage: R8 where possible / tight ROI / tile-
+      page allocation; never a permanent full-screen RGBA texture; RGBA only when color is
+      truly needed.
+
+### C0.4 — Group opacity
+- [ ] Primitive opacity vs group opacity distinguished (§14.5). Primitive opacity
+      multiplies straight into premultiplied color. Group opacity uses isolation/offscreen
+      **only** when per-primitive opacity is not semantically equivalent (overlapping
+      children whose compositing result must be preserved); when unsure, keep correctness
+      and use a layer.
+
+### C0.5 — Blend
+- [ ] Baseline `Clear/Src/Dst/SrcOver`, then `Plus/Multiply/Screen/Overlay/Darken/Lighten`
+      (§14.6). Full Porter-Duff (`DstOver, SrcIn/DstIn, SrcOut/DstOut, SrcATop/DstATop,
+      Xor`) + artistic (`ColorDodge, ColorBurn, HardLight, SoftLight, Difference, Exclusion,
+      Hue, Saturation, Color, Luminosity`). Destination-read / isolation blends are recorded
+      with a `LayerReason` and **deferred to the Effect Planner (E2)** — they must not
+      pollute the common `SrcOver` pipeline. Blend fallback path: fixed-function → backend
+      destination-read/subpass/framebuffer-fetch → bounded offscreen composite.
+
+### C0.6 — §31 gate
+- [ ] Benchmark gate (§31 Matrix): deep Rect clip; mixed RRect clip; complex cached clip;
+      nested opacity; blend stress. High-refresh 60/120/144/240.
+
+### C0 Done
+- [ ] Rect / RRect / Path clip ladder.
+- [ ] ClipChain retained.
+- [ ] Mask.
+- [ ] Group opacity.
+- [ ] Blend baseline.
+
+### Freeze
+- [ ] FREEZE C0: the clip ladder + Clip Planner tiers, the retained `ClipChain` +
+      ClipMask key, the mask model + R8/ROI storage discipline, the primitive-vs-group
+      opacity contract, and the blend baseline + `LayerReason` recording. This also seeds
+      the Effect Planner's facts (scissor fast path, mask cache) that E0/E1/E2 consume.
+
+---
+
+## E0 — Analytic shadow (§15)
+
+Common UI shadows get an analytic fast lane so they never default to mask → full-texture
+blur → composite. Analytic shadow shaders + DecoratedShape pipeline in `viso-shader`;
+instancing/coverage integration + mask/blur caching in `viso-render`; blur targets in
+`viso-gpu`. Depends on C0 frozen.
+
+### E0.1 — Analytic shadow fast lane
+- [ ] Fast analytic shapes `Rect / RRect / Circle / Ellipse / Capsule` via expanded
+      instance quad + analytic distance + Gaussian-like coverage approximation (§15.1) —
+      explicitly not the default mask/blur/composite path. Simple shadow does not create a
+      blur layer.
+- [ ] Parameters `offset`, `sigma`/blur-radius semantic, `spread`, `color` (§15.2).
+
+### E0.2 — DecoratedShape fusion (benchmark-gated)
+- [ ] Post-benchmark, a fused `DecoratedShape` pipeline drawing `shadow + fill + border`
+      in one primitive family (§15.3). Hard constraint: pure Rect keeps its shorter
+      pipeline — never force all rects into a large shader. One-draw-or-not decided by
+      shader register pressure / overdraw benchmark.
+
+### E0.3 — Path shadow fallback & inner shadow
+- [ ] Arbitrary path shadow (§15.4): `Path/Mask → tight shadow mask → blur → offset/color
+      composite`, caching the unshaded blur mask keyed on {same geometry, same sigma},
+      reused when only color/offset change. (Full ROI/blur infrastructure is E1; E0's
+      fallback is minimal and leans forward to E1.)
+- [ ] Inner shadow (§20.3): simple analytic geometry → direct distance function; general
+      path → mask/filter lane.
+
+### E0.4 — §31 gate
+- [ ] Benchmark gate (§31): 1k analytic shadows; path-shadow reuse. High-refresh.
+
+### E0 Done
+- [ ] UI shape analytic shadow.
+- [ ] inner shadow.
+- [ ] path shadow fallback.
+
+### Freeze
+- [ ] FREEZE E0: the analytic-shadow fast lane + parameters, the (benchmark-gated)
+      DecoratedShape fusion contract, and the path-shadow blur-mask cache key + inner-shadow
+      routing. Feeds the Effect Planner's "can use analytic shadow?" check.
+
+---
+
+## E1 — Offscreen / blur / ROI / transient targets (§16)
+
+Only now the *complete* offscreen infrastructure — ROI, adaptive blur, transient-target
+pool, RenderGraph — driven by real demand (no premature general RenderGraph before this).
+RenderGraph + Transient Target Planner + ROI in `viso-render`; blur kernels in
+`viso-shader`; transient texture pool / memoryless attachments in `viso-gpu`. Depends on
+C0 + E0 frozen; builds on F1 fence/retire and F4 pool/batch.
+
+### E1.1 — Tight ROI
+- [ ] Every offscreen effect first computes `content/effect bounds ∩ clip bounds ∩ surface
+      bounds` (§16.2). Forbidden pattern: small panel → full-screen copy → full-screen blur
+      → crop back. Required: `effect bounds + kernel expansion + clip/intersection → tight
+      ROI`. Never blur an entire 4K surface for a small widget.
+
+### E1.2 — Blur ladder
+- [ ] Auto-select by effective sigma / ROI / backend (§16.3): small → direct/separable;
+      medium → optimized separable / compute where profitable; large → downsample pyramid /
+      multi-scale (Kawase-like) / upsample. Thresholds are benchmark params, not public ABI.
+
+### E1.3 — Transient Target Planner
+- [ ] Lifetime analysis + size/format/sample compatibility + alias-reuse + frame-local pool
+      (§16.4) instead of per-effect `create_texture`/`destroy_texture`. Pool keyed by
+      format / usage / size-class bucket / sample count. Never one texture per shadow /
+      per clip / per material surface.
+
+### E1.4 — Demand-driven RenderGraph
+- [ ] Passes emerge from real needs (main / mask / shadow-blur / offscreen-group) then
+      abstract into a graph (§16.1, §25). RenderGraph owns pass dependency, resource
+      read/write usage, barrier/state lowering, transient lifetime, attachment
+      compatibility, pass-merge opportunity — never widget tree / layout / state binding /
+      font fallback. Reuse the compiled plan when topology is unchanged; param changes (blur
+      sigma / color / transform) must not rebuild topology.
+- [ ] Tile-GPU awareness (§16.5): minimize render-target switches / full-screen
+      intermediates / store-load cycles / transparent overdraw; allow transient/memoryless
+      attachments where the backend supports them; fuse passes only when it lowers real
+      bandwidth. Backend-specialized without forcing desktop into a tile model.
+
+### E1.5 — §31 gate
+- [ ] Benchmark gate (§31): small / medium / large blur; many small-ROI blurs. Resource
+      gate records transient render-target peak bytes + steady occupancy. Static/idle scene
+      does not rebuild clip/shadow/gradient cache and does not continuously submit.
+      High-refresh.
+
+### E1 Done
+- [ ] offscreen ROI.
+- [ ] blur ladder.
+- [ ] transient target reuse.
+- [ ] RenderGraph compile/reuse.
+
+### Freeze
+- [ ] FREEZE E1: the tight-ROI computation contract, the blur ladder selection (thresholds
+      internal), the Transient Target Planner pool keys + alias-reuse discipline, and the
+      RenderGraph responsibilities + compile/reuse (topology-only recompile) contract. E2's
+      backdrop / shared-pyramid / Effect Planner build directly on these.
+
+---
+
+## E2 — Backdrop / color effects / advanced blend (§17)
+
+Destination-dependent effects expressed through the RenderGraph dependency graph — never
+by reading undefined framebuffer state. Backdrop dependency + MaterialGroup + Effect Damage
+in `viso-render`; ColorTransform / advanced-blend / blur-pyramid shaders in `viso-shader`;
+capture / shared-pyramid targets in `viso-gpu`. Depends on E1 frozen (+ C0/E0 facts).
+
+### E2.1 — Backdrop capture & sharing
+- [ ] Backdrop is an explicit "depends on already-drawn content behind it" semantic (§17.1):
+      goes through a RenderGraph dependency; a widget never reads current framebuffer
+      undefined state; capture only the required ROI.
+- [ ] Shared backdrop (§17.2): multiple Frosted/Glass over the same region → shared capture
+      + shared blur pyramid where compatible + multiple material composites. Forbidden
+      default: N widgets = N full-screen captures + N blurs. Allow union ROI / shared
+      backdrop pyramid / MaterialGroup / shared effect pass.
+
+### E2.2 — Color effect fusion
+- [ ] Color effects (§17.3): `Brightness, Contrast, Saturation, HueRotate, Grayscale,
+      Sepia, Invert, ColorMatrix, Tint`. Consecutive compatible effects compile into a
+      single ColorTransform / matrix-like op; e.g. `Brightness→Contrast→Saturation` must
+      not produce three RT passes when math-mergeable. Only a non-expressible custom filter
+      gets an extra pass.
+
+### E2.3 — Advanced blend isolation
+- [ ] The destination-read blends deferred from C0 (§2577) land here as Nonlocal, isolated
+      through the Effect Planner — not on the common `SrcOver` pipeline.
+
+### E2.4 — Effect Planner & Local/Nonlocal classification
+- [ ] Local effect (§3102): no neighbor/dest read (`opacity, tint, color matrix,
+      brightness, contrast, saturation, simple gradient, simple mask, certain blend states`)
+      → fuse into the existing draw shader.
+- [ ] Nonlocal effect (§3120): needs neighbor samples / previous framebuffer / group
+      isolation (`blur, backdrop blur, large/general shadow, destination-dependent advanced
+      blend, displacement, group opacity with overlapping children`) → only then consider
+      offscreen/render target.
+- [ ] Effect Planner replaces saveLayer abuse (§3145): each potential layer records
+      `LayerReason ∈ {GroupOpacity, ImageFilter, BackdropFilter, AdvancedBlend, Isolation,
+      ComplexMask, SnapshotCache, NativeMaterialBoundary}`; the planner tries in order to
+      eliminate it (push opacity into children? fuse color matrix? scissor instead of clip
+      layer? analytic shadow? share backdrop? collapse adjacent effects?) — offscreen is
+      created only when all fail. "Offscreen is an expensive mechanism, not a convenient
+      default." The planner accretes facts across C0/E0/E1 and is exercised fully here.
+- [ ] Effect Damage (§3202): backdrop/blur does not look only at its own property dirty —
+      when content behind its ROI changes, `BackdropDependencyRevision` dirties only that
+      material/effect's ROI; other backdrops are unaffected.
+
+### E2.5 — §31 gate
+- [ ] Benchmark gate (§31): shared backdrop; color-effect fusion. Static-UI target: an
+      existing blur/glass/shadow does not cause continuous redraw; idle → 0 GPU submit.
+      High-refresh 60/120/144/240.
+
+### E2 Done
+- [ ] backdrop dependency.
+- [ ] shared backdrop / blur.
+- [ ] color effect fusion.
+- [ ] advanced blend isolation.
+
+### Freeze
+- [ ] FREEZE E2: the backdrop-dependency + shared-capture/pyramid contract, the color-effect
+      fusion rule, the advanced-blend isolation, the Local/Nonlocal classification + Effect
+      Planner `LayerReason` elimination order, and the Effect Damage `BackdropDependency
+      Revision` model. This closes the D0~E2 render foundation; M0/M1/A0 build strictly on
+      top and are never a prerequisite of anything below.
+
+---
+
+## M0 — Generic frosted / glass material (§18)
+
+A generic frosted/glass material composed **entirely by reusing frozen E1/E2** — a material
+layer, not a renderer foundation. Only the render/shader/gpu-side composition belongs here;
+material *semantics* / *parameters* are deferred to `Viso_Visual_Materials.md`.
+
+### M0.1 — Frosted composition (reusing E1/E2)
+- [ ] Frosted pipeline composed from frozen lower layers: `backdrop → blur →
+      saturation/tint → optional noise → material mask → border/highlight` (§18) — reusing
+      E2 backdrop, E1 blur/ROI, E2 color transform, C0 mask, E0 shadow/border; no new
+      foundation.
+- [ ] Backdrop dependency + ROI in `viso-render`; blur/distortion/color kernels in
+      `viso-shader`; texture/pass/sync in `viso-gpu`.
+- [ ] Shared-capture requirement: N material widgets must not = N full-screen captures + N
+      blurs; support union ROI / shared backdrop pyramid / MaterialGroup / shared effect
+      pass (reuses E2's sharing).
+
+### M0.2 — Deferred to Viso_Visual_Materials.md (out of this plan)
+- [ ] Material *parameters* + platform *semantics* + full Apple Liquid Glass / Frosted /
+      native material lane. Not implemented in viso-render/shader/gpu; only the E1/E2 reuse
+      contract above stays here.
+
+### M0 Done (no standalone spec block; validated against E-layer contracts)
+- [ ] Frosted composition reuses E1/E2 with shared capture/blur (no per-widget full-screen
+      capture). Governed by global DoD: "multiple backdrop/material can share capture/blur";
+      "local color effects can fuse".
+- [ ] M0 is not listed as a prerequisite of D0~E2.
+
+---
+
+## M1 — Platform material / Liquid Glass / HDR (§19)
+
+Platform-advanced materials last: native/GPU material lanes + HDR/wide-gamut, without
+leaking platform-private APIs into the generic Render IR.
+
+### M1.1 — Material lanes
+- [ ] Two selectable lanes: `Native System Material Lane` / `GPU Material Lane` (§19), chosen
+      by system integration / visual consistency / composability / animation / performance /
+      whether Viso GPU content must participate. Platform-private material APIs stay behind
+      the Native lane — never in the generic Render IR.
+
+### M1.2 — HDR / wide-gamut
+- [ ] Distinguish at least `SDR sRGB target / wide-gamut target / HDR target` (§19); the
+      RenderGraph Planner (E1) picks the intermediate format for blur/glass/gradient/blend
+      per real need. Forbidden: all offscreen forced to RGBA16F; HDR scene degraded to 8-bit
+      sRGB mid-pipeline then re-upped. Builds on F0 color contract + F1 surface format +
+      E-layer effect correctness. Never reach down and mutate the frozen F4 instance model
+      for a material-specific layout.
+
+### M1 Done (no standalone spec block)
+- [ ] Governed by global DoD: "HDR/wide-gamut intermediate not wrongly degraded"; "GPU
+      canonical alpha is premultiplied". Not a prerequisite of D0~E2; enters only after M0
+      freezes. Material semantics deferred to `Viso_Visual_Materials.md`.
+
+---
+
+## A0 — Advanced GPU optimization (§20)
+
+Compute vector / bindless / indirect / GPU culling as **workload specialization** — never a
+correctness prerequisite for ordinary UI, and never a workaround for an inefficient basic
+renderer. Compute/coverage kernels in `viso-shader`; ROI/binning/cull-orchestration/batch
+metadata in `viso-render`; descriptor tables / indirect / multi-draw / dispatch / barriers
+in `viso-gpu`. Enters only after M1 freezes; algorithms here are not frozen as public ABI.
+
+### A0.1 — Vector compute lane (§20.1)
+- [ ] Entered only when benchmark proves benefit (large dynamic path / vector editor /
+      canvas / complex clip scene / high path churn / CPU tessellation is the bottleneck).
+      Concept pipeline: `Path segment scene → tile/binning → parallel prefix/allocation →
+      per-tile coverage → fine raster`. The specific algorithm is not public ABI.
+- [ ] Hard rule: compute is workload specialization — 20 ordinary buttons / a panel / a few
+      dozen stable paths must never be routed through compute dispatch just for architectural
+      uniformity (§7.2, §20.1).
+
+### A0.2 — Bindless (§20.2)
+- [ ] Capability detection: Metal argument/resource tables / D3D12 descriptor heap / Vulkan
+      descriptor indexing / WebGPU binding arrays where available. Fast path exposes
+      `instance.texture_index` to avoid texture-change batch breaks. Fallback when
+      unavailable: atlas / small texture set / binding-group batching. Public paint API is
+      unchanged across backends.
+
+### A0.3 — GPU culling / indirect (§20 detailed, §24.1)
+- [ ] Normal UI: CPU bounds + clip intersection suffices. Large canvas/scene: chunk-level
+      CPU cull + optional GPU cull / indirect draw / multi-draw / GPU-driven batching. Hard
+      rule: 50 UI nodes must never produce compute dispatch for "GPU-driven".
+
+### A0 Done (no standalone spec block)
+- [ ] Governed by global DoD: "compute vector only as a large-dynamic-workload lane";
+      "default UI does not globally enable MSAA"; plus the 120/144/240 Hz regression gate and
+      the unsafe/SIMD reference + benchmark requirement. Not a prerequisite of D0~E2. D0~D3
+      must remain correct with zero compute dependency (§7.2).
+
+---
+
+## Global 1.0 Definition of Done (§33 — the render runtime contract)
+
+Not a construction stage; the full-stack acceptance the layers above collectively satisfy.
+Verify once the relevant layers are frozen:
+- [ ] Rect/RRect/Circle/Ellipse/Line/Arc/Path/Image/Text/Mesh each have an explicit
+      primitive path.
+- [ ] Solid/Linear/Radial/Sweep/ImagePattern/Shader brushes have explicit semantics.
+- [ ] Stroke cap/join/miter/dash/alignment have explicit semantics.
+- [ ] Simple UI shape defaults to analytic/instanced, not CPU tessellate.
+- [ ] General stable path can be retained cached geometry.
+- [ ] Compute vector only as a large-dynamic-workload lane.
+- [ ] Default UI does not globally enable MSAA.
+- [ ] Rect clip uses scissor fast path.
+- [ ] Border radius does not automatically clip children.
+- [ ] Stable complex clip can enter the mask cache.
+- [ ] Simple shadow does not default to creating a blur layer.
+- [ ] General blur/backdrop uses tight ROI.
+- [ ] Multiple backdrops/materials can share capture/blur.
+- [ ] Local color effects can fuse.
+- [ ] Offscreen layer has an explicit LayerReason.
+- [ ] Group opacity isolates only when semantically required.
+- [ ] GPU canonical alpha is premultiplied.
+- [ ] HDR/wide-gamut intermediate is not wrongly degraded.
