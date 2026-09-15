@@ -378,14 +378,14 @@ stage (F3-ext), out of scope here.
 - [x] Gate green + golden/bench byte-identical (diff drives the same store contents).
 
 ### F3.3 — Switch source of truth (submit walks retained stores)
-- [ ] `render/src/renderer.rs`: `submit`/`upload` lower from the retained stores +
+- [x] `render/src/renderer.rs`: `submit`/`upload` lower from the retained stores +
       revision planes instead of the per-frame immediate scratch; remove the
       top-of-`upload` scratch clear (`renderer.rs:410-418`) and the immediate walk,
       keeping the store-derived lowering that F3.1 proved byte-identical. Segments/
       draw-list building unchanged (F4 replaces segment merge with the batch planner).
-- [ ] `render/src/scene/inspect.rs` or extend `render/src/inspect.rs` (§62): expose
+- [x] `render/src/scene/inspect.rs` or extend `render/src/inspect.rs` (§62): expose
       `PrimitiveId` → instance/segment ranges, cold-path only (no steady-state cost).
-- [ ] Gate green + golden byte-identical F3.1→F3.3 + steady-state bench: identical
+- [x] Gate green + golden byte-identical F3.1→F3.3 + steady-state bench: identical
       input → zero store mutation, allocations flat, `buffer_count` unchanged.
 
 ### Freeze

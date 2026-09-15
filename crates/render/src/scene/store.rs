@@ -815,10 +815,14 @@ pub enum StoreRef {
     Path(PathId),
     /// Slot in the [`MeshStore`].
     Mesh(MeshId),
-    /// A composite draw emitted when a translucent layer closes (an image draw
-    /// whose instance is built by the immediate walk's `close_offscreen`). The
-    /// resolved instance is recorded inline so re-derivation reproduces it.
-    Composite(ImageInstance),
+    /// A composite draw emitted when a translucent layer closes: an image draw
+    /// sampling offscreen pass `pass`, whose resolved instance is recorded inline
+    /// so lowering reproduces it. The pass index resolves the sampling bind group
+    /// from the renderer's live offscreen passes at lowering time.
+    Composite {
+        instance: ImageInstance,
+        pass: usize,
+    },
 }
 
 impl std::fmt::Display for StoreRef {
@@ -829,7 +833,7 @@ impl std::fmt::Display for StoreRef {
             StoreRef::GlyphRun(_) => write!(f, "glyph-run"),
             StoreRef::Path(_) => write!(f, "path"),
             StoreRef::Mesh(_) => write!(f, "mesh"),
-            StoreRef::Composite(_) => write!(f, "composite"),
+            StoreRef::Composite { .. } => write!(f, "composite"),
         }
     }
 }
