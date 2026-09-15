@@ -210,7 +210,7 @@ pub trait GpuBackend {
     /// Create a sampler.
     fn create_sampler(&mut self, desc: &SamplerDesc) -> SamplerId;
 
-    /// Create a render pipeline. `layout` is the `#[derive(GpuInstance)]` layout
+    /// Create a render pipeline. `layout` is the `#[derive(GpuPod)]` layout
     /// of the instance type; it is validated against `desc.instance_schema`
     /// before the pipeline is built (registration-time layout check).
     fn create_pipeline(

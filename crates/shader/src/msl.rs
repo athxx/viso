@@ -11,7 +11,7 @@
 //! IR, so the MSL struct and the validated schema cannot drift.
 //!
 //! The MSL and schema are the shader half of the three-way instance contract (the
-//! other two halves are the `#[derive(GpuInstance)]` layout and the headless
+//! other two halves are the `#[derive(GpuPod)]` layout and the headless
 //! rasterizer's field reader); `create_pipeline` validates the derived layout
 //! against the schema at registration.
 //!
@@ -72,7 +72,7 @@ pub fn shader_source(kind: PrimitiveKind) -> Option<&'static str> {
 }
 
 /// The instance schema `kind`'s shader declares, or `None` if that primitive is
-/// not implemented. This is what the pipeline validates the derived `GpuInstance`
+/// not implemented. This is what the pipeline validates the derived `GpuPod`
 /// layout against at registration.
 pub fn instance_schema(kind: PrimitiveKind) -> Option<InstanceSchema> {
     match kind {

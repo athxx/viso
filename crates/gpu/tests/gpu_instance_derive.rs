@@ -1,16 +1,16 @@
-//! Integration tests for `#[derive(GpuInstance)]`.
+//! Integration tests for `#[derive(GpuPod)]`.
 //!
 //! These live in `viso-gpu` (not `viso-macros`) because the generated code
 //! names `viso_gpu::...` types, and `viso-gpu` is the crate that depends on both
 //! the trait/layout types and the derive — keeping `viso-macros` a pure leaf.
 
-use viso_gpu::{AttrFormat, GpuInstance, InstanceSchema, LayoutError, SchemaAttr};
+use viso_gpu::{AttrFormat, GpuPod, InstanceSchema, LayoutError, SchemaAttr};
 
 /// A realistic quad-ish instance: a scalar, a vec2, a vec3, a vec4, and a uint.
 /// Exercises every float format plus an integer field, with the tight
 /// `#[repr(C)]` offsets the derive must record via `offset_of!`.
 #[repr(C)]
-#[derive(Clone, Copy, GpuInstance)]
+#[derive(Clone, Copy, GpuPod)]
 struct TestInstance {
     depth: f32,       // Float1 @ 0
     pos: [f32; 2],    // Float2 @ 4

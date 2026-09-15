@@ -62,11 +62,11 @@ pub use viso_handle::RawWindowHandle;
 
 /// Derive an explicit, validated GPU instance layout for a `#[repr(C)]` struct.
 ///
-/// Re-exported from `viso-macros` so users import both the [`GpuInstance`] trait
+/// Re-exported from `viso-macros` so users import both the [`GpuPod`] trait
 /// and its derive from `viso_gpu`. The derive generates `unsafe impl
-/// GpuInstance` plus an inherent `const LAYOUT: InstanceLayout` and
+/// GpuPod` plus an inherent `const LAYOUT: InstanceLayout` and
 /// `validate_against` — see the trait docs and `viso-macros`.
-pub use viso_macros::GpuInstance;
+pub use viso_macros::GpuPod;
 
 /// Typed, cheap-to-copy handles for GPU resources. Backends map these to
 /// their own native objects; users and upper layers never see raw pointers.
@@ -148,7 +148,7 @@ resource_id!(/// Handle to a swapchain/surface.
 /// data (§18).
 ///
 /// Host structs and GPU instance data are separate concerns. This trait is
-/// intended to be implemented only by the `#[derive(GpuInstance)]` macro,
+/// intended to be implemented only by the `#[derive(GpuPod)]` macro,
 /// which validates field offsets, alignment, types, and the matching shader
 /// declaration — so the framework never relies on an implicit
 /// "everything after field X is GPU memory" assumption.
@@ -157,7 +157,7 @@ resource_id!(/// Handle to a swapchain/surface.
 /// Implementors must be `#[repr(C)]` and contain only GPU-uploadable fields
 /// with layout matching the declared instance schema. Hand-implementing this
 /// requires the same safety documentation and tests the derive generates.
-pub unsafe trait GpuInstance: Copy + 'static {
+pub unsafe trait GpuPod: Copy + 'static {
     /// Size in bytes of one instance, as seen by the GPU.
     const STRIDE: usize;
 }

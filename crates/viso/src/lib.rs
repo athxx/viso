@@ -79,7 +79,7 @@ pub use viso_ui::{WindowChrome, WindowConfig};
 // emits `::viso_ui::…` builder tokens but does not itself depend on `viso-ui`. The
 // facade re-exports it and already depends on `viso-ui`, so those emitted paths
 // resolve at the call site — the same reverse-re-export shape `viso-gpu` uses for
-// `viso_macros::GpuInstance`.
+// `viso_macros::GpuPod`.
 pub use viso_ui_macros::ui;
 
 /// The application entry-point contract implemented by every Viso app.

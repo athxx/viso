@@ -66,7 +66,7 @@ impl AttrFormat {
     }
 }
 
-/// One field of a `#[derive(GpuInstance)]` struct, as the GPU sees it.
+/// One field of a `#[derive(GpuPod)]` struct, as the GPU sees it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct InstanceField {
     /// The struct field's name (matched against the shader's attribute name).
@@ -77,7 +77,7 @@ pub struct InstanceField {
     pub format: AttrFormat,
 }
 
-/// The full instance layout emitted by `#[derive(GpuInstance)]`.
+/// The full instance layout emitted by `#[derive(GpuPod)]`.
 ///
 /// `stride` is `size_of::<Instance>()`; `fields` are in declaration order.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

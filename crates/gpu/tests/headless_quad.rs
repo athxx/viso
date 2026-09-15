@@ -9,7 +9,7 @@ use viso_gpu::backend::{
     DrawCommand, DrawList, Geometry, InlineUniforms, RenderPass, RenderTarget,
 };
 use viso_gpu::{
-    AttrFormat, BlendMode, BufferDesc, BufferUsage, BuiltinShader, GpuBackend, GpuInstance,
+    AttrFormat, BlendMode, BufferDesc, BufferUsage, BuiltinShader, GpuBackend, GpuPod,
     HeadlessRaster, InstanceSchema, LoadOp, PipelineDesc, RawWindowHandle, SchemaAttr,
     TextureFormat,
 };
@@ -17,7 +17,7 @@ use viso_gpu::{
 /// The Quad built-in's instance layout, matching the field names/formats the
 /// headless `fill_quad` reads and the Quad shader schema declares.
 #[repr(C)]
-#[derive(Clone, Copy, GpuInstance)]
+#[derive(Clone, Copy, GpuPod)]
 struct QuadInstance {
     rect_pos: [f32; 2],
     rect_size: [f32; 2],
@@ -60,7 +60,7 @@ fn quad_schema() -> InstanceSchema {
 }
 
 fn as_bytes(inst: &QuadInstance) -> &[u8] {
-    // Safe: `QuadInstance` is `#[repr(C)]` and `Copy` (GpuInstance invariant).
+    // Safe: `QuadInstance` is `#[repr(C)]` and `Copy` (GpuPod invariant).
     unsafe {
         core::slice::from_raw_parts(
             (inst as *const QuadInstance) as *const u8,
