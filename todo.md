@@ -611,11 +611,56 @@ safety-relevant behavior §9.2 actually cares about — rather than building an 
       `buffer_count` flat.
 
 ### Freeze
-- [ ] FREEZE F4: `BatchKey` (bit layout + field set), `RenderChunk` shape, the
-      instance-pool slot layout (`InstanceSlot { offset, len }` + `PrimitiveId`→slot
-      table), and the upload-ring / coalescer contracts — before D0. D/C/E/M/A build on
-      these. Machine-enforced in `render/tests/data_path_contract_frozen.rs` (one
-      consolidated gate: `BatchKey` pack/unpack round-trip + field bit-widths;
-      `RenderChunk` field set; `InstanceSlot` shape; ring/coalescer range invariants),
-      alongside the per-module unit tests. Record the frozen contract inline here
-      (mirroring the F3 freeze block) once the shapes settle.
+- [x] FREEZE F4: `BatchKey` (bit layout + field set), the `joins` adjacency predicate,
+      `RenderChunk` shape, the instance-pool upload discipline, and the dirty-range
+      coalescer contract — before D0. D/C/E/M/A build on these. Machine-enforced in
+      `render/tests/data_path_contract_frozen.rs` (one consolidated gate: family tags +
+      mergeability, target field encoding, three-dimension non-aliasing, `joins`
+      adjacency, `RenderChunk` field set + `open`/`absorb` growth, coalescer `Range` +
+      `GAP_THRESHOLD` bridge/split, pool grow-only / zero-upload / one-slot-upload),
+      alongside the per-module unit tests in `planner.rs`/`chunk.rs`/`coalescer.rs`/
+      `instance_pool.rs`.
+      Frozen contract (stable for D/C/E/M/A to build on):
+      - Packed batch key (`render/src/batch/planner.rs`): `BatchKey(u64)` — one packed
+        integer, never a string (§9.6). Three live dimensions occupy disjoint bit ranges
+        so a key uniquely identifies its `(family, target, resource)` triple and
+        adjacency merges on key equality alone: family bits `0..3`
+        (`FAMILY_MASK 0b111`), render target bits `14..24` (10 bits, `0x3ff`), bound
+        resource bits `24..48` (24 bits, `0xff_ffff`). The reserved §9.6 dimensions
+        (variant `3..4`, blend `4..8`, sample `8..10`, color-target `10..12`,
+        depth/stencil `12..14`, and `48..64`) are held at 0 — bit-fields exist so a later
+        dimension widens without moving a live field. `pack(family, target, resource:
+        Option<BindGroupId>)` (resource packs `bg.index`, `debug_assert` on overflow) /
+        `family()` / `target_field()` / `resource_field()` / `bits()`. `BatchFamily`
+        low-three-bit tags are frozen: `Quad = 0` / `Image = 1` / `GlyphRun = 2` /
+        `Mesh = 3`; `mergeable()` is true only for `Quad` and `Mesh`. `BatchTarget` packs
+        `Main → 0` and `Offscreen(i) → i + 1`.
+      - Adjacency predicate (`render/src/batch/planner.rs`): `joins(prev, next)` is the
+        single merge gate every site routes through — true iff `prev.mergeable &&
+        next.mergeable && prev.key == next.key && prev.clip == next.clip`. Any one
+        differing is a hard barrier; merge is adjacency-only, never across an
+        intervening non-joining item (paint order preserved, §8.6).
+      - Render chunk (`render/src/batch/chunk.rs`): a cold-path introspection projection
+        over the paint-order segment stream carrying exactly `{ key: BatchKey, family:
+        BatchFamily, clip: Option<Rect>, geometry: (u32, u32), order: (u32, u32) }`.
+        `RenderChunkId(u32)` is a transparent handle. `open(key, family, clip,
+        geom_start, count, order_start)` starts `geometry = (geom_start, count)` and a
+        one-wide `order = (order_start, order_start + 1)`; each `absorb(count)` extends
+        `geometry.1 += count` and the order span by one position. Lean by design — no
+        bounds/effect-dep/revision fields until a consumer needs them.
+      - Dirty-range coalescer (`render/src/pool/coalescer.rs`): `Range { start: usize,
+        len: usize }` (`size_of == 2 * usize`, §9.3). `coalesce(dirty, out)` takes a
+        strictly-increasing slot list and writes contiguous upload ranges into reused
+        scratch (clears `out`, no steady-state alloc): clean gaps of at most
+        `GAP_THRESHOLD == 4` bridge into one range, a wider gap splits. Empty dirty →
+        zero ranges; one dirty slot → one minimal one-slot range (the hover case).
+      - Instance pool (`render/src/pool/instance_pool.rs`): a grow-only device buffer
+        (`InstancePool<T>`, `T: Copy + PartialEq`, `STRIDE = size_of::<T>()`) diffed
+        against a CPU shadow — slot `i` is element `i`, inheriting F3's positional store
+        order (no separate slot table). `sync(backend, instances)` returns the
+        `write_buffer` call count: an unchanged frame diffs to nothing (0 writes, 0
+        `last_upload_bytes`); a one-slot change uploads exactly one slot's bytes in one
+        write; a grow (cold path, `next_power_of_two`) retires the old buffer via the F1
+        retire path and forces one full upload. Capacity is a high-water mark — a shorter
+        frame never shrinks it. Contiguous dirty slots route through `coalesce` into few
+        `write_buffer` ranges, never per-slot micro-copies (§9.1).
