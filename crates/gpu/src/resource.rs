@@ -110,7 +110,7 @@ pub struct SamplerDesc {
 /// Which built-in drawing program a pipeline runs.
 ///
 /// A GPU backend that executes real shaders (Metal) ignores this and uses
-/// [`PipelineDesc::shader_source`]. The headless software rasterizer has no
+/// [`PipelineDesc::msl`]. The headless software rasterizer has no
 /// shader compiler, so it uses this tag to select the CPU fill routine that
 /// reproduces the corresponding shader's SDF/AA/blend math. Every Viso
 /// primitive maps to exactly one built-in program (§30, §D layer).
@@ -132,17 +132,25 @@ pub enum BuiltinShader {
 
 /// Descriptor for a render pipeline ([`crate::GpuBackend::create_pipeline`]).
 ///
-/// `shader_source` is the backend shader text (MSL on Metal); `instance_schema`
-/// is the layout the shader's vertex-input struct declares, validated against
-/// the derived instance layout of the instance type at registration (§32/§36.1).
+/// A pipeline is created from a standard-manifest artifact, never from
+/// caller-assembled source: `msl` is the frozen backend shader text the manifest
+/// carries (MSL on Metal), and `variant` is its packed pipeline-variant identity.
+/// `instance_schema` is the layout the shader's vertex-input struct declares,
+/// validated against the derived instance layout of the instance type at
+/// registration (§32/§36.1).
 #[derive(Debug, Clone, Copy)]
 pub struct PipelineDesc {
     /// Debug label.
     pub label: &'static str,
     /// Which built-in drawing program this pipeline runs (headless dispatch).
     pub builtin: BuiltinShader,
-    /// Backend shader source (MSL on Metal; ignored by the headless raster).
-    pub shader_source: &'static str,
+    /// The packed variant identity of the manifest entry this pipeline realizes
+    /// (pipeline-changing dimensions only). A stable integer key, never a string.
+    pub variant: u32,
+    /// The frozen backend shader text from the manifest (MSL on Metal; ignored by
+    /// the headless raster, which dispatches on `builtin`). Compiled at device
+    /// init, never on a draw.
+    pub msl: &'static str,
     /// Entry point name for the vertex stage.
     pub vertex_entry: &'static str,
     /// Entry point name for the fragment stage.

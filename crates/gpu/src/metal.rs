@@ -387,7 +387,7 @@ impl GpuBackend for MetalBackend {
         // Registration-time layout check, identical to the headless path.
         layout.validate_against(&desc.instance_schema)?;
 
-        let source = NSString::from_str(desc.shader_source);
+        let source = NSString::from_str(desc.msl);
         let options = MTLCompileOptions::new();
         let library = self
             .device
