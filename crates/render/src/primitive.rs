@@ -75,30 +75,12 @@ impl Rect {
     }
 }
 
-/// A straight-alpha (non-premultiplied) linear RGBA color. The backend
-/// premultiplies as needed; keeping the public type straight matches how
-/// authors think about colors.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct Rgba {
-    /// Red, linear `[0, 1]`.
-    pub r: f32,
-    /// Green, linear `[0, 1]`.
-    pub g: f32,
-    /// Blue, linear `[0, 1]`.
-    pub b: f32,
-    /// Alpha `[0, 1]`.
-    pub a: f32,
-}
-
-impl Rgba {
-    /// A fully-transparent color.
-    pub const TRANSPARENT: Rgba = Rgba {
-        r: 0.0,
-        g: 0.0,
-        b: 0.0,
-        a: 0.0,
-    };
-}
+/// A straight-alpha (non-premultiplied) linear RGBA color — the wire shape a
+/// primitive carries. The backend premultiplies at the point of blend; keeping
+/// the public type straight matches how authors reason about a color
+/// independent of its opacity. This is the canonical straight-linear color
+/// defined in `viso-math`; the renderer exposes it under its historical name.
+pub use viso_math::LinearStraight as Rgba;
 
 /// A border stroke drawn inside a quad's edge.
 #[derive(Debug, Clone, Copy, PartialEq)]
