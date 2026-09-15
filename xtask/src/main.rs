@@ -65,7 +65,10 @@ fn allowed_edges() -> BTreeMap<&'static str, &'static [&'static str]> {
         // compact package and instantiates it through `BuildCx`, so the release path
         // carries no DSL compiler. Leaf edge, no cycle.
         ("viso-ui", &["viso-render", "viso-runtime", "viso-ende"][..]),
-        ("viso-render", &["viso-text", "viso-shader", "viso-gpu"][..]),
+        (
+            "viso-render",
+            &["viso-math", "viso-text", "viso-shader", "viso-gpu"][..],
+        ),
         ("viso-text", &["viso-gpu"][..]),
         ("viso-shader", &["viso-gpu"][..]),
         (

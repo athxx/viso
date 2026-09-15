@@ -30,19 +30,30 @@
 
 #![forbid(unsafe_op_in_unsafe_fn)]
 
+mod color;
+mod coverage;
 mod dvec;
 mod geom;
+mod legality;
 mod mat;
 mod quat;
 mod rect;
 mod simd;
+mod snap;
 mod transform;
 mod vec;
 
+pub use color::{
+    DisplayP3, ExtendedLinear, LinearPremul, LinearSrgb, LinearStraight, Srgb, linear_to_srgb,
+    srgb_to_linear,
+};
+pub use coverage::{Coverage, composite};
 pub use dvec::{DVec2, dvec2};
 pub use geom::{Aabb, Plane, Ray};
+pub use legality::{GeometryLegality, classify_extent, classify_rect, classify_transform};
 pub use mat::{Mat2, Mat3, Mat4};
 pub use quat::Quat;
 pub use rect::{DPoint, DRect, Insets, Point, Rect, Size};
+pub use snap::{Hairline, PixelSnap, snap_bounds, snap_device, snap_position, snap_stroke_center};
 pub use transform::{Affine2, Transform3};
 pub use vec::{Vec2, Vec3, Vec4, vec2, vec3, vec4};

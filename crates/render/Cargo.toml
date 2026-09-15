@@ -10,6 +10,7 @@ rust-version.workspace = true
 # frame packet. Decides batching/atlas/clip/passes; UI never owns backend
 # command submission (§16.1). `render -> widgets` is forbidden.
 [dependencies]
+viso-math = { workspace = true }
 viso-text = { workspace = true }
 viso-shader = { workspace = true }
 viso-gpu = { workspace = true }
