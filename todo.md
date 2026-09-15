@@ -57,7 +57,17 @@ every layer below `render`. `math` is the home (leaf, pure numeric, reachable by
       case classified; P3→linear sanity. (viso-math: 92 tests green.)
 - [x] Gate green (check-deps · fmt · clippy · test --workspace · golden byte-identical after
       `Rgba` re-homing · steady-state bench) → commit F0 (source + this todo, one commit).
-- [ ] FREEZE F0: color/coverage/snap/legality signatures + linear-premul canonical rep.
+- [x] FREEZE F0: color/coverage/snap/legality signatures + linear-premul canonical rep.
+      Frozen contract (stable for F1–F4 and D/C/E/M/A to build on):
+      - Canonical blend rep: `LinearPremul { r, g, b, a: f32 }` (`#[repr(C)]`, linear-light,
+        premultiplied) — the only type `composite`/`over`/`scale` operate on.
+      - Wire rep: `LinearStraight { r, g, b, a: f32 }` (`#[repr(C)]`, straight linear);
+        `render::Rgba` is this type. `premultiply`/`unpremultiply` bridge the two.
+      - Input spaces `Srgb`/`DisplayP3`/`LinearSrgb`/`ExtendedLinear`, each →
+        `into_linear_straight()` / `into_linear_premul()`. No sRGB-space blend path exists.
+      - `Coverage(f32)` (NaN→0) + `composite(LinearPremul, Coverage) -> LinearPremul`.
+      - `PixelSnap`, `Hairline` + `snap_device`/`snap_position`/`snap_bounds`/`snap_stroke_center`.
+      - `GeometryLegality` + `classify_rect`/`classify_extent`/`classify_transform`.
 
 ## F1 — RHI: generation-safe handles + deferred destruction + device-loss (`gpu`)
 (expanded when F0 is frozen)
