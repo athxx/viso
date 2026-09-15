@@ -254,13 +254,20 @@ pub trait GpuBackend {
 
     /// Acquire the next drawable for `surface`, opening a new frame.
     ///
-    /// This advances the backend's monotonic frame epoch and, before doing so,
-    /// reclaims the storage slots of resources retired in epochs the GPU has
-    /// since finished — so a slot freed by [`destroy_buffer`](Self::destroy_buffer)
-    /// and friends becomes reusable exactly one safe in-flight window later, and
-    /// the retire queue drains as frames complete rather than growing without
-    /// bound.
-    fn begin_frame(&mut self, surface: SurfaceId) -> Frame;
+    /// Returns `None` when no drawable is available — the surface is momentarily
+    /// out of date (a resize/DPI change the compositor has not caught up with) or
+    /// the drawable pool is exhausted. This is transient, not an error: the caller
+    /// skips the frame and retries next tick, and because the retained scene is
+    /// unchanged the same image is produced then. A failed acquire leaves the
+    /// epoch untouched, so no phantom in-flight frame is parked to stall the fence.
+    ///
+    /// On a successful acquire this advances the backend's monotonic frame epoch
+    /// and, before doing so, reclaims the storage slots of resources retired in
+    /// epochs the GPU has since finished — so a slot freed by
+    /// [`destroy_buffer`](Self::destroy_buffer) and friends becomes reusable
+    /// exactly one safe in-flight window later, and the retire queue drains as
+    /// frames complete rather than growing without bound.
+    fn begin_frame(&mut self, surface: SurfaceId) -> Option<Frame>;
     /// Encode and submit a draw list.
     fn encode(&mut self, list: &DrawList<'_>);
     /// Present a previously begun frame, submitting it to the display.
@@ -269,6 +276,20 @@ pub trait GpuBackend {
     /// the backend's fence advances so the next [`begin_frame`](Self::begin_frame)
     /// can reclaim anything that was awaiting this frame's completion.
     fn present(&mut self, frame: Frame);
+
+    /// Recover from a lost or reset device on `surface` (§6.4).
+    ///
+    /// A device loss (GPU reset, driver restart, display reconfiguration) or an
+    /// abandoned frame invalidates any drawable held between
+    /// [`begin_frame`](Self::begin_frame) and [`present`](Self::present): the
+    /// present that would have signalled its epoch will never run, so the fence
+    /// would stall and parked slots would never reclaim. This hook drops the held
+    /// drawable and unblocks the retire queue by treating the current epoch as
+    /// finished, so the next [`begin_frame`](Self::begin_frame) reclaims cleanly
+    /// and re-acquires a fresh drawable. Surface-owned GPU state is otherwise
+    /// re-derived lazily on the next frame; persistent resources (buffers,
+    /// textures, pipelines) survive, since a lost drawable does not free them.
+    fn device_lost(&mut self, surface: SurfaceId);
 
     /// Static device capabilities.
     fn caps(&self) -> &Caps;

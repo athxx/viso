@@ -908,7 +908,12 @@ impl Renderer {
         clear: [f32; 4],
         viewport: [f32; 2],
     ) {
-        let frame = backend.begin_frame(surface);
+        // The drawable can be momentarily unavailable (surface out of date after a
+        // resize/DPI change, or the drawable pool is exhausted). That is transient:
+        // skip this frame and let the next tick redraw the unchanged scene.
+        let Some(frame) = backend.begin_frame(surface) else {
+            return;
+        };
         self.encode(backend, frame, clear, viewport);
         backend.present(frame);
     }

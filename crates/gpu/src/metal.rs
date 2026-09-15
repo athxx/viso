@@ -262,6 +262,13 @@ impl MetalBackend {
 /// physical pixels. The view's backing conversion supplies the scale Core
 /// Animation needs when it composites the drawable into the content area.
 ///
+/// `width`/`height` are the target drawable size in **physical pixels**. Returns
+/// `true` if the drawable size or the backing scale actually changed from what
+/// the layer already carries — the caller uses that to skip redundant work
+/// (resetting an unchanged `drawableSize` restarts the drawable pool for no
+/// reason). The layer frame follows the view bounds on every call, since the
+/// view may have moved without its pixel size changing.
+///
 /// # Safety
 ///
 /// `view` must be the live NSView that owns `layer`, and this must run on its
@@ -271,7 +278,7 @@ unsafe fn configure_layer_geometry(
     view: &AnyObject,
     width: u32,
     height: u32,
-) {
+) -> bool {
     // SAFETY: the caller guarantees `view` is a live NSView.
     let bounds: CGRect = unsafe { msg_send![view, bounds] };
     // SAFETY: the caller guarantees `view` is a live NSView.
@@ -285,12 +292,26 @@ unsafe fn configure_layer_geometry(
         ]
     };
     layer.setFrame(bounds);
+
     let scale = backing_unit.width.max(backing_unit.height).max(1.0);
-    layer.setContentsScale(scale);
-    layer.setDrawableSize(CGSize {
+    let target = CGSize {
         width: width as f64,
         height: height as f64,
-    });
+    };
+
+    // Only touch the pixel-space geometry when it genuinely differs: each
+    // `setDrawableSize`/`setContentsScale` invalidates and rebuilds the drawable
+    // pool, so re-setting an unchanged value costs a needless reallocation.
+    let current = layer.drawableSize();
+    let size_changed = current.width != target.width || current.height != target.height;
+    let scale_changed = layer.contentsScale() != scale;
+    if scale_changed {
+        layer.setContentsScale(scale);
+    }
+    if size_changed {
+        layer.setDrawableSize(target);
+    }
+    size_changed || scale_changed
 }
 
 impl GpuBackend for MetalBackend {
@@ -536,7 +557,9 @@ impl GpuBackend for MetalBackend {
             let view = &*(ns_view as *const AnyObject);
             let _: () = msg_send![view, setWantsLayer: true];
             let _: () = msg_send![view, setLayer: &*layer];
-            configure_layer_geometry(&layer, view, width, height);
+            // Initial geometry: the return (whether it changed) is irrelevant on a
+            // freshly created layer, which starts with no drawable pool.
+            let _ = configure_layer_geometry(&layer, view, width, height);
         }
 
         self.surfaces
@@ -553,32 +576,46 @@ impl GpuBackend for MetalBackend {
 
     fn resize_surface(&mut self, id: SurfaceId, width: u32, height: u32) {
         let s = self.surface_mut(id);
+        // A resize or DPI change may arrive while a drawable is still held (the
+        // window can resize mid-frame). Drop it: it was sized for the old
+        // geometry, and reconfiguring the layer rebuilds the drawable pool under
+        // it. The next `begin_frame` acquires a correctly sized drawable.
+        s.current = None;
         s.width = width;
         s.height = height;
         // SAFETY: the originating platform window outlives its GPU surface.
         let view = unsafe { &*(s.view as *const AnyObject) };
         // SAFETY: `view` is a live NSView and layer geometry is updated on the
-        // platform thread that owns it.
+        // platform thread that owns it. `configure_layer_geometry` no-ops the
+        // pixel-space writes when the physical size and scale are unchanged.
         unsafe {
             configure_layer_geometry(&s.layer, view, width, height);
         }
     }
 
-    fn begin_frame(&mut self, surface: SurfaceId) -> Frame {
-        // Free slots parked by frames the GPU has since finished, then open the
-        // next epoch that this frame's work — and any `destroy_*` during it —
-        // will be stamped with.
+    fn begin_frame(&mut self, surface: SurfaceId) -> Option<Frame> {
+        // Free slots parked by frames the GPU has since finished. (Reclamation is
+        // gated by the completion fence, not the epoch, so it is safe to do before
+        // knowing whether this acquire succeeds.)
         self.reclaim_completed();
-        self.current_epoch = self.current_epoch.next();
 
         let s = self.surface_mut(surface);
-        // Acquire the next drawable; hold it for encode + present.
-        let drawable = s.layer.nextDrawable();
-        s.current = drawable;
-        Frame {
+        // Acquire the next drawable; hold it for encode + present. A nil drawable
+        // means the layer is momentarily out of date (mid-resize) or its pool is
+        // exhausted — not an error. Return `None` and, crucially, leave the epoch
+        // where it is: advancing it here would park a frame that `present` never
+        // completes, stalling the fence and the retire queue behind it.
+        let drawable = s.layer.nextDrawable()?;
+        s.current = Some(drawable);
+
+        // A drawable is in hand: this is a real frame, so open its epoch. Any
+        // `destroy_*` during it parks against this epoch and reclaims once the
+        // matching `present` completes.
+        self.current_epoch = self.current_epoch.next();
+        Some(Frame {
             surface,
             drawable: 0,
-        }
+        })
     }
 
     fn encode(&mut self, list: &DrawList<'_>) {
@@ -619,6 +656,23 @@ impl GpuBackend for MetalBackend {
                 cmd.commit();
             });
         }
+    }
+
+    fn device_lost(&mut self, surface: SurfaceId) {
+        // Drop any drawable held between `begin_frame` and `present`: the present
+        // that would have signalled its epoch will never run, so it must not be
+        // returned to the compositor.
+        self.surface_mut(surface).current = None;
+        // Advance the shared completion counter to the current epoch so the frame
+        // whose fence just went unsignalled — and every earlier one — is treated
+        // as finished. Without this the retire queue would wait forever on a fence
+        // no command buffer will ever raise, and parked slots would never reclaim.
+        // `fetch_max` keeps it monotonic against any real completion handlers still
+        // in flight. The next `begin_frame` reclaims cleanly and re-acquires a
+        // fresh drawable; persistent resources are untouched by the loss.
+        self.completed
+            .fetch_max(self.current_epoch.0, Ordering::Release);
+        self.reclaim_completed();
     }
 
     fn caps(&self) -> &Caps {

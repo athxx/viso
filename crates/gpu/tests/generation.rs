@@ -117,7 +117,9 @@ fn destroyed_slot_is_reclaimed_only_after_its_frame_completes() {
 
     // Open a frame, then destroy `first` inside it: the slot is parked against
     // this frame's epoch, not freed.
-    let frame = gpu.begin_frame(surface);
+    let frame = gpu
+        .begin_frame(surface)
+        .expect("headless acquire never fails");
     gpu.destroy_buffer(first);
     assert_eq!(gpu.retired_count(), 1, "destroy parks the slot");
 
@@ -134,7 +136,8 @@ fn destroyed_slot_is_reclaimed_only_after_its_frame_completes() {
 
     // The next frame drains the queue: `first`'s slot is freed (generation
     // bumped) and returns to the free-list.
-    let _ = gpu.begin_frame(surface);
+    gpu.begin_frame(surface)
+        .expect("headless acquire never fails");
     assert_eq!(
         gpu.retired_count(),
         0,
@@ -173,7 +176,9 @@ fn repeated_growth_keeps_the_retire_queue_bounded() {
     let baseline = gpu.buffer_count();
 
     for frame_index in 0..64 {
-        let frame = gpu.begin_frame(surface);
+        let frame = gpu
+            .begin_frame(surface)
+            .expect("headless acquire never fails");
 
         // A growth: the old buffer is retired, a bigger one takes its place. The
         // new buffer is live this frame; the old one is parked for reclamation.
@@ -199,9 +204,12 @@ fn repeated_growth_keeps_the_retire_queue_bounded() {
     }
 
     // Draining frame: the last retire completes and the queue empties.
-    let frame = gpu.begin_frame(surface);
+    let frame = gpu
+        .begin_frame(surface)
+        .expect("headless acquire never fails");
     gpu.present(frame);
-    let _ = gpu.begin_frame(surface);
+    gpu.begin_frame(surface)
+        .expect("headless acquire never fails");
     assert_eq!(
         gpu.retired_count(),
         0,
@@ -230,8 +238,106 @@ fn destroying_a_stale_handle_is_a_no_op() {
     assert_eq!(gpu.retired_count(), 0, "an unknown handle parks nothing");
 
     // Cycle a frame; nothing was reclaimed, and the live buffer is untouched.
-    let frame = gpu.begin_frame(surface);
+    let frame = gpu
+        .begin_frame(surface)
+        .expect("headless acquire never fails");
     gpu.present(frame);
-    let _ = gpu.begin_frame(surface);
+    gpu.begin_frame(surface)
+        .expect("headless acquire never fails");
     gpu.write_buffer(live, 0, &[2u8; 64]);
+}
+
+// --- Surface lifecycle: device loss, resize, out-of-date acquire -------------
+//
+// `begin_frame` is fallible: a `None` acquire is a transient skip that must not
+// advance the epoch, or it would park a frame no `present` ever completes and
+// stall the retire queue behind it. `device_lost` exists to break exactly that
+// stall — dropping the held drawable and treating the current epoch as finished
+// so parked slots reclaim. `resize_surface` re-lays-out the surface without
+// leaking the drawable it may have been holding. Driven through the public API
+// on the headless backend, where a presented frame completes immediately.
+
+/// A frame opened but abandoned — presented via neither `present` nor a clean
+/// second `begin_frame` — would leave the fence one epoch behind forever, so a
+/// slot retired in that frame could never reclaim. `device_lost` treats the
+/// current epoch as finished and drains the stalled queue.
+#[test]
+fn device_lost_unblocks_a_stalled_retire_queue() {
+    let mut gpu = HeadlessRaster::new();
+    let surface = gpu.create_surface(RawWindowHandle::Headless, 8, 8);
+
+    let victim = gpu.create_buffer(&buf());
+
+    // Open a frame and retire a buffer into it, then abandon the frame: no
+    // `present` runs, so the fence never advances past the previous epoch and
+    // the parked slot is stuck.
+    gpu.begin_frame(surface)
+        .expect("headless acquire never fails");
+    gpu.destroy_buffer(victim);
+    assert_eq!(gpu.retired_count(), 1, "the slot is parked in this frame");
+
+    // A plain next frame cannot save it: its reclaim runs against a fence that
+    // still trails the parked epoch, so the slot stays parked.
+    gpu.begin_frame(surface)
+        .expect("headless acquire never fails");
+    assert_eq!(
+        gpu.retired_count(),
+        1,
+        "without completion the parked slot cannot reclaim"
+    );
+
+    // Recover: `device_lost` signals the current epoch complete and drains.
+    gpu.device_lost(surface);
+    assert_eq!(
+        gpu.retired_count(),
+        0,
+        "device_lost treats the current epoch as finished and reclaims"
+    );
+
+    // The slot is back on the free-list: the next create reuses it at a bumped
+    // generation, so the abandoned frame left no leak behind.
+    let reused = gpu.create_buffer(&buf());
+    assert_eq!(reused.index, victim.index);
+    assert_ne!(reused.generation, victim.generation);
+
+    // And the backend keeps drawing after recovery.
+    let frame = gpu
+        .begin_frame(surface)
+        .expect("headless acquire succeeds again after recovery");
+    gpu.present(frame);
+}
+
+/// A resize reallocates the surface's framebuffer to the new physical size and
+/// drops any drawable held for the old geometry — the read-back buffer tracks
+/// the new dimensions exactly, with no stale pixels left over.
+#[test]
+fn resize_reallocates_the_surface_without_leaking_the_old_drawable() {
+    let mut gpu = HeadlessRaster::new();
+    let surface = gpu.create_surface(RawWindowHandle::Headless, 8, 8);
+
+    // Four bytes (BGRA8) per pixel at the initial size.
+    assert_eq!(gpu.read_pixels_bgra8(surface).len(), 8 * 8 * 4);
+
+    // Open a frame so a drawable is held, then resize mid-frame: the held
+    // drawable is for the old geometry and must be dropped, not presented.
+    gpu.begin_frame(surface)
+        .expect("headless acquire never fails");
+    gpu.resize_surface(surface, 16, 4);
+
+    // The framebuffer now tracks the new physical size exactly.
+    assert_eq!(gpu.read_pixels_bgra8(surface).len(), 16 * 4 * 4);
+
+    // The surface still acquires and presents cleanly at the new size — the
+    // mid-frame resize left no half-opened frame wedged in the epoch.
+    let frame = gpu
+        .begin_frame(surface)
+        .expect("headless acquire succeeds after resize");
+    gpu.present(frame);
+    gpu.begin_frame(surface)
+        .expect("headless acquire never fails");
+    assert_eq!(
+        gpu.retired_count(),
+        0,
+        "a mid-frame resize parks no phantom epoch"
+    );
 }
