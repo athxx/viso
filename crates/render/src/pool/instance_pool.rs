@@ -80,6 +80,12 @@ pub struct InstancePool<T> {
     /// Reused scratch holding the coalesced upload ranges for this frame. Same
     /// steady-state no-alloc property as `dirty_scratch`.
     range_scratch: Vec<Range>,
+    /// Bytes handed to [`write_buffer`](viso_gpu::GpuBackend::write_buffer) by
+    /// the last [`sync`](Self::sync): the summed size of the slots uploaded this
+    /// frame (`changed slots × stride`). Zero on an unchanged frame. A plain
+    /// counter read by [`last_upload_bytes`](Self::last_upload_bytes) into
+    /// `FrameStats::gpu_upload_bytes` (§61); it never allocates.
+    last_upload_bytes: usize,
 }
 
 impl<T: Copy + PartialEq + 'static> InstancePool<T> {
@@ -98,6 +104,7 @@ impl<T: Copy + PartialEq + 'static> InstancePool<T> {
             label,
             dirty_scratch: Vec::new(),
             range_scratch: Vec::new(),
+            last_upload_bytes: 0,
         }
     }
 
@@ -124,6 +131,14 @@ impl<T: Copy + PartialEq + 'static> InstancePool<T> {
         self.shadow.is_empty()
     }
 
+    /// Bytes uploaded by the most recent [`sync`](Self::sync): the changed slots
+    /// (or the whole array on a grow) times the element stride. Zero after an
+    /// unchanged frame. The renderer sums this across its pools into
+    /// `FrameStats::gpu_upload_bytes` (§61).
+    pub fn last_upload_bytes(&self) -> usize {
+        self.last_upload_bytes
+    }
+
     /// Reconcile the device buffer with `instances`, the family's freshly
     /// lowered draw-order array, uploading only the slots that changed.
     ///
@@ -145,6 +160,7 @@ impl<T: Copy + PartialEq + 'static> InstancePool<T> {
             // the shadow so a later frame that re-adds slots diffs against an
             // empty prefix and uploads them.
             self.shadow.clear();
+            self.last_upload_bytes = 0;
             return 0;
         }
 
@@ -153,6 +169,7 @@ impl<T: Copy + PartialEq + 'static> InstancePool<T> {
             self.upload_run(backend, 0, instances);
             self.shadow.clear();
             self.shadow.extend_from_slice(instances);
+            self.last_upload_bytes = instances.len() * Self::STRIDE;
             return 1;
         }
 
@@ -170,11 +187,14 @@ impl<T: Copy + PartialEq + 'static> InstancePool<T> {
         // clean gaps) and upload each as one contiguous write. An unchanged frame
         // has no dirty slots, yields no ranges, and issues zero uploads.
         coalescer::coalesce(&self.dirty_scratch, &mut self.range_scratch);
+        let mut uploaded_slots = 0;
         for r in 0..self.range_scratch.len() {
             let Range { start, len } = self.range_scratch[r];
             self.upload_run(backend, start, &instances[start..start + len]);
+            uploaded_slots += len;
         }
         let writes = self.range_scratch.len();
+        self.last_upload_bytes = uploaded_slots * Self::STRIDE;
 
         // The shadow now mirrors exactly `instances`.
         self.shadow.clear();

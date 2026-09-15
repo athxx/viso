@@ -11,6 +11,7 @@
 
 #![forbid(unsafe_op_in_unsafe_fn)]
 
+pub mod batch;
 pub mod color_atlas;
 pub mod frame;
 pub mod glyph_atlas;
@@ -41,10 +42,7 @@ pub use renderer::{FrameStats, Renderer};
 pub use viso_gpu::{BindGroupId, PipelineId, TextureId};
 use viso_text::{Direction, Shaper, rasterize_coverage};
 
-/// A compact batch key. Batch keys use integer IDs, never strings (§16.2),
-/// and must respect visual order and clipping.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct BatchKey(pub u32);
+pub use batch::{BatchFamily, BatchItem, BatchKey, BatchTarget, RenderChunk, RenderChunkId};
 
 /// The Image test texture: a 4×4 red/blue checkerboard, BGRA8, top-left origin,
 /// premultiplied (opaque, so premultiplied == straight).
