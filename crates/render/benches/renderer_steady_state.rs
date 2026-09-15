@@ -30,7 +30,8 @@ use viso_gpu::{
     GpuBackend, HeadlessRaster, RawWindowHandle, SurfaceId, TextureDesc, TextureFormat,
 };
 use viso_render::{
-    FrameStats, GlyphRunDraw, Primitive, Renderer, test_glyphs, test_scene, test_texture,
+    Border, FrameStats, GlyphRunDraw, Primitive, Quad, Rect, Renderer, Rgba, test_glyphs,
+    test_scene, test_texture,
 };
 
 /// A global allocator that counts heap allocations while `ARMED`, so a steady
@@ -127,6 +128,177 @@ fn setup() -> Harness {
         surface,
         scene,
     }
+}
+
+/// The D0.4 large-scene sizes: a moderate grid the steady-state / hover / scroll
+/// proofs run against, and a large one the criterion timing bench uses to show
+/// the per-frame cost is O(dirty), not O(scene). Kept as counts so the grid
+/// dimensions are derived, not hand-tuned.
+const GRID_10K: usize = 10_000;
+const GRID_100K: usize = 100_000;
+
+/// A pure-quad grid of `count` solid rects laid out in a near-square lattice,
+/// each an opaque colored tile with no border and no corner radius.
+///
+/// Deliberately quads only: the hover/scroll proofs need the quad pool to be the
+/// sole participant in `sync`, so a single changed tile is provably one upload
+/// range (§9.1) with no other family's traffic mixed in. The tiles are laid on a
+/// fixed pitch starting at the origin; the surface stays [`W`]×[`H`] (most tiles
+/// fall outside it, which is irrelevant — this measures the CPU data path
+/// (lower + diff + coalesce + upload), not rasterizer coverage).
+fn grid_scene(count: usize) -> Vec<Primitive> {
+    let cols = (count as f64).sqrt().ceil() as usize;
+    let mut scene = Vec::with_capacity(count);
+    for i in 0..count {
+        let col = (i % cols) as f32;
+        let row = (i / cols) as f32;
+        scene.push(Primitive::Quad(Quad {
+            rect: Rect {
+                x: col * 3.0,
+                y: row * 3.0,
+                w: 2.0,
+                h: 2.0,
+            },
+            // A per-tile hue so adjacent tiles differ, keeping the diff honest
+            // (a uniform fill would make a color change indistinguishable).
+            color: Rgba {
+                r: (i % 7) as f32 / 7.0,
+                g: (i % 13) as f32 / 13.0,
+                b: (i % 5) as f32 / 5.0,
+                a: 1.0,
+            },
+            radius: 0.0,
+            border: Border::NONE,
+        }));
+    }
+    scene
+}
+
+/// A [`Harness`] over a pure-quad [`grid_scene`] of `count` tiles. Same backend /
+/// renderer / surface setup as [`setup`], but no image/glyph resources — the
+/// grid needs none, so the quad pool is the only one that ever uploads.
+fn setup_grid(count: usize) -> Harness {
+    let mut gpu = HeadlessRaster::new();
+    let surface = gpu.create_surface(RawWindowHandle::Headless, W, H);
+    let format = gpu.surface_format(surface);
+    let renderer = Renderer::new(&mut gpu, format);
+    let scene = grid_scene(count);
+    Harness {
+        gpu,
+        renderer,
+        surface,
+        scene,
+    }
+}
+
+/// §9.1 proof — a paint-only change to one tile uploads exactly one coalesced
+/// range of one instance, never the whole scene.
+///
+/// Warms two frames of a 10k-tile grid (frame one grows + fills the pool; frame
+/// two is the clean steady baseline), asserts the steady frame uploads nothing,
+/// then recolors a single tile and asserts the next `upload`:
+///   - syncs exactly one range (`uploaded_ranges == 1`), not one per slot;
+///   - uploads exactly one `QuadInstance`'s worth of bytes;
+///   - bumps `dirty_primitives` by one and re-tessellates no path (a color change
+///     is a paint-plane event — geometry/tessellation untouched, §8.4).
+fn assert_hover_uploads_one_range() {
+    let mut h = setup_grid(GRID_10K);
+    frame(&mut h);
+    frame(&mut h);
+
+    // Steady baseline: an unchanged frame uploads nothing.
+    h.renderer.upload(&mut h.gpu, &h.scene);
+    let steady = h.renderer.frame_stats();
+    assert_eq!(
+        steady.uploaded_ranges, 0,
+        "an unchanged 10k grid must upload zero ranges (§9.1)"
+    );
+    assert_eq!(
+        steady.gpu_upload_bytes, 0,
+        "an unchanged 10k grid must upload zero bytes (§9.1)"
+    );
+
+    // Hover: recolor exactly one tile in the middle of the scene.
+    let target = GRID_10K / 2;
+    let Primitive::Quad(q) = &mut h.scene[target] else {
+        unreachable!("grid is pure quads");
+    };
+    q.color = Rgba {
+        r: 0.123,
+        g: 0.456,
+        b: 0.789,
+        a: 1.0,
+    };
+
+    h.renderer.upload(&mut h.gpu, &h.scene);
+    let hover = h.renderer.frame_stats();
+
+    assert_eq!(
+        hover.uploaded_ranges, 1,
+        "a one-tile paint change must coalesce to exactly one upload range, \
+         not one per slot and not a full-scene re-upload (§9.1/§9.3)"
+    );
+    assert_eq!(
+        hover.gpu_upload_bytes,
+        size_of::<viso_render::QuadInstance>(),
+        "a one-tile paint change must upload exactly one instance's bytes (§9.1)"
+    );
+    assert_eq!(
+        hover.dirty_primitives, 1,
+        "a one-tile paint change must dirty exactly one primitive (§8.4)"
+    );
+    assert_eq!(
+        hover.path_tessellations, 0,
+        "a paint-only change must re-tessellate nothing — quads never tessellate, \
+         and no geometry plane moved (§8.4)"
+    );
+}
+
+/// §8.7 proof — a scroll (every tile's position shifted) is a transform-plane
+/// event that never re-tessellates and never grows a buffer.
+///
+/// Shifting `rect_pos` on every tile dirties the transform plane for all N, so
+/// the frame re-uploads instances (position lives in the instance) — but it must
+/// do so by rewriting existing slots, not by rebuilding/growing buffers, and it
+/// must re-tessellate nothing (quads carry no tessellation; no geometry plane
+/// moved). This is the §8.7 "transform ≠ layout/geometry" contract at the data
+/// path: a scroll touches transform only.
+fn assert_scroll_is_transform_only() {
+    let mut h = setup_grid(GRID_10K);
+    frame(&mut h);
+    frame(&mut h);
+
+    let buffers = h.gpu.buffer_count();
+
+    // Scroll: shift every tile up-left by a whole pixel.
+    for p in &mut h.scene {
+        let Primitive::Quad(q) = p else {
+            unreachable!("grid is pure quads");
+        };
+        q.rect.x -= 1.0;
+        q.rect.y -= 1.0;
+    }
+
+    h.renderer.upload(&mut h.gpu, &h.scene);
+    let scroll = h.renderer.frame_stats();
+
+    assert_eq!(
+        scroll.dirty_primitives, GRID_10K as u32,
+        "a scroll moves every tile, so every primitive is dirty on the transform plane"
+    );
+    assert_eq!(
+        scroll.path_tessellations, 0,
+        "a transform-only change must re-tessellate nothing (§8.7)"
+    );
+    assert_eq!(
+        scroll.instance_rebuilds, 0,
+        "a scroll rewrites existing slots in place — no buffer is rebuilt/grown (§8.7/§9.1)"
+    );
+    assert_eq!(
+        h.gpu.buffer_count(),
+        buffers,
+        "a scroll must not allocate a new GPU buffer (§17.4)"
+    );
 }
 
 /// Lower + upload + submit one frame of the scene.
@@ -236,6 +408,10 @@ fn assert_steady_state_is_allocation_free() {
 
 fn bench_steady_state(c: &mut Criterion) {
     assert_steady_state_is_allocation_free();
+    // D0.4 gate: the persistent data path holds a local change to a local upload
+    // (§9.1) and a scroll to the transform plane (§8.7), at 10k tiles.
+    assert_hover_uploads_one_range();
+    assert_scroll_is_transform_only();
 
     let mut h = setup();
     // Warm up so the measured iterations are the reuse path, not first growth.
@@ -250,6 +426,35 @@ fn bench_steady_state(c: &mut Criterion) {
 
     c.bench_function("frame", |b| {
         b.iter(|| frame(black_box(&mut h)));
+    });
+
+    // D0.4 large-scene timing: at 100k tiles, a steady (unchanged) `upload` is the
+    // diff-and-coalesce cost with zero uploads, and a one-tile hover `upload` is
+    // that plus a single-instance write. Both must scale with the dirty set, not
+    // the scene — this bench is the regression sentinel for that (§9.1). A leading
+    // warm frame moves the pool past its one-time growth.
+    let mut big = setup_grid(GRID_100K);
+    frame(&mut big);
+    frame(&mut big);
+
+    c.bench_function("upload_100k_steady", |b| {
+        b.iter(|| {
+            big.renderer
+                .upload(black_box(&mut big.gpu), black_box(&big.scene))
+        });
+    });
+
+    // Recolor one tile before each measured iteration, so every iteration uploads
+    // exactly one instance range against a 100k-tile scene.
+    let hover_target = GRID_100K / 2;
+    c.bench_function("upload_100k_hover", |b| {
+        b.iter(|| {
+            if let Primitive::Quad(q) = &mut big.scene[hover_target] {
+                q.color.g = 1.0 - q.color.g;
+            }
+            big.renderer
+                .upload(black_box(&mut big.gpu), black_box(&big.scene));
+        });
     });
 }
 

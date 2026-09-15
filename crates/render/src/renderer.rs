@@ -195,6 +195,12 @@ struct TextureBinding {
     bind_group: BindGroupId,
 }
 
+/// The built-in pipelines the renderer prewarms once in [`Renderer::new`]
+/// (§7.1): SolidRect (quad), Image, MaskComposite (glyph), and PathFill (mesh).
+/// Reported as `FrameStats::shader_pipeline_creations` — a construction-time
+/// constant, since no draw ever triggers a runtime shader compile.
+const SHADER_PIPELINE_PREWARM_COUNT: u32 = 4;
+
 /// Draw-call and instance counts for the frame the renderer has just lowered.
 ///
 /// Read after [`Renderer::upload`] and before [`Renderer::submit`]: `upload`
@@ -230,6 +236,47 @@ pub struct FrameStats {
     /// stay separate counters because a later pass (indirect/multi-draw) can
     /// fold several batches into one call without changing the batch count.
     pub batches: usize,
+    /// Render chunks encoded this frame (§30): one per draw command across all
+    /// passes. One chunk is one draw command today, so this tracks `draw_calls`;
+    /// kept separate so a later chunking pass can group draws without moving the
+    /// draw-call count.
+    pub render_chunks: usize,
+    /// Times the encoded pipeline changed between two adjacent draw commands in
+    /// execution order (§30). A run of same-family segments is one switch on
+    /// entry; fewer switches means less state churn on the GPU.
+    pub pipeline_switches: u32,
+    /// Times the bound texture set changed between two adjacent draw commands in
+    /// execution order (§30). Untextured (solid-rect) draws carry no binding, so
+    /// a pure-quad frame reports 0.
+    pub texture_binding_switches: u32,
+    /// Contiguous upload ranges written to GPU buffers this frame, summed over
+    /// every pool (§30, §9.3): the number of `write_buffer` calls the dirty-range
+    /// coalescer produced. Zero on a steady frame; a single local change is one
+    /// range, not one per slot.
+    pub uploaded_ranges: usize,
+    /// Offscreen render-to-texture passes this frame (§30): one per translucent
+    /// layer. Zero for a flat scene with no group opacity (the D0 case).
+    pub offscreen_passes: usize,
+    /// Bytes backing this frame's transient offscreen render targets (§30):
+    /// summed `width * height * 4` (Bgra8) over every offscreen pass. Zero when
+    /// there are no offscreen passes.
+    pub transient_target_bytes: usize,
+    /// GPU pipelines created since the renderer was built (§30). The four
+    /// builtins are prewarmed once at construction and never recompiled at
+    /// steady state (§7.1: no runtime first-use compile), so this is a fixed
+    /// prewarm count, not a per-frame value.
+    pub shader_pipeline_creations: u32,
+    /// Retained primitives skipped this frame because they fell fully outside the
+    /// visible/clip region (§30). No culling stage exists yet, so this is 0;
+    /// a later layer lights it up without changing the counter's meaning.
+    pub culled_primitives: u32,
+    /// Instance buffers rebuilt (grown, forcing a full re-upload) this frame
+    /// (§30). Amortized to 0 at steady state once buffers reach their high-water
+    /// mark; a later layer wires the pool's grow signal in here.
+    pub instance_rebuilds: u32,
+    /// Hardware clip masks built this frame (§30). D0 clips are axis-aligned
+    /// scissors, never masks, so this is 0; the masked-clip layer lights it up.
+    pub clip_mask_builds: u32,
     /// Bytes uploaded to GPU instance/vertex/index buffers this frame, summed
     /// over every pool (§61). Zero on a steady frame that changed nothing — a
     /// local paint change uploads only its changed slots (§9.1).
@@ -317,6 +364,12 @@ pub struct Renderer {
     /// frame that changed nothing. Read by [`frame_stats`](Self::frame_stats)
     /// into `FrameStats::gpu_upload_bytes` (§61); a plain counter, no alloc.
     gpu_upload_bytes: usize,
+    /// Contiguous upload ranges the last [`upload`](Self::upload) wrote across
+    /// every pool — the sum of each pool's [`sync`](InstancePool::sync) return,
+    /// which is the number of `write_buffer` calls the dirty-range coalescer
+    /// produced (§9.3). Zero on a steady frame; a single local change is one
+    /// range. Read into `FrameStats::uploaded_ranges` (§30); a plain counter.
+    uploaded_ranges: usize,
 }
 
 /// A reusable render-target texture in [`Renderer::offscreen_pool`].
@@ -416,6 +469,7 @@ impl Renderer {
             passes: Vec::with_capacity(4),
             scene: Scene::new(),
             gpu_upload_bytes: 0,
+            uploaded_ranges: 0,
         }
     }
 
@@ -588,12 +642,16 @@ impl Renderer {
         // lowered draw-order scratch, uploading only the slots that changed since
         // last frame (§9.1) — a local paint change is a local upload, an
         // unchanged frame uploads nothing.
-        self.quad_pool.sync(backend, &self.quad_scratch);
-        self.image_pool.sync(backend, &self.image_scratch);
-        self.glyph_pool.sync(backend, &self.glyph_scratch);
-        self.mesh_vertex_pool
-            .sync(backend, &self.mesh_vertex_scratch);
-        self.mesh_index_pool.sync(backend, &self.mesh_index_scratch);
+        // Each `sync` returns the number of `write_buffer` calls it issued (the
+        // coalesced dirty-range count, §9.3); summed, that is this frame's
+        // `uploaded_ranges` counter (§30). A steady frame syncs zero ranges.
+        self.uploaded_ranges = self.quad_pool.sync(backend, &self.quad_scratch)
+            + self.image_pool.sync(backend, &self.image_scratch)
+            + self.glyph_pool.sync(backend, &self.glyph_scratch)
+            + self
+                .mesh_vertex_pool
+                .sync(backend, &self.mesh_vertex_scratch)
+            + self.mesh_index_pool.sync(backend, &self.mesh_index_scratch);
 
         // Sum the bytes each pool actually handed to the backend this frame into
         // the frame-scoped upload counter (§61). A steady frame that changed no
@@ -738,15 +796,60 @@ impl Renderer {
         self.scene.paint_order = record;
     }
 
-    /// The draw-call and instance counts for the frame just lowered by
+    /// The frame's counters (§30, §61), as they stand after the last
     /// [`upload`](Self::upload).
     ///
-    /// Every [`Segment`] maps 1:1 to a draw command (across all passes,
-    /// composites included), so `draw_calls` is simply the segment count; a
-    /// scene whose nodes did not change lowers to the same segments and keeps it
-    /// fixed. `instances` sums each segment's `count`. See [`FrameStats`].
+    /// Every [`Segment`] maps 1:1 to a draw command across all passes
+    /// (composites included), so `draw_calls`, `batches`, and `render_chunks`
+    /// all equal the segment count today; a scene whose nodes did not change
+    /// lowers to the same segments and keeps them fixed. `instances` sums each
+    /// segment's `count`. `pipeline_switches` and `texture_binding_switches`
+    /// walk the segments in submission order and count the transitions between
+    /// adjacent draws. `uploaded_ranges` and `gpu_upload_bytes` come from the
+    /// pool syncs. `offscreen_passes` and `transient_target_bytes` come from
+    /// this frame's translucent-layer passes. `shader_pipeline_creations` is the
+    /// fixed prewarm count (§7.1: no runtime compile). The counters with no
+    /// source in this layer stay 0 with their meaning fixed (see [`FrameStats`]).
     pub fn frame_stats(&self) -> FrameStats {
         let ingest = self.scene.ingest_stats;
+
+        // Walk the draw segments in submission order, counting a pipeline switch
+        // whenever the pipeline family changes between adjacent draws and a
+        // texture-binding switch whenever the bound texture set changes. The
+        // first draw is a switch on entry from the cleared state.
+        let mut pipeline_switches = 0u32;
+        let mut texture_binding_switches = 0u32;
+        let mut prev: Option<(BatchFamily, Option<BindGroupId>)> = None;
+        for seg in &self.segments {
+            let family = seg.kind.family();
+            let binding = seg.kind.resource();
+            match prev {
+                None => {
+                    pipeline_switches += 1;
+                    if binding.is_some() {
+                        texture_binding_switches += 1;
+                    }
+                }
+                Some((prev_family, prev_binding)) => {
+                    if prev_family != family {
+                        pipeline_switches += 1;
+                    }
+                    if prev_binding != binding {
+                        texture_binding_switches += 1;
+                    }
+                }
+            }
+            prev = Some((family, binding));
+        }
+
+        // Transient offscreen targets: one Bgra8 texture per translucent-layer
+        // pass, sized to its viewport (physical pixels).
+        let transient_target_bytes = self
+            .offscreen_passes
+            .iter()
+            .map(|p| (p.viewport[0] as usize) * (p.viewport[1] as usize) * 4)
+            .sum();
+
         FrameStats {
             draw_calls: self.segments.len(),
             instances: self.segments.iter().map(|s| s.count as usize).sum(),
@@ -756,6 +859,17 @@ impl Renderer {
             glyph_instances: ingest.glyph_instances,
             path_tessellations: ingest.path_tessellations,
             batches: self.segments.len(),
+            render_chunks: self.segments.len(),
+            pipeline_switches,
+            texture_binding_switches,
+            uploaded_ranges: self.uploaded_ranges,
+            offscreen_passes: self.offscreen_passes.len(),
+            transient_target_bytes,
+            shader_pipeline_creations: SHADER_PIPELINE_PREWARM_COUNT,
+            // Counters no stage below D0 lights up yet; meaning fixed, value 0.
+            culled_primitives: 0,
+            instance_rebuilds: 0,
+            clip_mask_builds: 0,
             gpu_upload_bytes: self.gpu_upload_bytes,
         }
     }
