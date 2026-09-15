@@ -1062,6 +1062,7 @@ mod tests {
         let stats = FrameStats {
             draw_calls: 2,
             instances: 15,
+            ..Default::default()
         };
         let snap = snapshot_ui(&store, root, sample_batches(), stats);
 
@@ -1083,6 +1084,7 @@ mod tests {
         let stats = FrameStats {
             draw_calls: 2,
             instances: 15,
+            ..Default::default()
         };
         let json = snapshot_ui(&store, root, sample_batches(), stats).to_json();
 
@@ -1138,6 +1140,7 @@ mod tests {
             FrameStats {
                 draw_calls: 2,
                 instances: 15,
+                ..Default::default()
             },
         );
         let dump = snap.dump();
@@ -1163,6 +1166,7 @@ mod tests {
             FrameStats {
                 draw_calls: 0,
                 instances: 0,
+                ..Default::default()
             },
         )
         .to_json();

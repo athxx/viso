@@ -12,18 +12,28 @@
 //!   meshes) plus the identity-separated transform/brush/clip stores.
 //! - [`revision`] — the seven independent monotone revision planes a diff bumps.
 //! - [`bounds`] — the five-stage bounds a primitive carries.
+//! - [`ingest`] — the per-frame diff walk that folds the primitive stream into
+//!   the stores, bumping only the revision planes a change moved.
 //!
 //! # Staged migration
 //!
-//! F3.1 (this stage) runs the scene as a **shadow**: the immediate walk in
-//! `Renderer::upload` stays authoritative and produces the scratch buffers that
-//! actually drive the GPU, while [`Scene::ingest`] rebuilds the retained stores
-//! from the same primitives and records, per emitted primitive, the store slot
-//! it landed in and the lowering context (`clip`, `target`, `origin`) resolved
-//! for it. A debug-only check ([`Scene::rederive_into`]) then replays that
-//! paint-order record back into scratch + segments and asserts it is
-//! byte-identical to what the immediate walk produced — proving the retained
-//! model is a faithful mirror before F3.2/F3.3 make it load-bearing.
+//! The immediate walk in `Renderer::upload` stays authoritative and produces the
+//! scratch buffers that actually drive the GPU. Alongside it, the walk hands each
+//! lowered primitive to the scene through one [`ingest`] call per kind
+//! ([`Scene::ingest_quad`], …), which diffs it against the retained store entry
+//! at its positional slot, mutates the store only where a field moved, bumps only
+//! the revision planes that change touched (§8.4), and records the store slot +
+//! lowering context (`clip`, `target`, `origin`) in paint order. A debug-only
+//! check replays that paint-order record back into scratch + segments and asserts
+//! it is byte-identical to what the immediate walk produced — proving the
+//! retained model is a faithful mirror before F3.3 makes it the source of truth.
+//!
+//! The stores **persist across frames**: [`Scene::begin_frame`] resets each
+//! store's cursor to zero (it does not clear entries), the ingest walk re-visits
+//! the slots in paint order, and [`Scene::finish_frame`] trims any tail the walk
+//! did not reach (the scene shrank). An unchanged scene therefore mutates no
+//! store and bumps no plane — the "0 primitive reconstruction" guarantee under a
+//! whole-tree re-emit (§8.4).
 //!
 //! The paint-order record is the bridge: it captures paint order (a correctness
 //! contract, §8.6) and the per-emit context the stores deliberately do *not*
@@ -32,6 +42,7 @@
 
 pub mod bounds;
 pub mod ids;
+pub mod ingest;
 pub mod revision;
 pub mod store;
 
@@ -39,6 +50,7 @@ use crate::primitive::Rect;
 
 use bounds::Bounds;
 use ids::PrimitiveId;
+use ingest::IngestStats;
 use revision::Revisions;
 use store::{
     BrushStore, ClipStore, GlyphRunStore, ImageStore, MeshStore, SolidQuadStore, StoreRef,
@@ -86,10 +98,11 @@ pub struct PaintEntry {
 /// The retained scene: the per-kind stores, the revision planes, and the
 /// paint-order record tying them together (§8).
 ///
-/// Owned by the [`Renderer`](crate::renderer::Renderer) and rebuilt each frame
-/// from the ingested primitive stream. Storage is cleared-not-freed via
-/// [`Scene::begin_frame`], so a steady-state scene of the same shape reuses last
-/// frame's allocations and the counting-allocator bench stays flat (§28).
+/// Owned by the [`Renderer`](crate::renderer::Renderer) and diffed each frame
+/// against the ingested primitive stream. Storage persists across frames;
+/// [`Scene::begin_frame`] only resets the per-store cursors, so a steady-state
+/// scene of the same shape mutates nothing, reuses last frame's allocations, and
+/// keeps the counting-allocator bench flat (§28).
 #[derive(Debug, Default)]
 pub struct Scene {
     /// Solid/bordered quads, in paint order.
@@ -112,6 +125,8 @@ pub struct Scene {
     pub revisions: Revisions,
     /// One [`PaintEntry`] per emitted primitive, in paint order.
     pub paint_order: Vec<PaintEntry>,
+    /// Per-frame ingest tallies (§61), reset at [`Scene::begin_frame`].
+    pub ingest_stats: IngestStats,
 }
 
 impl Scene {
@@ -120,9 +135,10 @@ impl Scene {
         Scene::default()
     }
 
-    /// Clear every store and the paint-order record for a new frame, keeping
-    /// backing capacity. Revision planes persist across frames (they are the
-    /// running history a consumer compares against).
+    /// Start a new frame: reset every store's cursor (entries persist to diff
+    /// against), reset the per-frame ingest counters, and clear the paint-order
+    /// record. Revision planes persist across frames — they are the running
+    /// history a consumer compares against.
     pub fn begin_frame(&mut self) {
         self.quads.begin_frame();
         self.images.begin_frame();
@@ -133,6 +149,15 @@ impl Scene {
         self.transforms.begin_frame();
         self.brushes.begin_frame();
         self.paint_order.clear();
+        self.begin_ingest();
+    }
+
+    /// Finish the frame's ingest walk: trim every store's tail past its cursor
+    /// (the scene shrank) and bump the visibility plane if anything was trimmed.
+    /// Called by the renderer after the immediate walk has ingested every
+    /// primitive.
+    pub fn finish_frame(&mut self) {
+        self.finish_ingest();
     }
 
     /// Record one emitted primitive: its store slot, lowering context, and

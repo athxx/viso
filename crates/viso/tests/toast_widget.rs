@@ -851,6 +851,7 @@ fn a_steady_shown_toast_frame_is_deterministic_and_reuses_gpu_resources() {
     let FrameStats {
         draw_calls,
         instances,
+        ..
     } = stats;
     assert!(draw_calls > 0, "the shown toast must emit draw calls");
     assert!(instances > 0, "the shown toast must emit instances");

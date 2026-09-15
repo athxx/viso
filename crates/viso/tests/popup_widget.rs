@@ -629,6 +629,7 @@ fn steady_popup_frame_is_allocation_free_including_after_an_open_close_flip() {
     let FrameStats {
         draw_calls,
         instances,
+        ..
     } = stats;
     assert!(draw_calls > 0, "the Popup scene must emit draw calls");
     assert!(instances > 0, "the Popup scene must emit instances");

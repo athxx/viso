@@ -269,6 +269,7 @@ pub mod __test_support {
                     viso_render::FrameStats {
                         draw_calls: 0,
                         instances: 0,
+                        ..Default::default()
                     },
                 ),
             };

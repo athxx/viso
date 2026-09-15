@@ -1,0 +1,240 @@
+//! Ingest-diff: fold a frame's primitive stream into the retained stores,
+//! bumping only the revision planes a field-wise change actually moved (§8.4).
+//!
+//! The renderer's immediate walk resolves each primitive to its lowered
+//! instance and lowering context, then hands it here through one `ingest_*`
+//! call per primitive kind. Each call:
+//!
+//! 1. diffs the incoming value against the retained store entry at its
+//!    **positional slot** (the Nth primitive of a kind → slot N, stable because
+//!    the sole producer re-emits the whole tree in stable pre-order every frame,
+//!    `ui::component::repaint_dirty`);
+//! 2. mutates the store in place *only* where a field differs, and bumps *only*
+//!    the affected revision plane(s) — an unchanged primitive touches neither
+//!    the store nor any plane (this is what makes "0 primitive reconstruction"
+//!    hold under a whole-tree re-emit, §8.4);
+//! 3. records the slot, lowering context, and bounds in the paint-order spine,
+//!    assigning the stable [`PrimitiveId`], and accumulates the per-frame dirty
+//!    counters ([`super::store::DirtyPlanes`] → [`IngestStats`]).
+//!
+//! A kind/count/sequence change at a slot is a *structural* change: the store's
+//! `ingest_*` appends a fresh entry (cold growth) or, on a shrink, `finish_frame`
+//! trims the tail. Those are the cold paths (§9.5); the steady path — same tree,
+//! same order — appends nothing and trims nothing.
+//!
+//! The field → plane mapping is the primitive semantics this module owns; the
+//! stores own the comparison (they own the entry layout) and report *which*
+//! fields moved, but the decision that a moved `rect_pos` is a transform-plane
+//! event and a moved `color` a paint-plane event lives here.
+
+use viso_gpu::TextureId;
+
+use crate::primitive::{GlyphInstance, ImageInstance, MeshVertex, Path, QuadInstance, Rect};
+
+use super::bounds::Bounds;
+use super::ids::PrimitiveId;
+use super::store::{DirtyPlanes, StoreRef};
+use super::{EmitContext, Scene};
+
+/// Per-frame ingest tallies (§61), accumulated as the frame's primitives are
+/// folded in. Plain integer counters — no allocation, reset each `begin_frame`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct IngestStats {
+    /// Primitives visited this frame (one per `ingest_*` call, composites
+    /// excluded — they are per-frame derived draws, not retained slots).
+    pub visible_primitives: u32,
+    /// Primitives whose diff moved at least one revision plane (a cold append
+    /// counts as dirty).
+    pub dirty_primitives: u32,
+    /// Quad instances retained this frame.
+    pub quad_instances: u32,
+    /// Glyph instances retained this frame (summed across runs).
+    pub glyph_instances: u32,
+    /// Paths (re-)tessellated this frame — a geometry or paint change on a path,
+    /// or a cold append. A cache hit does not count.
+    pub path_tessellations: u32,
+}
+
+impl IngestStats {
+    /// Reset to zero for a new frame.
+    fn clear(&mut self) {
+        *self = IngestStats::default();
+    }
+}
+
+impl Scene {
+    /// Reset the per-frame ingest counters. Called by [`Scene::begin_frame`].
+    pub(super) fn begin_ingest(&mut self) {
+        self.ingest_stats.clear();
+    }
+
+    /// Bump the revision planes flagged by a store's field-wise diff, and tally
+    /// the primitive as dirty if anything moved. Shared by every `ingest_*`.
+    fn apply_planes(&mut self, dirty: DirtyPlanes) {
+        if dirty.appended {
+            // A cold structural append: the slot did not exist last frame, so
+            // its geometry is new. Its paint/transform ride along with the new
+            // geometry; the structural generation is the cold path's concern.
+            self.revisions.bump_geometry();
+        } else {
+            if dirty.geometry {
+                self.revisions.bump_geometry();
+            }
+            if dirty.paint {
+                self.revisions.bump_paint();
+            }
+            if dirty.transform {
+                self.revisions.bump_transform();
+            }
+            if dirty.resource {
+                self.revisions.bump_resource();
+            }
+        }
+        if dirty.any() {
+            self.ingest_stats.dirty_primitives += 1;
+        }
+        self.ingest_stats.visible_primitives += 1;
+    }
+
+    /// Ingest a solid/bordered quad: diff into the quad store, bump the moved
+    /// planes, and record its paint-order slot. Returns the stable id.
+    pub fn ingest_quad(
+        &mut self,
+        instance: QuadInstance,
+        context: EmitContext,
+        bounds: Bounds,
+    ) -> PrimitiveId {
+        let (slot, dirty) = self.quads.ingest(instance);
+        self.apply_planes(dirty);
+        self.ingest_stats.quad_instances += 1;
+        self.record(StoreRef::Quad(slot), context, bounds)
+    }
+
+    /// Ingest an image draw: diff instance + texture, bump the moved planes,
+    /// record its slot.
+    pub fn ingest_image(
+        &mut self,
+        instance: ImageInstance,
+        texture: TextureId,
+        context: EmitContext,
+        bounds: Bounds,
+    ) -> PrimitiveId {
+        let (slot, dirty) = self.images.ingest(instance, texture);
+        self.apply_planes(dirty);
+        self.record(StoreRef::Image(slot), context, bounds)
+    }
+
+    /// Ingest a glyph run: pack its instances, diff against last frame's run,
+    /// bump the moved planes, record its slot.
+    pub fn ingest_glyph_run(
+        &mut self,
+        glyphs: impl Iterator<Item = GlyphInstance>,
+        atlas: TextureId,
+        context: EmitContext,
+        bounds: Bounds,
+    ) -> PrimitiveId {
+        let (slot, dirty) = self.glyph_runs.ingest_run(glyphs, atlas);
+        self.apply_planes(dirty);
+        if let Some(entry) = self.glyph_runs.run(slot) {
+            self.ingest_stats.glyph_instances += entry.count;
+        }
+        self.record(StoreRef::GlyphRun(slot), context, bounds)
+    }
+
+    /// Ingest a vector path: diff against the retained entry, re-tessellating
+    /// only on a geometry or paint change (a cache hit re-uses the tessellation),
+    /// bump the moved planes, record its slot.
+    pub fn ingest_path(
+        &mut self,
+        path: &Path,
+        context: EmitContext,
+        bounds: Bounds,
+    ) -> PrimitiveId {
+        let (slot, dirty) = self.paths.ingest(path);
+        if dirty.geometry || dirty.paint || dirty.appended {
+            self.ingest_stats.path_tessellations += 1;
+        }
+        self.apply_planes(dirty);
+        self.record(StoreRef::Path(slot), context, bounds)
+    }
+
+    /// Ingest a caller-supplied mesh: diff vertices/indices, bump the moved
+    /// planes, record its slot.
+    pub fn ingest_mesh(
+        &mut self,
+        vertices: &[MeshVertex],
+        indices: &[u32],
+        context: EmitContext,
+        bounds: Bounds,
+    ) -> PrimitiveId {
+        let (slot, dirty) = self.meshes.ingest(vertices, indices);
+        self.apply_planes(dirty);
+        self.record(StoreRef::Mesh(slot), context, bounds)
+    }
+
+    /// Record a translucent layer's composite draw. A composite is a per-frame
+    /// derived draw (it samples an offscreen texture created this frame), not a
+    /// retained store slot, so it bumps no plane and is not counted as a visible
+    /// retained primitive; it only takes a paint-order position so re-derivation
+    /// reproduces it.
+    pub fn ingest_composite(
+        &mut self,
+        instance: ImageInstance,
+        context: EmitContext,
+        bounds: Bounds,
+    ) -> PrimitiveId {
+        self.record(StoreRef::Composite(instance), context, bounds)
+    }
+
+    /// Fold an emit's clip rect into the clip store, bumping the clip plane on a
+    /// change. The identity-separated clip lets a scroll that only shifts a clip
+    /// bump `ClipRevision` without disturbing geometry/paint (§8.5). Returns
+    /// whether the clip moved. Does not itself record — the owning primitive's
+    /// `ingest_*` records the paint-order entry.
+    pub fn ingest_clip(&mut self, rect: Option<Rect>) -> bool {
+        let (_id, changed) = self.clips.ingest(rect);
+        if changed {
+            self.revisions.bump_clip();
+        }
+        changed
+    }
+
+    /// Fold an emit's world-space origin into the transform store, bumping the
+    /// transform plane on a change. A pure move (origin shift, unchanged
+    /// geometry/paint) dirties `TransformRevision` alone (§8.5). Returns whether
+    /// the transform moved.
+    pub fn ingest_transform(&mut self, origin: [f32; 2]) -> bool {
+        let (_id, changed) = self.transforms.ingest(origin);
+        if changed {
+            self.revisions.bump_transform();
+        }
+        changed
+    }
+
+    /// Fold a resolved fill color into the brush store, bumping the paint plane
+    /// on a change (§8.5). Returns whether the brush moved.
+    pub fn ingest_brush(&mut self, color: [f32; 4]) -> bool {
+        let (_id, changed) = self.brushes.ingest(color);
+        if changed {
+            self.revisions.bump_paint();
+        }
+        changed
+    }
+
+    /// Trim every store's tail past the frame's cursor (the scene shrank) and
+    /// bump the visibility plane if any store lost entries. Called after the
+    /// ingest walk by [`Scene::finish_frame`].
+    pub(super) fn finish_ingest(&mut self) {
+        let mut shrank = self.quads.finish_frame();
+        shrank |= self.images.finish_frame();
+        shrank |= self.glyph_runs.finish_frame();
+        shrank |= self.paths.finish_frame();
+        shrank |= self.meshes.finish_frame();
+        shrank |= self.clips.finish_frame();
+        shrank |= self.transforms.finish_frame();
+        shrank |= self.brushes.finish_frame();
+        if shrank {
+            self.revisions.bump_visibility();
+        }
+    }
+}

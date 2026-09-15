@@ -146,6 +146,11 @@ fn assert_steady_state_is_allocation_free() {
     // scene, caches the per-texture bind groups, and populates the offscreen
     // texture pool. After this, a steady frame must reuse all of it.
     frame(&mut h);
+    // The first frame is also cold for the retained scene: every primitive is a
+    // fresh append and reads as dirty, and the path is tessellated. A second
+    // frame re-visits the same store slots unchanged, so its stats are the steady
+    // baseline the loop below must reproduce.
+    frame(&mut h);
 
     let buffers = h.gpu.buffer_count();
     let textures = h.gpu.texture_count();
@@ -223,6 +228,7 @@ fn assert_steady_state_is_allocation_free() {
     let FrameStats {
         draw_calls,
         instances,
+        ..
     } = stats;
     assert!(draw_calls > 0, "the test scene must emit draw calls");
     assert!(instances > 0, "the test scene must emit instances");

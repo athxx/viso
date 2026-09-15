@@ -708,6 +708,7 @@ fn each_windows_steady_frame_is_deterministic_and_reuses_gpu_resources() {
         let FrameStats {
             draw_calls,
             instances,
+            ..
         } = stats;
         assert!(draw_calls > 0, "window {idx} must emit draw calls");
         assert!(instances > 0, "window {idx} must emit instances");

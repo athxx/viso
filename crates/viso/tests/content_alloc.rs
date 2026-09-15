@@ -276,6 +276,11 @@ fn steady_content_frame_is_allocation_free() {
     // populates any offscreen pool. After this, a steady frame must reuse all of
     // it and re-emit the same primitives.
     frame(&mut h);
+    // The first frame is cold for the retained scene too: every primitive is a
+    // fresh append, so it reads as dirty. A second frame re-visits the same store
+    // slots with the same values — nothing moves — so this is the frame whose
+    // stats define the steady baseline the loop below must reproduce.
+    frame(&mut h);
     // Grow the reused paint buffer to its steady capacity so a later
     // `paint_tree` into it does not reallocate.
     h.primitives.clear();
@@ -344,6 +349,7 @@ fn steady_content_frame_is_allocation_free() {
     let FrameStats {
         draw_calls,
         instances,
+        ..
     } = stats;
     assert!(draw_calls > 0, "the content scene must emit draw calls");
     assert!(instances > 0, "the content scene must emit instances");
