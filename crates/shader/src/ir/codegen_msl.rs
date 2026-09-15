@@ -24,7 +24,7 @@ use viso_gpu::InstanceSchema;
 use crate::ir::module::{IrField, ShaderIr, Varying, VertexSource};
 
 /// Project the IR's attribute field list onto the [`InstanceSchema`] the pipeline
-/// validates the derived `#[derive(GpuInstance)]` layout against. Same field
+/// validates the derived `#[derive(GpuPod)]` layout against. Same field
 /// list, same order as the emitted MSL attribute struct.
 ///
 /// Returns an owned attribute vector; the caller (`msl.rs`) caches it behind a

@@ -198,25 +198,30 @@ oracle tests already prove byte-equal to `emit_msl`). The §36.1 CPU↔GPU
       each foundation layer's own scrub, not smuggled into an F2 commit (§40).
 
 ### F2.2 — `GpuPod` ABI derive (§7.3) enforcing the full typed-layout contract
-- [ ] `macros/src/gpu_instance.rs` → rename the derive to `GpuPod` (the §7.3 name);
-      keep emitting the `unsafe impl viso_gpu::GpuInstance` + inherent `const LAYOUT`
-      + `fn validate_against`. `gpu` re-exports it as `GpuPod` (single derive, one
-      source of truth — no parallel `GpuInstance`/`GpuPod` split).
-- [ ] Enforce §7.3 at derive time (compile-fail, not runtime): reject non-`#[repr(C)]`;
-      reject any field type outside {f32,[f32;2|3|4],u32,[u32;2|4]} (already partial via
-      `attr_format()` — the whitelist already excludes bool/usize/isize/enum/pointer/
-      reference, so those are rejected by construction); require every field be `Copy`
-      (the whitelist is all `Copy`); no uninitialized padding (explicit `_pad`/`_padding`
-      `[u32;N]` fields are allowed and counted in the layout — never implicit tail padding,
-      which the §36.1 `StrideMismatch` check already catches at registration).
-- [ ] `gpu/src/lib.rs` + wherever the four instance structs live: apply `#[derive(GpuPod)]`
-      to `QuadInstance`/`ImageInstance`/`GlyphInstance`/`MeshVertex` (rename from
-      `GpuInstance` derive). Compile-time `size`/`align`/`offset` + backend binding layout
-      + reflection-compat all project from `const LAYOUT`.
-- [ ] `gpu/tests/` (trybuild): extend the compile-fail suite — `GpuPod` rejects a `bool`
-      field, a `usize` field, an enum field, a non-`#[repr(C)]` struct, and a pointer field.
-- [ ] Gate green + golden/bench byte-identical (layout const is unchanged; only the derive
-      name + rejection surface moved).
+- [x] `macros/src/gpu_instance.rs` → renamed the derive to `GpuPod` (the §7.3 name);
+      still emits the `unsafe impl viso_gpu::GpuPod` + inherent `const LAYOUT`
+      + `fn validate_against`. Trait + derive renamed together in `gpu/src/lib.rs`
+      (single source of truth — no parallel `GpuInstance`/`GpuPod` split). All ~15
+      consumer sites (gpu/backend/instance docs, render primitive + renderer, shader
+      msl/codegen docs, viso + ui-macros re-export comments, gpu tests) follow.
+- [x] Enforce §7.3 at derive time (compile-fail, not runtime): non-`#[repr(C)]` rejected;
+      any field type outside {f32,[f32;2|3|4],u32,[u32;2|4]} rejected at the field span
+      via `attr_format()` (the whitelist excludes bool/usize/isize/enum/pointer/reference
+      by construction), with an expanded §7.3 diagnostic naming the rejections; every field
+      required `Copy` via a generated compile-time `assert_copy::<Self>()` that turns a
+      missing `Copy` into a clear derive-site error; no implicit tail padding (all whitelist
+      types are 4-byte-aligned ⇒ no inter-field/tail padding, and the §36.1 `StrideMismatch`
+      check catches any residual at registration).
+- [x] The four instance structs carry `#[derive(GpuPod)]` (`QuadInstance`/`ImageInstance`/
+      `GlyphInstance`/`MeshVertex` in `render/src/primitive.rs`). Compile-time
+      `size`/`align`/`offset` + backend binding layout + reflection-compat all project
+      from `const LAYOUT` (unchanged).
+- [x] `gpu/tests/` (trybuild): extended the compile-fail suite — added `not_copy.rs`
+      (non-`Copy` struct → `assert_copy` bound error) and `bool_field.rs` (`bool` field →
+      §7.3 field-span error), alongside the existing bad-field-type / enum / missing-repr-C
+      cases; all `.stderr` regenerated.
+- [x] Gate green + golden/bench byte-identical (layout const unchanged; only the derive
+      name + diagnostic surface moved).
 
 ### F2.3 — `PipelineManifest` (compile-time enumerated standard pipelines)
 - [ ] `shader/src/manifest.rs` (NEW): `PipelineManifest` — for each of the enumerated

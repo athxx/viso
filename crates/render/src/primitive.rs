@@ -2,18 +2,18 @@
 //!
 //! A [`Primitive`] is the renderer-facing *description* of something to draw —
 //! high-level Viso geometry (a rounded rect, a glyph run, …), independent of any
-//! backend. Each primitive lowers to one `#[derive(GpuInstance)]` instance
+//! backend. Each primitive lowers to one `#[derive(GpuPod)]` instance
 //! struct whose `#[repr(C)]` layout the backend uploads directly.
 //!
 //! The instance struct's field names and formats are a three-way contract:
 //! - the **shader** (D layer) declares them as an `InstanceSchema`,
-//! - `#[derive(GpuInstance)]` records the real byte offsets (B layer),
+//! - `#[derive(GpuPod)]` records the real byte offsets (B layer),
 //! - the headless rasterizer reads fields by that name (C layer).
 //!
 //! `create_pipeline` validates the derived layout against the schema, so a
 //! mismatch is caught at pipeline-registration time.
 
-use viso_gpu::{GpuInstance, TextureId};
+use viso_gpu::{GpuPod, TextureId};
 
 // The Quad/Image/Mesh field contracts (`quad_schema`/`image_schema`/
 // `mesh_schema`) live with the hand-written MSL in `viso-shader` (layer D);
@@ -362,7 +362,7 @@ pub enum Primitive {
 /// backend premultiplies. `#[repr(C)]` with only 4-byte-aligned scalars, so the
 /// derive's `offset_of!`-based layout has no padding surprises.
 #[repr(C)]
-#[derive(Debug, Clone, Copy, PartialEq, GpuInstance)]
+#[derive(Debug, Clone, Copy, PartialEq, GpuPod)]
 pub struct QuadInstance {
     /// Top-left corner in physical pixels.
     pub rect_pos: [f32; 2],
@@ -386,7 +386,7 @@ pub struct QuadInstance {
 /// combines them. `#[repr(C)]` with only 8-byte `[f32; 2]`/`[f32; 4]` fields, so
 /// the derive's `offset_of!`-based layout has no padding surprises.
 #[repr(C)]
-#[derive(Debug, Clone, Copy, PartialEq, GpuInstance)]
+#[derive(Debug, Clone, Copy, PartialEq, GpuPod)]
 pub struct ImageInstance {
     /// Destination top-left in physical pixels.
     pub rect_pos: [f32; 2],
@@ -410,7 +410,7 @@ pub struct ImageInstance {
 /// `#[repr(C)]` with only 8-byte `[f32; 2]`/`[f32; 4]` fields, so the derive's
 /// `offset_of!`-based layout has no padding surprises.
 #[repr(C)]
-#[derive(Debug, Clone, Copy, PartialEq, GpuInstance)]
+#[derive(Debug, Clone, Copy, PartialEq, GpuPod)]
 pub struct GlyphInstance {
     /// Destination top-left in physical pixels.
     pub rect_pos: [f32; 2],
@@ -435,7 +435,7 @@ pub struct GlyphInstance {
 /// quad/image instance structs this is *per-vertex* data drawn as an indexed
 /// triangle list, not a `vertex_id`-generated quad. `#[repr(C)]`, stride 28.
 #[repr(C)]
-#[derive(Debug, Clone, Copy, PartialEq, GpuInstance)]
+#[derive(Debug, Clone, Copy, PartialEq, GpuPod)]
 pub struct MeshVertex {
     /// Position in physical pixels, top-left origin.
     pub pos: [f32; 2],

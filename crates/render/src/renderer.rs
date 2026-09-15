@@ -1094,7 +1094,7 @@ fn bytemuck_viewport(viewport: &[f32; 2]) -> &[u8] {
 
 /// View a slice of `#[repr(C)]` `Copy` POD instances as raw bytes for upload.
 fn instances_as_bytes<T: Copy>(instances: &[T]) -> &[u8] {
-    // Safe: `T` is a `GpuInstance` (`#[repr(C)]`, `Copy`, only POD scalars), so
+    // Safe: `T` is a `GpuPod` (`#[repr(C)]`, `Copy`, only POD scalars), so
     // its byte representation is a valid contiguous instance buffer.
     unsafe {
         core::slice::from_raw_parts(

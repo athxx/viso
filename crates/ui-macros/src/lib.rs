@@ -11,7 +11,7 @@
 //!
 //! The emitted tokens name `::viso_ui::…` paths; this crate does not depend on
 //! `viso-ui`. The facade `viso` re-exports `ui!` and already depends on `viso-ui`, so
-//! the emitted paths resolve at the call site (the `GpuInstance` re-export precedent).
+//! the emitted paths resolve at the call site (the `GpuPod` re-export precedent).
 //!
 //! Pipeline (identical checks/IR to the component frontend):
 //! `ui! { … }` tokens
