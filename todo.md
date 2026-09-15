@@ -304,7 +304,96 @@ oracle tests already prove byte-equal to `emit_msl`). The §36.1 CPU↔GPU
         to the frozen manifest (`render/tests/dev_shader_pipeline.rs`).
 
 ## F3 — Retained scene under frozen immediate-mode API (`render`)
-(expanded when F2 is frozen)
+
+Goal: make the renderer retained *internally* (§8) while `upload<B>(&mut self,
+backend, &[Primitive])` / `submit<B>` keep their exact frozen signatures and
+`primitive.rs`'s value types, `paint.rs`, `repaint_dirty`, and the facade glob do
+not move. Today `upload` clears every scratch Vec and re-lowers the whole
+`&[Primitive]` slice each frame (immediate mode, `renderer.rs:410-418`). F3 keeps
+that ingest boundary byte-identical but routes it through retained per-type stores
+addressed by typed generational IDs, with separate revision planes so a paint-only
+change re-lowers nothing geometric. Positional identity is sound because
+`repaint_dirty` (`ui/src/component.rs:1981`) re-emits the whole tree in stable
+pre-order every frame — the same determinism makepad relies on for slot reuse,
+but Viso keys stable `PrimitiveId`s and per-plane revisions rather than a single
+`redraw_id`. New modules land under `crates/render/src/scene/` (render owns the
+retained scene; no new crate). The retained/diff API exposed *to* `ui` is a later
+stage (F3-ext), out of scope here.
+
+### F3.1 — Shadow store (pure addition; immediate walk still authoritative)
+- [x] `render/src/scene/ids.rs` (NEW): typed dense generational IDs — `PrimitiveId`,
+      `TransformId`, `BrushId`, `ClipId`, `ImageId`, `GeometryId`, `PathId`, `MeshId`,
+      `ClipChainId`, `EffectChainId`, `MaterialId`, `RenderChunkId`, `PaintChunkId`
+      (§8). Each is `{index: u32, generation: u32}`, reusing the F1 `SlotMap` shape
+      (`gpu/src/slots.rs`) but render-local (scene IDs are positionally assigned +
+      diffed, not free-listed like GPU resources). No pointer/`usize` identity.
+- [x] `render/src/scene/revision.rs` (NEW): separate monotone revision planes —
+      `GeometryRevision`, `PaintRevision`, `TransformRevision`, `ClipRevision`,
+      `ResourceRevision`, `EffectRevision`, `VisibilityRevision` (§8.4). Each a
+      `u64` bump counter; a paint-only change bumps `PaintRevision` only.
+- [x] `render/src/scene/store.rs` (NEW): per-type compact stores (dense SoA/AoS, NOT
+      `Vec<Box<dyn>>`) — `SolidQuadStore`, `ImageStore`, `GlyphRunStore`,
+      `VectorPathStore`, `MeshStore`, `ClipStore`, and identity-separated
+      `TransformStore`/`BrushStore` (§8, §8.5). Hot fields compact; cold fields in
+      side tables. Fixed-capacity, cleared not freed across frames (high-water reuse,
+      like the existing `quad_scratch`).
+- [x] `render/src/scene/bounds.rs` (NEW): `local`/`world`/`clip`/`paint`/`effect`
+      bounds where `paint_bounds = geometry + stroke inflation + filter inflation`,
+      computed without re-parsing paths (§8). Feeds F4 visibility/chunking later.
+- [x] `render/src/scene/mod.rs` (NEW): retained `Scene` aggregating the stores +
+      revision planes + bounds; becomes an internal field of `Renderer`.
+- [x] Retessellation cache: move `Path::tessellate` into `VectorPathStore` keyed by
+      `PathId` + quality bucket, so transform/color changes reuse the cached
+      tessellation (§8). F3.1 populates it alongside the immediate walk.
+- [x] `render/src/renderer.rs` `upload`: keep the immediate walk producing scratch as
+      today, but ALSO build the retained stores from the same `&[Primitive]`, then
+      re-derive instances from the stores and assert byte-identical to the scratch
+      the immediate walk produced (shadow test — pure addition, no source-of-truth
+      change). Behind a debug-only assertion path so release carries no cost (§60).
+- [x] `render/tests/` (NEW): shadow byte-identity — for `test_scene`, the store-derived
+      `QuadInstance`/`ImageInstance`/`GlyphInstance`/`MeshVertex` bytes equal the
+      immediate-walk scratch bytes, instance-for-instance, in paint order.
+- [x] Gate green + golden/bench byte-identical (F3.1 adds stores, changes no output).
+
+### F3.2 — Ingest-diff (stable IDs by positional identity; revision-plane bumps)
+- [ ] `render/src/scene/ingest.rs` (NEW): walk `&[Primitive]` assigning a stable
+      `PrimitiveId` by positional identity vs the previous frame (Nth primitive of a
+      kind → same slot). Diff each primitive field-wise against the retained store;
+      bump ONLY the affected revision plane(s) — a moved quad bumps `TransformStore`/
+      `TransformRevision`, a recolored quad bumps `PaintRevision`, unchanged →
+      zero store mutation (§8.4, this is "0 primitive reconstruction" under a
+      whole-tree re-emit).
+- [ ] Kind/count-change handling: when positional identity breaks (a primitive kind
+      changes at a slot, or the tree grows/shrinks), reslot on the cold "structure
+      changed" path (§9.5) — no per-frame HashMap on the steady-state path.
+- [ ] Identity separation verified: a pure move dirties `TransformStore` only;
+      geometry/tessellation and `PaintRevision` untouched (§8, §11).
+- [ ] Extend `FrameStats` (today `{draw_calls, instances}`, `renderer.rs:153-162`)
+      toward §61 with integer counters (no alloc): `visible_primitives`,
+      `dirty_primitives`, `quad_instances`, `glyph_instances`, `path_tessellations`.
+- [ ] `render/tests/` (NEW): paint-only opacity/color change bumps `PaintRevision`
+      only — `GeometryRevision` unchanged, tessellation cache hit, zero geometry
+      store mutation. Steady-state: identical input twice → zero store mutation,
+      allocations flat.
+- [ ] Gate green + golden/bench byte-identical (diff drives the same store contents).
+
+### F3.3 — Switch source of truth (submit walks retained stores)
+- [ ] `render/src/renderer.rs`: `submit`/`upload` lower from the retained stores +
+      revision planes instead of the per-frame immediate scratch; remove the
+      top-of-`upload` scratch clear (`renderer.rs:410-418`) and the immediate walk,
+      keeping the store-derived lowering that F3.1 proved byte-identical. Segments/
+      draw-list building unchanged (F4 replaces segment merge with the batch planner).
+- [ ] `render/src/scene/inspect.rs` or extend `render/src/inspect.rs` (§62): expose
+      `PrimitiveId` → instance/segment ranges, cold-path only (no steady-state cost).
+- [ ] Gate green + golden byte-identical F3.1→F3.3 + steady-state bench: identical
+      input → zero store mutation, allocations flat, `buffer_count` unchanged.
+
+### Freeze
+- [ ] FREEZE F3: the typed generational scene IDs, per-type store layout, the seven
+      revision planes, and the bounds set (`local`/`world`/`clip`/`paint`/`effect`).
+      F4 (instance pool / upload ring / coalescer / batch planner / render chunk)
+      binds to these. Record the frozen contract inline (like F1/F2 above) and add a
+      machine-enforcing test where a shape shift would be a silent break.
 
 ## F4 — Persistent data path: instance pool / upload ring / coalescer / arena / batch / chunk (`render`)
 (expanded when F3 is frozen)

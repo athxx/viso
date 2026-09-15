@@ -17,6 +17,7 @@ pub mod inspect;
 pub mod primitive;
 pub mod rect_packer;
 pub mod renderer;
+pub mod scene;
 
 pub use color_atlas::{ColorAlloc, ColorAtlas};
 pub use glyph_atlas::{AtlasAlloc, GlyphAtlas};

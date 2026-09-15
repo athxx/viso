@@ -26,6 +26,8 @@ use viso_gpu::{
 use viso_shader::{PipelineEntry, PipelineFamily, standard_manifest};
 
 use crate::primitive::{GlyphInstance, ImageInstance, MeshVertex, Primitive, QuadInstance, Rect};
+use crate::scene::store::{StoreRef, glyph_instances};
+use crate::scene::{EmitContext, Scene};
 
 /// Bytes of one quad instance.
 const QUAD_STRIDE: usize = core::mem::size_of::<QuadInstance>();
@@ -84,6 +86,35 @@ pub(crate) struct Segment {
     pub(crate) clip: Option<Rect>,
     /// Which render pass this segment belongs to.
     pub(crate) target: PassTarget,
+}
+
+/// Append a mesh segment to `segments`, merging into the trailing segment when
+/// it is an adjacent mesh run under the same clip and target — the free-function
+/// twin of [`Renderer::push_mesh_segment`], used by the shadow re-derivation so
+/// the two build segments by identical rules.
+#[cfg(debug_assertions)]
+fn shadow_push_mesh_segment(
+    segments: &mut Vec<Segment>,
+    index_start: u32,
+    count: u32,
+    clip: Option<Rect>,
+    target: PassTarget,
+) {
+    if count == 0 {
+        return;
+    }
+    match segments.last_mut() {
+        Some(seg) if seg.kind == SegmentKind::Mesh && seg.clip == clip && seg.target == target => {
+            seg.count += count;
+        }
+        _ => segments.push(Segment {
+            kind: SegmentKind::Mesh,
+            start: index_start,
+            count,
+            clip,
+            target,
+        }),
+    }
 }
 
 /// Which render pass a [`Segment`] is drawn into.
@@ -238,6 +269,11 @@ pub struct Renderer {
     /// The frame's render passes (offscreen layers first, then surface), reused
     /// each frame. Each references its commands by range into `commands`.
     passes: Vec<RenderPass>,
+    /// The retained scene (§8), rebuilt each frame from the ingested primitive
+    /// stream. F3.1 runs it as a shadow: the immediate walk above is still
+    /// authoritative, and under `debug_assertions` the scene is re-derived and
+    /// asserted byte-identical to the scratch it mirrors.
+    scene: Scene,
 }
 
 /// A reusable render-target texture in [`Renderer::offscreen_pool`].
@@ -371,6 +407,7 @@ impl Renderer {
             viewports: Vec::with_capacity(4),
             commands: Vec::with_capacity(8),
             passes: Vec::with_capacity(4),
+            scene: Scene::new(),
         }
     }
 
@@ -416,13 +453,37 @@ impl Renderer {
         self.layer_stack.clear();
         self.offscreen_passes.clear();
         self.offscreen_pool_used = 0;
+        self.scene.begin_frame();
 
         for prim in primitives {
             let (clip, target, origin) = self.active();
+            let ctx = EmitContext {
+                clip,
+                offscreen: match target {
+                    PassTarget::Main => None,
+                    PassTarget::Offscreen(idx) => Some(idx),
+                },
+                origin,
+            };
             match prim {
                 Primitive::Quad(quad) => {
                     let start = self.quad_scratch.len() as u32;
                     let mut inst = quad.to_instance();
+                    // Retain the world-space instance (origin not yet subtracted)
+                    // in the shadow store, then record its paint-order slot.
+                    let slot = self.scene.quads.push(inst);
+                    let bounds = crate::scene::bounds::Bounds::from_world(
+                        Rect {
+                            x: inst.rect_pos[0],
+                            y: inst.rect_pos[1],
+                            w: inst.rect_size[0],
+                            h: inst.rect_size[1],
+                        },
+                        clip,
+                        0.0,
+                        0.0,
+                    );
+                    self.scene.record(StoreRef::Quad(slot), ctx, bounds);
                     inst.rect_pos[0] -= origin[0];
                     inst.rect_pos[1] -= origin[1];
                     self.quad_scratch.push(inst);
@@ -449,6 +510,19 @@ impl Renderer {
                     let bind_group = self.bind_group_for(backend, image.texture);
                     let start = self.image_scratch.len() as u32;
                     let mut inst = image.to_instance();
+                    let slot = self.scene.images.push(inst, image.texture);
+                    let bounds = crate::scene::bounds::Bounds::from_world(
+                        Rect {
+                            x: inst.rect_pos[0],
+                            y: inst.rect_pos[1],
+                            w: inst.rect_size[0],
+                            h: inst.rect_size[1],
+                        },
+                        clip,
+                        0.0,
+                        0.0,
+                    );
+                    self.scene.record(StoreRef::Image(slot), ctx, bounds);
                     inst.rect_pos[0] -= origin[0];
                     inst.rect_pos[1] -= origin[1];
                     self.image_scratch.push(inst);
@@ -467,6 +541,12 @@ impl Renderer {
                     let index_start = self.mesh_index_scratch.len() as u32;
                     let vertex_start = self.mesh_vertex_scratch.len();
                     self.tessellate_into(|verts, idx| path.tessellate(verts, idx));
+                    let slot = self.scene.paths.push(path);
+                    self.scene.record(
+                        StoreRef::Path(slot),
+                        ctx,
+                        crate::scene::bounds::Bounds::default(),
+                    );
                     self.translate_vertices(vertex_start, origin);
                     let count = self.mesh_index_scratch.len() as u32 - index_start;
                     self.push_mesh_segment(index_start, count, clip, target);
@@ -479,6 +559,12 @@ impl Renderer {
                         verts.extend_from_slice(&mesh.vertices);
                         idx.extend(mesh.indices.iter().map(|&i| base + i));
                     });
+                    let slot = self.scene.meshes.push(&mesh.vertices, &mesh.indices);
+                    self.scene.record(
+                        StoreRef::Mesh(slot),
+                        ctx,
+                        crate::scene::bounds::Bounds::default(),
+                    );
                     self.translate_vertices(vertex_start, origin);
                     let count = self.mesh_index_scratch.len() as u32 - index_start;
                     self.push_mesh_segment(index_start, count, clip, target);
@@ -489,6 +575,16 @@ impl Renderer {
                     }
                     let bind_group = self.bind_group_for(backend, run.atlas);
                     let start = self.glyph_scratch.len() as u32;
+                    let color = [run.color.r, run.color.g, run.color.b, run.color.a];
+                    let slot = self
+                        .scene
+                        .glyph_runs
+                        .push_run(glyph_instances(&run.glyphs, color), run.atlas);
+                    self.scene.record(
+                        StoreRef::GlyphRun(slot),
+                        ctx,
+                        crate::scene::bounds::Bounds::default(),
+                    );
                     for glyph in &run.glyphs {
                         let mut inst = run.instance(glyph);
                         inst.rect_pos[0] -= origin[0];
@@ -552,6 +648,184 @@ impl Renderer {
         self.upload_images(backend);
         self.upload_glyphs(backend);
         self.upload_mesh(backend);
+
+        #[cfg(debug_assertions)]
+        self.assert_shadow_matches(backend);
+    }
+
+    /// Re-derive the frame's instance scratch and segments from the retained
+    /// scene's stores + paint-order record, and assert they are byte-identical
+    /// to what the immediate walk just produced (F3.1 shadow invariant, §8).
+    ///
+    /// This is the proof that the retained model is a faithful mirror of the
+    /// immediate walk before F3.3 makes it the source of truth. It is
+    /// `debug_assertions`-only: it re-lowers into fresh scratch and compares, so
+    /// it never runs in release and imposes no steady-state release cost (§60).
+    #[cfg(debug_assertions)]
+    fn assert_shadow_matches<B: GpuBackend>(&mut self, backend: &mut B) {
+        let mut quads: Vec<QuadInstance> = Vec::with_capacity(self.quad_scratch.len());
+        let mut images: Vec<ImageInstance> = Vec::with_capacity(self.image_scratch.len());
+        let mut glyphs: Vec<GlyphInstance> = Vec::with_capacity(self.glyph_scratch.len());
+        let mut verts: Vec<MeshVertex> = Vec::with_capacity(self.mesh_vertex_scratch.len());
+        let mut indices: Vec<u32> = Vec::with_capacity(self.mesh_index_scratch.len());
+        let mut segments: Vec<Segment> = Vec::with_capacity(self.segments.len());
+
+        // Snapshot the paint-order record so the store/backend borrows below do
+        // not overlap the record borrow.
+        let record = self.scene.paint_order.clone();
+        for entry in &record {
+            let clip = entry.context.clip;
+            let target = match entry.context.offscreen {
+                None => PassTarget::Main,
+                Some(idx) => PassTarget::Offscreen(idx),
+            };
+            let origin = entry.context.origin;
+            match entry.store {
+                StoreRef::Quad(id) => {
+                    let mut inst = self.scene.quads.get(id).expect("quad slot").instance;
+                    inst.rect_pos[0] -= origin[0];
+                    inst.rect_pos[1] -= origin[1];
+                    let start = quads.len() as u32;
+                    quads.push(inst);
+                    match segments.last_mut() {
+                        Some(seg)
+                            if seg.kind == SegmentKind::Quad
+                                && seg.clip == clip
+                                && seg.target == target =>
+                        {
+                            seg.count += 1;
+                        }
+                        _ => segments.push(Segment {
+                            kind: SegmentKind::Quad,
+                            start,
+                            count: 1,
+                            clip,
+                            target,
+                        }),
+                    }
+                }
+                StoreRef::Image(id) => {
+                    let e = self.scene.images.get(id).expect("image slot");
+                    let mut inst = e.instance;
+                    let texture = e.texture;
+                    let bind_group = self.bind_group_for(backend, texture);
+                    inst.rect_pos[0] -= origin[0];
+                    inst.rect_pos[1] -= origin[1];
+                    let start = images.len() as u32;
+                    images.push(inst);
+                    segments.push(Segment {
+                        kind: SegmentKind::Image { bind_group },
+                        start,
+                        count: 1,
+                        clip,
+                        target,
+                    });
+                }
+                StoreRef::Composite(mut inst) => {
+                    // A composite's parent target is always main / unclipped /
+                    // zero-origin; it samples an offscreen texture whose bind
+                    // group is not retained in a store, so reproduce it from the
+                    // authoritative segment at this instance offset.
+                    let start = images.len() as u32;
+                    inst.rect_pos[0] -= origin[0];
+                    inst.rect_pos[1] -= origin[1];
+                    images.push(inst);
+                    let bind_group = self
+                        .segments
+                        .iter()
+                        .find_map(|s| match s.kind {
+                            SegmentKind::Image { bind_group }
+                                if s.start == start && s.count == 1 && s.target == target =>
+                            {
+                                Some(bind_group)
+                            }
+                            _ => None,
+                        })
+                        .expect("composite segment");
+                    segments.push(Segment {
+                        kind: SegmentKind::Image { bind_group },
+                        start,
+                        count: 1,
+                        clip,
+                        target,
+                    });
+                }
+                StoreRef::GlyphRun(run) => {
+                    let e = *self.scene.glyph_runs.run(run).expect("glyph run slot");
+                    let bind_group = self.bind_group_for(backend, e.atlas);
+                    let start = glyphs.len() as u32;
+                    for g in self.scene.glyph_runs.glyphs(&e) {
+                        let mut inst = *g;
+                        inst.rect_pos[0] -= origin[0];
+                        inst.rect_pos[1] -= origin[1];
+                        glyphs.push(inst);
+                    }
+                    let count = glyphs.len() as u32 - start;
+                    segments.push(Segment {
+                        kind: SegmentKind::GlyphRun { bind_group },
+                        start,
+                        count,
+                        clip,
+                        target,
+                    });
+                }
+                StoreRef::Path(id) => {
+                    let e = self.scene.paths.get(id).expect("path slot");
+                    let index_start = indices.len() as u32;
+                    let base = verts.len() as u32;
+                    verts.extend_from_slice(&e.vertices);
+                    indices.extend(e.indices.iter().map(|&i| base + i));
+                    if origin != [0.0, 0.0] {
+                        for v in &mut verts[base as usize..] {
+                            v.pos[0] -= origin[0];
+                            v.pos[1] -= origin[1];
+                        }
+                    }
+                    let count = indices.len() as u32 - index_start;
+                    shadow_push_mesh_segment(&mut segments, index_start, count, clip, target);
+                }
+                StoreRef::Mesh(id) => {
+                    let e = self.scene.meshes.get(id).expect("mesh slot");
+                    let index_start = indices.len() as u32;
+                    let base = verts.len() as u32;
+                    verts.extend_from_slice(&e.vertices);
+                    indices.extend(e.indices.iter().map(|&i| base + i));
+                    if origin != [0.0, 0.0] {
+                        for v in &mut verts[base as usize..] {
+                            v.pos[0] -= origin[0];
+                            v.pos[1] -= origin[1];
+                        }
+                    }
+                    let count = indices.len() as u32 - index_start;
+                    shadow_push_mesh_segment(&mut segments, index_start, count, clip, target);
+                }
+            }
+        }
+
+        debug_assert_eq!(
+            quads, self.quad_scratch,
+            "shadow quad instances diverge from the immediate walk"
+        );
+        debug_assert_eq!(
+            images, self.image_scratch,
+            "shadow image instances diverge from the immediate walk"
+        );
+        debug_assert_eq!(
+            glyphs, self.glyph_scratch,
+            "shadow glyph instances diverge from the immediate walk"
+        );
+        debug_assert_eq!(
+            verts, self.mesh_vertex_scratch,
+            "shadow mesh vertices diverge from the immediate walk"
+        );
+        debug_assert_eq!(
+            indices, self.mesh_index_scratch,
+            "shadow mesh indices diverge from the immediate walk"
+        );
+        debug_assert_eq!(
+            segments, self.segments,
+            "shadow segments diverge from the immediate walk"
+        );
     }
 
     /// The draw-call and instance counts for the frame just lowered by
@@ -746,13 +1020,28 @@ impl Renderer {
     fn close_offscreen(&mut self, idx: usize) {
         let pass = &self.offscreen_passes[idx];
         let start = self.image_scratch.len() as u32;
-        self.image_scratch.push(ImageInstance {
+        let composite = ImageInstance {
             rect_pos: [pass.rect.x, pass.rect.y],
             rect_size: [pass.rect.w, pass.rect.h],
             uv_pos: [0.0, 0.0],
             uv_size: [1.0, 1.0],
             color: [1.0, 1.0, 1.0, pass.opacity],
-        });
+        };
+        // Record the composite in the shadow scene's paint order: it draws into
+        // the parent target unclipped, at the layer's world-space rect, so its
+        // emit context is main-pass / no-clip / zero-origin. Re-derivation reads
+        // the retained instance straight back.
+        let bounds = crate::scene::bounds::Bounds::from_world(pass.rect, None, 0.0, 0.0);
+        self.scene.record(
+            StoreRef::Composite(composite),
+            EmitContext {
+                clip: None,
+                offscreen: None,
+                origin: [0.0, 0.0],
+            },
+            bounds,
+        );
+        self.image_scratch.push(composite);
         self.segments.push(Segment {
             kind: SegmentKind::Image {
                 bind_group: pass.bind_group,
