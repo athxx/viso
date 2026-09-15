@@ -389,11 +389,52 @@ stage (F3-ext), out of scope here.
       input → zero store mutation, allocations flat, `buffer_count` unchanged.
 
 ### Freeze
-- [ ] FREEZE F3: the typed generational scene IDs, per-type store layout, the seven
+- [x] FREEZE F3: the typed generational scene IDs, per-type store layout, the seven
       revision planes, and the bounds set (`local`/`world`/`clip`/`paint`/`effect`).
       F4 (instance pool / upload ring / coalescer / batch planner / render chunk)
-      binds to these. Record the frozen contract inline (like F1/F2 above) and add a
-      machine-enforcing test where a shape shift would be a silent break.
+      binds to these. Machine-enforced in `render/tests/scene_contract_frozen.rs`
+      (one consolidated gate: id shape + typed-id set + revision planes + bounds set),
+      alongside the per-module unit tests in `ids.rs`/`revision.rs`/`bounds.rs`.
+      Frozen contract (stable for F4 and D/C/E/M/A to build on):
+      - Typed scene handle (`render/src/scene/ids.rs`): `SceneId { index: u32,
+        generation: u32 }` — `#[repr(C)]`, 8 bytes, align 4, mirroring
+        `viso_gpu::slots::RawId` (one identity discipline across the stack, §8.2).
+        `new(index)` is generation 0 (first positional assignment); the diff bumps
+        `generation` only on the cold structural reslot path. Every typed id is a
+        `#[repr(transparent)]` newtype over it with `new`/`index`/`generation`:
+        `PrimitiveId` / `TransformId` / `BrushId` / `ClipId` / `ImageId` /
+        `GeometryId` / `PathId` / `MeshId` / `ClipChainId` / `EffectChainId` /
+        `MaterialId` / `RenderChunkId` / `PaintChunkId`. No pointer/`usize` identity.
+      - Revision planes (`render/src/scene/revision.rs`): `Revisions` — exactly seven
+        independent `u64` bump counters (56 bytes, no padding): `geometry` / `paint` /
+        `transform` / `clip` / `resource` / `effect` / `visibility` (§8.4). Each
+        `bump_*` is `wrapping_add(1)` and moves that plane alone; a consumer snapshots
+        the set and rebuilds only when a plane it depends on advanced. A paint-only
+        change advances `paint` and nothing else.
+      - Per-type stores (`render/src/scene/store.rs`): dense AoS/SoA `Vec` entries
+        (never `Vec<Box<dyn>>`), positionally slotted, persisting across frames —
+        `begin_frame` resets a cursor without freeing, `finish_frame` trims the tail
+        the walk did not revisit. `SolidQuadStore` (`QuadEntry { instance, transform,
+        brush }`), `ImageStore` (`ImageEntry { instance, texture }`), `GlyphRunStore`
+        (`GlyphRunEntry { start, count, atlas }` + shared instance/prev buffers),
+        `VectorPathStore` (`PathEntry { path, quality, vertices, indices }`, in-line
+        retessellation cache keyed by geometry + quality bucket), `MeshStore`
+        (`MeshEntry { vertices, indices }`), and identity-separated `ClipStore`
+        (`ClipEntry { rect }`) / `TransformStore` (`TransformEntry { origin }`) /
+        `BrushStore` (`BrushEntry { color }`). Each `ingest_*` diffs field-wise and
+        returns `DirtyPlanes { geometry, paint, transform, resource, appended }` — the
+        planes the change moved (an all-`false` result is a byte-identical slot: zero
+        mutation, zero bump). `StoreRef` (`Quad`/`Image`/`GlyphRun`/`Path`/`Mesh`/
+        `Composite { instance, pass }`) tags the paint-order record's per-emit slot.
+      - Bounds (`render/src/scene/bounds.rs`): `Bounds` — exactly five `Rect` stages
+        `local`/`world`/`clip`/`paint`/`effect` (§8). `Default` is five `Rect::ZERO`.
+        `from_world(world, clip, stroke, filter)`: `clip = world ∩ clip` (or `world`),
+        `paint = world.inflate(stroke * 0.5 + filter)` (half the stroke bleeds outside
+        the fill, filter inflates further), `effect = paint` until a neighbourhood
+        effect grows it. Computed numerically, never by re-parsing a path; a
+        transform-only change recomputes `world` onward from the cached `local`, a
+        paint-only change recomputes nothing. F4's dirty coalescer/visibility read
+        `paint`.
 
 ## F4 — Persistent data path: instance pool / upload ring / coalescer / arena / batch / chunk (`render`)
 (expanded when F3 is frozen)
