@@ -116,7 +116,7 @@ pub fn test_glyphs(origin: [f32; 2], font_size: f32) -> TestGlyphs {
     let line_height = font_size * 1.2;
 
     let mut shaper = Shaper::new();
-    let mut atlas = GlyphAtlas::new(ATLAS_SIZE, TextureId(0));
+    let mut atlas = GlyphAtlas::new(ATLAS_SIZE, TextureId::new(0));
     let mut glyphs = Vec::new();
 
     // Two lines to exercise `\n` handling and the baseline advance.

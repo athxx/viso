@@ -3362,7 +3362,7 @@ mod tests {
                         h: 1.0,
                     },
                 }],
-                atlas: TextureId(1),
+                atlas: TextureId::new(1),
                 color_glyphs: Vec::new(),
                 color_atlas: None,
                 color: RED,
@@ -3388,7 +3388,7 @@ mod tests {
         store.set_content_payload(
             image_leaf,
             Content::Image {
-                texture: TextureId(2),
+                texture: TextureId::new(2),
                 uv: Rect {
                     x: 0.0,
                     y: 0.0,
@@ -4728,7 +4728,7 @@ mod tests {
     fn text_run(natural: Vec2, at: Option<f32>, wrap: bool) -> Content {
         Content::Text {
             glyphs: Vec::new(),
-            atlas: TextureId(1),
+            atlas: TextureId::new(1),
             color_glyphs: Vec::new(),
             color_atlas: None,
             color: CLR,

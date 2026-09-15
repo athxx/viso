@@ -191,7 +191,7 @@ fn golden_path() -> PathBuf {
 fn image_derives_a_group_semantics_node() {
     let mut store = NodeStore::new();
     let root = {
-        let widget = image(TextureId(0), 32.0, 32.0);
+        let widget = image(TextureId::new(0), 32.0, 32.0);
         let mut cx = BuildCx::new(&mut store);
         widget.build(&mut cx);
         cx.root().expect("image declares a root")

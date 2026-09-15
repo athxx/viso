@@ -223,14 +223,14 @@ mod tests {
 
     #[test]
     fn empty_glyph_allocates_nothing() {
-        let mut atlas = ColorAtlas::new(64, TextureId(0));
+        let mut atlas = ColorAtlas::new(64, TextureId::new(0));
         assert_eq!(atlas.alloc(&glyph(0, 0, [0; 4])), ColorAlloc::Empty);
         assert!(atlas.take_dirty().is_none());
     }
 
     #[test]
     fn placed_uv_is_normalized_and_gutter_offset() {
-        let mut atlas = ColorAtlas::new(64, TextureId(0));
+        let mut atlas = ColorAtlas::new(64, TextureId::new(0));
         let ColorAlloc::Placed(uv) = atlas.alloc(&glyph(8, 8, [10, 20, 30, 40])) else {
             panic!("should place");
         };
@@ -242,7 +242,7 @@ mod tests {
 
     #[test]
     fn blit_writes_rgba_and_dirty_rect() {
-        let mut atlas = ColorAtlas::new(64, TextureId(0));
+        let mut atlas = ColorAtlas::new(64, TextureId::new(0));
         atlas.alloc(&glyph(4, 4, [1, 2, 3, 4]));
         let (x, y, w, h, bytes) = atlas.take_dirty().expect("dirty after alloc");
         assert_eq!((x, y, w, h), (1, 1, 4, 4));
@@ -254,7 +254,7 @@ mod tests {
     #[test]
     fn overflow_wipes_and_bumps_epoch() {
         // A tiny atlas that fits one padded 8×8 (10×10) but not two.
-        let mut atlas = ColorAtlas::new(12, TextureId(0));
+        let mut atlas = ColorAtlas::new(12, TextureId::new(0));
         assert!(matches!(
             atlas.alloc(&glyph(8, 8, [9, 9, 9, 9])),
             ColorAlloc::Placed(_)
@@ -275,7 +275,7 @@ mod tests {
 
     #[test]
     fn glyph_larger_than_atlas_is_overflow_without_wipe_loop() {
-        let mut atlas = ColorAtlas::new(8, TextureId(0));
+        let mut atlas = ColorAtlas::new(8, TextureId::new(0));
         assert_eq!(
             atlas.alloc(&glyph(8, 8, [1, 1, 1, 1])),
             ColorAlloc::Overflow

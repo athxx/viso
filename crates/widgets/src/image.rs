@@ -67,7 +67,7 @@ pub struct ImageStyle {
 /// use viso_ui::{BuildCx, Component, NodeStore, Rgba, TextureId};
 ///
 /// // A `TextureId` normally comes from the GPU backend after uploading pixels.
-/// let texture = TextureId(0);
+/// let texture = TextureId::new(0);
 /// let thumbnail = image(texture, 64.0, 64.0)
 ///     .tint(Rgba { r: 1.0, g: 1.0, b: 1.0, a: 0.5 });
 ///
@@ -178,7 +178,7 @@ mod tests {
     /// tint, and a fixed box at the intrinsic size.
     #[test]
     fn image_builds_one_leaf_with_image_content_and_group_semantics() {
-        let texture = TextureId(7);
+        let texture = TextureId::new(7);
         let widget = image(texture, 64.0, 48.0);
 
         let mut store = NodeStore::new();
@@ -217,7 +217,7 @@ mod tests {
     /// `Fixed` at the intrinsic pixel dimensions.
     #[test]
     fn setters_override_style_default_size_is_fixed_natural() {
-        let default_style = image(TextureId(0), 32.0, 16.0).style;
+        let default_style = image(TextureId::new(0), 32.0, 16.0).style;
         assert_eq!(default_style.size.width, Length::Fixed(32.0));
         assert_eq!(default_style.size.height, Length::Fixed(16.0));
         assert_eq!(default_style.uv, FULL_UV);
@@ -235,7 +235,7 @@ mod tests {
             b: 0.0,
             a: 1.0,
         };
-        let widget = image(TextureId(3), 32.0, 16.0)
+        let widget = image(TextureId::new(3), 32.0, 16.0)
             .uv(uv)
             .tint(tint)
             .size(Size::fill());
@@ -262,7 +262,7 @@ mod tests {
     /// key handler, and derives a presentational `Group` role.
     #[test]
     fn image_is_non_interactive() {
-        let widget = image(TextureId(0), 10.0, 10.0);
+        let widget = image(TextureId::new(0), 10.0, 10.0);
 
         let mut store = NodeStore::new();
         let mut cx = BuildCx::new(&mut store);

@@ -644,10 +644,10 @@ fn write_batch(w: &mut JsonWriter, b: &InspectBatch) {
     w.name("pipeline");
     w.string(b.pipeline.label());
     w.name("pipeline_id");
-    w.uint(b.pipeline_id.0 as u64);
+    w.uint(b.pipeline_id.index as u64);
     w.name("bind_group");
     match b.bind_group {
-        Some(bg) => w.uint(bg.0 as u64),
+        Some(bg) => w.uint(bg.index as u64),
         None => w.null(),
     }
     w.name("range");
@@ -798,7 +798,7 @@ mod tests {
     fn text_content() -> Content {
         Content::Text {
             glyphs: Vec::new(),
-            atlas: viso_render::TextureId(1),
+            atlas: viso_render::TextureId::new(1),
             color_glyphs: Vec::new(),
             color_atlas: None,
             color: Rgba::TRANSPARENT,
@@ -1021,7 +1021,7 @@ mod tests {
                 InspectBatch {
                     id: BatchId(0),
                     pipeline: BatchPipeline::Quad,
-                    pipeline_id: PipelineId(7),
+                    pipeline_id: PipelineId::new(7),
                     bind_group: None,
                     range: (0, 3),
                     clip: Some(Rect {
@@ -1035,8 +1035,8 @@ mod tests {
                 InspectBatch {
                     id: BatchId(1),
                     pipeline: BatchPipeline::GlyphRun,
-                    pipeline_id: PipelineId(9),
-                    bind_group: Some(BindGroupId(4)),
+                    pipeline_id: PipelineId::new(9),
+                    bind_group: Some(BindGroupId::new(4)),
                     range: (3, 12),
                     clip: None,
                     offscreen: true,

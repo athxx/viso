@@ -152,7 +152,7 @@ impl InspectBatches {
                 b.range.0 + b.range.1,
             );
             if let Some(bg) = b.bind_group {
-                let _ = write!(out, " bind={}", bg.0);
+                let _ = write!(out, " bind={}", bg.index);
             }
             if let Some(c) = b.clip {
                 let _ = write!(out, " clip=[{:.0},{:.0} {:.0}x{:.0}]", c.x, c.y, c.w, c.h);

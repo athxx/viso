@@ -446,7 +446,7 @@ mod tests {
                         h: 1.0,
                     },
                 }],
-                atlas: TextureId(7),
+                atlas: TextureId::new(7),
                 color_glyphs: Vec::new(),
                 color_atlas: None,
                 color: RED,
@@ -460,7 +460,7 @@ mod tests {
         store.set_content_payload(
             image_id,
             Content::Image {
-                texture: TextureId(9),
+                texture: TextureId::new(9),
                 uv: Rect {
                     x: 0.0,
                     y: 0.0,
@@ -519,7 +519,7 @@ mod tests {
                 _ => None,
             })
             .expect("a glyph run");
-        assert_eq!(run.atlas, TextureId(7));
+        assert_eq!(run.atlas, TextureId::new(7));
         assert_eq!(run.glyphs[0].rect.x, text_world.x + 2.0);
         assert_eq!(run.glyphs[0].rect.y, text_world.y + 3.0);
 
@@ -531,7 +531,7 @@ mod tests {
                 _ => None,
             })
             .expect("an image");
-        assert_eq!(image.texture, TextureId(9));
+        assert_eq!(image.texture, TextureId::new(9));
         assert_eq!(image.rect, store.world(image_id));
 
         // path: commands translated by the path leaf's world origin.
@@ -597,7 +597,7 @@ mod tests {
                         h: 0.1,
                     },
                 }],
-                atlas: TextureId(3),
+                atlas: TextureId::new(3),
                 color_glyphs: vec![GlyphInstanceData {
                     rect: Rect {
                         x: 12.0,
@@ -612,7 +612,7 @@ mod tests {
                         h: 0.125,
                     },
                 }],
-                color_atlas: Some(TextureId(5)),
+                color_atlas: Some(TextureId::new(5)),
                 color: RED,
                 natural: Vec2 { x: 40.0, y: 20.0 },
                 baseline: 16.0,
@@ -645,7 +645,7 @@ mod tests {
                 _ => None,
             })
             .expect("the outline run");
-        assert_eq!(run.atlas, TextureId(3));
+        assert_eq!(run.atlas, TextureId::new(3));
         assert_eq!(run.glyphs.len(), 1);
 
         // The one color glyph lowers to one Image: white opaque tint (passes the
@@ -660,7 +660,7 @@ mod tests {
             .collect();
         assert_eq!(images.len(), 1, "one color glyph → one image quad");
         let img = images[0];
-        assert_eq!(img.texture, TextureId(5));
+        assert_eq!(img.texture, TextureId::new(5));
         assert_eq!(img.tint, WHITE);
         assert_eq!(img.uv.x, 0.25);
         assert_eq!(img.uv.y, 0.5);
@@ -713,7 +713,7 @@ mod tests {
                         h: 0.1,
                     },
                 }],
-                atlas: TextureId(3),
+                atlas: TextureId::new(3),
                 color_glyphs: Vec::new(),
                 color_atlas: None,
                 color: RED,
