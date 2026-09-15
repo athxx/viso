@@ -1,19 +1,18 @@
-//! F3.1 shadow invariant: the retained scene, re-lowered from its stores and
-//! paint-order record, is byte-identical to the immediate walk's scratch.
+//! Retained-scene lowering invariant: `Renderer::upload` drives the frame's GPU
+//! scratch entirely from the retained scene, and a repeated identical upload
+//! reproduces the same scene shape without a full rebuild.
 //!
-//! `Renderer::upload` builds the immediate scratch buffers and segments (the
-//! authoritative path this stage), and *also* builds the retained scene as a
-//! shadow. Under `debug_assertions` it then re-derives scratch + segments from
-//! the scene and `debug_assert_eq!`s every buffer against the immediate walk;
-//! any divergence panics inside `upload`. This test drives `upload` with the
-//! full `test_scene` — quads, an image, a glyph run, a filled+stroked path, a
-//! mesh, an opaque scissor-clip layer, and a translucent offscreen layer that
-//! composites back — so every `StoreRef` arm and both passes are exercised.
+//! The stream walk only folds each primitive into its store and records paint
+//! order; `lower_from_scene` is the single source of truth that derives the
+//! instance buffers and segments from the scene (§8). This test drives `upload`
+//! with the full `test_scene` — quads, an image, a glyph run, a filled+stroked
+//! path, a mesh, an opaque scissor-clip layer, and a translucent offscreen layer
+//! that composites back — so every `StoreRef` arm and both passes are exercised.
 //!
 //! It runs `upload` twice: the second frame reuses the cleared-not-freed stores
-//! (`begin_frame`), proving the shadow stays byte-identical in steady state, not
-//! just on a cold first frame. If the assertion is disabled (release), the test
-//! still validates that a repeated upload produces the same scene shape.
+//! (`begin_frame`), so an unchanged scene mutates no store and the derived
+//! scratch is identical to the first frame — the steady-state "0 primitive
+//! reconstruction" guarantee (§8.4) under a whole-tree re-emit.
 
 use viso_gpu::{GpuBackend, HeadlessRaster, RawWindowHandle, TextureDesc, TextureFormat};
 use viso_render::{GlyphRunDraw, Renderer, test_glyphs, test_scene, test_texture};
@@ -22,7 +21,7 @@ const W: u32 = 128;
 const H: u32 = 96;
 
 #[test]
-fn shadow_rederivation_matches_immediate_walk() {
+fn scene_lowering_is_stable_across_frames() {
     let mut gpu = HeadlessRaster::new();
     let surface = gpu.create_surface(RawWindowHandle::Headless, W, H);
     let format = gpu.surface_format(surface);
@@ -57,8 +56,8 @@ fn shadow_rederivation_matches_immediate_walk() {
 
     let scene = test_scene(texture, glyphs);
 
-    // First frame: cold stores. The shadow assertion runs inside `upload`.
+    // First frame: cold stores populated and lowered from the scene.
     renderer.upload(&mut gpu, &scene);
-    // Second frame: cleared-not-freed stores reused. Still byte-identical.
+    // Second frame: cleared-not-freed stores reused; unchanged scene, same output.
     renderer.upload(&mut gpu, &scene);
 }

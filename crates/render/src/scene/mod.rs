@@ -15,18 +15,17 @@
 //! - [`ingest`] — the per-frame diff walk that folds the primitive stream into
 //!   the stores, bumping only the revision planes a change moved.
 //!
-//! # Staged migration
+//! # Source of truth
 //!
-//! The immediate walk in `Renderer::upload` stays authoritative and produces the
-//! scratch buffers that actually drive the GPU. Alongside it, the walk hands each
-//! lowered primitive to the scene through one [`ingest`] call per kind
-//! ([`Scene::ingest_quad`], …), which diffs it against the retained store entry
-//! at its positional slot, mutates the store only where a field moved, bumps only
-//! the revision planes that change touched (§8.4), and records the store slot +
-//! lowering context (`clip`, `target`, `origin`) in paint order. A debug-only
-//! check replays that paint-order record back into scratch + segments and asserts
-//! it is byte-identical to what the immediate walk produced — proving the
-//! retained model is a faithful mirror before F3.3 makes it the source of truth.
+//! The scene is authoritative. `Renderer::upload` walks the primitive stream only
+//! to resolve each primitive's lowering context from the layer stack and hand it
+//! to the scene through one [`ingest`] call per kind ([`Scene::ingest_quad`], …),
+//! which diffs it against the retained store entry at its positional slot, mutates
+//! the store only where a field moved, bumps only the revision planes that change
+//! touched (§8.4), and records the store slot + lowering context (`clip`,
+//! `target`, `origin`) in paint order. The GPU scratch and draw segments are then
+//! derived from the retained scene by replaying the paint-order record — the walk
+//! no longer produces them directly (§8).
 //!
 //! The stores **persist across frames**: [`Scene::begin_frame`] resets each
 //! store's cursor to zero (it does not clear entries), the ingest walk re-visits
@@ -80,9 +79,10 @@ pub struct EmitContext {
 /// One entry in the paint-order record: which store slot the Nth emitted
 /// primitive landed in, the context it was lowered under, and its bounds.
 ///
-/// The record is the retained scene's paint-ordered spine. F3.1 replays it to
-/// re-derive scratch; F3.2 diffs it against the previous frame to assign stable
-/// [`PrimitiveId`]s and bump only the revision planes a change touched.
+/// The record is the retained scene's paint-ordered spine: it is replayed each
+/// frame to derive the GPU scratch + draw segments, and diffed against the
+/// previous frame to assign stable [`PrimitiveId`]s and bump only the revision
+/// planes a change touched.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct PaintEntry {
     /// This primitive's stable identity (positional this stage).

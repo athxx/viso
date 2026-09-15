@@ -21,7 +21,9 @@ pub mod scene;
 
 pub use color_atlas::{ColorAlloc, ColorAtlas};
 pub use glyph_atlas::{AtlasAlloc, GlyphAtlas};
-pub use inspect::{BatchId, BatchPipeline, InspectBatch, InspectBatches};
+pub use inspect::{
+    BatchId, BatchPipeline, InspectBatch, InspectBatches, InspectPrimitives, PrimitiveRange,
+};
 pub use primitive::{
     Border, GlyphInstance, GlyphInstanceData, GlyphRunDraw, ImageDraw, ImageInstance, LayerClip,
     LineJoin, Mesh, MeshVertex, Path, PathCmd, Point, Primitive, Quad, QuadInstance, Rect, Rgba,

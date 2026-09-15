@@ -180,10 +180,11 @@ impl Scene {
     pub fn ingest_composite(
         &mut self,
         instance: ImageInstance,
+        pass: usize,
         context: EmitContext,
         bounds: Bounds,
     ) -> PrimitiveId {
-        self.record(StoreRef::Composite(instance), context, bounds)
+        self.record(StoreRef::Composite { instance, pass }, context, bounds)
     }
 
     /// Fold an emit's clip rect into the clip store, bumping the clip plane on a
