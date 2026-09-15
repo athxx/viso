@@ -437,4 +437,150 @@ stage (F3-ext), out of scope here.
         `paint`.
 
 ## F4 — Persistent data path: instance pool / upload ring / coalescer / arena / batch / chunk (`render`)
-(expanded when F3 is frozen)
+
+Goal: the performance foundation (§9, §36) built UNDER the frozen `upload<B>` /
+`submit<B>` boundary. Today (post-F3) `lower_from_scene` still rebuilds five scratch
+Vecs from the paint-order spine every frame and each `upload_*` helper does one full
+`write_buffer(buf, 0, all_bytes)` (grow via `destroy_buffer`+`create_buffer`); the
+draw-list merge is adjacent-only run-length coalescing on `(kind, clip, target)` via
+`segments.last_mut()` (`renderer.rs` quad merge / `push_mesh_segment`). F4 makes the
+data path persistent: a stable `PrimitiveId → InstanceSlot` in a long-lived device
+buffer so a hover (one `PaintRevision` bump on one slot, F3) uploads ONE small range,
+not the whole scene; transient uploads recycle through F1's `Epoch`/`Fence`/
+`RetireQueue`; dirty slots coalesce into a few `write_buffer` ranges; per-frame chunk/
+batch/clip scratch bump-allocates from a frame arena reset O(1) at frame end; and the
+segment merge is replaced by an order-safe packed-integer `BatchKey` planner that
+preserves F3 §8.6 paint order. All new modules land under `crates/render/src/` (render
+owns the data path; no new crate). The frozen immediate-mode boundary, `primitive.rs`
+value types, `paint.rs`, `repaint_dirty`, and the facade glob do not move.
+
+Design deltas over the makepad reference (reference-only, never copied): makepad keys a
+single `redraw_id` per draw list and reuses one MTLBuffer per draw item *positionally*
+by slot index; Viso keys a stable `PrimitiveId → InstanceSlot` and per-plane revisions
+(F3), so a local change touches exactly its slot(s). makepad has no instance ring
+(realloc-on-still-bound); Viso rotates transient uploads through the F1 fence/epoch ring.
+makepad's batch merge is an O(n) backward linear scan with a 1-byte lane key and a
+global accumulating z-float; Viso packs a full `BatchKey` integer and maximizes
+contiguous compatible runs within paint order without a global z coupling.
+
+### F4.1 — Frame arena (bump scratch; foundation the rest allocate from)
+- [x] `render/src/frame/arena.rs` (NEW): a bump allocator for per-frame scratch —
+      visible chunk list, batch scratch, clip scratch, small pass descriptors, and
+      coalescer/radix scratch (§9.4). Fixed-capacity backing (grown only on the cold
+      "frame bigger than ever seen" path, high-water like `quad_scratch`), O(1) reset
+      at frame end (bump cursor → 0, backing retained). No per-primitive `Vec`/`Box`/
+      `String`/`HashMap` on the steady-state path (§9.4, §28). Typed sub-allocations
+      (`alloc_slice::<T>(n)`) with alignment; the raw-pointer bump is module-
+      encapsulated with `SAFETY:` comments (§27).
+- [x] `render/src/frame/mod.rs` (NEW): frame-scoped state aggregate (the arena)
+      owned by `Renderer`; `new`/`reset` lifecycle.
+- [x] `render/tests/frame_arena.rs` (NEW): two warmed frames bump-allocate the same
+      byte total and reset to cursor 0; a frame that fits the high-water mark performs
+      zero heap allocation (counting allocator).
+- [x] Gate green + golden/bench byte-identical (arena is scratch plumbing, no output
+      change yet).
+
+### F4.2 — Persistent instance pool (stable `PrimitiveId → InstanceSlot`)
+- [ ] `render/src/pool/instance_pool.rs` (NEW): a long-lived device instance buffer
+      (F1-allocated via `create_buffer`, UMA persistent on Metal) with a stable
+      `PrimitiveId → InstanceSlot` map (§9.1). A slot is a `{offset, len}` range in the
+      buffer; the map is a dense direct-index table keyed by `PrimitiveId.index` (not a
+      per-frame HashMap — §9.5, §45), living behind the cold structural path. One pool
+      per instance family that shares a pipeline/stride (quad / image / glyph / mesh),
+      each backed by one grow-only device buffer + a free-list of vacated slots.
+- [ ] Slot lifecycle: allocation on first sight of a `PrimitiveId`, in-place rewrite on
+      a `PaintRevision`/`TransformRevision` bump (marks the slot dirty for the
+      coalescer), release to the free-list on primitive removal. Buffer growth retires
+      the old device buffer through F1 `destroy_buffer` (deferred/epoch-reclaimed, not
+      leaked); the pool never rebuilds all slots for a local change.
+- [ ] Wire `lower_from_scene`: instead of clearing + refilling `quad_scratch` etc. from
+      the whole paint order each frame, drive the pool from the F3 revision planes —
+      unchanged primitives keep their slot bytes untouched; only dirty slots are
+      rewritten. Paint order (the `paint_order` spine) still governs draw sequencing;
+      the pool only owns *where* each primitive's instance bytes live persistently.
+- [ ] `render/tests/instance_pool.rs` (NEW): a stable `PrimitiveId` keeps the same
+      `InstanceSlot` across frames; a paint-only change to one primitive rewrites
+      exactly one slot's bytes and leaves every other slot byte-identical; removal frees
+      the slot and a later insert reuses it (post-retire).
+- [ ] Gate green + golden byte-identical (same instance bytes reach the GPU, now via
+      persistent slots).
+
+### F4.3 — Frame upload ring (transient uploads recycled by F1 fence/epoch)
+- [ ] `render/src/pool/upload_ring.rs` (NEW): a ring of transient upload buffers for
+      per-frame data that is not slot-persistent (glyph runs, composites, mesh
+      vertex/index streams) (§9.2). Buffers are claimed per frame and returned to the
+      ring; reuse is gated by F1's `Fence`/`Epoch` — a buffer is reclaimable only once
+      its epoch `<= fence.completed()` (`gpu/src/retire.rs`), so an in-flight buffer is
+      never overwritten. No realloc-per-frame: the ring pre-sizes N deep and rotates.
+- [ ] Persistent-map / bump-write / aligned typed-write are permitted but
+      MODULE-ENCAPSULATED in `upload_ring.rs` with `SAFETY:` comments — nothing outside
+      touches the raw pointer (§9.2, §27). The typed `&[GpuPod]` → byte view path from
+      F2 is reused; no `Vec<Instance>→Vec<f32>→Vec<u8>` chain (§7.4).
+- [ ] Wire the mesh/glyph/composite streams through the ring; retire returned buffers
+      into the F1 `RetireQueue` and drain on `begin_frame`'s fence advance.
+- [ ] `render/tests/upload_ring.rs` (NEW): a buffer whose epoch is still in flight is
+      NOT reused (fence gate holds); once the fence signals, the ring reclaims it; two
+      warmed frames rotate through the same ring buffers with zero new allocation.
+- [ ] Gate green + golden byte-identical + steady-state bench: `buffer_count` flat,
+      retire queue bounded and draining.
+
+### F4.4 — Dirty range coalescer (few `write_buffer` ranges, not many micro-copies)
+- [ ] `render/src/pool/coalescer.rs` (NEW): merge adjacent/nearby dirty instance slots
+      into a few contiguous upload ranges (§9.3). Fixed-capacity scratch (arena- or
+      high-water-backed, no steady-state heap alloc — §9.3); input is the pool's dirty
+      slot set for the frame, output is a small list of `{offset, len}` ranges each
+      emitted as one `backend.write_buffer(buf, offset, bytes)`. A gap smaller than a
+      tunable threshold is bridged (one range re-uploading a few clean slots beats many
+      tiny copies); a large gap splits into a new range.
+- [ ] Wire the pool → coalescer → `write_buffer`: replace the per-family full
+      `write_buffer(buf, 0, all_bytes)` with the coalesced ranges. A steady-state frame
+      with no dirty slots issues zero `write_buffer` calls for that family.
+- [ ] `render/tests/coalescer.rs` (NEW): scattered dirty slots within the gap threshold
+      merge into one range; slots past the threshold split into separate ranges; a
+      single dirty slot (the hover case) yields exactly one minimal range; zero dirty
+      slots yield zero ranges. Fixed-capacity scratch does not allocate across frames.
+- [ ] Gate green + golden byte-identical + steady-state bench: one hover-style dirty
+      uploads exactly one coalesced range / touches one slot (proves §9.1 + §9.3).
+
+### F4.5 — Order-safe batch planner (packed `BatchKey`, replaces segment merge)
+- [ ] `render/src/batch/chunk.rs` (NEW): `RenderChunk` — `{ order range, bounds,
+      primitive ranges, pipeline/material summary, clip chain, effect deps, revision }`
+      (§9.6). A chunk is the unit of incremental rebuild: an unchanged chunk (its
+      revision snapshot matches) contributes its cached batch structure untouched; a
+      local change rebuilds only its chunk. Chunks partition the paint-order spine into
+      contiguous ranges.
+- [ ] `render/src/batch/planner.rs` (NEW): `BatchKey` — a packed integer (no strings,
+      §16.2, §29) over `{ pipeline family/variant, render target, blend, clip mode,
+      sample count, color-target class, resource table/texture set, depth/stencil class
+      }` (§9.6). The planner walks paint order and forms the MAXIMUM contiguous run of
+      compatible instances (equal `BatchKey`) — the goal is max contiguous compatible
+      instances within correct paint order, NOT fewest draws (§9.6, §16.2). The reorder
+      window widens only across spans explicitly marked opaque/reorder-safe; otherwise
+      paint order (F3 §8.6) is preserved exactly. Replaces the adjacent-only
+      `(kind, clip, target)` `segments.last_mut()` merge.
+- [ ] Emit `DrawCommand`/`RenderPass` from batches: each batch → one `DrawCommand`
+      pointing into the persistent pool at the batch's `instance_offset`; passes as
+      today (offscreen-first, then surface). Batch scratch bump-allocates from the F4.1
+      arena; `HashMap` only on the cold chunk/batch construction path (§9.5).
+- [ ] `render/tests/batch_planner.rs` (NEW): interleaved primitives with equal
+      `BatchKey` but split by an intervening incompatible one stay in paint order (not
+      merged across the barrier unless reorder-safe); a run of same-key primitives
+      collapses to one batch; `BatchKey` packs/unpacks losslessly; an unchanged chunk
+      reuses its batch structure (no rebuild).
+- [ ] Complete `FrameStats`/§61: `gpu_upload_bytes` (coalescer range sizes),
+      `draw_calls`/`batches` (planner), `quad_instances`/`glyph_instances` (pool),
+      `allocations_per_frame` (assert 0 steady state). Extend `inspect.rs`/§62:
+      `BatchId` → pipeline/resources, `RenderChunkId` → ranges, upload-range visibility
+      — cold path only.
+- [ ] Gate green + golden byte-identical + steady-state bench: two warmed frames
+      identical alloc (target 0 heap), `buffer_count` flat.
+
+### Freeze
+- [ ] FREEZE F4: `BatchKey` (bit layout + field set), `RenderChunk` shape, the
+      instance-pool slot layout (`InstanceSlot { offset, len }` + `PrimitiveId`→slot
+      table), and the upload-ring / coalescer contracts — before D0. D/C/E/M/A build on
+      these. Machine-enforced in `render/tests/data_path_contract_frozen.rs` (one
+      consolidated gate: `BatchKey` pack/unpack round-trip + field bit-widths;
+      `RenderChunk` field set; `InstanceSlot` shape; ring/coalescer range invariants),
+      alongside the per-module unit tests. Record the frozen contract inline here
+      (mirroring the F3 freeze block) once the shapes settle.
