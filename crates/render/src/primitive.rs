@@ -73,6 +73,29 @@ impl Rect {
     pub fn contains(self, px: f32, py: f32) -> bool {
         px >= self.x && px < self.x + self.w && py >= self.y && py < self.y + self.h
     }
+
+    /// The empty rect at the origin — the identity a retained bound starts from
+    /// before its geometry resolves.
+    pub const ZERO: Rect = Rect {
+        x: 0.0,
+        y: 0.0,
+        w: 0.0,
+        h: 0.0,
+    };
+
+    /// This rect grown by `amount` physical pixels on every side (origin moves
+    /// out, extent grows by twice the amount). A negative `amount` shrinks it;
+    /// the extent is clamped at zero. Used to inflate a fill bound by half a
+    /// stroke width or a filter radius without re-parsing geometry (§8).
+    #[inline]
+    pub fn inflate(self, amount: f32) -> Rect {
+        Rect {
+            x: self.x - amount,
+            y: self.y - amount,
+            w: (self.w + amount * 2.0).max(0.0),
+            h: (self.h + amount * 2.0).max(0.0),
+        }
+    }
 }
 
 /// A straight-alpha (non-premultiplied) linear RGBA color — the wire shape a
