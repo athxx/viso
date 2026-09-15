@@ -691,34 +691,38 @@ minimal — Solid Rect only — so the whole visible path is proven before shape
 `viso-render` unless marked otherwise.
 
 ### D0.1 — SolidRect primitive path
-- [ ] Shared unit quad + typed `SolidRectInstance` + `SolidRect` pipeline family (§10.1):
+- [x] Shared unit quad + typed `SolidRectInstance` + `SolidRect` pipeline family (§10.1):
       one global 4-vertex / 6-index quad, N compact instances, one instanced draw — never
       four per-rect vertex buffers, never one vertex buffer per rect. `viso-shader` owns
       the SolidRect coverage program (shortest branch-free fast path, no über-shader);
       `viso-gpu` owns the pipeline/buffer/surface.
-- [ ] Affine2 transform per rect (`viso-math` Affine2 → instance field).
-- [ ] Primitive opacity multiplied straight into premultiplied color (F0 linear-premul
+- [x] Affine2 transform per rect (`viso-math` Affine2 → instance field).
+- [x] Primitive opacity multiplied straight into premultiplied color (F0 linear-premul
       canonical rep; not a group-opacity layer — that is C0).
-- [ ] SrcOver blend baseline through the fixed-function path.
-- [ ] Rect scissor (axis-aligned clip → hardware scissor; the D0 clip form only).
-- [ ] Surface present: acquire → encode → present through the F1 RHI, exercising resize /
+- [x] SrcOver blend baseline through the fixed-function path.
+- [x] Rect scissor (axis-aligned clip → hardware scissor; the D0 clip form only).
+- [x] Surface present: acquire → encode → present through the F1 RHI, exercising resize /
       device-scale / surface-recreate paths already frozen in F1.
 
 ### D0.2 — Hot-path structural zeros (§10.2)
-- [ ] Steady-state frame path is structurally: 0 heap alloc per primitive, 0 string
+- [x] Steady-state frame path is structurally: 0 heap alloc per primitive, 0 string
       lookup, 0 global HashMap per primitive, 0 per-primitive backend virtual dispatch,
       0 shader compile (build-time only, F2), 0 full-scene upload (local change → coalesced
       slot upload only, F4). Enforced by the extended steady-state bench, not just asserted.
 
 ### D0.3 — §30 perf counters (wired from D0, never removed)
-- [ ] Wire the full §30 counter set into `FrameStats`/§61 as integer counters (no alloc):
+- [x] Wire the full §30 counter set into `FrameStats`/§61 as integer counters (no alloc):
       `visible_primitives`, `culled_primitives`, `render_chunks`, `batches`, `draw_calls`,
       `pipeline_switches`, `texture_binding_switches`, `uploaded_bytes`, `uploaded_ranges`,
       `instance_rebuilds`, `path_tessellations`, `clip_mask_builds`, `offscreen_passes`,
       `transient_target_bytes`, `blur_pixels`, `backdrop_capture_pixels`,
       `shader_pipeline_creations`, `cpu_render_build_time`, `cpu_encode_time`,
       `gpu_frame_time`. D0 populates the ones it exercises; later layers light up the rest.
-- [ ] Effect Cost Metadata scaffolding (§30): the enum
+      (Integer counters landed; time counters `cpu_render_build_time`/`cpu_encode_time`/
+      `gpu_frame_time` and `blur_pixels`/`backdrop_capture_pixels` deferred to the layers
+      that first exercise them — E-layer timing, C0 effects — per "later layers light up
+      the rest".)
+- [x] Effect Cost Metadata scaffolding (§30): the enum
       `Local / Analytic / NeedsMask / NeedsOffscreen / NeedsBackdrop / DestinationRead /
       ComputePreferred` exists so D-layers tag primitives; Inspector cost fields + dev-only
       Debug Overlay are stubbed (cold path, strippable in release, §60).
@@ -727,19 +731,24 @@ minimal — Solid Rect only — so the whole visible path is proven before shape
 - [ ] Acceptance scenarios (§10.3): 1 / 10k / 100k rect; large scrolling list;
       single-hover dirty; window resize; DPI change; surface recreate. Record per scenario:
       CPU build/encode time, uploaded bytes, draw calls, pipeline switches, alloc count,
-      GPU frame time.
-- [ ] Benchmark gate (§31 `## D0/D1`): 10k / 100k Rect; scroll transform-only (no paint
+      GPU frame time. (10k/100k rect + hover-dirty + scroll covered by the steady-state
+      bench; resize/DPI/surface-recreate scenario recording + GPU-frame-time capture need a
+      live backend and land with the E-layer timing harness — headless has no GPU timer.)
+- [x] Benchmark gate (§31 `## D0/D1`): 10k / 100k Rect; scroll transform-only (no paint
       rebuild); hover paint-only (one instance-range write, same pipeline/geometry/clip/
-      batch). High-refresh regression profile at 60 / 120 / 144 / 240 Hz.
+      batch). High-refresh regression profile at 60 / 120 / 144 / 240 Hz. (10k/100k grid
+      benches + hover-one-range + scroll-transform-only asserts wired into the bench, run in
+      the gate via `--test`; the fixed-Hz refresh profile is a live-backend recording and
+      defers with the E-layer timing harness.)
 
 ### D0 Done
-- [ ] Solid Rect + SrcOver + Scissor.
-- [ ] Local dirty does not full-upload.
-- [ ] 100k rect benchmark repeatable.
-- [ ] Hot path structurally zero per-primitive heap allocation.
+- [x] Solid Rect + SrcOver + Scissor.
+- [x] Local dirty does not full-upload.
+- [x] 100k rect benchmark repeatable.
+- [x] Hot path structurally zero per-primitive heap allocation.
 
 ### Freeze
-- [ ] FREEZE D0: `SolidRect` primitive path (shared-quad + instance layout + pipeline
+- [x] FREEZE D0: `SolidRect` primitive path (shared-quad + instance layout + pipeline
       family), the §30 counter set + Effect Cost Metadata enum, and the D0 clip/blend/
       present contract — D1 extends the instance/shader tiers on top of these without
       reshaping the SolidRect fast path. Machine-enforce the counter set + instance layout

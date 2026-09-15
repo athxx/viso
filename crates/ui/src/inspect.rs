@@ -1015,7 +1015,7 @@ mod tests {
     /// run) exercising every batch-JSON branch: label, pipeline id, present and
     /// absent bind group, clip-vs-null, and the offscreen flag.
     fn sample_batches() -> InspectBatches {
-        use viso_render::{BatchId, BatchPipeline, BindGroupId, PipelineId};
+        use viso_render::{BatchId, BatchPipeline, BindGroupId, EffectCost, PipelineId};
         InspectBatches {
             batches: vec![
                 InspectBatch {
@@ -1031,6 +1031,8 @@ mod tests {
                         h: 20.0,
                     }),
                     offscreen: false,
+                    // A main-pass clipped quad is realized in place.
+                    cost: EffectCost::Local,
                 },
                 InspectBatch {
                     id: BatchId(1),
@@ -1040,6 +1042,8 @@ mod tests {
                     range: (3, 12),
                     clip: None,
                     offscreen: true,
+                    // An offscreen run is realized through a transient target.
+                    cost: EffectCost::NeedsOffscreen,
                 },
             ],
         }

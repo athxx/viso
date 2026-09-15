@@ -13,6 +13,7 @@
 
 pub mod batch;
 pub mod color_atlas;
+pub mod effect_cost;
 pub mod frame;
 pub mod glyph_atlas;
 pub mod inspect;
@@ -23,6 +24,7 @@ pub mod renderer;
 pub mod scene;
 
 pub use color_atlas::{ColorAlloc, ColorAtlas};
+pub use effect_cost::EffectCost;
 pub use glyph_atlas::{AtlasAlloc, GlyphAtlas};
 pub use inspect::{
     BatchId, BatchPipeline, InspectBatch, InspectBatches, InspectPrimitives, PrimitiveRange,

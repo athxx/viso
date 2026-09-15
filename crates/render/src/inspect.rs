@@ -34,6 +34,7 @@ use crate::Renderer;
 use crate::batch::{
     BatchFamily, BatchItem, BatchKey, BatchTarget, RenderChunk, RenderChunkId, joins,
 };
+use crate::effect_cost::EffectCost;
 use crate::renderer::{PassTarget, Segment, SegmentKind};
 use crate::scene::ids::PrimitiveId;
 use crate::scene::store::StoreRef;
@@ -117,6 +118,14 @@ pub struct InspectBatch {
     /// Whether this batch draws into an offscreen pass (a translucent layer's
     /// render-to-texture) rather than the main surface pass.
     pub offscreen: bool,
+    /// How this batch must be realized on the GPU (architecture section 62 —
+    /// "why does this batch cost what it costs"). A main-pass draw of a solid
+    /// quad / image / glyph run / mesh is [`EffectCost::Local`]; a draw routed
+    /// into an offscreen pass is realized through a transient target, reported
+    /// as [`EffectCost::NeedsOffscreen`]. Masks, backdrops, destination-read
+    /// blends, and compute paths report their own class once those primitives
+    /// land in later layers.
+    pub cost: EffectCost,
 }
 
 /// A flat snapshot of a frame's draw batches: `batches[i]` is the batch
@@ -187,6 +196,7 @@ impl InspectBatches {
             if b.offscreen {
                 out.push_str(" offscreen");
             }
+            let _ = write!(out, " cost={}", b.cost.label());
             out.push('\n');
         }
         out
@@ -311,6 +321,7 @@ impl Renderer {
             ),
             SegmentKind::Mesh => (BatchPipeline::Mesh, self.mesh_pipeline_id(), None),
         };
+        let offscreen = matches!(seg.target, PassTarget::Offscreen(_));
         InspectBatch {
             id,
             pipeline,
@@ -318,7 +329,15 @@ impl Renderer {
             bind_group,
             range: (seg.start, seg.count),
             clip: seg.clip,
-            offscreen: matches!(seg.target, PassTarget::Offscreen(_)),
+            offscreen,
+            // D0 realizes every draw in place; a draw routed into an offscreen
+            // pass is realized through a transient target. Later layers set the
+            // richer classes when masks / backdrops / blend reads appear.
+            cost: if offscreen {
+                EffectCost::NeedsOffscreen
+            } else {
+                EffectCost::Local
+            },
         }
     }
 
@@ -570,6 +589,67 @@ impl Renderer {
         }
         spans
     }
+
+    /// A dev-only debug overlay dump: the frame's [`FrameStats`] counters
+    /// (architecture section 61) followed by the per-batch cost list
+    /// (architecture section 62), as one readable multi-line string a debug HUD
+    /// or a test can print verbatim.
+    ///
+    /// This is the cold-path, release-strippable overlay stub architecture
+    /// section 60 mandates: it is compiled only under `debug_assertions`, so a
+    /// release build carries none of it and pays no steady-state cost. It reads
+    /// only `&self` in the same window as [`frame_stats`](Self::frame_stats) and
+    /// [`inspect_batches`](Self::inspect_batches) (after [`upload`](Self::upload),
+    /// before [`submit`](Self::submit)) and mutates no renderer state.
+    ///
+    /// It renders text only — laying the numbers out as GPU primitives is a
+    /// later layer's job; this stub fixes the *content* the overlay reports.
+    #[cfg(debug_assertions)]
+    pub fn debug_overlay(&self) -> String {
+        use core::fmt::Write as _;
+
+        let s = self.frame_stats();
+        let mut out = String::new();
+        let _ = writeln!(out, "-- frame counters --");
+        let _ = writeln!(
+            out,
+            "draw_calls={} batches={} render_chunks={} pipeline_switches={} \
+             texture_binding_switches={}",
+            s.draw_calls,
+            s.batches,
+            s.render_chunks,
+            s.pipeline_switches,
+            s.texture_binding_switches,
+        );
+        let _ = writeln!(
+            out,
+            "visible_primitives={} culled_primitives={} dirty_primitives={} instances={}",
+            s.visible_primitives, s.culled_primitives, s.dirty_primitives, s.instances,
+        );
+        let _ = writeln!(
+            out,
+            "quad_instances={} glyph_instances={} path_tessellations={} instance_rebuilds={} \
+             clip_mask_builds={}",
+            s.quad_instances,
+            s.glyph_instances,
+            s.path_tessellations,
+            s.instance_rebuilds,
+            s.clip_mask_builds,
+        );
+        let _ = writeln!(
+            out,
+            "offscreen_passes={} transient_target_bytes={} shader_pipeline_creations={}",
+            s.offscreen_passes, s.transient_target_bytes, s.shader_pipeline_creations,
+        );
+        let _ = writeln!(
+            out,
+            "gpu_upload_bytes={} uploaded_ranges={}",
+            s.gpu_upload_bytes, s.uploaded_ranges,
+        );
+        out.push_str("-- batches --\n");
+        out.push_str(&self.inspect_batches().dump());
+        out
+    }
 }
 
 #[cfg(test)]
@@ -758,6 +838,18 @@ mod tests {
                     .iter()
                     .any(|b| !b.offscreen && b.pipeline == BatchPipeline::Image)
             );
+
+            // Effect cost tracks the pass: an offscreen draw is realized through
+            // a transient target (`NeedsOffscreen`); every main-pass draw is
+            // in-place (`Local`).
+            for b in &batches.batches {
+                let expected = if b.offscreen {
+                    EffectCost::NeedsOffscreen
+                } else {
+                    EffectCost::Local
+                };
+                assert_eq!(b.cost, expected);
+            }
         });
     }
 
@@ -916,10 +1008,28 @@ mod tests {
         with_upload(&prims, |r| {
             let dump = r.inspect_batches().dump();
             let expected = "\
-#0 quad range=0..1
-#1 quad range=1..2 clip=[5,5 30x30]
+#0 quad range=0..1 cost=local
+#1 quad range=1..2 clip=[5,5 30x30] cost=local
 ";
             assert_eq!(dump, expected);
+        });
+    }
+
+    #[test]
+    fn debug_overlay_reports_counters_and_batches() {
+        // The dev-only overlay dump carries the frame counters and the batch
+        // list. It reads the same window as `frame_stats`/`inspect_batches`, so
+        // its numbers agree with them.
+        with_upload(&[quad(0.0, 0.0), quad(20.0, 20.0)], |r| {
+            let overlay = r.debug_overlay();
+            let stats = r.frame_stats();
+
+            assert!(overlay.contains("-- frame counters --"));
+            assert!(overlay.contains("-- batches --"));
+            // Two adjacent quads merge into one batch, one draw call.
+            assert!(overlay.contains(&format!("draw_calls={}", stats.draw_calls)));
+            // The batch list is appended verbatim.
+            assert!(overlay.contains("quad range=0..2 cost=local"));
         });
     }
 }
