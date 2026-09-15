@@ -31,6 +31,9 @@
 
 use crate::Rect;
 use crate::Renderer;
+use crate::batch::{
+    BatchFamily, BatchItem, BatchKey, BatchTarget, RenderChunk, RenderChunkId, joins,
+};
 use crate::renderer::{PassTarget, Segment, SegmentKind};
 use crate::scene::ids::PrimitiveId;
 use crate::scene::store::StoreRef;
@@ -40,9 +43,10 @@ use viso_gpu::{BindGroupId, PipelineId};
 /// architecture section 62 names for `BatchId -> pipeline/resources`.
 ///
 /// `BatchId(i)` addresses `inspect_batches().batches[i]`, the `i`-th draw
-/// command the frame will encode, in submission order. (Distinct from the
-/// unused [`BatchKey`](crate::BatchKey), which is not the batch identity in
-/// play.)
+/// command the frame will encode, in submission order. (Distinct from
+/// [`BatchKey`](crate::BatchKey), the packed GPU-state key the planner merges
+/// on: many primitives sharing one `BatchKey` collapse into the one `BatchId`
+/// that draws them.)
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct BatchId(pub u32);
 
@@ -70,6 +74,18 @@ impl BatchPipeline {
             BatchPipeline::Image => "image",
             BatchPipeline::GlyphRun => "glyph",
             BatchPipeline::Mesh => "mesh",
+        }
+    }
+
+    /// The batch-planner family this pipeline draws through. `inspect_primitives`
+    /// packs its merge key from this so its adjacency decision routes through the
+    /// same [`joins`](crate::batch::joins) predicate the lowering uses.
+    fn family(self) -> BatchFamily {
+        match self {
+            BatchPipeline::Quad => BatchFamily::Quad,
+            BatchPipeline::Image => BatchFamily::Image,
+            BatchPipeline::GlyphRun => BatchFamily::GlyphRun,
+            BatchPipeline::Mesh => BatchFamily::Mesh,
         }
     }
 }
@@ -331,12 +347,10 @@ impl Renderer {
         let mut glyph_cursor: u32 = 0;
         let mut index_cursor: u32 = 0;
 
-        // The segment (batch) the last emit landed in, so a mergeable run can
-        // recognise it carries the same clip/target and reuse its BatchId. `None`
+        // The batch item the last emit landed in, so a mergeable run can
+        // recognise the next primitive joins it and reuse its BatchId. `None`
         // before the first emit.
-        let mut last_kind: Option<SegmentKind> = None;
-        let mut last_clip: Option<Option<Rect>> = None;
-        let mut last_target: Option<PassTarget> = None;
+        let mut last_item: Option<BatchItem> = None;
         let mut batch: i64 = -1;
 
         let mut primitives = Vec::with_capacity(self.scene_snapshot().paint_order.len());
@@ -402,21 +416,27 @@ impl Renderer {
                 continue;
             }
 
-            // A primitive merges into the previous batch only when it and the
-            // previous emit are the same mergeable kind (quads or meshes) under
-            // the same clip and target — the exact test `lower_from_scene` uses.
+            // A primitive merges into the previous batch exactly when the
+            // planner's `joins` predicate holds for their batch items — the same
+            // predicate `lower_from_scene` routes every segment through. The
+            // resource is left `None`: it never affects the decision (quads and
+            // meshes bind none; images and glyph runs are unmergeable regardless).
             // Images, glyph runs, and composites are always their own draw.
-            let mergeable = matches!(pipeline, BatchPipeline::Quad | BatchPipeline::Mesh);
-            let merges = mergeable
-                && last_kind == Some(kind)
-                && last_clip == Some(clip)
-                && last_target == Some(target);
+            let family = pipeline.family();
+            let target_field = match target {
+                PassTarget::Main => BatchTarget::Main,
+                PassTarget::Offscreen(i) => BatchTarget::Offscreen(i),
+            };
+            let item = BatchItem {
+                key: BatchKey::pack(family, target_field, None),
+                clip,
+                mergeable: family.mergeable(),
+            };
+            let merges = last_item.is_some_and(|prev| joins(&prev, &item));
             if !merges {
                 batch += 1;
             }
-            last_kind = if mergeable { Some(kind) } else { None };
-            last_clip = Some(clip);
-            last_target = Some(target);
+            last_item = Some(item);
 
             primitives.push(PrimitiveRange {
                 id: entry.id,
@@ -426,6 +446,129 @@ impl Renderer {
             });
         }
         InspectPrimitives { primitives }
+    }
+
+    /// Project the frame's draw segments into the paint-order `RenderChunk`
+    /// stream — the `RenderChunkId -> ranges` view (architecture section 62).
+    ///
+    /// A cold-path introspection surface, produced only when tooling asks. It is
+    /// not a hot-path structure and does not replace the segment list: the
+    /// segments stay the sole draw carrier the encoder reads. Each emitted draw
+    /// becomes one [`RenderChunk`] carrying the packed [`BatchKey`] the encoder
+    /// fixes — including the real bound resource for image/glyph chunks, so
+    /// chunks that bind distinct textures hold distinct keys — its geometry
+    /// range and clip, and the half-open paint-order span it absorbed. That span
+    /// is the one piece [`InspectBatch`] cannot carry: it maps a changed
+    /// paint-order position back to the single chunk that must be rebuilt.
+    ///
+    /// `chunks[i]` is `RenderChunkId(i)` and corresponds one-to-one with
+    /// `inspect_batches().batches[i]`: identical count and boundaries, since both
+    /// route every merge through the same [`joins`](crate::batch::joins)
+    /// predicate. It reads only `&self`, mutates no renderer state, and never
+    /// runs on the steady frame path.
+    pub fn render_chunks(&self) -> Vec<RenderChunk> {
+        // The paint-order walk yields, per emitted batch, the half-open span of
+        // paint-order positions that batch absorbed. Batch boundaries here match
+        // the segment list exactly (both merge through `joins`), so the i-th span
+        // pairs with the i-th segment. An empty mesh (zero indices) emits no
+        // segment and opens no batch — it is attributed to the current batch
+        // without extending the order span past what a real emit already covers.
+        let order_spans = self.chunk_order_spans();
+
+        let segments = self.segments_snapshot();
+        debug_assert_eq!(
+            segments.len(),
+            order_spans.len(),
+            "one paint-order span per emitted segment"
+        );
+
+        segments
+            .iter()
+            .zip(order_spans)
+            .map(|(seg, order)| RenderChunk {
+                key: BatchKey::pack(
+                    seg.kind.family(),
+                    seg.target.batch_target(),
+                    seg.kind.resource(),
+                ),
+                family: seg.kind.family(),
+                clip: seg.clip,
+                geometry: (seg.start, seg.count),
+                order,
+            })
+            .collect()
+    }
+
+    /// Find a chunk by its [`RenderChunkId`], if present.
+    pub fn render_chunk(&self, id: RenderChunkId) -> Option<RenderChunk> {
+        self.render_chunks().get(id.0 as usize).copied()
+    }
+
+    /// Walk the paint-order record the way [`inspect_primitives`](Self::inspect_primitives)
+    /// does, folding it into one half-open `(order_start, order_end)` span per
+    /// emitted batch. The merge decision routes through the same
+    /// [`joins`](crate::batch::joins) predicate the lowering uses, so the spans
+    /// line up one-to-one with the segment list.
+    fn chunk_order_spans(&self) -> Vec<(u32, u32)> {
+        let mut spans: Vec<(u32, u32)> = Vec::new();
+        let mut last_item: Option<BatchItem> = None;
+
+        for (pos, entry) in self.scene_snapshot().paint_order.iter().enumerate() {
+            let pos = pos as u32;
+            let clip = entry.context.clip;
+            let target = match entry.context.offscreen {
+                None => BatchTarget::Main,
+                Some(idx) => BatchTarget::Offscreen(idx),
+            };
+
+            // The family, and whether this entry emits geometry at all. An empty
+            // path/mesh (zero indices) produces no segment, so it neither opens a
+            // batch nor extends the current one's order span — mirroring
+            // `push_mesh_segment`'s early return.
+            let (family, emits) = match entry.store {
+                StoreRef::Quad(_) => (BatchFamily::Quad, true),
+                StoreRef::Image(_) | StoreRef::Composite { .. } => (BatchFamily::Image, true),
+                StoreRef::GlyphRun(run) => {
+                    let e = self
+                        .scene_snapshot()
+                        .glyph_runs
+                        .run(run)
+                        .expect("glyph run slot");
+                    (BatchFamily::GlyphRun, e.count > 0)
+                }
+                StoreRef::Path(id) => {
+                    let e = self.scene_snapshot().paths.get(id).expect("path slot");
+                    (BatchFamily::Mesh, !e.indices.is_empty())
+                }
+                StoreRef::Mesh(id) => {
+                    let e = self.scene_snapshot().meshes.get(id).expect("mesh slot");
+                    (BatchFamily::Mesh, !e.indices.is_empty())
+                }
+            };
+            if !emits {
+                continue;
+            }
+
+            // The resource never affects the boundary: quads/meshes bind none, and
+            // images/glyph runs are unmergeable regardless. Pack `None` here so
+            // the merge decision matches `inspect_primitives`; the emitted chunk
+            // carries the real resource from its segment.
+            let item = BatchItem {
+                key: BatchKey::pack(family, target, None),
+                clip,
+                mergeable: family.mergeable(),
+            };
+            let merges = last_item.is_some_and(|prev| joins(&prev, &item));
+            if merges {
+                if let Some(span) = spans.last_mut() {
+                    span.1 = pos + 1;
+                }
+            } else {
+                spans.push((pos, pos + 1));
+            }
+            last_item = Some(item);
+        }
+        spans
     }
 }
 

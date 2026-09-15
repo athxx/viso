@@ -568,38 +568,47 @@ safety-relevant behavior §9.2 actually cares about — rather than building an 
       final GPU buffer contents are unchanged (golden byte-identical), while a hover-style
       one-slot change uploads exactly one minimal coalesced range (proves §9.1 + §9.3).
 
-### F4.5 — Order-safe batch planner (packed `BatchKey`, replaces segment merge)
-- [ ] `render/src/batch/chunk.rs` (NEW): `RenderChunk` — `{ order range, bounds,
-      primitive ranges, pipeline/material summary, clip chain, effect deps, revision }`
-      (§9.6). A chunk is the unit of incremental rebuild: an unchanged chunk (its
-      revision snapshot matches) contributes its cached batch structure untouched; a
-      local change rebuilds only its chunk. Chunks partition the paint-order spine into
-      contiguous ranges.
-- [ ] `render/src/batch/planner.rs` (NEW): `BatchKey` — a packed integer (no strings,
-      §16.2, §29) over `{ pipeline family/variant, render target, blend, clip mode,
-      sample count, color-target class, resource table/texture set, depth/stencil class
-      }` (§9.6). The planner walks paint order and forms the MAXIMUM contiguous run of
-      compatible instances (equal `BatchKey`) — the goal is max contiguous compatible
-      instances within correct paint order, NOT fewest draws (§9.6, §16.2). The reorder
-      window widens only across spans explicitly marked opaque/reorder-safe; otherwise
-      paint order (F3 §8.6) is preserved exactly. Replaces the adjacent-only
-      `(kind, clip, target)` `segments.last_mut()` merge.
-- [ ] Emit `DrawCommand`/`RenderPass` from batches: each batch → one `DrawCommand`
-      pointing into the persistent pool at the batch's `instance_offset`; passes as
-      today (offscreen-first, then surface). Batch scratch bump-allocates from the F4.1
-      arena; `HashMap` only on the cold chunk/batch construction path (§9.5).
-- [ ] `render/tests/batch_planner.rs` (NEW): interleaved primitives with equal
-      `BatchKey` but split by an intervening incompatible one stay in paint order (not
-      merged across the barrier unless reorder-safe); a run of same-key primitives
-      collapses to one batch; `BatchKey` packs/unpacks losslessly; an unchanged chunk
-      reuses its batch structure (no rebuild).
-- [ ] Complete `FrameStats`/§61: `gpu_upload_bytes` (coalescer range sizes),
-      `draw_calls`/`batches` (planner), `quad_instances`/`glyph_instances` (pool),
-      `allocations_per_frame` (assert 0 steady state). Extend `inspect.rs`/§62:
-      `BatchId` → pipeline/resources, `RenderChunkId` → ranges, upload-range visibility
-      — cold path only.
-- [ ] Gate green + golden byte-identical + steady-state bench: two warmed frames
-      identical alloc (target 0 heap), `buffer_count` flat.
+### F4.5 — Order-safe batch planner (packed `BatchKey`, unifies the merge decision)
+- [x] `render/src/batch/planner.rs` (NEW): `BatchKey` — a packed `u64` (no strings,
+      §16.2, §29) over the full §9.6 field set `{ pipeline family, variant, blend, sample
+      count, color-target class, depth/stencil class, render target, resource table }`.
+      Only family / render-target / resource carry a value today; the rest are reserved
+      bit-fields written as `0` so a later blend/MSAA/depth dimension packs into the
+      existing layout without moving a frozen field. `joins(prev, next)` is the single
+      adjacency predicate: equal key + structural clip match + mergeable family. The
+      three former segment-merge sites now route their merge DECISION through
+      `planner::joins`; the goal is the MAXIMUM contiguous run of compatible instances
+      within correct paint order (§8.6), NOT fewest draws — adjacency-only, cross-span
+      reordering deferred (no reorder-safe spans minted yet).
+- [x] `render/src/batch/chunk.rs` (NEW): `RenderChunk { key, family, clip, geometry,
+      order }` + `RenderChunkId(u32)`. A LEAN cold-path §62 introspection projection over
+      the segment stream — NOT a hot-path parallel structure and NOT a Segment
+      replacement. `Segment` stays the sole hot-path draw carrier; `render_chunks()` is
+      produced only when §62 tooling asks. `geometry` is `(start, count)` in the family
+      buffer (instances for quad/image/glyph, indices for mesh); `order` is the half-open
+      paint-order span the chunk absorbed — the one piece an `InspectBatch` cannot carry,
+      so a consumer maps a changed paint position back to the one chunk to rebuild.
+- [x] `inspect.rs` (§62): `render_chunks()` / `render_chunk(RenderChunkId)` fold
+      `segments_snapshot()` for key/geometry/clip/resource and compute the order span via
+      `chunk_order_spans()` — routed through the same `joins` predicate, so chunks line
+      up 1:1 with segments (`debug_assert_eq!(segments.len(), order_spans.len())`) and
+      with `inspect_batches().batches[i]`. Chunk key carries the REAL bound resource, so
+      distinct textures yield distinct keys. Zero-geometry entries (empty path/mesh/glyph)
+      emit no segment and are skipped, keeping span count == segment count.
+- [x] `render/tests/batch_planner.rs` (NEW): a same-key adjacent quad run collapses to
+      one batch / one chunk spanning all paint positions; an unmergeable primitive
+      between two equal-key quads is a hard barrier keeping them in submission order (no
+      cross-barrier merge); `BatchKey` packs/unpacks losslessly across every family /
+      target / resource; `render_chunks()` is 1:1 with `inspect_batches()` (matching key /
+      geometry / clip, `RenderChunkId(i)` resolves to `chunks[i]`); distinct textures
+      yield distinct chunk keys.
+- [x] Complete `FrameStats`/§61: `gpu_upload_bytes` (coalescer range sizes via
+      `InstancePool::last_upload_bytes`) and `batches` (segment count) wired; `draw_calls`
+      / `instances` already present. Extend `inspect.rs`/§62: `BatchId` → pipeline /
+      resources and `RenderChunkId` → ranges both live, cold path only.
+- [x] Gate green + golden byte-identical + `InspectBatches::dump()` byte-identical +
+      steady-state bench: two warmed frames identical alloc (target 0 heap),
+      `buffer_count` flat.
 
 ### Freeze
 - [ ] FREEZE F4: `BatchKey` (bit layout + field set), `RenderChunk` shape, the

@@ -25,6 +25,7 @@ use viso_gpu::{
 
 use viso_shader::{PipelineEntry, PipelineFamily, standard_manifest};
 
+use crate::batch::{BatchFamily, BatchItem, BatchKey, BatchTarget, joins};
 use crate::pool::InstancePool;
 use crate::primitive::{GlyphInstance, ImageInstance, MeshVertex, Primitive, QuadInstance, Rect};
 use crate::scene::store::{StoreRef, glyph_instances};
@@ -55,6 +56,41 @@ pub(crate) enum SegmentKind {
     Mesh,
 }
 
+impl SegmentKind {
+    /// The batch-planner family this kind draws through: the pipeline and the
+    /// family buffer its geometry indexes.
+    pub(crate) fn family(self) -> BatchFamily {
+        match self {
+            SegmentKind::Quad => BatchFamily::Quad,
+            SegmentKind::Image { .. } => BatchFamily::Image,
+            SegmentKind::GlyphRun { .. } => BatchFamily::GlyphRun,
+            SegmentKind::Mesh => BatchFamily::Mesh,
+        }
+    }
+
+    /// The resource bind group folded into this kind's [`BatchKey`], if any:
+    /// the sampled texture/atlas for image and glyph draws, `None` for quad and
+    /// mesh (which bind no per-draw resource).
+    pub(crate) fn resource(self) -> Option<BindGroupId> {
+        match self {
+            SegmentKind::Image { bind_group } | SegmentKind::GlyphRun { bind_group } => {
+                Some(bind_group)
+            }
+            SegmentKind::Quad | SegmentKind::Mesh => None,
+        }
+    }
+}
+
+impl PassTarget {
+    /// The batch-planner target this pass maps to (surface vs. offscreen `i`).
+    pub(crate) fn batch_target(self) -> BatchTarget {
+        match self {
+            PassTarget::Main => BatchTarget::Main,
+            PassTarget::Offscreen(i) => BatchTarget::Offscreen(i),
+        }
+    }
+}
+
 /// A contiguous run of geometry that encodes as a single draw.
 ///
 /// Segments are built in [`Renderer::upload`] by walking the flat primitive
@@ -82,6 +118,24 @@ pub(crate) struct Segment {
     pub(crate) clip: Option<Rect>,
     /// Which render pass this segment belongs to.
     pub(crate) target: PassTarget,
+}
+
+impl Segment {
+    /// The batch item this segment presents to the planner: its packed state
+    /// key, its structural clip, and whether its family can grow a run. Two
+    /// adjacent segments merge exactly when [`joins`] holds for their items —
+    /// the single merge predicate every lowering and introspection site shares.
+    fn batch_item(&self) -> BatchItem {
+        BatchItem {
+            key: BatchKey::pack(
+                self.kind.family(),
+                self.target.batch_target(),
+                self.kind.resource(),
+            ),
+            clip: self.clip,
+            mergeable: self.kind.family().mergeable(),
+        }
+    }
 }
 
 /// Which render pass a [`Segment`] is drawn into.
@@ -170,6 +224,16 @@ pub struct FrameStats {
     /// Paths (re-)tessellated this frame — a geometry/paint change or a cold
     /// append; a cache hit does not count (§61).
     pub path_tessellations: u32,
+    /// Order-safe batches the planner emitted this frame (§9.6, §61): the count
+    /// of contiguous draws after adjacent compatible primitives merged. One
+    /// batch is one draw command today, so this equals `draw_calls`; the two
+    /// stay separate counters because a later pass (indirect/multi-draw) can
+    /// fold several batches into one call without changing the batch count.
+    pub batches: usize,
+    /// Bytes uploaded to GPU instance/vertex/index buffers this frame, summed
+    /// over every pool (§61). Zero on a steady frame that changed nothing — a
+    /// local paint change uploads only its changed slots (§9.1).
+    pub gpu_upload_bytes: usize,
 }
 
 /// Turns per-frame primitives into GPU draw commands for one surface.
@@ -247,6 +311,12 @@ pub struct Renderer {
     /// then [`Renderer::lower_from_scene`] derives every instance buffer and
     /// [`Segment`] from the scene (§8).
     scene: Scene,
+    /// Bytes uploaded to instance/vertex/index buffers by the last
+    /// [`upload`](Self::upload), summed over every pool (each pool's
+    /// [`last_upload_bytes`](InstancePool::last_upload_bytes)). Zero on a steady
+    /// frame that changed nothing. Read by [`frame_stats`](Self::frame_stats)
+    /// into `FrameStats::gpu_upload_bytes` (§61); a plain counter, no alloc.
+    gpu_upload_bytes: usize,
 }
 
 /// A reusable render-target texture in [`Renderer::offscreen_pool`].
@@ -345,6 +415,7 @@ impl Renderer {
             commands: Vec::with_capacity(8),
             passes: Vec::with_capacity(4),
             scene: Scene::new(),
+            gpu_upload_bytes: 0,
         }
     }
 
@@ -523,6 +594,16 @@ impl Renderer {
         self.mesh_vertex_pool
             .sync(backend, &self.mesh_vertex_scratch);
         self.mesh_index_pool.sync(backend, &self.mesh_index_scratch);
+
+        // Sum the bytes each pool actually handed to the backend this frame into
+        // the frame-scoped upload counter (§61). A steady frame that changed no
+        // slot uploaded nothing, so this is 0 — the same signal the steady-state
+        // bench uses to prove a local change stays a local upload (§9.1).
+        self.gpu_upload_bytes = self.quad_pool.last_upload_bytes()
+            + self.image_pool.last_upload_bytes()
+            + self.glyph_pool.last_upload_bytes()
+            + self.mesh_vertex_pool.last_upload_bytes()
+            + self.mesh_index_pool.last_upload_bytes();
     }
 
     /// Lower the retained scene to this frame's instance scratch + submission-
@@ -563,24 +644,15 @@ impl Renderer {
                     inst.rect_pos[1] -= origin[1];
                     let start = self.quad_scratch.len() as u32;
                     self.quad_scratch.push(inst);
-                    // Extend the current segment only if it is a quad run under
-                    // the same clip and target; otherwise open a new one.
-                    match self.segments.last_mut() {
-                        Some(seg)
-                            if seg.kind == SegmentKind::Quad
-                                && seg.clip == clip
-                                && seg.target == target =>
-                        {
-                            seg.count += 1;
-                        }
-                        _ => self.segments.push(Segment {
-                            kind: SegmentKind::Quad,
-                            start,
-                            count: 1,
-                            clip,
-                            target,
-                        }),
-                    }
+                    // Extend the current segment only if the planner says this
+                    // quad joins the previous draw; otherwise open a new one.
+                    self.merge_or_push(Segment {
+                        kind: SegmentKind::Quad,
+                        start,
+                        count: 1,
+                        clip,
+                        target,
+                    });
                 }
                 StoreRef::Image(id) => {
                     let e = self.scene.images.get(id).expect("image slot");
@@ -591,9 +663,9 @@ impl Renderer {
                     inst.rect_pos[1] -= origin[1];
                     let start = self.image_scratch.len() as u32;
                     self.image_scratch.push(inst);
-                    // Each image is its own draw (it binds a texture); never
-                    // merged with an adjacent image.
-                    self.segments.push(Segment {
+                    // Each image is its own draw (it binds a texture); the image
+                    // family is unmergeable, so this always opens a new segment.
+                    self.merge_or_push(Segment {
                         kind: SegmentKind::Image { bind_group },
                         start,
                         count: 1,
@@ -610,7 +682,7 @@ impl Renderer {
                     instance.rect_pos[1] -= origin[1];
                     let start = self.image_scratch.len() as u32;
                     self.image_scratch.push(instance);
-                    self.segments.push(Segment {
+                    self.merge_or_push(Segment {
                         kind: SegmentKind::Image { bind_group },
                         start,
                         count: 1,
@@ -630,8 +702,8 @@ impl Renderer {
                     }
                     let count = self.glyph_scratch.len() as u32 - start;
                     // A run is one instanced draw (it binds the atlas texture);
-                    // never merged with adjacent runs.
-                    self.segments.push(Segment {
+                    // the glyph family is unmergeable, so this opens a new segment.
+                    self.merge_or_push(Segment {
                         kind: SegmentKind::GlyphRun { bind_group },
                         start,
                         count,
@@ -683,6 +755,8 @@ impl Renderer {
             quad_instances: ingest.quad_instances,
             glyph_instances: ingest.glyph_instances,
             path_tessellations: ingest.path_tessellations,
+            batches: self.segments.len(),
+            gpu_upload_bytes: self.gpu_upload_bytes,
         }
     }
 
@@ -733,9 +807,27 @@ impl Renderer {
         self.mesh_pipeline
     }
 
+    /// Add `segment` to the batch list, merging it into the previous segment
+    /// when the planner says the two [`joins`], otherwise opening a new draw.
+    ///
+    /// This is the one merge site: the quad run in [`Self::lower_from_scene`],
+    /// the mesh run in [`Self::push_mesh_segment`], and the batch dump in
+    /// `inspect_primitives` all route their adjacency decision through the same
+    /// [`joins`] predicate over [`BatchItem`]s, so the emitted segment
+    /// boundaries can never drift from what introspection reports. A merge grows
+    /// the previous segment's `count` by the incoming one's; the two always
+    /// share a family buffer, so their geometry is already contiguous.
+    fn merge_or_push(&mut self, segment: Segment) {
+        let next = segment.batch_item();
+        match self.segments.last_mut() {
+            Some(prev) if joins(&prev.batch_item(), &next) => prev.count += segment.count,
+            _ => self.segments.push(segment),
+        }
+    }
+
     /// Push (or extend) a mesh segment covering `count` indices at `index_start`.
-    /// Adjacent meshes sharing the same clip and target merge into one indexed
-    /// draw.
+    /// Adjacent meshes sharing the same batch key and clip merge into one
+    /// indexed draw.
     fn push_mesh_segment(
         &mut self,
         index_start: u32,
@@ -746,20 +838,13 @@ impl Renderer {
         if count == 0 {
             return;
         }
-        match self.segments.last_mut() {
-            Some(seg)
-                if seg.kind == SegmentKind::Mesh && seg.clip == clip && seg.target == target =>
-            {
-                seg.count += count;
-            }
-            _ => self.segments.push(Segment {
-                kind: SegmentKind::Mesh,
-                start: index_start,
-                count,
-                clip,
-                target,
-            }),
-        }
+        self.merge_or_push(Segment {
+            kind: SegmentKind::Mesh,
+            start: index_start,
+            count,
+            clip,
+            target,
+        });
     }
 
     /// The active `(clip, target, origin)` from the top of the layer stack:
