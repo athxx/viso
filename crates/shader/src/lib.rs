@@ -21,10 +21,15 @@
 
 pub mod diag;
 pub mod ir;
+pub mod manifest;
 pub mod msl;
 pub mod reload;
 
 pub use diag::{Diagnostic, Severity};
+pub use manifest::{
+    ColorTargetClass, PipelineEntry, PipelineFamily, PipelineManifest, VariantKey,
+    standard_manifest,
+};
 pub use msl::{
     GLYPHRUN_MSL, IMAGE_MSL, MESH_MSL, PrimitiveKind, QUAD_MSL, glyphrun_schema, image_schema,
     instance_schema, mesh_schema, quad_schema, shader_source,

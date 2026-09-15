@@ -224,24 +224,24 @@ oracle tests already prove byte-equal to `emit_msl`). The §36.1 CPU↔GPU
       name + diagnostic surface moved).
 
 ### F2.3 — `PipelineManifest` (compile-time enumerated standard pipelines)
-- [ ] `shader/src/manifest.rs` (NEW): `PipelineManifest` — for each of the enumerated
+- [x] `shader/src/manifest.rs` (NEW): `PipelineManifest` — for each of the enumerated
       standard families, one `PipelineEntry { family: PipelineFamily, variant: VariantKey,
       msl: &'static str, schema: InstanceSchema, vertex_entry, fragment_entry }`. The
       `msl` is the frozen `emit_msl` output surfaced as `&'static str` (via the existing
       `msl.rs` `OnceLock` accessors — materialized once, not per first-use); the manifest
       is the single lookup the renderer consumes at device init.
-- [ ] `PipelineFamily` enum (§7.5): `SolidRect`, `AnalyticRRect`, `AnalyticEllipse`,
+- [x] `PipelineFamily` enum (§7.5): `SolidRect`, `AnalyticRRect`, `AnalyticEllipse`,
       `AnalyticLine`, `Image`, `Gradient`, `PathFill`, `PathStroke`, `MaskComposite`.
       Map the current four builtins (Quad/Image/GlyphRun/Mesh) onto families; families
       with no F2 builtin yet are declared but unpopulated (D-layer fills them).
-- [ ] `VariantKey` (§7.5 / §7.5-detail): packed integer over ONLY pipeline-changing dims —
+- [x] `VariantKey` (§7.5 / §7.5-detail): packed integer over ONLY pipeline-changing dims —
       {fixed-function state, resource layout, shader family, sample count, depth/stencil
       class}. Dynamic params (color/radius/opacity/gradient angle) are instance/uniform,
       never a variant. No uber-shader.
-- [ ] `shader/src/lib.rs`: re-export `PipelineManifest`/`PipelineFamily`/`VariantKey`/
+- [x] `shader/src/lib.rs`: re-export `PipelineManifest`/`PipelineFamily`/`VariantKey`/
       `PipelineEntry`; add `pub fn standard_manifest() -> &'static PipelineManifest`
       (`OnceLock`-built, the device-init prewarm source per the Impeller-like philosophy).
-- [ ] Gate green; oracle byte-equality intact (manifest `msl` == `testdata` oracles).
+- [x] Gate green; oracle byte-equality intact (manifest `msl` == `testdata` oracles).
 
 ### F2.4 — Renderer + backends consume the manifest; retire `shader_source` placeholder
 - [ ] `gpu/src/resource.rs`: remove `PipelineDesc.shader_source: &'static str`;
