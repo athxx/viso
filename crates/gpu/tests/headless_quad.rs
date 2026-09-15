@@ -109,7 +109,9 @@ fn draws_a_solid_rect_over_a_cleared_background() {
         )
         .expect("layout matches schema");
 
-    let frame = gpu.begin_frame(surface);
+    let frame = gpu
+        .begin_frame(surface)
+        .expect("headless acquire never fails");
     let cmd = DrawCommand {
         pipeline,
         bind_group: None,

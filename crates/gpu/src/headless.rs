@@ -357,16 +357,17 @@ impl GpuBackend for HeadlessRaster {
         s.color = vec![[0.0; 4]; (width * height) as usize];
     }
 
-    fn begin_frame(&mut self, surface: SurfaceId) -> Frame {
+    fn begin_frame(&mut self, surface: SurfaceId) -> Option<Frame> {
         // Reclaim slots retired in epochs the GPU has finished, then open the next
         // frame. A resource destroyed in epoch N is thus reclaimed no earlier than
-        // the begin_frame after N was presented — a genuine one-frame deferral.
+        // the begin_frame after N was presented — a genuine one-frame deferral. A
+        // CPU framebuffer is never out of date, so acquisition always succeeds.
         self.reclaim_completed();
         self.current_epoch = self.current_epoch.next();
-        Frame {
+        Some(Frame {
             surface,
             drawable: 0,
-        }
+        })
     }
 
     fn encode(&mut self, list: &DrawList<'_>) {
@@ -381,6 +382,17 @@ impl GpuBackend for HeadlessRaster {
         // finished the instant it is presented, so signal its epoch complete; the
         // next begin_frame will then reclaim anything retired in it.
         self.fence.signal(self.current_epoch);
+    }
+
+    fn device_lost(&mut self, _surface: SurfaceId) {
+        // No GPU, no drawable, no async completion: there is nothing to rebuild.
+        // The one obligation is the same as a real backend's — a frame that was
+        // opened but never presented must not leave the fence behind the current
+        // epoch, or parked slots would never reclaim. Signal the current epoch to
+        // complete any such in-flight frame, then drain so the stalled queue is
+        // freed here rather than waiting on a begin_frame that may never come.
+        self.fence.signal(self.current_epoch);
+        self.reclaim_completed();
     }
 
     fn caps(&self) -> &Caps {

@@ -143,16 +143,30 @@ production code.
 - [x] Gate green (Metal + headless) + golden/extended-bench.
 
 ### F1.4 — `device_lost()` + surface lifecycle (acquire/present/resize/DPI/out-of-date)
-- [ ] `gpu/src/backend.rs`: add a `device_lost()` recovery hook (§6.4) and the
-      acquire/present/resize/DPI/out-of-date surface paths.
-- [ ] `gpu/src/metal.rs`: handle nextDrawable failure / surface out-of-date / resize / DPI
-      change → rebuild surface-dependent resources; `headless.rs`: deterministic no-op /
-      resize path. (Device-loss recovery behavior informed by the makepad extraction.)
-- [ ] `gpu/tests/`: device-loss recovery rebuilds resources; resize/DPI path is correct.
-- [ ] Gate green (Metal + headless) + golden/bench.
+- [x] `gpu/src/backend.rs`: make `begin_frame` fallible — `fn begin_frame(&mut self, surface)
+      -> Option<Frame>`; `None` means the drawable is unavailable this frame (surface
+      out-of-date / drawable pool exhausted), so the caller skips and retries next frame. On a
+      failed acquire the epoch does NOT advance (no phantom in-flight frame stalls the fence).
+      Add `fn device_lost(&mut self, surface: SurfaceId)` (§6.4): drop any held drawable and
+      unblock the retire queue so a stalled fence cannot deadlock reclamation.
+- [x] `gpu/src/metal.rs`: `begin_frame` returns `None` when `nextDrawable` is nil (never park a
+      phantom epoch — the epoch advances only after a drawable is in hand); `configure_layer_geometry`
+      returns a "did change" bool and only re-sets `drawableSize`/`contentsScale` when the physical
+      size or scale actually differs (guard against redundant CATransaction / drawable-pool rebuild);
+      `resize_surface` drops the held drawable then reconfigures; `device_lost` drops the held
+      drawable and advances the fence to the current epoch so parked slots reclaim.
+- [x] `gpu/src/headless.rs`: `begin_frame` returns `Some(Frame)` always (a CPU framebuffer is
+      never out-of-date); `device_lost` signals the current epoch's fence and drains so a stalled
+      queue is freed. `resize_surface` reallocates the buffer.
+- [x] `render/src/renderer.rs`: `submit` handles `begin_frame` returning `None` — skip encode +
+      present for that frame (the retained scene is unchanged; the next frame redraws it).
+- [x] `gpu/tests/`: `device_lost` unblocks a stalled retire queue; a resize changes the surface
+      dimensions and reallocates without leaking the old drawable; the `Option<Frame>` call sites
+      updated across generation.rs + headless_quad.rs.
+- [x] Gate green (Metal + headless) + golden/bench.
 
 ### Freeze
-- [ ] FREEZE F1: the `GpuBackend` trait surface (incl. `destroy_*`/fence/epoch/`device_lost`)
+- [x] FREEZE F1: the `GpuBackend` trait surface (incl. `destroy_*`/fence/epoch/`device_lost`)
       + the generational `{index, generation}` handle scheme. F2 and F4 bind to these.
 
 ## F2 — Build-time compile → PipelineManifest + typed `GpuPod` ABI (`shader`, `macros`)
