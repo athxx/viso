@@ -169,8 +169,109 @@ production code.
 - [x] FREEZE F1: the `GpuBackend` trait surface (incl. `destroy_*`/fence/epoch/`device_lost`)
       + the generational `{index, generation}` handle scheme. F2 and F4 bind to these.
 
-## F2 — Build-time compile → PipelineManifest + typed `GpuPod` ABI (`shader`, `macros`)
-(expanded when F1 is frozen)
+## F2 — Compile-time pipeline manifest + typed `GpuPod` ABI (`shader`, `macros`, `gpu`)
+
+Goal: close §7.1 — the release standard draw path must never parse/compile shader
+source because a Button first appears. The IR→MSL codegen is already pure and
+byte-frozen (`emit_msl` == the `testdata` oracles); F2 lifts it out of the
+first-cold-registration path into a **compile-time `PipelineManifest`** whose backend
+artifacts (MSL for Metal, builtin tag for headless) are materialized once, not per
+first-use. No `build.rs` (a build script re-deriving frozen constants would double
+`gpu`'s objc2 compile for no gain — the manifest is a `const`/`OnceLock` value the
+oracle tests already prove byte-equal to `emit_msl`). The §36.1 CPU↔GPU
+`InstanceLayout`/`validate_attrs` cross-check stays, now run against manifest reflection.
+`shader` is the manifest home (owns IR+codegen, edge into `gpu`); `macros` owns the
+`GpuPod` derive; `gpu` retires the `PipelineDesc.shader_source` placeholder.
+
+### F2.1 — Scrub production makepad-source comments (no behavior change; byte-identical)
+- [x] `gpu/src/instance.rs`: removed the makepad references in the module doc and
+      in `validate_against`; kept the §-refs to Viso's own spec and the ABI rationale.
+- [x] `macros/src/gpu_instance.rs`: removed the makepad `DrawVars`/`DrawShaderInputs`
+      reference comments; derive logic unchanged.
+- [x] `macros/src/lib.rs`: removed the makepad `DrawVars` reference in the crate doc.
+- [x] `gpu/src/resource.rs`: scrubbed the "Phase 2" version-history comment;
+      reworded to describe the field neutrally (§32/§36.1).
+- [x] Gate green + golden byte-identical (comment-only edits).
+- Note: F2.1 scope is the shader/ABI subsystem (`gpu`, `macros`, `shader`) — now
+      clean. ~60 more makepad-keyword / "Phase N" version-history comments remain in
+      out-of-layer crates (`platform`/`render`/`text`/`runtime`/`dsl`/…); those are
+      each foundation layer's own scrub, not smuggled into an F2 commit (§40).
+
+### F2.2 — `GpuPod` ABI derive (§7.3) enforcing the full typed-layout contract
+- [ ] `macros/src/gpu_instance.rs` → rename the derive to `GpuPod` (the §7.3 name);
+      keep emitting the `unsafe impl viso_gpu::GpuInstance` + inherent `const LAYOUT`
+      + `fn validate_against`. `gpu` re-exports it as `GpuPod` (single derive, one
+      source of truth — no parallel `GpuInstance`/`GpuPod` split).
+- [ ] Enforce §7.3 at derive time (compile-fail, not runtime): reject non-`#[repr(C)]`;
+      reject any field type outside {f32,[f32;2|3|4],u32,[u32;2|4]} (already partial via
+      `attr_format()` — the whitelist already excludes bool/usize/isize/enum/pointer/
+      reference, so those are rejected by construction); require every field be `Copy`
+      (the whitelist is all `Copy`); no uninitialized padding (explicit `_pad`/`_padding`
+      `[u32;N]` fields are allowed and counted in the layout — never implicit tail padding,
+      which the §36.1 `StrideMismatch` check already catches at registration).
+- [ ] `gpu/src/lib.rs` + wherever the four instance structs live: apply `#[derive(GpuPod)]`
+      to `QuadInstance`/`ImageInstance`/`GlyphInstance`/`MeshVertex` (rename from
+      `GpuInstance` derive). Compile-time `size`/`align`/`offset` + backend binding layout
+      + reflection-compat all project from `const LAYOUT`.
+- [ ] `gpu/tests/` (trybuild): extend the compile-fail suite — `GpuPod` rejects a `bool`
+      field, a `usize` field, an enum field, a non-`#[repr(C)]` struct, and a pointer field.
+- [ ] Gate green + golden/bench byte-identical (layout const is unchanged; only the derive
+      name + rejection surface moved).
+
+### F2.3 — `PipelineManifest` (compile-time enumerated standard pipelines)
+- [ ] `shader/src/manifest.rs` (NEW): `PipelineManifest` — for each of the enumerated
+      standard families, one `PipelineEntry { family: PipelineFamily, variant: VariantKey,
+      msl: &'static str, schema: InstanceSchema, vertex_entry, fragment_entry }`. The
+      `msl` is the frozen `emit_msl` output surfaced as `&'static str` (via the existing
+      `msl.rs` `OnceLock` accessors — materialized once, not per first-use); the manifest
+      is the single lookup the renderer consumes at device init.
+- [ ] `PipelineFamily` enum (§7.5): `SolidRect`, `AnalyticRRect`, `AnalyticEllipse`,
+      `AnalyticLine`, `Image`, `Gradient`, `PathFill`, `PathStroke`, `MaskComposite`.
+      Map the current four builtins (Quad/Image/GlyphRun/Mesh) onto families; families
+      with no F2 builtin yet are declared but unpopulated (D-layer fills them).
+- [ ] `VariantKey` (§7.5 / §7.5-detail): packed integer over ONLY pipeline-changing dims —
+      {fixed-function state, resource layout, shader family, sample count, depth/stencil
+      class}. Dynamic params (color/radius/opacity/gradient angle) are instance/uniform,
+      never a variant. No uber-shader.
+- [ ] `shader/src/lib.rs`: re-export `PipelineManifest`/`PipelineFamily`/`VariantKey`/
+      `PipelineEntry`; add `pub fn standard_manifest() -> &'static PipelineManifest`
+      (`OnceLock`-built, the device-init prewarm source per the Impeller-like philosophy).
+- [ ] Gate green; oracle byte-equality intact (manifest `msl` == `testdata` oracles).
+
+### F2.4 — Renderer + backends consume the manifest; retire `shader_source` placeholder
+- [ ] `gpu/src/resource.rs`: remove `PipelineDesc.shader_source: &'static str`;
+      `PipelineDesc` carries the manifest artifact reference (family/variant + the
+      `&'static str` MSL borrowed from the manifest entry) instead of a raw per-call string.
+- [ ] `render/src/renderer.rs` (l.260-327): the four `create_pipeline` sites consume
+      `standard_manifest()` entries (family lookup) rather than `QUAD_MSL()`/`quad_schema()`
+      etc. directly; still pass `&QuadInstance::LAYOUT` for the §36.1 cross-check.
+- [ ] `gpu/src/metal.rs` (create_pipeline, l.382-440): `newLibraryWithSource` compiles the
+      manifest artifact's MSL — but this now runs only at device-init prewarm, never on the
+      first-Button draw path. Keep `layout.validate_against(&desc.instance_schema)?`.
+- [ ] `gpu/src/headless.rs`: unchanged builtin-tag path (never compiles MSL).
+- [ ] Update `PipelineDesc` test sites (`headless_quad.rs` ~l.96-106 with `shader_source:""`).
+- [ ] Gate green (Metal + headless) + golden/bench byte-identical.
+
+### F2.5 — Zero-copy typed upload (§7.4) + dev-mode manifest source wiring
+- [ ] Confirm/enforce the §7.4 path for the four instance stores: `&[GpuPod]` → typed byte
+      view (`bytemuck`-free `unsafe` cast behind the `GpuPod` `Copy`+no-padding guarantee,
+      one `SAFETY:` block) → `write_buffer` mapped range. Audit `renderer.rs` upload sites
+      for any `Vec<Instance>→Vec<f32>→Vec<u8>` chain and remove it if present.
+- [ ] Wire the existing `ShaderPipeline`/`CompiledShader` (`shader/src/reload.rs`) as the
+      **dev-mode** manifest source (Viso_Hot_Reload §19-21: shadow-compile candidate IR,
+      keep last-good on failure, swap at a safe frame boundary = F1 RetireQueue). Release
+      uses the compile-time manifest; dev uses the reload holder. No release hot-path tax
+      (§60 / Hot_Reload §1: no PatchBundle engine / dev transport in release).
+- [ ] `render/tests/` (NEW): **release-no-runtime-compile** — a first-Button paint through
+      the Metal path triggers zero `newLibraryWithSource` (instrument the backend with a
+      compile counter; assert it is 0 after device-init prewarm across the first frame).
+- [ ] Gate green + `metal_glyph.rs` green + §36.1 cross-check runs against manifest reflection.
+
+### Freeze
+- [ ] FREEZE F2: the `PipelineManifest` shape, `PipelineFamily`/`VariantKey`, and the
+      `GpuPod` ABI of the four instance structs (`QuadInstance`/`ImageInstance`/
+      `GlyphInstance`/`MeshVertex`). F3 (stores/instances) and F4 (instance pool/upload
+      ring/batch `BatchKey`) bind to these.
 
 ## F3 — Retained scene under frozen immediate-mode API (`render`)
 (expanded when F2 is frozen)

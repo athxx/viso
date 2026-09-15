@@ -2,8 +2,8 @@
 //!
 //! Hosts Viso's proc macros. Implemented so far:
 //! - [`macro@GpuInstance`] — derive an explicit, validated GPU instance layout
-//!   for a `#[repr(C)]` struct (§18, §32), replacing makepad's `DrawVars`
-//!   trailing-memory trick with named per-field offsets.
+//!   for a `#[repr(C)]` struct (§18, §32): named per-field offsets instead of an
+//!   implicit trailing-memory convention.
 //!
 //! Planned: `#[component]`, state/binding metadata, `.vs` schema, static
 //! template generation, compile-time diagnostics.

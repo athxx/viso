@@ -1,17 +1,17 @@
-//! Per-instance GPU vertex layout: the explicit descriptor that replaces
-//! makepad's implicit "everything after field X is GPU memory" `DrawVars` trick.
+//! Per-instance GPU vertex layout: the explicit descriptor for how a
+//! `#[repr(C)]` instance struct is read as GPU memory, rejecting any reliance on
+//! an implicit "everything after field X is GPU memory" convention (§18/§56).
 //!
-//! `#[derive(GpuInstance)]` (in `viso-macros`) emits a `const LAYOUT:
+//! `#[derive(GpuPod)]` (in `viso-macros`) emits a `const LAYOUT:
 //! InstanceLayout` for the annotated `#[repr(C)]` struct: one [`InstanceField`]
 //! per field, each carrying the field's real byte offset (via `offset_of!`) and
 //! its GPU attribute [`AttrFormat`]. A shader declares the layout it expects as
 //! an [`InstanceSchema`]; [`InstanceLayout::validate_against`] checks the two
 //! agree at pipeline-registration time.
 //!
-//! This mirrors makepad's `DrawShaderInputs` (`platform/src/draw_shader.rs`),
-//! but keyed on explicit byte offsets rather than reconstructed f32 "slots":
-//! our instance struct *is* the `#[repr(C)]` layout, so Rust already fixes the
-//! offsets and we only need to describe and cross-check them.
+//! The layout is keyed on explicit byte offsets rather than reconstructed f32
+//! "slots": the instance struct *is* the `#[repr(C)]` layout, so Rust already
+//! fixes the offsets and the derive only describes and cross-checks them.
 
 /// The GPU attribute format of one instance field.
 ///
@@ -177,9 +177,9 @@ impl InstanceLayout {
     /// padding, field reordering, or a wrong `repr` shifts any field — or leaves
     /// trailing padding in the stride — the two sides read different bytes for the
     /// same attribute; catching that here turns silent memory corruption into a
-    /// registration-time error (architecture section 30 / 53). Makepad has no such
-    /// explicit cross-check; it relies on both sides happening to apply the same
-    /// packing rule.
+    /// registration-time error (architecture section 30 / 53). The explicit
+    /// cross-check is the point: correctness never rests on both sides happening
+    /// to apply the same packing rule.
     pub fn validate_against(&self, schema: &InstanceSchema) -> Result<(), LayoutError> {
         self.validate_attrs(schema.attributes)
     }

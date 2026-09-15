@@ -132,9 +132,9 @@ pub enum BuiltinShader {
 
 /// Descriptor for a render pipeline ([`crate::GpuBackend::create_pipeline`]).
 ///
-/// The shader source is a hand-written MSL string (Phase 2); `instance_schema`
+/// `shader_source` is the backend shader text (MSL on Metal); `instance_schema`
 /// is the layout the shader's vertex-input struct declares, validated against
-/// the `#[derive(GpuInstance)]` layout of the instance type at registration.
+/// the derived instance layout of the instance type at registration (§32/§36.1).
 #[derive(Debug, Clone, Copy)]
 pub struct PipelineDesc {
     /// Debug label.

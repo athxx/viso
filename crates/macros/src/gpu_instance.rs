@@ -9,13 +9,11 @@
 //! 3. An inherent `fn validate_against(schema) -> Result<(), LayoutError>`
 //!    forwarding to `LAYOUT.validate_against(schema)`.
 //!
-//! This is the explicit replacement for makepad's `DrawVars` trailing-memory
-//! `from_raw_parts` trick (`draw_vars.rs:192`): rather than reinterpreting "all
-//! bytes after field X" as instance data, we name each field and record its
-//! offset, then cross-check against the shader's declared schema at pipeline
-//! registration (§32). Modeled on makepad's `DrawShaderInputs`
-//! (`platform/src/draw_shader.rs`), but keyed on byte offsets since our instance
-//! struct *is* the `#[repr(C)]` layout.
+//! This is the explicit alternative to reinterpreting "all bytes after field X"
+//! as instance data (§18/§56): every field is named and its offset recorded,
+//! then cross-checked against the shader's declared schema at pipeline
+//! registration (§32). It is keyed on byte offsets since the instance struct
+//! *is* the `#[repr(C)]` layout.
 //!
 //! Field types are restricted to 4-byte-aligned GPU scalars/vectors:
 //! `f32`, `[f32; 2|3|4]`, `u32`, `[u32; 2|4]`. Anything else is a compile error
