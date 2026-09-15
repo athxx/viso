@@ -15,7 +15,7 @@
 //!   rects to NDC. (Headless ignores uniforms; it works in pixel space.)
 //! - Every frame's acquire/encode/present runs inside an `autoreleasepool` so the
 //!   per-frame Metal autoreleased objects (drawable, command buffer, encoder) are
-//!   drained each frame rather than piling up (Phase 1 lesson).
+//!   drained each frame rather than piling up.
 //!
 //! Blend is premultiplied source-over (`src One`, `dst OneMinusSourceAlpha`,
 //! op `Add`), matching the headless raster.
@@ -48,6 +48,7 @@ use crate::resource::{
     AddressMode, BindGroupDesc, Binding, BlendMode, BufferDesc, BuiltinShader, Caps, FilterMode,
     PipelineDesc, SamplerDesc, TextureDesc, TextureFormat,
 };
+use crate::slots::SlotMap;
 use crate::{BindGroupId, BufferId, PipelineId, SamplerId, SurfaceId, TextureId};
 
 /// A GPU buffer: a `StorageModeShared` `MTLBuffer` whose `contents()` we memcpy
@@ -102,12 +103,12 @@ struct MetalSurface {
 pub struct MetalBackend {
     device: Retained<ProtocolObject<dyn MTLDevice>>,
     queue: Retained<ProtocolObject<dyn MTLCommandQueue>>,
-    buffers: Vec<MetalBuffer>,
-    textures: Vec<MetalTexture>,
-    samplers: Vec<MetalSampler>,
-    bind_groups: Vec<MetalBindGroup>,
-    pipelines: Vec<MetalPipeline>,
-    surfaces: Vec<MetalSurface>,
+    buffers: SlotMap<MetalBuffer>,
+    textures: SlotMap<MetalTexture>,
+    samplers: SlotMap<MetalSampler>,
+    bind_groups: SlotMap<MetalBindGroup>,
+    pipelines: SlotMap<MetalPipeline>,
+    surfaces: SlotMap<MetalSurface>,
     caps: Caps,
 }
 
@@ -132,17 +133,67 @@ impl MetalBackend {
         Self {
             device,
             queue,
-            buffers: Vec::new(),
-            textures: Vec::new(),
-            samplers: Vec::new(),
-            bind_groups: Vec::new(),
-            pipelines: Vec::new(),
-            surfaces: Vec::new(),
+            buffers: SlotMap::new(),
+            textures: SlotMap::new(),
+            samplers: SlotMap::new(),
+            bind_groups: SlotMap::new(),
+            pipelines: SlotMap::new(),
+            surfaces: SlotMap::new(),
             caps: Caps {
                 max_texture_size,
                 presents_to_display: true,
             },
         }
+    }
+
+    /// Resolve a buffer handle, panicking on a stale/unknown one (an internal
+    /// invariant break — a live handle always resolves in this backend).
+    fn buffer(&self, id: BufferId) -> &MetalBuffer {
+        self.buffers
+            .get(id.into())
+            .expect("buffer handle does not resolve")
+    }
+
+    /// Resolve a texture handle (see [`buffer`](Self::buffer) for the panic).
+    fn texture(&self, id: TextureId) -> &MetalTexture {
+        self.textures
+            .get(id.into())
+            .expect("texture handle does not resolve")
+    }
+
+    /// Resolve a sampler handle (see [`buffer`](Self::buffer)).
+    fn sampler(&self, id: SamplerId) -> &MetalSampler {
+        self.samplers
+            .get(id.into())
+            .expect("sampler handle does not resolve")
+    }
+
+    /// Resolve a pipeline handle (see [`buffer`](Self::buffer)).
+    fn pipeline(&self, id: PipelineId) -> &MetalPipeline {
+        self.pipelines
+            .get(id.into())
+            .expect("pipeline handle does not resolve")
+    }
+
+    /// Resolve a bind-group handle (see [`buffer`](Self::buffer)).
+    fn bind_group(&self, id: BindGroupId) -> &MetalBindGroup {
+        self.bind_groups
+            .get(id.into())
+            .expect("bind group handle does not resolve")
+    }
+
+    /// Resolve a surface handle for shared access (see [`buffer`](Self::buffer)).
+    fn surface(&self, id: SurfaceId) -> &MetalSurface {
+        self.surfaces
+            .get(id.into())
+            .expect("surface handle does not resolve")
+    }
+
+    /// Resolve a surface handle for mutation (see [`buffer`](Self::buffer)).
+    fn surface_mut(&mut self, id: SurfaceId) -> &mut MetalSurface {
+        self.surfaces
+            .get_mut(id.into())
+            .expect("surface handle does not resolve")
     }
 }
 
@@ -191,9 +242,7 @@ impl GpuBackend for MetalBackend {
             .device
             .newBufferWithLength_options(len, MTLResourceOptions::StorageModeShared)
             .expect("failed to allocate a Metal buffer");
-        let id = BufferId::new(self.buffers.len() as u32);
-        self.buffers.push(MetalBuffer { buffer, len });
-        id
+        self.buffers.insert(MetalBuffer { buffer, len }).into()
     }
 
     fn create_texture(&mut self, desc: &TextureDesc) -> TextureId {
@@ -220,12 +269,12 @@ impl GpuBackend for MetalBackend {
             .device
             .newTextureWithDescriptor(&td)
             .expect("failed to create a Metal texture");
-        let id = TextureId::new(self.textures.len() as u32);
-        self.textures.push(MetalTexture {
-            texture,
-            format: desc.format,
-        });
-        id
+        self.textures
+            .insert(MetalTexture {
+                texture,
+                format: desc.format,
+            })
+            .into()
     }
 
     fn create_sampler(&mut self, desc: &SamplerDesc) -> SamplerId {
@@ -247,9 +296,7 @@ impl GpuBackend for MetalBackend {
             .device
             .newSamplerStateWithDescriptor(&sd)
             .expect("failed to create a Metal sampler state");
-        let id = SamplerId::new(self.samplers.len() as u32);
-        self.samplers.push(MetalSampler { state });
-        id
+        self.samplers.insert(MetalSampler { state }).into()
     }
 
     fn create_pipeline(
@@ -257,7 +304,7 @@ impl GpuBackend for MetalBackend {
         desc: &PipelineDesc,
         layout: &InstanceLayout,
     ) -> Result<PipelineId, crate::instance::LayoutError> {
-        // Registration-time layout check (§32), identical to the headless path.
+        // Registration-time layout check, identical to the headless path.
         layout.validate_against(&desc.instance_schema)?;
 
         let source = NSString::from_str(desc.shader_source);
@@ -303,24 +350,25 @@ impl GpuBackend for MetalBackend {
             .newRenderPipelineStateWithDescriptor_error(&pd)
             .expect("failed to create Metal render pipeline state");
 
-        let id = PipelineId::new(self.pipelines.len() as u32);
-        self.pipelines.push(MetalPipeline {
-            state,
-            builtin: desc.builtin,
-        });
-        Ok(id)
+        Ok(self
+            .pipelines
+            .insert(MetalPipeline {
+                state,
+                builtin: desc.builtin,
+            })
+            .into())
     }
 
     fn create_bind_group(&mut self, desc: &BindGroupDesc) -> BindGroupId {
-        let id = BindGroupId::new(self.bind_groups.len() as u32);
-        self.bind_groups.push(MetalBindGroup {
-            bindings: desc.bindings.clone(),
-        });
-        id
+        self.bind_groups
+            .insert(MetalBindGroup {
+                bindings: desc.bindings.clone(),
+            })
+            .into()
     }
 
     fn write_buffer(&mut self, id: BufferId, offset: usize, bytes: &[u8]) {
-        let buf = &self.buffers[id.index as usize];
+        let buf = self.buffer(id);
         assert!(
             offset + bytes.len() <= buf.len,
             "write_buffer out of range: {} + {} > {}",
@@ -337,7 +385,7 @@ impl GpuBackend for MetalBackend {
     }
 
     fn write_texture(&mut self, id: TextureId, x: u32, y: u32, w: u32, h: u32, bytes: &[u8]) {
-        let tex = &self.textures[id.index as usize];
+        let tex = self.texture(id);
         let bytes_per_row = w as usize * tex.format.bytes_per_texel();
         assert!(
             bytes.len() >= bytes_per_row * h as usize,
@@ -397,20 +445,20 @@ impl GpuBackend for MetalBackend {
             configure_layer_geometry(&layer, view, width, height);
         }
 
-        let id = SurfaceId::new(self.surfaces.len() as u32);
-        self.surfaces.push(MetalSurface {
-            layer,
-            view: ns_view,
-            width,
-            height,
-            format: TextureFormat::Bgra8Unorm,
-            current: None,
-        });
-        id
+        self.surfaces
+            .insert(MetalSurface {
+                layer,
+                view: ns_view,
+                width,
+                height,
+                format: TextureFormat::Bgra8Unorm,
+                current: None,
+            })
+            .into()
     }
 
     fn resize_surface(&mut self, id: SurfaceId, width: u32, height: u32) {
-        let s = &mut self.surfaces[id.index as usize];
+        let s = self.surface_mut(id);
         s.width = width;
         s.height = height;
         // SAFETY: the originating platform window outlives its GPU surface.
@@ -423,7 +471,7 @@ impl GpuBackend for MetalBackend {
     }
 
     fn begin_frame(&mut self, surface: SurfaceId) -> Frame {
-        let s = &mut self.surfaces[surface.index as usize];
+        let s = self.surface_mut(surface);
         // Acquire the next drawable; hold it for encode + present.
         let drawable = s.layer.nextDrawable();
         s.current = drawable;
@@ -442,7 +490,7 @@ impl GpuBackend for MetalBackend {
     }
 
     fn present(&mut self, frame: Frame) {
-        let s = &mut self.surfaces[frame.surface.index as usize];
+        let s = self.surface_mut(frame.surface);
         if let Some(drawable) = s.current.take() {
             autoreleasepool(|_| {
                 let cmd = self
@@ -460,7 +508,7 @@ impl GpuBackend for MetalBackend {
     }
 
     fn surface_format(&self, surface: SurfaceId) -> TextureFormat {
-        self.surfaces[surface.index as usize].format
+        self.surface(surface).format
     }
 }
 
@@ -476,7 +524,7 @@ impl MetalBackend {
     /// same queue) has completed before `getBytes` copies out of the
     /// shared-storage texture.
     pub fn read_texture(&self, id: TextureId) -> Vec<u8> {
-        let tex = &self.textures[id.index as usize];
+        let tex = self.texture(id);
         let w = tex.texture.width();
         let h = tex.texture.height();
         let bpr = w * tex.format.bytes_per_texel();
@@ -520,14 +568,14 @@ impl MetalBackend {
         // ready after `begin_frame`; bail if the surface has none yet.
         let (color_tex, width, height) = match pass.target {
             RenderTarget::Surface(frame) => {
-                let s = &self.surfaces[frame.surface.index as usize];
+                let s = self.surface(frame.surface);
                 match &s.current {
                     Some(d) => (d.texture(), s.width, s.height),
                     None => return,
                 }
             }
             RenderTarget::Texture(id) => {
-                let tex = self.textures[id.index as usize].texture.clone();
+                let tex = self.texture(id).texture.clone();
                 let (w, h) = (tex.width() as u32, tex.height() as u32);
                 (tex, w, h)
             }
@@ -609,29 +657,27 @@ impl MetalBackend {
             height: sh as usize,
         });
 
-        let pipeline = &self.pipelines[c.pipeline.index as usize];
-        encoder.setRenderPipelineState(&pipeline.state);
+        encoder.setRenderPipelineState(&self.pipeline(c.pipeline).state);
 
         // Bind the fragment texture @0 and sampler @0 from the bind group, if
         // any (image/glyph draws). The MSL declares `texture(0)`/`sampler(0)`.
         if let Some(bg) = c.bind_group {
-            let group = &self.bind_groups[bg.index as usize];
-            for binding in &group.bindings {
+            for binding in &self.bind_group(bg).bindings {
                 match binding {
                     Binding::Texture(tid) => {
-                        let t = &self.textures[tid.index as usize];
+                        let t = self.texture(*tid);
                         unsafe {
                             encoder.setFragmentTexture_atIndex(Some(&t.texture), 0);
                         }
                     }
                     Binding::Sampler(sid) => {
-                        let s = &self.samplers[sid.index as usize];
+                        let s = self.sampler(*sid);
                         unsafe {
                             encoder.setFragmentSamplerState_atIndex(Some(&s.state), 0);
                         }
                     }
-                    // Uniform buffers in a bind group are not used by the Phase 2
-                    // built-ins (uniforms are inline); ignore for now.
+                    // Uniform buffers in a bind group carry no data for the
+                    // inline-uniform built-ins; ignore.
                     Binding::Uniform(_) => {}
                 }
             }
@@ -654,7 +700,7 @@ impl MetalBackend {
 
                 // Per-instance data at buffer index 1 (both stages), offset into
                 // the persistent instance buffer.
-                let inst = &self.buffers[c.instance_buffer.index as usize];
+                let inst = self.buffer(c.instance_buffer);
                 // SAFETY: the offset is within the allocated buffer (renderer
                 // guarantees `instance_offset + count*stride <= len`); index 1
                 // matches the MSL.
@@ -705,7 +751,7 @@ impl MetalBackend {
 
                 // Real per-vertex geometry at vertex buffer index 0; the MSL
                 // reads `verts[vertex_id]` from `[[buffer(0)]]`.
-                let vtx = &self.buffers[vertex_buffer.index as usize];
+                let vtx = self.buffer(vertex_buffer);
                 // SAFETY: buffer id is valid; index 0 matches the mesh MSL.
                 unsafe {
                     encoder.setVertexBuffer_offset_atIndex(Some(&vtx.buffer), 0, 0);
@@ -713,7 +759,7 @@ impl MetalBackend {
 
                 // One indexed triangle-list draw over this segment's index range.
                 // `indexBufferOffset` is in bytes; each index is a `u32`.
-                let idx = &self.buffers[index_buffer.index as usize];
+                let idx = self.buffer(index_buffer);
                 let byte_offset = index_offset as usize * core::mem::size_of::<u32>();
                 // SAFETY: `index_offset + index_count` u32 indices fit within the
                 // index buffer (renderer guarantees the buffer size); UInt32

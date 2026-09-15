@@ -107,16 +107,16 @@ production code.
 - [x] Gate green + golden/bench **byte-identical** (pure shape change, generation always 0).
 
 ### F1.2 — `SlotMap<T>` behind storage (still append-only; green)
-- [ ] `gpu/src/slots.rs` (NEW): generic `SlotMap<T>` — dense value storage + per-slot
+- [x] `gpu/src/slots.rs` (NEW): generic `SlotMap<T>` — dense value storage + per-slot
       generation + free-list. `insert(T) -> {index, generation}`, `get(id) -> Option<&T>` /
       `get_mut` (generation mismatch → None, no stale hit), `remove(id) -> Option<T>`.
       F1.2 uses only `insert`/`get` (append-only, free-list unused yet).
-- [ ] `gpu/src/headless.rs` + `metal.rs`: replace each append-only `Vec<T>` resource store
+- [x] `gpu/src/headless.rs` + `metal.rs`: replace each append-only `Vec<T>` resource store
       with `SlotMap<T>`; `create_*` returns the real `{index, generation}` from `insert`;
       lookups go through `get(id)`. Handles now carry a real generation (no longer always 0).
-- [ ] `gpu/tests/generation.rs` (NEW): a `SlotMap` returns distinct generations after
+- [x] `gpu/tests/generation.rs` (NEW): a `SlotMap` returns distinct generations after
       reuse; a stale handle resolves to `None`, never a wrong object.
-- [ ] Gate green + golden/bench byte-identical (allocation shape unchanged: still one
+- [x] Gate green + golden/bench byte-identical (allocation shape unchanged: still one
       insert per create, no per-frame growth).
 
 ### F1.3 — `destroy_*` + `RetireQueue` + fence/epoch (deferred reclamation)
