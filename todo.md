@@ -513,24 +513,34 @@ contiguous compatible runs within paint order without a global z coupling.
 - [x] Gate green + golden byte-identical (same instance bytes reach the GPU, now via the
       persistent shadow-diffed pools).
 
-### F4.3 — Frame upload ring (transient uploads recycled by F1 fence/epoch)
-- [ ] `render/src/pool/upload_ring.rs` (NEW): a ring of transient upload buffers for
-      per-frame data that is not slot-persistent (glyph runs, composites, mesh
-      vertex/index streams) (§9.2). Buffers are claimed per frame and returned to the
-      ring; reuse is gated by F1's `Fence`/`Epoch` — a buffer is reclaimable only once
-      its epoch `<= fence.completed()` (`gpu/src/retire.rs`), so an in-flight buffer is
-      never overwritten. No realloc-per-frame: the ring pre-sizes N deep and rotates.
-- [ ] Persistent-map / bump-write / aligned typed-write are permitted but
-      MODULE-ENCAPSULATED in `upload_ring.rs` with `SAFETY:` comments — nothing outside
-      touches the raw pointer (§9.2, §27). The typed `&[GpuPod]` → byte view path from
-      F2 is reused; no `Vec<Instance>→Vec<f32>→Vec<u8>` chain (§7.4).
-- [ ] Wire the mesh/glyph/composite streams through the ring; retire returned buffers
-      into the F1 `RetireQueue` and drain on `begin_frame`'s fence advance.
-- [ ] `render/tests/upload_ring.rs` (NEW): a buffer whose epoch is still in flight is
-      NOT reused (fence gate holds); once the fence signals, the ring reclaims it; two
-      warmed frames rotate through the same ring buffers with zero new allocation.
-- [ ] Gate green + golden byte-identical + steady-state bench: `buffer_count` flat,
-      retire queue bounded and draining.
+### F4.3 — Fence-recycle correctness (the transient path has no consumer; the pool is it)
+The original plan carried a Frame Upload Ring (§9.2) for "transient" per-frame uploads.
+Investigating the post-F4.2 architecture shows there is NO transient buffer-upload path
+to serve: the ONLY `write_buffer` consumer in `render` is now the persistent
+`InstancePool` (all five streams — quad/image/glyph instances + mesh vertex/index — go
+through shadow-diffed pools that upload ZERO on an unchanged frame, strictly better than
+a ring that re-uploads every frame). Uniforms ride inline by value in `DrawCommand`
+(`InlineUniforms`, no device buffer, no `write_buffer`); offscreen layers reuse a texture
+pool, not a buffer. A ring would be dead code with no producer. So F4.3 is collapsed to
+verifying the fence-recycle contract the pool already relies on — the performance- and
+safety-relevant behavior §9.2 actually cares about — rather than building an unused ring.
+- [x] No `pool/upload_ring.rs`: the persistent pools + inline uniforms + texture pool
+      already satisfy §9.2's intent (no per-frame buffer realloc; fence-safe reclaim of
+      the only buffers that ever churn — a pool's old buffer on grow). Nothing to wire.
+- [x] `render/tests/fence_recycle.rs` (NEW): drives `InstancePool` grow against a real
+      `HeadlessRaster` across `begin_frame`/`present` cycles and proves the F1 fence gate
+      through the backend's observable surface (`retired_count`, `buffer_count`):
+      growing retires the old buffer into the `RetireQueue` (parked, `retired_count` +1)
+      but does NOT free it in the frame it was retired in (in-flight — the fence has not
+      reached that epoch); the next `begin_frame` after that frame is presented reclaims
+      it exactly once (`retired_count` back to 0), never earlier (no premature free) and
+      never left parked (no leak); `buffer_count` (cumulative creates) is unaffected by
+      reclamation; several grows in one frame all reclaim together one frame later; a
+      steady frame parks nothing; and device loss drains a stalled queue rather than
+      leaking it. The `gpu_pod_bytes` §9.2 `SAFETY` encapsulation stays confined to the
+      pool module (untouched by this step).
+- [x] Gate green + golden byte-identical (no production code change — pure test +
+      todo rescope) + steady-state bench: `buffer_count` flat, retire queue drains.
 
 ### F4.4 — Dirty range coalescer (few `write_buffer` ranges, not many micro-copies)
 - [ ] `render/src/pool/coalescer.rs` (NEW): merge adjacent/nearby dirty instance slots
