@@ -212,7 +212,7 @@ pub trait GpuBackend {
 
     /// Create a render pipeline. `layout` is the `#[derive(GpuInstance)]` layout
     /// of the instance type; it is validated against `desc.instance_schema`
-    /// before the pipeline is built (registration-time layout check, §32).
+    /// before the pipeline is built (registration-time layout check).
     fn create_pipeline(
         &mut self,
         desc: &PipelineDesc,
@@ -221,6 +221,25 @@ pub trait GpuBackend {
 
     /// Create a bind group.
     fn create_bind_group(&mut self, desc: &BindGroupDesc) -> BindGroupId;
+
+    /// Retire a buffer for deferred destruction.
+    ///
+    /// The buffer may still be read by an in-flight frame, so its storage slot is
+    /// not freed immediately: it is parked against the current frame's epoch and
+    /// reclaimed only once the GPU has finished that epoch (see the epoch/fence
+    /// contract on [`begin_frame`](Self::begin_frame) / [`present`](Self::present)).
+    /// After reclamation `id` — and every copy of it — resolves to nothing, so a
+    /// use-after-destroy is a detectable miss, never a wrong-object hit. Retiring
+    /// an already-stale or unknown handle is a no-op.
+    fn destroy_buffer(&mut self, id: BufferId);
+    /// Retire a texture for deferred destruction (see [`destroy_buffer`](Self::destroy_buffer)).
+    fn destroy_texture(&mut self, id: TextureId);
+    /// Retire a sampler for deferred destruction (see [`destroy_buffer`](Self::destroy_buffer)).
+    fn destroy_sampler(&mut self, id: SamplerId);
+    /// Retire a pipeline for deferred destruction (see [`destroy_buffer`](Self::destroy_buffer)).
+    fn destroy_pipeline(&mut self, id: PipelineId);
+    /// Retire a bind group for deferred destruction (see [`destroy_buffer`](Self::destroy_buffer)).
+    fn destroy_bind_group(&mut self, id: BindGroupId);
 
     /// Overwrite a region of a buffer with CPU bytes (ring/persistent upload).
     fn write_buffer(&mut self, id: BufferId, offset: usize, bytes: &[u8]);
@@ -233,11 +252,22 @@ pub trait GpuBackend {
     /// Resize a surface's swapchain.
     fn resize_surface(&mut self, id: SurfaceId, width: u32, height: u32);
 
-    /// Acquire the next drawable for `surface`.
+    /// Acquire the next drawable for `surface`, opening a new frame.
+    ///
+    /// This advances the backend's monotonic frame epoch and, before doing so,
+    /// reclaims the storage slots of resources retired in epochs the GPU has
+    /// since finished — so a slot freed by [`destroy_buffer`](Self::destroy_buffer)
+    /// and friends becomes reusable exactly one safe in-flight window later, and
+    /// the retire queue drains as frames complete rather than growing without
+    /// bound.
     fn begin_frame(&mut self, surface: SurfaceId) -> Frame;
     /// Encode and submit a draw list.
     fn encode(&mut self, list: &DrawList<'_>);
-    /// Present a previously begun frame.
+    /// Present a previously begun frame, submitting it to the display.
+    ///
+    /// The presented frame carries the current epoch; when the GPU finishes it,
+    /// the backend's fence advances so the next [`begin_frame`](Self::begin_frame)
+    /// can reclaim anything that was awaiting this frame's completion.
     fn present(&mut self, frame: Frame);
 
     /// Static device capabilities.

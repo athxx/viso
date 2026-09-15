@@ -796,6 +796,7 @@ impl Renderer {
         }
         if count > self.quad_capacity {
             let new_cap = count.next_power_of_two();
+            backend.destroy_buffer(self.quad_buffer);
             self.quad_buffer = backend.create_buffer(&BufferDesc {
                 size: new_cap * QUAD_STRIDE,
                 usage: BufferUsage::INSTANCE | BufferUsage::CPU_WRITE,
@@ -814,6 +815,7 @@ impl Renderer {
         }
         if count > self.image_capacity {
             let new_cap = count.next_power_of_two();
+            backend.destroy_buffer(self.image_buffer);
             self.image_buffer = backend.create_buffer(&BufferDesc {
                 size: new_cap * IMAGE_STRIDE,
                 usage: BufferUsage::INSTANCE | BufferUsage::CPU_WRITE,
@@ -836,6 +838,7 @@ impl Renderer {
         }
         if count > self.glyph_capacity {
             let new_cap = count.next_power_of_two();
+            backend.destroy_buffer(self.glyph_buffer);
             self.glyph_buffer = backend.create_buffer(&BufferDesc {
                 size: new_cap * GLYPH_STRIDE,
                 usage: BufferUsage::INSTANCE | BufferUsage::CPU_WRITE,
@@ -859,6 +862,7 @@ impl Renderer {
         }
         if vcount > self.mesh_vertex_capacity {
             let new_cap = vcount.next_power_of_two();
+            backend.destroy_buffer(self.mesh_vertex_buffer);
             self.mesh_vertex_buffer = backend.create_buffer(&BufferDesc {
                 size: new_cap * MESH_VERTEX_STRIDE,
                 usage: BufferUsage::VERTEX | BufferUsage::CPU_WRITE,
@@ -868,6 +872,7 @@ impl Renderer {
         }
         if icount > self.mesh_index_capacity {
             let new_cap = icount.next_power_of_two();
+            backend.destroy_buffer(self.mesh_index_buffer);
             self.mesh_index_buffer = backend.create_buffer(&BufferDesc {
                 size: new_cap * MESH_INDEX_STRIDE,
                 usage: BufferUsage::INDEX | BufferUsage::CPU_WRITE,

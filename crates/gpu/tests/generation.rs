@@ -9,6 +9,7 @@
 //! surface here as `Some(<the new value>)` for the stale handle.
 
 use viso_gpu::slots::{RawId, SlotMap};
+use viso_gpu::{BufferDesc, BufferUsage, GpuBackend, HeadlessRaster, RawWindowHandle};
 
 /// Reusing a reclaimed slot bumps its generation, so successive occupants of
 /// one index are told apart by generation.
@@ -83,4 +84,154 @@ fn out_of_range_handle_resolves_to_none() {
         }),
         None
     );
+}
+
+// --- Deferred destruction, end-to-end through the backend --------------------
+//
+// The tests above pin the storage primitive; these pin the *reclamation timing*
+// the backend layers on top of it: a destroyed resource's slot is parked, not
+// freed, and becomes reusable only after the frame that could still be reading
+// it has completed. Driven entirely through the public `GpuBackend` API on the
+// headless backend (deterministic: a presented frame completes immediately, so
+// the fence trails the current epoch by exactly the one in-flight frame).
+
+fn buf() -> BufferDesc {
+    BufferDesc {
+        size: 64,
+        usage: BufferUsage::INSTANCE | BufferUsage::CPU_WRITE,
+        label: "generation-test",
+    }
+}
+
+/// A slot freed by `destroy_*` is not reclaimed the instant it is destroyed: it
+/// stays parked while its frame is in flight, so a buffer created in that window
+/// takes a fresh slot rather than the parked one. Only after the frame is
+/// presented and a later `begin_frame` drains the queue does the slot return to
+/// the free-list — and the next create reuses it, at a bumped generation.
+#[test]
+fn destroyed_slot_is_reclaimed_only_after_its_frame_completes() {
+    let mut gpu = HeadlessRaster::new();
+    let surface = gpu.create_surface(RawWindowHandle::Headless, 8, 8);
+
+    let first = gpu.create_buffer(&buf());
+
+    // Open a frame, then destroy `first` inside it: the slot is parked against
+    // this frame's epoch, not freed.
+    let frame = gpu.begin_frame(surface);
+    gpu.destroy_buffer(first);
+    assert_eq!(gpu.retired_count(), 1, "destroy parks the slot");
+
+    // A create *while the parked slot's frame is still in flight* cannot reuse
+    // it — the GPU might still be reading `first` this frame — so it appends.
+    let during = gpu.create_buffer(&buf());
+    assert_ne!(
+        during.index, first.index,
+        "a slot retired this frame must not be reused before the frame completes"
+    );
+
+    // Complete the frame. Now the parked slot's epoch is finished.
+    gpu.present(frame);
+
+    // The next frame drains the queue: `first`'s slot is freed (generation
+    // bumped) and returns to the free-list.
+    let _ = gpu.begin_frame(surface);
+    assert_eq!(
+        gpu.retired_count(),
+        0,
+        "the completed frame's slot is reclaimed"
+    );
+
+    // A create now reuses `first`'s slot — same index, higher generation.
+    let reused = gpu.create_buffer(&buf());
+    assert_eq!(
+        reused.index, first.index,
+        "the reclaimed slot returns to the free-list for reuse"
+    );
+    assert_ne!(
+        reused.generation, first.generation,
+        "reuse bumps the generation so the retired handle goes stale"
+    );
+
+    // The retired handle now aliases the reused slot's index but not its
+    // generation — a write through it is a detectable miss, never a wrong-object
+    // hit on `reused`'s buffer.
+    assert_eq!(first.index, reused.index);
+    assert_ne!(first, reused);
+}
+
+/// Repeatedly growing a buffer — destroy the old, create the new, every frame —
+/// keeps the retire queue bounded by the in-flight window (never growing without
+/// bound) and drains it to empty once frames stop. No slot is freed prematurely,
+/// so each create is a genuine new allocation and the cumulative count advances
+/// by exactly one per frame.
+#[test]
+fn repeated_growth_keeps_the_retire_queue_bounded() {
+    let mut gpu = HeadlessRaster::new();
+    let surface = gpu.create_surface(RawWindowHandle::Headless, 8, 8);
+
+    let mut current = gpu.create_buffer(&buf());
+    let baseline = gpu.buffer_count();
+
+    for frame_index in 0..64 {
+        let frame = gpu.begin_frame(surface);
+
+        // A growth: the old buffer is retired, a bigger one takes its place. The
+        // new buffer is live this frame; the old one is parked for reclamation.
+        gpu.destroy_buffer(current);
+        current = gpu.create_buffer(&buf());
+
+        // At most the one buffer retired this frame is parked: the previous
+        // frame's retire drained at this `begin_frame`.
+        assert!(
+            gpu.retired_count() <= 1,
+            "frame {frame_index}: retire queue grew past the in-flight window"
+        );
+
+        gpu.present(frame);
+
+        // Each frame is a genuine create — no slot was freed early to corrupt
+        // the count.
+        assert_eq!(
+            gpu.buffer_count(),
+            baseline + frame_index + 1,
+            "frame {frame_index}: buffer growth is a real allocation each frame"
+        );
+    }
+
+    // Draining frame: the last retire completes and the queue empties.
+    let frame = gpu.begin_frame(surface);
+    gpu.present(frame);
+    let _ = gpu.begin_frame(surface);
+    assert_eq!(
+        gpu.retired_count(),
+        0,
+        "the retire queue drains to empty once growth stops"
+    );
+
+    // The final buffer still resolves — the churn never touched the live slot.
+    gpu.write_buffer(current, 0, &[1u8; 64]);
+}
+
+/// Retiring a handle that is already stale or was never issued is a harmless
+/// no-op: it must not park a bogus entry that a later reclaim would use to free
+/// an unrelated live slot.
+#[test]
+fn destroying_a_stale_handle_is_a_no_op() {
+    let mut gpu = HeadlessRaster::new();
+    let surface = gpu.create_surface(RawWindowHandle::Headless, 8, 8);
+
+    let live = gpu.create_buffer(&buf());
+    let bogus = viso_gpu::BufferId {
+        index: 999,
+        generation: 7,
+    };
+
+    gpu.destroy_buffer(bogus);
+    assert_eq!(gpu.retired_count(), 0, "an unknown handle parks nothing");
+
+    // Cycle a frame; nothing was reclaimed, and the live buffer is untouched.
+    let frame = gpu.begin_frame(surface);
+    gpu.present(frame);
+    let _ = gpu.begin_frame(surface);
+    gpu.write_buffer(live, 0, &[2u8; 64]);
 }

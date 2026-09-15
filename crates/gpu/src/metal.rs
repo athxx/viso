@@ -22,7 +22,10 @@
 
 use core::ffi::c_void;
 use core::ptr::NonNull;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
+use block2::RcBlock;
 use objc2::msg_send;
 use objc2::rc::{Retained, autoreleasepool};
 use objc2::runtime::{AnyObject, ProtocolObject};
@@ -48,6 +51,7 @@ use crate::resource::{
     AddressMode, BindGroupDesc, Binding, BlendMode, BufferDesc, BuiltinShader, Caps, FilterMode,
     PipelineDesc, SamplerDesc, TextureDesc, TextureFormat,
 };
+use crate::retire::{Epoch, Fence, ResourceKind, RetireQueue, Retired};
 use crate::slots::SlotMap;
 use crate::{BindGroupId, BufferId, PipelineId, SamplerId, SurfaceId, TextureId};
 
@@ -110,6 +114,19 @@ pub struct MetalBackend {
     pipelines: SlotMap<MetalPipeline>,
     surfaces: SlotMap<MetalSurface>,
     caps: Caps,
+    /// Resources awaiting GPU completion before their storage slot is freed.
+    retire_queue: RetireQueue,
+    /// The epoch of the frame currently being built (the one a `destroy_*` call
+    /// parks against). Advanced by `begin_frame`.
+    current_epoch: Epoch,
+    /// Highest epoch the GPU has finished, shared with the command-buffer
+    /// completion handler. The handler runs on a background thread and raises
+    /// this via `fetch_max`; `begin_frame` reads it to build a [`Fence`] and
+    /// reclaim everything parked at or below it.
+    completed: Arc<AtomicU64>,
+    /// Reused across `begin_frame` calls to drain the retire queue without a
+    /// per-frame heap allocation.
+    reclaim_scratch: Vec<Retired>,
 }
 
 impl Default for MetalBackend {
@@ -143,6 +160,10 @@ impl MetalBackend {
                 max_texture_size,
                 presents_to_display: true,
             },
+            retire_queue: RetireQueue::new(),
+            current_epoch: Epoch::START,
+            completed: Arc::new(AtomicU64::new(0)),
+            reclaim_scratch: Vec::new(),
         }
     }
 
@@ -194,6 +215,44 @@ impl MetalBackend {
         self.surfaces
             .get_mut(id.into())
             .expect("surface handle does not resolve")
+    }
+
+    /// Number of resources parked in the retire queue awaiting GPU completion.
+    /// The queue drains as frames finish; a bounded value across steady-state
+    /// frames is the memory contract deferred destruction exists to keep.
+    pub fn retired_count(&self) -> usize {
+        self.retire_queue.len()
+    }
+
+    /// Free the storage slots of resources whose parking epoch the GPU has
+    /// finished. Reads the shared completion counter into a [`Fence`], drains
+    /// every entry at or below it, and removes each from its `SlotMap` — which
+    /// bumps the slot's generation so any surviving handle now resolves to
+    /// nothing rather than to whatever later reuses the slot.
+    fn reclaim_completed(&mut self) {
+        let fence = Fence::at(Epoch(self.completed.load(Ordering::Acquire)));
+        self.reclaim_scratch.clear();
+        self.retire_queue
+            .drain_completed(fence, &mut self.reclaim_scratch);
+        for entry in self.reclaim_scratch.drain(..) {
+            match entry.kind {
+                ResourceKind::Buffer => {
+                    self.buffers.remove(entry.id);
+                }
+                ResourceKind::Texture => {
+                    self.textures.remove(entry.id);
+                }
+                ResourceKind::Sampler => {
+                    self.samplers.remove(entry.id);
+                }
+                ResourceKind::Pipeline => {
+                    self.pipelines.remove(entry.id);
+                }
+                ResourceKind::BindGroup => {
+                    self.bind_groups.remove(entry.id);
+                }
+            }
+        }
     }
 }
 
@@ -367,6 +426,41 @@ impl GpuBackend for MetalBackend {
             .into()
     }
 
+    fn destroy_buffer(&mut self, id: BufferId) {
+        if self.buffers.get(id.into()).is_some() {
+            self.retire_queue
+                .retire(ResourceKind::Buffer, id.into(), self.current_epoch);
+        }
+    }
+
+    fn destroy_texture(&mut self, id: TextureId) {
+        if self.textures.get(id.into()).is_some() {
+            self.retire_queue
+                .retire(ResourceKind::Texture, id.into(), self.current_epoch);
+        }
+    }
+
+    fn destroy_sampler(&mut self, id: SamplerId) {
+        if self.samplers.get(id.into()).is_some() {
+            self.retire_queue
+                .retire(ResourceKind::Sampler, id.into(), self.current_epoch);
+        }
+    }
+
+    fn destroy_pipeline(&mut self, id: PipelineId) {
+        if self.pipelines.get(id.into()).is_some() {
+            self.retire_queue
+                .retire(ResourceKind::Pipeline, id.into(), self.current_epoch);
+        }
+    }
+
+    fn destroy_bind_group(&mut self, id: BindGroupId) {
+        if self.bind_groups.get(id.into()).is_some() {
+            self.retire_queue
+                .retire(ResourceKind::BindGroup, id.into(), self.current_epoch);
+        }
+    }
+
     fn write_buffer(&mut self, id: BufferId, offset: usize, bytes: &[u8]) {
         let buf = self.buffer(id);
         assert!(
@@ -471,6 +565,12 @@ impl GpuBackend for MetalBackend {
     }
 
     fn begin_frame(&mut self, surface: SurfaceId) -> Frame {
+        // Free slots parked by frames the GPU has since finished, then open the
+        // next epoch that this frame's work — and any `destroy_*` during it —
+        // will be stamped with.
+        self.reclaim_completed();
+        self.current_epoch = self.current_epoch.next();
+
         let s = self.surface_mut(surface);
         // Acquire the next drawable; hold it for encode + present.
         let drawable = s.layer.nextDrawable();
@@ -490,6 +590,8 @@ impl GpuBackend for MetalBackend {
     }
 
     fn present(&mut self, frame: Frame) {
+        let epoch = self.current_epoch.0;
+        let completed = Arc::clone(&self.completed);
         let s = self.surface_mut(frame.surface);
         if let Some(drawable) = s.current.take() {
             autoreleasepool(|_| {
@@ -497,6 +599,22 @@ impl GpuBackend for MetalBackend {
                     .queue
                     .commandBuffer()
                     .expect("failed to create a command buffer for present");
+                // Raise the shared completion counter to this frame's epoch when
+                // the GPU finishes it. The block runs on a Metal-owned background
+                // thread, so it may only touch the atomic — `fetch_max` keeps the
+                // counter monotonic under out-of-order handler invocation. The
+                // next `begin_frame` reads it to reclaim parked slots.
+                let handler =
+                    RcBlock::new(move |_cb: NonNull<ProtocolObject<dyn MTLCommandBuffer>>| {
+                        completed.fetch_max(epoch, Ordering::Release);
+                    });
+                // SAFETY: `handler` is a valid block matching `MTLCommandBufferHandler`
+                // (`Fn(NonNull<ProtocolObject<dyn MTLCommandBuffer>>)`); Metal copies
+                // it and invokes it at most once, after which the `RcBlock` here is
+                // dropped. It captures only an `Arc<AtomicU64>`, which is `Send`.
+                unsafe {
+                    cmd.addCompletedHandler(RcBlock::as_ptr(&handler));
+                }
                 cmd.presentDrawable(ProtocolObject::from_ref(&*drawable));
                 cmd.commit();
             });

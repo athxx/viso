@@ -1,5 +1,5 @@
 //! Steady-state renderer microbenchmarks and the hot-path allocation/dispatch
-//! invariant (§7.1, §17.4 — the last Phase 2 exit criterion).
+//! invariant (§7.1, §17.4).
 //!
 //! Two things are measured here, both through the public API (benches are an
 //! external crate and cannot touch `pub(crate)` internals, so we drive whole
@@ -193,6 +193,13 @@ fn assert_steady_state_is_allocation_free() {
             bind_groups,
             "frame {i}: a bind group was allocated for an unchanged scene \
              (per-texture bind groups must be cached)"
+        );
+        assert_eq!(
+            h.gpu.retired_count(),
+            0,
+            "frame {i}: a resource was retired for an unchanged scene \
+             (steady frames grow no buffer, so nothing is destroyed; and any \
+             earlier retire must have drained as its frame completed)"
         );
     }
 
