@@ -480,30 +480,38 @@ contiguous compatible runs within paint order without a global z coupling.
 - [x] Gate green + golden/bench byte-identical (arena is scratch plumbing, no output
       change yet).
 
-### F4.2 — Persistent instance pool (stable `PrimitiveId → InstanceSlot`)
-- [ ] `render/src/pool/instance_pool.rs` (NEW): a long-lived device instance buffer
-      (F1-allocated via `create_buffer`, UMA persistent on Metal) with a stable
-      `PrimitiveId → InstanceSlot` map (§9.1). A slot is a `{offset, len}` range in the
-      buffer; the map is a dense direct-index table keyed by `PrimitiveId.index` (not a
-      per-frame HashMap — §9.5, §45), living behind the cold structural path. One pool
-      per instance family that shares a pipeline/stride (quad / image / glyph / mesh),
-      each backed by one grow-only device buffer + a free-list of vacated slots.
-- [ ] Slot lifecycle: allocation on first sight of a `PrimitiveId`, in-place rewrite on
-      a `PaintRevision`/`TransformRevision` bump (marks the slot dirty for the
-      coalescer), release to the free-list on primitive removal. Buffer growth retires
-      the old device buffer through F1 `destroy_buffer` (deferred/epoch-reclaimed, not
-      leaked); the pool never rebuilds all slots for a local change.
-- [ ] Wire `lower_from_scene`: instead of clearing + refilling `quad_scratch` etc. from
-      the whole paint order each frame, drive the pool from the F3 revision planes —
-      unchanged primitives keep their slot bytes untouched; only dirty slots are
-      rewritten. Paint order (the `paint_order` spine) still governs draw sequencing;
-      the pool only owns *where* each primitive's instance bytes live persistently.
-- [ ] `render/tests/instance_pool.rs` (NEW): a stable `PrimitiveId` keeps the same
-      `InstanceSlot` across frames; a paint-only change to one primitive rewrites
-      exactly one slot's bytes and leaves every other slot byte-identical; removal frees
-      the slot and a later insert reuses it (post-retire).
-- [ ] Gate green + golden byte-identical (same instance bytes reach the GPU, now via
-      persistent slots).
+### F4.2 — Persistent instance pool (draw-order shadow diff)
+- [x] `render/src/pool/instance_pool.rs` (NEW): a long-lived, grow-only device buffer
+      (F1-allocated via `create_buffer`) per instance family that shares a pipeline and
+      stride (quad / image / glyph instance streams + the mesh vertex / index streams)
+      (§9.1). The pool keeps a CPU **shadow** of its device buffer's live prefix
+      (`shadow[i]` = the value in device slot `i`), created lazily on the first non-empty
+      frame. Slot `i` = draw-order element `i`: because F3's sole primitive producer
+      re-emits the whole tree in stable order every frame, an unchanged primitive keeps
+      its slot, so no separate `PrimitiveId → slot` map is needed. Element bound relaxed
+      to `Copy + PartialEq + 'static` POD (not the frozen `GpuPod`) so the `u32` index
+      stream — not an instance schema — is a valid element without extending the F2 ABI.
+- [x] `sync(backend, &lowered)` diffs the freshly lowered draw-order array against the
+      shadow element-by-element and uploads only the maximal runs of changed slots, one
+      `write_buffer` per run; returns the write count. Unchanged frame → 0 uploads;
+      one-slot repaint → 1 minimal upload; empty frame → shadow cleared, buffer retained.
+      Growth (instance count first exceeds capacity) rounds capacity to a power of two,
+      retires the old device buffer through F1 `destroy_buffer` (deferred/epoch-reclaimed,
+      not leaked), and forces one full upload. Alloc-free steady state (shadow reused).
+- [x] Wire the renderer (`renderer.rs`): five pools (quad / image / glyph instances,
+      mesh vertex, mesh index) replace the eager per-family buffer+capacity pairs.
+      `lower_from_scene` still lowers the whole paint order into reused scratch Vecs;
+      the upload step is now five `pool.sync(backend, &scratch)` calls. `command_for`
+      reads `pool.buffer()` for each segment's `instance_buffer`; draw-order contiguity
+      is preserved (`instance_offset = seg.start * STRIDE`, `index_offset = seg.start`).
+- [x] `render/tests/instance_pool.rs` (NEW): first non-empty `sync` creates the buffer
+      and uploads once; an identical frame uploads zero; a one-slot change uploads exactly
+      one run and leaves other slots untouched; separated changes split into two runs,
+      adjacent changes coalesce into one; an empty frame clears live slots without
+      destroying the buffer; exceeding capacity grows once (`buffer_count` +1, new buffer
+      identity, old retired) and re-syncs silently; the `u32` index stream diffs likewise.
+- [x] Gate green + golden byte-identical (same instance bytes reach the GPU, now via the
+      persistent shadow-diffed pools).
 
 ### F4.3 — Frame upload ring (transient uploads recycled by F1 fence/epoch)
 - [ ] `render/src/pool/upload_ring.rs` (NEW): a ring of transient upload buffers for
