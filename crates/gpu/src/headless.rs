@@ -37,6 +37,7 @@ use crate::resource::{
     BindGroupDesc, BufferDesc, BuiltinShader, Caps, PipelineDesc, SamplerDesc, TextureDesc,
     TextureFormat,
 };
+use crate::retire::{Epoch, Fence, ResourceKind, RetireQueue, Retired};
 use crate::slots::SlotMap;
 use crate::{BindGroupId, BufferId, PipelineId, SamplerId, SurfaceId, TextureId};
 
@@ -87,6 +88,15 @@ pub struct HeadlessRaster {
     bind_groups: SlotMap<HeadlessBindGroup>,
     surfaces: SlotMap<HeadlessSurface>,
     caps: Caps,
+    /// Resources awaiting reclamation, parked with the epoch they were retired in.
+    retire_queue: RetireQueue,
+    /// Highest epoch the GPU has finished. Headless completes each frame the moment
+    /// it is presented, so this trails `current_epoch` by exactly the in-flight frame.
+    fence: Fence,
+    /// The epoch of the frame currently being built. Advanced by `begin_frame`.
+    current_epoch: Epoch,
+    /// Scratch reused across `begin_frame` drains so reclamation allocates nothing.
+    reclaim_scratch: Vec<Retired>,
 }
 
 impl Default for HeadlessRaster {
@@ -109,6 +119,47 @@ impl HeadlessRaster {
                 max_texture_size: 16384,
                 presents_to_display: false,
             },
+            retire_queue: RetireQueue::new(),
+            fence: Fence::new(),
+            current_epoch: Epoch::START,
+            reclaim_scratch: Vec::new(),
+        }
+    }
+
+    /// The number of resources still parked awaiting reclamation.
+    ///
+    /// A steady-state frame that grows a buffer parks one slot and reclaims it a
+    /// frame later, so this stays bounded and drains to zero — the renderer bench
+    /// asserts the queue does not grow without bound.
+    pub fn retired_count(&self) -> usize {
+        self.retire_queue.len()
+    }
+
+    /// Reclaim every parked slot whose retire epoch the fence has now passed,
+    /// returning each freed slot to its store's free-list (which bumps the slot
+    /// generation, so the retired handle goes stale). Called from `begin_frame`.
+    fn reclaim_completed(&mut self) {
+        self.reclaim_scratch.clear();
+        self.retire_queue
+            .drain_completed(self.fence, &mut self.reclaim_scratch);
+        for entry in self.reclaim_scratch.drain(..) {
+            match entry.kind {
+                ResourceKind::Buffer => {
+                    self.buffers.remove(entry.id);
+                }
+                ResourceKind::Texture => {
+                    self.textures.remove(entry.id);
+                }
+                ResourceKind::Sampler => {
+                    self.samplers.remove(entry.id);
+                }
+                ResourceKind::Pipeline => {
+                    self.pipelines.remove(entry.id);
+                }
+                ResourceKind::BindGroup => {
+                    self.bind_groups.remove(entry.id);
+                }
+            }
         }
     }
 
@@ -225,6 +276,41 @@ impl GpuBackend for HeadlessRaster {
             .into()
     }
 
+    fn destroy_buffer(&mut self, id: BufferId) {
+        if self.buffers.get(id.into()).is_some() {
+            self.retire_queue
+                .retire(ResourceKind::Buffer, id.into(), self.current_epoch);
+        }
+    }
+
+    fn destroy_texture(&mut self, id: TextureId) {
+        if self.textures.get(id.into()).is_some() {
+            self.retire_queue
+                .retire(ResourceKind::Texture, id.into(), self.current_epoch);
+        }
+    }
+
+    fn destroy_sampler(&mut self, id: SamplerId) {
+        if self.samplers.get(id.into()).is_some() {
+            self.retire_queue
+                .retire(ResourceKind::Sampler, id.into(), self.current_epoch);
+        }
+    }
+
+    fn destroy_pipeline(&mut self, id: PipelineId) {
+        if self.pipelines.get(id.into()).is_some() {
+            self.retire_queue
+                .retire(ResourceKind::Pipeline, id.into(), self.current_epoch);
+        }
+    }
+
+    fn destroy_bind_group(&mut self, id: BindGroupId) {
+        if self.bind_groups.get(id.into()).is_some() {
+            self.retire_queue
+                .retire(ResourceKind::BindGroup, id.into(), self.current_epoch);
+        }
+    }
+
     fn write_buffer(&mut self, id: BufferId, offset: usize, bytes: &[u8]) {
         let buf = self
             .buffers
@@ -272,6 +358,11 @@ impl GpuBackend for HeadlessRaster {
     }
 
     fn begin_frame(&mut self, surface: SurfaceId) -> Frame {
+        // Reclaim slots retired in epochs the GPU has finished, then open the next
+        // frame. A resource destroyed in epoch N is thus reclaimed no earlier than
+        // the begin_frame after N was presented — a genuine one-frame deferral.
+        self.reclaim_completed();
+        self.current_epoch = self.current_epoch.next();
         Frame {
             surface,
             drawable: 0,
@@ -286,7 +377,10 @@ impl GpuBackend for HeadlessRaster {
 
     fn present(&mut self, _frame: Frame) {
         // No swapchain: the framebuffer already holds the final image, ready for
-        // `read_pixels_bgra8`.
+        // `read_pixels_bgra8`. With no asynchronous GPU, the presented frame is
+        // finished the instant it is presented, so signal its epoch complete; the
+        // next begin_frame will then reclaim anything retired in it.
+        self.fence.signal(self.current_epoch);
     }
 
     fn caps(&self) -> &Caps {

@@ -1180,6 +1180,7 @@ name = "viso-gpu"
 version = "0.0.0"
 dependencies = [
  "bitflags",
+ "block2",
  "objc2",
  "objc2-core-foundation",
  "objc2-foundation",

@@ -18,6 +18,7 @@ pub mod instance;
 #[cfg(target_os = "macos")]
 pub mod metal;
 pub mod resource;
+pub mod retire;
 pub mod slots;
 
 pub use backend::{

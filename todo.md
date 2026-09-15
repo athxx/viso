@@ -120,27 +120,27 @@ production code.
       insert per create, no per-frame growth).
 
 ### F1.3 — `destroy_*` + `RetireQueue` + fence/epoch (deferred reclamation)
-- [ ] `gpu/src/retire.rs` (NEW): `RetireQueue` + in-flight `Epoch`/`Fence` — a destroyed
+- [x] `gpu/src/retire.rs` (NEW): `RetireQueue` + in-flight `Epoch`/`Fence` — a destroyed
       slot is parked with the epoch it was retired in and reclaimed (slot freed for reuse,
       generation bumped) only once the GPU has finished that epoch. `begin_frame`/`present`
       advance the epoch and signal completion. (Fence/in-flight/retire behavior informed by
       the makepad Metal semantics extraction — behavior only.)
-- [ ] `gpu/src/backend.rs`: extend `GpuBackend` with
+- [x] `gpu/src/backend.rs`: extend `GpuBackend` with
       `destroy_buffer/texture/sampler/pipeline/bind_group`, an epoch/fence concept on
       `begin_frame`/`present`, and drive the `RetireQueue`. `create_*`/`write_*`/`encode`
       signatures unchanged.
-- [ ] `gpu/src/headless.rs` + `metal.rs`: implement `destroy_*` → retire; on epoch
+- [x] `gpu/src/headless.rs` + `metal.rs`: implement `destroy_*` → retire; on epoch
       completion, reclaim into the `SlotMap` free-list (generation bumped so old handles go
       stale). Metal: honor GPU completion via command-buffer completion / fence.
-- [ ] `render/src/renderer.rs`: buffer growth sites (799/817/839/862/871) `destroy_*` the
-      old buffer (→ retire) before creating the larger one, instead of leaking the old slot.
-- [ ] **Extend** `crates/render/benches/renderer_steady_state.rs` (never weakened):
+- [x] `render/src/renderer.rs`: buffer growth sites `destroy_*` the old buffer (→ retire)
+      before creating the larger one, instead of leaking the old slot.
+- [x] **Extend** `crates/render/benches/renderer_steady_state.rs` (never weakened):
       `buffer_count()` stays flat across warmed frames **and** the retire queue drains to
       empty (no unbounded growth of parked slots).
-- [ ] `gpu/tests/generation.rs`: destroyed slot is reused only after its epoch completes;
+- [x] `gpu/tests/generation.rs`: destroyed slot is reused only after its epoch completes;
       pre-fence reuse is impossible; buffer growth reclaims the old slot without premature
       free.
-- [ ] Gate green (Metal + headless) + golden/extended-bench.
+- [x] Gate green (Metal + headless) + golden/extended-bench.
 
 ### F1.4 — `device_lost()` + surface lifecycle (acquire/present/resize/DPI/out-of-date)
 - [ ] `gpu/src/backend.rs`: add a `device_lost()` recovery hook (§6.4) and the
