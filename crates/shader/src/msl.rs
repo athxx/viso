@@ -17,7 +17,7 @@
 //!
 //! ## Derivation is a one-time cold cost, exposed as `&'static`
 //!
-//! `PipelineDesc::shader_source` is `&'static str` and `InstanceSchema` borrows
+//! `PipelineDesc::msl` is `&'static str` and `InstanceSchema` borrows
 //! its attributes for `'static`, but the IR-derived MSL string and schema
 //! attribute vector are computed at run time. Each accessor caches its result in a
 //! function-local `static OnceLock`, so the first call (pipeline registration, a

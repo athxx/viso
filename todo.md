@@ -258,19 +258,19 @@ oracle tests already prove byte-equal to `emit_msl`). The §36.1 CPU↔GPU
 - [x] Gate green (Metal + headless) + golden/bench byte-identical.
 
 ### F2.5 — Zero-copy typed upload (§7.4) + dev-mode manifest source wiring
-- [ ] Confirm/enforce the §7.4 path for the four instance stores: `&[GpuPod]` → typed byte
+- [x] Confirm/enforce the §7.4 path for the four instance stores: `&[GpuPod]` → typed byte
       view (`bytemuck`-free `unsafe` cast behind the `GpuPod` `Copy`+no-padding guarantee,
       one `SAFETY:` block) → `write_buffer` mapped range. Audit `renderer.rs` upload sites
       for any `Vec<Instance>→Vec<f32>→Vec<u8>` chain and remove it if present.
-- [ ] Wire the existing `ShaderPipeline`/`CompiledShader` (`shader/src/reload.rs`) as the
+- [x] Wire the existing `ShaderPipeline`/`CompiledShader` (`shader/src/reload.rs`) as the
       **dev-mode** manifest source (Viso_Hot_Reload §19-21: shadow-compile candidate IR,
       keep last-good on failure, swap at a safe frame boundary = F1 RetireQueue). Release
       uses the compile-time manifest; dev uses the reload holder. No release hot-path tax
       (§60 / Hot_Reload §1: no PatchBundle engine / dev transport in release).
-- [ ] `render/tests/` (NEW): **release-no-runtime-compile** — a first-Button paint through
+- [x] `render/tests/` (NEW): **release-no-runtime-compile** — a first-Button paint through
       the Metal path triggers zero `newLibraryWithSource` (instrument the backend with a
       compile counter; assert it is 0 after device-init prewarm across the first frame).
-- [ ] Gate green + `metal_glyph.rs` green + §36.1 cross-check runs against manifest reflection.
+- [x] Gate green + `metal_glyph.rs` green + §36.1 cross-check runs against manifest reflection.
 
 ### Freeze
 - [ ] FREEZE F2: the `PipelineManifest` shape, `PipelineFamily`/`VariantKey`, and the

@@ -127,6 +127,11 @@ pub struct MetalBackend {
     /// Reused across `begin_frame` calls to drain the retire queue without a
     /// per-frame heap allocation.
     reclaim_scratch: Vec<Retired>,
+    /// How many times MSL has been compiled into a `MTLLibrary` (§7.1). Every
+    /// standard pipeline is compiled once at device init; a well-formed frame
+    /// never adds to this. A test snapshots it after prewarm and asserts a paint
+    /// leaves it unchanged — the "no runtime shader compilation" contract.
+    library_compiles: u64,
 }
 
 impl Default for MetalBackend {
@@ -164,6 +169,7 @@ impl MetalBackend {
             current_epoch: Epoch::START,
             completed: Arc::new(AtomicU64::new(0)),
             reclaim_scratch: Vec::new(),
+            library_compiles: 0,
         }
     }
 
@@ -222,6 +228,14 @@ impl MetalBackend {
     /// frames is the memory contract deferred destruction exists to keep.
     pub fn retired_count(&self) -> usize {
         self.retire_queue.len()
+    }
+
+    /// How many times MSL has been compiled into a `MTLLibrary` since this
+    /// backend was created. The standard pipelines account for one compile each
+    /// at device init (§7.1); a steady-state frame adds none. Instrumentation for
+    /// the no-runtime-compile test — not a hot-path value.
+    pub fn library_compiles(&self) -> u64 {
+        self.library_compiles
     }
 
     /// Free the storage slots of resources whose parking epoch the GPU has
@@ -393,6 +407,7 @@ impl GpuBackend for MetalBackend {
             .device
             .newLibraryWithSource_options_error(&source, Some(&options))
             .expect("MSL compilation failed");
+        self.library_compiles += 1;
 
         let vfn = NSString::from_str(desc.vertex_entry);
         let ffn = NSString::from_str(desc.fragment_entry);
