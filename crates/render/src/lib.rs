@@ -12,6 +12,7 @@
 #![forbid(unsafe_op_in_unsafe_fn)]
 
 pub mod color_atlas;
+pub mod frame;
 pub mod glyph_atlas;
 pub mod inspect;
 pub mod primitive;
