@@ -18,6 +18,7 @@ pub mod instance;
 #[cfg(target_os = "macos")]
 pub mod metal;
 pub mod resource;
+pub mod slots;
 
 pub use backend::{
     DrawCommand, DrawList, Frame, GpuBackend, InlineUniforms, LoadOp, RenderPass, RenderTarget,
@@ -100,6 +101,30 @@ macro_rules! resource_id {
             #[inline]
             pub const fn index(self) -> u32 {
                 self.index
+            }
+        }
+
+        impl From<$crate::slots::RawId> for $name {
+            /// Stamp this handle's type onto a `SlotMap` slot id — the
+            /// `{index, generation}` a backend gets back from `insert`.
+            #[inline]
+            fn from(raw: $crate::slots::RawId) -> Self {
+                Self {
+                    index: raw.index,
+                    generation: raw.generation,
+                }
+            }
+        }
+
+        impl From<$name> for $crate::slots::RawId {
+            /// Strip a typed handle back to a raw `SlotMap` slot id for a
+            /// `get`/`remove` lookup.
+            #[inline]
+            fn from(id: $name) -> Self {
+                $crate::slots::RawId {
+                    index: id.index,
+                    generation: id.generation,
+                }
             }
         }
     };

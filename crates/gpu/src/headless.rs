@@ -7,11 +7,10 @@
 //! blend math. The output is intended to match the Metal backend to within a
 //! small per-channel tolerance.
 //!
-//! ## Fidelity model (behavior ported from makepad, rewritten natively)
+//! ## Fidelity model
 //!
-//! makepad's own headless path JIT-compiles the *same* shader Metal runs, so it
-//! is exact by construction. Viso instead re-derives the math in fresh Rust,
-//! matching makepad's observable behavior (`platform/src/os/headless/`):
+//! The fill routines re-derive each shader's math in plain Rust so the output
+//! matches the GPU backend's observable behavior to within tolerance:
 //!
 //! - **Framebuffer:** RGBA `f32`, **premultiplied**, linear (not sRGB-encoded).
 //! - **Rounded-rect SDF** (IQ box): `k = min(2*r, min(halfw, halfh))` — the
@@ -38,6 +37,7 @@ use crate::resource::{
     BindGroupDesc, BufferDesc, BuiltinShader, Caps, PipelineDesc, SamplerDesc, TextureDesc,
     TextureFormat,
 };
+use crate::slots::SlotMap;
 use crate::{BindGroupId, BufferId, PipelineId, SamplerId, SurfaceId, TextureId};
 
 /// A CPU-resident buffer: just its bytes.
@@ -80,12 +80,12 @@ struct HeadlessSurface {
 
 /// A CPU software-rasterizer backend.
 pub struct HeadlessRaster {
-    buffers: Vec<HeadlessBuffer>,
-    textures: Vec<HeadlessTexture>,
-    samplers: Vec<SamplerDesc>,
-    pipelines: Vec<HeadlessPipeline>,
-    bind_groups: Vec<HeadlessBindGroup>,
-    surfaces: Vec<HeadlessSurface>,
+    buffers: SlotMap<HeadlessBuffer>,
+    textures: SlotMap<HeadlessTexture>,
+    samplers: SlotMap<SamplerDesc>,
+    pipelines: SlotMap<HeadlessPipeline>,
+    bind_groups: SlotMap<HeadlessBindGroup>,
+    surfaces: SlotMap<HeadlessSurface>,
     caps: Caps,
 }
 
@@ -99,12 +99,12 @@ impl HeadlessRaster {
     /// Create an empty headless backend.
     pub fn new() -> Self {
         Self {
-            buffers: Vec::new(),
-            textures: Vec::new(),
-            samplers: Vec::new(),
-            pipelines: Vec::new(),
-            bind_groups: Vec::new(),
-            surfaces: Vec::new(),
+            buffers: SlotMap::new(),
+            textures: SlotMap::new(),
+            samplers: SlotMap::new(),
+            pipelines: SlotMap::new(),
+            bind_groups: SlotMap::new(),
+            surfaces: SlotMap::new(),
             caps: Caps {
                 max_texture_size: 16384,
                 presents_to_display: false,
@@ -118,7 +118,7 @@ impl HeadlessRaster {
     /// This is the golden-test capture path; it mirrors a Metal texture
     /// readback of a `Bgra8Unorm` swapchain.
     pub fn read_pixels_bgra8(&self, surface: SurfaceId) -> Vec<u8> {
-        let s = &self.surfaces[surface.index as usize];
+        let s = self.surface(surface);
         let mut out = Vec::with_capacity(s.color.len() * 4);
         for &[r, g, b, a] in &s.color {
             let (ur, ug, ub) = unpremultiply(r, g, b, a);
@@ -133,18 +133,27 @@ impl HeadlessRaster {
     /// Sample one texel `[f32; 4]` (premultiplied linear) from `surface` at
     /// pixel `(x, y)`, top-left origin. Convenience for single-pixel assertions.
     pub fn surface_texel(&self, surface: SurfaceId, x: u32, y: u32) -> [f32; 4] {
-        let s = &self.surfaces[surface.index as usize];
+        let s = self.surface(surface);
         s.color[(y * s.width + x) as usize]
+    }
+
+    /// Resolve a surface handle, panicking on a stale/unknown one (an internal
+    /// invariant break — a live handle always resolves in these backends).
+    fn surface(&self, id: SurfaceId) -> &HeadlessSurface {
+        self.surfaces
+            .get(id.into())
+            .expect("surface handle does not resolve")
     }
 
     /// The number of buffers created over this backend's lifetime.
     ///
-    /// Resources are only ever pushed (never removed), so this is the
-    /// cumulative create count. A steady-state frame that reuses persistent
-    /// buffers leaves it unchanged, which the renderer bench asserts to guard
-    /// the hot-path allocation contract (§7.1, §17.4).
+    /// This is the store's cumulative create count (`SlotMap::created`), which
+    /// only grows on a genuine create — never on a lookup or a slot reuse. A
+    /// steady-state frame that reuses persistent buffers leaves it unchanged,
+    /// which the renderer bench asserts to guard the hot-path allocation
+    /// contract.
     pub fn buffer_count(&self) -> usize {
-        self.buffers.len()
+        self.buffers.created()
     }
 
     /// The number of textures created over this backend's lifetime.
@@ -153,7 +162,7 @@ impl HeadlessRaster {
     /// create; a steady-state frame whose translucent layers reuse pooled
     /// offscreen textures leaves it unchanged.
     pub fn texture_count(&self) -> usize {
-        self.textures.len()
+        self.textures.created()
     }
 
     /// The number of bind groups created over this backend's lifetime.
@@ -162,35 +171,33 @@ impl HeadlessRaster {
     /// create; cached per-texture bind groups keep it stable across steady
     /// frames.
     pub fn bind_group_count(&self) -> usize {
-        self.bind_groups.len()
+        self.bind_groups.created()
     }
 }
 
 impl GpuBackend for HeadlessRaster {
     fn create_buffer(&mut self, desc: &BufferDesc) -> BufferId {
-        let id = BufferId::new(self.buffers.len() as u32);
-        self.buffers.push(HeadlessBuffer {
-            bytes: vec![0u8; desc.size],
-        });
-        id
+        self.buffers
+            .insert(HeadlessBuffer {
+                bytes: vec![0u8; desc.size],
+            })
+            .into()
     }
 
     fn create_texture(&mut self, desc: &TextureDesc) -> TextureId {
-        let id = TextureId::new(self.textures.len() as u32);
         let count = (desc.width * desc.height) as usize;
-        self.textures.push(HeadlessTexture {
-            width: desc.width,
-            height: desc.height,
-            format: desc.format,
-            texels: vec![[0.0; 4]; count],
-        });
-        id
+        self.textures
+            .insert(HeadlessTexture {
+                width: desc.width,
+                height: desc.height,
+                format: desc.format,
+                texels: vec![[0.0; 4]; count],
+            })
+            .into()
     }
 
     fn create_sampler(&mut self, desc: &SamplerDesc) -> SamplerId {
-        let id = SamplerId::new(self.samplers.len() as u32);
-        self.samplers.push(*desc);
-        id
+        self.samplers.insert(*desc).into()
     }
 
     fn create_pipeline(
@@ -198,32 +205,39 @@ impl GpuBackend for HeadlessRaster {
         desc: &PipelineDesc,
         layout: &InstanceLayout,
     ) -> Result<PipelineId, crate::instance::LayoutError> {
-        // Registration-time layout check (§32): the derived instance layout must
+        // Registration-time layout check: the derived instance layout must
         // match the shader's declared schema before the pipeline is usable.
         layout.validate_against(&desc.instance_schema)?;
-        let id = PipelineId::new(self.pipelines.len() as u32);
-        self.pipelines.push(HeadlessPipeline {
-            builtin: desc.builtin,
-            layout: *layout,
-        });
-        Ok(id)
+        Ok(self
+            .pipelines
+            .insert(HeadlessPipeline {
+                builtin: desc.builtin,
+                layout: *layout,
+            })
+            .into())
     }
 
     fn create_bind_group(&mut self, desc: &BindGroupDesc) -> BindGroupId {
-        let id = BindGroupId::new(self.bind_groups.len() as u32);
-        self.bind_groups.push(HeadlessBindGroup {
-            bindings: desc.bindings.clone(),
-        });
-        id
+        self.bind_groups
+            .insert(HeadlessBindGroup {
+                bindings: desc.bindings.clone(),
+            })
+            .into()
     }
 
     fn write_buffer(&mut self, id: BufferId, offset: usize, bytes: &[u8]) {
-        let buf = &mut self.buffers[id.index as usize];
+        let buf = self
+            .buffers
+            .get_mut(id.into())
+            .expect("buffer handle does not resolve");
         buf.bytes[offset..offset + bytes.len()].copy_from_slice(bytes);
     }
 
     fn write_texture(&mut self, id: TextureId, x: u32, y: u32, w: u32, h: u32, bytes: &[u8]) {
-        let tex = &mut self.textures[id.index as usize];
+        let tex = self
+            .textures
+            .get_mut(id.into())
+            .expect("texture handle does not resolve");
         let bpt = tex.format.bytes_per_texel();
         for row in 0..h {
             for col in 0..w {
@@ -237,18 +251,21 @@ impl GpuBackend for HeadlessRaster {
     fn create_surface(&mut self, _raw: RawWindowHandle, width: u32, height: u32) -> SurfaceId {
         // The headless backend ignores the (Headless) handle; it just allocates
         // a CPU framebuffer of the requested size.
-        let id = SurfaceId::new(self.surfaces.len() as u32);
-        self.surfaces.push(HeadlessSurface {
-            width,
-            height,
-            format: TextureFormat::Bgra8Unorm,
-            color: vec![[0.0; 4]; (width * height) as usize],
-        });
-        id
+        self.surfaces
+            .insert(HeadlessSurface {
+                width,
+                height,
+                format: TextureFormat::Bgra8Unorm,
+                color: vec![[0.0; 4]; (width * height) as usize],
+            })
+            .into()
     }
 
     fn resize_surface(&mut self, id: SurfaceId, width: u32, height: u32) {
-        let s = &mut self.surfaces[id.index as usize];
+        let s = self
+            .surfaces
+            .get_mut(id.into())
+            .expect("surface handle does not resolve");
         s.width = width;
         s.height = height;
         s.color = vec![[0.0; 4]; (width * height) as usize];
@@ -277,7 +294,7 @@ impl GpuBackend for HeadlessRaster {
     }
 
     fn surface_format(&self, surface: SurfaceId) -> TextureFormat {
-        self.surfaces[surface.index as usize].format
+        self.surface(surface).format
     }
 }
 
@@ -297,20 +314,17 @@ impl HeadlessRaster {
     fn encode_pass(&mut self, pass: &RenderPass, commands: &[DrawCommand]) {
         let (target, width, height) = match pass.target {
             RenderTarget::Surface(frame) => {
-                let s = &self.surfaces[frame.surface.index as usize];
+                let s = self.surface(frame.surface);
                 (FbTarget::Surface(frame.surface), s.width, s.height)
             }
             RenderTarget::Texture(id) => {
-                let t = &self.textures[id.index as usize];
+                let t = self.texture(id);
                 (FbTarget::Texture(id), t.width, t.height)
             }
         };
 
         if let LoadOp::Clear(rgba) = pass.load {
-            match target {
-                FbTarget::Surface(id) => self.surfaces[id.index as usize].color.fill(rgba),
-                FbTarget::Texture(id) => self.textures[id.index as usize].texels.fill(rgba),
-            }
+            self.framebuffer(target).fill(rgba);
         }
 
         for cmd in commands {
@@ -323,16 +337,61 @@ impl HeadlessRaster {
     /// sampled source texture out first, so a texture target never aliases here).
     fn framebuffer(&mut self, target: FbTarget) -> &mut [[f32; 4]] {
         match target {
-            FbTarget::Surface(id) => &mut self.surfaces[id.index as usize].color,
-            FbTarget::Texture(id) => &mut self.textures[id.index as usize].texels,
+            FbTarget::Surface(id) => {
+                &mut self
+                    .surfaces
+                    .get_mut(id.into())
+                    .expect("surface handle does not resolve")
+                    .color
+            }
+            FbTarget::Texture(id) => {
+                &mut self
+                    .textures
+                    .get_mut(id.into())
+                    .expect("texture handle does not resolve")
+                    .texels
+            }
         }
+    }
+
+    /// Resolve a texture handle, panicking on a stale/unknown one (an internal
+    /// invariant break — a live handle always resolves in these backends).
+    fn texture(&self, id: TextureId) -> &HeadlessTexture {
+        self.textures
+            .get(id.into())
+            .expect("texture handle does not resolve")
+    }
+
+    /// Resolve a buffer handle (see [`texture`](Self::texture) for the panic).
+    fn buffer(&self, id: BufferId) -> &HeadlessBuffer {
+        self.buffers
+            .get(id.into())
+            .expect("buffer handle does not resolve")
+    }
+
+    /// Resolve a bind-group handle (see [`texture`](Self::texture)).
+    fn bind_group(&self, id: BindGroupId) -> &HeadlessBindGroup {
+        self.bind_groups
+            .get(id.into())
+            .expect("bind group handle does not resolve")
+    }
+
+    /// Resolve a sampler handle (see [`texture`](Self::texture)).
+    fn sampler(&self, id: SamplerId) -> SamplerDesc {
+        *self
+            .samplers
+            .get(id.into())
+            .expect("sampler handle does not resolve")
     }
 
     /// Rasterize one draw command's instances into the target framebuffer.
     fn encode_command(&mut self, target: FbTarget, width: u32, height: u32, cmd: &DrawCommand) {
         // Copy the pipeline metadata (both `Copy`) so the per-pixel fill can take
         // `&mut self` for blending without aliasing the pipeline/buffer tables.
-        let pipeline = &self.pipelines[cmd.pipeline.index as usize];
+        let pipeline = self
+            .pipelines
+            .get(cmd.pipeline.into())
+            .expect("pipeline handle does not resolve");
         let builtin = pipeline.builtin;
         let layout = pipeline.layout;
 
@@ -341,7 +400,7 @@ impl HeadlessRaster {
                 // Copy this command's instance bytes out for the same aliasing
                 // reason.
                 let span = count as usize * layout.stride;
-                let instances = self.buffers[cmd.instance_buffer.index as usize].bytes
+                let instances = self.buffer(cmd.instance_buffer).bytes
                     [cmd.instance_offset..cmd.instance_offset + span]
                     .to_vec();
 
@@ -386,8 +445,8 @@ impl HeadlessRaster {
                 index_count,
             } => {
                 // Snapshot the vertex + index bytes for the same aliasing reason.
-                let verts = self.buffers[vertex_buffer.index as usize].bytes.clone();
-                let idx_bytes = self.buffers[index_buffer.index as usize].bytes.clone();
+                let verts = self.buffer(vertex_buffer).bytes.clone();
+                let idx_bytes = self.buffer(index_buffer).bytes.clone();
                 self.fill_mesh(
                     target,
                     width,
@@ -640,10 +699,10 @@ impl HeadlessRaster {
                 address: crate::resource::AddressMode::ClampToEdge,
             },
         );
-        for binding in &self.bind_groups[bg.index as usize].bindings {
+        for binding in &self.bind_group(bg).bindings {
             match binding {
                 crate::resource::Binding::Texture(t) => tex_id = Some(*t),
-                crate::resource::Binding::Sampler(s) => samp = self.samplers[s.index as usize],
+                crate::resource::Binding::Sampler(s) => samp = self.sampler(*s),
                 crate::resource::Binding::Uniform(_) => {}
             }
         }
@@ -651,7 +710,7 @@ impl HeadlessRaster {
         // Snapshot the texture (dimensions + premultiplied texels) so the
         // per-pixel loop can take `&mut self.surfaces` without aliasing.
         let (tw, th, texels) = {
-            let t = &self.textures[tex_id.index as usize];
+            let t = self.texture(tex_id);
             (t.width, t.height, t.texels.clone())
         };
         if tw == 0 || th == 0 {
@@ -743,16 +802,16 @@ impl HeadlessRaster {
                 address: crate::resource::AddressMode::ClampToEdge,
             },
         );
-        for binding in &self.bind_groups[bg.index as usize].bindings {
+        for binding in &self.bind_group(bg).bindings {
             match binding {
                 crate::resource::Binding::Texture(t) => tex_id = Some(*t),
-                crate::resource::Binding::Sampler(s) => samp = self.samplers[s.index as usize],
+                crate::resource::Binding::Sampler(s) => samp = self.sampler(*s),
                 crate::resource::Binding::Uniform(_) => {}
             }
         }
         let Some(tex_id) = tex_id else { return };
         let (tw, th, texels) = {
-            let t = &self.textures[tex_id.index as usize];
+            let t = self.texture(tex_id);
             (t.width, t.height, t.texels.clone())
         };
         if tw == 0 || th == 0 || size[0] <= 0.0 || size[1] <= 0.0 {
