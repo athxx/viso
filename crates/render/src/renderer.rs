@@ -19,15 +19,11 @@ use viso_gpu::backend::{
 };
 use viso_gpu::{AddressMode, BindGroupId, FilterMode, SamplerId};
 use viso_gpu::{
-    BindGroupDesc, Binding, BlendMode, BufferDesc, BufferUsage, BuiltinShader, Frame, GpuBackend,
-    LoadOp, PipelineDesc, PipelineId, SamplerDesc, SurfaceId, TextureDesc, TextureFormat,
-    TextureId,
+    BindGroupDesc, Binding, BlendMode, BufferDesc, BufferUsage, Frame, GpuBackend, LoadOp,
+    PipelineDesc, PipelineId, SamplerDesc, SurfaceId, TextureDesc, TextureFormat, TextureId,
 };
 
-use viso_shader::{
-    GLYPHRUN_MSL, IMAGE_MSL, MESH_MSL, QUAD_MSL, glyphrun_schema, image_schema, mesh_schema,
-    quad_schema,
-};
+use viso_shader::{PipelineEntry, PipelineFamily, standard_manifest};
 
 use crate::primitive::{GlyphInstance, ImageInstance, MeshVertex, Primitive, QuadInstance, Rect};
 
@@ -258,70 +254,53 @@ impl Renderer {
     ///
     /// `surface_format` is the color-attachment format the pipelines target.
     pub fn new<B: GpuBackend>(backend: &mut B, surface_format: TextureFormat) -> Self {
+        // Every standard pipeline is created from its frozen manifest entry, not
+        // from caller-assembled source. This is the device-init prewarm (§7.1):
+        // the fixed set is materialized once, so no draw ever triggers a runtime
+        // shader compile.
+        let manifest = standard_manifest();
+        let desc = |entry: &PipelineEntry, label: &'static str| PipelineDesc {
+            label,
+            builtin: entry.builtin,
+            variant: entry.variant.packed(),
+            msl: entry.msl,
+            vertex_entry: entry.vertex_entry,
+            fragment_entry: entry.fragment_entry,
+            color_format: surface_format,
+            depth_format: None,
+            blend: BlendMode::PremultipliedOver,
+            instance_schema: entry.schema,
+        };
+        let entry = |family| {
+            manifest
+                .entry(family)
+                .expect("standard manifest populates every built-in family")
+        };
+
         let quad_pipeline = backend
             .create_pipeline(
-                &PipelineDesc {
-                    label: "quad",
-                    builtin: BuiltinShader::Quad,
-                    shader_source: QUAD_MSL(),
-                    vertex_entry: "vertex_main",
-                    fragment_entry: "fragment_main",
-                    color_format: surface_format,
-                    depth_format: None,
-                    blend: BlendMode::PremultipliedOver,
-                    instance_schema: quad_schema(),
-                },
+                &desc(entry(PipelineFamily::SolidRect), "quad"),
                 &QuadInstance::LAYOUT,
             )
             .expect("QuadInstance layout matches the quad shader schema");
 
         let image_pipeline = backend
             .create_pipeline(
-                &PipelineDesc {
-                    label: "image",
-                    builtin: BuiltinShader::Image,
-                    shader_source: IMAGE_MSL(),
-                    vertex_entry: "vertex_main",
-                    fragment_entry: "fragment_main",
-                    color_format: surface_format,
-                    depth_format: None,
-                    blend: BlendMode::PremultipliedOver,
-                    instance_schema: image_schema(),
-                },
+                &desc(entry(PipelineFamily::Image), "image"),
                 &ImageInstance::LAYOUT,
             )
             .expect("ImageInstance layout matches the image shader schema");
 
         let glyph_pipeline = backend
             .create_pipeline(
-                &PipelineDesc {
-                    label: "glyph",
-                    builtin: BuiltinShader::GlyphRun,
-                    shader_source: GLYPHRUN_MSL(),
-                    vertex_entry: "vertex_main",
-                    fragment_entry: "fragment_main",
-                    color_format: surface_format,
-                    depth_format: None,
-                    blend: BlendMode::PremultipliedOver,
-                    instance_schema: glyphrun_schema(),
-                },
+                &desc(entry(PipelineFamily::MaskComposite), "glyph"),
                 &GlyphInstance::LAYOUT,
             )
             .expect("GlyphInstance layout matches the glyph shader schema");
 
         let mesh_pipeline = backend
             .create_pipeline(
-                &PipelineDesc {
-                    label: "mesh",
-                    builtin: BuiltinShader::Path,
-                    shader_source: MESH_MSL(),
-                    vertex_entry: "vertex_main",
-                    fragment_entry: "fragment_main",
-                    color_format: surface_format,
-                    depth_format: None,
-                    blend: BlendMode::PremultipliedOver,
-                    instance_schema: mesh_schema(),
-                },
+                &desc(entry(PipelineFamily::PathFill), "mesh"),
                 &MeshVertex::LAYOUT,
             )
             .expect("MeshVertex layout matches the mesh shader schema");

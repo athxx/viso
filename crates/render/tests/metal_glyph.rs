@@ -1,8 +1,9 @@
 //! Real-Metal verification of the A8 glyph-coverage path.
 //!
 //! The headless rasterizer never compiles MSL, so a change to the GlyphRun
-//! fragment body only takes effect on a device pipeline. This test compiles
-//! [`GLYPHRUN_MSL`] on the system's default Metal device, draws one glyph
+//! fragment body only takes effect on a device pipeline. This test compiles the
+//! frozen mask-composite MSL from the standard manifest on the system's default
+//! Metal device, draws one glyph
 //! instance sampling a hand-built A8 coverage atlas into an offscreen BGRA8
 //! texture, reads it back, and asserts the fragment sampled coverage *directly*
 //! (`cov = texel.r`) and output premultiplied `color.rgb * (color.a * cov)`.
@@ -22,11 +23,11 @@ use viso_gpu::backend::{
     DrawCommand, DrawList, Geometry, InlineUniforms, LoadOp, RenderPass, RenderTarget,
 };
 use viso_gpu::{
-    AddressMode, BindGroupDesc, Binding, BlendMode, BufferDesc, BufferUsage, BuiltinShader,
-    FilterMode, GpuBackend, MetalBackend, PipelineDesc, SamplerDesc, TextureDesc, TextureFormat,
+    AddressMode, BindGroupDesc, Binding, BlendMode, BufferDesc, BufferUsage, FilterMode,
+    GpuBackend, MetalBackend, PipelineDesc, SamplerDesc, TextureDesc, TextureFormat,
 };
-use viso_render::{GlyphInstance, glyphrun_schema};
-use viso_shader::GLYPHRUN_MSL;
+use viso_render::GlyphInstance;
+use viso_shader::{PipelineFamily, standard_manifest};
 
 /// Reinterpret a `#[repr(C)]` `GlyphInstance` as its raw instance bytes.
 fn instance_bytes(inst: &GlyphInstance) -> &[u8] {
@@ -79,20 +80,25 @@ fn glyph_a8_coverage_direct_sample_on_metal() {
         bindings: vec![Binding::Texture(atlas), Binding::Sampler(sampler)],
     });
 
-    // The real device pipeline: the same MSL, entries, blend, and schema the
-    // renderer registers. Compiling this is the point of the test.
+    // The real device pipeline, built from the same manifest entry the renderer
+    // registers: the frozen MSL, entries, blend, and schema. Compiling this is
+    // the point of the test.
+    let entry = standard_manifest()
+        .entry(PipelineFamily::MaskComposite)
+        .expect("standard manifest populates the mask-composite family");
     let pipeline = gpu
         .create_pipeline(
             &PipelineDesc {
                 label: "metal-glyph",
-                builtin: BuiltinShader::GlyphRun,
-                shader_source: GLYPHRUN_MSL(),
-                vertex_entry: "vertex_main",
-                fragment_entry: "fragment_main",
+                builtin: entry.builtin,
+                variant: entry.variant.packed(),
+                msl: entry.msl,
+                vertex_entry: entry.vertex_entry,
+                fragment_entry: entry.fragment_entry,
                 color_format: TextureFormat::Bgra8Unorm,
                 depth_format: None,
                 blend: BlendMode::PremultipliedOver,
-                instance_schema: glyphrun_schema(),
+                instance_schema: entry.schema,
             },
             &GlyphInstance::LAYOUT,
         )

@@ -244,18 +244,18 @@ oracle tests already prove byte-equal to `emit_msl`). The §36.1 CPU↔GPU
 - [x] Gate green; oracle byte-equality intact (manifest `msl` == `testdata` oracles).
 
 ### F2.4 — Renderer + backends consume the manifest; retire `shader_source` placeholder
-- [ ] `gpu/src/resource.rs`: remove `PipelineDesc.shader_source: &'static str`;
+- [x] `gpu/src/resource.rs`: remove `PipelineDesc.shader_source: &'static str`;
       `PipelineDesc` carries the manifest artifact reference (family/variant + the
       `&'static str` MSL borrowed from the manifest entry) instead of a raw per-call string.
-- [ ] `render/src/renderer.rs` (l.260-327): the four `create_pipeline` sites consume
+- [x] `render/src/renderer.rs` (l.260-327): the four `create_pipeline` sites consume
       `standard_manifest()` entries (family lookup) rather than `QUAD_MSL()`/`quad_schema()`
       etc. directly; still pass `&QuadInstance::LAYOUT` for the §36.1 cross-check.
-- [ ] `gpu/src/metal.rs` (create_pipeline, l.382-440): `newLibraryWithSource` compiles the
+- [x] `gpu/src/metal.rs` (create_pipeline, l.382-440): `newLibraryWithSource` compiles the
       manifest artifact's MSL — but this now runs only at device-init prewarm, never on the
       first-Button draw path. Keep `layout.validate_against(&desc.instance_schema)?`.
-- [ ] `gpu/src/headless.rs`: unchanged builtin-tag path (never compiles MSL).
-- [ ] Update `PipelineDesc` test sites (`headless_quad.rs` ~l.96-106 with `shader_source:""`).
-- [ ] Gate green (Metal + headless) + golden/bench byte-identical.
+- [x] `gpu/src/headless.rs`: unchanged builtin-tag path (never compiles MSL).
+- [x] Update `PipelineDesc` test sites (`headless_quad.rs` ~l.96-106 with `shader_source:""`).
+- [x] Gate green (Metal + headless) + golden/bench byte-identical.
 
 ### F2.5 — Zero-copy typed upload (§7.4) + dev-mode manifest source wiring
 - [ ] Confirm/enforce the §7.4 path for the four instance stores: `&[GpuPod]` → typed byte

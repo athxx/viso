@@ -97,7 +97,8 @@ fn draws_a_solid_rect_over_a_cleared_background() {
             &PipelineDesc {
                 label: "quad",
                 builtin: BuiltinShader::Quad,
-                shader_source: "",
+                variant: 0,
+                msl: "",
                 vertex_entry: "vertex_main",
                 fragment_entry: "fragment_main",
                 color_format: TextureFormat::Bgra8Unorm,
