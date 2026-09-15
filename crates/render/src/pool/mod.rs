@@ -16,6 +16,8 @@
 //!
 //! [`write_buffer`]: viso_gpu::GpuBackend::write_buffer
 
+mod coalescer;
 mod instance_pool;
 
+pub use coalescer::{GAP_THRESHOLD, Range, coalesce};
 pub use instance_pool::InstancePool;

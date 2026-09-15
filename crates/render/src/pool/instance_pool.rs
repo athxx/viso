@@ -22,9 +22,11 @@
 //! - a full re-fill (first frame, or after a grow) issues one upload of the lot.
 //!
 //! This is the §9.1 contract: a local paint change costs a local upload, never
-//! a full-scene re-upload. The dirty-run merging here is deliberately minimal
-//! (adjacent changed slots coalesce into one run); the dedicated dirty-range
-//! coalescer (§9.3) refines the merge with a gap threshold in a later step.
+//! a full-scene re-upload. The changed slots are handed to the dirty-range
+//! [`coalescer`](super::coalescer) (§9.3), which merges runs separated by a
+//! short gap of clean slots into one upload range — trading a few redundantly
+//! shipped clean slots for far fewer `write_buffer` calls — and splits on a
+//! wide gap. Each coalesced range is emitted as one contiguous upload.
 //!
 //! # Draw-order slots
 //!
@@ -41,6 +43,8 @@
 use std::mem::size_of;
 
 use viso_gpu::{BufferDesc, BufferId, BufferUsage, GpuBackend};
+
+use super::coalescer::{self, Range};
 
 /// A long-lived device buffer for one instance family, uploaded per changed
 /// slot against a CPU shadow.
@@ -69,6 +73,13 @@ pub struct InstancePool<T> {
     usage: BufferUsage,
     /// A debug label for the device buffer (GPU tooling; ignored by headless).
     label: &'static str,
+    /// Reused scratch holding the slot indices that changed this frame, in
+    /// increasing order, before they are coalesced. Retained across frames so a
+    /// steady frame refills the same capacity without touching the heap.
+    dirty_scratch: Vec<usize>,
+    /// Reused scratch holding the coalesced upload ranges for this frame. Same
+    /// steady-state no-alloc property as `dirty_scratch`.
+    range_scratch: Vec<Range>,
 }
 
 impl<T: Copy + PartialEq + 'static> InstancePool<T> {
@@ -85,6 +96,8 @@ impl<T: Copy + PartialEq + 'static> InstancePool<T> {
             shadow: Vec::new(),
             usage: usage | BufferUsage::CPU_WRITE,
             label,
+            dirty_scratch: Vec::new(),
+            range_scratch: Vec::new(),
         }
     }
 
@@ -121,8 +134,10 @@ impl<T: Copy + PartialEq + 'static> InstancePool<T> {
     /// The buffer grows (cold path, one buffer create + one retire of the old
     /// buffer) when `instances.len()` first exceeds the capacity; a grow forces
     /// a single full upload of the new contents. Otherwise the array is diffed
-    /// against the shadow and each maximal run of changed slots is uploaded as
-    /// one contiguous range.
+    /// against the shadow, the changed slots are handed to the dirty-range
+    /// [`coalescer`](super::coalescer), and each coalesced range is uploaded as
+    /// one contiguous [`write_buffer`](viso_gpu::GpuBackend::write_buffer) —
+    /// runs separated by a short clean gap merge into one, wider gaps split.
     pub fn sync<B: GpuBackend>(&mut self, backend: &mut B, instances: &[T]) -> usize {
         if instances.is_empty() {
             // Nothing to draw this frame. The device buffer and shadow are
@@ -141,26 +156,25 @@ impl<T: Copy + PartialEq + 'static> InstancePool<T> {
             return 1;
         }
 
-        // Within capacity: diff element by element against the shadow, uploading
-        // each maximal run of changed slots. Slots beyond the shadow's current
-        // length are new this frame and always count as changed.
-        let mut writes = 0;
-        let mut i = 0;
-        while i < instances.len() {
-            let changed = i >= self.shadow.len() || self.shadow[i] != instances[i];
-            if !changed {
-                i += 1;
-                continue;
+        // Within capacity: diff element by element against the shadow, recording
+        // each changed slot's index. Slots beyond the shadow's current length are
+        // new this frame and always count as changed.
+        self.dirty_scratch.clear();
+        for (i, inst) in instances.iter().enumerate() {
+            if i >= self.shadow.len() || self.shadow[i] != *inst {
+                self.dirty_scratch.push(i);
             }
-            // Extend the run while slots keep differing.
-            let start = i;
-            while i < instances.len() && (i >= self.shadow.len() || self.shadow[i] != instances[i])
-            {
-                i += 1;
-            }
-            self.upload_run(backend, start, &instances[start..i]);
-            writes += 1;
         }
+
+        // Coalesce the changed slots into a few upload ranges (bridging short
+        // clean gaps) and upload each as one contiguous write. An unchanged frame
+        // has no dirty slots, yields no ranges, and issues zero uploads.
+        coalescer::coalesce(&self.dirty_scratch, &mut self.range_scratch);
+        for r in 0..self.range_scratch.len() {
+            let Range { start, len } = self.range_scratch[r];
+            self.upload_run(backend, start, &instances[start..start + len]);
+        }
+        let writes = self.range_scratch.len();
 
         // The shadow now mirrors exactly `instances`.
         self.shadow.clear();

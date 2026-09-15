@@ -543,22 +543,30 @@ safety-relevant behavior §9.2 actually cares about — rather than building an 
       todo rescope) + steady-state bench: `buffer_count` flat, retire queue drains.
 
 ### F4.4 — Dirty range coalescer (few `write_buffer` ranges, not many micro-copies)
-- [ ] `render/src/pool/coalescer.rs` (NEW): merge adjacent/nearby dirty instance slots
-      into a few contiguous upload ranges (§9.3). Fixed-capacity scratch (arena- or
-      high-water-backed, no steady-state heap alloc — §9.3); input is the pool's dirty
-      slot set for the frame, output is a small list of `{offset, len}` ranges each
-      emitted as one `backend.write_buffer(buf, offset, bytes)`. A gap smaller than a
-      tunable threshold is bridged (one range re-uploading a few clean slots beats many
-      tiny copies); a large gap splits into a new range.
-- [ ] Wire the pool → coalescer → `write_buffer`: replace the per-family full
-      `write_buffer(buf, 0, all_bytes)` with the coalesced ranges. A steady-state frame
-      with no dirty slots issues zero `write_buffer` calls for that family.
-- [ ] `render/tests/coalescer.rs` (NEW): scattered dirty slots within the gap threshold
-      merge into one range; slots past the threshold split into separate ranges; a
-      single dirty slot (the hover case) yields exactly one minimal range; zero dirty
-      slots yield zero ranges. Fixed-capacity scratch does not allocate across frames.
-- [ ] Gate green + golden byte-identical + steady-state bench: one hover-style dirty
-      uploads exactly one coalesced range / touches one slot (proves §9.1 + §9.3).
+- [x] `render/src/pool/coalescer.rs` (NEW): `coalesce(dirty, out)` merges a strictly
+      increasing dirty-slot list into a few contiguous `Range { start, len }` ranges
+      (§9.3). Output goes into a caller-owned reused `Vec` (high-water-backed, no
+      steady-state heap alloc — §9.3); each range is emitted by the pool as one
+      `backend.write_buffer(buf, offset, bytes)`. A clean gap of at most `GAP_THRESHOLD`
+      (=4) slots is bridged (one range re-uploading a few clean slots beats many tiny
+      copies); a wider gap splits into a new range. 8 unit tests cover the arithmetic.
+- [x] Wire the pool → coalescer → `write_buffer`: the within-capacity `sync` path
+      collects changed slot indices into a persistent `dirty_scratch`, runs
+      `coalescer::coalesce` into a persistent `range_scratch`, and uploads each range as
+      one contiguous write. An unchanged frame produces no dirty slots, no ranges, and
+      zero `write_buffer` calls for that family. Both scratch Vecs are reused across
+      frames (no steady-state alloc). Grow path still forces one full upload.
+- [x] `render/tests/coalescer.rs` (NEW): 7 integration tests driving the pool via
+      `HeadlessRaster` — one dirty slot → one range; no dirty slots → zero ranges;
+      changes within the gap threshold merge into one range; changes past it split into
+      two; three scattered clusters collapse to three ranges; repeated scattered
+      repaints issue a stable range count (scratch reuse). The rewritten F4.2
+      `separated_changes_split_near_changes_merge` also confirms the pool routes through
+      the coalescer under the new threshold.
+- [x] Gate green + golden byte-identical + steady-state bench (Success on both `upload`
+      and `frame`): bridged clean slots re-upload their existing shadow value, so the
+      final GPU buffer contents are unchanged (golden byte-identical), while a hover-style
+      one-slot change uploads exactly one minimal coalesced range (proves §9.1 + §9.3).
 
 ### F4.5 — Order-safe batch planner (packed `BatchKey`, replaces segment merge)
 - [ ] `render/src/batch/chunk.rs` (NEW): `RenderChunk` — `{ order range, bounds,

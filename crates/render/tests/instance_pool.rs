@@ -98,27 +98,29 @@ fn one_slot_change_uploads_one_run() {
     assert_eq!(pool.sync(&mut gpu, &changed), 0);
 }
 
-/// Two non-adjacent changed slots upload as two separate runs; two adjacent
-/// changed slots coalesce into one run.
+/// Changed slots far apart upload as two separate ranges; adjacent or
+/// near-adjacent changed slots (within the coalescer's gap threshold) merge
+/// into one range. The gap-threshold arithmetic itself lives in the coalescer's
+/// own unit tests; here we confirm the pool routes uploads through it.
 #[test]
-fn separated_changes_split_adjacent_changes_merge() {
+fn separated_changes_split_near_changes_merge() {
     let mut gpu = HeadlessRaster::new();
     let mut pool: InstancePool<QuadInstance> =
         InstancePool::new(BufferUsage::INSTANCE, "test-quads");
 
-    let base = [quad(1.0), quad(2.0), quad(3.0), quad(4.0), quad(5.0)];
+    let base: Vec<QuadInstance> = (0..16).map(|i| quad(i as f32)).collect();
     pool.sync(&mut gpu, &base);
 
-    // Change slots 1 and 3 (a gap at slot 2 keeps them separate) -> two runs.
-    let mut split = base;
-    split[1] = quad(20.0);
-    split[3] = quad(40.0);
+    // Change slots 1 and 12: a wide clean gap between them -> two ranges.
+    let mut split = base.clone();
+    split[1] = quad(101.0);
+    split[12] = quad(112.0);
     assert_eq!(pool.sync(&mut gpu, &split), 2);
 
-    // Change slots 1 and 2 (adjacent) -> one coalesced run.
-    let mut merged = split;
-    merged[1] = quad(21.0);
-    merged[2] = quad(31.0);
+    // Change slots 1 and 2 (adjacent) -> one coalesced range.
+    let mut merged = split.clone();
+    merged[1] = quad(201.0);
+    merged[2] = quad(202.0);
     assert_eq!(pool.sync(&mut gpu, &merged), 1);
 }
 
