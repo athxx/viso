@@ -19,7 +19,10 @@ use viso_gpu::{GpuPod, TextureId};
 // `mesh_schema`) live with the hand-written MSL in `viso-shader` (layer D);
 // re-export them here so the instance structs and their schemas stay visibly
 // paired at the primitive definition.
-pub use viso_shader::{glyphrun_schema, image_schema, mesh_schema, quad_schema};
+pub use viso_shader::{
+    analytic_ellipse_schema, analytic_rrect_schema, glyphrun_schema, image_schema, mesh_schema,
+    quad_schema,
+};
 
 /// An axis-aligned rectangle in physical pixels, top-left origin.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -143,6 +146,147 @@ impl Quad {
             rect_size: [self.rect.w, self.rect.h],
             color: [self.color.r, self.color.g, self.color.b, self.color.a],
             radius: self.radius,
+            border_width: self.border.width,
+            border_color: [
+                self.border.color.r,
+                self.border.color.g,
+                self.border.color.b,
+                self.border.color.a,
+            ],
+        }
+    }
+}
+
+/// Per-corner radii for an [`AnalyticRRect`], in physical pixels. Order follows
+/// the fill's quadrant test: `left_top`, `right_top`, `right_bottom`,
+/// `left_bottom`. A corner radius of `0` is a sharp corner. Oversized radii are
+/// scaled to fit by [`Corners::normalized`] during lowering (§11.2); the SDF
+/// additionally clamps each corner as a final safety net.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Corners {
+    /// Top-left corner radius.
+    pub left_top: f32,
+    /// Top-right corner radius.
+    pub right_top: f32,
+    /// Bottom-right corner radius.
+    pub right_bottom: f32,
+    /// Bottom-left corner radius.
+    pub left_bottom: f32,
+}
+
+impl Corners {
+    /// Sharp corners on all four sides.
+    pub const SHARP: Corners = Corners {
+        left_top: 0.0,
+        right_top: 0.0,
+        right_bottom: 0.0,
+        left_bottom: 0.0,
+    };
+
+    /// The same radius on every corner.
+    pub const fn uniform(r: f32) -> Corners {
+        Corners {
+            left_top: r,
+            right_top: r,
+            right_bottom: r,
+            left_bottom: r,
+        }
+    }
+
+    /// Scale these radii to fit a `width`×`height` box, following the CSS
+    /// overlapping-curves rule (§11.2): when two radii sharing an edge sum to
+    /// more than that edge's length, every radius shrinks by the *single*
+    /// smallest edge ratio, so the shape stays proportional instead of each
+    /// corner clamping independently and distorting. Negative inputs floor to
+    /// `0`. Widgets pass their authored radii straight through — the normalize
+    /// lives here, once, so no caller self-clamps.
+    pub fn normalized(self, width: f32, height: f32) -> Corners {
+        let r = [
+            self.left_top.max(0.0),
+            self.right_top.max(0.0),
+            self.right_bottom.max(0.0),
+            self.left_bottom.max(0.0),
+        ];
+        // Each edge's two adjacent radii must fit within its length.
+        let edge_ratio = |sum: f32, len: f32| if sum > len { len / sum } else { 1.0 };
+        let scale = edge_ratio(r[0] + r[1], width) // top
+            .min(edge_ratio(r[3] + r[2], width)) // bottom
+            .min(edge_ratio(r[0] + r[3], height)) // left
+            .min(edge_ratio(r[1] + r[2], height)); // right
+        Corners {
+            left_top: r[0] * scale,
+            right_top: r[1] * scale,
+            right_bottom: r[2] * scale,
+            left_bottom: r[3] * scale,
+        }
+    }
+}
+
+/// An analytic rounded rectangle with an independent radius per corner.
+///
+/// Unlike [`Quad`]'s single scalar radius, each corner rounds by its own amount,
+/// evaluated by a per-corner rounded-box SDF (no tessellation). Degenerates to a
+/// plain filled rectangle when all radii and the border are `0`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct AnalyticRRect {
+    /// The rectangle, in physical pixels.
+    pub rect: Rect,
+    /// Fill color.
+    pub color: Rgba,
+    /// Per-corner radii in pixels.
+    pub radius: Corners,
+    /// Border stroke.
+    pub border: Border,
+}
+
+impl AnalyticRRect {
+    /// Lower this rounded rect to its GPU instance. Per-corner radii are
+    /// normalized to the rect (§11.2) so oversized authored radii scale down
+    /// proportionally rather than distorting corner by corner.
+    pub fn to_instance(&self) -> AnalyticRRectInstance {
+        let radius = self.radius.normalized(self.rect.w, self.rect.h);
+        AnalyticRRectInstance {
+            rect_pos: [self.rect.x, self.rect.y],
+            rect_size: [self.rect.w, self.rect.h],
+            color: [self.color.r, self.color.g, self.color.b, self.color.a],
+            radius: [
+                radius.left_top,
+                radius.right_top,
+                radius.right_bottom,
+                radius.left_bottom,
+            ],
+            border_width: self.border.width,
+            border_color: [
+                self.border.color.r,
+                self.border.color.g,
+                self.border.color.b,
+                self.border.color.a,
+            ],
+        }
+    }
+}
+
+/// An analytic axis-aligned ellipse (a circle when the rect is square).
+///
+/// The ellipse radii are the rect's half-extents, so no radius field is carried;
+/// the fill is a scaled-circle SDF (no tessellation). Supports an inner border.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct AnalyticEllipse {
+    /// The bounding rectangle, in physical pixels. The ellipse touches its edges.
+    pub rect: Rect,
+    /// Fill color.
+    pub color: Rgba,
+    /// Border stroke.
+    pub border: Border,
+}
+
+impl AnalyticEllipse {
+    /// Lower this ellipse to its GPU instance.
+    pub fn to_instance(&self) -> AnalyticEllipseInstance {
+        AnalyticEllipseInstance {
+            rect_pos: [self.rect.x, self.rect.y],
+            rect_size: [self.rect.w, self.rect.h],
+            color: [self.color.r, self.color.g, self.color.b, self.color.a],
             border_width: self.border.width,
             border_color: [
                 self.border.color.r,
@@ -360,6 +504,10 @@ pub struct Mesh {
 pub enum Primitive {
     /// A rounded/bordered rectangle.
     Quad(Quad),
+    /// A rounded rectangle with an independent radius per corner.
+    AnalyticRRect(AnalyticRRect),
+    /// An axis-aligned ellipse/circle.
+    AnalyticEllipse(AnalyticEllipse),
     /// A run of shaped glyphs sampling a single-channel A8 coverage atlas.
     GlyphRun(GlyphRunDraw),
     /// A textured image sampled into a rect.
@@ -395,6 +543,56 @@ pub struct QuadInstance {
     pub color: [f32; 4],
     /// Corner radius in pixels.
     pub radius: f32,
+    /// Border stroke width in pixels (0 = none).
+    pub border_width: f32,
+    /// Straight linear RGBA border color.
+    pub border_color: [f32; 4],
+}
+
+/// GPU instance for the AnalyticRRect built-in shader.
+///
+/// Field names/formats match [`analytic_rrect_schema`] and the headless
+/// `fill_analytic_rrect` reader. Identical to [`QuadInstance`] except `radius` is
+/// a per-corner `[f32; 4]` (`left_top`, `right_top`, `right_bottom`,
+/// `left_bottom`) rather than a scalar. Colors are **straight** (non-premultiplied)
+/// linear RGBA — the backend premultiplies. `#[repr(C)]` with only 4-byte-aligned
+/// scalars/vectors, so the derive's `offset_of!`-based layout has no padding
+/// surprises.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, GpuPod)]
+pub struct AnalyticRRectInstance {
+    /// Top-left corner in physical pixels.
+    pub rect_pos: [f32; 2],
+    /// Width/height in physical pixels.
+    pub rect_size: [f32; 2],
+    /// Straight linear RGBA fill.
+    pub color: [f32; 4],
+    /// Per-corner radii in pixels (`left_top`, `right_top`, `right_bottom`,
+    /// `left_bottom`).
+    pub radius: [f32; 4],
+    /// Border stroke width in pixels (0 = none).
+    pub border_width: f32,
+    /// Straight linear RGBA border color.
+    pub border_color: [f32; 4],
+}
+
+/// GPU instance for the AnalyticEllipse built-in shader.
+///
+/// Field names/formats match [`analytic_ellipse_schema`] and the headless
+/// `fill_analytic_ellipse` reader. The ellipse radii are derived from
+/// `rect_size * 0.5` in the vertex stage, so there is no radius field. Colors are
+/// **straight** (non-premultiplied) linear RGBA — the backend premultiplies.
+/// `#[repr(C)]` with only 4-byte-aligned scalars/vectors, so the derive's
+/// `offset_of!`-based layout has no padding surprises.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, GpuPod)]
+pub struct AnalyticEllipseInstance {
+    /// Top-left corner in physical pixels.
+    pub rect_pos: [f32; 2],
+    /// Width/height in physical pixels.
+    pub rect_size: [f32; 2],
+    /// Straight linear RGBA fill.
+    pub color: [f32; 4],
     /// Border stroke width in pixels (0 = none).
     pub border_width: f32,
     /// Straight linear RGBA border color.
@@ -916,6 +1114,151 @@ mod tests {
         assert_eq!(
             QuadInstance::LAYOUT.validate_against(&quad_schema()),
             Ok(())
+        );
+    }
+
+    #[test]
+    fn analytic_rrect_instance_layout_matches_schema() {
+        assert_eq!(
+            AnalyticRRectInstance::LAYOUT.validate_against(&analytic_rrect_schema()),
+            Ok(())
+        );
+    }
+
+    #[test]
+    fn analytic_ellipse_instance_layout_matches_schema() {
+        assert_eq!(
+            AnalyticEllipseInstance::LAYOUT.validate_against(&analytic_ellipse_schema()),
+            Ok(())
+        );
+    }
+
+    #[test]
+    fn analytic_rrect_lowers_to_instance_with_per_corner_radii() {
+        let r = AnalyticRRect {
+            rect: Rect {
+                x: 10.0,
+                y: 20.0,
+                w: 30.0,
+                h: 40.0,
+            },
+            color: Rgba {
+                r: 1.0,
+                g: 0.5,
+                b: 0.25,
+                a: 1.0,
+            },
+            radius: Corners {
+                left_top: 1.0,
+                right_top: 2.0,
+                right_bottom: 3.0,
+                left_bottom: 4.0,
+            },
+            border: Border {
+                width: 2.0,
+                color: Rgba {
+                    r: 0.0,
+                    g: 0.0,
+                    b: 0.0,
+                    a: 1.0,
+                },
+            },
+        };
+        let inst = r.to_instance();
+        assert_eq!(inst.rect_pos, [10.0, 20.0]);
+        assert_eq!(inst.rect_size, [30.0, 40.0]);
+        assert_eq!(inst.color, [1.0, 0.5, 0.25, 1.0]);
+        // Corner order: left_top, right_top, right_bottom, left_bottom.
+        assert_eq!(inst.radius, [1.0, 2.0, 3.0, 4.0]);
+        assert_eq!(inst.border_width, 2.0);
+        assert_eq!(inst.border_color, [0.0, 0.0, 0.0, 1.0]);
+    }
+
+    #[test]
+    fn analytic_ellipse_lowers_to_instance() {
+        let e = AnalyticEllipse {
+            rect: Rect {
+                x: 10.0,
+                y: 20.0,
+                w: 30.0,
+                h: 40.0,
+            },
+            color: Rgba {
+                r: 0.2,
+                g: 0.4,
+                b: 0.6,
+                a: 0.8,
+            },
+            border: Border {
+                width: 3.0,
+                color: Rgba {
+                    r: 1.0,
+                    g: 1.0,
+                    b: 1.0,
+                    a: 1.0,
+                },
+            },
+        };
+        let inst = e.to_instance();
+        assert_eq!(inst.rect_pos, [10.0, 20.0]);
+        assert_eq!(inst.rect_size, [30.0, 40.0]);
+        assert_eq!(inst.color, [0.2, 0.4, 0.6, 0.8]);
+        assert_eq!(inst.border_width, 3.0);
+        assert_eq!(inst.border_color, [1.0, 1.0, 1.0, 1.0]);
+    }
+
+    #[test]
+    fn corners_within_the_box_pass_through_unscaled() {
+        let c = Corners {
+            left_top: 4.0,
+            right_top: 4.0,
+            right_bottom: 4.0,
+            left_bottom: 4.0,
+        };
+        // Every edge sum (8) fits within 20 → no scaling.
+        assert_eq!(c.normalized(20.0, 20.0), c);
+    }
+
+    #[test]
+    fn oversized_corners_scale_by_one_uniform_factor() {
+        // Top edge wants 30+10 across a 20-wide box → the tightest ratio is
+        // 20/40 = 0.5, and every corner shrinks by that same factor so the
+        // shape stays proportional (CSS overlapping-curves rule, §11.2).
+        let c = Corners {
+            left_top: 30.0,
+            right_top: 10.0,
+            right_bottom: 10.0,
+            left_bottom: 30.0,
+        };
+        let n = c.normalized(20.0, 100.0);
+        assert_eq!(
+            n,
+            Corners {
+                left_top: 15.0,
+                right_top: 5.0,
+                right_bottom: 5.0,
+                left_bottom: 15.0,
+            }
+        );
+    }
+
+    #[test]
+    fn negative_corner_radii_floor_to_zero() {
+        let c = Corners {
+            left_top: -5.0,
+            right_top: 2.0,
+            right_bottom: 0.0,
+            left_bottom: -1.0,
+        };
+        let n = c.normalized(100.0, 100.0);
+        assert_eq!(
+            n,
+            Corners {
+                left_top: 0.0,
+                right_top: 2.0,
+                right_bottom: 0.0,
+                left_bottom: 0.0,
+            }
         );
     }
 

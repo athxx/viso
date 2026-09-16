@@ -52,8 +52,8 @@ use ids::PrimitiveId;
 use ingest::IngestStats;
 use revision::Revisions;
 use store::{
-    BrushStore, ClipStore, GlyphRunStore, ImageStore, MeshStore, SolidQuadStore, StoreRef,
-    TransformStore, VectorPathStore,
+    AnalyticEllipseStore, AnalyticRRectStore, BrushStore, ClipStore, GlyphRunStore, ImageStore,
+    MeshStore, SolidQuadStore, StoreRef, TransformStore, VectorPathStore,
 };
 
 /// Where an emitted primitive's geometry is routed and how it is offset — the
@@ -107,6 +107,10 @@ pub struct PaintEntry {
 pub struct Scene {
     /// Solid/bordered quads, in paint order.
     pub quads: SolidQuadStore,
+    /// Analytic rounded rectangles (per-corner radius), in paint order.
+    pub analytic_rrects: AnalyticRRectStore,
+    /// Analytic ellipses, in paint order.
+    pub analytic_ellipses: AnalyticEllipseStore,
     /// Image draws.
     pub images: ImageStore,
     /// Glyph runs and their packed instances.
@@ -141,6 +145,8 @@ impl Scene {
     /// history a consumer compares against.
     pub fn begin_frame(&mut self) {
         self.quads.begin_frame();
+        self.analytic_rrects.begin_frame();
+        self.analytic_ellipses.begin_frame();
         self.images.begin_frame();
         self.glyph_runs.begin_frame();
         self.paths.begin_frame();

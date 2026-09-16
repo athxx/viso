@@ -810,25 +810,25 @@ Section 2 — gpu crate (BuiltinShader + headless three-leg):
       `rrect_sdf`/`ellipse_sdf` mirroring the fragment math; AA/border/premultiply reuse `fill_quad`.
 
 Section 3 — render crate (instance/primitive/store/renderer/inspect):
-- [ ] `primitive.rs`: `Primitive::AnalyticRRect`/`AnalyticEllipse` + host draw structs + `to_instance()`;
+- [x] `primitive.rs`: `Primitive::AnalyticRRect`/`AnalyticEllipse` + host draw structs + `to_instance()`;
       `#[repr(C)] #[derive(GpuPod)]` `AnalyticRRectInstance`/`AnalyticEllipseInstance`; schema re-export;
       two `*_instance_layout_matches_schema` tests. Unified radius-normalize when per-corner radii
       exceed available size (§11.2; widgets must not self-clamp).
-- [ ] `scene/store.rs`: `StoreRef` variants (reuse `GeometryId`) + `Display`; `AnalyticRRectStore`/
+- [x] `scene/store.rs`: `StoreRef` variants (reuse `GeometryId`) + `Display`; `AnalyticRRectStore`/
       `AnalyticEllipseStore` (begin/finish/ingest field-diff, per `SolidQuadStore`).
-- [ ] `scene/mod.rs`: two store fields + `begin_frame`/`finish_frame` calls.
-- [ ] `scene/ingest.rs`: `IngestStats` counters; `ingest_analytic_rrect`/`ingest_analytic_ellipse`;
+- [x] `scene/mod.rs`: two store fields + `begin_frame`/`finish_frame` calls.
+- [x] `scene/ingest.rs`: `IngestStats` counters; `ingest_analytic_rrect`/`ingest_analytic_ellipse`;
       wire into `finish_ingest`.
-- [ ] `batch/planner.rs`: `BatchFamily::AnalyticRRect`(tag 4)/`AnalyticEllipse`(tag 5), both
+- [x] `batch/planner.rs`: `BatchFamily::AnalyticRRect`(tag 4)/`AnalyticEllipse`(tag 5), both
       `mergeable`; `tag()`/`from_tag()`; round-trip test extended. `FAMILY_MASK=0b111` already fits.
-- [ ] `renderer.rs`: per-family pipeline/pool/scratch + `Renderer::new` (manifest-driven);
+- [x] `renderer.rs`: per-family pipeline/pool/scratch + `Renderer::new` (manifest-driven);
       `SegmentKind` variants + `family()`/`resource()`; `upload()` arms; pool-sync + `last_upload_bytes`
       sums; `lower_from_scene()` + `command_for()` arms; `SHADER_PIPELINE_PREWARM_COUNT` 4→6; strides.
-- [ ] `inspect.rs`: `BatchPipeline` variants + `label()`/`family()`; three exhaustive matches extended.
-- [ ] Frozen offset/stride blocks in `instance_abi_frozen.rs`.
-- [ ] Analytic AA correctness proof (coverage routes through F0's single
+- [x] `inspect.rs`: `BatchPipeline` variants + `label()`/`family()`; three exhaustive matches extended.
+- [x] Frozen offset/stride blocks in `instance_abi_frozen.rs`.
+- [x] Analytic AA correctness proof (coverage routes through F0's single
       `composite(premul, coverage)`; golden vs baseline).
-- [ ] Bump `SHADER_PIPELINE_PREWARM_COUNT` (`renderer.rs`) 4→6.
+- [x] Bump `SHADER_PIPELINE_PREWARM_COUNT` (`renderer.rs`) 4→6.
 
 ### D1.3 — AnalyticCapsule (`viso-shader`, `viso-gpu`, `viso-render`)
 - [ ] Add `PipelineFamily::AnalyticCapsule` (`crates/shader/src/manifest.rs` enum) + `lib.rs`

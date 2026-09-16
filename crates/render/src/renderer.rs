@@ -27,12 +27,19 @@ use viso_shader::{PipelineEntry, PipelineFamily, standard_manifest};
 
 use crate::batch::{BatchFamily, BatchItem, BatchKey, BatchTarget, joins};
 use crate::pool::InstancePool;
-use crate::primitive::{GlyphInstance, ImageInstance, MeshVertex, Primitive, QuadInstance, Rect};
+use crate::primitive::{
+    AnalyticEllipseInstance, AnalyticRRectInstance, GlyphInstance, ImageInstance, MeshVertex,
+    Primitive, QuadInstance, Rect,
+};
 use crate::scene::store::{StoreRef, glyph_instances};
 use crate::scene::{EmitContext, Scene};
 
 /// Bytes of one quad instance.
 const QUAD_STRIDE: usize = core::mem::size_of::<QuadInstance>();
+/// Bytes of one analytic rounded-rectangle instance.
+const ANALYTIC_RRECT_STRIDE: usize = core::mem::size_of::<AnalyticRRectInstance>();
+/// Bytes of one analytic ellipse instance.
+const ANALYTIC_ELLIPSE_STRIDE: usize = core::mem::size_of::<AnalyticEllipseInstance>();
 /// Bytes of one image instance.
 const IMAGE_STRIDE: usize = core::mem::size_of::<ImageInstance>();
 /// Bytes of one glyph instance.
@@ -43,6 +50,12 @@ pub(crate) enum SegmentKind {
     /// A run of adjacent quads sharing this segment's clip, in the quad buffer.
     /// `start`/`count` count instances in that buffer.
     Quad,
+    /// A run of adjacent analytic rounded rectangles sharing this segment's
+    /// clip, in the analytic-rrect buffer. `start`/`count` count instances.
+    AnalyticRRect,
+    /// A run of adjacent analytic ellipses sharing this segment's clip, in the
+    /// analytic-ellipse buffer. `start`/`count` count instances.
+    AnalyticEllipse,
     /// A single image, in the image buffer, sampling `bind_group`'s texture.
     /// `start`/`count` count instances in that buffer.
     Image { bind_group: BindGroupId },
@@ -62,6 +75,8 @@ impl SegmentKind {
     pub(crate) fn family(self) -> BatchFamily {
         match self {
             SegmentKind::Quad => BatchFamily::Quad,
+            SegmentKind::AnalyticRRect => BatchFamily::AnalyticRRect,
+            SegmentKind::AnalyticEllipse => BatchFamily::AnalyticEllipse,
             SegmentKind::Image { .. } => BatchFamily::Image,
             SegmentKind::GlyphRun { .. } => BatchFamily::GlyphRun,
             SegmentKind::Mesh => BatchFamily::Mesh,
@@ -76,7 +91,10 @@ impl SegmentKind {
             SegmentKind::Image { bind_group } | SegmentKind::GlyphRun { bind_group } => {
                 Some(bind_group)
             }
-            SegmentKind::Quad | SegmentKind::Mesh => None,
+            SegmentKind::Quad
+            | SegmentKind::AnalyticRRect
+            | SegmentKind::AnalyticEllipse
+            | SegmentKind::Mesh => None,
         }
     }
 }
@@ -196,10 +214,11 @@ struct TextureBinding {
 }
 
 /// The built-in pipelines the renderer prewarms once in [`Renderer::new`]
-/// (§7.1): SolidRect (quad), Image, MaskComposite (glyph), and PathFill (mesh).
-/// Reported as `FrameStats::shader_pipeline_creations` — a construction-time
-/// constant, since no draw ever triggers a runtime shader compile.
-const SHADER_PIPELINE_PREWARM_COUNT: u32 = 4;
+/// (§7.1): SolidRect (quad), Image, MaskComposite (glyph), PathFill (mesh),
+/// AnalyticRRect, and AnalyticEllipse. Reported as
+/// `FrameStats::shader_pipeline_creations` — a construction-time constant, since
+/// no draw ever triggers a runtime shader compile.
+const SHADER_PIPELINE_PREWARM_COUNT: u32 = 6;
 
 /// Draw-call and instance counts for the frame the renderer has just lowered.
 ///
@@ -287,6 +306,10 @@ pub struct FrameStats {
 pub struct Renderer {
     /// The Quad built-in pipeline (registered once).
     quad_pipeline: PipelineId,
+    /// The AnalyticRRect built-in pipeline (registered once).
+    analytic_rrect_pipeline: PipelineId,
+    /// The AnalyticEllipse built-in pipeline (registered once).
+    analytic_ellipse_pipeline: PipelineId,
     /// The Image built-in pipeline (registered once).
     image_pipeline: PipelineId,
     /// The GlyphRun built-in pipeline (registered once).
@@ -299,6 +322,12 @@ pub struct Renderer {
     /// changed slot against a CPU shadow (§9.1), so a local paint change costs a
     /// local upload rather than a full-buffer re-upload.
     quad_pool: InstancePool<QuadInstance>,
+    /// Persistent analytic rounded-rectangle instance pool (same slot-diff
+    /// upload as `quad_pool`).
+    analytic_rrect_pool: InstancePool<AnalyticRRectInstance>,
+    /// Persistent analytic ellipse instance pool (same slot-diff upload as
+    /// `quad_pool`).
+    analytic_ellipse_pool: InstancePool<AnalyticEllipseInstance>,
     /// Persistent image instance pool (same slot-diff upload as `quad_pool`).
     image_pool: InstancePool<ImageInstance>,
     /// Persistent glyph instance pool (same slot-diff upload as `quad_pool`).
@@ -313,6 +342,10 @@ pub struct Renderer {
     texture_bindings: Vec<TextureBinding>,
     /// Scratch quad instance data, reused each frame.
     quad_scratch: Vec<QuadInstance>,
+    /// Scratch analytic rounded-rectangle instance data, reused each frame.
+    analytic_rrect_scratch: Vec<AnalyticRRectInstance>,
+    /// Scratch analytic ellipse instance data, reused each frame.
+    analytic_ellipse_scratch: Vec<AnalyticEllipseInstance>,
     /// Scratch image instance data, reused each frame.
     image_scratch: Vec<ImageInstance>,
     /// Scratch glyph instance data, reused each frame.
@@ -416,6 +449,20 @@ impl Renderer {
             )
             .expect("QuadInstance layout matches the quad shader schema");
 
+        let analytic_rrect_pipeline = backend
+            .create_pipeline(
+                &desc(entry(PipelineFamily::AnalyticRRect), "analytic-rrect"),
+                &AnalyticRRectInstance::LAYOUT,
+            )
+            .expect("AnalyticRRectInstance layout matches the analytic-rrect shader schema");
+
+        let analytic_ellipse_pipeline = backend
+            .create_pipeline(
+                &desc(entry(PipelineFamily::AnalyticEllipse), "analytic-ellipse"),
+                &AnalyticEllipseInstance::LAYOUT,
+            )
+            .expect("AnalyticEllipseInstance layout matches the analytic-ellipse shader schema");
+
         let image_pipeline = backend
             .create_pipeline(
                 &desc(entry(PipelineFamily::Image), "image"),
@@ -444,10 +491,20 @@ impl Renderer {
 
         Self {
             quad_pipeline,
+            analytic_rrect_pipeline,
+            analytic_ellipse_pipeline,
             image_pipeline,
             glyph_pipeline,
             sampler,
             quad_pool: InstancePool::new(BufferUsage::INSTANCE, "quad-instances"),
+            analytic_rrect_pool: InstancePool::new(
+                BufferUsage::INSTANCE,
+                "analytic-rrect-instances",
+            ),
+            analytic_ellipse_pool: InstancePool::new(
+                BufferUsage::INSTANCE,
+                "analytic-ellipse-instances",
+            ),
             image_pool: InstancePool::new(BufferUsage::INSTANCE, "image-instances"),
             glyph_pool: InstancePool::new(BufferUsage::INSTANCE, "glyph-instances"),
             mesh_pipeline,
@@ -455,6 +512,8 @@ impl Renderer {
             mesh_index_pool: InstancePool::new(BufferUsage::INDEX, "mesh-indices"),
             texture_bindings: Vec::with_capacity(8),
             quad_scratch: Vec::with_capacity(256),
+            analytic_rrect_scratch: Vec::with_capacity(256),
+            analytic_ellipse_scratch: Vec::with_capacity(256),
             image_scratch: Vec::with_capacity(64),
             glyph_scratch: Vec::with_capacity(256),
             mesh_vertex_scratch: Vec::with_capacity(1024),
@@ -549,6 +608,36 @@ impl Renderer {
                         0.0,
                     );
                     self.scene.ingest_quad(inst, ctx, bounds);
+                }
+                Primitive::AnalyticRRect(rrect) => {
+                    let inst = rrect.to_instance();
+                    let bounds = crate::scene::bounds::Bounds::from_world(
+                        Rect {
+                            x: inst.rect_pos[0],
+                            y: inst.rect_pos[1],
+                            w: inst.rect_size[0],
+                            h: inst.rect_size[1],
+                        },
+                        clip,
+                        0.0,
+                        0.0,
+                    );
+                    self.scene.ingest_analytic_rrect(inst, ctx, bounds);
+                }
+                Primitive::AnalyticEllipse(ellipse) => {
+                    let inst = ellipse.to_instance();
+                    let bounds = crate::scene::bounds::Bounds::from_world(
+                        Rect {
+                            x: inst.rect_pos[0],
+                            y: inst.rect_pos[1],
+                            w: inst.rect_size[0],
+                            h: inst.rect_size[1],
+                        },
+                        clip,
+                        0.0,
+                        0.0,
+                    );
+                    self.scene.ingest_analytic_ellipse(inst, ctx, bounds);
                 }
                 Primitive::Image(image) => {
                     let inst = image.to_instance();
@@ -646,6 +735,12 @@ impl Renderer {
         // coalesced dirty-range count, §9.3); summed, that is this frame's
         // `uploaded_ranges` counter (§30). A steady frame syncs zero ranges.
         self.uploaded_ranges = self.quad_pool.sync(backend, &self.quad_scratch)
+            + self
+                .analytic_rrect_pool
+                .sync(backend, &self.analytic_rrect_scratch)
+            + self
+                .analytic_ellipse_pool
+                .sync(backend, &self.analytic_ellipse_scratch)
             + self.image_pool.sync(backend, &self.image_scratch)
             + self.glyph_pool.sync(backend, &self.glyph_scratch)
             + self
@@ -658,6 +753,8 @@ impl Renderer {
         // slot uploaded nothing, so this is 0 — the same signal the steady-state
         // bench uses to prove a local change stays a local upload (§9.1).
         self.gpu_upload_bytes = self.quad_pool.last_upload_bytes()
+            + self.analytic_rrect_pool.last_upload_bytes()
+            + self.analytic_ellipse_pool.last_upload_bytes()
             + self.image_pool.last_upload_bytes()
             + self.glyph_pool.last_upload_bytes()
             + self.mesh_vertex_pool.last_upload_bytes()
@@ -678,6 +775,8 @@ impl Renderer {
     /// walk of the stream would produce.
     fn lower_from_scene<B: GpuBackend>(&mut self, backend: &mut B) {
         self.quad_scratch.clear();
+        self.analytic_rrect_scratch.clear();
+        self.analytic_ellipse_scratch.clear();
         self.image_scratch.clear();
         self.glyph_scratch.clear();
         self.mesh_vertex_scratch.clear();
@@ -706,6 +805,44 @@ impl Renderer {
                     // quad joins the previous draw; otherwise open a new one.
                     self.merge_or_push(Segment {
                         kind: SegmentKind::Quad,
+                        start,
+                        count: 1,
+                        clip,
+                        target,
+                    });
+                }
+                StoreRef::AnalyticRRect(id) => {
+                    let mut inst = self
+                        .scene
+                        .analytic_rrects
+                        .get(id)
+                        .expect("analytic-rrect slot")
+                        .instance;
+                    inst.rect_pos[0] -= origin[0];
+                    inst.rect_pos[1] -= origin[1];
+                    let start = self.analytic_rrect_scratch.len() as u32;
+                    self.analytic_rrect_scratch.push(inst);
+                    self.merge_or_push(Segment {
+                        kind: SegmentKind::AnalyticRRect,
+                        start,
+                        count: 1,
+                        clip,
+                        target,
+                    });
+                }
+                StoreRef::AnalyticEllipse(id) => {
+                    let mut inst = self
+                        .scene
+                        .analytic_ellipses
+                        .get(id)
+                        .expect("analytic-ellipse slot")
+                        .instance;
+                    inst.rect_pos[0] -= origin[0];
+                    inst.rect_pos[1] -= origin[1];
+                    let start = self.analytic_ellipse_scratch.len() as u32;
+                    self.analytic_ellipse_scratch.push(inst);
+                    self.merge_or_push(Segment {
+                        kind: SegmentKind::AnalyticEllipse,
                         start,
                         count: 1,
                         clip,
@@ -904,6 +1041,16 @@ impl Renderer {
     /// The Quad pipeline handle, for batch introspection.
     pub(crate) fn quad_pipeline_id(&self) -> PipelineId {
         self.quad_pipeline
+    }
+
+    /// The AnalyticRRect pipeline handle, for batch introspection.
+    pub(crate) fn analytic_rrect_pipeline_id(&self) -> PipelineId {
+        self.analytic_rrect_pipeline
+    }
+
+    /// The AnalyticEllipse pipeline handle, for batch introspection.
+    pub(crate) fn analytic_ellipse_pipeline_id(&self) -> PipelineId {
+        self.analytic_ellipse_pipeline
     }
 
     /// The Image pipeline handle, for batch introspection.
@@ -1229,6 +1376,28 @@ impl Renderer {
                     .buffer()
                     .expect("quad pool buffer exists when a quad segment references it"),
                 instance_offset: seg.start as usize * QUAD_STRIDE,
+                uniforms,
+                scissor,
+            },
+            SegmentKind::AnalyticRRect => DrawCommand {
+                pipeline: self.analytic_rrect_pipeline,
+                bind_group: None,
+                geometry: Geometry::Generated { count: seg.count },
+                instance_buffer: self.analytic_rrect_pool.buffer().expect(
+                    "analytic-rrect pool buffer exists when an analytic-rrect segment references it",
+                ),
+                instance_offset: seg.start as usize * ANALYTIC_RRECT_STRIDE,
+                uniforms,
+                scissor,
+            },
+            SegmentKind::AnalyticEllipse => DrawCommand {
+                pipeline: self.analytic_ellipse_pipeline,
+                bind_group: None,
+                geometry: Geometry::Generated { count: seg.count },
+                instance_buffer: self.analytic_ellipse_pool.buffer().expect(
+                    "analytic-ellipse pool buffer exists when an analytic-ellipse segment references it",
+                ),
+                instance_offset: seg.start as usize * ANALYTIC_ELLIPSE_STRIDE,
                 uniforms,
                 scissor,
             },

@@ -29,7 +29,10 @@
 
 use viso_gpu::TextureId;
 
-use crate::primitive::{GlyphInstance, ImageInstance, MeshVertex, Path, QuadInstance, Rect};
+use crate::primitive::{
+    AnalyticEllipseInstance, AnalyticRRectInstance, GlyphInstance, ImageInstance, MeshVertex, Path,
+    QuadInstance, Rect,
+};
 
 use super::bounds::Bounds;
 use super::ids::PrimitiveId;
@@ -48,6 +51,10 @@ pub struct IngestStats {
     pub dirty_primitives: u32,
     /// Quad instances retained this frame.
     pub quad_instances: u32,
+    /// Analytic rounded-rectangle instances retained this frame.
+    pub analytic_rrect_instances: u32,
+    /// Analytic ellipse instances retained this frame.
+    pub analytic_ellipse_instances: u32,
     /// Glyph instances retained this frame (summed across runs).
     pub glyph_instances: u32,
     /// Paths (re-)tessellated this frame — a geometry or paint change on a path,
@@ -108,6 +115,34 @@ impl Scene {
         self.apply_planes(dirty);
         self.ingest_stats.quad_instances += 1;
         self.record(StoreRef::Quad(slot), context, bounds)
+    }
+
+    /// Ingest an analytic rounded rectangle: diff into the rrect store, bump the
+    /// moved planes, and record its paint-order slot. Returns the stable id.
+    pub fn ingest_analytic_rrect(
+        &mut self,
+        instance: AnalyticRRectInstance,
+        context: EmitContext,
+        bounds: Bounds,
+    ) -> PrimitiveId {
+        let (slot, dirty) = self.analytic_rrects.ingest(instance);
+        self.apply_planes(dirty);
+        self.ingest_stats.analytic_rrect_instances += 1;
+        self.record(StoreRef::AnalyticRRect(slot), context, bounds)
+    }
+
+    /// Ingest an analytic ellipse: diff into the ellipse store, bump the moved
+    /// planes, and record its paint-order slot. Returns the stable id.
+    pub fn ingest_analytic_ellipse(
+        &mut self,
+        instance: AnalyticEllipseInstance,
+        context: EmitContext,
+        bounds: Bounds,
+    ) -> PrimitiveId {
+        let (slot, dirty) = self.analytic_ellipses.ingest(instance);
+        self.apply_planes(dirty);
+        self.ingest_stats.analytic_ellipse_instances += 1;
+        self.record(StoreRef::AnalyticEllipse(slot), context, bounds)
     }
 
     /// Ingest an image draw: diff instance + texture, bump the moved planes,
@@ -227,6 +262,8 @@ impl Scene {
     /// ingest walk by [`Scene::finish_frame`].
     pub(super) fn finish_ingest(&mut self) {
         let mut shrank = self.quads.finish_frame();
+        shrank |= self.analytic_rrects.finish_frame();
+        shrank |= self.analytic_ellipses.finish_frame();
         shrank |= self.images.finish_frame();
         shrank |= self.glyph_runs.finish_frame();
         shrank |= self.paths.finish_frame();

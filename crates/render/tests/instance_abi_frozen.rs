@@ -1,4 +1,4 @@
-//! Frozen `#[repr(C)]` layout of the four GPU instance/vertex structs (§18 / §36.1).
+//! Frozen `#[repr(C)]` layout of the GPU instance/vertex structs (§18 / §36.1).
 //!
 //! These structs are the CPU half of the three-way instance ABI: the
 //! `#[derive(GpuPod)]` layout here, the shader's `InstanceIn`/`VertexIn` struct,
@@ -15,7 +15,10 @@
 
 use std::mem::{align_of, offset_of, size_of};
 
-use viso_render::{GlyphInstance, ImageInstance, MeshVertex, QuadInstance};
+use viso_render::{
+    AnalyticEllipseInstance, AnalyticRRectInstance, GlyphInstance, ImageInstance, MeshVertex,
+    QuadInstance,
+};
 
 #[test]
 fn quad_instance_layout_is_frozen() {
@@ -27,6 +30,45 @@ fn quad_instance_layout_is_frozen() {
     assert_eq!(offset_of!(QuadInstance, radius), 32);
     assert_eq!(offset_of!(QuadInstance, border_width), 36);
     assert_eq!(offset_of!(QuadInstance, border_color), 40);
+}
+
+#[test]
+fn analytic_rrect_instance_layout_is_frozen() {
+    assert_eq!(
+        size_of::<AnalyticRRectInstance>(),
+        68,
+        "AnalyticRRectInstance stride"
+    );
+    assert_eq!(
+        align_of::<AnalyticRRectInstance>(),
+        4,
+        "AnalyticRRectInstance align"
+    );
+    assert_eq!(offset_of!(AnalyticRRectInstance, rect_pos), 0);
+    assert_eq!(offset_of!(AnalyticRRectInstance, rect_size), 8);
+    assert_eq!(offset_of!(AnalyticRRectInstance, color), 16);
+    assert_eq!(offset_of!(AnalyticRRectInstance, radius), 32);
+    assert_eq!(offset_of!(AnalyticRRectInstance, border_width), 48);
+    assert_eq!(offset_of!(AnalyticRRectInstance, border_color), 52);
+}
+
+#[test]
+fn analytic_ellipse_instance_layout_is_frozen() {
+    assert_eq!(
+        size_of::<AnalyticEllipseInstance>(),
+        52,
+        "AnalyticEllipseInstance stride"
+    );
+    assert_eq!(
+        align_of::<AnalyticEllipseInstance>(),
+        4,
+        "AnalyticEllipseInstance align"
+    );
+    assert_eq!(offset_of!(AnalyticEllipseInstance, rect_pos), 0);
+    assert_eq!(offset_of!(AnalyticEllipseInstance, rect_size), 8);
+    assert_eq!(offset_of!(AnalyticEllipseInstance, color), 16);
+    assert_eq!(offset_of!(AnalyticEllipseInstance, border_width), 32);
+    assert_eq!(offset_of!(AnalyticEllipseInstance, border_color), 36);
 }
 
 #[test]

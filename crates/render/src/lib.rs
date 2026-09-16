@@ -30,9 +30,11 @@ pub use inspect::{
     BatchId, BatchPipeline, InspectBatch, InspectBatches, InspectPrimitives, PrimitiveRange,
 };
 pub use primitive::{
-    Border, GlyphInstance, GlyphInstanceData, GlyphRunDraw, ImageDraw, ImageInstance, LayerClip,
+    AnalyticEllipse, AnalyticEllipseInstance, AnalyticRRect, AnalyticRRectInstance, Border,
+    Corners, GlyphInstance, GlyphInstanceData, GlyphRunDraw, ImageDraw, ImageInstance, LayerClip,
     LineJoin, Mesh, MeshVertex, Path, PathCmd, Point, Primitive, Quad, QuadInstance, Rect, Rgba,
-    Stroke, glyphrun_schema, image_schema, mesh_schema, quad_schema,
+    Stroke, analytic_ellipse_schema, analytic_rrect_schema, glyphrun_schema, image_schema,
+    mesh_schema, quad_schema,
 };
 pub use renderer::{FrameStats, Renderer};
 // GPU handles that appear in this crate's public API. `TextureId` is carried by
@@ -185,7 +187,10 @@ pub fn test_glyphs(origin: [f32; 2], font_size: f32) -> TestGlyphs {
 /// textured path; a filled-and-stroked [`Primitive::Path`] (a Bézier outline with
 /// a miter corner, exercising curve flattening, fill coverage-AA, and stroke
 /// joins); a caller-supplied [`Primitive::Mesh`] triangle (the direct-geometry
-/// escape hatch, sharing the path pipeline); a multi-line
+/// escape hatch, sharing the path pipeline); an [`Primitive::AnalyticRRect`]
+/// with four distinct corner radii and a border, plus an
+/// [`Primitive::AnalyticEllipse`] with a border, exercising the two analytic
+/// Box-SDF families' fill and inner/outer border AA; a multi-line
 /// [`Primitive::GlyphRun`] (`glyphs`, from [`test_glyphs`]) sampling an A8
 /// coverage atlas, exercising the text vertical slice; and a translucent
 /// [`Primitive::Layer`] (`opacity < 1`) wrapping a solid quad, exercising the
@@ -356,6 +361,65 @@ pub fn test_scene(texture: TextureId, glyphs: GlyphRunDraw) -> Vec<Primitive> {
                 },
             ],
             indices: vec![0, 1, 2],
+        }),
+        // An analytic rounded rect with four *different* corner radii and a
+        // border, tucked against the left edge. Its per-corner SDF and the
+        // inner/outer border AA are captured by the golden the same way the
+        // Quad family's are — this is the analytic-rrect AA proof.
+        Primitive::AnalyticRRect(AnalyticRRect {
+            rect: Rect {
+                x: 2.0,
+                y: 24.0,
+                w: 24.0,
+                h: 26.0,
+            },
+            color: Rgba {
+                r: 0.95,
+                g: 0.75,
+                b: 0.1,
+                a: 1.0,
+            },
+            radius: Corners {
+                left_top: 2.0,
+                right_top: 8.0,
+                right_bottom: 12.0,
+                left_bottom: 4.0,
+            },
+            border: Border {
+                width: 2.0,
+                color: Rgba {
+                    r: 0.4,
+                    g: 0.25,
+                    b: 0.0,
+                    a: 1.0,
+                },
+            },
+        }),
+        // An analytic ellipse (non-square → a true ellipse, not a circle) with a
+        // border, in the top-center gap. The scaled-circle SDF's curved AA edge
+        // is what this adds to the baseline.
+        Primitive::AnalyticEllipse(AnalyticEllipse {
+            rect: Rect {
+                x: 60.0,
+                y: 2.0,
+                w: 28.0,
+                h: 18.0,
+            },
+            color: Rgba {
+                r: 0.2,
+                g: 0.55,
+                b: 0.95,
+                a: 1.0,
+            },
+            border: Border {
+                width: 2.5,
+                color: Rgba {
+                    r: 0.05,
+                    g: 0.15,
+                    b: 0.4,
+                    a: 1.0,
+                },
+            },
         }),
         // Translucent container: `opacity < 1.0` renders this subtree into an
         // offscreen texture, then composites it back over the scene at the layer

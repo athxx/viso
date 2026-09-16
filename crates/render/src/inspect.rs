@@ -58,6 +58,11 @@ pub struct BatchId(pub u32);
 pub enum BatchPipeline {
     /// A run of adjacent quads (the quad pipeline).
     Quad,
+    /// A run of adjacent analytic rounded rectangles (the analytic-rrect
+    /// pipeline).
+    AnalyticRRect,
+    /// A run of adjacent analytic ellipses (the analytic-ellipse pipeline).
+    AnalyticEllipse,
     /// A single textured image (the image pipeline).
     Image,
     /// One run of SDF glyphs (the glyph pipeline).
@@ -72,6 +77,8 @@ impl BatchPipeline {
     pub fn label(self) -> &'static str {
         match self {
             BatchPipeline::Quad => "quad",
+            BatchPipeline::AnalyticRRect => "analytic-rrect",
+            BatchPipeline::AnalyticEllipse => "analytic-ellipse",
             BatchPipeline::Image => "image",
             BatchPipeline::GlyphRun => "glyph",
             BatchPipeline::Mesh => "mesh",
@@ -84,6 +91,8 @@ impl BatchPipeline {
     fn family(self) -> BatchFamily {
         match self {
             BatchPipeline::Quad => BatchFamily::Quad,
+            BatchPipeline::AnalyticRRect => BatchFamily::AnalyticRRect,
+            BatchPipeline::AnalyticEllipse => BatchFamily::AnalyticEllipse,
             BatchPipeline::Image => BatchFamily::Image,
             BatchPipeline::GlyphRun => BatchFamily::GlyphRun,
             BatchPipeline::Mesh => BatchFamily::Mesh,
@@ -309,6 +318,16 @@ impl Renderer {
     fn inspect_segment(&self, id: BatchId, seg: &Segment) -> InspectBatch {
         let (pipeline, pipeline_id, bind_group) = match seg.kind {
             SegmentKind::Quad => (BatchPipeline::Quad, self.quad_pipeline_id(), None),
+            SegmentKind::AnalyticRRect => (
+                BatchPipeline::AnalyticRRect,
+                self.analytic_rrect_pipeline_id(),
+                None,
+            ),
+            SegmentKind::AnalyticEllipse => (
+                BatchPipeline::AnalyticEllipse,
+                self.analytic_ellipse_pipeline_id(),
+                None,
+            ),
             SegmentKind::Image { bind_group } => (
                 BatchPipeline::Image,
                 self.image_pipeline_id(),
@@ -362,6 +381,8 @@ impl Renderer {
         // images (also composites), and glyphs count in instances; paths and
         // meshes share the mesh index buffer, counted in indices.
         let mut quad_cursor: u32 = 0;
+        let mut analytic_rrect_cursor: u32 = 0;
+        let mut analytic_ellipse_cursor: u32 = 0;
         let mut image_cursor: u32 = 0;
         let mut glyph_cursor: u32 = 0;
         let mut index_cursor: u32 = 0;
@@ -384,6 +405,26 @@ impl Renderer {
                     let start = quad_cursor;
                     quad_cursor += 1;
                     (BatchPipeline::Quad, SegmentKind::Quad, start, 1)
+                }
+                StoreRef::AnalyticRRect(_) => {
+                    let start = analytic_rrect_cursor;
+                    analytic_rrect_cursor += 1;
+                    (
+                        BatchPipeline::AnalyticRRect,
+                        SegmentKind::AnalyticRRect,
+                        start,
+                        1,
+                    )
+                }
+                StoreRef::AnalyticEllipse(_) => {
+                    let start = analytic_ellipse_cursor;
+                    analytic_ellipse_cursor += 1;
+                    (
+                        BatchPipeline::AnalyticEllipse,
+                        SegmentKind::AnalyticEllipse,
+                        start,
+                        1,
+                    )
                 }
                 StoreRef::Image(_) | StoreRef::Composite { .. } => {
                     let start = image_cursor;
@@ -546,6 +587,8 @@ impl Renderer {
             // `push_mesh_segment`'s early return.
             let (family, emits) = match entry.store {
                 StoreRef::Quad(_) => (BatchFamily::Quad, true),
+                StoreRef::AnalyticRRect(_) => (BatchFamily::AnalyticRRect, true),
+                StoreRef::AnalyticEllipse(_) => (BatchFamily::AnalyticEllipse, true),
                 StoreRef::Image(_) | StoreRef::Composite { .. } => (BatchFamily::Image, true),
                 StoreRef::GlyphRun(run) => {
                     let e = self

@@ -27,6 +27,8 @@ const H: u32 = 96;
 fn pipeline_family(pipeline: BatchPipeline) -> BatchFamily {
     match pipeline {
         BatchPipeline::Quad => BatchFamily::Quad,
+        BatchPipeline::AnalyticRRect => BatchFamily::AnalyticRRect,
+        BatchPipeline::AnalyticEllipse => BatchFamily::AnalyticEllipse,
         BatchPipeline::Image => BatchFamily::Image,
         BatchPipeline::GlyphRun => BatchFamily::GlyphRun,
         BatchPipeline::Mesh => BatchFamily::Mesh,
