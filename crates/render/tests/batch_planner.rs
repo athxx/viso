@@ -30,6 +30,7 @@ fn pipeline_family(pipeline: BatchPipeline) -> BatchFamily {
         BatchPipeline::AnalyticRRect => BatchFamily::AnalyticRRect,
         BatchPipeline::AnalyticEllipse => BatchFamily::AnalyticEllipse,
         BatchPipeline::AnalyticCapsule => BatchFamily::AnalyticCapsule,
+        BatchPipeline::AnalyticLine => BatchFamily::AnalyticLine,
         BatchPipeline::Image => BatchFamily::Image,
         BatchPipeline::GlyphRun => BatchFamily::GlyphRun,
         BatchPipeline::Mesh => BatchFamily::Mesh,
@@ -179,6 +180,10 @@ fn batch_key_packs_and_unpacks_losslessly() {
         (BatchFamily::Image, 1),
         (BatchFamily::GlyphRun, 2),
         (BatchFamily::Mesh, 3),
+        (BatchFamily::AnalyticRRect, 4),
+        (BatchFamily::AnalyticEllipse, 5),
+        (BatchFamily::AnalyticCapsule, 6),
+        (BatchFamily::AnalyticLine, 7),
     ] {
         let main = BatchKey::pack(family, BatchTarget::Main, None);
         assert_eq!(main.family(), family);

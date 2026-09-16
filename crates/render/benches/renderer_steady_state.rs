@@ -30,8 +30,10 @@ use viso_gpu::{
     GpuBackend, HeadlessRaster, RawWindowHandle, SurfaceId, TextureDesc, TextureFormat,
 };
 use viso_render::{
-    Border, FrameStats, GlyphRunDraw, Primitive, Quad, Rect, Renderer, Rgba, test_glyphs,
-    test_scene, test_texture,
+    AnalyticCapsule, AnalyticCapsuleInstance, AnalyticEllipse, AnalyticEllipseInstance,
+    AnalyticLine, AnalyticLineInstance, AnalyticRRect, AnalyticRRectInstance, Border, Corners,
+    FrameStats, GlyphRunDraw, LineCap, LineJoin, Point, Primitive, Quad, Rect, Renderer, Rgba,
+    test_glyphs, test_scene, test_texture,
 };
 
 /// A global allocator that counts heap allocations while `ARMED`, so a steady
@@ -174,6 +176,130 @@ fn grid_scene(count: usize) -> Vec<Primitive> {
     scene
 }
 
+/// Which analytic family a per-family grid is built from. Each grid is
+/// homogeneous — one family only — so that family's pool is the sole participant
+/// in `sync`, letting the hover proof pin the upload to exactly one instance of
+/// that family's stride (mirroring the pure-quad proof's isolation).
+#[derive(Debug, Clone, Copy)]
+enum Family {
+    RRect,
+    Ellipse,
+    Capsule,
+    Line,
+}
+
+impl Family {
+    /// The byte stride of this family's GPU instance — the exact upload a
+    /// one-primitive hover must produce.
+    fn instance_stride(self) -> usize {
+        match self {
+            Family::RRect => size_of::<AnalyticRRectInstance>(),
+            Family::Ellipse => size_of::<AnalyticEllipseInstance>(),
+            Family::Capsule => size_of::<AnalyticCapsuleInstance>(),
+            Family::Line => size_of::<AnalyticLineInstance>(),
+        }
+    }
+
+    /// Build one primitive of this family for grid cell `i` at pixel `(x, y)`,
+    /// with the per-cell hue [`grid_scene`] uses so a recolor is observable.
+    fn primitive(self, i: usize, x: f32, y: f32) -> Primitive {
+        let color = Rgba {
+            r: (i % 7) as f32 / 7.0,
+            g: (i % 13) as f32 / 13.0,
+            b: (i % 5) as f32 / 5.0,
+            a: 1.0,
+        };
+        let rect = Rect {
+            x,
+            y,
+            w: 2.0,
+            h: 2.0,
+        };
+        match self {
+            Family::RRect => Primitive::AnalyticRRect(AnalyticRRect {
+                rect,
+                color,
+                radius: Corners::uniform(0.5),
+                border: Border::NONE,
+            }),
+            Family::Ellipse => Primitive::AnalyticEllipse(AnalyticEllipse {
+                rect,
+                color,
+                border: Border::NONE,
+            }),
+            Family::Capsule => Primitive::AnalyticCapsule(AnalyticCapsule {
+                rect,
+                color,
+                border: Border::NONE,
+            }),
+            Family::Line => Primitive::AnalyticLine(AnalyticLine {
+                p0: Point { x, y },
+                p1: Point {
+                    x: x + 2.0,
+                    y: y + 2.0,
+                },
+                width: 1.0,
+                color,
+                cap: LineCap::Butt,
+                join: LineJoin::Miter,
+                miter_limit: 4.0,
+                border: Border::NONE,
+            }),
+        }
+    }
+
+    /// Recolor a primitive of this family in place (a paint-plane change).
+    fn recolor(self, p: &mut Primitive, color: Rgba) {
+        match (self, p) {
+            (Family::RRect, Primitive::AnalyticRRect(r)) => r.color = color,
+            (Family::Ellipse, Primitive::AnalyticEllipse(e)) => e.color = color,
+            (Family::Capsule, Primitive::AnalyticCapsule(c)) => c.color = color,
+            (Family::Line, Primitive::AnalyticLine(l)) => l.color = color,
+            _ => unreachable!("grid is homogeneous in its family"),
+        }
+    }
+
+    /// Shift a primitive of this family up-left by a pixel (a transform-plane
+    /// change) — a scroll.
+    fn scroll(self, p: &mut Primitive) {
+        match (self, p) {
+            (Family::RRect, Primitive::AnalyticRRect(r)) => {
+                r.rect.x -= 1.0;
+                r.rect.y -= 1.0;
+            }
+            (Family::Ellipse, Primitive::AnalyticEllipse(e)) => {
+                e.rect.x -= 1.0;
+                e.rect.y -= 1.0;
+            }
+            (Family::Capsule, Primitive::AnalyticCapsule(c)) => {
+                c.rect.x -= 1.0;
+                c.rect.y -= 1.0;
+            }
+            (Family::Line, Primitive::AnalyticLine(l)) => {
+                l.p0.x -= 1.0;
+                l.p0.y -= 1.0;
+                l.p1.x -= 1.0;
+                l.p1.y -= 1.0;
+            }
+            _ => unreachable!("grid is homogeneous in its family"),
+        }
+    }
+}
+
+/// A homogeneous grid of `count` primitives of one analytic `family`, laid on the
+/// same fixed pitch as [`grid_scene`]. Used by the per-family hover/scroll proofs
+/// so each new analytic pool is exercised in isolation.
+fn family_grid_scene(family: Family, count: usize) -> Vec<Primitive> {
+    let cols = (count as f64).sqrt().ceil() as usize;
+    let mut scene = Vec::with_capacity(count);
+    for i in 0..count {
+        let col = (i % cols) as f32;
+        let row = (i / cols) as f32;
+        scene.push(family.primitive(i, col * 3.0, row * 3.0));
+    }
+    scene
+}
+
 /// A [`Harness`] over a pure-quad [`grid_scene`] of `count` tiles. Same backend /
 /// renderer / surface setup as [`setup`], but no image/glyph resources — the
 /// grid needs none, so the quad pool is the only one that ever uploads.
@@ -189,6 +315,117 @@ fn setup_grid(count: usize) -> Harness {
         surface,
         scene,
     }
+}
+
+/// A [`Harness`] over a homogeneous [`family_grid_scene`]. Same isolation as
+/// [`setup_grid`]: no image/glyph resources, and one family only, so that
+/// family's pool is the sole `sync` participant.
+fn setup_family_grid(family: Family, count: usize) -> Harness {
+    let mut gpu = HeadlessRaster::new();
+    let surface = gpu.create_surface(RawWindowHandle::Headless, W, H);
+    let format = gpu.surface_format(surface);
+    let renderer = Renderer::new(&mut gpu, format);
+    let scene = family_grid_scene(family, count);
+    Harness {
+        gpu,
+        renderer,
+        surface,
+        scene,
+    }
+}
+
+/// §9.1 proof for an analytic `family`: a paint-only change to one primitive
+/// uploads exactly one coalesced range of one instance of that family's stride,
+/// never the whole scene — the same guarantee [`assert_hover_uploads_one_range`]
+/// proves for quads, extended to each new analytic pool.
+fn assert_family_hover_uploads_one_range(family: Family) {
+    let mut h = setup_family_grid(family, GRID_10K);
+    frame(&mut h);
+    frame(&mut h);
+
+    h.renderer.upload(&mut h.gpu, &h.scene);
+    let steady = h.renderer.frame_stats();
+    assert_eq!(
+        steady.uploaded_ranges, 0,
+        "{family:?}: an unchanged 10k grid must upload zero ranges (§9.1)"
+    );
+    assert_eq!(
+        steady.gpu_upload_bytes, 0,
+        "{family:?}: an unchanged 10k grid must upload zero bytes (§9.1)"
+    );
+
+    let target = GRID_10K / 2;
+    family.recolor(
+        &mut h.scene[target],
+        Rgba {
+            r: 0.123,
+            g: 0.456,
+            b: 0.789,
+            a: 1.0,
+        },
+    );
+
+    h.renderer.upload(&mut h.gpu, &h.scene);
+    let hover = h.renderer.frame_stats();
+
+    assert_eq!(
+        hover.uploaded_ranges, 1,
+        "{family:?}: a one-primitive paint change must coalesce to exactly one \
+         upload range (§9.1/§9.3)"
+    );
+    assert_eq!(
+        hover.gpu_upload_bytes,
+        family.instance_stride(),
+        "{family:?}: a one-primitive paint change must upload exactly one \
+         instance's bytes (§9.1)"
+    );
+    assert_eq!(
+        hover.dirty_primitives, 1,
+        "{family:?}: a one-primitive paint change must dirty exactly one \
+         primitive (§8.4)"
+    );
+    assert_eq!(
+        hover.path_tessellations, 0,
+        "{family:?}: analytic families never tessellate, and no geometry plane \
+         moved (§8.4)"
+    );
+}
+
+/// §8.7 proof for an analytic `family`: a scroll (every primitive shifted) is a
+/// transform-plane event that re-tessellates nothing and grows no buffer.
+fn assert_family_scroll_is_transform_only(family: Family) {
+    let mut h = setup_family_grid(family, GRID_10K);
+    frame(&mut h);
+    frame(&mut h);
+
+    let buffers = h.gpu.buffer_count();
+
+    for p in &mut h.scene {
+        family.scroll(p);
+    }
+
+    h.renderer.upload(&mut h.gpu, &h.scene);
+    let scroll = h.renderer.frame_stats();
+
+    assert_eq!(
+        scroll.dirty_primitives, GRID_10K as u32,
+        "{family:?}: a scroll moves every primitive, so every one is dirty on the \
+         transform plane"
+    );
+    assert_eq!(
+        scroll.path_tessellations, 0,
+        "{family:?}: a transform-only change must re-tessellate nothing (§8.7)"
+    );
+    assert_eq!(
+        scroll.instance_rebuilds, 0,
+        "{family:?}: a scroll rewrites existing slots in place — no buffer is \
+         rebuilt/grown (§8.7/§9.1)"
+    );
+    assert_eq!(
+        h.gpu.buffer_count(),
+        buffers,
+        "{family:?}: a scroll must not allocate a new GPU buffer (§17.4)"
+    );
 }
 
 /// §9.1 proof — a paint-only change to one tile uploads exactly one coalesced
@@ -412,6 +649,19 @@ fn bench_steady_state(c: &mut Criterion) {
     // (§9.1) and a scroll to the transform plane (§8.7), at 10k tiles.
     assert_hover_uploads_one_range();
     assert_scroll_is_transform_only();
+
+    // D1 gate: each analytic family's pool holds the same two invariants in
+    // isolation — a one-primitive hover uploads exactly one instance of that
+    // family's stride, and a scroll is transform-only with no buffer growth.
+    for family in [
+        Family::RRect,
+        Family::Ellipse,
+        Family::Capsule,
+        Family::Line,
+    ] {
+        assert_family_hover_uploads_one_range(family);
+        assert_family_scroll_is_transform_only(family);
+    }
 
     let mut h = setup();
     // Warm up so the measured iterations are the reuse path, not first growth.

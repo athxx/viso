@@ -52,6 +52,9 @@ pub enum BatchFamily {
     AnalyticEllipse,
     /// Analytic capsules/stadiums, drawn instanced from their own shared buffer.
     AnalyticCapsule,
+    /// Analytic line segments (cap/join/miter), drawn instanced from their own
+    /// shared buffer.
+    AnalyticLine,
     /// A single textured image, drawn instanced from the shared image buffer,
     /// binding its texture's `bind_group`.
     Image,
@@ -75,6 +78,7 @@ impl BatchFamily {
             BatchFamily::AnalyticRRect => 4,
             BatchFamily::AnalyticEllipse => 5,
             BatchFamily::AnalyticCapsule => 6,
+            BatchFamily::AnalyticLine => 7,
         }
     }
 
@@ -88,6 +92,7 @@ impl BatchFamily {
             4 => Some(BatchFamily::AnalyticRRect),
             5 => Some(BatchFamily::AnalyticEllipse),
             6 => Some(BatchFamily::AnalyticCapsule),
+            7 => Some(BatchFamily::AnalyticLine),
             _ => None,
         }
     }
@@ -103,6 +108,7 @@ impl BatchFamily {
                 | BatchFamily::AnalyticRRect
                 | BatchFamily::AnalyticEllipse
                 | BatchFamily::AnalyticCapsule
+                | BatchFamily::AnalyticLine
                 | BatchFamily::Mesh
         )
     }
@@ -270,6 +276,7 @@ mod tests {
             BatchFamily::AnalyticRRect,
             BatchFamily::AnalyticEllipse,
             BatchFamily::AnalyticCapsule,
+            BatchFamily::AnalyticLine,
         ] {
             let key = BatchKey::pack(family, BatchTarget::Main, None);
             assert_eq!(key.family(), family);

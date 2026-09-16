@@ -642,3 +642,170 @@ fragment float4 fragment_main(VOut in [[stage_in]]) {
     return src;
 }
 "##;
+
+/// The AnalyticLine MSL, frozen as a codegen oracle.
+///
+/// Like the other analytic families, this has no pre-migration hand-written
+/// source: it was introduced directly on the typed IR, so its oracle is the
+/// codegen output itself, locked by the byte-equivalence self-consistency test.
+/// It still needs a one-time real-Metal compile to trust (the headless backend
+/// does not compile MSL; see `viso-msl-reserved-half`).
+pub const ANALYTIC_LINE_MSL_ORIGINAL: &str = r##"
+#include <metal_stdlib>
+using namespace metal;
+
+struct InstanceIn {
+    packed_float2 p0;
+    packed_float2 p1;
+    float width;
+    packed_float4 color;
+    uint cap;
+    uint join;
+    float miter_limit;
+    float border_width;
+    packed_float4 border_color;
+};
+
+struct Uniforms {
+    packed_float2 viewport;
+};
+
+struct VOut {
+    float4 position [[position]];
+    float2 local;        // pixel-space sample position
+    float2 seg_a;        // segment start (pixels)
+    float2 seg_b;        // segment end (pixels)
+    float half_width;    // stroke half-width (pixels)
+    uint cap [[flat]];            // 0=butt 1=square 2=round
+    uint join [[flat]];           // 0=miter 1=bevel 2=round
+    float miter_limit;
+    float border_width;
+    float4 color;
+    float4 border_color;
+};
+
+vertex VOut vertex_main(uint vid [[vertex_id]],
+                        uint iid [[instance_id]],
+                        const device InstanceIn* instances [[buffer(1)]],
+                        constant Uniforms& u [[buffer(0)]]) {
+    InstanceIn inst = instances[iid];
+
+    // A line has no axis-aligned rect: derive a bounding quad rotated along the
+    // segment direction. `t` runs 0→1 along the segment, `s` runs -1→+1 across it.
+    // Two triangles: (0,-1)(1,-1)(0,+1) and (1,-1)(1,+1)(0,+1).
+    float2 ts;
+    switch (vid) {
+        case 0: ts = float2(0.0, -1.0); break;
+        case 1: ts = float2(1.0, -1.0); break;
+        case 2: ts = float2(0.0,  1.0); break;
+        case 3: ts = float2(1.0, -1.0); break;
+        case 4: ts = float2(1.0,  1.0); break;
+        default: ts = float2(0.0, 1.0); break;
+    }
+
+    float2 p0 = float2(inst.p0);
+    float2 p1 = float2(inst.p1);
+    float hw = inst.width * 0.5;
+
+    // Segment direction and normal. A degenerate (zero-length) segment falls back
+    // to +x so the quad stays well-formed and the SDF still renders the caps.
+    float2 delta = p1 - p0;
+    float len = length(delta);
+    float2 dir = len > 0.0 ? delta / len : float2(1.0, 0.0);
+    float2 nrm = float2(-dir.y, dir.x);
+
+    // Square/round caps extend the geometry by a half-width past each end; butt
+    // caps do not. Pad by 1px each side (along and across) for the AA ramp.
+    float cap_ext = inst.cap == 0u ? 0.0 : hw;
+    float pad = 1.0;
+    float2 endpoint = p0 + dir * (ts.x * len);
+    float along = ts.x < 0.5 ? -(cap_ext + pad) : (cap_ext + pad);
+    float2 pixel = endpoint + dir * along + nrm * (ts.y * (hw + pad));
+
+    // Pixel-space (top-left origin) → NDC. Y is flipped for Metal.
+    float2 vp = float2(u.viewport);
+    float2 ndc = float2(pixel.x / vp.x * 2.0 - 1.0,
+                        1.0 - pixel.y / vp.y * 2.0);
+
+    VOut out;
+    out.position = float4(ndc, 0.0, 1.0);
+    out.local = pixel;
+    out.seg_a = p0;
+    out.seg_b = p1;
+    out.half_width = hw;
+    out.cap = inst.cap;
+    out.join = inst.join;
+    out.miter_limit = inst.miter_limit;
+    out.color = float4(inst.color);
+    out.border_width = inst.border_width;
+    out.border_color = float4(inst.border_color);
+    return out;
+}
+
+// Signed distance to a line segment of half-width `hw` (IQ): project the sample
+// onto the segment (clamped to its endpoints), then take the distance to that
+// nearest point minus the half-width. Negative inside. This alone yields round
+// caps (the endpoint projection rounds naturally); butt/square caps are applied
+// by the fragment as an along-axis trim/extension of the clamp parameter.
+static inline float segment_sdf(float2 p, float2 a, float2 b, float hw) {
+    float2 pa = p - a;
+    float2 ba = b - a;
+    float denom = dot(ba, ba);
+    float h = denom > 0.0 ? clamp(dot(pa, ba) / denom, 0.0, 1.0) : 0.0;
+    return length(pa - ba * h) - hw;
+}
+
+// Signed distance for a butt or square cap. `cap_ext` extends the segment span
+// by a half-width past each end (square); 0 keeps it flush (butt). The end faces
+// are half-planes perpendicular to the segment, intersected with the round-cap
+// body so the sides stay straight — a max() of the segment SDF and the two
+// end-plane distances.
+static inline float capped_segment_sdf(float2 p, float2 a, float2 b, float hw, float cap_ext) {
+    float2 ba = b - a;
+    float len = length(ba);
+    float2 dir = len > 0.0 ? ba / len : float2(1.0, 0.0);
+    float t = dot(p - a, dir);
+    float d = segment_sdf(p, a, b, hw);
+    // Trim past the (possibly extended) ends with perpendicular half-planes.
+    float end_d = max(-(t + cap_ext), t - (len + cap_ext));
+    return max(d, end_d);
+}
+
+// Device-pixel coverage factor: how many SDF units span one screen pixel at the
+// current sampling position, inverted. Coverage ramps over ~1 device pixel
+// regardless of scale, so the AA width tracks the physical grid.
+static inline float aa_factor(float2 p) {
+    return 1.0 / length(float2(length(dfdx(p)), length(dfdy(p))));
+}
+
+fragment float4 fragment_main(VOut in [[stage_in]]) {
+    // Round cap (cap==2) is the bare segment SDF; butt (0) and square (1) trim or
+    // extend the ends with perpendicular half-planes (cap_ext = 0 or half-width).
+    float d;
+    if (in.cap == 2u) {
+        d = segment_sdf(in.local, in.seg_a, in.seg_b, in.half_width);
+    } else {
+        float cap_ext = in.cap == 1u ? in.half_width : 0.0;
+        d = capped_segment_sdf(in.local, in.seg_a, in.seg_b, in.half_width, cap_ext);
+    }
+
+    // Device-pixel-aware coverage: linear ramp over ~1 physical pixel.
+    float aa = aa_factor(in.local);
+    float fill_cov = clamp(-d * aa, 0.0, 1.0);
+
+    // Fill, premultiplied.
+    float fa = in.color.a * fill_cov;
+    float4 src = float4(in.color.rgb * fa, fa);
+
+    // Border over fill (both premultiplied source-over).
+    if (in.border_width > 0.0) {
+        float bcov = clamp(-(abs(d) - in.border_width * 0.5) * aa, 0.0, 1.0);
+        if (bcov > 0.0) {
+            float ba = in.border_color.a * bcov;
+            float4 bsrc = float4(in.border_color.rgb * ba, ba);
+            src = bsrc + src * (1.0 - ba);
+        }
+    }
+    return src;
+}
+"##;

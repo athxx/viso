@@ -31,11 +31,11 @@ pub use inspect::{
 };
 pub use primitive::{
     AnalyticCapsule, AnalyticCapsuleInstance, AnalyticEllipse, AnalyticEllipseInstance,
-    AnalyticRRect, AnalyticRRectInstance, Border, Corners, GlyphInstance, GlyphInstanceData,
-    GlyphRunDraw, ImageDraw, ImageInstance, LayerClip, LineJoin, Mesh, MeshVertex, Path, PathCmd,
-    Point, Primitive, Quad, QuadInstance, Rect, Rgba, Stroke, analytic_capsule_schema,
-    analytic_ellipse_schema, analytic_rrect_schema, glyphrun_schema, image_schema, mesh_schema,
-    quad_schema,
+    AnalyticLine, AnalyticLineInstance, AnalyticRRect, AnalyticRRectInstance, Border, Corners,
+    GlyphInstance, GlyphInstanceData, GlyphRunDraw, ImageDraw, ImageInstance, LayerClip, LineCap,
+    LineJoin, Mesh, MeshVertex, Path, PathCmd, Point, Primitive, Quad, QuadInstance, Rect, Rgba,
+    Stroke, analytic_capsule_schema, analytic_ellipse_schema, analytic_line_schema,
+    analytic_rrect_schema, glyphrun_schema, image_schema, mesh_schema, quad_schema,
 };
 pub use renderer::{FrameStats, Renderer};
 // GPU handles that appear in this crate's public API. `TextureId` is carried by

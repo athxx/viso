@@ -16,8 +16,8 @@
 use std::mem::{align_of, offset_of, size_of};
 
 use viso_render::{
-    AnalyticCapsuleInstance, AnalyticEllipseInstance, AnalyticRRectInstance, GlyphInstance,
-    ImageInstance, MeshVertex, QuadInstance,
+    AnalyticCapsuleInstance, AnalyticEllipseInstance, AnalyticLineInstance, AnalyticRRectInstance,
+    GlyphInstance, ImageInstance, MeshVertex, QuadInstance,
 };
 
 #[test]
@@ -88,6 +88,29 @@ fn analytic_capsule_instance_layout_is_frozen() {
     assert_eq!(offset_of!(AnalyticCapsuleInstance, color), 16);
     assert_eq!(offset_of!(AnalyticCapsuleInstance, border_width), 32);
     assert_eq!(offset_of!(AnalyticCapsuleInstance, border_color), 36);
+}
+
+#[test]
+fn analytic_line_instance_layout_is_frozen() {
+    assert_eq!(
+        size_of::<AnalyticLineInstance>(),
+        68,
+        "AnalyticLineInstance stride"
+    );
+    assert_eq!(
+        align_of::<AnalyticLineInstance>(),
+        4,
+        "AnalyticLineInstance align"
+    );
+    assert_eq!(offset_of!(AnalyticLineInstance, p0), 0);
+    assert_eq!(offset_of!(AnalyticLineInstance, p1), 8);
+    assert_eq!(offset_of!(AnalyticLineInstance, width), 16);
+    assert_eq!(offset_of!(AnalyticLineInstance, color), 20);
+    assert_eq!(offset_of!(AnalyticLineInstance, cap), 36);
+    assert_eq!(offset_of!(AnalyticLineInstance, join), 40);
+    assert_eq!(offset_of!(AnalyticLineInstance, miter_limit), 44);
+    assert_eq!(offset_of!(AnalyticLineInstance, border_width), 48);
+    assert_eq!(offset_of!(AnalyticLineInstance, border_color), 52);
 }
 
 #[test]

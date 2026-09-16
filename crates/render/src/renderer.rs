@@ -28,8 +28,8 @@ use viso_shader::{PipelineEntry, PipelineFamily, standard_manifest};
 use crate::batch::{BatchFamily, BatchItem, BatchKey, BatchTarget, joins};
 use crate::pool::InstancePool;
 use crate::primitive::{
-    AnalyticCapsuleInstance, AnalyticEllipseInstance, AnalyticRRectInstance, GlyphInstance,
-    ImageInstance, MeshVertex, Primitive, QuadInstance, Rect,
+    AnalyticCapsuleInstance, AnalyticEllipseInstance, AnalyticLineInstance, AnalyticRRectInstance,
+    GlyphInstance, ImageInstance, MeshVertex, Primitive, QuadInstance, Rect,
 };
 use crate::scene::store::{StoreRef, glyph_instances};
 use crate::scene::{EmitContext, Scene};
@@ -42,6 +42,8 @@ const ANALYTIC_RRECT_STRIDE: usize = core::mem::size_of::<AnalyticRRectInstance>
 const ANALYTIC_ELLIPSE_STRIDE: usize = core::mem::size_of::<AnalyticEllipseInstance>();
 /// Bytes of one analytic capsule instance.
 const ANALYTIC_CAPSULE_STRIDE: usize = core::mem::size_of::<AnalyticCapsuleInstance>();
+/// Bytes of one analytic line instance.
+const ANALYTIC_LINE_STRIDE: usize = core::mem::size_of::<AnalyticLineInstance>();
 /// Bytes of one image instance.
 const IMAGE_STRIDE: usize = core::mem::size_of::<ImageInstance>();
 /// Bytes of one glyph instance.
@@ -61,6 +63,9 @@ pub(crate) enum SegmentKind {
     /// A run of adjacent analytic capsules sharing this segment's clip, in the
     /// analytic-capsule buffer. `start`/`count` count instances.
     AnalyticCapsule,
+    /// A run of adjacent analytic lines sharing this segment's clip, in the
+    /// analytic-line buffer. `start`/`count` count instances.
+    AnalyticLine,
     /// A single image, in the image buffer, sampling `bind_group`'s texture.
     /// `start`/`count` count instances in that buffer.
     Image { bind_group: BindGroupId },
@@ -83,6 +88,7 @@ impl SegmentKind {
             SegmentKind::AnalyticRRect => BatchFamily::AnalyticRRect,
             SegmentKind::AnalyticEllipse => BatchFamily::AnalyticEllipse,
             SegmentKind::AnalyticCapsule => BatchFamily::AnalyticCapsule,
+            SegmentKind::AnalyticLine => BatchFamily::AnalyticLine,
             SegmentKind::Image { .. } => BatchFamily::Image,
             SegmentKind::GlyphRun { .. } => BatchFamily::GlyphRun,
             SegmentKind::Mesh => BatchFamily::Mesh,
@@ -101,6 +107,7 @@ impl SegmentKind {
             | SegmentKind::AnalyticRRect
             | SegmentKind::AnalyticEllipse
             | SegmentKind::AnalyticCapsule
+            | SegmentKind::AnalyticLine
             | SegmentKind::Mesh => None,
         }
     }
@@ -222,10 +229,10 @@ struct TextureBinding {
 
 /// The built-in pipelines the renderer prewarms once in [`Renderer::new`]
 /// (§7.1): SolidRect (quad), Image, MaskComposite (glyph), PathFill (mesh),
-/// AnalyticRRect, AnalyticEllipse, and AnalyticCapsule. Reported as
+/// AnalyticRRect, AnalyticEllipse, AnalyticCapsule, and AnalyticLine. Reported as
 /// `FrameStats::shader_pipeline_creations` — a construction-time constant, since
 /// no draw ever triggers a runtime shader compile.
-const SHADER_PIPELINE_PREWARM_COUNT: u32 = 7;
+const SHADER_PIPELINE_PREWARM_COUNT: u32 = 8;
 
 /// Draw-call and instance counts for the frame the renderer has just lowered.
 ///
@@ -319,6 +326,8 @@ pub struct Renderer {
     analytic_ellipse_pipeline: PipelineId,
     /// The AnalyticCapsule built-in pipeline (registered once).
     analytic_capsule_pipeline: PipelineId,
+    /// The AnalyticLine built-in pipeline (registered once).
+    analytic_line_pipeline: PipelineId,
     /// The Image built-in pipeline (registered once).
     image_pipeline: PipelineId,
     /// The GlyphRun built-in pipeline (registered once).
@@ -340,6 +349,9 @@ pub struct Renderer {
     /// Persistent analytic capsule instance pool (same slot-diff upload as
     /// `quad_pool`).
     analytic_capsule_pool: InstancePool<AnalyticCapsuleInstance>,
+    /// Persistent analytic line instance pool (same slot-diff upload as
+    /// `quad_pool`).
+    analytic_line_pool: InstancePool<AnalyticLineInstance>,
     /// Persistent image instance pool (same slot-diff upload as `quad_pool`).
     image_pool: InstancePool<ImageInstance>,
     /// Persistent glyph instance pool (same slot-diff upload as `quad_pool`).
@@ -360,6 +372,8 @@ pub struct Renderer {
     analytic_ellipse_scratch: Vec<AnalyticEllipseInstance>,
     /// Scratch analytic capsule instance data, reused each frame.
     analytic_capsule_scratch: Vec<AnalyticCapsuleInstance>,
+    /// Scratch analytic line instance data, reused each frame.
+    analytic_line_scratch: Vec<AnalyticLineInstance>,
     /// Scratch image instance data, reused each frame.
     image_scratch: Vec<ImageInstance>,
     /// Scratch glyph instance data, reused each frame.
@@ -484,6 +498,13 @@ impl Renderer {
             )
             .expect("AnalyticCapsuleInstance layout matches the analytic-capsule shader schema");
 
+        let analytic_line_pipeline = backend
+            .create_pipeline(
+                &desc(entry(PipelineFamily::AnalyticLine), "analytic-line"),
+                &AnalyticLineInstance::LAYOUT,
+            )
+            .expect("AnalyticLineInstance layout matches the analytic-line shader schema");
+
         let image_pipeline = backend
             .create_pipeline(
                 &desc(entry(PipelineFamily::Image), "image"),
@@ -515,6 +536,7 @@ impl Renderer {
             analytic_rrect_pipeline,
             analytic_ellipse_pipeline,
             analytic_capsule_pipeline,
+            analytic_line_pipeline,
             image_pipeline,
             glyph_pipeline,
             sampler,
@@ -531,6 +553,7 @@ impl Renderer {
                 BufferUsage::INSTANCE,
                 "analytic-capsule-instances",
             ),
+            analytic_line_pool: InstancePool::new(BufferUsage::INSTANCE, "analytic-line-instances"),
             image_pool: InstancePool::new(BufferUsage::INSTANCE, "image-instances"),
             glyph_pool: InstancePool::new(BufferUsage::INSTANCE, "glyph-instances"),
             mesh_pipeline,
@@ -541,6 +564,7 @@ impl Renderer {
             analytic_rrect_scratch: Vec::with_capacity(256),
             analytic_ellipse_scratch: Vec::with_capacity(256),
             analytic_capsule_scratch: Vec::with_capacity(256),
+            analytic_line_scratch: Vec::with_capacity(256),
             image_scratch: Vec::with_capacity(64),
             glyph_scratch: Vec::with_capacity(256),
             mesh_vertex_scratch: Vec::with_capacity(1024),
@@ -681,6 +705,31 @@ impl Renderer {
                     );
                     self.scene.ingest_analytic_capsule(inst, ctx, bounds);
                 }
+                Primitive::AnalyticLine(line) => {
+                    let inst = line.to_instance();
+                    // AABB over both endpoints, inflated by half the stroke width
+                    // plus the border on every side (a square cap can extend by a
+                    // further half-width along the axis; `from_world`'s uniform
+                    // inflation covers it, since cap extension never exceeds the
+                    // perpendicular half-width already added).
+                    let min_x = inst.p0[0].min(inst.p1[0]);
+                    let min_y = inst.p0[1].min(inst.p1[1]);
+                    let max_x = inst.p0[0].max(inst.p1[0]);
+                    let max_y = inst.p0[1].max(inst.p1[1]);
+                    let world = Rect {
+                        x: min_x,
+                        y: min_y,
+                        w: max_x - min_x,
+                        h: max_y - min_y,
+                    };
+                    let bounds = crate::scene::bounds::Bounds::from_world(
+                        world,
+                        clip,
+                        inst.width + 2.0 * inst.border_width,
+                        0.0,
+                    );
+                    self.scene.ingest_analytic_line(inst, ctx, bounds);
+                }
                 Primitive::Image(image) => {
                     let inst = image.to_instance();
                     let bounds = crate::scene::bounds::Bounds::from_world(
@@ -786,6 +835,9 @@ impl Renderer {
             + self
                 .analytic_capsule_pool
                 .sync(backend, &self.analytic_capsule_scratch)
+            + self
+                .analytic_line_pool
+                .sync(backend, &self.analytic_line_scratch)
             + self.image_pool.sync(backend, &self.image_scratch)
             + self.glyph_pool.sync(backend, &self.glyph_scratch)
             + self
@@ -801,6 +853,7 @@ impl Renderer {
             + self.analytic_rrect_pool.last_upload_bytes()
             + self.analytic_ellipse_pool.last_upload_bytes()
             + self.analytic_capsule_pool.last_upload_bytes()
+            + self.analytic_line_pool.last_upload_bytes()
             + self.image_pool.last_upload_bytes()
             + self.glyph_pool.last_upload_bytes()
             + self.mesh_vertex_pool.last_upload_bytes()
@@ -824,6 +877,7 @@ impl Renderer {
         self.analytic_rrect_scratch.clear();
         self.analytic_ellipse_scratch.clear();
         self.analytic_capsule_scratch.clear();
+        self.analytic_line_scratch.clear();
         self.image_scratch.clear();
         self.glyph_scratch.clear();
         self.mesh_vertex_scratch.clear();
@@ -909,6 +963,28 @@ impl Renderer {
                     self.analytic_capsule_scratch.push(inst);
                     self.merge_or_push(Segment {
                         kind: SegmentKind::AnalyticCapsule,
+                        start,
+                        count: 1,
+                        clip,
+                        target,
+                    });
+                }
+                StoreRef::AnalyticLine(id) => {
+                    let mut inst = self
+                        .scene
+                        .analytic_lines
+                        .get(id)
+                        .expect("analytic-line slot")
+                        .instance;
+                    // Both endpoints are world-space; shift by the emit origin.
+                    inst.p0[0] -= origin[0];
+                    inst.p0[1] -= origin[1];
+                    inst.p1[0] -= origin[0];
+                    inst.p1[1] -= origin[1];
+                    let start = self.analytic_line_scratch.len() as u32;
+                    self.analytic_line_scratch.push(inst);
+                    self.merge_or_push(Segment {
+                        kind: SegmentKind::AnalyticLine,
                         start,
                         count: 1,
                         clip,
@@ -1122,6 +1198,11 @@ impl Renderer {
     /// The AnalyticCapsule pipeline handle, for batch introspection.
     pub(crate) fn analytic_capsule_pipeline_id(&self) -> PipelineId {
         self.analytic_capsule_pipeline
+    }
+
+    /// The AnalyticLine pipeline handle, for batch introspection.
+    pub(crate) fn analytic_line_pipeline_id(&self) -> PipelineId {
+        self.analytic_line_pipeline
     }
 
     /// The Image pipeline handle, for batch introspection.
@@ -1480,6 +1561,17 @@ impl Renderer {
                     "analytic-capsule pool buffer exists when an analytic-capsule segment references it",
                 ),
                 instance_offset: seg.start as usize * ANALYTIC_CAPSULE_STRIDE,
+                uniforms,
+                scissor,
+            },
+            SegmentKind::AnalyticLine => DrawCommand {
+                pipeline: self.analytic_line_pipeline,
+                bind_group: None,
+                geometry: Geometry::Generated { count: seg.count },
+                instance_buffer: self.analytic_line_pool.buffer().expect(
+                    "analytic-line pool buffer exists when an analytic-line segment references it",
+                ),
+                instance_offset: seg.start as usize * ANALYTIC_LINE_STRIDE,
                 uniforms,
                 scissor,
             },
