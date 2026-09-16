@@ -30,7 +30,8 @@
 use viso_handle::RawWindowHandle;
 
 use crate::backend::{
-    DrawCommand, DrawList, Frame, Geometry, GpuBackend, LoadOp, RenderPass, RenderTarget,
+    DrawCommand, DrawList, Frame, Geometry, GpuBackend, IndexFormat, LoadOp, RenderPass,
+    RenderTarget,
 };
 use crate::instance::{AttrFormat, InstanceLayout};
 use crate::resource::{
@@ -598,6 +599,7 @@ impl HeadlessRaster {
             Geometry::IndexedMesh {
                 vertex_buffer,
                 index_buffer,
+                index_format,
                 index_offset,
                 index_count,
             } => {
@@ -611,6 +613,7 @@ impl HeadlessRaster {
                     &layout,
                     &verts,
                     &idx_bytes,
+                    index_format,
                     index_offset,
                     index_count,
                     cmd.scissor,
@@ -637,6 +640,7 @@ impl HeadlessRaster {
         layout: &InstanceLayout,
         verts: &[u8],
         idx_bytes: &[u8],
+        index_format: IndexFormat,
         index_offset: u32,
         index_count: u32,
         scissor: Option<(u32, u32, u32, u32)>,
@@ -656,9 +660,9 @@ impl HeadlessRaster {
         let tri_count = index_count / 3;
         for t in 0..tri_count {
             let base = index_offset + t * 3;
-            let i0 = read_index(idx_bytes, base);
-            let i1 = read_index(idx_bytes, base + 1);
-            let i2 = read_index(idx_bytes, base + 2);
+            let i0 = read_index(idx_bytes, index_format, base);
+            let i1 = read_index(idx_bytes, index_format, base + 1);
+            let i2 = read_index(idx_bytes, index_format, base + 2);
             let (p0, c0, e0) = vertex(i0);
             let (p1, c1, e1) = vertex(i1);
             let (p2, c2, e2) = vertex(i2);
@@ -1616,9 +1620,17 @@ fn sample_texel(
 }
 
 /// Read the `n`-th `u32` index from a packed index buffer (little-endian).
-fn read_index(bytes: &[u8], n: u32) -> u32 {
-    let off = n as usize * 4;
-    u32::from_le_bytes(bytes[off..off + 4].try_into().unwrap())
+fn read_index(bytes: &[u8], format: IndexFormat, n: u32) -> u32 {
+    match format {
+        IndexFormat::U16 => {
+            let off = n as usize * 2;
+            u16::from_le_bytes(bytes[off..off + 2].try_into().unwrap()) as u32
+        }
+        IndexFormat::U32 => {
+            let off = n as usize * 4;
+            u32::from_le_bytes(bytes[off..off + 4].try_into().unwrap())
+        }
+    }
 }
 
 /// Twice the signed area of triangle `(a, b, c)` — the 2D edge function. Used

@@ -507,7 +507,7 @@ impl Renderer {
                 StoreRef::Path(id) => {
                     let e = self.scene_snapshot().paths.get(id).expect("path slot");
                     let start = index_cursor;
-                    let count = e.indices.len() as u32;
+                    let count = e.geometry.indices.len() as u32;
                     index_cursor += count;
                     (BatchPipeline::Mesh, SegmentKind::Mesh, start, count)
                 }
@@ -662,7 +662,7 @@ impl Renderer {
                 }
                 StoreRef::Path(id) => {
                     let e = self.scene_snapshot().paths.get(id).expect("path slot");
-                    (BatchFamily::Mesh, !e.indices.is_empty())
+                    (BatchFamily::Mesh, !e.geometry.indices.is_empty())
                 }
                 StoreRef::Mesh(id) => {
                     let e = self.scene_snapshot().meshes.get(id).expect("mesh slot");

@@ -230,16 +230,23 @@ impl Scene {
     }
 
     /// Ingest a vector path: diff against the retained entry, re-tessellating
-    /// only on a geometry or paint change (a cache hit re-uses the tessellation),
-    /// bump the moved planes, record its slot.
+    /// only on a geometry change (a transform-only, paint-only, or fully-equal
+    /// revisit re-uses the cached tessellation, §13.4), bump the moved planes,
+    /// record its slot.
     pub fn ingest_path(
         &mut self,
         path: &Path,
         context: EmitContext,
         bounds: Bounds,
     ) -> PrimitiveId {
-        let (slot, dirty) = self.paths.ingest(path);
-        if dirty.geometry || dirty.paint || dirty.appended {
+        // The device scale drives the tessellation quality bucket. Surface/layer
+        // DPI is not yet threaded to lowering, so this round tessellates at the
+        // identity scale (bucket 0); the hysteresis machinery is exercised by the
+        // store's unit tests. DPI wiring lands with the surface/layer scale (§13.4).
+        let (slot, dirty) = self.paths.ingest(path, 1.0);
+        // The tessellator runs only on a geometry rebuild (or a cold append);
+        // transform-only and paint-only reuse the cached geometry (§13.4).
+        if dirty.geometry || dirty.appended {
             self.ingest_stats.path_tessellations += 1;
         }
         self.apply_planes(dirty);

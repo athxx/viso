@@ -153,8 +153,13 @@ pub enum Geometry {
     IndexedMesh {
         /// The per-vertex geometry buffer, bound at index 0.
         vertex_buffer: BufferId,
-        /// The `u32` index buffer.
+        /// The index buffer. Its element width is [`Self::IndexedMesh::index_format`];
+        /// `index_offset`/`index_count` count elements of that width, not bytes.
         index_buffer: BufferId,
+        /// Width of each index in `index_buffer` (16- or 32-bit). Small geometry
+        /// (≤ 64k vertices) uses [`IndexFormat::U16`] to halve index bandwidth
+        /// and residency; larger geometry uses [`IndexFormat::U32`] (§13.4).
+        index_format: IndexFormat,
         /// Offset (in indices) of this draw's first index into `index_buffer`.
         /// Multiple mesh draws (e.g. different clips) share one index buffer;
         /// each starts at its own offset.
@@ -162,6 +167,31 @@ pub enum Geometry {
         /// Number of indices to draw (3 per triangle).
         index_count: u32,
     },
+}
+
+/// Element width of an index buffer bound by [`Geometry::IndexedMesh`].
+///
+/// The tessellator picks the narrowest width that addresses a geometry's vertex
+/// count: `U16` for ≤ 64k vertices (half the bandwidth and residency of `U32`),
+/// `U32` above that. The width is chosen once when geometry is (re-)tessellated
+/// and cached with it, so no per-frame branch is on the hot path.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IndexFormat {
+    /// 16-bit indices (`u16`). Valid when the mesh has ≤ 65 536 vertices.
+    U16,
+    /// 32-bit indices (`u32`).
+    U32,
+}
+
+impl IndexFormat {
+    /// Bytes per index element (2 for `U16`, 4 for `U32`).
+    #[inline]
+    pub const fn size(self) -> usize {
+        match self {
+            IndexFormat::U16 => 2,
+            IndexFormat::U32 => 4,
+        }
+    }
 }
 
 /// A single draw call: the lowered form of one render batch.

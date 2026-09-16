@@ -31,7 +31,7 @@
 use crate::primitive::{
     AnalyticCapsuleInstance, AnalyticEllipseInstance, AnalyticLineInstance, AnalyticRRectInstance,
     GlyphInstance, GlyphInstanceData, GradientInstance, ImageInstance, MeshVertex, Path,
-    QuadInstance,
+    PathGeometry, QuadInstance, Rgba,
 };
 
 use super::ids::{BrushId, ClipId, GeometryId, ImageId, MeshId, PathId, PrimitiveId, TransformId};
@@ -841,30 +841,90 @@ impl GlyphRunStore {
     }
 }
 
-/// A retained vector path with its cached tessellation (§8). The tessellation
-/// is keyed by the path's geometry and a quality bucket; a transform- or
-/// paint-only change reuses the cached vertices/indices rather than re-running
-/// `Path::tessellate`.
-#[derive(Debug, Clone)]
-pub struct PathEntry {
-    /// The path outline + paint that produced the cached tessellation. Held so
-    /// the diff can detect a geometry/paint change and invalidate the cache.
-    pub path: Path,
-    /// The quality bucket the tessellation was cached at (a single bucket for
-    /// now; higher-quality buckets land with device-scale-aware quality).
-    pub quality: u16,
-    /// Cached fill+stroke vertices, in the path's own space (origin not yet
-    /// subtracted). Absolute-indexed by `indices`, base-zero within this entry.
-    pub vertices: Vec<MeshVertex>,
-    /// Cached triangle-list indices into `vertices` (base-zero).
-    pub indices: Vec<u32>,
+/// The color/opacity a path is painted with — the per-primitive paint, held
+/// separately from the retained [`PathGeometry`] so a recolor never
+/// re-tessellates (§13.4). `fill`/`stroke_color` are straight-linear RGBA
+/// matching the source `Path`; `opacity` is a whole-path multiplier (1.0 today,
+/// reserved for a group-opacity plane).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PathPaint {
+    /// Fill color, or `None` for an unfilled path.
+    pub fill: Option<Rgba>,
+    /// Stroke color, or `None` for an unstroked path.
+    pub stroke_color: Option<Rgba>,
+    /// Whole-path opacity multiplier applied at lowering.
+    pub opacity: f32,
 }
 
-/// Dense store of vector paths with an in-line retessellation cache (§8). A
-/// path whose geometry and quality bucket are unchanged reuses its cached
-/// `vertices`/`indices`; `Path::tessellate` runs only on a geometry change
-/// (color is baked into the tessellated vertices, so a recolor re-tessellates
-/// too, but reports the paint plane).
+impl PathPaint {
+    /// The paint carried by a source path (fill/stroke color; opacity 1.0).
+    fn from_path(path: &Path) -> PathPaint {
+        PathPaint {
+            fill: path.fill,
+            stroke_color: path.stroke.map(|s| s.color),
+            opacity: 1.0,
+        }
+    }
+}
+
+/// The placement of a retained [`PathGeometry`] relative to the local space it
+/// was tessellated in — the per-primitive transform, held separately so a
+/// move/zoom that leaves the shape intact never re-tessellates (§13.4). This
+/// round carries translate + uniform scale; non-uniform scale / rotation route
+/// through a geometry rebuild.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PathTransform {
+    /// Translation from the tessellated space to the path's current space.
+    pub offset: [f32; 2],
+    /// Uniform scale about the tessellated origin (1.0 = as-tessellated).
+    pub scale: f32,
+}
+
+impl PathTransform {
+    /// The identity placement (geometry used exactly as tessellated).
+    const IDENTITY: Self = Self {
+        offset: [0.0, 0.0],
+        scale: 1.0,
+    };
+}
+
+/// The cache key for a retained tessellation: a translation-invariant structural
+/// fingerprint of the outline (see [`Path::geometry_fingerprint`]) paired with
+/// the quality bucket it was tessellated at. Two paths with the same key share a
+/// tessellation; they differ only by a [`PathTransform`] and/or [`PathPaint`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct GeometryKey {
+    /// Structural fingerprint of the outline, invariant under translation.
+    pub fingerprint: u64,
+    /// The quality bucket the geometry was tessellated at.
+    pub quality_bucket: u16,
+}
+
+/// A retained vector path split into a cached colorless tessellation plus the
+/// cheap per-primitive paint/transform layered on at lowering (§13.4). The
+/// geometry is keyed by [`GeometryKey`]; a transform- or paint-only change
+/// reuses `geometry` untouched rather than re-running the tessellator.
+#[derive(Debug, Clone)]
+pub struct PathEntry {
+    /// The cache key of `geometry` (structural fingerprint + quality bucket).
+    pub geom_key: GeometryKey,
+    /// The retained colorless tessellation, in its own local space.
+    pub geometry: PathGeometry,
+    /// The color/opacity to paint `geometry` with (applied at lowering).
+    pub paint: PathPaint,
+    /// The placement of `geometry` in the path's current space (applied at
+    /// lowering).
+    pub xform: PathTransform,
+    /// The full source outline, retained so the next frame's diff can classify a
+    /// change as geometry / transform-only / paint-only.
+    pub path: Path,
+}
+
+/// Dense store of vector paths with an in-line retessellation cache (§13.4). A
+/// path whose structural fingerprint and quality bucket are unchanged reuses its
+/// cached [`PathGeometry`]; the tessellator runs only on a geometry change. A
+/// pure translation/uniform-scale updates [`PathTransform`] and a recolor updates
+/// [`PathPaint`], both without touching the geometry.
 #[derive(Debug, Default)]
 pub struct VectorPathStore {
     entries: Vec<PathEntry>,
@@ -888,44 +948,92 @@ impl VectorPathStore {
         }
     }
 
-    /// Diff a path against the retained entry at the cursor. Fully equal → cache
-    /// hit, no re-tessellation, no bump. `cmds` differ → geometry + re-tessellate.
-    /// Same `cmds` but fill/stroke differ → paint + re-tessellate (color is
-    /// baked into `MeshVertex`). Cold growth appends + tessellates.
-    pub fn ingest(&mut self, path: &Path) -> (PathId, DirtyPlanes) {
+    /// Diff a path against the retained entry at the cursor, classifying the
+    /// change into independent planes (§13.4):
+    ///
+    /// - **geometry** — the structural fingerprint or quality bucket changed:
+    ///   re-tessellate into a fresh [`PathGeometry`]. This is the only path that
+    ///   runs the tessellator (and the only one the `path_tessellations` counter
+    ///   counts).
+    /// - **transform-only** — the outline is the previous one shifted by a pure
+    ///   translation: reuse the cached geometry, update [`PathTransform`].
+    /// - **paint-only** — only fill/stroke color moved: reuse the cached
+    ///   geometry, update [`PathPaint`].
+    ///
+    /// A fully equal path is a cache hit (no planes). Cold growth appends and
+    /// tessellates once.
+    pub fn ingest(&mut self, path: &Path, device_scale: f32) -> (PathId, DirtyPlanes) {
         let index = self.cursor;
         let dirty = if index < self.entries.len() {
             let prev = &self.entries[index];
-            let geometry = prev.path.cmds != path.cmds;
-            let paint =
-                !geometry && (prev.path.fill != path.fill || prev.path.stroke != path.stroke);
-            if geometry || paint {
-                let mut vertices = Vec::new();
-                let mut indices = Vec::new();
-                path.tessellate(&mut vertices, &mut indices);
+            // The quality bucket is chosen relative to the bucket this entry is
+            // already cached at, so the boundary hysteresis holds across the
+            // scale hovering near a step (§13.4).
+            let bucket = quality_bucket(device_scale, prev.geom_key.quality_bucket);
+            let fingerprint = path.geometry_fingerprint();
+            let geometry =
+                fingerprint != prev.geom_key.fingerprint || bucket != prev.geom_key.quality_bucket;
+            if geometry {
+                // The shape (or its quality) changed: re-tessellate at the
+                // current bucket. The new geometry defines a fresh local space,
+                // so the transform resets to identity and paint is re-read from
+                // the source.
+                let geo = path.tessellate_geometry_at(bucket);
                 self.entries[index] = PathEntry {
+                    geom_key: GeometryKey {
+                        fingerprint,
+                        quality_bucket: bucket,
+                    },
+                    geometry: geo,
+                    paint: PathPaint::from_path(path),
+                    xform: PathTransform::IDENTITY,
                     path: path.clone(),
-                    quality: DEFAULT_QUALITY,
-                    vertices,
-                    indices,
                 };
-            }
-            DirtyPlanes {
-                geometry,
-                paint,
-                transform: false,
-                resource: false,
-                appended: false,
+                DirtyPlanes {
+                    geometry: true,
+                    ..DirtyPlanes::default()
+                }
+            } else {
+                // Same shape: classify the cheap deltas. A pure translation
+                // folds into the transform (relative to the previous placement);
+                // color deltas fold into paint. Both reuse the cached geometry.
+                let translation = path.translation_from(&prev.path);
+                let paint = PathPaint::from_path(path);
+                let transform_moved = matches!(translation, Some(d) if d != [0.0, 0.0]);
+                let paint_moved = paint != prev.paint;
+                if transform_moved {
+                    let d = translation.expect("translation present");
+                    let prev_xform = prev.xform;
+                    self.entries[index].xform = PathTransform {
+                        offset: [prev_xform.offset[0] + d[0], prev_xform.offset[1] + d[1]],
+                        scale: prev_xform.scale,
+                    };
+                }
+                if paint_moved {
+                    self.entries[index].paint = paint;
+                }
+                // Retain the current source outline for the next frame's diff.
+                self.entries[index].path = path.clone();
+                DirtyPlanes {
+                    transform: transform_moved,
+                    paint: paint_moved,
+                    ..DirtyPlanes::default()
+                }
             }
         } else {
-            let mut vertices = Vec::new();
-            let mut indices = Vec::new();
-            path.tessellate(&mut vertices, &mut indices);
+            // Cold append: no cached bucket to hold, so the bucket is chosen
+            // from the identity (bucket 0) baseline for this device scale.
+            let bucket = quality_bucket(device_scale, DEFAULT_QUALITY);
+            let geo = path.tessellate_geometry_at(bucket);
             self.entries.push(PathEntry {
+                geom_key: GeometryKey {
+                    fingerprint: path.geometry_fingerprint(),
+                    quality_bucket: bucket,
+                },
+                geometry: geo,
+                paint: PathPaint::from_path(path),
+                xform: PathTransform::IDENTITY,
                 path: path.clone(),
-                quality: DEFAULT_QUALITY,
-                vertices,
-                indices,
             });
             DirtyPlanes::APPENDED
         };
@@ -949,9 +1057,58 @@ impl VectorPathStore {
     }
 }
 
-/// The single tessellation quality bucket in use. Device-scale-aware
-/// higher-quality buckets are added when path quality is wired to DPI.
+/// The tessellation quality bucket for the identity device scale (1.0). A path
+/// ingested with no scale information tessellates at this bucket.
 pub const DEFAULT_QUALITY: u16 = 0;
+
+/// The device scales at which the tessellation quality bucket steps up, in
+/// ascending order. A path drawn at a higher device scale needs a finer
+/// flatten tolerance to stay smooth, so it rebuilds into a higher bucket once
+/// its scale crosses the next boundary.
+///
+/// Boundaries are the *enter* thresholds: bucket `i` (0-based) covers roughly
+/// `[QUALITY_STEPS[i-1], QUALITY_STEPS[i])`. Bucket 0 is the identity scale.
+const QUALITY_STEPS: [f32; 3] = [1.5, 2.5, 4.0];
+
+/// Hysteresis band around each bucket boundary, as a fraction of the boundary
+/// scale. A bucket only steps *up* once the scale exceeds `boundary * (1 + H)`
+/// and only steps *down* once it falls below `boundary * (1 - H)`; between those
+/// the previous bucket is held. This stops a scale hovering on a boundary (e.g.
+/// a pinch-zoom settling near 2.0×) from re-tessellating every frame (§13.4).
+const QUALITY_HYSTERESIS: f32 = 0.1;
+
+/// The quality bucket a path should tessellate at for `device_scale`, given the
+/// bucket it is currently cached at (`prev`).
+///
+/// Without hysteresis a scale parked on a boundary would flip buckets — and thus
+/// re-tessellate — on tiny jitter. Instead each boundary is a band: crossing
+/// upward requires `scale > boundary * (1 + H)`, crossing downward requires
+/// `scale < boundary * (1 - H)`, and inside the band the previous bucket wins.
+/// The result is monotone in `device_scale` and stable across small wobble.
+pub fn quality_bucket(device_scale: f32, prev: u16) -> u16 {
+    let scale = device_scale.max(0.0);
+    let prev = prev as usize;
+    // Walk the boundaries; a boundary is "crossed" only outside its hysteresis
+    // band, so whether we are moving up or down decides which edge applies.
+    let mut bucket = 0usize;
+    for (i, &boundary) in QUALITY_STEPS.iter().enumerate() {
+        let target = i + 1;
+        let crossed = if target <= prev {
+            // At or below where we already are: hold this step unless the scale
+            // has dropped below the band's lower edge.
+            scale >= boundary * (1.0 - QUALITY_HYSTERESIS)
+        } else {
+            // Above where we are: only step up past the band's upper edge.
+            scale >= boundary * (1.0 + QUALITY_HYSTERESIS)
+        };
+        if crossed {
+            bucket = target;
+        } else {
+            break;
+        }
+    }
+    bucket as u16
+}
 
 /// A caller-supplied triangle mesh, stored as its vertices/indices (no
 /// tessellation — a mesh is already triangulated, §8).
@@ -1358,4 +1515,118 @@ impl std::fmt::Display for StoreRef {
 /// the paint-order record and the diff agree on the mapping.
 pub fn primitive_id(order_index: usize) -> PrimitiveId {
     PrimitiveId::new(order_index as u32)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::primitive::{PathCmd, Point, Rgba};
+
+    /// A filled path with one curved edge, so a finer quality bucket flattens
+    /// it into more vertices (the observable effect of a bucket change).
+    fn curved_path() -> Path {
+        Path {
+            cmds: vec![
+                PathCmd::MoveTo(Point::new(0.0, 0.0)),
+                PathCmd::CubicTo(
+                    Point::new(40.0, 80.0),
+                    Point::new(80.0, -40.0),
+                    Point::new(120.0, 40.0),
+                ),
+                PathCmd::LineTo(Point::new(120.0, 0.0)),
+                PathCmd::Close,
+            ],
+            fill: Some(Rgba::new(1.0, 0.0, 0.0, 1.0)),
+            stroke: None,
+        }
+    }
+
+    #[test]
+    fn quality_bucket_is_monotone_in_scale() {
+        // Deep inside each band (past the upper hysteresis edge) the bucket is
+        // fixed regardless of history, and rises with scale.
+        assert_eq!(quality_bucket(1.0, 0), 0);
+        assert_eq!(quality_bucket(2.0, 0), 1);
+        assert_eq!(quality_bucket(3.0, 0), 2);
+        assert_eq!(quality_bucket(5.0, 0), 3);
+    }
+
+    #[test]
+    fn quality_bucket_holds_inside_the_hysteresis_band() {
+        // The first boundary is 1.5; its band is [1.35, 1.65]. A scale in the
+        // band keeps whichever bucket we came from — no flip either way.
+        assert_eq!(quality_bucket(1.5, 0), 0, "coming from 0, hold 0 in-band");
+        assert_eq!(quality_bucket(1.5, 1), 1, "coming from 1, hold 1 in-band");
+        // Only outside the band does the bucket move.
+        assert_eq!(quality_bucket(1.66, 0), 1, "past upper edge steps up");
+        assert_eq!(quality_bucket(1.34, 1), 0, "below lower edge steps down");
+    }
+
+    #[test]
+    fn quality_bucket_does_not_flap_across_a_boundary() {
+        // Simulate a scale wobbling around the 1.5 boundary inside the band:
+        // the bucket must not oscillate frame to frame.
+        let mut bucket = 0u16;
+        for &s in &[1.48, 1.52, 1.49, 1.51, 1.50, 1.47, 1.53] {
+            bucket = quality_bucket(s, bucket);
+            assert_eq!(bucket, 0, "in-band wobble at {s} must hold bucket 0");
+        }
+    }
+
+    #[test]
+    fn within_bucket_scale_change_reuses_geometry() {
+        let path = curved_path();
+        let mut store = VectorPathStore::default();
+        store.begin_frame();
+        let (_, d0) = store.ingest(&path, 1.0);
+        assert!(d0.appended);
+        let verts0 = store.entries[0].geometry.verts.len();
+
+        // A scale change that stays inside bucket 0's band: no rebuild.
+        store.begin_frame();
+        let (_, d1) = store.ingest(&path, 1.3);
+        assert!(!d1.geometry, "in-band scale change must not re-tessellate");
+        assert_eq!(store.entries[0].geometry.verts.len(), verts0);
+    }
+
+    #[test]
+    fn cross_threshold_scale_change_retessellates_finer() {
+        let path = curved_path();
+        let mut store = VectorPathStore::default();
+        store.begin_frame();
+        store.ingest(&path, 1.0);
+        let coarse = store.entries[0].geometry.verts.len();
+        assert_eq!(store.entries[0].geom_key.quality_bucket, 0);
+
+        // Cross well past the first boundary: rebuild into a finer bucket with
+        // strictly more flattened vertices.
+        store.begin_frame();
+        let (_, d) = store.ingest(&path, 3.0);
+        assert!(d.geometry, "crossing a bucket boundary must re-tessellate");
+        assert!(store.entries[0].geom_key.quality_bucket > 0);
+        assert!(
+            store.entries[0].geometry.verts.len() > coarse,
+            "finer bucket must produce more vertices: {} vs {}",
+            store.entries[0].geometry.verts.len(),
+            coarse,
+        );
+    }
+
+    #[test]
+    fn hysteresis_band_does_not_retessellate_across_frames() {
+        let path = curved_path();
+        let mut store = VectorPathStore::default();
+        store.begin_frame();
+        store.ingest(&path, 1.0);
+        let verts = store.entries[0].geometry.verts.len();
+
+        // Wobble across the 1.5 boundary within the band over several frames.
+        for &s in &[1.48, 1.52, 1.49, 1.51, 1.5] {
+            store.begin_frame();
+            let (_, d) = store.ingest(&path, s);
+            assert!(!d.geometry, "in-band wobble at {s} must not re-tessellate");
+        }
+        assert_eq!(store.entries[0].geometry.verts.len(), verts);
+        assert_eq!(store.entries[0].geom_key.quality_bucket, 0);
+    }
 }

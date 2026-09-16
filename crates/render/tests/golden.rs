@@ -16,8 +16,8 @@ use viso_gpu::{
     TextureFormat,
 };
 use viso_render::{
-    Align, Align2, Fit, GlyphRunDraw, ImageRect, NineSlice, Primitive, Rect, Renderer, TiledImage,
-    test_glyphs, test_scene, test_texture,
+    Align, Align2, Fit, GlyphRunDraw, ImageRect, LineJoin, NineSlice, Path, PathCmd, Point,
+    Primitive, Rect, Renderer, Rgba, Stroke, TiledImage, test_glyphs, test_scene, test_texture,
 };
 
 const W: u32 = 128;
@@ -229,6 +229,111 @@ fn render_image_scene() -> Vec<u8> {
         [W as f32, H as f32],
     );
     gpu.read_pixels_bgra8(surface)
+}
+
+/// Render the vector-path scene: a filled+stroked convex outline (a pentagon) and
+/// a filled+stroked concave outline (a five-pointed star), tessellated through the
+/// retained vector-mesh lane (§13.4) and rasterized headless. Covers fill + stroke
+/// over both convex and concave geometry.
+fn render_path_scene() -> Vec<u8> {
+    let mut gpu = HeadlessRaster::new();
+    let surface = gpu.create_surface(RawWindowHandle::Headless, W, H);
+    let format = gpu.surface_format(surface);
+    let mut renderer = Renderer::new(&mut gpu, format);
+
+    let stroke = Stroke {
+        width: 2.0,
+        color: Rgba::new(0.05, 0.1, 0.2, 1.0),
+        join: LineJoin::Miter,
+    };
+
+    // Convex: an upright pentagon on the left.
+    let pentagon = Path {
+        cmds: vec![
+            PathCmd::MoveTo(Point::new(32.0, 12.0)),
+            PathCmd::LineTo(Point::new(54.0, 30.0)),
+            PathCmd::LineTo(Point::new(45.0, 58.0)),
+            PathCmd::LineTo(Point::new(19.0, 58.0)),
+            PathCmd::LineTo(Point::new(10.0, 30.0)),
+            PathCmd::Close,
+        ],
+        fill: Some(Rgba::new(0.2, 0.6, 0.35, 1.0)),
+        stroke: Some(stroke),
+    };
+
+    // Concave: a five-pointed star on the right (alternating outer/inner radii).
+    let mut cmds = Vec::with_capacity(11);
+    let (cx, cy, outer, inner) = (94.0f32, 40.0f32, 26.0f32, 11.0f32);
+    for k in 0..10 {
+        let r = if k % 2 == 0 { outer } else { inner };
+        let a = std::f32::consts::FRAC_PI_2 - (k as f32) * std::f32::consts::PI / 5.0;
+        let p = Point::new(cx + r * a.cos(), cy - r * a.sin());
+        cmds.push(if k == 0 {
+            PathCmd::MoveTo(p)
+        } else {
+            PathCmd::LineTo(p)
+        });
+    }
+    cmds.push(PathCmd::Close);
+    let star = Path {
+        cmds,
+        fill: Some(Rgba::new(0.85, 0.55, 0.15, 1.0)),
+        stroke: Some(stroke),
+    };
+
+    let scene = vec![Primitive::Path(pentagon), Primitive::Path(star)];
+    renderer.upload(&mut gpu, &scene);
+    renderer.submit(
+        &mut gpu,
+        surface,
+        [0.1, 0.1, 0.1, 1.0],
+        [W as f32, H as f32],
+    );
+    gpu.read_pixels_bgra8(surface)
+}
+
+#[test]
+fn path_scene_matches_golden() {
+    let actual = render_path_scene();
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/golden/path_scene.bgra8");
+
+    if std::env::var("BLESS").is_ok() {
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, &actual).unwrap();
+        eprintln!("blessed golden: {}", path.display());
+        return;
+    }
+
+    let expected = std::fs::read(&path).unwrap_or_else(|_| {
+        panic!(
+            "missing golden {}; run with BLESS=1 to generate it",
+            path.display()
+        )
+    });
+    assert_eq!(
+        actual.len(),
+        expected.len(),
+        "golden size mismatch: {} vs {}",
+        actual.len(),
+        expected.len()
+    );
+
+    let mut worst = 0u8;
+    let mut worst_at = 0usize;
+    for (i, (&a, &e)) in actual.iter().zip(&expected).enumerate() {
+        let diff = a.abs_diff(e);
+        if diff > worst {
+            worst = diff;
+            worst_at = i;
+        }
+    }
+    assert!(
+        worst <= TOL,
+        "golden mismatch: max per-channel diff {worst} at byte {worst_at} \
+         (pixel {}, channel {}) exceeds tolerance {TOL}",
+        worst_at / 4,
+        worst_at % 4,
+    );
 }
 
 #[test]
