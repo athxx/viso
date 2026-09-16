@@ -910,15 +910,22 @@ Section 3 — render crate (instance/primitive/store/renderer/inspect):
       `half`/reserved-word check).
 
 ### D1 Done
-- [ ] RRect / per-corner / Circle / Ellipse / Capsule.
-- [ ] Border / Line / Cap / Join basics.
-- [ ] analytic AA correctness.
+- [x] RRect / per-corner / Circle / Ellipse / Capsule. (Per-corner `AnalyticRRect` via `Corners`;
+      `AnalyticEllipse`; `AnalyticCapsule`. Circle is not a separate primitive — an equal-extent
+      ellipse/rrect, handled by the same SDF, per the analytic-tier design.)
+- [x] Border / Line / Cap / Join basics. (Every analytic family carries `border_width`/`border_color`
+      with the border-over-fill contract; `AnalyticLine` adds `LineCap` Butt/Square/Round + `LineJoin`
+      Miter/Bevel/Round + miter_limit.)
+- [x] analytic AA correctness. (Device-pixel fwidth `aa_factor` coverage on every analytic fragment
+      body, re-frozen Quad-first in D1.1; locked by the golden snapshot + the codegen byte-equivalence
+      oracle. On-device Metal compile of the analytic MSL stays owed — see the D1.4 note.)
 
 ### Freeze
-- [ ] FREEZE D1: the analytic-shape instance layouts + per-corner radius normalize, the
+- [x] FREEZE D1: the analytic-shape instance layouts + per-corner radius normalize, the
       border-alignment + bounds-inflation contract, the line cap/join/miter contract, and
       the A–E shader-tier enumeration. D2 adds brush/image on top; complex path stroke is
-      deferred to D3.
+      deferred to D3. (Layouts pinned in `instance_abi_frozen.rs`; MSL pinned by the
+      byte-equivalence oracle; batch-family tags 4–7 round-trip-tested in `batch_planner.rs`.)
 
 ---
 
