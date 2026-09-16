@@ -31,9 +31,10 @@
 use viso_gpu::{BuiltinShader, InstanceSchema};
 
 use crate::msl::{
-    ANALYTIC_CAPSULE_MSL, ANALYTIC_ELLIPSE_MSL, ANALYTIC_RRECT_MSL, GLYPHRUN_MSL, IMAGE_MSL,
-    MESH_MSL, QUAD_MSL, analytic_capsule_schema, analytic_ellipse_schema, analytic_rrect_schema,
-    glyphrun_schema, image_schema, mesh_schema, quad_schema,
+    ANALYTIC_CAPSULE_MSL, ANALYTIC_ELLIPSE_MSL, ANALYTIC_LINE_MSL, ANALYTIC_RRECT_MSL,
+    GLYPHRUN_MSL, IMAGE_MSL, MESH_MSL, QUAD_MSL, analytic_capsule_schema, analytic_ellipse_schema,
+    analytic_line_schema, analytic_rrect_schema, glyphrun_schema, image_schema, mesh_schema,
+    quad_schema,
 };
 use std::sync::OnceLock;
 
@@ -258,6 +259,15 @@ pub fn standard_manifest() -> &'static PipelineManifest {
                 vertex_entry: "vertex_main",
                 fragment_entry: "fragment_main",
             },
+            PipelineEntry {
+                family: PipelineFamily::AnalyticLine,
+                variant: VariantKey::standard(PipelineFamily::AnalyticLine),
+                builtin: BuiltinShader::AnalyticLine,
+                msl: ANALYTIC_LINE_MSL(),
+                schema: analytic_line_schema(),
+                vertex_entry: "vertex_main",
+                fragment_entry: "fragment_main",
+            },
         ],
     })
 }
@@ -266,14 +276,15 @@ pub fn standard_manifest() -> &'static PipelineManifest {
 mod tests {
     use super::*;
     use crate::ir::testdata::{
-        ANALYTIC_CAPSULE_MSL_ORIGINAL, ANALYTIC_ELLIPSE_MSL_ORIGINAL, ANALYTIC_RRECT_MSL_ORIGINAL,
-        GLYPHRUN_MSL_ORIGINAL, IMAGE_MSL_ORIGINAL, MESH_MSL_ORIGINAL, QUAD_MSL_ORIGINAL,
+        ANALYTIC_CAPSULE_MSL_ORIGINAL, ANALYTIC_ELLIPSE_MSL_ORIGINAL, ANALYTIC_LINE_MSL_ORIGINAL,
+        ANALYTIC_RRECT_MSL_ORIGINAL, GLYPHRUN_MSL_ORIGINAL, IMAGE_MSL_ORIGINAL, MESH_MSL_ORIGINAL,
+        QUAD_MSL_ORIGINAL,
     };
 
     #[test]
     fn manifest_enumerates_the_standard_builtins() {
         let m = standard_manifest();
-        assert_eq!(m.entries().len(), 7);
+        assert_eq!(m.entries().len(), 8);
         assert!(m.entry(PipelineFamily::SolidRect).is_some());
         assert!(m.entry(PipelineFamily::Image).is_some());
         assert!(m.entry(PipelineFamily::MaskComposite).is_some());
@@ -281,16 +292,13 @@ mod tests {
         assert!(m.entry(PipelineFamily::AnalyticRRect).is_some());
         assert!(m.entry(PipelineFamily::AnalyticEllipse).is_some());
         assert!(m.entry(PipelineFamily::AnalyticCapsule).is_some());
+        assert!(m.entry(PipelineFamily::AnalyticLine).is_some());
     }
 
     #[test]
     fn families_without_a_builtin_have_no_entry() {
         let m = standard_manifest();
-        for family in [
-            PipelineFamily::AnalyticLine,
-            PipelineFamily::Gradient,
-            PipelineFamily::PathStroke,
-        ] {
+        for family in [PipelineFamily::Gradient, PipelineFamily::PathStroke] {
             assert!(m.entry(family).is_none(), "{family:?} has no F2 built-in");
         }
     }
@@ -327,6 +335,10 @@ mod tests {
         assert_eq!(
             m.entry(PipelineFamily::AnalyticCapsule).unwrap().msl,
             ANALYTIC_CAPSULE_MSL_ORIGINAL
+        );
+        assert_eq!(
+            m.entry(PipelineFamily::AnalyticLine).unwrap().msl,
+            ANALYTIC_LINE_MSL_ORIGINAL
         );
     }
 

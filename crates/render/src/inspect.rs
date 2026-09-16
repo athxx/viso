@@ -65,6 +65,8 @@ pub enum BatchPipeline {
     AnalyticEllipse,
     /// A run of adjacent analytic capsules (the analytic-capsule pipeline).
     AnalyticCapsule,
+    /// A run of adjacent analytic lines (the analytic-line pipeline).
+    AnalyticLine,
     /// A single textured image (the image pipeline).
     Image,
     /// One run of SDF glyphs (the glyph pipeline).
@@ -82,6 +84,7 @@ impl BatchPipeline {
             BatchPipeline::AnalyticRRect => "analytic-rrect",
             BatchPipeline::AnalyticEllipse => "analytic-ellipse",
             BatchPipeline::AnalyticCapsule => "analytic-capsule",
+            BatchPipeline::AnalyticLine => "analytic-line",
             BatchPipeline::Image => "image",
             BatchPipeline::GlyphRun => "glyph",
             BatchPipeline::Mesh => "mesh",
@@ -97,6 +100,7 @@ impl BatchPipeline {
             BatchPipeline::AnalyticRRect => BatchFamily::AnalyticRRect,
             BatchPipeline::AnalyticEllipse => BatchFamily::AnalyticEllipse,
             BatchPipeline::AnalyticCapsule => BatchFamily::AnalyticCapsule,
+            BatchPipeline::AnalyticLine => BatchFamily::AnalyticLine,
             BatchPipeline::Image => BatchFamily::Image,
             BatchPipeline::GlyphRun => BatchFamily::GlyphRun,
             BatchPipeline::Mesh => BatchFamily::Mesh,
@@ -337,6 +341,11 @@ impl Renderer {
                 self.analytic_capsule_pipeline_id(),
                 None,
             ),
+            SegmentKind::AnalyticLine => (
+                BatchPipeline::AnalyticLine,
+                self.analytic_line_pipeline_id(),
+                None,
+            ),
             SegmentKind::Image { bind_group } => (
                 BatchPipeline::Image,
                 self.image_pipeline_id(),
@@ -393,6 +402,7 @@ impl Renderer {
         let mut analytic_rrect_cursor: u32 = 0;
         let mut analytic_ellipse_cursor: u32 = 0;
         let mut analytic_capsule_cursor: u32 = 0;
+        let mut analytic_line_cursor: u32 = 0;
         let mut image_cursor: u32 = 0;
         let mut glyph_cursor: u32 = 0;
         let mut index_cursor: u32 = 0;
@@ -442,6 +452,16 @@ impl Renderer {
                     (
                         BatchPipeline::AnalyticCapsule,
                         SegmentKind::AnalyticCapsule,
+                        start,
+                        1,
+                    )
+                }
+                StoreRef::AnalyticLine(_) => {
+                    let start = analytic_line_cursor;
+                    analytic_line_cursor += 1;
+                    (
+                        BatchPipeline::AnalyticLine,
+                        SegmentKind::AnalyticLine,
                         start,
                         1,
                     )
@@ -610,6 +630,7 @@ impl Renderer {
                 StoreRef::AnalyticRRect(_) => (BatchFamily::AnalyticRRect, true),
                 StoreRef::AnalyticEllipse(_) => (BatchFamily::AnalyticEllipse, true),
                 StoreRef::AnalyticCapsule(_) => (BatchFamily::AnalyticCapsule, true),
+                StoreRef::AnalyticLine(_) => (BatchFamily::AnalyticLine, true),
                 StoreRef::Image(_) | StoreRef::Composite { .. } => (BatchFamily::Image, true),
                 StoreRef::GlyphRun(run) => {
                     let e = self

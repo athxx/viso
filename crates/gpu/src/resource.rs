@@ -135,6 +135,9 @@ pub enum BuiltinShader {
     /// An analytic capsule/stadium: a rounded box whose corner radius is the
     /// smaller half-extent (AnalyticCapsule primitive).
     AnalyticCapsule,
+    /// An analytic stroked line segment defined by two endpoints, with cap/join
+    /// and SDF antialiasing (AnalyticLine primitive).
+    AnalyticLine,
     /// An offscreen layer composited back with clip/opacity (Layer primitive).
     Layer,
 }

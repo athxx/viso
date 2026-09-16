@@ -569,6 +569,16 @@ impl HeadlessRaster {
                                 cmd.scissor,
                             );
                         }
+                        BuiltinShader::AnalyticLine => {
+                            self.fill_analytic_line(
+                                target,
+                                width,
+                                height,
+                                &layout,
+                                inst,
+                                cmd.scissor,
+                            );
+                        }
                         // Path/Mesh never arrive as generated geometry.
                         BuiltinShader::Path | BuiltinShader::Mesh | BuiltinShader::Layer => {}
                     }
@@ -1053,6 +1063,106 @@ impl HeadlessRaster {
         }
     }
 
+    /// Fill one AnalyticLine instance: a stroked segment between two endpoints
+    /// with a butt/square/round cap, linear-coverage AA, premultiplied
+    /// source-over blend.
+    ///
+    /// Reads these fields (by name) from the instance bytes, per the AnalyticLine
+    /// built-in's schema:
+    /// - `p0`, `p1`      : `Float2` segment endpoints in physical pixels
+    /// - `width`         : `Float1` stroke width (centered; half-width each side)
+    /// - `color`         : `Float4` **straight** fill RGBA
+    /// - `cap`           : `Uint1` 0=butt 1=square 2=round
+    /// - `border_width`  : `Float1` border width
+    /// - `border_color`  : `Float4` **straight** border RGBA
+    ///
+    /// The per-pixel math mirrors [`ANALYTIC_LINE_MSL`](../../shader)'s fragment
+    /// (`segment_sdf`/`capped_segment_sdf` + border-over-fill) exactly. `join` and
+    /// `miter_limit` are read by the shader but only matter across multiple
+    /// segments; a single segment's shape is fully determined by its cap.
+    fn fill_analytic_line(
+        &mut self,
+        target: FbTarget,
+        width: u32,
+        height: u32,
+        layout: &InstanceLayout,
+        inst: &[u8],
+        scissor: Option<(u32, u32, u32, u32)>,
+    ) {
+        let p0 = read_f2(layout, inst, "p0");
+        let p1 = read_f2(layout, inst, "p1");
+        let stroke_w = read_f1(layout, inst, "width");
+        let fill = read_f4(layout, inst, "color");
+        let cap = read_u1(layout, inst, "cap");
+        let border_w = read_f1(layout, inst, "border_width");
+        let border_c = read_f4(layout, inst, "border_color");
+
+        let hw = stroke_w * 0.5;
+
+        // Bounding box of the rotated stroke: the endpoint span plus half-width
+        // (plus a cap extension for square/round caps) plus a 1px AA pad, on both
+        // axes. Cheaper than deriving the exact oriented quad and correct for the
+        // scan (pixels outside get zero coverage anyway).
+        let cap_ext = if cap == 0 { 0.0 } else { hw };
+        let margin = hw + cap_ext + 1.0;
+        let (mut x0, mut y0, mut x1, mut y1) = (
+            (p0[0].min(p1[0]) - margin).floor().max(0.0) as u32,
+            (p0[1].min(p1[1]) - margin).floor().max(0.0) as u32,
+            (p0[0].max(p1[0]) + margin).ceil().min(width as f32) as u32,
+            (p0[1].max(p1[1]) + margin).ceil().min(height as f32) as u32,
+        );
+        if let Some((sx, sy, sw, sh)) = scissor {
+            x0 = x0.max(sx);
+            y0 = y0.max(sy);
+            x1 = x1.min(sx + sw);
+            y1 = y1.min(sy + sh);
+        }
+
+        let aa = 1.0 / (2.0_f32).sqrt();
+
+        for py in y0..y1 {
+            for px in x0..x1 {
+                let p = [px as f32 + 0.5, py as f32 + 0.5];
+                let d = if cap == 2 {
+                    segment_sdf(p, p0, p1, hw)
+                } else {
+                    let ext = if cap == 1 { hw } else { 0.0 };
+                    capped_segment_sdf(p, p0, p1, hw, ext)
+                };
+
+                let fill_cov = (-d * aa).clamp(0.0, 1.0);
+                if fill_cov <= 0.0 && border_w <= 0.0 {
+                    continue;
+                }
+
+                let mut src = [
+                    fill[0] * fill[3] * fill_cov,
+                    fill[1] * fill[3] * fill_cov,
+                    fill[2] * fill[3] * fill_cov,
+                    fill[3] * fill_cov,
+                ];
+                if border_w > 0.0 {
+                    let bcov = (-(d.abs() - border_w * 0.5) * aa).clamp(0.0, 1.0);
+                    if bcov > 0.0 {
+                        let ba = border_c[3] * bcov;
+                        let bsrc = [border_c[0] * ba, border_c[1] * ba, border_c[2] * ba, ba];
+                        src = [
+                            bsrc[0] + src[0] * (1.0 - ba),
+                            bsrc[1] + src[1] * (1.0 - ba),
+                            bsrc[2] + src[2] * (1.0 - ba),
+                            bsrc[3] + src[3] * (1.0 - ba),
+                        ];
+                    }
+                }
+                if src[3] <= 0.0 {
+                    continue;
+                }
+
+                blend_pixel(self.framebuffer(target), width, px, py, src);
+            }
+        }
+    }
+
     /// Fill one Image instance: sample the bound texture's uv sub-rect across the
     /// destination rect, modulated by a straight tint, premultiplied source-over.
     ///
@@ -1361,6 +1471,40 @@ fn capsule_sdf(p: [f32; 2], center: [f32; 2], half: [f32; 2]) -> f32 {
     box_sdf(p, center, half, k)
 }
 
+/// Signed distance to a line segment of half-width `hw` (IQ): project the sample
+/// onto the segment (clamped to its endpoints) and subtract the half-width.
+/// Mirrors the AnalyticLine fragment's `segment_sdf` exactly.
+fn segment_sdf(p: [f32; 2], a: [f32; 2], b: [f32; 2], hw: f32) -> f32 {
+    let pa = [p[0] - a[0], p[1] - a[1]];
+    let ba = [b[0] - a[0], b[1] - a[1]];
+    let denom = ba[0] * ba[0] + ba[1] * ba[1];
+    let h = if denom > 0.0 {
+        ((pa[0] * ba[0] + pa[1] * ba[1]) / denom).clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    let dx = pa[0] - ba[0] * h;
+    let dy = pa[1] - ba[1] * h;
+    (dx * dx + dy * dy).sqrt() - hw
+}
+
+/// Signed distance for a butt (`cap_ext == 0`) or square (`cap_ext == hw`) cap:
+/// the segment SDF intersected with the two perpendicular end half-planes.
+/// Mirrors the AnalyticLine fragment's `capped_segment_sdf` exactly.
+fn capped_segment_sdf(p: [f32; 2], a: [f32; 2], b: [f32; 2], hw: f32, cap_ext: f32) -> f32 {
+    let ba = [b[0] - a[0], b[1] - a[1]];
+    let len = (ba[0] * ba[0] + ba[1] * ba[1]).sqrt();
+    let dir = if len > 0.0 {
+        [ba[0] / len, ba[1] / len]
+    } else {
+        [1.0, 0.0]
+    };
+    let t = (p[0] - a[0]) * dir[0] + (p[1] - a[1]) * dir[1];
+    let d = segment_sdf(p, a, b, hw);
+    let end_d = (-(t + cap_ext)).max(t - (len + cap_ext));
+    d.max(end_d)
+}
+
 /// Premultiplied source-over into one framebuffer pixel, quantizing the source
 /// to 8-bit first so the result is byte-exact against a real Bgra8 target.
 fn blend_pixel(fb: &mut [[f32; 4]], width: u32, px: u32, py: u32, src: [f32; 4]) {
@@ -1434,6 +1578,12 @@ fn decode_texel(format: TextureFormat, bytes: &[u8]) -> [f32; 4] {
 fn read_f1(layout: &InstanceLayout, inst: &[u8], name: &str) -> f32 {
     let off = field_offset(layout, name, AttrFormat::Float1);
     f32::from_le_bytes(inst[off..off + 4].try_into().unwrap())
+}
+
+/// Read a named `Uint1` field from instance bytes.
+fn read_u1(layout: &InstanceLayout, inst: &[u8], name: &str) -> u32 {
+    let off = field_offset(layout, name, AttrFormat::Uint1);
+    u32::from_le_bytes(inst[off..off + 4].try_into().unwrap())
 }
 
 /// Read a named `Float2` field from instance bytes.

@@ -20,8 +20,8 @@ use viso_gpu::{GpuPod, TextureId};
 // re-export them here so the instance structs and their schemas stay visibly
 // paired at the primitive definition.
 pub use viso_shader::{
-    analytic_capsule_schema, analytic_ellipse_schema, analytic_rrect_schema, glyphrun_schema,
-    image_schema, mesh_schema, quad_schema,
+    analytic_capsule_schema, analytic_ellipse_schema, analytic_line_schema, analytic_rrect_schema,
+    glyphrun_schema, image_schema, mesh_schema, quad_schema,
 };
 
 /// An axis-aligned rectangle in physical pixels, top-left origin.
@@ -334,6 +334,58 @@ impl AnalyticCapsule {
     }
 }
 
+/// An analytic stroked line segment defined by its two endpoints.
+///
+/// The stroke is centered on the `p0`→`p1` segment with the given `width`; the
+/// endpoints are shaped by `cap` and (for future multi-segment use, and to keep
+/// the round-endpoint semantics consistent) `join`/`miter_limit`. The fill is a
+/// segment SDF evaluated per pixel in the shader (no tessellation), with an
+/// optional inner border. Unlike the rect-based analytic families this needs its
+/// own [`AnalyticLineInstance`] layout — it is defined by endpoints, not an
+/// axis-aligned rect.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct AnalyticLine {
+    /// Segment start, in physical pixels.
+    pub p0: Point,
+    /// Segment end, in physical pixels.
+    pub p1: Point,
+    /// Stroke width in physical pixels (centered on the segment).
+    pub width: f32,
+    /// Fill color.
+    pub color: Rgba,
+    /// End-cap shape.
+    pub cap: LineCap,
+    /// Corner join shape (for multi-segment / round-endpoint consistency).
+    pub join: LineJoin,
+    /// Miter length limit as a multiple of the half-width, before a miter join
+    /// degenerates to a bevel.
+    pub miter_limit: f32,
+    /// Border stroke.
+    pub border: Border,
+}
+
+impl AnalyticLine {
+    /// Lower this line to its GPU instance.
+    pub fn to_instance(&self) -> AnalyticLineInstance {
+        AnalyticLineInstance {
+            p0: [self.p0.x, self.p0.y],
+            p1: [self.p1.x, self.p1.y],
+            width: self.width,
+            color: [self.color.r, self.color.g, self.color.b, self.color.a],
+            cap: self.cap.as_u32(),
+            join: self.join.as_u32(),
+            miter_limit: self.miter_limit,
+            border_width: self.border.width,
+            border_color: [
+                self.border.color.r,
+                self.border.color.g,
+                self.border.color.b,
+                self.border.color.a,
+            ],
+        }
+    }
+}
+
 /// A clip/compositing layer pushed by [`Primitive::Layer`].
 ///
 /// Every following primitive is constrained to `clip` until the matching
@@ -481,6 +533,47 @@ pub enum LineJoin {
     Miter,
     /// Flat-cut corner.
     Bevel,
+    /// Rounded corner (arc between the outer edges).
+    Round,
+}
+
+/// How a stroked line's endpoints are shaped.
+///
+/// A butt cap ends flush at the endpoint; a square cap projects the stroke half
+/// its width past the endpoint; a round cap adds a semicircle of that radius.
+/// Line-specific: the [`Path`] stroke uses only butt ends and carries no cap.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LineCap {
+    /// Flush end at the endpoint.
+    Butt,
+    /// Squared end projecting half the width past the endpoint.
+    Square,
+    /// Semicircular end of radius half the width.
+    Round,
+}
+
+impl LineCap {
+    /// The `u32` the [`AnalyticLineInstance`] carries (matches the shader/headless
+    /// dispatch: 0=butt, 1=square, 2=round).
+    const fn as_u32(self) -> u32 {
+        match self {
+            LineCap::Butt => 0,
+            LineCap::Square => 1,
+            LineCap::Round => 2,
+        }
+    }
+}
+
+impl LineJoin {
+    /// The `u32` the [`AnalyticLineInstance`] carries (0=miter, 1=bevel,
+    /// 2=round).
+    const fn as_u32(self) -> u32 {
+        match self {
+            LineJoin::Miter => 0,
+            LineJoin::Bevel => 1,
+            LineJoin::Round => 2,
+        }
+    }
 }
 
 /// A stroke (outline) applied to a [`Path`].
@@ -546,6 +639,8 @@ pub enum Primitive {
     AnalyticEllipse(AnalyticEllipse),
     /// A capsule/stadium (rounded box, corner radius = smaller half-extent).
     AnalyticCapsule(AnalyticCapsule),
+    /// A stroked line segment defined by two endpoints, with cap/join.
+    AnalyticLine(AnalyticLine),
     /// A run of shaped glyphs sampling a single-channel A8 coverage atlas.
     GlyphRun(GlyphRunDraw),
     /// A textured image sampled into a rect.
@@ -655,6 +750,39 @@ pub struct AnalyticCapsuleInstance {
     pub rect_size: [f32; 2],
     /// Straight linear RGBA fill.
     pub color: [f32; 4],
+    /// Border stroke width in pixels (0 = none).
+    pub border_width: f32,
+    /// Straight linear RGBA border color.
+    pub border_color: [f32; 4],
+}
+
+/// GPU instance for the AnalyticLine built-in shader.
+///
+/// Field names/formats match [`analytic_line_schema`] and the headless
+/// `fill_analytic_line` reader. `cap`/`join` are scalar `u32` enum codes
+/// (cap: 0=butt 1=square 2=round; join: 0=miter 1=bevel 2=round). Colors are
+/// **straight** (non-premultiplied) linear RGBA — the backend premultiplies.
+/// `#[repr(C)]` with only 4-byte-aligned scalars/vectors, so the derive's
+/// `offset_of!`-based layout has no padding: `p0`@0, `p1`@8, `width`@16,
+/// `color`@20, `cap`@36, `join`@40, `miter_limit`@44, `border_width`@48,
+/// `border_color`@52, stride 68.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, GpuPod)]
+pub struct AnalyticLineInstance {
+    /// Segment start in physical pixels.
+    pub p0: [f32; 2],
+    /// Segment end in physical pixels.
+    pub p1: [f32; 2],
+    /// Stroke width in pixels.
+    pub width: f32,
+    /// Straight linear RGBA fill.
+    pub color: [f32; 4],
+    /// Cap code: 0=butt, 1=square, 2=round.
+    pub cap: u32,
+    /// Join code: 0=miter, 1=bevel, 2=round.
+    pub join: u32,
+    /// Miter limit as a multiple of the half-width.
+    pub miter_limit: f32,
     /// Border stroke width in pixels (0 = none).
     pub border_width: f32,
     /// Straight linear RGBA border color.
@@ -1077,7 +1205,9 @@ fn emit_join(
     verts.push(mesh_vert(n_out, col, 1.0));
 
     // Miter apex: intersection of the two outer edges. Fall back to bevel if the
-    // miter grows past MITER_LIMIT × hw or the join kind is Bevel.
+    // miter grows past MITER_LIMIT × hw or the join kind is Bevel/Round. (Path's
+    // `Stroke` only exposes Miter/Bevel; Round exists for the analytic line's
+    // per-endpoint join and degenerates to a bevel corner in the mesh path.)
     if join == LineJoin::Miter
         && normals_diverge(pnx, pny, nnx, nny, sign)
         && let Some(apex) = miter_apex(p_out, idir, n_out, ndir)
@@ -1307,6 +1437,51 @@ mod tests {
         assert_eq!(inst.rect_size, [30.0, 40.0]);
         assert_eq!(inst.color, [0.2, 0.4, 0.6, 0.8]);
         assert_eq!(inst.border_width, 3.0);
+        assert_eq!(inst.border_color, [1.0, 1.0, 1.0, 1.0]);
+    }
+
+    #[test]
+    fn analytic_line_instance_layout_matches_schema() {
+        assert_eq!(
+            AnalyticLineInstance::LAYOUT.validate_against(&analytic_line_schema()),
+            Ok(())
+        );
+    }
+
+    #[test]
+    fn analytic_line_lowers_to_instance() {
+        let l = AnalyticLine {
+            p0: Point::new(10.0, 20.0),
+            p1: Point::new(30.0, 40.0),
+            width: 4.0,
+            color: Rgba {
+                r: 0.2,
+                g: 0.4,
+                b: 0.6,
+                a: 0.8,
+            },
+            cap: LineCap::Round,
+            join: LineJoin::Bevel,
+            miter_limit: 4.0,
+            border: Border {
+                width: 1.5,
+                color: Rgba {
+                    r: 1.0,
+                    g: 1.0,
+                    b: 1.0,
+                    a: 1.0,
+                },
+            },
+        };
+        let inst = l.to_instance();
+        assert_eq!(inst.p0, [10.0, 20.0]);
+        assert_eq!(inst.p1, [30.0, 40.0]);
+        assert_eq!(inst.width, 4.0);
+        assert_eq!(inst.color, [0.2, 0.4, 0.6, 0.8]);
+        assert_eq!(inst.cap, 2); // round
+        assert_eq!(inst.join, 1); // bevel
+        assert_eq!(inst.miter_limit, 4.0);
+        assert_eq!(inst.border_width, 1.5);
         assert_eq!(inst.border_color, [1.0, 1.0, 1.0, 1.0]);
     }
 

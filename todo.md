@@ -865,23 +865,49 @@ Section 3 — render crate (instance/primitive/store/renderer/inspect):
 - [x] Bump `SHADER_PIPELINE_PREWARM_COUNT` (`renderer.rs`) 6→7.
 
 ### D1.4 — AnalyticLine (cap/join/miter) + steady-state bench extension (`viso-render` + shader/gpu)
-- [ ] `primitive.rs`: extend `LineJoin` (`Miter|Bevel`) with `Round`; add `LineCap`
-      (`Butt/Square/Round`) + `miter_limit` on a Line-specific analytic stroke shape — do NOT
-      mutate the tessellated `Path`'s `Stroke` semantics; keep the CPU tessellator's `LineJoin`
-      match exhaustive after adding `Round`.
-- [ ] `AnalyticLine` three-leg ABI (`BatchFamily` tag 7, mergeable): segment SDF + cap
-      (butt/square/round) + join (miter/bevel/round) + miter_limit fallback, device-pixel fwidth AA.
-- [ ] `standard_manifest()` entry; bump `manifest_enumerates_the_four_builtins` 7→8; drop
-      AnalyticLine from `families_without_a_builtin_have_no_entry`'s list; bump
-      `SHADER_PIPELINE_PREWARM_COUNT` 7→8.
-- [ ] Extend `renderer_steady_state.rs` `grid_scene` with RRect/Ellipse/Capsule/Line grids so
-      `assert_steady_state_is_allocation_free` + hover/scroll proofs cover the new pools; per-family
-      hover asserts `gpu_upload_bytes == size_of::<<Family>Instance>()`, `uploaded_ranges==1`,
-      `dirty_primitives==1`, `path_tessellations==0`; scroll stays transform-only. Keep the
-      existing pure-quad proofs intact (quad pool remains the sole `sync` participant there).
-- [ ] Benchmark gate (§31 `## D0/D1`): 10k RRect; mixed Rect/RRect/Circle; scroll transform-only;
-      hover paint-only. Rounded-card target: RRect fill + border + one shadow → 1 analytic
-      primitive, not multi-level offscreen. High-refresh 60/120/144/240.
+- [x] `primitive.rs`: extend `LineJoin` (`Miter|Bevel`) with `Round` (CPU tessellator's `emit_join`
+      match stays exhaustive; `Round` degrades to a bevel-plus-arc approximation without changing
+      `Path`'s existing tessellated `Stroke` bytes); add Line-specific `LineCap` (`Butt/Square/Round`)
+      — NOT attached to `Path`'s `Stroke`. `AnalyticLine` host struct (endpoint `p0`/`p1` `Point`,
+      `width`, `color`, `cap`, `join`, `miter_limit`, `border`) + `to_instance()`; `Primitive` variant;
+      `#[repr(C)] #[derive(GpuPod)] AnalyticLineInstance`; `*_instance_layout_matches_schema` +
+      `*_lowers_to_instance` tests.
+- [x] shader `ir`: `analytic_line_ir()` (attrs p0/p1/width/color + scalar `cap`/`join` `IrType::U32`
+      → `Uint1`/MSL `uint` + miter_limit/border; varyings carry p0/p1/half_width/cap/join/miter_limit/
+      color/border); rotated-quad vertex body; `segment_sdf` fragment (IQ segment SDF + cap modifier +
+      miter fallback, device-pixel fwidth AA). `ir/testdata.rs` oracle baked from codegen (`half`→
+      `half_ext` to dodge the MSL reserved word); `codegen_msl.rs` byte-equivalence test.
+- [x] `msl.rs`: `PrimitiveKind::AnalyticLine` + `shader_source`/`instance_schema` arms +
+      `analytic_line_schema()`/`ANALYTIC_LINE_MSL()`; `analytic_line_has_source_and_schema` test.
+      `shader/src/lib.rs`: re-export `ANALYTIC_LINE_MSL`, `analytic_line_schema`.
+- [x] `standard_manifest()` entry; `manifest_enumerates_the_standard_builtins` 7→8; drop AnalyticLine
+      from `families_without_a_builtin_have_no_entry`'s list; `manifest_msl_is_the_frozen_oracle` arm.
+- [x] `gpu/src/resource.rs`: `BuiltinShader::AnalyticLine`. `gpu/src/headless.rs`: `fill_analytic_line`
+      (endpoint segment SDF Rust twin of the fragment, rotated bbox + scissor clamp, `aa=1/sqrt(2)`,
+      border-over-fill) + `read_u1` for the scalar `cap`/`join` fields; dispatch arm.
+- [x] `render/src/scene`: `AnalyticLineStore` + `StoreRef::AnalyticLine` + `Display`; `IngestStats`
+      counter; `ingest_analytic_line`; `begin_frame`/`finish_frame` wire.
+- [x] `render/src/batch/planner.rs`: `BatchFamily::AnalyticLine` (tag 7, mergeable) — the last
+      `FAMILY_MASK=0b111` slot (max 7); `tag()`/`from_tag()`; round-trip test extended.
+- [x] `render/src/renderer.rs`: pipeline/pool/scratch + `Renderer::new` (manifest-driven);
+      `SegmentKind::AnalyticLine` + `family()`/`resource()`; `upload()` arm; pool-sync +
+      `gpu_upload_bytes` sum; `lower_from_scene()` + `command_for()` arms; `ANALYTIC_LINE_STRIDE`;
+      bump `SHADER_PIPELINE_PREWARM_COUNT` 7→8.
+- [x] `render/src/inspect.rs`: `BatchPipeline::AnalyticLine` + `label()`/`family()`; the exhaustive
+      matches (cursor, `inspect_segment`, `inspect_primitives`, mergeable predicate) extended.
+      `render/src/lib.rs`: re-export `AnalyticLine`/`AnalyticLineInstance`/`analytic_line_schema`/
+      `LineCap`.
+- [x] Frozen offset/stride block in `instance_abi_frozen.rs` (stride 68, align 4, offsets
+      0/8/16/20/36/40/44/48/52); `batch_planner.rs` `pipeline_family` arm + round-trip family/tag list.
+- [x] Extend `renderer_steady_state.rs` with a `Family` enum (RRect/Ellipse/Capsule/Line) driving an
+      isolated per-family grid harness; per-family hover asserts `gpu_upload_bytes ==
+      size_of::<<Family>Instance>()`, `uploaded_ranges==1`, `dirty_primitives==1`,
+      `path_tessellations==0`; scroll stays transform-only (`dirty_primitives==GRID`, no
+      instance rebuilds / buffer churn). Existing pure-quad proofs kept intact.
+- [ ] Not verifiable here: real Metal-device MSL compile of `ANALYTIC_LINE_MSL` (headless does not
+      compile MSL). The MSL is codegen-derived from the shared template and locked by the
+      byte-equivalence test; one on-device Metal compile is still owed (same convention as the
+      `half`/reserved-word check).
 
 ### D1 Done
 - [ ] RRect / per-corner / Circle / Ellipse / Capsule.
