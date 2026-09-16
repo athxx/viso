@@ -1570,18 +1570,31 @@ fn sample_texel(
     let tx = u * tw as f32 - 0.5;
     let ty = v * th as f32 - 0.5;
 
+    // Mirror one integer axis coordinate into `[0, n)` as a period-2n triangle
+    // wave: within `[0, n)` identity, within `[n, 2n)` reflected — the same
+    // reflection the gradient extend-mirror uses, one dimension at a time.
+    let mirror = |i: i32, n: i32| -> i32 {
+        let period = 2 * n;
+        let m = i.rem_euclid(period);
+        if m < n { m } else { period - 1 - m }
+    };
+
     // Fetch one texel with the address mode applied to integer coords.
     let fetch = |ix: i32, iy: i32| -> [f32; 4] {
         let (cx, cy) = match samp.address {
             AddressMode::ClampToEdge => (ix.clamp(0, tw as i32 - 1), iy.clamp(0, th as i32 - 1)),
             AddressMode::Repeat => (ix.rem_euclid(tw as i32), iy.rem_euclid(th as i32)),
+            AddressMode::Mirror => (mirror(ix, tw as i32), mirror(iy, th as i32)),
         };
         texels[(cy as u32 * tw + cx as u32) as usize]
     };
 
     match samp.filter {
         FilterMode::Nearest => fetch(tx.round() as i32, ty.round() as i32),
-        FilterMode::Linear => {
+        // The headless raster has no mip chain, so trilinear degrades to
+        // bilinear on the base level (see `FilterMode::MipmapLinear`); the mip
+        // blend only takes effect on a device backend.
+        FilterMode::Linear | FilterMode::MipmapLinear => {
             let x0 = tx.floor();
             let y0 = ty.floor();
             let fx = tx - x0;
@@ -1813,4 +1826,82 @@ fn field_offset(layout: &InstanceLayout, name: &str, want: AttrFormat) -> usize 
         f.format
     );
     f.offset
+}
+
+#[cfg(test)]
+mod sampler_tests {
+    use super::sample_texel;
+    use crate::resource::{AddressMode, FilterMode, SamplerDesc};
+
+    /// A 2×1 texture: texel 0 is red, texel 1 is green (both opaque, premul).
+    fn two_texel() -> Vec<[f32; 4]> {
+        vec![[1.0, 0.0, 0.0, 1.0], [0.0, 1.0, 0.0, 1.0]]
+    }
+
+    fn nearest(address: AddressMode) -> SamplerDesc {
+        SamplerDesc {
+            filter: FilterMode::Nearest,
+            address,
+        }
+    }
+
+    #[test]
+    fn mirror_reflects_across_the_edge() {
+        let tex = two_texel();
+        let samp = nearest(AddressMode::Mirror);
+        // Inside [0,1): texel-center sampling — u in [0,0.5) → texel 0 (red),
+        // u in [0.5,1) → texel 1 (green).
+        assert_eq!(
+            sample_texel(&tex, 2, 1, 0.25, 0.5, &samp),
+            [1.0, 0.0, 0.0, 1.0]
+        );
+        assert_eq!(
+            sample_texel(&tex, 2, 1, 0.75, 0.5, &samp),
+            [0.0, 1.0, 0.0, 1.0]
+        );
+        // Second period [1,2) is mirrored: near u=1 stays green (last texel),
+        // near u=2 reflects back to red (first texel).
+        assert_eq!(
+            sample_texel(&tex, 2, 1, 1.25, 0.5, &samp),
+            [0.0, 1.0, 0.0, 1.0]
+        );
+        assert_eq!(
+            sample_texel(&tex, 2, 1, 1.75, 0.5, &samp),
+            [1.0, 0.0, 0.0, 1.0]
+        );
+    }
+
+    #[test]
+    fn mirror_differs_from_repeat_in_the_reflected_period() {
+        let tex = two_texel();
+        // In the second period, Repeat wraps (green at u=1.25) while Mirror
+        // reflects (still green near the seam but red at the far end).
+        let repeat = sample_texel(&tex, 2, 1, 1.75, 0.5, &nearest(AddressMode::Repeat));
+        let mirror = sample_texel(&tex, 2, 1, 1.75, 0.5, &nearest(AddressMode::Mirror));
+        assert_eq!(repeat, [0.0, 1.0, 0.0, 1.0]);
+        assert_eq!(mirror, [1.0, 0.0, 0.0, 1.0]);
+        assert_ne!(repeat, mirror);
+    }
+
+    #[test]
+    fn mipmap_linear_degrades_to_linear_in_headless() {
+        // Headless has no mip chain, so MipmapLinear must sample identically to
+        // Linear on the base level.
+        let tex = two_texel();
+        let base = SamplerDesc {
+            filter: FilterMode::Linear,
+            address: AddressMode::ClampToEdge,
+        };
+        let mip = SamplerDesc {
+            filter: FilterMode::MipmapLinear,
+            address: AddressMode::ClampToEdge,
+        };
+        for &u in &[0.0, 0.3, 0.5, 0.8, 1.0] {
+            assert_eq!(
+                sample_texel(&tex, 2, 1, u, 0.5, &base),
+                sample_texel(&tex, 2, 1, u, 0.5, &mip),
+                "MipmapLinear must match Linear at u={u}"
+            );
+        }
+    }
 }

@@ -37,8 +37,8 @@ use objc2_metal::{
     MTLIndexType, MTLLibrary, MTLLoadAction, MTLOrigin, MTLPixelFormat, MTLPrimitiveType,
     MTLRegion, MTLRenderCommandEncoder, MTLRenderPassDescriptor, MTLRenderPipelineDescriptor,
     MTLRenderPipelineState, MTLResourceOptions, MTLSamplerAddressMode, MTLSamplerDescriptor,
-    MTLSamplerMinMagFilter, MTLSamplerState, MTLScissorRect, MTLSize, MTLStoreAction, MTLTexture,
-    MTLTextureDescriptor, MTLTextureUsage, MTLViewport,
+    MTLSamplerMinMagFilter, MTLSamplerMipFilter, MTLSamplerState, MTLScissorRect, MTLSize,
+    MTLStoreAction, MTLTexture, MTLTextureDescriptor, MTLTextureUsage, MTLViewport,
 };
 use objc2_quartz_core::{CAMetalDrawable, CAMetalLayer};
 use viso_handle::RawWindowHandle;
@@ -373,15 +373,27 @@ impl GpuBackend for MetalBackend {
 
     fn create_sampler(&mut self, desc: &SamplerDesc) -> SamplerId {
         let sd = MTLSamplerDescriptor::new();
-        let filter = match desc.filter {
-            FilterMode::Nearest => MTLSamplerMinMagFilter::Nearest,
-            FilterMode::Linear => MTLSamplerMinMagFilter::Linear,
+        // Min/mag texel filter, plus the mip filter for the trilinear variant.
+        let (filter, mip) = match desc.filter {
+            FilterMode::Nearest => (
+                MTLSamplerMinMagFilter::Nearest,
+                MTLSamplerMipFilter::NotMipmapped,
+            ),
+            FilterMode::Linear => (
+                MTLSamplerMinMagFilter::Linear,
+                MTLSamplerMipFilter::NotMipmapped,
+            ),
+            FilterMode::MipmapLinear => {
+                (MTLSamplerMinMagFilter::Linear, MTLSamplerMipFilter::Linear)
+            }
         };
         sd.setMinFilter(filter);
         sd.setMagFilter(filter);
+        sd.setMipFilter(mip);
         let address = match desc.address {
             AddressMode::ClampToEdge => MTLSamplerAddressMode::ClampToEdge,
             AddressMode::Repeat => MTLSamplerAddressMode::Repeat,
+            AddressMode::Mirror => MTLSamplerAddressMode::MirrorRepeat,
         };
         sd.setSAddressMode(address);
         sd.setTAddressMode(address);

@@ -27,7 +27,7 @@
 //! fields moved, but the decision that a moved `rect_pos` is a transform-plane
 //! event and a moved `color` a paint-plane event lives here.
 
-use viso_gpu::TextureId;
+use viso_gpu::{SamplerDesc, TextureId};
 
 use crate::primitive::{
     AnalyticCapsuleInstance, AnalyticEllipseInstance, AnalyticLineInstance, AnalyticRRectInstance,
@@ -179,16 +179,17 @@ impl Scene {
         self.record(StoreRef::AnalyticLine(slot), context, bounds)
     }
 
-    /// Ingest an image draw: diff instance + texture, bump the moved planes,
-    /// record its slot.
+    /// Ingest an image draw: diff instance + texture + sampler, bump the moved
+    /// planes, record its slot.
     pub fn ingest_image(
         &mut self,
         instance: ImageInstance,
         texture: TextureId,
+        sampler: SamplerDesc,
         context: EmitContext,
         bounds: Bounds,
     ) -> PrimitiveId {
-        let (slot, dirty) = self.images.ingest(instance, texture);
+        let (slot, dirty) = self.images.ingest(instance, texture, sampler);
         self.apply_planes(dirty);
         self.record(StoreRef::Image(slot), context, bounds)
     }

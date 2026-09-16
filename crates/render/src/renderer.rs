@@ -17,11 +17,11 @@
 use viso_gpu::backend::{
     DrawCommand, DrawList, Geometry, InlineUniforms, RenderPass, RenderTarget,
 };
-use viso_gpu::{AddressMode, BindGroupId, FilterMode, SamplerId};
 use viso_gpu::{
     BindGroupDesc, Binding, BlendMode, BufferUsage, Frame, GpuBackend, LoadOp, PipelineDesc,
     PipelineId, SamplerDesc, SurfaceId, TextureDesc, TextureFormat, TextureId,
 };
+use viso_gpu::{BindGroupId, SamplerId};
 
 use viso_shader::{PipelineEntry, PipelineFamily, standard_manifest};
 
@@ -233,11 +233,35 @@ struct LayerEntry {
     origin: [f32; 2],
 }
 
-/// A texture's bind group, cached so repeated draws of the same texture reuse
-/// one bind group (and its sampler) rather than allocating per frame.
+/// A (texture, sampler) pair's bind group, cached so repeated draws sharing both
+/// reuse one bind group rather than allocating per frame. Sampler is part of the
+/// key: the same texture drawn with Nearest and with Linear needs two bind groups.
 struct TextureBinding {
     texture: TextureId,
+    sampler: SamplerId,
     bind_group: BindGroupId,
+}
+
+/// Interns [`SamplerDesc`] to a shared [`SamplerId`] so the renderer keeps one
+/// device sampler per distinct descriptor, never one per draw (§12, §17.1). The
+/// cardinality is tiny (a handful of filter/address combinations), so a scanned
+/// `Vec` is leaner than a hash map and matches `texture_bindings`' cold-path
+/// pattern; a lookup happens once when a new descriptor first appears.
+#[derive(Default)]
+struct SamplerCache {
+    entries: Vec<(SamplerDesc, SamplerId)>,
+}
+
+impl SamplerCache {
+    /// Return the interned sampler for `desc`, creating it on first sight.
+    fn intern<B: GpuBackend>(&mut self, backend: &mut B, desc: SamplerDesc) -> SamplerId {
+        if let Some((_, id)) = self.entries.iter().find(|(d, _)| *d == desc) {
+            return *id;
+        }
+        let id = backend.create_sampler(&desc);
+        self.entries.push((desc, id));
+        id
+    }
 }
 
 /// The built-in pipelines the renderer prewarms once in [`Renderer::new`]
@@ -347,10 +371,12 @@ pub struct Renderer {
     glyph_pipeline: PipelineId,
     /// The Gradient built-in pipeline (registered once).
     gradient_pipeline: PipelineId,
-    /// A linear-filter clamp sampler shared by image and glyph draws (Phase 2
-    /// uses one sampler configuration; the glyph coverage pool needs bilinear filtering,
-    /// which this provides). Per-image sampler variety lands later.
+    /// The default linear-filter clamp sampler, used by glyph runs, gradient
+    /// LUT sampling, and offscreen-layer compositing (all of which want bilinear
+    /// clamp). Image draws select their sampler via `sampler_cache` instead.
     sampler: SamplerId,
+    /// Interns image draws' [`SamplerDesc`] to shared [`SamplerId`]s (§12).
+    sampler_cache: SamplerCache,
     /// Persistent quad instance pool: a long-lived device buffer uploaded per
     /// changed slot against a CPU shadow (§9.1), so a local paint change costs a
     /// local upload rather than a full-buffer re-upload.
@@ -569,10 +595,13 @@ impl Renderer {
             label: "gradient-lut",
         });
 
-        let sampler = backend.create_sampler(&SamplerDesc {
-            filter: FilterMode::Linear,
-            address: AddressMode::ClampToEdge,
-        });
+        let default_sampler_desc = SamplerDesc::LINEAR_CLAMP;
+        let sampler = backend.create_sampler(&default_sampler_desc);
+        // Seed the image sampler cache with the default so a default-sampler
+        // image draw reuses this one device sampler instead of creating another.
+        let sampler_cache = SamplerCache {
+            entries: vec![(default_sampler_desc, sampler)],
+        };
 
         Self {
             quad_pipeline,
@@ -584,6 +613,7 @@ impl Renderer {
             glyph_pipeline,
             gradient_pipeline,
             sampler,
+            sampler_cache,
             quad_pool: InstancePool::new(BufferUsage::INSTANCE, "quad-instances"),
             analytic_rrect_pool: InstancePool::new(
                 BufferUsage::INSTANCE,
@@ -630,27 +660,30 @@ impl Renderer {
         }
     }
 
-    /// Get (or lazily create) the bind group for `texture`, pairing it with the
-    /// shared sampler. Cached across frames so a repeated texture reuses its
-    /// bind group (no per-frame allocation in steady state).
+    /// Get (or lazily create) the bind group pairing `texture` with `sampler`.
+    /// Cached across frames keyed by both, so a repeated (texture, sampler) pair
+    /// reuses its bind group (no per-frame allocation in steady state); the same
+    /// texture sampled two ways keeps two bind groups.
     fn bind_group_for<B: GpuBackend>(
         &mut self,
         backend: &mut B,
         texture: TextureId,
+        sampler: SamplerId,
     ) -> BindGroupId {
         if let Some(tb) = self
             .texture_bindings
             .iter()
-            .find(|tb| tb.texture == texture)
+            .find(|tb| tb.texture == texture && tb.sampler == sampler)
         {
             return tb.bind_group;
         }
         let bind_group = backend.create_bind_group(&BindGroupDesc {
             label: "image",
-            bindings: vec![Binding::Texture(texture), Binding::Sampler(self.sampler)],
+            bindings: vec![Binding::Texture(texture), Binding::Sampler(sampler)],
         });
         self.texture_bindings.push(TextureBinding {
             texture,
+            sampler,
             bind_group,
         });
         bind_group
@@ -790,7 +823,8 @@ impl Renderer {
                         0.0,
                         0.0,
                     );
-                    self.scene.ingest_image(inst, image.texture, ctx, bounds);
+                    self.scene
+                        .ingest_image(inst, image.texture, image.sampler, ctx, bounds);
                 }
                 Primitive::Gradient(gradient) => {
                     // The LUT decision is a lowering-time property the renderer
@@ -1092,7 +1126,9 @@ impl Renderer {
                     let e = self.scene.images.get(id).expect("image slot");
                     let mut inst = e.instance;
                     let texture = e.texture;
-                    let bind_group = self.bind_group_for(backend, texture);
+                    let sampler_desc = e.sampler;
+                    let sampler = self.sampler_cache.intern(backend, sampler_desc);
+                    let bind_group = self.bind_group_for(backend, texture, sampler);
                     inst.rect_pos[0] -= origin[0];
                     inst.rect_pos[1] -= origin[1];
                     let start = self.image_scratch.len() as u32;
@@ -1111,7 +1147,7 @@ impl Renderer {
                     let e = self.scene.gradients.get(id).expect("gradient slot");
                     let mut inst = e.instance;
                     let texture = e.texture;
-                    let bind_group = self.bind_group_for(backend, texture);
+                    let bind_group = self.bind_group_for(backend, texture, self.sampler);
                     inst.rect_pos[0] -= origin[0];
                     inst.rect_pos[1] -= origin[1];
                     let start = self.gradient_scratch.len() as u32;
@@ -1145,7 +1181,7 @@ impl Renderer {
                 }
                 StoreRef::GlyphRun(run) => {
                     let e = *self.scene.glyph_runs.run(run).expect("glyph run slot");
-                    let bind_group = self.bind_group_for(backend, e.atlas);
+                    let bind_group = self.bind_group_for(backend, e.atlas, self.sampler);
                     let start = self.glyph_scratch.len() as u32;
                     for g in self.scene.glyph_runs.glyphs(&e) {
                         let mut inst = *g;
@@ -1837,27 +1873,15 @@ mod tests {
     }
 
     fn image(texture: TextureId) -> Primitive {
-        Primitive::Image(ImageDraw {
-            rect: Rect {
+        Primitive::Image(ImageDraw::new(
+            Rect {
                 x: 0.0,
                 y: 0.0,
                 w: 8.0,
                 h: 8.0,
             },
-            uv: Rect {
-                x: 0.0,
-                y: 0.0,
-                w: 1.0,
-                h: 1.0,
-            },
-            tint: Rgba {
-                r: 1.0,
-                g: 1.0,
-                b: 1.0,
-                a: 1.0,
-            },
             texture,
-        })
+        ))
     }
 
     /// Build a renderer over a headless surface, run `upload`, and return the

@@ -13,7 +13,7 @@
 //! `create_pipeline` validates the derived layout against the schema, so a
 //! mismatch is caught at pipeline-registration time.
 
-use viso_gpu::{GpuPod, TextureId};
+use viso_gpu::{AddressMode, FilterMode, GpuPod, SamplerDesc, TextureId};
 use viso_math::{ExtendMode, InterpolationSpace};
 
 // The Quad/Image/Mesh field contracts (`quad_schema`/`image_schema`/
@@ -567,9 +567,34 @@ pub struct ImageDraw {
     pub tint: Rgba,
     /// The texture to sample.
     pub texture: TextureId,
+    /// How the texture is sampled (filter + address). The renderer interns this
+    /// to a shared sampler; it selects the bind group, not GPU instance data.
+    pub sampler: SamplerDesc,
 }
 
 impl ImageDraw {
+    /// A whole-image draw with the default sampler (bilinear, clamp-to-edge):
+    /// `uv` covers the full texture and the tint is unmodified white.
+    pub fn new(rect: Rect, texture: TextureId) -> Self {
+        Self {
+            rect,
+            uv: Rect {
+                x: 0.0,
+                y: 0.0,
+                w: 1.0,
+                h: 1.0,
+            },
+            tint: Rgba {
+                r: 1.0,
+                g: 1.0,
+                b: 1.0,
+                a: 1.0,
+            },
+            texture,
+            sampler: SamplerDesc::LINEAR_CLAMP,
+        }
+    }
+
     /// Lower this image to its GPU instance.
     pub fn to_instance(&self) -> ImageInstance {
         ImageInstance {
@@ -579,6 +604,576 @@ impl ImageDraw {
             uv_size: [self.uv.w, self.uv.h],
             color: [self.tint.r, self.tint.g, self.tint.b, self.tint.a],
         }
+    }
+}
+
+/// How a source image is scaled into its destination rect when their aspect
+/// ratios differ (§12.4). The solve is pure geometry, done on the CPU at
+/// lowering; the GPU only ever sees the resulting [`ImageDraw`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Fit {
+    /// Stretch to fill the destination exactly, ignoring aspect ratio.
+    Fill,
+    /// Scale uniformly to fit *inside* the destination (letterbox/pillarbox):
+    /// the whole image is visible, `align` positions it in the leftover space.
+    Contain,
+    /// Scale uniformly to *cover* the destination (crop): no empty space, the
+    /// overflow is cropped and `align` chooses which part of the source shows.
+    Cover,
+    /// No scaling (1:1 source pixels); `align` positions the source in the
+    /// destination, cropping any overflow.
+    None,
+}
+
+/// One axis' alignment of a scaled/positioned image within its destination
+/// (used by [`Fit::Contain`]/[`Fit::None`] for leftover space, and by
+/// [`Fit::Cover`]/[`Fit::None`] to choose the cropped-away side).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Align {
+    /// Left / top.
+    Start,
+    /// Centered.
+    Center,
+    /// Right / bottom.
+    End,
+}
+
+impl Align {
+    /// Fraction of the leftover (`free`) space placed *before* the content:
+    /// `Start` → 0, `Center` → 0.5, `End` → 1. `free` may be negative (content
+    /// larger than the box, i.e. a crop), in which case this is the fraction of
+    /// the overflow cropped off the leading edge.
+    #[inline]
+    fn offset(self, free: f32) -> f32 {
+        match self {
+            Align::Start => 0.0,
+            Align::Center => free * 0.5,
+            Align::End => free,
+        }
+    }
+}
+
+/// Two-axis alignment: `x` horizontal, `y` vertical.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Align2 {
+    /// Horizontal alignment.
+    pub x: Align,
+    /// Vertical alignment.
+    pub y: Align,
+}
+
+impl Align2 {
+    /// Centered on both axes — the common default.
+    pub const CENTER: Align2 = Align2 {
+        x: Align::Center,
+        y: Align::Center,
+    };
+}
+
+/// The author-facing image: a source region of a texture drawn into a
+/// destination rect with a scaling policy, alignment, opacity, and sampler
+/// (§12.4/§12.5). It carries pixel-space inputs and solves fit/align (and, for
+/// an atlas sub-region, half-texel bleed) on the CPU into a single low-level
+/// [`ImageDraw`]; [`ImageInstance`]'s frozen GPU layout is unchanged.
+///
+/// `src` is the source sub-region in **texture pixels** (`None` = the whole
+/// texture). When `src` is a proper sub-region it is treated as an atlas cell:
+/// its normalized UV rect is inset by half a texel on every side so bilinear
+/// sampling never bleeds a neighbouring cell (§12.6). A `None`/full-texture
+/// source is never inset.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ImageRect {
+    /// Source sub-region in texture pixels; `None` = the whole texture.
+    pub src: Option<Rect>,
+    /// Destination rectangle on screen, in physical pixels.
+    pub dest: Rect,
+    /// How the source scales into `dest`.
+    pub fit: Fit,
+    /// Alignment used by `Contain`/`Cover`/`None` to place/crop the source.
+    pub align: Align2,
+    /// Multiplied into the tint alpha (`1.0` = fully opaque).
+    pub opacity: f32,
+    /// The texture to sample.
+    pub texture: TextureId,
+    /// The texture's full dimensions in texels — needed to normalize `src` and
+    /// to size the half-texel bleed inset.
+    pub tex_size: [u32; 2],
+    /// How the texture is sampled.
+    pub sampler: SamplerDesc,
+}
+
+impl ImageRect {
+    /// A whole-texture image drawn into `dest` with `Fill`, centered, opaque,
+    /// and the default (bilinear clamp) sampler.
+    pub fn new(dest: Rect, texture: TextureId, tex_size: [u32; 2]) -> Self {
+        Self {
+            src: None,
+            dest,
+            fit: Fit::Fill,
+            align: Align2::CENTER,
+            opacity: 1.0,
+            texture,
+            tex_size,
+            sampler: SamplerDesc::LINEAR_CLAMP,
+        }
+    }
+
+    /// The source region in texture pixels, defaulting to the whole texture.
+    fn src_px(&self) -> Rect {
+        self.src.unwrap_or(Rect {
+            x: 0.0,
+            y: 0.0,
+            w: self.tex_size[0] as f32,
+            h: self.tex_size[1] as f32,
+        })
+    }
+
+    /// Solve fit/align/bleed into a single low-level [`ImageDraw`] (pure CPU).
+    ///
+    /// `Fill` maps the source region to `dest` directly. `Contain`/`Cover`/`None`
+    /// keep the source aspect ratio and instead move the *drawn rect* (Contain,
+    /// which shrinks it inside `dest`) or the *sampled sub-region* (Cover/None,
+    /// which crop the source), positioning the leftover/cropped extent by
+    /// `align`. The UV rect is then normalized against `tex_size`, with a
+    /// half-texel inset applied when `src` is a real atlas sub-region.
+    pub fn to_image_draw(&self) -> ImageDraw {
+        let src = self.src_px();
+        let (tw, th) = (self.tex_size[0] as f32, self.tex_size[1] as f32);
+
+        // Solve the on-screen rect and the sampled source rect (both still in
+        // their native units: dest in px, uv_px in texels).
+        let (rect, uv_px) = match self.fit {
+            Fit::Fill => (self.dest, src),
+            Fit::Contain => {
+                // Uniform scale to fit inside dest; shrink the drawn rect,
+                // sample the full source.
+                let scale = (self.dest.w / src.w).min(self.dest.h / src.h);
+                let (w, h) = (src.w * scale, src.h * scale);
+                let x = self.dest.x + self.align.x.offset(self.dest.w - w);
+                let y = self.dest.y + self.align.y.offset(self.dest.h - h);
+                (Rect { x, y, w, h }, src)
+            }
+            Fit::Cover => {
+                // Uniform scale to cover dest; fill the rect, crop the source.
+                let scale = (self.dest.w / src.w).max(self.dest.h / src.h);
+                let (sw, sh) = (self.dest.w / scale, self.dest.h / scale);
+                let sx = src.x + self.align.x.offset(src.w - sw);
+                let sy = src.y + self.align.y.offset(src.h - sh);
+                (
+                    self.dest,
+                    Rect {
+                        x: sx,
+                        y: sy,
+                        w: sw,
+                        h: sh,
+                    },
+                )
+            }
+            Fit::None => {
+                // 1:1 source pixels; fill the rect, crop/position the source by
+                // the destination extent measured in texels.
+                let sx = src.x + self.align.x.offset(src.w - self.dest.w);
+                let sy = src.y + self.align.y.offset(src.h - self.dest.h);
+                (
+                    self.dest,
+                    Rect {
+                        x: sx,
+                        y: sy,
+                        w: self.dest.w,
+                        h: self.dest.h,
+                    },
+                )
+            }
+        };
+
+        // Normalize the sampled rect to 0..1, insetting half a texel per side
+        // for a real atlas sub-region so bilinear taps never reach a neighbour.
+        let mut u0 = uv_px.x / tw;
+        let mut v0 = uv_px.y / th;
+        let mut uw = uv_px.w / tw;
+        let mut vh = uv_px.h / th;
+        if self.src.is_some() {
+            let (hx, hy) = (0.5 / tw, 0.5 / th);
+            u0 += hx;
+            v0 += hy;
+            uw -= 2.0 * hx;
+            vh -= 2.0 * hy;
+        }
+
+        ImageDraw {
+            rect,
+            uv: Rect {
+                x: u0,
+                y: v0,
+                w: uw,
+                h: vh,
+            },
+            tint: Rgba {
+                r: 1.0,
+                g: 1.0,
+                b: 1.0,
+                a: self.opacity,
+            },
+            texture: self.texture,
+            sampler: self.sampler,
+        }
+    }
+}
+
+/// A single sprite lifted from an atlas: the `region` (in atlas texels) drawn
+/// into `dest` (§12.6). This is just the ergonomic name for an [`ImageRect`]
+/// whose source is an atlas cell — it carries the same fit/align/opacity and
+/// inherits the half-texel bleed guard, so it never samples a neighbour.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SpriteRegion {
+    /// The atlas texture.
+    pub atlas: TextureId,
+    /// The atlas' full dimensions in texels.
+    pub tex_size: [u32; 2],
+    /// The sprite's cell within the atlas, in texels.
+    pub region: Rect,
+    /// Destination rectangle on screen, in physical pixels.
+    pub dest: Rect,
+    /// How the sprite scales into `dest`.
+    pub fit: Fit,
+    /// Alignment used by `Contain`/`Cover`/`None`.
+    pub align: Align2,
+    /// Multiplied into the tint alpha.
+    pub opacity: f32,
+    /// How the atlas is sampled.
+    pub sampler: SamplerDesc,
+}
+
+impl SpriteRegion {
+    /// A sprite cell stretched to fill `dest`, opaque, bilinear-clamped.
+    pub fn new(atlas: TextureId, tex_size: [u32; 2], region: Rect, dest: Rect) -> Self {
+        Self {
+            atlas,
+            tex_size,
+            region,
+            dest,
+            fit: Fit::Fill,
+            align: Align2::CENTER,
+            opacity: 1.0,
+            sampler: SamplerDesc::LINEAR_CLAMP,
+        }
+    }
+
+    /// The equivalent [`ImageRect`] (`src = region`), from which the low-level
+    /// draw and bleed guard follow.
+    pub fn to_image_rect(&self) -> ImageRect {
+        ImageRect {
+            src: Some(self.region),
+            dest: self.dest,
+            fit: self.fit,
+            align: self.align,
+            opacity: self.opacity,
+            texture: self.atlas,
+            tex_size: self.tex_size,
+            sampler: self.sampler,
+        }
+    }
+
+    /// Solve straight to a low-level [`ImageDraw`].
+    pub fn to_image_draw(&self) -> ImageDraw {
+        self.to_image_rect().to_image_draw()
+    }
+}
+
+/// A nine-patch image: a `region` split by `insets` into 4 fixed corners, 4
+/// single-axis-stretched edges, and a two-axis-stretched center, drawn into
+/// `dest` (§12.6). Expanded on the CPU into 9 [`ImageDraw`]s over the Image
+/// family — no new pipeline. `insets` is `[left, top, right, bottom]` in the
+/// source's own texels; the same absolute inset widths are preserved on screen
+/// (corners never scale), and only the interior stretches.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct NineSlice {
+    /// The texture.
+    pub texture: TextureId,
+    /// The texture's full dimensions in texels.
+    pub tex_size: [u32; 2],
+    /// The source region to slice, in texels.
+    pub region: Rect,
+    /// Border insets `[left, top, right, bottom]` in source texels.
+    pub insets: [f32; 4],
+    /// Destination rectangle on screen, in physical pixels.
+    pub dest: Rect,
+    /// How the texture is sampled.
+    pub sampler: SamplerDesc,
+}
+
+impl NineSlice {
+    /// A nine-patch over the whole texture with uniform `inset` on all sides.
+    pub fn new(texture: TextureId, tex_size: [u32; 2], dest: Rect, inset: f32) -> Self {
+        Self {
+            texture,
+            tex_size,
+            region: Rect {
+                x: 0.0,
+                y: 0.0,
+                w: tex_size[0] as f32,
+                h: tex_size[1] as f32,
+            },
+            insets: [inset; 4],
+            dest,
+            sampler: SamplerDesc::LINEAR_CLAMP,
+        }
+    }
+
+    /// Expand into the 9 patches (row-major: top row, middle row, bottom row).
+    ///
+    /// Each patch is a [`SpriteRegion`] with `Fit::Fill`, so every source
+    /// sub-cell carries the atlas half-texel bleed guard independently. Patches
+    /// with a zero-sized source or destination are skipped, so a degenerate
+    /// inset (edge wider than the region/dest) simply drops that patch rather
+    /// than producing a flipped rect.
+    pub fn to_image_draws(&self) -> Vec<ImageDraw> {
+        let [il, it, ir, ib] = self.insets;
+        let r = self.region;
+        let d = self.dest;
+
+        // Source column x-edges and row y-edges (texels).
+        let sx = [r.x, r.x + il, r.x + r.w - ir, r.x + r.w];
+        let sy = [r.y, r.y + it, r.y + r.h - ib, r.y + r.h];
+        // Destination edges: corners keep the source inset size, the center
+        // absorbs the remaining space.
+        let dx = [d.x, d.x + il, d.x + d.w - ir, d.x + d.w];
+        let dy = [d.y, d.y + it, d.y + d.h - ib, d.y + d.h];
+
+        let mut out = Vec::with_capacity(9);
+        for row in 0..3 {
+            for col in 0..3 {
+                let (sw, sh) = (sx[col + 1] - sx[col], sy[row + 1] - sy[row]);
+                let (dw, dh) = (dx[col + 1] - dx[col], dy[row + 1] - dy[row]);
+                if sw <= 0.0 || sh <= 0.0 || dw <= 0.0 || dh <= 0.0 {
+                    continue;
+                }
+                out.push(
+                    SpriteRegion {
+                        atlas: self.texture,
+                        tex_size: self.tex_size,
+                        region: Rect {
+                            x: sx[col],
+                            y: sy[row],
+                            w: sw,
+                            h: sh,
+                        },
+                        dest: Rect {
+                            x: dx[col],
+                            y: dy[row],
+                            w: dw,
+                            h: dh,
+                        },
+                        fit: Fit::Fill,
+                        align: Align2::CENTER,
+                        opacity: 1.0,
+                        sampler: self.sampler,
+                    }
+                    .to_image_draw(),
+                );
+            }
+        }
+        out
+    }
+}
+
+/// A repeating tile: `tile` (a source cell in texels) laid out across `dest`
+/// (§12.6). The fast path is a **single** [`ImageDraw`] whose UV rect exceeds
+/// `0..1` and relies on a `Repeat`/`Mirror` sampler to wrap — one instance, no
+/// CPU expansion. That fast path only holds for a whole-texture tile (`tile`
+/// covering the full texture); an atlas sub-cell cannot use wrap-around
+/// sampling without bleeding into neighbours, so it expands on the CPU into one
+/// [`ImageDraw`] per repetition instead.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TiledImage {
+    /// The texture.
+    pub texture: TextureId,
+    /// The texture's full dimensions in texels.
+    pub tex_size: [u32; 2],
+    /// The tile cell within the texture, in texels.
+    pub tile: Rect,
+    /// Destination rectangle on screen, in physical pixels.
+    pub dest: Rect,
+    /// How the texture is sampled — `address` should be `Repeat` or `Mirror`
+    /// for the single-instance fast path to wrap correctly.
+    pub sampler: SamplerDesc,
+}
+
+impl TiledImage {
+    /// Tile the whole texture across `dest` at 1:1 source size, wrapping with a
+    /// `Repeat` sampler.
+    pub fn new(texture: TextureId, tex_size: [u32; 2], dest: Rect) -> Self {
+        Self {
+            texture,
+            tex_size,
+            tile: Rect {
+                x: 0.0,
+                y: 0.0,
+                w: tex_size[0] as f32,
+                h: tex_size[1] as f32,
+            },
+            dest,
+            sampler: SamplerDesc {
+                filter: FilterMode::Linear,
+                address: AddressMode::Repeat,
+            },
+        }
+    }
+
+    /// Whether the tile is the whole texture — the condition for the
+    /// single-instance wrap fast path.
+    fn tile_is_whole_texture(&self) -> bool {
+        let (tw, th) = (self.tex_size[0] as f32, self.tex_size[1] as f32);
+        self.tile.x == 0.0 && self.tile.y == 0.0 && self.tile.w == tw && self.tile.h == th
+    }
+
+    /// Expand into the draws that fill `dest`.
+    ///
+    /// Whole-texture tiles take the one-instance wrap fast path: a single
+    /// [`ImageDraw`] whose UV rect is `dest / tile` so the sampler's
+    /// `Repeat`/`Mirror` address replicates it. An atlas sub-cell instead
+    /// expands to one draw per whole/partial repetition (the trailing
+    /// row/column is UV-cropped) so it never wraps into a neighbouring cell.
+    pub fn to_image_draws(&self) -> Vec<ImageDraw> {
+        let (tw, th) = (self.tex_size[0] as f32, self.tex_size[1] as f32);
+        if self.tile_is_whole_texture() {
+            // Fast path: sampler wraps a UV rect larger than 0..1.
+            return vec![ImageDraw {
+                rect: self.dest,
+                uv: Rect {
+                    x: 0.0,
+                    y: 0.0,
+                    w: self.dest.w / self.tile.w,
+                    h: self.dest.h / self.tile.h,
+                },
+                tint: Rgba {
+                    r: 1.0,
+                    g: 1.0,
+                    b: 1.0,
+                    a: 1.0,
+                },
+                texture: self.texture,
+                sampler: self.sampler,
+            }];
+        }
+
+        // Atlas sub-cell: CPU-expand, cropping the trailing partial tiles.
+        let (u0, v0) = (self.tile.x / tw, self.tile.y / th);
+        let (uw, vh) = (self.tile.w / tw, self.tile.h / th);
+        let cols = (self.dest.w / self.tile.w).ceil() as usize;
+        let rows = (self.dest.h / self.tile.h).ceil() as usize;
+        let mut out = Vec::with_capacity(cols.saturating_mul(rows));
+        for row in 0..rows {
+            for col in 0..cols {
+                let px = self.dest.x + col as f32 * self.tile.w;
+                let py = self.dest.y + row as f32 * self.tile.h;
+                // Clip the trailing tile to the destination edge.
+                let dw = (self.dest.x + self.dest.w - px).min(self.tile.w);
+                let dh = (self.dest.y + self.dest.h - py).min(self.tile.h);
+                if dw <= 0.0 || dh <= 0.0 {
+                    continue;
+                }
+                let frac_w = dw / self.tile.w;
+                let frac_h = dh / self.tile.h;
+                out.push(ImageDraw {
+                    rect: Rect {
+                        x: px,
+                        y: py,
+                        w: dw,
+                        h: dh,
+                    },
+                    uv: Rect {
+                        x: u0,
+                        y: v0,
+                        w: uw * frac_w,
+                        h: vh * frac_h,
+                    },
+                    tint: Rgba {
+                        r: 1.0,
+                        g: 1.0,
+                        b: 1.0,
+                        a: 1.0,
+                    },
+                    texture: self.texture,
+                    sampler: self.sampler,
+                });
+            }
+        }
+        out
+    }
+}
+
+/// How the renderer should back an image's texels (§12): a caller/upper-layer
+/// hint that selects the texture-resource strategy, resolved on the cold
+/// upload path (never per frame).
+///
+/// This round carries the hint and its dispatch surface; the actual atlas
+/// packer and external-image platform paths are follow-ups. `External` is a
+/// declared-but-unbuilt path — [`ResourcePolicy::resolve`] returns an explicit
+/// error for it rather than silently dropping the draw.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ResourcePolicy {
+    /// Small, immutable UI art — a candidate for atlas packing so many such
+    /// images share one texture and one draw. `mipmap` requests a mip chain
+    /// (worthwhile when the image is drawn heavily minified).
+    AtlasCandidate {
+        /// Whether to build/sample a mip chain for this image.
+        mipmap: bool,
+    },
+    /// Large or frequently replaced content — kept in its own texture rather
+    /// than packed into an atlas.
+    Standalone {
+        /// Whether to build/sample a mip chain for this image.
+        mipmap: bool,
+    },
+    /// Platform-provided image (video frame, camera feed). The platform image
+    /// path is not built this round; resolving this policy is an explicit
+    /// error, never a silent no-op.
+    External,
+}
+
+/// The texture-resource route [`ResourcePolicy`] resolves to. Consumed by the
+/// renderer's cold upload path to choose how an image is backed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ResourceRoute {
+    /// Pack into a shared atlas when possible; `mipmap` carries the mip hint.
+    Atlas {
+        /// Whether a mip chain was requested.
+        mipmap: bool,
+    },
+    /// Give the image its own texture; `mipmap` carries the mip hint.
+    Standalone {
+        /// Whether a mip chain was requested.
+        mipmap: bool,
+    },
+}
+
+/// Why a [`ResourcePolicy`] could not be resolved to a [`ResourceRoute`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ResourceRouteError {
+    /// [`ResourcePolicy::External`] was requested but the platform external-image
+    /// path is not implemented yet.
+    ExternalUnsupported,
+}
+
+impl ResourcePolicy {
+    /// The default for author-facing images: an atlas candidate without mips.
+    pub const DEFAULT: ResourcePolicy = ResourcePolicy::AtlasCandidate { mipmap: false };
+
+    /// Resolve to a concrete texture route, or an error for a route that is
+    /// declared but not built this round.
+    pub fn resolve(self) -> Result<ResourceRoute, ResourceRouteError> {
+        match self {
+            ResourcePolicy::AtlasCandidate { mipmap } => Ok(ResourceRoute::Atlas { mipmap }),
+            ResourcePolicy::Standalone { mipmap } => Ok(ResourceRoute::Standalone { mipmap }),
+            ResourcePolicy::External => Err(ResourceRouteError::ExternalUnsupported),
+        }
+    }
+}
+
+impl Default for ResourcePolicy {
+    fn default() -> Self {
+        ResourcePolicy::DEFAULT
     }
 }
 
@@ -1853,6 +2448,7 @@ mod tests {
                 a: 0.8,
             },
             texture: TextureId::new(0),
+            sampler: SamplerDesc::LINEAR_CLAMP,
         };
         let inst = img.to_instance();
         assert_eq!(inst.rect_pos, [10.0, 20.0]);
@@ -1931,5 +2527,264 @@ mod tests {
         assert_eq!(inst.radius, 4.0);
         assert_eq!(inst.border_width, 2.0);
         assert_eq!(inst.border_color, [0.0, 0.0, 0.0, 1.0]);
+    }
+
+    const TEX: TextureId = TextureId::new(9);
+
+    fn approx(a: f32, b: f32) {
+        assert!((a - b).abs() < 1e-5, "expected {b}, got {a}");
+    }
+
+    fn approx_rect(r: Rect, x: f32, y: f32, w: f32, h: f32) {
+        approx(r.x, x);
+        approx(r.y, y);
+        approx(r.w, w);
+        approx(r.h, h);
+    }
+
+    #[test]
+    fn image_rect_fill_maps_whole_texture_to_dest() {
+        // Fill + no src: the drawn rect is dest verbatim, uv is the full 0..1
+        // (no atlas inset for a whole-texture source), opacity lands in tint.a.
+        let ir = ImageRect {
+            src: None,
+            dest: Rect {
+                x: 10.0,
+                y: 20.0,
+                w: 100.0,
+                h: 50.0,
+            },
+            fit: Fit::Fill,
+            align: Align2::CENTER,
+            opacity: 0.5,
+            texture: TEX,
+            tex_size: [64, 32],
+            sampler: SamplerDesc::LINEAR_CLAMP,
+        };
+        let d = ir.to_image_draw();
+        approx_rect(d.rect, 10.0, 20.0, 100.0, 50.0);
+        approx_rect(d.uv, 0.0, 0.0, 1.0, 1.0);
+        approx(d.tint.a, 0.5);
+    }
+
+    #[test]
+    fn image_rect_contain_letterboxes_and_aligns() {
+        // 100x100 source into a 200x100 dest: contain scale = 1.0 (limited by
+        // height), so a 100x100 rect is centered horizontally → x offset 50.
+        let ir = ImageRect {
+            src: None,
+            dest: Rect {
+                x: 0.0,
+                y: 0.0,
+                w: 200.0,
+                h: 100.0,
+            },
+            fit: Fit::Contain,
+            align: Align2::CENTER,
+            opacity: 1.0,
+            texture: TEX,
+            tex_size: [100, 100],
+            sampler: SamplerDesc::LINEAR_CLAMP,
+        };
+        let d = ir.to_image_draw();
+        approx_rect(d.rect, 50.0, 0.0, 100.0, 100.0);
+        // Full source sampled.
+        approx_rect(d.uv, 0.0, 0.0, 1.0, 1.0);
+
+        // Start alignment pins the drawn rect to the left edge.
+        let ir_start = ImageRect {
+            align: Align2 {
+                x: Align::Start,
+                y: Align::Start,
+            },
+            ..ir
+        };
+        approx_rect(ir_start.to_image_draw().rect, 0.0, 0.0, 100.0, 100.0);
+    }
+
+    #[test]
+    fn image_rect_cover_crops_source_and_fills_dest() {
+        // 100x100 source into 200x100 dest: cover scale = 2.0 (width), sampled
+        // source height = dest.h/scale = 50, centered vertically → sy = 25.
+        // The drawn rect fills the whole dest.
+        let ir = ImageRect {
+            src: None,
+            dest: Rect {
+                x: 0.0,
+                y: 0.0,
+                w: 200.0,
+                h: 100.0,
+            },
+            fit: Fit::Cover,
+            align: Align2::CENTER,
+            opacity: 1.0,
+            texture: TEX,
+            tex_size: [100, 100],
+            sampler: SamplerDesc::LINEAR_CLAMP,
+        };
+        let d = ir.to_image_draw();
+        approx_rect(d.rect, 0.0, 0.0, 200.0, 100.0);
+        // Sampled source: full width (u 0..1), cropped height 50/100 centered.
+        approx_rect(d.uv, 0.0, 0.25, 1.0, 0.5);
+    }
+
+    #[test]
+    fn image_rect_none_samples_pixel_for_pixel() {
+        // Fit::None into a dest smaller than the source: 1:1 sampling, the
+        // source is cropped to the dest extent (in texels), centered.
+        let ir = ImageRect {
+            src: None,
+            dest: Rect {
+                x: 0.0,
+                y: 0.0,
+                w: 40.0,
+                h: 40.0,
+            },
+            fit: Fit::None,
+            align: Align2::CENTER,
+            opacity: 1.0,
+            texture: TEX,
+            tex_size: [100, 100],
+            sampler: SamplerDesc::LINEAR_CLAMP,
+        };
+        let d = ir.to_image_draw();
+        approx_rect(d.rect, 0.0, 0.0, 40.0, 40.0);
+        // Source cropped to 40x40 of a 100-tex, centered → offset 30 → uv 0.3.
+        approx_rect(d.uv, 0.3, 0.3, 0.4, 0.4);
+    }
+
+    #[test]
+    fn atlas_subregion_insets_half_a_texel_per_side() {
+        // A real src sub-region gets the half-texel bleed guard; a 100-wide tex
+        // → 0.5/100 = 0.005 inset per side.
+        let ir = ImageRect {
+            src: Some(Rect {
+                x: 0.0,
+                y: 0.0,
+                w: 50.0,
+                h: 50.0,
+            }),
+            dest: Rect {
+                x: 0.0,
+                y: 0.0,
+                w: 50.0,
+                h: 50.0,
+            },
+            fit: Fit::Fill,
+            align: Align2::CENTER,
+            opacity: 1.0,
+            texture: TEX,
+            tex_size: [100, 100],
+            sampler: SamplerDesc::LINEAR_CLAMP,
+        };
+        let d = ir.to_image_draw();
+        // uv0 = 0 + 0.005, uv_size = 0.5 - 2*0.005 = 0.49.
+        approx_rect(d.uv, 0.005, 0.005, 0.49, 0.49);
+    }
+
+    #[test]
+    fn nine_slice_expands_to_nine_tiling_patches() {
+        // 90x90 texture, uniform 30px inset, into a 300x300 dest. The 9 patches
+        // must tile dest exactly with no gaps/overlaps: corners 30x30, edges
+        // stretch one axis, center fills the 240x240 middle.
+        let ns = NineSlice::new(
+            TEX,
+            [90, 90],
+            Rect {
+                x: 0.0,
+                y: 0.0,
+                w: 300.0,
+                h: 300.0,
+            },
+            30.0,
+        );
+        let draws = ns.to_image_draws();
+        assert_eq!(draws.len(), 9);
+        // Top-left corner keeps source inset size.
+        approx_rect(draws[0].rect, 0.0, 0.0, 30.0, 30.0);
+        // Center patch (index 4) fills the interior.
+        approx_rect(draws[4].rect, 30.0, 30.0, 240.0, 240.0);
+        // Bottom-right corner (index 8) sits at the far edge.
+        approx_rect(draws[8].rect, 270.0, 270.0, 30.0, 30.0);
+        // The union of all patch rects covers dest with no overhang.
+        let (mut maxx, mut maxy) = (0.0f32, 0.0f32);
+        for d in &draws {
+            maxx = maxx.max(d.rect.x + d.rect.w);
+            maxy = maxy.max(d.rect.y + d.rect.h);
+        }
+        approx(maxx, 300.0);
+        approx(maxy, 300.0);
+    }
+
+    #[test]
+    fn tiled_whole_texture_uses_single_wrapping_instance() {
+        // Whole-texture tile → one draw whose uv exceeds 0..1 (dest/tile) so the
+        // Repeat sampler replicates it.
+        let t = TiledImage::new(
+            TEX,
+            [50, 50],
+            Rect {
+                x: 0.0,
+                y: 0.0,
+                w: 200.0,
+                h: 150.0,
+            },
+        );
+        let draws = t.to_image_draws();
+        assert_eq!(draws.len(), 1);
+        approx_rect(draws[0].uv, 0.0, 0.0, 4.0, 3.0);
+        assert_eq!(draws[0].sampler.address, AddressMode::Repeat);
+    }
+
+    #[test]
+    fn tiled_atlas_subcell_expands_and_crops_trailing_tiles() {
+        // A sub-cell tile (not the whole texture) can't wrap-sample, so it is
+        // CPU-expanded. A 40px tile across a 100px dest → 3 columns (40,40,20);
+        // the trailing column is cropped in both rect and uv.
+        let t = TiledImage {
+            texture: TEX,
+            tex_size: [100, 100],
+            tile: Rect {
+                x: 0.0,
+                y: 0.0,
+                w: 40.0,
+                h: 100.0,
+            },
+            dest: Rect {
+                x: 0.0,
+                y: 0.0,
+                w: 100.0,
+                h: 100.0,
+            },
+            sampler: SamplerDesc {
+                filter: FilterMode::Nearest,
+                address: AddressMode::Repeat,
+            },
+        };
+        let draws = t.to_image_draws();
+        assert_eq!(draws.len(), 3);
+        // Trailing tile: 20px wide, uv width cropped to half the tile (0.4→0.2).
+        approx_rect(draws[2].rect, 80.0, 0.0, 20.0, 100.0);
+        approx(draws[2].uv.w, 0.2);
+    }
+
+    #[test]
+    fn resource_policy_resolves_routes_and_rejects_external() {
+        assert_eq!(
+            ResourcePolicy::AtlasCandidate { mipmap: true }.resolve(),
+            Ok(ResourceRoute::Atlas { mipmap: true })
+        );
+        assert_eq!(
+            ResourcePolicy::Standalone { mipmap: false }.resolve(),
+            Ok(ResourceRoute::Standalone { mipmap: false })
+        );
+        assert_eq!(
+            ResourcePolicy::External.resolve(),
+            Err(ResourceRouteError::ExternalUnsupported)
+        );
+        assert_eq!(
+            ResourcePolicy::default(),
+            ResourcePolicy::AtlasCandidate { mipmap: false }
+        );
     }
 }

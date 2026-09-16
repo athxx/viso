@@ -51,13 +51,18 @@ pub struct QuadEntry {
     pub brush: BrushId,
 }
 
-/// A retained image draw: its lowered instance and the texture it samples.
+/// A retained image draw: its lowered instance, the texture it samples, and the
+/// sampler descriptor selecting filter/address (both resource-plane data — a
+/// change of either rebinds the draw's bind group without touching geometry).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ImageEntry {
     /// The lowered instance in world space.
     pub instance: ImageInstance,
     /// The sampled texture (resource plane).
     pub texture: viso_gpu::TextureId,
+    /// How the texture is sampled (resource plane). The renderer interns this to
+    /// a shared `SamplerId`; it is not GPU instance data.
+    pub sampler: viso_gpu::SamplerDesc,
 }
 
 /// A retained glyph run: a contiguous range of glyph instances in the run
@@ -657,11 +662,13 @@ impl ImageStore {
 
     /// Diff an image against the retained entry at the cursor and advance,
     /// appending on cold growth. `rect_pos` → transform; `rect_size`/`uv_pos`/
-    /// `uv_size` → geometry; `color` (tint) → paint; `texture` → resource.
+    /// `uv_size` → geometry; `color` (tint) → paint; `texture`/`sampler` →
+    /// resource (a sampler change rebinds the bind group, like a texture swap).
     pub fn ingest(
         &mut self,
         instance: ImageInstance,
         texture: viso_gpu::TextureId,
+        sampler: viso_gpu::SamplerDesc,
     ) -> (ImageId, DirtyPlanes) {
         let index = self.cursor;
         let dirty = if index < self.entries.len() {
@@ -673,15 +680,23 @@ impl ImageStore {
                     || pi.uv_pos != instance.uv_pos
                     || pi.uv_size != instance.uv_size,
                 paint: pi.color != instance.color,
-                resource: prev.texture != texture,
+                resource: prev.texture != texture || prev.sampler != sampler,
                 appended: false,
             };
             if dirty.any() {
-                self.entries[index] = ImageEntry { instance, texture };
+                self.entries[index] = ImageEntry {
+                    instance,
+                    texture,
+                    sampler,
+                };
             }
             dirty
         } else {
-            self.entries.push(ImageEntry { instance, texture });
+            self.entries.push(ImageEntry {
+                instance,
+                texture,
+                sampler,
+            });
             DirtyPlanes::APPENDED
         };
         self.cursor += 1;

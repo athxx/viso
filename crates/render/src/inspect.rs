@@ -810,27 +810,15 @@ mod tests {
     }
 
     fn image(texture: TextureId) -> Primitive {
-        Primitive::Image(ImageDraw {
-            rect: Rect {
+        Primitive::Image(ImageDraw::new(
+            Rect {
                 x: 0.0,
                 y: 0.0,
                 w: 8.0,
                 h: 8.0,
             },
-            uv: Rect {
-                x: 0.0,
-                y: 0.0,
-                w: 1.0,
-                h: 1.0,
-            },
-            tint: Rgba {
-                r: 1.0,
-                g: 1.0,
-                b: 1.0,
-                a: 1.0,
-            },
             texture,
-        })
+        ))
     }
 
     fn glyph_run(atlas: TextureId) -> Primitive {
