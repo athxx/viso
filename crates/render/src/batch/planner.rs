@@ -45,6 +45,11 @@ use viso_gpu::BindGroupId;
 pub enum BatchFamily {
     /// Axis-aligned rounded quads, drawn instanced from the shared quad buffer.
     Quad,
+    /// Analytic rounded rectangles (per-corner radius), drawn instanced from
+    /// their own shared buffer.
+    AnalyticRRect,
+    /// Analytic ellipses, drawn instanced from their own shared buffer.
+    AnalyticEllipse,
     /// A single textured image, drawn instanced from the shared image buffer,
     /// binding its texture's `bind_group`.
     Image,
@@ -65,6 +70,8 @@ impl BatchFamily {
             BatchFamily::Image => 1,
             BatchFamily::GlyphRun => 2,
             BatchFamily::Mesh => 3,
+            BatchFamily::AnalyticRRect => 4,
+            BatchFamily::AnalyticEllipse => 5,
         }
     }
 
@@ -75,15 +82,24 @@ impl BatchFamily {
             1 => Some(BatchFamily::Image),
             2 => Some(BatchFamily::GlyphRun),
             3 => Some(BatchFamily::Mesh),
+            4 => Some(BatchFamily::AnalyticRRect),
+            5 => Some(BatchFamily::AnalyticEllipse),
             _ => None,
         }
     }
 
     /// Whether draws of this family can grow by absorbing an adjacent primitive
-    /// of the same key. Quads and meshes share a family buffer and merge; images
-    /// and glyph runs each bind their own resource and stand alone.
+    /// of the same key. Quads, analytic rrects/ellipses, and meshes each share a
+    /// family buffer and merge; images and glyph runs each bind their own
+    /// resource and stand alone.
     pub const fn mergeable(self) -> bool {
-        matches!(self, BatchFamily::Quad | BatchFamily::Mesh)
+        matches!(
+            self,
+            BatchFamily::Quad
+                | BatchFamily::AnalyticRRect
+                | BatchFamily::AnalyticEllipse
+                | BatchFamily::Mesh
+        )
     }
 }
 
@@ -246,6 +262,8 @@ mod tests {
             BatchFamily::Image,
             BatchFamily::GlyphRun,
             BatchFamily::Mesh,
+            BatchFamily::AnalyticRRect,
+            BatchFamily::AnalyticEllipse,
         ] {
             let key = BatchKey::pack(family, BatchTarget::Main, None);
             assert_eq!(key.family(), family);
