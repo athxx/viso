@@ -763,37 +763,72 @@ CPU tessellation): animating size/radius/color patches instance fields only. Sha
 in `viso-render` (identity/geometry/bounds/alignment); coverage programs in `viso-shader`;
 pipeline/buffer in `viso-gpu`. Inherits the D0 hot-path zeros and §30 counters.
 
-### D1.1 — Analytic shape primitives
-- [ ] `AnalyticRRect` + per-corner radius, with a unified radius-normalize algorithm when
-      per-corner radii exceed available size (§11.2; individual widgets must not self-clamp).
-- [ ] `RoundedSuperellipse`.
-- [ ] `Circle` and `Ellipse`.
-- [ ] `Capsule`.
+Each analytic family is a strict A–E tier (§11) with its OWN `#[repr(C)] #[derive(GpuPod)]`
+instance struct, shader, `PipelineFamily`, pool, and freeze test — no über-shader. Each is an
+atomic three-leg ABI add (`<Family>Instance` in `render/src/primitive.rs` ⟷ `<family>_schema()`
+from `<family>_ir()` in `viso-shader` ⟷ `fill_<family>` in `gpu/src/headless.rs`), validated at
+prewarm + a layout/schema test. Analytic `BatchFamily` tags 4/5/6/7 fit the existing 3-bit
+`FAMILY_MASK=0b111` — the `BatchKey` field widen (3→4 bits) is DEFERRED to D2's 9th family, not
+done here. `PipelineFamily` already declares `AnalyticRRect/AnalyticEllipse/AnalyticLine`; only
+`AnalyticCapsule` must be added.
+
+### D1.1 — Device-pixel fwidth-AA re-freeze, Quad-only (`viso-shader`, `viso-gpu`, `viso-render`)
+- [x] Rewrite `QUAD_FRAGMENT_BODY` + `QUAD_HELPERS` (`crates/shader/src/ir/module.rs`) to the
+      device-pixel fwidth coverage form: `aa = 1/length(vec2(length(dFdx(pos)),length(dFdy(pos))))`,
+      `calc_blur = clamp(-dist*aa,0,1)`; rounded-box SDF `k = min(2r, min(halfw,halfh))`.
+- [x] Re-bake `QUAD_MSL_ORIGINAL` (`crates/shader/src/ir/testdata.rs`) — run codegen, paste emitted
+      MSL verbatim so `quad_msl_is_byte_equivalent` (`crates/shader/src/ir/codegen_msl.rs`) re-greens.
+      Never hand-author the oracle.
+- [x] Rewrite headless `fill_quad` (`crates/gpu/src/headless.rs`) to the identical closed-form math
+      FIRST; keep `blend_pixel` 8-bit quantize unchanged (only the coverage term moves).
+- [x] `BLESS=1 cargo test -p viso-render --test golden` re-bakes `tests/golden/quad_scene.bgra8`;
+      diff verified edge-confined (471/12288 texels, all AA fringe; interior + background
+      unchanged). Downstream widget content goldens (`crates/viso/tests/golden/*.bgra8`) re-baked
+      in the same commit — same fwidth fringe drift, all edge texels.
+- [x] `QuadInstance` layout UNCHANGED (stride 56) — `instance_abi_frozen.rs` stays green untouched.
+
+### D1.2 — AnalyticRRect (per-corner radius) + AnalyticEllipse (`viso-shader`, `viso-gpu`, `viso-render`)
+- [ ] `AnalyticRRect` three-leg ABI (`BatchFamily` tag 4, mergeable): per-corner `radius[4]` via
+      full box SDF per distinct radius selected by quadrant with `step`, border (width+color,
+      inner/outer AA), degenerates to plain fill at r=0/border=0. Unified radius-normalize when
+      per-corner radii exceed available size (§11.2; widgets must not self-clamp).
+- [ ] `AnalyticEllipse` three-leg ABI (`BatchFamily` tag 5, mergeable): scaled-circle SDF
+      `length(c)-r`, fill + border. (`Circle` is the equal-axis case.)
+- [ ] `standard_manifest()` entries for both; bump `manifest_enumerates_the_four_builtins` 4→6;
+      drop AnalyticRRect + AnalyticEllipse from `families_without_a_builtin_have_no_entry`'s list.
+- [ ] `BuiltinShader::AnalyticRRect`/`AnalyticEllipse`; `PrimitiveKind`/`SegmentKind`/`Primitive`
+      variants; per-family stores + ingest (`scene/{mod,ingest,store}.rs`); pools + `command_for`
+      arms; frozen offset/stride blocks in `instance_abi_frozen.rs`.
+- [ ] Bump `SHADER_PIPELINE_PREWARM_COUNT` (`renderer.rs`) 4→6.
 - [ ] Analytic AA correctness proof (coverage routes through F0's single
       `composite(premul, coverage)`; golden vs baseline).
 
-### D1.2 — Border / line
-- [ ] `RectBorder` / `RRectBorder` with alignment `Inside / Center / Outside` and
-      stroke-consistent bounds inflation (§11.3). Border coverage stays analytic
-      (outer/inner distance) — ordinary rect/rrect border never enters the D3 general path
-      stroker (§13, boundary confirmed).
-- [ ] `Line` with cap `butt/round/square`, join `miter/bevel/round`, `miter_limit` (§11.4).
-- [ ] `Circle/Ellipse Stroke`.
+### D1.3 — AnalyticCapsule (`viso-shader`, `viso-gpu`, `viso-render`)
+- [ ] Add `PipelineFamily::AnalyticCapsule` (`crates/shader/src/manifest.rs` enum) + `lib.rs`
+      re-export — the one family the enum lacks.
+- [ ] `AnalyticCapsule` three-leg ABI (`BatchFamily` tag 6, mergeable): capsule SDF (segment
+      distance minus radius); `r = min(halfw,halfh)`.
+- [ ] `standard_manifest()` entry; bump `manifest_enumerates_the_four_builtins` 6→7; bump
+      `SHADER_PIPELINE_PREWARM_COUNT` 6→7.
 
-### D1.3 — Tiered analytic shader families (§11, build-time enumerated)
-- [ ] `viso-shader` tiers: A `SolidRect` / B `RRect·Circle·Ellipse` / C `Fill+Border+
-      Gradient` / D `Expanded quad + analytic simple shadow` / E `specialized custom
-      analytic primitive`. Rationale: the commonest primitive must not pay the costliest
-      primitive's ALU / register pressure / branch cost. Pipeline families enumerated at
-      build time (F2 manifest); dynamic color/size/hover stay instance data — no über-shader.
-      SDF/analytic scope is limited to rrect / circle / ellipse / capsule / line / arc /
-      simple icon / border / simple inner-outer shadow (§7.3); arbitrary SVG is not required
-      to become SDF.
-
-### D1.4 — §31 gate
-- [ ] Benchmark gate (§31 `## D0/D1`): 10k RRect; mixed Rect/RRect/Circle; scroll
-      transform-only; hover paint-only. Rounded-card target: RRect fill + border + one
-      shadow → 1 analytic primitive, not multi-level offscreen. High-refresh 60/120/144/240.
+### D1.4 — AnalyticLine (cap/join/miter) + steady-state bench extension (`viso-render` + shader/gpu)
+- [ ] `primitive.rs`: extend `LineJoin` (`Miter|Bevel`) with `Round`; add `LineCap`
+      (`Butt/Square/Round`) + `miter_limit` on a Line-specific analytic stroke shape — do NOT
+      mutate the tessellated `Path`'s `Stroke` semantics; keep the CPU tessellator's `LineJoin`
+      match exhaustive after adding `Round`.
+- [ ] `AnalyticLine` three-leg ABI (`BatchFamily` tag 7, mergeable): segment SDF + cap
+      (butt/square/round) + join (miter/bevel/round) + miter_limit fallback, device-pixel fwidth AA.
+- [ ] `standard_manifest()` entry; bump `manifest_enumerates_the_four_builtins` 7→8; drop
+      AnalyticLine from `families_without_a_builtin_have_no_entry`'s list; bump
+      `SHADER_PIPELINE_PREWARM_COUNT` 7→8.
+- [ ] Extend `renderer_steady_state.rs` `grid_scene` with RRect/Ellipse/Capsule/Line grids so
+      `assert_steady_state_is_allocation_free` + hover/scroll proofs cover the new pools; per-family
+      hover asserts `gpu_upload_bytes == size_of::<<Family>Instance>()`, `uploaded_ranges==1`,
+      `dirty_primitives==1`, `path_tessellations==0`; scroll stays transform-only. Keep the
+      existing pure-quad proofs intact (quad pool remains the sole `sync` participant there).
+- [ ] Benchmark gate (§31 `## D0/D1`): 10k RRect; mixed Rect/RRect/Circle; scroll transform-only;
+      hover paint-only. Rounded-card target: RRect fill + border + one shadow → 1 analytic
+      primitive, not multi-level offscreen. High-refresh 60/120/144/240.
 
 ### D1 Done
 - [ ] RRect / per-corner / Circle / Ellipse / Capsule.

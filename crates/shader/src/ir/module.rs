@@ -399,14 +399,22 @@ static inline float box_sdf(float2 p, float2 center, float2 half_ext, float k) {
     float2 q = abs(p - center) - (half_ext - k);
     float2 mx = max(q, float2(0.0));
     return length(mx) + min(max(q.x, q.y), 0.0) - k;
+}
+
+// Device-pixel coverage factor: how many SDF units span one screen pixel at the
+// current sampling position, inverted. Coverage ramps over ~1 device pixel
+// regardless of scale, so the AA width tracks the physical grid.
+static inline float aa_factor(float2 p) {
+    return 1.0 / length(float2(length(dfdx(p)), length(dfdy(p))));
 }";
 
 const QUAD_FRAGMENT_BODY: &str = "\
 float k = min(2.0 * in.radius, min(in.half_size.x, in.half_size.y));
 float d = box_sdf(in.local, in.center, in.half_size, k);
 
-// aa ~= 1 at 1:1 scale: linear coverage over ~1px.
-float fill_cov = clamp(-d, 0.0, 1.0);
+// Device-pixel-aware coverage: linear ramp over ~1 physical pixel.
+float aa = aa_factor(in.local);
+float fill_cov = clamp(-d * aa, 0.0, 1.0);
 
 // Fill, premultiplied.
 float fa = in.color.a * fill_cov;
@@ -414,7 +422,7 @@ float4 src = float4(in.color.rgb * fa, fa);
 
 // Border over fill (both premultiplied source-over).
 if (in.border_width > 0.0) {
-    float bcov = clamp(-(abs(d) - in.border_width * 0.5), 0.0, 1.0);
+    float bcov = clamp(-(abs(d) - in.border_width * 0.5) * aa, 0.0, 1.0);
     if (bcov > 0.0) {
         float ba = in.border_color.a * bcov;
         float4 bsrc = float4(in.border_color.rgb * ba, ba);

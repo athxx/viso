@@ -719,14 +719,21 @@ impl HeadlessRaster {
             y1 = y1.min(sy + sh);
         }
 
+        // Device-pixel coverage factor. The framebuffer grid is 1:1 with the
+        // sampling position (one pixel step = one unit of `local`), so the
+        // screen-space derivatives of `local` are the unit basis vectors and
+        // `aa = 1 / length((1,0),(0,1)) = 1/sqrt(2)`. This mirrors the shader's
+        // `aa_factor(in.local)` exactly (see `QUAD_HELPERS`).
+        let aa = 1.0 / (2.0_f32).sqrt();
+
         for py in y0..y1 {
             for px in x0..x1 {
                 // Sample at the pixel center.
                 let p = [px as f32 + 0.5, py as f32 + 0.5];
                 let d = box_sdf(p, center, half, k);
 
-                // aa ≈ 1 at 1:1 scale: linear coverage over ~1px.
-                let fill_cov = (-d).clamp(0.0, 1.0);
+                // Device-pixel-aware coverage: linear ramp over ~1 physical pixel.
+                let fill_cov = (-d * aa).clamp(0.0, 1.0);
                 if fill_cov <= 0.0 && border_w <= 0.0 {
                     continue;
                 }
@@ -740,7 +747,7 @@ impl HeadlessRaster {
                     fill[3] * fill_cov,
                 ];
                 if border_w > 0.0 {
-                    let bcov = (-(d.abs() - border_w * 0.5)).clamp(0.0, 1.0);
+                    let bcov = (-(d.abs() - border_w * 0.5) * aa).clamp(0.0, 1.0);
                     if bcov > 0.0 {
                         let ba = border_c[3] * bcov;
                         // border over fill (both premultiplied source-over).
