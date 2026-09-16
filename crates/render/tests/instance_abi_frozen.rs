@@ -17,7 +17,7 @@ use std::mem::{align_of, offset_of, size_of};
 
 use viso_render::{
     AnalyticCapsuleInstance, AnalyticEllipseInstance, AnalyticLineInstance, AnalyticRRectInstance,
-    GlyphInstance, ImageInstance, MeshVertex, QuadInstance,
+    GlyphInstance, GradientInstance, ImageInstance, MeshVertex, QuadInstance,
 };
 
 #[test]
@@ -136,6 +136,22 @@ fn glyph_instance_layout_is_frozen() {
     assert_eq!(offset_of!(GlyphInstance, uv_pos), 16);
     assert_eq!(offset_of!(GlyphInstance, uv_size), 24);
     assert_eq!(offset_of!(GlyphInstance, color), 32);
+}
+
+#[test]
+fn gradient_instance_layout_is_frozen() {
+    assert_eq!(size_of::<GradientInstance>(), 80, "GradientInstance stride");
+    assert_eq!(align_of::<GradientInstance>(), 4, "GradientInstance align");
+    assert_eq!(offset_of!(GradientInstance, rect_pos), 0);
+    assert_eq!(offset_of!(GradientInstance, rect_size), 8);
+    assert_eq!(offset_of!(GradientInstance, kind), 16);
+    assert_eq!(offset_of!(GradientInstance, extend), 20);
+    assert_eq!(offset_of!(GradientInstance, p0), 24);
+    assert_eq!(offset_of!(GradientInstance, p1), 32);
+    assert_eq!(offset_of!(GradientInstance, lut_v), 40);
+    assert_eq!(offset_of!(GradientInstance, use_lut), 44);
+    assert_eq!(offset_of!(GradientInstance, color0), 48);
+    assert_eq!(offset_of!(GradientInstance, color1), 64);
 }
 
 #[test]

@@ -34,6 +34,7 @@ fn pipeline_family(pipeline: BatchPipeline) -> BatchFamily {
         BatchPipeline::Image => BatchFamily::Image,
         BatchPipeline::GlyphRun => BatchFamily::GlyphRun,
         BatchPipeline::Mesh => BatchFamily::Mesh,
+        BatchPipeline::Gradient => BatchFamily::Gradient,
     }
 }
 
@@ -184,6 +185,7 @@ fn batch_key_packs_and_unpacks_losslessly() {
         (BatchFamily::AnalyticEllipse, 5),
         (BatchFamily::AnalyticCapsule, 6),
         (BatchFamily::AnalyticLine, 7),
+        (BatchFamily::Gradient, 8),
     ] {
         let main = BatchKey::pack(family, BatchTarget::Main, None);
         assert_eq!(main.family(), family);
@@ -202,8 +204,8 @@ fn batch_key_packs_and_unpacks_losslessly() {
             "resource packs the bind-group index"
         );
 
-        // The tag lives in the low three bits; distinct families never collide.
-        assert_eq!(main.bits() & 0b111, tag);
+        // The tag lives in the low four bits; distinct families never collide.
+        assert_eq!(main.bits() & 0b1111, tag);
     }
 
     // Distinct dimensions produce distinct keys — no two of these alias.

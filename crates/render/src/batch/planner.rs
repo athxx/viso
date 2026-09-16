@@ -64,10 +64,13 @@ pub enum BatchFamily {
     /// Triangle meshes (vector paths and raw meshes), drawn indexed from the
     /// shared mesh vertex/index buffers.
     Mesh,
+    /// A single gradient fill over an axis-aligned rect, drawn instanced from the
+    /// shared gradient buffer, binding its baked 1D LUT atlas's `bind_group`.
+    Gradient,
 }
 
 impl BatchFamily {
-    /// The 3-bit family tag packed into a [`BatchKey`]. Stable across builds so a
+    /// The 4-bit family tag packed into a [`BatchKey`]. Stable across builds so a
     /// frozen key round-trips (see [`BatchKey`] field layout).
     const fn tag(self) -> u64 {
         match self {
@@ -79,10 +82,11 @@ impl BatchFamily {
             BatchFamily::AnalyticEllipse => 5,
             BatchFamily::AnalyticCapsule => 6,
             BatchFamily::AnalyticLine => 7,
+            BatchFamily::Gradient => 8,
         }
     }
 
-    /// Recover the family from its 3-bit tag. `None` for an unassigned tag.
+    /// Recover the family from its 4-bit tag. `None` for an unassigned tag.
     const fn from_tag(tag: u64) -> Option<BatchFamily> {
         match tag {
             0 => Some(BatchFamily::Quad),
@@ -93,6 +97,7 @@ impl BatchFamily {
             5 => Some(BatchFamily::AnalyticEllipse),
             6 => Some(BatchFamily::AnalyticCapsule),
             7 => Some(BatchFamily::AnalyticLine),
+            8 => Some(BatchFamily::Gradient),
             _ => None,
         }
     }
@@ -145,8 +150,7 @@ impl BatchTarget {
 ///
 /// | bits    | width | field                | today                     |
 /// |---------|-------|----------------------|---------------------------|
-/// | 0..3    | 3     | pipeline family      | [`BatchFamily`]           |
-/// | 3..4    | 1     | pipeline variant     | reserved, `0`             |
+/// | 0..4    | 4     | pipeline family      | [`BatchFamily`]           |
 /// | 4..8    | 4     | blend class          | reserved, `0` (src-over)  |
 /// | 8..10   | 2     | sample count class   | reserved, `0` (1×)        |
 /// | 10..12  | 2     | color-target class   | reserved, `0` (BGRA8)     |
@@ -164,7 +168,7 @@ pub struct BatchKey(u64);
 
 impl BatchKey {
     const FAMILY_SHIFT: u64 = 0;
-    const FAMILY_MASK: u64 = 0b111;
+    const FAMILY_MASK: u64 = 0b1111;
     const TARGET_SHIFT: u64 = 14;
     const TARGET_MASK: u64 = 0x3ff; // 10 bits
     const RESOURCE_SHIFT: u64 = 24;
@@ -277,6 +281,7 @@ mod tests {
             BatchFamily::AnalyticEllipse,
             BatchFamily::AnalyticCapsule,
             BatchFamily::AnalyticLine,
+            BatchFamily::Gradient,
         ] {
             let key = BatchKey::pack(family, BatchTarget::Main, None);
             assert_eq!(key.family(), family);

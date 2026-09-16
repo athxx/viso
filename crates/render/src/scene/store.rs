@@ -30,7 +30,8 @@
 
 use crate::primitive::{
     AnalyticCapsuleInstance, AnalyticEllipseInstance, AnalyticLineInstance, AnalyticRRectInstance,
-    GlyphInstance, GlyphInstanceData, ImageInstance, MeshVertex, Path, QuadInstance,
+    GlyphInstance, GlyphInstanceData, GradientInstance, ImageInstance, MeshVertex, Path,
+    QuadInstance,
 };
 
 use super::ids::{BrushId, ClipId, GeometryId, ImageId, MeshId, PathId, PrimitiveId, TransformId};
@@ -521,6 +522,102 @@ impl AnalyticLineStore {
 
     /// The entry at `id`, or `None` if the slot is out of range.
     pub fn get(&self, id: GeometryId) -> Option<&AnalyticLineEntry> {
+        self.entries.get(id.index() as usize)
+    }
+
+    /// Number of live entries.
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    /// Whether the store holds no entries.
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+}
+
+/// A retained gradient draw: its lowered instance and the LUT texture the
+/// renderer binds for it (§8.5). The instance is finalized during lowering — the
+/// renderer resolves `lut_v`/`use_lut` against its LUT atlas before ingest — so
+/// the entry holds the whole [`GradientInstance`] plus the atlas `texture` that
+/// backs the ramp (the resource plane, like [`ImageEntry`]). A two-stop inline
+/// gradient still carries the atlas handle so a later switch to the LUT path is
+/// a plain resource diff, not a structural change.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct GradientEntry {
+    /// The lowered instance, in world space (origin not yet subtracted).
+    pub instance: GradientInstance,
+    /// The 1D LUT atlas texture the ramp is baked into (bound per draw, §16.1).
+    pub texture: viso_gpu::TextureId,
+}
+
+/// Dense store of gradient fills (§8). Same AoS/cursor shape as the analytic
+/// stores, plus the per-draw LUT texture like [`ImageStore`]; the diff splits
+/// `rect_pos` → transform, `rect_size`/`kind`/`extend`/`p0`/`p1`/`lut_v`/
+/// `use_lut` → geometry, `color0`/`color1` → paint, `texture` → resource. A
+/// static gradient resolves to the same instance and LUT row every frame (the
+/// row is content-addressed and stable), so a steady scene diffs to nothing.
+#[derive(Debug, Default)]
+pub struct GradientStore {
+    entries: Vec<GradientEntry>,
+    cursor: usize,
+}
+
+impl GradientStore {
+    /// Reset the cursor for a new frame, keeping entries to diff against.
+    pub fn begin_frame(&mut self) {
+        self.cursor = 0;
+    }
+
+    /// Trim entries the frame's walk did not revisit. Returns whether a trim
+    /// happened.
+    pub fn finish_frame(&mut self) -> bool {
+        if self.cursor < self.entries.len() {
+            self.entries.truncate(self.cursor);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Diff `instance`/`texture` against the retained gradient at the cursor and
+    /// advance, appending on cold growth. Returns the slot and the moved planes.
+    pub fn ingest(
+        &mut self,
+        instance: GradientInstance,
+        texture: viso_gpu::TextureId,
+    ) -> (GeometryId, DirtyPlanes) {
+        let index = self.cursor;
+        let dirty = if index < self.entries.len() {
+            let prev = &self.entries[index];
+            let pi = &prev.instance;
+            let dirty = DirtyPlanes {
+                transform: pi.rect_pos != instance.rect_pos,
+                geometry: pi.rect_size != instance.rect_size
+                    || pi.kind != instance.kind
+                    || pi.extend != instance.extend
+                    || pi.p0 != instance.p0
+                    || pi.p1 != instance.p1
+                    || pi.lut_v != instance.lut_v
+                    || pi.use_lut != instance.use_lut,
+                paint: pi.color0 != instance.color0 || pi.color1 != instance.color1,
+                resource: prev.texture != texture,
+                appended: false,
+            };
+            if dirty.any() {
+                self.entries[index] = GradientEntry { instance, texture };
+            }
+            dirty
+        } else {
+            self.entries.push(GradientEntry { instance, texture });
+            DirtyPlanes::APPENDED
+        };
+        self.cursor += 1;
+        (GeometryId::new(index as u32), dirty)
+    }
+
+    /// The entry at `id`, or `None` if the slot is out of range.
+    pub fn get(&self, id: GeometryId) -> Option<&GradientEntry> {
         self.entries.get(id.index() as usize)
     }
 
@@ -1070,12 +1167,41 @@ impl TransformStore {
     }
 }
 
+/// The paint model a brush resolves to (§12 Brush model). A fill/stroke is one
+/// of these; the store diffs them by value so a recolor bumps the paint plane
+/// alone.
+///
+/// `Solid` is the wired steady-state path: its color is baked inline into each
+/// primitive's instance at lowering, and the brush store's entry mirrors it so
+/// the paint diff sees the change. The gradient variants name the fill's slot in
+/// the [`GradientStore`] (the gradient's lowered geometry + LUT live there),
+/// keeping the brush a pure paint identity: moving or recoloring the gradient
+/// still diffs its brush entry. [`Brush::ImagePattern`] (§12.4) and
+/// [`Brush::ShaderBrush`] are declared for the model but not yet lowered; their
+/// [`BrushStore::ingest`] path is an explicit `todo!`, never a silent no-op.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Brush {
+    /// A flat straight-linear RGBA fill — baked inline into the instance.
+    Solid([f32; 4]),
+    /// A linear gradient, resolved into the [`GradientStore`] slot `id`.
+    LinearGradient(GeometryId),
+    /// A radial gradient, resolved into the [`GradientStore`] slot `id`.
+    RadialGradient(GeometryId),
+    /// A sweep gradient, resolved into the [`GradientStore`] slot `id`.
+    SweepGradient(GeometryId),
+    /// A tiled/stretched image fill (§12.4). Declared for the model; lowering is
+    /// deferred (D2.2).
+    ImagePattern(ImageId),
+    /// A user shader fill. Declared for the model; lowering is deferred.
+    ShaderBrush,
+}
+
 /// A retained brush — a resolved fill/stroke paint (§8.5). The store exists so
 /// the diff can bump paint independently, and so the freeze pins its shape.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct BrushEntry {
-    /// Straight linear RGBA the brush paints.
-    pub color: [f32; 4],
+    /// The resolved paint this brush applies.
+    pub brush: Brush,
 }
 
 /// Dense store of brushes (§8.5). Entries persist across frames.
@@ -1101,18 +1227,27 @@ impl BrushStore {
         }
     }
 
-    /// Diff a brush against the retained entry at the cursor. A differing color
-    /// bumps the paint plane; cold growth appends.
-    pub fn ingest(&mut self, color: [f32; 4]) -> (BrushId, bool) {
+    /// Diff a brush against the retained entry at the cursor. A differing brush
+    /// (bit-exact for the solid color) bumps the paint plane; cold growth
+    /// appends. The deferred [`Brush::ImagePattern`]/[`Brush::ShaderBrush`]
+    /// paths are rejected explicitly rather than stored as no-ops.
+    pub fn ingest(&mut self, brush: Brush) -> (BrushId, bool) {
+        match brush {
+            Brush::ImagePattern(_) => {
+                todo!("ImagePattern brush lowering is deferred to D2.2 (§12.4)")
+            }
+            Brush::ShaderBrush => todo!("ShaderBrush lowering is not implemented"),
+            _ => {}
+        }
         let index = self.cursor;
         let changed = if index < self.entries.len() {
-            let changed = self.entries[index].color != color;
+            let changed = self.entries[index].brush != brush;
             if changed {
-                self.entries[index] = BrushEntry { color };
+                self.entries[index] = BrushEntry { brush };
             }
             changed
         } else {
-            self.entries.push(BrushEntry { color });
+            self.entries.push(BrushEntry { brush });
             true
         };
         self.cursor += 1;
@@ -1168,6 +1303,8 @@ pub enum StoreRef {
     AnalyticLine(GeometryId),
     /// Slot in the [`ImageStore`].
     Image(ImageId),
+    /// Slot in the [`GradientStore`].
+    Gradient(GeometryId),
     /// Run slot in the [`GlyphRunStore`].
     GlyphRun(u32),
     /// Slot in the [`VectorPathStore`].
@@ -1193,6 +1330,7 @@ impl std::fmt::Display for StoreRef {
             StoreRef::AnalyticCapsule(_) => write!(f, "analytic-capsule"),
             StoreRef::AnalyticLine(_) => write!(f, "analytic-line"),
             StoreRef::Image(_) => write!(f, "image"),
+            StoreRef::Gradient(_) => write!(f, "gradient"),
             StoreRef::GlyphRun(_) => write!(f, "glyph-run"),
             StoreRef::Path(_) => write!(f, "path"),
             StoreRef::Mesh(_) => write!(f, "mesh"),
