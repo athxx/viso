@@ -37,22 +37,32 @@ pub enum BlendMode {
     PremultipliedOver,
 }
 
-/// How a texture is sampled at coordinates between texels.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// How a texture is sampled at coordinates between texels (and, for
+/// `MipmapLinear`, across mip levels).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum FilterMode {
     /// Nearest-texel sampling.
     Nearest,
-    /// Bilinear sampling.
+    /// Bilinear sampling within one mip level.
     Linear,
+    /// Trilinear sampling: bilinear within a mip level and linear between the
+    /// two straddling mip levels. Used for heavily minified images. The
+    /// headless raster has no mip chain, so it degrades to `Linear` on the base
+    /// level — the mip blend only takes effect on a device backend (Metal:
+    /// `minFilter = linear, mipFilter = linear`).
+    MipmapLinear,
 }
 
 /// Texture-coordinate wrapping outside `[0, 1]`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum AddressMode {
     /// Clamp to the edge texel.
     ClampToEdge,
     /// Repeat (tile).
     Repeat,
+    /// Mirror on each repeat: the coordinate reflects at every integer boundary
+    /// (a period-2 triangle wave), so tiles alternate flipped.
+    Mirror,
 }
 
 bitflags::bitflags! {
@@ -99,12 +109,31 @@ pub struct TextureDesc {
 }
 
 /// Descriptor for [`crate::GpuBackend::create_sampler`].
-#[derive(Debug, Clone, Copy)]
+///
+/// `Hash`/`Eq` make this usable as an interning key: the renderer keeps one
+/// sampler per distinct descriptor rather than one per draw (§17.1, §12).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct SamplerDesc {
     /// Minification/magnification filter.
     pub filter: FilterMode,
     /// Coordinate wrapping.
     pub address: AddressMode,
+}
+
+impl SamplerDesc {
+    /// Bilinear filtering, clamp-to-edge wrapping — the default for whole-image
+    /// draws, glyph coverage, and layer compositing.
+    pub const LINEAR_CLAMP: Self = Self {
+        filter: FilterMode::Linear,
+        address: AddressMode::ClampToEdge,
+    };
+}
+
+impl Default for SamplerDesc {
+    /// [`SamplerDesc::LINEAR_CLAMP`].
+    fn default() -> Self {
+        Self::LINEAR_CLAMP
+    }
 }
 
 /// Which built-in drawing program a pipeline runs.

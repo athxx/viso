@@ -983,18 +983,54 @@ texture/sampler/pipeline in `viso-gpu`.
         verification deferred.
 
 ### D2.2 — Image / sprite / atlas lane
-- [ ] `Image` / `ImageRect` with source rect, destination rect, `fit`, `alignment`,
+- [x] `Image` / `ImageRect` with source rect, destination rect, `fit`, `alignment`,
       `opacity` (§12.4).
-- [ ] Sampling `Nearest` / `Linear` / `MipmapLinear` (where available/appropriate).
-- [ ] Edge behavior `Clamp` / `Repeat` / `Mirror` (§12.5); atlas/sprite sampling prevents
+  - [x] `ImageRect { src: Option<Rect(px)>, dest, fit, align, opacity, texture, tex_size,
+        sampler }` as the author-facing type; low-level `ImageDraw` retained as the
+        pre-solved fast path (atlas/glyph reuse).
+  - [x] `Fit::{Fill, Contain, Cover, None}` + `Align2 { x, y: Align::{Start, Center, End} }`;
+        `ImageRect::to_image_draw()` solves fit/align/opacity purely on the CPU into one
+        `ImageDraw` → existing `Primitive::Image` (no new Primitive variant, ImageInstance
+        ABI unchanged).
+  - [x] Unit tests: Fill/Contain/Cover/None × alignment dest+uv solve.
+- [x] Sampling `Nearest` / `Linear` / `MipmapLinear` (where available/appropriate).
+  - [x] `FilterMode::MipmapLinear` added; Metal maps `minFilter=linear, mipFilter=linear`;
+        headless has no mip chain so it degrades to Linear (device-side mip correctness
+        deferred with the MSL/device flag).
+  - [x] Sampler selected per image draw via `SamplerDesc`, not a single hardcoded sampler.
+- [x] Edge behavior `Clamp` / `Repeat` / `Mirror` (§12.5); atlas/sprite sampling prevents
       adjacent-texel bleeding.
-- [ ] Interned `SamplerId` (§12) — image sampling never creates a per-widget sampler.
-- [ ] Resource-policy routing (§12): small immutable UI image → atlas candidate;
+  - [x] `AddressMode::Mirror` added; Metal maps `mirrorRepeat`; headless mirror = period-2
+        triangle wave (same form as gradient extend-mirror), unit-tested.
+  - [x] Half-texel bleed guard: `ImageRect` insets uv by `0.5/tex_size` per side only when
+        `src.is_some()` (a real atlas sub-region); whole-texture draws are never inset.
+        Numeric unit test covers the inset.
+- [x] Interned `SamplerId` (§12) — image sampling never creates a per-widget sampler.
+  - [x] `SamplerDesc` gains `Hash + Eq`; renderer holds a cold-path `SamplerCache` (scanned
+        `Vec<(SamplerDesc, SamplerId)>`, matching the `texture_bindings` convention) seeded
+        with the shared Linear-Clamp default; image draws intern/hit by `SamplerDesc`.
+  - [x] Bind group re-keyed by `(texture, sampler)`; adding the sampler dimension needs no
+        BatchKey/segment-layout change (`SegmentKind::Image { bind_group }` is opaque).
+- [x] Resource-policy routing (§12): small immutable UI image → atlas candidate;
       large/frequently-replaced → standalone texture; video/camera → external texture (via
       a platform image path, not the standard image path); heavy downscale → mipmaps.
-- [ ] `NineSlice`, then `Tile`/`TiledImage`, then `Sprite`/`TextureAtlas` region — added
+  - [x] `ResourcePolicy::{AtlasCandidate { mipmap }, Standalone { mipmap }, External}` +
+        `resolve() -> Result<ResourceRoute, ResourceRouteError>`; `External` is an explicit
+        `ExternalUnsupported` error, never a silent no-op (platform image path deferred).
+        No automatic atlas packer this round.
+- [x] `NineSlice`, then `Tile`/`TiledImage`, then `Sprite`/`TextureAtlas` region — added
       only after basic `ImageRect` is stable, reusing the Image pipeline family (§12.6); no
       independent high-cost pipeline.
+  - [x] `SpriteRegion` = `src = region` convenience over `ImageRect` (inherits the bleed
+        guard).
+  - [x] `NineSlice` expands on the CPU into ≤9 `ImageDraw`s (corners unscaled, edges
+        single-axis, center two-axis); degenerate patches dropped. Tiling/coverage unit
+        test.
+  - [x] `TiledImage`: whole-texture fast path = one `ImageDraw` with a `>0..1` uv rect wrapped
+        by a Repeat/Mirror sampler; atlas sub-cell falls back to CPU expansion with the
+        trailing row/column uv-cropped. Both paths unit-tested.
+  - [x] Golden `image_family` scene (Contain/Nearest, Cover/Linear, NineSlice, tiled Repeat)
+        blessed and stable on re-run; ImageInstance layout-frozen test still passes.
 
 ### D2.3 — §31 gate
 - [ ] Benchmark gate (§31 `## D2`): many gradients; image grid; sprite atlas;

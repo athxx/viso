@@ -32,13 +32,15 @@ pub use inspect::{
     BatchId, BatchPipeline, InspectBatch, InspectBatches, InspectPrimitives, PrimitiveRange,
 };
 pub use primitive::{
-    AnalyticCapsule, AnalyticCapsuleInstance, AnalyticEllipse, AnalyticEllipseInstance,
-    AnalyticLine, AnalyticLineInstance, AnalyticRRect, AnalyticRRectInstance, Border, Corners,
-    GlyphInstance, GlyphInstanceData, GlyphRunDraw, Gradient, GradientInstance, GradientKind,
-    GradientStop, ImageDraw, ImageInstance, LayerClip, LineCap, LineJoin, Mesh, MeshVertex, Path,
-    PathCmd, Point, Primitive, Quad, QuadInstance, Rect, Rgba, Stroke, analytic_capsule_schema,
-    analytic_ellipse_schema, analytic_line_schema, analytic_rrect_schema, glyphrun_schema,
-    gradient_schema, image_schema, mesh_schema, quad_schema,
+    Align, Align2, AnalyticCapsule, AnalyticCapsuleInstance, AnalyticEllipse,
+    AnalyticEllipseInstance, AnalyticLine, AnalyticLineInstance, AnalyticRRect,
+    AnalyticRRectInstance, Border, Corners, Fit, GlyphInstance, GlyphInstanceData, GlyphRunDraw,
+    Gradient, GradientInstance, GradientKind, GradientStop, ImageDraw, ImageInstance, ImageRect,
+    LayerClip, LineCap, LineJoin, Mesh, MeshVertex, NineSlice, Path, PathCmd, Point, Primitive,
+    Quad, QuadInstance, Rect, ResourcePolicy, ResourceRoute, ResourceRouteError, Rgba,
+    SpriteRegion, Stroke, TiledImage, analytic_capsule_schema, analytic_ellipse_schema,
+    analytic_line_schema, analytic_rrect_schema, glyphrun_schema, gradient_schema, image_schema,
+    mesh_schema, quad_schema,
 };
 pub use renderer::{FrameStats, Renderer};
 // GPU handles that appear in this crate's public API. `TextureId` is carried by
@@ -47,7 +49,11 @@ pub use renderer::{FrameStats, Renderer};
 // resources` must be nameable). Re-export the exact set so a crate depending only
 // on `viso-render` (the DAG lets `viso-ui`/tools reach it) can name them without a
 // direct `viso-gpu` edge. `viso-gpu` is already a `viso-render` dependency.
-pub use viso_gpu::{BindGroupId, PipelineId, TextureId};
+// `SamplerDesc` (and its `FilterMode`/`AddressMode`) is carried by `ImageDraw`
+// and the high-level image primitives, so it is part of this crate's public API
+// even though it is a GPU-descriptor type; re-export it (not into the prelude —
+// §3.2, these are consumed by the widget layer, not by normal apps directly).
+pub use viso_gpu::{AddressMode, BindGroupId, FilterMode, PipelineId, SamplerDesc, TextureId};
 use viso_text::{Direction, Shaper, rasterize_coverage};
 
 pub use batch::{BatchFamily, BatchItem, BatchKey, BatchTarget, RenderChunk, RenderChunkId};
@@ -313,6 +319,7 @@ pub fn test_scene(texture: TextureId, glyphs: GlyphRunDraw) -> Vec<Primitive> {
                 a: 0.9,
             },
             texture,
+            sampler: SamplerDesc::LINEAR_CLAMP,
         }),
         // A filled-and-stroked vector path in the lower-right: a closed
         // teardrop-ish outline that mixes a cubic and a quadratic Bézier (so the

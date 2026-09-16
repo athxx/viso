@@ -22,7 +22,7 @@ use crate::content::Content;
 use crate::node::NodeId;
 use viso_render::{
     GlyphInstanceData, GlyphRunDraw, ImageDraw, LayerClip, Path, PathCmd, Point, Primitive, Quad,
-    Rect, Rgba,
+    Rect, Rgba, SamplerDesc,
 };
 
 /// The opaque white tint that passes a premultiplied color-atlas texel through
@@ -176,6 +176,7 @@ pub(crate) fn paint_content(content: &Content, world: Rect, out: &mut Vec<Primit
                         uv: g.uv,
                         tint: WHITE,
                         texture: *color_atlas,
+                        sampler: SamplerDesc::LINEAR_CLAMP,
                     }));
                 }
             }
@@ -188,6 +189,7 @@ pub(crate) fn paint_content(content: &Content, world: Rect, out: &mut Vec<Primit
                 uv: *uv,
                 tint: *tint,
                 texture: *texture,
+                sampler: SamplerDesc::LINEAR_CLAMP,
             }));
         }
         Content::Path {
