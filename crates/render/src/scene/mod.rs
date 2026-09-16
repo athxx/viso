@@ -52,8 +52,9 @@ use ids::PrimitiveId;
 use ingest::IngestStats;
 use revision::Revisions;
 use store::{
-    AnalyticEllipseStore, AnalyticRRectStore, BrushStore, ClipStore, GlyphRunStore, ImageStore,
-    MeshStore, SolidQuadStore, StoreRef, TransformStore, VectorPathStore,
+    AnalyticCapsuleStore, AnalyticEllipseStore, AnalyticRRectStore, BrushStore, ClipStore,
+    GlyphRunStore, ImageStore, MeshStore, SolidQuadStore, StoreRef, TransformStore,
+    VectorPathStore,
 };
 
 /// Where an emitted primitive's geometry is routed and how it is offset — the
@@ -111,6 +112,8 @@ pub struct Scene {
     pub analytic_rrects: AnalyticRRectStore,
     /// Analytic ellipses, in paint order.
     pub analytic_ellipses: AnalyticEllipseStore,
+    /// Analytic capsules, in paint order.
+    pub analytic_capsules: AnalyticCapsuleStore,
     /// Image draws.
     pub images: ImageStore,
     /// Glyph runs and their packed instances.
@@ -147,6 +150,7 @@ impl Scene {
         self.quads.begin_frame();
         self.analytic_rrects.begin_frame();
         self.analytic_ellipses.begin_frame();
+        self.analytic_capsules.begin_frame();
         self.images.begin_frame();
         self.glyph_runs.begin_frame();
         self.paths.begin_frame();

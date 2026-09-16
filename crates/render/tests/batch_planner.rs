@@ -29,6 +29,7 @@ fn pipeline_family(pipeline: BatchPipeline) -> BatchFamily {
         BatchPipeline::Quad => BatchFamily::Quad,
         BatchPipeline::AnalyticRRect => BatchFamily::AnalyticRRect,
         BatchPipeline::AnalyticEllipse => BatchFamily::AnalyticEllipse,
+        BatchPipeline::AnalyticCapsule => BatchFamily::AnalyticCapsule,
         BatchPipeline::Image => BatchFamily::Image,
         BatchPipeline::GlyphRun => BatchFamily::GlyphRun,
         BatchPipeline::Mesh => BatchFamily::Mesh,

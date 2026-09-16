@@ -35,7 +35,8 @@ use viso_gpu::{InstanceSchema, SchemaAttr};
 
 use crate::ir::codegen_msl::{emit_msl, emit_schema_attrs, schema_from_attrs};
 use crate::ir::module::{
-    ShaderIr, analytic_ellipse_ir, analytic_rrect_ir, glyphrun_ir, image_ir, mesh_ir, quad_ir,
+    ShaderIr, analytic_capsule_ir, analytic_ellipse_ir, analytic_rrect_ir, glyphrun_ir, image_ir,
+    mesh_ir, quad_ir,
 };
 
 /// The built-in primitive shaders (architecture section 15.3). One entry per
@@ -61,6 +62,10 @@ pub enum PrimitiveKind {
     AnalyticRRect,
     /// An axis-aligned ellipse (a circle when its axes are equal).
     AnalyticEllipse,
+    /// A capsule (stadium/pill): a rounded box whose corner radius is the
+    /// smaller half-extent, so the short axis rounds fully and the long axis
+    /// stays straight.
+    AnalyticCapsule,
     /// An offscreen-composited layer.
     Layer,
 }
@@ -73,6 +78,7 @@ pub fn shader_source(kind: PrimitiveKind) -> Option<&'static str> {
         PrimitiveKind::GlyphRun => Some(GLYPHRUN_MSL()),
         PrimitiveKind::AnalyticRRect => Some(ANALYTIC_RRECT_MSL()),
         PrimitiveKind::AnalyticEllipse => Some(ANALYTIC_ELLIPSE_MSL()),
+        PrimitiveKind::AnalyticCapsule => Some(ANALYTIC_CAPSULE_MSL()),
         // Path and Mesh share the general per-vertex mesh pipeline.
         PrimitiveKind::Path | PrimitiveKind::Mesh => Some(MESH_MSL()),
         _ => None,
@@ -89,6 +95,7 @@ pub fn instance_schema(kind: PrimitiveKind) -> Option<InstanceSchema> {
         PrimitiveKind::GlyphRun => Some(glyphrun_schema()),
         PrimitiveKind::AnalyticRRect => Some(analytic_rrect_schema()),
         PrimitiveKind::AnalyticEllipse => Some(analytic_ellipse_schema()),
+        PrimitiveKind::AnalyticCapsule => Some(analytic_capsule_schema()),
         // Path and Mesh validate their per-vertex layout against `mesh_schema`.
         PrimitiveKind::Path | PrimitiveKind::Mesh => Some(mesh_schema()),
         _ => None,
@@ -165,6 +172,17 @@ pub fn analytic_rrect_schema() -> InstanceSchema {
 pub fn analytic_ellipse_schema() -> InstanceSchema {
     static CELL: OnceLock<Vec<SchemaAttr>> = OnceLock::new();
     cached_schema(&CELL, &analytic_ellipse_ir())
+}
+
+/// The instance schema the AnalyticCapsule shader declares — projected from
+/// [`analytic_capsule_ir`].
+///
+/// Byte-identical to the AnalyticEllipse schema: the capsule radius is derived
+/// in the vertex stage from the rect's half-extents (`min` of the two), so the
+/// instance carries no radius field — just rect, color, and border.
+pub fn analytic_capsule_schema() -> InstanceSchema {
+    static CELL: OnceLock<Vec<SchemaAttr>> = OnceLock::new();
+    cached_schema(&CELL, &analytic_capsule_ir())
 }
 
 /// Cache a primitive's IR-derived MSL to `'static` and return it. Materialized
@@ -283,11 +301,30 @@ pub fn ANALYTIC_ELLIPSE_MSL() -> &'static str {
     cached_msl(&CELL, || emit_msl(&analytic_ellipse_ir()))
 }
 
+/// Inline MSL for the AnalyticCapsule built-in (Metal backend), derived from
+/// [`analytic_capsule_ir`].
+///
+/// Like [`QUAD_MSL`], the headless backend ignores this; only the real Metal
+/// backend compiles it. See `viso-msl-reserved-half`.
+///
+/// Contract (guaranteed by the shared IR): per-instance data at buffer index 1;
+/// viewport uniform at index 0; six `vertex_id`s form two triangles (plus 1px AA
+/// pad); colors are **straight** and the fragment premultiplies; a rounded-box
+/// SDF whose corner radius is pinned to the smaller half-extent (a stadium) with
+/// linear-coverage AA and border-over-fill reproduces the headless math. The
+/// half-extents are the rect's `size * 0.5`.
+#[allow(non_snake_case)]
+pub fn ANALYTIC_CAPSULE_MSL() -> &'static str {
+    static CELL: OnceLock<String> = OnceLock::new();
+    cached_msl(&CELL, || emit_msl(&analytic_capsule_ir()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::ir::module::{
-        analytic_ellipse_ir, analytic_rrect_ir, glyphrun_ir, image_ir, mesh_ir, quad_ir,
+        analytic_capsule_ir, analytic_ellipse_ir, analytic_rrect_ir, glyphrun_ir, image_ir,
+        mesh_ir, quad_ir,
     };
 
     /// The three legs of a built-in's field contract — the emitted MSL attribute
@@ -420,6 +457,32 @@ mod tests {
         assert_three_legs_agree(
             ANALYTIC_ELLIPSE_MSL(),
             &analytic_ellipse_schema(),
+            &ir_names,
+        );
+    }
+
+    #[test]
+    fn analytic_capsule_has_source_and_schema() {
+        assert!(shader_source(PrimitiveKind::AnalyticCapsule).is_some());
+        assert!(instance_schema(PrimitiveKind::AnalyticCapsule).is_some());
+        let ir_names: Vec<&str> = analytic_capsule_ir()
+            .attributes
+            .iter()
+            .map(|f| f.name)
+            .collect();
+        assert_eq!(
+            ir_names,
+            [
+                "rect_pos",
+                "rect_size",
+                "color",
+                "border_width",
+                "border_color"
+            ]
+        );
+        assert_three_legs_agree(
+            ANALYTIC_CAPSULE_MSL(),
+            &analytic_capsule_schema(),
             &ir_names,
         );
     }

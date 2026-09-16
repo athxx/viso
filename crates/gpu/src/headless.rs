@@ -559,6 +559,16 @@ impl HeadlessRaster {
                                 cmd.scissor,
                             );
                         }
+                        BuiltinShader::AnalyticCapsule => {
+                            self.fill_analytic_capsule(
+                                target,
+                                width,
+                                height,
+                                &layout,
+                                inst,
+                                cmd.scissor,
+                            );
+                        }
                         // Path/Mesh never arrive as generated geometry.
                         BuiltinShader::Path | BuiltinShader::Mesh | BuiltinShader::Layer => {}
                     }
@@ -962,6 +972,87 @@ impl HeadlessRaster {
         }
     }
 
+    /// Fill one AnalyticCapsule instance: a capsule/stadium (a rounded box whose
+    /// corner radius is the smaller half-extent), linear-coverage AA,
+    /// premultiplied source-over blend.
+    ///
+    /// Reads the same fields as [`fill_analytic_ellipse`](Self::fill_analytic_ellipse)
+    /// (the schema is byte-identical): `rect_pos`, `rect_size`, `color`,
+    /// `border_width`, `border_color`. The half-extents are the rect's half-size
+    /// and the corner radius is derived as their minimum. The per-pixel math
+    /// mirrors [`ANALYTIC_CAPSULE_MSL`](../../shader)'s fragment (`capsule_sdf` +
+    /// border-over-fill) exactly.
+    fn fill_analytic_capsule(
+        &mut self,
+        target: FbTarget,
+        width: u32,
+        height: u32,
+        layout: &InstanceLayout,
+        inst: &[u8],
+        scissor: Option<(u32, u32, u32, u32)>,
+    ) {
+        let pos = read_f2(layout, inst, "rect_pos");
+        let size = read_f2(layout, inst, "rect_size");
+        let fill = read_f4(layout, inst, "color");
+        let border_w = read_f1(layout, inst, "border_width");
+        let border_c = read_f4(layout, inst, "border_color");
+
+        let half = [size[0] * 0.5, size[1] * 0.5];
+        let center = [pos[0] + half[0], pos[1] + half[1]];
+
+        let (mut x0, mut y0, mut x1, mut y1) = (
+            (pos[0] - 1.0).floor().max(0.0) as u32,
+            (pos[1] - 1.0).floor().max(0.0) as u32,
+            (pos[0] + size[0] + 1.0).ceil().min(width as f32) as u32,
+            (pos[1] + size[1] + 1.0).ceil().min(height as f32) as u32,
+        );
+        if let Some((sx, sy, sw, sh)) = scissor {
+            x0 = x0.max(sx);
+            y0 = y0.max(sy);
+            x1 = x1.min(sx + sw);
+            y1 = y1.min(sy + sh);
+        }
+
+        let aa = 1.0 / (2.0_f32).sqrt();
+
+        for py in y0..y1 {
+            for px in x0..x1 {
+                let p = [px as f32 + 0.5, py as f32 + 0.5];
+                let d = capsule_sdf(p, center, half);
+
+                let fill_cov = (-d * aa).clamp(0.0, 1.0);
+                if fill_cov <= 0.0 && border_w <= 0.0 {
+                    continue;
+                }
+
+                let mut src = [
+                    fill[0] * fill[3] * fill_cov,
+                    fill[1] * fill[3] * fill_cov,
+                    fill[2] * fill[3] * fill_cov,
+                    fill[3] * fill_cov,
+                ];
+                if border_w > 0.0 {
+                    let bcov = (-(d.abs() - border_w * 0.5) * aa).clamp(0.0, 1.0);
+                    if bcov > 0.0 {
+                        let ba = border_c[3] * bcov;
+                        let bsrc = [border_c[0] * ba, border_c[1] * ba, border_c[2] * ba, ba];
+                        src = [
+                            bsrc[0] + src[0] * (1.0 - ba),
+                            bsrc[1] + src[1] * (1.0 - ba),
+                            bsrc[2] + src[2] * (1.0 - ba),
+                            bsrc[3] + src[3] * (1.0 - ba),
+                        ];
+                    }
+                }
+                if src[3] <= 0.0 {
+                    continue;
+                }
+
+                blend_pixel(self.framebuffer(target), width, px, py, src);
+            }
+        }
+    }
+
     /// Fill one Image instance: sample the bound texture's uv sub-rect across the
     /// destination rect, modulated by a straight tint, premultiplied source-over.
     ///
@@ -1258,6 +1349,16 @@ fn rrect_sdf(p: [f32; 2], center: [f32; 2], half: [f32; 2], radii: [f32; 4]) -> 
 fn ellipse_sdf(p: [f32; 2], center: [f32; 2], radii: [f32; 2]) -> f32 {
     let n = [(p[0] - center[0]) / radii[0], (p[1] - center[1]) / radii[1]];
     ((n[0] * n[0] + n[1] * n[1]).sqrt() - 1.0) * radii[0].min(radii[1])
+}
+
+/// Signed distance to a capsule/stadium, negative inside. Mirrors the MSL
+/// `capsule_sdf`: a rounded box whose corner radius is the smaller half-extent,
+/// so the short axis is fully rounded and the long axis stays straight. `half`
+/// are the box half-extents; the radius is derived as their minimum, which is
+/// exactly [`box_sdf`] with `k = min(half.x, half.y)`.
+fn capsule_sdf(p: [f32; 2], center: [f32; 2], half: [f32; 2]) -> f32 {
+    let k = half[0].min(half[1]);
+    box_sdf(p, center, half, k)
 }
 
 /// Premultiplied source-over into one framebuffer pixel, quantizing the source

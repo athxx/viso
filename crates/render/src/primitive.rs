@@ -20,8 +20,8 @@ use viso_gpu::{GpuPod, TextureId};
 // re-export them here so the instance structs and their schemas stay visibly
 // paired at the primitive definition.
 pub use viso_shader::{
-    analytic_ellipse_schema, analytic_rrect_schema, glyphrun_schema, image_schema, mesh_schema,
-    quad_schema,
+    analytic_capsule_schema, analytic_ellipse_schema, analytic_rrect_schema, glyphrun_schema,
+    image_schema, mesh_schema, quad_schema,
 };
 
 /// An axis-aligned rectangle in physical pixels, top-left origin.
@@ -298,6 +298,42 @@ impl AnalyticEllipse {
     }
 }
 
+/// An analytic capsule/stadium: a rounded box whose corner radius is the smaller
+/// half-extent.
+///
+/// The short axis is fully rounded and the long axis stays straight; a square
+/// rect degenerates to a circle. Like [`AnalyticEllipse`] the shape carries no
+/// radius field — the corner radius is derived in the shader as the smaller
+/// half-extent — so its instance layout is byte-identical to the ellipse's. The
+/// fill is a capsule SDF (no tessellation). Supports an inner border.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct AnalyticCapsule {
+    /// The bounding rectangle, in physical pixels. The capsule touches its edges.
+    pub rect: Rect,
+    /// Fill color.
+    pub color: Rgba,
+    /// Border stroke.
+    pub border: Border,
+}
+
+impl AnalyticCapsule {
+    /// Lower this capsule to its GPU instance.
+    pub fn to_instance(&self) -> AnalyticCapsuleInstance {
+        AnalyticCapsuleInstance {
+            rect_pos: [self.rect.x, self.rect.y],
+            rect_size: [self.rect.w, self.rect.h],
+            color: [self.color.r, self.color.g, self.color.b, self.color.a],
+            border_width: self.border.width,
+            border_color: [
+                self.border.color.r,
+                self.border.color.g,
+                self.border.color.b,
+                self.border.color.a,
+            ],
+        }
+    }
+}
+
 /// A clip/compositing layer pushed by [`Primitive::Layer`].
 ///
 /// Every following primitive is constrained to `clip` until the matching
@@ -508,6 +544,8 @@ pub enum Primitive {
     AnalyticRRect(AnalyticRRect),
     /// An axis-aligned ellipse/circle.
     AnalyticEllipse(AnalyticEllipse),
+    /// A capsule/stadium (rounded box, corner radius = smaller half-extent).
+    AnalyticCapsule(AnalyticCapsule),
     /// A run of shaped glyphs sampling a single-channel A8 coverage atlas.
     GlyphRun(GlyphRunDraw),
     /// A textured image sampled into a rect.
@@ -587,6 +625,30 @@ pub struct AnalyticRRectInstance {
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, GpuPod)]
 pub struct AnalyticEllipseInstance {
+    /// Top-left corner in physical pixels.
+    pub rect_pos: [f32; 2],
+    /// Width/height in physical pixels.
+    pub rect_size: [f32; 2],
+    /// Straight linear RGBA fill.
+    pub color: [f32; 4],
+    /// Border stroke width in pixels (0 = none).
+    pub border_width: f32,
+    /// Straight linear RGBA border color.
+    pub border_color: [f32; 4],
+}
+
+/// GPU instance for the AnalyticCapsule built-in shader.
+///
+/// Field names/formats match [`analytic_capsule_schema`] and the headless
+/// `fill_analytic_capsule` reader. Byte-identical to [`AnalyticEllipseInstance`]:
+/// the corner radius is derived as the smaller half-extent in the shader, so
+/// there is no radius field. Colors are **straight** (non-premultiplied) linear
+/// RGBA — the backend premultiplies. `#[repr(C)]` with only 4-byte-aligned
+/// scalars/vectors, so the derive's `offset_of!`-based layout has no padding
+/// surprises.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, GpuPod)]
+pub struct AnalyticCapsuleInstance {
     /// Top-left corner in physical pixels.
     pub rect_pos: [f32; 2],
     /// Width/height in physical pixels.
@@ -1200,6 +1262,47 @@ mod tests {
             },
         };
         let inst = e.to_instance();
+        assert_eq!(inst.rect_pos, [10.0, 20.0]);
+        assert_eq!(inst.rect_size, [30.0, 40.0]);
+        assert_eq!(inst.color, [0.2, 0.4, 0.6, 0.8]);
+        assert_eq!(inst.border_width, 3.0);
+        assert_eq!(inst.border_color, [1.0, 1.0, 1.0, 1.0]);
+    }
+
+    #[test]
+    fn analytic_capsule_instance_layout_matches_schema() {
+        assert_eq!(
+            AnalyticCapsuleInstance::LAYOUT.validate_against(&analytic_capsule_schema()),
+            Ok(())
+        );
+    }
+
+    #[test]
+    fn analytic_capsule_lowers_to_instance() {
+        let c = AnalyticCapsule {
+            rect: Rect {
+                x: 10.0,
+                y: 20.0,
+                w: 30.0,
+                h: 40.0,
+            },
+            color: Rgba {
+                r: 0.2,
+                g: 0.4,
+                b: 0.6,
+                a: 0.8,
+            },
+            border: Border {
+                width: 3.0,
+                color: Rgba {
+                    r: 1.0,
+                    g: 1.0,
+                    b: 1.0,
+                    a: 1.0,
+                },
+            },
+        };
+        let inst = c.to_instance();
         assert_eq!(inst.rect_pos, [10.0, 20.0]);
         assert_eq!(inst.rect_size, [30.0, 40.0]);
         assert_eq!(inst.color, [0.2, 0.4, 0.6, 0.8]);
