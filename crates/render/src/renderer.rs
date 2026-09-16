@@ -26,13 +26,15 @@ use viso_gpu::{
 use viso_shader::{PipelineEntry, PipelineFamily, standard_manifest};
 
 use crate::batch::{BatchFamily, BatchItem, BatchKey, BatchTarget, joins};
+use crate::gradient_lut::{GradientLutAtlas, LUT_WIDTH, LutAlloc, LutKey};
 use crate::pool::InstancePool;
 use crate::primitive::{
     AnalyticCapsuleInstance, AnalyticEllipseInstance, AnalyticLineInstance, AnalyticRRectInstance,
-    GlyphInstance, ImageInstance, MeshVertex, Primitive, QuadInstance, Rect,
+    GlyphInstance, GradientInstance, ImageInstance, MeshVertex, Primitive, QuadInstance, Rect,
 };
 use crate::scene::store::{StoreRef, glyph_instances};
 use crate::scene::{EmitContext, Scene};
+use viso_math::InterpolationSpace;
 
 /// Bytes of one quad instance.
 const QUAD_STRIDE: usize = core::mem::size_of::<QuadInstance>();
@@ -48,6 +50,13 @@ const ANALYTIC_LINE_STRIDE: usize = core::mem::size_of::<AnalyticLineInstance>()
 const IMAGE_STRIDE: usize = core::mem::size_of::<ImageInstance>();
 /// Bytes of one glyph instance.
 const GLYPH_STRIDE: usize = core::mem::size_of::<GlyphInstance>();
+/// Bytes of one gradient instance.
+const GRADIENT_STRIDE: usize = core::mem::size_of::<GradientInstance>();
+/// Rows in the renderer-owned 1D gradient LUT atlas: each row is one baked ramp
+/// (a 3+-stop or non-linear-space gradient), `LUT_WIDTH × ROWS` RGBA8. 64 rows
+/// is 64 KB — ample for a frame's distinct multi-stop gradients while trivial
+/// beside image/glyph atlases.
+const GRADIENT_LUT_ROWS: u32 = 64;
 /// What a [`Segment`] draws, and where its geometry lives.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) enum SegmentKind {
@@ -72,6 +81,9 @@ pub(crate) enum SegmentKind {
     /// One run of glyphs, in the glyph buffer, sampling `bind_group`'s A8 pool.
     /// `start`/`count` count instances in that buffer.
     GlyphRun { bind_group: BindGroupId },
+    /// A single gradient fill, in the gradient buffer, sampling `bind_group`'s
+    /// baked 1D LUT atlas. `start`/`count` count instances in that buffer.
+    Gradient { bind_group: BindGroupId },
     /// A run of adjacent triangle meshes (Path/Mesh) sharing this segment's
     /// clip, in the shared mesh vertex/index buffers. `start`/`count` count
     /// **indices** in the mesh index buffer (vertices are addressed by the
@@ -91,6 +103,7 @@ impl SegmentKind {
             SegmentKind::AnalyticLine => BatchFamily::AnalyticLine,
             SegmentKind::Image { .. } => BatchFamily::Image,
             SegmentKind::GlyphRun { .. } => BatchFamily::GlyphRun,
+            SegmentKind::Gradient { .. } => BatchFamily::Gradient,
             SegmentKind::Mesh => BatchFamily::Mesh,
         }
     }
@@ -100,9 +113,9 @@ impl SegmentKind {
     /// mesh (which bind no per-draw resource).
     pub(crate) fn resource(self) -> Option<BindGroupId> {
         match self {
-            SegmentKind::Image { bind_group } | SegmentKind::GlyphRun { bind_group } => {
-                Some(bind_group)
-            }
+            SegmentKind::Image { bind_group }
+            | SegmentKind::GlyphRun { bind_group }
+            | SegmentKind::Gradient { bind_group } => Some(bind_group),
             SegmentKind::Quad
             | SegmentKind::AnalyticRRect
             | SegmentKind::AnalyticEllipse
@@ -229,10 +242,10 @@ struct TextureBinding {
 
 /// The built-in pipelines the renderer prewarms once in [`Renderer::new`]
 /// (§7.1): SolidRect (quad), Image, MaskComposite (glyph), PathFill (mesh),
-/// AnalyticRRect, AnalyticEllipse, AnalyticCapsule, and AnalyticLine. Reported as
-/// `FrameStats::shader_pipeline_creations` — a construction-time constant, since
-/// no draw ever triggers a runtime shader compile.
-const SHADER_PIPELINE_PREWARM_COUNT: u32 = 8;
+/// AnalyticRRect, AnalyticEllipse, AnalyticCapsule, AnalyticLine, and Gradient.
+/// Reported as `FrameStats::shader_pipeline_creations` — a construction-time
+/// constant, since no draw ever triggers a runtime shader compile.
+const SHADER_PIPELINE_PREWARM_COUNT: u32 = 9;
 
 /// Draw-call and instance counts for the frame the renderer has just lowered.
 ///
@@ -332,6 +345,8 @@ pub struct Renderer {
     image_pipeline: PipelineId,
     /// The GlyphRun built-in pipeline (registered once).
     glyph_pipeline: PipelineId,
+    /// The Gradient built-in pipeline (registered once).
+    gradient_pipeline: PipelineId,
     /// A linear-filter clamp sampler shared by image and glyph draws (Phase 2
     /// uses one sampler configuration; the glyph coverage pool needs bilinear filtering,
     /// which this provides). Per-image sampler variety lands later.
@@ -356,6 +371,14 @@ pub struct Renderer {
     image_pool: InstancePool<ImageInstance>,
     /// Persistent glyph instance pool (same slot-diff upload as `quad_pool`).
     glyph_pool: InstancePool<GlyphInstance>,
+    /// Persistent gradient instance pool (same slot-diff upload as `quad_pool`).
+    gradient_pool: InstancePool<GradientInstance>,
+    /// The renderer-owned 1D gradient LUT atlas: 3+-stop and non-linear-space
+    /// gradients bake one ramp row here and sample `(t, lut_v)`. Unlike the
+    /// image/glyph atlases (caller-owned textures), this atlas is internal — its
+    /// `TextureId` is created once in [`Renderer::new`] and its dirty rows are
+    /// flushed to the device each frame after lowering.
+    gradient_lut: GradientLutAtlas,
     /// The general triangle-mesh pipeline (Path/Mesh), registered once.
     mesh_pipeline: PipelineId,
     /// Persistent mesh vertex pool (slot-diff upload; vertices, not instances).
@@ -378,6 +401,8 @@ pub struct Renderer {
     image_scratch: Vec<ImageInstance>,
     /// Scratch glyph instance data, reused each frame.
     glyph_scratch: Vec<GlyphInstance>,
+    /// Scratch gradient instance data, reused each frame.
+    gradient_scratch: Vec<GradientInstance>,
     /// Scratch mesh vertex data, reused each frame.
     mesh_vertex_scratch: Vec<MeshVertex>,
     /// Scratch mesh index data, reused each frame.
@@ -526,6 +551,24 @@ impl Renderer {
             )
             .expect("MeshVertex layout matches the mesh shader schema");
 
+        let gradient_pipeline = backend
+            .create_pipeline(
+                &desc(entry(PipelineFamily::Gradient), "gradient"),
+                &GradientInstance::LAYOUT,
+            )
+            .expect("GradientInstance layout matches the gradient shader schema");
+
+        // The 1D gradient LUT atlas is renderer-internal: baked from stops at
+        // lowering, uploaded into this texture before the pass. Unlike image and
+        // glyph textures (caller-owned), the renderer creates and owns it here.
+        let lut_texture = backend.create_texture(&TextureDesc {
+            width: LUT_WIDTH,
+            height: GRADIENT_LUT_ROWS,
+            format: GradientLutAtlas::FORMAT,
+            render_target: false,
+            label: "gradient-lut",
+        });
+
         let sampler = backend.create_sampler(&SamplerDesc {
             filter: FilterMode::Linear,
             address: AddressMode::ClampToEdge,
@@ -539,6 +582,7 @@ impl Renderer {
             analytic_line_pipeline,
             image_pipeline,
             glyph_pipeline,
+            gradient_pipeline,
             sampler,
             quad_pool: InstancePool::new(BufferUsage::INSTANCE, "quad-instances"),
             analytic_rrect_pool: InstancePool::new(
@@ -556,6 +600,8 @@ impl Renderer {
             analytic_line_pool: InstancePool::new(BufferUsage::INSTANCE, "analytic-line-instances"),
             image_pool: InstancePool::new(BufferUsage::INSTANCE, "image-instances"),
             glyph_pool: InstancePool::new(BufferUsage::INSTANCE, "glyph-instances"),
+            gradient_pool: InstancePool::new(BufferUsage::INSTANCE, "gradient-instances"),
+            gradient_lut: GradientLutAtlas::new(GRADIENT_LUT_ROWS, lut_texture),
             mesh_pipeline,
             mesh_vertex_pool: InstancePool::new(BufferUsage::VERTEX, "mesh-vertices"),
             mesh_index_pool: InstancePool::new(BufferUsage::INDEX, "mesh-indices"),
@@ -567,6 +613,7 @@ impl Renderer {
             analytic_line_scratch: Vec::with_capacity(256),
             image_scratch: Vec::with_capacity(64),
             glyph_scratch: Vec::with_capacity(256),
+            gradient_scratch: Vec::with_capacity(64),
             mesh_vertex_scratch: Vec::with_capacity(1024),
             mesh_index_scratch: Vec::with_capacity(2048),
             segments: Vec::with_capacity(8),
@@ -745,6 +792,45 @@ impl Renderer {
                     );
                     self.scene.ingest_image(inst, image.texture, ctx, bounds);
                 }
+                Primitive::Gradient(gradient) => {
+                    // The LUT decision is a lowering-time property the renderer
+                    // owns: a 2-stop linear-RGB gradient interpolates exactly in
+                    // the shader (inline `color0`/`color1`), so it needs no LUT;
+                    // a 3+-stop or non-linear-space gradient bakes a 1D row into
+                    // the renderer-internal atlas and samples it (§10.1, §12.3).
+                    let use_lut = gradient.stops.len() >= 3
+                        || gradient.interp != InterpolationSpace::LinearRgb;
+                    let lut_v = if use_lut {
+                        let key = LutKey::new(&gradient.stops, gradient.interp, gradient.extend);
+                        match self.gradient_lut.alloc(key.clone()) {
+                            LutAlloc::Row { v, .. } => v,
+                            LutAlloc::Overflow => {
+                                // The atlas wiped and re-based on overflow; the
+                                // retry lands in the freshly cleared atlas.
+                                match self.gradient_lut.alloc(key) {
+                                    LutAlloc::Row { v, .. } => v,
+                                    LutAlloc::Overflow => 0.0,
+                                }
+                            }
+                        }
+                    } else {
+                        0.0
+                    };
+                    let inst = gradient.to_instance(lut_v, use_lut);
+                    let bounds = crate::scene::bounds::Bounds::from_world(
+                        Rect {
+                            x: inst.rect_pos[0],
+                            y: inst.rect_pos[1],
+                            w: inst.rect_size[0],
+                            h: inst.rect_size[1],
+                        },
+                        clip,
+                        0.0,
+                        0.0,
+                    );
+                    self.scene
+                        .ingest_gradient(inst, self.gradient_lut.texture(), ctx, bounds);
+                }
                 Primitive::Path(path) => {
                     self.scene
                         .ingest_path(path, ctx, crate::scene::bounds::Bounds::default());
@@ -818,6 +904,14 @@ impl Renderer {
         // Derive the frame's scratch + segments from the retained scene.
         self.lower_from_scene(backend);
 
+        // Flush any gradient LUT rows baked this frame into the atlas texture
+        // (§12.2: bake once, upload once). The atlas coalesces the frame's newly
+        // baked rows into one contiguous dirty span; a frame that baked no new
+        // gradient uploads nothing.
+        if let Some((x, y, w, h, bytes)) = self.gradient_lut.take_dirty() {
+            backend.write_texture(self.gradient_lut.texture(), x, y, w, h, &bytes);
+        }
+
         // Reconcile each family's persistent device buffer with the freshly
         // lowered draw-order scratch, uploading only the slots that changed since
         // last frame (§9.1) — a local paint change is a local upload, an
@@ -840,6 +934,7 @@ impl Renderer {
                 .sync(backend, &self.analytic_line_scratch)
             + self.image_pool.sync(backend, &self.image_scratch)
             + self.glyph_pool.sync(backend, &self.glyph_scratch)
+            + self.gradient_pool.sync(backend, &self.gradient_scratch)
             + self
                 .mesh_vertex_pool
                 .sync(backend, &self.mesh_vertex_scratch)
@@ -856,6 +951,7 @@ impl Renderer {
             + self.analytic_line_pool.last_upload_bytes()
             + self.image_pool.last_upload_bytes()
             + self.glyph_pool.last_upload_bytes()
+            + self.gradient_pool.last_upload_bytes()
             + self.mesh_vertex_pool.last_upload_bytes()
             + self.mesh_index_pool.last_upload_bytes();
     }
@@ -880,6 +976,7 @@ impl Renderer {
         self.analytic_line_scratch.clear();
         self.image_scratch.clear();
         self.glyph_scratch.clear();
+        self.gradient_scratch.clear();
         self.mesh_vertex_scratch.clear();
         self.mesh_index_scratch.clear();
         self.segments.clear();
@@ -1004,6 +1101,25 @@ impl Renderer {
                     // family is unmergeable, so this always opens a new segment.
                     self.merge_or_push(Segment {
                         kind: SegmentKind::Image { bind_group },
+                        start,
+                        count: 1,
+                        clip,
+                        target,
+                    });
+                }
+                StoreRef::Gradient(id) => {
+                    let e = self.scene.gradients.get(id).expect("gradient slot");
+                    let mut inst = e.instance;
+                    let texture = e.texture;
+                    let bind_group = self.bind_group_for(backend, texture);
+                    inst.rect_pos[0] -= origin[0];
+                    inst.rect_pos[1] -= origin[1];
+                    let start = self.gradient_scratch.len() as u32;
+                    self.gradient_scratch.push(inst);
+                    // Each gradient binds its baked LUT atlas; the gradient family
+                    // is unmergeable, so this always opens a new segment.
+                    self.merge_or_push(Segment {
+                        kind: SegmentKind::Gradient { bind_group },
                         start,
                         count: 1,
                         clip,
@@ -1218,6 +1334,11 @@ impl Renderer {
     /// The Mesh pipeline handle, for batch introspection.
     pub(crate) fn mesh_pipeline_id(&self) -> PipelineId {
         self.mesh_pipeline
+    }
+
+    /// The Gradient pipeline handle, for batch introspection.
+    pub(crate) fn gradient_pipeline_id(&self) -> PipelineId {
+        self.gradient_pipeline
     }
 
     /// Add `segment` to the batch list, merging it into the previous segment
@@ -1596,6 +1717,18 @@ impl Renderer {
                     .buffer()
                     .expect("glyph pool buffer exists when a glyph segment references it"),
                 instance_offset: seg.start as usize * GLYPH_STRIDE,
+                uniforms,
+                scissor,
+            },
+            SegmentKind::Gradient { bind_group } => DrawCommand {
+                pipeline: self.gradient_pipeline,
+                bind_group: Some(bind_group),
+                geometry: Geometry::Generated { count: seg.count },
+                instance_buffer: self
+                    .gradient_pool
+                    .buffer()
+                    .expect("gradient pool buffer exists when a gradient segment references it"),
+                instance_offset: seg.start as usize * GRADIENT_STRIDE,
                 uniforms,
                 scissor,
             },

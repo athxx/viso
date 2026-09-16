@@ -544,6 +544,71 @@ pub fn analytic_line_ir() -> ShaderIr {
     }
 }
 
+/// Gradient built-in: an axis-aligned rect filled by a 1D gradient. Per-instance
+/// data, uniforms at buffer 0, one texture (the 1D gradient LUT atlas at
+/// `[[texture(0)]]`, sampled at row `lut_v`).
+///
+/// One family serves all three gradient geometries — the `kind` field selects
+/// linear / radial / sweep in the fragment, so they share a pipeline. The stop
+/// data is resolved off-instance: `use_lut != 0` samples the LUT, otherwise the
+/// fast 2-stop path lerps the two inline **premultiplied** colors. `extend`
+/// selects the clamp/repeat/mirror wrap of the gradient parameter `t`.
+pub fn gradient_ir() -> ShaderIr {
+    static ATTRS: &[IrField] = &[
+        IrField::new("rect_pos", IrType::F32X2),
+        IrField::new("rect_size", IrType::F32X2),
+        IrField::new("kind", IrType::U32),
+        IrField::new("extend", IrType::U32),
+        IrField::new("p0", IrType::F32X2),
+        IrField::new("p1", IrType::F32X2),
+        IrField::new("lut_v", IrType::F32),
+        IrField::new("use_lut", IrType::U32),
+        IrField::new("color0", IrType::F32X4),
+        IrField::new("color1", IrType::F32X4),
+    ];
+    static UNIFORMS: &[IrField] = &[IrField::new("viewport", IrType::F32X2)];
+    static VARYINGS: &[Varying] = &[
+        Varying::new("position", IrType::F32X4, " [[position]]", ""),
+        Varying::new("local", IrType::F32X2, "", "pixel-space sample position"),
+        Varying::new("rect_min", IrType::F32X2, "", "rect top-left (pixels)"),
+        Varying::new("rect_max", IrType::F32X2, "", "rect bottom-right (pixels)"),
+        Varying::new(
+            "kind",
+            IrType::U32,
+            " [[flat]]",
+            "0=linear 1=radial 2=sweep",
+        ),
+        Varying::new(
+            "extend",
+            IrType::U32,
+            " [[flat]]",
+            "0=clamp 1=repeat 2=mirror",
+        ),
+        Varying::new("g0", IrType::F32X2, "", "gradient p0 (pixels)"),
+        Varying::new(
+            "g1",
+            IrType::F32X2,
+            "",
+            "gradient p1 / (radius,_) / (angle,_)",
+        ),
+        Varying::new("lut_v", IrType::F32, "", "LUT row for this gradient"),
+        Varying::new("use_lut", IrType::U32, " [[flat]]", "0=inline 2-stop 1=LUT"),
+        Varying::new("color0", IrType::F32X4, "", "inline stop 0 (premultiplied)"),
+        Varying::new("color1", IrType::F32X4, "", "inline stop 1 (premultiplied)"),
+    ];
+    ShaderIr {
+        kind: PrimitiveKind::Gradient,
+        vertex_source: VertexSource::PerInstance,
+        attributes: ATTRS,
+        uniforms: UNIFORMS,
+        varyings: VARYINGS,
+        texture_count: 1,
+        vertex_body: GRADIENT_VERTEX_BODY,
+        helpers: GRADIENT_HELPERS,
+        fragment_body: GRADIENT_FRAGMENT_BODY,
+    }
+}
+
 // The verbatim per-primitive body math. Each string is the exact statement block
 // between `vertex_main`/`fragment_main`'s braces (or, for `helpers`, a run of
 // free-standing functions) as the hand-written built-in shipped it, so the
@@ -1071,3 +1136,106 @@ const MESH_FRAGMENT_BODY: &str = "\
 float cov = clamp(in.edge, 0.0, 1.0);
 float a = in.color.a * cov;
 return float4(in.color.rgb * a, a);";
+
+const GRADIENT_VERTEX_BODY: &str = "\
+InstanceIn inst = instances[iid];
+
+// Axis-aligned corner quad, two triangles: (0,0)(1,0)(0,1) and (1,0)(1,1)(0,1).
+// Pad by 1px each side so the AA ramp at the rect edge is covered.
+float2 corner;
+switch (vid) {
+    case 0: corner = float2(0.0, 0.0); break;
+    case 1: corner = float2(1.0, 0.0); break;
+    case 2: corner = float2(0.0, 1.0); break;
+    case 3: corner = float2(1.0, 0.0); break;
+    case 4: corner = float2(1.0, 1.0); break;
+    default: corner = float2(0.0, 1.0); break;
+}
+
+float2 pos = float2(inst.rect_pos);
+float2 size = float2(inst.rect_size);
+float2 pad = float2(1.0, 1.0);
+float2 pixel = pos - pad + corner * (size + 2.0 * pad);
+
+// Pixel-space (top-left origin) → NDC. Y is flipped for Metal.
+float2 vp = float2(u.viewport);
+float2 ndc = float2(pixel.x / vp.x * 2.0 - 1.0,
+                    1.0 - pixel.y / vp.y * 2.0);
+
+VOut out;
+out.position = float4(ndc, 0.0, 1.0);
+out.local = pixel;
+out.rect_min = pos;
+out.rect_max = pos + size;
+out.kind = inst.kind;
+out.extend = inst.extend;
+out.g0 = float2(inst.p0);
+out.g1 = float2(inst.p1);
+out.lut_v = inst.lut_v;
+out.use_lut = inst.use_lut;
+out.color0 = float4(inst.color0);
+out.color1 = float4(inst.color1);
+return out;";
+
+const GRADIENT_HELPERS: &str = "\
+// The raw gradient parameter for each geometry, before extend wrapping.
+// linear: project the sample onto the p0→p1 axis, normalized to [0,1] at the
+// endpoints. radial: distance from the center p0 over the radius (g1.x). sweep:
+// the angle around p0, offset by the start angle (g1.x) and normalized to a
+// single [0,1] turn.
+static inline float gradient_t(uint kind, float2 p, float2 g0, float2 g1) {
+    if (kind == 1u) {
+        float r = max(g1.x, 1e-6);
+        return length(p - g0) / r;
+    }
+    if (kind == 2u) {
+        float ang = atan2(p.y - g0.y, p.x - g0.x) - g1.x;
+        float turn = ang * (1.0 / (2.0 * M_PI_F));
+        return turn - floor(turn);
+    }
+    float2 axis = g1 - g0;
+    float len2 = max(dot(axis, axis), 1e-12);
+    return dot(p - g0, axis) / len2;
+}
+
+// Apply the extend mode to a raw parameter, yielding a [0,1] lookup coordinate.
+// 0=clamp, 1=repeat (fract), 2=mirror (triangle wave over period 2).
+static inline float gradient_extend(uint mode, float t) {
+    if (mode == 1u) {
+        return t - floor(t);
+    }
+    if (mode == 2u) {
+        float u = t - 2.0 * floor(t * 0.5);
+        return u > 1.0 ? 2.0 - u : u;
+    }
+    return clamp(t, 0.0, 1.0);
+}
+
+// Device-pixel coverage factor: how many SDF units span one screen pixel at the
+// current sampling position, inverted. Coverage ramps over ~1 device pixel
+// regardless of scale, so the AA width tracks the physical grid.
+static inline float aa_factor(float2 p) {
+    return 1.0 / length(float2(length(dfdx(p)), length(dfdy(p))));
+}";
+
+const GRADIENT_FRAGMENT_BODY: &str = "\
+// Rectangle coverage: signed distance to the axis-aligned box (negative inside),
+// ramped over ~1 device pixel for AA on the edges.
+float2 center = (in.rect_min + in.rect_max) * 0.5;
+float2 half_ext = (in.rect_max - in.rect_min) * 0.5;
+float2 q = abs(in.local - center) - half_ext;
+float d = length(max(q, float2(0.0))) + min(max(q.x, q.y), 0.0);
+float aa = aa_factor(in.local);
+float cov = clamp(-d * aa, 0.0, 1.0);
+
+// Gradient color at this sample: raw parameter → extend wrap → LUT sample or
+// inline 2-stop lerp. Both the LUT texel and the inline colors are premultiplied
+// linear, so the resolved color is already premultiplied.
+float t = gradient_t(in.kind, in.local, in.g0, in.g1);
+float u = gradient_extend(in.extend, t);
+float4 grad = in.use_lut != 0u
+    ? tex.sample(samp, float2(u, in.lut_v))
+    : mix(in.color0, in.color1, u);
+
+// Modulate the premultiplied gradient color by the edge coverage.
+return grad * cov;";

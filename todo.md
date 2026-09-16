@@ -938,15 +938,49 @@ policy in `viso-render`; gradient interpolation + sampling kernels in `viso-shad
 texture/sampler/pipeline in `viso-gpu`.
 
 ### D2.1 — Brush model
-- [ ] `Brush` enum in `BrushStore` (§12.1 / §10): `Solid`, `LinearGradient`,
+- [x] `Brush` enum in `BrushStore` (§12.1 / §10): `Solid`, `LinearGradient`,
       `RadialGradient`, `SweepGradient`, `ImagePattern`, `ShaderBrush`.
-- [ ] Gradient stop tiers (§12.2): 2-stop → inline instance colors; small stop count →
+  - [x] `Brush` + `BrushEntry` in `scene/store.rs`; `BrushStore::ingest(Brush) -> (BrushId, bool)`
+        cursor-diff contract (f32 bit-exact compare); re-exported from the render crate root
+        (not the prelude yet — the widget layer promotes it on first use, §3.2).
+  - [x] Gradient wired end-to-end (Linear/Radial/Sweep reach the screen): host `Gradient`
+        primitive, `GradientStore` + `StoreRef::Gradient`, `Scene::ingest_gradient`, the ninth
+        `Gradient` batch family (tag 8, unmergeable — each binds its own LUT bind group),
+        `FAMILY_MASK` widened `0b111 → 0b1111`.
+  - [x] `Gradient` shader family three-leg ABI: `gradient_ir()` IR + frozen MSL oracle
+        (byte-equivalence + three-legs-agree + manifest count 8→9), `#[repr(C)] GpuPod`
+        `GradientInstance` (stride 80, align 4, no padding; layout frozen), headless
+        `fill_gradient` line-for-line with the fragment shader.
+  - [x] Renderer owns/binds the internal LUT atlas: `gradient_pipeline` + pool/scratch,
+        `lower_from_scene` resolves the LUT row and finalizes the instance, dirty rows flushed
+        via `take_dirty()` before the pass; `command_for`/`inspect` gradient arms.
+  - [ ] `ImagePattern` render lane deferred to D2.2 (enum variant only); `ShaderBrush` render
+        deferred (enum variant only); both ingest through an explicit unimplemented path, never
+        a silent no-op. `Solid` stays inline-baked (unifying solid into brush storage deferred).
+- [x] Gradient stop tiers (§12.2): 2-stop → inline instance colors; small stop count →
       compact shared stop table; many stops / expensive interpolation → cached 1D Gradient
       LUT Atlas. LUT key ≥ {stop colors, stop offsets, interpolation space, extend/tile
       mode, target color-profile class}. Static gradient built once; never recreate a
       gradient texture per frame.
-- [ ] Gradient interpolation color-space policy is explicit (§12.3) — never accidentally
+  - [x] `GradientLutAtlas` (`gradient_lut.rs`): one RGBA8 row per distinct ramp, LUT resolution
+        256, texels stored **premultiplied** (shader/headless sample premultiplied, blend
+        branchless); `LutKey { stop bits, interp, extend, target profile }`; `alloc` reuses on
+        hit (zero per-frame rebake, §12.2), `take_dirty()`, epoch wipe on overflow.
+  - [x] Tier decision at lowering time: `use_lut = stops.len() >= 3 || interp != LinearRgb`;
+        2-stop linear-RGB takes the inline `color0`/`color1` fast path (no LUT row).
+  - [ ] Compact shared stop table middle tier (§10.1) deferred — D2.1 does inline(2-stop) vs
+        LUT(3+) only.
+- [x] Gradient interpolation color-space policy is explicit (§12.3) — never accidentally
       decided by texture format.
+  - [x] Explicit `InterpolationSpace` enum (`viso-math` color.rs), default `LinearRgb`;
+        `LinearRgb` (lerp already-linear stops) + `Srgb` (gamma-space lerp, per-texel
+        gamma→linear at bake) implemented; `OkLab` variant reserved, unimplemented.
+  - [x] Golden `test_scene` exercises all three: inline linear (LinearRgb), LUT radial
+        (LinearRgb), LUT sweep (Srgb, `Repeat` extend); blessed + re-run stable.
+  - [ ] Real Metal device MSL compile (`newLibraryWithSource`) unverifiable in this
+        environment — headless does not compile MSL. `GRADIENT_MSL` is covered by byte-equivalence
+        + CPU headless fill; `repeat`/`mirror` extend correctness is CPU-covered. Device
+        verification deferred.
 
 ### D2.2 — Image / sprite / atlas lane
 - [ ] `Image` / `ImageRect` with source rect, destination rect, `fit`, `alignment`,

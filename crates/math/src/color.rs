@@ -330,6 +330,47 @@ impl ExtendedLinear {
     }
 }
 
+/// The color space a gradient's stops are interpolated *in* — an explicit
+/// author choice, never inferred from the target texture format or color-target
+/// class (§12.3). Interpolating the same two stops in different spaces yields
+/// visibly different midtones (linear-RGB darkens the midpoint of a
+/// red→green ramp; gamma sRGB keeps it brighter), so the space is part of the
+/// gradient's identity and its baked LUT key.
+///
+/// The renderer bakes stops into a linear-light premultiplied LUT regardless of
+/// the interpolation space; the space only chooses *where* the per-texel lerp
+/// happens before the result is stored linear.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum InterpolationSpace {
+    /// Interpolate directly in linear light (the working space): lerp the
+    /// already-linear stop colors, store linear. The native, cheapest path and
+    /// the default.
+    #[default]
+    LinearRgb,
+    /// Interpolate in gamma-encoded sRGB: encode each stop to sRGB, lerp there,
+    /// then decode each interpolated texel back to linear for storage. Matches
+    /// the "web" gradient look.
+    Srgb,
+    /// Interpolate in the perceptual OkLab space. Reserved; not implemented in
+    /// D2.1 — constructing a gradient with this space is rejected at bake time.
+    OkLab,
+}
+
+/// How a gradient samples parameter values outside the `[0, 1]` stop range
+/// (§12.2). Applied to the gradient parameter `t` before the LUT/stop lookup;
+/// distinct from a texture address mode, which wraps texel coordinates.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum ExtendMode {
+    /// Clamp `t` to `[0, 1]` — the end stops extend outward.
+    #[default]
+    Clamp,
+    /// Repeat the `[0, 1]` ramp (`fract(t)`), tiling the gradient.
+    Repeat,
+    /// Mirror the ramp on each repeat (triangle wave), so adjacent tiles share
+    /// an edge color with no seam.
+    Mirror,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -410,6 +451,16 @@ mod tests {
         }
         .into_linear_straight();
         assert!((l.r - l.g).abs() < 1e-4 && (l.g - l.b).abs() < 1e-4);
+    }
+
+    #[test]
+    fn interpolation_space_defaults_to_linear() {
+        assert_eq!(InterpolationSpace::default(), InterpolationSpace::LinearRgb);
+    }
+
+    #[test]
+    fn extend_mode_defaults_to_clamp() {
+        assert_eq!(ExtendMode::default(), ExtendMode::Clamp);
     }
 
     #[test]

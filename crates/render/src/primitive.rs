@@ -14,6 +14,7 @@
 //! mismatch is caught at pipeline-registration time.
 
 use viso_gpu::{GpuPod, TextureId};
+use viso_math::{ExtendMode, InterpolationSpace};
 
 // The Quad/Image/Mesh field contracts (`quad_schema`/`image_schema`/
 // `mesh_schema`) live with the hand-written MSL in `viso-shader` (layer D);
@@ -21,7 +22,7 @@ use viso_gpu::{GpuPod, TextureId};
 // paired at the primitive definition.
 pub use viso_shader::{
     analytic_capsule_schema, analytic_ellipse_schema, analytic_line_schema, analytic_rrect_schema,
-    glyphrun_schema, image_schema, mesh_schema, quad_schema,
+    glyphrun_schema, gradient_schema, image_schema, mesh_schema, quad_schema,
 };
 
 /// An axis-aligned rectangle in physical pixels, top-left origin.
@@ -386,6 +387,142 @@ impl AnalyticLine {
     }
 }
 
+/// Which gradient parameterization a [`Gradient`] uses.
+///
+/// The `u32` codes are the wire contract shared by the shader, the derived
+/// instance layout, and the headless fill (0=linear, 1=radial, 2=sweep). Each
+/// reuses the instance's `p0`/`p1` pair differently — see [`Gradient`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GradientKind {
+    /// A linear gradient: `t` is the projection of the sample point onto the
+    /// `p0`→`p1` axis (`0` at `p0`, `1` at `p1`).
+    Linear,
+    /// A radial gradient centered at `p0` with radius `p1.x`: `t` is the
+    /// distance from the center over the radius.
+    Radial,
+    /// A sweep (angular/conic) gradient centered at `p0` starting at angle
+    /// `p1.x` (radians): `t` is the normalized turn `[0, 1)` around the center.
+    Sweep,
+}
+
+impl GradientKind {
+    /// The `u32` the [`GradientInstance`] carries (0=linear, 1=radial,
+    /// 2=sweep) — the shader/headless dispatch code.
+    const fn as_u32(self) -> u32 {
+        match self {
+            GradientKind::Linear => 0,
+            GradientKind::Radial => 1,
+            GradientKind::Sweep => 2,
+        }
+    }
+}
+
+/// One color stop of a [`Gradient`]: a fill color at a normalized position
+/// along the ramp.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct GradientStop {
+    /// Position along the ramp in `[0, 1]` (`0` = start, `1` = end).
+    pub offset: f32,
+    /// Straight linear RGBA color at this position.
+    pub color: Rgba,
+}
+
+/// A gradient fill over an axis-aligned rectangle.
+///
+/// The fill covers `rect`; the color at each pixel comes from evaluating the
+/// gradient parameter `t` (per [`GradientKind`]), applying `extend` for `t`
+/// outside `[0, 1]`, then looking up the ramp defined by `stops` interpolated
+/// in `interp` space. `p0`/`p1` are in the same physical-pixel space as `rect`
+/// and are reused by kind:
+///
+/// - **linear**: `p0`→`p1` is the gradient axis.
+/// - **radial**: `p0` is the center, `p1.x` the radius (`p1.y` unused).
+/// - **sweep**: `p0` is the center, `p1.x` the start angle in radians
+///   (`p1.y` unused).
+///
+/// The instance is *not* finalized here: the ramp's storage (an inline 2-stop
+/// pair vs. a baked LUT row) is decided during lowering, so [`to_instance`]
+/// takes the resolved `lut_v`/`use_lut` the renderer computes after allocating
+/// the LUT atlas row.
+///
+/// [`to_instance`]: Gradient::to_instance
+#[derive(Debug, Clone, PartialEq)]
+pub struct Gradient {
+    /// The filled rectangle, in physical pixels.
+    pub rect: Rect,
+    /// Which parameterization (linear/radial/sweep).
+    pub kind: GradientKind,
+    /// How the ramp extends for `t` outside `[0, 1]`.
+    pub extend: ExtendMode,
+    /// Gradient origin (linear start / radial center / sweep center).
+    pub p0: Point,
+    /// Kind-dependent second parameter: linear end / `(radius, _)` /
+    /// `(start_angle, _)`.
+    pub p1: Point,
+    /// The color stops, ordered by ascending `offset`. Two stops lower to an
+    /// inline instance pair; three or more bake a LUT row.
+    pub stops: Vec<GradientStop>,
+    /// The color space the stops are interpolated in (§12.3) — an explicit
+    /// choice, never inferred from the target format.
+    pub interp: InterpolationSpace,
+}
+
+impl Gradient {
+    /// Lower this gradient to its GPU instance, given the ramp storage the
+    /// renderer resolved during lowering.
+    ///
+    /// `use_lut` is `1` when the ramp is baked into the LUT atlas (three or more
+    /// stops, or a non-linear interpolation space) and `lut_v` is that row's
+    /// texture-`v`; `use_lut` is `0` for the inline two-stop fast path, where
+    /// `color0`/`color1` carry the two stops **premultiplied** (the shader and
+    /// headless fill sample premultiplied and blend without a branch) and
+    /// `lut_v` is unused. The single-stop and empty cases are normalized by the
+    /// caller before reaching here.
+    pub fn to_instance(&self, lut_v: f32, use_lut: bool) -> GradientInstance {
+        // Inline path carries the two end stops premultiplied; the LUT path
+        // leaves them zeroed (the shader ignores them when use_lut != 0).
+        let (color0, color1) = if use_lut {
+            ([0.0; 4], [0.0; 4])
+        } else {
+            let c0 = self
+                .stops
+                .first()
+                .map(|s| s.color)
+                .unwrap_or(Rgba::TRANSPARENT);
+            let c1 = self
+                .stops
+                .last()
+                .map(|s| s.color)
+                .unwrap_or(Rgba::TRANSPARENT);
+            let p0 = c0.premultiply();
+            let p1 = c1.premultiply();
+            ([p0.r, p0.g, p0.b, p0.a], [p1.r, p1.g, p1.b, p1.a])
+        };
+        GradientInstance {
+            rect_pos: [self.rect.x, self.rect.y],
+            rect_size: [self.rect.w, self.rect.h],
+            kind: self.kind.as_u32(),
+            extend: extend_as_u32(self.extend),
+            p0: [self.p0.x, self.p0.y],
+            p1: [self.p1.x, self.p1.y],
+            lut_v,
+            use_lut: use_lut as u32,
+            color0,
+            color1,
+        }
+    }
+}
+
+/// The `u32` an [`ExtendMode`] maps to in the [`GradientInstance`] wire contract
+/// (0=clamp, 1=repeat, 2=mirror) — the shader/headless dispatch code.
+const fn extend_as_u32(mode: ExtendMode) -> u32 {
+    match mode {
+        ExtendMode::Clamp => 0,
+        ExtendMode::Repeat => 1,
+        ExtendMode::Mirror => 2,
+    }
+}
+
 /// A clip/compositing layer pushed by [`Primitive::Layer`].
 ///
 /// Every following primitive is constrained to `clip` until the matching
@@ -645,6 +782,8 @@ pub enum Primitive {
     GlyphRun(GlyphRunDraw),
     /// A textured image sampled into a rect.
     Image(ImageDraw),
+    /// A linear/radial/sweep gradient fill over an axis-aligned rect.
+    Gradient(Gradient),
     /// A filled/stroked vector path.
     Path(Path),
     /// A colored triangle mesh.
@@ -787,6 +926,52 @@ pub struct AnalyticLineInstance {
     pub border_width: f32,
     /// Straight linear RGBA border color.
     pub border_color: [f32; 4],
+}
+
+/// GPU instance for the Gradient built-in shader.
+///
+/// Field names/formats match [`gradient_schema`] and the headless
+/// `fill_gradient` reader. `kind` is the [`GradientKind`] code (0=linear,
+/// 1=radial, 2=sweep) and `extend` the [`ExtendMode`] code (0=clamp, 1=repeat,
+/// 2=mirror). `p0`/`p1` are reused by kind — linear axis endpoints, radial
+/// `(center, (radius, _))`, sweep `(center, (start_angle, _))`.
+///
+/// The ramp is resolved during lowering: when `use_lut != 0` the fragment stage
+/// samples the LUT-atlas row at `(t, lut_v)`; when `use_lut == 0` it lerps the
+/// two inline stops `color0`/`color1`, which — unlike every other instance's
+/// straight-linear color — are stored **premultiplied** so the LUT and inline
+/// paths blend identically with no branch. `#[repr(C)]` with only 4-byte-aligned
+/// scalars/vectors, so the derive's `offset_of!`-based layout has no padding:
+/// `rect_pos`@0, `rect_size`@8, `kind`@16, `extend`@20, `p0`@24, `p1`@32,
+/// `lut_v`@40, `use_lut`@44, `color0`@48, `color1`@64, stride 80.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, GpuPod)]
+pub struct GradientInstance {
+    /// Top-left corner of the filled rect in physical pixels.
+    pub rect_pos: [f32; 2],
+    /// Width/height of the filled rect in physical pixels.
+    pub rect_size: [f32; 2],
+    /// Kind code: 0=linear, 1=radial, 2=sweep.
+    pub kind: u32,
+    /// Extend code: 0=clamp, 1=repeat, 2=mirror.
+    pub extend: u32,
+    /// Gradient origin (linear start / radial center / sweep center), physical
+    /// pixels.
+    pub p0: [f32; 2],
+    /// Kind-dependent second parameter: linear end / `(radius, _)` /
+    /// `(start_angle, _)`.
+    pub p1: [f32; 2],
+    /// The LUT-atlas row's texture-`v` (used only when `use_lut != 0`).
+    pub lut_v: f32,
+    /// Whether the ramp is a baked LUT row (`1`) or the inline two-stop pair
+    /// (`0`).
+    pub use_lut: u32,
+    /// First inline stop, **premultiplied** linear RGBA (used only when
+    /// `use_lut == 0`).
+    pub color0: [f32; 4],
+    /// Last inline stop, **premultiplied** linear RGBA (used only when
+    /// `use_lut == 0`).
+    pub color1: [f32; 4],
 }
 
 /// GPU instance for the Image built-in shader.
@@ -1483,6 +1668,61 @@ mod tests {
         assert_eq!(inst.miter_limit, 4.0);
         assert_eq!(inst.border_width, 1.5);
         assert_eq!(inst.border_color, [1.0, 1.0, 1.0, 1.0]);
+    }
+
+    #[test]
+    fn gradient_instance_layout_matches_schema() {
+        assert_eq!(
+            GradientInstance::LAYOUT.validate_against(&gradient_schema()),
+            Ok(())
+        );
+    }
+
+    #[test]
+    fn gradient_lowers_to_instance() {
+        // A radial gradient: p1 carries (radius, _). Two stops → inline path.
+        let g = Gradient {
+            rect: Rect {
+                x: 10.0,
+                y: 20.0,
+                w: 30.0,
+                h: 40.0,
+            },
+            kind: GradientKind::Radial,
+            extend: ExtendMode::Repeat,
+            p0: Point::new(25.0, 40.0),
+            p1: Point::new(15.0, 0.0),
+            stops: vec![
+                GradientStop {
+                    offset: 0.0,
+                    color: Rgba::new(1.0, 0.0, 0.0, 1.0),
+                },
+                GradientStop {
+                    offset: 1.0,
+                    color: Rgba::new(0.0, 0.0, 1.0, 0.5),
+                },
+            ],
+            interp: InterpolationSpace::LinearRgb,
+        };
+        // Inline two-stop path: use_lut == 0, colors carried premultiplied.
+        let inst = g.to_instance(0.0, false);
+        assert_eq!(inst.rect_pos, [10.0, 20.0]);
+        assert_eq!(inst.rect_size, [30.0, 40.0]);
+        assert_eq!(inst.kind, 1); // radial
+        assert_eq!(inst.extend, 1); // repeat
+        assert_eq!(inst.p0, [25.0, 40.0]);
+        assert_eq!(inst.p1, [15.0, 0.0]);
+        assert_eq!(inst.use_lut, 0);
+        // Premultiplied: opaque red stays, translucent blue scales rgb by a.
+        assert_eq!(inst.color0, [1.0, 0.0, 0.0, 1.0]);
+        assert_eq!(inst.color1, [0.0, 0.0, 0.5, 0.5]);
+
+        // LUT path: colors zeroed (shader ignores them), lut_v/use_lut set.
+        let lut = g.to_instance(0.375, true);
+        assert_eq!(lut.use_lut, 1);
+        assert_eq!(lut.lut_v, 0.375);
+        assert_eq!(lut.color0, [0.0; 4]);
+        assert_eq!(lut.color1, [0.0; 4]);
     }
 
     #[test]

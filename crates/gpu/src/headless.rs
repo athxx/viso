@@ -579,6 +579,17 @@ impl HeadlessRaster {
                                 cmd.scissor,
                             );
                         }
+                        BuiltinShader::Gradient => {
+                            self.fill_gradient(
+                                target,
+                                width,
+                                height,
+                                &layout,
+                                inst,
+                                cmd.bind_group,
+                                cmd.scissor,
+                            );
+                        }
                         // Path/Mesh never arrive as generated geometry.
                         BuiltinShader::Path | BuiltinShader::Mesh | BuiltinShader::Layer => {}
                     }
@@ -1359,6 +1370,187 @@ impl HeadlessRaster {
             }
         }
     }
+
+    /// Fill one Gradient instance over an axis-aligned rectangle, reproducing
+    /// [`GRADIENT_MSL`](../../shader)'s fragment math on the CPU.
+    ///
+    /// Reads these fields (by name) from the instance bytes, per the Gradient
+    /// built-in's schema:
+    /// - `rect_pos`  : `Float2` rect top-left in physical pixels
+    /// - `rect_size` : `Float2` rect width/height in physical pixels
+    /// - `kind`      : `Uint1`  0=linear 1=radial 2=sweep
+    /// - `extend`    : `Uint1`  0=clamp 1=repeat 2=mirror
+    /// - `p0`        : `Float2` gradient origin in physical pixels
+    /// - `p1`        : `Float2` linear endpoint / `(radius,_)` / `(start_angle,_)`
+    /// - `lut_v`     : `Float1` LUT row (v coordinate) for this gradient
+    /// - `use_lut`   : `Uint1`  0=inline 2-stop lerp, 1=sample the bound LUT
+    /// - `color0`    : `Float4` inline stop 0 (premultiplied linear), `use_lut==0`
+    /// - `color1`    : `Float4` inline stop 1 (premultiplied linear), `use_lut==0`
+    ///
+    /// The raw gradient parameter `t`, the extend wrap, and the resolved color
+    /// (LUT sample or inline lerp) all match the shader; both the LUT texel and
+    /// the inline colors are premultiplied, so the result is premultiplied and
+    /// blended source-over. The AA at the rect edge uses the same device-pixel
+    /// coverage proxy the other analytic fills use.
+    #[allow(clippy::too_many_arguments)]
+    fn fill_gradient(
+        &mut self,
+        target: FbTarget,
+        width: u32,
+        height: u32,
+        layout: &InstanceLayout,
+        inst: &[u8],
+        bind_group: Option<BindGroupId>,
+        scissor: Option<(u32, u32, u32, u32)>,
+    ) {
+        let pos = read_f2(layout, inst, "rect_pos");
+        let size = read_f2(layout, inst, "rect_size");
+        let kind = read_u1(layout, inst, "kind");
+        let extend = read_u1(layout, inst, "extend");
+        let g0 = read_f2(layout, inst, "p0");
+        let g1 = read_f2(layout, inst, "p1");
+        let lut_v = read_f1(layout, inst, "lut_v");
+        let use_lut = read_u1(layout, inst, "use_lut");
+        let color0 = read_f4(layout, inst, "color0");
+        let color1 = read_f4(layout, inst, "color1");
+
+        if size[0] <= 0.0 || size[1] <= 0.0 {
+            return;
+        }
+
+        // Resolve the bound LUT texture + sampler when `use_lut != 0`. The shader
+        // samples a 1D LUT atlas (one row per gradient); the CPU path snapshots
+        // the premultiplied texels the same way `fill_image` does.
+        let mut lut: Option<(u32, u32, Vec<[f32; 4]>, SamplerDesc)> = None;
+        if use_lut != 0 {
+            let Some(bg) = bind_group else { return };
+            let (mut tex_id, mut samp) = (
+                None,
+                SamplerDesc {
+                    filter: crate::resource::FilterMode::Linear,
+                    address: crate::resource::AddressMode::ClampToEdge,
+                },
+            );
+            for binding in &self.bind_group(bg).bindings {
+                match binding {
+                    crate::resource::Binding::Texture(t) => tex_id = Some(*t),
+                    crate::resource::Binding::Sampler(s) => samp = self.sampler(*s),
+                    crate::resource::Binding::Uniform(_) => {}
+                }
+            }
+            let Some(tex_id) = tex_id else { return };
+            let (tw, th, texels) = {
+                let t = self.texture(tex_id);
+                (t.width, t.height, t.texels.clone())
+            };
+            if tw == 0 || th == 0 {
+                return;
+            }
+            lut = Some((tw, th, texels, samp));
+        }
+
+        let rect_min = pos;
+        let rect_max = [pos[0] + size[0], pos[1] + size[1]];
+        let center = [
+            (rect_min[0] + rect_max[0]) * 0.5,
+            (rect_min[1] + rect_max[1]) * 0.5,
+        ];
+        let half_ext = [
+            (rect_max[0] - rect_min[0]) * 0.5,
+            (rect_max[1] - rect_min[1]) * 0.5,
+        ];
+
+        // Device-pixel AA proxy, matching `aa_factor` at unit scale (the same
+        // constant the other analytic fills use for their 1px ramp).
+        let aa = 1.0 / (2.0_f32).sqrt();
+
+        let (mut x0, mut y0, mut x1, mut y1) = (
+            (pos[0] - 1.0).floor().max(0.0) as u32,
+            (pos[1] - 1.0).floor().max(0.0) as u32,
+            (pos[0] + size[0] + 1.0).ceil().min(width as f32) as u32,
+            (pos[1] + size[1] + 1.0).ceil().min(height as f32) as u32,
+        );
+        if let Some((sx, sy, sw, sh)) = scissor {
+            x0 = x0.max(sx);
+            y0 = y0.max(sy);
+            x1 = x1.min(sx + sw);
+            y1 = y1.min(sy + sh);
+        }
+
+        for py in y0..y1 {
+            for px in x0..x1 {
+                let p = [px as f32 + 0.5, py as f32 + 0.5];
+
+                // Rectangle coverage: signed distance to the box, AA-ramped.
+                let q = [
+                    (p[0] - center[0]).abs() - half_ext[0],
+                    (p[1] - center[1]).abs() - half_ext[1],
+                ];
+                let qmax = [q[0].max(0.0), q[1].max(0.0)];
+                let d = (qmax[0] * qmax[0] + qmax[1] * qmax[1]).sqrt() + q[0].max(q[1]).min(0.0);
+                let cov = (-d * aa).clamp(0.0, 1.0);
+                if cov <= 0.0 {
+                    continue;
+                }
+
+                let t = gradient_t(kind, p, g0, g1);
+                let u = gradient_extend(extend, t);
+                let grad = match &lut {
+                    Some((tw, th, texels, samp)) => sample_texel(texels, *tw, *th, u, lut_v, samp),
+                    None => [
+                        color0[0] + (color1[0] - color0[0]) * u,
+                        color0[1] + (color1[1] - color0[1]) * u,
+                        color0[2] + (color1[2] - color0[2]) * u,
+                        color0[3] + (color1[3] - color0[3]) * u,
+                    ],
+                };
+
+                // grad is premultiplied; modulate by edge coverage.
+                let src = [grad[0] * cov, grad[1] * cov, grad[2] * cov, grad[3] * cov];
+                if src[3] <= 0.0 {
+                    continue;
+                }
+                blend_pixel(self.framebuffer(target), width, px, py, src);
+            }
+        }
+    }
+}
+
+/// The raw gradient parameter for each geometry, before extend wrapping —
+/// mirrors `gradient_t` in [`GRADIENT_MSL`](../../shader). linear: project the
+/// sample onto the `p0→p1` axis, normalized to `[0,1]` at the endpoints.
+/// radial: distance from the center `p0` over the radius (`g1.x`). sweep: the
+/// angle around `p0`, offset by the start angle (`g1.x`) and normalized to a
+/// single `[0,1]` turn.
+fn gradient_t(kind: u32, p: [f32; 2], g0: [f32; 2], g1: [f32; 2]) -> f32 {
+    if kind == 1 {
+        let r = g1[0].max(1e-6);
+        let dx = p[0] - g0[0];
+        let dy = p[1] - g0[1];
+        return (dx * dx + dy * dy).sqrt() / r;
+    }
+    if kind == 2 {
+        let ang = (p[1] - g0[1]).atan2(p[0] - g0[0]) - g1[0];
+        let turn = ang * (1.0 / (2.0 * std::f32::consts::PI));
+        return turn - turn.floor();
+    }
+    let axis = [g1[0] - g0[0], g1[1] - g0[1]];
+    let len2 = (axis[0] * axis[0] + axis[1] * axis[1]).max(1e-12);
+    ((p[0] - g0[0]) * axis[0] + (p[1] - g0[1]) * axis[1]) / len2
+}
+
+/// Apply the extend mode to a raw parameter, yielding a `[0,1]` lookup
+/// coordinate — mirrors `gradient_extend` in [`GRADIENT_MSL`](../../shader).
+/// 0=clamp, 1=repeat (fract), 2=mirror (triangle wave over period 2).
+fn gradient_extend(mode: u32, t: f32) -> f32 {
+    if mode == 1 {
+        return t - t.floor();
+    }
+    if mode == 2 {
+        let u = t - 2.0 * (t * 0.5).floor();
+        return if u > 1.0 { 2.0 - u } else { u };
+    }
+    t.clamp(0.0, 1.0)
 }
 
 /// Sample a premultiplied-linear texture at normalized `(u, v)` with the given

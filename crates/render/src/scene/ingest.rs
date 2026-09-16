@@ -31,12 +31,12 @@ use viso_gpu::TextureId;
 
 use crate::primitive::{
     AnalyticCapsuleInstance, AnalyticEllipseInstance, AnalyticLineInstance, AnalyticRRectInstance,
-    GlyphInstance, ImageInstance, MeshVertex, Path, QuadInstance, Rect,
+    GlyphInstance, GradientInstance, ImageInstance, MeshVertex, Path, QuadInstance, Rect,
 };
 
 use super::bounds::Bounds;
 use super::ids::PrimitiveId;
-use super::store::{DirtyPlanes, StoreRef};
+use super::store::{Brush, DirtyPlanes, StoreRef};
 use super::{EmitContext, Scene};
 
 /// Per-frame ingest tallies (§61), accumulated as the frame's primitives are
@@ -61,6 +61,8 @@ pub struct IngestStats {
     pub analytic_line_instances: u32,
     /// Glyph instances retained this frame (summed across runs).
     pub glyph_instances: u32,
+    /// Gradient fill instances retained this frame.
+    pub gradient_instances: u32,
     /// Paths (re-)tessellated this frame — a geometry or paint change on a path,
     /// or a cold append. A cache hit does not count.
     pub path_tessellations: u32,
@@ -191,6 +193,24 @@ impl Scene {
         self.record(StoreRef::Image(slot), context, bounds)
     }
 
+    /// Ingest a gradient fill: diff the lowered instance + its baked LUT texture,
+    /// bump the moved planes, record its slot. The instance is finalized at
+    /// lowering (it carries the resolved `lut_v`/`use_lut`), so a recolor that
+    /// re-bakes to a different LUT row moves the geometry/paint fields the same as
+    /// any other field change; a new LUT texture handle moves the resource plane.
+    pub fn ingest_gradient(
+        &mut self,
+        instance: GradientInstance,
+        lut_texture: TextureId,
+        context: EmitContext,
+        bounds: Bounds,
+    ) -> PrimitiveId {
+        let (slot, dirty) = self.gradients.ingest(instance, lut_texture);
+        self.apply_planes(dirty);
+        self.ingest_stats.gradient_instances += 1;
+        self.record(StoreRef::Gradient(slot), context, bounds)
+    }
+
     /// Ingest a glyph run: pack its instances, diff against last frame's run,
     /// bump the moved planes, record its slot.
     pub fn ingest_glyph_run(
@@ -279,10 +299,12 @@ impl Scene {
         changed
     }
 
-    /// Fold a resolved fill color into the brush store, bumping the paint plane
-    /// on a change (§8.5). Returns whether the brush moved.
-    pub fn ingest_brush(&mut self, color: [f32; 4]) -> bool {
-        let (_id, changed) = self.brushes.ingest(color);
+    /// Fold a resolved fill/stroke brush into the brush store, bumping the paint
+    /// plane on a change (§8.5). Returns whether the brush moved. The deferred
+    /// [`Brush::ImagePattern`]/[`Brush::ShaderBrush`] variants are rejected inside
+    /// the store rather than stored as no-ops.
+    pub fn ingest_brush(&mut self, brush: Brush) -> bool {
+        let (_id, changed) = self.brushes.ingest(brush);
         if changed {
             self.revisions.bump_paint();
         }
@@ -299,6 +321,7 @@ impl Scene {
         shrank |= self.analytic_capsules.finish_frame();
         shrank |= self.analytic_lines.finish_frame();
         shrank |= self.images.finish_frame();
+        shrank |= self.gradients.finish_frame();
         shrank |= self.glyph_runs.finish_frame();
         shrank |= self.paths.finish_frame();
         shrank |= self.meshes.finish_frame();

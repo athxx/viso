@@ -138,6 +138,10 @@ pub enum BuiltinShader {
     /// An analytic stroked line segment defined by two endpoints, with cap/join
     /// and SDF antialiasing (AnalyticLine primitive).
     AnalyticLine,
+    /// A gradient fill (linear/radial/sweep) over an axis-aligned rectangle,
+    /// sampling a cached 1D gradient LUT or lerping two inline premultiplied
+    /// stops (Gradient primitive).
+    Gradient,
     /// An offscreen layer composited back with clip/opacity (Layer primitive).
     Layer,
 }

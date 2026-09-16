@@ -16,6 +16,7 @@ pub mod color_atlas;
 pub mod effect_cost;
 pub mod frame;
 pub mod glyph_atlas;
+pub mod gradient_lut;
 pub mod inspect;
 pub mod pool;
 pub mod primitive;
@@ -26,16 +27,18 @@ pub mod scene;
 pub use color_atlas::{ColorAlloc, ColorAtlas};
 pub use effect_cost::EffectCost;
 pub use glyph_atlas::{AtlasAlloc, GlyphAtlas};
+pub use gradient_lut::{GradientLutAtlas, LutAlloc, LutKey};
 pub use inspect::{
     BatchId, BatchPipeline, InspectBatch, InspectBatches, InspectPrimitives, PrimitiveRange,
 };
 pub use primitive::{
     AnalyticCapsule, AnalyticCapsuleInstance, AnalyticEllipse, AnalyticEllipseInstance,
     AnalyticLine, AnalyticLineInstance, AnalyticRRect, AnalyticRRectInstance, Border, Corners,
-    GlyphInstance, GlyphInstanceData, GlyphRunDraw, ImageDraw, ImageInstance, LayerClip, LineCap,
-    LineJoin, Mesh, MeshVertex, Path, PathCmd, Point, Primitive, Quad, QuadInstance, Rect, Rgba,
-    Stroke, analytic_capsule_schema, analytic_ellipse_schema, analytic_line_schema,
-    analytic_rrect_schema, glyphrun_schema, image_schema, mesh_schema, quad_schema,
+    GlyphInstance, GlyphInstanceData, GlyphRunDraw, Gradient, GradientInstance, GradientKind,
+    GradientStop, ImageDraw, ImageInstance, LayerClip, LineCap, LineJoin, Mesh, MeshVertex, Path,
+    PathCmd, Point, Primitive, Quad, QuadInstance, Rect, Rgba, Stroke, analytic_capsule_schema,
+    analytic_ellipse_schema, analytic_line_schema, analytic_rrect_schema, glyphrun_schema,
+    gradient_schema, image_schema, mesh_schema, quad_schema,
 };
 pub use renderer::{FrameStats, Renderer};
 // GPU handles that appear in this crate's public API. `TextureId` is carried by
@@ -48,6 +51,12 @@ pub use viso_gpu::{BindGroupId, PipelineId, TextureId};
 use viso_text::{Direction, Shaper, rasterize_coverage};
 
 pub use batch::{BatchFamily, BatchItem, BatchKey, BatchTarget, RenderChunk, RenderChunkId};
+// The retained brush model (§8.5, §12): `Brush` names the fill a primitive
+// resolves to, and the gradient interpolation/extend policy is an explicit
+// color-space choice (§12.3), never inferred from a texture format. Not in the
+// prelude yet (§3.2) — the widget layer promotes these once it consumes them.
+pub use scene::store::Brush;
+pub use viso_math::{ExtendMode, InterpolationSpace};
 
 /// The Image test texture: a 4×4 red/blue checkerboard, BGRA8, top-left origin,
 /// premultiplied (opaque, so premultiplied == straight).
@@ -456,5 +465,134 @@ pub fn test_scene(texture: TextureId, glyphs: GlyphRunDraw) -> Vec<Primitive> {
             border: Border::NONE,
         }),
         Primitive::LayerEnd,
+        // A linear gradient (two stops → the inline fast path, `use_lut == 0`):
+        // a horizontal red→blue ramp across a thin band under the image, its axis
+        // running along the rect's width. Exercises the linear parameterization
+        // and the two-stop inline color path (no LUT row).
+        Primitive::Gradient(Gradient {
+            rect: Rect {
+                x: 2.0,
+                y: 90.0,
+                w: 60.0,
+                h: 5.0,
+            },
+            kind: GradientKind::Linear,
+            extend: ExtendMode::Clamp,
+            p0: Point::new(2.0, 90.0),
+            p1: Point::new(62.0, 90.0),
+            stops: vec![
+                GradientStop {
+                    offset: 0.0,
+                    color: Rgba {
+                        r: 0.9,
+                        g: 0.1,
+                        b: 0.1,
+                        a: 1.0,
+                    },
+                },
+                GradientStop {
+                    offset: 1.0,
+                    color: Rgba {
+                        r: 0.1,
+                        g: 0.2,
+                        b: 0.9,
+                        a: 1.0,
+                    },
+                },
+            ],
+            interp: InterpolationSpace::LinearRgb,
+        }),
+        // A radial gradient (three stops → the baked-LUT path, `use_lut == 1`):
+        // a small disc in the mid gap, bright center fading through green to
+        // transparent at the radius. Exercises the radial parameterization and
+        // the LUT atlas row bake.
+        Primitive::Gradient(Gradient {
+            rect: Rect {
+                x: 52.0,
+                y: 58.0,
+                w: 20.0,
+                h: 20.0,
+            },
+            kind: GradientKind::Radial,
+            extend: ExtendMode::Clamp,
+            p0: Point::new(62.0, 68.0),
+            p1: Point::new(10.0, 0.0),
+            stops: vec![
+                GradientStop {
+                    offset: 0.0,
+                    color: Rgba {
+                        r: 1.0,
+                        g: 1.0,
+                        b: 0.9,
+                        a: 1.0,
+                    },
+                },
+                GradientStop {
+                    offset: 0.5,
+                    color: Rgba {
+                        r: 0.2,
+                        g: 0.8,
+                        b: 0.3,
+                        a: 1.0,
+                    },
+                },
+                GradientStop {
+                    offset: 1.0,
+                    color: Rgba {
+                        r: 0.0,
+                        g: 0.1,
+                        b: 0.05,
+                        a: 0.0,
+                    },
+                },
+            ],
+            interp: InterpolationSpace::LinearRgb,
+        }),
+        // A sweep gradient (three stops in sRGB interpolation space → the baked-LUT
+        // path with a per-texel gamma→linear conversion): an angular ramp about a
+        // center in the lower-right gap, starting at angle 0. Exercises the sweep
+        // parameterization and the sRGB interpolation-space bake.
+        Primitive::Gradient(Gradient {
+            rect: Rect {
+                x: 100.0,
+                y: 86.0,
+                w: 24.0,
+                h: 10.0,
+            },
+            kind: GradientKind::Sweep,
+            extend: ExtendMode::Repeat,
+            p0: Point::new(112.0, 91.0),
+            p1: Point::new(0.0, 0.0),
+            stops: vec![
+                GradientStop {
+                    offset: 0.0,
+                    color: Rgba {
+                        r: 0.95,
+                        g: 0.6,
+                        b: 0.1,
+                        a: 1.0,
+                    },
+                },
+                GradientStop {
+                    offset: 0.5,
+                    color: Rgba {
+                        r: 0.6,
+                        g: 0.1,
+                        b: 0.8,
+                        a: 1.0,
+                    },
+                },
+                GradientStop {
+                    offset: 1.0,
+                    color: Rgba {
+                        r: 0.95,
+                        g: 0.6,
+                        b: 0.1,
+                        a: 1.0,
+                    },
+                },
+            ],
+            interp: InterpolationSpace::Srgb,
+        }),
     ]
 }

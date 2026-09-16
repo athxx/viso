@@ -36,7 +36,7 @@ use viso_gpu::{InstanceSchema, SchemaAttr};
 use crate::ir::codegen_msl::{emit_msl, emit_schema_attrs, schema_from_attrs};
 use crate::ir::module::{
     ShaderIr, analytic_capsule_ir, analytic_ellipse_ir, analytic_line_ir, analytic_rrect_ir,
-    glyphrun_ir, image_ir, mesh_ir, quad_ir,
+    glyphrun_ir, gradient_ir, image_ir, mesh_ir, quad_ir,
 };
 
 /// The built-in primitive shaders (architecture section 15.3). One entry per
@@ -69,6 +69,9 @@ pub enum PrimitiveKind {
     /// A stroked line segment defined by two endpoints and a width, with per-end
     /// caps (butt/square/round), a join style, and a miter limit.
     AnalyticLine,
+    /// A gradient-filled axis-aligned rectangle (linear/radial/sweep), sampling a
+    /// 1D LUT atlas row or lerping an inline 2-stop pair.
+    Gradient,
     /// An offscreen-composited layer.
     Layer,
 }
@@ -83,6 +86,7 @@ pub fn shader_source(kind: PrimitiveKind) -> Option<&'static str> {
         PrimitiveKind::AnalyticEllipse => Some(ANALYTIC_ELLIPSE_MSL()),
         PrimitiveKind::AnalyticCapsule => Some(ANALYTIC_CAPSULE_MSL()),
         PrimitiveKind::AnalyticLine => Some(ANALYTIC_LINE_MSL()),
+        PrimitiveKind::Gradient => Some(GRADIENT_MSL()),
         // Path and Mesh share the general per-vertex mesh pipeline.
         PrimitiveKind::Path | PrimitiveKind::Mesh => Some(MESH_MSL()),
         _ => None,
@@ -101,6 +105,7 @@ pub fn instance_schema(kind: PrimitiveKind) -> Option<InstanceSchema> {
         PrimitiveKind::AnalyticEllipse => Some(analytic_ellipse_schema()),
         PrimitiveKind::AnalyticCapsule => Some(analytic_capsule_schema()),
         PrimitiveKind::AnalyticLine => Some(analytic_line_schema()),
+        PrimitiveKind::Gradient => Some(gradient_schema()),
         // Path and Mesh validate their per-vertex layout against `mesh_schema`.
         PrimitiveKind::Path | PrimitiveKind::Mesh => Some(mesh_schema()),
         _ => None,
@@ -200,6 +205,20 @@ pub fn analytic_capsule_schema() -> InstanceSchema {
 pub fn analytic_line_schema() -> InstanceSchema {
     static CELL: OnceLock<Vec<SchemaAttr>> = OnceLock::new();
     cached_schema(&CELL, &analytic_line_ir())
+}
+
+/// The instance schema the Gradient shader declares — projected from
+/// [`gradient_ir`].
+///
+/// The instance carries the fill rect, a `kind` selector (linear/radial/sweep),
+/// an `extend` mode (clamp/repeat/mirror), two geometry points (`p0`/`p1`, reused
+/// as center+radius or center+start-angle for radial/sweep), a `lut_v` row and a
+/// `use_lut` flag choosing between the 1D LUT atlas and the inline 2-stop pair
+/// (`color0`/`color1`, premultiplied) — a distinct contract with its own
+/// `#[derive(GpuPod)]` layout.
+pub fn gradient_schema() -> InstanceSchema {
+    static CELL: OnceLock<Vec<SchemaAttr>> = OnceLock::new();
+    cached_schema(&CELL, &gradient_ir())
 }
 
 /// Cache a primitive's IR-derived MSL to `'static` and return it. Materialized
@@ -355,12 +374,33 @@ pub fn ANALYTIC_LINE_MSL() -> &'static str {
     cached_msl(&CELL, || emit_msl(&analytic_line_ir()))
 }
 
+/// Inline MSL for the Gradient built-in (Metal backend), derived from
+/// [`gradient_ir`].
+///
+/// Like [`QUAD_MSL`], the headless backend ignores this; only the real Metal
+/// backend compiles it. See `viso-msl-reserved-half`.
+///
+/// Contract (guaranteed by the shared IR): per-instance data at buffer index 1;
+/// viewport uniform at index 0; the 1D LUT atlas at `[[texture(0)]]` with a
+/// linear-clamp sampler at `[[sampler(0)]]`. Six `vertex_id`s form two triangles
+/// of an axis-aligned quad (plus 1px AA pad). The fragment resolves the gradient
+/// parameter by `kind` (linear = axis projection, radial = distance/radius, sweep
+/// = normalized angle), applies the `extend` wrap, then either samples the LUT row
+/// `(t, lut_v)` or lerps the inline `color0`/`color1` pair — both premultiplied
+/// linear — and modulates by rect-edge AA coverage, so the fragment outputs
+/// premultiplied.
+#[allow(non_snake_case)]
+pub fn GRADIENT_MSL() -> &'static str {
+    static CELL: OnceLock<String> = OnceLock::new();
+    cached_msl(&CELL, || emit_msl(&gradient_ir()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::ir::module::{
         analytic_capsule_ir, analytic_ellipse_ir, analytic_line_ir, analytic_rrect_ir, glyphrun_ir,
-        image_ir, mesh_ir, quad_ir,
+        gradient_ir, image_ir, mesh_ir, quad_ir,
     };
 
     /// The three legs of a built-in's field contract — the emitted MSL attribute
@@ -547,6 +587,29 @@ mod tests {
             ]
         );
         assert_three_legs_agree(ANALYTIC_LINE_MSL(), &analytic_line_schema(), &ir_names);
+    }
+
+    #[test]
+    fn gradient_has_source_and_schema() {
+        assert!(shader_source(PrimitiveKind::Gradient).is_some());
+        assert!(instance_schema(PrimitiveKind::Gradient).is_some());
+        let ir_names: Vec<&str> = gradient_ir().attributes.iter().map(|f| f.name).collect();
+        assert_eq!(
+            ir_names,
+            [
+                "rect_pos",
+                "rect_size",
+                "kind",
+                "extend",
+                "p0",
+                "p1",
+                "lut_v",
+                "use_lut",
+                "color0",
+                "color1"
+            ]
+        );
+        assert_three_legs_agree(GRADIENT_MSL(), &gradient_schema(), &ir_names);
     }
 
     #[test]

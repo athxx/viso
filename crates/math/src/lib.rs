@@ -44,8 +44,8 @@ mod transform;
 mod vec;
 
 pub use color::{
-    DisplayP3, ExtendedLinear, LinearPremul, LinearSrgb, LinearStraight, Srgb, linear_to_srgb,
-    srgb_to_linear,
+    DisplayP3, ExtendMode, ExtendedLinear, InterpolationSpace, LinearPremul, LinearSrgb,
+    LinearStraight, Srgb, linear_to_srgb, srgb_to_linear,
 };
 pub use coverage::{Coverage, composite};
 pub use dvec::{DVec2, dvec2};

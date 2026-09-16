@@ -217,8 +217,8 @@ mod tests {
     };
     use crate::ir::testdata::{
         ANALYTIC_CAPSULE_MSL_ORIGINAL, ANALYTIC_ELLIPSE_MSL_ORIGINAL, ANALYTIC_LINE_MSL_ORIGINAL,
-        ANALYTIC_RRECT_MSL_ORIGINAL, GLYPHRUN_MSL_ORIGINAL, IMAGE_MSL_ORIGINAL, MESH_MSL_ORIGINAL,
-        QUAD_MSL_ORIGINAL,
+        ANALYTIC_RRECT_MSL_ORIGINAL, GLYPHRUN_MSL_ORIGINAL, GRADIENT_MSL_ORIGINAL,
+        IMAGE_MSL_ORIGINAL, MESH_MSL_ORIGINAL, QUAD_MSL_ORIGINAL,
     };
 
     // The oracle is the *frozen* pre-Slice-Q hand-written text (see `testdata`),
@@ -271,5 +271,11 @@ mod tests {
     #[test]
     fn analytic_line_msl_is_byte_equivalent() {
         assert_eq!(emit_msl(&analytic_line_ir()), ANALYTIC_LINE_MSL_ORIGINAL);
+    }
+
+    #[test]
+    fn gradient_msl_is_byte_equivalent() {
+        use crate::ir::module::gradient_ir;
+        assert_eq!(emit_msl(&gradient_ir()), GRADIENT_MSL_ORIGINAL);
     }
 }

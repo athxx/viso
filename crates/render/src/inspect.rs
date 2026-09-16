@@ -73,6 +73,8 @@ pub enum BatchPipeline {
     GlyphRun,
     /// A run of triangle meshes — `Path`/`Mesh`, the direct-geometry pipeline.
     Mesh,
+    /// A single gradient fill (the gradient pipeline, binding its 1D LUT atlas).
+    Gradient,
 }
 
 impl BatchPipeline {
@@ -88,6 +90,7 @@ impl BatchPipeline {
             BatchPipeline::Image => "image",
             BatchPipeline::GlyphRun => "glyph",
             BatchPipeline::Mesh => "mesh",
+            BatchPipeline::Gradient => "gradient",
         }
     }
 
@@ -104,6 +107,7 @@ impl BatchPipeline {
             BatchPipeline::Image => BatchFamily::Image,
             BatchPipeline::GlyphRun => BatchFamily::GlyphRun,
             BatchPipeline::Mesh => BatchFamily::Mesh,
+            BatchPipeline::Gradient => BatchFamily::Gradient,
         }
     }
 }
@@ -356,6 +360,11 @@ impl Renderer {
                 self.glyph_pipeline_id(),
                 Some(bind_group),
             ),
+            SegmentKind::Gradient { bind_group } => (
+                BatchPipeline::Gradient,
+                self.gradient_pipeline_id(),
+                Some(bind_group),
+            ),
             SegmentKind::Mesh => (BatchPipeline::Mesh, self.mesh_pipeline_id(), None),
         };
         let offscreen = matches!(seg.target, PassTarget::Offscreen(_));
@@ -404,6 +413,7 @@ impl Renderer {
         let mut analytic_capsule_cursor: u32 = 0;
         let mut analytic_line_cursor: u32 = 0;
         let mut image_cursor: u32 = 0;
+        let mut gradient_cursor: u32 = 0;
         let mut glyph_cursor: u32 = 0;
         let mut index_cursor: u32 = 0;
 
@@ -474,6 +484,15 @@ impl Renderer {
                     // so it never merges regardless. Use a placeholder that the
                     // merge test below treats as non-mergeable.
                     (BatchPipeline::Image, SegmentKind::Quad, start, 1)
+                }
+                StoreRef::Gradient(_) => {
+                    let start = gradient_cursor;
+                    gradient_cursor += 1;
+                    // Like an image, a gradient binds its own LUT atlas and is
+                    // one instanced draw — unmergeable. Use a placeholder kind the
+                    // merge test treats as non-mergeable (the family below drives
+                    // the decision).
+                    (BatchPipeline::Gradient, SegmentKind::Quad, start, 1)
                 }
                 StoreRef::GlyphRun(run) => {
                     let e = self
@@ -632,6 +651,7 @@ impl Renderer {
                 StoreRef::AnalyticCapsule(_) => (BatchFamily::AnalyticCapsule, true),
                 StoreRef::AnalyticLine(_) => (BatchFamily::AnalyticLine, true),
                 StoreRef::Image(_) | StoreRef::Composite { .. } => (BatchFamily::Image, true),
+                StoreRef::Gradient(_) => (BatchFamily::Gradient, true),
                 StoreRef::GlyphRun(run) => {
                     let e = self
                         .scene_snapshot()
