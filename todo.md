@@ -1078,14 +1078,35 @@ vector is **not** here — it is a large-dynamic-workload lane (A0), and D0~D3 m
 depend on compute (§7.2).
 
 ### D3.1 — Path storage & commands
-- [ ] `PathArena` (§13.2): `tags` (compact command stream) + `points` (tightly packed f32)
+- [x] `PathArena` (§13.2): `tags` (compact command stream) + `points` (tightly packed f32)
       — never per-segment vtable/Box objects.
-- [ ] Commands `move_to` / `line_to` / `quad_to` / `cubic_to` / `close`; `Conic`/`Arc`
+  - [x] `tags: Vec<u8>` (one canonical code per command: Move/Line/Quad/Cubic/Close),
+        `points: Vec<f32>` packed `x,y` pairs; each tag consumes a fixed pair count. No
+        `Vec<PathCmd>` of enums, no `Box`/vtable per segment.
+  - [x] CPU-only storage: derives `Debug, Clone, PartialEq`, no `GpuPod`/`repr(C)`; new
+        module `crates/render/src/path/` (directory, grows for D3.2–D3.4).
+  - [x] `cmds()` iterator / `to_cmds()` reconstruct canonical `PathCmd`s from the SoA so the
+        D3.2 flatten/tessellate lane consumes the arena without owning a `Vec<PathCmd>`.
+  - [x] `with_capacity` prealloc; `command_count`/`is_empty` accessors.
+- [x] Commands `move_to` / `line_to` / `quad_to` / `cubic_to` / `close`; `Conic`/`Arc`
       lower to canonical segments (§13.1).
-- [ ] Path-creation-time metadata (§13): bounds, segment count, convexity hint,
+  - [x] `arc(center,radius,start,sweep)` → ≤90° cubic pieces (`k=4/3·tan(θ/4)` circle rule);
+        no `Arc` tag ever stored.
+  - [x] `conic(c,p,weight)` → plain quadratics via conic de Casteljau split (unit weight = one
+        `quad_to`); no `Conic` tag ever stored — stream is always canonical.
+- [x] Path-creation-time metadata (§13): bounds, segment count, convexity hint,
       simple-shape-recognition hint, complexity score — computed once, never re-scanned per
       render.
-- [ ] Fill rules `NonZero` and `EvenOdd` (§13.3).
+  - [x] `PathMetadata { bounds, segment_count, convex, simple_shape, complexity }` updated
+        incrementally on every push (bounds over control hull; complexity line=1/quad=2/cubic=3).
+  - [x] `ConvexityHint {Unknown,Convex,Concave}` from running turn-sign + subpath count;
+        `SimpleShapeHint {None,Rect,Ellipse}` recognized on `close` (single-subpath only).
+- [x] Fill rules `NonZero` and `EvenOdd` (§13.3).
+  - [x] `FillRule` enum (default `NonZero`), `set_fill_rule`/`fill_rule` on the arena.
+- [x] Verify: fmt / clippy -D warnings / check-deps (DAG unchanged, no new crate) / workspace
+      tests / 11 `path::` unit tests (SoA packing + round-trip, bounds, convex/concave,
+      rect/ellipse recognition, arc→cubic, conic→quad, fill rule). Exported (not into prelude,
+      §3.2).
 
 ### D3.2 — Retained tessellation (vector mesh lane)
 - [ ] Stable-path default lane (§13.4): `Path → worker flatten/preprocess → tessellate →
