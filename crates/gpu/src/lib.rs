@@ -22,7 +22,8 @@ pub mod retire;
 pub mod slots;
 
 pub use backend::{
-    DrawCommand, DrawList, Frame, GpuBackend, InlineUniforms, LoadOp, RenderPass, RenderTarget,
+    DrawCommand, DrawList, Frame, Geometry, GpuBackend, IndexFormat, InlineUniforms, LoadOp,
+    RenderPass, RenderTarget,
 };
 pub use headless::HeadlessRaster;
 #[cfg(target_os = "macos")]

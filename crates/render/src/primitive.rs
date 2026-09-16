@@ -1636,6 +1636,114 @@ pub struct MeshVertex {
     pub edge: f32,
 }
 
+/// A colorless tessellated vertex: position + AA coverage weight, in the path's
+/// own local space. This is the retained-geometry vertex — the part of a
+/// [`MeshVertex`] that survives a recolor or a transform-only change. Color is
+/// applied at lowering time (per-primitive paint), never baked into the cached
+/// geometry, so a recolor never re-tessellates. Internal to the tessellator and
+/// the path store; not a GPU ABI type.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct GeoVertex {
+    /// Position in the path's local space (physical pixels before transform).
+    pub pos: [f32; 2],
+    /// Coverage-AA weight (`1` interior, `0` fringe).
+    pub edge: f32,
+}
+
+/// A triangle-list index buffer at the narrowest width that addresses its mesh:
+/// `U16` when the vertex count fits in `u16`, else `U32`. Small icon/SVG
+/// geometry pays half the index bandwidth and device memory; large geometry
+/// stays correct at 32-bit (§13.4). Chosen once when geometry is built, cached
+/// with it, never re-decided per frame.
+#[derive(Debug, Clone, PartialEq)]
+pub enum IndexBuffer {
+    /// 16-bit indices (vertex count ≤ `u16::MAX`).
+    U16(Vec<u16>),
+    /// 32-bit indices.
+    U32(Vec<u32>),
+}
+
+impl IndexBuffer {
+    /// Build the narrowest buffer that addresses `vertex_count` vertices from a
+    /// slice of `u32` indices produced during tessellation.
+    fn from_u32(indices: &[u32], vertex_count: usize) -> IndexBuffer {
+        if vertex_count <= u16::MAX as usize {
+            IndexBuffer::U16(indices.iter().map(|&i| i as u16).collect())
+        } else {
+            IndexBuffer::U32(indices.to_vec())
+        }
+    }
+
+    /// Number of indices (3 per triangle).
+    pub fn len(&self) -> usize {
+        match self {
+            IndexBuffer::U16(v) => v.len(),
+            IndexBuffer::U32(v) => v.len(),
+        }
+    }
+
+    /// Whether the buffer holds no indices.
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// Iterate the indices as `u32` regardless of the stored width.
+    pub fn iter_u32(&self) -> impl Iterator<Item = u32> + '_ {
+        // Two concrete iterators unified into one enum so callers get a single
+        // type without boxing.
+        enum Iter<'a> {
+            U16(std::slice::Iter<'a, u16>),
+            U32(std::slice::Iter<'a, u32>),
+        }
+        impl Iterator for Iter<'_> {
+            type Item = u32;
+            fn next(&mut self) -> Option<u32> {
+                match self {
+                    Iter::U16(it) => it.next().map(|&i| i as u32),
+                    Iter::U32(it) => it.next().copied(),
+                }
+            }
+        }
+        match self {
+            IndexBuffer::U16(v) => Iter::U16(v.iter()),
+            IndexBuffer::U32(v) => Iter::U32(v.iter()),
+        }
+    }
+}
+
+/// A retained, **colorless** tessellation of a [`Path`], in the path's local
+/// space (§13.4). Holds only what is invariant under a recolor or a
+/// transform-only change: vertex positions, AA coverage, and the triangle-list
+/// index buffer. Fill vertices come first, then stroke vertices; `fill_vert_end`
+/// marks the boundary so lowering paints each span with its own color.
+///
+/// This is the object keyed by a geometry fingerprint + quality bucket: two
+/// primitives with the same outline at the same quality share it, and neither a
+/// paint change nor a translate/uniform-scale re-runs the tessellator.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PathGeometry {
+    /// Colorless vertices: fill span `[0, fill_vert_end)`, then stroke span.
+    pub verts: Vec<GeoVertex>,
+    /// Triangle-list indices into `verts` (base-zero, narrowest width).
+    pub indices: IndexBuffer,
+    /// Index into `verts` where the stroke vertices begin (== fill vertex count).
+    pub fill_vert_end: u32,
+    /// Local-space bounding rect of the tessellated geometry.
+    pub bounds: Rect,
+}
+
+impl PathGeometry {
+    /// An empty geometry (degenerate/empty path).
+    fn empty() -> PathGeometry {
+        PathGeometry {
+            verts: Vec::new(),
+            indices: IndexBuffer::U16(Vec::new()),
+            fill_vert_end: 0,
+            bounds: Rect::ZERO,
+        }
+    }
+}
+
 /// The tolerance (max chord deviation, physical pixels) used when flattening
 /// Bézier curves to line segments.
 const FLATTEN_TOLERANCE: f32 = 0.25;
@@ -1649,25 +1757,240 @@ const AA_FRINGE: f32 = 1.0;
 const MITER_LIMIT: f32 = 4.0;
 
 impl Path {
-    /// Tessellate this path into `verts`/`indices` (appended; absolute indices).
+    /// Tessellate this path's **geometry** — colorless local-space vertices and
+    /// indices (§13.4). Fill vertices are emitted first (span `[0, fill_vert_end)`),
+    /// then stroke vertices, so lowering can paint each span with its own color.
+    /// The fill/stroke *colors* are ignored here (only their presence matters):
+    /// a recolor reuses this result unchanged. Curves flatten at
+    /// [`FLATTEN_TOLERANCE`] (the identity-scale bucket 0); the index width is
+    /// picked to fit the vertex count. Use [`tessellate_geometry_at`] to
+    /// tessellate at a higher quality bucket.
     ///
-    /// Fill is emitted first (so the stroke draws over it). Emitted vertices use
-    /// the `MeshVertex` contract: straight color, `edge` coverage. This is the
-    /// CPU half of the Path→mesh lowering; the GPU/headless mesh path renders the
-    /// result as one indexed triangle list.
-    pub fn tessellate(&self, verts: &mut Vec<MeshVertex>, indices: &mut Vec<u32>) {
-        let subpaths = flatten(&self.cmds);
+    /// [`tessellate_geometry_at`]: Self::tessellate_geometry_at
+    pub fn tessellate_geometry(&self) -> PathGeometry {
+        self.tessellate_geometry_at(0)
+    }
 
-        if let Some(fill) = self.fill {
+    /// Tessellate this path's geometry at quality `bucket` (§13.4). A higher
+    /// bucket flattens curves finer — the chord tolerance is
+    /// `FLATTEN_TOLERANCE / (bucket + 1)` — so a path drawn at a larger device
+    /// scale stays smooth. Bucket 0 matches [`tessellate_geometry`]. Only the
+    /// flatten tolerance changes; the emitted layout is unaffected.
+    ///
+    /// [`tessellate_geometry`]: Self::tessellate_geometry
+    pub fn tessellate_geometry_at(&self, bucket: u16) -> PathGeometry {
+        let tolerance = FLATTEN_TOLERANCE / (bucket as f32 + 1.0);
+        let subpaths = flatten(&self.cmds, tolerance);
+
+        let mut verts: Vec<GeoVertex> = Vec::new();
+        let mut indices: Vec<u32> = Vec::new();
+
+        if self.fill.is_some() {
             for sub in &subpaths {
-                fill_subpath(&sub.points, fill, verts, indices);
+                fill_subpath(&sub.points, &mut verts, &mut indices);
             }
         }
+        let fill_vert_end = verts.len() as u32;
         if let Some(stroke) = self.stroke {
             for sub in &subpaths {
-                stroke_subpath(&sub.points, sub.closed, stroke, verts, indices);
+                stroke_subpath(&sub.points, sub.closed, stroke, &mut verts, &mut indices);
             }
         }
+
+        if verts.is_empty() {
+            return PathGeometry::empty();
+        }
+
+        let bounds = geo_bounds(&verts);
+        let index_buffer = IndexBuffer::from_u32(&indices, verts.len());
+        PathGeometry {
+            verts,
+            indices: index_buffer,
+            fill_vert_end,
+            bounds,
+        }
+    }
+
+    /// Tessellate this path into colored `verts`/`indices` (appended; absolute
+    /// indices). Fill is emitted first (so the stroke draws over it). Emitted
+    /// vertices use the `MeshVertex` contract: straight color, `edge` coverage.
+    /// This is the CPU half of the Path→mesh lowering for callers that bake color
+    /// eagerly (the Mesh family and legacy paths); the retained path store keeps
+    /// the colorless [`tessellate_geometry`](Self::tessellate_geometry) and paints
+    /// at lowering time so a recolor never re-tessellates.
+    pub fn tessellate(&self, verts: &mut Vec<MeshVertex>, indices: &mut Vec<u32>) {
+        let geo = self.tessellate_geometry();
+        let base = verts.len() as u32;
+        let fill_col = self.fill.map(rgba_array).unwrap_or([0.0; 4]);
+        let stroke_col = self.stroke.map(|s| rgba_array(s.color)).unwrap_or([0.0; 4]);
+        for (i, v) in geo.verts.iter().enumerate() {
+            let col = if (i as u32) < geo.fill_vert_end {
+                fill_col
+            } else {
+                stroke_col
+            };
+            verts.push(MeshVertex {
+                pos: v.pos,
+                color: col,
+                edge: v.edge,
+            });
+        }
+        indices.extend(geo.indices.iter_u32().map(|i| base + i));
+    }
+}
+
+/// Straight linear RGBA as a 4-element array (the `MeshVertex`/shader form).
+pub(crate) fn rgba_array(c: Rgba) -> [f32; 4] {
+    [c.r, c.g, c.b, c.a]
+}
+
+impl Path {
+    /// The first anchor point of the outline — the reference the translation-
+    /// invariant fingerprint subtracts, and the origin a transform is measured
+    /// from. `None` for an empty command list.
+    fn anchor(&self) -> Option<Point> {
+        self.cmds.iter().find_map(|c| match *c {
+            PathCmd::MoveTo(p) | PathCmd::LineTo(p) => Some(p),
+            PathCmd::QuadTo(_, p) | PathCmd::CubicTo(_, _, p) => Some(p),
+            PathCmd::Close => None,
+        })
+    }
+
+    /// A translation-invariant structural fingerprint of the outline: the command
+    /// kinds and their coordinates relative to [`anchor`](Self::anchor), quantized
+    /// to a sub-pixel grid. Two outlines with this same fingerprint are the same
+    /// shape up to a pure translation, so they share a tessellation — the offset
+    /// between them is carried as a [`PathTransform`], never re-tessellated
+    /// (§13.4). Coordinates quantize at `1/16` px, finer than
+    /// [`FLATTEN_TOLERANCE`], so a difference that would change the flattened mesh
+    /// always changes the fingerprint.
+    pub fn geometry_fingerprint(&self) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        let (ax, ay) = match self.anchor() {
+            Some(p) => (p.x, p.y),
+            None => (0.0, 0.0),
+        };
+        // Whether the interior is painted changes the fill tessellation but not
+        // the coordinates; fold presence (not color) into the key.
+        self.fill.is_some().hash(&mut h);
+        match &self.stroke {
+            Some(s) => {
+                1u8.hash(&mut h);
+                q(s.width).hash(&mut h);
+                s.join.as_u32().hash(&mut h);
+            }
+            None => 0u8.hash(&mut h),
+        }
+        for cmd in &self.cmds {
+            match *cmd {
+                PathCmd::MoveTo(p) => {
+                    0u8.hash(&mut h);
+                    q(p.x - ax).hash(&mut h);
+                    q(p.y - ay).hash(&mut h);
+                }
+                PathCmd::LineTo(p) => {
+                    1u8.hash(&mut h);
+                    q(p.x - ax).hash(&mut h);
+                    q(p.y - ay).hash(&mut h);
+                }
+                PathCmd::QuadTo(c, p) => {
+                    2u8.hash(&mut h);
+                    q(c.x - ax).hash(&mut h);
+                    q(c.y - ay).hash(&mut h);
+                    q(p.x - ax).hash(&mut h);
+                    q(p.y - ay).hash(&mut h);
+                }
+                PathCmd::CubicTo(c0, c1, p) => {
+                    3u8.hash(&mut h);
+                    q(c0.x - ax).hash(&mut h);
+                    q(c0.y - ay).hash(&mut h);
+                    q(c1.x - ax).hash(&mut h);
+                    q(c1.y - ay).hash(&mut h);
+                    q(p.x - ax).hash(&mut h);
+                    q(p.y - ay).hash(&mut h);
+                }
+                PathCmd::Close => 4u8.hash(&mut h),
+            }
+        }
+        h.finish()
+    }
+
+    /// If `self` is `other` shifted by a pure translation, the offset `self −
+    /// other` (the amount to move `other`'s cached geometry to land on `self`);
+    /// `None` if the outlines differ by anything but a translation. Requires
+    /// identical command sequences and a single constant coordinate delta across
+    /// every point (within a sub-pixel epsilon). Uniform scale and rotation are
+    /// out of scope this round (they route through a geometry rebuild).
+    pub fn translation_from(&self, other: &Path) -> Option<[f32; 2]> {
+        if self.cmds.len() != other.cmds.len() {
+            return None;
+        }
+        if self.fill.is_some() != other.fill.is_some() {
+            return None;
+        }
+        match (&self.stroke, &other.stroke) {
+            (Some(a), Some(b)) if a.width == b.width && a.join == b.join => {}
+            (None, None) => {}
+            _ => return None,
+        }
+        let mut delta: Option<(f32, f32)> = None;
+        // A per-coordinate delta must be one constant vector for a pure move.
+        let mut check = |sx: f32, sy: f32, ox: f32, oy: f32| -> bool {
+            let (dx, dy) = (sx - ox, sy - oy);
+            match delta {
+                None => {
+                    delta = Some((dx, dy));
+                    true
+                }
+                Some((ex, ey)) => (dx - ex).abs() <= 1e-3 && (dy - ey).abs() <= 1e-3,
+            }
+        };
+        for (s, o) in self.cmds.iter().zip(&other.cmds) {
+            let ok = match (*s, *o) {
+                (PathCmd::MoveTo(sp), PathCmd::MoveTo(op))
+                | (PathCmd::LineTo(sp), PathCmd::LineTo(op)) => check(sp.x, sp.y, op.x, op.y),
+                (PathCmd::QuadTo(sc, sp), PathCmd::QuadTo(oc, op)) => {
+                    check(sc.x, sc.y, oc.x, oc.y) && check(sp.x, sp.y, op.x, op.y)
+                }
+                (PathCmd::CubicTo(sc0, sc1, sp), PathCmd::CubicTo(oc0, oc1, op)) => {
+                    check(sc0.x, sc0.y, oc0.x, oc0.y)
+                        && check(sc1.x, sc1.y, oc1.x, oc1.y)
+                        && check(sp.x, sp.y, op.x, op.y)
+                }
+                (PathCmd::Close, PathCmd::Close) => true,
+                _ => return None,
+            };
+            if !ok {
+                return None;
+            }
+        }
+        delta.map(|(dx, dy)| [dx, dy])
+    }
+}
+
+/// Quantize a coordinate to a `1/16`-px grid for structural hashing.
+fn q(v: f32) -> i32 {
+    (v * 16.0).round() as i32
+}
+
+/// Local-space bounding rect over a colorless vertex ring.
+fn geo_bounds(verts: &[GeoVertex]) -> Rect {
+    let mut min_x = f32::INFINITY;
+    let mut min_y = f32::INFINITY;
+    let mut max_x = f32::NEG_INFINITY;
+    let mut max_y = f32::NEG_INFINITY;
+    for v in verts {
+        min_x = min_x.min(v.pos[0]);
+        min_y = min_y.min(v.pos[1]);
+        max_x = max_x.max(v.pos[0]);
+        max_y = max_y.max(v.pos[1]);
+    }
+    Rect {
+        x: min_x,
+        y: min_y,
+        w: (max_x - min_x).max(0.0),
+        h: (max_y - min_y).max(0.0),
     }
 }
 
@@ -1680,7 +2003,7 @@ struct Subpath {
 /// Flatten path commands into subpaths of line segments (De Casteljau, bounded
 /// by [`FLATTEN_TOLERANCE`]). Consecutive duplicate points are dropped so the
 /// stroker never sees zero-length segments.
-fn flatten(cmds: &[PathCmd]) -> Vec<Subpath> {
+fn flatten(cmds: &[PathCmd], tolerance: f32) -> Vec<Subpath> {
     let mut out: Vec<Subpath> = Vec::new();
     let mut cur: Vec<Point> = Vec::new();
     let mut closed = false;
@@ -1710,11 +2033,11 @@ fn flatten(cmds: &[PathCmd]) -> Vec<Subpath> {
             PathCmd::LineTo(p) => push(&mut cur, p),
             PathCmd::QuadTo(c, p) => {
                 let from = cur.last().copied().unwrap_or(c);
-                flatten_quad(from, c, p, &mut cur);
+                flatten_quad(from, c, p, tolerance, &mut cur);
             }
             PathCmd::CubicTo(c0, c1, p) => {
                 let from = cur.last().copied().unwrap_or(c0);
-                flatten_cubic(from, c0, c1, p, &mut cur);
+                flatten_cubic(from, c0, c1, p, tolerance, &mut cur);
             }
             PathCmd::Close => {
                 closed = true;
@@ -1733,25 +2056,25 @@ fn flatten(cmds: &[PathCmd]) -> Vec<Subpath> {
 
 /// Recursively subdivide a quadratic Bézier until it is flat within tolerance,
 /// appending the flattened points (excluding the start) to `out`.
-fn flatten_quad(p0: Point, p1: Point, p2: Point, out: &mut Vec<Point>) {
+fn flatten_quad(p0: Point, p1: Point, p2: Point, tolerance: f32, out: &mut Vec<Point>) {
     // Distance from the control point to the chord; a good flatness proxy.
     let d = point_line_dist(p1, p0, p2);
-    if d <= FLATTEN_TOLERANCE {
+    if d <= tolerance {
         out.push(p2);
         return;
     }
     let p01 = midpoint(p0, p1);
     let p12 = midpoint(p1, p2);
     let mid = midpoint(p01, p12);
-    flatten_quad(p0, p01, mid, out);
-    flatten_quad(mid, p12, p2, out);
+    flatten_quad(p0, p01, mid, tolerance, out);
+    flatten_quad(mid, p12, p2, tolerance, out);
 }
 
 /// Recursively subdivide a cubic Bézier until it is flat within tolerance,
 /// appending the flattened points (excluding the start) to `out`.
-fn flatten_cubic(p0: Point, p1: Point, p2: Point, p3: Point, out: &mut Vec<Point>) {
+fn flatten_cubic(p0: Point, p1: Point, p2: Point, p3: Point, tolerance: f32, out: &mut Vec<Point>) {
     let d = point_line_dist(p1, p0, p3).max(point_line_dist(p2, p0, p3));
-    if d <= FLATTEN_TOLERANCE {
+    if d <= tolerance {
         out.push(p3);
         return;
     }
@@ -1761,8 +2084,8 @@ fn flatten_cubic(p0: Point, p1: Point, p2: Point, p3: Point, out: &mut Vec<Point
     let p012 = midpoint(p01, p12);
     let p123 = midpoint(p12, p23);
     let mid = midpoint(p012, p123);
-    flatten_cubic(p0, p01, p012, mid, out);
-    flatten_cubic(mid, p123, p23, p3, out);
+    flatten_cubic(p0, p01, p012, mid, tolerance, out);
+    flatten_cubic(mid, p123, p23, p3, tolerance, out);
 }
 
 fn midpoint(a: Point, b: Point) -> Point {
@@ -1785,12 +2108,7 @@ fn point_line_dist(p: Point, a: Point, b: Point) -> f32 {
 /// Fan-triangulate a filled subpath from its centroid, with a 1px coverage-AA
 /// fringe around the outline. Assumes a simple, roughly convex polygon (Phase 2
 /// scope). No-op for degenerate outlines (< 3 points).
-fn fill_subpath(
-    points: &[Point],
-    color: Rgba,
-    verts: &mut Vec<MeshVertex>,
-    indices: &mut Vec<u32>,
-) {
+fn fill_subpath(points: &[Point], verts: &mut Vec<GeoVertex>, indices: &mut Vec<u32>) {
     // Drop a duplicated closing point so the outline is a clean ring.
     let ring: &[Point] = match points.split_last() {
         Some((last, head)) if head.first() == Some(last) && head.len() >= 3 => head,
@@ -1800,17 +2118,16 @@ fn fill_subpath(
         return;
     }
 
-    let col = [color.r, color.g, color.b, color.a];
     let cx = ring.iter().map(|p| p.x).sum::<f32>() / ring.len() as f32;
     let cy = ring.iter().map(|p| p.y).sum::<f32>() / ring.len() as f32;
     let center = Point::new(cx, cy);
 
     // Interior ring: centroid + each outline point (edge = 1, full coverage).
     let center_idx = verts.len() as u32;
-    verts.push(mesh_vert(center, col, 1.0));
+    verts.push(geo_vert(center, 1.0));
     let inner_start = verts.len() as u32;
     for &p in ring {
-        verts.push(mesh_vert(p, col, 1.0));
+        verts.push(geo_vert(p, 1.0));
     }
     let n = ring.len() as u32;
     for i in 0..n {
@@ -1826,7 +2143,7 @@ fn fill_subpath(
         let p = ring[i];
         let normal = outward_normal(ring, i, center);
         let outer = Point::new(p.x + normal.0 * AA_FRINGE, p.y + normal.1 * AA_FRINGE);
-        verts.push(mesh_vert(outer, col, 0.0));
+        verts.push(geo_vert(outer, 0.0));
     }
     for i in 0..n {
         let j = (i + 1) % n;
@@ -1866,19 +2183,13 @@ fn stroke_subpath(
     points: &[Point],
     closed: bool,
     stroke: Stroke,
-    verts: &mut Vec<MeshVertex>,
+    verts: &mut Vec<GeoVertex>,
     indices: &mut Vec<u32>,
 ) {
     if points.len() < 2 || stroke.width <= 0.0 {
         return;
     }
     let hw = stroke.width * 0.5;
-    let col = [
-        stroke.color.r,
-        stroke.color.g,
-        stroke.color.b,
-        stroke.color.a,
-    ];
 
     // Build the segment list (drop a duplicated closing point; closed rings wrap).
     let ring: &[Point] = match points.split_last() {
@@ -1895,13 +2206,13 @@ fn stroke_subpath(
         // Left normal (perpendicular).
         let nx = -dir.1;
         let ny = dir.0;
-        emit_stroke_quad(a, b, nx, ny, hw, col, verts, indices);
+        emit_stroke_quad(a, b, nx, ny, hw, verts, indices);
 
         // Join at `b` with the next segment (interior vertices only).
         let is_interior = closed || (s + 1) < seg_count;
         if is_interior {
             let c = ring[(s + 2) % count];
-            emit_join(b, a, c, nx, ny, hw, stroke.join, col, verts, indices);
+            emit_join(b, a, c, nx, ny, hw, stroke.join, verts, indices);
         }
     }
 }
@@ -1915,8 +2226,7 @@ fn emit_stroke_quad(
     nx: f32,
     ny: f32,
     hw: f32,
-    col: [f32; 4],
-    verts: &mut Vec<MeshVertex>,
+    verts: &mut Vec<GeoVertex>,
     indices: &mut Vec<u32>,
 ) {
     let base = verts.len() as u32;
@@ -1925,10 +2235,10 @@ fn emit_stroke_quad(
     let ar = Point::new(a.x - nx * hw, a.y - ny * hw);
     let bl = Point::new(b.x + nx * hw, b.y + ny * hw);
     let br = Point::new(b.x - nx * hw, b.y - ny * hw);
-    verts.push(mesh_vert(al, col, 1.0)); // 0
-    verts.push(mesh_vert(ar, col, 1.0)); // 1
-    verts.push(mesh_vert(bl, col, 1.0)); // 2
-    verts.push(mesh_vert(br, col, 1.0)); // 3
+    verts.push(geo_vert(al, 1.0)); // 0
+    verts.push(geo_vert(ar, 1.0)); // 1
+    verts.push(geo_vert(bl, 1.0)); // 2
+    verts.push(geo_vert(br, 1.0)); // 3
     indices.extend_from_slice(&[base, base + 1, base + 2, base + 1, base + 3, base + 2]);
 
     // Fringe on the left (+normal) and right (-normal) edges.
@@ -1937,10 +2247,10 @@ fn emit_stroke_quad(
     let arf = Point::new(ar.x - nx * AA_FRINGE, ar.y - ny * AA_FRINGE);
     let brf = Point::new(br.x - nx * AA_FRINGE, br.y - ny * AA_FRINGE);
     let f = verts.len() as u32;
-    verts.push(mesh_vert(alf, col, 0.0)); // f+0
-    verts.push(mesh_vert(blf, col, 0.0)); // f+1
-    verts.push(mesh_vert(arf, col, 0.0)); // f+2
-    verts.push(mesh_vert(brf, col, 0.0)); // f+3
+    verts.push(geo_vert(alf, 0.0)); // f+0
+    verts.push(geo_vert(blf, 0.0)); // f+1
+    verts.push(geo_vert(arf, 0.0)); // f+2
+    verts.push(geo_vert(brf, 0.0)); // f+3
     // Left fringe bridges core edge (al=base, bl=base+2) to (alf, blf).
     indices.extend_from_slice(&[base, f, f + 1, base, f + 1, base + 2]);
     // Right fringe bridges core edge (ar=base+1, br=base+3) to (arf, brf).
@@ -1959,8 +2269,7 @@ fn emit_join(
     pny: f32,
     hw: f32,
     join: LineJoin,
-    col: [f32; 4],
-    verts: &mut Vec<MeshVertex>,
+    verts: &mut Vec<GeoVertex>,
     indices: &mut Vec<u32>,
 ) {
     let ndir = norm(c.x - b.x, c.y - b.y);
@@ -1980,9 +2289,9 @@ fn emit_join(
     let n_out = Point::new(b.x + sign * nnx * hw, b.y + sign * nny * hw);
 
     let base = verts.len() as u32;
-    verts.push(mesh_vert(b, col, 1.0));
-    verts.push(mesh_vert(p_out, col, 1.0));
-    verts.push(mesh_vert(n_out, col, 1.0));
+    verts.push(geo_vert(b, 1.0));
+    verts.push(geo_vert(p_out, 1.0));
+    verts.push(geo_vert(n_out, 1.0));
 
     // Miter apex: intersection of the two outer edges. Fall back to bevel if the
     // miter grows past MITER_LIMIT × hw or the join kind is Bevel/Round. (Path's
@@ -1996,7 +2305,7 @@ fn emit_join(
         let dy = apex.y - b.y;
         if (dx * dx + dy * dy).sqrt() <= MITER_LIMIT * hw {
             let apex_idx = verts.len() as u32;
-            verts.push(mesh_vert(apex, col, 1.0));
+            verts.push(geo_vert(apex, 1.0));
             indices.extend_from_slice(&[base, base + 1, apex_idx, base, apex_idx, base + 2]);
             return;
         }
@@ -2034,10 +2343,9 @@ fn norm(x: f32, y: f32) -> (f32, f32) {
     }
 }
 
-fn mesh_vert(p: Point, color: [f32; 4], edge: f32) -> MeshVertex {
-    MeshVertex {
+fn geo_vert(p: Point, edge: f32) -> GeoVertex {
+    GeoVertex {
         pos: [p.x, p.y],
-        color,
         edge,
     }
 }

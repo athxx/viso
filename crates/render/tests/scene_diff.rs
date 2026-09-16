@@ -16,7 +16,9 @@
 //!   a whole-tree re-emit.
 
 use viso_gpu::{GpuBackend, HeadlessRaster, RawWindowHandle};
-use viso_render::{Border, Primitive, Quad, Rect, Renderer, Rgba};
+use viso_render::{
+    Border, LineJoin, Path, PathCmd, Point, Primitive, Quad, Rect, Renderer, Rgba, Stroke,
+};
 
 const W: u32 = 128;
 const H: u32 = 96;
@@ -40,6 +42,201 @@ fn new_renderer(gpu: &mut HeadlessRaster) -> Renderer {
     let surface = gpu.create_surface(RawWindowHandle::Headless, W, H);
     let format = gpu.surface_format(surface);
     Renderer::new(gpu, format)
+}
+
+fn pt(x: f32, y: f32) -> Point {
+    Point { x, y }
+}
+
+/// A closed triangle outline anchored at `origin`, filled `fill` and (optionally)
+/// stroked `stroke`. Translating `origin` is a pure translation of the outline;
+/// changing only `fill`/`stroke` is a pure recolor.
+fn tri_scene(origin: (f32, f32), fill: Option<Rgba>, stroke: Option<Rgba>) -> Vec<Primitive> {
+    let (x, y) = origin;
+    vec![Primitive::Path(Path {
+        cmds: vec![
+            PathCmd::MoveTo(pt(x, y)),
+            PathCmd::LineTo(pt(x + 30.0, y)),
+            PathCmd::LineTo(pt(x + 15.0, y + 26.0)),
+            PathCmd::Close,
+        ],
+        fill,
+        stroke: stroke.map(|color| Stroke {
+            width: 2.0,
+            color,
+            join: LineJoin::Miter,
+        }),
+    })]
+}
+
+/// Settle a path scene into the store (two identical frames), returning the
+/// steady-state revisions and cumulative tessellation count.
+fn settle(gpu: &mut HeadlessRaster, renderer: &mut Renderer, scene: &[Primitive]) {
+    renderer.upload(gpu, scene);
+    renderer.upload(gpu, scene);
+}
+
+#[test]
+fn path_geometry_change_retessellates_and_bumps_geometry_alone() {
+    let mut gpu = HeadlessRaster::new();
+    let mut renderer = new_renderer(&mut gpu);
+
+    let fill = Some(Rgba::new(0.2, 0.6, 0.3, 1.0));
+    let small = tri_scene((10.0, 10.0), fill, None);
+    settle(&mut gpu, &mut renderer, &small);
+    let settled = renderer.scene_revisions();
+    let base_tess = renderer.frame_stats().path_tessellations;
+
+    // A different outline shape (extra vertex) — the structural fingerprint
+    // changes, so the tessellator must run and only the geometry plane moves.
+    let bigger = vec![Primitive::Path(Path {
+        cmds: vec![
+            PathCmd::MoveTo(pt(10.0, 10.0)),
+            PathCmd::LineTo(pt(60.0, 10.0)),
+            PathCmd::LineTo(pt(60.0, 50.0)),
+            PathCmd::LineTo(pt(10.0, 50.0)),
+            PathCmd::Close,
+        ],
+        fill,
+        stroke: None,
+    })];
+    renderer.upload(&mut gpu, &bigger);
+    let after = renderer.scene_revisions();
+    let stats = renderer.frame_stats();
+
+    assert_eq!(
+        after.geometry,
+        settled.geometry + 1,
+        "a shape change must advance the geometry plane exactly once"
+    );
+    assert_eq!(
+        after.paint, settled.paint,
+        "geometry change must not bump paint"
+    );
+    assert_eq!(
+        after.transform, settled.transform,
+        "geometry change must not bump transform"
+    );
+    assert_eq!(
+        stats.path_tessellations,
+        base_tess + 1,
+        "a shape change must re-tessellate exactly once"
+    );
+}
+
+#[test]
+fn path_translation_reuses_geometry_and_bumps_transform_alone() {
+    let mut gpu = HeadlessRaster::new();
+    let mut renderer = new_renderer(&mut gpu);
+
+    let fill = Some(Rgba::new(0.2, 0.6, 0.3, 1.0));
+    settle(
+        &mut gpu,
+        &mut renderer,
+        &tri_scene((10.0, 10.0), fill, None),
+    );
+    let settled = renderer.scene_revisions();
+    let base_tess = renderer.frame_stats().path_tessellations;
+
+    // Same outline shifted by a constant vector: transform-only, no re-tessellate.
+    renderer.upload(&mut gpu, &tri_scene((25.0, 18.0), fill, None));
+    let after = renderer.scene_revisions();
+    let stats = renderer.frame_stats();
+
+    assert_eq!(
+        after.transform,
+        settled.transform + 1,
+        "a pure translation must advance the transform plane exactly once"
+    );
+    assert_eq!(
+        after.geometry, settled.geometry,
+        "a translation must not touch the geometry plane"
+    );
+    assert_eq!(
+        after.paint, settled.paint,
+        "a translation must not touch paint"
+    );
+    assert_eq!(
+        stats.path_tessellations, base_tess,
+        "a pure translation must not re-tessellate"
+    );
+    assert_eq!(stats.dirty_primitives, 1);
+}
+
+#[test]
+fn path_recolor_reuses_geometry_and_bumps_paint_alone() {
+    let mut gpu = HeadlessRaster::new();
+    let mut renderer = new_renderer(&mut gpu);
+
+    let green = Some(Rgba::new(0.2, 0.6, 0.3, 1.0));
+    let red = Some(Rgba::new(0.8, 0.1, 0.1, 1.0));
+    settle(
+        &mut gpu,
+        &mut renderer,
+        &tri_scene((10.0, 10.0), green, None),
+    );
+    let settled = renderer.scene_revisions();
+    let base_tess = renderer.frame_stats().path_tessellations;
+
+    // Only the fill color changes: paint-only, geometry reused.
+    renderer.upload(&mut gpu, &tri_scene((10.0, 10.0), red, None));
+    let after = renderer.scene_revisions();
+    let stats = renderer.frame_stats();
+
+    assert_eq!(
+        after.paint,
+        settled.paint + 1,
+        "a recolor must advance the paint plane exactly once"
+    );
+    assert_eq!(
+        after.geometry, settled.geometry,
+        "a recolor must not touch the geometry plane"
+    );
+    assert_eq!(
+        after.transform, settled.transform,
+        "a recolor must not touch the transform plane"
+    );
+    assert_eq!(
+        stats.path_tessellations, base_tess,
+        "a recolor must not re-tessellate"
+    );
+}
+
+#[test]
+fn path_unchanged_reuses_geometry_and_bumps_nothing() {
+    let mut gpu = HeadlessRaster::new();
+    let mut renderer = new_renderer(&mut gpu);
+
+    let scene = tri_scene(
+        (10.0, 10.0),
+        Some(Rgba::new(0.2, 0.6, 0.3, 1.0)),
+        Some(Rgba::new(0.1, 0.1, 0.1, 1.0)),
+    );
+    // Cold frame appends + tessellates once (`path_tessellations` is per-frame).
+    renderer.upload(&mut gpu, &scene);
+    assert_eq!(
+        renderer.frame_stats().path_tessellations,
+        1,
+        "the cold append must tessellate once"
+    );
+
+    // Steady frame: identical fill+stroke path — no plane, no re-tessellate.
+    renderer.upload(&mut gpu, &scene);
+    let settled = renderer.scene_revisions();
+    renderer.upload(&mut gpu, &scene);
+    let after = renderer.scene_revisions();
+    let stats = renderer.frame_stats();
+
+    assert_eq!(
+        after, settled,
+        "an unchanged path must not bump any revision plane"
+    );
+    assert_eq!(
+        stats.path_tessellations, 0,
+        "an unchanged path must not re-tessellate"
+    );
+    assert_eq!(stats.dirty_primitives, 0);
+    assert_eq!(stats.visible_primitives, 1);
 }
 
 #[test]

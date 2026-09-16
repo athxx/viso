@@ -44,7 +44,8 @@ use objc2_quartz_core::{CAMetalDrawable, CAMetalLayer};
 use viso_handle::RawWindowHandle;
 
 use crate::backend::{
-    DrawCommand, DrawList, Frame, Geometry, GpuBackend, LoadOp, RenderPass, RenderTarget,
+    DrawCommand, DrawList, Frame, Geometry, GpuBackend, IndexFormat, LoadOp, RenderPass,
+    RenderTarget,
 };
 use crate::instance::InstanceLayout;
 use crate::resource::{
@@ -931,6 +932,7 @@ impl MetalBackend {
             Geometry::IndexedMesh {
                 vertex_buffer,
                 index_buffer,
+                index_format,
                 index_offset,
                 index_count,
             } => {
@@ -957,18 +959,23 @@ impl MetalBackend {
                 }
 
                 // One indexed triangle-list draw over this segment's index range.
-                // `indexBufferOffset` is in bytes; each index is a `u32`.
+                // `indexBufferOffset` is in bytes; each index is `index_format`
+                // wide (2 for U16, 4 for U32).
                 let idx = self.buffer(index_buffer);
-                let byte_offset = index_offset as usize * core::mem::size_of::<u32>();
-                // SAFETY: `index_offset + index_count` u32 indices fit within the
-                // index buffer (renderer guarantees the buffer size); UInt32
-                // matches the renderer's index type.
+                let (index_type, elem) = match index_format {
+                    IndexFormat::U16 => (MTLIndexType::UInt16, 2usize),
+                    IndexFormat::U32 => (MTLIndexType::UInt32, 4usize),
+                };
+                let byte_offset = index_offset as usize * elem;
+                // SAFETY: `index_offset + index_count` indices of `index_format`
+                // width fit within the index buffer (renderer guarantees the
+                // buffer size); `index_type` matches the buffer's element width.
                 unsafe {
                     encoder
                         .drawIndexedPrimitives_indexCount_indexType_indexBuffer_indexBufferOffset(
                             MTLPrimitiveType::Triangle,
                             index_count as usize,
-                            MTLIndexType::UInt32,
+                            index_type,
                             &idx.buffer,
                             byte_offset,
                         );

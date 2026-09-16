@@ -1109,12 +1109,39 @@ depend on compute (§7.2).
       §3.2).
 
 ### D3.2 — Retained tessellation (vector mesh lane)
-- [ ] Stable-path default lane (§13.4): `Path → worker flatten/preprocess → tessellate →
-      retained GeometryId → cached GPU geometry`. Geometry separated from color/opacity;
-      transform-only never retessellates; scale retessellates only past a flatness/quality
-      bucket, with **hysteresis** to avoid zoom-threshold jitter.
-- [ ] 16-bit index for small geometry, else 32-bit; static device-local geometry is not
+- [x] Stable-path default lane (§13.4): geometry separated from color/opacity; transform-only
+      never retessellates; scale retessellates only past a flatness/quality bucket, with
+      **hysteresis** to avoid zoom-threshold jitter.
+  - [x] `PathGeometry` = retained colorless local-space mesh (`verts`, `indices: IndexBuffer`,
+        `fill_vert_end`, bounds); keyed by `GeometryKey { fingerprint, quality_bucket }`
+        (translation-invariant structural fingerprint).
+  - [x] `PathEntry { geom_key, geometry, paint: PathPaint, xform: PathTransform }` — color/opacity
+        live in `PathPaint`, translate/uniform-scale in `PathTransform`; neither touches geometry.
+  - [x] `VectorPathStore::ingest(path, device_scale)` three-way diff: geometry-change (structure
+        or bucket) retessellates and bumps `geometry`; transform-only (whole translate / uniform
+        scale within bucket) reuses geometry and bumps `transform`; paint-only reuses geometry and
+        bumps `paint`.
+  - [x] `Path::tessellate_geometry_at(bucket)` produces colorless pos/edge/index at
+        `FLATTEN_TOLERANCE / (bucket+1)`; `flatten(cmds, tolerance)` threads tolerance.
+  - [x] Quality bucket from device scale: `QUALITY_STEPS=[1.5,2.5,4.0]`, `QUALITY_HYSTERESIS=0.1`
+        (enter ≠ exit thresholds) so critical-zoom back-and-forth does not rebuild.
+  - [x] lowering (`StoreRef::Path`) applies `paint` color + `xform` onto cached colorless geometry
+        into `mesh_vertex_scratch`; `MeshVertex` ABI (stride 28) unchanged.
+  - [x] `path_tessellations` bumps only on geometry rebuild (`dirty.geometry || dirty.appended`);
+        transform-only / paint-only do not increment.
+- [x] 16-bit index for small geometry, else 32-bit; static device-local geometry is not
       mixed into the frame upload ring (§13, F4 boundary).
+  - [x] `IndexBuffer { U16(Vec<u16>), U32(Vec<u32>) }` chosen once at geometry build
+        (`vert_count <= u16::MAX` → U16); `IndexFormat { U16, U32 }` on `Geometry::IndexedMesh`
+        (backend/metal/headless).
+  - [x] Retained geometry reused via `mesh_vertex_pool`/`mesh_index_pool` shadow-diff: unchanged
+        frame syncs 0 ranges / 0 bytes (deterministic lowering → byte-identical mesh, no upload).
+- [x] Verify: fmt / clippy -D warnings / check-deps / gpu + render unit tests (three-way diff,
+      transform/paint reuse, bucket+hysteresis, ABI/counter freeze) / path golden (fill+stroke,
+      convex pentagon + concave star) / steady-state bench gate (unchanged → 0 tess / 0 ranges /
+      0 bytes; scroll → 0 tess; recolor → 0 tess) / workspace tests. Metal `UInt16` binding,
+      static device-local residency, and draw-range correctness are device-side, not verifiable
+      in the headless environment.
 
 ### D3.3 — Stroke
 - [ ] Stroke contract (§13.5): `width`, `alignment` (where semantically supported), `cap`,

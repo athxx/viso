@@ -15,7 +15,7 @@
 //! allocations (exit criterion).
 
 use viso_gpu::backend::{
-    DrawCommand, DrawList, Geometry, InlineUniforms, RenderPass, RenderTarget,
+    DrawCommand, DrawList, Geometry, IndexFormat, InlineUniforms, RenderPass, RenderTarget,
 };
 use viso_gpu::{
     BindGroupDesc, Binding, BlendMode, BufferUsage, Frame, GpuBackend, LoadOp, PipelineDesc,
@@ -31,6 +31,7 @@ use crate::pool::InstancePool;
 use crate::primitive::{
     AnalyticCapsuleInstance, AnalyticEllipseInstance, AnalyticLineInstance, AnalyticRRectInstance,
     GlyphInstance, GradientInstance, ImageInstance, MeshVertex, Primitive, QuadInstance, Rect,
+    rgba_array,
 };
 use crate::scene::store::{StoreRef, glyph_instances};
 use crate::scene::{EmitContext, Scene};
@@ -1204,9 +1205,44 @@ impl Renderer {
                     let e = self.scene.paths.get(id).expect("path slot");
                     let index_start = self.mesh_index_scratch.len() as u32;
                     let base = self.mesh_vertex_scratch.len() as u32;
-                    self.mesh_vertex_scratch.extend_from_slice(&e.vertices);
+                    // Color and place the retained colorless geometry here at
+                    // lowering: apply the per-primitive transform to position and
+                    // the per-primitive paint to color, producing the frozen
+                    // `MeshVertex` layout. The cached geometry stays colorless and
+                    // in its own local space, so a recolor/transform-only change
+                    // reuses it without re-tessellating (§13.4).
+                    //
+                    // The colored vertices flow through the `mesh_vertex_pool`
+                    // ring, whose CPU shadow diff makes an unchanged geometry +
+                    // paint + transform frame a zero-byte upload — the F4 "static
+                    // geometry stays off the ring" guarantee in effect for the
+                    // steady state. A dedicated device-local geometry buffer that
+                    // keeps the colorless mesh resident and passes paint/transform
+                    // through a per-primitive uniform (so even a dirty recolor
+                    // uploads no vertices) needs a mesh-shader uniform dimension
+                    // and is a §13 follow-up.
+                    let geo = &e.geometry;
+                    let [ox, oy] = e.xform.offset;
+                    let scale = e.xform.scale;
+                    let fill_col = e.paint.fill.map(rgba_array).unwrap_or([0.0; 4]);
+                    let stroke_col = e.paint.stroke_color.map(rgba_array).unwrap_or([0.0; 4]);
+                    let opacity = e.paint.opacity;
+                    self.mesh_vertex_scratch.reserve(geo.verts.len());
+                    for (vi, v) in geo.verts.iter().enumerate() {
+                        let mut col = if (vi as u32) < geo.fill_vert_end {
+                            fill_col
+                        } else {
+                            stroke_col
+                        };
+                        col[3] *= opacity;
+                        self.mesh_vertex_scratch.push(MeshVertex {
+                            pos: [v.pos[0] * scale + ox, v.pos[1] * scale + oy],
+                            color: col,
+                            edge: v.edge,
+                        });
+                    }
                     self.mesh_index_scratch
-                        .extend(e.indices.iter().map(|&i| base + i));
+                        .extend(geo.indices.iter_u32().map(|i| base + i));
                     self.translate_vertices(base as usize, origin);
                     let count = self.mesh_index_scratch.len() as u32 - index_start;
                     self.push_mesh_segment(index_start, count, clip, target);
@@ -1781,6 +1817,11 @@ impl Renderer {
                         index_buffer: self.mesh_index_pool.buffer().expect(
                             "mesh index pool buffer exists when a mesh segment references it",
                         ),
+                        // Path/Mesh indices are rebased into the shared 32-bit
+                        // index ring, so the frame draw is always U32. Native
+                        // 16-bit index buffers live on the static geometry store
+                        // (§13.4 F4 boundary), which selects its own width.
+                        index_format: IndexFormat::U32,
                         index_offset: seg.start,
                         index_count: seg.count,
                     },

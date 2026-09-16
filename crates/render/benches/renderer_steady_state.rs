@@ -33,8 +33,8 @@ use viso_render::{
     AnalyticCapsule, AnalyticCapsuleInstance, AnalyticEllipse, AnalyticEllipseInstance,
     AnalyticLine, AnalyticLineInstance, AnalyticRRect, AnalyticRRectInstance, Border, Corners,
     ExtendMode, FrameStats, GlyphRunDraw, Gradient, GradientKind, GradientStop, ImageDraw,
-    InterpolationSpace, LineCap, LineJoin, Point, Primitive, Quad, Rect, Renderer, Rgba,
-    SpriteRegion, test_glyphs, test_scene, test_texture,
+    InterpolationSpace, LineCap, LineJoin, Path, PathCmd, Point, Primitive, Quad, Rect, Renderer,
+    Rgba, SpriteRegion, Stroke, test_glyphs, test_scene, test_texture,
 };
 
 /// A global allocator that counts heap allocations while `ARMED`, so a steady
@@ -951,6 +951,120 @@ fn assert_scroll_is_transform_only() {
     );
 }
 
+/// A grid of filled + stroked vector paths. Each cell is a closed convex outline
+/// (a small pentagon) placed at its cell origin; position lives in the `cmds`, so
+/// a scroll is a whole-scene translation of every path.
+fn path_grid_scene(count: usize) -> Vec<Primitive> {
+    let cols = (count as f32).sqrt().ceil() as usize;
+    let step = 12.0;
+    let mut scene = Vec::with_capacity(count);
+    let fill = Rgba::new(0.2, 0.6, 0.35, 1.0);
+    let stroke = Rgba::new(0.05, 0.1, 0.08, 1.0);
+    for i in 0..count {
+        let cx = (i % cols) as f32 * step + 4.0;
+        let cy = (i / cols) as f32 * step + 4.0;
+        scene.push(Primitive::Path(Path {
+            cmds: vec![
+                PathCmd::MoveTo(Point::new(cx + 4.0, cy)),
+                PathCmd::LineTo(Point::new(cx + 8.0, cy + 3.0)),
+                PathCmd::LineTo(Point::new(cx + 6.0, cy + 8.0)),
+                PathCmd::LineTo(Point::new(cx + 2.0, cy + 8.0)),
+                PathCmd::LineTo(Point::new(cx, cy + 3.0)),
+                PathCmd::Close,
+            ],
+            fill: Some(fill),
+            stroke: Some(Stroke {
+                width: 1.0,
+                color: stroke,
+                join: LineJoin::Miter,
+            }),
+        }));
+    }
+    scene
+}
+
+/// §13.4 proof — the retained vector-mesh lane. A grid of filled+stroked paths is
+/// tessellated once; thereafter an unchanged frame re-tessellates nothing and
+/// uploads nothing, a scroll (whole-scene translation) reuses the cached geometry
+/// and re-tessellates nothing, and a recolor re-tessellates nothing (color is
+/// applied at lowering, not baked into the retained geometry).
+fn assert_path_grid_is_retained() {
+    const N: usize = 256;
+    let mut h = setup_scene(path_grid_scene(N));
+    // Frame one tessellates + grows the mesh pools; frame two is the clean steady
+    // baseline (all geometry cached, shadow diff settled).
+    frame(&mut h);
+    frame(&mut h);
+
+    let buffers = h.gpu.buffer_count();
+
+    // Steady baseline: an unchanged path grid re-tessellates nothing and uploads
+    // nothing (geometry + paint + transform all cached, §13.4 F4 steady state).
+    h.renderer.upload(&mut h.gpu, &h.scene);
+    let steady = h.renderer.frame_stats();
+    assert_eq!(
+        steady.path_tessellations, 0,
+        "an unchanged path grid must re-tessellate nothing (§13.4)"
+    );
+    assert_eq!(
+        steady.uploaded_ranges, 0,
+        "an unchanged path grid must upload zero ranges (§13.4 F4 steady state)"
+    );
+    assert_eq!(
+        steady.gpu_upload_bytes, 0,
+        "an unchanged path grid must upload zero bytes (§13.4 F4 steady state)"
+    );
+
+    // Scroll: shift every path by a constant vector. Position lives in the cmds,
+    // so this is a whole-scene translation — transform-only, geometry reused.
+    for p in &mut h.scene {
+        let Primitive::Path(path) = p else {
+            unreachable!("grid is pure paths");
+        };
+        for cmd in &mut path.cmds {
+            match cmd {
+                PathCmd::MoveTo(pt) | PathCmd::LineTo(pt) => {
+                    pt.x -= 1.0;
+                    pt.y -= 1.0;
+                }
+                _ => {}
+            }
+        }
+    }
+    h.renderer.upload(&mut h.gpu, &h.scene);
+    let scroll = h.renderer.frame_stats();
+    assert_eq!(
+        scroll.dirty_primitives, N as u32,
+        "a scroll moves every path, so every one is dirty on the transform plane"
+    );
+    assert_eq!(
+        scroll.path_tessellations, 0,
+        "a transform-only change must re-tessellate nothing — the cached geometry \
+         is reused, only the per-primitive transform moves (§13.4)"
+    );
+    assert_eq!(
+        h.gpu.buffer_count(),
+        buffers,
+        "a scroll must not allocate a new GPU buffer (§17.4)"
+    );
+
+    // Recolor every path's fill. Color is applied at lowering over the cached
+    // colorless geometry, so a recolor re-tessellates nothing.
+    for p in &mut h.scene {
+        let Primitive::Path(path) = p else {
+            unreachable!("grid is pure paths");
+        };
+        path.fill = Some(Rgba::new(0.8, 0.2, 0.1, 1.0));
+    }
+    h.renderer.upload(&mut h.gpu, &h.scene);
+    let recolor = h.renderer.frame_stats();
+    assert_eq!(
+        recolor.path_tessellations, 0,
+        "a paint-only change must re-tessellate nothing — color is applied at \
+         lowering, not baked into the retained geometry (§13.4)"
+    );
+}
+
 /// Lower + upload + submit one frame of the scene.
 fn frame(h: &mut Harness) {
     h.renderer.upload(&mut h.gpu, &h.scene);
@@ -1062,6 +1176,11 @@ fn bench_steady_state(c: &mut Criterion) {
     // (§9.1) and a scroll to the transform plane (§8.7), at 10k tiles.
     assert_hover_uploads_one_range();
     assert_scroll_is_transform_only();
+
+    // D3.2 gate (§13.4): the retained vector-mesh lane. A path grid tessellates
+    // once, then holds an unchanged frame to zero re-tessellation + zero upload,
+    // a scroll to transform-only, and a recolor to paint-only.
+    assert_path_grid_is_retained();
 
     // D1 gate: each analytic family's pool holds the same two invariants in
     // isolation — a one-primitive hover uploads exactly one instance of that
