@@ -29,8 +29,8 @@
 //! overwrote it with the freshly lowered one, when changed).
 
 use crate::primitive::{
-    AnalyticEllipseInstance, AnalyticRRectInstance, GlyphInstance, GlyphInstanceData,
-    ImageInstance, MeshVertex, Path, QuadInstance,
+    AnalyticCapsuleInstance, AnalyticEllipseInstance, AnalyticRRectInstance, GlyphInstance,
+    GlyphInstanceData, ImageInstance, MeshVertex, Path, QuadInstance,
 };
 
 use super::ids::{BrushId, ClipId, GeometryId, ImageId, MeshId, PathId, PrimitiveId, TransformId};
@@ -346,6 +346,92 @@ impl AnalyticEllipseStore {
 
     /// The entry at `id`, or `None` if the slot is out of range.
     pub fn get(&self, id: GeometryId) -> Option<&AnalyticEllipseEntry> {
+        self.entries.get(id.index() as usize)
+    }
+
+    /// Number of live entries.
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    /// Whether the store holds no entries.
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+}
+
+/// A retained analytic capsule: the resolved GPU instance plus its identity
+/// handles (§8.5). Byte-identical to [`AnalyticEllipseEntry`] — the corner
+/// radius is derived from `rect_size` in the shader.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct AnalyticCapsuleEntry {
+    /// The lowered instance, in world space (origin not yet subtracted).
+    pub instance: AnalyticCapsuleInstance,
+    /// Transform identity — bumped alone by a pure move (§8.5).
+    pub transform: TransformId,
+    /// Brush identity — bumped alone by a recolor (§8.5).
+    pub brush: BrushId,
+}
+
+/// Dense store of analytic capsules (§8). Same AoS/cursor shape as
+/// [`AnalyticEllipseStore`]; the diff splits `rect_pos` → transform,
+/// `rect_size`/`border_width` → geometry, `color`/`border_color` → paint.
+#[derive(Debug, Default)]
+pub struct AnalyticCapsuleStore {
+    entries: Vec<AnalyticCapsuleEntry>,
+    cursor: usize,
+}
+
+impl AnalyticCapsuleStore {
+    /// Reset the cursor for a new frame, keeping entries to diff against.
+    pub fn begin_frame(&mut self) {
+        self.cursor = 0;
+    }
+
+    /// Trim entries the frame's walk did not revisit. Returns whether a trim
+    /// happened.
+    pub fn finish_frame(&mut self) -> bool {
+        if self.cursor < self.entries.len() {
+            self.entries.truncate(self.cursor);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Diff `instance` against the retained capsule at the cursor and advance,
+    /// appending on cold growth. Returns the slot and the moved planes.
+    pub fn ingest(&mut self, instance: AnalyticCapsuleInstance) -> (GeometryId, DirtyPlanes) {
+        let index = self.cursor;
+        let dirty = if index < self.entries.len() {
+            let prev = &self.entries[index].instance;
+            let dirty = DirtyPlanes {
+                transform: prev.rect_pos != instance.rect_pos,
+                geometry: prev.rect_size != instance.rect_size
+                    || prev.border_width != instance.border_width,
+                paint: prev.color != instance.color || prev.border_color != instance.border_color,
+                resource: false,
+                appended: false,
+            };
+            if dirty.any() {
+                self.entries[index].instance = instance;
+            }
+            dirty
+        } else {
+            let idx = index as u32;
+            self.entries.push(AnalyticCapsuleEntry {
+                instance,
+                transform: TransformId::new(idx),
+                brush: BrushId::new(idx),
+            });
+            DirtyPlanes::APPENDED
+        };
+        self.cursor += 1;
+        (GeometryId::new(index as u32), dirty)
+    }
+
+    /// The entry at `id`, or `None` if the slot is out of range.
+    pub fn get(&self, id: GeometryId) -> Option<&AnalyticCapsuleEntry> {
         self.entries.get(id.index() as usize)
     }
 
@@ -987,6 +1073,8 @@ pub enum StoreRef {
     AnalyticRRect(GeometryId),
     /// Slot in the [`AnalyticEllipseStore`].
     AnalyticEllipse(GeometryId),
+    /// Slot in the [`AnalyticCapsuleStore`].
+    AnalyticCapsule(GeometryId),
     /// Slot in the [`ImageStore`].
     Image(ImageId),
     /// Run slot in the [`GlyphRunStore`].
@@ -1011,6 +1099,7 @@ impl std::fmt::Display for StoreRef {
             StoreRef::Quad(_) => write!(f, "quad"),
             StoreRef::AnalyticRRect(_) => write!(f, "analytic-rrect"),
             StoreRef::AnalyticEllipse(_) => write!(f, "analytic-ellipse"),
+            StoreRef::AnalyticCapsule(_) => write!(f, "analytic-capsule"),
             StoreRef::Image(_) => write!(f, "image"),
             StoreRef::GlyphRun(_) => write!(f, "glyph-run"),
             StoreRef::Path(_) => write!(f, "path"),

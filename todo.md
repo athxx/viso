@@ -831,12 +831,38 @@ Section 3 — render crate (instance/primitive/store/renderer/inspect):
 - [x] Bump `SHADER_PIPELINE_PREWARM_COUNT` (`renderer.rs`) 4→6.
 
 ### D1.3 — AnalyticCapsule (`viso-shader`, `viso-gpu`, `viso-render`)
-- [ ] Add `PipelineFamily::AnalyticCapsule` (`crates/shader/src/manifest.rs` enum) + `lib.rs`
-      re-export — the one family the enum lacks.
-- [ ] `AnalyticCapsule` three-leg ABI (`BatchFamily` tag 6, mergeable): capsule SDF (segment
-      distance minus radius); `r = min(halfw,halfh)`.
-- [ ] `standard_manifest()` entry; bump `manifest_enumerates_the_four_builtins` 6→7; bump
-      `SHADER_PIPELINE_PREWARM_COUNT` 6→7.
+- [x] Add `PipelineFamily::AnalyticCapsule` (`crates/shader/src/manifest.rs` enum) + `lib.rs`
+      re-export — the one family the enum lacked.
+- [x] `AnalyticCapsule` three-leg ABI (`BatchFamily` tag 6, mergeable): capsule SDF = rounded box
+      with corner radius `r = min(halfw,halfh)` → stadium/pill; instance layout byte-identical to
+      `AnalyticEllipseInstance` (no radius field, derived in shader/reader).
+- [x] `shader/src/ir/module.rs`: `analytic_capsule_ir()` + body strings (`half`→`half_ext`);
+      `PrimitiveKind::AnalyticCapsule`. `ir/testdata.rs`: `ANALYTIC_CAPSULE_MSL_ORIGINAL` (codegen
+      output, locked by byte-equivalence). `ir/codegen_msl.rs`: `*_msl_is_byte_equivalent` test.
+- [x] `shader/src/msl.rs`: `PrimitiveKind::AnalyticCapsule` + `analytic_capsule_schema()` /
+      `ANALYTIC_CAPSULE_MSL()` accessors + `shader_source`/`instance_schema` arms + three-leg test.
+      `manifest.rs`: `standard_manifest()` entry; `manifest_enumerates_the_*_builtins` 6→7;
+      oracle assertion. `lib.rs`: re-export `ANALYTIC_CAPSULE_MSL`, `analytic_capsule_schema`.
+- [x] `gpu/src/resource.rs`: `BuiltinShader::AnalyticCapsule`. `gpu/src/headless.rs`:
+      `fill_analytic_capsule` + `capsule_sdf` (reuses `box_sdf` with `k = half[0].min(half[1])`);
+      dispatch arm.
+- [x] `render/src/primitive.rs`: `AnalyticCapsule` host struct + `to_instance()`; `Primitive`
+      variant; `#[repr(C)] #[derive(GpuPod)] AnalyticCapsuleInstance`; schema re-export;
+      `*_instance_layout_matches_schema` + `*_lowers_to_instance` tests.
+- [x] `render/src/scene/store.rs`: `AnalyticCapsuleEntry` + `AnalyticCapsuleStore`;
+      `StoreRef::AnalyticCapsule(GeometryId)` + `Display` arm. `scene/mod.rs`: store field +
+      `begin_frame`. `scene/ingest.rs`: `IngestStats` counter; `ingest_analytic_capsule`;
+      `finish_frame` wire.
+- [x] `render/src/batch/planner.rs`: `BatchFamily::AnalyticCapsule` (tag 6, mergeable);
+      `tag()`/`from_tag()`; round-trip test extended. `FAMILY_MASK=0b111` still fits (max 7).
+- [x] `render/src/renderer.rs`: pipeline/pool/scratch + `Renderer::new` (manifest-driven);
+      `SegmentKind::AnalyticCapsule` + `family()`/`resource()`; `upload()` arm; pool-sync +
+      `last_upload_bytes` sum; `lower_from_scene()` + `command_for()` arms; `ANALYTIC_CAPSULE_STRIDE`.
+- [x] `render/src/inspect.rs`: `BatchPipeline::AnalyticCapsule` + `label()`/`family()`; three
+      exhaustive matches extended. `render/src/lib.rs`: re-export capsule primitive/instance/schema.
+- [x] Frozen offset/stride block in `instance_abi_frozen.rs` (stride 52, align 4, offsets
+      0/8/16/32/36); `batch_planner.rs` `pipeline_family` arm.
+- [x] Bump `SHADER_PIPELINE_PREWARM_COUNT` (`renderer.rs`) 6→7.
 
 ### D1.4 — AnalyticLine (cap/join/miter) + steady-state bench extension (`viso-render` + shader/gpu)
 - [ ] `primitive.rs`: extend `LineJoin` (`Miter|Bevel`) with `Round`; add `LineCap`

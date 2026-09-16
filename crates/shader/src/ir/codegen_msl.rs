@@ -212,11 +212,12 @@ fn push_body(out: &mut String, body: &str) {
 mod tests {
     use crate::ir::codegen_msl::emit_msl;
     use crate::ir::module::{
-        analytic_ellipse_ir, analytic_rrect_ir, glyphrun_ir, image_ir, mesh_ir, quad_ir,
+        analytic_capsule_ir, analytic_ellipse_ir, analytic_rrect_ir, glyphrun_ir, image_ir,
+        mesh_ir, quad_ir,
     };
     use crate::ir::testdata::{
-        ANALYTIC_ELLIPSE_MSL_ORIGINAL, ANALYTIC_RRECT_MSL_ORIGINAL, GLYPHRUN_MSL_ORIGINAL,
-        IMAGE_MSL_ORIGINAL, MESH_MSL_ORIGINAL, QUAD_MSL_ORIGINAL,
+        ANALYTIC_CAPSULE_MSL_ORIGINAL, ANALYTIC_ELLIPSE_MSL_ORIGINAL, ANALYTIC_RRECT_MSL_ORIGINAL,
+        GLYPHRUN_MSL_ORIGINAL, IMAGE_MSL_ORIGINAL, MESH_MSL_ORIGINAL, QUAD_MSL_ORIGINAL,
     };
 
     // The oracle is the *frozen* pre-Slice-Q hand-written text (see `testdata`),
@@ -255,6 +256,14 @@ mod tests {
         assert_eq!(
             emit_msl(&analytic_ellipse_ir()),
             ANALYTIC_ELLIPSE_MSL_ORIGINAL
+        );
+    }
+
+    #[test]
+    fn analytic_capsule_msl_is_byte_equivalent() {
+        assert_eq!(
+            emit_msl(&analytic_capsule_ir()),
+            ANALYTIC_CAPSULE_MSL_ORIGINAL
         );
     }
 }

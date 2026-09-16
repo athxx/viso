@@ -132,6 +132,9 @@ pub enum BuiltinShader {
     /// An analytic axis-aligned ellipse, a circle when its axes are equal
     /// (AnalyticEllipse primitive).
     AnalyticEllipse,
+    /// An analytic capsule/stadium: a rounded box whose corner radius is the
+    /// smaller half-extent (AnalyticCapsule primitive).
+    AnalyticCapsule,
     /// An offscreen layer composited back with clip/opacity (Layer primitive).
     Layer,
 }

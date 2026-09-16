@@ -30,8 +30,8 @@
 use viso_gpu::TextureId;
 
 use crate::primitive::{
-    AnalyticEllipseInstance, AnalyticRRectInstance, GlyphInstance, ImageInstance, MeshVertex, Path,
-    QuadInstance, Rect,
+    AnalyticCapsuleInstance, AnalyticEllipseInstance, AnalyticRRectInstance, GlyphInstance,
+    ImageInstance, MeshVertex, Path, QuadInstance, Rect,
 };
 
 use super::bounds::Bounds;
@@ -55,6 +55,8 @@ pub struct IngestStats {
     pub analytic_rrect_instances: u32,
     /// Analytic ellipse instances retained this frame.
     pub analytic_ellipse_instances: u32,
+    /// Analytic capsule instances retained this frame.
+    pub analytic_capsule_instances: u32,
     /// Glyph instances retained this frame (summed across runs).
     pub glyph_instances: u32,
     /// Paths (re-)tessellated this frame — a geometry or paint change on a path,
@@ -143,6 +145,20 @@ impl Scene {
         self.apply_planes(dirty);
         self.ingest_stats.analytic_ellipse_instances += 1;
         self.record(StoreRef::AnalyticEllipse(slot), context, bounds)
+    }
+
+    /// Ingest an analytic capsule: diff into the capsule store, bump the moved
+    /// planes, and record its paint-order slot. Returns the stable id.
+    pub fn ingest_analytic_capsule(
+        &mut self,
+        instance: AnalyticCapsuleInstance,
+        context: EmitContext,
+        bounds: Bounds,
+    ) -> PrimitiveId {
+        let (slot, dirty) = self.analytic_capsules.ingest(instance);
+        self.apply_planes(dirty);
+        self.ingest_stats.analytic_capsule_instances += 1;
+        self.record(StoreRef::AnalyticCapsule(slot), context, bounds)
     }
 
     /// Ingest an image draw: diff instance + texture, bump the moved planes,
@@ -264,6 +280,7 @@ impl Scene {
         let mut shrank = self.quads.finish_frame();
         shrank |= self.analytic_rrects.finish_frame();
         shrank |= self.analytic_ellipses.finish_frame();
+        shrank |= self.analytic_capsules.finish_frame();
         shrank |= self.images.finish_frame();
         shrank |= self.glyph_runs.finish_frame();
         shrank |= self.paths.finish_frame();

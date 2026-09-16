@@ -16,8 +16,8 @@
 use std::mem::{align_of, offset_of, size_of};
 
 use viso_render::{
-    AnalyticEllipseInstance, AnalyticRRectInstance, GlyphInstance, ImageInstance, MeshVertex,
-    QuadInstance,
+    AnalyticCapsuleInstance, AnalyticEllipseInstance, AnalyticRRectInstance, GlyphInstance,
+    ImageInstance, MeshVertex, QuadInstance,
 };
 
 #[test]
@@ -69,6 +69,25 @@ fn analytic_ellipse_instance_layout_is_frozen() {
     assert_eq!(offset_of!(AnalyticEllipseInstance, color), 16);
     assert_eq!(offset_of!(AnalyticEllipseInstance, border_width), 32);
     assert_eq!(offset_of!(AnalyticEllipseInstance, border_color), 36);
+}
+
+#[test]
+fn analytic_capsule_instance_layout_is_frozen() {
+    assert_eq!(
+        size_of::<AnalyticCapsuleInstance>(),
+        52,
+        "AnalyticCapsuleInstance stride"
+    );
+    assert_eq!(
+        align_of::<AnalyticCapsuleInstance>(),
+        4,
+        "AnalyticCapsuleInstance align"
+    );
+    assert_eq!(offset_of!(AnalyticCapsuleInstance, rect_pos), 0);
+    assert_eq!(offset_of!(AnalyticCapsuleInstance, rect_size), 8);
+    assert_eq!(offset_of!(AnalyticCapsuleInstance, color), 16);
+    assert_eq!(offset_of!(AnalyticCapsuleInstance, border_width), 32);
+    assert_eq!(offset_of!(AnalyticCapsuleInstance, border_color), 36);
 }
 
 #[test]
