@@ -34,7 +34,9 @@ use std::sync::OnceLock;
 use viso_gpu::{InstanceSchema, SchemaAttr};
 
 use crate::ir::codegen_msl::{emit_msl, emit_schema_attrs, schema_from_attrs};
-use crate::ir::module::{ShaderIr, glyphrun_ir, image_ir, mesh_ir, quad_ir};
+use crate::ir::module::{
+    ShaderIr, analytic_ellipse_ir, analytic_rrect_ir, glyphrun_ir, image_ir, mesh_ir, quad_ir,
+};
 
 /// The built-in primitive shaders (architecture section 15.3). One entry per
 /// [`Primitive`] kind in `viso-render`; each maps to an IR-derived MSL program and
@@ -55,6 +57,10 @@ pub enum PrimitiveKind {
     Path,
     /// A colored triangle mesh.
     Mesh,
+    /// A rounded rectangle with an independent radius per corner.
+    AnalyticRRect,
+    /// An axis-aligned ellipse (a circle when its axes are equal).
+    AnalyticEllipse,
     /// An offscreen-composited layer.
     Layer,
 }
@@ -65,6 +71,8 @@ pub fn shader_source(kind: PrimitiveKind) -> Option<&'static str> {
         PrimitiveKind::Quad => Some(QUAD_MSL()),
         PrimitiveKind::Image => Some(IMAGE_MSL()),
         PrimitiveKind::GlyphRun => Some(GLYPHRUN_MSL()),
+        PrimitiveKind::AnalyticRRect => Some(ANALYTIC_RRECT_MSL()),
+        PrimitiveKind::AnalyticEllipse => Some(ANALYTIC_ELLIPSE_MSL()),
         // Path and Mesh share the general per-vertex mesh pipeline.
         PrimitiveKind::Path | PrimitiveKind::Mesh => Some(MESH_MSL()),
         _ => None,
@@ -79,6 +87,8 @@ pub fn instance_schema(kind: PrimitiveKind) -> Option<InstanceSchema> {
         PrimitiveKind::Quad => Some(quad_schema()),
         PrimitiveKind::Image => Some(image_schema()),
         PrimitiveKind::GlyphRun => Some(glyphrun_schema()),
+        PrimitiveKind::AnalyticRRect => Some(analytic_rrect_schema()),
+        PrimitiveKind::AnalyticEllipse => Some(analytic_ellipse_schema()),
         // Path and Mesh validate their per-vertex layout against `mesh_schema`.
         PrimitiveKind::Path | PrimitiveKind::Mesh => Some(mesh_schema()),
         _ => None,
@@ -134,6 +144,27 @@ pub fn glyphrun_schema() -> InstanceSchema {
 pub fn mesh_schema() -> InstanceSchema {
     static CELL: OnceLock<Vec<SchemaAttr>> = OnceLock::new();
     cached_schema(&CELL, &mesh_ir())
+}
+
+/// The instance schema the AnalyticRRect shader declares — projected from
+/// [`analytic_rrect_ir`].
+///
+/// Unlike the Quad schema (a single scalar `radius`), this carries a
+/// `packed_float4` `radius` giving each corner an independent radius, so it is a
+/// distinct instance contract with its own `#[derive(GpuPod)]` layout.
+pub fn analytic_rrect_schema() -> InstanceSchema {
+    static CELL: OnceLock<Vec<SchemaAttr>> = OnceLock::new();
+    cached_schema(&CELL, &analytic_rrect_ir())
+}
+
+/// The instance schema the AnalyticEllipse shader declares — projected from
+/// [`analytic_ellipse_ir`].
+///
+/// The ellipse radii are the rect's half-extents (derived in the vertex stage),
+/// so the instance carries no radius field — just rect, color, and border.
+pub fn analytic_ellipse_schema() -> InstanceSchema {
+    static CELL: OnceLock<Vec<SchemaAttr>> = OnceLock::new();
+    cached_schema(&CELL, &analytic_ellipse_ir())
 }
 
 /// Cache a primitive's IR-derived MSL to `'static` and return it. Materialized
@@ -216,10 +247,48 @@ pub fn MESH_MSL() -> &'static str {
     cached_msl(&CELL, || emit_msl(&mesh_ir()))
 }
 
+/// Inline MSL for the AnalyticRRect built-in (Metal backend), derived from
+/// [`analytic_rrect_ir`].
+///
+/// Like [`QUAD_MSL`], the headless backend ignores this; only the real Metal
+/// backend compiles it. See `viso-msl-reserved-half`.
+///
+/// Contract (guaranteed by the shared IR): per-instance data at buffer index 1;
+/// viewport uniform at index 0; six `vertex_id`s form two triangles (plus 1px AA
+/// pad); colors are **straight** and the fragment premultiplies (blend `src One`,
+/// `dst OneMinusSourceAlpha`); a per-corner rounded-rect SDF (the active corner's
+/// radius chosen by quadrant, clamped to the box) with linear-coverage AA and
+/// border-over-fill reproduces the headless math.
+#[allow(non_snake_case)]
+pub fn ANALYTIC_RRECT_MSL() -> &'static str {
+    static CELL: OnceLock<String> = OnceLock::new();
+    cached_msl(&CELL, || emit_msl(&analytic_rrect_ir()))
+}
+
+/// Inline MSL for the AnalyticEllipse built-in (Metal backend), derived from
+/// [`analytic_ellipse_ir`].
+///
+/// Like [`QUAD_MSL`], the headless backend ignores this; only the real Metal
+/// backend compiles it. See `viso-msl-reserved-half`.
+///
+/// Contract (guaranteed by the shared IR): per-instance data at buffer index 1;
+/// viewport uniform at index 0; six `vertex_id`s form two triangles (plus 1px AA
+/// pad); colors are **straight** and the fragment premultiplies; a scaled-circle
+/// SDF (the point normalized by the per-axis radii, scaled back by the smaller
+/// radius) with linear-coverage AA and border-over-fill reproduces the headless
+/// math. The ellipse radii are the rect's half-extents.
+#[allow(non_snake_case)]
+pub fn ANALYTIC_ELLIPSE_MSL() -> &'static str {
+    static CELL: OnceLock<String> = OnceLock::new();
+    cached_msl(&CELL, || emit_msl(&analytic_ellipse_ir()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ir::module::{glyphrun_ir, image_ir, mesh_ir, quad_ir};
+    use crate::ir::module::{
+        analytic_ellipse_ir, analytic_rrect_ir, glyphrun_ir, image_ir, mesh_ir, quad_ir,
+    };
 
     /// The three legs of a built-in's field contract — the emitted MSL attribute
     /// struct, the derived schema, and the IR attribute list — must agree field for
@@ -304,6 +373,55 @@ mod tests {
             ["rect_pos", "rect_size", "uv_pos", "uv_size", "color"]
         );
         assert_three_legs_agree(GLYPHRUN_MSL(), &glyphrun_schema(), &ir_names);
+    }
+
+    #[test]
+    fn analytic_rrect_has_source_and_schema() {
+        assert!(shader_source(PrimitiveKind::AnalyticRRect).is_some());
+        assert!(instance_schema(PrimitiveKind::AnalyticRRect).is_some());
+        let ir_names: Vec<&str> = analytic_rrect_ir()
+            .attributes
+            .iter()
+            .map(|f| f.name)
+            .collect();
+        assert_eq!(
+            ir_names,
+            [
+                "rect_pos",
+                "rect_size",
+                "color",
+                "radius",
+                "border_width",
+                "border_color"
+            ]
+        );
+        assert_three_legs_agree(ANALYTIC_RRECT_MSL(), &analytic_rrect_schema(), &ir_names);
+    }
+
+    #[test]
+    fn analytic_ellipse_has_source_and_schema() {
+        assert!(shader_source(PrimitiveKind::AnalyticEllipse).is_some());
+        assert!(instance_schema(PrimitiveKind::AnalyticEllipse).is_some());
+        let ir_names: Vec<&str> = analytic_ellipse_ir()
+            .attributes
+            .iter()
+            .map(|f| f.name)
+            .collect();
+        assert_eq!(
+            ir_names,
+            [
+                "rect_pos",
+                "rect_size",
+                "color",
+                "border_width",
+                "border_color"
+            ]
+        );
+        assert_three_legs_agree(
+            ANALYTIC_ELLIPSE_MSL(),
+            &analytic_ellipse_schema(),
+            &ir_names,
+        );
     }
 
     #[test]

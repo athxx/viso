@@ -346,6 +346,106 @@ pub fn mesh_ir() -> ShaderIr {
     }
 }
 
+/// Analytic rounded-rectangle built-in: an axis-aligned rectangle with an
+/// independent corner radius per corner (`radius[4]`, ordered left-top,
+/// right-top, right-bottom, left-bottom) and an optional inner/outer
+/// antialiased border. Per-instance data, uniforms at buffer 0.
+///
+/// The single scalar-radius Quad built-in cannot express per-corner radii, so
+/// this is a distinct family with its own `packed_float4 radius` instance field.
+pub fn analytic_rrect_ir() -> ShaderIr {
+    static ATTRS: &[IrField] = &[
+        IrField::new("rect_pos", IrType::F32X2),
+        IrField::new("rect_size", IrType::F32X2),
+        IrField::new("color", IrType::F32X4),
+        IrField::new("radius", IrType::F32X4),
+        IrField::new("border_width", IrType::F32),
+        IrField::new("border_color", IrType::F32X4),
+    ];
+    static UNIFORMS: &[IrField] = &[IrField::new("viewport", IrType::F32X2)];
+    static VARYINGS: &[Varying] = &[
+        Varying::new("position", IrType::F32X4, " [[position]]", ""),
+        Varying::new(
+            "local",
+            IrType::F32X2,
+            "",
+            "pixel-space position relative to the padded rect",
+        ),
+        Varying::new(
+            "half_size",
+            IrType::F32X2,
+            "",
+            "half extents of the rect (pixels)",
+        ),
+        Varying::new("center", IrType::F32X2, "", "rect center (pixels)"),
+        Varying::new(
+            "radius",
+            IrType::F32X4,
+            "",
+            "per-corner radius: lt, rt, rb, lb",
+        ),
+        Varying::new("border_width", IrType::F32, "", ""),
+        Varying::new("color", IrType::F32X4, "", ""),
+        Varying::new("border_color", IrType::F32X4, "", ""),
+    ];
+    ShaderIr {
+        kind: PrimitiveKind::AnalyticRRect,
+        vertex_source: VertexSource::PerInstance,
+        attributes: ATTRS,
+        uniforms: UNIFORMS,
+        varyings: VARYINGS,
+        texture_count: 0,
+        vertex_body: ANALYTIC_RRECT_VERTEX_BODY,
+        helpers: ANALYTIC_RRECT_HELPERS,
+        fragment_body: ANALYTIC_RRECT_FRAGMENT_BODY,
+    }
+}
+
+/// Analytic ellipse built-in: a scaled-circle SDF filling the rect's inscribed
+/// ellipse (equal axes give a circle), with an optional inner/outer antialiased
+/// border. Per-instance data, uniforms at buffer 0. The ellipse radii are the
+/// rect's half-extents, so no radius instance field is needed.
+pub fn analytic_ellipse_ir() -> ShaderIr {
+    static ATTRS: &[IrField] = &[
+        IrField::new("rect_pos", IrType::F32X2),
+        IrField::new("rect_size", IrType::F32X2),
+        IrField::new("color", IrType::F32X4),
+        IrField::new("border_width", IrType::F32),
+        IrField::new("border_color", IrType::F32X4),
+    ];
+    static UNIFORMS: &[IrField] = &[IrField::new("viewport", IrType::F32X2)];
+    static VARYINGS: &[Varying] = &[
+        Varying::new("position", IrType::F32X4, " [[position]]", ""),
+        Varying::new(
+            "local",
+            IrType::F32X2,
+            "",
+            "pixel-space position relative to the padded rect",
+        ),
+        Varying::new(
+            "half_size",
+            IrType::F32X2,
+            "",
+            "ellipse radii = half extents (pixels)",
+        ),
+        Varying::new("center", IrType::F32X2, "", "ellipse center (pixels)"),
+        Varying::new("border_width", IrType::F32, "", ""),
+        Varying::new("color", IrType::F32X4, "", ""),
+        Varying::new("border_color", IrType::F32X4, "", ""),
+    ];
+    ShaderIr {
+        kind: PrimitiveKind::AnalyticEllipse,
+        vertex_source: VertexSource::PerInstance,
+        attributes: ATTRS,
+        uniforms: UNIFORMS,
+        varyings: VARYINGS,
+        texture_count: 0,
+        vertex_body: ANALYTIC_ELLIPSE_VERTEX_BODY,
+        helpers: ANALYTIC_ELLIPSE_HELPERS,
+        fragment_body: ANALYTIC_ELLIPSE_FRAGMENT_BODY,
+    }
+}
+
 // The verbatim per-primitive body math. Each string is the exact statement block
 // between `vertex_main`/`fragment_main`'s braces (or, for `helpers`, a run of
 // free-standing functions) as the hand-written built-in shipped it, so the
@@ -411,6 +511,163 @@ static inline float aa_factor(float2 p) {
 const QUAD_FRAGMENT_BODY: &str = "\
 float k = min(2.0 * in.radius, min(in.half_size.x, in.half_size.y));
 float d = box_sdf(in.local, in.center, in.half_size, k);
+
+// Device-pixel-aware coverage: linear ramp over ~1 physical pixel.
+float aa = aa_factor(in.local);
+float fill_cov = clamp(-d * aa, 0.0, 1.0);
+
+// Fill, premultiplied.
+float fa = in.color.a * fill_cov;
+float4 src = float4(in.color.rgb * fa, fa);
+
+// Border over fill (both premultiplied source-over).
+if (in.border_width > 0.0) {
+    float bcov = clamp(-(abs(d) - in.border_width * 0.5) * aa, 0.0, 1.0);
+    if (bcov > 0.0) {
+        float ba = in.border_color.a * bcov;
+        float4 bsrc = float4(in.border_color.rgb * ba, ba);
+        src = bsrc + src * (1.0 - ba);
+    }
+}
+return src;";
+
+const ANALYTIC_RRECT_VERTEX_BODY: &str = "\
+InstanceIn inst = instances[iid];
+
+// Two triangles: (0,0)(1,0)(0,1) and (1,0)(1,1)(0,1). Pad by 1px each side
+// so the AA ramp at the rect edge is covered.
+float2 corner;
+switch (vid) {
+    case 0: corner = float2(0.0, 0.0); break;
+    case 1: corner = float2(1.0, 0.0); break;
+    case 2: corner = float2(0.0, 1.0); break;
+    case 3: corner = float2(1.0, 0.0); break;
+    case 4: corner = float2(1.0, 1.0); break;
+    default: corner = float2(0.0, 1.0); break;
+}
+
+float2 pos = float2(inst.rect_pos);
+float2 size = float2(inst.rect_size);
+float2 pad = float2(1.0, 1.0);
+float2 pixel = pos - pad + corner * (size + 2.0 * pad);
+
+// Pixel-space (top-left origin) → NDC. Y is flipped for Metal.
+float2 vp = float2(u.viewport);
+float2 ndc = float2(pixel.x / vp.x * 2.0 - 1.0,
+                    1.0 - pixel.y / vp.y * 2.0);
+
+VOut out;
+out.position = float4(ndc, 0.0, 1.0);
+out.local = pixel;
+out.half_size = size * 0.5;
+out.center = pos + size * 0.5;
+out.radius = float4(inst.radius);
+out.border_width = inst.border_width;
+out.color = float4(inst.color);
+out.border_color = float4(inst.border_color);
+return out;";
+
+const ANALYTIC_RRECT_HELPERS: &str = "\
+// Signed distance to a rounded box with an independent radius per corner
+// (`radii` ordered left-top, right-top, right-bottom, left-bottom), negative
+// inside. The active corner's radius is selected by the sample's quadrant, then
+// clamped to the box (a radius cannot exceed the smaller full extent).
+// `half_ext` is the box's half-extents. (Do not name it `half` — that is a
+// reserved MSL type name, the 16-bit float.)
+static inline float rrect_sdf(float2 p, float2 center, float2 half_ext, float4 radii) {
+    float2 d = p - center;
+    // Quadrant select: x<0 picks a left corner, y<0 picks a top corner.
+    float r = d.x < 0.0 ? (d.y < 0.0 ? radii.x : radii.w)
+                        : (d.y < 0.0 ? radii.y : radii.z);
+    float k = min(2.0 * r, min(half_ext.x, half_ext.y));
+    float2 q = abs(d) - (half_ext - k);
+    float2 mx = max(q, float2(0.0));
+    return length(mx) + min(max(q.x, q.y), 0.0) - k;
+}
+
+// Device-pixel coverage factor: how many SDF units span one screen pixel at the
+// current sampling position, inverted. Coverage ramps over ~1 device pixel
+// regardless of scale, so the AA width tracks the physical grid.
+static inline float aa_factor(float2 p) {
+    return 1.0 / length(float2(length(dfdx(p)), length(dfdy(p))));
+}";
+
+const ANALYTIC_RRECT_FRAGMENT_BODY: &str = "\
+float d = rrect_sdf(in.local, in.center, in.half_size, in.radius);
+
+// Device-pixel-aware coverage: linear ramp over ~1 physical pixel.
+float aa = aa_factor(in.local);
+float fill_cov = clamp(-d * aa, 0.0, 1.0);
+
+// Fill, premultiplied.
+float fa = in.color.a * fill_cov;
+float4 src = float4(in.color.rgb * fa, fa);
+
+// Border over fill (both premultiplied source-over).
+if (in.border_width > 0.0) {
+    float bcov = clamp(-(abs(d) - in.border_width * 0.5) * aa, 0.0, 1.0);
+    if (bcov > 0.0) {
+        float ba = in.border_color.a * bcov;
+        float4 bsrc = float4(in.border_color.rgb * ba, ba);
+        src = bsrc + src * (1.0 - ba);
+    }
+}
+return src;";
+
+const ANALYTIC_ELLIPSE_VERTEX_BODY: &str = "\
+InstanceIn inst = instances[iid];
+
+// Two triangles: (0,0)(1,0)(0,1) and (1,0)(1,1)(0,1). Pad by 1px each side
+// so the AA ramp at the ellipse edge is covered.
+float2 corner;
+switch (vid) {
+    case 0: corner = float2(0.0, 0.0); break;
+    case 1: corner = float2(1.0, 0.0); break;
+    case 2: corner = float2(0.0, 1.0); break;
+    case 3: corner = float2(1.0, 0.0); break;
+    case 4: corner = float2(1.0, 1.0); break;
+    default: corner = float2(0.0, 1.0); break;
+}
+
+float2 pos = float2(inst.rect_pos);
+float2 size = float2(inst.rect_size);
+float2 pad = float2(1.0, 1.0);
+float2 pixel = pos - pad + corner * (size + 2.0 * pad);
+
+// Pixel-space (top-left origin) → NDC. Y is flipped for Metal.
+float2 vp = float2(u.viewport);
+float2 ndc = float2(pixel.x / vp.x * 2.0 - 1.0,
+                    1.0 - pixel.y / vp.y * 2.0);
+
+VOut out;
+out.position = float4(ndc, 0.0, 1.0);
+out.local = pixel;
+out.half_size = size * 0.5;
+out.center = pos + size * 0.5;
+out.border_width = inst.border_width;
+out.color = float4(inst.color);
+out.border_color = float4(inst.border_color);
+return out;";
+
+const ANALYTIC_ELLIPSE_HELPERS: &str = "\
+// Signed distance to an axis-aligned ellipse, negative inside. The point is
+// normalized by the per-axis radii and offset by the unit circle, then scaled
+// back by the smaller radius to approximate pixel-space distance for the AA
+// ramp. `radii` are the ellipse's half-extents.
+static inline float ellipse_sdf(float2 p, float2 center, float2 radii) {
+    float2 n = (p - center) / radii;
+    return (length(n) - 1.0) * min(radii.x, radii.y);
+}
+
+// Device-pixel coverage factor: how many SDF units span one screen pixel at the
+// current sampling position, inverted. Coverage ramps over ~1 device pixel
+// regardless of scale, so the AA width tracks the physical grid.
+static inline float aa_factor(float2 p) {
+    return 1.0 / length(float2(length(dfdx(p)), length(dfdy(p))));
+}";
+
+const ANALYTIC_ELLIPSE_FRAGMENT_BODY: &str = "\
+float d = ellipse_sdf(in.local, in.center, in.half_size);
 
 // Device-pixel-aware coverage: linear ramp over ~1 physical pixel.
 float aa = aa_factor(in.local);

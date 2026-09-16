@@ -126,6 +126,12 @@ pub enum BuiltinShader {
     Path,
     /// A triangle mesh with per-vertex color.
     Mesh,
+    /// An analytic rounded rectangle with an independent radius per corner
+    /// (AnalyticRRect primitive).
+    AnalyticRRect,
+    /// An analytic axis-aligned ellipse, a circle when its axes are equal
+    /// (AnalyticEllipse primitive).
+    AnalyticEllipse,
     /// An offscreen layer composited back with clip/opacity (Layer primitive).
     Layer,
 }

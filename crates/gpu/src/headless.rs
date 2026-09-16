@@ -539,6 +539,26 @@ impl HeadlessRaster {
                                 cmd.scissor,
                             );
                         }
+                        BuiltinShader::AnalyticRRect => {
+                            self.fill_analytic_rrect(
+                                target,
+                                width,
+                                height,
+                                &layout,
+                                inst,
+                                cmd.scissor,
+                            );
+                        }
+                        BuiltinShader::AnalyticEllipse => {
+                            self.fill_analytic_ellipse(
+                                target,
+                                width,
+                                height,
+                                &layout,
+                                inst,
+                                cmd.scissor,
+                            );
+                        }
                         // Path/Mesh never arrive as generated geometry.
                         BuiltinShader::Path | BuiltinShader::Mesh | BuiltinShader::Layer => {}
                     }
@@ -751,6 +771,179 @@ impl HeadlessRaster {
                     if bcov > 0.0 {
                         let ba = border_c[3] * bcov;
                         // border over fill (both premultiplied source-over).
+                        let bsrc = [border_c[0] * ba, border_c[1] * ba, border_c[2] * ba, ba];
+                        src = [
+                            bsrc[0] + src[0] * (1.0 - ba),
+                            bsrc[1] + src[1] * (1.0 - ba),
+                            bsrc[2] + src[2] * (1.0 - ba),
+                            bsrc[3] + src[3] * (1.0 - ba),
+                        ];
+                    }
+                }
+                if src[3] <= 0.0 {
+                    continue;
+                }
+
+                blend_pixel(self.framebuffer(target), width, px, py, src);
+            }
+        }
+    }
+
+    /// Fill one AnalyticRRect instance: a rounded rectangle with an independent
+    /// radius per corner, linear-coverage AA, premultiplied source-over blend.
+    ///
+    /// Reads these fields (by name) from the instance bytes, per the
+    /// AnalyticRRect built-in's schema:
+    /// - `rect_pos`  : `Float2` top-left in physical pixels
+    /// - `rect_size` : `Float2` width/height in physical pixels
+    /// - `color`     : `Float4` **straight** (non-premultiplied) linear RGBA
+    /// - `radius`    : `Float4` per-corner radius (pixels): lt, rt, rb, lb
+    /// - `border_width` : `Float1` (0 = no border)
+    /// - `border_color` : `Float4` straight linear RGBA
+    ///
+    /// The per-pixel math mirrors [`ANALYTIC_RRECT_MSL`](../../shader)'s fragment
+    /// (`rrect_sdf` + border-over-fill) exactly.
+    fn fill_analytic_rrect(
+        &mut self,
+        target: FbTarget,
+        width: u32,
+        height: u32,
+        layout: &InstanceLayout,
+        inst: &[u8],
+        scissor: Option<(u32, u32, u32, u32)>,
+    ) {
+        let pos = read_f2(layout, inst, "rect_pos");
+        let size = read_f2(layout, inst, "rect_size");
+        let fill = read_f4(layout, inst, "color");
+        let radii = read_f4(layout, inst, "radius");
+        let border_w = read_f1(layout, inst, "border_width");
+        let border_c = read_f4(layout, inst, "border_color");
+
+        let half = [size[0] * 0.5, size[1] * 0.5];
+        let center = [pos[0] + half[0], pos[1] + half[1]];
+
+        let (mut x0, mut y0, mut x1, mut y1) = (
+            (pos[0] - 1.0).floor().max(0.0) as u32,
+            (pos[1] - 1.0).floor().max(0.0) as u32,
+            (pos[0] + size[0] + 1.0).ceil().min(width as f32) as u32,
+            (pos[1] + size[1] + 1.0).ceil().min(height as f32) as u32,
+        );
+        if let Some((sx, sy, sw, sh)) = scissor {
+            x0 = x0.max(sx);
+            y0 = y0.max(sy);
+            x1 = x1.min(sx + sw);
+            y1 = y1.min(sy + sh);
+        }
+
+        // See `fill_quad`: the headless grid is 1:1 with `local`, so `aa` is the
+        // constant `1/sqrt(2)`, matching the shader's `aa_factor(in.local)`.
+        let aa = 1.0 / (2.0_f32).sqrt();
+
+        for py in y0..y1 {
+            for px in x0..x1 {
+                let p = [px as f32 + 0.5, py as f32 + 0.5];
+                let d = rrect_sdf(p, center, half, radii);
+
+                let fill_cov = (-d * aa).clamp(0.0, 1.0);
+                if fill_cov <= 0.0 && border_w <= 0.0 {
+                    continue;
+                }
+
+                let mut src = [
+                    fill[0] * fill[3] * fill_cov,
+                    fill[1] * fill[3] * fill_cov,
+                    fill[2] * fill[3] * fill_cov,
+                    fill[3] * fill_cov,
+                ];
+                if border_w > 0.0 {
+                    let bcov = (-(d.abs() - border_w * 0.5) * aa).clamp(0.0, 1.0);
+                    if bcov > 0.0 {
+                        let ba = border_c[3] * bcov;
+                        let bsrc = [border_c[0] * ba, border_c[1] * ba, border_c[2] * ba, ba];
+                        src = [
+                            bsrc[0] + src[0] * (1.0 - ba),
+                            bsrc[1] + src[1] * (1.0 - ba),
+                            bsrc[2] + src[2] * (1.0 - ba),
+                            bsrc[3] + src[3] * (1.0 - ba),
+                        ];
+                    }
+                }
+                if src[3] <= 0.0 {
+                    continue;
+                }
+
+                blend_pixel(self.framebuffer(target), width, px, py, src);
+            }
+        }
+    }
+
+    /// Fill one AnalyticEllipse instance: an axis-aligned ellipse (a circle when
+    /// its axes are equal), linear-coverage AA, premultiplied source-over blend.
+    ///
+    /// Reads these fields (by name) from the instance bytes, per the
+    /// AnalyticEllipse built-in's schema:
+    /// - `rect_pos`  : `Float2` top-left in physical pixels
+    /// - `rect_size` : `Float2` width/height in physical pixels
+    /// - `color`     : `Float4` **straight** (non-premultiplied) linear RGBA
+    /// - `border_width` : `Float1` (0 = no border)
+    /// - `border_color` : `Float4` straight linear RGBA
+    ///
+    /// The ellipse radii are the rect's half-extents. The per-pixel math mirrors
+    /// [`ANALYTIC_ELLIPSE_MSL`](../../shader)'s fragment (`ellipse_sdf` +
+    /// border-over-fill) exactly.
+    fn fill_analytic_ellipse(
+        &mut self,
+        target: FbTarget,
+        width: u32,
+        height: u32,
+        layout: &InstanceLayout,
+        inst: &[u8],
+        scissor: Option<(u32, u32, u32, u32)>,
+    ) {
+        let pos = read_f2(layout, inst, "rect_pos");
+        let size = read_f2(layout, inst, "rect_size");
+        let fill = read_f4(layout, inst, "color");
+        let border_w = read_f1(layout, inst, "border_width");
+        let border_c = read_f4(layout, inst, "border_color");
+
+        let radii = [size[0] * 0.5, size[1] * 0.5];
+        let center = [pos[0] + radii[0], pos[1] + radii[1]];
+
+        let (mut x0, mut y0, mut x1, mut y1) = (
+            (pos[0] - 1.0).floor().max(0.0) as u32,
+            (pos[1] - 1.0).floor().max(0.0) as u32,
+            (pos[0] + size[0] + 1.0).ceil().min(width as f32) as u32,
+            (pos[1] + size[1] + 1.0).ceil().min(height as f32) as u32,
+        );
+        if let Some((sx, sy, sw, sh)) = scissor {
+            x0 = x0.max(sx);
+            y0 = y0.max(sy);
+            x1 = x1.min(sx + sw);
+            y1 = y1.min(sy + sh);
+        }
+
+        let aa = 1.0 / (2.0_f32).sqrt();
+
+        for py in y0..y1 {
+            for px in x0..x1 {
+                let p = [px as f32 + 0.5, py as f32 + 0.5];
+                let d = ellipse_sdf(p, center, radii);
+
+                let fill_cov = (-d * aa).clamp(0.0, 1.0);
+                if fill_cov <= 0.0 && border_w <= 0.0 {
+                    continue;
+                }
+
+                let mut src = [
+                    fill[0] * fill[3] * fill_cov,
+                    fill[1] * fill[3] * fill_cov,
+                    fill[2] * fill[3] * fill_cov,
+                    fill[3] * fill_cov,
+                ];
+                if border_w > 0.0 {
+                    let bcov = (-(d.abs() - border_w * 0.5) * aa).clamp(0.0, 1.0);
+                    if bcov > 0.0 {
+                        let ba = border_c[3] * bcov;
                         let bsrc = [border_c[0] * ba, border_c[1] * ba, border_c[2] * ba, ba];
                         src = [
                             bsrc[0] + src[0] * (1.0 - ba),
@@ -1039,6 +1232,32 @@ fn box_sdf(p: [f32; 2], center: [f32; 2], half: [f32; 2], k: f32) -> f32 {
     let mx = [q[0].max(0.0), q[1].max(0.0)];
     let outside = (mx[0] * mx[0] + mx[1] * mx[1]).sqrt();
     outside + q[0].max(q[1]).min(0.0) - k
+}
+
+/// Signed distance to a rounded box with an independent radius per corner
+/// (`radii` ordered left-top, right-top, right-bottom, left-bottom), negative
+/// inside. Mirrors the MSL `rrect_sdf`: the active corner's radius is selected by
+/// the sample's quadrant, clamped to the box, then folded into `box_sdf`.
+fn rrect_sdf(p: [f32; 2], center: [f32; 2], half: [f32; 2], radii: [f32; 4]) -> f32 {
+    let d = [p[0] - center[0], p[1] - center[1]];
+    // Quadrant select: x<0 picks a left corner, y<0 picks a top corner.
+    let r = if d[0] < 0.0 {
+        if d[1] < 0.0 { radii[0] } else { radii[3] }
+    } else if d[1] < 0.0 {
+        radii[1]
+    } else {
+        radii[2]
+    };
+    let k = (2.0 * r).min(half[0].min(half[1]));
+    box_sdf(p, center, half, k)
+}
+
+/// Signed distance to an axis-aligned ellipse, negative inside. Mirrors the MSL
+/// `ellipse_sdf`: the point is normalized by the per-axis radii, offset by the
+/// unit circle, then scaled back by the smaller radius for the AA ramp.
+fn ellipse_sdf(p: [f32; 2], center: [f32; 2], radii: [f32; 2]) -> f32 {
+    let n = [(p[0] - center[0]) / radii[0], (p[1] - center[1]) / radii[1]];
+    ((n[0] * n[0] + n[1] * n[1]).sqrt() - 1.0) * radii[0].min(radii[1])
 }
 
 /// Premultiplied source-over into one framebuffer pixel, quantizing the source
