@@ -1109,6 +1109,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(debug_assertions)]
     fn debug_overlay_reports_counters_and_batches() {
         // The dev-only overlay dump carries the frame counters and the batch
         // list. It reads the same window as `frame_stats`/`inspect_batches`, so

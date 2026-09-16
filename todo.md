@@ -1033,17 +1033,35 @@ texture/sampler/pipeline in `viso-gpu`.
         blessed and stable on re-run; ImageInstance layout-frozen test still passes.
 
 ### D2.3 — §31 gate
-- [ ] Benchmark gate (§31 `## D2`): many gradients; image grid; sprite atlas;
-      texture-binding pressure. Steady state: 0 gradient-LUT rebuild unless the gradient
-      changed; no per-primitive texture creation. High-refresh 60/120/144/240.
+- [x] Benchmark gate (§31 `## D2`) added to `renderer_steady_state`: four workloads —
+      many gradients (`gradient_grid_scene`, 1k draws over a bounded 16-ramp LUT palette),
+      image grid (1k draws over one shared texture), sprite atlas (1k `SpriteRegion`
+      sub-cells of one atlas), and texture-binding pressure (8 textures × 32 draws).
+- [x] Steady-state proof — 0 gradient-LUT rebuild unless the gradient changed: an unchanged
+      gradient grid uploads 0 ranges / 0 bytes (a LUT rebake would dirty-upload the ramp
+      texture), and recoloring one LUT-baked gradient dirties exactly one primitive and
+      uploads its rebaked row + instance, never the whole scene (§8.4/§9.1).
+- [x] Steady-state proof — no per-primitive texture creation: `texture_count` is stable
+      across a steady frame for gradient / image / sprite / multi-texture workloads; the LUT
+      atlas and image textures are persistent (§17.4).
+- [x] Texture-binding proof: an image/sprite grid over one shared texture binds it exactly
+      once (`texture_binding_switches == 1`); N distinct textures grouped by texture bind
+      once per texture (`== N`) — binding count scales with distinct textures, not draws
+      (§16.2/§31).
+- [x] D2 timings (`gradient_grid_upload_steady`, `gradient_grid_recolor`,
+      `image_grid_upload_steady`) added as regression sentinels; all proofs run at bench
+      startup so a hot-path regression fails the bench binary.
+- [ ] High-refresh 60/120/144/240 device-side frame pacing: not verifiable headless (no real
+      swapchain/present clock); the CPU-side steady-state 0-rebuild / 0-upload proof is the
+      headless guarantee. Defer to on-device (Metal) frame-timing validation.
 
 ### D2 Done
-- [ ] Linear / Radial / Sweep Gradient.
-- [ ] Image / ImageRect / Sampling.
-- [ ] NineSlice / Tile / Atlas.
+- [x] Linear / Radial / Sweep Gradient.
+- [x] Image / ImageRect / Sampling.
+- [x] NineSlice / Tile / Atlas.
 
 ### Freeze
-- [ ] FREEZE D2: the `Brush` enum + gradient-stop tier strategy + LUT key, the image/sprite/
+- [x] FREEZE D2: the `Brush` enum + gradient-stop tier strategy + LUT key, the image/sprite/
       atlas lane + sampling/edge policy + interned `SamplerId`, and the resource-policy
       routing. D3 adds general paths on top.
 

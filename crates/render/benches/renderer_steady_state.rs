@@ -27,13 +27,14 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use criterion::{Criterion, criterion_group, criterion_main};
 use viso_gpu::{
-    GpuBackend, HeadlessRaster, RawWindowHandle, SurfaceId, TextureDesc, TextureFormat,
+    GpuBackend, HeadlessRaster, RawWindowHandle, SurfaceId, TextureDesc, TextureFormat, TextureId,
 };
 use viso_render::{
     AnalyticCapsule, AnalyticCapsuleInstance, AnalyticEllipse, AnalyticEllipseInstance,
     AnalyticLine, AnalyticLineInstance, AnalyticRRect, AnalyticRRectInstance, Border, Corners,
-    FrameStats, GlyphRunDraw, LineCap, LineJoin, Point, Primitive, Quad, Rect, Renderer, Rgba,
-    test_glyphs, test_scene, test_texture,
+    ExtendMode, FrameStats, GlyphRunDraw, Gradient, GradientKind, GradientStop, ImageDraw,
+    InterpolationSpace, LineCap, LineJoin, Point, Primitive, Quad, Rect, Renderer, Rgba,
+    SpriteRegion, test_glyphs, test_scene, test_texture,
 };
 
 /// A global allocator that counts heap allocations while `ARMED`, so a steady
@@ -332,6 +333,418 @@ fn setup_family_grid(family: Family, count: usize) -> Harness {
         surface,
         scene,
     }
+}
+
+// ---------------------------------------------------------------------------
+// D2 gate (§31 `## D2`): many gradients, image grid, sprite atlas, and
+// texture-binding pressure. Each scene proves the same steady-state contract
+// the D0/D1 gates prove for quads/analytics, plus the two D2-specific ones:
+// an unchanged gradient bakes no LUT row (0 upload), and no image draw creates a
+// per-primitive texture.
+// ---------------------------------------------------------------------------
+
+/// The D2 gradient/image grid size — smaller than the 10k analytic grids because
+/// each cell here is heavier (a baked LUT row or a textured draw), but still large
+/// enough that a whole-scene re-upload would dwarf a one-cell change.
+const GRID_1K: usize = 1_000;
+
+/// The distinct 3-stop gradient palette a [`gradient_grid_scene`] draws from.
+/// Kept well under `GRADIENT_LUT_ROWS` (64) because a real UI reuses a bounded
+/// gradient palette across many elements: many *gradient draws*, few distinct
+/// *LUT rows*. A palette larger than the atlas would overflow and thrash the LUT
+/// every frame — that is the overflow path, not steady state.
+const LUT_PALETTE: usize = 16;
+
+/// The 3-stop ramp for palette `slot` (`0..LUT_PALETTE`). A pure function of
+/// `slot`, so two cells with the same slot produce byte-identical stops and
+/// therefore the same [`LutKey`] — one shared baked row.
+fn lut_palette_stops(slot: usize) -> Vec<GradientStop> {
+    let t = slot as f32 / LUT_PALETTE as f32;
+    let a = Rgba {
+        r: t,
+        g: 1.0 - t,
+        b: 0.5,
+        a: 1.0,
+    };
+    let mid = Rgba {
+        r: 0.5,
+        g: t,
+        b: 1.0 - t,
+        a: 1.0,
+    };
+    let b = Rgba {
+        r: 1.0 - t,
+        g: 0.5,
+        b: t,
+        a: 1.0,
+    };
+    vec![
+        GradientStop {
+            offset: 0.0,
+            color: a,
+        },
+        GradientStop {
+            offset: 0.5,
+            color: mid,
+        },
+        GradientStop {
+            offset: 1.0,
+            color: b,
+        },
+    ]
+}
+
+/// A grid of `count` gradient fills laid on the same fixed pitch as
+/// [`grid_scene`]. Every third cell is a 3-stop gradient (which bakes a LUT row);
+/// the rest are inline 2-stop gradients (no LUT). The 3-stop cells cycle a fixed
+/// palette of [`LUT_PALETTE`] distinct [`LutKey`]s, so the scene has many
+/// gradient draws over a bounded, atlas-sized set of baked rows — the real "many
+/// gradients" steady-state workload (§31 D2), not a one-ramp scene and not an
+/// overflow thrash. `palette_shift` offsets the palette so a caller can compose
+/// a distinct-but-still-bounded variant.
+fn gradient_grid_scene(count: usize) -> Vec<Primitive> {
+    let cols = (count as f64).sqrt().ceil() as usize;
+    let mut scene = Vec::with_capacity(count);
+    for i in 0..count {
+        let col = (i % cols) as f32;
+        let row = (i / cols) as f32;
+        let rect = Rect {
+            x: col * 3.0,
+            y: row * 3.0,
+            w: 2.0,
+            h: 2.0,
+        };
+        let stops = if i % 3 == 0 {
+            // A 3-stop gradient drawn from the bounded palette: its key depends
+            // only on `slot`, so at most LUT_PALETTE distinct rows are baked no
+            // matter how many such cells the grid has.
+            let slot = (i / 3) % LUT_PALETTE;
+            lut_palette_stops(slot)
+        } else {
+            // An inline 2-stop gradient: distinct per cell, but 2-stop gradients
+            // take the inline fast path and bake no LUT row, so their variety
+            // costs the atlas nothing.
+            let a = Rgba {
+                r: (i % 7) as f32 / 7.0,
+                g: (i % 13) as f32 / 13.0,
+                b: (i % 5) as f32 / 5.0,
+                a: 1.0,
+            };
+            let b = Rgba {
+                r: (i % 5) as f32 / 5.0,
+                g: (i % 7) as f32 / 7.0,
+                b: (i % 11) as f32 / 11.0,
+                a: 1.0,
+            };
+            vec![
+                GradientStop {
+                    offset: 0.0,
+                    color: a,
+                },
+                GradientStop {
+                    offset: 1.0,
+                    color: b,
+                },
+            ]
+        };
+        scene.push(Primitive::Gradient(Gradient {
+            rect,
+            kind: GradientKind::Linear,
+            extend: ExtendMode::Clamp,
+            p0: Point {
+                x: rect.x,
+                y: rect.y,
+            },
+            p1: Point {
+                x: rect.x + rect.w,
+                y: rect.y + rect.h,
+            },
+            stops,
+            interp: InterpolationSpace::LinearRgb,
+        }));
+    }
+    scene
+}
+
+/// A grid of `count` image draws, all sampling one shared `texture` with one
+/// shared sampler. This is the "image grid" workload: because every draw shares
+/// the same (texture, sampler), the whole grid batches into one image draw call
+/// with a single texture binding — the renderer must not create a texture per
+/// draw, and the binding set must not churn.
+fn image_grid_scene(texture: TextureId, count: usize) -> Vec<Primitive> {
+    let cols = (count as f64).sqrt().ceil() as usize;
+    let mut scene = Vec::with_capacity(count);
+    for i in 0..count {
+        let col = (i % cols) as f32;
+        let row = (i / cols) as f32;
+        scene.push(Primitive::Image(ImageDraw::new(
+            Rect {
+                x: col * 3.0,
+                y: row * 3.0,
+                w: 2.0,
+                h: 2.0,
+            },
+            texture,
+        )));
+    }
+    scene
+}
+
+/// A grid of `count` sprite draws, each a distinct 1×1-texel sub-region of one
+/// shared atlas `texture` (via [`SpriteRegion`], which inherits the half-texel
+/// bleed guard), lowered to [`ImageDraw`]s. The "sprite atlas" workload: many
+/// visually distinct sprites from a single texture and a single binding.
+fn sprite_atlas_scene(texture: TextureId, atlas_size: [u32; 2], count: usize) -> Vec<Primitive> {
+    let cols = (count as f64).sqrt().ceil() as usize;
+    let cells = atlas_size[0].max(1);
+    let mut scene = Vec::with_capacity(count);
+    for i in 0..count {
+        let col = (i % cols) as f32;
+        let row = (i / cols) as f32;
+        // Cycle through the atlas's texel cells so adjacent sprites differ.
+        let cx = (i as u32 % cells) as f32;
+        let cy = ((i as u32 / cells) % cells) as f32;
+        let sprite = SpriteRegion::new(
+            texture,
+            atlas_size,
+            Rect {
+                x: cx,
+                y: cy,
+                w: 1.0,
+                h: 1.0,
+            },
+            Rect {
+                x: col * 3.0,
+                y: row * 3.0,
+                w: 2.0,
+                h: 2.0,
+            },
+        );
+        scene.push(Primitive::Image(sprite.to_image_draw()));
+    }
+    scene
+}
+
+/// A grid of `count` image draws spread across `textures.len()` distinct
+/// textures (round-robin), each a separate binding. The "texture-binding
+/// pressure" workload: distinct textures cannot share a bind group, so the
+/// planner emits one image batch per contiguous run of the same texture. This
+/// scene groups draws by texture so the binding count is bounded and known.
+fn texture_pressure_scene(textures: &[TextureId], per_texture: usize) -> Vec<Primitive> {
+    let total = textures.len() * per_texture;
+    let cols = (total as f64).sqrt().ceil() as usize;
+    let mut scene = Vec::with_capacity(total);
+    let mut i = 0usize;
+    for &texture in textures {
+        for _ in 0..per_texture {
+            let col = (i % cols) as f32;
+            let row = (i / cols) as f32;
+            scene.push(Primitive::Image(ImageDraw::new(
+                Rect {
+                    x: col * 3.0,
+                    y: row * 3.0,
+                    w: 2.0,
+                    h: 2.0,
+                },
+                texture,
+            )));
+            i += 1;
+        }
+    }
+    scene
+}
+
+/// A [`Harness`] whose scene is prebuilt, plus any textures it references so the
+/// caller can mutate the scene. Same cold-path setup as [`setup`].
+fn setup_scene(scene: Vec<Primitive>) -> Harness {
+    let mut gpu = HeadlessRaster::new();
+    let surface = gpu.create_surface(RawWindowHandle::Headless, W, H);
+    let format = gpu.surface_format(surface);
+    let renderer = Renderer::new(&mut gpu, format);
+    Harness {
+        gpu,
+        renderer,
+        surface,
+        scene,
+    }
+}
+
+/// Create and upload one BGRA8 checkerboard texture on `gpu`, returning its id.
+fn upload_test_texture(gpu: &mut HeadlessRaster, label: &'static str) -> (TextureId, [u32; 2]) {
+    let (tw, th, texels) = test_texture();
+    let texture = gpu.create_texture(&TextureDesc {
+        width: tw,
+        height: th,
+        format: TextureFormat::Bgra8Unorm,
+        render_target: false,
+        label,
+    });
+    gpu.write_texture(texture, 0, 0, tw, th, &texels);
+    (texture, [tw, th])
+}
+
+/// §12/§31 D2 proof — "many gradients": an unchanged gradient grid bakes no LUT
+/// row and uploads nothing, and recoloring one gradient re-bakes exactly that
+/// gradient (one LUT row + one instance), never the whole scene.
+fn assert_gradient_grid_steady_and_local() {
+    let mut h = setup_scene(gradient_grid_scene(GRID_1K));
+    frame(&mut h);
+    frame(&mut h);
+
+    let textures = h.gpu.texture_count();
+
+    // Steady baseline: an unchanged gradient scene rebakes no LUT row, so it
+    // uploads nothing (§31 D2: "0 gradient-LUT rebuild unless the gradient
+    // changed").
+    h.renderer.upload(&mut h.gpu, &h.scene);
+    let steady = h.renderer.frame_stats();
+    assert_eq!(
+        steady.uploaded_ranges, 0,
+        "an unchanged gradient grid must upload zero ranges — no LUT rebake, no \
+         instance re-upload (§31 D2)"
+    );
+    assert_eq!(
+        steady.gpu_upload_bytes, 0,
+        "an unchanged gradient grid must upload zero bytes (§31 D2)"
+    );
+    assert_eq!(
+        h.gpu.texture_count(),
+        textures,
+        "a steady gradient frame must create no texture — the LUT atlas is \
+         persistent (§17.4)"
+    );
+
+    // Recolor one 3-stop gradient (i % 3 == 0 → has a LUT row) so the change
+    // both re-bakes its LUT row and re-uploads its instance.
+    let target = (GRID_1K / 2 / 3) * 3;
+    let Primitive::Gradient(g) = &mut h.scene[target] else {
+        unreachable!("every third cell is a gradient with a middle stop");
+    };
+    assert!(g.stops.len() >= 3, "target must be a LUT-baked gradient");
+    g.stops[0].color = Rgba {
+        r: 0.9,
+        g: 0.1,
+        b: 0.4,
+        a: 1.0,
+    };
+
+    h.renderer.upload(&mut h.gpu, &h.scene);
+    let changed = h.renderer.frame_stats();
+    assert_eq!(
+        changed.dirty_primitives, 1,
+        "recoloring one gradient must dirty exactly one primitive (§8.4)"
+    );
+    assert!(
+        changed.gpu_upload_bytes > 0,
+        "a changed LUT gradient must upload its rebaked ramp + instance"
+    );
+    assert_eq!(
+        h.gpu.texture_count(),
+        textures,
+        "recoloring a gradient rewrites the LUT atlas in place — no new texture \
+         (§17.4)"
+    );
+}
+
+/// §12.6/§31 D2 proof — "image grid" and "sprite atlas": a grid of image/sprite
+/// draws over one shared texture is steady (0 upload unchanged), creates no
+/// per-draw texture, and collapses to a single texture binding (the whole grid
+/// shares one (texture, sampler), so the planner emits one binding, and a steady
+/// frame's binding set never churns).
+fn assert_image_grid_shares_one_binding(build: impl Fn(TextureId, [u32; 2]) -> Vec<Primitive>) {
+    let mut gpu = HeadlessRaster::new();
+    let surface = gpu.create_surface(RawWindowHandle::Headless, W, H);
+    let format = gpu.surface_format(surface);
+    let renderer = Renderer::new(&mut gpu, format);
+    let (texture, size) = upload_test_texture(&mut gpu, "bench-image-grid");
+    let scene = build(texture, size);
+    let mut h = Harness {
+        gpu,
+        renderer,
+        surface,
+        scene,
+    };
+
+    frame(&mut h);
+    frame(&mut h);
+
+    let textures = h.gpu.texture_count();
+
+    h.renderer.upload(&mut h.gpu, &h.scene);
+    let steady = h.renderer.frame_stats();
+    assert_eq!(
+        steady.uploaded_ranges, 0,
+        "an unchanged image grid must upload zero ranges (§9.1)"
+    );
+    assert_eq!(
+        steady.gpu_upload_bytes, 0,
+        "an unchanged image grid must upload zero bytes (§9.1)"
+    );
+    assert_eq!(
+        h.gpu.texture_count(),
+        textures,
+        "an image grid must create no per-draw texture — every draw shares the \
+         one uploaded texture (§31 D2: no per-primitive texture creation)"
+    );
+    // One shared (texture, sampler) ⇒ the image draws form one contiguous batch
+    // with a single texture binding, entered once. The scene has no other
+    // textured family, so there is exactly one binding switch (the entry) and no
+    // churn between adjacent draws.
+    assert_eq!(
+        steady.texture_binding_switches, 1,
+        "an image grid over one shared texture must bind that texture exactly \
+         once, not once per draw (§16.2/§31)"
+    );
+}
+
+/// §31 D2 proof — "texture-binding pressure": `n` distinct textures each backing
+/// a run of image draws force exactly `n` texture bindings (one per texture, none
+/// per draw), and the scene is still steady (0 upload unchanged) with no
+/// per-draw texture creation.
+fn assert_texture_pressure_binds_once_per_texture() {
+    const N_TEX: usize = 8;
+    const PER_TEX: usize = 32;
+
+    let mut gpu = HeadlessRaster::new();
+    let surface = gpu.create_surface(RawWindowHandle::Headless, W, H);
+    let format = gpu.surface_format(surface);
+    let renderer = Renderer::new(&mut gpu, format);
+
+    let textures: Vec<TextureId> = (0..N_TEX)
+        .map(|_| upload_test_texture(&mut gpu, "bench-texture-pressure").0)
+        .collect();
+    let scene = texture_pressure_scene(&textures, PER_TEX);
+    let mut h = Harness {
+        gpu,
+        renderer,
+        surface,
+        scene,
+    };
+
+    frame(&mut h);
+    frame(&mut h);
+
+    let tex_count = h.gpu.texture_count();
+
+    h.renderer.upload(&mut h.gpu, &h.scene);
+    let steady = h.renderer.frame_stats();
+    assert_eq!(
+        steady.uploaded_ranges, 0,
+        "an unchanged multi-texture grid must upload zero ranges (§9.1)"
+    );
+    assert_eq!(
+        h.gpu.texture_count(),
+        tex_count,
+        "a steady multi-texture frame must create no texture (§17.4/§31 D2)"
+    );
+    // Draws are grouped by texture, so each texture is bound once for its run:
+    // exactly N_TEX binding switches, bounded by the distinct-texture count, not
+    // the draw count (N_TEX * PER_TEX).
+    assert_eq!(
+        steady.texture_binding_switches, N_TEX as u32,
+        "distinct-texture draws must bind once per texture, not once per draw — \
+         binding count scales with distinct textures (§31 D2)"
+    );
 }
 
 /// §9.1 proof for an analytic `family`: a paint-only change to one primitive
@@ -663,6 +1076,15 @@ fn bench_steady_state(c: &mut Criterion) {
         assert_family_scroll_is_transform_only(family);
     }
 
+    // D2 gate (§31 `## D2`): many gradients, image grid, sprite atlas, and
+    // texture-binding pressure. Steady state rebakes no gradient LUT (0 upload),
+    // creates no per-primitive texture, and binds once per distinct texture; a
+    // one-gradient recolor rebakes exactly that gradient.
+    assert_gradient_grid_steady_and_local();
+    assert_image_grid_shares_one_binding(|tex, _size| image_grid_scene(tex, GRID_1K));
+    assert_image_grid_shares_one_binding(|tex, size| sprite_atlas_scene(tex, size, GRID_1K));
+    assert_texture_pressure_binds_once_per_texture();
+
     let mut h = setup();
     // Warm up so the measured iterations are the reuse path, not first growth.
     frame(&mut h);
@@ -704,6 +1126,53 @@ fn bench_steady_state(c: &mut Criterion) {
             }
             big.renderer
                 .upload(black_box(&mut big.gpu), black_box(&big.scene));
+        });
+    });
+
+    // D2 timings (§31 `## D2`). A steady `upload` of each workload is the
+    // diff-and-coalesce cost with zero GPU work; the gradient recolor is the
+    // one-LUT-row-rebake path. All scale with the dirty set, not the scene.
+    let mut grad = setup_scene(gradient_grid_scene(GRID_1K));
+    frame(&mut grad);
+    frame(&mut grad);
+    c.bench_function("gradient_grid_upload_steady", |b| {
+        b.iter(|| {
+            grad.renderer
+                .upload(black_box(&mut grad.gpu), black_box(&grad.scene))
+        });
+    });
+
+    // Recolor one LUT-baked gradient (i % 3 == 0) before each iteration, so each
+    // measured upload is one LUT-row rebake plus one instance write.
+    let grad_target = (GRID_1K / 2 / 3) * 3;
+    c.bench_function("gradient_grid_recolor", |b| {
+        b.iter(|| {
+            if let Primitive::Gradient(g) = &mut grad.scene[grad_target] {
+                g.stops[0].color.r = 1.0 - g.stops[0].color.r;
+            }
+            grad.renderer
+                .upload(black_box(&mut grad.gpu), black_box(&grad.scene));
+        });
+    });
+
+    // Image grid over one shared texture: steady upload with one texture binding.
+    let mut img_gpu = HeadlessRaster::new();
+    let img_surface = img_gpu.create_surface(RawWindowHandle::Headless, W, H);
+    let img_format = img_gpu.surface_format(img_surface);
+    let img_renderer = Renderer::new(&mut img_gpu, img_format);
+    let (img_tex, _img_size) = upload_test_texture(&mut img_gpu, "bench-image-timing");
+    let mut img = Harness {
+        gpu: img_gpu,
+        renderer: img_renderer,
+        surface: img_surface,
+        scene: image_grid_scene(img_tex, GRID_1K),
+    };
+    frame(&mut img);
+    frame(&mut img);
+    c.bench_function("image_grid_upload_steady", |b| {
+        b.iter(|| {
+            img.renderer
+                .upload(black_box(&mut img.gpu), black_box(&img.scene))
         });
     });
 }
