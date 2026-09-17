@@ -1273,7 +1273,7 @@ pub enum LineJoin {
 ///
 /// A butt cap ends flush at the endpoint; a square cap projects the stroke half
 /// its width past the endpoint; a round cap adds a semicircle of that radius.
-/// Line-specific: the [`Path`] stroke uses only butt ends and carries no cap.
+/// Applies to the open endpoints of a [`Path`] stroke and to each dash segment.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LineCap {
     /// Flush end at the endpoint.
@@ -1285,7 +1285,7 @@ pub enum LineCap {
 }
 
 impl LineCap {
-    /// The `u32` the [`AnalyticLineInstance`] carries (matches the shader/headless
+    /// The `u32` a stroke cap maps to (matches the analytic shader/headless
     /// dispatch: 0=butt, 1=square, 2=round).
     const fn as_u32(self) -> u32 {
         match self {
@@ -1297,8 +1297,7 @@ impl LineCap {
 }
 
 impl LineJoin {
-    /// The `u32` the [`AnalyticLineInstance`] carries (0=miter, 1=bevel,
-    /// 2=round).
+    /// The `u32` a stroke join maps to (0=miter, 1=bevel, 2=round).
     const fn as_u32(self) -> u32 {
         match self {
             LineJoin::Miter => 0,
@@ -1308,25 +1307,129 @@ impl LineJoin {
     }
 }
 
+/// Where a stroke sits relative to the outline it traces.
+///
+/// Only meaningful for closed subpaths, which have a defined inside/outside; an
+/// open subpath has no such distinction and is always stroked centered.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum StrokeAlign {
+    /// Centered on the outline: half the width falls on each side.
+    #[default]
+    Center,
+    /// Entirely inside a closed outline.
+    Inner,
+    /// Entirely outside a closed outline.
+    Outer,
+}
+
+impl StrokeAlign {
+    /// A stable discriminant for structural fingerprinting.
+    const fn as_u32(self) -> u32 {
+        match self {
+            StrokeAlign::Center => 0,
+            StrokeAlign::Inner => 1,
+            StrokeAlign::Outer => 2,
+        }
+    }
+
+    /// The stroke rail offsets `(left, right)` along the left normal for this
+    /// alignment and half-width, given whether the subpath is closed. Open
+    /// subpaths have no inside/outside and always stroke centered.
+    fn rails(self, hw: f32, closed: bool) -> (f32, f32) {
+        match self {
+            StrokeAlign::Center => (hw, -hw),
+            StrokeAlign::Inner if closed => (0.0, -2.0 * hw),
+            StrokeAlign::Outer if closed => (2.0 * hw, 0.0),
+            _ => (hw, -hw),
+        }
+    }
+}
+
+/// The maximum number of dash on/off lengths carried inline.
+pub const DASH_SEGMENTS_MAX: usize = 4;
+
+/// A dash pattern: alternating on/off run lengths (in physical pixels) that the
+/// stroke is chopped into, plus a phase offset.
+///
+/// Lengths are kept inline (up to [`DASH_SEGMENTS_MAX`]) so [`Stroke`] stays
+/// `Copy`; `len` is how many of `segments` are used (`1..=DASH_SEGMENTS_MAX`).
+/// A single-entry pattern is treated as `[on, on]`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct DashPattern {
+    /// On/off run lengths; the first is an "on" run.
+    pub segments: [f32; DASH_SEGMENTS_MAX],
+    /// How many entries of `segments` are valid (`1..=DASH_SEGMENTS_MAX`).
+    pub len: u8,
+    /// Phase offset into the pattern before the first dash.
+    pub offset: f32,
+}
+
+impl DashPattern {
+    /// Build a dash pattern from a slice of run lengths (clamped to
+    /// [`DASH_SEGMENTS_MAX`]) and a phase offset.
+    pub fn new(lengths: &[f32], offset: f32) -> Self {
+        let mut segments = [0.0; DASH_SEGMENTS_MAX];
+        let len = lengths.len().min(DASH_SEGMENTS_MAX);
+        segments[..len].copy_from_slice(&lengths[..len]);
+        DashPattern {
+            segments,
+            len: len as u8,
+            offset,
+        }
+    }
+
+    /// The valid run lengths.
+    fn runs(&self) -> &[f32] {
+        &self.segments[..self.len as usize]
+    }
+}
+
 /// A stroke (outline) applied to a [`Path`].
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Stroke {
-    /// Stroke width in physical pixels (centered on the path).
+    /// Stroke width in physical pixels.
     pub width: f32,
     /// Straight linear RGBA stroke color.
     pub color: Rgba,
+    /// How open endpoints (and dash-segment ends) are shaped.
+    pub cap: LineCap,
     /// How corners are joined.
     pub join: LineJoin,
+    /// Miter length limit as a multiple of the half-width; past it a miter join
+    /// falls back to a bevel.
+    pub miter_limit: f32,
+    /// Where the stroke sits relative to the outline (closed subpaths only).
+    pub align: StrokeAlign,
+    /// Optional dash pattern; `None` is a solid stroke.
+    pub dash: Option<DashPattern>,
+    /// When set, ignore `width` and draw a one-device-pixel hairline.
+    pub hairline: bool,
+}
+
+impl Stroke {
+    /// A solid, centered, butt-capped, miter-joined stroke of the given width
+    /// and color (miter limit 4.0, no dash, not a hairline).
+    pub fn new(width: f32, color: Rgba) -> Self {
+        Stroke {
+            width,
+            color,
+            cap: LineCap::Butt,
+            join: LineJoin::Miter,
+            miter_limit: DEFAULT_MITER_LIMIT,
+            align: StrokeAlign::Center,
+            dash: None,
+            hairline: false,
+        }
+    }
 }
 
 /// A filled and/or stroked vector path.
 ///
-/// Phase 2's path support is deliberately minimal: the CPU tessellator flattens
-/// curves, fan-triangulates the fill (assuming a simple, roughly convex
-/// outline), and expands the stroke into segment quads with miter/bevel joins,
-/// adding a 1px coverage-AA fringe. It does not implement even-odd/nonzero
-/// winding fills of self-intersecting outlines, caps beyond a butt end, or
-/// dashing — those are out of scope for this slice.
+/// The CPU tessellator flattens curves, fan-triangulates the fill (assuming a
+/// simple, roughly convex outline), and expands the stroke into segment quads
+/// with miter/bevel/round joins and butt/square/round caps, adding a 1px
+/// coverage-AA fringe. It does not implement even-odd/nonzero winding fills of
+/// self-intersecting outlines.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Path {
     /// The outline commands.
@@ -1752,9 +1855,14 @@ const FLATTEN_TOLERANCE: f32 = 0.25;
 /// strokes. The fringe vertices carry `edge = 0`; interior vertices `edge = 1`.
 const AA_FRINGE: f32 = 1.0;
 
-/// The bevel-fallback threshold for miter joins, as a multiple of the stroke's
-/// half-width. Corners sharper than this switch from miter to bevel.
-const MITER_LIMIT: f32 = 4.0;
+/// The default miter limit for [`Stroke::new`]: the bevel-fallback threshold
+/// for miter joins, as a multiple of the stroke's half-width. Corners sharper
+/// than this switch from miter to bevel.
+const DEFAULT_MITER_LIMIT: f32 = 4.0;
+
+/// The minimum arc-length step (physical pixels) used when flattening round
+/// caps and joins into a triangle fan.
+const ROUND_STEP: f32 = 0.5;
 
 impl Path {
     /// Tessellate this path's **geometry** — colorless local-space vertices and
@@ -1878,7 +1986,22 @@ impl Path {
             Some(s) => {
                 1u8.hash(&mut h);
                 q(s.width).hash(&mut h);
+                s.cap.as_u32().hash(&mut h);
                 s.join.as_u32().hash(&mut h);
+                q(s.miter_limit).hash(&mut h);
+                s.align.as_u32().hash(&mut h);
+                (s.hairline as u8).hash(&mut h);
+                match &s.dash {
+                    Some(d) => {
+                        1u8.hash(&mut h);
+                        d.len.hash(&mut h);
+                        for run in d.runs() {
+                            q(*run).hash(&mut h);
+                        }
+                        q(d.offset).hash(&mut h);
+                    }
+                    None => 0u8.hash(&mut h),
+                }
             }
             None => 0u8.hash(&mut h),
         }
@@ -1930,7 +2053,7 @@ impl Path {
             return None;
         }
         match (&self.stroke, &other.stroke) {
-            (Some(a), Some(b)) if a.width == b.width && a.join == b.join => {}
+            (Some(a), Some(b)) if stroke_geometry_eq(a, b) => {}
             (None, None) => {}
             _ => return None,
         }
@@ -2179,6 +2302,95 @@ fn outward_normal(ring: &[Point], i: usize, center: Point) -> (f32, f32) {
 /// Expand a polyline into a stroke: one quad per segment, plus miter/bevel joins
 /// at interior vertices, with a coverage-AA fringe along both sides. Butt ends
 /// (no caps) for open subpaths.
+/// Whether two strokes share the geometry-affecting style (everything but
+/// color). Used to route a color-only change to the paint plane while any shape
+/// change routes to a geometry rebuild.
+fn stroke_geometry_eq(a: &Stroke, b: &Stroke) -> bool {
+    a.width == b.width
+        && a.cap == b.cap
+        && a.join == b.join
+        && a.miter_limit == b.miter_limit
+        && a.align == b.align
+        && a.hairline == b.hairline
+        && a.dash == b.dash
+}
+
+/// Split a centerline (`ring`, optionally closed) into the "on" runs of a dash
+/// pattern. The pattern alternates on/off starting with the first segment;
+/// `offset` advances the starting phase. Returns each on-run as its own point
+/// list ready to stroke as an open polyline.
+fn dash_runs(ring: &[Point], closed: bool, dash: &DashPattern) -> Vec<Vec<Point>> {
+    let runs = dash.runs();
+    let period: f32 = runs.iter().sum();
+    if period <= 0.0 {
+        return vec![ring.to_vec()];
+    }
+    // Unroll a closed ring into an open polyline that revisits the start.
+    let mut pts: Vec<Point> = ring.to_vec();
+    if closed && ring.len() >= 2 {
+        pts.push(ring[0]);
+    }
+    if pts.len() < 2 {
+        return Vec::new();
+    }
+
+    // Phase within the pattern; `on` tracks whether the current run paints.
+    let mut phase = dash.offset.rem_euclid(period);
+    let (mut idx, mut on) = {
+        let mut acc = 0.0;
+        let mut i = 0;
+        let mut painting = true;
+        while acc + runs[i] <= phase && i + 1 < runs.len() {
+            acc += runs[i];
+            i += 1;
+            painting = !painting;
+        }
+        phase -= acc;
+        (i, painting)
+    };
+    let mut remaining = runs[idx] - phase;
+
+    let mut out: Vec<Vec<Point>> = Vec::new();
+    let mut cur: Vec<Point> = Vec::new();
+    if on {
+        cur.push(pts[0]);
+    }
+
+    for w in pts.windows(2) {
+        let (a, b) = (w[0], w[1]);
+        let seg = ((b.x - a.x).powi(2) + (b.y - a.y).powi(2)).sqrt();
+        if seg <= 0.0 {
+            continue;
+        }
+        let (dx, dy) = ((b.x - a.x) / seg, (b.y - a.y) / seg);
+        let mut travelled = 0.0;
+        while seg - travelled > remaining {
+            travelled += remaining;
+            let p = Point::new(a.x + dx * travelled, a.y + dy * travelled);
+            if on {
+                // End of an on-run: close it at `p`.
+                cur.push(p);
+                out.push(std::mem::take(&mut cur));
+            } else {
+                // Start of an on-run: begin a fresh run at `p`.
+                cur.push(p);
+            }
+            // Advance to the next run.
+            idx = (idx + 1) % runs.len();
+            on = !on;
+            remaining = runs[idx];
+        }
+        remaining -= seg - travelled;
+        if on {
+            cur.push(b);
+        }
+    }
+    if on && cur.len() >= 2 {
+        out.push(cur);
+    }
+    out
+}
+
 fn stroke_subpath(
     points: &[Point],
     closed: bool,
@@ -2186,18 +2398,52 @@ fn stroke_subpath(
     verts: &mut Vec<GeoVertex>,
     indices: &mut Vec<u32>,
 ) {
-    if points.len() < 2 || stroke.width <= 0.0 {
+    let hw = if stroke.hairline {
+        // One device pixel; DPI scaling is threaded with surface/layer DPI later.
+        0.5
+    } else {
+        stroke.width * 0.5
+    };
+    if points.len() < 2 || hw <= 0.0 {
         return;
     }
-    let hw = stroke.width * 0.5;
 
-    // Build the segment list (drop a duplicated closing point; closed rings wrap).
+    // Normalize to a point ring (a closed subpath drops its duplicated closing
+    // point and wraps).
     let ring: &[Point] = match points.split_last() {
         Some((last, head)) if closed && head.first() == Some(last) => head,
         _ => points,
     };
+
+    match &stroke.dash {
+        Some(dash) if dash.len > 0 => {
+            for run in dash_runs(ring, closed, dash) {
+                // Each "on" run is a standalone open polyline with the stroke's caps.
+                stroke_polyline(&run, false, hw, &stroke, verts, indices);
+            }
+        }
+        _ => stroke_polyline(ring, closed, hw, &stroke, verts, indices),
+    }
+}
+
+/// Stroke one polyline (or closed ring) of centerline points at half-width `hw`.
+fn stroke_polyline(
+    ring: &[Point],
+    closed: bool,
+    hw: f32,
+    stroke: &Stroke,
+    verts: &mut Vec<GeoVertex>,
+    indices: &mut Vec<u32>,
+) {
+    if ring.len() < 2 {
+        return;
+    }
     let count = ring.len();
     let seg_count = if closed { count } else { count - 1 };
+    // Alignment shifts the whole stroke along the left normal by `mid`; open
+    // subpaths have no inside/outside and stay centered.
+    let (off_l, off_r) = stroke.align.rails(hw, closed);
+    let mid = (off_l + off_r) * 0.5;
 
     for s in 0..seg_count {
         let a = ring[s];
@@ -2206,19 +2452,45 @@ fn stroke_subpath(
         // Left normal (perpendicular).
         let nx = -dir.1;
         let ny = dir.0;
-        emit_stroke_quad(a, b, nx, ny, hw, verts, indices);
+        emit_stroke_quad(a, b, nx, ny, hw, mid, verts, indices);
 
         // Join at `b` with the next segment (interior vertices only).
         let is_interior = closed || (s + 1) < seg_count;
         if is_interior {
             let c = ring[(s + 2) % count];
-            emit_join(b, a, c, nx, ny, hw, stroke.join, verts, indices);
+            emit_join(b, a, c, nx, ny, hw, mid, stroke, verts, indices);
         }
+    }
+
+    // Caps at the two open endpoints (closed rings have none).
+    if !closed {
+        let a0 = ring[0];
+        let a1 = ring[1];
+        emit_cap(
+            a0,
+            norm(a0.x - a1.x, a0.y - a1.y),
+            hw,
+            mid,
+            stroke,
+            verts,
+            indices,
+        );
+        let bn = ring[count - 1];
+        let bp = ring[count - 2];
+        emit_cap(
+            bn,
+            norm(bn.x - bp.x, bn.y - bp.y),
+            hw,
+            mid,
+            stroke,
+            verts,
+            indices,
+        );
     }
 }
 
 /// Emit one filled+fringed stroke quad for segment `a`→`b` with left normal
-/// `(nx, ny)` and half-width `hw`.
+/// `(nx, ny)`, half-width `hw`, shifted along the normal by `mid` (alignment).
 #[allow(clippy::too_many_arguments)]
 fn emit_stroke_quad(
     a: Point,
@@ -2226,15 +2498,19 @@ fn emit_stroke_quad(
     nx: f32,
     ny: f32,
     hw: f32,
+    mid: f32,
     verts: &mut Vec<GeoVertex>,
     indices: &mut Vec<u32>,
 ) {
     let base = verts.len() as u32;
+    // Left/right rail offsets along the normal after the alignment shift.
+    let ol = mid + hw;
+    let or = mid - hw;
     // Core quad corners (edge = 1) then fringe corners (edge = 0) on each side.
-    let al = Point::new(a.x + nx * hw, a.y + ny * hw);
-    let ar = Point::new(a.x - nx * hw, a.y - ny * hw);
-    let bl = Point::new(b.x + nx * hw, b.y + ny * hw);
-    let br = Point::new(b.x - nx * hw, b.y - ny * hw);
+    let al = Point::new(a.x + nx * ol, a.y + ny * ol);
+    let ar = Point::new(a.x + nx * or, a.y + ny * or);
+    let bl = Point::new(b.x + nx * ol, b.y + ny * ol);
+    let br = Point::new(b.x + nx * or, b.y + ny * or);
     verts.push(geo_vert(al, 1.0)); // 0
     verts.push(geo_vert(ar, 1.0)); // 1
     verts.push(geo_vert(bl, 1.0)); // 2
@@ -2258,8 +2534,8 @@ fn emit_stroke_quad(
 }
 
 /// Fill the wedge at corner `b` between the incoming segment (left normal
-/// `(pnx, pny)`) and the outgoing segment toward `c`. Miter when within the
-/// limit, otherwise a bevel triangle.
+/// `(pnx, pny)`) and the outgoing segment toward `c`. Miter within the limit,
+/// round when requested, bevel otherwise.
 #[allow(clippy::too_many_arguments)]
 fn emit_join(
     b: Point,
@@ -2268,7 +2544,8 @@ fn emit_join(
     pnx: f32,
     pny: f32,
     hw: f32,
-    join: LineJoin,
+    mid: f32,
+    stroke: &Stroke,
     verts: &mut Vec<GeoVertex>,
     indices: &mut Vec<u32>,
 ) {
@@ -2282,28 +2559,33 @@ fn emit_join(
     if cross.abs() < 1e-4 {
         return; // straight — nothing to fill.
     }
+    // Corner point after the alignment shift (about which the outer rails pivot).
+    let bc = Point::new(b.x + pnx * mid, b.y + pny * mid);
     // Outer side is opposite the turn. For a left turn (cross > 0) the outer
     // corner is on the -normal side; for a right turn, the +normal side.
     let sign = if cross > 0.0 { -1.0 } else { 1.0 };
-    let p_out = Point::new(b.x + sign * pnx * hw, b.y + sign * pny * hw);
-    let n_out = Point::new(b.x + sign * nnx * hw, b.y + sign * nny * hw);
+    let p_out = Point::new(bc.x + sign * pnx * hw, bc.y + sign * pny * hw);
+    let n_out = Point::new(bc.x + sign * nnx * hw, bc.y + sign * nny * hw);
+
+    if stroke.join == LineJoin::Round {
+        fan(bc, p_out, n_out, hw, verts, indices);
+        return;
+    }
 
     let base = verts.len() as u32;
-    verts.push(geo_vert(b, 1.0));
+    verts.push(geo_vert(bc, 1.0));
     verts.push(geo_vert(p_out, 1.0));
     verts.push(geo_vert(n_out, 1.0));
 
     // Miter apex: intersection of the two outer edges. Fall back to bevel if the
-    // miter grows past MITER_LIMIT × hw or the join kind is Bevel/Round. (Path's
-    // `Stroke` only exposes Miter/Bevel; Round exists for the analytic line's
-    // per-endpoint join and degenerates to a bevel corner in the mesh path.)
-    if join == LineJoin::Miter
+    // miter grows past `miter_limit × hw`.
+    if stroke.join == LineJoin::Miter
         && normals_diverge(pnx, pny, nnx, nny, sign)
         && let Some(apex) = miter_apex(p_out, idir, n_out, ndir)
     {
-        let dx = apex.x - b.x;
-        let dy = apex.y - b.y;
-        if (dx * dx + dy * dy).sqrt() <= MITER_LIMIT * hw {
+        let dx = apex.x - bc.x;
+        let dy = apex.y - bc.y;
+        if (dx * dx + dy * dy).sqrt() <= stroke.miter_limit * hw {
             let apex_idx = verts.len() as u32;
             verts.push(geo_vert(apex, 1.0));
             indices.extend_from_slice(&[base, base + 1, apex_idx, base, apex_idx, base + 2]);
@@ -2312,6 +2594,117 @@ fn emit_join(
     }
     // Bevel: single triangle across the corner.
     indices.extend_from_slice(&[base, base + 1, base + 2]);
+}
+
+/// Emit the end cap at open endpoint `end` whose outward direction is `dir`
+/// (pointing away from the polyline), half-width `hw`, alignment shift `mid`.
+#[allow(clippy::too_many_arguments)]
+fn emit_cap(
+    end: Point,
+    dir: (f32, f32),
+    hw: f32,
+    mid: f32,
+    stroke: &Stroke,
+    verts: &mut Vec<GeoVertex>,
+    indices: &mut Vec<u32>,
+) {
+    if dir == (0.0, 0.0) {
+        return;
+    }
+    // Left normal of the outward direction.
+    let nx = -dir.1;
+    let ny = dir.0;
+    let center = Point::new(end.x + nx * mid, end.y + ny * mid);
+    let l = Point::new(center.x + nx * hw, center.y + ny * hw);
+    let r = Point::new(center.x - nx * hw, center.y - ny * hw);
+    match stroke.cap {
+        LineCap::Butt => {}
+        LineCap::Square => {
+            // Project the rail ends `hw` along the outward direction.
+            let base = verts.len() as u32;
+            let lp = Point::new(l.x + dir.0 * hw, l.y + dir.1 * hw);
+            let rp = Point::new(r.x + dir.0 * hw, r.y + dir.1 * hw);
+            verts.push(geo_vert(l, 1.0));
+            verts.push(geo_vert(r, 1.0));
+            verts.push(geo_vert(lp, 1.0));
+            verts.push(geo_vert(rp, 1.0));
+            indices.extend_from_slice(&[base, base + 2, base + 3, base, base + 3, base + 1]);
+        }
+        LineCap::Round => {
+            // Half-circle bulging outward: sweep π starting at the left rail so
+            // the arc midpoint points along `dir` (outward), covering the cap and
+            // not the interior of the segment. The midpoint of an arc from
+            // `start` sweeping `s` is `start + s/2`; choose the sign of `s` so
+            // that midpoint aligns with `dir`.
+            let start = ny.atan2(nx);
+            let dir_ang = dir.1.atan2(dir.0);
+            // Rotate from `start` toward `dir` the short way; the half-circle then
+            // sweeps that same direction so its midpoint lands on `dir`.
+            let mut delta = dir_ang - start;
+            while delta > std::f32::consts::PI {
+                delta -= std::f32::consts::TAU;
+            }
+            while delta < -std::f32::consts::PI {
+                delta += std::f32::consts::TAU;
+            }
+            let sweep = std::f32::consts::PI.copysign(delta);
+            arc_fan(center, start, sweep, hw, verts, indices);
+        }
+    }
+}
+
+/// A rounded corner: a triangle fan centered at `c` sweeping the shorter arc
+/// from `from` to `to`, both at radius `hw`. Falls back to a single triangle
+/// when the radius is degenerate.
+fn fan(
+    c: Point,
+    from: Point,
+    to: Point,
+    hw: f32,
+    verts: &mut Vec<GeoVertex>,
+    indices: &mut Vec<u32>,
+) {
+    let a0 = (from.y - c.y).atan2(from.x - c.x);
+    let a1 = (to.y - c.y).atan2(to.x - c.x);
+    // Sweep the shorter way around.
+    let mut sweep = a1 - a0;
+    while sweep > std::f32::consts::PI {
+        sweep -= std::f32::consts::TAU;
+    }
+    while sweep < -std::f32::consts::PI {
+        sweep += std::f32::consts::TAU;
+    }
+    arc_fan(c, a0, sweep, hw, verts, indices);
+}
+
+/// A triangle fan centered at `c`, radius `hw`, starting at angle `start` and
+/// sweeping the signed angle `sweep`. Segment count follows the arc length.
+fn arc_fan(
+    c: Point,
+    start: f32,
+    sweep: f32,
+    hw: f32,
+    verts: &mut Vec<GeoVertex>,
+    indices: &mut Vec<u32>,
+) {
+    let arc = sweep.abs() * hw;
+    let steps = ((arc / ROUND_STEP).ceil() as u32).max(1);
+    let center_idx = verts.len() as u32;
+    verts.push(geo_vert(c, 1.0));
+    let mut prev = verts.len() as u32;
+    verts.push(geo_vert(
+        Point::new(c.x + start.cos() * hw, c.y + start.sin() * hw),
+        1.0,
+    ));
+    for i in 1..=steps {
+        let t = i as f32 / steps as f32;
+        let ang = start + sweep * t;
+        let p = Point::new(c.x + ang.cos() * hw, c.y + ang.sin() * hw);
+        let cur = verts.len() as u32;
+        verts.push(geo_vert(p, 1.0));
+        indices.extend_from_slice(&[center_idx, prev, cur]);
+        prev = cur;
+    }
 }
 
 /// Whether the two outer edge normals diverge enough that a miter apex is
@@ -3094,5 +3487,242 @@ mod tests {
             ResourcePolicy::default(),
             ResourcePolicy::AtlasCandidate { mipmap: false }
         );
+    }
+
+    // ---- D3.3 stroke geometry --------------------------------------------
+
+    /// A short open horizontal polyline (two points) with the given stroke.
+    fn open_line(stroke: Stroke) -> Path {
+        Path {
+            cmds: vec![
+                PathCmd::MoveTo(Point::new(10.0, 10.0)),
+                PathCmd::LineTo(Point::new(40.0, 10.0)),
+            ],
+            fill: None,
+            stroke: Some(stroke),
+        }
+    }
+
+    /// Bounding box of a path's stroke vertices (core + fringe).
+    fn stroke_bounds(p: &Path) -> Rect {
+        let geo = p.tessellate_geometry();
+        geo.bounds
+    }
+
+    #[test]
+    fn butt_cap_leaves_ends_flush_square_extends_them() {
+        let butt = open_line(Stroke::new(4.0, Rgba::new(0.0, 0.0, 0.0, 1.0)));
+        let square = open_line(Stroke {
+            cap: LineCap::Square,
+            ..Stroke::new(4.0, Rgba::new(0.0, 0.0, 0.0, 1.0))
+        });
+        let bb = stroke_bounds(&butt);
+        let sb = stroke_bounds(&square);
+        // Square caps extend the run by hw (=2) at each end; butt does not
+        // (modulo the AA fringe, which is symmetric and tiny).
+        assert!(sb.x < bb.x - 1.5, "square cap should reach left of butt");
+        assert!(
+            sb.x + sb.w > bb.x + bb.w + 1.5,
+            "square cap should reach right of butt"
+        );
+    }
+
+    #[test]
+    fn round_cap_bulges_past_butt_ends() {
+        let butt = open_line(Stroke::new(4.0, Rgba::new(0.0, 0.0, 0.0, 1.0)));
+        let round = open_line(Stroke {
+            cap: LineCap::Round,
+            ..Stroke::new(4.0, Rgba::new(0.0, 0.0, 0.0, 1.0))
+        });
+        let bb = stroke_bounds(&butt);
+        let rb = stroke_bounds(&round);
+        assert!(rb.x < bb.x - 1.0, "round cap should bulge left");
+        assert!(
+            rb.x + rb.w > bb.x + bb.w + 1.0,
+            "round cap should bulge right"
+        );
+    }
+
+    /// An L-shaped open polyline (one interior corner) with the given join.
+    fn corner_path(stroke: Stroke) -> Path {
+        Path {
+            cmds: vec![
+                PathCmd::MoveTo(Point::new(10.0, 10.0)),
+                PathCmd::LineTo(Point::new(40.0, 10.0)),
+                PathCmd::LineTo(Point::new(40.0, 40.0)),
+            ],
+            fill: None,
+            stroke: Some(stroke),
+        }
+    }
+
+    #[test]
+    fn round_join_emits_more_vertices_than_bevel() {
+        let base = Stroke::new(8.0, Rgba::new(0.0, 0.0, 0.0, 1.0));
+        let bevel = corner_path(Stroke {
+            join: LineJoin::Bevel,
+            ..base
+        });
+        let round = corner_path(Stroke {
+            join: LineJoin::Round,
+            ..base
+        });
+        let bv = bevel.tessellate_geometry().verts.len();
+        let rv = round.tessellate_geometry().verts.len();
+        assert!(rv > bv, "round join fan ({rv}) must exceed bevel ({bv})");
+    }
+
+    #[test]
+    fn tight_miter_limit_degrades_to_bevel() {
+        // A 90° corner has a miter ratio of √2 ≈ 1.414. A limit below that must
+        // fall back to bevel (fewer vertices than the miter apex path).
+        let wide = corner_path(Stroke {
+            join: LineJoin::Miter,
+            miter_limit: 4.0,
+            ..Stroke::new(8.0, Rgba::new(0.0, 0.0, 0.0, 1.0))
+        });
+        let tight = corner_path(Stroke {
+            join: LineJoin::Miter,
+            miter_limit: 1.0,
+            ..Stroke::new(8.0, Rgba::new(0.0, 0.0, 0.0, 1.0))
+        });
+        let wv = wide.tessellate_geometry().verts.len();
+        let tv = tight.tessellate_geometry().verts.len();
+        assert!(
+            tv < wv,
+            "tight miter ({tv}) should drop the apex vertex ({wv})"
+        );
+    }
+
+    #[test]
+    fn hairline_ignores_width_and_uses_half_pixel() {
+        // A hairline stroke has half-width 0.5 regardless of `width`; its bbox
+        // thickness is ~1px + fringe, far thinner than a width-10 stroke.
+        let thick = open_line(Stroke::new(10.0, Rgba::new(0.0, 0.0, 0.0, 1.0)));
+        let hair = open_line(Stroke {
+            hairline: true,
+            width: 10.0,
+            ..Stroke::new(10.0, Rgba::new(0.0, 0.0, 0.0, 1.0))
+        });
+        let tb = stroke_bounds(&thick);
+        let hb = stroke_bounds(&hair);
+        assert!(tb.h > 9.0, "thick stroke ~10px tall, got {}", tb.h);
+        assert!(hb.h < 3.5, "hairline ~1px core + fringe, got {}", hb.h);
+    }
+
+    #[test]
+    fn inner_outer_align_shifts_a_closed_ring() {
+        // A closed square: inner/outer alignment shift the stroke to one side, so
+        // their bounding boxes differ (outer grows, inner shrinks) vs centered.
+        let sq = |align: StrokeAlign| Path {
+            cmds: vec![
+                PathCmd::MoveTo(Point::new(20.0, 20.0)),
+                PathCmd::LineTo(Point::new(60.0, 20.0)),
+                PathCmd::LineTo(Point::new(60.0, 60.0)),
+                PathCmd::LineTo(Point::new(20.0, 60.0)),
+                PathCmd::Close,
+            ],
+            fill: None,
+            stroke: Some(Stroke {
+                align,
+                ..Stroke::new(8.0, Rgba::new(0.0, 0.0, 0.0, 1.0))
+            }),
+        };
+        let center = stroke_bounds(&sq(StrokeAlign::Center));
+        let outer = stroke_bounds(&sq(StrokeAlign::Outer));
+        let inner = stroke_bounds(&sq(StrokeAlign::Inner));
+        // Inner and outer shift the stroke to opposite sides of the ring, so both
+        // differ from the centered bbox and from each other.
+        assert!(
+            (outer.w - center.w).abs() > 1.0,
+            "outer ({}) should differ from center ({})",
+            outer.w,
+            center.w
+        );
+        assert!(
+            (inner.w - outer.w).abs() > 1.0,
+            "inner ({}) should differ from outer ({})",
+            inner.w,
+            outer.w
+        );
+    }
+
+    #[test]
+    fn dash_splits_a_line_into_multiple_runs() {
+        // A 30-long segment with a 5-on/5-off dash yields 3 painted runs.
+        let solid = open_line(Stroke::new(2.0, Rgba::new(0.0, 0.0, 0.0, 1.0)));
+        let dashed = open_line(Stroke {
+            dash: Some(DashPattern::new(&[5.0, 5.0], 0.0)),
+            ..Stroke::new(2.0, Rgba::new(0.0, 0.0, 0.0, 1.0))
+        });
+        let sv = solid.tessellate_geometry().verts.len();
+        let dv = dashed.tessellate_geometry().verts.len();
+        // Three separate quads emit more vertices than one solid quad.
+        assert!(
+            dv > sv,
+            "dashed ({dv}) should emit more geometry than solid ({sv})"
+        );
+    }
+
+    #[test]
+    fn dash_offset_changes_geometry_fingerprint() {
+        let a = open_line(Stroke {
+            dash: Some(DashPattern::new(&[5.0, 5.0], 0.0)),
+            ..Stroke::new(2.0, Rgba::new(0.0, 0.0, 0.0, 1.0))
+        });
+        let b = open_line(Stroke {
+            dash: Some(DashPattern::new(&[5.0, 5.0], 2.5)),
+            ..Stroke::new(2.0, Rgba::new(0.0, 0.0, 0.0, 1.0))
+        });
+        assert_ne!(a.geometry_fingerprint(), b.geometry_fingerprint());
+    }
+
+    #[test]
+    fn color_change_keeps_geometry_fingerprint_and_translation() {
+        let a = open_line(Stroke::new(3.0, Rgba::new(0.1, 0.2, 0.3, 1.0)));
+        let b = open_line(Stroke::new(3.0, Rgba::new(0.9, 0.8, 0.7, 1.0)));
+        assert_eq!(a.geometry_fingerprint(), b.geometry_fingerprint());
+        // Identical geometry → zero translation reuse (not a rebuild).
+        assert_eq!(a.translation_from(&b), Some([0.0, 0.0]));
+    }
+
+    #[test]
+    fn stroke_style_change_breaks_fingerprint_and_translation() {
+        let base = open_line(Stroke::new(3.0, Rgba::new(0.1, 0.2, 0.3, 1.0)));
+        let fields: [Stroke; 5] = [
+            Stroke {
+                cap: LineCap::Round,
+                ..Stroke::new(3.0, Rgba::new(0.1, 0.2, 0.3, 1.0))
+            },
+            Stroke {
+                join: LineJoin::Round,
+                ..Stroke::new(3.0, Rgba::new(0.1, 0.2, 0.3, 1.0))
+            },
+            Stroke {
+                miter_limit: 2.0,
+                ..Stroke::new(3.0, Rgba::new(0.1, 0.2, 0.3, 1.0))
+            },
+            Stroke {
+                align: StrokeAlign::Outer,
+                ..Stroke::new(3.0, Rgba::new(0.1, 0.2, 0.3, 1.0))
+            },
+            Stroke {
+                hairline: true,
+                ..Stroke::new(3.0, Rgba::new(0.1, 0.2, 0.3, 1.0))
+            },
+        ];
+        for s in fields {
+            let other = open_line(s);
+            assert_ne!(
+                base.geometry_fingerprint(),
+                other.geometry_fingerprint(),
+                "stroke style change must alter the geometry fingerprint"
+            );
+            assert_eq!(
+                base.translation_from(&other),
+                None,
+                "stroke style change must block translation reuse"
+            );
+        }
     }
 }
