@@ -26,6 +26,7 @@ fn allowed_edges() -> BTreeMap<&'static str, &'static [&'static str]> {
                 "viso-dsl",
                 "viso-services",
                 "viso-render",
+                "viso-svg",
                 "viso-gpu",
                 "viso-platform",
                 "viso-handle",
@@ -69,6 +70,11 @@ fn allowed_edges() -> BTreeMap<&'static str, &'static [&'static str]> {
             "viso-render",
             &["viso-math", "viso-text", "viso-shader", "viso-gpu"][..],
         ),
+        // The SVG input lane (§13) sits above render: it lowers parsed SVG into
+        // `viso_render::Path`/`Stroke`/`Primitive`, converting colors through
+        // `viso-math`. Its heavy usvg dependency tree is isolated here (§3.3),
+        // out of render/ui.
+        ("viso-svg", &["viso-render", "viso-math"][..]),
         ("viso-text", &["viso-gpu"][..]),
         ("viso-shader", &["viso-gpu"][..]),
         (

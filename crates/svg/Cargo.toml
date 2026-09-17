@@ -1,0 +1,16 @@
+[package]
+name = "viso-svg"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+# SVG input lane (§13): SVG bytes → parse → normalized vector scene →
+# `viso_render::Primitive`. SVG is an input format, not a per-frame XML DOM
+# renderer; parsing is a cold, cacheable step. usvg's parse/CSS/viewBox/gradient
+# machinery is a heavy dependency tree, kept out of `render`/`ui` in its own
+# crate above render (§3.3). Edges: `viso-svg -> viso-render, viso-math`.
+[dependencies]
+viso-render = { workspace = true }
+viso-math = { workspace = true }
+usvg = { workspace = true }

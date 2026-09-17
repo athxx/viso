@@ -1213,9 +1213,24 @@ depend on compute (§7.2).
     scanline (a separate §13 fill-rule feature). Cross-arch (x86_64/wasm) real-hardware
     speedups are unverifiable here (arm64 host runs only the NEON kernel); bit-exact
     correctness is verified per-arch by the equivalence tests.
-- [ ] SVG lane (§13): `SVG bytes → parse → normalized vector scene → Path/Brush/Stroke →
+- [x] SVG lane (§13): `SVG bytes → parse → normalized vector scene → Path/Brush/Stroke →
       cached Render IR`. SVG is an input format, not a per-frame XML DOM renderer; static
       assets may pre-parse at build time; runtime dynamic parse goes to a worker.
+    - [x] New `viso-svg` crate above `render` (§3.3): edges `viso-svg → viso-render, viso-math`,
+          `viso → viso-svg`; registered in workspace members + `[workspace.dependencies]`,
+          `allowed_edges()`, and re-exported as `viso::svg` (not in prelude, §3.2).
+    - [x] `usvg` adapter (§3.7 prefer-proven-algorithms): usvg owns XML/CSS/`viewBox`/unit/
+          `<use>`/group/transform flattening; `parse_svg(bytes) -> Result<SvgScene, SvgError>`
+          walks the resolved node tree depth-first in paint order.
+    - [x] Each usvg path node → one `viso_render::Primitive::Path`: absolute transform baked
+          into `PathCmd` coordinates (parse-time one-shot, not a per-frame matrix); solid
+          fill/stroke paint → straight-linear `Rgba` via the sRGB transfer, opacity into alpha;
+          stroke width/cap/join/miter/dash → `viso_render::Stroke` (`MiterClip → Miter`).
+    - [x] Deferred (skipped, not mis-rendered): gradient/pattern paints, filters, clip-paths,
+          images, text; fill-rule (render `Path` has no winding field yet); worker/build-time
+          hookup is a call-site policy (§26).
+    - [x] Tests: rect/line/`viewBox`+transform/fill-opacity/dash/gradient-skip/parse-error
+          assert the `PathCmd` sequence, baked coordinates, and fill/stroke colors exactly.
 
 ### D3.5 — §31 gate
 - [ ] Benchmark gate (§31 `## D3`): small stable SVG-like paths; large static path scene;
