@@ -1261,14 +1261,18 @@ depend on compute (§7.2).
           needs on-device Metal present and is unverifiable in this headless environment.
 
 ### D3 Done
-- [ ] Path commands.
-- [ ] NonZero / EvenOdd.
-- [ ] Fill / Stroke / Dash.
-- [ ] retained tessellation cache.
-- [ ] transform/color does not rebuild geometry.
+- [x] Path commands. (D3.1 `PathArena` + `PathCmd` Move/Line/Quad/Cubic/Close)
+- [x] NonZero / EvenOdd. (D3.1 `FillRule` carried on the arena; SVG lowering maps it in a
+      later round — the render storage/command layer already supports both.)
+- [x] Fill / Stroke / Dash. (D3.3 stroke contract + revision-driven stroke-geometry cache +
+      `DashPattern`.)
+- [x] retained tessellation cache. (D3.2 `GeometryId` cache + hysteresis + index-width +
+      upload-ring separation.)
+- [x] transform/color does not rebuild geometry. (D3.5 `assert_path_grid_is_retained`:
+      scroll/recolor → 0 re-tessellation.)
 
 ### Freeze
-- [ ] FREEZE D3: `PathArena` storage + command set + creation metadata, fill rules, the
+- [x] FREEZE D3: `PathArena` storage + command set + creation metadata, fill rules, the
       retained-tessellation vector-mesh lane (GeometryId cache + hysteresis + index-width +
       upload-ring separation), the stroke contract + revision-driven stroke-geometry cache,
       and the SVG-input → cached-Render-IR lane. C0 composes clip/mask/group/blend over the
