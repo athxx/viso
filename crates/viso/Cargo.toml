@@ -17,6 +17,7 @@ viso-widgets = { workspace = true }
 viso-dsl = { workspace = true }
 viso-services = { workspace = true }
 viso-render = { workspace = true }
+viso-svg = { workspace = true }
 viso-gpu = { workspace = true }
 viso-platform = { workspace = true }
 viso-text = { workspace = true }

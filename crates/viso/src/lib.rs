@@ -82,6 +82,14 @@ pub use viso_ui::{WindowChrome, WindowConfig};
 // `viso_macros::GpuPod`.
 pub use viso_ui_macros::ui;
 
+// The SVG input lane (§13), re-exported as `viso::svg` so an app that has SVG
+// bytes calls `viso::svg::parse_svg(..)` without naming the internal
+// `viso-svg` crate. A cold-path input codec (parse once, cache the resulting
+// primitives), deliberately kept out of the default prelude (§3.2): most apps
+// never touch it, and `SvgScene`/`SvgError` are not part of the default mental
+// model.
+pub use viso_svg as svg;
+
 /// The application entry-point contract implemented by every Viso app.
 ///
 /// The single generic entry point is [`run`]. An `Application` owns top-level
