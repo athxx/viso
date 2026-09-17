@@ -32,9 +32,9 @@ use viso_gpu::{
 use viso_render::{
     AnalyticCapsule, AnalyticCapsuleInstance, AnalyticEllipse, AnalyticEllipseInstance,
     AnalyticLine, AnalyticLineInstance, AnalyticRRect, AnalyticRRectInstance, Border, Corners,
-    ExtendMode, FrameStats, GlyphRunDraw, Gradient, GradientKind, GradientStop, ImageDraw,
-    InterpolationSpace, LineCap, LineJoin, Path, PathCmd, Point, Primitive, Quad, Rect, Renderer,
-    Rgba, SpriteRegion, Stroke, test_glyphs, test_scene, test_texture,
+    DashPattern, ExtendMode, FrameStats, GlyphRunDraw, Gradient, GradientKind, GradientStop,
+    ImageDraw, InterpolationSpace, LineCap, LineJoin, Path, PathCmd, Point, Primitive, Quad, Rect,
+    Renderer, Rgba, SpriteRegion, Stroke, test_glyphs, test_scene, test_texture,
 };
 
 /// A global allocator that counts heap allocations while `ARMED`, so a steady
@@ -1061,6 +1061,150 @@ fn assert_path_grid_is_retained() {
     );
 }
 
+/// A grid of curved, SVG-shaped paths — the geometry an `svg::parse_svg` scene
+/// lowers to (closed outlines with quadratic + cubic segments, a fill and a
+/// stroke). Each cell is a rounded-blob outline built from curve commands, so
+/// the tessellator actually flattens curves (unlike the straight-edged
+/// pentagon grid) — the realistic shape for the "small stable SVG-like paths"
+/// and "large static path scene" gate scenarios.
+fn svg_like_path_scene(count: usize) -> Vec<Primitive> {
+    let cols = (count as f32).sqrt().ceil() as usize;
+    let step = 16.0;
+    let mut scene = Vec::with_capacity(count);
+    let fill = Rgba::new(0.25, 0.5, 0.7, 1.0);
+    let stroke = Rgba::new(0.02, 0.06, 0.1, 1.0);
+    for i in 0..count {
+        let x = (i % cols) as f32 * step + 4.0;
+        let y = (i / cols) as f32 * step + 4.0;
+        // A closed blob: cubic top, quadratic right, cubic bottom, line close.
+        scene.push(Primitive::Path(Path {
+            cmds: vec![
+                PathCmd::MoveTo(Point::new(x, y + 5.0)),
+                PathCmd::CubicTo(
+                    Point::new(x, y),
+                    Point::new(x + 10.0, y),
+                    Point::new(x + 10.0, y + 5.0),
+                ),
+                PathCmd::QuadTo(Point::new(x + 10.0, y + 9.0), Point::new(x + 5.0, y + 10.0)),
+                PathCmd::CubicTo(
+                    Point::new(x + 2.0, y + 10.0),
+                    Point::new(x, y + 8.0),
+                    Point::new(x, y + 5.0),
+                ),
+                PathCmd::Close,
+            ],
+            fill: Some(fill),
+            stroke: Some(Stroke::new(1.0, stroke)),
+        }));
+    }
+    scene
+}
+
+/// A grid of open, dashed, thick-stroked polylines — the "stroke/dash heavy"
+/// gate scenario. No fill; every path carries a multi-run dash pattern with a
+/// phase offset, so stroke-geometry generation (dash expansion + caps/joins) is
+/// the dominant tessellation cost.
+fn dashed_stroke_scene(count: usize) -> Vec<Primitive> {
+    let cols = (count as f32).sqrt().ceil() as usize;
+    let step = 20.0;
+    let mut scene = Vec::with_capacity(count);
+    let color = Rgba::new(0.9, 0.4, 0.1, 1.0);
+    for i in 0..count {
+        let x = (i % cols) as f32 * step + 4.0;
+        let y = (i / cols) as f32 * step + 4.0;
+        let mut stroke = Stroke::new(3.0, color);
+        stroke.cap = LineCap::Round;
+        stroke.join = LineJoin::Round;
+        stroke.dash = Some(DashPattern::new(&[6.0, 3.0, 2.0, 3.0], 1.5));
+        scene.push(Primitive::Path(Path {
+            cmds: vec![
+                PathCmd::MoveTo(Point::new(x, y)),
+                PathCmd::LineTo(Point::new(x + 12.0, y + 2.0)),
+                PathCmd::LineTo(Point::new(x + 4.0, y + 10.0)),
+                PathCmd::LineTo(Point::new(x + 14.0, y + 12.0)),
+            ],
+            fill: None,
+            stroke: Some(stroke),
+        }));
+    }
+    scene
+}
+
+/// §31 `## D3` gate — small stable SVG-like paths and stroke/dash-heavy paths.
+/// Both are curve/dash workloads that tessellate once on the cold frame; a
+/// subsequent unchanged frame must re-tessellate nothing and upload nothing
+/// (the retained vector-mesh + stroke-geometry caches hold, §13.4).
+fn assert_curve_and_dash_scenes_are_retained() {
+    for (label, scene) in [
+        ("svg-like", svg_like_path_scene(64)),
+        ("dashed-stroke", dashed_stroke_scene(64)),
+    ] {
+        let mut h = setup_scene(scene);
+        // Cold frame tessellates + grows pools; second frame settles the diff.
+        frame(&mut h);
+        let cold = h.renderer.frame_stats();
+        assert!(
+            cold.path_tessellations > 0,
+            "{label}: the cold frame must tessellate the curved/dashed paths"
+        );
+        frame(&mut h);
+
+        h.renderer.upload(&mut h.gpu, &h.scene);
+        let steady = h.renderer.frame_stats();
+        assert_eq!(
+            steady.path_tessellations, 0,
+            "{label}: an unchanged curve/dash scene must re-tessellate nothing (§13.4)"
+        );
+        assert_eq!(
+            steady.uploaded_ranges, 0,
+            "{label}: an unchanged curve/dash scene must upload zero ranges (§13.4)"
+        );
+        assert_eq!(
+            steady.gpu_upload_bytes, 0,
+            "{label}: an unchanged curve/dash scene must upload zero bytes (§13.4)"
+        );
+    }
+}
+
+/// §31 `## D3` gate — path churn. When a subset of paths change geometry each
+/// frame, re-tessellation must scale with the churn set, not the whole scene:
+/// the cache holds the untouched paths and only the mutated ones re-tessellate.
+fn assert_path_churn_is_local() {
+    const N: usize = 256;
+    const CHURN: usize = 8;
+    let mut h = setup_scene(svg_like_path_scene(N));
+    frame(&mut h);
+    frame(&mut h);
+
+    // Steady baseline: nothing changed, nothing re-tessellates.
+    h.renderer.upload(&mut h.gpu, &h.scene);
+    assert_eq!(
+        h.renderer.frame_stats().path_tessellations,
+        0,
+        "baseline: an unchanged scene re-tessellates nothing"
+    );
+
+    // Churn the first CHURN paths' *shape* (deform one anchor, not a uniform
+    // translate — the cache fingerprint is translation-invariant, so only a
+    // relative-shape change re-tessellates). The other N-CHURN stay cache hits.
+    for p in h.scene.iter_mut().take(CHURN) {
+        let Primitive::Path(path) = p else {
+            unreachable!("scene is pure paths");
+        };
+        if let Some(PathCmd::CubicTo(c0, _, _)) = path.cmds.get_mut(1) {
+            c0.x += 0.5;
+            c0.y -= 0.5;
+        }
+    }
+    h.renderer.upload(&mut h.gpu, &h.scene);
+    let churn = h.renderer.frame_stats();
+    assert_eq!(
+        churn.path_tessellations, CHURN as u32,
+        "path churn must re-tessellate exactly the changed paths, not the scene \
+         ({CHURN} of {N} — the cache holds the rest, §13.4)"
+    );
+}
+
 /// Lower + upload + submit one frame of the scene.
 fn frame(h: &mut Harness) {
     h.renderer.upload(&mut h.gpu, &h.scene);
@@ -1178,6 +1322,12 @@ fn bench_steady_state(c: &mut Criterion) {
     // a scroll to transform-only, and a recolor to paint-only.
     assert_path_grid_is_retained();
 
+    // D3.5 gate (§31 `## D3`): curve/dash-heavy path scenes tessellate once and
+    // then hold steady (0 re-tessellation, 0 upload), and path churn stays local
+    // — re-tessellation scales with the changed set, not the scene.
+    assert_curve_and_dash_scenes_are_retained();
+    assert_path_churn_is_local();
+
     // D1 gate: each analytic family's pool holds the same two invariants in
     // isolation — a one-primitive hover uploads exactly one instance of that
     // family's stride, and a scroll is transform-only with no buffer growth.
@@ -1288,6 +1438,48 @@ fn bench_steady_state(c: &mut Criterion) {
         b.iter(|| {
             img.renderer
                 .upload(black_box(&mut img.gpu), black_box(&img.scene))
+        });
+    });
+
+    // D3.5 timings (§31 `## D3`). A large static SVG-like path scene warms its
+    // caches once; thereafter a steady `upload` is diff-and-coalesce with zero
+    // GPU work, and a small-churn `upload` re-tessellates only the changed paths.
+    // Both scale with the dirty set, not the scene.
+    let mut svg = setup_scene(svg_like_path_scene(GRID_10K));
+    frame(&mut svg);
+    frame(&mut svg);
+    c.bench_function("svg_path_grid_upload_steady", |b| {
+        b.iter(|| {
+            svg.renderer
+                .upload(black_box(&mut svg.gpu), black_box(&svg.scene))
+        });
+    });
+
+    // Deform one path's shape before each iteration (a relative-shape change,
+    // not a uniform translate), so every measured upload re-tessellates exactly
+    // one path against a 10k-path scene.
+    let churn_target = GRID_10K / 2;
+    c.bench_function("svg_path_grid_churn_one", |b| {
+        b.iter(|| {
+            if let Primitive::Path(path) = &mut svg.scene[churn_target]
+                && let Some(PathCmd::CubicTo(c0, _, _)) = path.cmds.get_mut(1)
+            {
+                c0.x += 0.25;
+            }
+            svg.renderer
+                .upload(black_box(&mut svg.gpu), black_box(&svg.scene));
+        });
+    });
+
+    // Stroke/dash-heavy scene: a steady `upload` holds the stroke-geometry cache
+    // (dash expansion + caps/joins tessellated once, then reused).
+    let mut dash = setup_scene(dashed_stroke_scene(GRID_1K));
+    frame(&mut dash);
+    frame(&mut dash);
+    c.bench_function("dashed_stroke_upload_steady", |b| {
+        b.iter(|| {
+            dash.renderer
+                .upload(black_box(&mut dash.gpu), black_box(&dash.scene))
         });
     });
 }
