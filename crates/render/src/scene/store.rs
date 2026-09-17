@@ -34,7 +34,9 @@ use crate::primitive::{
     PathGeometry, QuadInstance, Rgba,
 };
 
-use super::ids::{BrushId, ClipId, GeometryId, ImageId, MeshId, PathId, PrimitiveId, TransformId};
+use super::ids::{
+    BrushId, ClipChainId, ClipId, GeometryId, ImageId, MeshId, PathId, PrimitiveId, TransformId,
+};
 
 /// A retained solid/bordered quad: the resolved GPU instance plus the identity
 /// handles it separates into (§8.5). The instance is held whole; the diff
@@ -1272,6 +1274,206 @@ impl ClipStore {
     }
 }
 
+/// The cache key of a *complex* (path/mask) clip in a resolved chain (§14.2).
+///
+/// A rect-only chain resolves to a pure [`ClipChainDescriptor::rect`] and carries
+/// no mask key. A chain whose tail is an arbitrary-path clip must be re-rastered
+/// into a coverage mask only when one of the inputs that determines the mask's
+/// pixels moves; this key is exactly that set, so an unchanged key means the
+/// retained mask is still valid and no re-raster is owed. The mask's *pixels*
+/// are a function of these fields and nothing else:
+///
+/// - `geometry_revision` — the path arena's revision the mask was built against;
+///   a reparse/edit bumps it and invalidates the mask.
+/// - `transform_bucket` — the quantized effective transform (a mask built at one
+///   rotation/skew bucket cannot be reused at another; a pure translation folds
+///   into the ROI, not the bucket).
+/// - `device_scale_q` — the device pixel scale, quantized, since the mask is
+///   rasterized in device pixels.
+/// - `fill_rule` — nonzero vs even-odd changes which pixels the path covers.
+/// - `composition` — how this clip composes with the enclosing chain (intersect
+///   is the default; a difference/xor composition covers different pixels).
+///
+/// Every field is an integer or an already-quantized bucket so the key is
+/// `Eq`/`Hash`: comparison is exact, never a float tolerance on the hot path.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ClipMaskKey {
+    /// The path/geometry revision the mask was rasterized against.
+    pub geometry_revision: u64,
+    /// The quantized effective transform bucket the mask was built under.
+    pub transform_bucket: u64,
+    /// The device pixel scale, quantized to an integer bucket.
+    pub device_scale_q: u32,
+    /// The fill rule the coverage was computed with.
+    pub fill_rule: ClipFillRule,
+    /// How this clip composes with the enclosing chain.
+    pub composition: ClipComposition,
+}
+
+/// The fill rule a path clip's coverage is computed under (§14.2 mask key).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ClipFillRule {
+    /// Nonzero winding.
+    NonZero,
+    /// Even-odd winding.
+    EvenOdd,
+}
+
+/// How a clip in a resolved chain composes with the clip enclosing it
+/// (§14.2 mask key). Intersection is the default; the others are part of the key
+/// because they select different covered pixels for the same geometry.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ClipComposition {
+    /// The child is clipped to the intersection of itself and its parent — the
+    /// ordinary nested-clip case.
+    Intersect,
+    /// The child clips to the region of its parent *outside* this shape.
+    Difference,
+    /// Symmetric difference.
+    Xor,
+}
+
+/// A resolved clip chain: the pre-intersected axis-aligned box plus, for a
+/// complex tail, the mask key that says whether the retained coverage is still
+/// valid (§14.2).
+///
+/// This is the "pre-resolved clip descriptor" a [`ClipChainId`] names. Resolving
+/// a stack of nested clips folds all the axis-aligned rects into a single
+/// [`rect`](Self::rect) **once**; every clipped primitive under the chain reads
+/// that one box instead of walking the clip stack per primitive. When the chain
+/// is rect-only, `mask` is `None` and the descriptor is complete — there is no
+/// path to reparse and no mask to raster. When a complex clip is present, `mask`
+/// carries its [`ClipMaskKey`]; an unchanged key across frames means the retained
+/// mask stands and is not re-rastered.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ClipChainDescriptor {
+    /// The intersection of every axis-aligned rect in the chain, in world space.
+    /// A zero-area rect here is an [empty clip](Self::is_empty): the whole subtree
+    /// under this chain draws nothing (§14.3).
+    pub rect: crate::primitive::Rect,
+    /// The complex tail's mask key, or `None` for a rect-only chain.
+    pub mask: Option<ClipMaskKey>,
+}
+
+impl ClipChainDescriptor {
+    /// Whether this chain clips everything away: its folded rect has zero area,
+    /// so no primitive under it can be visible. The renderer uses this to reject
+    /// the whole subtree immediately rather than emit draws that the scissor
+    /// would discard pixel by pixel (§14.3).
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        self.rect.w <= 0.0 || self.rect.h <= 0.0
+    }
+}
+
+/// One retained resolved-chain entry: its descriptor and the identity of the
+/// input stack it was resolved from (§14.2).
+///
+/// `input` is the resolution key — the sequence of clip stores/keys the chain was
+/// built from, hashed to a compact fingerprint. It is what lets an unchanged
+/// chain skip re-resolution: if the incoming stack fingerprints to the same
+/// `input`, the retained `descriptor` is returned untouched — no rect refold, no
+/// mask re-raster, no per-primitive tree walk.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ClipChainEntry {
+    /// The fingerprint of the input clip stack this chain was resolved from.
+    pub input: u64,
+    /// The resolved descriptor.
+    pub descriptor: ClipChainDescriptor,
+}
+
+/// Dense store of resolved clip chains (§14.2), populating [`ClipChainId`].
+///
+/// Mirrors [`ClipStore`]'s retained cursor/diff/truncate discipline: the Nth
+/// chain resolved this frame owns the Nth slot, frame after frame. The store's
+/// job is to resolve a nested clip stack into one [`ClipChainDescriptor`] exactly
+/// once per change: [`resolve`](Self::resolve) compares the incoming stack's
+/// fingerprint against the retained entry and, when it matches, returns the
+/// cached descriptor without folding anything. A changed fingerprint refolds and
+/// reports the change so the caller can bump the clip plane.
+#[derive(Debug, Default)]
+pub struct ClipChainStore {
+    entries: Vec<ClipChainEntry>,
+    cursor: usize,
+}
+
+impl ClipChainStore {
+    /// Reset the cursor for a new frame, keeping entries to diff against.
+    pub fn begin_frame(&mut self) {
+        self.cursor = 0;
+    }
+
+    /// Trim chains the frame did not revisit. Returns whether a trim ran.
+    pub fn finish_frame(&mut self) -> bool {
+        if self.cursor < self.entries.len() {
+            self.entries.truncate(self.cursor);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Resolve a nested clip stack into a retained [`ClipChainDescriptor`].
+    ///
+    /// `rects` is the ordered stack of axis-aligned clip rects (outermost first);
+    /// they are pre-intersected into one box. `mask` is the complex tail's key,
+    /// or `None`. `input` fingerprints the stack's identity (geometry revisions,
+    /// rect identities) so an unchanged stack is recognised without refolding.
+    ///
+    /// When the retained entry at the cursor carries the same `input`, its
+    /// descriptor is returned unchanged — the fold and any mask raster are
+    /// skipped. Otherwise the rects are folded (starting from
+    /// [`Rect::INFINITE`](crate::primitive::Rect::INFINITE), the intersection
+    /// identity), the entry is (re)written, and the change is reported. Returns
+    /// the slot, its descriptor, and whether the chain changed.
+    pub fn resolve(
+        &mut self,
+        rects: &[crate::primitive::Rect],
+        mask: Option<ClipMaskKey>,
+        input: u64,
+    ) -> (ClipChainId, ClipChainDescriptor, bool) {
+        let index = self.cursor;
+        // A retained chain with the same input fingerprint is still valid: hand
+        // back the cached descriptor without re-folding or re-rastering.
+        if index < self.entries.len() && self.entries[index].input == input {
+            self.cursor += 1;
+            let entry = self.entries[index];
+            return (ClipChainId::new(index as u32), entry.descriptor, false);
+        }
+
+        // Cold path: fold the axis-aligned stack once. `INFINITE` is the
+        // intersection identity, so an empty stack resolves to unbounded.
+        let mut rect = crate::primitive::Rect::INFINITE;
+        for r in rects {
+            rect = rect.intersect(*r);
+        }
+        let descriptor = ClipChainDescriptor { rect, mask };
+        let entry = ClipChainEntry { input, descriptor };
+        if index < self.entries.len() {
+            self.entries[index] = entry;
+        } else {
+            self.entries.push(entry);
+        }
+        self.cursor += 1;
+        (ClipChainId::new(index as u32), descriptor, true)
+    }
+
+    /// The resolved descriptor at `id`, or `None` if out of range.
+    pub fn get(&self, id: ClipChainId) -> Option<&ClipChainDescriptor> {
+        self.entries.get(id.index() as usize).map(|e| &e.descriptor)
+    }
+
+    /// Number of resolved chains this frame.
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    /// Whether the store holds no chains.
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+}
+
 /// A retained affine transform (§8.5). Carries the world-space origin an emit
 /// subtracts; the identity separation lets a pure move bump this store's plane
 /// alone.
@@ -1628,5 +1830,126 @@ mod tests {
         }
         assert_eq!(store.entries[0].geometry.verts.len(), verts);
         assert_eq!(store.entries[0].geom_key.quality_bucket, 0);
+    }
+
+    fn rect(x: f32, y: f32, w: f32, h: f32) -> crate::primitive::Rect {
+        crate::primitive::Rect { x, y, w, h }
+    }
+
+    /// Nested axis-aligned rects are pre-intersected into one box on resolve —
+    /// the descriptor carries the fold, not the stack.
+    #[test]
+    fn chain_pre_intersects_nested_rects() {
+        let mut store = ClipChainStore::default();
+        store.begin_frame();
+        let outer = rect(0.0, 0.0, 100.0, 100.0);
+        let inner = rect(20.0, 30.0, 100.0, 100.0);
+        let (_id, d, changed) = store.resolve(&[outer, inner], None, 1);
+        assert!(changed, "first resolve is a cold build");
+        // Intersection: origin maxed, far edge minned → (20,30)..(100,100).
+        assert_eq!(d.rect, rect(20.0, 30.0, 80.0, 70.0));
+        assert!(d.mask.is_none(), "rect-only chain carries no mask");
+        assert!(!d.is_empty());
+    }
+
+    /// An empty stack resolves to the unbounded identity, not a zero rect.
+    #[test]
+    fn empty_stack_resolves_to_infinite() {
+        let mut store = ClipChainStore::default();
+        store.begin_frame();
+        let (_id, d, _) = store.resolve(&[], None, 7);
+        assert_eq!(d.rect, crate::primitive::Rect::INFINITE);
+        assert!(!d.is_empty());
+    }
+
+    /// Disjoint rects fold to a zero-area box — an empty clip that rejects the
+    /// whole subtree (§14.3).
+    #[test]
+    fn disjoint_rects_are_an_empty_clip() {
+        let mut store = ClipChainStore::default();
+        store.begin_frame();
+        let a = rect(0.0, 0.0, 10.0, 10.0);
+        let b = rect(50.0, 50.0, 10.0, 10.0);
+        let (_id, d, _) = store.resolve(&[a, b], None, 1);
+        assert!(d.is_empty(), "non-overlapping clips draw nothing");
+    }
+
+    /// An unchanged input fingerprint returns the retained descriptor without
+    /// re-folding: the second frame reports no change (no path reparse / mask
+    /// re-raster / tree walk owed).
+    #[test]
+    fn unchanged_chain_skips_re_resolution() {
+        let mut store = ClipChainStore::default();
+        let r = rect(0.0, 0.0, 40.0, 40.0);
+
+        store.begin_frame();
+        let (id0, _d0, changed0) = store.resolve(&[r], None, 42);
+        assert!(changed0);
+
+        store.begin_frame();
+        let (id1, _d1, changed1) = store.resolve(&[r], None, 42);
+        assert!(!changed1, "same fingerprint reuses the resolved chain");
+        assert_eq!(id0.index(), id1.index(), "same positional slot");
+    }
+
+    /// A changed fingerprint at the same slot re-resolves and reports the change,
+    /// so the caller bumps the clip plane.
+    #[test]
+    fn changed_fingerprint_re_resolves() {
+        let mut store = ClipChainStore::default();
+
+        store.begin_frame();
+        let (_id, _d, _) = store.resolve(&[rect(0.0, 0.0, 40.0, 40.0)], None, 1);
+
+        store.begin_frame();
+        let (_id, d, changed) = store.resolve(&[rect(0.0, 0.0, 60.0, 60.0)], None, 2);
+        assert!(changed, "a moved clip re-resolves");
+        assert_eq!(d.rect, rect(0.0, 0.0, 60.0, 60.0));
+    }
+
+    /// A complex tail carries its mask key; a changed key (a geometry-revision
+    /// bump) is a changed fingerprint and re-resolves.
+    #[test]
+    fn complex_chain_carries_and_rekeys_its_mask() {
+        let mut store = ClipChainStore::default();
+        let key = |rev| ClipMaskKey {
+            geometry_revision: rev,
+            transform_bucket: 0,
+            device_scale_q: 2,
+            fill_rule: ClipFillRule::NonZero,
+            composition: ClipComposition::Intersect,
+        };
+
+        store.begin_frame();
+        let (_id, d, _) = store.resolve(&[rect(0.0, 0.0, 40.0, 40.0)], Some(key(1)), 1);
+        assert_eq!(d.mask, Some(key(1)));
+
+        // Geometry unchanged → same fingerprint → mask stands.
+        store.begin_frame();
+        let (_id, _d, changed) = store.resolve(&[rect(0.0, 0.0, 40.0, 40.0)], Some(key(1)), 1);
+        assert!(!changed, "unchanged geometry keeps the retained mask");
+
+        // Geometry revision bumped → new fingerprint → re-raster owed.
+        store.begin_frame();
+        let (_id, d, changed) = store.resolve(&[rect(0.0, 0.0, 40.0, 40.0)], Some(key(2)), 2);
+        assert!(changed, "a geometry-revision bump invalidates the mask");
+        assert_eq!(d.mask, Some(key(2)));
+    }
+
+    /// Chains resolved past the cursor are trimmed when the frame revisits fewer,
+    /// mirroring the clip store's shrink discipline.
+    #[test]
+    fn finish_frame_trims_unrevisited_chains() {
+        let mut store = ClipChainStore::default();
+        store.begin_frame();
+        store.resolve(&[rect(0.0, 0.0, 10.0, 10.0)], None, 1);
+        store.resolve(&[rect(0.0, 0.0, 20.0, 20.0)], None, 2);
+        assert!(!store.finish_frame(), "all revisited → no trim");
+        assert_eq!(store.len(), 2);
+
+        store.begin_frame();
+        store.resolve(&[rect(0.0, 0.0, 10.0, 10.0)], None, 1);
+        assert!(store.finish_frame(), "one chain went unvisited → trimmed");
+        assert_eq!(store.len(), 1);
     }
 }
