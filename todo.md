@@ -1347,10 +1347,40 @@ shader variants in `viso-shader`; `ClipMaskAtlas` / R8 target allocation in `vis
         realization lands with C0.3.
 
 ### C0.3 — Mask
-- [ ] Baseline `AlphaMask` / `LuminanceMask`; detailed `ImageMask` / `PathMask` (§14.4).
+- [x] Baseline `AlphaMask` / `LuminanceMask`; detailed `ImageMask` / `PathMask` (§14.4).
       Stable mask → independent mask cache. Storage: R8 where possible / tight ROI / tile-
       page allocation; never a permanent full-screen RGBA texture; RGBA only when color is
       truly needed.
+  - [x] `mask.rs` module: the mask model + retained mask cache, the cold-path
+        decision of how a requested mask is stored and whether it is reused.
+  - [x] `MaskKind` { `Alpha`, `Luminance`, `Image`, `Path` } — the two composition
+        modes and the two sources (§14.4). `is_coverage_only()` = every kind but
+        `Image` (only an image source can carry color).
+  - [x] `MaskFormat` { `R8`, `Rgba8` } → `TextureFormat::{R8Unorm, Rgba8Unorm}` +
+        `bytes_per_texel()`. R8 is the default; RGBA only for a color image mask.
+  - [x] `MaskRequest::format()` resolves R8 unless the kind can carry color **and**
+        the source needs it — Alpha/Luminance/Path are always R8; an image mask is
+        R8 unless `needs_color`. Never a permanent full-screen RGBA target.
+  - [x] `MaskKey` — integer-only cache key mirroring `ClipMaskKey`'s discipline
+        (kind, `source_revision`, `transform_bucket`, `device_scale_q`, `fill_rule`);
+        `Eq`/`Hash`, no float tolerance on the resolve path. A pure translation folds
+        into the ROI, not the key.
+  - [x] `MaskCache` — keyed retained resource cache (§45), distinct from the
+        scene's positional cursor stores; `begin_frame`/`resolve`/`end_frame`. A
+        stable mask (unchanged key) is a hit with no re-raster (`rasterized=false`);
+        a miss page-allocates a tight ROI and reports `rasterized=true`.
+  - [x] Tight ROI + tile-page allocation via the shared `RectPacker` (same packer
+        as the glyph/color atlases); ROI rounded out to whole texels; oversize or
+        empty ROI → `None` (caller falls back). `end_frame` reclaims untouched masks
+        and deterministically repacks survivors (largest-first, stable placement).
+  - [x] `pub mod mask;` + re-exports in lib.rs (not the prelude, §3.2).
+  - [x] 8 mask tests: format resolution, cold raster of a tight ROI, stable-mask
+        reuse, changed-revision re-raster, untouched eviction, empty-ROI `None`,
+        oversize-`None`, fractional round-out. fmt/clippy/check-deps green;
+        `scene_contract_frozen` 4/4 unchanged.
+  - GPU R8 rasterization + stream-walk wiring (a masked draw sampling its page
+        sub-rect) deferred — this lands the mask model + cache; the realization
+        follows with the walk that already owes chain wiring from C0.2.
 
 ### C0.4 — Group opacity
 - [ ] Primitive opacity vs group opacity distinguished (§14.5). Primitive opacity

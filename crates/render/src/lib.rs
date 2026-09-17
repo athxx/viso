@@ -19,6 +19,7 @@ pub mod frame;
 pub mod glyph_atlas;
 pub mod gradient_lut;
 pub mod inspect;
+pub mod mask;
 pub mod path;
 pub mod pool;
 pub mod primitive;
@@ -34,6 +35,11 @@ pub use gradient_lut::{GradientLutAtlas, LutAlloc, LutKey};
 pub use inspect::{
     BatchId, BatchPipeline, InspectBatch, InspectBatches, InspectPrimitives, PrimitiveRange,
 };
+// The mask model and retained mask cache (§14.4): coverage realizations stored
+// tight (R8, ROI-sized, page-allocated), keyed so a stable mask is built once.
+// Consumed by the render walk and the widget layer, not by normal apps (§3.2 —
+// not in the prelude).
+pub use mask::{MaskCache, MaskFormat, MaskKey, MaskKind, MaskRequest, MaskResolution, MaskSlot};
 // Compact vector-path storage (§13). Not in the prelude yet (§3.2) — the widget
 // layer promotes these once it consumes them.
 pub use path::{ConvexityHint, FillRule, PathArena, PathMetadata, SimpleShapeHint};
