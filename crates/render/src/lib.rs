@@ -20,6 +20,7 @@ pub mod glyph_atlas;
 pub mod gradient_lut;
 pub mod inspect;
 pub mod mask;
+pub mod opacity;
 pub mod path;
 pub mod pool;
 pub mod primitive;
@@ -40,6 +41,11 @@ pub use inspect::{
 // Consumed by the render walk and the widget layer, not by normal apps (§3.2 —
 // not in the prelude).
 pub use mask::{MaskCache, MaskFormat, MaskKey, MaskKind, MaskRequest, MaskResolution, MaskSlot};
+// The opacity planner (§14.5): fold group opacity into children for free, or pay
+// for an isolation layer only when overlapping children make per-child opacity
+// non-equivalent. LayerReason is the layer-tag vocabulary the Effect Planner
+// (§3145) records. Cold-path planner, not in the prelude (§3.2).
+pub use opacity::{ChildOverlap, LayerReason, OpacityPlan, fold_child_opacity, plan_group_opacity};
 // Compact vector-path storage (§13). Not in the prelude yet (§3.2) — the widget
 // layer promotes these once it consumes them.
 pub use path::{ConvexityHint, FillRule, PathArena, PathMetadata, SimpleShapeHint};

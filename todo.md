@@ -1383,11 +1383,42 @@ shader variants in `viso-shader`; `ClipMaskAtlas` / R8 target allocation in `vis
         follows with the walk that already owes chain wiring from C0.2.
 
 ### C0.4 — Group opacity
-- [ ] Primitive opacity vs group opacity distinguished (§14.5). Primitive opacity
+- [x] Primitive opacity vs group opacity distinguished (§14.5). Primitive opacity
       multiplies straight into premultiplied color. Group opacity uses isolation/offscreen
       **only** when per-primitive opacity is not semantically equivalent (overlapping
       children whose compositing result must be preserved); when unsure, keep correctness
       and use a layer.
+  - [x] `opacity.rs` module: the cold-path opacity planner, the decision of how a
+        group's opacity is realized — folded into children for free, or paid for
+        with an isolation layer — mirroring the `clip.rs` planner shape.
+  - [x] `plan_group_opacity(opacity, overlap) -> OpacityPlan` ladder, cheapest
+        first: fully opaque (`>= 1`) → `Opaque` no-op; provably disjoint children →
+        `FoldIntoChildren` (opacity multiplies straight into each child's
+        premultiplied color, stays `EffectCost::Local`); overlapping **or** unknown
+        overlap → `IsolateLayer` (`EffectCost::NeedsOffscreen`). A fully-transparent
+        group folds a zero factor rather than isolating an invisible layer.
+  - [x] `ChildOverlap` { `Disjoint`, `Overlapping`, `Unknown` } — the fact that
+        decides fold vs layer; three-state so a conservative fallback (`Unknown`,
+        "when unsure, keep correctness") is recorded distinctly from a proven
+        overlap. `allows_fold()` true only for `Disjoint`.
+  - [x] `LayerReason` { `GroupOpacity`, `ImageFilter`, `BackdropFilter`,
+        `AdvancedBlend`, `Isolation`, `ComplexMask`, `SnapshotCache`,
+        `NativeMaterialBoundary` } — the Effect Planner's layer-tag vocabulary
+        (§3145); C0.4 populates `GroupOpacity`, the later effect lanes tag the rest.
+        `label()` per variant for the inspector (§62).
+  - [x] `OpacityPlan::{cost, needs_offscreen, layer_reason}` + `fold_child_opacity`
+        (the clamped product a fold applies to each child — the whole cost of the
+        common non-overlapping case).
+  - [x] `pub mod opacity;` + re-exports in lib.rs (not the prelude, §3.2).
+  - [x] 8 opacity tests: opaque no-op, disjoint fold stays local, overlapping
+        isolates with `GroupOpacity`, unknown isolates for correctness, transparent
+        folds not isolates, fold is a clamped product, only `Disjoint` allows fold,
+        distinct layer-reason labels. fmt/clippy/check-deps green;
+        `scene_contract_frozen` 4/4 unchanged.
+  - Overlap detection wiring (the scene walk computing `ChildOverlap` from child
+        bounds) + the offscreen isolation pass itself deferred — this lands the
+        opacity model + planner; the realization follows with the render walk that
+        already owes chain/mask wiring from C0.2/C0.3.
 
 ### C0.5 — Blend
 - [ ] Baseline `Clear/Src/Dst/SrcOver`, then `Plus/Multiply/Screen/Overlay/Darken/Lighten`
