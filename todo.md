@@ -1198,6 +1198,13 @@ depend on compute (§7.2).
         intrinsic block carries a `SAFETY:` comment (§27); stable-only (no `core::simd`).
   - [x] Microbenches `math_point_bounds_4k_x10k` and `math_segment_lengths_4k_x10k` added to
         `crates/math/benches/math.rs` (release baselines, §36).
+  - [x] First real consumer of the fold: `SvgScene::content_bounds() -> Option<Rect>` collects
+        every lowered path's baked anchor + Bézier control points into one contiguous
+        `Vec<viso_math::Point>` and folds it through `point_bounds` — the exact contiguous-array
+        caller `geo_bounds`'s doc redirects here. Conservative control-hull bound (never
+        under-reports a bulging curve); `None` for an empty/gradient-only scene instead of the
+        kernel's `+INF` sentinel; on-demand accessor, not a speculative `SvgScene` field (§41).
+        Tested by `content_bounds_covers_the_rect`, `_includes_control_points`, `_of_empty_scene_is_none`.
   - [x] Verified: `cargo test -p viso-math` (99 pass, incl. bit-exact), `-p viso-render`
         (unchanged, green), fmt, clippy `-D warnings --all-targets`, `xtask check-deps` (DAG
         unchanged — `render → math` edge already present).
