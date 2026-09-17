@@ -1315,12 +1315,36 @@ shader variants in `viso-shader`; `ClipMaskAtlas` / R8 target allocation in `vis
         scroll viewport → `Some(Scissor)` regardless of parent rounding.
 
 ### C0.2 — ClipChain (retained)
-- [ ] `ClipChain` retained (§14.2): `ClipChainId → pre-resolved clip descriptor`. With
+- [x] `ClipChain` retained (§14.2): `ClipChainId → pre-resolved clip descriptor`. With
       geometry unchanged: no path reparse, no mask re-raster, no per-primitive clip-stack
       tree walk. Nested axis-aligned rects pre-intersected. Complex ClipMask key ≥
       {geometry revision, effective transform bucket, device scale, fill rule, clip
       composition}.
-- [ ] Empty clip → immediate subtree reject (§14.3).
+  - [x] `ClipChainStore` (scene layer) populating the reserved `ClipChainId`, mirroring
+        `ClipStore`'s retained cursor/diff/truncate discipline (Nth chain owns Nth slot,
+        frame after frame). Trimmed with the other stores at `finish_ingest`.
+  - [x] `resolve(rects, mask, input)` folds the nested axis-aligned stack into one
+        `ClipChainDescriptor.rect` **once** (from `Rect::INFINITE`, the intersection
+        identity); an empty stack resolves to unbounded. Every clipped primitive under the
+        chain reads that one box instead of walking the clip stack per primitive.
+  - [x] `input` fingerprint keys re-resolution: an unchanged fingerprint returns the retained
+        descriptor untouched — no rect refold, no mask re-raster, no tree walk. A changed
+        fingerprint refolds and reports the change; `Scene::resolve_clip_chain` bumps the
+        existing `clip` plane (a chain is a pre-resolution of clips, not a new revision axis —
+        no new frozen id/plane; `scene_contract_frozen` stays green).
+  - [x] `ClipMaskKey` = {geometry_revision, transform_bucket, device_scale_q (quantized),
+        `ClipFillRule` (NonZero/EvenOdd), `ClipComposition` (Intersect/Difference/Xor)} — all
+        integer/bucket fields so the key is `Eq`/`Hash`, exact comparison on the hot path,
+        never a float tolerance. Rect-only chain carries `mask: None`.
+- [x] Empty clip → immediate subtree reject (§14.3).
+  - [x] `ClipChainDescriptor::is_empty()` = zero-area folded rect (disjoint nested clips
+        fold to `w`/`h`==0 via `Rect::intersect`); the reject signal the renderer reads to
+        discard the whole subtree instead of scissoring pixel by pixel.
+  - [x] Re-exports (`ClipChainDescriptor`/`ClipComposition`/`ClipFillRule`/`ClipMaskKey`),
+        7 store tests (pre-intersect, empty-stack→infinite, disjoint→empty, unchanged→skip,
+        changed→re-resolve, complex mask carry+rekey, finish-frame trim). Not yet driven by
+        the stream walk (still Rect-only `LayerClip`) — the walk wires chains + the mask
+        realization lands with C0.3.
 
 ### C0.3 — Mask
 - [ ] Baseline `AlphaMask` / `LuminanceMask`; detailed `ImageMask` / `PathMask` (§14.4).

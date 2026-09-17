@@ -68,6 +68,10 @@ pub use batch::{BatchFamily, BatchItem, BatchKey, BatchTarget, RenderChunk, Rend
 // color-space choice (§12.3), never inferred from a texture format. Not in the
 // prelude yet (§3.2) — the widget layer promotes these once it consumes them.
 pub use scene::store::Brush;
+// The resolved clip-chain descriptor (§14.2): nested clips pre-intersected once,
+// keyed so an unchanged chain skips re-resolution. Consumed by the render walk
+// and the widget layer, not by normal apps (§3.2 — not in the prelude).
+pub use scene::store::{ClipChainDescriptor, ClipComposition, ClipFillRule, ClipMaskKey};
 pub use viso_math::{ExtendMode, InterpolationSpace};
 
 /// The Image test texture: a 4×4 red/blue checkerboard, BGRA8, top-left origin,

@@ -35,8 +35,8 @@ use crate::primitive::{
 };
 
 use super::bounds::Bounds;
-use super::ids::PrimitiveId;
-use super::store::{Brush, DirtyPlanes, StoreRef};
+use super::ids::{ClipChainId, PrimitiveId};
+use super::store::{Brush, ClipChainDescriptor, ClipMaskKey, DirtyPlanes, StoreRef};
 use super::{EmitContext, Scene};
 
 /// Per-frame ingest tallies (§61), accumulated as the frame's primitives are
@@ -295,6 +295,31 @@ impl Scene {
         changed
     }
 
+    /// Resolve a nested clip stack into a retained [`ClipChainId`] (§14.2).
+    ///
+    /// `rects` is the ordered axis-aligned clip stack (outermost first), folded
+    /// once into the returned descriptor's box; `mask` is the complex tail's
+    /// key or `None`; `input` fingerprints the stack so an unchanged chain is
+    /// recognised and its descriptor returned without refolding or re-rastering.
+    /// A changed chain bumps the clip plane (the same plane a moved clip rect
+    /// bumps — a chain is a pre-resolution of clips, not a new revision axis).
+    ///
+    /// Returns the chain's id and its descriptor. The descriptor's
+    /// [`is_empty`](ClipChainDescriptor::is_empty) is the subtree-reject signal
+    /// (§14.3): an empty clip means every primitive under the chain is discarded.
+    pub fn resolve_clip_chain(
+        &mut self,
+        rects: &[Rect],
+        mask: Option<ClipMaskKey>,
+        input: u64,
+    ) -> (ClipChainId, ClipChainDescriptor) {
+        let (id, descriptor, changed) = self.clip_chains.resolve(rects, mask, input);
+        if changed {
+            self.revisions.bump_clip();
+        }
+        (id, descriptor)
+    }
+
     /// Fold an emit's world-space origin into the transform store, bumping the
     /// transform plane on a change. A pure move (origin shift, unchanged
     /// geometry/paint) dirties `TransformRevision` alone (§8.5). Returns whether
@@ -334,6 +359,7 @@ impl Scene {
         shrank |= self.paths.finish_frame();
         shrank |= self.meshes.finish_frame();
         shrank |= self.clips.finish_frame();
+        shrank |= self.clip_chains.finish_frame();
         shrank |= self.transforms.finish_frame();
         shrank |= self.brushes.finish_frame();
         if shrank {

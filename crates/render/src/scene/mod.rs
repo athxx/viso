@@ -53,8 +53,8 @@ use ingest::IngestStats;
 use revision::Revisions;
 use store::{
     AnalyticCapsuleStore, AnalyticEllipseStore, AnalyticLineStore, AnalyticRRectStore, BrushStore,
-    ClipStore, GlyphRunStore, GradientStore, ImageStore, MeshStore, SolidQuadStore, StoreRef,
-    TransformStore, VectorPathStore,
+    ClipChainStore, ClipStore, GlyphRunStore, GradientStore, ImageStore, MeshStore, SolidQuadStore,
+    StoreRef, TransformStore, VectorPathStore,
 };
 
 /// Where an emitted primitive's geometry is routed and how it is offset — the
@@ -128,6 +128,9 @@ pub struct Scene {
     pub meshes: MeshStore,
     /// Effective clip rects (identity-separated).
     pub clips: ClipStore,
+    /// Resolved clip chains (§14.2): nested clips pre-intersected once into a
+    /// descriptor keyed so an unchanged chain skips re-resolution.
+    pub clip_chains: ClipChainStore,
     /// Transforms (identity-separated; a pure move bumps this plane alone).
     pub transforms: TransformStore,
     /// Brushes (identity-separated; a recolor bumps this plane alone).
@@ -162,6 +165,7 @@ impl Scene {
         self.paths.begin_frame();
         self.meshes.begin_frame();
         self.clips.begin_frame();
+        self.clip_chains.begin_frame();
         self.transforms.begin_frame();
         self.brushes.begin_frame();
         self.paint_order.clear();
