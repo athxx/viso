@@ -7,7 +7,7 @@
 //! the linear extremes (0.0/1.0), so those are exact; a mid-tone is checked
 //! against the transfer function to nail the pipeline.
 
-use viso_math::srgb_to_linear;
+use viso_math::{Rect, srgb_to_linear};
 use viso_render::{LineCap, LineJoin, PathCmd, Point, Primitive};
 use viso_svg::{SvgScene, parse_svg};
 
@@ -175,6 +175,46 @@ fn gradient_only_path_is_skipped() {
     </svg>"##;
     let scene = parse_svg(svg).expect("valid svg");
     assert!(scene.prims.is_empty(), "gradient-only path is skipped");
+}
+
+#[test]
+fn content_bounds_covers_the_rect() {
+    // The rect's four corners span x 10..40, y 20..60; the content box is that
+    // AABB, distinct from the 100×100 document size.
+    let svg = br#"<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100">
+        <rect x="10" y="20" width="30" height="40" fill="red"/>
+    </svg>"#;
+    let scene = parse_svg(svg).expect("valid svg");
+    let bounds = scene.content_bounds().expect("rect has content");
+    assert_eq!(bounds, Rect::new(10.0, 20.0, 30.0, 40.0));
+}
+
+#[test]
+fn content_bounds_includes_control_points() {
+    // A cubic whose control points bulge to y=50 while its endpoints sit on
+    // y=0. A conservative bound over the control hull must report height 50,
+    // not 0 — this locks the "fold control points too" choice.
+    let svg = br#"<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100">
+        <path d="M 0 0 C 0 50 100 50 100 0" fill="black"/>
+    </svg>"#;
+    let scene = parse_svg(svg).expect("valid svg");
+    let bounds = scene.content_bounds().expect("path has content");
+    assert_eq!(bounds, Rect::new(0.0, 0.0, 100.0, 50.0));
+}
+
+#[test]
+fn content_bounds_of_empty_scene_is_none() {
+    // A gradient-only rect lowers to zero primitives, so there is no content to
+    // bound.
+    let svg = br##"<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10">
+        <defs>
+            <linearGradient id="g"><stop offset="0" stop-color="red"/>
+                <stop offset="1" stop-color="blue"/></linearGradient>
+        </defs>
+        <rect x="0" y="0" width="10" height="10" fill="url(#g)"/>
+    </svg>"##;
+    let scene = parse_svg(svg).expect("valid svg");
+    assert!(scene.content_bounds().is_none());
 }
 
 #[test]

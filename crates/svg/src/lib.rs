@@ -29,7 +29,7 @@
 use std::fmt;
 
 use usvg::tiny_skia_path::{PathSegment, Transform};
-use viso_math::Srgb;
+use viso_math::{Point as MPoint, Rect, Srgb};
 use viso_render::{
     DashPattern, LineCap, LineJoin, Path, PathCmd, Point, Primitive, Rgba, Stroke, StrokeAlign,
 };
@@ -47,6 +47,50 @@ pub struct SvgScene {
     pub prims: Vec<Primitive>,
     /// Intrinsic document size `(width, height)` in user-space units.
     pub size: (f32, f32),
+}
+
+impl SvgScene {
+    /// Axis-aligned bounding box of all drawable content, in the same
+    /// physical-pixel space as [`size`](Self::size), or `None` when the scene
+    /// has no lowered paths (an empty document, or the gradient/pattern-only
+    /// paints this round skips).
+    ///
+    /// Distinct from `size`, which is the usvg *document* box: this is a box
+    /// over every path's baked anchor and Bézier control points. Including the
+    /// control points makes it a conservative bound — the control hull contains
+    /// the curve, so a bulging curve is never under-reported. The fold runs
+    /// through [`viso_math::point_bounds`] over one contiguous point array, the
+    /// SIMD-accelerated min/max reduction (§13.6); the strided post-stroke
+    /// `geo_bounds` fold in `viso-render` stays scalar and points contiguous
+    /// callers such as this one here.
+    pub fn content_bounds(&self) -> Option<Rect> {
+        let mut pts: Vec<MPoint> = Vec::new();
+        for prim in &self.prims {
+            if let Primitive::Path(path) = prim {
+                for cmd in &path.cmds {
+                    match *cmd {
+                        PathCmd::MoveTo(p) | PathCmd::LineTo(p) => {
+                            pts.push(MPoint::new(p.x, p.y));
+                        }
+                        PathCmd::QuadTo(c, p) => {
+                            pts.push(MPoint::new(c.x, c.y));
+                            pts.push(MPoint::new(p.x, p.y));
+                        }
+                        PathCmd::CubicTo(c0, c1, p) => {
+                            pts.push(MPoint::new(c0.x, c0.y));
+                            pts.push(MPoint::new(c1.x, c1.y));
+                            pts.push(MPoint::new(p.x, p.y));
+                        }
+                        PathCmd::Close => {}
+                    }
+                }
+            }
+        }
+        if pts.is_empty() {
+            return None;
+        }
+        Some(viso_math::point_bounds(&pts))
+    }
 }
 
 /// Why an SVG failed to parse or lower.
