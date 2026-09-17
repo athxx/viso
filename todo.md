@@ -1421,13 +1421,35 @@ shader variants in `viso-shader`; `ClipMaskAtlas` / R8 target allocation in `vis
         already owes chain/mask wiring from C0.2/C0.3.
 
 ### C0.5 — Blend
-- [ ] Baseline `Clear/Src/Dst/SrcOver`, then `Plus/Multiply/Screen/Overlay/Darken/Lighten`
+- [x] Baseline `Clear/Src/Dst/SrcOver`, then `Plus/Multiply/Screen/Overlay/Darken/Lighten`
       (§14.6). Full Porter-Duff (`DstOver, SrcIn/DstIn, SrcOut/DstOut, SrcATop/DstATop,
       Xor`) + artistic (`ColorDodge, ColorBurn, HardLight, SoftLight, Difference, Exclusion,
       Hue, Saturation, Color, Luminosity`). Destination-read / isolation blends are recorded
       with a `LayerReason` and **deferred to the Effect Planner (E2)** — they must not
       pollute the common `SrcOver` pipeline. Blend fallback path: fixed-function → backend
       destination-read/subpass/framebuffer-fetch → bounded offscreen composite.
+  - [x] `blend.rs`: the scene-level blend model + realization classifier, cold-path
+        (§7.2), mirroring `clip.rs` / `opacity.rs`. Distinct from viso-gpu's low-level
+        RHI `BlendMode {Replace, PremultipliedOver}` — this is the compositing vocabulary.
+  - [x] `Blend`: the full SVG/CSS `mix-blend-mode` set (28 modes), grouped by tier —
+        fixed-function (Porter-Duff `Clear/Src/Dst/SrcOver/DstOver/SrcIn/DstIn/SrcOut/
+        DstOut/SrcATop/DstATop/Xor` + `Plus`), separable artistic (`Multiply/Screen/
+        Overlay/Darken/Lighten/ColorDodge/ColorBurn/HardLight/SoftLight/Difference/
+        Exclusion`), non-separable HSL (`Hue/Saturation/Color/Luminosity`). `SrcOver`
+        is `#[default]`.
+  - [x] `BlendRealization {FixedFunction, DestinationRead, Isolation}` + `Blend::realization`
+        / `is_fixed_function` / `is_advanced` — the tier each mode falls in.
+  - [x] `plan_blend` ladder: fixed-function → `EffectCost::Local`, no layer (`SrcOver`
+        hot path stays local); separable → `EffectCost::DestinationRead`, no layer
+        (in-pass read, not a target); HSL → `EffectCost::NeedsOffscreen` +
+        `LayerReason::AdvancedBlend`. `BlendPlan` carries mode/cost/reason with
+        `needs_offscreen` / `reads_destination`.
+  - [x] `pub mod blend;` + re-export `Blend, BlendPlan, BlendRealization, plan_blend`
+        (not in prelude, §3.2); 5 tests (default hot path, Porter-Duff+Plus fixed,
+        separable dest-read, HSL isolates, advanced dominates a local chain).
+  - [ ] Deferred: the destination-read fast path (subpass / framebuffer-fetch) and the
+        bounded offscreen composite themselves are E2 realization — this classifies and
+        records the tier at ingest; the planner carries it out.
 
 ### C0.6 — §31 gate
 - [ ] Benchmark gate (§31 Matrix): deep Rect clip; mixed RRect clip; complex cached clip;
