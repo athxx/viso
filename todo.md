@@ -1378,9 +1378,28 @@ shader variants in `viso-shader`; `ClipMaskAtlas` / R8 target allocation in `vis
         reuse, changed-revision re-raster, untouched eviction, empty-ROI `None`,
         oversize-`None`, fractional round-out. fmt/clippy/check-deps green;
         `scene_contract_frozen` 4/4 unchanged.
-  - GPU R8 rasterization + stream-walk wiring (a masked draw sampling its page
-        sub-rect) deferred — this lands the mask model + cache; the realization
-        follows with the walk that already owes chain wiring from C0.2.
+  - [x] GPU R8 rasterization + stream-walk wiring (a masked draw sampling its page
+        sub-rect): a concave/curve-bearing solid fill lowers as its own coverage.
+    - [x] `raster_mask.rs`: `PathCmd`→R8 coverage via `ab_glyph_rasterizer`, ROI-local,
+          NonZero (a `Primitive::Path` carries no fill rule). `path_bounds` supersets the
+          ink bound (control points included) so a clip never drops coverage it should keep.
+    - [x] `mask_page.rs`: the physical R8 page — GPU texture + CPU backing + coalesced
+          dirty rect, `blit`/`take_dirty`/`wipe`, and the repack re-blit flag; drained once
+          per frame like the glyph atlas and gradient LUT.
+    - [x] `renderer.rs` walk: a solid-fill-only path that is **not** a simple convex
+          straight-edge polygon (concave, or any curve command) resolves a `MaskCache`
+          slot, rasterizes its coverage into the page, and emits one `GlyphInstance`
+          (ROI world rect × slot UV × fill color) through the reused `SegmentKind::GlyphRun`
+          coverage pipeline — one R8 texture times a constant color is exactly the glyph
+          fragment, so no new SegmentKind/instance/id/shader/freeze change. A convex fill,
+          a stroked path, or a degenerate ROI keeps the tessellated lane (which fans it
+          trivially and reuses geometry across pure translations).
+    - [x] `begin_frame`/`end_frame` seam: a repack (survivors moved) forces a full
+          re-blit next frame; `clip_mask_builds` now reports actual builds (was hardcoded 0).
+    - [x] Tests: cold build → 1, stable reuse → 0, eviction+repack forces re-blit,
+          stroked/convex fills stay off the mask lane, and the convexity discriminator.
+          fmt/clippy/check-deps green; `scene_contract_frozen` 4/4 and
+          `instance_abi_frozen` 9/9 unchanged; `scene_diff` 8/8 (plain fills still tessellate).
 
 ### C0.4 — Group opacity
 - [x] Primitive opacity vs group opacity distinguished (§14.5). Primitive opacity
