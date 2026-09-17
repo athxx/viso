@@ -33,8 +33,8 @@ use viso_render::{
     AnalyticCapsule, AnalyticCapsuleInstance, AnalyticEllipse, AnalyticEllipseInstance,
     AnalyticLine, AnalyticLineInstance, AnalyticRRect, AnalyticRRectInstance, Border, Corners,
     DashPattern, ExtendMode, FrameStats, GlyphRunDraw, Gradient, GradientKind, GradientStop,
-    ImageDraw, InterpolationSpace, LineCap, LineJoin, Path, PathCmd, Point, Primitive, Quad, Rect,
-    Renderer, Rgba, SpriteRegion, Stroke, test_glyphs, test_scene, test_texture,
+    ImageDraw, InterpolationSpace, LayerClip, LineCap, LineJoin, Path, PathCmd, Point, Primitive,
+    Quad, Rect, Renderer, Rgba, SpriteRegion, Stroke, test_glyphs, test_scene, test_texture,
 };
 
 /// A global allocator that counts heap allocations while `ARMED`, so a steady
@@ -747,6 +747,190 @@ fn assert_texture_pressure_binds_once_per_texture() {
     );
 }
 
+// ---------------------------------------------------------------------------
+// C0.6 gate (§31 `## C0` compositing matrix): clip / layer / opacity / blend
+// steady state, measured on the hot compositing path — `Primitive::Layer` +
+// `Primitive::LayerEnd`. Two regimes, distinguished only by `opacity`:
+//
+// - `opacity == 1.0`: the layer is an in-pass hardware-scissor clip. A deep
+//   nest of such layers must open *zero* offscreen passes, allocate no target,
+//   and stay steady frame to frame (§14, §16.2).
+// - `opacity < 1.0`: the `Layer..LayerEnd` subtree renders to an offscreen
+//   target composited back as a modulated quad. Many translucent layers must
+//   reuse a *pooled* target set — one pass per translucent layer, bounded
+//   transient bytes, and **no** texture growth across steady frames (§17.4).
+//
+// These prove the compositing foundation pays only the cost its tier demands
+// and never defaults to an offscreen — the whole point of C0 (§14).
+// ---------------------------------------------------------------------------
+
+/// A tile quad at pixel `(x, y)` with a per-index hue, the same shape a
+/// [`grid_scene`] tile has so a layer's contents draw real geometry.
+fn layer_tile(i: usize, x: f32, y: f32) -> Primitive {
+    Primitive::Quad(Quad {
+        rect: Rect {
+            x,
+            y,
+            w: 2.0,
+            h: 2.0,
+        },
+        color: Rgba {
+            r: (i % 7) as f32 / 7.0,
+            g: (i % 13) as f32 / 13.0,
+            b: (i % 5) as f32 / 5.0,
+            a: 1.0,
+        },
+        radius: 0.0,
+        border: Border::NONE,
+    })
+}
+
+/// A stack of `depth` nested `Layer(clip)` scopes, each at `opacity` and each
+/// clip inset one pixel inside its parent, wrapping one tile per level. At
+/// `opacity == 1.0` this is a deep in-pass scissor nest (no offscreen); at
+/// `opacity < 1.0` every level is its own offscreen composite — the "deep clip"
+/// and "nested opacity" rows of the §31 matrix, selected by `opacity`.
+fn nested_layer_scene(depth: usize, opacity: f32) -> Vec<Primitive> {
+    let mut scene = Vec::with_capacity(depth * 3);
+    for level in 0..depth {
+        let inset = level as f32;
+        scene.push(Primitive::Layer(LayerClip {
+            clip: Rect {
+                x: inset,
+                y: inset,
+                w: (W as f32 - 2.0 * inset).max(1.0),
+                h: (H as f32 - 2.0 * inset).max(1.0),
+            },
+            opacity,
+        }));
+        scene.push(layer_tile(level, inset + 1.0, inset + 1.0));
+    }
+    for _ in 0..depth {
+        scene.push(Primitive::LayerEnd);
+    }
+    scene
+}
+
+/// `count` sibling `Layer(clip)` scopes laid on a fixed pitch, each at `opacity`
+/// and each wrapping one tile — the "blend stress" / many-layers row: a flat run
+/// of independent compositing scopes rather than one deep nest, so the offscreen
+/// pool is exercised in breadth (many concurrent same-size targets) at
+/// `opacity < 1.0`.
+fn sibling_layer_scene(count: usize, opacity: f32) -> Vec<Primitive> {
+    let cols = (count as f64).sqrt().ceil() as usize;
+    let mut scene = Vec::with_capacity(count * 3);
+    for i in 0..count {
+        let col = (i % cols) as f32;
+        let row = (i / cols) as f32;
+        scene.push(Primitive::Layer(LayerClip {
+            clip: Rect {
+                x: col * 4.0,
+                y: row * 4.0,
+                w: 3.0,
+                h: 3.0,
+            },
+            opacity,
+        }));
+        scene.push(layer_tile(i, col * 4.0 + 0.5, row * 4.0 + 0.5));
+        scene.push(Primitive::LayerEnd);
+    }
+    scene
+}
+
+/// C0.6 proof — a deep `opacity == 1.0` clip nest is pure in-pass scissoring: it
+/// opens **no** offscreen pass, allocates no target, and holds an unchanged
+/// frame steady (0 upload, 0 texture growth, identical [`FrameStats`]). This is
+/// the §31 "deep Rect clip" row — clip depth must never escalate to an
+/// offscreen (§14/§16.2).
+fn assert_deep_clip_nest_opens_no_offscreen() {
+    const DEPTH: usize = 32;
+    let mut h = setup_scene(nested_layer_scene(DEPTH, 1.0));
+    frame(&mut h);
+    frame(&mut h);
+
+    let textures = h.gpu.texture_count();
+
+    h.renderer.upload(&mut h.gpu, &h.scene);
+    let steady = h.renderer.frame_stats();
+    assert_eq!(
+        steady.offscreen_passes, 0,
+        "a deep opacity==1 clip nest must open zero offscreen passes — it clips \
+         in-pass with a hardware scissor, never an offscreen target (§14/§16.2)"
+    );
+    assert_eq!(
+        steady.transient_target_bytes, 0,
+        "an in-pass clip nest allocates no transient target bytes"
+    );
+    assert_eq!(
+        steady.uploaded_ranges, 0,
+        "an unchanged clip nest must upload zero ranges (§9.1)"
+    );
+    assert_eq!(
+        steady.gpu_upload_bytes, 0,
+        "an unchanged clip nest must upload zero bytes (§9.1)"
+    );
+    assert_eq!(
+        h.gpu.texture_count(),
+        textures,
+        "a steady clip nest must create no texture — no offscreen is opened \
+         (§17.4)"
+    );
+}
+
+/// C0.6 proof — translucent layers pay one offscreen pass each, but reuse a
+/// **pooled** target set: across steady frames the backend's texture count does
+/// not grow, transient bytes are bounded by the (bounded) live-pass set, and
+/// [`FrameStats`] is identical frame to frame. This is the §31 "nested opacity /
+/// blend stress" row — the offscreen cost is paid by tier and reused, never
+/// re-allocated per frame (§17.4).
+fn assert_translucent_layers_reuse_pooled_targets(
+    build: impl Fn() -> Vec<Primitive>,
+    layers: usize,
+) {
+    let mut h = setup_scene(build());
+    // First frame grows the offscreen pool to fit the live layers; the second is
+    // the steady baseline every later frame must reproduce with no growth.
+    frame(&mut h);
+    frame(&mut h);
+
+    let textures = h.gpu.texture_count();
+    let baseline = h.renderer.frame_stats();
+
+    assert_eq!(
+        baseline.offscreen_passes, layers,
+        "each translucent layer opens exactly one offscreen pass — bounded by \
+         the layer count, not the frame index (§14.5)"
+    );
+    assert!(
+        baseline.transient_target_bytes > 0,
+        "translucent layers must allocate transient target bytes"
+    );
+
+    // Two more identical frames must reuse the pooled targets: no new texture,
+    // no upload, and byte-identical stats.
+    for i in 0..2 {
+        h.renderer.upload(&mut h.gpu, &h.scene);
+        let steady = h.renderer.frame_stats();
+        assert_eq!(
+            steady, baseline,
+            "frame {i}: frame_stats changed for an unchanged translucent scene \
+             (offscreen passes/bytes are not steady)"
+        );
+        assert_eq!(
+            h.gpu.texture_count(),
+            textures,
+            "frame {i}: a translucent frame created a texture — offscreen \
+             targets must be pooled/reused across frames, not re-allocated \
+             (§17.4)"
+        );
+        assert_eq!(
+            steady.uploaded_ranges, 0,
+            "frame {i}: an unchanged translucent scene must upload zero ranges \
+             (§9.1)"
+        );
+    }
+}
+
 /// §9.1 proof for an analytic `family`: a paint-only change to one primitive
 /// uploads exactly one coalesced range of one instance of that family's stride,
 /// never the whole scene — the same guarantee [`assert_hover_uploads_one_range`]
@@ -1350,6 +1534,20 @@ fn bench_steady_state(c: &mut Criterion) {
     assert_image_grid_shares_one_binding(|tex, size| sprite_atlas_scene(tex, size, GRID_1K));
     assert_texture_pressure_binds_once_per_texture();
 
+    // C0.6 gate (§31 `## C0` compositing matrix): the clip/layer/opacity/blend
+    // foundation pays only its tier's cost. A deep opacity==1 clip nest opens no
+    // offscreen (in-pass scissor); nested and many-sibling translucent layers
+    // each open one pooled offscreen pass and reuse it across steady frames with
+    // no texture growth and identical stats.
+    assert_deep_clip_nest_opens_no_offscreen();
+    const NEST_DEPTH: usize = 16;
+    const SIBLINGS: usize = 64;
+    assert_translucent_layers_reuse_pooled_targets(
+        || nested_layer_scene(NEST_DEPTH, 0.5),
+        NEST_DEPTH,
+    );
+    assert_translucent_layers_reuse_pooled_targets(|| sibling_layer_scene(SIBLINGS, 0.5), SIBLINGS);
+
     let mut h = setup();
     // Warm up so the measured iterations are the reuse path, not first growth.
     frame(&mut h);
@@ -1480,6 +1678,44 @@ fn bench_steady_state(c: &mut Criterion) {
         b.iter(|| {
             dash.renderer
                 .upload(black_box(&mut dash.gpu), black_box(&dash.scene))
+        });
+    });
+
+    // C0.6 timings (§31 `## C0`). A deep in-pass clip nest is the pure-scissor
+    // compositing cost (no offscreen); the translucent nests/siblings add the
+    // pooled-offscreen open/close cost. All are steady `upload`s of an unchanged
+    // scene — the diff-and-coalesce path with the targets reused, not the frame
+    // rate. High-refresh cadence (see the note in the C0.6 checklist) is a
+    // present-loop property this microbench cannot observe.
+    let mut clip = setup_scene(nested_layer_scene(32, 1.0));
+    frame(&mut clip);
+    frame(&mut clip);
+    c.bench_function("deep_clip_nest_upload_steady", |b| {
+        b.iter(|| {
+            clip.renderer
+                .upload(black_box(&mut clip.gpu), black_box(&clip.scene))
+        });
+    });
+
+    let mut nested = setup_scene(nested_layer_scene(16, 0.5));
+    frame(&mut nested);
+    frame(&mut nested);
+    c.bench_function("nested_opacity_upload_steady", |b| {
+        b.iter(|| {
+            nested
+                .renderer
+                .upload(black_box(&mut nested.gpu), black_box(&nested.scene))
+        });
+    });
+
+    let mut layers = setup_scene(sibling_layer_scene(64, 0.5));
+    frame(&mut layers);
+    frame(&mut layers);
+    c.bench_function("sibling_layers_upload_steady", |b| {
+        b.iter(|| {
+            layers
+                .renderer
+                .upload(black_box(&mut layers.gpu), black_box(&layers.scene))
         });
     });
 }
