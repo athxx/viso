@@ -1287,12 +1287,32 @@ offscreen layer. Clip/mask/composition logic + cache keys in `viso-render`; blen
 shader variants in `viso-shader`; `ClipMaskAtlas` / R8 target allocation in `viso-gpu`.
 
 ### C0.1 — Clip ladder / Clip Planner
-- [ ] Clip ladder (§14.1): axis-aligned Rect → merged hardware scissor; simple RRect /
+- [x] Clip ladder (§14.1): axis-aligned Rect → merged hardware scissor; simple RRect /
       simple analytic shape → analytic clip when profitable; complex path → stencil or
       mask; stable repeated complex clip → retained `R8 ClipMaskAtlas` / cached realization.
-- [ ] Border radius does **not** imply clip-children; ordinary containers default
+  - [x] `clip.rs` planner module: `ClipShape` (Rect / RoundRect{rect,radii} / Path{bounds})
+        → `plan_clip(shape, stable) -> ClipPlan { tier, cost, bounds }`, a cold-path
+        classifier chosen once at ingest beside `EffectCost` (§7.2), never per-frame.
+  - [x] `ClipTier` ladder mapped onto the existing `EffectCost` classes: Scissor→Local,
+        Analytic→Analytic, Mask/CachedMask→NeedsMask; `builds_mask()` flags the tiers that
+        advance `clip_mask_builds`. Tier costs ordered cheapest-first (Scissor<Analytic<Mask).
+  - [x] "When profitable": a `RoundRect` whose per-corner radii normalize (`Corners::normalized`,
+        §11.2) to all-sharp collapses to a Scissor (free) — caller passes authored radii
+        through, no self-stripping; only genuinely rounded ones pay the analytic shader.
+  - [x] Complex path clip → per-frame `Mask` (tight ROI = path bounds, not full screen);
+        promoted to `CachedMask` (retained realization) when `stable`. Both `NeedsMask` cost
+        and build a mask the frame realized — C0.2's retained ClipChain makes later frames
+        free, not a cheaper cost class here.
+  - [x] Public re-exports (`ClipPlan`/`ClipShape`/`ClipTier`/`clips_children`/`plan_clip`);
+        8 unit tests (rect→scissor, rounded→analytic, sharp-rounded→scissor, path mask/cache
+        by stability, ROI bounds, policy, cost ordering). Not yet consumed by the stream walk
+        (still Rect-only `LayerClip`) — the analytic/mask realization lands with C0.2/C0.3.
+- [x] Border radius does **not** imply clip-children; ordinary containers default
       overflow-visible; a scroll viewport gets a scissor, not an offscreen layer just
       because a parent is rounded (§14).
+  - [x] `clips_children(has_radius, is_scroll_viewport) -> Option<ClipTier>`: rounded-only
+        container → `None` (overflow-visible, no clip, never an offscreen just for rounding);
+        scroll viewport → `Some(Scissor)` regardless of parent rounding.
 
 ### C0.2 — ClipChain (retained)
 - [ ] `ClipChain` retained (§14.2): `ClipChainId → pre-resolved clip descriptor`. With
