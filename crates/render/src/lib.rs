@@ -12,6 +12,7 @@
 #![forbid(unsafe_op_in_unsafe_fn)]
 
 pub mod batch;
+pub mod blend;
 pub mod clip;
 pub mod color_atlas;
 pub mod effect_cost;
@@ -28,6 +29,11 @@ pub mod rect_packer;
 pub mod renderer;
 pub mod scene;
 
+// The blend model and its realization classifier (§14.6): fixed-function
+// Porter-Duff stays local; separable artistic modes read the destination;
+// non-separable HSL modes isolate (tagged AdvancedBlend) and defer to the
+// Effect Planner (E2). Cold-path classifier, not in the prelude (§3.2).
+pub use blend::{Blend, BlendPlan, BlendRealization, plan_blend};
 pub use clip::{ClipPlan, ClipShape, ClipTier, clips_children, plan_clip};
 pub use color_atlas::{ColorAlloc, ColorAtlas};
 pub use effect_cost::EffectCost;
