@@ -1470,14 +1470,14 @@ shader variants in `viso-shader`; `ClipMaskAtlas` / R8 target allocation in `vis
         rate needs a real device with that display. Bit-exact steady-state stats verified.
 
 ### C0 Done
-- [ ] Rect / RRect / Path clip ladder.
-- [ ] ClipChain retained.
-- [ ] Mask.
-- [ ] Group opacity.
-- [ ] Blend baseline.
+- [x] Rect / RRect / Path clip ladder.
+- [x] ClipChain retained.
+- [x] Mask.
+- [x] Group opacity.
+- [x] Blend baseline.
 
 ### Freeze
-- [ ] FREEZE C0: the clip ladder + Clip Planner tiers, the retained `ClipChain` +
+- [x] FREEZE C0: the clip ladder + Clip Planner tiers, the retained `ClipChain` +
       ClipMask key, the mask model + R8/ROI storage discipline, the primitive-vs-group
       opacity contract, and the blend baseline + `LayerReason` recording. This also seeds
       the Effect Planner's facts (scissor fast path, mask cache) that E0/E1/E2 consume.
