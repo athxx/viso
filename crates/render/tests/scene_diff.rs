@@ -17,7 +17,7 @@
 
 use viso_gpu::{GpuBackend, HeadlessRaster, RawWindowHandle};
 use viso_render::{
-    Border, LineJoin, Path, PathCmd, Point, Primitive, Quad, Rect, Renderer, Rgba, Stroke,
+    Border, LineCap, Path, PathCmd, Point, Primitive, Quad, Rect, Renderer, Rgba, Stroke,
 };
 
 const W: u32 = 128;
@@ -61,11 +61,7 @@ fn tri_scene(origin: (f32, f32), fill: Option<Rgba>, stroke: Option<Rgba>) -> Ve
             PathCmd::Close,
         ],
         fill,
-        stroke: stroke.map(|color| Stroke {
-            width: 2.0,
-            color,
-            join: LineJoin::Miter,
-        }),
+        stroke: stroke.map(|color| Stroke::new(2.0, color)),
     })]
 }
 
@@ -318,4 +314,101 @@ fn identical_reupload_dirties_nothing() {
         "the primitive is still visible even though it did not change"
     );
     assert_eq!(stats.quad_instances, 1);
+}
+
+/// A stroked triangle whose stroke carries a full style (not just color).
+fn tri_stroked(origin: (f32, f32), stroke: Stroke) -> Vec<Primitive> {
+    let (x, y) = origin;
+    vec![Primitive::Path(Path {
+        cmds: vec![
+            PathCmd::MoveTo(pt(x, y)),
+            PathCmd::LineTo(pt(x + 30.0, y)),
+            PathCmd::LineTo(pt(x + 15.0, y + 26.0)),
+            PathCmd::Close,
+        ],
+        fill: None,
+        stroke: Some(stroke),
+    })]
+}
+
+#[test]
+fn stroke_style_change_retessellates_and_bumps_geometry_alone() {
+    let mut gpu = HeadlessRaster::new();
+    let mut renderer = new_renderer(&mut gpu);
+
+    let color = Rgba::new(0.1, 0.1, 0.1, 1.0);
+    let base = Stroke::new(2.0, color);
+    settle(&mut gpu, &mut renderer, &tri_stroked((10.0, 10.0), base));
+    let settled = renderer.scene_revisions();
+    let base_tess = renderer.frame_stats().path_tessellations;
+
+    // Widen the stroke and switch its cap: pure stroke *geometry*, so the
+    // fingerprint moves and only the geometry plane advances.
+    let restyled = Stroke {
+        width: 5.0,
+        cap: LineCap::Round,
+        ..base
+    };
+    renderer.upload(&mut gpu, &tri_stroked((10.0, 10.0), restyled));
+    let after = renderer.scene_revisions();
+    let stats = renderer.frame_stats();
+
+    assert_eq!(
+        after.geometry,
+        settled.geometry + 1,
+        "a stroke-style change must advance the geometry plane exactly once"
+    );
+    assert_eq!(
+        after.paint, settled.paint,
+        "a stroke-style change must not bump paint"
+    );
+    assert_eq!(
+        after.transform, settled.transform,
+        "a stroke-style change must not bump transform"
+    );
+    assert_eq!(
+        stats.path_tessellations,
+        base_tess + 1,
+        "a stroke-style change must re-tessellate exactly once"
+    );
+}
+
+#[test]
+fn stroke_color_change_reuses_geometry_and_bumps_paint_alone() {
+    let mut gpu = HeadlessRaster::new();
+    let mut renderer = new_renderer(&mut gpu);
+
+    let dark = Rgba::new(0.1, 0.1, 0.1, 1.0);
+    let bright = Rgba::new(0.9, 0.3, 0.2, 1.0);
+    // Keep every shape field fixed; only the stroke color differs.
+    let style = |c| Stroke {
+        width: 4.0,
+        cap: LineCap::Square,
+        ..Stroke::new(4.0, c)
+    };
+    settle(
+        &mut gpu,
+        &mut renderer,
+        &tri_stroked((10.0, 10.0), style(dark)),
+    );
+    let settled = renderer.scene_revisions();
+    let base_tess = renderer.frame_stats().path_tessellations;
+
+    renderer.upload(&mut gpu, &tri_stroked((10.0, 10.0), style(bright)));
+    let after = renderer.scene_revisions();
+    let stats = renderer.frame_stats();
+
+    assert_eq!(
+        after.paint,
+        settled.paint + 1,
+        "a stroke recolor must advance the paint plane exactly once"
+    );
+    assert_eq!(
+        after.geometry, settled.geometry,
+        "a stroke recolor must not touch the geometry plane"
+    );
+    assert_eq!(
+        stats.path_tessellations, base_tess,
+        "a stroke recolor must not re-tessellate"
+    );
 }

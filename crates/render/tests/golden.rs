@@ -16,8 +16,9 @@ use viso_gpu::{
     TextureFormat,
 };
 use viso_render::{
-    Align, Align2, Fit, GlyphRunDraw, ImageRect, LineJoin, NineSlice, Path, PathCmd, Point,
-    Primitive, Rect, Renderer, Rgba, Stroke, TiledImage, test_glyphs, test_scene, test_texture,
+    Align, Align2, DashPattern, Fit, GlyphRunDraw, ImageRect, LineCap, LineJoin, NineSlice, Path,
+    PathCmd, Point, Primitive, Rect, Renderer, Rgba, Stroke, TiledImage, test_glyphs, test_scene,
+    test_texture,
 };
 
 const W: u32 = 128;
@@ -241,11 +242,7 @@ fn render_path_scene() -> Vec<u8> {
     let format = gpu.surface_format(surface);
     let mut renderer = Renderer::new(&mut gpu, format);
 
-    let stroke = Stroke {
-        width: 2.0,
-        color: Rgba::new(0.05, 0.1, 0.2, 1.0),
-        join: LineJoin::Miter,
-    };
+    let stroke = Stroke::new(2.0, Rgba::new(0.05, 0.1, 0.2, 1.0));
 
     // Convex: an upright pentagon on the left.
     let pentagon = Path {
@@ -296,6 +293,123 @@ fn render_path_scene() -> Vec<u8> {
 fn path_scene_matches_golden() {
     let actual = render_path_scene();
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/golden/path_scene.bgra8");
+
+    if std::env::var("BLESS").is_ok() {
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, &actual).unwrap();
+        eprintln!("blessed golden: {}", path.display());
+        return;
+    }
+
+    let expected = std::fs::read(&path).unwrap_or_else(|_| {
+        panic!(
+            "missing golden {}; run with BLESS=1 to generate it",
+            path.display()
+        )
+    });
+    assert_eq!(
+        actual.len(),
+        expected.len(),
+        "golden size mismatch: {} vs {}",
+        actual.len(),
+        expected.len()
+    );
+
+    let mut worst = 0u8;
+    let mut worst_at = 0usize;
+    for (i, (&a, &e)) in actual.iter().zip(&expected).enumerate() {
+        let diff = a.abs_diff(e);
+        if diff > worst {
+            worst = diff;
+            worst_at = i;
+        }
+    }
+    assert!(
+        worst <= TOL,
+        "golden mismatch: max per-channel diff {worst} at byte {worst_at} \
+         (pixel {}, channel {}) exceeds tolerance {TOL}",
+        worst_at / 4,
+        worst_at % 4,
+    );
+}
+
+/// Render open-subpath stroke features exercised by D3.3: square and round
+/// caps, a real round join, and a dashed stroke — all through the retained
+/// vector-mesh lane, rasterized headless.
+fn render_stroke_scene() -> Vec<u8> {
+    let mut gpu = HeadlessRaster::new();
+    let surface = gpu.create_surface(RawWindowHandle::Headless, W, H);
+    let format = gpu.surface_format(surface);
+    let mut renderer = Renderer::new(&mut gpu, format);
+
+    let ink = Rgba::new(0.1, 0.15, 0.25, 1.0);
+
+    // An open L-polyline with square caps and a round join.
+    let squared = Path {
+        cmds: vec![
+            PathCmd::MoveTo(Point::new(16.0, 20.0)),
+            PathCmd::LineTo(Point::new(56.0, 20.0)),
+            PathCmd::LineTo(Point::new(56.0, 56.0)),
+        ],
+        fill: None,
+        stroke: Some(Stroke {
+            width: 7.0,
+            cap: LineCap::Square,
+            join: LineJoin::Round,
+            ..Stroke::new(7.0, ink)
+        }),
+    };
+
+    // An open polyline with round caps and a round join.
+    let rounded = Path {
+        cmds: vec![
+            PathCmd::MoveTo(Point::new(74.0, 56.0)),
+            PathCmd::LineTo(Point::new(74.0, 20.0)),
+            PathCmd::LineTo(Point::new(112.0, 20.0)),
+        ],
+        fill: None,
+        stroke: Some(Stroke {
+            width: 7.0,
+            cap: LineCap::Round,
+            join: LineJoin::Round,
+            ..Stroke::new(7.0, ink)
+        }),
+    };
+
+    // A dashed horizontal stroke across the bottom with round caps per dash.
+    let dashed = Path {
+        cmds: vec![
+            PathCmd::MoveTo(Point::new(16.0, 78.0)),
+            PathCmd::LineTo(Point::new(112.0, 78.0)),
+        ],
+        fill: None,
+        stroke: Some(Stroke {
+            width: 5.0,
+            cap: LineCap::Round,
+            dash: Some(DashPattern::new(&[10.0, 6.0], 0.0)),
+            ..Stroke::new(5.0, Rgba::new(0.7, 0.25, 0.2, 1.0))
+        }),
+    };
+
+    let scene = vec![
+        Primitive::Path(squared),
+        Primitive::Path(rounded),
+        Primitive::Path(dashed),
+    ];
+    renderer.upload(&mut gpu, &scene);
+    renderer.submit(
+        &mut gpu,
+        surface,
+        [0.1, 0.1, 0.1, 1.0],
+        [W as f32, H as f32],
+    );
+    gpu.read_pixels_bgra8(surface)
+}
+
+#[test]
+fn stroke_scene_matches_golden() {
+    let actual = render_stroke_scene();
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/golden/stroke_scene.bgra8");
 
     if std::env::var("BLESS").is_ok() {
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();

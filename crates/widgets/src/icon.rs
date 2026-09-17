@@ -156,7 +156,7 @@ impl Component for Icon {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use viso_ui::{BuildCx, Content, LineJoin, NodeId, NodeStore, Point};
+    use viso_ui::{BuildCx, Content, NodeId, NodeStore, Point};
 
     /// A deterministic square outline in a 20x20 local space, used across tests.
     fn square() -> Vec<PathCmd> {
@@ -237,16 +237,15 @@ mod tests {
             b: 0.0,
             a: 1.0,
         };
-        let stroke = Stroke {
-            width: 2.0,
-            color: Rgba {
+        let stroke = Stroke::new(
+            2.0,
+            Rgba {
                 r: 0.0,
                 g: 0.0,
                 b: 0.0,
                 a: 1.0,
             },
-            join: LineJoin::Miter,
-        };
+        );
         let widget = icon(square(), 32.0, 16.0)
             .fill(fill)
             .stroke(stroke)

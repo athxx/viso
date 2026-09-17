@@ -1144,11 +1144,40 @@ depend on compute (§7.2).
       in the headless environment.
 
 ### D3.3 — Stroke
-- [ ] Stroke contract (§13.5): `width`, `alignment` (where semantically supported), `cap`,
+- [x] Stroke contract (§13.5): `width`, `alignment` (where semantically supported), `cap`,
       `join`, `miter_limit`, `dash_array`, `dash_offset`, `hairline`.
-- [ ] General path stroke: `PathRevision + StrokeStyleRevision → worker preprocess →
-      retained stroke geometry` — reprocess only when path or stroke geometry changes; a
+  - [x] `Stroke` carries `width` / `color` / `cap` / `join` / `miter_limit` / `align` /
+        `dash` / `hairline`, stays `Copy`; `Stroke::new(width, color)` gives the full
+        default (Butt / Miter / limit 4.0 / Center / no dash / non-hairline).
+  - [x] `StrokeAlign { Center, Inner, Outer }` — inner/outer only carries meaning for a
+        closed subpath (Center = ±hw rails, Inner/Outer = one-sided rails); an open
+        subpath is always Center ("where semantically supported").
+  - [x] `DashPattern { segments: [f32; 4], len, offset }` — fixed inline array, stack
+        allocated, no `Vec`/`Arc`; > 4 dash segments deferred as a later §13 extension.
+  - [x] `cap`: Butt (flush), Square (extruded half-width), Round (arc fan) at open
+        endpoints only.
+  - [x] `join`: real Round join (arc fan, no longer degrades to bevel), Bevel, Miter with
+        the apex clamped by `miter_limit` (degrades to bevel past the limit).
+  - [x] `hairline`: ignores `width`, draws a half-pixel local half-width (device-scale
+        DPI wiring deferred with the surface/layer DPI work).
+  - [x] `dash_array` / `dash_offset`: CPU cold-path preprocessing splits each centerline
+        into painted "on" runs (offset applied, closed rings unrolled); runs down the
+        normal quad/join/cap emit path.
+- [x] General path stroke: reprocess only when the path or stroke geometry changes; a
       color change never rebuilds stroke geometry.
+  - [x] `geometry_fingerprint` folds width / cap / join / miter_limit / align / hairline /
+        dash but NOT color; `translation_from` gates stroke reuse on the same geometry
+        fields via `stroke_geometry_eq` (color allowed to differ).
+  - [x] A stroke-style change routes to the geometry plane (`path_tessellations += 1`); a
+        stroke recolor stays on the paint plane with 0 re-tessellation — asserted in
+        `scene_diff` plane tests.
+  - [x] Verified: render unit tests (cap/join/miter/hairline/align/dash + fingerprint
+        routing), golden `stroke_scene` (blessed, stable re-run), scene-diff plane
+        classification, workspace tests, fmt, clippy, check-deps. Real-Metal-device
+        stroke triangle rasterization / AA-fringe coverage precision is device-side and
+        not verifiable in the headless environment; covered by CPU golden + vertex/
+        triangle-count unit tests. Robust polygon offsetting for inner/outer alignment on
+        closed rings (uniform-normal-shift approximation used this round) is deferred.
 
 ### D3.4 — SIMD & SVG input
 - [ ] SIMD candidates (§13.6): bounds, flatness evaluation, segment transform, rect

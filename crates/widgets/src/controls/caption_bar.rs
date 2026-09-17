@@ -41,7 +41,7 @@ use std::rc::Rc;
 
 use viso_ui::{
     Align, Axis, BoxStyle, BuildCx, ChromeContext, Component, EventCx, FlexStyle, Inset,
-    InteractionStyle, Justify, Key, LeafStyle, Length, LineJoin, PathCmd, Point, PointerButtons,
+    InteractionStyle, Justify, Key, LeafStyle, Length, PathCmd, Point, PointerButtons,
     PointerPhase, Rgba, Role, Semantics, Size, StateValue, Stroke, Vec2, WindowChrome,
 };
 
@@ -400,11 +400,7 @@ fn window_button(cx: &mut BuildCx<'_>, kind: WindowButtonKind, height: f32, acti
                 leaf,
                 glyph.clone(),
                 None,
-                Some(Stroke {
-                    width: GLYPH_STROKE,
-                    color: BUTTON_GLYPH,
-                    join: LineJoin::Miter,
-                }),
+                Some(Stroke::new(GLYPH_STROKE, BUTTON_GLYPH)),
                 Vec2 {
                     x: extent,
                     y: extent,

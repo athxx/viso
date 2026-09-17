@@ -973,11 +973,7 @@ fn path_grid_scene(count: usize) -> Vec<Primitive> {
                 PathCmd::Close,
             ],
             fill: Some(fill),
-            stroke: Some(Stroke {
-                width: 1.0,
-                color: stroke,
-                join: LineJoin::Miter,
-            }),
+            stroke: Some(Stroke::new(1.0, stroke)),
         }));
     }
     scene

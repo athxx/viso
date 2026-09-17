@@ -38,13 +38,13 @@ pub use path::{ConvexityHint, FillRule, PathArena, PathMetadata, SimpleShapeHint
 pub use primitive::{
     Align, Align2, AnalyticCapsule, AnalyticCapsuleInstance, AnalyticEllipse,
     AnalyticEllipseInstance, AnalyticLine, AnalyticLineInstance, AnalyticRRect,
-    AnalyticRRectInstance, Border, Corners, Fit, GlyphInstance, GlyphInstanceData, GlyphRunDraw,
-    Gradient, GradientInstance, GradientKind, GradientStop, ImageDraw, ImageInstance, ImageRect,
-    LayerClip, LineCap, LineJoin, Mesh, MeshVertex, NineSlice, Path, PathCmd, Point, Primitive,
-    Quad, QuadInstance, Rect, ResourcePolicy, ResourceRoute, ResourceRouteError, Rgba,
-    SpriteRegion, Stroke, TiledImage, analytic_capsule_schema, analytic_ellipse_schema,
-    analytic_line_schema, analytic_rrect_schema, glyphrun_schema, gradient_schema, image_schema,
-    mesh_schema, quad_schema,
+    AnalyticRRectInstance, Border, Corners, DashPattern, Fit, GlyphInstance, GlyphInstanceData,
+    GlyphRunDraw, Gradient, GradientInstance, GradientKind, GradientStop, ImageDraw, ImageInstance,
+    ImageRect, LayerClip, LineCap, LineJoin, Mesh, MeshVertex, NineSlice, Path, PathCmd, Point,
+    Primitive, Quad, QuadInstance, Rect, ResourcePolicy, ResourceRoute, ResourceRouteError, Rgba,
+    SpriteRegion, Stroke, StrokeAlign, TiledImage, analytic_capsule_schema,
+    analytic_ellipse_schema, analytic_line_schema, analytic_rrect_schema, glyphrun_schema,
+    gradient_schema, image_schema, mesh_schema, quad_schema,
 };
 pub use renderer::{FrameStats, Renderer};
 // GPU handles that appear in this crate's public API. `TextureId` is carried by
@@ -348,16 +348,15 @@ pub fn test_scene(texture: TextureId, glyphs: GlyphRunDraw) -> Vec<Primitive> {
                 b: 0.8,
                 a: 1.0,
             }),
-            stroke: Some(Stroke {
-                width: 2.0,
-                color: Rgba {
+            stroke: Some(Stroke::new(
+                2.0,
+                Rgba {
                     r: 0.2,
                     g: 0.05,
                     b: 0.35,
                     a: 1.0,
                 },
-                join: LineJoin::Miter,
-            }),
+            )),
         }),
         // A caller-supplied triangle mesh (the escape hatch for geometry the
         // higher-level primitives don't cover): a single opaque teal triangle in
