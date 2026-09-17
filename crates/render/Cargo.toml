@@ -15,6 +15,11 @@ viso-text = { workspace = true }
 viso-shader = { workspace = true }
 viso-gpu = { workspace = true }
 
+# Analytic path coverage for clip/mask R8 rasterization (§14.4). External crate,
+# already transitive via viso-text; not an internal DAG edge (`xtask check-deps`
+# gates only viso-internal edges).
+ab_glyph_rasterizer = { workspace = true }
+
 # Benches only. criterion is a dev-dependency: it never ships in the renderer and
 # is not an architecture DAG edge (external crate, ignored by `xtask check-deps`).
 [dev-dependencies]

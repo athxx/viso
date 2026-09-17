@@ -21,10 +21,12 @@ pub mod glyph_atlas;
 pub mod gradient_lut;
 pub mod inspect;
 pub mod mask;
+pub mod mask_page;
 pub mod opacity;
 pub mod path;
 pub mod pool;
 pub mod primitive;
+pub mod raster_mask;
 pub mod rect_packer;
 pub mod renderer;
 pub mod scene;
@@ -47,6 +49,8 @@ pub use inspect::{
 // Consumed by the render walk and the widget layer, not by normal apps (§3.2 —
 // not in the prelude).
 pub use mask::{MaskCache, MaskFormat, MaskKey, MaskKind, MaskRequest, MaskResolution, MaskSlot};
+pub use mask_page::MaskPage;
+pub use raster_mask::{path_bounds, rasterize_path_coverage};
 // The opacity planner (§14.5): fold group opacity into children for free, or pay
 // for an isolation layer only when overlapping children make per-child opacity
 // non-equivalent. LayerReason is the layer-tag vocabulary the Effect Planner

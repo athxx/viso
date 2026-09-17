@@ -26,14 +26,18 @@ use viso_gpu::{BindGroupId, SamplerId};
 use viso_shader::{PipelineEntry, PipelineFamily, standard_manifest};
 
 use crate::batch::{BatchFamily, BatchItem, BatchKey, BatchTarget, joins};
+use crate::clip::{ClipShape, plan_clip};
 use crate::gradient_lut::{GradientLutAtlas, LUT_WIDTH, LutAlloc, LutKey};
+use crate::mask::{MaskCache, MaskKey, MaskKind, MaskRequest};
+use crate::mask_page::MaskPage;
 use crate::pool::InstancePool;
 use crate::primitive::{
     AnalyticCapsuleInstance, AnalyticEllipseInstance, AnalyticLineInstance, AnalyticRRectInstance,
-    GlyphInstance, GradientInstance, ImageInstance, MeshVertex, Primitive, QuadInstance, Rect,
-    rgba_array,
+    GlyphInstance, GradientInstance, ImageInstance, MeshVertex, PathCmd, Primitive, QuadInstance,
+    Rect, rgba_array,
 };
-use crate::scene::store::{StoreRef, glyph_instances};
+use crate::raster_mask::{path_bounds, rasterize_path_coverage};
+use crate::scene::store::{ClipFillRule, StoreRef, glyph_instances};
 use crate::scene::{EmitContext, Scene};
 use viso_math::InterpolationSpace;
 
@@ -58,6 +62,98 @@ const GRADIENT_STRIDE: usize = core::mem::size_of::<GradientInstance>();
 /// is 64 KB — ample for a frame's distinct multi-stop gradients while trivial
 /// beside image/glyph atlases.
 const GRADIENT_LUT_ROWS: u32 = 64;
+/// Edge of the renderer-owned R8 clip/mask page (§14.4): one shared square
+/// coverage texture ROIs pack into via the mask cache's max-rects allocator.
+/// 2048² is 4 MiB of R8 — ample for a frame's distinct path clips, each a tight
+/// ROI, while a single texture keeps every masked draw on one bind group.
+const MASK_PAGE_SIZE: u32 = 2048;
+
+/// A stable revision hash of a path's command stream, for the mask cache key
+/// (§14.4). The coverage of a filled path is a pure function of its commands, so
+/// hashing the raw `f32` bits of every point gives a key that changes exactly
+/// when the geometry does: an unchanged path re-resolves to the same slot with
+/// no re-raster, an edited path bumps the key and rebuilds.
+fn hash_path_cmds(cmds: &[PathCmd]) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    let pt = |p: crate::primitive::Point,
+              hasher: &mut std::collections::hash_map::DefaultHasher| {
+        p.x.to_bits().hash(hasher);
+        p.y.to_bits().hash(hasher);
+    };
+    for cmd in cmds {
+        match *cmd {
+            PathCmd::MoveTo(p) => {
+                0u8.hash(&mut h);
+                pt(p, &mut h);
+            }
+            PathCmd::LineTo(p) => {
+                1u8.hash(&mut h);
+                pt(p, &mut h);
+            }
+            PathCmd::QuadTo(c, p) => {
+                2u8.hash(&mut h);
+                pt(c, &mut h);
+                pt(p, &mut h);
+            }
+            PathCmd::CubicTo(c0, c1, p) => {
+                3u8.hash(&mut h);
+                pt(c0, &mut h);
+                pt(c1, &mut h);
+                pt(p, &mut h);
+            }
+            PathCmd::Close => 4u8.hash(&mut h),
+        }
+    }
+    h.finish()
+}
+
+/// Whether a filled path's outline is a simple convex straight-edge polygon —
+/// the shape class the tessellated path lane handles ideally (a fan of
+/// triangles, geometry reused across pure translations).
+///
+/// A curve command (`QuadTo`/`CubicTo`) is never convex here: its flattened
+/// outline is generally non-convex and its coverage is what analytic
+/// rasterization is for, so any curve-bearing path returns `false`. For a
+/// straight-edge outline, convexity is the sign of the cross product of
+/// consecutive edge vectors: convex iff every turn has the same sign (the
+/// wrapping edge back to the start included). Fewer than three vertices is
+/// degenerate and treated as convex (nothing to mask).
+///
+/// This is the hot-path discriminator for [`mask_solid_fill`](Renderer::mask_solid_fill):
+/// convex fills keep the tessellated lane (with its transform-only diff reuse),
+/// concave or curved fills — exactly where coverage caching beats
+/// re-tessellating — divert to the R8 mask lane.
+fn path_is_convex(cmds: &[PathCmd]) -> bool {
+    let mut pts: Vec<crate::primitive::Point> = Vec::with_capacity(cmds.len());
+    for cmd in cmds {
+        match *cmd {
+            PathCmd::MoveTo(p) | PathCmd::LineTo(p) => pts.push(p),
+            PathCmd::QuadTo(..) | PathCmd::CubicTo(..) => return false,
+            PathCmd::Close => {}
+        }
+    }
+    if pts.len() < 3 {
+        return true;
+    }
+    let mut sign = 0.0f32;
+    let n = pts.len();
+    for i in 0..n {
+        let a = pts[i];
+        let b = pts[(i + 1) % n];
+        let c = pts[(i + 2) % n];
+        let cross = (b.x - a.x) * (c.y - b.y) - (b.y - a.y) * (c.x - b.x);
+        if cross != 0.0 {
+            if sign == 0.0 {
+                sign = cross;
+            } else if (cross > 0.0) != (sign > 0.0) {
+                return false;
+            }
+        }
+    }
+    true
+}
+
 /// What a [`Segment`] draws, and where its geometry lives.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) enum SegmentKind {
@@ -406,6 +502,20 @@ pub struct Renderer {
     /// `TextureId` is created once in [`Renderer::new`] and its dirty rows are
     /// flushed to the device each frame after lowering.
     gradient_lut: GradientLutAtlas,
+    /// The retained clip/mask coverage cache (§14.4): keys a requested mask to a
+    /// packed slot in [`mask_page`](Self::mask_page) so a stable mask is
+    /// rasterized once and reused. Cold-path policy; the physical texture lives
+    /// in `mask_page`.
+    mask_cache: MaskCache,
+    /// The physical R8 mask page — the GPU texture, CPU backing, and dirty rect
+    /// the resolved coverage from `mask_cache` blits into. Internal texture like
+    /// `gradient_lut`; created once in [`Renderer::new`], drained each frame.
+    mask_page: MaskPage,
+    /// Clip masks rasterized this frame (§30/§61). Reset at frame start, bumped
+    /// each time a masked clip actually rasterizes coverage; surfaced as
+    /// [`FrameStats::clip_mask_builds`]. Steady state evicts/rasterizes nothing,
+    /// so this returns to 0.
+    mask_builds_this_frame: u32,
     /// The general triangle-mesh pipeline (Path/Mesh), registered once.
     mesh_pipeline: PipelineId,
     /// Persistent mesh vertex pool (slot-diff upload; vertices, not instances).
@@ -596,6 +706,18 @@ impl Renderer {
             label: "gradient-lut",
         });
 
+        // The R8 mask page is renderer-internal like the gradient LUT: resolved
+        // clip/mask coverage is blitted into this texture's CPU backing and
+        // uploaded before the pass. `MASK_PAGE_SIZE` is a single shared page;
+        // real UI clips are small ROIs that pack many-to-a-page.
+        let mask_texture = backend.create_texture(&TextureDesc {
+            width: MASK_PAGE_SIZE,
+            height: MASK_PAGE_SIZE,
+            format: MaskPage::FORMAT,
+            render_target: false,
+            label: "mask-page",
+        });
+
         let default_sampler_desc = SamplerDesc::LINEAR_CLAMP;
         let sampler = backend.create_sampler(&default_sampler_desc);
         // Seed the image sampler cache with the default so a default-sampler
@@ -633,6 +755,9 @@ impl Renderer {
             glyph_pool: InstancePool::new(BufferUsage::INSTANCE, "glyph-instances"),
             gradient_pool: InstancePool::new(BufferUsage::INSTANCE, "gradient-instances"),
             gradient_lut: GradientLutAtlas::new(GRADIENT_LUT_ROWS, lut_texture),
+            mask_cache: MaskCache::new(MASK_PAGE_SIZE),
+            mask_page: MaskPage::new(MASK_PAGE_SIZE, mask_texture),
+            mask_builds_this_frame: 0,
             mesh_pipeline,
             mesh_vertex_pool: InstancePool::new(BufferUsage::VERTEX, "mesh-vertices"),
             mesh_index_pool: InstancePool::new(BufferUsage::INDEX, "mesh-indices"),
@@ -690,6 +815,90 @@ impl Renderer {
         bind_group
     }
 
+    /// Lower a solid-fill-only [`Primitive::Path`] as a self-masked solid fill
+    /// (§14.4): rasterize its own coverage into an R8 mask-page slot and emit one
+    /// masked draw — the ROI world rect as geometry, the slot as UV, the fill as
+    /// the constant color — through the reused glyph coverage pipeline (a masked
+    /// solid fill is one coverage texture times a constant color, exactly the
+    /// glyph fragment, so no new pipeline or instance kind is needed).
+    ///
+    /// Returns `true` when the fill was lowered this way; `false` when it should
+    /// fall through to the tessellated path lane — a degenerate ROI, or a mask the
+    /// cache declined to allocate (empty/oversize), in which case the tessellated
+    /// fill (bounded by the active scissor) is the correct fallback.
+    fn mask_solid_fill(
+        &mut self,
+        path: &crate::primitive::Path,
+        fill: crate::primitive::Rgba,
+        ctx: EmitContext,
+        clip: Option<Rect>,
+    ) -> bool {
+        // The path's own bounds are the mask ROI; a degenerate path has no
+        // coverage to mask, so it falls through to the (also-degenerate) lane.
+        let roi = path_bounds(path.cmds.iter().copied());
+        if roi.w <= 0.0 || roi.h <= 0.0 {
+            return false;
+        }
+
+        // Plan the clip: a filled complex path plans a mask tier. The reject path
+        // (EvenOdd, unreachable from `Primitive::Path` which is always NonZero)
+        // would return a non-mask tier and fall through to the bounding scissor.
+        let plan = plan_clip(ClipShape::Path { bounds: roi }, false);
+        if !plan.tier.builds_mask() {
+            return false;
+        }
+
+        // Key the mask on its geometry: the path's coverage is a function of its
+        // command stream (NonZero at the primitive level), so a stable path builds
+        // its mask once and reuses the slot every frame after.
+        let key = MaskKey {
+            kind: MaskKind::Path,
+            source_revision: hash_path_cmds(&path.cmds),
+            transform_bucket: 0,
+            device_scale_q: 1,
+            fill_rule: ClipFillRule::NonZero,
+        };
+        let request = MaskRequest {
+            kind: MaskKind::Path,
+            needs_color: false,
+            roi,
+            key,
+        };
+        let Some(res) = self.mask_cache.resolve(&request) else {
+            // Empty or oversize ROI the packer declined — fall through to the
+            // tessellated fill within the active scissor.
+            return false;
+        };
+
+        // Rasterize on a cold build, a key change, or after a repack moved slot
+        // origins (the whole page must be re-blitted regardless of cache-hit).
+        if res.rasterized || self.mask_page.needs_full_reblit() {
+            let cov = rasterize_path_coverage(
+                path.cmds.iter().copied(),
+                roi,
+                1.0,
+                res.slot.w,
+                res.slot.h,
+            );
+            self.mask_page.blit(res.slot, &cov);
+            self.mask_builds_this_frame += 1;
+        }
+
+        // Sample the slot sub-rect of the shared page as normalized UVs.
+        let size = self.mask_page.size() as f32;
+        let inst = GlyphInstance {
+            rect_pos: [roi.x, roi.y],
+            rect_size: [roi.w, roi.h],
+            uv_pos: [res.slot.x as f32 / size, res.slot.y as f32 / size],
+            uv_size: [res.slot.w as f32 / size, res.slot.h as f32 / size],
+            color: [fill.r, fill.g, fill.b, fill.a],
+        };
+        let bounds = crate::scene::bounds::Bounds::from_world(roi, clip, 0.0, 0.0);
+        self.scene
+            .ingest_glyph_run(std::iter::once(inst), self.mask_page.texture(), ctx, bounds);
+        true
+    }
+
     /// Ingest this frame's primitive stream into the retained scene, then lower
     /// the retained stores to instance scratch + submission-ordered [`Segment`]s
     /// and upload the instance buffers.
@@ -711,6 +920,8 @@ impl Renderer {
         self.offscreen_passes.clear();
         self.offscreen_pool_used = 0;
         self.scene.begin_frame();
+        self.mask_cache.begin_frame();
+        self.mask_builds_this_frame = 0;
 
         for prim in primitives {
             let (clip, target, origin) = self.active();
@@ -867,6 +1078,23 @@ impl Renderer {
                         .ingest_gradient(inst, self.gradient_lut.texture(), ctx, bounds);
                 }
                 Primitive::Path(path) => {
+                    // A concave or curve-bearing solid-fill-only path is a
+                    // self-masked solid fill (§14.4): its own coverage is one R8
+                    // mask, and the fill color times that coverage is exactly the
+                    // glyph fragment, so it lowers as a single masked draw sampling
+                    // its mask-page slot rather than through tessellation — the lane
+                    // where coverage caching beats re-tessellating a complex outline.
+                    // A convex straight-edge fill (a triangle, a quad) keeps the
+                    // tessellated lane, which fans it trivially and reuses geometry
+                    // across pure translations; a stroked path or a degenerate fill
+                    // keeps that lane too.
+                    if let Some(fill) = path.fill
+                        && path.stroke.is_none()
+                        && !path_is_convex(&path.cmds)
+                        && self.mask_solid_fill(path, fill, ctx, clip)
+                    {
+                        continue;
+                    }
                     self.scene
                         .ingest_path(path, ctx, crate::scene::bounds::Bounds::default());
                 }
@@ -936,6 +1164,13 @@ impl Renderer {
         // retained stores hold exactly this frame's primitives.
         self.scene.finish_frame();
 
+        // Reclaim masks this frame no longer references. A repack moves surviving
+        // slot origins, so a `true` return forces every resolving mask to re-blit
+        // next frame regardless of cache-hit status (eviction is a cold event; a
+        // steady scene evicts nothing and this stays `false`).
+        self.mask_page
+            .set_needs_full_reblit(self.mask_cache.end_frame());
+
         // Derive the frame's scratch + segments from the retained scene.
         self.lower_from_scene(backend);
 
@@ -945,6 +1180,13 @@ impl Renderer {
         // gradient uploads nothing.
         if let Some((x, y, w, h, bytes)) = self.gradient_lut.take_dirty() {
             backend.write_texture(self.gradient_lut.texture(), x, y, w, h, &bytes);
+        }
+
+        // Flush the frame's baked mask coverage into the R8 page in one batched
+        // upload of the coalesced dirty sub-rect, mirroring the gradient LUT seam;
+        // a frame that built no masks uploads nothing.
+        if let Some((x, y, w, h, bytes)) = self.mask_page.take_dirty() {
+            backend.write_texture(self.mask_page.texture(), x, y, w, h, &bytes);
         }
 
         // Reconcile each family's persistent device buffer with the freshly
@@ -1333,10 +1575,12 @@ impl Renderer {
             offscreen_passes: self.offscreen_passes.len(),
             transient_target_bytes,
             shader_pipeline_creations: SHADER_PIPELINE_PREWARM_COUNT,
+            // Masks rasterized into the page this frame (§14.4): cold builds,
+            // re-rasters after a key change, and re-blits after a repack.
+            clip_mask_builds: self.mask_builds_this_frame,
             // Counters no stage below D0 lights up yet; meaning fixed, value 0.
             culled_primitives: 0,
             instance_rebuilds: 0,
-            clip_mask_builds: 0,
             gpu_upload_bytes: self.gpu_upload_bytes,
         }
     }
@@ -1934,6 +2178,181 @@ mod tests {
         let mut r = Renderer::new(&mut gpu, format);
         r.upload(&mut gpu, prims);
         r.segments.clone()
+    }
+
+    /// A solid-filled *concave* path (a chevron/arrow with one reflex vertex,
+    /// fill only, no stroke): the self-masked solid-fill case (§14.4). A convex
+    /// outline keeps the tessellated lane, so the mask-lane fixtures must be
+    /// non-convex to divert.
+    fn solid_path(ox: f32, oy: f32) -> Primitive {
+        use crate::primitive::Point as P;
+        Primitive::Path(crate::primitive::Path {
+            cmds: vec![
+                PathCmd::MoveTo(P::new(ox, oy)),
+                PathCmd::LineTo(P::new(ox + 16.0, oy + 8.0)),
+                PathCmd::LineTo(P::new(ox, oy + 16.0)),
+                PathCmd::LineTo(P::new(ox + 6.0, oy + 8.0)), // reflex vertex
+                PathCmd::Close,
+            ],
+            fill: Some(Rgba {
+                r: 0.2,
+                g: 0.4,
+                b: 0.6,
+                a: 1.0,
+            }),
+            stroke: None,
+        })
+    }
+
+    /// A cold masked solid fill rasterizes its coverage once: exactly one mask
+    /// build, and it lowers through the reused glyph-coverage pipeline.
+    #[test]
+    fn cold_masked_solid_fill_builds_one_mask() {
+        let mut gpu = HeadlessRaster::new();
+        let surface = gpu.create_surface(RawWindowHandle::Headless, 64, 64);
+        let format = gpu.surface_format(surface);
+        let mut r = Renderer::new(&mut gpu, format);
+        r.upload(&mut gpu, &[solid_path(4.0, 4.0)]);
+        assert_eq!(r.frame_stats().clip_mask_builds, 1);
+        assert!(
+            r.segments
+                .iter()
+                .any(|s| matches!(s.kind, SegmentKind::GlyphRun { .. })),
+            "masked solid fill lowers as a glyph-coverage draw"
+        );
+    }
+
+    /// A stable path re-resolves to its retained slot with no re-raster: the
+    /// second identical frame builds zero masks (the §14.4 stable fast path).
+    #[test]
+    fn stable_masked_solid_fill_rebuilds_nothing() {
+        let mut gpu = HeadlessRaster::new();
+        let surface = gpu.create_surface(RawWindowHandle::Headless, 64, 64);
+        let format = gpu.surface_format(surface);
+        let mut r = Renderer::new(&mut gpu, format);
+        r.upload(&mut gpu, &[solid_path(4.0, 4.0)]);
+        assert_eq!(r.frame_stats().clip_mask_builds, 1);
+        r.upload(&mut gpu, &[solid_path(4.0, 4.0)]);
+        assert_eq!(r.frame_stats().clip_mask_builds, 0);
+    }
+
+    /// Dropping a mask evicts it; re-introducing it repacks the page, which forces
+    /// a full re-blit and rebuilds the survivor.
+    #[test]
+    fn eviction_forces_reblit_next_frame() {
+        let mut gpu = HeadlessRaster::new();
+        let surface = gpu.create_surface(RawWindowHandle::Headless, 64, 64);
+        let format = gpu.surface_format(surface);
+        let mut r = Renderer::new(&mut gpu, format);
+        // Two distinct masks in frame 1.
+        r.upload(&mut gpu, &[solid_path(4.0, 4.0), solid_path(30.0, 30.0)]);
+        assert_eq!(r.frame_stats().clip_mask_builds, 2);
+        // Frame 2 references only the first: the second is evicted, repacking the
+        // page. Re-resolve of the first is a cache hit, but the repack sets
+        // needs_full_reblit for the following frame.
+        r.upload(&mut gpu, &[solid_path(4.0, 4.0)]);
+        // Frame 3: needs_full_reblit is set, so the surviving mask re-blits even
+        // though its key is unchanged.
+        r.upload(&mut gpu, &[solid_path(4.0, 4.0)]);
+        assert_eq!(r.frame_stats().clip_mask_builds, 1);
+    }
+
+    /// A stroked path is not a self-masked solid fill: it stays on the tessellated
+    /// path lane and builds no mask.
+    #[test]
+    fn stroked_path_skips_mask_lane() {
+        use crate::primitive::{Point as P, Stroke};
+        let prim = Primitive::Path(crate::primitive::Path {
+            cmds: vec![
+                PathCmd::MoveTo(P::new(4.0, 4.0)),
+                PathCmd::LineTo(P::new(20.0, 4.0)),
+                PathCmd::LineTo(P::new(12.0, 20.0)),
+                PathCmd::Close,
+            ],
+            fill: Some(Rgba {
+                r: 1.0,
+                g: 0.0,
+                b: 0.0,
+                a: 1.0,
+            }),
+            stroke: Some(Stroke::new(
+                2.0,
+                Rgba {
+                    r: 0.0,
+                    g: 0.0,
+                    b: 0.0,
+                    a: 1.0,
+                },
+            )),
+        });
+        let mut gpu = HeadlessRaster::new();
+        let surface = gpu.create_surface(RawWindowHandle::Headless, 64, 64);
+        let format = gpu.surface_format(surface);
+        let mut r = Renderer::new(&mut gpu, format);
+        r.upload(&mut gpu, &[prim]);
+        assert_eq!(r.frame_stats().clip_mask_builds, 0);
+    }
+
+    /// The convexity discriminator: convex polygons and degenerate stubs are
+    /// convex; a reflex vertex or any curve command is not.
+    #[test]
+    fn convexity_discriminator() {
+        use crate::primitive::Point as P;
+        let square = [
+            PathCmd::MoveTo(P::new(0.0, 0.0)),
+            PathCmd::LineTo(P::new(4.0, 0.0)),
+            PathCmd::LineTo(P::new(4.0, 4.0)),
+            PathCmd::LineTo(P::new(0.0, 4.0)),
+            PathCmd::Close,
+        ];
+        assert!(path_is_convex(&square));
+        let chevron = [
+            PathCmd::MoveTo(P::new(0.0, 0.0)),
+            PathCmd::LineTo(P::new(4.0, 2.0)),
+            PathCmd::LineTo(P::new(0.0, 4.0)),
+            PathCmd::LineTo(P::new(1.5, 2.0)),
+            PathCmd::Close,
+        ];
+        assert!(!path_is_convex(&chevron));
+        let curved = [
+            PathCmd::MoveTo(P::new(0.0, 0.0)),
+            PathCmd::QuadTo(P::new(2.0, 2.0), P::new(4.0, 0.0)),
+            PathCmd::Close,
+        ];
+        assert!(!path_is_convex(&curved));
+        // Fewer than three vertices is degenerate, treated as convex.
+        assert!(path_is_convex(&[
+            PathCmd::MoveTo(P::new(0.0, 0.0)),
+            PathCmd::LineTo(P::new(1.0, 0.0)),
+        ]));
+    }
+
+    /// A convex straight-edge solid fill (a triangle) is not diverted: it stays on
+    /// the tessellated path lane, which fans it trivially, and builds no mask.
+    #[test]
+    fn convex_solid_fill_stays_tessellated() {
+        use crate::primitive::Point as P;
+        let prim = Primitive::Path(crate::primitive::Path {
+            cmds: vec![
+                PathCmd::MoveTo(P::new(4.0, 4.0)),
+                PathCmd::LineTo(P::new(20.0, 4.0)),
+                PathCmd::LineTo(P::new(12.0, 20.0)),
+                PathCmd::Close,
+            ],
+            fill: Some(Rgba {
+                r: 0.2,
+                g: 0.4,
+                b: 0.6,
+                a: 1.0,
+            }),
+            stroke: None,
+        });
+        let mut gpu = HeadlessRaster::new();
+        let surface = gpu.create_surface(RawWindowHandle::Headless, 64, 64);
+        let format = gpu.surface_format(surface);
+        let mut r = Renderer::new(&mut gpu, format);
+        r.upload(&mut gpu, &[prim]);
+        assert_eq!(r.frame_stats().clip_mask_builds, 0);
     }
 
     #[test]
