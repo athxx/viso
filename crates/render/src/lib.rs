@@ -12,6 +12,7 @@
 #![forbid(unsafe_op_in_unsafe_fn)]
 
 pub mod batch;
+pub mod clip;
 pub mod color_atlas;
 pub mod effect_cost;
 pub mod frame;
@@ -25,6 +26,7 @@ pub mod rect_packer;
 pub mod renderer;
 pub mod scene;
 
+pub use clip::{ClipPlan, ClipShape, ClipTier, clips_children, plan_clip};
 pub use color_atlas::{ColorAlloc, ColorAtlas};
 pub use effect_cost::EffectCost;
 pub use glyph_atlas::{AtlasAlloc, GlyphAtlas};
