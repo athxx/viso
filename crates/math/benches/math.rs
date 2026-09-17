@@ -8,7 +8,9 @@
 //! - `math_affine2_transform_points_10m` — 10M `Affine2::transform_point`;
 //! - `math_rect_hit_test_10m`          — 10M `Rect::contains` hit tests;
 //! - `math_aabb_intersection_1m`       — 1M `Aabb::intersects`;
-//! - `math_transform_chain_100k`       — 100k `Transform3::then` compositions.
+//! - `math_transform_chain_100k`       — 100k `Transform3::then` compositions;
+//! - `math_point_bounds_4k_x10k`       — 10k folds of a 4k-point ring (SIMD);
+//! - `math_segment_lengths_4k_x10k`    — 10k arc-length passes over 4k points.
 //!
 //! These are the throughput baselines a later optimization must not regress.
 //! Run release (`cargo bench -p viso-math`); criterion defaults to a release
@@ -18,7 +20,10 @@
 use std::hint::black_box;
 
 use criterion::{Criterion, criterion_group, criterion_main};
-use viso_math::{Aabb, Affine2, Mat4, Point, Quat, Rect, Transform3, Vec2, Vec3, vec2, vec3};
+use viso_math::{
+    Aabb, Affine2, Mat4, Point, Quat, Rect, Transform3, Vec2, Vec3, point_bounds, segment_lengths,
+    vec2, vec3,
+};
 
 const N_10M: u64 = 10_000_000;
 const N_1M: u64 = 1_000_000;
@@ -137,6 +142,47 @@ fn transform_chain(c: &mut Criterion) {
     });
 }
 
+/// A closed ring of `n` points on a wobbly circle — a stand-in for a flattened
+/// outline, contiguous in memory so the SIMD fold sees a real point array.
+fn ring(n: usize) -> Vec<Point> {
+    (0..n)
+        .map(|i| {
+            let t = i as f32 * 0.017;
+            Point::new(t.cos() * 240.0 + t * 0.3, t.sin() * 180.0 - t * 0.2)
+        })
+        .collect()
+}
+
+fn point_bounds_bench(c: &mut Criterion) {
+    c.bench_function("math_point_bounds_4k_x10k", |bencher| {
+        let pts = ring(4096);
+        bencher.iter(|| {
+            let mut acc = 0.0f32;
+            for _ in 0..10_000u64 {
+                let r = point_bounds(black_box(&pts));
+                acc += r.size.w + r.size.h;
+            }
+            black_box(acc)
+        })
+    });
+}
+
+fn segment_lengths_bench(c: &mut Criterion) {
+    c.bench_function("math_segment_lengths_4k_x10k", |bencher| {
+        let pts = ring(4096);
+        let mut out: Vec<f32> = Vec::with_capacity(pts.len());
+        bencher.iter(|| {
+            let mut acc = 0.0f32;
+            for _ in 0..10_000u64 {
+                out.clear();
+                segment_lengths(black_box(&pts), &mut out);
+                acc += out.iter().copied().sum::<f32>();
+            }
+            black_box(acc)
+        })
+    });
+}
+
 criterion_group!(
     benches,
     vec2_ops,
@@ -144,6 +190,8 @@ criterion_group!(
     affine2_transform_points,
     rect_hit_test,
     aabb_intersection,
-    transform_chain
+    transform_chain,
+    point_bounds_bench,
+    segment_lengths_bench
 );
 criterion_main!(benches);

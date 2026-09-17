@@ -2097,7 +2097,15 @@ fn q(v: f32) -> i32 {
     (v * 16.0).round() as i32
 }
 
-/// Local-space bounding rect over a colorless vertex ring.
+/// Local-space bounding rect over the tessellated (stroke-widened) vertex ring.
+///
+/// This folds `GeoVertex` — a strided, non-`repr(C)` struct (position + AA
+/// weight) — so it is not a contiguous `[Point]` and is a poor SIMD target
+/// (gather-bound, no wide contiguous load). It also must fold the *post*-stroke
+/// vertices, whose fringe extends past the centerline, so it cannot be replaced
+/// by a bound over the input polyline. The contiguous-`[Point]` min/max fold
+/// lives in `viso_math::point_bounds` (SIMD-accelerated) for callers that have a
+/// real point array, e.g. the SVG import path; this strided fold stays scalar.
 fn geo_bounds(verts: &[GeoVertex]) -> Rect {
     let mut min_x = f32::INFINITY;
     let mut min_y = f32::INFINITY;

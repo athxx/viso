@@ -30,6 +30,7 @@
 
 #![forbid(unsafe_op_in_unsafe_fn)]
 
+mod batch;
 mod color;
 mod coverage;
 mod dvec;
@@ -43,6 +44,7 @@ mod snap;
 mod transform;
 mod vec;
 
+pub use batch::{point_bounds, segment_lengths};
 pub use color::{
     DisplayP3, ExtendMode, ExtendedLinear, InterpolationSpace, LinearPremul, LinearSrgb,
     LinearStraight, Srgb, linear_to_srgb, srgb_to_linear,
