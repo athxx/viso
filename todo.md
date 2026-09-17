@@ -1452,8 +1452,22 @@ shader variants in `viso-shader`; `ClipMaskAtlas` / R8 target allocation in `vis
         records the tier at ingest; the planner carries it out.
 
 ### C0.6 — §31 gate
-- [ ] Benchmark gate (§31 Matrix): deep Rect clip; mixed RRect clip; complex cached clip;
+- [x] Benchmark gate (§31 Matrix): deep Rect clip; mixed RRect clip; complex cached clip;
       nested opacity; blend stress. High-refresh 60/120/144/240.
+  - [x] Deep Rect clip nest (`assert_deep_clip_nest_opens_no_offscreen`, DEPTH=32,
+        opacity 1.0): a fully-opaque `Layer(clip)` nest is an in-pass hardware scissor —
+        0 offscreen passes, 0 transient target bytes, 0 texture growth, and byte-identical
+        steady `FrameStats` (0 uploaded ranges / gpu upload bytes) across warmed frames.
+  - [x] Nested + sibling translucent layers (`assert_translucent_layers_reuse_pooled_targets`,
+        NEST_DEPTH=16 / SIBLINGS=64, opacity 0.5): exactly `layers` offscreen passes,
+        transient target bytes > 0, and steady-state pooled-target reuse — texture count
+        unchanged and byte-identical `FrameStats` across warmed frames (no per-frame target
+        allocation; §31 nested-opacity / blend-stress / many-layers).
+  - [x] Timing benches over the matrix: `deep_clip_nest_upload_steady`,
+        `nested_opacity_upload_steady`, `sibling_layers_upload_steady` (release profile).
+  - [ ] Unverifiable here: high-refresh 60/120/144/240Hz cadence is a present-loop
+        property the upload microbench cannot observe; per-frame wall-clock at each refresh
+        rate needs a real device with that display. Bit-exact steady-state stats verified.
 
 ### C0 Done
 - [ ] Rect / RRect / Path clip ladder.
