@@ -1233,10 +1233,25 @@ depend on compute (§7.2).
           assert the `PathCmd` sequence, baked coordinates, and fill/stroke colors exactly.
 
 ### D3.5 — §31 gate
-- [ ] Benchmark gate (§31 `## D3`): small stable SVG-like paths; large static path scene;
+- [x] Benchmark gate (§31 `## D3`): small stable SVG-like paths; large static path scene;
       path transform-only (0 retessellate); stroke/dash heavy; path churn. Steady state:
       0 path tessellation when geometry unchanged; 0 general path parse. High-refresh
       60/120/144/240.
+    - [x] Startup proofs in `renderer_steady_state`: `assert_curve_and_dash_scenes_are_retained`
+          (curved SVG-shaped + dashed/stroke-heavy scenes tessellate once, then 0
+          re-tessellation / 0 upload-range / 0 bytes on the unchanged frame) and
+          `assert_path_churn_is_local` (a relative-shape change re-tessellates exactly the
+          changed paths — 8 of 256 — the cache holds the rest). `assert_path_grid_is_retained`
+          already pins path transform-only (scroll) and paint-only (recolor) to 0 tessellation.
+    - [x] Timing benches: `svg_path_grid_upload_steady` (10k static paths, steady diff-walk),
+          `svg_path_grid_churn_one` (one shape deform against 10k), `dashed_stroke_upload_steady`
+          (stroke-geometry cache held). Release only (§36); run with
+          `CARGO_TARGET_DIR=/tmp/rust_tmp cargo bench -p viso-render`.
+    - [x] "0 general path parse" is structural: `svg::parse_svg` is an input-lane one-shot,
+          never called per frame; the renderer's per-frame path is tessellation-cache lookup,
+          not parse. High-refresh (60/120/144/240) is a device/present-rate property — the
+          steady frame does O(dirty) work independent of refresh rate; real per-rate timing
+          needs on-device Metal present and is unverifiable in this headless environment.
 
 ### D3 Done
 - [ ] Path commands.
