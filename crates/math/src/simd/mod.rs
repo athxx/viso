@@ -13,7 +13,10 @@
 //! check), a build always compiles exactly one kernel and the accelerated path
 //! carries no dispatch branch.
 
+mod bounds;
 mod scalar;
+
+pub(crate) use bounds::{point_bounds, segment_lengths};
 
 // The scalar reference, exposed under a distinct name for two callers: the
 // fallback kernel on targets without a SIMD path, and the bit-exact oracle the

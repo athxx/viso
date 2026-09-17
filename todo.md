@@ -1180,9 +1180,39 @@ depend on compute (§7.2).
         closed rings (uniform-normal-shift approximation used this round) is deferred.
 
 ### D3.4 — SIMD & SVG input
-- [ ] SIMD candidates (§13.6): bounds, flatness evaluation, segment transform, rect
+- [x] SIMD candidates (§13.6): bounds, flatness evaluation, segment transform, rect
       intersection, point classification, stroke preprocessing — scalar implementation kept
       as the correctness oracle.
+  - [x] `viso-math` gained a `simd::bounds` kernel set mirroring the existing `simd::mat4_mul`
+        boundary (scalar reference + SSE2/NEON/wasm128 kernels + `#[cfg(target_arch)]`
+        dispatch, no runtime probe), exposed as scalar-ABI public entry points
+        `point_bounds(&[Point]) -> Rect` and `segment_lengths(&[Point], &mut Vec<f32>)` via a
+        thin `batch` module.
+  - [x] **bounds** — contiguous-`[Point]` min/max fold in one `[x,y,x,y]` register (backs the
+        `geo_bounds` semantics for callers holding a real point array; first consumer is the
+        SVG import path). **stroke preprocessing** — per-segment Euclidean length
+        (`segment_lengths`), the arc-length input a dash splitter consumes.
+  - [x] Every kernel is bit-for-bit equal to the scalar reference: fixed accumulation order,
+        plain mul+add (no FMA), asserted by `point_bounds_matches_scalar_bit_exact` and
+        `segment_lengths_matches_scalar_bit_exact` comparing `.to_bits()`. Each `unsafe`
+        intrinsic block carries a `SAFETY:` comment (§27); stable-only (no `core::simd`).
+  - [x] Microbenches `math_point_bounds_4k_x10k` and `math_segment_lengths_4k_x10k` added to
+        `crates/math/benches/math.rs` (release baselines, §36).
+  - [x] Verified: `cargo test -p viso-math` (99 pass, incl. bit-exact), `-p viso-render`
+        (unchanged, green), fmt, clippy `-D warnings --all-targets`, `xtask check-deps` (DAG
+        unchanged — `render → math` edge already present).
+  - Deferred (no contiguous scalar oracle to accelerate without contrivance, §37):
+    render's post-tessellation `geo_bounds` stays scalar — its input is a strided,
+    stroke-widened `GeoVertex` buffer (non-`repr(C)`, gather-bound, not a `[Point]`), a poor
+    SIMD target; **flatness evaluation** is inside recursive De Casteljau (single-segment
+    `point_line_dist`, not batch-shaped); **dash arc-length** is consumed by an incremental
+    on/off state machine that recomputes the segment direction anyway; **per-segment
+    transform** has no CPU routine (retained tessellation is transform-invariant; batch
+    `point × Mat` belongs to `viso-math`, lands with a feature that needs CPU batch
+    transform); **point/winding classification** ships with the unimplemented winding-fill
+    scanline (a separate §13 fill-rule feature). Cross-arch (x86_64/wasm) real-hardware
+    speedups are unverifiable here (arm64 host runs only the NEON kernel); bit-exact
+    correctness is verified per-arch by the equivalence tests.
 - [ ] SVG lane (§13): `SVG bytes → parse → normalized vector scene → Path/Brush/Stroke →
       cached Render IR`. SVG is an input format, not a per-frame XML DOM renderer; static
       assets may pre-parse at build time; runtime dynamic parse goes to a worker.
