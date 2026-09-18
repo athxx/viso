@@ -31,10 +31,11 @@ use viso_gpu::{
 };
 use viso_render::{
     AnalyticCapsule, AnalyticCapsuleInstance, AnalyticEllipse, AnalyticEllipseInstance,
-    AnalyticLine, AnalyticLineInstance, AnalyticRRect, AnalyticRRectInstance, Border, Corners,
-    DashPattern, ExtendMode, FrameStats, GlyphRunDraw, Gradient, GradientKind, GradientStop,
-    ImageDraw, InterpolationSpace, LayerClip, LineCap, LineJoin, Path, PathCmd, Point, Primitive,
-    Quad, Rect, Renderer, Rgba, SpriteRegion, Stroke, test_glyphs, test_scene, test_texture,
+    AnalyticLine, AnalyticLineInstance, AnalyticRRect, AnalyticRRectInstance, AnalyticShadow,
+    Border, Corners, DashPattern, ExtendMode, FrameStats, GlyphRunDraw, Gradient, GradientKind,
+    GradientStop, ImageDraw, InterpolationSpace, LayerClip, LineCap, LineJoin, Path, PathCmd,
+    Point, Primitive, Quad, Rect, Renderer, Rgba, ShadowShape, SpriteRegion, Stroke, test_glyphs,
+    test_scene, test_texture,
 };
 
 /// A global allocator that counts heap allocations while `ARMED`, so a steady
@@ -1389,6 +1390,181 @@ fn assert_path_churn_is_local() {
     );
 }
 
+// ---------------------------------------------------------------------------
+// E0.2 gate (§15.3 / §20.1): the fusion decision for a decorated shape
+// (`shadow + fill + border`). The phase is benchmark-gated — a fused
+// `DecoratedShape` pipeline is built only if the register-pressure / overdraw
+// measurement justifies it. This gate measures the half that is observable in a
+// headless CPU backend (draw-call / batch / pipeline-switch structure and the
+// shaded-quad-area overdraw proxy) and records the verdict; the register-pressure
+// / shaded-pixel-time half is a real-device measurement `FrameStats` +
+// `HeadlessRaster` cannot express and is flagged, not asserted (§7.3).
+// ---------------------------------------------------------------------------
+
+/// The decorated-card grid size for the fusion gate: enough cards that the
+/// per-card batch/switch structure is unambiguous, small enough to stay a
+/// startup assertion.
+const DECORATED_CARDS: usize = 256;
+
+/// A grid of `count` decorated cards. Each card is a soft drop shadow drawn
+/// *under* a rounded rect that carries both a fill and a border — the exact
+/// `shadow + fill + border` triple §15.3 asks about. The shadow and the rrect
+/// are emitted in paint order (shadow first) so the planner may not reorder them
+/// across the family barrier: this is the *separate-draw* baseline the fusion
+/// decision is measured against.
+///
+/// Deliberately no pure `Rect`: §15.3's hard constraint keeps a plain rect on the
+/// shorter Quad pipeline, so it never enters the decorated path and is not part
+/// of this measurement.
+fn decorated_card_scene(count: usize) -> Vec<Primitive> {
+    let cols = (count as f64).sqrt().ceil() as usize;
+    let mut scene = Vec::with_capacity(count * 2);
+    for i in 0..count {
+        let col = (i % cols) as f32;
+        let row = (i / cols) as f32;
+        let rect = Rect {
+            x: col * 8.0 + 4.0,
+            y: row * 8.0 + 4.0,
+            w: 4.0,
+            h: 3.0,
+        };
+        let color = Rgba {
+            r: (i % 7) as f32 / 7.0,
+            g: (i % 13) as f32 / 13.0,
+            b: (i % 5) as f32 / 5.0,
+            a: 1.0,
+        };
+        let radius = Corners::uniform(0.75);
+        // Shadow under the card: offset down-right, a soft blur, drawn first so it
+        // sits below the fill in paint order.
+        scene.push(Primitive::AnalyticShadow(AnalyticShadow {
+            rect,
+            color: Rgba {
+                r: 0.0,
+                g: 0.0,
+                b: 0.0,
+                a: 0.35,
+            },
+            radius,
+            offset: [0.5, 0.75],
+            sigma: 1.0,
+            spread: 0.0,
+            shape: ShadowShape::RoundedBox,
+        }));
+        // The card itself: fill + border in one rrect draw (the rrect family
+        // already fuses fill and border in its fragment).
+        scene.push(Primitive::AnalyticRRect(AnalyticRRect {
+            rect,
+            color,
+            radius,
+            border: Border {
+                width: 0.5,
+                color: Rgba {
+                    r: 1.0,
+                    g: 1.0,
+                    b: 1.0,
+                    a: 1.0,
+                },
+            },
+        }));
+    }
+    scene
+}
+
+/// The device-pixel footprint of one shadow's expanded instance quad, matching
+/// the shader's vertex pad: `reach = 3*sigma + max(spread,0) + 1`, and the quad
+/// spans `size + 2*(reach + |offset|)` on each axis. This is the overdraw proxy
+/// — every fill/border pixel of a fused draw would be shaded through a fragment
+/// this large, versus the tight rrect quad of the separate path.
+fn shadow_quad_area(s: &AnalyticShadow) -> f32 {
+    let reach = 3.0 * s.sigma + s.spread.max(0.0) + 1.0;
+    let pad_x = reach + s.offset[0].abs();
+    let pad_y = reach + s.offset[1].abs();
+    (s.rect.w + 2.0 * pad_x) * (s.rect.h + 2.0 * pad_y)
+}
+
+/// E0.2 fusion gate. The decorated-card grid draws `shadow + fill + border` as
+/// separate analytic draws today; this pins the structure the fusion decision
+/// turns on and records the verdict.
+///
+/// Observable here (asserted): a shadow and its rrect are different families, so
+/// the planner cannot merge across the per-card barrier — the separate path is
+/// `2N` draws with a pipeline switch on every draw. A fused `DecoratedShape`
+/// family would collapse that to `N` mergeable draws with a single switch.
+///
+/// Also observable (measured, not asserted): the shadow's expanded quad is far
+/// larger than the tight fill quad, so a fused fragment would shade the whole
+/// `shadow + fill + border` body over that larger area for every card. The area
+/// ratio is the overdraw proxy.
+///
+/// NOT observable here (the other half of the §20.1 gate): real-Metal shader
+/// register pressure and shaded-pixel time on device. `FrameStats` has no
+/// overdraw or GPU-timing counter and `HeadlessRaster` is a CPU rasterizer, so
+/// whether the fused fragment's extra ALU + the larger shaded area actually beat
+/// the separate path's extra draw/switch cost is a device measurement, not a
+/// headless one (§7.3). The fused pipeline is therefore deferred until that
+/// measurement exists; this gate lands the measurable half and the barrier proof.
+fn assert_decorated_fusion_gate() {
+    let scene = decorated_card_scene(DECORATED_CARDS);
+    let mut h = setup_scene(scene);
+    frame(&mut h);
+    frame(&mut h);
+
+    let stats = h.renderer.frame_stats();
+
+    // Separate-draw structure: one shadow + one rrect per card, neither mergeable
+    // into the other's family, and the two families strictly alternate in paint
+    // order — so every draw is a family transition.
+    assert_eq!(
+        stats.draw_calls,
+        DECORATED_CARDS * 2,
+        "decorated cards draw as separate shadow + rrect draws (a fused family \
+         would be {DECORATED_CARDS})"
+    );
+    assert_eq!(
+        stats.batches,
+        DECORATED_CARDS * 2,
+        "the shadow/rrect family barrier blocks merging: 2 batches per card"
+    );
+    assert_eq!(
+        stats.pipeline_switches,
+        (DECORATED_CARDS * 2) as u32,
+        "alternating families switch the pipeline on every draw (a fused family \
+         would switch once)"
+    );
+
+    // Overdraw proxy: the shadow's expanded quad dwarfs the tight fill quad, so a
+    // fused fragment shades the decorated body over a much larger area. Assert the
+    // proxy is real and large enough that the tradeoff is non-trivial — the exact
+    // break-even is a device measurement, not this ratio.
+    let card = AnalyticShadow {
+        rect: Rect {
+            x: 0.0,
+            y: 0.0,
+            w: 4.0,
+            h: 3.0,
+        },
+        color: Rgba {
+            r: 0.0,
+            g: 0.0,
+            b: 0.0,
+            a: 0.35,
+        },
+        radius: Corners::uniform(0.75),
+        offset: [0.5, 0.75],
+        sigma: 1.0,
+        spread: 0.0,
+        shape: ShadowShape::RoundedBox,
+    };
+    let fill_area = card.rect.w * card.rect.h;
+    let overdraw_ratio = shadow_quad_area(&card) / fill_area;
+    assert!(
+        overdraw_ratio > 2.0,
+        "the shadow quad must be materially larger than the fill quad for the \
+         overdraw tradeoff to matter (proxy ratio {overdraw_ratio:.1}x)"
+    );
+}
+
 /// Lower + upload + submit one frame of the scene.
 fn frame(h: &mut Harness) {
     h.renderer.upload(&mut h.gpu, &h.scene);
@@ -1547,6 +1723,12 @@ fn bench_steady_state(c: &mut Criterion) {
         NEST_DEPTH,
     );
     assert_translucent_layers_reuse_pooled_targets(|| sibling_layer_scene(SIBLINGS, 0.5), SIBLINGS);
+
+    // E0.2 gate (§15.3 / §20.1): the decorated-shape fusion decision. Pins the
+    // separate-draw batch/switch structure and the shaded-quad overdraw proxy the
+    // fusion turns on; the register-pressure / GPU-time half is a device
+    // measurement this backend cannot express (see the fn doc).
+    assert_decorated_fusion_gate();
 
     let mut h = setup();
     // Warm up so the measured iterations are the reuse path, not first growth.
@@ -1716,6 +1898,21 @@ fn bench_steady_state(c: &mut Criterion) {
             layers
                 .renderer
                 .upload(black_box(&mut layers.gpu), black_box(&layers.scene))
+        });
+    });
+
+    // E0.2 timing (§15.3 / §20.1): the separate-draw decorated-card baseline —
+    // one shadow + one rrect per card, `2N` draws. This is the cost a fused
+    // `DecoratedShape` family would be measured against on device; here it is the
+    // steady diff-and-coalesce upload of the separate path.
+    let mut cards = setup_scene(decorated_card_scene(DECORATED_CARDS));
+    frame(&mut cards);
+    frame(&mut cards);
+    c.bench_function("decorated_cards_upload_steady", |b| {
+        b.iter(|| {
+            cards
+                .renderer
+                .upload(black_box(&mut cards.gpu), black_box(&cards.scene))
         });
     });
 }
