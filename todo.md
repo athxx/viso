@@ -1671,9 +1671,38 @@ C0 + E0 frozen; builds on F1 fence/retire and F4 pool/batch.
         cull gate) + updated `translucent_layer_opens_offscreen_and_composites`.
 
 ### E1.2 — Blur ladder
-- [ ] Auto-select by effective sigma / ROI / backend (§16.3): small → direct/separable;
+- [x] Auto-select by effective sigma / ROI / backend (§16.3): small → direct/separable;
       medium → optimized separable / compute where profitable; large → downsample pyramid /
       multi-scale (Kawase-like) / upsample. Thresholds are benchmark params, not public ABI.
+  - [x] Content blur authored on the existing offscreen layer: `LayerClip.blur_sigma`
+        (0 = no blur; > 0 forces an offscreen pass even at opacity 1.0). No new authoring
+        primitive; blur consumes the tight-ROI texture as-is. Backdrop blur deferred (needs
+        destination capture — a separate slice).
+  - [x] `blur` built-in: one pipeline, params carried per-instance (`BlurInstance`:
+        rect_pos/rect_size/uv_pos/uv_size/dir/sigma/radius) since `InlineUniforms` (16 B)
+        only fits the viewport. `blur_ir()` (IR source of MSL + schema), `BLUR_MSL()`,
+        `blur_schema()`, `PrimitiveKind::Blur`, `PipelineFamily::Blur` manifest entry,
+        `BuiltinShader::Blur`. Fragment is a normalized Gaussian tap loop along `dir`.
+  - [x] Headless raster dispatches `BuiltinShader::Blur` to `fill_blur` — a real separable
+        tap read (uv-space, clamp-to-edge), so a hard edge becomes a monotonic ramp;
+        headlessly verifiable, unlike viewport-NDC-only math.
+  - [x] `blur_plan(sigma, src_w, src_h) -> BlurPlan` (cold, once per blurred layer): skip
+        ≤ `BLUR_MIN_SIGMA`; small → two separable passes at full ROI res; large → ÷2
+        downsample pyramid until residual radius ≤ `BLUR_MAX_TAPS`, blur, upsample back.
+        `ComputePreferred` recorded when caps report compute + large sigma; raster separable
+        is the shipped realization (compute dispatch deferred, labeled a hypothesis).
+  - [x] Pass insertion at `LayerEnd` (between `finalize_offscreen` and `close_offscreen`):
+        claim scratch from the size-keyed offscreen pool (H/V ping-pong reuses two textures),
+        record `BlurPass`es drained in `encode` as extra `RenderTarget::Texture` passes before
+        the surface pass, repoint the composite's sampling bind group at the final blurred
+        texture. Composite geometry/rect unchanged.
+  - [x] Counters (§30/§61): `FrameStats::blur_passes` and `blur_target_bytes`;
+        `counter_contract_frozen.rs` updated in the same commit.
+  - [x] Tests: `blur_plan_small_sigma_is_two_separable_passes`, `blur_plan_large_sigma_
+        downsamples`, `subpixel_blur_skips`, `blurred_layer_forces_offscreen_at_full_opacity`,
+        `headless_blur_softens_a_hard_edge`, `steady_state_blur_reuses_pooled_targets`;
+        shader-side `blur_schema_matches_instance_layout`. No frozen-MSL byte oracle exists
+        for Blur (no testdata dir); its MSL is validated structurally in-crate.
 
 ### E1.3 — Transient Target Planner
 - [ ] Lifetime analysis + size/format/sample compatibility + alias-reuse + frame-local pool

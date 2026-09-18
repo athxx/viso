@@ -105,6 +105,7 @@ fn paint_subtree(
         out.push(Primitive::Layer(LayerClip {
             clip: world,
             opacity: 1.0,
+            blur_sigma: 0.0,
         }));
     }
 

@@ -54,7 +54,9 @@ fn frame_stats_roster_is_frozen() {
         // Offscreen / pipeline lifetime (§30).
         offscreen_passes: 17,
         transient_target_bytes: 18,
-        shader_pipeline_creations: 19,
+        blur_passes: 19,
+        blur_target_bytes: 20,
+        shader_pipeline_creations: 21,
     };
 
     // Every field reads back what it was set to — a plain integer counter, no
@@ -77,7 +79,9 @@ fn frame_stats_roster_is_frozen() {
     assert_eq!(s.gpu_upload_bytes, 16);
     assert_eq!(s.offscreen_passes, 17);
     assert_eq!(s.transient_target_bytes, 18);
-    assert_eq!(s.shader_pipeline_creations, 19);
+    assert_eq!(s.blur_passes, 19);
+    assert_eq!(s.blur_target_bytes, 20);
+    assert_eq!(s.shader_pipeline_creations, 21);
 
     // The default is the all-zero frame: a renderer that drew nothing reports
     // every counter at zero, so a steady frame's deltas are meaningful.
@@ -100,6 +104,8 @@ fn frame_stats_roster_is_frozen() {
     assert_eq!(z.gpu_upload_bytes, 0);
     assert_eq!(z.offscreen_passes, 0);
     assert_eq!(z.transient_target_bytes, 0);
+    assert_eq!(z.blur_passes, 0);
+    assert_eq!(z.blur_target_bytes, 0);
     assert_eq!(z.shader_pipeline_creations, 0);
 }
 

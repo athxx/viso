@@ -803,6 +803,7 @@ fn nested_layer_scene(depth: usize, opacity: f32) -> Vec<Primitive> {
                 h: (H as f32 - 2.0 * inset).max(1.0),
             },
             opacity,
+            blur_sigma: 0.0,
         }));
         scene.push(layer_tile(level, inset + 1.0, inset + 1.0));
     }
@@ -831,6 +832,7 @@ fn sibling_layer_scene(count: usize, opacity: f32) -> Vec<Primitive> {
                 h: 3.0,
             },
             opacity,
+            blur_sigma: 0.0,
         }));
         scene.push(layer_tile(i, col * 4.0 + 0.5, row * 4.0 + 0.5));
         scene.push(Primitive::LayerEnd);

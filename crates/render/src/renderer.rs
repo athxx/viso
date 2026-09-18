@@ -33,8 +33,8 @@ use crate::mask_page::MaskPage;
 use crate::pool::InstancePool;
 use crate::primitive::{
     AnalyticCapsuleInstance, AnalyticEllipseInstance, AnalyticLineInstance, AnalyticRRectInstance,
-    GlyphInstance, GradientInstance, ImageInstance, MeshVertex, PathCmd, Primitive, QuadInstance,
-    Rect, ShadowInstance, rgba_array,
+    BlurInstance, GlyphInstance, GradientInstance, ImageInstance, MeshVertex, PathCmd, Primitive,
+    QuadInstance, Rect, ShadowInstance, rgba_array,
 };
 use crate::raster_mask::{path_bounds, rasterize_path_coverage};
 use crate::scene::store::{ClipFillRule, StoreRef, glyph_instances};
@@ -59,6 +59,8 @@ const GLYPH_STRIDE: usize = core::mem::size_of::<GlyphInstance>();
 const GRADIENT_STRIDE: usize = core::mem::size_of::<GradientInstance>();
 /// Bytes of one analytic soft-shadow instance.
 const SHADOW_STRIDE: usize = core::mem::size_of::<ShadowInstance>();
+/// Bytes of one blur instance.
+const BLUR_STRIDE: usize = core::mem::size_of::<BlurInstance>();
 /// Rows in the renderer-owned 1D gradient LUT atlas: each row is one baked ramp
 /// (a 3+-stop or non-linear-space gradient), `LUT_WIDTH × ROWS` RGBA8. 64 rows
 /// is 64 KB — ample for a frame's distinct multi-stop gradients while trivial
@@ -350,6 +352,11 @@ struct LayerEntry {
     /// exactly this layer's recorded children (`paint_order[start..]`). Unused
     /// for a main-target layer.
     paint_order_start: usize,
+    /// The layer's requested content-blur sigma in physical pixels (§16.2, E1.2).
+    /// `0.0` means no blur; `> 0.0` inserts a separable Gaussian ladder between
+    /// this layer's offscreen render and its composite. Only meaningful for an
+    /// offscreen (`Offscreen`) target.
+    blur_sigma: f32,
 }
 
 /// A (texture, sampler) pair's bind group, cached so repeated draws sharing both
@@ -384,11 +391,12 @@ impl SamplerCache {
 }
 
 /// The built-in pipelines the renderer prewarms once in [`Renderer::new`]
-/// (§7.1): SolidRect (quad), Image, MaskComposite (glyph), PathFill (mesh),
-/// AnalyticRRect, AnalyticEllipse, AnalyticCapsule, AnalyticLine, and Gradient.
-/// Reported as `FrameStats::shader_pipeline_creations` — a construction-time
-/// constant, since no draw ever triggers a runtime shader compile.
-const SHADER_PIPELINE_PREWARM_COUNT: u32 = 9;
+/// (§7.1): SolidRect (quad), AnalyticRRect, AnalyticEllipse, AnalyticCapsule,
+/// AnalyticLine, Image, MaskComposite (glyph), PathFill (mesh), Gradient,
+/// AnalyticShadow, and ContentBlur (blur). Reported as
+/// `FrameStats::shader_pipeline_creations` — a construction-time constant, since
+/// no draw ever triggers a runtime shader compile.
+const SHADER_PIPELINE_PREWARM_COUNT: u32 = 11;
 
 /// Draw-call and instance counts for the frame the renderer has just lowered.
 ///
@@ -450,6 +458,15 @@ pub struct FrameStats {
     /// summed `width * height * 4` (Bgra8) over every offscreen pass. Zero when
     /// there are no offscreen passes.
     pub transient_target_bytes: usize,
+    /// Separable Gaussian blur passes this frame (§30): the number of single-axis
+    /// blur passes chained ahead of a layer composite. A blurred layer that fits
+    /// the small-radius tier contributes two (one horizontal, one vertical); zero
+    /// when no layer blurs its content.
+    pub blur_passes: u32,
+    /// Bytes backing this frame's transient blur scratch render targets (§30):
+    /// summed `width * height * 4` (Bgra8) over every blur pass's destination.
+    /// Zero when there are no blur passes.
+    pub blur_target_bytes: usize,
     /// GPU pipelines created since the renderer was built (§30). The four
     /// builtins are prewarmed once at construction and never recompiled at
     /// steady state (§7.1: no runtime first-use compile), so this is a fixed
@@ -492,6 +509,10 @@ pub struct Renderer {
     gradient_pipeline: PipelineId,
     /// The AnalyticShadow built-in pipeline (registered once).
     analytic_shadow_pipeline: PipelineId,
+    /// The ContentBlur built-in pipeline (registered once): one separable
+    /// Gaussian pass, chained horizontally then vertically to blur an offscreen
+    /// layer's content before compositing it (§16.2, E1.2).
+    blur_pipeline: PipelineId,
     /// The default linear-filter clamp sampler, used by glyph runs, gradient
     /// LUT sampling, and offscreen-layer compositing (all of which want bilinear
     /// clamp). Image draws select their sampler via `sampler_cache` instead.
@@ -523,6 +544,9 @@ pub struct Renderer {
     /// Persistent analytic soft-shadow instance pool (same slot-diff upload as
     /// `quad_pool`).
     analytic_shadow_pool: InstancePool<ShadowInstance>,
+    /// Persistent blur instance pool (same slot-diff upload as `quad_pool`): one
+    /// [`BlurInstance`] per separable pass this frame, indexed by `BlurPass`.
+    blur_pool: InstancePool<BlurInstance>,
     /// The renderer-owned 1D gradient LUT atlas: 3+-stop and non-linear-space
     /// gradients bake one ramp row here and sample `(t, lut_v)`. Unlike the
     /// image/glyph atlases (caller-owned textures), this atlas is internal — its
@@ -569,6 +593,9 @@ pub struct Renderer {
     gradient_scratch: Vec<GradientInstance>,
     /// Scratch analytic soft-shadow instance data, reused each frame.
     analytic_shadow_scratch: Vec<ShadowInstance>,
+    /// Scratch blur instance data, reused each frame: one [`BlurInstance`] per
+    /// separable pass, filled in `finalize_offscreen` and synced by `upload`.
+    blur_scratch: Vec<BlurInstance>,
     /// Scratch mesh vertex data, reused each frame.
     mesh_vertex_scratch: Vec<MeshVertex>,
     /// Scratch mesh index data, reused each frame.
@@ -585,6 +612,11 @@ pub struct Renderer {
     /// layers, in creation order. Reused each frame; emitted before the surface
     /// pass in [`Renderer::encode`].
     offscreen_passes: Vec<OffscreenPass>,
+    /// The separable Gaussian blur passes for this frame's blurred layers, in
+    /// execution order. Built during `finalize_offscreen` (one per `BlurStep` of
+    /// each layer's [`BlurPlan`]); drained in [`Renderer::encode`] between the
+    /// offscreen layer passes and the surface pass. Reused each frame.
+    blur_passes: Vec<BlurPass>,
     /// A pool of render-target textures keyed by extent, so a steady-state frame
     /// whose translucent layers keep the same sizes reuses textures instead of
     /// allocating (exit criterion). Grown on demand; never shrunk.
@@ -640,6 +672,181 @@ struct PooledTexture {
     bind_group: BindGroupId,
     width: u32,
     height: u32,
+}
+
+/// Blur below this sigma (in physical pixels) is a visual no-op: the separable
+/// ladder would resolve to a near-identity single-tap resample, so a sub-pixel
+/// blur is skipped and the layer composites its unblurred content directly.
+const BLUR_MIN_SIGMA: f32 = 1.0;
+
+/// The Gaussian tail is negligible past three standard deviations, so a full-
+/// quality pass samples `ceil(3 * sigma)` taps on each side of center.
+const BLUR_RADIUS_SIGMAS: f32 = 3.0;
+
+/// The most taps one separable pass samples on each side of center. A blur whose
+/// full-resolution radius would exceed this downsamples first, so the reduced-
+/// resolution blur stays within this bound (a fixed per-pixel tap budget).
+const BLUR_MAX_TAPS: u32 = 32;
+
+/// One separable blur pass in a [`BlurPlan`]: a full-target draw that reads the
+/// previous stage's texture and writes the next, sized `width`×`height`.
+///
+/// The `dir`/`sigma`/`radius` are expressed against the *source* being sampled
+/// (normalized source uv for `dir`, source texels for `sigma`), matching the
+/// [`BlurInstance`] the headless raster and Metal shader both read. A downsample
+/// step shrinks the target below the source; a blur step keeps the extent and
+/// walks one axis. The source is the base offscreen texture for the first step
+/// and the previous step's target thereafter.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct BlurStep {
+    /// Target extent in physical pixels.
+    width: u32,
+    height: u32,
+    /// Per-tap step in normalized source uv along this pass's axis.
+    dir: [f32; 2],
+    /// Gaussian standard deviation in source texels (`0` for a plain resample).
+    sigma: f32,
+    /// Tap count on each side of center.
+    radius: f32,
+}
+
+/// The separable Gaussian ladder for one blurred layer (§16, E1.2).
+///
+/// A plan is a pure function of the requested sigma and the source ROI extent
+/// ([`blur_plan`]); it owns no GPU resources. An empty plan means the blur is a
+/// no-op (sub-pixel sigma) and the layer composites its base texture unchanged.
+/// Otherwise the renderer claims one scratch target per step, chains the draws
+/// base → step0 → step1 → …, and repoints the layer's composite to sample the
+/// final step's texture.
+#[derive(Debug, Clone, PartialEq)]
+struct BlurPlan {
+    steps: Vec<BlurStep>,
+}
+
+impl BlurPlan {
+    /// A no-op plan: no passes, composite samples the base texture directly.
+    fn skip() -> Self {
+        BlurPlan { steps: Vec::new() }
+    }
+
+    /// Whether this plan inserts any blur passes.
+    fn is_empty(&self) -> bool {
+        self.steps.is_empty()
+    }
+}
+
+/// Plan the separable Gaussian ladder for a `sigma`-pixel blur of a `src_w`×
+/// `src_h` offscreen ROI (§16.2, E1.2). Pure: no allocation of GPU targets, only
+/// the step descriptors the renderer realizes.
+///
+/// The tiers, cheapest first:
+///
+/// 1. **Skip** — `sigma <= `[`BLUR_MIN_SIGMA`]: a sub-pixel blur is a visual
+///    no-op, so the plan is empty and the layer composites unblurred.
+/// 2. **Two separable passes** — the full-resolution radius `ceil(3 * sigma)`
+///    fits [`BLUR_MAX_TAPS`]: one horizontal then one vertical pass at the source
+///    extent, each `2 * radius + 1` taps.
+/// 3. **Downsample pyramid** — a larger radius would blow the tap budget, so the
+///    source is halved (bilinearly, one separable resample per axis) by an
+///    integer factor `d` chosen so the reduced-resolution radius `ceil(3 * sigma
+///    / d)` fits the budget, then blurred horizontally and vertically at the
+///    reduced extent. The composite upsamples by sampling the smaller texture
+///    over the full ROI (linear filter), so the wide blur costs a bounded tap
+///    count per pixel rather than growing without limit.
+fn blur_plan(sigma: f32, src_w: u32, src_h: u32) -> BlurPlan {
+    // A blur is planned only for a super-pixel sigma over a non-empty source.
+    // Phrasing the guard as the positive "plans a blur" condition (rather than a
+    // negated `>`) also skips a NaN sigma, since `NaN > floor` is false.
+    let blurs = sigma > BLUR_MIN_SIGMA && src_w != 0 && src_h != 0;
+    if !blurs {
+        return BlurPlan::skip();
+    }
+
+    let full_radius = (BLUR_RADIUS_SIGMAS * sigma).ceil().max(1.0);
+
+    // Tier 2: the full-resolution radius fits one pass's tap budget.
+    if full_radius as u32 <= BLUR_MAX_TAPS {
+        let step_h = BlurStep {
+            width: src_w,
+            height: src_h,
+            dir: [1.0 / src_w as f32, 0.0],
+            sigma,
+            radius: full_radius,
+        };
+        let step_v = BlurStep {
+            width: src_w,
+            height: src_h,
+            dir: [0.0, 1.0 / src_h as f32],
+            sigma,
+            radius: full_radius,
+        };
+        return BlurPlan {
+            steps: vec![step_h, step_v],
+        };
+    }
+
+    // Tier 3: downsample so the reduced-resolution radius fits the budget. The
+    // smallest integer `d` with `ceil(3 * sigma / d) <= MAX_TAPS`.
+    let mut d = 2u32;
+    loop {
+        let reduced = (BLUR_RADIUS_SIGMAS * sigma / d as f32).ceil().max(1.0);
+        if reduced as u32 <= BLUR_MAX_TAPS {
+            break;
+        }
+        d += 1;
+    }
+    let dst_w = (src_w / d).max(1);
+    let dst_h = (src_h / d).max(1);
+    let reduced_sigma = sigma / d as f32;
+    let reduced_radius = (BLUR_RADIUS_SIGMAS * reduced_sigma).ceil().max(1.0);
+
+    // Downsample each axis (bilinear resample, sigma 0 = a straight box of one
+    // linear tap) into the reduced extent, then blur horizontally and vertically
+    // at that extent. The downsample reads the base at full extent; the blurs
+    // read the already-reduced texture, so their `dir` is in reduced-texel uv.
+    let down_h = BlurStep {
+        width: dst_w,
+        height: src_h,
+        dir: [0.0, 0.0],
+        sigma: 0.0,
+        radius: 0.0,
+    };
+    let down_v = BlurStep {
+        width: dst_w,
+        height: dst_h,
+        dir: [0.0, 0.0],
+        sigma: 0.0,
+        radius: 0.0,
+    };
+    let blur_h = BlurStep {
+        width: dst_w,
+        height: dst_h,
+        dir: [1.0 / dst_w as f32, 0.0],
+        sigma: reduced_sigma,
+        radius: reduced_radius,
+    };
+    let blur_v = BlurStep {
+        width: dst_w,
+        height: dst_h,
+        dir: [0.0, 1.0 / dst_h as f32],
+        sigma: reduced_sigma,
+        radius: reduced_radius,
+    };
+    BlurPlan {
+        steps: vec![down_h, down_v, blur_h, blur_v],
+    }
+}
+
+/// One realized blur pass this frame: the source texture it samples, the target
+/// it writes, its viewport (= target extent), and the slot of its single
+/// [`BlurInstance`] in [`Renderer::blur_scratch`]. Transient — rebuilt every
+/// frame in `finalize_offscreen`, drained in [`Renderer::encode`] between the
+/// offscreen layer passes and the surface pass.
+struct BlurPass {
+    source: BindGroupId,
+    target: TextureId,
+    viewport: [f32; 2],
+    instance: u32,
 }
 
 impl Renderer {
@@ -741,6 +948,13 @@ impl Renderer {
             )
             .expect("ShadowInstance layout matches the analytic-shadow shader schema");
 
+        let blur_pipeline = backend
+            .create_pipeline(
+                &desc(entry(PipelineFamily::ContentBlur), "blur"),
+                &BlurInstance::LAYOUT,
+            )
+            .expect("BlurInstance layout matches the blur shader schema");
+
         // The 1D gradient LUT atlas is renderer-internal: baked from stops at
         // lowering, uploaded into this texture before the pass. Unlike image and
         // glyph textures (caller-owned), the renderer creates and owns it here.
@@ -782,6 +996,7 @@ impl Renderer {
             glyph_pipeline,
             gradient_pipeline,
             analytic_shadow_pipeline,
+            blur_pipeline,
             sampler,
             sampler_cache,
             quad_pool: InstancePool::new(BufferUsage::INSTANCE, "quad-instances"),
@@ -805,6 +1020,7 @@ impl Renderer {
                 BufferUsage::INSTANCE,
                 "analytic-shadow-instances",
             ),
+            blur_pool: InstancePool::new(BufferUsage::INSTANCE, "blur-instances"),
             gradient_lut: GradientLutAtlas::new(GRADIENT_LUT_ROWS, lut_texture),
             mask_cache: MaskCache::new(MASK_PAGE_SIZE),
             mask_page: MaskPage::new(MASK_PAGE_SIZE, mask_texture),
@@ -822,11 +1038,13 @@ impl Renderer {
             glyph_scratch: Vec::with_capacity(256),
             gradient_scratch: Vec::with_capacity(64),
             analytic_shadow_scratch: Vec::with_capacity(256),
+            blur_scratch: Vec::with_capacity(8),
             mesh_vertex_scratch: Vec::with_capacity(1024),
             mesh_index_scratch: Vec::with_capacity(2048),
             segments: Vec::with_capacity(8),
             layer_stack: Vec::with_capacity(8),
             offscreen_passes: Vec::with_capacity(4),
+            blur_passes: Vec::with_capacity(4),
             offscreen_pool: Vec::with_capacity(4),
             offscreen_pool_used: 0,
             viewports: Vec::with_capacity(4),
@@ -1088,6 +1306,8 @@ impl Renderer {
     pub fn upload<B: GpuBackend>(&mut self, backend: &mut B, primitives: &[Primitive]) {
         self.layer_stack.clear();
         self.offscreen_passes.clear();
+        self.blur_passes.clear();
+        self.blur_scratch.clear();
         self.offscreen_pool_used = 0;
         self.scene.begin_frame();
         self.mask_cache.begin_frame();
@@ -1329,24 +1549,26 @@ impl Renderer {
                         Some(parent) => parent.clip.intersect(layer.clip),
                         None => layer.clip,
                     };
-                    if layer.opacity >= 1.0 {
-                        // Opaque: a plain in-pass scissor clip. Inherit the
-                        // parent's pass target and origin unchanged.
+                    if layer.opacity >= 1.0 && layer.blur_sigma <= 0.0 {
+                        // Opaque and unblurred: a plain in-pass scissor clip.
+                        // Inherit the parent's pass target and origin unchanged.
                         self.layer_stack.push(LayerEntry {
                             clip: world_clip,
                             target,
                             origin,
                             content_union: Rect::ZERO,
                             paint_order_start: self.scene.paint_order.len(),
+                            blur_sigma: 0.0,
                         });
                     } else {
-                        // Translucent: open an offscreen pass. Its geometry is
-                        // translated so the layer's top-left maps to the
-                        // texture's (0, 0). The tight content ROI is not known
+                        // Translucent or blurred: open an offscreen pass. Its
+                        // geometry is translated so the layer's top-left maps to
+                        // the texture's (0, 0). The tight content ROI is not known
                         // until the subtree is walked, so the texture is claimed
                         // and the pass sized/composited at LayerEnd; the origin
                         // recorded here is provisional (the clip top-left) and
-                        // repatched to the ROI top-left then.
+                        // repatched to the ROI top-left then. A blur forces the
+                        // offscreen path even at full opacity (§16.2, E1.2).
                         let pass_origin = [world_clip.x, world_clip.y];
                         let paint_order_start = self.scene.paint_order.len();
                         let idx = self.open_offscreen(world_clip, layer.opacity);
@@ -1356,6 +1578,7 @@ impl Renderer {
                             origin: pass_origin,
                             content_union: Rect::ZERO,
                             paint_order_start,
+                            blur_sigma: layer.blur_sigma,
                         });
                     }
                 }
@@ -1455,6 +1678,7 @@ impl Renderer {
             + self
                 .analytic_shadow_pool
                 .sync(backend, &self.analytic_shadow_scratch)
+            + self.blur_pool.sync(backend, &self.blur_scratch)
             + self
                 .mesh_vertex_pool
                 .sync(backend, &self.mesh_vertex_scratch)
@@ -1473,6 +1697,7 @@ impl Renderer {
             + self.glyph_pool.last_upload_bytes()
             + self.gradient_pool.last_upload_bytes()
             + self.analytic_shadow_pool.last_upload_bytes()
+            + self.blur_pool.last_upload_bytes()
             + self.mesh_vertex_pool.last_upload_bytes()
             + self.mesh_index_pool.last_upload_bytes();
     }
@@ -1843,9 +2068,24 @@ impl Renderer {
             .map(|p| (p.viewport[0] as usize) * (p.viewport[1] as usize) * 4)
             .sum();
 
+        // Transient blur targets: one Bgra8 scratch texture per separable pass
+        // (§16.2, E1.2), sized to its viewport (physical pixels).
+        let blur_target_bytes = self
+            .blur_passes
+            .iter()
+            .map(|p| (p.viewport[0] as usize) * (p.viewport[1] as usize) * 4)
+            .sum();
+
         FrameStats {
-            draw_calls: self.segments.len(),
-            instances: self.segments.iter().map(|s| s.count as usize).sum(),
+            // Each blur pass is one full-target draw beyond the segment-derived
+            // draws, so it adds to both the draw and instance totals.
+            draw_calls: self.segments.len() + self.blur_passes.len(),
+            instances: self
+                .segments
+                .iter()
+                .map(|s| s.count as usize)
+                .sum::<usize>()
+                + self.blur_passes.len(),
             visible_primitives: ingest.visible_primitives,
             dirty_primitives: ingest.dirty_primitives,
             quad_instances: ingest.quad_instances,
@@ -1858,6 +2098,8 @@ impl Renderer {
             uploaded_ranges: self.uploaded_ranges,
             offscreen_passes: self.offscreen_passes.len(),
             transient_target_bytes,
+            blur_passes: self.blur_passes.len() as u32,
+            blur_target_bytes,
             shader_pipeline_creations: SHADER_PIPELINE_PREWARM_COUNT,
             // Masks rasterized into the page this frame (§14.4): cold builds,
             // re-rasters after a key change, and re-blits after a repack.
@@ -2087,6 +2329,68 @@ impl Renderer {
                 pe.context.clip = pe.context.clip.map(|_| local_clip);
             }
         }
+
+        // Insert the separable Gaussian ladder (§16.2, E1.2) between this pass's
+        // render and its composite. The plan is a pure function of the sigma and
+        // the ROI extent; a sub-pixel blur plans no steps and leaves the pass
+        // sampling its base texture unchanged.
+        self.build_blur(backend, idx, entry.blur_sigma, width, height);
+    }
+
+    /// Realize the blur ladder for the offscreen pass at `idx`: plan the separable
+    /// steps for `sigma` over the `width`×`height` base ROI, claim one scratch
+    /// render target per step, chain the passes base → step0 → step1 → …, append a
+    /// [`BlurPass`] (with its [`BlurInstance`]) for each, and repoint the pass's
+    /// composite bind group to the final blurred texture (§16.2, E1.2).
+    ///
+    /// A no-op plan (sub-pixel sigma) leaves `offscreen_passes[idx].bind_group`
+    /// pointing at the base texture, so the composite samples the unblurred
+    /// content — the blur silently degrades to a plain offscreen layer.
+    fn build_blur<B: GpuBackend>(
+        &mut self,
+        backend: &mut B,
+        idx: usize,
+        sigma: f32,
+        width: u32,
+        height: u32,
+    ) {
+        let plan = blur_plan(sigma, width, height);
+        if plan.is_empty() {
+            return;
+        }
+
+        // The source of step 0 is the base offscreen texture; each later step
+        // reads the target of the one before. Each step's `BlurInstance` is a
+        // full-target quad (`Geometry::Generated`, one instance) whose uv spans
+        // the whole source — the vertex stage is identical to Image's, so the
+        // rect covers the target and the uv covers the source `[0, 1]`.
+        let base = self.offscreen_passes[idx]
+            .bind_group
+            .expect("offscreen pass texture claimed before its blur ladder is built");
+        let mut source = base;
+        for step in &plan.steps {
+            let target = self.claim_pooled_texture(backend, step.width, step.height);
+            let instance = self.blur_scratch.len() as u32;
+            self.blur_scratch.push(BlurInstance {
+                rect_pos: [0.0, 0.0],
+                rect_size: [step.width as f32, step.height as f32],
+                uv_pos: [0.0, 0.0],
+                uv_size: [1.0, 1.0],
+                dir: step.dir,
+                sigma: step.sigma,
+                radius: step.radius,
+            });
+            self.blur_passes.push(BlurPass {
+                source,
+                target: target.texture,
+                viewport: [step.width as f32, step.height as f32],
+                instance,
+            });
+            source = target.bind_group;
+        }
+
+        // Composite now samples the final step's texture instead of the base.
+        self.offscreen_passes[idx].bind_group = Some(source);
     }
 
     /// Claim a pooled render-target texture of `width`×`height`, reusing an
@@ -2246,6 +2550,34 @@ impl Renderer {
                     pass.texture
                         .expect("offscreen pass finalized before encode"),
                 ),
+                load: LoadOp::Clear([0.0, 0.0, 0.0, 0.0]),
+                first_command,
+                command_count: commands.len() as u32 - first_command,
+            });
+        }
+
+        // The separable blur passes (§16.2, E1.2) run after every layer's content
+        // is rendered and before the surface composites it: each reads its source
+        // texture and writes one full-target quad into its (cleared) target. One
+        // RenderPass per pass keeps the read-after-write ordering explicit.
+        for pass in &self.blur_passes {
+            let vp = pass.viewport;
+            let uniforms = InlineUniforms::new(bytemuck_viewport(&vp));
+            let first_command = commands.len() as u32;
+            commands.push(DrawCommand {
+                pipeline: self.blur_pipeline,
+                bind_group: Some(pass.source),
+                geometry: Geometry::Generated { count: 1 },
+                instance_buffer: self
+                    .blur_pool
+                    .buffer()
+                    .expect("blur pool buffer exists when a blur pass references it"),
+                instance_offset: pass.instance as usize * BLUR_STRIDE,
+                uniforms,
+                scissor: None,
+            });
+            passes.push(RenderPass {
+                target: RenderTarget::Texture(pass.target),
                 load: LoadOp::Clear([0.0, 0.0, 0.0, 0.0]),
                 first_command,
                 command_count: commands.len() as u32 - first_command,
@@ -2489,6 +2821,7 @@ mod tests {
         Primitive::Layer(LayerClip {
             clip: Rect { x, y, w, h },
             opacity: 1.0,
+            blur_sigma: 0.0,
         })
     }
 
@@ -2498,6 +2831,7 @@ mod tests {
         Primitive::Layer(LayerClip {
             clip: Rect { x, y, w, h },
             opacity,
+            blur_sigma: 0.0,
         })
     }
 
@@ -3185,6 +3519,286 @@ mod tests {
             (px[c], px[c + 1], px[c + 2]),
             (255, 255, 255),
             "corner must stay background"
+        );
+    }
+
+    /// A layer with `blur_sigma > 0` at `opacity == 1.0` still takes the offscreen
+    /// path: the blur ladder needs the layer's content in a texture it can sample,
+    /// so a blurred opaque layer opens exactly one offscreen pass where an unblurred
+    /// opaque layer would have stayed inline.
+    #[test]
+    fn blurred_layer_forces_offscreen_at_full_opacity() {
+        let opaque = Primitive::Layer(LayerClip {
+            clip: Rect {
+                x: 8.0,
+                y: 8.0,
+                w: 16.0,
+                h: 16.0,
+            },
+            opacity: 1.0,
+            blur_sigma: 0.0,
+        });
+        let blurred = Primitive::Layer(LayerClip {
+            clip: Rect {
+                x: 8.0,
+                y: 8.0,
+                w: 16.0,
+                h: 16.0,
+            },
+            opacity: 1.0,
+            blur_sigma: 3.0,
+        });
+
+        let mut gpu = HeadlessRaster::new();
+        let surface = gpu.create_surface(RawWindowHandle::Headless, 64, 64);
+        let format = gpu.surface_format(surface);
+        let mut r = Renderer::new(&mut gpu, format);
+
+        // Opaque, unblurred: no offscreen pass (the inline fast path).
+        r.upload(&mut gpu, &[opaque, quad(10.0, 10.0), Primitive::LayerEnd]);
+        assert_eq!(
+            r.frame_stats().offscreen_passes,
+            0,
+            "an opaque unblurred layer stays inline"
+        );
+        assert_eq!(r.frame_stats().blur_passes, 0);
+
+        // Opaque, blurred: one offscreen pass plus the separable ladder.
+        r.upload(&mut gpu, &[blurred, quad(10.0, 10.0), Primitive::LayerEnd]);
+        assert_eq!(
+            r.frame_stats().offscreen_passes,
+            1,
+            "a blurred layer forces an offscreen pass even at full opacity"
+        );
+        assert!(
+            r.frame_stats().blur_passes >= 2,
+            "the ladder inserts at least a horizontal and a vertical pass"
+        );
+    }
+
+    /// A small-radius blur (`ceil(3 * sigma) <= MAX_TAPS`) plans exactly two
+    /// separable full-resolution passes: one horizontal, one vertical, each at the
+    /// source extent, walking a single axis in normalized source texels.
+    #[test]
+    fn blur_plan_small_sigma_is_two_separable_passes() {
+        let plan = blur_plan(4.0, 40, 24);
+        assert_eq!(plan.steps.len(), 2, "small blur is two passes");
+
+        let h = &plan.steps[0];
+        let v = &plan.steps[1];
+        // Both keep the full source extent.
+        assert_eq!((h.width, h.height), (40, 24));
+        assert_eq!((v.width, v.height), (40, 24));
+        // ceil(3 * 4) = 12 taps each side, well under the 32 budget.
+        assert_eq!(h.radius, 12.0);
+        assert_eq!(v.radius, 12.0);
+        // First pass walks x, second walks y; each step is one source texel.
+        assert_eq!(h.dir, [1.0 / 40.0, 0.0]);
+        assert_eq!(v.dir, [0.0, 1.0 / 24.0]);
+        assert_eq!(h.sigma, 4.0);
+        assert_eq!(v.sigma, 4.0);
+    }
+
+    /// A large-radius blur downsamples first: a full-resolution `ceil(3 * sigma)`
+    /// past the tap budget plans a four-step ladder — two resample passes that
+    /// shrink the source by an integer factor, then a horizontal and vertical blur
+    /// at the reduced extent whose radius fits the budget.
+    #[test]
+    fn blur_plan_large_sigma_downsamples() {
+        // sigma 20 → full radius ceil(60) = 60 > 32, so it must downsample.
+        let src_w = 200u32;
+        let src_h = 120u32;
+        let plan = blur_plan(20.0, src_w, src_h);
+        assert_eq!(plan.steps.len(), 4, "large blur is a downsample pyramid");
+
+        let down_h = &plan.steps[0];
+        let down_v = &plan.steps[1];
+        let blur_h = &plan.steps[2];
+        let blur_v = &plan.steps[3];
+
+        // The reduced extent is strictly smaller on both axes.
+        assert!(blur_v.width < src_w && blur_v.height < src_h);
+        // The two resample passes carry no Gaussian weight (plain bilinear taps).
+        assert_eq!(down_h.sigma, 0.0);
+        assert_eq!(down_v.sigma, 0.0);
+        assert_eq!(down_h.radius, 0.0);
+        assert_eq!(down_v.radius, 0.0);
+        // The width collapses first (down_h), then the height (down_v), landing at
+        // the reduced extent the two blur passes then share.
+        assert_eq!(down_h.width, blur_h.width);
+        assert_eq!(down_h.height, src_h);
+        assert_eq!((down_v.width, down_v.height), (blur_h.width, blur_h.height));
+        // The reduced-resolution blur radius is within budget.
+        assert!(blur_h.radius as u32 <= BLUR_MAX_TAPS);
+        assert!(blur_v.radius as u32 <= BLUR_MAX_TAPS);
+        // The blur passes walk one reduced-texel axis each.
+        assert_eq!(blur_h.dir, [1.0 / blur_h.width as f32, 0.0]);
+        assert_eq!(blur_v.dir, [0.0, 1.0 / blur_v.height as f32]);
+    }
+
+    /// A sub-pixel blur (`sigma <= BLUR_MIN_SIGMA`) is a visual no-op: the plan is
+    /// empty, so no ladder is inserted and the layer composites its base texture.
+    /// A zero-extent source is likewise skipped.
+    #[test]
+    fn subpixel_blur_skips() {
+        assert!(blur_plan(0.0, 40, 40).is_empty(), "zero sigma");
+        assert!(blur_plan(1.0, 40, 40).is_empty(), "sigma at the floor");
+        assert!(blur_plan(0.5, 40, 40).is_empty(), "sub-pixel sigma");
+        assert!(!blur_plan(2.0, 40, 40).is_empty(), "above the floor blurs");
+        assert!(blur_plan(4.0, 0, 40).is_empty(), "zero-width source");
+        assert!(blur_plan(4.0, 40, 0).is_empty(), "zero-height source");
+    }
+
+    /// End-to-end headless blur: a hard black/white vertical edge inside a blurred
+    /// layer composites as a monotonic ramp rather than a step. Sampling a row
+    /// across the former edge, luminance must never decrease left-to-right and must
+    /// climb through intermediate values the hard edge never produced.
+    #[test]
+    fn headless_blur_softens_a_hard_edge() {
+        const W: u32 = 48;
+        const H: u32 = 16;
+        let mut gpu = HeadlessRaster::new();
+        let surface = gpu.create_surface(RawWindowHandle::Headless, W, H);
+        let format = gpu.surface_format(surface);
+        let mut r = Renderer::new(&mut gpu, format);
+
+        // Left half black, right half white, filling the layer rect. The layer
+        // spans the full surface and blurs its content horizontally/vertically.
+        let black = Primitive::Quad(Quad {
+            rect: Rect {
+                x: 0.0,
+                y: 0.0,
+                w: (W / 2) as f32,
+                h: H as f32,
+            },
+            color: Rgba {
+                r: 0.0,
+                g: 0.0,
+                b: 0.0,
+                a: 1.0,
+            },
+            radius: 0.0,
+            border: Border::NONE,
+        });
+        let white = Primitive::Quad(Quad {
+            rect: Rect {
+                x: (W / 2) as f32,
+                y: 0.0,
+                w: (W / 2) as f32,
+                h: H as f32,
+            },
+            color: Rgba {
+                r: 1.0,
+                g: 1.0,
+                b: 1.0,
+                a: 1.0,
+            },
+            radius: 0.0,
+            border: Border::NONE,
+        });
+        let blurred = Primitive::Layer(LayerClip {
+            clip: Rect {
+                x: 0.0,
+                y: 0.0,
+                w: W as f32,
+                h: H as f32,
+            },
+            opacity: 1.0,
+            blur_sigma: 4.0,
+        });
+
+        r.upload(&mut gpu, &[blurred, black, white, Primitive::LayerEnd]);
+        r.submit(
+            &mut gpu,
+            surface,
+            [0.0, 0.0, 0.0, 1.0],
+            [W as f32, H as f32],
+        );
+        let px = gpu.read_pixels_bgra8(surface);
+
+        // Read the middle row's blue channel (grayscale, so any channel works)
+        // across the transition band around the former edge. Away from the layer's
+        // own boundaries (where uv clamping thins the tap window), the ramp must be
+        // non-decreasing and pass through mid-gray that a hard step would skip.
+        let row = H / 2;
+        let edge = W / 2;
+        let band = 8u32; // ceil(3 * sigma) taps, kept inside the surface margins.
+        let lo = edge - band;
+        let hi = edge + band;
+        let mut prev = 0i32;
+        let mut saw_midtone = false;
+        for x in lo..=hi {
+            let i = ((row * W + x) * 4) as usize;
+            let v = px[i] as i32;
+            assert!(
+                v + 2 >= prev,
+                "luminance must not fall across a blurred edge: x={x} {v} < {prev}"
+            );
+            if (64..=192).contains(&v) {
+                saw_midtone = true;
+            }
+            prev = v;
+        }
+        assert!(
+            saw_midtone,
+            "a blurred edge produces mid-tones a hard step never would"
+        );
+
+        // The blurred result is bounded by the source: black on the far left,
+        // white on the far right, so the edge genuinely softened between them.
+        let left = px[((row * W + lo) * 4) as usize] as i32;
+        let right = px[((row * W + hi) * 4) as usize] as i32;
+        assert!(left < 64, "left of the edge stays near black: {left}");
+        assert!(right > 192, "right of the edge stays near white: {right}");
+    }
+
+    /// The blur scratch textures are pooled: a steady scene that blurs the same
+    /// layer every frame claims its ladder targets from the pool on later frames
+    /// rather than creating fresh ones, so the transient target byte count is
+    /// stable and no new GPU textures are minted at steady state.
+    #[test]
+    fn steady_state_blur_reuses_pooled_targets() {
+        let scene = |sigma: f32| {
+            [
+                Primitive::Layer(LayerClip {
+                    clip: Rect {
+                        x: 4.0,
+                        y: 4.0,
+                        w: 24.0,
+                        h: 24.0,
+                    },
+                    opacity: 1.0,
+                    blur_sigma: sigma,
+                }),
+                quad(8.0, 8.0),
+                Primitive::LayerEnd,
+            ]
+        };
+
+        let mut gpu = HeadlessRaster::new();
+        let surface = gpu.create_surface(RawWindowHandle::Headless, 64, 64);
+        let format = gpu.surface_format(surface);
+        let mut r = Renderer::new(&mut gpu, format);
+
+        r.upload(&mut gpu, &scene(4.0));
+        let first = r.frame_stats();
+        assert!(first.blur_passes >= 2);
+        let pool_after_first = r.offscreen_pool.len();
+
+        r.upload(&mut gpu, &scene(4.0));
+        let second = r.frame_stats();
+        assert_eq!(
+            second.blur_passes, first.blur_passes,
+            "an identical blurred scene plans the same ladder"
+        );
+        assert_eq!(
+            second.blur_target_bytes, first.blur_target_bytes,
+            "the blur scratch footprint is stable at steady state"
+        );
+        assert_eq!(
+            r.offscreen_pool.len(),
+            pool_after_first,
+            "the second identical frame mints no new pooled textures"
         );
     }
 }

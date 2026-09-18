@@ -36,7 +36,7 @@ use viso_gpu::{InstanceSchema, SchemaAttr};
 use crate::ir::codegen_msl::{emit_msl, emit_schema_attrs, schema_from_attrs};
 use crate::ir::module::{
     ShaderIr, analytic_capsule_ir, analytic_ellipse_ir, analytic_line_ir, analytic_rrect_ir,
-    analytic_shadow_ir, glyphrun_ir, gradient_ir, image_ir, mesh_ir, quad_ir,
+    analytic_shadow_ir, blur_ir, glyphrun_ir, gradient_ir, image_ir, mesh_ir, quad_ir,
 };
 
 /// The built-in primitive shaders (architecture section 15.3). One entry per
@@ -78,6 +78,9 @@ pub enum PrimitiveKind {
     AnalyticShadow,
     /// An offscreen-composited layer.
     Layer,
+    /// A separable Gaussian blur pass sampling a source texture along one axis
+    /// (content blur of an offscreen layer).
+    Blur,
 }
 
 /// The MSL source for `kind`, or `None` if that primitive has no shader.
@@ -92,6 +95,7 @@ pub fn shader_source(kind: PrimitiveKind) -> Option<&'static str> {
         PrimitiveKind::AnalyticLine => Some(ANALYTIC_LINE_MSL()),
         PrimitiveKind::Gradient => Some(GRADIENT_MSL()),
         PrimitiveKind::AnalyticShadow => Some(ANALYTIC_SHADOW_MSL()),
+        PrimitiveKind::Blur => Some(BLUR_MSL()),
         // Path and Mesh share the general per-vertex mesh pipeline.
         PrimitiveKind::Path | PrimitiveKind::Mesh => Some(MESH_MSL()),
         _ => None,
@@ -112,6 +116,7 @@ pub fn instance_schema(kind: PrimitiveKind) -> Option<InstanceSchema> {
         PrimitiveKind::AnalyticLine => Some(analytic_line_schema()),
         PrimitiveKind::Gradient => Some(gradient_schema()),
         PrimitiveKind::AnalyticShadow => Some(analytic_shadow_schema()),
+        PrimitiveKind::Blur => Some(blur_schema()),
         // Path and Mesh validate their per-vertex layout against `mesh_schema`.
         PrimitiveKind::Path | PrimitiveKind::Mesh => Some(mesh_schema()),
         _ => None,
@@ -143,6 +148,17 @@ pub fn quad_schema() -> InstanceSchema {
 pub fn image_schema() -> InstanceSchema {
     static CELL: OnceLock<Vec<SchemaAttr>> = OnceLock::new();
     cached_schema(&CELL, &image_ir())
+}
+
+/// The instance schema the Blur shader declares — projected from [`blur_ir`].
+///
+/// The Image-style quad fields (`rect_pos`/`rect_size`/`uv_pos`/`uv_size`) plus
+/// the per-pass blur parameters (`dir`/`sigma`/`radius`) — the whole blur ABI
+/// rides in the instance so [`InlineUniforms`](viso_gpu) carries only the
+/// viewport.
+pub fn blur_schema() -> InstanceSchema {
+    static CELL: OnceLock<Vec<SchemaAttr>> = OnceLock::new();
+    cached_schema(&CELL, &blur_ir())
 }
 
 /// The instance schema the GlyphRun shader declares — projected from
@@ -279,6 +295,23 @@ pub fn QUAD_MSL() -> &'static str {
 pub fn IMAGE_MSL() -> &'static str {
     static CELL: OnceLock<String> = OnceLock::new();
     cached_msl(&CELL, || emit_msl(&image_ir()))
+}
+
+/// Inline MSL for the Blur built-in (Metal backend), derived from [`blur_ir`].
+///
+/// Like [`IMAGE_MSL`], only the real Metal backend compiles it; the headless
+/// backend uses its `fill_blur` routine. See `viso-msl-reserved-half`.
+///
+/// Contract (guaranteed by the shared IR): per-instance data at buffer index 1
+/// (the whole blur ABI, no inline blur uniforms); viewport uniform at index 0;
+/// the source texture at `[[texture(0)]]`, sampler at `[[sampler(0)]]`. The
+/// vertex stage synthesizes the target quad (Image math) and forwards the blur
+/// params; the fragment runs a normalized 1D Gaussian tap loop along `dir` over
+/// premultiplied texels.
+#[allow(non_snake_case)]
+pub fn BLUR_MSL() -> &'static str {
+    static CELL: OnceLock<String> = OnceLock::new();
+    cached_msl(&CELL, || emit_msl(&blur_ir()))
 }
 
 /// Inline MSL for the GlyphRun built-in (Metal backend), derived from
@@ -500,6 +533,40 @@ mod tests {
             ["rect_pos", "rect_size", "uv_pos", "uv_size", "color"]
         );
         assert_three_legs_agree(IMAGE_MSL(), &image_schema(), &ir_names);
+    }
+
+    #[test]
+    fn blur_schema_matches_instance_layout() {
+        assert!(shader_source(PrimitiveKind::Blur).is_some());
+        assert!(instance_schema(PrimitiveKind::Blur).is_some());
+        let ir_names: Vec<&str> = blur_ir().attributes.iter().map(|f| f.name).collect();
+        assert_eq!(
+            ir_names,
+            [
+                "rect_pos",
+                "rect_size",
+                "uv_pos",
+                "uv_size",
+                "dir",
+                "sigma",
+                "radius"
+            ]
+        );
+        assert_three_legs_agree(BLUR_MSL(), &blur_schema(), &ir_names);
+
+        // The schema offsets must match the derived tightly-packed offsets of the
+        // BlurInstance ABI: all fields 4-byte aligned, so offsets are the prefix
+        // sum of packed sizes with no padding.
+        let (expected, stride) = blur_ir().expected_offsets();
+        let schema = blur_schema();
+        assert_eq!(schema.attributes.len(), expected.len());
+        // rect_pos/rect_size/uv_pos/uv_size/dir are F32X2 (8 bytes); sigma/radius
+        // are F32 (4 bytes): 5*8 + 2*4 = 48 bytes total.
+        assert_eq!(stride, 48);
+        assert_eq!(expected[0], ("rect_pos", 0));
+        assert_eq!(expected[4], ("dir", 32));
+        assert_eq!(expected[5], ("sigma", 40));
+        assert_eq!(expected[6], ("radius", 44));
     }
 
     #[test]
