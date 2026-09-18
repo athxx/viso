@@ -1542,10 +1542,32 @@ instancing/coverage integration + mask/blur caching in `viso-render`; blur targe
         term, no new revision plane).
 
 ### E0.2 — DecoratedShape fusion (benchmark-gated)
-- [ ] Post-benchmark, a fused `DecoratedShape` pipeline drawing `shadow + fill + border`
+- [x] Post-benchmark, a fused `DecoratedShape` pipeline drawing `shadow + fill + border`
       in one primitive family (§15.3). Hard constraint: pure Rect keeps its shorter
       pipeline — never force all rects into a large shader. One-draw-or-not decided by
       shader register pressure / overdraw benchmark.
+  - [x] Landed the gating benchmark (`renderer_steady_state`): a decorated-card grid
+        drawing each card as `AnalyticShadow` (under) + `AnalyticRRect` (fill + border, the
+        rrect family already fuses fill and border in its fragment) — the separate-draw
+        baseline the fusion is measured against. Timing bench `decorated_cards_upload_steady`.
+  - [x] `assert_decorated_fusion_gate` pins the structure the decision turns on: shadow
+        and rrect are different families and strictly alternate in paint order, so the
+        planner cannot merge across the per-card barrier — the separate path is `2N` draws,
+        `2N` batches, a pipeline switch on every draw. A fused `DecoratedShape` family would
+        collapse that to `N` mergeable draws with a single switch.
+  - [x] Overdraw proxy measured (not asserted as a verdict): the shadow's expanded instance
+        quad (`3σ + spread + |offset|` pad) is materially larger than the tight fill quad
+        (proxy ratio > 2×), so a fused fragment would shade the whole `shadow + fill + border`
+        body over that larger area for every card.
+  - [x] Verdict: fused pipeline **deferred**, not built. The §20.1 gate's deciding half —
+        real-Metal shader register pressure and shaded-pixel time — is unobservable here
+        (`FrameStats` has no overdraw/GPU-timing counter; `HeadlessRaster` is a CPU
+        rasterizer), so whether the fused fragment's extra ALU + larger shaded area beat the
+        separate path's extra draw/switch cost is a device measurement, not a headless one
+        (§7.3). Building the big shader on that unmeasured hypothesis is what §7.3/§36 forbid;
+        the gate lands the measurable half + barrier proof and waits for the device number.
+  - [x] Hard constraint honored: pure `Rect` is deliberately absent from the decorated path
+        (kept on the shorter Quad pipeline), so it is never routed through the fused shader.
 
 ### E0.3 — Path shadow fallback & inner shadow
 - [ ] Arbitrary path shadow (§15.4): `Path/Mask → tight shadow mask → blur → offset/color
