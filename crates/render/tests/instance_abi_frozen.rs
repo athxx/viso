@@ -115,7 +115,7 @@ fn analytic_line_instance_layout_is_frozen() {
 
 #[test]
 fn shadow_instance_layout_is_frozen() {
-    assert_eq!(size_of::<ShadowInstance>(), 68, "ShadowInstance stride");
+    assert_eq!(size_of::<ShadowInstance>(), 72, "ShadowInstance stride");
     assert_eq!(align_of::<ShadowInstance>(), 4, "ShadowInstance align");
     assert_eq!(offset_of!(ShadowInstance, rect_pos), 0);
     assert_eq!(offset_of!(ShadowInstance, rect_size), 8);
@@ -125,6 +125,7 @@ fn shadow_instance_layout_is_frozen() {
     assert_eq!(offset_of!(ShadowInstance, sigma), 56);
     assert_eq!(offset_of!(ShadowInstance, spread), 60);
     assert_eq!(offset_of!(ShadowInstance, shape), 64);
+    assert_eq!(offset_of!(ShadowInstance, inner), 68);
 }
 
 #[test]

@@ -1570,12 +1570,36 @@ instancing/coverage integration + mask/blur caching in `viso-render`; blur targe
         (kept on the shorter Quad pipeline), so it is never routed through the fused shader.
 
 ### E0.3 — Path shadow fallback & inner shadow
-- [ ] Arbitrary path shadow (§15.4): `Path/Mask → tight shadow mask → blur → offset/color
+- [x] Arbitrary path shadow (§15.4): `Path/Mask → tight shadow mask → blur → offset/color
       composite`, caching the unshaded blur mask keyed on {same geometry, same sigma},
       reused when only color/offset change. (Full ROI/blur infrastructure is E1; E0's
       fallback is minimal and leans forward to E1.)
-- [ ] Inner shadow (§20.3): simple analytic geometry → direct distance function; general
+  - [x] Typed carrier: `PathShadow { color, offset, sigma, spread, inner }` on
+        `Path.shadow: Option<PathShadow>` — no shape-recognition heuristic, the request
+        rides the primitive that owns the geometry.
+  - [x] `mask_path_shadow` reuses the C0 mask→glyph-composite lane: rasterize the path's
+        tight coverage once, composite it offset by `offset` and tinted by `color` under
+        the fill through the glyph-coverage pipeline (no new pipeline).
+  - [x] Mask key folds `sigma`/`spread` into `source_revision` so the shadow slot never
+        aliases the shape's own solid-fill mask and E1's blurred reblit re-keys on radius
+        change without touching the cache contract; sharp cached mask stands in for the
+        blur until E1 (documented in-lane).
+  - [x] Shadow footprint (`3σ + spread` + offset) inflates the emitted quad's paint/effect
+        bounds via the existing `filter` term — no new revision plane.
+  - [x] Path shadow draws under the fill; the fill lane (self-masked or tessellated) is
+        unchanged. Tests: outer builds a second offset mask keyed apart from the fill,
+        stable frame rebuilds nothing.
+- [x] Inner shadow (§20.3): simple analytic geometry → direct distance function; general
       path → mask/filter lane.
+  - [x] Analytic geometry: `AnalyticShadow` carries an `inner:u32` field (no spare `shape`
+        bit → new field), branching the fragment/headless coverage to `soft*inside` —
+        `soft = ½(1+erf(d/√2σ))`, `inside = ½(1−erf(d/√2σ))` — the smooth bell darkest just
+        inside the edge; σ<0.01 reuses the sharp AA ramp. Direct distance function, no mask.
+  - [x] General path inner shadow routes to the mask/filter lane owner: the E0 path lane
+        declines `inner` (returns to the fill lane undrawn), reserving it for E1's filter
+        lane. Test: inner path shadow builds only the fill mask.
+  - [x] Frozen coverage regenerated: `ShadowInstance` stride 68→72 with `inner`@68 pinned;
+        `ANALYTIC_SHADOW_MSL_ORIGINAL` + manifest oracle regenerated for the inner branch.
 
 ### E0.4 — §31 gate
 - [ ] Benchmark gate (§31): 1k analytic shadows; path-shadow reuse. High-refresh.

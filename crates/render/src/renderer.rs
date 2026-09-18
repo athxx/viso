@@ -927,6 +927,114 @@ impl Renderer {
         true
     }
 
+    /// Draw an arbitrary path's drop shadow through the mask lane (§15.4/§20.2).
+    ///
+    /// The E0 fallback rasterizes the path's own tight coverage once — keyed on
+    /// {geometry, sigma} so it is a distinct slot from the shape's own fill mask
+    /// and survives color/offset-only changes — then composites it offset by
+    /// `offset` and tinted by `color` under the shape. There is no separable blur
+    /// convolution yet: the cached mask is sharp and the recorded sigma leans the
+    /// key forward to E1, where the ROI-padded blurred reblit drops in without a
+    /// re-key. A soft `sigma` therefore reads as a sharp offset silhouette until
+    /// E1 lands; the geometry/offset/color/bounds contract is already final.
+    ///
+    /// Returns `false` (caller keeps the normal fill lane, shadow undrawn) for a
+    /// degenerate path, an inner shadow (routed to the analytic lane — §20.3), or
+    /// a packer-declined ROI.
+    fn mask_path_shadow(
+        &mut self,
+        path: &crate::primitive::Path,
+        shadow: &crate::primitive::PathShadow,
+        ctx: EmitContext,
+        clip: Option<Rect>,
+    ) -> bool {
+        // Inner shadows on a general path are an E1 filter-lane concern; the
+        // analytic families carry inner shadow directly (§20.3), so the general
+        // path lane only serves the outer drop shadow.
+        if shadow.inner {
+            return false;
+        }
+
+        let roi = path_bounds(path.cmds.iter().copied());
+        if roi.w <= 0.0 || roi.h <= 0.0 {
+            return false;
+        }
+
+        let plan = plan_clip(ClipShape::Path { bounds: roi }, false);
+        if !plan.tier.builds_mask() {
+            return false;
+        }
+
+        // Fold sigma into the geometry revision so a shadow mask never aliases the
+        // shape's own solid-fill mask (same cmds, no sigma) and so E1's blurred
+        // reblit re-keys automatically when the blur radius changes.
+        let source_revision = {
+            use std::hash::{Hash, Hasher};
+            let mut h = std::collections::hash_map::DefaultHasher::new();
+            hash_path_cmds(&path.cmds).hash(&mut h);
+            shadow.sigma.to_bits().hash(&mut h);
+            shadow.spread.to_bits().hash(&mut h);
+            h.finish()
+        };
+        let key = MaskKey {
+            kind: MaskKind::Path,
+            source_revision,
+            transform_bucket: 0,
+            device_scale_q: 1,
+            fill_rule: ClipFillRule::NonZero,
+        };
+        let request = MaskRequest {
+            kind: MaskKind::Path,
+            needs_color: false,
+            roi,
+            key,
+        };
+        let Some(res) = self.mask_cache.resolve(&request) else {
+            return false;
+        };
+
+        if res.rasterized || self.mask_page.needs_full_reblit() {
+            let cov = rasterize_path_coverage(
+                path.cmds.iter().copied(),
+                roi,
+                1.0,
+                res.slot.w,
+                res.slot.h,
+            );
+            self.mask_page.blit(res.slot, &cov);
+            self.mask_builds_this_frame += 1;
+        }
+
+        // Composite the cached coverage offset by the drop and tinted by the
+        // shadow color. The shadow footprint extends the emitted quad's bounds by
+        // the blur reach (3σ) plus outward spread plus the offset, so the retained
+        // paint/effect bounds cover the soft, shifted silhouette.
+        let size = self.mask_page.size() as f32;
+        let shadow_rect = Rect {
+            x: roi.x + shadow.offset[0],
+            y: roi.y + shadow.offset[1],
+            w: roi.w,
+            h: roi.h,
+        };
+        let inst = GlyphInstance {
+            rect_pos: [shadow_rect.x, shadow_rect.y],
+            rect_size: [shadow_rect.w, shadow_rect.h],
+            uv_pos: [res.slot.x as f32 / size, res.slot.y as f32 / size],
+            uv_size: [res.slot.w as f32 / size, res.slot.h as f32 / size],
+            color: [
+                shadow.color.r,
+                shadow.color.g,
+                shadow.color.b,
+                shadow.color.a,
+            ],
+        };
+        let filter = 3.0 * shadow.sigma + shadow.spread.max(0.0);
+        let bounds = crate::scene::bounds::Bounds::from_world(shadow_rect, clip, 0.0, filter);
+        self.scene
+            .ingest_glyph_run(std::iter::once(inst), self.mask_page.texture(), ctx, bounds);
+        true
+    }
+
     /// Ingest this frame's primitive stream into the retained scene, then lower
     /// the retained stores to instance scratch + submission-ordered [`Segment`]s
     /// and upload the instance buffers.
@@ -1128,6 +1236,12 @@ impl Renderer {
                     self.scene.ingest_analytic_shadow(inst, ctx, bounds);
                 }
                 Primitive::Path(path) => {
+                    // A path drop shadow lowers first so it sits under the fill:
+                    // its tight coverage is cached once (keyed on geometry+sigma)
+                    // and composited offset + tinted through the mask lane.
+                    if let Some(shadow) = path.shadow.as_ref() {
+                        self.mask_path_shadow(path, shadow, ctx, clip);
+                    }
                     // A concave or curve-bearing solid-fill-only path is a
                     // self-masked solid fill (§14.4): its own coverage is one R8
                     // mask, and the fill color times that coverage is exactly the
@@ -2291,6 +2405,7 @@ mod tests {
                 a: 1.0,
             }),
             stroke: None,
+            shadow: None,
         })
     }
 
@@ -2323,6 +2438,88 @@ mod tests {
         r.upload(&mut gpu, &[solid_path(4.0, 4.0)]);
         assert_eq!(r.frame_stats().clip_mask_builds, 1);
         r.upload(&mut gpu, &[solid_path(4.0, 4.0)]);
+        assert_eq!(r.frame_stats().clip_mask_builds, 0);
+    }
+
+    /// The same concave outline as `solid_path`, now carrying a drop shadow.
+    fn shadowed_path(inner: bool) -> Primitive {
+        use crate::primitive::{PathShadow, Point as P};
+        Primitive::Path(crate::primitive::Path {
+            cmds: vec![
+                PathCmd::MoveTo(P::new(4.0, 4.0)),
+                PathCmd::LineTo(P::new(20.0, 12.0)),
+                PathCmd::LineTo(P::new(4.0, 20.0)),
+                PathCmd::LineTo(P::new(10.0, 12.0)),
+                PathCmd::Close,
+            ],
+            fill: Some(Rgba {
+                r: 0.2,
+                g: 0.4,
+                b: 0.6,
+                a: 1.0,
+            }),
+            stroke: None,
+            shadow: Some(PathShadow {
+                color: Rgba {
+                    r: 0.0,
+                    g: 0.0,
+                    b: 0.0,
+                    a: 0.5,
+                },
+                offset: [3.0, 4.0],
+                sigma: 2.0,
+                spread: 0.0,
+                inner,
+            }),
+        })
+    }
+
+    /// An outer path shadow builds a second mask (distinct from the fill mask, so
+    /// keyed apart by sigma) and composites it offset by the drop through the
+    /// reused glyph-coverage pipeline — two masked draws under/over each other.
+    #[test]
+    fn outer_path_shadow_builds_a_second_offset_mask() {
+        let mut gpu = HeadlessRaster::new();
+        let surface = gpu.create_surface(RawWindowHandle::Headless, 64, 64);
+        let format = gpu.surface_format(surface);
+        let mut r = Renderer::new(&mut gpu, format);
+        r.upload(&mut gpu, &[shadowed_path(false)]);
+        // One build for the shadow silhouette, one for the fill: the sigma-folded
+        // key keeps them from colliding on the same slot.
+        assert_eq!(r.frame_stats().clip_mask_builds, 2);
+        let glyph_draws = r
+            .segments
+            .iter()
+            .filter(|s| matches!(s.kind, SegmentKind::GlyphRun { .. }))
+            .count();
+        assert!(
+            glyph_draws >= 2,
+            "shadow and fill each lower as a glyph-coverage draw"
+        );
+    }
+
+    /// An inner path shadow is an E1 filter-lane concern: the general path lane
+    /// declines it, so only the fill mask is built.
+    #[test]
+    fn inner_path_shadow_skips_the_general_lane() {
+        let mut gpu = HeadlessRaster::new();
+        let surface = gpu.create_surface(RawWindowHandle::Headless, 64, 64);
+        let format = gpu.surface_format(surface);
+        let mut r = Renderer::new(&mut gpu, format);
+        r.upload(&mut gpu, &[shadowed_path(true)]);
+        assert_eq!(r.frame_stats().clip_mask_builds, 1);
+    }
+
+    /// A stable shadowed path re-resolves both slots with no re-raster.
+    #[test]
+    fn stable_path_shadow_rebuilds_nothing() {
+        let mut gpu = HeadlessRaster::new();
+        let surface = gpu.create_surface(RawWindowHandle::Headless, 64, 64);
+        let format = gpu.surface_format(surface);
+        let mut r = Renderer::new(&mut gpu, format);
+        r.upload(&mut gpu, &[shadowed_path(false)]);
+        assert_eq!(r.frame_stats().clip_mask_builds, 2);
+        r.upload(&mut gpu, &[shadowed_path(false)]);
         assert_eq!(r.frame_stats().clip_mask_builds, 0);
     }
 
@@ -2374,6 +2571,7 @@ mod tests {
                     a: 1.0,
                 },
             )),
+            shadow: None,
         });
         let mut gpu = HeadlessRaster::new();
         let surface = gpu.create_surface(RawWindowHandle::Headless, 64, 64);
@@ -2436,6 +2634,7 @@ mod tests {
                 a: 1.0,
             }),
             stroke: None,
+            shadow: None,
         });
         let mut gpu = HeadlessRaster::new();
         let surface = gpu.create_surface(RawWindowHandle::Headless, 64, 64);

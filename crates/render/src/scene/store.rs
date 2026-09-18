@@ -1831,6 +1831,7 @@ mod tests {
             ],
             fill: Some(Rgba::new(1.0, 0.0, 0.0, 1.0)),
             stroke: None,
+            shadow: None,
         }
     }
 

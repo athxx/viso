@@ -255,6 +255,7 @@ fn render_path_scene() -> Vec<u8> {
             PathCmd::Close,
         ],
         fill: Some(Rgba::new(0.2, 0.6, 0.35, 1.0)),
+        shadow: None,
         stroke: Some(stroke),
     };
 
@@ -275,6 +276,7 @@ fn render_path_scene() -> Vec<u8> {
     let star = Path {
         cmds,
         fill: Some(Rgba::new(0.85, 0.55, 0.15, 1.0)),
+        shadow: None,
         stroke: Some(stroke),
     };
 
@@ -352,6 +354,7 @@ fn render_stroke_scene() -> Vec<u8> {
             PathCmd::LineTo(Point::new(56.0, 56.0)),
         ],
         fill: None,
+        shadow: None,
         stroke: Some(Stroke {
             width: 7.0,
             cap: LineCap::Square,
@@ -368,6 +371,7 @@ fn render_stroke_scene() -> Vec<u8> {
             PathCmd::LineTo(Point::new(112.0, 20.0)),
         ],
         fill: None,
+        shadow: None,
         stroke: Some(Stroke {
             width: 7.0,
             cap: LineCap::Round,
@@ -383,6 +387,7 @@ fn render_stroke_scene() -> Vec<u8> {
             PathCmd::LineTo(Point::new(112.0, 78.0)),
         ],
         fill: None,
+        shadow: None,
         stroke: Some(Stroke {
             width: 5.0,
             cap: LineCap::Round,

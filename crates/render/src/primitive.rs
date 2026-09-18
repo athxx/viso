@@ -389,6 +389,10 @@ pub struct AnalyticShadow {
     pub spread: f32,
     /// Which silhouette the shadow casts.
     pub shape: ShadowShape,
+    /// `false` for an outer drop shadow (fills the silhouette, fades outward);
+    /// `true` for an inner shadow (darkens the interior near the edge, fading
+    /// toward the center) — the analytic §20.3 lane, no mask/blur target.
+    pub inner: bool,
 }
 
 impl AnalyticShadow {
@@ -412,6 +416,7 @@ impl AnalyticShadow {
             sigma: self.sigma,
             spread: self.spread,
             shape: self.shape.as_u32(),
+            inner: self.inner as u32,
         }
     }
 }
@@ -1519,6 +1524,39 @@ pub struct Path {
     pub fill: Option<Rgba>,
     /// Stroke, if the outline is painted (drawn over the fill).
     pub stroke: Option<Stroke>,
+    /// A soft shadow cast by this path's silhouette, if any (§15.4/§20.2). Drawn
+    /// under the path via the tight-mask fallback lane — the path's own coverage
+    /// mask, offset and tinted; no analytic SDF exists for an arbitrary outline.
+    pub shadow: Option<PathShadow>,
+}
+
+/// A soft shadow cast by an arbitrary [`Path`] silhouette (§15.4/§20.2).
+///
+/// Unlike [`AnalyticShadow`] there is no closed-form SDF for a general outline, so
+/// this lowers through the tight-coverage-mask fallback: the path's own coverage
+/// is rasterized to one R8 mask (the same mask lane a self-masked fill uses),
+/// then composited under the path, displaced by `offset` and tinted by `color`.
+/// The unshaded mask is keyed on `{geometry, sigma}` and reused across frames when
+/// only `color`/`offset` change (§20.2).
+///
+/// `sigma` is recorded and folds into the mask's cache key so the E1 separable
+/// blur drops in without re-keying; E0's minimal fallback composites the sharp
+/// mask (no convolution pass — full ROI/blur is E1). `inner` selects an inner
+/// shadow, which E0 routes through the same mask lane (§20.3 general-path side).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PathShadow {
+    /// Shadow color (straight linear RGBA; `a` scales the whole ramp).
+    pub color: Rgba,
+    /// Shadow displacement in physical pixels.
+    pub offset: [f32; 2],
+    /// Blur standard deviation in pixels (§15.2 blur-radius semantic). Recorded in
+    /// the mask cache key; E0 composites the sharp mask, E1 applies the blur.
+    pub sigma: f32,
+    /// Silhouette grow (`+`) / shrink (`-`) in pixels. Recorded in the key; the E0
+    /// fallback does not yet dilate the mask (E1), so it affects the key only.
+    pub spread: f32,
+    /// `false` = drop shadow under the path; `true` = inner shadow (§20.3).
+    pub inner: bool,
 }
 
 /// A colored triangle mesh supplied directly by the caller (no tessellation).
@@ -1716,7 +1754,8 @@ pub struct AnalyticLineInstance {
 /// rect; `radius` is the per-corner rounding used only when `shape == 0`
 /// (rounded box). `offset` displaces the shadow, `sigma` is the blur standard
 /// deviation, `spread` grows/shrinks the silhouette, and `shape` selects the SDF
-/// (0=rounded box, 1=ellipse, 2=capsule). `color` is **straight**
+/// (0=rounded box, 1=ellipse, 2=capsule). `inner` selects the shadow side
+/// (0=outer drop shadow, 1=inner shadow). `color` is **straight**
 /// (non-premultiplied) linear RGBA — the backend premultiplies. `#[repr(C)]` with
 /// only 4-byte-aligned scalars/vectors, so the derive's `offset_of!`-based layout
 /// has no padding surprises.
@@ -1740,6 +1779,8 @@ pub struct ShadowInstance {
     pub spread: f32,
     /// Silhouette code: 0=rounded box, 1=ellipse, 2=capsule.
     pub shape: u32,
+    /// Shadow side: 0=outer drop shadow, 1=inner shadow.
+    pub inner: u32,
 }
 
 /// GPU instance for the Gradient built-in shader.
@@ -3073,6 +3114,7 @@ mod tests {
             sigma: 4.0,
             spread: 1.5,
             shape: ShadowShape::Capsule,
+            inner: false,
         };
         let inst = s.to_instance();
         assert_eq!(inst.rect_pos, [10.0, 20.0]);
@@ -3084,6 +3126,7 @@ mod tests {
         assert_eq!(inst.sigma, 4.0);
         assert_eq!(inst.spread, 1.5);
         assert_eq!(inst.shape, 2);
+        assert_eq!(inst.inner, 0);
     }
 
     #[test]
@@ -3672,6 +3715,7 @@ mod tests {
             ],
             fill: None,
             stroke: Some(stroke),
+            shadow: None,
         }
     }
 
@@ -3725,6 +3769,7 @@ mod tests {
             ],
             fill: None,
             stroke: Some(stroke),
+            shadow: None,
         }
     }
 
@@ -3799,6 +3844,7 @@ mod tests {
                 align,
                 ..Stroke::new(8.0, Rgba::new(0.0, 0.0, 0.0, 1.0))
             }),
+            shadow: None,
         };
         let center = stroke_bounds(&sq(StrokeAlign::Center));
         let outer = stroke_bounds(&sq(StrokeAlign::Outer));
