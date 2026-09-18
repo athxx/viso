@@ -1570,6 +1570,204 @@ fn assert_decorated_fusion_gate() {
     );
 }
 
+// ---------------------------------------------------------------------------
+// E0.4 — §31 shadow gate. Two proofs the analytic-shadow fast lane scales the
+// way §15/§20 promises, both through observable headless counters.
+//
+// 1. `assert_analytic_shadow_lane_scales`: a grid of 1k analytic shadows. Every
+//    shadow is one instance on the single shared shadow family, so the whole
+//    grid collapses to one mergeable batch behind one pipeline (no blur target,
+//    no per-shadow offscreen, no family transition), and a warmed steady frame
+//    uploads nothing and tessellates nothing.
+// 2. `assert_path_shadow_reuse_is_local`: the general-path shadow's cached
+//    coverage mask is keyed on {geometry, sigma, spread}, so a frame that
+//    changes only the shadow's color/offset rebuilds no mask, while a frame
+//    that changes the path's geometry rebuilds exactly its two slots. This is
+//    the "reused when only color/offset change" contract of §15.4.
+//
+// NOT observable here (flagged, not asserted): real-device shaded-pixel time
+// for a thousand overlapping soft shadows, and the visual quality of the sharp
+// E0 path-shadow mask vs a true blurred one. `FrameStats` has no GPU-timing or
+// overdraw counter and `HeadlessRaster` is a CPU rasterizer (§7.3/§36).
+// ---------------------------------------------------------------------------
+
+/// The analytic-shadow grid size for the §31 gate: 1k shadows, matching the D1/D2
+/// grid gates so the shadow lane is measured at the same scale as its siblings.
+const SHADOW_GRID: usize = 1_000;
+
+/// A grid of `count` analytic drop shadows, no accompanying fill — this isolates
+/// the shadow lane so its batch/pipeline structure is unambiguous. The rects tile
+/// densely inside the surface; overlap is irrelevant to lowering, which emits one
+/// instance per shadow regardless of where it lands.
+fn analytic_shadow_grid_scene(count: usize) -> Vec<Primitive> {
+    let cols = (count as f64).sqrt().ceil() as usize;
+    let mut scene = Vec::with_capacity(count);
+    for i in 0..count {
+        let col = (i % cols) as f32;
+        let row = (i / cols) as f32;
+        scene.push(Primitive::AnalyticShadow(AnalyticShadow {
+            rect: Rect {
+                x: col * 3.0 + 2.0,
+                y: row * 3.0 + 2.0,
+                w: 2.0,
+                h: 1.5,
+            },
+            color: Rgba {
+                r: 0.0,
+                g: 0.0,
+                b: 0.0,
+                a: 0.35,
+            },
+            radius: Corners::uniform(0.5),
+            offset: [0.5, 0.75],
+            sigma: 1.0,
+            spread: 0.0,
+            shape: ShadowShape::RoundedBox,
+            inner: false,
+        }));
+    }
+    scene
+}
+
+/// E0.4 gate, part 1 (§15/§31): 1k analytic shadows stay one mergeable batch on
+/// one pipeline with no offscreen, and a warmed steady frame is upload- and
+/// tessellation-free.
+fn assert_analytic_shadow_lane_scales() {
+    let mut h = setup_scene(analytic_shadow_grid_scene(SHADOW_GRID));
+    frame(&mut h);
+    frame(&mut h);
+
+    let textures = h.gpu.texture_count();
+    let stats = h.renderer.frame_stats();
+
+    // One shared family: 1k shadows merge into a single batch / single draw
+    // behind one pipeline. A blur-target design would break this into per-shadow
+    // offscreen passes; the analytic lane does not.
+    assert_eq!(
+        stats.batches, 1,
+        "1k analytic shadows share one mergeable family: one batch"
+    );
+    assert_eq!(
+        stats.draw_calls, 1,
+        "one merged batch lowers to one draw call"
+    );
+    assert_eq!(
+        stats.pipeline_switches, 1,
+        "the shadow lane binds its pipeline once for the whole grid"
+    );
+    assert_eq!(
+        stats.instances, SHADOW_GRID,
+        "every shadow is exactly one instance on the shared pool"
+    );
+    assert_eq!(
+        stats.clip_mask_builds, 0,
+        "analytic shadows are closed-form coverage: they build no mask"
+    );
+
+    // Steady state: an unchanged grid uploads nothing, tessellates nothing, and
+    // opens no offscreen texture (§9.1/§17.4).
+    h.renderer.upload(&mut h.gpu, &h.scene);
+    let steady = h.renderer.frame_stats();
+    assert_eq!(
+        steady.uploaded_ranges, 0,
+        "an unchanged 1k-shadow grid uploads zero ranges (§9.1)"
+    );
+    assert_eq!(
+        steady.gpu_upload_bytes, 0,
+        "an unchanged 1k-shadow grid uploads zero bytes (§9.1)"
+    );
+    assert_eq!(
+        steady.path_tessellations, 0,
+        "analytic shadows never tessellate"
+    );
+    assert_eq!(
+        h.gpu.texture_count(),
+        textures,
+        "the analytic-shadow lane opens no offscreen target (§16.2)"
+    );
+}
+
+/// A triangle fan with a drop shadow, anchored at `(ox, oy)`; the shadow tint is
+/// `alpha` and offset by `off`. Distinct anchors/geometry produce distinct
+/// coverage masks; a changed tint or offset alone reuses the cached mask.
+fn shadowed_path_at(ox: f32, oy: f32, alpha: f32, off: [f32; 2]) -> Primitive {
+    use viso_render::PathShadow;
+    Primitive::Path(Path {
+        cmds: vec![
+            PathCmd::MoveTo(Point::new(ox, oy)),
+            PathCmd::LineTo(Point::new(ox + 16.0, oy + 8.0)),
+            PathCmd::LineTo(Point::new(ox, oy + 16.0)),
+            PathCmd::LineTo(Point::new(ox + 6.0, oy + 8.0)),
+            PathCmd::Close,
+        ],
+        fill: Some(Rgba {
+            r: 0.2,
+            g: 0.4,
+            b: 0.6,
+            a: 1.0,
+        }),
+        stroke: None,
+        shadow: Some(PathShadow {
+            color: Rgba {
+                r: 0.0,
+                g: 0.0,
+                b: 0.0,
+                a: alpha,
+            },
+            offset: off,
+            sigma: 2.0,
+            spread: 0.0,
+            inner: false,
+        }),
+    })
+}
+
+/// E0.4 gate, part 2 (§15.4): the path-shadow coverage cache is keyed on
+/// {geometry, sigma, spread}, so re-tinting or re-offsetting the shadow reuses
+/// the cached mask (0 rebuilds), while moving the path's geometry rebuilds
+/// exactly its own two slots (shadow silhouette + fill) — never the scene.
+fn assert_path_shadow_reuse_is_local() {
+    let mut h = setup_scene(vec![
+        shadowed_path_at(4.0, 4.0, 0.5, [3.0, 4.0]),
+        shadowed_path_at(40.0, 40.0, 0.5, [3.0, 4.0]),
+    ]);
+    // Frame 1 is cold: each path builds a shadow-silhouette mask + a fill mask.
+    frame(&mut h);
+    assert_eq!(
+        h.renderer.frame_stats().clip_mask_builds,
+        4,
+        "two shadowed paths build two masks each (silhouette + fill)"
+    );
+    // Frame 2 unchanged: every slot is a cache hit.
+    frame(&mut h);
+    assert_eq!(
+        h.renderer.frame_stats().clip_mask_builds,
+        0,
+        "an unchanged shadowed-path scene rebuilds no mask"
+    );
+
+    // Re-tint and re-offset one shadow only. The key excludes color/offset, so
+    // the cached coverage is reused — zero rebuilds — and the offset moves at
+    // composite time (§15.4 "reused when only color/offset change").
+    h.scene[0] = shadowed_path_at(4.0, 4.0, 0.8, [6.0, 2.0]);
+    h.renderer.upload(&mut h.gpu, &h.scene);
+    assert_eq!(
+        h.renderer.frame_stats().clip_mask_builds,
+        0,
+        "changing only the shadow color/offset reuses the cached coverage mask"
+    );
+
+    // Move the path's geometry. The silhouette + fill keys both shift, so this
+    // path rebuilds its two slots — and only its two, not the untouched sibling.
+    h.scene[0] = shadowed_path_at(6.0, 6.0, 0.8, [6.0, 2.0]);
+    h.renderer.upload(&mut h.gpu, &h.scene);
+    assert_eq!(
+        h.renderer.frame_stats().clip_mask_builds,
+        2,
+        "moving one path's geometry rebuilds exactly its two masks, not the scene"
+    );
+}
+
 /// Lower + upload + submit one frame of the scene.
 fn frame(h: &mut Harness) {
     h.renderer.upload(&mut h.gpu, &h.scene);
@@ -1735,6 +1933,13 @@ fn bench_steady_state(c: &mut Criterion) {
     // measurement this backend cannot express (see the fn doc).
     assert_decorated_fusion_gate();
 
+    // E0.4 gate (§15/§15.4/§31): the analytic-shadow fast lane at 1k shadows
+    // stays one mergeable batch on one pipeline with no offscreen and holds a
+    // steady frame upload-free; the general-path shadow's coverage cache reuses
+    // its mask across color/offset changes and rebuilds only the moved path.
+    assert_analytic_shadow_lane_scales();
+    assert_path_shadow_reuse_is_local();
+
     let mut h = setup();
     // Warm up so the measured iterations are the reuse path, not first growth.
     frame(&mut h);
@@ -1776,6 +1981,23 @@ fn bench_steady_state(c: &mut Criterion) {
             }
             big.renderer
                 .upload(black_box(&mut big.gpu), black_box(&big.scene));
+        });
+    });
+
+    // E0.4 timing (§15/§31): a steady `upload` of 1k analytic shadows is the
+    // diff-and-coalesce cost of the shared shadow pool with zero GPU work — the
+    // high-refresh sentinel for the analytic-shadow lane (all closed-form
+    // coverage, no offscreen). Debug timing is not a perf result (§36); run
+    // release. On-device shaded-pixel time for overlapping soft shadows is a
+    // separate measurement this headless backend cannot express (§7.3).
+    let mut shadows = setup_scene(analytic_shadow_grid_scene(SHADOW_GRID));
+    frame(&mut shadows);
+    frame(&mut shadows);
+    c.bench_function("analytic_shadow_1k_upload_steady", |b| {
+        b.iter(|| {
+            shadows
+                .renderer
+                .upload(black_box(&mut shadows.gpu), black_box(&shadows.scene))
         });
     });
 

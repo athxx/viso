@@ -1602,7 +1602,17 @@ instancing/coverage integration + mask/blur caching in `viso-render`; blur targe
         `ANALYTIC_SHADOW_MSL_ORIGINAL` + manifest oracle regenerated for the inner branch.
 
 ### E0.4 — §31 gate
-- [ ] Benchmark gate (§31): 1k analytic shadows; path-shadow reuse. High-refresh.
+- [x] Benchmark gate (§31): 1k analytic shadows; path-shadow reuse. High-refresh.
+  - [x] 1k analytic shadows: `analytic_shadow_grid_scene` + `assert_analytic_shadow_lane_scales`
+        pins the shared shadow family to one mergeable batch / one draw / one pipeline switch,
+        1k instances, zero mask builds, and zero offscreen textures — a blur-target design
+        would fan out per-shadow passes; the closed-form lane does not.
+  - [x] Path-shadow reuse: `assert_path_shadow_reuse_is_local` proves the coverage key excludes
+        color/offset — re-tint + re-offset rebuilds 0 masks, moving one path's geometry rebuilds
+        exactly its 2 slots (silhouette + fill), never the sibling — the §15.4 reuse contract.
+  - [x] High-refresh: steady `upload` of the 1k-shadow grid uploads 0 ranges / 0 bytes /
+        0 tessellations; `analytic_shadow_1k_upload_steady` timing bench is the regression
+        sentinel (release-only; on-device shaded-pixel time flagged, not asserted — §7.3).
 
 ### E0 Done
 - [ ] UI shape analytic shadow.
