@@ -981,6 +981,7 @@ struct InstanceIn {
     float sigma;
     float spread;
     uint shape;
+    uint inner;
 };
 
 struct Uniforms {
@@ -997,6 +998,7 @@ struct VOut {
     float sigma;         // blur standard deviation (pixels)
     float spread;        // silhouette grow/shrink (pixels)
     uint shape [[flat]];          // 0=rounded box 1=ellipse 2=capsule
+    uint inner [[flat]];          // 0=outer drop shadow 1=inner shadow
     float4 color;
 };
 
@@ -1041,6 +1043,7 @@ vertex VOut vertex_main(uint vid [[vertex_id]],
     out.sigma = inst.sigma;
     out.spread = inst.spread;
     out.shape = inst.shape;
+    out.inner = inst.inner;
     out.color = float4(inst.color);
     return out;
 }
@@ -1112,10 +1115,24 @@ fragment float4 fragment_main(VOut in [[stage_in]]) {
     float d = shadow_sdf(in.shape, p, half_ext, in.radius);
 
     // Soft coverage: model the blurred edge as a 1-D Gaussian applied to the signed
-    // distance, so coverage = 1 - Phi(d/sigma) = 0.5*(1 - erf(d/(sqrt2*sigma))).
-    // A near-zero sigma has no blur, so fall back to the device-pixel AA ramp.
+    // distance. An outer drop shadow fills the silhouette and fades outward
+    // (coverage = 1 - Phi(d/sigma) = 0.5*(1 - erf(d/(sqrt2*sigma)))). An inner shadow
+    // is its complement clipped to the interior: the blurred silhouette of the hole,
+    // darkest at the edge and fading toward the center — 0.5*(1 + erf(...)) times an
+    // inside mask. A near-zero sigma has no blur, so fall back to a device-pixel AA
+    // ramp (a signed hairline at the edge for the inner case, a filled ramp otherwise).
     float cov;
-    if (in.sigma > 0.01) {
+    if (in.inner != 0u) {
+        if (in.sigma > 0.01) {
+            float soft = 0.5 * (1.0 + erf_approx(d / (1.4142135 * in.sigma)));
+            // Clip to the interior with the same Gaussian edge, so the darkening
+            // lives inside the silhouette and vanishes at and beyond the edge.
+            float inside = 0.5 * (1.0 - erf_approx(d / (1.4142135 * in.sigma)));
+            cov = soft * inside;
+        } else {
+            cov = clamp(-d * shadow_aa(in.local), 0.0, 1.0);
+        }
+    } else if (in.sigma > 0.01) {
         cov = 0.5 * (1.0 - erf_approx(d / (1.4142135 * in.sigma)));
     } else {
         cov = clamp(-d * shadow_aa(in.local), 0.0, 1.0);

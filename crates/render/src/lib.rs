@@ -386,6 +386,7 @@ pub fn test_scene(texture: TextureId, glyphs: GlyphRunDraw) -> Vec<Primitive> {
                     a: 1.0,
                 },
             )),
+            shadow: None,
         }),
         // A caller-supplied triangle mesh (the escape hatch for geometry the
         // higher-level primitives don't cover): a single opaque teal triangle in

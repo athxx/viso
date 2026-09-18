@@ -172,7 +172,12 @@ fn lower_path(path: &usvg::Path) -> Option<Primitive> {
         return None;
     }
 
-    Some(Primitive::Path(Path { cmds, fill, stroke }))
+    Some(Primitive::Path(Path {
+        cmds,
+        fill,
+        stroke,
+        shadow: None,
+    }))
 }
 
 /// Convert a `tiny_skia_path::Path` to Viso [`PathCmd`]s, transforming every

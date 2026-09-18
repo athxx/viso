@@ -1158,6 +1158,7 @@ fn path_grid_scene(count: usize) -> Vec<Primitive> {
                 PathCmd::Close,
             ],
             fill: Some(fill),
+            shadow: None,
             stroke: Some(Stroke::new(1.0, stroke)),
         }));
     }
@@ -1279,6 +1280,7 @@ fn svg_like_path_scene(count: usize) -> Vec<Primitive> {
                 PathCmd::Close,
             ],
             fill: Some(fill),
+            shadow: None,
             stroke: Some(Stroke::new(1.0, stroke)),
         }));
     }
@@ -1309,6 +1311,7 @@ fn dashed_stroke_scene(count: usize) -> Vec<Primitive> {
                 PathCmd::LineTo(Point::new(x + 14.0, y + 12.0)),
             ],
             fill: None,
+            shadow: None,
             stroke: Some(stroke),
         }));
     }
@@ -1450,6 +1453,7 @@ fn decorated_card_scene(count: usize) -> Vec<Primitive> {
             sigma: 1.0,
             spread: 0.0,
             shape: ShadowShape::RoundedBox,
+            inner: false,
         }));
         // The card itself: fill + border in one rrect draw (the rrect family
         // already fuses fill and border in its fragment).
@@ -1555,6 +1559,7 @@ fn assert_decorated_fusion_gate() {
         sigma: 1.0,
         spread: 0.0,
         shape: ShadowShape::RoundedBox,
+        inner: false,
     };
     let fill_area = card.rect.w * card.rect.h;
     let overdraw_ratio = shadow_quad_area(&card) / fill_area;

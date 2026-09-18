@@ -61,6 +61,7 @@ fn tri_scene(origin: (f32, f32), fill: Option<Rgba>, stroke: Option<Rgba>) -> Ve
             PathCmd::Close,
         ],
         fill,
+        shadow: None,
         stroke: stroke.map(|color| Stroke::new(2.0, color)),
     })]
 }
@@ -94,6 +95,7 @@ fn path_geometry_change_retessellates_and_bumps_geometry_alone() {
             PathCmd::Close,
         ],
         fill,
+        shadow: None,
         stroke: None,
     })];
     renderer.upload(&mut gpu, &bigger);
@@ -327,6 +329,7 @@ fn tri_stroked(origin: (f32, f32), stroke: Stroke) -> Vec<Primitive> {
             PathCmd::Close,
         ],
         fill: None,
+        shadow: None,
         stroke: Some(stroke),
     })]
 }

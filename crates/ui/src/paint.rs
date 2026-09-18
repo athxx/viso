@@ -200,6 +200,7 @@ pub(crate) fn paint_content(content: &Content, world: Rect, out: &mut Vec<Primit
                 cmds,
                 fill: *fill,
                 stroke: *stroke,
+                shadow: None,
             }));
         }
     }

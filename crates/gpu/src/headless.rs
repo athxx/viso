@@ -1202,6 +1202,7 @@ impl HeadlessRaster {
     /// - `sigma`     : `Float1` blur standard deviation in physical pixels
     /// - `spread`    : `Float1` silhouette grow (>0) / shrink (<0) in physical pixels
     /// - `shape`     : `Uint1` 0=rounded box 1=ellipse 2=capsule
+    /// - `inner`     : `Uint1` 0=outer drop shadow 1=inner shadow (darkens inside)
     ///
     /// The per-pixel math mirrors [`ANALYTIC_SHADOW_MSL`](../../shader)'s fragment
     /// exactly: sample in rect-centered space shifted by `-offset`, inset the
@@ -1225,6 +1226,7 @@ impl HeadlessRaster {
         let sigma = read_f1(layout, inst, "sigma");
         let spread = read_f1(layout, inst, "spread");
         let shape = read_u1(layout, inst, "shape");
+        let inner = read_u1(layout, inst, "inner");
 
         let half = [size[0] * 0.5, size[1] * 0.5];
         let center = [pos[0] + half[0], pos[1] + half[1]];
@@ -1258,9 +1260,17 @@ impl HeadlessRaster {
                 ];
                 let d = shadow_sdf(shape, p, half_ext, radii);
 
-                let cov = if sigma > 0.01 {
-                    // `1.4142135` (not `SQRT_2`) is byte-exact with the MSL emitter's literal.
-                    #[allow(clippy::approx_constant)]
+                // `1.4142135` (not `SQRT_2`) is byte-exact with the MSL emitter's literal.
+                #[allow(clippy::approx_constant)]
+                let cov = if inner != 0 {
+                    if sigma > 0.01 {
+                        let soft = 0.5 * (1.0 + erf_approx(d / (1.4142135 * sigma)));
+                        let inside = 0.5 * (1.0 - erf_approx(d / (1.4142135 * sigma)));
+                        (soft * inside).clamp(0.0, 1.0)
+                    } else {
+                        (-d * aa).clamp(0.0, 1.0)
+                    }
+                } else if sigma > 0.01 {
                     (0.5 * (1.0 - erf_approx(d / (1.4142135 * sigma)))).clamp(0.0, 1.0)
                 } else {
                     (-d * aa).clamp(0.0, 1.0)
