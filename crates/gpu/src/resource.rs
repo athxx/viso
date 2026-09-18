@@ -177,6 +177,9 @@ pub enum BuiltinShader {
     AnalyticShadow,
     /// An offscreen layer composited back with clip/opacity (Layer primitive).
     Layer,
+    /// A separable Gaussian blur pass sampling a source texture along one axis
+    /// (content blur of an offscreen layer).
+    Blur,
 }
 
 /// Descriptor for a render pipeline ([`crate::GpuBackend::create_pipeline`]).

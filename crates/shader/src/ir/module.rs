@@ -289,6 +289,43 @@ pub fn image_ir() -> ShaderIr {
     }
 }
 
+/// Separable Gaussian blur built-in: one full-target quad sampling a source
+/// texture along a single axis. Per-instance data, uniforms at buffer 0, one
+/// texture. The blur parameters ride in the instance (`dir`/`sigma`/`radius`)
+/// rather than inline uniforms; the vertex stage is the Image quad synthesis and
+/// forwards the blur params to the fragment, which runs a 1D Gaussian tap loop
+/// over the source uv.
+pub fn blur_ir() -> ShaderIr {
+    static ATTRS: &[IrField] = &[
+        IrField::new("rect_pos", IrType::F32X2),
+        IrField::new("rect_size", IrType::F32X2),
+        IrField::new("uv_pos", IrType::F32X2),
+        IrField::new("uv_size", IrType::F32X2),
+        IrField::new("dir", IrType::F32X2),
+        IrField::new("sigma", IrType::F32),
+        IrField::new("radius", IrType::F32),
+    ];
+    static UNIFORMS: &[IrField] = &[IrField::new("viewport", IrType::F32X2)];
+    static VARYINGS: &[Varying] = &[
+        Varying::new("position", IrType::F32X4, " [[position]]", ""),
+        Varying::new("uv", IrType::F32X2, "", ""),
+        Varying::new("dir", IrType::F32X2, "", "per-tap step in normalized uv"),
+        Varying::new("sigma", IrType::F32, "", "Gaussian sigma in source texels"),
+        Varying::new("radius", IrType::F32, "", "tap radius (taps each side)"),
+    ];
+    ShaderIr {
+        kind: PrimitiveKind::Blur,
+        vertex_source: VertexSource::PerInstance,
+        attributes: ATTRS,
+        uniforms: UNIFORMS,
+        varyings: VARYINGS,
+        texture_count: 1,
+        vertex_body: BLUR_VERTEX_BODY,
+        helpers: "",
+        fragment_body: BLUR_FRAGMENT_BODY,
+    }
+}
+
 /// Glyph-run built-in: the image contract sampling a single-channel A8 coverage
 /// atlas. The fragment reads the texel's coverage directly and modulates the
 /// run color by it — no signed-distance decode.
@@ -1302,6 +1339,54 @@ const IMAGE_FRAGMENT_BODY: &str = "\
 float4 texel = tex.sample(samp, in.uv);
 float4 t = float4(in.tint.rgb * in.tint.a, in.tint.a);
 return texel * t;";
+
+const BLUR_VERTEX_BODY: &str = "\
+InstanceIn inst = instances[iid];
+
+float2 corner;
+switch (vid) {
+    case 0: corner = float2(0.0, 0.0); break;
+    case 1: corner = float2(1.0, 0.0); break;
+    case 2: corner = float2(0.0, 1.0); break;
+    case 3: corner = float2(1.0, 0.0); break;
+    case 4: corner = float2(1.0, 1.0); break;
+    default: corner = float2(0.0, 1.0); break;
+}
+
+float2 pos = float2(inst.rect_pos);
+float2 size = float2(inst.rect_size);
+float2 pixel = pos + corner * size;
+
+float2 vp = float2(u.viewport);
+float2 ndc = float2(pixel.x / vp.x * 2.0 - 1.0,
+                    1.0 - pixel.y / vp.y * 2.0);
+
+VOut out;
+out.position = float4(ndc, 0.0, 1.0);
+out.uv = float2(inst.uv_pos) + corner * float2(inst.uv_size);
+out.dir = float2(inst.dir);
+out.sigma = float(inst.sigma);
+out.radius = float(inst.radius);
+return out;";
+
+const BLUR_FRAGMENT_BODY: &str = "\
+// Separable 1D Gaussian tap loop along `dir` (normalized uv step). The source
+// texel is premultiplied linear; weights are exp(-(i*i)/(2*sigma*sigma)),
+// normalized by their sum. sigma<=0 degrades to a single center tap. The
+// clamp-to-edge sampler handles borders.
+float sigma = in.sigma;
+int R = (sigma > 0.0) ? int(in.radius) : 0;
+float two_sigma_sq = 2.0 * sigma * sigma;
+float4 acc = float4(0.0);
+float wsum = 0.0;
+for (int i = -R; i <= R; ++i) {
+    float fi = float(i);
+    float w = (two_sigma_sq > 0.0) ? exp(-(fi * fi) / two_sigma_sq) : 1.0;
+    float2 suv = in.uv + fi * in.dir;
+    acc += w * tex.sample(samp, suv);
+    wsum += w;
+}
+return (wsum > 0.0) ? acc / wsum : float4(0.0);";
 
 const GLYPHRUN_VERTEX_BODY: &str = "\
 InstanceIn inst = instances[iid];

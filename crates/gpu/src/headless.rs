@@ -601,6 +601,17 @@ impl HeadlessRaster {
                                 cmd.scissor,
                             );
                         }
+                        BuiltinShader::Blur => {
+                            self.fill_blur(
+                                target,
+                                width,
+                                height,
+                                &layout,
+                                inst,
+                                cmd.bind_group,
+                                cmd.scissor,
+                            );
+                        }
                         // Path/Mesh never arrive as generated geometry.
                         BuiltinShader::Path | BuiltinShader::Mesh | BuiltinShader::Layer => {}
                     }
@@ -1394,6 +1405,123 @@ impl HeadlessRaster {
                     texel[2] * tint_pm[2],
                     texel[3] * tint_pm[3],
                 ];
+                if src[3] <= 0.0 {
+                    continue;
+                }
+                blend_pixel(self.framebuffer(target), width, px, py, src);
+            }
+        }
+    }
+
+    /// Fill one separable Gaussian blur instance sampling a source texture.
+    ///
+    /// Instance layout ([`BlurInstance`](../../render)):
+    /// - `rect_pos`/`rect_size` : destination quad in physical pixels
+    /// - `uv_pos`/`uv_size`     : source sub-rect, normalized `0..1`
+    /// - `dir`                  : per-tap step in normalized uv along the blur axis
+    /// - `sigma`                : Gaussian sigma in source texels
+    /// - `radius`               : tap radius (taps each side); loop `-R..=R`
+    ///
+    /// For each destination pixel the source uv is derived exactly as
+    /// [`fill_image`](Self::fill_image), then a 1D Gaussian tap loop walks the uv
+    /// along `dir` (`u + i*dir[0]`, `v + i*dir[1]`), weighting each premultiplied
+    /// texel by `exp(-(i*i)/(2*sigma*sigma))` and normalizing by the weight sum.
+    /// The result is premultiplied (no tint) and blended source-over. A clamp-to-
+    /// edge sampler handles borders; `sigma <= 0` degrades to a single center tap.
+    #[allow(clippy::too_many_arguments)]
+    fn fill_blur(
+        &mut self,
+        target: FbTarget,
+        width: u32,
+        height: u32,
+        layout: &InstanceLayout,
+        inst: &[u8],
+        bind_group: Option<BindGroupId>,
+        scissor: Option<(u32, u32, u32, u32)>,
+    ) {
+        let pos = read_f2(layout, inst, "rect_pos");
+        let size = read_f2(layout, inst, "rect_size");
+        let uv_pos = read_f2(layout, inst, "uv_pos");
+        let uv_size = read_f2(layout, inst, "uv_size");
+        let dir = read_f2(layout, inst, "dir");
+        let sigma = read_f1(layout, inst, "sigma");
+        let radius = read_f1(layout, inst, "radius");
+
+        let Some(bg) = bind_group else { return };
+        let (mut tex_id, mut samp) = (
+            None,
+            SamplerDesc {
+                filter: crate::resource::FilterMode::Linear,
+                address: crate::resource::AddressMode::ClampToEdge,
+            },
+        );
+        for binding in &self.bind_group(bg).bindings {
+            match binding {
+                crate::resource::Binding::Texture(t) => tex_id = Some(*t),
+                crate::resource::Binding::Sampler(s) => samp = self.sampler(*s),
+                crate::resource::Binding::Uniform(_) => {}
+            }
+        }
+        let Some(tex_id) = tex_id else { return };
+        let (tw, th, texels) = {
+            let t = self.texture(tex_id);
+            (t.width, t.height, t.texels.clone())
+        };
+        if tw == 0 || th == 0 || size[0] <= 0.0 || size[1] <= 0.0 {
+            return;
+        }
+
+        let (mut x0, mut y0, mut x1, mut y1) = (
+            pos[0].floor().max(0.0) as u32,
+            pos[1].floor().max(0.0) as u32,
+            (pos[0] + size[0]).ceil().min(width as f32) as u32,
+            (pos[1] + size[1]).ceil().min(height as f32) as u32,
+        );
+        if let Some((sx, sy, sw, sh)) = scissor {
+            x0 = x0.max(sx);
+            y0 = y0.max(sy);
+            x1 = x1.min(sx + sw);
+            y1 = y1.min(sy + sh);
+        }
+
+        // Number of taps each side. A non-positive sigma or radius degrades to a
+        // single center tap (identity resample).
+        let r = if sigma > 0.0 {
+            radius.max(0.0).round() as i32
+        } else {
+            0
+        };
+        let two_sigma_sq = 2.0 * sigma * sigma;
+
+        for py in y0..y1 {
+            for px in x0..x1 {
+                let fx = (px as f32 + 0.5 - pos[0]) / size[0];
+                let fy = (py as f32 + 0.5 - pos[1]) / size[1];
+                let u = uv_pos[0] + fx * uv_size[0];
+                let v = uv_pos[1] + fy * uv_size[1];
+
+                let mut acc = [0.0f32; 4];
+                let mut wsum = 0.0f32;
+                for i in -r..=r {
+                    let fi = i as f32;
+                    let w = if two_sigma_sq > 0.0 {
+                        (-(fi * fi) / two_sigma_sq).exp()
+                    } else {
+                        1.0
+                    };
+                    let su = u + fi * dir[0];
+                    let sv = v + fi * dir[1];
+                    let texel = sample_texel(&texels, tw, th, su, sv, &samp);
+                    acc[0] += w * texel[0];
+                    acc[1] += w * texel[1];
+                    acc[2] += w * texel[2];
+                    acc[3] += w * texel[3];
+                    wsum += w;
+                }
+                if wsum <= 0.0 {
+                    continue;
+                }
+                let src = [acc[0] / wsum, acc[1] / wsum, acc[2] / wsum, acc[3] / wsum];
                 if src[3] <= 0.0 {
                     continue;
                 }

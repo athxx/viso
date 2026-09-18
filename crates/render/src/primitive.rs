@@ -648,6 +648,13 @@ const fn extend_as_u32(mode: ExtendMode) -> u32 {
 ///   whole layer uniformly translucent without double-blending its overlapping
 ///   contents, at the cost of one offscreen pass per translucent layer.
 ///
+/// `blur_sigma` optionally Gaussian-blurs the layer's own content:
+///
+/// - `blur_sigma == 0.0` (default): no blur.
+/// - `blur_sigma > 0.0`: forces an offscreen pass even at `opacity == 1.0`, and
+///   the layer's content is Gaussian-blurred (a separable ladder inserted
+///   between the offscreen render and the composite) before compositing.
+///
 /// The offscreen pass is emitted before the main pass (see the render backend's
 /// draw-list ordering) and cleared to transparent.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -658,6 +665,10 @@ pub struct LayerClip {
     /// Layer opacity in `[0, 1]`. `1.0` clips in-pass; `< 1.0` triggers
     /// offscreen compositing at this opacity.
     pub opacity: f32,
+    /// Gaussian blur sigma in physical pixels applied to the layer's own
+    /// content. `0.0` (default) means no blur; `> 0.0` forces an offscreen pass
+    /// even at `opacity == 1.0` and blurs the content before compositing.
+    pub blur_sigma: f32,
 }
 
 /// A textured image: sample a sub-rect of `texture` into a destination `rect`,
@@ -1874,6 +1885,36 @@ pub struct ImageInstance {
     pub uv_size: [f32; 2],
     /// Straight linear RGBA tint (a = opacity).
     pub color: [f32; 4],
+}
+
+/// GPU instance for the Blur built-in shader.
+///
+/// Field names/formats match [`blur_schema`](viso_shader::blur_schema) and the
+/// headless `fill_blur` reader. Like [`ImageInstance`] it draws one
+/// `vertex_id`-generated full-target quad that samples a source texture, but
+/// instead of a single tap it walks a separable Gaussian ladder: `dir` is the
+/// per-tap step in normalized source uv (one axis, `(step, 0)` horizontal or
+/// `(0, step)` vertical), `sigma` is the Gaussian standard deviation in source
+/// texels, and `radius` is the tap count on each side of center. `#[repr(C)]`
+/// with only 4-byte-aligned scalars/vectors, so the derive's `offset_of!`-based
+/// layout has no padding — five `[f32; 2]` plus two `f32`, stride 48.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, GpuPod)]
+pub struct BlurInstance {
+    /// Destination top-left in physical pixels.
+    pub rect_pos: [f32; 2],
+    /// Destination width/height in physical pixels.
+    pub rect_size: [f32; 2],
+    /// Source sub-rect origin in normalized texture coords.
+    pub uv_pos: [f32; 2],
+    /// Source sub-rect size in normalized texture coords.
+    pub uv_size: [f32; 2],
+    /// Per-tap step in normalized source uv along the blur axis.
+    pub dir: [f32; 2],
+    /// Gaussian standard deviation, in source texels.
+    pub sigma: f32,
+    /// Tap count on each side of the center sample.
+    pub radius: f32,
 }
 
 /// GPU instance for the GlyphRun built-in shader.

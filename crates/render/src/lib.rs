@@ -308,6 +308,7 @@ pub fn test_scene(texture: TextureId, glyphs: GlyphRunDraw) -> Vec<Primitive> {
                 h: 40.0,
             },
             opacity: 1.0,
+            blur_sigma: 0.0,
         }),
         // A sharp-cornered orange quad larger than the clip on every side; only
         // the clip window shows, proving the scissor bounds the fill.
@@ -485,6 +486,7 @@ pub fn test_scene(texture: TextureId, glyphs: GlyphRunDraw) -> Vec<Primitive> {
                 h: 32.0,
             },
             opacity: 0.5,
+            blur_sigma: 0.0,
         }),
         // An opaque magenta quad exactly filling the layer clip; after compositing
         // at opacity 0.5 it appears as a half-strength wash over the scene.

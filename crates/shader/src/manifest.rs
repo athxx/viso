@@ -32,10 +32,10 @@ use viso_gpu::{BuiltinShader, InstanceSchema};
 
 use crate::msl::{
     ANALYTIC_CAPSULE_MSL, ANALYTIC_ELLIPSE_MSL, ANALYTIC_LINE_MSL, ANALYTIC_RRECT_MSL,
-    ANALYTIC_SHADOW_MSL, GLYPHRUN_MSL, GRADIENT_MSL, IMAGE_MSL, MESH_MSL, QUAD_MSL,
+    ANALYTIC_SHADOW_MSL, BLUR_MSL, GLYPHRUN_MSL, GRADIENT_MSL, IMAGE_MSL, MESH_MSL, QUAD_MSL,
     analytic_capsule_schema, analytic_ellipse_schema, analytic_line_schema, analytic_rrect_schema,
-    analytic_shadow_schema, glyphrun_schema, gradient_schema, image_schema, mesh_schema,
-    quad_schema,
+    analytic_shadow_schema, blur_schema, glyphrun_schema, gradient_schema, image_schema,
+    mesh_schema, quad_schema,
 };
 use std::sync::OnceLock;
 
@@ -81,6 +81,11 @@ pub enum PipelineFamily {
     /// A coverage/mask composite — the GlyphRun built-in samples an A8 coverage
     /// atlas, the canonical mask-composite case.
     MaskComposite,
+    /// A separable Gaussian blur of an offscreen layer's content — the Blur
+    /// built-in samples a source texture along one axis. One pass per axis; the
+    /// renderer chains a horizontal and a vertical pass to blur a layer before
+    /// compositing it.
+    ContentBlur,
 }
 
 /// The color-target class a pipeline renders into. Part of [`VariantKey`]
@@ -291,6 +296,15 @@ pub fn standard_manifest() -> &'static PipelineManifest {
                 vertex_entry: "vertex_main",
                 fragment_entry: "fragment_main",
             },
+            PipelineEntry {
+                family: PipelineFamily::ContentBlur,
+                variant: VariantKey::standard(PipelineFamily::ContentBlur),
+                builtin: BuiltinShader::Blur,
+                msl: BLUR_MSL(),
+                schema: blur_schema(),
+                vertex_entry: "vertex_main",
+                fragment_entry: "fragment_main",
+            },
         ],
     })
 }
@@ -307,7 +321,7 @@ mod tests {
     #[test]
     fn manifest_enumerates_the_standard_builtins() {
         let m = standard_manifest();
-        assert_eq!(m.entries().len(), 10);
+        assert_eq!(m.entries().len(), 11);
         assert!(m.entry(PipelineFamily::SolidRect).is_some());
         assert!(m.entry(PipelineFamily::Image).is_some());
         assert!(m.entry(PipelineFamily::MaskComposite).is_some());
@@ -318,6 +332,7 @@ mod tests {
         assert!(m.entry(PipelineFamily::AnalyticLine).is_some());
         assert!(m.entry(PipelineFamily::Gradient).is_some());
         assert!(m.entry(PipelineFamily::AnalyticShadow).is_some());
+        assert!(m.entry(PipelineFamily::ContentBlur).is_some());
     }
 
     #[test]
