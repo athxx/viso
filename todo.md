@@ -1650,10 +1650,25 @@ RenderGraph + Transient Target Planner + ROI in `viso-render`; blur kernels in
 C0 + E0 frozen; builds on F1 fence/retire and F4 pool/batch.
 
 ### E1.1 — Tight ROI
-- [ ] Every offscreen effect first computes `content/effect bounds ∩ clip bounds ∩ surface
+- [x] Every offscreen effect first computes `content/effect bounds ∩ clip bounds ∩ surface
       bounds` (§16.2). Forbidden pattern: small panel → full-screen copy → full-screen blur
       → crop back. Required: `effect bounds + kernel expansion + clip/intersection → tight
       ROI`. Never blur an entire 4K surface for a small widget.
+  - [x] Offscreen target sized to `content_union ∩ clip ∩ surface`, deferred to `LayerEnd`
+        (content bounds unknown at layer-open); kernel expansion = 0 here, folded in at E1.2.
+  - [x] Two-phase `upload` exploited: walk accumulates a world-space `content_union` per
+        offscreen layer; `finalize_offscreen` repatches each recorded child's origin/clip to
+        the ROI top-left before `lower_from_scene` — no geometry re-baking.
+  - [x] Texture claim deferred from layer-open to `finalize_offscreen`, so the pool keys on
+        the tight ROI size (`OffscreenPass` texture/bind_group become `Option`).
+  - [x] Surface bounds reach sizing via a `surface_size` field + `set_surface_size` setter
+        (no `upload` signature change; §40).
+  - [x] `Rect::union` bounding-box helper (empty operand is identity, seeds the accumulator).
+  - [x] Children falling fully outside the tight ROI are culled at lowering and tallied into
+        `FrameStats::culled_primitives` (was reserved/always-0).
+  - [x] Tests: `tight_roi_sizes_target_to_content_not_clip` (panel-in-huge-clip sizes to the
+        panel, origin repatched, composite at ROI world rect, `transient_target_bytes` tight,
+        cull gate) + updated `translucent_layer_opens_offscreen_and_composites`.
 
 ### E1.2 — Blur ladder
 - [ ] Auto-select by effective sigma / ROI / backend (§16.3): small → direct/separable;

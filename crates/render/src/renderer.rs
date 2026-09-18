@@ -308,15 +308,19 @@ pub(crate) enum PassTarget {
 /// positions have had the layer origin subtracted, so the existing shaders draw
 /// them correctly against the pass's `viewport` (= the texture extent).
 struct OffscreenPass {
-    /// The render-target texture this pass draws into.
-    texture: TextureId,
+    /// The render-target texture this pass draws into. `None` until the pass is
+    /// finalized at `LayerEnd`, when the content ROI is known and a pooled
+    /// texture of exactly the ROI extent is claimed (§16.2).
+    texture: Option<TextureId>,
     /// Bind group pairing `texture` with the shared sampler, for compositing.
-    bind_group: BindGroupId,
+    /// `None` until finalize, alongside `texture`.
+    bind_group: Option<BindGroupId>,
     /// The pass viewport `[width, height]` in physical pixels (= texture extent,
-    /// the ceil of the layer clip size).
+    /// the ceil of the tight content ROI). `[0, 0]` until finalize.
     viewport: [f32; 2],
-    /// The layer clip's world-space rect: the composite destination, and the
-    /// origin subtracted from this pass's geometry.
+    /// The tight content ROI's world-space rect: the composite destination, and
+    /// the origin subtracted from this pass's geometry. Equals the layer clip
+    /// until finalize narrows it to `content ∩ clip ∩ surface`.
     rect: Rect,
     /// The layer opacity in `[0, 1)`, applied as the composite tint alpha.
     opacity: f32,
@@ -334,8 +338,18 @@ struct LayerEntry {
     target: PassTarget,
     /// The world-space origin subtracted from geometry drawn under this layer,
     /// so an offscreen pass renders with its texture's top-left at `(0, 0)`.
-    /// Zero for the main pass.
+    /// Zero for the main pass. For an offscreen layer this is a provisional
+    /// origin (the clip top-left); finalize repatches it to the ROI top-left.
     origin: [f32; 2],
+    /// Running union (world space) of the paint bounds of every primitive drawn
+    /// directly under this layer, used only for an offscreen layer to size its
+    /// tight ROI at `LayerEnd`. [`Rect::ZERO`] is the empty seed; unused for a
+    /// main-target (opaque) layer.
+    content_union: Rect,
+    /// `scene.paint_order.len()` captured at Layer-open, so finalize can repatch
+    /// exactly this layer's recorded children (`paint_order[start..]`). Unused
+    /// for a main-target layer.
+    paint_order_start: usize,
 }
 
 /// A (texture, sampler) pair's bind group, cached so repeated draws sharing both
@@ -608,6 +622,16 @@ pub struct Renderer {
     /// produced (§9.3). Zero on a steady frame; a single local change is one
     /// range. Read into `FrameStats::uploaded_ranges` (§30); a plain counter.
     uploaded_ranges: usize,
+    /// The surface size in physical pixels `[width, height]`, the outer clamp
+    /// for every offscreen ROI (`content ∩ clip ∩ surface`, §16.2). Defaults to
+    /// [`Rect::INFINITE`]'s extent (no surface clamp) until
+    /// [`set_surface_size`](Self::set_surface_size) reports the real size; the
+    /// caller passes the same value it later hands `submit`.
+    surface_size: [f32; 2],
+    /// Offscreen-pass children lowered this frame whose paint bounds fell fully
+    /// outside their pass's tight ROI (the clip excluded them), so their draw
+    /// was skipped (§16.2). Read into `FrameStats::culled_primitives` (§61).
+    culled_this_frame: u32,
 }
 
 /// A reusable render-target texture in [`Renderer::offscreen_pool`].
@@ -811,7 +835,17 @@ impl Renderer {
             scene: Scene::new(),
             gpu_upload_bytes: 0,
             uploaded_ranges: 0,
+            surface_size: [Rect::INFINITE.w, Rect::INFINITE.h],
+            culled_this_frame: 0,
         }
+    }
+
+    /// Report the surface size in physical pixels `[width, height]` — the outer
+    /// clamp for every offscreen ROI (§16.2). Call before [`upload`](Self::upload)
+    /// with the same value later handed to [`submit`](Self::submit); until then
+    /// ROIs clamp only to content and clip (no surface bound).
+    pub fn set_surface_size(&mut self, surface_size: [f32; 2]) {
+        self.surface_size = surface_size;
     }
 
     /// Get (or lazily create) the bind group pairing `texture` with `sampler`.
@@ -1058,6 +1092,7 @@ impl Renderer {
         self.scene.begin_frame();
         self.mask_cache.begin_frame();
         self.mask_builds_this_frame = 0;
+        self.culled_this_frame = 0;
 
         for prim in primitives {
             let (clip, target, origin) = self.active();
@@ -1069,6 +1104,11 @@ impl Renderer {
                 },
                 origin,
             };
+            // Paint-order slots this primitive records, so its paint bounds can
+            // be folded into the innermost offscreen layer's content union after
+            // the match (a nested layer's composite, recorded at its LayerEnd,
+            // rolls up into the outer pass the same way).
+            let record_start = self.scene.paint_order.len();
             match prim {
                 Primitive::Quad(quad) => {
                     // Diff the world-space instance (origin not yet subtracted)
@@ -1296,18 +1336,26 @@ impl Renderer {
                             clip: world_clip,
                             target,
                             origin,
+                            content_union: Rect::ZERO,
+                            paint_order_start: self.scene.paint_order.len(),
                         });
                     } else {
                         // Translucent: open an offscreen pass. Its geometry is
                         // translated so the layer's top-left maps to the
-                        // texture's (0, 0); the pass is sized to the layer rect
-                        // and composited back at LayerEnd.
+                        // texture's (0, 0). The tight content ROI is not known
+                        // until the subtree is walked, so the texture is claimed
+                        // and the pass sized/composited at LayerEnd; the origin
+                        // recorded here is provisional (the clip top-left) and
+                        // repatched to the ROI top-left then.
                         let pass_origin = [world_clip.x, world_clip.y];
-                        let idx = self.open_offscreen(backend, world_clip, layer.opacity);
+                        let paint_order_start = self.scene.paint_order.len();
+                        let idx = self.open_offscreen(world_clip, layer.opacity);
                         self.layer_stack.push(LayerEntry {
                             clip: world_clip,
                             target: PassTarget::Offscreen(idx),
                             origin: pass_origin,
+                            content_union: Rect::ZERO,
+                            paint_order_start,
                         });
                     }
                 }
@@ -1315,11 +1363,39 @@ impl Renderer {
                     if let Some(entry) = self.layer_stack.pop()
                         && let PassTarget::Offscreen(idx) = entry.target
                     {
+                        // Size the pass to its tight content ROI, claim the
+                        // texture, and repatch its children's origin to the ROI
+                        // top-left — all deferred to here because the content
+                        // union isn't known until the subtree is walked (§16.2).
+                        let surface = Rect {
+                            x: 0.0,
+                            y: 0.0,
+                            w: self.surface_size[0],
+                            h: self.surface_size[1],
+                        };
+                        self.finalize_offscreen(backend, idx, &entry, surface);
                         // Composite the finished offscreen texture back into the
-                        // parent target as a textured quad at the layer's
-                        // world-space rect, tinted by the layer opacity.
+                        // parent target as a textured quad at the ROI world rect,
+                        // tinted by the layer opacity.
                         self.close_offscreen(idx);
                     }
+                }
+            }
+
+            // Fold every paint bound this primitive recorded into the innermost
+            // offscreen layer's running content union (world space), the source
+            // for its tight ROI at `finalize_offscreen`. Only the innermost
+            // offscreen accumulates; the composite a nested LayerEnd records
+            // carries the inner pass's own paint bounds and rolls up here.
+            if let Some(top) = self.layer_stack.last()
+                && let PassTarget::Offscreen(_) = top.target
+            {
+                let mut union = top.content_union;
+                for entry in &self.scene.paint_order[record_start..] {
+                    union = union.union(entry.bounds.paint);
+                }
+                if let Some(top) = self.layer_stack.last_mut() {
+                    top.content_union = union;
                 }
             }
         }
@@ -1438,6 +1514,24 @@ impl Renderer {
                 Some(idx) => PassTarget::Offscreen(idx),
             };
             let origin = entry.context.origin;
+            // Cull an offscreen child whose world paint bounds fall fully outside
+            // its pass's tight ROI — only possible when the clip excluded it, so
+            // its scissor would draw nothing (§16.2). The composite has no
+            // offscreen target, so it is never culled here.
+            if let PassTarget::Offscreen(idx) = target {
+                let paint = entry.bounds.paint;
+                // A zero-area paint bound means "bounds not computed" (path /
+                // mesh / glyph carry a default), not "outside the ROI"; only
+                // cull a primitive that has real bounds and misses the ROI.
+                if paint.w > 0.0 && paint.h > 0.0 {
+                    let roi = self.offscreen_passes[idx].rect;
+                    let hit = paint.intersect(roi);
+                    if hit.w <= 0.0 || hit.h <= 0.0 {
+                        self.culled_this_frame += 1;
+                        continue;
+                    }
+                }
+            }
             match entry.store {
                 StoreRef::Quad(id) => {
                     let mut inst = self.scene.quads.get(id).expect("quad slot").instance;
@@ -1596,8 +1690,10 @@ impl Renderer {
                 StoreRef::Composite { mut instance, pass } => {
                     // A composite draws into the parent target (main / unclipped /
                     // zero-origin) sampling offscreen pass `pass`; its bind group
-                    // is the pass's live sampling bind group.
-                    let bind_group = self.offscreen_passes[pass].bind_group;
+                    // is the pass's live sampling bind group, filled at finalize.
+                    let bind_group = self.offscreen_passes[pass]
+                        .bind_group
+                        .expect("offscreen pass finalized before its composite lowers");
                     instance.rect_pos[0] -= origin[0];
                     instance.rect_pos[1] -= origin[1];
                     let start = self.image_scratch.len() as u32;
@@ -1766,8 +1862,9 @@ impl Renderer {
             // Masks rasterized into the page this frame (§14.4): cold builds,
             // re-rasters after a key change, and re-blits after a repack.
             clip_mask_builds: self.mask_builds_this_frame,
+            // Offscreen children the tight ROI excluded this frame (§16.2).
+            culled_primitives: self.culled_this_frame,
             // Counters no stage below D0 lights up yet; meaning fixed, value 0.
-            culled_primitives: 0,
             instance_rebuilds: 0,
             gpu_upload_bytes: self.gpu_upload_bytes,
         }
@@ -1927,29 +2024,69 @@ impl Renderer {
     }
 
     /// Open an offscreen pass for a translucent layer whose world-space clip is
-    /// `world_clip`, returning its index in `offscreen_passes`. Claims (or grows)
-    /// a pooled render-target texture sized to the layer rect, so a steady-state
-    /// frame with same-size layers reuses textures. The texture is filled in and
-    /// composited at [`Renderer::close_offscreen`].
-    fn open_offscreen<B: GpuBackend>(
-        &mut self,
-        backend: &mut B,
-        world_clip: Rect,
-        opacity: f32,
-    ) -> usize {
-        // Size the texture to cover the (possibly fractional) layer rect.
-        let width = (world_clip.w.ceil() as u32).max(1);
-        let height = (world_clip.h.ceil() as u32).max(1);
-        let pooled = self.claim_pooled_texture(backend, width, height);
+    /// `world_clip`, returning its index in `offscreen_passes`. No GPU work here:
+    /// the texture is claimed at [`Renderer::finalize_offscreen`] once the tight
+    /// content ROI is known, so the target is never larger than the visible
+    /// content (§16.2). `rect` holds the clip provisionally until then.
+    fn open_offscreen(&mut self, world_clip: Rect, opacity: f32) -> usize {
         let idx = self.offscreen_passes.len();
         self.offscreen_passes.push(OffscreenPass {
-            texture: pooled.texture,
-            bind_group: pooled.bind_group,
-            viewport: [width as f32, height as f32],
+            texture: None,
+            bind_group: None,
+            viewport: [0.0, 0.0],
             rect: world_clip,
             opacity,
         });
         idx
+    }
+
+    /// Size the offscreen pass at `idx` to its tight content ROI, claim a pooled
+    /// render-target texture of exactly that extent, and repatch every recorded
+    /// child of the pass to the ROI top-left origin (§16.2). Called from
+    /// `LayerEnd` before [`close_offscreen`](Self::close_offscreen).
+    ///
+    /// The ROI is `content_union ∩ clip ∩ surface`: never the full clip (a small
+    /// panel in a huge clip stays small) nor the full surface. An empty subtree
+    /// (or a clip that excludes all content) clamps to a 1×1 texture; the
+    /// composite then draws a degenerate quad.
+    ///
+    /// All children of one pass share a single origin (each subtracts the same
+    /// value at [`lower_from_scene`](Self::lower_from_scene)), so shrinking the
+    /// ROI top-left means rewriting that one origin — and the clip, recomputed
+    /// from the world clip against the new origin — on every recorded child.
+    fn finalize_offscreen<B: GpuBackend>(
+        &mut self,
+        backend: &mut B,
+        idx: usize,
+        entry: &LayerEntry,
+        surface: Rect,
+    ) {
+        let roi = entry.content_union.intersect(entry.clip).intersect(surface);
+        let width = (roi.w.ceil() as u32).max(1);
+        let height = (roi.h.ceil() as u32).max(1);
+        let pooled = self.claim_pooled_texture(backend, width, height);
+        let pass = &mut self.offscreen_passes[idx];
+        pass.texture = Some(pooled.texture);
+        pass.bind_group = Some(pooled.bind_group);
+        pass.viewport = [width as f32, height as f32];
+        pass.rect = roi;
+
+        // Repatch this pass's recorded children to the ROI top-left origin, and
+        // recompute each texture-local clip from the world clip (preserving an
+        // absent clip). Only entries this pass owns are touched.
+        let new_origin = [roi.x, roi.y];
+        let local_clip = Rect {
+            x: entry.clip.x - new_origin[0],
+            y: entry.clip.y - new_origin[1],
+            w: entry.clip.w,
+            h: entry.clip.h,
+        };
+        for pe in &mut self.scene.paint_order[entry.paint_order_start..] {
+            if pe.context.offscreen == Some(idx) {
+                pe.context.origin = new_origin;
+                pe.context.clip = pe.context.clip.map(|_| local_clip);
+            }
+        }
     }
 
     /// Claim a pooled render-target texture of `width`×`height`, reusing an
@@ -2105,7 +2242,10 @@ impl Renderer {
                 commands.push(self.command_for(seg, uniforms, vp));
             }
             passes.push(RenderPass {
-                target: RenderTarget::Texture(pass.texture),
+                target: RenderTarget::Texture(
+                    pass.texture
+                        .expect("offscreen pass finalized before encode"),
+                ),
                 load: LoadOp::Clear([0.0, 0.0, 0.0, 0.0]),
                 first_command,
                 command_count: commands.len() as u32 - first_command,
@@ -2877,25 +3017,28 @@ mod tests {
             ],
         );
 
-        // Exactly one offscreen pass, sized to the layer rect.
+        // Exactly one offscreen pass, sized to the tight content ROI — the 10×10
+        // quad, not the 20×20 layer clip (§16.2): the target never exceeds the
+        // visible content.
         assert_eq!(r.offscreen_passes.len(), 1);
         let pass = &r.offscreen_passes[0];
-        assert_eq!(pass.viewport, [20.0, 20.0]);
+        assert_eq!(pass.viewport, [10.0, 10.0]);
         assert_eq!(pass.opacity, 0.5);
 
         // The child quad routes to that offscreen pass, with its position shifted
-        // into texture-local space (layer origin subtracted).
+        // into texture-local space (ROI top-left, = the quad's own corner,
+        // subtracted → the origin).
         let child = r
             .segments
             .iter()
             .find(|s| s.target == PassTarget::Offscreen(0))
             .expect("child quad segment routes to the offscreen pass");
         assert_eq!(child.kind, SegmentKind::Quad);
-        assert_eq!(r.quad_scratch[child.start as usize].rect_pos, [2.0, 2.0]);
+        assert_eq!(r.quad_scratch[child.start as usize].rect_pos, [0.0, 0.0]);
 
         // The main pass carries exactly one composite: an Image segment sampling
         // the offscreen texture, tinted white with alpha == opacity, positioned at
-        // the layer's world rect.
+        // the ROI's world rect.
         let composites: Vec<&Segment> = r
             .segments
             .iter()
@@ -2904,9 +3047,80 @@ mod tests {
         assert_eq!(composites.len(), 1);
         assert!(matches!(composites[0].kind, SegmentKind::Image { .. }));
         let inst = &r.image_scratch[composites[0].start as usize];
-        assert_eq!(inst.rect_pos, [8.0, 8.0]);
-        assert_eq!(inst.rect_size, [20.0, 20.0]);
+        assert_eq!(inst.rect_pos, [10.0, 10.0]);
+        assert_eq!(inst.rect_size, [10.0, 10.0]);
         assert_eq!(inst.color, [1.0, 1.0, 1.0, 0.5]);
+    }
+
+    /// A small panel inside a large-but-onscreen clip sizes its offscreen target
+    /// to the panel's content, not the clip and not the surface (§16.2): the
+    /// forbidden "small panel → full-screen target" shape never occurs. A second
+    /// child placed outside a tight clip is culled at lowering.
+    #[test]
+    fn tight_roi_sizes_target_to_content_not_clip() {
+        let mut gpu = HeadlessRaster::new();
+        let surface = gpu.create_surface(RawWindowHandle::Headless, 64, 64);
+        let format = gpu.surface_format(surface);
+        let mut r = Renderer::new(&mut gpu, format);
+        r.set_surface_size([64.0, 64.0]);
+        // A translucent layer with a 4000×4000 clip, but only a 10×10 quad at
+        // (10, 10). ROI = content(10,10,10,10) ∩ clip ∩ surface(64×64) = the quad.
+        r.upload(
+            &mut gpu,
+            &[
+                layer_opacity(0.0, 0.0, 4000.0, 4000.0, 0.5),
+                quad(10.0, 10.0),
+                Primitive::LayerEnd,
+            ],
+        );
+
+        // Sized to the panel, never the 4000×4000 clip nor the 64×64 surface.
+        assert_eq!(r.offscreen_passes.len(), 1);
+        assert_eq!(r.offscreen_passes[0].viewport, [10.0, 10.0]);
+        // The transient-target budget reflects the tight size (§61 resource gate).
+        assert_eq!(r.frame_stats().transient_target_bytes, 10 * 10 * 4);
+
+        // Origin repatched to the ROI top-left (the quad's own corner), so the
+        // child lands at the texture origin.
+        let child = r
+            .segments
+            .iter()
+            .find(|s| s.target == PassTarget::Offscreen(0))
+            .expect("child routes to the offscreen pass");
+        assert_eq!(r.quad_scratch[child.start as usize].rect_pos, [0.0, 0.0]);
+
+        // Composite lands at the ROI's world rect.
+        let composite = r
+            .segments
+            .iter()
+            .find(|s| s.target == PassTarget::Main)
+            .expect("composite in main pass");
+        let inst = &r.image_scratch[composite.start as usize];
+        assert_eq!(inst.rect_pos, [10.0, 10.0]);
+        assert_eq!(inst.rect_size, [10.0, 10.0]);
+
+        // Culling: a tight clip around one quad, with a second quad fully outside
+        // it. The offscreen child that misses the ROI is dropped at lowering and
+        // counted, so the pass sizes to the surviving quad alone.
+        let mut r2 = Renderer::new(&mut gpu, format);
+        r2.set_surface_size([64.0, 64.0]);
+        r2.upload(
+            &mut gpu,
+            &[
+                layer_opacity(10.0, 10.0, 10.0, 10.0, 0.5), // clip == first quad
+                quad(10.0, 10.0),                           // inside the clip
+                quad(40.0, 40.0),                           // outside → culled
+                Primitive::LayerEnd,
+            ],
+        );
+        assert_eq!(r2.frame_stats().culled_primitives, 1);
+        assert_eq!(r2.offscreen_passes[0].viewport, [10.0, 10.0]);
+        let offscreen_children = r2
+            .segments
+            .iter()
+            .filter(|s| s.target == PassTarget::Offscreen(0))
+            .count();
+        assert_eq!(offscreen_children, 1, "the outside quad is not drawn");
     }
 
     /// End-to-end headless composite: an opaque quad inside a `opacity == 0.5`
