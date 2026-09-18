@@ -1615,14 +1615,29 @@ instancing/coverage integration + mask/blur caching in `viso-render`; blur targe
         sentinel (release-only; on-device shaded-pixel time flagged, not asserted — §7.3).
 
 ### E0 Done
-- [ ] UI shape analytic shadow.
-- [ ] inner shadow.
-- [ ] path shadow fallback.
+- [x] UI shape analytic shadow — `AnalyticShadow` is the 7th expanded-quad/SDF family
+      (`primitive.rs`): one pipeline, one `ShadowInstance`, closed-form erf coverage, no blur
+      target; `shape` discriminator subsumes RoundedBox/Ellipse/Capsule. Frozen MSL + ABI pins.
+- [x] inner shadow — `AnalyticShadow.inner` flips coverage to `soft*inside` in both the MSL
+      fragment and the headless rasterizer (bit-identical), with the sharp-σ AA-ramp fallback;
+      `inner`@68 pinned in the frozen instance ABI.
+- [x] path shadow fallback — general paths reuse the mask→glyph-composite lane
+      (`mask_path_shadow`): tight coverage rasterized once, keyed on {geometry,sigma,spread},
+      composited offset+tinted; inner general-path shadow defers to the E1 filter lane.
 
 ### Freeze
-- [ ] FREEZE E0: the analytic-shadow fast lane + parameters, the (benchmark-gated)
+- [x] FREEZE E0: the analytic-shadow fast lane + parameters, the (benchmark-gated)
       DecoratedShape fusion contract, and the path-shadow blur-mask cache key + inner-shadow
       routing. Feeds the Effect Planner's "can use analytic shadow?" check.
+  - [x] Parameters: `render/tests/shadow_contract_frozen.rs` pins the public `AnalyticShadow`
+        / `PathShadow` authoring surface and the `to_instance` lowering (shape→u32 0/1/2,
+        radius normalization, offset/sigma/spread passthrough, inner→0/1); `instance_abi_frozen.rs`
+        pins the `ShadowInstance` bytes; the shader MSL oracle pins the coverage codegen.
+  - [x] Fusion contract: `assert_decorated_fusion_gate` (steady-state bench) pins the
+        DecoratedShape fill+shadow collapse to one mergeable batch.
+  - [x] Cache key + routing: `assert_path_shadow_reuse_is_local` pins the {geometry,sigma,spread}
+        key that excludes color/offset, and the inner general-path shadow deferring to E1 —
+        the "can use analytic shadow?" inputs the Effect Planner reads.
 
 ---
 
