@@ -70,6 +70,31 @@ impl Rect {
         }
     }
 
+    /// The bounding box of two rects (both top-left-origin, physical pixels).
+    ///
+    /// An empty operand (`w <= 0 || h <= 0`) is the identity, so [`Rect::ZERO`]
+    /// seeds a running union: `ZERO.union(a) == a`. Used to accumulate an
+    /// offscreen pass's content bounds as its subtree is walked, before sizing
+    /// the pass's tight render-target ROI (§16.2).
+    pub fn union(self, other: Rect) -> Rect {
+        if self.w <= 0.0 || self.h <= 0.0 {
+            return other;
+        }
+        if other.w <= 0.0 || other.h <= 0.0 {
+            return self;
+        }
+        let x0 = self.x.min(other.x);
+        let y0 = self.y.min(other.y);
+        let x1 = (self.x + self.w).max(other.x + other.w);
+        let y1 = (self.y + self.h).max(other.y + other.h);
+        Rect {
+            x: x0,
+            y: y0,
+            w: x1 - x0,
+            h: y1 - y0,
+        }
+    }
+
     /// Whether the point `(px, py)` (physical px, same space as the rect) lies
     /// inside this rect. Near edges are inclusive, far edges exclusive
     /// (`[x, x+w)` / `[y, y+h)`), so two rects tiling a shared boundary do not
