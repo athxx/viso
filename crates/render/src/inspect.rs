@@ -75,6 +75,9 @@ pub enum BatchPipeline {
     Mesh,
     /// A single gradient fill (the gradient pipeline, binding its 1D LUT atlas).
     Gradient,
+    /// A run of adjacent analytic soft drop shadows (the analytic-shadow
+    /// pipeline; binds no texture).
+    AnalyticShadow,
 }
 
 impl BatchPipeline {
@@ -91,6 +94,7 @@ impl BatchPipeline {
             BatchPipeline::GlyphRun => "glyph",
             BatchPipeline::Mesh => "mesh",
             BatchPipeline::Gradient => "gradient",
+            BatchPipeline::AnalyticShadow => "analytic-shadow",
         }
     }
 
@@ -108,6 +112,7 @@ impl BatchPipeline {
             BatchPipeline::GlyphRun => BatchFamily::GlyphRun,
             BatchPipeline::Mesh => BatchFamily::Mesh,
             BatchPipeline::Gradient => BatchFamily::Gradient,
+            BatchPipeline::AnalyticShadow => BatchFamily::AnalyticShadow,
         }
     }
 }
@@ -365,6 +370,11 @@ impl Renderer {
                 self.gradient_pipeline_id(),
                 Some(bind_group),
             ),
+            SegmentKind::AnalyticShadow => (
+                BatchPipeline::AnalyticShadow,
+                self.analytic_shadow_pipeline_id(),
+                None,
+            ),
             SegmentKind::Mesh => (BatchPipeline::Mesh, self.mesh_pipeline_id(), None),
         };
         let offscreen = matches!(seg.target, PassTarget::Offscreen(_));
@@ -412,6 +422,7 @@ impl Renderer {
         let mut analytic_ellipse_cursor: u32 = 0;
         let mut analytic_capsule_cursor: u32 = 0;
         let mut analytic_line_cursor: u32 = 0;
+        let mut analytic_shadow_cursor: u32 = 0;
         let mut image_cursor: u32 = 0;
         let mut gradient_cursor: u32 = 0;
         let mut glyph_cursor: u32 = 0;
@@ -472,6 +483,16 @@ impl Renderer {
                     (
                         BatchPipeline::AnalyticLine,
                         SegmentKind::AnalyticLine,
+                        start,
+                        1,
+                    )
+                }
+                StoreRef::AnalyticShadow(_) => {
+                    let start = analytic_shadow_cursor;
+                    analytic_shadow_cursor += 1;
+                    (
+                        BatchPipeline::AnalyticShadow,
+                        SegmentKind::AnalyticShadow,
                         start,
                         1,
                     )
@@ -650,6 +671,7 @@ impl Renderer {
                 StoreRef::AnalyticEllipse(_) => (BatchFamily::AnalyticEllipse, true),
                 StoreRef::AnalyticCapsule(_) => (BatchFamily::AnalyticCapsule, true),
                 StoreRef::AnalyticLine(_) => (BatchFamily::AnalyticLine, true),
+                StoreRef::AnalyticShadow(_) => (BatchFamily::AnalyticShadow, true),
                 StoreRef::Image(_) | StoreRef::Composite { .. } => (BatchFamily::Image, true),
                 StoreRef::Gradient(_) => (BatchFamily::Gradient, true),
                 StoreRef::GlyphRun(run) => {

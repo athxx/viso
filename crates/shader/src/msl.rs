@@ -36,7 +36,7 @@ use viso_gpu::{InstanceSchema, SchemaAttr};
 use crate::ir::codegen_msl::{emit_msl, emit_schema_attrs, schema_from_attrs};
 use crate::ir::module::{
     ShaderIr, analytic_capsule_ir, analytic_ellipse_ir, analytic_line_ir, analytic_rrect_ir,
-    glyphrun_ir, gradient_ir, image_ir, mesh_ir, quad_ir,
+    analytic_shadow_ir, glyphrun_ir, gradient_ir, image_ir, mesh_ir, quad_ir,
 };
 
 /// The built-in primitive shaders (architecture section 15.3). One entry per
@@ -72,6 +72,10 @@ pub enum PrimitiveKind {
     /// A gradient-filled axis-aligned rectangle (linear/radial/sweep), sampling a
     /// 1D LUT atlas row or lerping an inline 2-stop pair.
     Gradient,
+    /// A soft drop shadow for an analytic shape (rounded box / ellipse / capsule),
+    /// drawn as one expanded quad whose coverage is a closed-form Gaussian ramp
+    /// over the shape's signed distance — no offscreen blur pass.
+    AnalyticShadow,
     /// An offscreen-composited layer.
     Layer,
 }
@@ -87,6 +91,7 @@ pub fn shader_source(kind: PrimitiveKind) -> Option<&'static str> {
         PrimitiveKind::AnalyticCapsule => Some(ANALYTIC_CAPSULE_MSL()),
         PrimitiveKind::AnalyticLine => Some(ANALYTIC_LINE_MSL()),
         PrimitiveKind::Gradient => Some(GRADIENT_MSL()),
+        PrimitiveKind::AnalyticShadow => Some(ANALYTIC_SHADOW_MSL()),
         // Path and Mesh share the general per-vertex mesh pipeline.
         PrimitiveKind::Path | PrimitiveKind::Mesh => Some(MESH_MSL()),
         _ => None,
@@ -106,6 +111,7 @@ pub fn instance_schema(kind: PrimitiveKind) -> Option<InstanceSchema> {
         PrimitiveKind::AnalyticCapsule => Some(analytic_capsule_schema()),
         PrimitiveKind::AnalyticLine => Some(analytic_line_schema()),
         PrimitiveKind::Gradient => Some(gradient_schema()),
+        PrimitiveKind::AnalyticShadow => Some(analytic_shadow_schema()),
         // Path and Mesh validate their per-vertex layout against `mesh_schema`.
         PrimitiveKind::Path | PrimitiveKind::Mesh => Some(mesh_schema()),
         _ => None,
@@ -219,6 +225,18 @@ pub fn analytic_line_schema() -> InstanceSchema {
 pub fn gradient_schema() -> InstanceSchema {
     static CELL: OnceLock<Vec<SchemaAttr>> = OnceLock::new();
     cached_schema(&CELL, &gradient_ir())
+}
+
+/// The instance schema the AnalyticShadow shader declares — projected from
+/// [`analytic_shadow_ir`].
+///
+/// Carries the source rect, a `packed_float4` per-corner `radius`, the shadow
+/// `color`, the `offset`, blur `sigma`, `spread`, and a scalar `shape` selector
+/// (0 = rounded box, 1 = ellipse, 2 = capsule) — a distinct contract with its own
+/// `#[derive(GpuPod)]` layout.
+pub fn analytic_shadow_schema() -> InstanceSchema {
+    static CELL: OnceLock<Vec<SchemaAttr>> = OnceLock::new();
+    cached_schema(&CELL, &analytic_shadow_ir())
 }
 
 /// Cache a primitive's IR-derived MSL to `'static` and return it. Materialized
@@ -393,6 +411,26 @@ pub fn ANALYTIC_LINE_MSL() -> &'static str {
 pub fn GRADIENT_MSL() -> &'static str {
     static CELL: OnceLock<String> = OnceLock::new();
     cached_msl(&CELL, || emit_msl(&gradient_ir()))
+}
+
+/// Inline MSL for the AnalyticShadow built-in (Metal backend), derived from
+/// [`analytic_shadow_ir`].
+///
+/// Like [`QUAD_MSL`], the headless backend ignores this; only the real Metal
+/// backend compiles it. See `viso-msl-reserved-half`.
+///
+/// Contract (guaranteed by the shared IR): per-instance data at buffer index 1;
+/// viewport uniform at index 0; no texture. Six `vertex_id`s form two triangles
+/// of a quad expanded by `3*sigma + spread + |offset|` so the whole soft footprint
+/// is covered. The fragment shifts the sample by `-offset`, insets the half-extents
+/// by `spread`, evaluates the `shape`-selected SDF, and maps the distance through a
+/// Gaussian integral (`0.5*(1 - erf(d/(sqrt2*sigma)))`), falling back to a
+/// device-pixel AA ramp when `sigma` is near zero. `color` is **straight** and the
+/// fragment outputs premultiplied.
+#[allow(non_snake_case)]
+pub fn ANALYTIC_SHADOW_MSL() -> &'static str {
+    static CELL: OnceLock<String> = OnceLock::new();
+    cached_msl(&CELL, || emit_msl(&analytic_shadow_ir()))
 }
 
 #[cfg(test)]

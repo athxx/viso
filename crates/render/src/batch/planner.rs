@@ -67,6 +67,10 @@ pub enum BatchFamily {
     /// A single gradient fill over an axis-aligned rect, drawn instanced from the
     /// shared gradient buffer, binding its baked 1D LUT atlas's `bind_group`.
     Gradient,
+    /// Analytic soft drop shadows (rounded box / ellipse / capsule), drawn
+    /// instanced from their own shared buffer; a closed-form Gaussian coverage
+    /// ramp, binding no texture.
+    AnalyticShadow,
 }
 
 impl BatchFamily {
@@ -83,6 +87,7 @@ impl BatchFamily {
             BatchFamily::AnalyticCapsule => 6,
             BatchFamily::AnalyticLine => 7,
             BatchFamily::Gradient => 8,
+            BatchFamily::AnalyticShadow => 9,
         }
     }
 
@@ -98,6 +103,7 @@ impl BatchFamily {
             6 => Some(BatchFamily::AnalyticCapsule),
             7 => Some(BatchFamily::AnalyticLine),
             8 => Some(BatchFamily::Gradient),
+            9 => Some(BatchFamily::AnalyticShadow),
             _ => None,
         }
     }
@@ -114,6 +120,7 @@ impl BatchFamily {
                 | BatchFamily::AnalyticEllipse
                 | BatchFamily::AnalyticCapsule
                 | BatchFamily::AnalyticLine
+                | BatchFamily::AnalyticShadow
                 | BatchFamily::Mesh
         )
     }
@@ -282,6 +289,7 @@ mod tests {
             BatchFamily::AnalyticCapsule,
             BatchFamily::AnalyticLine,
             BatchFamily::Gradient,
+            BatchFamily::AnalyticShadow,
         ] {
             let key = BatchKey::pack(family, BatchTarget::Main, None);
             assert_eq!(key.family(), family);

@@ -22,7 +22,8 @@ use viso_math::{ExtendMode, InterpolationSpace};
 // paired at the primitive definition.
 pub use viso_shader::{
     analytic_capsule_schema, analytic_ellipse_schema, analytic_line_schema, analytic_rrect_schema,
-    glyphrun_schema, gradient_schema, image_schema, mesh_schema, quad_schema,
+    analytic_shadow_schema, glyphrun_schema, gradient_schema, image_schema, mesh_schema,
+    quad_schema,
 };
 
 /// An axis-aligned rectangle in physical pixels, top-left origin.
@@ -331,6 +332,86 @@ impl AnalyticCapsule {
                 self.border.color.b,
                 self.border.color.a,
             ],
+        }
+    }
+}
+
+/// The silhouette an [`AnalyticShadow`] casts, selecting the SDF the fast lane
+/// evaluates its Gaussian coverage against.
+///
+/// Every requested §15 shape folds onto one of three distance functions, matching
+/// the shader/headless `shape` discriminator: a rounded box subsumes `Rect`
+/// (radius 0) and `RRect` (per-corner radii); an ellipse subsumes `Circle` and
+/// `Ellipse`; a capsule is a rounded box whose radius is the smaller half-extent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ShadowShape {
+    /// A (optionally per-corner-rounded) box — covers `Rect` and `RRect`.
+    RoundedBox,
+    /// An axis-aligned ellipse — covers `Circle` and `Ellipse`.
+    Ellipse,
+    /// A capsule/stadium — corner radius is the smaller half-extent.
+    Capsule,
+}
+
+impl ShadowShape {
+    /// The `u32` this silhouette maps to (matches the analytic shader/headless
+    /// `shadow_sdf` dispatch: 0=rounded box, 1=ellipse, 2=capsule).
+    const fn as_u32(self) -> u32 {
+        match self {
+            ShadowShape::RoundedBox => 0,
+            ShadowShape::Ellipse => 1,
+            ShadowShape::Capsule => 2,
+        }
+    }
+}
+
+/// A soft drop shadow for an analytic shape, drawn by the §15 fast lane: one extra
+/// instanced quad under the shape whose coverage is a closed-form Gaussian ramp
+/// over the shape's signed distance — no blur target, no offscreen composite.
+///
+/// The shadow silhouette is `rect` grown by `spread` and shaped by `shape`
+/// (rounded box / ellipse / capsule), blurred with standard deviation `sigma`
+/// (the blur-radius semantic of §15.2) and displaced by `offset`. `radius` is the
+/// per-corner rounding used only when `shape` is [`ShadowShape::RoundedBox`].
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct AnalyticShadow {
+    /// The source shape's rectangle, in physical pixels (before spread/offset).
+    pub rect: Rect,
+    /// Shadow color (straight linear RGBA; `a` scales the whole ramp).
+    pub color: Rgba,
+    /// Per-corner radii in pixels, used only for [`ShadowShape::RoundedBox`].
+    pub radius: Corners,
+    /// Shadow displacement in physical pixels.
+    pub offset: [f32; 2],
+    /// Blur standard deviation in pixels (§15.2 blur-radius semantic).
+    pub sigma: f32,
+    /// Silhouette grow (`+`) / shrink (`-`) in pixels applied before the blur.
+    pub spread: f32,
+    /// Which silhouette the shadow casts.
+    pub shape: ShadowShape,
+}
+
+impl AnalyticShadow {
+    /// Lower this shadow to its GPU instance. Per-corner radii are normalized to
+    /// the rect (§11.2) exactly as [`AnalyticRRect::to_instance`], so oversized
+    /// authored radii scale down proportionally; `offset`/`sigma`/`spread`/`shape`
+    /// pass through unchanged.
+    pub fn to_instance(&self) -> ShadowInstance {
+        let radius = self.radius.normalized(self.rect.w, self.rect.h);
+        ShadowInstance {
+            rect_pos: [self.rect.x, self.rect.y],
+            rect_size: [self.rect.w, self.rect.h],
+            color: [self.color.r, self.color.g, self.color.b, self.color.a],
+            radius: [
+                radius.left_top,
+                radius.right_top,
+                radius.right_bottom,
+                radius.left_bottom,
+            ],
+            offset: self.offset,
+            sigma: self.sigma,
+            spread: self.spread,
+            shape: self.shape.as_u32(),
         }
     }
 }
@@ -1482,6 +1563,8 @@ pub enum Primitive {
     Image(ImageDraw),
     /// A linear/radial/sweep gradient fill over an axis-aligned rect.
     Gradient(Gradient),
+    /// A soft drop shadow for an analytic shape, drawn by the §15 fast lane.
+    AnalyticShadow(AnalyticShadow),
     /// A filled/stroked vector path.
     Path(Path),
     /// A colored triangle mesh.
@@ -1624,6 +1707,39 @@ pub struct AnalyticLineInstance {
     pub border_width: f32,
     /// Straight linear RGBA border color.
     pub border_color: [f32; 4],
+}
+
+/// GPU instance for the AnalyticShadow built-in shader.
+///
+/// Field names/formats match [`analytic_shadow_schema`] and the headless
+/// `fill_analytic_shadow` reader. `rect_pos`/`rect_size` are the source shape's
+/// rect; `radius` is the per-corner rounding used only when `shape == 0`
+/// (rounded box). `offset` displaces the shadow, `sigma` is the blur standard
+/// deviation, `spread` grows/shrinks the silhouette, and `shape` selects the SDF
+/// (0=rounded box, 1=ellipse, 2=capsule). `color` is **straight**
+/// (non-premultiplied) linear RGBA — the backend premultiplies. `#[repr(C)]` with
+/// only 4-byte-aligned scalars/vectors, so the derive's `offset_of!`-based layout
+/// has no padding surprises.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, GpuPod)]
+pub struct ShadowInstance {
+    /// Source shape top-left corner in physical pixels.
+    pub rect_pos: [f32; 2],
+    /// Source shape width/height in physical pixels.
+    pub rect_size: [f32; 2],
+    /// Straight linear RGBA shadow color.
+    pub color: [f32; 4],
+    /// Per-corner radii in pixels (`left_top`, `right_top`, `right_bottom`,
+    /// `left_bottom`); used only when `shape == 0`.
+    pub radius: [f32; 4],
+    /// Shadow displacement in physical pixels.
+    pub offset: [f32; 2],
+    /// Blur standard deviation in pixels.
+    pub sigma: f32,
+    /// Silhouette grow/shrink in pixels.
+    pub spread: f32,
+    /// Silhouette code: 0=rounded box, 1=ellipse, 2=capsule.
+    pub shape: u32,
 }
 
 /// GPU instance for the Gradient built-in shader.
@@ -2927,6 +3043,54 @@ mod tests {
         assert_eq!(inst.color, [0.2, 0.4, 0.6, 0.8]);
         assert_eq!(inst.border_width, 3.0);
         assert_eq!(inst.border_color, [1.0, 1.0, 1.0, 1.0]);
+    }
+
+    #[test]
+    fn analytic_shadow_instance_layout_matches_schema() {
+        assert_eq!(
+            ShadowInstance::LAYOUT.validate_against(&analytic_shadow_schema()),
+            Ok(())
+        );
+    }
+
+    #[test]
+    fn analytic_shadow_lowers_to_instance() {
+        let s = AnalyticShadow {
+            rect: Rect {
+                x: 10.0,
+                y: 20.0,
+                w: 30.0,
+                h: 40.0,
+            },
+            color: Rgba {
+                r: 0.1,
+                g: 0.2,
+                b: 0.3,
+                a: 0.5,
+            },
+            radius: Corners::uniform(6.0),
+            offset: [2.0, -3.0],
+            sigma: 4.0,
+            spread: 1.5,
+            shape: ShadowShape::Capsule,
+        };
+        let inst = s.to_instance();
+        assert_eq!(inst.rect_pos, [10.0, 20.0]);
+        assert_eq!(inst.rect_size, [30.0, 40.0]);
+        assert_eq!(inst.color, [0.1, 0.2, 0.3, 0.5]);
+        // 6px radii fit within the 30x40 rect, so normalization is a no-op.
+        assert_eq!(inst.radius, [6.0, 6.0, 6.0, 6.0]);
+        assert_eq!(inst.offset, [2.0, -3.0]);
+        assert_eq!(inst.sigma, 4.0);
+        assert_eq!(inst.spread, 1.5);
+        assert_eq!(inst.shape, 2);
+    }
+
+    #[test]
+    fn shadow_shape_maps_to_stable_codes() {
+        assert_eq!(ShadowShape::RoundedBox.as_u32(), 0);
+        assert_eq!(ShadowShape::Ellipse.as_u32(), 1);
+        assert_eq!(ShadowShape::Capsule.as_u32(), 2);
     }
 
     #[test]

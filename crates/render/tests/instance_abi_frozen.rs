@@ -17,7 +17,7 @@ use std::mem::{align_of, offset_of, size_of};
 
 use viso_render::{
     AnalyticCapsuleInstance, AnalyticEllipseInstance, AnalyticLineInstance, AnalyticRRectInstance,
-    GlyphInstance, GradientInstance, ImageInstance, MeshVertex, QuadInstance,
+    GlyphInstance, GradientInstance, ImageInstance, MeshVertex, QuadInstance, ShadowInstance,
 };
 
 #[test]
@@ -111,6 +111,20 @@ fn analytic_line_instance_layout_is_frozen() {
     assert_eq!(offset_of!(AnalyticLineInstance, miter_limit), 44);
     assert_eq!(offset_of!(AnalyticLineInstance, border_width), 48);
     assert_eq!(offset_of!(AnalyticLineInstance, border_color), 52);
+}
+
+#[test]
+fn shadow_instance_layout_is_frozen() {
+    assert_eq!(size_of::<ShadowInstance>(), 68, "ShadowInstance stride");
+    assert_eq!(align_of::<ShadowInstance>(), 4, "ShadowInstance align");
+    assert_eq!(offset_of!(ShadowInstance, rect_pos), 0);
+    assert_eq!(offset_of!(ShadowInstance, rect_size), 8);
+    assert_eq!(offset_of!(ShadowInstance, color), 16);
+    assert_eq!(offset_of!(ShadowInstance, radius), 32);
+    assert_eq!(offset_of!(ShadowInstance, offset), 48);
+    assert_eq!(offset_of!(ShadowInstance, sigma), 56);
+    assert_eq!(offset_of!(ShadowInstance, spread), 60);
+    assert_eq!(offset_of!(ShadowInstance, shape), 64);
 }
 
 #[test]

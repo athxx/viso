@@ -963,3 +963,167 @@ fragment float4 fragment_main(VOut in [[stage_in]],
     return grad * cov;
 }
 "##;
+
+/// The AnalyticShadow MSL, frozen as a codegen oracle. Same provenance as
+/// [`ANALYTIC_CAPSULE_MSL_ORIGINAL`]: a new family with no historical hand-
+/// written Metal, so the oracle is the codegen output itself, locked by the
+/// byte-equivalence self-check in `codegen_msl`.
+pub const ANALYTIC_SHADOW_MSL_ORIGINAL: &str = r##"
+#include <metal_stdlib>
+using namespace metal;
+
+struct InstanceIn {
+    packed_float2 rect_pos;
+    packed_float2 rect_size;
+    packed_float4 color;
+    packed_float4 radius;
+    packed_float2 offset;
+    float sigma;
+    float spread;
+    uint shape;
+};
+
+struct Uniforms {
+    packed_float2 viewport;
+};
+
+struct VOut {
+    float4 position [[position]];
+    float2 local;        // pixel-space position relative to the padded rect
+    float2 half_size;    // half extents of the source rect (pixels)
+    float2 center;       // source rect center (pixels)
+    float4 radius;       // per-corner radius: lt, rt, rb, lb
+    float2 offset;       // shadow offset (pixels)
+    float sigma;         // blur standard deviation (pixels)
+    float spread;        // silhouette grow/shrink (pixels)
+    uint shape [[flat]];          // 0=rounded box 1=ellipse 2=capsule
+    float4 color;
+};
+
+vertex VOut vertex_main(uint vid [[vertex_id]],
+                        uint iid [[instance_id]],
+                        const device InstanceIn* instances [[buffer(1)]],
+                        constant Uniforms& u [[buffer(0)]]) {
+    InstanceIn inst = instances[iid];
+
+    // Two triangles over the padded quad. The pad must enclose the whole soft
+    // footprint: the blur reaches ~3 sigma past the edge, spread grows the
+    // silhouette, and the offset slides it — so pad = 3*sigma + spread + |offset|
+    // on each axis (plus 1px for the AA fallback of a spread-only shadow).
+    float2 corner;
+    switch (vid) {
+        case 0: corner = float2(0.0, 0.0); break;
+        case 1: corner = float2(1.0, 0.0); break;
+        case 2: corner = float2(0.0, 1.0); break;
+        case 3: corner = float2(1.0, 0.0); break;
+        case 4: corner = float2(1.0, 1.0); break;
+        default: corner = float2(0.0, 1.0); break;
+    }
+
+    float2 pos = float2(inst.rect_pos);
+    float2 size = float2(inst.rect_size);
+    float reach = 3.0 * inst.sigma + max(inst.spread, 0.0) + 1.0;
+    float2 pad = float2(reach, reach) + abs(float2(inst.offset));
+    float2 pixel = pos - pad + corner * (size + 2.0 * pad);
+
+    // Pixel-space (top-left origin) → NDC. Y is flipped for Metal.
+    float2 vp = float2(u.viewport);
+    float2 ndc = float2(pixel.x / vp.x * 2.0 - 1.0,
+                        1.0 - pixel.y / vp.y * 2.0);
+
+    VOut out;
+    out.position = float4(ndc, 0.0, 1.0);
+    out.local = pixel;
+    out.half_size = size * 0.5;
+    out.center = pos + size * 0.5;
+    out.radius = float4(inst.radius);
+    out.offset = float2(inst.offset);
+    out.sigma = inst.sigma;
+    out.spread = inst.spread;
+    out.shape = inst.shape;
+    out.color = float4(inst.color);
+    return out;
+}
+
+// Signed distance to a rounded box, negative inside. `radii` is per corner
+// (left-top, right-top, right-bottom, left-bottom); the sample's quadrant picks
+// the active radius, clamped so it never exceeds the smaller full extent.
+// `half_ext` is the box half-extents. (Never name it `half` — that is the
+// reserved MSL 16-bit float type.)
+static inline float shadow_rrect_sdf(float2 p, float2 half_ext, float4 radii) {
+    float r = p.x < 0.0 ? (p.y < 0.0 ? radii.x : radii.w)
+                        : (p.y < 0.0 ? radii.y : radii.z);
+    float k = min(2.0 * r, min(half_ext.x, half_ext.y));
+    float2 q = abs(p) - (half_ext - k);
+    float2 mx = max(q, float2(0.0));
+    return length(mx) + min(max(q.x, q.y), 0.0) - k;
+}
+
+// Signed distance to an axis-aligned ellipse inscribed in the box, negative
+// inside: normalize the sample by the per-axis radii, offset by the unit
+// circle, then scale back by the smaller radius. Matches the analytic-ellipse
+// family's `ellipse_sdf`.
+static inline float shadow_ellipse_sdf(float2 p, float2 half_ext) {
+    float2 r = max(half_ext, float2(1e-4));
+    float2 n = p / r;
+    return (length(n) - 1.0) * min(r.x, r.y);
+}
+
+// Signed distance to a horizontal or vertical capsule (stadium): a rounded box
+// whose corner radius equals the smaller half-extent, so the short axis is a
+// pair of semicircle caps.
+static inline float shadow_capsule_sdf(float2 p, float2 half_ext) {
+    float r = min(half_ext.x, half_ext.y);
+    float2 q = abs(p) - (half_ext - float2(r));
+    float2 mx = max(q, float2(0.0));
+    return length(mx) + min(max(q.x, q.y), 0.0) - r;
+}
+
+// Selected shadow silhouette SDF at a rect-centered sample. 0=rounded box,
+// 1=ellipse, 2=capsule.
+static inline float shadow_sdf(uint shape, float2 p, float2 half_ext, float4 radii) {
+    if (shape == 1u) { return shadow_ellipse_sdf(p, half_ext); }
+    if (shape == 2u) { return shadow_capsule_sdf(p, half_ext); }
+    return shadow_rrect_sdf(p, half_ext, radii);
+}
+
+// Abramowitz & Stegun 7.1.26 error-function approximation (|error| < 1.5e-7).
+static inline float erf_approx(float x) {
+    float s = sign(x);
+    float ax = abs(x);
+    float t = 1.0 / (1.0 + 0.3275911 * ax);
+    float y = 1.0 - (((((1.061405429 * t - 1.453152027) * t) + 1.421413741) * t
+                    - 0.284496736) * t + 0.254829592) * t * exp(-ax * ax);
+    return s * y;
+}
+
+// Device-pixel coverage factor: SDF units per screen pixel, inverted, so the
+// sharp fallback ramp spans ~1 physical pixel at any scale.
+static inline float shadow_aa(float2 p) {
+    return 1.0 / length(float2(length(dfdx(p)), length(dfdy(p))));
+}
+
+fragment float4 fragment_main(VOut in [[stage_in]]) {
+    // Sample in rect-centered space, shifted opposite the shadow offset so the
+    // silhouette lands at +offset on screen. Spread grows (or shrinks) the
+    // silhouette by insetting the half-extents.
+    float2 p = in.local - in.center - in.offset;
+    float2 half_ext = max(in.half_size + float2(in.spread), float2(0.0));
+    float d = shadow_sdf(in.shape, p, half_ext, in.radius);
+
+    // Soft coverage: model the blurred edge as a 1-D Gaussian applied to the signed
+    // distance, so coverage = 1 - Phi(d/sigma) = 0.5*(1 - erf(d/(sqrt2*sigma))).
+    // A near-zero sigma has no blur, so fall back to the device-pixel AA ramp.
+    float cov;
+    if (in.sigma > 0.01) {
+        cov = 0.5 * (1.0 - erf_approx(d / (1.4142135 * in.sigma)));
+    } else {
+        cov = clamp(-d * shadow_aa(in.local), 0.0, 1.0);
+    }
+    cov = clamp(cov, 0.0, 1.0);
+
+    // Premultiplied source-over.
+    float fa = in.color.a * cov;
+    return float4(in.color.rgb * fa, fa);
+}
+"##;

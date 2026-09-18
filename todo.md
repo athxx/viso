@@ -1511,11 +1511,35 @@ instancing/coverage integration + mask/blur caching in `viso-render`; blur targe
 `viso-gpu`. Depends on C0 frozen.
 
 ### E0.1 — Analytic shadow fast lane
-- [ ] Fast analytic shapes `Rect / RRect / Circle / Ellipse / Capsule` via expanded
+- [x] Fast analytic shapes `Rect / RRect / Circle / Ellipse / Capsule` via expanded
       instance quad + analytic distance + Gaussian-like coverage approximation (§15.1) —
       explicitly not the default mask/blur/composite path. Simple shadow does not create a
       blur layer.
-- [ ] Parameters `offset`, `sigma`/blur-radius semantic, `spread`, `color` (§15.2).
+  - [x] One `AnalyticShadow` family (7th analytic-shape family) with a `shape` discriminator
+        (0=rounded box: Rect→radius 0, RRect→per-corner F32X4; 1=ellipse: Circle/Ellipse;
+        2=capsule) — one shader IR, one instance, one pipeline, one batch tag; no blur
+        target, no offscreen pass.
+  - [x] Coverage = closed-form separable erf-of-rounded-box ramp over `sigma` (AA fallback
+        for `sigma <= 0.01`); vertex quad expanded by `3*sigma + spread + max(|offset|) + 1`
+        so the blurred/offset/spread footprint stays inside the drawn quad.
+  - [x] `analytic_shadow_ir()` + frozen byte-exact MSL oracle; `PipelineFamily::AnalyticShadow`
+        in the shader manifest (10 built-ins); `analytic_shadow_schema`/`ANALYTIC_SHADOW_MSL`
+        re-exported.
+  - [x] Headless CPU rasterizer `fill_analytic_shadow` + `shadow_sdf`/`erf_approx`, bit-exact
+        vs the MSL emitter (`1.4142135` literal, three-way `sign(0)==0` erf).
+  - [x] `BatchFamily::AnalyticShadow` (tag 9, binds no texture, mergeable with itself);
+        `SegmentKind::AnalyticShadow`; scene store/ingest/diff wiring; renderer
+        upload/sync/segment-emit/draw-command plumbing; batch introspection arms.
+- [x] Parameters `offset`, `sigma`/blur-radius semantic, `spread`, `color` (§15.2).
+  - [x] `AnalyticShadow` source struct → `ShadowInstance` (`rect_pos, rect_size, color,
+        radius, offset, sigma, spread, shape`), straight linear RGBA, all fields 4-byte
+        aligned; `to_instance()` normalizes per-corner radius.
+  - [x] Shadow footprint feeds scene-bounds `filter` inflation
+        (`3*sigma + max(spread,0) + max(|offset.x|,|offset.y|)`) so paint/effect bounds cover
+        the offset+blur+spread extent.
+  - [x] Frozen `ShadowInstance` ABI pin (size 68 / align 4 / per-field offsets);
+        `scene_contract_frozen` unchanged (footprint flows through the existing `filter`
+        term, no new revision plane).
 
 ### E0.2 — DecoratedShape fusion (benchmark-gated)
 - [ ] Post-benchmark, a fused `DecoratedShape` pipeline drawing `shadow + fill + border`
