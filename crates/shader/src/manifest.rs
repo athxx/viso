@@ -32,9 +32,10 @@ use viso_gpu::{BuiltinShader, InstanceSchema};
 
 use crate::msl::{
     ANALYTIC_CAPSULE_MSL, ANALYTIC_ELLIPSE_MSL, ANALYTIC_LINE_MSL, ANALYTIC_RRECT_MSL,
-    GLYPHRUN_MSL, GRADIENT_MSL, IMAGE_MSL, MESH_MSL, QUAD_MSL, analytic_capsule_schema,
-    analytic_ellipse_schema, analytic_line_schema, analytic_rrect_schema, glyphrun_schema,
-    gradient_schema, image_schema, mesh_schema, quad_schema,
+    ANALYTIC_SHADOW_MSL, GLYPHRUN_MSL, GRADIENT_MSL, IMAGE_MSL, MESH_MSL, QUAD_MSL,
+    analytic_capsule_schema, analytic_ellipse_schema, analytic_line_schema, analytic_rrect_schema,
+    analytic_shadow_schema, glyphrun_schema, gradient_schema, image_schema, mesh_schema,
+    quad_schema,
 };
 use std::sync::OnceLock;
 
@@ -69,6 +70,10 @@ pub enum PipelineFamily {
     Image,
     /// A gradient fill (linear/radial/…). No F2 built-in yet.
     Gradient,
+    /// A soft drop shadow for an analytic shape (rounded box / ellipse / capsule),
+    /// its coverage a closed-form Gaussian ramp over the shape's signed distance.
+    /// Implemented as a D-layer built-in.
+    AnalyticShadow,
     /// A filled vector path (per-vertex mesh) — the shared Mesh built-in.
     PathFill,
     /// A stroked vector path (per-vertex mesh). Shares the Mesh built-in today.
@@ -277,6 +282,15 @@ pub fn standard_manifest() -> &'static PipelineManifest {
                 vertex_entry: "vertex_main",
                 fragment_entry: "fragment_main",
             },
+            PipelineEntry {
+                family: PipelineFamily::AnalyticShadow,
+                variant: VariantKey::standard(PipelineFamily::AnalyticShadow),
+                builtin: BuiltinShader::AnalyticShadow,
+                msl: ANALYTIC_SHADOW_MSL(),
+                schema: analytic_shadow_schema(),
+                vertex_entry: "vertex_main",
+                fragment_entry: "fragment_main",
+            },
         ],
     })
 }
@@ -286,14 +300,14 @@ mod tests {
     use super::*;
     use crate::ir::testdata::{
         ANALYTIC_CAPSULE_MSL_ORIGINAL, ANALYTIC_ELLIPSE_MSL_ORIGINAL, ANALYTIC_LINE_MSL_ORIGINAL,
-        ANALYTIC_RRECT_MSL_ORIGINAL, GLYPHRUN_MSL_ORIGINAL, GRADIENT_MSL_ORIGINAL,
-        IMAGE_MSL_ORIGINAL, MESH_MSL_ORIGINAL, QUAD_MSL_ORIGINAL,
+        ANALYTIC_RRECT_MSL_ORIGINAL, ANALYTIC_SHADOW_MSL_ORIGINAL, GLYPHRUN_MSL_ORIGINAL,
+        GRADIENT_MSL_ORIGINAL, IMAGE_MSL_ORIGINAL, MESH_MSL_ORIGINAL, QUAD_MSL_ORIGINAL,
     };
 
     #[test]
     fn manifest_enumerates_the_standard_builtins() {
         let m = standard_manifest();
-        assert_eq!(m.entries().len(), 9);
+        assert_eq!(m.entries().len(), 10);
         assert!(m.entry(PipelineFamily::SolidRect).is_some());
         assert!(m.entry(PipelineFamily::Image).is_some());
         assert!(m.entry(PipelineFamily::MaskComposite).is_some());
@@ -303,6 +317,7 @@ mod tests {
         assert!(m.entry(PipelineFamily::AnalyticCapsule).is_some());
         assert!(m.entry(PipelineFamily::AnalyticLine).is_some());
         assert!(m.entry(PipelineFamily::Gradient).is_some());
+        assert!(m.entry(PipelineFamily::AnalyticShadow).is_some());
     }
 
     #[test]
@@ -352,6 +367,10 @@ mod tests {
         assert_eq!(
             m.entry(PipelineFamily::Gradient).unwrap().msl,
             GRADIENT_MSL_ORIGINAL
+        );
+        assert_eq!(
+            m.entry(PipelineFamily::AnalyticShadow).unwrap().msl,
+            ANALYTIC_SHADOW_MSL_ORIGINAL
         );
     }
 

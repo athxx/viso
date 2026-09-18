@@ -31,7 +31,7 @@
 use crate::primitive::{
     AnalyticCapsuleInstance, AnalyticEllipseInstance, AnalyticLineInstance, AnalyticRRectInstance,
     GlyphInstance, GlyphInstanceData, GradientInstance, ImageInstance, MeshVertex, Path,
-    PathGeometry, QuadInstance, Rgba,
+    PathGeometry, QuadInstance, Rgba, ShadowInstance,
 };
 
 use super::ids::{
@@ -529,6 +529,94 @@ impl AnalyticLineStore {
 
     /// The entry at `id`, or `None` if the slot is out of range.
     pub fn get(&self, id: GeometryId) -> Option<&AnalyticLineEntry> {
+        self.entries.get(id.index() as usize)
+    }
+
+    /// Number of live entries.
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    /// Whether the store holds no entries.
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+}
+
+/// A retained analytic shadow: the resolved GPU instance plus its identity
+/// handles (§8.5).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct AnalyticShadowEntry {
+    /// The lowered instance, in world space (origin not yet subtracted).
+    pub instance: ShadowInstance,
+    /// Transform identity — bumped alone by a pure move (§8.5).
+    pub transform: TransformId,
+    /// Brush identity — bumped alone by a recolor (§8.5).
+    pub brush: BrushId,
+}
+
+/// Dense store of analytic shadows (§8). Same AoS/cursor shape as the other
+/// analytic stores; the diff splits `rect_pos`/`offset` → transform,
+/// `rect_size`/`radius`/`sigma`/`spread`/`shape` → geometry, `color` → paint.
+#[derive(Debug, Default)]
+pub struct AnalyticShadowStore {
+    entries: Vec<AnalyticShadowEntry>,
+    cursor: usize,
+}
+
+impl AnalyticShadowStore {
+    /// Reset the cursor for a new frame, keeping entries to diff against.
+    pub fn begin_frame(&mut self) {
+        self.cursor = 0;
+    }
+
+    /// Trim entries the frame's walk did not revisit. Returns whether a trim
+    /// happened.
+    pub fn finish_frame(&mut self) -> bool {
+        if self.cursor < self.entries.len() {
+            self.entries.truncate(self.cursor);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Diff `instance` against the retained shadow at the cursor and advance,
+    /// appending on cold growth. Returns the slot and the moved planes.
+    pub fn ingest(&mut self, instance: ShadowInstance) -> (GeometryId, DirtyPlanes) {
+        let index = self.cursor;
+        let dirty = if index < self.entries.len() {
+            let prev = &self.entries[index].instance;
+            let dirty = DirtyPlanes {
+                transform: prev.rect_pos != instance.rect_pos || prev.offset != instance.offset,
+                geometry: prev.rect_size != instance.rect_size
+                    || prev.radius != instance.radius
+                    || prev.sigma != instance.sigma
+                    || prev.spread != instance.spread
+                    || prev.shape != instance.shape,
+                paint: prev.color != instance.color,
+                resource: false,
+                appended: false,
+            };
+            if dirty.any() {
+                self.entries[index].instance = instance;
+            }
+            dirty
+        } else {
+            let idx = index as u32;
+            self.entries.push(AnalyticShadowEntry {
+                instance,
+                transform: TransformId::new(idx),
+                brush: BrushId::new(idx),
+            });
+            DirtyPlanes::APPENDED
+        };
+        self.cursor += 1;
+        (GeometryId::new(index as u32), dirty)
+    }
+
+    /// The entry at `id`, or `None` if the slot is out of range.
+    pub fn get(&self, id: GeometryId) -> Option<&AnalyticShadowEntry> {
         self.entries.get(id.index() as usize)
     }
 
@@ -1679,6 +1767,8 @@ pub enum StoreRef {
     Image(ImageId),
     /// Slot in the [`GradientStore`].
     Gradient(GeometryId),
+    /// Slot in the [`AnalyticShadowStore`].
+    AnalyticShadow(GeometryId),
     /// Run slot in the [`GlyphRunStore`].
     GlyphRun(u32),
     /// Slot in the [`VectorPathStore`].
@@ -1705,6 +1795,7 @@ impl std::fmt::Display for StoreRef {
             StoreRef::AnalyticLine(_) => write!(f, "analytic-line"),
             StoreRef::Image(_) => write!(f, "image"),
             StoreRef::Gradient(_) => write!(f, "gradient"),
+            StoreRef::AnalyticShadow(_) => write!(f, "analytic-shadow"),
             StoreRef::GlyphRun(_) => write!(f, "glyph-run"),
             StoreRef::Path(_) => write!(f, "path"),
             StoreRef::Mesh(_) => write!(f, "mesh"),

@@ -171,6 +171,10 @@ pub enum BuiltinShader {
     /// sampling a cached 1D gradient LUT or lerping two inline premultiplied
     /// stops (Gradient primitive).
     Gradient,
+    /// A soft drop shadow for an analytic shape (rounded box / ellipse / capsule),
+    /// its coverage a closed-form Gaussian ramp over the shape's signed distance
+    /// (AnalyticShadow primitive).
+    AnalyticShadow,
     /// An offscreen layer composited back with clip/opacity (Layer primitive).
     Layer,
 }

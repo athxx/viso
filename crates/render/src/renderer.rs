@@ -34,7 +34,7 @@ use crate::pool::InstancePool;
 use crate::primitive::{
     AnalyticCapsuleInstance, AnalyticEllipseInstance, AnalyticLineInstance, AnalyticRRectInstance,
     GlyphInstance, GradientInstance, ImageInstance, MeshVertex, PathCmd, Primitive, QuadInstance,
-    Rect, rgba_array,
+    Rect, ShadowInstance, rgba_array,
 };
 use crate::raster_mask::{path_bounds, rasterize_path_coverage};
 use crate::scene::store::{ClipFillRule, StoreRef, glyph_instances};
@@ -57,6 +57,8 @@ const IMAGE_STRIDE: usize = core::mem::size_of::<ImageInstance>();
 const GLYPH_STRIDE: usize = core::mem::size_of::<GlyphInstance>();
 /// Bytes of one gradient instance.
 const GRADIENT_STRIDE: usize = core::mem::size_of::<GradientInstance>();
+/// Bytes of one analytic soft-shadow instance.
+const SHADOW_STRIDE: usize = core::mem::size_of::<ShadowInstance>();
 /// Rows in the renderer-owned 1D gradient LUT atlas: each row is one baked ramp
 /// (a 3+-stop or non-linear-space gradient), `LUT_WIDTH × ROWS` RGBA8. 64 rows
 /// is 64 KB — ample for a frame's distinct multi-stop gradients while trivial
@@ -181,6 +183,10 @@ pub(crate) enum SegmentKind {
     /// A single gradient fill, in the gradient buffer, sampling `bind_group`'s
     /// baked 1D LUT atlas. `start`/`count` count instances in that buffer.
     Gradient { bind_group: BindGroupId },
+    /// A run of adjacent analytic soft shadows sharing this segment's clip, in
+    /// the analytic-shadow buffer. `start`/`count` count instances; binds no
+    /// texture.
+    AnalyticShadow,
     /// A run of adjacent triangle meshes (Path/Mesh) sharing this segment's
     /// clip, in the shared mesh vertex/index buffers. `start`/`count` count
     /// **indices** in the mesh index buffer (vertices are addressed by the
@@ -201,6 +207,7 @@ impl SegmentKind {
             SegmentKind::Image { .. } => BatchFamily::Image,
             SegmentKind::GlyphRun { .. } => BatchFamily::GlyphRun,
             SegmentKind::Gradient { .. } => BatchFamily::Gradient,
+            SegmentKind::AnalyticShadow => BatchFamily::AnalyticShadow,
             SegmentKind::Mesh => BatchFamily::Mesh,
         }
     }
@@ -218,6 +225,7 @@ impl SegmentKind {
             | SegmentKind::AnalyticEllipse
             | SegmentKind::AnalyticCapsule
             | SegmentKind::AnalyticLine
+            | SegmentKind::AnalyticShadow
             | SegmentKind::Mesh => None,
         }
     }
@@ -468,6 +476,8 @@ pub struct Renderer {
     glyph_pipeline: PipelineId,
     /// The Gradient built-in pipeline (registered once).
     gradient_pipeline: PipelineId,
+    /// The AnalyticShadow built-in pipeline (registered once).
+    analytic_shadow_pipeline: PipelineId,
     /// The default linear-filter clamp sampler, used by glyph runs, gradient
     /// LUT sampling, and offscreen-layer compositing (all of which want bilinear
     /// clamp). Image draws select their sampler via `sampler_cache` instead.
@@ -496,6 +506,9 @@ pub struct Renderer {
     glyph_pool: InstancePool<GlyphInstance>,
     /// Persistent gradient instance pool (same slot-diff upload as `quad_pool`).
     gradient_pool: InstancePool<GradientInstance>,
+    /// Persistent analytic soft-shadow instance pool (same slot-diff upload as
+    /// `quad_pool`).
+    analytic_shadow_pool: InstancePool<ShadowInstance>,
     /// The renderer-owned 1D gradient LUT atlas: 3+-stop and non-linear-space
     /// gradients bake one ramp row here and sample `(t, lut_v)`. Unlike the
     /// image/glyph atlases (caller-owned textures), this atlas is internal — its
@@ -540,6 +553,8 @@ pub struct Renderer {
     glyph_scratch: Vec<GlyphInstance>,
     /// Scratch gradient instance data, reused each frame.
     gradient_scratch: Vec<GradientInstance>,
+    /// Scratch analytic soft-shadow instance data, reused each frame.
+    analytic_shadow_scratch: Vec<ShadowInstance>,
     /// Scratch mesh vertex data, reused each frame.
     mesh_vertex_scratch: Vec<MeshVertex>,
     /// Scratch mesh index data, reused each frame.
@@ -695,6 +710,13 @@ impl Renderer {
             )
             .expect("GradientInstance layout matches the gradient shader schema");
 
+        let analytic_shadow_pipeline = backend
+            .create_pipeline(
+                &desc(entry(PipelineFamily::AnalyticShadow), "analytic-shadow"),
+                &ShadowInstance::LAYOUT,
+            )
+            .expect("ShadowInstance layout matches the analytic-shadow shader schema");
+
         // The 1D gradient LUT atlas is renderer-internal: baked from stops at
         // lowering, uploaded into this texture before the pass. Unlike image and
         // glyph textures (caller-owned), the renderer creates and owns it here.
@@ -735,6 +757,7 @@ impl Renderer {
             image_pipeline,
             glyph_pipeline,
             gradient_pipeline,
+            analytic_shadow_pipeline,
             sampler,
             sampler_cache,
             quad_pool: InstancePool::new(BufferUsage::INSTANCE, "quad-instances"),
@@ -754,6 +777,10 @@ impl Renderer {
             image_pool: InstancePool::new(BufferUsage::INSTANCE, "image-instances"),
             glyph_pool: InstancePool::new(BufferUsage::INSTANCE, "glyph-instances"),
             gradient_pool: InstancePool::new(BufferUsage::INSTANCE, "gradient-instances"),
+            analytic_shadow_pool: InstancePool::new(
+                BufferUsage::INSTANCE,
+                "analytic-shadow-instances",
+            ),
             gradient_lut: GradientLutAtlas::new(GRADIENT_LUT_ROWS, lut_texture),
             mask_cache: MaskCache::new(MASK_PAGE_SIZE),
             mask_page: MaskPage::new(MASK_PAGE_SIZE, mask_texture),
@@ -770,6 +797,7 @@ impl Renderer {
             image_scratch: Vec::with_capacity(64),
             glyph_scratch: Vec::with_capacity(256),
             gradient_scratch: Vec::with_capacity(64),
+            analytic_shadow_scratch: Vec::with_capacity(256),
             mesh_vertex_scratch: Vec::with_capacity(1024),
             mesh_index_scratch: Vec::with_capacity(2048),
             segments: Vec::with_capacity(8),
@@ -1077,6 +1105,28 @@ impl Renderer {
                     self.scene
                         .ingest_gradient(inst, self.gradient_lut.texture(), ctx, bounds);
                 }
+                Primitive::AnalyticShadow(shadow) => {
+                    let inst = shadow.to_instance();
+                    // The shadow footprint extends past the shape rect by the
+                    // blur reach (3σ covers a Gaussian), the outward spread, and
+                    // the drop offset. Fed as the `filter` inflation term so the
+                    // paint/effect bounds cover the soft-edged, offset quad.
+                    let shadow_filter = 3.0 * inst.sigma
+                        + inst.spread.max(0.0)
+                        + inst.offset[0].abs().max(inst.offset[1].abs());
+                    let bounds = crate::scene::bounds::Bounds::from_world(
+                        Rect {
+                            x: inst.rect_pos[0],
+                            y: inst.rect_pos[1],
+                            w: inst.rect_size[0],
+                            h: inst.rect_size[1],
+                        },
+                        clip,
+                        0.0,
+                        shadow_filter,
+                    );
+                    self.scene.ingest_analytic_shadow(inst, ctx, bounds);
+                }
                 Primitive::Path(path) => {
                     // A concave or curve-bearing solid-fill-only path is a
                     // self-masked solid fill (§14.4): its own coverage is one R8
@@ -1213,6 +1263,9 @@ impl Renderer {
             + self.glyph_pool.sync(backend, &self.glyph_scratch)
             + self.gradient_pool.sync(backend, &self.gradient_scratch)
             + self
+                .analytic_shadow_pool
+                .sync(backend, &self.analytic_shadow_scratch)
+            + self
                 .mesh_vertex_pool
                 .sync(backend, &self.mesh_vertex_scratch)
             + self.mesh_index_pool.sync(backend, &self.mesh_index_scratch);
@@ -1229,6 +1282,7 @@ impl Renderer {
             + self.image_pool.last_upload_bytes()
             + self.glyph_pool.last_upload_bytes()
             + self.gradient_pool.last_upload_bytes()
+            + self.analytic_shadow_pool.last_upload_bytes()
             + self.mesh_vertex_pool.last_upload_bytes()
             + self.mesh_index_pool.last_upload_bytes();
     }
@@ -1254,6 +1308,7 @@ impl Renderer {
         self.image_scratch.clear();
         self.glyph_scratch.clear();
         self.gradient_scratch.clear();
+        self.analytic_shadow_scratch.clear();
         self.mesh_vertex_scratch.clear();
         self.mesh_index_scratch.clear();
         self.segments.clear();
@@ -1399,6 +1454,25 @@ impl Renderer {
                     // is unmergeable, so this always opens a new segment.
                     self.merge_or_push(Segment {
                         kind: SegmentKind::Gradient { bind_group },
+                        start,
+                        count: 1,
+                        clip,
+                        target,
+                    });
+                }
+                StoreRef::AnalyticShadow(id) => {
+                    let mut inst = self
+                        .scene
+                        .analytic_shadows
+                        .get(id)
+                        .expect("analytic-shadow slot")
+                        .instance;
+                    inst.rect_pos[0] -= origin[0];
+                    inst.rect_pos[1] -= origin[1];
+                    let start = self.analytic_shadow_scratch.len() as u32;
+                    self.analytic_shadow_scratch.push(inst);
+                    self.merge_or_push(Segment {
+                        kind: SegmentKind::AnalyticShadow,
                         start,
                         count: 1,
                         clip,
@@ -1655,6 +1729,11 @@ impl Renderer {
     /// The Gradient pipeline handle, for batch introspection.
     pub(crate) fn gradient_pipeline_id(&self) -> PipelineId {
         self.gradient_pipeline
+    }
+
+    /// The AnalyticShadow pipeline handle, for batch introspection.
+    pub(crate) fn analytic_shadow_pipeline_id(&self) -> PipelineId {
+        self.analytic_shadow_pipeline
     }
 
     /// Add `segment` to the batch list, merging it into the previous segment
@@ -2009,6 +2088,17 @@ impl Renderer {
                     "analytic-line pool buffer exists when an analytic-line segment references it",
                 ),
                 instance_offset: seg.start as usize * ANALYTIC_LINE_STRIDE,
+                uniforms,
+                scissor,
+            },
+            SegmentKind::AnalyticShadow => DrawCommand {
+                pipeline: self.analytic_shadow_pipeline,
+                bind_group: None,
+                geometry: Geometry::Generated { count: seg.count },
+                instance_buffer: self.analytic_shadow_pool.buffer().expect(
+                    "analytic-shadow pool buffer exists when an analytic-shadow segment references it",
+                ),
+                instance_offset: seg.start as usize * SHADOW_STRIDE,
                 uniforms,
                 scissor,
             },

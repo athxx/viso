@@ -591,6 +591,16 @@ impl HeadlessRaster {
                                 cmd.scissor,
                             );
                         }
+                        BuiltinShader::AnalyticShadow => {
+                            self.fill_analytic_shadow(
+                                target,
+                                width,
+                                height,
+                                &layout,
+                                inst,
+                                cmd.scissor,
+                            );
+                        }
                         // Path/Mesh never arrive as generated geometry.
                         BuiltinShader::Path | BuiltinShader::Mesh | BuiltinShader::Layer => {}
                     }
@@ -1178,6 +1188,98 @@ impl HeadlessRaster {
         }
     }
 
+    /// Fill one AnalyticShadow instance: a soft drop shadow for an analytic shape
+    /// (rounded box / ellipse / capsule), its coverage a closed-form Gaussian ramp
+    /// over the shape's signed distance — no offscreen blur pass.
+    ///
+    /// Reads these fields (by name) from the instance bytes, per the AnalyticShadow
+    /// built-in's schema:
+    /// - `rect_pos`  : `Float2` source rect top-left in physical pixels
+    /// - `rect_size` : `Float2` source rect width/height in physical pixels
+    /// - `color`     : `Float4` **straight** (non-premultiplied) linear RGBA
+    /// - `radius`    : `Float4` per-corner radius (lt, rt, rb, lb) for the box case
+    /// - `offset`    : `Float2` shadow offset in physical pixels
+    /// - `sigma`     : `Float1` blur standard deviation in physical pixels
+    /// - `spread`    : `Float1` silhouette grow (>0) / shrink (<0) in physical pixels
+    /// - `shape`     : `Uint1` 0=rounded box 1=ellipse 2=capsule
+    ///
+    /// The per-pixel math mirrors [`ANALYTIC_SHADOW_MSL`](../../shader)'s fragment
+    /// exactly: sample in rect-centered space shifted by `-offset`, inset the
+    /// half-extents by `spread`, evaluate the `shape`-selected SDF, and map the
+    /// distance through a Gaussian integral (`0.5*(1 - erf(d/(sqrt2*sigma)))`),
+    /// falling back to a device-pixel AA ramp when `sigma` is near zero.
+    fn fill_analytic_shadow(
+        &mut self,
+        target: FbTarget,
+        width: u32,
+        height: u32,
+        layout: &InstanceLayout,
+        inst: &[u8],
+        scissor: Option<(u32, u32, u32, u32)>,
+    ) {
+        let pos = read_f2(layout, inst, "rect_pos");
+        let size = read_f2(layout, inst, "rect_size");
+        let fill = read_f4(layout, inst, "color");
+        let radii = read_f4(layout, inst, "radius");
+        let offset = read_f2(layout, inst, "offset");
+        let sigma = read_f1(layout, inst, "sigma");
+        let spread = read_f1(layout, inst, "spread");
+        let shape = read_u1(layout, inst, "shape");
+
+        let half = [size[0] * 0.5, size[1] * 0.5];
+        let center = [pos[0] + half[0], pos[1] + half[1]];
+        let half_ext = [(half[0] + spread).max(0.0), (half[1] + spread).max(0.0)];
+
+        // Footprint = the padded quad the vertex stage expands to: 3*sigma of blur
+        // reach, plus positive spread, plus a 1px AA-fallback pad, plus |offset|.
+        let reach = 3.0 * sigma + spread.max(0.0) + 1.0;
+        let pad = [reach + offset[0].abs(), reach + offset[1].abs()];
+        let (mut x0, mut y0, mut x1, mut y1) = (
+            (pos[0] - pad[0]).floor().max(0.0) as u32,
+            (pos[1] - pad[1]).floor().max(0.0) as u32,
+            (pos[0] + size[0] + pad[0]).ceil().min(width as f32) as u32,
+            (pos[1] + size[1] + pad[1]).ceil().min(height as f32) as u32,
+        );
+        if let Some((sx, sy, sw, sh)) = scissor {
+            x0 = x0.max(sx);
+            y0 = y0.max(sy);
+            x1 = x1.min(sx + sw);
+            y1 = y1.min(sy + sh);
+        }
+
+        // Device-pixel AA ramp for the sigma≈0 fallback (scale-1 scan → 1/sqrt2).
+        let aa = 1.0 / (2.0_f32).sqrt();
+
+        for py in y0..y1 {
+            for px in x0..x1 {
+                let p = [
+                    px as f32 + 0.5 - center[0] - offset[0],
+                    py as f32 + 0.5 - center[1] - offset[1],
+                ];
+                let d = shadow_sdf(shape, p, half_ext, radii);
+
+                let cov = if sigma > 0.01 {
+                    // `1.4142135` (not `SQRT_2`) is byte-exact with the MSL emitter's literal.
+                    #[allow(clippy::approx_constant)]
+                    (0.5 * (1.0 - erf_approx(d / (1.4142135 * sigma)))).clamp(0.0, 1.0)
+                } else {
+                    (-d * aa).clamp(0.0, 1.0)
+                };
+                if cov <= 0.0 {
+                    continue;
+                }
+
+                let fa = fill[3] * cov;
+                let src = [fill[0] * fa, fill[1] * fa, fill[2] * fa, fa];
+                if src[3] <= 0.0 {
+                    continue;
+                }
+
+                blend_pixel(self.framebuffer(target), width, px, py, src);
+            }
+        }
+    }
+
     /// Fill one Image instance: sample the bound texture's uv sub-rect across the
     /// destination rect, modulated by a straight tint, premultiplied source-over.
     ///
@@ -1686,6 +1788,48 @@ fn ellipse_sdf(p: [f32; 2], center: [f32; 2], radii: [f32; 2]) -> f32 {
 fn capsule_sdf(p: [f32; 2], center: [f32; 2], half: [f32; 2]) -> f32 {
     let k = half[0].min(half[1]);
     box_sdf(p, center, half, k)
+}
+
+/// Signed distance for the AnalyticShadow family, evaluated in shape-centered
+/// space (`p` is already relative to the shape center), negative inside. Mirrors
+/// the MSL `shadow_sdf`: `shape` 1 selects the ellipse, 2 the capsule, anything
+/// else the per-corner rounded box. The ellipse arm clamps the half-extents to
+/// `1e-4` before normalizing — matching the shader's guard against a zero radius,
+/// which the sharp-shape [`ellipse_sdf`] deliberately omits.
+fn shadow_sdf(shape: u32, p: [f32; 2], half_ext: [f32; 2], radii: [f32; 4]) -> f32 {
+    match shape {
+        1 => {
+            let r = [half_ext[0].max(1e-4), half_ext[1].max(1e-4)];
+            let n = [p[0] / r[0], p[1] / r[1]];
+            ((n[0] * n[0] + n[1] * n[1]).sqrt() - 1.0) * r[0].min(r[1])
+        }
+        2 => capsule_sdf(p, [0.0, 0.0], half_ext),
+        _ => rrect_sdf(p, [0.0, 0.0], half_ext, radii),
+    }
+}
+
+/// Rational approximation of the Gauss error function (Abramowitz & Stegun
+/// 7.1.26, max abs error ~1.5e-7), byte-exact against the MSL `erf_approx`. Used
+/// to map the shadow SDF through a Gaussian coverage ramp
+/// (`0.5*(1 - erf(d/(sqrt2*sigma)))`).
+#[allow(clippy::excessive_precision)] // A&S coefficients kept byte-exact vs the MSL emitter.
+fn erf_approx(x: f32) -> f32 {
+    // Match MSL `sign`: sign(0) == 0, so erf(0) == 0 exactly.
+    let s = if x > 0.0 {
+        1.0
+    } else if x < 0.0 {
+        -1.0
+    } else {
+        0.0
+    };
+    let ax = x.abs();
+    let t = 1.0 / (1.0 + 0.3275911 * ax);
+    let y = 1.0
+        - (((((1.061405429 * t - 1.453152027) * t) + 1.421413741) * t - 0.284496736) * t
+            + 0.254829592)
+            * t
+            * (-ax * ax).exp();
+    s * y
 }
 
 /// Signed distance to a line segment of half-width `hw` (IQ): project the sample
