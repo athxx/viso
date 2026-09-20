@@ -770,6 +770,15 @@ impl Renderer {
         );
         let _ = writeln!(
             out,
+            "transient_targets={} transient_peak_bytes={} transient_pool_bytes={} \
+             transient_target_allocations={}",
+            s.transient_targets,
+            s.transient_peak_bytes,
+            s.transient_pool_bytes,
+            s.transient_target_allocations,
+        );
+        let _ = writeln!(
+            out,
             "gpu_upload_bytes={} uploaded_ranges={}",
             s.gpu_upload_bytes, s.uploaded_ranges,
         );

@@ -30,6 +30,7 @@ pub mod raster_mask;
 pub mod rect_packer;
 pub mod renderer;
 pub mod scene;
+pub mod transient;
 
 // The blend model and its realization classifier (§14.6): fixed-function
 // Porter-Duff stays local; separable artistic modes read the destination;

@@ -57,6 +57,11 @@ fn frame_stats_roster_is_frozen() {
         blur_passes: 19,
         blur_target_bytes: 20,
         shader_pipeline_creations: 21,
+        // Transient render-target pool occupancy (§16.4/§30).
+        transient_targets: 22,
+        transient_peak_bytes: 23,
+        transient_pool_bytes: 24,
+        transient_target_allocations: 25,
     };
 
     // Every field reads back what it was set to — a plain integer counter, no
@@ -82,6 +87,10 @@ fn frame_stats_roster_is_frozen() {
     assert_eq!(s.blur_passes, 19);
     assert_eq!(s.blur_target_bytes, 20);
     assert_eq!(s.shader_pipeline_creations, 21);
+    assert_eq!(s.transient_targets, 22);
+    assert_eq!(s.transient_peak_bytes, 23);
+    assert_eq!(s.transient_pool_bytes, 24);
+    assert_eq!(s.transient_target_allocations, 25);
 
     // The default is the all-zero frame: a renderer that drew nothing reports
     // every counter at zero, so a steady frame's deltas are meaningful.
@@ -107,6 +116,10 @@ fn frame_stats_roster_is_frozen() {
     assert_eq!(z.blur_passes, 0);
     assert_eq!(z.blur_target_bytes, 0);
     assert_eq!(z.shader_pipeline_creations, 0);
+    assert_eq!(z.transient_targets, 0);
+    assert_eq!(z.transient_peak_bytes, 0);
+    assert_eq!(z.transient_pool_bytes, 0);
+    assert_eq!(z.transient_target_allocations, 0);
 }
 
 /// The seven effect cost classes are frozen in cheapest-first order (§7.5): the

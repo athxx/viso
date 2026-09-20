@@ -225,8 +225,12 @@ pub struct DrawList<'a> {
     /// All draw commands for the frame, concatenated across passes in execution
     /// order. Each [`RenderPass`] in `passes` indexes a contiguous range here.
     pub commands: &'a [DrawCommand],
-    /// The passes, in execution order (offscreen layers first, then main). Each
-    /// references its commands by range into `commands`.
+    /// The passes, in execution order: offscreen work in dependency order (a pass
+    /// that samples another's target comes after it), then main. A backend may
+    /// assume a target is fully written by the time a later pass reads it, and that
+    /// two passes writing the same texture are ordered as listed — offscreen
+    /// targets are pooled and aliased, so order is the only lifetime guarantee.
+    /// Each pass references its commands by range into `commands`.
     pub passes: &'a [RenderPass],
 }
 
