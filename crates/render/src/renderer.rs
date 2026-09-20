@@ -39,6 +39,7 @@ use crate::primitive::{
 use crate::raster_mask::{path_bounds, rasterize_path_coverage};
 use crate::scene::store::{ClipFillRule, StoreRef, glyph_instances};
 use crate::scene::{EmitContext, Scene};
+use crate::transient::{SURFACE_SLOT, TargetDesc, TargetId, TargetUsage, TransientTargets};
 use viso_math::InterpolationSpace;
 
 /// Bytes of one quad instance.
@@ -310,16 +311,24 @@ pub(crate) enum PassTarget {
 /// positions have had the layer origin subtracted, so the existing shaders draw
 /// them correctly against the pass's `viewport` (= the texture extent).
 struct OffscreenPass {
-    /// The render-target texture this pass draws into. `None` until the pass is
-    /// finalized at `LayerEnd`, when the content ROI is known and a pooled
-    /// texture of exactly the ROI extent is claimed (§16.2).
-    texture: Option<TextureId>,
-    /// Bind group pairing `texture` with the shared sampler, for compositing.
-    /// `None` until finalize, alongside `texture`.
-    bind_group: Option<BindGroupId>,
-    /// The pass viewport `[width, height]` in physical pixels (= texture extent,
-    /// the ceil of the tight content ROI). `[0, 0]` until finalize.
+    /// The transient target this pass draws into. `None` until the pass is
+    /// finalized at `LayerEnd`, when the content ROI is known and a target of
+    /// that ROI's size class is declared against the frame-local pool (§16.2,
+    /// §16.4). The concrete texture is resolved later, in
+    /// [`TransientTargets::assign`].
+    base: Option<TargetId>,
+    /// The transient target the composite samples: `base` for an unblurred layer,
+    /// the last rung of the blur ladder for a blurred one. `None` until finalize.
+    sample: Option<TargetId>,
+    /// The pass viewport `[width, height]` in physical pixels — the *size class*
+    /// of the ROI, which is the extent of the pooled texture this pass writes and
+    /// therefore the extent the shaders map pixels to NDC against. `[0, 0]` until
+    /// finalize. Always `>= used`.
     viewport: [f32; 2],
+    /// The extent this pass actually draws into, anchored at the target's
+    /// top-left: the ceil of the tight content ROI, before size-class rounding.
+    /// The composite samples exactly this sub-rect. `[0, 0]` until finalize.
+    used: [u32; 2],
     /// The tight content ROI's world-space rect: the composite destination, and
     /// the origin subtracted from this pass's geometry. Equals the layer clip
     /// until finalize narrows it to `content ∩ clip ∩ surface`.
@@ -454,19 +463,46 @@ pub struct FrameStats {
     /// Offscreen render-to-texture passes this frame (§30): one per translucent
     /// layer. Zero for a flat scene with no group opacity (the D0 case).
     pub offscreen_passes: usize,
-    /// Bytes backing this frame's transient offscreen render targets (§30):
-    /// summed `width * height * 4` (Bgra8) over every offscreen pass. Zero when
-    /// there are no offscreen passes.
+    /// Bytes this frame's offscreen layer passes *address* (§30): summed
+    /// `width * height * bytes_per_texel` over every offscreen pass's pooled
+    /// target. Zero when there are no offscreen passes.
+    ///
+    /// This is a per-pass sum, not an occupancy figure: two passes whose
+    /// lifetimes do not overlap can share one pooled texture, so the sum can
+    /// exceed the memory actually held. Read `transient_peak_bytes` for the
+    /// concurrently-live footprint and `transient_pool_bytes` for what the pool
+    /// retains.
     pub transient_target_bytes: usize,
     /// Separable Gaussian blur passes this frame (§30): the number of single-axis
     /// blur passes chained ahead of a layer composite. A blurred layer that fits
     /// the small-radius tier contributes two (one horizontal, one vertical); zero
     /// when no layer blurs its content.
     pub blur_passes: u32,
-    /// Bytes backing this frame's transient blur scratch render targets (§30):
-    /// summed `width * height * 4` (Bgra8) over every blur pass's destination.
-    /// Zero when there are no blur passes.
+    /// Bytes this frame's blur rungs *address* (§30): summed
+    /// `width * height * bytes_per_texel` over every blur pass's pooled
+    /// destination. Zero when there are no blur passes. A per-pass sum with the
+    /// same aliasing caveat as `transient_target_bytes`.
     pub blur_target_bytes: usize,
+    /// Peak concurrently-live transient render-target bytes this frame (§16.4,
+    /// §31): the maximum, over every timeline slot, of the pooled bytes whose
+    /// `[first_write, last_read]` interval covers that slot. This is the real
+    /// high-water footprint the frame's offscreen work demands — the figure a
+    /// memory gate bounds, and always `<= transient_pool_bytes`.
+    pub transient_peak_bytes: usize,
+    /// Bytes the transient target pool currently retains (§16.4): summed over
+    /// every physical texture it holds, including ones this frame left idle (they
+    /// are kept for a bounded number of frames so a steady scene stops
+    /// allocating). The resident cost of the pool, not of one frame.
+    pub transient_pool_bytes: usize,
+    /// Physical transient textures created this frame (§16.4). A steady scene
+    /// whose layers keep their size classes reports 0 — every target is served
+    /// from the pool, so no `create_texture` reaches the backend (exit criterion:
+    /// never one texture per shadow / per clip / per material surface).
+    pub transient_target_allocations: u32,
+    /// Physical transient textures the pool holds after this frame (§16.4).
+    /// Bounded by the peak concurrent demand of any recent frame, not by the
+    /// number of effects drawn.
+    pub transient_targets: usize,
     /// GPU pipelines created since the renderer was built (§30). The four
     /// builtins are prewarmed once at construction and never recompiled at
     /// steady state (§7.1: no runtime first-use compile), so this is a fixed
@@ -617,16 +653,22 @@ pub struct Renderer {
     /// each layer's [`BlurPlan`]); drained in [`Renderer::encode`] between the
     /// offscreen layer passes and the surface pass. Reused each frame.
     blur_passes: Vec<BlurPass>,
-    /// A pool of render-target textures keyed by extent, so a steady-state frame
-    /// whose translucent layers keep the same sizes reuses textures instead of
-    /// allocating (exit criterion). Grown on demand; never shrunk.
-    offscreen_pool: Vec<PooledTexture>,
-    /// How many pooled textures are already claimed by this frame's passes,
-    /// reset each frame so successive same-size layers each get a distinct one.
-    offscreen_pool_used: usize,
+    /// The frame-local transient render-target pool (§16.4): every offscreen
+    /// layer and every blur rung declares a virtual target here, and one
+    /// lifetime-aware assignment pass maps those virtuals onto reusable physical
+    /// textures keyed by format / usage / size class / sample count. Replaces
+    /// per-effect `create_texture`/`destroy_texture`.
+    transient: TransientTargets,
+    /// This frame's offscreen execution order — one entry per render pass that
+    /// writes a transient target, in the order [`Renderer::encode`] emits them
+    /// (before the surface pass). The index of an entry is the *timeline slot*
+    /// the planner's lifetime analysis works in: a target's `first_write` is the
+    /// slot of the pass that fills it, its `last_read` the slot of the last pass
+    /// that samples it (or [`SURFACE_SLOT`]). Reused each frame.
+    timeline: Vec<TimelineEntry>,
     /// Per-pass viewports for this frame, reused each frame. Index 0 is the
-    /// surface; the rest map 1:1 to `offscreen_passes`. Their bytes feed each
-    /// command's inline uniform (copied by value, no borrow).
+    /// surface; the rest map 1:1 to `timeline`. Their bytes feed each command's
+    /// inline uniform (copied by value, no borrow).
     viewports: Vec<[f32; 2]>,
     /// The frame's draw commands, flat across all passes in execution order,
     /// reused each frame. `passes` slices this by range. Borrow-free, so its
@@ -666,12 +708,18 @@ pub struct Renderer {
     culled_this_frame: u32,
 }
 
-/// A reusable render-target texture in [`Renderer::offscreen_pool`].
-struct PooledTexture {
-    texture: TextureId,
-    bind_group: BindGroupId,
-    width: u32,
-    height: u32,
+/// One entry of [`Renderer::timeline`]: a render pass that writes a transient
+/// target, identified by what it draws. Its position in the timeline is the slot
+/// the planner's lifetime analysis uses, and the order [`Renderer::encode`]
+/// emits passes in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TimelineEntry {
+    /// The offscreen layer pass at this index in [`Renderer::offscreen_passes`],
+    /// which renders the layer's subtree into its base target.
+    Offscreen(usize),
+    /// The blur rung at this index in [`Renderer::blur_passes`], which reads the
+    /// previous rung's target and writes its own.
+    Blur(usize),
 }
 
 /// Blur below this sigma (in physical pixels) is a visual no-op: the separable
@@ -691,19 +739,26 @@ const BLUR_MAX_TAPS: u32 = 32;
 /// One separable blur pass in a [`BlurPlan`]: a full-target draw that reads the
 /// previous stage's texture and writes the next, sized `width`×`height`.
 ///
-/// The `dir`/`sigma`/`radius` are expressed against the *source* being sampled
-/// (normalized source uv for `dir`, source texels for `sigma`), matching the
+/// The `axis`/`sigma`/`radius` are expressed against the *source* being sampled
+/// (source texels for `sigma`, a unit direction for `axis`), matching the
 /// [`BlurInstance`] the headless raster and Metal shader both read. A downsample
 /// step shrinks the target below the source; a blur step keeps the extent and
 /// walks one axis. The source is the base offscreen texture for the first step
 /// and the previous step's target thereafter.
+///
+/// `width`/`height` are the *used* extent: the tight sub-rect this rung writes
+/// and the next samples. The pooled texture backing it may be larger (its size
+/// class, §16.4), which is why `axis` is a plain unit direction — the per-tap uv
+/// step needs the *physical* source extent, known only once the planner has
+/// assigned a texture, so the normalization happens at instance-build time.
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct BlurStep {
-    /// Target extent in physical pixels.
+    /// Used target extent in physical pixels.
     width: u32,
     height: u32,
-    /// Per-tap step in normalized source uv along this pass's axis.
-    dir: [f32; 2],
+    /// Unit direction this pass walks: `[1, 0]` horizontal, `[0, 1]` vertical,
+    /// `[0, 0]` for a plain single-tap resample.
+    axis: [f32; 2],
     /// Gaussian standard deviation in source texels (`0` for a plain resample).
     sigma: f32,
     /// Tap count on each side of center.
@@ -769,14 +824,14 @@ fn blur_plan(sigma: f32, src_w: u32, src_h: u32) -> BlurPlan {
         let step_h = BlurStep {
             width: src_w,
             height: src_h,
-            dir: [1.0 / src_w as f32, 0.0],
+            axis: [1.0, 0.0],
             sigma,
             radius: full_radius,
         };
         let step_v = BlurStep {
             width: src_w,
             height: src_h,
-            dir: [0.0, 1.0 / src_h as f32],
+            axis: [0.0, 1.0],
             sigma,
             radius: full_radius,
         };
@@ -803,32 +858,33 @@ fn blur_plan(sigma: f32, src_w: u32, src_h: u32) -> BlurPlan {
     // Downsample each axis (bilinear resample, sigma 0 = a straight box of one
     // linear tap) into the reduced extent, then blur horizontally and vertically
     // at that extent. The downsample reads the base at full extent; the blurs
-    // read the already-reduced texture, so their `dir` is in reduced-texel uv.
+    // read the already-reduced texture, so their per-tap step is one reduced
+    // texel (the `axis` normalization happens against that texture's extent).
     let down_h = BlurStep {
         width: dst_w,
         height: src_h,
-        dir: [0.0, 0.0],
+        axis: [0.0, 0.0],
         sigma: 0.0,
         radius: 0.0,
     };
     let down_v = BlurStep {
         width: dst_w,
         height: dst_h,
-        dir: [0.0, 0.0],
+        axis: [0.0, 0.0],
         sigma: 0.0,
         radius: 0.0,
     };
     let blur_h = BlurStep {
         width: dst_w,
         height: dst_h,
-        dir: [1.0 / dst_w as f32, 0.0],
+        axis: [1.0, 0.0],
         sigma: reduced_sigma,
         radius: reduced_radius,
     };
     let blur_v = BlurStep {
         width: dst_w,
         height: dst_h,
-        dir: [0.0, 1.0 / dst_h as f32],
+        axis: [0.0, 1.0],
         sigma: reduced_sigma,
         radius: reduced_radius,
     };
@@ -837,14 +893,21 @@ fn blur_plan(sigma: f32, src_w: u32, src_h: u32) -> BlurPlan {
     }
 }
 
-/// One realized blur pass this frame: the source texture it samples, the target
-/// it writes, its viewport (= target extent), and the slot of its single
-/// [`BlurInstance`] in [`Renderer::blur_scratch`]. Transient — rebuilt every
-/// frame in `finalize_offscreen`, drained in [`Renderer::encode`] between the
-/// offscreen layer passes and the surface pass.
+/// One realized blur pass this frame: the transient target it samples, the one it
+/// writes, its viewport, and the slot of its single [`BlurInstance`] in
+/// [`Renderer::blur_scratch`]. Transient — rebuilt every frame in
+/// `finalize_offscreen`, drained in [`Renderer::encode`] between the offscreen
+/// layer passes and the surface pass.
+///
+/// `source`/`target` are *virtual* ids: the concrete texture and bind group are
+/// resolved from [`Renderer::transient`] after the frame's assignment pass, so a
+/// rung's scratch texture can be recycled from an earlier rung whose lifetime has
+/// ended (§16.4).
 struct BlurPass {
-    source: BindGroupId,
-    target: TextureId,
+    source: TargetId,
+    target: TargetId,
+    /// The *physical* extent of `target` — what the shader maps pixels to NDC
+    /// against, which is the pooled texture's size class, not the used sub-rect.
     viewport: [f32; 2],
     instance: u32,
 }
@@ -1045,9 +1108,9 @@ impl Renderer {
             layer_stack: Vec::with_capacity(8),
             offscreen_passes: Vec::with_capacity(4),
             blur_passes: Vec::with_capacity(4),
-            offscreen_pool: Vec::with_capacity(4),
-            offscreen_pool_used: 0,
-            viewports: Vec::with_capacity(4),
+            transient: TransientTargets::new(),
+            timeline: Vec::with_capacity(8),
+            viewports: Vec::with_capacity(8),
             commands: Vec::with_capacity(8),
             passes: Vec::with_capacity(4),
             scene: Scene::new(),
@@ -1308,7 +1371,8 @@ impl Renderer {
         self.offscreen_passes.clear();
         self.blur_passes.clear();
         self.blur_scratch.clear();
-        self.offscreen_pool_used = 0;
+        self.timeline.clear();
+        self.transient.begin_frame();
         self.scene.begin_frame();
         self.mask_cache.begin_frame();
         self.mask_builds_this_frame = 0;
@@ -1596,7 +1660,7 @@ impl Renderer {
                             w: self.surface_size[0],
                             h: self.surface_size[1],
                         };
-                        self.finalize_offscreen(backend, idx, &entry, surface);
+                        self.finalize_offscreen(idx, &entry, surface);
                         // Composite the finished offscreen texture back into the
                         // parent target as a textured quad at the ROI world rect,
                         // tinted by the layer opacity.
@@ -1633,6 +1697,16 @@ impl Renderer {
         // steady scene evicts nothing and this stays `false`).
         self.mask_page
             .set_needs_full_reblit(self.mask_cache.end_frame());
+
+        // Map this frame's virtual transient targets onto physical textures
+        // (§16.4). Every offscreen layer and blur rung declared its target during
+        // the walk with a `[first_write, last_read]` timeline interval; this one
+        // pass walks them in write order and hands each the first pooled texture
+        // of a compatible key whose previous tenant's interval has ended, minting
+        // a texture only when none is free. Must run before lowering, since the
+        // composites resolve their sampled bind groups from the assignment.
+        self.transient
+            .assign(backend, self.sampler, self.timeline.len() as u32);
 
         // Derive the frame's scratch + segments from the retained scene.
         self.lower_from_scene(backend);
@@ -1915,10 +1989,12 @@ impl Renderer {
                 StoreRef::Composite { mut instance, pass } => {
                     // A composite draws into the parent target (main / unclipped /
                     // zero-origin) sampling offscreen pass `pass`; its bind group
-                    // is the pass's live sampling bind group, filled at finalize.
-                    let bind_group = self.offscreen_passes[pass]
-                        .bind_group
+                    // is the pooled texture the planner assigned to that pass's
+                    // sampled target (the base, or the last blur rung).
+                    let sample = self.offscreen_passes[pass]
+                        .sample
                         .expect("offscreen pass finalized before its composite lowers");
+                    let bind_group = self.transient.bind_group(sample);
                     instance.rect_pos[0] -= origin[0];
                     instance.rect_pos[1] -= origin[1];
                     let start = self.image_scratch.len() as u32;
@@ -2060,21 +2136,20 @@ impl Renderer {
             prev = Some((family, binding));
         }
 
-        // Transient offscreen targets: one Bgra8 texture per translucent-layer
-        // pass, sized to its viewport (physical pixels).
+        // Bytes each kind of pass addresses: the pooled target's physical extent
+        // (its size class), summed per pass. Aliasing means these sums are not an
+        // occupancy figure — `transient` reports that separately.
         let transient_target_bytes = self
             .offscreen_passes
             .iter()
             .map(|p| (p.viewport[0] as usize) * (p.viewport[1] as usize) * 4)
             .sum();
-
-        // Transient blur targets: one Bgra8 scratch texture per separable pass
-        // (§16.2, E1.2), sized to its viewport (physical pixels).
         let blur_target_bytes = self
             .blur_passes
             .iter()
             .map(|p| (p.viewport[0] as usize) * (p.viewport[1] as usize) * 4)
             .sum();
+        let transient = self.transient.stats();
 
         FrameStats {
             // Each blur pass is one full-target draw beyond the segment-derived
@@ -2100,6 +2175,10 @@ impl Renderer {
             transient_target_bytes,
             blur_passes: self.blur_passes.len() as u32,
             blur_target_bytes,
+            transient_peak_bytes: transient.peak_bytes,
+            transient_pool_bytes: transient.pool_bytes,
+            transient_target_allocations: transient.allocations,
+            transient_targets: transient.targets,
             shader_pipeline_creations: SHADER_PIPELINE_PREWARM_COUNT,
             // Masks rasterized into the page this frame (§14.4): cold builds,
             // re-rasters after a key change, and re-blits after a repack.
@@ -2266,51 +2345,68 @@ impl Renderer {
     }
 
     /// Open an offscreen pass for a translucent layer whose world-space clip is
-    /// `world_clip`, returning its index in `offscreen_passes`. No GPU work here:
-    /// the texture is claimed at [`Renderer::finalize_offscreen`] once the tight
-    /// content ROI is known, so the target is never larger than the visible
-    /// content (§16.2). `rect` holds the clip provisionally until then.
+    /// `world_clip`, returning its index in `offscreen_passes`. No GPU work and no
+    /// target declaration here: the ROI is only known at
+    /// [`Renderer::finalize_offscreen`], so the target is never larger than the
+    /// visible content (§16.2). `rect` holds the clip provisionally until then.
     fn open_offscreen(&mut self, world_clip: Rect, opacity: f32) -> usize {
         let idx = self.offscreen_passes.len();
         self.offscreen_passes.push(OffscreenPass {
-            texture: None,
-            bind_group: None,
+            base: None,
+            sample: None,
             viewport: [0.0, 0.0],
+            used: [0, 0],
             rect: world_clip,
             opacity,
         });
         idx
     }
 
-    /// Size the offscreen pass at `idx` to its tight content ROI, claim a pooled
-    /// render-target texture of exactly that extent, and repatch every recorded
-    /// child of the pass to the ROI top-left origin (§16.2). Called from
-    /// `LayerEnd` before [`close_offscreen`](Self::close_offscreen).
+    /// Size the offscreen pass at `idx` to its tight content ROI, declare the
+    /// transient target it writes, and repatch every recorded child of the pass to
+    /// the ROI top-left origin (§16.2). Called from `LayerEnd` before
+    /// [`close_offscreen`](Self::close_offscreen).
     ///
     /// The ROI is `content_union ∩ clip ∩ surface`: never the full clip (a small
     /// panel in a huge clip stays small) nor the full surface. An empty subtree
-    /// (or a clip that excludes all content) clamps to a 1×1 texture; the
-    /// composite then draws a degenerate quad.
+    /// (or a clip that excludes all content) clamps to a 1×1 target; the composite
+    /// then draws a degenerate quad.
+    ///
+    /// No GPU resource is created here. The pass takes the next timeline slot and
+    /// declares a *virtual* target of the ROI's size class against the frame-local
+    /// pool (§16.4); the concrete texture is picked once the whole frame's
+    /// lifetimes are known, in [`TransientTargets::assign`]. The pass viewport is
+    /// therefore the pooled extent (what the shaders map pixels to NDC against),
+    /// and `used` the tight ROI extent it actually writes at the target top-left.
     ///
     /// All children of one pass share a single origin (each subtracts the same
     /// value at [`lower_from_scene`](Self::lower_from_scene)), so shrinking the
     /// ROI top-left means rewriting that one origin — and the clip, recomputed
     /// from the world clip against the new origin — on every recorded child.
-    fn finalize_offscreen<B: GpuBackend>(
-        &mut self,
-        backend: &mut B,
-        idx: usize,
-        entry: &LayerEntry,
-        surface: Rect,
-    ) {
+    fn finalize_offscreen(&mut self, idx: usize, entry: &LayerEntry, surface: Rect) {
         let roi = entry.content_union.intersect(entry.clip).intersect(surface);
         let width = (roi.w.ceil() as u32).max(1);
         let height = (roi.h.ceil() as u32).max(1);
-        let pooled = self.claim_pooled_texture(backend, width, height);
+
+        let slot = self.timeline.len() as u32;
+        self.timeline.push(TimelineEntry::Offscreen(idx));
+        let base = self.transient.declare(
+            TargetDesc {
+                width,
+                height,
+                format: TextureFormat::Bgra8Unorm,
+                usage: TargetUsage::COLOR_ATTACHMENT,
+                samples: 1,
+                label: "offscreen-layer",
+            },
+            slot,
+        );
+        let phys = self.transient.phys_extent(base);
         let pass = &mut self.offscreen_passes[idx];
-        pass.texture = Some(pooled.texture);
-        pass.bind_group = Some(pooled.bind_group);
-        pass.viewport = [width as f32, height as f32];
+        pass.base = Some(base);
+        pass.sample = Some(base);
+        pass.viewport = [phys[0] as f32, phys[1] as f32];
+        pass.used = [width, height];
         pass.rect = roi;
 
         // Repatch this pass's recorded children to the ROI top-left origin, and
@@ -2334,108 +2430,96 @@ impl Renderer {
         // render and its composite. The plan is a pure function of the sigma and
         // the ROI extent; a sub-pixel blur plans no steps and leaves the pass
         // sampling its base texture unchanged.
-        self.build_blur(backend, idx, entry.blur_sigma, width, height);
+        self.build_blur(idx, entry.blur_sigma);
+
+        // Whatever the ladder left the composite sampling stays alive until the
+        // surface pass reads it, which is what pins a layer's final texture out of
+        // the alias pool for the rest of the frame.
+        let sample = self.offscreen_passes[idx]
+            .sample
+            .expect("offscreen pass declares its base target before finalize returns");
+        self.transient.read_at(sample, SURFACE_SLOT);
     }
 
     /// Realize the blur ladder for the offscreen pass at `idx`: plan the separable
-    /// steps for `sigma` over the `width`×`height` base ROI, claim one scratch
-    /// render target per step, chain the passes base → step0 → step1 → …, append a
-    /// [`BlurPass`] (with its [`BlurInstance`]) for each, and repoint the pass's
-    /// composite bind group to the final blurred texture (§16.2, E1.2).
+    /// steps for `sigma` over the base ROI, declare one transient target per step,
+    /// chain the passes base → step0 → step1 → …, append a [`BlurPass`] (with its
+    /// [`BlurInstance`]) for each, and repoint the pass's composite target at the
+    /// final blurred one (§16.2, E1.2).
     ///
-    /// A no-op plan (sub-pixel sigma) leaves `offscreen_passes[idx].bind_group`
-    /// pointing at the base texture, so the composite samples the unblurred
-    /// content — the blur silently degrades to a plain offscreen layer.
-    fn build_blur<B: GpuBackend>(
-        &mut self,
-        backend: &mut B,
-        idx: usize,
-        sigma: f32,
-        width: u32,
-        height: u32,
-    ) {
-        let plan = blur_plan(sigma, width, height);
+    /// A no-op plan (sub-pixel sigma) leaves `offscreen_passes[idx].sample` on the
+    /// base target, so the composite samples the unblurred content — the blur
+    /// silently degrades to a plain offscreen layer.
+    ///
+    /// Each step's quad covers the *used* extent of its target at the target's
+    /// top-left, and samples the *used* sub-rect of its source: pooled targets are
+    /// size-class buckets, so used ≤ physical and the uv window has to be
+    /// normalized against the physical source extent (as does the per-tap step
+    /// `dir`, which the plan hands over as a unit axis).
+    fn build_blur(&mut self, idx: usize, sigma: f32) {
+        let (base, used) = {
+            let pass = &self.offscreen_passes[idx];
+            (
+                pass.base
+                    .expect("offscreen pass target declared before its blur ladder is built"),
+                pass.used,
+            )
+        };
+        let plan = blur_plan(sigma, used[0], used[1]);
         if plan.is_empty() {
             return;
         }
 
-        // The source of step 0 is the base offscreen texture; each later step
-        // reads the target of the one before. Each step's `BlurInstance` is a
-        // full-target quad (`Geometry::Generated`, one instance) whose uv spans
-        // the whole source — the vertex stage is identical to Image's, so the
-        // rect covers the target and the uv covers the source `[0, 1]`.
-        let base = self.offscreen_passes[idx]
-            .bind_group
-            .expect("offscreen pass texture claimed before its blur ladder is built");
+        // The source of step 0 is the base offscreen target; each later step reads
+        // the target of the one before, and each takes the next timeline slot, so
+        // the planner sees a strictly ordered write-then-read chain and can never
+        // alias a step's source into its own target.
         let mut source = base;
+        let mut source_used = used;
         for step in &plan.steps {
-            let target = self.claim_pooled_texture(backend, step.width, step.height);
+            let slot = self.timeline.len() as u32;
+            self.timeline
+                .push(TimelineEntry::Blur(self.blur_passes.len()));
+            let target = self.transient.declare(
+                TargetDesc {
+                    width: step.width,
+                    height: step.height,
+                    format: TextureFormat::Bgra8Unorm,
+                    usage: TargetUsage::COLOR_ATTACHMENT,
+                    samples: 1,
+                    label: "blur-scratch",
+                },
+                slot,
+            );
+            self.transient.read_at(source, slot);
+
+            let src = self.transient.phys_extent(source);
+            let dst = self.transient.phys_extent(target);
             let instance = self.blur_scratch.len() as u32;
             self.blur_scratch.push(BlurInstance {
                 rect_pos: [0.0, 0.0],
                 rect_size: [step.width as f32, step.height as f32],
                 uv_pos: [0.0, 0.0],
-                uv_size: [1.0, 1.0],
-                dir: step.dir,
+                uv_size: [
+                    source_used[0] as f32 / src[0] as f32,
+                    source_used[1] as f32 / src[1] as f32,
+                ],
+                dir: [step.axis[0] / src[0] as f32, step.axis[1] / src[1] as f32],
                 sigma: step.sigma,
                 radius: step.radius,
             });
             self.blur_passes.push(BlurPass {
                 source,
-                target: target.texture,
-                viewport: [step.width as f32, step.height as f32],
+                target,
+                viewport: [dst[0] as f32, dst[1] as f32],
                 instance,
             });
-            source = target.bind_group;
+            source = target;
+            source_used = [step.width, step.height];
         }
 
-        // Composite now samples the final step's texture instead of the base.
-        self.offscreen_passes[idx].bind_group = Some(source);
-    }
-
-    /// Claim a pooled render-target texture of `width`×`height`, reusing an
-    /// unclaimed one of that size if present, else creating (and pooling) a new
-    /// one. Returns the texture and its sampling bind group.
-    fn claim_pooled_texture<B: GpuBackend>(
-        &mut self,
-        backend: &mut B,
-        width: u32,
-        height: u32,
-    ) -> PooledTexture {
-        // Scan the not-yet-claimed tail for a size match, swapping it into the
-        // claimed prefix so each pass gets a distinct texture.
-        for i in self.offscreen_pool_used..self.offscreen_pool.len() {
-            if self.offscreen_pool[i].width == width && self.offscreen_pool[i].height == height {
-                self.offscreen_pool.swap(self.offscreen_pool_used, i);
-                let pooled = PooledTexture {
-                    ..self.offscreen_pool[self.offscreen_pool_used]
-                };
-                self.offscreen_pool_used += 1;
-                return pooled;
-            }
-        }
-        let texture = backend.create_texture(&TextureDesc {
-            width,
-            height,
-            format: TextureFormat::Bgra8Unorm,
-            render_target: true,
-            label: "offscreen-layer",
-        });
-        let bind_group = backend.create_bind_group(&BindGroupDesc {
-            label: "offscreen-layer",
-            bindings: vec![Binding::Texture(texture), Binding::Sampler(self.sampler)],
-        });
-        let pooled = PooledTexture {
-            texture,
-            bind_group,
-            width,
-            height,
-        };
-        // Insert at the claimed boundary so used ones stay in the prefix.
-        self.offscreen_pool
-            .insert(self.offscreen_pool_used, PooledTexture { ..pooled });
-        self.offscreen_pool_used += 1;
-        pooled
+        // Composite now samples the final step's target instead of the base.
+        self.offscreen_passes[idx].sample = Some(source);
     }
 
     /// Close the offscreen pass at `idx`, recording a composite draw in the
@@ -2449,14 +2533,31 @@ impl Renderer {
     /// it draws into the parent target unclipped, since the offscreen texture
     /// already holds only the clipped subtree.
     ///
+    /// The pass wrote its ROI at the top-left of a size-class-bucketed pooled
+    /// target, so the composite samples the `used / physical` sub-rect rather than
+    /// the whole texture. That is the same texel mapping an exactly-sized target
+    /// gives (`uv_size = 1` over a `used`-wide texture), so nothing about edge
+    /// bleed changes: pixel centers stay inside `[0.5, used - 0.5]` texels.
+    ///
     /// [`lower_from_scene`]: Self::lower_from_scene
     fn close_offscreen(&mut self, idx: usize) {
         let pass = &self.offscreen_passes[idx];
+        let sample = pass
+            .sample
+            .expect("offscreen pass is finalized before it is closed");
+        // The *sampled* target's own used extent, not the base ROI's: a large-sigma
+        // ladder ends at a downsampled target, and the composite upsamples it back
+        // over the layer rect exactly as it did with unbucketed targets.
+        let used = self.transient.used_extent(sample);
+        let phys = self.transient.phys_extent(sample);
         let composite = ImageInstance {
             rect_pos: [pass.rect.x, pass.rect.y],
             rect_size: [pass.rect.w, pass.rect.h],
             uv_pos: [0.0, 0.0],
-            uv_size: [1.0, 1.0],
+            uv_size: [
+                used[0] as f32 / phys[0] as f32,
+                used[1] as f32 / phys[1] as f32,
+            ],
             color: [1.0, 1.0, 1.0, pass.opacity],
         };
         let bounds = crate::scene::bounds::Bounds::from_world(pass.rect, None, 0.0, 0.0);
@@ -2500,10 +2601,14 @@ impl Renderer {
 
     /// Build the draw list and hand it to the backend (no present).
     ///
-    /// Emits one [`RenderPass`] per offscreen texture (in creation order, cleared
-    /// transparent) followed by the surface pass, matching the `passes` ordering
-    /// contract (offscreen layers first, then main). Each offscreen pass uses its
-    /// own texture-extent viewport uniform; the surface pass uses `viewport`.
+    /// Emits one [`RenderPass`] per entry of this frame's offscreen `timeline` (in
+    /// timeline order, each target cleared transparent) followed by the surface
+    /// pass, matching the `passes` ordering contract (offscreen work in dependency
+    /// order, then main). The timeline is exactly the order the transient planner
+    /// did its lifetime analysis in, so every pass's source is written before it is
+    /// read and an aliased target is never read after being reclaimed. Each
+    /// offscreen pass uses its own pooled-extent viewport uniform; the surface pass
+    /// uses `viewport`.
     fn encode<B: GpuBackend>(
         &mut self,
         backend: &mut B,
@@ -2525,59 +2630,57 @@ impl Renderer {
         passes.clear();
 
         // Per-pass viewports. Index 0 is the surface; the rest map 1:1 to
-        // `offscreen_passes`. Their bytes are copied by value into each command.
+        // `timeline`. Their bytes are copied by value into each command.
         viewports.push(viewport);
-        for pass in &self.offscreen_passes {
-            viewports.push(pass.viewport);
-        }
-
-        // Offscreen passes first (textures cleared transparent), then the surface
-        // pass (cleared to the background). Each pass appends its commands to the
-        // flat `commands` buffer and records its range in a `RenderPass`.
-        for (i, pass) in self.offscreen_passes.iter().enumerate() {
-            let vp = viewports[i + 1];
-            let uniforms = InlineUniforms::new(bytemuck_viewport(&vp));
-            let first_command = commands.len() as u32;
-            for seg in self
-                .segments
-                .iter()
-                .filter(|seg| seg.target == PassTarget::Offscreen(i))
-            {
-                commands.push(self.command_for(seg, uniforms, vp));
-            }
-            passes.push(RenderPass {
-                target: RenderTarget::Texture(
-                    pass.texture
-                        .expect("offscreen pass finalized before encode"),
-                ),
-                load: LoadOp::Clear([0.0, 0.0, 0.0, 0.0]),
-                first_command,
-                command_count: commands.len() as u32 - first_command,
+        for entry in &self.timeline {
+            viewports.push(match *entry {
+                TimelineEntry::Offscreen(i) => self.offscreen_passes[i].viewport,
+                TimelineEntry::Blur(i) => self.blur_passes[i].viewport,
             });
         }
 
-        // The separable blur passes (§16.2, E1.2) run after every layer's content
-        // is rendered and before the surface composites it: each reads its source
-        // texture and writes one full-target quad into its (cleared) target. One
-        // RenderPass per pass keeps the read-after-write ordering explicit.
-        for pass in &self.blur_passes {
-            let vp = pass.viewport;
+        // The offscreen timeline first (every target cleared transparent), then the
+        // surface pass (cleared to the background). Each pass appends its commands
+        // to the flat `commands` buffer and records its range in a `RenderPass`.
+        for (slot, entry) in self.timeline.iter().enumerate() {
+            let vp = viewports[slot + 1];
             let uniforms = InlineUniforms::new(bytemuck_viewport(&vp));
             let first_command = commands.len() as u32;
-            commands.push(DrawCommand {
-                pipeline: self.blur_pipeline,
-                bind_group: Some(pass.source),
-                geometry: Geometry::Generated { count: 1 },
-                instance_buffer: self
-                    .blur_pool
-                    .buffer()
-                    .expect("blur pool buffer exists when a blur pass references it"),
-                instance_offset: pass.instance as usize * BLUR_STRIDE,
-                uniforms,
-                scissor: None,
-            });
+            let target = match *entry {
+                // A layer's own content: every segment routed to this pass.
+                TimelineEntry::Offscreen(i) => {
+                    for seg in self
+                        .segments
+                        .iter()
+                        .filter(|seg| seg.target == PassTarget::Offscreen(i))
+                    {
+                        commands.push(self.command_for(seg, uniforms, vp));
+                    }
+                    self.offscreen_passes[i]
+                        .base
+                        .expect("offscreen pass declares its target before encode")
+                }
+                // One step of a separable blur ladder (§16.2, E1.2): a single
+                // full-target quad reading the previous step's target.
+                TimelineEntry::Blur(i) => {
+                    let pass = &self.blur_passes[i];
+                    commands.push(DrawCommand {
+                        pipeline: self.blur_pipeline,
+                        bind_group: Some(self.transient.bind_group(pass.source)),
+                        geometry: Geometry::Generated { count: 1 },
+                        instance_buffer: self
+                            .blur_pool
+                            .buffer()
+                            .expect("blur pool buffer exists when a blur pass references it"),
+                        instance_offset: pass.instance as usize * BLUR_STRIDE,
+                        uniforms,
+                        scissor: None,
+                    });
+                    pass.target
+                }
+            };
             passes.push(RenderPass {
-                target: RenderTarget::Texture(pass.target),
+                target: RenderTarget::Texture(self.transient.texture(target)),
                 load: LoadOp::Clear([0.0, 0.0, 0.0, 0.0]),
                 first_command,
                 command_count: commands.len() as u32 - first_command,
@@ -3353,10 +3456,12 @@ mod tests {
 
         // Exactly one offscreen pass, sized to the tight content ROI — the 10×10
         // quad, not the 20×20 layer clip (§16.2): the target never exceeds the
-        // visible content.
+        // visible content. The *physical* target is the ROI's size class, since
+        // it comes from the frame-local alias pool (§16.4).
         assert_eq!(r.offscreen_passes.len(), 1);
         let pass = &r.offscreen_passes[0];
-        assert_eq!(pass.viewport, [10.0, 10.0]);
+        assert_eq!(pass.used, [10, 10]);
+        assert_eq!(pass.viewport, [16.0, 16.0]);
         assert_eq!(pass.opacity, 0.5);
 
         // The child quad routes to that offscreen pass, with its position shifted
@@ -3408,11 +3513,19 @@ mod tests {
             ],
         );
 
-        // Sized to the panel, never the 4000×4000 clip nor the 64×64 surface.
+        // Sized to the panel, never the 4000×4000 clip nor the 64×64 surface. The
+        // written region is exactly the ROI; the pooled texture behind it is the
+        // ROI's size class (§16.4), which is still far below the surface.
         assert_eq!(r.offscreen_passes.len(), 1);
-        assert_eq!(r.offscreen_passes[0].viewport, [10.0, 10.0]);
+        assert_eq!(r.offscreen_passes[0].used, [10, 10]);
+        assert_eq!(r.offscreen_passes[0].viewport, [16.0, 16.0]);
         // The transient-target budget reflects the tight size (§61 resource gate).
-        assert_eq!(r.frame_stats().transient_target_bytes, 10 * 10 * 4);
+        let bytes = r.frame_stats().transient_target_bytes;
+        assert_eq!(bytes, 16 * 16 * 4);
+        assert!(
+            bytes < 64 * 64 * 4 / 4,
+            "the pooled target stays a fraction of a full-surface one: {bytes}"
+        );
 
         // Origin repatched to the ROI top-left (the quad's own corner), so the
         // child lands at the texture origin.
@@ -3448,7 +3561,7 @@ mod tests {
             ],
         );
         assert_eq!(r2.frame_stats().culled_primitives, 1);
-        assert_eq!(r2.offscreen_passes[0].viewport, [10.0, 10.0]);
+        assert_eq!(r2.offscreen_passes[0].used, [10, 10]);
         let offscreen_children = r2
             .segments
             .iter()
@@ -3592,9 +3705,10 @@ mod tests {
         // ceil(3 * 4) = 12 taps each side, well under the 32 budget.
         assert_eq!(h.radius, 12.0);
         assert_eq!(v.radius, 12.0);
-        // First pass walks x, second walks y; each step is one source texel.
-        assert_eq!(h.dir, [1.0 / 40.0, 0.0]);
-        assert_eq!(v.dir, [0.0, 1.0 / 24.0]);
+        // First pass walks x, second walks y, as unit axes — the renderer divides
+        // by the *pooled* source extent when it builds the instance.
+        assert_eq!(h.axis, [1.0, 0.0]);
+        assert_eq!(v.axis, [0.0, 1.0]);
         assert_eq!(h.sigma, 4.0);
         assert_eq!(v.sigma, 4.0);
     }
@@ -3631,9 +3745,11 @@ mod tests {
         // The reduced-resolution blur radius is within budget.
         assert!(blur_h.radius as u32 <= BLUR_MAX_TAPS);
         assert!(blur_v.radius as u32 <= BLUR_MAX_TAPS);
-        // The blur passes walk one reduced-texel axis each.
-        assert_eq!(blur_h.dir, [1.0 / blur_h.width as f32, 0.0]);
-        assert_eq!(blur_v.dir, [0.0, 1.0 / blur_v.height as f32]);
+        // The blur passes walk one axis each; the resamples walk none.
+        assert_eq!(blur_h.axis, [1.0, 0.0]);
+        assert_eq!(blur_v.axis, [0.0, 1.0]);
+        assert_eq!(down_h.axis, [0.0, 0.0]);
+        assert_eq!(down_v.axis, [0.0, 0.0]);
     }
 
     /// A sub-pixel blur (`sigma <= BLUR_MIN_SIGMA`) is a visual no-op: the plan is
@@ -3783,7 +3899,10 @@ mod tests {
         r.upload(&mut gpu, &scene(4.0));
         let first = r.frame_stats();
         assert!(first.blur_passes >= 2);
-        let pool_after_first = r.offscreen_pool.len();
+        assert!(
+            first.transient_target_allocations > 0,
+            "the first frame has to mint its ladder's textures"
+        );
 
         r.upload(&mut gpu, &scene(4.0));
         let second = r.frame_stats();
@@ -3796,9 +3915,12 @@ mod tests {
             "the blur scratch footprint is stable at steady state"
         );
         assert_eq!(
-            r.offscreen_pool.len(),
-            pool_after_first,
+            second.transient_target_allocations, 0,
             "the second identical frame mints no new pooled textures"
+        );
+        assert_eq!(
+            second.transient_targets, first.transient_targets,
+            "and the pool neither grows nor shrinks"
         );
     }
 }

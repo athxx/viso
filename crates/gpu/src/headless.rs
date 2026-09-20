@@ -1426,8 +1426,14 @@ impl HeadlessRaster {
     /// [`fill_image`](Self::fill_image), then a 1D Gaussian tap loop walks the uv
     /// along `dir` (`u + i*dir[0]`, `v + i*dir[1]`), weighting each premultiplied
     /// texel by `exp(-(i*i)/(2*sigma*sigma))` and normalizing by the weight sum.
-    /// The result is premultiplied (no tint) and blended source-over. A clamp-to-
-    /// edge sampler handles borders; `sigma <= 0` degrades to a single center tap.
+    /// The result is premultiplied (no tint) and blended source-over; `sigma <= 0`
+    /// degrades to a single center tap.
+    ///
+    /// Taps are clamped to the `uv_pos`/`uv_size` sub-rect, inset by half a texel so
+    /// the outer texel row/column is held rather than blended with whatever lies
+    /// beyond it: a pooled render target is larger than the region written into it,
+    /// so the sampler's own clamp-to-edge would hold cleared padding, not the
+    /// content edge. This mirrors the Metal fragment body exactly.
     #[allow(clippy::too_many_arguments)]
     fn fill_blur(
         &mut self,
@@ -1493,6 +1499,14 @@ impl HeadlessRaster {
         };
         let two_sigma_sq = 2.0 * sigma * sigma;
 
+        // The tap window, inset half a texel inside the source sub-rect.
+        let half_texel = [0.5 / tw as f32, 0.5 / th as f32];
+        let lo = [uv_pos[0] + half_texel[0], uv_pos[1] + half_texel[1]];
+        let hi = [
+            (uv_pos[0] + uv_size[0] - half_texel[0]).max(lo[0]),
+            (uv_pos[1] + uv_size[1] - half_texel[1]).max(lo[1]),
+        ];
+
         for py in y0..y1 {
             for px in x0..x1 {
                 let fx = (px as f32 + 0.5 - pos[0]) / size[0];
@@ -1509,8 +1523,8 @@ impl HeadlessRaster {
                     } else {
                         1.0
                     };
-                    let su = u + fi * dir[0];
-                    let sv = v + fi * dir[1];
+                    let su = (u + fi * dir[0]).clamp(lo[0], hi[0]);
+                    let sv = (v + fi * dir[1]).clamp(lo[1], hi[1]);
                     let texel = sample_texel(&texels, tw, th, su, sv, &samp);
                     acc[0] += w * texel[0];
                     acc[1] += w * texel[1];

@@ -1705,10 +1705,53 @@ C0 + E0 frozen; builds on F1 fence/retire and F4 pool/batch.
         for Blur (no testdata dir); its MSL is validated structurally in-crate.
 
 ### E1.3 — Transient Target Planner
-- [ ] Lifetime analysis + size/format/sample compatibility + alias-reuse + frame-local pool
+- [x] Lifetime analysis + size/format/sample compatibility + alias-reuse + frame-local pool
       (§16.4) instead of per-effect `create_texture`/`destroy_texture`. Pool keyed by
       format / usage / size-class bucket / sample count. Never one texture per shadow /
       per clip / per material surface.
+  - [x] `crates/render/src/transient.rs`: `TransientTargets` — a virtual/physical split.
+        Two phases per frame: `declare(TargetDesc, first_write) -> TargetId` +
+        `read_at(id, slot)` record what a pass needs; `assign(backend, sampler,
+        timeline_len)` binds every virtual to a physical texture once the frame's shape
+        is known. Callers never touch `create_texture`/`destroy_texture`.
+  - [x] `size_class(n)`: round up to a sixteenth of the enclosing power of two, floor 16 —
+        ≤ 6.25% slack for large extents, ≤ 15 px for small ones, monotonic, and
+        overflow-safe (`checked_next_power_of_two` + `saturating_mul`). Turns a
+        per-frame-accidental extent into a stable reuse key instead of a cache miss.
+  - [x] `TargetKey { format, usage, samples, width, height }` — the compatibility key, on
+        the size class rather than the request. `TargetUsage` is a bit set
+        (`RENDER_TARGET` | `SAMPLED`) so a sampled-only target never aliases an
+        attachment. `samples` is keyed now and stays 1 until the RHI grows MSAA.
+  - [x] Lifetime = `[first_write, last_read]` over the frame's execution timeline:
+        `timeline: Vec<TimelineEntry>` records offscreen and blur passes in the order
+        `encode` emits them (appended at `LayerEnd` in post-order), and `SURFACE_SLOT`
+        marks a target the surface pass still samples, so a composited layer's texture
+        lives to the end of the frame.
+  - [x] Alias reuse: a virtual claims the first physical with an equal key whose
+        `free_at <= first_write`. Strict non-overlap, so a blur pass can never alias its
+        own source. A ping-pong chain of four passes needs two textures; an identical
+        second frame allocates none.
+  - [x] Idle retirement: a physical unclaimed for `TRANSIENT_TARGET_IDLE_FRAMES` (60) is
+        released through the epoch-deferred RHI (`destroy_bind_group`/`destroy_texture`),
+        so a brief topology change does not thrash and a shrinking pool does not leak.
+  - [x] Blur taps clamp to the used sub-rect: a bucketed physical target is wider than
+        the ROI written into it, so `blur_ir()` gained a `uv_bounds` varying and both
+        the MSL fragment and headless `fill_blur` clamp taps to a half-texel inset of
+        `(uv_pos, uv_pos + uv_size)`. Bit-identical when the sub-rect is the whole
+        texture; no instance-ABI change (`BlurInstance` untouched).
+  - [x] Physical vs used extent kept distinct throughout: pass viewports and blur
+        `dir` steps use the physical extent, composite `rect_size` and uv use the used
+        ROI (`used_extent` / `phys_extent`), so the composited image is unchanged from
+        E1.1 and the bucket padding is never sampled.
+  - [x] Counters (§30/§61): `FrameStats::transient_targets` / `transient_peak_bytes`
+        (difference-sweep high-water mark over the timeline, not the sum) /
+        `transient_pool_bytes` / `transient_target_allocations`; `inspect.rs` prints
+        them and `counter_contract_frozen.rs` pins them in the same commit.
+  - [x] Tests: `disjoint_lifetimes_alias_one_texture`, `overlapping_lifetimes_never_alias`,
+        `incompatible_keys_never_share`, `steady_frames_allocate_nothing`,
+        `unclaimed_physicals_retire_after_an_idle_window`,
+        `size_classes_round_up_with_bounded_slack`; the existing ROI/blur renderer tests
+        now assert the used ROI and its size class separately.
 
 ### E1.4 — Demand-driven RenderGraph
 - [ ] Passes emerge from real needs (main / mask / shadow-blur / offscreen-group) then

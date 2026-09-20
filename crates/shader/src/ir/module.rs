@@ -312,6 +312,12 @@ pub fn blur_ir() -> ShaderIr {
         Varying::new("dir", IrType::F32X2, "", "per-tap step in normalized uv"),
         Varying::new("sigma", IrType::F32, "", "Gaussian sigma in source texels"),
         Varying::new("radius", IrType::F32, "", "tap radius (taps each side)"),
+        Varying::new(
+            "uv_bounds",
+            IrType::F32X4,
+            "",
+            "source sub-rect the taps clamp to: (min_uv, max_uv)",
+        ),
     ];
     ShaderIr {
         kind: PrimitiveKind::Blur,
@@ -1367,22 +1373,31 @@ out.uv = float2(inst.uv_pos) + corner * float2(inst.uv_size);
 out.dir = float2(inst.dir);
 out.sigma = float(inst.sigma);
 out.radius = float(inst.radius);
+out.uv_bounds = float4(float2(inst.uv_pos),
+                       float2(inst.uv_pos) + float2(inst.uv_size));
 return out;";
 
 const BLUR_FRAGMENT_BODY: &str = "\
 // Separable 1D Gaussian tap loop along `dir` (normalized uv step). The source
 // texel is premultiplied linear; weights are exp(-(i*i)/(2*sigma*sigma)),
-// normalized by their sum. sigma<=0 degrades to a single center tap. The
-// clamp-to-edge sampler handles borders.
+// normalized by their sum. sigma<=0 degrades to a single center tap.
+//
+// Taps are clamped to the source sub-rect, inset by half a texel so the outer
+// texel row/column is held rather than blended with whatever lies beyond it:
+// a pooled render target is larger than the region written into it, so the
+// sampler's own clamp-to-edge would hold cleared padding, not the content edge.
 float sigma = in.sigma;
 int R = (sigma > 0.0) ? int(in.radius) : 0;
 float two_sigma_sq = 2.0 * sigma * sigma;
+float2 half_texel = 0.5 / float2(float(tex.get_width()), float(tex.get_height()));
+float2 lo = in.uv_bounds.xy + half_texel;
+float2 hi = max(in.uv_bounds.zw - half_texel, lo);
 float4 acc = float4(0.0);
 float wsum = 0.0;
 for (int i = -R; i <= R; ++i) {
     float fi = float(i);
     float w = (two_sigma_sq > 0.0) ? exp(-(fi * fi) / two_sigma_sq) : 1.0;
-    float2 suv = in.uv + fi * in.dir;
+    float2 suv = clamp(in.uv + fi * in.dir, lo, hi);
     acc += w * tex.sample(samp, suv);
     wsum += w;
 }
