@@ -819,6 +819,14 @@ fn nested_layer_scene(depth: usize, opacity: f32) -> Vec<Primitive> {
 /// pool is exercised in breadth (many concurrent same-size targets) at
 /// `opacity < 1.0`.
 fn sibling_layer_scene(count: usize, opacity: f32) -> Vec<Primitive> {
+    blurred_sibling_layer_scene(count, opacity, 0.0)
+}
+
+/// [`sibling_layer_scene`] with each layer's content blurred at `sigma`: the
+/// same flat run of small ROIs, but every scope now needs an offscreen target
+/// *plus* its ladder's scratch. At `sigma > 0` this is the "many small-ROI
+/// blurs" row of the §31 matrix.
+fn blurred_sibling_layer_scene(count: usize, opacity: f32, sigma: f32) -> Vec<Primitive> {
     let cols = (count as f64).sqrt().ceil() as usize;
     let mut scene = Vec::with_capacity(count * 3);
     for i in 0..count {
@@ -832,7 +840,7 @@ fn sibling_layer_scene(count: usize, opacity: f32) -> Vec<Primitive> {
                 h: 3.0,
             },
             opacity,
-            blur_sigma: 0.0,
+            blur_sigma: sigma,
         }));
         scene.push(layer_tile(i, col * 4.0 + 0.5, row * 4.0 + 0.5));
         scene.push(Primitive::LayerEnd);
@@ -1770,6 +1778,420 @@ fn assert_path_shadow_reuse_is_local() {
     );
 }
 
+// ---------------------------------------------------------------------------
+// E1.5 — the §31 blur / transient-resource gate. Three proofs, all read off
+// `FrameStats` on a warmed renderer:
+//
+// * **Blur tiers** — small / medium / large sigma on one ROI-sized layer. The
+//   ladder's pass count is a function of *tier*, never of sigma: a blur is
+//   either skipped (sub-pixel), two full-resolution separable passes, or a
+//   four-step downsample-then-blur ladder. Crucially the large tier addresses
+//   *fewer* scratch bytes than the medium one despite twice the passes, because
+//   it runs at reduced extent (§16.3).
+// * **Many small-ROI blurs** — a flat run of independently blurred layers. Each
+//   pays its own offscreen + ladder, but the transient pool aliases them down:
+//   the pooled physical count and the live-set peak stay far below the bytes the
+//   passes address (§16.4/§17.4).
+// * **Idle blurred scene** — a static scene holding a gradient LUT, a
+//   path-shadow coverage mask, analytic shadows and a blur ladder inside one
+//   layer rebuilds *nothing* on a repeat frame: no mask, no tessellation, no
+//   upload, no pooled allocation, no graph recompile, identical `FrameStats`.
+//
+// NOT observable here (flagged, not asserted): on-device shaded-pixel time per
+// tier — the sigma at which downsampling beats a wider kernel is reasoned from
+// the tap budget and asserted only as *pass and byte structure*, never as Metal
+// time (§7.3/§36). "Does not continuously submit" is a present-loop property
+// owned by `runtime/benches/frame_loop.rs::assert_idle_does_no_work`; from the
+// render crate only "an idle upload does no work" is visible. `HeadlessRaster`
+// is a CPU rasterizer with no bandwidth or overdraw counter, so the bandwidth
+// saving a reduced-extent ladder buys is inferred from target bytes, not
+// measured.
+// ---------------------------------------------------------------------------
+
+/// The blurred layer's ROI for the tier gate: a 64-pixel square, fully covered
+/// by its content and landing exactly on a pool size class, so the tier
+/// comparison is about the ladder and not about bucket slack.
+const BLUR_ROI: f32 = 64.0;
+
+/// One opaque layer blurred at `sigma`, its clip exactly covered by a single
+/// quad — so the tight ROI is `BLUR_ROI` square and the frame is one offscreen
+/// pass plus whatever ladder `sigma` selects.
+fn blurred_layer_scene(sigma: f32) -> Vec<Primitive> {
+    let rect = Rect {
+        x: 0.0,
+        y: 0.0,
+        w: BLUR_ROI,
+        h: BLUR_ROI,
+    };
+    vec![
+        Primitive::Layer(LayerClip {
+            clip: rect,
+            opacity: 1.0,
+            blur_sigma: sigma,
+        }),
+        Primitive::Quad(Quad {
+            rect,
+            color: Rgba {
+                r: 0.85,
+                g: 0.45,
+                b: 0.2,
+                a: 1.0,
+            },
+            radius: 0.0,
+            border: Border::NONE,
+        }),
+        Primitive::LayerEnd,
+    ]
+}
+
+/// A blur tier as the gate observes it: the authored sigma and the number of
+/// ladder passes it must plan.
+struct BlurTier {
+    label: &'static str,
+    sigma: f32,
+    passes: u32,
+}
+
+/// E1.5 gate, part 1 (§16.3/§31): the ladder's cost is set by tier, not by
+/// sigma. Every tier is one offscreen pass; the ladder adds 0, 2 or 4 passes and
+/// never more, and the compiled plan is exactly `offscreen + rungs + surface`.
+/// Across tiers the scratch footprint is *non-increasing* in sigma — the large
+/// tiers downsample, so a 24-sigma blur addresses fewer bytes than a 10-sigma
+/// one even though it runs twice the passes.
+fn assert_blur_ladder_tiers_scale() {
+    const TIERS: [BlurTier; 5] = [
+        BlurTier {
+            label: "sub-pixel",
+            sigma: 0.5,
+            passes: 0,
+        },
+        BlurTier {
+            label: "small",
+            sigma: 2.0,
+            passes: 2,
+        },
+        BlurTier {
+            label: "medium",
+            sigma: 10.0,
+            passes: 2,
+        },
+        BlurTier {
+            label: "large",
+            sigma: 24.0,
+            passes: 4,
+        },
+        BlurTier {
+            label: "huge",
+            sigma: 64.0,
+            passes: 4,
+        },
+    ];
+    let roi_bytes = (BLUR_ROI as usize) * (BLUR_ROI as usize) * 4;
+    let mut scratch = [0usize; TIERS.len()];
+
+    for (i, tier) in TIERS.iter().enumerate() {
+        let mut h = setup_scene(blurred_layer_scene(tier.sigma));
+        frame(&mut h);
+        frame(&mut h);
+
+        let textures = h.gpu.texture_count();
+        let baseline = h.renderer.frame_stats();
+        let label = tier.label;
+
+        assert_eq!(
+            baseline.offscreen_passes, 1,
+            "{label}: a blurred layer is exactly one offscreen pass, whatever \
+             the tier (§16.2)"
+        );
+        assert_eq!(
+            baseline.blur_passes, tier.passes,
+            "{label} (sigma {}): the ladder plans {} pass(es)",
+            tier.sigma, tier.passes
+        );
+        assert_eq!(
+            baseline.render_passes,
+            2 + tier.passes as usize,
+            "{label}: the compiled plan is the offscreen pass + each ladder rung \
+             + the surface pass (§16.1)"
+        );
+        assert_eq!(
+            baseline.transient_target_bytes, roi_bytes,
+            "{label}: the layer's target is its tight ROI's size class, \
+             independent of sigma (§16.4)"
+        );
+        assert!(
+            baseline.transient_peak_bytes > 0
+                && baseline.transient_peak_bytes <= baseline.transient_pool_bytes,
+            "{label}: the live-set peak is real and never exceeds the pool it is \
+             drawn from ({} vs {})",
+            baseline.transient_peak_bytes,
+            baseline.transient_pool_bytes
+        );
+
+        // Steady state: an unchanged blurred layer re-plans nothing — same
+        // ladder, same pooled targets, no new texture, no graph recompile.
+        for f in 0..2 {
+            h.renderer.upload(&mut h.gpu, &h.scene);
+            let steady = h.renderer.frame_stats();
+            assert_eq!(
+                steady, baseline,
+                "{label} idle frame {f}: every counter must reproduce the warmed \
+                 baseline"
+            );
+            assert_eq!(
+                steady.transient_target_allocations, 0,
+                "{label}: a steady blurred frame mints no pooled texture (§17.4)"
+            );
+            assert_eq!(
+                steady.render_graph_compiles, 0,
+                "{label}: the topology is unchanged, so the pass plan is reused \
+                 (§16.1)"
+            );
+            assert_eq!(
+                h.gpu.texture_count(),
+                textures,
+                "{label}: a steady blurred frame creates no backend texture"
+            );
+        }
+        scratch[i] = baseline.blur_target_bytes;
+    }
+
+    // The tier structure, read as scratch bytes. This is the whole point of the
+    // ladder: past the tap budget, cost stops growing with sigma and starts
+    // *shrinking*, because the blur moves to a smaller extent.
+    assert_eq!(
+        scratch[0], 0,
+        "a sub-pixel blur is a visual no-op: it addresses no scratch at all"
+    );
+    assert_eq!(
+        scratch[1], scratch[2],
+        "small and medium blurs share one realization — two full-resolution \
+         separable passes — so their scratch footprint is identical"
+    );
+    assert_eq!(
+        scratch[2],
+        2 * roi_bytes,
+        "two full-resolution rungs address two ROI-sized targets"
+    );
+    assert!(
+        scratch[3] < scratch[2],
+        "the large tier's four reduced-extent rungs address *fewer* scratch \
+         bytes than the medium tier's two full-resolution ones ({} vs {}) — \
+         downsampling is the point (§16.3)",
+        scratch[3],
+        scratch[2]
+    );
+    assert!(
+        scratch[4] <= scratch[3],
+        "a larger sigma downsamples further, so scratch never grows with sigma \
+         ({} vs {})",
+        scratch[4],
+        scratch[3]
+    );
+}
+
+/// The "many small-ROI blurs" fan-out: enough independently blurred layers that
+/// naive per-layer allocation would be obvious, small enough to stay inside the
+/// bench surface.
+const BLUR_SIBLINGS: usize = 64;
+
+/// The sigma for the fan-out rows: comfortably inside the tap budget, so every
+/// layer plans the two-pass full-resolution ladder and the gate measures pooling
+/// rather than tier selection.
+const BLUR_SIBLING_SIGMA: f32 = 2.0;
+
+/// E1.5 gate, part 2 (§16.4/§17.4/§31): [`BLUR_SIBLINGS`] small-ROI blurs each
+/// pay their own offscreen pass and their own two-rung ladder, but the transient
+/// planner aliases their targets: the pooled physical count is a small constant
+/// above the number of targets that must survive to the surface pass, and the
+/// live-set peak is a fraction of the bytes the passes address. Steady frames
+/// then reproduce the whole `FrameStats` exactly with zero new allocations.
+fn assert_many_small_roi_blurs_bound_transient_memory() {
+    let mut h = setup_scene(blurred_sibling_layer_scene(
+        BLUR_SIBLINGS,
+        1.0,
+        BLUR_SIBLING_SIGMA,
+    ));
+    frame(&mut h);
+    frame(&mut h);
+
+    let textures = h.gpu.texture_count();
+    let baseline = h.renderer.frame_stats();
+
+    assert_eq!(
+        baseline.offscreen_passes, BLUR_SIBLINGS,
+        "every blurred layer is its own offscreen pass"
+    );
+    assert_eq!(
+        baseline.blur_passes as usize,
+        2 * BLUR_SIBLINGS,
+        "each layer plans a horizontal + vertical rung at this sigma"
+    );
+    assert_eq!(
+        baseline.render_passes,
+        3 * BLUR_SIBLINGS + 1,
+        "the plan is one offscreen + two rungs per layer, plus the surface pass"
+    );
+
+    // Virtual targets the frame declares: a base plus one per rung, per layer.
+    // The resource gate *records* what that costs, since the absolute numbers
+    // are the interesting output, not just the inequalities below.
+    let virtuals = 3 * BLUR_SIBLINGS;
+    let addressed = baseline.transient_target_bytes + baseline.blur_target_bytes;
+    println!(
+        "E1.5 resource gate: {BLUR_SIBLINGS} small-ROI blurs -> \
+         {} pooled targets for {virtuals} declared, peak {} B live, \
+         pool {} B resident, {} B addressed by passes",
+        baseline.transient_targets,
+        baseline.transient_peak_bytes,
+        baseline.transient_pool_bytes,
+        addressed
+    );
+
+    assert!(
+        baseline.transient_targets < virtuals,
+        "the pool must alias: {} physical targets for {virtuals} declared \
+         virtuals (§16.4)",
+        baseline.transient_targets
+    );
+    assert!(
+        baseline.transient_targets <= BLUR_SIBLINGS + 8,
+        "only each layer's *final* rung has to survive to the surface pass; \
+         bases and intermediate rungs die immediately and alias, so the pool is \
+         ~one target per layer, not three ({} physicals)",
+        baseline.transient_targets
+    );
+    assert!(
+        baseline.transient_peak_bytes * 2 < addressed,
+        "the concurrent live set is a fraction of the bytes the passes address \
+         ({} B peak vs {addressed} B addressed) — lifetimes, not pass count, \
+         set the memory bill (§16.4)",
+        baseline.transient_peak_bytes
+    );
+    assert!(
+        baseline.transient_peak_bytes <= baseline.transient_pool_bytes,
+        "the peak live set never exceeds resident pool bytes ({} vs {})",
+        baseline.transient_peak_bytes,
+        baseline.transient_pool_bytes
+    );
+
+    for f in 0..2 {
+        h.renderer.upload(&mut h.gpu, &h.scene);
+        let steady = h.renderer.frame_stats();
+        assert_eq!(
+            steady, baseline,
+            "idle frame {f}: {BLUR_SIBLINGS} blurred layers must reproduce every \
+             counter of the warmed baseline"
+        );
+        assert_eq!(
+            steady.uploaded_ranges, 0,
+            "an unchanged blurred fan-out uploads zero ranges (§9.1)"
+        );
+        assert_eq!(
+            steady.transient_target_allocations, 0,
+            "a steady fan-out mints no pooled texture (§17.4)"
+        );
+        assert_eq!(
+            h.gpu.texture_count(),
+            textures,
+            "the pool neither grows nor churns across steady frames"
+        );
+    }
+}
+
+/// A static "app screen" inside one blurred translucent layer: a bounded
+/// gradient palette (LUT rows), a shadowed path (coverage masks + tessellation),
+/// and a run of analytic shadows — every effect cache the renderer keeps, all
+/// under a ladder. Warming this populates all of them at once, so a later idle
+/// frame that rebuilds *any* of them shows up as a single counter regression.
+fn idle_effect_scene(sigma: f32) -> Vec<Primitive> {
+    let mut scene = vec![Primitive::Layer(LayerClip {
+        clip: Rect {
+            x: 0.0,
+            y: 0.0,
+            w: W as f32,
+            h: H as f32,
+        },
+        opacity: 0.85,
+        blur_sigma: sigma,
+    })];
+    scene.extend(gradient_grid_scene(LUT_PALETTE));
+    scene.push(shadowed_path_at(8.0, 8.0, 0.5, [3.0, 4.0]));
+    scene.extend(analytic_shadow_grid_scene(8));
+    scene.push(Primitive::LayerEnd);
+    scene
+}
+
+/// E1.5 gate, part 3 (§7.1/§9.1/§16.1/§31): a static idle scene rebuilds no
+/// cache. With gradient LUT rows, a path-shadow coverage mask, analytic shadows
+/// and a blur ladder all live, repeat uploads of the unchanged scene build zero
+/// masks, tessellate zero paths, upload zero bytes, allocate zero pooled
+/// targets, recompile zero pass plans, and report an identical [`FrameStats`].
+fn assert_idle_blurred_scene_rebuilds_nothing() {
+    let mut h = setup_scene(idle_effect_scene(6.0));
+    frame(&mut h);
+    frame(&mut h);
+
+    let textures = h.gpu.texture_count();
+    let buffers = h.gpu.buffer_count();
+    let baseline = h.renderer.frame_stats();
+    assert!(
+        baseline.blur_passes > 0,
+        "the idle scene must actually carry a blur ladder to be worth gating"
+    );
+    assert!(
+        baseline.offscreen_passes > 0,
+        "the idle scene must actually composite through an offscreen target"
+    );
+
+    for f in 0..4 {
+        h.renderer.upload(&mut h.gpu, &h.scene);
+        let idle = h.renderer.frame_stats();
+        assert_eq!(
+            idle, baseline,
+            "idle frame {f}: an unchanged effect-heavy scene must reproduce every \
+             counter exactly"
+        );
+        assert_eq!(
+            idle.clip_mask_builds, 0,
+            "idle frame {f}: no clip or shadow coverage mask is rebuilt \
+             (§14.4/§15.4)"
+        );
+        assert_eq!(
+            idle.path_tessellations, 0,
+            "idle frame {f}: no path is re-tessellated (§16.3)"
+        );
+        assert_eq!(
+            idle.uploaded_ranges, 0,
+            "idle frame {f}: no instance range is re-uploaded (§9.1)"
+        );
+        assert_eq!(
+            idle.gpu_upload_bytes, 0,
+            "idle frame {f}: no gradient LUT row is re-baked and no instance byte \
+             re-sent (§9.1)"
+        );
+        assert_eq!(
+            idle.transient_target_allocations, 0,
+            "idle frame {f}: the ladder's targets come back from the pool (§17.4)"
+        );
+        assert_eq!(
+            idle.render_graph_compiles, 0,
+            "idle frame {f}: the topology is unchanged, so the compiled plan is \
+             reused (§16.1)"
+        );
+        assert_eq!(
+            h.gpu.texture_count(),
+            textures,
+            "idle frame {f}: no backend texture is created"
+        );
+        assert_eq!(
+            h.gpu.buffer_count(),
+            buffers,
+            "idle frame {f}: no backend buffer is created"
+        );
+    }
+}
+
 /// Lower + upload + submit one frame of the scene.
 fn frame(h: &mut Harness) {
     h.renderer.upload(&mut h.gpu, &h.scene);
@@ -1941,6 +2363,14 @@ fn bench_steady_state(c: &mut Criterion) {
     // its mask across color/offset changes and rebuilds only the moved path.
     assert_analytic_shadow_lane_scales();
     assert_path_shadow_reuse_is_local();
+
+    // E1.5 gate (§16.3/§16.4/§31): the blur ladder's cost is set by tier and its
+    // scratch shrinks as sigma grows past the tap budget; a fan-out of small-ROI
+    // blurs aliases down to ~one pooled target per layer; and a static
+    // effect-heavy blurred scene rebuilds no cache when it idles.
+    assert_blur_ladder_tiers_scale();
+    assert_many_small_roi_blurs_bound_transient_memory();
+    assert_idle_blurred_scene_rebuilds_nothing();
 
     let mut h = setup();
     // Warm up so the measured iterations are the reuse path, not first growth.
@@ -2143,6 +2573,53 @@ fn bench_steady_state(c: &mut Criterion) {
                 .renderer
                 .upload(black_box(&mut cards.gpu), black_box(&cards.scene))
         });
+    });
+
+    // E1.5 timing (§16.3/§31): the blur tiers and the small-ROI fan-out. `upload`
+    // is where the ladder is planned and its targets are claimed; `frame` also
+    // encodes every rung, so the pair separates plan reuse from multi-pass encode
+    // cost. Neither is device shaded-pixel time (§36).
+    let mut blur_small = setup_scene(blurred_layer_scene(2.0));
+    frame(&mut blur_small);
+    frame(&mut blur_small);
+    c.bench_function("blur_small_upload_steady", |b| {
+        b.iter(|| {
+            blur_small
+                .renderer
+                .upload(black_box(&mut blur_small.gpu), black_box(&blur_small.scene))
+        });
+    });
+
+    let mut blur_large = setup_scene(blurred_layer_scene(24.0));
+    frame(&mut blur_large);
+    frame(&mut blur_large);
+    c.bench_function("blur_large_upload_steady", |b| {
+        b.iter(|| {
+            blur_large
+                .renderer
+                .upload(black_box(&mut blur_large.gpu), black_box(&blur_large.scene))
+        });
+    });
+    c.bench_function("blur_large_frame", |b| {
+        b.iter(|| frame(black_box(&mut blur_large)));
+    });
+
+    let mut many_blurs = setup_scene(blurred_sibling_layer_scene(
+        BLUR_SIBLINGS,
+        1.0,
+        BLUR_SIBLING_SIGMA,
+    ));
+    frame(&mut many_blurs);
+    frame(&mut many_blurs);
+    c.bench_function("many_small_blurs_upload_steady", |b| {
+        b.iter(|| {
+            many_blurs
+                .renderer
+                .upload(black_box(&mut many_blurs.gpu), black_box(&many_blurs.scene))
+        });
+    });
+    c.bench_function("many_small_blurs_frame", |b| {
+        b.iter(|| frame(black_box(&mut many_blurs)));
     });
 }
 

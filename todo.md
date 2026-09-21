@@ -1817,10 +1817,40 @@ C0 + E0 frozen; builds on F1 fence/retire and F4 pool/batch.
         path keeps discrete render targets and is not pushed into a tile model.
 
 ### E1.5 — §31 gate
-- [ ] Benchmark gate (§31): small / medium / large blur; many small-ROI blurs. Resource
+- [x] Benchmark gate (§31): small / medium / large blur; many small-ROI blurs. Resource
       gate records transient render-target peak bytes + steady occupancy. Static/idle scene
       does not rebuild clip/shadow/gradient cache and does not continuously submit.
       High-refresh.
+  - [x] Blur tiers gated in `render/benches/renderer_steady_state.rs` over one 64x64-ROI
+        layer at sigma 0.5 / 2 / 10 / 24 / 64: every tier is exactly one offscreen pass,
+        the ladder plans 0 / 2 / 2 / 4 / 4 passes, and the compiled plan is exactly
+        `offscreen + rungs + surface`. Pass count is a function of tier, never of sigma.
+  - [x] Scratch footprint asserted non-increasing in sigma: sub-pixel addresses 0 bytes,
+        small == medium (two full-resolution rungs = 2x the ROI), and the large tier's
+        four reduced-extent rungs address strictly *fewer* bytes than medium's two
+        full-resolution ones (20480 vs 32768), with the huge tier lower again (7168).
+  - [x] Many small-ROI blurs: 64 sibling blurred layers each pay their own offscreen +
+        two rungs (192 declared virtuals), but the pool aliases them to 65 physical
+        targets — only each layer's final rung survives to the surface pass.
+  - [x] Resource gate records the numbers it asserts: pooled targets, peak live bytes,
+        resident pool bytes and bytes addressed by passes are printed, and the peak live
+        set is asserted at under half the addressed bytes (66560 B vs 196608 B) —
+        lifetimes, not pass count, set the memory bill.
+  - [x] Static/idle scene: one blurred translucent layer holding a bounded gradient-LUT
+        palette, a shadowed path and analytic shadows rebuilds nothing across repeat
+        uploads — 0 clip/shadow mask builds, 0 tessellations, 0 uploaded ranges, 0 upload
+        bytes, 0 pooled allocations, 0 graph recompiles, identical `FrameStats`, and no
+        backend texture or buffer created.
+  - [x] Timing rows added for the tiers and the fan-out (`blur_small_upload_steady`,
+        `blur_large_upload_steady`, `blur_large_frame`, `many_small_blurs_upload_steady`,
+        `many_small_blurs_frame`) so plan reuse in `upload` is separated from multi-pass
+        encode in `submit`.
+  - [x] Flagged, not asserted: on-device shaded-pixel time per tier (the sigma crossover
+        is reasoned from the tap budget, not measured on Metal); "does not continuously
+        submit" and high-refresh cadence are present-loop properties owned by
+        `runtime/benches/frame_loop.rs::assert_idle_does_no_work`; `HeadlessRaster` has no
+        bandwidth or overdraw counter, so a reduced-extent ladder's bandwidth saving is
+        inferred from target bytes (§7.3/§36).
 
 ### E1 Done
 - [ ] offscreen ROI.
