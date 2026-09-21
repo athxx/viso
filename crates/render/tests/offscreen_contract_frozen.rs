@@ -58,6 +58,21 @@ fn rect(x: f32, y: f32, w: f32, h: f32) -> Rect {
     Rect { x, y, w, h }
 }
 
+/// A quad strictly inside `r`, so a group containing both provably has
+/// overlapping children (§14.5) and cannot have its opacity pushed down into
+/// them. Since the inner quad adds nothing to the union, every ROI byte assertion
+/// is the same as for `r` alone — which is the point: these fixtures pin the
+/// *target sizing*, and the planner must not be able to sidestep them by
+/// eliminating the layer they size.
+fn contained(r: Rect) -> Primitive {
+    quad(rect(
+        r.x + r.w * 0.25,
+        r.y + r.h * 0.25,
+        (r.w * 0.5).max(1.0),
+        (r.h * 0.5).max(1.0),
+    ))
+}
+
 /// A layer that goes offscreen for `opacity`, with no blur.
 fn layer(clip: Rect, opacity: f32) -> Primitive {
     Primitive::Layer(LayerClip {
@@ -99,6 +114,7 @@ fn roi_is_bounded_by_layer_content() {
         &[
             layer(rect(0.0, 0.0, 512.0, 512.0), 0.5),
             quad(rect(100.0, 100.0, 40.0, 24.0)),
+            contained(rect(100.0, 100.0, 40.0, 24.0)),
             Primitive::LayerEnd,
         ],
     );
@@ -125,6 +141,7 @@ fn roi_is_bounded_by_the_layer_clip() {
         &[
             layer(rect(10.0, 10.0, 40.0, 24.0), 0.5),
             quad(rect(0.0, 0.0, 400.0, 400.0)),
+            contained(rect(0.0, 0.0, 400.0, 400.0)),
             Primitive::LayerEnd,
         ],
     );
@@ -141,6 +158,7 @@ fn roi_is_bounded_by_the_surface() {
         &[
             layer(rect(-500.0, -500.0, 2000.0, 2000.0), 0.5),
             quad(rect(-100.0, -100.0, 1000.0, 1000.0)),
+            contained(rect(-100.0, -100.0, 1000.0, 1000.0)),
             Primitive::LayerEnd,
         ],
     );
@@ -156,6 +174,7 @@ fn roi_is_resolved_at_layer_end() {
     let one = &[
         layer(rect(0.0, 0.0, 256.0, 256.0), 0.5),
         quad(rect(0.0, 0.0, 16.0, 16.0)),
+        contained(rect(0.0, 0.0, 16.0, 16.0)),
         Primitive::LayerEnd,
     ];
     r.upload(&mut gpu, one);
@@ -164,6 +183,7 @@ fn roi_is_resolved_at_layer_end() {
     let two = &[
         layer(rect(0.0, 0.0, 256.0, 256.0), 0.5),
         quad(rect(0.0, 0.0, 16.0, 16.0)),
+        contained(rect(0.0, 0.0, 16.0, 16.0)),
         quad(rect(200.0, 0.0, 16.0, 16.0)),
         Primitive::LayerEnd,
     ];
@@ -269,6 +289,7 @@ fn a_subpixel_blur_stays_inline() {
                 backdrop_sigma: 0.0,
             }),
             quad(rect(0.0, 0.0, 64.0, 64.0)),
+            contained(rect(0.0, 0.0, 64.0, 64.0)),
             Primitive::LayerEnd,
         ],
     );
@@ -804,6 +825,7 @@ fn a_real_frame_plans_exactly_the_passes_it_needs() {
             Primitive::LayerEnd,
             layer(rect(64.0, 0.0, 64.0, 64.0), 0.5),
             quad(rect(64.0, 0.0, 64.0, 64.0)),
+            contained(rect(64.0, 0.0, 64.0, 64.0)),
             Primitive::LayerEnd,
         ],
     );

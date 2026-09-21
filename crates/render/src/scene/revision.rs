@@ -93,6 +93,30 @@ impl Revisions {
     pub fn bump_visibility(&mut self) {
         self.visibility = self.visibility.wrapping_add(1);
     }
+
+    /// One monotone number that moves whenever *any* plane moves: the sum of all
+    /// seven counters.
+    ///
+    /// This is deliberately not a replacement for the planes — a consumer that
+    /// depends on geometry alone must still read `geometry`, or a recolor would
+    /// look like a reshape (the exact collapse this module exists to avoid). It
+    /// is the stamp for consumers whose dependency is "the pixels under this
+    /// rect", where every plane matters equally: a backdrop capture cannot tell a
+    /// moved quad from a recolored one, both change what it samples (§3202).
+    ///
+    /// Monotone because each plane only ever advances, so a stamp taken later is
+    /// never below one taken earlier, and `max` over a set of stamps is the
+    /// newest of them.
+    #[inline]
+    pub fn content(&self) -> u64 {
+        self.geometry
+            .wrapping_add(self.paint)
+            .wrapping_add(self.transform)
+            .wrapping_add(self.clip)
+            .wrapping_add(self.resource)
+            .wrapping_add(self.effect)
+            .wrapping_add(self.visibility)
+    }
 }
 
 #[cfg(test)]
@@ -113,6 +137,28 @@ mod tests {
         assert_eq!(r.resource, before.resource);
         assert_eq!(r.effect, before.effect);
         assert_eq!(r.visibility, before.visibility);
+    }
+
+    /// The content stamp moves for every plane and only ever forward — the two
+    /// properties a ROI-scoped dependency revision needs (§3202).
+    #[test]
+    fn content_moves_with_every_plane() {
+        let mut r = Revisions::new();
+        assert_eq!(r.content(), 0);
+        let bumps: [fn(&mut Revisions); 7] = [
+            Revisions::bump_geometry,
+            Revisions::bump_paint,
+            Revisions::bump_transform,
+            Revisions::bump_clip,
+            Revisions::bump_resource,
+            Revisions::bump_effect,
+            Revisions::bump_visibility,
+        ];
+        for (i, bump) in bumps.into_iter().enumerate() {
+            let before = r.content();
+            bump(&mut r);
+            assert_eq!(r.content(), before + 1, "plane {i} moved the stamp");
+        }
     }
 
     #[test]

@@ -65,6 +65,56 @@ pub enum LayerReason {
 }
 
 impl LayerReason {
+    /// Every reason, in declaration order. The order is the bit order of
+    /// [`ReasonSet`](crate::effect_plan::ReasonSet), so it is part of the
+    /// inspector's stable output.
+    pub const ALL: [LayerReason; 8] = [
+        LayerReason::GroupOpacity,
+        LayerReason::ImageFilter,
+        LayerReason::BackdropFilter,
+        LayerReason::AdvancedBlend,
+        LayerReason::Isolation,
+        LayerReason::ComplexMask,
+        LayerReason::SnapshotCache,
+        LayerReason::NativeMaterialBoundary,
+    ];
+
+    /// This reason's index in [`ALL`](LayerReason::ALL) — its bit position in a
+    /// [`ReasonSet`](crate::effect_plan::ReasonSet).
+    pub fn index(self) -> u32 {
+        match self {
+            LayerReason::GroupOpacity => 0,
+            LayerReason::ImageFilter => 1,
+            LayerReason::BackdropFilter => 2,
+            LayerReason::AdvancedBlend => 3,
+            LayerReason::Isolation => 4,
+            LayerReason::ComplexMask => 5,
+            LayerReason::SnapshotCache => 6,
+            LayerReason::NativeMaterialBoundary => 7,
+        }
+    }
+
+    /// What a layer kept alive *only* by this reason costs to realize (§7.5).
+    ///
+    /// Most reasons buy a plain offscreen color pass. A backdrop filter also
+    /// captures the pixels behind the group, and an advanced blend reads the
+    /// destination it composites over — the two rungs above `NeedsOffscreen` on
+    /// the ladder. Every reason is [`Nonlocal`](crate::EffectLocality::Nonlocal)
+    /// by construction: a reason that *survives* planning is, by definition, an
+    /// effect that could not be shaded in place (§3120).
+    pub fn cost(self) -> EffectCost {
+        match self {
+            LayerReason::BackdropFilter => EffectCost::NeedsBackdrop,
+            LayerReason::AdvancedBlend => EffectCost::DestinationRead,
+            LayerReason::GroupOpacity
+            | LayerReason::ImageFilter
+            | LayerReason::Isolation
+            | LayerReason::ComplexMask
+            | LayerReason::SnapshotCache
+            | LayerReason::NativeMaterialBoundary => EffectCost::NeedsOffscreen,
+        }
+    }
+
     /// The lowercase label for an inspector dump / overlay row.
     pub fn label(self) -> &'static str {
         match self {
@@ -300,20 +350,38 @@ mod tests {
         assert!(!ChildOverlap::Unknown.allows_fold());
     }
 
+    /// Indices are dense, distinct, and agree with `ALL`'s order — the bitset in
+    /// [`crate::effect_plan`] indexes reasons by them.
+    #[test]
+    fn layer_reason_indices_are_dense() {
+        for (i, reason) in LayerReason::ALL.into_iter().enumerate() {
+            assert_eq!(reason.index() as usize, i, "{reason:?} indexes at {i}");
+        }
+    }
+
+    /// Every reason that survives planning is nonlocal — the §3120 definition of
+    /// "may consider an offscreen target" — and the two reasons that need more
+    /// than a color pass rank above it.
+    #[test]
+    fn every_reason_is_nonlocal() {
+        for reason in LayerReason::ALL {
+            assert!(!reason.cost().is_local(), "{reason:?} is nonlocal");
+            assert!(reason.cost().needs_offscreen() || reason.cost().reads_destination());
+        }
+        assert_eq!(
+            LayerReason::BackdropFilter.cost(),
+            EffectCost::NeedsBackdrop
+        );
+        assert_eq!(
+            LayerReason::AdvancedBlend.cost(),
+            EffectCost::DestinationRead
+        );
+    }
+
     /// Every layer reason has a distinct, stable label.
     #[test]
     fn layer_reason_labels_are_distinct() {
-        let all = [
-            LayerReason::GroupOpacity,
-            LayerReason::ImageFilter,
-            LayerReason::BackdropFilter,
-            LayerReason::AdvancedBlend,
-            LayerReason::Isolation,
-            LayerReason::ComplexMask,
-            LayerReason::SnapshotCache,
-            LayerReason::NativeMaterialBoundary,
-        ];
-        let labels: Vec<&str> = all.iter().map(|r| r.label()).collect();
+        let labels: Vec<&str> = LayerReason::ALL.iter().map(|r| r.label()).collect();
         for (i, a) in labels.iter().enumerate() {
             for b in &labels[i + 1..] {
                 assert_ne!(a, b, "labels are unique");

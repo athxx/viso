@@ -2143,23 +2143,132 @@ capture / shared-pyramid targets in `viso-gpu`. Depends on E1 frozen (+ C0/E0 fa
         but composites `SrcOver` — asserted as the current behavior, not as the desired one.
 
 ### E2.4 — Effect Planner & Local/Nonlocal classification
-- [ ] Local effect (§3102): no neighbor/dest read (`opacity, tint, color matrix,
+- [x] Local effect (§3102): no neighbor/dest read (`opacity, tint, color matrix,
       brightness, contrast, saturation, simple gradient, simple mask, certain blend states`)
       → fuse into the existing draw shader.
-- [ ] Nonlocal effect (§3120): needs neighbor samples / previous framebuffer / group
+  - [x] `EffectLocality { Local, Nonlocal }` in `render/src/effect_cost.rs` is **derived**,
+        not stored: `EffectCost::locality()` is the single threshold `>= NeedsOffscreen` on
+        the cost ladder E0 already ordered cheapest-first. Two facts that must agree cannot
+        drift when only one of them exists. `is_local()` is the §3102 predicate; `NeedsMask`
+        stays local, because the mask is a separate coverage build and the masked draw itself
+        still shades from its own fragment ("simple mask").
+  - [x] The locality of a chain is `dominating()`'s maximum, so a run of local links fuses
+        into one draw and one nonlocal link taints the chain — the same `max` E0 defined, now
+        carrying the §3102/§3120 meaning as well.
+- [x] Nonlocal effect (§3120): needs neighbor samples / previous framebuffer / group
       isolation (`blur, backdrop blur, large/general shadow, destination-dependent advanced
       blend, displacement, group opacity with overlapping children`) → only then consider
       offscreen/render target.
-- [ ] Effect Planner replaces saveLayer abuse (§3145): each potential layer records
+  - [x] `LayerReason::cost()` maps every reason onto the ladder at or above the frontier —
+        `BackdropFilter → NeedsBackdrop`, `AdvancedBlend → DestinationRead`, the other six →
+        `NeedsOffscreen` — so "a reason survived planning" and "this effect is nonlocal" are
+        the same statement (`every_reason_is_nonlocal`).
+  - [x] `Revisions::content()`: one monotone stamp that is the sum of all seven §8.4 planes.
+        Deliberately *not* a replacement for the planes — it exists only for consumers whose
+        dependency is "the pixels under this rect", where a moved quad and a recolored one are
+        indistinguishable.
+- [x] Effect Planner replaces saveLayer abuse (§3145): each potential layer records
       `LayerReason ∈ {GroupOpacity, ImageFilter, BackdropFilter, AdvancedBlend, Isolation,
       ComplexMask, SnapshotCache, NativeMaterialBoundary}`; the planner tries in order to
       eliminate it (push opacity into children? fuse color matrix? scissor instead of clip
       layer? analytic shadow? share backdrop? collapse adjacent effects?) — offscreen is
       created only when all fail. "Offscreen is an expensive mechanism, not a convenient
       default." The planner accretes facts across C0/E0/E1 and is exercised fully here.
-- [ ] Effect Damage (§3202): backdrop/blur does not look only at its own property dirty —
+  - [x] The eight reasons fit a `u8` exactly, so `render/src/effect_plan.rs` carries a plan's
+        requested / eliminated / surviving sets as three single-byte bitsets (`ReasonSet`,
+        `EliminationSet`). A `LayerPlan` is 16 bytes with no per-layer allocation (§28), and
+        `LayerReason::ALL` / `index()` fix the bit order so an inspector dump is stable.
+  - [x] `plan_layer()` walks the six-rung `LayerElimination` ladder. The order is load-bearing
+        and split in two: the rungs that remove a **reason** run first
+        (`OpacityPushedIntoChildren`, `FusedColorMatrix`, `SharedBackdrop` — a shared capture
+        hands the group a texture it can sample in place, so the backdrop stops needing a
+        target of its own), then the rungs that only remove **passes**
+        (`AnalyticShadow`, `CollapsedAdjacentEffects`), then `ScissorInsteadOfClipLayer`
+        *last*, because it is a statement about the outcome of every other rung.
+  - [x] Between the two halves sits the revocation guard: an elimination that does not
+        actually eliminate is not recorded. Without it a translucent frosted panel over
+        disjoint children would have had its opacity fold revoked by a reason that the very
+        next rung retires.
+  - [x] `scan_layer_subtree()` proves `ChildOverlap` from the primitive stream: pairwise
+        `Rect::intersect` over a whitelist of foldable drawables (quad, the four analytic
+        shapes, analytic shadow, image — each carrying a *straight* alpha the factor can
+        multiply into), capped at `MAX_FOLD_CHILDREN = 32` so the O(n²) proof can never cost
+        more than the target it removes. A nested `Layer`, a `Gradient` (premultiplied
+        instance stops), a `Path`/`Mesh`, or a `GlyphRun` reports `Unknown` → isolate. Folding
+        a *color matrix* per child was considered and rejected: a `ColorOp` applied before
+        AA-coverage multiplication or before a texture tint is not the same function as one
+        applied after compositing, so only opacity folds.
+  - [x] `LayerEntry.fold_opacity` carries the factor down the layer stack and the seven
+        drawable arms multiply it into `color[3]` (and `border_color[3]`) at lower time. A
+        folded layer never contains a nested one — a nested `Layer` makes the enclosing scan
+        report `Unknown` — so the factor never needs to compose more than one level.
+  - [x] `FrameStats` gains `layers_planned`, `layers_eliminated`, `opacity_folds` and
+        `backdrop_dirty_rois` (fields 35-38, order pinned in `counter_contract_frozen.rs`),
+        and `Renderer::layer_plans()` exposes the per-layer decision for §62 without unsafe
+        poking.
+  - [x] Six in-crate and integration fixtures had to grow a *contained* second child: they
+        pin ROI sizing and target bytes, and a single-child translucent layer now folds away.
+        The added quad sits strictly inside the first, so every byte assertion is unchanged —
+        the planner must not be able to sidestep a fixture by eliminating the layer it sizes.
+        Same for the bench's `nested_layer_scene` innermost level and every
+        `blurred_sibling_layer_scene` scope.
+- [x] Effect Damage (§3202): backdrop/blur does not look only at its own property dirty —
       when content behind its ROI changes, `BackdropDependencyRevision` dirties only that
       material/effect's ROI; other backdrops are unaffected.
+  - [x] `Scene::content_stamps[i]` is a retained positional vector holding
+        `revisions.content()` as of the last frame primitive slot `i` changed. `pending_dirty:
+        Option<bool>` is set by `apply_planes` from the per-primitive `DirtyPlanes` and is
+        `None` for a synthesized composite — conservatively dirty. So a recolor advances one
+        slot's stamp, not the whole scene's.
+  - [x] Per capture, `realize_backdrop_captures` accumulates over exactly the entries it
+        samples (already ROI-filtered by `paint.intersect(roi)`):
+        `revision = max(content_stamp).wrapping_add(member_count)`. The count term catches a
+        removal at the *tail*, where no surviving slot's stamp moves; an interior removal is
+        caught because the positional stores diff every subsequent slot dirty.
+  - [x] `BackdropDependency { roi, revision, dirty }` is diffed against the same capture slot
+        from the previous frame — the vector is deliberately *not* cleared per frame, is
+        rewritten in place in capture order (so slot `i` still holds last frame's value when
+        read), truncated to the capture count, and cleared when a frame has no capture at all.
+  - [x] `render/tests/effect_planner_contract.rs` (15 tests) defends all four bullets through
+        the public surface. The locality threshold and the nonlocality of every reason; a
+        translucent group over disjoint children → **0 offscreen passes, 0 transient bytes,
+        1 planned, 1 eliminated, 1 fold**, raising `GroupOpacity` and retiring it plus the
+        clip onto the pass scissor; a **byte-exact** headless readback showing the folded
+        group equals the same children authored at the faded alpha; overlapping / nested-group
+        / gradient children each keep the layer and record *no* fold; an opaque group raises
+        no reason at all; a blur survives as `ImageFilter`, an advanced blend as
+        `AdvancedBlend` at `DestinationRead`; a color chain collapses with 1 fused op and 0
+        passes while the blur keeps the layer it rides on; a frosted panel raises
+        `BackdropFilter` then eliminates it via `SharedBackdrop` and stays in-pass. For §3202:
+        two panels over separate content, recoloring under one → **exactly 1 dirty ROI**, the
+        other's revision unmoved and its ROI provably not reaching the first panel; three
+        identical repeat frames → **0 dirty ROIs** with steady revisions; a scene with no
+        backdrop reports no dependencies at all.
+  - [x] Gated in `render/benches/renderer_steady_state.rs`
+        (`assert_group_opacity_folds_without_a_target`): 16 cards at opacity 0.6 whose two
+        children are separated by a two-pixel gap cost **16 planned, 16 eliminated, 16 folded,
+        0 offscreen passes, 0 transient bytes, 0 pool claims, 1 render pass, 16 draw calls**.
+        The identical row with the children crossing in the middle is the forbidden default
+        made visible: **0 folds, 16 offscreen passes, 16384 transient bytes, 17 render passes,
+        32 draw calls**. Repeat uploads reproduce every counter with 0 graph recompiles and no
+        texture churn, and an idle frosted row reports **0 dirty backdrop ROIs** across three
+        frames with every dependency clean.
+  - [x] Timing rows `faded_cards_upload_steady` (2.72 µs — the subtree scan, the plan and the
+        per-child multiply for all 16 groups), `faded_cards_frame` (17.19 µs) and the
+        `faded_cards_isolated_frame` control (66.27 µs): eliminating the layer is **~3.9×**
+        on this row's whole frame path, and the pairwise-disjointness proof that buys it is
+        under 3 µs for 16 groups — well below the target it removes.
+  - [x] Flagged, not asserted: two *abutting* rects are `Disjoint` under `Rect::intersect` yet
+        can share one antialiased pixel row, where the fold and an isolated composite differ
+        by sub-pixel coverage — the fixtures here leave a gap rather than assert the
+        abutting case either way. A clean `BackdropDependency` is *reported* but not yet
+        *acted on*: skipping the capture and its ladder needs retained (non-transient)
+        capture textures, so E2.4 pays the same passes a dirty ROI would and E2.5 owns the
+        saving. The µs figures are `HeadlessRaster` CPU rasterizer cost, not device time (no
+        GPU capture here, §7.3/§36) — the 3.9× is a real frame-path saving on this backend,
+        but on-device the avoided target also saves bandwidth and a pass boundary that are
+        unmeasured. `SnapshotCache` and `NativeMaterialBoundary` are nameable and costed but
+        nothing raises them yet, so their elimination rungs are untested by construction.
 
 ### E2.5 — §31 gate
 - [ ] Benchmark gate (§31): shared backdrop; color-effect fusion. Static-UI target: an

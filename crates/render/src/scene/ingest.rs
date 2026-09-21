@@ -109,6 +109,9 @@ impl Scene {
         if dirty.any() {
             self.ingest_stats.dirty_primitives += 1;
         }
+        // Handed to the `record` call that follows, which stamps this primitive's
+        // paint-order slot only if something about it moved (§3202).
+        self.set_pending_dirty(dirty.any());
         self.ingest_stats.visible_primitives += 1;
     }
 

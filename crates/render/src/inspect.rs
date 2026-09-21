@@ -980,7 +980,10 @@ mod tests {
                 blur_sigma: 0.0,
                 backdrop_sigma: 0.0,
             }),
+            // Two overlapping children: the group opacity cannot be pushed into
+            // them, so the layer really does isolate (§14.5).
             quad(4.0, 4.0),
+            quad(8.0, 8.0),
             Primitive::LayerEnd,
         ];
         with_upload(&prims, |r| {
@@ -1106,7 +1109,10 @@ mod tests {
                 blur_sigma: 0.0,
                 backdrop_sigma: 0.0,
             }),
+            // Two overlapping children: the group opacity cannot be pushed into
+            // them, so the layer really does isolate (§14.5).
             quad(4.0, 4.0),
+            quad(8.0, 8.0),
             Primitive::LayerEnd,
         ];
         with_upload(&prims, |r| {

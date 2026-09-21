@@ -29,10 +29,12 @@ use crate::batch::{BatchFamily, BatchItem, BatchKey, BatchTarget, joins};
 use crate::blend::Blend;
 use crate::clip::{ClipShape, plan_clip};
 use crate::color_effect::{ColorOp, fuse};
+use crate::effect_plan::{LayerPlan, LayerRequest, plan_layer};
 use crate::gradient_lut::{GradientLutAtlas, LUT_WIDTH, LutAlloc, LutKey};
 use crate::graph::{PassLoad, PassWork, RenderGraph};
 use crate::mask::{MaskCache, MaskKey, MaskKind, MaskRequest};
 use crate::mask_page::MaskPage;
+use crate::opacity::ChildOverlap;
 use crate::pool::InstancePool;
 use crate::primitive::{
     AdvancedBlendInstance, AnalyticCapsuleInstance, AnalyticEllipseInstance, AnalyticLineInstance,
@@ -392,6 +394,149 @@ struct OffscreenPass {
 /// against the §31 bench, not a public parameter.
 const BACKDROP_UNION_SLACK: f32 = 2.0;
 
+/// How many children a layer may hold before the planner stops trying to prove
+/// them disjoint and reports [`ChildOverlap::Unknown`] instead (§14.5).
+///
+/// The proof is pairwise, so it is quadratic in the child count; the cap bounds
+/// the cold-path work at `32 * 31 / 2` rect intersections per translucent layer
+/// and no more. Above it the answer is "unknown", which costs one offscreen pass
+/// — the same pass the scene would have paid before the planner existed, so the
+/// cap can only ever lose an optimization, never correctness. Groups this wide are
+/// also the ones least likely to be disjoint.
+const MAX_FOLD_CHILDREN: usize = 32;
+
+/// What the Effect Planner needs to know about a layer's own subtree, gathered by
+/// one look-ahead over the primitive stream at the layer's open (§3145).
+///
+/// Both facts are cheap and neither can be recovered later: by the time the
+/// subtree has been walked, its children have already been ingested with the
+/// alpha they were going to keep.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct SubtreeFacts {
+    /// Whether the direct children provably do not overlap — the fact that
+    /// decides whether a group opacity can be pushed into them.
+    overlap: ChildOverlap,
+    /// Whether the subtree contains a shadow shaded in closed form, which is why
+    /// it never asked for a blurred copy of itself (E0's analytic shadow).
+    analytic_shadow: bool,
+}
+
+/// Look ahead over the layer opened at `layer_index` and gather the facts the
+/// Effect Planner needs about its content (§3145).
+///
+/// A group opacity folds into its children only when they provably do not overlap
+/// *and* every one of them can actually carry the factor — a straight-alpha
+/// instance whose alpha the renderer may scale. Anything else reports
+/// [`ChildOverlap::Unknown`], which the planner treats as overlap and pays a pass
+/// for (§14.5's "when unsure, keep correctness"):
+///
+/// - a **nested layer**, whose own subtree would have to be folded through too;
+/// - a **gradient**, whose inline stops are stored premultiplied and whose LUT
+///   form has no per-instance alpha at all;
+/// - a **path** or **mesh**, whose payloads are owned vectors — rewriting their
+///   colors would allocate on the walk (§28);
+/// - a **glyph run**, whose glyphs are separate instances that may overlap each
+///   other inside the run (italic and script faces routinely do), so per-instance
+///   folding could double-blend within one "child".
+///
+/// The scan stops at the layer's matching `LayerEnd`, so a sibling layer later in
+/// the stream never contaminates this one's facts.
+fn scan_layer_subtree(primitives: &[Primitive], layer_index: usize) -> SubtreeFacts {
+    let mut rects: [Rect; MAX_FOLD_CHILDREN] = [Rect::ZERO; MAX_FOLD_CHILDREN];
+    let mut count = 0usize;
+    let mut foldable = true;
+    let mut analytic_shadow = false;
+    let mut depth = 0u32;
+    for prim in &primitives[layer_index + 1..] {
+        // One rect per drawable, in the same world space its instance is lowered
+        // to, or `None` for a kind that cannot carry a folded alpha.
+        let rect = match prim {
+            Primitive::LayerEnd => {
+                if depth == 0 {
+                    break;
+                }
+                depth -= 1;
+                continue;
+            }
+            Primitive::Layer(_) => {
+                depth += 1;
+                foldable = false;
+                continue;
+            }
+            // Pure annotations on whichever layer owns them.
+            Primitive::ColorEffect(_) | Primitive::Blend(_) => continue,
+            _ if depth > 0 => continue,
+            Primitive::Quad(quad) => Some(quad.rect),
+            Primitive::AnalyticRRect(rrect) => Some(rrect.rect),
+            Primitive::AnalyticEllipse(ellipse) => Some(ellipse.rect),
+            Primitive::AnalyticCapsule(capsule) => Some(capsule.rect),
+            Primitive::AnalyticLine(line) => {
+                let inst = line.to_instance();
+                let reach = 0.5 * inst.width + inst.border_width;
+                Some(Rect {
+                    x: inst.p0[0].min(inst.p1[0]) - reach,
+                    y: inst.p0[1].min(inst.p1[1]) - reach,
+                    w: (inst.p1[0] - inst.p0[0]).abs() + 2.0 * reach,
+                    h: (inst.p1[1] - inst.p0[1]).abs() + 2.0 * reach,
+                })
+            }
+            Primitive::Image(image) => Some(image.rect),
+            Primitive::AnalyticShadow(shadow) => {
+                analytic_shadow = true;
+                let inst = shadow.to_instance();
+                let reach = BLUR_RADIUS_SIGMAS * inst.sigma
+                    + inst.spread.max(0.0)
+                    + inst.offset[0].abs().max(inst.offset[1].abs());
+                Some(Rect {
+                    x: inst.rect_pos[0] - reach,
+                    y: inst.rect_pos[1] - reach,
+                    w: inst.rect_size[0] + 2.0 * reach,
+                    h: inst.rect_size[1] + 2.0 * reach,
+                })
+            }
+            _ => None,
+        };
+        let Some(rect) = rect else {
+            foldable = false;
+            continue;
+        };
+        if !foldable {
+            continue;
+        }
+        if count == MAX_FOLD_CHILDREN {
+            foldable = false;
+            continue;
+        }
+        rects[count] = rect;
+        count += 1;
+    }
+    let overlap = if !foldable {
+        ChildOverlap::Unknown
+    } else if pairwise_disjoint(&rects[..count]) {
+        ChildOverlap::Disjoint
+    } else {
+        ChildOverlap::Overlapping
+    };
+    SubtreeFacts {
+        overlap,
+        analytic_shadow,
+    }
+}
+
+/// Whether no two of these rects share area. `O(n^2)` over at most
+/// [`MAX_FOLD_CHILDREN`] rects, with no allocation.
+fn pairwise_disjoint(rects: &[Rect]) -> bool {
+    for (i, a) in rects.iter().enumerate() {
+        for b in &rects[i + 1..] {
+            let hit = a.intersect(*b);
+            if hit.w > 0.0 && hit.h > 0.0 {
+                return false;
+            }
+        }
+    }
+    true
+}
+
 /// One backdrop capture pass: the content already submitted *behind* one (or one
 /// shared group of) backdrop layers, re-rendered into a tight ROI target, blurred
 /// by the standard ladder, and composited under each member layer's own content
@@ -473,6 +618,43 @@ struct LayerEntry {
     color_start: u32,
     /// Number of fused color ops this layer owns (see `color_start`).
     color_len: u32,
+    /// The group opacity the Effect Planner pushed into this layer's children
+    /// instead of buying an isolation pass for it (§14.5, §3161 rung 1), already
+    /// multiplied with whatever the ancestors folded. `1.0` when nothing is folded
+    /// — the case for every offscreen layer, and for every opaque layer.
+    ///
+    /// A folded factor is only ever established for a layer whose direct children
+    /// are provably disjoint drawables, and a nested layer makes the enclosing
+    /// scan report [`ChildOverlap::Unknown`], so a folded layer never contains
+    /// another one. The product here therefore has at most one non-unit term; it
+    /// is written as a product anyway so the invariant is not load-bearing.
+    fold_opacity: f32,
+}
+
+/// What one backdrop capture depends on, and whether that dependency moved since
+/// the previous frame (§3202).
+///
+/// A backdrop filter is the one effect whose input is *not* its own properties: it
+/// samples whatever happens to be painted behind it. So its invalidation cannot be
+/// driven by a property dirty flag — a frosted panel over a scrolling list must
+/// re-capture even though nothing about the panel changed, and a frosted panel over
+/// a static header must not re-capture just because a list elsewhere scrolled.
+///
+/// The dependency is therefore scoped to the region of interest: the newest content
+/// stamp ([`Scene::content_stamp`](crate::scene::Scene::content_stamp)) among the
+/// entries the capture actually samples, mixed with how many there are. Two panels
+/// over different content get different revisions and go dirty independently.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct BackdropDependency {
+    /// The capture's region of interest in world space — the rect the revision is
+    /// scoped to.
+    pub roi: Rect,
+    /// The revision of the content under `roi`. Compared, never interpreted: the
+    /// only meaningful operation is equality against the previous frame's value.
+    pub revision: u64,
+    /// Whether `revision` differs from the previous frame's for this capture slot.
+    /// A slot that is new this frame is dirty.
+    pub dirty: bool,
 }
 
 /// A (texture, sampler) pair's bind group, cached so repeated draws sharing both
@@ -633,6 +815,25 @@ pub struct FrameStats {
     /// `backdrop_captures`, which conflates both kinds of destination snapshot:
     /// the frosted-glass backdrop and the blend's bounded destination read).
     pub blend_isolations: u32,
+    /// Potential layers the Effect Planner considered this frame (§3145): one per
+    /// `Primitive::Layer` in the stream, whether or not it ended up costing a pass.
+    /// The denominator for the two counters below.
+    pub layers_planned: u32,
+    /// Planned layers where at least one rung of the elimination ladder fired
+    /// (§3161) — the layer either vanished entirely or got cheaper. Counted per
+    /// layer, not per rung.
+    pub layers_eliminated: u32,
+    /// Planned layers whose group opacity was pushed into provably-disjoint
+    /// children instead of buying an isolation pass (§14.5). Each one is an
+    /// offscreen pass and its transient bytes that the frame did not pay for —
+    /// the counter that makes "offscreen is an expensive mechanism, not a
+    /// convenient default" measurable.
+    pub opacity_folds: u32,
+    /// Backdrop captures whose region-of-interest saw its content change since the
+    /// previous frame (§3202). A frosted panel over static content reports 0 even
+    /// while an unrelated panel elsewhere reports 1: the dependency is scoped to
+    /// the ROI, not to the effect's own properties.
+    pub backdrop_dirty_rois: u32,
     /// Peak concurrently-live transient render-target bytes this frame (§16.4,
     /// §31): the maximum, over every graph pass slot, of the pooled bytes whose
     /// `[first_write, last_read]` interval covers that slot. This is the real
@@ -805,6 +1006,24 @@ pub struct Renderer {
     /// Layers isolated by a non-`SrcOver` blend this frame (§14.6). Reset at frame
     /// start, surfaced as [`FrameStats::blend_isolations`].
     blend_isolations: u32,
+    /// Every layer plan the Effect Planner produced this frame, in stream order
+    /// (§3145). Cleared at frame start and retained afterwards so the inspector can
+    /// answer "why did this group cost a pass?" from the same data the renderer
+    /// decided on — no unsafe poking, no second decision path (§62). Three bytes of
+    /// bitset plus a float per layer, and a `Vec` whose capacity survives the frame.
+    layer_plans: Vec<LayerPlan>,
+    /// Layers considered / partly eliminated / opacity-folded this frame. Reset at
+    /// frame start, surfaced as the matching [`FrameStats`] fields.
+    layers_planned: u32,
+    layers_eliminated: u32,
+    opacity_folds: u32,
+    /// Backdrop captures whose ROI content moved since the previous frame (§3202).
+    /// Reset at frame start, surfaced as [`FrameStats::backdrop_dirty_rois`].
+    backdrop_dirty_rois: u32,
+    /// One [`BackdropDependency`] per backdrop capture, **retained across frames**:
+    /// it is the previous frame's value each capture's new revision is compared
+    /// against, rewritten in place once the comparison is made.
+    backdrop_dependencies: Vec<BackdropDependency>,
     /// Scratch quad instance data, reused each frame.
     quad_scratch: Vec<QuadInstance>,
     /// Scratch analytic rounded-rectangle instance data, reused each frame.
@@ -1374,6 +1593,12 @@ impl Renderer {
             texture_bindings: Vec::with_capacity(8),
             blend_bindings: Vec::with_capacity(4),
             blend_isolations: 0,
+            layer_plans: Vec::new(),
+            layers_planned: 0,
+            layers_eliminated: 0,
+            opacity_folds: 0,
+            backdrop_dirty_rois: 0,
+            backdrop_dependencies: Vec::new(),
             quad_scratch: Vec::with_capacity(256),
             analytic_rrect_scratch: Vec::with_capacity(256),
             analytic_ellipse_scratch: Vec::with_capacity(256),
@@ -1707,9 +1932,18 @@ impl Renderer {
         self.mask_builds_this_frame = 0;
         self.culled_this_frame = 0;
         self.blend_isolations = 0;
+        self.layer_plans.clear();
+        self.layers_planned = 0;
+        self.layers_eliminated = 0;
+        self.opacity_folds = 0;
+        self.backdrop_dirty_rois = 0;
 
         for (prim_index, prim) in primitives.iter().enumerate() {
             let (clip, target, origin) = self.active();
+            // The group opacity the Effect Planner pushed into this primitive's
+            // ancestors (§14.5). `1.0` — the steady state everywhere outside a
+            // folded group — leaves every instance byte-identical.
+            let fold = self.active_fold();
             let ctx = EmitContext {
                 clip,
                 offscreen: match target {
@@ -1733,7 +1967,11 @@ impl Renderer {
                     // Diff the world-space instance (origin not yet subtracted)
                     // into the retained store, bumping only the moved planes, and
                     // record its paint-order slot.
-                    let inst = quad.to_instance();
+                    let mut inst = quad.to_instance();
+                    if fold < 1.0 {
+                        inst.color[3] *= fold;
+                        inst.border_color[3] *= fold;
+                    }
                     let bounds = crate::scene::bounds::Bounds::from_world(
                         Rect {
                             x: inst.rect_pos[0],
@@ -1748,7 +1986,11 @@ impl Renderer {
                     self.scene.ingest_quad(inst, ctx, bounds);
                 }
                 Primitive::AnalyticRRect(rrect) => {
-                    let inst = rrect.to_instance();
+                    let mut inst = rrect.to_instance();
+                    if fold < 1.0 {
+                        inst.color[3] *= fold;
+                        inst.border_color[3] *= fold;
+                    }
                     let bounds = crate::scene::bounds::Bounds::from_world(
                         Rect {
                             x: inst.rect_pos[0],
@@ -1763,7 +2005,11 @@ impl Renderer {
                     self.scene.ingest_analytic_rrect(inst, ctx, bounds);
                 }
                 Primitive::AnalyticEllipse(ellipse) => {
-                    let inst = ellipse.to_instance();
+                    let mut inst = ellipse.to_instance();
+                    if fold < 1.0 {
+                        inst.color[3] *= fold;
+                        inst.border_color[3] *= fold;
+                    }
                     let bounds = crate::scene::bounds::Bounds::from_world(
                         Rect {
                             x: inst.rect_pos[0],
@@ -1778,7 +2024,11 @@ impl Renderer {
                     self.scene.ingest_analytic_ellipse(inst, ctx, bounds);
                 }
                 Primitive::AnalyticCapsule(capsule) => {
-                    let inst = capsule.to_instance();
+                    let mut inst = capsule.to_instance();
+                    if fold < 1.0 {
+                        inst.color[3] *= fold;
+                        inst.border_color[3] *= fold;
+                    }
                     let bounds = crate::scene::bounds::Bounds::from_world(
                         Rect {
                             x: inst.rect_pos[0],
@@ -1793,7 +2043,11 @@ impl Renderer {
                     self.scene.ingest_analytic_capsule(inst, ctx, bounds);
                 }
                 Primitive::AnalyticLine(line) => {
-                    let inst = line.to_instance();
+                    let mut inst = line.to_instance();
+                    if fold < 1.0 {
+                        inst.color[3] *= fold;
+                        inst.border_color[3] *= fold;
+                    }
                     // AABB over both endpoints, inflated by half the stroke width
                     // plus the border on every side (a square cap can extend by a
                     // further half-width along the axis; `from_world`'s uniform
@@ -1818,7 +2072,10 @@ impl Renderer {
                     self.scene.ingest_analytic_line(inst, ctx, bounds);
                 }
                 Primitive::Image(image) => {
-                    let inst = image.to_instance();
+                    let mut inst = image.to_instance();
+                    if fold < 1.0 {
+                        inst.color[3] *= fold;
+                    }
                     let bounds = crate::scene::bounds::Bounds::from_world(
                         Rect {
                             x: inst.rect_pos[0],
@@ -1873,7 +2130,10 @@ impl Renderer {
                         .ingest_gradient(inst, self.gradient_lut.texture(), ctx, bounds);
                 }
                 Primitive::AnalyticShadow(shadow) => {
-                    let inst = shadow.to_instance();
+                    let mut inst = shadow.to_instance();
+                    if fold < 1.0 {
+                        inst.color[3] *= fold;
+                    }
                     // The shadow footprint extends past the shape rect by the
                     // blur reach (3σ covers a Gaussian), the outward spread, and
                     // the drop offset. Fed as the `filter` inflation term so the
@@ -1954,10 +2214,12 @@ impl Renderer {
                     // the layer's own content, so the blurred backdrop lands
                     // under it. Only layers drawing straight into the surface
                     // pass qualify — see `backdrop_roi`.
+                    let mut shared_backdrop = false;
                     if layer.backdrop_sigma > BLUR_MIN_SIGMA
                         && matches!(target, PassTarget::Main)
                         && let Some(roi) = self.backdrop_roi(world_clip, layer.backdrop_sigma)
                     {
+                        shared_backdrop = true;
                         let capture = self.join_or_open_backdrop(roi, layer.backdrop_sigma);
                         let dest = world_clip.intersect(self.surface_rect());
                         let bounds = crate::scene::bounds::Bounds::from_world(dest, None, 0.0, 0.0);
@@ -1993,6 +2255,13 @@ impl Renderer {
                         })
                         .last()
                         .unwrap_or_default();
+                    // How many effects the author wrote, before fusion — the
+                    // denominator the planner compares the fused op count against
+                    // to know whether fusing actually removed anything (§3161).
+                    let color_effects = markers
+                        .clone()
+                        .filter(|p| matches!(p, Primitive::ColorEffect(_)))
+                        .count();
                     // Fusing the color chain here — straight off the stream,
                     // into the shared arena — is what makes a run of mergeable
                     // effects one op instead of one pass each (§17.3).
@@ -2005,17 +2274,51 @@ impl Renderer {
                         &mut self.color_ops,
                     );
                     let color_len = self.color_ops.len() as u32 - color_start;
-                    if layer.opacity >= 1.0
-                        && layer.blur_sigma <= BLUR_MIN_SIGMA
-                        && color_len == 0
-                        && blend == Blend::SrcOver
-                    {
-                        // Opaque, any blur it asked for is sub-pixel, and its
-                        // color chain computed nothing — the ladder would plan no
-                        // rung and the matrix is the identity, so the offscreen
-                        // texture would be rendered only to be composited back
-                        // unchanged. A plain in-pass scissor clip instead.
-                        // Inherit the parent's pass target and origin unchanged.
+                    // Every reason this layer might exist, and every rung of the
+                    // elimination ladder that can retire one (§3145). The subtree
+                    // scan that proves the children disjoint is the one part of
+                    // this that is not free, so it runs only for the layer that
+                    // could use the answer — a translucent one.
+                    let facts = if layer.opacity < 1.0 {
+                        scan_layer_subtree(primitives, prim_index)
+                    } else {
+                        SubtreeFacts {
+                            overlap: ChildOverlap::Unknown,
+                            analytic_shadow: false,
+                        }
+                    };
+                    let plan = plan_layer(&LayerRequest {
+                        opacity: layer.opacity,
+                        overlap: facts.overlap,
+                        blurs_content: layer.blur_sigma > BLUR_MIN_SIGMA,
+                        // A backdrop request that could not be captured (nested, or
+                        // off the surface pass) raises nothing: there is no filter
+                        // to eliminate because there is no filter.
+                        filters_backdrop: shared_backdrop,
+                        advanced_blend: blend != Blend::SrcOver,
+                        color_effects: color_effects as u32,
+                        fused_color_ops: color_len,
+                        analytic_shadow: facts.analytic_shadow,
+                        shared_backdrop,
+                        ..LayerRequest::default()
+                    });
+                    self.layers_planned += 1;
+                    if !plan.eliminated.is_empty() {
+                        self.layers_eliminated += 1;
+                    }
+                    if plan.folds_opacity() {
+                        self.opacity_folds += 1;
+                    }
+                    // The factor the planner retired the group opacity with, times
+                    // whatever an ancestor already folded.
+                    let child_fold = fold * plan.fold_opacity;
+                    self.layer_plans.push(plan);
+                    if !plan.needs_offscreen() {
+                        // Nothing survived the ladder: whatever this layer asked
+                        // for is either the identity or was pushed into its
+                        // children, so the offscreen texture would be rendered only
+                        // to be composited back unchanged. A plain in-pass scissor
+                        // clip instead, inheriting the parent's target and origin.
                         self.layer_stack.push(LayerEntry {
                             clip: world_clip,
                             target,
@@ -2025,6 +2328,7 @@ impl Renderer {
                             blur_sigma: 0.0,
                             color_start,
                             color_len: 0,
+                            fold_opacity: child_fold,
                         });
                     } else {
                         // Translucent or blurred: open an offscreen pass. Its
@@ -2067,6 +2371,11 @@ impl Renderer {
                             blur_sigma: layer.blur_sigma,
                             color_start,
                             color_len,
+                            // An isolated layer pays its own opacity on the
+                            // composite draw, so there is nothing to push down;
+                            // `child_fold` is what an ancestor folded, which is
+                            // `1.0` whenever a layer is reached at all.
+                            fold_opacity: child_fold,
                         });
                     }
                 }
@@ -2762,6 +3071,24 @@ impl Renderer {
     /// come from the compiled pass plan (§16.1). `shader_pipeline_creations` is the
     /// fixed prewarm count (§7.1: no runtime compile). The counters with no
     /// source in this layer stay 0 with their meaning fixed (see [`FrameStats`]).
+    /// Every layer plan this frame's walk produced, in stream order (§3145, §62).
+    /// A plan names the reasons the layer was requested for, the ladder rungs that
+    /// fired, and the reasons that survived — so an inspector or a test can show
+    /// *why* a group cost an offscreen pass, reading exactly the values the
+    /// renderer decided on.
+    pub fn layer_plans(&self) -> &[LayerPlan] {
+        &self.layer_plans
+    }
+
+    /// One entry per backdrop capture this frame, in capture order (§3202, §62):
+    /// the ROI its dependency is scoped to, that dependency's revision, and whether
+    /// it moved since the previous frame. This is how "only that effect's ROI is
+    /// dirty" is observed — two frosted panels over unrelated content report
+    /// independent `dirty` flags.
+    pub fn backdrop_dependencies(&self) -> &[BackdropDependency] {
+        &self.backdrop_dependencies
+    }
+
     pub fn frame_stats(&self) -> FrameStats {
         let ingest = self.scene.ingest_stats;
 
@@ -2846,6 +3173,10 @@ impl Renderer {
                 .map(|c| (c.used[0] as usize) * (c.used[1] as usize))
                 .sum(),
             blend_isolations: self.blend_isolations,
+            layers_planned: self.layers_planned,
+            layers_eliminated: self.layers_eliminated,
+            opacity_folds: self.opacity_folds,
+            backdrop_dirty_rois: self.backdrop_dirty_rois,
             transient_peak_bytes: transient.peak_bytes,
             transient_pool_bytes: transient.pool_bytes,
             transient_target_allocations: transient.allocations,
@@ -3016,6 +3347,18 @@ impl Renderer {
         }
     }
 
+    /// The group opacity folded into whatever is drawn right now (§3161 rung 1):
+    /// the innermost layer's accumulated fold factor, or `1.0` at the top level.
+    /// Kept out of [`active`](Renderer::active) because every caller of that
+    /// function wants the clip/target triple and only the drawable arms multiply
+    /// this in.
+    fn active_fold(&self) -> f32 {
+        match self.layer_stack.last() {
+            Some(entry) => entry.fold_opacity,
+            None => 1.0,
+        }
+    }
+
     /// Translate the mesh vertices staged since `vertex_start` by `-origin`, so
     /// geometry drawn into an offscreen pass has the layer's top-left at the
     /// texture origin. A no-op for the main pass (origin is zero).
@@ -3154,6 +3497,7 @@ impl Renderer {
     /// ends, because a later layer can still join the group and grow its union.
     fn realize_backdrop_captures(&mut self) {
         if self.backdrop_captures.is_empty() {
+            self.backdrop_dependencies.clear();
             return;
         }
         // Detach the paint order so the scan can borrow it while the graph, the
@@ -3188,7 +3532,13 @@ impl Renderer {
             // The graph does not deduplicate reads, and one offscreen layer can
             // contribute many entries to a capture, so fold the sources here.
             reads.clear();
-            for entry in &record[..under] {
+            // The ROI-scoped dependency revision (§3202), accumulated over exactly
+            // the entries this capture samples: the newest content stamp among
+            // them, plus how many there were. The count is what catches a removal
+            // at the tail, where no surviving slot's stamp moves.
+            let mut dependency = 0u64;
+            let mut members = 0u64;
+            for (slot, entry) in record[..under].iter().enumerate() {
                 if entry.context.offscreen.is_some() {
                     continue;
                 }
@@ -3199,6 +3549,8 @@ impl Renderer {
                         continue;
                     }
                 }
+                dependency = dependency.max(self.scene.content_stamp(slot));
+                members += 1;
                 let source = match entry.store {
                     StoreRef::Composite { pass, .. } => self.offscreen_passes[pass].sample,
                     // Always an earlier capture: a group's members are recorded
@@ -3226,7 +3578,29 @@ impl Renderer {
             };
             let sample = self.build_blur_chain(base, [width, height], sigma);
             self.backdrop_captures[i].sample = Some(sample);
+
+            // Diff against this capture slot's value from the previous frame. A
+            // slot that did not exist then is new work, so it counts as dirty; the
+            // vector is rewritten in place, in capture order, so slot `i` still
+            // holds last frame's value when it is read here.
+            let revision = dependency.wrapping_add(members);
+            let previous = self.backdrop_dependencies.get(i).map(|d| d.revision);
+            let dirty = previous != Some(revision);
+            if dirty {
+                self.backdrop_dirty_rois += 1;
+            }
+            let entry = BackdropDependency {
+                roi,
+                revision,
+                dirty,
+            };
+            match self.backdrop_dependencies.get_mut(i) {
+                Some(slot) => *slot = entry,
+                None => self.backdrop_dependencies.push(entry),
+            }
         }
+        self.backdrop_dependencies
+            .truncate(self.backdrop_captures.len());
         self.backdrop_reads = reads;
         self.scene.paint_order = record;
     }
@@ -3973,6 +4347,24 @@ mod tests {
         })
     }
 
+    /// A quad of an explicit size, used to place one child *inside* another so the
+    /// two provably overlap without moving the group's content union — the shape a
+    /// fixture needs when it is asserting isolation-pass geometry rather than the
+    /// planner's fold (§14.5).
+    fn quad_sized(x: f32, y: f32, w: f32, h: f32) -> Primitive {
+        Primitive::Quad(Quad {
+            rect: Rect { x, y, w, h },
+            color: Rgba {
+                r: 1.0,
+                g: 0.0,
+                b: 0.0,
+                a: 1.0,
+            },
+            radius: 0.0,
+            border: Border::NONE,
+        })
+    }
+
     fn layer(x: f32, y: f32, w: f32, h: f32) -> Primitive {
         Primitive::Layer(LayerClip {
             clip: Rect { x, y, w, h },
@@ -4516,6 +4908,9 @@ mod tests {
             &[
                 layer_opacity(8.0, 8.0, 20.0, 20.0, 0.5),
                 quad(10.0, 10.0),
+                // Contained inside the first quad: the children overlap, so the
+                // group opacity cannot fold and the layer really isolates.
+                quad_sized(12.0, 12.0, 4.0, 4.0),
                 Primitive::LayerEnd,
             ],
         );
@@ -4575,6 +4970,7 @@ mod tests {
             &[
                 layer_opacity(0.0, 0.0, 4000.0, 4000.0, 0.5),
                 quad(10.0, 10.0),
+                quad_sized(12.0, 12.0, 4.0, 4.0),
                 Primitive::LayerEnd,
             ],
         );
@@ -4622,6 +5018,7 @@ mod tests {
             &[
                 layer_opacity(10.0, 10.0, 10.0, 10.0, 0.5), // clip == first quad
                 quad(10.0, 10.0),                           // inside the clip
+                quad_sized(12.0, 12.0, 4.0, 4.0),           // overlaps it
                 quad(40.0, 40.0),                           // outside → culled
                 Primitive::LayerEnd,
             ],
