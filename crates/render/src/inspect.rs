@@ -497,7 +497,9 @@ impl Renderer {
                         1,
                     )
                 }
-                StoreRef::Image(_) | StoreRef::Composite { .. } => {
+                StoreRef::Image(_)
+                | StoreRef::Composite { .. }
+                | StoreRef::BackdropComposite { .. } => {
                     let start = image_cursor;
                     image_cursor += 1;
                     // Image kind carries a bind group in the segment list, but
@@ -566,6 +568,10 @@ impl Renderer {
             let target_field = match target {
                 PassTarget::Main => BatchTarget::Main,
                 PassTarget::Offscreen(i) => BatchTarget::Offscreen(i),
+                // Unreachable from the paint-order spine: a capture's draws are
+                // re-lowered duplicates of entries whose own target is the one
+                // recorded here, never recorded entries of their own.
+                PassTarget::Capture(i) => BatchTarget::Backdrop(i),
             };
             let item = BatchItem {
                 key: BatchKey::pack(family, target_field, None),
@@ -672,7 +678,9 @@ impl Renderer {
                 StoreRef::AnalyticCapsule(_) => (BatchFamily::AnalyticCapsule, true),
                 StoreRef::AnalyticLine(_) => (BatchFamily::AnalyticLine, true),
                 StoreRef::AnalyticShadow(_) => (BatchFamily::AnalyticShadow, true),
-                StoreRef::Image(_) | StoreRef::Composite { .. } => (BatchFamily::Image, true),
+                StoreRef::Image(_)
+                | StoreRef::Composite { .. }
+                | StoreRef::BackdropComposite { .. } => (BatchFamily::Image, true),
                 StoreRef::Gradient(_) => (BatchFamily::Gradient, true),
                 StoreRef::GlyphRun(run) => {
                     let e = self
@@ -950,6 +958,7 @@ mod tests {
                 },
                 opacity: 0.5,
                 blur_sigma: 0.0,
+                backdrop_sigma: 0.0,
             }),
             quad(4.0, 4.0),
             Primitive::LayerEnd,
@@ -1075,6 +1084,7 @@ mod tests {
                 },
                 opacity: 0.5,
                 blur_sigma: 0.0,
+                backdrop_sigma: 0.0,
             }),
             quad(4.0, 4.0),
             Primitive::LayerEnd,
@@ -1107,6 +1117,7 @@ mod tests {
                 },
                 opacity: 1.0,
                 blur_sigma: 0.0,
+                backdrop_sigma: 0.0,
             }),
             quad(10.0, 10.0),
             Primitive::LayerEnd,
@@ -1135,6 +1146,7 @@ mod tests {
                 },
                 opacity: 1.0,
                 blur_sigma: 0.0,
+                backdrop_sigma: 0.0,
             }),
             quad(10.0, 10.0),
             Primitive::LayerEnd,

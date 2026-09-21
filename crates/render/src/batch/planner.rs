@@ -127,23 +127,38 @@ impl BatchFamily {
 }
 
 /// Which render pass a primitive draws into — the render-target dimension of a
-/// [`BatchKey`]. The surface pass and each offscreen pass are distinct targets,
-/// so a draw never spans two passes.
+/// [`BatchKey`]. The surface pass, each offscreen pass, and each backdrop
+/// capture pass are distinct targets, so a draw never spans two passes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BatchTarget {
     /// The final surface pass, composited onto the window.
     Main,
     /// The `i`-th offscreen render-to-texture pass.
     Offscreen(usize),
+    /// The `i`-th backdrop capture pass: the content behind one (or one shared
+    /// group of) backdrop layers, re-rendered into a tight ROI target.
+    Backdrop(usize),
 }
 
 impl BatchTarget {
-    /// The render-target field value packed into a [`BatchKey`]: `0` for the
-    /// surface, `i + 1` for offscreen pass `i`.
+    /// The render-target *index* field value packed into a [`BatchKey`]: `0` for
+    /// the surface, and `i + 1` for offscreen pass or backdrop capture `i`. The
+    /// two pass kinds share the index field and are told apart by
+    /// [`class`](Self::class), so a capture index never has to be squeezed into a
+    /// sub-range of the offscreen pass numbering.
     const fn field(self) -> u64 {
         match self {
             BatchTarget::Main => 0,
-            BatchTarget::Offscreen(i) => i as u64 + 1,
+            BatchTarget::Offscreen(i) | BatchTarget::Backdrop(i) => i as u64 + 1,
+        }
+    }
+
+    /// The render-target *class* field value: `0` for the surface and offscreen
+    /// passes, `1` for a backdrop capture pass.
+    const fn class(self) -> u64 {
+        match self {
+            BatchTarget::Main | BatchTarget::Offscreen(_) => 0,
+            BatchTarget::Backdrop(_) => 1,
         }
     }
 }
@@ -162,9 +177,11 @@ impl BatchTarget {
 /// | 8..10   | 2     | sample count class   | reserved, `0` (1×)        |
 /// | 10..12  | 2     | color-target class   | reserved, `0` (BGRA8)     |
 /// | 12..14  | 2     | depth/stencil class  | reserved, `0` (none)      |
-/// | 14..24  | 10    | render target        | [`BatchTarget`]           |
+/// | 14..24  | 10    | render target index  | [`BatchTarget`]           |
 /// | 24..48  | 24    | resource table       | bind-group index, or `0`  |
-/// | 48..64  | 16    | reserved             | `0`                       |
+/// | 48..50  | 2     | render target class  | surface/offscreen, or     |
+/// |         |       |                      | backdrop capture          |
+/// | 50..64  | 14    | reserved             | `0`                       |
 ///
 /// The reserved fields carry the single class this renderer uses today; they
 /// exist in the layout so that adding blend modes, MSAA, or a depth pass later
@@ -180,16 +197,18 @@ impl BatchKey {
     const TARGET_MASK: u64 = 0x3ff; // 10 bits
     const RESOURCE_SHIFT: u64 = 24;
     const RESOURCE_MASK: u64 = 0xff_ffff; // 24 bits
+    const TARGET_CLASS_SHIFT: u64 = 48;
+    const TARGET_CLASS_MASK: u64 = 0b11;
 
     /// Pack a key from the state a primitive fixes: its pipeline `family`, the
     /// pass `target` it draws into, and the `resource` bind group it binds (the
     /// texture/atlas for image/glyph families, `None` for quad/mesh). Reserved
     /// class fields take their sole current value (`0`).
     ///
-    /// Panics in debug if `target`'s offscreen index or `resource`'s bind-group
-    /// index overflows its field — both are far beyond any real frame's pass or
-    /// resource count, so the panic marks a layout/pack contract violation, not a
-    /// runtime input error.
+    /// Panics in debug if `target`'s pass index or `resource`'s bind-group index
+    /// overflows its field — both are far beyond any real frame's pass or resource
+    /// count, so the panic marks a layout/pack contract violation, not a runtime
+    /// input error.
     pub fn pack(
         family: BatchFamily,
         target: BatchTarget,
@@ -198,7 +217,7 @@ impl BatchKey {
         let target_field = target.field();
         debug_assert!(
             target_field <= Self::TARGET_MASK,
-            "offscreen pass index exceeds the render-target field width"
+            "pass index exceeds the render-target field width"
         );
         let resource_field = resource.map_or(0, |bg| bg.index as u64);
         debug_assert!(
@@ -208,7 +227,8 @@ impl BatchKey {
         BatchKey(
             (family.tag() << Self::FAMILY_SHIFT)
                 | ((target_field & Self::TARGET_MASK) << Self::TARGET_SHIFT)
-                | ((resource_field & Self::RESOURCE_MASK) << Self::RESOURCE_SHIFT),
+                | ((resource_field & Self::RESOURCE_MASK) << Self::RESOURCE_SHIFT)
+                | ((target.class() & Self::TARGET_CLASS_MASK) << Self::TARGET_CLASS_SHIFT),
         )
     }
 
@@ -218,9 +238,16 @@ impl BatchKey {
         BatchFamily::from_tag(tag).expect("a packed key always holds a valid family tag")
     }
 
-    /// The render-target field: `0` for the surface, `i + 1` for offscreen `i`.
+    /// The render-target index field: `0` for the surface, `i + 1` for offscreen
+    /// pass or backdrop capture `i`.
     pub fn target_field(self) -> u64 {
         (self.0 >> Self::TARGET_SHIFT) & Self::TARGET_MASK
+    }
+
+    /// The render-target class field: `0` for the surface and offscreen passes,
+    /// `1` for a backdrop capture pass.
+    pub fn target_class_field(self) -> u64 {
+        (self.0 >> Self::TARGET_CLASS_SHIFT) & Self::TARGET_CLASS_MASK
     }
 
     /// The resource-table field: the bound bind-group index, or `0` for none.
@@ -309,6 +336,25 @@ mod tests {
         assert_eq!(
             BatchKey::pack(BatchFamily::Quad, BatchTarget::Offscreen(6), None).target_field(),
             7
+        );
+        // A backdrop capture numbers its index in the same field as an offscreen
+        // pass (so neither kind loses range) and is told apart by the class field,
+        // which is what keeps the two from aliasing at equal indices.
+        let backdrop = BatchKey::pack(BatchFamily::Quad, BatchTarget::Backdrop(0), None);
+        assert_eq!(backdrop.target_field(), 1);
+        assert_eq!(backdrop.target_class_field(), 1);
+        assert_eq!(
+            BatchKey::pack(BatchFamily::Quad, BatchTarget::Offscreen(0), None).target_class_field(),
+            0
+        );
+        assert_ne!(
+            backdrop,
+            BatchKey::pack(BatchFamily::Quad, BatchTarget::Offscreen(0), None)
+        );
+        // The whole index range stays available to captures too.
+        assert_eq!(
+            BatchKey::pack(BatchFamily::Quad, BatchTarget::Backdrop(0x3fe), None).target_field(),
+            0x3ff
         );
     }
 

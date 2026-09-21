@@ -299,6 +299,33 @@ impl Scene {
         self.record(StoreRef::Composite { instance, pass }, context, bounds)
     }
 
+    /// Record a backdrop layer's composite draw, emitted when the layer *opens*
+    /// so the blurred backdrop lands under the layer's own content. Like
+    /// [`ingest_composite`] it is a per-frame derived draw that bumps no plane,
+    /// but its instance is left unresolved: the capture's ROI can still grow as
+    /// later layers join its group, so only the destination `rect` and `opacity`
+    /// are recorded and the UVs are derived once the capture is realized.
+    ///
+    /// [`ingest_composite`]: Self::ingest_composite
+    pub fn ingest_backdrop_composite(
+        &mut self,
+        capture: usize,
+        rect: Rect,
+        opacity: f32,
+        context: EmitContext,
+        bounds: Bounds,
+    ) -> PrimitiveId {
+        self.record(
+            StoreRef::BackdropComposite {
+                capture,
+                rect,
+                opacity,
+            },
+            context,
+            bounds,
+        )
+    }
+
     /// Fold an emit's clip rect into the clip store, bumping the clip plane on a
     /// change. The identity-separated clip lets a scroll that only shifts a clip
     /// bump `ClipRevision` without disturbing geometry/paint (§8.5). Returns

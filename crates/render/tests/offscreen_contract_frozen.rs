@@ -64,6 +64,7 @@ fn layer(clip: Rect, opacity: f32) -> Primitive {
         clip,
         opacity,
         blur_sigma: 0.0,
+        backdrop_sigma: 0.0,
     })
 }
 
@@ -73,6 +74,7 @@ fn blurred(clip: Rect, sigma: f32) -> Primitive {
         clip,
         opacity: 1.0,
         blur_sigma: sigma,
+        backdrop_sigma: 0.0,
     })
 }
 
@@ -264,6 +266,7 @@ fn a_subpixel_blur_stays_inline() {
                 clip: rect(0.0, 0.0, 64.0, 64.0),
                 opacity: 0.5,
                 blur_sigma: 0.5,
+                backdrop_sigma: 0.0,
             }),
             quad(rect(0.0, 0.0, 64.0, 64.0)),
             Primitive::LayerEnd,
@@ -603,9 +606,16 @@ fn the_pool_is_steady_then_retires_idle_physicals() {
 /// undefined contents.
 #[test]
 fn the_graph_vocabulary_is_closed() {
-    for work in [PassWork::Offscreen(0), PassWork::Blur(0), PassWork::Surface] {
+    for work in [
+        PassWork::Offscreen(0),
+        PassWork::Blur(0),
+        PassWork::BackdropCapture(0),
+        PassWork::Surface,
+    ] {
         match work {
-            PassWork::Offscreen(idx) | PassWork::Blur(idx) => assert_eq!(idx, 0),
+            PassWork::Offscreen(idx) | PassWork::Blur(idx) | PassWork::BackdropCapture(idx) => {
+                assert_eq!(idx, 0)
+            }
             PassWork::Surface => {}
         }
     }
