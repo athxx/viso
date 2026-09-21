@@ -791,6 +791,13 @@ fn layer_tile(i: usize, x: f32, y: f32) -> Primitive {
 /// `opacity == 1.0` this is a deep in-pass scissor nest (no offscreen); at
 /// `opacity < 1.0` every level is its own offscreen composite — the "deep clip"
 /// and "nested opacity" rows of the §31 matrix, selected by `opacity`.
+///
+/// The innermost level carries a second, overlapping tile. Every outer level
+/// already contains a nested layer, which makes its children's overlap unknowable
+/// cheaply and so keeps its target; the innermost would otherwise hold a single
+/// child and have its opacity folded into it (§3145), turning this fixture into a
+/// measurement of `depth - 1` targets. The extra tile sits inside the first, so
+/// the union — and every byte the nest allocates — is unchanged.
 fn nested_layer_scene(depth: usize, opacity: f32) -> Vec<Primitive> {
     let mut scene = Vec::with_capacity(depth * 3);
     for level in 0..depth {
@@ -807,6 +814,24 @@ fn nested_layer_scene(depth: usize, opacity: f32) -> Vec<Primitive> {
             backdrop_sigma: 0.0,
         }));
         scene.push(layer_tile(level, inset + 1.0, inset + 1.0));
+        if level + 1 == depth {
+            scene.push(Primitive::Quad(Quad {
+                rect: Rect {
+                    x: inset + 1.5,
+                    y: inset + 1.5,
+                    w: 1.0,
+                    h: 1.0,
+                },
+                color: Rgba {
+                    r: 0.2,
+                    g: 0.7,
+                    b: 0.4,
+                    a: 1.0,
+                },
+                radius: 0.0,
+                border: Border::NONE,
+            }));
+        }
     }
     for _ in 0..depth {
         scene.push(Primitive::LayerEnd);
@@ -827,6 +852,13 @@ fn sibling_layer_scene(count: usize, opacity: f32) -> Vec<Primitive> {
 /// same flat run of small ROIs, but every scope now needs an offscreen target
 /// *plus* its ladder's scratch. At `sigma > 0` this is the "many small-ROI
 /// blurs" row of the §31 matrix.
+///
+/// Each scope wraps a tile *and* a smaller tile inside it. The second child is
+/// what keeps the row measuring targets: a translucent group over one child has
+/// provably non-overlapping children, so the planner would push its opacity down
+/// and eliminate the layer entirely (§3145). Two overlapping children is the case
+/// the group genuinely exists for, and because the inner tile is contained the
+/// ROI, the target bytes, and the pool behaviour are exactly the single tile's.
 fn blurred_sibling_layer_scene(count: usize, opacity: f32, sigma: f32) -> Vec<Primitive> {
     let cols = (count as f64).sqrt().ceil() as usize;
     let mut scene = Vec::with_capacity(count * 3);
@@ -845,6 +877,22 @@ fn blurred_sibling_layer_scene(count: usize, opacity: f32, sigma: f32) -> Vec<Pr
             backdrop_sigma: 0.0,
         }));
         scene.push(layer_tile(i, col * 4.0 + 0.5, row * 4.0 + 0.5));
+        scene.push(Primitive::Quad(Quad {
+            rect: Rect {
+                x: col * 4.0 + 1.0,
+                y: row * 4.0 + 1.0,
+                w: 1.0,
+                h: 1.0,
+            },
+            color: Rgba {
+                r: 0.2,
+                g: 0.7,
+                b: 0.4,
+                a: 1.0,
+            },
+            radius: 0.0,
+            border: Border::NONE,
+        }));
         scene.push(Primitive::LayerEnd);
     }
     scene
@@ -2674,6 +2722,248 @@ fn assert_blend_isolation_costs_no_extra_pass() {
     }
 }
 
+/// How many translucent cards the E2.4 row carries, and their geometry — a row of
+/// faded tiles, the shape a themed list paints while its rows animate their group
+/// opacity.
+const FADED_CARDS: usize = 16;
+const FADED_CARD_SIZE: f32 = 12.0;
+const FADED_CARD_PITCH: f32 = 14.0;
+
+/// The group opacity the row fades to. Any value in `(0, 1)` exercises the same
+/// decision; this one is far enough from both ends that no clamp shortcut applies.
+const FADED_OPACITY: f32 = 0.6;
+
+/// A row of `count` translucent groups, each holding two children inside its own
+/// clip. With `overlap == false` the children are separated by a two-pixel gap —
+/// provably disjoint, so the group opacity is equivalent to per-child opacity and
+/// the planner can push it down. With `overlap == true` the same two children
+/// straddle the middle, where per-child opacity would double-blend, and the group
+/// must isolate: the control this gate measures the fold against.
+fn faded_card_scene(count: usize, overlap: bool) -> Vec<Primitive> {
+    let mut scene = Vec::with_capacity(count * 4);
+    for i in 0..count {
+        let x = 4.0 + i as f32 * FADED_CARD_PITCH;
+        let card = Rect {
+            x,
+            y: 16.0,
+            w: FADED_CARD_SIZE,
+            h: FADED_CARD_SIZE,
+        };
+        // Disjoint: [x+1, x+5) and [x+7, x+11) — a two-pixel gap, so the children
+        // do not even share an antialiased edge pixel. Overlapping: two wide
+        // halves that cross in the middle.
+        let (first, second) = if overlap {
+            (
+                Rect {
+                    x: x + 1.0,
+                    y: 17.0,
+                    w: 8.0,
+                    h: 10.0,
+                },
+                Rect {
+                    x: x + 3.0,
+                    y: 17.0,
+                    w: 8.0,
+                    h: 10.0,
+                },
+            )
+        } else {
+            (
+                Rect {
+                    x: x + 1.0,
+                    y: 17.0,
+                    w: 4.0,
+                    h: 10.0,
+                },
+                Rect {
+                    x: x + 7.0,
+                    y: 17.0,
+                    w: 4.0,
+                    h: 10.0,
+                },
+            )
+        };
+        scene.push(Primitive::Layer(LayerClip {
+            clip: card,
+            opacity: FADED_OPACITY,
+            blur_sigma: 0.0,
+            backdrop_sigma: 0.0,
+        }));
+        for rect in [first, second] {
+            scene.push(Primitive::Quad(Quad {
+                rect,
+                color: Rgba {
+                    r: 0.3,
+                    g: 0.6,
+                    b: 0.9,
+                    a: 1.0,
+                },
+                radius: 0.0,
+                border: Border::NONE,
+            }));
+        }
+        scene.push(Primitive::LayerEnd);
+    }
+    scene
+}
+
+/// E2.4 gate (§3102/§3120/§3145/§31): a group opacity is a multiply, not a render
+/// target, whenever the planner can prove it.
+///
+/// Two rows of the same geometry and the same opacity, differing only in whether
+/// the children overlap. The disjoint row must cost *nothing*: no offscreen pass,
+/// no transient byte, one surface pass — the group factor rides into each child's
+/// alpha. The overlapping row is the forbidden default made visible: it is what
+/// every group opacity would cost if the planner did not try, one target and one
+/// composite per card. The ratio between them is the whole point of §3145.
+///
+/// The gate also pins the §3202 half on the same frame: an unchanged row reports
+/// no dirty backdrop ROI, so a static screen with frosted chrome does no repeat
+/// capture work on the effect planner's account.
+fn assert_group_opacity_folds_without_a_target() {
+    let mut isolated = setup_scene(faded_card_scene(FADED_CARDS, true));
+    frame(&mut isolated);
+    frame(&mut isolated);
+    let control = isolated.renderer.frame_stats();
+
+    let mut h = setup_scene(faded_card_scene(FADED_CARDS, false));
+    frame(&mut h);
+    frame(&mut h);
+    let textures = h.gpu.texture_count();
+    let baseline = h.renderer.frame_stats();
+
+    let cards = FADED_CARDS as u32;
+
+    println!(
+        "E2.4 planner gate: {FADED_CARDS} x opacity {FADED_OPACITY} -> \
+         {} planned, {} eliminated, {} folded, {} offscreen pass(es), \
+         {} transient byte(s), {} render passes, {} draw calls \
+         (the same row with overlapping children: {} folded, \
+          {} offscreen pass(es), {} transient byte(s), {} render passes, \
+          {} draw calls)",
+        baseline.layers_planned,
+        baseline.layers_eliminated,
+        baseline.opacity_folds,
+        baseline.offscreen_passes,
+        baseline.transient_target_bytes,
+        baseline.render_passes,
+        baseline.draw_calls,
+        control.opacity_folds,
+        control.offscreen_passes,
+        control.transient_target_bytes,
+        control.render_passes,
+        control.draw_calls
+    );
+
+    // Every group was considered — the planner does not skip the question, it
+    // answers it.
+    assert_eq!(
+        baseline.layers_planned, cards,
+        "each translucent group raises its reason and is planned"
+    );
+    assert_eq!(
+        baseline.opacity_folds, cards,
+        "disjoint children take the fold, every card"
+    );
+    assert_eq!(
+        baseline.layers_eliminated, cards,
+        "and the layer that reason asked for is eliminated"
+    );
+
+    // What the fold costs: nothing.
+    assert_eq!(
+        baseline.offscreen_passes, 0,
+        "a folded group allocates no render target (§3145)"
+    );
+    assert_eq!(
+        baseline.transient_target_bytes, 0,
+        "and therefore no transient bytes"
+    );
+    assert_eq!(
+        baseline.transient_target_allocations, 0,
+        "nothing is claimed from the pool either"
+    );
+    assert_eq!(
+        baseline.render_passes, 1,
+        "the whole row stays a single surface pass"
+    );
+    assert_eq!(
+        baseline.backdrop_captures, 0,
+        "group opacity reads no destination"
+    );
+
+    // What the same row costs when the proof fails — the forbidden default.
+    assert_eq!(
+        control.opacity_folds, 0,
+        "overlapping children must not be folded: correctness first (§14.5)"
+    );
+    assert_eq!(
+        control.offscreen_passes, FADED_CARDS,
+        "the control row pays one target per card"
+    );
+    assert_eq!(
+        control.render_passes,
+        FADED_CARDS + 1,
+        "and one pass per target plus the surface"
+    );
+    assert!(
+        control.transient_target_bytes > 0,
+        "the control row really does allocate"
+    );
+    assert!(
+        baseline.draw_calls < control.draw_calls,
+        "the folded row also composites less: {} draw(s) vs {}",
+        baseline.draw_calls,
+        control.draw_calls
+    );
+
+    for f in 0..2 {
+        h.renderer.upload(&mut h.gpu, &h.scene);
+        let steady = h.renderer.frame_stats();
+        assert_eq!(
+            steady, baseline,
+            "idle frame {f}: an unchanged folded row must reproduce every counter \
+             of the warmed baseline"
+        );
+        assert_eq!(
+            steady.render_graph_compiles, 0,
+            "the plan is a decision about unchanged content, so it is not recompiled"
+        );
+        assert_eq!(
+            h.gpu.texture_count(),
+            textures,
+            "a folded row neither grows nor churns textures"
+        );
+    }
+
+    // §3202: the frosted row's backdrop dependency is a fact about its ROI's
+    // content, so an unchanged frame dirties nothing.
+    let mut frosted = setup_scene(frosted_panel_row_scene(FROSTED_PANELS, FROSTED_PANEL_SIGMA));
+    frame(&mut frosted);
+    let first = frosted.renderer.frame_stats();
+    assert!(
+        first.backdrop_captures > 0,
+        "the row really does capture a backdrop"
+    );
+    for f in 0..3 {
+        frame(&mut frosted);
+        let steady = frosted.renderer.frame_stats();
+        assert_eq!(
+            steady.backdrop_dirty_rois, 0,
+            "idle frame {f}: nothing changed behind any panel, so no ROI is dirty \
+             (§3202)"
+        );
+        assert!(
+            frosted
+                .renderer
+                .backdrop_dependencies()
+                .iter()
+                .all(|d| !d.dirty),
+            "idle frame {f}: every dependency reports clean"
+        );
+    }
+}
+
 /// A static "app screen" inside one blurred translucent layer: a bounded
 /// gradient palette (LUT rows), a shadowed path (coverage masks + tessellation),
 /// and a run of analytic shadows — every effect cache the renderer keeps, all
@@ -2963,6 +3253,12 @@ fn bench_steady_state(c: &mut Criterion) {
     // destination snapshot, while the same row under `SrcOver` stays a single
     // fixed-function surface pass.
     assert_blend_isolation_costs_no_extra_pass();
+
+    // E2.4 gate (§3102/§3120/§3145/§3202/§31): a row of translucent cards whose
+    // children provably do not overlap pushes its group opacity into them and pays
+    // nothing, while the identical row with overlapping children pays a target per
+    // card; and an idle frosted row dirties no backdrop ROI.
+    assert_group_opacity_folds_without_a_target();
 
     let mut h = setup();
     // Warm up so the measured iterations are the reuse path, not first growth.
@@ -3294,6 +3590,37 @@ fn bench_steady_state(c: &mut Criterion) {
     frame(&mut src_over_cards);
     c.bench_function("src_over_cards_frame", |b| {
         b.iter(|| frame(black_box(&mut src_over_cards)));
+    });
+
+    // E2.4 (§3145/§36): what the Effect Planner's cheapest rung is worth. Both
+    // rows author the same geometry at the same group opacity; only the children's
+    // overlap differs, so the pair brackets the fold against the target it avoids.
+    // `upload` is where the subtree is scanned, the plan is made and — in the
+    // folded row — the factor is multiplied into each child's alpha; `frame` adds
+    // the pass encoding, which is where the isolated row pays for a target per
+    // card. The scan is O(n²) in a group's foldable children by design (it is a
+    // pairwise disjointness proof, capped at a small child count), so `faded_cards_
+    // upload_steady` is also the guard that the proof does not grow into the cost
+    // it exists to remove. None of this is device shaded-pixel time (§36).
+    let mut faded = setup_scene(faded_card_scene(FADED_CARDS, false));
+    frame(&mut faded);
+    frame(&mut faded);
+    c.bench_function("faded_cards_upload_steady", |b| {
+        b.iter(|| {
+            faded
+                .renderer
+                .upload(black_box(&mut faded.gpu), black_box(&faded.scene))
+        });
+    });
+    c.bench_function("faded_cards_frame", |b| {
+        b.iter(|| frame(black_box(&mut faded)));
+    });
+
+    let mut faded_isolated = setup_scene(faded_card_scene(FADED_CARDS, true));
+    frame(&mut faded_isolated);
+    frame(&mut faded_isolated);
+    c.bench_function("faded_cards_isolated_frame", |b| {
+        b.iter(|| frame(black_box(&mut faded_isolated)));
     });
 }
 

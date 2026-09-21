@@ -141,6 +141,27 @@ pub struct Scene {
     pub revisions: Revisions,
     /// One [`PaintEntry`] per emitted primitive, in paint order.
     pub paint_order: Vec<PaintEntry>,
+    /// One content stamp per paint-order slot: the value of
+    /// [`Revisions::content`] at the last frame in which *that slot's* primitive
+    /// changed (§3202).
+    ///
+    /// Unlike `paint_order`, this vector is **retained across frames** — it is the
+    /// history a ROI-scoped consumer diffs against. A backdrop capture's
+    /// dependency is "the pixels under this rect", so it takes the maximum stamp
+    /// over the slots whose paint bounds hit its ROI: the stamp moves when the
+    /// content behind *that* panel moves and stays put when some unrelated part of
+    /// the scene changes, which is precisely the property that keeps one dirty
+    /// backdrop from invalidating every other one.
+    ///
+    /// Positional, like the stores themselves: removing a primitive shifts every
+    /// later slot, and the shifted slots diff dirty against their new contents, so
+    /// the stamps follow the shift rather than aliasing across it.
+    content_stamps: Vec<u64>,
+    /// Whether the primitive currently being recorded had any dirty plane. `None`
+    /// means no plane report arrived for it — the case for a composite the
+    /// renderer synthesizes, which is conservatively treated as dirty because its
+    /// pixels come from a pass rather than from a diffed store.
+    pending_dirty: Option<bool>,
     /// Per-frame ingest tallies (§61), reset at [`Scene::begin_frame`].
     pub ingest_stats: IngestStats,
 }
@@ -181,18 +202,57 @@ impl Scene {
     /// primitive.
     pub fn finish_frame(&mut self) {
         self.finish_ingest();
+        // The scene shrank: drop the stamps of slots that no longer exist, so a
+        // later frame that grows back into them sees new content rather than a
+        // stale stamp from two shapes ago.
+        self.content_stamps.truncate(self.paint_order.len());
+        self.pending_dirty = None;
     }
 
     /// Record one emitted primitive: its store slot, lowering context, and
     /// bounds, assigning it the next positional [`PrimitiveId`]. Returns the id.
     pub fn record(&mut self, store: StoreRef, context: EmitContext, bounds: Bounds) -> PrimitiveId {
-        let id = store::primitive_id(self.paint_order.len());
+        let index = self.paint_order.len();
+        let id = store::primitive_id(index);
         self.paint_order.push(PaintEntry {
             id,
             store,
             context,
             bounds,
         });
+        // A slot that did not exist last frame is new content by definition; an
+        // existing slot keeps its old stamp unless something about it moved. The
+        // `None` case is a synthesized composite — no store diffed it, so it is
+        // assumed to have changed.
+        let stamp = self.revisions.content();
+        match self.content_stamps.get_mut(index) {
+            Some(slot) => {
+                if self.pending_dirty.take().unwrap_or(true) {
+                    *slot = stamp;
+                }
+            }
+            None => {
+                self.pending_dirty = None;
+                self.content_stamps.push(stamp);
+            }
+        }
         id
+    }
+
+    /// The content stamp of paint-order slot `index` (§3202): the
+    /// [`Revisions::content`] value as of the last frame that slot's primitive
+    /// changed. Out-of-range slots report `0`, which compares as "older than
+    /// anything", so a consumer never mistakes a missing slot for fresh content.
+    #[inline]
+    pub fn content_stamp(&self, index: usize) -> u64 {
+        self.content_stamps.get(index).copied().unwrap_or(0)
+    }
+
+    /// Record that the primitive about to be recorded had (or had not) a dirty
+    /// plane this frame. Called by the ingest lane; a composite recorded without
+    /// one is conservatively dirty.
+    #[inline]
+    pub(crate) fn set_pending_dirty(&mut self, dirty: bool) {
+        self.pending_dirty = Some(dirty);
     }
 }

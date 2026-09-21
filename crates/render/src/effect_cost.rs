@@ -56,6 +56,50 @@ pub enum EffectCost {
     ComputePreferred = 6,
 }
 
+/// Whether an effect can be evaluated from the fragment it is shading alone
+/// (§3102) or needs pixels it does not own (§3120).
+///
+/// This is the single most consequential fact about an effect, because it decides
+/// whether the effect is *free* — folded into the draw shader that was going to
+/// run anyway — or whether it buys a render target:
+///
+/// - **Local** (§3102): the output pixel is a pure function of the source pixel.
+///   Opacity, tint, a color matrix, brightness/contrast/saturation, a simple
+///   gradient, a simple mask, a blend the fixed-function stage expresses. These
+///   fuse into the existing draw shader; the frame allocates nothing for them.
+/// - **Nonlocal** (§3120): the output pixel depends on neighbor samples, on the
+///   previous framebuffer, or on the group being composited in isolation first.
+///   Blur, backdrop blur, a large/general shadow, a destination-dependent
+///   advanced blend, displacement, group opacity over overlapping children. Only
+///   these may consider an offscreen target.
+///
+/// The frontier is exactly one threshold on the [`EffectCost`] ladder — the
+/// ladder is already ordered by realization cost, and the first rung that stops
+/// being expressible in place is [`NeedsOffscreen`](EffectCost::NeedsOffscreen).
+/// Deriving locality from the ladder rather than storing it separately is what
+/// keeps the two facts from drifting apart.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
+#[repr(u8)]
+pub enum EffectLocality {
+    /// Evaluated from the shaded fragment alone — fuses into the draw shader
+    /// (§3102).
+    #[default]
+    Local = 0,
+    /// Needs neighbor samples, the previous framebuffer, or group isolation —
+    /// only these effects may consider an offscreen target (§3120).
+    Nonlocal = 1,
+}
+
+impl EffectLocality {
+    /// The lowercase label for an inspector dump / overlay row.
+    pub fn label(self) -> &'static str {
+        match self {
+            EffectLocality::Local => "local",
+            EffectLocality::Nonlocal => "nonlocal",
+        }
+    }
+}
+
 impl EffectCost {
     /// The lowercase label for an inspector dump / overlay row.
     pub fn label(self) -> &'static str {
@@ -93,6 +137,25 @@ impl EffectCost {
     /// barrier / destination copy — no plain hardware blend suffices).
     pub fn reads_destination(self) -> bool {
         matches!(self, EffectCost::DestinationRead)
+    }
+
+    /// Whether this class is local (§3102) or nonlocal (§3120): the one threshold
+    /// on the ladder at [`NeedsOffscreen`](EffectCost::NeedsOffscreen) — a class
+    /// below it shades in place, a class at or above it needs pixels the fragment
+    /// does not own. [`NeedsMask`](EffectCost::NeedsMask) stays local: the mask is
+    /// a separate coverage build, but the masked draw itself still shades in place
+    /// from its own fragment (§3102's "simple mask").
+    pub fn locality(self) -> EffectLocality {
+        if self >= EffectCost::NeedsOffscreen {
+            EffectLocality::Nonlocal
+        } else {
+            EffectLocality::Local
+        }
+    }
+
+    /// Whether this class fuses into the existing draw shader (§3102).
+    pub fn is_local(self) -> bool {
+        self.locality() == EffectLocality::Local
     }
 
     /// The dominating cost of a chain of links: the maximum class, since the
@@ -165,6 +228,52 @@ mod tests {
                 EffectCost::Analytic,
             ]),
             EffectCost::NeedsBackdrop,
+        );
+    }
+
+    /// The Local/Nonlocal frontier (§3102 vs §3120) is one threshold on the
+    /// ladder, and it coincides exactly with "may consider an offscreen target".
+    #[test]
+    fn locality_is_one_threshold_on_the_ladder() {
+        for local in [
+            EffectCost::Local,
+            EffectCost::Analytic,
+            EffectCost::NeedsMask,
+        ] {
+            assert_eq!(local.locality(), EffectLocality::Local, "{local:?}");
+            assert!(local.is_local());
+            assert!(!local.needs_offscreen(), "a local class needs no target");
+        }
+        for nonlocal in [
+            EffectCost::NeedsOffscreen,
+            EffectCost::NeedsBackdrop,
+            EffectCost::DestinationRead,
+            EffectCost::ComputePreferred,
+        ] {
+            assert_eq!(
+                nonlocal.locality(),
+                EffectLocality::Nonlocal,
+                "{nonlocal:?}"
+            );
+            assert!(!nonlocal.is_local());
+        }
+        // The threshold is monotone: locality never drops as cost rises.
+        let ladder = [
+            EffectCost::Local,
+            EffectCost::Analytic,
+            EffectCost::NeedsMask,
+            EffectCost::NeedsOffscreen,
+            EffectCost::NeedsBackdrop,
+            EffectCost::DestinationRead,
+            EffectCost::ComputePreferred,
+        ];
+        for pair in ladder.windows(2) {
+            assert!(pair[0].locality() <= pair[1].locality());
+        }
+        assert_eq!(EffectLocality::default(), EffectLocality::Local);
+        assert_ne!(
+            EffectLocality::Local.label(),
+            EffectLocality::Nonlocal.label()
         );
     }
 

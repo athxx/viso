@@ -17,6 +17,7 @@ pub mod clip;
 pub mod color_atlas;
 pub mod color_effect;
 pub mod effect_cost;
+pub mod effect_plan;
 pub mod frame;
 pub mod glyph_atlas;
 pub mod gradient_lut;
@@ -46,7 +47,14 @@ pub use color_atlas::{ColorAlloc, ColorAtlas};
 // render-target pass. Authored via `Primitive::ColorEffect`; the fused `ColorOp`
 // is the renderer's unit of work, not normally named by apps (§3.2).
 pub use color_effect::{ColorEffect, ColorMatrix, ColorOp, fuse};
-pub use effect_cost::EffectCost;
+pub use effect_cost::{EffectCost, EffectLocality};
+// The Effect Planner (§3145): every potential layer records why it might exist,
+// the §3161 elimination ladder tries to remove each reason in order, and an
+// offscreen target is created only when one survives. Cold-path planner, not in
+// the prelude (§3.2).
+pub use effect_plan::{
+    EliminationSet, LayerElimination, LayerPlan, LayerRequest, ReasonSet, plan_layer,
+};
 pub use glyph_atlas::{AtlasAlloc, GlyphAtlas};
 pub use gradient_lut::{GradientLutAtlas, LutAlloc, LutKey};
 pub use inspect::{
@@ -80,7 +88,7 @@ pub use primitive::{
     color_transform_schema, glyphrun_schema, gradient_schema, image_schema, mesh_schema,
     quad_schema,
 };
-pub use renderer::{FrameStats, Renderer};
+pub use renderer::{BackdropDependency, FrameStats, Renderer};
 // GPU handles that appear in this crate's public API. `TextureId` is carried by
 // `ImageDraw`/`GlyphRunDraw`; `BindGroupId`/`PipelineId` are the resource handles
 // on `InspectBatch`'s public fields (architecture 62: `BatchId -> pipeline/
