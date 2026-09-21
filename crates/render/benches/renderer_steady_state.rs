@@ -804,6 +804,7 @@ fn nested_layer_scene(depth: usize, opacity: f32) -> Vec<Primitive> {
             },
             opacity,
             blur_sigma: 0.0,
+            backdrop_sigma: 0.0,
         }));
         scene.push(layer_tile(level, inset + 1.0, inset + 1.0));
     }
@@ -841,6 +842,7 @@ fn blurred_sibling_layer_scene(count: usize, opacity: f32, sigma: f32) -> Vec<Pr
             },
             opacity,
             blur_sigma: sigma,
+            backdrop_sigma: 0.0,
         }));
         scene.push(layer_tile(i, col * 4.0 + 0.5, row * 4.0 + 0.5));
         scene.push(Primitive::LayerEnd);
@@ -1828,6 +1830,7 @@ fn blurred_layer_scene(sigma: f32) -> Vec<Primitive> {
             clip: rect,
             opacity: 1.0,
             blur_sigma: sigma,
+            backdrop_sigma: 0.0,
         }),
         Primitive::Quad(Quad {
             rect,
@@ -2113,6 +2116,167 @@ fn assert_many_small_roi_blurs_bound_transient_memory() {
     }
 }
 
+/// The toolbar-shaped frosted row: enough panels that "one capture + one ladder
+/// per panel" would be plainly visible in the pass counts.
+const FROSTED_PANELS: usize = 6;
+
+/// The sigma every panel of the row frosts at — the same one for all of them, so
+/// a shared ladder is admissible, and small enough that the ladder is the
+/// two-rung full-resolution tier.
+const FROSTED_PANEL_SIGMA: f32 = 2.0;
+
+/// Panel edge length and the pitch they sit on. The gap (`pitch - size`) is wider
+/// than the blur reach `ceil(3 * sigma)`, so no panel's own composite lands inside
+/// its neighbour's padded ROI and the whole row is sharable.
+const FROSTED_PANEL_SIZE: f32 = 12.0;
+const FROSTED_PANEL_PITCH: f32 = 20.0;
+
+/// A row of `count` backdrop-blurred panels over one opaque background, each
+/// carrying a small opaque tile of its own content — the §17.2 sharing case as a
+/// real toolbar/sidebar would author it.
+fn frosted_panel_row_scene(count: usize, sigma: f32) -> Vec<Primitive> {
+    let mut scene = vec![Primitive::Quad(Quad {
+        rect: Rect {
+            x: 0.0,
+            y: 0.0,
+            w: W as f32,
+            h: H as f32,
+        },
+        color: Rgba {
+            r: 0.2,
+            g: 0.35,
+            b: 0.5,
+            a: 1.0,
+        },
+        radius: 0.0,
+        border: Border::NONE,
+    })];
+    for i in 0..count {
+        let panel = Rect {
+            x: 4.0 + i as f32 * FROSTED_PANEL_PITCH,
+            y: 20.0,
+            w: FROSTED_PANEL_SIZE,
+            h: FROSTED_PANEL_SIZE,
+        };
+        scene.push(Primitive::Layer(LayerClip {
+            clip: panel,
+            opacity: 1.0,
+            blur_sigma: 0.0,
+            backdrop_sigma: sigma,
+        }));
+        scene.push(Primitive::Quad(Quad {
+            rect: Rect {
+                x: panel.x + 3.0,
+                y: panel.y + 3.0,
+                w: panel.w - 6.0,
+                h: panel.h - 6.0,
+            },
+            color: Rgba {
+                r: 0.95,
+                g: 0.95,
+                b: 0.95,
+                a: 1.0,
+            },
+            radius: 0.0,
+            border: Border::NONE,
+        }));
+        scene.push(Primitive::LayerEnd);
+    }
+    scene
+}
+
+/// E2.1 gate (§17.1/§17.2/§31): a frosted row's backdrop cost is set by the
+/// *group*, not the panel count. [`FROSTED_PANELS`] panels over one background
+/// take **one** capture pass over the union ROI and **one** blur ladder — the same
+/// pass plan a single panel produces — and add only their own composites. The
+/// forbidden default (N full-surface captures + N ladders) would scale every one
+/// of these numbers with `count`.
+///
+/// Captured pixels are compared against `count ×` the single panel's capture, so
+/// the union is proven cheaper than the N tight captures it replaces, not merely
+/// cheaper than N full screens.
+fn assert_frosted_panel_row_shares_one_capture() {
+    let mut one = setup_scene(frosted_panel_row_scene(1, FROSTED_PANEL_SIGMA));
+    frame(&mut one);
+    frame(&mut one);
+    let single = one.renderer.frame_stats();
+
+    let mut h = setup_scene(frosted_panel_row_scene(FROSTED_PANELS, FROSTED_PANEL_SIGMA));
+    frame(&mut h);
+    frame(&mut h);
+    let textures = h.gpu.texture_count();
+    let baseline = h.renderer.frame_stats();
+
+    println!(
+        "E2.1 sharing gate: {FROSTED_PANELS} frosted panels -> \
+         {} capture(s) over {} px, {} blur pass(es), {} render passes \
+         (one panel alone: {} capture over {} px, {} blur, {} passes)",
+        baseline.backdrop_captures,
+        baseline.backdrop_capture_pixels,
+        baseline.blur_passes,
+        baseline.render_passes,
+        single.backdrop_captures,
+        single.backdrop_capture_pixels,
+        single.blur_passes,
+        single.render_passes
+    );
+
+    assert_eq!(
+        single.backdrop_captures, 1,
+        "one frosted panel is one capture"
+    );
+    assert_eq!(
+        baseline.backdrop_captures, 1,
+        "the whole row shares one capture, not {FROSTED_PANELS} (§17.2)"
+    );
+    assert_eq!(
+        baseline.blur_passes, single.blur_passes,
+        "a shared capture is blurred once: the row plans the same ladder as one \
+         panel, not one ladder per panel"
+    );
+    assert_eq!(
+        baseline.render_passes, single.render_passes,
+        "sharing adds composites, never passes — capture + ladder + surface, the \
+         same plan either way (§17.1)"
+    );
+    assert!(
+        baseline.backdrop_capture_pixels < FROSTED_PANELS * single.backdrop_capture_pixels,
+        "the union ROI must cost less than the {FROSTED_PANELS} tight captures it \
+         replaces ({} vs {} px)",
+        baseline.backdrop_capture_pixels,
+        FROSTED_PANELS * single.backdrop_capture_pixels
+    );
+    assert!(
+        baseline.backdrop_capture_pixels < (W as usize) * (H as usize),
+        "and less than the surface: a shared group must not promote itself to a \
+         full-screen capture ({} px)",
+        baseline.backdrop_capture_pixels
+    );
+
+    for f in 0..2 {
+        h.renderer.upload(&mut h.gpu, &h.scene);
+        let steady = h.renderer.frame_stats();
+        assert_eq!(
+            steady, baseline,
+            "idle frame {f}: an unchanged frosted row must reproduce every counter \
+             of the warmed baseline"
+        );
+        assert_eq!(
+            steady.transient_target_allocations, 0,
+            "a steady capture comes back from the pool (§17.4)"
+        );
+        assert_eq!(
+            steady.render_graph_compiles, 0,
+            "the capture's topology is unchanged, so the cached plan is reused"
+        );
+        assert_eq!(
+            h.gpu.texture_count(),
+            textures,
+            "the capture target neither grows nor churns across steady frames"
+        );
+    }
+}
+
 /// A static "app screen" inside one blurred translucent layer: a bounded
 /// gradient palette (LUT rows), a shadowed path (coverage masks + tessellation),
 /// and a run of analytic shadows — every effect cache the renderer keeps, all
@@ -2128,6 +2292,7 @@ fn idle_effect_scene(sigma: f32) -> Vec<Primitive> {
         },
         opacity: 0.85,
         blur_sigma: sigma,
+        backdrop_sigma: 0.0,
     })];
     scene.extend(gradient_grid_scene(LUT_PALETTE));
     scene.push(shadowed_path_at(8.0, 8.0, 0.5, [3.0, 4.0]));
@@ -2386,6 +2551,11 @@ fn bench_steady_state(c: &mut Criterion) {
     assert_many_small_roi_blurs_bound_transient_memory();
     assert_idle_blurred_scene_rebuilds_nothing();
 
+    // E2.1 gate (§17.1/§17.2/§31): a row of frosted panels shares one capture
+    // pass and one ladder with the union ROI — the pass plan of a single panel —
+    // instead of one full-surface capture and ladder per panel.
+    assert_frosted_panel_row_shares_one_capture();
+
     let mut h = setup();
     // Warm up so the measured iterations are the reuse path, not first growth.
     frame(&mut h);
@@ -2634,6 +2804,26 @@ fn bench_steady_state(c: &mut Criterion) {
     });
     c.bench_function("many_small_blurs_frame", |b| {
         b.iter(|| frame(black_box(&mut many_blurs)));
+    });
+
+    // E2.1 timing (§17.1/§17.2/§31): the frosted row. `upload` is where the
+    // sharing decision runs and the capture's target/ladder are claimed, so it is
+    // the cost of *planning* a shared backdrop; `frame` also encodes the capture
+    // pass, its rungs, and one composite per panel. Neither is device shaded-pixel
+    // time (§36).
+    let mut frosted_row = setup_scene(frosted_panel_row_scene(FROSTED_PANELS, FROSTED_PANEL_SIGMA));
+    frame(&mut frosted_row);
+    frame(&mut frosted_row);
+    c.bench_function("frosted_row_upload_steady", |b| {
+        b.iter(|| {
+            frosted_row.renderer.upload(
+                black_box(&mut frosted_row.gpu),
+                black_box(&frosted_row.scene),
+            )
+        });
+    });
+    c.bench_function("frosted_row_frame", |b| {
+        b.iter(|| frame(black_box(&mut frosted_row)));
     });
 }
 

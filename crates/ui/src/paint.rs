@@ -106,6 +106,7 @@ fn paint_subtree(
             clip: world,
             opacity: 1.0,
             blur_sigma: 0.0,
+            backdrop_sigma: 0.0,
         }));
     }
 

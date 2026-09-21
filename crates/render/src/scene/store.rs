@@ -31,7 +31,7 @@
 use crate::primitive::{
     AnalyticCapsuleInstance, AnalyticEllipseInstance, AnalyticLineInstance, AnalyticRRectInstance,
     GlyphInstance, GlyphInstanceData, GradientInstance, ImageInstance, MeshVertex, Path,
-    PathGeometry, QuadInstance, Rgba, ShadowInstance,
+    PathGeometry, QuadInstance, Rect, Rgba, ShadowInstance,
 };
 
 use super::ids::{
@@ -1783,6 +1783,18 @@ pub enum StoreRef {
         instance: ImageInstance,
         pass: usize,
     },
+    /// A backdrop composite emitted when a layer with a backdrop opens: an image
+    /// draw sampling backdrop capture `capture` over the world-space `rect` the
+    /// layer covers. Unlike [`StoreRef::Composite`] the instance cannot be
+    /// resolved at record time — the capture's ROI may still grow as later
+    /// layers join its group, and its physical target is unassigned until the
+    /// post-walk — so only the destination rect and `opacity` are recorded and
+    /// the UVs are derived at lowering time.
+    BackdropComposite {
+        capture: usize,
+        rect: Rect,
+        opacity: f32,
+    },
 }
 
 impl std::fmt::Display for StoreRef {
@@ -1800,6 +1812,7 @@ impl std::fmt::Display for StoreRef {
             StoreRef::Path(_) => write!(f, "path"),
             StoreRef::Mesh(_) => write!(f, "mesh"),
             StoreRef::Composite { .. } => write!(f, "composite"),
+            StoreRef::BackdropComposite { .. } => write!(f, "backdrop-composite"),
         }
     }
 }

@@ -39,7 +39,7 @@ use crate::primitive::{
 };
 use crate::raster_mask::{path_bounds, rasterize_path_coverage};
 use crate::scene::store::{ClipFillRule, StoreRef, glyph_instances};
-use crate::scene::{EmitContext, Scene};
+use crate::scene::{EmitContext, PaintEntry, Scene};
 use crate::transient::{TargetDesc, TargetId, TargetUsage, TransientTargets};
 use viso_math::InterpolationSpace;
 
@@ -236,11 +236,13 @@ impl SegmentKind {
 }
 
 impl PassTarget {
-    /// The batch-planner target this pass maps to (surface vs. offscreen `i`).
+    /// The batch-planner target this pass maps to (surface vs. offscreen `i` vs.
+    /// backdrop capture `i`).
     pub(crate) fn batch_target(self) -> BatchTarget {
         match self {
             PassTarget::Main => BatchTarget::Main,
             PassTarget::Offscreen(i) => BatchTarget::Offscreen(i),
+            PassTarget::Capture(i) => BatchTarget::Backdrop(i),
         }
     }
 }
@@ -300,6 +302,10 @@ pub(crate) enum PassTarget {
     /// An offscreen texture pass, indexed into [`Renderer::offscreen_passes`].
     /// Emitted before the surface pass so its texture is ready to composite.
     Offscreen(usize),
+    /// A backdrop capture pass, indexed into [`Renderer::backdrop_captures`]:
+    /// the content behind one backdrop group, re-rendered into a tight ROI
+    /// target so the blurred result can be composited under the group's layers.
+    Capture(usize),
 }
 
 /// One offscreen render-to-texture pass, created for a translucent
@@ -336,6 +342,61 @@ struct OffscreenPass {
     rect: Rect,
     /// The layer opacity in `[0, 1)`, applied as the composite tint alpha.
     opacity: f32,
+}
+
+/// How much empty area a backdrop group may absorb before a joining layer opens
+/// its own capture instead: the union is accepted while its area stays within
+/// this factor of the summed area of its members' own ROIs.
+///
+/// `1.0` would only ever accept a union that wastes nothing (so two panels with
+/// a gap between them never share); an unbounded factor would let two panels in
+/// opposite screen corners share one near-full-screen capture — the §17.2
+/// forbidden default in reverse. This is the internal knob between those, tuned
+/// against the §31 bench, not a public parameter.
+const BACKDROP_UNION_SLACK: f32 = 2.0;
+
+/// One backdrop capture pass: the content already submitted *behind* one (or one
+/// shared group of) backdrop layers, re-rendered into a tight ROI target, blurred
+/// by the standard ladder, and composited under each member layer's own content
+/// (§17.1, §17.2).
+///
+/// The capture is a *re-render*, not a read of the attachment the member layers
+/// draw into: it depends on the producers of the content behind them, which the
+/// render graph sees as ordinary read edges on those producers' targets. No
+/// widget ever samples undefined framebuffer state.
+///
+/// Sharing is the default and the split is the exception: a layer joins the open
+/// group when it asks for the same sigma, nothing has been drawn between them
+/// that the group's ROI covers, and the union stays within
+/// [`BACKDROP_UNION_SLACK`] of the members' own area. `N` frosted panels over one
+/// background therefore cost one capture and one blur ladder, not `N` of each.
+struct BackdropCapture {
+    /// `paint_order.len()` at the moment the group opened: exactly the entries
+    /// before this index are "behind" the group and get re-rendered into it.
+    under: usize,
+    /// The world-space ROI this capture renders: the union of its members' clips,
+    /// each inflated by the blur reach, intersected with the surface.
+    roi: Rect,
+    /// Summed area of the members' own inflated ROIs, the denominator of the
+    /// union-slack test (it double-counts overlap, which is what makes two
+    /// overlapping panels look "compatible" by area — they are split earlier, by
+    /// the blocker test).
+    covered: f32,
+    /// The blur sigma every member of this group asked for. A different sigma
+    /// needs a different ladder, so it opens its own capture.
+    sigma: f32,
+    /// The transient target this pass draws into; `None` until the post-walk
+    /// realizes the capture.
+    base: Option<TargetId>,
+    /// The transient target the member composites sample: the last rung of this
+    /// group's shared blur ladder. `None` until realized.
+    sample: Option<TargetId>,
+    /// The pass viewport `[width, height]`: the pooled (size-class) extent of
+    /// `base`, which the shaders map pixels to NDC against.
+    viewport: [f32; 2],
+    /// The extent this pass actually draws, at the target's top-left: the ceil of
+    /// `roi`, before size-class rounding.
+    used: [u32; 2],
 }
 
 /// An entry on the layer stack while lowering the flat primitive stream.
@@ -484,6 +545,17 @@ pub struct FrameStats {
     /// destination. Zero when there are no blur passes. A per-pass sum with the
     /// same aliasing caveat as `transient_target_bytes`.
     pub blur_target_bytes: usize,
+    /// Backdrop capture passes this frame (§17.1, §17.2): one per *group* of
+    /// backdrop layers, not one per layer. `N` frosted panels sharing one
+    /// background report `1`, and the blur ladder over that one capture is shared
+    /// too (`blur_passes` does not scale with `N` either). Zero when no layer asks
+    /// for a backdrop.
+    pub backdrop_captures: u32,
+    /// Pixels this frame's backdrop captures re-render (§17.1): summed
+    /// `used_width * used_height` over every capture. This is the ROI-only cost
+    /// the "capture only the required region" rule bounds — a small panel over a
+    /// 4K window captures its own padded rect, never the framebuffer.
+    pub backdrop_capture_pixels: usize,
     /// Peak concurrently-live transient render-target bytes this frame (§16.4,
     /// §31): the maximum, over every graph pass slot, of the pooled bytes whose
     /// `[first_write, last_read]` interval covers that slot. This is the real
@@ -673,6 +745,16 @@ pub struct Renderer {
     /// each layer's [`BlurPlan`]); drained in [`Renderer::encode`] between the
     /// offscreen layer passes and the surface pass. Reused each frame.
     blur_passes: Vec<BlurPass>,
+    /// This frame's backdrop captures, in creation order — one per *group* of
+    /// backdrop layers that share a background (§17.2), not one per layer. Each
+    /// re-renders the content already recorded behind its group into a tight ROI
+    /// target and blurs it; the group's members each composite that one blurred
+    /// result under their own content. Reused each frame.
+    backdrop_captures: Vec<BackdropCapture>,
+    /// Scratch for folding one backdrop capture's read edges: the render graph
+    /// does not deduplicate reads, and one producer can contribute many paint
+    /// entries to a capture. Cleared per capture, retained across frames.
+    backdrop_reads: Vec<TargetId>,
     /// The frame-local transient render-target pool (§16.4): every offscreen
     /// layer and every blur rung declares a virtual target here, and one
     /// lifetime-aware assignment pass maps those virtuals onto reusable physical
@@ -1114,6 +1196,8 @@ impl Renderer {
             layer_stack: Vec::with_capacity(8),
             offscreen_passes: Vec::with_capacity(4),
             blur_passes: Vec::with_capacity(4),
+            backdrop_captures: Vec::with_capacity(2),
+            backdrop_reads: Vec::with_capacity(4),
             transient: TransientTargets::new(),
             graph: RenderGraph::new(),
             commands: Vec::with_capacity(8),
@@ -1375,6 +1459,7 @@ impl Renderer {
         self.layer_stack.clear();
         self.offscreen_passes.clear();
         self.blur_passes.clear();
+        self.backdrop_captures.clear();
         self.blur_scratch.clear();
         self.graph.begin_frame();
         self.transient.begin_frame();
@@ -1390,14 +1475,19 @@ impl Renderer {
                 offscreen: match target {
                     PassTarget::Main => None,
                     PassTarget::Offscreen(idx) => Some(idx),
+                    // A capture pass is never on the layer stack: it re-renders
+                    // entries this walk already recorded, at lowering time.
+                    PassTarget::Capture(_) => None,
                 },
                 origin,
             };
             // Paint-order slots this primitive records, so its paint bounds can
             // be folded into the innermost offscreen layer's content union after
             // the match (a nested layer's composite, recorded at its LayerEnd,
-            // rolls up into the outer pass the same way).
-            let record_start = self.scene.paint_order.len();
+            // rolls up into the outer pass the same way). A backdrop layer moves
+            // this cursor past its own backdrop composite, which belongs to the
+            // *parent* target and must not be folded into the layer it opens.
+            let mut record_start = self.scene.paint_order.len();
             match prim {
                 Primitive::Quad(quad) => {
                     // Diff the world-space instance (origin not yet subtracted)
@@ -1618,6 +1708,30 @@ impl Renderer {
                         Some(parent) => parent.clip.intersect(layer.clip),
                         None => layer.clip,
                     };
+                    // A backdrop is an explicit dependency on the content already
+                    // recorded behind this layer (§17.1): join (or open) the
+                    // capture group for it and record the composite *now*, before
+                    // the layer's own content, so the blurred backdrop lands
+                    // under it. Only layers drawing straight into the surface
+                    // pass qualify — see `backdrop_roi`.
+                    if layer.backdrop_sigma > BLUR_MIN_SIGMA
+                        && matches!(target, PassTarget::Main)
+                        && let Some(roi) = self.backdrop_roi(world_clip, layer.backdrop_sigma)
+                    {
+                        let capture = self.join_or_open_backdrop(roi, layer.backdrop_sigma);
+                        let dest = world_clip.intersect(self.surface_rect());
+                        let bounds = crate::scene::bounds::Bounds::from_world(dest, None, 0.0, 0.0);
+                        self.scene.ingest_backdrop_composite(
+                            capture,
+                            dest,
+                            layer.opacity,
+                            ctx,
+                            bounds,
+                        );
+                        // The composite belongs to the parent target, not to the
+                        // layer this primitive opens.
+                        record_start = self.scene.paint_order.len();
+                    }
                     if layer.opacity >= 1.0 && layer.blur_sigma <= BLUR_MIN_SIGMA {
                         // Opaque, and any blur it asked for is sub-pixel — the
                         // ladder would plan no rung, so the offscreen texture
@@ -1662,12 +1776,7 @@ impl Renderer {
                         // texture, and repatch its children's origin to the ROI
                         // top-left — all deferred to here because the content
                         // union isn't known until the subtree is walked (§16.2).
-                        let surface = Rect {
-                            x: 0.0,
-                            y: 0.0,
-                            w: self.surface_size[0],
-                            h: self.surface_size[1],
-                        };
+                        let surface = self.surface_rect();
                         self.finalize_offscreen(idx, &entry, surface);
                         // Composite the finished offscreen texture back into the
                         // parent target as a textured quad at the ROI world rect,
@@ -1706,6 +1815,12 @@ impl Renderer {
         self.mask_page
             .set_needs_full_reblit(self.mask_cache.end_frame());
 
+        // Realize this frame's backdrop captures (§17.1, §17.2) ahead of the
+        // surface pass that consumes them. They can only be recorded here: a
+        // group's ROI is not final until the walk ends, since a later layer can
+        // still join it and grow the union.
+        self.realize_backdrop_captures();
+
         // Close the graph with the surface pass. It reads every layer's final
         // sampled target (what `close_offscreen` composites), and it can only be
         // recorded here: during the walk the surface node does not exist yet, and
@@ -1713,6 +1828,11 @@ impl Renderer {
         let surface = self.graph.open(PassWork::Surface, None);
         for i in 0..self.offscreen_passes.len() {
             if let Some(sample) = self.offscreen_passes[i].sample {
+                self.graph.read(surface, sample);
+            }
+        }
+        for i in 0..self.backdrop_captures.len() {
+            if let Some(sample) = self.backdrop_captures[i].sample {
                 self.graph.read(surface, sample);
             }
         }
@@ -1856,263 +1976,375 @@ impl Renderer {
                     }
                 }
             }
-            match entry.store {
-                StoreRef::Quad(id) => {
-                    let mut inst = self.scene.quads.get(id).expect("quad slot").instance;
-                    inst.rect_pos[0] -= origin[0];
-                    inst.rect_pos[1] -= origin[1];
-                    let start = self.quad_scratch.len() as u32;
-                    self.quad_scratch.push(inst);
-                    // Extend the current segment only if the planner says this
-                    // quad joins the previous draw; otherwise open a new one.
-                    self.merge_or_push(Segment {
-                        kind: SegmentKind::Quad,
-                        start,
-                        count: 1,
-                        clip,
-                        target,
-                    });
+            self.lower_entry(backend, entry, clip, target, origin);
+        }
+
+        // Re-render each backdrop capture's under-content into its own pass
+        // (§17.1). Appended *after* the main walk so every main-walk instance
+        // keeps the cursor it already had — a capture's duplicated instances land
+        // at the tail of the same family scratch, and `encode` selects a pass's
+        // draws by segment target, not by scratch order. A shared capture is
+        // walked once for the whole group, which is what makes N frosted panels
+        // over one background cost one re-render, not N (§17.2).
+        for i in 0..self.backdrop_captures.len() {
+            let roi = self.backdrop_captures[i].roi;
+            let target = PassTarget::Capture(i);
+            let origin = [roi.x, roi.y];
+            let under = self.backdrop_captures[i].under;
+            for entry in &record[..under] {
+                // Only content of the capture's own target is behind it; an
+                // offscreen layer's children reach the surface through their
+                // pass's composite, which is itself a `record` entry here.
+                if entry.context.offscreen.is_some() {
+                    continue;
                 }
-                StoreRef::AnalyticRRect(id) => {
-                    let mut inst = self
-                        .scene
-                        .analytic_rrects
-                        .get(id)
-                        .expect("analytic-rrect slot")
-                        .instance;
-                    inst.rect_pos[0] -= origin[0];
-                    inst.rect_pos[1] -= origin[1];
-                    let start = self.analytic_rrect_scratch.len() as u32;
-                    self.analytic_rrect_scratch.push(inst);
-                    self.merge_or_push(Segment {
-                        kind: SegmentKind::AnalyticRRect,
-                        start,
-                        count: 1,
-                        clip,
-                        target,
-                    });
-                }
-                StoreRef::AnalyticEllipse(id) => {
-                    let mut inst = self
-                        .scene
-                        .analytic_ellipses
-                        .get(id)
-                        .expect("analytic-ellipse slot")
-                        .instance;
-                    inst.rect_pos[0] -= origin[0];
-                    inst.rect_pos[1] -= origin[1];
-                    let start = self.analytic_ellipse_scratch.len() as u32;
-                    self.analytic_ellipse_scratch.push(inst);
-                    self.merge_or_push(Segment {
-                        kind: SegmentKind::AnalyticEllipse,
-                        start,
-                        count: 1,
-                        clip,
-                        target,
-                    });
-                }
-                StoreRef::AnalyticCapsule(id) => {
-                    let mut inst = self
-                        .scene
-                        .analytic_capsules
-                        .get(id)
-                        .expect("analytic-capsule slot")
-                        .instance;
-                    inst.rect_pos[0] -= origin[0];
-                    inst.rect_pos[1] -= origin[1];
-                    let start = self.analytic_capsule_scratch.len() as u32;
-                    self.analytic_capsule_scratch.push(inst);
-                    self.merge_or_push(Segment {
-                        kind: SegmentKind::AnalyticCapsule,
-                        start,
-                        count: 1,
-                        clip,
-                        target,
-                    });
-                }
-                StoreRef::AnalyticLine(id) => {
-                    let mut inst = self
-                        .scene
-                        .analytic_lines
-                        .get(id)
-                        .expect("analytic-line slot")
-                        .instance;
-                    // Both endpoints are world-space; shift by the emit origin.
-                    inst.p0[0] -= origin[0];
-                    inst.p0[1] -= origin[1];
-                    inst.p1[0] -= origin[0];
-                    inst.p1[1] -= origin[1];
-                    let start = self.analytic_line_scratch.len() as u32;
-                    self.analytic_line_scratch.push(inst);
-                    self.merge_or_push(Segment {
-                        kind: SegmentKind::AnalyticLine,
-                        start,
-                        count: 1,
-                        clip,
-                        target,
-                    });
-                }
-                StoreRef::Image(id) => {
-                    let e = self.scene.images.get(id).expect("image slot");
-                    let mut inst = e.instance;
-                    let texture = e.texture;
-                    let sampler_desc = e.sampler;
-                    let sampler = self.sampler_cache.intern(backend, sampler_desc);
-                    let bind_group = self.bind_group_for(backend, texture, sampler);
-                    inst.rect_pos[0] -= origin[0];
-                    inst.rect_pos[1] -= origin[1];
-                    let start = self.image_scratch.len() as u32;
-                    self.image_scratch.push(inst);
-                    // Each image is its own draw (it binds a texture); the image
-                    // family is unmergeable, so this always opens a new segment.
-                    self.merge_or_push(Segment {
-                        kind: SegmentKind::Image { bind_group },
-                        start,
-                        count: 1,
-                        clip,
-                        target,
-                    });
-                }
-                StoreRef::Gradient(id) => {
-                    let e = self.scene.gradients.get(id).expect("gradient slot");
-                    let mut inst = e.instance;
-                    let texture = e.texture;
-                    let bind_group = self.bind_group_for(backend, texture, self.sampler);
-                    inst.rect_pos[0] -= origin[0];
-                    inst.rect_pos[1] -= origin[1];
-                    let start = self.gradient_scratch.len() as u32;
-                    self.gradient_scratch.push(inst);
-                    // Each gradient binds its baked LUT atlas; the gradient family
-                    // is unmergeable, so this always opens a new segment.
-                    self.merge_or_push(Segment {
-                        kind: SegmentKind::Gradient { bind_group },
-                        start,
-                        count: 1,
-                        clip,
-                        target,
-                    });
-                }
-                StoreRef::AnalyticShadow(id) => {
-                    let mut inst = self
-                        .scene
-                        .analytic_shadows
-                        .get(id)
-                        .expect("analytic-shadow slot")
-                        .instance;
-                    inst.rect_pos[0] -= origin[0];
-                    inst.rect_pos[1] -= origin[1];
-                    let start = self.analytic_shadow_scratch.len() as u32;
-                    self.analytic_shadow_scratch.push(inst);
-                    self.merge_or_push(Segment {
-                        kind: SegmentKind::AnalyticShadow,
-                        start,
-                        count: 1,
-                        clip,
-                        target,
-                    });
-                }
-                StoreRef::Composite { mut instance, pass } => {
-                    // A composite draws into the parent target (main / unclipped /
-                    // zero-origin) sampling offscreen pass `pass`; its bind group
-                    // is the pooled texture the planner assigned to that pass's
-                    // sampled target (the base, or the last blur rung).
-                    let sample = self.offscreen_passes[pass]
-                        .sample
-                        .expect("offscreen pass finalized before its composite lowers");
-                    let bind_group = self.transient.bind_group(sample);
-                    instance.rect_pos[0] -= origin[0];
-                    instance.rect_pos[1] -= origin[1];
-                    let start = self.image_scratch.len() as u32;
-                    self.image_scratch.push(instance);
-                    self.merge_or_push(Segment {
-                        kind: SegmentKind::Image { bind_group },
-                        start,
-                        count: 1,
-                        clip,
-                        target,
-                    });
-                }
-                StoreRef::GlyphRun(run) => {
-                    let e = *self.scene.glyph_runs.run(run).expect("glyph run slot");
-                    let bind_group = self.bind_group_for(backend, e.atlas, self.sampler);
-                    let start = self.glyph_scratch.len() as u32;
-                    for g in self.scene.glyph_runs.glyphs(&e) {
-                        let mut inst = *g;
-                        inst.rect_pos[0] -= origin[0];
-                        inst.rect_pos[1] -= origin[1];
-                        self.glyph_scratch.push(inst);
+                let paint = entry.bounds.paint;
+                // A zero-area paint bound means "bounds not computed", so it is
+                // conservatively kept; a real bound outside the ROI contributes
+                // nothing to the capture and is dropped. This is not a cull of
+                // the frame's visible work (the primitive still draws into its
+                // own target), so it does not touch `culled_this_frame`.
+                if paint.w > 0.0 && paint.h > 0.0 {
+                    let hit = paint.intersect(roi);
+                    if hit.w <= 0.0 || hit.h <= 0.0 {
+                        continue;
                     }
-                    let count = self.glyph_scratch.len() as u32 - start;
-                    // A run is one instanced draw (it binds the atlas texture);
-                    // the glyph family is unmergeable, so this opens a new segment.
-                    self.merge_or_push(Segment {
-                        kind: SegmentKind::GlyphRun { bind_group },
-                        start,
-                        count,
-                        clip,
-                        target,
-                    });
                 }
-                StoreRef::Path(id) => {
-                    let e = self.scene.paths.get(id).expect("path slot");
-                    let index_start = self.mesh_index_scratch.len() as u32;
-                    let base = self.mesh_vertex_scratch.len() as u32;
-                    // Color and place the retained colorless geometry here at
-                    // lowering: apply the per-primitive transform to position and
-                    // the per-primitive paint to color, producing the frozen
-                    // `MeshVertex` layout. The cached geometry stays colorless and
-                    // in its own local space, so a recolor/transform-only change
-                    // reuses it without re-tessellating (§13.4).
-                    //
-                    // The colored vertices flow through the `mesh_vertex_pool`
-                    // ring, whose CPU shadow diff makes an unchanged geometry +
-                    // paint + transform frame a zero-byte upload — the F4 "static
-                    // geometry stays off the ring" guarantee in effect for the
-                    // steady state. A dedicated device-local geometry buffer that
-                    // keeps the colorless mesh resident and passes paint/transform
-                    // through a per-primitive uniform (so even a dirty recolor
-                    // uploads no vertices) needs a mesh-shader uniform dimension
-                    // and is a §13 follow-up.
-                    let geo = &e.geometry;
-                    let [ox, oy] = e.xform.offset;
-                    let scale = e.xform.scale;
-                    let fill_col = e.paint.fill.map(rgba_array).unwrap_or([0.0; 4]);
-                    let stroke_col = e.paint.stroke_color.map(rgba_array).unwrap_or([0.0; 4]);
-                    let opacity = e.paint.opacity;
-                    self.mesh_vertex_scratch.reserve(geo.verts.len());
-                    for (vi, v) in geo.verts.iter().enumerate() {
-                        let mut col = if (vi as u32) < geo.fill_vert_end {
-                            fill_col
-                        } else {
-                            stroke_col
-                        };
-                        col[3] *= opacity;
-                        self.mesh_vertex_scratch.push(MeshVertex {
-                            pos: [v.pos[0] * scale + ox, v.pos[1] * scale + oy],
-                            color: col,
-                            edge: v.edge,
-                        });
-                    }
-                    self.mesh_index_scratch
-                        .extend(geo.indices.iter_u32().map(|i| base + i));
-                    self.translate_vertices(base as usize, origin);
-                    let count = self.mesh_index_scratch.len() as u32 - index_start;
-                    self.push_mesh_segment(index_start, count, clip, target);
-                }
-                StoreRef::Mesh(id) => {
-                    let e = self.scene.meshes.get(id).expect("mesh slot");
-                    let index_start = self.mesh_index_scratch.len() as u32;
-                    let base = self.mesh_vertex_scratch.len() as u32;
-                    self.mesh_vertex_scratch.extend_from_slice(&e.vertices);
-                    self.mesh_index_scratch
-                        .extend(e.indices.iter().map(|&i| base + i));
-                    self.translate_vertices(base as usize, origin);
-                    let count = self.mesh_index_scratch.len() as u32 - index_start;
-                    self.push_mesh_segment(index_start, count, clip, target);
-                }
+                // Rebase the scissor from the entry's own target space into the
+                // capture's: both are world-space offsets, so the shift is the
+                // difference of the two origins. An unclipped entry stays
+                // unclipped.
+                let clip = entry.context.clip.map(|c| Rect {
+                    x: c.x + entry.context.origin[0] - origin[0],
+                    y: c.y + entry.context.origin[1] - origin[1],
+                    w: c.w,
+                    h: c.h,
+                });
+                self.lower_entry(backend, entry, clip, target, origin);
             }
         }
+
         self.scene.paint_order = record;
+    }
+
+    /// Lower one paint-order entry into the instance scratch of its family and
+    /// the covering segment, under an explicit lowering context.
+    ///
+    /// Split out of [`lower_from_scene`](Self::lower_from_scene) because a
+    /// primitive is lowered once per pass that draws it: once for its own target,
+    /// and again for each backdrop capture whose ROI it falls behind (§17.1). The
+    /// context is passed in rather than read off the entry so the capture walk can
+    /// retarget and re-origin it without touching the retained record.
+    fn lower_entry<B: GpuBackend>(
+        &mut self,
+        backend: &mut B,
+        entry: &PaintEntry,
+        clip: Option<Rect>,
+        target: PassTarget,
+        origin: [f32; 2],
+    ) {
+        match entry.store {
+            StoreRef::Quad(id) => {
+                let mut inst = self.scene.quads.get(id).expect("quad slot").instance;
+                inst.rect_pos[0] -= origin[0];
+                inst.rect_pos[1] -= origin[1];
+                let start = self.quad_scratch.len() as u32;
+                self.quad_scratch.push(inst);
+                // Extend the current segment only if the planner says this
+                // quad joins the previous draw; otherwise open a new one.
+                self.merge_or_push(Segment {
+                    kind: SegmentKind::Quad,
+                    start,
+                    count: 1,
+                    clip,
+                    target,
+                });
+            }
+            StoreRef::AnalyticRRect(id) => {
+                let mut inst = self
+                    .scene
+                    .analytic_rrects
+                    .get(id)
+                    .expect("analytic-rrect slot")
+                    .instance;
+                inst.rect_pos[0] -= origin[0];
+                inst.rect_pos[1] -= origin[1];
+                let start = self.analytic_rrect_scratch.len() as u32;
+                self.analytic_rrect_scratch.push(inst);
+                self.merge_or_push(Segment {
+                    kind: SegmentKind::AnalyticRRect,
+                    start,
+                    count: 1,
+                    clip,
+                    target,
+                });
+            }
+            StoreRef::AnalyticEllipse(id) => {
+                let mut inst = self
+                    .scene
+                    .analytic_ellipses
+                    .get(id)
+                    .expect("analytic-ellipse slot")
+                    .instance;
+                inst.rect_pos[0] -= origin[0];
+                inst.rect_pos[1] -= origin[1];
+                let start = self.analytic_ellipse_scratch.len() as u32;
+                self.analytic_ellipse_scratch.push(inst);
+                self.merge_or_push(Segment {
+                    kind: SegmentKind::AnalyticEllipse,
+                    start,
+                    count: 1,
+                    clip,
+                    target,
+                });
+            }
+            StoreRef::AnalyticCapsule(id) => {
+                let mut inst = self
+                    .scene
+                    .analytic_capsules
+                    .get(id)
+                    .expect("analytic-capsule slot")
+                    .instance;
+                inst.rect_pos[0] -= origin[0];
+                inst.rect_pos[1] -= origin[1];
+                let start = self.analytic_capsule_scratch.len() as u32;
+                self.analytic_capsule_scratch.push(inst);
+                self.merge_or_push(Segment {
+                    kind: SegmentKind::AnalyticCapsule,
+                    start,
+                    count: 1,
+                    clip,
+                    target,
+                });
+            }
+            StoreRef::AnalyticLine(id) => {
+                let mut inst = self
+                    .scene
+                    .analytic_lines
+                    .get(id)
+                    .expect("analytic-line slot")
+                    .instance;
+                // Both endpoints are world-space; shift by the emit origin.
+                inst.p0[0] -= origin[0];
+                inst.p0[1] -= origin[1];
+                inst.p1[0] -= origin[0];
+                inst.p1[1] -= origin[1];
+                let start = self.analytic_line_scratch.len() as u32;
+                self.analytic_line_scratch.push(inst);
+                self.merge_or_push(Segment {
+                    kind: SegmentKind::AnalyticLine,
+                    start,
+                    count: 1,
+                    clip,
+                    target,
+                });
+            }
+            StoreRef::Image(id) => {
+                let e = self.scene.images.get(id).expect("image slot");
+                let mut inst = e.instance;
+                let texture = e.texture;
+                let sampler_desc = e.sampler;
+                let sampler = self.sampler_cache.intern(backend, sampler_desc);
+                let bind_group = self.bind_group_for(backend, texture, sampler);
+                inst.rect_pos[0] -= origin[0];
+                inst.rect_pos[1] -= origin[1];
+                let start = self.image_scratch.len() as u32;
+                self.image_scratch.push(inst);
+                // Each image is its own draw (it binds a texture); the image
+                // family is unmergeable, so this always opens a new segment.
+                self.merge_or_push(Segment {
+                    kind: SegmentKind::Image { bind_group },
+                    start,
+                    count: 1,
+                    clip,
+                    target,
+                });
+            }
+            StoreRef::Gradient(id) => {
+                let e = self.scene.gradients.get(id).expect("gradient slot");
+                let mut inst = e.instance;
+                let texture = e.texture;
+                let bind_group = self.bind_group_for(backend, texture, self.sampler);
+                inst.rect_pos[0] -= origin[0];
+                inst.rect_pos[1] -= origin[1];
+                let start = self.gradient_scratch.len() as u32;
+                self.gradient_scratch.push(inst);
+                // Each gradient binds its baked LUT atlas; the gradient family
+                // is unmergeable, so this always opens a new segment.
+                self.merge_or_push(Segment {
+                    kind: SegmentKind::Gradient { bind_group },
+                    start,
+                    count: 1,
+                    clip,
+                    target,
+                });
+            }
+            StoreRef::AnalyticShadow(id) => {
+                let mut inst = self
+                    .scene
+                    .analytic_shadows
+                    .get(id)
+                    .expect("analytic-shadow slot")
+                    .instance;
+                inst.rect_pos[0] -= origin[0];
+                inst.rect_pos[1] -= origin[1];
+                let start = self.analytic_shadow_scratch.len() as u32;
+                self.analytic_shadow_scratch.push(inst);
+                self.merge_or_push(Segment {
+                    kind: SegmentKind::AnalyticShadow,
+                    start,
+                    count: 1,
+                    clip,
+                    target,
+                });
+            }
+            StoreRef::Composite { mut instance, pass } => {
+                // A composite draws into the parent target (main / unclipped /
+                // zero-origin) sampling offscreen pass `pass`; its bind group
+                // is the pooled texture the planner assigned to that pass's
+                // sampled target (the base, or the last blur rung).
+                let sample = self.offscreen_passes[pass]
+                    .sample
+                    .expect("offscreen pass finalized before its composite lowers");
+                let bind_group = self.transient.bind_group(sample);
+                instance.rect_pos[0] -= origin[0];
+                instance.rect_pos[1] -= origin[1];
+                let start = self.image_scratch.len() as u32;
+                self.image_scratch.push(instance);
+                self.merge_or_push(Segment {
+                    kind: SegmentKind::Image { bind_group },
+                    start,
+                    count: 1,
+                    clip,
+                    target,
+                });
+            }
+            StoreRef::GlyphRun(run) => {
+                let e = *self.scene.glyph_runs.run(run).expect("glyph run slot");
+                let bind_group = self.bind_group_for(backend, e.atlas, self.sampler);
+                let start = self.glyph_scratch.len() as u32;
+                for g in self.scene.glyph_runs.glyphs(&e) {
+                    let mut inst = *g;
+                    inst.rect_pos[0] -= origin[0];
+                    inst.rect_pos[1] -= origin[1];
+                    self.glyph_scratch.push(inst);
+                }
+                let count = self.glyph_scratch.len() as u32 - start;
+                // A run is one instanced draw (it binds the atlas texture);
+                // the glyph family is unmergeable, so this opens a new segment.
+                self.merge_or_push(Segment {
+                    kind: SegmentKind::GlyphRun { bind_group },
+                    start,
+                    count,
+                    clip,
+                    target,
+                });
+            }
+            StoreRef::Path(id) => {
+                let e = self.scene.paths.get(id).expect("path slot");
+                let index_start = self.mesh_index_scratch.len() as u32;
+                let base = self.mesh_vertex_scratch.len() as u32;
+                // Color and place the retained colorless geometry here at
+                // lowering: apply the per-primitive transform to position and
+                // the per-primitive paint to color, producing the frozen
+                // `MeshVertex` layout. The cached geometry stays colorless and
+                // in its own local space, so a recolor/transform-only change
+                // reuses it without re-tessellating (§13.4).
+                //
+                // The colored vertices flow through the `mesh_vertex_pool`
+                // ring, whose CPU shadow diff makes an unchanged geometry +
+                // paint + transform frame a zero-byte upload — the F4 "static
+                // geometry stays off the ring" guarantee in effect for the
+                // steady state. A dedicated device-local geometry buffer that
+                // keeps the colorless mesh resident and passes paint/transform
+                // through a per-primitive uniform (so even a dirty recolor
+                // uploads no vertices) needs a mesh-shader uniform dimension
+                // and is a §13 follow-up.
+                let geo = &e.geometry;
+                let [ox, oy] = e.xform.offset;
+                let scale = e.xform.scale;
+                let fill_col = e.paint.fill.map(rgba_array).unwrap_or([0.0; 4]);
+                let stroke_col = e.paint.stroke_color.map(rgba_array).unwrap_or([0.0; 4]);
+                let opacity = e.paint.opacity;
+                self.mesh_vertex_scratch.reserve(geo.verts.len());
+                for (vi, v) in geo.verts.iter().enumerate() {
+                    let mut col = if (vi as u32) < geo.fill_vert_end {
+                        fill_col
+                    } else {
+                        stroke_col
+                    };
+                    col[3] *= opacity;
+                    self.mesh_vertex_scratch.push(MeshVertex {
+                        pos: [v.pos[0] * scale + ox, v.pos[1] * scale + oy],
+                        color: col,
+                        edge: v.edge,
+                    });
+                }
+                self.mesh_index_scratch
+                    .extend(geo.indices.iter_u32().map(|i| base + i));
+                self.translate_vertices(base as usize, origin);
+                let count = self.mesh_index_scratch.len() as u32 - index_start;
+                self.push_mesh_segment(index_start, count, clip, target);
+            }
+            StoreRef::Mesh(id) => {
+                let e = self.scene.meshes.get(id).expect("mesh slot");
+                let index_start = self.mesh_index_scratch.len() as u32;
+                let base = self.mesh_vertex_scratch.len() as u32;
+                self.mesh_vertex_scratch.extend_from_slice(&e.vertices);
+                self.mesh_index_scratch
+                    .extend(e.indices.iter().map(|&i| base + i));
+                self.translate_vertices(base as usize, origin);
+                let count = self.mesh_index_scratch.len() as u32 - index_start;
+                self.push_mesh_segment(index_start, count, clip, target);
+            }
+            StoreRef::BackdropComposite {
+                capture,
+                rect,
+                opacity,
+            } => {
+                // The blurred backdrop, composited under the layer that asked
+                // for it. Unlike a layer composite (whose texture *is* the
+                // layer's ROI), a backdrop samples a sub-rect of a capture that
+                // may be shared with other layers and padded by the blur reach,
+                // so the UVs are derived here from the destination rect's
+                // position inside the capture ROI.
+                let cap = &self.backdrop_captures[capture];
+                let (roi, used) = (cap.roi, cap.used);
+                let sample = cap
+                    .sample
+                    .expect("backdrop capture is realized before its composite lowers");
+                let bind_group = self.transient.bind_group(sample);
+                // The sampled target's written sub-rect within its physical
+                // (size-class rounded) extent: the capture ROI covers exactly
+                // this fraction of the texture.
+                let sampled = self.transient.used_extent(sample);
+                let phys = self.transient.phys_extent(sample);
+                let cover = [
+                    sampled[0] as f32 / phys[0] as f32,
+                    sampled[1] as f32 / phys[1] as f32,
+                ];
+                let (bw, bh) = (used[0] as f32, used[1] as f32);
+                let instance = ImageInstance {
+                    rect_pos: [rect.x - origin[0], rect.y - origin[1]],
+                    rect_size: [rect.w, rect.h],
+                    uv_pos: [
+                        (rect.x - roi.x) / bw * cover[0],
+                        (rect.y - roi.y) / bh * cover[1],
+                    ],
+                    uv_size: [rect.w / bw * cover[0], rect.h / bh * cover[1]],
+                    color: [1.0, 1.0, 1.0, opacity],
+                };
+                let start = self.image_scratch.len() as u32;
+                self.image_scratch.push(instance);
+                self.merge_or_push(Segment {
+                    kind: SegmentKind::Image { bind_group },
+                    start,
+                    count: 1,
+                    clip,
+                    target,
+                });
+            }
+        }
     }
 
     /// The frame's counters (§30, §61), as they stand after the last
@@ -2203,6 +2435,12 @@ impl Renderer {
             transient_target_bytes,
             blur_passes: self.blur_passes.len() as u32,
             blur_target_bytes,
+            backdrop_captures: self.backdrop_captures.len() as u32,
+            backdrop_capture_pixels: self
+                .backdrop_captures
+                .iter()
+                .map(|c| (c.used[0] as usize) * (c.used[1] as usize))
+                .sum(),
             transient_peak_bytes: transient.peak_bytes,
             transient_pool_bytes: transient.pool_bytes,
             transient_target_allocations: transient.allocations,
@@ -2376,6 +2614,208 @@ impl Renderer {
         }
     }
 
+    /// The surface pass's world-space rect in physical pixels: the clamp every
+    /// ROI is intersected with, so no capture or layer target is ever larger than
+    /// the window.
+    fn surface_rect(&self) -> Rect {
+        Rect {
+            x: 0.0,
+            y: 0.0,
+            w: self.surface_size[0],
+            h: self.surface_size[1],
+        }
+    }
+
+    /// The capture ROI a backdrop layer over `world_clip` requires: its clip
+    /// inflated by the blur's reach (`BLUR_RADIUS_SIGMAS * sigma` — the widest tap
+    /// offset the ladder can read, so the visible sub-rect is never contaminated
+    /// by the target's transparent border) intersected with the surface. Never the
+    /// whole screen (§17.1): "capture only the required ROI". `None` when the
+    /// padded clip misses the surface entirely, in which case no capture is made.
+    fn backdrop_roi(&self, world_clip: Rect, sigma: f32) -> Option<Rect> {
+        let reach = (BLUR_RADIUS_SIGMAS * sigma).ceil();
+        let padded = Rect {
+            x: world_clip.x - reach,
+            y: world_clip.y - reach,
+            w: world_clip.w + 2.0 * reach,
+            h: world_clip.h + 2.0 * reach,
+        };
+        let roi = padded.intersect(self.surface_rect());
+        (roi.w > 0.0 && roi.h > 0.0).then_some(roi)
+    }
+
+    /// Join `roi` into the most recent backdrop capture group when the two are
+    /// compatible, or open a new group; returns the capture index (§17.2).
+    ///
+    /// This is what keeps "N frosted panels = N full-screen captures + N blurs"
+    /// from being the default: a row of panels over the same background shares one
+    /// capture, one blur ladder, and gets one composite each. Joining requires all
+    /// three of
+    ///
+    /// - the same sigma (a shared ladder can only realize one sigma);
+    /// - nothing drawn between the two panels that a shared capture would sample
+    ///   but the individual captures would not (see
+    ///   [`backdrop_group_blocked`](Self::backdrop_group_blocked)) — a widget
+    ///   painted *over* the first panel must not reappear under the second;
+    /// - a union no more than [`BACKDROP_UNION_SLACK`]× the area the members
+    ///   actually need, so two panels at opposite corners of the window do not
+    ///   silently promote themselves to a full-screen capture.
+    ///
+    /// Only the last group is considered: paint order is the sharing order, and
+    /// reaching further back would have to re-check every intervening draw against
+    /// every older group for the same cost as a split.
+    fn join_or_open_backdrop(&mut self, roi: Rect, sigma: f32) -> usize {
+        let area = roi.w * roi.h;
+        if let Some(last) = self.backdrop_captures.len().checked_sub(1) {
+            let cap = &self.backdrop_captures[last];
+            let (cap_sigma, cap_roi, cap_covered, cap_under) =
+                (cap.sigma, cap.roi, cap.covered, cap.under);
+            let union = cap_roi.union(roi);
+            if cap_sigma == sigma
+                && union.w * union.h <= (cap_covered + area) * BACKDROP_UNION_SLACK
+                && !self.backdrop_group_blocked(cap_under, roi)
+            {
+                let cap = &mut self.backdrop_captures[last];
+                cap.roi = union;
+                cap.covered += area;
+                return last;
+            }
+        }
+        let idx = self.backdrop_captures.len();
+        self.backdrop_captures.push(BackdropCapture {
+            under: self.scene.paint_order.len(),
+            roi,
+            covered: area,
+            sigma,
+            base: None,
+            sample: None,
+            viewport: [0.0, 0.0],
+            used: [0, 0],
+        });
+        idx
+    }
+
+    /// Whether anything recorded since paint-order index `from` would show through
+    /// a capture shared over `roi` that must not: a draw between two candidate
+    /// members that overlaps the joining member's ROI is *above* the first
+    /// member's backdrop but would land *below* the second's, so the group has to
+    /// split.
+    ///
+    /// Entries inside an offscreen layer are not blockers: their pixels reach the
+    /// surface through the layer's composite, which is itself a paint-order entry
+    /// and is tested here. An unknown (zero-area) paint bound counts as blocking —
+    /// sharing is an optimization and a split is always correct.
+    fn backdrop_group_blocked(&self, from: usize, roi: Rect) -> bool {
+        self.scene.paint_order[from..].iter().any(|e| {
+            if e.context.offscreen.is_some() {
+                return false;
+            }
+            let paint = e.bounds.paint;
+            if paint.w <= 0.0 || paint.h <= 0.0 {
+                return true;
+            }
+            let hit = paint.intersect(roi);
+            hit.w > 0.0 && hit.h > 0.0
+        })
+    }
+
+    /// Realize every backdrop capture this frame opened, in creation order, just
+    /// before the surface pass consumes them (§17.1).
+    ///
+    /// Per capture: declare a transient target of exactly its ROI, open a graph
+    /// node for it, register a read edge to every *producer* of the content the
+    /// capture re-renders, and blur the result through the shared ladder. The read
+    /// edges are the whole point — a backdrop depends on already-drawn content
+    /// through the render graph, never by reading the framebuffer it is itself
+    /// being composited into, whose contents at that moment are undefined.
+    ///
+    /// Only producers that are themselves targets can be read edges (a layer's
+    /// composite reads an offscreen texture; an earlier backdrop composite reads
+    /// that capture's blurred texture). Plain geometry needs no edge: the capture
+    /// pass re-renders it, so its input is the same vertex/instance data the
+    /// surface pass draws, not a texture the GPU has to finish writing first.
+    ///
+    /// This cannot run during the walk: a group's ROI is not final until the walk
+    /// ends, because a later layer can still join the group and grow its union.
+    fn realize_backdrop_captures(&mut self) {
+        if self.backdrop_captures.is_empty() {
+            return;
+        }
+        // Detach the paint order so the scan can borrow it while the graph, the
+        // target pool, and the captures are mutated. Restored below; the vector's
+        // allocation round-trips untouched.
+        let record = std::mem::take(&mut self.scene.paint_order);
+        let mut reads = std::mem::take(&mut self.backdrop_reads);
+        for i in 0..self.backdrop_captures.len() {
+            let (roi, under) = {
+                let cap = &self.backdrop_captures[i];
+                (cap.roi, cap.under)
+            };
+            let width = (roi.w.ceil() as u32).max(1);
+            let height = (roi.h.ceil() as u32).max(1);
+
+            let slot = self.graph.next_slot();
+            let base = self.transient.declare(
+                TargetDesc {
+                    width,
+                    height,
+                    format: TextureFormat::Bgra8Unorm,
+                    usage: TargetUsage::COLOR_ATTACHMENT,
+                    samples: 1,
+                    label: "backdrop-capture",
+                },
+                slot,
+            );
+            let node = self
+                .graph
+                .open(PassWork::BackdropCapture(i as u32), Some(base));
+
+            // The graph does not deduplicate reads, and one offscreen layer can
+            // contribute many entries to a capture, so fold the sources here.
+            reads.clear();
+            for entry in &record[..under] {
+                if entry.context.offscreen.is_some() {
+                    continue;
+                }
+                let paint = entry.bounds.paint;
+                if paint.w > 0.0 && paint.h > 0.0 {
+                    let hit = paint.intersect(roi);
+                    if hit.w <= 0.0 || hit.h <= 0.0 {
+                        continue;
+                    }
+                }
+                let source = match entry.store {
+                    StoreRef::Composite { pass, .. } => self.offscreen_passes[pass].sample,
+                    // Always an earlier capture: a group's members are recorded
+                    // after it opens, so its index is below this one's.
+                    StoreRef::BackdropComposite { capture, .. } => {
+                        self.backdrop_captures[capture].sample
+                    }
+                    _ => None,
+                };
+                if let Some(source) = source
+                    && !reads.contains(&source)
+                {
+                    reads.push(source);
+                    self.graph.read(node, source);
+                }
+            }
+
+            let phys = self.transient.phys_extent(base);
+            let sigma = {
+                let cap = &mut self.backdrop_captures[i];
+                cap.base = Some(base);
+                cap.viewport = [phys[0] as f32, phys[1] as f32];
+                cap.used = [width, height];
+                cap.sigma
+            };
+            let sample = self.build_blur_chain(base, [width, height], sigma);
+            self.backdrop_captures[i].sample = Some(sample);
+        }
+        self.backdrop_reads = reads;
+        self.scene.paint_order = record;
+    }
+
     /// Open an offscreen pass for a translucent layer whose world-space clip is
     /// `world_clip`, returning its index in `offscreen_passes`. No GPU work and no
     /// target declaration here: the ROI is only known at
@@ -2494,9 +2934,21 @@ impl Renderer {
                 pass.used,
             )
         };
+        // Composite samples the final step's target instead of the base (the
+        // chain returns `base` unchanged when the plan is empty).
+        self.offscreen_passes[idx].sample = Some(self.build_blur_chain(base, used, sigma));
+    }
+
+    /// Plan and record the separable Gaussian ladder for `sigma` over a target
+    /// `base` whose written extent is `used`, returning the target the result
+    /// should be sampled from — `base` itself when the plan is empty (a sub-pixel
+    /// sigma). Shared by content blur ([`build_blur`](Self::build_blur)) and
+    /// backdrop blur ([`realize_backdrop_captures`](Self::realize_backdrop_captures)):
+    /// both blur one tight-ROI texture, so both share one ladder (§16.2, §17.2).
+    fn build_blur_chain(&mut self, base: TargetId, used: [u32; 2], sigma: f32) -> TargetId {
         let plan = blur_plan(sigma, used[0], used[1]);
         if plan.is_empty() {
-            return;
+            return base;
         }
 
         // The source of step 0 is the base offscreen target; each later step reads
@@ -2546,9 +2998,7 @@ impl Renderer {
             source = target;
             source_used = [step.width, step.height];
         }
-
-        // Composite now samples the final step's target instead of the base.
-        self.offscreen_passes[idx].sample = Some(source);
+        source
     }
 
     /// Close the offscreen pass at `idx`, recording a composite draw in the
@@ -2666,6 +3116,7 @@ impl Renderer {
             let vp = match works[0] {
                 PassWork::Offscreen(i) => self.offscreen_passes[i as usize].viewport,
                 PassWork::Blur(i) => self.blur_passes[i as usize].viewport,
+                PassWork::BackdropCapture(i) => self.backdrop_captures[i as usize].viewport,
                 PassWork::Surface => viewport,
             };
             let uniforms = InlineUniforms::new(bytemuck_viewport(&vp));
@@ -2698,6 +3149,19 @@ impl Renderer {
                             uniforms,
                             scissor: None,
                         });
+                    }
+                    // The content behind one (or one shared group of) backdrop
+                    // layers, re-rendered into a tight ROI target (§17.1). The
+                    // draws are the duplicated instances `lower_from_scene`
+                    // appended for this capture, selected by their segment target.
+                    PassWork::BackdropCapture(i) => {
+                        for seg in self
+                            .segments
+                            .iter()
+                            .filter(|seg| seg.target == PassTarget::Capture(i as usize))
+                        {
+                            commands.push(self.command_for(seg, uniforms, vp));
+                        }
                     }
                     // The frame's visible result: everything not routed offscreen,
                     // composites included.
@@ -2947,6 +3411,7 @@ mod tests {
             clip: Rect { x, y, w, h },
             opacity: 1.0,
             blur_sigma: 0.0,
+            backdrop_sigma: 0.0,
         })
     }
 
@@ -2957,6 +3422,7 @@ mod tests {
             clip: Rect { x, y, w, h },
             opacity,
             blur_sigma: 0.0,
+            backdrop_sigma: 0.0,
         })
     }
 
@@ -3672,6 +4138,7 @@ mod tests {
             },
             opacity: 1.0,
             blur_sigma: 0.0,
+            backdrop_sigma: 0.0,
         });
         let blurred = Primitive::Layer(LayerClip {
             clip: Rect {
@@ -3682,6 +4149,7 @@ mod tests {
             },
             opacity: 1.0,
             blur_sigma: 3.0,
+            backdrop_sigma: 0.0,
         });
 
         let mut gpu = HeadlessRaster::new();
@@ -3843,6 +4311,7 @@ mod tests {
             },
             opacity: 1.0,
             blur_sigma: 4.0,
+            backdrop_sigma: 0.0,
         });
 
         r.upload(&mut gpu, &[blurred, black, white, Primitive::LayerEnd]);
@@ -3907,6 +4376,7 @@ mod tests {
                     },
                     opacity: 1.0,
                     blur_sigma: sigma,
+                    backdrop_sigma: 0.0,
                 }),
                 quad(8.0, 8.0),
                 Primitive::LayerEnd,
@@ -3977,6 +4447,7 @@ mod tests {
                     },
                     opacity: 1.0,
                     blur_sigma: 4.0,
+                    backdrop_sigma: 0.0,
                 }),
                 quad(8.0, 8.0),
                 Primitive::LayerEnd,
@@ -4009,6 +4480,7 @@ mod tests {
                     },
                     opacity: 1.0,
                     blur_sigma: sigma,
+                    backdrop_sigma: 0.0,
                 }),
                 quad(x + 4.0, 8.0),
                 Primitive::LayerEnd,
@@ -4078,6 +4550,7 @@ mod tests {
                     },
                     opacity: 1.0,
                     blur_sigma: sigma,
+                    backdrop_sigma: 0.0,
                 }),
                 quad(8.0, 8.0),
                 Primitive::LayerEnd,

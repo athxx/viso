@@ -655,6 +655,29 @@ const fn extend_as_u32(mode: ExtendMode) -> u32 {
 ///   the layer's content is Gaussian-blurred (a separable ladder inserted
 ///   between the offscreen render and the composite) before compositing.
 ///
+/// `backdrop_sigma` instead blurs what is *behind* the layer (a frosted-glass
+/// panel):
+///
+/// - `backdrop_sigma == 0.0` (default): no backdrop.
+/// - `backdrop_sigma > 0.0`: the content already submitted behind this layer is
+///   captured into its own render pass over the layer's clip (padded by the
+///   blur reach), blurred, and composited under the layer's own content. The
+///   capture is an explicit dependency on the producers of that content — never
+///   a read of the target this layer draws into — so the layer itself need not
+///   go offscreen. Panels that sit over the same backdrop and ask for the same
+///   sigma share one capture, one blur ladder, and one set of composites.
+///
+/// Two backdrop requests are honoured only as far as they can produce a visible
+/// difference, and are otherwise silently dropped:
+///
+/// - a sub-pixel `backdrop_sigma` (at or below the ladder's minimum) plans no
+///   blur rung, so the capture would composite the content back unchanged;
+/// - a backdrop on a layer nested inside a translucent or blurred layer. Such a
+///   layer draws into its parent's offscreen texture, whose pass is closed
+///   mid-walk, while a capture's region is only final once the walk ends and no
+///   further panel can join its group. The clip and the layer's own content are
+///   unaffected; only the frosted backdrop is omitted.
+///
 /// The offscreen pass is emitted before the main pass (see the render backend's
 /// draw-list ordering) and cleared to transparent.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -669,6 +692,12 @@ pub struct LayerClip {
     /// content. `0.0` (default) means no blur; `> 0.0` forces an offscreen pass
     /// even at `opacity == 1.0` and blurs the content before compositing.
     pub blur_sigma: f32,
+    /// Gaussian blur sigma in physical pixels applied to the content *behind*
+    /// this layer. `0.0` (default) means no backdrop; `> 0.0` captures the
+    /// already-submitted content under `clip` into a dedicated pass, blurs it,
+    /// and composites it beneath this layer's own content. Dropped for a
+    /// sub-pixel sigma, or on a layer nested inside a translucent/blurred one.
+    pub backdrop_sigma: f32,
 }
 
 /// A textured image: sample a sub-rect of `texture` into a destination `rect`,

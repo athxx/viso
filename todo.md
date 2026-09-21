@@ -1916,13 +1916,76 @@ in `viso-render`; ColorTransform / advanced-blend / blur-pyramid shaders in `vis
 capture / shared-pyramid targets in `viso-gpu`. Depends on E1 frozen (+ C0/E0 facts).
 
 ### E2.1 — Backdrop capture & sharing
-- [ ] Backdrop is an explicit "depends on already-drawn content behind it" semantic (§17.1):
+- [x] Backdrop is an explicit "depends on already-drawn content behind it" semantic (§17.1):
       goes through a RenderGraph dependency; a widget never reads current framebuffer
       undefined state; capture only the required ROI.
-- [ ] Shared backdrop (§17.2): multiple Frosted/Glass over the same region → shared capture
+  - [x] Authoring is one field: `LayerClip::backdrop_sigma` (`render/src/primitive.rs`).
+        `> 0` on a non-offscreen layer makes it a *frosted* layer — its own content stays
+        inline on the surface while what is already painted behind it is blurred. The layer
+        needs no new primitive, no destination read, and no user-visible pass concept.
+  - [x] A capture is a pass that **re-renders the under-content**, never a read of the
+        attachment being written. `realize_backdrop_captures` (`render/src/renderer.rs`)
+        opens one `PassWork::BackdropCapture(i)` node per group whose draw list is the
+        paint-order prefix below the group, so the capture's inputs are *producers* and its
+        result is a finished texture by the time any composite samples it. The surface pass
+        reads the group's final blur rung through `graph.read`, making "behind me" an edge
+        the graph can validate, cull and order — a widget can never observe undefined
+        framebuffer state because it never names the framebuffer.
+  - [x] Tight capture ROI: `backdrop_roi` pads the layer's clip by the ladder's own reach
+        `ceil(BLUR_RADIUS_SIGMAS * sigma)` per side and intersects the surface, so the
+        capture is exactly the pixels the kernel reads and the off-surface half of the
+        padding is dropped rather than allocated. The target and its rungs come from the
+        E1.3 pool at the E1.2 ladder tier, so a backdrop is not a per-frame allocation.
+  - [x] Two cases capture nothing, by design and documented on `LayerClip`: a sub-pixel
+        sigma (the composite would be the capture unchanged, so the layer stays a plain
+        scissor) and a clip with no on-surface area. A backdrop nested inside an offscreen
+        layer is also dropped — its parent's pass closes mid-walk while a capture group is
+        only final once the walk ends; the clip still applies.
+  - [x] `render/tests/backdrop_contract.rs` pins the semantic through the public surface
+        only (`backdrop_sigma` in, `FrameStats` out): the ROI equals the padded clip, is
+        clamped at the window edge, the frame's passes account for exactly
+        `offscreen + captures + rungs + surface` with `culled_render_passes == 0`, and the
+        three no-capture cases hold.
+- [x] Shared backdrop (§17.2): multiple Frosted/Glass over the same region → shared capture
       + shared blur pyramid where compatible + multiple material composites. Forbidden
       default: N widgets = N full-screen captures + N blurs. Allow union ROI / shared
       backdrop pyramid / MaterialGroup / shared effect pass.
+  - [x] `join_or_open_backdrop` is the whole grouping policy: a frosted layer joins the
+        open group iff the sigmas are equal (same ladder), the union ROI stays within
+        `BACKDROP_UNION_SLACK` of the members' own area (so distant panels split instead of
+        silently promoting themselves to one full-window capture), and nothing painted since
+        the group's base intersects the joiner's padded ROI. Joining widens the group's ROI
+        to the union; the group is one capture, one ladder, and one composite per member.
+  - [x] The blocking test is what keeps sharing correct: a capture taken below the whole
+        group cannot contain a member's own frosted result, so a panel drawn *over* an
+        earlier panel — or over anything painted between them — opens its own group. An
+        offscreen entry is skipped rather than treated as a blocker, since it composites
+        into its own target and not into the captured region.
+  - [x] Composites are ordinary paint-order entries against the shared result
+        (`StoreRef::BackdropComposite { capture, rect, opacity }`), so N members cost N
+        draws over one blurred source. `BatchTarget::Backdrop(i)` gives captures their own
+        2-bit target *class* in the batch key (bits 48..50) rather than carving a sub-range
+        out of the 10-bit offscreen index, so a capture pass and an offscreen pass at equal
+        index never alias and neither kind loses range.
+  - [x] Gated in `render/benches/renderer_steady_state.rs`
+        (`assert_frosted_panel_row_shares_one_capture`): a six-panel frosted row costs
+        **1 capture over 2928 px, 2 blur passes, 4 render passes** — the identical pass plan
+        to a single panel (1 capture, 2 blur, 4 passes) — versus the forbidden default's
+        6 captures, 12 blur passes and 19 passes. Captured pixels stay under both
+        `6 x` the single-panel capture and one full surface; a repeat upload allocates no
+        transient target, recompiles no graph, and creates no backend texture.
+  - [x] Timing rows `frosted_row_upload_steady` (1.20 µs — planning the shared group and
+        claiming its targets) and `frosted_row_frame` (2.45 ms — encode of the capture, its
+        rungs and six composites through `HeadlessRaster`'s CPU rasterizer) separate plan
+        reuse from encode.
+  - [x] Flagged, not asserted: on-device Metal time for a capture vs. N captures (no GPU
+        capture here, and `HeadlessRaster` has no bandwidth/overdraw counter, so the saving
+        is evidenced by pass counts and captured pixels, §7.3/§36); the union-slack and
+        sharing thresholds are internal consts chosen by reasoning, not tuned against a
+        device; the graph read-edge is verified through pass accounting rather than edge
+        inspection, since `Renderer`'s public surface is `upload`/`frame_stats`/`submit`;
+        `MaterialGroup` as a *public authoring* type is not introduced — grouping is inferred
+        from geometry and sigma, which keeps the mental model at one field (§6.1).
 
 ### E2.2 — Color effect fusion
 - [ ] Color effects (§17.3): `Brightness, Contrast, Saturation, HueRotate, Grayscale,
