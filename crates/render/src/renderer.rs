@@ -28,6 +28,7 @@ use viso_shader::{PipelineEntry, PipelineFamily, standard_manifest};
 use crate::batch::{BatchFamily, BatchItem, BatchKey, BatchTarget, joins};
 use crate::clip::{ClipShape, plan_clip};
 use crate::gradient_lut::{GradientLutAtlas, LUT_WIDTH, LutAlloc, LutKey};
+use crate::graph::{PassLoad, PassWork, RenderGraph};
 use crate::mask::{MaskCache, MaskKey, MaskKind, MaskRequest};
 use crate::mask_page::MaskPage;
 use crate::pool::InstancePool;
@@ -39,7 +40,7 @@ use crate::primitive::{
 use crate::raster_mask::{path_bounds, rasterize_path_coverage};
 use crate::scene::store::{ClipFillRule, StoreRef, glyph_instances};
 use crate::scene::{EmitContext, Scene};
-use crate::transient::{SURFACE_SLOT, TargetDesc, TargetId, TargetUsage, TransientTargets};
+use crate::transient::{TargetDesc, TargetId, TargetUsage, TransientTargets};
 use viso_math::InterpolationSpace;
 
 /// Bytes of one quad instance.
@@ -484,7 +485,7 @@ pub struct FrameStats {
     /// same aliasing caveat as `transient_target_bytes`.
     pub blur_target_bytes: usize,
     /// Peak concurrently-live transient render-target bytes this frame (§16.4,
-    /// §31): the maximum, over every timeline slot, of the pooled bytes whose
+    /// §31): the maximum, over every graph pass slot, of the pooled bytes whose
     /// `[first_write, last_read]` interval covers that slot. This is the real
     /// high-water footprint the frame's offscreen work demands — the figure a
     /// memory gate bounds, and always `<= transient_pool_bytes`.
@@ -503,6 +504,25 @@ pub struct FrameStats {
     /// Bounded by the peak concurrent demand of any recent frame, not by the
     /// number of effects drawn.
     pub transient_targets: usize,
+    /// Render passes the graph compiled for this frame (§16.1, §30): the passes
+    /// handed to the backend, and therefore the frame's render-target switch
+    /// count. At least 1 (the surface) after any upload. Lower than
+    /// `offscreen_passes + blur_passes + 1` exactly when the graph merged or
+    /// culled something.
+    pub render_passes: usize,
+    /// Passes the graph folded into a preceding pass because both write the same
+    /// attachment (§16.5): each merge is one render-target switch — and, on a tile
+    /// GPU, one attachment store/load cycle — that the frame does not pay.
+    pub render_pass_merges: u32,
+    /// Passes the graph dropped because nothing samples what they write (§16.1).
+    /// Zero for a scene whose every offscreen layer is composited, which is the
+    /// normal case; nonzero means work was planned and then found dead.
+    pub culled_render_passes: u32,
+    /// `1` when this frame rebuilt the pass plan, `0` when it reused the cached
+    /// one (§16.1). Topology alone drives a rebuild: a resize, a scroll, a
+    /// recolor, or a blur sigma change that keeps the ladder's shape all reuse the
+    /// plan, so a steady scene reports 0 from its second frame onward.
+    pub render_graph_compiles: u32,
     /// GPU pipelines created since the renderer was built (§30). The four
     /// builtins are prewarmed once at construction and never recompiled at
     /// steady state (§7.1: no runtime first-use compile), so this is a fixed
@@ -659,17 +679,16 @@ pub struct Renderer {
     /// textures keyed by format / usage / size class / sample count. Replaces
     /// per-effect `create_texture`/`destroy_texture`.
     transient: TransientTargets,
-    /// This frame's offscreen execution order — one entry per render pass that
-    /// writes a transient target, in the order [`Renderer::encode`] emits them
-    /// (before the surface pass). The index of an entry is the *timeline slot*
-    /// the planner's lifetime analysis works in: a target's `first_write` is the
-    /// slot of the pass that fills it, its `last_read` the slot of the last pass
-    /// that samples it (or [`SURFACE_SLOT`]). Reused each frame.
-    timeline: Vec<TimelineEntry>,
-    /// Per-pass viewports for this frame, reused each frame. Index 0 is the
-    /// surface; the rest map 1:1 to `timeline`. Their bytes feed each command's
-    /// inline uniform (copied by value, no borrow).
-    viewports: Vec<[f32; 2]>,
+    /// This frame's pass topology (§16.1, §25): every offscreen layer, every blur
+    /// rung, and the surface records a node here with the target it writes and the
+    /// targets it samples. The graph validates the dependency order, culls
+    /// unread passes, merges adjacent passes sharing an attachment, derives every
+    /// transient lifetime, and lowers each pass's load op — and reuses the
+    /// compiled plan whenever the topology is unchanged, so a resize, a recolor,
+    /// or a blur sigma tweak never rebuilds it. [`Renderer::encode`] walks the
+    /// compiled plan; the passes' payloads stay in `offscreen_passes` /
+    /// `blur_passes`.
+    graph: RenderGraph,
     /// The frame's draw commands, flat across all passes in execution order,
     /// reused each frame. `passes` slices this by range. Borrow-free, so its
     /// backing allocation is retained across frames via `clear` (0 steady-state
@@ -706,20 +725,6 @@ pub struct Renderer {
     /// outside their pass's tight ROI (the clip excluded them), so their draw
     /// was skipped (§16.2). Read into `FrameStats::culled_primitives` (§61).
     culled_this_frame: u32,
-}
-
-/// One entry of [`Renderer::timeline`]: a render pass that writes a transient
-/// target, identified by what it draws. Its position in the timeline is the slot
-/// the planner's lifetime analysis uses, and the order [`Renderer::encode`]
-/// emits passes in.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum TimelineEntry {
-    /// The offscreen layer pass at this index in [`Renderer::offscreen_passes`],
-    /// which renders the layer's subtree into its base target.
-    Offscreen(usize),
-    /// The blur rung at this index in [`Renderer::blur_passes`], which reads the
-    /// previous rung's target and writes its own.
-    Blur(usize),
 }
 
 /// Blur below this sigma (in physical pixels) is a visual no-op: the separable
@@ -893,19 +898,18 @@ fn blur_plan(sigma: f32, src_w: u32, src_h: u32) -> BlurPlan {
     }
 }
 
-/// One realized blur pass this frame: the transient target it samples, the one it
-/// writes, its viewport, and the slot of its single [`BlurInstance`] in
+/// One realized blur pass this frame: the transient target it samples, its
+/// viewport, and the slot of its single [`BlurInstance`] in
 /// [`Renderer::blur_scratch`]. Transient — rebuilt every frame in
-/// `finalize_offscreen`, drained in [`Renderer::encode`] between the offscreen
-/// layer passes and the surface pass.
+/// `finalize_offscreen`, encoded from the compiled plan in [`Renderer::encode`].
 ///
-/// `source`/`target` are *virtual* ids: the concrete texture and bind group are
-/// resolved from [`Renderer::transient`] after the frame's assignment pass, so a
-/// rung's scratch texture can be recycled from an earlier rung whose lifetime has
-/// ended (§16.4).
+/// The target it *writes* lives on its graph node, not here (§41): the graph is
+/// what lowers attachments and load ops. `source` is a *virtual* id — the concrete
+/// texture and bind group are resolved from [`Renderer::transient`] after the
+/// frame's assignment pass, so a rung's scratch texture can be recycled from an
+/// earlier rung whose lifetime has ended (§16.4).
 struct BlurPass {
     source: TargetId,
-    target: TargetId,
     /// The *physical* extent of `target` — what the shader maps pixels to NDC
     /// against, which is the pooled texture's size class, not the used sub-rect.
     viewport: [f32; 2],
@@ -1109,8 +1113,7 @@ impl Renderer {
             offscreen_passes: Vec::with_capacity(4),
             blur_passes: Vec::with_capacity(4),
             transient: TransientTargets::new(),
-            timeline: Vec::with_capacity(8),
-            viewports: Vec::with_capacity(8),
+            graph: RenderGraph::new(),
             commands: Vec::with_capacity(8),
             passes: Vec::with_capacity(4),
             scene: Scene::new(),
@@ -1371,7 +1374,7 @@ impl Renderer {
         self.offscreen_passes.clear();
         self.blur_passes.clear();
         self.blur_scratch.clear();
-        self.timeline.clear();
+        self.graph.begin_frame();
         self.transient.begin_frame();
         self.scene.begin_frame();
         self.mask_cache.begin_frame();
@@ -1698,15 +1701,32 @@ impl Renderer {
         self.mask_page
             .set_needs_full_reblit(self.mask_cache.end_frame());
 
+        // Close the graph with the surface pass. It reads every layer's final
+        // sampled target (what `close_offscreen` composites), and it can only be
+        // recorded here: during the walk the surface node does not exist yet, and
+        // the graph's read arena requires a node's reads to be contiguous.
+        let surface = self.graph.open(PassWork::Surface, None);
+        for i in 0..self.offscreen_passes.len() {
+            if let Some(sample) = self.offscreen_passes[i].sample {
+                self.graph.read(surface, sample);
+            }
+        }
+
+        // Compile the frame's pass plan — validate, cull, merge — or reuse the
+        // cached one when the topology is unchanged (§16.1).
+        self.graph.compile();
+
         // Map this frame's virtual transient targets onto physical textures
-        // (§16.4). Every offscreen layer and blur rung declared its target during
-        // the walk with a `[first_write, last_read]` timeline interval; this one
-        // pass walks them in write order and hands each the first pooled texture
-        // of a compatible key whose previous tenant's interval has ended, minting
-        // a texture only when none is free. Must run before lowering, since the
-        // composites resolve their sampled bind groups from the assignment.
+        // (§16.4). Each was declared during the walk at the slot of the pass that
+        // writes it; the graph's recorded reads are what close their lifetimes, so
+        // it drives the interval analysis. `assign` then walks the virtuals in
+        // write order and hands each the first pooled texture of a compatible key
+        // whose previous tenant's interval has ended, minting a texture only when
+        // none is free. Both must run before lowering, since the composites
+        // resolve their sampled bind groups from the assignment.
+        self.graph.apply_lifetimes(&mut self.transient);
         self.transient
-            .assign(backend, self.sampler, self.timeline.len() as u32);
+            .assign(backend, self.sampler, self.graph.surface_slot());
 
         // Derive the frame's scratch + segments from the retained scene.
         self.lower_from_scene(backend);
@@ -2101,7 +2121,9 @@ impl Renderer {
     /// walk the segments in submission order and count the transitions between
     /// adjacent draws. `uploaded_ranges` and `gpu_upload_bytes` come from the
     /// pool syncs. `offscreen_passes` and `transient_target_bytes` come from
-    /// this frame's translucent-layer passes. `shader_pipeline_creations` is the
+    /// this frame's translucent-layer passes. `render_passes`,
+    /// `render_pass_merges`, `culled_render_passes`, and `render_graph_compiles`
+    /// come from the compiled pass plan (§16.1). `shader_pipeline_creations` is the
     /// fixed prewarm count (§7.1: no runtime compile). The counters with no
     /// source in this layer stay 0 with their meaning fixed (see [`FrameStats`]).
     pub fn frame_stats(&self) -> FrameStats {
@@ -2150,6 +2172,7 @@ impl Renderer {
             .map(|p| (p.viewport[0] as usize) * (p.viewport[1] as usize) * 4)
             .sum();
         let transient = self.transient.stats();
+        let graph = self.graph.stats();
 
         FrameStats {
             // Each blur pass is one full-target draw beyond the segment-derived
@@ -2179,6 +2202,10 @@ impl Renderer {
             transient_pool_bytes: transient.pool_bytes,
             transient_target_allocations: transient.allocations,
             transient_targets: transient.targets,
+            render_passes: graph.passes as usize,
+            render_pass_merges: graph.merges,
+            culled_render_passes: graph.culled,
+            render_graph_compiles: graph.compiles,
             shader_pipeline_creations: SHADER_PIPELINE_PREWARM_COUNT,
             // Masks rasterized into the page this frame (§14.4): cold builds,
             // re-rasters after a key change, and re-blits after a repack.
@@ -2372,7 +2399,7 @@ impl Renderer {
     /// (or a clip that excludes all content) clamps to a 1×1 target; the composite
     /// then draws a degenerate quad.
     ///
-    /// No GPU resource is created here. The pass takes the next timeline slot and
+    /// No GPU resource is created here. The pass takes the next graph slot and
     /// declares a *virtual* target of the ROI's size class against the frame-local
     /// pool (§16.4); the concrete texture is picked once the whole frame's
     /// lifetimes are known, in [`TransientTargets::assign`]. The pass viewport is
@@ -2388,8 +2415,7 @@ impl Renderer {
         let width = (roi.w.ceil() as u32).max(1);
         let height = (roi.h.ceil() as u32).max(1);
 
-        let slot = self.timeline.len() as u32;
-        self.timeline.push(TimelineEntry::Offscreen(idx));
+        let slot = self.graph.next_slot();
         let base = self.transient.declare(
             TargetDesc {
                 width,
@@ -2401,6 +2427,7 @@ impl Renderer {
             },
             slot,
         );
+        self.graph.open(PassWork::Offscreen(idx as u32), Some(base));
         let phys = self.transient.phys_extent(base);
         let pass = &mut self.offscreen_passes[idx];
         pass.base = Some(base);
@@ -2432,13 +2459,10 @@ impl Renderer {
         // sampling its base texture unchanged.
         self.build_blur(idx, entry.blur_sigma);
 
-        // Whatever the ladder left the composite sampling stays alive until the
-        // surface pass reads it, which is what pins a layer's final texture out of
-        // the alias pool for the rest of the frame.
-        let sample = self.offscreen_passes[idx]
-            .sample
-            .expect("offscreen pass declares its base target before finalize returns");
-        self.transient.read_at(sample, SURFACE_SLOT);
+        debug_assert!(
+            self.offscreen_passes[idx].sample.is_some(),
+            "offscreen pass declares its base target before finalize returns"
+        );
     }
 
     /// Realize the blur ladder for the offscreen pass at `idx`: plan the separable
@@ -2471,15 +2495,13 @@ impl Renderer {
         }
 
         // The source of step 0 is the base offscreen target; each later step reads
-        // the target of the one before, and each takes the next timeline slot, so
-        // the planner sees a strictly ordered write-then-read chain and can never
-        // alias a step's source into its own target.
+        // the target of the one before, and each takes the next graph slot, so the
+        // graph sees a strictly ordered write-then-read chain and the pool can
+        // never alias a step's source into its own target.
         let mut source = base;
         let mut source_used = used;
         for step in &plan.steps {
-            let slot = self.timeline.len() as u32;
-            self.timeline
-                .push(TimelineEntry::Blur(self.blur_passes.len()));
+            let slot = self.graph.next_slot();
             let target = self.transient.declare(
                 TargetDesc {
                     width: step.width,
@@ -2491,7 +2513,10 @@ impl Renderer {
                 },
                 slot,
             );
-            self.transient.read_at(source, slot);
+            let node = self
+                .graph
+                .open(PassWork::Blur(self.blur_passes.len() as u32), Some(target));
+            self.graph.read(node, source);
 
             let src = self.transient.phys_extent(source);
             let dst = self.transient.phys_extent(target);
@@ -2510,7 +2535,6 @@ impl Renderer {
             });
             self.blur_passes.push(BlurPass {
                 source,
-                target,
                 viewport: [dst[0] as f32, dst[1] as f32],
                 instance,
             });
@@ -2601,12 +2625,13 @@ impl Renderer {
 
     /// Build the draw list and hand it to the backend (no present).
     ///
-    /// Emits one [`RenderPass`] per entry of this frame's offscreen `timeline` (in
-    /// timeline order, each target cleared transparent) followed by the surface
-    /// pass, matching the `passes` ordering contract (offscreen work in dependency
-    /// order, then main). The timeline is exactly the order the transient planner
-    /// did its lifetime analysis in, so every pass's source is written before it is
-    /// read and an aliased target is never read after being reclaimed. Each
+    /// Emits one [`RenderPass`] per entry of the compiled plan the render graph
+    /// produced in [`upload`](Self::upload), in plan order: every offscreen and
+    /// blur pass in dependency order, then the surface pass. The graph validated
+    /// that order (every source is written strictly before it is read, so an
+    /// aliased target is never read after being reclaimed), merged the passes that
+    /// share an attachment, and lowered each one's load op. A merged pass carries
+    /// several works and encodes them back to back into the one attachment. Each
     /// offscreen pass uses its own pooled-extent viewport uniform; the surface pass
     /// uses `viewport`.
     fn encode<B: GpuBackend>(
@@ -2616,92 +2641,85 @@ impl Renderer {
         clear: [f32; 4],
         viewport: [f32; 2],
     ) {
-        // All three scratch buffers are `Renderer`-owned and borrow-free
+        // Both scratch buffers are `Renderer`-owned and borrow-free
         // (`DrawCommand`/`RenderPass` carry no lifetime — uniforms are stored by
         // value). We take them out with `mem::take`, clear them (retaining their
         // backing allocations), refill, and put them back: 0 heap allocations on
         // a steady frame. Taking them out lets the fill loops borrow `&self`
-        // (segments, offscreen passes) without aliasing the buffers being filled.
-        let mut viewports = std::mem::take(&mut self.viewports);
+        // (segments, graph, offscreen passes) without aliasing the buffers being
+        // filled.
         let mut commands = std::mem::take(&mut self.commands);
         let mut passes = std::mem::take(&mut self.passes);
-        viewports.clear();
         commands.clear();
         passes.clear();
 
-        // Per-pass viewports. Index 0 is the surface; the rest map 1:1 to
-        // `timeline`. Their bytes are copied by value into each command.
-        viewports.push(viewport);
-        for entry in &self.timeline {
-            viewports.push(match *entry {
-                TimelineEntry::Offscreen(i) => self.offscreen_passes[i].viewport,
-                TimelineEntry::Blur(i) => self.blur_passes[i].viewport,
-            });
-        }
-
-        // The offscreen timeline first (every target cleared transparent), then the
-        // surface pass (cleared to the background). Each pass appends its commands
-        // to the flat `commands` buffer and records its range in a `RenderPass`.
-        for (slot, entry) in self.timeline.iter().enumerate() {
-            let vp = viewports[slot + 1];
+        for pass in self.graph.passes() {
+            let works = self.graph.works(pass);
+            // Every work in a merged pass writes the same attachment, hence shares
+            // its pooled extent, so one viewport uniform covers the whole pass. Its
+            // bytes are copied by value into each command.
+            let vp = match works[0] {
+                PassWork::Offscreen(i) => self.offscreen_passes[i as usize].viewport,
+                PassWork::Blur(i) => self.blur_passes[i as usize].viewport,
+                PassWork::Surface => viewport,
+            };
             let uniforms = InlineUniforms::new(bytemuck_viewport(&vp));
             let first_command = commands.len() as u32;
-            let target = match *entry {
-                // A layer's own content: every segment routed to this pass.
-                TimelineEntry::Offscreen(i) => {
-                    for seg in self
-                        .segments
-                        .iter()
-                        .filter(|seg| seg.target == PassTarget::Offscreen(i))
-                    {
-                        commands.push(self.command_for(seg, uniforms, vp));
+            for work in works {
+                match *work {
+                    // A layer's own content: every segment routed to this pass.
+                    PassWork::Offscreen(i) => {
+                        for seg in self
+                            .segments
+                            .iter()
+                            .filter(|seg| seg.target == PassTarget::Offscreen(i as usize))
+                        {
+                            commands.push(self.command_for(seg, uniforms, vp));
+                        }
                     }
-                    self.offscreen_passes[i]
-                        .base
-                        .expect("offscreen pass declares its target before encode")
+                    // One step of a separable blur ladder (§16.2, E1.2): a single
+                    // full-target quad reading the previous step's target.
+                    PassWork::Blur(i) => {
+                        let blur = &self.blur_passes[i as usize];
+                        commands.push(DrawCommand {
+                            pipeline: self.blur_pipeline,
+                            bind_group: Some(self.transient.bind_group(blur.source)),
+                            geometry: Geometry::Generated { count: 1 },
+                            instance_buffer: self
+                                .blur_pool
+                                .buffer()
+                                .expect("blur pool buffer exists when a blur pass references it"),
+                            instance_offset: blur.instance as usize * BLUR_STRIDE,
+                            uniforms,
+                            scissor: None,
+                        });
+                    }
+                    // The frame's visible result: everything not routed offscreen,
+                    // composites included.
+                    PassWork::Surface => {
+                        for seg in self
+                            .segments
+                            .iter()
+                            .filter(|seg| seg.target == PassTarget::Main)
+                        {
+                            commands.push(self.command_for(seg, uniforms, vp));
+                        }
+                    }
                 }
-                // One step of a separable blur ladder (§16.2, E1.2): a single
-                // full-target quad reading the previous step's target.
-                TimelineEntry::Blur(i) => {
-                    let pass = &self.blur_passes[i];
-                    commands.push(DrawCommand {
-                        pipeline: self.blur_pipeline,
-                        bind_group: Some(self.transient.bind_group(pass.source)),
-                        geometry: Geometry::Generated { count: 1 },
-                        instance_buffer: self
-                            .blur_pool
-                            .buffer()
-                            .expect("blur pool buffer exists when a blur pass references it"),
-                        instance_offset: pass.instance as usize * BLUR_STRIDE,
-                        uniforms,
-                        scissor: None,
-                    });
-                    pass.target
-                }
-            };
+            }
             passes.push(RenderPass {
-                target: RenderTarget::Texture(self.transient.texture(target)),
-                load: LoadOp::Clear([0.0, 0.0, 0.0, 0.0]),
+                target: match pass.writes() {
+                    Some(target) => RenderTarget::Texture(self.transient.texture(target)),
+                    None => RenderTarget::Surface(frame),
+                },
+                load: match pass.load() {
+                    PassLoad::ClearTransparent => LoadOp::Clear([0.0, 0.0, 0.0, 0.0]),
+                    PassLoad::ClearBackground => LoadOp::Clear(clear),
+                },
                 first_command,
                 command_count: commands.len() as u32 - first_command,
             });
         }
-
-        let main_uniforms = InlineUniforms::new(bytemuck_viewport(&viewports[0]));
-        let first_command = commands.len() as u32;
-        for seg in self
-            .segments
-            .iter()
-            .filter(|seg| seg.target == PassTarget::Main)
-        {
-            commands.push(self.command_for(seg, main_uniforms, viewport));
-        }
-        passes.push(RenderPass {
-            target: RenderTarget::Surface(frame),
-            load: LoadOp::Clear(clear),
-            first_command,
-            command_count: commands.len() as u32 - first_command,
-        });
 
         backend.encode(&DrawList {
             commands: &commands,
@@ -2709,7 +2727,6 @@ impl Renderer {
         });
 
         // Return the buffers so their capacity is reused next frame.
-        self.viewports = viewports;
         self.commands = commands;
         self.passes = passes;
     }
@@ -3921,6 +3938,165 @@ mod tests {
         assert_eq!(
             second.transient_targets, first.transient_targets,
             "and the pool neither grows nor shrinks"
+        );
+    }
+
+    /// The compiled plan is what the backend sees: one pass per offscreen layer,
+    /// one per blur rung, one surface pass — and nothing merged or culled, since
+    /// every pass in a real frame writes a distinct attachment that something
+    /// downstream samples (§16.1).
+    #[test]
+    fn the_pass_plan_counts_every_attachment_the_frame_writes() {
+        let mut gpu = HeadlessRaster::new();
+        let surface = gpu.create_surface(RawWindowHandle::Headless, 64, 64);
+        let format = gpu.surface_format(surface);
+        let mut r = Renderer::new(&mut gpu, format);
+        r.set_surface_size([64.0, 64.0]);
+
+        r.upload(&mut gpu, &[quad(4.0, 4.0)]);
+        let flat = r.frame_stats();
+        assert_eq!(
+            flat.render_passes, 1,
+            "a frame with no layers is the surface pass alone"
+        );
+
+        r.upload(
+            &mut gpu,
+            &[
+                Primitive::Layer(LayerClip {
+                    clip: Rect {
+                        x: 4.0,
+                        y: 4.0,
+                        w: 24.0,
+                        h: 24.0,
+                    },
+                    opacity: 1.0,
+                    blur_sigma: 4.0,
+                }),
+                quad(8.0, 8.0),
+                Primitive::LayerEnd,
+            ],
+        );
+        let blurred = r.frame_stats();
+        assert_eq!(
+            blurred.render_passes,
+            blurred.offscreen_passes + blurred.blur_passes as usize + 1,
+            "every layer, every rung, and the surface each get a pass"
+        );
+        assert_eq!(blurred.render_pass_merges, 0);
+        assert_eq!(blurred.culled_render_passes, 0);
+    }
+
+    /// Topology alone drives a recompile (§16.1): a second identical frame reuses
+    /// the plan, and so does a frame that only moves geometry, recolors it, resizes
+    /// the surface, or nudges a sigma within its ladder tier — all of which change
+    /// extents and payloads but not the pass graph.
+    #[test]
+    fn only_a_topology_change_recompiles_the_pass_plan() {
+        let scene = |x: f32, sigma: f32| {
+            vec![
+                Primitive::Layer(LayerClip {
+                    clip: Rect {
+                        x,
+                        y: 4.0,
+                        w: 24.0,
+                        h: 24.0,
+                    },
+                    opacity: 1.0,
+                    blur_sigma: sigma,
+                }),
+                quad(x + 4.0, 8.0),
+                Primitive::LayerEnd,
+            ]
+        };
+
+        let mut gpu = HeadlessRaster::new();
+        let surface = gpu.create_surface(RawWindowHandle::Headless, 64, 64);
+        let format = gpu.surface_format(surface);
+        let mut r = Renderer::new(&mut gpu, format);
+        r.set_surface_size([64.0, 64.0]);
+
+        r.upload(&mut gpu, &scene(4.0, 4.0));
+        let first = r.frame_stats();
+        assert_eq!(
+            first.render_graph_compiles, 1,
+            "the first frame has no cached plan to reuse"
+        );
+
+        r.upload(&mut gpu, &scene(4.0, 4.0));
+        assert_eq!(
+            r.frame_stats().render_graph_compiles,
+            0,
+            "an identical frame reuses the compiled plan"
+        );
+
+        r.upload(&mut gpu, &scene(10.0, 4.6));
+        let moved = r.frame_stats();
+        assert_eq!(
+            moved.render_graph_compiles, 0,
+            "a transform and a sigma tweak inside one ladder tier are parameters, not topology"
+        );
+        assert_eq!(moved.render_passes, first.render_passes);
+
+        r.set_surface_size([48.0, 96.0]);
+        r.upload(&mut gpu, &scene(4.0, 4.0));
+        assert_eq!(
+            r.frame_stats().render_graph_compiles,
+            0,
+            "a resize changes every extent and no dependency"
+        );
+
+        let mut two = scene(4.0, 4.0);
+        two.extend(scene(34.0, 4.0));
+        r.upload(&mut gpu, &two);
+        let grown = r.frame_stats();
+        assert_eq!(
+            grown.render_graph_compiles, 1,
+            "a second layer is a genuinely different graph"
+        );
+        assert!(grown.render_passes > first.render_passes);
+    }
+
+    /// A sigma large enough to enter the downsampling tier plans more rungs than a
+    /// small one, which *is* a topology change — the plan-reuse contract covers
+    /// parameter drift, not a different ladder shape (§16.1, §16.3).
+    #[test]
+    fn crossing_a_blur_ladder_tier_recompiles_the_pass_plan() {
+        let scene = |sigma: f32| {
+            [
+                Primitive::Layer(LayerClip {
+                    clip: Rect {
+                        x: 0.0,
+                        y: 0.0,
+                        w: 64.0,
+                        h: 64.0,
+                    },
+                    opacity: 1.0,
+                    blur_sigma: sigma,
+                }),
+                quad(8.0, 8.0),
+                Primitive::LayerEnd,
+            ]
+        };
+
+        let mut gpu = HeadlessRaster::new();
+        let surface = gpu.create_surface(RawWindowHandle::Headless, 64, 64);
+        let format = gpu.surface_format(surface);
+        let mut r = Renderer::new(&mut gpu, format);
+        r.set_surface_size([64.0, 64.0]);
+
+        r.upload(&mut gpu, &scene(2.0));
+        let small = r.frame_stats();
+        r.upload(&mut gpu, &scene(40.0));
+        let large = r.frame_stats();
+
+        assert!(
+            large.blur_passes > small.blur_passes,
+            "the large sigma has to downsample, which adds rungs"
+        );
+        assert_eq!(
+            large.render_graph_compiles, 1,
+            "more rungs is a different pass graph"
         );
     }
 }

@@ -62,6 +62,11 @@ fn frame_stats_roster_is_frozen() {
         transient_peak_bytes: 23,
         transient_pool_bytes: 24,
         transient_target_allocations: 25,
+        // Compiled pass plan (§16.1/§25).
+        render_passes: 26,
+        render_pass_merges: 27,
+        culled_render_passes: 28,
+        render_graph_compiles: 29,
     };
 
     // Every field reads back what it was set to — a plain integer counter, no
@@ -91,6 +96,10 @@ fn frame_stats_roster_is_frozen() {
     assert_eq!(s.transient_peak_bytes, 23);
     assert_eq!(s.transient_pool_bytes, 24);
     assert_eq!(s.transient_target_allocations, 25);
+    assert_eq!(s.render_passes, 26);
+    assert_eq!(s.render_pass_merges, 27);
+    assert_eq!(s.culled_render_passes, 28);
+    assert_eq!(s.render_graph_compiles, 29);
 
     // The default is the all-zero frame: a renderer that drew nothing reports
     // every counter at zero, so a steady frame's deltas are meaningful.
@@ -120,6 +129,10 @@ fn frame_stats_roster_is_frozen() {
     assert_eq!(z.transient_peak_bytes, 0);
     assert_eq!(z.transient_pool_bytes, 0);
     assert_eq!(z.transient_target_allocations, 0);
+    assert_eq!(z.render_passes, 0);
+    assert_eq!(z.render_pass_merges, 0);
+    assert_eq!(z.culled_render_passes, 0);
+    assert_eq!(z.render_graph_compiles, 0);
 }
 
 /// The seven effect cost classes are frozen in cheapest-first order (§7.5): the

@@ -1754,16 +1754,67 @@ C0 + E0 frozen; builds on F1 fence/retire and F4 pool/batch.
         now assert the used ROI and its size class separately.
 
 ### E1.4 — Demand-driven RenderGraph
-- [ ] Passes emerge from real needs (main / mask / shadow-blur / offscreen-group) then
+- [x] Passes emerge from real needs (main / mask / shadow-blur / offscreen-group) then
       abstract into a graph (§16.1, §25). RenderGraph owns pass dependency, resource
       read/write usage, barrier/state lowering, transient lifetime, attachment
       compatibility, pass-merge opportunity — never widget tree / layout / state binding /
       font fallback. Reuse the compiled plan when topology is unchanged; param changes (blur
       sigma / color / transform) must not rebuild topology.
-- [ ] Tile-GPU awareness (§16.5): minimize render-target switches / full-screen
+  - [x] `crates/render/src/graph.rs`: `RenderGraph` records one node per real need as the
+        need appears — `PassWork::Offscreen(i)` at `finalize_offscreen`, `PassWork::Blur(i)`
+        per ladder rung, `PassWork::Surface` opened last in `upload`. A node carries only
+        topology: the `TargetId` it writes (`None` = surface) plus a contiguous slice of the
+        targets it reads, in a flat read arena.
+  - [x] Graph owns the five lowering jobs and nothing else: validate (every read is produced
+        by an earlier node), cull (a write nobody reads and that is not the surface),
+        merge (adjacent nodes writing the same attachment collapse into one
+        `CompiledPass` with an ordered `PassWork` list), lower load ops (`PassLoad` is
+        *derived* from the attachment, never stored; no `StoreOp` because every declared
+        target is read), and drive transient lifetimes (`apply_lifetimes` replays the
+        compiled order into `TransientTargets::read_at`). Pass payload — viewport,
+        instances, bind groups, segments — stays in the renderer (§16.1/§41).
+  - [x] Plan reuse: `compile()` hashes topology with a fixed-seed `DefaultHasher` over node
+        count, each node's `PassWork`, its write, and its reads. A hit returns the cached
+        `passes`/`work_order` untouched and reports `render_graph_compiles == 0`. The hash
+        deliberately excludes extents, colors, transforms, and sigma, so scroll / recolor /
+        resize / a sigma nudge inside one ladder tier all reuse the plan; crossing a tier
+        changes the rung count, which is genuinely different topology, and recompiles.
+  - [x] `renderer.rs` lost its hand-rolled `TimelineEntry` list and the `viewports` scratch
+        buffer: `encode` now walks `graph.passes()`, resolves the attachment from
+        `pass.writes()` and the `LoadOp` from `pass.load()`, and emits each merged pass's
+        works in order. `BlurPass` dropped its `target` field — the graph node is the single
+        source of truth for what a pass writes.
+  - [x] Counters (§30/§61): `FrameStats::render_passes` / `render_pass_merges` /
+        `culled_render_passes` / `render_graph_compiles`; `inspect.rs` prints them and
+        `counter_contract_frozen.rs` pins them in the same commit.
+  - [x] Tests: 10 in `graph::tests` (validate/cull/merge/load-lowering/lifetime replay/hash
+        stability) plus `the_pass_plan_counts_every_attachment_the_frame_writes`,
+        `only_a_topology_change_recompiles_the_pass_plan` (identical frame, move, sigma
+        4.0→4.6 and a surface resize all recompile 0 times; a second layer recompiles once),
+        `crossing_a_blur_ladder_tier_recompiles_the_pass_plan`.
+- [x] Tile-GPU awareness (§16.5): minimize render-target switches / full-screen
       intermediates / store-load cycles / transparent overdraw; allow transient/memoryless
       attachments where the backend supports them; fuse passes only when it lowers real
       bandwidth. Backend-specialized without forcing desktop into a tile model.
+  - [x] Switches/intermediates: the graph is the single place that decides how many
+        attachments a frame binds — culling drops a write nobody samples, merging collapses
+        adjacent writes to one attachment, and the ROI/ladder work of E1.1–E1.3 already
+        keeps every intermediate at tight ROI rather than full screen. `render_passes`
+        makes the count observable per frame.
+  - [x] Store-load cycles: load ops are lowered, not authored — an offscreen/scratch
+        attachment clears to transparent, the surface clears to the frame's background, and
+        nothing is ever `Load`ed, so no pass pays a load of the previous contents.
+  - [x] No `LoadOp::DontCare` / memoryless attachment is emitted, and this is deliberate,
+        not a gap: every pipeline including blur is created `PremultipliedOver`, so a
+        discarded attachment would blend against undefined memory; `crates/gpu/src/headless.rs`
+        ignores `PipelineDesc::blend` entirely and would diverge from Metal; the final ladder
+        rung's composite takes bilinear taps that can still reach pooled padding; and `Caps`
+        carries no memoryless capability to branch on. Emitting one would trade correctness
+        for unmeasured bandwidth (§7.3) — it waits for an E2 capability flag.
+  - [x] Fusion is bandwidth-gated by construction: merging requires an identical attachment,
+        so a merged pass writes exactly the pixels the two passes wrote separately and saves
+        one attachment bind. Passes writing different targets are never fused, so the desktop
+        path keeps discrete render targets and is not pushed into a tile model.
 
 ### E1.5 — §31 gate
 - [ ] Benchmark gate (§31): small / medium / large blur; many small-ROI blurs. Resource
