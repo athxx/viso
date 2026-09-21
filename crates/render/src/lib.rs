@@ -19,6 +19,7 @@ pub mod effect_cost;
 pub mod frame;
 pub mod glyph_atlas;
 pub mod gradient_lut;
+pub mod graph;
 pub mod inspect;
 pub mod mask;
 pub mod mask_page;

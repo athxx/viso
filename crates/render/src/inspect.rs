@@ -779,6 +779,12 @@ impl Renderer {
         );
         let _ = writeln!(
             out,
+            "render_passes={} render_pass_merges={} culled_render_passes={} \
+             render_graph_compiles={}",
+            s.render_passes, s.render_pass_merges, s.culled_render_passes, s.render_graph_compiles,
+        );
+        let _ = writeln!(
+            out,
             "gpu_upload_bytes={} uploaded_ranges={}",
             s.gpu_upload_bytes, s.uploaded_ranges,
         );

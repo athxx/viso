@@ -163,6 +163,17 @@ pub struct TargetDesc {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TargetId(u32);
 
+impl TargetId {
+    /// This target's declaration index within the frame, dense from zero.
+    ///
+    /// Exposed so the render graph can key its per-target side tables by plain
+    /// index instead of hashing handles; it is not a device resource id, and it
+    /// is only meaningful for the frame that declared it.
+    pub const fn index(self) -> usize {
+        self.0 as usize
+    }
+}
+
 /// A target the frame declared, before (and after) it is bound to a physical.
 #[derive(Debug, Clone, Copy)]
 struct VirtualTarget {
