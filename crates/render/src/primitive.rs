@@ -13,6 +13,7 @@
 //! `create_pipeline` validates the derived layout against the schema, so a
 //! mismatch is caught at pipeline-registration time.
 
+use crate::color_effect::ColorEffect;
 use viso_gpu::{AddressMode, FilterMode, GpuPod, SamplerDesc, TextureId};
 use viso_math::{ExtendMode, InterpolationSpace};
 
@@ -22,8 +23,8 @@ use viso_math::{ExtendMode, InterpolationSpace};
 // paired at the primitive definition.
 pub use viso_shader::{
     analytic_capsule_schema, analytic_ellipse_schema, analytic_line_schema, analytic_rrect_schema,
-    analytic_shadow_schema, glyphrun_schema, gradient_schema, image_schema, mesh_schema,
-    quad_schema,
+    analytic_shadow_schema, color_transform_schema, glyphrun_schema, gradient_schema, image_schema,
+    mesh_schema, quad_schema,
 };
 
 /// An axis-aligned rectangle in physical pixels, top-left origin.
@@ -1677,6 +1678,15 @@ pub enum Primitive {
     /// [`Primitive::LayerEnd`]. A `LayerClip::opacity < 1` layer additionally
     /// renders its subtree offscreen and composites it back at that opacity.
     Layer(LayerClip),
+    /// Attach one per-pixel color effect to the layer just opened (§17.3).
+    ///
+    /// Valid only immediately after [`Primitive::Layer`], before that layer's
+    /// content: a run of these markers is the layer's effect chain, applied in
+    /// stream order. Consecutive matrix-expressible effects fuse into one op, so
+    /// a chain costs render-target passes only where the math genuinely cannot
+    /// merge (see [`fuse`](crate::color_effect::fuse)). Anywhere else in the
+    /// stream the marker is ignored.
+    ColorEffect(ColorEffect),
     /// Pop the most recent [`Primitive::Layer`] clip (and, for a translucent
     /// layer, close its offscreen pass and emit the composite).
     LayerEnd,
@@ -1944,6 +1954,42 @@ pub struct BlurInstance {
     pub sigma: f32,
     /// Tap count on each side of the center sample.
     pub radius: f32,
+}
+
+/// GPU instance for the ColorTransform built-in shader.
+///
+/// Field names/formats match [`color_transform_schema`] and the headless
+/// `fill_color_transform` reader. This is the realization of one fused
+/// [`ColorOp`](crate::color_effect::ColorOp): like [`ImageInstance`] it draws a
+/// `vertex_id`-generated quad sampling a source texture, then maps each texel's
+/// straight linear RGBA through the affine matrix (`row0..row3` times
+/// `(r, g, b, a)` plus `offset`) and, when `gamma != 1`, raises RGB to that
+/// power. One instance therefore carries a whole run of merged color effects.
+/// `#[repr(C)]` with only 4-byte-aligned scalars/vectors, so the derive's
+/// `offset_of!`-based layout has no padding — stride 116.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, GpuPod)]
+pub struct ColorTransformInstance {
+    /// Destination top-left in physical pixels.
+    pub rect_pos: [f32; 2],
+    /// Destination width/height in physical pixels.
+    pub rect_size: [f32; 2],
+    /// Source sub-rect origin in normalized texture coords.
+    pub uv_pos: [f32; 2],
+    /// Source sub-rect size in normalized texture coords.
+    pub uv_size: [f32; 2],
+    /// Red output row: coefficients over `(r, g, b, a)`.
+    pub row0: [f32; 4],
+    /// Green output row.
+    pub row1: [f32; 4],
+    /// Blue output row.
+    pub row2: [f32; 4],
+    /// Alpha output row.
+    pub row3: [f32; 4],
+    /// Constant term per output channel (the matrix's fifth column).
+    pub offset: [f32; 4],
+    /// Per-channel RGB exponent applied after the matrix; `1.0` = none.
+    pub gamma: f32,
 }
 
 /// GPU instance for the GlyphRun built-in shader.
@@ -3390,6 +3436,14 @@ mod tests {
     fn image_instance_layout_matches_schema() {
         assert_eq!(
             ImageInstance::LAYOUT.validate_against(&image_schema()),
+            Ok(())
+        );
+    }
+
+    #[test]
+    fn color_transform_instance_layout_matches_schema() {
+        assert_eq!(
+            ColorTransformInstance::LAYOUT.validate_against(&color_transform_schema()),
             Ok(())
         );
     }

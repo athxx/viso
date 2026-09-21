@@ -15,6 +15,7 @@ pub mod batch;
 pub mod blend;
 pub mod clip;
 pub mod color_atlas;
+pub mod color_effect;
 pub mod effect_cost;
 pub mod frame;
 pub mod glyph_atlas;
@@ -40,6 +41,11 @@ pub mod transient;
 pub use blend::{Blend, BlendPlan, BlendRealization, plan_blend};
 pub use clip::{ClipPlan, ClipShape, ClipTier, clips_children, plan_clip};
 pub use color_atlas::{ColorAlloc, ColorAtlas};
+// Per-pixel color effects and their fusion (§17.3): a run of affine effects
+// compiles into one matrix op, so only a non-expressible stage costs an extra
+// render-target pass. Authored via `Primitive::ColorEffect`; the fused `ColorOp`
+// is the renderer's unit of work, not normally named by apps (§3.2).
+pub use color_effect::{ColorEffect, ColorMatrix, ColorOp, fuse};
 pub use effect_cost::EffectCost;
 pub use glyph_atlas::{AtlasAlloc, GlyphAtlas};
 pub use gradient_lut::{GradientLutAtlas, LutAlloc, LutKey};
@@ -64,14 +70,15 @@ pub use path::{ConvexityHint, FillRule, PathArena, PathMetadata, SimpleShapeHint
 pub use primitive::{
     Align, Align2, AnalyticCapsule, AnalyticCapsuleInstance, AnalyticEllipse,
     AnalyticEllipseInstance, AnalyticLine, AnalyticLineInstance, AnalyticRRect,
-    AnalyticRRectInstance, AnalyticShadow, Border, Corners, DashPattern, Fit, GlyphInstance,
-    GlyphInstanceData, GlyphRunDraw, Gradient, GradientInstance, GradientKind, GradientStop,
-    ImageDraw, ImageInstance, ImageRect, LayerClip, LineCap, LineJoin, Mesh, MeshVertex, NineSlice,
-    Path, PathCmd, PathShadow, Point, Primitive, Quad, QuadInstance, Rect, ResourcePolicy,
-    ResourceRoute, ResourceRouteError, Rgba, ShadowInstance, ShadowShape, SpriteRegion, Stroke,
-    StrokeAlign, TiledImage, analytic_capsule_schema, analytic_ellipse_schema,
-    analytic_line_schema, analytic_rrect_schema, analytic_shadow_schema, glyphrun_schema,
-    gradient_schema, image_schema, mesh_schema, quad_schema,
+    AnalyticRRectInstance, AnalyticShadow, Border, ColorTransformInstance, Corners, DashPattern,
+    Fit, GlyphInstance, GlyphInstanceData, GlyphRunDraw, Gradient, GradientInstance, GradientKind,
+    GradientStop, ImageDraw, ImageInstance, ImageRect, LayerClip, LineCap, LineJoin, Mesh,
+    MeshVertex, NineSlice, Path, PathCmd, PathShadow, Point, Primitive, Quad, QuadInstance, Rect,
+    ResourcePolicy, ResourceRoute, ResourceRouteError, Rgba, ShadowInstance, ShadowShape,
+    SpriteRegion, Stroke, StrokeAlign, TiledImage, analytic_capsule_schema,
+    analytic_ellipse_schema, analytic_line_schema, analytic_rrect_schema, analytic_shadow_schema,
+    color_transform_schema, glyphrun_schema, gradient_schema, image_schema, mesh_schema,
+    quad_schema,
 };
 pub use renderer::{FrameStats, Renderer};
 // GPU handles that appear in this crate's public API. `TextureId` is carried by

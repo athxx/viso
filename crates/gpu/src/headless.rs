@@ -612,6 +612,17 @@ impl HeadlessRaster {
                                 cmd.scissor,
                             );
                         }
+                        BuiltinShader::ColorTransform => {
+                            self.fill_color_transform(
+                                target,
+                                width,
+                                height,
+                                &layout,
+                                inst,
+                                cmd.bind_group,
+                                cmd.scissor,
+                            );
+                        }
                         // Path/Mesh never arrive as generated geometry.
                         BuiltinShader::Path | BuiltinShader::Mesh | BuiltinShader::Layer => {}
                     }
@@ -1539,6 +1550,124 @@ impl HeadlessRaster {
                 if src[3] <= 0.0 {
                     continue;
                 }
+                blend_pixel(self.framebuffer(target), width, px, py, src);
+            }
+        }
+    }
+
+    /// Fill one fused color-effect instance sampling a source texture.
+    ///
+    /// Instance layout ([`ColorTransformInstance`](../../render)):
+    /// - `rect_pos`/`rect_size` : destination quad in physical pixels
+    /// - `uv_pos`/`uv_size`     : source sub-rect, normalized `0..1`
+    /// - `row0`..`row3`         : output rows of the color matrix over `(r, g, b, a)`
+    /// - `offset`               : the matrix's constant column, one term per channel
+    /// - `gamma`                : per-channel RGB exponent applied after the matrix
+    ///
+    /// The source uv is derived exactly as [`fill_image`](Self::fill_image), then the
+    /// texel is *unpremultiplied* before the matrix — a color matrix is defined on
+    /// straight RGBA, so brightness must not depend on coverage. The four rows plus
+    /// the constant column produce the output channels, the result is clamped to the
+    /// representable range, the optional gamma is applied to RGB, and the pixel is
+    /// repremultiplied and blended source-over. This mirrors the Metal fragment body
+    /// exactly, so one pass here realizes the same fused run of color effects.
+    #[allow(clippy::too_many_arguments)]
+    fn fill_color_transform(
+        &mut self,
+        target: FbTarget,
+        width: u32,
+        height: u32,
+        layout: &InstanceLayout,
+        inst: &[u8],
+        bind_group: Option<BindGroupId>,
+        scissor: Option<(u32, u32, u32, u32)>,
+    ) {
+        let pos = read_f2(layout, inst, "rect_pos");
+        let size = read_f2(layout, inst, "rect_size");
+        let uv_pos = read_f2(layout, inst, "uv_pos");
+        let uv_size = read_f2(layout, inst, "uv_size");
+        let rows = [
+            read_f4(layout, inst, "row0"),
+            read_f4(layout, inst, "row1"),
+            read_f4(layout, inst, "row2"),
+            read_f4(layout, inst, "row3"),
+        ];
+        let offset = read_f4(layout, inst, "offset");
+        let gamma = read_f1(layout, inst, "gamma");
+
+        let Some(bg) = bind_group else { return };
+        let (mut tex_id, mut samp) = (
+            None,
+            SamplerDesc {
+                filter: crate::resource::FilterMode::Linear,
+                address: crate::resource::AddressMode::ClampToEdge,
+            },
+        );
+        for binding in &self.bind_group(bg).bindings {
+            match binding {
+                crate::resource::Binding::Texture(t) => tex_id = Some(*t),
+                crate::resource::Binding::Sampler(s) => samp = self.sampler(*s),
+                crate::resource::Binding::Uniform(_) => {}
+            }
+        }
+        let Some(tex_id) = tex_id else { return };
+        let (tw, th, texels) = {
+            let t = self.texture(tex_id);
+            (t.width, t.height, t.texels.clone())
+        };
+        if tw == 0 || th == 0 || size[0] <= 0.0 || size[1] <= 0.0 {
+            return;
+        }
+
+        let (mut x0, mut y0, mut x1, mut y1) = (
+            pos[0].floor().max(0.0) as u32,
+            pos[1].floor().max(0.0) as u32,
+            (pos[0] + size[0]).ceil().min(width as f32) as u32,
+            (pos[1] + size[1]).ceil().min(height as f32) as u32,
+        );
+        if let Some((sx, sy, sw, sh)) = scissor {
+            x0 = x0.max(sx);
+            y0 = y0.max(sy);
+            x1 = x1.min(sx + sw);
+            y1 = y1.min(sy + sh);
+        }
+
+        for py in y0..y1 {
+            for px in x0..x1 {
+                let fx = (px as f32 + 0.5 - pos[0]) / size[0];
+                let fy = (py as f32 + 0.5 - pos[1]) / size[1];
+                let u = uv_pos[0] + fx * uv_size[0];
+                let v = uv_pos[1] + fy * uv_size[1];
+                let texel = sample_texel(&texels, tw, th, u, v, &samp);
+
+                // Straight RGBA in, straight RGBA out. A fully transparent texel
+                // carries no color, so it enters the matrix as zero.
+                let a = texel[3];
+                let straight = if a > 0.0 {
+                    [texel[0] / a, texel[1] / a, texel[2] / a, a]
+                } else {
+                    [0.0; 4]
+                };
+
+                let mut dst = [0.0f32; 4];
+                for c in 0..4 {
+                    let row = rows[c];
+                    dst[c] = (row[0] * straight[0]
+                        + row[1] * straight[1]
+                        + row[2] * straight[2]
+                        + row[3] * straight[3]
+                        + offset[c])
+                        .clamp(0.0, 1.0);
+                }
+                if gamma != 1.0 {
+                    for channel in dst.iter_mut().take(3) {
+                        *channel = channel.powf(gamma);
+                    }
+                }
+                if dst[3] <= 0.0 {
+                    continue;
+                }
+                let src = [dst[0] * dst[3], dst[1] * dst[3], dst[2] * dst[3], dst[3]];
                 blend_pixel(self.framebuffer(target), width, px, py, src);
             }
         }

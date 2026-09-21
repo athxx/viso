@@ -180,6 +180,10 @@ pub enum BuiltinShader {
     /// A separable Gaussian blur pass sampling a source texture along one axis
     /// (content blur of an offscreen layer).
     Blur,
+    /// A fused color-effect pass sampling a source texture and mapping each texel
+    /// through an affine color matrix plus an optional gamma. One pass realizes a
+    /// whole run of mergeable color effects.
+    ColorTransform,
 }
 
 /// Descriptor for a render pipeline ([`crate::GpuBackend::create_pipeline`]).

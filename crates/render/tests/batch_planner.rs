@@ -36,6 +36,7 @@ fn pipeline_family(pipeline: BatchPipeline) -> BatchFamily {
         BatchPipeline::Mesh => BatchFamily::Mesh,
         BatchPipeline::Gradient => BatchFamily::Gradient,
         BatchPipeline::AnalyticShadow => BatchFamily::AnalyticShadow,
+        BatchPipeline::ColorTransform => BatchFamily::ColorTransform,
     }
 }
 

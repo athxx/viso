@@ -78,6 +78,9 @@ pub enum BatchPipeline {
     /// A run of adjacent analytic soft drop shadows (the analytic-shadow
     /// pipeline; binds no texture).
     AnalyticShadow,
+    /// One fused run of color effects (the color-transform pipeline, binding the
+    /// offscreen layer texture it recolors).
+    ColorTransform,
 }
 
 impl BatchPipeline {
@@ -95,6 +98,7 @@ impl BatchPipeline {
             BatchPipeline::Mesh => "mesh",
             BatchPipeline::Gradient => "gradient",
             BatchPipeline::AnalyticShadow => "analytic-shadow",
+            BatchPipeline::ColorTransform => "color-transform",
         }
     }
 
@@ -113,6 +117,7 @@ impl BatchPipeline {
             BatchPipeline::Mesh => BatchFamily::Mesh,
             BatchPipeline::Gradient => BatchFamily::Gradient,
             BatchPipeline::AnalyticShadow => BatchFamily::AnalyticShadow,
+            BatchPipeline::ColorTransform => BatchFamily::ColorTransform,
         }
     }
 }
@@ -376,6 +381,11 @@ impl Renderer {
                 None,
             ),
             SegmentKind::Mesh => (BatchPipeline::Mesh, self.mesh_pipeline_id(), None),
+            SegmentKind::ColorTransform { bind_group } => (
+                BatchPipeline::ColorTransform,
+                self.color_transform_pipeline_id(),
+                Some(bind_group),
+            ),
         };
         let offscreen = matches!(seg.target, PassTarget::Offscreen(_));
         InspectBatch {

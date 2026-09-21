@@ -32,10 +32,10 @@ use viso_gpu::{BuiltinShader, InstanceSchema};
 
 use crate::msl::{
     ANALYTIC_CAPSULE_MSL, ANALYTIC_ELLIPSE_MSL, ANALYTIC_LINE_MSL, ANALYTIC_RRECT_MSL,
-    ANALYTIC_SHADOW_MSL, BLUR_MSL, GLYPHRUN_MSL, GRADIENT_MSL, IMAGE_MSL, MESH_MSL, QUAD_MSL,
-    analytic_capsule_schema, analytic_ellipse_schema, analytic_line_schema, analytic_rrect_schema,
-    analytic_shadow_schema, blur_schema, glyphrun_schema, gradient_schema, image_schema,
-    mesh_schema, quad_schema,
+    ANALYTIC_SHADOW_MSL, BLUR_MSL, COLOR_TRANSFORM_MSL, GLYPHRUN_MSL, GRADIENT_MSL, IMAGE_MSL,
+    MESH_MSL, QUAD_MSL, analytic_capsule_schema, analytic_ellipse_schema, analytic_line_schema,
+    analytic_rrect_schema, analytic_shadow_schema, blur_schema, color_transform_schema,
+    glyphrun_schema, gradient_schema, image_schema, mesh_schema, quad_schema,
 };
 use std::sync::OnceLock;
 
@@ -86,6 +86,12 @@ pub enum PipelineFamily {
     /// renderer chains a horizontal and a vertical pass to blur a layer before
     /// compositing it.
     ContentBlur,
+    /// A fused run of per-pixel color effects — the ColorTransform built-in maps a
+    /// source texture's texels through one affine color matrix plus an optional
+    /// gamma. Brightness, contrast, saturation, hue rotation and their kin all
+    /// multiply down into that one matrix, so a whole effect chain normally needs a
+    /// single pass of this family rather than one per effect.
+    ColorTransform,
 }
 
 /// The color-target class a pipeline renders into. Part of [`VariantKey`]
@@ -305,6 +311,15 @@ pub fn standard_manifest() -> &'static PipelineManifest {
                 vertex_entry: "vertex_main",
                 fragment_entry: "fragment_main",
             },
+            PipelineEntry {
+                family: PipelineFamily::ColorTransform,
+                variant: VariantKey::standard(PipelineFamily::ColorTransform),
+                builtin: BuiltinShader::ColorTransform,
+                msl: COLOR_TRANSFORM_MSL(),
+                schema: color_transform_schema(),
+                vertex_entry: "vertex_main",
+                fragment_entry: "fragment_main",
+            },
         ],
     })
 }
@@ -321,7 +336,7 @@ mod tests {
     #[test]
     fn manifest_enumerates_the_standard_builtins() {
         let m = standard_manifest();
-        assert_eq!(m.entries().len(), 11);
+        assert_eq!(m.entries().len(), 12);
         assert!(m.entry(PipelineFamily::SolidRect).is_some());
         assert!(m.entry(PipelineFamily::Image).is_some());
         assert!(m.entry(PipelineFamily::MaskComposite).is_some());
@@ -333,6 +348,7 @@ mod tests {
         assert!(m.entry(PipelineFamily::Gradient).is_some());
         assert!(m.entry(PipelineFamily::AnalyticShadow).is_some());
         assert!(m.entry(PipelineFamily::ContentBlur).is_some());
+        assert!(m.entry(PipelineFamily::ColorTransform).is_some());
     }
 
     #[test]

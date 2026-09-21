@@ -53,6 +53,11 @@ pub enum PassWork {
     /// The blur rung at this index in the renderer's blur list: reads the
     /// previous rung's target and writes its own.
     Blur(u32),
+    /// The color-transform rung at this index in the renderer's color-pass list:
+    /// reads the previous rung's target and writes its own. Only a color chain
+    /// that cannot fuse into a single op needs these — the last op of every
+    /// chain rides the layer's composite draw instead of a pass of its own.
+    ColorTransform(u32),
     /// The backdrop capture at this index in the renderer's capture list:
     /// re-renders the content behind one backdrop group into a tight ROI
     /// target. It depends on the producers of that content, not on the target
