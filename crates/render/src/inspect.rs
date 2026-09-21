@@ -81,6 +81,9 @@ pub enum BatchPipeline {
     /// One fused run of color effects (the color-transform pipeline, binding the
     /// offscreen layer texture it recolors).
     ColorTransform,
+    /// One isolated advanced-blend composite (the advanced-blend pipeline, binding
+    /// the isolated layer and the bounded destination snapshot it blends against).
+    AdvancedBlend,
 }
 
 impl BatchPipeline {
@@ -99,6 +102,7 @@ impl BatchPipeline {
             BatchPipeline::Gradient => "gradient",
             BatchPipeline::AnalyticShadow => "analytic-shadow",
             BatchPipeline::ColorTransform => "color-transform",
+            BatchPipeline::AdvancedBlend => "advanced-blend",
         }
     }
 
@@ -118,6 +122,7 @@ impl BatchPipeline {
             BatchPipeline::Gradient => BatchFamily::Gradient,
             BatchPipeline::AnalyticShadow => BatchFamily::AnalyticShadow,
             BatchPipeline::ColorTransform => BatchFamily::ColorTransform,
+            BatchPipeline::AdvancedBlend => BatchFamily::AdvancedBlend,
         }
     }
 }
@@ -384,6 +389,11 @@ impl Renderer {
             SegmentKind::ColorTransform { bind_group } => (
                 BatchPipeline::ColorTransform,
                 self.color_transform_pipeline_id(),
+                Some(bind_group),
+            ),
+            SegmentKind::AdvancedBlend { bind_group } => (
+                BatchPipeline::AdvancedBlend,
+                self.advanced_blend_pipeline_id(),
                 Some(bind_group),
             ),
         };

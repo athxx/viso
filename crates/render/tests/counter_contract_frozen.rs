@@ -60,6 +60,7 @@ fn frame_stats_roster_is_frozen() {
         color_transform_passes: 33,
         backdrop_captures: 30,
         backdrop_capture_pixels: 31,
+        blend_isolations: 34,
         shader_pipeline_creations: 21,
         // Transient render-target pool occupancy (§16.4/§30).
         transient_targets: 22,
@@ -99,6 +100,7 @@ fn frame_stats_roster_is_frozen() {
     assert_eq!(s.color_transform_passes, 33);
     assert_eq!(s.backdrop_captures, 30);
     assert_eq!(s.backdrop_capture_pixels, 31);
+    assert_eq!(s.blend_isolations, 34);
     assert_eq!(s.shader_pipeline_creations, 21);
     assert_eq!(s.transient_targets, 22);
     assert_eq!(s.transient_peak_bytes, 23);
@@ -136,6 +138,7 @@ fn frame_stats_roster_is_frozen() {
     assert_eq!(z.color_transform_passes, 0);
     assert_eq!(z.backdrop_captures, 0);
     assert_eq!(z.backdrop_capture_pixels, 0);
+    assert_eq!(z.blend_isolations, 0);
     assert_eq!(z.shader_pipeline_creations, 0);
     assert_eq!(z.transient_targets, 0);
     assert_eq!(z.transient_peak_bytes, 0);

@@ -18,14 +18,15 @@ use viso_gpu::backend::{
     DrawCommand, DrawList, Geometry, IndexFormat, InlineUniforms, RenderPass, RenderTarget,
 };
 use viso_gpu::{
-    BindGroupDesc, Binding, BlendMode, BufferUsage, Frame, GpuBackend, LoadOp, PipelineDesc,
-    PipelineId, SamplerDesc, SurfaceId, TextureDesc, TextureFormat, TextureId,
+    BindGroupDesc, Binding, BufferUsage, Frame, GpuBackend, LoadOp, PipelineDesc, PipelineId,
+    SamplerDesc, SurfaceId, TextureDesc, TextureFormat, TextureId,
 };
 use viso_gpu::{BindGroupId, SamplerId};
 
 use viso_shader::{PipelineEntry, PipelineFamily, standard_manifest};
 
 use crate::batch::{BatchFamily, BatchItem, BatchKey, BatchTarget, joins};
+use crate::blend::Blend;
 use crate::clip::{ClipShape, plan_clip};
 use crate::color_effect::{ColorOp, fuse};
 use crate::gradient_lut::{GradientLutAtlas, LUT_WIDTH, LutAlloc, LutKey};
@@ -34,9 +35,9 @@ use crate::mask::{MaskCache, MaskKey, MaskKind, MaskRequest};
 use crate::mask_page::MaskPage;
 use crate::pool::InstancePool;
 use crate::primitive::{
-    AnalyticCapsuleInstance, AnalyticEllipseInstance, AnalyticLineInstance, AnalyticRRectInstance,
-    BlurInstance, ColorTransformInstance, GlyphInstance, GradientInstance, ImageInstance,
-    MeshVertex, PathCmd, Primitive, QuadInstance, Rect, ShadowInstance, rgba_array,
+    AdvancedBlendInstance, AnalyticCapsuleInstance, AnalyticEllipseInstance, AnalyticLineInstance,
+    AnalyticRRectInstance, BlurInstance, ColorTransformInstance, GlyphInstance, GradientInstance,
+    ImageInstance, MeshVertex, PathCmd, Primitive, QuadInstance, Rect, ShadowInstance, rgba_array,
 };
 use crate::raster_mask::{path_bounds, rasterize_path_coverage};
 use crate::scene::store::{ClipFillRule, StoreRef, glyph_instances};
@@ -66,6 +67,8 @@ const SHADOW_STRIDE: usize = core::mem::size_of::<ShadowInstance>();
 const BLUR_STRIDE: usize = core::mem::size_of::<BlurInstance>();
 /// Bytes of one fused color-transform instance.
 const COLOR_TRANSFORM_STRIDE: usize = core::mem::size_of::<ColorTransformInstance>();
+/// Bytes of one isolated advanced-blend composite instance.
+const ADVANCED_BLEND_STRIDE: usize = core::mem::size_of::<AdvancedBlendInstance>();
 /// Rows in the renderer-owned 1D gradient LUT atlas: each row is one baked ramp
 /// (a 3+-stop or non-linear-space gradient), `LUT_WIDTH × ROWS` RGBA8. 64 rows
 /// is 64 KB — ample for a frame's distinct multi-stop gradients while trivial
@@ -203,6 +206,12 @@ pub(crate) enum SegmentKind {
     /// color-transform buffer: an affine color matrix plus an optional gamma.
     /// `start`/`count` count instances in that buffer.
     ColorTransform { bind_group: BindGroupId },
+    /// One isolated advanced-blend composite, in the advanced-blend buffer.
+    /// `bind_group` binds **two** textures — the isolated layer at slot 0 and the
+    /// bounded destination snapshot at slot 1 — and the fragment returns the
+    /// finished composite, so this is the one kind whose pipeline writes with
+    /// [`BlendMode::Replace`](viso_gpu::BlendMode::Replace).
+    AdvancedBlend { bind_group: BindGroupId },
 }
 
 impl SegmentKind {
@@ -221,6 +230,7 @@ impl SegmentKind {
             SegmentKind::AnalyticShadow => BatchFamily::AnalyticShadow,
             SegmentKind::Mesh => BatchFamily::Mesh,
             SegmentKind::ColorTransform { .. } => BatchFamily::ColorTransform,
+            SegmentKind::AdvancedBlend { .. } => BatchFamily::AdvancedBlend,
         }
     }
 
@@ -232,7 +242,8 @@ impl SegmentKind {
             SegmentKind::Image { bind_group }
             | SegmentKind::GlyphRun { bind_group }
             | SegmentKind::Gradient { bind_group }
-            | SegmentKind::ColorTransform { bind_group } => Some(bind_group),
+            | SegmentKind::ColorTransform { bind_group }
+            | SegmentKind::AdvancedBlend { bind_group } => Some(bind_group),
             SegmentKind::Quad
             | SegmentKind::AnalyticRRect
             | SegmentKind::AnalyticEllipse
@@ -357,6 +368,17 @@ struct OffscreenPass {
     /// ordinary tinted image draw. Ops before the last one become extra
     /// [`PassWork::ColorTransform`] rungs, exactly as the blur ladder does.
     color: Option<ColorOp>,
+    /// The blend this layer composites with, and the backdrop capture holding the
+    /// bounded destination snapshot it reads — `None` for the overwhelmingly
+    /// common `SrcOver` layer, whose composite is a plain image draw on the
+    /// fixed-function blend state (§14.6).
+    ///
+    /// When set, the composite is lowered as one `AdvancedBlend` draw instead:
+    /// the fragment samples both this pass's `sample` target and the capture,
+    /// evaluates the blend, and writes with [`BlendMode::Replace`]. Because that
+    /// draw has no color-matrix slot, a blended layer's whole color chain is
+    /// realized as [`PassWork::ColorTransform`] rungs and `color` stays `None`.
+    blend: Option<(Blend, usize)>,
 }
 
 /// How much empty area a backdrop group may absorb before a joining layer opens
@@ -462,6 +484,17 @@ struct TextureBinding {
     bind_group: BindGroupId,
 }
 
+/// A (source, destination) texture pair's bind group, cached the same way and for
+/// the same reason as [`TextureBinding`] — an isolated advanced blend is the one
+/// draw that binds two textures at once (§14.6). The shared linear-clamp sampler
+/// is implied rather than keyed: a blend always samples both its layer and its
+/// destination snapshot with it, since both are pooled transient targets.
+struct BlendBinding {
+    source: TextureId,
+    destination: TextureId,
+    bind_group: BindGroupId,
+}
+
 /// Interns [`SamplerDesc`] to a shared [`SamplerId`] so the renderer keeps one
 /// device sampler per distinct descriptor, never one per draw (§12, §17.1). The
 /// cardinality is tiny (a handful of filter/address combinations), so a scanned
@@ -487,10 +520,11 @@ impl SamplerCache {
 /// The built-in pipelines the renderer prewarms once in [`Renderer::new`]
 /// (§7.1): SolidRect (quad), AnalyticRRect, AnalyticEllipse, AnalyticCapsule,
 /// AnalyticLine, Image, MaskComposite (glyph), PathFill (mesh), Gradient,
-/// AnalyticShadow, ContentBlur (blur), and ColorTransform (fused color effects).
+/// AnalyticShadow, ContentBlur (blur), ColorTransform (fused color effects), and
+/// AdvancedBlend (isolated destination-read blends).
 /// Reported as `FrameStats::shader_pipeline_creations` — a construction-time
 /// constant, since no draw ever triggers a runtime shader compile.
-const SHADER_PIPELINE_PREWARM_COUNT: u32 = 12;
+const SHADER_PIPELINE_PREWARM_COUNT: u32 = 13;
 
 /// Draw-call and instance counts for the frame the renderer has just lowered.
 ///
@@ -591,6 +625,14 @@ pub struct FrameStats {
     /// the "capture only the required region" rule bounds — a small panel over a
     /// 4K window captures its own padded rect, never the framebuffer.
     pub backdrop_capture_pixels: usize,
+    /// Layers this frame isolated because their blend mode is not `SrcOver`
+    /// (§14.6): one per layer routed through the advanced-blend pipeline. Zero for
+    /// every ordinary frame — this counter is precisely the "does the common
+    /// `SrcOver` pipeline stay clean" gate, and each isolation costs one offscreen
+    /// pass plus a share of one bounded destination snapshot (counted in
+    /// `backdrop_captures`, which conflates both kinds of destination snapshot:
+    /// the frosted-glass backdrop and the blend's bounded destination read).
+    pub blend_isolations: u32,
     /// Peak concurrently-live transient render-target bytes this frame (§16.4,
     /// §31): the maximum, over every graph pass slot, of the pooled bytes whose
     /// `[first_write, last_read]` interval covers that slot. This is the real
@@ -680,6 +722,11 @@ pub struct Renderer {
     /// — an affine color matrix plus an optional gamma — applied to a source
     /// texture (§17.3, E2.2).
     color_transform_pipeline: PipelineId,
+    /// The AdvancedBlend built-in pipeline (registered once): one isolated blend
+    /// composite that samples the layer and the bounded destination snapshot behind
+    /// it, evaluates a mode the fixed-function blender cannot express, and writes
+    /// with [`BlendMode::Replace`] (§14.6, E2.3).
+    advanced_blend_pipeline: PipelineId,
     /// The default linear-filter clamp sampler, used by glyph runs, gradient
     /// LUT sampling, and offscreen-layer compositing (all of which want bilinear
     /// clamp). Image draws select their sampler via `sampler_cache` instead.
@@ -718,6 +765,10 @@ pub struct Renderer {
     /// `quad_pool`): one [`ColorTransformInstance`] per fused color op this frame,
     /// whether the op rides a layer's composite draw or its own pass.
     color_transform_pool: InstancePool<ColorTransformInstance>,
+    /// Persistent advanced-blend instance pool (same slot-diff upload as
+    /// `quad_pool`): one [`AdvancedBlendInstance`] per isolated non-`SrcOver`
+    /// layer composited this frame. Empty for every ordinary frame.
+    advanced_blend_pool: InstancePool<AdvancedBlendInstance>,
     /// The renderer-owned 1D gradient LUT atlas: 3+-stop and non-linear-space
     /// gradients bake one ramp row here and sample `(t, lut_v)`. Unlike the
     /// image/glyph atlases (caller-owned textures), this atlas is internal — its
@@ -746,6 +797,14 @@ pub struct Renderer {
     mesh_index_pool: InstancePool<u32>,
     /// Cached per-texture bind groups, reused across frames.
     texture_bindings: Vec<TextureBinding>,
+    /// Cached two-texture bind groups for isolated advanced-blend composites,
+    /// reused across frames. Separate from `texture_bindings` because the key is a
+    /// pair, not a (texture, sampler): folding both into one scanned `Vec` would
+    /// make every ordinary image draw compare a field it never sets.
+    blend_bindings: Vec<BlendBinding>,
+    /// Layers isolated by a non-`SrcOver` blend this frame (§14.6). Reset at frame
+    /// start, surfaced as [`FrameStats::blend_isolations`].
+    blend_isolations: u32,
     /// Scratch quad instance data, reused each frame.
     quad_scratch: Vec<QuadInstance>,
     /// Scratch analytic rounded-rectangle instance data, reused each frame.
@@ -771,6 +830,10 @@ pub struct Renderer {
     /// [`ColorTransformInstance`] per fused color op, filled in
     /// `finalize_offscreen` (extra rungs) and in lowering (the composite's op).
     color_transform_scratch: Vec<ColorTransformInstance>,
+    /// Scratch advanced-blend instance data, reused each frame: one
+    /// [`AdvancedBlendInstance`] per isolated non-`SrcOver` layer, filled where
+    /// the layer's composite draw is lowered.
+    advanced_blend_scratch: Vec<AdvancedBlendInstance>,
     /// Scratch mesh vertex data, reused each frame.
     mesh_vertex_scratch: Vec<MeshVertex>,
     /// Scratch mesh index data, reused each frame.
@@ -1122,7 +1185,10 @@ impl Renderer {
             fragment_entry: entry.fragment_entry,
             color_format: surface_format,
             depth_format: None,
-            blend: BlendMode::PremultipliedOver,
+            // The blend state belongs to the family, not to this call site: every
+            // family composites premultiplied source-over except the isolated
+            // advanced blend, whose fragment returns the finished composite.
+            blend: entry.blend,
             instance_schema: entry.schema,
         };
         let entry = |family| {
@@ -1215,6 +1281,13 @@ impl Renderer {
             )
             .expect("ColorTransformInstance layout matches the color-transform shader schema");
 
+        let advanced_blend_pipeline = backend
+            .create_pipeline(
+                &desc(entry(PipelineFamily::AdvancedBlend), "advanced-blend"),
+                &AdvancedBlendInstance::LAYOUT,
+            )
+            .expect("AdvancedBlendInstance layout matches the advanced-blend shader schema");
+
         // The 1D gradient LUT atlas is renderer-internal: baked from stops at
         // lowering, uploaded into this texture before the pass. Unlike image and
         // glyph textures (caller-owned), the renderer creates and owns it here.
@@ -1258,6 +1331,7 @@ impl Renderer {
             analytic_shadow_pipeline,
             blur_pipeline,
             color_transform_pipeline,
+            advanced_blend_pipeline,
             sampler,
             sampler_cache,
             quad_pool: InstancePool::new(BufferUsage::INSTANCE, "quad-instances"),
@@ -1286,6 +1360,10 @@ impl Renderer {
                 BufferUsage::INSTANCE,
                 "color-transform-instances",
             ),
+            advanced_blend_pool: InstancePool::new(
+                BufferUsage::INSTANCE,
+                "advanced-blend-instances",
+            ),
             gradient_lut: GradientLutAtlas::new(GRADIENT_LUT_ROWS, lut_texture),
             mask_cache: MaskCache::new(MASK_PAGE_SIZE),
             mask_page: MaskPage::new(MASK_PAGE_SIZE, mask_texture),
@@ -1294,6 +1372,8 @@ impl Renderer {
             mesh_vertex_pool: InstancePool::new(BufferUsage::VERTEX, "mesh-vertices"),
             mesh_index_pool: InstancePool::new(BufferUsage::INDEX, "mesh-indices"),
             texture_bindings: Vec::with_capacity(8),
+            blend_bindings: Vec::with_capacity(4),
+            blend_isolations: 0,
             quad_scratch: Vec::with_capacity(256),
             analytic_rrect_scratch: Vec::with_capacity(256),
             analytic_ellipse_scratch: Vec::with_capacity(256),
@@ -1305,6 +1385,7 @@ impl Renderer {
             analytic_shadow_scratch: Vec::with_capacity(256),
             blur_scratch: Vec::with_capacity(8),
             color_transform_scratch: Vec::with_capacity(8),
+            advanced_blend_scratch: Vec::with_capacity(4),
             mesh_vertex_scratch: Vec::with_capacity(1024),
             mesh_index_scratch: Vec::with_capacity(2048),
             segments: Vec::with_capacity(8),
@@ -1359,6 +1440,43 @@ impl Renderer {
         self.texture_bindings.push(TextureBinding {
             texture,
             sampler,
+            bind_group,
+        });
+        bind_group
+    }
+
+    /// Get (or lazily create) the two-texture bind group an isolated advanced-blend
+    /// composite draws with: the isolated layer as `source`, the bounded snapshot of
+    /// what is behind it as `destination` (§14.6).
+    ///
+    /// Slot order is the contract — slot 0 is the source, slot 1 the destination —
+    /// because the shader names its samplers by role (`tex`, `dst_tex`) and binds
+    /// them by index. Both share the renderer's linear-clamp sampler, so one
+    /// `Sampler` binding covers the pair.
+    fn blend_bind_group_for<B: GpuBackend>(
+        &mut self,
+        backend: &mut B,
+        source: TextureId,
+        destination: TextureId,
+    ) -> BindGroupId {
+        if let Some(bb) = self
+            .blend_bindings
+            .iter()
+            .find(|bb| bb.source == source && bb.destination == destination)
+        {
+            return bb.bind_group;
+        }
+        let bind_group = backend.create_bind_group(&BindGroupDesc {
+            label: "advanced-blend",
+            bindings: vec![
+                Binding::Texture(source),
+                Binding::Texture(destination),
+                Binding::Sampler(self.sampler),
+            ],
+        });
+        self.blend_bindings.push(BlendBinding {
+            source,
+            destination,
             bind_group,
         });
         bind_group
@@ -1581,12 +1699,14 @@ impl Renderer {
         self.backdrop_captures.clear();
         self.blur_scratch.clear();
         self.color_transform_scratch.clear();
+        self.advanced_blend_scratch.clear();
         self.graph.begin_frame();
         self.transient.begin_frame();
         self.scene.begin_frame();
         self.mask_cache.begin_frame();
         self.mask_builds_this_frame = 0;
         self.culled_this_frame = 0;
+        self.blend_isolations = 0;
 
         for (prim_index, prim) in primitives.iter().enumerate() {
             let (clip, target, origin) = self.active();
@@ -1852,21 +1972,43 @@ impl Renderer {
                         // layer this primitive opens.
                         record_start = self.scene.paint_order.len();
                     }
-                    // The layer's color-effect chain is the run of
-                    // `Primitive::ColorEffect` markers that follows this
-                    // primitive; fusing it here — straight off the stream, into
-                    // the shared arena — is what makes a run of mergeable
+                    // The layer's marker run is everything between this
+                    // primitive and the layer's first real content: color
+                    // effects (§17.3) and blend modes (§14.6), in any order.
+                    // Both kinds are pure annotations on this layer, so the run
+                    // is scanned once here and the two markers read out of it
+                    // independently — a `Blend` between two `ColorEffect`s ends
+                    // neither chain.
+                    let markers = primitives[prim_index + 1..].iter().take_while(|p| {
+                        matches!(p, Primitive::ColorEffect(_) | Primitive::Blend(_))
+                    });
+                    // The *last* blend marker in the run wins; a run with none
+                    // composites `SrcOver`, the one mode the fixed-function
+                    // stage expresses on the common pipeline.
+                    let blend = markers
+                        .clone()
+                        .filter_map(|p| match p {
+                            Primitive::Blend(mode) => Some(*mode),
+                            _ => None,
+                        })
+                        .last()
+                        .unwrap_or_default();
+                    // Fusing the color chain here — straight off the stream,
+                    // into the shared arena — is what makes a run of mergeable
                     // effects one op instead of one pass each (§17.3).
                     let color_start = self.color_ops.len() as u32;
                     fuse(
-                        primitives[prim_index + 1..].iter().map_while(|p| match p {
+                        markers.filter_map(|p| match p {
                             Primitive::ColorEffect(effect) => Some(*effect),
                             _ => None,
                         }),
                         &mut self.color_ops,
                     );
                     let color_len = self.color_ops.len() as u32 - color_start;
-                    if layer.opacity >= 1.0 && layer.blur_sigma <= BLUR_MIN_SIGMA && color_len == 0
+                    if layer.opacity >= 1.0
+                        && layer.blur_sigma <= BLUR_MIN_SIGMA
+                        && color_len == 0
+                        && blend == Blend::SrcOver
                     {
                         // Opaque, any blur it asked for is sub-pixel, and its
                         // color chain computed nothing — the ladder would plan no
@@ -1893,10 +2035,29 @@ impl Renderer {
                         // recorded here is provisional (the clip top-left) and
                         // repatched to the ROI top-left then. A blur forces the
                         // offscreen path even at full opacity (§16.2, E1.2), and so
-                        // does a color chain that computes anything (§17.3, E2.2).
+                        // does a color chain that computes anything (§17.3, E2.2)
+                        // and a blend the fixed-function stage cannot express
+                        // (§14.6, E2.3).
                         let pass_origin = [world_clip.x, world_clip.y];
                         let paint_order_start = self.scene.paint_order.len();
-                        let idx = self.open_offscreen(world_clip, layer.opacity);
+                        // An advanced blend needs to read the destination. The
+                        // bounded snapshot it reads is the same capture pass a
+                        // backdrop blur uses, taken at sigma 0 — so the two share
+                        // one mechanism, and `capture_sigma == 0` is what keeps a
+                        // blend capture from joining a frosted-glass group whose
+                        // pixels are blurred. Only layers drawing straight into
+                        // the surface pass can capture (see `backdrop_roi`); a
+                        // nested one still isolates, but composites `SrcOver`.
+                        let mut isolate = None;
+                        if blend != Blend::SrcOver
+                            && matches!(target, PassTarget::Main)
+                            && let Some(roi) = self.backdrop_roi(world_clip, 0.0)
+                        {
+                            let capture = self.join_or_open_backdrop(roi, 0.0);
+                            isolate = Some((blend, capture));
+                            self.blend_isolations += 1;
+                        }
+                        let idx = self.open_offscreen(world_clip, layer.opacity, isolate);
                         self.layer_stack.push(LayerEntry {
                             clip: world_clip,
                             target: PassTarget::Offscreen(idx),
@@ -1913,8 +2074,8 @@ impl Renderer {
                 // of markers that follows it and fuses them in one pass. Walking
                 // over them again here is the no-op that keeps the chain a pure
                 // annotation on the layer — and makes a marker anywhere else in
-                // the stream harmless rather than an error (§17.3).
-                Primitive::ColorEffect(_) => {}
+                // the stream harmless rather than an error (§17.3, §14.6).
+                Primitive::ColorEffect(_) | Primitive::Blend(_) => {}
                 Primitive::LayerEnd => {
                     if let Some(entry) = self.layer_stack.pop()
                         && let PassTarget::Offscreen(idx) = entry.target
@@ -2049,6 +2210,9 @@ impl Renderer {
                 .color_transform_pool
                 .sync(backend, &self.color_transform_scratch)
             + self
+                .advanced_blend_pool
+                .sync(backend, &self.advanced_blend_scratch)
+            + self
                 .mesh_vertex_pool
                 .sync(backend, &self.mesh_vertex_scratch)
             + self.mesh_index_pool.sync(backend, &self.mesh_index_scratch);
@@ -2068,6 +2232,7 @@ impl Renderer {
             + self.analytic_shadow_pool.last_upload_bytes()
             + self.blur_pool.last_upload_bytes()
             + self.color_transform_pool.last_upload_bytes()
+            + self.advanced_blend_pool.last_upload_bytes()
             + self.mesh_vertex_pool.last_upload_bytes()
             + self.mesh_index_pool.last_upload_bytes();
     }
@@ -2360,6 +2525,64 @@ impl Renderer {
                 let bind_group = self.transient.bind_group(sample);
                 instance.rect_pos[0] -= origin[0];
                 instance.rect_pos[1] -= origin[1];
+                // An advanced blend cannot ride the fixed-function stage, so this
+                // layer's composite becomes one `AdvancedBlend` draw: it samples
+                // both the layer and the bounded destination snapshot its capture
+                // holds, evaluates the blend per fragment, and writes the result
+                // with `Replace` — the destination is already in the fragment, so
+                // the blend state must not mix it in twice. One draw, two textures,
+                // no pass added, and the common `SrcOver` pipeline is left exactly
+                // as it was (§14.6, E2.3).
+                if let Some((mode, capture)) = self.offscreen_passes[pass].blend {
+                    let cap = &self.backdrop_captures[capture];
+                    let (roi, cap_used) = (cap.roi, cap.used);
+                    let snapshot = cap
+                        .sample
+                        .expect("backdrop capture is realized before a blend composite lowers");
+                    // The capture ROI can be shared with other isolated layers and
+                    // is padded to a pooled size class, so the destination UVs are
+                    // derived from where this layer's rect sits inside that ROI —
+                    // the same derivation a blurred backdrop composite uses.
+                    let sampled = self.transient.used_extent(snapshot);
+                    let phys = self.transient.phys_extent(snapshot);
+                    let cover = [
+                        sampled[0] as f32 / phys[0] as f32,
+                        sampled[1] as f32 / phys[1] as f32,
+                    ];
+                    let (bw, bh) = (cap_used[0] as f32, cap_used[1] as f32);
+                    let rect = self.offscreen_passes[pass].rect;
+                    // The layer opacity rides the blend instance rather than a
+                    // composite tint: the fragment folds it into the source before
+                    // evaluating the blend, which is where compositing math wants
+                    // it (a blend of a half-transparent layer is not a half-faded
+                    // blend of an opaque one).
+                    let opacity = self.offscreen_passes[pass].opacity;
+                    let src_texture = self.transient.texture(sample);
+                    let dst_texture = self.transient.texture(snapshot);
+                    let bind_group = self.blend_bind_group_for(backend, src_texture, dst_texture);
+                    let start = self.advanced_blend_scratch.len() as u32;
+                    self.advanced_blend_scratch.push(AdvancedBlendInstance {
+                        rect_pos: instance.rect_pos,
+                        rect_size: instance.rect_size,
+                        uv_pos: instance.uv_pos,
+                        uv_size: instance.uv_size,
+                        dst_uv_pos: [
+                            (rect.x - roi.x) / bw * cover[0],
+                            (rect.y - roi.y) / bh * cover[1],
+                        ],
+                        dst_uv_size: [rect.w / bw * cover[0], rect.h / bh * cover[1]],
+                        mode: mode.mode(),
+                        opacity,
+                    });
+                    self.merge_or_push(Segment {
+                        kind: SegmentKind::AdvancedBlend { bind_group },
+                        start,
+                        count: 1,
+                        clip,
+                        target,
+                    });
+                    return;
+                }
                 // A layer whose color chain fused to a final op composites through
                 // the color-transform pipeline instead of the plain image one: same
                 // quad, same source texture, one extra matrix multiply in the
@@ -2622,6 +2845,7 @@ impl Renderer {
                 .iter()
                 .map(|c| (c.used[0] as usize) * (c.used[1] as usize))
                 .sum(),
+            blend_isolations: self.blend_isolations,
             transient_peak_bytes: transient.peak_bytes,
             transient_pool_bytes: transient.pool_bytes,
             transient_target_allocations: transient.allocations,
@@ -2722,6 +2946,11 @@ impl Renderer {
     /// The ColorTransform pipeline handle, for batch introspection.
     pub(crate) fn color_transform_pipeline_id(&self) -> PipelineId {
         self.color_transform_pipeline
+    }
+
+    /// The AdvancedBlend pipeline handle, for batch introspection.
+    pub(crate) fn advanced_blend_pipeline_id(&self) -> PipelineId {
+        self.advanced_blend_pipeline
     }
 
     /// Add `segment` to the batch list, merging it into the previous segment
@@ -3007,7 +3236,16 @@ impl Renderer {
     /// target declaration here: the ROI is only known at
     /// [`Renderer::finalize_offscreen`], so the target is never larger than the
     /// visible content (§16.2). `rect` holds the clip provisionally until then.
-    fn open_offscreen(&mut self, world_clip: Rect, opacity: f32) -> usize {
+    ///
+    /// `blend` is `Some((mode, capture))` only for a layer isolated by an advanced
+    /// blend, naming the mode and the backdrop capture holding the bounded
+    /// destination snapshot its composite reads (§14.6).
+    fn open_offscreen(
+        &mut self,
+        world_clip: Rect,
+        opacity: f32,
+        blend: Option<(Blend, usize)>,
+    ) -> usize {
         let idx = self.offscreen_passes.len();
         self.offscreen_passes.push(OffscreenPass {
             base: None,
@@ -3017,6 +3255,7 @@ impl Renderer {
             rect: world_clip,
             opacity,
             color: None,
+            blend,
         });
         idx
     }
@@ -3207,22 +3446,30 @@ impl Renderer {
     /// Each rung's quad covers the used extent of its own target and samples the
     /// used sub-rect of its source, for the same pooled-size-class reason the blur
     /// rungs do; the color math is per-texel, so no rung resizes.
+    ///
+    /// A layer isolated by an advanced blend is the one exception: its composite is
+    /// an `AdvancedBlend` draw, which carries no color matrix, so *every* op gets a
+    /// rung and the layer opacity rides the blend instance instead of the final
+    /// op's alpha row. Such a layer pays one more pass than a `SrcOver` one — the
+    /// honest price of a composite that already reads two textures (§14.6).
     fn build_color_chain(&mut self, idx: usize, entry: &LayerEntry) {
         if entry.color_len == 0 {
             return;
         }
-        let (mut source, opacity) = {
+        let (mut source, opacity, blended) = {
             let pass = &self.offscreen_passes[idx];
             (
                 pass.sample
                     .expect("offscreen pass target declared before its color chain is built"),
                 pass.opacity,
+                pass.blend.is_some(),
             )
         };
         let mut used = self.transient.used_extent(source);
         let start = entry.color_start as usize;
         let last = start + entry.color_len as usize - 1;
-        for i in start..last {
+        let rungs = if blended { last + 1 } else { last };
+        for i in start..rungs {
             let op = self.color_ops[i];
             let slot = self.graph.next_slot();
             let target = self.transient.declare(
@@ -3265,10 +3512,12 @@ impl Renderer {
         }
         let pass = &mut self.offscreen_passes[idx];
         pass.sample = Some(source);
-        // The layer opacity rides the final op's alpha row instead of the
-        // composite's tint: one multiply in the shader either way, and it keeps the
-        // composite a plain textured quad with no second color source.
-        pass.color = Some(self.color_ops[last].with_opacity(opacity));
+        if !blended {
+            // The layer opacity rides the final op's alpha row instead of the
+            // composite's tint: one multiply in the shader either way, and it keeps
+            // the composite a plain textured quad with no second color source.
+            pass.color = Some(self.color_ops[last].with_opacity(opacity));
+        }
     }
 
     /// Close the offscreen pass at `idx`, recording a composite draw in the
@@ -3589,6 +3838,20 @@ impl Renderer {
                     "color-transform pool buffer exists when a color segment references it",
                 ),
                 instance_offset: seg.start as usize * COLOR_TRANSFORM_STRIDE,
+                uniforms,
+                scissor,
+            },
+            // An isolated layer's blend composite: the same quad again, through the
+            // pipeline that samples both the layer and its destination snapshot and
+            // writes with `Replace` (§14.6, E2.3).
+            SegmentKind::AdvancedBlend { bind_group } => DrawCommand {
+                pipeline: self.advanced_blend_pipeline,
+                bind_group: Some(bind_group),
+                geometry: Geometry::Generated { count: seg.count },
+                instance_buffer: self.advanced_blend_pool.buffer().expect(
+                    "advanced-blend pool buffer exists when a blend segment references it",
+                ),
+                instance_offset: seg.start as usize * ADVANCED_BLEND_STRIDE,
                 uniforms,
                 scissor,
             },

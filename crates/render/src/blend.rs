@@ -47,7 +47,14 @@ use crate::opacity::LayerReason;
 /// The variants are grouped by realization tier ([`realization`](Blend::realization)),
 /// not alphabetically: the Porter-Duff + `Plus` block is fixed-function, the
 /// separable artistic block reads the destination, and the HSL block isolates.
+///
+/// The discriminants are the shader ABI. `#[repr(u8)]` pins them so
+/// [`mode`](Blend::mode) is a plain cast and the AdvancedBlend fragment can
+/// branch on the same numbering: `0..=12` Porter-Duff + `Plus`, `13..=23` the
+/// separable artistic modes, `24..=27` the HSL ones. Reordering the variants is
+/// an ABI break, which is why a frozen test pins every number.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+#[repr(u8)]
 pub enum Blend {
     // --- Fixed-function: Porter-Duff compositing + Plus ---
     /// Both source and destination cleared to zero within the bounds.
@@ -155,6 +162,18 @@ impl Blend {
     /// (§14.6). The complement of [`is_fixed_function`](Blend::is_fixed_function).
     pub fn is_advanced(self) -> bool {
         !self.is_fixed_function()
+    }
+
+    /// The blend discriminant handed to the AdvancedBlend shader — the ABI the
+    /// fragment branches on. `0..=12` are the Porter-Duff coverage modes (linear
+    /// in the premultiplied operands), `13..=23` the W3C separable artistic ones,
+    /// `24..=27` the non-separable HSL ones, so the shader needs one comparison to
+    /// pick a family and one switch inside it.
+    ///
+    /// A cast, not a table: `#[repr(u8)]` on [`Blend`] makes the declaration order
+    /// the numbering, and `blend_mode_abi_is_frozen` pins every value.
+    pub const fn mode(self) -> u32 {
+        self as u32
     }
 }
 
@@ -310,6 +329,57 @@ mod tests {
             assert!(plan.needs_offscreen(), "{mode:?}");
             assert_eq!(plan.reason, Some(LayerReason::AdvancedBlend), "{mode:?}");
             assert!(mode.is_advanced(), "{mode:?}");
+        }
+    }
+
+    /// The blend discriminant is the AdvancedBlend shader ABI, so every number is
+    /// frozen: the shader dispatches on `mode <= 12` / `mode <= 23` / else, and the
+    /// three ranges must stay contiguous and in tier order. Reordering a variant
+    /// silently repaints, which is why this pins all 28 rather than samples.
+    #[test]
+    fn blend_mode_abi_is_frozen() {
+        let frozen = [
+            (Blend::Clear, 0),
+            (Blend::Src, 1),
+            (Blend::Dst, 2),
+            (Blend::SrcOver, 3),
+            (Blend::DstOver, 4),
+            (Blend::SrcIn, 5),
+            (Blend::DstIn, 6),
+            (Blend::SrcOut, 7),
+            (Blend::DstOut, 8),
+            (Blend::SrcATop, 9),
+            (Blend::DstATop, 10),
+            (Blend::Xor, 11),
+            (Blend::Plus, 12),
+            (Blend::Multiply, 13),
+            (Blend::Screen, 14),
+            (Blend::Overlay, 15),
+            (Blend::Darken, 16),
+            (Blend::Lighten, 17),
+            (Blend::ColorDodge, 18),
+            (Blend::ColorBurn, 19),
+            (Blend::HardLight, 20),
+            (Blend::SoftLight, 21),
+            (Blend::Difference, 22),
+            (Blend::Exclusion, 23),
+            (Blend::Hue, 24),
+            (Blend::Saturation, 25),
+            (Blend::Color, 26),
+            (Blend::Luminosity, 27),
+        ];
+        for (mode, want) in frozen {
+            assert_eq!(mode.mode(), want, "{mode:?}");
+        }
+
+        // The tier boundaries the shader's two comparisons rely on.
+        for (mode, want) in frozen {
+            let tier = match want {
+                0..=12 => BlendRealization::FixedFunction,
+                13..=23 => BlendRealization::DestinationRead,
+                _ => BlendRealization::Isolation,
+            };
+            assert_eq!(mode.realization(), tier, "{mode:?}");
         }
     }
 

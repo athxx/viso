@@ -31,12 +31,12 @@ pub use manifest::{
     standard_manifest,
 };
 pub use msl::{
-    ANALYTIC_CAPSULE_MSL, ANALYTIC_ELLIPSE_MSL, ANALYTIC_LINE_MSL, ANALYTIC_RRECT_MSL,
-    ANALYTIC_SHADOW_MSL, COLOR_TRANSFORM_MSL, GLYPHRUN_MSL, GRADIENT_MSL, IMAGE_MSL, MESH_MSL,
-    PrimitiveKind, QUAD_MSL, analytic_capsule_schema, analytic_ellipse_schema,
-    analytic_line_schema, analytic_rrect_schema, analytic_shadow_schema, color_transform_schema,
-    glyphrun_schema, gradient_schema, image_schema, instance_schema, mesh_schema, quad_schema,
-    shader_source,
+    ADVANCED_BLEND_MSL, ANALYTIC_CAPSULE_MSL, ANALYTIC_ELLIPSE_MSL, ANALYTIC_LINE_MSL,
+    ANALYTIC_RRECT_MSL, ANALYTIC_SHADOW_MSL, COLOR_TRANSFORM_MSL, GLYPHRUN_MSL, GRADIENT_MSL,
+    IMAGE_MSL, MESH_MSL, PrimitiveKind, QUAD_MSL, advanced_blend_schema, analytic_capsule_schema,
+    analytic_ellipse_schema, analytic_line_schema, analytic_rrect_schema, analytic_shadow_schema,
+    color_transform_schema, glyphrun_schema, gradient_schema, image_schema, instance_schema,
+    mesh_schema, quad_schema, shader_source,
 };
 pub use reload::{CompiledShader, ShaderPipeline};
 

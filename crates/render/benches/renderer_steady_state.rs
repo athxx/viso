@@ -32,10 +32,10 @@ use viso_gpu::{
 use viso_render::{
     AnalyticCapsule, AnalyticCapsuleInstance, AnalyticEllipse, AnalyticEllipseInstance,
     AnalyticLine, AnalyticLineInstance, AnalyticRRect, AnalyticRRectInstance, AnalyticShadow,
-    Border, ColorEffect, Corners, DashPattern, ExtendMode, FrameStats, GlyphRunDraw, Gradient,
-    GradientKind, GradientStop, ImageDraw, InterpolationSpace, LayerClip, LineCap, LineJoin, Path,
-    PathCmd, Point, Primitive, Quad, Rect, Renderer, Rgba, ShadowShape, SpriteRegion, Stroke,
-    test_glyphs, test_scene, test_texture,
+    Blend, Border, ColorEffect, Corners, DashPattern, ExtendMode, FrameStats, GlyphRunDraw,
+    Gradient, GradientKind, GradientStop, ImageDraw, InterpolationSpace, LayerClip, LineCap,
+    LineJoin, Path, PathCmd, Point, Primitive, Quad, Rect, Renderer, Rgba, ShadowShape,
+    SpriteRegion, Stroke, test_glyphs, test_scene, test_texture,
 };
 
 /// A global allocator that counts heap allocations while `ARMED`, so a steady
@@ -2475,6 +2475,205 @@ fn assert_color_chain_fuses_to_one_pass() {
     }
 }
 
+/// How many blended tiles the E2.3 row carries, and their geometry — a row of
+/// small badges over a shared background, the shape a themed list paints when its
+/// rows carry a non-`SrcOver` blend.
+const BLENDED_CARDS: usize = 8;
+const BLENDED_CARD_SIZE: f32 = 12.0;
+const BLENDED_CARD_PITCH: f32 = 14.0;
+
+/// The separable mode the gate plans and times: the cheapest advanced blend, so
+/// the pass algebra it proves is the *floor* every other advanced mode also pays.
+const BLENDED_MODE: Blend = Blend::Multiply;
+
+/// A non-separable mode for the timing pair: `Luminosity` evaluates luminance and
+/// a clipped color fit per pixel, the most expensive fragment in the family.
+const BLENDED_MODE_HEAVY: Blend = Blend::Luminosity;
+
+/// A row of `count` tiles over an opaque background, each tile in its own layer
+/// carrying `mode`. With `mode == SrcOver` this is the same geometry on the common
+/// fixed-function path — the control the isolation cost is measured against.
+fn blended_card_scene(count: usize, mode: Blend) -> Vec<Primitive> {
+    let mut scene = Vec::with_capacity(count * 4 + 1);
+    // Something to blend against: the destination the snapshots read.
+    scene.push(Primitive::Quad(Quad {
+        rect: Rect {
+            x: 0.0,
+            y: 0.0,
+            w: W as f32,
+            h: H as f32,
+        },
+        color: Rgba {
+            r: 0.8,
+            g: 0.4,
+            b: 0.2,
+            a: 1.0,
+        },
+        radius: 0.0,
+        border: Border::NONE,
+    }));
+    for i in 0..count {
+        let card = Rect {
+            x: 4.0 + i as f32 * BLENDED_CARD_PITCH,
+            y: 16.0,
+            w: BLENDED_CARD_SIZE,
+            h: BLENDED_CARD_SIZE,
+        };
+        scene.push(Primitive::Layer(LayerClip {
+            clip: card,
+            opacity: 1.0,
+            blur_sigma: 0.0,
+            backdrop_sigma: 0.0,
+        }));
+        scene.push(Primitive::Blend(mode));
+        scene.push(Primitive::Quad(Quad {
+            rect: card,
+            color: Rgba {
+                r: 0.3,
+                g: 0.6,
+                b: 0.9,
+                a: 1.0,
+            },
+            radius: 0.0,
+            border: Border::NONE,
+        }));
+        scene.push(Primitive::LayerEnd);
+    }
+    scene
+}
+
+/// E2.3 gate (§17.1/§31): an advanced blend is isolated through the planner and
+/// pays only the layer target it already needs plus one *bounded* destination
+/// snapshot — no third render-target pass per blend, and nothing on the common
+/// path.
+///
+/// Two halves. The control row is the identical geometry under `SrcOver`: it must
+/// open no offscreen, take no capture, and stay one surface pass — proof that the
+/// fixed-function lane is untouched by the advanced family existing. The isolated
+/// row then pays exactly `offscreen + capture` per card and composites in one draw
+/// each, so `render_passes` is the sum of those two plus the surface. The forbidden
+/// default — re-reading the whole destination per blend — would snapshot
+/// `BLENDED_CARDS × W × H` pixels; the bound printed here is what isolation
+/// actually reads.
+fn assert_blend_isolation_costs_no_extra_pass() {
+    let mut plain = setup_scene(blended_card_scene(BLENDED_CARDS, Blend::SrcOver));
+    frame(&mut plain);
+    frame(&mut plain);
+    let common = plain.renderer.frame_stats();
+
+    let mut h = setup_scene(blended_card_scene(BLENDED_CARDS, BLENDED_MODE));
+    frame(&mut h);
+    frame(&mut h);
+    let textures = h.gpu.texture_count();
+    let baseline = h.renderer.frame_stats();
+
+    let cards = BLENDED_CARDS as u32;
+    let full_surface_reads = BLENDED_CARDS * (W as usize) * (H as usize);
+
+    println!(
+        "E2.3 isolation gate: {BLENDED_CARDS} x {BLENDED_MODE:?} -> \
+         {} isolation(s), {} offscreen pass(es), {} capture(s) reading {} px, \
+         {} render passes, {} draw calls \
+         (same row as SrcOver: {} isolation(s), {} offscreen pass(es), \
+          {} capture(s), {} render passes; a full destination read per blend \
+          would be {full_surface_reads} px)",
+        baseline.blend_isolations,
+        baseline.offscreen_passes,
+        baseline.backdrop_captures,
+        baseline.backdrop_capture_pixels,
+        baseline.render_passes,
+        baseline.draw_calls,
+        common.blend_isolations,
+        common.offscreen_passes,
+        common.backdrop_captures,
+        common.render_passes
+    );
+
+    // The common path is untouched: fixed-function blending is a pipeline state,
+    // never a pass.
+    assert_eq!(
+        common.blend_isolations, 0,
+        "`SrcOver` is fixed-function: it must never isolate (§C0.5)"
+    );
+    assert_eq!(
+        common.offscreen_passes, 0,
+        "an opaque `SrcOver` layer draws in-pass under a scissor"
+    );
+    assert_eq!(common.backdrop_captures, 0, "and reads no destination");
+    assert_eq!(
+        common.render_passes, 1,
+        "so the whole control row is one surface pass"
+    );
+
+    // The isolated row: one isolation per card, each on its own layer target.
+    assert_eq!(
+        baseline.blend_isolations, cards,
+        "every advanced-blend layer is isolated through the planner"
+    );
+    assert_eq!(
+        baseline.offscreen_passes, BLENDED_CARDS,
+        "an isolated blend renders into the layer target it already needed — \
+         one per card, no scratch of its own"
+    );
+    assert_eq!(
+        baseline.render_passes,
+        baseline.offscreen_passes + baseline.backdrop_captures as usize + 1,
+        "the pass plan is exactly layer targets + snapshots + the surface: an \
+         advanced blend buys no third pass"
+    );
+    assert_eq!(
+        baseline.color_transform_passes, 0,
+        "no color op is authored here, so the blend must not open a color pass"
+    );
+    assert!(
+        baseline.backdrop_capture_pixels < W as usize * H as usize,
+        "the snapshots are bounded by the tiles, not the surface ({} px of {} )",
+        baseline.backdrop_capture_pixels,
+        W as usize * H as usize
+    );
+    assert!(
+        baseline.backdrop_capture_pixels * (BLENDED_CARDS / 2) < full_surface_reads,
+        "and stay far below a full destination read per blend ({} px vs \
+         {full_surface_reads} px)",
+        baseline.backdrop_capture_pixels
+    );
+    assert_eq!(
+        baseline.backdrop_captures, 1,
+        "disjoint badges share one snapshot pass over the union ROI — isolation \
+         reuses the E2.1 capture machinery instead of capturing per blend"
+    );
+    assert_eq!(
+        baseline.draw_calls,
+        common.draw_calls + BLENDED_CARDS + 1,
+        "each isolated layer composites in exactly one extra draw — the single \
+         two-texture advanced-blend draw — plus the one draw the shared snapshot \
+         re-renders the background with"
+    );
+
+    for f in 0..2 {
+        h.renderer.upload(&mut h.gpu, &h.scene);
+        let steady = h.renderer.frame_stats();
+        assert_eq!(
+            steady, baseline,
+            "idle frame {f}: an unchanged blended row must reproduce every \
+             counter of the warmed baseline"
+        );
+        assert_eq!(
+            steady.transient_target_allocations, 0,
+            "the layer target and the snapshot both come back from the pool (§17.4)"
+        );
+        assert_eq!(
+            steady.render_graph_compiles, 0,
+            "the isolation topology is unchanged, so the cached plan is reused"
+        );
+        assert_eq!(
+            h.gpu.texture_count(),
+            textures,
+            "isolation targets neither grow nor churn across steady frames"
+        );
+    }
+}
+
 /// A static "app screen" inside one blurred translucent layer: a bounded
 /// gradient palette (LUT rows), a shadowed path (coverage masks + tessellation),
 /// and a run of analytic shadows — every effect cache the renderer keeps, all
@@ -2758,6 +2957,12 @@ fn bench_steady_state(c: &mut Criterion) {
     // a single effect no matter how long its mergeable chain is, and only a
     // non-expressible stage buys one extra pass per card.
     assert_color_chain_fuses_to_one_pass();
+
+    // E2.3 gate (§17.1/§31): a row of advanced-blend badges isolates through the
+    // planner for the price of the layer target it already needed plus one bounded
+    // destination snapshot, while the same row under `SrcOver` stays a single
+    // fixed-function surface pass.
+    assert_blend_isolation_costs_no_extra_pass();
 
     let mut h = setup();
     // Warm up so the measured iterations are the reuse path, not first growth.
@@ -3054,6 +3259,41 @@ fn bench_steady_state(c: &mut Criterion) {
     frame(&mut graded_split);
     c.bench_function("graded_cards_split_frame", |b| {
         b.iter(|| frame(black_box(&mut graded_split)));
+    });
+
+    // E2.3 timing (§17.1/§31): the blended row. `upload` is where the blend is
+    // classified, the layer is forced offscreen, and its bounded snapshot is
+    // claimed — the cost of *planning* an isolation; `frame` also encodes the
+    // snapshot pass and one two-texture composite per badge. The `SrcOver` control
+    // brackets what isolation costs over the fixed-function lane, and the
+    // non-separable row brackets the fragment's spread across the family. None of
+    // these is device shaded-pixel time (§36).
+    let mut blended = setup_scene(blended_card_scene(BLENDED_CARDS, BLENDED_MODE));
+    frame(&mut blended);
+    frame(&mut blended);
+    c.bench_function("blended_cards_upload_steady", |b| {
+        b.iter(|| {
+            blended
+                .renderer
+                .upload(black_box(&mut blended.gpu), black_box(&blended.scene))
+        });
+    });
+    c.bench_function("blended_cards_frame", |b| {
+        b.iter(|| frame(black_box(&mut blended)));
+    });
+
+    let mut blended_heavy = setup_scene(blended_card_scene(BLENDED_CARDS, BLENDED_MODE_HEAVY));
+    frame(&mut blended_heavy);
+    frame(&mut blended_heavy);
+    c.bench_function("blended_cards_nonseparable_frame", |b| {
+        b.iter(|| frame(black_box(&mut blended_heavy)));
+    });
+
+    let mut src_over_cards = setup_scene(blended_card_scene(BLENDED_CARDS, Blend::SrcOver));
+    frame(&mut src_over_cards);
+    frame(&mut src_over_cards);
+    c.bench_function("src_over_cards_frame", |b| {
+        b.iter(|| frame(black_box(&mut src_over_cards)));
     });
 }
 

@@ -76,6 +76,13 @@ pub enum BatchFamily {
     /// affine color matrix plus an optional gamma, applied to what an offscreen
     /// layer already rendered.
     ColorTransform,
+    /// One isolated advanced-blend composite, drawn instanced from the shared
+    /// advanced-blend buffer and binding *two* textures in one `bind_group` — the
+    /// isolated layer and the bounded snapshot of what is behind it. The fragment
+    /// evaluates a blend the fixed-function stage cannot express, which is why it
+    /// is its own family rather than a variant of [`Image`](BatchFamily::Image):
+    /// the common `SrcOver` pipeline stays untouched.
+    AdvancedBlend,
 }
 
 impl BatchFamily {
@@ -94,6 +101,7 @@ impl BatchFamily {
             BatchFamily::Gradient => 8,
             BatchFamily::AnalyticShadow => 9,
             BatchFamily::ColorTransform => 10,
+            BatchFamily::AdvancedBlend => 11,
         }
     }
 
@@ -111,14 +119,15 @@ impl BatchFamily {
             8 => Some(BatchFamily::Gradient),
             9 => Some(BatchFamily::AnalyticShadow),
             10 => Some(BatchFamily::ColorTransform),
+            11 => Some(BatchFamily::AdvancedBlend),
             _ => None,
         }
     }
 
     /// Whether draws of this family can grow by absorbing an adjacent primitive
     /// of the same key. Quads, analytic rrects/ellipses, and meshes each share a
-    /// family buffer and merge; images, glyph runs, gradients, and color
-    /// transforms each bind their own resource and stand alone.
+    /// family buffer and merge; images, glyph runs, gradients, color transforms,
+    /// and advanced blends each bind their own resource and stand alone.
     pub const fn mergeable(self) -> bool {
         matches!(
             self,
@@ -325,6 +334,7 @@ mod tests {
             BatchFamily::Gradient,
             BatchFamily::AnalyticShadow,
             BatchFamily::ColorTransform,
+            BatchFamily::AdvancedBlend,
         ] {
             let key = BatchKey::pack(family, BatchTarget::Main, None);
             assert_eq!(key.family(), family);
@@ -423,6 +433,9 @@ mod tests {
         // A fused color op samples one specific source texture, so it stands alone
         // for the same reason — the fusion happens in the matrix, not in the batch.
         assert!(!BatchFamily::ColorTransform.mergeable());
+        // An isolated advanced blend binds one specific (source, destination) pair
+        // and writes with `Replace`, so two adjacent ones must never share a draw.
+        assert!(!BatchFamily::AdvancedBlend.mergeable());
     }
 
     #[test]

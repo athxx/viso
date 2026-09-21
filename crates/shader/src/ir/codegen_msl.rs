@@ -180,12 +180,22 @@ fn emit_vertex_entry(out: &mut String, ir: &ShaderIr) {
 }
 
 /// The `fragment float4 fragment_main(...)` entry point. Textured primitives
-/// (`texture_count == 1`) bind a `texture2d<float>` + `sampler`; untextured ones
-/// take only `stage_in`.
+/// bind one `texture2d<float>` per texture plus a single shared `sampler`;
+/// untextured ones take only `stage_in`.
+///
+/// Texture slots are named by role, not by index: slot 0 is always `tex` (the
+/// primary source), slot 1 `dst_tex` (the destination a blend reads). One
+/// sampler serves every slot — Viso's textured built-ins all sample
+/// clamp-to-edge with the same filter.
 fn emit_fragment_entry(out: &mut String, ir: &ShaderIr) {
-    if ir.texture_count == 1 {
+    if ir.texture_count >= 1 {
         out.push_str("fragment float4 fragment_main(VOut in [[stage_in]],\n");
         out.push_str("                              texture2d<float> tex [[texture(0)]],\n");
+        if ir.texture_count >= 2 {
+            out.push_str(
+                "                              texture2d<float> dst_tex [[texture(1)]],\n",
+            );
+        }
         out.push_str("                              sampler samp [[sampler(0)]]) {\n");
     } else {
         out.push_str("fragment float4 fragment_main(VOut in [[stage_in]]) {\n");

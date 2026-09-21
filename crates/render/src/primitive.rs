@@ -13,6 +13,7 @@
 //! `create_pipeline` validates the derived layout against the schema, so a
 //! mismatch is caught at pipeline-registration time.
 
+use crate::blend::Blend;
 use crate::color_effect::ColorEffect;
 use viso_gpu::{AddressMode, FilterMode, GpuPod, SamplerDesc, TextureId};
 use viso_math::{ExtendMode, InterpolationSpace};
@@ -22,9 +23,9 @@ use viso_math::{ExtendMode, InterpolationSpace};
 // re-export them here so the instance structs and their schemas stay visibly
 // paired at the primitive definition.
 pub use viso_shader::{
-    analytic_capsule_schema, analytic_ellipse_schema, analytic_line_schema, analytic_rrect_schema,
-    analytic_shadow_schema, color_transform_schema, glyphrun_schema, gradient_schema, image_schema,
-    mesh_schema, quad_schema,
+    advanced_blend_schema, analytic_capsule_schema, analytic_ellipse_schema, analytic_line_schema,
+    analytic_rrect_schema, analytic_shadow_schema, color_transform_schema, glyphrun_schema,
+    gradient_schema, image_schema, mesh_schema, quad_schema,
 };
 
 /// An axis-aligned rectangle in physical pixels, top-left origin.
@@ -1687,6 +1688,17 @@ pub enum Primitive {
     /// merge (see [`fuse`](crate::color_effect::fuse)). Anywhere else in the
     /// stream the marker is ignored.
     ColorEffect(ColorEffect),
+    /// Set the blend mode the layer just opened composites with (§14.6).
+    ///
+    /// Same placement rule as [`Primitive::ColorEffect`]: valid only in the marker
+    /// run immediately after [`Primitive::Layer`], and ignored anywhere else. The
+    /// markers may interleave freely; the *last* `Blend` in the run wins, and the
+    /// default without one is [`Blend::SrcOver`](crate::blend::Blend::SrcOver).
+    ///
+    /// Anything but `SrcOver` isolates: the layer is composited as a unit through
+    /// the dedicated advanced-blend pipeline against a bounded snapshot of what is
+    /// behind it, so the common `SrcOver` pipeline stays untouched.
+    Blend(Blend),
     /// Pop the most recent [`Primitive::Layer`] clip (and, for a translucent
     /// layer, close its offscreen pass and emit the composite).
     LayerEnd,
@@ -1990,6 +2002,47 @@ pub struct ColorTransformInstance {
     pub offset: [f32; 4],
     /// Per-channel RGB exponent applied after the matrix; `1.0` = none.
     pub gamma: f32,
+}
+
+/// GPU instance for the AdvancedBlend built-in shader.
+///
+/// Field names/formats match [`advanced_blend_schema`] and the headless
+/// `fill_advanced_blend` reader. This is the realization of an isolated
+/// [`Blend`](crate::blend::Blend) the fixed-function blender cannot express: the
+/// quad samples *two* textures — the isolated layer at slot 0 through
+/// `uv_pos`/`uv_size`, and a bounded snapshot of what is behind it at slot 1
+/// through `dst_uv_pos`/`dst_uv_size` — evaluates the mode's compositing math in
+/// the fragment, and writes the finished result with
+/// [`BlendMode::Replace`](viso_gpu::BlendMode::Replace).
+///
+/// The two uv sub-rects are independent because the two textures are pooled
+/// separately and cover different world rects. `mode` is
+/// [`Blend::mode`](crate::blend::Blend::mode) — the whole 28-mode set shares one
+/// pipeline and one draw, so an advanced blend costs no extra pass beyond the
+/// layer's own offscreen and the shared destination snapshot. `opacity` is the
+/// layer opacity folded into the source, which on premultiplied data is exactly a
+/// coverage scale. `#[repr(C)]` with only 4-byte-aligned scalars/vectors, so the
+/// derive's `offset_of!`-based layout has no padding — six `[f32; 2]` plus a `u32`
+/// and an `f32`, stride 56.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, GpuPod)]
+pub struct AdvancedBlendInstance {
+    /// Destination top-left in physical pixels.
+    pub rect_pos: [f32; 2],
+    /// Destination width/height in physical pixels.
+    pub rect_size: [f32; 2],
+    /// Source (isolated layer) sub-rect origin in normalized texture coords.
+    pub uv_pos: [f32; 2],
+    /// Source sub-rect size in normalized texture coords.
+    pub uv_size: [f32; 2],
+    /// Destination (snapshot) sub-rect origin in normalized texture coords.
+    pub dst_uv_pos: [f32; 2],
+    /// Destination sub-rect size in normalized texture coords.
+    pub dst_uv_size: [f32; 2],
+    /// The blend discriminant — [`Blend::mode`](crate::blend::Blend::mode).
+    pub mode: u32,
+    /// Layer opacity folded into the source before blending.
+    pub opacity: f32,
 }
 
 /// GPU instance for the GlyphRun built-in shader.
@@ -3445,6 +3498,39 @@ mod tests {
         assert_eq!(
             ColorTransformInstance::LAYOUT.validate_against(&color_transform_schema()),
             Ok(())
+        );
+    }
+
+    #[test]
+    fn advanced_blend_instance_layout_matches_schema() {
+        assert_eq!(
+            AdvancedBlendInstance::LAYOUT.validate_against(&advanced_blend_schema()),
+            Ok(())
+        );
+    }
+
+    /// The two uv sub-rects sit at distinct offsets and the mode/opacity tail packs
+    /// tight behind them: six `[f32; 2]` then `u32` then `f32`, no padding.
+    #[test]
+    fn advanced_blend_instance_is_tightly_packed() {
+        assert_eq!(AdvancedBlendInstance::LAYOUT.stride, 56);
+        let offsets: Vec<_> = AdvancedBlendInstance::LAYOUT
+            .fields
+            .iter()
+            .map(|f| (f.name, f.offset))
+            .collect();
+        assert_eq!(
+            offsets,
+            vec![
+                ("rect_pos", 0),
+                ("rect_size", 8),
+                ("uv_pos", 16),
+                ("uv_size", 24),
+                ("dst_uv_pos", 32),
+                ("dst_uv_size", 40),
+                ("mode", 48),
+                ("opacity", 52),
+            ]
         );
     }
 

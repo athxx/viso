@@ -28,14 +28,15 @@
 //! `OnceLock`; the renderer consumes it at device init to create every standard
 //! pipeline before the first frame.
 
-use viso_gpu::{BuiltinShader, InstanceSchema};
+use viso_gpu::{BlendMode, BuiltinShader, InstanceSchema};
 
 use crate::msl::{
-    ANALYTIC_CAPSULE_MSL, ANALYTIC_ELLIPSE_MSL, ANALYTIC_LINE_MSL, ANALYTIC_RRECT_MSL,
-    ANALYTIC_SHADOW_MSL, BLUR_MSL, COLOR_TRANSFORM_MSL, GLYPHRUN_MSL, GRADIENT_MSL, IMAGE_MSL,
-    MESH_MSL, QUAD_MSL, analytic_capsule_schema, analytic_ellipse_schema, analytic_line_schema,
-    analytic_rrect_schema, analytic_shadow_schema, blur_schema, color_transform_schema,
-    glyphrun_schema, gradient_schema, image_schema, mesh_schema, quad_schema,
+    ADVANCED_BLEND_MSL, ANALYTIC_CAPSULE_MSL, ANALYTIC_ELLIPSE_MSL, ANALYTIC_LINE_MSL,
+    ANALYTIC_RRECT_MSL, ANALYTIC_SHADOW_MSL, BLUR_MSL, COLOR_TRANSFORM_MSL, GLYPHRUN_MSL,
+    GRADIENT_MSL, IMAGE_MSL, MESH_MSL, QUAD_MSL, advanced_blend_schema, analytic_capsule_schema,
+    analytic_ellipse_schema, analytic_line_schema, analytic_rrect_schema, analytic_shadow_schema,
+    blur_schema, color_transform_schema, glyphrun_schema, gradient_schema, image_schema,
+    mesh_schema, quad_schema,
 };
 use std::sync::OnceLock;
 
@@ -92,6 +93,14 @@ pub enum PipelineFamily {
     /// multiply down into that one matrix, so a whole effect chain normally needs a
     /// single pass of this family rather than one per effect.
     ColorTransform,
+    /// An isolated advanced-blend composite — the AdvancedBlend built-in reads an
+    /// isolated layer and a bounded snapshot of what is behind it and evaluates a
+    /// blend the fixed-function stage cannot express (the W3C artistic and HSL
+    /// modes, and the Porter-Duff modes outside plain source-over). The only
+    /// family whose fixed-function state is [`BlendMode::Replace`]: the fragment
+    /// has already mixed the destination in, so the blend stage must not do it
+    /// again.
+    AdvancedBlend,
 }
 
 /// The color-target class a pipeline renders into. Part of [`VariantKey`]
@@ -172,6 +181,13 @@ pub struct PipelineEntry {
     /// The instance layout the shader declares (its reflection), cross-checked
     /// against the derived `#[derive(GpuPod)]` layout at registration (§36.1).
     pub schema: InstanceSchema,
+    /// The fixed-function color-blend state this family's shader was written
+    /// against. Part of the pipeline object, so it belongs to the manifest rather
+    /// than to the renderer's create call: every family but
+    /// [`PipelineFamily::AdvancedBlend`] wants premultiplied source-over, and
+    /// that one wants `Replace` because its fragment returns the finished
+    /// composite.
+    pub blend: BlendMode,
     /// Vertex entry-point name.
     pub vertex_entry: &'static str,
     /// Fragment entry-point name.
@@ -218,6 +234,7 @@ pub fn standard_manifest() -> &'static PipelineManifest {
                 builtin: BuiltinShader::Quad,
                 msl: QUAD_MSL(),
                 schema: quad_schema(),
+                blend: BlendMode::PremultipliedOver,
                 vertex_entry: "vertex_main",
                 fragment_entry: "fragment_main",
             },
@@ -227,6 +244,7 @@ pub fn standard_manifest() -> &'static PipelineManifest {
                 builtin: BuiltinShader::Image,
                 msl: IMAGE_MSL(),
                 schema: image_schema(),
+                blend: BlendMode::PremultipliedOver,
                 vertex_entry: "vertex_main",
                 fragment_entry: "fragment_main",
             },
@@ -236,6 +254,7 @@ pub fn standard_manifest() -> &'static PipelineManifest {
                 builtin: BuiltinShader::GlyphRun,
                 msl: GLYPHRUN_MSL(),
                 schema: glyphrun_schema(),
+                blend: BlendMode::PremultipliedOver,
                 vertex_entry: "vertex_main",
                 fragment_entry: "fragment_main",
             },
@@ -245,6 +264,7 @@ pub fn standard_manifest() -> &'static PipelineManifest {
                 builtin: BuiltinShader::Path,
                 msl: MESH_MSL(),
                 schema: mesh_schema(),
+                blend: BlendMode::PremultipliedOver,
                 vertex_entry: "vertex_main",
                 fragment_entry: "fragment_main",
             },
@@ -254,6 +274,7 @@ pub fn standard_manifest() -> &'static PipelineManifest {
                 builtin: BuiltinShader::AnalyticRRect,
                 msl: ANALYTIC_RRECT_MSL(),
                 schema: analytic_rrect_schema(),
+                blend: BlendMode::PremultipliedOver,
                 vertex_entry: "vertex_main",
                 fragment_entry: "fragment_main",
             },
@@ -263,6 +284,7 @@ pub fn standard_manifest() -> &'static PipelineManifest {
                 builtin: BuiltinShader::AnalyticEllipse,
                 msl: ANALYTIC_ELLIPSE_MSL(),
                 schema: analytic_ellipse_schema(),
+                blend: BlendMode::PremultipliedOver,
                 vertex_entry: "vertex_main",
                 fragment_entry: "fragment_main",
             },
@@ -272,6 +294,7 @@ pub fn standard_manifest() -> &'static PipelineManifest {
                 builtin: BuiltinShader::AnalyticCapsule,
                 msl: ANALYTIC_CAPSULE_MSL(),
                 schema: analytic_capsule_schema(),
+                blend: BlendMode::PremultipliedOver,
                 vertex_entry: "vertex_main",
                 fragment_entry: "fragment_main",
             },
@@ -281,6 +304,7 @@ pub fn standard_manifest() -> &'static PipelineManifest {
                 builtin: BuiltinShader::AnalyticLine,
                 msl: ANALYTIC_LINE_MSL(),
                 schema: analytic_line_schema(),
+                blend: BlendMode::PremultipliedOver,
                 vertex_entry: "vertex_main",
                 fragment_entry: "fragment_main",
             },
@@ -290,6 +314,7 @@ pub fn standard_manifest() -> &'static PipelineManifest {
                 builtin: BuiltinShader::Gradient,
                 msl: GRADIENT_MSL(),
                 schema: gradient_schema(),
+                blend: BlendMode::PremultipliedOver,
                 vertex_entry: "vertex_main",
                 fragment_entry: "fragment_main",
             },
@@ -299,6 +324,7 @@ pub fn standard_manifest() -> &'static PipelineManifest {
                 builtin: BuiltinShader::AnalyticShadow,
                 msl: ANALYTIC_SHADOW_MSL(),
                 schema: analytic_shadow_schema(),
+                blend: BlendMode::PremultipliedOver,
                 vertex_entry: "vertex_main",
                 fragment_entry: "fragment_main",
             },
@@ -308,6 +334,7 @@ pub fn standard_manifest() -> &'static PipelineManifest {
                 builtin: BuiltinShader::Blur,
                 msl: BLUR_MSL(),
                 schema: blur_schema(),
+                blend: BlendMode::PremultipliedOver,
                 vertex_entry: "vertex_main",
                 fragment_entry: "fragment_main",
             },
@@ -317,6 +344,17 @@ pub fn standard_manifest() -> &'static PipelineManifest {
                 builtin: BuiltinShader::ColorTransform,
                 msl: COLOR_TRANSFORM_MSL(),
                 schema: color_transform_schema(),
+                blend: BlendMode::PremultipliedOver,
+                vertex_entry: "vertex_main",
+                fragment_entry: "fragment_main",
+            },
+            PipelineEntry {
+                family: PipelineFamily::AdvancedBlend,
+                variant: VariantKey::standard(PipelineFamily::AdvancedBlend),
+                builtin: BuiltinShader::AdvancedBlend,
+                msl: ADVANCED_BLEND_MSL(),
+                schema: advanced_blend_schema(),
+                blend: BlendMode::Replace,
                 vertex_entry: "vertex_main",
                 fragment_entry: "fragment_main",
             },
@@ -336,7 +374,7 @@ mod tests {
     #[test]
     fn manifest_enumerates_the_standard_builtins() {
         let m = standard_manifest();
-        assert_eq!(m.entries().len(), 12);
+        assert_eq!(m.entries().len(), 13);
         assert!(m.entry(PipelineFamily::SolidRect).is_some());
         assert!(m.entry(PipelineFamily::Image).is_some());
         assert!(m.entry(PipelineFamily::MaskComposite).is_some());
@@ -349,6 +387,7 @@ mod tests {
         assert!(m.entry(PipelineFamily::AnalyticShadow).is_some());
         assert!(m.entry(PipelineFamily::ContentBlur).is_some());
         assert!(m.entry(PipelineFamily::ColorTransform).is_some());
+        assert!(m.entry(PipelineFamily::AdvancedBlend).is_some());
     }
 
     #[test]
