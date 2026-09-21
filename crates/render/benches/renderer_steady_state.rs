@@ -32,10 +32,10 @@ use viso_gpu::{
 use viso_render::{
     AnalyticCapsule, AnalyticCapsuleInstance, AnalyticEllipse, AnalyticEllipseInstance,
     AnalyticLine, AnalyticLineInstance, AnalyticRRect, AnalyticRRectInstance, AnalyticShadow,
-    Border, Corners, DashPattern, ExtendMode, FrameStats, GlyphRunDraw, Gradient, GradientKind,
-    GradientStop, ImageDraw, InterpolationSpace, LayerClip, LineCap, LineJoin, Path, PathCmd,
-    Point, Primitive, Quad, Rect, Renderer, Rgba, ShadowShape, SpriteRegion, Stroke, test_glyphs,
-    test_scene, test_texture,
+    Border, ColorEffect, Corners, DashPattern, ExtendMode, FrameStats, GlyphRunDraw, Gradient,
+    GradientKind, GradientStop, ImageDraw, InterpolationSpace, LayerClip, LineCap, LineJoin, Path,
+    PathCmd, Point, Primitive, Quad, Rect, Renderer, Rgba, ShadowShape, SpriteRegion, Stroke,
+    test_glyphs, test_scene, test_texture,
 };
 
 /// A global allocator that counts heap allocations while `ARMED`, so a steady
@@ -2277,6 +2277,204 @@ fn assert_frosted_panel_row_shares_one_capture() {
     }
 }
 
+/// The graded-card row: enough cards that a per-effect render-target pass would
+/// dominate the pass plan instead of hiding in the noise.
+const GRADED_CARDS: usize = 8;
+
+/// Card edge length and pitch. The gap keeps the cards disjoint, so each one is
+/// its own layer with its own chain and nothing merges across them by accident.
+const GRADED_CARD_SIZE: f32 = 12.0;
+const GRADED_CARD_PITCH: f32 = 14.0;
+
+/// The chain every card carries: five effects, every one of them affine on
+/// straight linear RGBA, so the whole run is expressible as a single 4x5 matrix
+/// (§17.3). Authored the way a theme would — a mild tone/color grade — not as a
+/// synthetic worst case.
+const GRADED_CHAIN: [ColorEffect; 5] = [
+    ColorEffect::Brightness(1.08),
+    ColorEffect::Contrast(1.12),
+    ColorEffect::Saturation(0.85),
+    ColorEffect::HueRotate(0.25),
+    ColorEffect::Grayscale(0.15),
+];
+
+/// The same grade with one non-expressible stage wedged into the middle — the
+/// stand-in for a custom filter, and the only thing that may cost a pass.
+fn graded_chain_split() -> Vec<ColorEffect> {
+    let mut chain = GRADED_CHAIN.to_vec();
+    chain.insert(GRADED_CHAIN.len() / 2, ColorEffect::Gamma(2.2));
+    chain
+}
+
+/// A row of `count` color-graded cards, each a layer carrying `effects` over its
+/// own opaque tile — the §17.3 fusion case as a themed list/gallery authors it.
+fn graded_card_scene(count: usize, effects: &[ColorEffect]) -> Vec<Primitive> {
+    let mut scene = Vec::with_capacity(count * (effects.len() + 3));
+    for i in 0..count {
+        let card = Rect {
+            x: 4.0 + i as f32 * GRADED_CARD_PITCH,
+            y: 16.0,
+            w: GRADED_CARD_SIZE,
+            h: GRADED_CARD_SIZE,
+        };
+        scene.push(Primitive::Layer(LayerClip {
+            clip: card,
+            opacity: 1.0,
+            blur_sigma: 0.0,
+            backdrop_sigma: 0.0,
+        }));
+        scene.extend(effects.iter().copied().map(Primitive::ColorEffect));
+        scene.push(Primitive::Quad(Quad {
+            rect: card,
+            color: Rgba {
+                r: 0.85,
+                g: 0.45,
+                b: 0.3,
+                a: 1.0,
+            },
+            radius: 0.0,
+            border: Border::NONE,
+        }));
+        scene.push(Primitive::LayerEnd);
+    }
+    scene
+}
+
+/// E2.2 gate (§17.3/§31): a color chain's cost is set by how many *ops* it fuses
+/// into, never by how many effects the author wrote. [`GRADED_CARDS`] cards each
+/// carrying the five-effect [`GRADED_CHAIN`] plan exactly the pass count of the
+/// same row carrying one effect — one op per card, riding the composite each
+/// layer already draws, and zero render-target passes of their own. The forbidden
+/// default (one pass per effect) would add `4 × GRADED_CARDS` passes here.
+///
+/// The split row is the other half of the contract: a single non-expressible
+/// stage costs exactly one extra pass per card, not one per effect.
+fn assert_color_chain_fuses_to_one_pass() {
+    let mut one = setup_scene(graded_card_scene(GRADED_CARDS, &GRADED_CHAIN[..1]));
+    frame(&mut one);
+    frame(&mut one);
+    let single = one.renderer.frame_stats();
+
+    let mut h = setup_scene(graded_card_scene(GRADED_CARDS, &GRADED_CHAIN));
+    frame(&mut h);
+    frame(&mut h);
+    let textures = h.gpu.texture_count();
+    let baseline = h.renderer.frame_stats();
+
+    let split_chain = graded_chain_split();
+    let mut split_h = setup_scene(graded_card_scene(GRADED_CARDS, &split_chain));
+    frame(&mut split_h);
+    frame(&mut split_h);
+    let split = split_h.renderer.frame_stats();
+
+    let cards = GRADED_CARDS as u32;
+    let effects = GRADED_CHAIN.len() as u32;
+    // What the same row would cost if every effect took its own pass.
+    let unfused_passes = baseline.render_passes + (GRADED_CHAIN.len() - 1) * GRADED_CARDS;
+
+    println!(
+        "E2.2 fusion gate: {GRADED_CARDS} cards x {effects} effects -> \
+         {} op(s), {} color pass(es), {} render passes \
+         (one effect each: {} op(s), {} color pass(es), {} passes; \
+          split by one non-expressible stage: {} op(s), {} color pass(es), \
+          {} passes; a pass per effect would be {unfused_passes})",
+        baseline.color_effect_ops,
+        baseline.color_transform_passes,
+        baseline.render_passes,
+        single.color_effect_ops,
+        single.color_transform_passes,
+        single.render_passes,
+        split.color_effect_ops,
+        split.color_transform_passes,
+        split.render_passes
+    );
+
+    assert_eq!(
+        baseline.color_effect_ops, cards,
+        "each card's {effects} effects fuse into one op (§17.3)"
+    );
+    assert_eq!(
+        baseline.color_transform_passes, 0,
+        "a fused op rides the composite the layer already draws: no pass of its own"
+    );
+    assert_eq!(
+        baseline.offscreen_passes, GRADED_CARDS,
+        "one layer per card, no more: fusion must not split a layer"
+    );
+    assert_eq!(
+        baseline.render_passes, single.render_passes,
+        "the {effects}-effect row plans the same passes as the one-effect row — \
+         chain length must not reach the pass plan"
+    );
+    assert_eq!(
+        baseline.color_effect_ops, single.color_effect_ops,
+        "and the same op count: the extra effects are matrix multiplications, \
+         not work items"
+    );
+    assert!(
+        baseline.render_passes < unfused_passes,
+        "the fused plan must beat a pass per effect ({} vs {unfused_passes} passes)",
+        baseline.render_passes
+    );
+
+    assert_eq!(
+        split.color_effect_ops,
+        2 * cards,
+        "one non-expressible stage splits each card's run once"
+    );
+    assert_eq!(
+        split.color_transform_passes, cards,
+        "and costs exactly one pass per card — the trailing op still rides the \
+         composite"
+    );
+    assert_eq!(
+        split.render_passes,
+        baseline.render_passes + GRADED_CARDS,
+        "a split adds its own pass and nothing else"
+    );
+    assert!(
+        split.render_passes < unfused_passes,
+        "even the split plan stays below a pass per effect ({} vs \
+         {unfused_passes} passes)",
+        split.render_passes
+    );
+
+    for f in 0..2 {
+        h.renderer.upload(&mut h.gpu, &h.scene);
+        let steady = h.renderer.frame_stats();
+        assert_eq!(
+            steady, baseline,
+            "idle frame {f}: an unchanged graded row must reproduce every counter \
+             of the warmed baseline"
+        );
+        assert_eq!(
+            steady.transient_target_allocations, 0,
+            "a steady graded layer comes back from the pool (§17.4)"
+        );
+        assert_eq!(
+            steady.render_graph_compiles, 0,
+            "the chain's topology is unchanged, so the cached plan is reused"
+        );
+        assert_eq!(
+            h.gpu.texture_count(),
+            textures,
+            "the layer targets neither grow nor churn across steady frames"
+        );
+    }
+
+    for f in 0..2 {
+        split_h.renderer.upload(&mut split_h.gpu, &split_h.scene);
+        let steady = split_h.renderer.frame_stats();
+        assert_eq!(
+            steady, split,
+            "idle frame {f}: the split row's scratch targets must be reused, not \
+             replanned"
+        );
+        assert_eq!(steady.transient_target_allocations, 0);
+        assert_eq!(steady.render_graph_compiles, 0);
+    }
+}
+
 /// A static "app screen" inside one blurred translucent layer: a bounded
 /// gradient palette (LUT rows), a shadowed path (coverage masks + tessellation),
 /// and a run of analytic shadows — every effect cache the renderer keeps, all
@@ -2556,6 +2754,11 @@ fn bench_steady_state(c: &mut Criterion) {
     // instead of one full-surface capture and ladder per panel.
     assert_frosted_panel_row_shares_one_capture();
 
+    // E2.2 gate (§17.3/§31): a row of color-graded cards plans the pass count of
+    // a single effect no matter how long its mergeable chain is, and only a
+    // non-expressible stage buys one extra pass per card.
+    assert_color_chain_fuses_to_one_pass();
+
     let mut h = setup();
     // Warm up so the measured iterations are the reuse path, not first growth.
     frame(&mut h);
@@ -2824,6 +3027,33 @@ fn bench_steady_state(c: &mut Criterion) {
     });
     c.bench_function("frosted_row_frame", |b| {
         b.iter(|| frame(black_box(&mut frosted_row)));
+    });
+
+    // E2.2 timing (§17.3/§31): the graded row. `upload` is where the chain fuses
+    // and the fused matrix is folded into the composite instance, so it is the
+    // cost of *planning* the grade; `frame` also encodes one composite per card
+    // through the color-transform pipeline. The split row pays one extra scratch
+    // pass per card, so the pair brackets the fused/split difference in CPU terms
+    // — neither is device shaded-pixel time (§36).
+    let mut graded = setup_scene(graded_card_scene(GRADED_CARDS, &GRADED_CHAIN));
+    frame(&mut graded);
+    frame(&mut graded);
+    c.bench_function("graded_cards_upload_steady", |b| {
+        b.iter(|| {
+            graded
+                .renderer
+                .upload(black_box(&mut graded.gpu), black_box(&graded.scene))
+        });
+    });
+    c.bench_function("graded_cards_frame", |b| {
+        b.iter(|| frame(black_box(&mut graded)));
+    });
+
+    let mut graded_split = setup_scene(graded_card_scene(GRADED_CARDS, &graded_chain_split()));
+    frame(&mut graded_split);
+    frame(&mut graded_split);
+    c.bench_function("graded_cards_split_frame", |b| {
+        b.iter(|| frame(black_box(&mut graded_split)));
     });
 }
 

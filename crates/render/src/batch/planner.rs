@@ -71,6 +71,11 @@ pub enum BatchFamily {
     /// instanced from their own shared buffer; a closed-form Gaussian coverage
     /// ramp, binding no texture.
     AnalyticShadow,
+    /// One fused run of per-pixel color effects, drawn instanced from the shared
+    /// color-transform buffer and binding the source texture's `bind_group`: an
+    /// affine color matrix plus an optional gamma, applied to what an offscreen
+    /// layer already rendered.
+    ColorTransform,
 }
 
 impl BatchFamily {
@@ -88,6 +93,7 @@ impl BatchFamily {
             BatchFamily::AnalyticLine => 7,
             BatchFamily::Gradient => 8,
             BatchFamily::AnalyticShadow => 9,
+            BatchFamily::ColorTransform => 10,
         }
     }
 
@@ -104,14 +110,15 @@ impl BatchFamily {
             7 => Some(BatchFamily::AnalyticLine),
             8 => Some(BatchFamily::Gradient),
             9 => Some(BatchFamily::AnalyticShadow),
+            10 => Some(BatchFamily::ColorTransform),
             _ => None,
         }
     }
 
     /// Whether draws of this family can grow by absorbing an adjacent primitive
     /// of the same key. Quads, analytic rrects/ellipses, and meshes each share a
-    /// family buffer and merge; images and glyph runs each bind their own
-    /// resource and stand alone.
+    /// family buffer and merge; images, glyph runs, gradients, and color
+    /// transforms each bind their own resource and stand alone.
     pub const fn mergeable(self) -> bool {
         matches!(
             self,
@@ -317,6 +324,7 @@ mod tests {
             BatchFamily::AnalyticLine,
             BatchFamily::Gradient,
             BatchFamily::AnalyticShadow,
+            BatchFamily::ColorTransform,
         ] {
             let key = BatchKey::pack(family, BatchTarget::Main, None);
             assert_eq!(key.family(), family);
@@ -412,6 +420,9 @@ mod tests {
         };
         // Two byte-identical images still never merge (each binds its own draw).
         assert!(!joins(&img, &img));
+        // A fused color op samples one specific source texture, so it stands alone
+        // for the same reason — the fusion happens in the matrix, not in the batch.
+        assert!(!BatchFamily::ColorTransform.mergeable());
     }
 
     #[test]

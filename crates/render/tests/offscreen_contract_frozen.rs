@@ -609,11 +609,15 @@ fn the_graph_vocabulary_is_closed() {
     for work in [
         PassWork::Offscreen(0),
         PassWork::Blur(0),
+        PassWork::ColorTransform(0),
         PassWork::BackdropCapture(0),
         PassWork::Surface,
     ] {
         match work {
-            PassWork::Offscreen(idx) | PassWork::Blur(idx) | PassWork::BackdropCapture(idx) => {
+            PassWork::Offscreen(idx)
+            | PassWork::Blur(idx)
+            | PassWork::ColorTransform(idx)
+            | PassWork::BackdropCapture(idx) => {
                 assert_eq!(idx, 0)
             }
             PassWork::Surface => {}

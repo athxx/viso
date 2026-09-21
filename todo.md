@@ -1988,11 +1988,79 @@ capture / shared-pyramid targets in `viso-gpu`. Depends on E1 frozen (+ C0/E0 fa
         from geometry and sigma, which keeps the mental model at one field (§6.1).
 
 ### E2.2 — Color effect fusion
-- [ ] Color effects (§17.3): `Brightness, Contrast, Saturation, HueRotate, Grayscale,
+- [x] Color effects (§17.3): `Brightness, Contrast, Saturation, HueRotate, Grayscale,
       Sepia, Invert, ColorMatrix, Tint`. Consecutive compatible effects compile into a
       single ColorTransform / matrix-like op; e.g. `Brightness→Contrast→Saturation` must
       not produce three RT passes when math-mergeable. Only a non-expressible custom filter
       gets an extra pass.
+  - [x] `ColorMatrix` (a 4x5 affine map on straight linear RGBA) is the single algebra all
+        nine effects lower to, so fusion is matrix multiplication rather than a table of
+        pairwise special cases: `brightness/contrast/saturation/hue_rotate/grayscale/
+        sepia/invert/tint` are constructors, `then` composes, and an authored
+        `ColorEffect::ColorMatrix` is the same type the fuser already speaks. Because every
+        constructor is affine, *any* run of the nine is expressible — chain length can never
+        be what buys a pass.
+  - [x] `ColorOp { matrix, gamma }` is what a render-target pass actually costs: matrix →
+        clamp once → optional `powf(gamma)`, mirroring the fragment shader and the headless
+        rasterizer. `ColorMatrix::apply` stays a *pure unclamped* linear map, so composing
+        two matrices and running one clamp is bit-comparable with the shader instead of
+        accumulating a clamp per authored effect.
+  - [x] `fuse(effects, &mut ops)` is the whole compiler, and it is one line of algebra:
+        affine stages multiply into the current matrix, consecutive gammas multiply their
+        exponents, and only an affine stage arriving *after* a gamma has to close the op.
+        A neutral run emits nothing at all, so `Brightness(1.0)` costs zero ops and does not
+        drag the layer offscreen.
+  - [x] Authoring is one marker, `Primitive::ColorEffect(ColorEffect)`, placed between a
+        `Layer` and its content — no new primitive kind for each effect and no builder. The
+        marker binds only to the layer it immediately follows: loose markers are inert and a
+        marker after the layer's content has started is ignored, so a chain can never leak
+        across a sibling. `size_of::<ColorEffect>()` is pinned below
+        `size_of::<Primitive>() - 8` so every quad in the frame does not widen for the
+        color feature.
+  - [x] Realization is where the "no extra pass" property is bought: a non-empty op list
+        forces the layer offscreen (the effect needs a texture to read), and the **last** op
+        rides the composite draw the layer was already going to make, through the new
+        `ColorTransform` pipeline. An N-effect fusable chain therefore costs **0** extra
+        render-target passes; ops `0..N-1` become `ColorTransform` passes ping-ponging on
+        pooled `"color-scratch"` targets (E1.3 pool, no per-frame allocation). Layer
+        `opacity` folds into the final op's alpha row via `ColorOp::with_opacity` rather
+        than becoming a second draw.
+  - [x] `BatchFamily::ColorTransform` (tag 10, not mergeable with any other family) and
+        `BuiltinShader::ColorTransform` carry the op as instance data (`ColorTransformInstance`,
+        stride 116, ABI-pinned) — so a fused grade is *uniform data on an existing draw*, not
+        a pipeline variant per effect (§7.5). `SHADER_PIPELINE_PREWARM_COUNT` is 12.
+  - [x] `FrameStats` gains `color_effect_ops` and `color_transform_passes`, which is what
+        makes the bullet's property assertable rather than argued: ops count the fused
+        computations, passes count the ones that failed to fuse. Both are pinned in
+        `counter_contract_frozen.rs`.
+  - [x] `render/tests/color_effect_contract.rs` (13 tests) defends the contract through the
+        public surface only: `Brightness→Contrast→Saturation` is **1 op / 0 color passes /
+        2 render passes**; all nine effects at once are still 1 op; one non-expressible
+        stage (`Gamma`, the stand-in for a custom filter) is **2 ops / 1 color pass**, and
+        two of them in a row are still 1 op. Fusing is also proven value-preserving —
+        a fused chain matches both the hand-composed `ColorMatrix` and the CPU `ColorOp`,
+        a split chain matches its ops applied in order, full grayscale is the Rec.709
+        luminance and full invert the negative.
+  - [x] Gated in `render/benches/renderer_steady_state.rs`
+        (`assert_color_chain_fuses_to_one_pass`): 8 graded cards x 5 effects = 40 authored
+        effects cost **8 ops, 0 color passes, 9 render passes** — the identical pass plan to
+        the same row carrying *one* effect — versus the forbidden default's 41 passes. One
+        non-expressible stage costs exactly **+8** passes (one per card, never one per
+        effect): 16 ops, 8 color passes, 17 passes. Repeat uploads of both rows reproduce
+        every counter with 0 transient allocations, 0 graph recompiles and no backend
+        texture churn.
+  - [x] Timing rows `graded_cards_upload_steady` (4.75 µs — fusing the chains and folding
+        the matrices into the composite instances), `graded_cards_frame` (49.1 µs) and
+        `graded_cards_split_frame` (94.4 µs) bracket the fused/split difference in CPU
+        terms: the split row's eight extra scratch passes roughly double the encode.
+  - [x] Flagged, not asserted: on-device Metal shaded-pixel time and bandwidth for a fused
+        vs. split chain (no GPU capture here; `HeadlessRaster` proves pixel fidelity and
+        pass counts, not device savings, §7.3/§36); the ~2x figure above is the CPU
+        rasterizer's cost, not a GPU ratio. `Gamma` stands in for "a non-expressible custom
+        filter" because no user-shader effect surface exists yet, so the split path is
+        verified by an in-tree non-affine stage rather than a real custom filter; the
+        Rec.709 luma weights and the CSS-compatible `sepia/invert` blends are chosen by
+        convention, not measured against a reference implementation.
 
 ### E2.3 — Advanced blend isolation
 - [ ] The destination-read blends deferred from C0 (§2577) land here as Nonlocal, isolated

@@ -332,6 +332,53 @@ pub fn blur_ir() -> ShaderIr {
     }
 }
 
+/// Fused color-effect built-in: one quad sampling a source texture and mapping
+/// each texel through an affine color matrix plus an optional gamma. Per-instance
+/// data, uniforms at buffer 0, one texture.
+///
+/// The whole point is that a *run* of color effects (brightness, contrast,
+/// saturation, hue rotation, …) multiplies down to one 4×5 matrix, so this single
+/// pass realizes as many effects as the math can merge; the fragment stage never
+/// sees how many effects it stands for. `row0..row3` are the output rows over
+/// `(r, g, b, a)`, `offset` is the matrix's fifth (constant) column, and `gamma`
+/// is the one stage matrices cannot express.
+pub fn color_transform_ir() -> ShaderIr {
+    static ATTRS: &[IrField] = &[
+        IrField::new("rect_pos", IrType::F32X2),
+        IrField::new("rect_size", IrType::F32X2),
+        IrField::new("uv_pos", IrType::F32X2),
+        IrField::new("uv_size", IrType::F32X2),
+        IrField::new("row0", IrType::F32X4),
+        IrField::new("row1", IrType::F32X4),
+        IrField::new("row2", IrType::F32X4),
+        IrField::new("row3", IrType::F32X4),
+        IrField::new("offset", IrType::F32X4),
+        IrField::new("gamma", IrType::F32),
+    ];
+    static UNIFORMS: &[IrField] = &[IrField::new("viewport", IrType::F32X2)];
+    static VARYINGS: &[Varying] = &[
+        Varying::new("position", IrType::F32X4, " [[position]]", ""),
+        Varying::new("uv", IrType::F32X2, "", ""),
+        Varying::new("row0", IrType::F32X4, "", "red row over (r, g, b, a)"),
+        Varying::new("row1", IrType::F32X4, "", "green row"),
+        Varying::new("row2", IrType::F32X4, "", "blue row"),
+        Varying::new("row3", IrType::F32X4, "", "alpha row"),
+        Varying::new("offset", IrType::F32X4, "", "constant column per channel"),
+        Varying::new("gamma", IrType::F32, "", "post-matrix RGB exponent"),
+    ];
+    ShaderIr {
+        kind: PrimitiveKind::ColorTransform,
+        vertex_source: VertexSource::PerInstance,
+        attributes: ATTRS,
+        uniforms: UNIFORMS,
+        varyings: VARYINGS,
+        texture_count: 1,
+        vertex_body: COLOR_TRANSFORM_VERTEX_BODY,
+        helpers: "",
+        fragment_body: COLOR_TRANSFORM_FRAGMENT_BODY,
+    }
+}
+
 /// Glyph-run built-in: the image contract sampling a single-channel A8 coverage
 /// atlas. The fragment reads the texel's coverage directly and modulates the
 /// run color by it — no signed-distance decode.
@@ -1402,6 +1449,59 @@ for (int i = -R; i <= R; ++i) {
     wsum += w;
 }
 return (wsum > 0.0) ? acc / wsum : float4(0.0);";
+
+const COLOR_TRANSFORM_VERTEX_BODY: &str = "\
+InstanceIn inst = instances[iid];
+
+float2 corner;
+switch (vid) {
+    case 0: corner = float2(0.0, 0.0); break;
+    case 1: corner = float2(1.0, 0.0); break;
+    case 2: corner = float2(0.0, 1.0); break;
+    case 3: corner = float2(1.0, 0.0); break;
+    case 4: corner = float2(1.0, 1.0); break;
+    default: corner = float2(0.0, 1.0); break;
+}
+
+float2 pos = float2(inst.rect_pos);
+float2 size = float2(inst.rect_size);
+float2 pixel = pos + corner * size;
+
+float2 vp = float2(u.viewport);
+float2 ndc = float2(pixel.x / vp.x * 2.0 - 1.0,
+                    1.0 - pixel.y / vp.y * 2.0);
+
+VOut out;
+out.position = float4(ndc, 0.0, 1.0);
+out.uv = float2(inst.uv_pos) + corner * float2(inst.uv_size);
+out.row0 = float4(inst.row0);
+out.row1 = float4(inst.row1);
+out.row2 = float4(inst.row2);
+out.row3 = float4(inst.row3);
+out.offset = float4(inst.offset);
+out.gamma = float(inst.gamma);
+return out;";
+
+const COLOR_TRANSFORM_FRAGMENT_BODY: &str = "\
+// The source texel is premultiplied linear, but a color matrix is defined on
+// straight RGBA (brightness must not depend on coverage), so unpremultiply
+// first. Then map through the four output rows plus the constant column, clamp
+// to the representable range, apply the optional gamma, and repremultiply.
+// A fully transparent texel carries no color: it enters the matrix as zero, so
+// it keeps whatever the constant column says (normally still transparent).
+float4 texel = tex.sample(samp, in.uv);
+float a = texel.a;
+float4 src = (a > 0.0) ? float4(texel.rgb / a, a) : float4(0.0);
+
+float4 dst = float4(dot(in.row0, src) + in.offset.r,
+                    dot(in.row1, src) + in.offset.g,
+                    dot(in.row2, src) + in.offset.b,
+                    dot(in.row3, src) + in.offset.a);
+dst = clamp(dst, 0.0, 1.0);
+if (in.gamma != 1.0) {
+    dst.rgb = pow(dst.rgb, float3(in.gamma));
+}
+return float4(dst.rgb * dst.a, dst.a);";
 
 const GLYPHRUN_VERTEX_BODY: &str = "\
 InstanceIn inst = instances[iid];

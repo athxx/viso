@@ -36,7 +36,8 @@ use viso_gpu::{InstanceSchema, SchemaAttr};
 use crate::ir::codegen_msl::{emit_msl, emit_schema_attrs, schema_from_attrs};
 use crate::ir::module::{
     ShaderIr, analytic_capsule_ir, analytic_ellipse_ir, analytic_line_ir, analytic_rrect_ir,
-    analytic_shadow_ir, blur_ir, glyphrun_ir, gradient_ir, image_ir, mesh_ir, quad_ir,
+    analytic_shadow_ir, blur_ir, color_transform_ir, glyphrun_ir, gradient_ir, image_ir, mesh_ir,
+    quad_ir,
 };
 
 /// The built-in primitive shaders (architecture section 15.3). One entry per
@@ -81,6 +82,9 @@ pub enum PrimitiveKind {
     /// A separable Gaussian blur pass sampling a source texture along one axis
     /// (content blur of an offscreen layer).
     Blur,
+    /// A fused run of per-pixel color effects, applied to a source texture as one
+    /// affine color matrix plus an optional gamma.
+    ColorTransform,
 }
 
 /// The MSL source for `kind`, or `None` if that primitive has no shader.
@@ -96,6 +100,7 @@ pub fn shader_source(kind: PrimitiveKind) -> Option<&'static str> {
         PrimitiveKind::Gradient => Some(GRADIENT_MSL()),
         PrimitiveKind::AnalyticShadow => Some(ANALYTIC_SHADOW_MSL()),
         PrimitiveKind::Blur => Some(BLUR_MSL()),
+        PrimitiveKind::ColorTransform => Some(COLOR_TRANSFORM_MSL()),
         // Path and Mesh share the general per-vertex mesh pipeline.
         PrimitiveKind::Path | PrimitiveKind::Mesh => Some(MESH_MSL()),
         _ => None,
@@ -117,6 +122,7 @@ pub fn instance_schema(kind: PrimitiveKind) -> Option<InstanceSchema> {
         PrimitiveKind::Gradient => Some(gradient_schema()),
         PrimitiveKind::AnalyticShadow => Some(analytic_shadow_schema()),
         PrimitiveKind::Blur => Some(blur_schema()),
+        PrimitiveKind::ColorTransform => Some(color_transform_schema()),
         // Path and Mesh validate their per-vertex layout against `mesh_schema`.
         PrimitiveKind::Path | PrimitiveKind::Mesh => Some(mesh_schema()),
         _ => None,
@@ -159,6 +165,18 @@ pub fn image_schema() -> InstanceSchema {
 pub fn blur_schema() -> InstanceSchema {
     static CELL: OnceLock<Vec<SchemaAttr>> = OnceLock::new();
     cached_schema(&CELL, &blur_ir())
+}
+
+/// The instance schema the ColorTransform shader declares — projected from
+/// [`color_transform_ir`].
+///
+/// The Image-style quad fields (`rect_pos`/`rect_size`/`uv_pos`/`uv_size`) plus a
+/// whole fused color op: the four matrix rows, the constant column, and the gamma
+/// exponent. Carrying the matrix per instance is what lets an arbitrarily long
+/// run of mergeable effects collapse into one draw.
+pub fn color_transform_schema() -> InstanceSchema {
+    static CELL: OnceLock<Vec<SchemaAttr>> = OnceLock::new();
+    cached_schema(&CELL, &color_transform_ir())
 }
 
 /// The instance schema the GlyphRun shader declares — projected from
@@ -312,6 +330,24 @@ pub fn IMAGE_MSL() -> &'static str {
 pub fn BLUR_MSL() -> &'static str {
     static CELL: OnceLock<String> = OnceLock::new();
     cached_msl(&CELL, || emit_msl(&blur_ir()))
+}
+
+/// Inline MSL for the ColorTransform built-in (Metal backend), derived from
+/// [`color_transform_ir`].
+///
+/// Like [`BLUR_MSL`], only the real Metal backend compiles it; the headless
+/// backend uses its `fill_color_transform` routine. See `viso-msl-reserved-half`.
+///
+/// Contract (guaranteed by the shared IR): per-instance data at buffer index 1
+/// (the whole fused color op — matrix rows, constant column, gamma); viewport
+/// uniform at index 0; the source texture at `[[texture(0)]]`, sampler at
+/// `[[sampler(0)]]`. The vertex stage synthesizes the target quad (Image math);
+/// the fragment unpremultiplies, applies the matrix and gamma, clamps, and
+/// repremultiplies, so both its input and output are premultiplied linear.
+#[allow(non_snake_case)]
+pub fn COLOR_TRANSFORM_MSL() -> &'static str {
+    static CELL: OnceLock<String> = OnceLock::new();
+    cached_msl(&CELL, || emit_msl(&color_transform_ir()))
 }
 
 /// Inline MSL for the GlyphRun built-in (Metal backend), derived from
@@ -567,6 +603,48 @@ mod tests {
         assert_eq!(expected[4], ("dir", 32));
         assert_eq!(expected[5], ("sigma", 40));
         assert_eq!(expected[6], ("radius", 44));
+    }
+
+    #[test]
+    fn color_transform_schema_matches_instance_layout() {
+        assert!(shader_source(PrimitiveKind::ColorTransform).is_some());
+        assert!(instance_schema(PrimitiveKind::ColorTransform).is_some());
+        let ir_names: Vec<&str> = color_transform_ir()
+            .attributes
+            .iter()
+            .map(|f| f.name)
+            .collect();
+        assert_eq!(
+            ir_names,
+            [
+                "rect_pos",
+                "rect_size",
+                "uv_pos",
+                "uv_size",
+                "row0",
+                "row1",
+                "row2",
+                "row3",
+                "offset",
+                "gamma"
+            ]
+        );
+        assert_three_legs_agree(COLOR_TRANSFORM_MSL(), &color_transform_schema(), &ir_names);
+
+        // The schema offsets must match the derived tightly-packed offsets of the
+        // ColorTransformInstance ABI: the quad fields are F32X2 (8 bytes), the four
+        // matrix rows and the constant column are F32X4 (16 bytes), and the gamma is
+        // a bare F32 — all 4-byte aligned, so offsets are the prefix sum with no
+        // padding: 4*8 + 5*16 + 4 = 116 bytes.
+        let (expected, stride) = color_transform_ir().expected_offsets();
+        let schema = color_transform_schema();
+        assert_eq!(schema.attributes.len(), expected.len());
+        assert_eq!(stride, 116);
+        assert_eq!(expected[0], ("rect_pos", 0));
+        assert_eq!(expected[4], ("row0", 32));
+        assert_eq!(expected[7], ("row3", 80));
+        assert_eq!(expected[8], ("offset", 96));
+        assert_eq!(expected[9], ("gamma", 112));
     }
 
     #[test]

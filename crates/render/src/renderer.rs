@@ -27,6 +27,7 @@ use viso_shader::{PipelineEntry, PipelineFamily, standard_manifest};
 
 use crate::batch::{BatchFamily, BatchItem, BatchKey, BatchTarget, joins};
 use crate::clip::{ClipShape, plan_clip};
+use crate::color_effect::{ColorOp, fuse};
 use crate::gradient_lut::{GradientLutAtlas, LUT_WIDTH, LutAlloc, LutKey};
 use crate::graph::{PassLoad, PassWork, RenderGraph};
 use crate::mask::{MaskCache, MaskKey, MaskKind, MaskRequest};
@@ -34,8 +35,8 @@ use crate::mask_page::MaskPage;
 use crate::pool::InstancePool;
 use crate::primitive::{
     AnalyticCapsuleInstance, AnalyticEllipseInstance, AnalyticLineInstance, AnalyticRRectInstance,
-    BlurInstance, GlyphInstance, GradientInstance, ImageInstance, MeshVertex, PathCmd, Primitive,
-    QuadInstance, Rect, ShadowInstance, rgba_array,
+    BlurInstance, ColorTransformInstance, GlyphInstance, GradientInstance, ImageInstance,
+    MeshVertex, PathCmd, Primitive, QuadInstance, Rect, ShadowInstance, rgba_array,
 };
 use crate::raster_mask::{path_bounds, rasterize_path_coverage};
 use crate::scene::store::{ClipFillRule, StoreRef, glyph_instances};
@@ -63,6 +64,8 @@ const GRADIENT_STRIDE: usize = core::mem::size_of::<GradientInstance>();
 const SHADOW_STRIDE: usize = core::mem::size_of::<ShadowInstance>();
 /// Bytes of one blur instance.
 const BLUR_STRIDE: usize = core::mem::size_of::<BlurInstance>();
+/// Bytes of one fused color-transform instance.
+const COLOR_TRANSFORM_STRIDE: usize = core::mem::size_of::<ColorTransformInstance>();
 /// Rows in the renderer-owned 1D gradient LUT atlas: each row is one baked ramp
 /// (a 3+-stop or non-linear-space gradient), `LUT_WIDTH × ROWS` RGBA8. 64 rows
 /// is 64 KB — ample for a frame's distinct multi-stop gradients while trivial
@@ -196,6 +199,10 @@ pub(crate) enum SegmentKind {
     /// **indices** in the mesh index buffer (vertices are addressed by the
     /// absolute indices baked into the index data).
     Mesh,
+    /// One fused color op applied to `bind_group`'s source texture, in the
+    /// color-transform buffer: an affine color matrix plus an optional gamma.
+    /// `start`/`count` count instances in that buffer.
+    ColorTransform { bind_group: BindGroupId },
 }
 
 impl SegmentKind {
@@ -213,6 +220,7 @@ impl SegmentKind {
             SegmentKind::Gradient { .. } => BatchFamily::Gradient,
             SegmentKind::AnalyticShadow => BatchFamily::AnalyticShadow,
             SegmentKind::Mesh => BatchFamily::Mesh,
+            SegmentKind::ColorTransform { .. } => BatchFamily::ColorTransform,
         }
     }
 
@@ -223,7 +231,8 @@ impl SegmentKind {
         match self {
             SegmentKind::Image { bind_group }
             | SegmentKind::GlyphRun { bind_group }
-            | SegmentKind::Gradient { bind_group } => Some(bind_group),
+            | SegmentKind::Gradient { bind_group }
+            | SegmentKind::ColorTransform { bind_group } => Some(bind_group),
             SegmentKind::Quad
             | SegmentKind::AnalyticRRect
             | SegmentKind::AnalyticEllipse
@@ -342,6 +351,12 @@ struct OffscreenPass {
     rect: Rect,
     /// The layer opacity in `[0, 1)`, applied as the composite tint alpha.
     opacity: f32,
+    /// The fused color op the composite itself applies, if this layer carried a
+    /// color-effect chain: the *last* op of the chain, with the layer opacity
+    /// folded into its alpha row. `None` for a plain layer, whose composite is an
+    /// ordinary tinted image draw. Ops before the last one become extra
+    /// [`PassWork::ColorTransform`] rungs, exactly as the blur ladder does.
+    color: Option<ColorOp>,
 }
 
 /// How much empty area a backdrop group may absorb before a joining layer opens
@@ -428,6 +443,14 @@ struct LayerEntry {
     /// this layer's offscreen render and its composite. Only meaningful for an
     /// offscreen (`Offscreen`) target.
     blur_sigma: f32,
+    /// Where this layer's fused color ops live in [`Renderer::color_ops`]:
+    /// `color_ops[color_start..color_start + color_len]`, the output of
+    /// [`fuse`](crate::color_effect::fuse) over the layer's effect chain. `0` ops
+    /// means no color work; `n` ops cost `n - 1` extra render-target passes,
+    /// because the last op rides the layer's composite draw.
+    color_start: u32,
+    /// Number of fused color ops this layer owns (see `color_start`).
+    color_len: u32,
 }
 
 /// A (texture, sampler) pair's bind group, cached so repeated draws sharing both
@@ -464,10 +487,10 @@ impl SamplerCache {
 /// The built-in pipelines the renderer prewarms once in [`Renderer::new`]
 /// (§7.1): SolidRect (quad), AnalyticRRect, AnalyticEllipse, AnalyticCapsule,
 /// AnalyticLine, Image, MaskComposite (glyph), PathFill (mesh), Gradient,
-/// AnalyticShadow, and ContentBlur (blur). Reported as
-/// `FrameStats::shader_pipeline_creations` — a construction-time constant, since
-/// no draw ever triggers a runtime shader compile.
-const SHADER_PIPELINE_PREWARM_COUNT: u32 = 11;
+/// AnalyticShadow, ContentBlur (blur), and ColorTransform (fused color effects).
+/// Reported as `FrameStats::shader_pipeline_creations` — a construction-time
+/// constant, since no draw ever triggers a runtime shader compile.
+const SHADER_PIPELINE_PREWARM_COUNT: u32 = 12;
 
 /// Draw-call and instance counts for the frame the renderer has just lowered.
 ///
@@ -545,6 +568,18 @@ pub struct FrameStats {
     /// destination. Zero when there are no blur passes. A per-pass sum with the
     /// same aliasing caveat as `transient_target_bytes`.
     pub blur_target_bytes: usize,
+    /// Fused color ops this frame (§17.3): the number of `ColorOp`s the layers'
+    /// color-effect chains compiled down to, *not* the number of effects authored.
+    /// A chain of nine matrix-expressible effects reports `1`, because they all
+    /// multiply into one matrix; a stage the matrix cannot express splits the run
+    /// and adds one.
+    pub color_effect_ops: u32,
+    /// Extra render-target passes the frame's color ops cost (§17.3): one per
+    /// fused op beyond the first of each chain, since the last op of every chain
+    /// rides that layer's composite draw. `0` for every chain that fused
+    /// completely — the property "consecutive compatible effects do not each get a
+    /// pass" is exactly `color_transform_passes == 0`.
+    pub color_transform_passes: u32,
     /// Backdrop capture passes this frame (§17.1, §17.2): one per *group* of
     /// backdrop layers, not one per layer. `N` frosted panels sharing one
     /// background report `1`, and the blur ladder over that one capture is shared
@@ -579,8 +614,8 @@ pub struct FrameStats {
     /// Render passes the graph compiled for this frame (§16.1, §30): the passes
     /// handed to the backend, and therefore the frame's render-target switch
     /// count. At least 1 (the surface) after any upload. Lower than
-    /// `offscreen_passes + blur_passes + 1` exactly when the graph merged or
-    /// culled something.
+    /// `offscreen_passes + blur_passes + color_transform_passes + 1` exactly when
+    /// the graph merged or culled something.
     pub render_passes: usize,
     /// Passes the graph folded into a preceding pass because both write the same
     /// attachment (§16.5): each merge is one render-target switch — and, on a tile
@@ -641,6 +676,10 @@ pub struct Renderer {
     /// Gaussian pass, chained horizontally then vertically to blur an offscreen
     /// layer's content before compositing it (§16.2, E1.2).
     blur_pipeline: PipelineId,
+    /// The ColorTransform built-in pipeline (registered once): one fused color op
+    /// — an affine color matrix plus an optional gamma — applied to a source
+    /// texture (§17.3, E2.2).
+    color_transform_pipeline: PipelineId,
     /// The default linear-filter clamp sampler, used by glyph runs, gradient
     /// LUT sampling, and offscreen-layer compositing (all of which want bilinear
     /// clamp). Image draws select their sampler via `sampler_cache` instead.
@@ -675,6 +714,10 @@ pub struct Renderer {
     /// Persistent blur instance pool (same slot-diff upload as `quad_pool`): one
     /// [`BlurInstance`] per separable pass this frame, indexed by `BlurPass`.
     blur_pool: InstancePool<BlurInstance>,
+    /// Persistent color-transform instance pool (same slot-diff upload as
+    /// `quad_pool`): one [`ColorTransformInstance`] per fused color op this frame,
+    /// whether the op rides a layer's composite draw or its own pass.
+    color_transform_pool: InstancePool<ColorTransformInstance>,
     /// The renderer-owned 1D gradient LUT atlas: 3+-stop and non-linear-space
     /// gradients bake one ramp row here and sample `(t, lut_v)`. Unlike the
     /// image/glyph atlases (caller-owned textures), this atlas is internal — its
@@ -724,6 +767,10 @@ pub struct Renderer {
     /// Scratch blur instance data, reused each frame: one [`BlurInstance`] per
     /// separable pass, filled in `finalize_offscreen` and synced by `upload`.
     blur_scratch: Vec<BlurInstance>,
+    /// Scratch color-transform instance data, reused each frame: one
+    /// [`ColorTransformInstance`] per fused color op, filled in
+    /// `finalize_offscreen` (extra rungs) and in lowering (the composite's op).
+    color_transform_scratch: Vec<ColorTransformInstance>,
     /// Scratch mesh vertex data, reused each frame.
     mesh_vertex_scratch: Vec<MeshVertex>,
     /// Scratch mesh index data, reused each frame.
@@ -745,6 +792,18 @@ pub struct Renderer {
     /// each layer's [`BlurPlan`]); drained in [`Renderer::encode`] between the
     /// offscreen layer passes and the surface pass. Reused each frame.
     blur_passes: Vec<BlurPass>,
+    /// The extra color-transform passes for this frame's layers whose effect chain
+    /// did not fuse into a single op, in execution order. Built during
+    /// `finalize_offscreen` (one per fused op *beyond the last*, which rides the
+    /// layer's composite draw instead); drained in [`Renderer::encode`] alongside
+    /// the blur rungs. Empty for every chain that fused completely. Reused each
+    /// frame.
+    color_passes: Vec<ColorPass>,
+    /// This frame's fused color ops, in layer-open order: the arena
+    /// [`LayerEntry::color_start`] / `color_len` index into, filled by
+    /// [`fuse`](crate::color_effect::fuse) when a layer's effect chain is read.
+    /// Cleared per frame, so a steady scene reuses the allocation (§7.1).
+    color_ops: Vec<ColorOp>,
     /// This frame's backdrop captures, in creation order — one per *group* of
     /// backdrop layers that share a background (§17.2), not one per layer. Each
     /// re-renders the content already recorded behind its group into a tight ROI
@@ -1000,6 +1059,49 @@ struct BlurPass {
     instance: u32,
 }
 
+/// One realized color-transform pass this frame — the same shape as [`BlurPass`],
+/// for the same reason: the target it writes lives on its graph node, `source` is
+/// a virtual id resolved after the assignment pass, and `instance` slots into
+/// [`Renderer::color_transform_scratch`].
+///
+/// Only a chain whose ops could not all fuse mints these, one per op beyond the
+/// last. A fully-fused chain mints none — its single op rides the layer's
+/// composite draw.
+struct ColorPass {
+    source: TargetId,
+    /// The *physical* extent of the written target (see [`BlurPass::viewport`]).
+    viewport: [f32; 2],
+    instance: u32,
+}
+
+/// Lay a fused [`ColorOp`] out as GPU instance data over `rect` (target space)
+/// sampling `uv` (normalized against the source's physical extent).
+///
+/// The op's 4×5 matrix splits into four row vectors and the fifth (offset) column,
+/// because that is the shape the shader consumes: four dot products plus an add.
+fn color_transform_instance(
+    op: ColorOp,
+    rect_pos: [f32; 2],
+    rect_size: [f32; 2],
+    uv_pos: [f32; 2],
+    uv_size: [f32; 2],
+) -> ColorTransformInstance {
+    let r = op.matrix.rows;
+    let row = |i: usize| [r[i][0], r[i][1], r[i][2], r[i][3]];
+    ColorTransformInstance {
+        rect_pos,
+        rect_size,
+        uv_pos,
+        uv_size,
+        row0: row(0),
+        row1: row(1),
+        row2: row(2),
+        row3: row(3),
+        offset: [r[0][4], r[1][4], r[2][4], r[3][4]],
+        gamma: op.gamma,
+    }
+}
+
 impl Renderer {
     /// Create a renderer for `surface`, registering the Quad and Image
     /// pipelines and a shared linear-clamp sampler.
@@ -1106,6 +1208,13 @@ impl Renderer {
             )
             .expect("BlurInstance layout matches the blur shader schema");
 
+        let color_transform_pipeline = backend
+            .create_pipeline(
+                &desc(entry(PipelineFamily::ColorTransform), "color-transform"),
+                &ColorTransformInstance::LAYOUT,
+            )
+            .expect("ColorTransformInstance layout matches the color-transform shader schema");
+
         // The 1D gradient LUT atlas is renderer-internal: baked from stops at
         // lowering, uploaded into this texture before the pass. Unlike image and
         // glyph textures (caller-owned), the renderer creates and owns it here.
@@ -1148,6 +1257,7 @@ impl Renderer {
             gradient_pipeline,
             analytic_shadow_pipeline,
             blur_pipeline,
+            color_transform_pipeline,
             sampler,
             sampler_cache,
             quad_pool: InstancePool::new(BufferUsage::INSTANCE, "quad-instances"),
@@ -1172,6 +1282,10 @@ impl Renderer {
                 "analytic-shadow-instances",
             ),
             blur_pool: InstancePool::new(BufferUsage::INSTANCE, "blur-instances"),
+            color_transform_pool: InstancePool::new(
+                BufferUsage::INSTANCE,
+                "color-transform-instances",
+            ),
             gradient_lut: GradientLutAtlas::new(GRADIENT_LUT_ROWS, lut_texture),
             mask_cache: MaskCache::new(MASK_PAGE_SIZE),
             mask_page: MaskPage::new(MASK_PAGE_SIZE, mask_texture),
@@ -1190,12 +1304,15 @@ impl Renderer {
             gradient_scratch: Vec::with_capacity(64),
             analytic_shadow_scratch: Vec::with_capacity(256),
             blur_scratch: Vec::with_capacity(8),
+            color_transform_scratch: Vec::with_capacity(8),
             mesh_vertex_scratch: Vec::with_capacity(1024),
             mesh_index_scratch: Vec::with_capacity(2048),
             segments: Vec::with_capacity(8),
             layer_stack: Vec::with_capacity(8),
             offscreen_passes: Vec::with_capacity(4),
             blur_passes: Vec::with_capacity(4),
+            color_passes: Vec::with_capacity(2),
+            color_ops: Vec::with_capacity(4),
             backdrop_captures: Vec::with_capacity(2),
             backdrop_reads: Vec::with_capacity(4),
             transient: TransientTargets::new(),
@@ -1459,8 +1576,11 @@ impl Renderer {
         self.layer_stack.clear();
         self.offscreen_passes.clear();
         self.blur_passes.clear();
+        self.color_passes.clear();
+        self.color_ops.clear();
         self.backdrop_captures.clear();
         self.blur_scratch.clear();
+        self.color_transform_scratch.clear();
         self.graph.begin_frame();
         self.transient.begin_frame();
         self.scene.begin_frame();
@@ -1468,7 +1588,7 @@ impl Renderer {
         self.mask_builds_this_frame = 0;
         self.culled_this_frame = 0;
 
-        for prim in primitives {
+        for (prim_index, prim) in primitives.iter().enumerate() {
             let (clip, target, origin) = self.active();
             let ctx = EmitContext {
                 clip,
@@ -1732,10 +1852,26 @@ impl Renderer {
                         // layer this primitive opens.
                         record_start = self.scene.paint_order.len();
                     }
-                    if layer.opacity >= 1.0 && layer.blur_sigma <= BLUR_MIN_SIGMA {
-                        // Opaque, and any blur it asked for is sub-pixel — the
-                        // ladder would plan no rung, so the offscreen texture
-                        // would be rendered only to be composited back
+                    // The layer's color-effect chain is the run of
+                    // `Primitive::ColorEffect` markers that follows this
+                    // primitive; fusing it here — straight off the stream, into
+                    // the shared arena — is what makes a run of mergeable
+                    // effects one op instead of one pass each (§17.3).
+                    let color_start = self.color_ops.len() as u32;
+                    fuse(
+                        primitives[prim_index + 1..].iter().map_while(|p| match p {
+                            Primitive::ColorEffect(effect) => Some(*effect),
+                            _ => None,
+                        }),
+                        &mut self.color_ops,
+                    );
+                    let color_len = self.color_ops.len() as u32 - color_start;
+                    if layer.opacity >= 1.0 && layer.blur_sigma <= BLUR_MIN_SIGMA && color_len == 0
+                    {
+                        // Opaque, any blur it asked for is sub-pixel, and its
+                        // color chain computed nothing — the ladder would plan no
+                        // rung and the matrix is the identity, so the offscreen
+                        // texture would be rendered only to be composited back
                         // unchanged. A plain in-pass scissor clip instead.
                         // Inherit the parent's pass target and origin unchanged.
                         self.layer_stack.push(LayerEntry {
@@ -1745,6 +1881,8 @@ impl Renderer {
                             content_union: Rect::ZERO,
                             paint_order_start: self.scene.paint_order.len(),
                             blur_sigma: 0.0,
+                            color_start,
+                            color_len: 0,
                         });
                     } else {
                         // Translucent or blurred: open an offscreen pass. Its
@@ -1754,7 +1892,8 @@ impl Renderer {
                         // and the pass sized/composited at LayerEnd; the origin
                         // recorded here is provisional (the clip top-left) and
                         // repatched to the ROI top-left then. A blur forces the
-                        // offscreen path even at full opacity (§16.2, E1.2).
+                        // offscreen path even at full opacity (§16.2, E1.2), and so
+                        // does a color chain that computes anything (§17.3, E2.2).
                         let pass_origin = [world_clip.x, world_clip.y];
                         let paint_order_start = self.scene.paint_order.len();
                         let idx = self.open_offscreen(world_clip, layer.opacity);
@@ -1765,9 +1904,17 @@ impl Renderer {
                             content_union: Rect::ZERO,
                             paint_order_start,
                             blur_sigma: layer.blur_sigma,
+                            color_start,
+                            color_len,
                         });
                     }
                 }
+                // Already consumed: the `Primitive::Layer` arm reads the whole run
+                // of markers that follows it and fuses them in one pass. Walking
+                // over them again here is the no-op that keeps the chain a pure
+                // annotation on the layer — and makes a marker anywhere else in
+                // the stream harmless rather than an error (§17.3).
+                Primitive::ColorEffect(_) => {}
                 Primitive::LayerEnd => {
                     if let Some(entry) = self.layer_stack.pop()
                         && let PassTarget::Offscreen(idx) = entry.target
@@ -1899,6 +2046,9 @@ impl Renderer {
                 .sync(backend, &self.analytic_shadow_scratch)
             + self.blur_pool.sync(backend, &self.blur_scratch)
             + self
+                .color_transform_pool
+                .sync(backend, &self.color_transform_scratch)
+            + self
                 .mesh_vertex_pool
                 .sync(backend, &self.mesh_vertex_scratch)
             + self.mesh_index_pool.sync(backend, &self.mesh_index_scratch);
@@ -1917,6 +2067,7 @@ impl Renderer {
             + self.gradient_pool.last_upload_bytes()
             + self.analytic_shadow_pool.last_upload_bytes()
             + self.blur_pool.last_upload_bytes()
+            + self.color_transform_pool.last_upload_bytes()
             + self.mesh_vertex_pool.last_upload_bytes()
             + self.mesh_index_pool.last_upload_bytes();
     }
@@ -2209,6 +2360,31 @@ impl Renderer {
                 let bind_group = self.transient.bind_group(sample);
                 instance.rect_pos[0] -= origin[0];
                 instance.rect_pos[1] -= origin[1];
+                // A layer whose color chain fused to a final op composites through
+                // the color-transform pipeline instead of the plain image one: same
+                // quad, same source texture, one extra matrix multiply in the
+                // fragment shader — which is how an N-effect fusable chain costs
+                // zero extra render-target passes (§17.3, E2.2). The op already
+                // carries the layer opacity in its alpha row, so the composite's
+                // tint has nothing left to say and is dropped.
+                if let Some(op) = self.offscreen_passes[pass].color {
+                    let start = self.color_transform_scratch.len() as u32;
+                    self.color_transform_scratch.push(color_transform_instance(
+                        op,
+                        instance.rect_pos,
+                        instance.rect_size,
+                        instance.uv_pos,
+                        instance.uv_size,
+                    ));
+                    self.merge_or_push(Segment {
+                        kind: SegmentKind::ColorTransform { bind_group },
+                        start,
+                        count: 1,
+                        clip,
+                        target,
+                    });
+                    return;
+                }
                 let start = self.image_scratch.len() as u32;
                 self.image_scratch.push(instance);
                 self.merge_or_push(Segment {
@@ -2412,15 +2588,18 @@ impl Renderer {
         let graph = self.graph.stats();
 
         FrameStats {
-            // Each blur pass is one full-target draw beyond the segment-derived
-            // draws, so it adds to both the draw and instance totals.
-            draw_calls: self.segments.len() + self.blur_passes.len(),
+            // Each blur rung and each non-final color op is one full-target draw
+            // beyond the segment-derived draws, so both add to the draw and
+            // instance totals. The *final* color op is not counted here: it rides
+            // the composite, which is already a segment.
+            draw_calls: self.segments.len() + self.blur_passes.len() + self.color_passes.len(),
             instances: self
                 .segments
                 .iter()
                 .map(|s| s.count as usize)
                 .sum::<usize>()
-                + self.blur_passes.len(),
+                + self.blur_passes.len()
+                + self.color_passes.len(),
             visible_primitives: ingest.visible_primitives,
             dirty_primitives: ingest.dirty_primitives,
             quad_instances: ingest.quad_instances,
@@ -2435,6 +2614,8 @@ impl Renderer {
             transient_target_bytes,
             blur_passes: self.blur_passes.len() as u32,
             blur_target_bytes,
+            color_effect_ops: self.color_ops.len() as u32,
+            color_transform_passes: self.color_passes.len() as u32,
             backdrop_captures: self.backdrop_captures.len() as u32,
             backdrop_capture_pixels: self
                 .backdrop_captures
@@ -2536,6 +2717,11 @@ impl Renderer {
     /// The AnalyticShadow pipeline handle, for batch introspection.
     pub(crate) fn analytic_shadow_pipeline_id(&self) -> PipelineId {
         self.analytic_shadow_pipeline
+    }
+
+    /// The ColorTransform pipeline handle, for batch introspection.
+    pub(crate) fn color_transform_pipeline_id(&self) -> PipelineId {
+        self.color_transform_pipeline
     }
 
     /// Add `segment` to the batch list, merging it into the previous segment
@@ -2830,6 +3016,7 @@ impl Renderer {
             used: [0, 0],
             rect: world_clip,
             opacity,
+            color: None,
         });
         idx
     }
@@ -2903,6 +3090,11 @@ impl Renderer {
         // the ROI extent; a sub-pixel blur plans no steps and leaves the pass
         // sampling its base texture unchanged.
         self.build_blur(idx, entry.blur_sigma);
+
+        // Then the layer's fused color ops (§17.3, E2.2), which read what the blur
+        // ladder left. A chain that fused to one op adds no pass at all — that op
+        // rides the composite draw.
+        self.build_color_chain(idx, entry);
 
         debug_assert!(
             self.offscreen_passes[idx].sample.is_some(),
@@ -2999,6 +3191,84 @@ impl Renderer {
             source_used = [step.width, step.height];
         }
         source
+    }
+
+    /// Realize the fused color-effect chain of the offscreen pass at `idx`: the
+    /// ops `entry` claimed in [`Renderer::color_ops`], applied to whatever the blur
+    /// ladder left the pass sampling (§17.3, E2.2).
+    ///
+    /// The last op is *not* given a pass: it is stored on the pass as
+    /// [`OffscreenPass::color`], with the layer opacity folded into its alpha row,
+    /// and the composite draw runs it while compositing. So a chain that fused into
+    /// one op — every run of matrix-expressible effects, however long — costs zero
+    /// extra render-target passes; only the ops a run could not absorb, one per
+    /// non-expressible stage, become [`ColorPass`]es here.
+    ///
+    /// Each rung's quad covers the used extent of its own target and samples the
+    /// used sub-rect of its source, for the same pooled-size-class reason the blur
+    /// rungs do; the color math is per-texel, so no rung resizes.
+    fn build_color_chain(&mut self, idx: usize, entry: &LayerEntry) {
+        if entry.color_len == 0 {
+            return;
+        }
+        let (mut source, opacity) = {
+            let pass = &self.offscreen_passes[idx];
+            (
+                pass.sample
+                    .expect("offscreen pass target declared before its color chain is built"),
+                pass.opacity,
+            )
+        };
+        let mut used = self.transient.used_extent(source);
+        let start = entry.color_start as usize;
+        let last = start + entry.color_len as usize - 1;
+        for i in start..last {
+            let op = self.color_ops[i];
+            let slot = self.graph.next_slot();
+            let target = self.transient.declare(
+                TargetDesc {
+                    width: used[0],
+                    height: used[1],
+                    format: TextureFormat::Bgra8Unorm,
+                    usage: TargetUsage::COLOR_ATTACHMENT,
+                    samples: 1,
+                    label: "color-scratch",
+                },
+                slot,
+            );
+            let node = self.graph.open(
+                PassWork::ColorTransform(self.color_passes.len() as u32),
+                Some(target),
+            );
+            self.graph.read(node, source);
+
+            let src = self.transient.phys_extent(source);
+            let dst = self.transient.phys_extent(target);
+            let instance = self.color_transform_scratch.len() as u32;
+            self.color_transform_scratch.push(color_transform_instance(
+                op,
+                [0.0, 0.0],
+                [used[0] as f32, used[1] as f32],
+                [0.0, 0.0],
+                [
+                    used[0] as f32 / src[0] as f32,
+                    used[1] as f32 / src[1] as f32,
+                ],
+            ));
+            self.color_passes.push(ColorPass {
+                source,
+                viewport: [dst[0] as f32, dst[1] as f32],
+                instance,
+            });
+            source = target;
+            used = self.transient.used_extent(target);
+        }
+        let pass = &mut self.offscreen_passes[idx];
+        pass.sample = Some(source);
+        // The layer opacity rides the final op's alpha row instead of the
+        // composite's tint: one multiply in the shader either way, and it keeps the
+        // composite a plain textured quad with no second color source.
+        pass.color = Some(self.color_ops[last].with_opacity(opacity));
     }
 
     /// Close the offscreen pass at `idx`, recording a composite draw in the
@@ -3116,6 +3386,7 @@ impl Renderer {
             let vp = match works[0] {
                 PassWork::Offscreen(i) => self.offscreen_passes[i as usize].viewport,
                 PassWork::Blur(i) => self.blur_passes[i as usize].viewport,
+                PassWork::ColorTransform(i) => self.color_passes[i as usize].viewport,
                 PassWork::BackdropCapture(i) => self.backdrop_captures[i as usize].viewport,
                 PassWork::Surface => viewport,
             };
@@ -3146,6 +3417,24 @@ impl Renderer {
                                 .buffer()
                                 .expect("blur pool buffer exists when a blur pass references it"),
                             instance_offset: blur.instance as usize * BLUR_STRIDE,
+                            uniforms,
+                            scissor: None,
+                        });
+                    }
+                    // One op of a color chain that could not fuse all the way down
+                    // (§17.3, E2.2): a single full-target quad applying one matrix
+                    // (plus gamma) to the previous op's target. A fully fusable
+                    // chain emits none of these — its one op rides the composite.
+                    PassWork::ColorTransform(i) => {
+                        let color = &self.color_passes[i as usize];
+                        commands.push(DrawCommand {
+                            pipeline: self.color_transform_pipeline,
+                            bind_group: Some(self.transient.bind_group(color.source)),
+                            geometry: Geometry::Generated { count: 1 },
+                            instance_buffer: self.color_transform_pool.buffer().expect(
+                                "color-transform pool buffer exists when a color pass references it",
+                            ),
+                            instance_offset: color.instance as usize * COLOR_TRANSFORM_STRIDE,
                             uniforms,
                             scissor: None,
                         });
@@ -3289,6 +3578,20 @@ impl Renderer {
                 uniforms,
                 scissor,
             },
+            // A composite whose layer fused a color chain: the same quad an
+            // `Image` segment would draw, through the pipeline that applies the
+            // fused matrix (§17.3, E2.2).
+            SegmentKind::ColorTransform { bind_group } => DrawCommand {
+                pipeline: self.color_transform_pipeline,
+                bind_group: Some(bind_group),
+                geometry: Geometry::Generated { count: seg.count },
+                instance_buffer: self.color_transform_pool.buffer().expect(
+                    "color-transform pool buffer exists when a color segment references it",
+                ),
+                instance_offset: seg.start as usize * COLOR_TRANSFORM_STRIDE,
+                uniforms,
+                scissor,
+            },
             SegmentKind::GlyphRun { bind_group } => DrawCommand {
                 pipeline: self.glyph_pipeline,
                 bind_group: Some(bind_group),
@@ -3384,6 +3687,7 @@ fn bytemuck_viewport(viewport: &[f32; 2]) -> &[u8] {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::color_effect::{ColorEffect, ColorMatrix};
     use crate::primitive::{Border, ImageDraw, LayerClip, Quad, Rgba};
     use viso_gpu::{HeadlessRaster, RawWindowHandle};
 
@@ -3420,6 +3724,17 @@ mod tests {
     fn layer_opacity(x: f32, y: f32, w: f32, h: f32, opacity: f32) -> Primitive {
         Primitive::Layer(LayerClip {
             clip: Rect { x, y, w, h },
+            opacity,
+            blur_sigma: 0.0,
+            backdrop_sigma: 0.0,
+        })
+    }
+
+    /// A layer whose color chain follows it in the stream: `clip`/`opacity` only,
+    /// no blur, so any offscreen it gets is the color chain's doing.
+    fn layer_color(clip: Rect, opacity: f32) -> Primitive {
+        Primitive::Layer(LayerClip {
+            clip,
             opacity,
             blur_sigma: 0.0,
             backdrop_sigma: 0.0,
@@ -4456,11 +4771,414 @@ mod tests {
         let blurred = r.frame_stats();
         assert_eq!(
             blurred.render_passes,
-            blurred.offscreen_passes + blurred.blur_passes as usize + 1,
-            "every layer, every rung, and the surface each get a pass"
+            blurred.offscreen_passes
+                + blurred.blur_passes as usize
+                + blurred.color_transform_passes as usize
+                + 1,
+            "every layer, every rung, every unfused color op, and the surface each get a pass"
         );
         assert_eq!(blurred.render_pass_merges, 0);
         assert_eq!(blurred.culled_render_passes, 0);
+
+        // The same identity holds when a color chain is what forces the
+        // offscreen, including the split case that does earn extra passes.
+        r.upload(
+            &mut gpu,
+            &[
+                layer_color(
+                    Rect {
+                        x: 4.0,
+                        y: 4.0,
+                        w: 24.0,
+                        h: 24.0,
+                    },
+                    1.0,
+                ),
+                Primitive::ColorEffect(ColorEffect::Brightness(1.4)),
+                Primitive::ColorEffect(ColorEffect::Gamma(2.2)),
+                Primitive::ColorEffect(ColorEffect::Saturation(0.3)),
+                quad(8.0, 8.0),
+                Primitive::LayerEnd,
+            ],
+        );
+        let split = r.frame_stats();
+        assert_eq!(split.color_transform_passes, 1);
+        assert_eq!(
+            split.render_passes,
+            split.offscreen_passes
+                + split.blur_passes as usize
+                + split.color_transform_passes as usize
+                + 1,
+        );
+    }
+
+    /// The headline property of E2.2 (§17.3): three mergeable effects are one
+    /// fused op, that op rides the composite the layer already draws, and the
+    /// frame therefore costs **one** offscreen pass and **zero** extra
+    /// render-target passes — not three.
+    #[test]
+    fn a_mergeable_color_chain_costs_no_extra_passes() {
+        let mut gpu = HeadlessRaster::new();
+        let surface = gpu.create_surface(RawWindowHandle::Headless, 64, 64);
+        let format = gpu.surface_format(surface);
+        let mut r = Renderer::new(&mut gpu, format);
+        r.set_surface_size([64.0, 64.0]);
+
+        let clip = Rect {
+            x: 4.0,
+            y: 4.0,
+            w: 24.0,
+            h: 24.0,
+        };
+        r.upload(
+            &mut gpu,
+            &[
+                layer_color(clip, 1.0),
+                Primitive::ColorEffect(ColorEffect::Brightness(1.2)),
+                Primitive::ColorEffect(ColorEffect::Contrast(0.8)),
+                Primitive::ColorEffect(ColorEffect::Saturation(0.5)),
+                quad(8.0, 8.0),
+                Primitive::LayerEnd,
+            ],
+        );
+        let s = r.frame_stats();
+        assert_eq!(s.color_effect_ops, 1, "three mergeable effects fuse to one");
+        assert_eq!(
+            s.color_transform_passes, 0,
+            "the one op rides the composite: no extra render-target pass"
+        );
+        assert_eq!(s.offscreen_passes, 1, "the chain forces exactly one layer");
+        assert_eq!(s.blur_passes, 0);
+        assert_eq!(
+            s.render_passes, 2,
+            "the layer and the surface, nothing else"
+        );
+
+        // The composite draws through the color-transform pipeline rather than
+        // the plain image one — same quad, one extra matrix in the fragment.
+        let batches = r.inspect_batches();
+        assert_eq!(
+            batches
+                .batches
+                .iter()
+                .filter(|b| b.pipeline == crate::inspect::BatchPipeline::ColorTransform)
+                .count(),
+            1,
+            "the composite is the single color-transform draw"
+        );
+        assert!(
+            !batches
+                .batches
+                .iter()
+                .any(|b| b.pipeline == crate::inspect::BatchPipeline::Image),
+            "a recolored composite never also emits a plain image draw"
+        );
+    }
+
+    /// Length is not what splits a chain — expressibility is. All nine affine
+    /// effects at once still fuse to one op and zero extra passes.
+    #[test]
+    fn a_long_mergeable_chain_still_costs_no_extra_passes() {
+        let mut gpu = HeadlessRaster::new();
+        let surface = gpu.create_surface(RawWindowHandle::Headless, 64, 64);
+        let format = gpu.surface_format(surface);
+        let mut r = Renderer::new(&mut gpu, format);
+        r.set_surface_size([64.0, 64.0]);
+
+        let clip = Rect {
+            x: 4.0,
+            y: 4.0,
+            w: 24.0,
+            h: 24.0,
+        };
+        r.upload(
+            &mut gpu,
+            &[
+                layer_color(clip, 1.0),
+                Primitive::ColorEffect(ColorEffect::Brightness(1.1)),
+                Primitive::ColorEffect(ColorEffect::Contrast(1.2)),
+                Primitive::ColorEffect(ColorEffect::Saturation(0.9)),
+                Primitive::ColorEffect(ColorEffect::HueRotate(0.4)),
+                Primitive::ColorEffect(ColorEffect::Grayscale(0.25)),
+                Primitive::ColorEffect(ColorEffect::Sepia(0.3)),
+                Primitive::ColorEffect(ColorEffect::Invert(0.1)),
+                Primitive::ColorEffect(ColorEffect::ColorMatrix(ColorMatrix::brightness(0.95))),
+                Primitive::ColorEffect(ColorEffect::Tint {
+                    color: [0.2, 0.4, 0.9],
+                    amount: 0.35,
+                }),
+                quad(8.0, 8.0),
+                Primitive::LayerEnd,
+            ],
+        );
+        let s = r.frame_stats();
+        assert_eq!(s.color_effect_ops, 1, "nine mergeable effects are one op");
+        assert_eq!(s.color_transform_passes, 0);
+        assert_eq!(s.render_passes, 2);
+    }
+
+    /// Only the stage the fused form cannot express earns a pass: a gamma in the
+    /// middle of two affine runs splits the chain exactly once, so the frame pays
+    /// one extra render-target pass — not one per effect.
+    #[test]
+    fn only_a_non_expressible_stage_earns_a_pass() {
+        let mut gpu = HeadlessRaster::new();
+        let surface = gpu.create_surface(RawWindowHandle::Headless, 64, 64);
+        let format = gpu.surface_format(surface);
+        let mut r = Renderer::new(&mut gpu, format);
+        r.set_surface_size([64.0, 64.0]);
+
+        let clip = Rect {
+            x: 4.0,
+            y: 4.0,
+            w: 24.0,
+            h: 24.0,
+        };
+        r.upload(
+            &mut gpu,
+            &[
+                layer_color(clip, 1.0),
+                Primitive::ColorEffect(ColorEffect::Brightness(1.2)),
+                Primitive::ColorEffect(ColorEffect::Contrast(0.8)),
+                Primitive::ColorEffect(ColorEffect::Gamma(2.2)),
+                Primitive::ColorEffect(ColorEffect::Saturation(0.5)),
+                Primitive::ColorEffect(ColorEffect::Invert(0.2)),
+                quad(8.0, 8.0),
+                Primitive::LayerEnd,
+            ],
+        );
+        let s = r.frame_stats();
+        assert_eq!(
+            s.color_effect_ops, 2,
+            "five effects around one gamma are two ops"
+        );
+        assert_eq!(
+            s.color_transform_passes, 1,
+            "the earlier op gets a pass; the last still rides the composite"
+        );
+        assert_eq!(s.offscreen_passes, 1);
+        assert_eq!(
+            s.render_passes, 3,
+            "the layer, the one unfused op, and the surface"
+        );
+    }
+
+    /// A chain of neutral parameters computes nothing, so it must not force an
+    /// offscreen at all: the layer stays a plain in-pass scissor clip.
+    #[test]
+    fn a_neutral_color_chain_forces_no_offscreen() {
+        let mut gpu = HeadlessRaster::new();
+        let surface = gpu.create_surface(RawWindowHandle::Headless, 64, 64);
+        let format = gpu.surface_format(surface);
+        let mut r = Renderer::new(&mut gpu, format);
+        r.set_surface_size([64.0, 64.0]);
+
+        let clip = Rect {
+            x: 4.0,
+            y: 4.0,
+            w: 24.0,
+            h: 24.0,
+        };
+        r.upload(
+            &mut gpu,
+            &[
+                layer_color(clip, 1.0),
+                Primitive::ColorEffect(ColorEffect::Brightness(1.0)),
+                Primitive::ColorEffect(ColorEffect::Gamma(1.0)),
+                Primitive::ColorEffect(ColorEffect::Grayscale(0.0)),
+                quad(8.0, 8.0),
+                Primitive::LayerEnd,
+            ],
+        );
+        let s = r.frame_stats();
+        assert_eq!(s.color_effect_ops, 0);
+        assert_eq!(s.color_transform_passes, 0);
+        assert_eq!(
+            s.offscreen_passes, 0,
+            "nothing to compute, nothing to build"
+        );
+        assert_eq!(s.render_passes, 1, "the surface pass alone");
+    }
+
+    /// Two identical frames plan the same graph and reuse the same pooled
+    /// scratch: a split color chain is steady-state stable (§16.3, §17.4).
+    #[test]
+    fn steady_state_color_chain_reuses_pooled_targets() {
+        let mut gpu = HeadlessRaster::new();
+        let surface = gpu.create_surface(RawWindowHandle::Headless, 64, 64);
+        let format = gpu.surface_format(surface);
+        let mut r = Renderer::new(&mut gpu, format);
+        r.set_surface_size([64.0, 64.0]);
+
+        let clip = Rect {
+            x: 4.0,
+            y: 4.0,
+            w: 24.0,
+            h: 24.0,
+        };
+        let scene = [
+            layer_color(clip, 0.75),
+            Primitive::ColorEffect(ColorEffect::Saturation(0.4)),
+            Primitive::ColorEffect(ColorEffect::Gamma(1.8)),
+            Primitive::ColorEffect(ColorEffect::Brightness(1.3)),
+            quad(8.0, 8.0),
+            Primitive::LayerEnd,
+        ];
+
+        r.upload(&mut gpu, &scene);
+        let first = r.frame_stats();
+        r.upload(&mut gpu, &scene);
+        let second = r.frame_stats();
+
+        assert_eq!(first.color_effect_ops, 2);
+        assert_eq!(first.color_transform_passes, 1);
+        assert_eq!(second.color_effect_ops, first.color_effect_ops);
+        assert_eq!(
+            second.color_transform_passes, first.color_transform_passes,
+            "an identical frame plans an identical chain"
+        );
+        assert_eq!(second.render_passes, first.render_passes);
+        assert_eq!(second.draw_calls, first.draw_calls);
+        assert_eq!(
+            second.transient_target_allocations, 0,
+            "the second frame allocates no new scratch"
+        );
+        assert_eq!(
+            second.render_graph_compiles, 0,
+            "the topology hash hits, so the graph is not recompiled"
+        );
+    }
+
+    /// The markers are an annotation on the layer, not a primitive of their own:
+    /// a `ColorEffect` outside a layer open is inert, and a run that follows a
+    /// layer stops at the first non-marker primitive.
+    #[test]
+    fn color_effect_markers_only_bind_to_the_layer_they_follow() {
+        let mut gpu = HeadlessRaster::new();
+        let surface = gpu.create_surface(RawWindowHandle::Headless, 64, 64);
+        let format = gpu.surface_format(surface);
+        let mut r = Renderer::new(&mut gpu, format);
+        r.set_surface_size([64.0, 64.0]);
+
+        // Markers with no layer to annotate: no ops, no passes, no draws beyond
+        // the quad itself.
+        r.upload(
+            &mut gpu,
+            &[
+                Primitive::ColorEffect(ColorEffect::Invert(1.0)),
+                quad(4.0, 4.0),
+                Primitive::ColorEffect(ColorEffect::Invert(1.0)),
+            ],
+        );
+        let loose = r.frame_stats();
+        assert_eq!(loose.color_effect_ops, 0);
+        assert_eq!(loose.offscreen_passes, 0);
+        assert_eq!(loose.render_passes, 1);
+
+        // A marker after the layer's content is past the run and does not join it.
+        let clip = Rect {
+            x: 4.0,
+            y: 4.0,
+            w: 24.0,
+            h: 24.0,
+        };
+        r.upload(
+            &mut gpu,
+            &[
+                layer_color(clip, 1.0),
+                Primitive::ColorEffect(ColorEffect::Invert(1.0)),
+                quad(8.0, 8.0),
+                Primitive::ColorEffect(ColorEffect::Gamma(2.2)),
+                Primitive::LayerEnd,
+            ],
+        );
+        let s = r.frame_stats();
+        assert_eq!(
+            s.color_effect_ops, 1,
+            "only the leading run fuses; the trailing marker is inert"
+        );
+        assert_eq!(s.color_transform_passes, 0);
+    }
+
+    /// Layer opacity rides the fused op's alpha row instead of a second tint, so
+    /// a translucent recolored layer still costs one offscreen and no extra pass.
+    #[test]
+    fn layer_opacity_folds_into_the_fused_op() {
+        let mut gpu = HeadlessRaster::new();
+        let surface = gpu.create_surface(RawWindowHandle::Headless, 64, 64);
+        let format = gpu.surface_format(surface);
+        let mut r = Renderer::new(&mut gpu, format);
+        r.set_surface_size([64.0, 64.0]);
+
+        let clip = Rect {
+            x: 4.0,
+            y: 4.0,
+            w: 24.0,
+            h: 24.0,
+        };
+        r.upload(
+            &mut gpu,
+            &[
+                layer_color(clip, 0.5),
+                Primitive::ColorEffect(ColorEffect::Grayscale(1.0)),
+                quad(8.0, 8.0),
+                Primitive::LayerEnd,
+            ],
+        );
+        let s = r.frame_stats();
+        assert_eq!(s.color_effect_ops, 1);
+        assert_eq!(s.color_transform_passes, 0);
+        assert_eq!(s.offscreen_passes, 1);
+
+        let op = r.offscreen_passes[0]
+            .color
+            .expect("a recolored layer carries its fused op");
+        assert_eq!(
+            op.matrix.rows[3],
+            [0.0, 0.0, 0.0, 0.5, 0.0],
+            "the alpha row carries the layer opacity"
+        );
+    }
+
+    /// A blur and a color chain on one layer compose rather than fight: the
+    /// ladder runs on the layer's content and the fused op recolors its result,
+    /// still with no extra color pass.
+    #[test]
+    fn a_blur_and_a_color_chain_share_one_offscreen() {
+        let mut gpu = HeadlessRaster::new();
+        let surface = gpu.create_surface(RawWindowHandle::Headless, 64, 64);
+        let format = gpu.surface_format(surface);
+        let mut r = Renderer::new(&mut gpu, format);
+        r.set_surface_size([64.0, 64.0]);
+
+        r.upload(
+            &mut gpu,
+            &[
+                Primitive::Layer(LayerClip {
+                    clip: Rect {
+                        x: 4.0,
+                        y: 4.0,
+                        w: 24.0,
+                        h: 24.0,
+                    },
+                    opacity: 1.0,
+                    blur_sigma: 3.0,
+                    backdrop_sigma: 0.0,
+                }),
+                Primitive::ColorEffect(ColorEffect::Grayscale(1.0)),
+                Primitive::ColorEffect(ColorEffect::Brightness(1.2)),
+                quad(8.0, 8.0),
+                Primitive::LayerEnd,
+            ],
+        );
+        let s = r.frame_stats();
+        assert_eq!(s.offscreen_passes, 1);
+        assert!(s.blur_passes >= 2, "the ladder still runs");
+        assert_eq!(s.color_effect_ops, 1);
+        assert_eq!(
+            s.color_transform_passes, 0,
+            "the fused op rides the composite of the blurred texture"
+        );
     }
 
     /// Topology alone drives a recompile (§16.1): a second identical frame reuses

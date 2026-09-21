@@ -56,6 +56,8 @@ fn frame_stats_roster_is_frozen() {
         transient_target_bytes: 18,
         blur_passes: 19,
         blur_target_bytes: 20,
+        color_effect_ops: 32,
+        color_transform_passes: 33,
         backdrop_captures: 30,
         backdrop_capture_pixels: 31,
         shader_pipeline_creations: 21,
@@ -93,6 +95,8 @@ fn frame_stats_roster_is_frozen() {
     assert_eq!(s.transient_target_bytes, 18);
     assert_eq!(s.blur_passes, 19);
     assert_eq!(s.blur_target_bytes, 20);
+    assert_eq!(s.color_effect_ops, 32);
+    assert_eq!(s.color_transform_passes, 33);
     assert_eq!(s.backdrop_captures, 30);
     assert_eq!(s.backdrop_capture_pixels, 31);
     assert_eq!(s.shader_pipeline_creations, 21);
@@ -128,6 +132,8 @@ fn frame_stats_roster_is_frozen() {
     assert_eq!(z.transient_target_bytes, 0);
     assert_eq!(z.blur_passes, 0);
     assert_eq!(z.blur_target_bytes, 0);
+    assert_eq!(z.color_effect_ops, 0);
+    assert_eq!(z.color_transform_passes, 0);
     assert_eq!(z.backdrop_captures, 0);
     assert_eq!(z.backdrop_capture_pixels, 0);
     assert_eq!(z.shader_pipeline_creations, 0);
