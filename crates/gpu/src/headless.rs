@@ -623,6 +623,17 @@ impl HeadlessRaster {
                                 cmd.scissor,
                             );
                         }
+                        BuiltinShader::AdvancedBlend => {
+                            self.fill_advanced_blend(
+                                target,
+                                width,
+                                height,
+                                &layout,
+                                inst,
+                                cmd.bind_group,
+                                cmd.scissor,
+                            );
+                        }
                         // Path/Mesh never arrive as generated geometry.
                         BuiltinShader::Path | BuiltinShader::Mesh | BuiltinShader::Layer => {}
                     }
@@ -1673,6 +1684,126 @@ impl HeadlessRaster {
         }
     }
 
+    /// Fill one isolated advanced-blend composite: two textures in, the finished
+    /// blend out.
+    ///
+    /// Instance layout ([`AdvancedBlendInstance`](../../render)):
+    /// - `rect_pos`/`rect_size`       : destination quad in physical pixels
+    /// - `uv_pos`/`uv_size`           : source sub-rect in texture 0 (the isolated layer)
+    /// - `dst_uv_pos`/`dst_uv_size`   : destination sub-rect in texture 1 (the snapshot)
+    /// - `mode`                       : the blend discriminant, `0..=27`
+    /// - `opacity`                    : layer opacity folded into the source
+    ///
+    /// The two sub-rects are independent because the two textures are pooled
+    /// separately and cover different world rects. Both bindings are resolved *in
+    /// slot order* — the bind group lists texture 0 then texture 1, matching the
+    /// `[[texture(n)]]` indices the MSL declares.
+    ///
+    /// The fragment owns the whole composite, so the destination is read here and
+    /// mixed in here: the result is **written**, not blended
+    /// ([`BlendMode::Replace`](crate::BlendMode::Replace)). That is the one place
+    /// this backend's hardcoded source-over would be wrong, which is why it uses
+    /// [`write_pixel`] instead of [`blend_pixel`]. Mirrors the Metal fragment body,
+    /// so the same 28 modes are verifiable headlessly.
+    #[allow(clippy::too_many_arguments)]
+    fn fill_advanced_blend(
+        &mut self,
+        target: FbTarget,
+        width: u32,
+        height: u32,
+        layout: &InstanceLayout,
+        inst: &[u8],
+        bind_group: Option<BindGroupId>,
+        scissor: Option<(u32, u32, u32, u32)>,
+    ) {
+        let pos = read_f2(layout, inst, "rect_pos");
+        let size = read_f2(layout, inst, "rect_size");
+        let uv_pos = read_f2(layout, inst, "uv_pos");
+        let uv_size = read_f2(layout, inst, "uv_size");
+        let dst_uv_pos = read_f2(layout, inst, "dst_uv_pos");
+        let dst_uv_size = read_f2(layout, inst, "dst_uv_size");
+        let mode = read_u1(layout, inst, "mode");
+        let opacity = read_f1(layout, inst, "opacity");
+
+        let Some(bg) = bind_group else { return };
+        let mut textures: [Option<TextureId>; 2] = [None, None];
+        let mut samp = SamplerDesc {
+            filter: crate::resource::FilterMode::Linear,
+            address: crate::resource::AddressMode::ClampToEdge,
+        };
+        let mut slot = 0usize;
+        for binding in &self.bind_group(bg).bindings {
+            match binding {
+                crate::resource::Binding::Texture(t) => {
+                    if slot < textures.len() {
+                        textures[slot] = Some(*t);
+                    }
+                    slot += 1;
+                }
+                crate::resource::Binding::Sampler(s) => samp = self.sampler(*s),
+                crate::resource::Binding::Uniform(_) => {}
+            }
+        }
+        let [Some(src_id), Some(dst_id)] = textures else {
+            return;
+        };
+        if size[0] <= 0.0 || size[1] <= 0.0 {
+            return;
+        }
+        let (sw, sh, src_texels) = {
+            let t = self.texture(src_id);
+            (t.width, t.height, t.texels.clone())
+        };
+        let (dw, dh, dst_texels) = {
+            let t = self.texture(dst_id);
+            (t.width, t.height, t.texels.clone())
+        };
+        if sw == 0 || sh == 0 || dw == 0 || dh == 0 {
+            return;
+        }
+
+        let (mut x0, mut y0, mut x1, mut y1) = (
+            pos[0].floor().max(0.0) as u32,
+            pos[1].floor().max(0.0) as u32,
+            (pos[0] + size[0]).ceil().min(width as f32) as u32,
+            (pos[1] + size[1]).ceil().min(height as f32) as u32,
+        );
+        if let Some((sx, sy, sw_c, sh_c)) = scissor {
+            x0 = x0.max(sx);
+            y0 = y0.max(sy);
+            x1 = x1.min(sx + sw_c);
+            y1 = y1.min(sy + sh_c);
+        }
+
+        for py in y0..y1 {
+            for px in x0..x1 {
+                let fx = (px as f32 + 0.5 - pos[0]) / size[0];
+                let fy = (py as f32 + 0.5 - pos[1]) / size[1];
+                let mut s = sample_texel(
+                    &src_texels,
+                    sw,
+                    sh,
+                    uv_pos[0] + fx * uv_size[0],
+                    uv_pos[1] + fy * uv_size[1],
+                    &samp,
+                );
+                for c in s.iter_mut() {
+                    *c *= opacity;
+                }
+                let d = sample_texel(
+                    &dst_texels,
+                    dw,
+                    dh,
+                    dst_uv_pos[0] + fx * dst_uv_size[0],
+                    dst_uv_pos[1] + fy * dst_uv_size[1],
+                    &samp,
+                );
+                let out = blend_composite(mode, s, d);
+                write_pixel(self.framebuffer(target), width, px, py, out);
+            }
+        }
+    }
+
     /// Fill one glyph instance from an R8 single-channel A8 coverage atlas.
     ///
     /// The instance layout matches [`fill_image`](Self::fill_image). The atlas
@@ -2165,6 +2296,208 @@ fn blend_pixel(fb: &mut [[f32; 4]], width: u32, px: u32, py: u32, src: [f32; 4])
         src[2] + dst[2] * inv,
         src[3] + dst[3] * inv,
     ];
+}
+
+/// Overwrite one framebuffer pixel — the raster equivalent of
+/// [`BlendMode::Replace`](crate::BlendMode::Replace).
+///
+/// This backend's other fills all end in [`blend_pixel`] because every other
+/// pipeline composites premultiplied source-over. The advanced-blend fragment
+/// already folded the destination into its result, so blending it a second time
+/// would double-count it: the value is written as-is, quantized to 8 bits like
+/// every other path so the readback stays byte-exact against a real Bgra8 target.
+fn write_pixel(fb: &mut [[f32; 4]], width: u32, px: u32, py: u32, src: [f32; 4]) {
+    fb[(py * width + px) as usize] = [
+        quantize_unorm8(src[0]),
+        quantize_unorm8(src[1]),
+        quantize_unorm8(src[2]),
+        quantize_unorm8(src[3]),
+    ];
+}
+
+/// The whole advanced-blend composite for one pixel: premultiplied source and
+/// destination in, the premultiplied result out.
+///
+/// `mode` is the render crate's `Blend` discriminant — this crate sits below
+/// `viso-render` and cannot name that type, so the numbering is the ABI:
+/// `0..=12` the Porter-Duff operators plus `Plus`, `13..=23` the W3C separable
+/// artistic modes, `24..=27` the non-separable HSL ones. A CPU mirror of
+/// `ADVANCED_BLEND_FRAGMENT_BODY`, so pixel tests here pin the same math the
+/// Metal fragment runs.
+fn blend_composite(mode: u32, s: [f32; 4], d: [f32; 4]) -> [f32; 4] {
+    let (sa, da) = (s[3], d[3]);
+    let out = if mode <= 12 {
+        // Linear in the premultiplied operands: no unpremultiply needed.
+        let (fa, fb) = porter_duff(mode, sa, da);
+        [
+            fa * s[0] + fb * d[0],
+            fa * s[1] + fb * d[1],
+            fa * s[2] + fb * d[2],
+            fa * sa + fb * da,
+        ]
+    } else {
+        // The advanced modes are defined on straight color, with the union of the
+        // two coverages as the output alpha:
+        //   co = as*(1-ab)*cs + as*ab*B(cb,cs) + (1-as)*ab*cb
+        let straight = |c: [f32; 4], a: f32| {
+            if a > 0.0 {
+                [c[0] / a, c[1] / a, c[2] / a]
+            } else {
+                [0.0; 3]
+            }
+        };
+        let cs = straight(s, sa);
+        let cb = straight(d, da);
+        let b = if mode <= 23 {
+            [
+                blend_separable(mode, cb[0], cs[0]),
+                blend_separable(mode, cb[1], cs[1]),
+                blend_separable(mode, cb[2], cs[2]),
+            ]
+        } else {
+            blend_nonseparable(mode, cb, cs)
+        };
+        let mut out = [0.0f32; 4];
+        for c in 0..3 {
+            out[c] = sa * (1.0 - da) * cs[c] + sa * da * b[c] + (1.0 - sa) * da * cb[c];
+        }
+        out[3] = sa + da - sa * da;
+        out
+    };
+    [
+        out[0].clamp(0.0, 1.0),
+        out[1].clamp(0.0, 1.0),
+        out[2].clamp(0.0, 1.0),
+        out[3].clamp(0.0, 1.0),
+    ]
+}
+
+/// The Porter-Duff coverage pair `(fa, fb)` for modes `0..=12`. `Plus` is
+/// `(1, 1)` and relies on the caller's clamp, which is also the safe default for
+/// an out-of-range mode.
+fn porter_duff(mode: u32, sa: f32, da: f32) -> (f32, f32) {
+    match mode {
+        0 => (0.0, 0.0),
+        1 => (1.0, 0.0),
+        2 => (0.0, 1.0),
+        3 => (1.0, 1.0 - sa),
+        4 => (1.0 - da, 1.0),
+        5 => (da, 0.0),
+        6 => (0.0, sa),
+        7 => (1.0 - da, 0.0),
+        8 => (0.0, 1.0 - sa),
+        9 => (da, 1.0 - sa),
+        10 => (1.0 - da, sa),
+        11 => (1.0 - da, 1.0 - sa),
+        _ => (1.0, 1.0),
+    }
+}
+
+/// `B(cb, cs)` for the separable artistic modes `13..=23`, one channel of
+/// straight color. Overlay is hard-light with its arguments swapped; the
+/// dodge/burn guards are the W3C limits, which keep the divisions finite at full
+/// coverage.
+fn blend_separable(mode: u32, cb: f32, cs: f32) -> f32 {
+    let screen = |cb: f32, cs: f32| cb + cs - cb * cs;
+    let hard_light = |cb: f32, cs: f32| {
+        if cs <= 0.5 {
+            cb * 2.0 * cs
+        } else {
+            screen(cb, 2.0 * cs - 1.0)
+        }
+    };
+    match mode {
+        13 => cb * cs,
+        14 => screen(cb, cs),
+        15 => hard_light(cs, cb),
+        16 => cb.min(cs),
+        17 => cb.max(cs),
+        18 => {
+            if cb <= 0.0 {
+                0.0
+            } else if cs >= 1.0 {
+                1.0
+            } else {
+                (cb / (1.0 - cs)).min(1.0)
+            }
+        }
+        19 => {
+            if cb >= 1.0 {
+                1.0
+            } else if cs <= 0.0 {
+                0.0
+            } else {
+                1.0 - ((1.0 - cb) / cs).min(1.0)
+            }
+        }
+        20 => hard_light(cb, cs),
+        21 => {
+            let d = if cb <= 0.25 {
+                ((16.0 * cb - 12.0) * cb + 4.0) * cb
+            } else {
+                cb.sqrt()
+            };
+            if cs <= 0.5 {
+                cb - (1.0 - 2.0 * cs) * cb * (1.0 - cb)
+            } else {
+                cb + (2.0 * cs - 1.0) * (d - cb)
+            }
+        }
+        22 => (cb - cs).abs(),
+        _ => cb + cs - 2.0 * cb * cs,
+    }
+}
+
+/// `B(cb, cs)` for the non-separable modes `24..=27`, which mix a hue /
+/// saturation / luminosity component of one operand into the other. Verbatim from
+/// the W3C compositing model: luminosity is the Rec.601 luma, and clipping keeps a
+/// relit color in gamut by scaling it about its own luminosity rather than
+/// clamping per channel.
+fn blend_nonseparable(mode: u32, cb: [f32; 3], cs: [f32; 3]) -> [f32; 3] {
+    let lum = |c: [f32; 3]| 0.3 * c[0] + 0.59 * c[1] + 0.11 * c[2];
+    let clip_color = |c: [f32; 3]| {
+        let l = lum(c);
+        let n = c[0].min(c[1]).min(c[2]);
+        let x = c[0].max(c[1]).max(c[2]);
+        let mut c = c;
+        if n < 0.0 {
+            let k = l / (l - n).max(1e-6);
+            for v in c.iter_mut() {
+                *v = l + (*v - l) * k;
+            }
+        }
+        if x > 1.0 {
+            let k = (1.0 - l) / (x - l).max(1e-6);
+            for v in c.iter_mut() {
+                *v = l + (*v - l) * k;
+            }
+        }
+        c
+    };
+    let set_lum = |c: [f32; 3], l: f32| {
+        let d = l - lum(c);
+        clip_color([c[0] + d, c[1] + d, c[2] + d])
+    };
+    let sat = |c: [f32; 3]| c[0].max(c[1]).max(c[2]) - c[0].min(c[1]).min(c[2]);
+    let set_sat = |c: [f32; 3], s: f32| {
+        let n = c[0].min(c[1]).min(c[2]);
+        let x = c[0].max(c[1]).max(c[2]);
+        if x > n {
+            [
+                (c[0] - n) * s / (x - n),
+                (c[1] - n) * s / (x - n),
+                (c[2] - n) * s / (x - n),
+            ]
+        } else {
+            [0.0; 3]
+        }
+    };
+    match mode {
+        24 => set_lum(set_sat(cs, sat(cb)), lum(cb)),
+        25 => set_lum(set_sat(cb, sat(cs)), lum(cb)),
+        26 => set_lum(cs, lum(cb)),
+        _ => set_lum(cb, lum(cs)),
+    }
 }
 
 /// `round(clamp(v, 0, 1) * 255) / 255` — quantize a channel to 8-bit.

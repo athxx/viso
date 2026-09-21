@@ -1466,9 +1466,11 @@ shader variants in `viso-shader`; `ClipMaskAtlas` / R8 target allocation in `vis
   - [x] `pub mod blend;` + re-export `Blend, BlendPlan, BlendRealization, plan_blend`
         (not in prelude, §3.2); 5 tests (default hot path, Porter-Duff+Plus fixed,
         separable dest-read, HSL isolates, advanced dominates a local chain).
-  - [ ] Deferred: the destination-read fast path (subpass / framebuffer-fetch) and the
+  - [x] Deferred: the destination-read fast path (subpass / framebuffer-fetch) and the
         bounded offscreen composite themselves are E2 realization — this classifies and
-        records the tier at ingest; the planner carries it out.
+        records the tier at ingest; the planner carries it out. Realized in E2.3 as the
+        bounded offscreen composite; the subpass / framebuffer-fetch rung is still
+        unrealized (no capability bit exists to select it).
 
 ### C0.6 — §31 gate
 - [x] Benchmark gate (§31 Matrix): deep Rect clip; mixed RRect clip; complex cached clip;
@@ -2063,8 +2065,82 @@ capture / shared-pyramid targets in `viso-gpu`. Depends on E1 frozen (+ C0/E0 fa
         convention, not measured against a reference implementation.
 
 ### E2.3 — Advanced blend isolation
-- [ ] The destination-read blends deferred from C0 (§2577) land here as Nonlocal, isolated
+- [x] The destination-read blends deferred from C0 (§2577) land here as Nonlocal, isolated
       through the Effect Planner — not on the common `SrcOver` pipeline.
+  - [x] Authoring is one marker: `Primitive::Blend(Blend)` inside a layer run sets how that
+        layer composites, last marker wins, and a marker outside a layer run is ignored. No
+        new primitive kind for the blended content itself and nothing added to the prelude
+        (§3.2) — the 28-variant `Blend` and `plan_blend` were already public from C0.5.
+  - [x] Ingest routes every marker through the C0.5 classification instead of re-deciding:
+        `plan_blend(mode)` gives `BlendPlan { mode, cost, reason }`, and `SrcOver` —
+        `BlendRealization::FixedFunction`, `EffectCost::Local` — opens nothing at all. An
+        explicit `SrcOver` marker is byte-for-byte free: same draws, passes, offscreens and
+        instances as an unmarked frame.
+  - [x] Realization for the other 27 modes is one uniform shape, so `DestinationRead` and
+        `Isolation` share a path: force the layer offscreen, take one **bounded** snapshot of
+        the destination through the E2.1 backdrop machinery at sigma 0
+        (`OffscreenPass.blend: Option<(Blend, usize)>`), and composite with a single
+        `AdvancedBlend` draw that samples source + destination from one two-texture bind group
+        and writes `BlendMode::Replace`. Net cost over an ordinary translucent layer: one
+        snapshot. Layer opacity rides `AdvancedBlendInstance.opacity` (stride 56) and enters
+        as source alpha *before* the blend, so `Difference` at 0.5 is
+        `0.5·|Cb−Cs| + 0.5·Cb`, not a 50% lerp toward the blended result.
+  - [x] Color ops and a blend on the same layer compose without fighting: when
+        `pass.blend.is_some()` every fused op becomes its own `ColorTransform` RT pass and
+        `pass.color` stays `None`, so the composite slot the grade normally rides is free for
+        the blend draw.
+  - [x] 15th built-in shader `BuiltinShader::AdvancedBlend`: `advanced_blend_ir()` with
+        `texture_count: 2` (MSL codegen emits `dst_tex [[texture(1)]]` whenever
+        `texture_count >= 2`), the full W3C compositing set in IR helpers — premultiplied
+        Porter-Duff for 0..=12, straight-alpha `co = as·(1−ab)·cs + as·ab·B(cb,cs) +
+        (1−as)·ab·cb` for the 11 separable modes, and `lum`/`clip_color`/`set_lum`/`sat`/
+        `set_sat` for the four HSL modes. `PipelineDesc`/`PipelineEntry` gained a `blend`
+        field so the 13th manifest entry can request `BlendMode::Replace`;
+        `SHADER_PIPELINE_PREWARM_COUNT` is 13, so the pipeline is built at construction and
+        never compiled on demand.
+  - [x] `BatchFamily::AdvancedBlend` (tag 11) is **not** mergeable: each isolated blend binds
+        its own (source, destination) pair and writes `Replace`, so two adjacent ones must
+        never share a draw. The fixed-function families and their keys are untouched.
+  - [x] `FrameStats.blend_isolations` makes the property assertable rather than argued —
+        how many layers the planner pulled off the common path this frame. 34 fields, order
+        pinned in `counter_contract_frozen.rs`.
+  - [x] `render/tests/blend_contract.rs` (13 tests) defends the contract through the public
+        surface only — markers in, `FrameStats` and read-back pixels out. `SrcOver` never
+        isolates (0 isolations / 0 offscreens / 0 captures / 1 pass); each of the 15 advanced
+        modes is **1 isolation, 1 offscreen, 1 capture, 3 render passes**; the snapshot is
+        bounded by the layer, and four disjoint blended layers together still read less than
+        the surface. Pixel fidelity is checked against an independent CPU oracle written from
+        the W3C definitions (not a mirror of the shader) for all 15 modes, plus the
+        `Multiply` white/black fixed points and the opacity-as-source-alpha rule.
+  - [x] Gated in `render/benches/renderer_steady_state.rs`
+        (`assert_blend_isolation_costs_no_extra_pass`): 8 `Multiply` badges over a shared
+        background cost **8 isolations, 8 offscreen passes, 1 shared snapshot reading
+        1320 px, 10 render passes, 18 draw calls** — i.e. exactly
+        `offscreen + snapshot + surface`, with no third pass per blend — against the
+        forbidden default's 98304 px of destination reads. Disjoint badges share **one**
+        snapshot over the union ROI rather than capturing per blend. The identical row under
+        `SrcOver` stays **0 isolations / 0 offscreens / 0 captures / 1 pass**, which is the
+        proof the common pipeline is untouched. Repeat uploads reproduce every counter with 0
+        transient allocations, 0 graph recompiles and no backend texture churn.
+  - [x] Timing rows `blended_cards_upload_steady` (2.50 µs — classifying, forcing the layers
+        offscreen and claiming the shared snapshot), `blended_cards_frame` (183.9 µs),
+        `blended_cards_nonseparable_frame` (179.5 µs) and the `src_over_cards_frame` control
+        (106.6 µs): isolation costs ~77 µs of CPU raster over the fixed-function row for this
+        row, and the non-separable HSL fragment is indistinguishable from the separable one
+        at this size.
+  - [x] Flagged, not asserted: on-device Metal shaded-pixel time and bandwidth for an
+        isolated blend (no GPU capture here — `HeadlessRaster` proves pixel fidelity and pass
+        counts, not device savings, §7.3/§36); the µs figures above are CPU rasterizer cost,
+        so the separable/non-separable parity is a property of this backend, not of a GPU.
+        The middle rung of the C0.5 ladder — backend destination-read via subpass /
+        framebuffer-fetch — is still unrealized: no capability bit exists to select it, so
+        all 27 non-`SrcOver` modes take the bounded-offscreen rung, which is correct but
+        pays a snapshot where framebuffer-fetch would pay none. Only `SrcOver` has a
+        hardware blend state; `BlendMode::Replace` is requested in the manifest but the
+        headless raster ignores pipeline blend state and emulates it by overwriting the
+        pixel, so the real `Replace` attachment state is unverified here. A blended layer
+        nested inside another offscreen layer has no destination to snapshot: it isolates
+        but composites `SrcOver` — asserted as the current behavior, not as the desired one.
 
 ### E2.4 — Effect Planner & Local/Nonlocal classification
 - [ ] Local effect (§3102): no neighbor/dest read (`opacity, tint, color matrix,

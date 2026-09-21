@@ -184,6 +184,13 @@ pub enum BuiltinShader {
     /// through an affine color matrix plus an optional gamma. One pass realizes a
     /// whole run of mergeable color effects.
     ColorTransform,
+    /// An isolated advanced-blend composite: samples an isolated layer (source) and
+    /// a bounded snapshot of what is behind it (destination) from **two** textures,
+    /// evaluates a separable-artistic or non-separable-HSL blend function, and
+    /// writes the result with [`BlendMode::Replace`] — the destination has already
+    /// been accounted for in the fragment, so the fixed-function stage must not mix
+    /// it in a second time.
+    AdvancedBlend,
 }
 
 /// Descriptor for a render pipeline ([`crate::GpuBackend::create_pipeline`]).

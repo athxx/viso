@@ -379,6 +379,53 @@ pub fn color_transform_ir() -> ShaderIr {
     }
 }
 
+/// Advanced-blend built-in: the isolated composite of a layer that asked for a
+/// blend mode the fixed-function stage cannot express. Per-instance data,
+/// uniforms at buffer 0, **two** textures — the isolated layer (source) at slot 0
+/// and a bounded snapshot of what is behind it (destination) at slot 1.
+///
+/// The whole blend is evaluated in the fragment stage and written with
+/// `BlendMode::Replace`, so the destination is read exactly once and mixed in
+/// exactly once. `mode` is the blend discriminant (the render crate's `Blend`
+/// ABI): `0..=12` are the Porter-Duff separable-coverage modes, `13..=23` the
+/// W3C separable artistic ones, `24..=27` the non-separable HSL ones.
+pub fn advanced_blend_ir() -> ShaderIr {
+    static ATTRS: &[IrField] = &[
+        IrField::new("rect_pos", IrType::F32X2),
+        IrField::new("rect_size", IrType::F32X2),
+        IrField::new("uv_pos", IrType::F32X2),
+        IrField::new("uv_size", IrType::F32X2),
+        IrField::new("dst_uv_pos", IrType::F32X2),
+        IrField::new("dst_uv_size", IrType::F32X2),
+        IrField::new("mode", IrType::U32),
+        IrField::new("opacity", IrType::F32),
+    ];
+    static UNIFORMS: &[IrField] = &[IrField::new("viewport", IrType::F32X2)];
+    static VARYINGS: &[Varying] = &[
+        Varying::new("position", IrType::F32X4, " [[position]]", ""),
+        Varying::new("uv", IrType::F32X2, "", "source (isolated layer) uv"),
+        Varying::new("dst_uv", IrType::F32X2, "", "destination (snapshot) uv"),
+        Varying::new(
+            "mode",
+            IrType::U32,
+            " [[flat]]",
+            "0..12 Porter-Duff 13..23 separable 24..27 HSL",
+        ),
+        Varying::new("opacity", IrType::F32, "", "layer opacity, folded into src"),
+    ];
+    ShaderIr {
+        kind: PrimitiveKind::AdvancedBlend,
+        vertex_source: VertexSource::PerInstance,
+        attributes: ATTRS,
+        uniforms: UNIFORMS,
+        varyings: VARYINGS,
+        texture_count: 2,
+        vertex_body: ADVANCED_BLEND_VERTEX_BODY,
+        helpers: ADVANCED_BLEND_HELPERS,
+        fragment_body: ADVANCED_BLEND_FRAGMENT_BODY,
+    }
+}
+
 /// Glyph-run built-in: the image contract sampling a single-channel A8 coverage
 /// atlas. The fragment reads the texel's coverage directly and modulates the
 /// run color by it — no signed-distance decode.
@@ -1502,6 +1549,176 @@ if (in.gamma != 1.0) {
     dst.rgb = pow(dst.rgb, float3(in.gamma));
 }
 return float4(dst.rgb * dst.a, dst.a);";
+
+const ADVANCED_BLEND_VERTEX_BODY: &str = "\
+InstanceIn inst = instances[iid];
+
+float2 corner;
+switch (vid) {
+    case 0: corner = float2(0.0, 0.0); break;
+    case 1: corner = float2(1.0, 0.0); break;
+    case 2: corner = float2(0.0, 1.0); break;
+    case 3: corner = float2(1.0, 0.0); break;
+    case 4: corner = float2(1.0, 1.0); break;
+    default: corner = float2(0.0, 1.0); break;
+}
+
+float2 pos = float2(inst.rect_pos);
+float2 size = float2(inst.rect_size);
+float2 pixel = pos + corner * size;
+
+float2 vp = float2(u.viewport);
+float2 ndc = float2(pixel.x / vp.x * 2.0 - 1.0,
+                    1.0 - pixel.y / vp.y * 2.0);
+
+VOut out;
+out.position = float4(ndc, 0.0, 1.0);
+out.uv = float2(inst.uv_pos) + corner * float2(inst.uv_size);
+out.dst_uv = float2(inst.dst_uv_pos) + corner * float2(inst.dst_uv_size);
+out.mode = inst.mode;
+out.opacity = float(inst.opacity);
+return out;";
+
+const ADVANCED_BLEND_HELPERS: &str = "\
+// The Porter-Duff coverage pair (fa, fb) for modes 0..12, applied to
+// premultiplied source and destination: co = fa*Cs + fb*Cb, ao = fa*as + fb*ab.
+// `Plus` (12) is (1, 1) and relies on the caller's clamp, which is also the
+// safe default for an out-of-range mode.
+static inline float2 porter_duff(uint mode, float sa, float da) {
+    switch (mode) {
+        case 0u:  return float2(0.0, 0.0);
+        case 1u:  return float2(1.0, 0.0);
+        case 2u:  return float2(0.0, 1.0);
+        case 3u:  return float2(1.0, 1.0 - sa);
+        case 4u:  return float2(1.0 - da, 1.0);
+        case 5u:  return float2(da, 0.0);
+        case 6u:  return float2(0.0, sa);
+        case 7u:  return float2(1.0 - da, 0.0);
+        case 8u:  return float2(0.0, 1.0 - sa);
+        case 9u:  return float2(da, 1.0 - sa);
+        case 10u: return float2(1.0 - da, sa);
+        case 11u: return float2(1.0 - da, 1.0 - sa);
+        default:  return float2(1.0, 1.0);
+    }
+}
+
+// One channel of the separable blend functions, on straight (unpremultiplied)
+// values. Screen and hard-light are factored out because overlay and soft-light
+// are defined in terms of them.
+static inline float blend_screen(float cb, float cs) {
+    return cb + cs - cb * cs;
+}
+
+static inline float blend_hard_light(float cb, float cs) {
+    return (cs <= 0.5) ? (cb * 2.0 * cs) : blend_screen(cb, 2.0 * cs - 1.0);
+}
+
+static inline float blend_soft_light(float cb, float cs) {
+    float d = (cb <= 0.25) ? (((16.0 * cb - 12.0) * cb + 4.0) * cb) : sqrt(cb);
+    return (cs <= 0.5) ? (cb - (1.0 - 2.0 * cs) * cb * (1.0 - cb))
+                       : (cb + (2.0 * cs - 1.0) * (d - cb));
+}
+
+// B(cb, cs) for the separable artistic modes 13..23. Overlay is hard-light with
+// its arguments swapped; the dodge/burn guards are the W3C limits, which keep the
+// divisions finite at full coverage.
+static inline float blend_separable(uint mode, float cb, float cs) {
+    switch (mode) {
+        case 13u: return cb * cs;
+        case 14u: return blend_screen(cb, cs);
+        case 15u: return blend_hard_light(cs, cb);
+        case 16u: return min(cb, cs);
+        case 17u: return max(cb, cs);
+        case 18u: return (cb <= 0.0) ? 0.0
+                       : (cs >= 1.0) ? 1.0
+                       : min(1.0, cb / (1.0 - cs));
+        case 19u: return (cb >= 1.0) ? 1.0
+                       : (cs <= 0.0) ? 0.0
+                       : 1.0 - min(1.0, (1.0 - cb) / cs);
+        case 20u: return blend_hard_light(cb, cs);
+        case 21u: return blend_soft_light(cb, cs);
+        case 22u: return fabs(cb - cs);
+        default:  return cb + cs - 2.0 * cb * cs;
+    }
+}
+
+// The non-separable HSL helpers, verbatim from the W3C compositing model:
+// luminosity is the Rec.601 luma, and clipping keeps a relit color in gamut by
+// scaling it about its own luminosity rather than clamping per channel.
+static inline float blend_lum(float3 c) {
+    return dot(c, float3(0.3, 0.59, 0.11));
+}
+
+static inline float3 blend_clip_color(float3 c) {
+    float l = blend_lum(c);
+    float n = min(c.r, min(c.g, c.b));
+    float x = max(c.r, max(c.g, c.b));
+    if (n < 0.0) {
+        c = l + (c - l) * l / max(l - n, 1e-6);
+    }
+    if (x > 1.0) {
+        c = l + (c - l) * (1.0 - l) / max(x - l, 1e-6);
+    }
+    return c;
+}
+
+static inline float3 blend_set_lum(float3 c, float l) {
+    return blend_clip_color(c + (l - blend_lum(c)));
+}
+
+static inline float blend_sat(float3 c) {
+    return max(c.r, max(c.g, c.b)) - min(c.r, min(c.g, c.b));
+}
+
+static inline float3 blend_set_sat(float3 c, float s) {
+    float n = min(c.r, min(c.g, c.b));
+    float x = max(c.r, max(c.g, c.b));
+    return (x > n) ? ((c - n) * s / (x - n)) : float3(0.0);
+}
+
+// B(cb, cs) for the non-separable modes 24..27, which mix a hue/saturation/
+// luminosity component of one operand into the other.
+static inline float3 blend_nonseparable(uint mode, float3 cb, float3 cs) {
+    switch (mode) {
+        case 24u: return blend_set_lum(blend_set_sat(cs, blend_sat(cb)), blend_lum(cb));
+        case 25u: return blend_set_lum(blend_set_sat(cb, blend_sat(cs)), blend_lum(cb));
+        case 26u: return blend_set_lum(cs, blend_lum(cb));
+        default:  return blend_set_lum(cb, blend_lum(cs));
+    }
+}";
+
+const ADVANCED_BLEND_FRAGMENT_BODY: &str = "\
+// Source is the isolated layer, destination the bounded snapshot of what is
+// behind it. Both are premultiplied; the layer opacity scales the whole source
+// (a premultiplied scale is exactly a coverage scale). The result is final —
+// the pipeline writes it with `Replace`, so the destination contributes here and
+// nowhere else.
+float4 s = tex.sample(samp, in.uv) * in.opacity;
+float4 d = dst_tex.sample(samp, in.dst_uv);
+float sa = s.a;
+float da = d.a;
+
+float4 result;
+if (in.mode <= 12u) {
+    // Porter-Duff: linear in the premultiplied operands, no unpremultiply.
+    float2 f = porter_duff(in.mode, sa, da);
+    result = float4(f.x * s.rgb + f.y * d.rgb, f.x * sa + f.y * da);
+} else {
+    // The advanced modes are defined on straight color, with the union of the
+    // two coverages as the output alpha:
+    //   co = as*(1-ab)*cs + as*ab*B(cb,cs) + (1-as)*ab*cb
+    float3 cs = (sa > 0.0) ? (s.rgb / sa) : float3(0.0);
+    float3 cb = (da > 0.0) ? (d.rgb / da) : float3(0.0);
+    float3 b = (in.mode <= 23u)
+        ? float3(blend_separable(in.mode, cb.r, cs.r),
+                 blend_separable(in.mode, cb.g, cs.g),
+                 blend_separable(in.mode, cb.b, cs.b))
+        : blend_nonseparable(in.mode, cb, cs);
+    float ao = sa + da - sa * da;
+    float3 co = sa * (1.0 - da) * cs + sa * da * b + (1.0 - sa) * da * cb;
+    result = float4(co, ao);
+}
+return clamp(result, 0.0, 1.0);";
 
 const GLYPHRUN_VERTEX_BODY: &str = "\
 InstanceIn inst = instances[iid];

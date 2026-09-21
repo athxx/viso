@@ -35,9 +35,9 @@ use viso_gpu::{InstanceSchema, SchemaAttr};
 
 use crate::ir::codegen_msl::{emit_msl, emit_schema_attrs, schema_from_attrs};
 use crate::ir::module::{
-    ShaderIr, analytic_capsule_ir, analytic_ellipse_ir, analytic_line_ir, analytic_rrect_ir,
-    analytic_shadow_ir, blur_ir, color_transform_ir, glyphrun_ir, gradient_ir, image_ir, mesh_ir,
-    quad_ir,
+    ShaderIr, advanced_blend_ir, analytic_capsule_ir, analytic_ellipse_ir, analytic_line_ir,
+    analytic_rrect_ir, analytic_shadow_ir, blur_ir, color_transform_ir, glyphrun_ir, gradient_ir,
+    image_ir, mesh_ir, quad_ir,
 };
 
 /// The built-in primitive shaders (architecture section 15.3). One entry per
@@ -85,6 +85,10 @@ pub enum PrimitiveKind {
     /// A fused run of per-pixel color effects, applied to a source texture as one
     /// affine color matrix plus an optional gamma.
     ColorTransform,
+    /// The isolated composite of a layer whose blend mode the fixed-function
+    /// stage cannot express: source and a bounded destination snapshot in, the
+    /// finished blend out.
+    AdvancedBlend,
 }
 
 /// The MSL source for `kind`, or `None` if that primitive has no shader.
@@ -101,6 +105,7 @@ pub fn shader_source(kind: PrimitiveKind) -> Option<&'static str> {
         PrimitiveKind::AnalyticShadow => Some(ANALYTIC_SHADOW_MSL()),
         PrimitiveKind::Blur => Some(BLUR_MSL()),
         PrimitiveKind::ColorTransform => Some(COLOR_TRANSFORM_MSL()),
+        PrimitiveKind::AdvancedBlend => Some(ADVANCED_BLEND_MSL()),
         // Path and Mesh share the general per-vertex mesh pipeline.
         PrimitiveKind::Path | PrimitiveKind::Mesh => Some(MESH_MSL()),
         _ => None,
@@ -123,6 +128,7 @@ pub fn instance_schema(kind: PrimitiveKind) -> Option<InstanceSchema> {
         PrimitiveKind::AnalyticShadow => Some(analytic_shadow_schema()),
         PrimitiveKind::Blur => Some(blur_schema()),
         PrimitiveKind::ColorTransform => Some(color_transform_schema()),
+        PrimitiveKind::AdvancedBlend => Some(advanced_blend_schema()),
         // Path and Mesh validate their per-vertex layout against `mesh_schema`.
         PrimitiveKind::Path | PrimitiveKind::Mesh => Some(mesh_schema()),
         _ => None,
@@ -177,6 +183,20 @@ pub fn blur_schema() -> InstanceSchema {
 pub fn color_transform_schema() -> InstanceSchema {
     static CELL: OnceLock<Vec<SchemaAttr>> = OnceLock::new();
     cached_schema(&CELL, &color_transform_ir())
+}
+
+/// The instance schema the AdvancedBlend shader declares — projected from
+/// [`advanced_blend_ir`].
+///
+/// The Image-style quad fields (`rect_pos`/`rect_size`/`uv_pos`/`uv_size`) address
+/// the isolated layer; a second uv sub-rect (`dst_uv_pos`/`dst_uv_size`) addresses
+/// the destination snapshot, because the two textures are independently sized and
+/// independently positioned in world space. `mode` is the blend discriminant and
+/// `opacity` the layer opacity folded into the source — so every advanced mode
+/// shares one pipeline and one draw.
+pub fn advanced_blend_schema() -> InstanceSchema {
+    static CELL: OnceLock<Vec<SchemaAttr>> = OnceLock::new();
+    cached_schema(&CELL, &advanced_blend_ir())
 }
 
 /// The instance schema the GlyphRun shader declares — projected from
@@ -348,6 +368,26 @@ pub fn BLUR_MSL() -> &'static str {
 pub fn COLOR_TRANSFORM_MSL() -> &'static str {
     static CELL: OnceLock<String> = OnceLock::new();
     cached_msl(&CELL, || emit_msl(&color_transform_ir()))
+}
+
+/// Inline MSL for the AdvancedBlend built-in (Metal backend), derived from
+/// [`advanced_blend_ir`].
+///
+/// Like [`BLUR_MSL`], only the real Metal backend compiles it; the headless
+/// backend uses its `fill_advanced_blend` routine. See `viso-msl-reserved-half`.
+///
+/// Contract (guaranteed by the shared IR): per-instance data at buffer index 1
+/// (both uv sub-rects, the blend mode, the layer opacity); viewport uniform at
+/// index 0; the isolated layer at `[[texture(0)]]`, the destination snapshot at
+/// `[[texture(1)]]`, one shared sampler at `[[sampler(0)]]`. The fragment
+/// evaluates the *whole* composite — Porter-Duff on premultiplied operands, the
+/// W3C artistic and HSL modes on straight color — so the pipeline must bind it
+/// with [`BlendMode::Replace`](viso_gpu::BlendMode::Replace); mixing the
+/// destination in again in the fixed-function stage would double-count it.
+#[allow(non_snake_case)]
+pub fn ADVANCED_BLEND_MSL() -> &'static str {
+    static CELL: OnceLock<String> = OnceLock::new();
+    cached_msl(&CELL, || emit_msl(&advanced_blend_ir()))
 }
 
 /// Inline MSL for the GlyphRun built-in (Metal backend), derived from
