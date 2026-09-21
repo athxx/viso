@@ -729,7 +729,9 @@ pub struct Renderer {
 
 /// Blur below this sigma (in physical pixels) is a visual no-op: the separable
 /// ladder would resolve to a near-identity single-tap resample, so a sub-pixel
-/// blur is skipped and the layer composites its unblurred content directly.
+/// blur is skipped and the layer composites its unblurred content directly. An
+/// opaque layer asking for one stays inline entirely — it pays no offscreen pass
+/// for an effect that would not survive the round trip.
 const BLUR_MIN_SIGMA: f32 = 1.0;
 
 /// The Gaussian tail is negligible past three standard deviations, so a full-
@@ -1616,8 +1618,11 @@ impl Renderer {
                         Some(parent) => parent.clip.intersect(layer.clip),
                         None => layer.clip,
                     };
-                    if layer.opacity >= 1.0 && layer.blur_sigma <= 0.0 {
-                        // Opaque and unblurred: a plain in-pass scissor clip.
+                    if layer.opacity >= 1.0 && layer.blur_sigma <= BLUR_MIN_SIGMA {
+                        // Opaque, and any blur it asked for is sub-pixel — the
+                        // ladder would plan no rung, so the offscreen texture
+                        // would be rendered only to be composited back
+                        // unchanged. A plain in-pass scissor clip instead.
                         // Inherit the parent's pass target and origin unchanged.
                         self.layer_stack.push(LayerEntry {
                             clip: world_clip,

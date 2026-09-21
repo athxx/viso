@@ -1822,9 +1822,10 @@ C0 + E0 frozen; builds on F1 fence/retire and F4 pool/batch.
       does not rebuild clip/shadow/gradient cache and does not continuously submit.
       High-refresh.
   - [x] Blur tiers gated in `render/benches/renderer_steady_state.rs` over one 64x64-ROI
-        layer at sigma 0.5 / 2 / 10 / 24 / 64: every tier is exactly one offscreen pass,
-        the ladder plans 0 / 2 / 2 / 4 / 4 passes, and the compiled plan is exactly
-        `offscreen + rungs + surface`. Pass count is a function of tier, never of sigma.
+        layer at sigma 0.5 / 2 / 10 / 24 / 64: the ladder plans 0 / 2 / 2 / 4 / 4 passes,
+        a realized blur is exactly one offscreen pass while a sub-pixel one stays inline
+        and opens none, and the compiled plan is exactly `offscreen + rungs + surface`.
+        Pass count is a function of tier, never of sigma.
   - [x] Scratch footprint asserted non-increasing in sigma: sub-pixel addresses 0 bytes,
         small == medium (two full-resolution rungs = 2x the ROI), and the large tier's
         four reduced-extent rungs address strictly *fewer* bytes than medium's two
@@ -1853,16 +1854,57 @@ C0 + E0 frozen; builds on F1 fence/retire and F4 pool/batch.
         inferred from target bytes (§7.3/§36).
 
 ### E1 Done
-- [ ] offscreen ROI.
-- [ ] blur ladder.
-- [ ] transient target reuse.
-- [ ] RenderGraph compile/reuse.
+- [x] offscreen ROI — every offscreen layer sizes its target to
+      `content_union ∩ clip ∩ surface`, resolved at `LayerEnd` once the subtree's bounds are
+      known (`finalize_offscreen` in `render/src/renderer.rs`), with each child's origin/clip
+      repatched to the ROI top-left and out-of-ROI children culled. A small panel never
+      round-trips the surface.
+- [x] blur ladder — `LayerClip::blur_sigma` is the whole authoring surface; `blur_plan` picks
+      the realization cold, once per blurred layer: skip below `BLUR_MIN_SIGMA`, two
+      full-resolution separable rungs inside the `BLUR_MAX_TAPS` budget, four reduced-extent
+      rungs beyond it. Thresholds are internal consts; the `blur` built-in is one pipeline
+      with per-instance dir/sigma/radius and uv-clamped taps.
+- [x] transient target reuse — `render/src/transient.rs` `TransientTargets` splits virtual
+      from physical: `declare`/`read_at` record `[first_write, last_read]`, `assign` binds
+      each virtual to the first physical whose `TargetKey {format, usage, samples, size-class
+      w/h}` matches and whose `free_at <= first_write`. Strict non-overlap, so a pass can
+      never alias its own source; unclaimed physicals retire after 60 idle frames.
+- [x] RenderGraph compile/reuse — `render/src/graph.rs` owns exactly five jobs (validate,
+      cull, merge same-attachment neighbours, lower load ops, drive transient lifetimes) and
+      no payload. `compile()` hashes topology only — node count, `PassWork`, write, reads —
+      so scroll, recolor, resize and a within-tier sigma nudge all reuse the plan
+      (`render_graph_compiles == 0`); crossing a ladder tier is genuinely new topology.
 
 ### Freeze
-- [ ] FREEZE E1: the tight-ROI computation contract, the blur ladder selection (thresholds
+- [x] FREEZE E1: the tight-ROI computation contract, the blur ladder selection (thresholds
       internal), the Transient Target Planner pool keys + alias-reuse discipline, and the
       RenderGraph responsibilities + compile/reuse (topology-only recompile) contract. E2's
       backdrop / shared-pyramid / Effect Planner build directly on these.
+  - [x] Tight ROI: `render/tests/offscreen_contract_frozen.rs` pins each of the three
+        intersection terms separately — content (a 40x24 quad in a full-surface clip sizes to
+        the quad), clip, and surface — plus resolution at `LayerEnd` (a late-arriving child
+        widens the ROI) and the inline case (an opaque unblurred layer allocates nothing).
+  - [x] Blur ladder selection: the same file pins the three tiers behaviorally through the
+        only public surface — `LayerClip::blur_sigma` in, `FrameStats` out — so the
+        thresholds stay internal: sigma sweeps assert 0 / 2 / 4 rungs, a sub-pixel sigma
+        stays inline, the pyramid tier addresses strictly fewer bytes than full resolution,
+        and a within-tier nudge changes neither counters nor plan. `blur_plan` itself is
+        pinned in-crate by `renderer.rs`'s unit tests.
+  - [x] Pool keys + alias-reuse: `the_pool_key_is_five_dimensions` pins `TargetKey`'s five
+        fields, `bytes()`, and `TargetUsage`'s bit semantics;
+        `aliasing_requires_strictly_non_overlapping_lifetimes`,
+        `incompatible_keys_never_alias`, `a_surface_read_extends_a_lifetime_to_the_frame_end`
+        and `the_pool_is_steady_then_retires_idle_physicals` pin the discipline and the
+        60-frame idle window; `size_classes_are_monotonic_with_bounded_waste` pins the
+        bucketing. `transient::tests` covers the same functions from inside the crate.
+  - [x] Graph responsibilities + compile/reuse: `the_graph_vocabulary_is_closed`,
+        `load_ops_are_derived_from_the_attachment`, `the_graph_culls_passes_nothing_reads`
+        and `the_graph_drives_transient_lifetimes` pin what the graph owns;
+        `only_topology_forces_a_recompile` pins the cache — cold compile 1, then identical /
+        moved / recolored / sigma-nudged / resized frames 0, a tier crossing or a new layer
+        1. `a_real_frame_plans_exactly_the_passes_it_needs` closes the loop from a rendered
+        frame back to `GraphStats`. Integration-level, so it gates `cargo test --workspace`,
+        which a bench does not.
 
 ---
 

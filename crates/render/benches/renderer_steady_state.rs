@@ -1844,18 +1844,21 @@ fn blurred_layer_scene(sigma: f32) -> Vec<Primitive> {
     ]
 }
 
-/// A blur tier as the gate observes it: the authored sigma and the number of
-/// ladder passes it must plan.
+/// A blur tier as the gate observes it: the authored sigma, whether the layer
+/// needs an offscreen target at all, and the number of ladder passes it plans.
 struct BlurTier {
     label: &'static str,
     sigma: f32,
+    offscreen: usize,
     passes: u32,
 }
 
 /// E1.5 gate, part 1 (§16.3/§31): the ladder's cost is set by tier, not by
-/// sigma. Every tier is one offscreen pass; the ladder adds 0, 2 or 4 passes and
-/// never more, and the compiled plan is exactly `offscreen + rungs + surface`.
-/// Across tiers the scratch footprint is *non-increasing* in sigma — the large
+/// sigma. A sub-pixel blur is free — the ladder plans no rung, so an opaque
+/// layer asking for one stays inline and pays no offscreen target either. Every
+/// realized tier is one offscreen pass plus 2 or 4 ladder passes and never more,
+/// and the compiled plan is exactly `offscreen + rungs + surface`. Across the
+/// realized tiers the scratch footprint is *non-increasing* in sigma — the large
 /// tiers downsample, so a 24-sigma blur addresses fewer bytes than a 10-sigma
 /// one even though it runs twice the passes.
 fn assert_blur_ladder_tiers_scale() {
@@ -1863,26 +1866,31 @@ fn assert_blur_ladder_tiers_scale() {
         BlurTier {
             label: "sub-pixel",
             sigma: 0.5,
+            offscreen: 0,
             passes: 0,
         },
         BlurTier {
             label: "small",
             sigma: 2.0,
+            offscreen: 1,
             passes: 2,
         },
         BlurTier {
             label: "medium",
             sigma: 10.0,
+            offscreen: 1,
             passes: 2,
         },
         BlurTier {
             label: "large",
             sigma: 24.0,
+            offscreen: 1,
             passes: 4,
         },
         BlurTier {
             label: "huge",
             sigma: 64.0,
+            offscreen: 1,
             passes: 4,
         },
     ];
@@ -1899,9 +1907,9 @@ fn assert_blur_ladder_tiers_scale() {
         let label = tier.label;
 
         assert_eq!(
-            baseline.offscreen_passes, 1,
-            "{label}: a blurred layer is exactly one offscreen pass, whatever \
-             the tier (§16.2)"
+            baseline.offscreen_passes, tier.offscreen,
+            "{label}: a realized blur is exactly one offscreen pass, a skipped \
+             one is none (§16.2)"
         );
         assert_eq!(
             baseline.blur_passes, tier.passes,
@@ -1910,22 +1918,28 @@ fn assert_blur_ladder_tiers_scale() {
         );
         assert_eq!(
             baseline.render_passes,
-            2 + tier.passes as usize,
+            1 + tier.offscreen + tier.passes as usize,
             "{label}: the compiled plan is the offscreen pass + each ladder rung \
              + the surface pass (§16.1)"
         );
         assert_eq!(
-            baseline.transient_target_bytes, roi_bytes,
+            baseline.transient_target_bytes,
+            tier.offscreen * roi_bytes,
             "{label}: the layer's target is its tight ROI's size class, \
              independent of sigma (§16.4)"
         );
         assert!(
-            baseline.transient_peak_bytes > 0
-                && baseline.transient_peak_bytes <= baseline.transient_pool_bytes,
-            "{label}: the live-set peak is real and never exceeds the pool it is \
-             drawn from ({} vs {})",
+            baseline.transient_peak_bytes <= baseline.transient_pool_bytes,
+            "{label}: the live-set peak never exceeds the pool it is drawn from \
+             ({} vs {})",
             baseline.transient_peak_bytes,
             baseline.transient_pool_bytes
+        );
+        assert_eq!(
+            baseline.transient_peak_bytes > 0,
+            tier.offscreen == 1,
+            "{label}: a realized blur holds a live target, a skipped one holds \
+             nothing"
         );
 
         // Steady state: an unchanged blurred layer re-plans nothing — same
