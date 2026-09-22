@@ -14,7 +14,7 @@
 //! mismatch is caught at pipeline-registration time.
 
 use crate::blend::Blend;
-use crate::color_effect::ColorEffect;
+use crate::color_effect::{ColorEffect, ColorOp};
 use viso_gpu::{AddressMode, FilterMode, GpuPod, SamplerDesc, TextureId};
 use viso_math::{ExtendMode, InterpolationSpace};
 
@@ -700,6 +700,96 @@ pub struct LayerClip {
     /// and composites it beneath this layer's own content. Dropped for a
     /// sub-pixel sigma, or on a layer nested inside a translucent/blurred one.
     pub backdrop_sigma: f32,
+}
+
+/// A frosted material surface: one leaf primitive for the whole §18 chain
+/// `backdrop → blur → saturation/tint → optional noise → material mask →
+/// border/highlight`.
+///
+/// This is a *leaf*, not a container. A frosted panel does not have to enclose its
+/// content, and forcing it to would cost an offscreen pass it does not need: the
+/// surface only reads what is behind it. Draw it, then draw the panel's content
+/// over it like any other content.
+///
+/// Every stage reuses a frozen lower layer. The backdrop capture and its blur
+/// ladder are exactly the ones [`LayerClip::backdrop_sigma`] uses — panels at the
+/// same sigma over the same background join one capture and one ladder, so N panels
+/// cost one capture, one ladder, and N composites rather than N of each. The tint
+/// is a [`ColorOp`](crate::color_effect::ColorOp), the same fused 4×5 matrix + gamma
+/// the color-effect chain produces, so saturation/tint/brightness are free here.
+/// The mask is the same per-corner signed distance an [`AnalyticRRect`] uses, and
+/// the border/highlight is drawn as an ordinary [`AnalyticRRect`] over the surface,
+/// batching with every other rounded rect on screen.
+///
+/// `backdrop_sigma` at or below the ladder's minimum plans no blur rung, so no
+/// capture is opened at all: the surface then contributes only its border, which is
+/// the honest rendering of glass with nothing behind it to blur.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct FrostedMaterial {
+    /// The surface's rect in physical pixels.
+    pub rect: Rect,
+    /// Per-corner mask radii in physical pixels (normalized against `rect`).
+    pub radius: Corners,
+    /// Gaussian blur sigma in physical pixels applied to the captured backdrop.
+    /// At or below the ladder's minimum no capture is made.
+    pub backdrop_sigma: f32,
+    /// The fused color op applied to the blurred backdrop — saturation, tint,
+    /// brightness and their kin, already multiplied down to one matrix plus gamma.
+    /// [`ColorOp::IDENTITY`](crate::color_effect::ColorOp::IDENTITY) leaves it alone.
+    pub color: ColorOp,
+    /// Grain amplitude in `[0, 1]`; `0.0` = none. The grain is a hash of the integer
+    /// device pixel, so a static surface renders identically every frame.
+    pub noise: f32,
+    /// Surface opacity in `[0, 1]`, applied to the finished composite.
+    pub opacity: f32,
+    /// The border/highlight ring, drawn as an analytic rounded rect over the
+    /// surface. [`Border::NONE`] for none.
+    pub border: Border,
+}
+
+impl FrostedMaterial {
+    /// Plain glass over `rect`: the given blur, no tint, no grain, fully opaque and
+    /// unbordered.
+    pub fn new(rect: Rect, radius: Corners, backdrop_sigma: f32) -> Self {
+        Self {
+            rect,
+            radius,
+            backdrop_sigma,
+            color: ColorOp::IDENTITY,
+            noise: 0.0,
+            opacity: 1.0,
+            border: Border::NONE,
+        }
+    }
+
+    /// The surface's mask radii, normalized against the rect (§11.2) exactly as
+    /// [`AnalyticRRect::to_instance`] does, so the mask and the border ring round
+    /// identically.
+    pub fn radii(&self) -> [f32; 4] {
+        let radius = self.radius.normalized(self.rect.w, self.rect.h);
+        [
+            radius.left_top,
+            radius.right_top,
+            radius.right_bottom,
+            radius.left_bottom,
+        ]
+    }
+
+    /// The border/highlight ring as an ordinary analytic rounded rect: same rect and
+    /// radii, transparent fill (the material composite already painted the surface),
+    /// the authored border. `None` when there is no border to draw.
+    ///
+    /// Reusing the analytic shape rather than folding a ring into the material
+    /// fragment is what lets a panel's border batch with every other rounded rect on
+    /// screen instead of paying its own draw.
+    pub fn border_rrect(&self) -> Option<AnalyticRRect> {
+        (self.border.width > 0.0 && self.border.color.a > 0.0).then_some(AnalyticRRect {
+            rect: self.rect,
+            color: Rgba::TRANSPARENT,
+            radius: self.radius,
+            border: self.border,
+        })
+    }
 }
 
 /// A textured image: sample a sub-rect of `texture` into a destination `rect`,
@@ -1670,6 +1760,9 @@ pub enum Primitive {
     Gradient(Gradient),
     /// A soft drop shadow for an analytic shape, drawn by the §15 fast lane.
     AnalyticShadow(AnalyticShadow),
+    /// A frosted material surface: a blurred backdrop, tinted, grained and masked
+    /// to the surface's own rounded rect, plus its border ring.
+    Frosted(FrostedMaterial),
     /// A filled/stroked vector path.
     Path(Path),
     /// A colored triangle mesh.
@@ -2002,6 +2095,51 @@ pub struct ColorTransformInstance {
     pub offset: [f32; 4],
     /// Per-channel RGB exponent applied after the matrix; `1.0` = none.
     pub gamma: f32,
+}
+
+/// GPU instance for the Material built-in shader.
+///
+/// Field names/formats match [`material_schema`] and the headless `fill_material`
+/// reader. It is a [`ColorTransformInstance`] plus the material's own mask: the
+/// quad samples the shared blurred backdrop through `uv_pos`/`uv_size`, tints it
+/// with the same fused affine matrix (`row0..row3` + `offset`) and `gamma`, adds
+/// `noise` × a grain hashed from the integer device pixel, multiplies by the
+/// rounded-rect coverage of `radius`, and scales by `opacity`.
+///
+/// One instance is therefore a whole frosted surface — no extra pass, target or
+/// capture beyond the blurred-backdrop layer it replaces. `#[repr(C)]` with only
+/// 4-byte-aligned scalars/vectors, so the derive's `offset_of!`-based layout has no
+/// padding — stride 140.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, GpuPod)]
+pub struct MaterialInstance {
+    /// Destination top-left in physical pixels.
+    pub rect_pos: [f32; 2],
+    /// Destination width/height in physical pixels.
+    pub rect_size: [f32; 2],
+    /// Backdrop sub-rect origin in normalized texture coords.
+    pub uv_pos: [f32; 2],
+    /// Backdrop sub-rect size in normalized texture coords.
+    pub uv_size: [f32; 2],
+    /// Red output row: coefficients over `(r, g, b, a)`.
+    pub row0: [f32; 4],
+    /// Green output row.
+    pub row1: [f32; 4],
+    /// Blue output row.
+    pub row2: [f32; 4],
+    /// Alpha output row.
+    pub row3: [f32; 4],
+    /// Constant term per output channel (the matrix's fifth column).
+    pub offset: [f32; 4],
+    /// Mask radii in physical pixels, ordered left-top, right-top, right-bottom,
+    /// left-bottom — already normalized against the rect.
+    pub radius: [f32; 4],
+    /// Per-channel RGB exponent applied after the matrix; `1.0` = none.
+    pub gamma: f32,
+    /// Grain amplitude in `0..1`; `0.0` = no noise.
+    pub noise: f32,
+    /// Surface opacity, applied last.
+    pub opacity: f32,
 }
 
 /// GPU instance for the AdvancedBlend built-in shader.

@@ -37,7 +37,7 @@ use crate::ir::codegen_msl::{emit_msl, emit_schema_attrs, schema_from_attrs};
 use crate::ir::module::{
     ShaderIr, advanced_blend_ir, analytic_capsule_ir, analytic_ellipse_ir, analytic_line_ir,
     analytic_rrect_ir, analytic_shadow_ir, blur_ir, color_transform_ir, glyphrun_ir, gradient_ir,
-    image_ir, mesh_ir, quad_ir,
+    image_ir, material_ir, mesh_ir, quad_ir,
 };
 
 /// The built-in primitive shaders (architecture section 15.3). One entry per
@@ -85,6 +85,9 @@ pub enum PrimitiveKind {
     /// A fused run of per-pixel color effects, applied to a source texture as one
     /// affine color matrix plus an optional gamma.
     ColorTransform,
+    /// The composite of a frosted material surface: a blurred backdrop tinted by a
+    /// fused color op, grained, and masked by the surface's own rounded rect.
+    Material,
     /// The isolated composite of a layer whose blend mode the fixed-function
     /// stage cannot express: source and a bounded destination snapshot in, the
     /// finished blend out.
@@ -105,6 +108,7 @@ pub fn shader_source(kind: PrimitiveKind) -> Option<&'static str> {
         PrimitiveKind::AnalyticShadow => Some(ANALYTIC_SHADOW_MSL()),
         PrimitiveKind::Blur => Some(BLUR_MSL()),
         PrimitiveKind::ColorTransform => Some(COLOR_TRANSFORM_MSL()),
+        PrimitiveKind::Material => Some(MATERIAL_MSL()),
         PrimitiveKind::AdvancedBlend => Some(ADVANCED_BLEND_MSL()),
         // Path and Mesh share the general per-vertex mesh pipeline.
         PrimitiveKind::Path | PrimitiveKind::Mesh => Some(MESH_MSL()),
@@ -128,6 +132,7 @@ pub fn instance_schema(kind: PrimitiveKind) -> Option<InstanceSchema> {
         PrimitiveKind::AnalyticShadow => Some(analytic_shadow_schema()),
         PrimitiveKind::Blur => Some(blur_schema()),
         PrimitiveKind::ColorTransform => Some(color_transform_schema()),
+        PrimitiveKind::Material => Some(material_schema()),
         PrimitiveKind::AdvancedBlend => Some(advanced_blend_schema()),
         // Path and Mesh validate their per-vertex layout against `mesh_schema`.
         PrimitiveKind::Path | PrimitiveKind::Mesh => Some(mesh_schema()),
@@ -183,6 +188,17 @@ pub fn blur_schema() -> InstanceSchema {
 pub fn color_transform_schema() -> InstanceSchema {
     static CELL: OnceLock<Vec<SchemaAttr>> = OnceLock::new();
     cached_schema(&CELL, &color_transform_ir())
+}
+
+/// The instance schema the Material shader declares — projected from
+/// [`material_ir`].
+///
+/// The ColorTransform fields (quad + fused color op) plus the material's own mask
+/// `radius`, a grain amplitude, and an opacity — the whole frosted composite in
+/// one instance, so a panel is one draw whatever its material says.
+pub fn material_schema() -> InstanceSchema {
+    static CELL: OnceLock<Vec<SchemaAttr>> = OnceLock::new();
+    cached_schema(&CELL, &material_ir())
 }
 
 /// The instance schema the AdvancedBlend shader declares — projected from
@@ -368,6 +384,25 @@ pub fn BLUR_MSL() -> &'static str {
 pub fn COLOR_TRANSFORM_MSL() -> &'static str {
     static CELL: OnceLock<String> = OnceLock::new();
     cached_msl(&CELL, || emit_msl(&color_transform_ir()))
+}
+
+/// Inline MSL for the Material built-in (Metal backend), derived from
+/// [`material_ir`].
+///
+/// Like [`BLUR_MSL`], only the real Metal backend compiles it; the headless
+/// backend uses its `fill_material` routine. See `viso-msl-reserved-half`.
+///
+/// Contract (guaranteed by the shared IR): per-instance data at buffer index 1
+/// (quad, fused color op, mask radii, grain amplitude, opacity); viewport uniform
+/// at index 0; the blurred backdrop at `[[texture(0)]]`, sampler at
+/// `[[sampler(0)]]`. The fragment tints, grains, masks and fades in one pass and
+/// returns premultiplied linear, so the pipeline blends it with
+/// [`BlendMode::PremultipliedOver`](viso_gpu::BlendMode::PremultipliedOver) like
+/// any other composite.
+#[allow(non_snake_case)]
+pub fn MATERIAL_MSL() -> &'static str {
+    static CELL: OnceLock<String> = OnceLock::new();
+    cached_msl(&CELL, || emit_msl(&material_ir()))
 }
 
 /// Inline MSL for the AdvancedBlend built-in (Metal backend), derived from
@@ -685,6 +720,65 @@ mod tests {
         assert_eq!(expected[7], ("row3", 80));
         assert_eq!(expected[8], ("offset", 96));
         assert_eq!(expected[9], ("gamma", 112));
+    }
+
+    #[test]
+    fn material_schema_matches_instance_layout() {
+        assert!(shader_source(PrimitiveKind::Material).is_some());
+        assert!(instance_schema(PrimitiveKind::Material).is_some());
+        let ir_names: Vec<&str> = material_ir().attributes.iter().map(|f| f.name).collect();
+        assert_eq!(
+            ir_names,
+            [
+                "rect_pos",
+                "rect_size",
+                "uv_pos",
+                "uv_size",
+                "row0",
+                "row1",
+                "row2",
+                "row3",
+                "offset",
+                "radius",
+                "gamma",
+                "noise",
+                "opacity"
+            ]
+        );
+        assert_three_legs_agree(MATERIAL_MSL(), &material_schema(), &ir_names);
+
+        // The ColorTransform prefix (4*8 + 5*16 = 112) plus the mask radii (F32X4)
+        // and three bare F32 tail fields: 112 + 16 + 3*4 = 140 bytes, no padding.
+        let (expected, stride) = material_ir().expected_offsets();
+        let schema = material_schema();
+        assert_eq!(schema.attributes.len(), expected.len());
+        assert_eq!(stride, 140);
+        assert_eq!(expected[0], ("rect_pos", 0));
+        assert_eq!(expected[4], ("row0", 32));
+        assert_eq!(expected[8], ("offset", 96));
+        assert_eq!(expected[9], ("radius", 112));
+        assert_eq!(expected[10], ("gamma", 128));
+        assert_eq!(expected[11], ("noise", 132));
+        assert_eq!(expected[12], ("opacity", 136));
+    }
+
+    /// The grain must never read time, or a static frosted surface would redraw
+    /// differently every frame and defeat the idle-frame gate. The only inputs the
+    /// shader has are its instance fields and the pixel position, so this asserts
+    /// the fragment body's hash reads the pixel varying and nothing else.
+    #[test]
+    fn material_grain_is_a_pure_function_of_the_pixel() {
+        let msl = MATERIAL_MSL();
+        assert!(msl.contains("float grain(float2 p)"));
+        assert!(msl.contains("grain(in.local)"));
+        // `in.local` is the pixel position and the instance fields are the only
+        // other inputs: the IR declares no clock/frame uniform to read.
+        let uniforms: Vec<&str> = material_ir().uniforms.iter().map(|f| f.name).collect();
+        assert_eq!(uniforms, ["viewport"]);
+        // An integer-lattice hash, not `fract(sin(...))`: exactly reproducible on
+        // the CPU rasterizer and across devices.
+        assert!(msl.contains("uint x = uint(int(floor(p.x)));"));
+        assert!(!msl.contains("fract(sin("));
     }
 
     #[test]

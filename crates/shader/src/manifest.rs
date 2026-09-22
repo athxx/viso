@@ -33,10 +33,10 @@ use viso_gpu::{BlendMode, BuiltinShader, InstanceSchema};
 use crate::msl::{
     ADVANCED_BLEND_MSL, ANALYTIC_CAPSULE_MSL, ANALYTIC_ELLIPSE_MSL, ANALYTIC_LINE_MSL,
     ANALYTIC_RRECT_MSL, ANALYTIC_SHADOW_MSL, BLUR_MSL, COLOR_TRANSFORM_MSL, GLYPHRUN_MSL,
-    GRADIENT_MSL, IMAGE_MSL, MESH_MSL, QUAD_MSL, advanced_blend_schema, analytic_capsule_schema,
-    analytic_ellipse_schema, analytic_line_schema, analytic_rrect_schema, analytic_shadow_schema,
-    blur_schema, color_transform_schema, glyphrun_schema, gradient_schema, image_schema,
-    mesh_schema, quad_schema,
+    GRADIENT_MSL, IMAGE_MSL, MATERIAL_MSL, MESH_MSL, QUAD_MSL, advanced_blend_schema,
+    analytic_capsule_schema, analytic_ellipse_schema, analytic_line_schema, analytic_rrect_schema,
+    analytic_shadow_schema, blur_schema, color_transform_schema, glyphrun_schema, gradient_schema,
+    image_schema, material_schema, mesh_schema, quad_schema,
 };
 use std::sync::OnceLock;
 
@@ -93,6 +93,12 @@ pub enum PipelineFamily {
     /// multiply down into that one matrix, so a whole effect chain normally needs a
     /// single pass of this family rather than one per effect.
     ColorTransform,
+    /// A frosted material composite — the Material built-in resolves a blurred
+    /// backdrop into a finished glass surface: tint (a fused color matrix), grain,
+    /// and the surface's own rounded-rect mask, all in one fragment. It replaces the
+    /// plain image composite a blurred-backdrop layer would otherwise use, so a
+    /// material surface costs no pass, target or capture beyond that layer's.
+    MaterialComposite,
     /// An isolated advanced-blend composite — the AdvancedBlend built-in reads an
     /// isolated layer and a bounded snapshot of what is behind it and evaluates a
     /// blend the fixed-function stage cannot express (the W3C artistic and HSL
@@ -349,6 +355,16 @@ pub fn standard_manifest() -> &'static PipelineManifest {
                 fragment_entry: "fragment_main",
             },
             PipelineEntry {
+                family: PipelineFamily::MaterialComposite,
+                variant: VariantKey::standard(PipelineFamily::MaterialComposite),
+                builtin: BuiltinShader::Material,
+                msl: MATERIAL_MSL(),
+                schema: material_schema(),
+                blend: BlendMode::PremultipliedOver,
+                vertex_entry: "vertex_main",
+                fragment_entry: "fragment_main",
+            },
+            PipelineEntry {
                 family: PipelineFamily::AdvancedBlend,
                 variant: VariantKey::standard(PipelineFamily::AdvancedBlend),
                 builtin: BuiltinShader::AdvancedBlend,
@@ -374,7 +390,7 @@ mod tests {
     #[test]
     fn manifest_enumerates_the_standard_builtins() {
         let m = standard_manifest();
-        assert_eq!(m.entries().len(), 13);
+        assert_eq!(m.entries().len(), 14);
         assert!(m.entry(PipelineFamily::SolidRect).is_some());
         assert!(m.entry(PipelineFamily::Image).is_some());
         assert!(m.entry(PipelineFamily::MaskComposite).is_some());
@@ -387,6 +403,7 @@ mod tests {
         assert!(m.entry(PipelineFamily::AnalyticShadow).is_some());
         assert!(m.entry(PipelineFamily::ContentBlur).is_some());
         assert!(m.entry(PipelineFamily::ColorTransform).is_some());
+        assert!(m.entry(PipelineFamily::MaterialComposite).is_some());
         assert!(m.entry(PipelineFamily::AdvancedBlend).is_some());
     }
 

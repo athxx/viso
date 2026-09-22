@@ -329,6 +329,26 @@ impl Scene {
         )
     }
 
+    /// Record a frosted material surface's composite draw. Like
+    /// [`ingest_backdrop_composite`] it is a per-frame derived draw with unresolved
+    /// UVs; the surface's rect and material parameters live in the renderer's
+    /// per-frame material record `material`.
+    ///
+    /// [`ingest_backdrop_composite`]: Self::ingest_backdrop_composite
+    pub fn ingest_material_composite(
+        &mut self,
+        capture: usize,
+        material: usize,
+        context: EmitContext,
+        bounds: Bounds,
+    ) -> PrimitiveId {
+        self.record(
+            StoreRef::MaterialComposite { capture, material },
+            context,
+            bounds,
+        )
+    }
+
     /// Fold an emit's clip rect into the clip store, bumping the clip plane on a
     /// change. The identity-separated clip lets a scroll that only shifts a clip
     /// bump `ClipRevision` without disturbing geometry/paint (§8.5). Returns

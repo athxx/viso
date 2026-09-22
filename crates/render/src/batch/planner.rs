@@ -83,6 +83,11 @@ pub enum BatchFamily {
     /// is its own family rather than a variant of [`Image`](BatchFamily::Image):
     /// the common `SrcOver` pipeline stays untouched.
     AdvancedBlend,
+    /// One frosted material surface, drawn instanced from the shared material
+    /// buffer and binding the blurred backdrop's `bind_group`. Its own family
+    /// rather than an [`Image`](BatchFamily::Image) variant because the fragment
+    /// tints, grains and masks in one pass.
+    Material,
 }
 
 impl BatchFamily {
@@ -102,6 +107,7 @@ impl BatchFamily {
             BatchFamily::AnalyticShadow => 9,
             BatchFamily::ColorTransform => 10,
             BatchFamily::AdvancedBlend => 11,
+            BatchFamily::Material => 12,
         }
     }
 
@@ -120,6 +126,7 @@ impl BatchFamily {
             9 => Some(BatchFamily::AnalyticShadow),
             10 => Some(BatchFamily::ColorTransform),
             11 => Some(BatchFamily::AdvancedBlend),
+            12 => Some(BatchFamily::Material),
             _ => None,
         }
     }
@@ -127,7 +134,8 @@ impl BatchFamily {
     /// Whether draws of this family can grow by absorbing an adjacent primitive
     /// of the same key. Quads, analytic rrects/ellipses, and meshes each share a
     /// family buffer and merge; images, glyph runs, gradients, color transforms,
-    /// and advanced blends each bind their own resource and stand alone.
+    /// material surfaces, and advanced blends each bind their own resource and
+    /// stand alone.
     pub const fn mergeable(self) -> bool {
         matches!(
             self,

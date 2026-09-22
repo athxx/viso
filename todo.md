@@ -2462,15 +2462,83 @@ layer, not a renderer foundation. Only the render/shader/gpu-side composition be
 material *semantics* / *parameters* are deferred to `Viso_Visual_Materials.md`.
 
 ### M0.1 — Frosted composition (reusing E1/E2)
-- [ ] Frosted pipeline composed from frozen lower layers: `backdrop → blur →
+- [x] Frosted pipeline composed from frozen lower layers: `backdrop → blur →
       saturation/tint → optional noise → material mask → border/highlight` (§18) — reusing
       E2 backdrop, E1 blur/ROI, E2 color transform, C0 mask, E0 shadow/border; no new
       foundation.
-- [ ] Backdrop dependency + ROI in `viso-render`; blur/distortion/color kernels in
+  - [x] The whole chain is **one fragment, one draw** — a new `material` built-in
+        (`PipelineFamily::MaterialComposite`, `BuiltinShader::Material`) that *replaces* the
+        `Image` draw a backdrop composite already emitted. It samples E2's shared blurred
+        backdrop, applies E2's fused `ColorOp` (4 dot products + offset, optional `pow`),
+        adds grain, multiplies by E0's `rrect_sdf` per-corner coverage, then by opacity, and
+        returns premultiplied. No stage of the chain is a pass of its own, so the
+        composition costs **zero new passes, targets, captures or blur rungs** over the
+        backdrop layer it stands in for.
+  - [x] Authoring is one leaf primitive, not a container: `Primitive::Frosted(FrostedMaterial
+        { rect, radius, backdrop_sigma, color, noise, opacity, border })`. A panel is not a
+        `Layer`, so it opens no offscreen pass and needs no `LayerEnd`.
+  - [x] The border/highlight is **not** new shader code: `FrostedMaterial::border_rrect()`
+        lowers the authored `Border` to an ordinary `AnalyticRRectInstance` with a
+        transparent fill, ingested through E0's `ingest_analytic_rrect`, so it batches with
+        every other rrect in the frame and inherits E0's AA. It returns `None` when the
+        border has zero width or zero alpha, so an unbordered panel emits nothing extra.
+  - [x] The mask is E0's SDF evaluated in-fragment (`Corners` → normalized `[lt, rt, rb, lb]`
+        → `rrect_sdf` + `aa_factor`), so rounding a panel needs no clip mask, no stencil and
+        no second draw. Verified by read-back: `the_material_mask_rounds_its_corners`.
+  - [x] The grain is a function of the **integer device pixel only** — an integer avalanche
+        hash (`wrapping_mul`/xor/shift, no `fract(sin(...))`), never a clock. That keeps
+        E2.5's static-UI gate intact: a static frosted screen renders byte-identically frame
+        to frame even at full noise amplitude
+        (`noise_is_deterministic_across_identical_frames`), while still varying per pixel
+        rather than applying a constant offset (`noise_varies_per_pixel_but_only_when_asked_for`).
+  - [x] Sub-threshold sigma degrades honestly: at `sigma <= BLUR_MIN_SIGMA`, or inside an
+        offscreen layer, no capture is opened and the surface contributes only its border
+        ring — it never silently falls back to a full-screen capture
+        (`a_subpixel_sigma_captures_nothing_and_keeps_the_border`).
+- [x] Backdrop dependency + ROI in `viso-render`; blur/distortion/color kernels in
       `viso-shader`; texture/pass/sync in `viso-gpu`.
-- [ ] Shared-capture requirement: N material widgets must not = N full-screen captures + N
+  - [x] `viso-shader` owns the kernel and nothing else: `material_ir()` is the single typed
+        IR value, and both `MATERIAL_MSL()` and `material_schema()` are projected from it,
+        so the MSL and the instance schema cannot drift. Added to `standard_manifest()` as
+        the 14th entry.
+  - [x] `viso-render` owns the dependency and the ROI: the `Primitive::Frosted` walk arm
+        computes `backdrop_roi(world_clip, sigma)` and calls E2's *unmodified*
+        `join_or_open_backdrop`, so a material surface is just another member of E2's
+        capture groups. The composite instance uses the **full** material rect (the SDF's
+        centre/half-size must be the authored rect) and applies the live clip through the
+        segment's scissor instead of shrinking the rect.
+  - [x] `viso-gpu` owns the resource plumbing: one `BuiltinShader::Material` tag, one
+        bind-group handle on `SegmentKind::Material`, and a scalar `fill_material` in the
+        headless raster backend that mirrors the MSL stage for stage (including the grain
+        hash) so every contract below is verifiable by pixel read-back with no device.
+  - [x] Three-way ABI agreement is machine-checked, not conventional: `MaterialInstance`'s
+        `GpuPod` layout, `material_schema()` and the headless field reader are asserted
+        equal (13 attributes, stride 140, frozen offsets) and `create_pipeline` rejects any
+        mismatch at construction.
+- [x] Shared-capture requirement: N material widgets must not = N full-screen captures + N
       blurs; support union ROI / shared backdrop pyramid / MaterialGroup / shared effect
       pass (reuses E2's sharing).
+  - [x] Sharing is **inherited, not reimplemented**: a material surface routes through the
+        same `join_or_open_backdrop` union-ROI heuristic a backdrop layer does, so four
+        panels at one sigma over one background produce **1 capture + 1 blur ladder + 4
+        composites**, and the ladder does not grow with the panel count
+        (`n_panels_share_one_capture_and_one_blur_ladder`).
+  - [x] The rule's negative half holds too: two panels at *different* sigmas split into two
+        capture groups, because one blurred backdrop cannot serve two radii
+        (`panels_at_different_sigmas_do_not_share`).
+  - [x] No `MaterialGroup` type was added. The group already exists — it is E2's capture
+        group — so introducing a second grouping concept would have been public surface
+        buying nothing.
+  - [x] `material_composites` is the new frame counter (the 39th `FrameStats` field, pinned
+        in the frozen counter contract); `color_transform_passes` stays at 0, because the
+        tint rides the composite draw rather than buying a pass.
+  - [x] Flagged, not asserted: no device timing of a frosted screen — the composition's
+        *cost shape* (passes, targets, captures, blur rungs, draw calls, upload bytes) is
+        asserted exactly, but the wall-clock win of fusing the chain into one fragment
+        versus chaining separate passes is unmeasured here; the headless raster backend is a
+        scalar CPU rasterizer, so its timings are not a device frame budget. Distortion
+        (refraction / edge lensing) is not part of this slice: the §18 chain as implemented
+        stops at colour, grain and mask, and a displacement stage would need its own kernel.
 
 ### M0.2 — Deferred to Viso_Visual_Materials.md (out of this plan)
 - [ ] Material *parameters* + platform *semantics* + full Apple Liquid Glass / Frosted /
