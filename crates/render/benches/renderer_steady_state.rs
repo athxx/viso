@@ -2964,6 +2964,339 @@ fn assert_group_opacity_folds_without_a_target() {
     }
 }
 
+/// Panel counts the E2.5 sharing sweep walks. Bounded above by the surface: at
+/// [`FROSTED_PANEL_PITCH`] a seventh panel would not fit inside `W`, and a panel
+/// the surface clips changes the union ROI for a reason that has nothing to do
+/// with sharing.
+const FROSTED_SWEEP: [usize; 4] = [1, 2, 4, 6];
+
+/// E2.5 gate, part 1 (§17.2/§31): a shared backdrop's *plan* is flat in the
+/// number of panels sharing it. Across [`FROSTED_SWEEP`] the row always takes one
+/// capture, plans the same ladder and the same render passes as a single panel,
+/// and only its composite draws grow — which is the shape of the contract, since
+/// a composite is a draw inside a pass somebody already opened.
+///
+/// The resource half is the same statement in bytes: both the captured pixels and
+/// the peak live transient set grow *sub-linearly* in panel count, so the per-panel
+/// cost of the group falls as the group grows. The forbidden default (a capture
+/// and a ladder per panel) is exactly linear in all four numbers.
+fn assert_shared_backdrop_cost_is_flat_in_panel_count() {
+    let mut sweep: Vec<(usize, FrameStats)> = Vec::new();
+    for &count in FROSTED_SWEEP.iter() {
+        let mut h = setup_scene(frosted_panel_row_scene(count, FROSTED_PANEL_SIGMA));
+        frame(&mut h);
+        frame(&mut h);
+        sweep.push((count, h.renderer.frame_stats()));
+    }
+
+    let (_, one) = sweep[0];
+    for &(count, s) in sweep.iter() {
+        println!(
+            "E2.5 sharing sweep: {count} panel(s) -> {} capture(s), {} px \
+             ({} px/panel), {} blur pass(es), {} render passes, {} draws, \
+             peak {} B live, pool {} B resident",
+            s.backdrop_captures,
+            s.backdrop_capture_pixels,
+            s.backdrop_capture_pixels / count,
+            s.blur_passes,
+            s.render_passes,
+            s.draw_calls,
+            s.transient_peak_bytes,
+            s.transient_pool_bytes
+        );
+    }
+
+    for (i, &(count, s)) in sweep.iter().enumerate() {
+        assert_eq!(
+            s.backdrop_captures, 1,
+            "{count} panels at one sigma must share one capture, not {count} (§17.2)"
+        );
+        assert_eq!(
+            s.blur_passes, one.blur_passes,
+            "{count} panels plan the ladder of one: the blur follows the capture, \
+             not the sharer count"
+        );
+        assert_eq!(
+            s.render_passes, one.render_passes,
+            "{count} panels plan the passes of one: sharing adds composites, never \
+             passes (§17.1)"
+        );
+        assert_eq!(
+            s.color_transform_passes, 0,
+            "{count} panels: a frosted panel is not a color pass"
+        );
+        assert!(
+            s.backdrop_capture_pixels < (W as usize) * (H as usize),
+            "{count} panels: a shared group must not promote itself to a \
+             full-surface capture ({} px)",
+            s.backdrop_capture_pixels
+        );
+        assert!(
+            s.transient_peak_bytes <= s.transient_pool_bytes,
+            "{count} panels: the peak live set never exceeds resident pool bytes \
+             ({} vs {})",
+            s.transient_peak_bytes,
+            s.transient_pool_bytes
+        );
+
+        if i == 0 {
+            continue;
+        }
+        let (prev_count, prev) = sweep[i - 1];
+        assert!(
+            s.draw_calls > prev.draw_calls,
+            "{count} panels must draw more composites than {prev_count} — \
+             otherwise the sweep is not measuring a growing row ({} vs {})",
+            s.draw_calls,
+            prev.draw_calls
+        );
+        assert!(
+            s.backdrop_capture_pixels / count < prev.backdrop_capture_pixels / prev_count,
+            "the per-panel captured area must fall as the group grows \
+             ({} px/panel at {count} vs {} px/panel at {prev_count}) — sharing \
+             that merely kept pace with the row would be no sharing at all",
+            s.backdrop_capture_pixels / count,
+            prev.backdrop_capture_pixels / prev_count
+        );
+        assert!(
+            s.backdrop_capture_pixels < count * one.backdrop_capture_pixels,
+            "{count} panels: the union must cost less than the {count} tight \
+             captures it replaces ({} vs {} px)",
+            s.backdrop_capture_pixels,
+            count * one.backdrop_capture_pixels
+        );
+        assert!(
+            s.transient_peak_bytes < count * one.transient_peak_bytes,
+            "{count} panels: the peak live set must stay below {count}x a single \
+             panel's ({} vs {} B) — one capture and one ladder, widened, not \
+             {count} of each",
+            s.transient_peak_bytes,
+            count * one.transient_peak_bytes
+        );
+    }
+}
+
+/// E2.5 gate, part 2 (§17.3/§31): chain length reaches nothing the GPU pays for.
+/// Sweeping a mergeable chain from one effect to [`GRADED_CHAIN`]'s full length
+/// leaves every cost counter of the row identical — same draws, same instances,
+/// same passes, same fused op per card, same transient bytes — while the authored
+/// primitive stream grows, which is what proves the sweep really lengthened the
+/// chain rather than the harness quietly dropping it.
+fn assert_color_fusion_is_flat_in_chain_length() {
+    let cards = GRADED_CARDS as u32;
+    let mut first: Option<FrameStats> = None;
+    let mut prev_authored = 0usize;
+
+    for n in 1..=GRADED_CHAIN.len() {
+        let mut h = setup_scene(graded_card_scene(GRADED_CARDS, &GRADED_CHAIN[..n]));
+        let authored = h.scene.len();
+        frame(&mut h);
+        frame(&mut h);
+        let s = h.renderer.frame_stats();
+
+        println!(
+            "E2.5 fusion sweep: chain of {n} -> {authored} authored primitive(s), \
+             {} fused op(s), {} color pass(es), {} render passes, {} draws, \
+             {} transient B",
+            s.color_effect_ops,
+            s.color_transform_passes,
+            s.render_passes,
+            s.draw_calls,
+            s.transient_target_bytes
+        );
+
+        assert_eq!(
+            s.color_effect_ops, cards,
+            "a chain of {n} mergeable effects is one op per card (§17.3)"
+        );
+        assert_eq!(
+            s.color_transform_passes, 0,
+            "chain of {n}: the fused op rides the composite the layer already draws"
+        );
+        assert!(
+            authored > prev_authored,
+            "chain of {n} must author more primitives than the chain of {} \
+             ({authored} vs {prev_authored}) — otherwise the sweep is not \
+             lengthening anything",
+            n - 1
+        );
+        prev_authored = authored;
+
+        // The one counter that is *not* flat, and must not be: the collapse rung
+        // fires exactly when there were adjacent effects to collapse. A chain of
+        // one had nothing to shed, so the planner records no elimination for it —
+        // which is how this sweep distinguishes "fused" from "never asked".
+        assert_eq!(
+            s.layers_eliminated,
+            if n == 1 { 0 } else { cards },
+            "chain of {n}: the collapse rung must be recorded on every card from \
+             two effects onward, and on none at one"
+        );
+
+        match first {
+            None => first = Some(s),
+            Some(f) => {
+                assert_eq!(
+                    (s.draw_calls, s.instances),
+                    (f.draw_calls, f.instances),
+                    "chain of {n}: a longer mergeable chain must not add a draw or \
+                     an instance"
+                );
+                assert_eq!(
+                    (s.render_passes, s.offscreen_passes),
+                    (f.render_passes, f.offscreen_passes),
+                    "chain of {n}: chain length must not reach the pass plan"
+                );
+                assert_eq!(
+                    (s.transient_target_bytes, s.transient_peak_bytes),
+                    (f.transient_target_bytes, f.transient_peak_bytes),
+                    "chain of {n}: a matrix product needs no memory of its own"
+                );
+                assert_eq!(
+                    (s.pipeline_switches, s.texture_binding_switches),
+                    (f.pipeline_switches, f.texture_binding_switches),
+                    "chain of {n}: fusion must not churn pipeline or binding state"
+                );
+                assert_eq!(
+                    s.layers_planned, f.layers_planned,
+                    "chain of {n}: the planner sees one layer per card either way"
+                );
+            }
+        }
+    }
+}
+
+/// Refresh rates the static-UI gate holds the scene across. One second of frames
+/// at each, so a per-frame leak of a single byte or a single pooled texture is
+/// 240 chances to show up rather than one.
+const REFRESH_RATES: [u32; 4] = [60, 120, 144, 240];
+
+/// The full glass screen: a frosted row over a background (backdrop capture +
+/// shared ladder), and on top of it the whole idle effect stack inside a blurred
+/// translucent layer (content ladder, gradient LUT rows, a path-shadow coverage
+/// mask, analytic shadows). Every cache and every E2 mechanism live in one frame,
+/// so a single counter regression names itself.
+fn glass_screen_scene() -> Vec<Primitive> {
+    let mut scene = frosted_panel_row_scene(FROSTED_PANELS, FROSTED_PANEL_SIGMA);
+    scene.extend(idle_effect_scene(6.0));
+    scene
+}
+
+/// E2.5 gate, part 3 (§7.1/§17.4/§3202/§31): the static-UI target. An existing
+/// glass/blur/shadow screen that nobody touches costs the same frame forever — at
+/// every refresh rate in [`REFRESH_RATES`]. Each of the 564 frames reproduces the
+/// warmed [`FrameStats`] exactly, dirties **no** backdrop ROI, rebuilds no mask,
+/// re-tessellates nothing, uploads nothing, mints no pooled texture, recompiles no
+/// pass plan, and creates no backend resource.
+///
+/// The allocation half is what makes "high refresh" more than a longer loop: the
+/// per-frame heap traffic of `submit` is asserted constant *within* each cadence
+/// and *equal across* all four, so the steady frame cost cannot depend on how
+/// often it runs. A backdrop that re-dirtied itself, or a capture that fell out of
+/// the pool once per second, would break the 240 Hz budget first and show up here
+/// as drift rather than as a frame-time mystery.
+fn assert_static_glass_holds_at_every_refresh_rate() {
+    let mut h = setup_scene(glass_screen_scene());
+    frame(&mut h);
+    frame(&mut h);
+
+    let textures = h.gpu.texture_count();
+    let buffers = h.gpu.buffer_count();
+    let bind_groups = h.gpu.bind_group_count();
+    let baseline = h.renderer.frame_stats();
+
+    assert!(
+        baseline.backdrop_captures > 0,
+        "the glass screen must actually capture a backdrop to be worth gating"
+    );
+    assert!(
+        baseline.blur_passes > 0,
+        "the glass screen must actually carry blur ladders"
+    );
+    assert!(
+        baseline.offscreen_passes > 0,
+        "the glass screen must actually composite through offscreen targets"
+    );
+
+    println!(
+        "E2.5 static-UI gate: glass screen -> {} capture(s), {} blur pass(es), \
+         {} offscreen pass(es), {} render passes, {} draws, held for \
+         {:?} frames",
+        baseline.backdrop_captures,
+        baseline.blur_passes,
+        baseline.offscreen_passes,
+        baseline.render_passes,
+        baseline.draw_calls,
+        REFRESH_RATES
+    );
+
+    let mut cadence_allocs: Option<usize> = None;
+    for &hz in REFRESH_RATES.iter() {
+        let mut first_allocs = 0usize;
+        for f in 0..hz {
+            h.renderer.upload(&mut h.gpu, &h.scene);
+            let idle = h.renderer.frame_stats();
+            assert_eq!(
+                idle, baseline,
+                "{hz} Hz frame {f}: an untouched glass screen must reproduce every \
+                 counter of the warmed baseline"
+            );
+            assert_eq!(
+                idle.backdrop_dirty_rois, 0,
+                "{hz} Hz frame {f}: nothing moved behind any panel, so no backdrop \
+                 ROI is dirty (§3202)"
+            );
+            assert!(
+                h.renderer.backdrop_dependencies().iter().all(|d| !d.dirty),
+                "{hz} Hz frame {f}: every backdrop dependency reports clean"
+            );
+
+            ALLOCS.store(0, Ordering::Relaxed);
+            ARMED.store(true, Ordering::Relaxed);
+            h.renderer
+                .submit(&mut h.gpu, h.surface, CLEAR, [W as f32, H as f32]);
+            ARMED.store(false, Ordering::Relaxed);
+            let allocs = ALLOCS.load(Ordering::Relaxed);
+
+            assert_eq!(
+                h.gpu.texture_count(),
+                textures,
+                "{hz} Hz frame {f}: a backend texture was created for a static screen"
+            );
+            assert_eq!(
+                h.gpu.buffer_count(),
+                buffers,
+                "{hz} Hz frame {f}: a backend buffer was created for a static screen"
+            );
+            assert_eq!(
+                h.gpu.bind_group_count(),
+                bind_groups,
+                "{hz} Hz frame {f}: a bind group was created for a static screen"
+            );
+
+            if f == 0 {
+                first_allocs = allocs;
+            } else {
+                assert_eq!(
+                    allocs, first_allocs,
+                    "{hz} Hz frame {f}: submit's heap traffic drifted from the \
+                     cadence's first frame ({allocs} vs {first_allocs}) — a steady \
+                     frame's cost must not grow with the frame index (§7.1)"
+                );
+            }
+        }
+        match cadence_allocs {
+            None => cadence_allocs = Some(first_allocs),
+            Some(prev) => assert_eq!(
+                first_allocs, prev,
+                "a steady frame allocated {first_allocs} at {hz} Hz but {prev} at \
+                 {} Hz: per-frame cost must not depend on the refresh rate",
+                REFRESH_RATES[0]
+            ),
+        }
+    }
+}
+
 /// A static "app screen" inside one blurred translucent layer: a bounded
 /// gradient palette (LUT rows), a shadowed path (coverage masks + tessellation),
 /// and a run of analytic shadows — every effect cache the renderer keeps, all
@@ -3259,6 +3592,16 @@ fn bench_steady_state(c: &mut Criterion) {
     // nothing, while the identical row with overlapping children pays a target per
     // card; and an idle frosted row dirties no backdrop ROI.
     assert_group_opacity_folds_without_a_target();
+
+    // E2.5 gate (§31 `## E2`): the lane's own scaling and static-UI targets. A
+    // shared backdrop's pass plan and its memory peak are flat / sub-linear in the
+    // number of sharers; a mergeable color chain's length reaches no cost counter
+    // at all; and a glass/blur/shadow screen nobody touches holds every counter,
+    // every backend resource and its per-frame heap traffic across one second of
+    // frames at 60, 120, 144 and 240 Hz.
+    assert_shared_backdrop_cost_is_flat_in_panel_count();
+    assert_color_fusion_is_flat_in_chain_length();
+    assert_static_glass_holds_at_every_refresh_rate();
 
     let mut h = setup();
     // Warm up so the measured iterations are the reuse path, not first growth.
@@ -3621,6 +3964,29 @@ fn bench_steady_state(c: &mut Criterion) {
     frame(&mut faded_isolated);
     c.bench_function("faded_cards_isolated_frame", |b| {
         b.iter(|| frame(black_box(&mut faded_isolated)));
+    });
+
+    // E2.5 timing (§31/§36): the static glass screen — a shared backdrop capture
+    // and ladder, a content ladder, gradient LUT rows, a path-shadow mask and
+    // analytic shadows, all live at once. `upload` is what a frame of an untouched
+    // screen costs on the CPU (diff, plan, and the §3202 dependency scan, all of
+    // which must find nothing to do); `frame` adds encoding every pass. This row is
+    // the one to read against a refresh budget — 16.67 / 8.33 / 6.94 / 4.17 ms at
+    // 60 / 120 / 144 / 240 Hz — though it is `HeadlessRaster` CPU rasterization,
+    // not device shaded-pixel time, so the budget comparison bounds the framework's
+    // own per-frame cost and nothing else (§7.3/§36).
+    let mut glass = setup_scene(glass_screen_scene());
+    frame(&mut glass);
+    frame(&mut glass);
+    c.bench_function("glass_screen_upload_steady", |b| {
+        b.iter(|| {
+            glass
+                .renderer
+                .upload(black_box(&mut glass.gpu), black_box(&glass.scene))
+        });
+    });
+    c.bench_function("glass_screen_frame", |b| {
+        b.iter(|| frame(black_box(&mut glass)));
     });
 }
 
