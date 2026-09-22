@@ -223,12 +223,13 @@ mod tests {
     use crate::ir::codegen_msl::emit_msl;
     use crate::ir::module::{
         analytic_capsule_ir, analytic_ellipse_ir, analytic_line_ir, analytic_rrect_ir,
-        analytic_shadow_ir, glyphrun_ir, image_ir, mesh_ir, quad_ir,
+        analytic_shadow_ir, glyphrun_ir, image_ir, mesh_ir, mtsdf_ir, quad_ir,
     };
     use crate::ir::testdata::{
         ANALYTIC_CAPSULE_MSL_ORIGINAL, ANALYTIC_ELLIPSE_MSL_ORIGINAL, ANALYTIC_LINE_MSL_ORIGINAL,
         ANALYTIC_RRECT_MSL_ORIGINAL, ANALYTIC_SHADOW_MSL_ORIGINAL, GLYPHRUN_MSL_ORIGINAL,
-        GRADIENT_MSL_ORIGINAL, IMAGE_MSL_ORIGINAL, MESH_MSL_ORIGINAL, QUAD_MSL_ORIGINAL,
+        GRADIENT_MSL_ORIGINAL, IMAGE_MSL_ORIGINAL, MESH_MSL_ORIGINAL, MTSDF_MSL_ORIGINAL,
+        QUAD_MSL_ORIGINAL,
     };
 
     // The oracle is the *frozen* pre-Slice-Q hand-written text (see `testdata`),
@@ -250,6 +251,11 @@ mod tests {
     #[test]
     fn glyphrun_msl_is_byte_equivalent() {
         assert_eq!(emit_msl(&glyphrun_ir()), GLYPHRUN_MSL_ORIGINAL);
+    }
+
+    #[test]
+    fn mtsdf_msl_is_byte_equivalent() {
+        assert_eq!(emit_msl(&mtsdf_ir()), MTSDF_MSL_ORIGINAL);
     }
 
     #[test]

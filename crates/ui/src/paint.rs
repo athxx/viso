@@ -21,8 +21,8 @@ use crate::component::NodeStore;
 use crate::content::Content;
 use crate::node::NodeId;
 use viso_render::{
-    GlyphInstanceData, GlyphRunDraw, ImageDraw, LayerClip, Path, PathCmd, Point, Primitive, Quad,
-    Rect, Rgba, SamplerDesc,
+    GlyphInstanceData, GlyphLane, GlyphRunDraw, ImageDraw, LayerClip, Path, PathCmd, Point,
+    Primitive, Quad, Rect, Rgba, SamplerDesc,
 };
 
 /// The opaque white tint that passes a premultiplied color-atlas texel through
@@ -160,6 +160,7 @@ pub(crate) fn paint_content(content: &Content, world: Rect, out: &mut Vec<Primit
                 glyphs,
                 atlas: *atlas,
                 color: *color,
+                lane: GlyphLane::CoverageA8,
             }));
             // Color-bitmap glyphs (emoji) reuse the Image pipeline: each is one
             // textured quad sampling the RGBA color atlas at its glyph sub-rect.

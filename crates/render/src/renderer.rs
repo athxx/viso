@@ -195,6 +195,10 @@ pub(crate) enum SegmentKind {
     /// One run of glyphs, in the glyph buffer, sampling `bind_group`'s A8 pool.
     /// `start`/`count` count instances in that buffer.
     GlyphRun { bind_group: BindGroupId },
+    /// One run of MTSDF glyphs, in the *same* glyph buffer, sampling
+    /// `bind_group`'s field pool. `start`/`count` count instances in that buffer.
+    /// Shares the glyph instance ABI exactly; only the pipeline differs.
+    MtsdfRun { bind_group: BindGroupId },
     /// A single gradient fill, in the gradient buffer, sampling `bind_group`'s
     /// baked 1D LUT atlas. `start`/`count` count instances in that buffer.
     Gradient { bind_group: BindGroupId },
@@ -235,6 +239,7 @@ impl SegmentKind {
             SegmentKind::AnalyticLine => BatchFamily::AnalyticLine,
             SegmentKind::Image { .. } => BatchFamily::Image,
             SegmentKind::GlyphRun { .. } => BatchFamily::GlyphRun,
+            SegmentKind::MtsdfRun { .. } => BatchFamily::MtsdfRun,
             SegmentKind::Gradient { .. } => BatchFamily::Gradient,
             SegmentKind::AnalyticShadow => BatchFamily::AnalyticShadow,
             SegmentKind::Mesh => BatchFamily::Mesh,
@@ -251,6 +256,7 @@ impl SegmentKind {
         match self {
             SegmentKind::Image { bind_group }
             | SegmentKind::GlyphRun { bind_group }
+            | SegmentKind::MtsdfRun { bind_group }
             | SegmentKind::Gradient { bind_group }
             | SegmentKind::ColorTransform { bind_group }
             | SegmentKind::AdvancedBlend { bind_group }
@@ -743,11 +749,11 @@ impl SamplerCache {
 /// (§7.1): SolidRect (quad), AnalyticRRect, AnalyticEllipse, AnalyticCapsule,
 /// AnalyticLine, Image, MaskComposite (glyph), PathFill (mesh), Gradient,
 /// AnalyticShadow, ContentBlur (blur), ColorTransform (fused color effects),
-/// AdvancedBlend (isolated destination-read blends), and MaterialComposite
-/// (frosted material surfaces).
+/// AdvancedBlend (isolated destination-read blends), MaterialComposite
+/// (frosted material surfaces), and ScalableText (the MTSDF glyph lane).
 /// Reported as `FrameStats::shader_pipeline_creations` — a construction-time
 /// constant, since no draw ever triggers a runtime shader compile.
-const SHADER_PIPELINE_PREWARM_COUNT: u32 = 14;
+const SHADER_PIPELINE_PREWARM_COUNT: u32 = 15;
 
 /// Draw-call and instance counts for the frame the renderer has just lowered.
 ///
@@ -992,6 +998,8 @@ pub struct Renderer {
     image_pipeline: PipelineId,
     /// The GlyphRun built-in pipeline (registered once).
     glyph_pipeline: PipelineId,
+    /// The Mtsdf built-in pipeline — the scalable text lane (registered once).
+    mtsdf_pipeline: PipelineId,
     /// The Gradient built-in pipeline (registered once).
     gradient_pipeline: PipelineId,
     /// The AnalyticShadow built-in pipeline (registered once).
@@ -1724,6 +1732,15 @@ impl Renderer {
             )
             .expect("MaterialInstance layout matches the material shader schema");
 
+        // Created last on purpose: `PipelineId`s are handed out sequentially, and
+        // the goldens pin the ids the earlier families already hold.
+        let mtsdf_pipeline = backend
+            .create_pipeline(
+                &desc(entry(PipelineFamily::ScalableText), "mtsdf"),
+                &GlyphInstance::LAYOUT,
+            )
+            .expect("GlyphInstance layout matches the mtsdf shader schema");
+
         // The 1D gradient LUT atlas is renderer-internal: baked from stops at
         // lowering, uploaded into this texture before the pass. Unlike image and
         // glyph textures (caller-owned), the renderer creates and owns it here.
@@ -1763,6 +1780,7 @@ impl Renderer {
             analytic_line_pipeline,
             image_pipeline,
             glyph_pipeline,
+            mtsdf_pipeline,
             gradient_pipeline,
             analytic_shadow_pipeline,
             blur_pipeline,
@@ -2049,8 +2067,13 @@ impl Renderer {
             color: [fill.r, fill.g, fill.b, fill.a],
         };
         let bounds = crate::scene::bounds::Bounds::from_world(roi, clip, 0.0, 0.0);
-        self.scene
-            .ingest_glyph_run(std::iter::once(inst), self.mask_page.texture(), ctx, bounds);
+        self.scene.ingest_glyph_run(
+            std::iter::once(inst),
+            self.mask_page.texture(),
+            crate::GlyphLane::CoverageA8,
+            ctx,
+            bounds,
+        );
         true
     }
 
@@ -2157,8 +2180,13 @@ impl Renderer {
         };
         let filter = 3.0 * shadow.sigma + shadow.spread.max(0.0);
         let bounds = crate::scene::bounds::Bounds::from_world(shadow_rect, clip, 0.0, filter);
-        self.scene
-            .ingest_glyph_run(std::iter::once(inst), self.mask_page.texture(), ctx, bounds);
+        self.scene.ingest_glyph_run(
+            std::iter::once(inst),
+            self.mask_page.texture(),
+            crate::GlyphLane::CoverageA8,
+            ctx,
+            bounds,
+        );
         true
     }
 
@@ -2462,6 +2490,7 @@ impl Renderer {
                     self.scene.ingest_glyph_run(
                         glyph_instances(&run.glyphs, color),
                         run.atlas,
+                        run.lane,
                         ctx,
                         crate::scene::bounds::Bounds::default(),
                     );
@@ -3282,7 +3311,10 @@ impl Renderer {
                 // masked path fills that share the mask page, to a draw per atlas
                 // (§20.2).
                 self.merge_or_push(Segment {
-                    kind: SegmentKind::GlyphRun { bind_group },
+                    kind: match e.lane {
+                        crate::GlyphLane::CoverageA8 => SegmentKind::GlyphRun { bind_group },
+                        crate::GlyphLane::Mtsdf => SegmentKind::MtsdfRun { bind_group },
+                    },
                     start,
                     count,
                     clip,
@@ -3698,6 +3730,11 @@ impl Renderer {
     /// The GlyphRun pipeline handle, for batch introspection.
     pub(crate) fn glyph_pipeline_id(&self) -> PipelineId {
         self.glyph_pipeline
+    }
+
+    /// The Mtsdf pipeline handle, for batch introspection.
+    pub(crate) fn mtsdf_pipeline_id(&self) -> PipelineId {
+        self.mtsdf_pipeline
     }
 
     /// The Mesh pipeline handle, for batch introspection.
@@ -4714,6 +4751,20 @@ impl Renderer {
                 uniforms,
                 scissor,
             },
+            // Both text lanes index one buffer at one stride: the lane picks the
+            // pipeline, not the geometry.
+            SegmentKind::MtsdfRun { bind_group } => DrawCommand {
+                pipeline: self.mtsdf_pipeline,
+                bind_group: Some(bind_group),
+                geometry: Geometry::Generated { count: seg.count },
+                instance_buffer: self
+                    .glyph_pool
+                    .buffer()
+                    .expect("glyph pool buffer exists when an mtsdf segment references it"),
+                instance_offset: seg.start as usize * GLYPH_STRIDE,
+                uniforms,
+                scissor,
+            },
             SegmentKind::Gradient { bind_group } => DrawCommand {
                 pipeline: self.gradient_pipeline,
                 bind_group: Some(bind_group),
@@ -5311,6 +5362,7 @@ mod tests {
             glyphs: tg.glyphs.clone(),
             atlas,
             color: tg.color,
+            lane: crate::GlyphLane::CoverageA8,
         };
         r.upload(&mut gpu, &[Primitive::GlyphRun(run)]);
         // Opaque black clear so any glyph ink (near-white) is unmistakable.

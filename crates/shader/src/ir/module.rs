@@ -523,6 +523,47 @@ pub fn glyphrun_ir() -> ShaderIr {
     }
 }
 
+/// MTSDF built-in: the scalable text lane. Same instance ABI as the glyph-run
+/// built-in — the same atlas quad, the same run color — but the atlas holds a
+/// multi-channel signed distance field instead of coverage, so one field stays
+/// sharp across its whole quality window instead of one fixed size.
+///
+/// Distinct from the coverage lane rather than a variant of it: the fragment
+/// decode is different work, and a field glyph and a coverage glyph live in
+/// different atlases. Viso 1.0 has no third, single-channel lane.
+pub fn mtsdf_ir() -> ShaderIr {
+    static ATTRS: &[IrField] = &[
+        IrField::new("rect_pos", IrType::F32X2),
+        IrField::new("rect_size", IrType::F32X2),
+        IrField::new("uv_pos", IrType::F32X2),
+        IrField::new("uv_size", IrType::F32X2),
+        IrField::new("color", IrType::F32X4),
+    ];
+    static UNIFORMS: &[IrField] = &[IrField::new("viewport", IrType::F32X2)];
+    static VARYINGS: &[Varying] = &[
+        Varying::new("position", IrType::F32X4, " [[position]]", ""),
+        Varying::new("uv", IrType::F32X2, "", ""),
+        Varying::new("color", IrType::F32X4, "", ""),
+        Varying::new(
+            "span",
+            IrType::F32X2,
+            "",
+            "device pixels per uv unit, for the screen-space distance range",
+        ),
+    ];
+    ShaderIr {
+        kind: PrimitiveKind::Mtsdf,
+        vertex_source: VertexSource::PerInstance,
+        attributes: ATTRS,
+        uniforms: UNIFORMS,
+        varyings: VARYINGS,
+        texture_count: 1,
+        vertex_body: MTSDF_VERTEX_BODY,
+        helpers: "",
+        fragment_body: MTSDF_FRAGMENT_BODY,
+    }
+}
+
 /// General mesh built-in (shared by Path and Mesh): a real per-vertex buffer at
 /// index 0, uniforms at index 1, no instance buffer, no texture.
 pub fn mesh_ir() -> ShaderIr {
@@ -1936,6 +1977,53 @@ const GLYPHRUN_FRAGMENT_BODY: &str = "\
 // Single-channel A8 coverage sampled directly: the atlas texel's red channel
 // is exact per-pixel coverage. Modulate the run color by it, premultiplied.
 float cov = tex.sample(samp, in.uv).r;
+float a = in.color.a * cov;
+return float4(in.color.rgb * a, a);";
+
+const MTSDF_VERTEX_BODY: &str = "\
+InstanceIn inst = instances[iid];
+
+float2 corner;
+switch (vid) {
+    case 0: corner = float2(0.0, 0.0); break;
+    case 1: corner = float2(1.0, 0.0); break;
+    case 2: corner = float2(0.0, 1.0); break;
+    case 3: corner = float2(1.0, 0.0); break;
+    case 4: corner = float2(1.0, 1.0); break;
+    default: corner = float2(0.0, 1.0); break;
+}
+
+float2 pos = float2(inst.rect_pos);
+float2 size = float2(inst.rect_size);
+float2 pixel = pos + corner * size;
+
+float2 vp = float2(u.viewport);
+float2 ndc = float2(pixel.x / vp.x * 2.0 - 1.0,
+                    1.0 - pixel.y / vp.y * 2.0);
+
+VOut out;
+out.position = float4(ndc, 0.0, 1.0);
+out.uv = float2(inst.uv_pos) + corner * float2(inst.uv_size);
+out.color = float4(inst.color);
+out.span = size / max(float2(inst.uv_size), float2(1e-6));
+return out;";
+
+const MTSDF_FRAGMENT_BODY: &str = "\
+// The median of the three channels reconstructs the glyph's edge, including a
+// sharp corner where a single channel would round it. Alpha carries the true
+// signed distance: where the two disagree on which side of the edge this texel
+// is, the median is a multi-channel interpolation artifact and the true distance
+// wins.
+float4 s = tex.sample(samp, in.uv);
+float md = max(min(s.r, s.g), min(max(s.r, s.g), s.b));
+float sd = ((md > 0.5) != (s.a > 0.5)) ? s.a : md;
+
+// Distances are stored in field texels over this span; converting it to device
+// pixels is what keeps the edge one pixel wide at every scale in the window.
+float distance_range = 4.0;
+float texels_per_uv = float(tex.get_width());
+float px_range = distance_range * in.span.x / max(texels_per_uv, 1.0);
+float cov = clamp((sd - 0.5) * px_range + 0.5, 0.0, 1.0);
 float a = in.color.a * cov;
 return float4(in.color.rgb * a, a);";
 

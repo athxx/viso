@@ -83,10 +83,15 @@ pub use font_provider::{
     FontProvider, SubsetRange,
 };
 pub use font_request::{FontRequest, FontRole, FontSlant, FontTarget, FontWeight, FontWidth};
-pub use glyph_cache::{Admission, GlyphKey, GlyphResidency};
+pub use glyph_cache::{
+    Admission, DEFAULT_PAGE_BYTES, GlyphKey, GlyphResidency, PoolBudget, Reclaimed,
+};
 pub use glyph_representation::GlyphImageKind;
 pub use line_break::{BreakOpportunity, LineBreaker};
 pub use line_break_tailoring::{LineBreakStrictness, LineBreakTailoring, WordBreak};
+pub use mtsdf::{
+    BUCKETS, DISTANCE_RANGE, FIELD_PAD, MtsdfGenerator, MtsdfGlyph, MtsdfPlan, MtsdfRequest,
+};
 pub use progressive::{FontRevision, ParagraphId, Progressive, ReflowScope, RevisionEffect, RunId};
 pub use raster_a8::{CoverageBitmap, rasterize_coverage};
 pub use resolver::{FaceMetrics, FontResolver, Resolved, inspect_face};

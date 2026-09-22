@@ -136,21 +136,34 @@ GPU pages; today render owns both and does it wrong.
 
 ## X3 — MTSDF lane (§13.2, §13.5)
 
-Goal: a scalable representation that exists. `sdfer` is already in the dependency tree.
+Goal: a scalable representation that exists. Generated msdfgen-style from `ttf-parser`
+outlines inside `viso-text`; `sdfer` was dropped from both manifests rather than adapted.
 
-- [ ] `mtsdf::MtsdfGlyph` / `MtsdfGenerator`: multi-channel distance field with a true
+- [x] `mtsdf::MtsdfGlyph` / `MtsdfGenerator`: multi-channel distance field with a true
       distance channel for AA, source-to-distance range, bearing/extent, scratch reuse across
       generations (no per-glyph allocation).
-- [ ] Resolution buckets and a quality window (§13.5): beyond the window, request the next
+- [x] Resolution buckets and a quality window (§13.5): beyond the window, request the next
       bucket or hand off to X5's OutlineVector — never scale one field without bound.
-- [ ] `viso-shader` / `viso-render`: the MTSDF sampling lane and its pipeline, distinct from
-      the A8 coverage lane, sampling the MTSDF pool from X2.
-- [ ] Viso 1.0 adds no plain single-channel SDF lane (DoD, explicit).
-- [ ] Tests: a generated field reconstructs the glyph's coverage within tolerance at bucket
+- [x] `viso-shader` / `viso-render`: the MTSDF sampling lane and its pipeline, distinct from
+      the A8 coverage lane, sampling the MTSDF pool from X2. The field atlas is a
+      `TextureFormat::Rgba8Data` plane — four data channels, never premultiplied, since a
+      distance is not a color. `GlyphLane` on the authoring primitive selects the pipeline;
+      the two lanes share one instance buffer and never merge into one batch. The screen-space
+      range comes from a `span` varying (device pixels per uv unit), not a derivative, so the
+      headless raster mirrors the MSL exactly.
+- [x] Viso 1.0 adds no plain single-channel SDF lane (DoD, explicit).
+- [x] Tests: a generated field reconstructs the glyph's coverage within tolerance at bucket
       scale and at the window edges; corners survive (a sharp-corner glyph does not round —
       this is what multi-channel buys); generation allocates no per-glyph scratch after
       warm-up; a request past the window returns the next bucket rather than stretching.
-- [ ] Gate green → commit.
+      Plus the lane end to end: an MTSDF run draws through its own pipeline, a field
+      reproduces the coverage it was generated from, and magnified 4x its edge band stays
+      decisively narrower than the same glyph stretched from an A8 bitmap.
+- [x] Gate green → commit.
+
+X3 ships the lane **drivable on explicit request**: a caller that generates a field and
+authors `GlyphLane::Mtsdf` gets it. Deciding *for* a glyph that it should be on this lane is
+the promotion state machine, which is X4.
 
 ---
 

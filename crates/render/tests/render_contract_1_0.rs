@@ -28,10 +28,10 @@ use viso_gpu::{
 use viso_render::{
     AnalyticCapsule, AnalyticEllipse, AnalyticLine, AnalyticRRect, AnalyticShadow, Border,
     ChildOverlap, ClipShape, ClipTier, ColorEffect, Corners, DashPattern, FrameStats,
-    GlyphInstanceData, GlyphRunDraw, ImageDraw, LayerClip, LayerReason, LineCap, LineJoin, Mesh,
-    MeshVertex, OpacityPlan, Path, PathArena, PathCmd, Point, Primitive, Quad, ReasonSet, Rect,
-    Renderer, Rgba, SamplerDesc, ShadowShape, Stroke, StrokeAlign, VectorLane, VectorWorkload,
-    clips_children, plan_clip, plan_group_opacity,
+    GlyphInstanceData, GlyphLane, GlyphRunDraw, ImageDraw, LayerClip, LayerReason, LineCap,
+    LineJoin, Mesh, MeshVertex, OpacityPlan, Path, PathArena, PathCmd, Point, Primitive, Quad,
+    ReasonSet, Rect, Renderer, Rgba, SamplerDesc, ShadowShape, Stroke, StrokeAlign, VectorLane,
+    VectorWorkload, clips_children, plan_clip, plan_group_opacity,
 };
 
 const W: u32 = 256;
@@ -205,6 +205,7 @@ fn every_shape_has_its_own_primitive() {
                 .collect(),
             atlas,
             color: Rgba::new(0.05, 0.05, 0.05, 1.0),
+            lane: GlyphLane::CoverageA8,
         }),
         // Mesh.
         Primitive::Mesh(Mesh {

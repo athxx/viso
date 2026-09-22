@@ -99,8 +99,10 @@ pub enum BatchPipeline {
     AnalyticLine,
     /// A single textured image (the image pipeline).
     Image,
-    /// One run of SDF glyphs (the glyph pipeline).
+    /// One run of exact-coverage glyphs (the glyph pipeline).
     GlyphRun,
+    /// One run of MTSDF glyphs (the scalable-text pipeline).
+    MtsdfRun,
     /// A run of triangle meshes — `Path`/`Mesh`, the direct-geometry pipeline.
     Mesh,
     /// A single gradient fill (the gradient pipeline, binding its 1D LUT atlas).
@@ -131,6 +133,7 @@ impl BatchPipeline {
             BatchPipeline::AnalyticLine => "analytic-line",
             BatchPipeline::Image => "image",
             BatchPipeline::GlyphRun => "glyph",
+            BatchPipeline::MtsdfRun => "mtsdf",
             BatchPipeline::Mesh => "mesh",
             BatchPipeline::Gradient => "gradient",
             BatchPipeline::AnalyticShadow => "analytic-shadow",
@@ -152,6 +155,7 @@ impl BatchPipeline {
             BatchPipeline::AnalyticLine => BatchFamily::AnalyticLine,
             BatchPipeline::Image => BatchFamily::Image,
             BatchPipeline::GlyphRun => BatchFamily::GlyphRun,
+            BatchPipeline::MtsdfRun => BatchFamily::MtsdfRun,
             BatchPipeline::Mesh => BatchFamily::Mesh,
             BatchPipeline::Gradient => BatchFamily::Gradient,
             BatchPipeline::AnalyticShadow => BatchFamily::AnalyticShadow,
@@ -410,6 +414,11 @@ impl Renderer {
                 self.glyph_pipeline_id(),
                 Some(bind_group),
             ),
+            SegmentKind::MtsdfRun { bind_group } => (
+                BatchPipeline::MtsdfRun,
+                self.mtsdf_pipeline_id(),
+                Some(bind_group),
+            ),
             SegmentKind::Gradient { bind_group } => (
                 BatchPipeline::Gradient,
                 self.gradient_pipeline_id(),
@@ -584,7 +593,12 @@ impl Renderer {
                         .expect("glyph run slot");
                     let start = glyph_cursor;
                     glyph_cursor += e.count;
-                    (BatchPipeline::GlyphRun, start, e.count)
+                    // One cursor for both lanes: they share the instance buffer.
+                    let pipeline = match e.lane {
+                        crate::primitive::GlyphLane::CoverageA8 => BatchPipeline::GlyphRun,
+                        crate::primitive::GlyphLane::Mtsdf => BatchPipeline::MtsdfRun,
+                    };
+                    (pipeline, start, e.count)
                 }
                 StoreRef::Path(id) => {
                     let e = self.scene_snapshot().paths.get(id).expect("path slot");
@@ -881,7 +895,8 @@ impl Renderer {
 mod tests {
     use super::*;
     use crate::primitive::{
-        Border, GlyphInstanceData, GlyphRunDraw, ImageDraw, LayerClip, Primitive, Quad, Rgba,
+        Border, GlyphInstanceData, GlyphLane, GlyphRunDraw, ImageDraw, LayerClip, Primitive, Quad,
+        Rgba,
     };
     use viso_gpu::{
         GpuBackend, HeadlessRaster, RawWindowHandle, TextureDesc, TextureFormat, TextureId,
@@ -964,6 +979,7 @@ mod tests {
                 b: 1.0,
                 a: 1.0,
             },
+            lane: GlyphLane::CoverageA8,
         })
     }
 

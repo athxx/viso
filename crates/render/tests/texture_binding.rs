@@ -26,9 +26,9 @@ use viso_gpu::{
     GpuBackend, HeadlessRaster, RawWindowHandle, TextureDesc, TextureFormat, TextureId,
 };
 use viso_render::{
-    BindingModel, Border, ExtendMode, FrameStats, GlyphInstanceData, GlyphRunDraw, Gradient,
-    GradientKind, GradientStop, ImageDraw, InterpolationSpace, Point, Primitive, Quad, Rect,
-    Renderer, Rgba, TextureWorkload,
+    BindingModel, Border, ExtendMode, FrameStats, GlyphInstanceData, GlyphLane, GlyphRunDraw,
+    Gradient, GradientKind, GradientStop, ImageDraw, InterpolationSpace, Point, Primitive, Quad,
+    Rect, Renderer, Rgba, TextureWorkload,
 };
 
 const W: u32 = 256;
@@ -99,6 +99,7 @@ fn glyph_run(atlas: TextureId, glyphs: u32, y: f32) -> Primitive {
             .collect(),
         atlas,
         color: Rgba::new(0.9, 0.9, 0.9, 1.0),
+        lane: GlyphLane::CoverageA8,
     })
 }
 

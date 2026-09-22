@@ -33,10 +33,10 @@ use viso_gpu::{BlendMode, BuiltinShader, InstanceSchema};
 use crate::msl::{
     ADVANCED_BLEND_MSL, ANALYTIC_CAPSULE_MSL, ANALYTIC_ELLIPSE_MSL, ANALYTIC_LINE_MSL,
     ANALYTIC_RRECT_MSL, ANALYTIC_SHADOW_MSL, BLUR_MSL, COLOR_TRANSFORM_MSL, GLYPHRUN_MSL,
-    GRADIENT_MSL, IMAGE_MSL, MATERIAL_MSL, MESH_MSL, QUAD_MSL, advanced_blend_schema,
+    GRADIENT_MSL, IMAGE_MSL, MATERIAL_MSL, MESH_MSL, MTSDF_MSL, QUAD_MSL, advanced_blend_schema,
     analytic_capsule_schema, analytic_ellipse_schema, analytic_line_schema, analytic_rrect_schema,
     analytic_shadow_schema, blur_schema, color_transform_schema, glyphrun_schema, gradient_schema,
-    image_schema, material_schema, mesh_schema, quad_schema,
+    image_schema, material_schema, mesh_schema, mtsdf_schema, quad_schema,
 };
 use std::sync::OnceLock;
 
@@ -82,6 +82,12 @@ pub enum PipelineFamily {
     /// A coverage/mask composite — the GlyphRun built-in samples an A8 coverage
     /// atlas, the canonical mask-composite case.
     MaskComposite,
+    /// Scalable text — the Mtsdf built-in samples a multi-channel signed distance
+    /// field atlas, so one field serves a range of sizes with sharp corners. A
+    /// family of its own rather than a variant of [`PipelineFamily::MaskComposite`]:
+    /// the fragment decode and the atlas format both differ, which is exactly what
+    /// makes a pipeline (§7.5).
+    ScalableText,
     /// A separable Gaussian blur of an offscreen layer's content — the Blur
     /// built-in samples a source texture along one axis. One pass per axis; the
     /// renderer chains a horizontal and a vertical pass to blur a layer before
@@ -265,6 +271,16 @@ pub fn standard_manifest() -> &'static PipelineManifest {
                 fragment_entry: "fragment_main",
             },
             PipelineEntry {
+                family: PipelineFamily::ScalableText,
+                variant: VariantKey::standard(PipelineFamily::ScalableText),
+                builtin: BuiltinShader::Mtsdf,
+                msl: MTSDF_MSL(),
+                schema: mtsdf_schema(),
+                blend: BlendMode::PremultipliedOver,
+                vertex_entry: "vertex_main",
+                fragment_entry: "fragment_main",
+            },
+            PipelineEntry {
                 family: PipelineFamily::PathFill,
                 variant: VariantKey::standard(PipelineFamily::PathFill),
                 builtin: BuiltinShader::Path,
@@ -384,16 +400,18 @@ mod tests {
     use crate::ir::testdata::{
         ANALYTIC_CAPSULE_MSL_ORIGINAL, ANALYTIC_ELLIPSE_MSL_ORIGINAL, ANALYTIC_LINE_MSL_ORIGINAL,
         ANALYTIC_RRECT_MSL_ORIGINAL, ANALYTIC_SHADOW_MSL_ORIGINAL, GLYPHRUN_MSL_ORIGINAL,
-        GRADIENT_MSL_ORIGINAL, IMAGE_MSL_ORIGINAL, MESH_MSL_ORIGINAL, QUAD_MSL_ORIGINAL,
+        GRADIENT_MSL_ORIGINAL, IMAGE_MSL_ORIGINAL, MESH_MSL_ORIGINAL, MTSDF_MSL_ORIGINAL,
+        QUAD_MSL_ORIGINAL,
     };
 
     #[test]
     fn manifest_enumerates_the_standard_builtins() {
         let m = standard_manifest();
-        assert_eq!(m.entries().len(), 14);
+        assert_eq!(m.entries().len(), 15);
         assert!(m.entry(PipelineFamily::SolidRect).is_some());
         assert!(m.entry(PipelineFamily::Image).is_some());
         assert!(m.entry(PipelineFamily::MaskComposite).is_some());
+        assert!(m.entry(PipelineFamily::ScalableText).is_some());
         assert!(m.entry(PipelineFamily::PathFill).is_some());
         assert!(m.entry(PipelineFamily::AnalyticRRect).is_some());
         assert!(m.entry(PipelineFamily::AnalyticEllipse).is_some());
@@ -448,6 +466,10 @@ mod tests {
         assert_eq!(
             m.entry(PipelineFamily::MaskComposite).unwrap().msl,
             GLYPHRUN_MSL_ORIGINAL
+        );
+        assert_eq!(
+            m.entry(PipelineFamily::ScalableText).unwrap().msl,
+            MTSDF_MSL_ORIGINAL
         );
         assert_eq!(
             m.entry(PipelineFamily::PathFill).unwrap().msl,

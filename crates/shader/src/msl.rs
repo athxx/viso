@@ -37,7 +37,7 @@ use crate::ir::codegen_msl::{emit_msl, emit_schema_attrs, schema_from_attrs};
 use crate::ir::module::{
     ShaderIr, advanced_blend_ir, analytic_capsule_ir, analytic_ellipse_ir, analytic_line_ir,
     analytic_rrect_ir, analytic_shadow_ir, blur_ir, color_transform_ir, glyphrun_ir, gradient_ir,
-    image_ir, material_ir, mesh_ir, quad_ir,
+    image_ir, material_ir, mesh_ir, mtsdf_ir, quad_ir,
 };
 
 /// The built-in primitive shaders (architecture section 15.3). One entry per
@@ -51,8 +51,11 @@ use crate::ir::module::{
 pub enum PrimitiveKind {
     /// A rounded/bordered rectangle.
     Quad,
-    /// A run of shaped glyphs.
+    /// A run of shaped glyphs sampling an A8 coverage atlas.
     GlyphRun,
+    /// A run of glyphs sampling a multi-channel signed distance field atlas: the
+    /// scalable text lane, where one field serves a range of sizes.
+    Mtsdf,
     /// A textured image.
     Image,
     /// A filled/stroked vector path.
@@ -100,6 +103,7 @@ pub fn shader_source(kind: PrimitiveKind) -> Option<&'static str> {
         PrimitiveKind::Quad => Some(QUAD_MSL()),
         PrimitiveKind::Image => Some(IMAGE_MSL()),
         PrimitiveKind::GlyphRun => Some(GLYPHRUN_MSL()),
+        PrimitiveKind::Mtsdf => Some(MTSDF_MSL()),
         PrimitiveKind::AnalyticRRect => Some(ANALYTIC_RRECT_MSL()),
         PrimitiveKind::AnalyticEllipse => Some(ANALYTIC_ELLIPSE_MSL()),
         PrimitiveKind::AnalyticCapsule => Some(ANALYTIC_CAPSULE_MSL()),
@@ -124,6 +128,7 @@ pub fn instance_schema(kind: PrimitiveKind) -> Option<InstanceSchema> {
         PrimitiveKind::Quad => Some(quad_schema()),
         PrimitiveKind::Image => Some(image_schema()),
         PrimitiveKind::GlyphRun => Some(glyphrun_schema()),
+        PrimitiveKind::Mtsdf => Some(mtsdf_schema()),
         PrimitiveKind::AnalyticRRect => Some(analytic_rrect_schema()),
         PrimitiveKind::AnalyticEllipse => Some(analytic_ellipse_schema()),
         PrimitiveKind::AnalyticCapsule => Some(analytic_capsule_schema()),
@@ -224,6 +229,17 @@ pub fn advanced_blend_schema() -> InstanceSchema {
 pub fn glyphrun_schema() -> InstanceSchema {
     static CELL: OnceLock<Vec<SchemaAttr>> = OnceLock::new();
     cached_schema(&CELL, &glyphrun_ir())
+}
+
+/// The instance schema the MTSDF shader declares — projected from [`mtsdf_ir`].
+///
+/// Byte-identical to the GlyphRun schema: the two text lanes share one instance
+/// layout and one instance buffer, and differ only in how the fragment decodes
+/// the atlas texel. Keeping the ABI common is what lets a run switch lanes
+/// without re-packing its instances.
+pub fn mtsdf_schema() -> InstanceSchema {
+    static CELL: OnceLock<Vec<SchemaAttr>> = OnceLock::new();
+    cached_schema(&CELL, &mtsdf_ir())
 }
 
 /// The per-vertex schema the general mesh shader declares — projected from
@@ -441,6 +457,26 @@ pub fn ADVANCED_BLEND_MSL() -> &'static str {
 pub fn GLYPHRUN_MSL() -> &'static str {
     static CELL: OnceLock<String> = OnceLock::new();
     cached_msl(&CELL, || emit_msl(&glyphrun_ir()))
+}
+
+/// Inline MSL for the MTSDF built-in (Metal backend), derived from [`mtsdf_ir`].
+///
+/// Like [`GLYPHRUN_MSL`], only the real Metal backend compiles it. See
+/// `viso-msl-reserved-half`.
+///
+/// Contract (guaranteed by the shared IR): the same instance ABI as
+/// [`GLYPHRUN_MSL`] — per-instance data at buffer index 1, viewport uniform at
+/// index 0 — but the texture at `[[texture(0)]]` is an **RGBA8 non-sRGB**
+/// multi-channel distance field, sampled linearly: the data is distances, and an
+/// sRGB view would gamma-warp every one of them. The fragment takes the median of
+/// RGB, falls back to alpha's true distance on a sign clash, and scales the
+/// stored range into device pixels using the quad's pixels-per-uv span, matching
+/// the headless `fill_mtsdf` path. `color` is **straight** and the fragment
+/// outputs premultiplied.
+#[allow(non_snake_case)]
+pub fn MTSDF_MSL() -> &'static str {
+    static CELL: OnceLock<String> = OnceLock::new();
+    cached_msl(&CELL, || emit_msl(&mtsdf_ir()))
 }
 
 /// Inline MSL for the general mesh built-in (Path/Mesh, Metal backend), derived

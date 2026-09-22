@@ -28,6 +28,7 @@ pub mod graph;
 pub mod inspect;
 pub mod mask;
 pub mod mask_page;
+pub mod mtsdf_atlas;
 pub mod opacity;
 pub mod path;
 pub mod pool;
@@ -71,6 +72,7 @@ pub use inspect::{
 // not in the prelude).
 pub use mask::{MaskCache, MaskFormat, MaskKey, MaskKind, MaskRequest, MaskResolution, MaskSlot};
 pub use mask_page::MaskPage;
+pub use mtsdf_atlas::{MtsdfAlloc, MtsdfAtlas};
 pub use raster_mask::{path_bounds, rasterize_path_coverage};
 // The opacity planner (§14.5): fold group opacity into children for free, or pay
 // for an isolation layer only when overlapping children make per-child opacity
@@ -84,7 +86,7 @@ pub use primitive::{
     Align, Align2, AnalyticCapsule, AnalyticCapsuleInstance, AnalyticEllipse,
     AnalyticEllipseInstance, AnalyticLine, AnalyticLineInstance, AnalyticRRect,
     AnalyticRRectInstance, AnalyticShadow, Border, ColorTransformInstance, Corners, DashPattern,
-    Fit, FrostedMaterial, GlyphInstance, GlyphInstanceData, GlyphRunDraw, Gradient,
+    Fit, FrostedMaterial, GlyphInstance, GlyphInstanceData, GlyphLane, GlyphRunDraw, Gradient,
     GradientInstance, GradientKind, GradientStop, ImageDraw, ImageInstance, ImageRect, LayerClip,
     LineCap, LineJoin, MaterialLane, MaterialLaneNeeds, Mesh, MeshVertex, NativeMaterialRegion,
     NineSlice, Path, PathCmd, PathShadow, Point, Primitive, Quad, QuadInstance, Rect,
