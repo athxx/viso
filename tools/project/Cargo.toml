@@ -1,0 +1,25 @@
+[package]
+name = "viso-project"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+
+# The project/config resolution model shared by the CLI, the language server and
+# any future Studio (Viso_CLI.md section 40). It answers "what project am I in,
+# what is the resolved configuration, and what am I building" and nothing else:
+# no argument parsing, no cargo invocation, no GPU, no compiler.
+#
+# It depends on no viso crate on purpose. The dependency direction in
+# Viso_CLI.md section 41 is tools -> framework, never the reverse, and nothing
+# here needs a framework type: a resolved configuration is plain data. Keeping
+# the edge absent also keeps `viso --help` free of any framework initialization
+# (Viso_CLI.md section 64).
+[dependencies]
+# Format-preserving TOML parse with byte spans. The spans are the reason for this
+# dependency rather than a hand-rolled subset parser: every config diagnostic and
+# every resolved value must be able to point at the line it came from
+# (Viso_CLI.md section 5 provenance, section 10.1 `config show`). `default-features`
+# stays on for `parse`/`display`; no serde is pulled in.
+toml_edit = "0.25"

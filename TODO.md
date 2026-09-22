@@ -58,49 +58,49 @@ Goal: one answer to "what project am I in, what is the resolved configuration, a
 I building". Everything after T0 asks this crate instead of re-deriving it. No CLI, no
 GPU, no compiler — a pure resolution library over `Viso.toml` and the environment.
 
-- [ ] `tools/project/` new crate `viso-project`; workspace member; `toml_edit` dependency
+- [x] `tools/project/` new crate `viso-project`; workspace member; `toml_edit` dependency
       (format-preserving DOM parse, no `serde` in the tree — `viso config` must be able to
       report the *source* of every value, which a plain deserialize throws away).
-- [ ] `Viso.toml` schema (`Viso_CLI.md` §38), typed and total — unknown keys are a
+- [x] `Viso.toml` schema (`Viso_CLI.md` §38), typed and total — unknown keys are a
       diagnostic, not silence:
-  - [ ] `[package]` name / bundle_id / version.
-  - [ ] `[build] default_target`.
-  - [ ] `[profile.dev|release|shipping]` opt_level / source_maps / strip (§38.2).
-  - [ ] `[web]`, `[target.android]`, `[target.ios]`, `[export.*]` parsed and typed now even
+  - [x] `[package]` name / bundle_id / version.
+  - [x] `[build] default_target`.
+  - [x] `[profile.dev|release|shipping]` opt_level / source_maps / strip (§38.2).
+  - [x] `[web]`, `[target.android]`, `[target.ios]`, `[export.*]` parsed and typed now even
         though their commands are deferred — an unknown-key diagnostic must not fire on a
         config the deferred phases will honor.
-  - [ ] Reject `hot_reload = true` (or any synonym) under `release`/`shipping` with a
+  - [x] Reject `hot_reload = true` (or any synonym) under `release`/`shipping` with a
         stable config-error code, never a silently patchable release package (§38.2).
-- [ ] Project discovery (§4): walk up from cwd to the first `Viso.toml`, stop at filesystem
+- [x] Project discovery (§4): walk up from cwd to the first `Viso.toml`, stop at filesystem
       root; `--project <path>` overrides; workspace `members` in the root manifest.
-- [ ] Config precedence (§5), with provenance recorded per value so `viso config show` can
+- [x] Config precedence (§5), with provenance recorded per value so `viso config show` can
       print where each came from: CLI flag → `VISO_*` env → `Viso.toml` target/profile
       override → `Viso.toml` project defaults → framework default.
-- [ ] Artifact-kind model (§2): `build` / `package` / `export` are three different outputs
+- [x] Artifact-kind model (§2): `build` / `package` / `export` are three different outputs
       with three different meanings; the type system must not let one be mistaken for
       another.
-- [ ] Target model (§3): `Host` (resolved from the current OS — never a positional the user
+- [x] Target model (§3): `Host` (resolved from the current OS — never a positional the user
       types, §1) and `Headless` (§3.4) are the T0 targets; `Ios`/`Android`/`Web*` are
       declared in the enum and return a clean "not in this build" for now (§3.2/§3.3).
-- [ ] Build mode ↔ dev-runtime linkage is fixed by the profile, not configurable
+- [x] Build mode ↔ dev-runtime linkage is fixed by the profile, not configurable
       (§38.2): `dev → Dev Runtime present`, `release|shipping → Dev Runtime absent`.
       Expose it as a resolved fact other sections read; T5 turns it into a cargo feature.
-- [ ] `BuildId` (§46) — a content-addressed id over {project fingerprint, target, profile,
+- [x] `BuildId` (§46) — a content-addressed id over {project fingerprint, target, profile,
       toolchain} that the T5 handshake compares; `ProjectFingerprint` over the source graph.
-- [ ] Cache layout (§45) and project lock (§44) under `target/viso/`: build-cache lock,
+- [x] Cache layout (§45) and project lock (§44) under `target/viso/`: build-cache lock,
       package-output lock, dev-session lock per target — advisory file locks, so two
       `viso run`s on one project cannot corrupt one artifact, while two *targets* stay
       concurrent.
-- [ ] Extend `cargo xtask check-deps` to cover `tools/*`: the crate→directory mapping is
+- [x] Extend `cargo xtask check-deps` to cover `tools/*`: the crate→directory mapping is
       currently `viso-x → crates/x`, which cannot see a tools crate; add an explicit path
       per allowlist entry, admit `viso-project`/`viso-dev`/`viso-cli`, and add the §41
       reverse check — no `crates/*` manifest may name a tools crate.
-- [ ] Tests: discovery from a nested dir / no-manifest / explicit `--project`; precedence
+- [x] Tests: discovery from a nested dir / no-manifest / explicit `--project`; precedence
       with a flag and an env var and a profile override all in play; every provenance
       answer; unknown-key and release-hot-reload diagnostics; lock contention;
       `BuildId` stability and its change on each input.
-- [ ] Gate green → commit T0.
-- [ ] FREEZE T0: `ResolvedConfig`, provenance, `Target`, `Profile`, `BuildId`,
+- [x] Gate green → commit T0.
+- [x] FREEZE T0: `ResolvedConfig`, provenance, `Target`, `Profile`, `BuildId`,
       `ProjectFingerprint`, cache/lock paths.
 
 ---
