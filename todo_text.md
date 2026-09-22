@@ -116,20 +116,21 @@ independent unit, and `fallback` is the hot path that pays for it today.
 Goal: delete the whole-atlas wipe. `viso-text` owns residency metadata, `viso-render` owns
 GPU pages; today render owns both and does it wrong.
 
-- [ ] `render`'s glyph atlas adopts `viso_text::GlyphResidency`: page-age + CLOCK eviction,
+- [x] `render`'s glyph atlas adopts `viso_text::GlyphResidency`: page-age + CLOCK eviction,
       per-kind pools (A8 / MTSDF / RGBA / Vector) with independent byte budgets.
-- [ ] Remove the generational whole-atlas wipe. A full atlas evicts the coldest page and
+- [x] Remove the generational whole-atlas wipe. A full atlas evicts the coldest page and
       re-admits; it never clears live glyphs. Atlas-full is a normal steady state, not a
       reset event.
-- [ ] Memory pressure evicts within one pool. It must not cascade into a full text-cache
+- [x] Memory pressure evicts within one pool. It must not cascade into a full text-cache
       clear (DoD: `memory pressure 不引发全 Text cache 连锁清空`).
-- [ ] Counters (AGENTS 61, §25): resident glyphs / pages / upload bytes per pool, evictions
-      per frame, admission failures. Wired from this section and never removed.
-- [ ] Tests: admitting past the budget evicts the coldest page and keeps the hot glyphs
+- [x] Counters (AGENTS 61, §25): resident glyphs / pages / upload bytes per pool, evictions
+      per frame, admission failures. Wired from this section and never removed. They live on
+      the facade's `TextCounters` beside `GlyphResidency`, not on render's frozen `FrameStats`.
+- [x] Tests: admitting past the budget evicts the coldest page and keeps the hot glyphs
       resident; a glyph evicted and re-requested re-admits without a whole-atlas upload;
       pool budgets are independent (filling the RGBA pool evicts nothing from A8); a
       steady-state frame over a warm working set admits nothing and uploads zero bytes.
-- [ ] Gate green → commit.
+- [x] Gate green → commit.
 
 ---
 

@@ -29,6 +29,23 @@
 //! non-referenced page: its generation is bumped, invalidating only the entries
 //! that lived on it, and it is reused. There is never a whole-atlas clear.
 //!
+//! A full pool is therefore a normal steady state, not a reset event: the
+//! coldest page is reclaimed and immediately re-admitted into, and every other
+//! page keeps its live glyphs and its pixels. Memory pressure uses the same
+//! sweep through [`GlyphResidency::shed_pool_to_pressure`], confined to the one
+//! pool named — it can never cascade into a text-cache-wide clear.
+//!
+//! # The pixel owner is told exactly which pages died
+//!
+//! Reclaiming a page invalidates pixels this crate does not own, so every
+//! reclaim is recorded and handed to the pixel owner through
+//! [`GlyphResidency::take_reclaims`]: `viso-render` resets that page's packer
+//! and drops the placements it held, and nothing else. The reverse direction
+//! exists too — when the owner's packer cannot fit a glyph the metadata layer
+//! thought would fit (rectangle fragmentation is invisible from here), the owner
+//! calls [`GlyphResidency::revoke`], which undoes the admission and seals the
+//! page so no further glyph is aimed at it until it is reclaimed.
+//!
 //! # Recency is folded once per frame, never per glyph draw
 //!
 //! Drawing a glyph only records that its page was touched this frame; it does
@@ -61,8 +78,61 @@ pub struct GlyphKey {
 /// A pool tracks residency at page granularity in fixed-count slots;
 /// pixel-level rectangle packing is a texture-memory concern that lives in
 /// `viso-render`, not in this metadata layer. A page is full when it holds this
-/// many glyphs.
+/// many glyphs, or when its byte capacity is reached, whichever comes first.
 const PAGE_GLYPH_CAP: usize = 256;
+
+/// The default byte capacity of one page: a 256×256 single-channel page.
+///
+/// The pixel owner overrides this per pool through [`PoolBudget`] — an RGBA page
+/// of the same edge length holds four times the bytes — so the metadata layer's
+/// notion of a full page tracks real texture memory.
+pub const DEFAULT_PAGE_BYTES: usize = 256 * 256;
+
+/// One pool's independent budget: how many pages it may hold, and how many
+/// bitmap bytes fit on one of its pages.
+///
+/// [`Self::bytes`] is the pool's byte ceiling. Budgets are per pool and never
+/// shared: a pool at its ceiling evicts within itself, so filling the color pool
+/// cannot evict a coverage glyph.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PoolBudget {
+    /// Maximum pages this pool may allocate before eviction is forced.
+    pub pages: usize,
+    /// Maximum admitted bitmap bytes one page holds.
+    pub page_bytes: usize,
+}
+
+impl PoolBudget {
+    /// A budget of `pages` pages of `page_bytes` bytes each.
+    pub const fn new(pages: usize, page_bytes: usize) -> Self {
+        Self { pages, page_bytes }
+    }
+
+    /// The pool's byte ceiling: every page full.
+    pub const fn bytes(&self) -> usize {
+        self.pages * self.page_bytes
+    }
+}
+
+impl Default for PoolBudget {
+    fn default() -> Self {
+        Self::new(64, DEFAULT_PAGE_BYTES)
+    }
+}
+
+/// A page whose contents were dropped by a reclaim, reported to the owner of the
+/// pixels.
+///
+/// The pixel owner must reset that page's rectangle packer and drop the
+/// placements it was holding for that page — and nothing else: no other page, no
+/// other pool, and never the whole texture. `kind` is the pool's canonical kind,
+/// so the vector pool reports [`GlyphImageKind::OutlineVector`] for both vector
+/// representations.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Reclaimed {
+    pub kind: GlyphImageKind,
+    pub page: usize,
+}
 
 /// The result of asking a pool to make a glyph resident.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -97,6 +167,10 @@ struct Page {
     /// CLOCK second-chance bit: set when the page is touched, cleared to give a
     /// recently-referenced page one reprieve before reclamation.
     referenced: bool,
+    /// Set by [`GlyphResidency::revoke`] when the pixel owner's packer could not
+    /// fit a glyph this page's byte accounting said would fit. A sealed page
+    /// accepts no further glyphs until it is reclaimed.
+    sealed: bool,
     /// Bumped when the page is reclaimed, so stale index entries pointing at an
     /// earlier generation are detected as invalidated.
     generation: u32,
@@ -112,14 +186,19 @@ impl Page {
         Self {
             last_used_epoch: epoch,
             referenced: false,
+            sealed: false,
             generation: 0,
             resident: Vec::new(),
             bytes: 0,
         }
     }
 
-    fn has_room(&self) -> bool {
-        self.resident.len() < PAGE_GLYPH_CAP
+    /// Whether a `need`-byte glyph still fits: a free slot, byte room under the
+    /// page's capacity, and not sealed by the pixel owner.
+    fn has_room(&self, need: usize, page_bytes: usize) -> bool {
+        !self.sealed
+            && self.resident.len() < PAGE_GLYPH_CAP
+            && self.bytes.saturating_add(need) <= page_bytes
     }
 }
 
@@ -128,6 +207,8 @@ impl Page {
 /// one pool never touches another and a whole-atlas reset is impossible.
 #[derive(Debug)]
 struct Pool {
+    /// The pool's canonical representation kind, reported in [`Reclaimed`].
+    kind: GlyphImageKind,
     /// This pool's pages.
     pages: Vec<Page>,
     /// Where each resident glyph lives: `(page index, page generation at
@@ -136,28 +217,32 @@ struct Pool {
     index: HashMap<GlyphKey, (usize, u32)>,
     /// CLOCK hand: where the next eviction sweep resumes.
     clock_hand: usize,
-    /// Maximum pages before eviction is forced for this pool.
-    max_pages: usize,
+    /// This pool's independent budget: page count and per-page bytes.
+    budget: PoolBudget,
     /// Accumulated bitmap bytes ever admitted into this pool: its upload
     /// candidate volume (counter 61 `gpu_upload_bytes` for the pool).
     upload_bytes_total: u64,
     /// Number of glyphs currently resident in this pool.
     resident_glyphs: usize,
-    /// Whether the last [`Self::select_page`] reclaimed a page (an eviction),
-    /// so callers can decide whether to fall back to A8 instead of evicting.
-    last_select_evicted: bool,
+    /// Pages reclaimed in this pool over its lifetime (counter 61).
+    evictions: u64,
+    /// Admissions the pixel owner could not place, undone by
+    /// [`GlyphResidency::revoke`] (counter 61).
+    admission_failures: u64,
 }
 
 impl Pool {
-    fn new(max_pages: usize) -> Self {
+    fn new(kind: GlyphImageKind, budget: PoolBudget) -> Self {
         Self {
+            kind,
             pages: Vec::new(),
             index: HashMap::new(),
             clock_hand: 0,
-            max_pages: max_pages.max(1),
+            budget: PoolBudget::new(budget.pages.max(1), budget.page_bytes.max(1)),
             upload_bytes_total: 0,
             resident_glyphs: 0,
-            last_select_evicted: false,
+            evictions: 0,
+            admission_failures: 0,
         }
     }
 
@@ -169,17 +254,37 @@ impl Pool {
         })
     }
 
-    /// Whether an admit of a new glyph would force an eviction: every page is
-    /// full and the pool is at its page budget.
-    fn would_evict(&self) -> bool {
-        self.pages.len() >= self.max_pages && !self.pages.iter().any(Page::has_room)
+    /// The first page a `need`-byte glyph fits on, if any.
+    fn room_for(&self, need: usize) -> Option<usize> {
+        let page_bytes = self.budget.page_bytes;
+        self.pages
+            .iter()
+            .position(|page| page.has_room(need, page_bytes))
+    }
+
+    /// Whether an admit of a new `need`-byte glyph would force an eviction:
+    /// no page has room and the pool is at its page budget.
+    fn would_evict(&self, need: usize) -> bool {
+        self.pages.len() >= self.budget.pages && self.room_for(need).is_none()
+    }
+
+    /// Bytes currently held by this pool's resident glyphs.
+    fn resident_bytes(&self) -> usize {
+        self.pages.iter().map(|page| page.bytes).sum()
     }
 
     /// Admit a new (known-not-resident) glyph, returning the page it landed on
     /// and the byte offset within that page. Grows a page, reuses a page with
-    /// room, or CLOCK-reclaims a cold page under budget pressure.
-    fn admit(&mut self, key: GlyphKey, bitmap_bytes: usize, epoch: u64) -> (usize, usize) {
-        let page = self.select_page(epoch);
+    /// room, or CLOCK-reclaims a cold page under budget pressure, logging any
+    /// reclaim for the pixel owner.
+    fn admit(
+        &mut self,
+        key: GlyphKey,
+        bitmap_bytes: usize,
+        epoch: u64,
+        reclaims: &mut Vec<Reclaimed>,
+    ) -> (usize, usize) {
+        let page = self.select_page(bitmap_bytes, epoch, reclaims);
         let offset_bytes = self.pages[page].bytes;
         self.pages[page].resident.push(key);
         self.pages[page].bytes += bitmap_bytes;
@@ -192,22 +297,59 @@ impl Pool {
         (page, offset_bytes)
     }
 
-    /// Pick a page to admit onto: a page with room, else a fresh page while
-    /// under budget, else a CLOCK-reclaimed cold page. Sets
-    /// [`Self::last_select_evicted`] when a page had to be reclaimed.
-    fn select_page(&mut self, epoch: u64) -> usize {
-        self.last_select_evicted = false;
-        if let Some(page) = self.pages.iter().position(Page::has_room) {
+    /// Pick a page to admit a `need`-byte glyph onto: a page with room, else a
+    /// fresh page while under budget, else a CLOCK-reclaimed cold page (logged
+    /// as a [`Reclaimed`] so the pixel owner can reset just that page).
+    fn select_page(&mut self, need: usize, epoch: u64, reclaims: &mut Vec<Reclaimed>) -> usize {
+        if let Some(page) = self.room_for(need) {
             return page;
         }
-        if self.pages.len() < self.max_pages {
+        if self.pages.len() < self.budget.pages {
             self.pages.push(Page::new(epoch));
             return self.pages.len() - 1;
         }
         let victim = self.evict_one();
-        self.reclaim_page(victim, epoch);
-        self.last_select_evicted = true;
+        self.reclaim_page(victim, epoch, reclaims);
         victim
+    }
+
+    /// Reclaim the coldest pages, one at a time, until the pool's resident bytes
+    /// fit `pressure_bytes`. Confined to this pool: it reclaims pages here and
+    /// reports them, and touches no other pool and no other cache.
+    fn shed(&mut self, pressure_bytes: usize, epoch: u64, reclaims: &mut Vec<Reclaimed>) {
+        while self.resident_bytes() > pressure_bytes {
+            let Some(victim) = (0..self.pages.len())
+                .filter(|&i| !self.pages[i].resident.is_empty())
+                .min_by_key(|&i| self.pages[i].last_used_epoch)
+            else {
+                return;
+            };
+            self.reclaim_page(victim, epoch, reclaims);
+        }
+    }
+
+    /// Undo the most recent admission of `key` on `page` — the pixel owner could
+    /// not place it — and seal the page so nothing else is aimed at it until it
+    /// is reclaimed. `bitmap_bytes` must be what the admission was charged.
+    fn revoke(&mut self, key: &GlyphKey, page: usize, bitmap_bytes: usize) {
+        let Some(slot) = self.pages.get_mut(page) else {
+            return;
+        };
+        slot.sealed = true;
+        self.admission_failures += 1;
+        debug_assert_eq!(
+            slot.resident.last(),
+            Some(key),
+            "revoke must name the admission that just happened on this page"
+        );
+        if slot.resident.last() != Some(key) {
+            return;
+        }
+        slot.resident.pop();
+        slot.bytes = slot.bytes.saturating_sub(bitmap_bytes);
+        self.index.remove(key);
+        self.upload_bytes_total = self.upload_bytes_total.saturating_sub(bitmap_bytes as u64);
+        self.resident_glyphs -= 1;
     }
 
     /// The CLOCK sweep: from the hand, give any referenced page one second
@@ -236,7 +378,9 @@ impl Pool {
     /// entries that lived on it), drop its residents, and reset its bytes. The
     /// stale index entries are detected lazily by generation mismatch on
     /// lookup. This never clears any other page or any other pool.
-    fn reclaim_page(&mut self, page: usize, epoch: u64) {
+    ///
+    /// The reclaim is logged so the pixel owner resets exactly this page.
+    fn reclaim_page(&mut self, page: usize, epoch: u64, reclaims: &mut Vec<Reclaimed>) {
         let evicted = std::mem::take(&mut self.pages[page].resident);
         self.resident_glyphs -= evicted.len();
         for key in &evicted {
@@ -253,6 +397,12 @@ impl Pool {
         self.pages[page].bytes = 0;
         self.pages[page].last_used_epoch = epoch;
         self.pages[page].referenced = false;
+        self.pages[page].sealed = false;
+        self.evictions += 1;
+        reclaims.push(Reclaimed {
+            kind: self.kind,
+            page,
+        });
     }
 }
 
@@ -277,6 +427,9 @@ pub struct GlyphResidency {
     /// Keyed by `(kind, page)` so all four pools share one per-frame bitset and
     /// recency stays off the per-glyph path.
     touched_this_frame: HashSet<(GlyphImageKind, usize)>,
+    /// Pages reclaimed since the pixel owner last drained them, in reclaim order.
+    /// Empty in steady state, so draining costs nothing per frame.
+    reclaims: Vec<Reclaimed>,
     /// Monotonic epoch counter; advanced once per frame across all pools.
     epoch: u64,
 }
@@ -289,27 +442,40 @@ impl Default for GlyphResidency {
 }
 
 impl GlyphResidency {
-    /// A residency map with the given page budget applied to every pool.
+    /// A residency map with the given page budget and the default page byte
+    /// capacity applied to every pool.
     pub fn new(max_pages: usize) -> Self {
-        Self {
-            a8: Pool::new(max_pages),
-            mtsdf: Pool::new(max_pages),
-            rgba: Pool::new(max_pages),
-            vector: Pool::new(max_pages),
-            touched_this_frame: HashSet::new(),
-            epoch: 0,
-        }
+        let budget = PoolBudget::new(max_pages, DEFAULT_PAGE_BYTES);
+        Self::with_pool_budgets(budget, budget, budget, budget)
     }
 
     /// A residency map with independent per-pool page budgets. A pool given a
     /// small budget evicts sooner without affecting the others.
     pub fn with_budgets(a8: usize, mtsdf: usize, rgba: usize, vector: usize) -> Self {
+        Self::with_pool_budgets(
+            PoolBudget::new(a8, DEFAULT_PAGE_BYTES),
+            PoolBudget::new(mtsdf, DEFAULT_PAGE_BYTES),
+            PoolBudget::new(rgba, DEFAULT_PAGE_BYTES),
+            PoolBudget::new(vector, DEFAULT_PAGE_BYTES),
+        )
+    }
+
+    /// A residency map whose four pools each carry their own page count and
+    /// per-page byte capacity — the form the pixel owner uses, since an RGBA page
+    /// of a given edge length holds four times the bytes of a coverage page.
+    pub fn with_pool_budgets(
+        a8: PoolBudget,
+        mtsdf: PoolBudget,
+        rgba: PoolBudget,
+        vector: PoolBudget,
+    ) -> Self {
         Self {
-            a8: Pool::new(a8),
-            mtsdf: Pool::new(mtsdf),
-            rgba: Pool::new(rgba),
-            vector: Pool::new(vector),
+            a8: Pool::new(GlyphImageKind::MaskA8, a8),
+            mtsdf: Pool::new(GlyphImageKind::ScalableMtsdf, mtsdf),
+            rgba: Pool::new(GlyphImageKind::ColorRgba8, rgba),
+            vector: Pool::new(GlyphImageKind::OutlineVector, vector),
             touched_this_frame: HashSet::new(),
+            reclaims: Vec::new(),
             epoch: 0,
         }
     }
@@ -345,14 +511,21 @@ impl GlyphResidency {
     pub fn get_or_admit(&mut self, key: GlyphKey, bitmap_bytes: usize) -> Admission {
         let kind = key.kind;
         let epoch = self.epoch;
-        let pool = self.pool_mut(kind);
+        let reclaims = &mut self.reclaims;
+        let pool = match kind {
+            GlyphImageKind::MaskA8 => &mut self.a8,
+            GlyphImageKind::ScalableMtsdf => &mut self.mtsdf,
+            GlyphImageKind::ColorRgba8 => &mut self.rgba,
+            GlyphImageKind::OutlineVector | GlyphImageKind::ColorVector => &mut self.vector,
+        };
+        let pool_kind = pool.kind;
         if let Some(page) = pool.resident_page(&key) {
             pool.pages[page].referenced = true;
-            self.touched_this_frame.insert((kind, page));
+            self.touched_this_frame.insert((pool_kind, page));
             return Admission::Cached { kind, page };
         }
-        let (page, offset_bytes) = pool.admit(key, bitmap_bytes, epoch);
-        self.touched_this_frame.insert((kind, page));
+        let (page, offset_bytes) = pool.admit(key, bitmap_bytes, epoch, reclaims);
+        self.touched_this_frame.insert((pool_kind, page));
         Admission::Admitted {
             kind,
             page,
@@ -383,7 +556,7 @@ impl GlyphResidency {
             return self.get_or_admit(key, bitmap_bytes);
         }
         // A8 requests never fall back — A8 *is* the fallback.
-        if kind == GlyphImageKind::MaskA8 || !self.pool(kind).would_evict() {
+        if kind == GlyphImageKind::MaskA8 || !self.pool(kind).would_evict(bitmap_bytes) {
             return self.get_or_admit(key, bitmap_bytes);
         }
         // The promoted pool would evict: admit into A8 as coverage instead.
@@ -412,12 +585,68 @@ impl GlyphResidency {
     /// glyph collapse to one recency update per frame and nothing mutates page
     /// age here.
     pub fn touch(&mut self, key: GlyphKey) {
-        let kind = key.kind;
-        let pool = self.pool_mut(kind);
+        let pool = self.pool_mut(key.kind);
+        let pool_kind = pool.kind;
         if let Some(page) = pool.resident_page(&key) {
             pool.pages[page].referenced = true;
-            self.touched_this_frame.insert((kind, page));
+            self.touched_this_frame.insert((pool_kind, page));
         }
+    }
+
+    /// Mark a page used this frame, for callers that already know which page a
+    /// glyph lives on (the pixel owner's placement record carries it).
+    ///
+    /// Same effect as [`Self::touch`] without the residency index lookup, so the
+    /// per-glyph-draw path costs no hash of a [`GlyphKey`].
+    pub fn touch_page(&mut self, kind: GlyphImageKind, page: usize) {
+        let pool = self.pool_mut(kind);
+        let pool_kind = pool.kind;
+        if let Some(slot) = pool.pages.get_mut(page) {
+            slot.referenced = true;
+            self.touched_this_frame.insert((pool_kind, page));
+        }
+    }
+
+    /// Undo an admission the pixel owner could not place, and seal its page.
+    ///
+    /// The metadata layer accounts bytes; the owner packs rectangles, and
+    /// fragmentation can defeat a placement this layer thought would fit. Then
+    /// the owner calls this with the same `bitmap_bytes` the admission was
+    /// charged: the glyph stops being resident, the bytes are refunded, one
+    /// admission failure is counted, and the page is sealed so the next admit
+    /// aims elsewhere (or reclaims a cold page) instead of retrying forever.
+    pub fn revoke(&mut self, key: GlyphKey, page: usize, bitmap_bytes: usize) {
+        self.pool_mut(key.kind).revoke(&key, page, bitmap_bytes);
+    }
+
+    /// Move the pages reclaimed since the last drain into `out`.
+    ///
+    /// The pixel owner calls this after admitting and after shedding, resets each
+    /// reported page's packer, and drops the placements it held for that page —
+    /// only those. Empty in steady state, so a warm frame drains nothing.
+    pub fn take_reclaims(&mut self, out: &mut Vec<Reclaimed>) {
+        out.append(&mut self.reclaims);
+    }
+
+    /// Shed one pool down to `pressure_bytes` of resident bytes, reclaiming its
+    /// coldest pages first, and return how many pages were reclaimed.
+    ///
+    /// Memory pressure is answered inside the named pool: the other three pools
+    /// keep every glyph, no other text cache is consulted, and nothing is
+    /// cleared wholesale. The reclaimed pages are reported through
+    /// [`Self::take_reclaims`] like any other eviction.
+    pub fn shed_pool_to_pressure(&mut self, kind: GlyphImageKind, pressure_bytes: usize) -> u64 {
+        let epoch = self.epoch;
+        let reclaims = &mut self.reclaims;
+        let pool = match kind {
+            GlyphImageKind::MaskA8 => &mut self.a8,
+            GlyphImageKind::ScalableMtsdf => &mut self.mtsdf,
+            GlyphImageKind::ColorRgba8 => &mut self.rgba,
+            GlyphImageKind::OutlineVector | GlyphImageKind::ColorVector => &mut self.vector,
+        };
+        let before = pool.evictions;
+        pool.shed(pressure_bytes, epoch, reclaims);
+        pool.evictions - before
     }
 
     /// Fold this frame's touched pages into recency and advance the epoch.
@@ -479,6 +708,41 @@ impl GlyphResidency {
     /// The number of pages currently allocated in one pool.
     pub fn pool_page_count(&self, kind: GlyphImageKind) -> usize {
         self.pool(kind).pages.len()
+    }
+
+    /// Bytes currently held by one pool's resident glyphs, against
+    /// [`PoolBudget::bytes`].
+    pub fn pool_resident_bytes(&self, kind: GlyphImageKind) -> usize {
+        self.pool(kind).resident_bytes()
+    }
+
+    /// One pool's independent budget.
+    pub fn pool_budget(&self, kind: GlyphImageKind) -> PoolBudget {
+        self.pool(kind).budget
+    }
+
+    /// Pages reclaimed across all four pools (counter 61: evictions).
+    pub fn evictions(&self) -> u64 {
+        self.a8.evictions + self.mtsdf.evictions + self.rgba.evictions + self.vector.evictions
+    }
+
+    /// Pages reclaimed in one pool.
+    pub fn pool_evictions(&self, kind: GlyphImageKind) -> u64 {
+        self.pool(kind).evictions
+    }
+
+    /// Admissions the pixel owner could not place, across all four pools
+    /// (counter 61: admission failures).
+    pub fn admission_failures(&self) -> u64 {
+        self.a8.admission_failures
+            + self.mtsdf.admission_failures
+            + self.rgba.admission_failures
+            + self.vector.admission_failures
+    }
+
+    /// Admissions the pixel owner could not place in one pool.
+    pub fn pool_admission_failures(&self, kind: GlyphImageKind) -> u64 {
+        self.pool(kind).admission_failures
     }
 }
 
@@ -787,6 +1051,198 @@ mod tests {
         ));
         assert_eq!(res.pool_resident_glyphs(GlyphImageKind::ScalableMtsdf), 1);
         assert_eq!(res.pool_resident_glyphs(GlyphImageKind::MaskA8), 0);
+    }
+
+    #[test]
+    fn a_byte_budget_fills_a_page_before_its_slots_do() {
+        // A page that holds 100 bytes takes two 40-byte glyphs and grows a second
+        // page for the third, long before the 256-slot cap is in play.
+        let mut res = GlyphResidency::with_pool_budgets(
+            PoolBudget::new(4, 100),
+            PoolBudget::default(),
+            PoolBudget::default(),
+            PoolBudget::default(),
+        );
+        let pages = |r: &GlyphResidency| r.pool_page_count(GlyphImageKind::MaskA8);
+        res.get_or_admit_a8(key(1, 0), 40);
+        res.get_or_admit_a8(key(2, 0), 40);
+        assert_eq!(pages(&res), 1, "80 of 100 bytes: still one page");
+        res.get_or_admit_a8(key(3, 0), 40);
+        assert_eq!(
+            pages(&res),
+            2,
+            "the third glyph does not fit the byte budget"
+        );
+        assert_eq!(res.pool_resident_bytes(GlyphImageKind::MaskA8), 120);
+        assert_eq!(res.pool_budget(GlyphImageKind::MaskA8).bytes(), 400);
+    }
+
+    #[test]
+    fn a_reclaim_is_reported_to_the_pixel_owner_and_nothing_else_is() {
+        // One page of 100 bytes: the third glyph forces that page's reclaim, and
+        // exactly one page is reported — never a whole-atlas reset.
+        let mut res = GlyphResidency::with_pool_budgets(
+            PoolBudget::new(1, 100),
+            PoolBudget::default(),
+            PoolBudget::default(),
+            PoolBudget::default(),
+        );
+        let mut reclaims = Vec::new();
+        res.get_or_admit_a8(key(1, 0), 40);
+        res.get_or_admit_a8(key(2, 0), 40);
+        res.take_reclaims(&mut reclaims);
+        assert!(reclaims.is_empty(), "admitting with room reclaims nothing");
+
+        res.get_or_admit_a8(key(3, 0), 40);
+        res.take_reclaims(&mut reclaims);
+        assert_eq!(
+            reclaims,
+            vec![Reclaimed {
+                kind: GlyphImageKind::MaskA8,
+                page: 0,
+            }]
+        );
+        assert_eq!(res.evictions(), 1);
+        // Draining is idempotent: the same reclaim is not reported twice.
+        reclaims.clear();
+        res.take_reclaims(&mut reclaims);
+        assert!(reclaims.is_empty());
+        // The re-admitted glyph is resident on the reclaimed page.
+        assert!(matches!(
+            res.get_or_admit_a8(key(3, 0), 40),
+            Admission::Cached { .. }
+        ));
+    }
+
+    #[test]
+    fn a_revoked_admission_seals_its_page_and_is_not_resident() {
+        // The pixel owner's packer could not fit the glyph the byte accounting
+        // admitted: the admission is undone and the page takes nothing more.
+        let mut res = GlyphResidency::with_pool_budgets(
+            PoolBudget::new(2, 1_000),
+            PoolBudget::default(),
+            PoolBudget::default(),
+            PoolBudget::default(),
+        );
+        let Admission::Admitted { page, .. } = res.get_or_admit_a8(key(1, 0), 40) else {
+            panic!("first admit");
+        };
+        res.revoke(key(1, 0), page, 40);
+
+        assert_eq!(res.pool_resident_glyphs(GlyphImageKind::MaskA8), 0);
+        assert_eq!(res.pool_resident_bytes(GlyphImageKind::MaskA8), 0);
+        assert_eq!(res.upload_bytes_total(), 0, "the bytes were refunded");
+        assert_eq!(res.admission_failures(), 1);
+
+        // The sealed page takes nothing more, so the next admit grows a page
+        // instead of aiming at it again.
+        let Admission::Admitted { page: next, .. } = res.get_or_admit_a8(key(2, 0), 40) else {
+            panic!("second admit");
+        };
+        assert_ne!(next, page, "a sealed page is not admitted onto");
+        assert_eq!(res.pool_page_count(GlyphImageKind::MaskA8), 2);
+    }
+
+    #[test]
+    fn a_reclaim_unseals_the_page_it_reuses() {
+        // Sealing is a property of a page's current contents, not of the page:
+        // reclaiming it makes it admissible again.
+        let mut res = GlyphResidency::with_pool_budgets(
+            PoolBudget::new(1, 1_000),
+            PoolBudget::default(),
+            PoolBudget::default(),
+            PoolBudget::default(),
+        );
+        let Admission::Admitted { page, .. } = res.get_or_admit_a8(key(1, 0), 40) else {
+            panic!("first admit");
+        };
+        res.revoke(key(1, 0), page, 40);
+        // The only page is sealed and the pool is at its page budget, so this
+        // admit must reclaim it — and then succeed on it.
+        let Admission::Admitted { page: reused, .. } = res.get_or_admit_a8(key(2, 0), 40) else {
+            panic!("admit after seal");
+        };
+        assert_eq!(reused, page);
+        assert_eq!(res.pool_resident_glyphs(GlyphImageKind::MaskA8), 1);
+        assert_eq!(res.evictions(), 1);
+    }
+
+    #[test]
+    fn memory_pressure_sheds_one_pool_and_leaves_the_others_whole() {
+        // Fill all four pools, then shed only the RGBA pool. No other pool loses
+        // a glyph, a page, or a byte: pressure never cascades into a text-cache
+        // clear (§13.10 DoD).
+        let page = PoolBudget::new(8, 100);
+        let mut res = GlyphResidency::with_pool_budgets(page, page, page, page);
+        for g in 0..6u16 {
+            res.get_or_admit(key_kind(g, 0, GlyphImageKind::MaskA8), 40);
+            res.get_or_admit(key_kind(g, 0, GlyphImageKind::ScalableMtsdf), 40);
+            res.get_or_admit(key_kind(g, 0, GlyphImageKind::ColorRgba8), 40);
+            res.get_or_admit(key_kind(g, 0, GlyphImageKind::OutlineVector), 40);
+            // Spread page ages so the shed has a coldest page to pick.
+            res.advance_epoch();
+        }
+        let mut reclaims = Vec::new();
+        res.take_reclaims(&mut reclaims);
+        reclaims.clear();
+
+        let a8_before = res.pool_resident_glyphs(GlyphImageKind::MaskA8);
+        let mtsdf_before = res.pool_resident_bytes(GlyphImageKind::ScalableMtsdf);
+        let vector_pages = res.pool_page_count(GlyphImageKind::OutlineVector);
+        let rgba_before = res.pool_resident_bytes(GlyphImageKind::ColorRgba8);
+        assert!(rgba_before > 80);
+
+        let evicted = res.shed_pool_to_pressure(GlyphImageKind::ColorRgba8, 80);
+        assert!(evicted > 0, "pressure reclaimed pages");
+        assert!(res.pool_resident_bytes(GlyphImageKind::ColorRgba8) <= 80);
+
+        // Every reported reclaim is an RGBA page and nothing else.
+        res.take_reclaims(&mut reclaims);
+        assert_eq!(reclaims.len() as u64, evicted);
+        assert!(
+            reclaims
+                .iter()
+                .all(|r| r.kind == GlyphImageKind::ColorRgba8)
+        );
+        // The other three pools are untouched.
+        assert_eq!(res.pool_resident_glyphs(GlyphImageKind::MaskA8), a8_before);
+        assert_eq!(
+            res.pool_resident_bytes(GlyphImageKind::ScalableMtsdf),
+            mtsdf_before
+        );
+        assert_eq!(
+            res.pool_page_count(GlyphImageKind::OutlineVector),
+            vector_pages
+        );
+        assert_eq!(res.pool_evictions(GlyphImageKind::MaskA8), 0);
+        assert_eq!(res.pool_evictions(GlyphImageKind::ScalableMtsdf), 0);
+        assert_eq!(res.pool_evictions(GlyphImageKind::OutlineVector), 0);
+    }
+
+    #[test]
+    fn shedding_to_a_budget_that_already_fits_reclaims_nothing() {
+        let mut res = GlyphResidency::new(4);
+        res.get_or_admit_a8(key(1, 0), 40);
+        let evicted = res.shed_pool_to_pressure(GlyphImageKind::MaskA8, 1_000);
+        assert_eq!(evicted, 0);
+        assert_eq!(res.pool_resident_glyphs(GlyphImageKind::MaskA8), 1);
+    }
+
+    #[test]
+    fn touch_page_folds_recency_without_an_index_lookup() {
+        let mut res = GlyphResidency::new(2);
+        let Admission::Admitted { kind, page, .. } = res.get_or_admit_a8(key(7, 0), 40) else {
+            panic!("admit");
+        };
+        res.advance_epoch();
+        let after_admit = res.a8.pages[page].last_used_epoch;
+
+        for _ in 0..10_000 {
+            res.touch_page(kind, page);
+        }
+        assert_eq!(res.a8.pages[page].last_used_epoch, after_admit);
+        res.advance_epoch();
+        assert!(res.a8.pages[page].last_used_epoch > after_admit);
     }
 
     #[test]

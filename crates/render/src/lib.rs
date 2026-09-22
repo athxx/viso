@@ -11,6 +11,7 @@
 
 #![forbid(unsafe_op_in_unsafe_fn)]
 
+pub mod atlas_plane;
 pub mod batch;
 pub mod binding_model;
 pub mod blend;
@@ -42,6 +43,7 @@ pub mod vector_lane;
 // Porter-Duff stays local; separable artistic modes read the destination;
 // non-separable HSL modes isolate (tagged AdvancedBlend) and defer to the
 // Effect Planner (E2). Cold-path classifier, not in the prelude (§3.2).
+pub use atlas_plane::AtlasPlane;
 pub use blend::{Blend, BlendPlan, BlendRealization, plan_blend};
 pub use clip::{ClipPlan, ClipShape, ClipTier, clips_children, plan_clip};
 pub use color_atlas::{ColorAlloc, ColorAtlas};
@@ -193,8 +195,8 @@ const TEST_FONT: &[u8] = include_bytes!("fixtures/DejaVuSans-subset.ttf");
 /// the baseline advance is a plain multiple of `font_size` rather than real
 /// face metrics, since this crate has no face-metrics dependency.
 pub fn test_glyphs(origin: [f32; 2], font_size: f32) -> TestGlyphs {
-    // A generous square atlas: the demo string fits with room to spare, so no
-    // overflow wipe occurs and every glyph keeps its first-pass UV.
+    // A generous square atlas, one page: the demo string fits with room to
+    // spare, so the page never fills and every glyph keeps its first-pass UV.
     const ATLAS_SIZE: u32 = 256;
     // Baseline of the first line below `origin.y`, and the advance between
     // successive baselines — plain `font_size` fractions (typical Latin text
@@ -203,7 +205,7 @@ pub fn test_glyphs(origin: [f32; 2], font_size: f32) -> TestGlyphs {
     let line_height = font_size * 1.2;
 
     let mut shaper = Shaper::new();
-    let mut atlas = GlyphAtlas::new(ATLAS_SIZE, TextureId::new(0));
+    let mut atlas = GlyphAtlas::new(ATLAS_SIZE, ATLAS_SIZE, TextureId::new(0));
     let mut glyphs = Vec::new();
 
     // Two lines to exercise `\n` handling and the baseline advance.
@@ -222,7 +224,7 @@ pub fn test_glyphs(origin: [f32; 2], font_size: f32) -> TestGlyphs {
         let mut pen_x = origin[0];
         for g in &run.glyphs {
             if let Some(bitmap) = rasterize_coverage(TEST_FONT, 0, g.glyph_id, font_size)
-                && let AtlasAlloc::Placed(uv) = atlas.alloc(&bitmap)
+                && let AtlasAlloc::Placed(uv) = atlas.alloc_in_page(0, &bitmap)
             {
                 // `left`/`top` are pen-origin-relative device pixels: `top`
                 // is the distance up from the baseline to the bitmap's top.

@@ -10,16 +10,34 @@ use viso_render::{
 };
 use viso_text::fallback::{FallbackPlan, FallbackPlanKey, FallbackStyle, FontFallback};
 use viso_text::font_manifest::{AssetRef, FontManifest};
+use viso_text::system_fonts::ColorGlyph;
 use viso_text::{
-    BaseDirection, BidiInfo, ColorGlyphRasterizer, Coverage, Direction, FontFaceId, FontRequest,
-    FontResolver, FontRole, GlyphImageKind, LineBreaker, Resolved, Segmenter, ShapedRun, Shaper,
-    inspect_face, rasterize_coverage,
+    Admission, BaseDirection, BidiInfo, ColorGlyphRasterizer, Coverage, CoverageBitmap, Direction,
+    FontFaceId, FontRequest, FontResolver, FontRole, GlyphImageKind, GlyphKey, GlyphResidency,
+    LineBreaker, PoolBudget, Reclaimed, Resolved, Segmenter, ShapedRun, Shaper, inspect_face,
+    rasterize_coverage,
 };
 use viso_ui::{Content, TextRequest, Vec2};
 
 use crate::system_fonts::{CoreTextColorRaster, CoreTextProvider, LiveFontRegistry};
 
 const ATLAS_SIZE: u32 = 1024;
+/// Page edge length: the atlas plane is cut into `256 × 256` pages, and the page
+/// is the unit of residency and of eviction (§13.9). Sixteen pages per plane is
+/// enough granularity that reclaiming the coldest one costs a small fraction of
+/// the working set, and few enough that the CLOCK sweep is trivially cheap.
+const ATLAS_PAGE: u32 = 256;
+/// Bytes per texel of the color plane, so an RGBA page is budgeted for the four
+/// times the bytes an A8 page of the same edge length holds.
+const COLOR_BYTES_PER_TEXEL: usize = 4;
+/// How many times one glyph may be re-aimed at a different page before it is
+/// given up on for this frame.
+///
+/// Residency accounts bytes; the packer places rectangles, so fragmentation can
+/// defeat a page the byte budget said would fit. Each refusal seals that page and
+/// reclaims elsewhere, so the retry always makes progress; the bound only keeps a
+/// pathological glyph from walking the whole plane in one frame.
+const PLACEMENT_RETRIES: u32 = 4;
 
 #[derive(Debug, Default)]
 pub(crate) struct TextCounters {
@@ -27,6 +45,10 @@ pub(crate) struct TextCounters {
     relinebreaks: Cell<u64>,
     rasters: Cell<u64>,
     atlas_upload_bytes: Cell<u64>,
+    /// Pages reclaimed this frame, across all pools (§25 eviction visibility).
+    evictions: Cell<u64>,
+    /// Admissions the packer refused this frame, forcing a re-aim.
+    admission_failures: Cell<u64>,
 }
 
 impl TextCounters {
@@ -46,6 +68,14 @@ impl TextCounters {
         self.atlas_upload_bytes.get()
     }
 
+    pub(crate) fn evictions(&self) -> u64 {
+        self.evictions.get()
+    }
+
+    pub(crate) fn admission_failures(&self) -> u64 {
+        self.admission_failures.get()
+    }
+
     fn record_shape(&self, wrapped: bool) {
         self.reshapes.set(self.reshapes.get() + 1);
         if wrapped {
@@ -62,11 +92,22 @@ impl TextCounters {
             .set(self.atlas_upload_bytes.get() + bytes as u64);
     }
 
+    fn record_eviction(&self) {
+        self.evictions.set(self.evictions.get() + 1);
+    }
+
+    fn record_admission_failure(&self) {
+        self.admission_failures
+            .set(self.admission_failures.get() + 1);
+    }
+
     fn reset(&self) {
         self.reshapes.set(0);
         self.relinebreaks.set(0);
         self.rasters.set(0);
         self.atlas_upload_bytes.set(0);
+        self.evictions.set(0);
+        self.admission_failures.set(0);
     }
 }
 
@@ -93,12 +134,17 @@ struct LayoutKey {
     width_bits: Option<u32>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-struct RasterKey {
-    face: FontFaceId,
-    glyph: u16,
-    bucket: u16,
-    kind: GlyphImageKind,
+/// Where one glyph's pixels live, as the pixel owner records it.
+///
+/// `page` is what makes residency and pixels one model: a cache hit touches that
+/// page for the CLOCK sweep without hashing a key, and a reclaim of that page
+/// drops exactly the placements that pointed into it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct Placement {
+    uv: Rect,
+    bearing: [f32; 2],
+    size: [u32; 2],
+    page: usize,
 }
 
 pub(crate) struct TextShaper {
@@ -112,10 +158,22 @@ pub(crate) struct TextShaper {
     primary: Option<FontFaceId>,
     next_asset: u32,
     layouts: HashMap<LayoutKey, PreparedLayout>,
-    coverage_uv: HashMap<RasterKey, (Rect, [f32; 2], [u32; 2])>,
-    color_uv: HashMap<RasterKey, (Rect, [f32; 2], [u32; 2])>,
+    coverage_uv: HashMap<GlyphKey, Placement>,
+    color_uv: HashMap<GlyphKey, Placement>,
     coverage_atlas: Option<GlyphAtlas>,
     color_atlas: Option<ColorAtlas>,
+    /// Which glyph is resident on which page, and which page is coldest. The
+    /// metadata half of the atlas lives in `viso-text`; the atlases above own the
+    /// pixels of the pages it names (§13.9, §13.10).
+    residency: GlyphResidency,
+    /// Scratch for draining reclaimed pages; reused so a reclaim allocates
+    /// nothing after warm-up and a steady-state frame drains an empty vec.
+    reclaims: Vec<Reclaimed>,
+    /// Atlas plane geometry in texels: edge length and page edge length. Fixed
+    /// for the process; the pool budgets above are derived from it, so the
+    /// metadata layer's "page full" and the packer's agree by construction.
+    atlas_size: u32,
+    atlas_page: u32,
     provider: CoreTextProvider,
     color_raster: CoreTextColorRaster,
     counters: TextCounters,
@@ -123,10 +181,19 @@ pub(crate) struct TextShaper {
 
 impl TextShaper {
     pub(crate) fn new() -> Self {
+        Self::with_atlas_geometry(ATLAS_SIZE, ATLAS_PAGE)
+    }
+
+    /// A shaper over atlas planes of `size × size` texels cut into
+    /// `page × page` pages, with each pool budgeted to match.
+    fn with_atlas_geometry(size: u32, page: u32) -> Self {
         // One live-font registry, shared between the provider (which records the
         // handles CoreText resolves) and the color/coverage raster (which
         // rasterizes through them). See `system_fonts::LiveFontRegistry`.
         let live = LiveFontRegistry::new();
+        let per_axis = (size / page.max(1)).max(1) as usize;
+        let pages = per_axis * per_axis;
+        let page_bytes = (page as usize) * (page as usize);
         Self {
             resolver: FontResolver::new(),
             fallback: FontFallback::new(1 << 30),
@@ -140,6 +207,19 @@ impl TextShaper {
             color_uv: HashMap::new(),
             coverage_atlas: None,
             color_atlas: None,
+            // Each pool is budgeted from the geometry of the plane that holds it,
+            // so "this page is full" means the same thing to the metadata layer
+            // and to the packer. The MTSDF and vector pools keep their defaults
+            // until their planes exist; their budgets are independent either way.
+            residency: GlyphResidency::with_pool_budgets(
+                PoolBudget::new(pages, page_bytes),
+                PoolBudget::default(),
+                PoolBudget::new(pages, page_bytes * COLOR_BYTES_PER_TEXEL),
+                PoolBudget::default(),
+            ),
+            reclaims: Vec::new(),
+            atlas_size: size,
+            atlas_page: page,
             provider: CoreTextProvider::new(live.clone()),
             color_raster: CoreTextColorRaster::new(live),
             counters: TextCounters::default(),
@@ -164,7 +244,16 @@ impl TextShaper {
         &self.counters
     }
 
-    pub(crate) fn reset_counters(&self) {
+    /// Residency itself, for the per-pool counters (resident glyphs, pages, and
+    /// upload bytes) — read straight from the owner rather than mirrored.
+    pub(crate) fn residency(&self) -> &GlyphResidency {
+        &self.residency
+    }
+
+    /// Close the frame: fold the pages drawn this frame into page recency once
+    /// (not once per glyph draw) and zero the per-frame counters.
+    pub(crate) fn end_frame(&mut self) {
+        self.residency.advance_epoch();
         self.counters.reset();
     }
 
@@ -210,26 +299,24 @@ impl TextShaper {
                     self.color_raster
                         .rasterize_color_glyph(glyph.face, glyph.glyph, ppem)
             {
-                let key = RasterKey {
+                let key = GlyphKey {
                     face: glyph.face,
                     glyph: glyph.glyph,
                     bucket: ppem,
                     kind: GlyphImageKind::ColorRgba8,
                 };
-                let cached = self.color_uv.get(&key).copied();
-                let packed = cached.or_else(|| {
-                    let atlas = ensure_color_atlas(&mut self.color_atlas, backend);
-                    match atlas.alloc(&color) {
-                        ColorAlloc::Placed(uv) => {
-                            self.counters.record_raster();
-                            let value = (uv, color.origin_px, [color.width, color.height]);
-                            self.color_uv.insert(key, value);
-                            Some(value)
-                        }
-                        ColorAlloc::Empty | ColorAlloc::Overflow => None,
+                let packed = match self.color_uv.get(&key) {
+                    Some(&placement) => {
+                        self.residency
+                            .touch_page(GlyphImageKind::ColorRgba8, placement.page);
+                        Some(placement)
                     }
-                });
-                if let Some((uv, bearing, size)) = packed {
+                    None => self.admit_color(backend, key, &color),
+                };
+                if let Some(Placement {
+                    uv, bearing, size, ..
+                }) = packed
+                {
                     let inv = 1.0 / dpi_factor;
                     // `origin_px` is the ink bbox's *bottom-left* in y-up strike
                     // px: `bearing[1]` is the bottom of the ink above the baseline
@@ -251,13 +338,15 @@ impl TextShaper {
                 }
             }
 
-            let key = RasterKey {
+            let key = GlyphKey {
                 face: glyph.face,
                 glyph: glyph.glyph,
                 bucket: ppem,
                 kind: GlyphImageKind::MaskA8,
             };
             let packed = if let Some(&cached) = self.coverage_uv.get(&key) {
+                self.residency
+                    .touch_page(GlyphImageKind::MaskA8, cached.page);
                 cached
             } else {
                 // Parser-outlined coverage first; if the face carries no
@@ -281,16 +370,14 @@ impl TextShaper {
                         b
                     }
                 };
-                let atlas = ensure_coverage_atlas(&mut self.coverage_atlas, backend);
-                let AtlasAlloc::Placed(uv) = atlas.alloc(&bitmap) else {
+                let Some(placement) = self.admit_coverage(backend, key, &bitmap) else {
                     continue;
                 };
-                let value = (uv, [bitmap.left, bitmap.top], [bitmap.width, bitmap.height]);
-                self.coverage_uv.insert(key, value);
-                self.counters.record_raster();
-                value
+                placement
             };
-            let (uv, bearing, size) = packed;
+            let Placement {
+                uv, bearing, size, ..
+            } = packed;
             let inv = 1.0 / dpi_factor;
             glyphs.push(GlyphInstanceData {
                 rect: Rect {
@@ -611,6 +698,137 @@ impl TextShaper {
             .sum()
     }
 
+    /// Admit a freshly rasterized coverage bitmap and pack its pixels onto the
+    /// page residency chose, re-aiming if the packer refuses that page.
+    ///
+    /// `None` when the glyph cannot be placed at all — larger than a page, empty,
+    /// or it exhausted its re-aims this frame. Nothing is cleared on the way:
+    /// filling the pool reclaims the coldest page and re-admits into it.
+    fn admit_coverage<B: GpuBackend>(
+        &mut self,
+        backend: &mut B,
+        key: GlyphKey,
+        bitmap: &CoverageBitmap,
+    ) -> Option<Placement> {
+        let bytes = bitmap.coverage.len();
+        for _ in 0..PLACEMENT_RETRIES {
+            let (page, fresh) = self.page_for(key, bytes);
+            let atlas = ensure_coverage_atlas(
+                &mut self.coverage_atlas,
+                backend,
+                self.atlas_size,
+                self.atlas_page,
+            );
+            match atlas.alloc_in_page(page, bitmap) {
+                AtlasAlloc::Placed(uv) => {
+                    let placement = Placement {
+                        uv,
+                        bearing: [bitmap.left, bitmap.top],
+                        size: [bitmap.width, bitmap.height],
+                        page,
+                    };
+                    self.coverage_uv.insert(key, placement);
+                    self.counters.record_raster();
+                    return Some(placement);
+                }
+                AtlasAlloc::PageFull if fresh => self.revoke(key, page, bytes),
+                AtlasAlloc::PageFull | AtlasAlloc::Empty | AtlasAlloc::TooLarge => return None,
+            }
+        }
+        None
+    }
+
+    /// The color-glyph twin of [`Self::admit_coverage`], against the RGBA pool and
+    /// the color plane.
+    fn admit_color<B: GpuBackend>(
+        &mut self,
+        backend: &mut B,
+        key: GlyphKey,
+        color: &ColorGlyph,
+    ) -> Option<Placement> {
+        let bytes = color.rgba.len();
+        for _ in 0..PLACEMENT_RETRIES {
+            let (page, fresh) = self.page_for(key, bytes);
+            let atlas = ensure_color_atlas(
+                &mut self.color_atlas,
+                backend,
+                self.atlas_size,
+                self.atlas_page,
+            );
+            match atlas.alloc_in_page(page, color) {
+                ColorAlloc::Placed(uv) => {
+                    let placement = Placement {
+                        uv,
+                        bearing: color.origin_px,
+                        size: [color.width, color.height],
+                        page,
+                    };
+                    self.color_uv.insert(key, placement);
+                    self.counters.record_raster();
+                    return Some(placement);
+                }
+                ColorAlloc::PageFull if fresh => self.revoke(key, page, bytes),
+                ColorAlloc::PageFull | ColorAlloc::Empty | ColorAlloc::TooLarge => return None,
+            }
+        }
+        None
+    }
+
+    /// Ask residency which page a glyph belongs on, then reopen every page the
+    /// decision reclaimed before anything is packed into it.
+    ///
+    /// The flag says whether this call created the admission; only then may a
+    /// refused placement be revoked (revoking a placement someone else owns would
+    /// corrupt the byte accounting).
+    fn page_for(&mut self, key: GlyphKey, bytes: usize) -> (usize, bool) {
+        let admission = self.residency.get_or_admit(key, bytes);
+        self.drain_reclaims();
+        match admission {
+            Admission::Admitted { page, .. } => (page, true),
+            Admission::Cached { page, .. } => (page, false),
+        }
+    }
+
+    /// Apply the reclaims residency has reported: reopen each named page for
+    /// packing and drop the placements that pointed into it — that page and
+    /// nothing else. Every other page keeps its pixels and its UVs, so no reclaim
+    /// can cascade into a cache-wide clear.
+    fn drain_reclaims(&mut self) {
+        let mut reclaims = std::mem::take(&mut self.reclaims);
+        self.residency.take_reclaims(&mut reclaims);
+        for reclaimed in reclaims.drain(..) {
+            self.counters.record_eviction();
+            match reclaimed.kind {
+                GlyphImageKind::MaskA8 => {
+                    if let Some(atlas) = self.coverage_atlas.as_mut() {
+                        atlas.reset_page(reclaimed.page);
+                    }
+                    self.coverage_uv
+                        .retain(|_, placement| placement.page != reclaimed.page);
+                }
+                GlyphImageKind::ColorRgba8 => {
+                    if let Some(atlas) = self.color_atlas.as_mut() {
+                        atlas.reset_page(reclaimed.page);
+                    }
+                    self.color_uv
+                        .retain(|_, placement| placement.page != reclaimed.page);
+                }
+                // The MTSDF and vector pools hold no plane yet, so they own no
+                // pixels to reopen.
+                GlyphImageKind::ScalableMtsdf
+                | GlyphImageKind::OutlineVector
+                | GlyphImageKind::ColorVector => {}
+            }
+        }
+        self.reclaims = reclaims;
+    }
+
+    /// Undo an admission the packer refused, counting the failure.
+    fn revoke(&mut self, key: GlyphKey, page: usize, bytes: usize) {
+        self.residency.revoke(key, page, bytes);
+        self.counters.record_admission_failure();
+    }
+
     fn upload_dirty<B: GpuBackend>(&mut self, backend: &mut B) {
         if let Some(atlas) = self.coverage_atlas.as_mut()
             && let Some((x, y, width, height, bytes)) = atlas.take_dirty()
@@ -630,32 +848,36 @@ impl TextShaper {
 fn ensure_coverage_atlas<'a, B: GpuBackend>(
     atlas: &'a mut Option<GlyphAtlas>,
     backend: &mut B,
+    size: u32,
+    page: u32,
 ) -> &'a mut GlyphAtlas {
     atlas.get_or_insert_with(|| {
         let texture = backend.create_texture(&TextureDesc {
-            width: ATLAS_SIZE,
-            height: ATLAS_SIZE,
+            width: size,
+            height: size,
             format: GlyphAtlas::FORMAT,
             render_target: false,
             label: "ui-glyph-coverage",
         });
-        GlyphAtlas::new(ATLAS_SIZE, texture)
+        GlyphAtlas::new(size, page, texture)
     })
 }
 
 fn ensure_color_atlas<'a, B: GpuBackend>(
     atlas: &'a mut Option<ColorAtlas>,
     backend: &mut B,
+    size: u32,
+    page: u32,
 ) -> &'a mut ColorAtlas {
     atlas.get_or_insert_with(|| {
         let texture = backend.create_texture(&TextureDesc {
-            width: ATLAS_SIZE,
-            height: ATLAS_SIZE,
+            width: size,
+            height: size,
             format: ColorAtlas::FORMAT,
             render_target: false,
             label: "ui-glyph-color",
         });
-        ColorAtlas::new(ATLAS_SIZE, texture)
+        ColorAtlas::new(size, page, texture)
     })
 }
 
@@ -724,6 +946,210 @@ mod tests {
         shaper
     }
 
+    /// A deliberately tiny plane for the residency tests: 96 × 96 texels cut into
+    /// nine 32-texel pages. At the sizes used below one padded glyph fills a page,
+    /// so every distinct glyph owns a page and page turnover is reachable within a
+    /// handful of frames — the same code path a 1024 × 1024 plane reaches after a
+    /// few thousand.
+    const TINY_PLANE: u32 = 96;
+    const TINY_PAGE: u32 = 32;
+    /// Two ascenders: at ~30px each is padded past half a page on both axes, so no
+    /// two of them ever share a page.
+    const PAIR: &str = "bd";
+
+    fn tiny_shaper() -> TextShaper {
+        let mut shaper = TextShaper::with_atlas_geometry(TINY_PLANE, TINY_PAGE);
+        shaper.load_font(TEST_FONT, 0).expect("fixture parses");
+        shaper
+    }
+
+    fn headless() -> HeadlessRaster {
+        let mut gpu = HeadlessRaster::new();
+        let _ = gpu.create_surface(RawWindowHandle::Headless, 128, 128);
+        gpu
+    }
+
+    fn request(text: &str, font_size: f32) -> TextRequest {
+        TextRequest {
+            text: text.into(),
+            font_size,
+            color: WHITE,
+            soft_wrap: false,
+        }
+    }
+
+    /// Draw the hot pair plus one never-before-seen resolution bucket per frame,
+    /// closing every frame the way the runtime does. Eighteen glyphs are demanded
+    /// of nine pages, so the pool must turn over. Returns the pages reclaimed.
+    fn flood(shaper: &mut TextShaper, gpu: &mut HeadlessRaster) -> u64 {
+        let mut evictions = 0;
+        for size in [27.0, 28.0, 29.0, 31.0, 32.0, 33.0, 34.0] {
+            shaper.shape(gpu, &request(PAIR, 30.0), 1.0, None);
+            shaper.shape(gpu, &request(PAIR, size), 1.0, None);
+            evictions += shaper.counters().evictions();
+            shaper.end_frame();
+        }
+        evictions
+    }
+
+    #[test]
+    fn filling_the_pool_reclaims_cold_pages_and_keeps_the_hot_glyphs() {
+        let mut gpu = headless();
+        let mut shaper = tiny_shaper();
+        shaper.shape(&mut gpu, &request(PAIR, 30.0), 1.0, None);
+        shaper.end_frame();
+
+        let evicted = flood(&mut shaper, &mut gpu);
+        assert!(evicted > 0, "nine pages must turn over under this load");
+        assert_eq!(
+            shaper.residency().pool_page_count(GlyphImageKind::MaskA8),
+            9,
+            "eviction reuses pages; it never grows the plane",
+        );
+
+        // The hot pair was drawn in every single frame, so CLOCK found its pages
+        // referenced every time it passed them: they are still resident, and this
+        // frame therefore rasterizes nothing and uploads nothing.
+        let content = shaper.shape(&mut gpu, &request(PAIR, 30.0), 1.0, None);
+        let Content::Text { glyphs, .. } = &content else {
+            panic!("text content");
+        };
+        assert_eq!(glyphs.len(), 2);
+        assert_eq!(
+            shaper.counters().rasters(),
+            0,
+            "the hot glyphs must survive the flood",
+        );
+        assert_eq!(shaper.counters().atlas_upload_bytes(), 0);
+    }
+
+    #[test]
+    fn a_reclaimed_glyph_readmits_without_a_whole_atlas_upload() {
+        let mut gpu = headless();
+        let mut shaper = tiny_shaper();
+        // Drawn once, in the first frame, and never touched again: the coldest
+        // page in the pool from that moment on.
+        let probe = request("q", 26.0);
+        shaper.shape(&mut gpu, &probe, 1.0, None);
+        shaper.end_frame();
+        assert!(flood(&mut shaper, &mut gpu) > 0);
+
+        let content = shaper.shape(&mut gpu, &probe, 1.0, None);
+        let Content::Text { glyphs, .. } = &content else {
+            panic!("text content");
+        };
+        assert_eq!(
+            glyphs.len(),
+            1,
+            "a reclaimed glyph re-admits, it is not dropped"
+        );
+        assert!(
+            shaper.counters().rasters() > 0,
+            "its page was reclaimed during the flood",
+        );
+        // Only the re-admitted glyph's own texels move. The generational wipe this
+        // replaced re-uploaded the entire plane every time it fired.
+        let uploaded = shaper.counters().atlas_upload_bytes();
+        assert!(
+            uploaded > 0 && uploaded < (TINY_PAGE * TINY_PAGE) as u64,
+            "re-admission uploaded {uploaded} bytes",
+        );
+    }
+
+    /// Pool budgets are independent: filling the RGBA pool reclaims color pages
+    /// and nothing else. The A8 coverage pool keeps every glyph and every page —
+    /// §13.10's `memory pressure 不引发全 Text cache 连锁清空`.
+    ///
+    /// macOS-only: only the CoreText provider yields real color-emoji bitmaps, so
+    /// only there can the RGBA pool be filled at all.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn filling_the_color_pool_reclaims_nothing_from_the_coverage_pool() {
+        let mut gpu = headless();
+        let mut shaper = tiny_shaper();
+        let latin = request(PAIR, 30.0);
+        shaper.shape(&mut gpu, &latin, 1.0, None);
+        shaper.end_frame();
+        let coverage_glyphs = shaper
+            .residency()
+            .pool_resident_glyphs(GlyphImageKind::MaskA8);
+        let coverage_bytes = shaper
+            .residency()
+            .pool_resident_bytes(GlyphImageKind::MaskA8);
+        assert!(coverage_glyphs > 0, "the coverage pool is warm");
+
+        // One fresh emoji bucket per frame, never re-requested, until the nine-page
+        // color pool turns over. The Latin pair is not drawn again at all.
+        for size in 12..=26 {
+            shaper.shape(&mut gpu, &request("🥟", size as f32), 1.0, None);
+            shaper.end_frame();
+        }
+        let residency = shaper.residency();
+        assert!(
+            residency.pool_evictions(GlyphImageKind::ColorRgba8) > 0,
+            "the color pool must have turned over",
+        );
+        assert_eq!(
+            residency.pool_evictions(GlyphImageKind::MaskA8),
+            0,
+            "color pressure must not reclaim a coverage page",
+        );
+        assert_eq!(
+            residency.pool_resident_glyphs(GlyphImageKind::MaskA8),
+            coverage_glyphs,
+        );
+        assert_eq!(
+            residency.pool_resident_bytes(GlyphImageKind::MaskA8),
+            coverage_bytes,
+        );
+
+        // And the untouched coverage glyphs are still usable: no raster, no upload.
+        shaper.shape(&mut gpu, &latin, 1.0, None);
+        assert_eq!(shaper.counters().rasters(), 0);
+        assert_eq!(shaper.counters().atlas_upload_bytes(), 0);
+    }
+
+    #[test]
+    fn a_warm_working_set_admits_nothing_and_uploads_zero_bytes() {
+        let mut gpu = headless();
+        let mut shaper = tiny_shaper();
+        let frame = ["Viso", "steady", "state"];
+        for text in frame {
+            shaper.shape(&mut gpu, &request(text, 18.0), 1.0, None);
+        }
+        shaper.end_frame();
+        let residency = shaper.residency();
+        let resident = residency.pool_resident_glyphs(GlyphImageKind::MaskA8);
+        let pages = residency.pool_page_count(GlyphImageKind::MaskA8);
+        let uploaded = residency.pool_upload_bytes(GlyphImageKind::MaskA8);
+        assert!(
+            resident > 0 && uploaded > 0,
+            "the first frame admitted glyphs"
+        );
+
+        for text in frame {
+            shaper.shape(&mut gpu, &request(text, 18.0), 1.0, None);
+        }
+        let counters = shaper.counters();
+        assert_eq!(counters.reshapes(), 0);
+        assert_eq!(counters.rasters(), 0);
+        assert_eq!(counters.atlas_upload_bytes(), 0);
+        assert_eq!(counters.evictions(), 0);
+        assert_eq!(counters.admission_failures(), 0);
+        let residency = shaper.residency();
+        assert_eq!(
+            residency.pool_resident_glyphs(GlyphImageKind::MaskA8),
+            resident,
+            "a warm frame admits nothing",
+        );
+        assert_eq!(residency.pool_page_count(GlyphImageKind::MaskA8), pages);
+        assert_eq!(
+            residency.pool_upload_bytes(GlyphImageKind::MaskA8),
+            uploaded,
+            "a warm frame uploads nothing",
+        );
+    }
+
     #[test]
     fn shapes_and_reuses_residency() {
         let mut gpu = HeadlessRaster::new();
@@ -736,7 +1162,7 @@ mod tests {
             soft_wrap: false,
         };
         let first = shaper.shape(&mut gpu, &request, 1.0, None);
-        shaper.reset_counters();
+        shaper.end_frame();
         let second = shaper.shape(&mut gpu, &request, 1.0, None);
         let Content::Text {
             glyphs,

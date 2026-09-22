@@ -1583,6 +1583,31 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
                                         c.rasters(),
                                         c.atlas_upload_bytes(),
                                     );
+                                    // Glyph residency, per representation pool:
+                                    // what is resident, how many pages hold it,
+                                    // and how the pools turned over this frame.
+                                    let r = text.residency();
+                                    use viso_text::GlyphImageKind as Pool;
+                                    let pools = [
+                                        ("a8", Pool::MaskA8),
+                                        ("mtsdf", Pool::ScalableMtsdf),
+                                        ("rgba", Pool::ColorRgba8),
+                                        ("vector", Pool::OutlineVector),
+                                    ];
+                                    for (name, kind) in pools {
+                                        eprintln!(
+                                            "viso: glyph pool {name} glyphs={} pages={} bytes={} upload_bytes={}",
+                                            r.pool_resident_glyphs(kind),
+                                            r.pool_page_count(kind),
+                                            r.pool_resident_bytes(kind),
+                                            r.pool_upload_bytes(kind),
+                                        );
+                                    }
+                                    eprintln!(
+                                        "viso: glyph residency evictions={} admission_failures={}",
+                                        c.evictions(),
+                                        c.admission_failures(),
+                                    );
                                 }
                             }
                         }
@@ -1601,11 +1626,12 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
                     // invalidation; clear every node's dirty set so the next frame
                     // starts clean and an idle frame recomputes nothing.
                     ws.store.clear_dirty();
-                    // Zero the text counters at the frame boundary so each frame's
-                    // trace reflects only that frame's shaping / raster / upload
-                    // work (a steady-state repaint reads back all zeros).
-                    if let Some(text) = &ws.text {
-                        text.reset_counters();
+                    // Close the text frame: fold the glyph pages drawn this frame
+                    // into page recency once, and zero the counters so each
+                    // frame's trace reflects only that frame's shaping / raster /
+                    // upload work (a steady-state repaint reads back all zeros).
+                    if let Some(text) = &mut ws.text {
+                        text.end_frame();
                     }
                     // Keep the loop beating while this window has live animations.
                     // `wants_animation` already tells the scheduler to stay in
