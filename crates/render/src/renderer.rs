@@ -921,6 +921,17 @@ pub struct FrameStats {
     /// over every pool (§61). Zero on a steady frame that changed nothing — a
     /// local paint change uploads only its changed slots (§9.1).
     pub gpu_upload_bytes: usize,
+    /// Compute dispatches this frame (§20.1, §61).
+    ///
+    /// Zero for every scene this renderer can draw: the vector lane is CPU
+    /// tessellation, and no backend exposes a dispatch encoder
+    /// ([`Caps::compute_dispatch`](viso_gpu::Caps::compute_dispatch)). The counter
+    /// exists ahead of the lane because the §20.1 hard rule is a *bound*, not an
+    /// implementation detail — ordinary UI must read `0` here forever, so the
+    /// number a test can assert has to be reported whether or not a dispatch could
+    /// happen. A compute lane that lit this up for twenty buttons would be a
+    /// regression visible in this field.
+    pub compute_dispatches: u32,
 }
 
 /// Turns per-frame primitives into GPU draw commands for one surface.
@@ -3522,6 +3533,9 @@ impl Renderer {
             // Counters no stage below D0 lights up yet; meaning fixed, value 0.
             instance_rebuilds: 0,
             gpu_upload_bytes: self.gpu_upload_bytes,
+            // The vector lane is CPU tessellation for every scene this renderer
+            // draws, and no backend offers a dispatch encoder (§20.1).
+            compute_dispatches: 0,
         }
     }
 

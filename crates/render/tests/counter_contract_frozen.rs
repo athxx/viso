@@ -79,6 +79,8 @@ fn frame_stats_roster_is_frozen() {
         render_pass_merges: 27,
         culled_render_passes: 28,
         render_graph_compiles: 29,
+        // Compute-lane bound (§20.1): ordinary UI reports zero dispatches.
+        compute_dispatches: 41,
     };
 
     // Every field reads back what it was set to — a plain integer counter, no
@@ -123,6 +125,7 @@ fn frame_stats_roster_is_frozen() {
     assert_eq!(s.render_pass_merges, 27);
     assert_eq!(s.culled_render_passes, 28);
     assert_eq!(s.render_graph_compiles, 29);
+    assert_eq!(s.compute_dispatches, 41);
 
     // The default is the all-zero frame: a renderer that drew nothing reports
     // every counter at zero, so a steady frame's deltas are meaningful.
@@ -167,6 +170,7 @@ fn frame_stats_roster_is_frozen() {
     assert_eq!(z.render_pass_merges, 0);
     assert_eq!(z.culled_render_passes, 0);
     assert_eq!(z.render_graph_compiles, 0);
+    assert_eq!(z.compute_dispatches, 0);
 }
 
 /// The seven effect cost classes are frozen in cheapest-first order (§7.5): the

@@ -165,6 +165,9 @@ impl MetalBackend {
             caps: Caps {
                 max_texture_size,
                 presents_to_display: true,
+                // The device has compute; this backend exposes no dispatch
+                // encoder, so nothing above it may plan one (§20.1).
+                compute_dispatch: false,
             },
             retire_queue: RetireQueue::new(),
             current_epoch: Epoch::START,
