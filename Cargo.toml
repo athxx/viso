@@ -19,6 +19,7 @@ members = [
     "crates/dsl",
     "crates/lsp",
     "crates/services",
+    "tools/project",
     "xtask",
     "libs/woff2",
     "examples/hello_world",
@@ -59,6 +60,11 @@ viso-widgets = { path = "crates/widgets", version = "0.0.0" }
 viso-dsl = { path = "crates/dsl", version = "0.0.0" }
 viso-lsp = { path = "crates/lsp", version = "0.0.0" }
 viso-services = { path = "crates/services", version = "0.0.0" }
+
+# Tooling crates. The dependency direction is one-way (architecture 41): a tools
+# crate may depend on a framework crate, never the reverse. `check-deps` enforces
+# both halves of that.
+viso-project = { path = "tools/project", version = "0.0.0" }
 
 # ---------------------------------------------------------------------------
 # Third-party crates. These are not viso* edges, so `cargo xtask check-deps`
