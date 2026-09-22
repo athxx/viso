@@ -11,9 +11,9 @@ use viso_render::{
 use viso_text::fallback::{FallbackPlan, FallbackPlanKey, FallbackStyle, FontFallback};
 use viso_text::font_manifest::{AssetRef, FontManifest};
 use viso_text::{
-    BaseDirection, BidiInfo, ColorGlyphRasterizer, Direction, FontFaceId, FontRequest,
+    BaseDirection, BidiInfo, ColorGlyphRasterizer, Coverage, Direction, FontFaceId, FontRequest,
     FontResolver, FontRole, GlyphImageKind, LineBreaker, Resolved, Segmenter, ShapedRun, Shaper,
-    face_covers, inspect_face, rasterize_coverage,
+    inspect_face, rasterize_coverage,
 };
 use viso_ui::{Content, TextRequest, Vec2};
 
@@ -104,6 +104,9 @@ struct RasterKey {
 pub(crate) struct TextShaper {
     resolver: FontResolver,
     fallback: FontFallback,
+    /// Coverage sets for resolver-owned faces, so per-cluster face selection is a
+    /// set lookup instead of a face parse per grapheme.
+    face_coverage: Coverage,
     shaper: Shaper,
     manifest: FontManifest,
     primary: Option<FontFaceId>,
@@ -127,6 +130,7 @@ impl TextShaper {
         Self {
             resolver: FontResolver::new(),
             fallback: FontFallback::new(1 << 30),
+            face_coverage: Coverage::new(),
             shaper: Shaper::new(),
             manifest: FontManifest::default(),
             primary: None,
@@ -415,9 +419,22 @@ impl TextShaper {
         }
     }
 
-    fn face_covers(&self, face: FontFaceId, text: &str) -> bool {
-        self.face_bytes(face)
-            .is_some_and(|(bytes, index)| face_covers(bytes, index, text))
+    /// Whether the face has a glyph for every scalar in `text` — the candidate
+    /// filter that picks a cluster's face before shaping.
+    ///
+    /// The answer comes from the face's coverage set, built once per face, so a
+    /// paragraph of many clusters does not re-parse a face per cluster. It is a
+    /// filter, not the verdict: the shaped run's coverage-miss flag is still what
+    /// decides whether the choice held.
+    fn face_covers(&mut self, face: FontFaceId, text: &str) -> bool {
+        let Some((bytes, index)) = self
+            .resolver
+            .face_bytes(face)
+            .or_else(|| self.fallback.face_bytes(face))
+        else {
+            return false;
+        };
+        self.face_coverage.face_covers(face, bytes, index, text)
     }
 
     fn shape_registered(

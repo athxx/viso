@@ -25,6 +25,12 @@
 //! per-shape learned plan, and locale is part of the key so the same Han scalar
 //! can resolve to a different face under `zh-Hans` / `zh-Hant` / `ja` / `ko`.
 //!
+//! The local coverage check goes through [`Coverage`], not through a fresh face
+//! parse: a candidate's `cmap` is compressed into a coverage set the first time
+//! it is asked about, so a walk over N candidates costs N set lookups and zero
+//! face parses once warm. Coverage is a candidate filter — the authoritative
+//! answer for a complex cluster is still the shaper's.
+//!
 //! Variation coordinates and presentation mode are part of the plan key's
 //! eventual identity (per the runtime spec) and are added with the color/emoji
 //! and variable-font slices; the key already carries the fields that are live.
@@ -44,9 +50,9 @@
 use std::collections::HashMap;
 
 use unicode_script::{Script, UnicodeScript};
-use unicode_segmentation::UnicodeSegmentation;
 
 use crate::FontFaceId;
+use crate::coverage::Coverage;
 use crate::font_request::{FontSlant, FontWeight, FontWidth};
 use crate::system_fonts::{SystemFontProvider, SystemFontQuery};
 
@@ -125,33 +131,6 @@ struct Candidate {
     postscript_name: Option<String>,
 }
 
-impl Candidate {
-    /// Bytes of `run`, from its start, this candidate's `cmap` covers, measured
-    /// over extended grapheme clusters so the boundary never falls inside one.
-    ///
-    /// A cluster counts as covered only when the face has a glyph for *every*
-    /// scalar in it; the first cluster with any missing scalar stops the mapping.
-    /// This keeps emoji ZWJ / skin-tone / variation-selector / flag sequences
-    /// atomic: a face that covers the base emoji but not the joiner or the
-    /// trailing scalar contributes zero for that cluster, so the whole cluster is
-    /// re-planned onto the emoji fallback face rather than split across faces.
-    /// Zero means the candidate covers no leading cluster of the run.
-    fn mapped_len(&self, run: &str) -> usize {
-        let Ok(face) = ttf_parser::Face::parse(&self.bytes, self.index) else {
-            return 0;
-        };
-        let mut mapped = 0;
-        for (offset, cluster) in run.grapheme_indices(true) {
-            if cluster.chars().all(|ch| face.glyph_index(ch).is_some()) {
-                mapped = offset + cluster.len();
-            } else {
-                break;
-            }
-        }
-        mapped
-    }
-}
-
 /// The run/cluster fallback planner with its per-shape candidate cache.
 ///
 /// It interns each distinct resolved fallback face once (so the same system face
@@ -171,6 +150,11 @@ pub struct FontFallback {
     /// Base id space offset: fallback face ids start above the resolver's app /
     /// system faces so the two id spaces never collide.
     id_base: u32,
+    /// Per-candidate coverage sets, built on the candidate's first coverage
+    /// question and reused for every later one. Without it a plan-cache hit
+    /// would still re-parse the candidate face per run, which is most of the
+    /// cost the plan cache exists to avoid.
+    coverage: Coverage,
     /// Counter: platform fallback queries issued (runs, never scalars).
     system_fallback_query_count: u64,
     /// Counter: bytes of run text mapped by a platform fallback query.
@@ -219,7 +203,7 @@ impl FontFallback {
         // Try the remembered candidate's local coverage first: a normal CJK page
         // takes this path for every run after the first, with no OS query.
         if let Some(&face) = self.plans.get(key) {
-            let mapped = self.faces[(face.0 - self.id_base) as usize].mapped_len(run);
+            let mapped = self.mapped_len(face, run);
             if mapped > 0 {
                 self.fallback_plan_hit += 1;
                 return FallbackPlan::Mapped {
@@ -245,7 +229,7 @@ impl FontFallback {
         };
 
         let face = self.intern(result.bytes, result.index, result.postscript_name);
-        let mapped = self.faces[(face.0 - self.id_base) as usize].mapped_len(run);
+        let mapped = self.mapped_len(face, run);
         if mapped == 0 {
             return FallbackPlan::Unresolved;
         }
@@ -277,6 +261,22 @@ impl FontFallback {
             .checked_sub(self.id_base)
             .and_then(|i| self.faces.get(i as usize))
             .and_then(|c| c.postscript_name.as_deref())
+    }
+
+    /// Bytes of `run`, from its start, the candidate covers, cluster-atomic —
+    /// see [`Coverage::mapped_len`]. The first question about a candidate derives
+    /// its coverage set; later runs test the set, so a warm fallback walk parses
+    /// no faces at all.
+    fn mapped_len(&mut self, face: FontFaceId, run: &str) -> usize {
+        let Some(candidate) = face
+            .0
+            .checked_sub(self.id_base)
+            .and_then(|i| self.faces.get(i as usize))
+        else {
+            return 0;
+        };
+        self.coverage
+            .mapped_len(face, &candidate.bytes, candidate.index, run)
     }
 
     /// Intern a resolved system face to a stable fallback id, deduping identical
@@ -320,6 +320,18 @@ impl FontFallback {
     pub fn fallback_plan_miss(&self) -> u64 {
         self.fallback_plan_miss
     }
+
+    /// Resident bytes of the candidates' coverage sets, to charge against the
+    /// Face Cache's budget alongside the candidate bytes themselves.
+    pub fn coverage_bytes(&self) -> usize {
+        self.coverage.bytes()
+    }
+
+    /// Face parses performed to build candidate coverage: one per interned
+    /// candidate, ever. A warm page of runs must not move this.
+    pub fn coverage_face_parses(&self) -> u64 {
+        self.coverage.face_parses()
+    }
 }
 
 /// A small FNV-1a hash over face bytes for candidate dedup identity. Only used
@@ -336,6 +348,8 @@ fn fnv1a(bytes: &[u8]) -> u64 {
 #[cfg(test)]
 mod tests {
     use std::cell::{Cell, RefCell};
+
+    use unicode_segmentation::UnicodeSegmentation;
 
     use super::*;
     use crate::system_fonts::SystemFontResult;
@@ -482,6 +496,58 @@ mod tests {
         assert_eq!(fb.system_fallback_query_count(), 1);
         assert_eq!(fb.fallback_plan_miss(), 1, "only the first run missed");
         assert_eq!(fb.fallback_plan_hit(), 199, "the rest hit the plan cache");
+    }
+
+    #[test]
+    fn a_warm_fallback_walk_parses_no_faces() {
+        // The coverage accelerator's contract: the local coverage check that
+        // serves a plan-cache hit must be a set lookup, not a face parse. One
+        // parse builds the candidate's coverage; 500 further runs across several
+        // shapes add none.
+        let provider = CountingProvider::new(true);
+        let mut fb = FontFallback::new(1000);
+        assert_eq!(fb.coverage_face_parses(), 0, "nothing is built eagerly");
+
+        fb.plan_run(&key(0, Script::Latin, ""), "AV", &provider);
+        assert_eq!(
+            fb.coverage_face_parses(),
+            1,
+            "the candidate was parsed once"
+        );
+        let warm_bytes = fb.coverage_bytes();
+        assert!(warm_bytes > 0, "the coverage set has a chargeable cost");
+
+        // Several distinct shapes, all resolving to the same interned candidate
+        // bytes, so each new plan reuses the one coverage set.
+        for locale in ["", "en", "fr"] {
+            for _ in 0..500 {
+                fb.plan_run(&key(0, Script::Latin, locale), "AVWxn", &provider);
+            }
+        }
+        assert_eq!(
+            fb.coverage_face_parses(),
+            1,
+            "a warm walk parses no faces at all"
+        );
+        assert_eq!(
+            fb.coverage_bytes(),
+            warm_bytes,
+            "and admits no new coverage"
+        );
+    }
+
+    #[test]
+    fn each_interned_candidate_is_parsed_once() {
+        // Four locales resolve to four byte-distinct candidates: one parse each,
+        // never one per run.
+        let provider = LocaleRoutingProvider::new();
+        let mut fb = FontFallback::new(1000);
+        for locale in ["zh-Hans", "zh-Hant", "ja", "ko"] {
+            for _ in 0..50 {
+                fb.plan_run(&key(0, Script::Han, locale), "AV", &provider);
+            }
+        }
+        assert_eq!(fb.coverage_face_parses(), 4, "one parse per candidate face");
     }
 
     #[test]
