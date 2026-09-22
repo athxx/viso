@@ -2932,22 +2932,114 @@ in `viso-gpu`. Enters only after M1 freezes; algorithms here are not frozen as p
 
 Not a construction stage; the full-stack acceptance the layers above collectively satisfy.
 Verify once the relevant layers are frozen:
-- [ ] Rect/RRect/Circle/Ellipse/Line/Arc/Path/Image/Text/Mesh each have an explicit
+
+The checklist is executable, not a document: `crates/render/tests/render_contract_1_0.rs`
+states sixteen of the eighteen items as outcome assertions through the public API, and the
+remaining two live where their subject is reachable (the pipeline manifest in `viso-shader`,
+the brush model in `scene::store`). The detailed mechanism contracts stay where they are —
+this file is the coarse statement that a forbidden default has not crept back in while every
+mechanism test still passes.
+
+- [x] Rect/RRect/Circle/Ellipse/Line/Arc/Path/Image/Text/Mesh each have an explicit
       primitive path.
-- [ ] Solid/Linear/Radial/Sweep/ImagePattern/Shader brushes have explicit semantics.
-- [ ] Stroke cap/join/miter/dash/alignment have explicit semantics.
-- [ ] Simple UI shape defaults to analytic/instanced, not CPU tessellate.
-- [ ] General stable path can be retained cached geometry.
-- [ ] Compute vector only as a large-dynamic-workload lane.
-- [ ] Default UI does not globally enable MSAA.
-- [ ] Rect clip uses scissor fast path.
-- [ ] Border radius does not automatically clip children.
-- [ ] Stable complex clip can enter the mask cache.
-- [ ] Simple shadow does not default to creating a blur layer.
-- [ ] General blur/backdrop uses tight ROI.
-- [ ] Multiple backdrops/materials can share capture/blur.
-- [ ] Local color effects can fuse.
-- [ ] Offscreen layer has an explicit LayerReason.
-- [ ] Group opacity isolates only when semantically required.
-- [ ] GPU canonical alpha is premultiplied.
-- [ ] HDR/wide-gamut intermediate is not wrongly degraded.
+  - [x] `every_shape_has_its_own_primitive`: eleven shapes in one frame →
+        `visible_primitives == 11`, drawable. Circle/Ellipse share `AnalyticEllipse`
+        (equal axes of one closed form); Arc lowers through `PathArena::arc` to ≤90°
+        cubics. Eight of the eleven reach neither the tessellator nor a mask.
+  - [x] The two `Path` entries take the two documented path routes, asserted apart:
+        the stroked arc tessellates (`path_tessellations == 1`), the concave curved
+        fill takes the §14.4 coverage-mask lane (`clip_mask_builds > 0`).
+- [x] Solid/Linear/Radial/Sweep/ImagePattern/Shader brushes have explicit semantics.
+  - [x] `store.rs::the_brush_model_is_four_lowered_kinds_and_two_declared_ones`: an
+        exhaustive match over all six, the four lowered ones round-tripped through
+        `BrushStore::ingest` + `get` and diffing to unchanged on a second frame.
+  - [x] `an_image_pattern_brush_rejects_rather_than_painting_nothing` /
+        `a_shader_brush_rejects_rather_than_painting_nothing`: the two declared-but-
+        unlowered kinds panic with their deferral reason instead of storing a no-op.
+        Declared and deferred is the honest state, and now the asserted one.
+- [x] Stroke cap/join/miter/dash/alignment have explicit semantics.
+  - [x] `stroke_style_is_honored_in_every_dimension`: join, miter limit, alignment,
+        dash and hairline each change the raster of a closed outline when changed
+        alone — a field parsed and dropped would leave it identical.
+  - [x] Cap is asserted on an open contour (Square and Round both differ), and
+        asserted *not* to change a closed one: a cap exists only where a contour ends.
+        Symmetrically, alignment cannot move an open contour's stroke — it has no
+        inside. Both are semantics, not omissions.
+- [x] Simple UI shape defaults to analytic/instanced, not CPU tessellate.
+  - [x] `a_screen_of_simple_shapes_never_tessellates`: 120 rounded rects, dots and
+        dividers → `path_tessellations == 0`, `clip_mask_builds == 0`,
+        `draw_calls <= 8`. Grouped by kind, so the draw bound is a statement about
+        instancing rather than about reordering (§16.2 forbids reordering across an
+        overlap it cannot prove absent).
+- [x] General stable path can be retained cached geometry.
+  - [x] `a_stable_path_is_tessellated_once_not_once_per_frame`: a filled+stroked
+        cubic path tessellates on the cold frame and, re-uploaded unchanged,
+        reports `path_tessellations == 0`, `dirty_primitives == 0`, still
+        `visible_primitives == 1`.
+- [x] Compute vector only as a large-dynamic-workload lane.
+  - [x] `the_compute_vector_lane_is_not_the_default`: `VectorLane::select` on a
+        zeroed workload is `CpuTessellate`, and a real 30-quad frame reports
+        `compute_dispatches == 0`, `indirect_draws == 0`. The lane's own conditions
+        stay pinned in `vector_lane.rs`; the three A0 lanes' shared default is
+        pinned in `gpu_specialization.rs`.
+- [x] Default UI does not globally enable MSAA.
+  - [x] `shader/src/manifest.rs::no_standard_pipeline_enables_multisampling`: every
+        entry of `standard_manifest()` is `sample_count == 1` with no depth/stencil.
+        `VariantKey` can express 4× — that is what makes it pipeline-changing — but
+        nothing shipped selects it. Analytic SDF coverage is how these antialias.
+- [x] Rect clip uses scissor fast path.
+  - [x] `a_rect_clip_is_a_scissor`: `ClipTier::Scissor`, `!builds_mask()`, bounds
+        preserved — and a RoundRect whose radii normalize away lands on the same free
+        tier, so the shape asked for decides the cost, not the type authored.
+- [x] Border radius does not automatically clip children.
+  - [x] `a_border_radius_does_not_clip_children`: `clips_children(true, false) ==
+        None` (overflow-visible), only a scroll viewport clips and with a scissor.
+        End to end, a rounded panel with a child past its corner pays
+        `clip_mask_builds == 0`, `offscreen_passes == 0`, `transient_target_bytes == 0`.
+- [x] Stable complex clip can enter the mask cache.
+  - [x] `a_stable_complex_clip_enters_the_mask_cache`: an unstable path clip is
+        `Mask`, the same shape declared stable is `CachedMask`; both build a mask, and
+        stability is the only difference between them.
+- [x] Simple shadow does not default to creating a blur layer.
+  - [x] `a_simple_shadow_creates_no_blur_layer`: twelve shadowed buttons report
+        `blur_passes == 0`, `offscreen_passes == 0`, `transient_target_bytes == 0`,
+        `blur_target_bytes == 0` with ≥24 instances drawn — the closed-form ramp,
+        not render-to-layer-and-blur.
+- [x] General blur/backdrop uses tight ROI.
+  - [x] `a_backdrop_captures_a_tight_roi`: a 48×32 frosted panel on a 256² surface
+        blurs for real (`blur_passes > 0`) while `backdrop_capture_pixels * 8 < W*H`.
+        The tighter per-mechanism bound stays in `backdrop_contract.rs`.
+- [x] Multiple backdrops/materials can share capture/blur.
+  - [x] `panels_over_one_background_share_a_capture`: two panels over the same
+        background at the same sigma → `backdrop_captures == 1`. N panels are not N
+        captures.
+- [x] Local color effects can fuse.
+  - [x] `local_color_effects_fuse_into_one_op`: Brightness + Contrast + Saturation
+        on one layer → `color_effect_ops == 1`, `color_transform_passes == 0`. The
+        composite the layer was already drawing carries the matrix.
+- [x] Offscreen layer has an explicit LayerReason.
+  - [x] `an_offscreen_layer_names_its_reason`: the planner answers
+        `Some(LayerReason::GroupOpacity)`, and a real frame's single `layer_plans()`
+        entry carries `ReasonSet::of(GroupOpacity)` as `requested` with a non-empty
+        `surviving` — the target is never anonymous.
+- [x] Group opacity isolates only when semantically required.
+  - [x] `group_opacity_isolates_only_when_required`: opaque → `Opaque`; translucent
+        over disjoint children → `FoldIntoChildren { factor }` and
+        `!needs_offscreen()`; overlapping *or unknown* → `IsolateLayer`, because not
+        knowing is not permission to fold.
+  - [x] The frame agrees: disjoint translucent children give `offscreen_passes == 0`,
+        `transient_target_bytes == 0`, `opacity_folds == 1`, `layers_eliminated == 1`.
+- [x] GPU canonical alpha is premultiplied.
+  - [x] `gpu_alpha_is_premultiplied`: half-alpha white over transparent black stores
+        ~0.5 in each channel (RGBA16F readback) — straight-alpha storage would store
+        1.0 and composite wrongly on the next sample.
+  - [x] The pair is the contract: authoring stays straight, and the 8-bit capture path
+        un-premultiplies back to 255, so a golden image shows white. Both asserted.
+- [x] HDR/wide-gamut intermediate is not wrongly degraded.
+  - [x] `an_hdr_highlight_is_not_narrowed_mid_pipeline`: a 4.0 red through a
+        translucent blurred layer comes back `> 1.5` on an extended-range surface and
+        `<= 1.01` on an SDR one. The narrowing belongs at the display, not at an
+        intermediate nobody can see. The seventeen-case detail is in `color_domain.rs`.
+- [x] Verified: `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets
+      -- -D warnings`, `cargo xtask check-deps` (18 crates), `cargo test --workspace`,
+      `cargo bench -p viso-render -- --test`.
