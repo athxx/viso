@@ -2541,15 +2541,64 @@ material *semantics* / *parameters* are deferred to `Viso_Visual_Materials.md`.
         stops at colour, grain and mask, and a displacement stage would need its own kernel.
 
 ### M0.2 — Deferred to Viso_Visual_Materials.md (out of this plan)
-- [ ] Material *parameters* + platform *semantics* + full Apple Liquid Glass / Frosted /
+- [x] Material *parameters* + platform *semantics* + full Apple Liquid Glass / Frosted /
       native material lane. Not implemented in viso-render/shader/gpu; only the E1/E2 reuse
       contract above stays here.
+  - [x] Deliberately not implemented, and the boundary is visible in the code: what M0.1
+        landed is a *composition mechanism* (`FrostedMaterial` = rect + radius + sigma +
+        fused `ColorOp` + noise + opacity + border), every field of which is a quantity the
+        renderer already knows how to consume. There is no named material, no design-system
+        token, no platform lane and no vibrancy/HDR semantics anywhere in
+        `viso-render`/`viso-shader`/`viso-gpu`.
+  - [x] That split is what keeps the ladder honest: a named material is a *policy* over
+        these parameters (which sigma, which tint, which noise floor, how it responds to the
+        system appearance), and policy in the render foundation would freeze taste into the
+        ABI. `Viso_Visual_Materials.md` owns the naming and the platform lane; M0.1 owns only
+        that the chain is expressible and costs nothing extra.
+  - [x] Nothing here blocks that document: the parameters it will name are already the
+        public fields of `FrostedMaterial`, so a material library is authored *on top* of
+        M0.1 with no change to the pipeline, the instance ABI, or the capture-sharing rule.
 
 ### M0 Done (no standalone spec block; validated against E-layer contracts)
-- [ ] Frosted composition reuses E1/E2 with shared capture/blur (no per-widget full-screen
+- [x] Frosted composition reuses E1/E2 with shared capture/blur (no per-widget full-screen
       capture). Governed by global DoD: "multiple backdrop/material can share capture/blur";
       "local color effects can fuse".
-- [ ] M0 is not listed as a prerequisite of D0~E2.
+  - [x] "Multiple backdrop/material can share capture/blur" is asserted on all three shapes:
+        many materials (`n_panels_share_one_capture_and_one_blur_ladder` — 4 panels, 1
+        capture, 1 ladder), the **mixed** case
+        (`a_material_and_a_backdrop_layer_share_one_capture` — a backdrop layer and a frosted
+        surface at one sigma land in one group, and the ladder/capture-pixel cost equals the
+        two-layer scene), and the negative case
+        (`panels_at_different_sigmas_do_not_share`). A material surface is a *member* of E2's
+        capture groups, not a second sharing mechanism.
+  - [x] "Local color effects can fuse" is asserted end to end on a material surface
+        (`a_chain_of_local_color_effects_fuses_into_the_one_composite`): four effects
+        (saturation, sepia, brightness, and a trailing gamma) collapse to one `ColorOp`
+        carrying both matrix and gamma, applied inside the composite draw — so
+        `color_transform_passes == 0` and the draw/pass/blur counts are byte-for-byte those
+        of a no-effect panel, while the pixels demonstrably change.
+  - [x] "No per-widget full-screen capture": the capture ROI is E1's clip-padded,
+        surface-clamped `backdrop_roi`, and joining is bounded by E2's union-slack rule, so
+        panels that are far apart split rather than silently unioning to the whole screen.
+        Below `BLUR_MIN_SIGMA` nothing is captured at all.
+  - [x] No new foundation was added to close M0: no new pass kind, no new target kind, no new
+        capture mechanism, no new sharing heuristic, no new grouping type. The only additions
+        are one pipeline family, one instance layout, one segment kind, one batch family, one
+        primitive variant and one frame counter — all of them the *thin* per-draw surface a
+        composition needs.
+- [x] M0 is not listed as a prerequisite of D0~E2.
+  - [x] Verified by reading the dependency direction, not by assertion: the only mentions of
+        M0 inside the D0~E2 blocks delegate work *upward* ("M0 owns that", "the input M0
+        needs"), and no D0~E2 bullet requires M0 to be done first. The §3 rule that an upper
+        layer must never become a prerequisite of a lower one still holds after M0.1.
+  - [x] Mechanically: nothing under D0~E2 was changed to make M0.1 work. E1's blur ladder,
+        E2's `join_or_open_backdrop`/`backdrop_roi`/`backdrop_group_blocked`, E2's `fuse` and
+        E0's rrect SDF were all consumed as-is; the frozen instance-ABI, MSL-oracle and
+        counter-order tests were extended only by *addition*, never by amendment.
+  - [x] Flagged, not asserted: "not a prerequisite" is a documentation/ordering property, so
+        it is checked by inspection of todo.md and the change set, not by a test — there is
+        no machine gate that would catch a future edit adding an M0 prerequisite to a lower
+        section.
 
 ---
 

@@ -20,6 +20,10 @@
 //!    gate) even with noise turned all the way up.
 //! 4. **The mask rounds and the color op tints**, verified by read-back rather
 //!    than by counter.
+//! 5. **The global DoD holds on the mixed case.** A backdrop layer and a material
+//!    surface at one sigma share one capture — the two authoring forms are members
+//!    of the same group, not two parallel mechanisms — and a whole chain of local
+//!    color effects fuses into the single composite draw rather than buying passes.
 //!
 //! Everything goes through the public surface: `Primitive::Frosted` in,
 //! `FrameStats` and read-back pixels out.
@@ -274,6 +278,111 @@ fn panels_at_different_sigmas_do_not_share() {
     );
     assert_eq!(stats.material_composites, 2);
     assert_eq!(stats.backdrop_captures, 2);
+}
+
+/// The global DoD's "multiple backdrop/material can share capture/blur" on the
+/// *mixed* case: a plain backdrop layer and a frosted surface at one sigma land in
+/// the same capture group. The two authoring forms are not two mechanisms — a
+/// material surface is a member of the same group a layer opens, so mixing them in
+/// one screen does not double the capture or the ladder.
+#[test]
+fn a_material_and_a_backdrop_layer_share_one_capture() {
+    let (mut gpu, _s, mut r) = renderer(W, H);
+    let mixed = frame(
+        &mut r,
+        &mut gpu,
+        &[
+            background(),
+            Primitive::Frosted(frosted(rect(8.0, 8.0, 40.0, 32.0), SIGMA)),
+            backdrop_layer(rect(8.0, 56.0, 40.0, 32.0), SIGMA),
+            Primitive::LayerEnd,
+        ],
+    );
+
+    assert_eq!(mixed.material_composites, 1);
+    assert_eq!(
+        mixed.backdrop_captures, 1,
+        "a layer and a material surface at one sigma share one capture"
+    );
+
+    // The same two regions as two backdrop layers: the ladder cost must match, so
+    // the material form is neither cheaper by cheating nor dearer by duplicating.
+    let (mut gpu, _s, mut r) = renderer(W, H);
+    let layers = frame(
+        &mut r,
+        &mut gpu,
+        &[
+            background(),
+            backdrop_layer(rect(8.0, 8.0, 40.0, 32.0), SIGMA),
+            Primitive::LayerEnd,
+            backdrop_layer(rect(8.0, 56.0, 40.0, 32.0), SIGMA),
+            Primitive::LayerEnd,
+        ],
+    );
+    assert_eq!(mixed.backdrop_captures, layers.backdrop_captures);
+    assert_eq!(mixed.blur_passes, layers.blur_passes);
+    assert_eq!(
+        mixed.backdrop_capture_pixels,
+        layers.backdrop_capture_pixels
+    );
+}
+
+/// The global DoD's "local color effects can fuse", on a material surface: a chain
+/// of affine effects plus a trailing gamma collapses to **one** `ColorOp`, which the
+/// material fragment applies inside its own draw. So a four-effect glass costs
+/// exactly what a no-effect glass costs — no color-transform pass, no extra draw —
+/// while still changing the pixels.
+#[test]
+fn a_chain_of_local_color_effects_fuses_into_the_one_composite() {
+    let panel = rect(32.0, 32.0, 64.0, 64.0);
+    let chain = [
+        ColorEffect::Saturation(1.6),
+        ColorEffect::Sepia(0.4),
+        ColorEffect::Brightness(0.7),
+        ColorEffect::Gamma(1.8),
+    ];
+    let mut ops = Vec::new();
+    fuse(chain, &mut ops);
+    assert_eq!(
+        ops.len(),
+        1,
+        "an affine run with a trailing gamma is one op"
+    );
+    assert_ne!(ops[0].gamma, 1.0, "the gamma rode into the same op");
+
+    let mut m = frosted(panel, SIGMA);
+    m.color = ops[0];
+
+    let (mut gpu, _s, mut r) = renderer(W, H);
+    let tinted = frame(&mut r, &mut gpu, &[background(), Primitive::Frosted(m)]);
+    let (mut gpu, _s, mut r) = renderer(W, H);
+    let plain = frame(
+        &mut r,
+        &mut gpu,
+        &[background(), Primitive::Frosted(frosted(panel, SIGMA))],
+    );
+
+    assert_eq!(
+        tinted.color_transform_passes, 0,
+        "a fused chain rides the composite, it does not buy a pass"
+    );
+    assert_eq!(
+        tinted.draw_calls, plain.draw_calls,
+        "four effects cost the same draws as none"
+    );
+    assert_eq!(tinted.render_passes, plain.render_passes);
+    assert_eq!(tinted.blur_passes, plain.blur_passes);
+
+    // And the chain is actually applied, not silently dropped.
+    let cx = (panel.x + panel.w * 0.5) as u32;
+    let cy = (panel.y + panel.h * 0.5) as u32;
+    let with = pixel(&present(&[background(), Primitive::Frosted(m)]), cx, cy);
+    let without = pixel(
+        &present(&[background(), Primitive::Frosted(frosted(panel, SIGMA))]),
+        cx,
+        cy,
+    );
+    assert_ne!(with, without, "the fused op must change the composite");
 }
 
 // ---------------------------------------------------------------------------
