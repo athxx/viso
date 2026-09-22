@@ -76,7 +76,7 @@ pub mod raster_a8;
 pub mod text_work;
 
 pub use bidi::{BaseDirection, BidiInfo, BidiLevel, DirectionRun, Paragraph};
-pub use coverage::face_covers;
+pub use coverage::{Coverage, face_covers};
 pub use font_cache::FontCache;
 pub use font_provider::{
     ExternalFaceId, ExternalFetchCoordinator, ExternalFontProvider, FaceSource, FetchedSubset,
