@@ -2845,9 +2845,49 @@ in `viso-gpu`. Enters only after M1 freezes; algorithms here are not frozen as p
         `cargo bench -p viso-render -- --test`.
 
 ### A0.3 — GPU culling / indirect (§20 detailed, §24.1)
-- [ ] Normal UI: CPU bounds + clip intersection suffices. Large canvas/scene: chunk-level
+- [x] Normal UI: CPU bounds + clip intersection suffices. Large canvas/scene: chunk-level
       CPU cull + optional GPU cull / indirect draw / multi-draw / GPU-driven batching. Hard
       rule: 50 UI nodes must never produce compute dispatch for "GPU-driven".
+  - [x] `CullPlan` in `crates/render/src/cull.rs`: `PerPrimitive` (the `Default`) →
+        `Chunked` → `GpuIndirect`, a plain enum naming the three §20 escalations. The
+        module doc states what it exists to make arithmetic: culling is a cost, not a free
+        win, so a plan is entered on evidence rather than on ambition.
+  - [x] `CullWorkload` carries the measured inputs — `primitives`, `offscreen_share`,
+        `cull_share`, plus the two capability halves. All-zero default means "nothing
+        measured", so an undescribed scene lands on the plain bounds test.
+  - [x] `CullPlan::select` is conjunctive at each rung: `Chunked` needs scale *and* a
+        mostly-offscreen scene; `GpuIndirect` additionally needs both capabilities *and*
+        culling profiled as a real share of the frame. Thresholds are internal consts
+        (benchmark parameters, not ABI) and are never asserted as values.
+  - [x] `Caps.indirect_draw` added beside `compute_dispatch`: both backends report
+        `false`, because this RHI's draws carry their counts inline and no encoder reads
+        them from memory (§17.1). Either half alone is not the capability; upper layers
+        read both as vetoes.
+  - [x] `FrameStats.indirect_draws` (42nd counter) added after `compute_dispatches` and
+        pinned in the frozen roster, so the hard rule is a number a regression trips
+        rather than a paragraph a reviewer has to remember.
+  - [x] The escalation that actually **ships** is the CPU one, because it needs no GPU
+        feature: `ChunkedCull` bins primitive bounds into a uniform grid sized to ≈64
+        primitives per cell, rejects a whole chunk on one compare against its union
+        bounds, and `chunk_of` *clamps* rather than rejects so a stray primitive is never
+        dropped. Members are placed by counting sort, and the appended range is sorted, so
+        the visible set comes out in paint order — a cull that reordered submission would
+        break z-order (§16.2).
+  - [x] Its correctness contract is exact agreement with a brute-force per-primitive walk
+        over six representative viewports, plus a small viewport testing a small fraction
+        of a large scene; rebuild reuses its buffers and leaves no stale members (§28).
+  - [x] `crates/render/tests/culling.rs` pins the frame end: 50 real nodes drawn through
+        the real renderer report zero dispatches and zero indirect draws, a frame that
+        genuinely culls (`culled_primitives > 0`) still culls on the CPU, three steady
+        frames never warm up into a dispatch, and the hard rule holds at 50 / 400 / 2000
+        primitives even with both capabilities and a fully offscreen, fully profiled
+        frame — scale is the only missing condition and it is enough.
+  - [x] Honestly labeled: the GPU plan is *selected*, never realized — no backend here
+        exposes dispatch or indirect draw, so its speedup is unmeasured. What ships and is
+        verified is the CPU chunk cull.
+  - [x] Verified: `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets
+        -- -D warnings`, `cargo xtask check-deps` (18 crates), `cargo test --workspace`,
+        `cargo bench -p viso-render -- --test`.
 
 ### A0 Done (no standalone spec block)
 - [ ] Governed by global DoD: "compute vector only as a large-dynamic-workload lane";

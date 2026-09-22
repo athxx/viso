@@ -17,6 +17,7 @@ pub mod blend;
 pub mod clip;
 pub mod color_atlas;
 pub mod color_effect;
+pub mod cull;
 pub mod effect_cost;
 pub mod effect_plan;
 pub mod frame;
@@ -101,6 +102,7 @@ pub use vector_lane::{VectorLane, VectorWorkload};
 // so a host can describe a frame and see which model it lands in; the fast path's
 // resource table is a backend capability, and the paint API is the same either way.
 pub use binding_model::{BindingModel, TextureWorkload};
+pub use cull::{ChunkGrid, ChunkedCull, CullOutcome, CullPlan, CullWorkload};
 // GPU handles that appear in this crate's public API. `TextureId` is carried by
 // `ImageDraw`/`GlyphRunDraw`; `BindGroupId`/`PipelineId` are the resource handles
 // on `InspectBatch`'s public fields (architecture 62: `BatchId -> pipeline/

@@ -963,6 +963,17 @@ pub struct FrameStats {
     /// happen. A compute lane that lit this up for twenty buttons would be a
     /// regression visible in this field.
     pub compute_dispatches: u32,
+    /// Draws this frame whose vertex/instance counts came from a GPU-written buffer
+    /// rather than from the CPU (§24.1, §61).
+    ///
+    /// Zero for every scene this renderer can draw: culling is the per-primitive
+    /// bounds test, and no backend exposes indirect draw
+    /// ([`Caps::indirect_draw`](viso_gpu::Caps::indirect_draw)). Reported for the
+    /// same reason as [`compute_dispatches`](Self::compute_dispatches) — §20's hard
+    /// rule that 50 UI nodes are never "GPU-driven" is a bound a test must be able
+    /// to assert, and together the two fields say a frame decided its own visibility
+    /// on the CPU, which is what makes that rule arithmetic rather than editorial.
+    pub indirect_draws: u32,
 }
 
 /// Turns per-frame primitives into GPU draw commands for one surface.
@@ -3570,6 +3581,9 @@ impl Renderer {
             // The vector lane is CPU tessellation for every scene this renderer
             // draws, and no backend offers a dispatch encoder (§20.1).
             compute_dispatches: 0,
+            // Every draw carries its own counts: culling is the per-primitive bounds
+            // test above, and no backend reads draw arguments from memory (§24.1).
+            indirect_draws: 0,
         }
     }
 
