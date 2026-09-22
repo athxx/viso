@@ -447,4 +447,19 @@ pub struct Caps {
     /// not change with the answer (§20.2) — only how many draws a frame of images
     /// costs.
     pub bindless_texture_slots: u32,
+    /// Whether a draw can read its vertex/instance counts from a buffer the GPU
+    /// wrote, rather than from arguments the CPU passed (§24.1).
+    ///
+    /// The other half of GPU-driven rendering: a compute kernel decides what is
+    /// visible and writes the draw arguments, and an indirect draw consumes them, so
+    /// the CPU never learns the count. Either half alone is not the capability —
+    /// indirect draw without dispatch just moves the same CPU-computed numbers
+    /// through a buffer.
+    ///
+    /// Reported honestly, like the other two: both backends answer `false`, because
+    /// this RHI's draw commands carry their counts inline and no encoder here reads
+    /// them from memory (§17.1). Upper layers read it as a *veto* — a culling plan
+    /// escalates on scene shape and measured cull cost, and this only says whether
+    /// the GPU plan exists to be reached at all (§20, §7.2).
+    pub indirect_draw: bool,
 }

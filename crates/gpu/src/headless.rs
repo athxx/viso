@@ -126,6 +126,7 @@ impl HeadlessRaster {
                 presents_to_display: false,
                 compute_dispatch: false,
                 bindless_texture_slots: 0,
+                indirect_draw: false,
             },
             retire_queue: RetireQueue::new(),
             fence: Fence::new(),

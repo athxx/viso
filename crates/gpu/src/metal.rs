@@ -172,6 +172,7 @@ impl MetalBackend {
                 // texture per slot at creation, so there is no table to index
                 // (§20.2). Atlas + bind-group batching is the path that exists.
                 bindless_texture_slots: 0,
+                indirect_draw: false,
             },
             retire_queue: RetireQueue::new(),
             current_epoch: Epoch::START,
