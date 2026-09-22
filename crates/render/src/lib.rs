@@ -81,12 +81,13 @@ pub use primitive::{
     AnalyticRRectInstance, AnalyticShadow, Border, ColorTransformInstance, Corners, DashPattern,
     Fit, FrostedMaterial, GlyphInstance, GlyphInstanceData, GlyphRunDraw, Gradient,
     GradientInstance, GradientKind, GradientStop, ImageDraw, ImageInstance, ImageRect, LayerClip,
-    LineCap, LineJoin, Mesh, MeshVertex, NineSlice, Path, PathCmd, PathShadow, Point, Primitive,
-    Quad, QuadInstance, Rect, ResourcePolicy, ResourceRoute, ResourceRouteError, Rgba,
-    ShadowInstance, ShadowShape, SpriteRegion, Stroke, StrokeAlign, TiledImage,
-    analytic_capsule_schema, analytic_ellipse_schema, analytic_line_schema, analytic_rrect_schema,
-    analytic_shadow_schema, color_transform_schema, glyphrun_schema, gradient_schema, image_schema,
-    mesh_schema, quad_schema,
+    LineCap, LineJoin, MaterialLane, MaterialLaneNeeds, Mesh, MeshVertex, NativeMaterialRegion,
+    NineSlice, Path, PathCmd, PathShadow, Point, Primitive, Quad, QuadInstance, Rect,
+    ResourcePolicy, ResourceRoute, ResourceRouteError, Rgba, ShadowInstance, ShadowShape,
+    SpriteRegion, Stroke, StrokeAlign, TiledImage, analytic_capsule_schema,
+    analytic_ellipse_schema, analytic_line_schema, analytic_rrect_schema, analytic_shadow_schema,
+    color_transform_schema, glyphrun_schema, gradient_schema, image_schema, mesh_schema,
+    quad_schema,
 };
 pub use renderer::{BackdropDependency, FrameStats, Renderer};
 // GPU handles that appear in this crate's public API. `TextureId` is carried by

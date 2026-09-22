@@ -702,6 +702,115 @@ pub struct LayerClip {
     pub backdrop_sigma: f32,
 }
 
+/// Which realization draws a material surface (§19).
+///
+/// Two lanes exist because they are good at opposite things, and neither one
+/// dominates: the GPU lane is composable and identical everywhere, the native lane
+/// is the platform's own material and therefore matches the platform exactly. The
+/// choice is a *policy* over the trade-offs in [`MaterialLaneNeeds`], not a quality
+/// ranking — see [`MaterialLane::select`].
+///
+/// This enum is the entire footprint the native lane has in the generic render IR.
+/// No platform-private material API, identifier or appearance name appears here or
+/// anywhere below it: the renderer reports the region and its generic parameters
+/// ([`NativeMaterialRegion`]), and the platform layer maps that to whatever its own
+/// material vocabulary calls for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum MaterialLane {
+    /// Viso draws the glass itself, through the material pipeline: one composite
+    /// over a shared blurred backdrop capture.
+    ///
+    /// Composable (Viso content above *and* below the surface participates),
+    /// frame-synchronous (it animates with everything else because it *is* a draw),
+    /// and pixel-identical on every backend. Costs a backdrop capture and a blur
+    /// ladder, shared across panels at the same sigma.
+    #[default]
+    Gpu,
+    /// The platform draws the material behind the Viso surface; Viso reserves the
+    /// region and composites over it.
+    ///
+    /// Matches the system exactly (including appearance changes and effects Viso
+    /// does not implement) and costs Viso no capture, no blur and no composite —
+    /// but the platform composites *behind* the whole Viso surface, so Viso content
+    /// drawn below the surface cannot show through it, and the material animates on
+    /// the system's schedule rather than the frame's.
+    Native,
+}
+
+/// The trade-offs that pick a material lane (§19). Every field is a property of the
+/// *use site*, not of a platform, so the decision is portable: a backend that has no
+/// native material simply never offers the native lane.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct MaterialLaneNeeds {
+    /// The platform offers a native material at all. `false` on any backend without
+    /// one, which forces the GPU lane regardless of everything else.
+    pub native_available: bool,
+    /// The surface must track the system's own material — a sidebar or titlebar that
+    /// would look wrong if it did not change with the system appearance.
+    pub system_integration: bool,
+    /// Viso-drawn content sits *below* the surface and must show through it. A native
+    /// material composites behind the whole Viso surface, so it cannot blur Viso
+    /// content; this is the hard disqualifier.
+    pub viso_content_below: bool,
+    /// The surface's parameters animate per frame (a sigma or tint that moves with a
+    /// gesture), which needs the material to be a draw in the frame.
+    pub animated: bool,
+    /// The surface must composite with Viso effects around it — a layer opacity, a
+    /// color effect, or a blend mode applied over it.
+    pub composability: bool,
+}
+
+impl MaterialLane {
+    /// Pick a lane from the use site's needs (§19).
+    ///
+    /// The precedence is deliberate, and it is *correctness before fidelity*: any
+    /// requirement the native lane cannot meet rules it out, and only then does
+    /// system integration pull toward it. That ordering means a wrong answer here
+    /// degrades to "Viso drew the glass itself", never to "the panel does not
+    /// composite correctly".
+    ///
+    /// Performance is not an input. The native lane is cheaper for Viso in every
+    /// case it is eligible for, so it would never change an eligible answer, and
+    /// treating it as a tiebreak would invite exactly the silent visual regression
+    /// the precedence above exists to prevent.
+    pub fn select(needs: MaterialLaneNeeds) -> Self {
+        let disqualified = needs.viso_content_below || needs.animated || needs.composability;
+        if needs.native_available && !disqualified && needs.system_integration {
+            MaterialLane::Native
+        } else {
+            MaterialLane::Gpu
+        }
+    }
+}
+
+/// A region a [`MaterialLane::Native`] surface reserved for the platform's own
+/// material, reported to the platform layer after a frame is uploaded.
+///
+/// Carries geometry plus the *generic* material parameters the surface authored —
+/// never a platform material name. The platform layer owns the mapping from these
+/// numbers to its own vocabulary, which is what keeps platform-private material APIs
+/// out of the render IR (§19); naming and per-platform semantics belong to
+/// `Viso_Visual_Materials.md`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct NativeMaterialRegion {
+    /// The surface's rect in physical pixels, clipped to what was actually visible.
+    pub rect: Rect,
+    /// Per-corner mask radii in physical pixels, normalized against `rect` exactly
+    /// as the GPU lane's mask is, so both lanes round identically.
+    pub radius: [f32; 4],
+    /// The blur sigma the surface authored, in physical pixels — a hint for how
+    /// strong a native material to choose, not a kernel to run.
+    pub sigma: f32,
+    /// The fused color op the surface authored, for a platform that can tint its
+    /// material. A platform that cannot simply ignores it.
+    pub color: ColorOp,
+    /// Grain amplitude the surface authored, in `[0, 1]`.
+    pub noise: f32,
+    /// Surface opacity in `[0, 1]`, with any enclosing layer opacity already folded
+    /// in, so the platform does not have to reconstruct the layer stack.
+    pub opacity: f32,
+}
+
 /// A frosted material surface: one leaf primitive for the whole §18 chain
 /// `backdrop → blur → saturation/tint → optional noise → material mask →
 /// border/highlight`.
@@ -745,6 +854,10 @@ pub struct FrostedMaterial {
     /// The border/highlight ring, drawn as an analytic rounded rect over the
     /// surface. [`Border::NONE`] for none.
     pub border: Border,
+    /// Which realization draws the surface (§19). [`MaterialLane::Gpu`] by default —
+    /// the portable answer; [`MaterialLane::Native`] reserves the region for the
+    /// platform's own material instead of capturing and blurring a backdrop.
+    pub lane: MaterialLane,
 }
 
 impl FrostedMaterial {
@@ -759,6 +872,7 @@ impl FrostedMaterial {
             noise: 0.0,
             opacity: 1.0,
             border: Border::NONE,
+            lane: MaterialLane::Gpu,
         }
     }
 

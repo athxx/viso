@@ -39,8 +39,8 @@ use crate::pool::InstancePool;
 use crate::primitive::{
     AdvancedBlendInstance, AnalyticCapsuleInstance, AnalyticEllipseInstance, AnalyticLineInstance,
     AnalyticRRectInstance, BlurInstance, ColorTransformInstance, GlyphInstance, GradientInstance,
-    ImageInstance, MaterialInstance, MeshVertex, PathCmd, Primitive, QuadInstance, Rect,
-    ShadowInstance, rgba_array,
+    ImageInstance, MaterialInstance, MaterialLane, MeshVertex, NativeMaterialRegion, PathCmd,
+    Primitive, QuadInstance, Rect, ShadowInstance, rgba_array,
 };
 use crate::raster_mask::{path_bounds, rasterize_path_coverage};
 use crate::scene::store::{ClipFillRule, StoreRef, glyph_instances};
@@ -834,6 +834,15 @@ pub struct FrameStats {
     ///
     /// [`FrostedMaterial`]: crate::FrostedMaterial
     pub material_composites: u32,
+    /// Regions reserved this frame for a [`MaterialLane::Native`] surface (§19).
+    ///
+    /// These cost Viso nothing at all — no capture, no blur rung, no composite, no
+    /// draw — because the platform's own material composites behind the Viso surface.
+    /// A screen whose panels are all on the native lane therefore reports captures
+    /// and blur passes of zero while still reporting its panels here.
+    ///
+    /// [`MaterialLane::Native`]: crate::MaterialLane::Native
+    pub native_material_regions: u32,
     /// Potential layers the Effect Planner considered this frame (§3145): one per
     /// `Primitive::Layer` in the stream, whether or not it ended up costing a pass.
     /// The denominator for the two counters below.
@@ -1089,6 +1098,12 @@ pub struct Renderer {
     /// paint-order entry stays small while the ~100 bytes of material parameters
     /// live once per surface here.
     material_records: Vec<MaterialRecord>,
+    /// This frame's [`MaterialLane::Native`] regions, in paint order, reused each
+    /// frame. These reserve space for the platform's own material rather than
+    /// describing a draw, so they never reach the GPU — the platform layer reads them
+    /// back with [`native_material_regions`](Self::native_material_regions) after
+    /// [`upload`](Self::upload).
+    native_material_regions: Vec<NativeMaterialRegion>,
     /// Scratch mesh vertex data, reused each frame.
     mesh_vertex_scratch: Vec<MeshVertex>,
     /// Scratch mesh index data, reused each frame.
@@ -1711,6 +1726,7 @@ impl Renderer {
             advanced_blend_scratch: Vec::with_capacity(4),
             material_scratch: Vec::with_capacity(8),
             material_records: Vec::with_capacity(8),
+            native_material_regions: Vec::new(),
             mesh_vertex_scratch: Vec::with_capacity(1024),
             mesh_index_scratch: Vec::with_capacity(2048),
             segments: Vec::with_capacity(8),
@@ -2023,6 +2039,7 @@ impl Renderer {
         self.color_ops.clear();
         self.backdrop_captures.clear();
         self.material_records.clear();
+        self.native_material_regions.clear();
         self.blur_scratch.clear();
         self.color_transform_scratch.clear();
         self.advanced_blend_scratch.clear();
@@ -2317,7 +2334,31 @@ impl Renderer {
                     // surface inside an offscreen layer has no surface-pass
                     // backdrop to read — see `backdrop_roi`. Either way the
                     // surface contributes only its border ring.
-                    if material.backdrop_sigma > BLUR_MIN_SIGMA
+                    if material.lane == MaterialLane::Native && matches!(target, PassTarget::Main) {
+                        // The native lane reserves the region and draws nothing: the
+                        // platform's own material composites behind the Viso surface,
+                        // so capturing and blurring a backdrop here would pay for a
+                        // frosted panel twice and then hide one of them. The region is
+                        // reported with its generic parameters only — the platform
+                        // layer owns the mapping to its material vocabulary (§19).
+                        //
+                        // Only on the surface pass: a material composited *behind* the
+                        // Viso surface cannot be scaled, blurred, or blended by an
+                        // offscreen layer's own composite, so inside one the lane
+                        // falls back to whatever the GPU lane can do there rather
+                        // than reserving a region the enclosing layer would then
+                        // fail to honour.
+                        if world_clip.w > 0.0 && world_clip.h > 0.0 {
+                            self.native_material_regions.push(NativeMaterialRegion {
+                                rect: world_clip,
+                                radius: material.radii(),
+                                sigma: material.backdrop_sigma,
+                                color: material.color,
+                                noise: material.noise,
+                                opacity: material.opacity * fold,
+                            });
+                        }
+                    } else if material.backdrop_sigma > BLUR_MIN_SIGMA
                         && matches!(target, PassTarget::Main)
                         && let Some(roi) = self.backdrop_roi(world_clip, material.backdrop_sigma)
                     {
@@ -3365,6 +3406,7 @@ impl Renderer {
                 .sum(),
             blend_isolations: self.blend_isolations,
             material_composites: self.material_records.len() as u32,
+            native_material_regions: self.native_material_regions.len() as u32,
             layers_planned: self.layers_planned,
             layers_eliminated: self.layers_eliminated,
             opacity_folds: self.opacity_folds,
@@ -3479,6 +3521,17 @@ impl Renderer {
     /// The MaterialComposite pipeline handle, for batch introspection.
     pub(crate) fn material_pipeline_id(&self) -> PipelineId {
         self.material_pipeline
+    }
+
+    /// The regions this frame reserved for the platform's own material (§19), in
+    /// paint order, valid until the next [`upload`](Self::upload).
+    ///
+    /// The platform layer reads this to place, size and round its native material
+    /// views. Each region carries geometry plus the *generic* parameters the surface
+    /// authored — the mapping to a platform material name lives above this crate, so
+    /// no platform-private material API reaches the render IR.
+    pub fn native_material_regions(&self) -> &[NativeMaterialRegion] {
+        &self.native_material_regions
     }
 
     /// Add `segment` to the batch list, merging it into the previous segment
