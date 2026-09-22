@@ -2608,10 +2608,51 @@ Platform-advanced materials last: native/GPU material lanes + HDR/wide-gamut, wi
 leaking platform-private APIs into the generic Render IR.
 
 ### M1.1 — Material lanes
-- [ ] Two selectable lanes: `Native System Material Lane` / `GPU Material Lane` (§19), chosen
+- [x] Two selectable lanes: `Native System Material Lane` / `GPU Material Lane` (§19), chosen
       by system integration / visual consistency / composability / animation / performance /
       whether Viso GPU content must participate. Platform-private material APIs stay behind
       the Native lane — never in the generic Render IR.
+  - [x] `MaterialLane { Gpu, Native }` on `FrostedMaterial`, defaulting to `Gpu`: the lane is
+        one authoring field on the existing material surface, not a second primitive. M0's
+        composite is the `Gpu` arm verbatim, so nothing about the shipped path changed.
+  - [x] The `Native` arm reserves a region and draws nothing: no backdrop capture, no blur
+        rung, no composite, no transient target, one render pass. Asserted against the same
+        panel on the `Gpu` lane rather than by reading the code.
+  - [x] Reserved regions land in a per-frame `native_material_regions: Vec<NativeMaterialRegion>`,
+        read back through `Renderer::native_material_regions()` and counted by the 40th
+        `FrameStats` field. They never reach the GPU — no instance store, no pipeline, no
+        draw — so the frozen F4 instance model is untouched.
+  - [x] `NativeMaterialRegion` carries clipped world rect + normalized radii + sigma + fused
+        `ColorOp` + noise + opacity: the generic parameters the surface authored, and nothing
+        with a platform material name in it. The mapping into a platform vocabulary lives
+        above this crate, which is what keeps platform-private APIs out of the Render IR.
+  - [x] The border/highlight ring stays Viso's on both lanes (an ordinary analytic rrect), so
+        switching lanes cannot silently change the app's edge treatment.
+  - [x] `MaterialLane::select(MaterialLaneNeeds)` is a pure decision function with
+        correctness-before-fidelity precedence: `viso_content_below` / `animated` /
+        `composability` each disqualify the native lane outright, an unavailable native
+        material forces `Gpu`, and only then does `system_integration` pull toward `Native`.
+        A wrong answer degrades to "Viso drew the glass", never to "the panel composites
+        wrongly".
+  - [x] The native lane only applies on the surface pass. A material the platform composites
+        *behind* the Viso surface cannot be scaled or blended by an offscreen layer's own
+        composite, so inside a group-opacity layer the lane falls back and reports no region
+        — verified to match the `Gpu`-lane frame exactly rather than promising the platform
+        something the frame would fail to honour.
+  - [x] The lanes coexist: two native panels interleaved between two GPU ones leave the GPU
+        panels' capture count, blur ladder and captured ROI pixels bit-identical to the
+        same scene with the native panels deleted — a reserved region neither joins nor
+        widens a capture group.
+  - [x] Verified: `cargo fmt --all` + `--check`, `clippy --workspace --all-targets -D warnings`,
+        `cargo xtask check-deps` (18 crates), `cargo test --workspace` (135 binaries green,
+        incl. 12 new `material_lane` tests and the extended frozen counter contract),
+        `cargo bench -p viso-render -- --test`.
+  - [x] Flagged, not asserted: no platform material is actually created here — this slice
+        lands the lane *decision* and the generic hand-off contract; the Metal/AppKit side
+        that consumes a `NativeMaterialRegion` is a platform-crate slice, so native-lane
+        visual fidelity and its real compositing cost are unmeasured. `performance` is
+        deliberately not an input to `select`: ranking the lanes by speed needs on-device
+        timing this environment cannot produce.
 
 ### M1.2 — HDR / wide-gamut
 - [ ] Distinguish at least `SDR sRGB target / wide-gamut target / HDR target` (§19); the

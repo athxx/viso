@@ -62,6 +62,7 @@ fn frame_stats_roster_is_frozen() {
         backdrop_capture_pixels: 31,
         blend_isolations: 34,
         material_composites: 39,
+        native_material_regions: 40,
         // Effect Planner decisions (§3145/§3202).
         layers_planned: 35,
         layers_eliminated: 36,
@@ -108,6 +109,7 @@ fn frame_stats_roster_is_frozen() {
     assert_eq!(s.backdrop_capture_pixels, 31);
     assert_eq!(s.blend_isolations, 34);
     assert_eq!(s.material_composites, 39);
+    assert_eq!(s.native_material_regions, 40);
     assert_eq!(s.layers_planned, 35);
     assert_eq!(s.layers_eliminated, 36);
     assert_eq!(s.opacity_folds, 37);
@@ -151,6 +153,7 @@ fn frame_stats_roster_is_frozen() {
     assert_eq!(z.backdrop_capture_pixels, 0);
     assert_eq!(z.blend_isolations, 0);
     assert_eq!(z.material_composites, 0);
+    assert_eq!(z.native_material_regions, 0);
     assert_eq!(z.layers_planned, 0);
     assert_eq!(z.layers_eliminated, 0);
     assert_eq!(z.opacity_folds, 0);
