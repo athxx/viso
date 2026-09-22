@@ -282,9 +282,10 @@ impl PassTarget {
 ///
 /// Segments are built in [`Renderer::upload`] by walking the flat primitive
 /// stream and its `Layer`/`LayerEnd` clip stack, preserving submission order so
-/// primitives interleave by z-order. Adjacent quads join one segment when their
-/// clip and target match; adjacent meshes likewise; each image is its own
-/// segment (it needs its texture's bind group). `clip == None` means unclipped.
+/// primitives interleave by z-order. Adjacent primitives join one segment when
+/// their batch key and clip match — for the texture-sampling families the key
+/// includes the bind group, so a run sharing one atlas is one draw (§20.2).
+/// `clip == None` means unclipped.
 ///
 /// The meaning of `start`/`count` depends on `kind`: instances for
 /// [`SegmentKind::Quad`]/[`SegmentKind::Image`]/[`SegmentKind::GlyphRun`],
@@ -673,6 +674,36 @@ struct TextureBinding {
     texture: TextureId,
     sampler: SamplerId,
     bind_group: BindGroupId,
+}
+
+/// What a recorded paint-order entry samples, compared by value.
+///
+/// A bind group is one texture plus one sampler, and the sampler cache interns per
+/// descriptor, so an equal `(texture, desc)` pair always resolves to the equal
+/// [`BindGroupId`] the lowering would build. That makes this a faithful stand-in
+/// for the resource field of a [`BatchKey`](crate::batch::BatchKey) on the cold
+/// introspection paths, which read `&self` and so cannot intern anything.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SampledSource {
+    /// A texture read through the sampler its descriptor interns to.
+    Texture(TextureId, SamplerDesc),
+    /// A pooled transient target — an offscreen layer's result or a capture's
+    /// blurred output — whose bind group the transient pool owns and reuses, so
+    /// the target identity is the resource identity.
+    Transient(TargetId),
+}
+
+/// Which pipeline an offscreen layer's closing composite lowers through.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CompositeLowering {
+    /// The layer's blend mode needs a destination read, so the composite is one
+    /// advanced-blend draw binding both textures (§14.6).
+    AdvancedBlend,
+    /// The layer's color chain fused into one op, so the composite recolors while
+    /// it composites (§17.3).
+    ColorTransform,
+    /// The ordinary case: one textured quad through the image pipeline.
+    Image,
 }
 
 /// A (source, destination) texture pair's bind group, cached the same way and for
@@ -3071,8 +3102,9 @@ impl Renderer {
                 inst.rect_pos[1] -= origin[1];
                 let start = self.image_scratch.len() as u32;
                 self.image_scratch.push(inst);
-                // Each image is its own draw (it binds a texture); the image
-                // family is unmergeable, so this always opens a new segment.
+                // Adjacent images sampling the same texture join one instanced
+                // draw: the bind group is part of the key, so an equal key is an
+                // equal resource (§20.2 bind-group batching).
                 self.merge_or_push(Segment {
                     kind: SegmentKind::Image { bind_group },
                     start,
@@ -3090,8 +3122,8 @@ impl Renderer {
                 inst.rect_pos[1] -= origin[1];
                 let start = self.gradient_scratch.len() as u32;
                 self.gradient_scratch.push(inst);
-                // Each gradient binds its baked LUT atlas; the gradient family
-                // is unmergeable, so this always opens a new segment.
+                // Gradients sharing a baked LUT page join one draw, so a screen
+                // of gradient fills costs a draw per page (§20.2).
                 self.merge_or_push(Segment {
                     kind: SegmentKind::Gradient { bind_group },
                     start,
@@ -3234,8 +3266,10 @@ impl Renderer {
                     self.glyph_scratch.push(inst);
                 }
                 let count = self.glyph_scratch.len() as u32 - start;
-                // A run is one instanced draw (it binds the atlas texture);
-                // the glyph family is unmergeable, so this opens a new segment.
+                // A run is one instanced draw, and adjacent runs on the same
+                // atlas join it — which is what collapses a page of text, and the
+                // masked path fills that share the mask page, to a draw per atlas
+                // (§20.2).
                 self.merge_or_push(Segment {
                     kind: SegmentKind::GlyphRun { bind_group },
                     start,
@@ -3564,6 +3598,57 @@ impl Renderer {
     /// holds the frame just lowered.
     pub(crate) fn scene_snapshot(&self) -> &Scene {
         &self.scene
+    }
+
+    /// The resource a recorded paint-order entry samples, or `None` for the
+    /// families that bind none (quads, analytics, meshes).
+    ///
+    /// For the cold-path introspection walks (§34, §62): the bind group is part
+    /// of the batch key (§20.2), so a walk that ignored the resource would merge
+    /// two adjacent images of *different* textures and drift from the segment
+    /// list. Read-only, so it cannot intern a real `BindGroupId` — it reports the
+    /// inputs a bind group is built from instead, which is enough because equality
+    /// is all a merge decision asks.
+    pub(crate) fn sampled_source(&self, store: StoreRef) -> Option<SampledSource> {
+        match store {
+            StoreRef::Image(id) => {
+                let e = self.scene.images.get(id).expect("image slot");
+                Some(SampledSource::Texture(e.texture, e.sampler))
+            }
+            StoreRef::Gradient(id) => {
+                let e = self.scene.gradients.get(id).expect("gradient slot");
+                Some(SampledSource::Texture(e.texture, SamplerDesc::LINEAR_CLAMP))
+            }
+            StoreRef::GlyphRun(run) => {
+                let e = self.scene.glyph_runs.run(run).expect("glyph run slot");
+                Some(SampledSource::Texture(e.atlas, SamplerDesc::LINEAR_CLAMP))
+            }
+            StoreRef::Composite { pass, .. } => self.offscreen_passes[pass]
+                .sample
+                .map(SampledSource::Transient),
+            StoreRef::BackdropComposite { capture, .. }
+            | StoreRef::MaterialComposite { capture, .. } => self.backdrop_captures[capture]
+                .sample
+                .map(SampledSource::Transient),
+            _ => None,
+        }
+    }
+
+    /// Which pipeline offscreen pass `pass`'s closing composite lowers through.
+    ///
+    /// The same three-way choice [`lower_entry`](Self::lower_entry) makes,
+    /// exposed for the introspection walks: the family drives the merge decision,
+    /// and the pipelines spend different instance scratch, so a walk that assumed
+    /// every composite is a plain image draw would misattribute both.
+    pub(crate) fn composite_lowering(&self, pass: usize) -> CompositeLowering {
+        let p = &self.offscreen_passes[pass];
+        if p.blend.is_some() {
+            CompositeLowering::AdvancedBlend
+        } else if p.color.is_some() {
+            CompositeLowering::ColorTransform
+        } else {
+            CompositeLowering::Image
+        }
     }
 
     /// The Quad pipeline handle, for batch introspection.
@@ -4885,7 +4970,8 @@ mod tests {
 
     /// An outer path shadow builds a second mask (distinct from the fill mask, so
     /// keyed apart by sigma) and composites it offset by the drop through the
-    /// reused glyph-coverage pipeline — two masked draws under/over each other.
+    /// reused glyph-coverage pipeline — two masked instances, shadow under fill,
+    /// and because both sample the same mask page they are one draw (§20.2).
     #[test]
     fn outer_path_shadow_builds_a_second_offset_mask() {
         let mut gpu = HeadlessRaster::new();
@@ -4896,14 +4982,19 @@ mod tests {
         // One build for the shadow silhouette, one for the fill: the sigma-folded
         // key keeps them from colliding on the same slot.
         assert_eq!(r.frame_stats().clip_mask_builds, 2);
-        let glyph_draws = r
+        let glyph: Vec<_> = r
             .segments
             .iter()
             .filter(|s| matches!(s.kind, SegmentKind::GlyphRun { .. }))
-            .count();
-        assert!(
-            glyph_draws >= 2,
-            "shadow and fill each lower as a glyph-coverage draw"
+            .collect();
+        assert_eq!(
+            glyph.len(),
+            1,
+            "both masked draws share the mask page, so they batch into one"
+        );
+        assert_eq!(
+            glyph[0].count, 2,
+            "shadow and fill each lower as a masked coverage instance"
         );
     }
 
@@ -5141,9 +5232,12 @@ mod tests {
         });
         let mut r = Renderer::new(&mut gpu, format);
         r.upload(&mut gpu, &[image(tex), image(tex)]);
-        // Two image segments, but one cached bind group for the shared texture.
-        assert_eq!(r.segments.len(), 2);
+        // One cached bind group for the shared texture — and because the bind group
+        // is part of the batch key, the two images are also one instanced draw
+        // (§20.2 bind-group batching), not two draws of the same resource.
         assert_eq!(r.texture_bindings.len(), 1);
+        assert_eq!(r.segments.len(), 1);
+        assert_eq!(r.segments[0].count, 2);
     }
 
     #[test]

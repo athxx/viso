@@ -132,10 +132,22 @@ impl BatchFamily {
     }
 
     /// Whether draws of this family can grow by absorbing an adjacent primitive
-    /// of the same key. Quads, analytic rrects/ellipses, and meshes each share a
-    /// family buffer and merge; images, glyph runs, gradients, color transforms,
-    /// material surfaces, and advanced blends each bind their own resource and
-    /// stand alone.
+    /// of the same key.
+    ///
+    /// Two groups qualify. The families that bind no per-draw resource — quads,
+    /// the analytic shapes, meshes — merge on their key alone. The families that
+    /// sample one texture — images, glyph runs, gradients — merge too, because the
+    /// texture is *part of* the key: an equal key means an equal bind group, so a
+    /// run of them is one resource and one draw. That is the §20.2 fallback doing
+    /// its work: atlas the content, and bind-group batching collapses a screen of
+    /// icons or a page of text into a draw per atlas, which is the draw count a
+    /// resource table would have reached with backend support this RHI does not
+    /// need.
+    ///
+    /// The composite families stand alone regardless: a color transform, an
+    /// advanced blend, and a material surface each carry per-draw state beyond
+    /// their bind group (a fused matrix, a destination snapshot, a backdrop), so
+    /// two of them are not one draw even when their keys agree.
     pub const fn mergeable(self) -> bool {
         matches!(
             self,
@@ -146,6 +158,9 @@ impl BatchFamily {
                 | BatchFamily::AnalyticLine
                 | BatchFamily::AnalyticShadow
                 | BatchFamily::Mesh
+                | BatchFamily::Image
+                | BatchFamily::GlyphRun
+                | BatchFamily::Gradient
         )
     }
 }

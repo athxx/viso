@@ -131,10 +131,11 @@ fn adjacent_same_key_quads_collapse_to_one_batch() {
 
 #[test]
 fn incompatible_primitive_splits_equal_key_quads_in_order() {
-    // Two quads with an image between them. The image binds its own texture and
-    // is unmergeable, so it is a hard barrier: the trailing quad may NOT reach
-    // back past it to join the leading quad. The emitted draws replay the scene
-    // in submission order — quad, image, quad — three batches, not two.
+    // Two quads with an image between them. The image draws from a different
+    // pipeline, so its key cannot equal a quad's and it is a hard barrier: the
+    // trailing quad may NOT reach back past it to join the leading quad. The
+    // emitted draws replay the scene in submission order — quad, image, quad —
+    // three batches, not two.
     with_scene(
         |gpu| {
             let tex = make_texture(gpu);
@@ -145,7 +146,7 @@ fn incompatible_primitive_splits_equal_key_quads_in_order() {
             assert_eq!(
                 batches.len(),
                 3,
-                "an unmergeable primitive is a barrier: no cross-barrier merge"
+                "an intervening family is a barrier: no cross-barrier merge"
             );
 
             let chunks = r.render_chunks();

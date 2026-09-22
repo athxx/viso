@@ -168,6 +168,10 @@ impl MetalBackend {
                 // The device has compute; this backend exposes no dispatch
                 // encoder, so nothing above it may plan one (§20.1).
                 compute_dispatch: false,
+                // Metal has argument tables; this backend's bind groups bind one
+                // texture per slot at creation, so there is no table to index
+                // (§20.2). Atlas + bind-group batching is the path that exists.
+                bindless_texture_slots: 0,
             },
             retire_queue: RetireQueue::new(),
             current_epoch: Epoch::START,
