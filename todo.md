@@ -2890,10 +2890,41 @@ in `viso-gpu`. Enters only after M1 freezes; algorithms here are not frozen as p
         `cargo bench -p viso-render -- --test`.
 
 ### A0 Done (no standalone spec block)
-- [ ] Governed by global DoD: "compute vector only as a large-dynamic-workload lane";
+- [x] Governed by global DoD: "compute vector only as a large-dynamic-workload lane";
       "default UI does not globally enable MSAA"; plus the 120/144/240 Hz regression gate and
       the unsafe/SIMD reference + benchmark requirement. Not a prerequisite of D0~E2. D0~D3
       must remain correct with zero compute dependency (§7.2).
+  - [x] "Compute vector only as a large-dynamic-workload lane": held from both ends by
+        A0.1 — `VectorLane::select` needs scale *and* churn *and* a measured bottleneck
+        *and* a dispatch capability, and a screen of buttons drawn through the real
+        renderer dispatches nothing. Asserted in `vector_lane.rs`.
+  - [x] "Default UI does not globally enable MSAA": every entry in the shipped manifest is
+        single-sampled with no depth attachment, now asserted rather than assumed
+        (`no_standard_pipeline_enables_multisampling`). `VariantKey` can *express* a 4×
+        sample count — that is what makes it pipeline-changing — but nothing selects one;
+        these shapes antialias from analytic SDF coverage.
+  - [x] The three A0 lanes share one property no per-lane file can state, so
+        `crates/render/tests/gpu_specialization.rs` states it: an undescribed workload
+        selects the portable realization in all three, all three capability answers are
+        no, and an ordinary frame reports zero of every A0 counter. A lane that defaulted
+        to its fast path would be one you had to opt out of.
+  - [x] "D0~D3 remains correct with zero compute dependency" is not one assertion but the
+        whole suite passing on a backend reporting every A0 capability absent — which is
+        the only backend here. No D/E-section contract, frozen test, or public signature
+        changed across A0; the three additions are a capability field, a counter, and
+        three cold-path selectors.
+  - [x] 120/144/240 Hz regression gate: `assert_static_glass_holds_at_every_refresh_rate`
+        still holds, so nothing in A0 made per-frame cost depend on the refresh rate.
+  - [x] Unsafe/SIMD requirement: vacuous by construction — A0 added no `unsafe` and no
+        SIMD. Its three modules are plain safe arithmetic on measured inputs.
+  - [x] Honestly labeled, in Chinese at report time and in the module docs: all three fast
+        paths are *selected* and never realized, because no backend here exposes compute
+        dispatch, a resource table, or indirect draw. What ships and is measured is the
+        portable realization of each — CPU tessellation, bind-group batching, and the
+        chunk-level CPU cull.
+  - [x] Verified: `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets
+        -- -D warnings`, `cargo xtask check-deps` (18 crates), `cargo test --workspace`,
+        `cargo bench -p viso-render -- --test`.
 
 ---
 

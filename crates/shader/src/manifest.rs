@@ -407,6 +407,24 @@ mod tests {
         assert!(m.entry(PipelineFamily::AdvancedBlend).is_some());
     }
 
+    /// The §33 rule that default UI does not globally enable MSAA, stated as the
+    /// arithmetic it reduces to: every shipped pipeline is single-sampled with no
+    /// depth attachment. [`VariantKey`] can *express* a 4× sample count — that is
+    /// what makes it a pipeline-changing dimension — but nothing in the standard
+    /// manifest selects one, so no frame pays for a multisampled attachment it
+    /// never asked for. Analytic SDF coverage is how these shapes antialias.
+    #[test]
+    fn no_standard_pipeline_enables_multisampling() {
+        for e in standard_manifest().entries() {
+            assert_eq!(
+                e.variant.sample_count, 1,
+                "{:?} ships multisampled: UI antialiases analytically",
+                e.family
+            );
+            assert!(!e.variant.depth_stencil, "{:?} binds depth", e.family);
+        }
+    }
+
     #[test]
     fn families_without_a_builtin_have_no_entry() {
         let m = standard_manifest();
