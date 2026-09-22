@@ -426,6 +426,73 @@ pub fn advanced_blend_ir() -> ShaderIr {
     }
 }
 
+/// Material-composite built-in: the one draw a frosted surface costs.
+///
+/// A frosted panel is `backdrop → blur → saturation/tint → optional noise →
+/// material mask → border/highlight`. The first two stages are passes that
+/// already exist (the backdrop capture and its blur ladder), and the last is an
+/// ordinary analytic rounded-rect drawn over this one. Everything between fuses
+/// into this single fragment, so a panel adds no pass, no target and no capture
+/// beyond what a plain blurred-backdrop layer already needed:
+///
+/// - the tint is the same affine 4×5 color matrix (`row0..row3` + `offset`) plus
+///   `gamma` the fused color built-in uses, so saturation/tint/brightness cost
+///   nothing extra here;
+/// - `noise` is a grain amplitude over a hash of the *integer device pixel*, so a
+///   static screen renders byte-identically every frame (no time input);
+/// - `radius` is the panel's per-corner mask, evaluated as a signed distance like
+///   every other analytic shape, so the glass has real antialiased corners
+///   instead of a rectangular cut;
+/// - `opacity` scales the whole result last.
+///
+/// Per-instance data, uniforms at buffer 0, one texture (the blurred backdrop).
+pub fn material_ir() -> ShaderIr {
+    static ATTRS: &[IrField] = &[
+        IrField::new("rect_pos", IrType::F32X2),
+        IrField::new("rect_size", IrType::F32X2),
+        IrField::new("uv_pos", IrType::F32X2),
+        IrField::new("uv_size", IrType::F32X2),
+        IrField::new("row0", IrType::F32X4),
+        IrField::new("row1", IrType::F32X4),
+        IrField::new("row2", IrType::F32X4),
+        IrField::new("row3", IrType::F32X4),
+        IrField::new("offset", IrType::F32X4),
+        IrField::new("radius", IrType::F32X4),
+        IrField::new("gamma", IrType::F32),
+        IrField::new("noise", IrType::F32),
+        IrField::new("opacity", IrType::F32),
+    ];
+    static UNIFORMS: &[IrField] = &[IrField::new("viewport", IrType::F32X2)];
+    static VARYINGS: &[Varying] = &[
+        Varying::new("position", IrType::F32X4, " [[position]]", ""),
+        Varying::new("uv", IrType::F32X2, "", "backdrop uv"),
+        Varying::new("uv_bounds", IrType::F32X4, "", "backdrop sub-rect (lo, hi)"),
+        Varying::new("local", IrType::F32X2, "", "pixel-space sample position"),
+        Varying::new("half_size", IrType::F32X2, "", ""),
+        Varying::new("center", IrType::F32X2, "", ""),
+        Varying::new("radius", IrType::F32X4, "", "mask radii lt, rt, rb, lb"),
+        Varying::new("row0", IrType::F32X4, "", "red row over (r, g, b, a)"),
+        Varying::new("row1", IrType::F32X4, "", "green row"),
+        Varying::new("row2", IrType::F32X4, "", "blue row"),
+        Varying::new("row3", IrType::F32X4, "", "alpha row"),
+        Varying::new("offset", IrType::F32X4, "", "constant column per channel"),
+        Varying::new("gamma", IrType::F32, "", "post-matrix RGB exponent"),
+        Varying::new("noise", IrType::F32, "", "grain amplitude, 0 = none"),
+        Varying::new("opacity", IrType::F32, "", ""),
+    ];
+    ShaderIr {
+        kind: PrimitiveKind::Material,
+        vertex_source: VertexSource::PerInstance,
+        attributes: ATTRS,
+        uniforms: UNIFORMS,
+        varyings: VARYINGS,
+        texture_count: 1,
+        vertex_body: MATERIAL_VERTEX_BODY,
+        helpers: MATERIAL_HELPERS,
+        fragment_body: MATERIAL_FRAGMENT_BODY,
+    }
+}
+
 /// Glyph-run built-in: the image contract sampling a single-channel A8 coverage
 /// atlas. The fragment reads the texel's coverage directly and modulates the
 /// run color by it — no signed-distance decode.
@@ -1549,6 +1616,124 @@ if (in.gamma != 1.0) {
     dst.rgb = pow(dst.rgb, float3(in.gamma));
 }
 return float4(dst.rgb * dst.a, dst.a);";
+
+const MATERIAL_VERTEX_BODY: &str = "\
+InstanceIn inst = instances[iid];
+
+// Padded by 1px each side like every analytic shape, so the mask's AA ramp at
+// the panel edge is covered. The uv of that ring lands outside the backdrop
+// sub-rect; the fragment clamps it back, and its coverage is ~0 anyway.
+float2 corner;
+switch (vid) {
+    case 0: corner = float2(0.0, 0.0); break;
+    case 1: corner = float2(1.0, 0.0); break;
+    case 2: corner = float2(0.0, 1.0); break;
+    case 3: corner = float2(1.0, 0.0); break;
+    case 4: corner = float2(1.0, 1.0); break;
+    default: corner = float2(0.0, 1.0); break;
+}
+
+float2 pos = float2(inst.rect_pos);
+float2 size = float2(inst.rect_size);
+float2 pad = float2(1.0, 1.0);
+float2 pixel = pos - pad + corner * (size + 2.0 * pad);
+
+float2 vp = float2(u.viewport);
+float2 ndc = float2(pixel.x / vp.x * 2.0 - 1.0,
+                    1.0 - pixel.y / vp.y * 2.0);
+
+float2 uv_lo = float2(inst.uv_pos);
+float2 uv_hi = uv_lo + float2(inst.uv_size);
+float2 uv_pad = float2(inst.uv_size) / max(size, float2(1.0, 1.0));
+
+VOut out;
+out.position = float4(ndc, 0.0, 1.0);
+out.uv = uv_lo - uv_pad + corner * (float2(inst.uv_size) + 2.0 * uv_pad);
+out.uv_bounds = float4(uv_lo, uv_hi);
+out.local = pixel;
+out.half_size = size * 0.5;
+out.center = pos + size * 0.5;
+out.radius = float4(inst.radius);
+out.row0 = float4(inst.row0);
+out.row1 = float4(inst.row1);
+out.row2 = float4(inst.row2);
+out.row3 = float4(inst.row3);
+out.offset = float4(inst.offset);
+out.gamma = float(inst.gamma);
+out.noise = float(inst.noise);
+out.opacity = float(inst.opacity);
+return out;";
+
+const MATERIAL_HELPERS: &str = "\
+// Signed distance to a rounded box with an independent radius per corner
+// (`radii` ordered left-top, right-top, right-bottom, left-bottom), negative
+// inside. `half_ext` is the box's half-extents. (Do not name it `half` — that is
+// a reserved MSL type name, the 16-bit float.)
+static inline float rrect_sdf(float2 p, float2 center, float2 half_ext, float4 radii) {
+    float2 d = p - center;
+    float r = d.x < 0.0 ? (d.y < 0.0 ? radii.x : radii.w)
+                        : (d.y < 0.0 ? radii.y : radii.z);
+    float k = min(2.0 * r, min(half_ext.x, half_ext.y));
+    float2 q = abs(d) - (half_ext - k);
+    float2 mx = max(q, float2(0.0));
+    return length(mx) + min(max(q.x, q.y), 0.0) - k;
+}
+
+// Device-pixel coverage factor: how many SDF units span one screen pixel at the
+// current sampling position, inverted.
+static inline float aa_factor(float2 p) {
+    return 1.0 / length(float2(length(dfdx(p)), length(dfdy(p))));
+}
+
+// Grain in [-0.5, 0.5] from an integer-lattice hash of the device pixel.
+//
+// Integer mixing rather than a trigonometric hash: unsigned wraparound multiply and shift
+// are exactly defined, so the value matches the CPU rasterizer bit for bit and
+// carries no time input — a static frosted surface therefore renders identically
+// every frame, which is what keeps an idle screen from re-uploading.
+static inline float grain(float2 p) {
+    uint x = uint(int(floor(p.x)));
+    uint y = uint(int(floor(p.y)));
+    uint h = (x * 0x9E3779B9u) ^ (y * 0x85EBCA6Bu);
+    h ^= h >> 15;
+    h *= 0x2C1B3C6Du;
+    h ^= h >> 12;
+    h *= 0x297A2D39u;
+    h ^= h >> 15;
+    return float(h & 0x00FFFFFFu) / 16777215.0 - 0.5;
+}";
+
+const MATERIAL_FRAGMENT_BODY: &str = "\
+// Taps are clamped to the backdrop's sub-rect, inset by half a texel: a pooled
+// render target is larger than the region written into it, so the sampler's own
+// clamp-to-edge would hold cleared padding rather than the content edge.
+float2 half_texel = 0.5 / float2(float(tex.get_width()), float(tex.get_height()));
+float2 lo = in.uv_bounds.xy + half_texel;
+float2 hi = max(in.uv_bounds.zw - half_texel, lo);
+float4 texel = tex.sample(samp, clamp(in.uv, lo, hi));
+
+// Tint: the same straight-alpha affine matrix the fused color built-in applies,
+// so brightness never depends on coverage.
+float a = texel.a;
+float4 src = (a > 0.0) ? float4(texel.rgb / a, a) : float4(0.0);
+float4 dst = float4(dot(in.row0, src) + in.offset.r,
+                    dot(in.row1, src) + in.offset.g,
+                    dot(in.row2, src) + in.offset.b,
+                    dot(in.row3, src) + in.offset.a);
+dst = clamp(dst, 0.0, 1.0);
+if (in.gamma != 1.0) {
+    dst.rgb = pow(dst.rgb, float3(in.gamma));
+}
+if (in.noise > 0.0) {
+    dst.rgb = clamp(dst.rgb + in.noise * grain(in.local), 0.0, 1.0);
+}
+
+// Material mask: the panel's own rounded rect, antialiased over one device pixel.
+float d = rrect_sdf(in.local, in.center, in.half_size, in.radius);
+float cov = clamp(-d * aa_factor(in.local), 0.0, 1.0);
+
+float oa = dst.a * cov * in.opacity;
+return float4(dst.rgb * oa, oa);";
 
 const ADVANCED_BLEND_VERTEX_BODY: &str = "\
 InstanceIn inst = instances[iid];

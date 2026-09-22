@@ -38,6 +38,7 @@ fn pipeline_family(pipeline: BatchPipeline) -> BatchFamily {
         BatchPipeline::AnalyticShadow => BatchFamily::AnalyticShadow,
         BatchPipeline::ColorTransform => BatchFamily::ColorTransform,
         BatchPipeline::AdvancedBlend => BatchFamily::AdvancedBlend,
+        BatchPipeline::Material => BatchFamily::Material,
     }
 }
 

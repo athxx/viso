@@ -1795,6 +1795,12 @@ pub enum StoreRef {
         rect: Rect,
         opacity: f32,
     },
+    /// A frosted material composite: backdrop capture `capture` resolved into a
+    /// finished glass surface by the material pipeline. Like
+    /// [`StoreRef::BackdropComposite`] the UVs cannot be resolved at record time, so
+    /// the surface's rect and its material parameters live in the renderer's
+    /// per-frame material record `material` and the instance is built at lowering.
+    MaterialComposite { capture: usize, material: usize },
 }
 
 impl std::fmt::Display for StoreRef {
@@ -1813,6 +1819,7 @@ impl std::fmt::Display for StoreRef {
             StoreRef::Mesh(_) => write!(f, "mesh"),
             StoreRef::Composite { .. } => write!(f, "composite"),
             StoreRef::BackdropComposite { .. } => write!(f, "backdrop-composite"),
+            StoreRef::MaterialComposite { .. } => write!(f, "material-composite"),
         }
     }
 }

@@ -623,6 +623,17 @@ impl HeadlessRaster {
                                 cmd.scissor,
                             );
                         }
+                        BuiltinShader::Material => {
+                            self.fill_material(
+                                target,
+                                width,
+                                height,
+                                &layout,
+                                inst,
+                                cmd.bind_group,
+                                cmd.scissor,
+                            );
+                        }
                         BuiltinShader::AdvancedBlend => {
                             self.fill_advanced_blend(
                                 target,
@@ -1684,6 +1695,153 @@ impl HeadlessRaster {
         }
     }
 
+    /// Fill one frosted material composite: a blurred backdrop in, a finished glass
+    /// surface out.
+    ///
+    /// Instance layout (`MaterialInstance`):
+    /// - `rect_pos`/`rect_size` : the surface's quad in physical pixels
+    /// - `uv_pos`/`uv_size`     : the blurred backdrop's sub-rect, normalized `0..1`
+    /// - `row0`..`row3`/`offset`: the fused tint matrix, exactly as ColorTransform
+    /// - `radius`               : mask radii, left-top, right-top, right-bottom, left-bottom
+    /// - `gamma`                : post-matrix RGB exponent
+    /// - `noise`                : grain amplitude, `0` = none
+    /// - `opacity`              : scales the finished surface
+    ///
+    /// Mirrors the Metal fragment stage-for-stage: tint on straight RGBA, grain from
+    /// an integer-lattice hash of the device pixel (so the value matches the shader's
+    /// `grain` bit for bit and never varies frame to frame), then the surface's own
+    /// rounded-rect coverage as the mask. The AA ramp uses one unit per pixel, which
+    /// is what the shader's `aa_factor` evaluates to for this pixel-space quad.
+    #[allow(clippy::too_many_arguments)]
+    fn fill_material(
+        &mut self,
+        target: FbTarget,
+        width: u32,
+        height: u32,
+        layout: &InstanceLayout,
+        inst: &[u8],
+        bind_group: Option<BindGroupId>,
+        scissor: Option<(u32, u32, u32, u32)>,
+    ) {
+        let pos = read_f2(layout, inst, "rect_pos");
+        let size = read_f2(layout, inst, "rect_size");
+        let uv_pos = read_f2(layout, inst, "uv_pos");
+        let uv_size = read_f2(layout, inst, "uv_size");
+        let rows = [
+            read_f4(layout, inst, "row0"),
+            read_f4(layout, inst, "row1"),
+            read_f4(layout, inst, "row2"),
+            read_f4(layout, inst, "row3"),
+        ];
+        let offset = read_f4(layout, inst, "offset");
+        let radius = read_f4(layout, inst, "radius");
+        let gamma = read_f1(layout, inst, "gamma");
+        let noise = read_f1(layout, inst, "noise");
+        let opacity = read_f1(layout, inst, "opacity");
+
+        let Some(bg) = bind_group else { return };
+        let (mut tex_id, mut samp) = (
+            None,
+            SamplerDesc {
+                filter: crate::resource::FilterMode::Linear,
+                address: crate::resource::AddressMode::ClampToEdge,
+            },
+        );
+        for binding in &self.bind_group(bg).bindings {
+            match binding {
+                crate::resource::Binding::Texture(t) => tex_id = Some(*t),
+                crate::resource::Binding::Sampler(s) => samp = self.sampler(*s),
+                crate::resource::Binding::Uniform(_) => {}
+            }
+        }
+        let Some(tex_id) = tex_id else { return };
+        let (tw, th, texels) = {
+            let t = self.texture(tex_id);
+            (t.width, t.height, t.texels.clone())
+        };
+        if tw == 0 || th == 0 || size[0] <= 0.0 || size[1] <= 0.0 {
+            return;
+        }
+
+        // The quad is padded 1px each side so the mask's AA ramp is covered.
+        let (mut x0, mut y0, mut x1, mut y1) = (
+            (pos[0] - 1.0).floor().max(0.0) as u32,
+            (pos[1] - 1.0).floor().max(0.0) as u32,
+            (pos[0] + size[0] + 1.0).ceil().min(width as f32) as u32,
+            (pos[1] + size[1] + 1.0).ceil().min(height as f32) as u32,
+        );
+        if let Some((sx, sy, sw, sh)) = scissor {
+            x0 = x0.max(sx);
+            y0 = y0.max(sy);
+            x1 = x1.min(sx + sw);
+            y1 = y1.min(sy + sh);
+        }
+
+        let center = [pos[0] + size[0] * 0.5, pos[1] + size[1] * 0.5];
+        let half_size = [size[0] * 0.5, size[1] * 0.5];
+        // Half-texel inset: a pooled target is larger than the region written into
+        // it, so clamping to the sub-rect edge holds content, not cleared padding.
+        let half_texel = [0.5 / tw as f32, 0.5 / th as f32];
+        let lo = [uv_pos[0] + half_texel[0], uv_pos[1] + half_texel[1]];
+        let hi = [
+            (uv_pos[0] + uv_size[0] - half_texel[0]).max(lo[0]),
+            (uv_pos[1] + uv_size[1] - half_texel[1]).max(lo[1]),
+        ];
+
+        for py in y0..y1 {
+            for px in x0..x1 {
+                let local = [px as f32 + 0.5, py as f32 + 0.5];
+                let d = rrect_sdf(local, center, half_size, radius);
+                let cov = (-d).clamp(0.0, 1.0);
+                if cov <= 0.0 {
+                    continue;
+                }
+
+                let fx = (local[0] - pos[0]) / size[0];
+                let fy = (local[1] - pos[1]) / size[1];
+                let u = (uv_pos[0] + fx * uv_size[0]).clamp(lo[0], hi[0]);
+                let v = (uv_pos[1] + fy * uv_size[1]).clamp(lo[1], hi[1]);
+                let texel = sample_texel(&texels, tw, th, u, v, &samp);
+
+                let a = texel[3];
+                let straight = if a > 0.0 {
+                    [texel[0] / a, texel[1] / a, texel[2] / a, a]
+                } else {
+                    [0.0; 4]
+                };
+
+                let mut dst = [0.0f32; 4];
+                for c in 0..4 {
+                    let row = rows[c];
+                    dst[c] = (row[0] * straight[0]
+                        + row[1] * straight[1]
+                        + row[2] * straight[2]
+                        + row[3] * straight[3]
+                        + offset[c])
+                        .clamp(0.0, 1.0);
+                }
+                if gamma != 1.0 {
+                    for channel in dst.iter_mut().take(3) {
+                        *channel = channel.powf(gamma);
+                    }
+                }
+                if noise > 0.0 {
+                    let g = grain(local);
+                    for channel in dst.iter_mut().take(3) {
+                        *channel = (*channel + noise * g).clamp(0.0, 1.0);
+                    }
+                }
+
+                let oa = dst[3] * cov * opacity;
+                if oa <= 0.0 {
+                    continue;
+                }
+                let src = [dst[0] * oa, dst[1] * oa, dst[2] * oa, oa];
+                blend_pixel(self.framebuffer(target), width, px, py, src);
+            }
+        }
+    }
+
     /// Fill one isolated advanced-blend composite: two textures in, the finished
     /// blend out.
     ///
@@ -2182,6 +2340,24 @@ fn rrect_sdf(p: [f32; 2], center: [f32; 2], half: [f32; 2], radii: [f32; 4]) -> 
     };
     let k = (2.0 * r).min(half[0].min(half[1]));
     box_sdf(p, center, half, k)
+}
+
+/// Grain in `[-0.5, 0.5]` from an integer-lattice hash of the device pixel.
+///
+/// Mirrors the MSL `grain` operation for operation: unsigned wraparound multiply
+/// and shift are exactly defined in both languages, so the CPU and GPU values are
+/// bit-identical, and the only input is the integer pixel — never time — so a
+/// static frosted surface renders the same grain every frame.
+fn grain(p: [f32; 2]) -> f32 {
+    let x = p[0].floor() as i32 as u32;
+    let y = p[1].floor() as i32 as u32;
+    let mut h = x.wrapping_mul(0x9E37_79B9) ^ y.wrapping_mul(0x85EB_CA6B);
+    h ^= h >> 15;
+    h = h.wrapping_mul(0x2C1B_3C6D);
+    h ^= h >> 12;
+    h = h.wrapping_mul(0x297A_2D39);
+    h ^= h >> 15;
+    (h & 0x00FF_FFFF) as f32 / 16_777_215.0 - 0.5
 }
 
 /// Signed distance to an axis-aligned ellipse, negative inside. Mirrors the MSL

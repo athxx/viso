@@ -35,15 +35,17 @@ impl Application for Hello {
                 ..Default::default()
             },
             |cx| {
-                label("Hello 世界 🥟🎉\n泰 สวัสดี\n天城 नमस्ते\n阿拉 مرحبا\n韩안녕하세요\n日 こんにちは")
-                    .font_size(48.0)
-                    .color(Rgba {
-                        r: 0.93,
-                        g: 0.94,
-                        b: 0.97,
-                        a: 1.0,
-                    })
-                    .build(cx);
+                label(
+                    "Hello 世界 🥟🎉\n泰 สวัสดี\n天城 नमस्ते\n阿拉 مرحبا\n韩안녕하세요\n日 こんにちは",
+                )
+                .font_size(48.0)
+                .color(Rgba {
+                    r: 0.93,
+                    g: 0.94,
+                    b: 0.97,
+                    a: 1.0,
+                })
+                .build(cx);
             },
         );
     }

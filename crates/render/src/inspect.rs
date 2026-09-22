@@ -84,6 +84,9 @@ pub enum BatchPipeline {
     /// One isolated advanced-blend composite (the advanced-blend pipeline, binding
     /// the isolated layer and the bounded destination snapshot it blends against).
     AdvancedBlend,
+    /// One frosted material surface (the material pipeline, binding the shared
+    /// blurred backdrop capture it samples).
+    Material,
 }
 
 impl BatchPipeline {
@@ -103,6 +106,7 @@ impl BatchPipeline {
             BatchPipeline::AnalyticShadow => "analytic-shadow",
             BatchPipeline::ColorTransform => "color-transform",
             BatchPipeline::AdvancedBlend => "advanced-blend",
+            BatchPipeline::Material => "material",
         }
     }
 
@@ -123,6 +127,7 @@ impl BatchPipeline {
             BatchPipeline::AnalyticShadow => BatchFamily::AnalyticShadow,
             BatchPipeline::ColorTransform => BatchFamily::ColorTransform,
             BatchPipeline::AdvancedBlend => BatchFamily::AdvancedBlend,
+            BatchPipeline::Material => BatchFamily::Material,
         }
     }
 }
@@ -396,6 +401,11 @@ impl Renderer {
                 self.advanced_blend_pipeline_id(),
                 Some(bind_group),
             ),
+            SegmentKind::Material { bind_group } => (
+                BatchPipeline::Material,
+                self.material_pipeline_id(),
+                Some(bind_group),
+            ),
         };
         let offscreen = matches!(seg.target, PassTarget::Offscreen(_));
         InspectBatch {
@@ -446,6 +456,7 @@ impl Renderer {
         let mut image_cursor: u32 = 0;
         let mut gradient_cursor: u32 = 0;
         let mut glyph_cursor: u32 = 0;
+        let mut material_cursor: u32 = 0;
         let mut index_cursor: u32 = 0;
 
         // The batch item the last emit landed in, so a mergeable run can
@@ -527,6 +538,14 @@ impl Renderer {
                     // so it never merges regardless. Use a placeholder that the
                     // merge test below treats as non-mergeable.
                     (BatchPipeline::Image, SegmentKind::Quad, start, 1)
+                }
+                StoreRef::MaterialComposite { .. } => {
+                    let start = material_cursor;
+                    material_cursor += 1;
+                    // Like an image, a material surface binds its own capture and
+                    // is one instanced draw — unmergeable. Placeholder kind; the
+                    // family below drives the merge decision.
+                    (BatchPipeline::Material, SegmentKind::Quad, start, 1)
                 }
                 StoreRef::Gradient(_) => {
                     let start = gradient_cursor;
@@ -701,6 +720,7 @@ impl Renderer {
                 StoreRef::Image(_)
                 | StoreRef::Composite { .. }
                 | StoreRef::BackdropComposite { .. } => (BatchFamily::Image, true),
+                StoreRef::MaterialComposite { .. } => (BatchFamily::Material, true),
                 StoreRef::Gradient(_) => (BatchFamily::Gradient, true),
                 StoreRef::GlyphRun(run) => {
                     let e = self

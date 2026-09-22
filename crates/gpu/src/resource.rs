@@ -184,6 +184,12 @@ pub enum BuiltinShader {
     /// through an affine color matrix plus an optional gamma. One pass realizes a
     /// whole run of mergeable color effects.
     ColorTransform,
+    /// A frosted material composite: samples a blurred backdrop, tints it through an
+    /// affine color matrix plus an optional gamma, adds grain hashed from the integer
+    /// device pixel, and masks the result with the surface's own rounded rect — the
+    /// whole §18 chain minus the passes that produced the backdrop and the border
+    /// drawn over it.
+    Material,
     /// An isolated advanced-blend composite: samples an isolated layer (source) and
     /// a bounded snapshot of what is behind it (destination) from **two** textures,
     /// evaluates a separable-artistic or non-separable-HSL blend function, and

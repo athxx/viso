@@ -39,7 +39,8 @@ use crate::pool::InstancePool;
 use crate::primitive::{
     AdvancedBlendInstance, AnalyticCapsuleInstance, AnalyticEllipseInstance, AnalyticLineInstance,
     AnalyticRRectInstance, BlurInstance, ColorTransformInstance, GlyphInstance, GradientInstance,
-    ImageInstance, MeshVertex, PathCmd, Primitive, QuadInstance, Rect, ShadowInstance, rgba_array,
+    ImageInstance, MaterialInstance, MeshVertex, PathCmd, Primitive, QuadInstance, Rect,
+    ShadowInstance, rgba_array,
 };
 use crate::raster_mask::{path_bounds, rasterize_path_coverage};
 use crate::scene::store::{ClipFillRule, StoreRef, glyph_instances};
@@ -71,6 +72,8 @@ const BLUR_STRIDE: usize = core::mem::size_of::<BlurInstance>();
 const COLOR_TRANSFORM_STRIDE: usize = core::mem::size_of::<ColorTransformInstance>();
 /// Bytes of one isolated advanced-blend composite instance.
 const ADVANCED_BLEND_STRIDE: usize = core::mem::size_of::<AdvancedBlendInstance>();
+/// Bytes of one frosted material composite instance.
+const MATERIAL_STRIDE: usize = core::mem::size_of::<MaterialInstance>();
 /// Rows in the renderer-owned 1D gradient LUT atlas: each row is one baked ramp
 /// (a 3+-stop or non-linear-space gradient), `LUT_WIDTH × ROWS` RGBA8. 64 rows
 /// is 64 KB — ample for a frame's distinct multi-stop gradients while trivial
@@ -214,6 +217,10 @@ pub(crate) enum SegmentKind {
     /// finished composite, so this is the one kind whose pipeline writes with
     /// [`BlendMode::Replace`](viso_gpu::BlendMode::Replace).
     AdvancedBlend { bind_group: BindGroupId },
+    /// One frosted material surface, in the material buffer, sampling
+    /// `bind_group`'s blurred backdrop. `start`/`count` count instances in that
+    /// buffer.
+    Material { bind_group: BindGroupId },
 }
 
 impl SegmentKind {
@@ -233,6 +240,7 @@ impl SegmentKind {
             SegmentKind::Mesh => BatchFamily::Mesh,
             SegmentKind::ColorTransform { .. } => BatchFamily::ColorTransform,
             SegmentKind::AdvancedBlend { .. } => BatchFamily::AdvancedBlend,
+            SegmentKind::Material { .. } => BatchFamily::Material,
         }
     }
 
@@ -245,7 +253,8 @@ impl SegmentKind {
             | SegmentKind::GlyphRun { bind_group }
             | SegmentKind::Gradient { bind_group }
             | SegmentKind::ColorTransform { bind_group }
-            | SegmentKind::AdvancedBlend { bind_group } => Some(bind_group),
+            | SegmentKind::AdvancedBlend { bind_group }
+            | SegmentKind::Material { bind_group } => Some(bind_group),
             SegmentKind::Quad
             | SegmentKind::AnalyticRRect
             | SegmentKind::AnalyticEllipse
@@ -702,11 +711,12 @@ impl SamplerCache {
 /// The built-in pipelines the renderer prewarms once in [`Renderer::new`]
 /// (§7.1): SolidRect (quad), AnalyticRRect, AnalyticEllipse, AnalyticCapsule,
 /// AnalyticLine, Image, MaskComposite (glyph), PathFill (mesh), Gradient,
-/// AnalyticShadow, ContentBlur (blur), ColorTransform (fused color effects), and
-/// AdvancedBlend (isolated destination-read blends).
+/// AnalyticShadow, ContentBlur (blur), ColorTransform (fused color effects),
+/// AdvancedBlend (isolated destination-read blends), and MaterialComposite
+/// (frosted material surfaces).
 /// Reported as `FrameStats::shader_pipeline_creations` — a construction-time
 /// constant, since no draw ever triggers a runtime shader compile.
-const SHADER_PIPELINE_PREWARM_COUNT: u32 = 13;
+const SHADER_PIPELINE_PREWARM_COUNT: u32 = 14;
 
 /// Draw-call and instance counts for the frame the renderer has just lowered.
 ///
@@ -815,6 +825,15 @@ pub struct FrameStats {
     /// `backdrop_captures`, which conflates both kinds of destination snapshot:
     /// the frosted-glass backdrop and the blend's bounded destination read).
     pub blend_isolations: u32,
+    /// Frosted material surfaces composited this frame (§18): one per
+    /// [`FrostedMaterial`] whose backdrop resolved to a capture. The fused chain
+    /// `backdrop → blur → color transform → noise → rounded mask → opacity` is a
+    /// *single* draw, so this counter never adds a pass or a target of its own —
+    /// `N` panels over one background still report one `backdrop_captures` and the
+    /// blur ladder of that one capture.
+    ///
+    /// [`FrostedMaterial`]: crate::FrostedMaterial
+    pub material_composites: u32,
     /// Potential layers the Effect Planner considered this frame (§3145): one per
     /// `Primitive::Layer` in the stream, whether or not it ended up costing a pass.
     /// The denominator for the two counters below.
@@ -928,6 +947,11 @@ pub struct Renderer {
     /// it, evaluates a mode the fixed-function blender cannot express, and writes
     /// with [`BlendMode::Replace`] (§14.6, E2.3).
     advanced_blend_pipeline: PipelineId,
+    /// The MaterialComposite built-in pipeline (registered once): one frosted
+    /// material surface — the shared blurred backdrop, a fused color op,
+    /// deterministic grain, and a per-corner rounded mask — in a single draw
+    /// (§18, M0.1).
+    material_pipeline: PipelineId,
     /// The default linear-filter clamp sampler, used by glyph runs, gradient
     /// LUT sampling, and offscreen-layer compositing (all of which want bilinear
     /// clamp). Image draws select their sampler via `sampler_cache` instead.
@@ -970,6 +994,9 @@ pub struct Renderer {
     /// `quad_pool`): one [`AdvancedBlendInstance`] per isolated non-`SrcOver`
     /// layer composited this frame. Empty for every ordinary frame.
     advanced_blend_pool: InstancePool<AdvancedBlendInstance>,
+    /// Persistent material instance pool (same slot-diff upload as `quad_pool`):
+    /// one [`MaterialInstance`] per frosted surface composited this frame.
+    material_pool: InstancePool<MaterialInstance>,
     /// The renderer-owned 1D gradient LUT atlas: 3+-stop and non-linear-space
     /// gradients bake one ramp row here and sample `(t, lut_v)`. Unlike the
     /// image/glyph atlases (caller-owned textures), this atlas is internal — its
@@ -1053,6 +1080,15 @@ pub struct Renderer {
     /// [`AdvancedBlendInstance`] per isolated non-`SrcOver` layer, filled where
     /// the layer's composite draw is lowered.
     advanced_blend_scratch: Vec<AdvancedBlendInstance>,
+    /// Scratch material instance data, reused each frame: one
+    /// [`MaterialInstance`] per frosted surface, filled where its composite draw
+    /// is lowered.
+    material_scratch: Vec<MaterialInstance>,
+    /// This frame's frosted-surface parameters, reused each frame. A
+    /// [`StoreRef::MaterialComposite`] carries only the index into this list, so a
+    /// paint-order entry stays small while the ~100 bytes of material parameters
+    /// live once per surface here.
+    material_records: Vec<MaterialRecord>,
     /// Scratch mesh vertex data, reused each frame.
     mesh_vertex_scratch: Vec<MeshVertex>,
     /// Scratch mesh index data, reused each frame.
@@ -1356,6 +1392,59 @@ struct ColorPass {
     instance: u32,
 }
 
+/// One frosted material surface's parameters, as resolved during the frame's
+/// primitive walk (§18). Held per frame on the renderer rather than inline in
+/// [`StoreRef::MaterialComposite`]: the composite is a derived draw, and a
+/// paint-order entry is visited for every primitive, so it carries an index.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct MaterialRecord {
+    /// The surface rect in world space — both the composited quad and the
+    /// rounded-mask geometry the fragment evaluates its SDF against.
+    rect: Rect,
+    /// Per-corner radii, already normalized against the rect
+    /// (`[top_left, top_right, bottom_right, bottom_left]`).
+    radius: [f32; 4],
+    /// The fused color op applied to the blurred backdrop — E2's frozen 4×5
+    /// matrix plus optional gamma, reused verbatim.
+    op: ColorOp,
+    /// Grain amplitude in unit color, `0.0` for none.
+    noise: f32,
+    /// Surface opacity, group-opacity fold already applied.
+    opacity: f32,
+}
+
+/// Lay a [`MaterialRecord`] out as GPU instance data over `rect` (target space)
+/// sampling `uv` (normalized against the capture's physical extent).
+///
+/// The fused op's 4×5 matrix splits into row vectors plus the offset column, the
+/// same shape [`color_transform_instance`] produces — the material pipeline runs
+/// E2's color stage inline rather than in a pass of its own.
+fn material_instance(
+    record: MaterialRecord,
+    rect_pos: [f32; 2],
+    rect_size: [f32; 2],
+    uv_pos: [f32; 2],
+    uv_size: [f32; 2],
+) -> MaterialInstance {
+    let r = record.op.matrix.rows;
+    let row = |i: usize| [r[i][0], r[i][1], r[i][2], r[i][3]];
+    MaterialInstance {
+        rect_pos,
+        rect_size,
+        uv_pos,
+        uv_size,
+        row0: row(0),
+        row1: row(1),
+        row2: row(2),
+        row3: row(3),
+        offset: [r[0][4], r[1][4], r[2][4], r[3][4]],
+        radius: record.radius,
+        gamma: record.op.gamma,
+        noise: record.noise,
+        opacity: record.opacity,
+    }
+}
+
 /// Lay a fused [`ColorOp`] out as GPU instance data over `rect` (target space)
 /// sampling `uv` (normalized against the source's physical extent).
 ///
@@ -1507,6 +1596,13 @@ impl Renderer {
             )
             .expect("AdvancedBlendInstance layout matches the advanced-blend shader schema");
 
+        let material_pipeline = backend
+            .create_pipeline(
+                &desc(entry(PipelineFamily::MaterialComposite), "material"),
+                &MaterialInstance::LAYOUT,
+            )
+            .expect("MaterialInstance layout matches the material shader schema");
+
         // The 1D gradient LUT atlas is renderer-internal: baked from stops at
         // lowering, uploaded into this texture before the pass. Unlike image and
         // glyph textures (caller-owned), the renderer creates and owns it here.
@@ -1551,6 +1647,7 @@ impl Renderer {
             blur_pipeline,
             color_transform_pipeline,
             advanced_blend_pipeline,
+            material_pipeline,
             sampler,
             sampler_cache,
             quad_pool: InstancePool::new(BufferUsage::INSTANCE, "quad-instances"),
@@ -1583,6 +1680,7 @@ impl Renderer {
                 BufferUsage::INSTANCE,
                 "advanced-blend-instances",
             ),
+            material_pool: InstancePool::new(BufferUsage::INSTANCE, "material-instances"),
             gradient_lut: GradientLutAtlas::new(GRADIENT_LUT_ROWS, lut_texture),
             mask_cache: MaskCache::new(MASK_PAGE_SIZE),
             mask_page: MaskPage::new(MASK_PAGE_SIZE, mask_texture),
@@ -1611,6 +1709,8 @@ impl Renderer {
             blur_scratch: Vec::with_capacity(8),
             color_transform_scratch: Vec::with_capacity(8),
             advanced_blend_scratch: Vec::with_capacity(4),
+            material_scratch: Vec::with_capacity(8),
+            material_records: Vec::with_capacity(8),
             mesh_vertex_scratch: Vec::with_capacity(1024),
             mesh_index_scratch: Vec::with_capacity(2048),
             segments: Vec::with_capacity(8),
@@ -1922,6 +2022,7 @@ impl Renderer {
         self.color_passes.clear();
         self.color_ops.clear();
         self.backdrop_captures.clear();
+        self.material_records.clear();
         self.blur_scratch.clear();
         self.color_transform_scratch.clear();
         self.advanced_blend_scratch.clear();
@@ -2200,6 +2301,52 @@ impl Renderer {
                         ctx,
                         crate::scene::bounds::Bounds::default(),
                     );
+                }
+                Primitive::Frosted(material) => {
+                    // A frosted surface is a leaf, not a container: it declares a
+                    // backdrop dependency, joins (or opens) the capture group for
+                    // it exactly the way a backdrop layer does — so `N` panels at
+                    // one sigma still cost one capture and one blur ladder — and
+                    // then composites the whole §18 chain in a single draw.
+                    let world_clip = match clip {
+                        Some(c) => material.rect.intersect(c),
+                        None => material.rect,
+                    };
+                    // Below `BLUR_MIN_SIGMA` there is nothing to capture (a
+                    // sub-pixel blur of the backdrop is the backdrop), and a
+                    // surface inside an offscreen layer has no surface-pass
+                    // backdrop to read — see `backdrop_roi`. Either way the
+                    // surface contributes only its border ring.
+                    if material.backdrop_sigma > BLUR_MIN_SIGMA
+                        && matches!(target, PassTarget::Main)
+                        && let Some(roi) = self.backdrop_roi(world_clip, material.backdrop_sigma)
+                    {
+                        let capture = self.join_or_open_backdrop(roi, material.backdrop_sigma);
+                        let index = self.material_records.len();
+                        self.material_records.push(MaterialRecord {
+                            rect: material.rect,
+                            radius: material.radii(),
+                            op: material.color,
+                            noise: material.noise,
+                            opacity: material.opacity * fold,
+                        });
+                        let bounds =
+                            crate::scene::bounds::Bounds::from_world(material.rect, clip, 0.0, 0.0);
+                        self.scene
+                            .ingest_material_composite(capture, index, ctx, bounds);
+                    }
+                    // The border/highlight ring is an ordinary analytic rrect
+                    // (§18): a transparent fill with a stroke, so it batches with
+                    // every other rrect on screen and needs no shader of its own.
+                    if let Some(border) = material.border_rrect() {
+                        let mut inst = border.to_instance();
+                        if fold < 1.0 {
+                            inst.border_color[3] *= fold;
+                        }
+                        let bounds =
+                            crate::scene::bounds::Bounds::from_world(material.rect, clip, 0.0, 0.0);
+                        self.scene.ingest_analytic_rrect(inst, ctx, bounds);
+                    }
                 }
                 Primitive::Layer(layer) => {
                     // The layer clip, intersected with the parent's effective
@@ -2521,6 +2668,7 @@ impl Renderer {
             + self
                 .advanced_blend_pool
                 .sync(backend, &self.advanced_blend_scratch)
+            + self.material_pool.sync(backend, &self.material_scratch)
             + self
                 .mesh_vertex_pool
                 .sync(backend, &self.mesh_vertex_scratch)
@@ -2542,6 +2690,7 @@ impl Renderer {
             + self.blur_pool.last_upload_bytes()
             + self.color_transform_pool.last_upload_bytes()
             + self.advanced_blend_pool.last_upload_bytes()
+            + self.material_pool.last_upload_bytes()
             + self.mesh_vertex_pool.last_upload_bytes()
             + self.mesh_index_pool.last_upload_bytes();
     }
@@ -2568,6 +2717,7 @@ impl Renderer {
         self.glyph_scratch.clear();
         self.gradient_scratch.clear();
         self.analytic_shadow_scratch.clear();
+        self.material_scratch.clear();
         self.mesh_vertex_scratch.clear();
         self.mesh_index_scratch.clear();
         self.segments.clear();
@@ -3052,6 +3202,47 @@ impl Renderer {
                     target,
                 });
             }
+            StoreRef::MaterialComposite { capture, material } => {
+                // A frosted surface: the same shared capture a backdrop layer
+                // samples, but composited through the material pipeline, which
+                // folds the color transform, the grain, the rounded mask, and the
+                // opacity into that one draw (§18). No extra pass, no extra
+                // target, and no capture of its own.
+                let record = self.material_records[material];
+                let cap = &self.backdrop_captures[capture];
+                let (roi, used) = (cap.roi, cap.used);
+                let sample = cap
+                    .sample
+                    .expect("backdrop capture is realized before its material composite lowers");
+                let bind_group = self.transient.bind_group(sample);
+                let sampled = self.transient.used_extent(sample);
+                let phys = self.transient.phys_extent(sample);
+                let cover = [
+                    sampled[0] as f32 / phys[0] as f32,
+                    sampled[1] as f32 / phys[1] as f32,
+                ];
+                let (bw, bh) = (used[0] as f32, used[1] as f32);
+                let rect = record.rect;
+                let instance = material_instance(
+                    record,
+                    [rect.x - origin[0], rect.y - origin[1]],
+                    [rect.w, rect.h],
+                    [
+                        (rect.x - roi.x) / bw * cover[0],
+                        (rect.y - roi.y) / bh * cover[1],
+                    ],
+                    [rect.w / bw * cover[0], rect.h / bh * cover[1]],
+                );
+                let start = self.material_scratch.len() as u32;
+                self.material_scratch.push(instance);
+                self.merge_or_push(Segment {
+                    kind: SegmentKind::Material { bind_group },
+                    start,
+                    count: 1,
+                    clip,
+                    target,
+                });
+            }
         }
     }
 
@@ -3173,6 +3364,7 @@ impl Renderer {
                 .map(|c| (c.used[0] as usize) * (c.used[1] as usize))
                 .sum(),
             blend_isolations: self.blend_isolations,
+            material_composites: self.material_records.len() as u32,
             layers_planned: self.layers_planned,
             layers_eliminated: self.layers_eliminated,
             opacity_folds: self.opacity_folds,
@@ -3282,6 +3474,11 @@ impl Renderer {
     /// The AdvancedBlend pipeline handle, for batch introspection.
     pub(crate) fn advanced_blend_pipeline_id(&self) -> PipelineId {
         self.advanced_blend_pipeline
+    }
+
+    /// The MaterialComposite pipeline handle, for batch introspection.
+    pub(crate) fn material_pipeline_id(&self) -> PipelineId {
+        self.material_pipeline
     }
 
     /// Add `segment` to the batch list, merging it into the previous segment
@@ -3555,7 +3752,8 @@ impl Renderer {
                     StoreRef::Composite { pass, .. } => self.offscreen_passes[pass].sample,
                     // Always an earlier capture: a group's members are recorded
                     // after it opens, so its index is below this one's.
-                    StoreRef::BackdropComposite { capture, .. } => {
+                    StoreRef::BackdropComposite { capture, .. }
+                    | StoreRef::MaterialComposite { capture, .. } => {
                         self.backdrop_captures[capture].sample
                     }
                     _ => None,
@@ -4226,6 +4424,21 @@ impl Renderer {
                     "advanced-blend pool buffer exists when a blend segment references it",
                 ),
                 instance_offset: seg.start as usize * ADVANCED_BLEND_STRIDE,
+                uniforms,
+                scissor,
+            },
+            // A frosted material surface: the same generated quad, through the
+            // pipeline that samples the shared blurred backdrop and applies the
+            // whole §18 chain in one fragment (M0.1).
+            SegmentKind::Material { bind_group } => DrawCommand {
+                pipeline: self.material_pipeline,
+                bind_group: Some(bind_group),
+                geometry: Geometry::Generated { count: seg.count },
+                instance_buffer: self
+                    .material_pool
+                    .buffer()
+                    .expect("material pool buffer exists when a material segment references it"),
+                instance_offset: seg.start as usize * MATERIAL_STRIDE,
                 uniforms,
                 scissor,
             },
