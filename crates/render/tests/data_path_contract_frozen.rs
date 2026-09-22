@@ -16,23 +16,53 @@ use viso_render::batch::planner::{BatchItem, joins};
 use viso_render::pool::{GAP_THRESHOLD, InstancePool, Range, coalesce};
 use viso_render::{BatchFamily, BatchKey, BatchTarget, Rect, RenderChunk, RenderChunkId};
 
-/// The four pipeline families and their frozen low-three-bit tags (§9.6). The
-/// tag lives in `BatchKey` bits `0..3`; Quad and Mesh are the mergeable pair.
+/// The four original pipeline families and their frozen low-three-bit tags
+/// (§9.6). The tag lives in `BatchKey` bits `0..3`.
+///
+/// Mergeability is pinned alongside them, and the set is wider than the tags: the
+/// texture-sampling families merge too, because the bind group is part of the key
+/// (§20.2), so an equal key is an equal resource and a run of images or glyph runs
+/// on one atlas is one instanced draw. What stays unmergeable is the composite
+/// families, which carry per-draw state their key does not name.
 #[test]
 fn batch_family_tags_and_mergeability_are_frozen() {
-    for (family, tag, mergeable) in [
-        (BatchFamily::Quad, 0u64, true),
-        (BatchFamily::Image, 1, false),
-        (BatchFamily::GlyphRun, 2, false),
-        (BatchFamily::Mesh, 3, true),
+    for (family, tag) in [
+        (BatchFamily::Quad, 0u64),
+        (BatchFamily::Image, 1),
+        (BatchFamily::GlyphRun, 2),
+        (BatchFamily::Mesh, 3),
     ] {
         let key = BatchKey::pack(family, BatchTarget::Main, None);
         assert_eq!(key.family(), family, "family round-trips through the key");
         assert_eq!(key.bits() & 0b111, tag, "family tag in the low three bits");
-        assert_eq!(
+    }
+
+    for family in [
+        BatchFamily::Quad,
+        BatchFamily::Mesh,
+        BatchFamily::Image,
+        BatchFamily::GlyphRun,
+        BatchFamily::Gradient,
+        BatchFamily::AnalyticRRect,
+        BatchFamily::AnalyticEllipse,
+        BatchFamily::AnalyticCapsule,
+        BatchFamily::AnalyticLine,
+        BatchFamily::AnalyticShadow,
+    ] {
+        assert!(
             family.mergeable(),
-            mergeable,
-            "only Quad and Mesh instances merge into one draw"
+            "{family:?} draws from one pipeline with one resource, so a run of them is one draw"
+        );
+    }
+
+    for family in [
+        BatchFamily::ColorTransform,
+        BatchFamily::AdvancedBlend,
+        BatchFamily::Material,
+    ] {
+        assert!(
+            !family.mergeable(),
+            "{family:?} carries per-draw state beyond its key and must stand alone"
         );
     }
 }

@@ -35,10 +35,40 @@ use crate::batch::{
     BatchFamily, BatchItem, BatchKey, BatchTarget, RenderChunk, RenderChunkId, joins,
 };
 use crate::effect_cost::EffectCost;
-use crate::renderer::{PassTarget, Segment, SegmentKind};
+use crate::renderer::{CompositeLowering, PassTarget, SampledSource, Segment, SegmentKind};
 use crate::scene::ids::PrimitiveId;
 use crate::scene::store::StoreRef;
 use viso_gpu::{BindGroupId, PipelineId};
+
+/// Maps the resources a paint-order walk meets onto dense indices, so a walk can
+/// pack a [`BatchKey`] whose resource field compares like the real one.
+///
+/// The introspection walks read `&self` and so cannot intern a [`BindGroupId`],
+/// but `joins` only ever compares packed keys for equality — so any injective map
+/// from resource to index reproduces its decisions exactly. Indices start at one:
+/// `BatchKey::pack` folds `None` to zero, and a resource must never look like no
+/// resource. Frames sample a handful of distinct textures, so the linear scan runs
+/// over a list of that size, on a path that never touches a steady frame.
+#[derive(Default)]
+struct ResourceIndex {
+    seen: Vec<SampledSource>,
+}
+
+impl ResourceIndex {
+    /// The dense stand-in for `source`, assigning it one on first sight.
+    fn get(&mut self, source: Option<SampledSource>) -> Option<BindGroupId> {
+        let source = source?;
+        let at = self
+            .seen
+            .iter()
+            .position(|s| *s == source)
+            .unwrap_or_else(|| {
+                self.seen.push(source);
+                self.seen.len() - 1
+            });
+        Some(BindGroupId::new(at as u32 + 1))
+    }
+}
 
 /// A batch's index into the frame's segment list — the stable handle
 /// architecture section 62 names for `BatchId -> pipeline/resources`.
@@ -457,7 +487,14 @@ impl Renderer {
         let mut gradient_cursor: u32 = 0;
         let mut glyph_cursor: u32 = 0;
         let mut material_cursor: u32 = 0;
+        let mut color_transform_cursor: u32 = 0;
+        let mut advanced_blend_cursor: u32 = 0;
         let mut index_cursor: u32 = 0;
+
+        // The resource each entry samples, as the dense stand-in the merge key
+        // needs: the bind group is part of the key (§20.2), so two adjacent images
+        // of different textures must not look alike here.
+        let mut resources = ResourceIndex::default();
 
         // The batch item the last emit landed in, so a mergeable run can
         // recognise the next primitive joins it and reuse its BatchId. `None`
@@ -472,89 +509,72 @@ impl Renderer {
                 None => PassTarget::Main,
                 Some(idx) => PassTarget::Offscreen(idx),
             };
-            let (pipeline, kind, start, count) = match entry.store {
+            let (pipeline, start, count) = match entry.store {
                 StoreRef::Quad(_) => {
                     let start = quad_cursor;
                     quad_cursor += 1;
-                    (BatchPipeline::Quad, SegmentKind::Quad, start, 1)
+                    (BatchPipeline::Quad, start, 1)
                 }
                 StoreRef::AnalyticRRect(_) => {
                     let start = analytic_rrect_cursor;
                     analytic_rrect_cursor += 1;
-                    (
-                        BatchPipeline::AnalyticRRect,
-                        SegmentKind::AnalyticRRect,
-                        start,
-                        1,
-                    )
+                    (BatchPipeline::AnalyticRRect, start, 1)
                 }
                 StoreRef::AnalyticEllipse(_) => {
                     let start = analytic_ellipse_cursor;
                     analytic_ellipse_cursor += 1;
-                    (
-                        BatchPipeline::AnalyticEllipse,
-                        SegmentKind::AnalyticEllipse,
-                        start,
-                        1,
-                    )
+                    (BatchPipeline::AnalyticEllipse, start, 1)
                 }
                 StoreRef::AnalyticCapsule(_) => {
                     let start = analytic_capsule_cursor;
                     analytic_capsule_cursor += 1;
-                    (
-                        BatchPipeline::AnalyticCapsule,
-                        SegmentKind::AnalyticCapsule,
-                        start,
-                        1,
-                    )
+                    (BatchPipeline::AnalyticCapsule, start, 1)
                 }
                 StoreRef::AnalyticLine(_) => {
                     let start = analytic_line_cursor;
                     analytic_line_cursor += 1;
-                    (
-                        BatchPipeline::AnalyticLine,
-                        SegmentKind::AnalyticLine,
-                        start,
-                        1,
-                    )
+                    (BatchPipeline::AnalyticLine, start, 1)
                 }
                 StoreRef::AnalyticShadow(_) => {
                     let start = analytic_shadow_cursor;
                     analytic_shadow_cursor += 1;
-                    (
-                        BatchPipeline::AnalyticShadow,
-                        SegmentKind::AnalyticShadow,
-                        start,
-                        1,
-                    )
+                    (BatchPipeline::AnalyticShadow, start, 1)
                 }
-                StoreRef::Image(_)
-                | StoreRef::Composite { .. }
-                | StoreRef::BackdropComposite { .. } => {
+                StoreRef::Image(_) | StoreRef::BackdropComposite { .. } => {
                     let start = image_cursor;
                     image_cursor += 1;
-                    // Image kind carries a bind group in the segment list, but
-                    // range attribution ignores it — each image is its own draw,
-                    // so it never merges regardless. Use a placeholder that the
-                    // merge test below treats as non-mergeable.
-                    (BatchPipeline::Image, SegmentKind::Quad, start, 1)
+                    (BatchPipeline::Image, start, 1)
                 }
+                // A layer composite is a plain image draw only when its layer
+                // asked for nothing else; a fused color chain or an isolated
+                // advanced blend composites through its own pipeline, and spends
+                // its own instance scratch.
+                StoreRef::Composite { pass, .. } => match self.composite_lowering(pass) {
+                    CompositeLowering::AdvancedBlend => {
+                        let start = advanced_blend_cursor;
+                        advanced_blend_cursor += 1;
+                        (BatchPipeline::AdvancedBlend, start, 1)
+                    }
+                    CompositeLowering::ColorTransform => {
+                        let start = color_transform_cursor;
+                        color_transform_cursor += 1;
+                        (BatchPipeline::ColorTransform, start, 1)
+                    }
+                    CompositeLowering::Image => {
+                        let start = image_cursor;
+                        image_cursor += 1;
+                        (BatchPipeline::Image, start, 1)
+                    }
+                },
                 StoreRef::MaterialComposite { .. } => {
                     let start = material_cursor;
                     material_cursor += 1;
-                    // Like an image, a material surface binds its own capture and
-                    // is one instanced draw — unmergeable. Placeholder kind; the
-                    // family below drives the merge decision.
-                    (BatchPipeline::Material, SegmentKind::Quad, start, 1)
+                    (BatchPipeline::Material, start, 1)
                 }
                 StoreRef::Gradient(_) => {
                     let start = gradient_cursor;
                     gradient_cursor += 1;
-                    // Like an image, a gradient binds its own LUT atlas and is
-                    // one instanced draw — unmergeable. Use a placeholder kind the
-                    // merge test treats as non-mergeable (the family below drives
-                    // the decision).
-                    (BatchPipeline::Gradient, SegmentKind::Quad, start, 1)
+                    (BatchPipeline::Gradient, start, 1)
                 }
                 StoreRef::GlyphRun(run) => {
                     let e = self
@@ -564,21 +584,21 @@ impl Renderer {
                         .expect("glyph run slot");
                     let start = glyph_cursor;
                     glyph_cursor += e.count;
-                    (BatchPipeline::GlyphRun, SegmentKind::Quad, start, e.count)
+                    (BatchPipeline::GlyphRun, start, e.count)
                 }
                 StoreRef::Path(id) => {
                     let e = self.scene_snapshot().paths.get(id).expect("path slot");
                     let start = index_cursor;
                     let count = e.geometry.indices.len() as u32;
                     index_cursor += count;
-                    (BatchPipeline::Mesh, SegmentKind::Mesh, start, count)
+                    (BatchPipeline::Mesh, start, count)
                 }
                 StoreRef::Mesh(id) => {
                     let e = self.scene_snapshot().meshes.get(id).expect("mesh slot");
                     let start = index_cursor;
                     let count = e.indices.len() as u32;
                     index_cursor += count;
-                    (BatchPipeline::Mesh, SegmentKind::Mesh, start, count)
+                    (BatchPipeline::Mesh, start, count)
                 }
             };
 
@@ -587,7 +607,7 @@ impl Renderer {
             // untouched. Attribute the empty range to the current batch without
             // opening a new one, so `primitive.batch` always indexes a real
             // batch (or stays −1 when nothing has been emitted yet).
-            if kind == SegmentKind::Mesh && count == 0 {
+            if pipeline == BatchPipeline::Mesh && count == 0 {
                 primitives.push(PrimitiveRange {
                     id: entry.id,
                     pipeline,
@@ -599,10 +619,9 @@ impl Renderer {
 
             // A primitive merges into the previous batch exactly when the
             // planner's `joins` predicate holds for their batch items — the same
-            // predicate `lower_from_scene` routes every segment through. The
-            // resource is left `None`: it never affects the decision (quads and
-            // meshes bind none; images and glyph runs are unmergeable regardless).
-            // Images, glyph runs, and composites are always their own draw.
+            // predicate `lower_from_scene` routes every segment through, over the
+            // same three pieces of state: family, target, and the resource the
+            // draw binds.
             let family = pipeline.family();
             let target_field = match target {
                 PassTarget::Main => BatchTarget::Main,
@@ -613,7 +632,11 @@ impl Renderer {
                 PassTarget::Capture(i) => BatchTarget::Backdrop(i),
             };
             let item = BatchItem {
-                key: BatchKey::pack(family, target_field, None),
+                key: BatchKey::pack(
+                    family,
+                    target_field,
+                    resources.get(self.sampled_source(entry.store)),
+                ),
                 clip,
                 mergeable: family.mergeable(),
             };
@@ -697,6 +720,7 @@ impl Renderer {
     fn chunk_order_spans(&self) -> Vec<(u32, u32)> {
         let mut spans: Vec<(u32, u32)> = Vec::new();
         let mut last_item: Option<BatchItem> = None;
+        let mut resources = ResourceIndex::default();
 
         for (pos, entry) in self.scene_snapshot().paint_order.iter().enumerate() {
             let pos = pos as u32;
@@ -717,9 +741,16 @@ impl Renderer {
                 StoreRef::AnalyticCapsule(_) => (BatchFamily::AnalyticCapsule, true),
                 StoreRef::AnalyticLine(_) => (BatchFamily::AnalyticLine, true),
                 StoreRef::AnalyticShadow(_) => (BatchFamily::AnalyticShadow, true),
-                StoreRef::Image(_)
-                | StoreRef::Composite { .. }
-                | StoreRef::BackdropComposite { .. } => (BatchFamily::Image, true),
+                StoreRef::Image(_) | StoreRef::BackdropComposite { .. } => {
+                    (BatchFamily::Image, true)
+                }
+                // A fused color chain or an isolated advanced blend composites
+                // through its own pipeline, and those families stand alone.
+                StoreRef::Composite { pass, .. } => match self.composite_lowering(pass) {
+                    CompositeLowering::AdvancedBlend => (BatchFamily::AdvancedBlend, true),
+                    CompositeLowering::ColorTransform => (BatchFamily::ColorTransform, true),
+                    CompositeLowering::Image => (BatchFamily::Image, true),
+                },
                 StoreRef::MaterialComposite { .. } => (BatchFamily::Material, true),
                 StoreRef::Gradient(_) => (BatchFamily::Gradient, true),
                 StoreRef::GlyphRun(run) => {
@@ -743,12 +774,16 @@ impl Renderer {
                 continue;
             }
 
-            // The resource never affects the boundary: quads/meshes bind none, and
-            // images/glyph runs are unmergeable regardless. Pack `None` here so
-            // the merge decision matches `inspect_primitives`; the emitted chunk
-            // carries the real resource from its segment.
+            // The resource is part of the boundary — a texture change ends a batch
+            // (§20.2) — so it is packed here the same way `inspect_primitives`
+            // packs it, as a dense stand-in for the bind group. The emitted chunk
+            // still carries the real bind group, read from its segment.
             let item = BatchItem {
-                key: BatchKey::pack(family, target, None),
+                key: BatchKey::pack(
+                    family,
+                    target,
+                    resources.get(self.sampled_source(entry.store)),
+                ),
                 clip,
                 mergeable: family.mergeable(),
             };

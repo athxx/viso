@@ -431,4 +431,20 @@ pub struct Caps {
     /// is entered on a measured benefit over a large dynamic workload, and this
     /// only says whether that lane exists to be entered at all (§20.1, §7.2).
     pub compute_dispatch: bool,
+    /// How many textures one draw can address through a resource table, or `0`
+    /// when the backend binds textures per draw (§20.2).
+    ///
+    /// The bindless capability behind Metal argument/resource tables, a D3D12
+    /// descriptor heap, Vulkan descriptor indexing, and WebGPU binding arrays,
+    /// reported as the one number that decides anything: the number of slots an
+    /// instance's texture index may select from. Zero means the fast path does not
+    /// exist here, not that images cost more — the fallback is atlasing, a small
+    /// texture set, and bind-group batching, which is what this renderer does.
+    ///
+    /// Reported honestly, like [`compute_dispatch`](Self::compute_dispatch): both
+    /// backends answer `0` because this RHI's [`BindGroupDesc`] binds one texture
+    /// per slot at creation and has no table to index. The public paint API does
+    /// not change with the answer (§20.2) — only how many draws a frame of images
+    /// costs.
+    pub bindless_texture_slots: u32,
 }

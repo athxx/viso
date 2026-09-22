@@ -214,8 +214,14 @@ fn neighbouring_panels_share_one_capture_and_one_ladder() {
         shared.render_passes, single.render_passes,
         "and adds no pass either"
     );
-    // Each panel still composites itself: two draws, one blurred source.
-    assert_eq!(shared.draw_calls, single.draw_calls + 1);
+    // Each panel still composites itself — one instance each — but the two
+    // composites sample the same blurred source, so bind-group batching puts them
+    // in one draw (§20.2): the second panel costs an instance, not a draw call.
+    assert_eq!(shared.instances, single.instances + 1);
+    assert_eq!(
+        shared.draw_calls, single.draw_calls,
+        "panels sharing a blurred source share the composite draw"
+    );
 }
 
 /// Different sigmas cannot share a ladder, so they cannot share a capture: the

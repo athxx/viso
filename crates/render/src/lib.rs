@@ -12,6 +12,7 @@
 #![forbid(unsafe_op_in_unsafe_fn)]
 
 pub mod batch;
+pub mod binding_model;
 pub mod blend;
 pub mod clip;
 pub mod color_atlas;
@@ -95,6 +96,11 @@ pub use renderer::{BackdropDependency, FrameStats, Renderer};
 // specialization, so the *decision* is public (a host can describe its workload
 // and see the answer) while the kernels behind it are not a frozen contract.
 pub use vector_lane::{VectorLane, VectorWorkload};
+
+// How a draw addresses the textures it samples (§20.2). The *decision* is public
+// so a host can describe a frame and see which model it lands in; the fast path's
+// resource table is a backend capability, and the paint API is the same either way.
+pub use binding_model::{BindingModel, TextureWorkload};
 // GPU handles that appear in this crate's public API. `TextureId` is carried by
 // `ImageDraw`/`GlyphRunDraw`; `BindGroupId`/`PipelineId` are the resource handles
 // on `InspectBatch`'s public fields (architecture 62: `BatchId -> pipeline/

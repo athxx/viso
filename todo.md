@@ -2796,11 +2796,53 @@ in `viso-gpu`. Enters only after M1 freezes; algorithms here are not frozen as p
         (137/137 binaries), `cargo bench -p viso-render -- --test`.
 
 ### A0.2 — Bindless (§20.2)
-- [ ] Capability detection: Metal argument/resource tables / D3D12 descriptor heap / Vulkan
+- [x] Capability detection: Metal argument/resource tables / D3D12 descriptor heap / Vulkan
       descriptor indexing / WebGPU binding arrays where available. Fast path exposes
       `instance.texture_index` to avoid texture-change batch breaks. Fallback when
       unavailable: atlas / small texture set / binding-group batching. Public paint API is
       unchanged across backends.
+  - [x] `BindingModel { PerDraw, Bindless { slots } }` in `crates/render/src/binding_model.rs`,
+        re-exported from the crate root; `PerDraw` is `Default`, so the portable model is what
+        a backend that reports nothing gets.
+  - [x] `Caps.bindless_texture_slots: u32` is the capability, sized rather than boolean — a
+        table of eight slots is not a table. Reported honestly: both the headless and the Metal
+        backend answer `0`, because this RHI binds one texture per slot at bind-group creation
+        and exposes no table to index (§17.1).
+  - [x] `TextureWorkload` describes the entry conditions as data: `bindless_slots`,
+        `distinct_textures`, `texture_batch_breaks`. All-zero default = "nothing measured",
+        which selects `PerDraw`.
+  - [x] `BindingModel::select` is a conjunction: the capability must exist *and* the texture
+        set must be too large for atlasing to shrink (`> SMALL_TEXTURE_SET`) *and* the breaks
+        must actually be costing draws (`> COSTLY_BATCH_BREAKS`) *and* the table must hold the
+        set. Any one missing → `PerDraw`. A frame that atlasing already fixed never reaches the
+        fast path, however capable the backend.
+  - [x] The fallback is the shipped realization, and it is real: Image / GlyphRun / Gradient and
+        every analytic family are `mergeable()`, so adjacent draws sharing a bind group collapse
+        into one instanced draw at the single `merge_or_push` choke point. A texture change is
+        the only thing that splits them, which is exactly what `instance.texture_index` would
+        remove.
+  - [x] `crates/render/tests/texture_binding.rs` measures the fallback through the public paint
+        stream: 100 images on one texture / 40 glyph runs on one atlas / 24 gradients on one LUT
+        page are each one draw; three textures are three draws; the same eight images cost two
+        draws grouped and eight interleaved, so the cost is *switches*, not textures; a frame
+        described honestly picks `PerDraw` even against a backend claiming 500 000 slots.
+  - [x] Both cold introspection walks (§34, §62) pack the sampled resource into their batch
+        key, so they reproduce the lowering's boundaries now that texture families merge:
+        `Renderer::sampled_source` reports `(TextureId, SamplerDesc)` or the transient target,
+        and `inspect.rs`'s `ResourceIndex` maps it to a dense stand-in. Read-only paths cannot
+        intern a `BindGroupId`, and `joins` only compares keys for equality, so any injective
+        map reproduces its decisions exactly.
+  - [x] Same fix repaired a latent misattribution: a composite whose layer fused a color chain
+        or needs a destination read lowers through its own pipeline, and the walks now ask
+        `Renderer::composite_lowering` instead of charging every composite to the image lane.
+  - [x] No descriptor table / binding array ships here: §20.2 gates the fast path on a
+        capability no backend in this repository has, so what lands is the selection contract,
+        the honest capability, and the fallback that reaches the same draw counts — labeled as
+        such. `bindless_texture_slots == 0` is pinned, so the day a backend grows a table the
+        new cost has to be proven in the same file.
+  - [x] Verified: `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets
+        -- -D warnings`, `cargo xtask check-deps` (18 crates), `cargo test --workspace`,
+        `cargo bench -p viso-render -- --test`.
 
 ### A0.3 — GPU culling / indirect (§20 detailed, §24.1)
 - [ ] Normal UI: CPU bounds + clip intersection suffices. Large canvas/scene: chunk-level

@@ -125,6 +125,7 @@ impl HeadlessRaster {
                 max_texture_size: 16384,
                 presents_to_display: false,
                 compute_dispatch: false,
+                bindless_texture_slots: 0,
             },
             retire_queue: RetireQueue::new(),
             fence: Fence::new(),
