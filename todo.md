@@ -2655,17 +2655,86 @@ leaking platform-private APIs into the generic Render IR.
         timing this environment cannot produce.
 
 ### M1.2 — HDR / wide-gamut
-- [ ] Distinguish at least `SDR sRGB target / wide-gamut target / HDR target` (§19); the
+- [x] Distinguish at least `SDR sRGB target / wide-gamut target / HDR target` (§19); the
       RenderGraph Planner (E1) picks the intermediate format for blur/glass/gradient/blend
       per real need. Forbidden: all offscreen forced to RGBA16F; HDR scene degraded to 8-bit
       sRGB mid-pipeline then re-upped. Builds on F0 color contract + F1 surface format +
       E-layer effect correctness. Never reach down and mutate the frozen F4 instance model
       for a material-specific layout.
+  - [x] `ColorSpace { Srgb, DisplayP3, ExtendedLinearSrgb, ExtendedLinearDisplayP3 }` in
+        `viso-gpu`, orthogonal to `TextureFormat`: P3 at 8 bits and sRGB at 8 bits are the
+        same format in different spaces, so inferring one from the other would force every
+        wide-gamut window onto float storage it does not need.
+  - [x] `ColorDomain { Sdr, WideGamut, Hdr }` — the three §19 classes, with
+        `requires_extended_range()`. `ColorSpace::domain()` collapses both extended-linear
+        spaces onto `Hdr`: they differ in gamut but make the same demand of a texture, so
+        the planner never multiplies its format decision by the space list.
+  - [x] `TextureFormat::Rgba16Float` plus `is_extended_range()` / `is_color()`. Extended
+        range is a property of the representation, not the bit depth — no unorm format holds
+        a value above 1.0 at any width — so the plan branches on that, never on bytes.
+  - [x] `GpuBackend::surface_color_space` (provided, defaults to `Srgb`); Metal maps
+        `Rgba16Float`; the headless raster gained a per-surface space, a `Rgba16Float`
+        decode arm, `read_pixels_rgba16f`, and `set_surface_color_target` so an HDR plan is
+        testable with no HDR display attached.
+  - [x] The planner rule: **an intermediate is allocated in the surface's own format.** It
+        is simultaneously in the target's domain, lossless for its precision, no wider than
+        that precision needs, and compatible with the single prewarmed pipeline set — a
+        Metal pipeline is bound to its attachment format, so a differing intermediate would
+        need a second set of 14 pipelines and a per-target format on every draw. Both bans
+        then hold structurally, not by convention: SDR never pays for half-float, and an
+        extended-range target is never narrowed and re-widened.
+  - [x] All four intermediate `TargetDesc` sites read `self.intermediate_format`: backdrop
+        capture, offscreen layer, blur scratch, color scratch.
+  - [x] `Renderer::for_surface(backend, surface)` takes both the format and the space from
+        the surface it draws into, so the two cannot disagree; `Renderer::new(backend,
+        format)` keeps meaning SDR sRGB, so no existing call site changes meaning. The
+        facade uses `for_surface`.
+  - [x] Gradient LUT follows the *domain*, not the surface format: it is a CPU bake, not an
+        attachment, and `to_u8`'s clamp was the one path that could destroy an authored stop
+        above 1.0 before the GPU ever sampled it. `GradientLutAtlas::format_for(domain)` →
+        `Rgba8Unorm` for Sdr/WideGamut, `Rgba16Float` for Hdr; the bake writes half-float
+        texels through the shared `f32_to_f16`.
+  - [x] Coverage planes stay `R8Unorm` at every domain (glyph atlas, mask pages) and are
+        excluded from `is_color` by construction: a mask is an occupancy fraction in `[0, 1]`
+        by definition, and widening the frame's largest textures would buy range that cannot
+        exist in them.
+  - [x] The headless raster now quantizes a write to the *attachment's* format instead of
+        always to 8-bit unorm, so an extended-range intermediate no longer clips in the one
+        place a surface-level pixel test could not attribute.
+  - [x] `f16_to_f32` / `f32_to_f16` moved beside `TextureFormat` and made public: a backend
+        decoding a half-float texel and an upper layer baking one have to agree bit for bit.
+  - [x] `crates/render/tests/color_domain.rs` (13 tests): each of the three targets keeps
+        its own intermediates; the intermediate always matches the attachment across every
+        describable target; an out-of-range highlight survives a blurred half-opacity layer
+        on an HDR surface *and* clips on an SDR one (the pair is what makes the first
+        evidence); the ramp follows the domain; coverage is never promoted; an unnegotiated
+        surface reports SDR rather than an optimistic guess.
+  - [x] The frozen F4 instance model is untouched — no instance layout, schema, or shader
+        changed; this slice only decides which format a target is allocated with.
+  - Flagged, not asserted: on-device HDR/EDR output is unverifiable here (no EDR display in
+    this environment), so the Metal `Rgba16Float` mapping and the compositor's reading of an
+    extended-linear space are verified by construction, not by capture. No backend yet
+    *negotiates* a wide or extended space with its compositor — every real surface still
+    reports `Srgb`, and the wide/HDR paths are exercised through the headless backend's
+    reported target. Bandwidth of an HDR frame is not measured; the SDR path is unchanged by
+    construction (same format as before), so no regression is claimed or possible.
 
 ### M1 Done (no standalone spec block)
-- [ ] Governed by global DoD: "HDR/wide-gamut intermediate not wrongly degraded"; "GPU
+- [x] Governed by global DoD: "HDR/wide-gamut intermediate not wrongly degraded"; "GPU
       canonical alpha is premultiplied". Not a prerequisite of D0~E2; enters only after M0
       freezes. Material semantics deferred to `Viso_Visual_Materials.md`.
+  - [x] "HDR/wide-gamut intermediate not wrongly degraded": held from both ends by M1.2 —
+        an extended-range target keeps extended-range intermediates end to end, and an SDR
+        one is never widened past what it can display. Asserted in `color_domain.rs`.
+  - [x] "GPU canonical alpha is premultiplied": unchanged and extended, not reinterpreted.
+        Every new path is premultiplied — the `Rgba16Float` decode premultiplies on upload
+        like every other format, the half-float readback reports premultiplied texels, and
+        the gradient bake premultiplies before quantizing to either texel width.
+  - [x] Not a prerequisite of D0~E2: no D/E-section contract, frozen test, or public type
+        changed behavior. `Renderer::new` keeps its signature and its meaning.
+  - [x] Material semantics stay deferred: M1.1 reports a native region with geometry plus
+        generic parameters, and no platform material name, blur implementation, or
+        vibrancy-style vocabulary entered this crate.
 
 ---
 

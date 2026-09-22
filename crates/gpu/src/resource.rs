@@ -13,6 +13,9 @@ pub enum TextureFormat {
     Rgba8Unorm,
     /// Single 8-bit channel — glyph coverage / alpha atlases.
     R8Unorm,
+    /// 16-bit half-float RGBA. The storage an HDR target needs: values outside
+    /// `[0, 1]` survive it, which no unorm format can do at any bit depth.
+    Rgba16Float,
     /// 32-bit float depth.
     Depth32Float,
 }
@@ -23,8 +26,163 @@ impl TextureFormat {
         match self {
             TextureFormat::Bgra8Unorm | TextureFormat::Rgba8Unorm => 4,
             TextureFormat::R8Unorm => 1,
+            TextureFormat::Rgba16Float => 8,
             TextureFormat::Depth32Float => 4,
         }
+    }
+
+    /// Whether this format stores values outside `[0, 1]`.
+    ///
+    /// An unorm format cannot, at any bit depth: 10-bit unorm buys *precision*
+    /// inside the unit range, not headroom above it. So this — not the bit depth
+    /// — is what decides whether a target can hold an HDR value.
+    pub const fn is_extended_range(self) -> bool {
+        matches!(self, TextureFormat::Rgba16Float)
+    }
+
+    /// Whether this format stores color (as opposed to coverage or depth).
+    ///
+    /// Coverage planes are deliberately excluded: a glyph or clip mask is an
+    /// occupancy fraction in `[0, 1]` by definition, so no color domain ever
+    /// promotes one. Widening every `R8Unorm` atlas alongside the color targets
+    /// would multiply the largest textures in the frame for no representable
+    /// gain.
+    pub const fn is_color(self) -> bool {
+        matches!(
+            self,
+            TextureFormat::Bgra8Unorm | TextureFormat::Rgba8Unorm | TextureFormat::Rgba16Float
+        )
+    }
+}
+
+/// Widen one IEEE-754 binary16 value to `f32`.
+///
+/// The CPU side of [`TextureFormat::Rgba16Float`]: a backend decoding such a
+/// texel and an upper layer baking one must agree bit for bit, so the pair lives
+/// beside the format rather than inside either caller.
+///
+/// Exact for every input: binary16's 11-bit significand and 5-bit exponent both
+/// fit inside binary32's, so subnormals normalize and infinities/NaNs carry their
+/// payload across without a rounding decision anywhere.
+pub fn f16_to_f32(bits: u16) -> f32 {
+    let sign = ((bits >> 15) as u32) << 31;
+    let exp = ((bits >> 10) & 0x1f) as u32;
+    let mantissa = (bits & 0x3ff) as u32;
+    let f = match exp {
+        // Zero or subnormal: scale the significand by 2^-24 to normalize it.
+        0 => {
+            if mantissa == 0 {
+                sign
+            } else {
+                let value = mantissa as f32 * (1.0 / 16_777_216.0);
+                return f32::from_bits(sign | value.to_bits());
+            }
+        }
+        // Infinity or NaN: binary32's exponent is all ones too.
+        0x1f => sign | 0x7f80_0000 | (mantissa << 13),
+        // Normal: rebias the exponent (15 -> 127) and left-align the significand.
+        _ => sign | ((exp + 112) << 23) | (mantissa << 13),
+    };
+    f32::from_bits(f)
+}
+
+/// Encode one `f32` as IEEE-754 binary16, saturating to the finite maximum.
+///
+/// Round-to-nearest-even on the significand, matching what a GPU does when it
+/// writes a half-float attachment.
+pub fn f32_to_f16(value: f32) -> u16 {
+    let bits = value.to_bits();
+    let sign = ((bits >> 31) as u16) << 15;
+    let exp = ((bits >> 23) & 0xff) as i32;
+    let mantissa = bits & 0x7f_ffff;
+    if exp == 0xff {
+        // Infinity, or a NaN kept non-zero so it does not decode as infinity.
+        return sign | 0x7c00 | if mantissa != 0 { 0x200 } else { 0 };
+    }
+    // Unbiased exponent, rebiased for binary16.
+    let e = exp - 127 + 15;
+    if e >= 0x1f {
+        // Above binary16's range: clamp to the largest finite value rather than
+        // silently turning a bright highlight into an infinity.
+        return sign | 0x7bff;
+    }
+    if e <= 0 {
+        if e < -10 {
+            return sign;
+        }
+        // Subnormal: shift the implicit leading one back into the significand.
+        let m = mantissa | 0x80_0000;
+        let shift = (14 - e) as u32;
+        let half_bits = (m >> shift) as u16;
+        let round = (m >> (shift - 1)) & 1;
+        return sign | (half_bits + round as u16);
+    }
+    let half_bits = ((e as u32) << 10) as u16 | (mantissa >> 13) as u16;
+    // Round to nearest, ties to even, on the 13 discarded significand bits.
+    let rest = mantissa & 0x1fff;
+    let round = usize::from(rest > 0x1000 || (rest == 0x1000 && (half_bits & 1) == 1));
+    sign | (half_bits + round as u16)
+}
+
+/// The primaries and transfer function a compositor reads a surface's texels
+/// through.
+///
+/// Orthogonal to [`TextureFormat`], which fixes only precision and range: P3 at
+/// 8 bits per channel and sRGB at 8 bits per channel are the same *format* in
+/// different *spaces*, and they are not interchangeable. Keeping the two apart is
+/// what lets a wide-gamut target stay 8-bit — the alternative, inferring the space
+/// from the format, forces every wide-gamut window to pay for float storage it
+/// does not need.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ColorSpace {
+    /// sRGB primaries, sRGB transfer, `[0, 1]`. The ordinary SDR window.
+    #[default]
+    Srgb,
+    /// Display P3 primaries, sRGB transfer, `[0, 1]`. Wide gamut, standard range.
+    DisplayP3,
+    /// sRGB primaries, linear transfer, unbounded. HDR in the sRGB gamut.
+    ExtendedLinearSrgb,
+    /// Display P3 primaries, linear transfer, unbounded. Wide gamut *and* HDR.
+    ExtendedLinearDisplayP3,
+}
+
+impl ColorSpace {
+    /// The [`ColorDomain`] this space belongs to.
+    pub const fn domain(self) -> ColorDomain {
+        match self {
+            ColorSpace::Srgb => ColorDomain::Sdr,
+            ColorSpace::DisplayP3 => ColorDomain::WideGamut,
+            ColorSpace::ExtendedLinearSrgb | ColorSpace::ExtendedLinearDisplayP3 => {
+                ColorDomain::Hdr
+            }
+        }
+    }
+}
+
+/// The three target classes a render graph plans intermediate formats for.
+///
+/// A [`ColorSpace`] names an exact encoding; a domain names the *storage
+/// requirement* that follows from it, which is all the planner needs. Several
+/// spaces collapse onto one domain — extended-linear sRGB and extended-linear P3
+/// differ in gamut but make the same demand of a texture — so planning on the
+/// domain keeps the format decision from multiplying with every space added later.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ColorDomain {
+    /// sRGB, standard range. 8-bit unorm is sufficient and correct.
+    #[default]
+    Sdr,
+    /// Wider primaries, still standard range. Needs the right space, not more
+    /// bits: promoting it to float would buy headroom nothing can occupy.
+    WideGamut,
+    /// Unbounded range. Requires extended-range storage end to end; any unorm
+    /// stage in the middle clips the highlights permanently.
+    Hdr,
+}
+
+impl ColorDomain {
+    /// Whether a target in this domain must use an extended-range format.
+    pub const fn requires_extended_range(self) -> bool {
+        matches!(self, ColorDomain::Hdr)
     }
 }
 

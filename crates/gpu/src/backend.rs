@@ -330,4 +330,18 @@ pub trait GpuBackend {
 
     /// The surface's swapchain format (color attachment format for pipelines).
     fn surface_format(&self, surface: SurfaceId) -> TextureFormat;
+
+    /// The surface's color space — the primaries and transfer function the
+    /// compositor reads its texels through.
+    ///
+    /// Separate from [`surface_format`](Self::surface_format), which fixes only
+    /// precision and range: together they name the target's
+    /// [`ColorDomain`](crate::ColorDomain), which is what a render graph plans its
+    /// intermediate formats against. A backend that has not yet negotiated a wide
+    /// or extended space with its compositor reports the ordinary SDR default,
+    /// which is the truthful answer for it rather than an optimistic one.
+    fn surface_color_space(&self, surface: SurfaceId) -> crate::ColorSpace {
+        let _ = surface;
+        crate::ColorSpace::Srgb
+    }
 }

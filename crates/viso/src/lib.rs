@@ -664,8 +664,10 @@ impl WindowState {
         if let Some(raw) = native_handle {
             let mut backend = viso_gpu::create_device();
             let surface = backend.create_surface(raw, w.max(1), h.max(1));
-            let format = backend.surface_format(surface);
-            let renderer = Renderer::new(&mut backend, format);
+            // Both the format and the color space come from the surface, so the
+            // renderer's intermediate targets are planned for the domain this
+            // window actually composites in (§19).
+            let renderer = Renderer::for_surface(&mut backend, surface);
 
             ws.gpu = Some(GpuState {
                 backend,
