@@ -75,8 +75,11 @@ pub struct GlyphRunEntry {
     pub start: u32,
     /// Number of glyph instances in this run.
     pub count: u32,
-    /// The A8 coverage atlas the run samples (resource plane).
+    /// The atlas the run samples (resource plane).
     pub atlas: viso_gpu::TextureId,
+    /// Which representation `atlas` holds, and so which pipeline draws the run.
+    /// Both lanes share this store: the instances are the same bytes either way.
+    pub lane: crate::primitive::GlyphLane,
 }
 
 /// Which revision planes an ingested primitive moved at its slot (§8.4).
@@ -855,6 +858,7 @@ impl GlyphRunStore {
         &mut self,
         glyphs: impl Iterator<Item = GlyphInstance>,
         atlas: viso_gpu::TextureId,
+        lane: crate::primitive::GlyphLane,
     ) -> (u32, DirtyPlanes) {
         let start = self.instances.len() as u32;
         self.instances.extend(glyphs);
@@ -888,12 +892,15 @@ impl GlyphRunStore {
                 start,
                 count,
                 atlas,
+                lane,
             };
             DirtyPlanes {
                 geometry,
                 paint,
                 transform: false,
-                resource: prev_entry.atlas != atlas,
+                // A lane switch is a pipeline switch, which the resource plane
+                // already carries: it arrives with a different atlas.
+                resource: prev_entry.atlas != atlas || prev_entry.lane != lane,
                 appended: false,
             }
         } else {
@@ -901,6 +908,7 @@ impl GlyphRunStore {
                 start,
                 count,
                 atlas,
+                lane,
             });
             DirtyPlanes::APPENDED
         };

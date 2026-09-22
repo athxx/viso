@@ -32,9 +32,9 @@ use viso_gpu::{
 use viso_render::{
     AnalyticCapsule, AnalyticCapsuleInstance, AnalyticEllipse, AnalyticEllipseInstance,
     AnalyticLine, AnalyticLineInstance, AnalyticRRect, AnalyticRRectInstance, AnalyticShadow,
-    Blend, Border, ColorEffect, Corners, DashPattern, ExtendMode, FrameStats, GlyphRunDraw,
-    Gradient, GradientKind, GradientStop, ImageDraw, InterpolationSpace, LayerClip, LineCap,
-    LineJoin, Path, PathCmd, Point, Primitive, Quad, Rect, Renderer, Rgba, ShadowShape,
+    Blend, Border, ColorEffect, Corners, DashPattern, ExtendMode, FrameStats, GlyphLane,
+    GlyphRunDraw, Gradient, GradientKind, GradientStop, ImageDraw, InterpolationSpace, LayerClip,
+    LineCap, LineJoin, Path, PathCmd, Point, Primitive, Quad, Rect, Renderer, Rgba, ShadowShape,
     SpriteRegion, Stroke, test_glyphs, test_scene, test_texture,
 };
 
@@ -123,6 +123,7 @@ fn setup() -> Harness {
         glyphs: tg.glyphs,
         atlas,
         color: tg.color,
+        lane: GlyphLane::CoverageA8,
     };
 
     let scene = test_scene(texture, glyphs);

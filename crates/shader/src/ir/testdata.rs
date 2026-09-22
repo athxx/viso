@@ -256,6 +256,92 @@ fragment float4 fragment_main(VOut in [[stage_in]],
 }
 "##;
 
+/// The intended MTSDF MSL, frozen as a codegen oracle.
+///
+/// The scalable text lane: an RGBA field whose three color channels are per-edge
+/// signed distances and whose alpha is the true signed distance. Their median
+/// reconstructs a corner the A8 lane cannot, and the varying `span` carries the
+/// quad's device-pixel-per-uv scale so the range converts to pixels without a
+/// derivative. This text is the on-device-verified target, not a pre-migration
+/// baseline.
+pub const MTSDF_MSL_ORIGINAL: &str = r##"
+#include <metal_stdlib>
+using namespace metal;
+
+struct InstanceIn {
+    packed_float2 rect_pos;
+    packed_float2 rect_size;
+    packed_float2 uv_pos;
+    packed_float2 uv_size;
+    packed_float4 color;
+};
+
+struct Uniforms {
+    packed_float2 viewport;
+};
+
+struct VOut {
+    float4 position [[position]];
+    float2 uv;
+    float4 color;
+    float2 span;    // device pixels per uv unit, for the screen-space distance range
+};
+
+vertex VOut vertex_main(uint vid [[vertex_id]],
+                        uint iid [[instance_id]],
+                        const device InstanceIn* instances [[buffer(1)]],
+                        constant Uniforms& u [[buffer(0)]]) {
+    InstanceIn inst = instances[iid];
+
+    float2 corner;
+    switch (vid) {
+        case 0: corner = float2(0.0, 0.0); break;
+        case 1: corner = float2(1.0, 0.0); break;
+        case 2: corner = float2(0.0, 1.0); break;
+        case 3: corner = float2(1.0, 0.0); break;
+        case 4: corner = float2(1.0, 1.0); break;
+        default: corner = float2(0.0, 1.0); break;
+    }
+
+    float2 pos = float2(inst.rect_pos);
+    float2 size = float2(inst.rect_size);
+    float2 pixel = pos + corner * size;
+
+    float2 vp = float2(u.viewport);
+    float2 ndc = float2(pixel.x / vp.x * 2.0 - 1.0,
+                        1.0 - pixel.y / vp.y * 2.0);
+
+    VOut out;
+    out.position = float4(ndc, 0.0, 1.0);
+    out.uv = float2(inst.uv_pos) + corner * float2(inst.uv_size);
+    out.color = float4(inst.color);
+    out.span = size / max(float2(inst.uv_size), float2(1e-6));
+    return out;
+}
+
+fragment float4 fragment_main(VOut in [[stage_in]],
+                              texture2d<float> tex [[texture(0)]],
+                              sampler samp [[sampler(0)]]) {
+    // The median of the three channels reconstructs the glyph's edge, including a
+    // sharp corner where a single channel would round it. Alpha carries the true
+    // signed distance: where the two disagree on which side of the edge this texel
+    // is, the median is a multi-channel interpolation artifact and the true distance
+    // wins.
+    float4 s = tex.sample(samp, in.uv);
+    float md = max(min(s.r, s.g), min(max(s.r, s.g), s.b));
+    float sd = ((md > 0.5) != (s.a > 0.5)) ? s.a : md;
+
+    // Distances are stored in field texels over this span; converting it to device
+    // pixels is what keeps the edge one pixel wide at every scale in the window.
+    float distance_range = 4.0;
+    float texels_per_uv = float(tex.get_width());
+    float px_range = distance_range * in.span.x / max(texels_per_uv, 1.0);
+    float cov = clamp((sd - 0.5) * px_range + 0.5, 0.0, 1.0);
+    float a = in.color.a * cov;
+    return float4(in.color.rgb * a, a);
+}
+"##;
+
 /// The original hand-written MESH MSL, frozen as a codegen oracle.
 pub const MESH_MSL_ORIGINAL: &str = r##"
 #include <metal_stdlib>

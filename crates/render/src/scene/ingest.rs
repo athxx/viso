@@ -238,10 +238,11 @@ impl Scene {
         &mut self,
         glyphs: impl Iterator<Item = GlyphInstance>,
         atlas: TextureId,
+        lane: crate::primitive::GlyphLane,
         context: EmitContext,
         bounds: Bounds,
     ) -> PrimitiveId {
-        let (slot, dirty) = self.glyph_runs.ingest_run(glyphs, atlas);
+        let (slot, dirty) = self.glyph_runs.ingest_run(glyphs, atlas, lane);
         self.apply_planes(dirty);
         if let Some(entry) = self.glyph_runs.run(slot) {
             self.ingest_stats.glyph_instances += entry.count;

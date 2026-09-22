@@ -13,6 +13,16 @@ pub enum TextureFormat {
     Rgba8Unorm,
     /// Single 8-bit channel — glyph coverage / alpha atlases.
     R8Unorm,
+    /// Four independent 8-bit unorm channels of *data*, not color.
+    ///
+    /// Same storage as [`Rgba8Unorm`](TextureFormat::Rgba8Unorm) — what differs
+    /// is the content convention. A color texture's alpha is opacity, so a
+    /// backend may premultiply it into RGB; here all four channels are signed
+    /// distances (the MTSDF glyph field: three per-edge channels plus a true
+    /// distance), and multiplying three of them by the fourth would destroy the
+    /// field. Uploaded and sampled verbatim, and never promoted to a wider color
+    /// domain, since a distance is not a color in any domain.
+    Rgba8Data,
     /// 16-bit half-float RGBA. The storage an HDR target needs: values outside
     /// `[0, 1]` survive it, which no unorm format can do at any bit depth.
     Rgba16Float,
@@ -24,7 +34,7 @@ impl TextureFormat {
     /// Bytes per texel (depth formats included).
     pub const fn bytes_per_texel(self) -> usize {
         match self {
-            TextureFormat::Bgra8Unorm | TextureFormat::Rgba8Unorm => 4,
+            TextureFormat::Bgra8Unorm | TextureFormat::Rgba8Unorm | TextureFormat::Rgba8Data => 4,
             TextureFormat::R8Unorm => 1,
             TextureFormat::Rgba16Float => 8,
             TextureFormat::Depth32Float => 4,
@@ -42,11 +52,11 @@ impl TextureFormat {
 
     /// Whether this format stores color (as opposed to coverage or depth).
     ///
-    /// Coverage planes are deliberately excluded: a glyph or clip mask is an
-    /// occupancy fraction in `[0, 1]` by definition, so no color domain ever
-    /// promotes one. Widening every `R8Unorm` atlas alongside the color targets
-    /// would multiply the largest textures in the frame for no representable
-    /// gain.
+    /// Coverage and distance planes are deliberately excluded: a glyph or clip
+    /// mask is an occupancy fraction in `[0, 1]` by definition and a distance
+    /// field is geometry, so no color domain ever promotes either. Widening
+    /// every `R8Unorm` atlas alongside the color targets would multiply the
+    /// largest textures in the frame for no representable gain.
     pub const fn is_color(self) -> bool {
         matches!(
             self,
@@ -307,8 +317,11 @@ pub enum BuiltinShader {
     Quad,
     /// A textured quad sampling an atlas/image (Image primitive).
     Image,
-    /// An MSDF glyph quad sampling the glyph atlas (GlyphRun primitive).
+    /// A glyph quad sampling an A8 coverage atlas (GlyphRun primitive).
     GlyphRun,
+    /// A glyph quad sampling a multi-channel signed distance field atlas, the
+    /// scalable text lane (Mtsdf primitive).
+    Mtsdf,
     /// A filled/stroked vector path.
     Path,
     /// A triangle mesh with per-vertex color.

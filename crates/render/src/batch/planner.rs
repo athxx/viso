@@ -61,6 +61,16 @@ pub enum BatchFamily {
     /// One run of coverage glyphs, drawn instanced from the shared glyph buffer,
     /// binding its atlas's `bind_group`.
     GlyphRun,
+    /// One run of MTSDF glyphs, drawn instanced from the *same* shared glyph
+    /// buffer, binding its field atlas's `bind_group`.
+    ///
+    /// Its own family rather than a [`GlyphRun`](BatchFamily::GlyphRun) variant
+    /// because the two lanes decode differently in the fragment — exact coverage
+    /// versus a multi-channel distance — so they are two pipelines, and a
+    /// pipeline switch is exactly what a family tag exists to separate. The
+    /// instance ABI is shared, so a paragraph that mixes the lanes still fills
+    /// one buffer.
+    MtsdfRun,
     /// Triangle meshes (vector paths and raw meshes), drawn indexed from the
     /// shared mesh vertex/index buffers.
     Mesh,
@@ -108,6 +118,7 @@ impl BatchFamily {
             BatchFamily::ColorTransform => 10,
             BatchFamily::AdvancedBlend => 11,
             BatchFamily::Material => 12,
+            BatchFamily::MtsdfRun => 13,
         }
     }
 
@@ -127,6 +138,7 @@ impl BatchFamily {
             10 => Some(BatchFamily::ColorTransform),
             11 => Some(BatchFamily::AdvancedBlend),
             12 => Some(BatchFamily::Material),
+            13 => Some(BatchFamily::MtsdfRun),
             _ => None,
         }
     }
@@ -138,7 +150,8 @@ impl BatchFamily {
     /// the analytic shapes, meshes — merge on their key alone. The families that
     /// sample one texture — images, glyph runs, gradients — merge too, because the
     /// texture is *part of* the key: an equal key means an equal bind group, so a
-    /// run of them is one resource and one draw. That is the §20.2 fallback doing
+    /// run of them is one resource and one draw (both text lanes included — a
+    /// field atlas batches exactly like a coverage atlas). That is the §20.2 fallback doing
     /// its work: atlas the content, and bind-group batching collapses a screen of
     /// icons or a page of text into a draw per atlas, which is the draw count a
     /// resource table would have reached with backend support this RHI does not
@@ -160,6 +173,7 @@ impl BatchFamily {
                 | BatchFamily::Mesh
                 | BatchFamily::Image
                 | BatchFamily::GlyphRun
+                | BatchFamily::MtsdfRun
                 | BatchFamily::Gradient
         )
     }

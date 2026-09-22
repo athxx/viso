@@ -1538,15 +1538,38 @@ impl Default for ResourcePolicy {
 /// which representation-pool sub-rect holds its pixels.
 ///
 /// The text subsystem ([`viso_text`]) computes these — screen rect and atlas UV
-/// are already resolved — so the renderer never re-runs layout. This run uses
-/// exact single-channel A8 coverage; scalable, vector, and color representations
-/// are retained in their own pools and lower through their matching primitives.
+/// are already resolved — so the renderer never re-runs layout. Which atlas the
+/// UV indexes is the run's [`GlyphLane`]; vector and color representations are
+/// retained in their own pools and lower through their matching primitives.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct GlyphInstanceData {
     /// Destination rectangle on screen, in physical pixels.
     pub rect: Rect,
     /// Source sub-rect in the atlas, in normalized texture coordinates (`0..1`).
     pub uv: Rect,
+}
+
+/// Which representation a [`GlyphRunDraw`]'s atlas holds, and therefore which
+/// fragment decode the run needs.
+///
+/// The two lanes share the whole quad path — one instance ABI, one buffer, the
+/// same screen rects and UVs — and differ only in how the fragment turns a texel
+/// into coverage. Viso 1.0 has exactly these two raster lanes: there is no plain
+/// single-channel SDF lane, because a single channel cannot hold a sharp corner
+/// and the exact-coverage lane is strictly better wherever a fixed size is known
+/// (§13.2).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum GlyphLane {
+    /// Exact single-channel A8 coverage: the texel *is* the coverage. The
+    /// default, and correct for any glyph rasterized at the size it is drawn.
+    #[default]
+    CoverageA8,
+    /// A multi-channel distance field ([`MtsdfAtlas`](crate::mtsdf_atlas)): the
+    /// median of three per-edge channels reconstructs the edge, with the true
+    /// distance breaking a sign clash. Resolution-independent within its quality
+    /// window, which is what lets one field serve a glyph under a sustained
+    /// scale or rotation instead of re-rasterizing it every frame.
+    Mtsdf,
 }
 
 /// A run of shaped glyphs sharing one atlas texture and one color.
@@ -1558,10 +1581,12 @@ pub struct GlyphInstanceData {
 pub struct GlyphRunDraw {
     /// The positioned glyphs, one screen quad each.
     pub glyphs: Vec<GlyphInstanceData>,
-    /// The single-channel A8 coverage atlas the glyphs sample.
+    /// The atlas the glyphs sample. Its content must match `lane`.
     pub atlas: TextureId,
     /// Straight linear RGBA color applied to the entire run (a = opacity).
     pub color: Rgba,
+    /// Which representation `atlas` holds, and so which pipeline draws this run.
+    pub lane: GlyphLane,
 }
 
 impl GlyphRunDraw {
@@ -3805,6 +3830,7 @@ mod tests {
                 b: 0.3,
                 a: 0.9,
             },
+            lane: GlyphLane::CoverageA8,
         };
         let glyph = GlyphInstanceData {
             rect: Rect {

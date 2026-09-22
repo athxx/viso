@@ -636,6 +636,17 @@ impl HeadlessRaster {
                                 cmd.scissor,
                             );
                         }
+                        BuiltinShader::Mtsdf => {
+                            self.fill_mtsdf(
+                                target,
+                                width,
+                                height,
+                                &layout,
+                                inst,
+                                cmd.bind_group,
+                                cmd.scissor,
+                            );
+                        }
                         BuiltinShader::AnalyticRRect => {
                             self.fill_analytic_rrect(
                                 target,
@@ -2143,6 +2154,103 @@ impl HeadlessRaster {
         }
     }
 
+    /// Distance range an MTSDF glyph field encodes, in source texels.
+    ///
+    /// The generator (`viso_text::mtsdf::DISTANCE_RANGE`) and this raster must
+    /// agree or every edge lands at the wrong sharpness. `viso-gpu` sits below
+    /// `viso-text` in the crate DAG and cannot import the constant, so the
+    /// contract is restated here and pinned by `MTSDF_MSL`, which bakes the same
+    /// literal into the shader.
+    const MTSDF_DISTANCE_RANGE: f32 = 4.0;
+
+    /// Fill one Mtsdf instance, reproducing `MTSDF_MSL`'s fragment math on the
+    /// CPU: the median of the three distance channels, the true-distance
+    /// fallback on a sign clash, and the stored range scaled into device pixels.
+    ///
+    /// Shares the glyph instance ABI exactly — the two text lanes differ only in
+    /// this decode.
+    #[allow(clippy::too_many_arguments)]
+    fn fill_mtsdf(
+        &mut self,
+        target: FbTarget,
+        width: u32,
+        height: u32,
+        layout: &InstanceLayout,
+        inst: &[u8],
+        bind_group: Option<BindGroupId>,
+        scissor: Option<(u32, u32, u32, u32)>,
+    ) {
+        let pos = read_f2(layout, inst, "rect_pos");
+        let size = read_f2(layout, inst, "rect_size");
+        let uv_pos = read_f2(layout, inst, "uv_pos");
+        let uv_size = read_f2(layout, inst, "uv_size");
+        let color = read_f4(layout, inst, "color");
+
+        // Resolve the bound field atlas and sampler. The atlas is RGBA8 with a
+        // linear, non-sRGB view: the texels are distances, not color.
+        let Some(bg) = bind_group else { return };
+        let (mut tex_id, mut samp) = (
+            None,
+            SamplerDesc {
+                filter: crate::resource::FilterMode::Linear,
+                address: crate::resource::AddressMode::ClampToEdge,
+            },
+        );
+        for binding in &self.bind_group(bg).bindings {
+            match binding {
+                crate::resource::Binding::Texture(t) => tex_id = Some(*t),
+                crate::resource::Binding::Sampler(s) => samp = self.sampler(*s),
+                crate::resource::Binding::Uniform(_) => {}
+            }
+        }
+        let Some(tex_id) = tex_id else { return };
+        let (tw, th, texels) = {
+            let t = self.texture(tex_id);
+            (t.width, t.height, t.texels.clone())
+        };
+        if tw == 0 || th == 0 || size[0] <= 0.0 || size[1] <= 0.0 {
+            return;
+        }
+
+        let (mut x0, mut y0, mut x1, mut y1) = (
+            pos[0].floor().max(0.0) as u32,
+            pos[1].floor().max(0.0) as u32,
+            (pos[0] + size[0]).ceil().min(width as f32) as u32,
+            (pos[1] + size[1]).ceil().min(height as f32) as u32,
+        );
+        if let Some((sx, sy, sw, sh)) = scissor {
+            x0 = x0.max(sx);
+            y0 = y0.max(sy);
+            x1 = x1.min(sx + sw);
+            y1 = y1.min(sy + sh);
+        }
+
+        // Screen-space width of the stored distance range: the quad's device
+        // pixels per uv unit, divided by the atlas texels per uv unit.
+        let span = size[0] / uv_size[0].max(1e-6);
+        let px_range = Self::MTSDF_DISTANCE_RANGE * span / (tw as f32).max(1.0);
+        let base_a = color[3];
+        for py in y0..y1 {
+            for px in x0..x1 {
+                let fx = (px as f32 + 0.5 - pos[0]) / size[0];
+                let fy = (py as f32 + 0.5 - pos[1]) / size[1];
+                let u = uv_pos[0] + fx * uv_size[0];
+                let v = uv_pos[1] + fy * uv_size[1];
+
+                let s = sample_texel(&texels, tw, th, u, v, &samp);
+                let md = s[0].min(s[1]).max(s[2].min(s[0].max(s[1])));
+                let sd = if (md > 0.5) != (s[3] > 0.5) { s[3] } else { md };
+                let cov = ((sd - 0.5) * px_range + 0.5).clamp(0.0, 1.0);
+                let a = base_a * cov;
+                if a <= 0.0 {
+                    continue;
+                }
+                let src = [color[0] * a, color[1] * a, color[2] * a, a];
+                self.blend_pixel(target, width, px, py, src);
+            }
+        }
+    }
+
     /// Fill one Gradient instance over an axis-aligned rectangle, reproducing
     /// [`GRADIENT_MSL`](../../shader)'s fragment math on the CPU.
     ///
@@ -2771,7 +2879,12 @@ fn unpremultiply(r: f32, g: f32, b: f32, a: f32) -> (f32, f32, f32) {
     }
 }
 
-/// Decode one texel's bytes into premultiplied linear RGBA.
+/// Decode one texel's bytes into four linear channels.
+///
+/// Color formats arrive with straight alpha and are stored premultiplied, which
+/// is what every blend and composite downstream expects. A data format
+/// ([`TextureFormat::Rgba8Data`]) is stored verbatim: its channels are not a
+/// color and its fourth channel is not opacity.
 fn decode_texel(format: TextureFormat, bytes: &[u8]) -> [f32; 4] {
     match format {
         TextureFormat::Rgba8Unorm => {
@@ -2800,6 +2913,14 @@ fn decode_texel(format: TextureFormat, bytes: &[u8]) -> [f32; 4] {
             let (r, g, b, a) = (ch(0), ch(1), ch(2), ch(3));
             [r * a, g * a, b * a, a]
         }
+        // Data channels, not color: kept verbatim. Premultiplying a distance
+        // field by its own true-distance channel would destroy it.
+        TextureFormat::Rgba8Data => [
+            bytes[0] as f32 / 255.0,
+            bytes[1] as f32 / 255.0,
+            bytes[2] as f32 / 255.0,
+            bytes[3] as f32 / 255.0,
+        ],
         // Single coverage channel: replicated as premultiplied white * coverage.
         TextureFormat::R8Unorm => {
             let a = bytes[0] as f32 / 255.0;

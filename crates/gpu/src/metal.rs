@@ -997,7 +997,10 @@ impl MetalBackend {
 fn pixel_format(f: TextureFormat) -> MTLPixelFormat {
     match f {
         TextureFormat::Bgra8Unorm => MTLPixelFormat::BGRA8Unorm,
-        TextureFormat::Rgba8Unorm => MTLPixelFormat::RGBA8Unorm,
+        // Metal stores raw channels either way — premultiplication is a content
+        // convention, never a property of the pixel format — so a data plane and
+        // a color plane of the same width share one Metal format here.
+        TextureFormat::Rgba8Unorm | TextureFormat::Rgba8Data => MTLPixelFormat::RGBA8Unorm,
         TextureFormat::R8Unorm => MTLPixelFormat::R8Unorm,
         TextureFormat::Rgba16Float => MTLPixelFormat::RGBA16Float,
         TextureFormat::Depth32Float => MTLPixelFormat::Depth32Float,

@@ -15,7 +15,7 @@
 //! reconstruction" guarantee (§8.4) under a whole-tree re-emit.
 
 use viso_gpu::{GpuBackend, HeadlessRaster, RawWindowHandle, TextureDesc, TextureFormat};
-use viso_render::{GlyphRunDraw, Renderer, test_glyphs, test_scene, test_texture};
+use viso_render::{GlyphLane, GlyphRunDraw, Renderer, test_glyphs, test_scene, test_texture};
 
 const W: u32 = 128;
 const H: u32 = 96;
@@ -52,6 +52,7 @@ fn scene_lowering_is_stable_across_frames() {
         glyphs: tg.glyphs,
         atlas,
         color: tg.color,
+        lane: GlyphLane::CoverageA8,
     };
 
     let scene = test_scene(texture, glyphs);

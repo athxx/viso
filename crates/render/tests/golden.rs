@@ -16,9 +16,9 @@ use viso_gpu::{
     TextureFormat,
 };
 use viso_render::{
-    Align, Align2, DashPattern, Fit, GlyphRunDraw, ImageRect, LineCap, LineJoin, NineSlice, Path,
-    PathCmd, Point, Primitive, Rect, Renderer, Rgba, Stroke, TiledImage, test_glyphs, test_scene,
-    test_texture,
+    Align, Align2, DashPattern, Fit, GlyphLane, GlyphRunDraw, ImageRect, LineCap, LineJoin,
+    NineSlice, Path, PathCmd, Point, Primitive, Rect, Renderer, Rgba, Stroke, TiledImage,
+    test_glyphs, test_scene, test_texture,
 };
 
 const W: u32 = 128;
@@ -58,6 +58,7 @@ fn render_scene() -> Vec<u8> {
         glyphs: tg.glyphs,
         atlas,
         color: tg.color,
+        lane: GlyphLane::CoverageA8,
     };
 
     let scene = test_scene(texture, glyphs);
