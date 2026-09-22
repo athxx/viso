@@ -991,6 +991,7 @@ fn pixel_format(f: TextureFormat) -> MTLPixelFormat {
         TextureFormat::Bgra8Unorm => MTLPixelFormat::BGRA8Unorm,
         TextureFormat::Rgba8Unorm => MTLPixelFormat::RGBA8Unorm,
         TextureFormat::R8Unorm => MTLPixelFormat::R8Unorm,
+        TextureFormat::Rgba16Float => MTLPixelFormat::RGBA16Float,
         TextureFormat::Depth32Float => MTLPixelFormat::Depth32Float,
     }
 }

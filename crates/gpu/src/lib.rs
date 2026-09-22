@@ -55,7 +55,8 @@ pub use instance::{
 };
 pub use resource::{
     AddressMode, BindGroupDesc, Binding, BlendMode, BufferDesc, BufferUsage, BuiltinShader, Caps,
-    FilterMode, PipelineDesc, SamplerDesc, TextureDesc, TextureFormat,
+    ColorDomain, ColorSpace, FilterMode, PipelineDesc, SamplerDesc, TextureDesc, TextureFormat,
+    f16_to_f32, f32_to_f16,
 };
 /// Re-exported so consumers of [`GpuBackend::create_surface`] can name the
 /// handle type without depending on `viso-handle` directly.

@@ -18,8 +18,8 @@ use viso_gpu::backend::{
     DrawCommand, DrawList, Geometry, IndexFormat, InlineUniforms, RenderPass, RenderTarget,
 };
 use viso_gpu::{
-    BindGroupDesc, Binding, BufferUsage, Frame, GpuBackend, LoadOp, PipelineDesc, PipelineId,
-    SamplerDesc, SurfaceId, TextureDesc, TextureFormat, TextureId,
+    BindGroupDesc, Binding, BufferUsage, ColorDomain, ColorSpace, Frame, GpuBackend, LoadOp,
+    PipelineDesc, PipelineId, SamplerDesc, SurfaceId, TextureDesc, TextureFormat, TextureId,
 };
 use viso_gpu::{BindGroupId, SamplerId};
 
@@ -1199,6 +1199,32 @@ pub struct Renderer {
     /// outside their pass's tight ROI (the clip excluded them), so their draw
     /// was skipped (§16.2). Read into `FrameStats::culled_primitives` (§61).
     culled_this_frame: u32,
+    /// The surface's own color-attachment format — what every prewarmed pipeline
+    /// was built against, so it is also the only format an offscreen pass can
+    /// legally use (a pipeline is bound to its attachment format).
+    surface_format: TextureFormat,
+    /// The color space the compositor reads the surface through, as the backend
+    /// reported it. Orthogonal to the format: the same 8-bit texels mean
+    /// different colors in sRGB and Display P3.
+    color_space: ColorSpace,
+    /// The pixel format every intermediate color target this frame is allocated
+    /// with — backdrop captures, offscreen layers, blur scratch, color scratch.
+    ///
+    /// The planner's rule is that this *is* [`surface_format`](Self::surface_format),
+    /// and that is a decision, not a shortcut. The surface's format is
+    /// simultaneously the only one in the target's own domain, lossless for its
+    /// precision, no wider than its precision needs, and compatible with the
+    /// single prewarmed pipeline set — so both failure modes the rule exists to
+    /// forbid are structurally impossible: an SDR target never pays for
+    /// half-float intermediates, and an extended-range target never has its
+    /// intermediates narrowed to 8 bits and then stretched back up. A format that
+    /// differed from the surface's would need a second set of 14 pipelines and a
+    /// per-target format on every draw, buying nothing at either end.
+    ///
+    /// Coverage planes are not color and are excluded by construction: the glyph
+    /// atlas and mask pages stay `R8Unorm` at every domain (see
+    /// [`TextureFormat::is_color`]).
+    intermediate_format: TextureFormat,
 }
 
 /// Blur below this sigma (in physical pixels) is a visual no-op: the separable
@@ -1489,11 +1515,38 @@ fn color_transform_instance(
 }
 
 impl Renderer {
-    /// Create a renderer for `surface`, registering the Quad and Image
-    /// pipelines and a shared linear-clamp sampler.
+    /// Create a renderer for a surface of `surface_format` in the ordinary SDR
+    /// sRGB color space, registering the built-in pipelines and a shared
+    /// linear-clamp sampler.
     ///
-    /// `surface_format` is the color-attachment format the pipelines target.
+    /// `surface_format` is the color-attachment format the pipelines target. For
+    /// a wide-gamut or HDR target use
+    /// [`for_surface`](Self::for_surface), which asks the backend for both the
+    /// format and the space rather than assuming either.
     pub fn new<B: GpuBackend>(backend: &mut B, surface_format: TextureFormat) -> Self {
+        Self::for_target(backend, surface_format, ColorSpace::Srgb)
+    }
+
+    /// Create a renderer for `surface`, taking both its color-attachment format
+    /// and its color space from the backend.
+    ///
+    /// This is the constructor a real window uses: it cannot disagree with the
+    /// surface it draws into, and it is the only way an extended-range target
+    /// gets extended-range intermediates (see
+    /// [`intermediate_format`](Self::intermediate_format)).
+    pub fn for_surface<B: GpuBackend>(backend: &mut B, surface: SurfaceId) -> Self {
+        let format = backend.surface_format(surface);
+        let space = backend.surface_color_space(surface);
+        Self::for_target(backend, format, space)
+    }
+
+    /// The shared body of both constructors: build every pipeline against
+    /// `surface_format` and plan the intermediates for `color_space`'s domain.
+    fn for_target<B: GpuBackend>(
+        backend: &mut B,
+        surface_format: TextureFormat,
+        color_space: ColorSpace,
+    ) -> Self {
         // Every standard pipeline is created from its frozen manifest entry, not
         // from caller-assembled source. This is the device-init prewarm (§7.1):
         // the fixed set is materialized once, so no draw ever triggers a runtime
@@ -1624,7 +1677,7 @@ impl Renderer {
         let lut_texture = backend.create_texture(&TextureDesc {
             width: LUT_WIDTH,
             height: GRADIENT_LUT_ROWS,
-            format: GradientLutAtlas::FORMAT,
+            format: GradientLutAtlas::format_for(color_space.domain()),
             render_target: false,
             label: "gradient-lut",
         });
@@ -1696,7 +1749,11 @@ impl Renderer {
                 "advanced-blend-instances",
             ),
             material_pool: InstancePool::new(BufferUsage::INSTANCE, "material-instances"),
-            gradient_lut: GradientLutAtlas::new(GRADIENT_LUT_ROWS, lut_texture),
+            gradient_lut: GradientLutAtlas::new(
+                GRADIENT_LUT_ROWS,
+                lut_texture,
+                GradientLutAtlas::format_for(color_space.domain()),
+            ),
             mask_cache: MaskCache::new(MASK_PAGE_SIZE),
             mask_page: MaskPage::new(MASK_PAGE_SIZE, mask_texture),
             mask_builds_this_frame: 0,
@@ -1745,6 +1802,9 @@ impl Renderer {
             gpu_upload_bytes: 0,
             uploaded_ranges: 0,
             surface_size: [Rect::INFINITE.w, Rect::INFINITE.h],
+            surface_format,
+            color_space,
+            intermediate_format: surface_format,
             culled_this_frame: 0,
         }
     }
@@ -1755,6 +1815,40 @@ impl Renderer {
     /// ROIs clamp only to content and clip (no surface bound).
     pub fn set_surface_size(&mut self, surface_size: [f32; 2]) {
         self.surface_size = surface_size;
+    }
+
+    /// The color-attachment format every built-in pipeline was created against.
+    pub fn surface_format(&self) -> TextureFormat {
+        self.surface_format
+    }
+
+    /// The color space the compositor reads this renderer's surface through.
+    pub fn color_space(&self) -> ColorSpace {
+        self.color_space
+    }
+
+    /// Which of SDR / wide-gamut / HDR this renderer is drawing for (§19) — the
+    /// classification its intermediate formats are planned against.
+    pub fn color_domain(&self) -> ColorDomain {
+        self.color_space.domain()
+    }
+
+    /// The pixel format allocated for every intermediate color target this frame
+    /// (backdrop capture, offscreen layer, blur scratch, color scratch).
+    ///
+    /// Reported so a test — or an inspector — can state the contract directly:
+    /// an extended-range target keeps extended-range intermediates, and an SDR
+    /// one is never widened past what it can display. See the field docs for why
+    /// this is the surface's own format.
+    pub fn intermediate_format(&self) -> TextureFormat {
+        self.intermediate_format
+    }
+
+    /// The format the gradient LUT bakes its ramps into, which follows the
+    /// domain: an HDR target's ramps keep stops above 1.0 instead of clamping
+    /// them at the bake.
+    pub fn gradient_lut_format(&self) -> TextureFormat {
+        self.gradient_lut.format()
     }
 
     /// Get (or lazily create) the bind group pairing `texture` with `sampler`.
@@ -3768,7 +3862,7 @@ impl Renderer {
                 TargetDesc {
                     width,
                     height,
-                    format: TextureFormat::Bgra8Unorm,
+                    format: self.intermediate_format,
                     usage: TargetUsage::COLOR_ATTACHMENT,
                     samples: 1,
                     label: "backdrop-capture",
@@ -3916,7 +4010,7 @@ impl Renderer {
             TargetDesc {
                 width,
                 height,
-                format: TextureFormat::Bgra8Unorm,
+                format: self.intermediate_format,
                 usage: TargetUsage::COLOR_ATTACHMENT,
                 samples: 1,
                 label: "offscreen-layer",
@@ -4019,7 +4113,7 @@ impl Renderer {
                 TargetDesc {
                     width: step.width,
                     height: step.height,
-                    format: TextureFormat::Bgra8Unorm,
+                    format: self.intermediate_format,
                     usage: TargetUsage::COLOR_ATTACHMENT,
                     samples: 1,
                     label: "blur-scratch",
@@ -4101,7 +4195,7 @@ impl Renderer {
                 TargetDesc {
                     width: used[0],
                     height: used[1],
-                    format: TextureFormat::Bgra8Unorm,
+                    format: self.intermediate_format,
                     usage: TargetUsage::COLOR_ATTACHMENT,
                     samples: 1,
                     label: "color-scratch",

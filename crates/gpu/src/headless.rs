@@ -35,8 +35,8 @@ use crate::backend::{
 };
 use crate::instance::{AttrFormat, InstanceLayout};
 use crate::resource::{
-    BindGroupDesc, BufferDesc, BuiltinShader, Caps, PipelineDesc, SamplerDesc, TextureDesc,
-    TextureFormat,
+    BindGroupDesc, BufferDesc, BuiltinShader, Caps, ColorSpace, PipelineDesc, SamplerDesc,
+    TextureDesc, TextureFormat, f16_to_f32, f32_to_f16,
 };
 use crate::retire::{Epoch, Fence, ResourceKind, RetireQueue, Retired};
 use crate::slots::SlotMap;
@@ -76,6 +76,11 @@ struct HeadlessSurface {
     width: u32,
     height: u32,
     format: TextureFormat,
+    /// The space the compositor would read this framebuffer through. The raster
+    /// itself is space-agnostic — every framebuffer is premultiplied linear
+    /// `f32` — so this exists to let a test stand in for a wide-gamut or HDR
+    /// swapchain and observe what the renderer plans for one.
+    color_space: ColorSpace,
     /// Premultiplied linear RGBA, row-major top-left.
     color: Vec<[f32; 4]>,
 }
@@ -180,6 +185,45 @@ impl HeadlessRaster {
             out.push(to_unorm8(a)); // A
         }
         out
+    }
+
+    /// Read the last-presented framebuffer of `surface` as tightly-packed
+    /// **RGBA16F** bytes, top-left origin, premultiplied — the readback an
+    /// extended-range swapchain gives.
+    ///
+    /// Unlike [`read_pixels_bgra8`](Self::read_pixels_bgra8) this preserves values
+    /// above `1.0`, so a test can tell an HDR highlight that survived the frame
+    /// from one an 8-bit stage clipped on the way through.
+    pub fn read_pixels_rgba16f(&self, surface: SurfaceId) -> Vec<u8> {
+        let s = self.surface(surface);
+        let mut out = Vec::with_capacity(s.color.len() * 8);
+        for texel in &s.color {
+            for &c in texel {
+                out.extend_from_slice(&f32_to_f16(c).to_le_bytes());
+            }
+        }
+        out
+    }
+
+    /// Stand this surface in for a wide-gamut or HDR swapchain.
+    ///
+    /// The raster is format-agnostic internally — every framebuffer is
+    /// premultiplied linear `f32` — so this changes what the surface *reports*,
+    /// which is exactly what the renderer plans its intermediate formats from. It
+    /// lets a headless test exercise the HDR plan on a machine with no HDR display
+    /// attached.
+    pub fn set_surface_color_target(
+        &mut self,
+        surface: SurfaceId,
+        format: TextureFormat,
+        color_space: ColorSpace,
+    ) {
+        let s = self
+            .surfaces
+            .get_mut(surface.into())
+            .expect("surface handle does not resolve");
+        s.format = format;
+        s.color_space = color_space;
     }
 
     /// Sample one texel `[f32; 4]` (premultiplied linear) from `surface` at
@@ -343,6 +387,7 @@ impl GpuBackend for HeadlessRaster {
                 width,
                 height,
                 format: TextureFormat::Bgra8Unorm,
+                color_space: ColorSpace::Srgb,
                 color: vec![[0.0; 4]; (width * height) as usize],
             })
             .into()
@@ -403,6 +448,10 @@ impl GpuBackend for HeadlessRaster {
     fn surface_format(&self, surface: SurfaceId) -> TextureFormat {
         self.surface(surface).format
     }
+
+    fn surface_color_space(&self, surface: SurfaceId) -> ColorSpace {
+        self.surface(surface).color_space
+    }
 }
 
 /// Where a pass's rasterized pixels land: the swapchain surface, or an
@@ -459,6 +508,50 @@ impl HeadlessRaster {
                     .texels
             }
         }
+    }
+
+    /// The declared pixel format of `target` — what the rasterizer quantizes its
+    /// writes to, so the readback matches a real attachment of that format.
+    fn target_format(&self, target: FbTarget) -> TextureFormat {
+        match target {
+            FbTarget::Surface(id) => self.surface(id).format,
+            FbTarget::Texture(id) => self.texture(id).format,
+        }
+    }
+
+    /// Premultiplied source-over into one pixel of `target`, quantizing the
+    /// source to the attachment's format first so the result matches a real
+    /// target of that format.
+    ///
+    /// On an extended-range attachment there is no quantization step at all: a
+    /// value above `1.0` is exactly what such a target stores, and rounding it
+    /// into 8 bits here would clip an HDR intermediate in the one place a test
+    /// could never see it (§19).
+    fn blend_pixel(&mut self, target: FbTarget, width: u32, px: u32, py: u32, src: [f32; 4]) {
+        let src = quantize_for(self.target_format(target), src);
+        let fb = self.framebuffer(target);
+        let idx = (py * width + px) as usize;
+        let dst = fb[idx];
+        let inv = 1.0 - src[3];
+        fb[idx] = [
+            src[0] + dst[0] * inv,
+            src[1] + dst[1] * inv,
+            src[2] + dst[2] * inv,
+            src[3] + dst[3] * inv,
+        ];
+    }
+
+    /// Overwrite one pixel of `target` — the raster equivalent of
+    /// [`BlendMode::Replace`](crate::BlendMode::Replace).
+    ///
+    /// This backend's other fills all end in [`blend_pixel`](Self::blend_pixel)
+    /// because every other pipeline composites premultiplied source-over. The
+    /// advanced-blend fragment already folded the destination into its result, so
+    /// blending it a second time would double-count it: the value is written
+    /// as-is, quantized like every other path.
+    fn write_pixel(&mut self, target: FbTarget, width: u32, px: u32, py: u32, src: [f32; 4]) {
+        let src = quantize_for(self.target_format(target), src);
+        self.framebuffer(target)[(py * width + px) as usize] = src;
     }
 
     /// Resolve a texture handle, panicking on a stale/unknown one (an internal
@@ -774,7 +867,7 @@ impl HeadlessRaster {
                     }
                     // Premultiplied source-over.
                     let src = [col[0] * a, col[1] * a, col[2] * a, a];
-                    blend_pixel(self.framebuffer(target), width, px, py, src);
+                    self.blend_pixel(target, width, px, py, src);
                 }
             }
         }
@@ -873,7 +966,7 @@ impl HeadlessRaster {
                     continue;
                 }
 
-                blend_pixel(self.framebuffer(target), width, px, py, src);
+                self.blend_pixel(target, width, px, py, src);
             }
         }
     }
@@ -961,7 +1054,7 @@ impl HeadlessRaster {
                     continue;
                 }
 
-                blend_pixel(self.framebuffer(target), width, px, py, src);
+                self.blend_pixel(target, width, px, py, src);
             }
         }
     }
@@ -1046,7 +1139,7 @@ impl HeadlessRaster {
                     continue;
                 }
 
-                blend_pixel(self.framebuffer(target), width, px, py, src);
+                self.blend_pixel(target, width, px, py, src);
             }
         }
     }
@@ -1127,7 +1220,7 @@ impl HeadlessRaster {
                     continue;
                 }
 
-                blend_pixel(self.framebuffer(target), width, px, py, src);
+                self.blend_pixel(target, width, px, py, src);
             }
         }
     }
@@ -1227,7 +1320,7 @@ impl HeadlessRaster {
                     continue;
                 }
 
-                blend_pixel(self.framebuffer(target), width, px, py, src);
+                self.blend_pixel(target, width, px, py, src);
             }
         }
     }
@@ -1329,7 +1422,7 @@ impl HeadlessRaster {
                     continue;
                 }
 
-                blend_pixel(self.framebuffer(target), width, px, py, src);
+                self.blend_pixel(target, width, px, py, src);
             }
         }
     }
@@ -1441,7 +1534,7 @@ impl HeadlessRaster {
                 if src[3] <= 0.0 {
                     continue;
                 }
-                blend_pixel(self.framebuffer(target), width, px, py, src);
+                self.blend_pixel(target, width, px, py, src);
             }
         }
     }
@@ -1572,7 +1665,7 @@ impl HeadlessRaster {
                 if src[3] <= 0.0 {
                     continue;
                 }
-                blend_pixel(self.framebuffer(target), width, px, py, src);
+                self.blend_pixel(target, width, px, py, src);
             }
         }
     }
@@ -1690,7 +1783,7 @@ impl HeadlessRaster {
                     continue;
                 }
                 let src = [dst[0] * dst[3], dst[1] * dst[3], dst[2] * dst[3], dst[3]];
-                blend_pixel(self.framebuffer(target), width, px, py, src);
+                self.blend_pixel(target, width, px, py, src);
             }
         }
     }
@@ -1837,7 +1930,7 @@ impl HeadlessRaster {
                     continue;
                 }
                 let src = [dst[0] * oa, dst[1] * oa, dst[2] * oa, oa];
-                blend_pixel(self.framebuffer(target), width, px, py, src);
+                self.blend_pixel(target, width, px, py, src);
             }
         }
     }
@@ -1957,7 +2050,7 @@ impl HeadlessRaster {
                     &samp,
                 );
                 let out = blend_composite(mode, s, d);
-                write_pixel(self.framebuffer(target), width, px, py, out);
+                self.write_pixel(target, width, px, py, out);
             }
         }
     }
@@ -2042,7 +2135,7 @@ impl HeadlessRaster {
                     continue;
                 }
                 let src = [color[0] * a, color[1] * a, color[2] * a, a];
-                blend_pixel(self.framebuffer(target), width, px, py, src);
+                self.blend_pixel(target, width, px, py, src);
             }
         }
     }
@@ -2186,7 +2279,7 @@ impl HeadlessRaster {
                 if src[3] <= 0.0 {
                     continue;
                 }
-                blend_pixel(self.framebuffer(target), width, px, py, src);
+                self.blend_pixel(target, width, px, py, src);
             }
         }
     }
@@ -2454,43 +2547,6 @@ fn capped_segment_sdf(p: [f32; 2], a: [f32; 2], b: [f32; 2], hw: f32, cap_ext: f
     d.max(end_d)
 }
 
-/// Premultiplied source-over into one framebuffer pixel, quantizing the source
-/// to 8-bit first so the result is byte-exact against a real Bgra8 target.
-fn blend_pixel(fb: &mut [[f32; 4]], width: u32, px: u32, py: u32, src: [f32; 4]) {
-    let src = [
-        quantize_unorm8(src[0]),
-        quantize_unorm8(src[1]),
-        quantize_unorm8(src[2]),
-        quantize_unorm8(src[3]),
-    ];
-    let idx = (py * width + px) as usize;
-    let dst = fb[idx];
-    let inv = 1.0 - src[3];
-    fb[idx] = [
-        src[0] + dst[0] * inv,
-        src[1] + dst[1] * inv,
-        src[2] + dst[2] * inv,
-        src[3] + dst[3] * inv,
-    ];
-}
-
-/// Overwrite one framebuffer pixel — the raster equivalent of
-/// [`BlendMode::Replace`](crate::BlendMode::Replace).
-///
-/// This backend's other fills all end in [`blend_pixel`] because every other
-/// pipeline composites premultiplied source-over. The advanced-blend fragment
-/// already folded the destination into its result, so blending it a second time
-/// would double-count it: the value is written as-is, quantized to 8 bits like
-/// every other path so the readback stays byte-exact against a real Bgra8 target.
-fn write_pixel(fb: &mut [[f32; 4]], width: u32, px: u32, py: u32, src: [f32; 4]) {
-    fb[(py * width + px) as usize] = [
-        quantize_unorm8(src[0]),
-        quantize_unorm8(src[1]),
-        quantize_unorm8(src[2]),
-        quantize_unorm8(src[3]),
-    ];
-}
-
 /// The whole advanced-blend composite for one pixel: premultiplied source and
 /// destination in, the premultiplied result out.
 ///
@@ -2677,6 +2733,23 @@ fn blend_nonseparable(mode: u32, cb: [f32; 3], cs: [f32; 3]) -> [f32; 3] {
 }
 
 /// `round(clamp(v, 0, 1) * 255) / 255` — quantize a channel to 8-bit.
+/// Quantize a premultiplied source color to what `format` can actually store.
+///
+/// An 8-bit unorm attachment rounds every channel to a byte and clamps to
+/// `[0, 1]`; an extended-range one stores the value as given, which is the whole
+/// reason it was chosen for the target.
+fn quantize_for(format: TextureFormat, src: [f32; 4]) -> [f32; 4] {
+    if format.is_extended_range() {
+        return src;
+    }
+    [
+        quantize_unorm8(src[0]),
+        quantize_unorm8(src[1]),
+        quantize_unorm8(src[2]),
+        quantize_unorm8(src[3]),
+    ]
+}
+
 fn quantize_unorm8(v: f32) -> f32 {
     (v.clamp(0.0, 1.0) * 255.0).round() / 255.0
 }
@@ -2714,6 +2787,14 @@ fn decode_texel(format: TextureFormat, bytes: &[u8]) -> [f32; 4] {
                 bytes[2] as f32 / 255.0,
                 bytes[3] as f32 / 255.0,
             );
+            [r * a, g * a, b * a, a]
+        }
+        // Extended range: the same straight-alpha convention as the unorm
+        // formats, but the channels are not clamped, so a value above 1.0
+        // survives the upload instead of saturating at the top of the range.
+        TextureFormat::Rgba16Float => {
+            let ch = |i: usize| f16_to_f32(u16::from_le_bytes([bytes[i * 2], bytes[i * 2 + 1]]));
+            let (r, g, b, a) = (ch(0), ch(1), ch(2), ch(3));
             [r * a, g * a, b * a, a]
         }
         // Single coverage channel: replicated as premultiplied white * coverage.

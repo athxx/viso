@@ -1,6 +1,5 @@
-//! The 1D gradient LUT atlas: an RGBA8 texture the renderer bakes gradient
-//! ramps into, one row per distinct gradient, plus the CPU backing it uploads
-//! from.
+//! The 1D gradient LUT atlas: a texture the renderer bakes gradient ramps into,
+//! one row per distinct gradient, plus the CPU backing it uploads from.
 //!
 //! A gradient with three or more stops (or a non-linear
 //! [`InterpolationSpace`]) is too expensive to evaluate per fragment, so its
@@ -24,7 +23,7 @@
 
 use std::collections::HashMap;
 
-use viso_gpu::{TextureFormat, TextureId};
+use viso_gpu::{ColorDomain, TextureFormat, TextureId, f32_to_f16};
 use viso_math::{ExtendMode, InterpolationSpace, LinearStraight, linear_to_srgb, srgb_to_linear};
 
 use crate::primitive::GradientStop;
@@ -34,9 +33,6 @@ use crate::primitive::GradientStop;
 /// that banding is invisible at any on-screen gradient length while keeping the
 /// row a single cache-friendly line.
 pub const LUT_WIDTH: u32 = 256;
-
-/// Bytes per texel of the RGBA8 backing.
-const BPT: u32 = 4;
 
 /// A baked-ramp cache key: two gradients that bake to identical rows share one.
 ///
@@ -110,10 +106,14 @@ pub enum LutAlloc {
 pub struct GradientLutAtlas {
     /// Number of rows (the texture height). Each row is one baked ramp.
     rows: u32,
-    /// Row-major RGBA8 pixels, `LUT_WIDTH × rows × 4` bytes; the CPU source of
-    /// truth.
+    /// Row-major texels, `LUT_WIDTH × rows × format.bytes_per_texel()` bytes;
+    /// the CPU source of truth, laid out exactly as the upload wants it.
     pixels: Vec<u8>,
-    /// The GPU texture (`Rgba8Unorm`, `LUT_WIDTH × rows`) these pixels back.
+    /// The texel format of both `pixels` and the GPU texture — 8-bit unorm, or
+    /// half-float when the target's domain needs values above 1.0 to survive the
+    /// bake (see [`format_for`](Self::format_for)).
+    format: TextureFormat,
+    /// The GPU texture (`format`, `LUT_WIDTH × rows`) these pixels back.
     texture: TextureId,
     /// Cache of baked keys → row index, so a repeated gradient never rebakes.
     cache: HashMap<LutKey, u32>,
@@ -128,17 +128,32 @@ pub struct GradientLutAtlas {
 }
 
 impl GradientLutAtlas {
-    /// The RGBA8 pixel format a gradient-LUT texture must be created with.
-    pub const FORMAT: TextureFormat = TextureFormat::Rgba8Unorm;
-
-    /// A fresh atlas of `rows` ramp rows, backing the given GPU texture.
+    /// The format a gradient-LUT texture must be created with for `domain`.
     ///
-    /// The texture must be created as [`Self::FORMAT`] at `LUT_WIDTH × rows`.
-    /// The backing starts fully zero (transparent).
-    pub fn new(rows: u32, texture: TextureId) -> Self {
+    /// An SDR or wide-gamut ramp is 8-bit unorm: its authored stops live inside
+    /// `[0, 1]`, and 256 texels of that range is exactly what [`LUT_WIDTH`] is
+    /// sized for. An HDR ramp is half-float, because the bake quantizes through
+    /// this texel and an unorm one would clamp a stop above 1.0 *before* the
+    /// blur/composite chain ever saw it — the one place a gradient could silently
+    /// lose the extended range its target can display.
+    pub const fn format_for(domain: ColorDomain) -> TextureFormat {
+        if domain.requires_extended_range() {
+            TextureFormat::Rgba16Float
+        } else {
+            TextureFormat::Rgba8Unorm
+        }
+    }
+
+    /// A fresh atlas of `rows` ramp rows in `format`, backing the given texture.
+    ///
+    /// The texture must be created as `format` at `LUT_WIDTH × rows`; use
+    /// [`format_for`](Self::format_for) to pick it from the target's domain. The
+    /// backing starts fully zero (transparent).
+    pub fn new(rows: u32, texture: TextureId, format: TextureFormat) -> Self {
         Self {
             rows,
-            pixels: vec![0u8; (LUT_WIDTH as usize) * (rows as usize) * BPT as usize],
+            pixels: vec![0u8; (LUT_WIDTH as usize) * (rows as usize) * format.bytes_per_texel()],
+            format,
             texture,
             cache: HashMap::new(),
             next_row: 0,
@@ -157,14 +172,24 @@ impl GradientLutAtlas {
         self.texture
     }
 
+    /// The texel format of the backing and its texture.
+    pub fn format(&self) -> TextureFormat {
+        self.format
+    }
+
+    /// Bytes per texel of the backing.
+    fn bpt(&self) -> usize {
+        self.format.bytes_per_texel()
+    }
+
     /// The current generation. Bumps on every overflow wipe; callers key their
     /// cached `lut_v` on it and re-alloc after a change.
     pub fn epoch(&self) -> u32 {
         self.epoch
     }
 
-    /// The full CPU pixel backing (row-major RGBA8, `LUT_WIDTH × rows × 4`
-    /// bytes).
+    /// The full CPU pixel backing (row-major [`format`](Self::format) texels,
+    /// `LUT_WIDTH × rows` of them).
     pub fn pixels(&self) -> &[u8] {
         &self.pixels
     }
@@ -207,7 +232,7 @@ impl GradientLutAtlas {
     /// [`viso_gpu::GpuBackend::write_texture`].
     pub fn take_dirty(&mut self) -> Option<(u32, u32, u32, u32, Vec<u8>)> {
         let (first, count) = self.dirty.take()?;
-        let row_bytes = (LUT_WIDTH * BPT) as usize;
+        let row_bytes = LUT_WIDTH as usize * self.bpt();
         let start = first as usize * row_bytes;
         let end = start + count as usize * row_bytes;
         Some((0, first, LUT_WIDTH, count, self.pixels[start..end].to_vec()))
@@ -220,10 +245,12 @@ impl GradientLutAtlas {
 
     /// Bake `key`'s ramp into `row`: for each of [`LUT_WIDTH`] texels, fold the
     /// parameter through `extend`, evaluate the stops in the chosen
-    /// interpolation space, and store the result **premultiplied** linear RGBA8
-    /// (the sample path, like the color atlas, is premultiplied and branchless).
+    /// interpolation space, and store the result **premultiplied** linear
+    /// (the sample path, like the color atlas, is premultiplied and branchless)
+    /// in whichever [`format`](Self::format) the atlas was built with.
     fn bake(&mut self, row: u32, key: &LutKey) {
-        let base = row as usize * (LUT_WIDTH * BPT) as usize;
+        let bpt = self.bpt();
+        let base = row as usize * LUT_WIDTH as usize * bpt;
         for texel in 0..LUT_WIDTH {
             // Texel centers span (0, 1): the row is a lookup over `t`, so the
             // first and last texels sit half a step in, matching bilinear
@@ -232,11 +259,19 @@ impl GradientLutAtlas {
             let folded = fold_extend(t, key.extend);
             let color = eval_stops(&key.stops, folded, key.interp);
             let premul = color.premultiply();
-            let off = base + texel as usize * BPT as usize;
-            self.pixels[off] = to_u8(premul.r);
-            self.pixels[off + 1] = to_u8(premul.g);
-            self.pixels[off + 2] = to_u8(premul.b);
-            self.pixels[off + 3] = to_u8(premul.a);
+            let off = base + texel as usize * bpt;
+            let channels = [premul.r, premul.g, premul.b, premul.a];
+            if self.format.is_extended_range() {
+                for (i, c) in channels.iter().enumerate() {
+                    let bytes = f32_to_f16(*c).to_le_bytes();
+                    self.pixels[off + i * 2] = bytes[0];
+                    self.pixels[off + i * 2 + 1] = bytes[1];
+                }
+            } else {
+                for (i, c) in channels.iter().enumerate() {
+                    self.pixels[off + i] = to_u8(*c);
+                }
+            }
         }
     }
 
@@ -349,7 +384,10 @@ fn lerp_color(
     }
 }
 
-/// One linear channel `[0, 1]` (extended range clamped) to an 8-bit texel.
+/// One linear channel `[0, 1]` to an 8-bit texel, clamping anything outside.
+///
+/// The clamp is the whole reason an HDR atlas bakes half-float instead: this is
+/// the only path by which a gradient stop above 1.0 would lose its headroom.
 fn to_u8(c: f32) -> u8 {
     (c.clamp(0.0, 1.0) * 255.0 + 0.5) as u8
 }
@@ -357,6 +395,9 @@ fn to_u8(c: f32) -> u8 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Bytes per texel of the 8-bit backing these tests bake into.
+    const BPT: u32 = 4;
     use crate::primitive::Rgba;
 
     fn stop(offset: f32, r: f32, g: f32, b: f32, a: f32) -> GradientStop {
@@ -372,7 +413,7 @@ mod tests {
 
     #[test]
     fn same_key_hits_the_same_row_without_rebaking() {
-        let mut atlas = GradientLutAtlas::new(4, TextureId::new(0));
+        let mut atlas = GradientLutAtlas::new(4, TextureId::new(0), TextureFormat::Rgba8Unorm);
         let stops = vec![stop(0.0, 1.0, 0.0, 0.0, 1.0), stop(1.0, 0.0, 0.0, 1.0, 1.0)];
         let a = atlas.alloc(key(stops.clone()));
         // Baking the first row dirties it; a repeat must not dirty again.
@@ -384,7 +425,7 @@ mod tests {
 
     #[test]
     fn distinct_keys_get_distinct_rows() {
-        let mut atlas = GradientLutAtlas::new(4, TextureId::new(0));
+        let mut atlas = GradientLutAtlas::new(4, TextureId::new(0), TextureFormat::Rgba8Unorm);
         let a = atlas.alloc(key(vec![
             stop(0.0, 1.0, 0.0, 0.0, 1.0),
             stop(1.0, 0.0, 1.0, 0.0, 1.0),
@@ -401,7 +442,7 @@ mod tests {
 
     #[test]
     fn extend_and_interp_are_part_of_the_key() {
-        let mut atlas = GradientLutAtlas::new(4, TextureId::new(0));
+        let mut atlas = GradientLutAtlas::new(4, TextureId::new(0), TextureFormat::Rgba8Unorm);
         let stops = vec![stop(0.0, 1.0, 0.0, 0.0, 1.0), stop(1.0, 0.0, 0.0, 1.0, 1.0)];
         let clamp = atlas.alloc(LutKey::new(
             &stops,
@@ -430,7 +471,7 @@ mod tests {
 
     #[test]
     fn overflow_wipes_and_bumps_epoch() {
-        let mut atlas = GradientLutAtlas::new(1, TextureId::new(0));
+        let mut atlas = GradientLutAtlas::new(1, TextureId::new(0), TextureFormat::Rgba8Unorm);
         assert!(matches!(
             atlas.alloc(key(vec![
                 stop(0.0, 1.0, 0.0, 0.0, 1.0),
@@ -461,7 +502,7 @@ mod tests {
 
     #[test]
     fn take_dirty_returns_full_width_rows() {
-        let mut atlas = GradientLutAtlas::new(4, TextureId::new(0));
+        let mut atlas = GradientLutAtlas::new(4, TextureId::new(0), TextureFormat::Rgba8Unorm);
         atlas.alloc(key(vec![
             stop(0.0, 1.0, 0.0, 0.0, 1.0),
             stop(1.0, 0.0, 0.0, 1.0, 1.0),
@@ -475,7 +516,7 @@ mod tests {
     fn linear_bake_midpoint_is_halfway_premultiplied() {
         // Red→blue, opaque, linear space: the middle texel is ~(0.5, 0, 0.5)
         // premultiplied (a == 1), stored as 8-bit.
-        let mut atlas = GradientLutAtlas::new(1, TextureId::new(0));
+        let mut atlas = GradientLutAtlas::new(1, TextureId::new(0), TextureFormat::Rgba8Unorm);
         atlas.alloc(key(vec![
             stop(0.0, 1.0, 0.0, 0.0, 1.0),
             stop(1.0, 0.0, 0.0, 1.0, 1.0),
@@ -493,7 +534,7 @@ mod tests {
     fn premultiplied_storage_scales_rgb_by_alpha() {
         // A single fully-opaque-white to translucent-white ramp: at the
         // translucent end, premultiplied rgb tracks alpha.
-        let mut atlas = GradientLutAtlas::new(1, TextureId::new(0));
+        let mut atlas = GradientLutAtlas::new(1, TextureId::new(0), TextureFormat::Rgba8Unorm);
         atlas.alloc(key(vec![
             stop(0.0, 1.0, 1.0, 1.0, 1.0),
             stop(1.0, 1.0, 1.0, 1.0, 0.0),
