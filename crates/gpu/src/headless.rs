@@ -124,6 +124,7 @@ impl HeadlessRaster {
             caps: Caps {
                 max_texture_size: 16384,
                 presents_to_display: false,
+                compute_dispatch: false,
             },
             retire_queue: RetireQueue::new(),
             fence: Fence::new(),

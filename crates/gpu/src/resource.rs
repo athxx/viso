@@ -419,4 +419,16 @@ pub struct Caps {
     pub max_texture_size: u32,
     /// Whether the backend renders to a real display (false for headless).
     pub presents_to_display: bool,
+    /// Whether this backend can dispatch compute kernels (§20.1).
+    ///
+    /// A device capability *and* an RHI one: the answer is `false` until the
+    /// backend actually exposes a dispatch entry point, because a capability the
+    /// layers above cannot call is not a capability. The Metal and headless
+    /// backends therefore both report `false` today — Metal's device has compute,
+    /// this RHI has no encoder for it (§17.1 keeps the RHI small).
+    ///
+    /// Upper layers read this as a *veto*, never as an instruction: a compute lane
+    /// is entered on a measured benefit over a large dynamic workload, and this
+    /// only says whether that lane exists to be entered at all (§20.1, §7.2).
+    pub compute_dispatch: bool,
 }

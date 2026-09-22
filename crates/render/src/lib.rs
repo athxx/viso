@@ -34,6 +34,7 @@ pub mod rect_packer;
 pub mod renderer;
 pub mod scene;
 pub mod transient;
+pub mod vector_lane;
 
 // The blend model and its realization classifier (§14.6): fixed-function
 // Porter-Duff stays local; separable artistic modes read the destination;
@@ -90,6 +91,10 @@ pub use primitive::{
     quad_schema,
 };
 pub use renderer::{BackdropDependency, FrameStats, Renderer};
+// Which lane rasterizes vector geometry (§20.1). The compute lane is workload
+// specialization, so the *decision* is public (a host can describe its workload
+// and see the answer) while the kernels behind it are not a frozen contract.
+pub use vector_lane::{VectorLane, VectorWorkload};
 // GPU handles that appear in this crate's public API. `TextureId` is carried by
 // `ImageDraw`/`GlyphRunDraw`; `BindGroupId`/`PipelineId` are the resource handles
 // on `InspectBatch`'s public fields (architecture 62: `BatchId -> pipeline/

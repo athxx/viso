@@ -2747,13 +2747,53 @@ metadata in `viso-render`; descriptor tables / indirect / multi-draw / dispatch 
 in `viso-gpu`. Enters only after M1 freezes; algorithms here are not frozen as public ABI.
 
 ### A0.1 — Vector compute lane (§20.1)
-- [ ] Entered only when benchmark proves benefit (large dynamic path / vector editor /
+- [x] Entered only when benchmark proves benefit (large dynamic path / vector editor /
       canvas / complex clip scene / high path churn / CPU tessellation is the bottleneck).
       Concept pipeline: `Path segment scene → tile/binning → parallel prefix/allocation →
       per-tile coverage → fine raster`. The specific algorithm is not public ABI.
-- [ ] Hard rule: compute is workload specialization — 20 ordinary buttons / a panel / a few
+  - [x] `VectorLane { CpuTessellate, GpuCompute }` in `crates/render/src/vector_lane.rs`,
+        re-exported from the crate root; `CpuTessellate` is `Default`, so every path that
+        does not deliberately opt in stays on the tessellated lane.
+  - [x] `VectorWorkload` describes the entry conditions as data: `compute_available`,
+        `segments`, `remeshed_segments_per_frame`, `clip_composite_ops`,
+        `tessellation_share`. All-zero default = "nothing measured".
+  - [x] `VectorLane::select` is a conjunction, not a heuristic sum: the capability, the
+        measured bottleneck (`tessellation_is_the_bottleneck`), and the scene shape
+        (`is_large_and_dynamic`) must all hold. Any one missing → `CpuTessellate`.
+  - [x] The benchmark gate is a type, not a comment (§7.3): `tessellation_share` defaults to
+        `0.0`, so an unprofiled frame and a frame where tessellation is not the limit are the
+        same input and cannot reach compute at any scale.
+  - [x] "Large" and "dynamic" are both required — a large *stable* scene belongs in retained
+        cached geometry, whose per-frame tessellation cost is already zero; heavy
+        clip/composite traffic counts as churn at scale.
+  - [x] Thresholds are internal consts, deliberately not asserted as values (§20.1: the
+        algorithm and its crossovers are not public ABI). What is pinned is the shape of the
+        conjunction and which way each condition points.
+  - [x] `Caps.compute_dispatch` is the capability veto, reported honestly: both the headless
+        and the Metal backend answer `false`, because this RHI exposes no dispatch encoder
+        (§17.1) — a capability the layers above cannot call is not a capability.
+  - [x] No compute rasterizer / binning kernel ships here: §20.1 gates it on a benchmark that
+        cannot be run against a dispatch path no backend offers. What lands is the decision
+        machinery and the negative rule's enforcement, labeled as such.
+- [x] Hard rule: compute is workload specialization — 20 ordinary buttons / a panel / a few
       dozen stable paths must never be routed through compute dispatch just for architectural
       uniformity (§7.2, §20.1).
+  - [x] `FrameStats::compute_dispatches` (§30/§61) makes the rule arithmetic instead of
+        editorial: the counter is the frame-level form of "ordinary UI has zero compute
+        dependency", and a later lane that dispatched for a button regresses it visibly.
+        Added to the frozen roster in `crates/render/tests/counter_contract_frozen.rs`.
+  - [x] Policy-level gate: `twenty_buttons_and_a_panel_are_never_routed_through_compute`
+        runs the three scenes §20.1 names through `select` under the *most* favorable
+        conditions (compute available, tessellation measured at 90 % of the frame) and they
+        all stay on the CPU lane — scale is the only thing they lack.
+  - [x] Frame-level gate: real scenes drawn through the real renderer report zero dispatches —
+        twenty buttons, four dozen curved paths nested in a translucent layer (exercising both
+        CPU vector lanes: the §14.4 self-masked coverage lane and the tessellated lane), and
+        three consecutive frames with a local change, so no "warm-up dispatch" can hide in a
+        steady state.
+  - [x] Verified: `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets
+        -- -D warnings`, `cargo xtask check-deps` (18 crates), `cargo test --workspace`
+        (137/137 binaries), `cargo bench -p viso-render -- --test`.
 
 ### A0.2 — Bindless (§20.2)
 - [ ] Capability detection: Metal argument/resource tables / D3D12 descriptor heap / Vulkan
