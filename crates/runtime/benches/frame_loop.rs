@@ -69,7 +69,10 @@ fn bench_blank_frames(c: &mut Criterion) {
     assert_idle_does_no_work();
 
     let mut group = c.benchmark_group("blank_frame_loop");
-    for n in [1u32, 60, 600] {
+    // 1 isolates the fixed cost of one frame; 60/120/144/240 are one second of
+    // frames at each supported refresh rate, so the row set reads directly as a
+    // per-second phase-dispatch budget; 600 keeps a long-run row for drift.
+    for n in [1u32, 60, 120, 144, 240, 600] {
         group.bench_function(format!("{n}_frames"), |b| {
             b.iter(|| drive_frames(black_box(n)));
         });

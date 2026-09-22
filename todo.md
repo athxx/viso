@@ -2271,22 +2271,187 @@ capture / shared-pyramid targets in `viso-gpu`. Depends on E1 frozen (+ C0/E0 fa
         nothing raises them yet, so their elimination rungs are untested by construction.
 
 ### E2.5 — §31 gate
-- [ ] Benchmark gate (§31): shared backdrop; color-effect fusion. Static-UI target: an
+- [x] Benchmark gate (§31): shared backdrop; color-effect fusion. Static-UI target: an
       existing blur/glass/shadow does not cause continuous redraw; idle → 0 GPU submit.
       High-refresh 60/120/144/240.
+  - [x] **Sharing is flat in sharer count, and its bytes are sub-linear.**
+        `assert_shared_backdrop_cost_is_flat_in_panel_count` sweeps a row of 1 / 2 / 4 / 6
+        frosted panels at one sigma and asserts the *plan* of six sharers is the plan of
+        one: always `backdrop_captures == 1`, and `blur_passes` / `render_passes` /
+        `color_transform_passes` identical to the single-panel row. Only the composites
+        grow (`draw_calls` strictly increasing per step). Measured: 1 capture, 2 blur
+        passes, 4 render passes at every width; 6 / 8 / 12 / 16 draws. The bytes are the
+        interesting half — capture pixels 528 / 1008 / 1968 / 2928 px, i.e. 528 / 504 /
+        492 / 488 px *per panel*, asserted strictly decreasing and asserted below
+        `count * single.backdrop_capture_pixels`; peak transient 8 / 12 / 24 / 32 KiB,
+        likewise asserted sub-linear. Sharing is not merely "not worse than N captures":
+        each new sharer costs strictly less than the first. Every row also asserts
+        `backdrop_capture_pixels < W*H` (a shared group must never promote itself to a
+        full-surface capture) and `transient_peak_bytes <= transient_pool_bytes`. The
+        sweep stops at 6 because a 7th panel at `FROSTED_PANEL_PITCH` would not fit in
+        `W = 128`, and a surface-clipped panel would change the union ROI for a reason
+        that has nothing to do with sharing.
+  - [x] **Chain length reaches no cost counter.**
+        `assert_color_fusion_is_flat_in_chain_length` grades 8 cards with chains of
+        1..=5 affine stages and asserts the authored primitive count strictly grows
+        (32 / 40 / 48 / 56 / 64, read from `scene.len()` — `visible_primitives` counts
+        drawables, so authored `ColorEffect` entries are invisible to it) while every
+        cost counter holds: `color_effect_ops == 8` (one per card, not one per stage),
+        `color_transform_passes == 0`, and `draw_calls` / `instances` /
+        `render_passes` / `offscreen_passes` / `transient_target_bytes` /
+        `transient_peak_bytes` / `pipeline_switches` / `texture_binding_switches` /
+        `layers_planned` all equal to the chain-of-1 row. Measured: 16 draws, 9 render
+        passes, 8192 transient bytes, unchanged from 1 stage to 5. One counter must
+        *not* be flat and is asserted positively: `layers_eliminated == 0` at length 1
+        and `== 8` at length ≥ 2 — at length 1 there is nothing to fuse, so recording an
+        elimination would claim credit for work never requested.
+  - [x] **A static glass screen holds across every refresh rate.**
+        `assert_static_glass_holds_at_every_refresh_rate` builds one screen that
+        exercises all three lanes at once (`glass_screen_scene` = the frosted panel row
+        plus the idle blur/shadow scene: measured 1 capture, 4 blur passes, 1 offscreen
+        pass, 7 render passes, 38 draws) and then re-uploads and re-submits it for 60,
+        then 120, then 144, then 240 consecutive frames — 564 frames total, nothing
+        touched. Every frame asserts the *whole* `FrameStats` struct equals the warm
+        baseline (one `assert_eq!` on all 38 fields, so a new counter joins the gate
+        automatically), `backdrop_dirty_rois == 0`, and that no `BackdropDependency` is
+        dirty: an existing glass panel must not re-dirty itself, which is exactly the
+        "does not cause continuous redraw" target.
+  - [x] **Refresh rate cannot reach steady frame cost.** The same gate pins backend
+        resource identity and heap traffic inside `submit`: `texture_count`,
+        `buffer_count` and `bind_group_count` are asserted constant across all 564
+        frames (no creation, no pool churn), and the `CountingAlloc` delta of each
+        `submit` is asserted equal *within* a cadence and *across* cadences. So the cost
+        of frame N is independent of both N and of the rate — the property that makes a
+        120/144/240 Hz target a matter of the per-frame budget alone, with no
+        rate-dependent term to discover later.
+  - [x] **The other half of "idle → 0 GPU submit" lives where the loop lives.** The
+        render side can only prove the precondition (an untouched glass screen dirties
+        nothing); whether a frame is submitted at all is the present loop's decision, and
+        `crates/runtime/benches/frame_loop.rs::assert_idle_does_no_work` owns it —
+        `RedrawReasons::new().is_idle()` and `decide() == FrameDecision::NoFrame`, with a
+        single `StateDirty` asserted to escalate off idle so the invariant cannot be
+        satisfied by a loop that never submits. That bench's cadence sweep is now
+        `[1, 60, 120, 144, 240, 600]`, so the four refresh rates read directly as a
+        per-second phase-dispatch budget in the crate that dispatches phases.
+  - [x] **Timing rows, and what they are worth.** Two release rows were added on the
+        glass screen: `glass_screen_upload_steady` = **5.07 µs** (plan + encode of a
+        warm, unchanged glass screen — 0.03% of the 16.67 ms frame at 60 Hz, 0.12% of
+        the 4.17 ms at 240 Hz) and `glass_screen_frame` = **4.77 ms** for upload +
+        submit. The second number is *not* a frame budget result: `HeadlessRaster`
+        shades every blur tap in scalar CPU code, so it measures the test rasterizer,
+        not a device. The frame-path claim this gate supports is the upload row and the
+        counter flatness above; the device-side budget is unmeasured here.
+  - [x] Flagged, not asserted: no on-device GPU timing exists in this environment
+        (§7.3/§36), so "240 Hz is met" is not claimed — what is claimed is that the
+        per-frame *work* is constant in frame index and in refresh rate, and that the
+        CPU frame path is ~5 µs. The `submit` allocation count is asserted constant, not
+        zero: the headless backend allocates its own readback/scratch storage, so a
+        true 0-alloc steady state is a device-backend property this harness cannot see.
+        The static-UI saving is still a *plan* saving, not a capture skip: a clean
+        `BackdropDependency` is reported and the ladder is still paid, because skipping
+        it needs retained capture textures (M0 owns that). The sweep is one row of
+        equal-sized panels at one sigma; mixed sigmas and mixed sizes are covered for
+        *correctness* by `backdrop_contract.rs` but not swept for cost.
 
 ### E2 Done
-- [ ] backdrop dependency.
-- [ ] shared backdrop / blur.
-- [ ] color effect fusion.
-- [ ] advanced blend isolation.
+- [x] **backdrop dependency.** Every capture group publishes a
+      `BackdropDependency { roi, revision, dirty }` through `Renderer::backdrop_dependencies()`,
+      one per group in capture order, retained across frames and rewritten in place. The
+      revision is a function of the §3202 content stamp of the primitives under the ROI —
+      the wrapping sum of all seven revision planes — so a quad that only *moved* dirties
+      the backdrop above it exactly as a recolored one does, and a frame in which nothing
+      changed dirties nothing. Damage is scoped: one panel's repaint never advances
+      another panel's revision. This is what lets a glass panel be cheap without being
+      stale, and it is the input M0 needs to skip a capture rather than merely report that
+      it could.
+- [x] **shared backdrop / blur.** Groups that blur at the same sigma and whose padded ROIs
+      union without waste join one capture and one ladder (`join_or_open_backdrop`, bounded
+      by `BACKDROP_UNION_SLACK`): N sharers cost one capture, one blur chain and N
+      composites, with capture bytes per sharer strictly falling as the group grows. A
+      different sigma is a different ladder and can never join; a distant panel opens its
+      own group rather than promoting the union to a full-surface capture. The capture is
+      always sized by the ROI it will be sampled through — strictly larger than the panel
+      (the kernel reaches outside it), strictly smaller than the surface. Crossing a blur
+      tier adds rungs to the ladder, never captures: the tier belongs to the blur, the
+      capture to the group, and they stay separable.
+- [x] **color effect fusion.** A maximal run of affine color stages collapses to one
+      `ColorOp` that rides the composite the layer already draws — one op, zero passes of
+      its own, however long the run. `Gamma` is the one non-affine stage and is the only
+      thing that can split a run: it costs exactly one extra pass, the leading half
+      evaluated into it and the trailing half still riding the composite. Fusion is a
+      matrix product and matrix products do not commute, so authored order is preserved:
+      desaturate-then-sepia and sepia-then-desaturate read back as different pixels.
+      Chain length therefore reaches no cost counter at all — the planner records the fusion
+      as `FusedColorMatrix`/`CollapsedAdjacentEffects` so the saving is visible without
+      being inferrable from a pass count that never moved.
+- [x] **advanced blend isolation.** A blend the fixed-function stage cannot express is
+      raised as `LayerReason::AdvancedBlend` at cost `DestinationRead`, and reads its
+      destination through a capture bounded by the group's ROI — never the surface — inside
+      the offscreen target the group already needed, so isolation costs one target and not
+      two. `SrcOver` is the fixed-function lane and stays free: zero isolations, zero
+      offscreen passes, zero captures, one surface pass. Naming a blend must never be what
+      costs a pass; needing one must be.
 
 ### Freeze
-- [ ] FREEZE E2: the backdrop-dependency + shared-capture/pyramid contract, the color-effect
+- [x] FREEZE E2: the backdrop-dependency + shared-capture/pyramid contract, the color-effect
       fusion rule, the advanced-blend isolation, the Local/Nonlocal classification + Effect
       Planner `LayerReason` elimination order, and the Effect Damage `BackdropDependency
       Revision` model. This closes the D0~E2 render foundation; M0/M1/A0 build strictly on
       top and are never a prerequisite of anything below.
+  - [x] Pinned in `crates/render/tests/effect_contract_frozen.rs` (21 tests), through the
+        public surface only, so a downstream slice that breaks a promise trips a test whose
+        name says which promise it broke. The behavioural coverage stays in
+        `backdrop_contract.rs`, `color_effect_contract.rs`, `blend_contract.rs` and
+        `effect_planner_contract.rs`; this file states the contracts in one place.
+  - [x] **Shared capture + dependency.** `panels_at_one_sigma_share_one_capture_and_one_ladder`
+        (two sharers = the pass plan of one, plus one composite, plus exactly one
+        dependency), `a_different_sigma_opens_its_own_capture`,
+        `a_distant_panel_opens_its_own_capture`,
+        `a_capture_is_bounded_by_its_roi_not_the_surface` (panel px < capture px < surface
+        px), and `a_backdrop_tier_change_adds_rungs_not_captures` — sigma 2 → 40 at a fixed
+        ROI must raise `blur_passes` while holding captures and dependencies at one.
+  - [x] **Fusion rule.** `an_affine_run_is_one_op_and_no_pass_of_its_own` (five stages → 1
+        op, 0 color passes, pass plan identical to one stage),
+        `a_non_affine_stage_splits_the_run_for_exactly_one_pass` (a `Gamma` in the middle →
+        2 ops, 1 color pass, `render_passes + 1` and nothing else), and
+        `fusion_preserves_the_authored_order` — a readback byte-inequality between the two
+        orderings of a non-commuting pair, so fusion can never silently reorder.
+  - [x] **Advanced blend.** `an_advanced_blend_reads_a_bounded_destination` (1 isolation, 1
+        offscreen pass, 1 capture, capture px < surface px) and `src_over_never_isolates`
+        (0 / 0 / 0, one surface pass) — the second is the one that forbids isolating
+        whenever a blend is merely *named*.
+  - [x] **Local/Nonlocal + elimination order.** `the_locality_frontier_is_one_threshold`
+        pins the full per-variant predicate table and the implication that defines the
+        frontier: a local class demands no target, no capture and no destination read,
+        while every nonlocal class names what it needs. `a_chain_is_as_nonlocal_as_its_worst_link`
+        pins `dominating` over empty / all-local / mixed chains.
+        `the_layer_reason_vocabulary_is_closed_and_nonlocal` closes the eight reasons at
+        their pinned indices, labels and costs (`BackdropFilter` → `NeedsBackdrop`,
+        `AdvancedBlend` → `DestinationRead`, the other six → `NeedsOffscreen`) and asserts
+        no reason can be local. `the_elimination_ladder_is_closed_and_the_sets_are_bytes`
+        closes the six rungs and pins `size_of::<ReasonSet>() == size_of::<EliminationSet>() == 1`,
+        `size_of::<LayerPlan>() <= 8`, and `ALL`-ordered iteration so an inspector dump is
+        stable (§62). Order itself is pinned by three tests:
+        `reason_removing_rungs_run_before_the_revocation_guard` (a translucent shared-backdrop
+        group folds *and* retires its backdrop reason — evaluating the share after the guard
+        would revoke a fold for a reason about to disappear),
+        `an_elimination_that_does_not_eliminate_is_not_recorded` (a complex mask keeps the
+        target, so the fold is revoked and `fold_opacity` returns to 1.0), and
+        `the_scissor_rung_is_the_outcome_of_the_ladder`, which sweeps 13 requests and
+        asserts across all of them that the scissor rung, `needs_offscreen()`,
+        `locality() == Local` and `dominating_reason().is_none()` are four spellings of
+        "no reason survived".
+  - [x] **Effect damage.** `damage_is_scoped_to_the_roi_that_changed` (recolor under panel A
+        → exactly 1 dirty ROI, A's revision advances, B's holds),
+        `a_move_dirties_a_backdrop_as_much_as_a_recolor` (the dependency is on content, not
+        on one revision plane), `an_unchanged_frame_dirties_no_backdrop` (a first draw
+        dirties what it plans, the second settles, and four further idle uploads change
+        nothing — the property the static-UI target rests on), and
+        `no_backdrop_means_no_dependency` (the mechanism costs nothing when unused).
+  - [x] Frozen means the *public* surface: the joining heuristic's slack constant, the
+        ladder's tier thresholds, the fused-matrix internals and the capture pool's
+        allocation strategy all remain free to change, and are asserted only through
+        behaviour a caller can observe (counts, byte bounds, monotonicity, pixels).
 
 ---
 
