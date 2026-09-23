@@ -14,8 +14,8 @@ use viso_text::system_fonts::ColorGlyph;
 use viso_text::{
     Admission, BaseDirection, BidiInfo, ColorGlyphRasterizer, Coverage, CoverageBitmap, Direction,
     FontFaceId, FontRequest, FontResolver, FontRole, GlyphImageKind, GlyphKey, GlyphResidency,
-    LineBreaker, PoolBudget, Reclaimed, Resolved, Segmenter, ShapedRun, Shaper, inspect_face,
-    rasterize_coverage,
+    LineBreaker, OUTLINE_POOL, PoolBudget, Reclaimed, Resolved, Segmenter, ShapedRun, Shaper,
+    inspect_face, rasterize_coverage,
 };
 use viso_ui::{Content, TextRequest, Vec2};
 
@@ -211,13 +211,14 @@ impl TextShaper {
             color_atlas: None,
             // Each pool is budgeted from the geometry of the plane that holds it,
             // so "this page is full" means the same thing to the metadata layer
-            // and to the packer. The MTSDF and vector pools keep their defaults
-            // until their planes exist; their budgets are independent either way.
+            // and to the packer. The MTSDF pool keeps its default until its plane
+            // exists; the vector pool holds retained outlines, not texels, and
+            // carries the outline cache's own budget.
             residency: GlyphResidency::with_pool_budgets(
                 PoolBudget::new(pages, page_bytes),
                 PoolBudget::default(),
                 PoolBudget::new(pages, page_bytes * COLOR_BYTES_PER_TEXEL),
-                PoolBudget::default(),
+                OUTLINE_POOL,
             ),
             reclaims: Vec::new(),
             atlas_size: size,

@@ -94,6 +94,7 @@ pub use line_break_tailoring::{LineBreakStrictness, LineBreakTailoring, WordBrea
 pub use mtsdf::{
     BUCKETS, DISTANCE_RANGE, FIELD_PAD, MtsdfGenerator, MtsdfGlyph, MtsdfPlan, MtsdfRequest,
 };
+pub use outline_cache::{OUTLINE_POOL, OutlineCache, OutlineGlyph, OutlineRequest};
 pub use progressive::{FontRevision, ParagraphId, Progressive, ReflowScope, RevisionEffect, RunId};
 pub use raster_a8::{CoverageBitmap, rasterize_coverage};
 pub use resolver::{FaceMetrics, FontResolver, Resolved, inspect_face};

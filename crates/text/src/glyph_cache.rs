@@ -628,6 +628,23 @@ impl GlyphResidency {
         out.append(&mut self.reclaims);
     }
 
+    /// Move only `kind`'s pool reclaims into `out`, leaving the other pools'
+    /// queued for their own owners.
+    ///
+    /// For a pool whose contents one owner holds exclusively — the vector pool's
+    /// retained outlines — so that owner settles its reclaims the moment they
+    /// happen, before a later admission can reuse the page they name.
+    pub fn take_pool_reclaims(&mut self, kind: GlyphImageKind, out: &mut Vec<Reclaimed>) {
+        let kind = self.pool(kind).kind;
+        self.reclaims.retain(|reclaimed| {
+            let theirs = reclaimed.kind != kind;
+            if !theirs {
+                out.push(*reclaimed);
+            }
+            theirs
+        });
+    }
+
     /// Shed one pool down to `pressure_bytes` of resident bytes, reclaiming its
     /// coldest pages first, and return how many pages were reclaimed.
     ///
