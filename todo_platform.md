@@ -104,9 +104,10 @@ Follow-ups carried forward:
 - [ ] WebGPU (`web-sys`): adapter/device async bring-up, canvas context, buffers, textures,
       samplers, pipelines, bind groups, render passes, offscreen targets, present,
       device-lost.
-- [ ] Vulkan (`ash`): instance/device selection, swapchain (Xlib, Wayland, Android),
+- [x] Vulkan (`ash`): instance/device selection, swapchain (Xlib, Wayland, Android),
       frames-in-flight ring, staging uploads, pipelines, descriptor sets, render passes,
-      offscreen targets, recreate on resize/out-of-date, device-lost.
+      offscreen targets, recreate on resize/out-of-date, device-lost. Device tests run on
+      MoltenVK here (`--features vulkan`); real Linux/Android swapchains unverified.
 - [ ] D3D12 (`windows`): device, DXGI flip-model swapchain, command allocators per frame,
       fence ring, upload heap, root signature, PSOs, descriptor heaps, RTV/SRV, offscreen
       targets, resize, device-removed.

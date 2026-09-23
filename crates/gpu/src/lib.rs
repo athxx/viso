@@ -20,6 +20,10 @@ pub mod metal;
 pub mod resource;
 pub mod retire;
 pub mod slots;
+/// The native Vulkan backend (Linux/Android, or any target with the `vulkan`
+/// feature).
+#[cfg(any(feature = "vulkan", target_os = "linux", target_os = "android"))]
+pub mod vulkan;
 
 pub use backend::{
     DrawCommand, DrawList, Frame, Geometry, GpuBackend, IndexFormat, InlineUniforms, LoadOp,
@@ -28,19 +32,25 @@ pub use backend::{
 pub use headless::HeadlessRaster;
 #[cfg(target_vendor = "apple")]
 pub use metal::MetalBackend;
+#[cfg(any(feature = "vulkan", target_os = "linux", target_os = "android"))]
+pub use vulkan::VulkanBackend;
 
 /// The concrete GPU backend for this target, selected at compile time.
 ///
 /// ADR-007: there is one [`GpuBackend`] trait for source-level unification, but
 /// the facade holds *this concrete type* monomorphized so the frame hot path has
 /// no `dyn GpuBackend` dispatch. On macOS and iOS it is the native
-/// [`MetalBackend`]; on targets whose native backend has not landed yet it is
-/// the software [`HeadlessRaster`], which always compiles and needs no GPU.
+/// [`MetalBackend`]; on Linux and Android the [`VulkanBackend`]; on targets
+/// without a native backend it is the software [`HeadlessRaster`], which always
+/// compiles and needs no GPU.
 #[cfg(target_vendor = "apple")]
 pub type Backend = MetalBackend;
-/// The concrete GPU backend for this target (software raster until the
-/// target's native backend lands).
-#[cfg(not(target_vendor = "apple"))]
+/// The concrete GPU backend for this target.
+#[cfg(any(target_os = "linux", target_os = "android"))]
+pub type Backend = VulkanBackend;
+/// The concrete GPU backend for this target (software raster: no native
+/// backend is selected here).
+#[cfg(not(any(target_vendor = "apple", target_os = "linux", target_os = "android")))]
 pub type Backend = HeadlessRaster;
 
 /// Create the GPU device/backend for this target (ADR-007 cfg static select).

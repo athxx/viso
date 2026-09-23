@@ -22,6 +22,16 @@ bitflags = "2"
 # layout types, so it re-exports the derive that generates their impls; this is
 # the single allowed viso-gpu -> viso-macros edge (§10).
 viso-macros = { workspace = true }
+# Vulkan bindings (loader resolved at runtime, no link-time dependency). Always
+# on for Linux/Android, where Vulkan is the native backend; elsewhere opt-in via
+# the `vulkan` feature (MoltenVK on macOS, the Vulkan runtime on Windows).
+ash = { version = "0.38", optional = true }
+
+[features]
+vulkan = ["dep:ash"]
+
+[target.'cfg(any(target_os = "linux", target_os = "android"))'.dependencies]
+ash = "0.38"
 
 # Apple targets: the native Metal backend (objc2). External crates, not viso-* edges,
 # so they don't affect `xtask check-deps`. The concrete backend is chosen by

@@ -120,6 +120,18 @@ impl<T> SlotMap<T> {
         Some(value)
     }
 
+    /// Remove every live value, yielding each once. Used by backend teardown to
+    /// destroy native objects; the map is empty (and every handle stale) after.
+    pub fn drain(&mut self) -> impl Iterator<Item = T> + '_ {
+        self.live = 0;
+        self.free = (0..self.slots.len() as u32).rev().collect();
+        self.slots.iter_mut().filter_map(|slot| {
+            let value = slot.value.take()?;
+            slot.generation = slot.generation.wrapping_add(1);
+            Some(value)
+        })
+    }
+
     /// The number of live values currently stored.
     pub fn len(&self) -> usize {
         self.live
@@ -190,6 +202,25 @@ mod tests {
         assert_eq!(m.get(a), Some(&42));
         m.remove(a);
         assert_eq!(m.get_mut(a), None);
+    }
+
+    #[test]
+    fn drain_yields_every_live_value_and_stales_all_handles() {
+        let mut m = SlotMap::new();
+        let a = m.insert(1u8);
+        let b = m.insert(2u8);
+        let c = m.insert(3u8);
+        m.remove(b);
+        let mut drained: Vec<u8> = m.drain().collect();
+        drained.sort();
+        assert_eq!(drained, [1, 3]);
+        assert!(m.is_empty());
+        assert_eq!((m.get(a), m.get(c)), (None, None));
+        // Every slot is reusable, and never at a handle's old generation.
+        let d = m.insert(4u8);
+        assert!(d.index < 3);
+        assert_ne!(Some(d), [a, b, c].into_iter().find(|h| h.index == d.index));
+        assert_eq!(m.get(d), Some(&4));
     }
 
     #[test]
