@@ -47,6 +47,10 @@ hot-reload = []
 ttf-parser = { workspace = true }
 rustybuzz = { workspace = true }
 
+# Web: the WebGPU device opens asynchronously before the scheduler starts.
+[target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dependencies]
+wasm-bindgen-futures = "0.4"
+
 # Native measurements: criterion does not build for wasm32.
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 criterion = "0.7"

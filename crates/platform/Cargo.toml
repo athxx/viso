@@ -76,6 +76,43 @@ libc = "0.2"
 # bindings the web backend drives.
 [target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dependencies]
 wasm-bindgen = "0.2.128"
+wasm-bindgen-futures = "0.4"
+js-sys = "0.3"
+web-sys = { version = "0.3", features = [
+    "AddEventListenerOptions",
+    "Clipboard",
+    "ClipboardEvent",
+    "CompositionEvent",
+    "CssStyleDeclaration",
+    "DataTransfer",
+    "Document",
+    "DomRect",
+    "DomRectReadOnly",
+    "Element",
+    "Event",
+    "EventTarget",
+    "FocusOptions",
+    "HtmlCanvasElement",
+    "HtmlElement",
+    "HtmlTextAreaElement",
+    "InputEvent",
+    "KeyboardEvent",
+    "MediaQueryList",
+    "MouseEvent",
+    "Navigator",
+    "Node",
+    "PointerEvent",
+    "ResizeObserver",
+    "ResizeObserverBoxOptions",
+    "ResizeObserverEntry",
+    "ResizeObserverOptions",
+    "ResizeObserverSize",
+    "UiEvent",
+    "VisualViewport",
+    "WheelEvent",
+    "Window",
+    "console",
+] }
 
 # Windows: Win32 via the windows crate.
 [target.'cfg(target_os = "windows")'.dependencies]

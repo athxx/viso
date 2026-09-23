@@ -347,6 +347,11 @@ pub async fn prepare() -> bool {
     ok
 }
 
+/// Whether [`prepare`] opened a device that no backend has taken yet.
+pub fn is_prepared() -> bool {
+    PREPARED.with(|p| p.borrow().is_some())
+}
+
 /// A buffer: the WebGPU buffer and its byte length.
 struct WebGpuBuffer {
     buffer: GpuBuffer,

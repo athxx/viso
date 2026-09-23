@@ -170,9 +170,9 @@ Follow-ups carried forward:
 
 ## P7 — Web platform
 
-- [ ] `wasm-bindgen` + `web-sys`: canvas sizing with `devicePixelRatio` +
+- [x] `wasm-bindgen` + `web-sys`: canvas sizing with `devicePixelRatio` +
       `ResizeObserver`, `requestAnimationFrame` loop.
-- [ ] Pointer events (mouse/touch/pen), wheel, keyboard, a hidden `<textarea>` for
+- [x] Pointer events (mouse/touch/pen), wheel, keyboard, a hidden `<textarea>` for
       composition/IME + soft keyboard, clipboard (async API), CSS cursor,
       `prefers-color-scheme`, `visibilitychange` lifecycle.
 
