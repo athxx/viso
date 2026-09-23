@@ -98,6 +98,13 @@ pub trait PlatformApp {
         let _ = (window, regions);
     }
 
+    /// Enter or leave fullscreen for `window`. The backend reports the state it
+    /// reached with [`RawEvent::FullscreenChanged`](crate::RawEvent). A no-op
+    /// where windows are always fullscreen (mobile, a browser tab).
+    fn set_fullscreen(&mut self, window: WindowId, fullscreen: bool) {
+        let _ = (window, fullscreen);
+    }
+
     /// Programmatically close `window`, destroying its OS shell.
     ///
     /// The counterpart to [`create_window`](Self::create_window): it lets the

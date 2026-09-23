@@ -131,11 +131,11 @@ Follow-ups carried forward:
 
 ## P3 — Windows platform parity
 
-- [ ] Per-monitor-v2 DPI, `WM_DPICHANGED`, scale factor.
-- [ ] Mouse (+ capture, leave tracking), wheel/hwheel, pointer/touch/pen (`WM_POINTER*`).
-- [ ] Keys (`WM_KEYDOWN`/`WM_SYSKEYDOWN` → `KeyCode`), `WM_CHAR` text with surrogate pairs.
-- [ ] IME (`WM_IME_*`, IMM32 composition string + caret, candidate window at `set_ime_area`).
-- [ ] Clipboard (`CF_UNICODETEXT`), cursors, dark mode (`AppsUseLightTheme` + immersive dark
+- [x] Per-monitor-v2 DPI, `WM_DPICHANGED`, scale factor.
+- [x] Mouse (+ capture, leave tracking), wheel/hwheel, pointer/touch/pen (`WM_POINTER*`).
+- [x] Keys (`WM_KEYDOWN`/`WM_SYSKEYDOWN` → `KeyCode`), `WM_CHAR` text with surrogate pairs.
+- [x] IME (`WM_IME_*`, IMM32 composition string + caret, candidate window at `set_ime_area`).
+- [x] Clipboard (`CF_UNICODETEXT`), cursors, dark mode (`AppsUseLightTheme` + immersive dark
       title bar), focus, fullscreen, title, menus (`HMENU` + accelerators), timers/wakeup.
 
 ## P4 — Linux platform parity
