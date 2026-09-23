@@ -221,6 +221,12 @@ impl<'a> RuntimeCx<'a> {
     pub fn appearance(&self) -> Appearance {
         self.app.appearance()
     }
+
+    /// Whether windows are movable desktop windows that carry a caption; see
+    /// [`PlatformApp::framed_windows`](viso_platform::PlatformApp::framed_windows).
+    pub fn framed_windows(&self) -> bool {
+        self.app.framed_windows()
+    }
 }
 
 #[cfg(test)]

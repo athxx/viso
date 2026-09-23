@@ -803,6 +803,30 @@ impl NodeStore {
         self.mark_dirty(id, DirtyClass::LAYOUT | DirtyClass::PAINT);
     }
 
+    /// Rewrite a Flex or Grid container's padding in place, marking it
+    /// `MEASURE | LAYOUT | PAINT` (padding is part of its natural size). The
+    /// facade keeps a full-screen window's content clear of system UI this way,
+    /// following each safe-area or keyboard change without a rebuild. A no-op
+    /// for a stale handle or a node with no padding.
+    pub fn set_padding(&mut self, id: NodeId, inset: Inset) {
+        if !self.arena.is_live(id) {
+            return;
+        }
+        match &mut self.layout[id.index() as usize] {
+            LayoutInput::Flex { padding, .. } | LayoutInput::Grid { padding, .. } => {
+                if *padding == inset {
+                    return;
+                }
+                *padding = inset;
+            }
+            _ => return,
+        }
+        self.mark_dirty(
+            id,
+            DirtyClass::MEASURE | DirtyClass::LAYOUT | DirtyClass::PAINT,
+        );
+    }
+
     /// A node holding pointer capture, if any pointer is captured.
     #[inline]
     pub fn capture(&self) -> Option<NodeId> {

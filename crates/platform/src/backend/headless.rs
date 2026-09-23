@@ -32,6 +32,7 @@ pub struct HeadlessApp {
     /// `request_paste` hands back.
     clipboard: Option<String>,
     appearance: Appearance,
+    framed_windows: bool,
 }
 
 impl HeadlessApp {
@@ -44,6 +45,7 @@ impl HeadlessApp {
             pending_redraws: VecDeque::new(),
             clipboard: None,
             appearance: Appearance::default(),
+            framed_windows: true,
         }
     }
 
@@ -61,6 +63,12 @@ impl HeadlessApp {
     /// test a change also enqueue the matching [`RawEvent::AppearanceChanged`].
     pub fn set_appearance(&mut self, appearance: Appearance) {
         self.appearance = appearance;
+    }
+
+    /// Set what [`PlatformApp::framed_windows`] reports, to stand in for a
+    /// full-screen host (mobile, a browser tab).
+    pub fn set_framed_windows(&mut self, framed: bool) {
+        self.framed_windows = framed;
     }
 
     /// The clipboard's current text.
@@ -231,6 +239,10 @@ impl PlatformApp for HeadlessApp {
 
     fn appearance(&self) -> Appearance {
         self.appearance
+    }
+
+    fn framed_windows(&self) -> bool {
+        self.framed_windows
     }
 }
 

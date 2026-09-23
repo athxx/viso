@@ -40,7 +40,7 @@ use objc2_metal::{
     MTLSamplerMinMagFilter, MTLSamplerMipFilter, MTLSamplerState, MTLScissorRect, MTLSize,
     MTLStoreAction, MTLTexture, MTLTextureDescriptor, MTLTextureUsage, MTLViewport,
 };
-use objc2_quartz_core::{CAMetalDrawable, CAMetalLayer};
+use objc2_quartz_core::{CAMetalDrawable, CAMetalLayer, CATransaction};
 use viso_handle::RawWindowHandle;
 
 use crate::backend::{
@@ -304,7 +304,12 @@ unsafe fn configure_layer_geometry(
 ) -> bool {
     // SAFETY: the caller guarantees `view` is a live NSView.
     let bounds: CGRect = unsafe { msg_send![view, bounds] };
+    // A hosted sublayer animates frame changes implicitly; the surface must
+    // snap to the view's new bounds with the frame drawn for them.
+    CATransaction::begin();
+    CATransaction::setDisableActions(true);
     layer.setFrame(bounds);
+    CATransaction::commit();
 
     #[cfg(target_os = "macos")]
     let scale = {

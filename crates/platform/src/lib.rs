@@ -142,6 +142,14 @@ pub trait PlatformApp {
     /// The current system appearance. Changes arrive as
     /// [`RawEvent::AppearanceChanged`].
     fn appearance(&self) -> Appearance;
+
+    /// Whether windows are desktop windows the user moves and resizes, so a
+    /// self-drawn caption belongs on them. `false` where the app owns the
+    /// whole screen or tab (mobile, a browser page): the facade then draws no
+    /// caption and insets content by the reported safe area instead.
+    fn framed_windows(&self) -> bool {
+        true
+    }
 }
 
 /// A single native window / drawable shell.

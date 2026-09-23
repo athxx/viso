@@ -39,7 +39,7 @@
 use std::cell::Cell;
 
 use viso_gpu::{Backend, GpuBackend, SurfaceId};
-use viso_platform::{LogicalRect, RawWindowHandle, WindowId};
+use viso_platform::{Insets, LogicalRect, RawWindowHandle, WindowId};
 use viso_render::{Primitive, Rect, Renderer};
 use viso_runtime::{FramePhase, RuntimeCx, Scheduler};
 use viso_ui::{
@@ -326,9 +326,27 @@ pub mod __test_support {
         script: Vec<viso_platform::RawEvent>,
         step: Duration,
     ) -> DrivenApp<A> {
-        let app = Box::new(viso_platform::backend::headless::HeadlessApp::scripted(
+        drive_host::<A>(script, step, true)
+    }
+
+    /// [`drive_scripted`] on a host whose windows fill the screen (mobile, a
+    /// browser tab): no caption, content inset by the safe area.
+    pub fn drive_scripted_full_screen<A: Application>(
+        script: Vec<viso_platform::RawEvent>,
+        step: Duration,
+    ) -> DrivenApp<A> {
+        drive_host::<A>(script, step, false)
+    }
+
+    fn drive_host<A: Application>(
+        script: Vec<viso_platform::RawEvent>,
+        step: Duration,
+        framed: bool,
+    ) -> DrivenApp<A> {
+        let mut app = Box::new(viso_platform::backend::headless::HeadlessApp::scripted(
             script,
         ));
+        app.set_framed_windows(framed);
         let driver = AppDriver::<A>::new();
         let clock = FixedStepClock::new(Instant::now(), step);
         let driver = Scheduler::with_clock(app, driver, clock).run_returning();
@@ -434,6 +452,12 @@ struct WindowState {
     /// traffic lights — and restore it on exit, by toggling this node's
     /// visibility rather than rebuilding the tree.
     caption: Option<NodeId>,
+    /// The root container a full-screen window pads to keep content clear of
+    /// system UI (`None` on a framed desktop window), with the last reported
+    /// safe area and on-screen keyboard height, in logical points.
+    safe_area_root: Option<NodeId>,
+    safe_area: Insets,
+    keyboard_inset: f64,
     /// The retained UI tree: real nodes built once on launch, then relaid only
     /// where invalidated each frame and painted to primitives.
     store: NodeStore,
@@ -606,6 +630,9 @@ impl WindowState {
             draggable_cache: Vec::new(),
             chrome: WindowChrome::Native,
             caption: None,
+            safe_area_root: None,
+            safe_area: Insets::default(),
+            keyboard_inset: 0.0,
             store: NodeStore::new(),
             states: StateStore::new(),
             bindings: BindingTable::new(),
@@ -1179,6 +1206,48 @@ fn wrap_root_with_caption(
     Some(root.id())
 }
 
+/// Wrap a full-screen window's content (mobile, a browser tab) in a fill
+/// Column the facade pads by the safe area and keyboard, so content stays
+/// clear of the status bar, notch, home indicator and on-screen keyboard. The
+/// Column is the window root; such a window draws no caption.
+fn wrap_root_in_safe_area(
+    cx: &mut BuildCx<'_>,
+    build_content: impl FnOnce(&mut BuildCx<'_>) -> Option<NodeId>,
+) -> Option<NodeId> {
+    let root = cx.flex(
+        FlexStyle {
+            axis: Axis::Column,
+            align: viso_ui::Align::Stretch,
+            size: Size::fill(),
+            ..FlexStyle::default()
+        },
+        |cx| {
+            build_content(cx);
+        },
+    );
+    Some(root.id())
+}
+
+impl WindowState {
+    /// Pad the safe-area root by the reported insets; the bottom edge clears
+    /// whichever is taller, the home indicator or the on-screen keyboard.
+    fn apply_safe_area(&mut self) {
+        let Some(root) = self.safe_area_root else {
+            return;
+        };
+        let a = self.safe_area;
+        self.store.set_padding(
+            root,
+            viso_ui::Inset {
+                left: a.left as f32,
+                top: a.top as f32,
+                right: a.right as f32,
+                bottom: a.bottom.max(self.keyboard_inset) as f32,
+            },
+        );
+    }
+}
+
 impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
     fn on_launch(&mut self, cx: &mut RuntimeCx<'_>) {
         // Construct the user application now that the pump is live, then take the
@@ -1212,7 +1281,8 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
         let app = self.app.as_mut();
         let ui_chrome = cfg.chrome;
         let title = cfg.title.clone();
-        let caption = cfg.caption;
+        let framed = cx.framed_windows();
+        let caption = cfg.caption && framed;
         // Read the native traffic-light box the instant the window exists, so the
         // single build below sees it and a self-drawn caption yields to the OS
         // overlay instead of drawing its own buttons (section 24 data contract).
@@ -1221,14 +1291,22 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
         // build inside `open`; read it back afterward to hold for fullscreen hide.
         let caption_cell = Cell::new(None);
         let mut ws = WindowState::open(cx, id, &self.fonts, ui_chrome, chrome_geom, |build| {
-            wrap_root_with_caption(build, &title, caption, &caption_cell, |build| {
+            let content = |build: &mut BuildCx<'_>| {
                 app.and_then(|app| {
                     app.build(build);
                     build.root()
                 })
-            })
+            };
+            if framed {
+                wrap_root_with_caption(build, &title, caption, &caption_cell, content)
+            } else {
+                wrap_root_in_safe_area(build, content)
+            }
         });
         ws.caption = caption_cell.get();
+        if !framed {
+            ws.safe_area_root = ws.root;
+        }
         self.windows.push(ws);
     }
 
@@ -1500,6 +1578,20 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
         }
     }
 
+    fn on_safe_area(&mut self, window: WindowId, insets: Insets) {
+        if let Some(ws) = self.window_mut(window) {
+            ws.safe_area = insets;
+            ws.apply_safe_area();
+        }
+    }
+
+    fn on_keyboard_inset(&mut self, window: WindowId, height: f64) {
+        if let Some(ws) = self.window_mut(window) {
+            ws.keyboard_inset = height;
+            ws.apply_safe_area();
+        }
+    }
+
     fn on_fullscreen_changed(&mut self, window: WindowId, fullscreen: bool) {
         // Hide the self-drawn caption while fullscreen and restore it on exit by
         // toggling its root's visibility in place — on macOS the OS draws its own
@@ -1639,7 +1731,8 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
                     // Values the build closure moves in to wrap the deferred tree
                     // in the default caption band, exactly as the launch path does.
                     let title = req.config.title.clone();
-                    let caption = req.config.caption;
+                    let framed = cx.framed_windows();
+                    let caption = req.config.caption && framed;
                     let build = req.build;
                     let id_slot = req.id_slot;
                     if let Ok(id) = cx.create_window(config) {
@@ -1658,9 +1751,22 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
                         let caption_cell = Cell::new(None);
                         let mut ws =
                             WindowState::open(cx, id, &self.fonts, ui_chrome, chrome_geom, |cx| {
-                                wrap_root_with_caption(cx, &title, caption, &caption_cell, build)
+                                if framed {
+                                    wrap_root_with_caption(
+                                        cx,
+                                        &title,
+                                        caption,
+                                        &caption_cell,
+                                        build,
+                                    )
+                                } else {
+                                    wrap_root_in_safe_area(cx, build)
+                                }
                             });
                         ws.caption = caption_cell.get();
+                        if !framed {
+                            ws.safe_area_root = ws.root;
+                        }
                         self.windows.push(ws);
                     }
                 }
