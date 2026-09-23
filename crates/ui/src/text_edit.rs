@@ -282,7 +282,11 @@ impl Buffer {
     }
 
     /// Replace the current selection with `s`, collapsing to a caret after it.
+    /// The buffer is single-line, so a pasted or committed line break lands as
+    /// a space.
     fn replace_selection(&mut self, s: &str) {
+        let s = single_line(s);
+        let s = s.as_ref();
         let (start, end) = (self.sel.start(), self.sel.end());
         self.text.replace_range(start..end, s);
         let at = start + s.len();
@@ -362,6 +366,8 @@ impl Buffer {
     /// Finalize the composition: replace the composition range with the final
     /// `text` as committed content and end the composing state.
     fn commit_compose(&mut self, text: &str) {
+        let text = single_line(text);
+        let text = text.as_ref();
         let (start, end) = if self.has_composition() {
             (self.composition_start, self.composition_end)
         } else {
@@ -381,6 +387,29 @@ impl Buffer {
         self.composition_start = at;
         self.composition_end = at;
     }
+}
+
+/// `s` with every line break (`\r\n`, `\n`, `\r`) folded to one space. Borrows
+/// when there is none, which is the common case for typed text.
+fn single_line(s: &str) -> std::borrow::Cow<'_, str> {
+    if !s.contains(['\n', '\r']) {
+        return std::borrow::Cow::Borrowed(s);
+    }
+    let mut out = String::with_capacity(s.len());
+    let mut chars = s.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '\r' => {
+                if chars.peek() == Some(&'\n') {
+                    chars.next();
+                }
+                out.push(' ');
+            }
+            '\n' => out.push(' '),
+            c => out.push(c),
+        }
+    }
+    std::borrow::Cow::Owned(out)
 }
 
 /// The previous `char` boundary strictly before byte `at`, or `at` if already at
@@ -713,6 +742,30 @@ mod tests {
         });
         assert!(!b.has_composition());
         assert_eq!(b.text, "");
+    }
+
+    #[test]
+    fn insert_folds_line_breaks_to_spaces() {
+        let mut b = buf("ab", 1);
+        b.apply_one(&EditIntent::Insert("x\r\ny\nz\rw".into()));
+        assert_eq!(b.text, "ax y z wb");
+        assert_eq!(b.sel, Selection::caret(8));
+    }
+
+    #[test]
+    fn commit_compose_folds_line_breaks() {
+        let mut b = buf("", 0);
+        b.apply_one(&EditIntent::CommitCompose("a\nb".into()));
+        assert_eq!(b.text, "a b");
+    }
+
+    #[test]
+    fn single_line_borrows_when_clean() {
+        assert!(matches!(
+            single_line("plain"),
+            std::borrow::Cow::Borrowed(_)
+        ));
+        assert_eq!(single_line("\r\r\n"), "  ");
     }
 
     #[test]

@@ -31,12 +31,14 @@ use std::time::Instant;
 
 use objc2::rc::{Retained, autoreleasepool};
 use objc2::runtime::{AnyClass, AnyObject, ClassBuilder, ProtocolObject, Sel};
-use objc2::{AnyThread, DefinedClass, MainThreadOnly, define_class, msg_send, sel};
+use objc2::{AnyThread, ClassType, DefinedClass, MainThreadOnly, define_class, msg_send, sel};
 use objc2_app_kit::{
-    NSApplication, NSApplicationActivationPolicy, NSApplicationDelegate,
-    NSApplicationTerminateReply, NSBackingStoreType, NSEvent, NSEventMask, NSEventModifierFlags,
-    NSMenu, NSMenuItem, NSTextInputClient, NSTrackingArea, NSTrackingAreaOptions, NSView, NSWindow,
-    NSWindowDelegate, NSWindowStyleMask, NSWindowTitleVisibility,
+    NSAppearanceNameAqua, NSAppearanceNameDarkAqua, NSApplication, NSApplicationActivationPolicy,
+    NSApplicationDelegate, NSApplicationTerminateReply, NSBackingStoreType, NSCursor, NSEvent,
+    NSEventMask, NSEventModifierFlags, NSMenu, NSMenuItem, NSPasteboard, NSPasteboardTypeString,
+    NSTextInputClient, NSTrackingArea, NSTrackingAreaOptions, NSView, NSWindow, NSWindowDelegate,
+    NSWindowStyleMask, NSWindowTitleVisibility, NSWorkspace,
+    NSWorkspaceAccessibilityDisplayOptionsDidChangeNotification,
 };
 use objc2_foundation::{
     MainThreadMarker, NSArray, NSAttributedString, NSAttributedStringKey, NSDate,
@@ -49,8 +51,9 @@ use crate::control::{
     ControlFlow, LogicalRect, PlatformError, WindowChrome, WindowConfig, WindowId,
 };
 use crate::event::{
-    AcceptCell, KeyCode, Modifiers, PointerButtons, PointerPhase, RawEvent, RawImePreedit, RawKey,
-    RawPointer, RawScroll, RawText,
+    AcceptCell, Appearance, ClipboardReply, ClipboardShortcut, ColorScheme, CursorIcon, KeyCode,
+    Modifiers, PointerButtons, PointerPhase, RawEvent, RawImePreedit, RawKey, RawPointer,
+    RawScroll, RawText, clipboard_shortcut,
 };
 use crate::handler::AppHandler;
 use crate::menu::{Accel, Menu, SystemAction};
@@ -77,6 +80,10 @@ struct PumpQueue {
     /// re-entrant drive never overlap in time (the pump is parked in AppKit
     /// when the delegate runs). See `MacApp::run` and `drain_and_drive`.
     drive: Option<NonNull<dyn AppHandler>>,
+    /// The appearance last reported, so the several AppKit sources that signal
+    /// a change (every view's `viewDidChangeEffectiveAppearance`, the workspace
+    /// accessibility notification) emit one `AppearanceChanged` per real change.
+    appearance: Appearance,
 }
 
 /// Shared state the delegate/view mutate and the pump reads. `Rc<RefCell<..>>`
@@ -110,7 +117,10 @@ impl MacApp {
         };
         let app = NSApplication::sharedApplication(mtm);
         app.setActivationPolicy(NSApplicationActivationPolicy::Regular);
-        let shared: Shared = Rc::new(RefCell::new(PumpQueue::default()));
+        let shared: Shared = Rc::new(RefCell::new(PumpQueue {
+            appearance: current_appearance(&app),
+            ..PumpQueue::default()
+        }));
 
         // Standard "AppName" application menu with a "Quit AppName" item bound to
         // Command-Q. Without a main menu the OS has nowhere to route the Cmd+Q
@@ -121,6 +131,22 @@ impl MacApp {
         let app_delegate = AppDelegate::new(mtm, shared.clone());
         app.setDelegate(Some(ProtocolObject::from_ref(&*app_delegate)));
         install_main_menu(mtm, &app, &app_delegate);
+        // Contrast and reduce-motion live in the workspace's accessibility
+        // options, which have no per-view callback.
+        // SAFETY: the selector is implemented by `AppDelegate` with the
+        // `(&self, &NSNotification)` signature the center calls; the delegate is
+        // kept alive by `MacApp` and a deallocated observer is unregistered by
+        // the center itself.
+        unsafe {
+            NSWorkspace::sharedWorkspace()
+                .notificationCenter()
+                .addObserver_selector_name_object(
+                    &app_delegate,
+                    sel!(accessibilityDisplayOptionsChanged:),
+                    Some(NSWorkspaceAccessibilityDisplayOptionsDidChangeNotification),
+                    None,
+                );
+        }
 
         Ok(Self {
             mtm,
@@ -181,7 +207,72 @@ unsafe fn drain_and_drive(mut handler: NonNull<dyn AppHandler>, shared: &Shared)
         // for the duration of this call (the pump's own `handler.handle` is
         // parked in AppKit while a delegate drives, so the reborrow never
         // overlaps another live one).
-        unsafe { handler.as_mut() }.handle(event);
+        deliver(unsafe { handler.as_mut() }, event);
+    }
+}
+
+/// Hand one event to the handler, completing the copy handshake: a
+/// `CopyRequested` reply the handler filled is written to the pasteboard once
+/// the handler returns.
+fn deliver(handler: &mut dyn AppHandler, event: RawEvent) -> ControlFlow {
+    let reply = match &event {
+        RawEvent::CopyRequested { reply, .. } => Some(reply.clone()),
+        _ => None,
+    };
+    let flow = handler.handle(event);
+    if let Some(text) = reply.and_then(|r| r.take()) {
+        write_pasteboard(&text);
+    }
+    flow
+}
+
+/// Replace the general pasteboard's contents with plain text.
+fn write_pasteboard(text: &str) {
+    let pasteboard = NSPasteboard::generalPasteboard();
+    pasteboard.clearContents();
+    // SAFETY: `NSPasteboardTypeString` is an immutable AppKit constant,
+    // initialized before any Rust code runs.
+    let kind = unsafe { NSPasteboardTypeString };
+    pasteboard.setString_forType(&NSString::from_str(text), kind);
+}
+
+/// The general pasteboard's plain text, if it holds any.
+fn read_pasteboard() -> Option<String> {
+    // SAFETY: as in `write_pasteboard`.
+    let kind = unsafe { NSPasteboardTypeString };
+    NSPasteboard::generalPasteboard()
+        .stringForType(kind)
+        .map(|s| s.to_string())
+}
+
+/// The system appearance as AppKit reports it right now.
+fn current_appearance(app: &NSApplication) -> Appearance {
+    // SAFETY: the appearance names are immutable AppKit constants.
+    let (aqua, dark) = unsafe { (NSAppearanceNameAqua, NSAppearanceNameDarkAqua) };
+    let names = NSArray::from_slice(&[aqua, dark]);
+    let is_dark = app
+        .effectiveAppearance()
+        .bestMatchFromAppearancesWithNames(&names)
+        .is_some_and(|best| best.isEqualToString(dark));
+    let workspace = NSWorkspace::sharedWorkspace();
+    Appearance {
+        color_scheme: if is_dark {
+            ColorScheme::Dark
+        } else {
+            ColorScheme::Light
+        },
+        high_contrast: workspace.accessibilityDisplayShouldIncreaseContrast(),
+        reduce_motion: workspace.accessibilityDisplayShouldReduceMotion(),
+    }
+}
+
+/// Re-read the appearance and enqueue `AppearanceChanged` if it moved.
+fn report_appearance(shared: &Shared, mtm: MainThreadMarker) {
+    let now = current_appearance(&NSApplication::sharedApplication(mtm));
+    let mut q = shared.borrow_mut();
+    if q.appearance != now {
+        q.appearance = now;
+        q.events.push_back(RawEvent::AppearanceChanged(now));
     }
 }
 
@@ -309,7 +400,7 @@ impl PlatformApp for MacApp {
             // resizes, closes, and the pointer/key/scroll/IME samples the view
             // enqueued while AppKit dispatched the last OS event.
             if let Some(event) = self.next_synthetic() {
-                flow = handler.handle(event);
+                flow = deliver(handler, event);
                 if flow == ControlFlow::Exit {
                     break;
                 }
@@ -447,11 +538,43 @@ impl PlatformApp for MacApp {
             return; // Unknown id: no-op, matching headless.
         };
         let closed = self.windows.remove(pos);
+        closed.content_view.set_cursor_icon(CursorIcon::Default);
         closed.window.close();
         self.shared
             .borrow_mut()
             .events
             .push_back(RawEvent::WindowClosed { window });
+    }
+
+    fn set_clipboard_text(&mut self, text: &str) {
+        write_pasteboard(text);
+    }
+
+    fn request_paste(&mut self, window: WindowId) {
+        if let Some(text) = read_pasteboard() {
+            self.shared
+                .borrow_mut()
+                .events
+                .push_back(RawEvent::Paste { window, text });
+        }
+    }
+
+    fn set_cursor(&mut self, window: WindowId, icon: CursorIcon) {
+        if let Some(win) = self.windows.iter().find(|w| w.id == window) {
+            win.content_view.set_cursor_icon(icon);
+        }
+    }
+
+    fn set_ime_area(&mut self, window: WindowId, caret: Option<LogicalRect>) {
+        if let Some(win) = self.windows.iter().find(|w| w.id == window) {
+            win.content_view.set_ime_area(caret);
+        }
+    }
+
+    fn show_soft_keyboard(&mut self, _window: WindowId, _show: bool) {}
+
+    fn appearance(&self) -> Appearance {
+        current_appearance(&self.app)
     }
 }
 
@@ -634,6 +757,16 @@ define_class!(
             }));
         }
 
+        #[unsafe(method(windowDidBecomeKey:))]
+        fn window_did_become_key(&self, _notification: &NSNotification) {
+            self.push_focus(true);
+        }
+
+        #[unsafe(method(windowDidResignKey:))]
+        fn window_did_resign_key(&self, _notification: &NSNotification) {
+            self.push_focus(false);
+        }
+
         #[unsafe(method(windowWillEnterFullScreen:))]
         fn window_will_enter_full_screen(&self, _notification: &NSNotification) {
             let ivars = self.ivars();
@@ -713,6 +846,18 @@ impl WindowDelegate {
         });
         unsafe { msg_send![super(this), init] }
     }
+
+    fn push_focus(&self, focused: bool) {
+        let ivars = self.ivars();
+        let window = ivars.window;
+        let _ = catch_unwind(AssertUnwindSafe(|| {
+            ivars
+                .shared
+                .borrow_mut()
+                .events
+                .push_back(RawEvent::WindowFocused { window, focused });
+        }));
+    }
 }
 
 /// Ivars for the application delegate: the pump's shared queue, so the menu's
@@ -743,6 +888,16 @@ define_class!(
             }));
             NSApplicationTerminateReply::TerminateCancel
         }
+
+        #[unsafe(method(applicationDidHide:))]
+        fn application_did_hide(&self, _notification: &NSNotification) {
+            self.push(RawEvent::Suspended);
+        }
+
+        #[unsafe(method(applicationDidUnhide:))]
+        fn application_did_unhide(&self, _notification: &NSNotification) {
+            self.push(RawEvent::Resumed);
+        }
     }
 
     impl AppDelegate {
@@ -755,6 +910,13 @@ define_class!(
                 shared.borrow_mut().should_exit = true;
             }));
         }
+
+        #[unsafe(method(accessibilityDisplayOptionsChanged:))]
+        fn accessibility_display_options_changed(&self, _notification: &NSNotification) {
+            let shared = self.ivars().shared.clone();
+            let mtm = self.mtm();
+            let _ = catch_unwind(AssertUnwindSafe(|| report_appearance(&shared, mtm)));
+        }
     }
 );
 
@@ -762,6 +924,13 @@ impl AppDelegate {
     fn new(mtm: MainThreadMarker, shared: Shared) -> Retained<Self> {
         let this = Self::alloc(mtm).set_ivars(AppDelegateIvars { shared });
         unsafe { msg_send![super(this), init] }
+    }
+
+    fn push(&self, event: RawEvent) {
+        let shared = self.ivars().shared.clone();
+        let _ = catch_unwind(AssertUnwindSafe(|| {
+            shared.borrow_mut().events.push_back(event);
+        }));
     }
 }
 
@@ -1098,6 +1267,9 @@ fn build_system_item(
         SystemAction::CloseWindow => ("Close".to_string(), "w", sel!(performClose:)),
         SystemAction::Hide => (format!("Hide {app_name}"), "h", sel!(hide:)),
         SystemAction::Minimize => ("Minimize".to_string(), "m", sel!(performMiniaturize:)),
+        SystemAction::Copy => ("Copy".to_string(), "c", sel!(copy:)),
+        SystemAction::Cut => ("Cut".to_string(), "x", sel!(cut:)),
+        SystemAction::Paste => ("Paste".to_string(), "v", sel!(paste:)),
     };
     let title = name.map(str::to_string).unwrap_or(default_title);
     // SAFETY: standard AppKit menu-item construction on the main thread.
@@ -1163,6 +1335,15 @@ struct ViewIvars {
     /// a pointer event. Empty (the default) means the whole content area routes
     /// normally, so native-chrome windows never take the drag path.
     draggable_regions: RefCell<Vec<LogicalRect>>,
+    /// The cursor the app asked for over this view.
+    cursor: Cell<CursorIcon>,
+    /// Whether this view currently holds one `[NSCursor hide]` (the count is
+    /// global, so each view balances its own).
+    cursor_hidden: Cell<bool>,
+    /// A text field has focus: key events go through the input context.
+    ime_enabled: Cell<bool>,
+    /// The focused field's caret, logical points in this view.
+    ime_caret: Cell<Option<LogicalRect>>,
 }
 
 define_class!(
@@ -1193,6 +1374,9 @@ define_class!(
         #[unsafe(method(updateTrackingAreas))]
         fn update_tracking_areas(&self) {
             let _ = catch_unwind(AssertUnwindSafe(|| unsafe {
+                for old in self.trackingAreas().iter() {
+                    self.removeTrackingArea(&old);
+                }
                 let options = NSTrackingAreaOptions::MouseEnteredAndExited
                     | NSTrackingAreaOptions::MouseMoved
                     | NSTrackingAreaOptions::ActiveInKeyWindow
@@ -1206,6 +1390,77 @@ define_class!(
                 );
                 self.addTrackingArea(&area);
             }));
+        }
+
+        // AppKit re-applies cursor rects on every enter/move, so the app's
+        // cursor is registered as one rect covering the view.
+        #[unsafe(method(resetCursorRects))]
+        fn reset_cursor_rects(&self) {
+            let _ = catch_unwind(AssertUnwindSafe(|| {
+                if let Some(cursor) = ns_cursor(self.ivars().cursor.get()) {
+                    self.addCursorRect_cursor(self.bounds(), &cursor);
+                }
+            }));
+        }
+
+        #[unsafe(method(mouseEntered:))]
+        fn mouse_entered(&self, _event: &NSEvent) {
+            let _ = catch_unwind(AssertUnwindSafe(|| {
+                self.sync_cursor_hidden(true);
+            }));
+        }
+
+        #[unsafe(method(viewDidChangeEffectiveAppearance))]
+        fn view_did_change_effective_appearance(&self) {
+            let shared = self.ivars().shared.clone();
+            let mtm = self.mtm();
+            let _ = catch_unwind(AssertUnwindSafe(|| report_appearance(&shared, mtm)));
+        }
+
+        // Modifier keys produce no keyDown/keyUp; their transitions arrive
+        // here and are reported as key presses and releases.
+        #[unsafe(method(flagsChanged:))]
+        fn flags_changed(&self, event: &NSEvent) {
+            let _ = catch_unwind(AssertUnwindSafe(|| {
+                let code = keycode_of(event);
+                let Some(pressed) = modifier_key_down(code, event.modifierFlags()) else {
+                    return;
+                };
+                let window = self.ivars().window;
+                let modifiers = modifiers_of(event);
+                let key = |pressed| {
+                    RawEvent::Key(RawKey {
+                        window,
+                        code,
+                        pressed,
+                        repeat: false,
+                        modifiers,
+                    })
+                };
+                self.push(key(pressed));
+                // Caps Lock reports its lock state, not the key: each toggle
+                // is one full press.
+                if code == KeyCode::CapsLock {
+                    self.push(key(!pressed));
+                }
+            }));
+        }
+
+        // Edit-menu actions and the responder chain's standard clipboard
+        // selectors.
+        #[unsafe(method(copy:))]
+        fn copy(&self, _sender: Option<&AnyObject>) {
+            let _ = catch_unwind(AssertUnwindSafe(|| self.clipboard(ClipboardShortcut::Copy)));
+        }
+
+        #[unsafe(method(cut:))]
+        fn cut(&self, _sender: Option<&AnyObject>) {
+            let _ = catch_unwind(AssertUnwindSafe(|| self.clipboard(ClipboardShortcut::Cut)));
+        }
+
+        #[unsafe(method(paste:))]
+        fn paste(&self, _sender: Option<&AnyObject>) {
+            let _ = catch_unwind(AssertUnwindSafe(|| self.clipboard(ClipboardShortcut::Paste)));
         }
 
         #[unsafe(method(mouseDown:))]
@@ -1270,6 +1525,7 @@ define_class!(
 
         #[unsafe(method(mouseExited:))]
         fn mouse_exited(&self, event: &NSEvent) {
+            let _ = catch_unwind(AssertUnwindSafe(|| self.sync_cursor_hidden(false)));
             self.pointer(event, PointerPhase::Left, PointerButtons::NONE, false);
         }
 
@@ -1306,17 +1562,26 @@ define_class!(
             let _ = catch_unwind(AssertUnwindSafe(|| {
                 let ivars = self.ivars();
                 let code = keycode_of(event);
+                let modifiers = modifiers_of(event);
                 self.push(RawEvent::Key(RawKey {
                     window: ivars.window,
                     code,
                     pressed: true,
                     repeat: event.isARepeat(),
-                    modifiers: modifiers_of(event),
+                    modifiers,
                 }));
+                // Without an Edit menu no key equivalent claims Command-C/X/V,
+                // so the shortcut reaches the view and is handled here.
+                if let Some(shortcut) = clipboard_shortcut(code, modifiers) {
+                    self.clipboard(shortcut);
+                    return;
+                }
                 // Route through the input context so IME composition and
                 // `insertText:`/`setMarkedText:` fire. For plain (non-composed)
                 // typing this yields the committed characters via `insertText:`.
-                if let Some(ctx) = self.inputContext() {
+                if ivars.ime_enabled.get()
+                    && let Some(ctx) = self.inputContext()
+                {
                     let _: bool = ctx.handleEvent(event);
                 }
             }));
@@ -1429,10 +1694,12 @@ define_class!(
 
         #[unsafe(method(firstRectForCharacterRange:actualRange:))]
         unsafe fn first_rect(&self, _range: NSRange, _actual: NSRangePointer) -> NSRect {
-            // The caret rect (used to park the IME candidate window) is not yet
-            // tracked; report the view's screen origin so the panel appears near
-            // the window rather than at (0,0).
-            let local = NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(0.0, 0.0));
+            // The candidate window parks under this rect: the focused field's
+            // caret, or the view's origin until the app has reported one.
+            let local = match self.ivars().ime_caret.get() {
+                Some(r) => NSRect::new(NSPoint::new(r.x, r.y), NSSize::new(r.width, r.height)),
+                None => NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(0.0, 0.0)),
+            };
             let in_window = self.convertRect_toView(local, None);
             match self.window() {
                 Some(w) => w.convertRectToScreen(in_window),
@@ -1463,6 +1730,10 @@ impl VisoContentView {
             buttons: Cell::new(0),
             marked: RefCell::new(String::new()),
             draggable_regions: RefCell::new(Vec::new()),
+            cursor: Cell::new(CursorIcon::Default),
+            cursor_hidden: Cell::new(false),
+            ime_enabled: Cell::new(true),
+            ime_caret: Cell::new(None),
         });
         let this: Retained<Self> = unsafe { msg_send![super(this), initWithFrame: frame] };
         this
@@ -1514,15 +1785,96 @@ impl VisoContentView {
                 ivars.buttons.set(mask);
             }
             let (x, y) = self.location(event);
-            self.push(RawEvent::Pointer(RawPointer {
-                window: ivars.window,
+            self.push(RawEvent::Pointer(RawPointer::mouse(
+                ivars.window,
                 x,
                 y,
-                buttons: PointerButtons(mask),
-                modifiers: modifiers_of(event),
+                PointerButtons(mask),
+                modifiers_of(event),
                 phase,
-            }));
+            )));
         }));
+    }
+
+    /// Answer a clipboard gesture: copy and cut ask the app for its selection
+    /// (written back by `deliver`), paste hands it the pasteboard's text.
+    fn clipboard(&self, shortcut: ClipboardShortcut) {
+        let window = self.ivars().window;
+        let event = match shortcut {
+            ClipboardShortcut::Copy | ClipboardShortcut::Cut => RawEvent::CopyRequested {
+                window,
+                cut: shortcut == ClipboardShortcut::Cut,
+                reply: ClipboardReply::new(),
+            },
+            ClipboardShortcut::Paste => match read_pasteboard() {
+                Some(text) => RawEvent::Paste { window, text },
+                None => return,
+            },
+        };
+        self.push(event);
+    }
+
+    fn set_cursor_icon(&self, icon: CursorIcon) {
+        let ivars = self.ivars();
+        if ivars.cursor.replace(icon) == icon {
+            return;
+        }
+        let inside = self.mouse_inside();
+        self.sync_cursor_hidden(inside);
+        if let Some(window) = self.window() {
+            window.invalidateCursorRectsForView(self);
+        }
+        // Cursor rects apply on the next mouse move; show the change now.
+        if inside && let Some(cursor) = ns_cursor(icon) {
+            cursor.set();
+        }
+    }
+
+    /// Hold `[NSCursor hide]` exactly while the pointer is inside and the app
+    /// asked for [`CursorIcon::Hidden`].
+    fn sync_cursor_hidden(&self, inside: bool) {
+        let ivars = self.ivars();
+        let want = inside && ivars.cursor.get() == CursorIcon::Hidden;
+        if want != ivars.cursor_hidden.replace(want) {
+            if want {
+                NSCursor::hide();
+            } else {
+                NSCursor::unhide();
+            }
+        }
+    }
+
+    fn mouse_inside(&self) -> bool {
+        let Some(window) = self.window() else {
+            return false;
+        };
+        let p = self.convertPoint_fromView(window.mouseLocationOutsideOfEventStream(), None);
+        let b = self.bounds();
+        p.x >= b.origin.x
+            && p.y >= b.origin.y
+            && p.x < b.origin.x + b.size.width
+            && p.y < b.origin.y + b.size.height
+    }
+
+    fn set_ime_area(&self, caret: Option<LogicalRect>) {
+        let ivars = self.ivars();
+        ivars.ime_enabled.set(caret.is_some());
+        ivars.ime_caret.set(caret);
+        let Some(ctx) = self.inputContext() else {
+            return;
+        };
+        if caret.is_some() {
+            ctx.invalidateCharacterCoordinates();
+        } else if !ivars.marked.borrow().is_empty() {
+            // Focus left the field mid-composition: drop it on both sides.
+            ctx.discardMarkedText();
+            ivars.marked.borrow_mut().clear();
+            self.push(RawEvent::ImePreedit(RawImePreedit {
+                window: ivars.window,
+                text: String::new(),
+                caret: 0,
+            }));
+        }
     }
 
     /// Push one raw event onto the shared queue.
@@ -1542,25 +1894,222 @@ fn modifiers_of(event: &NSEvent) -> Modifiers {
     }
 }
 
-/// Map an `NSEvent`'s hardware `keyCode` onto the minimal platform [`KeyCode`].
-/// Named keys use their macOS scancodes; everything else rides as
-/// `Other(scancode)` so higher layers can still route it.
+/// Map an `NSEvent`'s hardware `keyCode` (a physical position, independent of
+/// the keyboard layout) onto the platform [`KeyCode`]. Unknown codes ride as
+/// `Other(scancode)` so higher layers can still route them.
 fn keycode_of(event: &NSEvent) -> KeyCode {
-    let scancode = event.keyCode() as u32;
+    keycode_from_scancode(event.keyCode())
+}
+
+fn keycode_from_scancode(scancode: u16) -> KeyCode {
+    use KeyCode as K;
     match scancode {
-        0x35 => KeyCode::Escape,
-        0x24 | 0x4c => KeyCode::Enter, // Return, keypad Enter
-        0x31 => KeyCode::Space,
-        0x30 => KeyCode::Tab,
-        0x33 => KeyCode::Backspace,
-        0x7b => KeyCode::Left,
-        0x7c => KeyCode::Right,
-        0x7d => KeyCode::Down,
-        0x7e => KeyCode::Up,
-        0x75 => KeyCode::Delete, // forward delete
-        0x73 => KeyCode::Home,
-        0x77 => KeyCode::End,
-        other => KeyCode::Other(other),
+        0x00 => K::A,
+        0x01 => K::S,
+        0x02 => K::D,
+        0x03 => K::F,
+        0x04 => K::H,
+        0x05 => K::G,
+        0x06 => K::Z,
+        0x07 => K::X,
+        0x08 => K::C,
+        0x09 => K::V,
+        0x0a => K::IntlBackslash,
+        0x0b => K::B,
+        0x0c => K::Q,
+        0x0d => K::W,
+        0x0e => K::E,
+        0x0f => K::R,
+        0x10 => K::Y,
+        0x11 => K::T,
+        0x12 => K::Digit1,
+        0x13 => K::Digit2,
+        0x14 => K::Digit3,
+        0x15 => K::Digit4,
+        0x16 => K::Digit6,
+        0x17 => K::Digit5,
+        0x18 => K::Equal,
+        0x19 => K::Digit9,
+        0x1a => K::Digit7,
+        0x1b => K::Minus,
+        0x1c => K::Digit8,
+        0x1d => K::Digit0,
+        0x1e => K::BracketRight,
+        0x1f => K::O,
+        0x20 => K::U,
+        0x21 => K::BracketLeft,
+        0x22 => K::I,
+        0x23 => K::P,
+        0x24 => K::Enter,
+        0x25 => K::L,
+        0x26 => K::J,
+        0x27 => K::Quote,
+        0x28 => K::K,
+        0x29 => K::Semicolon,
+        0x2a => K::Backslash,
+        0x2b => K::Comma,
+        0x2c => K::Slash,
+        0x2d => K::N,
+        0x2e => K::M,
+        0x2f => K::Period,
+        0x30 => K::Tab,
+        0x31 => K::Space,
+        0x32 => K::Backquote,
+        0x33 => K::Backspace,
+        0x35 => K::Escape,
+        0x36 => K::LogoRight,
+        0x37 => K::LogoLeft,
+        0x38 => K::ShiftLeft,
+        0x39 => K::CapsLock,
+        0x3a => K::AltLeft,
+        0x3b => K::ControlLeft,
+        0x3c => K::ShiftRight,
+        0x3d => K::AltRight,
+        0x3e => K::ControlRight,
+        0x3f => K::Fn,
+        0x40 => K::F17,
+        0x41 => K::NumpadDecimal,
+        0x43 => K::NumpadMultiply,
+        0x45 => K::NumpadAdd,
+        0x47 => K::NumLock,
+        0x48 => K::VolumeUp,
+        0x49 => K::VolumeDown,
+        0x4a => K::VolumeMute,
+        0x4b => K::NumpadDivide,
+        0x4c => K::Enter,
+        0x4e => K::NumpadSubtract,
+        0x4f => K::F18,
+        0x50 => K::F19,
+        0x51 => K::NumpadEqual,
+        0x52 => K::Numpad0,
+        0x53 => K::Numpad1,
+        0x54 => K::Numpad2,
+        0x55 => K::Numpad3,
+        0x56 => K::Numpad4,
+        0x57 => K::Numpad5,
+        0x58 => K::Numpad6,
+        0x59 => K::Numpad7,
+        0x5a => K::F20,
+        0x5b => K::Numpad8,
+        0x5c => K::Numpad9,
+        0x5d => K::IntlYen,
+        0x5e => K::IntlRo,
+        0x5f => K::NumpadComma,
+        0x60 => K::F5,
+        0x61 => K::F6,
+        0x62 => K::F7,
+        0x63 => K::F3,
+        0x64 => K::F8,
+        0x65 => K::F9,
+        0x66 => K::Lang2,
+        0x67 => K::F11,
+        0x68 => K::Lang1,
+        0x69 => K::F13,
+        0x6a => K::F16,
+        0x6b => K::F14,
+        0x6d => K::F10,
+        0x6e => K::ContextMenu,
+        0x6f => K::F12,
+        0x71 => K::F15,
+        0x72 => K::Insert,
+        0x73 => K::Home,
+        0x74 => K::PageUp,
+        0x75 => K::Delete,
+        0x76 => K::F4,
+        0x77 => K::End,
+        0x78 => K::F2,
+        0x79 => K::PageDown,
+        0x7a => K::F1,
+        0x7b => K::Left,
+        0x7c => K::Right,
+        0x7d => K::Down,
+        0x7e => K::Up,
+        other => K::Other(u32::from(other)),
+    }
+}
+
+/// Whether the modifier key `code` is down after a `flagsChanged:`, read from
+/// the per-side device bits of the flags (`NX_DEVICE*KEYMASK`) so a left and
+/// right key held together release independently. `None` for a non-modifier.
+fn modifier_key_down(code: KeyCode, flags: NSEventModifierFlags) -> Option<bool> {
+    let device = match code {
+        KeyCode::ControlLeft => 0x0001,
+        KeyCode::ShiftLeft => 0x0002,
+        KeyCode::ShiftRight => 0x0004,
+        KeyCode::LogoLeft => 0x0008,
+        KeyCode::LogoRight => 0x0010,
+        KeyCode::AltLeft => 0x0020,
+        KeyCode::AltRight => 0x0040,
+        KeyCode::ControlRight => 0x2000,
+        KeyCode::CapsLock => return Some(flags.contains(NSEventModifierFlags::CapsLock)),
+        KeyCode::Fn => return Some(flags.contains(NSEventModifierFlags::Function)),
+        _ => return None,
+    };
+    Some(flags.0 & device != 0)
+}
+
+/// The AppKit cursor for `icon`; `None` for [`CursorIcon::Hidden`]. Shapes
+/// AppKit only vends on newer releases or through undocumented class methods
+/// are looked up by selector and fall back to the nearest public cursor.
+fn ns_cursor(icon: CursorIcon) -> Option<Retained<NSCursor>> {
+    use CursorIcon as C;
+    Some(match icon {
+        C::Hidden => return None,
+        C::Default => NSCursor::arrowCursor(),
+        C::Pointer => NSCursor::pointingHandCursor(),
+        C::Text => NSCursor::IBeamCursor(),
+        C::VerticalText => NSCursor::IBeamCursorForVerticalLayout(),
+        C::Crosshair => NSCursor::crosshairCursor(),
+        C::Grab => NSCursor::openHandCursor(),
+        C::Grabbing => NSCursor::closedHandCursor(),
+        C::NotAllowed => NSCursor::operationNotAllowedCursor(),
+        C::ContextMenu => NSCursor::contextualMenuCursor(),
+        C::Copy => NSCursor::dragCopyCursor(),
+        C::Alias => NSCursor::dragLinkCursor(),
+        C::ResizeEw | C::ResizeCol => {
+            class_cursor(sel!(columnResizeCursor)).unwrap_or_else(|| legacy_resize_cursor(true))
+        }
+        C::ResizeNs | C::ResizeRow => {
+            class_cursor(sel!(rowResizeCursor)).unwrap_or_else(|| legacy_resize_cursor(false))
+        }
+        C::Move => class_cursor(sel!(_moveCursor)).unwrap_or_else(NSCursor::openHandCursor),
+        C::Wait | C::Progress => {
+            class_cursor(sel!(busyButClickableCursor)).unwrap_or_else(NSCursor::arrowCursor)
+        }
+        C::Help => class_cursor(sel!(_helpCursor)).unwrap_or_else(NSCursor::arrowCursor),
+        C::ZoomIn => class_cursor(sel!(zoomInCursor)).unwrap_or_else(NSCursor::arrowCursor),
+        C::ZoomOut => class_cursor(sel!(zoomOutCursor)).unwrap_or_else(NSCursor::arrowCursor),
+        C::ResizeNesw => class_cursor(sel!(_windowResizeNorthEastSouthWestCursor))
+            .unwrap_or_else(NSCursor::crosshairCursor),
+        C::ResizeNwse => class_cursor(sel!(_windowResizeNorthWestSouthEastCursor))
+            .unwrap_or_else(NSCursor::crosshairCursor),
+    })
+}
+
+/// The two-way resize cursors of releases that predate `columnResizeCursor` /
+/// `rowResizeCursor`.
+#[allow(deprecated)]
+fn legacy_resize_cursor(horizontal: bool) -> Retained<NSCursor> {
+    if horizontal {
+        NSCursor::resizeLeftRightCursor()
+    } else {
+        NSCursor::resizeUpDownCursor()
+    }
+}
+
+/// A cursor from an `NSCursor` class method that may not exist on this
+/// release, called only after `respondsToSelector:` confirms it.
+fn class_cursor(sel: Sel) -> Option<Retained<NSCursor>> {
+    let class = NSCursor::class();
+    if !class.responds_to(sel) {
+        return None;
+    }
+    // SAFETY: the class answers `sel`, and every such selector is a
+    // zero-argument class method returning an autoreleased `NSCursor`;
+    // `performSelector:` returns it unretained and `retain` takes ownership.
+    unsafe {
+        let obj: *mut AnyObject = msg_send![class, performSelector: sel];
+        Retained::retain(obj.cast::<NSCursor>())
     }
 }
 
@@ -1654,5 +2203,88 @@ mod tests {
         assert!(is_redraw(&handler.seen[1], WindowId(3)));
         assert!(shared.borrow().events.is_empty());
         assert!(shared.borrow().redraws.is_empty());
+    }
+
+    #[test]
+    fn scancodes_map_to_distinct_physical_keys() {
+        let mut seen = std::collections::HashMap::new();
+        for code in 0u16..=0x7f {
+            let key = keycode_from_scancode(code);
+            if matches!(key, KeyCode::Other(_)) {
+                continue;
+            }
+            // Return and keypad Enter are the one intended pair.
+            if let Some(prev) = seen.insert(key, code) {
+                assert_eq!((prev, code), (0x24, 0x4c), "{key:?} mapped twice");
+            }
+        }
+        assert_eq!(keycode_from_scancode(0x00), KeyCode::A);
+        assert_eq!(keycode_from_scancode(0x1d), KeyCode::Digit0);
+        assert_eq!(keycode_from_scancode(0x7a), KeyCode::F1);
+        assert_eq!(keycode_from_scancode(0x52), KeyCode::Numpad0);
+        assert_eq!(keycode_from_scancode(0x34), KeyCode::Other(0x34));
+        let letters = (0u16..=0x7f)
+            .filter(|c| {
+                let k = format!("{:?}", keycode_from_scancode(*c));
+                k.len() == 1 && k.as_bytes()[0].is_ascii_uppercase()
+            })
+            .count();
+        assert_eq!(letters, 26);
+    }
+
+    #[test]
+    fn modifier_sides_release_independently() {
+        // Both shifts held, then the left one released.
+        let both = NSEventModifierFlags(NSEventModifierFlags::Shift.0 | 0x0002 | 0x0004);
+        let right_only = NSEventModifierFlags(NSEventModifierFlags::Shift.0 | 0x0004);
+        assert_eq!(modifier_key_down(KeyCode::ShiftLeft, both), Some(true));
+        assert_eq!(
+            modifier_key_down(KeyCode::ShiftLeft, right_only),
+            Some(false)
+        );
+        assert_eq!(
+            modifier_key_down(KeyCode::ShiftRight, right_only),
+            Some(true)
+        );
+        assert_eq!(
+            modifier_key_down(KeyCode::CapsLock, NSEventModifierFlags::CapsLock),
+            Some(true)
+        );
+        assert_eq!(modifier_key_down(KeyCode::A, both), None);
+    }
+
+    #[test]
+    fn missing_cursor_selectors_fall_back() {
+        // Cursor objects need a window-server connection a test process lacks,
+        // so only the probe and the Hidden case are checked here.
+        assert!(class_cursor(sel!(visoNoSuchCursor)).is_none());
+        assert!(ns_cursor(CursorIcon::Hidden).is_none());
+    }
+
+    #[test]
+    fn deliver_hands_back_the_copy_reply_only_for_copy_requests() {
+        struct Answer;
+        impl AppHandler for Answer {
+            fn handle(&mut self, event: RawEvent) -> ControlFlow {
+                if let RawEvent::CopyRequested { reply, .. } = &event {
+                    // Answer then take it back, so the test leaves the real
+                    // pasteboard untouched while exercising the reply slot.
+                    reply.set("x".into());
+                    assert_eq!(reply.take().as_deref(), Some("x"));
+                }
+                ControlFlow::Wait
+            }
+        }
+        let reply = ClipboardReply::new();
+        let flow = deliver(
+            &mut Answer,
+            RawEvent::CopyRequested {
+                window: WindowId(1),
+                cut: false,
+                reply: reply.clone(),
+            },
+        );
+        assert_eq!(flow, ControlFlow::Wait);
+        assert_eq!(reply.take(), None);
     }
 }

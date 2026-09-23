@@ -90,7 +90,7 @@ struct MetalPipeline {
     builtin: BuiltinShader,
 }
 
-/// A surface: a `CAMetalLayer` attached to the window's content `NSView`, plus
+/// A surface: a `CAMetalLayer` hosted by the window's content view, plus
 /// its current drawable size in device pixels.
 struct MetalSurface {
     layer: Retained<CAMetalLayer>,
@@ -294,8 +294,8 @@ impl MetalBackend {
 ///
 /// # Safety
 ///
-/// `view` must be the live NSView that owns `layer`, and this must run on its
-/// AppKit thread.
+/// `view` must be the live NSView (macOS) or UIView (iOS) that hosts `layer`,
+/// and this must run on its main thread.
 unsafe fn configure_layer_geometry(
     layer: &CAMetalLayer,
     view: &AnyObject,
@@ -304,19 +304,29 @@ unsafe fn configure_layer_geometry(
 ) -> bool {
     // SAFETY: the caller guarantees `view` is a live NSView.
     let bounds: CGRect = unsafe { msg_send![view, bounds] };
-    // SAFETY: the caller guarantees `view` is a live NSView.
-    let backing_unit: CGSize = unsafe {
-        msg_send![
-            view,
-            convertSizeToBacking: CGSize {
-                width: 1.0,
-                height: 1.0,
-            }
-        ]
-    };
     layer.setFrame(bounds);
 
-    let scale = backing_unit.width.max(backing_unit.height).max(1.0);
+    #[cfg(target_os = "macos")]
+    let scale = {
+        // SAFETY: the caller guarantees `view` is a live NSView.
+        let backing_unit: CGSize = unsafe {
+            msg_send![
+                view,
+                convertSizeToBacking: CGSize {
+                    width: 1.0,
+                    height: 1.0,
+                }
+            ]
+        };
+        backing_unit.width.max(backing_unit.height).max(1.0)
+    };
+    #[cfg(not(target_os = "macos"))]
+    let scale = {
+        // SAFETY: the caller guarantees `view` is a live UIView;
+        // `contentScaleFactor` is a UIView property.
+        let factor: f64 = unsafe { msg_send![view, contentScaleFactor] };
+        factor.max(1.0)
+    };
     let target = CGSize {
         width: width as f64,
         height: height as f64,
@@ -572,9 +582,12 @@ impl GpuBackend for MetalBackend {
     }
 
     fn create_surface(&mut self, raw: RawWindowHandle, width: u32, height: u32) -> SurfaceId {
-        let ns_view = match raw {
+        let view_ptr = match raw {
+            #[cfg(target_os = "macos")]
             RawWindowHandle::AppKit { ns_view } => ns_view,
-            other => panic!("MetalBackend requires an AppKit window handle, got {other:?}"),
+            #[cfg(not(target_os = "macos"))]
+            RawWindowHandle::UiKit { ui_view } => ui_view,
+            other => panic!("MetalBackend requires a native view handle, got {other:?}"),
         };
 
         let layer = CAMetalLayer::new();
@@ -582,17 +595,27 @@ impl GpuBackend for MetalBackend {
         layer.setPixelFormat(MTLPixelFormat::BGRA8Unorm);
         layer.setPresentsWithTransaction(false);
         layer.setMaximumDrawableCount(3);
+        #[cfg(target_os = "macos")]
         layer.setDisplaySyncEnabled(true);
 
-        // Attach the layer to the content NSView. viso-gpu does not depend on
-        // objc2-app-kit, so we message the opaque view pointer directly.
-        // SAFETY: `ns_view` is the live content `NSView` the platform layer
-        // handed us via `RawWindowHandle::AppKit`; these selectors exist on
-        // NSView.
+        // Attach the layer to the content view. viso-gpu does not depend on the
+        // UI toolkit crates, so we message the opaque view pointer directly.
+        // SAFETY: `view_ptr` is the live content view the platform layer handed
+        // us — an `NSView` via `RawWindowHandle::AppKit` on macOS, a `UIView` via
+        // `RawWindowHandle::UiKit` on iOS — and each selector exists on that
+        // class (`layer` on UIView returns its non-nil backing CALayer).
         unsafe {
-            let view = &*(ns_view as *const AnyObject);
-            let _: () = msg_send![view, setWantsLayer: true];
-            let _: () = msg_send![view, setLayer: &*layer];
+            let view = &*(view_ptr as *const AnyObject);
+            #[cfg(target_os = "macos")]
+            {
+                let _: () = msg_send![view, setWantsLayer: true];
+                let _: () = msg_send![view, setLayer: &*layer];
+            }
+            #[cfg(not(target_os = "macos"))]
+            {
+                let host: *mut AnyObject = msg_send![view, layer];
+                let _: () = msg_send![&*host, addSublayer: &*layer];
+            }
             // Initial geometry: the return (whether it changed) is irrelevant on a
             // freshly created layer, which starts with no drawable pool.
             let _ = configure_layer_geometry(&layer, view, width, height);
@@ -601,7 +624,7 @@ impl GpuBackend for MetalBackend {
         self.surfaces
             .insert(MetalSurface {
                 layer,
-                view: ns_view,
+                view: view_ptr,
                 width,
                 height,
                 format: TextureFormat::Bgra8Unorm,

@@ -3503,6 +3503,14 @@ impl Renderer {
         &self.backdrop_dependencies
     }
 
+    /// Release rebuildable GPU memory the current scene does not use: pooled
+    /// offscreen targets the last frame left unclaimed. Called on an OS memory
+    /// warning; the next frame recreates whatever it needs. Returns the bytes
+    /// released.
+    pub fn trim_caches<B: GpuBackend>(&mut self, backend: &mut B) -> usize {
+        self.transient.trim_idle(backend)
+    }
+
     pub fn frame_stats(&self) -> FrameStats {
         let ingest = self.scene.ingest_stats;
 

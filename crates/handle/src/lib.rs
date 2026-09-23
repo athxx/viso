@@ -25,26 +25,59 @@ pub enum RawWindowHandle {
     /// macOS/AppKit: pointer to the window's content `NSView`.
     ///
     /// The Metal backend sets `wantsLayer = YES` and attaches a `CAMetalLayer`
-    /// as this view's backing layer (mirrors makepad's `setLayer:` path).
+    /// as this view's backing layer.
     AppKit {
         /// `*mut NSView` — the window's content view.
         ns_view: *mut c_void,
     },
 
-    /// Windows/Win32: the window `HWND`.
+    /// iOS/UIKit: pointer to the root `UIView`.
     ///
-    /// Compile-checked stub in Phase 2; the D3D12 backend consumes it later.
+    /// The Metal backend adds a `CAMetalLayer` sublayer sized to the view.
+    UiKit {
+        /// `*mut UIView` — the view that hosts the drawable layer.
+        ui_view: *mut c_void,
+    },
+
+    /// Windows/Win32: the window `HWND` and its module `HINSTANCE`.
     Win32 {
         /// `HWND` as a raw pointer.
         hwnd: *mut c_void,
+        /// `HINSTANCE` of the module that registered the window class.
+        hinstance: *mut c_void,
     },
 
-    /// Linux/X11: the window XID.
-    ///
-    /// Compile-checked stub in Phase 2; the Vulkan backend consumes it later.
+    /// Linux/X11 through Xlib: the connection and the window XID
+    /// (`VK_KHR_xlib_surface`).
     Xlib {
+        /// `*mut Display` — the Xlib connection owning the window.
+        display: *mut c_void,
         /// X11 window id.
-        window: u32,
+        window: u64,
+    },
+
+    /// Linux/Wayland: the connection and the `wl_surface`
+    /// (`VK_KHR_wayland_surface`).
+    Wayland {
+        /// `*mut wl_display`.
+        display: *mut c_void,
+        /// `*mut wl_surface` of the toplevel.
+        surface: *mut c_void,
+    },
+
+    /// Android: the `ANativeWindow` backing the activity's surface
+    /// (`VK_KHR_android_surface`). Valid between surface-created and
+    /// surface-destroyed.
+    AndroidNdk {
+        /// `*mut ANativeWindow`.
+        a_native_window: *mut c_void,
+    },
+
+    /// Web: the `<canvas>` element, as an object id into the JS heap the
+    /// platform layer keeps alive for the window's lifetime.
+    WebCanvas {
+        /// Index of the canvas in the host's object table.
+        canvas_id: u32,
     },
 
     /// No native surface — the headless backend renders into a CPU framebuffer.

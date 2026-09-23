@@ -9,10 +9,13 @@
 //!
 //! These are runtime-tier value types, deliberately small and `Copy` on the
 //! pointer path so threading a sample through the driver allocates nothing.
-//! They mirror the platform event meaning without re-exporting the platform
-//! types, keeping the driver contract independent of the raw event shape.
+//! Coordinates are resolved here; pure identities that need no resolution —
+//! the physical key code, the pointer id and device class, the clipboard reply
+//! slot — are the platform's own types, so one vocabulary runs from the OS to
+//! the widget.
 
 use viso_platform::WindowId;
+pub use viso_platform::{ClipboardReply, KeyCode as Key, PointerId, PointerKind};
 
 /// The lifecycle position of a pointer sample. Mirrors the platform phase, with
 /// `Leave` naming the pointer-exited-the-window case.
@@ -23,6 +26,8 @@ pub enum PointerPhase {
     Up,
     /// The pointer left the window bounds.
     Leave,
+    /// The OS took the contact away; it ends like `Up` but activates nothing.
+    Cancel,
 }
 
 /// A pointer sample already resolved to physical pixels (window-top-left
@@ -32,9 +37,14 @@ pub enum PointerPhase {
 pub struct PointerSample {
     /// The window the sample belongs to.
     pub window: WindowId,
+    /// Which pointer this is; stable from `Down` to `Up`/`Cancel`.
+    pub pointer: PointerId,
+    pub kind: PointerKind,
     /// Position in physical pixels, origin at the window's top-left.
     pub x: f32,
     pub y: f32,
+    /// Normalized contact pressure in `0.0..=1.0`.
+    pub pressure: f32,
     /// Buttons currently held, as a raw bitmask (matches the UI-tier mask).
     pub buttons: u8,
     /// Keyboard modifier state at the time of the sample.
@@ -63,33 +73,6 @@ pub struct KeySample {
     /// True if this press is an OS auto-repeat.
     pub repeat: bool,
     pub modifiers: Modifiers,
-}
-
-/// A minimal platform-independent key identity (runtime-tier mirror of the
-/// platform key code — kept crate-local so no OS vocabulary rides upward).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Key {
-    Escape,
-    Enter,
-    Space,
-    Tab,
-    Backspace,
-    /// Left arrow — directional navigation.
-    Left,
-    /// Right arrow — directional navigation.
-    Right,
-    /// Up arrow — directional navigation.
-    Up,
-    /// Down arrow — directional navigation.
-    Down,
-    /// Forward delete — removes the character after the caret.
-    Delete,
-    /// Home — moves the caret to the start of the line.
-    Home,
-    /// End — moves the caret to the end of the line.
-    End,
-    /// Any key not in the minimal set, carrying its raw platform scancode.
-    Other(u32),
 }
 
 /// A scroll sample resolved to physical pixels (window-top-left origin), the
@@ -124,6 +107,17 @@ pub struct ImePreeditSample {
     pub caret: usize,
 }
 
+/// The OS asked the focused content for its selection (a native copy/cut
+/// gesture). The driver answers through `reply`; the backend writes the answer
+/// to the system clipboard once the event returns.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CopySample {
+    pub window: WindowId,
+    /// Remove the selection after answering.
+    pub cut: bool,
+    pub reply: ClipboardReply,
+}
+
 /// A normalized input sample handed to the driver.
 ///
 /// Each variant carries data already normalized for its channel, so the driver
@@ -142,6 +136,10 @@ pub enum InputSample {
     Text(TextSample),
     /// An in-progress IME composition update (preedit).
     ImePreedit(ImePreeditSample),
+    /// Clipboard text to insert at the focused content.
+    Paste(TextSample),
+    /// A copy/cut request for the focused content's selection.
+    Copy(CopySample),
 }
 
 impl InputSample {
@@ -156,6 +154,8 @@ impl InputSample {
             InputSample::Key(k) => k.window,
             InputSample::Text(t) => t.window,
             InputSample::ImePreedit(p) => p.window,
+            InputSample::Paste(t) => t.window,
+            InputSample::Copy(c) => c.window,
         }
     }
 }

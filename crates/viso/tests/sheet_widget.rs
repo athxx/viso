@@ -498,14 +498,14 @@ fn open_script() -> Vec<RawEvent> {
         RawEvent::RedrawRequested {
             window: WindowId(1),
         },
-        RawEvent::Pointer(RawPointer {
-            window: WindowId(1),
-            x: SURFACE_W / 2.0,
-            y: SURFACE_H / 2.0,
-            buttons: RawButtons::PRIMARY,
-            modifiers: RawModifiers::default(),
-            phase: RawPhase::Down,
-        }),
+        RawEvent::Pointer(RawPointer::mouse(
+            WindowId(1),
+            SURFACE_W / 2.0,
+            SURFACE_H / 2.0,
+            RawButtons::PRIMARY,
+            RawModifiers::default(),
+            RawPhase::Down,
+        )),
         RawEvent::RedrawRequested {
             window: WindowId(1),
         },

@@ -10,11 +10,23 @@
 
 use std::time::Instant;
 
-use viso_platform::{LogicalRect, MenuCommandId, WindowId};
+use viso_platform::{Appearance, Insets, LogicalRect, MenuCommandId, WindowId};
 
 use crate::context::RuntimeCx;
 use crate::input::InputSample;
 use crate::phase::FramePhase;
+
+/// Where the app stands in its OS lifecycle.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Lifecycle {
+    /// The app went to the background. The scheduler stops running frames and
+    /// animation beats until [`Lifecycle::Resumed`].
+    Suspended,
+    /// The app is back in the foreground; its windows need a fresh frame.
+    Resumed,
+    /// The OS is short on memory: drop every cache that can be rebuilt.
+    LowMemory,
+}
 
 /// The app-layer hooks the frame scheduler drives.
 ///
@@ -82,6 +94,28 @@ pub trait FrameDriver {
     /// regions back through `cx`). Default no-op: a driver with no caption, and
     /// every backend that never reports fullscreen, ignores it.
     fn on_fullscreen_changed(&mut self, _window: WindowId, _fullscreen: bool) {}
+
+    /// `window` became (`true`) or stopped being (`false`) the keyboard target.
+    /// Default no-op.
+    fn on_window_focus(&mut self, _window: WindowId, _focused: bool) {}
+
+    /// The system appearance (light/dark, contrast, motion) changed. Default
+    /// no-op.
+    fn on_appearance(&mut self, _appearance: Appearance) {}
+
+    /// The region of `window` covered by system UI changed, in logical points.
+    /// Default no-op.
+    fn on_safe_area(&mut self, _window: WindowId, _insets: Insets) {}
+
+    /// The on-screen keyboard now covers `height` logical points at the bottom
+    /// of `window`. Default no-op.
+    fn on_keyboard_inset(&mut self, _window: WindowId, _height: f64) {}
+
+    /// The app moved through its OS lifecycle. On
+    /// [`Lifecycle::Resumed`] the driver requests a redraw for each window it
+    /// owns through `cx`, since the scheduler does not track window ids.
+    /// Default no-op.
+    fn on_lifecycle(&mut self, _cx: &mut RuntimeCx<'_>, _event: Lifecycle) {}
 
     /// Whether the driver wants continuous animation frames right now. When
     /// true, the scheduler keeps requesting redraw beats even with no input.

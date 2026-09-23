@@ -468,6 +468,28 @@ impl TransientTargets {
         peak as usize
     }
 
+    /// Release every physical the last frame did not claim, without waiting out
+    /// the idle window — the response to an OS memory warning. A claimed
+    /// physical stays: the retained passes of that frame still name it. Returns
+    /// the bytes released.
+    pub fn trim_idle<B: GpuBackend>(&mut self, backend: &mut B) -> usize {
+        let mut freed = 0;
+        let mut i = 0;
+        while i < self.physicals.len() {
+            if self.physicals[i].claimed {
+                i += 1;
+                continue;
+            }
+            let p = self.physicals.swap_remove(i);
+            freed += p.key.bytes();
+            backend.destroy_bind_group(p.bind_group);
+            backend.destroy_texture(p.texture);
+        }
+        self.stats.pool_bytes = self.physicals.iter().map(|p| p.key.bytes()).sum();
+        self.stats.targets = self.physicals.len();
+        freed
+    }
+
     /// Retire physicals that have gone unclaimed for too many consecutive frames.
     ///
     /// Safe to do here: a retired physical is by definition not referenced by any
@@ -681,6 +703,32 @@ mod tests {
                 "only the first frame mints textures"
             );
         }
+    }
+
+    /// A memory warning drops the idle physicals at once but keeps every one the
+    /// last frame claimed, so the retained passes still name live textures.
+    #[test]
+    fn trim_idle_releases_only_unclaimed_physicals() {
+        let (mut gpu, sampler, mut pool) = pool();
+        pool.begin_frame();
+        let a = pool.declare(desc(40, 40), 0);
+        let b = pool.declare(desc(40, 40), 1);
+        pool.read_at(a, SURFACE_SLOT);
+        pool.read_at(b, SURFACE_SLOT);
+        pool.assign(&mut gpu, sampler, 2);
+        assert_eq!(pool.stats().targets, 2);
+
+        pool.begin_frame();
+        let kept = pool.declare(desc(40, 40), 0);
+        pool.read_at(kept, SURFACE_SLOT);
+        pool.assign(&mut gpu, sampler, 1);
+        let texture = pool.texture(kept);
+
+        assert_eq!(pool.trim_idle(&mut gpu), 48 * 48 * 4);
+        assert_eq!(pool.stats().targets, 1);
+        assert_eq!(pool.stats().pool_bytes, 48 * 48 * 4);
+        assert_eq!(pool.texture(kept), texture);
+        assert_eq!(pool.trim_idle(&mut gpu), 0, "nothing idle is left");
     }
 
     /// A physical that stops being claimed is held for a bounded number of frames

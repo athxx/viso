@@ -5,8 +5,7 @@
 //! invert the edge with a trait *defined here* and *implemented above*: the
 //! backend owns a `&mut dyn AppHandler` and calls [`AppHandler::handle`] for
 //! each event, receiving a [`ControlFlow`] telling it whether to block, poll,
-//! or exit. Mirrors makepad's `Box<dyn FnMut(PlatformEvent) -> EventFlow>`
-//! funnel, but as a named trait rather than a boxed closure.
+//! or exit — one named trait rather than a boxed closure.
 
 use crate::control::ControlFlow;
 use crate::event::RawEvent;

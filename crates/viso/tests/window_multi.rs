@@ -306,27 +306,27 @@ impl Application for MultiWindowApp {
 
 /// A primary pointer-down at the launch window's center.
 fn press() -> RawEvent {
-    RawEvent::Pointer(RawPointer {
-        window: WindowId(1),
-        x: SURFACE_W / 2.0,
-        y: SURFACE_H / 2.0,
-        buttons: RawButtons::PRIMARY,
-        modifiers: RawModifiers::default(),
-        phase: RawPhase::Down,
-    })
+    RawEvent::Pointer(RawPointer::mouse(
+        WindowId(1),
+        SURFACE_W / 2.0,
+        SURFACE_H / 2.0,
+        RawButtons::PRIMARY,
+        RawModifiers::default(),
+        RawPhase::Down,
+    ))
 }
 
 /// A primary pointer-down at the *second* window's center — routes to window 2's
 /// tree, not the launch window's. Window 2 opens at its own logical size.
 fn press_aux() -> RawEvent {
-    RawEvent::Pointer(RawPointer {
-        window: WindowId(2),
-        x: AUX_LOGICAL_W / 2.0,
-        y: AUX_LOGICAL_H / 2.0,
-        buttons: RawButtons::PRIMARY,
-        modifiers: RawModifiers::default(),
-        phase: RawPhase::Down,
-    })
+    RawEvent::Pointer(RawPointer::mouse(
+        WindowId(2),
+        AUX_LOGICAL_W / 2.0,
+        AUX_LOGICAL_H / 2.0,
+        RawButtons::PRIMARY,
+        RawModifiers::default(),
+        RawPhase::Down,
+    ))
 }
 
 fn redraw() -> RawEvent {

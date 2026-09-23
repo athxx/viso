@@ -26,12 +26,13 @@ pub mod scheduler;
 
 pub use clock::{FixedStepClock, FrameClock, ManualClock, WallClock};
 pub use context::RuntimeCx;
-pub use driver::FrameDriver;
+pub use driver::{FrameDriver, Lifecycle};
 pub use frame::run_frame;
 pub use input::{
-    ImePreeditSample, InputSample, Key, KeySample, Modifiers, PointerPhase, PointerSample,
-    TextSample,
+    ClipboardReply, CopySample, ImePreeditSample, InputSample, Key, KeySample, Modifiers,
+    PointerId, PointerKind, PointerPhase, PointerSample, ScrollSample, TextSample,
 };
 pub use phase::FramePhase;
 pub use schedule::{FrameDecision, RedrawReason, RedrawReasons};
 pub use scheduler::Scheduler;
+pub use viso_platform::{Appearance, ColorScheme, CursorIcon, Insets};

@@ -10,13 +10,12 @@ rust-version.workspace = true
 # lifecycle, native handles, accessibility bridge hook.
 #
 # FORBIDDEN dependencies (architecture §10.1): ui, widgets, dsl, studio.
-# Unlike legacy makepad's `platform` crate, this MUST NOT pull in script,
-# network, video, or live-reload.
+# This MUST NOT pull in script, network, video, or live-reload.
 #
 # Native backends are the only external deps, each behind a target cfg so
 # headless/CI on a non-matching target pulls zero external crates. These are
-# published, memory-safe bindings — Viso's "native rewrite" is the window/event
-# /loop *semantics*, not reinventing makepad's vendored FFI scaffolding.
+# published, memory-safe bindings — Viso owns the window/event/loop
+# *semantics*, not the FFI scaffolding.
 [dependencies]
 # The shared native-window-handle vocabulary (leaf crate). Produced here by
 # `Window::raw_handle`, consumed by viso-gpu — kept in its own crate so gpu
@@ -52,6 +51,11 @@ objc2-app-kit = { version = "0.3", features = [
     "NSTextInputClient",
     "NSTextInputContext",
     "NSAttributedString",
+    "NSPasteboard",
+    "NSCursor",
+    "NSAppearance",
+    "NSWorkspace",
+    "NSAccessibility",
 ] }
 
 # Windows: Win32 via the windows crate.
@@ -63,8 +67,8 @@ windows = { version = "0.62", features = [
     "Win32_Graphics_Gdi",
 ] }
 
-# Linux/X11 via x11rb (Wayland deferred).
-[target.'cfg(all(unix, not(target_os = "macos")))'.dependencies]
+# Linux and the BSDs: X11 via x11rb.
+[target.'cfg(any(target_os = "linux", target_os = "freebsd", target_os = "openbsd", target_os = "netbsd", target_os = "dragonfly"))'.dependencies]
 x11rb = "0.14"
 # `poll(2)` on the X connection fd, so a live one-shot timer can bound the
 # event-loop block to its deadline instead of sleeping indefinitely.

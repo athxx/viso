@@ -236,6 +236,20 @@ impl PlatformApp for X11App {
             .events
             .push_back(RawEvent::WindowClosed { window });
     }
+
+    fn set_clipboard_text(&mut self, _text: &str) {}
+
+    fn request_paste(&mut self, _window: WindowId) {}
+
+    fn set_cursor(&mut self, _window: WindowId, _icon: crate::CursorIcon) {}
+
+    fn set_ime_area(&mut self, _window: WindowId, _caret: Option<crate::LogicalRect>) {}
+
+    fn show_soft_keyboard(&mut self, _window: WindowId, _show: bool) {}
+
+    fn appearance(&self) -> crate::Appearance {
+        crate::Appearance::default()
+    }
 }
 
 impl X11App {
@@ -322,6 +336,9 @@ impl Window for X11Window {
     }
 
     fn raw_handle(&self) -> RawWindowHandle {
-        RawWindowHandle::Xlib { window: self.xid }
+        RawWindowHandle::Xlib {
+            display: core::ptr::null_mut(),
+            window: u64::from(self.xid),
+        }
     }
 }

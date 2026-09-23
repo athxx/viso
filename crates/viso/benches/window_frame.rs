@@ -48,14 +48,14 @@ const STEP: Duration = Duration::from_millis(16);
 /// A primary pointer-down at the launch window's center — drives one handler
 /// action per press (the app sequences open/close by a press counter).
 fn press() -> RawEvent {
-    RawEvent::Pointer(RawPointer {
-        window: WindowId(1),
-        x: SURFACE_W / 2.0,
-        y: SURFACE_H / 2.0,
-        buttons: RawButtons::PRIMARY,
-        modifiers: RawModifiers::default(),
-        phase: RawPhase::Down,
-    })
+    RawEvent::Pointer(RawPointer::mouse(
+        WindowId(1),
+        SURFACE_W / 2.0,
+        SURFACE_H / 2.0,
+        RawButtons::PRIMARY,
+        RawModifiers::default(),
+        RawPhase::Down,
+    ))
 }
 
 /// A redraw beat on the launch window — primes the pump and advances one frame so
