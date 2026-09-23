@@ -70,7 +70,7 @@ pub enum ControlFlow {
     /// Nothing is pending — block until the OS delivers the next event.
     Wait,
     /// Block until the OS delivers an event or this deadline elapses.
-    WaitUntil(std::time::Instant),
+    WaitUntil(crate::Instant),
     /// Tear down the pump and return from `run`.
     Exit,
 }

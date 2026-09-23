@@ -8,7 +8,7 @@
 //! `Application` and its `AppCx`). The scheduler is generic over this trait, so
 //! the runtime orchestrates frames while staying UI-agnostic.
 
-use std::time::Instant;
+use viso_platform::Instant;
 
 use viso_platform::{Appearance, Insets, LogicalRect, MenuCommandId, WindowId};
 

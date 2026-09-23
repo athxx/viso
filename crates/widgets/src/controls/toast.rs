@@ -511,7 +511,7 @@ mod tests {
         /// flips and any timer arms), apply the hidden flips to the store, and arm
         /// the timer requests on the live registry against `now` — the driver's
         /// FlushStateTransactions discipline reproduced for the test.
-        fn drive(&mut self, now: std::time::Instant, act: impl FnOnce(&mut EventCx<'_>)) {
+        fn drive(&mut self, now: viso_ui::Instant, act: impl FnOnce(&mut EventCx<'_>)) {
             let ev = read_pointer();
             let (hidden, timer_reqs) = {
                 let mut cx = EventCx::__new_pointer(&mut self.states, &self.bindings, &ev);
@@ -529,7 +529,7 @@ mod tests {
 
         /// Fire every timer due at `now`, exactly as the driver does at a frame
         /// head — an auto-dismiss's `on_fire` runs here against the live store.
-        fn fire_due(&mut self, now: std::time::Instant) {
+        fn fire_due(&mut self, now: viso_ui::Instant) {
             self.timers.fire_due(&mut self.store, now);
         }
 
@@ -615,7 +615,7 @@ mod tests {
         let dur = Duration::from_millis(4000);
         let (handle, content) = built_toast(&mut r, dur);
 
-        let t0 = std::time::Instant::now();
+        let t0 = viso_ui::Instant::now();
         let h = handle.clone();
         r.drive(t0, move |ev| h.show(ev));
 
@@ -636,7 +636,7 @@ mod tests {
         let dur = Duration::from_millis(4000);
         let (handle, content) = built_toast(&mut r, dur);
 
-        let t0 = std::time::Instant::now();
+        let t0 = viso_ui::Instant::now();
         let h = handle.clone();
         r.drive(t0, move |ev| h.show(ev));
         assert!(!r.store.hidden(content), "shown before the deadline");
@@ -678,7 +678,7 @@ mod tests {
         let handle = slot.borrow().clone().expect("build filled the handle slot");
         let content = handle.content;
 
-        let t0 = std::time::Instant::now();
+        let t0 = viso_ui::Instant::now();
         let h = handle.clone();
         r.drive(t0, move |ev| h.show(ev));
         assert!(!r.store.hidden(content), "shown");
@@ -715,7 +715,7 @@ mod tests {
         let dur = Duration::from_millis(4000);
         let (handle, content) = built_toast(&mut r, dur);
 
-        let t0 = std::time::Instant::now();
+        let t0 = viso_ui::Instant::now();
         let h = handle.clone();
         r.drive(t0, move |ev| h.show(ev));
 
@@ -761,7 +761,7 @@ mod tests {
         let handle = slot.borrow().clone().expect("build filled the handle slot");
 
         // Dismissing a never-shown toast does nothing and fires no callback.
-        let t0 = std::time::Instant::now();
+        let t0 = viso_ui::Instant::now();
         let h = handle.clone();
         r.drive(t0, move |ev| h.dismiss(ev));
         assert_eq!(r.is_open(handle.open), Some(false), "still closed");

@@ -20,6 +20,7 @@ pub mod control;
 pub mod event;
 pub mod handler;
 pub mod menu;
+pub mod time;
 
 pub use control::{
     ControlFlow, DEFAULT_FRAME_BUDGET, LogicalRect, PlatformError, WindowChrome, WindowConfig,
@@ -32,6 +33,7 @@ pub use event::{
 };
 pub use handler::AppHandler;
 pub use menu::{Accel, Menu, MenuCommandId, SystemAction};
+pub use time::Instant;
 // The native window handle lives in the `viso-handle` leaf crate so `viso-gpu`
 // can name it without depending on `viso-platform` (the DAG rule). Re-exported here
 // because platform is where it's produced (`Window::raw_handle`).

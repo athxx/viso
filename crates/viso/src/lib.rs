@@ -173,7 +173,9 @@ pub fn run<A: Application>() {
 pub mod __test_support {
     use super::AppDriver;
     use crate::Application;
-    use std::time::{Duration, Instant};
+    use std::time::Duration;
+
+    use viso_runtime::Instant;
     use viso_runtime::{FixedStepClock, Scheduler};
 
     /// Inspection view over a settled [`AppDriver`], returned from
@@ -492,12 +494,6 @@ struct WindowState {
     changed: Vec<StateId>,
     /// The tree root declared by the application's `build`, if it authored one.
     root: Option<NodeId>,
-    /// The touch or pen contact the tree currently follows. The first contact
-    /// down claims it and its lift or cancel releases it; a second finger while
-    /// one is down is not routed, so a pinch never reads as two taps. A mouse
-    /// always routes. Multi-pointer routing and gesture arbitration build on
-    /// this one-contact rule later.
-    primary_pointer: Option<viso_runtime::PointerId>,
     /// The text-entry area last pushed to the platform, in logical points:
     /// `Some(Some(rect))` while a text control has focus, `Some(None)` once
     /// pushed clear, `None` before the first push. The Layout phase compares
@@ -507,6 +503,10 @@ struct WindowState {
     /// Reusable ancestry buffer the pointer router fills each event, owned here
     /// so routing a pointer allocates nothing on the steady path.
     route_chain: Vec<NodeId>,
+    /// Reusable scratch for [`WindowState::settle_text_edits`]: the edited
+    /// nodes drained from the registry, and the text of the one being reported.
+    edited: Vec<NodeId>,
+    edited_text: String,
     /// Reusable primitive buffer. Rebuilt only on a paint-affecting frame; reused
     /// verbatim (and re-uploaded) on frames with no paint invalidation.
     primitives: Vec<Primitive>,
@@ -531,19 +531,18 @@ struct WindowState {
     /// Reusable buffer the text seam drains pending requests into, so re-shaping
     /// text allocates only the shaped payloads, not the request list.
     text_scratch: Vec<(NodeId, Box<TextRequest>)>,
-    /// Retained source requests for `soft_wrap` runs, keyed by node — the one
-    /// place the facade keeps a shaped run's declaration after the store's
-    /// request column is drained (`take_text_requests` consumes it, and the
-    /// store treats the request as write-once: an edit re-declares it, see
-    /// `text_edit::reconcile`). The two-phase reflow (DL1) needs the source text
-    /// to reshape a wrap-eligible leaf at the width layout assigned it, which is
-    /// not known until after the first shape; this holds exactly that subset —
-    /// only runs that opted into wrapping, a small minority of text nodes — so
-    /// the store's hot columns and the general drain contract stay untouched. A
-    /// pure single-line label never lands here. Entries are pruned when a node
-    /// is freed (checked live at drain time) and overwritten when a wrap run is
+    /// Retained source request of every shaped run, keyed by node — the one
+    /// place the facade keeps a run's declaration after the store's request
+    /// column is drained (`take_text_requests` consumes it, and the store treats
+    /// the request as write-once: an edit re-declares it, see
+    /// `text_edit::reconcile`). Two consumers need the source after the first
+    /// shape: the two-phase reflow reshapes a `soft_wrap` leaf at the width
+    /// layout assigned it, and a memory-warning trim reshapes every mounted run
+    /// into the freshly emptied glyph atlas (a shaped payload carries atlas UVs,
+    /// so it cannot outlive the pages it points into). Entries are pruned when a
+    /// node is freed (checked live at drain time) and overwritten when a run is
     /// re-declared.
-    wrap_sources: std::collections::HashMap<NodeId, Box<TextRequest>>,
+    text_sources: std::collections::HashMap<NodeId, Box<TextRequest>>,
     /// Reusable buffer the Layout phase drains the store's queued text reflows
     /// into (`take_text_reflows`), so servicing a reflow allocates only the
     /// reshaped payloads. Empty and allocation-free on the steady path with no
@@ -621,9 +620,10 @@ impl WindowState {
             timer_requests: Vec::new(),
             changed: Vec::new(),
             root: None,
-            primary_pointer: None,
             ime_area: None,
             route_chain: Vec::new(),
+            edited: Vec::new(),
+            edited_text: String::new(),
             primitives: Vec::new(),
             scratch: Vec::new(),
             redo_roots: Vec::new(),
@@ -631,7 +631,7 @@ impl WindowState {
             awaiting_first_frame: true,
             text: None,
             text_scratch: Vec::new(),
-            wrap_sources: std::collections::HashMap::new(),
+            text_sources: std::collections::HashMap::new(),
             reflow_scratch: Vec::new(),
             scratch_opens: Vec::new(),
             scratch_closes: Vec::new(),
@@ -801,6 +801,10 @@ impl WindowState {
         if self.text_scratch.is_empty() {
             return;
         }
+        // Declaring text is the frame that may have freed older runs, so drop
+        // their sources here; a steady frame declares nothing and never scans.
+        let arena = self.store.arena();
+        self.text_sources.retain(|id, _| arena.is_live(*id));
         // Rasterize glyphs at the window's real device-pixel density (seeded at
         // open, refreshed on every geometry change), so a HiDPI surface gets
         // crisp SDFs instead of 1x coverage upscaled by the compositor.
@@ -811,16 +815,56 @@ impl WindowState {
             // wrap-eligible leaf a narrower box, it enqueues a reflow that the
             // Layout phase drains and reshapes at `Some(width)`.
             let content = text.shape(&mut gpu.backend, &request, dpi, None);
-            // A run that opted into wrapping keeps its source here so the reflow
-            // pass can reshape it at the assigned width (the store drops the
-            // request on drain). A single-line run needs no source retained and
-            // never enters this map. Re-declaring a run (edit/rebuild) overwrites
-            // its entry; the drain below prunes freed nodes.
-            if request.soft_wrap {
-                self.wrap_sources.insert(id, request);
-            }
+            // Every run keeps its source so a reflow or a memory trim can
+            // reshape it (the store drops the request on drain). Re-declaring a
+            // run (edit/rebuild) overwrites its entry; the reflow drain and the
+            // trim prune freed nodes.
+            self.text_sources.insert(id, request);
             self.store.set_content_payload(id, content);
         }
+    }
+
+    /// Fold every queued edit into its buffer and tell each control whose text
+    /// changed what it now reads, so `on_change` observes typing, deletion,
+    /// paste, and cut through one path. Runs right after an input sample is
+    /// routed, so state a change handler writes flushes in the same frame.
+    fn settle_text_edits(&mut self) {
+        text_edit::reconcile(&mut self.store, &mut self.text_edits);
+        self.text_edits.take_changed(&mut self.edited);
+        for i in 0..self.edited.len() {
+            let node = self.edited[i];
+            let Some(buffer) = self.text_edits.get(node) else {
+                continue;
+            };
+            self.edited_text.clear();
+            self.edited_text.push_str(&buffer.text);
+            KeyRouter::route_text_change(
+                &mut self.store,
+                &mut self.states,
+                &self.bindings,
+                &mut self.text_edits,
+                node,
+                &self.edited_text,
+            );
+        }
+    }
+
+    /// Give back every GPU cache the next frame can rebuild: idle pooled
+    /// targets, and the whole glyph atlas. Mounted text is reshaped at once into
+    /// fresh planes, so the atlas comes back holding only the live working set
+    /// and no retained payload is left pointing at a retired page.
+    fn trim_memory(&mut self) {
+        let (Some(gpu), Some(text)) = (self.gpu.as_mut(), self.text.as_mut()) else {
+            return;
+        };
+        gpu.renderer.trim_caches(&mut gpu.backend);
+        text.trim(|texture| gpu.renderer.release_texture(&mut gpu.backend, texture));
+        let arena = self.store.arena();
+        self.text_sources.retain(|id, _| arena.is_live(*id));
+        for (&id, request) in &self.text_sources {
+            self.store.set_text_request(id, (**request).clone());
+        }
+        self.shape_pending_text();
     }
 
     /// The surface size in logical points: the physical surface divided by the
@@ -909,33 +953,6 @@ impl WindowState {
     /// held still: the registered set is tiny (one band per caption) so building the
     /// candidate list and comparing it is a handful of `f32` ops, not a full-tree
     /// sweep, and a window with no caption registers nothing and returns instantly.
-    /// Whether a pointer sample reaches the tree under the one-contact rule
-    /// ([`primary_pointer`](Self::primary_pointer)), updating the claim as a
-    /// contact lands or lifts.
-    fn admit_pointer(&mut self, p: &viso_runtime::PointerSample) -> bool {
-        if p.kind == viso_runtime::PointerKind::Mouse {
-            return true;
-        }
-        match (self.primary_pointer, p.phase) {
-            (None, viso_runtime::PointerPhase::Down) => {
-                self.primary_pointer = Some(p.pointer);
-                true
-            }
-            (Some(id), phase) if id == p.pointer => {
-                if matches!(
-                    phase,
-                    viso_runtime::PointerPhase::Up | viso_runtime::PointerPhase::Cancel
-                ) {
-                    self.primary_pointer = None;
-                }
-                true
-            }
-            // A pen hovering with nothing down still moves hover.
-            (None, _) => p.kind == viso_runtime::PointerKind::Pen,
-            _ => false,
-        }
-    }
-
     /// The focused node's nearest text-edit control: the focused node itself or
     /// the closest ancestor that registered a buffer.
     fn focused_text_node(&self) -> Option<NodeId> {
@@ -950,17 +967,24 @@ impl WindowState {
     }
 
     /// Recompute the text-entry area from the laid-out tree and report whether
-    /// it differs from what was last pushed. The area is the focused text
-    /// control's box; the caret-precise rect follows once the caret is painted.
+    /// it differs from what was last pushed. The area is the caret's line box
+    /// in the focused control, one logical pixel wide so a candidate window
+    /// anchors beside the insertion point; a control whose run is not shaped
+    /// yet reports its whole box.
     fn ime_area_changed(&mut self) -> bool {
         let area = self.focused_text_node().map(|id| {
             let r = self.store.world(id);
-            LogicalRect {
-                x: r.x as f64,
-                y: r.y as f64,
-                width: r.w as f64,
-                height: r.h as f64,
-            }
+            let caret = match (
+                self.text.as_mut(),
+                self.text_sources.get(&id),
+                self.text_edits.get(id),
+            ) {
+                (Some(text), Some(request), Some(buffer)) if request.text == buffer.text => {
+                    text.caret(request, Some(r.w), buffer.sel.cursor)
+                }
+                _ => None,
+            };
+            caret_area(r, caret)
         });
         if self.ime_area == Some(area) {
             return false;
@@ -1048,7 +1072,7 @@ impl WindowState {
             // session that churns wrapped paragraphs from leaking their sources.
             if passes == 0 {
                 let arena = self.store.arena();
-                self.wrap_sources.retain(|id, _| arena.is_live(*id));
+                self.text_sources.retain(|id, _| arena.is_live(*id));
             }
             let (Some(gpu), Some(text)) = (self.gpu.as_mut(), self.text.as_mut()) else {
                 // No shaper/GPU (headless-without-surface, pre-launch): nothing
@@ -1059,9 +1083,8 @@ impl WindowState {
             };
             let dpi = self.dpi;
             for (id, width) in self.reflow_scratch.drain(..) {
-                // The source is retained only for `soft_wrap` runs; a missing
-                // entry means the node was freed or never opted in, so skip it.
-                let Some(request) = self.wrap_sources.get(&id) else {
+                // A missing source means the node was freed, so skip it.
+                let Some(request) = self.text_sources.get(&id) else {
                     continue;
                 };
                 let content = text.shape(&mut gpu.backend, request, dpi, Some(width));
@@ -1258,11 +1281,17 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
             return;
         };
         let scale = ws.dpi.max(1.0);
+        // Samples that can edit the focused text control settle their edits
+        // once routed; pointer and scroll samples never record one.
+        let edits_text = matches!(
+            sample,
+            viso_runtime::InputSample::Key(_)
+                | viso_runtime::InputSample::Text(_)
+                | viso_runtime::InputSample::Paste(_)
+                | viso_runtime::InputSample::ImePreedit(_)
+        );
         match sample {
             viso_runtime::InputSample::Pointer(p) => {
-                if !ws.admit_pointer(&p) {
-                    return;
-                }
                 let ev = PointerEvent {
                     x: p.x / scale,
                     y: p.y / scale,
@@ -1285,20 +1314,22 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
                         logo: p.modifiers.logo,
                     },
                 };
-                PointerRouter::route(
+                // Every pointer routes on its own; a finger or pen is a direct
+                // contact (landing capture + pan arbitration). A cancelled
+                // contact arrives as a leave, which ends it and its capture.
+                let contact = viso_ui::PointerContact {
+                    id: viso_ui::PointerId(p.pointer.0),
+                    direct: p.kind != viso_runtime::PointerKind::Mouse,
+                };
+                PointerRouter::route_contact(
                     &mut ws.store,
                     &mut ws.states,
                     &ws.bindings,
                     root,
+                    contact,
                     ev,
                     &mut ws.route_chain,
                 );
-                // The OS took the contact back, so no up will follow: release a
-                // capture the press established rather than leave the tree
-                // following a pointer that no longer exists.
-                if p.phase == viso_runtime::PointerPhase::Cancel {
-                    ws.store.set_capture(None);
-                }
             }
             viso_runtime::InputSample::Key(k) => {
                 // Lower the runtime-tier key sample onto the UI-tier event, then
@@ -1375,6 +1406,7 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
                 c.reply.set(buffer.text[start..end].to_owned());
                 if c.cut {
                     buffer.queue(text_edit::EditIntent::Delete);
+                    ws.settle_text_edits();
                 }
             }
             viso_runtime::InputSample::ImePreedit(p) => {
@@ -1414,6 +1446,9 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
                 ScrollRouter::route(&mut ws.store, root, ev);
             }
         }
+        if edits_text {
+            ws.settle_text_edits();
+        }
     }
 
     fn on_lifecycle(&mut self, cx: &mut RuntimeCx<'_>, event: viso_runtime::Lifecycle) {
@@ -1428,9 +1463,8 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
             // Give back the GPU memory the next frame can rebuild on demand.
             viso_runtime::Lifecycle::LowMemory => {
                 for ws in &mut self.windows {
-                    if let Some(gpu) = &mut ws.gpu {
-                        gpu.renderer.trim_caches(&mut gpu.backend);
-                    }
+                    ws.trim_memory();
+                    cx.request_redraw(ws.window);
                 }
             }
             viso_runtime::Lifecycle::Suspended => {}
@@ -1662,7 +1696,7 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
                     // shaping step below re-shapes the new string. A no-op when no
                     // control took an edit this frame (the steady case), so a
                     // non-text frame pays nothing.
-                    text_edit::reconcile(&mut ws.store, &mut ws.text_edits);
+                    ws.settle_text_edits();
                     // Shape any text (re)declared this frame — a rebuilt list row,
                     // an applied text edit, or a future reactive text update
                     // leaves a pending `TextRequest` — into a content payload
@@ -1853,7 +1887,7 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
         self.windows.iter().any(|w| !w.animations.is_empty())
     }
 
-    fn next_timer_deadline(&self) -> Option<std::time::Instant> {
+    fn next_timer_deadline(&self) -> Option<viso_runtime::Instant> {
         // The earliest live timer deadline across all windows (a toast's
         // auto-dismiss instant), or `None` when no window has a timer armed. The
         // scheduler turns `Some(deadline)` into a `ControlFlow::WaitUntil` so an
@@ -1959,6 +1993,66 @@ pub mod platform {
 }
 pub mod runtime {
     pub use viso_runtime::*;
+}
+
+/// The text-entry area for a control at `world` whose caret, relative to the
+/// run's origin, is `caret`: a one-pixel column on the caret's line, kept inside
+/// the control, or the whole control when no caret geometry exists.
+fn caret_area(world: Rect, caret: Option<Rect>) -> LogicalRect {
+    match caret {
+        Some(c) => LogicalRect {
+            x: (world.x + c.x.clamp(0.0, world.w)) as f64,
+            y: (world.y + c.y) as f64,
+            width: 1.0,
+            height: c.h as f64,
+        },
+        None => LogicalRect {
+            x: world.x as f64,
+            y: world.y as f64,
+            width: world.w as f64,
+            height: world.h as f64,
+        },
+    }
+}
+
+#[cfg(test)]
+mod caret_area_tests {
+    use super::*;
+
+    const FIELD: Rect = Rect {
+        x: 10.0,
+        y: 20.0,
+        w: 160.0,
+        h: 30.0,
+    };
+
+    #[test]
+    fn a_caret_becomes_a_column_on_its_line_inside_the_field() {
+        let caret = Rect {
+            x: 42.0,
+            y: 3.0,
+            w: 0.0,
+            h: 18.0,
+        };
+        assert_eq!(
+            caret_area(FIELD, Some(caret)),
+            LogicalRect::new(52.0, 23.0, 1.0, 18.0)
+        );
+        let past = Rect { x: 400.0, ..caret };
+        assert_eq!(
+            caret_area(FIELD, Some(past)).x,
+            170.0,
+            "clamped to the field"
+        );
+    }
+
+    #[test]
+    fn an_unshaped_field_reports_its_whole_box() {
+        assert_eq!(
+            caret_area(FIELD, None),
+            LogicalRect::new(10.0, 20.0, 160.0, 30.0)
+        );
+    }
 }
 
 #[cfg(test)]

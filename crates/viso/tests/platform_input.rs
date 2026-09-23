@@ -1,10 +1,10 @@
 //! Platform input that reaches the tree through the facade rather than a
 //! widget handler: clipboard copy/cut/paste answered from the focused text
 //! control's buffer, the text-entry area pushed for IME candidate windows and
-//! the soft keyboard, a cancelled contact releasing capture, and the
-//! one-contact rule for touch.
+//! the soft keyboard, a cancelled contact releasing capture, and per-contact
+//! touch routing.
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 
 use std::time::Duration;
 
@@ -25,6 +25,8 @@ thread_local! {
     static DOWNS: Cell<u32> = const { Cell::new(0) };
     /// Whether the root captures the pointer on press.
     static CAPTURE: Cell<bool> = const { Cell::new(false) };
+    /// Every value the field reported through `on_change`, in order.
+    static CHANGES: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
 }
 
 /// A field seeded with "hello" filling the top of a counting root.
@@ -52,6 +54,7 @@ impl Application for FieldApp {
                 text_input("Name")
                     .value("hello")
                     .size(Size::fixed(160.0, 30.0))
+                    .on_change(|_ev, text| CHANGES.with(|c| c.borrow_mut().push(text.to_owned())))
                     .build(cx);
             },
         );
@@ -181,9 +184,11 @@ fn cut_answers_with_the_selection_and_removes_it() {
         },
         redraw(),
     ]);
+    CHANGES.with(|c| c.borrow_mut().clear());
     let app = drive_scripted::<FieldApp>(script, STEP);
     assert_eq!(reply.take().as_deref(), Some("hello"));
     assert_eq!(app.focused_text(), Some(""));
+    assert_eq!(CHANGES.with(|c| c.borrow().clone()), [String::new()]);
 }
 
 #[test]
@@ -197,8 +202,10 @@ fn paste_replaces_the_selection_on_one_line() {
         },
         redraw(),
     ]);
+    CHANGES.with(|c| c.borrow_mut().clear());
     let app = drive_scripted::<FieldApp>(script, STEP);
     assert_eq!(app.focused_text(), Some("two lines"));
+    assert_eq!(CHANGES.with(|c| c.borrow().clone()), ["two lines"]);
 }
 
 #[test]
@@ -210,6 +217,8 @@ fn focusing_a_field_pushes_its_box_as_the_text_entry_area() {
         "with nothing focused the area is pushed clear once"
     );
 
+    // A headless window shapes no text, so the area falls back to the box; the
+    // caret column is covered where a shaper exists.
     let app = drive_scripted::<FieldApp>(focused(), STEP);
     let area = app
         .ime_area()
@@ -240,7 +249,7 @@ fn a_cancelled_contact_releases_capture() {
 }
 
 #[test]
-fn a_second_finger_does_not_route_while_the_first_is_down() {
+fn a_second_finger_routes_alongside_the_first() {
     DOWNS.with(|d| d.set(0));
     let _ = drive_scripted::<FieldApp>(
         vec![
@@ -249,12 +258,11 @@ fn a_second_finger_does_not_route_while_the_first_is_down() {
             touch(2, 40.0, 60.0, RawPhase::Down),
             touch(2, 40.0, 60.0, RawPhase::Up),
             touch(1, 20.0, 60.0, RawPhase::Up),
-            // The first contact lifted, so the next one is primary again.
             touch(3, 20.0, 60.0, RawPhase::Down),
             touch(3, 20.0, 60.0, RawPhase::Up),
             redraw(),
         ],
         STEP,
     );
-    assert_eq!(DOWNS.with(Cell::get), 2);
+    assert_eq!(DOWNS.with(Cell::get), 3);
 }

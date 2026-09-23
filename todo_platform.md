@@ -62,15 +62,21 @@ WebGPU through gstack `/browse`. Windows/D3D12 is `cargo check`/`clippy` only.
 Follow-ups carried forward:
 
 - [ ] Verify on a live macOS session: cursor switching, IME candidate placement,
-      appearance KVO, key/resign notifications (compiled + headless-tested only).
-- [ ] macOS never emits `LowMemory`; `Suspended`/`Resumed` map to app hide/unhide.
-- [ ] iOS Metal `UIView` surface is compile-checked only; run it on the simulator in P2/P5.
-- [ ] `std::time::Instant::now` panics on `wasm32-unknown-unknown` (`WallClock`) — P7.
-- [ ] Multi-pointer routing + gesture arbitration (secondary touches are dropped today).
-- [ ] `LowMemory` also trims the glyph/MTSDF atlases.
-- [ ] IME area is the text control's box; switch to the caret rect once caret geometry is
-      exposed.
-- [ ] A cut does not fire `TextInput::on_change`.
+      appearance KVO, key/resign notifications, memory-pressure delivery on the main queue
+      (compiled + headless-tested only; needs a person at the machine).
+- [x] macOS emits `LowMemory` from the libdispatch memory-pressure source (warn +
+      critical); `Suspended`/`Resumed` map to app hide/unhide.
+- [x] iOS Metal `UIView` surface runs on the simulator (`tests/metal_uikit_surface.rs`).
+- [x] `Instant` on `wasm32-unknown-unknown` reads `performance.now()`
+      (`viso_platform::Instant`); every clock and timer in the workspace uses it.
+- [x] Multi-pointer routing: each contact gets its own landing capture and pan
+      arbitration, so two fingers press two controls; a pan claims only its own contact.
+- [x] `LowMemory` also trims the glyph/MTSDF atlases: every pool page is reclaimed, the
+      planes are released with their bindings, and mounted text is reshaped into fresh
+      planes.
+- [x] IME area is the caret rect (pen position of the shaped run at the cursor, line
+      height tall), falling back to the control's box when no shaper is present.
+- [x] A cut fires `TextInput::on_change`.
 
 ## P1 — Portable shader bodies
 

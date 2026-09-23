@@ -15,6 +15,7 @@ use crate::content::{Content, TextRequest};
 use crate::context::EventCx;
 use crate::dirty::DirtyClass;
 use crate::grid::{GridPlacement, GridStyle, GridTracks, TrackSizing};
+use crate::input::{PointerContacts, PointerId};
 use crate::layout::{
     self, Align, Axis, Inset, Justify, LayoutInput, LayoutTree, Length, Measured, Size, Vec2,
 };
@@ -258,11 +259,11 @@ pub struct NodeStore {
     /// IME events route to this node (not hit testing). One slot per store — a
     /// window has one focus — reset to `None` on a structural rebuild.
     focused: Option<NodeId>,
-    /// The node currently holding pointer capture, or `None`. While set, the
-    /// pointer router redirects Move/Up to this node regardless of what the
-    /// pointer is over (drag-to-scroll, thumb drag). One slot per store — a
-    /// single pointer this slice — reset to `None` on a structural rebuild.
-    capture: Option<NodeId>,
+    /// Per-pointer capture and gesture state. While a pointer is captured the
+    /// router redirects its samples to the captor regardless of what the
+    /// pointer is over (a thumb drag, a finger that landed on a control).
+    /// Cleared on a structural rebuild.
+    contacts: PointerContacts,
     /// The subtree focus traversal is confined to, or `None` for the whole tree.
     /// When set (an open modal/dialog traps the ring), [`focus_next`] starts its
     /// pre-order from this node instead of the passed root, so Tab cycles only
@@ -441,7 +442,7 @@ impl NodeStore {
         self.window_closes.clear();
         self.text_reflows.clear();
         self.focused = None;
-        self.capture = None;
+        self.contacts.clear();
         self.hovered = None;
         self.focus_scope = None;
         self.draggable_regions.clear();
@@ -802,21 +803,38 @@ impl NodeStore {
         self.mark_dirty(id, DirtyClass::LAYOUT | DirtyClass::PAINT);
     }
 
-    /// The node holding pointer capture, if any.
+    /// A node holding pointer capture, if any pointer is captured.
     #[inline]
     pub fn capture(&self) -> Option<NodeId> {
-        self.capture
+        self.contacts.any_captor()
     }
 
-    /// Set (or clear, with `None`) the pointer-capture holder. A live-guarded
-    /// write: capturing a stale handle is a no-op, so a released/freed node
-    /// never holds capture. Clearing is always honored.
-    pub fn set_capture(&mut self, id: Option<NodeId>) {
+    /// The node `pointer` is captured to, if any.
+    #[inline]
+    pub fn capture_of(&self, pointer: PointerId) -> Option<NodeId> {
+        self.contacts.captor(pointer)
+    }
+
+    /// Capture `pointer` to a node (or release it with `None`), returning the
+    /// node that held it before. A live-guarded write: capturing a stale handle
+    /// is a no-op, so a released/freed node never holds capture. Clearing is
+    /// always honored.
+    pub fn set_capture(&mut self, pointer: PointerId, id: Option<NodeId>) -> Option<NodeId> {
         match id {
-            Some(node) if self.arena.is_live(node) => self.capture = Some(node),
-            Some(_) => {}
-            None => self.capture = None,
+            Some(node) if !self.arena.is_live(node) => self.contacts.captor(pointer),
+            _ => self.contacts.set_captor(pointer, id, false),
         }
+    }
+
+    /// Per-pointer routing state.
+    #[inline]
+    pub(crate) fn contacts(&self) -> &PointerContacts {
+        &self.contacts
+    }
+
+    #[inline]
+    pub(crate) fn contacts_mut(&mut self) -> &mut PointerContacts {
+        &mut self.contacts
     }
 
     /// Register a node as a draggable self-drawn-caption region. A live-guarded,

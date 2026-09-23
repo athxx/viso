@@ -117,6 +117,7 @@ struct PositionedGlyph {
     glyph: u16,
     cluster: usize,
     origin: [f32; 2],
+    advance: f32,
 }
 
 #[derive(Debug, Clone)]
@@ -124,6 +125,7 @@ struct PreparedLayout {
     glyphs: Vec<PositionedGlyph>,
     natural: Vec2,
     baseline: f32,
+    line_height: f32,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -257,16 +259,74 @@ impl TextShaper {
         self.counters.reset();
     }
 
-    pub(crate) fn shape<B: GpuBackend>(
+    /// Answer an OS memory warning: reclaim every page of every glyph pool,
+    /// drop the prepared-layout cache, and hand the atlas planes to `retire` so
+    /// the caller can release them with their bindings. Placements die with
+    /// their pages, so every retained text payload is stale afterwards — the
+    /// caller reshapes the mounted text, which re-admits exactly the live
+    /// working set into freshly created planes. Returns the plane bytes retired.
+    pub(crate) fn trim(&mut self, mut retire: impl FnMut(TextureId)) -> usize {
+        for kind in [
+            GlyphImageKind::MaskA8,
+            GlyphImageKind::ScalableMtsdf,
+            GlyphImageKind::ColorRgba8,
+            GlyphImageKind::OutlineVector,
+        ] {
+            self.residency.shed_pool_to_pressure(kind, 0);
+        }
+        self.drain_reclaims();
+        let plane = (self.atlas_size as usize) * (self.atlas_size as usize);
+        let mut bytes = 0;
+        if let Some(atlas) = self.coverage_atlas.take() {
+            retire(atlas.texture());
+            bytes += plane;
+        }
+        if let Some(atlas) = self.color_atlas.take() {
+            retire(atlas.texture());
+            bytes += plane * COLOR_BYTES_PER_TEXEL;
+        }
+        self.coverage_uv = HashMap::new();
+        self.color_uv = HashMap::new();
+        self.layouts = HashMap::new();
+        bytes
+    }
+
+    /// The caret box for byte offset `at` of `request`'s text, relative to the
+    /// run's origin: a zero-width rect at the caret's pen position spanning its
+    /// line. Reads the layout the run was shaped with, so asking costs a shape
+    /// only for text the cache has not seen.
+    pub(crate) fn caret(
         &mut self,
-        backend: &mut B,
         request: &TextRequest,
-        dpi_factor: f32,
         max_width: Option<f32>,
-    ) -> Content {
-        let Some(face) = self.resolve_primary() else {
-            return empty_content(request, max_width);
+        at: usize,
+    ) -> Option<Rect> {
+        let layout = self.layout_for(request, max_width)?;
+        let row_of = |y: f32| {
+            ((y - layout.baseline) / layout.line_height)
+                .round()
+                .max(0.0)
         };
+        let (x, row) = match layout.glyphs.iter().find(|g| g.cluster >= at) {
+            Some(g) => (g.origin[0], row_of(g.origin[1])),
+            None => layout.glyphs.last().map_or((0.0, 0.0), |g| {
+                (g.origin[0] + g.advance, row_of(g.origin[1]))
+            }),
+        };
+        Some(Rect {
+            x,
+            y: row * layout.line_height,
+            w: 0.0,
+            h: layout.line_height,
+        })
+    }
+
+    fn layout_for(
+        &mut self,
+        request: &TextRequest,
+        max_width: Option<f32>,
+    ) -> Option<&PreparedLayout> {
+        let face = self.resolve_primary()?;
         let wrap_width = request.soft_wrap.then_some(max_width).flatten();
         let key = LayoutKey {
             face,
@@ -274,14 +334,26 @@ impl TextShaper {
             size_bits: request.font_size.to_bits(),
             width_bits: wrap_width.map(f32::to_bits),
         };
-        let layout = if let Some(layout) = self.layouts.get(&key) {
-            layout.clone()
-        } else {
+        if !self.layouts.contains_key(&key) {
             let layout = self.prepare_layout(face, &request.text, request.font_size, wrap_width);
             self.counters.record_shape(wrap_width.is_some());
-            self.layouts.insert(key, layout.clone());
-            layout
+            self.layouts.insert(key.clone(), layout);
+        }
+        self.layouts.get(&key)
+    }
+
+    pub(crate) fn shape<B: GpuBackend>(
+        &mut self,
+        backend: &mut B,
+        request: &TextRequest,
+        dpi_factor: f32,
+        max_width: Option<f32>,
+    ) -> Content {
+        let wrap_width = request.soft_wrap.then_some(max_width).flatten();
+        let Some(layout) = self.layout_for(request, max_width) else {
+            return empty_content(request, max_width);
         };
+        let layout = layout.clone();
 
         let mut glyphs = Vec::with_capacity(layout.glyphs.len());
         let mut color_glyphs = Vec::new();
@@ -628,6 +700,7 @@ impl TextShaper {
                                 baseline + row_index as f32 * line_height
                                     - glyph.y_offset * font_size,
                             ],
+                            advance: glyph.x_advance * font_size,
                         });
                         pen_x += glyph.x_advance * font_size;
                     }
@@ -640,6 +713,7 @@ impl TextShaper {
             glyphs: positioned,
             natural,
             baseline,
+            line_height,
         }
     }
 
@@ -963,6 +1037,29 @@ mod tests {
         shaper
     }
 
+    #[test]
+    fn the_caret_walks_the_pen_positions_of_a_shaped_run() {
+        let mut shaper = tiny_shaper();
+        let request = TextRequest {
+            text: PAIR.to_owned(),
+            font_size: 30.0,
+            color: Rgba::TRANSPARENT,
+            soft_wrap: false,
+        };
+        let first = shaper.caret(&request, None, 0).expect("a face is loaded");
+        let middle = shaper.caret(&request, None, 1).expect("a face is loaded");
+        let end = shaper.caret(&request, None, 2).expect("a face is loaded");
+        assert_eq!(first.x, 0.0);
+        assert!(first.x < middle.x && middle.x < end.x);
+        assert_eq!((first.y, first.w), (0.0, 0.0));
+        assert!(first.h >= 30.0, "the caret spans the line, not the ink");
+        assert_eq!(
+            shaper.counters().reshapes(),
+            1,
+            "every query reads one layout"
+        );
+    }
+
     fn headless() -> HeadlessRaster {
         let mut gpu = HeadlessRaster::new();
         let _ = gpu.create_surface(RawWindowHandle::Headless, 128, 128);
@@ -990,6 +1087,50 @@ mod tests {
             shaper.end_frame();
         }
         evictions
+    }
+
+    #[test]
+    fn a_memory_trim_retires_the_atlas_and_reshaping_readmits_only_the_live_runs() {
+        let mut gpu = headless();
+        let mut shaper = tiny_shaper();
+        let first = shaper.shape(&mut gpu, &request(PAIR, 30.0), 1.0, None);
+        shaper.shape(&mut gpu, &request(PAIR, 27.0), 1.0, None);
+        shaper.end_frame();
+        let Content::Text { atlas: old, .. } = first else {
+            panic!("text content");
+        };
+
+        let mut retired = Vec::new();
+        let bytes = shaper.trim(|texture| retired.push(texture));
+        assert_eq!(retired, vec![old], "only the coverage plane existed");
+        assert_eq!(bytes, (TINY_PLANE * TINY_PLANE) as usize);
+        assert_eq!(
+            shaper
+                .residency()
+                .pool_resident_bytes(GlyphImageKind::MaskA8),
+            0
+        );
+
+        // Reshaping the one run still mounted re-rasterizes into a fresh plane
+        // and admits its two glyphs only; the dropped run stays out.
+        let again = shaper.shape(&mut gpu, &request(PAIR, 30.0), 1.0, None);
+        let Content::Text { atlas, glyphs, .. } = &again else {
+            panic!("text content");
+        };
+        assert_ne!(*atlas, old, "a retired plane is never sampled again");
+        assert_eq!(glyphs.len(), 2);
+        assert_eq!(shaper.counters().rasters(), 2);
+        let mut fresh = tiny_shaper();
+        fresh.shape(&mut headless(), &request(PAIR, 30.0), 1.0, None);
+        assert_eq!(
+            shaper
+                .residency()
+                .pool_resident_bytes(GlyphImageKind::MaskA8),
+            fresh
+                .residency()
+                .pool_resident_bytes(GlyphImageKind::MaskA8),
+            "the trimmed atlas holds exactly what a cold start would",
+        );
     }
 
     #[test]

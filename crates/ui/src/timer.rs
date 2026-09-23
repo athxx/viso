@@ -21,7 +21,9 @@
 //! (a driver's `next_timer_deadline` reads
 //! [`earliest`](TimerRegistry::earliest); an empty registry returns `None`).
 
-use std::time::{Duration, Instant};
+use std::time::Duration;
+
+use viso_runtime::Instant;
 
 use crate::component::NodeStore;
 use crate::node::NodeId;

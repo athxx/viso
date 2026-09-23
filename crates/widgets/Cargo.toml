@@ -14,7 +14,8 @@ viso-ui = { workspace = true }
 
 # Widget microbenches drive build/layout/paint_tree through viso-ui only, so no
 # facade or render dev-dep is needed and no dependency edge is added.
-[dev-dependencies]
+# Native measurements: criterion does not build for wasm32.
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 criterion = "0.7"
 
 [[bench]]

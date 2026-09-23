@@ -35,4 +35,4 @@ pub use input::{
 pub use phase::FramePhase;
 pub use schedule::{FrameDecision, RedrawReason, RedrawReasons};
 pub use scheduler::Scheduler;
-pub use viso_platform::{Appearance, ColorScheme, CursorIcon, Insets};
+pub use viso_platform::{Appearance, ColorScheme, CursorIcon, Insets, Instant};

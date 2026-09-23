@@ -34,6 +34,7 @@ pub mod virtual_list;
 pub mod window;
 
 pub use animation::{AnimationRegistry, Easing, TranslateAnim};
+// The frame clock's time point (wasm-safe), named by timers and deadlines.
 pub use binding::{Binding, BindingTable};
 pub use component::{
     BuildCx, Component, FlexStyle, FrameRecompute, Handle, LeafStyle, NodeStore, PointerHandler,
@@ -48,8 +49,9 @@ pub use grid::{
 };
 pub use hit_test::{HitTestTree, hit_test};
 pub use input::{
-    ImeEvent, Key, KeyEvent, KeyRouter, Modifiers, PointerButtons, PointerEvent, PointerPhase,
-    PointerRouter, ScrollEvent, ScrollRouter, focus_next, route_pointer, route_scroll,
+    ImeEvent, Key, KeyEvent, KeyRouter, Modifiers, PointerButtons, PointerContact, PointerEvent,
+    PointerId, PointerPhase, PointerRouter, ScrollEvent, ScrollRouter, TOUCH_SLOP, focus_next,
+    route_contact, route_pointer, route_scroll,
 };
 pub use inspect::{
     InspectFlags, InspectKind, InspectNode, InspectSnapshot, InspectTree, PaintRange, PaintRanges,
@@ -58,6 +60,7 @@ pub use inspect::{
 pub use layout::{Align, Axis, Inset, Justify, Length, Size, Vec2};
 pub use node::{NodeArena, NodeId, NodeLinks};
 pub use paint::paint_tree;
+pub use viso_runtime::Instant;
 // Render primitive data types that already appear in this crate's public API —
 // `Content`'s payload fields (content.rs), `TextRequest::color`, and
 // `BoxStyle::fill` (style.rs) are all typed with them. Re-export the exact set

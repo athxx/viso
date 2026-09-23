@@ -22,12 +22,14 @@
 //! each callback in `catch_unwind` so a panic in Rust never unwinds across the
 //! Objective-C frame.
 
+use crate::Instant;
 use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::ptr::NonNull;
 use std::rc::Rc;
-use std::time::Instant;
+
+use super::memory_pressure::MemoryPressure;
 
 use objc2::rc::{Retained, autoreleasepool};
 use objc2::runtime::{AnyClass, AnyObject, ClassBuilder, ProtocolObject, Sel};
@@ -105,6 +107,8 @@ pub struct MacApp {
     /// Replaced wholesale on each `set_menu`, dropping the previous menu's
     /// targets once AppKit has swapped in the new bar.
     menu_targets: Vec<Retained<MenuTarget>>,
+    /// The kernel's memory-pressure notifications, queued as `LowMemory`.
+    _memory_pressure: Option<MemoryPressure>,
 }
 
 impl MacApp {
@@ -148,6 +152,13 @@ impl MacApp {
                 );
         }
 
+        let pressure_queue = shared.clone();
+        let memory_pressure = MemoryPressure::on_main_queue(move || {
+            if let Ok(mut q) = pressure_queue.try_borrow_mut() {
+                q.events.push_back(RawEvent::LowMemory);
+            }
+        });
+
         Ok(Self {
             mtm,
             app,
@@ -157,6 +168,7 @@ impl MacApp {
             launched: false,
             _app_delegate: app_delegate,
             menu_targets: Vec::new(),
+            _memory_pressure: memory_pressure,
         })
     }
 

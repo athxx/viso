@@ -10,7 +10,9 @@
 //! injectable, deterministic time source) over the coarse mechanism (a
 //! hard-coded wall clock) — animation tests are non-deterministic otherwise.
 
-use std::time::{Duration, Instant};
+use std::time::Duration;
+
+use viso_platform::Instant;
 
 /// A source of monotonic time, sampled once at the head of each frame.
 ///

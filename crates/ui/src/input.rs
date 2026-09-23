@@ -72,6 +72,158 @@ pub struct PointerEvent {
     pub modifiers: Modifiers,
 }
 
+/// Which pointer a sample belongs to: stable from its `Down` to its `Up` (or
+/// cancel). The mouse is always [`PointerId::MOUSE`]; each finger or pen
+/// contact gets its own id from the platform.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub struct PointerId(pub u64);
+
+impl PointerId {
+    /// The system mouse (or the trackpad driving it).
+    pub const MOUSE: PointerId = PointerId(0);
+}
+
+/// How the router treats one pointer: its id and whether it is a direct
+/// contact (a finger or pen on the glass). A direct contact is implicitly
+/// captured to the node it lands on, and pans an enclosing scroll viewport once
+/// it travels past [`TOUCH_SLOP`] — the pan then wins the contact and the node
+/// it landed on receives a `Leave`, so a press that became a scroll never
+/// clicks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PointerContact {
+    pub id: PointerId,
+    pub direct: bool,
+}
+
+impl PointerContact {
+    /// The mouse: hit-tested each sample, never implicitly captured, never pans.
+    pub const MOUSE: PointerContact = PointerContact {
+        id: PointerId::MOUSE,
+        direct: false,
+    };
+}
+
+/// How far (in logical points) a direct contact travels before it is a pan
+/// rather than a press. Matches the common platform touch slop (8 dp / ~10 pt).
+pub const TOUCH_SLOP: f32 = 8.0;
+
+/// What a direct contact has turned into.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Gesture {
+    /// Still inside the slop: the node it landed on owns it.
+    Pending,
+    /// Past the slop with a viewport that can scroll: the router pans it and
+    /// no node sees the contact again.
+    Pan,
+    /// Past the slop with nothing to pan, or explicitly captured by a handler:
+    /// the captor keeps it to the end.
+    Held,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ContactSlot {
+    id: PointerId,
+    captor: Option<NodeId>,
+    /// The captor is the router's implicit landing capture, not a handler's
+    /// explicit `capture_pointer`; only an implicit captor yields to a pan.
+    implicit: bool,
+    /// Whether this is a tracked direct contact (lives from down to up), as
+    /// opposed to a mouse slot that exists only while captured.
+    direct: bool,
+    origin: [f32; 2],
+    last: [f32; 2],
+    gesture: Gesture,
+}
+
+/// Per-pointer routing state held by the node store: each live pointer's
+/// captor and, for a direct contact, where it landed and what gesture it became.
+/// One entry per finger at most, in a reused `Vec`, so a steady stream of
+/// touches allocates nothing once the fingers-down high-water mark is reached.
+#[derive(Debug, Default)]
+pub struct PointerContacts {
+    slots: Vec<ContactSlot>,
+}
+
+impl PointerContacts {
+    fn slot(&self, id: PointerId) -> Option<&ContactSlot> {
+        self.slots.iter().find(|s| s.id == id)
+    }
+
+    fn slot_mut(&mut self, id: PointerId) -> Option<&mut ContactSlot> {
+        self.slots.iter_mut().find(|s| s.id == id)
+    }
+
+    /// The node `id` is captured to, if any.
+    pub fn captor(&self, id: PointerId) -> Option<NodeId> {
+        self.slot(id).and_then(|s| s.captor)
+    }
+
+    /// The first captured pointer's captor, if any pointer is captured.
+    pub fn any_captor(&self) -> Option<NodeId> {
+        self.slots.iter().find_map(|s| s.captor)
+    }
+
+    /// Capture `id` to `node` (or release it with `None`), returning the node
+    /// that held it before. A handler's capture is explicit and ends any pan
+    /// arbitration for the contact.
+    pub(crate) fn set_captor(
+        &mut self,
+        id: PointerId,
+        node: Option<NodeId>,
+        implicit: bool,
+    ) -> Option<NodeId> {
+        if let Some(slot) = self.slot_mut(id) {
+            let prev = slot.captor;
+            slot.captor = node;
+            slot.implicit = implicit && node.is_some();
+            if node.is_some() && !implicit && slot.gesture == Gesture::Pending {
+                slot.gesture = Gesture::Held;
+            }
+            if node.is_none() && !slot.direct {
+                self.slots.retain(|s| s.id != id);
+            }
+            return prev;
+        }
+        if node.is_some() {
+            self.slots.push(ContactSlot {
+                id,
+                captor: node,
+                implicit,
+                direct: false,
+                origin: [0.0; 2],
+                last: [0.0; 2],
+                gesture: Gesture::Held,
+            });
+        }
+        None
+    }
+
+    /// A direct contact landed at `at`: start tracking it. A stale slot under the
+    /// same id (a lost up) is replaced.
+    fn begin(&mut self, id: PointerId, at: [f32; 2]) {
+        self.slots.retain(|s| s.id != id);
+        self.slots.push(ContactSlot {
+            id,
+            captor: None,
+            implicit: false,
+            direct: true,
+            origin: at,
+            last: at,
+            gesture: Gesture::Pending,
+        });
+    }
+
+    /// The contact lifted or was cancelled: forget it and its capture.
+    fn end(&mut self, id: PointerId) {
+        self.slots.retain(|s| s.id != id);
+    }
+
+    /// Forget every pointer: a structural rebuild invalidates every captor.
+    pub(crate) fn clear(&mut self) {
+        self.slots.clear();
+    }
+}
+
 /// The physical key identity: the one vocabulary shared from the OS event up
 /// to the widget, named by US-layout position.
 pub use viso_runtime::Key;
@@ -148,6 +300,23 @@ impl PointerRouter {
     ) -> bool {
         route_pointer(store, states, bindings, root, ev, chain)
     }
+
+    /// [`route`](Self::route) for a specific pointer. Each pointer routes on its
+    /// own: its own capture, and — for a direct contact — its own landing
+    /// capture and pan arbitration, so two fingers press two controls
+    /// independently and a finger that drags inside a scroll viewport scrolls it
+    /// instead of clicking what it landed on.
+    pub fn route_contact(
+        store: &mut NodeStore,
+        states: &mut StateStore,
+        bindings: &BindingTable,
+        root: NodeId,
+        contact: PointerContact,
+        ev: PointerEvent,
+        chain: &mut Vec<NodeId>,
+    ) -> bool {
+        route_contact(store, states, bindings, root, contact, ev, chain)
+    }
 }
 
 /// One node's dispatch outcome: whether a handler ran, and whether it asked the
@@ -160,8 +329,7 @@ struct Dispatched {
     stop: bool,
 }
 
-/// Free-function form of [`PointerRouter::route`] (the struct is a stable home
-/// for future capture/gesture state).
+/// Free-function form of [`PointerRouter::route`]: the mouse's route.
 pub fn route_pointer(
     store: &mut NodeStore,
     states: &mut StateStore,
@@ -170,6 +338,70 @@ pub fn route_pointer(
     ev: PointerEvent,
     chain: &mut Vec<NodeId>,
 ) -> bool {
+    route_contact(
+        store,
+        states,
+        bindings,
+        root,
+        PointerContact::MOUSE,
+        ev,
+        chain,
+    )
+}
+
+/// Free-function form of [`PointerRouter::route_contact`].
+pub fn route_contact(
+    store: &mut NodeStore,
+    states: &mut StateStore,
+    bindings: &BindingTable,
+    root: NodeId,
+    contact: PointerContact,
+    ev: PointerEvent,
+    chain: &mut Vec<NodeId>,
+) -> bool {
+    let pointer = contact.id;
+    if contact.direct {
+        match ev.phase {
+            PointerPhase::Down => store.contacts_mut().begin(pointer, [ev.x, ev.y]),
+            PointerPhase::Move => {
+                if let Some(ran) = pan_step(store, states, bindings, pointer, &ev) {
+                    chain.clear();
+                    return ran;
+                }
+            }
+            PointerPhase::Up | PointerPhase::Leave => {
+                // A panned contact already left its landing node; its lift ends
+                // the pan and reaches no one.
+                let panned = store
+                    .contacts()
+                    .slot(pointer)
+                    .is_some_and(|s| s.gesture == Gesture::Pan);
+                if panned {
+                    store.contacts_mut().end(pointer);
+                    chain.clear();
+                    return true;
+                }
+            }
+            PointerPhase::Enter => {}
+        }
+    }
+    let ran = route_sample(store, states, bindings, root, contact, &ev, chain);
+    if contact.direct && matches!(ev.phase, PointerPhase::Up | PointerPhase::Leave) {
+        store.contacts_mut().end(pointer);
+    }
+    ran
+}
+
+fn route_sample(
+    store: &mut NodeStore,
+    states: &mut StateStore,
+    bindings: &BindingTable,
+    root: NodeId,
+    contact: PointerContact,
+    ev: &PointerEvent,
+    chain: &mut Vec<NodeId>,
+) -> bool {
+    let pointer = contact.id;
     // A captured pointer routes straight to the capturing node's chain,
     // bypassing hit testing — a drag or slider grab keeps receiving samples even
     // when the pointer leaves the node's box. On pointer-up the capture is
@@ -180,7 +412,7 @@ pub fn route_pointer(
     // must not hover-highlight whatever passes under it), so hover is synthesized
     // only on the non-capture Move branch below. A window Leave — the pointer
     // left the window entirely — always clears hover regardless of capture.
-    let target = match store.capture() {
+    let target = match store.capture_of(pointer) {
         Some(captured) => captured,
         None => {
             // The pointer left the window: no node is under it, so force the
@@ -189,7 +421,7 @@ pub fn route_pointer(
             // and clears the slot — then there is no dispatch target for the
             // window leave itself, so return once hover is settled.
             if ev.phase == PointerPhase::Leave {
-                sync_hover(store, states, bindings, None, &ev);
+                sync_hover(store, states, bindings, None, pointer, ev);
                 chain.clear();
                 return false;
             }
@@ -197,7 +429,7 @@ pub fn route_pointer(
                 // A move over no node (a gap between children, past the root):
                 // this too is a hover change — leave whatever was hovered.
                 if ev.phase == PointerPhase::Move {
-                    sync_hover(store, states, bindings, None, &ev);
+                    sync_hover(store, states, bindings, None, pointer, ev);
                 }
                 chain.clear();
                 return false;
@@ -207,14 +439,112 @@ pub fn route_pointer(
             // Up) does not drive hover — hover follows the moving pointer, like
             // the platform's own move-driven hover cycle.
             if ev.phase == PointerPhase::Move {
-                sync_hover(store, states, bindings, Some(hit), &ev);
+                sync_hover(store, states, bindings, Some(hit), pointer, ev);
+            }
+            // A direct contact is captured to the node it lands on, so the rest
+            // of the contact follows that node even as the finger drifts off it
+            // — and so a pan can take it back from exactly that node.
+            if contact.direct && ev.phase == PointerPhase::Down {
+                store.contacts_mut().set_captor(pointer, Some(hit), true);
             }
             hit
         }
     };
     dispatch_chain(store, root, target, chain, |s, n| {
-        pointer_dispatch(s, states, bindings, n, &ev)
+        pointer_dispatch(s, states, bindings, n, pointer, ev)
     })
+}
+
+/// Advance a direct contact's gesture on a move. Returns `Some(ran)` when the
+/// router consumed the move as a pan (no node sees it), `None` when the move
+/// routes to the captor as usual.
+fn pan_step(
+    store: &mut NodeStore,
+    states: &mut StateStore,
+    bindings: &BindingTable,
+    pointer: PointerId,
+    ev: &PointerEvent,
+) -> Option<bool> {
+    let slot = *store.contacts().slot(pointer)?;
+    let at = [ev.x, ev.y];
+    if let Some(s) = store.contacts_mut().slot_mut(pointer) {
+        s.last = at;
+    }
+    let from = slot.captor?;
+    match slot.gesture {
+        Gesture::Held => None,
+        Gesture::Pan => {
+            // Content follows the finger: a finger moving up reveals later
+            // content, so the offset grows by the negated travel.
+            scroll_chain(
+                store,
+                from,
+                Vec2 {
+                    x: slot.last[0] - at[0],
+                    y: slot.last[1] - at[1],
+                },
+            );
+            Some(true)
+        }
+        Gesture::Pending => {
+            let travel = Vec2 {
+                x: at[0] - slot.origin[0],
+                y: at[1] - slot.origin[1],
+            };
+            if travel.x.hypot(travel.y) < TOUCH_SLOP || !slot.implicit {
+                return None;
+            }
+            let axis = if travel.x.abs() > travel.y.abs() {
+                Axis::Row
+            } else {
+                Axis::Column
+            };
+            let want = -travel.on(axis);
+            if !can_scroll(store, from, axis, want) {
+                if let Some(s) = store.contacts_mut().slot_mut(pointer) {
+                    s.gesture = Gesture::Held;
+                }
+                return None;
+            }
+            // The pan wins the contact: the node it landed on loses it with a
+            // `Leave`, which clears its press without a click.
+            if let Some(s) = store.contacts_mut().slot_mut(pointer) {
+                s.gesture = Gesture::Pan;
+            }
+            hover_dispatch(
+                store,
+                states,
+                bindings,
+                from,
+                PointerPhase::Leave,
+                pointer,
+                ev,
+            );
+            scroll_chain(store, from, axis_vec(axis, want));
+            Some(true)
+        }
+    }
+}
+
+/// Whether some scroll viewport at or above `from` scrolls along `axis` and has
+/// room left for a `delta` of that sign.
+fn can_scroll(store: &NodeStore, from: NodeId, axis: Axis, delta: f32) -> bool {
+    let mut node = Some(from);
+    while let Some(n) = node {
+        if store.scroll_axis(n) == Some(axis) {
+            let offset = store.scroll(n).on(axis);
+            let room = if delta > 0.0 {
+                store.scroll_range(n, axis) - offset
+            } else {
+                offset
+            };
+            if room > 0.0 {
+                return true;
+            }
+        }
+        node = store.arena().links(n).and_then(|l| l.parent);
+    }
+    false
 }
 
 /// A normalized scroll (wheel/trackpad) sample in physical pixels: the point
@@ -260,12 +590,22 @@ pub fn route_scroll(store: &mut NodeStore, root: NodeId, ev: ScrollEvent) -> boo
     let Some(target) = HitTestTree::hit(store, root, ev.x, ev.y) else {
         return false;
     };
+    scroll_chain(
+        store,
+        target,
+        Vec2 {
+            x: ev.delta_x,
+            y: ev.delta_y,
+        },
+    )
+}
 
+/// Place `delta` on the scroll viewports from `target` up to the root, each
+/// absorbing its own axis's component while it has range left in the direction
+/// of travel. Shared by the wheel route and the touch pan.
+fn scroll_chain(store: &mut NodeStore, target: NodeId, delta: Vec2) -> bool {
     // Remaining delta to place; each viewport consumes its own axis's component.
-    let mut remaining = Vec2 {
-        x: ev.delta_x,
-        y: ev.delta_y,
-    };
+    let mut remaining = delta;
     let mut consumed = false;
 
     // Walk from the target up to the root, letting each scroll viewport absorb
@@ -386,6 +726,7 @@ fn pointer_dispatch(
     states: &mut StateStore,
     bindings: &BindingTable,
     node: NodeId,
+    pointer: PointerId,
     event: &PointerEvent,
 ) -> Dispatched {
     let Some(mut handler) = store.take_handler(node) else {
@@ -393,6 +734,7 @@ fn pointer_dispatch(
     };
     let (capture, focus, scope, hidden, anims, timers, opens, closes, stop) = {
         let mut ev = EventCx::__new_pointer(states, bindings, event);
+        ev.__set_pointer_id(pointer);
         ev.__set_focused(store.focused());
         handler(&mut ev);
         (
@@ -408,9 +750,24 @@ fn pointer_dispatch(
         )
     };
     store.restore_handler(node, handler);
-    apply_pointer_side_effects(
-        store, capture, focus, scope, hidden, anims, timers, opens, closes,
+    let loser = apply_pointer_side_effects(
+        store, pointer, capture, focus, scope, hidden, anims, timers, opens, closes,
     );
+    // A handler took the pointer from another node (an ancestor claiming a
+    // drag its descendant was tracking): the previous captor loses the contact,
+    // and the claimed sample goes no further down the chain toward it.
+    let stop = stop || loser.is_some();
+    if let Some(lost) = loser {
+        hover_dispatch(
+            store,
+            states,
+            bindings,
+            lost,
+            PointerPhase::Leave,
+            pointer,
+            event,
+        );
+    }
     Dispatched { ran: true, stop }
 }
 
@@ -428,6 +785,7 @@ fn hover_dispatch(
     bindings: &BindingTable,
     node: NodeId,
     phase: PointerPhase,
+    pointer: PointerId,
     sample: &PointerEvent,
 ) {
     let Some(mut handler) = store.take_handler(node) else {
@@ -445,6 +803,7 @@ fn hover_dispatch(
     };
     let (capture, focus, scope, hidden, anims, timers, opens, closes, _stop) = {
         let mut ev = EventCx::__new_pointer(states, bindings, &event);
+        ev.__set_pointer_id(pointer);
         ev.__set_focused(store.focused());
         handler(&mut ev);
         (
@@ -460,8 +819,10 @@ fn hover_dispatch(
         )
     };
     store.restore_handler(node, handler);
-    apply_pointer_side_effects(
-        store, capture, focus, scope, hidden, anims, timers, opens, closes,
+    // A hover handler that grabs the pointer from another node is not an
+    // arbitration the router honors: hover never steals a live contact.
+    let _ = apply_pointer_side_effects(
+        store, pointer, capture, focus, scope, hidden, anims, timers, opens, closes,
     );
 }
 
@@ -476,6 +837,7 @@ fn sync_hover(
     states: &mut StateStore,
     bindings: &BindingTable,
     new: Option<NodeId>,
+    pointer: PointerId,
     sample: &PointerEvent,
 ) {
     let old = store.hovered();
@@ -491,6 +853,7 @@ fn sync_hover(
             bindings,
             old_node,
             PointerPhase::Leave,
+            pointer,
             sample,
         );
     }
@@ -501,6 +864,7 @@ fn sync_hover(
             bindings,
             new_node,
             PointerPhase::Enter,
+            pointer,
             sample,
         );
     }
@@ -513,10 +877,12 @@ fn sync_hover(
 /// Apply the deferred side-effects a pointer handler produced. Shared by the
 /// chain dispatch ([`pointer_dispatch`]) and the single-node hover dispatch
 /// ([`hover_dispatch`]) so both settle capture/focus/visibility/queued requests
-/// through one path.
+/// through one path. Returns the node that lost `pointer` to a capture request
+/// made for a different node, if any.
 #[allow(clippy::too_many_arguments)]
 fn apply_pointer_side_effects(
     store: &mut NodeStore,
+    pointer: PointerId,
     capture: Option<Option<NodeId>>,
     focus: Option<Option<NodeId>>,
     scope: Option<Option<NodeId>>,
@@ -525,12 +891,16 @@ fn apply_pointer_side_effects(
     timers: Vec<crate::timer::TimerRequest>,
     opens: Vec<crate::window::WindowOpenRequest>,
     closes: Vec<u32>,
-) {
+) -> Option<NodeId> {
     // A capture request is applied against this node: `Some(id)` captures to the
     // requested node, `None` releases. Applied after the handler returns because
     // the cx holds no node store to touch the capture slot directly.
+    let mut loser = None;
     if let Some(request) = capture {
-        store.set_capture(request);
+        let prev = store.set_capture(pointer, request);
+        if request.is_some() && prev.is_some() && prev != request {
+            loser = prev;
+        }
     }
     // A focus request from a pointer handler is the click-to-focus path: a press
     // on a text field or button focuses it. Applied the same deferred way as the
@@ -573,6 +943,7 @@ fn apply_pointer_side_effects(
     for id in closes {
         store.queue_window_close(id);
     }
+    loser
 }
 
 /// Advance focus to the next (`forward`) or previous focusable node in tree
@@ -708,6 +1079,32 @@ impl KeyRouter {
             ime_dispatch(s, states, bindings, edits, n, &ev)
         })
     }
+
+    /// Tell an edited node its text changed, driving its key handler once with
+    /// the new text (read via `cx.text_change()`). Targets `node` alone — the
+    /// change belongs to that control, not its ancestry. Returns whether a
+    /// handler ran.
+    pub fn route_text_change(
+        store: &mut NodeStore,
+        states: &mut StateStore,
+        bindings: &BindingTable,
+        edits: &mut TextEdits,
+        node: NodeId,
+        text: &str,
+    ) -> bool {
+        if !store.arena().is_live(node) {
+            return false;
+        }
+        key_handler_dispatch(
+            store,
+            states,
+            bindings,
+            edits,
+            node,
+            KeyPayload::TextChange(text),
+        )
+        .ran
+    }
 }
 
 /// Call one node's *key* handler with the key event, moving it out of the store
@@ -781,11 +1178,34 @@ fn ime_dispatch(
     node: NodeId,
     ev: &ImeEvent,
 ) -> Dispatched {
+    key_handler_dispatch(store, states, bindings, edits, node, KeyPayload::Ime(ev))
+}
+
+/// What a key-handler dispatch other than a raw key hands the handler.
+#[derive(Clone, Copy)]
+enum KeyPayload<'e> {
+    Ime(&'e ImeEvent),
+    TextChange(&'e str),
+}
+
+/// Call one node's key handler with `payload`, then apply everything the
+/// handler requested — the shared body of the IME and text-change dispatches.
+fn key_handler_dispatch(
+    store: &mut NodeStore,
+    states: &mut StateStore,
+    bindings: &BindingTable,
+    edits: &mut TextEdits,
+    node: NodeId,
+    payload: KeyPayload<'_>,
+) -> Dispatched {
     let Some(mut handler) = store.take_key_handler(node) else {
         return Dispatched::default();
     };
     let (request, stop, recorded, hidden, scope, anims, timers, opens, closes) = {
-        let mut cx = EventCx::__new_ime(states, bindings, ev);
+        let mut cx = match payload {
+            KeyPayload::Ime(ev) => EventCx::__new_ime(states, bindings, ev),
+            KeyPayload::TextChange(text) => EventCx::__new_text_change(states, bindings, text),
+        };
         cx.__set_focused(store.focused());
         handler(&mut cx);
         (
@@ -1423,7 +1843,7 @@ mod tests {
         let (a, b) = (a.unwrap(), b.unwrap());
 
         // A captures the pointer (as if a drag began on it).
-        store.set_capture(Some(a));
+        store.set_capture(PointerId::MOUSE, Some(a));
         let mut chain = Vec::new();
         // Move over B's area while captured.
         route_pointer(
@@ -2428,5 +2848,288 @@ mod tests {
         // Inner (vertical) took the y; outer (horizontal) took the x.
         assert_eq!(store.scroll(inner), Vec2 { x: 0.0, y: 40.0 });
         assert_eq!(store.scroll(root), Vec2 { x: 30.0, y: 0.0 });
+    }
+}
+
+#[cfg(test)]
+mod contact_tests {
+    use super::*;
+    use crate::component::{BuildCx, FlexStyle, LeafStyle, ScrollStyle};
+    use crate::layout::Size;
+    use std::cell::RefCell;
+    use std::rc::Rc;
+    use viso_render::Rect;
+
+    type Log = Rc<RefCell<Vec<(u32, PointerPhase)>>>;
+
+    struct Scene {
+        store: NodeStore,
+        states: StateStore,
+        bindings: BindingTable,
+        root: NodeId,
+        a: NodeId,
+        b: NodeId,
+        log: Log,
+        chain: Vec<NodeId>,
+    }
+
+    /// Logs each sample's phase under `label`; with `capture`, a press captures
+    /// the pointer to `node` explicitly (a slider grab).
+    fn logger(
+        log: Log,
+        label: u32,
+        capture: Option<NodeId>,
+    ) -> impl FnMut(&mut EventCx<'_>) + 'static {
+        move |ev| {
+            let Some(p) = ev.pointer() else { return };
+            log.borrow_mut().push((label, p.phase));
+            if let Some(node) = capture
+                && p.phase == PointerPhase::Down
+            {
+                ev.capture_pointer(node);
+            }
+        }
+    }
+
+    /// A 100×100 vertical viewport (200 pt of range) whose content starts with
+    /// a row of two 40×40 controls, `a` at x 0..40 and `b` at x 40..80.
+    fn scene(capture_a: bool) -> Scene {
+        let mut store = NodeStore::new();
+        let log: Log = Rc::new(RefCell::new(Vec::new()));
+        let (mut a, mut b) = (None, None);
+        let root = {
+            let mut cx = BuildCx::new(&mut store);
+            cx.scroll(
+                ScrollStyle {
+                    axis: Axis::Column,
+                    size: Size::fixed(100.0, 100.0),
+                    ..Default::default()
+                },
+                |cx| {
+                    cx.flex(
+                        FlexStyle {
+                            axis: Axis::Column,
+                            size: Size::fixed(100.0, 300.0),
+                            ..Default::default()
+                        },
+                        |cx| {
+                            cx.flex(
+                                FlexStyle {
+                                    axis: Axis::Row,
+                                    size: Size::fixed(100.0, 40.0),
+                                    ..Default::default()
+                                },
+                                |cx| {
+                                    let ah = cx.leaf(LeafStyle {
+                                        size: Size::fixed(40.0, 40.0),
+                                        ..Default::default()
+                                    });
+                                    a = Some(ah.id());
+                                    let bh = cx.leaf(LeafStyle {
+                                        size: Size::fixed(40.0, 40.0),
+                                        ..Default::default()
+                                    });
+                                    b = Some(bh.id());
+                                },
+                            );
+                        },
+                    );
+                },
+            );
+            cx.root().unwrap()
+        };
+        let (a, b) = (a.unwrap(), b.unwrap());
+        store.set_pointer_handler(a, Box::new(logger(log.clone(), 0, capture_a.then_some(a))));
+        store.set_pointer_handler(b, Box::new(logger(log.clone(), 1, None)));
+        let mut scratch = Vec::new();
+        store.layout(
+            root,
+            Rect {
+                x: 0.0,
+                y: 0.0,
+                w: 100.0,
+                h: 100.0,
+            },
+            &mut scratch,
+        );
+        Scene {
+            store,
+            states: StateStore::new(),
+            bindings: BindingTable::new(),
+            root,
+            a,
+            b,
+            log,
+            chain: Vec::new(),
+        }
+    }
+
+    impl Scene {
+        fn touch(&mut self, finger: u64, x: f32, y: f32, phase: PointerPhase) {
+            let buttons = if phase == PointerPhase::Up {
+                PointerButtons::NONE
+            } else {
+                PointerButtons::PRIMARY
+            };
+            route_contact(
+                &mut self.store,
+                &mut self.states,
+                &self.bindings,
+                self.root,
+                PointerContact {
+                    id: PointerId(finger),
+                    direct: true,
+                },
+                PointerEvent {
+                    x,
+                    y,
+                    phase,
+                    buttons,
+                    modifiers: Modifiers::default(),
+                },
+                &mut self.chain,
+            );
+        }
+
+        fn log(&self) -> Vec<(u32, PointerPhase)> {
+            self.log.borrow().clone()
+        }
+    }
+
+    #[test]
+    fn two_fingers_press_two_controls_independently() {
+        let mut s = scene(false);
+        s.touch(1, 10.0, 10.0, PointerPhase::Down);
+        s.touch(2, 50.0, 10.0, PointerPhase::Down);
+        assert_eq!(s.store.capture_of(PointerId(1)), Some(s.a));
+        assert_eq!(s.store.capture_of(PointerId(2)), Some(s.b));
+        // Each finger follows its landing node even after drifting off it.
+        s.touch(1, 60.0, 12.0, PointerPhase::Move);
+        s.touch(1, 60.0, 12.0, PointerPhase::Up);
+        s.touch(2, 50.0, 10.0, PointerPhase::Up);
+        assert_eq!(
+            s.log(),
+            vec![
+                (0, PointerPhase::Down),
+                (1, PointerPhase::Down),
+                (0, PointerPhase::Move),
+                (0, PointerPhase::Up),
+                (1, PointerPhase::Up),
+            ]
+        );
+        assert_eq!(s.store.capture(), None);
+    }
+
+    #[test]
+    fn a_drag_past_the_slop_pans_and_cancels_the_press() {
+        let mut s = scene(false);
+        let viewport = s.root;
+        s.touch(1, 10.0, 30.0, PointerPhase::Down);
+        s.touch(1, 10.0, 10.0, PointerPhase::Move);
+        assert_eq!(s.store.scroll(viewport).y, 20.0);
+        s.touch(1, 10.0, 5.0, PointerPhase::Move);
+        assert_eq!(s.store.scroll(viewport).y, 25.0);
+        s.touch(1, 10.0, 5.0, PointerPhase::Up);
+        // The press ended in a leave and never saw the lift, so it never clicks.
+        assert_eq!(
+            s.log(),
+            vec![(0, PointerPhase::Down), (0, PointerPhase::Leave)]
+        );
+        assert_eq!(s.store.capture(), None);
+    }
+
+    #[test]
+    fn travel_inside_the_slop_stays_a_press() {
+        let mut s = scene(false);
+        s.touch(1, 10.0, 30.0, PointerPhase::Down);
+        s.touch(1, 12.0, 26.0, PointerPhase::Move);
+        s.touch(1, 12.0, 26.0, PointerPhase::Up);
+        assert_eq!(s.store.scroll(s.root).y, 0.0);
+        assert_eq!(
+            s.log(),
+            vec![
+                (0, PointerPhase::Down),
+                (0, PointerPhase::Move),
+                (0, PointerPhase::Up)
+            ]
+        );
+    }
+
+    #[test]
+    fn a_drag_with_no_room_to_pan_stays_with_the_control() {
+        let mut s = scene(false);
+        // Dragging down at offset 0 would scroll toward negative offsets.
+        s.touch(1, 10.0, 10.0, PointerPhase::Down);
+        s.touch(1, 10.0, 30.0, PointerPhase::Move);
+        s.touch(1, 10.0, 30.0, PointerPhase::Up);
+        assert_eq!(s.store.scroll(s.root).y, 0.0);
+        assert_eq!(s.log().last(), Some(&(0, PointerPhase::Up)));
+    }
+
+    #[test]
+    fn an_explicit_capture_is_never_taken_by_a_pan() {
+        let mut s = scene(true);
+        s.touch(1, 10.0, 30.0, PointerPhase::Down);
+        s.touch(1, 10.0, 5.0, PointerPhase::Move);
+        s.touch(1, 10.0, 5.0, PointerPhase::Up);
+        assert_eq!(s.store.scroll(s.root).y, 0.0);
+        assert_eq!(
+            s.log(),
+            vec![
+                (0, PointerPhase::Down),
+                (0, PointerPhase::Move),
+                (0, PointerPhase::Up)
+            ]
+        );
+    }
+
+    #[test]
+    fn a_cancelled_contact_leaves_and_releases() {
+        let mut s = scene(false);
+        s.touch(1, 10.0, 10.0, PointerPhase::Down);
+        s.touch(1, 10.0, 10.0, PointerPhase::Leave);
+        assert_eq!(s.store.capture(), None);
+        assert_eq!(
+            s.log(),
+            vec![(0, PointerPhase::Down), (0, PointerPhase::Leave)]
+        );
+    }
+
+    #[test]
+    fn claiming_a_held_pointer_cancels_its_holder() {
+        let mut s = scene(false);
+        let viewport = s.root;
+        // The viewport claims the mouse on any move: the drag it takes over
+        // was a's, so a receives a leave.
+        let log = s.log.clone();
+        s.store.set_pointer_handler(
+            viewport,
+            Box::new(move |ev: &mut EventCx<'_>| {
+                if ev.pointer().is_some_and(|p| p.phase == PointerPhase::Move) {
+                    log.borrow_mut().push((9, PointerPhase::Move));
+                    ev.capture_pointer(viewport);
+                }
+            }),
+        );
+        s.store.set_capture(PointerId::MOUSE, Some(s.a));
+        route_pointer(
+            &mut s.store,
+            &mut s.states,
+            &s.bindings,
+            s.root,
+            PointerEvent {
+                x: 10.0,
+                y: 10.0,
+                phase: PointerPhase::Move,
+                buttons: PointerButtons::PRIMARY,
+                modifiers: Modifiers::default(),
+            },
+            &mut s.chain,
+        );
+        assert_eq!(s.store.capture_of(PointerId::MOUSE), Some(viewport));
+        assert_eq!(
+            s.log(),
+            vec![(9, PointerPhase::Move), (0, PointerPhase::Leave)]
+        );
     }
 }

@@ -51,7 +51,8 @@ use std::cell::{Cell, RefCell};
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::atomic::Ordering;
-use std::time::{Duration, Instant};
+use std::time::Duration;
+use viso::ui::Instant;
 
 use viso::__test_support::drive_scripted;
 use viso::gpu::{GpuBackend, HeadlessRaster, RawWindowHandle};
