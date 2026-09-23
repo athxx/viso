@@ -110,6 +110,13 @@ pub fn plan(px_per_em: f32) -> MtsdfPlan {
     MtsdfPlan::Outline
 }
 
+/// The quality window of a field generated at `bucket` px-per-em: the effective
+/// px-per-em range it may serve before the caller re-[`plan`]s (§13.5). The same
+/// range every generated [`MtsdfGlyph`] records.
+pub fn window(bucket: f32) -> (f32, f32) {
+    (bucket * WINDOW_MIN, bucket * WINDOW_MAX)
+}
+
 /// What to generate a field for.
 #[derive(Debug, Clone, Copy)]
 pub struct MtsdfRequest<'a> {
@@ -283,6 +290,7 @@ impl MtsdfGenerator {
             return None;
         }
         let scale = req.px_per_em / face.units_per_em() as f32;
+        let (min_px_per_em, max_px_per_em) = window(req.px_per_em);
         let meta = |width: u32, height: u32, left: f32, top: f32| MtsdfGlyph {
             face: req.face,
             glyph: req.glyph,
@@ -294,8 +302,8 @@ impl MtsdfGenerator {
             left,
             top,
             distance_range: DISTANCE_RANGE,
-            min_px_per_em: req.px_per_em * WINDOW_MIN,
-            max_px_per_em: req.px_per_em * WINDOW_MAX,
+            min_px_per_em,
+            max_px_per_em,
         };
 
         let mut bounds = BoundsSink::default();
