@@ -72,32 +72,9 @@ pub struct PointerEvent {
     pub modifiers: Modifiers,
 }
 
-/// A minimal platform-independent key identity (UI-tier mirror of the runtime
-/// key, kept crate-local so no transport vocabulary rides down into the tree).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Key {
-    Escape,
-    Enter,
-    Space,
-    Tab,
-    Backspace,
-    /// Left arrow — directional navigation (slider decrement, caret motion).
-    Left,
-    /// Right arrow — directional navigation (slider increment, caret motion).
-    Right,
-    /// Up arrow — directional navigation (slider increment, vertical motion).
-    Up,
-    /// Down arrow — directional navigation (slider decrement, vertical motion).
-    Down,
-    /// Forward delete — removes the character after the caret (text editing).
-    Delete,
-    /// Home — moves the caret to the start of the line (text editing).
-    Home,
-    /// End — moves the caret to the end of the line (text editing).
-    End,
-    /// Any key not in the minimal set, carrying its raw platform scancode.
-    Other(u32),
-}
+/// The physical key identity: the one vocabulary shared from the OS event up
+/// to the widget, named by US-layout position.
+pub use viso_runtime::Key;
 
 /// A normalized key event (UI tier). Coordinate-free: routed to the focused
 /// node, not by hit testing.

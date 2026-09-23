@@ -44,7 +44,7 @@ use viso_render::{Primitive, Rect, Renderer};
 use viso_runtime::{FramePhase, RuntimeCx, Scheduler};
 use viso_ui::{
     AnimationRegistry, Axis, BindingTable, BuildCx, ChromeContext, ComputedStore, DirtyClass,
-    EffectStore, FlexStyle, FrameRecompute, ImeEvent, Key, KeyEvent, KeyRouter, Modifiers, NodeId,
+    EffectStore, FlexStyle, FrameRecompute, ImeEvent, KeyEvent, KeyRouter, Modifiers, NodeId,
     NodeStore, PointerButtons, PointerEvent, PointerPhase, PointerRouter, ScrollEvent,
     ScrollRouter, SemanticProjector, Size, StateId, StateStore, TextEdits, TextRequest,
     TimerRegistry, TimerRequest, TranslateAnim, VirtualLists, WindowOpenRequest, focus_next,
@@ -150,6 +150,11 @@ pub fn run<A: Application>() {
     let platform_app =
         viso_platform::create_app().unwrap_or_else(|_| viso_platform::create_headless_app());
     let driver = AppDriver::<A>::new();
+    // The browser's event loop cannot block, so the scheduler outlives `run`
+    // there; everywhere else the pump blocks until the last window closes.
+    #[cfg(target_arch = "wasm32")]
+    Scheduler::new(platform_app, driver).run_detached();
+    #[cfg(not(target_arch = "wasm32"))]
     Scheduler::new(platform_app, driver).run();
 }
 
@@ -229,6 +234,20 @@ pub mod __test_support {
         /// reads it to prove a `WindowChromeGeom` event lands on the right window.
         pub fn chrome_buttons_at(&self, index: usize) -> Option<viso_platform::LogicalRect> {
             self.driver.windows[index].chrome_buttons
+        }
+
+        /// The text of the focused text control in the launch window, or
+        /// `None` when focus is not in text entry.
+        pub fn focused_text(&self) -> Option<&str> {
+            let ws = &self.driver.windows[0];
+            let node = ws.focused_text_node()?;
+            ws.text_edits.get(node).map(|b| b.text.as_str())
+        }
+
+        /// The text-entry area last pushed to the platform for the launch
+        /// window: `None` before any push, `Some(None)` once pushed clear.
+        pub fn ime_area(&self) -> Option<Option<viso_platform::LogicalRect>> {
+            self.driver.windows[0].ime_area
         }
 
         /// How much each layer recomputed on the first window's most recent
@@ -473,6 +492,18 @@ struct WindowState {
     changed: Vec<StateId>,
     /// The tree root declared by the application's `build`, if it authored one.
     root: Option<NodeId>,
+    /// The touch or pen contact the tree currently follows. The first contact
+    /// down claims it and its lift or cancel releases it; a second finger while
+    /// one is down is not routed, so a pinch never reads as two taps. A mouse
+    /// always routes. Multi-pointer routing and gesture arbitration build on
+    /// this one-contact rule later.
+    primary_pointer: Option<viso_runtime::PointerId>,
+    /// The text-entry area last pushed to the platform, in logical points:
+    /// `Some(Some(rect))` while a text control has focus, `Some(None)` once
+    /// pushed clear, `None` before the first push. The Layout phase compares
+    /// against it so a steady frame pushes nothing and the soft keyboard is
+    /// shown or hidden only when focus moves into or out of text entry.
+    ime_area: Option<Option<LogicalRect>>,
     /// Reusable ancestry buffer the pointer router fills each event, owned here
     /// so routing a pointer allocates nothing on the steady path.
     route_chain: Vec<NodeId>,
@@ -590,6 +621,8 @@ impl WindowState {
             timer_requests: Vec::new(),
             changed: Vec::new(),
             root: None,
+            primary_pointer: None,
+            ime_area: None,
             route_chain: Vec::new(),
             primitives: Vec::new(),
             scratch: Vec::new(),
@@ -876,6 +909,66 @@ impl WindowState {
     /// held still: the registered set is tiny (one band per caption) so building the
     /// candidate list and comparing it is a handful of `f32` ops, not a full-tree
     /// sweep, and a window with no caption registers nothing and returns instantly.
+    /// Whether a pointer sample reaches the tree under the one-contact rule
+    /// ([`primary_pointer`](Self::primary_pointer)), updating the claim as a
+    /// contact lands or lifts.
+    fn admit_pointer(&mut self, p: &viso_runtime::PointerSample) -> bool {
+        if p.kind == viso_runtime::PointerKind::Mouse {
+            return true;
+        }
+        match (self.primary_pointer, p.phase) {
+            (None, viso_runtime::PointerPhase::Down) => {
+                self.primary_pointer = Some(p.pointer);
+                true
+            }
+            (Some(id), phase) if id == p.pointer => {
+                if matches!(
+                    phase,
+                    viso_runtime::PointerPhase::Up | viso_runtime::PointerPhase::Cancel
+                ) {
+                    self.primary_pointer = None;
+                }
+                true
+            }
+            // A pen hovering with nothing down still moves hover.
+            (None, _) => p.kind == viso_runtime::PointerKind::Pen,
+            _ => false,
+        }
+    }
+
+    /// The focused node's nearest text-edit control: the focused node itself or
+    /// the closest ancestor that registered a buffer.
+    fn focused_text_node(&self) -> Option<NodeId> {
+        let mut node = self.store.focused();
+        while let Some(id) = node {
+            if self.text_edits.get(id).is_some() {
+                return Some(id);
+            }
+            node = self.store.parent(id);
+        }
+        None
+    }
+
+    /// Recompute the text-entry area from the laid-out tree and report whether
+    /// it differs from what was last pushed. The area is the focused text
+    /// control's box; the caret-precise rect follows once the caret is painted.
+    fn ime_area_changed(&mut self) -> bool {
+        let area = self.focused_text_node().map(|id| {
+            let r = self.store.world(id);
+            LogicalRect {
+                x: r.x as f64,
+                y: r.y as f64,
+                width: r.w as f64,
+                height: r.h as f64,
+            }
+        });
+        if self.ime_area == Some(area) {
+            return false;
+        }
+        self.ime_area = Some(area);
+        true
+    }
+
     fn draggable_regions_changed(&mut self) -> bool {
         let regions = self.store.draggable_regions();
         // Fast exit shared by every window without a self-drawn caption: nothing
@@ -1167,6 +1260,9 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
         let scale = ws.dpi.max(1.0);
         match sample {
             viso_runtime::InputSample::Pointer(p) => {
+                if !ws.admit_pointer(&p) {
+                    return;
+                }
                 let ev = PointerEvent {
                     x: p.x / scale,
                     y: p.y / scale,
@@ -1174,7 +1270,12 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
                         viso_runtime::PointerPhase::Down => PointerPhase::Down,
                         viso_runtime::PointerPhase::Move => PointerPhase::Move,
                         viso_runtime::PointerPhase::Up => PointerPhase::Up,
-                        viso_runtime::PointerPhase::Leave => PointerPhase::Leave,
+                        // A cancelled contact must not activate anything: it
+                        // reaches the tree as a leave, which clears press and
+                        // hover without a click.
+                        viso_runtime::PointerPhase::Leave | viso_runtime::PointerPhase::Cancel => {
+                            PointerPhase::Leave
+                        }
                     },
                     buttons: PointerButtons(p.buttons),
                     modifiers: Modifiers {
@@ -1192,6 +1293,12 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
                     ev,
                     &mut ws.route_chain,
                 );
+                // The OS took the contact back, so no up will follow: release a
+                // capture the press established rather than leave the tree
+                // following a pointer that no longer exists.
+                if p.phase == viso_runtime::PointerPhase::Cancel {
+                    ws.store.set_capture(None);
+                }
             }
             viso_runtime::InputSample::Key(k) => {
                 // Lower the runtime-tier key sample onto the UI-tier event, then
@@ -1205,7 +1312,7 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
                     focus_next(&mut ws.store, root, !modifiers.shift);
                 } else {
                     let ev = KeyEvent {
-                        key: lower_key(k.key),
+                        key: k.key,
                         pressed: k.pressed,
                         repeat: k.repeat,
                         modifiers,
@@ -1233,6 +1340,42 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
                     ImeEvent::Commit { text: t.text },
                     &mut ws.route_chain,
                 );
+            }
+            viso_runtime::InputSample::Paste(t) => {
+                // Pasted text enters the focused control exactly like a committed
+                // IME segment: it replaces the selection. A single-line buffer
+                // folds any line breaks in it.
+                KeyRouter::route_ime(
+                    &mut ws.store,
+                    &mut ws.states,
+                    &ws.bindings,
+                    &mut ws.text_edits,
+                    root,
+                    ImeEvent::Commit { text: t.text },
+                    &mut ws.route_chain,
+                );
+            }
+            viso_runtime::InputSample::Copy(c) => {
+                // The platform asks for the selection while its copy/cut handler
+                // is still on the stack. Apply any edits queued this event batch
+                // first so the reply reflects what the user sees, then answer
+                // from the focused text control's buffer. An empty selection
+                // leaves the reply unset and the clipboard untouched.
+                text_edit::reconcile(&mut ws.store, &mut ws.text_edits);
+                let Some(node) = ws.focused_text_node() else {
+                    return;
+                };
+                let Some(buffer) = ws.text_edits.get_mut(node) else {
+                    return;
+                };
+                let (start, end) = (buffer.sel.start(), buffer.sel.end());
+                if start == end {
+                    return;
+                }
+                c.reply.set(buffer.text[start..end].to_owned());
+                if c.cut {
+                    buffer.queue(text_edit::EditIntent::Delete);
+                }
             }
             viso_runtime::InputSample::ImePreedit(p) => {
                 // An in-progress composition routes as a preedit; a control shows
@@ -1270,6 +1413,27 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
                 };
                 ScrollRouter::route(&mut ws.store, root, ev);
             }
+        }
+    }
+
+    fn on_lifecycle(&mut self, cx: &mut RuntimeCx<'_>, event: viso_runtime::Lifecycle) {
+        match event {
+            // Frames were skipped while suspended and a surface may have been
+            // recreated underneath, so every window paints once on return.
+            viso_runtime::Lifecycle::Resumed => {
+                for ws in &self.windows {
+                    cx.request_redraw(ws.window);
+                }
+            }
+            // Give back the GPU memory the next frame can rebuild on demand.
+            viso_runtime::Lifecycle::LowMemory => {
+                for ws in &mut self.windows {
+                    if let Some(gpu) = &mut ws.gpu {
+                        gpu.renderer.trim_caches(&mut gpu.backend);
+                    }
+                }
+            }
+            viso_runtime::Lifecycle::Suspended => {}
         }
     }
 
@@ -1541,6 +1705,18 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
                     if ws.draggable_regions_changed() {
                         cx.set_draggable_regions(ws.window, &ws.draggable_cache);
                     }
+                    // Tell the platform where text entry is, so an IME candidate
+                    // window and the soft keyboard track the focused control. The
+                    // keyboard is toggled only when focus crosses into or out of
+                    // text entry, not when the control merely moves.
+                    let was_editing = matches!(ws.ime_area, Some(Some(_)));
+                    if ws.ime_area_changed() {
+                        let area = ws.ime_area.flatten();
+                        cx.set_ime_area(ws.window, area);
+                        if was_editing != area.is_some() {
+                            cx.show_soft_keyboard(ws.window, area.is_some());
+                        }
+                    }
                 }
             }
             FramePhase::UploadGpuChanges => {
@@ -1693,29 +1869,8 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
     }
 }
 
-/// Lower a runtime-tier key identity onto the UI-tier one. The two enums are
-/// deliberate value mirrors (the UI layer must not depend on the runtime), so
-/// the facade — which sees both — is the one place that maps between them.
-fn lower_key(key: viso_runtime::Key) -> Key {
-    match key {
-        viso_runtime::Key::Escape => Key::Escape,
-        viso_runtime::Key::Enter => Key::Enter,
-        viso_runtime::Key::Space => Key::Space,
-        viso_runtime::Key::Tab => Key::Tab,
-        viso_runtime::Key::Backspace => Key::Backspace,
-        viso_runtime::Key::Left => Key::Left,
-        viso_runtime::Key::Right => Key::Right,
-        viso_runtime::Key::Up => Key::Up,
-        viso_runtime::Key::Down => Key::Down,
-        viso_runtime::Key::Delete => Key::Delete,
-        viso_runtime::Key::Home => Key::Home,
-        viso_runtime::Key::End => Key::End,
-        viso_runtime::Key::Other(code) => Key::Other(code),
-    }
-}
-
 /// Lower runtime-tier modifier state onto the UI-tier mirror (same fields, a
-/// crate-boundary copy — see [`lower_key`]).
+/// crate-boundary copy).
 fn lower_modifiers(m: viso_runtime::Modifiers) -> Modifiers {
     Modifiers {
         shift: m.shift,

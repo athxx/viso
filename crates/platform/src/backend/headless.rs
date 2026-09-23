@@ -15,8 +15,8 @@
 use std::collections::VecDeque;
 
 use crate::RawWindowHandle;
-use crate::control::{PlatformError, WindowConfig, WindowId};
-use crate::event::RawEvent;
+use crate::control::{LogicalRect, PlatformError, WindowConfig, WindowId};
+use crate::event::{Appearance, CursorIcon, RawEvent};
 use crate::handler::AppHandler;
 use crate::{ControlFlow, PlatformApp, Window};
 
@@ -28,6 +28,10 @@ pub struct HeadlessApp {
     script: VecDeque<RawEvent>,
     /// Redraw requests raised during handling, delivered as beats.
     pending_redraws: VecDeque<WindowId>,
+    /// The in-process clipboard: what `set_clipboard_text` stored and
+    /// `request_paste` hands back.
+    clipboard: Option<String>,
+    appearance: Appearance,
 }
 
 impl HeadlessApp {
@@ -38,6 +42,8 @@ impl HeadlessApp {
             windows: Vec::new(),
             script: VecDeque::new(),
             pending_redraws: VecDeque::new(),
+            clipboard: None,
+            appearance: Appearance::default(),
         }
     }
 
@@ -49,6 +55,45 @@ impl HeadlessApp {
         let mut app = Self::new();
         app.script = script.into_iter().collect();
         app
+    }
+
+    /// Set the appearance [`PlatformApp::appearance`] reports. Scripts that
+    /// test a change also enqueue the matching [`RawEvent::AppearanceChanged`].
+    pub fn set_appearance(&mut self, appearance: Appearance) {
+        self.appearance = appearance;
+    }
+
+    /// The clipboard's current text.
+    pub fn clipboard(&self) -> Option<&str> {
+        self.clipboard.as_deref()
+    }
+
+    /// The cursor last set on `window`.
+    pub fn cursor(&self, window: WindowId) -> Option<CursorIcon> {
+        self.windows
+            .iter()
+            .find(|w| w.id == window)
+            .map(|w| w.cursor)
+    }
+
+    /// The caret rect last handed to the IME for `window`.
+    pub fn ime_area(&self, window: WindowId) -> Option<LogicalRect> {
+        self.windows
+            .iter()
+            .find(|w| w.id == window)
+            .and_then(|w| w.ime_area)
+    }
+
+    /// Whether the soft keyboard is currently requested for `window`.
+    pub fn soft_keyboard_shown(&self, window: WindowId) -> bool {
+        self.windows
+            .iter()
+            .find(|w| w.id == window)
+            .is_some_and(|w| w.soft_keyboard)
+    }
+
+    fn window_mut(&mut self, id: WindowId) -> Option<&mut HeadlessWindow> {
+        self.windows.iter_mut().find(|w| w.id == id)
     }
 
     fn next_event(&mut self) -> Option<RawEvent> {
@@ -75,6 +120,9 @@ impl PlatformApp for HeadlessApp {
             title: config.title,
             scale: 1.0,
             physical_size: (w as u32, h as u32),
+            cursor: CursorIcon::Default,
+            ime_area: None,
+            soft_keyboard: false,
         });
         Ok(id)
     }
@@ -129,6 +177,40 @@ impl PlatformApp for HeadlessApp {
                 .push_front(RawEvent::WindowClosed { window: id });
         }
     }
+
+    fn set_clipboard_text(&mut self, text: &str) {
+        self.clipboard = Some(text.to_string());
+    }
+
+    fn request_paste(&mut self, window: WindowId) {
+        // Delivered next, ahead of the rest of the script: the answer to a
+        // request made while handling the current event.
+        if let Some(text) = self.clipboard.clone() {
+            self.script.push_front(RawEvent::Paste { window, text });
+        }
+    }
+
+    fn set_cursor(&mut self, window: WindowId, icon: CursorIcon) {
+        if let Some(w) = self.window_mut(window) {
+            w.cursor = icon;
+        }
+    }
+
+    fn set_ime_area(&mut self, window: WindowId, caret: Option<LogicalRect>) {
+        if let Some(w) = self.window_mut(window) {
+            w.ime_area = caret;
+        }
+    }
+
+    fn show_soft_keyboard(&mut self, window: WindowId, show: bool) {
+        if let Some(w) = self.window_mut(window) {
+            w.soft_keyboard = show;
+        }
+    }
+
+    fn appearance(&self) -> Appearance {
+        self.appearance
+    }
 }
 
 /// A headless window: pure state, no OS resource.
@@ -137,6 +219,9 @@ pub struct HeadlessWindow {
     title: String,
     scale: f64,
     physical_size: (u32, u32),
+    cursor: CursorIcon,
+    ime_area: Option<LogicalRect>,
+    soft_keyboard: bool,
 }
 
 impl Window for HeadlessWindow {
@@ -171,7 +256,84 @@ impl Window for HeadlessWindow {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::control::LogicalRect;
+    use crate::handler::AppHandler;
+
+    struct Recorder(Vec<RawEvent>);
+
+    impl AppHandler for Recorder {
+        fn handle(&mut self, event: RawEvent) -> ControlFlow {
+            self.0.push(event);
+            ControlFlow::Wait
+        }
+    }
+
+    #[test]
+    fn clipboard_round_trips_through_request_paste() {
+        let mut app = HeadlessApp::new();
+        let id = app.create_window(WindowConfig::default()).unwrap();
+        app.request_paste(id);
+        let mut rec = Recorder(Vec::new());
+        app.run(&mut rec);
+        assert_eq!(
+            rec.0,
+            vec![RawEvent::AppLaunched],
+            "empty clipboard answers nothing"
+        );
+
+        app.set_clipboard_text("héllo");
+        assert_eq!(app.clipboard(), Some("héllo"));
+        app.request_paste(id);
+        let mut rec = Recorder(Vec::new());
+        app.run(&mut rec);
+        assert_eq!(
+            rec.0,
+            vec![
+                RawEvent::AppLaunched,
+                RawEvent::Paste {
+                    window: id,
+                    text: "héllo".into()
+                }
+            ]
+        );
+    }
+
+    #[test]
+    fn cursor_ime_and_keyboard_state_is_per_window() {
+        let mut app = HeadlessApp::new();
+        let a = app.create_window(WindowConfig::default()).unwrap();
+        let b = app.create_window(WindowConfig::default()).unwrap();
+        app.set_cursor(a, CursorIcon::Text);
+        app.set_ime_area(a, Some(LogicalRect::new(10.0, 20.0, 1.0, 16.0)));
+        app.show_soft_keyboard(a, true);
+        assert_eq!(app.cursor(a), Some(CursorIcon::Text));
+        assert_eq!(app.cursor(b), Some(CursorIcon::Default));
+        assert_eq!(
+            app.ime_area(a),
+            Some(LogicalRect::new(10.0, 20.0, 1.0, 16.0))
+        );
+        assert_eq!(app.ime_area(b), None);
+        assert!(app.soft_keyboard_shown(a));
+        assert!(!app.soft_keyboard_shown(b));
+        app.set_ime_area(a, None);
+        assert_eq!(app.ime_area(a), None);
+        // Unknown windows are ignored.
+        app.set_cursor(WindowId(99), CursorIcon::Wait);
+        assert_eq!(app.cursor(WindowId(99)), None);
+    }
+
+    #[test]
+    fn appearance_is_scriptable() {
+        use crate::event::ColorScheme;
+        let mut app = HeadlessApp::new();
+        assert_eq!(app.appearance(), Appearance::default());
+        let dark = Appearance {
+            color_scheme: ColorScheme::Dark,
+            high_contrast: true,
+            reduce_motion: false,
+        };
+        app.set_appearance(dark);
+        assert_eq!(app.appearance(), dark);
+    }
 
     #[test]
     fn set_draggable_regions_is_a_no_op_on_headless() {

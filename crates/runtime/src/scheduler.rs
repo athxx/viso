@@ -14,16 +14,16 @@
 use std::time::{Duration, Instant};
 
 use viso_platform::{
-    AppHandler, ControlFlow, KeyCode, Modifiers as RawModifiers, PlatformApp, RawEvent, RawPointer,
+    AppHandler, ControlFlow, Modifiers as RawModifiers, PlatformApp, RawEvent, RawPointer,
     RawScroll,
 };
 
 use crate::clock::{FrameClock, WallClock};
 use crate::context::RuntimeCx;
-use crate::driver::FrameDriver;
+use crate::driver::{FrameDriver, Lifecycle};
 use crate::frame::run_frame;
 use crate::input::{
-    ImePreeditSample, InputSample, Key, KeySample, Modifiers, PointerPhase, PointerSample,
+    CopySample, ImePreeditSample, InputSample, KeySample, Modifiers, PointerPhase, PointerSample,
     ScrollSample, TextSample,
 };
 use crate::schedule::{RedrawReason, RedrawReasons};
@@ -39,6 +39,9 @@ pub struct Scheduler<D: FrameDriver, C: FrameClock = WallClock> {
     /// Windows currently open. When this empties after a close, we exit.
     open_windows: u32,
     launched: bool,
+    /// The app is in the background: no frames, no animation beats. Pending
+    /// reasons are kept and drained by the first frame after resume.
+    suspended: bool,
     /// The time source sampled once at the head of each frame.
     clock: C,
     /// When the previous frame ran, for the delta the next frame observes.
@@ -64,6 +67,7 @@ impl<D: FrameDriver, C: FrameClock> Scheduler<D, C> {
             reasons: RedrawReasons::new(),
             open_windows: 0,
             launched: false,
+            suspended: false,
             clock,
             last_frame: None,
         }
@@ -109,11 +113,31 @@ impl<D: FrameDriver, C: FrameClock> Scheduler<D, C> {
         self.driver
     }
 
+    /// Run under a pump that returns before the app ends — the browser's event
+    /// loop cannot block, so its [`PlatformApp::run`] installs callbacks and
+    /// returns at once, and the handler must outlive that call. The scheduler
+    /// is moved to the heap and leaked, so it lives for the rest of the
+    /// process; when the pump does block, this behaves like [`run`](Self::run)
+    /// except that the scheduler is never dropped.
+    pub fn run_detached(self)
+    where
+        D: 'static,
+        C: 'static,
+    {
+        let this: &'static mut Self = Box::leak(Box::new(self));
+        // SAFETY: `this` is leaked, so it and the `app` it owns stay valid for
+        // the rest of the process, including after `run` returns and whenever
+        // the pump later re-enters the handler. As in `run`, the pump's uses of
+        // `app` and of the handler are strictly interleaved, never simultaneous.
+        let app: *mut dyn PlatformApp = &mut *this.app;
+        unsafe { (*app).run(this) };
+    }
+
     /// Run one frame if the pending reasons call for it, then reset them.
     fn maybe_run_frame(&mut self) {
         // Only spend a frame when something is actually pending — the
-        // zero-CPU-when-idle contract.
-        if self.reasons.is_idle() {
+        // zero-CPU-when-idle contract. A backgrounded app draws nothing.
+        if self.suspended || self.reasons.is_idle() {
             return;
         }
         // Sample the clock at the frame head and diff against the previous
@@ -138,10 +162,28 @@ impl<D: FrameDriver, C: FrameClock> Scheduler<D, C> {
         }
     }
 
+    /// Hand a lifecycle transition to the driver with a live context, so it can
+    /// request redraws for its windows on resume.
+    fn lifecycle(&mut self, event: Lifecycle) {
+        let state_dirty = {
+            let mut cx = RuntimeCx::new(self.app.as_mut(), Duration::ZERO, self.clock.now());
+            self.driver.on_lifecycle(&mut cx, event);
+            cx.state_dirty_requested()
+        };
+        if state_dirty {
+            self.reasons.add(RedrawReason::StateDirty);
+        }
+    }
+
     /// After handling an event, decide how the pump should proceed.
     fn resolve_control_flow(&mut self) -> ControlFlow {
         if self.launched && self.open_windows == 0 {
             return ControlFlow::Exit;
+        }
+        // In the background only OS events wake the loop; timers and animation
+        // resume with the first frame after `Resumed`.
+        if self.suspended {
+            return ControlFlow::Wait;
         }
         // If the driver wants continuous animation, keep beats coming.
         if self.driver.wants_animation() {
@@ -204,8 +246,11 @@ impl<D: FrameDriver, C: FrameClock> AppHandler for Scheduler<D, C> {
             RawEvent::RedrawRequested { .. } => {
                 // A beat: run the frame the pending reasons ask for. Requesting
                 // a redraw from the driver added a reason; the beat drains it.
-                self.maybe_run_frame();
-                self.reasons.take();
+                // While suspended the reasons stay pending for the resume frame.
+                if !self.suspended {
+                    self.maybe_run_frame();
+                    self.reasons.take();
+                }
             }
             RawEvent::Resized {
                 window,
@@ -268,7 +313,7 @@ impl<D: FrameDriver, C: FrameClock> AppHandler for Scheduler<D, C> {
                 // just drop the OS vocabulary and hand the driver a KeySample.
                 let sample = KeySample {
                     window: k.window,
-                    key: normalize_key(k.code),
+                    key: k.code,
                     pressed: k.pressed,
                     repeat: k.repeat,
                     modifiers: normalize_modifiers(k.modifiers),
@@ -337,6 +382,47 @@ impl<D: FrameDriver, C: FrameClock> AppHandler for Scheduler<D, C> {
                 self.driver.on_input(InputSample::Scroll(sample));
                 self.reasons.add(RedrawReason::InputDirty);
             }
+            RawEvent::WindowFocused { window, focused } => {
+                self.driver.on_window_focus(window, focused);
+                self.reasons.add(RedrawReason::InputDirty);
+            }
+            RawEvent::AppearanceChanged(appearance) => {
+                self.driver.on_appearance(appearance);
+                self.reasons.add(RedrawReason::InputDirty);
+            }
+            RawEvent::SafeAreaChanged { window, insets } => {
+                self.driver.on_safe_area(window, insets);
+                self.reasons.add(RedrawReason::InputDirty);
+            }
+            RawEvent::KeyboardInsetChanged { window, height } => {
+                self.driver.on_keyboard_inset(window, height);
+                self.reasons.add(RedrawReason::InputDirty);
+            }
+            RawEvent::CopyRequested { window, cut, reply } => {
+                // The driver answers synchronously through `reply`; the backend
+                // reads it once this returns. A cut edits content, so redraw.
+                self.driver
+                    .on_input(InputSample::Copy(CopySample { window, cut, reply }));
+                if cut {
+                    self.reasons.add(RedrawReason::InputDirty);
+                }
+            }
+            RawEvent::Paste { window, text } => {
+                self.driver
+                    .on_input(InputSample::Paste(TextSample { window, text }));
+                self.reasons.add(RedrawReason::InputDirty);
+            }
+            RawEvent::Suspended => {
+                self.suspended = true;
+                self.lifecycle(Lifecycle::Suspended);
+            }
+            RawEvent::Resumed => {
+                self.suspended = false;
+                self.lifecycle(Lifecycle::Resumed);
+                // The drawable may have been rebuilt while hidden.
+                self.reasons.add(RedrawReason::ExternalSurfaceInvalidation);
+            }
+            RawEvent::LowMemory => self.lifecycle(Lifecycle::LowMemory),
         }
         self.resolve_control_flow()
     }
@@ -352,11 +438,15 @@ fn normalize_pointer(p: RawPointer, scale: f32) -> PointerSample {
         RawPhase::Moved => PointerPhase::Move,
         RawPhase::Up => PointerPhase::Up,
         RawPhase::Left => PointerPhase::Leave,
+        RawPhase::Cancel => PointerPhase::Cancel,
     };
     PointerSample {
         window: p.window,
+        pointer: p.pointer,
+        kind: p.kind,
         x: p.x as f32 * scale,
         y: p.y as f32 * scale,
+        pressure: p.pressure,
         buttons: p.buttons.0,
         modifiers: normalize_modifiers(p.modifiers),
         phase,
@@ -374,26 +464,6 @@ fn normalize_scroll(s: RawScroll, scale: f32) -> ScrollSample {
         delta_x: s.delta_x as f32 * scale,
         delta_y: s.delta_y as f32 * scale,
         modifiers: normalize_modifiers(s.modifiers),
-    }
-}
-
-/// Map a platform key code onto the runtime-tier [`Key`] mirror, dropping the OS
-/// vocabulary so no platform type rides up to the driver.
-fn normalize_key(code: KeyCode) -> Key {
-    match code {
-        KeyCode::Escape => Key::Escape,
-        KeyCode::Enter => Key::Enter,
-        KeyCode::Space => Key::Space,
-        KeyCode::Tab => Key::Tab,
-        KeyCode::Backspace => Key::Backspace,
-        KeyCode::Left => Key::Left,
-        KeyCode::Right => Key::Right,
-        KeyCode::Up => Key::Up,
-        KeyCode::Down => Key::Down,
-        KeyCode::Delete => Key::Delete,
-        KeyCode::Home => Key::Home,
-        KeyCode::End => Key::End,
-        KeyCode::Other(scancode) => Key::Other(scancode),
     }
 }
 
@@ -528,5 +598,135 @@ mod tests {
             vec![(WindowId(1), true), (WindowId(1), false)],
             "each transition reaches the driver in order with its window and state"
         );
+    }
+
+    /// A driver that records lifecycle events, frames and clipboard traffic,
+    /// and answers a copy request with a fixed selection.
+    #[derive(Default)]
+    struct LifecycleDriver {
+        lifecycle: Vec<Lifecycle>,
+        frames: u32,
+        pasted: Vec<String>,
+        copies: Vec<bool>,
+    }
+
+    impl FrameDriver for LifecycleDriver {
+        fn on_launch(&mut self, _cx: &mut RuntimeCx<'_>) {}
+        fn on_geometry(&mut self, _window: WindowId, _scale: f64, _width: u32, _height: u32) {}
+        fn on_input(&mut self, sample: InputSample) {
+            match sample {
+                InputSample::Paste(t) => self.pasted.push(t.text),
+                InputSample::Copy(c) => {
+                    self.copies.push(c.cut);
+                    c.reply.set("sel".to_owned());
+                }
+                _ => {}
+            }
+        }
+        fn run_phase(&mut self, phase: FramePhase, _cx: &mut RuntimeCx<'_>) {
+            if phase == FramePhase::Submit {
+                self.frames += 1;
+            }
+        }
+        fn on_lifecycle(&mut self, _cx: &mut RuntimeCx<'_>, event: Lifecycle) {
+            self.lifecycle.push(event);
+        }
+    }
+
+    fn lifecycle_scheduler() -> Scheduler<LifecycleDriver> {
+        let app = Box::new(HeadlessApp::scripted(vec![]));
+        let mut sched = Scheduler::new(app, LifecycleDriver::default());
+        sched.launched = true;
+        sched.open_windows = 1;
+        sched
+    }
+
+    fn click() -> RawEvent {
+        RawEvent::Pointer(RawPointer::mouse(
+            WindowId(1),
+            4.0,
+            4.0,
+            viso_platform::PointerButtons::PRIMARY,
+            RawModifiers::default(),
+            viso_platform::PointerPhase::Down,
+        ))
+    }
+
+    #[test]
+    fn a_suspended_app_runs_no_frames_and_resumes_with_one() {
+        let mut sched = lifecycle_scheduler();
+        assert_eq!(sched.handle(RawEvent::Suspended), ControlFlow::Wait);
+        // Input and beats while backgrounded keep their reasons but draw nothing.
+        assert_eq!(sched.handle(click()), ControlFlow::Wait);
+        let _ = sched.handle(RawEvent::RedrawRequested {
+            window: WindowId(1),
+        });
+        assert_eq!(sched.driver.frames, 0, "no frame while suspended");
+
+        assert_eq!(
+            sched.handle(RawEvent::Resumed),
+            ControlFlow::Poll,
+            "resuming leaves a frame pending"
+        );
+        let _ = sched.handle(RawEvent::RedrawRequested {
+            window: WindowId(1),
+        });
+        assert_eq!(
+            sched.driver.frames, 1,
+            "the resume frame drains every reason"
+        );
+        assert_eq!(
+            sched.driver.lifecycle,
+            vec![Lifecycle::Suspended, Lifecycle::Resumed]
+        );
+    }
+
+    #[test]
+    fn a_memory_warning_reaches_the_driver_without_a_frame() {
+        let mut sched = lifecycle_scheduler();
+        assert_eq!(sched.handle(RawEvent::LowMemory), ControlFlow::Wait);
+        assert_eq!(sched.driver.lifecycle, vec![Lifecycle::LowMemory]);
+    }
+
+    #[test]
+    fn a_copy_request_is_answered_in_place_and_only_cut_dirties_the_frame() {
+        let mut sched = lifecycle_scheduler();
+        let reply = viso_platform::ClipboardReply::new();
+        let flow = sched.handle(RawEvent::CopyRequested {
+            window: WindowId(1),
+            cut: false,
+            reply: reply.clone(),
+        });
+        assert_eq!(flow, ControlFlow::Wait, "a copy changes nothing on screen");
+        assert_eq!(reply.take().as_deref(), Some("sel"));
+
+        let reply = viso_platform::ClipboardReply::new();
+        let flow = sched.handle(RawEvent::CopyRequested {
+            window: WindowId(1),
+            cut: true,
+            reply: reply.clone(),
+        });
+        assert_eq!(flow, ControlFlow::Poll, "a cut removes the selection");
+        assert_eq!(reply.take().as_deref(), Some("sel"));
+        assert_eq!(sched.driver.copies, vec![false, true]);
+    }
+
+    #[test]
+    fn pasted_text_reaches_the_driver_as_input() {
+        let mut sched = lifecycle_scheduler();
+        let flow = sched.handle(RawEvent::Paste {
+            window: WindowId(1),
+            text: "clip".to_owned(),
+        });
+        assert_eq!(flow, ControlFlow::Poll);
+        assert_eq!(sched.driver.pasted, vec!["clip".to_owned()]);
+    }
+
+    #[test]
+    fn a_detached_scheduler_runs_the_pump_to_completion() {
+        // The headless pump blocks until its script drains, so a detached run
+        // still launches and returns; only the scheduler is never dropped.
+        let app = Box::new(HeadlessApp::scripted(vec![]));
+        Scheduler::new(app, LifecycleDriver::default()).run_detached();
     }
 }

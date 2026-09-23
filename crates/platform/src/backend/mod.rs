@@ -16,7 +16,13 @@ pub mod macos;
 #[cfg(target_os = "windows")]
 pub mod windows;
 
-#[cfg(all(unix, not(target_os = "macos")))]
+#[cfg(any(
+    target_os = "linux",
+    target_os = "freebsd",
+    target_os = "openbsd",
+    target_os = "netbsd",
+    target_os = "dragonfly"
+))]
 pub mod x11;
 
 /// Build the native platform app for this target, if one is compiled.
@@ -29,11 +35,25 @@ pub fn create_native() -> Result<Box<dyn PlatformApp>, PlatformError> {
     {
         windows::WinApp::new().map(|a| Box::new(a) as Box<dyn PlatformApp>)
     }
-    #[cfg(all(unix, not(target_os = "macos")))]
+    #[cfg(any(
+        target_os = "linux",
+        target_os = "freebsd",
+        target_os = "openbsd",
+        target_os = "netbsd",
+        target_os = "dragonfly"
+    ))]
     {
         x11::X11App::new().map(|a| Box::new(a) as Box<dyn PlatformApp>)
     }
-    #[cfg(not(any(target_os = "macos", target_os = "windows", unix)))]
+    #[cfg(not(any(
+        target_os = "macos",
+        target_os = "windows",
+        target_os = "linux",
+        target_os = "freebsd",
+        target_os = "openbsd",
+        target_os = "netbsd",
+        target_os = "dragonfly"
+    )))]
     {
         Err(PlatformError::NoBackend)
     }

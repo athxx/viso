@@ -61,9 +61,8 @@ impl LogicalRect {
 /// What the pump should do after delivering the current event batch.
 ///
 /// The runtime returns this from [`crate::AppHandler::handle`]; the backend
-/// blocks, spins, sleeps, or exits accordingly. Mirrors makepad's
-/// `EventFlow { Poll, Wait, Exit }`, extended with a deadline variant so timers
-/// need no busy-poll.
+/// blocks, spins, sleeps, or exits accordingly. The deadline variant lets
+/// timers sleep without busy-polling.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ControlFlow {
     /// A frame is pending — do not block; process the next event immediately.

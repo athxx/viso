@@ -109,14 +109,14 @@ fn slide_script() -> Vec<RawEvent> {
         RawEvent::RedrawRequested {
             window: WindowId(1),
         },
-        RawEvent::Pointer(RawPointer {
-            window: WindowId(1),
-            x: SURFACE_W as f64 / 2.0,
-            y: SURFACE_H as f64 / 2.0,
-            buttons: RawButtons::PRIMARY,
-            modifiers: Modifiers::default(),
-            phase: RawPhase::Down,
-        }),
+        RawEvent::Pointer(RawPointer::mouse(
+            WindowId(1),
+            SURFACE_W as f64 / 2.0,
+            SURFACE_H as f64 / 2.0,
+            RawButtons::PRIMARY,
+            Modifiers::default(),
+            RawPhase::Down,
+        )),
         RawEvent::RedrawRequested {
             window: WindowId(1),
         },

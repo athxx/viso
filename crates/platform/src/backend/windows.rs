@@ -97,10 +97,11 @@ impl PlatformApp for WinApp {
             .collect();
         let (w, h) = config.logical_size;
 
+        // SAFETY: `GetModuleHandleW(None)` returns the calling process's module.
+        let hinstance =
+            unsafe { GetModuleHandleW(None).map_err(|e| PlatformError::Backend(e.to_string()))? };
         // SAFETY: standard Win32 window creation with a registered class.
         let hwnd = unsafe {
-            let hinstance =
-                GetModuleHandleW(None).map_err(|e| PlatformError::Backend(e.to_string()))?;
             CreateWindowExW(
                 WINDOW_EX_STYLE(0),
                 w!("VisoWindowClass"),
@@ -124,6 +125,7 @@ impl PlatformApp for WinApp {
         self.windows.push(WinWindow {
             id,
             hwnd,
+            hinstance: hinstance.0,
             scale: 1.0,
         });
         self.shared.borrow_mut().redraws.push_back(id);
@@ -243,12 +245,27 @@ impl PlatformApp for WinApp {
             .events
             .push_back(RawEvent::WindowClosed { window });
     }
+
+    fn set_clipboard_text(&mut self, _text: &str) {}
+
+    fn request_paste(&mut self, _window: WindowId) {}
+
+    fn set_cursor(&mut self, _window: WindowId, _icon: crate::CursorIcon) {}
+
+    fn set_ime_area(&mut self, _window: WindowId, _caret: Option<crate::LogicalRect>) {}
+
+    fn show_soft_keyboard(&mut self, _window: WindowId, _show: bool) {}
+
+    fn appearance(&self) -> crate::Appearance {
+        crate::Appearance::default()
+    }
 }
 
 /// A native Win32 window.
 pub struct WinWindow {
     id: WindowId,
     hwnd: HWND,
+    hinstance: *mut core::ffi::c_void,
     scale: f64,
 }
 
@@ -278,6 +295,7 @@ impl Window for WinWindow {
     fn raw_handle(&self) -> RawWindowHandle {
         RawWindowHandle::Win32 {
             hwnd: self.hwnd.0 as *mut core::ffi::c_void,
+            hinstance: self.hinstance,
         }
     }
 }

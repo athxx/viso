@@ -176,14 +176,14 @@ fn idle_beats_do_no_work() {
 fn input_dirties_then_next_beat_runs_a_frame() {
     // An input event adds InputDirty; the following beat drains it into a frame.
     use viso_platform::{Modifiers, PointerButtons, PointerPhase, RawPointer};
-    let pointer = RawEvent::Pointer(RawPointer {
-        window: WindowId(1),
-        x: 10.0,
-        y: 20.0,
-        buttons: PointerButtons::PRIMARY,
-        modifiers: Modifiers::default(),
-        phase: PointerPhase::Down,
-    });
+    let pointer = RawEvent::Pointer(RawPointer::mouse(
+        WindowId(1),
+        10.0,
+        20.0,
+        PointerButtons::PRIMARY,
+        Modifiers::default(),
+        PointerPhase::Down,
+    ));
     let script = vec![
         pointer,
         RawEvent::RedrawRequested {

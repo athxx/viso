@@ -9,7 +9,8 @@
 use std::time::{Duration, Instant};
 
 use viso_platform::{
-    LogicalRect, PlatformApp, PlatformError, RawWindowHandle, WindowConfig, WindowId,
+    Appearance, CursorIcon, LogicalRect, PlatformApp, PlatformError, RawWindowHandle, WindowConfig,
+    WindowId,
 };
 
 /// Capabilities available to a frame driver for the duration of one callback.
@@ -179,6 +180,38 @@ impl<'a> RuntimeCx<'a> {
     /// caption can decide at build time whether to yield to the OS overlay.
     pub fn window_chrome_geom(&self, window: WindowId) -> Option<LogicalRect> {
         self.app.window(window).and_then(|w| w.chrome_geom())
+    }
+
+    /// Put `text` on the system clipboard.
+    pub fn set_clipboard_text(&mut self, text: &str) {
+        self.app.set_clipboard_text(text);
+    }
+
+    /// Ask for the clipboard's text; it arrives as an
+    /// [`InputSample::Paste`](crate::InputSample::Paste) for `window`.
+    pub fn request_paste(&mut self, window: WindowId) {
+        self.app.request_paste(window);
+    }
+
+    /// Show `icon` while the mouse is over `window`'s content.
+    pub fn set_cursor(&mut self, window: WindowId, icon: CursorIcon) {
+        self.app.set_cursor(window, icon);
+    }
+
+    /// Anchor the input method's candidate window at `caret` (logical points,
+    /// top-left origin); `None` disables the IME for `window`.
+    pub fn set_ime_area(&mut self, window: WindowId, caret: Option<LogicalRect>) {
+        self.app.set_ime_area(window, caret);
+    }
+
+    /// Show or hide the on-screen keyboard for `window`.
+    pub fn show_soft_keyboard(&mut self, window: WindowId, show: bool) {
+        self.app.show_soft_keyboard(window, show);
+    }
+
+    /// The current system appearance.
+    pub fn appearance(&self) -> Appearance {
+        self.app.appearance()
     }
 }
 

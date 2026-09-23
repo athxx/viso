@@ -8,11 +8,10 @@
 //! This crate MUST NOT depend on ui/widgets/dsl/studio, and MUST NOT pull in
 //! script, network, video, or live-reload.
 //!
-//! Phase 1 status: the event vocabulary, loop-control types, and the
-//! window/app traits are defined, with a deterministic headless backend and
-//! native backends (macOS/Windows/X11) selected by target. The runtime calls
-//! *up* through [`AppHandler`] (defined here, implemented above) so this stays
-//! the DAG bottom.
+//! At most one native backend is compiled per target, next to a deterministic
+//! headless backend that is always available; a target without a native
+//! backend reports [`PlatformError::NoBackend`]. The runtime calls *up* through [`AppHandler`] (defined
+//! here, implemented above) so this stays the DAG bottom.
 
 #![forbid(unsafe_op_in_unsafe_fn)]
 
@@ -27,8 +26,9 @@ pub use control::{
     WindowId,
 };
 pub use event::{
-    AcceptCell, KeyCode, Modifiers, PointerButtons, PointerPhase, RawEvent, RawImePreedit, RawKey,
-    RawPointer, RawScroll, RawText,
+    AcceptCell, Appearance, ClipboardReply, ClipboardShortcut, ColorScheme, CursorIcon, Insets,
+    KeyCode, Modifiers, PointerButtons, PointerId, PointerKind, PointerPhase, RawEvent,
+    RawImePreedit, RawKey, RawPointer, RawScroll, RawText, clipboard_shortcut,
 };
 pub use handler::AppHandler;
 pub use menu::{Accel, Menu, MenuCommandId, SystemAction};
@@ -57,6 +57,9 @@ pub trait PlatformApp {
     /// Run the OS event pump to completion, funneling every event through
     /// `handler` and obeying the [`ControlFlow`] it returns. Returns when the
     /// handler asks to [`ControlFlow::Exit`] (or the OS terminates the app).
+    /// On a target whose event loop cannot block (Web) it installs its
+    /// callbacks and returns at once; the caller then keeps `handler` alive for
+    /// the rest of the process.
     fn run(&mut self, handler: &mut dyn AppHandler);
 
     /// Borrow a window by id, if it exists.
@@ -103,6 +106,33 @@ pub trait PlatformApp {
     /// down that window's state through one code path, whichever side initiated
     /// the close. Closing an id that does not exist is a no-op.
     fn close_window(&mut self, window: WindowId);
+
+    /// Put `text` on the system clipboard (plain UTF-8 text).
+    ///
+    /// For copies the app starts itself ("Copy link"); copies the OS starts
+    /// arrive as [`RawEvent::CopyRequested`] instead.
+    fn set_clipboard_text(&mut self, text: &str);
+
+    /// Ask for the clipboard's text. It arrives as a [`RawEvent::Paste`] for
+    /// `window` — immediately on systems with a synchronous clipboard, after the
+    /// permission prompt on the web. Nothing arrives when the clipboard holds no
+    /// text or access is refused.
+    fn request_paste(&mut self, window: WindowId);
+
+    /// Show `icon` while the mouse is over `window`'s content.
+    fn set_cursor(&mut self, window: WindowId, icon: CursorIcon);
+
+    /// Tell the input method where the text caret is, so candidate windows and
+    /// the soft keyboard's accessory views sit next to it. `None` means no text
+    /// field has focus: the IME is disabled for the window.
+    fn set_ime_area(&mut self, window: WindowId, caret: Option<LogicalRect>);
+
+    /// Show or hide the on-screen keyboard. A no-op where there is none.
+    fn show_soft_keyboard(&mut self, window: WindowId, show: bool);
+
+    /// The current system appearance. Changes arrive as
+    /// [`RawEvent::AppearanceChanged`].
+    fn appearance(&self) -> Appearance;
 }
 
 /// A single native window / drawable shell.

@@ -167,14 +167,14 @@ impl Application for CloseEverythingApp {
 /// A primary pointer-down at the launch window's center. One priming redraw runs
 /// the first layout so the root has a world box the pointer can hit.
 fn press() -> RawEvent {
-    RawEvent::Pointer(RawPointer {
-        window: WindowId(1),
-        x: SURFACE_W / 2.0,
-        y: SURFACE_H / 2.0,
-        buttons: RawButtons::PRIMARY,
-        modifiers: RawModifiers::default(),
-        phase: RawPhase::Down,
-    })
+    RawEvent::Pointer(RawPointer::mouse(
+        WindowId(1),
+        SURFACE_W / 2.0,
+        SURFACE_H / 2.0,
+        RawButtons::PRIMARY,
+        RawModifiers::default(),
+        RawPhase::Down,
+    ))
 }
 
 fn redraw() -> RawEvent {

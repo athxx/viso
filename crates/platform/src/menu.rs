@@ -29,9 +29,8 @@ pub struct MenuCommandId(pub u32);
 /// `key` is the accelerator's base character *exactly as the OS wants it* for
 /// its key-equivalent field — e.g. `"q"`, `"s"`, `","` — kept as an owned
 /// string rather than routed through [`KeyCode`](crate::event::KeyCode) on
-/// purpose: the platform key vocabulary is deliberately minimal (no letter
-/// keys), and an accelerator is fundamentally a display/OS concern, not a live
-/// input sample. The [`Modifiers`](crate::event::Modifiers) `is_primary()` fold
+/// purpose: an accelerator is a display/OS concern (the character printed on the
+/// user's keycap under their layout), not a physical-key input sample. The [`Modifiers`](crate::event::Modifiers) `is_primary()` fold
 /// is *not* reused here; menus name their modifiers concretely so the app can
 /// say "Shift+Command" without the platform second-guessing it.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -81,6 +80,13 @@ pub enum SystemAction {
     Hide,
     /// Minimize the key window.
     Minimize,
+    /// Copy the focused selection (arrives as `RawEvent::CopyRequested`).
+    Copy,
+    /// Cut the focused selection (arrives as `RawEvent::CopyRequested` with
+    /// `cut` set).
+    Cut,
+    /// Paste the clipboard into the focused field (arrives as `RawEvent::Paste`).
+    Paste,
 }
 
 /// A node in the application-menu tree.
