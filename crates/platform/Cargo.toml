@@ -58,6 +58,15 @@ objc2-app-kit = { version = "0.3", features = [
     "NSAccessibility",
 ] }
 
+# iOS / iPadOS: UIKit via objc2 (default features: every class the backend
+# names is in the default set).
+[target.'cfg(target_os = "ios")'.dependencies]
+objc2 = "0.6"
+objc2-foundation = "0.3"
+objc2-ui-kit = "0.3"
+objc2-quartz-core = "0.3"
+objc2-core-foundation = "0.3"
+
 # Web: the page clock (`performance.now`) behind `time::Instant`, and the DOM
 # bindings the web backend drives.
 [target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dependencies]

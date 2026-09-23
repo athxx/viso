@@ -152,11 +152,11 @@ Follow-ups carried forward:
 
 ## P5 — iOS platform
 
-- [ ] `UIApplicationMain` + delegate, one `UIWindow`/`UIViewController`/Metal-backed `UIView`,
+- [x] `UIApplicationMain` + delegate, one `UIWindow`/`UIViewController`/Metal-backed `UIView`,
       `CADisplayLink` frames.
-- [ ] Multi-touch → pointer events; hardware keyboard (`pressesBegan`).
-- [ ] `UITextInput` for IME + soft keyboard, marked text → preedit.
-- [ ] Safe area, keyboard frame, rotation/resize, trait-collection appearance,
+- [x] Multi-touch → pointer events; hardware keyboard (`pressesBegan`).
+- [x] `UITextInput` for IME + soft keyboard, marked text → preedit.
+- [x] Safe area, keyboard frame, rotation/resize, trait-collection appearance,
       background/foreground lifecycle, `UIPasteboard`.
 
 ## P6 — Android platform

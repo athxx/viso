@@ -19,6 +19,17 @@ mod memory_pressure;
 #[cfg(target_os = "windows")]
 pub mod windows;
 
+#[cfg(target_os = "ios")]
+pub mod ios;
+
+#[cfg(any(target_os = "ios", test))]
+#[path = "ios/translate.rs"]
+pub(crate) mod ios_translate;
+
+#[cfg(any(target_os = "ios", test))]
+#[path = "ios/composition.rs"]
+pub(crate) mod ios_composition;
+
 #[cfg(any(target_os = "windows", test))]
 #[path = "windows/translate.rs"]
 pub(crate) mod win32_translate;
@@ -53,6 +64,10 @@ pub fn create_native() -> Result<Box<dyn PlatformApp>, PlatformError> {
     {
         windows::WinApp::new().map(|a| Box::new(a) as Box<dyn PlatformApp>)
     }
+    #[cfg(target_os = "ios")]
+    {
+        ios::IosApp::new().map(|a| Box::new(a) as Box<dyn PlatformApp>)
+    }
     #[cfg(any(
         target_os = "linux",
         target_os = "freebsd",
@@ -66,6 +81,7 @@ pub fn create_native() -> Result<Box<dyn PlatformApp>, PlatformError> {
     #[cfg(not(any(
         target_os = "macos",
         target_os = "windows",
+        target_os = "ios",
         target_os = "linux",
         target_os = "freebsd",
         target_os = "openbsd",
