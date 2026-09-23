@@ -531,6 +531,21 @@ impl PlatformApp for MacApp {
         cache.extend_from_slice(regions);
     }
 
+    fn set_fullscreen(&mut self, window: WindowId, fullscreen: bool) {
+        // AppKit animates the transition and reports it through the window
+        // delegate's will-enter/will-exit callbacks.
+        let Some(win) = self.windows.iter().find(|w| w.id == window) else {
+            return;
+        };
+        let is = win
+            .window
+            .styleMask()
+            .contains(NSWindowStyleMask::FullScreen);
+        if is != fullscreen {
+            win.window.toggleFullScreen(None);
+        }
+    }
+
     fn close_window(&mut self, window: WindowId) {
         // Same close path as a user-driven close, initiated by the app: order the
         // NSWindow out (dropping its Retained releases the OS shell) and enqueue a

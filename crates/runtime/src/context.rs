@@ -133,6 +133,12 @@ impl<'a> RuntimeCx<'a> {
         self.app.set_draggable_regions(window, regions);
     }
 
+    /// Enter or leave fullscreen for `window`; the platform reports the
+    /// transition as a `FullscreenChanged` event.
+    pub fn set_fullscreen(&mut self, window: WindowId, fullscreen: bool) {
+        self.app.set_fullscreen(window, fullscreen);
+    }
+
     /// Programmatically close `window`, destroying its OS shell.
     ///
     /// The counterpart to [`create_window`](Self::create_window). The platform

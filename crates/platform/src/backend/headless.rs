@@ -76,6 +76,14 @@ impl HeadlessApp {
             .map(|w| w.cursor)
     }
 
+    /// Whether `window` is fullscreen.
+    pub fn is_fullscreen(&self, window: WindowId) -> Option<bool> {
+        self.windows
+            .iter()
+            .find(|w| w.id == window)
+            .map(|w| w.fullscreen)
+    }
+
     /// The caret rect last handed to the IME for `window`.
     pub fn ime_area(&self, window: WindowId) -> Option<LogicalRect> {
         self.windows
@@ -123,6 +131,7 @@ impl PlatformApp for HeadlessApp {
             cursor: CursorIcon::Default,
             ime_area: None,
             soft_keyboard: false,
+            fullscreen: false,
         });
         Ok(id)
     }
@@ -182,6 +191,18 @@ impl PlatformApp for HeadlessApp {
         self.clipboard = Some(text.to_string());
     }
 
+    fn set_fullscreen(&mut self, window: WindowId, fullscreen: bool) {
+        // Reported next, like a real backend's transition, and only when the
+        // state changes.
+        if let Some(w) = self.window_mut(window)
+            && w.fullscreen != fullscreen
+        {
+            w.fullscreen = fullscreen;
+            self.script
+                .push_front(RawEvent::FullscreenChanged { window, fullscreen });
+        }
+    }
+
     fn request_paste(&mut self, window: WindowId) {
         // Delivered next, ahead of the rest of the script: the answer to a
         // request made while handling the current event.
@@ -222,6 +243,7 @@ pub struct HeadlessWindow {
     cursor: CursorIcon,
     ime_area: Option<LogicalRect>,
     soft_keyboard: bool,
+    fullscreen: bool,
 }
 
 impl Window for HeadlessWindow {
@@ -333,6 +355,27 @@ mod tests {
         };
         app.set_appearance(dark);
         assert_eq!(app.appearance(), dark);
+    }
+
+    #[test]
+    fn set_fullscreen_reports_each_change_once() {
+        let mut app = HeadlessApp::new();
+        let id = app.create_window(WindowConfig::default()).unwrap();
+        app.set_fullscreen(id, true);
+        app.set_fullscreen(id, true);
+        assert_eq!(app.is_fullscreen(id), Some(true));
+        app.set_fullscreen(id, false);
+        app.set_fullscreen(WindowId(999), true);
+        let reported = app
+            .script
+            .iter()
+            .filter_map(|e| match e {
+                RawEvent::FullscreenChanged { window, fullscreen } => Some((*window, *fullscreen)),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(reported, [(id, false), (id, true)]);
+        assert_eq!(app.is_fullscreen(id), Some(false));
     }
 
     #[test]

@@ -19,6 +19,10 @@ mod memory_pressure;
 #[cfg(target_os = "windows")]
 pub mod windows;
 
+#[cfg(any(target_os = "windows", test))]
+#[path = "windows/translate.rs"]
+pub(crate) mod win32_translate;
+
 #[cfg(any(
     target_os = "linux",
     target_os = "freebsd",
