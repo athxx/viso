@@ -95,12 +95,14 @@ Follow-ups carried forward:
       `GpuBackend::SHADER_LANG` and the renderer asks the manifest for that language only;
       headless takes `ShaderCode::None`.
 - [x] Every built-in's WGSL (web + native) passes `naga` validation.
-- [ ] Semantic cross-check on real hardware: WGSL → MSL via `naga`, rendered on the host
-      Metal device, pixel-compared with the native MSL pipeline for every golden scene.
+- [x] Semantic cross-check on real hardware: WGSL → MSL via `naga`, rendered on the host
+      Metal device, pixel-compared with the native MSL pipeline for every golden scene
+      (`tests/metal_naga_golden.rs`, macOS + iOS simulator, tolerance 1).
 
 ## P2 — GPU backends
 
-- [ ] iOS Metal: shared Metal backend over `CAMetalLayer` hosted in a `UIView`.
+- [x] iOS Metal: shared Metal backend over `CAMetalLayer` hosted in a `UIView`; surface
+      acquire/clear/present/resize and the golden scenes run on the iOS simulator.
 - [x] WebGPU (direct `wasm-bindgen` bindings): adapter/device async bring-up (`prepare()`
       before the sync `create_device`), canvas context, buffers, textures, samplers,
       pipelines, bind groups, dynamic-offset uniform ring, render passes, offscreen
@@ -116,8 +118,10 @@ Follow-ups carried forward:
       the device tests (`tests/d3d12_backend.rs`, debug layer via `VISO_D3D12_DEBUG`) and
       FXC compilation of the generated HLSL are unverified here (every built-in passes
       glslang's HLSL frontend).
-- [ ] Each backend implements the full `GpuBackend` trait, `Caps`, color space, and passes
-      the same golden scenes as headless where it can run here.
+- [x] Each backend implements the full `GpuBackend` trait, `Caps`, color space, and passes
+      the same golden scenes as headless where it can run here: Metal (macOS, iOS
+      simulator), Vulkan (MoltenVK + validation layer), WebGPU (Deno). D3D12 runs the same
+      `golden_scenes` test, unverified here.
 
 ## P3 — Windows platform parity
 

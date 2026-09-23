@@ -10,6 +10,8 @@
 
 #![cfg(any(feature = "vulkan", target_os = "linux", target_os = "android"))]
 
+mod golden_scenes;
+
 use viso_gpu::backend::{
     DrawCommand, DrawList, Geometry, InlineUniforms, LoadOp, RenderPass, RenderTarget,
 };
@@ -344,6 +346,19 @@ fn renderer_prewarms_every_standard_pipeline_on_vulkan() {
     })];
     for _ in 0..3 {
         renderer.upload(&mut gpu, &scene);
+    }
+    assert_no_validation_errors(&gpu);
+}
+
+/// Every golden scene, rendered through the renderer on the device, matches the
+/// headless reference.
+#[test]
+fn golden_scenes_match_on_vulkan() {
+    let Some(mut gpu) = device() else { return };
+    for scene in golden_scenes::GoldenScene::ALL {
+        let target = golden_scenes::render_to_target(&mut gpu, scene);
+        let pixels = gpu.read_texture(target);
+        golden_scenes::assert_device_matches(scene, &pixels);
     }
     assert_no_validation_errors(&gpu);
 }

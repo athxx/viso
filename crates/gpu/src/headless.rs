@@ -855,6 +855,16 @@ impl HeadlessRaster {
                 continue;
             }
             let inv_area = 1.0 / area;
+            // Top-left fill rule, as device rasterizers apply it: a sample exactly
+            // on an edge belongs to the triangle only when that edge is a left
+            // edge or a horizontal top edge, so abutting triangles and a shape's
+            // bottom/right boundary never double- or over-cover a pixel.
+            let owns = [
+                owns_boundary(p1, p2, area),
+                owns_boundary(p2, p0, area),
+                owns_boundary(p0, p1, area),
+            ];
+            let inside = |w: f32, owns: bool| w > 0.0 || (w == 0.0 && owns);
 
             for py in y0..y1 {
                 for px in x0..x1 {
@@ -864,7 +874,7 @@ impl HeadlessRaster {
                     let w1 = edge_fn(p2, p0, p) * inv_area;
                     let w2 = edge_fn(p0, p1, p) * inv_area;
                     // Inside test tolerant of either winding.
-                    if w0 < 0.0 || w1 < 0.0 || w2 < 0.0 {
+                    if !(inside(w0, owns[0]) && inside(w1, owns[1]) && inside(w2, owns[2])) {
                         continue;
                     }
 
@@ -1506,11 +1516,9 @@ impl HeadlessRaster {
 
         // Destination pixel bounds (no AA pad — the image samples exactly its
         // rect), clipped to the surface and the optional scissor.
-        let (mut x0, mut y0, mut x1, mut y1) = (
-            pos[0].floor().max(0.0) as u32,
-            pos[1].floor().max(0.0) as u32,
-            (pos[0] + size[0]).ceil().min(width as f32) as u32,
-            (pos[1] + size[1]).ceil().min(height as f32) as u32,
+        let ((mut x0, mut x1), (mut y0, mut y1)) = (
+            center_span(pos[0], size[0], width),
+            center_span(pos[1], size[1], height),
         );
         if let Some((sx, sy, sw, sh)) = scissor {
             x0 = x0.max(sx);
@@ -1619,11 +1627,9 @@ impl HeadlessRaster {
             return;
         }
 
-        let (mut x0, mut y0, mut x1, mut y1) = (
-            pos[0].floor().max(0.0) as u32,
-            pos[1].floor().max(0.0) as u32,
-            (pos[0] + size[0]).ceil().min(width as f32) as u32,
-            (pos[1] + size[1]).ceil().min(height as f32) as u32,
+        let ((mut x0, mut x1), (mut y0, mut y1)) = (
+            center_span(pos[0], size[0], width),
+            center_span(pos[1], size[1], height),
         );
         if let Some((sx, sy, sw, sh)) = scissor {
             x0 = x0.max(sx);
@@ -1750,11 +1756,9 @@ impl HeadlessRaster {
             return;
         }
 
-        let (mut x0, mut y0, mut x1, mut y1) = (
-            pos[0].floor().max(0.0) as u32,
-            pos[1].floor().max(0.0) as u32,
-            (pos[0] + size[0]).ceil().min(width as f32) as u32,
-            (pos[1] + size[1]).ceil().min(height as f32) as u32,
+        let ((mut x0, mut x1), (mut y0, mut y1)) = (
+            center_span(pos[0], size[0], width),
+            center_span(pos[1], size[1], height),
         );
         if let Some((sx, sy, sw, sh)) = scissor {
             x0 = x0.max(sx);
@@ -2029,11 +2033,9 @@ impl HeadlessRaster {
             return;
         }
 
-        let (mut x0, mut y0, mut x1, mut y1) = (
-            pos[0].floor().max(0.0) as u32,
-            pos[1].floor().max(0.0) as u32,
-            (pos[0] + size[0]).ceil().min(width as f32) as u32,
-            (pos[1] + size[1]).ceil().min(height as f32) as u32,
+        let ((mut x0, mut x1), (mut y0, mut y1)) = (
+            center_span(pos[0], size[0], width),
+            center_span(pos[1], size[1], height),
         );
         if let Some((sx, sy, sw_c, sh_c)) = scissor {
             x0 = x0.max(sx);
@@ -2121,11 +2123,9 @@ impl HeadlessRaster {
             return;
         }
 
-        let (mut x0, mut y0, mut x1, mut y1) = (
-            pos[0].floor().max(0.0) as u32,
-            pos[1].floor().max(0.0) as u32,
-            (pos[0] + size[0]).ceil().min(width as f32) as u32,
-            (pos[1] + size[1]).ceil().min(height as f32) as u32,
+        let ((mut x0, mut x1), (mut y0, mut y1)) = (
+            center_span(pos[0], size[0], width),
+            center_span(pos[1], size[1], height),
         );
         if let Some((sx, sy, sw, sh)) = scissor {
             x0 = x0.max(sx);
@@ -2214,11 +2214,9 @@ impl HeadlessRaster {
             return;
         }
 
-        let (mut x0, mut y0, mut x1, mut y1) = (
-            pos[0].floor().max(0.0) as u32,
-            pos[1].floor().max(0.0) as u32,
-            (pos[0] + size[0]).ceil().min(width as f32) as u32,
-            (pos[1] + size[1]).ceil().min(height as f32) as u32,
+        let ((mut x0, mut x1), (mut y0, mut y1)) = (
+            center_span(pos[0], size[0], width),
+            center_span(pos[1], size[1], height),
         );
         if let Some((sx, sy, sw, sh)) = scissor {
             x0 = x0.max(sx);
@@ -2516,6 +2514,24 @@ fn read_index(bytes: &[u8], format: IndexFormat, n: u32) -> u32 {
 /// per-vertex weights.
 fn edge_fn(a: [f32; 2], b: [f32; 2], c: [f32; 2]) -> f32 {
     (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0])
+}
+
+/// The pixels `[first, end)` along one axis whose centers fall inside
+/// `[lo, lo + extent)`, clamped to `[0, limit)` — the samples a device
+/// rasterizes for an axis-aligned quad under the top-left rule.
+fn center_span(lo: f32, extent: f32, limit: u32) -> (u32, u32) {
+    let first = (lo - 0.5).ceil().clamp(0.0, limit as f32) as u32;
+    let end = (lo + extent - 0.5).ceil().clamp(0.0, limit as f32) as u32;
+    (first, end.max(first))
+}
+
+/// Whether edge `a → b` of a triangle with signed doubled area `area` is a
+/// top or left edge (y down): its inward normal points right, or straight down.
+fn owns_boundary(a: [f32; 2], b: [f32; 2], area: f32) -> bool {
+    let s = area.signum();
+    let nx = -(b[1] - a[1]) * s;
+    let ny = (b[0] - a[0]) * s;
+    nx > 0.0 || (nx == 0.0 && ny > 0.0)
 }
 
 /// Signed distance to a rounded box (IQ), negative inside. `k` is the already
@@ -2883,37 +2899,29 @@ fn unpremultiply(r: f32, g: f32, b: f32, a: f32) -> (f32, f32, f32) {
 
 /// Decode one texel's bytes into four linear channels.
 ///
-/// Color formats arrive with straight alpha and are stored premultiplied, which
-/// is what every blend and composite downstream expects. A data format
-/// ([`TextureFormat::Rgba8Data`]) is stored verbatim: its channels are not a
+/// Every color texel is uploaded premultiplied (the Viso texture convention the
+/// device shaders sample under), so it is stored as-is. A data format
+/// ([`TextureFormat::Rgba8Data`]) is stored verbatim too: its channels are not a
 /// color and its fourth channel is not opacity.
 fn decode_texel(format: TextureFormat, bytes: &[u8]) -> [f32; 4] {
     match format {
-        TextureFormat::Rgba8Unorm => {
-            let (r, g, b, a) = (
-                bytes[0] as f32 / 255.0,
-                bytes[1] as f32 / 255.0,
-                bytes[2] as f32 / 255.0,
-                bytes[3] as f32 / 255.0,
-            );
-            [r * a, g * a, b * a, a]
-        }
-        TextureFormat::Bgra8Unorm => {
-            let (b, g, r, a) = (
-                bytes[0] as f32 / 255.0,
-                bytes[1] as f32 / 255.0,
-                bytes[2] as f32 / 255.0,
-                bytes[3] as f32 / 255.0,
-            );
-            [r * a, g * a, b * a, a]
-        }
-        // Extended range: the same straight-alpha convention as the unorm
-        // formats, but the channels are not clamped, so a value above 1.0
-        // survives the upload instead of saturating at the top of the range.
+        TextureFormat::Rgba8Unorm => [
+            bytes[0] as f32 / 255.0,
+            bytes[1] as f32 / 255.0,
+            bytes[2] as f32 / 255.0,
+            bytes[3] as f32 / 255.0,
+        ],
+        TextureFormat::Bgra8Unorm => [
+            bytes[2] as f32 / 255.0,
+            bytes[1] as f32 / 255.0,
+            bytes[0] as f32 / 255.0,
+            bytes[3] as f32 / 255.0,
+        ],
+        // Extended range: not clamped, so a value above 1.0 survives the upload
+        // instead of saturating at the top of the range.
         TextureFormat::Rgba16Float => {
             let ch = |i: usize| f16_to_f32(u16::from_le_bytes([bytes[i * 2], bytes[i * 2 + 1]]));
-            let (r, g, b, a) = (ch(0), ch(1), ch(2), ch(3));
-            [r * a, g * a, b * a, a]
+            [ch(0), ch(1), ch(2), ch(3)]
         }
         // Data channels, not color: kept verbatim. Premultiplying a distance
         // field by its own true-distance channel would destroy it.
@@ -3056,5 +3064,53 @@ mod sampler_tests {
                 "MipmapLinear must match Linear at u={u}"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod fill_rule_tests {
+    use super::{TextureFormat, decode_texel, owns_boundary};
+
+    #[test]
+    fn left_and_top_edges_own_their_boundary_in_either_winding() {
+        // Axis-aligned square split along its diagonal, both windings.
+        let (tl, tr, bl) = ([0.0, 0.0], [4.0, 0.0], [0.0, 4.0]);
+        for flip in [false, true] {
+            let (a, b, c) = if flip { (tl, bl, tr) } else { (tl, tr, bl) };
+            let area = super::edge_fn(a, b, c);
+            // Top edge (y = 0, interior below) and left edge (x = 0) own samples
+            // on them; the diagonal (bottom-right of this triangle) does not.
+            let edge = |p: [f32; 2], q: [f32; 2]| owns_boundary(p, q, area);
+            assert!(edge(tl, tr) || edge(tr, tl));
+            assert!(edge(tl, bl) || edge(bl, tl));
+            let diag = if flip { edge(bl, tr) } else { edge(tr, bl) };
+            assert!(!diag, "the bottom-right diagonal must not own its samples");
+        }
+    }
+
+    #[test]
+    fn color_texels_are_stored_premultiplied_as_uploaded() {
+        // A half-transparent premultiplied red: stored verbatim, not re-scaled.
+        let rgba = decode_texel(TextureFormat::Rgba8Unorm, &[128, 0, 0, 128]);
+        assert_eq!(rgba, [128.0 / 255.0, 0.0, 0.0, 128.0 / 255.0]);
+        let bgra = decode_texel(TextureFormat::Bgra8Unorm, &[0, 0, 128, 128]);
+        assert_eq!(bgra, rgba);
+    }
+}
+
+#[cfg(test)]
+mod center_span_tests {
+    use super::center_span;
+
+    #[test]
+    fn only_pixels_whose_centers_are_inside_the_quad_are_covered() {
+        // [4.6, 10.6): centers 4.5 (out) … 10.5 (in) → pixels 5..=10.
+        assert_eq!(center_span(4.6, 6.0, 100), (5, 11));
+        // A center exactly on the far edge is excluded, on the near edge kept.
+        assert_eq!(center_span(4.5, 6.0, 100), (4, 10));
+        // Clamped to the target and never inverted.
+        assert_eq!(center_span(-3.0, 5.0, 100), (0, 2));
+        assert_eq!(center_span(98.0, 10.0, 100), (98, 100));
+        assert_eq!(center_span(4.1, 0.2, 100), (4, 4));
     }
 }

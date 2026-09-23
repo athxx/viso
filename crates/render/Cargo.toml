@@ -32,6 +32,12 @@ vulkan = ["viso-gpu/vulkan"]
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 criterion = "0.7"
 
+# The WGSL → MSL semantic cross-check on the Metal device: a test-only
+# translator, never linked into the renderer.
+[target.'cfg(target_vendor = "apple")'.dev-dependencies]
+naga = { version = "30", features = ["wgsl-in", "msl-out"] }
+naga-types = "30"
+
 [target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dev-dependencies]
 wasm-bindgen-test = "0.3"
 
