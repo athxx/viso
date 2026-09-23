@@ -81,9 +81,25 @@ windows = { version = "0.62", features = [
     "Win32_System_Registry",
 ] }
 
-# Linux and the BSDs: X11 via x11rb.
+# Linux and the BSDs: X11 through XCB (libxcb loaded at runtime), Wayland
+# through libwayland-client (also loaded at runtime), xkbcommon for keymaps
+# and compose on both, and the desktop portal over D-Bus for appearance.
 [target.'cfg(any(target_os = "linux", target_os = "freebsd", target_os = "openbsd", target_os = "netbsd", target_os = "dragonfly"))'.dependencies]
-x11rb = "0.14"
-# `poll(2)` on the X connection fd, so a live one-shot timer can bound the
-# event-loop block to its deadline instead of sleeping indefinitely.
+x11rb = { version = "0.13", features = [
+    "allow-unsafe-code",
+    "dl-libxcb",
+    "cursor",
+    "randr",
+    "render",
+    "resource_manager",
+    "xinput",
+    "xkb",
+] }
+xim = { version = "0.5", default-features = false, features = ["x11rb-client", "x11rb-xcb"] }
+xkbcommon-dl = { version = "0.4", features = ["x11"] }
+wayland-client = "0.31"
+wayland-backend = { version = "0.3", features = ["client_system", "dlopen"] }
+wayland-protocols = { version = "0.32", features = ["client", "staging", "unstable"] }
+wayland-cursor = "0.31"
+zbus = { version = "5", default-features = false, features = ["blocking-api", "async-io"] }
 libc = "0.2"

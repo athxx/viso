@@ -140,15 +140,15 @@ Follow-ups carried forward:
 
 ## P4 — Linux platform parity
 
-- [ ] X11: XInput2 pointer/touch, XKB keymap + compose, XIM IME (preedit callbacks, spot
+- [x] X11: XInput2 pointer/touch, XKB keymap + compose, XIM IME (preedit callbacks, spot
       location), clipboard (`CLIPBOARD`/`UTF8_STRING` selection ownership), cursors, Xft.dpi +
       RandR scale, focus, fullscreen (`_NET_WM_STATE`), title, wakeup pipe.
-- [ ] Wayland (`wayland-client` + protocols): `xdg-shell`, `wl_seat` pointer/keyboard/touch,
+- [x] Wayland (`wayland-client` + protocols): `xdg-shell`, `wl_seat` pointer/keyboard/touch,
       `xkbcommon` keymap, `text-input-v3` IME, `wl_data_device` clipboard,
       `cursor-shape-v1`/theme cursors, `fractional-scale-v1` + `viewporter`,
       `xdg-decoration`, frame callbacks.
-- [ ] Runtime selection: Wayland when `WAYLAND_DISPLAY` is set, X11 otherwise.
-- [ ] Appearance via the `org.freedesktop.appearance` portal setting.
+- [x] Runtime selection: Wayland when `WAYLAND_DISPLAY` is set, X11 otherwise.
+- [x] Appearance via the `org.freedesktop.appearance` portal setting.
 
 ## P5 — iOS platform
 

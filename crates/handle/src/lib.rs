@@ -47,13 +47,13 @@ pub enum RawWindowHandle {
         hinstance: *mut c_void,
     },
 
-    /// Linux/X11 through Xlib: the connection and the window XID
-    /// (`VK_KHR_xlib_surface`).
-    Xlib {
-        /// `*mut Display` — the Xlib connection owning the window.
-        display: *mut c_void,
+    /// Linux/X11 through XCB: the connection and the window XID
+    /// (`VK_KHR_xcb_surface`).
+    Xcb {
+        /// `*mut xcb_connection_t` — the connection owning the window.
+        connection: *mut c_void,
         /// X11 window id.
-        window: u64,
+        window: u32,
     },
 
     /// Linux/Wayland: the connection and the `wl_surface`

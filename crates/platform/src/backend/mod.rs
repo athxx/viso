@@ -30,7 +30,18 @@ pub(crate) mod win32_translate;
     target_os = "netbsd",
     target_os = "dragonfly"
 ))]
-pub mod x11;
+pub mod linux;
+
+#[cfg(any(
+    target_os = "linux",
+    target_os = "freebsd",
+    target_os = "openbsd",
+    target_os = "netbsd",
+    target_os = "dragonfly",
+    test
+))]
+#[path = "linux/translate.rs"]
+pub(crate) mod linux_translate;
 
 /// Build the native platform app for this target, if one is compiled.
 pub fn create_native() -> Result<Box<dyn PlatformApp>, PlatformError> {
@@ -50,7 +61,7 @@ pub fn create_native() -> Result<Box<dyn PlatformApp>, PlatformError> {
         target_os = "dragonfly"
     ))]
     {
-        x11::X11App::new().map(|a| Box::new(a) as Box<dyn PlatformApp>)
+        linux::create()
     }
     #[cfg(not(any(
         target_os = "macos",
