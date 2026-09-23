@@ -19,12 +19,14 @@
 
 #![forbid(unsafe_op_in_unsafe_fn)]
 
+pub mod code;
 pub mod diag;
 pub mod ir;
 pub mod manifest;
 pub mod msl;
 pub mod reload;
 
+pub use code::shader_code;
 pub use diag::{Diagnostic, Severity};
 pub use manifest::{
     ColorTargetClass, PipelineEntry, PipelineFamily, PipelineManifest, VariantKey,

@@ -74,21 +74,27 @@ Follow-ups carried forward:
 
 ## P1 — Portable shader bodies
 
-- [ ] A typed body AST for the built-in shading subset (decls, assignment, `if`/`else`,
+- [x] A typed body AST for the built-in shading subset (decls, assignment, `if`/`else`,
       `switch`, `for`, ternary, calls, swizzles, member/index access, `u`/float literals),
       parsed from the existing body fragments; parse + type errors carry spans.
-- [ ] MSL stays byte-equal to the frozen oracles (bodies still spliced verbatim for Metal;
+- [x] MSL stays byte-equal to the frozen oracles (bodies still spliced verbatim for Metal;
       the AST is checked to round-trip every built-in).
-- [ ] WGSL emitter: instance/vertex data as `@location` vertex attributes with instance step
-      mode, uniforms at `@group(0) @binding(0)`, textures/sampler at group 1, reserved-word
-      renaming, `select` for ternaries, explicit casts, `dpdx`/`dpdy`, `textureSample`.
-- [ ] Frozen WGSL oracles for every built-in, byte-equality tested.
-- [ ] SPIR-V and HLSL from the validated WGSL through `naga` (target-gated to the Vulkan
-      and D3D12 targets; host dev-dependency for tests).
-- [ ] `PipelineDesc` carries `ShaderCode` (MSL / WGSL / SPIR-V / HLSL) for the compiled
-      backend only; headless ignores it.
-- [ ] Every built-in's WGSL passes `naga` validation; SPIR-V round-trips through `naga`'s
-      SPIR-V frontend and validator.
+- [x] WGSL emitter: instance/vertex data as `@location` vertex attributes with instance step
+      mode, uniforms at `@group(0) @binding(0)` (web) or `var<immediate>` (native → push
+      constants), textures/sampler at group 1 (web) or 0 (native), reserved-word renaming,
+      `select` for ternaries, explicit casts, `dpdx`/`dpdy`.
+- [x] Texture reads lower to explicit LOD 0 (`textureSampleLevel` / `SampleLevel`): every
+      texture is single-mip, and explicit LOD is legal in non-uniform control flow (blur loop).
+- [x] HLSL (SM 5.1) from our own emitter: `ATTR<i>` semantics, `ConstantBuffer` at `b0`
+      (root constants), `t0`/`t1`/`s0`; every built-in compiles through glslang's HLSL front
+      end and passes `spirv-val`.
+- [x] SPIR-V frozen as `crates/shader/spirv/*.spv`, generated from the native WGSL by `naga`
+      (host dev-dependency only — no shader compiler ships); byte-equality test against a
+      fresh compile (`VISO_BLESS_SPIRV=1` regenerates); `spirv-val --target-env vulkan1.0`.
+- [x] `PipelineDesc` carries `ShaderCode` (MSL / WGSL / SPIR-V / HLSL); each backend states its
+      `GpuBackend::SHADER_LANG` and the renderer asks the manifest for that language only;
+      headless takes `ShaderCode::None`.
+- [x] Every built-in's WGSL (web + native) passes `naga` validation.
 - [ ] Semantic cross-check on real hardware: WGSL → MSL via `naga`, rendered on the host
       Metal device, pixel-compared with the native MSL pipeline for every golden scene.
 

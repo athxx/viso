@@ -9,18 +9,18 @@
 //! future shared renderer could treat both uniformly, without `viso-shader`
 //! depending on `viso-dsl`.
 //!
-//! Shader diagnostics locate a problem by [`CompileStage`](crate::CompileStage)
-//! rather than a text span: the built-in primitives are described by a Rust-side
-//! structured IR builder, not parsed `.vs` text, so there is no source range to
-//! point at yet (the shader text frontend is deferred — see `todo.md`). When a
-//! text frontend lands, a primary span can be added alongside the stage, matching
-//! the DSL diagnostic shape.
+//! Shader diagnostics always name the [`CompileStage`](crate::CompileStage) that
+//! produced them. Errors in a built-in's body fragments additionally carry the
+//! primary [`Span`] inside that fragment (see [`crate::ir::body`]); interface and
+//! layout errors, which come from the Rust-side IR builder rather than text, carry
+//! no span.
 //!
 //! This is a cold-path structure — diagnostics are assembled once per compile,
 //! never on a frame path — so owned `String`/`Vec` fields are appropriate
 //! (AGENTS section 7.2).
 
 use crate::CompileStage;
+use crate::ir::body::lex::Span;
 
 /// How severe a shader diagnostic is. Ordered least-to-most severe so a pass can
 /// take the maximum severity of a set with `Ord`, matching the DSL `Severity`.
@@ -38,9 +38,9 @@ pub enum Severity {
 ///
 /// `code` is a `'static` string (e.g. `"Shader0001"`), so it is borrowed, never
 /// allocated; `message` is owned. `stage` records which pipeline stage produced
-/// the diagnostic (source → parsed syntax → typed IR → validation → codegen),
-/// standing in for the primary text span the DSL diagnostic carries until a
-/// shader text frontend exists. `notes` carries free-form guidance.
+/// the diagnostic (source → parsed syntax → typed IR → validation → codegen);
+/// `span` is the primary source location when the problem is in body text.
+/// `notes` carries free-form guidance.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Diagnostic {
     /// How severe the diagnostic is.
@@ -49,6 +49,8 @@ pub struct Diagnostic {
     pub code: &'static str,
     /// The pipeline stage that produced the diagnostic.
     pub stage: CompileStage,
+    /// The primary source span, when the diagnostic points into body text.
+    pub span: Option<Span>,
     /// Free-form notes offering guidance beyond the one-line message.
     pub notes: Vec<String>,
     /// The rendered one-line message.
@@ -63,6 +65,7 @@ impl Diagnostic {
             severity: Severity::Error,
             code,
             stage,
+            span: None,
             notes: Vec::new(),
             message: message.into(),
         }
@@ -74,9 +77,16 @@ impl Diagnostic {
             severity: Severity::Warning,
             code,
             stage,
+            span: None,
             notes: Vec::new(),
             message: message.into(),
         }
+    }
+
+    /// Attach the primary source span, builder-style.
+    pub fn with_span(mut self, span: Span) -> Self {
+        self.span = Some(span);
+        self
     }
 
     /// Attach a free-form note, builder-style.
@@ -109,6 +119,7 @@ mod tests {
         assert_eq!(e.code, "Shader0001");
         assert_eq!(e.stage, CompileStage::Validation);
         assert!(e.notes.is_empty());
+        assert_eq!(e.span, None);
 
         let w = Diagnostic::warning("Shader0002", CompileStage::TypedIr, "unused varying")
             .with_note("consider removing it");

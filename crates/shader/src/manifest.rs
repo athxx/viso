@@ -12,10 +12,9 @@
 //! [`PipelineEntry`] per implemented standard pipeline, each carrying:
 //!
 //! - the [`PipelineFamily`] it belongs to (§7.5) and its packed [`VariantKey`];
-//! - the frozen backend MSL, surfaced as `&'static str` — the exact
-//!   [`emit_msl`](crate::ir::codegen_msl::emit_msl) output the `msl.rs` accessors
-//!   cache once behind a `OnceLock` (byte-equal to the `testdata` oracles), not a
-//!   re-derivation;
+//! - the [`PrimitiveKind`] whose program it runs, served per backend language
+//!   by [`PipelineEntry::code`] (MSL byte-equal to the `testdata` oracles,
+//!   WGSL/HLSL printed from the same IR, SPIR-V frozen);
 //! - the [`InstanceSchema`] the shader declares (its reflection), which the
 //!   renderer cross-checks against the derived `#[derive(GpuPod)]` layout at
 //!   registration (§36.1);
@@ -28,15 +27,14 @@
 //! `OnceLock`; the renderer consumes it at device init to create every standard
 //! pipeline before the first frame.
 
-use viso_gpu::{BlendMode, BuiltinShader, InstanceSchema};
+use viso_gpu::{BlendMode, BuiltinShader, InstanceSchema, ShaderCode, ShaderLang};
 
+use crate::code::shader_code;
 use crate::msl::{
-    ADVANCED_BLEND_MSL, ANALYTIC_CAPSULE_MSL, ANALYTIC_ELLIPSE_MSL, ANALYTIC_LINE_MSL,
-    ANALYTIC_RRECT_MSL, ANALYTIC_SHADOW_MSL, BLUR_MSL, COLOR_TRANSFORM_MSL, GLYPHRUN_MSL,
-    GRADIENT_MSL, IMAGE_MSL, MATERIAL_MSL, MESH_MSL, MTSDF_MSL, QUAD_MSL, advanced_blend_schema,
-    analytic_capsule_schema, analytic_ellipse_schema, analytic_line_schema, analytic_rrect_schema,
-    analytic_shadow_schema, blur_schema, color_transform_schema, glyphrun_schema, gradient_schema,
-    image_schema, material_schema, mesh_schema, mtsdf_schema, quad_schema,
+    PrimitiveKind, advanced_blend_schema, analytic_capsule_schema, analytic_ellipse_schema,
+    analytic_line_schema, analytic_rrect_schema, analytic_shadow_schema, blur_schema,
+    color_transform_schema, glyphrun_schema, gradient_schema, image_schema, material_schema,
+    mesh_schema, mtsdf_schema, quad_schema,
 };
 use std::sync::OnceLock;
 
@@ -176,9 +174,10 @@ impl VariantKey {
 /// One standard pipeline: its family/variant, its frozen backend artifact, the
 /// instance reflection it declares, and the entry points.
 ///
-/// Every field is `'static`: `msl` is the frozen `OnceLock`-cached MSL string,
-/// `schema` borrows its attributes for `'static`, so an entry is `Copy` and the
-/// whole manifest is a small table the renderer indexes at device init.
+/// Every field is `'static`: the program is named by its [`PrimitiveKind`] and
+/// fetched per language through [`PipelineEntry::code`], `schema` borrows its
+/// attributes for `'static`, so an entry is `Copy` and the whole manifest is a
+/// small table the renderer indexes at device init.
 #[derive(Debug, Clone, Copy)]
 pub struct PipelineEntry {
     /// The family this pipeline implements.
@@ -187,9 +186,8 @@ pub struct PipelineEntry {
     pub variant: VariantKey,
     /// The built-in tag the headless raster dispatches on (Metal ignores it).
     pub builtin: BuiltinShader,
-    /// The frozen backend MSL (Metal). Byte-equal to the `testdata` oracle;
-    /// compiled once at device-init prewarm, never on a draw.
-    pub msl: &'static str,
+    /// The built-in program this pipeline runs, in any backend language.
+    pub kind: PrimitiveKind,
     /// The instance layout the shader declares (its reflection), cross-checked
     /// against the derived `#[derive(GpuPod)]` layout at registration (§36.1).
     pub schema: InstanceSchema,
@@ -204,6 +202,24 @@ pub struct PipelineEntry {
     pub vertex_entry: &'static str,
     /// Fragment entry-point name.
     pub fragment_entry: &'static str,
+}
+
+impl PipelineEntry {
+    /// The program in `lang` — the backend's
+    /// [`GpuBackend::SHADER_LANG`](viso_gpu::GpuBackend::SHADER_LANG). Only the
+    /// requested language is materialized; compiled once at device-init
+    /// prewarm, never on a draw.
+    pub fn code(&self, lang: ShaderLang) -> ShaderCode {
+        shader_code(self.kind, lang).expect("every manifest entry names a shaded kind")
+    }
+
+    /// The MSL program. Byte-equal to the `testdata` oracle.
+    pub fn msl(&self) -> &'static str {
+        match self.code(ShaderLang::Msl) {
+            ShaderCode::Msl(msl) => msl,
+            _ => unreachable!("an MSL request yields MSL"),
+        }
+    }
 }
 
 /// The enumerated set of standard pipelines (§7.1/§7.5).
@@ -244,7 +260,7 @@ pub fn standard_manifest() -> &'static PipelineManifest {
                 family: PipelineFamily::SolidRect,
                 variant: VariantKey::standard(PipelineFamily::SolidRect),
                 builtin: BuiltinShader::Quad,
-                msl: QUAD_MSL(),
+                kind: PrimitiveKind::Quad,
                 schema: quad_schema(),
                 blend: BlendMode::PremultipliedOver,
                 vertex_entry: "vertex_main",
@@ -254,7 +270,7 @@ pub fn standard_manifest() -> &'static PipelineManifest {
                 family: PipelineFamily::Image,
                 variant: VariantKey::standard(PipelineFamily::Image),
                 builtin: BuiltinShader::Image,
-                msl: IMAGE_MSL(),
+                kind: PrimitiveKind::Image,
                 schema: image_schema(),
                 blend: BlendMode::PremultipliedOver,
                 vertex_entry: "vertex_main",
@@ -264,7 +280,7 @@ pub fn standard_manifest() -> &'static PipelineManifest {
                 family: PipelineFamily::MaskComposite,
                 variant: VariantKey::standard(PipelineFamily::MaskComposite),
                 builtin: BuiltinShader::GlyphRun,
-                msl: GLYPHRUN_MSL(),
+                kind: PrimitiveKind::GlyphRun,
                 schema: glyphrun_schema(),
                 blend: BlendMode::PremultipliedOver,
                 vertex_entry: "vertex_main",
@@ -274,7 +290,7 @@ pub fn standard_manifest() -> &'static PipelineManifest {
                 family: PipelineFamily::ScalableText,
                 variant: VariantKey::standard(PipelineFamily::ScalableText),
                 builtin: BuiltinShader::Mtsdf,
-                msl: MTSDF_MSL(),
+                kind: PrimitiveKind::Mtsdf,
                 schema: mtsdf_schema(),
                 blend: BlendMode::PremultipliedOver,
                 vertex_entry: "vertex_main",
@@ -284,7 +300,7 @@ pub fn standard_manifest() -> &'static PipelineManifest {
                 family: PipelineFamily::PathFill,
                 variant: VariantKey::standard(PipelineFamily::PathFill),
                 builtin: BuiltinShader::Path,
-                msl: MESH_MSL(),
+                kind: PrimitiveKind::Mesh,
                 schema: mesh_schema(),
                 blend: BlendMode::PremultipliedOver,
                 vertex_entry: "vertex_main",
@@ -294,7 +310,7 @@ pub fn standard_manifest() -> &'static PipelineManifest {
                 family: PipelineFamily::AnalyticRRect,
                 variant: VariantKey::standard(PipelineFamily::AnalyticRRect),
                 builtin: BuiltinShader::AnalyticRRect,
-                msl: ANALYTIC_RRECT_MSL(),
+                kind: PrimitiveKind::AnalyticRRect,
                 schema: analytic_rrect_schema(),
                 blend: BlendMode::PremultipliedOver,
                 vertex_entry: "vertex_main",
@@ -304,7 +320,7 @@ pub fn standard_manifest() -> &'static PipelineManifest {
                 family: PipelineFamily::AnalyticEllipse,
                 variant: VariantKey::standard(PipelineFamily::AnalyticEllipse),
                 builtin: BuiltinShader::AnalyticEllipse,
-                msl: ANALYTIC_ELLIPSE_MSL(),
+                kind: PrimitiveKind::AnalyticEllipse,
                 schema: analytic_ellipse_schema(),
                 blend: BlendMode::PremultipliedOver,
                 vertex_entry: "vertex_main",
@@ -314,7 +330,7 @@ pub fn standard_manifest() -> &'static PipelineManifest {
                 family: PipelineFamily::AnalyticCapsule,
                 variant: VariantKey::standard(PipelineFamily::AnalyticCapsule),
                 builtin: BuiltinShader::AnalyticCapsule,
-                msl: ANALYTIC_CAPSULE_MSL(),
+                kind: PrimitiveKind::AnalyticCapsule,
                 schema: analytic_capsule_schema(),
                 blend: BlendMode::PremultipliedOver,
                 vertex_entry: "vertex_main",
@@ -324,7 +340,7 @@ pub fn standard_manifest() -> &'static PipelineManifest {
                 family: PipelineFamily::AnalyticLine,
                 variant: VariantKey::standard(PipelineFamily::AnalyticLine),
                 builtin: BuiltinShader::AnalyticLine,
-                msl: ANALYTIC_LINE_MSL(),
+                kind: PrimitiveKind::AnalyticLine,
                 schema: analytic_line_schema(),
                 blend: BlendMode::PremultipliedOver,
                 vertex_entry: "vertex_main",
@@ -334,7 +350,7 @@ pub fn standard_manifest() -> &'static PipelineManifest {
                 family: PipelineFamily::Gradient,
                 variant: VariantKey::standard(PipelineFamily::Gradient),
                 builtin: BuiltinShader::Gradient,
-                msl: GRADIENT_MSL(),
+                kind: PrimitiveKind::Gradient,
                 schema: gradient_schema(),
                 blend: BlendMode::PremultipliedOver,
                 vertex_entry: "vertex_main",
@@ -344,7 +360,7 @@ pub fn standard_manifest() -> &'static PipelineManifest {
                 family: PipelineFamily::AnalyticShadow,
                 variant: VariantKey::standard(PipelineFamily::AnalyticShadow),
                 builtin: BuiltinShader::AnalyticShadow,
-                msl: ANALYTIC_SHADOW_MSL(),
+                kind: PrimitiveKind::AnalyticShadow,
                 schema: analytic_shadow_schema(),
                 blend: BlendMode::PremultipliedOver,
                 vertex_entry: "vertex_main",
@@ -354,7 +370,7 @@ pub fn standard_manifest() -> &'static PipelineManifest {
                 family: PipelineFamily::ContentBlur,
                 variant: VariantKey::standard(PipelineFamily::ContentBlur),
                 builtin: BuiltinShader::Blur,
-                msl: BLUR_MSL(),
+                kind: PrimitiveKind::Blur,
                 schema: blur_schema(),
                 blend: BlendMode::PremultipliedOver,
                 vertex_entry: "vertex_main",
@@ -364,7 +380,7 @@ pub fn standard_manifest() -> &'static PipelineManifest {
                 family: PipelineFamily::ColorTransform,
                 variant: VariantKey::standard(PipelineFamily::ColorTransform),
                 builtin: BuiltinShader::ColorTransform,
-                msl: COLOR_TRANSFORM_MSL(),
+                kind: PrimitiveKind::ColorTransform,
                 schema: color_transform_schema(),
                 blend: BlendMode::PremultipliedOver,
                 vertex_entry: "vertex_main",
@@ -374,7 +390,7 @@ pub fn standard_manifest() -> &'static PipelineManifest {
                 family: PipelineFamily::MaterialComposite,
                 variant: VariantKey::standard(PipelineFamily::MaterialComposite),
                 builtin: BuiltinShader::Material,
-                msl: MATERIAL_MSL(),
+                kind: PrimitiveKind::Material,
                 schema: material_schema(),
                 blend: BlendMode::PremultipliedOver,
                 vertex_entry: "vertex_main",
@@ -384,7 +400,7 @@ pub fn standard_manifest() -> &'static PipelineManifest {
                 family: PipelineFamily::AdvancedBlend,
                 variant: VariantKey::standard(PipelineFamily::AdvancedBlend),
                 builtin: BuiltinShader::AdvancedBlend,
-                msl: ADVANCED_BLEND_MSL(),
+                kind: PrimitiveKind::AdvancedBlend,
                 schema: advanced_blend_schema(),
                 blend: BlendMode::Replace,
                 vertex_entry: "vertex_main",
@@ -456,47 +472,47 @@ mod tests {
         // testdata oracles — not a fresh derivation.
         let m = standard_manifest();
         assert_eq!(
-            m.entry(PipelineFamily::SolidRect).unwrap().msl,
+            m.entry(PipelineFamily::SolidRect).unwrap().msl(),
             QUAD_MSL_ORIGINAL
         );
         assert_eq!(
-            m.entry(PipelineFamily::Image).unwrap().msl,
+            m.entry(PipelineFamily::Image).unwrap().msl(),
             IMAGE_MSL_ORIGINAL
         );
         assert_eq!(
-            m.entry(PipelineFamily::MaskComposite).unwrap().msl,
+            m.entry(PipelineFamily::MaskComposite).unwrap().msl(),
             GLYPHRUN_MSL_ORIGINAL
         );
         assert_eq!(
-            m.entry(PipelineFamily::ScalableText).unwrap().msl,
+            m.entry(PipelineFamily::ScalableText).unwrap().msl(),
             MTSDF_MSL_ORIGINAL
         );
         assert_eq!(
-            m.entry(PipelineFamily::PathFill).unwrap().msl,
+            m.entry(PipelineFamily::PathFill).unwrap().msl(),
             MESH_MSL_ORIGINAL
         );
         assert_eq!(
-            m.entry(PipelineFamily::AnalyticRRect).unwrap().msl,
+            m.entry(PipelineFamily::AnalyticRRect).unwrap().msl(),
             ANALYTIC_RRECT_MSL_ORIGINAL
         );
         assert_eq!(
-            m.entry(PipelineFamily::AnalyticEllipse).unwrap().msl,
+            m.entry(PipelineFamily::AnalyticEllipse).unwrap().msl(),
             ANALYTIC_ELLIPSE_MSL_ORIGINAL
         );
         assert_eq!(
-            m.entry(PipelineFamily::AnalyticCapsule).unwrap().msl,
+            m.entry(PipelineFamily::AnalyticCapsule).unwrap().msl(),
             ANALYTIC_CAPSULE_MSL_ORIGINAL
         );
         assert_eq!(
-            m.entry(PipelineFamily::AnalyticLine).unwrap().msl,
+            m.entry(PipelineFamily::AnalyticLine).unwrap().msl(),
             ANALYTIC_LINE_MSL_ORIGINAL
         );
         assert_eq!(
-            m.entry(PipelineFamily::Gradient).unwrap().msl,
+            m.entry(PipelineFamily::Gradient).unwrap().msl(),
             GRADIENT_MSL_ORIGINAL
         );
         assert_eq!(
-            m.entry(PipelineFamily::AnalyticShadow).unwrap().msl,
+            m.entry(PipelineFamily::AnalyticShadow).unwrap().msl(),
             ANALYTIC_SHADOW_MSL_ORIGINAL
         );
     }

@@ -107,7 +107,7 @@ fn draw_indexed(format: IndexFormat, index_bytes: &[u8]) -> ([f32; 4], [f32; 4])
                 label: "mesh",
                 builtin: BuiltinShader::Mesh,
                 variant: 0,
-                msl: "",
+                code: viso_gpu::ShaderCode::None,
                 vertex_entry: "vertex_main",
                 fragment_entry: "fragment_main",
                 color_format: TextureFormat::Bgra8Unorm,

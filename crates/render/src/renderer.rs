@@ -1617,7 +1617,7 @@ impl Renderer {
             label,
             builtin: entry.builtin,
             variant: entry.variant.packed(),
-            msl: entry.msl,
+            code: entry.code(B::SHADER_LANG),
             vertex_entry: entry.vertex_entry,
             fragment_entry: entry.fragment_entry,
             color_format: surface_format,

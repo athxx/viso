@@ -38,7 +38,7 @@ fn assert_dev_matches_manifest(ir: ShaderIr, cpu_layout: &InstanceLayout, family
 
     assert_eq!(
         pipeline.last_good().msl,
-        entry.msl,
+        entry.msl(),
         "the dev-mode {family:?} compile must be byte-identical to the frozen \
          manifest MSL — the dev keep-last-good path may not diverge from the \
          release artifact (§60)"
