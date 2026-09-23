@@ -294,7 +294,7 @@ impl Window for WinWindow {
 
     fn raw_handle(&self) -> RawWindowHandle {
         RawWindowHandle::Win32 {
-            hwnd: self.hwnd.0 as *mut core::ffi::c_void,
+            hwnd: self.hwnd.0,
             hinstance: self.hinstance,
         }
     }

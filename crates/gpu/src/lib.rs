@@ -12,6 +12,9 @@
 #![forbid(unsafe_op_in_unsafe_fn)]
 
 pub mod backend;
+/// The native Direct3D 12 backend (compiled only on Windows).
+#[cfg(target_os = "windows")]
+pub mod d3d12;
 pub mod headless;
 pub mod instance;
 /// The native Metal backend (compiled only on Apple targets; ADR-007 cfg select).
@@ -29,6 +32,8 @@ pub use backend::{
     DrawCommand, DrawList, Frame, Geometry, GpuBackend, IndexFormat, InlineUniforms, LoadOp,
     RenderPass, RenderTarget,
 };
+#[cfg(target_os = "windows")]
+pub use d3d12::D3D12Backend;
 pub use headless::HeadlessRaster;
 #[cfg(target_vendor = "apple")]
 pub use metal::MetalBackend;
@@ -40,17 +45,26 @@ pub use vulkan::VulkanBackend;
 /// ADR-007: there is one [`GpuBackend`] trait for source-level unification, but
 /// the facade holds *this concrete type* monomorphized so the frame hot path has
 /// no `dyn GpuBackend` dispatch. On macOS and iOS it is the native
-/// [`MetalBackend`]; on Linux and Android the [`VulkanBackend`]; on targets
+/// [`MetalBackend`]; on Windows the [`D3D12Backend`]; on Linux and Android the
+/// [`VulkanBackend`]; on targets
 /// without a native backend it is the software [`HeadlessRaster`], which always
 /// compiles and needs no GPU.
 #[cfg(target_vendor = "apple")]
 pub type Backend = MetalBackend;
 /// The concrete GPU backend for this target.
+#[cfg(target_os = "windows")]
+pub type Backend = D3D12Backend;
+/// The concrete GPU backend for this target.
 #[cfg(any(target_os = "linux", target_os = "android"))]
 pub type Backend = VulkanBackend;
 /// The concrete GPU backend for this target (software raster: no native
 /// backend is selected here).
-#[cfg(not(any(target_vendor = "apple", target_os = "linux", target_os = "android")))]
+#[cfg(not(any(
+    target_vendor = "apple",
+    target_os = "windows",
+    target_os = "linux",
+    target_os = "android"
+)))]
 pub type Backend = HeadlessRaster;
 
 /// Create the GPU device/backend for this target (ADR-007 cfg static select).
