@@ -37,7 +37,19 @@ pub mod android;
 #[path = "android/translate.rs"]
 pub(crate) mod android_translate;
 
-#[cfg(any(target_os = "ios", target_os = "android", test))]
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+pub mod web;
+
+#[cfg(any(all(target_arch = "wasm32", target_os = "unknown"), test))]
+#[path = "web/translate.rs"]
+pub(crate) mod web_translate;
+
+#[cfg(any(
+    target_os = "ios",
+    target_os = "android",
+    all(target_arch = "wasm32", target_os = "unknown"),
+    test
+))]
 mod utf16;
 
 #[cfg(any(target_os = "windows", test))]
@@ -92,6 +104,10 @@ pub fn create_native() -> Result<Box<dyn PlatformApp>, PlatformError> {
     {
         linux::create()
     }
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    {
+        web::WebApp::new().map(|a| Box::new(a) as Box<dyn PlatformApp>)
+    }
     #[cfg(not(any(
         target_os = "macos",
         target_os = "windows",
@@ -101,7 +117,8 @@ pub fn create_native() -> Result<Box<dyn PlatformApp>, PlatformError> {
         target_os = "freebsd",
         target_os = "openbsd",
         target_os = "netbsd",
-        target_os = "dragonfly"
+        target_os = "dragonfly",
+        all(target_arch = "wasm32", target_os = "unknown")
     )))]
     {
         Err(PlatformError::NoBackend)

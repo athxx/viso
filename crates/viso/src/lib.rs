@@ -151,8 +151,15 @@ pub fn run<A: Application>() {
         viso_platform::create_app().unwrap_or_else(|_| viso_platform::create_headless_app());
     let driver = AppDriver::<A>::new();
     // The browser's event loop cannot block, so the scheduler outlives `run`
-    // there; everywhere else the pump blocks until the last window closes.
-    #[cfg(target_arch = "wasm32")]
+    // there; everywhere else the pump blocks until the last window closes. In
+    // a page the WebGPU device opens asynchronously, before the first window
+    // asks for it.
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    wasm_bindgen_futures::spawn_local(async move {
+        viso_gpu::webgpu::prepare().await;
+        Scheduler::new(platform_app, driver).run_detached();
+    });
+    #[cfg(all(target_arch = "wasm32", not(target_os = "unknown")))]
     Scheduler::new(platform_app, driver).run_detached();
     #[cfg(not(target_arch = "wasm32"))]
     Scheduler::new(platform_app, driver).run();
@@ -723,6 +730,9 @@ impl WindowState {
             Some(RawWindowHandle::Headless) | None => None,
             Some(handle) => Some(handle),
         };
+        // A browser without WebGPU keeps the window without a GPU surface.
+        #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+        let native_handle = native_handle.filter(|_| viso_gpu::webgpu::is_prepared());
         if let Some(raw) = native_handle {
             let mut backend = viso_gpu::create_device();
             let surface = backend.create_surface(raw, w.max(1), h.max(1));

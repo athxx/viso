@@ -2271,6 +2271,7 @@ dependencies = [
  "viso-ui",
  "viso-ui-macros",
  "viso-widgets",
+ "wasm-bindgen-futures",
 ]
 
 [[package]]
@@ -2353,6 +2354,7 @@ name = "viso-platform"
 version = "0.0.0"
 dependencies = [
  "jni-sys",
+ "js-sys",
  "libc",
  "objc2",
  "objc2-app-kit",
@@ -2362,10 +2364,12 @@ dependencies = [
  "objc2-ui-kit",
  "viso-handle",
  "wasm-bindgen",
+ "wasm-bindgen-futures",
  "wayland-backend",
  "wayland-client",
  "wayland-cursor",
  "wayland-protocols",
+ "web-sys",
  "windows",
  "x11rb",
  "xim",
