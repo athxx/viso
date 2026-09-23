@@ -47,6 +47,13 @@ windows = { version = "0.62", features = [
     "Win32_System_Threading",
 ] }
 
+# Web: the WebGPU backend, bound directly to the browser API (no web-sys layer).
+# External crates, not viso-* edges.
+[target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dependencies]
+wasm-bindgen = "0.2.128"
+js-sys = "0.3"
+wasm-bindgen-futures = "0.4"
+
 # Apple targets: the native Metal backend (objc2). External crates, not viso-* edges,
 # so they don't affect `xtask check-deps`. The concrete backend is chosen by
 # `cfg` (ADR-007); on other targets only the headless raster compiles.

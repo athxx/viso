@@ -73,10 +73,11 @@ pub enum RawWindowHandle {
         a_native_window: *mut c_void,
     },
 
-    /// Web: the `<canvas>` element, as an object id into the JS heap the
-    /// platform layer keeps alive for the window's lifetime.
+    /// Web: the `<canvas>` element the platform layer tags with
+    /// `data-viso-canvas="{canvas_id}"` and keeps in the document for the
+    /// window's lifetime.
     WebCanvas {
-        /// Index of the canvas in the host's object table.
+        /// The canvas's `data-viso-canvas` attribute value.
         canvas_id: u32,
     },
 

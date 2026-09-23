@@ -27,8 +27,13 @@ ab_glyph_rasterizer = { workspace = true }
 # macOS), so its device tests run there.
 vulkan = ["viso-gpu/vulkan"]
 
-[dev-dependencies]
+# The steady-state benches are native measurements; criterion does not build for
+# wasm32 (the web path is verified by the WebGPU tests instead).
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 criterion = "0.7"
+
+[target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dev-dependencies]
+wasm-bindgen-test = "0.3"
 
 [[bench]]
 name = "renderer_steady_state"

@@ -27,6 +27,9 @@ pub mod slots;
 /// feature).
 #[cfg(any(feature = "vulkan", target_os = "linux", target_os = "android"))]
 pub mod vulkan;
+/// The WebGPU backend (compiled only for `wasm32-unknown-unknown`).
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+pub mod webgpu;
 
 pub use backend::{
     DrawCommand, DrawList, Frame, Geometry, GpuBackend, IndexFormat, InlineUniforms, LoadOp,
@@ -39,6 +42,8 @@ pub use headless::HeadlessRaster;
 pub use metal::MetalBackend;
 #[cfg(any(feature = "vulkan", target_os = "linux", target_os = "android"))]
 pub use vulkan::VulkanBackend;
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+pub use webgpu::WebGpuBackend;
 
 /// The concrete GPU backend for this target, selected at compile time.
 ///
@@ -46,7 +51,7 @@ pub use vulkan::VulkanBackend;
 /// the facade holds *this concrete type* monomorphized so the frame hot path has
 /// no `dyn GpuBackend` dispatch. On macOS and iOS it is the native
 /// [`MetalBackend`]; on Windows the [`D3D12Backend`]; on Linux and Android the
-/// [`VulkanBackend`]; on targets
+/// [`VulkanBackend`]; on the web the [`WebGpuBackend`]; on targets
 /// without a native backend it is the software [`HeadlessRaster`], which always
 /// compiles and needs no GPU.
 #[cfg(target_vendor = "apple")]
@@ -57,13 +62,17 @@ pub type Backend = D3D12Backend;
 /// The concrete GPU backend for this target.
 #[cfg(any(target_os = "linux", target_os = "android"))]
 pub type Backend = VulkanBackend;
+/// The concrete GPU backend for this target.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+pub type Backend = WebGpuBackend;
 /// The concrete GPU backend for this target (software raster: no native
 /// backend is selected here).
 #[cfg(not(any(
     target_vendor = "apple",
     target_os = "windows",
     target_os = "linux",
-    target_os = "android"
+    target_os = "android",
+    all(target_arch = "wasm32", target_os = "unknown")
 )))]
 pub type Backend = HeadlessRaster;
 
