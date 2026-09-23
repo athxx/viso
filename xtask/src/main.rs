@@ -10,6 +10,8 @@
 //! name-to-path convention that holds for most crates is worse than no convention:
 //! the one crate it does not cover is silently skipped rather than checked.
 
+mod bundle;
+
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -221,11 +223,13 @@ fn allowed_edges() -> BTreeMap<&'static str, Allowed> {
 }
 
 fn main() -> ExitCode {
-    let cmd = std::env::args().nth(1).unwrap_or_default();
-    match cmd.as_str() {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let cmd = args.first().map(String::as_str).unwrap_or_default();
+    match cmd {
         "check-deps" => check_deps(),
+        "bundle" => bundle::bundle(&args[1..]),
         other => {
-            eprintln!("unknown xtask: {other:?}\nusage: cargo xtask check-deps");
+            eprintln!("unknown xtask: {other:?}\nusage: cargo xtask check-deps | bundle");
             ExitCode::FAILURE
         }
     }

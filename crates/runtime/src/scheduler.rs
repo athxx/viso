@@ -17,7 +17,7 @@ use viso_platform::Instant;
 
 use viso_platform::{
     AppHandler, ControlFlow, Modifiers as RawModifiers, PlatformApp, RawEvent, RawPointer,
-    RawScroll,
+    RawScroll, WindowId,
 };
 
 use crate::clock::{FrameClock, WallClock};
@@ -170,6 +170,19 @@ impl<D: FrameDriver, C: FrameClock> Scheduler<D, C> {
         let state_dirty = {
             let mut cx = RuntimeCx::new(self.app.as_mut(), Duration::ZERO, self.clock.now());
             self.driver.on_lifecycle(&mut cx, event);
+            cx.state_dirty_requested()
+        };
+        if state_dirty {
+            self.reasons.add(RedrawReason::StateDirty);
+        }
+    }
+
+    /// Hand a window's surface loss or return to the driver with a live
+    /// context.
+    fn surface(&mut self, window: WindowId, available: bool) {
+        let state_dirty = {
+            let mut cx = RuntimeCx::new(self.app.as_mut(), Duration::ZERO, self.clock.now());
+            self.driver.on_surface(&mut cx, window, available);
             cx.state_dirty_requested()
         };
         if state_dirty {
@@ -425,6 +438,11 @@ impl<D: FrameDriver, C: FrameClock> AppHandler for Scheduler<D, C> {
                 self.reasons.add(RedrawReason::ExternalSurfaceInvalidation);
             }
             RawEvent::LowMemory => self.lifecycle(Lifecycle::LowMemory),
+            RawEvent::SurfaceDestroyed { window } => self.surface(window, false),
+            RawEvent::SurfaceCreated { window } => {
+                self.surface(window, true);
+                self.reasons.add(RedrawReason::ExternalSurfaceInvalidation);
+            }
         }
         self.resolve_control_flow()
     }
@@ -610,6 +628,7 @@ mod tests {
         frames: u32,
         pasted: Vec<String>,
         copies: Vec<bool>,
+        surfaces: Vec<(WindowId, bool)>,
     }
 
     impl FrameDriver for LifecycleDriver {
@@ -632,6 +651,9 @@ mod tests {
         }
         fn on_lifecycle(&mut self, _cx: &mut RuntimeCx<'_>, event: Lifecycle) {
             self.lifecycle.push(event);
+        }
+        fn on_surface(&mut self, _cx: &mut RuntimeCx<'_>, window: WindowId, available: bool) {
+            self.surfaces.push((window, available));
         }
     }
 
@@ -681,6 +703,25 @@ mod tests {
             sched.driver.lifecycle,
             vec![Lifecycle::Suspended, Lifecycle::Resumed]
         );
+    }
+
+    #[test]
+    fn a_lost_surface_draws_nothing_and_a_new_one_draws_once() {
+        let mut sched = lifecycle_scheduler();
+        let window = WindowId(1);
+        assert_eq!(
+            sched.handle(RawEvent::SurfaceDestroyed { window }),
+            ControlFlow::Wait,
+            "losing the surface schedules no frame"
+        );
+        assert_eq!(
+            sched.handle(RawEvent::SurfaceCreated { window }),
+            ControlFlow::Poll,
+            "the new surface needs its first frame"
+        );
+        let _ = sched.handle(RawEvent::RedrawRequested { window });
+        assert_eq!(sched.driver.frames, 1);
+        assert_eq!(sched.driver.surfaces, vec![(window, false), (window, true)]);
     }
 
     #[test]

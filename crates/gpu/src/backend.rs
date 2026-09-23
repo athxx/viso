@@ -288,6 +288,11 @@ pub trait GpuBackend {
     fn create_surface(&mut self, raw: RawWindowHandle, width: u32, height: u32) -> SurfaceId;
     /// Resize a surface's swapchain.
     fn resize_surface(&mut self, id: SurfaceId, width: u32, height: u32);
+    /// Destroy a surface and its swapchain now, before the native window it
+    /// was created on goes away (a mobile app losing its window in the
+    /// background). A frame open on it is abandoned. The handle is stale
+    /// afterwards; destroying an unknown handle is a no-op.
+    fn destroy_surface(&mut self, id: SurfaceId);
 
     /// Acquire the next drawable for `surface`, opening a new frame.
     ///

@@ -161,11 +161,11 @@ Follow-ups carried forward:
 
 ## P6 — Android platform
 
-- [ ] Java `Activity` + `SurfaceView` shell with an `InputConnection` for IME; JNI bridge into
+- [x] Java `Activity` + `SurfaceView` shell with an `InputConnection` for IME; JNI bridge into
       a Rust loop thread fed by a message queue.
-- [ ] `ANativeWindow` surface lifecycle (created/changed/destroyed), Choreographer frames.
-- [ ] Touch (multi-pointer), key events → `KeyCode`, composing text → preedit.
-- [ ] Insets (system bars, cutout, IME), density, dark mode (`uiMode`), lifecycle,
+- [x] `ANativeWindow` surface lifecycle (created/changed/destroyed), Choreographer frames.
+- [x] Touch (multi-pointer), key events → `KeyCode`, composing text → preedit.
+- [x] Insets (system bars, cutout, IME), density, dark mode (`uiMode`), lifecycle,
       `ClipboardManager`, pointer icons.
 
 ## P7 — Web platform

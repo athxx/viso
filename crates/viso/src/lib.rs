@@ -591,7 +591,9 @@ struct WindowState {
 struct GpuState {
     backend: Backend,
     renderer: Renderer,
-    surface: SurfaceId,
+    /// The window's surface; `None` while the platform has taken the native
+    /// window away (a backgrounded mobile app).
+    surface: Option<SurfaceId>,
     /// Current surface size in physical pixels `(width, height)`.
     size: (u32, u32),
 }
@@ -732,7 +734,7 @@ impl WindowState {
             ws.gpu = Some(GpuState {
                 backend,
                 renderer,
-                surface,
+                surface: Some(surface),
                 size: (w.max(1), h.max(1)),
             });
             // Stand up the font stack now that a backend exists to allocate the
@@ -1330,7 +1332,9 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
             ws.dpi = scale as f32;
         }
         if let Some(gpu) = &mut ws.gpu {
-            gpu.backend.resize_surface(gpu.surface, w, h);
+            if let Some(surface) = gpu.surface {
+                gpu.backend.resize_surface(surface, w, h);
+            }
             gpu.size = (w, h);
         }
         if let Some(root) = ws.root {
@@ -1547,6 +1551,36 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
             }
             viso_runtime::Lifecycle::Suspended => {}
         }
+    }
+
+    fn on_surface(&mut self, cx: &mut RuntimeCx<'_>, window: WindowId, available: bool) {
+        let raw = cx.raw_handle(window);
+        let Some(ws) = self.window_mut(window) else {
+            return;
+        };
+        let Some(gpu) = &mut ws.gpu else {
+            return;
+        };
+        if let Some(old) = gpu.surface.take() {
+            gpu.backend.destroy_surface(old);
+        }
+        let Some(raw) = raw.filter(|r| available && !matches!(r, RawWindowHandle::Headless)) else {
+            return;
+        };
+        let (w, h) = gpu.size;
+        let surface = gpu.backend.create_surface(raw, w, h);
+        // A new native window may composite differently from the old one;
+        // the pipelines are rebuilt only then.
+        if gpu.backend.surface_format(surface) != gpu.renderer.surface_format()
+            || gpu.backend.surface_color_space(surface) != gpu.renderer.color_space()
+        {
+            gpu.renderer = Renderer::for_surface(&mut gpu.backend, surface);
+        }
+        gpu.surface = Some(surface);
+        if let Some(root) = ws.root {
+            ws.store.mark_dirty(root, DirtyClass::PAINT);
+        }
+        cx.request_redraw(window);
     }
 
     fn on_menu_command(&mut self, command: viso_platform::MenuCommandId) {
@@ -1927,12 +1961,14 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
                                 }
                             }
                         }
-                        gpu.renderer.submit(
-                            &mut gpu.backend,
-                            gpu.surface,
-                            [0.1, 0.1, 0.1, 1.0],
-                            viewport,
-                        );
+                        if let Some(surface) = gpu.surface {
+                            gpu.renderer.submit(
+                                &mut gpu.backend,
+                                surface,
+                                [0.1, 0.1, 0.1, 1.0],
+                                viewport,
+                            );
+                        }
                     }
                 }
             }
