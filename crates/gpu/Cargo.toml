@@ -33,6 +33,20 @@ vulkan = ["dep:ash"]
 [target.'cfg(any(target_os = "linux", target_os = "android"))'.dependencies]
 ash = "0.38"
 
+# Windows: the native Direct3D 12 backend (DXGI swapchains, FXC for HLSL).
+# External crate, not a viso-* edge.
+[target.'cfg(target_os = "windows")'.dependencies]
+windows = { version = "0.62", features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Direct3D",
+    "Win32_Graphics_Direct3D12",
+    "Win32_Graphics_Direct3D_Fxc",
+    "Win32_Graphics_Dxgi",
+    "Win32_Graphics_Dxgi_Common",
+    "Win32_Security",
+    "Win32_System_Threading",
+] }
+
 # Apple targets: the native Metal backend (objc2). External crates, not viso-* edges,
 # so they don't affect `xtask check-deps`. The concrete backend is chosen by
 # `cfg` (ADR-007); on other targets only the headless raster compiles.

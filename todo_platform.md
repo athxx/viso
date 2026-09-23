@@ -108,9 +108,12 @@ Follow-ups carried forward:
       frames-in-flight ring, staging uploads, pipelines, descriptor sets, render passes,
       offscreen targets, recreate on resize/out-of-date, device-lost. Device tests run on
       MoltenVK here (`--features vulkan`); real Linux/Android swapchains unverified.
-- [ ] D3D12 (`windows`): device, DXGI flip-model swapchain, command allocators per frame,
+- [x] D3D12 (`windows`): device, DXGI flip-model swapchain, command allocators per frame,
       fence ring, upload heap, root signature, PSOs, descriptor heaps, RTV/SRV, offscreen
-      targets, resize, device-removed.
+      targets, resize, device-removed. Cross-`clippy` clean for `x86_64-pc-windows-msvc`;
+      the device tests (`tests/d3d12_backend.rs`, debug layer via `VISO_D3D12_DEBUG`) and
+      FXC compilation of the generated HLSL are unverified here (every built-in passes
+      glslang's HLSL frontend).
 - [ ] Each backend implements the full `GpuBackend` trait, `Caps`, color space, and passes
       the same golden scenes as headless where it can run here.
 
