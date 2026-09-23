@@ -197,15 +197,15 @@ without recomputing per glyph per frame.
 
 Goal: extreme zoom without an unbounded distance field, and without tessellating per frame.
 
-- [ ] `outline_cache`: retained tessellated contours keyed by face and glyph, bounded, with
+- [x] `outline_cache`: retained tessellated contours keyed by face and glyph, bounded, with
       `viso-render` owning the vertex buffers (this crate holds identity and extent).
-- [ ] Promotion from X4 at the top of the MTSDF quality window; steady state reuses the
+- [x] Promotion from X4 at the top of the MTSDF quality window; steady state reuses the
       retained mesh and re-tessellates nothing (DoD: `稳态不每帧 tessellate`).
-- [ ] Its own residency budget in X2's pool set.
-- [ ] Tests: two consecutive frames at extreme zoom tessellate once; the retained outline's
+- [x] Its own residency budget in X2's pool set.
+- [x] Tests: two consecutive frames at extreme zoom tessellate once; the retained outline's
       rendered coverage matches the A8 raster of the same glyph at the same scale within
       tolerance; eviction and re-request re-tessellate exactly once.
-- [ ] Gate green → commit.
+- [x] Gate green → commit.
 
 ---
 
