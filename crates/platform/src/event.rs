@@ -675,6 +675,15 @@ pub enum RawEvent {
     Resumed,
     /// The OS is short on memory; drop caches that can be rebuilt.
     LowMemory,
+    /// The native surface behind `window` went away: its GPU swapchain must
+    /// be destroyed before this returns, and nothing drawn until
+    /// [`RawEvent::SurfaceCreated`]. Only platforms that reclaim a live
+    /// window's surface (Android) send it.
+    SurfaceDestroyed { window: WindowId },
+    /// `window` has a native surface again after
+    /// [`RawEvent::SurfaceDestroyed`]; [`Window::raw_handle`](crate::Window::raw_handle)
+    /// returns it and [`Window::inner_size`](crate::Window::inner_size) its size.
+    SurfaceCreated { window: WindowId },
 }
 
 #[cfg(test)]

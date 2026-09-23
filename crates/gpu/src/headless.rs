@@ -408,6 +408,10 @@ impl GpuBackend for HeadlessRaster {
         s.color = vec![[0.0; 4]; (width * height) as usize];
     }
 
+    fn destroy_surface(&mut self, id: SurfaceId) {
+        self.surfaces.remove(id.into());
+    }
+
     fn begin_frame(&mut self, surface: SurfaceId) -> Option<Frame> {
         // Reclaim slots retired in epochs the GPU has finished, then open the next
         // frame. A resource destroyed in epoch N is thus reclaimed no earlier than

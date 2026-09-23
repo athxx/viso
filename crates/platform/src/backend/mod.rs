@@ -30,6 +30,16 @@ pub(crate) mod ios_translate;
 #[path = "ios/composition.rs"]
 pub(crate) mod ios_composition;
 
+#[cfg(target_os = "android")]
+pub mod android;
+
+#[cfg(any(target_os = "android", test))]
+#[path = "android/translate.rs"]
+pub(crate) mod android_translate;
+
+#[cfg(any(target_os = "ios", target_os = "android", test))]
+mod utf16;
+
 #[cfg(any(target_os = "windows", test))]
 #[path = "windows/translate.rs"]
 pub(crate) mod win32_translate;
@@ -68,6 +78,10 @@ pub fn create_native() -> Result<Box<dyn PlatformApp>, PlatformError> {
     {
         ios::IosApp::new().map(|a| Box::new(a) as Box<dyn PlatformApp>)
     }
+    #[cfg(target_os = "android")]
+    {
+        android::AndroidApp::new().map(|a| Box::new(a) as Box<dyn PlatformApp>)
+    }
     #[cfg(any(
         target_os = "linux",
         target_os = "freebsd",
@@ -82,6 +96,7 @@ pub fn create_native() -> Result<Box<dyn PlatformApp>, PlatformError> {
         target_os = "macos",
         target_os = "windows",
         target_os = "ios",
+        target_os = "android",
         target_os = "linux",
         target_os = "freebsd",
         target_os = "openbsd",

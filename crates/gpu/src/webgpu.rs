@@ -230,6 +230,8 @@ extern "C" {
     fn configure(this: &GpuCanvasContext, desc: &Object) -> Result<(), JsValue>;
     #[wasm_bindgen(method, catch, js_name = getCurrentTexture)]
     fn get_current_texture(this: &GpuCanvasContext) -> Result<GpuTexture, JsValue>;
+    #[wasm_bindgen(method)]
+    fn unconfigure(this: &GpuCanvasContext);
 
     type Canvas;
     #[wasm_bindgen(method, js_name = getContext)]
@@ -1405,6 +1407,15 @@ impl GpuBackend for WebGpuBackend {
             s.canvas.set_height(height);
             s.width = width;
             s.height = height;
+        }
+    }
+
+    fn destroy_surface(&mut self, id: SurfaceId) {
+        if self.acquired.as_ref().is_some_and(|a| a.surface == id) {
+            self.acquired = None;
+        }
+        if let Some(s) = self.surfaces.remove(id.into()) {
+            s.context.unconfigure();
         }
     }
 

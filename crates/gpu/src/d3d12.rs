@@ -1639,6 +1639,27 @@ impl GpuBackend for D3D12Backend {
         }
     }
 
+    fn destroy_surface(&mut self, id: SurfaceId) {
+        if self.surfaces.get(id.into()).is_none() {
+            return;
+        }
+        if self.acquired.is_some() {
+            self.device_lost(id);
+        } else {
+            self.submit();
+            self.wait_idle();
+            self.reclaim_completed();
+        }
+        let s = self.surfaces.remove(id.into()).expect("checked");
+        self.rtv_free.extend(s.rtvs);
+        // SAFETY: the queue is idle, so nothing waits on or presents to the
+        // swapchain; its latency handle is closed exactly once. The buffers
+        // and the swapchain release on drop.
+        unsafe {
+            let _ = CloseHandle(s.waitable);
+        }
+    }
+
     fn begin_frame(&mut self, surface: SurfaceId) -> Option<Frame> {
         self.reclaim_completed();
         if let Some(open) = self.acquired.map(|a| a.surface) {

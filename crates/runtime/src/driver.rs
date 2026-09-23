@@ -117,6 +117,12 @@ pub trait FrameDriver {
     /// Default no-op.
     fn on_lifecycle(&mut self, _cx: &mut RuntimeCx<'_>, _event: Lifecycle) {}
 
+    /// `window`'s native surface went away (`available = false`) or came back
+    /// (`true`). On loss the driver destroys the window's GPU surface before
+    /// returning; on return it creates one against the window's new handle
+    /// and redraws through `cx`. Default no-op.
+    fn on_surface(&mut self, _cx: &mut RuntimeCx<'_>, _window: WindowId, _available: bool) {}
+
     /// Whether the driver wants continuous animation frames right now. When
     /// true, the scheduler keeps requesting redraw beats even with no input.
     fn wants_animation(&self) -> bool {

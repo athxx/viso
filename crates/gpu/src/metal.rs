@@ -662,6 +662,29 @@ impl GpuBackend for MetalBackend {
         }
     }
 
+    fn destroy_surface(&mut self, id: SurfaceId) {
+        // A held drawable drops with the entry; frames already committed keep
+        // their own references, so there is nothing to wait for.
+        let Some(s) = self.surfaces.remove(id.into()) else {
+            return;
+        };
+        // SAFETY: `s.view` is the live view the layer was attached to in
+        // `create_surface` (the platform destroys the surface before the
+        // view), and both selectors exist on its class.
+        unsafe {
+            #[cfg(target_os = "macos")]
+            {
+                let view = &*(s.view as *const AnyObject);
+                let none: *const AnyObject = std::ptr::null();
+                let _: () = msg_send![view, setLayer: none];
+            }
+            #[cfg(not(target_os = "macos"))]
+            {
+                let _: () = msg_send![&*s.layer, removeFromSuperlayer];
+            }
+        }
+    }
+
     fn begin_frame(&mut self, surface: SurfaceId) -> Option<Frame> {
         // Free slots parked by frames the GPU has since finished. (Reclamation is
         // gated by the completion fence, not the epoch, so it is safe to do before

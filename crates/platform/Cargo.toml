@@ -67,6 +67,11 @@ objc2-ui-kit = "0.3"
 objc2-quartz-core = "0.3"
 objc2-core-foundation = "0.3"
 
+# Android: JNI into the `dev.viso` Java shell, NDK entry points by hand.
+[target.'cfg(target_os = "android")'.dependencies]
+jni-sys = "0.4"
+libc = "0.2"
+
 # Web: the page clock (`performance.now`) behind `time::Instant`, and the DOM
 # bindings the web backend drives.
 [target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dependencies]

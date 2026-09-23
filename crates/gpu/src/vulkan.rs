@@ -1877,6 +1877,42 @@ impl GpuBackend for VulkanBackend {
         }
     }
 
+    fn destroy_surface(&mut self, id: SurfaceId) {
+        if self.surfaces.get(id.into()).is_none() {
+            return;
+        }
+        // Abandoning an open frame also idles the device.
+        if self.acquired.is_some() {
+            self.device_lost(id);
+        } else {
+            self.submit(None, None);
+            // SAFETY: waiting for the device to idle has no preconditions.
+            unsafe {
+                let _ = self.device.device_wait_idle();
+            }
+            self.reclaim_completed();
+        }
+        let s = self.surfaces.remove(id.into()).expect("checked");
+        // SAFETY: the device is idle, so no submission references the
+        // swapchain's images, views, framebuffers or semaphores; each is
+        // destroyed once, the swapchain before its surface.
+        unsafe {
+            for img in s.images {
+                self.device.destroy_framebuffer(img.framebuffer, None);
+                self.device.destroy_image_view(img.view, None);
+            }
+            for sem in s.finished {
+                self.device.destroy_semaphore(sem, None);
+            }
+            if s.swapchain != vk::SwapchainKHR::null() {
+                self.swapchain_fn().destroy_swapchain(s.swapchain, None);
+            }
+            if let Some(f) = &self.surface_fn {
+                f.destroy_surface(s.surface, None);
+            }
+        }
+    }
+
     fn begin_frame(&mut self, surface: SurfaceId) -> Option<Frame> {
         self.reclaim_completed();
         if self.acquired.is_some() {

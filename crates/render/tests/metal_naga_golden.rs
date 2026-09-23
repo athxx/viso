@@ -265,6 +265,10 @@ impl GpuBackend for NagaMetal {
         self.metal.resize_surface(id, width, height);
     }
 
+    fn destroy_surface(&mut self, id: SurfaceId) {
+        self.metal.destroy_surface(id);
+    }
+
     fn begin_frame(&mut self, surface: SurfaceId) -> Option<Frame> {
         self.metal.begin_frame(surface)
     }
