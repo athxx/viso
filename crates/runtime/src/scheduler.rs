@@ -11,7 +11,9 @@
 //!    when a frame is pending,
 //!    `Exit` when the last window closed.
 
-use std::time::{Duration, Instant};
+use std::time::Duration;
+
+use viso_platform::Instant;
 
 use viso_platform::{
     AppHandler, ControlFlow, Modifiers as RawModifiers, PlatformApp, RawEvent, RawPointer,

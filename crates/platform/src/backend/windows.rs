@@ -11,10 +11,10 @@
 //! message pump, and close/resize/paint routing. Input mapping beyond that is
 //! deferred with the input subsystem.
 
+use crate::Instant;
 use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::rc::Rc;
-use std::time::Instant;
 
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;

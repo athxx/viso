@@ -36,7 +36,7 @@
 //! does not have. Its accessible role is [`Role::TextField`] with the given label
 //! as its accessible name (AGENTS section 15).
 //!
-//! Deferred to later slices: multi-line/wrap, undo/redo, word motion, clipboard,
+//! Deferred to later slices: multi-line/wrap, undo/redo, word motion,
 //! placeholder/password rendering, horizontal scroll/clip, caret blink,
 //! double/triple-click selection, grapheme-cluster stepping, and authoritative
 //! full-state IME sync (Android/iOS).
@@ -69,11 +69,10 @@ use viso_ui::{
     PointerButtons, PointerPhase, Rgba, Role, Semantics, Size, TextRequest,
 };
 
-/// A shared, mutable change callback carrying the field's new text. It is not
-/// wired to the router yet — the buffer edit is applied and re-shaped after the
-/// handler returns, so the handler cannot read the resulting text in the same
-/// dispatch. It is kept as a `Copy`-cheap `Rc` on the widget for a later slice
-/// that surfaces the post-edit text; a `TextInput` with no handler still edits.
+/// A shared, mutable change callback carrying the field's new text, fired from
+/// the field's key handler when the driver reports a settled edit
+/// ([`EventCx::text_change`]). Shared through an `Rc` so the builder can set it
+/// after construction and the built handler still sees it.
 type SharedChange = Rc<RefCell<Option<Box<dyn FnMut(&mut EventCx<'_>, &str)>>>>;
 
 /// The text color: near-white for contrast against a dark surface.
@@ -237,8 +236,13 @@ impl Component for TextInput {
         // the router applies them to this node's buffer after the handler returns,
         // and the shape pass folds them into the text — the handler never mutates
         // the buffer directly.
+        let on_change = Rc::clone(&self.on_change);
         cx.on_key(root, move |ev| {
-            if let Some(k) = ev.key() {
+            if let Some(text) = ev.text_change() {
+                if let Some(handler) = on_change.borrow_mut().as_mut() {
+                    handler(ev, text);
+                }
+            } else if let Some(k) = ev.key() {
                 // Only act on a fresh press (ignore key-up); navigation and
                 // deletion honor auto-repeat so a held key keeps moving/deleting.
                 if !k.pressed {

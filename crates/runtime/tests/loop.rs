@@ -9,10 +9,10 @@
 
 use std::cell::RefCell;
 use std::rc::Rc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use viso_platform::backend::headless::HeadlessApp;
-use viso_platform::{AcceptCell, RawEvent, WindowConfig, WindowId};
+use viso_platform::{AcceptCell, Instant, RawEvent, WindowConfig, WindowId};
 use viso_runtime::{FrameClock, FrameDriver, FramePhase, InputSample, RuntimeCx, Scheduler};
 
 /// Shared, observable record of what the driver was asked to do.

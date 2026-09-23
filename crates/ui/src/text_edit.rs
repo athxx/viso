@@ -464,6 +464,9 @@ pub struct TextEdits {
     /// `buffers[node_index]` is the buffer for that editable node, or `None` for
     /// a non-editable node (the common case).
     buffers: Vec<Option<Box<Buffer>>>,
+    /// Nodes whose text [`reconcile`] changed since the driver last drained them
+    /// with [`TextEdits::take_changed`], in edit order, each at most once.
+    changed: Vec<NodeId>,
 }
 
 impl TextEdits {
@@ -476,6 +479,14 @@ impl TextEdits {
     /// when the tree is rebuilt wholesale.
     pub fn clear(&mut self) {
         self.buffers.clear();
+        self.changed.clear();
+    }
+
+    /// Move the nodes whose text changed since the last drain into `out`
+    /// (cleared first), so the driver can tell each control its new text.
+    pub fn take_changed(&mut self, out: &mut Vec<NodeId>) {
+        out.clear();
+        out.append(&mut self.changed);
     }
 
     /// Register `buffer` for `node`, growing the dense index as needed. Replaces
@@ -555,6 +566,9 @@ pub fn reconcile(store: &mut crate::component::NodeStore, edits: &mut TextEdits)
             soft_wrap: false,
         };
         store.set_text_request(node, request);
+        if !edits.changed.contains(&node) {
+            edits.changed.push(node);
+        }
         redeclared += 1;
     }
     redeclared

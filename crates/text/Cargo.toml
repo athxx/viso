@@ -27,7 +27,8 @@ zune-core = { workspace = true }
 # Benches only. criterion is a dev-dependency: it never ships in the text
 # runtime and is not an architecture DAG edge (external crate, ignored by
 # `xtask check-deps`).
-[dev-dependencies]
+# Native measurements: criterion does not build for wasm32.
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 criterion = "0.7"
 
 [[bench]]

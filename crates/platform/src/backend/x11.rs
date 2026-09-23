@@ -8,11 +8,11 @@
 //! and `Expose` (redraw), whose blocking is chosen by the runtime's
 //! [`ControlFlow`].
 
+use crate::Instant;
 use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::os::fd::AsRawFd;
 use std::rc::Rc;
-use std::time::Instant;
 
 use x11rb::connection::Connection;
 use x11rb::protocol::Event as XEvent;

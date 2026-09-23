@@ -6,7 +6,9 @@
 //! `viso-ui` `AppCx` to give the user a full application context; the runtime
 //! itself sees only this.
 
-use std::time::{Duration, Instant};
+use std::time::Duration;
+
+use viso_platform::Instant;
 
 use viso_platform::{
     Appearance, CursorIcon, LogicalRect, PlatformApp, PlatformError, RawWindowHandle, WindowConfig,

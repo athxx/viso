@@ -58,6 +58,11 @@ objc2-app-kit = { version = "0.3", features = [
     "NSAccessibility",
 ] }
 
+# Web: the page clock (`performance.now`) behind `time::Instant`, and the DOM
+# bindings the web backend drives.
+[target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dependencies]
+wasm-bindgen = "0.2.128"
+
 # Windows: Win32 via the windows crate.
 [target.'cfg(target_os = "windows")'.dependencies]
 windows = { version = "0.62", features = [

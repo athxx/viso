@@ -14,7 +14,7 @@ use core::marker::PhantomData;
 use crate::animation::TranslateAnim;
 use crate::binding::BindingTable;
 use crate::component::NodeStore;
-use crate::input::{ImeEvent, KeyEvent, PointerEvent};
+use crate::input::{ImeEvent, KeyEvent, PointerEvent, PointerId};
 use crate::node::NodeId;
 use crate::state::{StateId, StateStore, StateValue};
 use crate::text_edit::EditIntent;
@@ -195,10 +195,14 @@ pub struct EventCx<'a> {
     /// The pointer event currently being dispatched, if this is a pointer
     /// dispatch.
     pointer: Option<&'a PointerEvent>,
+    /// Which pointer the dispatched sample belongs to.
+    pointer_id: PointerId,
     /// The key event currently being dispatched, if this is a key dispatch.
     key: Option<&'a KeyEvent>,
     /// The IME event currently being dispatched, if this is an IME dispatch.
     ime: Option<&'a ImeEvent>,
+    /// The edited node's new text, if this dispatch reports a settled edit.
+    text_change: Option<&'a str>,
     /// A focus request a handler made this dispatch: `Some(Some(id))` focuses
     /// `id`, `Some(None)` clears focus, `None` = no request. Applied by the
     /// router after the handler returns.
@@ -302,6 +306,8 @@ impl<'a> EventCx<'a> {
             window_opens: Vec::new(),
             window_closes: Vec::new(),
             focused: None,
+            pointer_id: PointerId::MOUSE,
+            text_change: None,
         }
     }
 
@@ -331,6 +337,8 @@ impl<'a> EventCx<'a> {
             window_opens: Vec::new(),
             window_closes: Vec::new(),
             focused: None,
+            pointer_id: PointerId::MOUSE,
+            text_change: None,
         }
     }
 
@@ -359,6 +367,8 @@ impl<'a> EventCx<'a> {
             window_opens: Vec::new(),
             window_closes: Vec::new(),
             focused: None,
+            pointer_id: PointerId::MOUSE,
+            text_change: None,
         }
     }
 
@@ -387,7 +397,22 @@ impl<'a> EventCx<'a> {
             window_opens: Vec::new(),
             window_closes: Vec::new(),
             focused: None,
+            pointer_id: PointerId::MOUSE,
+            text_change: None,
         }
+    }
+
+    /// Assemble the event context that reports a settled edit: the node's text
+    /// changed, and the handler reads the new text via [`EventCx::text_change`].
+    #[doc(hidden)]
+    pub fn __new_text_change(
+        states: &'a mut StateStore,
+        bindings: &'a BindingTable,
+        text: &'a str,
+    ) -> Self {
+        let mut cx = Self::__new(states, bindings);
+        cx.text_change = Some(text);
+        cx
     }
 
     /// Read the current value of a state cell. `None` for a stale handle.
@@ -413,6 +438,21 @@ impl<'a> EventCx<'a> {
         self.pointer
     }
 
+    /// Which pointer the sample under dispatch belongs to: [`PointerId::MOUSE`]
+    /// for the mouse (and on the key and IME paths), a per-contact id for each
+    /// finger or pen. [`capture_pointer`](Self::capture_pointer) captures this
+    /// pointer, so a multi-touch control tells its contacts apart by it.
+    #[inline]
+    pub fn pointer_id(&self) -> PointerId {
+        self.pointer_id
+    }
+
+    #[doc(hidden)]
+    #[inline]
+    pub fn __set_pointer_id(&mut self, id: PointerId) {
+        self.pointer_id = id;
+    }
+
     /// The key event under dispatch, if this is a key dispatch; `None` on the
     /// pointer and IME paths.
     #[inline]
@@ -425,6 +465,14 @@ impl<'a> EventCx<'a> {
     #[inline]
     pub fn ime(&self) -> Option<&ImeEvent> {
         self.ime
+    }
+
+    /// The new text of this node's edit buffer, when this dispatch reports that
+    /// an edit changed it. Delivered to the edited node's key handler once per
+    /// input sample that changed the text — typing, deletion, paste, and cut
+    /// alike — after the edit is applied, so the text is what the user now sees.
+    pub fn text_change(&self) -> Option<&'a str> {
+        self.text_change
     }
 
     /// The node that held focus when this dispatch began, or `None` if nothing
@@ -641,10 +689,13 @@ impl<'a> EventCx<'a> {
         std::mem::take(&mut self.window_closes)
     }
 
-    /// Request that the pointer be captured to `id` after this handler returns.
-    /// While captured, subsequent pointer samples route straight to `id` (a
-    /// drag, a slider grab) instead of hit-testing. The router applies it; the
-    /// cx holds no node store, so nothing moves at call time.
+    /// Request that the dispatched pointer be captured to `id` after this
+    /// handler returns. While captured, that pointer's samples route straight to
+    /// `id` (a drag, a slider grab) instead of hit-testing. Capturing a pointer
+    /// another node holds takes it over: the previous holder receives a
+    /// `Leave`, so an ancestor that claims a drag cancels its descendant's
+    /// press. The router applies it; the cx holds no node store, so nothing
+    /// moves at call time.
     #[inline]
     pub fn capture_pointer(&mut self, id: NodeId) {
         self.capture_request = Some(Some(id));

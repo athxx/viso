@@ -1,2 +1,7 @@
 [alias]
 xtask = "run --quiet --package xtask --"
+
+# Clippy's `missing_const_for_thread_local` misreads Android's thread-local
+# lowering and flags initializers that are already `const`.
+[target.aarch64-linux-android]
+rustflags = ["-A", "clippy::missing_const_for_thread_local"]

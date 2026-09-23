@@ -41,12 +41,15 @@ mobile = []
 hot-reload = []
 
 [dev-dependencies]
-criterion = "0.7"
 # The CoreText provider's sfnt-reassembly tests parse their output to prove the
 # reassembled directory is valid, and the system-font smoke tests shape through
 # the resolved face. Only used in tests, so they stay dev-dependencies.
 ttf-parser = { workspace = true }
 rustybuzz = { workspace = true }
+
+# Native measurements: criterion does not build for wasm32.
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+criterion = "0.7"
 
 # Multi-window microbenchmarks: window open/close cost and the per-frame
 # `run_phase` fan-out over N windows (validating the linear `Vec<WindowState>`).
