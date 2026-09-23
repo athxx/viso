@@ -172,24 +172,24 @@ the promotion state machine, which is X4.
 Goal: the state machine that chooses a representation per glyph from observed behavior,
 without recomputing per glyph per frame.
 
-- [ ] `RepresentationState::resolve`: current kind, active bucket, transform-quality window,
+- [x] `RepresentationState::resolve`: current kind, active bucket, transform-quality window,
       pending-promotion accounting. Retained between frames; the decision is amortized, not
       per-frame (DoD: `policy 不按每 glyph / 每 frame 重算`).
-- [ ] Hysteresis both ways (§13.4): sustained scale/rotation promotes to MTSDF, settling
+- [x] Hysteresis both ways (§13.4): sustained scale/rotation promotes to MTSDF, settling
       demotes back to exact coverage at a frame boundary. Transient motion must not thrash.
-- [ ] Promotion never blocks the frame: while an MTSDF generation is pending the glyph keeps
+- [x] Promotion never blocks the frame: while an MTSDF generation is pending the glyph keeps
       drawing last-good coverage (§13.3). Same for the async exact-coverage regeneration
       after settle.
-- [ ] CJK policy (§13.7): default to exact coverage; promotion thresholds account for the
+- [x] CJK policy (§13.7): default to exact coverage; promotion thresholds account for the
       much larger working set.
-- [ ] Quality fallback (§13.11): any representation can fall back to coverage under
+- [x] Quality fallback (§13.11): any representation can fall back to coverage under
       residency pressure, because coverage is always correct. No glyph keeps Coverage +
       MTSDF + Vector resident by default (DoD, explicit).
-- [ ] Tests: a one-frame scale spike promotes nothing; a sustained zoom promotes once and
+- [x] Tests: a one-frame scale spike promotes nothing; a sustained zoom promotes once and
       only once; settling demotes once, at a frame boundary, never mid-frame; a pending
       promotion draws the previous representation and the frame's raster/shape counters stay
       at zero; forcing residency pressure demotes to coverage rather than dropping the glyph.
-- [ ] Gate green → commit.
+- [x] Gate green → commit.
 
 ---
 

@@ -86,7 +86,9 @@ pub use font_request::{FontRequest, FontRole, FontSlant, FontTarget, FontWeight,
 pub use glyph_cache::{
     Admission, DEFAULT_PAGE_BYTES, GlyphKey, GlyphResidency, PoolBudget, Reclaimed,
 };
-pub use glyph_representation::GlyphImageKind;
+pub use glyph_representation::{
+    GlyphImageKind, Representation, RepresentationState, Resolution, RunClass, TransformSample,
+};
 pub use line_break::{BreakOpportunity, LineBreaker};
 pub use line_break_tailoring::{LineBreakStrictness, LineBreakTailoring, WordBreak};
 pub use mtsdf::{
