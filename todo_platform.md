@@ -44,7 +44,7 @@ WebGPU through gstack `/browse`. Windows/D3D12 is `cargo check`/`clippy` only.
       is P4. No `cfg(unix)` catch-all.
 - [x] `RawWindowHandle`: `UiKit { ui_view }`, `Xlib { display, window }`,
       `Wayland { display, surface }`, `AndroidNdk { a_native_window }`,
-      `WebCanvas { canvas_id }` (object id into the JS heap).
+      `WebCanvas { canvas_id }` (the canvas's `data-viso-canvas` attribute).
 - [x] Event vocabulary: pointer id + kind (mouse/touch/pen) + pressure, `Cancel` phase;
       full `KeyCode` map (letters, digits, F-keys, modifiers, punctuation, numpad, media);
       `WindowFocus`, `AppearanceChanged`, `SafeAreaChanged`, `KeyboardInsetChanged`,
@@ -101,9 +101,11 @@ Follow-ups carried forward:
 ## P2 — GPU backends
 
 - [ ] iOS Metal: shared Metal backend over `CAMetalLayer` hosted in a `UIView`.
-- [ ] WebGPU (`web-sys`): adapter/device async bring-up, canvas context, buffers, textures,
-      samplers, pipelines, bind groups, render passes, offscreen targets, present,
-      device-lost.
+- [x] WebGPU (direct `wasm-bindgen` bindings): adapter/device async bring-up (`prepare()`
+      before the sync `create_device`), canvas context, buffers, textures, samplers,
+      pipelines, bind groups, dynamic-offset uniform ring, render passes, offscreen
+      targets, present, device-lost, validation-error counting. Device tests run under
+      Deno's WebGPU here; browser canvas presentation unverified.
 - [x] Vulkan (`ash`): instance/device selection, swapchain (Xlib, Wayland, Android),
       frames-in-flight ring, staging uploads, pipelines, descriptor sets, render passes,
       offscreen targets, recreate on resize/out-of-date, device-lost. Device tests run on
