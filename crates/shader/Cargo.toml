@@ -10,3 +10,9 @@ rust-version.workspace = true
 # but does NOT share a runtime VM with it.
 [dependencies]
 viso-gpu = { workspace = true }
+
+[dev-dependencies]
+# The reference WGSL front end + validator and SPIR-V writer: checks every
+# emitted WGSL module and produces the frozen SPIR-V artifacts the Vulkan
+# backend embeds. Test-only; never linked into a build.
+naga = { version = "30", features = ["wgsl-in", "spv-out"] }

@@ -935,6 +935,28 @@ pub fn gradient_ir() -> ShaderIr {
     }
 }
 
+/// Every built-in's IR, in [`PrimitiveKind`] declaration order — the set the
+/// portable codegens and their oracles cover.
+pub fn builtin_irs() -> [ShaderIr; 15] {
+    [
+        quad_ir(),
+        image_ir(),
+        blur_ir(),
+        color_transform_ir(),
+        advanced_blend_ir(),
+        material_ir(),
+        glyphrun_ir(),
+        mtsdf_ir(),
+        mesh_ir(),
+        analytic_rrect_ir(),
+        analytic_shadow_ir(),
+        analytic_ellipse_ir(),
+        analytic_capsule_ir(),
+        analytic_line_ir(),
+        gradient_ir(),
+    ]
+}
+
 // The verbatim per-primitive body math. Each string is the exact statement block
 // between `vertex_main`/`fragment_main`'s braces (or, for `helpers`, a run of
 // free-standing functions) as the hand-written built-in shipped it, so the

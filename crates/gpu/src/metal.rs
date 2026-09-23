@@ -50,7 +50,7 @@ use crate::backend::{
 use crate::instance::InstanceLayout;
 use crate::resource::{
     AddressMode, BindGroupDesc, Binding, BlendMode, BufferDesc, BuiltinShader, Caps, FilterMode,
-    PipelineDesc, SamplerDesc, TextureDesc, TextureFormat,
+    PipelineDesc, SamplerDesc, ShaderCode, ShaderLang, TextureDesc, TextureFormat,
 };
 use crate::retire::{Epoch, Fence, ResourceKind, RetireQueue, Retired};
 use crate::slots::SlotMap;
@@ -348,6 +348,8 @@ unsafe fn configure_layer_geometry(
 }
 
 impl GpuBackend for MetalBackend {
+    const SHADER_LANG: ShaderLang = ShaderLang::Msl;
+
     fn create_buffer(&mut self, desc: &BufferDesc) -> BufferId {
         // Shared storage: CPU-visible, coherent on UMA — no `didModifyRange:`.
         let len = desc.size.max(1);
@@ -432,7 +434,10 @@ impl GpuBackend for MetalBackend {
         // Registration-time layout check, identical to the headless path.
         layout.validate_against(&desc.instance_schema)?;
 
-        let source = NSString::from_str(desc.msl);
+        let ShaderCode::Msl(msl) = desc.code else {
+            panic!("the Metal backend compiles MSL, got {:?}", desc.code.lang());
+        };
+        let source = NSString::from_str(msl);
         let options = MTLCompileOptions::new();
         let library = self
             .device
@@ -890,19 +895,25 @@ impl MetalBackend {
 
         encoder.setRenderPipelineState(&self.pipeline(c.pipeline).state);
 
-        // Bind the fragment texture @0 and sampler @0 from the bind group, if
-        // any (image/glyph draws). The MSL declares `texture(0)`/`sampler(0)`.
+        // Bind the bind group's textures in order at `texture(0)`, `texture(1)`
+        // and its sampler at `sampler(0)`, as the MSL declares them.
         if let Some(bg) = c.bind_group {
+            let mut texture_index = 0;
             for binding in &self.bind_group(bg).bindings {
                 match binding {
                     Binding::Texture(tid) => {
                         let t = self.texture(*tid);
+                        // SAFETY: `t.texture` is a live texture and the index is
+                        // one of the fragment slots the program declares.
                         unsafe {
-                            encoder.setFragmentTexture_atIndex(Some(&t.texture), 0);
+                            encoder.setFragmentTexture_atIndex(Some(&t.texture), texture_index);
                         }
+                        texture_index += 1;
                     }
                     Binding::Sampler(sid) => {
                         let s = self.sampler(*sid);
+                        // SAFETY: `s.state` is a live sampler state; slot 0 is the
+                        // shared sampler every program declares.
                         unsafe {
                             encoder.setFragmentSamplerState_atIndex(Some(&s.state), 0);
                         }

@@ -237,6 +237,9 @@ pub struct DrawList<'a> {
 /// The single RHI trait. Cold-path methods create resources; the hot path is
 /// `write_buffer` + `encode` + `present`.
 pub trait GpuBackend {
+    /// The shading language [`PipelineDesc::code`] must be in for this backend.
+    const SHADER_LANG: crate::ShaderLang;
+
     /// Create a GPU buffer.
     fn create_buffer(&mut self, desc: &BufferDesc) -> BufferId;
     /// Create a texture.

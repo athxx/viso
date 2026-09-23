@@ -24,7 +24,7 @@ use viso_gpu::backend::{
 };
 use viso_gpu::{
     AddressMode, BindGroupDesc, Binding, BlendMode, BufferDesc, BufferUsage, FilterMode,
-    GpuBackend, MetalBackend, PipelineDesc, SamplerDesc, TextureDesc, TextureFormat,
+    GpuBackend, MetalBackend, PipelineDesc, SamplerDesc, ShaderLang, TextureDesc, TextureFormat,
 };
 use viso_render::GlyphInstance;
 use viso_shader::{PipelineFamily, standard_manifest};
@@ -92,7 +92,7 @@ fn glyph_a8_coverage_direct_sample_on_metal() {
                 label: "metal-glyph",
                 builtin: entry.builtin,
                 variant: entry.variant.packed(),
-                msl: entry.msl,
+                code: entry.code(ShaderLang::Msl),
                 vertex_entry: entry.vertex_entry,
                 fragment_entry: entry.fragment_entry,
                 color_format: TextureFormat::Bgra8Unorm,

@@ -387,10 +387,11 @@ pub struct PipelineDesc {
     /// The packed variant identity of the manifest entry this pipeline realizes
     /// (pipeline-changing dimensions only). A stable integer key, never a string.
     pub variant: u32,
-    /// The frozen backend shader text from the manifest (MSL on Metal; ignored by
-    /// the headless raster, which dispatches on `builtin`). Compiled at device
-    /// init, never on a draw.
-    pub msl: &'static str,
+    /// The program in the language this backend consumes
+    /// ([`GpuBackend::SHADER_LANG`](crate::GpuBackend::SHADER_LANG)); the headless
+    /// raster dispatches on `builtin` and takes [`ShaderCode::None`]. Compiled at
+    /// device init, never on a draw.
+    pub code: ShaderCode,
     /// Entry point name for the vertex stage.
     pub vertex_entry: &'static str,
     /// Entry point name for the fragment stage.
@@ -403,6 +404,53 @@ pub struct PipelineDesc {
     pub blend: BlendMode,
     /// The instance layout the shader expects (validated at registration).
     pub instance_schema: crate::instance::InstanceSchema,
+}
+
+/// The shading language a backend consumes its programs in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ShaderLang {
+    /// No program text: the backend dispatches on [`BuiltinShader`].
+    None,
+    /// Metal Shading Language source.
+    Msl,
+    /// WGSL source with uniforms in a bound buffer (WebGPU).
+    Wgsl,
+    /// HLSL shader model 5.1 source (Direct3D 12).
+    Hlsl,
+    /// A SPIR-V module with both entry points and push-constant uniforms (Vulkan).
+    SpirV,
+}
+
+/// One pipeline's program, in one [`ShaderLang`].
+///
+/// Every stage reads the same interface: the attribute fields at locations /
+/// semantics `0..n` in schema order, the viewport uniform, textures `tex` and
+/// `dst_tex` in slots 0 and 1, and one sampler.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ShaderCode {
+    /// No program text (see [`ShaderLang::None`]).
+    None,
+    /// MSL source.
+    Msl(&'static str),
+    /// WGSL source.
+    Wgsl(&'static str),
+    /// HLSL source.
+    Hlsl(&'static str),
+    /// SPIR-V words as little-endian bytes (length a multiple of four).
+    SpirV(&'static [u8]),
+}
+
+impl ShaderCode {
+    /// The language this code is in.
+    pub const fn lang(self) -> ShaderLang {
+        match self {
+            ShaderCode::None => ShaderLang::None,
+            ShaderCode::Msl(_) => ShaderLang::Msl,
+            ShaderCode::Wgsl(_) => ShaderLang::Wgsl,
+            ShaderCode::Hlsl(_) => ShaderLang::Hlsl,
+            ShaderCode::SpirV(_) => ShaderLang::SpirV,
+        }
+    }
 }
 
 /// One binding in a [`BindGroupDesc`].

@@ -275,6 +275,8 @@ impl HeadlessRaster {
 }
 
 impl GpuBackend for HeadlessRaster {
+    const SHADER_LANG: crate::ShaderLang = crate::ShaderLang::None;
+
     fn create_buffer(&mut self, desc: &BufferDesc) -> BufferId {
         self.buffers
             .insert(HeadlessBuffer {
