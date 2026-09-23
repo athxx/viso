@@ -295,7 +295,7 @@ impl VulkanBackend {
         if has_surface {
             enabled.push(khr::surface::NAME.as_ptr());
             for name in [
-                khr::xlib_surface::NAME,
+                khr::xcb_surface::NAME,
                 khr::wayland_surface::NAME,
                 khr::android_surface::NAME,
                 khr::win32_surface::NAME,
@@ -1782,12 +1782,12 @@ impl GpuBackend for VulkanBackend {
         // extension was enabled on the instance (the loader panics otherwise).
         let surface = unsafe {
             match raw {
-                RawWindowHandle::Xlib { display, window } => {
-                    let info = vk::XlibSurfaceCreateInfoKHR::default()
-                        .dpy(display.cast())
-                        .window(window as vk::Window);
-                    khr::xlib_surface::Instance::new(&self.entry, &self.instance)
-                        .create_xlib_surface(&info, None)
+                RawWindowHandle::Xcb { connection, window } => {
+                    let info = vk::XcbSurfaceCreateInfoKHR::default()
+                        .connection(connection)
+                        .window(window);
+                    khr::xcb_surface::Instance::new(&self.entry, &self.instance)
+                        .create_xcb_surface(&info, None)
                 }
                 RawWindowHandle::Wayland { display, surface } => {
                     let info = vk::WaylandSurfaceCreateInfoKHR::default()
