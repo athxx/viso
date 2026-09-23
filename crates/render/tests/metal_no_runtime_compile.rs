@@ -12,7 +12,7 @@
 //!
 //! macOS-only: it needs a real `MTLDevice`. On CI without a GPU this is skipped.
 
-#![cfg(target_os = "macos")]
+#![cfg(target_vendor = "apple")]
 
 use viso_gpu::{MetalBackend, TextureFormat};
 use viso_render::{Border, Primitive, Quad, Rect, Renderer, Rgba};

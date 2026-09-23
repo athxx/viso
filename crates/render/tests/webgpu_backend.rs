@@ -10,6 +10,8 @@
 
 #![cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 
+mod golden_scenes;
+
 use viso_gpu::backend::{
     DrawCommand, DrawList, Geometry, InlineUniforms, LoadOp, RenderPass, RenderTarget,
 };
@@ -390,4 +392,19 @@ async fn invalid_wgsl_is_counted_as_a_validation_error() {
         gpu.validation_errors() > 0,
         "an invalid shader module went unreported"
     );
+}
+
+/// Every golden scene, rendered through the renderer on the device, matches the
+/// headless reference.
+#[wasm_bindgen_test]
+async fn golden_scenes_match_on_webgpu() {
+    let Some(mut gpu) = device().await else {
+        return;
+    };
+    for scene in golden_scenes::GoldenScene::ALL {
+        let target = golden_scenes::render_to_target(&mut gpu, scene);
+        let pixels = gpu.read_texture(target).await;
+        golden_scenes::assert_device_matches(scene, &pixels);
+    }
+    assert_no_validation_errors(&mut gpu).await;
 }

@@ -17,7 +17,7 @@
 //!
 //! macOS-only: it needs a real `MTLDevice`. On CI without a GPU this is skipped.
 
-#![cfg(target_os = "macos")]
+#![cfg(target_vendor = "apple")]
 
 use viso_gpu::backend::{
     DrawCommand, DrawList, Geometry, InlineUniforms, LoadOp, RenderPass, RenderTarget,

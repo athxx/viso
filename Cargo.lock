@@ -1741,6 +1741,7 @@ dependencies = [
  "objc2-app-kit",
  "objc2-foundation",
  "viso-handle",
+ "wasm-bindgen",
  "windows",
  "x11rb",
 ]
@@ -1758,6 +1759,8 @@ version = "0.0.0"
 dependencies = [
  "ab_glyph_rasterizer",
  "criterion",
+ "naga",
+ "naga-types",
  "viso-gpu",
  "viso-math",
  "viso-shader",

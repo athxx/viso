@@ -18,8 +18,8 @@ use viso_gpu::backend::{
     DrawCommand, DrawList, Geometry, IndexFormat, InlineUniforms, RenderPass, RenderTarget,
 };
 use viso_gpu::{
-    BindGroupDesc, Binding, BufferUsage, ColorDomain, ColorSpace, Frame, GpuBackend, LoadOp,
-    PipelineDesc, PipelineId, SamplerDesc, SurfaceId, TextureDesc, TextureFormat, TextureId,
+    BindGroupDesc, Binding, BufferUsage, ColorDomain, ColorSpace, GpuBackend, LoadOp, PipelineDesc,
+    PipelineId, SamplerDesc, SurfaceId, TextureDesc, TextureFormat, TextureId,
 };
 use viso_gpu::{BindGroupId, SamplerId};
 
@@ -3511,6 +3511,21 @@ impl Renderer {
         self.transient.trim_idle(backend)
     }
 
+    /// Destroy a texture the caller owns together with every bind group this
+    /// renderer cached for it, so a retired atlas plane leaves no binding that
+    /// still names it. The next paint that samples a replacement texture binds
+    /// it afresh.
+    pub fn release_texture<B: GpuBackend>(&mut self, backend: &mut B, texture: TextureId) {
+        self.texture_bindings.retain(|tb| {
+            if tb.texture != texture {
+                return true;
+            }
+            backend.destroy_bind_group(tb.bind_group);
+            false
+        });
+        backend.destroy_texture(texture);
+    }
+
     pub fn frame_stats(&self) -> FrameStats {
         let ingest = self.scene.ingest_stats;
 
@@ -4470,8 +4485,22 @@ impl Renderer {
         let Some(frame) = backend.begin_frame(surface) else {
             return;
         };
-        self.encode(backend, frame, clear, viewport);
+        self.encode(backend, RenderTarget::Surface(frame), clear, viewport);
         backend.present(frame);
+    }
+
+    /// Encode the staged draws with `target` in place of the surface: the same
+    /// passes [`submit`](Self::submit) emits, the last one drawing into a
+    /// render-target texture of `viewport` pixels instead of a drawable.
+    /// For screenshots, thumbnails and device verification; nothing is presented.
+    pub fn render_to_texture<B: GpuBackend>(
+        &mut self,
+        backend: &mut B,
+        target: TextureId,
+        clear: [f32; 4],
+        viewport: [f32; 2],
+    ) {
+        self.encode(backend, RenderTarget::Texture(target), clear, viewport);
     }
 
     /// Build the draw list and hand it to the backend (no present).
@@ -4488,7 +4517,7 @@ impl Renderer {
     fn encode<B: GpuBackend>(
         &mut self,
         backend: &mut B,
-        frame: Frame,
+        main: RenderTarget,
         clear: [f32; 4],
         viewport: [f32; 2],
     ) {
@@ -4594,7 +4623,7 @@ impl Renderer {
             passes.push(RenderPass {
                 target: match pass.writes() {
                     Some(target) => RenderTarget::Texture(self.transient.texture(target)),
-                    None => RenderTarget::Surface(frame),
+                    None => main,
                 },
                 load: match pass.load() {
                     PassLoad::ClearTransparent => LoadOp::Clear([0.0, 0.0, 0.0, 0.0]),
@@ -5311,6 +5340,29 @@ mod tests {
         assert_eq!(r.texture_bindings.len(), 1);
         assert_eq!(r.segments.len(), 1);
         assert_eq!(r.segments[0].count, 2);
+    }
+
+    #[test]
+    fn releasing_a_texture_drops_its_cached_bindings_only() {
+        let mut gpu = HeadlessRaster::new();
+        let surface = gpu.create_surface(RawWindowHandle::Headless, 64, 64);
+        let format = gpu.surface_format(surface);
+        let desc = viso_gpu::TextureDesc {
+            width: 2,
+            height: 2,
+            format: TextureFormat::Bgra8Unorm,
+            render_target: false,
+            label: "t",
+        };
+        let kept = gpu.create_texture(&desc);
+        let retired = gpu.create_texture(&desc);
+        let mut r = Renderer::new(&mut gpu, format);
+        r.upload(&mut gpu, &[image(kept), image(retired)]);
+        assert_eq!(r.texture_bindings.len(), 2);
+
+        r.release_texture(&mut gpu, retired);
+        assert_eq!(r.texture_bindings.len(), 1);
+        assert_eq!(r.texture_bindings[0].texture, kept);
     }
 
     #[test]
