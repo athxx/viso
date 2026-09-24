@@ -2,7 +2,7 @@
 //! [`Primitive`] stream, coordinates, and fill/stroke are checked exactly.
 //!
 //! Colors are asserted in straight-linear space (Viso's `Rgba`), the same
-//! conversion the adapter applies: a usvg u8 sRGB channel run through the sRGB
+//! conversion the adapter applies: an 8-bit sRGB channel run through the sRGB
 //! transfer function. Pure black/white/primaries at the sRGB extremes map to
 //! the linear extremes (0.0/1.0), so those are exact; a mid-tone is checked
 //! against the transfer function to nail the pipeline.
@@ -23,7 +23,7 @@ fn only_path(scene: &SvgScene) -> &viso_render::Path {
 
 #[test]
 fn rect_becomes_a_closed_filled_path() {
-    // usvg converts a `<rect>` into a path: a move + three lines + close,
+    // The parser converts a `<rect>` into a path: a move + three lines + close,
     // walking the corners. Fill is solid red at full opacity.
     let svg = br#"<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100">
         <rect x="10" y="20" width="30" height="40" fill="red"/>
@@ -38,7 +38,7 @@ fn rect_becomes_a_closed_filled_path() {
     assert_eq!((fill.r, fill.g, fill.b, fill.a), (1.0, 0.0, 0.0, 1.0));
     assert!(path.stroke.is_none(), "unstroked rect has no stroke");
 
-    // The outline visits the four corners and closes. usvg may start at any
+    // The outline visits the four corners and closes. The parser may start at any
     // corner and wind either way, so assert the corner *set* the anchors touch
     // plus the closed shape, not a fixed vertex order.
     let mut pts: Vec<(f32, f32)> = path
@@ -103,7 +103,7 @@ fn line_path_carries_fill_and_stroke() {
 #[test]
 fn transform_and_viewbox_are_baked_into_coordinates() {
     // A `viewBox` scaling the 0..10 user space onto a 100px document (×10) plus
-    // a `translate(1,2)` on the group. usvg resolves both into each path's
+    // a `translate(1,2)` on the group. The parser resolves both into each path's
     // absolute transform; the adapter bakes it into the emitted points. A point
     // at user (3,4) under translate(1,2) then ×10 lands at ((3+1)*10,(4+2)*10)
     // = (40,60).

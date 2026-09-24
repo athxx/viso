@@ -551,7 +551,7 @@ struct WindowState {
     /// diagnostics and asserted by tests to confirm only the dirty subtree moved.
     recompute: FrameRecompute,
     /// True until the first frame has been submitted. Lets the Submit phase emit
-    /// a one-shot diagnostic (gated on `VISO_FRAME_TRACE`) proving the first
+    /// a one-shot diagnostic (gated on `VISO_DEBUG`) proving the first
     /// frame reached the GPU, then fall dark for every steady-state frame.
     awaiting_first_frame: bool,
     /// The facade's font stack + glyph atlas. Shapes each node's `TextRequest`
@@ -1966,7 +1966,7 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
                     // on the frame it appears/resizes; this surfaces that one-time
                     // cost, gated so a steady frame (zero passes) pays only the
                     // env-var check and nothing prints.
-                    if reflow_passes > 0 && std::env::var_os("VISO_FRAME_TRACE").is_some() {
+                    if reflow_passes > 0 && std::env::var_os("VISO_DEBUG").is_some() {
                         eprintln!("[viso] text reflow: {reflow_passes} pass(es)");
                     }
                     // Feed measured row heights back into each list's height model
@@ -2022,7 +2022,7 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
                         // the segments.
                         if ws.awaiting_first_frame {
                             ws.awaiting_first_frame = false;
-                            if std::env::var_os("VISO_FRAME_TRACE").is_some() {
+                            if std::env::var_os("VISO_DEBUG").is_some() {
                                 let stats = gpu.renderer.frame_stats();
                                 let recompute = ws.recompute;
                                 eprintln!(

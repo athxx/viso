@@ -16,7 +16,7 @@ consume it.
 Two facts made a soft-wrap leaf never wrap, even though the engine could:
 
 - The text engine **already** wraps. `viso_text::prepare(font, text, size,
-  max_width: Option<f32>, ...)` breaks a run into rows and expands the per-row
+max_width: Option<f32>, ...)` breaks a run into rows and expands the per-row
   vertical metrics, so a wrapped paragraph's height is already correct
   (`crates/text/src/layout.rs`, benched at ≤8× the unwrapped alloc baseline in
   `crates/text/benches/wrap_line.rs`). The width simply never arrived: the
@@ -37,7 +37,7 @@ must honor that boundary precisely rather than reshaping every frame.
 ## Decision
 
 Reflow text in **two phases**, keeping the measure/layout engine ignorant of
-text. Layout records a pure-data *reflow request* when it assigns a
+text. Layout records a pure-data _reflow request_ when it assigns a
 wrap-eligible leaf a width its content was not shaped at; the facade — which
 owns the font stack — drains the queue, reshapes at that width, writes back, and
 re-runs layout, in a bounded loop.
@@ -92,6 +92,7 @@ Eligible entries push `(arena.live_id(index), qwidth)` into a `text_reflows`
 handoff Vec, drained by `take_text_reflows` (mirrors `take_text_requests`).
 
 Two invalidation write paths:
+
 - `set_content_payload` (text-change path) marks `MEASURE|LAYOUT|PAINT|SEMANTICS`.
 - `set_reflowed_content` (width-only reshape) marks `MEASURE|LAYOUT|PAINT` but
   **omits SEMANTICS**: a width-only reshape does not change the accessible name,
@@ -142,7 +143,7 @@ the 3-pass cap is a safety net, not the argument.
 - **Known, non-steady first-frame cost.** A wrapped `Fill` paragraph is shaped
   once at `None` (Phase A) then once at its width (Phase B) on first appearance —
   inherent to the two-phase premise (width is a layout output), not a
-  steady-state regression. A §61 counter, gated behind `VISO_FRAME_TRACE`,
+  steady-state regression. A §61 counter, gated behind `VISO_DEBUG`,
   prints the reflow pass count so the double-shape is visible.
 - **Scope is Flex `Fill`/`Fixed` only.** Grid (Auto/Fr tracks size from child
   naturals → genuine width→width feedback), Scroll (wrapping to the viewport

@@ -124,16 +124,6 @@ objc2-core-text = "0.3"
 objc2-core-foundation = "0.3"
 objc2-core-graphics = "0.3"
 
-# Pure-Rust SVG simplification for the SVG input lane (§13, §3.7
-# prefer-proven-algorithms). usvg parses XML/CSS, resolves units/viewBox,
-# expands `<use>`, and flattens groups/transforms/gradients into a simple node
-# tree with resolved absolute transforms — the standards-heavy work Viso must
-# not reimplement. `viso-svg` walks that tree into `viso_render::Primitive`.
-# Kept out of render/ui: only the `viso-svg` crate links it (its dependency
-# tree is heavy and SVG is a distinct input subsystem, §3.3). Re-exports
-# tiny-skia-path as `usvg::tiny_skia_path`, the geometry the walk consumes.
-usvg = "0.48"
-
 [profile.release]
 lto = "thin"
 codegen-units = 1
