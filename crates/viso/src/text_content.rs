@@ -60,10 +60,17 @@ const PLACEMENT_RETRIES: u32 = 4;
 /// Where fallback face ids start: above every id the resolver hands out, so the
 /// two id spaces never collide.
 const FALLBACK_FACE_IDS: u32 = 1 << 30;
-/// The main thread's per-frame budget for committing worker results:
-/// `min(500µs, 5% of the frame)`, which is 500µs at 60Hz (§14.4). At least one
-/// result commits per frame, so a backlog always drains.
-pub(crate) const TEXT_COMMIT_BUDGET: Duration = Duration::from_micros(500);
+/// The frame interval the commit budget is derived from until the display's
+/// own refresh period reaches the frame loop: 60Hz.
+pub(crate) const DEFAULT_FRAME_INTERVAL: Duration = Duration::from_nanos(16_666_667);
+
+/// The main thread's per-frame budget for committing worker results at a
+/// display refresh of one frame per `interval`: `min(500µs, 5% of the frame)`
+/// — 500µs at 60Hz, 416µs at 120Hz, 347µs at 144Hz, 208µs at 240Hz (§14.4).
+/// At least one result commits per frame, so a backlog always drains.
+pub(crate) fn text_commit_budget(interval: Duration) -> Duration {
+    (interval / 20).min(Duration::from_micros(500))
+}
 
 #[derive(Debug, Default)]
 pub(crate) struct TextCounters {
@@ -228,7 +235,7 @@ impl ParagraphSlot {
         (u64::from(self.generation) << 32) | u64::from(self.index)
     }
 
-    fn from_key(key: u64) -> Self {
+    pub(crate) fn from_key(key: u64) -> Self {
         Self {
             index: key as u32,
             generation: (key >> 32) as u32,
@@ -368,6 +375,9 @@ pub(crate) struct TextShaper {
     fallback: FontFallback,
     manifest: FontManifest,
     primary: Option<FontFaceId>,
+    /// System queries made to resolve the primary face; one at most once it
+    /// resolved, so a steady frame never asks the system for a font.
+    primary_queries: u64,
     next_asset: u32,
     /// Every mounted text node, pruned with the tree.
     slots: HashMap<ParagraphSlot, TextSlot>,
@@ -434,7 +444,7 @@ impl TextShaper {
     /// A shaper over atlas planes of `size × size` texels cut into
     /// `page × page` pages, with each pool budgeted to match, and face and
     /// shaping caches held to `budgets`.
-    fn with_atlas_geometry(size: u32, page: u32, budgets: TextBudgets) -> Self {
+    pub(crate) fn with_atlas_geometry(size: u32, page: u32, budgets: TextBudgets) -> Self {
         // One live-font registry, shared between the provider (which records the
         // handles CoreText resolves) and the color/coverage raster (which
         // rasterizes through them). See `system_fonts::LiveFontRegistry`.
@@ -447,6 +457,7 @@ impl TextShaper {
             fallback: FontFallback::new(FALLBACK_FACE_IDS),
             manifest: FontManifest::default(),
             primary: None,
+            primary_queries: 0,
             next_asset: 0,
             slots: HashMap::new(),
             pending: Vec::new(),
@@ -527,6 +538,25 @@ impl TextShaper {
 
     pub(crate) fn counters(&self) -> &TextCounters {
         &self.counters
+    }
+
+    /// Fallback resolution, for its system-query, plan, and coverage
+    /// counters.
+    pub(crate) fn fallback(&self) -> &FontFallback {
+        &self.fallback
+    }
+
+    /// System queries made to resolve the primary face.
+    pub(crate) fn primary_queries(&self) -> u64 {
+        self.primary_queries
+    }
+
+    /// The cumulative shape invocations of `slot`'s worker paragraph, and the
+    /// lines it draws; `None` until it draws a layout.
+    pub(crate) fn drawn_layout(&self, slot: ParagraphSlot) -> Option<(u64, &[LineLayout])> {
+        let entry = self.slots.get(&slot)?;
+        let drawn = entry.drawn.as_ref()?;
+        Some((entry.shape_calls, &drawn.lines))
     }
 
     /// Residency itself, for the per-pool counters (resident glyphs, pages, and
@@ -1317,6 +1347,7 @@ impl TextShaper {
 
     fn resolve_primary(&mut self) -> Option<FontFaceId> {
         if self.primary.is_none() {
+            self.primary_queries += 1;
             let request = FontRequest::role(FontRole::Ui);
             if let Resolved::Face(face) =
                 self.resolver
@@ -2257,10 +2288,12 @@ mod tests {
     fn a_reclaimed_glyph_readmits_without_a_whole_atlas_upload() {
         let mut gpu = headless();
         let mut shaper = tiny_shaper();
-        // Drawn once, in the first frame, and never touched again: the coldest
-        // page in the pool from that moment on.
+        // Drawn once, in the first frame, beside cold filler that fills its page,
+        // and never touched again: no hot glyph lands on its page, so CLOCK
+        // finds it idle and reclaims it.
         let probe = request("q", 26.0);
         settle(&mut shaper, &mut gpu, slot(2), &probe, None);
+        settle(&mut shaper, &mut gpu, slot(3), &request("aceo", 26.0), None);
         shaper.end_frame();
         assert!(flood(&mut shaper, &mut gpu) > 0);
 
