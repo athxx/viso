@@ -214,21 +214,21 @@ Goal: extreme zoom without an unbounded distance field, and without tessellating
 Goal: the runtime uses `paragraph.rs`. This is the largest single piece of built-and-unused
 work in the crate (1467 lines, 19 tests, proven `incremental == full` by benchmark).
 
-- [ ] `crates/viso/src/text_content.rs` routes through `paragraph::Paragraph` instead of
+- [x] `crates/viso/src/text_content.rs` routes through `paragraph::Paragraph` instead of
       assembling `BidiInfo` + `LineBreaker` + `Shaper` itself. One pipeline, one definition of
       correct (§12.4).
-- [ ] Incremental invalidation (§12.19) is in effect at runtime: an edit reshapes a bounded
+- [x] Incremental invalidation (§12.19) is in effect at runtime: an edit reshapes a bounded
       neighborhood regardless of document size, and the result equals a full recompute.
-- [ ] Last-good paragraph (§12.21): a pending reflow draws the previous layout rather than
+- [x] Last-good paragraph (§12.21): a pending reflow draws the previous layout rather than
       blocking input.
-- [ ] `LineBreakTailoring` reaches the runtime: zh-Hans / zh-Hant / ja / ko get their own
+- [x] `LineBreakTailoring` reaches the runtime: zh-Hans / zh-Hant / ja / ko get their own
       line-break tailoring from the resolved locale (DoD, four separate items).
-- [ ] Tests: the runtime path and a full recompute agree on line structure for a scripted
+- [x] Tests: the runtime path and a full recompute agree on line structure for a scripted
       edit sequence; a single-character edit in a 10k-word paragraph reshapes a bounded
       number of runs; a static text frame executes zero resolve / shape / raster (DoD:
       `static text steady frame 不执行 resolve/shape/raster`) — asserted on counters, not
       inferred.
-- [ ] Gate green → commit.
+- [x] Gate green → commit.
 
 ---
 

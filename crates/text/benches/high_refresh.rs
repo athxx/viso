@@ -34,7 +34,7 @@ use std::hint::black_box;
 use std::time::Instant;
 
 use criterion::{Criterion, criterion_group, criterion_main};
-use viso_text::paragraph::Paragraph;
+use viso_text::paragraph::{Paragraph, ShapedSpan};
 use viso_text::shaping::{Direction, ShapedRun, Shaper};
 use viso_text::text_work::TextWork;
 use viso_text::{BaseDirection, FontFaceId, TextOffset};
@@ -81,7 +81,7 @@ fn shape_run(sub: &str, dir: Direction) -> ShapedRun {
 /// a pure cache hit. Returns the paragraph and the shape-call count after warmup.
 fn warmed_paragraph(text: &str, width: f32) -> (Paragraph, u64) {
     let mut p = Paragraph::new(text, BaseDirection::LeftToRight, 0);
-    let mut shape_fn = |s: &str, d: Direction| shape_run(s, d);
+    let mut shape_fn = |s: &str, d: Direction| ShapedSpan::from(shape_run(s, d));
     p.layout(width, &mut shape_fn);
     let warm = p.shape_call_count();
     (p, warm)
@@ -98,7 +98,7 @@ fn assert_steady_frame_does_not_reshape() {
     let (mut p, warm) = warmed_paragraph(text, width);
 
     // Re-lay out identical frames at the highest tier's cadence: none reshapes.
-    let mut shape_fn = |s: &str, d: Direction| shape_run(s, d);
+    let mut shape_fn = |s: &str, d: Direction| ShapedSpan::from(shape_run(s, d));
     for frame in 0..240 {
         p.layout(width, &mut shape_fn);
         assert_eq!(
@@ -153,7 +153,7 @@ fn assert_steady_frame_within_tier_budgets() {
     let full = shape_run(text, Direction::LeftToRight).width_ems;
     let width = full / 3.0;
     let (mut p, _warm) = warmed_paragraph(text, width);
-    let mut shape_fn = |s: &str, d: Direction| shape_run(s, d);
+    let mut shape_fn = |s: &str, d: Direction| ShapedSpan::from(shape_run(s, d));
 
     // Time a batch of steady (cache-hit) frames and take the per-frame mean.
     const FRAMES: u32 = 2000;
@@ -190,7 +190,7 @@ fn bench_steady_frame(c: &mut Criterion) {
     let full = shape_run(text, Direction::LeftToRight).width_ems;
     let width = full / 3.0;
     let (mut p, _warm) = warmed_paragraph(text, width);
-    let mut shape_fn = |s: &str, d: Direction| shape_run(s, d);
+    let mut shape_fn = |s: &str, d: Direction| ShapedSpan::from(shape_run(s, d));
 
     c.bench_function("text_steady_frame_layout_cache_hit", |b| {
         b.iter(|| black_box(p.layout(black_box(width), &mut shape_fn)));

@@ -54,7 +54,7 @@ use viso_widgets::caption_bar;
 
 pub mod system_fonts;
 mod text_content;
-use text_content::TextShaper;
+use text_content::{ParagraphSlot, TextShaper};
 
 mod window;
 pub use window::{WindowBuilder, WindowHandle, window};
@@ -844,16 +844,23 @@ impl WindowState {
         // their sources here; a steady frame declares nothing and never scans.
         let arena = self.store.arena();
         self.text_sources.retain(|id, _| arena.is_live(*id));
+        text.retain_paragraphs(|slot| {
+            arena.live_id(slot.index()).map(ParagraphSlot::from) == Some(slot)
+        });
         // Rasterize glyphs at the window's real device-pixel density (seeded at
         // open, refreshed on every geometry change), so a HiDPI surface gets
         // crisp SDFs instead of 1x coverage upscaled by the compositor.
         let dpi = self.dpi;
         for (id, request) in self.text_scratch.drain(..) {
-            // First shape is unconstrained: the run's `natural` extent is the
-            // unwrapped single-line width. If layout later assigns a
-            // wrap-eligible leaf a narrower box, it enqueues a reflow that the
-            // Layout phase drains and reshapes at `Some(width)`.
-            let content = text.shape(&mut gpu.backend, &request, dpi, None);
+            // A new run shapes unconstrained: its `natural` extent is the
+            // unwrapped single-line width. A run already laid out keeps the
+            // width it last wrapped to, so an edit reflows only the edited
+            // lines and the paragraph never flashes unwrapped. If layout then
+            // assigns a wrap-eligible leaf a different box, it enqueues a
+            // reflow that the Layout phase drains and reshapes at that width.
+            let slot = ParagraphSlot::from(id);
+            let width = text.wrap_width(slot);
+            let content = text.shape(&mut gpu.backend, slot, &request, dpi, width);
             // Every run keeps its source so a reflow or a memory trim can
             // reshape it (the store drops the request on drain). Re-declaring a
             // run (edit/rebuild) overwrites its entry; the reflow drain and the
@@ -900,6 +907,9 @@ impl WindowState {
         text.trim(|texture| gpu.renderer.release_texture(&mut gpu.backend, texture));
         let arena = self.store.arena();
         self.text_sources.retain(|id, _| arena.is_live(*id));
+        text.retain_paragraphs(|slot| {
+            arena.live_id(slot.index()).map(ParagraphSlot::from) == Some(slot)
+        });
         for (&id, request) in &self.text_sources {
             self.store.set_text_request(id, (**request).clone());
         }
@@ -1018,9 +1028,14 @@ impl WindowState {
                 self.text_sources.get(&id),
                 self.text_edits.get(id),
             ) {
-                (Some(text), Some(request), Some(buffer)) if request.text == buffer.text => {
-                    text.caret(request, Some(r.w), buffer.sel.cursor)
-                }
+                (Some(text), Some(request), Some(buffer)) if request.text == buffer.text => text
+                    .caret(
+                        ParagraphSlot::from(id),
+                        request,
+                        viso_text::TextPosition::downstream(viso_text::TextOffset(
+                            buffer.sel.cursor,
+                        )),
+                    ),
                 _ => None,
             };
             caret_area(r, caret)
@@ -1109,10 +1124,6 @@ impl WindowState {
             // on a frame that actually reflows — never a steady frame — and the
             // map holds only wrap paragraphs, so this stays small. Keeps a long
             // session that churns wrapped paragraphs from leaking their sources.
-            if passes == 0 {
-                let arena = self.store.arena();
-                self.text_sources.retain(|id, _| arena.is_live(*id));
-            }
             let (Some(gpu), Some(text)) = (self.gpu.as_mut(), self.text.as_mut()) else {
                 // No shaper/GPU (headless-without-surface, pre-launch): nothing
                 // can reshape, so drop the drained requests and stop rather than
@@ -1120,13 +1131,26 @@ impl WindowState {
                 self.reflow_scratch.clear();
                 break;
             };
+            if passes == 0 {
+                let arena = self.store.arena();
+                self.text_sources.retain(|id, _| arena.is_live(*id));
+                text.retain_paragraphs(|slot| {
+                    arena.live_id(slot.index()).map(ParagraphSlot::from) == Some(slot)
+                });
+            }
             let dpi = self.dpi;
             for (id, width) in self.reflow_scratch.drain(..) {
                 // A missing source means the node was freed, so skip it.
                 let Some(request) = self.text_sources.get(&id) else {
                     continue;
                 };
-                let content = text.shape(&mut gpu.backend, request, dpi, Some(width));
+                let content = text.shape(
+                    &mut gpu.backend,
+                    ParagraphSlot::from(id),
+                    request,
+                    dpi,
+                    Some(width),
+                );
                 // Width-only reshape: mark MEASURE|LAYOUT|PAINT but not
                 // SEMANTICS — the accessible name is unchanged by wrapping.
                 self.store.set_reflowed_content(id, content);
@@ -1937,9 +1961,10 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
                                 if let Some(text) = &ws.text {
                                     let c = text.counters();
                                     eprintln!(
-                                        "viso: text reshapes={} relinebreaks={} rasters={} atlas_upload_bytes={}",
+                                        "viso: text reshapes={} relinebreaks={} shaped_runs={} rasters={} atlas_upload_bytes={}",
                                         c.reshapes(),
                                         c.relinebreaks(),
+                                        c.shaped_runs(),
                                         c.rasters(),
                                         c.atlas_upload_bytes(),
                                     );

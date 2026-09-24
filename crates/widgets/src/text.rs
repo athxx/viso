@@ -91,6 +91,8 @@ impl Default for LabelStyle {
 pub struct Label {
     text: String,
     style: LabelStyle,
+    /// The content language (BCP-47), or `None` for the process locale.
+    locale: Option<String>,
 }
 
 /// Construct a [`Label`] with the given text and default style. Chain
@@ -99,6 +101,7 @@ pub fn label(text: impl Into<String>) -> Label {
     Label {
         text: text.into(),
         style: LabelStyle::default(),
+        locale: None,
     }
 }
 
@@ -128,6 +131,13 @@ impl Label {
         self.style.soft_wrap = true;
         self
     }
+
+    /// Set the content language as a BCP-47 tag (`"ja"`, `"zh-Hant"`). It
+    /// selects locale line breaking and fallback faces; the text is unchanged.
+    pub fn locale(mut self, locale: impl Into<String>) -> Self {
+        self.locale = Some(locale.into());
+        self
+    }
 }
 
 impl Component for Label {
@@ -148,6 +158,7 @@ impl Component for Label {
                 font_size: self.style.font_size,
                 color: self.style.color,
                 soft_wrap: self.style.soft_wrap,
+                locale: self.locale.clone(),
             },
         );
         cx.semantics(

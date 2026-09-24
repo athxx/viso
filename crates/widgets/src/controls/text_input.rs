@@ -212,6 +212,7 @@ impl Component for TextInput {
                 color: self.style.color,
                 // A text field is single-line: it scrolls horizontally, never wraps.
                 soft_wrap: false,
+                locale: None,
             },
         );
 
