@@ -167,6 +167,11 @@ struct Page {
     /// CLOCK second-chance bit: set when the page is touched, cleared to give a
     /// recently-referenced page one reprieve before reclamation.
     referenced: bool,
+    /// One past the epoch this page was last drawn from or admitted to. While
+    /// that epoch is current the frame holds placements on the page, so
+    /// reclaiming it would repaint glyphs already handed out; CLOCK skips it
+    /// unless the frame alone needs every page.
+    busy_until: u64,
     /// Set by [`GlyphResidency::revoke`] when the pixel owner's packer could not
     /// fit a glyph this page's byte accounting said would fit. A sealed page
     /// accepts no further glyphs until it is reclaimed.
@@ -186,6 +191,7 @@ impl Page {
         Self {
             last_used_epoch: epoch,
             referenced: false,
+            busy_until: 0,
             sealed: false,
             generation: 0,
             resident: Vec::new(),
@@ -291,6 +297,7 @@ impl Pool {
         let generation = self.pages[page].generation;
         self.index.insert(key, (page, generation));
         self.pages[page].referenced = true;
+        self.pages[page].busy_until = epoch + 1;
 
         self.upload_bytes_total += bitmap_bytes as u64;
         self.resident_glyphs += 1;
@@ -308,7 +315,7 @@ impl Pool {
             self.pages.push(Page::new(epoch));
             return self.pages.len() - 1;
         }
-        let victim = self.evict_one();
+        let victim = self.evict_one(epoch);
         self.reclaim_page(victim, epoch, reclaims);
         victim
     }
@@ -372,21 +379,28 @@ impl Pool {
 
     /// The CLOCK sweep: from the hand, give any referenced page one second
     /// chance (clear the bit, advance) and reclaim the first non-referenced
-    /// page, preferring the coldest. Returns the page index to reuse.
-    fn evict_one(&mut self) -> usize {
+    /// page the frame at `epoch` holds nothing on. Returns the page index to
+    /// reuse.
+    fn evict_one(&mut self, epoch: u64) -> usize {
         let n = self.pages.len();
         // A full sweep clearing reference bits guarantees a non-referenced page
-        // exists on the second lap; bound the scan to two laps.
+        // exists on the second lap if any page is idle; bound the scan to two
+        // laps.
         for _ in 0..(2 * n) {
             let idx = self.clock_hand % n;
             self.clock_hand = (self.clock_hand + 1) % n;
-            if self.pages[idx].referenced {
-                self.pages[idx].referenced = false;
+            let page = &mut self.pages[idx];
+            if page.busy_until > epoch {
+                continue;
+            }
+            if page.referenced {
+                page.referenced = false;
             } else {
                 return idx;
             }
         }
-        // Fallback: after two laps every bit was cleared, so pick the coldest.
+        // The frame holds every page: its working set exceeds the pool, so the
+        // coldest page goes regardless.
         (0..n)
             .min_by_key(|&i| self.pages[i].last_used_epoch)
             .unwrap_or(0)
@@ -550,6 +564,7 @@ impl GlyphResidency {
         let pool_kind = pool.kind;
         if let Some(page) = pool.resident_page(&key) {
             pool.pages[page].referenced = true;
+            pool.pages[page].busy_until = epoch + 1;
             self.touched_this_frame.insert((pool_kind, page));
             return Admission::Cached { kind, page };
         }
@@ -614,10 +629,12 @@ impl GlyphResidency {
     /// glyph collapse to one recency update per frame and nothing mutates page
     /// age here.
     pub fn touch(&mut self, key: GlyphKey) {
+        let epoch = self.epoch;
         let pool = self.pool_mut(key.kind);
         let pool_kind = pool.kind;
         if let Some(page) = pool.resident_page(&key) {
             pool.pages[page].referenced = true;
+            pool.pages[page].busy_until = epoch + 1;
             self.touched_this_frame.insert((pool_kind, page));
         }
     }
@@ -628,10 +645,12 @@ impl GlyphResidency {
     /// Same effect as [`Self::touch`] without the residency index lookup, so the
     /// per-glyph-draw path costs no hash of a [`GlyphKey`].
     pub fn touch_page(&mut self, kind: GlyphImageKind, page: usize) {
+        let epoch = self.epoch;
         let pool = self.pool_mut(kind);
         let pool_kind = pool.kind;
         if let Some(slot) = pool.pages.get_mut(page) {
             slot.referenced = true;
+            slot.busy_until = epoch + 1;
             self.touched_this_frame.insert((pool_kind, page));
         }
     }
@@ -912,6 +931,30 @@ mod tests {
         );
         // The whole atlas was not cleared: page 1 still holds a real key.
         assert!(res.a8.pages[1].resident.contains(&key(0, 1)));
+    }
+
+    #[test]
+    fn clock_spares_a_page_drawn_this_frame_when_every_bit_is_set() {
+        let mut res = GlyphResidency::new(2);
+        for g in 0..PAGE_GLYPH_CAP as u16 {
+            res.get_or_admit_a8(key(g, 0), 10);
+        }
+        for g in 0..PAGE_GLYPH_CAP as u16 {
+            res.get_or_admit_a8(key(g, 1), 10);
+        }
+        res.advance_epoch();
+        // Both pages carry a set bit, but only page 0 is drawn from this frame.
+        res.a8.pages[1].referenced = true;
+        res.touch(key(0, 0));
+
+        res.get_or_admit_a8(key(999, 2), 10);
+
+        assert!(
+            res.a8.pages[0].resident.contains(&key(0, 0)),
+            "the page this frame draws from survives"
+        );
+        assert!(res.a8.pages[1].resident.contains(&key(999, 2)));
+        assert_eq!(res.a8.pages[0].generation, 0);
     }
 
     #[test]

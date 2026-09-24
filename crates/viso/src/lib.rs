@@ -54,6 +54,7 @@ use viso_widgets::caption_bar;
 
 pub mod system_fonts;
 mod text_content;
+mod text_harness;
 mod text_worker;
 use text_content::{ParagraphSlot, TextShaper};
 
@@ -360,6 +361,10 @@ pub mod __test_support {
         let driver = Scheduler::with_clock(app, driver, clock).run_returning();
         DrivenApp { driver }
     }
+
+    pub use crate::text_harness::{
+        LineShape, TextDraw, TextHarness, TextStats, text_commit_budget,
+    };
 }
 
 /// Bridges the UI-agnostic runtime [`viso_runtime::FrameDriver`] to the user's
@@ -889,7 +894,7 @@ impl WindowState {
         }
         text.pump(
             &mut gpu.backend,
-            text_content::TEXT_COMMIT_BUDGET,
+            text_content::text_commit_budget(text_content::DEFAULT_FRAME_INTERVAL),
             &mut self.text_updated,
         );
         let dpi = self.dpi;

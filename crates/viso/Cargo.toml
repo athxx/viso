@@ -60,3 +60,8 @@ criterion = "0.7"
 [[bench]]
 name = "window_frame"
 harness = false
+
+# The wired text runtime under the §26 matrix and the per-tier commit budgets.
+[[bench]]
+name = "text_runtime"
+harness = false

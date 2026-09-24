@@ -313,16 +313,32 @@ work, so the main thread stops doing the expensive parts.
 
 Goal: the benchmark matrix measures the runtime, not module-level fixtures.
 
-- [ ] `high_refresh.rs` and `incremental_edit.rs` extended to drive the wired runtime path
+- [x] `high_refresh.rs` and `incremental_edit.rs` extended to drive the wired runtime path
       (X6–X9), keeping their existing assertions as the floor.
-- [ ] §26 matrix coverage for the categories this program can measure headlessly: startup,
+      (The wired runtime lives in `viso`, which a `viso-text` bench cannot depend on, so the
+      runtime cases are `crates/viso/benches/text_runtime.rs` over a headless `TextHarness`;
+      the two primitive benches stay as they are, the floor.)
+- [x] §26 matrix coverage for the categories this program can measure headlessly: startup,
       resolution / fallback, face cache, shaping, world-ready correctness / editing, glyph
       representation / atlas.
-- [ ] Per-tier regression gates at 60 / 120 / 144 / 240 Hz frame budgets (§14.1), release
+      (A subset per category: `native_system_ui_first_resolve`, Latin / CJK-10k cold/warm,
+      mixed Latin-CJK-emoji, ZWJ, face SLRU hot set, middle-token edit at 500 / 2000 / 8000
+      words, text input + caret, 10k-line code-editor scroll, page eviction without reset.
+      Not covered: `long_log_scan`, `emoji_zwj_1000_clusters`, `cjk_mixed_zh_ja_ko`,
+      `missing_family_negative_cache`, the 3000-font startup. System-font rows run on macOS
+      only. `cjk_10k_cold` measures ~3.3 s here — reported, not gated. The page-eviction row
+      found CLOCK reclaiming a page the frame had already drawn from once every page carried
+      a reference bit; a page touched or admitted this frame is now spared unless the frame
+      holds every page.)
+- [x] Per-tier regression gates at 60 / 120 / 144 / 240 Hz frame budgets (§14.1), release
       builds only (AGENTS 36).
-- [ ] A scrolling CJK document and a mixed-direction editing session as steady-state cases:
+      (Budget `min(500 µs, 5 % of frame)` per tier: 500 / 416 / 347 / 208 µs; an edit frame
+      must stay under 2× its budget in release, measured ~17–19 µs at every tier. CPU budget
+      only — no device cadence (see Deferred); the runtime still derives its budget from a
+      60 Hz default, the display period is not wired to it.)
+- [x] A scrolling CJK document and a mixed-direction editing session as steady-state cases:
       constant draw / upload / shape counts across identical frames.
-- [ ] Gate green → commit.
+- [x] Gate green → commit.
 
 ---
 
