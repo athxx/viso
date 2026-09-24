@@ -289,16 +289,23 @@ Goal: the 1 GiB placeholder goes away and the implemented SLRU takes over.
 Goal: `text_work.rs` (540 lines, 10 tests, used only by a benchmark) runs the runtime's text
 work, so the main thread stops doing the expensive parts.
 
-- [ ] The scheduler owns shaping / MTSDF generation / exact-coverage regeneration off the main
+- [x] The scheduler owns shaping / MTSDF generation / exact-coverage regeneration off the main
       thread, with the frame budget as its admission rule (§14.1).
-- [ ] The worker boundary respects unsafe shaping boundaries (§12.7, §12.9): a reshape at a
+      (A worker thread owns paragraph layout, the shaping cache and exact-coverage raster,
+      its jobs ordered by `TextWork`; the main thread commits results under a fixed 500 µs
+      (the §14.4 cap; the 5 %-of-frame term is not wired to the display period). The runtime
+      has no MTSDF path yet, so there is none to move;
+      CoreText color / platform coverage still rasterize on the main thread.)
+- [x] The worker boundary respects unsafe shaping boundaries (§12.7, §12.9): a reshape at a
       worker boundary does not mechanically cut a `ShapedRun`.
-- [ ] Main-thread work per frame is bounded and measured; a pending unit yields last-good
+      (A job is a whole paragraph; the worker's incremental relayout keeps its own safe
+      boundaries.)
+- [x] Main-thread work per frame is bounded and measured; a pending unit yields last-good
       output rather than a stall.
-- [ ] Tests: an edit cadence performs no shaping on the main thread (the existing bench gate,
+- [x] Tests: an edit cadence performs no shaping on the main thread (the existing bench gate,
       re-asserted against the runtime path); a frame that exceeds its budget defers rather
       than overruns; deferred work completes deterministically in headless.
-- [ ] Gate green → commit.
+- [x] Gate green → commit.
 
 ---
 

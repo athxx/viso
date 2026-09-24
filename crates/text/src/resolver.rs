@@ -22,6 +22,7 @@
 //! [`Missing`]: Resolved::Missing
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use crate::FontFaceId;
 use crate::font_manifest::{AssetRef, FontManifest};
@@ -57,8 +58,8 @@ enum FaceKey {
 struct FaceEntry {
     /// Owned sfnt bytes once loaded; `None` for an app face not yet read from
     /// its asset. `ttf-parser` / `rustybuzz` faces are reconstructed from this
-    /// on demand.
-    bytes: Option<Vec<u8>>,
+    /// on demand. Shared, so a worker thread can shape from the same bytes.
+    bytes: Option<Arc<[u8]>>,
     /// Face index within `bytes` for a collection; 0 for a single face.
     index: u32,
 }
@@ -173,13 +174,16 @@ impl FontResolver {
             if let Some(bytes) = bytes {
                 let slot = &mut self.faces[id.0 as usize];
                 if slot.bytes.is_none() {
-                    slot.bytes = Some(bytes);
+                    slot.bytes = Some(bytes.into());
                 }
             }
             return id;
         }
         let id = FontFaceId(self.faces.len() as u32);
-        self.faces.push(FaceEntry { bytes, index });
+        self.faces.push(FaceEntry {
+            bytes: bytes.map(Arc::from),
+            index,
+        });
         self.interned.insert(key, id);
         id
     }
@@ -207,7 +211,15 @@ impl FontResolver {
     pub fn face_bytes(&self, id: FontFaceId) -> Option<(&[u8], u32)> {
         self.faces
             .get(id.0 as usize)
-            .and_then(|f| f.bytes.as_ref().map(|b| (b.as_slice(), f.index)))
+            .and_then(|f| f.bytes.as_ref().map(|b| (&**b, f.index)))
+    }
+
+    /// A shared handle to a registered face's bytes and index, for handing the
+    /// face to another thread without copying it.
+    pub fn face_data(&self, id: FontFaceId) -> Option<(Arc<[u8]>, u32)> {
+        self.faces
+            .get(id.0 as usize)
+            .and_then(|f| f.bytes.clone().map(|b| (b, f.index)))
     }
 
     /// Parse and return the placement/identity metrics for a registered face.

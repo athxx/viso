@@ -54,6 +54,7 @@ use viso_widgets::caption_bar;
 
 pub mod system_fonts;
 mod text_content;
+mod text_worker;
 use text_content::{ParagraphSlot, TextShaper};
 
 mod window;
@@ -562,6 +563,10 @@ struct WindowState {
     /// Reusable buffer the text seam drains pending requests into, so re-shaping
     /// text allocates only the shaped payloads, not the request list.
     text_scratch: Vec<(NodeId, Box<TextRequest>)>,
+    /// Reusable buffer the text commit drains the slots whose layout the
+    /// worker finished into, so committing allocates nothing on the steady
+    /// path.
+    text_updated: Vec<ParagraphSlot>,
     /// Retained source request of every shaped run, keyed by node — the one
     /// place the facade keeps a run's declaration after the store's request
     /// column is drained (`take_text_requests` consumes it, and the store treats
@@ -668,6 +673,7 @@ impl WindowState {
             text: None,
             text_scratch: Vec::new(),
             text_sources: std::collections::HashMap::new(),
+            text_updated: Vec::new(),
             reflow_scratch: Vec::new(),
             scratch_opens: Vec::new(),
             scratch_closes: Vec::new(),
@@ -870,6 +876,54 @@ impl WindowState {
         }
     }
 
+    /// Commit the text worker's finished layouts within the frame's commit
+    /// budget and redraw each run they replaced, at the width it last wrapped
+    /// to. Until a run's layout is committed it keeps drawing its last good
+    /// one. A no-op when the worker owes nothing (the steady case).
+    fn commit_text_work(&mut self) {
+        let (Some(gpu), Some(text)) = (self.gpu.as_mut(), self.text.as_mut()) else {
+            return;
+        };
+        if !text.has_pending_work() {
+            return;
+        }
+        text.pump(
+            &mut gpu.backend,
+            text_content::TEXT_COMMIT_BUDGET,
+            &mut self.text_updated,
+        );
+        let dpi = self.dpi;
+        for slot in self.text_updated.drain(..) {
+            let Some(id) = self
+                .store
+                .arena()
+                .live_id(slot.index())
+                .filter(|&id| ParagraphSlot::from(id) == slot)
+            else {
+                continue;
+            };
+            let Some(request) = self.text_sources.get(&id) else {
+                continue;
+            };
+            let width = text.wrap_width(slot);
+            let content = text.shape(&mut gpu.backend, slot, request, dpi, width);
+            // The request is unchanged, so its accessible name is too.
+            self.store.set_reflowed_content(id, content);
+        }
+    }
+
+    /// Hand the text worker every layout this frame asked for, in one batch.
+    fn dispatch_text_work(&mut self) {
+        if let Some(text) = self.text.as_mut() {
+            text.dispatch();
+        }
+    }
+
+    /// Whether the text worker still owes results a later frame commits.
+    fn text_work_pending(&self) -> bool {
+        self.text.as_ref().is_some_and(TextShaper::has_pending_work)
+    }
+
     /// Fold every queued edit into its buffer and tell each control whose text
     /// changed what it now reads, so `on_change` observes typing, deletion,
     /// paste, and cut through one path. Runs right after an input sample is
@@ -1028,7 +1082,7 @@ impl WindowState {
         let area = self.focused_text_node().map(|id| {
             let r = self.store.world(id);
             let caret = match (
-                self.text.as_mut(),
+                self.text.as_ref(),
                 self.text_sources.get(&id),
                 self.text_edits.get(id),
             ) {
@@ -1878,6 +1932,11 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
                     // shaping step below re-shapes the new string. A no-op when no
                     // control took an edit this frame (the steady case), so a
                     // non-text frame pays nothing.
+                    // Commit the layouts the text worker finished since the
+                    // last frame, within the commit budget, so this frame's
+                    // measure sees them; what the budget leaves waits for the
+                    // next frame, drawing its last good layout meanwhile.
+                    ws.commit_text_work();
                     ws.settle_text_edits();
                     // Shape any text (re)declared this frame — a rebuilt list row,
                     // an applied text edit, or a future reactive text update
@@ -1899,6 +1958,9 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
                     // sees the final wrapped row heights, not the unconstrained
                     // single-line ones.
                     let reflow_passes = ws.reflow_wrapped_text();
+                    // Every layout this frame asked for goes to the worker at
+                    // once, so it lays them out while the frame renders.
+                    ws.dispatch_text_work();
                     // First-frame double-shape visibility (§61): a wrapped `Fill`
                     // paragraph is shaped once unconstrained then once at its width
                     // on the frame it appears/resizes; this surfaces that one-time
@@ -1969,10 +2031,14 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
                                 if let Some(text) = &ws.text {
                                     let c = text.counters();
                                     eprintln!(
-                                        "viso: text reshapes={} relinebreaks={} shaped_runs={} rasters={} atlas_upload_bytes={}",
+                                        "viso: text reshapes={} relinebreaks={} shaped_runs={} main_shaped_runs={} commits={} deferred={} main_commit_us={} rasters={} atlas_upload_bytes={}",
                                         c.reshapes(),
                                         c.relinebreaks(),
                                         c.shaped_runs(),
+                                        c.main_shaped_runs(),
+                                        c.commits(),
+                                        c.deferred(),
+                                        c.main_commit_micros(),
                                         c.rasters(),
                                         c.atlas_upload_bytes(),
                                     );
@@ -2057,7 +2123,9 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
                     // non-empty; the moment it empties (the last slide settled)
                     // this stops firing and, once every window is idle, the loop
                     // falls idle, holding the zero-CPU-when-idle contract.
-                    if !ws.animations.is_empty() {
+                    // Text the worker still owes is committed by a later frame,
+                    // so keep beating until it lands.
+                    if !ws.animations.is_empty() || ws.text_work_pending() {
                         cx.request_redraw(ws.window);
                     }
                 }
@@ -2090,7 +2158,9 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
         // as its animations finish; once every window is idle this returns
         // false and the loop is free to idle — the counterpart to the per-window
         // `request_redraw` self-reschedule in `PostFrameCleanup`.
-        self.windows.iter().any(|w| !w.animations.is_empty())
+        self.windows
+            .iter()
+            .any(|w| !w.animations.is_empty() || w.text_work_pending())
     }
 
     fn next_timer_deadline(&self) -> Option<viso_runtime::Instant> {

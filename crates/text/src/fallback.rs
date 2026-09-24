@@ -48,6 +48,7 @@
 //! through to the emoji fallback face intact.
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use unicode_script::{Script, UnicodeScript};
 
@@ -123,7 +124,7 @@ pub enum FallbackPlan {
 /// cannot come back naming a different face.
 #[derive(Debug)]
 struct Candidate {
-    bytes: Vec<u8>,
+    bytes: Arc<[u8]>,
     index: u32,
     /// The platform-reported PostScript name, if any. Authoritative for
     /// re-opening the face through the platform raster (color emoji, Apple
@@ -258,7 +259,13 @@ impl FontFallback {
     /// Owned sfnt bytes and face index for a resolved fallback face, for the Face
     /// Cache to build a `ttf-parser` / `rustybuzz` face. Cold path only.
     pub fn face_bytes(&self, face: FontFaceId) -> Option<(&[u8], u32)> {
-        self.faces.get(&face).map(|c| (c.bytes.as_slice(), c.index))
+        self.faces.get(&face).map(|c| (&*c.bytes, c.index))
+    }
+
+    /// A shared handle to a resolved fallback face's bytes and index, for
+    /// handing the face to another thread without copying it.
+    pub fn face_data(&self, face: FontFaceId) -> Option<(Arc<[u8]>, u32)> {
+        self.faces.get(&face).map(|c| (c.bytes.clone(), c.index))
     }
 
     /// The platform-reported PostScript name of a resolved fallback face, if the
@@ -301,7 +308,7 @@ impl FontFallback {
         self.faces.insert(
             id,
             Candidate {
-                bytes,
+                bytes: bytes.into(),
                 index,
                 postscript_name,
             },
