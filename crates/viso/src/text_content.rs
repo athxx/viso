@@ -3,6 +3,7 @@
 
 use std::cell::Cell;
 use std::collections::HashMap;
+use std::sync::OnceLock;
 
 use viso_gpu::{GpuBackend, TextureDesc};
 use viso_render::{
@@ -10,14 +11,15 @@ use viso_render::{
 };
 use viso_text::fallback::{FallbackPlan, FallbackPlanKey, FallbackStyle, FontFallback};
 use viso_text::font_manifest::{AssetRef, FontManifest};
+use viso_text::paragraph::{LineLayout, Paragraph, ShapedSegment, ShapedSpan, line_index_at};
 use viso_text::system_fonts::ColorGlyph;
 use viso_text::{
-    Admission, BaseDirection, BidiInfo, ColorGlyphRasterizer, Coverage, CoverageBitmap, Direction,
+    Admission, BaseDirection, ColorGlyphRasterizer, Coverage, CoverageBitmap, Direction,
     FontFaceId, FontRequest, FontResolver, FontRole, GlyphImageKind, GlyphKey, GlyphResidency,
-    LineBreaker, OUTLINE_POOL, PoolBudget, Reclaimed, Resolved, Segmenter, ShapedRun, Shaper,
-    inspect_face, rasterize_coverage,
+    LineBreakTailoring, OUTLINE_POOL, PoolBudget, Reclaimed, Resolved, Segmenter, ShapedRun,
+    Shaper, TextOffset, TextPosition, inspect_face, rasterize_coverage,
 };
-use viso_ui::{Content, TextRequest, Vec2};
+use viso_ui::{Content, NodeId, TextRequest, Vec2};
 
 use crate::system_fonts::{CoreTextColorRaster, CoreTextProvider, LiveFontRegistry};
 
@@ -38,11 +40,25 @@ const COLOR_BYTES_PER_TEXEL: usize = 4;
 /// reclaims elsewhere, so the retry always makes progress; the bound only keeps a
 /// pathological glyph from walking the whole plane in one frame.
 const PLACEMENT_RETRIES: u32 = 4;
+/// Longest source substring the cross-paragraph span cache keeps. Labels,
+/// button titles and short wrapped lines repeat across nodes and rebuilds;
+/// long runs are unique to their paragraph, whose retained lines already
+/// keep them.
+const SPAN_CACHE_TEXT: usize = 64;
+/// Entries per span-cache generation. When the live generation fills it
+/// becomes the previous one and the one before is dropped, so the cache holds
+/// at most twice this many spans and a span still in use survives a turnover.
+const SPAN_CACHE_ENTRIES: usize = 4096;
 
 #[derive(Debug, Default)]
 pub(crate) struct TextCounters {
+    /// Paragraph layouts that ran — a pure cache hit does not count.
     reshapes: Cell<u64>,
+    /// The subset of `reshapes` that broke lines to a wrap width.
     relinebreaks: Cell<u64>,
+    /// Spans handed to the shaper: misses of both the paragraph's per-pass memo
+    /// and the cross-paragraph span cache.
+    shaped_runs: Cell<u64>,
     rasters: Cell<u64>,
     atlas_upload_bytes: Cell<u64>,
     /// Pages reclaimed this frame, across all pools (§25 eviction visibility).
@@ -58,6 +74,10 @@ impl TextCounters {
 
     pub(crate) fn relinebreaks(&self) -> u64 {
         self.relinebreaks.get()
+    }
+
+    pub(crate) fn shaped_runs(&self) -> u64 {
+        self.shaped_runs.get()
     }
 
     pub(crate) fn rasters(&self) -> u64 {
@@ -83,6 +103,10 @@ impl TextCounters {
         }
     }
 
+    fn record_shaped_run(&self) {
+        self.shaped_runs.set(self.shaped_runs.get() + 1);
+    }
+
     fn record_raster(&self) {
         self.rasters.set(self.rasters.get() + 1);
     }
@@ -104,6 +128,7 @@ impl TextCounters {
     fn reset(&self) {
         self.reshapes.set(0);
         self.relinebreaks.set(0);
+        self.shaped_runs.set(0);
         self.rasters.set(0);
         self.atlas_upload_bytes.set(0);
         self.evictions.set(0);
@@ -117,10 +142,10 @@ struct PositionedGlyph {
     glyph: u16,
     cluster: usize,
     origin: [f32; 2],
-    advance: f32,
 }
 
-#[derive(Debug, Clone)]
+/// A paragraph's lines placed in logical pixels at one font size.
+#[derive(Debug, Clone, Default)]
 struct PreparedLayout {
     glyphs: Vec<PositionedGlyph>,
     natural: Vec2,
@@ -128,12 +153,83 @@ struct PreparedLayout {
     line_height: f32,
 }
 
+/// Which retained paragraph a request belongs to: the node that draws it,
+/// generation included, so a recycled node index never inherits another
+/// node's lines.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) struct ParagraphSlot {
+    index: u32,
+    generation: u32,
+}
+
+impl ParagraphSlot {
+    pub(crate) fn index(self) -> u32 {
+        self.index
+    }
+}
+
+impl From<NodeId> for ParagraphSlot {
+    fn from(id: NodeId) -> Self {
+        Self {
+            index: id.index(),
+            generation: id.generation(),
+        }
+    }
+}
+
+/// One node's paragraph as the runtime retains it between frames.
+///
+/// The lines are the last good layout: an edit is applied to them as a range
+/// replacement, so the next layout reflows only the neighbourhood of the edit,
+/// and until that layout runs the placed glyphs of the previous one are what
+/// draws.
+#[derive(Debug)]
+struct RetainedParagraph {
+    paragraph: Paragraph,
+    /// The wrap width, in logical pixels, the lines were laid out to; `None`
+    /// for unwrapped text.
+    wrap: Option<f32>,
+    /// The font size bits `placed` was computed at, or `None` when the lines
+    /// changed since it was placed.
+    placed_at: Option<u32>,
+    placed: PreparedLayout,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-struct LayoutKey {
+struct SpanKey {
     face: FontFaceId,
+    direction: Direction,
+    /// Fallback faces are chosen per locale, so the same text can shape
+    /// differently under two locales.
+    locale: String,
     text: String,
-    size_bits: u32,
-    width_bits: Option<u32>,
+}
+
+/// Shaped spans shared across paragraphs, in two generations: identical short
+/// text in different nodes — or in the same node after a rebuild gave it a new
+/// identity — shapes once.
+#[derive(Debug, Default)]
+struct SpanCache {
+    live: HashMap<SpanKey, ShapedSpan>,
+    previous: HashMap<SpanKey, ShapedSpan>,
+}
+
+impl SpanCache {
+    fn get(&mut self, key: &SpanKey) -> Option<ShapedSpan> {
+        if let Some(span) = self.live.get(key) {
+            return Some(span.clone());
+        }
+        let span = self.previous.remove(key)?;
+        self.insert(key.clone(), span.clone());
+        Some(span)
+    }
+
+    fn insert(&mut self, key: SpanKey, span: ShapedSpan) {
+        if self.live.len() >= SPAN_CACHE_ENTRIES {
+            self.previous = std::mem::take(&mut self.live);
+        }
+        self.live.insert(key, span);
+    }
 }
 
 /// Where one glyph's pixels live, as the pixel owner records it.
@@ -159,7 +255,9 @@ pub(crate) struct TextShaper {
     manifest: FontManifest,
     primary: Option<FontFaceId>,
     next_asset: u32,
-    layouts: HashMap<LayoutKey, PreparedLayout>,
+    /// Every mounted text node's paragraph, pruned with the tree.
+    paragraphs: HashMap<ParagraphSlot, RetainedParagraph>,
+    spans: SpanCache,
     coverage_uv: HashMap<GlyphKey, Placement>,
     color_uv: HashMap<GlyphKey, Placement>,
     coverage_atlas: Option<GlyphAtlas>,
@@ -204,7 +302,8 @@ impl TextShaper {
             manifest: FontManifest::default(),
             primary: None,
             next_asset: 0,
-            layouts: HashMap::new(),
+            paragraphs: HashMap::new(),
+            spans: SpanCache::default(),
             coverage_uv: HashMap::new(),
             color_uv: HashMap::new(),
             coverage_atlas: None,
@@ -261,11 +360,13 @@ impl TextShaper {
     }
 
     /// Answer an OS memory warning: reclaim every page of every glyph pool,
-    /// drop the prepared-layout cache, and hand the atlas planes to `retire` so
-    /// the caller can release them with their bindings. Placements die with
-    /// their pages, so every retained text payload is stale afterwards — the
-    /// caller reshapes the mounted text, which re-admits exactly the live
-    /// working set into freshly created planes. Returns the plane bytes retired.
+    /// drop the shared span cache, and hand the atlas planes to `retire` so the
+    /// caller can release them with their bindings. Placements die with their
+    /// pages, so every retained text payload is stale afterwards — the caller
+    /// reshapes the mounted text, which re-admits exactly the live working set
+    /// into freshly created planes. The retained paragraphs are kept: they hold
+    /// no pixels, and keeping them makes that reshape a re-raster only. Returns
+    /// the plane bytes retired.
     pub(crate) fn trim(&mut self, mut retire: impl FnMut(TextureId)) -> usize {
         for kind in [
             GlyphImageKind::MaskA8,
@@ -288,77 +389,169 @@ impl TextShaper {
         }
         self.coverage_uv = HashMap::new();
         self.color_uv = HashMap::new();
-        self.layouts = HashMap::new();
+        self.spans = SpanCache::default();
         bytes
     }
 
-    /// The caret box for byte offset `at` of `request`'s text, relative to the
-    /// run's origin: a zero-width rect at the caret's pen position spanning its
-    /// line. Reads the layout the run was shaped with, so asking costs a shape
-    /// only for text the cache has not seen.
-    pub(crate) fn caret(
-        &mut self,
-        request: &TextRequest,
-        max_width: Option<f32>,
-        at: usize,
-    ) -> Option<Rect> {
-        let layout = self.layout_for(request, max_width)?;
-        let row_of = |y: f32| {
-            ((y - layout.baseline) / layout.line_height)
-                .round()
-                .max(0.0)
-        };
-        let (x, row) = match layout.glyphs.iter().find(|g| g.cluster >= at) {
-            Some(g) => (g.origin[0], row_of(g.origin[1])),
-            None => layout.glyphs.last().map_or((0.0, 0.0), |g| {
-                (g.origin[0] + g.advance, row_of(g.origin[1]))
-            }),
-        };
-        Some(Rect {
-            x,
-            y: row * layout.line_height,
-            w: 0.0,
-            h: layout.line_height,
-        })
+    /// Drop the paragraphs of every slot `live` rejects — nodes freed, or
+    /// whose index now names a newer node.
+    pub(crate) fn retain_paragraphs(&mut self, mut live: impl FnMut(ParagraphSlot) -> bool) {
+        self.paragraphs.retain(|slot, _| live(*slot));
     }
 
-    fn layout_for(
+    /// The wrap width `slot`'s lines were last laid out to, if they wrap.
+    ///
+    /// Reshaping edited text at this width keeps the last good line structure
+    /// on screen until layout decides whether the box itself changed, instead
+    /// of flashing the text unwrapped for a frame.
+    pub(crate) fn wrap_width(&self, slot: ParagraphSlot) -> Option<f32> {
+        self.paragraphs.get(&slot).and_then(|p| p.wrap)
+    }
+
+    /// The caret box at `position` in `slot`'s text, relative to the run's
+    /// origin: a zero-width rect at the caret's inline position spanning its
+    /// line. Reads the lines the text was last drawn with, so asking costs a
+    /// layout only when `request` changed since then.
+    pub(crate) fn caret(
         &mut self,
+        slot: ParagraphSlot,
         request: &TextRequest,
-        max_width: Option<f32>,
-    ) -> Option<&PreparedLayout> {
-        let face = self.resolve_primary()?;
-        let wrap_width = request.soft_wrap.then_some(max_width).flatten();
-        let key = LayoutKey {
-            face,
-            text: request.text.clone(),
-            size_bits: request.font_size.to_bits(),
-            width_bits: wrap_width.map(f32::to_bits),
+        position: TextPosition,
+    ) -> Option<Rect> {
+        let wrap = self.wrap_width(slot);
+        let retained = self.prepare(slot, request, wrap)?;
+        let lines = retained.paragraph.lines();
+        let row = line_index_at(lines, position);
+        let x = lines
+            .get(row)
+            .and_then(|line: &LineLayout| line.caret_x(position))
+            .unwrap_or(0.0);
+        let line_height = retained.placed.line_height;
+        let rect = Rect {
+            x: x * request.font_size,
+            y: row as f32 * line_height,
+            w: 0.0,
+            h: line_height,
         };
-        if !self.layouts.contains_key(&key) {
-            let layout = self.prepare_layout(face, &request.text, request.font_size, wrap_width);
-            self.counters.record_shape(wrap_width.is_some());
-            self.layouts.insert(key.clone(), layout);
+        self.paragraphs.insert(slot, retained);
+        Some(rect)
+    }
+
+    /// Bring `slot`'s paragraph up to `request` at `wrap` and place its lines,
+    /// taking it out of the map so the caller can raster from it while
+    /// borrowing the shaper; the caller puts it back.
+    ///
+    /// The text change is applied as the one range replacement that turns the
+    /// old text into the new, so the layout reflows from the edit's line and
+    /// stops where the lines restabilize.
+    fn prepare(
+        &mut self,
+        slot: ParagraphSlot,
+        request: &TextRequest,
+        wrap: Option<f32>,
+    ) -> Option<RetainedParagraph> {
+        let face = self.resolve_primary()?;
+        let epoch = u64::from(face.0);
+        let mut retained = match self.paragraphs.remove(&slot) {
+            Some(mut retained) => {
+                apply_text(&mut retained.paragraph, &request.text);
+                retained.paragraph.set_style_epoch(epoch);
+                retained
+            }
+            None => RetainedParagraph {
+                paragraph: Paragraph::new(request.text.clone(), BaseDirection::Auto, epoch),
+                wrap,
+                placed_at: None,
+                placed: PreparedLayout::default(),
+            },
+        };
+        let locale = match request.locale.as_deref() {
+            Some(locale) => locale,
+            None => process_locale(),
+        };
+        retained
+            .paragraph
+            .set_tailoring(LineBreakTailoring::for_locale(locale));
+        // Shaping is in em, so only the wrap width depends on the font size.
+        let width_em = match wrap {
+            Some(width) if request.font_size > 0.0 => width / request.font_size,
+            _ => 0.0,
+        };
+        let relaid = retained
+            .paragraph
+            .layout(width_em, &mut |text: &str, direction: Direction| {
+                self.shape_span(face, locale, text, direction)
+            });
+        if relaid {
+            self.counters.record_shape(wrap.is_some());
+            retained.placed_at = None;
         }
-        self.layouts.get(&key)
+        retained.wrap = wrap;
+        let size_bits = request.font_size.to_bits();
+        if retained.placed_at != Some(size_bits) {
+            retained.placed = self.place(face, retained.paragraph.lines(), request.font_size);
+            retained.placed_at = Some(size_bits);
+        }
+        Some(retained)
+    }
+
+    /// Position every glyph of `lines` in logical pixels: each run starts at
+    /// its own inline offset, so BiDi order and fallback splits come from the
+    /// paragraph, not from re-walking the text here.
+    fn place(&self, base: FontFaceId, lines: &[LineLayout], font_size: f32) -> PreparedLayout {
+        let metrics = self
+            .resolver
+            .face_metrics(base)
+            .unwrap_or_else(default_metrics);
+        let baseline = metrics.ascender_em * font_size;
+        let line_height = metrics.line_height_em.max(1.0) * font_size;
+        let mut glyphs = Vec::new();
+        let mut natural = Vec2::ZERO;
+        for (row, line) in lines.iter().enumerate() {
+            let y = baseline + row as f32 * line_height;
+            for run in &line.runs {
+                let mut pen = run.visual_inline_range.0;
+                for glyph in &run.glyphs {
+                    glyphs.push(PositionedGlyph {
+                        face: run.face,
+                        glyph: glyph.glyph_id,
+                        cluster: run.logical_range.0.0 + glyph.cluster as usize,
+                        origin: [
+                            (pen + glyph.x_offset) * font_size,
+                            y - glyph.y_offset * font_size,
+                        ],
+                    });
+                    pen += glyph.x_advance;
+                }
+            }
+            natural.x = natural.x.max(line.width * font_size);
+        }
+        natural.y = lines.len() as f32 * line_height;
+        PreparedLayout {
+            glyphs,
+            natural,
+            baseline,
+            line_height,
+        }
     }
 
     pub(crate) fn shape<B: GpuBackend>(
         &mut self,
         backend: &mut B,
+        slot: ParagraphSlot,
         request: &TextRequest,
         dpi_factor: f32,
         max_width: Option<f32>,
     ) -> Content {
         let wrap_width = request.soft_wrap.then_some(max_width).flatten();
-        let Some(layout) = self.layout_for(request, max_width) else {
+        let Some(retained) = self.prepare(slot, request, wrap_width) else {
             return empty_content(request, max_width);
         };
-        let layout = layout.clone();
+        let layout = &retained.placed;
 
         let mut glyphs = Vec::with_capacity(layout.glyphs.len());
         let mut color_glyphs = Vec::new();
-        for glyph in layout.glyphs {
+        for &glyph in &layout.glyphs {
             let ppem = (request.font_size * dpi_factor)
                 .round()
                 .clamp(1.0, u16::MAX as f32) as u16;
@@ -468,7 +661,7 @@ impl TextShaper {
             .as_ref()
             .map_or(TextureId::new(0), GlyphAtlas::texture);
         self.upload_dirty(backend);
-        Content::Text {
+        let content = Content::Text {
             glyphs,
             atlas,
             color_glyphs,
@@ -478,7 +671,9 @@ impl TextShaper {
             baseline: layout.baseline,
             shaped_at_width: wrap_width,
             soft_wrap: request.soft_wrap,
-        }
+        };
+        self.paragraphs.insert(slot, retained);
+        content
     }
 
     fn resolve_primary(&mut self) -> Option<FontFaceId> {
@@ -510,29 +705,43 @@ impl TextShaper {
             .or_else(|| self.fallback.face_bytes(face))
     }
 
+    /// Shape one direction run of `text` from `base`, splitting it into
+    /// fallback faces per grapheme where `base` does not cover it.
     fn shape_span(
         &mut self,
         base: FontFaceId,
+        locale: &str,
         text: &str,
-        source_start: usize,
         direction: Direction,
-    ) -> Vec<(ShapedRun, usize)> {
-        let Some(run) = self.shape_registered(base, text, direction) else {
-            return Vec::new();
-        };
-        if !run.has_coverage_miss() {
-            return vec![(run, source_start)];
+    ) -> ShapedSpan {
+        let key = (text.len() <= SPAN_CACHE_TEXT).then(|| SpanKey {
+            face: base,
+            direction,
+            locale: locale.to_owned(),
+            text: text.to_owned(),
+        });
+        if let Some(span) = key.as_ref().and_then(|key| self.spans.get(key)) {
+            return span;
         }
-        self.shape_clusters(base, text, source_start, direction)
+        self.counters.record_shaped_run();
+        let span = match self.shape_registered(base, text, direction) {
+            None => ShapedSpan::default(),
+            Some(run) if !run.has_coverage_miss() => ShapedSpan::from(run),
+            Some(_) => self.shape_clusters(base, locale, text, direction),
+        };
+        if let Some(key) = key {
+            self.spans.insert(key, span.clone());
+        }
+        span
     }
 
     fn shape_clusters(
         &mut self,
         base: FontFaceId,
+        locale: &str,
         text: &str,
-        source_start: usize,
         direction: Direction,
-    ) -> Vec<(ShapedRun, usize)> {
+    ) -> ShapedSpan {
         let boundaries: Vec<usize> = Segmenter::new(text)
             .grapheme_boundaries()
             .map(|offset| offset.0)
@@ -543,7 +752,7 @@ impl TextShaper {
             let face = if self.face_covers(base, cluster) {
                 base
             } else {
-                self.resolve_fallback(base, cluster).unwrap_or(base)
+                self.resolve_fallback(base, locale, cluster).unwrap_or(base)
             };
             if let Some(last) = groups.last_mut()
                 && last.0 == face
@@ -553,30 +762,16 @@ impl TextShaper {
                 groups.push((face, pair[0], pair[1]));
             }
         }
-        let mut out = Vec::with_capacity(groups.len());
+        let mut span = ShapedSpan::default();
         for (face, start, end) in groups {
-            self.push_shaped(
-                &mut out,
-                face,
-                &text[start..end],
-                source_start + start,
-                direction,
-            );
+            if let Some(run) = self.shape_registered(face, &text[start..end], direction) {
+                span.segments.push(ShapedSegment {
+                    start: start as u32,
+                    run,
+                });
+            }
         }
-        out
-    }
-
-    fn push_shaped(
-        &mut self,
-        out: &mut Vec<(ShapedRun, usize)>,
-        face: FontFaceId,
-        text: &str,
-        source_start: usize,
-        direction: Direction,
-    ) {
-        if let Some(run) = self.shape_registered(face, text, direction) {
-            out.push((run, source_start));
-        }
+        span
     }
 
     /// Whether the face has a glyph for every scalar in `text` — the candidate
@@ -622,11 +817,16 @@ impl TextShaper {
         rasterize_coverage(bytes, index, glyph, pixels_per_em)
     }
 
-    fn resolve_fallback(&mut self, base: FontFaceId, text: &str) -> Option<FontFaceId> {
+    fn resolve_fallback(
+        &mut self,
+        base: FontFaceId,
+        locale: &str,
+        text: &str,
+    ) -> Option<FontFaceId> {
         let key = FallbackPlanKey {
             base,
             script: FontFallback::run_script(text),
-            locale: String::new(),
+            locale: locale.to_owned(),
             style: FallbackStyle::default(),
             source_revision: 0,
         };
@@ -660,117 +860,6 @@ impl TextShaper {
             self.color_raster
                 .register_face(face, name, metrics.glyph_count);
         }
-    }
-
-    fn prepare_layout(
-        &mut self,
-        base: FontFaceId,
-        text: &str,
-        font_size: f32,
-        max_width: Option<f32>,
-    ) -> PreparedLayout {
-        let rows = self.rows(base, text, font_size, max_width);
-        let metrics = self
-            .resolver
-            .face_metrics(base)
-            .unwrap_or_else(default_metrics);
-        let baseline = metrics.ascender_em * font_size;
-        let line_height = metrics.line_height_em.max(1.0) * font_size;
-        let mut positioned = Vec::new();
-        let mut natural = Vec2::ZERO;
-
-        for (row_index, (start, end)) in rows.into_iter().enumerate() {
-            let bidi = BidiInfo::resolve(&text[start..end], BaseDirection::Auto);
-            let mut pen_x = 0.0;
-            for directional in bidi.direction_runs() {
-                let run_start = start + directional.start.0;
-                let run_end = start + directional.end.0;
-                for (run, source) in self.shape_span(
-                    base,
-                    &text[run_start..run_end],
-                    run_start,
-                    directional.direction,
-                ) {
-                    for glyph in run.glyphs {
-                        positioned.push(PositionedGlyph {
-                            face: run.face,
-                            glyph: glyph.glyph_id,
-                            cluster: source + glyph.cluster as usize,
-                            origin: [
-                                pen_x + glyph.x_offset * font_size,
-                                baseline + row_index as f32 * line_height
-                                    - glyph.y_offset * font_size,
-                            ],
-                            advance: glyph.x_advance * font_size,
-                        });
-                        pen_x += glyph.x_advance * font_size;
-                    }
-                }
-            }
-            natural.x = natural.x.max(pen_x);
-            natural.y = (row_index as f32 + 1.0) * line_height;
-        }
-        PreparedLayout {
-            glyphs: positioned,
-            natural,
-            baseline,
-            line_height,
-        }
-    }
-
-    fn rows(
-        &mut self,
-        base: FontFaceId,
-        text: &str,
-        font_size: f32,
-        max_width: Option<f32>,
-    ) -> Vec<(usize, usize)> {
-        let Some(limit) = max_width.filter(|width| *width > 0.0) else {
-            return hard_rows(text);
-        };
-        let breaker = LineBreaker::new();
-        let mut rows = Vec::new();
-        for (hard_start, hard_end) in hard_rows(text) {
-            if hard_start == hard_end {
-                rows.push((hard_start, hard_end));
-                continue;
-            }
-            let line = &text[hard_start..hard_end];
-            let mut row_start = 0;
-            let mut last_fit = None;
-            for (offset, _) in breaker.break_opportunities(line) {
-                let end = offset.0;
-                let width = self.measure(base, &line[row_start..end], font_size);
-                if width <= limit || last_fit.is_none() {
-                    last_fit = Some(end);
-                    continue;
-                }
-                let chosen = last_fit.unwrap_or(end);
-                rows.push((hard_start + row_start, hard_start + chosen));
-                row_start = chosen;
-                last_fit = Some(end);
-            }
-            if row_start < line.len() {
-                rows.push((hard_start + row_start, hard_end));
-            }
-        }
-        rows
-    }
-
-    fn measure(&mut self, base: FontFaceId, text: &str, font_size: f32) -> f32 {
-        let bidi = BidiInfo::resolve(text, BaseDirection::Auto);
-        bidi.direction_runs()
-            .into_iter()
-            .flat_map(|run| {
-                self.shape_span(
-                    base,
-                    &text[run.start.0..run.end.0],
-                    run.start.0,
-                    run.direction,
-                )
-            })
-            .map(|(run, _)| run.width_ems * font_size)
-            .sum()
     }
 
     /// Admit a freshly rasterized coverage bitmap and pack its pixels onto the
@@ -956,17 +1045,57 @@ fn ensure_color_atlas<'a, B: GpuBackend>(
     })
 }
 
-fn hard_rows(text: &str) -> Vec<(usize, usize)> {
-    let mut rows = Vec::new();
-    let mut start = 0;
-    for (offset, ch) in text.char_indices() {
-        if ch == '\n' {
-            rows.push((start, offset));
-            start = offset + ch.len_utf8();
-        }
+/// Turn `paragraph`'s text into `text` as one range replacement: the span
+/// between their common prefix and common suffix, both cut back to char
+/// boundaries of either string.
+fn apply_text(paragraph: &mut Paragraph, text: &str) {
+    let old = paragraph.text();
+    if old == text {
+        return;
     }
-    rows.push((start, text.len()));
-    rows
+    let mut prefix = old
+        .bytes()
+        .zip(text.bytes())
+        .take_while(|(a, b)| a == b)
+        .count();
+    while !(old.is_char_boundary(prefix) && text.is_char_boundary(prefix)) {
+        prefix -= 1;
+    }
+    let room = (old.len() - prefix).min(text.len() - prefix);
+    let mut suffix = old
+        .bytes()
+        .rev()
+        .zip(text.bytes().rev())
+        .take(room)
+        .take_while(|(a, b)| a == b)
+        .count();
+    while !(old.is_char_boundary(old.len() - suffix) && text.is_char_boundary(text.len() - suffix))
+    {
+        suffix -= 1;
+    }
+    let removed = (TextOffset(prefix), TextOffset(old.len() - suffix));
+    paragraph.edit(removed, &text[prefix..text.len() - suffix]);
+}
+
+/// The process content locale as a BCP-47 tag, from the POSIX locale
+/// variables (`zh_CN.UTF-8` → `zh-CN`); empty when none is set or it is the
+/// `C`/`POSIX` locale. Read once: the locale of a running process is fixed.
+fn process_locale() -> &'static str {
+    static LOCALE: OnceLock<String> = OnceLock::new();
+    LOCALE.get_or_init(|| {
+        ["LC_ALL", "LC_CTYPE", "LANG"]
+            .into_iter()
+            .find_map(|name| std::env::var(name).ok().filter(|v| !v.is_empty()))
+            .map_or_else(String::new, |value| posix_to_bcp47(&value))
+    })
+}
+
+fn posix_to_bcp47(value: &str) -> String {
+    let tag = value.split(['.', '@']).next().unwrap_or_default();
+    if tag == "C" || tag == "POSIX" {
+        return String::new();
+    }
+    tag.replace('_', "-")
 }
 
 fn empty_content(request: &TextRequest, shaped_at_width: Option<f32>) -> Content {
@@ -1032,6 +1161,13 @@ mod tests {
     /// two of them ever share a page.
     const PAIR: &str = "bd";
 
+    fn slot(index: u32) -> ParagraphSlot {
+        ParagraphSlot {
+            index,
+            generation: 0,
+        }
+    }
+
     fn tiny_shaper() -> TextShaper {
         let mut shaper = TextShaper::with_atlas_geometry(TINY_PLANE, TINY_PAGE);
         shaper.load_font(TEST_FONT, 0).expect("fixture parses");
@@ -1046,10 +1182,17 @@ mod tests {
             font_size: 30.0,
             color: Rgba::TRANSPARENT,
             soft_wrap: false,
+            locale: None,
         };
-        let first = shaper.caret(&request, None, 0).expect("a face is loaded");
-        let middle = shaper.caret(&request, None, 1).expect("a face is loaded");
-        let end = shaper.caret(&request, None, 2).expect("a face is loaded");
+        let first = shaper
+            .caret(slot(0), &request, TextPosition::downstream(TextOffset(0)))
+            .expect("a face is loaded");
+        let middle = shaper
+            .caret(slot(0), &request, TextPosition::downstream(TextOffset(1)))
+            .expect("a face is loaded");
+        let end = shaper
+            .caret(slot(0), &request, TextPosition::downstream(TextOffset(2)))
+            .expect("a face is loaded");
         assert_eq!(first.x, 0.0);
         assert!(first.x < middle.x && middle.x < end.x);
         assert_eq!((first.y, first.w), (0.0, 0.0));
@@ -1073,6 +1216,7 @@ mod tests {
             font_size,
             color: WHITE,
             soft_wrap: false,
+            locale: None,
         }
     }
 
@@ -1082,8 +1226,8 @@ mod tests {
     fn flood(shaper: &mut TextShaper, gpu: &mut HeadlessRaster) -> u64 {
         let mut evictions = 0;
         for size in [27.0, 28.0, 29.0, 31.0, 32.0, 33.0, 34.0] {
-            shaper.shape(gpu, &request(PAIR, 30.0), 1.0, None);
-            shaper.shape(gpu, &request(PAIR, size), 1.0, None);
+            shaper.shape(gpu, slot(0), &request(PAIR, 30.0), 1.0, None);
+            shaper.shape(gpu, slot(1), &request(PAIR, size), 1.0, None);
             evictions += shaper.counters().evictions();
             shaper.end_frame();
         }
@@ -1094,8 +1238,8 @@ mod tests {
     fn a_memory_trim_retires_the_atlas_and_reshaping_readmits_only_the_live_runs() {
         let mut gpu = headless();
         let mut shaper = tiny_shaper();
-        let first = shaper.shape(&mut gpu, &request(PAIR, 30.0), 1.0, None);
-        shaper.shape(&mut gpu, &request(PAIR, 27.0), 1.0, None);
+        let first = shaper.shape(&mut gpu, slot(0), &request(PAIR, 30.0), 1.0, None);
+        shaper.shape(&mut gpu, slot(1), &request(PAIR, 27.0), 1.0, None);
         shaper.end_frame();
         let Content::Text { atlas: old, .. } = first else {
             panic!("text content");
@@ -1114,7 +1258,7 @@ mod tests {
 
         // Reshaping the one run still mounted re-rasterizes into a fresh plane
         // and admits its two glyphs only; the dropped run stays out.
-        let again = shaper.shape(&mut gpu, &request(PAIR, 30.0), 1.0, None);
+        let again = shaper.shape(&mut gpu, slot(0), &request(PAIR, 30.0), 1.0, None);
         let Content::Text { atlas, glyphs, .. } = &again else {
             panic!("text content");
         };
@@ -1122,7 +1266,7 @@ mod tests {
         assert_eq!(glyphs.len(), 2);
         assert_eq!(shaper.counters().rasters(), 2);
         let mut fresh = tiny_shaper();
-        fresh.shape(&mut headless(), &request(PAIR, 30.0), 1.0, None);
+        fresh.shape(&mut headless(), slot(0), &request(PAIR, 30.0), 1.0, None);
         assert_eq!(
             shaper
                 .residency()
@@ -1138,7 +1282,7 @@ mod tests {
     fn filling_the_pool_reclaims_cold_pages_and_keeps_the_hot_glyphs() {
         let mut gpu = headless();
         let mut shaper = tiny_shaper();
-        shaper.shape(&mut gpu, &request(PAIR, 30.0), 1.0, None);
+        shaper.shape(&mut gpu, slot(0), &request(PAIR, 30.0), 1.0, None);
         shaper.end_frame();
 
         let evicted = flood(&mut shaper, &mut gpu);
@@ -1152,7 +1296,7 @@ mod tests {
         // The hot pair was drawn in every single frame, so CLOCK found its pages
         // referenced every time it passed them: they are still resident, and this
         // frame therefore rasterizes nothing and uploads nothing.
-        let content = shaper.shape(&mut gpu, &request(PAIR, 30.0), 1.0, None);
+        let content = shaper.shape(&mut gpu, slot(0), &request(PAIR, 30.0), 1.0, None);
         let Content::Text { glyphs, .. } = &content else {
             panic!("text content");
         };
@@ -1172,11 +1316,11 @@ mod tests {
         // Drawn once, in the first frame, and never touched again: the coldest
         // page in the pool from that moment on.
         let probe = request("q", 26.0);
-        shaper.shape(&mut gpu, &probe, 1.0, None);
+        shaper.shape(&mut gpu, slot(2), &probe, 1.0, None);
         shaper.end_frame();
         assert!(flood(&mut shaper, &mut gpu) > 0);
 
-        let content = shaper.shape(&mut gpu, &probe, 1.0, None);
+        let content = shaper.shape(&mut gpu, slot(2), &probe, 1.0, None);
         let Content::Text { glyphs, .. } = &content else {
             panic!("text content");
         };
@@ -1210,7 +1354,7 @@ mod tests {
         let mut gpu = headless();
         let mut shaper = tiny_shaper();
         let latin = request(PAIR, 30.0);
-        shaper.shape(&mut gpu, &latin, 1.0, None);
+        shaper.shape(&mut gpu, slot(0), &latin, 1.0, None);
         shaper.end_frame();
         let coverage_glyphs = shaper
             .residency()
@@ -1223,7 +1367,7 @@ mod tests {
         // One fresh emoji bucket per frame, never re-requested, until the nine-page
         // color pool turns over. The Latin pair is not drawn again at all.
         for size in 12..=26 {
-            shaper.shape(&mut gpu, &request("🥟", size as f32), 1.0, None);
+            shaper.shape(&mut gpu, slot(1), &request("🥟", size as f32), 1.0, None);
             shaper.end_frame();
         }
         let residency = shaper.residency();
@@ -1246,7 +1390,7 @@ mod tests {
         );
 
         // And the untouched coverage glyphs are still usable: no raster, no upload.
-        shaper.shape(&mut gpu, &latin, 1.0, None);
+        shaper.shape(&mut gpu, slot(0), &latin, 1.0, None);
         assert_eq!(shaper.counters().rasters(), 0);
         assert_eq!(shaper.counters().atlas_upload_bytes(), 0);
     }
@@ -1256,8 +1400,8 @@ mod tests {
         let mut gpu = headless();
         let mut shaper = tiny_shaper();
         let frame = ["Viso", "steady", "state"];
-        for text in frame {
-            shaper.shape(&mut gpu, &request(text, 18.0), 1.0, None);
+        for (n, text) in (0..).zip(frame) {
+            shaper.shape(&mut gpu, slot(n), &request(text, 18.0), 1.0, None);
         }
         shaper.end_frame();
         let residency = shaper.residency();
@@ -1269,8 +1413,8 @@ mod tests {
             "the first frame admitted glyphs"
         );
 
-        for text in frame {
-            shaper.shape(&mut gpu, &request(text, 18.0), 1.0, None);
+        for (n, text) in (0..).zip(frame) {
+            shaper.shape(&mut gpu, slot(n), &request(text, 18.0), 1.0, None);
         }
         let counters = shaper.counters();
         assert_eq!(counters.reshapes(), 0);
@@ -1302,10 +1446,11 @@ mod tests {
             font_size: 22.0,
             color: WHITE,
             soft_wrap: false,
+            locale: None,
         };
-        let first = shaper.shape(&mut gpu, &request, 1.0, None);
+        let first = shaper.shape(&mut gpu, slot(0), &request, 1.0, None);
         shaper.end_frame();
-        let second = shaper.shape(&mut gpu, &request, 1.0, None);
+        let second = shaper.shape(&mut gpu, slot(0), &request, 1.0, None);
         let Content::Text {
             glyphs,
             natural,
@@ -1326,6 +1471,12 @@ mod tests {
         };
         assert_eq!(atlas, &second_atlas);
         assert_eq!(shaper.counters().reshapes(), 0);
+        assert_eq!(shaper.counters().relinebreaks(), 0);
+        assert_eq!(
+            shaper.counters().shaped_runs(),
+            0,
+            "a static frame resolves and shapes nothing"
+        );
         assert_eq!(shaper.counters().rasters(), 0);
         assert_eq!(shaper.counters().atlas_upload_bytes(), 0);
     }
@@ -1354,8 +1505,9 @@ mod tests {
             font_size: 48.0,
             color: WHITE,
             soft_wrap: false,
+            locale: None,
         };
-        let content = shaper.shape(&mut gpu, &request, 1.0, None);
+        let content = shaper.shape(&mut gpu, slot(0), &request, 1.0, None);
         let Content::Text {
             glyphs,
             color_glyphs,
@@ -1420,8 +1572,9 @@ mod tests {
                 font_size: 48.0,
                 color: WHITE,
                 soft_wrap: false,
+                locale: None,
             };
-            let c = solo.shape(&mut gpu, &req, 1.0, None);
+            let c = solo.shape(&mut gpu, slot(0), &req, 1.0, None);
             let Content::Text {
                 glyphs,
                 color_glyphs,
@@ -1473,13 +1626,15 @@ mod tests {
             font_size: 48.0,
             color: WHITE,
             soft_wrap: false,
+            locale: None,
         };
-        let _ = shaper.shape(&mut gpu, &request, 1.0, None);
+        let _ = shaper.shape(&mut gpu, slot(0), &request, 1.0, None);
         // Re-derive the per-glyph face/glyph placements (GlyphInstanceData in the
         // shaped Content carries only rect/uv, not face/glyph).
-        let base = shaper.resolve_primary().expect("primary UI face resolves");
-        let layout = shaper.prepare_layout(base, "नमस्ते", 48.0, None);
-        let glyphs = &layout.glyphs;
+        let retained = shaper
+            .prepare(slot(0), &request, None)
+            .expect("primary UI face resolves");
+        let glyphs = &retained.placed.glyphs;
         assert!(!glyphs.is_empty(), "Devanagari must place glyphs");
 
         // At least one placed glyph must come from a CFF2 face and be served by
@@ -1531,12 +1686,13 @@ mod tests {
             font_size: 20.0,
             color: WHITE,
             soft_wrap: true,
+            locale: None,
         };
-        let wide = shaper.shape(&mut gpu, &request, 1.0, None);
+        let wide = shaper.shape(&mut gpu, slot(0), &request, 1.0, None);
         let Content::Text { natural: wide, .. } = wide else {
             panic!("text content");
         };
-        let narrow = shaper.shape(&mut gpu, &request, 1.0, Some(wide.x * 0.4));
+        let narrow = shaper.shape(&mut gpu, slot(0), &request, 1.0, Some(wide.x * 0.4));
         let Content::Text {
             natural: narrow, ..
         } = narrow
@@ -1545,5 +1701,233 @@ mod tests {
         };
         assert!(narrow.x < wide.x);
         assert!(narrow.y > wide.y);
+    }
+
+    fn wrapped(text: &str) -> TextRequest {
+        TextRequest {
+            soft_wrap: true,
+            ..request(text, 16.0)
+        }
+    }
+
+    /// Line structure as plain data: each line's source range and width, and
+    /// each run's source range, inline extent and glyph ids.
+    type LineShape = (
+        (usize, usize),
+        u32,
+        Vec<((usize, usize), (u32, u32), Vec<u16>)>,
+    );
+
+    fn structure(lines: &[LineLayout]) -> Vec<LineShape> {
+        lines
+            .iter()
+            .map(|line| {
+                let runs = line
+                    .runs
+                    .iter()
+                    .map(|run| {
+                        (
+                            (run.logical_range.0.0, run.logical_range.1.0),
+                            (
+                                run.visual_inline_range.0.to_bits(),
+                                run.visual_inline_range.1.to_bits(),
+                            ),
+                            run.glyphs.iter().map(|g| g.glyph_id).collect(),
+                        )
+                    })
+                    .collect();
+                (
+                    (line.logical_range.0.0, line.logical_range.1.0),
+                    line.width.to_bits(),
+                    runs,
+                )
+            })
+            .collect()
+    }
+
+    fn lines_of(shaper: &TextShaper, at: ParagraphSlot) -> Vec<LineShape> {
+        structure(shaper.paragraphs[&at].paragraph.lines())
+    }
+
+    /// The lines a fresh paragraph lays out for `text`, through the same
+    /// shaper, with nothing retained.
+    fn recomputed(text: &str, width_px: f32) -> Vec<LineShape> {
+        let mut gpu = headless();
+        let mut fresh = shaper();
+        fresh.shape(&mut gpu, slot(0), &wrapped(text), 1.0, Some(width_px));
+        lines_of(&fresh, slot(0))
+    }
+
+    #[test]
+    fn runtime_edits_equal_a_full_recompute() {
+        let mut gpu = headless();
+        let mut shaper = shaper();
+        let width = 120.0;
+        let mut text = String::from("the quick brown fox jumps over the lazy dog again and again");
+        shaper.shape(&mut gpu, slot(0), &wrapped(&text), 1.0, Some(width));
+        assert_eq!(lines_of(&shaper, slot(0)), recomputed(&text, width));
+        assert!(shaper.paragraphs[&slot(0)].paragraph.lines().len() > 2);
+
+        let edits: [(usize, usize, &str); 7] = [
+            (4, 9, "slow"),
+            (0, 0, "and "),
+            (20, 20, "\n"),
+            (30, 31, ""),
+            (10, 10, "extraordinarily "),
+            (0, 4, ""),
+            (25, 40, " "),
+        ];
+        for (start, end, replacement) in edits {
+            text.replace_range(start..end, replacement);
+            shaper.shape(&mut gpu, slot(0), &wrapped(&text), 1.0, Some(width));
+            assert_eq!(shaper.paragraphs[&slot(0)].paragraph.text(), text);
+            assert_eq!(
+                lines_of(&shaper, slot(0)),
+                recomputed(&text, width),
+                "after replacing {start}..{end} with {replacement:?}",
+            );
+            shaper.end_frame();
+        }
+    }
+
+    #[test]
+    fn a_character_edit_in_a_long_paragraph_reshapes_a_bounded_neighbourhood() {
+        const WORDS: [&str; 7] = ["lorem", "ipsum", "dolor", "sit", "amet", "a", "quod"];
+        // A varied 10k-word paragraph, so line contents do not repeat.
+        let mut seed = 0x2545_f491_u32;
+        let mut text = String::new();
+        for _ in 0..10_000 {
+            seed ^= seed << 13;
+            seed ^= seed >> 17;
+            seed ^= seed << 5;
+            text.push_str(WORDS[seed as usize % WORDS.len()]);
+            text.push(' ');
+        }
+        let mut gpu = headless();
+        let mut shaper = shaper();
+        let width = 240.0;
+        shaper.shape(&mut gpu, slot(0), &wrapped(&text), 1.0, Some(width));
+        let full = shaper.paragraphs[&slot(0)].paragraph.shape_call_count();
+        let lines = shaper.paragraphs[&slot(0)].paragraph.lines().len();
+        assert!(lines > 500, "the paragraph wraps into many lines ({lines})");
+        shaper.end_frame();
+
+        let middle = text.len() / 2;
+        let at = (middle..)
+            .find(|&i| text.as_bytes()[i] != b' ')
+            .unwrap_or(middle);
+        text.replace_range(at..at + 1, "Q");
+        shaper.shape(&mut gpu, slot(0), &wrapped(&text), 1.0, Some(width));
+        let edit = shaper.paragraphs[&slot(0)].paragraph.shape_call_count() - full;
+        assert_eq!(shaper.counters().reshapes(), 1);
+        assert!(
+            edit <= 64,
+            "a one-character edit shaped {edit} runs (the full layout shaped {full})",
+        );
+        assert!(shaper.counters().shaped_runs() <= edit);
+        assert_eq!(lines_of(&shaper, slot(0)), recomputed(&text, width));
+    }
+
+    #[test]
+    fn an_edit_keeps_drawing_at_the_last_good_wrap_width() {
+        let mut gpu = headless();
+        let mut shaper = shaper();
+        let text = "a paragraph long enough to wrap onto a few lines";
+        let width = 100.0;
+        let Content::Text { natural, .. } =
+            shaper.shape(&mut gpu, slot(0), &wrapped(text), 1.0, Some(width))
+        else {
+            panic!("text content");
+        };
+        assert_eq!(shaper.wrap_width(slot(0)), Some(width));
+
+        // The runtime reshapes an edited run at its retained width, so it
+        // keeps its line structure rather than drawing unwrapped until layout
+        // reflows it.
+        let edited = format!("{text}!");
+        let retained = shaper.wrap_width(slot(0));
+        let Content::Text {
+            natural: after,
+            shaped_at_width,
+            ..
+        } = shaper.shape(&mut gpu, slot(0), &wrapped(&edited), 1.0, retained)
+        else {
+            panic!("text content");
+        };
+        assert_eq!(shaped_at_width, Some(width));
+        assert_eq!(after.y, natural.y);
+        assert!(after.x <= width);
+
+        // A memory trim keeps the lines: the reshape it forces only rasters.
+        shaper.end_frame();
+        shaper.trim(|_| {});
+        shaper.shape(&mut gpu, slot(0), &wrapped(&edited), 1.0, retained);
+        assert_eq!(shaper.counters().reshapes(), 0);
+        assert_eq!(shaper.counters().shaped_runs(), 0);
+        assert!(shaper.counters().rasters() > 0);
+    }
+
+    #[test]
+    fn the_content_locale_selects_the_paragraph_line_breaking() {
+        let mut gpu = headless();
+        let mut shaper = shaper();
+        for (n, locale) in (0..).zip(["ja", "zh-Hans", "zh-Hant", "ko"]) {
+            let request = TextRequest {
+                locale: Some(locale.to_owned()),
+                ..wrapped("line breaking")
+            };
+            shaper.shape(&mut gpu, slot(n), &request, 1.0, Some(80.0));
+            assert_eq!(
+                shaper.paragraphs[&slot(n)].paragraph.tailoring(),
+                LineBreakTailoring::for_locale(locale),
+                "{locale}",
+            );
+        }
+        let tailoring = |n| shaper.paragraphs[&slot(n)].paragraph.tailoring();
+        assert_eq!(tailoring(0), tailoring(1), "ja and zh share the CJK tables");
+        assert_eq!(tailoring(1), tailoring(2));
+        assert_ne!(tailoring(0), tailoring(3), "ko breaks as a spaced script");
+
+        let unset = wrapped("line breaking");
+        shaper.shape(&mut gpu, slot(9), &unset, 1.0, Some(80.0));
+        assert_eq!(
+            shaper.paragraphs[&slot(9)].paragraph.tailoring(),
+            LineBreakTailoring::for_locale(process_locale()),
+        );
+    }
+
+    #[test]
+    fn posix_locales_map_to_bcp47_tags() {
+        assert_eq!(posix_to_bcp47("zh_CN.UTF-8"), "zh-CN");
+        assert_eq!(posix_to_bcp47("ja_JP"), "ja-JP");
+        assert_eq!(posix_to_bcp47("ko_KR.eucKR@euro"), "ko-KR");
+        assert_eq!(posix_to_bcp47("C"), "");
+        assert_eq!(posix_to_bcp47("POSIX"), "");
+    }
+
+    #[test]
+    fn affinity_places_a_wrap_boundary_caret_on_either_line() {
+        let mut shaper = shaper();
+        let mut gpu = headless();
+        let request = wrapped("first second third fourth");
+        shaper.shape(&mut gpu, slot(0), &request, 1.0, Some(70.0));
+        let second = shaper.paragraphs[&slot(0)].paragraph.lines()[1]
+            .logical_range
+            .0;
+        let upstream = shaper
+            .caret(slot(0), &request, TextPosition::upstream(second))
+            .expect("a face is loaded");
+        let downstream = shaper
+            .caret(slot(0), &request, TextPosition::downstream(second))
+            .expect("a face is loaded");
+        assert_eq!(upstream.y, 0.0, "upstream ends the first line");
+        assert!(upstream.x > 0.0);
+        assert_eq!(downstream.y, upstream.h, "downstream starts the second");
+        assert_eq!(downstream.x, 0.0);
+        assert_eq!(
+            shaper.counters().reshapes(),
+            1,
+            "carets read the drawn lines"
+        );
     }
 }

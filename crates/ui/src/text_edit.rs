@@ -166,6 +166,9 @@ pub struct Buffer {
     /// The run color the node was declared with. Resident for the same reason as
     /// [`font_size`](Buffer::font_size).
     pub color: Rgba,
+    /// The content locale the node was declared with. Resident for the same
+    /// reason as [`font_size`](Buffer::font_size).
+    pub locale: Option<String>,
     /// Start byte of the active IME composition, or `composition_end` when none.
     composition_start: usize,
     /// End byte of the active IME composition; `> composition_start` while
@@ -184,6 +187,7 @@ impl Default for Buffer {
             sel: Selection::default(),
             font_size: 0.0,
             color: Rgba::TRANSPARENT,
+            locale: None,
             composition_start: 0,
             composition_end: 0,
             pending: Vec::new(),
@@ -208,6 +212,7 @@ impl Buffer {
             sel: Selection::caret(at),
             font_size: 0.0,
             color: Rgba::TRANSPARENT,
+            locale: None,
             composition_start: at,
             composition_end: at,
             pending: Vec::new(),
@@ -225,6 +230,7 @@ impl Buffer {
             sel: Selection::caret(at),
             font_size: request.font_size,
             color: request.color,
+            locale: request.locale.clone(),
             composition_start: at,
             composition_end: at,
             pending: Vec::new(),
@@ -564,6 +570,7 @@ pub fn reconcile(store: &mut crate::component::NodeStore, edits: &mut TextEdits)
             color: buffer.color,
             // An edit buffer is single-line here: it clips/scrolls, never wraps.
             soft_wrap: false,
+            locale: buffer.locale.clone(),
         };
         store.set_text_request(node, request);
         if !edits.changed.contains(&node) {

@@ -155,6 +155,10 @@ pub struct TextRequest {
     /// width the layout pass assigns. A `Fit`-width leaf ignores this — it sizes
     /// to its content and is never width-constrained, so it never wraps.
     pub soft_wrap: bool,
+    /// The content language as a BCP-47 tag (`"ja"`, `"zh-Hant"`, `"ko"`), or
+    /// `None` for the process locale. It selects locale line breaking and
+    /// locale-specific fallback faces; it never changes the text itself.
+    pub locale: Option<String>,
 }
 
 #[cfg(test)]
