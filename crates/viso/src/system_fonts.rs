@@ -152,6 +152,9 @@ impl CoreTextColorRaster {
     ) {
     }
 
+    /// Drop a face's binding. A no-op on platforms without a binding.
+    pub fn forget_face(&self, _face: viso_text::FontFaceId) {}
+
     /// Grayscale-coverage rasterization is a macOS-only recovery path; off macOS
     /// there is no CoreText, so this always declines.
     pub fn rasterize_coverage_glyph(
@@ -253,6 +256,13 @@ mod color {
         /// count is no longer needed — the live handle is authoritative.
         pub fn register_face(&self, face: FontFaceId, ps_name: &str, _expected_glyph_count: u16) {
             self.bindings.borrow_mut().insert(face, ps_name.to_string());
+        }
+
+        /// Drop a face's binding and its per-ppem handles: the facade dropped the
+        /// face, and its id is never handed out again.
+        pub fn forget_face(&self, face: FontFaceId) {
+            self.bindings.borrow_mut().remove(&face);
+            self.faces.borrow_mut().remove(&face);
         }
     }
 

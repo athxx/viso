@@ -265,20 +265,22 @@ seven DoD items are true of the library and false of the product.
 
 Goal: the 1 GiB placeholder goes away and the implemented SLRU takes over.
 
-- [ ] `FontCache` (byte-budgeted SLRU) replaces `FontFallback::new(1 << 30)` in the facade.
+- [x] `FontCache` (byte-budgeted SLRU) replaces `FontFallback::new(1 << 30)` in the facade.
       Budget from the resolved configuration, not a constant.
-- [ ] Recency is not updated per glyph (§9.3) — per face, per admission window.
-- [ ] Pinned hot faces (§9.4) survive eviction: the system UI face and the resolved CJK
+      (`1 << 30` was the fallback face-id base, not a budget; it stays as a named id base
+      and the facade now owns a real `FontCache` budget from `MemoryClass::text_budgets`.)
+- [x] Recency is not updated per glyph (§9.3) — per face, per admission window.
+- [x] Pinned hot faces (§9.4) survive eviction: the system UI face and the resolved CJK
       fallback are not evictable in a normal frame.
-- [ ] Shaping cache gets its own budget (§11), separate from the face cache.
-- [ ] Each cache's lifetime is independent (§18): dropping a face drops its coverage set, its
+- [x] Shaping cache gets its own budget (§11), separate from the face cache.
+- [x] Each cache's lifetime is independent (§18): dropping a face drops its coverage set, its
       shaping entries and its glyph residency, and nothing else.
-- [ ] Counters (§25): face cache bytes / hits / misses / evictions, shaping cache the same.
-- [ ] Tests: exceeding the face budget evicts by SLRU order and keeps pinned faces; shaping a
+- [x] Counters (§25): face cache bytes / hits / misses / evictions, shaping cache the same.
+- [x] Tests: exceeding the face budget evicts by SLRU order and keeps pinned faces; shaping a
       run 1000 times touches recency a bounded number of times, not 1000; dropping one face
       leaves other faces' caches intact; budget exhaustion in one cache does not evict from
       the other.
-- [ ] Gate green → commit.
+- [x] Gate green → commit.
 
 ---
 
