@@ -118,8 +118,9 @@ pub enum FallbackPlan {
 }
 
 /// A loaded fallback candidate: owned face bytes and index, so a later run can
-/// test the candidate's local coverage without touching the OS. The candidate's
-/// [`FontFaceId`] is its position in the planner's `faces` vector plus `id_base`.
+/// test the candidate's local coverage without touching the OS. Ids are handed
+/// out from `id_base` upward and never reused, so a forgotten candidate's id
+/// cannot come back naming a different face.
 #[derive(Debug)]
 struct Candidate {
     bytes: Vec<u8>,
@@ -141,9 +142,11 @@ struct Candidate {
 pub struct FontFallback {
     /// Per-shape remembered candidate; the plan-cache the spec requires.
     plans: HashMap<FallbackPlanKey, FontFaceId>,
-    /// Interned fallback faces: dense id -> owned bytes, so local coverage of a
+    /// Interned fallback faces: id -> owned bytes, so local coverage of a
     /// remembered candidate is testable without the OS.
-    faces: Vec<Candidate>,
+    faces: HashMap<FontFaceId, Candidate>,
+    /// The id the next interned face receives, counted from `id_base`.
+    next_index: u32,
     /// System faces already interned, keyed by their bytes' identity, so the
     /// same resolved face dedups to one id across runs.
     interned: HashMap<(u64, u32), FontFaceId>,
@@ -185,6 +188,16 @@ impl FontFallback {
             .map(|c| c.script())
             .find(|&s| s != Script::Common && s != Script::Inherited)
             .unwrap_or(Script::Common)
+    }
+
+    /// Whether `script` is one whose fallback face is a hot, long-lived face:
+    /// a CJK page resolves one large face and keeps drawing with it, so the
+    /// runtime pins it rather than let it churn through the face cache.
+    pub fn is_cjk(script: Script) -> bool {
+        matches!(
+            script,
+            Script::Han | Script::Hiragana | Script::Katakana | Script::Hangul | Script::Bopomofo
+        )
     }
 
     /// Plan fallback for one contiguous coverage-miss run.
@@ -245,10 +258,7 @@ impl FontFallback {
     /// Owned sfnt bytes and face index for a resolved fallback face, for the Face
     /// Cache to build a `ttf-parser` / `rustybuzz` face. Cold path only.
     pub fn face_bytes(&self, face: FontFaceId) -> Option<(&[u8], u32)> {
-        face.0
-            .checked_sub(self.id_base)
-            .and_then(|i| self.faces.get(i as usize))
-            .map(|c| (c.bytes.as_slice(), c.index))
+        self.faces.get(&face).map(|c| (c.bytes.as_slice(), c.index))
     }
 
     /// The platform-reported PostScript name of a resolved fallback face, if the
@@ -257,9 +267,8 @@ impl FontFallback {
     /// synthesized sfnt's `name` table, which may carry only platform-specific
     /// records. Cold path only.
     pub fn face_postscript_name(&self, face: FontFaceId) -> Option<&str> {
-        face.0
-            .checked_sub(self.id_base)
-            .and_then(|i| self.faces.get(i as usize))
+        self.faces
+            .get(&face)
             .and_then(|c| c.postscript_name.as_deref())
     }
 
@@ -268,11 +277,7 @@ impl FontFallback {
     /// its coverage set; later runs test the set, so a warm fallback walk parses
     /// no faces at all.
     fn mapped_len(&mut self, face: FontFaceId, run: &str) -> usize {
-        let Some(candidate) = face
-            .0
-            .checked_sub(self.id_base)
-            .and_then(|i| self.faces.get(i as usize))
-        else {
+        let Some(candidate) = self.faces.get(&face) else {
             return 0;
         };
         self.coverage
@@ -291,14 +296,38 @@ impl FontFallback {
         if let Some(&id) = self.interned.get(&ident) {
             return id;
         }
-        let id = FontFaceId(self.id_base + self.faces.len() as u32);
-        self.faces.push(Candidate {
-            bytes,
-            index,
-            postscript_name,
-        });
+        let id = FontFaceId(self.id_base + self.next_index);
+        self.next_index += 1;
+        self.faces.insert(
+            id,
+            Candidate {
+                bytes,
+                index,
+                postscript_name,
+            },
+        );
         self.interned.insert(ident, id);
         id
+    }
+
+    /// The resident cost of a resolved fallback face: its owned bytes plus its
+    /// coverage set, the two things forgetting it releases. The Face Cache is
+    /// charged this on admission.
+    pub fn face_cost(&self, face: FontFaceId) -> Option<u64> {
+        let candidate = self.faces.get(&face)?;
+        Some((candidate.bytes.len() + self.coverage.face_bytes(face)) as u64)
+    }
+
+    /// Drop a resolved fallback face: its bytes, its coverage set, and every
+    /// plan that would hand it out again. A later run of the same shape asks the
+    /// platform afresh and interns the answer under a new id.
+    pub fn forget(&mut self, face: FontFaceId) {
+        if self.faces.remove(&face).is_none() {
+            return;
+        }
+        self.coverage.forget(face);
+        self.plans.retain(|_, planned| *planned != face);
+        self.interned.retain(|_, interned| *interned != face);
     }
 
     /// Platform fallback queries issued (per run, never per scalar).
@@ -569,6 +598,41 @@ mod tests {
         // Two OS queries (distinct keys), but one interned face.
         assert_eq!(provider.calls.get(), 2);
         assert_eq!(fb.face_bytes(a).map(|(b, _)| b.len()), Some(DEJAVU.len()));
+    }
+
+    #[test]
+    fn forgetting_a_face_drops_its_bytes_and_plans_and_nothing_else() {
+        let provider = LocaleRoutingProvider::new();
+        let mut fb = FontFallback::new(1000);
+        let plan = |fb: &mut FontFallback, locale| match fb.plan_run(
+            &key(0, Script::Han, locale),
+            "AV",
+            &provider,
+        ) {
+            FallbackPlan::Mapped { face, .. } => face,
+            FallbackPlan::Unresolved => panic!("the fixture covers Latin"),
+        };
+        let zh = plan(&mut fb, "zh-Hans");
+        let ja = plan(&mut fb, "ja");
+        assert!(
+            fb.face_cost(zh)
+                .is_some_and(|cost| cost > DEJAVU.len() as u64)
+        );
+
+        fb.forget(zh);
+
+        assert!(fb.face_bytes(zh).is_none());
+        assert!(fb.face_cost(zh).is_none());
+        assert!(fb.face_bytes(ja).is_some(), "the other face stays");
+        assert_eq!(plan(&mut fb, "ja"), ja, "its plan stays too");
+        let queries = provider.seen_locales.borrow().len();
+        let again = plan(&mut fb, "zh-Hans");
+        assert_eq!(
+            provider.seen_locales.borrow().len(),
+            queries + 1,
+            "re-asked"
+        );
+        assert_ne!(again, zh, "ids are never reused");
     }
 
     #[test]

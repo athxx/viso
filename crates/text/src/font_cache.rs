@@ -29,10 +29,22 @@
 //!
 //! # Pinning
 //!
-//! The current default UI face, in-flight shaping/raster faces, and an
-//! explicitly pinned document face can be pinned so they are never demoted or
-//! evicted while their scope is live. Pinning is scoped, not a permanent
-//! residency API.
+//! The current default UI face, the faces a retained paragraph draws with, and
+//! an explicitly pinned document face can be pinned so they are never demoted
+//! or evicted while their scope is live. Pins are counted: every scope that
+//! pins a face releases its own pin, and the face becomes evictable when the
+//! last one does. Pinning is scoped, not a permanent residency API.
+//!
+//! A face used in the current epoch is in flight — a run shaped with it may not
+//! have reached a retained owner yet — so it is not evicted until the epoch
+//! folds. The budget may overshoot inside one epoch; [`advance_epoch`] brings it
+//! back.
+//!
+//! # Evictions are reported, not applied
+//!
+//! The cache accounts residency; it does not own the face payloads. Every face
+//! it evicts is logged for [`take_evicted`], so the owner drops exactly that
+//! face's bytes and derived state and nothing else.
 //!
 //! # Memory pressure sheds, never flushes
 //!
@@ -51,6 +63,7 @@
 //! live scope, exactly as the ordinary budget does.
 //!
 //! [`advance_epoch`]: FontCache::advance_epoch
+//! [`take_evicted`]: FontCache::take_evicted
 //! [`shed_to_pressure_budget`]: FontCache::shed_to_pressure_budget
 //! [`restore_budget`]: FontCache::restore_budget
 
@@ -93,8 +106,11 @@ pub struct FontCache {
     /// [`advance_epoch`]. This is the epoch-merge buffer that keeps recency off
     /// the per-glyph path.
     used_this_epoch: HashSet<FontFaceId>,
-    /// Scoped pins: never demoted or evicted while present.
-    pinned: HashSet<FontFaceId>,
+    /// Scoped pins with their scope counts: never demoted or evicted while
+    /// present.
+    pinned: HashMap<FontFaceId, u32>,
+    /// Faces evicted since the owner last drained them, in eviction order.
+    evicted: Vec<FontFaceId>,
     /// Total resident cost of all entries.
     total_bytes: u64,
     /// The resting byte budget: the ceiling in effect when not under memory
@@ -110,6 +126,15 @@ pub struct FontCache {
     protected_target_bytes: u64,
     /// Monotonic epoch counter; advanced once per frame / paragraph pass.
     epoch: u64,
+    /// Counter: admissions or touches that found the face resident.
+    hits: u64,
+    /// Counter: admissions of a face that was not resident.
+    misses: u64,
+    /// Counter: faces evicted over the cache's lifetime.
+    evictions: u64,
+    /// Counter: recency updates folded by [`advance_epoch`](Self::advance_epoch)
+    /// — one per face per epoch it was used in, however often it was used.
+    recency_updates: u64,
 }
 
 impl FontCache {
@@ -122,12 +147,17 @@ impl FontCache {
         Self {
             entries: HashMap::new(),
             used_this_epoch: HashSet::new(),
-            pinned: HashSet::new(),
+            pinned: HashMap::new(),
+            evicted: Vec::new(),
             total_bytes: 0,
             resting_budget_bytes: budget_bytes,
             budget_bytes,
             protected_target_bytes: budget_bytes / 5 * 4,
             epoch: 0,
+            hits: 0,
+            misses: 0,
+            evictions: 0,
+            recency_updates: 0,
         }
     }
 
@@ -162,6 +192,7 @@ impl FontCache {
         self.used_this_epoch.insert(id);
 
         if let Some(entry) = self.entries.get_mut(&id) {
+            self.hits += 1;
             // Reuse: the second meaningful reuse earns Protected.
             if entry.segment == Segment::Probation {
                 if entry.reused {
@@ -173,6 +204,7 @@ impl FontCache {
             return;
         }
 
+        self.misses += 1;
         self.entries.insert(
             id,
             FaceEntry {
@@ -193,6 +225,7 @@ impl FontCache {
     /// only by [`advance_epoch`], so nothing here mutates per glyph.
     pub fn touch(&mut self, id: FontFaceId) {
         if self.entries.contains_key(&id) {
+            self.hits += 1;
             self.used_this_epoch.insert(id);
         }
     }
@@ -206,6 +239,7 @@ impl FontCache {
     pub fn advance_epoch(&mut self) {
         for id in self.used_this_epoch.drain() {
             if let Some(entry) = self.entries.get_mut(&id) {
+                self.recency_updates += 1;
                 entry.last_touched_epoch = self.epoch;
                 if entry.segment == Segment::Probation {
                     if entry.reused {
@@ -221,19 +255,52 @@ impl FontCache {
         self.enforce_budget();
     }
 
-    /// Pin a face so it is never demoted or evicted while pinned.
+    /// Pin a face for one scope so it is never demoted or evicted while any
+    /// scope holds it.
     pub fn pin(&mut self, id: FontFaceId) {
-        self.pinned.insert(id);
+        *self.pinned.entry(id).or_insert(0) += 1;
     }
 
-    /// Release a scoped pin, returning the face to normal eviction eligibility.
+    /// Release one scope's pin; the face returns to normal eviction
+    /// eligibility when the last scope releases it.
     pub fn unpin(&mut self, id: FontFaceId) {
-        self.pinned.remove(&id);
+        if let Some(count) = self.pinned.get_mut(&id) {
+            *count -= 1;
+            if *count == 0 {
+                self.pinned.remove(&id);
+            }
+        }
     }
 
     /// Whether a face is currently pinned.
     pub fn is_pinned(&self, id: FontFaceId) -> bool {
-        self.pinned.contains(&id)
+        self.pinned.contains_key(&id)
+    }
+
+    /// Move the faces evicted since the last drain into `out`, in eviction
+    /// order. Empty in steady state.
+    pub fn take_evicted(&mut self, out: &mut Vec<FontFaceId>) {
+        out.append(&mut self.evicted);
+    }
+
+    /// Admissions and touches that found the face resident.
+    pub fn hits(&self) -> u64 {
+        self.hits
+    }
+
+    /// Admissions of a face that was not resident.
+    pub fn misses(&self) -> u64 {
+        self.misses
+    }
+
+    /// Faces evicted over the cache's lifetime.
+    pub fn evictions(&self) -> u64 {
+        self.evictions
+    }
+
+    /// Recency updates folded so far: at most one per face per epoch.
+    pub fn recency_updates(&self) -> u64 {
+        self.recency_updates
     }
 
     /// The effective byte budget currently enforced (the resting budget, or a
@@ -247,7 +314,7 @@ impl FontCache {
     pub fn pinned_bytes(&self) -> u64 {
         self.entries
             .iter()
-            .filter(|(id, _)| self.pinned.contains(id))
+            .filter(|(id, _)| self.pinned.contains_key(id))
             .map(|(_, e)| e.cost_bytes)
             .sum()
     }
@@ -314,21 +381,29 @@ impl FontCache {
             if let Some(victim) = self.coldest(Segment::Probation) {
                 let entry = self.entries.remove(&victim).unwrap();
                 self.total_bytes -= entry.cost_bytes;
+                self.evictions += 1;
+                self.evicted.push(victim);
             } else if let Some(coldest) = self.coldest(Segment::Protected) {
                 self.entries.get_mut(&coldest).unwrap().segment = Segment::Probation;
             } else {
-                // Everything left is pinned; the budget cannot be met without
-                // violating a live scope, so stop rather than evict a pin.
+                // Everything left is pinned or in flight; the budget cannot be
+                // met without violating a live scope, so stop rather than evict
+                // one.
                 break;
             }
         }
     }
 
-    /// The coldest (oldest `last_touched_epoch`) unpinned face in a segment.
+    /// The coldest (oldest `last_touched_epoch`) face in a segment that is
+    /// neither pinned nor in flight this epoch.
     fn coldest(&self, segment: Segment) -> Option<FontFaceId> {
         self.entries
             .iter()
-            .filter(|(id, e)| e.segment == segment && !self.pinned.contains(id))
+            .filter(|(id, e)| {
+                e.segment == segment
+                    && !self.pinned.contains_key(id)
+                    && !self.used_this_epoch.contains(id)
+            })
             .min_by_key(|(_, e)| e.last_touched_epoch)
             .map(|(id, _)| *id)
     }
@@ -552,6 +627,96 @@ mod tests {
             500,
             "pressure budget is clamped to the resting budget"
         );
+    }
+
+    #[test]
+    fn over_budget_evicts_in_slru_order_keeps_pins_and_reports_each_eviction() {
+        let mut cache = FontCache::with_budget(400);
+        let ui = id(0);
+        cache.admit(ui, 100);
+        cache.pin(ui);
+        // A Protected face: reused across epochs.
+        let hot = id(1);
+        for _ in 0..3 {
+            cache.admit(hot, 100);
+            cache.advance_epoch();
+        }
+        assert_eq!(cache.segment_of(hot), Some(Segment::Protected));
+        // Two cold Probation faces, the older first.
+        cache.admit(id(2), 100);
+        cache.advance_epoch();
+        cache.admit(id(3), 100);
+        cache.advance_epoch();
+
+        // One more over budget: the coldest Probation face goes, not the
+        // Protected one and never the pin.
+        cache.admit(id(4), 100);
+        cache.advance_epoch();
+        let mut evicted = Vec::new();
+        cache.take_evicted(&mut evicted);
+        assert_eq!(evicted, vec![id(2)]);
+        // More pressure keeps draining Probation, oldest first, and leaves the
+        // Protected face alone while Probation still has a candidate.
+        cache.admit(id(5), 100);
+        cache.advance_epoch();
+        cache.admit(id(6), 200);
+        cache.advance_epoch();
+        cache.take_evicted(&mut evicted);
+        assert_eq!(evicted, vec![id(2), id(3), id(4), id(5)]);
+        assert!(cache.contains(hot), "Protected outlives Probation churn");
+        assert!(cache.contains(ui), "the pinned UI face survives");
+        assert_eq!(cache.evictions(), evicted.len() as u64);
+        assert!(cache.total_bytes() <= 400);
+        let mut none = Vec::new();
+        cache.take_evicted(&mut none);
+        assert!(none.is_empty(), "draining empties the log");
+    }
+
+    #[test]
+    fn pins_are_counted_per_scope() {
+        let mut cache = FontCache::with_budget(100);
+        cache.admit(id(0), 100);
+        cache.pin(id(0));
+        cache.pin(id(0));
+        cache.advance_epoch();
+        cache.unpin(id(0));
+        cache.admit(id(1), 100);
+        cache.advance_epoch();
+        assert!(cache.contains(id(0)), "one scope still holds the pin");
+        cache.unpin(id(0));
+        assert!(!cache.is_pinned(id(0)));
+        cache.admit(id(2), 100);
+        cache.advance_epoch();
+        assert!(
+            !cache.contains(id(0)),
+            "the last release makes it evictable"
+        );
+    }
+
+    #[test]
+    fn a_face_used_this_epoch_is_not_evicted_until_the_epoch_folds() {
+        let mut cache = FontCache::with_budget(100);
+        cache.admit(id(0), 100);
+        cache.admit(id(1), 100);
+        assert!(
+            cache.contains(id(0)) && cache.contains(id(1)),
+            "both are in flight, so the budget overshoots within the epoch"
+        );
+        cache.advance_epoch();
+        assert!(cache.total_bytes() <= 100, "the fold restores the budget");
+    }
+
+    #[test]
+    fn hits_misses_and_recency_updates_are_bounded_by_use_not_by_glyphs() {
+        let mut cache = FontCache::with_budget(1_000);
+        cache.admit(id(0), 100);
+        for _ in 0..1_000 {
+            cache.touch(id(0));
+        }
+        cache.advance_epoch();
+        assert_eq!(cache.misses(), 1);
+        assert_eq!(cache.hits(), 1_000);
+        assert_eq!(cache.recency_updates(), 1, "one fold for 1000 uses");
     }
 
     #[test]

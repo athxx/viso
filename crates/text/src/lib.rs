@@ -15,7 +15,7 @@
 //! specification. Font pipeline: [`font_request`], [`font_manifest`],
 //! [`font_format`], [`resolver`], [`app_fonts`], [`system_fonts`],
 //! [`system_catalog`], [`font_provider`], [`fallback`], [`coverage`],
-//! [`font_cache`], [`progressive`]. Shaping and world-ready paragraph
+//! [`font_cache`], [`memory_budget`], [`progressive`]. Shaping and world-ready paragraph
 //! correctness: [`shaping`],
 //! [`segment`], [`bidi`], [`line_break`], [`line_break_tailoring`],
 //! [`text_position`], [`caret`], [`hit_test`], [`selection`], [`ime`],
@@ -49,6 +49,7 @@ pub mod font_format;
 pub mod font_manifest;
 pub mod font_provider;
 pub mod font_request;
+pub mod memory_budget;
 pub mod progressive;
 pub mod resolver;
 pub mod system_catalog;
@@ -92,6 +93,7 @@ pub use glyph_representation::{
 };
 pub use line_break::{BreakOpportunity, LineBreaker};
 pub use line_break_tailoring::{LineBreakStrictness, LineBreakTailoring, WordBreak};
+pub use memory_budget::{MemoryClass, TextBudgets};
 pub use mtsdf::{
     BUCKETS, DISTANCE_RANGE, FIELD_PAD, MtsdfGenerator, MtsdfGlyph, MtsdfPlan, MtsdfRequest,
 };

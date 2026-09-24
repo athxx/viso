@@ -14,10 +14,11 @@ use viso_text::font_manifest::{AssetRef, FontManifest};
 use viso_text::paragraph::{LineLayout, Paragraph, ShapedSegment, ShapedSpan, line_index_at};
 use viso_text::system_fonts::ColorGlyph;
 use viso_text::{
-    Admission, BaseDirection, ColorGlyphRasterizer, Coverage, CoverageBitmap, Direction,
+    Admission, BaseDirection, ColorGlyphRasterizer, Coverage, CoverageBitmap, Direction, FontCache,
     FontFaceId, FontRequest, FontResolver, FontRole, GlyphImageKind, GlyphKey, GlyphResidency,
-    LineBreakTailoring, OUTLINE_POOL, PoolBudget, Reclaimed, Resolved, Segmenter, ShapedRun,
-    Shaper, TextOffset, TextPosition, inspect_face, rasterize_coverage,
+    LineBreakTailoring, MemoryClass, OUTLINE_POOL, PoolBudget, Reclaimed, Resolved, Segmenter,
+    ShapedGlyph, ShapedRun, Shaper, TextBudgets, TextOffset, TextPosition, inspect_face,
+    rasterize_coverage,
 };
 use viso_ui::{Content, EditGeometry, EditLayout, NodeId, TextRequest, Vec2};
 
@@ -45,10 +46,9 @@ const PLACEMENT_RETRIES: u32 = 4;
 /// long runs are unique to their paragraph, whose retained lines already
 /// keep them.
 const SPAN_CACHE_TEXT: usize = 64;
-/// Entries per span-cache generation. When the live generation fills it
-/// becomes the previous one and the one before is dropped, so the cache holds
-/// at most twice this many spans and a span still in use survives a turnover.
-const SPAN_CACHE_ENTRIES: usize = 4096;
+/// Where fallback face ids start: above every id the resolver hands out, so the
+/// two id spaces never collide.
+const FALLBACK_FACE_IDS: u32 = 1 << 30;
 
 #[derive(Debug, Default)]
 pub(crate) struct TextCounters {
@@ -193,6 +193,9 @@ struct RetainedParagraph {
     /// changed since it was placed.
     placed_at: Option<u32>,
     placed: PreparedLayout,
+    /// The distinct faces the lines draw with, each holding one face-cache pin
+    /// for as long as this paragraph is retained.
+    faces: Vec<FontFaceId>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -205,31 +208,148 @@ struct SpanKey {
     text: String,
 }
 
-/// Shaped spans shared across paragraphs, in two generations: identical short
-/// text in different nodes — or in the same node after a rebuild gave it a new
-/// identity — shapes once.
-#[derive(Debug, Default)]
-struct SpanCache {
+/// The global shaping cache: shaped spans shared across paragraphs, so
+/// identical short text in different nodes — or in the same node after a
+/// rebuild gave it a new identity — shapes once.
+///
+/// It is budgeted in bytes on its own, apart from the face cache, and kept in
+/// two generations: when the live generation reaches half the budget it
+/// becomes the previous one and the one before is dropped, so the cache holds
+/// at most the budget and a span still in use survives a turnover by moving
+/// back into the live generation on its next hit.
+#[derive(Debug)]
+pub(crate) struct SpanCache {
     live: HashMap<SpanKey, ShapedSpan>,
     previous: HashMap<SpanKey, ShapedSpan>,
+    live_bytes: u64,
+    previous_bytes: u64,
+    budget_bytes: u64,
+    hits: u64,
+    misses: u64,
+    evictions: u64,
 }
 
 impl SpanCache {
+    fn with_budget(budget_bytes: u64) -> Self {
+        Self {
+            live: HashMap::new(),
+            previous: HashMap::new(),
+            live_bytes: 0,
+            previous_bytes: 0,
+            budget_bytes,
+            hits: 0,
+            misses: 0,
+            evictions: 0,
+        }
+    }
+
     fn get(&mut self, key: &SpanKey) -> Option<ShapedSpan> {
         if let Some(span) = self.live.get(key) {
+            self.hits += 1;
             return Some(span.clone());
         }
-        let span = self.previous.remove(key)?;
+        let Some(span) = self.previous.remove(key) else {
+            self.misses += 1;
+            return None;
+        };
+        self.hits += 1;
+        self.previous_bytes -= span_bytes(key, &span);
         self.insert(key.clone(), span.clone());
         Some(span)
     }
 
     fn insert(&mut self, key: SpanKey, span: ShapedSpan) {
-        if self.live.len() >= SPAN_CACHE_ENTRIES {
+        let bytes = span_bytes(&key, &span);
+        if self.live_bytes + bytes > self.budget_bytes / 2 {
+            self.evictions += self.previous.len() as u64;
             self.previous = std::mem::take(&mut self.live);
+            self.previous_bytes = std::mem::replace(&mut self.live_bytes, 0);
         }
-        self.live.insert(key, span);
+        self.live_bytes += bytes;
+        if let Some(old) = self.live.insert(key, span) {
+            self.live_bytes -= segment_bytes(&old);
+        }
     }
+
+    /// Drop every span shaped from `face` or split onto it — the face itself
+    /// was dropped. Spans of every other face stay.
+    fn forget_face(&mut self, face: FontFaceId) {
+        for (spans, bytes) in [
+            (&mut self.live, &mut self.live_bytes),
+            (&mut self.previous, &mut self.previous_bytes),
+        ] {
+            spans.retain(|key, span| {
+                let keep = key.face != face && span.segments.iter().all(|s| s.run.face != face);
+                if !keep {
+                    *bytes -= span_bytes(key, span);
+                }
+                keep
+            });
+        }
+    }
+
+    /// Resident bytes across both generations.
+    pub(crate) fn bytes(&self) -> u64 {
+        self.live_bytes + self.previous_bytes
+    }
+
+    pub(crate) fn budget_bytes(&self) -> u64 {
+        self.budget_bytes
+    }
+
+    pub(crate) fn hits(&self) -> u64 {
+        self.hits
+    }
+
+    pub(crate) fn misses(&self) -> u64 {
+        self.misses
+    }
+
+    /// Spans dropped by generation turnover (a face drop is not an eviction).
+    pub(crate) fn evictions(&self) -> u64 {
+        self.evictions
+    }
+
+    pub(crate) fn len(&self) -> usize {
+        self.live.len() + self.previous.len()
+    }
+
+    /// Drop every span, counting each as an eviction.
+    fn clear(&mut self) {
+        self.evictions += self.len() as u64;
+        self.live.clear();
+        self.previous.clear();
+        self.live_bytes = 0;
+        self.previous_bytes = 0;
+    }
+}
+
+/// The resident cost charged for one cached span: its key's owned strings, its
+/// glyphs and ligature carets, and the fixed size of the entry itself.
+fn span_bytes(key: &SpanKey, span: &ShapedSpan) -> u64 {
+    let strings = key.text.len() + key.locale.len();
+    let entry = std::mem::size_of::<SpanKey>() + std::mem::size_of::<ShapedSpan>();
+    (strings + entry) as u64 + segment_bytes(span)
+}
+
+/// The heap a span's segments hold, apart from its key.
+fn segment_bytes(span: &ShapedSpan) -> u64 {
+    let segments: usize = span
+        .segments
+        .iter()
+        .map(|segment| {
+            let run = &segment.run;
+            let carets: usize = run
+                .ligature_carets
+                .iter()
+                .map(|l| std::mem::size_of_val(l) + std::mem::size_of_val(l.carets.as_slice()))
+                .sum();
+            std::mem::size_of_val(segment)
+                + run.glyphs.len() * std::mem::size_of::<ShapedGlyph>()
+                + carets
+        })
+        .sum();
+    segments as u64
 }
 
 /// Where one glyph's pixels live, as the pixel owner records it.
@@ -258,6 +378,15 @@ pub(crate) struct TextShaper {
     /// Every mounted text node's paragraph, pruned with the tree.
     paragraphs: HashMap<ParagraphSlot, RetainedParagraph>,
     spans: SpanCache,
+    /// Face residency under its own byte budget. Pins hold the primary, app,
+    /// and CJK fallback faces for the process and each retained paragraph's
+    /// faces while it lives; an evicted face is dropped with everything keyed
+    /// by it at the frame boundary.
+    faces: FontCache,
+    /// Faces pinned for the process, so each is pinned once.
+    hot_faces: Vec<FontFaceId>,
+    /// Scratch for draining face evictions; empty in steady state.
+    evicted_faces: Vec<FontFaceId>,
     coverage_uv: HashMap<GlyphKey, Placement>,
     color_uv: HashMap<GlyphKey, Placement>,
     coverage_atlas: Option<GlyphAtlas>,
@@ -281,12 +410,17 @@ pub(crate) struct TextShaper {
 
 impl TextShaper {
     pub(crate) fn new() -> Self {
-        Self::with_atlas_geometry(ATLAS_SIZE, ATLAS_PAGE)
+        Self::with_atlas_geometry(
+            ATLAS_SIZE,
+            ATLAS_PAGE,
+            MemoryClass::for_target().text_budgets(),
+        )
     }
 
     /// A shaper over atlas planes of `size × size` texels cut into
-    /// `page × page` pages, with each pool budgeted to match.
-    fn with_atlas_geometry(size: u32, page: u32) -> Self {
+    /// `page × page` pages, with each pool budgeted to match, and face and
+    /// shaping caches held to `budgets`.
+    fn with_atlas_geometry(size: u32, page: u32, budgets: TextBudgets) -> Self {
         // One live-font registry, shared between the provider (which records the
         // handles CoreText resolves) and the color/coverage raster (which
         // rasterizes through them). See `system_fonts::LiveFontRegistry`.
@@ -296,14 +430,17 @@ impl TextShaper {
         let page_bytes = (page as usize) * (page as usize);
         Self {
             resolver: FontResolver::new(),
-            fallback: FontFallback::new(1 << 30),
+            fallback: FontFallback::new(FALLBACK_FACE_IDS),
             face_coverage: Coverage::new(),
             shaper: Shaper::new(),
             manifest: FontManifest::default(),
             primary: None,
             next_asset: 0,
             paragraphs: HashMap::new(),
-            spans: SpanCache::default(),
+            spans: SpanCache::with_budget(budgets.shaping_cache_bytes),
+            faces: FontCache::with_budget(budgets.face_cache_bytes),
+            hot_faces: Vec::new(),
+            evicted_faces: Vec::new(),
             coverage_uv: HashMap::new(),
             color_uv: HashMap::new(),
             coverage_atlas: None,
@@ -337,9 +474,32 @@ impl TextShaper {
         inspect_face(&bytes, index)?;
         let asset = AssetRef(self.next_asset);
         self.next_asset = self.next_asset.wrapping_add(1);
+        let cost = bytes.len() as u64;
         let face = self.resolver.register_app_face(asset, index, bytes);
         self.primary.get_or_insert(face);
+        self.pin_hot(face, cost);
         Some(face)
+    }
+
+    /// Admit `face` and pin it for the process: the primary face, app faces,
+    /// and CJK fallback faces are too expensive to reload to ever evict.
+    fn pin_hot(&mut self, face: FontFaceId, cost: u64) {
+        if self.hot_faces.contains(&face) {
+            return;
+        }
+        self.faces.pin(face);
+        self.faces.admit(face, cost);
+        self.hot_faces.push(face);
+    }
+
+    /// The face cache, for its counters and resident bytes.
+    pub(crate) fn face_cache(&self) -> &FontCache {
+        &self.faces
+    }
+
+    /// The shaping cache, for its counters and resident bytes.
+    pub(crate) fn shaping_cache(&self) -> &SpanCache {
+        &self.spans
     }
 
     pub(crate) fn counters(&self) -> &TextCounters {
@@ -356,11 +516,42 @@ impl TextShaper {
     /// (not once per glyph draw) and zero the per-frame counters.
     pub(crate) fn end_frame(&mut self) {
         self.residency.advance_epoch();
+        self.faces.advance_epoch();
+        self.drop_evicted_faces();
         self.counters.reset();
     }
 
+    /// Drop every face the face cache evicted, unless it was re-admitted
+    /// since: by then it is resident again and in use.
+    fn drop_evicted_faces(&mut self) {
+        let mut evicted = std::mem::take(&mut self.evicted_faces);
+        self.faces.take_evicted(&mut evicted);
+        for face in evicted.drain(..) {
+            if !self.faces.contains(face) {
+                self.drop_face(face);
+            }
+        }
+        self.evicted_faces = evicted;
+    }
+
+    /// Drop exactly what is keyed by `face`: its bytes and fallback plans, its
+    /// coverage sets, the spans shaped with it, its glyph residency and
+    /// placements, and its color-raster binding. Every other face keeps all of
+    /// its state. The dropped glyphs' texels stay on their pages until the page
+    /// is reclaimed.
+    fn drop_face(&mut self, face: FontFaceId) {
+        self.fallback.forget(face);
+        self.face_coverage.forget(face);
+        self.spans.forget_face(face);
+        self.residency.forget_face(face);
+        self.coverage_uv.retain(|key, _| key.face != face);
+        self.color_uv.retain(|key, _| key.face != face);
+        self.color_raster.forget_face(face);
+    }
+
     /// Answer an OS memory warning: reclaim every page of every glyph pool,
-    /// drop the shared span cache, and hand the atlas planes to `retire` so the
+    /// drop the shared span cache, shed every face no live scope holds, and
+    /// hand the atlas planes to `retire` so the
     /// caller can release them with their bindings. Placements die with their
     /// pages, so every retained text payload is stale afterwards — the caller
     /// reshapes the mounted text, which re-admits exactly the live working set
@@ -377,6 +568,9 @@ impl TextShaper {
             self.residency.shed_pool_to_pressure(kind, 0);
         }
         self.drain_reclaims();
+        self.faces.shed_to_pressure_budget(0);
+        self.faces.restore_budget();
+        self.drop_evicted_faces();
         let plane = (self.atlas_size as usize) * (self.atlas_size as usize);
         let mut bytes = 0;
         if let Some(atlas) = self.coverage_atlas.take() {
@@ -389,14 +583,23 @@ impl TextShaper {
         }
         self.coverage_uv = HashMap::new();
         self.color_uv = HashMap::new();
-        self.spans = SpanCache::default();
+        self.spans.clear();
         bytes
     }
 
     /// Drop the paragraphs of every slot `live` rejects — nodes freed, or
     /// whose index now names a newer node.
     pub(crate) fn retain_paragraphs(&mut self, mut live: impl FnMut(ParagraphSlot) -> bool) {
-        self.paragraphs.retain(|slot, _| live(*slot));
+        let faces = &mut self.faces;
+        self.paragraphs.retain(|slot, paragraph| {
+            let keep = live(*slot);
+            if !keep {
+                for &face in &paragraph.faces {
+                    faces.unpin(face);
+                }
+            }
+            keep
+        });
     }
 
     /// The wrap width `slot`'s lines were last laid out to, if they wrap.
@@ -463,6 +666,7 @@ impl TextShaper {
                 wrap,
                 placed_at: None,
                 placed: PreparedLayout::default(),
+                faces: Vec::new(),
             },
         };
         let locale = match request.locale.as_deref() {
@@ -485,6 +689,7 @@ impl TextShaper {
         if relaid {
             self.counters.record_shape(wrap.is_some());
             retained.placed_at = None;
+            self.repin_faces(&mut retained);
         }
         retained.wrap = wrap;
         let size_bits = request.font_size.to_bits();
@@ -493,6 +698,25 @@ impl TextShaper {
             retained.placed_at = Some(size_bits);
         }
         Some(retained)
+    }
+
+    /// Move `retained`'s face pins to the faces its new lines draw with. New
+    /// pins are taken before old ones are released, so a face the paragraph
+    /// keeps using is never unpinned in between.
+    fn repin_faces(&mut self, retained: &mut RetainedParagraph) {
+        let mut faces = Vec::new();
+        for run in retained.paragraph.lines().iter().flat_map(|l| &l.runs) {
+            if !faces.contains(&run.face) {
+                faces.push(run.face);
+            }
+        }
+        for &face in &faces {
+            self.faces.pin(face);
+        }
+        for &face in &retained.faces {
+            self.faces.unpin(face);
+        }
+        retained.faces = faces;
     }
 
     /// Position every glyph of `lines` in logical pixels: each run starts at
@@ -685,6 +909,11 @@ impl TextShaper {
             {
                 self.primary = Some(face);
                 self.register_color_face(face);
+                let cost = self
+                    .resolver
+                    .face_bytes(face)
+                    .map_or(0, |(bytes, _)| bytes.len() as u64);
+                self.pin_hot(face, cost);
             }
         }
         self.primary
@@ -721,6 +950,7 @@ impl TextShaper {
             text: text.to_owned(),
         });
         if let Some(span) = key.as_ref().and_then(|key| self.spans.get(key)) {
+            self.touch_faces(base, &span);
             return span;
         }
         self.counters.record_shaped_run();
@@ -729,10 +959,20 @@ impl TextShaper {
             Some(run) if !run.has_coverage_miss() => ShapedSpan::from(run),
             Some(_) => self.shape_clusters(base, locale, text, direction),
         };
+        self.touch_faces(base, &span);
         if let Some(key) = key {
             self.spans.insert(key, span.clone());
         }
         span
+    }
+
+    /// Mark the faces a span draws with as used this frame: once per span, not
+    /// per glyph, and folded into recency once per face at the frame boundary.
+    fn touch_faces(&mut self, base: FontFaceId, span: &ShapedSpan) {
+        self.faces.touch(base);
+        for segment in &span.segments {
+            self.faces.touch(segment.run.face);
+        }
     }
 
     fn shape_clusters(
@@ -832,10 +1072,27 @@ impl TextShaper {
         };
         match self.fallback.plan_run(&key, text, &self.provider) {
             FallbackPlan::Mapped { face, .. } => {
-                self.register_fallback_color_face(face);
+                self.use_fallback_face(face, FontFallback::is_cjk(key.script));
                 Some(face)
             }
             FallbackPlan::Unresolved => None,
+        }
+    }
+
+    /// Account one use of a resolved fallback face: a touch when resident,
+    /// otherwise an admission charged its bytes and coverage — pinned for the
+    /// process when it serves a CJK script.
+    fn use_fallback_face(&mut self, face: FontFaceId, cjk: bool) {
+        if self.faces.contains(face) {
+            self.faces.touch(face);
+            return;
+        }
+        self.register_fallback_color_face(face);
+        let cost = self.fallback.face_cost(face).unwrap_or(0);
+        if cjk {
+            self.pin_hot(face, cost);
+        } else {
+            self.faces.admit(face, cost);
         }
     }
 
@@ -1185,7 +1442,11 @@ mod tests {
     }
 
     fn tiny_shaper() -> TextShaper {
-        let mut shaper = TextShaper::with_atlas_geometry(TINY_PLANE, TINY_PAGE);
+        let mut shaper = TextShaper::with_atlas_geometry(
+            TINY_PLANE,
+            TINY_PAGE,
+            MemoryClass::for_target().text_budgets(),
+        );
         shaper.load_font(TEST_FONT, 0).expect("fixture parses");
         shaper
     }
@@ -1248,6 +1509,220 @@ mod tests {
         let hit = viso_text::hit_test::HitTester::new(line)
             .position_at_inline((middle.x + 0.5) / layout.font_size);
         assert_eq!(hit.offset, TextOffset(1));
+    }
+
+    /// A platform stand-in that answers every fallback query with the fixture
+    /// face, padded so each answer interns as a distinct face.
+    struct FixtureFaces {
+        answered: Cell<usize>,
+    }
+
+    impl viso_text::SystemFontProvider for FixtureFaces {
+        fn resolve_system_face(
+            &self,
+            _query: &viso_text::SystemFontQuery,
+        ) -> Option<viso_text::SystemFontResult> {
+            let answered = self.answered.get() + 1;
+            self.answered.set(answered);
+            let mut bytes = TEST_FONT.to_vec();
+            bytes.resize(bytes.len() + answered, 0);
+            Some(viso_text::SystemFontResult {
+                bytes,
+                index: 0,
+                postscript_name: None,
+            })
+        }
+    }
+
+    /// Resolve a fresh fallback face for "b" through `faces` and account its use
+    /// the way shaping does.
+    fn fallback_face(shaper: &mut TextShaper, faces: &FixtureFaces, cjk: bool) -> FontFaceId {
+        let key = FallbackPlanKey {
+            base: FontFaceId(u32::MAX),
+            script: FontFallback::run_script("b"),
+            locale: format!("x-{}", faces.answered.get()),
+            style: FallbackStyle::default(),
+            source_revision: 0,
+        };
+        let FallbackPlan::Mapped { face, .. } = shaper.fallback.plan_run(&key, "b", faces) else {
+            panic!("the fixture covers the run");
+        };
+        shaper.use_fallback_face(face, cjk);
+        face
+    }
+
+    fn budgeted_shaper(face_cache_bytes: u64, shaping_cache_bytes: u64) -> TextShaper {
+        let budgets = TextBudgets {
+            face_cache_bytes,
+            shaping_cache_bytes,
+        };
+        let mut shaper = TextShaper::with_atlas_geometry(TINY_PLANE, TINY_PAGE, budgets);
+        shaper.load_font(TEST_FONT, 0).expect("fixture parses");
+        shaper
+    }
+
+    /// One fallback face's charge: the fixture's bytes plus its coverage set.
+    fn fallback_cost() -> u64 {
+        let mut shaper = budgeted_shaper(u64::MAX, u64::MAX);
+        let faces = FixtureFaces {
+            answered: Cell::new(0),
+        };
+        let face = fallback_face(&mut shaper, &faces, false);
+        shaper.fallback.face_cost(face).expect("resident")
+    }
+
+    #[test]
+    fn the_face_budget_drops_cold_fallback_faces_and_keeps_pinned_ones() {
+        let cost = fallback_cost();
+        // The pinned app face plus room for about two fallback faces.
+        let mut shaper = budgeted_shaper(TEST_FONT.len() as u64 + cost * 5 / 2, u64::MAX);
+        let app = shaper.primary.expect("loaded");
+        let faces = FixtureFaces {
+            answered: Cell::new(0),
+        };
+        let cjk = fallback_face(&mut shaper, &faces, true);
+        shaper.end_frame();
+        let mut latin = Vec::new();
+        for _ in 0..4 {
+            latin.push(fallback_face(&mut shaper, &faces, false));
+            shaper.end_frame();
+        }
+        let cache = shaper.face_cache();
+        assert!(cache.evictions() >= 2, "cold faces were evicted");
+        assert!(cache.total_bytes() <= cache.budget_bytes() + cost);
+        assert!(cache.contains(app) && cache.contains(cjk));
+        assert!(shaper.resolver.face_bytes(app).is_some());
+        assert!(
+            shaper.fallback.face_bytes(cjk).is_some(),
+            "CJK stays pinned"
+        );
+        let newest = *latin.last().expect("admitted");
+        assert!(shaper.fallback.face_bytes(newest).is_some());
+        for &face in &latin[..2] {
+            assert!(!cache.contains(face));
+            assert!(shaper.fallback.face_bytes(face).is_none(), "bytes dropped");
+            assert!(shaper.fallback.face_cost(face).is_none());
+        }
+    }
+
+    #[test]
+    fn a_face_in_use_this_frame_is_not_dropped_before_the_frame_ends() {
+        let cost = fallback_cost();
+        let mut shaper = budgeted_shaper(TEST_FONT.len() as u64 + cost / 2, u64::MAX);
+        let faces = FixtureFaces {
+            answered: Cell::new(0),
+        };
+        let first = fallback_face(&mut shaper, &faces, false);
+        let second = fallback_face(&mut shaper, &faces, false);
+        // Both overshoot the budget, but both are in flight this frame.
+        assert!(shaper.fallback.face_bytes(first).is_some());
+        assert!(shaper.fallback.face_bytes(second).is_some());
+        shaper.end_frame();
+        shaper.end_frame();
+        assert!(shaper.face_cache().total_bytes() <= shaper.face_cache().budget_bytes());
+        assert!(shaper.fallback.face_bytes(first).is_none());
+    }
+
+    #[test]
+    fn dropping_a_face_leaves_every_other_face_intact() {
+        let mut shaper = tiny_shaper();
+        let mut gpu = headless();
+        let app = shaper.primary.expect("loaded");
+        let faces = FixtureFaces {
+            answered: Cell::new(0),
+        };
+        let other = fallback_face(&mut shaper, &faces, false);
+        let doomed = fallback_face(&mut shaper, &faces, false);
+        let _ = shaper.shape(&mut gpu, slot(0), &request(PAIR, 30.0), 1.0, None);
+        for face in [other, doomed] {
+            let span = shaper.shape_span(face, "en", "b", Direction::LeftToRight);
+            assert!(!span.segments.is_empty());
+            assert!(shaper.face_covers(face, "b"));
+            let key = GlyphKey {
+                face,
+                glyph: span.segments[0].run.glyphs[0].glyph_id,
+                bucket: 30,
+                kind: GlyphImageKind::MaskA8,
+            };
+            let bitmap = shaper.rasterize(face, key.glyph, 30.0).expect("outline");
+            assert!(shaper.admit_coverage(&mut gpu, key, &bitmap).is_some());
+        }
+        let spans = shaper.spans.len();
+        let placements = shaper.coverage_uv.len();
+        let glyphs = shaper
+            .residency
+            .pool_resident_glyphs(GlyphImageKind::MaskA8);
+
+        shaper.drop_face(doomed);
+
+        assert_eq!(shaper.spans.len(), spans - 1);
+        assert_eq!(shaper.coverage_uv.len(), placements - 1);
+        assert_eq!(
+            shaper
+                .residency
+                .pool_resident_glyphs(GlyphImageKind::MaskA8),
+            glyphs - 1
+        );
+        assert!(shaper.coverage_uv.keys().all(|key| key.face != doomed));
+        assert!(shaper.fallback.face_bytes(doomed).is_none());
+        for face in [app, other] {
+            assert!(shaper.coverage_uv.keys().any(|key| key.face == face));
+            assert!(shaper.face_covers(face, "b"));
+        }
+        assert!(shaper.fallback.face_bytes(other).is_some());
+        let spans_before = shaper.shaping_cache().hits();
+        let _ = shaper.shape_span(other, "en", "b", Direction::LeftToRight);
+        assert_eq!(shaper.shaping_cache().hits(), spans_before + 1, "kept");
+    }
+
+    #[test]
+    fn repeated_shaping_folds_face_recency_once_per_frame() {
+        let mut shaper = tiny_shaper();
+        shaper.end_frame();
+        let before = shaper.face_cache().recency_updates();
+        let hits = shaper.face_cache().hits();
+        for index in 0..1000 {
+            let paragraph = shaper.prepare(slot(index), &request(PAIR, 30.0), None);
+            shaper
+                .paragraphs
+                .insert(slot(index), paragraph.expect("shaped"));
+        }
+        shaper.end_frame();
+        assert!(shaper.face_cache().hits() >= hits + 1000);
+        assert_eq!(shaper.face_cache().recency_updates(), before + 1);
+    }
+
+    #[test]
+    fn span_and_face_budgets_turn_over_independently() {
+        let mut shaper = budgeted_shaper(u64::MAX, 8 * 1024);
+        let app = shaper.primary.expect("loaded");
+        // Distinct spans the fixture face covers alone: `index` spelled in b/d.
+        for index in 2..500u32 {
+            let text: String = (0..u32::BITS - index.leading_zeros())
+                .map(|bit| if index >> bit & 1 == 1 { 'b' } else { 'd' })
+                .collect();
+            let _ = shaper.shape_span(app, "en", &text, Direction::LeftToRight);
+        }
+        let spans = shaper.shaping_cache();
+        assert!(spans.evictions() > 0);
+        assert!(spans.bytes() <= spans.budget_bytes());
+        assert_eq!(shaper.face_cache().evictions(), 0);
+        assert!(shaper.face_cache().contains(app));
+
+        let cost = fallback_cost();
+        let mut shaper = budgeted_shaper(TEST_FONT.len() as u64 + cost, u64::MAX);
+        let app = shaper.primary.expect("loaded");
+        let _ = shaper.shape_span(app, "en", PAIR, Direction::LeftToRight);
+        let faces = FixtureFaces {
+            answered: Cell::new(0),
+        };
+        for _ in 0..3 {
+            fallback_face(&mut shaper, &faces, false);
+            shaper.end_frame();
+        }
+        assert!(shaper.face_cache().evictions() > 0);
+        assert_eq!(shaper.shaping_cache().evictions(), 0);
+        assert_eq!(shaper.shaping_cache().len(), 1, "the app face's span stays");
     }
 
     fn headless() -> HeadlessRaster {

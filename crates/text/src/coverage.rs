@@ -313,6 +313,11 @@ impl Coverage {
         self.bytes
     }
 
+    /// Resident bytes of one face's set; zero when it has none.
+    pub fn face_bytes(&self, face: FontFaceId) -> usize {
+        self.sets.get(&face).map_or(0, CoverageSet::bytes)
+    }
+
     /// Faces with a built set.
     pub fn face_count(&self) -> usize {
         self.sets.len()

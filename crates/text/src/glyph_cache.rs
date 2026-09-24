@@ -319,7 +319,7 @@ impl Pool {
     fn shed(&mut self, pressure_bytes: usize, epoch: u64, reclaims: &mut Vec<Reclaimed>) {
         while self.resident_bytes() > pressure_bytes {
             let Some(victim) = (0..self.pages.len())
-                .filter(|&i| !self.pages[i].resident.is_empty())
+                .filter(|&i| self.pages[i].bytes > 0)
                 .min_by_key(|&i| self.pages[i].last_used_epoch)
             else {
                 return;
@@ -350,6 +350,24 @@ impl Pool {
         self.index.remove(key);
         self.upload_bytes_total = self.upload_bytes_total.saturating_sub(bitmap_bytes as u64);
         self.resident_glyphs -= 1;
+    }
+
+    /// Drop every glyph of `face` from this pool, returning how many were
+    /// resident. Their texels stay packed until the page is next reclaimed —
+    /// the packer frees whole pages, not rectangles — so each page keeps its
+    /// byte charge and nothing else in the pool moves.
+    fn forget_face(&mut self, face: FontFaceId) -> usize {
+        let mut dropped = 0;
+        for page in &mut self.pages {
+            let before = page.resident.len();
+            page.resident.retain(|key| key.face != face);
+            dropped += before - page.resident.len();
+        }
+        if dropped > 0 {
+            self.index.retain(|key, _| key.face != face);
+            self.resident_glyphs -= dropped;
+        }
+        dropped
     }
 
     /// The CLOCK sweep: from the hand, give any referenced page one second
@@ -497,6 +515,17 @@ impl GlyphResidency {
             GlyphImageKind::ColorRgba8 => &self.rgba,
             GlyphImageKind::OutlineVector | GlyphImageKind::ColorVector => &self.vector,
         }
+    }
+
+    /// Drop every glyph of `face` from every pool — the face itself was
+    /// dropped — returning how many were resident. No page is reclaimed and no
+    /// other face's glyph moves; the dead texels are recovered when their page
+    /// next turns over.
+    pub fn forget_face(&mut self, face: FontFaceId) -> usize {
+        self.a8.forget_face(face)
+            + self.mtsdf.forget_face(face)
+            + self.rgba.forget_face(face)
+            + self.vector.forget_face(face)
     }
 
     /// Make a glyph resident in the pool its [`GlyphKey::kind`] selects.
@@ -778,6 +807,31 @@ mod tests {
 
     fn key(glyph: u16, bucket: u16) -> GlyphKey {
         key_kind(glyph, bucket, GlyphImageKind::MaskA8)
+    }
+
+    #[test]
+    fn forgetting_a_face_drops_only_its_glyphs() {
+        let mut res = GlyphResidency::new(4);
+        let other = key(1, 0);
+        let doomed = GlyphKey {
+            face: FontFaceId(7),
+            ..key(2, 0)
+        };
+        res.get_or_admit_a8(other, 100);
+        res.get_or_admit_a8(doomed, 100);
+        res.get_or_admit_a8(GlyphKey { glyph: 3, ..doomed }, 100);
+
+        assert_eq!(res.forget_face(doomed.face), 2);
+
+        assert_eq!(res.resident_glyphs(), 1);
+        assert!(matches!(
+            res.get_or_admit_a8(other, 100),
+            Admission::Cached { .. }
+        ));
+        assert!(matches!(
+            res.get_or_admit_a8(doomed, 100),
+            Admission::Admitted { .. }
+        ));
     }
 
     #[test]

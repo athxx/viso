@@ -2001,6 +2001,27 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
                                         c.evictions(),
                                         c.admission_failures(),
                                     );
+                                    let f = text.face_cache();
+                                    eprintln!(
+                                        "viso: face cache bytes={}/{} faces={} hits={} misses={} evictions={} recency_updates={}",
+                                        f.total_bytes(),
+                                        f.budget_bytes(),
+                                        f.len(),
+                                        f.hits(),
+                                        f.misses(),
+                                        f.evictions(),
+                                        f.recency_updates(),
+                                    );
+                                    let s = text.shaping_cache();
+                                    eprintln!(
+                                        "viso: shaping cache bytes={}/{} spans={} hits={} misses={} evictions={}",
+                                        s.bytes(),
+                                        s.budget_bytes(),
+                                        s.len(),
+                                        s.hits(),
+                                        s.misses(),
+                                        s.evictions(),
+                                    );
                                 }
                             }
                         }
