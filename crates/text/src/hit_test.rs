@@ -21,7 +21,7 @@
 //! chosen by visual distance, not by assuming byte order runs left to right.
 
 use crate::paragraph::{LineLayout, VisualRun};
-use crate::text_position::{CaretAffinity, TextOffset, TextPosition};
+use crate::text_position::{TextOffset, TextPosition};
 
 /// Resolves screen points to text positions over a line's retained geometry.
 ///
@@ -76,11 +76,10 @@ impl<'a> HitTester<'a> {
 /// The caret stop in `run` nearest `inline_x`, resolved to a [`TextPosition`].
 ///
 /// Stops carry real inline x, so "nearest" is a genuine visual-distance choice,
-/// not an average-width index. The affinity records which side of the nearest
-/// stop the point fell on: a point to the stop's visual left associates
-/// upstream, to its right downstream — so a click just inside a run's leading
-/// edge and one just outside it resolve to the same offset but different
-/// affinities, which is what disambiguates a BiDi seam.
+/// not an average-width index. The affinity ties the position to this run
+/// ([`VisualRun::stop_affinity`]): at a BiDi seam the same offset also belongs
+/// to the neighbouring run, possibly at the other end of the line, and the
+/// caret has to draw where the point was, not where the other run puts it.
 fn nearest_stop(run: &VisualRun, inline_x: f32) -> TextPosition {
     // `caret_stops` are in logical order; their inline x is monotonic (ascending
     // for LTR, descending for RTL). Pick the stop minimizing |x - inline_x|.
@@ -93,17 +92,9 @@ fn nearest_stop(run: &VisualRun, inline_x: f32) -> TextPosition {
             best_dist = dist;
         }
     }
-    // Affinity from which visual side of the chosen stop the point lies on.
-    // Upstream = the point is to the stop's left (associates with content
-    // before it in visual order); downstream = to its right.
-    let affinity = if inline_x < best.inline_x {
-        CaretAffinity::Upstream
-    } else {
-        CaretAffinity::Downstream
-    };
     TextPosition {
         offset: best.offset,
-        affinity,
+        affinity: run.stop_affinity(best.offset),
     }
 }
 
@@ -162,16 +153,77 @@ mod tests {
     #[test]
     fn ltr_click_near_a_stop_resolves_to_that_offset() {
         // Clicking near stop 1's real inline x resolves to offset 1, not an
-        // average-width guess.
+        // average-width guess, from either side of it.
         let line = layout_line("AVA", BaseDirection::LeftToRight);
         let run = &line.runs[0];
         let x1 = run.inline_x_of(TextOffset(1)).unwrap();
         let ht = HitTester::new(&line);
         assert_eq!(ht.position_at_inline(x1).offset, TextOffset(1));
-        // A hair to the left of stop 1 keeps offset 1 but flips affinity upstream.
-        let pos = ht.position_at_inline(x1 - 0.001);
-        assert_eq!(pos.offset, TextOffset(1));
-        assert_eq!(pos.affinity, CaretAffinity::Upstream);
+        assert_eq!(ht.position_at_inline(x1 - 0.001).offset, TextOffset(1));
+        assert_eq!(ht.position_at_inline(x1 + 0.001).offset, TextOffset(1));
+    }
+
+    #[test]
+    fn hit_position_draws_where_the_point_was() {
+        // "A" + Hebrew under LTR base: offset 1 is both the Latin run's right
+        // edge and the Hebrew run's right edge. A click at either place resolves
+        // to a position whose caret draws there, not at the other end.
+        let text = "A\u{05D0}\u{05D1}";
+        let line = layout_line(text, BaseDirection::LeftToRight);
+        let ht = HitTester::new(&line);
+        for run in &line.runs {
+            for stop in &run.caret_stops {
+                let hit = ht.position_at_inline(stop.inline_x);
+                let drawn = line.caret_x(hit).expect("a hit is a caret stop");
+                assert!(
+                    (drawn - stop.inline_x).abs() < 1e-4,
+                    "stop {:?} at {} drew at {}",
+                    stop.offset,
+                    stop.inline_x,
+                    drawn
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn proportional_rtl_hit_matches_shaped_geometry() {
+        // A proportional RTL run (advances 0.3, 0.9, 0.5 em in logical order):
+        // the shaped advances, not an average width, decide which offset each
+        // point selects.
+        let text = "\u{05D0}\u{05D5}\u{05DD}";
+        let glyph = |cluster, x_advance| crate::shaping::ShapedGlyph {
+            glyph_id: 1,
+            cluster,
+            x_advance,
+            x_offset: 0.0,
+            y_offset: 0.0,
+            unsafe_to_break: false,
+        };
+        let shaped = ShapedRun {
+            face: FontFaceId(0),
+            glyphs: vec![glyph(4, 0.5), glyph(2, 0.9), glyph(0, 0.3)],
+            width_ems: 1.7,
+            text_len: 6,
+            ligature_carets: Vec::new(),
+        };
+        let bidi = BidiInfo::resolve(text, BaseDirection::RightToLeft);
+        let line = LineLayout::single_line(text, &bidi, &[shaped]);
+        let run = &line.runs[0];
+        let xs: Vec<f32> = run.caret_stops.iter().map(|s| s.inline_x).collect();
+        let expected = [1.7, 1.4, 0.5, 0.0];
+        assert!(
+            xs.iter().zip(expected).all(|(x, e)| (x - e).abs() < 1e-4),
+            "{xs:?}"
+        );
+        let ht = HitTester::new(&line);
+        for pair in run.caret_stops.windows(2) {
+            // A point just past the midpoint toward the later stop selects it.
+            let toward = pair[0].inline_x + (pair[1].inline_x - pair[0].inline_x) * 0.6;
+            assert_eq!(ht.position_at_inline(toward).offset, pair[1].offset);
+            let back = pair[0].inline_x + (pair[1].inline_x - pair[0].inline_x) * 0.4;
+            assert_eq!(ht.position_at_inline(back).offset, pair[0].offset);
+        }
     }
 
     #[test]
@@ -191,8 +243,8 @@ mod tests {
     #[test]
     fn rtl_click_left_edge_hits_highest_logical_offset() {
         // In a pure RTL line the visual-left edge is the highest logical offset.
-        // Clicking at the far left resolves there, not to logical 0 — the
-        // byte-order assumption makepad makes would return the wrong end.
+        // Clicking at the far left resolves there, not to logical 0 — assuming
+        // byte order is visual order would return the wrong end.
         let text = "\u{05D0}\u{05D1}\u{05D2}";
         let line = layout_line(text, BaseDirection::RightToLeft);
         let ht = HitTester::new(&line);

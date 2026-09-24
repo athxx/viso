@@ -73,7 +73,7 @@ impl CompositionClause {
 /// [`Revision`]. Nothing here is a visual glyph index. When there is no active
 /// composition the range is empty (`start == end`) and [`Self::is_active`] is
 /// false; the default is the inactive composition at the origin.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ImeComposition {
     /// The preedit's logical byte range `[start, end)`. Empty when inactive.
     range: (TextOffset, TextOffset),
@@ -321,22 +321,17 @@ impl ImeComposition {
 
 /// The inline x of a logical anchor position within `line`'s retained caret map.
 ///
-/// The anchor's offset is looked up in the run that owns it, using the run's
-/// caret-stop inline x — so an RTL run reports the visually-left-to-right-correct
+/// The anchor is placed by the line's affinity-aware caret lookup, so at a
+/// direction seam it sits beside the text it belongs to, and an RTL run reports the visually-left-to-right-correct
 /// position, not a byte-order estimate. When the offset is not an exact stop (a
 /// composition anchor should sit on a grapheme boundary, so this is a safety
 /// net), or the line is empty, the hit tester resolves the nearest stop instead
 /// of inventing a position.
 fn anchor_inline_x(line: &LineLayout, anchor: TextPosition) -> f32 {
-    // The anchor offset is a caret stop in exactly one run (its own logical
-    // range, endpoints included at the appropriate side). Read that stop's
-    // resolved visual x directly from the retained caret map — this is a real
-    // visual position for both LTR and RTL runs.
-    if let Some(x) = line
-        .runs
-        .iter()
-        .find_map(|run| run.inline_x_of(anchor.offset))
-    {
+    // The anchor offset is a caret stop of the run its affinity selects; read
+    // that stop's resolved visual x from the retained caret map — a real visual
+    // position for both LTR and RTL runs.
+    if let Some(x) = line.caret_x(anchor) {
         return x;
     }
     // The anchor is not an exact stop (a safety net — a composition anchor should

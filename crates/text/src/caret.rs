@@ -13,10 +13,10 @@
 //! Left/Right are *visual* directions, not logical increment/decrement. Pressing
 //! Right moves to the caret stop immediately to the right on screen, which in an
 //! RTL run means a *lower* logical offset, and at a run boundary means crossing
-//! into the neighbouring run with the appropriate affinity. This is exactly what
-//! makepad's caret gets wrong (it walks byte order and assumes byte order equals
-//! visual order); Viso resolves motion against the visual-x-ordered caret stops
-//! the line already carries, so RTL and mixed-direction lines move correctly.
+//! into the neighbouring run with the appropriate affinity. Walking byte order
+//! and assuming it equals visual order gets this wrong; motion here resolves
+//! against the visual-x-ordered caret stops the line already carries, so RTL and
+//! mixed-direction lines move correctly.
 //!
 //! # Grapheme and ligature granularity
 //!
@@ -24,14 +24,14 @@
 //! stops from [`crate::segment::Segmenter`] boundaries), so motion can never
 //! land inside a grapheme — an emoji ZWJ sequence, a combining sequence, a
 //! regional-indicator flag are all indivisible. When a ligature merges several
-//! graphemes into one glyph the stops still exist at each grapheme boundary
-//! (their inline x interpolated across the ligature's advance by the run's
-//! cluster map), so the caret walks graphemes even through a ligature rather
-//! than jumping the whole glyph.
+//! graphemes into one glyph the stops still exist at each grapheme boundary —
+//! placed at the font's GDEF ligature carets when it has them, else split
+//! evenly across the ligature's advance — so the caret walks graphemes even
+//! through a ligature rather than jumping the whole glyph.
 
 use crate::paragraph::{LineLayout, VisualRun};
 use crate::shaping::Direction;
-use crate::text_position::{CaretAffinity, TextOffset, TextPosition};
+use crate::text_position::{TextOffset, TextPosition};
 
 /// A caret over a single laid-out line: the current position plus the preferred
 /// inline x that vertical motion (Up/Down, a later slice) keeps sticky.
@@ -152,41 +152,24 @@ struct VisualStopRef {
 }
 
 /// The line's caret stops flattened into a single left-to-right visual sequence,
-/// each carrying the position (with boundary affinity) a caret takes there.
+/// each carrying the position a caret takes there.
 ///
 /// Runs are already in visual left-to-right order. Within a run the stops are in
 /// logical order, whose inline x is ascending for an LTR run and descending for
 /// an RTL run; emitting them in visual-x order per run and concatenating runs
-/// yields one globally left-to-right sequence. At a shared run boundary the two
-/// runs each contribute the boundary offset once; affinity distinguishes them —
-/// the trailing edge of the left run is upstream, the leading edge of the right
-/// run is downstream — so a caret can rest on either side and motion is
-/// unambiguous.
+/// yields one globally left-to-right sequence. A run seam contributes its offset
+/// once per run, each with the affinity that draws it on that run's side
+/// ([`VisualRun::stop_affinity`]), so a caret can rest on either side of a BiDi
+/// seam; a seam whose two sides coincide in both offset and x is emitted once.
 fn visual_stops(line: &LineLayout) -> Vec<VisualStopRef> {
     let mut out: Vec<VisualStopRef> = Vec::new();
-    for (run_idx, run) in line.runs.iter().enumerate() {
-        let is_first_run = run_idx == 0;
-        // Emit this run's stops in visual (left-to-right) order.
-        let ordered = run_stops_visual(run);
-        for (stop_idx, stop) in ordered.iter().enumerate() {
-            // The leading (leftmost-in-visual) stop of a run is a shared boundary
-            // with the previous run when one exists; the previous run already
-            // emitted that offset as its trailing edge (upstream), so this run
-            // contributes it as its leading edge (downstream). Skip re-emitting a
-            // duplicate inline x for a boundary that coincides, but keep the
-            // downstream-affinity position so a caret can associate forward.
-            let is_leading = stop_idx == 0;
-            let affinity = boundary_affinity(run, is_leading);
+    for run in &line.runs {
+        for (stop_idx, stop) in run_stops_visual(run).iter().enumerate() {
             let position = TextPosition {
                 offset: stop.offset,
-                affinity,
+                affinity: run.stop_affinity(stop.offset),
             };
-            // Avoid emitting two stops at an identical (offset, inline_x) across a
-            // run seam; the previous run's trailing stop and this run's leading
-            // stop share the seam offset. Keep both only when their affinity or x
-            // differ (a real BiDi seam), which is the common mixed-direction case.
-            if !is_first_run
-                && is_leading
+            if stop_idx == 0
                 && out.last().is_some_and(|prev| {
                     prev.position.offset == position.offset
                         && (prev.inline_x - stop.inline_x).abs() < f32::EPSILON
@@ -212,25 +195,6 @@ fn run_stops_visual(run: &VisualRun) -> Vec<crate::paragraph::CaretStop> {
         stops.reverse();
     }
     stops
-}
-
-/// The affinity a boundary stop takes. The leading (visual-left) edge of a run
-/// associates downstream (with the run's content that follows it in logical
-/// order for LTR, precedes for RTL — in both cases the run it leads); a
-/// non-leading stop is interior and its affinity is downstream by convention
-/// since it does not sit on a run seam.
-fn boundary_affinity(run: &VisualRun, is_leading: bool) -> CaretAffinity {
-    if is_leading {
-        // The leftmost stop of a run leads that run: a caret there associates
-        // with the run to its right in visual space, which is `Downstream` for
-        // an LTR run's start and the run's high-offset edge for an RTL run.
-        match run.direction {
-            Direction::LeftToRight => CaretAffinity::Downstream,
-            Direction::RightToLeft => CaretAffinity::Upstream,
-        }
-    } else {
-        CaretAffinity::Downstream
-    }
 }
 
 #[cfg(test)]
@@ -357,6 +321,39 @@ mod tests {
         assert!(visited.contains(&TextOffset(1)));
         assert!(visited.contains(&TextOffset(3)));
         assert!(visited.contains(&TextOffset(5)));
+    }
+
+    #[test]
+    fn bidi_seam_offset_has_two_visual_carets_picked_by_affinity() {
+        // "A" + Hebrew "אב" under LTR base draws [A][בא]: offset 1 is the Latin
+        // run's right edge and the Hebrew run's right edge. Upstream keeps the
+        // caret after "A"; downstream puts it at the far right of the line.
+        let text = "A\u{05D0}\u{05D1}";
+        let line = layout_line(text, BaseDirection::LeftToRight);
+        let up = line
+            .caret_x(TextPosition::upstream(TextOffset(1)))
+            .expect("seam is a stop");
+        let down = line
+            .caret_x(TextPosition::downstream(TextOffset(1)))
+            .expect("seam is a stop");
+        assert!((up - line.runs[0].visual_inline_range.1).abs() < 1e-4);
+        assert!((down - line.width).abs() < 1e-4);
+        assert!(down > up + 0.1, "the two visual positions differ");
+        // Visual motion visits both and every stop draws where motion put it.
+        let mut caret = Caret::at(TextPosition::downstream(TextOffset(0)));
+        let mut seen = Vec::new();
+        for _ in 0..6 {
+            let before = caret.position;
+            let p = caret.move_right(&line);
+            if p == before {
+                break;
+            }
+            let x = line.caret_x(p).expect("motion lands on a stop");
+            assert!((x - caret.preferred_x.unwrap()).abs() < 1e-4);
+            seen.push(p);
+        }
+        assert!(seen.contains(&TextPosition::upstream(TextOffset(1))));
+        assert!(seen.contains(&TextPosition::downstream(TextOffset(1))));
     }
 
     #[test]

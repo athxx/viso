@@ -306,7 +306,7 @@ impl Interactive {
             ev,
             &mut self.chain,
         );
-        text_edit::reconcile(&mut self.store, &mut self.text_edits);
+        text_edit::reconcile(&mut self.store, &mut self.text_edits, None);
         ran
     }
 
@@ -322,7 +322,7 @@ impl Interactive {
             ev,
             &mut self.chain,
         );
-        text_edit::reconcile(&mut self.store, &mut self.text_edits);
+        text_edit::reconcile(&mut self.store, &mut self.text_edits, None);
         ran
     }
 
@@ -335,13 +335,16 @@ impl Interactive {
             .text
     }
 
-    /// The applied caret position (selection cursor) after reconcile.
+    /// The applied caret position (the selection's focus offset) after
+    /// reconcile.
     fn caret(&self) -> usize {
         self.text_edits
             .get(self.field)
             .expect("the field has a registered buffer")
             .sel
-            .cursor
+            .focus
+            .offset
+            .0
     }
 }
 

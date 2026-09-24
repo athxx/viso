@@ -59,6 +59,7 @@ pub mod bidi;
 pub mod caret;
 pub mod hit_test;
 pub mod ime;
+mod ligature_caret;
 pub mod line_break;
 pub mod line_break_tailoring;
 pub mod paragraph;
@@ -99,7 +100,7 @@ pub use progressive::{FontRevision, ParagraphId, Progressive, ReflowScope, Revis
 pub use raster_a8::{CoverageBitmap, rasterize_coverage};
 pub use resolver::{FaceMetrics, FontResolver, Resolved, inspect_face};
 pub use segment::{GraphemeCheckpoint, Segmenter};
-pub use shaping::{Direction, ShapedGlyph, ShapedRun, Shaper};
+pub use shaping::{Direction, LigatureCarets, ShapedGlyph, ShapedRun, Shaper};
 pub use system_catalog::{CatalogFace, SystemFontCatalog};
 pub use system_fonts::{
     ColorGlyph, ColorGlyphRasterizer, NoSystemFonts, SystemFontProvider, SystemFontQuery,

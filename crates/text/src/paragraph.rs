@@ -57,8 +57,7 @@ use crate::text_position::{CaretAffinity, TextOffset, TextPosition};
 /// RTL run the first *logical* stop is at the run's right edge. Storing the
 /// resolved visual x per stop is what lets hit testing and caret placement stay
 /// direction-correct without re-deriving glyph order — an RTL run's clusters are
-/// non-increasing in x, so a naive byte-order scan (the makepad hazard) would
-/// misplace the caret.
+/// non-increasing in x, so a naive byte-order scan would misplace the caret.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct CaretStop {
     /// The grapheme-boundary source byte offset this stop lands on.
@@ -126,6 +125,20 @@ impl VisualRun {
             .iter()
             .find(|s| s.offset == offset)
             .map(|s| s.inline_x)
+    }
+
+    /// The affinity that makes [`LineLayout::caret_x`] draw the caret at this
+    /// run's own stop for `offset`: upstream at the run's logical end (the
+    /// content before the offset is this run's), downstream everywhere else.
+    /// A stop taken from this run with this affinity round-trips to its own x
+    /// even where a neighbouring run shares the offset.
+    pub fn stop_affinity(&self, offset: TextOffset) -> CaretAffinity {
+        let (start, end) = self.logical_range;
+        if offset == end && start < end {
+            CaretAffinity::Upstream
+        } else {
+            CaretAffinity::Downstream
+        }
     }
 }
 
@@ -343,9 +356,15 @@ impl From<ShapedRun> for ShapedSpan {
 ///
 /// Caret stops come from the grapheme boundaries within the range (never from
 /// glyph count — a ligature merges graphemes, marks split one). Each stop's
-/// inline x is accumulated from shaped-glyph advances, walked in the run's
-/// visual direction so an RTL run's stops carry decreasing-in-logical-order but
-/// left-to-right-correct visual x.
+/// inline x is the accumulated advance of the shaping clusters logically before
+/// it, measured from `left` for an LTR run and from `right` for an RTL run, so
+/// an RTL run's stops carry decreasing-in-logical-order but left-to-right-correct
+/// visual x.
+///
+/// A stop strictly inside a cluster (a ligature drawing several graphemes as one
+/// glyph) sits at the font's GDEF ligature caret when the face records one per
+/// component character, else at an even split of the cluster's advance among
+/// the graphemes it draws.
 fn build_visual_run(
     text: &str,
     run: &crate::bidi::DirectionRun,
@@ -357,47 +376,87 @@ fn build_visual_run(
     let width = shaped.map(|s| s.width_ems).unwrap_or(0.0);
     let right = left + width;
 
-    // The grapheme boundaries within the run, in logical order — the legal caret
-    // stops. `grapheme_boundaries` over the run substring yields offsets relative
-    // to the substring; rebase to absolute source offsets.
+    // The grapheme boundaries within the run, in logical order and relative to
+    // the substring, which is also the space glyph clusters are measured in.
     let sub = &text[start.0..end.0];
-    let boundaries: Vec<TextOffset> = Segmenter::new(sub)
+    let boundaries: Vec<usize> = Segmenter::new(sub)
         .grapheme_boundaries()
-        .map(|b| TextOffset(start.0 + b.0))
+        .map(|b| b.0)
         .collect();
 
-    // The inline x of a source offset within this run. Advances are summed per
-    // shaping cluster; a caret stop's x is the accumulated advance of every
-    // cluster that begins strictly before it. For an LTR run inline x increases
-    // with logical offset from `left`; for an RTL run the first logical offset
-    // sits at `right` and inline x decreases as logical offset increases, so the
-    // caret stays left-to-right correct in visual space.
-    let advance_before = |offset: TextOffset| -> f32 {
-        let Some(shaped) = shaped else { return 0.0 };
-        let local = (offset.0 - start.0) as u32;
-        shaped
-            .glyphs
-            .iter()
-            // One advance per cluster: sum a glyph's advance once for the run of
-            // glyphs sharing its cluster. Summing every glyph would double-count
-            // marks, which share their base's cluster and carry zero advance in
-            // practice, but guarding on cluster keeps it correct regardless.
-            .filter(|g| g.cluster < local)
-            .map(|g| g.x_advance)
-            .sum()
+    // One entry per shaping cluster in logical order: its start, its summed
+    // advance (a base and its marks share a cluster), and the glyph that may
+    // carry ligature carets.
+    let mut clusters: Vec<(usize, f32, u16)> = shaped
+        .map(|s| {
+            s.glyphs
+                .iter()
+                .map(|g| (g.cluster as usize, g.x_advance, g.glyph_id))
+                .collect()
+        })
+        .unwrap_or_default();
+    clusters.sort_by_key(|c| c.0);
+    clusters.dedup_by(|next, kept| {
+        if next.0 != kept.0 {
+            return false;
+        }
+        kept.1 += next.1;
+        let has_carets = |id| shaped.is_some_and(|s| s.carets_for(id).is_some());
+        if !has_carets(kept.2) && has_carets(next.2) {
+            kept.2 = next.2;
+        }
+        true
+    });
+    let cluster_end = |i: usize| clusters.get(i + 1).map_or(sub.len(), |c| c.0);
+
+    // The advance from the cluster's logical start to boundary `b` strictly
+    // inside cluster `i`.
+    let inside = |i: usize, b: usize| -> f32 {
+        let (cluster_start, advance, glyph) = clusters[i];
+        let cluster_stop = cluster_end(i);
+        let chars = sub[cluster_start..cluster_stop].chars().count();
+        let before = sub[cluster_start..b].chars().count();
+        let font_caret = shaped
+            .and_then(|s| s.carets_for(glyph))
+            .filter(|carets| carets.len() + 1 == chars);
+        let partial = match font_caret {
+            // Carets ascend in x from the glyph origin; logical order runs with
+            // x for LTR and against it for RTL.
+            Some(carets) => match run.direction {
+                Direction::LeftToRight => carets[before - 1],
+                Direction::RightToLeft => advance - carets[chars - 1 - before],
+            },
+            None => {
+                let first = boundaries.partition_point(|&o| o <= cluster_start);
+                let inner = boundaries.partition_point(|&o| o < cluster_stop) - first;
+                let rank = boundaries.partition_point(|&o| o <= b) - first;
+                advance * rank as f32 / (inner + 1) as f32
+            }
+        };
+        partial.max(0.0).min(advance.max(0.0))
     };
 
-    let caret_stops: Vec<CaretStop> = boundaries
-        .iter()
-        .map(|&offset| {
-            let adv = advance_before(offset);
-            let inline_x = match run.direction {
-                Direction::LeftToRight => left + adv,
-                Direction::RightToLeft => right - adv,
-            };
-            CaretStop { offset, inline_x }
-        })
-        .collect();
+    let mut caret_stops = Vec::with_capacity(boundaries.len());
+    let mut cluster = 0;
+    let mut before = 0.0f32;
+    for &b in &boundaries {
+        while cluster < clusters.len() && cluster_end(cluster) <= b {
+            before += clusters[cluster].1;
+            cluster += 1;
+        }
+        let adv = match clusters.get(cluster) {
+            Some(&(cluster_start, _, _)) if cluster_start < b => before + inside(cluster, b),
+            _ => before,
+        };
+        let inline_x = match run.direction {
+            Direction::LeftToRight => left + adv,
+            Direction::RightToLeft => right - adv,
+        };
+        caret_stops.push(CaretStop {
+            offset: TextOffset(start.0 + b),
+            inline_x,
+        });
+    }
 
     VisualRun {
         logical_range: (start, end),
@@ -1103,7 +1162,7 @@ mod tests {
     fn rtl_run_caret_stops_descend_in_visual_x() {
         // A pure Hebrew run resolves RTL. Its first logical stop sits at the run's
         // right edge and inline x decreases as the logical offset advances — the
-        // BiDi-correct placement makepad's byte-order scan gets wrong.
+        // BiDi-correct placement a byte-order scan gets wrong.
         let (_, line) = layout_line("\u{05D0}\u{05D1}\u{05D2}", BaseDirection::RightToLeft);
         assert_eq!(line.runs.len(), 1);
         let run = &line.runs[0];
@@ -1560,9 +1619,9 @@ mod tests {
         // The TF-P6.3 correctness 对拍 on an editor-scale paragraph: an edit deep
         // inside a several-thousand-line document, relaid incrementally, must be
         // bit-for-bit identical to laying the whole edited document out from
-        // scratch. This is the guarantee makepad's whole-paragraph layout cache
-        // gets only by doing the full recompute; Viso's per-line stable-stop
-        // reflow must reach the same result without it.
+        // scratch. A whole-paragraph layout cache gets this only by doing the
+        // full recompute; the per-line stable-stop reflow must reach the same
+        // result without it.
         let text = very_large_text(4000);
         // A few words per line — thousands of lines.
         let width = measured_width("word0000 word0001 ") + 0.01;
@@ -1608,7 +1667,7 @@ mod tests {
         // edit, not the whole document. The reshaped-run count for the incremental
         // relayout must be a tiny fraction of a full recompute's — this is what
         // keeps a keystroke O(edited lines) instead of O(document), the property
-        // makepad's whole-paragraph re-layout on any param change gives up.
+        // a whole-paragraph re-layout on any param change gives up.
         let text = very_large_text(4000);
         let width = measured_width("word0000 word0001 ") + 0.01;
 
@@ -1797,5 +1856,126 @@ mod tests {
                 p.text()
             );
         }
+    }
+
+    /// A synthetic single-face run: one glyph per `(cluster, advance, id)`.
+    fn synthetic_run(
+        glyphs: &[(u32, f32, u16)],
+        text_len: u32,
+        carets: &[(u16, &[f32])],
+    ) -> ShapedRun {
+        ShapedRun {
+            face: FontFaceId(0),
+            glyphs: glyphs
+                .iter()
+                .map(
+                    |&(cluster, x_advance, glyph_id)| crate::shaping::ShapedGlyph {
+                        glyph_id,
+                        cluster,
+                        x_advance,
+                        x_offset: 0.0,
+                        y_offset: 0.0,
+                        unsafe_to_break: false,
+                    },
+                )
+                .collect(),
+            width_ems: glyphs.iter().map(|g| g.1).sum(),
+            text_len,
+            ligature_carets: carets
+                .iter()
+                .map(|&(glyph_id, c)| crate::shaping::LigatureCarets {
+                    glyph_id,
+                    carets: c.to_vec(),
+                })
+                .collect(),
+        }
+    }
+
+    fn synthetic_line(text: &str, direction: Direction, shaped: &ShapedRun) -> VisualRun {
+        let run = crate::bidi::DirectionRun {
+            start: TextOffset(0),
+            end: TextOffset(text.len()),
+            level: BidiLevel(if direction == Direction::RightToLeft {
+                1
+            } else {
+                0
+            }),
+            direction,
+        };
+        build_visual_run(text, &run, (run.start, run.end), Some(shaped), 0.0)
+    }
+
+    fn stop_xs(run: &VisualRun) -> Vec<(usize, f32)> {
+        run.caret_stops
+            .iter()
+            .map(|s| (s.offset.0, s.inline_x))
+            .collect()
+    }
+
+    fn assert_stops(run: &VisualRun, expected: &[(usize, f32)]) {
+        let got = stop_xs(run);
+        assert_eq!(got.len(), expected.len(), "{got:?}");
+        for (g, e) in got.iter().zip(expected) {
+            assert_eq!(g.0, e.0, "{got:?}");
+            assert!(approx(g.1, e.1), "{got:?} vs {expected:?}");
+        }
+    }
+
+    #[test]
+    fn ltr_ligature_stops_sit_at_font_carets() {
+        // "ffi" drawn as one glyph with carets after each component.
+        let shaped = synthetic_run(&[(0, 1.5, 7)], 3, &[(7, &[0.4, 0.9])]);
+        let run = synthetic_line("ffi", Direction::LeftToRight, &shaped);
+        assert_stops(&run, &[(0, 0.0), (1, 0.4), (2, 0.9), (3, 1.5)]);
+    }
+
+    #[test]
+    fn rtl_ligature_stops_mirror_font_carets() {
+        // A two-letter RTL ligature (lam-alef) whose caret sits 0.3 em from the
+        // glyph origin: logical start is the right edge, the inner stop is at
+        // the caret, the logical end is the left edge.
+        let text = "\u{0644}\u{0627}";
+        let shaped = synthetic_run(&[(0, 1.0, 9)], 4, &[(9, &[0.3])]);
+        let run = synthetic_line(text, Direction::RightToLeft, &shaped);
+        assert_stops(&run, &[(0, 1.0), (2, 0.3), (4, 0.0)]);
+    }
+
+    #[test]
+    fn ligature_without_font_carets_splits_its_advance_evenly() {
+        // "xffiy": the ligature cluster [1, 4) has no carets, so its two inner
+        // stops split its 1.2 em advance into thirds.
+        let shaped = synthetic_run(&[(0, 0.5, 1), (1, 1.2, 7), (4, 0.5, 2)], 5, &[]);
+        let run = synthetic_line("xffiy", Direction::LeftToRight, &shaped);
+        assert_stops(
+            &run,
+            &[(0, 0.0), (1, 0.5), (2, 0.9), (3, 1.3), (4, 1.7), (5, 2.2)],
+        );
+        // A caret list that does not match the component count also splits.
+        let partial = synthetic_run(&[(0, 0.5, 1), (1, 1.2, 7), (4, 0.5, 2)], 5, &[(7, &[0.2])]);
+        let run = synthetic_line("xffiy", Direction::LeftToRight, &partial);
+        assert_stops(
+            &run,
+            &[(0, 0.0), (1, 0.5), (2, 0.9), (3, 1.3), (4, 1.7), (5, 2.2)],
+        );
+    }
+
+    #[test]
+    fn ligature_stops_stay_on_grapheme_boundaries() {
+        // "e\u{301}f" in one cluster: the accent is part of the first grapheme,
+        // so the only inner stop is after it (byte 3), at the midpoint.
+        let text = "e\u{301}f";
+        let shaped = synthetic_run(&[(0, 1.0, 7), (0, 0.0, 8)], 4, &[]);
+        let run = synthetic_line(text, Direction::LeftToRight, &shaped);
+        assert_stops(&run, &[(0, 0.0), (3, 0.5), (4, 1.0)]);
+    }
+
+    #[test]
+    fn marks_sharing_a_cluster_add_their_advance_once_per_cluster() {
+        // Base plus a zero-width mark in cluster 0 and a second base after it;
+        // RTL glyph order is visual, so the clusters arrive descending.
+        let text = "\u{05D0}\u{05B8}\u{05D1}";
+        let shaped = synthetic_run(&[(4, 0.6, 3), (0, 0.7, 1), (0, 0.0, 2)], 6, &[]);
+        let run = synthetic_line(text, Direction::RightToLeft, &shaped);
+        assert_stops(&run, &[(0, 1.3), (4, 0.6), (6, 0.0)]);
     }
 }

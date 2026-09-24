@@ -237,26 +237,27 @@ work in the crate (1467 lines, 19 tests, proven `incremental == full` by benchma
 Goal: `TextInput` edits through the world-ready model. Today it has its own simpler one, so
 seven DoD items are true of the library and false of the product.
 
-- [ ] `text_input.rs` adopts `viso_text::TextPosition` / `TextOffset` / `CaretAffinity` as
+- [x] `text_input.rs` adopts `viso_text::TextPosition` / `TextOffset` / `CaretAffinity` as
       its position model. No integer stands for more than one index space (§12.2).
-- [ ] Grapheme-cluster stepping from `segment` (§12.5), replacing per-`char` motion.
-- [ ] BiDi dual caret (§12.13): one logical offset at a direction or wrap boundary resolves
+- [x] Grapheme-cluster stepping from `segment` (§12.5), replacing per-`char` motion.
+- [x] BiDi dual caret (§12.13): one logical offset at a direction or wrap boundary resolves
       to two visual positions, selected by affinity.
-- [ ] Ligature caret (§12.14) from GDEF / shaper metadata; the caret never lands inside an
+- [x] Ligature caret (§12.14) from GDEF / shaper metadata; the caret never lands inside an
       illegal grapheme interior.
-- [ ] Hit testing (§12.15) returns a logical `TextPosition` + affinity from the shaped
+- [x] Hit testing (§12.15) returns a logical `TextPosition` + affinity from the shaped
       geometry, never an average-glyph-width guess. Enables click-to-place and drag-select,
       which the control's docs currently defer.
-- [ ] Selection (§12.16): logical range is the source of truth, rendered as multiple visual
-      fragments across direction runs.
-- [ ] IME (§12.17): logical range + revision; candidate rects come from the visual caret map.
-- [ ] Source text is never implicitly normalized (§12.3) — assert it survives a round trip.
-- [ ] Tests: caret motion over combining marks, emoji ZWJ sequences and ligatures steps whole
+- [x] Selection (§12.16): logical range is the source of truth, rendered as multiple visual
+      fragments across direction runs. (Fragments are resolved from the control's
+      selection; painting the highlight and the caret is not wired yet.)
+- [x] IME (§12.17): logical range + revision; candidate rects come from the visual caret map.
+- [x] Source text is never implicitly normalized (§12.3) — assert it survives a round trip.
+- [x] Tests: caret motion over combining marks, emoji ZWJ sequences and ligatures steps whole
       graphemes; a caret at an RTL/LTR boundary reports both visual positions and affinity
       picks; a mixed-direction selection renders as the expected fragment set; a CJK IME
       composition preserves the logical range across a revision; hit-testing a proportional
       RTL run returns the same offset the shaped geometry implies.
-- [ ] Gate green → commit.
+- [x] Gate green → commit.
 
 ---
 

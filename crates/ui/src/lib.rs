@@ -75,7 +75,7 @@ pub use reactive::{
 pub use semantics::{Role, SemanticState, Semantics, SemanticsNode, SemanticsTree};
 pub use state::{StateId, StateStore, StateValue};
 pub use style::{BoxStyle, InteractionStyle, StyleId};
-pub use text_edit::{Buffer, EditIntent, Motion, Selection, TextEdits};
+pub use text_edit::{Buffer, EditGeometry, EditIntent, EditLayout, Motion, TextEdits};
 pub use timer::{TimerId, TimerRegistry, TimerRequest};
 pub use token::{Theme, TokenId, TokenInterner, TokenNamespace};
 pub use virtual_list::{
@@ -83,4 +83,6 @@ pub use virtual_list::{
     reconcile, set_item_count,
 };
 pub use viso_render::{Border, LineJoin, PathCmd, Point, Rect, Rgba, Stroke, TextureId};
+pub use viso_text::selection::Selection;
+pub use viso_text::{CaretAffinity, TextOffset, TextPosition};
 pub use window::{ChromeContext, WindowChrome, WindowConfig, WindowIdSlot, WindowOpenRequest};

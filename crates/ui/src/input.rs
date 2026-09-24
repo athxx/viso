@@ -732,7 +732,7 @@ fn pointer_dispatch(
     let Some(mut handler) = store.take_handler(node) else {
         return Dispatched::default();
     };
-    let (capture, focus, scope, hidden, anims, timers, opens, closes, stop) = {
+    let (capture, focus, scope, hidden, anims, timers, opens, closes, edits, stop) = {
         let mut ev = EventCx::__new_pointer(states, bindings, event);
         ev.__set_pointer_id(pointer);
         ev.__set_focused(store.focused());
@@ -746,10 +746,16 @@ fn pointer_dispatch(
             ev.__take_timer_requests(),
             ev.__take_window_opens(),
             ev.__take_window_closes(),
+            ev.__take_edits(),
             ev.__stop_requested(),
         )
     };
     store.restore_handler(node, handler);
+    // A pointer handler cannot reach the driver-owned edit registry; its
+    // click-to-place and drag-select intents wait on the store for reconcile.
+    for intent in edits {
+        store.queue_edit(node, intent);
+    }
     let loser = apply_pointer_side_effects(
         store, pointer, capture, focus, scope, hidden, anims, timers, opens, closes,
     );

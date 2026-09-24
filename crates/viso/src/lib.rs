@@ -875,7 +875,11 @@ impl WindowState {
     /// paste, and cut through one path. Runs right after an input sample is
     /// routed, so state a change handler writes flushes in the same frame.
     fn settle_text_edits(&mut self) {
-        text_edit::reconcile(&mut self.store, &mut self.text_edits);
+        let geometry = self
+            .text
+            .as_ref()
+            .map(|t| t as &dyn text_edit::EditGeometry);
+        text_edit::reconcile(&mut self.store, &mut self.text_edits, geometry);
         self.text_edits.take_changed(&mut self.edited);
         for i in 0..self.edited.len() {
             let node = self.edited[i];
@@ -1028,14 +1032,16 @@ impl WindowState {
                 self.text_sources.get(&id),
                 self.text_edits.get(id),
             ) {
-                (Some(text), Some(request), Some(buffer)) if request.text == buffer.text => text
-                    .caret(
-                        ParagraphSlot::from(id),
-                        request,
-                        viso_text::TextPosition::downstream(viso_text::TextOffset(
-                            buffer.sel.cursor,
-                        )),
-                    ),
+                (Some(text), Some(request), Some(buffer)) if request.text == buffer.text => {
+                    // A composing control anchors the candidate window at the
+                    // composition, not wherever the caret sits inside it.
+                    let at = if buffer.has_composition() {
+                        buffer.composition().anchor()
+                    } else {
+                        buffer.sel.focus
+                    };
+                    text.caret(ParagraphSlot::from(id), request, at)
+                }
                 _ => None,
             };
             caret_area(r, caret)
@@ -1182,7 +1188,7 @@ fn to_platform_config(cfg: &WindowConfig) -> viso_platform::WindowConfig {
 }
 
 /// Wrap a window's authored content in the default self-drawn caption band when
-/// `caption` asks for it, mirroring makepad's `show_caption_bar: true` default:
+/// `caption` asks for it, which is the default:
 /// every window gets a window-centered title with no authoring. Called inside a
 /// window's build closure, after the app has declared its own tree.
 ///
@@ -1398,7 +1404,8 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
         };
         let scale = ws.dpi.max(1.0);
         // Samples that can edit the focused text control settle their edits
-        // once routed; pointer and scroll samples never record one.
+        // once routed; a pointer sample settles only when a handler placed a
+        // caret, and scroll samples never record one.
         let edits_text = matches!(
             sample,
             viso_runtime::InputSample::Key(_)
@@ -1508,18 +1515,19 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
                 // first so the reply reflects what the user sees, then answer
                 // from the focused text control's buffer. An empty selection
                 // leaves the reply unset and the clipboard untouched.
-                text_edit::reconcile(&mut ws.store, &mut ws.text_edits);
+                let geometry = ws.text.as_ref().map(|t| t as &dyn text_edit::EditGeometry);
+                text_edit::reconcile(&mut ws.store, &mut ws.text_edits, geometry);
                 let Some(node) = ws.focused_text_node() else {
                     return;
                 };
                 let Some(buffer) = ws.text_edits.get_mut(node) else {
                     return;
                 };
-                let (start, end) = (buffer.sel.start(), buffer.sel.end());
+                let (start, end) = buffer.sel.logical_range();
                 if start == end {
                     return;
                 }
-                c.reply.set(buffer.text[start..end].to_owned());
+                c.reply.set(buffer.text[start.0..end.0].to_owned());
                 if c.cut {
                     buffer.queue(text_edit::EditIntent::Delete);
                     ws.settle_text_edits();
@@ -1562,7 +1570,7 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
                 ScrollRouter::route(&mut ws.store, root, ev);
             }
         }
-        if edits_text {
+        if edits_text || ws.store.has_edit_requests() {
             ws.settle_text_edits();
         }
     }

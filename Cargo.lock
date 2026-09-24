@@ -2458,6 +2458,7 @@ dependencies = [
  "viso-ende",
  "viso-render",
  "viso-runtime",
+ "viso-text",
 ]
 
 [[package]]
