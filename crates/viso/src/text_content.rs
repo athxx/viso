@@ -1,28 +1,44 @@
-//! Facade-owned text preparation: resolves faces, shapes retained requests, and
-//! uploads raster products into renderer-owned representation pools.
+//! Facade-owned text preparation: resolves faces, keeps every text node's last
+//! good layout, hands shaping and exact-coverage rasterization to the text
+//! worker, and uploads raster products into renderer-owned representation
+//! pools.
+//!
+//! The main thread never shapes. A node whose text, wrap width, or locale
+//! changed keeps drawing its last good lines while the worker lays the new
+//! ones out; the finished layout is committed in one step once every glyph it
+//! draws has coverage, within a per-frame commit budget (§12.20, §12.21,
+//! §14.4).
 
 use std::cell::Cell;
-use std::collections::HashMap;
-use std::sync::OnceLock;
+use std::collections::{HashMap, HashSet, VecDeque};
+use std::sync::mpsc::TryRecvError;
+use std::sync::{Arc, OnceLock};
+use std::thread;
+use std::time::Duration;
 
 use viso_gpu::{GpuBackend, TextureDesc};
+use viso_platform::Instant;
 use viso_render::{
     AtlasAlloc, ColorAlloc, ColorAtlas, GlyphAtlas, GlyphInstanceData, Rect, TextureId,
 };
-use viso_text::fallback::{FallbackPlan, FallbackPlanKey, FallbackStyle, FontFallback};
+use viso_text::fallback::{FallbackPlan, FontFallback};
 use viso_text::font_manifest::{AssetRef, FontManifest};
-use viso_text::paragraph::{LineLayout, Paragraph, ShapedSegment, ShapedSpan, line_index_at};
+use viso_text::paragraph::{LineLayout, line_index_at};
 use viso_text::system_fonts::ColorGlyph;
+use viso_text::text_work::Priority;
 use viso_text::{
-    Admission, BaseDirection, ColorGlyphRasterizer, Coverage, CoverageBitmap, Direction, FontCache,
-    FontFaceId, FontRequest, FontResolver, FontRole, GlyphImageKind, GlyphKey, GlyphResidency,
-    LineBreakTailoring, MemoryClass, OUTLINE_POOL, PoolBudget, Reclaimed, Resolved, Segmenter,
-    ShapedGlyph, ShapedRun, Shaper, TextBudgets, TextOffset, TextPosition, inspect_face,
-    rasterize_coverage,
+    Admission, ColorGlyphRasterizer, CoverageBitmap, FontCache, FontFaceId, FontRequest,
+    FontResolver, FontRole, GlyphImageKind, GlyphKey, GlyphResidency, LineBreakTailoring,
+    MemoryClass, OUTLINE_POOL, PoolBudget, Reclaimed, Resolved, TextBudgets, TextPosition,
+    inspect_face,
 };
 use viso_ui::{Content, EditGeometry, EditLayout, NodeId, TextRequest, Vec2};
 
 use crate::system_fonts::{CoreTextColorRaster, CoreTextProvider, LiveFontRegistry};
+use crate::text_worker::{
+    ClusterKey, FromWorker, LayoutDone, LayoutJob, Rastered, SpanStats, TextWorker, ToWorker,
+    starts_emoji,
+};
 
 const ATLAS_SIZE: u32 = 1024;
 /// Page edge length: the atlas plane is cut into `256 × 256` pages, and the page
@@ -41,24 +57,32 @@ const COLOR_BYTES_PER_TEXEL: usize = 4;
 /// reclaims elsewhere, so the retry always makes progress; the bound only keeps a
 /// pathological glyph from walking the whole plane in one frame.
 const PLACEMENT_RETRIES: u32 = 4;
-/// Longest source substring the cross-paragraph span cache keeps. Labels,
-/// button titles and short wrapped lines repeat across nodes and rebuilds;
-/// long runs are unique to their paragraph, whose retained lines already
-/// keep them.
-const SPAN_CACHE_TEXT: usize = 64;
 /// Where fallback face ids start: above every id the resolver hands out, so the
 /// two id spaces never collide.
 const FALLBACK_FACE_IDS: u32 = 1 << 30;
+/// The main thread's per-frame budget for committing worker results:
+/// `min(500µs, 5% of the frame)`, which is 500µs at 60Hz (§14.4). At least one
+/// result commits per frame, so a backlog always drains.
+pub(crate) const TEXT_COMMIT_BUDGET: Duration = Duration::from_micros(500);
 
 #[derive(Debug, Default)]
 pub(crate) struct TextCounters {
-    /// Paragraph layouts that ran — a pure cache hit does not count.
+    /// Paragraph layouts committed that ran — a pure cache hit does not count.
     reshapes: Cell<u64>,
     /// The subset of `reshapes` that broke lines to a wrap width.
     relinebreaks: Cell<u64>,
-    /// Spans handed to the shaper: misses of both the paragraph's per-pass memo
-    /// and the cross-paragraph span cache.
+    /// Spans handed to the shaper, on whichever thread shaped them: misses of
+    /// both the paragraph's per-pass memo and the cross-paragraph span cache.
     shaped_runs: Cell<u64>,
+    /// The subset of `shaped_runs` shaped on the main thread; nonzero only
+    /// where the worker cannot run on a thread of its own.
+    main_shaped_runs: Cell<u64>,
+    /// Worker results committed this frame.
+    commits: Cell<u64>,
+    /// Worker results the commit budget left for a later frame.
+    deferred: Cell<u64>,
+    /// Main-thread time spent committing worker results this frame.
+    main_commit_micros: Cell<u64>,
     rasters: Cell<u64>,
     atlas_upload_bytes: Cell<u64>,
     /// Pages reclaimed this frame, across all pools (§25 eviction visibility).
@@ -78,6 +102,22 @@ impl TextCounters {
 
     pub(crate) fn shaped_runs(&self) -> u64 {
         self.shaped_runs.get()
+    }
+
+    pub(crate) fn main_shaped_runs(&self) -> u64 {
+        self.main_shaped_runs.get()
+    }
+
+    pub(crate) fn commits(&self) -> u64 {
+        self.commits.get()
+    }
+
+    pub(crate) fn deferred(&self) -> u64 {
+        self.deferred.get()
+    }
+
+    pub(crate) fn main_commit_micros(&self) -> u64 {
+        self.main_commit_micros.get()
     }
 
     pub(crate) fn rasters(&self) -> u64 {
@@ -103,8 +143,20 @@ impl TextCounters {
         }
     }
 
-    fn record_shaped_run(&self) {
-        self.shaped_runs.set(self.shaped_runs.get() + 1);
+    fn record_shaped_runs(&self, runs: u64, on_main: bool) {
+        self.shaped_runs.set(self.shaped_runs.get() + runs);
+        if on_main {
+            self.main_shaped_runs
+                .set(self.main_shaped_runs.get() + runs);
+        }
+    }
+
+    fn record_commits(&self, commits: u64, deferred: usize, spent: Duration) {
+        self.commits.set(self.commits.get() + commits);
+        self.deferred.set(deferred as u64);
+        let micros = u64::try_from(spent.as_micros()).unwrap_or(u64::MAX);
+        self.main_commit_micros
+            .set(self.main_commit_micros.get().saturating_add(micros));
     }
 
     fn record_raster(&self) {
@@ -129,6 +181,10 @@ impl TextCounters {
         self.reshapes.set(0);
         self.relinebreaks.set(0);
         self.shaped_runs.set(0);
+        self.main_shaped_runs.set(0);
+        self.commits.set(0);
+        self.deferred.set(0);
+        self.main_commit_micros.set(0);
         self.rasters.set(0);
         self.atlas_upload_bytes.set(0);
         self.evictions.set(0);
@@ -166,6 +222,18 @@ impl ParagraphSlot {
     pub(crate) fn index(self) -> u32 {
         self.index
     }
+
+    /// The slot packed into one integer, as the worker keys paragraphs.
+    fn key(self) -> u64 {
+        (u64::from(self.generation) << 32) | u64::from(self.index)
+    }
+
+    fn from_key(key: u64) -> Self {
+        Self {
+            index: key as u32,
+            generation: (key >> 32) as u32,
+        }
+    }
 }
 
 impl From<NodeId> for ParagraphSlot {
@@ -177,179 +245,109 @@ impl From<NodeId> for ParagraphSlot {
     }
 }
 
-/// One node's paragraph as the runtime retains it between frames.
-///
-/// The lines are the last good layout: an edit is applied to them as a range
-/// replacement, so the next layout reflows only the neighbourhood of the edit,
-/// and until that layout runs the placed glyphs of the previous one are what
-/// draws.
+/// What a paragraph is laid out from: everything its lines depend on. The
+/// font size is not part of it — shaping is in em, so a size only scales the
+/// placed lines.
+#[derive(Debug, Clone, PartialEq)]
+struct LayoutTarget {
+    text: Arc<str>,
+    /// The wrap width in em, as bits; `0` for unwrapped text.
+    width_em: u32,
+    tailoring: LineBreakTailoring,
+    base: FontFaceId,
+    locale: String,
+}
+
+impl LayoutTarget {
+    fn matches(
+        &self,
+        text: &str,
+        width_em: u32,
+        tailoring: LineBreakTailoring,
+        base: FontFaceId,
+        locale: &str,
+    ) -> bool {
+        *self.text == *text
+            && self.width_em == width_em
+            && self.tailoring == tailoring
+            && self.base == base
+            && self.locale == locale
+    }
+}
+
+/// A layout the worker returned, placed at one font size. It holds one
+/// face-cache pin on each face its lines draw with.
 #[derive(Debug)]
-struct RetainedParagraph {
-    paragraph: Paragraph,
-    /// The wrap width, in logical pixels, the lines were laid out to; `None`
-    /// for unwrapped text.
-    wrap: Option<f32>,
-    /// The font size bits `placed` was computed at, or `None` when the lines
-    /// changed since it was placed.
-    placed_at: Option<u32>,
+struct Committed {
+    target: LayoutTarget,
+    lines: Vec<LineLayout>,
+    /// The font size bits `placed` was computed at.
+    font_size: u32,
     placed: PreparedLayout,
-    /// The distinct faces the lines draw with, each holding one face-cache pin
-    /// for as long as this paragraph is retained.
     faces: Vec<FontFaceId>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-struct SpanKey {
-    face: FontFaceId,
-    direction: Direction,
-    /// Fallback faces are chosen per locale, so the same text can shape
-    /// differently under two locales.
-    locale: String,
-    text: String,
-}
-
-/// The global shaping cache: shaped spans shared across paragraphs, so
-/// identical short text in different nodes — or in the same node after a
-/// rebuild gave it a new identity — shapes once.
+/// One text node as the runtime retains it between frames.
 ///
-/// It is budgeted in bytes on its own, apart from the face cache, and kept in
-/// two generations: when the live generation reaches half the budget it
-/// becomes the previous one and the one before is dropped, so the cache holds
-/// at most the budget and a span still in use survives a turnover by moving
-/// back into the live generation on its next hit.
+/// `drawn` is the last good layout and what draws until a newer one is
+/// complete. A newer layout waits in `staged` until every glyph it draws has
+/// coverage, then replaces `drawn` in one step, so the node never shows half
+/// of an edit or a glyph missing from the new lines.
 #[derive(Debug)]
-pub(crate) struct SpanCache {
-    live: HashMap<SpanKey, ShapedSpan>,
-    previous: HashMap<SpanKey, ShapedSpan>,
-    live_bytes: u64,
-    previous_bytes: u64,
-    budget_bytes: u64,
-    hits: u64,
-    misses: u64,
-    evictions: u64,
+struct TextSlot {
+    /// What the node asks for now.
+    target: LayoutTarget,
+    /// The wrap width of `target`, in logical pixels; `None` for unwrapped
+    /// text.
+    wrap: Option<f32>,
+    font_size: f32,
+    /// The raster bucket the node draws at.
+    ppem: u16,
+    drawn: Option<Committed>,
+    staged: Option<Committed>,
+    /// Layouts sent to the worker and not yet returned, oldest first.
+    laying: Vec<(u64, LayoutTarget)>,
+    committed_seq: u64,
+    /// Waiting in the pending list for the next dispatch.
+    queued: bool,
+    /// The next layout reshapes every run: a cluster the last one could not
+    /// cover has a face now.
+    full: bool,
+    /// The worker paragraph's cumulative shape invocations.
+    shape_calls: u64,
 }
 
-impl SpanCache {
-    fn with_budget(budget_bytes: u64) -> Self {
+impl TextSlot {
+    fn new(target: LayoutTarget) -> Self {
         Self {
-            live: HashMap::new(),
-            previous: HashMap::new(),
-            live_bytes: 0,
-            previous_bytes: 0,
-            budget_bytes,
-            hits: 0,
-            misses: 0,
-            evictions: 0,
+            target,
+            wrap: None,
+            font_size: 0.0,
+            ppem: 1,
+            drawn: None,
+            staged: None,
+            laying: Vec::new(),
+            committed_seq: 0,
+            queued: false,
+            full: false,
+            shape_calls: 0,
         }
-    }
-
-    fn get(&mut self, key: &SpanKey) -> Option<ShapedSpan> {
-        if let Some(span) = self.live.get(key) {
-            self.hits += 1;
-            return Some(span.clone());
-        }
-        let Some(span) = self.previous.remove(key) else {
-            self.misses += 1;
-            return None;
-        };
-        self.hits += 1;
-        self.previous_bytes -= span_bytes(key, &span);
-        self.insert(key.clone(), span.clone());
-        Some(span)
-    }
-
-    fn insert(&mut self, key: SpanKey, span: ShapedSpan) {
-        let bytes = span_bytes(&key, &span);
-        if self.live_bytes + bytes > self.budget_bytes / 2 {
-            self.evictions += self.previous.len() as u64;
-            self.previous = std::mem::take(&mut self.live);
-            self.previous_bytes = std::mem::replace(&mut self.live_bytes, 0);
-        }
-        self.live_bytes += bytes;
-        if let Some(old) = self.live.insert(key, span) {
-            self.live_bytes -= segment_bytes(&old);
-        }
-    }
-
-    /// Drop every span shaped from `face` or split onto it — the face itself
-    /// was dropped. Spans of every other face stay.
-    fn forget_face(&mut self, face: FontFaceId) {
-        for (spans, bytes) in [
-            (&mut self.live, &mut self.live_bytes),
-            (&mut self.previous, &mut self.previous_bytes),
-        ] {
-            spans.retain(|key, span| {
-                let keep = key.face != face && span.segments.iter().all(|s| s.run.face != face);
-                if !keep {
-                    *bytes -= span_bytes(key, span);
-                }
-                keep
-            });
-        }
-    }
-
-    /// Resident bytes across both generations.
-    pub(crate) fn bytes(&self) -> u64 {
-        self.live_bytes + self.previous_bytes
-    }
-
-    pub(crate) fn budget_bytes(&self) -> u64 {
-        self.budget_bytes
-    }
-
-    pub(crate) fn hits(&self) -> u64 {
-        self.hits
-    }
-
-    pub(crate) fn misses(&self) -> u64 {
-        self.misses
-    }
-
-    /// Spans dropped by generation turnover (a face drop is not an eviction).
-    pub(crate) fn evictions(&self) -> u64 {
-        self.evictions
-    }
-
-    pub(crate) fn len(&self) -> usize {
-        self.live.len() + self.previous.len()
-    }
-
-    /// Drop every span, counting each as an eviction.
-    fn clear(&mut self) {
-        self.evictions += self.len() as u64;
-        self.live.clear();
-        self.previous.clear();
-        self.live_bytes = 0;
-        self.previous_bytes = 0;
     }
 }
 
-/// The resident cost charged for one cached span: its key's owned strings, its
-/// glyphs and ligature carets, and the fixed size of the entry itself.
-fn span_bytes(key: &SpanKey, span: &ShapedSpan) -> u64 {
-    let strings = key.text.len() + key.locale.len();
-    let entry = std::mem::size_of::<SpanKey>() + std::mem::size_of::<ShapedSpan>();
-    (strings + entry) as u64 + segment_bytes(span)
-}
-
-/// The heap a span's segments hold, apart from its key.
-fn segment_bytes(span: &ShapedSpan) -> u64 {
-    let segments: usize = span
-        .segments
-        .iter()
-        .map(|segment| {
-            let run = &segment.run;
-            let carets: usize = run
-                .ligature_carets
-                .iter()
-                .map(|l| std::mem::size_of_val(l) + std::mem::size_of_val(l.carets.as_slice()))
-                .sum();
-            std::mem::size_of_val(segment)
-                + run.glyphs.len() * std::mem::size_of::<ShapedGlyph>()
-                + carets
-        })
-        .sum();
-    segments as u64
+/// What became of a coverage glyph the atlas does not hold.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Fate {
+    /// Asked of the worker; its coverage has not come back yet.
+    Requested,
+    /// The worker's parser reads no outline for it, so the platform
+    /// rasterizes it on the main thread when it draws.
+    Platform,
+    /// It has no ink.
+    Blank,
+    /// The atlas could not place it; it is tried again once a page is
+    /// reclaimed.
+    Refused,
 }
 
 /// Where one glyph's pixels live, as the pixel owner records it.
@@ -368,18 +366,34 @@ struct Placement {
 pub(crate) struct TextShaper {
     resolver: FontResolver,
     fallback: FontFallback,
-    /// Coverage sets for resolver-owned faces, so per-cluster face selection is a
-    /// set lookup instead of a face parse per grapheme.
-    face_coverage: Coverage,
-    shaper: Shaper,
     manifest: FontManifest,
     primary: Option<FontFaceId>,
     next_asset: u32,
-    /// Every mounted text node's paragraph, pruned with the tree.
-    paragraphs: HashMap<ParagraphSlot, RetainedParagraph>,
-    spans: SpanCache,
+    /// Every mounted text node, pruned with the tree.
+    slots: HashMap<ParagraphSlot, TextSlot>,
+    /// Slots whose target changed since the last dispatch.
+    pending: Vec<ParagraphSlot>,
+    worker: TextWorker,
+    /// Faces whose bytes the worker holds.
+    worker_faces: HashSet<FontFaceId>,
+    /// Messages for the worker, sent as one batch per dispatch.
+    outbox: Vec<ToWorker>,
+    /// Worker results received and not yet committed.
+    ready: VecDeque<FromWorker>,
+    /// Jobs sent that have not replied.
+    in_flight: u32,
+    next_seq: u64,
+    next_raster: u64,
+    /// Coverage glyphs to ask of the worker at the next dispatch.
+    raster_wanted: Vec<GlyphKey>,
+    /// Slots that draw, or are staged with, a glyph whose coverage was asked
+    /// for, redrawn when a raster result arrives.
+    raster_waiters: Vec<ParagraphSlot>,
+    fate: HashMap<GlyphKey, Fate>,
+    /// The worker's shaping-cache counters, as of its last layout.
+    span_stats: SpanStats,
     /// Face residency under its own byte budget. Pins hold the primary, app,
-    /// and CJK fallback faces for the process and each retained paragraph's
+    /// and CJK fallback faces for the process and each committed layout's
     /// faces while it lives; an evicted face is dropped with everything keyed
     /// by it at the frame boundary.
     faces: FontCache,
@@ -431,13 +445,22 @@ impl TextShaper {
         Self {
             resolver: FontResolver::new(),
             fallback: FontFallback::new(FALLBACK_FACE_IDS),
-            face_coverage: Coverage::new(),
-            shaper: Shaper::new(),
             manifest: FontManifest::default(),
             primary: None,
             next_asset: 0,
-            paragraphs: HashMap::new(),
-            spans: SpanCache::with_budget(budgets.shaping_cache_bytes),
+            slots: HashMap::new(),
+            pending: Vec::new(),
+            worker: TextWorker::spawn(budgets.shaping_cache_bytes),
+            worker_faces: HashSet::new(),
+            outbox: Vec::new(),
+            ready: VecDeque::new(),
+            in_flight: 0,
+            next_seq: 0,
+            next_raster: 0,
+            raster_wanted: Vec::new(),
+            raster_waiters: Vec::new(),
+            fate: HashMap::new(),
+            span_stats: SpanStats::empty(budgets.shaping_cache_bytes),
             faces: FontCache::with_budget(budgets.face_cache_bytes),
             hot_faces: Vec::new(),
             evicted_faces: Vec::new(),
@@ -497,9 +520,9 @@ impl TextShaper {
         &self.faces
     }
 
-    /// The shaping cache, for its counters and resident bytes.
-    pub(crate) fn shaping_cache(&self) -> &SpanCache {
-        &self.spans
+    /// The worker's shaping cache, for its counters and resident bytes.
+    pub(crate) fn shaping_cache(&self) -> &SpanStats {
+        &self.span_stats
     }
 
     pub(crate) fn counters(&self) -> &TextCounters {
@@ -534,15 +557,17 @@ impl TextShaper {
         self.evicted_faces = evicted;
     }
 
-    /// Drop exactly what is keyed by `face`: its bytes and fallback plans, its
-    /// coverage sets, the spans shaped with it, its glyph residency and
-    /// placements, and its color-raster binding. Every other face keeps all of
-    /// its state. The dropped glyphs' texels stay on their pages until the page
-    /// is reclaimed.
+    /// Drop exactly what is keyed by `face`: its bytes and fallback plans, the
+    /// worker's copy of its bytes with its coverage sets and the spans shaped
+    /// with it, its glyph residency and placements, and its color-raster
+    /// binding. Every other face keeps all of its state. The dropped glyphs'
+    /// texels stay on their pages until the page is reclaimed.
     fn drop_face(&mut self, face: FontFaceId) {
         self.fallback.forget(face);
-        self.face_coverage.forget(face);
-        self.spans.forget_face(face);
+        if self.worker_faces.remove(&face) {
+            self.outbox.push(ToWorker::Forget(face));
+        }
+        self.fate.retain(|key, _| key.face != face);
         self.residency.forget_face(face);
         self.coverage_uv.retain(|key, _| key.face != face);
         self.color_uv.retain(|key, _| key.face != face);
@@ -550,14 +575,14 @@ impl TextShaper {
     }
 
     /// Answer an OS memory warning: reclaim every page of every glyph pool,
-    /// drop the shared span cache, shed every face no live scope holds, and
-    /// hand the atlas planes to `retire` so the
-    /// caller can release them with their bindings. Placements die with their
-    /// pages, so every retained text payload is stale afterwards — the caller
-    /// reshapes the mounted text, which re-admits exactly the live working set
-    /// into freshly created planes. The retained paragraphs are kept: they hold
-    /// no pixels, and keeping them makes that reshape a re-raster only. Returns
-    /// the plane bytes retired.
+    /// drop the worker's span cache, shed every face no live scope holds, and
+    /// hand the atlas planes to `retire` so the caller can release them with
+    /// their bindings. Placements die with their pages, so every retained text
+    /// payload is stale afterwards — the caller reshapes the mounted text,
+    /// which re-admits exactly the live working set into freshly created
+    /// planes. The last good layouts are kept: they hold no pixels, and
+    /// keeping them makes that reshape a re-raster only. Returns the plane
+    /// bytes retired.
     pub(crate) fn trim(&mut self, mut retire: impl FnMut(TextureId)) -> usize {
         for kind in [
             GlyphImageKind::MaskA8,
@@ -583,140 +608,66 @@ impl TextShaper {
         }
         self.coverage_uv = HashMap::new();
         self.color_uv = HashMap::new();
-        self.spans.clear();
+        self.fate = HashMap::new();
+        self.outbox.push(ToWorker::Clear);
         bytes
     }
 
-    /// Drop the paragraphs of every slot `live` rejects — nodes freed, or
-    /// whose index now names a newer node.
+    /// Drop the slots of every node `live` rejects — nodes freed, or whose
+    /// index now names a newer node — with the worker's paragraphs for them.
     pub(crate) fn retain_paragraphs(&mut self, mut live: impl FnMut(ParagraphSlot) -> bool) {
         let faces = &mut self.faces;
-        self.paragraphs.retain(|slot, paragraph| {
+        let outbox = &mut self.outbox;
+        self.slots.retain(|slot, entry| {
             let keep = live(*slot);
             if !keep {
-                for &face in &paragraph.faces {
-                    faces.unpin(face);
+                for committed in [&entry.drawn, &entry.staged].into_iter().flatten() {
+                    for &face in &committed.faces {
+                        faces.unpin(face);
+                    }
                 }
+                outbox.push(ToWorker::DropSlot(slot.key()));
             }
             keep
         });
     }
 
-    /// The wrap width `slot`'s lines were last laid out to, if they wrap.
+    /// The wrap width `slot`'s text is laid out to, if it wraps.
     ///
     /// Reshaping edited text at this width keeps the last good line structure
     /// on screen until layout decides whether the box itself changed, instead
     /// of flashing the text unwrapped for a frame.
     pub(crate) fn wrap_width(&self, slot: ParagraphSlot) -> Option<f32> {
-        self.paragraphs.get(&slot).and_then(|p| p.wrap)
+        self.slots.get(&slot).and_then(|entry| entry.wrap)
     }
 
     /// The caret box at `position` in `slot`'s text, relative to the run's
     /// origin: a zero-width rect at the caret's inline position spanning its
-    /// line. Reads the lines the text was last drawn with, so asking costs a
-    /// layout only when `request` changed since then.
+    /// line. Reads the lines the text is drawn with, so asking costs no
+    /// layout; `None` until the text drawn is `request`'s.
     pub(crate) fn caret(
-        &mut self,
+        &self,
         slot: ParagraphSlot,
         request: &TextRequest,
         position: TextPosition,
     ) -> Option<Rect> {
-        let wrap = self.wrap_width(slot);
-        let retained = self.prepare(slot, request, wrap)?;
-        let lines = retained.paragraph.lines();
+        let drawn = self.slots.get(&slot)?.drawn.as_ref()?;
+        if *drawn.target.text != *request.text {
+            return None;
+        }
+        let lines = &drawn.lines;
         let row = line_index_at(lines, position);
         let x = lines
             .get(row)
             .and_then(|line: &LineLayout| line.caret_x(position))
             .unwrap_or(0.0);
-        let line_height = retained.placed.line_height;
-        let rect = Rect {
-            x: x * request.font_size,
+        let line_height = drawn.placed.line_height;
+        Some(Rect {
+            x: x * f32::from_bits(drawn.font_size),
             y: row as f32 * line_height,
             w: 0.0,
             h: line_height,
-        };
-        self.paragraphs.insert(slot, retained);
-        Some(rect)
-    }
-
-    /// Bring `slot`'s paragraph up to `request` at `wrap` and place its lines,
-    /// taking it out of the map so the caller can raster from it while
-    /// borrowing the shaper; the caller puts it back.
-    ///
-    /// The text change is applied as the one range replacement that turns the
-    /// old text into the new, so the layout reflows from the edit's line and
-    /// stops where the lines restabilize.
-    fn prepare(
-        &mut self,
-        slot: ParagraphSlot,
-        request: &TextRequest,
-        wrap: Option<f32>,
-    ) -> Option<RetainedParagraph> {
-        let face = self.resolve_primary()?;
-        let epoch = u64::from(face.0);
-        let mut retained = match self.paragraphs.remove(&slot) {
-            Some(mut retained) => {
-                apply_text(&mut retained.paragraph, &request.text);
-                retained.paragraph.set_style_epoch(epoch);
-                retained
-            }
-            None => RetainedParagraph {
-                paragraph: Paragraph::new(request.text.clone(), BaseDirection::Auto, epoch),
-                wrap,
-                placed_at: None,
-                placed: PreparedLayout::default(),
-                faces: Vec::new(),
-            },
-        };
-        let locale = match request.locale.as_deref() {
-            Some(locale) => locale,
-            None => process_locale(),
-        };
-        retained
-            .paragraph
-            .set_tailoring(LineBreakTailoring::for_locale(locale));
-        // Shaping is in em, so only the wrap width depends on the font size.
-        let width_em = match wrap {
-            Some(width) if request.font_size > 0.0 => width / request.font_size,
-            _ => 0.0,
-        };
-        let relaid = retained
-            .paragraph
-            .layout(width_em, &mut |text: &str, direction: Direction| {
-                self.shape_span(face, locale, text, direction)
-            });
-        if relaid {
-            self.counters.record_shape(wrap.is_some());
-            retained.placed_at = None;
-            self.repin_faces(&mut retained);
-        }
-        retained.wrap = wrap;
-        let size_bits = request.font_size.to_bits();
-        if retained.placed_at != Some(size_bits) {
-            retained.placed = self.place(face, retained.paragraph.lines(), request.font_size);
-            retained.placed_at = Some(size_bits);
-        }
-        Some(retained)
-    }
-
-    /// Move `retained`'s face pins to the faces its new lines draw with. New
-    /// pins are taken before old ones are released, so a face the paragraph
-    /// keeps using is never unpinned in between.
-    fn repin_faces(&mut self, retained: &mut RetainedParagraph) {
-        let mut faces = Vec::new();
-        for run in retained.paragraph.lines().iter().flat_map(|l| &l.runs) {
-            if !faces.contains(&run.face) {
-                faces.push(run.face);
-            }
-        }
-        for &face in &faces {
-            self.faces.pin(face);
-        }
-        for &face in &retained.faces {
-            self.faces.unpin(face);
-        }
-        retained.faces = faces;
+        })
     }
 
     /// Position every glyph of `lines` in logical pixels: each run starts at
@@ -759,6 +710,12 @@ impl TextShaper {
         }
     }
 
+    /// `slot`'s content for `request`: its last good layout, drawn now.
+    ///
+    /// A request its layout does not match yet is queued for the worker, and
+    /// `slot` is reported by [`Self::pump`] once the new layout is committed;
+    /// until then the last good one keeps drawing, and a node with none draws
+    /// nothing.
     pub(crate) fn shape<B: GpuBackend>(
         &mut self,
         backend: &mut B,
@@ -767,24 +724,95 @@ impl TextShaper {
         dpi_factor: f32,
         max_width: Option<f32>,
     ) -> Content {
-        let wrap_width = request.soft_wrap.then_some(max_width).flatten();
-        let Some(retained) = self.prepare(slot, request, wrap_width) else {
+        let wrap = request.soft_wrap.then_some(max_width).flatten();
+        let Some(base) = self.resolve_primary() else {
             return empty_content(request, max_width);
         };
-        let layout = &retained.placed;
+        self.ensure_worker_face(base);
+        let locale = match request.locale.as_deref() {
+            Some(locale) => locale,
+            None => process_locale(),
+        };
+        let tailoring = LineBreakTailoring::for_locale(locale);
+        // Shaping is in em, so only the wrap width depends on the font size.
+        let width_em = match wrap {
+            Some(width) if request.font_size > 0.0 => (width / request.font_size).to_bits(),
+            _ => 0,
+        };
+        let mut entry = match self.slots.remove(&slot) {
+            Some(entry)
+                if entry
+                    .target
+                    .matches(&request.text, width_em, tailoring, base, locale) =>
+            {
+                entry
+            }
+            stale => {
+                let target = LayoutTarget {
+                    text: Arc::from(request.text.as_str()),
+                    width_em,
+                    tailoring,
+                    base,
+                    locale: locale.to_owned(),
+                };
+                let mut entry = match stale {
+                    Some(mut entry) => {
+                        entry.target = target;
+                        entry
+                    }
+                    None => TextSlot::new(target),
+                };
+                if !entry.queued {
+                    entry.queued = true;
+                    self.pending.push(slot);
+                }
+                entry
+            }
+        };
+        entry.wrap = wrap;
+        entry.font_size = request.font_size;
+        entry.ppem = (request.font_size * dpi_factor)
+            .round()
+            .clamp(1.0, f32::from(u16::MAX)) as u16;
+        let size = request.font_size.to_bits();
+        for committed in [&mut entry.drawn, &mut entry.staged].into_iter().flatten() {
+            if committed.font_size != size {
+                committed.placed =
+                    self.place(committed.target.base, &committed.lines, request.font_size);
+                committed.font_size = size;
+            }
+        }
+        self.try_promote(slot, &mut entry);
+        let content = self.render(backend, slot, &entry, request, dpi_factor);
+        self.slots.insert(slot, entry);
+        content
+    }
 
+    /// Draw `entry`'s last good layout. A coverage glyph the atlas does not
+    /// hold yet is skipped, and `at` is redrawn once it arrives.
+    fn render<B: GpuBackend>(
+        &mut self,
+        backend: &mut B,
+        at: ParagraphSlot,
+        entry: &TextSlot,
+        request: &TextRequest,
+        dpi_factor: f32,
+    ) -> Content {
+        let wrap = entry.wrap;
+        let Some(drawn) = &entry.drawn else {
+            return empty_content(request, wrap);
+        };
+        // Once per draw, not per glyph, and folded into recency once per face
+        // at the frame boundary.
+        for &face in &drawn.faces {
+            self.faces.touch(face);
+        }
+        let ppem = entry.ppem;
+        let layout = &drawn.placed;
         let mut glyphs = Vec::with_capacity(layout.glyphs.len());
         let mut color_glyphs = Vec::new();
         for &glyph in &layout.glyphs {
-            let ppem = (request.font_size * dpi_factor)
-                .round()
-                .clamp(1.0, u16::MAX as f32) as u16;
-            let is_emoji = request.text[glyph.cluster..]
-                .chars()
-                .next()
-                .is_some_and(is_emoji);
-
-            if is_emoji
+            if starts_emoji(&drawn.target.text, glyph.cluster)
                 && let Some(color) =
                     self.color_raster
                         .rasterize_color_glyph(glyph.face, glyph.glyph, ppem)
@@ -834,40 +862,20 @@ impl TextShaper {
                 bucket: ppem,
                 kind: GlyphImageKind::MaskA8,
             };
-            let packed = if let Some(&cached) = self.coverage_uv.get(&key) {
-                self.residency
-                    .touch_page(GlyphImageKind::MaskA8, cached.page);
-                cached
-            } else {
-                // Parser-outlined coverage first; if the face carries no
-                // parser-readable outline (Apple proprietary `hvgl`, e.g.
-                // PingFang → empty bitmap), recover it as grayscale A8 through
-                // CoreText, the same path emoji uses for color.
-                let bitmap = match self.rasterize(glyph.face, glyph.glyph, ppem as f32) {
-                    Some(b) if !b.is_empty() => b,
-                    _ => {
-                        let cb = self.color_raster.rasterize_coverage_glyph(
-                            glyph.face,
-                            glyph.glyph,
-                            ppem,
-                        );
-                        let Some(b) = cb else {
-                            continue;
-                        };
-                        if b.is_empty() {
-                            continue;
-                        }
-                        b
-                    }
-                };
-                let Some(placement) = self.admit_coverage(backend, key, &bitmap) else {
-                    continue;
-                };
-                placement
+            let packed = match self.coverage_uv.get(&key) {
+                Some(&cached) => {
+                    self.residency
+                        .touch_page(GlyphImageKind::MaskA8, cached.page);
+                    Some(cached)
+                }
+                None => self.coverage_miss(backend, at, key),
             };
-            let Placement {
+            let Some(Placement {
                 uv, bearing, size, ..
-            } = packed;
+            }) = packed
+            else {
+                continue;
+            };
             let inv = 1.0 / dpi_factor;
             glyphs.push(GlyphInstanceData {
                 rect: Rect {
@@ -885,7 +893,7 @@ impl TextShaper {
             .as_ref()
             .map_or(TextureId::new(0), GlyphAtlas::texture);
         self.upload_dirty(backend);
-        let content = Content::Text {
+        Content::Text {
             glyphs,
             atlas,
             color_glyphs,
@@ -893,11 +901,418 @@ impl TextShaper {
             color: request.color,
             natural: layout.natural,
             baseline: layout.baseline,
-            shaped_at_width: wrap_width,
+            shaped_at_width: wrap,
             soft_wrap: request.soft_wrap,
+        }
+    }
+
+    /// A coverage glyph the atlas does not hold: rasterized here when only
+    /// the platform can, otherwise asked of the worker, with `at` redrawn when
+    /// it arrives.
+    fn coverage_miss<B: GpuBackend>(
+        &mut self,
+        backend: &mut B,
+        at: ParagraphSlot,
+        key: GlyphKey,
+    ) -> Option<Placement> {
+        match self.fate.get(&key) {
+            Some(Fate::Platform) => self.platform_coverage(backend, key),
+            Some(Fate::Blank | Fate::Refused) => None,
+            Some(Fate::Requested) => {
+                self.wait_for_raster(at);
+                None
+            }
+            None => {
+                self.request_raster(key);
+                self.wait_for_raster(at);
+                None
+            }
+        }
+    }
+
+    /// Recover a glyph the parser reads no outline for (Apple's proprietary
+    /// `hvgl`, e.g. PingFang, or a CFF2 variable outline) as grayscale A8
+    /// through CoreText, the same path emoji uses for color.
+    fn platform_coverage<B: GpuBackend>(
+        &mut self,
+        backend: &mut B,
+        key: GlyphKey,
+    ) -> Option<Placement> {
+        let bitmap = self
+            .color_raster
+            .rasterize_coverage_glyph(key.face, key.glyph, key.bucket)
+            .filter(|bitmap| !bitmap.is_empty());
+        let Some(bitmap) = bitmap else {
+            self.fate.insert(key, Fate::Blank);
+            return None;
         };
-        self.paragraphs.insert(slot, retained);
-        content
+        let placed = self.admit_coverage(backend, key, &bitmap);
+        if placed.is_none() {
+            self.fate.insert(key, Fate::Refused);
+        }
+        placed
+    }
+
+    fn request_raster(&mut self, key: GlyphKey) {
+        self.fate.insert(key, Fate::Requested);
+        self.raster_wanted.push(key);
+    }
+
+    fn wait_for_raster(&mut self, at: ParagraphSlot) {
+        if !self.raster_waiters.contains(&at) {
+            self.raster_waiters.push(at);
+        }
+    }
+
+    /// Replace `entry`'s drawn layout with its staged one if every glyph the
+    /// staged one draws can draw now, asking the worker for the coverage of
+    /// those that cannot. `true` when it did.
+    fn try_promote(&mut self, at: ParagraphSlot, entry: &mut TextSlot) -> bool {
+        let Some(staged) = &entry.staged else {
+            return false;
+        };
+        let mut ready = true;
+        for glyph in &staged.placed.glyphs {
+            // Color glyphs rasterize on the main thread as they draw.
+            if starts_emoji(&staged.target.text, glyph.cluster) {
+                continue;
+            }
+            let key = GlyphKey {
+                face: glyph.face,
+                glyph: glyph.glyph,
+                bucket: entry.ppem,
+                kind: GlyphImageKind::MaskA8,
+            };
+            if self.coverage_uv.contains_key(&key) {
+                continue;
+            }
+            match self.fate.get(&key) {
+                Some(Fate::Platform | Fate::Blank | Fate::Refused) => {}
+                Some(Fate::Requested) => ready = false,
+                None => {
+                    self.request_raster(key);
+                    ready = false;
+                }
+            }
+        }
+        if !ready {
+            self.wait_for_raster(at);
+            return false;
+        }
+        let staged = entry.staged.take();
+        if let Some(old) = std::mem::replace(&mut entry.drawn, staged) {
+            self.unpin(&old.faces);
+        }
+        true
+    }
+
+    fn unpin(&mut self, faces: &[FontFaceId]) {
+        for &face in faces {
+            self.faces.unpin(face);
+        }
+    }
+
+    /// Hand `face`'s bytes to the worker once, ahead of any job that uses it.
+    /// `false` when the face has no bytes to hand over.
+    fn ensure_worker_face(&mut self, face: FontFaceId) -> bool {
+        if self.worker_faces.contains(&face) {
+            return true;
+        }
+        let data = self
+            .resolver
+            .face_data(face)
+            .or_else(|| self.fallback.face_data(face));
+        let Some(data) = data else {
+            return false;
+        };
+        self.worker_faces.insert(face);
+        self.outbox.push(ToWorker::Face { face, data });
+        true
+    }
+
+    /// Send every queued layout and coverage request to the worker in one
+    /// batch.
+    pub(crate) fn dispatch(&mut self) {
+        let mut pending = std::mem::take(&mut self.pending);
+        for at in pending.drain(..) {
+            let Some(entry) = self.slots.get_mut(&at) else {
+                continue;
+            };
+            if !std::mem::take(&mut entry.queued) {
+                continue;
+            }
+            self.next_seq += 1;
+            let seq = self.next_seq;
+            entry.laying.push((seq, entry.target.clone()));
+            let target = &entry.target;
+            self.outbox.push(ToWorker::Layout(Box::new(LayoutJob {
+                slot: at.key(),
+                seq,
+                text: target.text.clone(),
+                width_em: f32::from_bits(target.width_em),
+                tailoring: target.tailoring,
+                base: target.base,
+                locale: target.locale.clone(),
+                full: std::mem::take(&mut entry.full),
+                ppem: entry.ppem,
+                // A node with nothing drawn yet shows a hole until it lands.
+                priority: if entry.drawn.is_none() {
+                    Priority::CriticalVisible
+                } else {
+                    Priority::InteractiveEdit
+                },
+            })));
+            self.in_flight += 1;
+        }
+        self.pending = pending;
+        if !self.raster_wanted.is_empty() {
+            self.next_raster += 1;
+            self.outbox.push(ToWorker::Raster {
+                id: self.next_raster,
+                keys: std::mem::take(&mut self.raster_wanted),
+            });
+            self.in_flight += 1;
+        }
+        if !self.outbox.is_empty() {
+            self.worker.send(std::mem::take(&mut self.outbox));
+        }
+    }
+
+    /// Whether the worker owes results or anything waits to be sent or
+    /// committed.
+    pub(crate) fn has_pending_work(&self) -> bool {
+        self.in_flight > 0
+            || !self.ready.is_empty()
+            || !self.pending.is_empty()
+            || !self.outbox.is_empty()
+            || !self.raster_wanted.is_empty()
+    }
+
+    /// Commit the worker's results, oldest first, until `budget` is spent —
+    /// at least one per call, so a backlog always drains — and push every slot
+    /// whose drawn content changed onto `updated`, for the caller to redraw.
+    /// What the budget leaves waits for the next frame.
+    pub(crate) fn pump<B: GpuBackend>(
+        &mut self,
+        backend: &mut B,
+        budget: Duration,
+        updated: &mut Vec<ParagraphSlot>,
+    ) {
+        self.dispatch();
+        loop {
+            match self.worker.try_recv() {
+                Ok(message) => self.receive(message),
+                Err(TryRecvError::Empty) => break,
+                // The worker died: nothing more will reply.
+                Err(TryRecvError::Disconnected) => {
+                    self.in_flight = 0;
+                    break;
+                }
+            }
+        }
+        if self.ready.is_empty() {
+            return;
+        }
+        let start = Instant::now();
+        let mut commits = 0;
+        while let Some(message) = self.ready.pop_front() {
+            self.commit(backend, message, updated);
+            commits += 1;
+            if start.elapsed() >= budget {
+                break;
+            }
+        }
+        self.counters
+            .record_commits(commits, self.ready.len(), start.elapsed());
+        self.upload_dirty(backend);
+        self.dispatch();
+    }
+
+    fn receive(&mut self, message: FromWorker) {
+        match message {
+            FromWorker::Cancelled(jobs) => self.in_flight = self.in_flight.saturating_sub(jobs),
+            #[cfg(test)]
+            FromWorker::Flushed => {}
+            message => {
+                self.in_flight = self.in_flight.saturating_sub(1);
+                self.ready.push_back(message);
+            }
+        }
+    }
+
+    /// Block until the worker ran every job sent so far, keeping its results
+    /// for [`Self::pump`].
+    #[cfg(test)]
+    fn wait_idle(&mut self) {
+        self.dispatch();
+        self.worker.send(vec![ToWorker::Flush]);
+        while let Some(message) = self.worker.recv() {
+            if matches!(message, FromWorker::Flushed) {
+                break;
+            }
+            self.receive(message);
+        }
+    }
+
+    fn commit<B: GpuBackend>(
+        &mut self,
+        backend: &mut B,
+        message: FromWorker,
+        updated: &mut Vec<ParagraphSlot>,
+    ) {
+        match message {
+            FromWorker::Laid(done) => self.commit_layout(backend, *done, updated),
+            FromWorker::Rastered(glyphs) => {
+                self.admit_rastered(backend, glyphs);
+                let mut waiters = std::mem::take(&mut self.raster_waiters);
+                for at in waiters.drain(..) {
+                    let Some(mut entry) = self.slots.remove(&at) else {
+                        continue;
+                    };
+                    self.try_promote(at, &mut entry);
+                    self.slots.insert(at, entry);
+                    push_once(updated, at);
+                }
+                waiters.append(&mut self.raster_waiters);
+                self.raster_waiters = waiters;
+            }
+            FromWorker::Cancelled(_) => {}
+            #[cfg(test)]
+            FromWorker::Flushed => {}
+        }
+    }
+
+    /// Commit one finished layout: admit the coverage that came with it,
+    /// resolve the fallback faces it asked for, and stage its lines — or lay
+    /// the paragraph out again when it could not draw every cluster.
+    fn commit_layout<B: GpuBackend>(
+        &mut self,
+        backend: &mut B,
+        done: LayoutDone,
+        updated: &mut Vec<ParagraphSlot>,
+    ) {
+        self.admit_rastered(backend, done.glyphs);
+        let needs = !done.needs.is_empty();
+        for need in done.needs {
+            let face = match self
+                .fallback
+                .plan_run(&need.key, &need.cluster, &self.provider)
+            {
+                FallbackPlan::Mapped { face, .. } => {
+                    self.use_fallback_face(face, FontFallback::is_cjk(need.key.script));
+                    if self.ensure_worker_face(face) {
+                        self.outbox.push(ToWorker::Route {
+                            key: need.key.clone(),
+                            face,
+                        });
+                        face
+                    } else {
+                        need.key.base
+                    }
+                }
+                // Nothing covers it: it draws with the base face's notdef.
+                FallbackPlan::Unresolved => need.key.base,
+            };
+            self.outbox.push(ToWorker::Assign {
+                cluster: ClusterKey {
+                    base: need.key.base,
+                    locale: need.key.locale,
+                    cluster: need.cluster,
+                },
+                face,
+            });
+        }
+        let at = ParagraphSlot::from_key(done.slot);
+        let Some(mut entry) = self.slots.remove(&at) else {
+            return;
+        };
+        self.counters
+            .record_shaped_runs(done.shaped_runs, done.thread == thread::current().id());
+        self.span_stats = done.spans;
+        entry.shape_calls = done.shape_calls;
+        // Replies arrive in order, so every older layout still listed was
+        // superseded on the worker before it ran.
+        let target = entry
+            .laying
+            .iter()
+            .position(|&(seq, _)| seq == done.seq)
+            .and_then(|i| entry.laying.drain(..=i).next_back())
+            .map(|(_, target)| target);
+        if let Some(target) = target {
+            // A face the lines draw with was dropped since they were laid out.
+            let dropped = done
+                .lines
+                .iter()
+                .flat_map(|line| &line.runs)
+                .any(|run| !self.worker_faces.contains(&run.face));
+            if needs || dropped {
+                entry.full = true;
+                if !entry.queued {
+                    entry.queued = true;
+                    self.pending.push(at);
+                }
+            } else if done.seq > entry.committed_seq {
+                entry.committed_seq = done.seq;
+                if done.relaid {
+                    self.counters.record_shape(target.width_em != 0);
+                }
+                let staged = self.stage(target, done.lines, entry.font_size);
+                if let Some(old) = entry.staged.replace(staged) {
+                    self.unpin(&old.faces);
+                }
+                if self.try_promote(at, &mut entry) {
+                    push_once(updated, at);
+                }
+            }
+        }
+        self.slots.insert(at, entry);
+    }
+
+    /// Place `lines` at `font_size`, pinning every face they draw with. The
+    /// pins are taken before the layout they replace releases its own, so a
+    /// face both use is never unpinned in between.
+    fn stage(&mut self, target: LayoutTarget, lines: Vec<LineLayout>, font_size: f32) -> Committed {
+        let mut faces = Vec::new();
+        for run in lines.iter().flat_map(|line| &line.runs) {
+            if !faces.contains(&run.face) {
+                faces.push(run.face);
+            }
+        }
+        for &face in &faces {
+            self.faces.pin(face);
+        }
+        let placed = self.place(target.base, &lines, font_size);
+        Committed {
+            target,
+            lines,
+            font_size: font_size.to_bits(),
+            placed,
+            faces,
+        }
+    }
+
+    /// Admit the coverage the worker rasterized. A glyph it has no outline
+    /// for is left to the platform raster.
+    fn admit_rastered<B: GpuBackend>(&mut self, backend: &mut B, glyphs: Vec<Rastered>) {
+        for (key, bitmap) in glyphs {
+            // Its face was dropped while the raster was in flight.
+            if !self.worker_faces.contains(&key.face) || self.coverage_uv.contains_key(&key) {
+                self.fate.remove(&key);
+                continue;
+            }
+            match bitmap {
+                Some(bitmap) if !bitmap.is_empty() => {
+                    if self.admit_coverage(backend, key, &bitmap).is_some() {
+                        self.fate.remove(&key);
+                    } else {
+                        self.fate.insert(key, Fate::Refused);
+                    }
+                }
+                _ => {
+                    self.fate.insert(key, Fate::Platform);
+                }
+            }
+        }
     }
 
     fn resolve_primary(&mut self) -> Option<FontFaceId> {
@@ -928,155 +1343,11 @@ impl TextShaper {
         }
     }
 
+    #[cfg(test)]
     fn face_bytes(&self, face: FontFaceId) -> Option<(&[u8], u32)> {
         self.resolver
             .face_bytes(face)
             .or_else(|| self.fallback.face_bytes(face))
-    }
-
-    /// Shape one direction run of `text` from `base`, splitting it into
-    /// fallback faces per grapheme where `base` does not cover it.
-    fn shape_span(
-        &mut self,
-        base: FontFaceId,
-        locale: &str,
-        text: &str,
-        direction: Direction,
-    ) -> ShapedSpan {
-        let key = (text.len() <= SPAN_CACHE_TEXT).then(|| SpanKey {
-            face: base,
-            direction,
-            locale: locale.to_owned(),
-            text: text.to_owned(),
-        });
-        if let Some(span) = key.as_ref().and_then(|key| self.spans.get(key)) {
-            self.touch_faces(base, &span);
-            return span;
-        }
-        self.counters.record_shaped_run();
-        let span = match self.shape_registered(base, text, direction) {
-            None => ShapedSpan::default(),
-            Some(run) if !run.has_coverage_miss() => ShapedSpan::from(run),
-            Some(_) => self.shape_clusters(base, locale, text, direction),
-        };
-        self.touch_faces(base, &span);
-        if let Some(key) = key {
-            self.spans.insert(key, span.clone());
-        }
-        span
-    }
-
-    /// Mark the faces a span draws with as used this frame: once per span, not
-    /// per glyph, and folded into recency once per face at the frame boundary.
-    fn touch_faces(&mut self, base: FontFaceId, span: &ShapedSpan) {
-        self.faces.touch(base);
-        for segment in &span.segments {
-            self.faces.touch(segment.run.face);
-        }
-    }
-
-    fn shape_clusters(
-        &mut self,
-        base: FontFaceId,
-        locale: &str,
-        text: &str,
-        direction: Direction,
-    ) -> ShapedSpan {
-        let boundaries: Vec<usize> = Segmenter::new(text)
-            .grapheme_boundaries()
-            .map(|offset| offset.0)
-            .collect();
-        let mut groups: Vec<(FontFaceId, usize, usize)> = Vec::new();
-        for pair in boundaries.windows(2) {
-            let cluster = &text[pair[0]..pair[1]];
-            let face = if self.face_covers(base, cluster) {
-                base
-            } else {
-                self.resolve_fallback(base, locale, cluster).unwrap_or(base)
-            };
-            if let Some(last) = groups.last_mut()
-                && last.0 == face
-            {
-                last.2 = pair[1];
-            } else {
-                groups.push((face, pair[0], pair[1]));
-            }
-        }
-        let mut span = ShapedSpan::default();
-        for (face, start, end) in groups {
-            if let Some(run) = self.shape_registered(face, &text[start..end], direction) {
-                span.segments.push(ShapedSegment {
-                    start: start as u32,
-                    run,
-                });
-            }
-        }
-        span
-    }
-
-    /// Whether the face has a glyph for every scalar in `text` — the candidate
-    /// filter that picks a cluster's face before shaping.
-    ///
-    /// The answer comes from the face's coverage set, built once per face, so a
-    /// paragraph of many clusters does not re-parse a face per cluster. It is a
-    /// filter, not the verdict: the shaped run's coverage-miss flag is still what
-    /// decides whether the choice held.
-    fn face_covers(&mut self, face: FontFaceId, text: &str) -> bool {
-        let Some((bytes, index)) = self
-            .resolver
-            .face_bytes(face)
-            .or_else(|| self.fallback.face_bytes(face))
-        else {
-            return false;
-        };
-        self.face_coverage.face_covers(face, bytes, index, text)
-    }
-
-    fn shape_registered(
-        &mut self,
-        face: FontFaceId,
-        text: &str,
-        direction: Direction,
-    ) -> Option<ShapedRun> {
-        let resolver = &self.resolver;
-        let fallback = &self.fallback;
-        let shaper = &mut self.shaper;
-        let (bytes, index) = resolver
-            .face_bytes(face)
-            .or_else(|| fallback.face_bytes(face))?;
-        shaper.shape_run(face, bytes, index, text, direction)
-    }
-
-    fn rasterize(
-        &self,
-        face: FontFaceId,
-        glyph: u16,
-        pixels_per_em: f32,
-    ) -> Option<viso_text::CoverageBitmap> {
-        let (bytes, index) = self.face_bytes(face)?;
-        rasterize_coverage(bytes, index, glyph, pixels_per_em)
-    }
-
-    fn resolve_fallback(
-        &mut self,
-        base: FontFaceId,
-        locale: &str,
-        text: &str,
-    ) -> Option<FontFaceId> {
-        let key = FallbackPlanKey {
-            base,
-            script: FontFallback::run_script(text),
-            locale: locale.to_owned(),
-            style: FallbackStyle::default(),
-            source_revision: 0,
-        };
-        match self.fallback.plan_run(&key, text, &self.provider) {
-            FallbackPlan::Mapped { face, .. } => {
-                self.use_fallback_face(face, FontFallback::is_cjk(key.script));
-                Some(face)
-            }
-            FallbackPlan::Unresolved => None,
-        }
     }
 
     /// Account one use of a resolved fallback face: a touch when resident,
@@ -1217,6 +1488,10 @@ impl TextShaper {
     fn drain_reclaims(&mut self) {
         let mut reclaims = std::mem::take(&mut self.reclaims);
         self.residency.take_reclaims(&mut reclaims);
+        // A reclaimed page is room a glyph the atlas refused may fit into.
+        if !reclaims.is_empty() {
+            self.fate.retain(|_, fate| *fate != Fate::Refused);
+        }
         for reclaimed in reclaims.drain(..) {
             self.counters.record_eviction();
             match reclaimed.kind {
@@ -1266,18 +1541,18 @@ impl TextShaper {
     }
 }
 
-/// A text control's drawn geometry is its retained paragraph as last placed:
-/// the lines, the size they were placed at, and their line height, all in the
-/// node's logical-pixel space. A paragraph whose lines changed since placement
-/// answers `None` until it is placed again.
+/// A text control's drawn geometry is its last good layout: the lines, the
+/// size they were placed at, and their line height, all in the node's
+/// logical-pixel space. The text is the one those lines were laid out from,
+/// so an edit the worker has not laid out yet is not reconciled against them.
 impl EditGeometry for TextShaper {
     fn layout(&self, node: NodeId) -> Option<EditLayout<'_>> {
-        let retained = self.paragraphs.get(&ParagraphSlot::from(node))?;
+        let drawn = self.slots.get(&ParagraphSlot::from(node))?.drawn.as_ref()?;
         Some(EditLayout {
-            text: retained.paragraph.text(),
-            lines: retained.paragraph.lines(),
-            font_size: f32::from_bits(retained.placed_at?),
-            line_height: retained.placed.line_height,
+            text: &drawn.target.text,
+            lines: &drawn.lines,
+            font_size: f32::from_bits(drawn.font_size),
+            line_height: drawn.placed.line_height,
         })
     }
 }
@@ -1316,38 +1591,6 @@ fn ensure_color_atlas<'a, B: GpuBackend>(
         });
         ColorAtlas::new(size, page, texture)
     })
-}
-
-/// Turn `paragraph`'s text into `text` as one range replacement: the span
-/// between their common prefix and common suffix, both cut back to char
-/// boundaries of either string.
-fn apply_text(paragraph: &mut Paragraph, text: &str) {
-    let old = paragraph.text();
-    if old == text {
-        return;
-    }
-    let mut prefix = old
-        .bytes()
-        .zip(text.bytes())
-        .take_while(|(a, b)| a == b)
-        .count();
-    while !(old.is_char_boundary(prefix) && text.is_char_boundary(prefix)) {
-        prefix -= 1;
-    }
-    let room = (old.len() - prefix).min(text.len() - prefix);
-    let mut suffix = old
-        .bytes()
-        .rev()
-        .zip(text.bytes().rev())
-        .take(room)
-        .take_while(|(a, b)| a == b)
-        .count();
-    while !(old.is_char_boundary(old.len() - suffix) && text.is_char_boundary(text.len() - suffix))
-    {
-        suffix -= 1;
-    }
-    let removed = (TextOffset(prefix), TextOffset(old.len() - suffix));
-    paragraph.edit(removed, &text[prefix..text.len() - suffix]);
 }
 
 /// The process content locale as a BCP-47 tag, from the POSIX locale
@@ -1396,18 +1639,20 @@ fn default_metrics() -> viso_text::FaceMetrics {
     }
 }
 
-fn is_emoji(ch: char) -> bool {
-    matches!(
-        ch as u32,
-        0x1F000..=0x1FAFF | 0x2600..=0x27BF | 0xFE0F | 0x200D
-    )
+fn push_once(slots: &mut Vec<ParagraphSlot>, slot: ParagraphSlot) {
+    if !slots.contains(&slot) {
+        slots.push(slot);
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::text_worker::{FaceData, WorkerState};
     use viso_gpu::{HeadlessRaster, RawWindowHandle};
     use viso_render::Rgba;
+    use viso_text::fallback::{FallbackPlanKey, FallbackStyle};
+    use viso_text::{TextOffset, rasterize_coverage};
 
     const TEST_FONT: &[u8] = include_bytes!("../fixtures/DejaVuSans-subset.ttf");
     const WHITE: Rgba = Rgba {
@@ -1461,15 +1706,22 @@ mod tests {
             soft_wrap: false,
             locale: None,
         };
+        assert!(
+            shaper
+                .caret(slot(0), &request, TextPosition::downstream(TextOffset(0)))
+                .is_none(),
+            "nothing is drawn yet"
+        );
+        settle(&mut shaper, &mut headless(), slot(0), &request, None);
         let first = shaper
             .caret(slot(0), &request, TextPosition::downstream(TextOffset(0)))
-            .expect("a face is loaded");
+            .expect("drawn");
         let middle = shaper
             .caret(slot(0), &request, TextPosition::downstream(TextOffset(1)))
-            .expect("a face is loaded");
+            .expect("drawn");
         let end = shaper
             .caret(slot(0), &request, TextPosition::downstream(TextOffset(2)))
-            .expect("a face is loaded");
+            .expect("drawn");
         assert_eq!(first.x, 0.0);
         assert!(first.x < middle.x && middle.x < end.x);
         assert_eq!((first.y, first.w), (0.0, 0.0));
@@ -1492,15 +1744,15 @@ mod tests {
             locale: None,
         };
         let node = viso_ui::NodeArena::new().alloc();
+        let at = ParagraphSlot::from(node);
+        let mut gpu = headless();
+        shaper.shape(&mut gpu, at, &request, 1.0, None);
         assert!(shaper.layout(node).is_none(), "nothing drawn yet");
+        settle(&mut shaper, &mut gpu, at, &request, None);
         let middle = shaper
-            .caret(
-                ParagraphSlot::from(node),
-                &request,
-                TextPosition::downstream(TextOffset(1)),
-            )
-            .expect("a face is loaded");
-        let layout = shaper.layout(node).expect("placed by the caret query");
+            .caret(at, &request, TextPosition::downstream(TextOffset(1)))
+            .expect("drawn");
+        let layout = shaper.layout(node).expect("drawn");
         assert_eq!(layout.text, PAIR);
         assert_eq!(layout.font_size, 30.0);
         assert_eq!(layout.line_height, middle.h);
@@ -1633,21 +1885,26 @@ mod tests {
         };
         let other = fallback_face(&mut shaper, &faces, false);
         let doomed = fallback_face(&mut shaper, &faces, false);
-        let _ = shaper.shape(&mut gpu, slot(0), &request(PAIR, 30.0), 1.0, None);
+        settle(&mut shaper, &mut gpu, slot(0), &request(PAIR, 30.0), None);
+        // The fixture faces are one font padded apart, so glyph ids agree.
+        let glyph = shaper.slots[&slot(0)]
+            .drawn
+            .as_ref()
+            .expect("drawn")
+            .placed
+            .glyphs[0]
+            .glyph;
         for face in [other, doomed] {
-            let span = shaper.shape_span(face, "en", "b", Direction::LeftToRight);
-            assert!(!span.segments.is_empty());
-            assert!(shaper.face_covers(face, "b"));
+            assert!(shaper.ensure_worker_face(face));
             let key = GlyphKey {
                 face,
-                glyph: span.segments[0].run.glyphs[0].glyph_id,
+                glyph,
                 bucket: 30,
                 kind: GlyphImageKind::MaskA8,
             };
-            let bitmap = shaper.rasterize(face, key.glyph, 30.0).expect("outline");
+            let bitmap = rasterize_coverage(TEST_FONT, 0, glyph, 30.0).expect("outline");
             assert!(shaper.admit_coverage(&mut gpu, key, &bitmap).is_some());
         }
-        let spans = shaper.spans.len();
         let placements = shaper.coverage_uv.len();
         let glyphs = shaper
             .residency
@@ -1655,7 +1912,6 @@ mod tests {
 
         shaper.drop_face(doomed);
 
-        assert_eq!(shaper.spans.len(), spans - 1);
         assert_eq!(shaper.coverage_uv.len(), placements - 1);
         assert_eq!(
             shaper
@@ -1665,27 +1921,30 @@ mod tests {
         );
         assert!(shaper.coverage_uv.keys().all(|key| key.face != doomed));
         assert!(shaper.fallback.face_bytes(doomed).is_none());
+        assert!(
+            shaper
+                .outbox
+                .iter()
+                .any(|message| matches!(message, ToWorker::Forget(face) if *face == doomed)),
+            "the worker forgets it too"
+        );
         for face in [app, other] {
             assert!(shaper.coverage_uv.keys().any(|key| key.face == face));
-            assert!(shaper.face_covers(face, "b"));
+            assert!(shaper.worker_faces.contains(&face));
         }
         assert!(shaper.fallback.face_bytes(other).is_some());
-        let spans_before = shaper.shaping_cache().hits();
-        let _ = shaper.shape_span(other, "en", "b", Direction::LeftToRight);
-        assert_eq!(shaper.shaping_cache().hits(), spans_before + 1, "kept");
     }
 
     #[test]
-    fn repeated_shaping_folds_face_recency_once_per_frame() {
+    fn repeated_drawing_folds_face_recency_once_per_frame() {
         let mut shaper = tiny_shaper();
+        let mut gpu = headless();
+        settle(&mut shaper, &mut gpu, slot(0), &request(PAIR, 30.0), None);
         shaper.end_frame();
         let before = shaper.face_cache().recency_updates();
         let hits = shaper.face_cache().hits();
-        for index in 0..1000 {
-            let paragraph = shaper.prepare(slot(index), &request(PAIR, 30.0), None);
-            shaper
-                .paragraphs
-                .insert(slot(index), paragraph.expect("shaped"));
+        for _ in 0..1000 {
+            shaper.shape(&mut gpu, slot(0), &request(PAIR, 30.0), 1.0, None);
         }
         shaper.end_frame();
         assert!(shaper.face_cache().hits() >= hits + 1000);
@@ -1693,26 +1952,11 @@ mod tests {
     }
 
     #[test]
-    fn span_and_face_budgets_turn_over_independently() {
-        let mut shaper = budgeted_shaper(u64::MAX, 8 * 1024);
-        let app = shaper.primary.expect("loaded");
-        // Distinct spans the fixture face covers alone: `index` spelled in b/d.
-        for index in 2..500u32 {
-            let text: String = (0..u32::BITS - index.leading_zeros())
-                .map(|bit| if index >> bit & 1 == 1 { 'b' } else { 'd' })
-                .collect();
-            let _ = shaper.shape_span(app, "en", &text, Direction::LeftToRight);
-        }
-        let spans = shaper.shaping_cache();
-        assert!(spans.evictions() > 0);
-        assert!(spans.bytes() <= spans.budget_bytes());
-        assert_eq!(shaper.face_cache().evictions(), 0);
-        assert!(shaper.face_cache().contains(app));
-
+    fn a_face_budget_turnover_leaves_the_span_cache_alone() {
         let cost = fallback_cost();
         let mut shaper = budgeted_shaper(TEST_FONT.len() as u64 + cost, u64::MAX);
-        let app = shaper.primary.expect("loaded");
-        let _ = shaper.shape_span(app, "en", PAIR, Direction::LeftToRight);
+        let mut gpu = headless();
+        settle(&mut shaper, &mut gpu, slot(0), &request(PAIR, 30.0), None);
         let faces = FixtureFaces {
             answered: Cell::new(0),
         };
@@ -1721,8 +1965,178 @@ mod tests {
             shaper.end_frame();
         }
         assert!(shaper.face_cache().evictions() > 0);
-        assert_eq!(shaper.shaping_cache().evictions(), 0);
-        assert_eq!(shaper.shaping_cache().len(), 1, "the app face's span stays");
+        // A second paragraph of the same text reads the span the first cached.
+        settle(&mut shaper, &mut gpu, slot(1), &request(PAIR, 30.0), None);
+        let spans = shaper.shaping_cache();
+        assert_eq!(spans.evictions(), 0);
+        assert_eq!(spans.len(), 1, "the app face's span stays");
+        assert!(spans.hits() > 0);
+    }
+
+    #[test]
+    fn span_budget_turnover_and_face_drops_are_independent() {
+        let mut worker = WorkerState::new(4 * 1024);
+        let app = FontFaceId(1);
+        let other = FontFaceId(2);
+        let data: FaceData = (Arc::from(TEST_FONT), 0);
+        worker.add_face(app, data.clone());
+        worker.add_face(other, data);
+        worker.shape_text(app, PAIR);
+        worker.shape_text(other, PAIR);
+
+        // Distinct spans from one face turn the generations over.
+        for n in 0..200 {
+            worker.shape_text(app, &format!("{PAIR} {n}"));
+        }
+        let turned = worker.span_stats();
+        assert!(turned.evictions() > 0);
+        assert!(turned.bytes() <= turned.budget_bytes());
+
+        // A span in use survives turnover by moving to the live generation.
+        let misses = worker.span_stats().misses();
+        worker.shape_text(app, "keep");
+        worker.shape_text(app, "keep");
+        assert_eq!(worker.span_stats().misses(), misses + 1);
+
+        // Dropping a face takes its spans, and is no eviction.
+        worker.shape_text(other, "keep");
+        let before = worker.span_stats();
+        worker.drop_face(other);
+        let after = worker.span_stats();
+        assert_eq!(after.evictions(), before.evictions());
+        assert_eq!(after.len(), before.len() - 1);
+        worker.shape_text(app, "keep");
+        assert_eq!(
+            worker.span_stats().misses(),
+            after.misses(),
+            "the app face's span stays"
+        );
+    }
+
+    #[test]
+    fn an_edit_cadence_shapes_nothing_on_the_main_thread() {
+        let mut shaper = tiny_shaper();
+        let mut gpu = headless();
+        let mut text = String::from("tick tock ");
+        let first = settle(&mut shaper, &mut gpu, slot(0), &wrapped(&text), Some(120.0));
+        let mut last = natural(&first);
+        for n in 0..20 {
+            text.push(if n % 2 == 0 { 'a' } else { ' ' });
+            // The edited text draws the last good layout at once.
+            let drawn = shaper.shape(&mut gpu, slot(0), &wrapped(&text), 1.0, Some(120.0));
+            assert_eq!(natural(&drawn), last);
+            assert!(shaper.has_pending_work());
+            drain(&mut shaper, &mut gpu);
+            let committed = shaper.shape(&mut gpu, slot(0), &wrapped(&text), 1.0, Some(120.0));
+            assert_eq!(drawn_text(&shaper, slot(0)), text);
+            last = natural(&committed);
+        }
+        let counters = shaper.counters();
+        assert_eq!(counters.main_shaped_runs(), 0);
+        assert!(counters.shaped_runs() > 0);
+        assert!(counters.commits() >= 21);
+    }
+
+    #[test]
+    fn an_over_budget_frame_defers_the_rest_of_the_commits() {
+        let mut shaper = tiny_shaper();
+        let mut gpu = headless();
+        let texts = ["ab", "ba", "aab", "bba"];
+        for (n, text) in (0..).zip(texts) {
+            shaper.shape(&mut gpu, slot(n), &request(text, 30.0), 1.0, None);
+        }
+        shaper.wait_idle();
+        let mut updated = Vec::new();
+        for (frame, left) in [3, 2, 1, 0].into_iter().enumerate() {
+            shaper.pump(&mut gpu, Duration::ZERO, &mut updated);
+            let counters = shaper.counters();
+            assert_eq!(counters.commits(), frame as u64 + 1, "one commit a frame");
+            assert_eq!(counters.deferred(), left);
+            assert_eq!(updated.len(), frame + 1);
+        }
+        assert!(!shaper.has_pending_work());
+        for (n, text) in (0..).zip(texts) {
+            let content = shaper.shape(&mut gpu, slot(n), &request(text, 30.0), 1.0, None);
+            assert_eq!(glyph_count(&content), text.len());
+        }
+    }
+
+    #[test]
+    fn deferred_work_completes_the_same_under_any_budget() {
+        let texts = [
+            "the quick brown fox jumps over the lazy dog",
+            "tick tock tick tock",
+            PAIR,
+        ];
+        let run = |budget: Duration| {
+            let mut shaper = tiny_shaper();
+            let mut gpu = headless();
+            for (n, text) in (0..).zip(texts) {
+                shaper.shape(&mut gpu, slot(n), &wrapped(text), 1.0, Some(90.0));
+            }
+            let mut updated = Vec::new();
+            let mut frames = 0;
+            while shaper.has_pending_work() {
+                shaper.wait_idle();
+                shaper.pump(&mut gpu, budget, &mut updated);
+                frames += 1;
+            }
+            let drawn: Vec<_> = (0..)
+                .zip(texts)
+                .map(|(n, text)| {
+                    let content = shaper.shape(&mut gpu, slot(n), &wrapped(text), 1.0, Some(90.0));
+                    (
+                        natural(&content),
+                        glyph_count(&content),
+                        lines_of(&shaper, slot(n)),
+                    )
+                })
+                .collect();
+            (drawn, frames)
+        };
+        let (slow, slow_frames) = run(Duration::ZERO);
+        let (fast, fast_frames) = run(Duration::MAX);
+        assert_eq!(slow, fast);
+        assert!(slow_frames > fast_frames);
+    }
+
+    /// Run the worker until it owes nothing, committing everything it
+    /// returns; the slots whose drawn layout changed.
+    fn drain(shaper: &mut TextShaper, gpu: &mut HeadlessRaster) -> Vec<ParagraphSlot> {
+        let mut updated = Vec::new();
+        while shaper.has_pending_work() {
+            shaper.wait_idle();
+            shaper.pump(gpu, Duration::MAX, &mut updated);
+        }
+        updated
+    }
+
+    /// `request`'s content once the worker laid it out and every glyph it
+    /// draws is resident.
+    fn settle(
+        shaper: &mut TextShaper,
+        gpu: &mut HeadlessRaster,
+        at: ParagraphSlot,
+        request: &TextRequest,
+        width: Option<f32>,
+    ) -> Content {
+        shaper.shape(gpu, at, request, 1.0, width);
+        drain(shaper, gpu);
+        shaper.shape(gpu, at, request, 1.0, width)
+    }
+
+    fn glyph_count(content: &Content) -> usize {
+        let Content::Text { glyphs, .. } = content else {
+            panic!("text content");
+        };
+        glyphs.len()
+    }
+
+    fn natural(content: &Content) -> Vec2 {
+        let Content::Text { natural, .. } = content else {
+            panic!("text content");
+        };
+        *natural
     }
 
     fn headless() -> HeadlessRaster {
@@ -1749,6 +2163,9 @@ mod tests {
         for size in [27.0, 28.0, 29.0, 31.0, 32.0, 33.0, 34.0] {
             shaper.shape(gpu, slot(0), &request(PAIR, 30.0), 1.0, None);
             shaper.shape(gpu, slot(1), &request(PAIR, size), 1.0, None);
+            drain(shaper, gpu);
+            shaper.shape(gpu, slot(0), &request(PAIR, 30.0), 1.0, None);
+            shaper.shape(gpu, slot(1), &request(PAIR, size), 1.0, None);
             evictions += shaper.counters().evictions();
             shaper.end_frame();
         }
@@ -1759,8 +2176,8 @@ mod tests {
     fn a_memory_trim_retires_the_atlas_and_reshaping_readmits_only_the_live_runs() {
         let mut gpu = headless();
         let mut shaper = tiny_shaper();
-        let first = shaper.shape(&mut gpu, slot(0), &request(PAIR, 30.0), 1.0, None);
-        shaper.shape(&mut gpu, slot(1), &request(PAIR, 27.0), 1.0, None);
+        let first = settle(&mut shaper, &mut gpu, slot(0), &request(PAIR, 30.0), None);
+        settle(&mut shaper, &mut gpu, slot(1), &request(PAIR, 27.0), None);
         shaper.end_frame();
         let Content::Text { atlas: old, .. } = first else {
             panic!("text content");
@@ -1779,7 +2196,7 @@ mod tests {
 
         // Reshaping the one run still mounted re-rasterizes into a fresh plane
         // and admits its two glyphs only; the dropped run stays out.
-        let again = shaper.shape(&mut gpu, slot(0), &request(PAIR, 30.0), 1.0, None);
+        let again = settle(&mut shaper, &mut gpu, slot(0), &request(PAIR, 30.0), None);
         let Content::Text { atlas, glyphs, .. } = &again else {
             panic!("text content");
         };
@@ -1787,7 +2204,13 @@ mod tests {
         assert_eq!(glyphs.len(), 2);
         assert_eq!(shaper.counters().rasters(), 2);
         let mut fresh = tiny_shaper();
-        fresh.shape(&mut headless(), slot(0), &request(PAIR, 30.0), 1.0, None);
+        settle(
+            &mut fresh,
+            &mut headless(),
+            slot(0),
+            &request(PAIR, 30.0),
+            None,
+        );
         assert_eq!(
             shaper
                 .residency()
@@ -1803,7 +2226,7 @@ mod tests {
     fn filling_the_pool_reclaims_cold_pages_and_keeps_the_hot_glyphs() {
         let mut gpu = headless();
         let mut shaper = tiny_shaper();
-        shaper.shape(&mut gpu, slot(0), &request(PAIR, 30.0), 1.0, None);
+        settle(&mut shaper, &mut gpu, slot(0), &request(PAIR, 30.0), None);
         shaper.end_frame();
 
         let evicted = flood(&mut shaper, &mut gpu);
@@ -1837,11 +2260,11 @@ mod tests {
         // Drawn once, in the first frame, and never touched again: the coldest
         // page in the pool from that moment on.
         let probe = request("q", 26.0);
-        shaper.shape(&mut gpu, slot(2), &probe, 1.0, None);
+        settle(&mut shaper, &mut gpu, slot(2), &probe, None);
         shaper.end_frame();
         assert!(flood(&mut shaper, &mut gpu) > 0);
 
-        let content = shaper.shape(&mut gpu, slot(2), &probe, 1.0, None);
+        let content = settle(&mut shaper, &mut gpu, slot(2), &probe, None);
         let Content::Text { glyphs, .. } = &content else {
             panic!("text content");
         };
@@ -1875,7 +2298,7 @@ mod tests {
         let mut gpu = headless();
         let mut shaper = tiny_shaper();
         let latin = request(PAIR, 30.0);
-        shaper.shape(&mut gpu, slot(0), &latin, 1.0, None);
+        settle(&mut shaper, &mut gpu, slot(0), &latin, None);
         shaper.end_frame();
         let coverage_glyphs = shaper
             .residency()
@@ -1888,7 +2311,13 @@ mod tests {
         // One fresh emoji bucket per frame, never re-requested, until the nine-page
         // color pool turns over. The Latin pair is not drawn again at all.
         for size in 12..=26 {
-            shaper.shape(&mut gpu, slot(1), &request("🥟", size as f32), 1.0, None);
+            settle(
+                &mut shaper,
+                &mut gpu,
+                slot(1),
+                &request("🥟", size as f32),
+                None,
+            );
             shaper.end_frame();
         }
         let residency = shaper.residency();
@@ -1924,6 +2353,10 @@ mod tests {
         for (n, text) in (0..).zip(frame) {
             shaper.shape(&mut gpu, slot(n), &request(text, 18.0), 1.0, None);
         }
+        drain(&mut shaper, &mut gpu);
+        for (n, text) in (0..).zip(frame) {
+            shaper.shape(&mut gpu, slot(n), &request(text, 18.0), 1.0, None);
+        }
         shaper.end_frame();
         let residency = shaper.residency();
         let resident = residency.pool_resident_glyphs(GlyphImageKind::MaskA8);
@@ -1937,6 +2370,10 @@ mod tests {
         for (n, text) in (0..).zip(frame) {
             shaper.shape(&mut gpu, slot(n), &request(text, 18.0), 1.0, None);
         }
+        assert!(
+            !shaper.has_pending_work(),
+            "a warm frame asks nothing of the worker"
+        );
         let counters = shaper.counters();
         assert_eq!(counters.reshapes(), 0);
         assert_eq!(counters.rasters(), 0);
@@ -1969,7 +2406,7 @@ mod tests {
             soft_wrap: false,
             locale: None,
         };
-        let first = shaper.shape(&mut gpu, slot(0), &request, 1.0, None);
+        let first = settle(&mut shaper, &mut gpu, slot(0), &request, None);
         shaper.end_frame();
         let second = shaper.shape(&mut gpu, slot(0), &request, 1.0, None);
         let Content::Text {
@@ -2028,7 +2465,7 @@ mod tests {
             soft_wrap: false,
             locale: None,
         };
-        let content = shaper.shape(&mut gpu, slot(0), &request, 1.0, None);
+        let content = settle(&mut shaper, &mut gpu, slot(0), &request, None);
         let Content::Text {
             glyphs,
             color_glyphs,
@@ -2095,7 +2532,7 @@ mod tests {
                 soft_wrap: false,
                 locale: None,
             };
-            let c = solo.shape(&mut gpu, slot(0), &req, 1.0, None);
+            let c = settle(&mut solo, &mut gpu, slot(0), &req, None);
             let Content::Text {
                 glyphs,
                 color_glyphs,
@@ -2149,13 +2586,11 @@ mod tests {
             soft_wrap: false,
             locale: None,
         };
-        let _ = shaper.shape(&mut gpu, slot(0), &request, 1.0, None);
-        // Re-derive the per-glyph face/glyph placements (GlyphInstanceData in the
-        // shaped Content carries only rect/uv, not face/glyph).
-        let retained = shaper
-            .prepare(slot(0), &request, None)
-            .expect("primary UI face resolves");
-        let glyphs = &retained.placed.glyphs;
+        settle(&mut shaper, &mut gpu, slot(0), &request, None);
+        // The drawn layout's per-glyph face/glyph placements (GlyphInstanceData
+        // in the shaped Content carries only rect/uv, not face/glyph).
+        let drawn = shaper.slots[&slot(0)].drawn.as_ref().expect("drawn");
+        let glyphs = &drawn.placed.glyphs;
         assert!(!glyphs.is_empty(), "Devanagari must place glyphs");
 
         // At least one placed glyph must come from a CFF2 face and be served by
@@ -2176,7 +2611,7 @@ mod tests {
 
             // The static fast path must refuse a CFF2 outline...
             assert!(
-                shaper.rasterize(g.face, g.glyph, 48.0).is_none(),
+                rasterize_coverage(bytes, index, g.glyph, 48.0).is_none(),
                 "static parser must refuse CFF2 glyph {} (variable outline)",
                 g.glyph,
             );
@@ -2209,11 +2644,11 @@ mod tests {
             soft_wrap: true,
             locale: None,
         };
-        let wide = shaper.shape(&mut gpu, slot(0), &request, 1.0, None);
+        let wide = settle(&mut shaper, &mut gpu, slot(0), &request, None);
         let Content::Text { natural: wide, .. } = wide else {
             panic!("text content");
         };
-        let narrow = shaper.shape(&mut gpu, slot(0), &request, 1.0, Some(wide.x * 0.4));
+        let narrow = settle(&mut shaper, &mut gpu, slot(0), &request, Some(wide.x * 0.4));
         let Content::Text {
             natural: narrow, ..
         } = narrow
@@ -2266,8 +2701,27 @@ mod tests {
             .collect()
     }
 
+    fn drawn_text(shaper: &TextShaper, at: ParagraphSlot) -> String {
+        shaper.slots[&at]
+            .drawn
+            .as_ref()
+            .expect("drawn")
+            .target
+            .text
+            .to_string()
+    }
+
+    fn drawn_tailoring(shaper: &TextShaper, at: ParagraphSlot) -> LineBreakTailoring {
+        shaper.slots[&at]
+            .drawn
+            .as_ref()
+            .expect("drawn")
+            .target
+            .tailoring
+    }
+
     fn lines_of(shaper: &TextShaper, at: ParagraphSlot) -> Vec<LineShape> {
-        structure(shaper.paragraphs[&at].paragraph.lines())
+        structure(&shaper.slots[&at].drawn.as_ref().expect("drawn").lines)
     }
 
     /// The lines a fresh paragraph lays out for `text`, through the same
@@ -2275,7 +2729,13 @@ mod tests {
     fn recomputed(text: &str, width_px: f32) -> Vec<LineShape> {
         let mut gpu = headless();
         let mut fresh = shaper();
-        fresh.shape(&mut gpu, slot(0), &wrapped(text), 1.0, Some(width_px));
+        settle(
+            &mut fresh,
+            &mut gpu,
+            slot(0),
+            &wrapped(text),
+            Some(width_px),
+        );
         lines_of(&fresh, slot(0))
     }
 
@@ -2285,9 +2745,9 @@ mod tests {
         let mut shaper = shaper();
         let width = 120.0;
         let mut text = String::from("the quick brown fox jumps over the lazy dog again and again");
-        shaper.shape(&mut gpu, slot(0), &wrapped(&text), 1.0, Some(width));
+        settle(&mut shaper, &mut gpu, slot(0), &wrapped(&text), Some(width));
         assert_eq!(lines_of(&shaper, slot(0)), recomputed(&text, width));
-        assert!(shaper.paragraphs[&slot(0)].paragraph.lines().len() > 2);
+        assert!(lines_of(&shaper, slot(0)).len() > 2);
 
         let edits: [(usize, usize, &str); 7] = [
             (4, 9, "slow"),
@@ -2300,8 +2760,8 @@ mod tests {
         ];
         for (start, end, replacement) in edits {
             text.replace_range(start..end, replacement);
-            shaper.shape(&mut gpu, slot(0), &wrapped(&text), 1.0, Some(width));
-            assert_eq!(shaper.paragraphs[&slot(0)].paragraph.text(), text);
+            settle(&mut shaper, &mut gpu, slot(0), &wrapped(&text), Some(width));
+            assert_eq!(drawn_text(&shaper, slot(0)), text);
             assert_eq!(
                 lines_of(&shaper, slot(0)),
                 recomputed(&text, width),
@@ -2327,9 +2787,9 @@ mod tests {
         let mut gpu = headless();
         let mut shaper = shaper();
         let width = 240.0;
-        shaper.shape(&mut gpu, slot(0), &wrapped(&text), 1.0, Some(width));
-        let full = shaper.paragraphs[&slot(0)].paragraph.shape_call_count();
-        let lines = shaper.paragraphs[&slot(0)].paragraph.lines().len();
+        settle(&mut shaper, &mut gpu, slot(0), &wrapped(&text), Some(width));
+        let full = shaper.slots[&slot(0)].shape_calls;
+        let lines = lines_of(&shaper, slot(0)).len();
         assert!(lines > 500, "the paragraph wraps into many lines ({lines})");
         shaper.end_frame();
 
@@ -2338,8 +2798,8 @@ mod tests {
             .find(|&i| text.as_bytes()[i] != b' ')
             .unwrap_or(middle);
         text.replace_range(at..at + 1, "Q");
-        shaper.shape(&mut gpu, slot(0), &wrapped(&text), 1.0, Some(width));
-        let edit = shaper.paragraphs[&slot(0)].paragraph.shape_call_count() - full;
+        settle(&mut shaper, &mut gpu, slot(0), &wrapped(&text), Some(width));
+        let edit = shaper.slots[&slot(0)].shape_calls - full;
         assert_eq!(shaper.counters().reshapes(), 1);
         assert!(
             edit <= 64,
@@ -2356,7 +2816,7 @@ mod tests {
         let text = "a paragraph long enough to wrap onto a few lines";
         let width = 100.0;
         let Content::Text { natural, .. } =
-            shaper.shape(&mut gpu, slot(0), &wrapped(text), 1.0, Some(width))
+            settle(&mut shaper, &mut gpu, slot(0), &wrapped(text), Some(width))
         else {
             panic!("text content");
         };
@@ -2367,6 +2827,18 @@ mod tests {
         // reflows it.
         let edited = format!("{text}!");
         let retained = shaper.wrap_width(slot(0));
+        // Until the worker lays the edit out, the last good lines draw.
+        let Content::Text {
+            natural: pending,
+            shaped_at_width,
+            ..
+        } = shaper.shape(&mut gpu, slot(0), &wrapped(&edited), 1.0, retained)
+        else {
+            panic!("text content");
+        };
+        assert_eq!(shaped_at_width, Some(width));
+        assert_eq!(pending, natural);
+        drain(&mut shaper, &mut gpu);
         let Content::Text {
             natural: after,
             shaped_at_width,
@@ -2378,11 +2850,12 @@ mod tests {
         assert_eq!(shaped_at_width, Some(width));
         assert_eq!(after.y, natural.y);
         assert!(after.x <= width);
+        assert_eq!(drawn_text(&shaper, slot(0)), edited);
 
         // A memory trim keeps the lines: the reshape it forces only rasters.
         shaper.end_frame();
         shaper.trim(|_| {});
-        shaper.shape(&mut gpu, slot(0), &wrapped(&edited), 1.0, retained);
+        settle(&mut shaper, &mut gpu, slot(0), &wrapped(&edited), retained);
         assert_eq!(shaper.counters().reshapes(), 0);
         assert_eq!(shaper.counters().shaped_runs(), 0);
         assert!(shaper.counters().rasters() > 0);
@@ -2397,22 +2870,22 @@ mod tests {
                 locale: Some(locale.to_owned()),
                 ..wrapped("line breaking")
             };
-            shaper.shape(&mut gpu, slot(n), &request, 1.0, Some(80.0));
+            settle(&mut shaper, &mut gpu, slot(n), &request, Some(80.0));
             assert_eq!(
-                shaper.paragraphs[&slot(n)].paragraph.tailoring(),
+                drawn_tailoring(&shaper, slot(n)),
                 LineBreakTailoring::for_locale(locale),
                 "{locale}",
             );
         }
-        let tailoring = |n| shaper.paragraphs[&slot(n)].paragraph.tailoring();
+        let tailoring = |n| drawn_tailoring(&shaper, slot(n));
         assert_eq!(tailoring(0), tailoring(1), "ja and zh share the CJK tables");
         assert_eq!(tailoring(1), tailoring(2));
         assert_ne!(tailoring(0), tailoring(3), "ko breaks as a spaced script");
 
         let unset = wrapped("line breaking");
-        shaper.shape(&mut gpu, slot(9), &unset, 1.0, Some(80.0));
+        settle(&mut shaper, &mut gpu, slot(9), &unset, Some(80.0));
         assert_eq!(
-            shaper.paragraphs[&slot(9)].paragraph.tailoring(),
+            drawn_tailoring(&shaper, slot(9)),
             LineBreakTailoring::for_locale(process_locale()),
         );
     }
@@ -2431,16 +2904,16 @@ mod tests {
         let mut shaper = shaper();
         let mut gpu = headless();
         let request = wrapped("first second third fourth");
-        shaper.shape(&mut gpu, slot(0), &request, 1.0, Some(70.0));
-        let second = shaper.paragraphs[&slot(0)].paragraph.lines()[1]
+        settle(&mut shaper, &mut gpu, slot(0), &request, Some(70.0));
+        let second = shaper.slots[&slot(0)].drawn.as_ref().expect("drawn").lines[1]
             .logical_range
             .0;
         let upstream = shaper
             .caret(slot(0), &request, TextPosition::upstream(second))
-            .expect("a face is loaded");
+            .expect("drawn");
         let downstream = shaper
             .caret(slot(0), &request, TextPosition::downstream(second))
-            .expect("a face is loaded");
+            .expect("drawn");
         assert_eq!(upstream.y, 0.0, "upstream ends the first line");
         assert!(upstream.x > 0.0);
         assert_eq!(downstream.y, upstream.h, "downstream starts the second");
