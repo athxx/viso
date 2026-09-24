@@ -19,7 +19,7 @@ use viso_text::{
     LineBreakTailoring, OUTLINE_POOL, PoolBudget, Reclaimed, Resolved, Segmenter, ShapedRun,
     Shaper, TextOffset, TextPosition, inspect_face, rasterize_coverage,
 };
-use viso_ui::{Content, NodeId, TextRequest, Vec2};
+use viso_ui::{Content, EditGeometry, EditLayout, NodeId, TextRequest, Vec2};
 
 use crate::system_fonts::{CoreTextColorRaster, CoreTextProvider, LiveFontRegistry};
 
@@ -1009,6 +1009,22 @@ impl TextShaper {
     }
 }
 
+/// A text control's drawn geometry is its retained paragraph as last placed:
+/// the lines, the size they were placed at, and their line height, all in the
+/// node's logical-pixel space. A paragraph whose lines changed since placement
+/// answers `None` until it is placed again.
+impl EditGeometry for TextShaper {
+    fn layout(&self, node: NodeId) -> Option<EditLayout<'_>> {
+        let retained = self.paragraphs.get(&ParagraphSlot::from(node))?;
+        Some(EditLayout {
+            text: retained.paragraph.text(),
+            lines: retained.paragraph.lines(),
+            font_size: f32::from_bits(retained.placed_at?),
+            line_height: retained.placed.line_height,
+        })
+    }
+}
+
 fn ensure_coverage_atlas<'a, B: GpuBackend>(
     atlas: &'a mut Option<GlyphAtlas>,
     backend: &mut B,
@@ -1202,6 +1218,36 @@ mod tests {
             1,
             "every query reads one layout"
         );
+    }
+
+    #[test]
+    fn edit_geometry_is_the_placed_paragraph_and_resolves_a_click() {
+        let mut shaper = tiny_shaper();
+        let request = TextRequest {
+            text: PAIR.to_owned(),
+            font_size: 30.0,
+            color: Rgba::TRANSPARENT,
+            soft_wrap: false,
+            locale: None,
+        };
+        let node = viso_ui::NodeArena::new().alloc();
+        assert!(shaper.layout(node).is_none(), "nothing drawn yet");
+        let middle = shaper
+            .caret(
+                ParagraphSlot::from(node),
+                &request,
+                TextPosition::downstream(TextOffset(1)),
+            )
+            .expect("a face is loaded");
+        let layout = shaper.layout(node).expect("placed by the caret query");
+        assert_eq!(layout.text, PAIR);
+        assert_eq!(layout.font_size, 30.0);
+        assert_eq!(layout.line_height, middle.h);
+        // The stop the caret query drew at offset 1 is where a click resolves.
+        let line = &layout.lines[0];
+        let hit = viso_text::hit_test::HitTester::new(line)
+            .position_at_inline((middle.x + 0.5) / layout.font_size);
+        assert_eq!(hit.offset, TextOffset(1));
     }
 
     fn headless() -> HeadlessRaster {

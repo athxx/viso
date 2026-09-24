@@ -388,6 +388,13 @@ pub struct NodeStore {
     /// every sub-pixel frame. Empty and allocation-free in the overwhelmingly
     /// common frame with no wrap-eligible text whose width changed.
     text_reflows: Vec<(NodeId, f32)>,
+    /// Cold, transient handoff buffer (not index-aligned): edit intents a
+    /// pointer handler recorded (click-to-place, drag-select), sitting here
+    /// between the pointer router, which holds the store but not the
+    /// driver-owned [`TextEdits`](crate::text_edit::TextEdits) registry, and
+    /// [`reconcile`](crate::text_edit::reconcile), which drains them onto each
+    /// node's buffer. Empty and allocation-free in a frame with no text click.
+    edit_requests: Vec<(NodeId, crate::text_edit::EditIntent)>,
     /// Cold retained slot (not index-aligned): the nodes a caption widget
     /// declared as draggable self-drawn-caption regions, in declaration order. A
     /// self-drawn-chrome window's caption registers its blank band here at build
@@ -441,6 +448,7 @@ impl NodeStore {
         self.window_opens.clear();
         self.window_closes.clear();
         self.text_reflows.clear();
+        self.edit_requests.clear();
         self.focused = None;
         self.contacts.clear();
         self.hovered = None;
@@ -1218,6 +1226,26 @@ impl NodeStore {
     pub fn take_text_reflows(&mut self, out: &mut Vec<(NodeId, f32)>) {
         out.clear();
         out.append(&mut self.text_reflows);
+    }
+
+    /// Enqueue an edit intent a pointer handler recorded for `node`. It waits
+    /// here until [`reconcile`](crate::text_edit::reconcile) moves it onto the
+    /// node's edit buffer.
+    #[inline]
+    pub fn queue_edit(&mut self, node: NodeId, intent: crate::text_edit::EditIntent) {
+        self.edit_requests.push((node, intent));
+    }
+
+    /// Whether any pointer-recorded edit intent is waiting for reconcile.
+    #[inline]
+    pub fn has_edit_requests(&self) -> bool {
+        !self.edit_requests.is_empty()
+    }
+
+    /// Move every queued edit intent out into `out` (cleared first).
+    pub fn take_edit_requests(&mut self, out: &mut Vec<(NodeId, crate::text_edit::EditIntent)>) {
+        out.clear();
+        out.append(&mut self.edit_requests);
     }
 
     /// Enqueue a transform animation the router drained off an

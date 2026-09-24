@@ -42,6 +42,7 @@
 //! metadata and the boundary queries it reads.
 
 use crate::FontFaceId;
+use crate::ligature_caret;
 
 /// One positioned glyph produced by shaping.
 ///
@@ -85,9 +86,32 @@ pub struct ShapedRun {
     /// (the last cluster's extent is otherwise unknown) so break-safety queries
     /// have an unambiguous end regardless of direction.
     pub text_len: u32,
+    /// Font-recorded caret positions inside the run's ligature glyphs, one
+    /// entry per distinct ligature glyph the face describes (GDEF
+    /// `LigCaretList`). Empty when the face records none.
+    pub ligature_carets: Vec<LigatureCarets>,
+}
+
+/// Where the font places carets inside one ligature glyph: em offsets from the
+/// glyph origin, ascending. A ligature of `n` characters has `n - 1` carets
+/// when the font describes it fully.
+#[derive(Debug, Clone, PartialEq)]
+pub struct LigatureCarets {
+    /// The ligature glyph the carets belong to.
+    pub glyph_id: u16,
+    /// Caret offsets from the glyph origin in em units, ascending.
+    pub carets: Vec<f32>,
 }
 
 impl ShapedRun {
+    /// The font's caret offsets inside ligature glyph `glyph_id`, if recorded.
+    pub fn carets_for(&self, glyph_id: u16) -> Option<&[f32]> {
+        self.ligature_carets
+            .iter()
+            .find(|l| l.glyph_id == glyph_id)
+            .map(|l| l.carets.as_slice())
+    }
+
     /// Whether any glyph in the run is `.notdef` (glyph id 0), i.e. the face
     /// could not cover some cluster and the caller must resolve it via fallback.
     pub fn has_coverage_miss(&self) -> bool {
@@ -231,11 +255,33 @@ impl Shaper {
         // Reclaim the buffer's allocation for the next run.
         self.reusable_buffer = Some(glyph_buffer.clear());
 
+        let mut ligature_carets: Vec<LigatureCarets> = Vec::new();
+        if let Some(gdef) = rb_face
+            .raw_face()
+            .table(ttf_parser::Tag::from_bytes(b"GDEF"))
+        {
+            for glyph in &glyphs {
+                if ligature_carets.iter().any(|l| l.glyph_id == glyph.glyph_id) {
+                    continue;
+                }
+                if let Some(carets) = ligature_caret::ligature_carets(gdef, glyph.glyph_id) {
+                    ligature_carets.push(LigatureCarets {
+                        glyph_id: glyph.glyph_id,
+                        carets: carets
+                            .into_iter()
+                            .map(|c| f32::from(c) / units_per_em)
+                            .collect(),
+                    });
+                }
+            }
+        }
+
         Some(ShapedRun {
             face,
             glyphs,
             width_ems,
             text_len: text.len() as u32,
+            ligature_carets,
         })
     }
 }

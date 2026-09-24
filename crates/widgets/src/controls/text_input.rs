@@ -22,7 +22,7 @@
 //! - **navigation and deletion** come from [`KeyEvent`](viso_ui::KeyEvent)s —
 //!   Left/Right move the caret ([`Motion`](viso_ui::Motion)), Home/End jump to the
 //!   ends, Shift extends the selection, Backspace/Delete remove the selection or
-//!   one character;
+//!   one grapheme cluster;
 //! - **insertion and composition** come from [`ImeEvent`](viso_ui::ImeEvent)s —
 //!   `Preedit` drives a [`EditIntent::Compose`](viso_ui::EditIntent::Compose)
 //!   (the composing underline), `Commit` finalizes it with
@@ -30,16 +30,18 @@
 //!   IME-commit-driven: there is no key-to-insert path, which is what makes the
 //!   control IME-aware from the first slice (AGENTS section 20).
 //!
-//! A primary press moves focus to the field so subsequent keystrokes route to it;
-//! richer pointer editing (click-to-place-caret, drag-select) is a later slice —
-//! it needs the shaped glyph geometry to hit-test a character, which the handler
-//! does not have. Its accessible role is [`Role::TextField`] with the given label
-//! as its accessible name (AGENTS section 15).
+//! A primary press moves focus to the field, captures the pointer, and records
+//! an [`EditIntent::PlaceAt`](viso_ui::EditIntent::PlaceAt) at the press point
+//! (Shift extends the selection); moving with the button held extends it, which
+//! is drag-select. The handler only forwards the point — the reconcile pass
+//! resolves it through the field's drawn caret stops. Its accessible role is
+//! [`Role::TextField`] with the given label as its accessible name (AGENTS
+//! section 15).
 //!
 //! Deferred to later slices: multi-line/wrap, undo/redo, word motion,
 //! placeholder/password rendering, horizontal scroll/clip, caret blink,
-//! double/triple-click selection, grapheme-cluster stepping, and authoritative
-//! full-state IME sync (Android/iOS).
+//! double/triple-click selection, and authoritative full-state IME sync
+//! (Android/iOS).
 //!
 //! ```
 //! use viso_widgets::text_input;
@@ -66,7 +68,7 @@ use std::rc::Rc;
 
 use viso_ui::{
     BuildCx, Component, EditIntent, EventCx, ImeEvent, Key, LeafStyle, Length, Motion,
-    PointerButtons, PointerPhase, Rgba, Role, Semantics, Size, TextRequest,
+    PointerButtons, PointerPhase, Rgba, Role, Semantics, Size, TextOffset, TextRequest,
 };
 
 /// A shared, mutable change callback carrying the field's new text, fired from
@@ -219,15 +221,27 @@ impl Component for TextInput {
         // Focusable so keystrokes and IME events route to it while focused.
         cx.focusable(root, true);
 
-        // A primary press focuses the field so subsequent keystrokes route here.
-        // Click-to-place-caret and drag-select need the shaped glyph geometry to
-        // hit-test a character (which the handler does not have) and are a later
-        // slice.
+        // A primary press focuses the field and places the caret at the press
+        // point; moving with the button held extends the selection (the capture
+        // keeps the drag here when it leaves the field). The point is resolved
+        // against the drawn caret stops when the intent is applied.
         let root_id = root.id();
         cx.on_pointer(root, move |ev| {
             let Some(p) = ev.pointer() else { return };
-            if p.phase == PointerPhase::Down && p.buttons.contains(PointerButtons::PRIMARY) {
-                ev.request_focus(root_id);
+            let held = p.buttons.contains(PointerButtons::PRIMARY);
+            let (x, y) = (p.x, p.y);
+            match p.phase {
+                PointerPhase::Down if held => {
+                    let extend = p.modifiers.shift;
+                    ev.request_focus(root_id);
+                    ev.capture_pointer(root_id);
+                    ev.record_edit(EditIntent::PlaceAt { x, y, extend });
+                }
+                PointerPhase::Move if held => {
+                    ev.record_edit(EditIntent::PlaceAt { x, y, extend: true });
+                }
+                PointerPhase::Up => ev.release_pointer(),
+                _ => {}
             }
         });
 
@@ -277,7 +291,7 @@ impl Component for TextInput {
                     // composing state (empty text cancels the composition).
                     ImeEvent::Preedit { text, caret } => ev.record_edit(EditIntent::Compose {
                         text: text.clone(),
-                        caret: *caret,
+                        caret: TextOffset(*caret),
                     }),
                     // The commit finalizes composition (or, with no composition in
                     // flight, inserts the text at the caret): this is the insertion
@@ -349,14 +363,24 @@ mod tests {
         /// Feed a pointer sample to the root's pointer handler, restoring it after,
         /// and return any pending focus request the handler made.
         fn pointer(&mut self, root: NodeId, ev: PointerEvent) -> Option<Option<NodeId>> {
+            self.pointer_full(root, ev).focus
+        }
+
+        /// Feed a pointer sample to the root's pointer handler, restoring it after,
+        /// and return every deferred request the handler made.
+        fn pointer_full(&mut self, root: NodeId, ev: PointerEvent) -> PointerOutcome {
             let mut handler = self.store.take_handler(root).expect("pointer handler");
-            let focus = {
+            let outcome = {
                 let mut cx = EventCx::__new_pointer(&mut self.states, &self.bindings, &ev);
                 handler(&mut cx);
-                cx.__take_focus_request()
+                PointerOutcome {
+                    focus: cx.__take_focus_request(),
+                    capture: cx.__take_capture_request(),
+                    edits: cx.__take_edits(),
+                }
             };
             self.store.restore_handler(root, handler);
-            focus
+            outcome
         }
 
         /// Feed a key sample to the root's key handler, restoring it after, and
@@ -385,6 +409,13 @@ mod tests {
             self.store.restore_key_handler(root, handler);
             edits
         }
+    }
+
+    /// The deferred requests one pointer dispatch made.
+    struct PointerOutcome {
+        focus: Option<Option<NodeId>>,
+        capture: Option<Option<NodeId>>,
+        edits: Vec<EditIntent>,
     }
 
     /// A primary-button pointer sample at the origin in the given phase.
@@ -486,6 +517,95 @@ mod tests {
         };
         let focus = rx.pointer(root, non_primary);
         assert_eq!(focus, None, "a non-primary press does not focus");
+    }
+
+    /// A press captures the pointer and places the caret at the press point;
+    /// a held move extends the selection; the release frees the capture. A move
+    /// without the button held records nothing.
+    #[test]
+    fn press_and_drag_record_placements() {
+        let mut rx = Reactive::new();
+        let root = rx.build(text_input("Name").value("hello"));
+
+        let down = rx.pointer_full(
+            root,
+            PointerEvent {
+                x: 12.0,
+                y: 3.0,
+                ..primary(PointerPhase::Down)
+            },
+        );
+        assert_eq!(down.capture, Some(Some(root)));
+        assert_eq!(
+            down.edits,
+            vec![EditIntent::PlaceAt {
+                x: 12.0,
+                y: 3.0,
+                extend: false
+            }]
+        );
+
+        let drag = rx.pointer_full(
+            root,
+            PointerEvent {
+                x: 30.0,
+                y: 4.0,
+                ..primary(PointerPhase::Move)
+            },
+        );
+        assert_eq!(
+            drag.edits,
+            vec![EditIntent::PlaceAt {
+                x: 30.0,
+                y: 4.0,
+                extend: true
+            }]
+        );
+
+        let up = rx.pointer_full(
+            root,
+            PointerEvent {
+                buttons: PointerButtons::NONE,
+                ..primary(PointerPhase::Up)
+            },
+        );
+        assert_eq!(up.capture, Some(None));
+        assert!(up.edits.is_empty());
+
+        let hover = rx.pointer_full(
+            root,
+            PointerEvent {
+                buttons: PointerButtons::NONE,
+                ..primary(PointerPhase::Move)
+            },
+        );
+        assert!(hover.edits.is_empty());
+        assert_eq!(hover.capture, None);
+    }
+
+    /// Shift-press extends from the existing anchor instead of collapsing.
+    #[test]
+    fn shift_press_extends() {
+        let mut rx = Reactive::new();
+        let root = rx.build(text_input("Name"));
+        let down = rx.pointer_full(
+            root,
+            PointerEvent {
+                modifiers: Modifiers {
+                    shift: true,
+                    ..Modifiers::default()
+                },
+                ..primary(PointerPhase::Down)
+            },
+        );
+        assert_eq!(
+            down.edits,
+            vec![EditIntent::PlaceAt {
+                x: 0.0,
+                y: 0.0,
+                extend: true
+            }]
+        );
     }
 
     /// Arrow and Home/End presses record caret motions; Shift extends the selection.
@@ -594,7 +714,7 @@ mod tests {
             rx.ime(root, preedit),
             vec![EditIntent::Compose {
                 text: "ni".into(),
-                caret: 2
+                caret: TextOffset(2)
             }],
             "a preedit records a composing update"
         );

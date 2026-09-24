@@ -15,10 +15,10 @@
 //! intersection -> a fragment rect for each run the selection touches. A pure
 //! LTR or pure RTL line yields one fragment; a mixed line yields one fragment
 //! per run the selection overlaps, each spanning that run's visual extent for
-//! the covered sub-range. This is where Viso exceeds makepad, which paints one
-//! contiguous span per row assuming byte order equals visual order — wrong the
-//! moment a selection crosses a direction boundary. Highlighting reads visual
-//! geometry; the selection itself stays logical.
+//! the covered sub-range. One contiguous span per row, assuming byte order
+//! equals visual order, is wrong the moment a selection crosses a direction
+//! boundary. Highlighting reads visual geometry; the selection itself stays
+//! logical.
 
 use crate::paragraph::{LineLayout, VisualRun};
 use crate::text_position::{TextOffset, TextPosition};
@@ -255,8 +255,8 @@ mod tests {
     fn mixed_selection_splits_into_per_run_fragments() {
         // "A" + Hebrew "אב" under LTR base: a selection spanning the seam
         // (bytes 0..5, the whole text) crosses the LTR run and the RTL run and
-        // must produce two fragments, one per run — makepad's single-span model
-        // would wrongly merge them.
+        // must produce two fragments, one per run — a single span per row would
+        // wrongly merge them.
         let text = "A\u{05D0}\u{05D1}";
         let line = layout_line(text, BaseDirection::LeftToRight);
         let frags = sel(0, text.len()).fragments(&line);

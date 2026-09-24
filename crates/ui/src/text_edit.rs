@@ -33,72 +33,45 @@
 //! so an edit typed this frame is measured, laid out, and painted this frame. A
 //! buffer whose queue is empty is skipped — the steady path touches nothing.
 //!
-//! ## Grapheme awareness
+//! ## Positions come from the text runtime
 //!
-//! Caret motion and deletion currently step by Unicode scalar boundaries through
-//! [`prev_boundary`] and [`next_boundary`]. The text runtime already retains
-//! typed grapheme and logical-to-visual mappings; this edit buffer keeps the same
-//! byte-offset [`Selection`] contract so it can adopt those boundaries without
-//! changing stored selection state.
+//! The selection is a [`Selection`] of typed [`TextPosition`]s (byte offset plus
+//! caret affinity) and the composition an [`ImeComposition`] — the text
+//! runtime's own model, not a second byte-offset one kept beside it. Deletion
+//! and logical caret steps move by grapheme cluster, so a combining sequence, a
+//! ZWJ emoji or a flag is removed and crossed whole. Left/Right move *visually*
+//! through the caret stops of the lines the text was last drawn with, and a
+//! click resolves through the same stops, when the runtime supplies that
+//! geometry through [`EditGeometry`]; without it (text not shaped yet, or edited
+//! earlier in the same batch) Left/Right fall back to a logical grapheme step
+//! and a click waits for the next shaped frame.
+//!
+//! Every change to the text advances the buffer's [`Revision`], which the IME
+//! composition is stamped with, so a platform or worker result computed against
+//! older text can be recognized as stale.
 
 use crate::content::TextRequest;
 use crate::node::NodeId;
 use viso_render::Rgba;
+use viso_text::caret::Caret;
+use viso_text::hit_test::HitTester;
+use viso_text::ime::{ImeComposition, Revision};
+use viso_text::paragraph::{LineLayout, line_index_at};
+use viso_text::selection::Selection;
+use viso_text::{Segmenter, TextOffset, TextPosition};
 
-/// A caret or range selection over a buffer, as byte offsets into its text.
-///
-/// The caret is `cursor`; `anchor` is where a range selection was started. They
-/// are equal for a bare caret. [`start`](Selection::start) and
-/// [`end`](Selection::end) return them in text order regardless of drag
-/// direction, which is what the edit ops act on.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub struct Selection {
-    /// The moving end — where the caret is and where typing inserts.
-    pub cursor: usize,
-    /// The fixed end — equal to `cursor` for a bare caret, the drag origin for a
-    /// range.
-    pub anchor: usize,
-}
-
-impl Selection {
-    /// A collapsed caret at byte offset `at`.
-    #[inline]
-    pub fn caret(at: usize) -> Self {
-        Self {
-            cursor: at,
-            anchor: at,
-        }
-    }
-
-    /// The earlier of the two ends, in text order.
-    #[inline]
-    pub fn start(&self) -> usize {
-        self.cursor.min(self.anchor)
-    }
-
-    /// The later of the two ends, in text order.
-    #[inline]
-    pub fn end(&self) -> usize {
-        self.cursor.max(self.anchor)
-    }
-
-    /// Whether the selection is a bare caret (no characters selected).
-    #[inline]
-    pub fn is_caret(&self) -> bool {
-        self.cursor == self.anchor
-    }
-}
-
-/// Which end of the text a caret motion targets, for arrow / Home / End.
+/// Which way a caret motion goes, for arrow / Home / End.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Motion {
-    /// One `char` toward the start of the text.
+    /// One caret stop to the visual left (one grapheme back when the text has
+    /// no drawn geometry yet).
     Left,
-    /// One `char` toward the end of the text.
+    /// One caret stop to the visual right (one grapheme forward when the text
+    /// has no drawn geometry yet).
     Right,
-    /// The start of the line (single line: byte 0).
+    /// The start of the text.
     Home,
-    /// The end of the line (single line: the text length in bytes).
+    /// The end of the text.
     End,
 }
 
@@ -109,33 +82,65 @@ pub enum Motion {
 /// buffer snapshot at record time — the buffer state is only read when the
 /// intent is applied, keeping the record path (in a handler that has no store)
 /// pure.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum EditIntent {
     /// Replace the current selection with this text (an ordinary keystroke or an
     /// IME commit). Collapses to a caret after the inserted text.
     Insert(String),
-    /// Delete backward: the selection if any, else the `char` before the caret.
+    /// Delete backward: the selection if any, else the grapheme before the caret.
     Backspace,
-    /// Delete forward: the selection if any, else the `char` after the caret.
+    /// Delete forward: the selection if any, else the grapheme after the caret.
     Delete,
     /// Move the caret. `extend` keeps the anchor fixed (shift-select) instead of
     /// collapsing to a caret.
     Move { motion: Motion, extend: bool },
+    /// Place the caret at the pointer, in the same window space as node bounds.
+    /// `extend` keeps the anchor fixed (shift-click, drag-select).
+    PlaceAt { x: f32, y: f32, extend: bool },
     /// Set or update the IME composition: replace the composition range (or the
     /// selection, if no composition is active yet) with `text`, keeping it marked
     /// as composing with the caret at `caret` bytes into `text`. An empty `text`
     /// cancels the composition.
-    Compose { text: String, caret: usize },
+    Compose { text: String, caret: TextOffset },
     /// Finalize the IME composition: keep the composed text as committed and end
     /// the composing state. `text` is the final segment (may differ from the last
     /// preedit).
     CommitCompose(String),
 }
 
+/// The drawn geometry of one editable node's text, as the runtime last laid it
+/// out: what visual caret motion and click placement resolve against.
+#[derive(Debug, Clone, Copy)]
+pub struct EditLayout<'a> {
+    /// The text the lines were laid out for. Geometry is only used while it
+    /// equals the buffer's text.
+    pub text: &'a str,
+    /// The laid-out lines, inline positions in em.
+    pub lines: &'a [LineLayout],
+    /// The font size the lines were placed at, in the node's space units per em.
+    pub font_size: f32,
+    /// The distance between successive lines, in the node's space units.
+    pub line_height: f32,
+}
+
+/// Where the runtime answers "how is this node's text drawn right now". The
+/// text shaper implements it; [`reconcile`] asks once per edited node.
+pub trait EditGeometry {
+    /// The drawn layout of `node`'s text, or `None` when it has not been drawn.
+    fn layout(&self, node: NodeId) -> Option<EditLayout<'_>>;
+}
+
+/// An [`EditLayout`] together with the node's origin in window space.
+#[derive(Clone, Copy)]
+struct Placed<'a> {
+    layout: EditLayout<'a>,
+    origin: (f32, f32),
+}
+
 /// The retained state of one editable node: its text, the selection over it, the
-/// byte range currently held by an in-progress IME composition, and the text
-/// style ([`font_size`](Buffer::font_size), [`color`](Buffer::color)) the node
-/// was declared with.
+/// in-progress IME composition, and the text style
+/// ([`font_size`](Buffer::font_size), [`color`](Buffer::color)) the node was
+/// declared with.
 ///
 /// The style is resident here on purpose. [`NodeStore::take_text_requests`] drains
 /// a node's pending [`TextRequest`] once it is shaped, and the shaped
@@ -146,9 +151,10 @@ pub enum EditIntent {
 /// re-declare a complete request from the buffer alone, with no lookup into the
 /// store and no extra allocation (both fields are `Copy`).
 ///
-/// Single-line: the text holds no `'\n'` (Enter submits, it does not insert), and
-/// there is no wrap or vertical motion. Byte offsets index into `text`; all edit
-/// ops keep the selection and composition range on `char` boundaries.
+/// Single-line: the text holds no `'\n'` (Enter submits, it does not insert).
+/// Every offset the edit ops leave behind is a grapheme boundary of `text`,
+/// except a composition caret, which the platform places and which is kept on a
+/// `char` boundary.
 ///
 /// `PartialEq` (not `Eq`) because [`color`](Buffer::color) holds `f32` channels;
 /// `Default` is hand-written because [`Rgba`] has no `Default` impl (its zero is
@@ -169,11 +175,10 @@ pub struct Buffer {
     /// The content locale the node was declared with. Resident for the same
     /// reason as [`font_size`](Buffer::font_size).
     pub locale: Option<String>,
-    /// Start byte of the active IME composition, or `composition_end` when none.
-    composition_start: usize,
-    /// End byte of the active IME composition; `> composition_start` while
-    /// composing.
-    composition_end: usize,
+    /// The active IME composition, inactive (empty range) when not composing.
+    composition: ImeComposition,
+    /// Advances on every change to `text`.
+    revision: Revision,
     /// Queued intents recorded since the last reconcile, applied in order. A
     /// reused buffer (drained, not reallocated) so the steady path allocates
     /// nothing.
@@ -182,16 +187,7 @@ pub struct Buffer {
 
 impl Default for Buffer {
     fn default() -> Self {
-        Self {
-            text: String::new(),
-            sel: Selection::default(),
-            font_size: 0.0,
-            color: Rgba::TRANSPARENT,
-            locale: None,
-            composition_start: 0,
-            composition_end: 0,
-            pending: Vec::new(),
-        }
+        Self::with_text(String::new())
     }
 }
 
@@ -206,15 +202,15 @@ impl Buffer {
     /// A buffer holding `text` with the caret at its end and a zeroed style.
     pub fn with_text(text: impl Into<String>) -> Self {
         let text = text.into();
-        let at = text.len();
+        let at = TextOffset(text.len());
         Self {
             text,
-            sel: Selection::caret(at),
+            sel: Selection::caret(TextPosition::upstream(at)),
             font_size: 0.0,
             color: Rgba::TRANSPARENT,
             locale: None,
-            composition_start: at,
-            composition_end: at,
+            composition: ImeComposition::default(),
+            revision: Revision::default(),
             pending: Vec::new(),
         }
     }
@@ -224,23 +220,30 @@ impl Buffer {
     /// the request after an edit. This is how the text-input widget registers a
     /// buffer at build time.
     pub fn with_request(request: &TextRequest) -> Self {
-        let at = request.text.len();
         Self {
-            text: request.text.clone(),
-            sel: Selection::caret(at),
             font_size: request.font_size,
             color: request.color,
             locale: request.locale.clone(),
-            composition_start: at,
-            composition_end: at,
-            pending: Vec::new(),
+            ..Self::with_text(request.text.clone())
         }
     }
 
     /// Whether an IME composition is currently active.
     #[inline]
     pub fn has_composition(&self) -> bool {
-        self.composition_end > self.composition_start
+        self.composition.is_active()
+    }
+
+    /// The IME composition state: its range, anchor and revision.
+    #[inline]
+    pub fn composition(&self) -> &ImeComposition {
+        &self.composition
+    }
+
+    /// The text revision: advances on every change to [`text`](Buffer::text).
+    #[inline]
+    pub fn revision(&self) -> Revision {
+        self.revision
     }
 
     /// Record an intent to apply on the next reconcile. Called by the router with
@@ -259,32 +262,47 @@ impl Buffer {
     /// Apply every queued intent in order, clearing the queue. Returns whether
     /// the text changed (so the caller re-declares the node's text) — a
     /// selection-only move returns `false` and needs no reshape.
-    fn apply_pending(&mut self) -> bool {
-        let before = self.text.len();
-        // A cheap change detector that also catches same-length edits: compare a
-        // fingerprint of the text before and after. Length alone misses a
-        // replace-in-place, so hash the bytes.
-        let hash_before = fnv1a(self.text.as_bytes());
+    fn apply_pending(&mut self, placed: Option<Placed<'_>>) -> bool {
+        let before = self.revision;
         let intents = std::mem::take(&mut self.pending);
         for intent in intents.iter() {
-            self.apply_one(intent);
+            self.apply_one(intent, placed);
         }
         // Return the drained buffer for reuse next frame (it is now empty).
         self.pending = intents;
         self.pending.clear();
-        self.text.len() != before || fnv1a(self.text.as_bytes()) != hash_before
+        self.revision != before
     }
 
-    /// Apply a single intent to the buffer.
-    fn apply_one(&mut self, intent: &EditIntent) {
+    /// Apply a single intent to the buffer. `placed` is the node's drawn
+    /// geometry, used only while it still describes the buffer's text.
+    fn apply_one(&mut self, intent: &EditIntent, placed: Option<Placed<'_>>) {
+        let placed = placed.filter(|p| p.layout.text == self.text);
         match intent {
             EditIntent::Insert(s) => self.replace_selection(s),
             EditIntent::Backspace => self.delete(true),
             EditIntent::Delete => self.delete(false),
-            EditIntent::Move { motion, extend } => self.move_caret(*motion, *extend),
+            EditIntent::Move { motion, extend } => {
+                self.move_caret(*motion, *extend, placed.map(|p| p.layout))
+            }
+            EditIntent::PlaceAt { x, y, extend } => {
+                if let Some(placed) = placed {
+                    self.place_at(placed, *x, *y, *extend);
+                }
+            }
             EditIntent::Compose { text, caret } => self.compose(text, *caret),
             EditIntent::CommitCompose(text) => self.commit_compose(text),
         }
+    }
+
+    /// Replace `[start, end)` of the text with `s`, advancing the revision when
+    /// the text actually changes.
+    fn splice(&mut self, start: TextOffset, end: TextOffset, s: &str) {
+        if &self.text[start.0..end.0] == s {
+            return;
+        }
+        self.text.replace_range(start.0..end.0, s);
+        self.revision = self.revision.next();
     }
 
     /// Replace the current selection with `s`, collapsing to a caret after it.
@@ -292,106 +310,141 @@ impl Buffer {
     /// a space.
     fn replace_selection(&mut self, s: &str) {
         let s = single_line(s);
-        let s = s.as_ref();
-        let (start, end) = (self.sel.start(), self.sel.end());
-        self.text.replace_range(start..end, s);
-        let at = start + s.len();
-        self.sel = Selection::caret(at);
-        self.collapse_composition(at);
+        let (start, end) = self.sel.logical_range();
+        self.splice(start, end, &s);
+        self.composition.clear();
+        self.sel = Selection::caret(TextPosition::upstream(TextOffset(start.0 + s.len())));
     }
 
-    /// Delete the selection, or one `char` toward `backward`/forward if it is a
-    /// bare caret. The caret ends at the start of the removed range.
+    /// Delete the selection, or one grapheme backward/forward from a bare caret.
+    /// The caret ends at the start of the removed range.
     fn delete(&mut self, backward: bool) {
         let (start, end) = if self.sel.is_caret() {
-            let c = self.sel.cursor;
+            let at = self.sel.focus.offset;
+            let graphemes = Segmenter::new(&self.text);
             if backward {
-                (prev_boundary(&self.text, c), c)
+                (graphemes.prev_grapheme(at), at)
             } else {
-                (c, next_boundary(&self.text, c))
+                (at, graphemes.next_grapheme(at))
             }
         } else {
-            (self.sel.start(), self.sel.end())
+            self.sel.logical_range()
         };
         if start == end {
             return;
         }
-        self.text.replace_range(start..end, "");
-        self.sel = Selection::caret(start);
-        self.collapse_composition(start);
+        self.splice(start, end, "");
+        self.composition.clear();
+        self.sel = Selection::caret(TextPosition::downstream(start));
     }
 
     /// Move the caret per `motion`. With `extend`, the anchor stays put
-    /// (shift-select); without it, an existing range collapses to the motion's
-    /// natural end and a bare caret steps.
-    fn move_caret(&mut self, motion: Motion, extend: bool) {
+    /// (shift-select); without it, an existing range collapses to its logical
+    /// start (Left) or end (Right) and a bare caret steps.
+    fn move_caret(&mut self, motion: Motion, extend: bool, layout: Option<EditLayout<'_>>) {
+        let (start, end) = self.sel.logical_range();
         let target = match motion {
-            Motion::Left => {
-                if !extend && !self.sel.is_caret() {
-                    self.sel.start()
-                } else {
-                    prev_boundary(&self.text, self.sel.cursor)
+            Motion::Left if !extend && !self.sel.is_caret() => TextPosition::downstream(start),
+            Motion::Right if !extend && !self.sel.is_caret() => TextPosition::upstream(end),
+            Motion::Left | Motion::Right => {
+                let right = motion == Motion::Right;
+                match layout {
+                    Some(layout) => visual_step(layout.lines, self.sel.focus, right),
+                    None => {
+                        let graphemes = Segmenter::new(&self.text);
+                        let at = self.sel.focus.offset;
+                        if right {
+                            TextPosition::upstream(graphemes.next_grapheme(at))
+                        } else {
+                            TextPosition::downstream(graphemes.prev_grapheme(at))
+                        }
+                    }
                 }
             }
-            Motion::Right => {
-                if !extend && !self.sel.is_caret() {
-                    self.sel.end()
-                } else {
-                    next_boundary(&self.text, self.sel.cursor)
-                }
-            }
-            Motion::Home => 0,
-            Motion::End => self.text.len(),
+            Motion::Home => TextPosition::downstream(TextOffset(0)),
+            Motion::End => TextPosition::upstream(TextOffset(self.text.len())),
         };
-        self.sel.cursor = target;
-        if !extend {
-            self.sel.anchor = target;
+        self.set_focus(target, extend);
+    }
+
+    /// Place the caret at window point `(x, y)` through the drawn lines.
+    fn place_at(&mut self, placed: Placed<'_>, x: f32, y: f32, extend: bool) {
+        let layout = placed.layout;
+        if layout.lines.is_empty() || layout.font_size <= 0.0 {
+            return;
+        }
+        let (local_x, local_y) = (x - placed.origin.0, y - placed.origin.1);
+        let row = if layout.line_height > 0.0 {
+            (local_y / layout.line_height).floor().max(0.0) as usize
+        } else {
+            0
+        };
+        let line = &layout.lines[row.min(layout.lines.len() - 1)];
+        let position = HitTester::new(line).position_at_inline(local_x / layout.font_size);
+        self.set_focus(position, extend);
+    }
+
+    /// Move the selection's focus to `position`, keeping the anchor when
+    /// `extend`, else collapsing to a caret there.
+    fn set_focus(&mut self, position: TextPosition, extend: bool) {
+        if extend {
+            self.sel.focus = position;
+        } else {
+            self.sel = Selection::caret(position);
         }
     }
 
     /// Update the IME composition: replace the composition range (or the
     /// selection, if not composing yet) with `text`, keep it marked composing,
     /// and place the caret `caret` bytes into it. Empty `text` cancels.
-    fn compose(&mut self, text: &str, caret: usize) {
-        let (start, end) = if self.has_composition() {
-            (self.composition_start, self.composition_end)
+    fn compose(&mut self, text: &str, caret: TextOffset) {
+        let (start, end) = if self.composition.is_active() {
+            self.composition.range()
         } else {
-            (self.sel.start(), self.sel.end())
+            self.sel.logical_range()
         };
-        self.text.replace_range(start..end, text);
-        self.composition_start = start;
-        self.composition_end = start + text.len();
-        let caret = caret.min(text.len());
-        self.sel = Selection::caret(start + caret);
+        self.splice(start, end, text);
         if text.is_empty() {
-            // Cancelled: no active composition.
-            self.composition_end = self.composition_start;
+            self.composition.clear();
+            self.sel = Selection::caret(TextPosition::downstream(start));
+            return;
         }
+        let composed_end = TextOffset(start.0 + text.len());
+        self.composition
+            .set_range(start, composed_end, self.revision);
+        let mut caret = caret.0.min(text.len());
+        while !text.is_char_boundary(caret) {
+            caret -= 1;
+        }
+        self.sel = Selection::caret(TextPosition::upstream(TextOffset(start.0 + caret)));
     }
 
-    /// Finalize the composition: replace the composition range with the final
+    /// Finalize the composition: replace the range it stands for with the final
     /// `text` as committed content and end the composing state.
     fn commit_compose(&mut self, text: &str) {
         let text = single_line(text);
-        let text = text.as_ref();
-        let (start, end) = if self.has_composition() {
-            (self.composition_start, self.composition_end)
+        let (start, end) = if self.composition.is_active() {
+            self.composition.replacement()
         } else {
-            (self.sel.start(), self.sel.end())
+            self.sel.logical_range()
         };
-        self.text.replace_range(start..end, text);
-        let at = start + text.len();
-        self.sel = Selection::caret(at);
-        self.composition_start = at;
-        self.composition_end = at;
+        self.splice(start, end, &text);
+        self.composition.clear();
+        self.sel = Selection::caret(TextPosition::upstream(TextOffset(start.0 + text.len())));
     }
+}
 
-    /// After a non-IME edit at `at`, drop any stale composition range so it does
-    /// not point into shifted text.
-    #[inline]
-    fn collapse_composition(&mut self, at: usize) {
-        self.composition_start = at;
-        self.composition_end = at;
+/// One caret stop from `from` in the visual direction, on the line that draws
+/// `from`.
+fn visual_step(lines: &[LineLayout], from: TextPosition, right: bool) -> TextPosition {
+    let Some(line) = lines.get(line_index_at(lines, from)) else {
+        return from;
+    };
+    let mut caret = Caret::at(from);
+    if right {
+        caret.move_right(line)
+    } else {
+        caret.move_left(line)
     }
 }
 
@@ -416,48 +469,6 @@ fn single_line(s: &str) -> std::borrow::Cow<'_, str> {
         }
     }
     std::borrow::Cow::Owned(out)
-}
-
-/// The previous `char` boundary strictly before byte `at`, or `at` if already at
-/// the start. A single point where char stepping becomes grapheme stepping later.
-#[inline]
-pub fn prev_boundary(text: &str, at: usize) -> usize {
-    if at == 0 {
-        return 0;
-    }
-    let mut i = at - 1;
-    while i > 0 && !text.is_char_boundary(i) {
-        i -= 1;
-    }
-    i
-}
-
-/// The next `char` boundary strictly after byte `at`, or `at` if already at the
-/// end. The grapheme-upgrade twin of [`prev_boundary`].
-#[inline]
-pub fn next_boundary(text: &str, at: usize) -> usize {
-    let len = text.len();
-    if at >= len {
-        return len;
-    }
-    let mut i = at + 1;
-    while i < len && !text.is_char_boundary(i) {
-        i += 1;
-    }
-    i
-}
-
-/// A tiny FNV-1a over the buffer text, used only to detect a same-length edit so
-/// reconcile knows whether to re-declare the text. Not a hot path (runs once per
-/// dirty buffer per frame), not security-sensitive.
-#[inline]
-fn fnv1a(bytes: &[u8]) -> u64 {
-    let mut h: u64 = 0xcbf29ce484222325;
-    for &b in bytes {
-        h ^= b as u64;
-        h = h.wrapping_mul(0x100000001b3);
-    }
-    h
 }
 
 /// The driver-owned registry of edit buffers, indexed by the editable node's
@@ -534,6 +545,11 @@ impl TextEdits {
 /// layout phase, before text shaping, so an edit recorded during input is shaped
 /// and painted the same frame.
 ///
+/// Intents a pointer handler recorded are first moved from the store's queue
+/// onto their node's buffer. `geometry` supplies each edited node's drawn
+/// lines for visual caret motion and click placement; `None` (no text runtime)
+/// leaves Left/Right logical and clicks unresolved.
+///
 /// The steady path is a no-op: a buffer with no queued intent is skipped, and a
 /// buffer whose intents were all caret moves re-declares nothing. Returns the
 /// number of nodes whose text was re-declared this frame — a steady-state
@@ -543,7 +559,20 @@ impl TextEdits {
 /// ([`Buffer::font_size`] / [`Buffer::color`]), so an edit does not disturb
 /// styling and needs no lookup into the store — the request the node was declared
 /// with was already drained by a prior frame's shaping. See [`Buffer`].
-pub fn reconcile(store: &mut crate::component::NodeStore, edits: &mut TextEdits) -> u32 {
+pub fn reconcile(
+    store: &mut crate::component::NodeStore,
+    edits: &mut TextEdits,
+    geometry: Option<&dyn EditGeometry>,
+) -> u32 {
+    if store.has_edit_requests() {
+        let mut requests = Vec::new();
+        store.take_edit_requests(&mut requests);
+        for (node, intent) in requests {
+            if let Some(buffer) = edits.get_mut(node) {
+                buffer.queue(intent);
+            }
+        }
+    }
     let mut redeclared = 0;
     for i in 0..edits.buffers.len() {
         let Some(buffer) = edits.buffers[i].as_deref_mut() else {
@@ -558,7 +587,14 @@ pub fn reconcile(store: &mut crate::component::NodeStore, edits: &mut TextEdits)
             edits.buffers[i] = None;
             continue;
         };
-        let text_changed = buffer.apply_pending();
+        let placed = geometry.and_then(|g| g.layout(node)).map(|layout| {
+            let world = store.world(node);
+            Placed {
+                layout,
+                origin: (world.x, world.y),
+            }
+        });
+        let text_changed = buffer.apply_pending(placed);
         if !text_changed {
             continue;
         }
@@ -584,183 +620,325 @@ pub fn reconcile(store: &mut crate::component::NodeStore, edits: &mut TextEdits)
 #[cfg(test)]
 mod tests {
     use super::*;
+    use viso_text::bidi::{BaseDirection, BidiInfo};
+    use viso_text::{CaretAffinity, FontFaceId, ShapedGlyph, ShapedRun};
 
     fn buf(text: &str, cursor: usize) -> Buffer {
         let mut b = Buffer::with_text(text);
-        b.sel = Selection::caret(cursor);
-        b.composition_start = cursor;
-        b.composition_end = cursor;
+        b.sel = Selection::caret(TextPosition::downstream(TextOffset(cursor)));
         b
     }
 
-    #[test]
-    fn selection_orders_ends() {
-        let s = Selection {
-            cursor: 2,
-            anchor: 5,
-        };
-        assert_eq!(s.start(), 2);
-        assert_eq!(s.end(), 5);
-        assert!(!s.is_caret());
-        assert!(Selection::caret(3).is_caret());
+    fn range(anchor: usize, focus: usize) -> Selection {
+        Selection {
+            anchor: TextPosition::downstream(TextOffset(anchor)),
+            focus: TextPosition::downstream(TextOffset(focus)),
+        }
+    }
+
+    fn apply(b: &mut Buffer, intent: EditIntent) {
+        b.apply_one(&intent, None);
+    }
+
+    fn step(b: &mut Buffer, motion: Motion) {
+        apply(
+            b,
+            EditIntent::Move {
+                motion,
+                extend: false,
+            },
+        );
+    }
+
+    fn at(b: &Buffer) -> usize {
+        assert!(b.sel.is_caret());
+        b.sel.focus.offset.0
+    }
+
+    /// One laid-out line for `text`, every char one em wide, resolved with the
+    /// real bidi pass.
+    fn line_for(text: &str) -> Vec<LineLayout> {
+        let bidi = BidiInfo::resolve(text, BaseDirection::LeftToRight);
+        let shaped: Vec<ShapedRun> = bidi
+            .direction_runs()
+            .iter()
+            .map(|run| {
+                let slice = &text[run.start.0..run.end.0];
+                let mut glyphs: Vec<ShapedGlyph> = slice
+                    .char_indices()
+                    .map(|(i, _)| ShapedGlyph {
+                        glyph_id: 1,
+                        cluster: i as u32,
+                        x_advance: 1.0,
+                        x_offset: 0.0,
+                        y_offset: 0.0,
+                        unsafe_to_break: false,
+                    })
+                    .collect();
+                if run.level.0 % 2 == 1 {
+                    glyphs.reverse();
+                }
+                ShapedRun {
+                    face: FontFaceId(0),
+                    width_ems: glyphs.len() as f32,
+                    glyphs,
+                    text_len: slice.len() as u32,
+                    ligature_carets: Vec::new(),
+                }
+            })
+            .collect();
+        vec![LineLayout::single_line(text, &bidi, &shaped)]
+    }
+
+    struct FakeGeometry {
+        node: NodeId,
+        text: String,
+        lines: Vec<LineLayout>,
+    }
+
+    impl EditGeometry for FakeGeometry {
+        fn layout(&self, node: NodeId) -> Option<EditLayout<'_>> {
+            (node == self.node).then(|| EditLayout {
+                text: &self.text,
+                lines: &self.lines,
+                font_size: 10.0,
+                line_height: 12.0,
+            })
+        }
+    }
+
+    fn placed<'a>(text: &'a str, lines: &'a [LineLayout]) -> Placed<'a> {
+        Placed {
+            layout: EditLayout {
+                text,
+                lines,
+                font_size: 10.0,
+                line_height: 12.0,
+            },
+            origin: (100.0, 50.0),
+        }
     }
 
     #[test]
     fn insert_at_caret_appends_and_collapses() {
         let mut b = buf("ab", 2);
-        b.apply_one(&EditIntent::Insert("c".into()));
+        apply(&mut b, EditIntent::Insert("c".into()));
         assert_eq!(b.text, "abc");
-        assert_eq!(b.sel, Selection::caret(3));
+        assert_eq!(at(&b), 3);
+        assert_eq!(b.sel.focus.affinity, CaretAffinity::Upstream);
     }
 
     #[test]
     fn insert_replaces_selection() {
         let mut b = Buffer::with_text("hello");
-        b.sel = Selection {
-            cursor: 1,
-            anchor: 4,
-        };
-        b.apply_one(&EditIntent::Insert("X".into()));
+        b.sel = range(4, 1);
+        apply(&mut b, EditIntent::Insert("X".into()));
         assert_eq!(b.text, "hXo");
-        assert_eq!(b.sel, Selection::caret(2));
+        assert_eq!(at(&b), 2);
     }
 
     #[test]
     fn backspace_at_caret_removes_prev_char() {
         let mut b = buf("abc", 3);
-        b.apply_one(&EditIntent::Backspace);
+        apply(&mut b, EditIntent::Backspace);
         assert_eq!(b.text, "ab");
-        assert_eq!(b.sel, Selection::caret(2));
+        assert_eq!(at(&b), 2);
     }
 
     #[test]
     fn backspace_at_start_is_noop() {
         let mut b = buf("abc", 0);
-        b.apply_one(&EditIntent::Backspace);
+        let revision = b.revision();
+        apply(&mut b, EditIntent::Backspace);
         assert_eq!(b.text, "abc");
-        assert_eq!(b.sel, Selection::caret(0));
+        assert_eq!(at(&b), 0);
+        assert_eq!(b.revision(), revision);
     }
 
     #[test]
     fn delete_at_caret_removes_next_char() {
         let mut b = buf("abc", 0);
-        b.apply_one(&EditIntent::Delete);
+        apply(&mut b, EditIntent::Delete);
         assert_eq!(b.text, "bc");
-        assert_eq!(b.sel, Selection::caret(0));
+        assert_eq!(at(&b), 0);
     }
 
     #[test]
     fn delete_removes_selection() {
         let mut b = Buffer::with_text("hello");
-        b.sel = Selection {
-            cursor: 4,
-            anchor: 1,
-        };
-        b.apply_one(&EditIntent::Delete);
+        b.sel = range(1, 4);
+        apply(&mut b, EditIntent::Delete);
         assert_eq!(b.text, "ho");
-        assert_eq!(b.sel, Selection::caret(1));
-    }
-
-    #[test]
-    fn move_left_steps_one_char() {
-        let mut b = buf("abc", 3);
-        b.apply_one(&EditIntent::Move {
-            motion: Motion::Left,
-            extend: false,
-        });
-        assert_eq!(b.sel, Selection::caret(2));
+        assert_eq!(at(&b), 1);
     }
 
     #[test]
     fn move_left_collapses_selection_to_start() {
         let mut b = Buffer::with_text("hello");
-        b.sel = Selection {
-            cursor: 4,
-            anchor: 1,
-        };
-        b.apply_one(&EditIntent::Move {
-            motion: Motion::Left,
-            extend: false,
-        });
-        assert_eq!(b.sel, Selection::caret(1));
+        b.sel = range(1, 4);
+        step(&mut b, Motion::Left);
+        assert_eq!(at(&b), 1);
+    }
+
+    #[test]
+    fn move_right_collapses_selection_to_end() {
+        let mut b = Buffer::with_text("hello");
+        b.sel = range(4, 1);
+        step(&mut b, Motion::Right);
+        assert_eq!(at(&b), 4);
     }
 
     #[test]
     fn shift_move_extends_selection() {
         let mut b = buf("abc", 3);
-        b.apply_one(&EditIntent::Move {
-            motion: Motion::Left,
-            extend: true,
-        });
-        assert_eq!(
-            b.sel,
-            Selection {
-                cursor: 2,
-                anchor: 3
-            }
+        apply(
+            &mut b,
+            EditIntent::Move {
+                motion: Motion::Left,
+                extend: true,
+            },
         );
+        assert_eq!(b.sel.anchor.offset, TextOffset(3));
+        assert_eq!(b.sel.focus.offset, TextOffset(2));
     }
 
     #[test]
     fn home_end_jump_to_line_ends() {
         let mut b = buf("abc", 1);
-        b.apply_one(&EditIntent::Move {
-            motion: Motion::End,
-            extend: false,
-        });
-        assert_eq!(b.sel, Selection::caret(3));
-        b.apply_one(&EditIntent::Move {
-            motion: Motion::Home,
-            extend: false,
-        });
-        assert_eq!(b.sel, Selection::caret(0));
+        step(&mut b, Motion::End);
+        assert_eq!(at(&b), 3);
+        step(&mut b, Motion::Home);
+        assert_eq!(at(&b), 0);
     }
 
     #[test]
-    fn multibyte_char_steps_whole_codepoint() {
-        // "é" is 2 bytes; the caret must skip the whole char, not split it.
-        let mut b = buf("é", 2);
-        b.apply_one(&EditIntent::Move {
-            motion: Motion::Left,
-            extend: false,
-        });
-        assert_eq!(b.sel, Selection::caret(0));
-        b.apply_one(&EditIntent::Backspace);
-        assert_eq!(b.text, "é");
-        assert_eq!(b.sel, Selection::caret(0));
+    fn combining_sequence_is_one_step_and_one_delete() {
+        // "e" + U+0301 COMBINING ACUTE: one grapheme, three bytes.
+        let text = "ae\u{301}b";
+        let mut b = buf(text, 1);
+        step(&mut b, Motion::Right);
+        assert_eq!(at(&b), 4);
+        step(&mut b, Motion::Left);
+        assert_eq!(at(&b), 1);
+        apply(&mut b, EditIntent::Delete);
+        assert_eq!(b.text, "ab");
+        assert_eq!(at(&b), 1);
+    }
+
+    #[test]
+    fn zwj_emoji_and_flag_delete_whole() {
+        // Family (man ZWJ woman ZWJ girl), then the flag of Japan.
+        let family = "\u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}";
+        let flag = "\u{1F1EF}\u{1F1F5}";
+        let text = format!("{family}{flag}");
+        let mut b = buf(&text, text.len());
+        apply(&mut b, EditIntent::Backspace);
+        assert_eq!(b.text, family);
+        apply(&mut b, EditIntent::Backspace);
+        assert_eq!(b.text, "");
+    }
+
+    #[test]
+    fn decomposed_text_is_kept_as_typed() {
+        // NFD input survives an edit round-trip byte for byte: the buffer never
+        // normalizes what the user or IME produced.
+        let nfd = "Cafe\u{301}";
+        let mut b = buf(nfd, nfd.len());
+        apply(&mut b, EditIntent::Insert("!".into()));
+        apply(&mut b, EditIntent::Backspace);
+        assert_eq!(b.text, nfd);
+        apply(&mut b, EditIntent::Backspace);
+        assert_eq!(b.text, "Caf");
     }
 
     #[test]
     fn compose_then_commit_leaves_final_text() {
         let mut b = buf("", 0);
-        b.apply_one(&EditIntent::Compose {
-            text: "n".into(),
-            caret: 1,
-        });
+        apply(
+            &mut b,
+            EditIntent::Compose {
+                text: "n".into(),
+                caret: TextOffset(1),
+            },
+        );
         assert!(b.has_composition());
         assert_eq!(b.text, "n");
-        b.apply_one(&EditIntent::Compose {
-            text: "ni".into(),
-            caret: 2,
-        });
+        apply(
+            &mut b,
+            EditIntent::Compose {
+                text: "ni".into(),
+                caret: TextOffset(2),
+            },
+        );
         assert_eq!(b.text, "ni");
-        b.apply_one(&EditIntent::CommitCompose("你".into()));
+        apply(&mut b, EditIntent::CommitCompose("你".into()));
         assert!(!b.has_composition());
         assert_eq!(b.text, "你");
-        assert_eq!(b.sel, Selection::caret("你".len()));
+        assert_eq!(at(&b), "你".len());
+    }
+
+    #[test]
+    fn cjk_composition_tracks_revisions() {
+        let mut b = buf("ab", 1);
+        let start = b.revision();
+        apply(
+            &mut b,
+            EditIntent::Compose {
+                text: "zhong".into(),
+                caret: TextOffset(5),
+            },
+        );
+        let first = b.composition().revision();
+        assert!(first > start);
+        assert_eq!(b.composition().range(), (TextOffset(1), TextOffset(6)));
+        apply(
+            &mut b,
+            EditIntent::Compose {
+                text: "中".into(),
+                caret: TextOffset(3),
+            },
+        );
+        assert_eq!(b.text, "a中b");
+        assert_eq!(b.composition().range(), (TextOffset(1), TextOffset(4)));
+        assert!(b.composition().revision() > first);
+        // A result computed against the first preedit is now stale.
+        assert!(!b.composition().accepts(first));
+        apply(&mut b, EditIntent::CommitCompose("中".into()));
+        assert_eq!(b.text, "a中b");
+        assert!(!b.has_composition());
+        assert_eq!(at(&b), 4);
+    }
+
+    #[test]
+    fn compose_caret_stays_on_a_char_boundary() {
+        let mut b = buf("", 0);
+        apply(
+            &mut b,
+            EditIntent::Compose {
+                text: "中".into(),
+                caret: TextOffset(2),
+            },
+        );
+        assert_eq!(at(&b), 0);
     }
 
     #[test]
     fn compose_empty_cancels() {
         let mut b = buf("", 0);
-        b.apply_one(&EditIntent::Compose {
-            text: "n".into(),
-            caret: 1,
-        });
-        b.apply_one(&EditIntent::Compose {
-            text: "".into(),
-            caret: 0,
-        });
+        apply(
+            &mut b,
+            EditIntent::Compose {
+                text: "n".into(),
+                caret: TextOffset(1),
+            },
+        );
+        apply(
+            &mut b,
+            EditIntent::Compose {
+                text: "".into(),
+                caret: TextOffset(0),
+            },
+        );
         assert!(!b.has_composition());
         assert_eq!(b.text, "");
     }
@@ -768,15 +946,15 @@ mod tests {
     #[test]
     fn insert_folds_line_breaks_to_spaces() {
         let mut b = buf("ab", 1);
-        b.apply_one(&EditIntent::Insert("x\r\ny\nz\rw".into()));
+        apply(&mut b, EditIntent::Insert("x\r\ny\nz\rw".into()));
         assert_eq!(b.text, "ax y z wb");
-        assert_eq!(b.sel, Selection::caret(8));
+        assert_eq!(at(&b), 8);
     }
 
     #[test]
     fn commit_compose_folds_line_breaks() {
         let mut b = buf("", 0);
-        b.apply_one(&EditIntent::CommitCompose("a\nb".into()));
+        apply(&mut b, EditIntent::CommitCompose("a\nb".into()));
         assert_eq!(b.text, "a b");
     }
 
@@ -790,11 +968,189 @@ mod tests {
     }
 
     #[test]
+    fn visual_moves_follow_drawn_order_in_rtl() {
+        // "ab " then Hebrew "אב": Right walks the screen left to right, which
+        // crosses the RTL run from its logical end back to its logical start.
+        let text = "ab \u{5D0}\u{5D1}";
+        let lines = line_for(text);
+        let mut b = buf(text, 0);
+        let geometry = placed(text, &lines);
+        let mut trail = Vec::new();
+        for _ in 0..6 {
+            b.apply_one(
+                &EditIntent::Move {
+                    motion: Motion::Right,
+                    extend: false,
+                },
+                Some(geometry),
+            );
+            trail.push((lines[0].caret_x(b.sel.focus).unwrap(), at(&b)));
+        }
+        assert!(
+            trail.windows(2).all(|w| w[1].0 >= w[0].0),
+            "Right never moves leftward on screen: {trail:?}"
+        );
+        // The run seam at x = 3 is two logical stops (end of "ab ", end of the
+        // Hebrew run), then the caret walks the Hebrew run backwards.
+        let offsets: Vec<usize> = trail.iter().map(|&(_, o)| o).collect();
+        assert_eq!(offsets, [1, 2, 3, 7, 5, 3]);
+        assert_eq!(trail.last().unwrap().0, 5.0);
+    }
+
+    #[test]
+    fn one_offset_at_a_direction_boundary_draws_where_its_affinity_says() {
+        // Offset 3 ends "ab " (x = 3) and starts the Hebrew run, whose logical
+        // start is drawn at its right edge (x = 5).
+        let text = "ab \u{5D0}\u{5D1}";
+        let lines = line_for(text);
+        let mut b = buf(text, 0);
+        let mut seen = Vec::new();
+        for _ in 0..6 {
+            b.apply_one(
+                &EditIntent::Move {
+                    motion: Motion::Right,
+                    extend: false,
+                },
+                Some(placed(text, &lines)),
+            );
+            if at(&b) == 3 {
+                seen.push((b.sel.focus.affinity, lines[0].caret_x(b.sel.focus).unwrap()));
+            }
+        }
+        assert_eq!(
+            seen,
+            [
+                (CaretAffinity::Upstream, 3.0),
+                (CaretAffinity::Downstream, 5.0)
+            ]
+        );
+    }
+
+    #[test]
+    fn visual_steps_cross_a_ligature_grapheme_by_grapheme() {
+        // "ffi" shaped as one 3 em ligature glyph, then "x": the caret stops
+        // inside the ligature at each grapheme, never skipping it whole.
+        let text = "ffix";
+        let bidi = BidiInfo::resolve(text, BaseDirection::LeftToRight);
+        let glyph = |cluster, x_advance| ShapedGlyph {
+            glyph_id: 7,
+            cluster,
+            x_advance,
+            x_offset: 0.0,
+            y_offset: 0.0,
+            unsafe_to_break: false,
+        };
+        let shaped = ShapedRun {
+            face: FontFaceId(0),
+            glyphs: vec![glyph(0, 3.0), glyph(3, 1.0)],
+            width_ems: 4.0,
+            text_len: 4,
+            ligature_carets: Vec::new(),
+        };
+        let lines = vec![LineLayout::single_line(text, &bidi, &[shaped])];
+        let mut b = buf(text, 0);
+        let mut trail = Vec::new();
+        for _ in 0..4 {
+            b.apply_one(
+                &EditIntent::Move {
+                    motion: Motion::Right,
+                    extend: false,
+                },
+                Some(placed(text, &lines)),
+            );
+            trail.push(at(&b));
+        }
+        assert_eq!(trail, [1, 2, 3, 4]);
+    }
+
+    #[test]
+    fn drag_across_directions_selects_one_logical_range_in_two_fragments() {
+        // Drag from x = 1 em ("b") to x = 4 em (between the Hebrew letters).
+        let text = "ab \u{5D0}\u{5D1}";
+        let lines = line_for(text);
+        let mut b = buf(text, 0);
+        for (x, extend) in [(110.0, false), (140.0, true)] {
+            b.apply_one(
+                &EditIntent::PlaceAt { x, y: 55.0, extend },
+                Some(placed(text, &lines)),
+            );
+        }
+        // Logically: from "b" through the first Hebrew letter.
+        assert_eq!(b.sel.logical_range(), (TextOffset(1), TextOffset(5)));
+        // Visually: "b " on the left, and the first Hebrew letter drawn at the
+        // run's right edge — two disjoint rectangles.
+        let fragments: Vec<(f32, f32)> = b
+            .sel
+            .fragments(&lines[0])
+            .iter()
+            .map(|f| (f.left, f.right))
+            .collect();
+        assert_eq!(fragments, [(1.0, 3.0), (4.0, 5.0)]);
+    }
+
+    #[test]
+    fn stale_geometry_falls_back_to_logical_steps() {
+        let lines = line_for("abc");
+        let mut b = buf("abcd", 4);
+        b.apply_one(
+            &EditIntent::Move {
+                motion: Motion::Left,
+                extend: false,
+            },
+            Some(placed("abc", &lines)),
+        );
+        assert_eq!(at(&b), 3);
+    }
+
+    #[test]
+    fn place_at_resolves_through_drawn_stops() {
+        let text = "abcd";
+        let lines = line_for(text);
+        let mut b = buf(text, 0);
+        // Origin (100, 50), 10px per em: x = 121 is 2.1 em, nearest stop 2.
+        b.apply_one(
+            &EditIntent::PlaceAt {
+                x: 121.0,
+                y: 55.0,
+                extend: false,
+            },
+            Some(placed(text, &lines)),
+        );
+        assert_eq!(at(&b), 2);
+        // Drag to 3.8 em, extending: the anchor stays at 2.
+        b.apply_one(
+            &EditIntent::PlaceAt {
+                x: 138.0,
+                y: 90.0,
+                extend: true,
+            },
+            Some(placed(text, &lines)),
+        );
+        assert_eq!(b.sel.anchor.offset, TextOffset(2));
+        assert_eq!(b.sel.focus.offset, TextOffset(4));
+        assert_eq!(b.sel.logical_range(), (TextOffset(2), TextOffset(4)));
+    }
+
+    #[test]
+    fn place_at_without_geometry_is_ignored() {
+        let mut b = buf("abcd", 1);
+        apply(
+            &mut b,
+            EditIntent::PlaceAt {
+                x: 0.0,
+                y: 0.0,
+                extend: false,
+            },
+        );
+        assert_eq!(at(&b), 1);
+    }
+
+    #[test]
     fn apply_pending_reports_text_change_and_drains() {
         let mut b = buf("ab", 2);
         b.queue(EditIntent::Insert("c".into()));
         assert!(b.is_dirty());
-        assert!(b.apply_pending());
+        assert!(b.apply_pending(None));
         assert_eq!(b.text, "abc");
         assert!(!b.is_dirty());
     }
@@ -806,25 +1162,26 @@ mod tests {
             motion: Motion::Left,
             extend: false,
         });
-        assert!(!b.apply_pending());
+        assert!(!b.apply_pending(None));
         assert_eq!(b.text, "abc");
+    }
+
+    fn live_node(store: &mut crate::component::NodeStore) -> NodeId {
+        let mut cx = crate::component::BuildCx::new(store);
+        let h = cx.leaf(crate::component::LeafStyle {
+            size: crate::layout::Size::fixed(1.0, 1.0),
+            ..Default::default()
+        });
+        cx.root();
+        h.id()
     }
 
     #[test]
     fn registry_registers_and_recovers() {
         let mut edits = TextEdits::new();
         assert!(edits.is_empty());
-        // Mint a live node id.
         let mut store = crate::component::NodeStore::new();
-        let id = {
-            let mut cx = crate::component::BuildCx::new(&mut store);
-            let h = cx.leaf(crate::component::LeafStyle {
-                size: crate::layout::Size::fixed(1.0, 1.0),
-                ..Default::default()
-            });
-            cx.root();
-            h.id()
-        };
+        let id = live_node(&mut store);
         edits.register(id, Box::new(Buffer::with_text("hi")));
         assert!(!edits.is_empty());
         assert_eq!(edits.get(id).map(|b| b.text.as_str()), Some("hi"));
@@ -832,5 +1189,32 @@ mod tests {
         assert!(edits.get(id).unwrap().is_dirty());
         edits.clear();
         assert!(edits.is_empty());
+    }
+
+    #[test]
+    fn reconcile_routes_store_requests_through_geometry() {
+        let mut store = crate::component::NodeStore::new();
+        let id = live_node(&mut store);
+        let mut edits = TextEdits::new();
+        edits.register(id, Box::new(Buffer::with_text("abcd")));
+        let world = store.world(id);
+        let geometry = FakeGeometry {
+            node: id,
+            text: "abcd".into(),
+            lines: line_for("abcd"),
+        };
+        store.queue_edit(
+            id,
+            EditIntent::PlaceAt {
+                x: world.x + 11.0,
+                y: world.y + 1.0,
+                extend: false,
+            },
+        );
+        assert!(store.has_edit_requests());
+        // A placement changes only the selection: nothing re-declared.
+        assert_eq!(reconcile(&mut store, &mut edits, Some(&geometry)), 0);
+        assert!(!store.has_edit_requests());
+        assert_eq!(at(edits.get(id).unwrap()), 1);
     }
 }

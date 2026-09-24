@@ -16,6 +16,9 @@ viso-runtime = { workspace = true }
 # compact serialized UI package and instantiates it through `BuildCx`, so the release
 # path carries no DSL compiler. `viso-ende` is a dependency-free DAG leaf.
 viso-ende = { workspace = true }
+# Editing reads the text runtime's position, caret, hit-test, selection and IME
+# model (spec 12.2, 12.13-12.17) instead of keeping a second byte-offset one.
+viso-text = { workspace = true }
 
 # Benches only. criterion is a dev-dependency: it never ships in the ui crate.
 # Native measurements: criterion does not build for wasm32.

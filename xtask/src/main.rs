@@ -139,12 +139,14 @@ fn allowed_edges() -> BTreeMap<&'static str, Allowed> {
         ),
         // `viso-ende` is the AOT package codec: the release loader (Slice P) decodes a
         // compact package and instantiates it through `BuildCx`, so the release path
-        // carries no DSL compiler. Leaf edge, no cycle.
+        // carries no DSL compiler. Leaf edge, no cycle. `viso-text` supplies the
+        // editing model (positions, caret, hit test, selection, IME) text controls
+        // edit through; it already sits below `viso-render`, so no cycle.
         (
             "viso-ui",
             Allowed {
                 dir: "crates/ui",
-                deps: &["viso-render", "viso-runtime", "viso-ende"],
+                deps: &["viso-render", "viso-runtime", "viso-ende", "viso-text"],
             },
         ),
         (
