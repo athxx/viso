@@ -291,6 +291,11 @@ public class VisoActivity extends Activity implements SurfaceHolder.Callback2 {
         runOnUiThread(this::finish);
     }
 
+    /** The view assistive technologies read the app's semantics through. */
+    View hostView() {
+        return view;
+    }
+
     // The native loop.
 
     static native void nativeStart(VisoActivity activity, float density, int appearance);

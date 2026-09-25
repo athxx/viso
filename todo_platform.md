@@ -205,9 +205,12 @@ Follow-ups carried forward:
 
 ## P10 — Accessibility OS bridges
 
-- [ ] Semantics tree → NSAccessibility (macOS), UIAccessibility (iOS), UI Automation
+- [x] Semantics tree → NSAccessibility (macOS), UIAccessibility (iOS), UI Automation
       (Windows), AT-SPI over D-Bus (Linux), `AccessibilityNodeProvider` (Android), ARIA DOM
       mirror (Web); incremental updates, focus and actions routed back as events.
+      (ADR 0030. Runtime-verified: Web via CDP AX tree + mirrored click → Action. Compile-only:
+      Windows, Linux, Android, iOS AX (app runs in the simulator; no AX inspector here).
+      Open: Web focus following, Linux root window bounds.)
 
 ## P11 — Services per platform
 

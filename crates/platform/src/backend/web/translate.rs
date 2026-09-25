@@ -2,7 +2,8 @@
 //! soft keyboards that leave it empty, `key`) to [`KeyCode`], `PointerEvent`
 //! types, buttons and pointer types to phases, kinds and ids, `WheelEvent`
 //! deltas to logical points, [`CursorIcon`] to CSS cursors, and the platform
-//! strings that make Command the primary modifier. Nothing here touches the
+//! strings that make Command the primary modifier, and the ARIA vocabulary of
+//! the accessibility mirror. Nothing here touches the
 //! DOM, so it is compiled and tested on every host.
 
 #![cfg_attr(
@@ -10,6 +11,8 @@
     allow(dead_code)
 )]
 
+use crate::accessibility::AccessAction;
+use crate::accessibility::accesskit::{Role, Toggled};
 use crate::event::{
     CursorIcon, KeyCode, Modifiers, PointerButtons, PointerId, PointerKind, PointerPhase,
 };
@@ -339,6 +342,51 @@ pub(crate) fn page_claims(code: KeyCode, m: Modifiers) -> bool {
         || ((m.control || m.logo) && !alt_gr)
 }
 
+/// The ARIA role mirroring an AccessKit one, following AccessKit's own
+/// mapping on the other targets; `None` leaves a plain container.
+pub(crate) fn aria_role(role: Role) -> Option<&'static str> {
+    Some(match role {
+        Role::Button => "button",
+        Role::CheckBox => "checkbox",
+        Role::RadioButton => "radio",
+        Role::Slider => "slider",
+        Role::TextInput => "textbox",
+        Role::Tab => "tab",
+        Role::TabList => "tablist",
+        Role::Tree => "tree",
+        Role::TreeItem => "treeitem",
+        Role::Group => "group",
+        Role::Region => "region",
+        Role::Navigation => "navigation",
+        Role::Dialog => "dialog",
+        Role::Status => "status",
+        _ => return None,
+    })
+}
+
+/// Whether a role is named by its text content rather than `aria-label`,
+/// which ARIA ignores on plain text and on live regions.
+pub(crate) fn named_by_content(role: Role) -> bool {
+    matches!(role, Role::Label | Role::Status)
+}
+
+pub(crate) fn aria_checked(toggled: Toggled) -> &'static str {
+    match toggled {
+        Toggled::True => "true",
+        Toggled::False => "false",
+        Toggled::Mixed => "mixed",
+    }
+}
+
+/// The step a `KeyboardEvent.key` asks of a focused slider.
+pub(crate) fn slider_step(key: &str) -> Option<AccessAction> {
+    match key {
+        "ArrowUp" | "ArrowRight" => Some(AccessAction::Increment),
+        "ArrowDown" | "ArrowLeft" => Some(AccessAction::Decrement),
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -538,5 +586,17 @@ mod tests {
         assert_eq!(css_px(" 0.5px "), 0.5);
         assert_eq!(css_px("auto"), 0.0);
         assert_eq!(css_px(""), 0.0);
+    }
+
+    #[test]
+    fn the_mirror_speaks_aria() {
+        assert_eq!(aria_role(Role::Slider), Some("slider"));
+        assert_eq!(aria_role(Role::GenericContainer), None);
+        assert_eq!(aria_role(Role::Label), None);
+        assert!(named_by_content(Role::Label) && !named_by_content(Role::Button));
+        assert_eq!(aria_checked(Toggled::Mixed), "mixed");
+        assert_eq!(slider_step("ArrowUp"), Some(AccessAction::Increment));
+        assert_eq!(slider_step("ArrowLeft"), Some(AccessAction::Decrement));
+        assert_eq!(slider_step("Enter"), None);
     }
 }

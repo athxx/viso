@@ -51,7 +51,7 @@ pub use hit_test::{HitTestTree, hit_test};
 pub use input::{
     ImeEvent, Key, KeyEvent, KeyRouter, Modifiers, PointerButtons, PointerContact, PointerEvent,
     PointerId, PointerPhase, PointerRouter, ScrollEvent, ScrollRouter, TOUCH_SLOP, focus_next,
-    route_contact, route_pointer, route_scroll,
+    focus_node, route_contact, route_pointer, route_scroll,
 };
 pub use inspect::{
     InspectFlags, InspectKind, InspectNode, InspectSnapshot, InspectTree, PaintRange, PaintRanges,

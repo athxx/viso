@@ -50,6 +50,7 @@ struct Methods {
     get_clipboard: Global<jmethodID>,
     set_title_text: Global<jmethodID>,
     finish: Global<jmethodID>,
+    host_view: Global<jmethodID>,
 }
 
 struct Java {
@@ -119,6 +120,36 @@ fn call_void(method: impl FnOnce(&Methods) -> Global<jmethodID>, args: &[jvalue]
     unsafe {
         env_call!(env, CallVoidMethodA, activity, id, args.as_ptr());
         check(env);
+    }
+}
+
+/// Call `f` on the (attached) loop thread with its environment and the
+/// activity's host view, a local reference deleted afterwards.
+pub(super) fn with_host_view<R>(f: impl FnOnce(*mut JNIEnv, jobject) -> R) -> Option<R> {
+    let (Some(java), Some(env)) = (JAVA.get(), env()) else {
+        return None;
+    };
+    let activity = java.activity.lock().unwrap_or_else(|e| e.into_inner()).0;
+    if activity.is_null() {
+        return None;
+    }
+    // SAFETY: `activity` is a live global reference to a `VisoActivity` and
+    // `host_view` its no-argument `hostView` method; the returned local
+    // reference is deleted once `f` is done with it.
+    unsafe {
+        let view = env_call!(
+            env,
+            CallObjectMethodA,
+            activity,
+            java.methods.host_view.0,
+            ptr::null()
+        );
+        if !check(env) || view.is_null() {
+            return None;
+        }
+        let result = f(env, view);
+        env_call!(env, DeleteLocalRef, view);
+        Some(result)
     }
 }
 
@@ -337,6 +368,7 @@ pub unsafe extern "system" fn JNI_OnLoad(vm: *mut JavaVM, _reserved: *mut c_void
             get_clipboard: method(c"getClipboard", c"()Ljava/lang/String;"),
             set_title_text: method(c"setTitleText", c"(Ljava/lang/String;)V"),
             finish: method(c"finishFromNative", c"()V"),
+            host_view: method(c"hostView", c"()Landroid/view/View;"),
         };
         if !check(env) {
             return JNI_ERR;
@@ -457,6 +489,7 @@ extern "system" fn native_start(
             density: f64::from(density),
             appearance,
         });
+        send(Msg::Recreated);
         return;
     }
     redirect_output_to_logcat();

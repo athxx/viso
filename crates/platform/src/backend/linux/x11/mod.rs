@@ -35,7 +35,7 @@ use self::input::Devices;
 use self::selection::Clipboard;
 use super::translate::{self, Edge, RESIZE_BORDER};
 use super::xkb::{self as keymap, KeyText, Keyboard};
-use super::{After, Chore, Display, Pump, WakeReceiver, poll_readable, wake_channel};
+use super::{After, Chore, Display, Pump, WakeReceiver, Waker, poll_readable, wake_channel};
 use crate::control::{PlatformError, WindowChrome, WindowConfig, WindowId};
 use crate::event::{
     AcceptCell, Appearance, CursorIcon, Modifiers, PointerButtons, PointerKind, PointerPhase,
@@ -55,6 +55,8 @@ fn backend_error(e: impl std::fmt::Display) -> PlatformError {
 pub(crate) struct X11App {
     x11: Rc<RefCell<X11>>,
     wakes: Rc<WakeReceiver>,
+    /// Handed to each window's accessibility adapter.
+    waker: Waker,
     windows: Vec<X11Window>,
     next_id: u32,
 }
@@ -63,11 +65,12 @@ impl X11App {
     pub(crate) fn new() -> Result<Self, PlatformError> {
         let (waker, wakes) = wake_channel().map_err(backend_error)?;
         let mut x11 = X11::connect()?;
-        let appearance = super::portal::spawn(waker);
+        let appearance = super::portal::spawn(waker.clone());
         x11.pump.appearance = appearance;
         Ok(Self {
             x11: Rc::new(RefCell::new(x11)),
             wakes: Rc::new(wakes),
+            waker,
             windows: Vec::new(),
             next_id: 1,
         })
@@ -86,6 +89,7 @@ impl PlatformApp for X11App {
     fn create_window(&mut self, config: WindowConfig) -> Result<WindowId, PlatformError> {
         let id = WindowId(self.next_id);
         let xid = self.x11.borrow_mut().create_window(id, &config)?;
+        self.x11.borrow_mut().pump.attach_access(id, &self.waker);
         self.next_id += 1;
         let live = self.x11.borrow();
         self.windows.retain(|w| live.index(w.id).is_some());
@@ -139,6 +143,10 @@ impl PlatformApp for X11App {
             ];
             x11.send_wm_state(x11.windows[i].xid, data);
         });
+    }
+
+    fn update_accessibility(&mut self, window: WindowId, update: accesskit::TreeUpdate) {
+        self.x11.borrow_mut().pump.update_access(window, update);
     }
 
     fn close_window(&mut self, window: WindowId) {

@@ -443,6 +443,14 @@ impl<D: FrameDriver, C: FrameClock> AppHandler for Scheduler<D, C> {
                 self.surface(window, true);
                 self.reasons.add(RedrawReason::ExternalSurfaceInvalidation);
             }
+            RawEvent::Accessibility { window, request } => {
+                // Activation needs a frame to publish the first tree; an action
+                // edits state like any input. No OS input precedes either, so
+                // nothing else asks the backend for the beat.
+                self.driver.on_accessibility(window, request);
+                self.reasons.add(RedrawReason::InputDirty);
+                self.app.request_redraw(window);
+            }
         }
         self.resolve_control_flow()
     }
@@ -617,6 +625,46 @@ mod tests {
             sched.driver.fullscreen,
             vec![(WindowId(1), true), (WindowId(1), false)],
             "each transition reaches the driver in order with its window and state"
+        );
+    }
+
+    /// A driver that opens one window and counts its frames and the
+    /// accessibility requests it receives.
+    #[derive(Default)]
+    struct AccessDriver {
+        frames: u32,
+        requests: Vec<viso_platform::AccessRequest>,
+    }
+
+    impl FrameDriver for AccessDriver {
+        fn on_launch(&mut self, cx: &mut RuntimeCx<'_>) {
+            cx.create_window(viso_platform::WindowConfig::default())
+                .expect("headless window");
+        }
+        fn on_geometry(&mut self, _window: WindowId, _scale: f64, _width: u32, _height: u32) {}
+        fn on_input(&mut self, _sample: InputSample) {}
+        fn run_phase(&mut self, phase: FramePhase, _cx: &mut RuntimeCx<'_>) {
+            if phase == FramePhase::Submit {
+                self.frames += 1;
+            }
+        }
+        fn on_accessibility(&mut self, _window: WindowId, request: viso_platform::AccessRequest) {
+            self.requests.push(request);
+        }
+    }
+
+    #[test]
+    fn an_accessibility_request_gets_a_frame_of_its_own() {
+        let activated = RawEvent::Accessibility {
+            window: WindowId(1),
+            request: viso_platform::AccessRequest::Activated,
+        };
+        let app = Box::new(HeadlessApp::scripted(vec![activated]));
+        let driver = Scheduler::new(app, AccessDriver::default()).run_returning();
+        assert_eq!(driver.requests, [viso_platform::AccessRequest::Activated]);
+        assert_eq!(
+            driver.frames, 2,
+            "the first frame, then the one that publishes the tree"
         );
     }
 

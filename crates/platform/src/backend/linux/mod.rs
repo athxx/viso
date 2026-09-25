@@ -8,6 +8,7 @@
 //! with no borrow of backend state held, so the calls it makes back into the
 //! app during `run` see consistent state.
 
+mod access;
 mod portal;
 mod wayland;
 mod x11;
@@ -21,6 +22,7 @@ use std::rc::Rc;
 use std::sync::{Arc, mpsc};
 
 use super::linux_translate as translate;
+use crate::accessibility::AccessRequest;
 use crate::control::{ControlFlow, PlatformError, WindowId};
 use crate::event::{
     AcceptCell, Appearance, ClipboardReply, ClipboardShortcut, KeyCode, Modifiers, RawEvent,
@@ -56,6 +58,11 @@ pub(crate) enum Wake {
     Appearance(Appearance),
     /// A clipboard read finished.
     Paste { window: WindowId, text: String },
+    /// An assistive technology asked something of a window.
+    Access {
+        window: WindowId,
+        request: AccessRequest,
+    },
 }
 
 /// The sending half of the loop's wake channel: a message queue plus a
@@ -178,11 +185,31 @@ pub(crate) struct Pump {
     pub(crate) should_exit: bool,
     pub(crate) appearance: Appearance,
     pub(crate) accels: AccelTable,
+    /// Each window's accessibility adapter.
+    access: Vec<(WindowId, access::LinuxAccess)>,
 }
 
 impl Pump {
     pub(crate) fn push(&mut self, event: RawEvent) {
+        if let RawEvent::WindowFocused { window, focused } = event
+            && let Some((_, access)) = self.access.iter_mut().find(|(w, _)| *w == window)
+        {
+            access.set_focused(focused);
+        }
         self.events.push_back(event);
+    }
+
+    /// Give `window` an accessibility adapter whose requests arrive through
+    /// `waker`.
+    pub(crate) fn attach_access(&mut self, window: WindowId, waker: &Waker) {
+        self.access
+            .push((window, access::LinuxAccess::attach(window, waker)));
+    }
+
+    pub(crate) fn update_access(&mut self, window: WindowId, update: accesskit::TreeUpdate) {
+        if let Some((_, access)) = self.access.iter_mut().find(|(w, _)| *w == window) {
+            access.update(update);
+        }
     }
 
     pub(crate) fn push_redraw(&mut self, window: WindowId) {
@@ -206,12 +233,16 @@ impl Pump {
 
     pub(crate) fn forget_window(&mut self, window: WindowId) {
         self.redraws.retain(|w| *w != window);
+        self.access.retain(|(w, _)| *w != window);
     }
 
     fn wake(&mut self, wake: Wake) {
         match wake {
             Wake::Appearance(appearance) => self.set_appearance(appearance),
             Wake::Paste { window, text } => self.push(RawEvent::Paste { window, text }),
+            Wake::Access { window, request } => {
+                self.push(RawEvent::Accessibility { window, request });
+            }
         }
     }
 

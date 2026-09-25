@@ -331,7 +331,7 @@ Viso 不以“全部自研”为荣，也不以“尽量依赖现成库”为目
 
 Viso 在这些领域拥有的是 **cache policy、数据布局、生命周期、增量接口、性能 instrumentation 与替换边界**。例如 `viso-text` 可以使用成熟 shaping/Unicode crate，但 paragraph cache、glyph atlas、增量 line layout 与 UI invalidation 仍属于 Viso。
 
-Accessibility 的 canonical model 是 Viso 自有 semantics tree；平台 adapter 优先复用 AccessKit 等成熟桥接能力，只在能力或性能不满足时实现平台专用 adapter。
+Accessibility 的 canonical model 是 Viso 自有 semantics tree；平台 adapter 优先复用 AccessKit 等成熟桥接能力，只在能力或性能不满足时实现平台专用 adapter。平台桥的边界格式（`accesskit::TreeUpdate` 经 `PlatformApp::update_accessibility` 推送，请求以 `RawEvent::Accessibility` 回流）、仅在辅助技术激活时发布，以及 iOS（UIAccessibility container）与 Web（ARIA DOM mirror）两个 Viso 自有 adapter，见 [ADR 0030](docs/adr/0030-accessibility-os-bridge.md)。
 
 #### Tier C — Adapter / 可替换依赖
 
@@ -7005,7 +7005,7 @@ Box<dyn HitTestNode>
 5. Linux/OpenGL 与 Android/GLES compatibility backend 的投入时机；
 6. dynamic scripting VM 的保留范围；
 7. platform backend 何时从 module 升格独立 crate；
-8. AccessKit adapter 能覆盖多少目标平台/能力缺口；Viso semantics tree 本身已确定为 canonical model；
+8. AccessKit adapter 覆盖 macOS/Windows/Linux/Android，iOS 与 Web 由 Viso 自有 adapter 补齐（ADR 0030）；剩余能力缺口（Web 焦点跟随、文本编辑语义）待定；
 9. Rust declarative API 除 `ui!` / `component!` / `view!` 外是否还需要 builder/function syntax；
 10. 3D scene graph 放 render、extras 还是独立 crate；
 11. paragraph cache 是否跨 component 共享以及内存上限；

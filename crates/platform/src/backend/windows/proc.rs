@@ -33,7 +33,7 @@ use ::windows::Win32::UI::WindowsAndMessaging::{
 };
 
 use super::translate::{self, MenuAction};
-use super::{WindowState, drive, system};
+use super::{WindowState, access, drive, system};
 use crate::control::ControlFlow;
 use crate::event::{
     AcceptCell, ClipboardReply, ClipboardShortcut, KeyCode, Modifiers, PointerButtons, PointerId,
@@ -225,6 +225,15 @@ fn handle(
                 q.windows.retain(|w| !Rc::ptr_eq(w, state));
                 q.redraws.retain(|w| *w != id);
                 q.events.push_back(RawEvent::WindowClosed { window: id });
+            }
+            Some(LRESULT(0))
+        }
+        access::WM_ACCESS => {
+            if let Some(request) = access::decode(wparam, lparam) {
+                state.push(RawEvent::Accessibility {
+                    window: id,
+                    request,
+                });
             }
             Some(LRESULT(0))
         }

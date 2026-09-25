@@ -93,6 +93,13 @@ define_class!(
             true
         }
 
+        #[unsafe(method_id(accessibilityElements))]
+        fn accessibility_elements(&self) -> Option<Retained<NSArray>> {
+            let mut elements = None;
+            super::guarded(|| elements = super::access::elements());
+            elements
+        }
+
         #[unsafe(method(layoutSubviews))]
         fn layout_subviews(&self) {
             // SAFETY: forwards to UIView's implementation.

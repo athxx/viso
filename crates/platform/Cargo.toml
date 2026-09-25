@@ -21,9 +21,13 @@ rust-version.workspace = true
 # `Window::raw_handle`, consumed by viso-gpu — kept in its own crate so gpu
 # needn't depend on platform (§10 DAG).
 viso-handle = { workspace = true }
+# The accessibility tree vocabulary the bridge speaks (ADR 0030): data types
+# only; each backend's adapter crate sits with that backend below.
+accesskit = "0.25"
 
 # macOS: AppKit via objc2.
 [target.'cfg(target_os = "macos")'.dependencies]
+accesskit_macos = "0.27"
 objc2 = "0.6"
 objc2-foundation = { version = "0.3", features = [
     "NSDate",
@@ -69,6 +73,7 @@ objc2-core-foundation = "0.3"
 
 # Android: JNI into the `dev.viso` Java shell, NDK entry points by hand.
 [target.'cfg(target_os = "android")'.dependencies]
+accesskit_android = { version = "0.8", features = ["embedded-dex"] }
 jni-sys = "0.4"
 libc = "0.2"
 
@@ -116,6 +121,7 @@ web-sys = { version = "0.3", features = [
 
 # Windows: Win32 via the windows crate.
 [target.'cfg(target_os = "windows")'.dependencies]
+accesskit_windows = "0.35"
 windows = { version = "0.62", features = [
     "Win32_Foundation",
     "Win32_System_LibraryLoader",
@@ -134,7 +140,8 @@ windows = { version = "0.62", features = [
 
 # Linux and the BSDs: X11 through XCB (libxcb loaded at runtime), Wayland
 # through libwayland-client (also loaded at runtime), xkbcommon for keymaps
-# and compose on both, and the desktop portal over D-Bus for appearance.
+# and compose on both, the desktop portal over D-Bus for appearance, and
+# AT-SPI over the accessibility bus.
 [target.'cfg(any(target_os = "linux", target_os = "freebsd", target_os = "openbsd", target_os = "netbsd", target_os = "dragonfly"))'.dependencies]
 x11rb = { version = "0.13", features = [
     "allow-unsafe-code",
@@ -153,4 +160,5 @@ wayland-backend = { version = "0.3", features = ["client_system", "dlopen"] }
 wayland-protocols = { version = "0.32", features = ["client", "staging", "unstable"] }
 wayland-cursor = "0.31"
 zbus = { version = "5", default-features = false, features = ["blocking-api", "async-io"] }
+accesskit_unix = "0.23"
 libc = "0.2"

@@ -18,6 +18,7 @@
 //! first responder: touches, pointer hover and scroll, hardware keys, and
 //! `UITextInput` composition all arrive there.
 
+mod access;
 mod view;
 
 use std::cell::{Cell, RefCell};
@@ -38,11 +39,12 @@ use objc2_ui_kit::{
     UIAccessibilityContrast, UIAccessibilityDarkerSystemColorsEnabled,
     UIAccessibilityDarkerSystemColorsStatusDidChangeNotification,
     UIAccessibilityIsReduceMotionEnabled, UIAccessibilityReduceMotionStatusDidChangeNotification,
-    UIApplication, UIApplicationDelegate, UIKeyboardFrameEndUserInfoKey,
-    UIKeyboardWillChangeFrameNotification, UIPasteboard, UIResponder, UIScene,
-    UISceneConfiguration, UISceneConnectionOptions, UISceneDelegate, UISceneSession, UIScreen,
-    UITraitCollection, UITraitEnvironment, UIUserInterfaceStyle, UIViewController, UIWindow,
-    UIWindowScene, UIWindowSceneDelegate,
+    UIAccessibilitySwitchControlStatusDidChangeNotification,
+    UIAccessibilityVoiceOverStatusDidChangeNotification, UIApplication, UIApplicationDelegate,
+    UIKeyboardFrameEndUserInfoKey, UIKeyboardWillChangeFrameNotification, UIPasteboard,
+    UIResponder, UIScene, UISceneConfiguration, UISceneConnectionOptions, UISceneDelegate,
+    UISceneSession, UIScreen, UITraitCollection, UITraitEnvironment, UIUserInterfaceStyle,
+    UIViewController, UIWindow, UIWindowScene, UIWindowSceneDelegate,
 };
 
 use self::view::VisoView;
@@ -50,7 +52,7 @@ use crate::control::{ControlFlow, LogicalRect, PlatformError, WindowConfig, Wind
 use crate::event::{Appearance, ColorScheme, CursorIcon, RawEvent};
 use crate::handler::AppHandler;
 use crate::menu::Menu;
-use crate::{Instant, PlatformApp, RawWindowHandle, Window};
+use crate::{Instant, PlatformApp, RawWindowHandle, Window, accesskit};
 
 /// The only window's id.
 const WINDOW: WindowId = WindowId(1);
@@ -77,6 +79,7 @@ struct Loop {
     display_link: RefCell<Option<Retained<CADisplayLink>>>,
     wake_timer: RefCell<Option<Retained<NSTimer>>>,
     target: RefCell<Option<Retained<LoopTarget>>>,
+    access: RefCell<access::Access>,
 }
 
 thread_local! {
@@ -94,6 +97,7 @@ thread_local! {
         display_link: RefCell::new(None),
         wake_timer: RefCell::new(None),
         target: RefCell::new(None),
+        access: RefCell::new(access::Access::new()),
     };
 }
 
@@ -302,6 +306,14 @@ impl IosApp {
                     sel!(accessibilityChanged:),
                     UIAccessibilityDarkerSystemColorsStatusDidChangeNotification,
                 ),
+                (
+                    sel!(assistiveTechnologyChanged:),
+                    UIAccessibilityVoiceOverStatusDidChangeNotification,
+                ),
+                (
+                    sel!(assistiveTechnologyChanged:),
+                    UIAccessibilitySwitchControlStatusDidChangeNotification,
+                ),
             ] {
                 center.addObserver_selector_name_object(&target, selector, Some(name), None);
             }
@@ -403,6 +415,12 @@ impl PlatformApp for IosApp {
     fn request_redraw(&mut self, window: WindowId) {
         if window == WINDOW {
             request_frame();
+        }
+    }
+
+    fn update_accessibility(&mut self, window: WindowId, update: accesskit::TreeUpdate) {
+        if let Some(w) = self.window.as_ref().filter(|_| window == WINDOW) {
+            access::update(&w.view, update);
         }
     }
 
@@ -546,6 +564,11 @@ define_class!(
                 report_appearance(&traits);
                 drive();
             });
+        }
+
+        #[unsafe(method(assistiveTechnologyChanged:))]
+        fn assistive_technology_changed(&self, _note: &NSNotification) {
+            guarded(access::assistive_technology_changed);
         }
     }
 );

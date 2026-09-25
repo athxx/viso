@@ -17,6 +17,7 @@
 //! a hidden `<textarea>` ([`input`]), which receives keys, text, composition
 //! and clipboard events and opens the soft keyboard on touch devices.
 
+mod access;
 mod input;
 
 use std::cell::{Cell, RefCell};
@@ -34,6 +35,7 @@ use web_sys::{
 };
 
 use super::web_translate::{css_cursor, css_px, is_apple, keyboard_inset, pixels};
+use crate::accessibility::accesskit;
 use crate::control::{ControlFlow, LogicalRect, PlatformError, WindowConfig, WindowId};
 use crate::event::{Appearance, ColorScheme, CursorIcon, Insets, PointerButtons, RawEvent};
 use crate::handler::AppHandler;
@@ -294,6 +296,8 @@ struct Page {
     observer: RefCell<Option<Observer>>,
     /// Fires when the device pixel ratio leaves its current value.
     scale_watch: RefCell<Option<Listener>>,
+    /// The accessibility mirror over the canvas.
+    access: RefCell<Option<access::WebAccess>>,
 }
 
 impl Page {
@@ -682,6 +686,7 @@ impl PlatformApp for WebApp {
             listeners: RefCell::new(Vec::new()),
             observer: RefCell::new(None),
             scale_watch: RefCell::new(None),
+            access: RefCell::new(access::WebAccess::attach(&document, &root)),
         });
         LOOP.with(|l| *l.page.borrow_mut() = Some(page.clone()));
 
@@ -736,6 +741,18 @@ impl PlatformApp for WebApp {
 
     fn set_menu(&mut self, _menu: &Menu) {}
 
+    fn update_accessibility(&mut self, window: WindowId, update: accesskit::TreeUpdate) {
+        let Some(w) = self.window.as_ref().filter(|_| window == WINDOW) else {
+            return;
+        };
+        let page = &w.page;
+        let rect = page.canvas.get_bounding_client_rect();
+        let canvas = (rect.left(), rect.top(), rect.width(), rect.height());
+        if let Some(access) = page.access.borrow_mut().as_mut() {
+            access.update(&document(), update, canvas, page.scale.get());
+        }
+    }
+
     fn set_fullscreen(&mut self, window: WindowId, fullscreen: bool) {
         let Some(w) = self.window.as_ref().filter(|_| window == WINDOW) else {
             return;
@@ -770,6 +787,9 @@ impl PlatformApp for WebApp {
         page.scale_watch.borrow_mut().take();
         if let Some((observer, _callback)) = page.observer.borrow_mut().take() {
             observer.disconnect();
+        }
+        if let Some(access) = page.access.borrow_mut().take() {
+            access.remove();
         }
         page.canvas.remove();
         page.input.remove();

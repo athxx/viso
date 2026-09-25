@@ -29,6 +29,7 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::ptr::NonNull;
 use std::rc::Rc;
 
+use super::macos_access::{MacAccess, Sink};
 use super::memory_pressure::MemoryPressure;
 
 use objc2::rc::{Retained, autoreleasepool};
@@ -169,6 +170,18 @@ impl MacApp {
             _app_delegate: app_delegate,
             menu_targets: Vec::new(),
             _memory_pressure: memory_pressure,
+        })
+    }
+
+    /// The queue the accessibility adapters push their requests onto. They run
+    /// inside AppKit callbacks, so a panic is caught before it can unwind into
+    /// Objective-C.
+    fn access_sink(&self) -> Sink {
+        let shared = self.shared.clone();
+        Rc::new(move |event| {
+            let _ = catch_unwind(AssertUnwindSafe(|| {
+                shared.borrow_mut().events.push_back(event);
+            }));
         })
     }
 
@@ -344,6 +357,7 @@ impl PlatformApp for MacApp {
         let view = VisoContentView::new(self.mtm, id, self.shared.clone(), content_rect);
         window.setContentView(Some(&view));
         window.makeFirstResponder(Some(&view));
+        let access = MacAccess::attach(&view, id, self.access_sink());
 
         window.makeKeyAndOrderFront(None);
 
@@ -367,6 +381,7 @@ impl PlatformApp for MacApp {
             content_view: view,
             _delegate: delegate,
             chrome: config.chrome,
+            access,
         });
         // The first frame is scheduled by the runtime after launch (paired with a
         // FirstFrame redraw reason), keeping a single beat source across backends.
@@ -412,6 +427,11 @@ impl PlatformApp for MacApp {
             // resizes, closes, and the pointer/key/scroll/IME samples the view
             // enqueued while AppKit dispatched the last OS event.
             if let Some(event) = self.next_synthetic() {
+                if let RawEvent::WindowFocused { window, focused } = event
+                    && let Some(win) = self.windows.iter_mut().find(|w| w.id == window)
+                {
+                    win.access.set_focused(focused);
+                }
                 flow = deliver(handler, event);
                 if flow == ControlFlow::Exit {
                     break;
@@ -546,6 +566,12 @@ impl PlatformApp for MacApp {
         }
     }
 
+    fn update_accessibility(&mut self, window: WindowId, update: accesskit::TreeUpdate) {
+        if let Some(win) = self.windows.iter_mut().find(|w| w.id == window) {
+            win.access.update(update);
+        }
+    }
+
     fn close_window(&mut self, window: WindowId) {
         // Same close path as a user-driven close, initiated by the app: order the
         // NSWindow out (dropping its Retained releases the OS shell) and enqueue a
@@ -618,6 +644,8 @@ pub struct MacWindow {
     /// only for `SelfDrawn` (a `Native` window's OS title bar owns its own
     /// buttons, outside our layout).
     chrome: WindowChrome,
+    /// The content view's accessibility adapter.
+    access: MacAccess,
 }
 
 impl Window for MacWindow {

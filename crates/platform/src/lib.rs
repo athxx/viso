@@ -15,6 +15,13 @@
 
 #![forbid(unsafe_op_in_unsafe_fn)]
 
+#[cfg(any(
+    target_os = "ios",
+    all(target_arch = "wasm32", target_os = "unknown"),
+    test
+))]
+mod access_mirror;
+pub mod accessibility;
 pub mod backend;
 pub mod control;
 pub mod event;
@@ -22,6 +29,7 @@ pub mod handler;
 pub mod menu;
 pub mod time;
 
+pub use accessibility::{AccessAction, AccessRequest, accesskit};
 pub use control::{
     ControlFlow, DEFAULT_FRAME_BUDGET, LogicalRect, PlatformError, WindowChrome, WindowConfig,
     WindowId,
@@ -103,6 +111,13 @@ pub trait PlatformApp {
     /// where windows are always fullscreen (mobile, a browser tab).
     fn set_fullscreen(&mut self, window: WindowId, fullscreen: bool) {
         let _ = (window, fullscreen);
+    }
+
+    /// Publish an accessibility tree update for `window` (ADR 0030). The app
+    /// sends a full tree after [`AccessRequest::Activated`] and only changed
+    /// nodes after that. A no-op on backends without an accessibility bridge.
+    fn update_accessibility(&mut self, window: WindowId, update: accesskit::TreeUpdate) {
+        let _ = (window, update);
     }
 
     /// Programmatically close `window`, destroying its OS shell.

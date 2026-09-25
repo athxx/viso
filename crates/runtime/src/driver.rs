@@ -10,7 +10,7 @@
 
 use viso_platform::Instant;
 
-use viso_platform::{Appearance, Insets, LogicalRect, MenuCommandId, WindowId};
+use viso_platform::{AccessRequest, Appearance, Insets, LogicalRect, MenuCommandId, WindowId};
 
 use crate::context::RuntimeCx;
 use crate::input::InputSample;
@@ -110,6 +110,10 @@ pub trait FrameDriver {
     /// The on-screen keyboard now covers `height` logical points at the bottom
     /// of `window`. Default no-op.
     fn on_keyboard_inset(&mut self, _window: WindowId, _height: f64) {}
+
+    /// An assistive technology started or stopped listening to `window`, or
+    /// asked for an action on one of its nodes. Default no-op.
+    fn on_accessibility(&mut self, _window: WindowId, _request: AccessRequest) {}
 
     /// The app moved through its OS lifecycle. On
     /// [`Lifecycle::Resumed`] the driver requests a redraw for each window it

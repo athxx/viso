@@ -12,7 +12,7 @@ use viso_platform::Instant;
 
 use viso_platform::{
     Appearance, CursorIcon, LogicalRect, PlatformApp, PlatformError, RawWindowHandle, WindowConfig,
-    WindowId,
+    WindowId, accesskit,
 };
 
 /// Capabilities available to a frame driver for the duration of one callback.
@@ -131,6 +131,13 @@ impl<'a> RuntimeCx<'a> {
     /// changes, not per frame.
     pub fn set_draggable_regions(&mut self, window: WindowId, regions: &[LogicalRect]) {
         self.app.set_draggable_regions(window, regions);
+    }
+
+    /// Publish an accessibility tree update for `window` to the OS bridge. A
+    /// no-op on backends without one. Called only while an assistive
+    /// technology listens.
+    pub fn update_accessibility(&mut self, window: WindowId, update: accesskit::TreeUpdate) {
+        self.app.update_accessibility(window, update);
     }
 
     /// Enter or leave fullscreen for `window`; the platform reports the

@@ -1018,6 +1018,18 @@ pub fn focus_next(store: &mut NodeStore, root: NodeId, forward: bool) -> Option<
     Some(new)
 }
 
+/// Focus `node` directly, as an assistive technology's focus action does:
+/// the same slot move and dirty marks as a Tab step. Returns `false`, changing
+/// nothing, when `node` is freed or not focusable.
+pub fn focus_node(store: &mut NodeStore, node: NodeId) -> bool {
+    if !store.arena().is_live(node) || !store.focusable(node) {
+        return false;
+    }
+    let old = store.focused();
+    apply_focus(store, old, Some(node));
+    true
+}
+
 /// Move the focus slot from `old` to `new`, repainting both (the focus-ring
 /// leaves the old node and lands on the new) and marking both semantically
 /// changed (a focus move is a semantic event, so the derived accessibility tree
@@ -1985,6 +1997,18 @@ mod tests {
         assert_eq!(focus_next(&mut store, root, true), Some(a));
         // Backward wraps the other way.
         assert_eq!(focus_next(&mut store, root, false), Some(c));
+    }
+
+    #[test]
+    fn focus_node_moves_focus_and_refuses_the_unfocusable() {
+        let (mut store, root, [a, b, _]) = three_focusable_leaves();
+        assert!(focus_node(&mut store, b));
+        assert_eq!(store.focused(), Some(b));
+        assert!(store.dirty(b).contains(DirtyClass::SEMANTICS));
+        // Tab continues from where the direct focus landed.
+        assert_eq!(focus_next(&mut store, root, false), Some(a));
+        assert!(!focus_node(&mut store, root));
+        assert_eq!(store.focused(), Some(a));
     }
 
     #[test]

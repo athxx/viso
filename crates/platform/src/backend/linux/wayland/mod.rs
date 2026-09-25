@@ -98,6 +98,7 @@ impl PlatformApp for WaylandApp {
         let mut wl = self.wl.borrow_mut();
         let Wl { queue, state } = &mut *wl;
         let surface = state.create_window(id, &config);
+        state.pump.attach_access(id, &state.waker);
         // Wait for the first configure so the window has its real size and
         // scale before the app builds a surface for it.
         while state
@@ -162,6 +163,10 @@ impl PlatformApp for WaylandApp {
                 }
             }
         });
+    }
+
+    fn update_accessibility(&mut self, window: WindowId, update: accesskit::TreeUpdate) {
+        self.with_state(|state| state.pump.update_access(window, update));
     }
 
     fn close_window(&mut self, window: WindowId) {

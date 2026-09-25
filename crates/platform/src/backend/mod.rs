@@ -14,6 +14,9 @@ pub mod headless;
 pub mod macos;
 
 #[cfg(target_os = "macos")]
+mod macos_access;
+
+#[cfg(target_os = "macos")]
 mod memory_pressure;
 
 #[cfg(target_os = "windows")]

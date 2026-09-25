@@ -52,6 +52,7 @@ use viso_ui::{
 };
 use viso_widgets::caption_bar;
 
+mod accessibility;
 pub mod system_fonts;
 mod text_content;
 mod text_harness;
@@ -487,6 +488,9 @@ struct WindowState {
     safe_area_root: Option<NodeId>,
     safe_area: Insets,
     keyboard_inset: f64,
+    /// The accessibility tree published to the OS, present only while an
+    /// assistive technology listens to this window.
+    access: Option<accessibility::AccessBridge>,
     /// The retained UI tree: real nodes built once on launch, then relaid only
     /// where invalidated each frame and painted to primitives.
     store: NodeStore,
@@ -665,6 +669,7 @@ impl WindowState {
             draggable_cache: Vec::new(),
             chrome: WindowChrome::Native,
             caption: None,
+            access: None,
             safe_area_root: None,
             safe_area: Insets::default(),
             keyboard_inset: 0.0,
@@ -1747,6 +1752,35 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
         }
     }
 
+    fn on_accessibility(&mut self, window: WindowId, request: viso_platform::AccessRequest) {
+        let Some(ws) = self.window_mut(window) else {
+            return;
+        };
+        let (target, action) = match request {
+            viso_platform::AccessRequest::Activated => {
+                ws.access = Some(accessibility::AccessBridge::new());
+                return;
+            }
+            viso_platform::AccessRequest::Deactivated => {
+                ws.access = None;
+                return;
+            }
+            viso_platform::AccessRequest::Action { target, action } => (target, action),
+        };
+        let Some(node) = ws.access.as_ref().and_then(|access| access.target(target)) else {
+            return;
+        };
+        if !ws.store.arena().is_live(node) {
+            return;
+        }
+        let scale = ws.dpi.max(1.0);
+        if let Some(samples) = accessibility::perform(&mut ws.store, window, node, action, scale) {
+            for sample in samples {
+                self.on_input(sample);
+            }
+        }
+    }
+
     fn on_fullscreen_changed(&mut self, window: WindowId, fullscreen: bool) {
         // Hide the self-drawn caption while fullscreen and restore it on exit by
         // toggling its root's visibility in place — on macOS the OS draws its own
@@ -2019,6 +2053,16 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
                         if was_editing != area.is_some() {
                             cx.show_soft_keyboard(ws.window, area.is_some());
                         }
+                    }
+                }
+            }
+            FramePhase::UpdateSemantics => {
+                for ws in &mut self.windows {
+                    let (Some(access), Some(root)) = (&mut ws.access, ws.root) else {
+                        continue;
+                    };
+                    if let Some(update) = access.update(&ws.store, root, ws.dpi.max(1.0)) {
+                        cx.update_accessibility(ws.window, update);
                     }
                 }
             }

@@ -19,6 +19,7 @@
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
+use crate::accessibility::AccessRequest;
 use crate::control::{LogicalRect, WindowId};
 use crate::menu::MenuCommandId;
 
@@ -684,6 +685,12 @@ pub enum RawEvent {
     /// [`RawEvent::SurfaceDestroyed`]; [`Window::raw_handle`](crate::Window::raw_handle)
     /// returns it and [`Window::inner_size`](crate::Window::inner_size) its size.
     SurfaceCreated { window: WindowId },
+    /// An assistive technology started or stopped listening to `window`, or
+    /// asked for an action on one of its published nodes.
+    Accessibility {
+        window: WindowId,
+        request: AccessRequest,
+    },
 }
 
 #[cfg(test)]

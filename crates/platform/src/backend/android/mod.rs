@@ -21,6 +21,7 @@
 //! and returns from `run`; when the app's `main` returns first, the activity
 //! is finished for it.
 
+mod access;
 mod jni;
 mod ndk;
 
@@ -33,6 +34,7 @@ use std::time::Duration;
 
 use super::android_translate as translate;
 use super::utf16::byte_offset;
+use crate::accessibility::AccessRequest;
 use crate::control::{ControlFlow, LogicalRect, PlatformError, WindowConfig, WindowId};
 use crate::event::{
     AcceptCell, Appearance, ClipboardReply, ClipboardShortcut, ColorScheme, CursorIcon, Insets,
@@ -117,6 +119,10 @@ pub(super) enum Msg {
     Commit(String),
     /// A context-menu edit: copy 0, cut 1, paste 2.
     Edit(i32),
+    /// An assistive technology's request.
+    Access(AccessRequest),
+    /// The system recreated the activity: a new host view.
+    Recreated,
     Destroy,
 }
 
@@ -296,6 +302,8 @@ struct Loop {
     cursor: Cell<i32>,
     /// The activity is finishing: `run` returns once the queue drains.
     finishing: Cell<bool>,
+    /// The accessibility adapter on the host view, while the window is open.
+    access: RefCell<Option<accesskit_android::InjectingAdapter>>,
 }
 
 thread_local! {
@@ -320,6 +328,7 @@ thread_local! {
         mouse: Cell::new(PointerButtons::NONE),
         cursor: Cell::new(translate::pointer_icon(CursorIcon::Default)),
         finishing: Cell::new(false),
+        access: RefCell::new(None),
     };
 }
 
@@ -562,8 +571,18 @@ fn apply(msg: Msg) {
         Msg::Edit(1) => copy(true),
         Msg::Edit(2) => paste(),
         Msg::Edit(_) => {}
+        Msg::Access(request) => push_to_window(RawEvent::Accessibility {
+            window: WINDOW,
+            request,
+        }),
+        Msg::Recreated => {
+            if LOOP.with(|l| l.window_open.get()) {
+                attach_access();
+            }
+        }
         Msg::Destroy => {
             LOOP.with(|l| l.finishing.set(true));
+            drop(LOOP.with(|l| l.access.borrow_mut().take()));
             if LOOP.with(|l| l.window_open.replace(false)) {
                 push(RawEvent::CloseRequested {
                     window: WINDOW,
@@ -573,6 +592,14 @@ fn apply(msg: Msg) {
             }
         }
     }
+}
+
+/// Put a fresh accessibility adapter on the current host view, replacing
+/// (and detaching) any earlier one.
+fn attach_access() {
+    drop(LOOP.with(|l| l.access.borrow_mut().take()));
+    let adapter = access::attach();
+    LOOP.with(|l| *l.access.borrow_mut() = adapter);
 }
 
 fn apply_surface(surface: Surface) {
@@ -738,6 +765,7 @@ impl PlatformApp for AndroidApp {
             ));
         }
         LOOP.with(|l| l.window_open.set(true));
+        attach_access();
         jni::set_title(&config.title);
         push(RawEvent::SafeAreaChanged {
             window: WINDOW,
@@ -832,6 +860,7 @@ impl PlatformApp for AndroidApp {
             l.window_open.set(false);
             l.finishing.set(true);
         });
+        drop(LOOP.with(|l| l.access.borrow_mut().take()));
         jni::finish();
         push(RawEvent::WindowClosed { window });
     }
@@ -869,6 +898,19 @@ impl PlatformApp for AndroidApp {
 
     fn appearance(&self) -> Appearance {
         LOOP.with(|l| l.appearance.get())
+    }
+
+    fn update_accessibility(&mut self, window: WindowId, update: accesskit::TreeUpdate) {
+        if window != WINDOW {
+            return;
+        }
+        // The adapter posts its events to the UI thread rather than calling
+        // back into the loop, so nothing re-enters the borrow.
+        LOOP.with(|l| {
+            if let Some(adapter) = l.access.borrow_mut().as_mut() {
+                access::update(adapter, update);
+            }
+        });
     }
 
     fn framed_windows(&self) -> bool {

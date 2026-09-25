@@ -11,6 +11,7 @@
 //! Compile-checked from the development host; runtime behavior needs a
 //! Windows machine.
 
+mod access;
 mod menu;
 mod proc;
 mod system;
@@ -450,6 +451,7 @@ impl PlatformApp for WinApp {
         let dark = self.shared.borrow().appearance.color_scheme == crate::ColorScheme::Dark;
         system::set_dark_title(hwnd, dark);
         state.size.set(state.client_size());
+        let access = access::attach(hwnd);
         // No text field has focus yet: keys reach the window unconverted
         // until one asks for the IME.
         proc::set_ime_area(&state, None);
@@ -460,7 +462,7 @@ impl PlatformApp for WinApp {
         }
         state.ready.set(true);
         self.shared.borrow_mut().push_redraw(id);
-        self.windows.push(WinWindow { state });
+        self.windows.push(WinWindow { state, access });
         Ok(id)
     }
 
@@ -574,6 +576,12 @@ impl PlatformApp for WinApp {
         self.shared.borrow_mut().menu = native;
     }
 
+    fn update_accessibility(&mut self, window: WindowId, update: accesskit::TreeUpdate) {
+        if let Some(win) = self.windows.iter_mut().find(|w| w.state.id == window) {
+            access::update(&mut win.access, update);
+        }
+    }
+
     fn close_window(&mut self, window: WindowId) {
         // The same path as an accepted user close: `WM_DESTROY` queues the
         // `WindowClosed` the scheduler counts against its open windows.
@@ -630,6 +638,8 @@ impl PlatformApp for WinApp {
 /// A native Win32 window.
 pub struct WinWindow {
     state: Rc<WindowState>,
+    /// The window's accessibility adapter.
+    access: accesskit_windows::SubclassingAdapter,
 }
 
 impl Window for WinWindow {
