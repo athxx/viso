@@ -77,12 +77,12 @@ pub use viso_ui::{InspectSnapshot, snapshot_ui};
 // private to this module for the drain translation).
 pub use viso_ui::{WindowChrome, WindowConfig};
 
-// The `ui!` proc-macro lives in the compile-time-only `viso-ui-macros` crate; it
-// emits `::viso_ui::…` builder tokens but does not itself depend on `viso-ui`. The
-// facade re-exports it and already depends on `viso-ui`, so those emitted paths
-// resolve at the call site — the same reverse-re-export shape `viso-gpu` uses for
-// `viso_macros::GpuPod`.
-pub use viso_ui_macros::ui;
+// The DSL entry points `ui!`, `component!` and `view!` live in the compile-time-only
+// `viso-ui-macros` crate; they emit `::viso_ui::…` builder tokens but do not
+// themselves depend on `viso-ui`. The facade re-exports them and already depends on
+// `viso-ui`, so those emitted paths resolve at the call site — the same
+// reverse-re-export shape `viso-gpu` uses for `viso_macros::GpuPod`.
+pub use viso_ui_macros::{component, ui, view};
 
 // The SVG input lane (§13), re-exported as `viso::svg` so an app that has SVG
 // bytes calls `viso::svg::parse_svg(..)` without naming the internal

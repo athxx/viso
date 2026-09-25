@@ -62,6 +62,8 @@ inspector = ["viso-text/inspector"]
 # the resolved face. Only used in tests, so they stay dev-dependencies.
 ttf-parser = { workspace = true }
 rustybuzz = { workspace = true }
+# The DSL macros' diagnostics are checked against the spans rustc reports.
+trybuild = "1"
 
 # Web: the WebGPU device opens asynchronously before the scheduler starts.
 [target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dependencies]

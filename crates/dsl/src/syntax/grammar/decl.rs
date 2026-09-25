@@ -27,14 +27,23 @@ pub(super) fn compilation_unit(p: &mut Parser) {
     }
 }
 
-/// `ImportDecl* ComponentDecl EOF` — the body of a `component!` entry. Imports may
-/// precede the single component; anything else is still parsed (and recovered) so
-/// a malformed entry does not swallow the rest of the input.
+/// `ImportDecl* "component"? ComponentDecl EOF` — the body of a `component!`
+/// entry. Imports may precede the single component, whose `component` keyword is
+/// optional (`component! { Counter { … } }`). Anything after it is reported and
+/// still parsed as top-level declarations, so a malformed entry keeps its shape.
 pub(super) fn component_entry(p: &mut Parser) {
-    while !p.at_end() {
-        if p.at(SyntaxKind::ImportKw) {
-            import_decl(p);
-        } else {
+    while p.at(SyntaxKind::ImportKw) {
+        import_decl(p);
+    }
+    attributes(p);
+    match p.current() {
+        SyntaxKind::ComponentKw => component_decl(p),
+        SyntaxKind::Ident | SyntaxKind::RawIdent => component_body(p),
+        _ => p.error(ParseErrorKind::MissingToken),
+    }
+    if !p.at_end() {
+        p.error(ParseErrorKind::UnexpectedTokens);
+        while !p.at_end() {
             top_level_decl(p);
         }
     }
@@ -143,12 +152,24 @@ fn decl_core(p: &mut Parser) {
 fn component_decl(p: &mut Parser) {
     let m = p.start();
     p.bump_any(); // `component`
+    component_rest(p);
+    m.complete(p, SyntaxKind::ComponentDecl);
+}
+
+/// A `component!` component written without its keyword: `IDENT … { member* }`.
+fn component_body(p: &mut Parser) {
+    let m = p.start();
+    component_rest(p);
+    m.complete(p, SyntaxKind::ComponentDecl);
+}
+
+/// Everything in a component declaration after the keyword.
+fn component_rest(p: &mut Parser) {
     name(p);
     generic_params(p);
     implements_clause(p);
     where_clause(p);
     member_block(p, member);
-    m.complete(p, SyntaxKind::ComponentDecl);
 }
 
 /// `"system" IDENT GenericParams? ImplementsClause? WhereClause? "{"

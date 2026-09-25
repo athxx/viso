@@ -163,22 +163,22 @@ not. All three must share schema, name resolution, type/effect checking, Typed H
 Reactive/UI/Shader IR and diagnostics — the frontend already does, so this is an entry
 surface, not a second compiler.
 
-- [ ] `component!` proc-macro in `viso-ui-macros` on the existing `ComponentDecl` grammar
+- [x] `component!` proc-macro in `viso-ui-macros` on the existing `ComponentDecl` grammar
       entry (`crates/dsl/src/syntax/grammar/decl.rs`), emitting the same `viso_ui` builder
       shape `ui!` emits.
-- [ ] `view!("path.vs")` proc-macro: resolve the path relative to the invoking file, compile
+- [x] `view!("path.vs")` proc-macro: resolve the path relative to the invoking file, compile
       it through the normal module/file frontend, and register the file as a compile
       dependency so editing the `.vs` rebuilds the Rust crate (AGENTS 21.5: `view!` compiles
       an external `.vs` through the file frontend, not an inline copy of it).
-- [ ] Diagnostics from all three map back to real spans — inline macro spans for
+- [x] Diagnostics from all three map back to real spans — inline macro spans for
       `ui!`/`component!`, `.vs` file + line/col for `view!`.
-- [ ] `.vs` files need no per-file `language`/`module` header (AGENTS 21.5.3): module path
+- [x] `.vs` files need no per-file `language`/`module` header (AGENTS 21.5.3): module path
       derives from package + source path, language version from `Viso.toml`.
-- [ ] Contract test: three equivalent sources — one `ui!`, one `component!`, one `.vs` via
+- [x] Contract test: three equivalent sources — one `ui!`, one `component!`, one `.vs` via
       `view!` — produce the *same* Typed HIR and UI/Binding IR. This is the assertion that
       keeps them one pipeline instead of three dialects.
-- [ ] Gate green → commit T2.
-- [ ] FREEZE T2: the three entry-point parse contracts and their shared lowering.
+- [x] Gate green → commit T2.
+- [x] FREEZE T2: the three entry-point parse contracts and their shared lowering.
 
 ---
 

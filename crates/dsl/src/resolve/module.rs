@@ -101,12 +101,14 @@ impl SourceUnit {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum ResolveErrorKind {
-    /// An `import` named a module not present in the graph, or a type/value path
-    /// named a symbol that resolves to nothing.
+    /// An `import` named a module not present in the graph.
     UnresolvedModule,
-    /// Two source units declared the same module path, or a name was defined twice
-    /// within one namespace.
+    /// A type path named a user type no declaration or import provides.
+    UnresolvedType,
+    /// Two source units declared the same module path.
     AmbiguousModule,
+    /// A name was declared twice within one namespace.
+    DuplicateName,
     /// The import graph contains a cycle.
     CyclicImport,
 }
@@ -115,8 +117,8 @@ impl ResolveErrorKind {
     /// The stable diagnostic code (spec section 30).
     pub const fn code(self) -> &'static str {
         match self {
-            ResolveErrorKind::UnresolvedModule => "E2001",
-            ResolveErrorKind::AmbiguousModule => "E2002",
+            ResolveErrorKind::UnresolvedModule | ResolveErrorKind::UnresolvedType => "E2001",
+            ResolveErrorKind::AmbiguousModule | ResolveErrorKind::DuplicateName => "E2002",
             ResolveErrorKind::CyclicImport => "E2003",
         }
     }
@@ -125,7 +127,9 @@ impl ResolveErrorKind {
     pub const fn message(self) -> &'static str {
         match self {
             ResolveErrorKind::UnresolvedModule => "imported module does not exist",
+            ResolveErrorKind::UnresolvedType => "type does not exist",
             ResolveErrorKind::AmbiguousModule => "two source units declare the same module",
+            ResolveErrorKind::DuplicateName => "name is already declared in this scope",
             ResolveErrorKind::CyclicImport => "modules form an import cycle",
         }
     }

@@ -77,6 +77,9 @@ pub struct Package {
     pub bundle_id: Option<Spanned<String>>,
     /// Project version.
     pub version: Option<Spanned<String>>,
+    /// The Viso language version the package's `.vs` sources are written in; a
+    /// source file never restates it.
+    pub language: Option<Spanned<String>>,
     /// `[package.ios]` signing identity (section 38.4). Kept here rather than
     /// under `[target.ios]` because it is delivery configuration, not a build
     /// property.
@@ -367,11 +370,16 @@ impl<'a> Reader<'a> {
 
         let package = match self.table(root, "package") {
             Some(t) => {
-                self.deny_unknown(t, &["name", "bundle_id", "version", "ios"], "package");
+                self.deny_unknown(
+                    t,
+                    &["name", "bundle_id", "version", "language", "ios"],
+                    "package",
+                );
                 Package {
                     name: self.string(t, "name", "package"),
                     bundle_id: self.string(t, "bundle_id", "package"),
                     version: self.string(t, "version", "package"),
+                    language: self.string(t, "language", "package"),
                     ios_team_id: match self.table(t, "ios") {
                         Some(ios) => {
                             self.deny_unknown(ios, &["team_id"], "package.ios");
@@ -934,6 +942,7 @@ default_target = "host"
 name = "app"
 bundle_id = "com.example.app"
 version = "0.2.0"
+language = "1.0"
 
 [package.ios]
 team_id = "ABCDE12345"
@@ -980,6 +989,7 @@ members = ["apps/one", "apps/two"]
         assert!(warnings.is_empty(), "{warnings:?}");
 
         assert_eq!(m.package.version.as_ref().unwrap().value, "0.2.0");
+        assert_eq!(m.package.language.as_ref().unwrap().value, "1.0");
         assert_eq!(m.package.ios_team_id.as_ref().unwrap().value, "ABCDE12345");
 
         assert_eq!(m.profiles.dev.opt_level.unwrap().value, OptLevel::Zero);

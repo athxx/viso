@@ -1,11 +1,12 @@
 //! UI IR + Binding IR -> `viso_ui` builder `TokenStream` (AGENTS section 21.5, 59).
 //!
-//! The shared DSL frontend (driven from [`crate`]) turns a `ui! { ... }` body into
-//! a static [`UiTree`] template plus a [`BindingIr`] of compiled
-//! `StateId -> (node, DirtyClass)` edges. This module lowers those *data*
-//! structures into the Rust tokens the macro expands to: a single builder closure
-//! `|cx: &mut ::viso_ui::BuildCx<'_>| -> ::viso_ui::Handle` that mounts the retained
-//! tree once and records each reactive binding against the retained node it targets.
+//! The shared DSL frontend turns a view — a `ui!` fragment, or the `view` block of
+//! a `component!` or a `.vs` component — into a static [`UiTree`] template plus a
+//! [`BindingIr`] of compiled `StateId -> (node, DirtyClass)` edges. This module
+//! lowers those *data* structures into the builder expression every entry point
+//! expands around: it mounts the retained tree once through a `cx` of type
+//! `&mut ::viso_ui::BuildCx<'_>`, records each reactive binding against the
+//! retained node it targets, and evaluates to the root's `::viso_ui::Handle`.
 //!
 //! No runtime parse, no per-frame rebuild (section 59): every node is a direct
 //! `cx.flex` / `cx.leaf` / … call, and every static [`BindingEdge`] becomes one
@@ -15,10 +16,10 @@
 //! The walk replicates the Binding IR's pre-order [`NodeKey`] numbering exactly, so
 //! the `Handle` captured for each builder call aligns with the `NodeKey` each edge
 //! targets. Control-flow regions (`if`/`for`/`match`) are recorded in the IR but
-//! their runtime reconciliation belongs to a consuming slice; rather than mount them
-//! wrong (which would desync the NodeKey numbering and misroute every later
-//! binding), the emitter surfaces an explicit `compile_error!` for this first cut,
-//! preserving the "no silent wrong lowering" invariant.
+//! their runtime reconciliation is not mounted; rather than mount them wrong
+//! (which would desync the NodeKey numbering and misroute every later binding),
+//! the emitter reports an error, preserving the "no silent wrong lowering"
+//! invariant.
 
 use std::collections::HashMap;
 
@@ -36,25 +37,24 @@ struct ControlFlow {
     kind: &'static str,
 }
 
-/// Lowers a fragment's [`UiTree`] + [`BindingIr`] to the builder closure tokens.
+/// Lowers a view's [`UiTree`] + [`BindingIr`] to the builder expression.
 ///
-/// `sources` maps each reactive-source [`SymbolId`] the frontend minted back to the
-/// user's in-scope Rust `StateId` identifier; Rust hygiene resolves that identifier
-/// at the macro call site (the caller named the source, the frontend minted the id).
+/// `sources` maps each reactive-source [`SymbolId`] to the Rust identifier of the
+/// `StateId` in scope where the expression expands: the caller's own for a `ui!`
+/// fragment, a local the expansion allocates for a component's `state`.
 ///
-/// Returns `Err` with a rendered `compile_error!` payload span/message if the
-/// fragment contains a control-flow region (deferred to a consuming slice) or a
-/// binding whose source the caller did not name.
-pub fn emit_fragment(
+/// Returns `Err` with the message if the view has other than one root, contains a
+/// control-flow region, or binds a source `sources` does not name.
+pub fn emit_view(
     tree: &UiTree,
     bindings: &BindingIr,
     sources: &HashMap<SymbolId, Ident>,
 ) -> Result<TokenStream, String> {
-    // A fragment mounts one root today; a bare multi-root fragment has no single
-    // Handle to return. Reject it explicitly rather than silently drop siblings.
+    // A view mounts one root; a multi-root view has no single Handle to return.
+    // Reject it explicitly rather than silently drop siblings.
     if tree.items.len() != 1 {
         return Err(format!(
-            "a `ui!` fragment must have exactly one root node, found {}",
+            "a view must have exactly one root node, found {}",
             tree.items.len()
         ));
     }
@@ -79,8 +79,7 @@ pub fn emit_fragment(
 
     if let Some(cf) = ctx.control_flow {
         return Err(format!(
-            "`ui!` does not yet mount a `{}` region; control-flow reconciliation \
-             lands in a later slice. Lift the branch into Rust for now.",
+            "a view does not mount a `{}` region; lift the branch into Rust",
             cf.kind
         ));
     }
@@ -91,11 +90,7 @@ pub fn emit_fragment(
         ));
     }
 
-    Ok(quote! {
-        |cx: &mut ::viso_ui::BuildCx<'_>| -> ::viso_ui::Handle {
-            #root
-        }
-    })
+    Ok(root)
 }
 
 /// The state threaded through the pre-order emit walk.

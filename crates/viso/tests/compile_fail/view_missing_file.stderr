@@ -1,0 +1,5 @@
+error: cannot read `$DIR/tests/compile_fail/missing.vs`: No such file or directory (os error 2)
+ --> tests/compile_fail/view_missing_file.rs:2:30
+  |
+2 |     let _build = viso::view!("missing.vs");
+  |                              ^^^^^^^^^^^^

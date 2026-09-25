@@ -1,0 +1,5 @@
+error: $DIR/tests/compile_fail/duplicate_state.vs:3:11: E2002: name is already declared in this scope: `count`
+ --> tests/compile_fail/view_duplicate_state.rs:2:30
+  |
+2 |     let _build = viso::view!("duplicate_state.vs");
+  |                              ^^^^^^^^^^^^^^^^^^^^

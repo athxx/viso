@@ -1961,6 +1961,7 @@ dependencies = [
  "objc2-core-graphics",
  "objc2-core-text",
  "rustybuzz",
+ "trybuild",
  "ttf-parser",
  "viso-dsl",
  "viso-gpu",
@@ -2175,6 +2176,7 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.119",
+ "toml_edit",
  "viso-dsl",
 ]
 

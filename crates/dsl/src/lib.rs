@@ -19,6 +19,7 @@
 pub mod aot;
 pub mod ast;
 pub mod diag;
+pub mod frontend;
 pub mod hir;
 pub mod hotreload;
 pub mod ir;

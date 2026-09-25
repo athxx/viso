@@ -26,6 +26,7 @@ use crate::ast::{
     ViewItem,
 };
 use crate::diag::Diagnostic;
+use crate::hir::Ty;
 use crate::syntax::SyntaxNode;
 use crate::syntax::span::TextRange;
 
@@ -217,7 +218,7 @@ fn build_symbol_table(
         });
         if let Err(_existing) = out.table.define(name, ns, symbol) {
             out.errors.push(
-                ResolveErrorKind::AmbiguousModule.to_diagnostic(Some(name_tok.text_range()), &text),
+                ResolveErrorKind::DuplicateName.to_diagnostic(Some(name_tok.text_range()), &text),
             );
         }
         // A component's/system's members (state, computed, input, event, and the
@@ -286,7 +287,7 @@ fn define_members(
         });
         if let Err(_existing) = out.table.define(name, ns, symbol) {
             out.errors.push(
-                ResolveErrorKind::AmbiguousModule
+                ResolveErrorKind::DuplicateName
                     .to_diagnostic(Some(name_tok.text_range()), &member_text),
             );
         }
@@ -570,7 +571,7 @@ impl ModulePass<'_> {
             ViewItem::Named(n) => self.resolve_named_node(&n),
             ViewItem::Anonymous(a) => {
                 if let Some(ty) = a.ty() {
-                    self.resolve_type_path(&ty);
+                    self.resolve_node_type(&ty);
                 }
                 if let Some(body) = a.body() {
                     self.resolve_node_body(&body);
@@ -609,7 +610,7 @@ impl ModulePass<'_> {
             });
         }
         if let Some(ty) = node.ty() {
-            self.resolve_type_path(&ty);
+            self.resolve_node_type(&ty);
         }
         if let Some(body) = node.body() {
             self.resolve_node_body(&body);
@@ -758,6 +759,18 @@ impl ModulePass<'_> {
     /// Resolves the head segment of a type path against the type namespace, then
     /// imports; an unresolved user type is [`E2001`].
     fn resolve_type_path(&mut self, ty: &TypePath) {
+        self.resolve_type_head(ty, self.defer_unresolved_types);
+    }
+
+    /// Resolves a view node's type. A node type no declaration or import names is a
+    /// native/widget schema type (`Column`, `Leaf`, …), in a component's view exactly
+    /// as in a fragment, so it is left for the schema to check rather than raising
+    /// [`E2001`].
+    fn resolve_node_type(&mut self, ty: &TypePath) {
+        self.resolve_type_head(ty, true);
+    }
+
+    fn resolve_type_head(&mut self, ty: &TypePath, defer_unresolved: bool) {
         let Some(head) = ty.segments().next() else {
             return;
         };
@@ -783,9 +796,9 @@ impl ModulePass<'_> {
         // by a user declaration, so only a name that looks user-defined is flagged.
         // In a fragment there is no compilation unit to declare it and no import, so
         // the name is a native/schema widget type — deferred, never diagnosed here.
-        if is_user_type_name(&text) && !self.defer_unresolved_types {
+        if is_user_type_name(&text) && !defer_unresolved {
             self.errors.push(
-                ResolveErrorKind::UnresolvedModule.to_diagnostic(Some(head.text_range()), &text),
+                ResolveErrorKind::UnresolvedType.to_diagnostic(Some(head.text_range()), &text),
             );
         }
     }
@@ -880,16 +893,18 @@ pub fn resolve_fragment(
 }
 
 /// Whether a type name is a user-defined type (uppercase-initial) not covered by the
-/// built-in schema names. A conservative approximation until the native schema lands
-/// (Slice deferred): only PascalCase names outside a small built-in set are flagged
-/// so a missing user type surfaces while built-ins stay quiet.
+/// built-in names. A conservative approximation until the native schema lands: only
+/// PascalCase names that are neither a scalar the typer knows
+/// ([`Ty::from_builtin_name`], which also reports the removed `Float` itself) nor a
+/// structural head are flagged, so a missing user type surfaces while built-ins stay
+/// quiet.
 fn is_user_type_name(text: &str) -> bool {
-    const BUILTINS: &[&str] = &[
-        "Int", "Float", "Text", "Bool", "Color", "Unit", "Vec2", "Vec3", "Vec4", "List", "Map",
-        "Option", "Self",
+    const STRUCTURAL: &[&str] = &[
+        "Int", "Text", "Vec2", "Vec3", "Vec4", "List", "Map", "Option", "Self",
     ];
     let starts_upper = text.chars().next().is_some_and(|c| c.is_uppercase());
-    starts_upper && !BUILTINS.contains(&text)
+    let builtin = !matches!(Ty::from_builtin_name(text), Ok(None));
+    starts_upper && !builtin && !STRUCTURAL.contains(&text)
 }
 
 #[cfg(test)]

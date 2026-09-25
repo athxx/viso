@@ -16,26 +16,11 @@
 //! (each a name-derived, compile-stable [`SymbolId`]). Those identities are the
 //! durable keys the diff and migration stages align old and new state against.
 
-use crate::ast::{AstNode, PathExpr, ViewFragment};
-use crate::diag::{Diagnostic, Severity};
+use crate::diag::Diagnostic;
+use crate::frontend::compile_fragment;
 use crate::ir::binding_ir::BindingIr;
 use crate::ir::ui_ir::UiTree;
-use crate::ir::{analyze_keys, lower_bindings, lower_fragment_items};
-use crate::resolve::{NameInterner, SymbolId, resolve_fragment};
-use crate::syntax::grammar::{Entry, parse_entry};
-use crate::syntax::{SyntaxKind, SyntaxNode, TextRange, TextSize, tokenize};
-
-use std::collections::BTreeSet;
-
-/// The synthetic package a bare fragment resolves against.
-///
-/// This MUST be byte-identical to the `ui!` proc-macro's `FRAGMENT_PACKAGE`
-/// (`crates/ui-macros/src/lib.rs`): the resolver fingerprints a source's
-/// identity from `(package, name)`, so a `ui!`-built live tree and a
-/// hot-reloaded candidate agree on a state's [`SymbolId`] only if both resolve
-/// under the same package anchor. That agreement is what lets the migration
-/// stage match a live state cell to its recompiled counterpart by identity.
-const FRAGMENT_PACKAGE: &str = "<ui!>";
+use crate::resolve::SymbolId;
 
 /// A successfully compiled and validated reload candidate — pure data, no live
 /// tree touched.
@@ -70,95 +55,34 @@ impl CandidatePlan {
 /// fatal diagnostics that make it uncompilable.
 ///
 /// Pure: it reads only `source` and allocates only its own IR. Any
-/// [`Severity::Error`] from parse, resolution, or key analysis is fatal — the
-/// whole set is returned so the caller reports every problem at once and keeps
-/// the last-good UI (the transaction never reaches commit). Warnings (e.g. a
+/// [`Severity::Error`](crate::diag::Severity::Error) from parse, resolution, or
+/// key analysis is fatal — the whole set is returned so the caller reports every
+/// problem at once and keeps the last-good UI (the transaction never reaches
+/// commit). Warnings (e.g. a
 /// keyless stateful `for`) are non-fatal and left in the IR for a lint pass,
 /// matching the build-time frontend.
 pub fn plan(source: &str) -> Result<CandidatePlan, Vec<Diagnostic>> {
-    let parse = parse_entry(&tokenize(source), source, Entry::ViewFragment);
-    let root = SyntaxNode::new_root(parse.root);
-
-    let Some(fragment) = ViewFragment::cast(root.clone()) else {
-        // A body that will not even cast to a fragment is a hard structural
-        // error; surface it as a fatal diagnostic with the whole-source span.
-        let whole = TextRange::new(TextSize::ZERO, TextSize::new(source.len() as u32));
-        return Err(vec![Diagnostic::error(
-            "E4200",
-            whole,
-            "hot reload source is not a valid view fragment",
-        )]);
-    };
-
-    // Candidate reactive sources: the head segment of every value-position path,
-    // first-appearance order, deduplicated — the same set the proc-macro derives,
-    // so the resolver mints the same per-name identities.
-    let source_names = candidate_sources(&root);
-    let candidate_refs: Vec<&str> = source_names.iter().map(String::as_str).collect();
-
-    let mut interner = NameInterner::new();
-    let resolved = resolve_fragment(&fragment, &candidate_refs, &mut interner, FRAGMENT_PACKAGE);
-
-    let tree = lower_fragment_items(fragment.items());
-    let env = crate::hir::SourceSet::new(resolved.sources.iter().copied());
-    let bindings = lower_bindings(&tree, &root, &resolved.refs, &env);
-    let keys = analyze_keys(&tree, &root, &resolved.refs, &env);
-
-    // Gather every fatal diagnostic across the frontend stages. One fatal → the
-    // candidate is rejected; the caller keeps last-good.
-    let mut fatal: Vec<Diagnostic> = Vec::new();
-    collect_fatal(&parse.errors, &mut fatal);
-    collect_fatal(&resolved.errors, &mut fatal);
-    collect_fatal(&keys.diagnostics, &mut fatal);
-    if !fatal.is_empty() {
-        return Err(fatal);
+    let compiled = compile_fragment(source);
+    if compiled.has_errors() {
+        return Err(compiled.errors().cloned().collect());
     }
-
+    let (sources, source_names) = compiled
+        .sources
+        .into_iter()
+        .map(|source| (source.symbol, source.name))
+        .unzip();
     Ok(CandidatePlan {
-        tree,
-        bindings,
-        sources: resolved.sources,
+        tree: compiled.tree,
+        bindings: compiled.bindings,
+        sources,
         source_names,
     })
-}
-
-/// Move the `Severity::Error` diagnostics from `diags` into `out`, cloning them so
-/// the returned set owns its spans/codes. Non-error severities are left behind.
-fn collect_fatal(diags: &[Diagnostic], out: &mut Vec<Diagnostic>) {
-    for d in diags {
-        if d.severity == Severity::Error {
-            out.push(d.clone());
-        }
-    }
-}
-
-/// Every candidate reactive-source name in the fragment: the head segment of each
-/// `PathExpr`, first-appearance order, deduplicated. Mirrors the proc-macro's
-/// `candidate_sources` so both paths derive the same identities from the same
-/// source.
-fn candidate_sources(root: &SyntaxNode) -> Vec<String> {
-    let mut seen = BTreeSet::new();
-    let mut names = Vec::new();
-    for node in root.descendants() {
-        if node.kind() != SyntaxKind::PathExpr {
-            continue;
-        }
-        let Some(path) = PathExpr::cast(node) else {
-            continue;
-        };
-        if let Some(head) = path.segments().next() {
-            let text = head.text();
-            if seen.insert(text.clone()) {
-                names.push(text);
-            }
-        }
-    }
-    names
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::diag::Severity;
 
     #[test]
     fn valid_fragment_compiles_to_a_plan() {

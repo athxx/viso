@@ -1,0 +1,5 @@
+error: the view reads input `label`; a mounted view reads only states
+ --> tests/compile_fail/component_reads_input.rs:3:9
+  |
+3 |         input label: String;
+  |         ^^^^^
