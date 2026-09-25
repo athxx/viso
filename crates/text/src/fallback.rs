@@ -873,6 +873,30 @@ mod tests {
     }
 
     #[test]
+    fn emoji_presentation_and_modifier_sequences_stay_whole() {
+        // A variation selector, a skin-tone modifier, a keycap and a flag each
+        // bind to their base: one cluster that falls through to one face, never
+        // a base drawn in the text face and a stray selector or modifier left
+        // for another.
+        let provider = CountingProvider::new(true);
+        let mut fb = FontFallback::new(1000);
+        for sequence in [
+            "\u{2764}\u{FE0F}",
+            "\u{1F44D}\u{1F3FD}",
+            "1\u{FE0F}\u{20E3}",
+            "\u{1F1EF}\u{1F1F5}",
+        ] {
+            let run = format!("A{sequence}");
+            let plan = fb.plan_run(&key(0, Script::Common, ""), &run, &provider);
+            let FallbackPlan::Mapped { mapped_len, .. } = plan else {
+                panic!("the leading 'A' of {run:?} maps");
+            };
+            assert_eq!(mapped_len, "A".len(), "{sequence:?} is not split");
+            assert_eq!(run[mapped_len..].graphemes(true).count(), 1);
+        }
+    }
+
+    #[test]
     fn partly_covered_cluster_maps_as_uncovered() {
         // A base letter the fixture covers, combined with a combining acute it
         // does not: "a" + U+0301 is one grapheme. A per-scalar walk would map the

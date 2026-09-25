@@ -378,15 +378,24 @@ Goal: the DoD's last functional item — `Inspector 能解释每一个 fallback 
 
 ## X12 — Program Done
 
-- [ ] Walk `Viso_Text_Font_Runtime.md` §29 item by item and tick it in the spec with the test
+- [x] Walk `Viso_Text_Font_Runtime.md` §29 item by item and tick it in the spec with the test
       or counter that proves it. An item with no evidence is not ticked.
-- [ ] Items that cannot be verified in this environment are listed by name with the reason
+      (35 of 45 ticked; §29.1 lists the tests behind each. Two items gained tests here: emoji
+      VS16 / skin-tone / keycap / flag sequences stay on one face, and typing into a covered
+      paragraph moves no face miss, system query or coverage parse. The worker's coverage
+      builds now reach the Inspector with the next layout.)
+- [x] Items that cannot be verified in this environment are listed by name with the reason
       (AGENTS 69, §53) rather than silently ticked.
-- [ ] FREEZE: `GlyphImageKind` and the representation state machine, `GlyphResidency` pool and
+      (§29.1's second table lists the ten unticked items. The Latin/CJK/emoji rows rest on the
+      CoreText adapter and run on macOS only, and the `bench:` rows and the `inspector`-feature
+      tests are outside CI's `cargo test --workspace`.)
+- [x] FREEZE: `GlyphImageKind` and the representation state machine, `GlyphResidency` pool and
       eviction contract, `TextPosition` / `TextOffset` / `CaretAffinity`, the paragraph
       pipeline entry contract, face and shaping cache budget contracts, the MTSDF bucket and
       quality-window constants.
-- [ ] `TODO.md` header corrected: the text/font program is complete because this file says so
+      (`crates/text/tests/text_contract_frozen.rs`, public surface only. Promotion thresholds
+      and the memory-class MiB figures stay private and unpinned.)
+- [x] `TODO.md` header corrected: the text/font program is complete because this file says so
       with evidence, not by assertion.
 
 ---

@@ -1,12 +1,20 @@
 # Viso Tooling & Dev Runtime — T0 → T10
 
 The rendering program (`todo_rendering.md`, F0 → A0 + the Global 1.0 DoD) is complete and
-frozen. The text/font program is **not** — see `todo_text.md` (X1 → X12) for the audited
-state: the algorithm layer is large and well tested, but §13's glyph representation is four
-`todo!()` stubs, most of the crate has no runtime consumer, and `Viso_Text_Font_Runtime.md`
-§29's Definition of Done is unticked. Two of its items (`assets/fonts/` auto-registration,
-the WASM lane) are
-blocked on this program, which is why both exist. What is missing here is not another
+frozen. The text/font program (`todo_text.md`, X1 → X12) is complete as a program, and its
+public contracts are frozen in `crates/text/tests/text_contract_frozen.rs`.
+`Viso_Text_Font_Runtime.md` §29 is 35 of 45 ticked, each with the test behind it (§29.1).
+The ten unticked items are named there with the reason:
+- The runtime drives no MTSDF promotion yet (three items).
+- The OS memory-warning trim still clears whole text caches.
+- Unicode data comes from mixed releases.
+- Cluster and glyph indices are untyped.
+- zh/ja share one CJK line-break table.
+- There is no Thai/Lao/Khmer segmenter provider.
+- `assets/fonts/` auto-registration and WASM lazy fetch are blocked on this program, which is
+  why both exist.
+
+What is missing here is not another
 layer *under* the frame — it is everything a developer touches *around* it: there is no
 `viso` binary, no `tools/` directory, no `Viso.toml`, no watcher, no dev session, and two of
 the three mandated DSL entry points (`component!`, `view!`) do not exist. `Viso_CLI.md`
