@@ -791,7 +791,7 @@ impl WorkerState {
     }
 }
 
-fn is_emoji(ch: char) -> bool {
+pub(crate) fn is_emoji(ch: char) -> bool {
     matches!(
         ch as u32,
         0x1F000..=0x1FAFF | 0x2600..=0x27BF | 0xFE0F | 0x200D

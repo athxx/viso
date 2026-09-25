@@ -65,7 +65,8 @@ pub struct ColorGlyph {
     pub rgba: Vec<u8>,
     /// The em size, in pixels, this bitmap was rasterized for.
     pub pixels_per_em: u16,
-    /// Placement of the bitmap's top-left relative to the pen origin, in pixels.
+    /// The bitmap's bottom-left corner relative to the pen origin, in y-up
+    /// pixels at `pixels_per_em`.
     pub origin_px: [f32; 2],
 }
 
