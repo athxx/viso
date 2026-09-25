@@ -6,17 +6,17 @@
 //!
 //! | target                          | resolver                       | module         |
 //! |---------------------------------|--------------------------------|----------------|
-//! | macOS                           | CoreText cascade               | `coretext`     |
+//! | macOS / iOS                     | CoreText cascade               | `coretext`     |
 //! | Windows                         | DirectWrite system collection  | `directwrite`  |
 //! | Linux / BSD (not Android)       | fontconfig, loaded at runtime  | `fontconfig`   |
 //! | Android                         | `AFontMatcher`, else `fonts.xml` | `android`    |
-//! | everything else (WASM, iOS)     | none — the application's fonts | —              |
+//! | everything else (WASM)          | none — the application's fonts | —              |
 //!
 //! Every resolver answers the same question — a face for a role, style,
 //! language and sample run — with the face's own file bytes and collection
 //! index, so shaping, coverage and the portable color raster
-//! ([`viso_text::raster_color`]) read the real tables. Only macOS rasterizes
-//! glyphs through the platform ([`PlatformColorRaster`]); elsewhere color glyphs
+//! ([`viso_text::raster_color`]) read the real tables. Only Apple targets
+//! rasterize glyphs through the platform ([`PlatformColorRaster`]); elsewhere color glyphs
 //! are painted from the face's `COLR` / `CBDT` / `sbix` tables and the platform
 //! raster declines.
 
@@ -24,7 +24,7 @@
 mod android;
 #[cfg(any(target_os = "android", test))]
 mod android_config;
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "ios"))]
 mod coretext;
 #[cfg(target_os = "windows")]
 mod directwrite;
@@ -42,13 +42,13 @@ mod fontconfig;
 ))]
 mod sample;
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "ios"))]
 pub use coretext::{
     CoreTextColorRaster as PlatformColorRaster, CoreTextProvider as PlatformFontProvider,
     LiveFontRegistry,
 };
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(any(target_os = "macos", target_os = "ios")))]
 pub use declining::{LiveFontRegistry, NoColorRaster as PlatformColorRaster};
 
 #[cfg(target_os = "windows")]
@@ -63,19 +63,15 @@ pub use fontconfig::FontconfigProvider as PlatformFontProvider;
 #[cfg(target_os = "android")]
 pub use android::AndroidFontProvider as PlatformFontProvider;
 
-#[cfg(not(any(
-    target_os = "macos",
-    target_os = "windows",
-    all(unix, not(target_os = "ios"))
-)))]
+#[cfg(not(any(target_os = "windows", unix)))]
 pub use no_system::NoSystemFonts as PlatformFontProvider;
 
 /// The shared pieces for targets whose platform raster has nothing to add:
 /// no live font handles to share, and a color raster that always declines so
 /// color glyphs come from the portable raster alone.
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(any(target_os = "macos", target_os = "ios")))]
 mod declining {
-    /// A zero-sized, cheap-to-clone stand-in for the macOS registry of live
+    /// A zero-sized, cheap-to-clone stand-in for the Apple registry of live
     /// CoreText handles, so the shaper is built the same way on every target.
     #[derive(Clone, Default)]
     pub struct LiveFontRegistry;
@@ -130,11 +126,7 @@ mod declining {
 }
 
 /// A target with no system-font source.
-#[cfg(not(any(
-    target_os = "macos",
-    target_os = "windows",
-    all(unix, not(target_os = "ios"))
-)))]
+#[cfg(not(any(target_os = "windows", unix)))]
 mod no_system {
     use super::LiveFontRegistry;
 

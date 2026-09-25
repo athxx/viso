@@ -2595,9 +2595,10 @@ mod tests {
     /// and nothing else. The A8 coverage pool keeps every glyph and every page —
     /// §13.10's `memory pressure 不引发全 Text cache 连锁清空`.
     ///
-    /// macOS-only: only the CoreText provider yields real color-emoji bitmaps, so
-    /// only there can the RGBA pool be filled at all.
-    #[cfg(target_os = "macos")]
+    /// Runs on every target with a system-font provider: the provider resolves a
+    /// color emoji face and the platform or portable color raster fills the RGBA
+    /// pool from it.
+    #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn filling_the_color_pool_reclaims_nothing_from_the_coverage_pool() {
         let mut gpu = headless();
@@ -2745,17 +2746,17 @@ mod tests {
     }
 
     /// The multilingual sample must resolve CJK, Devanagari, and emoji through
-    /// the CoreText system-font path and actually rasterize their glyphs — the
-    /// live-`CTFont` registry regression guard. Apple's PingFang/`.SFNS`-fallback
+    /// the system-font provider and actually rasterize their glyphs. On Apple
+    /// targets this is the live-`CTFont` registry guard: PingFang/`.SFNS`-fallback
     /// CJK and Devanagari faces carry proprietary `hvgl` outlines a generic parser
-    /// cannot render, so they route through the CoreText grayscale-coverage raster;
-    /// if the raster could not bind their live handle (the old `CTFontCreateWithName`
-    /// path silently substituted a Latin fallback), those glyphs would vanish and
-    /// the atlas would receive no coverage upload for them.
+    /// cannot render, so they route through the CoreText grayscale-coverage raster,
+    /// and a raster that could not bind their live handle would drop those glyphs
+    /// and upload no coverage for them. Elsewhere the provider's faces are real
+    /// files the portable rasters read directly.
     ///
-    /// macOS-only: it depends on the CoreText system-font provider resolving real
-    /// system faces, which the non-macOS stub does not.
-    #[cfg(target_os = "macos")]
+    /// Runs on every target with a system-font provider; the host must have CJK,
+    /// Devanagari and color emoji faces installed.
+    #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn multilingual_sample_rasterizes_cjk_devanagari_emoji() {
         let mut gpu = HeadlessRaster::new();
@@ -2875,8 +2876,8 @@ mod tests {
     /// (refuse) while the live CoreText coverage path returns real ink. If the
     /// refusal regressed, the static path would return `Some` and this fails.
     ///
-    /// macOS-only: depends on the CoreText provider resolving `.SFDevanagari`.
-    #[cfg(target_os = "macos")]
+    /// Apple-only: depends on the CoreText provider resolving `.SFDevanagari`.
+    #[cfg(any(target_os = "macos", target_os = "ios"))]
     #[test]
     fn cff2_devanagari_routes_through_live_raster_not_static_parser() {
         let mut gpu = HeadlessRaster::new();

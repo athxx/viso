@@ -1,4 +1,4 @@
-//! CoreText: the macOS binding behind [`viso_text::SystemFontProvider`] and
+//! CoreText: the macOS / iOS binding behind [`viso_text::SystemFontProvider`] and
 //! [`viso_text::ColorGlyphRasterizer`].
 //!
 //! viso-text stays a pure algorithm layer, so the actual OS query lives here in
@@ -80,7 +80,7 @@ mod live_fonts {
     }
 }
 
-/// CoreText color-emoji rasterizer: the macOS binding behind
+/// CoreText color-emoji rasterizer: the macOS / iOS binding behind
 /// [`viso_text::ColorGlyphRasterizer`].
 ///
 /// A system emoji face reaches viso-text with its color strikes stripped (see

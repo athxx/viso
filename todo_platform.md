@@ -178,14 +178,14 @@ Follow-ups carried forward:
 
 ## P8 — Text per platform
 
-- [ ] Portable color-glyph rasterizer from the font file itself: COLRv0/v1 (Windows Segoe UI
+- [x] Portable color-glyph rasterizer from the font file itself: COLRv0/v1 (Windows Segoe UI
       Emoji), CBDT/CBLC (Noto Color Emoji on Linux/Android), sbix (Apple), so emoji render
       identically without an OS raster.
-- [ ] System font providers behind the existing `ExternalFontProvider` contract:
+- [x] System font providers behind the existing `ExternalFontProvider` contract:
       DirectWrite (Windows), fontconfig (Linux), `/system/fonts` + `fonts.xml` (Android),
       CoreText (iOS, shared with macOS), bundled fallback (Web).
-- [ ] Platform-default UI/monospace/emoji families and CJK fallback chains per OS.
-- [ ] The macOS-only `text_content` tests run on every host that has a provider.
+- [x] Platform-default UI/monospace/emoji families and CJK fallback chains per OS.
+- [x] The macOS-only `text_content` tests run on every host that has a provider.
 
 ## P9 — Run, package, verify, document
 

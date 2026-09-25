@@ -24,10 +24,10 @@ viso-text = { workspace = true }
 viso-shader = { workspace = true }
 viso-macros = { workspace = true }
 
-# CoreText system-font provider (crates/viso/src/system_fonts/coretext.rs).
-# objc2-core-* returns CFRetained<T> RAII wrappers, so the provider drops
-# CoreFoundation objects without manual CFRelease.
-[target.'cfg(target_os = "macos")'.dependencies]
+# CoreText system-font provider (crates/viso/src/system_fonts/coretext.rs),
+# shared by macOS and iOS. objc2-core-* returns CFRetained<T> RAII wrappers, so
+# the provider drops CoreFoundation objects without manual CFRelease.
+[target.'cfg(any(target_os = "macos", target_os = "ios"))'.dependencies]
 objc2-core-text = { workspace = true }
 objc2-core-foundation = { workspace = true }
 objc2-core-graphics = { workspace = true }

@@ -12,6 +12,11 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
+      # The text tests resolve CJK, Devanagari and color emoji through fontconfig.
+      - name: Install system fonts
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends fontconfig fonts-noto-core fonts-noto-cjk fonts-noto-color-emoji
       # Phase 0 exit criterion: dependency direction is machine-checked.
       - name: Check crate dependency DAG (§10)
         run: cargo xtask check-deps
