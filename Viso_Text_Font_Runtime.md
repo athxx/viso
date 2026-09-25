@@ -2913,52 +2913,113 @@ very-large paragraph incremental correctness/perf
 Viso Text/Font Runtime 只有同时满足下面条件才算达到 1.0 合同：
 
 ```text
-[ ] Native App 不打包任何字体也能使用系统 UI/CJK/Emoji
-[ ] Native startup 不全量扫描系统字体
-[ ] 3000 installed fonts 不造成线性 startup parse 成本
+[x] Native App 不打包任何字体也能使用系统 UI/CJK/Emoji
+[x] Native startup 不全量扫描系统字体
+[x] 3000 installed fonts 不造成线性 startup parse 成本
 [ ] assets/fonts 自动进入 FontManifest，但 runtime 不 eager parse
-[ ] WASM 没有隐式系统/框架字体
+[x] WASM 没有隐式系统/框架字体
 [ ] WASM packaged SFNT 字体可以 lazy fetch（WOFF2 须由调用方解压为 SFNT）
-[ ] CJK fallback 以 run/cluster + locale 处理
-[ ] Emoji ZWJ/VS/skin-tone cluster 不被错误拆 font
-[ ] common fallback face 可以复用，避免逐字符 OS query
-[ ] UAX #9 / #14 / #29 官方 conformance corpus 进入 CI
+[x] CJK fallback 以 run/cluster + locale 处理
+[x] Emoji ZWJ/VS/skin-tone cluster 不被错误拆 font
+[x] common fallback face 可以复用，避免逐字符 OS query
+[x] UAX #9 / #14 / #29 官方 conformance corpus 进入 CI
 [ ] Unicode algorithm property data 来自一致的数据 release
-[ ] source text 不被 renderer 隐式 normalization
+[x] source text 不被 renderer 隐式 normalization
 [ ] UTF-8 / UTF-16 / grapheme / shaping cluster / glyph index 使用 typed mapping
-[ ] BiDi paragraph 先 resolve levels，最终 visual reorder 在 line formation 后按行执行
-[ ] LRI/RLI/FSI/PDI 与 paired-bracket/neutral/number 场景正确
-[ ] line break 使用 UAX #14 + locale tailoring，而不是 ASCII whitespace heuristic
+[x] BiDi paragraph 先 resolve levels，最终 visual reorder 在 line formation 后按行执行
+[x] LRI/RLI/FSI/PDI 与 paired-bracket/neutral/number 场景正确
+[x] line break 使用 UAX #14 + locale tailoring，而不是 ASCII whitespace heuristic
 [ ] zh-Hans / zh-Hant / ja / ko 有独立 CJK line-break tailoring
-[ ] unsafe shaping boundary 不被机械切开；需要时 worker boundary reshape
+[x] unsafe shaping boundary 不被机械切开；需要时 worker boundary reshape
 [ ] Thai/Lao/Khmer 等允许 locale/dictionary segmenter provider
-[ ] 同一 logical offset 在 BiDi/line-wrap boundary 可用 affinity 表达双视觉 caret
-[ ] ligature caret 优先使用 GDEF/shaper caret metadata，不进入非法 grapheme interior
-[ ] selection 以 logical range 为 source truth，可渲染为多个 visual fragments
-[ ] hit test 返回 logical TextPosition + affinity，不按平均 glyph width 猜 index
-[ ] CJK/RTL IME composition 使用 logical range + revision，candidate rect 来自 visual caret map
-[ ] incremental paragraph result 与 full recompute 结果一致
-[ ] Face Cache 是 byte-budgeted SLRU
-[ ] Face SLRU recency 不按每 glyph 更新
-[ ] Shaping Cache 有独立预算
-[ ] 普通 UI / 小字号 / CJK 默认使用 A8 Coverage
+[x] 同一 logical offset 在 BiDi/line-wrap boundary 可用 affinity 表达双视觉 caret
+[x] ligature caret 优先使用 GDEF/shaper caret metadata，不进入非法 grapheme interior
+[x] selection 以 logical range 为 source truth，可渲染为多个 visual fragments
+[x] hit test 返回 logical TextPosition + affinity，不按平均 glyph width 猜 index
+[x] CJK/RTL IME composition 使用 logical range + revision，candidate rect 来自 visual caret map
+[x] incremental paragraph result 与 full recompute 结果一致
+[x] Face Cache 是 byte-budgeted SLRU
+[x] Face SLRU recency 不按每 glyph 更新
+[x] Shaping Cache 有独立预算
+[x] 普通 UI / 小字号 / CJK 默认使用 A8 Coverage
 [ ] 连续 zoom/scale/rotation 场景可 lazy promotion 到 MTSDF
 [ ] MTSDF generation 不阻塞当前 frame，pending 时继续 last-good Coverage
 [ ] transform settle 后可异步生成精确 Coverage 并 frame-boundary switch back
-[ ] MTSDF 超出 quality window 时使用新的 MTSDF bucket 或 OutlineVector，而不是无限放大
-[ ] 极端 zoom/高精度场景拥有 retained OutlineVector path，且稳态不每帧 tessellate
-[ ] 不为每个 glyph 默认永久保存 Coverage + MTSDF + Vector 多份表示
-[ ] Viso 1.0 不额外建立普通 SDF lane
-[ ] Glyph representation policy 不按每 glyph / 每 frame 重算
-[ ] Glyph Atlas page eviction 不逐 glyph LRU
-[ ] Atlas 满时不正常执行 whole-atlas reset
-[ ] A8 / MTSDF / color RGBA atlas 与 Vector cache 使用独立 residency budget
+[x] MTSDF 超出 quality window 时使用新的 MTSDF bucket 或 OutlineVector，而不是无限放大
+[x] 极端 zoom/高精度场景拥有 retained OutlineVector path，且稳态不每帧 tessellate
+[x] 不为每个 glyph 默认永久保存 Coverage + MTSDF + Vector 多份表示
+[x] Viso 1.0 不额外建立普通 SDF lane
+[x] Glyph representation policy 不按每 glyph / 每 frame 重算
+[x] Glyph Atlas page eviction 不逐 glyph LRU
+[x] Atlas 满时不正常执行 whole-atlas reset
+[x] A8 / MTSDF / color RGBA atlas 与 Vector cache 使用独立 residency budget
 [ ] memory pressure 不引发全 Text cache 连锁清空
-[ ] static text steady frame 不执行 resolve/shape/raster
-[ ] 120/144/240Hz benchmark 有独立 regression gate
-[ ] TextInput 的普通局部编辑在已加载字体下无需 IO/parse
-[ ] Inspector 能解释每一个 fallback 和 cache miss
+[x] static text steady frame 不执行 resolve/shape/raster
+[x] 120/144/240Hz benchmark 有独立 regression gate
+[x] TextInput 的普通局部编辑在已加载字体下无需 IO/parse
+[x] Inspector 能解释每一个 fallback 和 cache miss
 ```
+
+## 29.1 证据
+
+每个已勾选项都对应一个测试或计数器。测试名可在仓库中直接 grep。
+没有证据的项不勾选，并在第二张表写明原因。
+
+`bench:` 前缀是 `harness = false` 的 benchmark gate，本地运行，不在 CI `cargo test --workspace` 内。
+标注 macOS 的行依赖 CoreText adapter，其他平台 adapter 尚不存在。
+
+| 项 | 证据 |
+|---|---|
+| 不打包字体使用系统 UI/CJK/Emoji | `multilingual_sample_rasterizes_cjk_devanagari_emoji`（无 app 字体），`color_glyph_readback_has_opaque_pixels`（macOS） |
+| startup 不全量扫描 | bench: `native_no_packaged_fonts_startup`（Latin 首帧 `system_queries == 1`），`enumeration_is_metadata_only_and_holds_no_faces_resident`（macOS） |
+| 3000 fonts 无线性 parse | `three_thousand_discovered_faces_parse_nothing_at_startup`（计 parse 次数，不计绝对时间） |
+| WASM 无隐式字体 | `wasm_runtime_has_no_implicit_system_or_framework_font`（host 上建模，未构建 wasm32） |
+| CJK fallback 按 run/cluster + locale | `same_han_run_selects_a_different_face_per_locale`，`locale_is_part_of_the_plan_key`，`partly_covered_cluster_maps_as_uncovered`，`mapped_len_stops_on_a_cluster_boundary` |
+| Emoji ZWJ/VS/skin-tone 不拆 font | `emoji_zwj_sequence_is_never_split_across_faces`，`emoji_presentation_and_modifier_sequences_stay_whole`（VS16、skin-tone、keycap、flag） |
+| common fallback 复用 | `common_page_reuses_candidate_without_per_char_os_query`；bench: mixed 行 `system_queries` 恒定 |
+| UAX #9/#14/#29 corpus 进 CI | `bidi.rs` / `line_break.rs` / `segment.rs` corpus 测试，经 CI `cargo test --workspace` 运行 |
+| 不隐式 normalization | `bridge_does_not_normalize_source`，`control_characters_stay_in_source`，`composition_does_not_normalize_source_range` |
+| BiDi 按行 visual reorder | `visual_reorder_matches_uax9_corpus`，`direction_runs_keep_logical_order_and_split_on_level`，`mixed_line_orders_runs_left_to_right`，`rtl_paragraph_incremental_equals_full` |
+| isolate / bracket / neutral / number | `resolves_paragraph_level_and_char_levels_against_uax9_corpus` |
+| UAX #14 + locale tailoring | `line_breaks_match_uax14_corpus`，`the_content_locale_selects_the_paragraph_line_breaking`，`word_break_keep_all_and_break_all_are_observable` |
+| unsafe shaping boundary | `reshape_span_encloses_unsafe_boundary`，`interior_of_multibyte_cluster_is_unsafe`，`main_thread_shapes_nothing_on_cold_miss`，`an_edit_cadence_shapes_nothing_on_the_main_thread` |
+| affinity 双视觉 caret | `bidi_seam_offset_has_two_visual_carets_picked_by_affinity`，`affinity_places_a_wrap_boundary_caret_on_either_line` |
+| ligature caret | `ltr_ligature_stops_sit_at_font_carets`，`rtl_ligature_stops_mirror_font_carets`，`ligature_stops_stay_on_grapheme_boundaries`，`reads_format1_and_format3_carets_through_glyph_array_coverage` |
+| selection 多 visual fragment | `mixed_selection_splits_into_per_run_fragments`，`logical_range_normalizes_but_keeps_anchor_focus` |
+| hit test | `proportional_rtl_hit_matches_shaped_geometry`，`hit_test_round_trips_with_caret_stops`，`hit_position_draws_where_the_point_was`，`edit_geometry_is_the_placed_paragraph_and_resolves_a_click` |
+| IME logical range + revision | `revision_gates_stale_worker_results`，`candidate_rect_uses_visual_caret_map_ltr`，`candidate_rect_rtl_uses_visual_position_not_byte_order`，`begin_maps_utf16_bounds_to_logical_range` |
+| incremental == full | `incremental_edit_equals_full_recompute`，`very_large_paragraph_incremental_edit_equals_full_recompute`，`runtime_edits_equal_a_full_recompute`，`paragraph_entry_is_injected_shaping_and_incremental_equals_full` |
+| Face Cache byte-budgeted SLRU | `admit_accounts_bytes_not_count`，`second_reuse_promotes_to_protected`，`scan_of_one_shot_faces_does_not_flush_protected`，`the_face_budget_drops_cold_fallback_faces_and_keeps_pinned_ones` |
+| SLRU recency 不按 glyph | `recency_is_epoch_merged_not_per_glyph`，`repeated_drawing_folds_face_recency_once_per_frame` |
+| Shaping Cache 独立预算 | `span_budget_turnover_and_face_drops_are_independent`，`a_face_budget_turnover_leaves_the_span_cache_alone`，`every_cache_has_its_own_byte_budget_from_a_memory_class` |
+| 默认 A8 Coverage | `a_run_starts_on_coverage_and_switches_only_at_a_resolve`，`cjk_needs_a_longer_sustained_transform`；runtime 只 admit `MaskA8` / `ColorRgba8`，`the_inspection_explains_a_reclaimed_glyph_and_what_it_draws_from` 断言 `MaskA8` |
+| quality window | `a_request_past_a_window_takes_the_next_bucket`，`past_the_ladder_the_request_hands_off_to_the_outline`，`the_planned_bucket_is_always_inside_the_field_window`，`mtsdf_buckets_and_quality_windows` |
+| retained OutlineVector | `two_consecutive_frames_at_extreme_zoom_tessellate_once`，`eviction_and_re_request_re_tessellate_exactly_once` |
+| 不永久保存多份表示 | `a_glyph_never_holds_coverage_a_field_and_an_outline_at_once` |
+| 无普通 SDF lane | `glyph_image_kinds_are_exactly_five_with_no_plain_sdf` |
+| policy 不按 glyph/frame 重算 | `a_steady_run_is_never_re_evaluated`，`a_one_frame_scale_spike_promotes_nothing` |
+| page eviction 不逐 glyph LRU | `clock_second_chance_spares_recently_referenced`，`evicted_page_generation_bumps_and_invalidates_only_its_entries`，`touch_page_folds_recency_without_an_index_lookup` |
+| 无 whole-atlas reset | `atlas_full_evicts_a_page_never_whole_resets`，`filling_the_pool_reclaims_cold_pages_and_keeps_the_hot_glyphs`，`a_reclaimed_glyph_readmits_without_a_whole_atlas_upload`，`residency_evicts_one_page_of_one_pool_and_never_resets` |
+| 独立 residency budget | `four_pools_are_independent_no_cross_pool_eviction`，`independent_budgets_evict_at_their_own_thresholds`，`filling_the_color_pool_reclaims_nothing_from_the_coverage_pool`，`the_cache_stays_within_the_vector_pool_budget` |
+| static steady frame 零 text work | `steady_state_frame_shapes_nothing`，`a_warm_working_set_admits_nothing_and_uploads_zero_bytes`；bench: `assert_steady_frames_do_no_text_work` |
+| 120/144/240Hz 独立 gate | bench: `assert_edit_cadence_holds_each_tier`，text `high_refresh` bench（只量 CPU 预算，不在 CI） |
+| TextInput 局部编辑无 IO/parse | `typing_into_a_covered_paragraph_loads_queries_and_parses_nothing`（face miss、system query、fallback 与 worker coverage parse 全程不变） |
+| Inspector 解释 fallback 与 cache miss | `FallbackTrace` 与 face / shaping / coverage（fallback 与 worker 两份）/ 四个 glyph pool 的 `MissLedger`；`the_inspection_explains_a_reclaimed_glyph_and_what_it_draws_from`，`the_worker_s_coverage_builds_reach_the_inspection`，`a_span_miss_names_the_turnover_or_face_drop_that_evicted_it`（`inspector` feature，不在 CI 默认 feature 集） |
+
+未勾选：
+
+| 项 | 原因 |
+|---|---|
+| assets/fonts 自动进入 FontManifest | 依赖 `Viso.toml` 与 asset pipeline，尚不存在 |
+| WASM lazy fetch | `a_lazy_fetch_resolves_and_refunds_its_budget` 只在模块层成立，没有 web consumer |
+| Unicode 数据同一 release | `LineBreakTest` 15.1.0，`unicode-bidi` 16.0.0，Grapheme/WordBreakTest 17.0.0 |
+| typed mapping | `ShapedGlyph.cluster` 是裸 `u32`，`glyph_id` 是裸 `u16` |
+| zh-Hans/zh-Hant/ja/ko 独立 tailoring | ICU provider 只有一个 ja/zh bucket，`locale_selects_cjk_bucket_ja_zh_but_not_ko` 断言三者 break 集相同 |
+| Thai/Lao/Khmer provider | Thai 只经 ICU 内置 auto segmenter，无可插拔 provider，Lao/Khmer 无测试 |
+| MTSDF lazy promotion | 状态机已测试，runtime 不驱动 `RepresentationState`（无 transform 输入） |
+| MTSDF generation 不阻塞 frame | runtime 不生成 MTSDF |
+| settle 后 switch back | 同上，只有状态机层证据 |
+| memory pressure 不连锁清空 | pool 层 `memory_pressure_sheds_one_pool_and_leaves_the_others_whole` 成立，但 OS 内存警告路径 `TextShaper::trim` 清空全部 pool、span cache 与未 pin 的 face，违反 §19 |
 
 ---
 

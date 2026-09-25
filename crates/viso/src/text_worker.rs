@@ -138,6 +138,11 @@ pub(crate) struct LayoutDone {
     /// The shaping cache's misses and evictions, when they changed since the
     /// last layout reported them; always `None` without the inspector.
     pub(crate) span_ledger: Option<MissLedger>,
+    /// Face parses the worker's coverage sets have cost, ever.
+    pub(crate) coverage_parses: u64,
+    /// The worker's coverage sets built and dropped, when they changed since
+    /// the last layout reported them; always `None` without the inspector.
+    pub(crate) coverage_ledger: Option<MissLedger>,
 }
 
 #[derive(Debug)]
@@ -400,6 +405,10 @@ fn segment_bytes(span: &ShapedSpan) -> u64 {
 pub(crate) struct WorkerState {
     faces: HashMap<FontFaceId, FaceData>,
     coverage: Coverage,
+    /// `coverage` built or dropped a set since a layout last reported it.
+    coverage_changed: bool,
+    /// Face parses as of the last report.
+    coverage_reported: u64,
     shaper: Shaper,
     spans: SpanCache,
     paragraphs: HashMap<u64, Paragraph>,
@@ -425,6 +434,8 @@ impl WorkerState {
         Self {
             faces: HashMap::new(),
             coverage: Coverage::new(),
+            coverage_changed: false,
+            coverage_reported: 0,
             shaper: Shaper::new(),
             spans: SpanCache::with_budget(span_budget_bytes),
             paragraphs: HashMap::new(),
@@ -582,9 +593,21 @@ impl WorkerState {
             glyphs,
             spans: self.spans.stats(),
             span_ledger: self.spans.changed_ledger(),
+            coverage_parses: self.coverage.face_parses(),
+            coverage_ledger: self.changed_coverage_ledger(),
         };
         self.paragraphs.insert(job.slot, paragraph);
         done
+    }
+
+    /// A copy of the coverage ledger when a set was built or dropped since
+    /// this last returned one.
+    fn changed_coverage_ledger(&mut self) -> Option<MissLedger> {
+        let parses = self.coverage.face_parses();
+        let changed =
+            std::mem::take(&mut self.coverage_changed) || parses != self.coverage_reported;
+        self.coverage_reported = parses;
+        (inspect::ENABLED && changed).then(|| self.coverage.ledger().clone())
     }
 
     fn raster(&self, key: GlyphKey) -> Rastered {
@@ -598,6 +621,7 @@ impl WorkerState {
     fn forget_face(&mut self, face: FontFaceId) {
         self.faces.remove(&face);
         self.coverage.forget(face);
+        self.coverage_changed = true;
         self.spans.forget_face(face);
         self.sent.retain(|key| key.face != face);
         self.assigned.retain(|_, &mut f| f != face);

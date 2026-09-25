@@ -300,7 +300,10 @@ pub struct TextInspection {
     pub fallbacks: Vec<FallbackTrace>,
     pub faces: MissLedger,
     pub shaping: MissLedger,
+    /// Coverage sets the fallback walk built.
     pub coverage: MissLedger,
+    /// Coverage sets the layout worker built to route clusters while shaping.
+    pub layout_coverage: MissLedger,
     /// One ledger per residency pool, keys naming their kind.
     pub glyphs: Vec<MissLedger>,
     pub resident: Vec<GlyphExplanation>,
