@@ -20,6 +20,7 @@ use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 use std::thread::{self, JoinHandle, ThreadId};
 
 use viso_text::fallback::{FallbackPlanKey, FallbackStyle, FontFallback};
+use viso_text::inspect::{self, BudgetState, CacheKey, MissLedger};
 use viso_text::paragraph::{LineLayout, Paragraph, ShapedSegment, ShapedSpan};
 use viso_text::text_work::{JobKind, Priority, TextJob, TextWork};
 use viso_text::{
@@ -134,6 +135,9 @@ pub(crate) struct LayoutDone {
     pub(crate) thread: ThreadId,
     pub(crate) glyphs: Vec<Rastered>,
     pub(crate) spans: SpanStats,
+    /// The shaping cache's misses and evictions, when they changed since the
+    /// last layout reported them; always `None` without the inspector.
+    pub(crate) span_ledger: Option<MissLedger>,
 }
 
 #[derive(Debug)]
@@ -155,6 +159,17 @@ struct SpanKey {
     /// differently under two locales.
     locale: String,
     text: String,
+}
+
+impl SpanKey {
+    fn cache_key(&self) -> CacheKey {
+        CacheKey::Shaping {
+            face: self.face,
+            direction: self.direction,
+            locale: self.locale.clone(),
+            text: self.text.clone(),
+        }
+    }
 }
 
 /// The shaping cache's counters and resident bytes, as last reported by the
@@ -224,6 +239,10 @@ struct SpanCache {
     hits: u64,
     misses: u64,
     evictions: u64,
+    ledger: MissLedger,
+    /// The ledger recorded something since [`Self::changed_ledger`] last
+    /// reported it.
+    ledger_changed: bool,
 }
 
 impl SpanCache {
@@ -237,6 +256,8 @@ impl SpanCache {
             hits: 0,
             misses: 0,
             evictions: 0,
+            ledger: MissLedger::default(),
+            ledger_changed: false,
         }
     }
 
@@ -247,6 +268,15 @@ impl SpanCache {
         }
         let Some(span) = self.previous.remove(key) else {
             self.misses += 1;
+            if inspect::ENABLED {
+                let budget = BudgetState {
+                    resident_bytes: self.live_bytes + self.previous_bytes,
+                    budget_bytes: Some(self.budget_bytes),
+                    entries: self.len() as u64,
+                };
+                self.ledger.missed(key.cache_key(), budget);
+                self.ledger_changed = true;
+            }
             return None;
         };
         self.hits += 1;
@@ -259,6 +289,13 @@ impl SpanCache {
         let bytes = span_bytes(&key, &span);
         if self.live_bytes + bytes > self.budget_bytes / 2 {
             self.evictions += self.previous.len() as u64;
+            if inspect::ENABLED {
+                let by = key.cache_key();
+                for evicted in self.previous.keys() {
+                    self.ledger.evicted(evicted.cache_key(), Some(by.clone()));
+                }
+                self.ledger_changed = true;
+            }
             self.previous = std::mem::take(&mut self.live);
             self.previous_bytes = std::mem::replace(&mut self.live_bytes, 0);
         }
@@ -271,6 +308,7 @@ impl SpanCache {
     /// Drop every span shaped from `face` or split onto it — the face itself
     /// was dropped. Spans of every other face stay.
     fn forget_face(&mut self, face: FontFaceId) {
+        let ledger = &mut self.ledger;
         for (spans, bytes) in [
             (&mut self.live, &mut self.live_bytes),
             (&mut self.previous, &mut self.previous_bytes),
@@ -279,10 +317,14 @@ impl SpanCache {
                 let keep = key.face != face && span.segments.iter().all(|s| s.run.face != face);
                 if !keep {
                     *bytes -= span_bytes(key, span);
+                    if inspect::ENABLED {
+                        ledger.evicted(key.cache_key(), Some(CacheKey::Face(face)));
+                    }
                 }
                 keep
             });
         }
+        self.ledger_changed |= inspect::ENABLED;
     }
 
     fn len(&self) -> usize {
@@ -292,6 +334,12 @@ impl SpanCache {
     /// Drop every span, counting each as an eviction.
     fn clear(&mut self) {
         self.evictions += self.len() as u64;
+        if inspect::ENABLED {
+            for key in self.live.keys().chain(self.previous.keys()) {
+                self.ledger.evicted(key.cache_key(), None);
+            }
+            self.ledger_changed = true;
+        }
         self.live.clear();
         self.previous.clear();
         self.live_bytes = 0;
@@ -307,6 +355,14 @@ impl SpanCache {
             evictions: self.evictions,
             len: self.len(),
         }
+    }
+
+    /// A copy of the ledger when it changed since this last returned one.
+    fn changed_ledger(&mut self) -> Option<MissLedger> {
+        if !std::mem::take(&mut self.ledger_changed) {
+            return None;
+        }
+        Some(self.ledger.clone())
     }
 }
 
@@ -525,6 +581,7 @@ impl WorkerState {
             thread: thread::current().id(),
             glyphs,
             spans: self.spans.stats(),
+            span_ledger: self.spans.changed_ledger(),
         };
         self.paragraphs.insert(job.slot, paragraph);
         done
@@ -687,6 +744,11 @@ impl WorkerState {
     #[cfg(test)]
     pub(crate) fn span_stats(&self) -> SpanStats {
         self.spans.stats()
+    }
+
+    #[cfg(all(test, feature = "inspector"))]
+    pub(crate) fn span_ledger(&self) -> &MissLedger {
+        &self.spans.ledger
     }
 
     #[cfg(test)]

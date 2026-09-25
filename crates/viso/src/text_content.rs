@@ -23,6 +23,7 @@ use viso_render::{
 };
 use viso_text::fallback::{FallbackPlan, FontFallback};
 use viso_text::font_manifest::{AssetRef, FontManifest};
+use viso_text::inspect::{MissLedger, TextInspection};
 use viso_text::paragraph::{LineLayout, line_index_at};
 use viso_text::system_fonts::ColorGlyph;
 use viso_text::text_work::Priority;
@@ -402,6 +403,9 @@ pub(crate) struct TextShaper {
     fate: HashMap<GlyphKey, Fate>,
     /// The worker's shaping-cache counters, as of its last layout.
     span_stats: SpanStats,
+    /// The worker's shaping-cache explanations, as of the last layout that
+    /// changed them; empty without the inspector.
+    span_ledger: MissLedger,
     /// Face residency under its own byte budget. Pins hold the primary, app,
     /// and CJK fallback faces for the process and each committed layout's
     /// faces while it lives; an evicted face is dropped with everything keyed
@@ -472,6 +476,7 @@ impl TextShaper {
             raster_waiters: Vec::new(),
             fate: HashMap::new(),
             span_stats: SpanStats::empty(budgets.shaping_cache_bytes),
+            span_ledger: MissLedger::default(),
             faces: FontCache::with_budget(budgets.face_cache_bytes),
             hot_faces: Vec::new(),
             evicted_faces: Vec::new(),
@@ -557,6 +562,26 @@ impl TextShaper {
         let entry = self.slots.get(&slot)?;
         let drawn = entry.drawn.as_ref()?;
         Some((entry.shape_calls, &drawn.lines))
+    }
+
+    /// Why each fallback chose its face, why each cache missed, and where each
+    /// resident glyph lives. Everything is empty without the inspector.
+    pub(crate) fn inspect(&self) -> TextInspection {
+        TextInspection {
+            fallbacks: self.fallback.traces().iter().cloned().collect(),
+            faces: self.faces.ledger().clone(),
+            shaping: self.span_ledger.clone(),
+            coverage: self.fallback.coverage_ledger().clone(),
+            glyphs: [
+                GlyphImageKind::MaskA8,
+                GlyphImageKind::ScalableMtsdf,
+                GlyphImageKind::ColorRgba8,
+                GlyphImageKind::OutlineVector,
+            ]
+            .map(|kind| self.residency.pool_ledger(kind).clone())
+            .into(),
+            resident: self.residency.explain_resident(),
+        }
     }
 
     /// Residency itself, for the per-pool counters (resident glyphs, pages, and
@@ -1237,6 +1262,7 @@ impl TextShaper {
                         });
                         face
                     } else {
+                        self.fallback.decline_not_resident(face);
                         need.key.base
                     }
                 }
@@ -1259,6 +1285,9 @@ impl TextShaper {
         self.counters
             .record_shaped_runs(done.shaped_runs, done.thread == thread::current().id());
         self.span_stats = done.spans;
+        if let Some(ledger) = done.span_ledger {
+            self.span_ledger = ledger;
+        }
         entry.shape_calls = done.shape_calls;
         // Replies arrive in order, so every older layout still listed was
         // superseded on the worker before it ran.
@@ -2042,6 +2071,104 @@ mod tests {
             after.misses(),
             "the app face's span stays"
         );
+    }
+
+    #[cfg(feature = "inspector")]
+    #[test]
+    fn a_span_miss_names_the_turnover_or_face_drop_that_evicted_it() {
+        use viso_text::inspect::{CacheKey, MissCause};
+
+        let mut worker = WorkerState::new(4 * 1024);
+        let app = FontFaceId(1);
+        let other = FontFaceId(2);
+        let data: FaceData = (Arc::from(TEST_FONT), 0);
+        worker.add_face(app, data.clone());
+        worker.add_face(other, data);
+        worker.shape_text(app, PAIR);
+        worker.shape_text(other, PAIR);
+        let cold = worker.span_ledger().misses().last().expect("a cold miss");
+        assert_eq!(cold.cause, MissCause::Cold);
+        assert_eq!(cold.budget.budget_bytes, Some(4 * 1024));
+
+        for n in 0..200 {
+            worker.shape_text(app, &format!("{PAIR} {n}"));
+        }
+        worker.shape_text(app, PAIR);
+        let miss = worker.span_ledger().misses().last().expect("a miss");
+        let CacheKey::Shaping { face, text, .. } = &miss.key else {
+            panic!("a shaping key");
+        };
+        assert_eq!((*face, text.as_str()), (app, PAIR));
+        let MissCause::Evicted {
+            by: Some(CacheKey::Shaping { text: by, .. }),
+        } = &miss.cause
+        else {
+            panic!("evicted by a turnover: {:?}", miss.cause);
+        };
+        assert!(by.starts_with(PAIR), "the admission that turned it over");
+
+        worker.shape_text(other, "keep");
+        worker.drop_face(other);
+        worker.add_face(other, (Arc::from(TEST_FONT), 0));
+        worker.shape_text(other, "keep");
+        let miss = worker.span_ledger().misses().last().expect("a miss");
+        assert_eq!(
+            miss.cause,
+            MissCause::Evicted {
+                by: Some(CacheKey::Face(other))
+            }
+        );
+    }
+
+    #[cfg(feature = "inspector")]
+    #[test]
+    fn the_inspection_explains_a_reclaimed_glyph_and_what_it_draws_from() {
+        use viso_text::inspect::{CacheKey, MissCause};
+
+        let mut gpu = headless();
+        let mut shaper = tiny_shaper();
+        let probe = request("q", 26.0);
+        settle(&mut shaper, &mut gpu, slot(2), &probe, None);
+        settle(&mut shaper, &mut gpu, slot(3), &request("aceo", 26.0), None);
+        shaper.end_frame();
+        assert!(flood(&mut shaper, &mut gpu) > 0);
+        settle(&mut shaper, &mut gpu, slot(2), &probe, None);
+
+        let inspection = shaper.inspect();
+        let coverage = &inspection.glyphs[0];
+        let miss = coverage
+            .misses()
+            .iter()
+            .rev()
+            .find(|miss| matches!(&miss.key, CacheKey::Glyph(key) if key.bucket == 26))
+            .expect("the probe missed again");
+        let MissCause::Evicted {
+            by: Some(CacheKey::Glyph(by)),
+        } = &miss.cause
+        else {
+            panic!("reclaimed for an admission: {:?}", miss.cause);
+        };
+        assert_ne!(by.bucket, 26, "a flood glyph took its page");
+        assert!(miss.budget.budget_bytes.is_some());
+        assert!(
+            inspection
+                .shaping
+                .misses()
+                .iter()
+                .any(|miss| miss.cause == MissCause::Cold),
+            "the worker's shaping misses reach the main thread"
+        );
+        let CacheKey::Glyph(probe_key) = miss.key else {
+            unreachable!();
+        };
+        let resident = inspection
+            .resident
+            .iter()
+            .find(|glyph| glyph.key == probe_key)
+            .expect("the probe is resident again");
+        assert_eq!(resident.key.kind, GlyphImageKind::MaskA8);
+        assert!(resident.generation > 0, "it lives on a reclaimed page");
+        assert_eq!(resident.promotion, None);
     }
 
     #[test]
