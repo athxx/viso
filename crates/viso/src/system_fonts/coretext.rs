@@ -1,15 +1,12 @@
-//! CoreText system-font provider: the macOS platform binding behind
-//! [`viso_text::SystemFontProvider`].
+//! CoreText: the macOS binding behind [`viso_text::SystemFontProvider`] and
+//! [`viso_text::ColorGlyphRasterizer`].
 //!
 //! viso-text stays a pure algorithm layer, so the actual OS query lives here in
 //! the facade. Given a role and a sample string, we ask CoreText for the base UI
 //! font, coax it to cascade to a face covering the sample (CJK / emoji), reject
 //! the LastResort tofu font, and reassemble the face's sfnt tables into a byte
 //! blob that ttf-parser / rustybuzz can parse.
-//!
-//! On non-macOS targets this module compiles to a stub whose provider always
-//! returns `None`; the bundled fallback faces cover those platforms until their
-//! own providers land (the trait seam is already in place).
+
 //!
 //! ## sfnt reassembly (the interesting part)
 //!
@@ -33,53 +30,9 @@
 //! does not verify them, and computing them over Apple's giant CJK super-fonts
 //! costs tens of milliseconds for no benefit.
 
-#[cfg(target_os = "macos")]
-pub use imp::CoreTextProvider;
-
-/// A no-op provider for platforms without a native binding yet. Always resolves
-/// `None`, so the fallback chain relies on bundled faces there.
-#[cfg(not(target_os = "macos"))]
-pub struct CoreTextProvider;
-
-#[cfg(not(target_os = "macos"))]
-impl CoreTextProvider {
-    /// Takes the shared registry for signature parity with the macOS provider;
-    /// it owns no fonts to record.
-    pub fn new(_live: LiveFontRegistry) -> Self {
-        Self
-    }
-}
-
-#[cfg(not(target_os = "macos"))]
-impl viso_text::SystemFontProvider for CoreTextProvider {
-    fn resolve_system_face(
-        &self,
-        _query: &viso_text::SystemFontQuery,
-    ) -> Option<viso_text::SystemFontResult> {
-        None
-    }
-}
-
-#[cfg(target_os = "macos")]
 pub use color::CoreTextColorRaster;
+pub use imp::CoreTextProvider;
 pub use live_fonts::LiveFontRegistry;
-
-/// A no-op registry stub for platforms without a live-`CTFont` source: the
-/// provider records nothing and the raster reads nothing, so the shared
-/// [`TextShaper`](crate::text_content) wiring compiles unchanged off macOS.
-#[cfg(not(target_os = "macos"))]
-mod live_fonts {
-    /// A zero-sized, cheap-to-clone stub mirroring the macOS registry's shape so
-    /// the same shaper construction works on every platform.
-    #[derive(Clone, Default)]
-    pub struct LiveFontRegistry;
-
-    impl LiveFontRegistry {
-        pub fn new() -> Self {
-            Self
-        }
-    }
-}
 
 /// The shared registry of live CoreText font handles that the system-font
 /// provider resolves and the color/coverage raster reuses.
@@ -93,7 +46,6 @@ mod live_fonts {
 /// resolved here, keyed by that same name, and the raster copies it to each pixel
 /// size with no name round-trip — correct by construction, and one retained
 /// handle per distinct face rather than one per size.
-#[cfg(target_os = "macos")]
 mod live_fonts {
     use std::cell::RefCell;
     use std::collections::HashMap;
@@ -128,57 +80,6 @@ mod live_fonts {
     }
 }
 
-/// A no-op color rasterizer for platforms without a native binding. Always
-/// declines, so a color-emoji face yields no color glyph and the shaper falls
-/// through to the outline path (no color output, no panic).
-#[cfg(not(target_os = "macos"))]
-pub struct CoreTextColorRaster;
-
-#[cfg(not(target_os = "macos"))]
-impl CoreTextColorRaster {
-    /// Takes the shared registry for signature parity with the macOS raster; it
-    /// reads no handles.
-    pub fn new(_live: LiveFontRegistry) -> Self {
-        Self
-    }
-
-    /// Bind a resolved emoji face's identity to the CoreText re-open name and
-    /// glyph count the raster needs. A no-op on platforms without a binding.
-    pub fn register_face(
-        &self,
-        _face: viso_text::FontFaceId,
-        _ps_name: &str,
-        _expected_glyph_count: u16,
-    ) {
-    }
-
-    /// Drop a face's binding. A no-op on platforms without a binding.
-    pub fn forget_face(&self, _face: viso_text::FontFaceId) {}
-
-    /// Grayscale-coverage rasterization is a macOS-only recovery path; off macOS
-    /// there is no CoreText, so this always declines.
-    pub fn rasterize_coverage_glyph(
-        &self,
-        _face: viso_text::FontFaceId,
-        _glyph: u16,
-        _pixels_per_em: u16,
-    ) -> Option<viso_text::CoverageBitmap> {
-        None
-    }
-}
-
-#[cfg(not(target_os = "macos"))]
-impl viso_text::ColorGlyphRasterizer for CoreTextColorRaster {
-    fn rasterize_color_glyph(
-        &self,
-        _face: viso_text::FontFaceId,
-        _glyph: u16,
-        _pixels_per_em: u16,
-    ) -> Option<viso_text::ColorGlyph> {
-        None
-    }
-}
-
 /// CoreText color-emoji rasterizer: the macOS binding behind
 /// [`viso_text::ColorGlyphRasterizer`].
 ///
@@ -191,7 +92,6 @@ impl viso_text::ColorGlyphRasterizer for CoreTextColorRaster {
 /// The bitmap remains **premultiplied**: the color-glyph GPU path lowers to an
 /// image draw with a white tint, which passes the texel through unchanged. The
 /// conversion therefore only swizzles BGRA to RGBA.
-#[cfg(target_os = "macos")]
 mod color {
     use std::cell::RefCell;
     use std::collections::HashMap;
@@ -611,7 +511,6 @@ mod color {
     }
 }
 
-#[cfg(target_os = "macos")]
 mod imp {
     use objc2_core_foundation::{CFIndex, CFRange, CFRetained, CFString};
     use objc2_core_text::{CTFont, CTFontTableOptions, CTFontTableTag, CTFontUIFontType};
