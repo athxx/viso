@@ -60,6 +60,8 @@ pub struct AppCx<'a> {
     /// (a user face sits ahead of any system fallback). Empty for an app that
     /// loads no font and relies entirely on the system default.
     fonts: Vec<Box<[u8]>>,
+    /// The faces packaged from `assets/fonts/`, if the app asked for them.
+    packaged: viso_text::PackagedFonts,
 }
 
 impl<'a> AppCx<'a> {
@@ -68,6 +70,7 @@ impl<'a> AppCx<'a> {
         Self {
             _life: PhantomData,
             fonts: Vec::new(),
+            packaged: viso_text::PackagedFonts::default(),
         }
     }
 
@@ -93,6 +96,27 @@ impl<'a> AppCx<'a> {
         let bytes = std::fs::read(path)?;
         self.fonts.push(bytes.into_boxed_slice());
         Ok(())
+    }
+
+    /// Render with the faces packaged from the crate's `assets/fonts/`:
+    /// `cx.use_packaged_fonts(viso::packaged_fonts!())`.
+    ///
+    /// The UI text binds to a packaged text family (one covering Latin if any
+    /// does) ahead of the system UI face, and every packaged face is tried
+    /// before the system when a run needs a fallback, so a packaged emoji or
+    /// CJK face draws those runs. Nothing is parsed until a face is first
+    /// used. A face registered with [`load_font`](Self::load_font) still
+    /// becomes the primary ahead of the packaged UI family. Calling this again
+    /// replaces the earlier set.
+    pub fn use_packaged_fonts(&mut self, fonts: viso_text::PackagedFonts) {
+        self.packaged = fonts;
+    }
+
+    /// The packaged faces, for the facade to install into each window's
+    /// shaper.
+    #[doc(hidden)]
+    pub fn __packaged_fonts(&self) -> viso_text::PackagedFonts {
+        self.packaged
     }
 
     /// Take the registered font faces for the facade to load into each window's

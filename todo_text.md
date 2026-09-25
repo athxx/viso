@@ -68,9 +68,8 @@ Fix what panics, then what violates a stated contract, then connect what is alre
 then gate it. Each section's Done gate must be green and its contract frozen before the next
 builds on it. Nothing below may become a prerequisite of anything above it.
 
-The tooling program (`TODO.md`, T0 → T10) is a genuine prerequisite for three DoD items —
-`assets/fonts/` auto-registration needs `Viso.toml` and an asset pipeline, and the WASM lane
-needs a web target — so those are deferred by name at the bottom rather than blocked on here.
+The tooling program (`TODO.md`, T0 → T10) is a genuine prerequisite for the WASM lane, which
+needs a web target, so it is deferred by name at the bottom rather than blocked on here.
 
 Gate for every section: `cargo xtask check-deps` · `cargo fmt --all -- --check` ·
 `cargo clippy --workspace --all-targets -- -D warnings` · `cargo test --workspace`.
@@ -400,7 +399,7 @@ Goal: the DoD's last functional item — `Inspector 能解释每一个 fallback 
 
 ---
 
-## Platform adapters
+## Platform adapters and packaged fonts
 
 - [x] System-font adapters for Windows, Linux / BSD and Android behind the unchanged
       `SystemFontProvider` seam (§4.2), with color glyphs painted portably off macOS.
@@ -412,19 +411,28 @@ Goal: the DoD's last functional item — `Inspector 能解释每一个 fallback 
       `CBDT`; `crates/text/tests/color_raster.rs`. Pure parts unit-tested; `cargo clippy`
       clean for `x86_64-pc-windows-msvc`, `x86_64-unknown-linux-gnu`, `aarch64-linux-android`,
       `wasm32-unknown-unknown`, `aarch64-apple-ios`. Device runs: see Deferred.)
+- [x] `assets/fonts/` packaging (§3.1): `viso::packaged_fonts!()` scans the crate's
+      `assets/fonts/` at build time, rejects a file that does not parse (or a WOFF / WOFF2)
+      with a compile error naming it, extracts family / weight / width / slant / color /
+      monospace / script summary per face and embeds each file once;
+      `AppCx::use_packaged_fonts` installs it. The UI role binds to a packaged text family and
+      its bytes are read on first use; every packaged face is tried before the platform in
+      fallback. No `Viso.toml` is needed: the directory is the declaration.
+      (`crates/macros/src/packaged_fonts.rs`, `crates/text/src/packaged.rs`,
+      `crates/viso/tests/packaged_fonts.rs`,
+      `text_content::tests::a_packaged_ui_family_becomes_the_primary_on_first_use`. Adding or
+      removing a file needs a rebuild of the invoking crate — stable proc macros cannot track
+      a directory.)
 
 ---
 
 ## Deferred — named, with the reason
 
-- **Platform adapters on real devices.** The Windows, Linux and Android adapters are built
-  and unit-tested (see *Platform adapters* above), but no Windows, Linux or Android device
-  has run them: coverage of each platform's own fallback behavior, first-query cost and
-  large-collection read cost are unverified until they do.
-- **`assets/fonts/` automatic registration (§3.1).** Requires `Viso.toml` and an asset
-  pipeline to scan and emit a `FontManifest` at build time. `font_manifest.rs` and
-  `app_fonts.rs` are ready to consume one. Blocked on `TODO.md` T0/T4 — a real cross-program
-  dependency, not a gap in this crate.
+- **Platform adapters and packaged fonts on real devices.** The Windows, Linux and Android
+  adapters and `packaged_fonts!` are built and unit-tested (see *Platform adapters* above),
+  but no Windows, Linux or Android device has run them: coverage of each platform's own
+  fallback behavior, first-query cost and large-collection read cost are unverified until
+  they do.
 - **WASM / Canvas lane (§16) and Progressive / Remote fonts (§17).** `font_provider.rs`
   (`ExternalFontProvider`, `ExternalFetchCoordinator`, `SubsetRange`) and `progressive.rs`
   are implemented and tested; they have no consumer because there is no web target yet

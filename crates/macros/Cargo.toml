@@ -22,3 +22,7 @@ proc-macro = true
 proc-macro2 = "1"
 quote = "1"
 syn = { version = "2", features = ["full", "extra-traits"] }
+# `packaged_fonts!` validates each packaged font and reads the metadata the
+# font manifest keeps at build time.
+ttf-parser = { workspace = true }
+unicode-script = { workspace = true }

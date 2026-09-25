@@ -21,6 +21,7 @@ use viso_platform::Instant;
 use viso_render::{
     AtlasAlloc, ColorAlloc, ColorAtlas, GlyphAtlas, GlyphInstanceData, Rect, TextureId,
 };
+use viso_text::app_fonts::AppFonts;
 use viso_text::fallback::{FallbackPlan, FontFallback};
 use viso_text::font_manifest::{AssetRef, FontManifest};
 use viso_text::inspect::{MissLedger, TextInspection};
@@ -30,9 +31,9 @@ use viso_text::system_fonts::ColorGlyph;
 use viso_text::text_work::Priority;
 use viso_text::{
     Admission, ColorGlyphRasterizer, CoverageBitmap, FontCache, FontFaceId, FontRequest,
-    FontResolver, FontRole, GlyphImageKind, GlyphKey, GlyphResidency, LineBreakTailoring,
-    MemoryClass, OUTLINE_POOL, PoolBudget, Reclaimed, Resolved, TextBudgets, TextPosition,
-    inspect_face,
+    FontResolver, FontRole, FontTarget, GlyphImageKind, GlyphKey, GlyphResidency,
+    LineBreakTailoring, MemoryClass, OUTLINE_POOL, PackagedFirst, PackagedFonts, PoolBudget,
+    Reclaimed, Resolved, TextBudgets, TextPosition, inspect_face,
 };
 use viso_ui::{Content, EditGeometry, EditLayout, NodeId, TextRequest, Vec2};
 
@@ -376,6 +377,9 @@ pub(crate) struct TextShaper {
     resolver: FontResolver,
     fallback: FontFallback,
     manifest: FontManifest,
+    /// The faces packaged from `assets/fonts/`: the manifest's source, and
+    /// tried ahead of the platform in fallback.
+    packaged: PackagedFonts,
     primary: Option<FontFaceId>,
     /// System queries made to resolve the primary face; one at most once it
     /// resolved, so a steady frame never asks the system for a font.
@@ -466,6 +470,7 @@ impl TextShaper {
             resolver: FontResolver::new(),
             fallback: FontFallback::new(FALLBACK_FACE_IDS),
             manifest: FontManifest::default(),
+            packaged: PackagedFonts::default(),
             primary: None,
             primary_queries: 0,
             next_asset: 0,
@@ -526,6 +531,17 @@ impl TextShaper {
         self.primary.get_or_insert(face);
         self.pin_hot(face, cost);
         Some(face)
+    }
+
+    /// Resolve through the faces packaged from `assets/fonts/`: the UI role
+    /// binds to a packaged family when one suits it, and every packaged face
+    /// is tried before the platform in fallback. Only metadata is read here.
+    pub(crate) fn use_packaged_fonts(&mut self, fonts: PackagedFonts) {
+        if fonts.is_empty() {
+            return;
+        }
+        self.manifest = fonts.manifest();
+        self.packaged = fonts;
     }
 
     /// Admit `face` and pin it for the process: the primary face, app faces,
@@ -1287,10 +1303,14 @@ impl TextShaper {
         self.admit_rastered(backend, done.glyphs);
         let needs = !done.needs.is_empty();
         for need in done.needs {
-            let face = match self
-                .fallback
-                .plan_run(&need.key, &need.cluster, &self.provider)
-            {
+            let face = match self.fallback.plan_run(
+                &need.key,
+                &need.cluster,
+                &PackagedFirst {
+                    packaged: self.packaged,
+                    system: &self.provider,
+                },
+            ) {
                 FallbackPlan::Mapped { face, .. } => {
                     self.use_fallback_face(face, FontFallback::is_cjk(need.key.script));
                     if self.ensure_worker_face(face) {
@@ -1423,6 +1443,7 @@ impl TextShaper {
             if let Resolved::Face(face) =
                 self.resolver
                     .resolve(&request, &self.manifest, &self.provider, "")
+                && self.face_loaded(face, &request)
             {
                 self.primary = Some(face);
                 self.register_color_face(face);
@@ -1434,6 +1455,29 @@ impl TextShaper {
             }
         }
         self.primary
+    }
+
+    /// Whether `face` has its bytes, reading a packaged face's asset on its
+    /// first use.
+    fn face_loaded(&mut self, face: FontFaceId, request: &FontRequest) -> bool {
+        if self.resolver.face_bytes(face).is_some() {
+            return true;
+        }
+        let FontTarget::Role(role) = request.target else {
+            return false;
+        };
+        let Some(entry) = self.manifest.family_for_role(role).and_then(|family| {
+            self.manifest
+                .select(family, request.weight, request.width, request.slant)
+        }) else {
+            return false;
+        };
+        AppFonts::load_face(
+            &mut self.resolver,
+            &self.packaged,
+            entry.asset,
+            entry.face_index,
+        ) == Some(face)
     }
 
     fn register_color_face(&self, face: FontFaceId) {
@@ -1768,6 +1812,38 @@ mod tests {
         let mut shaper = TextShaper::new();
         shaper.load_font(TEST_FONT, 0).expect("fixture parses");
         shaper
+    }
+
+    #[test]
+    fn a_packaged_ui_family_becomes_the_primary_on_first_use() {
+        static FACES: [viso_text::PackagedFace; 1] = [viso_text::PackagedFace {
+            file: "DejaVuSans-subset.ttf",
+            file_index: 0,
+            bytes: TEST_FONT,
+            face_index: 0,
+            family: "DejaVu Sans",
+            weight: 400,
+            width: 5,
+            slant: viso_text::FontSlant::Normal,
+            color: false,
+            mono: false,
+            scripts: &["Latn"],
+        }];
+        let mut shaper = TextShaper::new();
+        shaper.use_packaged_fonts(PackagedFonts::__new(&FACES));
+        assert_eq!(
+            shaper.resolver.face_bytes(FontFaceId(0)),
+            None,
+            "nothing read yet"
+        );
+        let primary = shaper.resolve_primary().expect("the packaged family");
+        let (bytes, index) = shaper
+            .resolver
+            .face_bytes(primary)
+            .expect("read on first use");
+        assert_eq!((bytes, index), (TEST_FONT, 0));
+        assert_eq!(shaper.resolve_primary(), Some(primary));
+        assert_eq!(shaper.primary_queries, 1);
     }
 
     /// A deliberately tiny plane for the residency tests: 96 × 96 texels cut into

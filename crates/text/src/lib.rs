@@ -13,7 +13,7 @@
 //!
 //! The module set and the order they are filled in follow the runtime
 //! specification. Font pipeline: [`font_request`], [`font_manifest`],
-//! [`font_format`], [`resolver`], [`app_fonts`], [`system_fonts`],
+//! [`font_format`], [`resolver`], [`app_fonts`], [`packaged`], [`system_fonts`],
 //! [`system_catalog`], [`font_provider`], [`fallback`], [`coverage`],
 //! [`font_cache`], [`memory_budget`], [`progressive`]. Shaping and world-ready paragraph
 //! correctness: [`shaping`],
@@ -50,6 +50,7 @@ pub mod font_manifest;
 pub mod font_provider;
 pub mod font_request;
 pub mod memory_budget;
+pub mod packaged;
 pub mod progressive;
 pub mod resolver;
 pub mod system_catalog;
@@ -102,6 +103,7 @@ pub use mtsdf::{
     BUCKETS, DISTANCE_RANGE, FIELD_PAD, MtsdfGenerator, MtsdfGlyph, MtsdfPlan, MtsdfRequest,
 };
 pub use outline_cache::{OUTLINE_POOL, OutlineCache, OutlineGlyph, OutlineRequest};
+pub use packaged::{PackagedFace, PackagedFirst, PackagedFonts};
 pub use progressive::{FontRevision, ParagraphId, Progressive, ReflowScope, RevisionEffect, RunId};
 pub use raster_a8::{CoverageBitmap, rasterize_coverage};
 pub use resolver::{FaceMetrics, FontResolver, Resolved, inspect_face};

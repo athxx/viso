@@ -3,16 +3,15 @@
 The rendering program (`todo_rendering.md`, F0 → A0 + the Global 1.0 DoD) is complete and
 frozen. The text/font program (`todo_text.md`, X1 → X12) is complete as a program, and its
 public contracts are frozen in `crates/text/tests/text_contract_frozen.rs`.
-`Viso_Text_Font_Runtime.md` §29 is 35 of 45 ticked, each with the test behind it (§29.1).
-The ten unticked items are named there with the reason:
+`Viso_Text_Font_Runtime.md` §29 is 36 of 45 ticked, each with the test behind it (§29.1).
+The nine unticked items are named there with the reason:
 - The runtime drives no MTSDF promotion yet (three items).
 - The OS memory-warning trim still clears whole text caches.
 - Unicode data comes from mixed releases.
 - Cluster and glyph indices are untyped.
 - zh/ja share one CJK line-break table.
 - There is no Thai/Lao/Khmer segmenter provider.
-- `assets/fonts/` auto-registration and WASM lazy fetch are blocked on this program, which is
-  why both exist.
+- WASM lazy fetch is blocked on this program's web target.
 
 What is missing here is not another
 layer *under* the frame — it is everything a developer touches *around* it: there is no

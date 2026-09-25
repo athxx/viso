@@ -2046,6 +2046,8 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.119",
+ "ttf-parser",
+ "unicode-script",
 ]
 
 [[package]]
