@@ -406,6 +406,11 @@ pub(crate) struct TextShaper {
     /// The worker's shaping-cache explanations, as of the last layout that
     /// changed them; empty without the inspector.
     span_ledger: MissLedger,
+    /// Face parses the worker's coverage sets have cost, as of its last layout.
+    layout_coverage_parses: u64,
+    /// The worker's coverage explanations, as of the last layout that changed
+    /// them; empty without the inspector.
+    layout_coverage_ledger: MissLedger,
     /// Face residency under its own byte budget. Pins hold the primary, app,
     /// and CJK fallback faces for the process and each committed layout's
     /// faces while it lives; an evicted face is dropped with everything keyed
@@ -477,6 +482,8 @@ impl TextShaper {
             fate: HashMap::new(),
             span_stats: SpanStats::empty(budgets.shaping_cache_bytes),
             span_ledger: MissLedger::default(),
+            layout_coverage_parses: 0,
+            layout_coverage_ledger: MissLedger::default(),
             faces: FontCache::with_budget(budgets.face_cache_bytes),
             hot_faces: Vec::new(),
             evicted_faces: Vec::new(),
@@ -552,6 +559,11 @@ impl TextShaper {
     }
 
     /// System queries made to resolve the primary face.
+    /// Face parses the worker's coverage sets have cost, as of its last layout.
+    pub(crate) fn layout_coverage_parses(&self) -> u64 {
+        self.layout_coverage_parses
+    }
+
     pub(crate) fn primary_queries(&self) -> u64 {
         self.primary_queries
     }
@@ -572,6 +584,7 @@ impl TextShaper {
             faces: self.faces.ledger().clone(),
             shaping: self.span_ledger.clone(),
             coverage: self.fallback.coverage_ledger().clone(),
+            layout_coverage: self.layout_coverage_ledger.clone(),
             glyphs: [
                 GlyphImageKind::MaskA8,
                 GlyphImageKind::ScalableMtsdf,
@@ -1287,6 +1300,10 @@ impl TextShaper {
         self.span_stats = done.spans;
         if let Some(ledger) = done.span_ledger {
             self.span_ledger = ledger;
+        }
+        self.layout_coverage_parses = done.coverage_parses;
+        if let Some(ledger) = done.coverage_ledger {
+            self.layout_coverage_ledger = ledger;
         }
         entry.shape_calls = done.shape_calls;
         // Replies arrive in order, so every older layout still listed was
@@ -2122,6 +2139,33 @@ mod tests {
 
     #[cfg(feature = "inspector")]
     #[test]
+    fn the_worker_s_coverage_builds_reach_the_inspection() {
+        use viso_text::inspect::{CacheKey, MissCause};
+
+        let mut gpu = headless();
+        let mut shaper = shaper();
+        // Devanagari the fixture does not cover: the worker routes the cluster
+        // and builds the primary face's coverage set to do it.
+        settle(
+            &mut shaper,
+            &mut gpu,
+            slot(0),
+            &request("a\u{0915}", 16.0),
+            None,
+        );
+        assert!(shaper.layout_coverage_parses() >= 1);
+        let inspection = shaper.inspect();
+        let miss = inspection
+            .layout_coverage
+            .misses()
+            .last()
+            .expect("a coverage build");
+        assert!(matches!(miss.key, CacheKey::Coverage(_)));
+        assert_eq!(miss.cause, MissCause::Cold);
+    }
+
+    #[cfg(feature = "inspector")]
+    #[test]
     fn the_inspection_explains_a_reclaimed_glyph_and_what_it_draws_from() {
         use viso_text::inspect::{CacheKey, MissCause};
 
@@ -2929,6 +2973,36 @@ mod tests {
             );
             shaper.end_frame();
         }
+    }
+
+    #[test]
+    fn typing_into_a_covered_paragraph_loads_queries_and_parses_nothing() {
+        let mut gpu = headless();
+        let mut shaper = shaper();
+        let mut text = String::from("note: ");
+        settle(&mut shaper, &mut gpu, slot(0), &wrapped(&text), Some(120.0));
+        shaper.end_frame();
+        let io = |shaper: &TextShaper| {
+            (
+                shaper.face_cache().misses(),
+                shaper.primary_queries(),
+                shaper.fallback().system_fallback_query_count(),
+                shaper.fallback().coverage_face_parses(),
+                shaper.layout_coverage_parses(),
+            )
+        };
+        let warm = io(&shaper);
+
+        for (at, ch) in "the quick brown fox, again".char_indices() {
+            text.push(ch);
+            settle(&mut shaper, &mut gpu, slot(0), &wrapped(&text), Some(120.0));
+            assert_eq!(io(&shaper), warm, "keystroke {at} ({ch:?})");
+            shaper.end_frame();
+        }
+        text.replace_range(6..9, "");
+        settle(&mut shaper, &mut gpu, slot(0), &wrapped(&text), Some(120.0));
+        assert_eq!(io(&shaper), warm, "a deletion");
+        assert_eq!(drawn_text(&shaper, slot(0)), text);
     }
 
     #[test]

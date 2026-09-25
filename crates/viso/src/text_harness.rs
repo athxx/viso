@@ -85,6 +85,8 @@ pub struct TextStats {
     pub system_queries: u64,
     pub fallback_plan_hits: u64,
     pub fallback_plan_misses: u64,
+    /// Face parses coverage sets have cost, on the main thread and the worker.
+    pub coverage_parses: u64,
 }
 
 /// The text runtime over a headless raster backend, driven frame by frame.
@@ -265,6 +267,7 @@ impl TextHarness {
             system_queries: self.shaper.primary_queries() + fallback.system_fallback_query_count(),
             fallback_plan_hits: fallback.fallback_plan_hit(),
             fallback_plan_misses: fallback.fallback_plan_miss(),
+            coverage_parses: fallback.coverage_face_parses() + self.shaper.layout_coverage_parses(),
         }
     }
 }
