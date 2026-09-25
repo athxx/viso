@@ -24,14 +24,27 @@ viso-text = { workspace = true }
 viso-shader = { workspace = true }
 viso-macros = { workspace = true }
 
-# CoreText system-font provider (crates/viso/src/system_fonts.rs). macOS only;
-# other targets fall back to bundled faces. objc2-core-* returns CFRetained<T>
-# RAII wrappers, so the provider drops CoreFoundation objects without manual
-# CFRelease.
+# CoreText system-font provider (crates/viso/src/system_fonts/coretext.rs).
+# objc2-core-* returns CFRetained<T> RAII wrappers, so the provider drops
+# CoreFoundation objects without manual CFRelease.
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2-core-text = { workspace = true }
 objc2-core-foundation = { workspace = true }
 objc2-core-graphics = { workspace = true }
+
+# Windows system-font provider: DirectWrite's system collection and fallback.
+[target.'cfg(target_os = "windows")'.dependencies]
+windows = { version = "0.62", features = [
+    "Win32_Foundation",
+    "Win32_Graphics_DirectWrite",
+] }
+# `#[implement]` (the fallback's text source) expands to `windows_core` paths.
+windows-core = "0.62"
+
+# Linux / BSD and Android system-font providers load `libfontconfig` /
+# `libandroid` at runtime through `dlopen`.
+[target.'cfg(all(unix, not(any(target_os = "macos", target_os = "ios"))))'.dependencies]
+libc = "0.2"
 
 [features]
 default = []

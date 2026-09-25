@@ -25,6 +25,7 @@ use viso_text::fallback::{FallbackPlan, FontFallback};
 use viso_text::font_manifest::{AssetRef, FontManifest};
 use viso_text::inspect::{MissLedger, TextInspection};
 use viso_text::paragraph::{LineLayout, line_index_at};
+use viso_text::raster_color::rasterize_color;
 use viso_text::system_fonts::ColorGlyph;
 use viso_text::text_work::Priority;
 use viso_text::{
@@ -35,7 +36,7 @@ use viso_text::{
 };
 use viso_ui::{Content, EditGeometry, EditLayout, NodeId, TextRequest, Vec2};
 
-use crate::system_fonts::{CoreTextColorRaster, CoreTextProvider, LiveFontRegistry};
+use crate::system_fonts::{LiveFontRegistry, PlatformColorRaster, PlatformFontProvider};
 use crate::text_worker::{
     ClusterKey, FromWorker, LayoutDone, LayoutJob, Rastered, SpanStats, TextWorker, ToWorker,
     starts_emoji,
@@ -436,8 +437,8 @@ pub(crate) struct TextShaper {
     /// metadata layer's "page full" and the packer's agree by construction.
     atlas_size: u32,
     atlas_page: u32,
-    provider: CoreTextProvider,
-    color_raster: CoreTextColorRaster,
+    provider: PlatformFontProvider,
+    color_raster: PlatformColorRaster,
     counters: TextCounters,
 }
 
@@ -505,8 +506,8 @@ impl TextShaper {
             reclaims: Vec::new(),
             atlas_size: size,
             atlas_page: page,
-            provider: CoreTextProvider::new(live.clone()),
-            color_raster: CoreTextColorRaster::new(live),
+            provider: PlatformFontProvider::new(live.clone()),
+            color_raster: PlatformColorRaster::new(live),
             counters: TextCounters::default(),
         }
     }
@@ -880,11 +881,7 @@ impl TextShaper {
         let mut glyphs = Vec::with_capacity(layout.glyphs.len());
         let mut color_glyphs = Vec::new();
         for &glyph in &layout.glyphs {
-            if starts_emoji(&drawn.target.text, glyph.cluster)
-                && let Some(color) =
-                    self.color_raster
-                        .rasterize_color_glyph(glyph.face, glyph.glyph, ppem)
-            {
+            if starts_emoji(&drawn.target.text, glyph.cluster) {
                 let key = GlyphKey {
                     face: glyph.face,
                     glyph: glyph.glyph,
@@ -897,7 +894,7 @@ impl TextShaper {
                             .touch_page(GlyphImageKind::ColorRgba8, placement.page);
                         Some(placement)
                     }
-                    None => self.admit_color(backend, key, &color),
+                    None => self.color_miss(backend, key),
                 };
                 if let Some(Placement {
                     uv, bearing, size, ..
@@ -972,6 +969,34 @@ impl TextShaper {
             shaped_at_width: wrap,
             soft_wrap: request.soft_wrap,
         }
+    }
+
+    /// A color glyph the atlas does not hold: painted from the face's own
+    /// color tables when it carries them, otherwise by the platform raster,
+    /// and remembered as blank when neither draws it so the glyph falls to
+    /// coverage without asking again.
+    fn color_miss<B: GpuBackend>(&mut self, backend: &mut B, key: GlyphKey) -> Option<Placement> {
+        if matches!(self.fate.get(&key), Some(Fate::Blank | Fate::Refused)) {
+            return None;
+        }
+        let portable = self
+            .resolver
+            .face_bytes(key.face)
+            .or_else(|| self.fallback.face_bytes(key.face))
+            .and_then(|(bytes, index)| rasterize_color(bytes, index, key.glyph, key.bucket));
+        let color = portable.or_else(|| {
+            self.color_raster
+                .rasterize_color_glyph(key.face, key.glyph, key.bucket)
+        });
+        let Some(color) = color else {
+            self.fate.insert(key, Fate::Blank);
+            return None;
+        };
+        let placed = self.admit_color(backend, key, &color);
+        if placed.is_none() {
+            self.fate.insert(key, Fate::Refused);
+        }
+        placed
     }
 
     /// A coverage glyph the atlas does not hold: rasterized here when only

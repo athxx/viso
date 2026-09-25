@@ -21,7 +21,7 @@
 //! [`text_position`], [`caret`], [`hit_test`], [`selection`], [`ime`],
 //! [`paragraph`]. Scheduling and glyph representation: [`text_work`],
 //! [`glyph_representation`], [`mtsdf`], [`outline_cache`], [`raster_a8`],
-//! [`glyph_cache`]. Introspection: [`inspect`].
+//! [`raster_color`], [`glyph_cache`]. Introspection: [`inspect`].
 //!
 //! # Glyph representation
 //!
@@ -75,6 +75,7 @@ pub mod glyph_representation;
 pub mod mtsdf;
 pub mod outline_cache;
 pub mod raster_a8;
+pub mod raster_color;
 pub mod text_work;
 
 // Introspection.

@@ -400,13 +400,27 @@ Goal: the DoD's last functional item — `Inspector 能解释每一个 fallback 
 
 ---
 
+## Platform adapters
+
+- [x] System-font adapters for Windows, Linux / BSD and Android behind the unchanged
+      `SystemFontProvider` seam (§4.2), with color glyphs painted portably off macOS.
+      (`crates/viso/src/system_fonts/`: `directwrite.rs` — role families, then
+      `IDWriteFontFallback::MapCharacters`; `fontconfig.rs` — `libfontconfig` loaded at
+      runtime, role alias + weight / slant / width + CJK lang + sample charset; `android.rs`
+      — `AFontMatcher` from API 29, else `fonts.xml` via `android_config.rs`, coverage checked
+      over a mapped file. `crates/text/src/raster_color.rs` paints `COLR` v0/v1, `sbix` and
+      `CBDT`; `crates/text/tests/color_raster.rs`. Pure parts unit-tested; `cargo clippy`
+      clean for `x86_64-pc-windows-msvc`, `x86_64-unknown-linux-gnu`, `aarch64-linux-android`,
+      `wasm32-unknown-unknown`, `aarch64-apple-ios`. Device runs: see Deferred.)
+
+---
+
 ## Deferred — named, with the reason
 
-- **Windows DirectWrite / Linux fontconfig / Android platform adapters (§4.2).** Only the
-  macOS CoreText adapter exists. Each needs its own device to verify against, and the
-  cross-platform build lane is the tooling program's job (`TODO.md` T4). The trait seam
-  (`SystemFontProvider`, `ColorGlyphRasterizer`) is already the right shape and needs no
-  change to accept them.
+- **Platform adapters on real devices.** The Windows, Linux and Android adapters are built
+  and unit-tested (see *Platform adapters* above), but no Windows, Linux or Android device
+  has run them: coverage of each platform's own fallback behavior, first-query cost and
+  large-collection read cost are unverified until they do.
 - **`assets/fonts/` automatic registration (§3.1).** Requires `Viso.toml` and an asset
   pipeline to scan and emit a `FontManifest` at build time. `font_manifest.rs` and
   `app_fonts.rs` are ready to consume one. Blocked on `TODO.md` T0/T4 — a real cross-program

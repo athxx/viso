@@ -1956,6 +1956,7 @@ name = "viso"
 version = "0.0.0"
 dependencies = [
  "criterion",
+ "libc",
  "objc2-core-foundation",
  "objc2-core-graphics",
  "objc2-core-text",
@@ -1975,6 +1976,8 @@ dependencies = [
  "viso-ui-macros",
  "viso-widgets",
  "wasm-bindgen-futures",
+ "windows",
+ "windows-core",
 ]
 
 [[package]]
