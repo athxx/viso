@@ -4699,6 +4699,16 @@ Arc<dyn ClipboardService>
 - AI agent；
 - permission denied paths。
 
+### 49.3 协议与实现（ADR 0031）
+
+`viso-services` 定义六个 object-safe 协议：files、share、notifications、permissions、secure_storage、haptics。异步调用返回一次性的 `Reply<T>`：它是 `Future`，也可以不经 executor 用 `try_take` 轮询。配对的 `Completer` 是 `Send`，可以在 OS 回调所在的任意线程完成；被丢弃而未应答时，结果为 `Cancelled`。
+
+`Services` 是注册表，每个协议占一个固定字段。`Services::system(app)` 按编译目标选择 OS 实现，`Services::unsupported()` 对所有调用返回 `Unsupported`，`Mock` 用于 headless 测试并记录调用。
+
+Android 通过 `viso-platform` 暴露的两个窄接口访问 activity：`with_activity` 和 `VisoActivity.addResults`。其余逻辑都在 services 内，包括随 APK 打包的 `dev.viso.services.VisoServices` Java 类。
+
+在 UI task 协议落地之前，`cx.services()` 的接入暂缓。
+
 ---
 
 ## 50. Mobile lifecycle

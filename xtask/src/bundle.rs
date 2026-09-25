@@ -398,14 +398,10 @@ fn android(o: &Options) -> Result<PathBuf, String> {
     let so = stage.join(format!("lib/arm64-v8a/lib{lib}.so"));
     std::fs::copy(&built, &so).map_err(|e| format!("{}: {e}", so.display()))?;
 
-    // The Java shell.
+    // The Java shell, and the services' Java half.
     let shell = root.join("crates/platform/android");
-    let sources: Vec<PathBuf> = std::fs::read_dir(shell.join("java/dev/viso"))
-        .map_err(|e| e.to_string())?
-        .filter_map(Result::ok)
-        .map(|e| e.path())
-        .filter(|p| p.extension().is_some_and(|x| x == "java"))
-        .collect();
+    let mut sources = java_files(&shell.join("java"))?;
+    sources.extend(java_files(&root.join("crates/services/android/java"))?);
     run(Command::new("javac")
         .args([
             "-source",
@@ -421,11 +417,8 @@ fn android(o: &Options) -> Result<PathBuf, String> {
         .arg("-d")
         .arg(&classes)
         .args(&sources))?;
-    let class_files: Vec<PathBuf> = std::fs::read_dir(classes.join("dev/viso"))
-        .map_err(|e| e.to_string())?
-        .filter_map(Result::ok)
-        .map(|e| e.path())
-        .collect();
+    let mut class_files = Vec::new();
+    files_under(&classes, "class", &mut class_files)?;
     run(Command::new(sdk.build_tools.join("d8"))
         .args(["--min-api", &ANDROID_MIN_API.to_string()])
         .args(o.release.then_some("--release"))
@@ -497,6 +490,27 @@ fn android(o: &Options) -> Result<PathBuf, String> {
 
 /// The page that loads the app: the canvas fills it edge to edge (the
 /// backend keeps content inside the safe area) and nothing scrolls.
+/// The Java sources under `dir`, at any depth.
+fn java_files(dir: &Path) -> Result<Vec<PathBuf>, String> {
+    let mut found = Vec::new();
+    files_under(dir, "java", &mut found)?;
+    Ok(found)
+}
+
+/// Collect the files under `dir` with `extension`, at any depth.
+fn files_under(dir: &Path, extension: &str, found: &mut Vec<PathBuf>) -> Result<(), String> {
+    let entries = std::fs::read_dir(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    for entry in entries.filter_map(Result::ok) {
+        let path = entry.path();
+        if path.is_dir() {
+            files_under(&path, extension, found)?;
+        } else if path.extension().is_some_and(|x| x == extension) {
+            found.push(path);
+        }
+    }
+    Ok(())
+}
+
 fn index_html(bin: &str) -> String {
     format!(
         r#"<!doctype html>

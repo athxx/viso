@@ -131,11 +131,13 @@ fn allowed_edges() -> BTreeMap<&'static str, Allowed> {
                 deps: &["viso-dsl"],
             },
         ),
+        // Services reach platform only on Android, for the activity their JNI
+        // calls go through; platform never sees services.
         (
             "viso-services",
             Allowed {
                 dir: "crates/services",
-                deps: &["viso-runtime"],
+                deps: &["viso-runtime", "viso-platform"],
             },
         ),
         // `viso-ende` is the AOT package codec: the release loader (Slice P) decodes a

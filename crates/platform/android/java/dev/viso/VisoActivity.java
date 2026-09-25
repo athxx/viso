@@ -6,6 +6,7 @@ import android.app.UiModeManager;
 import android.content.ClipData;
 import android.content.ClipboardManager;
 import android.content.Context;
+import android.content.Intent;
 import android.content.pm.ActivityInfo;
 import android.content.pm.PackageManager;
 import android.content.res.Configuration;
@@ -20,6 +21,8 @@ import android.view.View;
 import android.view.Window;
 import android.view.WindowInsets;
 import android.view.WindowManager;
+
+import java.util.concurrent.CopyOnWriteArrayList;
 
 /**
  * The host activity of a Viso app. It owns one full-screen {@link VisoView}
@@ -36,6 +39,25 @@ public class VisoActivity extends Activity implements SurfaceHolder.Callback2 {
     private static final int APPEARANCE_DARK = 1;
     private static final int APPEARANCE_HIGH_CONTRAST = 2;
     private static final int APPEARANCE_REDUCE_MOTION = 4;
+
+    /**
+     * Receives the results of the activities and permission requests others
+     * start from the activity. Every receiver sees every result and picks
+     * out the request codes it issued.
+     */
+    public interface Results {
+        void onActivityResult(Activity activity, int request, int result, Intent data);
+
+        void onRequestPermissionsResult(Activity activity, int request, String[] permissions,
+                int[] grants);
+    }
+
+    private static final CopyOnWriteArrayList<Results> results = new CopyOnWriteArrayList<>();
+
+    /** Deliver results to {@code receiver}, from this activity and the ones that replace it. */
+    public static void addResults(Results receiver) {
+        results.addIfAbsent(receiver);
+    }
 
     private VisoView view;
     private int lastAppearance = -1;
@@ -222,6 +244,22 @@ public class VisoActivity extends Activity implements SurfaceHolder.Callback2 {
             // so the next launch starts `main` afresh.
             nativeDestroy();
             System.exit(0);
+        }
+    }
+
+    @Override
+    protected void onActivityResult(int request, int result, Intent data) {
+        super.onActivityResult(request, result, data);
+        for (Results receiver : results) {
+            receiver.onActivityResult(this, request, result, data);
+        }
+    }
+
+    @Override
+    public void onRequestPermissionsResult(int request, String[] permissions, int[] grants) {
+        super.onRequestPermissionsResult(request, permissions, grants);
+        for (Results receiver : results) {
+            receiver.onRequestPermissionsResult(this, request, permissions, grants);
         }
     }
 

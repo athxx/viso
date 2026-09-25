@@ -153,6 +153,34 @@ pub(super) fn with_host_view<R>(f: impl FnOnce(*mut JNIEnv, jobject) -> R) -> Op
     }
 }
 
+/// Call `f` on a thread attached to the VM with its environment and the
+/// live `VisoActivity`, a local reference deleted afterwards. `None` when the
+/// thread is not attached or no activity exists yet.
+///
+/// The activity outlives `f`'s calls into it; `f` must not keep the
+/// reference past its return.
+pub fn with_activity<R>(f: impl FnOnce(*mut JNIEnv, jobject) -> R) -> Option<R> {
+    let (java, env) = (JAVA.get()?, env()?);
+    // SAFETY: `env` is this thread's environment; the global reference is
+    // live while the lock is held, and the local one made from it keeps the
+    // activity alive until it is deleted after `f`.
+    unsafe {
+        let activity = {
+            let slot = java.activity.lock().unwrap_or_else(|e| e.into_inner());
+            if slot.0.is_null() {
+                return None;
+            }
+            env_call!(env, NewLocalRef, slot.0)
+        };
+        if activity.is_null() {
+            return None;
+        }
+        let result = f(env, activity);
+        env_call!(env, DeleteLocalRef, activity);
+        Some(result)
+    }
+}
+
 /// A Java string from `text`, as a local reference, or null.
 ///
 /// # Safety

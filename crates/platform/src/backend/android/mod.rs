@@ -25,6 +25,8 @@ mod access;
 mod jni;
 mod ndk;
 
+pub use jni::with_activity;
+
 use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;
 use std::ffi::{c_char, c_int, c_long, c_void};

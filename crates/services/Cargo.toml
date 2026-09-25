@@ -5,9 +5,82 @@ edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
 
-# App service protocol (§9 viso-services): file, share, notifications,
-# permissions, camera, location, secure storage, haptics, media, networking
-# adapter. These are cold-path services — trait objects are acceptable here
-# (§7.2) so this OS logic stays out of platform/runtime.
+# App service protocols (§49, ADR 0031): file dialogs, share, notifications,
+# permissions, secure storage, haptics. Cold paths — trait objects are fine
+# here (§7.2) — so this OS logic stays out of platform/runtime. Each OS's
+# bindings sit behind its target cfg.
 [dependencies]
-viso-runtime = { workspace = true }
+
+# macOS and iOS: AppKit/UIKit panels and sheets, UserNotifications, the
+# Keychain.
+[target.'cfg(target_vendor = "apple")'.dependencies]
+objc2 = "0.6"
+block2 = "0.6"
+objc2-foundation = { version = "0.3", features = ["block2"] }
+objc2-core-foundation = "0.3"
+objc2-security = "0.3"
+objc2-uniform-type-identifiers = "0.3"
+objc2-user-notifications = { version = "0.3", features = ["block2"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2-app-kit = { version = "0.3", features = ["block2", "objc2-uniform-type-identifiers"] }
+
+[target.'cfg(target_os = "ios")'.dependencies]
+objc2-ui-kit = { version = "0.3", features = ["block2", "objc2-uniform-type-identifiers"] }
+
+# Windows: the common item dialogs, the share sheet, tray balloons, the
+# Credential Manager.
+[target.'cfg(target_os = "windows")'.dependencies]
+windows = { version = "0.62", features = [
+    "ApplicationModel_DataTransfer",
+    "Foundation",
+    "Win32_Foundation",
+    "Win32_Security_Credentials",
+    "Win32_System_Com",
+    "Win32_System_LibraryLoader",
+    "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_UI_Shell",
+    "Win32_UI_Shell_Common",
+    "Win32_UI_WindowsAndMessaging",
+] }
+
+# Linux and the BSDs: the desktop portal, the notification server and the
+# Secret Service, all on the session bus.
+[target.'cfg(any(target_os = "linux", target_os = "freebsd", target_os = "openbsd", target_os = "netbsd", target_os = "dragonfly"))'.dependencies]
+serde = "1"
+zbus = { version = "5", default-features = false, features = ["blocking-api", "async-io"] }
+
+# Android: JNI into the `dev.viso.services` Java class the app's APK
+# carries, reached through the activity the platform backend holds.
+[target.'cfg(target_os = "android")'.dependencies]
+jni-sys = "0.4"
+viso-platform = { workspace = true }
+
+# Web: a file input and download links, `navigator.share`, the Notification
+# API and `navigator.vibrate`.
+[target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dependencies]
+wasm-bindgen = "0.2.128"
+wasm-bindgen-futures = "0.4"
+js-sys = "0.3"
+web-sys = { version = "0.3", features = [
+    "Blob",
+    "BlobPropertyBag",
+    "Document",
+    "DomException",
+    "Element",
+    "Event",
+    "EventTarget",
+    "File",
+    "FileList",
+    "HtmlAnchorElement",
+    "HtmlElement",
+    "HtmlInputElement",
+    "Navigator",
+    "Node",
+    "Notification",
+    "NotificationOptions",
+    "NotificationPermission",
+    "ShareData",
+    "Url",
+    "Window",
+] }

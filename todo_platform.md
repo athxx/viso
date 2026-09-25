@@ -214,5 +214,9 @@ Follow-ups carried forward:
 
 ## P11 — Services per platform
 
-- [ ] File open/save dialogs, share, notifications, permissions, secure storage, haptics —
+- [x] File open/save dialogs, share, notifications, permissions, secure storage, haptics —
       each a `viso-services` protocol with a headless mock and one implementation per OS.
+      (ADR 0031. Runtime-verified: Android on the emulator, every call including cancel and
+      deny paths; macOS Keychain. Compile-only: Windows, Linux, iOS, Web, and the macOS
+      panels, share picker and notifications.)
+- [ ] `cx.services()` on the phase contexts, once the UI task protocol lands.
