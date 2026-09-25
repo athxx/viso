@@ -346,17 +346,33 @@ Goal: the benchmark matrix measures the runtime, not module-level fixtures.
 
 Goal: the DoD's last functional item — `Inspector 能解释每一个 fallback 和 cache miss`.
 
-- [ ] Per-fallback explanation: requested family / role / locale, the chain walked, why each
+- [x] Per-fallback explanation: requested family / role / locale, the chain walked, why each
       face declined (no coverage / not resident / declined by provider), what was chosen.
-- [ ] Per-cache-miss explanation for face, shaping, coverage and glyph residency: the key, the
+      (`FallbackTrace` in `viso_text::inspect`: the requested face stands for the family; the
+      role is the one the platform query asks for, since a fallback plan is not keyed by role.
+      A chosen face the worker could not be handed is amended to `NotResident`.)
+- [x] Per-cache-miss explanation for face, shaping, coverage and glyph residency: the key, the
       budget state, and the eviction that caused it if there was one.
-- [ ] Representation explanation per glyph: current kind, bucket, promotion state, and the
+      (`MissLedger` per cache: an eviction names the admission that needed the room, the
+      dropped face it went with, or `None` for memory pressure; a miss names the latest
+      eviction of its key. The worker's shaping ledger reaches the main thread with the next
+      layout that changed it. Logs keep the last 1024 entries.)
+- [x] Representation explanation per glyph: current kind, bucket, promotion state, and the
       observed transform that drove it.
-- [ ] Exposed through the debug introspection surface (AGENTS 62), not a print path; stripped
+      (`GlyphExplanation` per resident glyph: key (kind + bucket), page, generation;
+      `RepresentationState::explain` gives drawn / pending kind, bucket, rotation, world-space,
+      bucket-change streak and cooldown. The runtime drives no promotion state yet, so a
+      resident glyph's `promotion` is `None`.)
+- [x] Exposed through the debug introspection surface (AGENTS 62), not a print path; stripped
       or feature-gated so it imposes no steady-state release cost (AGENTS 60).
-- [ ] Tests: a forced fallback reports the full chain with a reason per declining face; a
+      (`TextInspection` via `TextShaper::inspect` / `TextHarness::inspect`. Recording is behind
+      the `inspector` feature (`viso` → `viso-text`): every record site checks a constant, so
+      without it no key is built and no log grows — zero cost by construction, not measured.)
+- [x] Tests: a forced fallback reports the full chain with a reason per declining face; a
       forced eviction reports the evicted key and the admission that caused it.
-- [ ] Gate green → commit.
+      (Runtime-level tests in `viso` run only with `--features inspector`, outside the default
+      gate.)
+- [x] Gate green → commit.
 
 ---
 

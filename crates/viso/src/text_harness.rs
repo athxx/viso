@@ -12,6 +12,7 @@ use std::time::Duration;
 use viso_gpu::{GpuBackend, HeadlessRaster, RawWindowHandle};
 use viso_platform::Instant;
 use viso_render::Rgba;
+use viso_text::inspect::TextInspection;
 use viso_text::paragraph::LineLayout;
 use viso_text::{GlyphImageKind, MemoryClass, TextOffset, TextPosition};
 use viso_ui::{Content, TextRequest};
@@ -224,6 +225,12 @@ impl TextHarness {
         self.shaper
             .drawn_layout(slot(paragraph))
             .map_or_else(Vec::new, |(_, lines)| structure(lines))
+    }
+
+    /// Why each fallback chose its face, why each cache missed, and where each
+    /// resident glyph lives; empty unless the `inspector` feature is on.
+    pub fn inspect(&self) -> TextInspection {
+        self.shaper.inspect()
     }
 
     pub fn stats(&self) -> TextStats {

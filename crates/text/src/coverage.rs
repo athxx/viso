@@ -46,6 +46,7 @@ use std::collections::hash_map::Entry;
 use unicode_segmentation::UnicodeSegmentation;
 
 use crate::FontFaceId;
+use crate::inspect::{self, BudgetState, CacheKey, MissLedger};
 
 /// Whether an sfnt face covers every scalar in `text`.
 ///
@@ -231,6 +232,8 @@ pub struct Coverage {
     /// Counter: face parses performed to build sets — one per face, ever. A
     /// steady-state fallback walk must not move this.
     face_parses: u64,
+    /// Sets built and dropped, with why. Empty unless [`inspect::ENABLED`].
+    ledger: MissLedger,
 }
 
 impl Coverage {
@@ -298,14 +301,28 @@ impl Coverage {
     pub fn forget(&mut self, face: FontFaceId) {
         if let Some(set) = self.sets.remove(&face) {
             self.bytes -= set.bytes();
+            if inspect::ENABLED {
+                self.ledger
+                    .evicted(CacheKey::Coverage(face), Some(CacheKey::Face(face)));
+            }
         }
     }
 
     /// Drop every set — the font source changed, so every derived answer is
     /// stale.
     pub fn clear(&mut self) {
+        if inspect::ENABLED {
+            for &face in self.sets.keys() {
+                self.ledger.evicted(CacheKey::Coverage(face), None);
+            }
+        }
         self.sets.clear();
         self.bytes = 0;
+    }
+
+    /// Sets built and dropped, with why.
+    pub fn ledger(&self) -> &MissLedger {
+        &self.ledger
     }
 
     /// Resident bytes of all coverage sets, to charge against the Face Cache.
@@ -333,9 +350,17 @@ impl Coverage {
     /// build). Bytes that do not parse yield an empty set, which is cached like
     /// any other so a broken face is parsed once rather than on every question.
     fn set_for(&mut self, face: FontFaceId, sfnt: &[u8], index: u32) -> &CoverageSet {
+        let budget = BudgetState {
+            resident_bytes: self.bytes as u64,
+            budget_bytes: None,
+            entries: self.sets.len() as u64,
+        };
         match self.sets.entry(face) {
             Entry::Occupied(slot) => slot.into_mut(),
             Entry::Vacant(slot) => {
+                if inspect::ENABLED {
+                    self.ledger.missed(CacheKey::Coverage(face), budget);
+                }
                 let set = CoverageSet::from_sfnt(sfnt, index);
                 self.face_parses += 1;
                 self.bytes += set.bytes();

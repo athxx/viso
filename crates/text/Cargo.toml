@@ -24,6 +24,11 @@ icu_locale_core = { workspace = true }
 zune-png = { workspace = true }
 zune-core = { workspace = true }
 
+[features]
+# Records fallback walks, cache misses and evictions for the Inspector
+# (`inspect`). Off, every record site compiles out.
+inspector = []
+
 # Benches only. criterion is a dev-dependency: it never ships in the text
 # runtime and is not an architecture DAG edge (external crate, ignored by
 # `xtask check-deps`).

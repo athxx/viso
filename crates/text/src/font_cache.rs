@@ -71,6 +71,7 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 
 use crate::FontFaceId;
+use crate::inspect::{self, BudgetState, CacheKey, MissLedger};
 
 /// Which SLRU segment a resident face is in.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -135,6 +136,8 @@ pub struct FontCache {
     /// Counter: recency updates folded by [`advance_epoch`](Self::advance_epoch)
     /// — one per face per epoch it was used in, however often it was used.
     recency_updates: u64,
+    /// Misses and evictions, with why. Empty unless [`inspect::ENABLED`].
+    ledger: MissLedger,
 }
 
 impl FontCache {
@@ -158,6 +161,7 @@ impl FontCache {
             misses: 0,
             evictions: 0,
             recency_updates: 0,
+            ledger: MissLedger::default(),
         }
     }
 
@@ -205,6 +209,14 @@ impl FontCache {
         }
 
         self.misses += 1;
+        if inspect::ENABLED {
+            let budget = BudgetState {
+                resident_bytes: self.total_bytes,
+                budget_bytes: Some(self.budget_bytes),
+                entries: self.entries.len() as u64,
+            };
+            self.ledger.missed(CacheKey::Face(id), budget);
+        }
         self.entries.insert(
             id,
             FaceEntry {
@@ -215,7 +227,7 @@ impl FontCache {
             },
         );
         self.total_bytes += cost_bytes;
-        self.enforce_budget();
+        self.enforce_budget(Some(id));
     }
 
     /// Mark a face used in the current epoch without changing its cost.
@@ -252,7 +264,7 @@ impl FontCache {
         }
         self.epoch += 1;
         self.enforce_protected_target();
-        self.enforce_budget();
+        self.enforce_budget(None);
     }
 
     /// Pin a face for one scope so it is never demoted or evicted while any
@@ -303,6 +315,11 @@ impl FontCache {
         self.recency_updates
     }
 
+    /// Misses and evictions, with why.
+    pub fn ledger(&self) -> &MissLedger {
+        &self.ledger
+    }
+
     /// The effective byte budget currently enforced (the resting budget, or a
     /// smaller pressure budget while shedding).
     pub fn budget_bytes(&self) -> u64 {
@@ -341,7 +358,7 @@ impl FontCache {
         self.budget_bytes = pressure_budget_bytes.min(self.resting_budget_bytes);
         self.protected_target_bytes = self.budget_bytes / 5 * 4;
         self.enforce_protected_target();
-        self.enforce_budget();
+        self.enforce_budget(None);
     }
 
     /// Lift the effective ceiling back to the resting budget when memory pressure
@@ -373,8 +390,10 @@ impl FontCache {
     }
 
     /// Evict cold Probation faces (then, if still over, demote-and-evict) until
-    /// the total is within budget. Pinned faces are never evicted.
-    fn enforce_budget(&mut self) {
+    /// the total is within budget. Pinned faces are never evicted. `admitting`
+    /// is the face whose admission needed the room; `None` when an epoch fold
+    /// or memory pressure did.
+    fn enforce_budget(&mut self, admitting: Option<FontFaceId>) {
         while self.total_bytes > self.budget_bytes {
             // Prefer evicting cold Probation; only if none remains, demote the
             // coldest Protected into Probation so it can be evicted next.
@@ -383,6 +402,10 @@ impl FontCache {
                 self.total_bytes -= entry.cost_bytes;
                 self.evictions += 1;
                 self.evicted.push(victim);
+                if inspect::ENABLED {
+                    self.ledger
+                        .evicted(CacheKey::Face(victim), admitting.map(CacheKey::Face));
+                }
             } else if let Some(coldest) = self.coldest(Segment::Protected) {
                 self.entries.get_mut(&coldest).unwrap().segment = Segment::Probation;
             } else {
@@ -418,6 +441,7 @@ impl FontCache {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::inspect::{Eviction, MissCause};
 
     fn id(n: u32) -> FontFaceId {
         FontFaceId(n)
@@ -738,5 +762,57 @@ mod tests {
             .count();
         assert!(protected_count <= 4);
         assert_eq!(cache.segment_of(id(0)), Some(Segment::Probation));
+    }
+
+    #[test]
+    fn a_forced_eviction_names_the_admission_and_the_re_miss_names_the_eviction() {
+        let mut cache = FontCache::with_budget(200);
+        cache.admit(id(0), 100);
+        cache.advance_epoch();
+        cache.admit(id(1), 100);
+        cache.advance_epoch();
+        cache.admit(id(2), 100);
+
+        let eviction = cache.ledger().evictions().last().expect("one went");
+        assert_eq!(eviction.evicted, CacheKey::Face(id(0)));
+        assert_eq!(eviction.by, Some(CacheKey::Face(id(2))));
+
+        cache.admit(id(0), 100);
+        let miss = cache.ledger().misses().last().expect("re-missed");
+        assert_eq!(miss.key, CacheKey::Face(id(0)));
+        assert_eq!(
+            miss.budget,
+            BudgetState {
+                resident_bytes: 200,
+                budget_bytes: Some(200),
+                entries: 2,
+            }
+        );
+        assert_eq!(
+            miss.cause,
+            MissCause::Evicted {
+                by: Some(CacheKey::Face(id(2)))
+            }
+        );
+        let first = cache.ledger().misses().iter().next().expect("recorded");
+        assert_eq!(first.cause, MissCause::Cold);
+    }
+
+    #[test]
+    fn pressure_evictions_name_no_admission() {
+        let mut cache = FontCache::with_budget(300);
+        cache.admit(id(0), 100);
+        cache.advance_epoch();
+        cache.admit(id(1), 100);
+        cache.advance_epoch();
+        cache.shed_to_pressure_budget(100);
+        let evictions: Vec<_> = cache.ledger().evictions().iter().cloned().collect();
+        assert_eq!(
+            evictions,
+            [Eviction {
+                evicted: CacheKey::Face(id(0)),
+                by: None
+            }]
+        );
     }
 }

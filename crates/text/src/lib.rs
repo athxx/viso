@@ -21,7 +21,7 @@
 //! [`text_position`], [`caret`], [`hit_test`], [`selection`], [`ime`],
 //! [`paragraph`]. Scheduling and glyph representation: [`text_work`],
 //! [`glyph_representation`], [`mtsdf`], [`outline_cache`], [`raster_a8`],
-//! [`glyph_cache`].
+//! [`glyph_cache`]. Introspection: [`inspect`].
 //!
 //! # Glyph representation
 //!
@@ -76,6 +76,9 @@ pub mod mtsdf;
 pub mod outline_cache;
 pub mod raster_a8;
 pub mod text_work;
+
+// Introspection.
+pub mod inspect;
 
 pub use bidi::{BaseDirection, BidiInfo, BidiLevel, DirectionRun, Paragraph};
 pub use coverage::{Coverage, face_covers};

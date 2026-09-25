@@ -54,7 +54,10 @@ use unicode_script::{Script, UnicodeScript};
 
 use crate::FontFaceId;
 use crate::coverage::Coverage;
-use crate::font_request::{FontSlant, FontWeight, FontWidth};
+use crate::font_request::{FontRole, FontSlant, FontWeight, FontWidth};
+use crate::inspect::{
+    self, FaceDecline, FaceOutcome, FallbackSource, FallbackTrace, MissLedger, TraceLog,
+};
 use crate::system_fonts::{SystemFontProvider, SystemFontQuery};
 
 /// The style attributes that, together with the base face and locale, identify a
@@ -169,6 +172,9 @@ pub struct FontFallback {
     /// Counter: plan-cache misses — no remembered candidate covered, so the OS
     /// was queried.
     fallback_plan_miss: u64,
+    /// Every recent walk, with a reason per declining face. Empty unless
+    /// [`inspect::ENABLED`].
+    traces: TraceLog<FallbackTrace>,
 }
 
 impl FontFallback {
@@ -214,12 +220,19 @@ impl FontFallback {
         run: &str,
         provider: &dyn SystemFontProvider,
     ) -> FallbackPlan {
+        let mut trace = inspect::ENABLED
+            .then(|| FallbackTrace::begin(key.base, QUERY_ROLE, &key.locale, key.script, run));
+
         // Try the remembered candidate's local coverage first: a normal CJK page
         // takes this path for every run after the first, with no OS query.
         if let Some(&face) = self.plans.get(key) {
             let mapped = self.mapped_len(face, run);
+            if let Some(trace) = &mut trace {
+                trace.step(FallbackSource::Remembered, Some(face), outcome(mapped));
+            }
             if mapped > 0 {
                 self.fallback_plan_hit += 1;
+                self.record(trace, Some(face));
                 return FallbackPlan::Mapped {
                     face,
                     mapped_len: mapped,
@@ -230,7 +243,7 @@ impl FontFallback {
         // No remembered candidate covered the run: ask the platform once.
         self.fallback_plan_miss += 1;
         let query = SystemFontQuery {
-            role: crate::font_request::FontRole::Ui,
+            role: QUERY_ROLE,
             weight: key.style.weight,
             width: key.style.width,
             slant: key.style.slant,
@@ -239,21 +252,68 @@ impl FontFallback {
         };
         self.system_fallback_query_count += 1;
         let Some(result) = provider.resolve_system_face(&query) else {
+            if let Some(trace) = &mut trace {
+                trace.step(
+                    FallbackSource::Platform,
+                    None,
+                    FaceOutcome::Declined(FaceDecline::DeclinedByProvider),
+                );
+            }
+            self.record(trace, None);
             return FallbackPlan::Unresolved;
         };
 
         let face = self.intern(result.bytes, result.index, result.postscript_name);
         let mapped = self.mapped_len(face, run);
+        if let Some(trace) = &mut trace {
+            trace.step(FallbackSource::Platform, Some(face), outcome(mapped));
+        }
         if mapped == 0 {
+            self.record(trace, None);
             return FallbackPlan::Unresolved;
         }
 
         self.system_fallback_mapped_clusters += mapped as u64;
         self.plans.insert(key.clone(), face);
+        self.record(trace, Some(face));
         FallbackPlan::Mapped {
             face,
             mapped_len: mapped,
         }
+    }
+
+    fn record(&mut self, trace: Option<FallbackTrace>, chosen: Option<FontFaceId>) {
+        if let Some(mut trace) = trace {
+            trace.chosen = chosen;
+            self.traces.push(trace);
+        }
+    }
+
+    /// The runtime could not make the face the latest walk chose resident to
+    /// shape with, so the run draws the requested face instead: amend that
+    /// walk's final step to say so.
+    pub fn decline_not_resident(&mut self, face: FontFaceId) {
+        let Some(trace) = self.traces.last_mut() else {
+            return;
+        };
+        if trace.chosen != Some(face) {
+            return;
+        }
+        trace.chosen = None;
+        if let Some(step) = trace.steps.last_mut() {
+            step.outcome = FaceOutcome::Declined(FaceDecline::NotResident);
+        }
+    }
+
+    /// The most recent fallback walks, oldest first. Empty unless
+    /// [`inspect::ENABLED`].
+    pub fn traces(&self) -> &TraceLog<FallbackTrace> {
+        &self.traces
+    }
+
+    /// Misses and evictions of the candidates' coverage sets.
+    pub fn coverage_ledger(&self) -> &MissLedger {
+        self.coverage.ledger()
     }
 
     /// Owned sfnt bytes and face index for a resolved fallback face, for the Face
@@ -370,6 +430,18 @@ impl FontFallback {
     }
 }
 
+/// The role a fallback query asks the platform for: a fallback face only has to
+/// cover the run, so every query asks for the default proportional role.
+const QUERY_ROLE: FontRole = FontRole::Ui;
+
+fn outcome(mapped_len: usize) -> FaceOutcome {
+    if mapped_len > 0 {
+        FaceOutcome::Mapped { mapped_len }
+    } else {
+        FaceOutcome::Declined(FaceDecline::NoCoverage)
+    }
+}
+
 /// A small FNV-1a hash over face bytes for candidate dedup identity. Only used
 /// on the cold intern path, not on any steady-state path.
 fn fnv1a(bytes: &[u8]) -> u64 {
@@ -388,6 +460,7 @@ mod tests {
     use unicode_segmentation::UnicodeSegmentation;
 
     use super::*;
+    use crate::inspect::{CacheKey, MissCause};
     use crate::system_fonts::SystemFontResult;
 
     /// A subset of DejaVu Sans: covers Latin, misses CJK / emoji / Cyrillic. Used
@@ -839,5 +912,117 @@ mod tests {
                 mapped_len: run.len(),
             }
         );
+    }
+
+    #[test]
+    fn a_forced_fallback_explains_every_face_it_walked() {
+        // A remembered candidate that has gone stale (its bytes map nothing)
+        // declines; the platform's answer takes the run. The trace names the
+        // request and every face in order with its reason.
+        let provider = CountingProvider::new(true);
+        let mut fb = FontFallback::new(1000);
+        let k = key(7, Script::Latin, "en");
+        let stale = fb.intern(b"not a face".to_vec(), 0, None);
+        fb.plans.insert(k.clone(), stale);
+
+        let FallbackPlan::Mapped { face, mapped_len } = fb.plan_run(&k, "AV", &provider) else {
+            panic!("the platform face covers Latin");
+        };
+
+        let trace = fb.traces().last().expect("the walk was recorded");
+        assert_eq!(fb.traces().len(), 1);
+        assert_eq!(trace.base, FontFaceId(7));
+        assert_eq!(trace.role, FontRole::Ui);
+        assert_eq!(trace.locale, "en");
+        assert_eq!(trace.script, Script::Latin);
+        assert_eq!(trace.run, "AV");
+        let no_coverage = FaceOutcome::Declined(FaceDecline::NoCoverage);
+        let walked: Vec<_> = trace
+            .steps
+            .iter()
+            .map(|step| (step.source, step.face, step.outcome))
+            .collect();
+        assert_eq!(
+            walked,
+            [
+                (FallbackSource::Requested, Some(FontFaceId(7)), no_coverage),
+                (FallbackSource::Remembered, Some(stale), no_coverage),
+                (
+                    FallbackSource::Platform,
+                    Some(face),
+                    FaceOutcome::Mapped { mapped_len }
+                ),
+            ]
+        );
+        assert_eq!(trace.chosen, Some(face));
+
+        // The remembered face now covers, so the next walk stops there.
+        fb.plan_run(&k, "AV", &provider);
+        let trace = fb.traces().last().expect("recorded");
+        assert_eq!(trace.steps.len(), 2);
+        assert_eq!(trace.steps[1].source, FallbackSource::Remembered);
+        assert_eq!(trace.chosen, Some(face));
+    }
+
+    #[test]
+    fn a_fallback_nothing_covers_says_why_each_face_declined() {
+        // The platform offers nothing.
+        let mut fb = FontFallback::new(1000);
+        let k = key(0, Script::Han, "ja");
+        fb.plan_run(&k, "\u{4F60}", &CountingProvider::new(false));
+        let trace = fb.traces().last().expect("recorded");
+        assert_eq!(
+            trace.steps.last().map(|step| (step.face, step.outcome)),
+            Some((None, FaceOutcome::Declined(FaceDecline::DeclinedByProvider)))
+        );
+        assert_eq!(trace.chosen, None);
+
+        // The platform offers a face that does not cover the run.
+        fb.plan_run(&k, "\u{4F60}", &CountingProvider::new(true));
+        let trace = fb.traces().last().expect("recorded");
+        let last = trace.steps.last().expect("the platform was asked");
+        assert_eq!(last.source, FallbackSource::Platform);
+        assert!(last.face.is_some());
+        assert_eq!(last.outcome, FaceOutcome::Declined(FaceDecline::NoCoverage));
+        assert_eq!(trace.chosen, None);
+    }
+
+    #[test]
+    fn a_chosen_face_that_cannot_be_made_resident_is_explained() {
+        let provider = CountingProvider::new(true);
+        let mut fb = FontFallback::new(1000);
+        let FallbackPlan::Mapped { face, .. } =
+            fb.plan_run(&key(0, Script::Latin, ""), "AV", &provider)
+        else {
+            panic!("maps");
+        };
+        fb.decline_not_resident(FontFaceId(face.0 + 1));
+        assert_eq!(fb.traces().last().and_then(|t| t.chosen), Some(face));
+
+        fb.decline_not_resident(face);
+        let trace = fb.traces().last().expect("recorded");
+        assert_eq!(trace.chosen, None);
+        assert_eq!(
+            trace.steps.last().map(|step| step.outcome),
+            Some(FaceOutcome::Declined(FaceDecline::NotResident))
+        );
+    }
+
+    #[test]
+    fn a_coverage_set_rebuilt_after_its_face_was_forgotten_names_the_face() {
+        let provider = LocaleRoutingProvider::new();
+        let mut fb = FontFallback::new(1000);
+        let FallbackPlan::Mapped { face, .. } =
+            fb.plan_run(&key(0, Script::Han, "ja"), "AV", &provider)
+        else {
+            panic!("maps");
+        };
+        fb.forget(face);
+        let eviction = fb.coverage_ledger().evictions().last().expect("dropped");
+        assert_eq!(eviction.evicted, CacheKey::Coverage(face));
+        assert_eq!(eviction.by, Some(CacheKey::Face(face)));
+        let cold = fb.coverage_ledger().misses().last().expect("built once");
+        assert_eq!(cold.key, CacheKey::Coverage(face));
+        assert_eq!(cold.cause, MissCause::Cold);
     }
 }

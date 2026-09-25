@@ -59,6 +59,7 @@ use std::collections::HashSet;
 
 use crate::FontFaceId;
 use crate::glyph_representation::GlyphImageKind;
+use crate::inspect::{self, BudgetState, CacheKey, GlyphExplanation, MissLedger};
 
 /// The full identity of a resolved glyph image: the face, the glyph, the chosen
 /// representation, and the resolution / size bucket it was resolved into. Color
@@ -235,6 +236,8 @@ struct Pool {
     /// Admissions the pixel owner could not place, undone by
     /// [`GlyphResidency::revoke`] (counter 61).
     admission_failures: u64,
+    /// Misses and evictions, with why. Empty unless [`inspect::ENABLED`].
+    ledger: MissLedger,
 }
 
 impl Pool {
@@ -249,6 +252,7 @@ impl Pool {
             resident_glyphs: 0,
             evictions: 0,
             admission_failures: 0,
+            ledger: MissLedger::default(),
         }
     }
 
@@ -290,7 +294,15 @@ impl Pool {
         epoch: u64,
         reclaims: &mut Vec<Reclaimed>,
     ) -> (usize, usize) {
-        let page = self.select_page(bitmap_bytes, epoch, reclaims);
+        if inspect::ENABLED {
+            let budget = BudgetState {
+                resident_bytes: self.resident_bytes() as u64,
+                budget_bytes: Some(self.budget.bytes() as u64),
+                entries: self.resident_glyphs as u64,
+            };
+            self.ledger.missed(CacheKey::Glyph(key), budget);
+        }
+        let page = self.select_page(key, bitmap_bytes, epoch, reclaims);
         let offset_bytes = self.pages[page].bytes;
         self.pages[page].resident.push(key);
         self.pages[page].bytes += bitmap_bytes;
@@ -307,7 +319,13 @@ impl Pool {
     /// Pick a page to admit a `need`-byte glyph onto: a page with room, else a
     /// fresh page while under budget, else a CLOCK-reclaimed cold page (logged
     /// as a [`Reclaimed`] so the pixel owner can reset just that page).
-    fn select_page(&mut self, need: usize, epoch: u64, reclaims: &mut Vec<Reclaimed>) -> usize {
+    fn select_page(
+        &mut self,
+        admitting: GlyphKey,
+        need: usize,
+        epoch: u64,
+        reclaims: &mut Vec<Reclaimed>,
+    ) -> usize {
         if let Some(page) = self.room_for(need) {
             return page;
         }
@@ -316,7 +334,7 @@ impl Pool {
             return self.pages.len() - 1;
         }
         let victim = self.evict_one(epoch);
-        self.reclaim_page(victim, epoch, reclaims);
+        self.reclaim_page(victim, epoch, reclaims, Some(admitting));
         victim
     }
 
@@ -331,7 +349,7 @@ impl Pool {
             else {
                 return;
             };
-            self.reclaim_page(victim, epoch, reclaims);
+            self.reclaim_page(victim, epoch, reclaims, None);
         }
     }
 
@@ -364,6 +382,14 @@ impl Pool {
     /// the packer frees whole pages, not rectangles — so each page keeps its
     /// byte charge and nothing else in the pool moves.
     fn forget_face(&mut self, face: FontFaceId) -> usize {
+        if inspect::ENABLED {
+            for page in &self.pages {
+                for key in page.resident.iter().filter(|key| key.face == face) {
+                    self.ledger
+                        .evicted(CacheKey::Glyph(*key), Some(CacheKey::Face(face)));
+                }
+            }
+        }
         let mut dropped = 0;
         for page in &mut self.pages {
             let before = page.resident.len();
@@ -412,9 +438,23 @@ impl Pool {
     /// lookup. This never clears any other page or any other pool.
     ///
     /// The reclaim is logged so the pixel owner resets exactly this page.
-    fn reclaim_page(&mut self, page: usize, epoch: u64, reclaims: &mut Vec<Reclaimed>) {
+    /// `admitting` is the glyph that needed the page; `None` when memory
+    /// pressure did.
+    fn reclaim_page(
+        &mut self,
+        page: usize,
+        epoch: u64,
+        reclaims: &mut Vec<Reclaimed>,
+        admitting: Option<GlyphKey>,
+    ) {
         let evicted = std::mem::take(&mut self.pages[page].resident);
         self.resident_glyphs -= evicted.len();
+        if inspect::ENABLED {
+            for key in &evicted {
+                self.ledger
+                    .evicted(CacheKey::Glyph(*key), admitting.map(CacheKey::Glyph));
+            }
+        }
         for key in &evicted {
             // Only drop index entries still pointing at this page's old
             // generation; a key re-admitted elsewhere must not be removed.
@@ -809,11 +849,48 @@ impl GlyphResidency {
     pub fn pool_admission_failures(&self, kind: GlyphImageKind) -> u64 {
         self.pool(kind).admission_failures
     }
+
+    /// One pool's misses and evictions, with why.
+    pub fn pool_ledger(&self, kind: GlyphImageKind) -> &MissLedger {
+        &self.pool(kind).ledger
+    }
+
+    /// Where a resident glyph lives, or `None` when it is not resident. Carries
+    /// no promotion state: that lives on the run, not in residency.
+    pub fn explain_glyph(&self, key: GlyphKey) -> Option<GlyphExplanation> {
+        let pool = self.pool(key.kind);
+        let page = pool.resident_page(&key)?;
+        Some(GlyphExplanation {
+            key,
+            page,
+            generation: pool.pages[page].generation,
+            promotion: None,
+        })
+    }
+
+    /// Every resident glyph across the four pools, in no particular order.
+    /// Tooling only: it walks every page.
+    pub fn explain_resident(&self) -> Vec<GlyphExplanation> {
+        [&self.a8, &self.mtsdf, &self.rgba, &self.vector]
+            .into_iter()
+            .flat_map(|pool| {
+                pool.pages.iter().enumerate().flat_map(|(at, page)| {
+                    page.resident.iter().map(move |&key| GlyphExplanation {
+                        key,
+                        page: at,
+                        generation: page.generation,
+                        promotion: None,
+                    })
+                })
+            })
+            .collect()
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::inspect::MissCause;
 
     fn key_kind(glyph: u16, bucket: u16, kind: GlyphImageKind) -> GlyphKey {
         GlyphKey {
@@ -1378,5 +1455,92 @@ mod tests {
             2,
             "MTSDF grew a second page under its own budget, independent of A8"
         );
+    }
+
+    #[test]
+    fn a_forced_eviction_names_the_evicted_glyph_and_the_admission_that_caused_it() {
+        let one_page = PoolBudget::new(1, 100);
+        let mut res = GlyphResidency::with_pool_budgets(one_page, one_page, one_page, one_page);
+        let resident = key(1, 0);
+        let admitting = key(2, 0);
+        res.get_or_admit_a8(resident, 100);
+        res.advance_epoch();
+        res.get_or_admit_a8(admitting, 100);
+
+        let ledger = res.pool_ledger(GlyphImageKind::MaskA8);
+        let eviction = ledger.evictions().last().expect("the page turned over");
+        assert_eq!(eviction.evicted, CacheKey::Glyph(resident));
+        assert_eq!(eviction.by, Some(CacheKey::Glyph(admitting)));
+        assert_eq!(
+            ledger.misses().last().map(|miss| &miss.budget),
+            Some(&BudgetState {
+                resident_bytes: 100,
+                budget_bytes: Some(100),
+                entries: 1,
+            })
+        );
+
+        res.advance_epoch();
+        res.get_or_admit_a8(resident, 100);
+        let miss = res
+            .pool_ledger(GlyphImageKind::MaskA8)
+            .misses()
+            .last()
+            .expect("re-missed");
+        assert_eq!(miss.key, CacheKey::Glyph(resident));
+        assert_eq!(
+            miss.cause,
+            MissCause::Evicted {
+                by: Some(CacheKey::Glyph(admitting))
+            }
+        );
+        assert!(
+            res.pool_ledger(GlyphImageKind::ColorRgba8)
+                .evictions()
+                .is_empty(),
+            "other pools record nothing"
+        );
+    }
+
+    #[test]
+    fn pressure_and_face_drops_name_their_cause() {
+        let mut res = GlyphResidency::new(4);
+        let a = key(1, 0);
+        let b = GlyphKey {
+            face: FontFaceId(9),
+            ..key(2, 0)
+        };
+        res.get_or_admit_a8(a, 100);
+        res.get_or_admit_a8(b, 100);
+        res.forget_face(FontFaceId(9));
+        res.shed_pool_to_pressure(GlyphImageKind::MaskA8, 0);
+        let evictions: Vec<_> = res
+            .pool_ledger(GlyphImageKind::MaskA8)
+            .evictions()
+            .iter()
+            .map(|eviction| (eviction.evicted.clone(), eviction.by.clone()))
+            .collect();
+        assert_eq!(
+            evictions,
+            [
+                (CacheKey::Glyph(b), Some(CacheKey::Face(FontFaceId(9)))),
+                (CacheKey::Glyph(a), None),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_resident_glyph_explains_where_it_lives() {
+        let mut res = GlyphResidency::new(4);
+        let k = key(5, 3);
+        assert_eq!(res.explain_glyph(k), None);
+        let Admission::Admitted { page, .. } = res.get_or_admit_a8(k, 100) else {
+            panic!("admitted");
+        };
+        let explained = res.explain_glyph(k).expect("resident");
+        assert_eq!(explained.key.kind, GlyphImageKind::MaskA8);
+        assert_eq!(explained.key.bucket, 3);
+        assert_eq!((explained.page, explained.generation), (page, 0));
+        assert_eq!(res.explain_resident(), [explained]);
     }
 }

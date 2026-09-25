@@ -39,6 +39,9 @@ default = []
 # (§5). Backends resolve from the target, not from user feature combos.
 mobile = []
 hot-reload = []
+# Text runtime explanations — every fallback walk, cache miss and eviction —
+# for the Inspector; compiled out otherwise.
+inspector = ["viso-text/inspector"]
 
 [dev-dependencies]
 # The CoreText provider's sfnt-reassembly tests parse their output to prove the

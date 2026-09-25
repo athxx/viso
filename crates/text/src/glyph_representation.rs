@@ -33,6 +33,7 @@
 
 use std::time::Duration;
 
+use crate::inspect::RepresentationExplanation;
 use crate::mtsdf::{self, BUCKETS, MtsdfPlan};
 use crate::progressive::FontRevision;
 
@@ -358,6 +359,22 @@ impl RepresentationState {
     /// The representation requested and not yet switched to.
     pub fn pending(&self) -> Option<Representation> {
         self.pending
+    }
+
+    /// What the run draws and waits for, and the observed transform that
+    /// drove it, for the Inspector.
+    pub fn explain(&self) -> RepresentationExplanation {
+        RepresentationExplanation {
+            drawn: self.drawn,
+            pending: self.pending,
+            pending_ready: self.arrived,
+            bucket: self.bucket,
+            rotated: self.rotated,
+            world_space: self.world_space,
+            streak: self.streak_start.map(|start| (self.streak_changes, start)),
+            rotated_since: self.rotated_since,
+            cooldown_until: (self.cooldown_until > Duration::ZERO).then_some(self.cooldown_until),
+        }
     }
 
     /// How many resolves evaluated the policy rather than returning the cached
@@ -690,6 +707,26 @@ mod tests {
                 self.frame(px, false);
             }
         }
+    }
+
+    #[test]
+    fn the_explanation_follows_the_observed_transform() {
+        let mut run = Driver::new(RunClass::Text, 16.0);
+        let still = run.state.explain();
+        assert_eq!(still.drawn, Representation::coverage(16));
+        assert_eq!((still.pending, still.pending_ready), (None, false));
+        assert_eq!(
+            (still.bucket, still.rotated, still.world_space),
+            (16, false, false)
+        );
+        assert_eq!((still.streak, still.cooldown_until), (None, None));
+
+        run.zoom(16.0, 100.0, 90);
+        let zoomed = run.state.explain();
+        assert_eq!(zoomed.drawn, run.state.drawn());
+        assert!(zoomed.drawn.is_scalable());
+        assert_eq!(zoomed.bucket, 100);
+        assert!(zoomed.streak.is_some_and(|(changes, _)| changes > 0));
     }
 
     #[test]
