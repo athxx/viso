@@ -17,7 +17,7 @@ pub mod backend;
 pub mod d3d12;
 pub mod headless;
 pub mod instance;
-/// The native Metal backend (compiled only on Apple targets; ADR-007 cfg select).
+/// The native Metal backend (compiled only on Apple targets; ADR 0029 cfg select).
 #[cfg(target_vendor = "apple")]
 pub mod metal;
 pub mod resource;
@@ -47,7 +47,7 @@ pub use webgpu::WebGpuBackend;
 
 /// The concrete GPU backend for this target, selected at compile time.
 ///
-/// ADR-007: there is one [`GpuBackend`] trait for source-level unification, but
+/// ADR 0029: there is one [`GpuBackend`] trait for source-level unification, but
 /// the facade holds *this concrete type* monomorphized so the frame hot path has
 /// no `dyn GpuBackend` dispatch. On macOS and iOS it is the native
 /// [`MetalBackend`]; on Windows the [`D3D12Backend`]; on Linux and Android the
@@ -76,7 +76,7 @@ pub type Backend = WebGpuBackend;
 )))]
 pub type Backend = HeadlessRaster;
 
-/// Create the GPU device/backend for this target (ADR-007 cfg static select).
+/// Create the GPU device/backend for this target (ADR 0029 cfg static select).
 ///
 /// The facade calls this once at launch and stores the returned [`Backend`] by
 /// value. Backends that need a live window (Metal) create their surface later

@@ -1489,7 +1489,7 @@ impl TextShaper {
         }
     }
 
-    #[cfg(test)]
+    #[cfg(all(test, any(target_os = "macos", target_os = "ios")))]
     fn face_bytes(&self, face: FontFaceId) -> Option<(&[u8], u32)> {
         self.resolver
             .face_bytes(face)

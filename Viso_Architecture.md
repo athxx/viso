@@ -3201,8 +3201,12 @@ Fence
 macOS/iOS → Metal
 Windows   → D3D12（必要时兼容路径）
 Linux     → Vulkan
+Android   → Vulkan
 Web       → WebGPU
+其它      → HeadlessRaster（软件光栅，测试/无原生后端）
 ```
+
+选择由 `viso_gpu::Backend` 类型别名按 `cfg` 在编译期完成，facade 按值持有，帧路径无 `dyn` 分派；详见 [ADR 0029](docs/adr/0029-gpu-backend-static-selection.md)。
 
 源码层可以：
 
@@ -4616,13 +4620,16 @@ crates/platform/src/
 
 Viso 不把“跨平台”理解成所有设备都走同一个最低能力后端。Viso 1.0 定义以下主路径：
 
-| Platform | Tier-1 backend | 目标 |
-|---|---|---|
-| macOS / iOS | Metal | first-class / performance baseline |
-| Windows | D3D12 | first-class / performance baseline |
-| Linux | Vulkan | first-class |
-| Android | Vulkan | first-class；设备能力不足时由兼容策略处理 |
-| Web | WebGPU | first-class |
+| Platform | Tier-1 backend | 目标 | 实现（`viso_gpu::Backend`） |
+|---|---|---|---|
+| macOS / iOS | Metal | first-class / performance baseline | `MetalBackend`（`target_vendor = "apple"`） |
+| Windows | D3D12 | first-class / performance baseline | `D3D12Backend` |
+| Linux | Vulkan | first-class | `VulkanBackend` |
+| Android | Vulkan | first-class；设备能力不足时由兼容策略处理 | `VulkanBackend` |
+| Web | WebGPU | first-class | `WebGpuBackend`（`wasm32-unknown-unknown`） |
+| 其它 target | — | 测试 / 回退 | `HeadlessRaster` |
+
+编译期静态选择规则见 [ADR 0029](docs/adr/0029-gpu-backend-static-selection.md)。
 
 Tier-2 compatibility backend 可以存在，例如 Linux OpenGL、Android GLES 或 Web compatibility renderer，但遵循三条规则：
 
@@ -6385,6 +6392,8 @@ trait Painter {
 **代价**：build pipeline 更复杂。
 
 ## ADR-007：GPU backend 静态选择
+
+文件记录：[ADR 0029](docs/adr/0029-gpu-backend-static-selection.md)。
 
 **决定**：源代码统一 RHI，target release 尽量单 backend specialization。  
 **原因**：避免热路径 dyn dispatch 和最低公分母。  

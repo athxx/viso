@@ -2,8 +2,16 @@
 //! a bare executable.
 //!
 //! ```text
-//! cargo xtask bundle --target android|web -p <package> [--bin <name>] [--release] [--run]
+//! cargo xtask bundle --target ios-sim|ios|android|web -p <package> [--bin <name>]
+//!     [--release] [--run] [--sign <identity>] [--profile <file>]
 //! ```
+//!
+//! iOS: the binary is built for `aarch64-apple-ios-sim` (`ios-sim`) or
+//! `aarch64-apple-ios` (`ios`) and wrapped in an `.app` with its Info.plist
+//! under `<target-dir>/bundle/<target>/`. It is signed ad-hoc unless
+//! `--sign` names an identity; a device build also embeds the `--profile`
+//! provisioning profile and signs with its entitlements. `--run` installs it on
+//! the booted simulator and launches it (simulator only).
 //!
 //! Android: the binary is linked as a shared library exporting `main` and
 //! `JNI_OnLoad`, and packed with the `dev.viso` Java shell into a signed APK
@@ -27,6 +35,8 @@ struct Options {
     bin: Option<String>,
     release: bool,
     run: bool,
+    sign: Option<String>,
+    profile: Option<PathBuf>,
 }
 
 fn parse(args: &[String]) -> Result<Options, String> {
@@ -36,6 +46,8 @@ fn parse(args: &[String]) -> Result<Options, String> {
         bin: None,
         release: false,
         run: false,
+        sign: None,
+        profile: None,
     };
     let mut it = args.iter();
     while let Some(arg) = it.next() {
@@ -46,6 +58,8 @@ fn parse(args: &[String]) -> Result<Options, String> {
             "--bin" => o.bin = Some(value()?),
             "--release" => o.release = true,
             "--run" => o.run = true,
+            "--sign" => o.sign = Some(value()?),
+            "--profile" => o.profile = Some(PathBuf::from(value()?)),
             other => return Err(format!("unknown argument {other:?}")),
         }
     }
@@ -64,9 +78,13 @@ pub(crate) fn bundle(args: &[String]) -> ExitCode {
         }
     };
     let result = match options.target.as_str() {
+        "ios-sim" => ios(&options, true),
+        "ios" => ios(&options, false),
         "android" => android(&options),
         "web" => web(&options),
-        other => Err(format!("unknown bundle target {other:?} (android, web)")),
+        other => Err(format!(
+            "unknown bundle target {other:?} (ios-sim, ios, android, web)"
+        )),
     };
     match result {
         Ok(path) => {
@@ -80,8 +98,8 @@ pub(crate) fn bundle(args: &[String]) -> ExitCode {
     }
 }
 
-const USAGE: &str =
-    "cargo xtask bundle --target android|web -p <package> [--bin <name>] [--release] [--run]";
+const USAGE: &str = "cargo xtask bundle --target ios-sim|ios|android|web -p <package> \
+[--bin <name>] [--release] [--run] [--sign <identity>] [--profile <file>]";
 
 /// Run `cmd`, failing with its name if it does not succeed.
 fn run(cmd: &mut Command) -> Result<(), String> {
@@ -139,6 +157,155 @@ fn executable(messages: &str) -> Option<PathBuf> {
             Some(PathBuf::from(l[at..at + end].replace("\\\\", "\\")))
         })
         .next_back()
+}
+
+/// The lowest iOS version the bundle supports (the Info.plist's
+/// `MinimumOSVersion`).
+const IOS_MIN_VERSION: &str = "15.0";
+
+/// A bundle identifier for `bin`: letters, digits, `-` and `.` only.
+fn ios_bundle_id(bin: &str) -> String {
+    let name: String = bin
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+        .collect();
+    format!("dev.viso.{name}")
+}
+
+/// The app's Info.plist: one full-screen scene, portrait and landscape, on
+/// iPhone and iPad.
+fn info_plist(bin: &str, id: &str, simulator: bool) -> String {
+    let platform = if simulator {
+        "iPhoneSimulator"
+    } else {
+        "iPhoneOS"
+    };
+    format!(
+        r#"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleDevelopmentRegion</key>
+	<string>en</string>
+	<key>CFBundleExecutable</key>
+	<string>{bin}</string>
+	<key>CFBundleIdentifier</key>
+	<string>{id}</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>CFBundleName</key>
+	<string>{bin}</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>1.0</string>
+	<key>CFBundleVersion</key>
+	<string>1</string>
+	<key>CFBundleSupportedPlatforms</key>
+	<array>
+		<string>{platform}</string>
+	</array>
+	<key>LSRequiresIPhoneOS</key>
+	<true/>
+	<key>MinimumOSVersion</key>
+	<string>{IOS_MIN_VERSION}</string>
+	<key>UIDeviceFamily</key>
+	<array>
+		<integer>1</integer>
+		<integer>2</integer>
+	</array>
+	<key>UILaunchScreen</key>
+	<dict/>
+	<key>UIApplicationSceneManifest</key>
+	<dict>
+		<key>UIApplicationSupportsMultipleScenes</key>
+		<false/>
+	</dict>
+	<key>UISupportedInterfaceOrientations</key>
+	<array>
+		<string>UIInterfaceOrientationPortrait</string>
+		<string>UIInterfaceOrientationLandscapeLeft</string>
+		<string>UIInterfaceOrientationLandscapeRight</string>
+	</array>
+	<key>UISupportedInterfaceOrientations~ipad</key>
+	<array>
+		<string>UIInterfaceOrientationPortrait</string>
+		<string>UIInterfaceOrientationPortraitUpsideDown</string>
+		<string>UIInterfaceOrientationLandscapeLeft</string>
+		<string>UIInterfaceOrientationLandscapeRight</string>
+	</array>
+</dict>
+</plist>
+"#
+    )
+}
+
+fn ios(o: &Options, simulator: bool) -> Result<PathBuf, String> {
+    let root = crate::workspace_root();
+    let (target, triple) = if simulator {
+        ("ios-sim", "aarch64-apple-ios-sim")
+    } else {
+        ("ios", "aarch64-apple-ios")
+    };
+    if o.run && !simulator {
+        return Err(
+            "--run installs on the simulator only; install a device build with \
+             `xcrun devicectl device install app --device <id> <app>`"
+                .into(),
+        );
+    }
+    let bin = o.bin.clone().unwrap_or_else(|| o.package.clone());
+    let mut cargo = Command::new(std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into()));
+    cargo
+        .current_dir(&root)
+        .args(["build", "--message-format=json-render-diagnostics"])
+        .args(["-p", &o.package, "--bin", &bin, "--target", triple])
+        .args(o.release.then_some("--release"));
+    let built = executable(&output(&mut cargo)?).ok_or("cargo reported no executable")?;
+
+    let target_dir = built.ancestors().nth(3).ok_or("unexpected artifact path")?;
+    let out = target_dir.join("bundle").join(target);
+    let app = out.join(format!("{bin}.app"));
+    let _ = std::fs::remove_dir_all(&app);
+    std::fs::create_dir_all(&app).map_err(|e| format!("{}: {e}", app.display()))?;
+    let exe = app.join(&bin);
+    std::fs::copy(&built, &exe).map_err(|e| format!("{}: {e}", exe.display()))?;
+    let id = ios_bundle_id(&bin);
+    let plist = app.join("Info.plist");
+    std::fs::write(&plist, info_plist(&bin, &id, simulator))
+        .map_err(|e| format!("{}: {e}", plist.display()))?;
+
+    let mut codesign = Command::new("codesign");
+    codesign
+        .args(["--force", "--timestamp=none", "--sign"])
+        .arg(o.sign.as_deref().unwrap_or("-"));
+    if let Some(profile) = o.profile.as_deref().filter(|_| !simulator) {
+        std::fs::copy(profile, app.join("embedded.mobileprovision"))
+            .map_err(|e| format!("{}: {e}", profile.display()))?;
+        let decoded = out.join(format!("{bin}.mobileprovision.plist"));
+        let text = output(
+            Command::new("security")
+                .args(["cms", "-D", "-i"])
+                .arg(profile),
+        )?;
+        std::fs::write(&decoded, text).map_err(|e| format!("{}: {e}", decoded.display()))?;
+        let entitlements = out.join(format!("{bin}.entitlements"));
+        run(Command::new("plutil")
+            .args(["-extract", "Entitlements", "xml1", "-o"])
+            .arg(&entitlements)
+            .arg(&decoded))?;
+        codesign.arg("--entitlements").arg(&entitlements);
+    }
+    run(codesign.arg(&app))?;
+
+    if o.run {
+        run(Command::new("xcrun")
+            .args(["simctl", "install", "booted"])
+            .arg(&app))
+        .map_err(|e| format!("{e} (boot a simulator first: xcrun simctl boot <device>)"))?;
+        run(Command::new("xcrun").args(["simctl", "launch", "booted", &id]))?;
+    }
+    Ok(app)
 }
 
 struct AndroidSdk {
@@ -493,9 +660,35 @@ mod tests {
             .collect();
         let o = parse(&args).unwrap();
         assert_eq!((o.target.as_str(), o.package.as_str()), ("android", "app"));
-        assert!(o.release && !o.run && o.bin.is_none());
+        assert!(o.release && !o.run && o.bin.is_none() && o.sign.is_none());
         assert!(parse(&args[..2]).is_err());
+        let signed: Vec<String> = [
+            "--target",
+            "ios",
+            "-p",
+            "app",
+            "--sign",
+            "Dev",
+            "--profile",
+            "p",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+        let o = parse(&signed).unwrap();
+        assert_eq!(o.sign.as_deref(), Some("Dev"));
+        assert_eq!(o.profile, Some(PathBuf::from("p")));
         assert!(parse(&["--frobnicate".to_string()]).is_err());
+    }
+
+    #[test]
+    fn the_ios_bundle_names_its_executable_and_platform() {
+        assert_eq!(ios_bundle_id("hello_world"), "dev.viso.hello-world");
+        let plist = info_plist("hello_world", "dev.viso.hello-world", true);
+        assert!(plist.contains("<string>hello_world</string>"));
+        assert!(plist.contains("<string>dev.viso.hello-world</string>"));
+        assert!(plist.contains("<string>iPhoneSimulator</string>"));
+        assert!(info_plist("a", "dev.viso.a", false).contains("<string>iPhoneOS</string>"));
     }
 
     #[test]

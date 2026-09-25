@@ -1,7 +1,7 @@
 //! The renderer facade: lower primitives → batches → GPU draw commands (§16).
 //!
 //! [`Renderer`] is generic over the [`GpuBackend`] so the same code drives the
-//! Metal and headless-raster backends (ADR-007: the concrete backend is chosen
+//! Metal and headless-raster backends (ADR 0029: the concrete backend is chosen
 //! at compile time by the facade, so there is no per-frame `dyn` dispatch). It
 //! owns the cold-path GPU resources (the Quad and Image pipelines, persistent
 //! instance buffers) and turns each frame's `&[Primitive]` into one [`DrawList`].

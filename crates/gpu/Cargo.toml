@@ -56,7 +56,7 @@ wasm-bindgen-futures = "0.4"
 
 # Apple targets: the native Metal backend (objc2). External crates, not viso-* edges,
 # so they don't affect `xtask check-deps`. The concrete backend is chosen by
-# `cfg` (ADR-007); on other targets only the headless raster compiles.
+# `cfg` (ADR 0029); the headless raster compiles on every target.
 [target.'cfg(target_vendor = "apple")'.dependencies]
 objc2 = "0.6"
 # Objective-C blocks: the command-buffer completion handler that advances the

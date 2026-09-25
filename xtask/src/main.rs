@@ -11,6 +11,7 @@
 //! the one crate it does not cover is silently skipped rather than checked.
 
 mod bundle;
+mod targets;
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -230,8 +231,11 @@ fn main() -> ExitCode {
     match cmd {
         "check-deps" => check_deps(),
         "bundle" => bundle::bundle(&args[1..]),
+        "check-targets" => targets::check_targets(&args[1..]),
         other => {
-            eprintln!("unknown xtask: {other:?}\nusage: cargo xtask check-deps | bundle");
+            eprintln!(
+                "unknown xtask: {other:?}\nusage: cargo xtask check-deps | check-targets | bundle"
+            );
             ExitCode::FAILURE
         }
     }

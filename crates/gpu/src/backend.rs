@@ -2,7 +2,7 @@
 //!
 //! There is exactly one `GpuBackend` trait; the concrete backend is chosen at
 //! compile time by [`create_device`] and the facade holds it monomorphized, so
-//! the frame hot path has no `dyn GpuBackend` dispatch (ADR-007). The trait
+//! the frame hot path has no `dyn GpuBackend` dispatch (ADR 0029). The trait
 //! exists to keep the Metal and headless-raster backends *source-compatible* and
 //! to let cold-path code (setup, tests) be backend-generic.
 //!

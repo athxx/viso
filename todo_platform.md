@@ -189,14 +189,19 @@ Follow-ups carried forward:
 
 ## P9 — Run, package, verify, document
 
-- [ ] `cargo xtask bundle --target {ios-sim,ios,android,web}`: iOS `.app` (Info.plist,
+- [x] `cargo xtask bundle --target {ios-sim,ios,android,web}`: iOS `.app` (Info.plist,
       codesign ad-hoc for simulator), Android APK (javac → d8 → aapt2 → zipalign → apksigner,
       debug keystore), web bundle (`wasm-bindgen` output + loader HTML).
+      (Web bundle served and run; the iOS and Android packages are not yet installed on a
+      device or simulator.)
 - [ ] Examples launch and render on: macOS, iOS simulator, Android emulator, Chromium
       WebGPU, Linux X11 + Wayland (podman VM, lavapipe).
-- [ ] `cargo check --target` + `clippy -D warnings` for all eight installed targets.
-- [ ] ADR: GPU backend static selection per target (the code cites "ADR-007", which is the
-      scroll-viewport ADR); architecture document backend matrix updated.
+      (Verified: macOS; `01-counter` on Chromium WebGPU. Not verified: iOS simulator,
+      Android emulator (the emulator image exposes no Vulkan), Linux X11/Wayland, Web text.)
+- [x] `cargo check --target` + `clippy -D warnings` for all eight installed targets
+      (`cargo xtask check-targets`).
+- [x] ADR: GPU backend static selection per target (the code cites "ADR-007", which is the
+      scroll-viewport ADR); architecture document backend matrix updated (ADR 0029).
 
 ## P10 — Accessibility OS bridges
 
