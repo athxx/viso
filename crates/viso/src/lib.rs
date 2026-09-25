@@ -92,6 +92,13 @@ pub use viso_ui_macros::ui;
 // model.
 pub use viso_svg as svg;
 
+/// Fonts packaged into the binary from the crate's `assets/fonts/`:
+/// `cx.use_packaged_fonts(viso::packaged_fonts!())` in `Application::new`.
+pub mod fonts {
+    pub use viso_text::{FontSlant, PackagedFace, PackagedFonts};
+}
+pub use viso_macros::packaged_fonts;
+
 /// The application entry-point contract implemented by every Viso app.
 ///
 /// The single generic entry point is [`run`]. An `Application` owns top-level
@@ -405,7 +412,16 @@ struct AppDriver<A: Application> {
     /// fallbacks), so a face registered at init applies to the launch window and
     /// to any window opened later alike. Empty for an app that loads no font and
     /// relies on the system default.
-    fonts: Vec<Box<[u8]>>,
+    fonts: SessionFonts,
+}
+
+/// The fonts an app registered at init, installed into every window's shaper.
+#[derive(Default)]
+struct SessionFonts {
+    /// Raw sfnt faces from `AppCx::load_font`, in call order.
+    loaded: Vec<Box<[u8]>>,
+    /// Faces packaged from `assets/fonts/` via `AppCx::use_packaged_fonts`.
+    packaged: fonts::PackagedFonts,
 }
 
 /// Everything one window owns: its retained tree, reactive state, GPU surface,
@@ -623,7 +639,7 @@ impl<A: Application> AppDriver<A> {
             windows: Vec::new(),
             pending_opens: Vec::new(),
             pending_closes: Vec::new(),
-            fonts: Vec::new(),
+            fonts: SessionFonts::default(),
         }
     }
 
@@ -698,7 +714,7 @@ impl WindowState {
     fn open(
         cx: &mut RuntimeCx<'_>,
         window: WindowId,
-        fonts: &[Box<[u8]>],
+        fonts: &SessionFonts,
         chrome: WindowChrome,
         initial_chrome_geom: Option<LogicalRect>,
         build: impl FnOnce(&mut BuildCx) -> Option<NodeId>,
@@ -769,7 +785,8 @@ impl WindowState {
             // default in place. An app that loaded no font gets an empty chain the
             // first shape seeds from the system.
             let mut shaper = TextShaper::new();
-            for face in fonts {
+            shaper.use_packaged_fonts(fonts.packaged);
+            for face in &fonts.loaded {
                 // Each window gets its own shaper, so hand it a fresh copy of the
                 // sfnt bytes rather than moving the shared registration out. A face
                 // whose bytes are not a valid sfnt is skipped, keeping the system
@@ -1355,7 +1372,10 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
         // faces it registered through `AppCx::load_font` so every window opened
         // this session loads them ahead of the system fallbacks.
         self.app = Some(A::new(&mut self.cx));
-        self.fonts = self.cx.__take_fonts();
+        self.fonts = SessionFonts {
+            loaded: self.cx.__take_fonts(),
+            packaged: self.cx.__packaged_fonts(),
+        };
         // Install the app's menu bar, if it declares one, before opening any
         // window. A `None` leaves the framework's standard app menu (with its
         // working Quit) in place from platform bring-up.

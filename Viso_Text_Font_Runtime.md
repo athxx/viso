@@ -2916,7 +2916,7 @@ Viso Text/Font Runtime 只有同时满足下面条件才算达到 1.0 合同：
 [x] Native App 不打包任何字体也能使用系统 UI/CJK/Emoji
 [x] Native startup 不全量扫描系统字体
 [x] 3000 installed fonts 不造成线性 startup parse 成本
-[ ] assets/fonts 自动进入 FontManifest，但 runtime 不 eager parse
+[x] assets/fonts 自动进入 FontManifest，但 runtime 不 eager parse
 [x] WASM 没有隐式系统/框架字体
 [ ] WASM packaged SFNT 字体可以 lazy fetch（WOFF2 须由调用方解压为 SFNT）
 [x] CJK fallback 以 run/cluster + locale 处理
@@ -3005,12 +3005,12 @@ Viso Text/Font Runtime 只有同时满足下面条件才算达到 1.0 合同：
 | 120/144/240Hz 独立 gate | bench: `assert_edit_cadence_holds_each_tier`，text `high_refresh` bench（只量 CPU 预算，不在 CI） |
 | TextInput 局部编辑无 IO/parse | `typing_into_a_covered_paragraph_loads_queries_and_parses_nothing`（face miss、system query、fallback 与 worker coverage parse 全程不变） |
 | Inspector 解释 fallback 与 cache miss | `FallbackTrace` 与 face / shaping / coverage（fallback 与 worker 两份）/ 四个 glyph pool 的 `MissLedger`；`the_inspection_explains_a_reclaimed_glyph_and_what_it_draws_from`，`the_worker_s_coverage_builds_reach_the_inspection`，`a_span_miss_names_the_turnover_or_face_drop_that_evicted_it`（`inspector` feature，不在 CI 默认 feature 集） |
+| assets/fonts 自动进入 FontManifest，不 eager parse | `viso::packaged_fonts!()` 构建期扫描、校验、抽取元数据并嵌入；`PackagedFonts::manifest` 只搬元数据；`a_packaged_ui_family_becomes_the_primary_on_first_use`（首次使用才读字节），`crates/viso/tests/packaged_fonts.rs`。无需 `Viso.toml`；增删文件需重新编译调用 crate |
 
 未勾选：
 
 | 项 | 原因 |
 |---|---|
-| assets/fonts 自动进入 FontManifest | 依赖 `Viso.toml` 与 asset pipeline，尚不存在 |
 | WASM lazy fetch | `a_lazy_fetch_resolves_and_refunds_its_budget` 只在模块层成立，没有 web consumer |
 | Unicode 数据同一 release | `LineBreakTest` 15.1.0，`unicode-bidi` 16.0.0，Grapheme/WordBreakTest 17.0.0 |
 | typed mapping | `ShapedGlyph.cluster` 是裸 `u32`，`glyph_id` 是裸 `u16` |
