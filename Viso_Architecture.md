@@ -2261,6 +2261,14 @@ viso-smol
 
 不把所有 adapter 组合直接做成核心 crate feature matrix。
 
+### 13.2 实现（ADR 0032）
+
+- `viso-platform` 的 `LoopWaker` 可跨线程 kick，loop 线程上收到一次 `RawEvent::Wakeup`；每个 backend 复用自己已有的唤醒通道。
+- `viso-runtime::task::TaskSet` 持有 task 与 wake queue。首次 wake 或 spawn 才 kick；没有 wake 的帧不加锁、不 poll。`FrameDriver::on_wakeup` 为有 task 被唤醒或 timer 到期的窗口请求重绘。
+- `EventCx::spawn` / `spawn_then` / `cancel_task`：task 归 handler 所在节点所有，释放子树或清空 store 时随之取消。`spawn_then` 的续体在帧边界拿到 `UpdateCx`，因此 `.await` 期间不持有 arena 引用。
+- `cx.services()` 由 facade prelude 中的 `ServicesExt` 提供；store 以 `Rc<dyn Any>` 借出 `Services`，所以 `ui` 不依赖 `services`。
+- 暂缓：`UpdateCx` / `BuildCx` / `TaskCx` 上的 spawn 与 services、detached spawn、adapter crate。
+
 ---
 
 # Part V — UI Runtime 数据模型
@@ -4707,7 +4715,7 @@ Arc<dyn ClipboardService>
 
 Android 通过 `viso-platform` 暴露的两个窄接口访问 activity：`with_activity` 和 `VisoActivity.addResults`。其余逻辑都在 services 内，包括随 APK 打包的 `dev.viso.services.VisoServices` Java 类。
 
-在 UI task 协议落地之前，`cx.services()` 的接入暂缓。
+handler 通过 `cx.services()` 取得会话注册表，并用 `cx.spawn_then` 等待 `Reply`（ADR 0032，§13.2）。
 
 ---
 

@@ -196,6 +196,10 @@ impl PlatformApp for X11App {
     fn appearance(&self) -> Appearance {
         self.x11.borrow().pump.appearance
     }
+
+    fn loop_waker(&self) -> crate::LoopWaker {
+        self.waker.loop_waker()
+    }
 }
 
 /// An X11 toplevel.

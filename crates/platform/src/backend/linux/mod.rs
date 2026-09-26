@@ -63,6 +63,8 @@ pub(crate) enum Wake {
         window: WindowId,
         request: AccessRequest,
     },
+    /// A [`LoopWaker`](crate::LoopWaker) kick.
+    Tasks,
 }
 
 /// The sending half of the loop's wake channel: a message queue plus a
@@ -74,6 +76,14 @@ pub(crate) struct Waker {
 }
 
 impl Waker {
+    /// A [`LoopWaker`](crate::LoopWaker) whose kick sends [`Wake::Tasks`].
+    pub(crate) fn loop_waker(&self) -> crate::LoopWaker {
+        let waker = self.clone();
+        crate::LoopWaker::new(move || {
+            waker.send(Wake::Tasks);
+        })
+    }
+
     /// Queue `wake` and interrupt the loop; `false` once the loop is gone.
     pub(crate) fn send(&self, wake: Wake) -> bool {
         if self.tx.send(wake).is_err() {
@@ -243,6 +253,7 @@ impl Pump {
             Wake::Access { window, request } => {
                 self.push(RawEvent::Accessibility { window, request });
             }
+            Wake::Tasks => self.push(RawEvent::Wakeup),
         }
     }
 

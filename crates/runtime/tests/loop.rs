@@ -104,6 +104,10 @@ impl FrameClock for FixedStepClock {
         self.cursor += self.step;
         at
     }
+
+    fn peek(&self) -> Instant {
+        self.cursor
+    }
 }
 
 const PHASES: u32 = FramePhase::ORDER.len() as u32;

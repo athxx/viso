@@ -210,6 +210,10 @@ impl PlatformApp for WaylandApp {
     fn appearance(&self) -> Appearance {
         self.wl.borrow().state.pump.appearance
     }
+
+    fn loop_waker(&self) -> crate::LoopWaker {
+        self.wl.borrow().state.waker.loop_waker()
+    }
 }
 
 /// A Wayland toplevel.

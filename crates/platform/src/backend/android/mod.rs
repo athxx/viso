@@ -126,6 +126,8 @@ pub(super) enum Msg {
     /// The system recreated the activity: a new host view.
     Recreated,
     Destroy,
+    /// A [`LoopWaker`](crate::LoopWaker) kick.
+    Wake,
 }
 
 /// The loop thread's looper, set once it has one.
@@ -504,6 +506,7 @@ fn apply(msg: Msg) {
                 });
             }
         }
+        Msg::Wake => push(RawEvent::Wakeup),
         Msg::LowMemory => {
             if LOOP.with(|l| l.launched.get()) {
                 push(RawEvent::LowMemory);
@@ -917,6 +920,10 @@ impl PlatformApp for AndroidApp {
 
     fn framed_windows(&self) -> bool {
         false
+    }
+
+    fn loop_waker(&self) -> crate::LoopWaker {
+        crate::LoopWaker::new(|| send(Msg::Wake))
     }
 }
 

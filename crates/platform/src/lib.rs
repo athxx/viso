@@ -28,6 +28,7 @@ pub mod event;
 pub mod handler;
 pub mod menu;
 pub mod time;
+pub mod wake;
 
 pub use accessibility::{AccessAction, AccessRequest, accesskit};
 pub use control::{
@@ -42,6 +43,7 @@ pub use event::{
 pub use handler::AppHandler;
 pub use menu::{Accel, Menu, MenuCommandId, SystemAction};
 pub use time::Instant;
+pub use wake::LoopWaker;
 // The native window handle lives in the `viso-handle` leaf crate so `viso-gpu`
 // can name it without depending on `viso-platform` (the DAG rule). Re-exported here
 // because platform is where it's produced (`Window::raw_handle`).
@@ -164,6 +166,12 @@ pub trait PlatformApp {
     /// caption and insets content by the reported safe area instead.
     fn framed_windows(&self) -> bool {
         true
+    }
+
+    /// A handle that wakes this loop from any thread with a
+    /// [`RawEvent::Wakeup`]. Inert on a backend without a cross-thread wake.
+    fn loop_waker(&self) -> LoopWaker {
+        LoopWaker::inert()
     }
 }
 

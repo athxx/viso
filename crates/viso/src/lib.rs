@@ -36,16 +36,19 @@
 
 #![forbid(unsafe_op_in_unsafe_fn)]
 
+use std::any::Any;
 use std::cell::Cell;
+use std::rc::Rc;
 
 use viso_gpu::{Backend, GpuBackend, SurfaceId};
 use viso_platform::{Insets, LogicalRect, RawWindowHandle, WindowId};
 use viso_render::{Primitive, Rect, Renderer};
 use viso_runtime::{FramePhase, RuntimeCx, Scheduler};
+use viso_ui::context::UpdateCx;
 use viso_ui::{
-    AnimationRegistry, Axis, BindingTable, BuildCx, ChromeContext, ComputedStore, DirtyClass,
-    EffectStore, FlexStyle, FrameRecompute, ImeEvent, KeyEvent, KeyRouter, Modifiers, NodeId,
-    NodeStore, PointerButtons, PointerEvent, PointerPhase, PointerRouter, ScrollEvent,
+    AnimationRegistry, Axis, BindingTable, BuildCx, ChromeContext, ComputedStore, Continuation,
+    DirtyClass, EffectStore, FlexStyle, FrameRecompute, ImeEvent, KeyEvent, KeyRouter, Modifiers,
+    NodeId, NodeStore, PointerButtons, PointerEvent, PointerPhase, PointerRouter, ScrollEvent,
     ScrollRouter, SemanticProjector, Size, StateId, StateStore, TextEdits, TextRequest,
     TimerRegistry, TimerRequest, TranslateAnim, VirtualLists, WindowOpenRequest, focus_next,
     text_edit, virtual_list,
@@ -53,6 +56,7 @@ use viso_ui::{
 use viso_widgets::caption_bar;
 
 mod accessibility;
+pub mod services;
 pub mod system_fonts;
 mod text_content;
 mod text_harness;
@@ -157,9 +161,15 @@ pub trait Application: Sized + 'static {
 /// UI-agnostic [`viso_runtime::FrameDriver`] to the user's [`Application`] and
 /// its [`AppCx`], and runs the scheduler until the last window closes.
 pub fn run<A: Application>() {
-    let platform_app =
-        viso_platform::create_app().unwrap_or_else(|_| viso_platform::create_headless_app());
-    let driver = AppDriver::<A>::new();
+    // A headless fallback has no OS behind its services.
+    let (platform_app, services) = match viso_platform::create_app() {
+        Ok(app) => (app, None),
+        Err(_) => (
+            viso_platform::create_headless_app(),
+            Some(services::Services::unsupported()),
+        ),
+    };
+    let driver = AppDriver::<A>::new(services);
     // The browser's event loop cannot block, so the scheduler outlives `run`
     // there; everywhere else the pump blocks until the last window closes. In
     // a page the WebGPU device opens asynchronously, before the first window
@@ -213,6 +223,11 @@ pub mod __test_support {
         /// The first window's declared root node, if any.
         pub fn root(&self) -> Option<super::NodeId> {
             self.driver.windows[0].root
+        }
+
+        /// The first window's reactive state cells.
+        pub fn states(&self) -> &super::StateStore {
+            &self.driver.windows[0].states
         }
 
         /// How many windows are open on the settled driver. One for a
@@ -343,7 +358,17 @@ pub mod __test_support {
         script: Vec<viso_platform::RawEvent>,
         step: Duration,
     ) -> DrivenApp<A> {
-        drive_host::<A>(script, step, true)
+        drive_host::<A>(script, step, true, None)
+    }
+
+    /// [`drive_scripted`] with `services` lent to every handler in place of
+    /// the headless fallback's unsupported registry.
+    pub fn drive_scripted_with_services<A: Application>(
+        script: Vec<viso_platform::RawEvent>,
+        step: Duration,
+        services: crate::services::Services,
+    ) -> DrivenApp<A> {
+        drive_host::<A>(script, step, true, Some(services))
     }
 
     /// [`drive_scripted`] on a host whose windows fill the screen (mobile, a
@@ -352,19 +377,21 @@ pub mod __test_support {
         script: Vec<viso_platform::RawEvent>,
         step: Duration,
     ) -> DrivenApp<A> {
-        drive_host::<A>(script, step, false)
+        drive_host::<A>(script, step, false, None)
     }
 
     fn drive_host<A: Application>(
         script: Vec<viso_platform::RawEvent>,
         step: Duration,
         framed: bool,
+        services: Option<crate::services::Services>,
     ) -> DrivenApp<A> {
         let mut app = Box::new(viso_platform::backend::headless::HeadlessApp::scripted(
             script,
         ));
         app.set_framed_windows(framed);
-        let driver = AppDriver::<A>::new();
+        let services = services.unwrap_or_else(crate::services::Services::unsupported);
+        let driver = AppDriver::<A>::new(Some(services));
         let clock = FixedStepClock::new(Instant::now(), step);
         let driver = Scheduler::with_clock(app, driver, clock).run_returning();
         DrivenApp { driver }
@@ -414,6 +441,9 @@ struct AppDriver<A: Application> {
     /// to any window opened later alike. Empty for an app that loads no font and
     /// relies on the system default.
     fonts: SessionFonts,
+    /// The session's service registry, lent type-erased to every window's
+    /// store. Created on launch unless injected (a headless session, a test).
+    services: Option<Rc<dyn Any>>,
 }
 
 /// The fonts an app registered at init, installed into every window's shaper.
@@ -617,6 +647,9 @@ struct WindowState {
     /// Reusable buffer for this window's queued window-close ids, mirroring
     /// [`scratch_opens`](Self::scratch_opens).
     scratch_closes: Vec<u32>,
+    /// Reusable buffer the flush polls this window's woken tasks into: one
+    /// entry per task that finished, its continuation if it writes back.
+    continuations: Vec<Option<Continuation>>,
 }
 
 /// The facade-owned GPU state: the concrete backend, the renderer, and the
@@ -636,7 +669,7 @@ struct GpuState {
 }
 
 impl<A: Application> AppDriver<A> {
-    fn new() -> Self {
+    fn new(services: Option<services::Services>) -> Self {
         Self {
             app: None,
             cx: AppCx::__new(),
@@ -644,6 +677,7 @@ impl<A: Application> AppDriver<A> {
             pending_opens: Vec::new(),
             pending_closes: Vec::new(),
             fonts: SessionFonts::default(),
+            services: services.map(|s| Rc::new(s) as Rc<dyn Any>),
         }
     }
 
@@ -703,6 +737,7 @@ impl WindowState {
             reflow_scratch: Vec::new(),
             scratch_opens: Vec::new(),
             scratch_closes: Vec::new(),
+            continuations: Vec::new(),
         }
     }
 
@@ -720,11 +755,15 @@ impl WindowState {
         cx: &mut RuntimeCx<'_>,
         window: WindowId,
         fonts: &SessionFonts,
+        services: Option<Rc<dyn Any>>,
         chrome: WindowChrome,
         initial_chrome_geom: Option<LogicalRect>,
         build: impl FnOnce(&mut BuildCx) -> Option<NodeId>,
     ) -> Self {
         let mut ws = WindowState::new(window);
+        // Tasks a handler spawns wake the loop through its waker, and handlers
+        // reach the session's services through the store.
+        ws.store.__install_task_host(cx.loop_waker(), services);
         // Record who draws this window's chrome. Known at open time from the
         // window config; the build-time half of the chrome data contract a
         // caption widget reads through `BuildCx::chrome` (section 24 — driven by
@@ -1387,6 +1426,12 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
         if let Some(menu) = self.app.as_ref().and_then(Application::menu) {
             cx.set_menu(&menu);
         }
+        // The OS services, created once on the loop thread now that the
+        // platform is up; every window's handlers share them.
+        if self.services.is_none() {
+            let system = services::Services::system(&services::app_name());
+            self.services = Some(Rc::new(system));
+        }
         // Open the initial window with the app's declared configuration
         // (`window_config`, defaulting to a self-drawn, captioned window). Later
         // phases let the app request further windows via `AppCx`.
@@ -1416,19 +1461,28 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
         // The wrap captures the caption root into this cell during the synchronous
         // build inside `open`; read it back afterward to hold for fullscreen hide.
         let caption_cell = Cell::new(None);
-        let mut ws = WindowState::open(cx, id, &self.fonts, ui_chrome, chrome_geom, |build| {
-            let content = |build: &mut BuildCx<'_>| {
-                app.and_then(|app| {
-                    app.build(build);
-                    build.root()
-                })
-            };
-            if framed {
-                wrap_root_with_caption(build, &title, caption, &caption_cell, content)
-            } else {
-                wrap_root_in_safe_area(build, content)
-            }
-        });
+        let services = self.services.clone();
+        let mut ws = WindowState::open(
+            cx,
+            id,
+            &self.fonts,
+            services,
+            ui_chrome,
+            chrome_geom,
+            |build| {
+                let content = |build: &mut BuildCx<'_>| {
+                    app.and_then(|app| {
+                        app.build(build);
+                        build.root()
+                    })
+                };
+                if framed {
+                    wrap_root_with_caption(build, &title, caption, &caption_cell, content)
+                } else {
+                    wrap_root_in_safe_area(build, content)
+                }
+            },
+        );
         ws.caption = caption_cell.get();
         if !framed {
             ws.safe_area_root = ws.root;
@@ -1679,6 +1733,19 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
         }
     }
 
+    fn on_wakeup(&mut self, cx: &mut RuntimeCx<'_>) {
+        // A loop kick: a task woke (or was spawned), or a timer deadline
+        // elapsed. Frame the windows with work, so the frame polls the tasks
+        // and fires the timers.
+        let now = cx.frame_now();
+        for ws in &self.windows {
+            let timer_due = ws.timers.earliest().is_some_and(|at| at <= now);
+            if ws.store.tasks_woken() || timer_due {
+                cx.request_redraw(ws.window);
+            }
+        }
+    }
+
     fn on_surface(&mut self, cx: &mut RuntimeCx<'_>, window: WindowId, available: bool) {
         let raw = cx.raw_handle(window);
         let Some(ws) = self.window_mut(window) else {
@@ -1845,6 +1912,20 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
                     if !ws.timers.is_empty() {
                         ws.timers.fire_due(&mut ws.store, cx.frame_now());
                     }
+                    // Poll the tasks spawned or woken since the last frame and
+                    // run each finished one's continuation, so the state it
+                    // writes flushes below in this same frame. No woken task
+                    // (the steady case) takes no lock and polls nothing.
+                    if ws.store.tasks_woken() {
+                        ws.store.poll_tasks(&mut ws.continuations);
+                        for then in ws.continuations.drain(..).flatten() {
+                            then(&mut UpdateCx::__new(
+                                &mut ws.states,
+                                &ws.bindings,
+                                &mut ws.store,
+                            ));
+                        }
+                    }
                     // Drain this frame's pending state writes once and fan the
                     // same changed set through the three downstream reactors, in
                     // order. Many writes in one transaction collapse here; a
@@ -1938,8 +2019,14 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
                         // Capture the caption root during the synchronous build, as
                         // the launch path does, to hold for fullscreen hide.
                         let caption_cell = Cell::new(None);
-                        let mut ws =
-                            WindowState::open(cx, id, &self.fonts, ui_chrome, chrome_geom, |cx| {
+                        let mut ws = WindowState::open(
+                            cx,
+                            id,
+                            &self.fonts,
+                            self.services.clone(),
+                            ui_chrome,
+                            chrome_geom,
+                            |cx| {
                                 if framed {
                                     wrap_root_with_caption(
                                         cx,
@@ -1951,7 +2038,8 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
                                 } else {
                                     wrap_root_in_safe_area(cx, build)
                                 }
-                            });
+                            },
+                        );
                         ws.caption = caption_cell.get();
                         if !framed {
                             ws.safe_area_root = ws.root;
@@ -2263,6 +2351,9 @@ fn lower_modifiers(m: viso_runtime::Modifiers) -> Modifiers {
 /// GPU/backend/internal-compiler types never appear here.
 pub mod prelude {
     pub use crate::{Application, run};
+    // `cx.services()` on a handler's context: the file dialog, share sheet and
+    // permission prompts an ordinary app reaches for (ADR 0032).
+    pub use crate::services::ServicesExt;
     pub use viso_ui::context::AppCx;
     pub use viso_ui::dirty::DirtyClass;
     pub use viso_ui::node::NodeId;

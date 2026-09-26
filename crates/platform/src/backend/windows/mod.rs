@@ -20,9 +20,12 @@ use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;
 use std::ptr::NonNull;
 use std::rc::Rc;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
-use ::windows::Win32::Foundation::{HINSTANCE, HWND, POINT, RECT};
+use ::windows::Win32::Foundation::{HINSTANCE, HWND, LPARAM, POINT, RECT, WPARAM};
 use ::windows::Win32::System::LibraryLoader::GetModuleHandleW;
+use ::windows::Win32::System::Threading::GetCurrentThreadId;
 use ::windows::Win32::UI::HiDpi::{
     AdjustWindowRectExForDpi, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, GetDpiForWindow,
     SetProcessDpiAwarenessContext,
@@ -30,10 +33,10 @@ use ::windows::Win32::UI::HiDpi::{
 use ::windows::Win32::UI::WindowsAndMessaging::{
     CW_USEDEFAULT, CreateWindowExW, DestroyWindow, DispatchMessageW, GWL_EXSTYLE, GWL_STYLE,
     GetClientRect, GetMenu, GetMessageW, GetWindowLongPtrW, MSG, MWMO_INPUTAVAILABLE,
-    MsgWaitForMultipleObjectsEx, PM_REMOVE, PeekMessageW, QS_ALLINPUT, RegisterClassExW, SW_SHOW,
-    SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOZORDER, SetWindowPos, SetWindowTextW, ShowWindow,
-    TranslateAcceleratorW, TranslateMessage, WINDOW_EX_STYLE, WINDOW_STYLE, WM_QUIT, WNDCLASSEXW,
-    WS_OVERLAPPEDWINDOW,
+    MsgWaitForMultipleObjectsEx, PM_REMOVE, PeekMessageW, PostThreadMessageW, QS_ALLINPUT,
+    RegisterClassExW, SW_SHOW, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOZORDER, SetWindowPos,
+    SetWindowTextW, ShowWindow, TranslateAcceleratorW, TranslateMessage, WINDOW_EX_STYLE,
+    WINDOW_STYLE, WM_QUIT, WNDCLASSEXW, WS_OVERLAPPEDWINDOW,
 };
 use ::windows::core::{PCWSTR, w};
 
@@ -42,9 +45,13 @@ use crate::control::{ControlFlow, PlatformError, WindowConfig, WindowId};
 use crate::event::{Appearance, CursorIcon, PointerButtons, PointerKind, RawEvent};
 use crate::handler::AppHandler;
 use crate::menu::Menu;
-use crate::{Instant, LogicalRect, PlatformApp, RawWindowHandle, Window};
+use crate::{Instant, LogicalRect, LoopWaker, PlatformApp, RawWindowHandle, Window};
 
 const CLASS_NAME: PCWSTR = w!("VisoWindowClass");
+
+/// The thread message a [`LoopWaker`] kick posts to end the pump's wait. It
+/// carries nothing; the pump drains `PumpQueue::woken`.
+const WM_WAKE: u32 = ::windows::Win32::UI::WindowsAndMessaging::WM_APP + 2;
 
 /// Events the window procedure produces, drained by the pump between OS
 /// messages, plus the little app-wide state the procedure needs.
@@ -76,6 +83,9 @@ struct PumpQueue {
     appearance: Appearance,
     /// Wheel lines (vertical) and characters (horizontal) per notch.
     wheel: (u32, u32),
+    /// Set by a [`LoopWaker`] kick from any thread; drained as one
+    /// `RawEvent::Wakeup`, by the pump or by a modal loop's drive.
+    woken: Arc<AtomicBool>,
 }
 
 type Shared = Rc<RefCell<PumpQueue>>;
@@ -97,6 +107,9 @@ impl PumpQueue {
     fn next_synthetic(&mut self) -> Option<RawEvent> {
         if let Some(window) = self.redraws.pop_front() {
             return Some(RawEvent::RedrawRequested { window });
+        }
+        if self.woken.swap(false, Ordering::AcqRel) {
+            return Some(RawEvent::Wakeup);
         }
         self.events.pop_front()
     }
@@ -316,6 +329,8 @@ pub struct WinApp {
     next_window_id: u32,
     windows: Vec<WinWindow>,
     class_registered: bool,
+    /// The thread that created the app and runs its pump.
+    ui_thread: u32,
 }
 
 impl WinApp {
@@ -337,6 +352,8 @@ impl WinApp {
             next_window_id: 1,
             windows: Vec::new(),
             class_registered: false,
+            // SAFETY: reads the calling thread's id; no arguments.
+            ui_thread: unsafe { GetCurrentThreadId() },
         })
     }
 
@@ -557,6 +574,18 @@ impl PlatformApp for WinApp {
 
     fn request_redraw(&mut self, window: WindowId) {
         self.shared.borrow_mut().push_redraw(window);
+    }
+
+    fn loop_waker(&self) -> LoopWaker {
+        let woken = self.shared.borrow().woken.clone();
+        let thread = self.ui_thread;
+        LoopWaker::new(move || {
+            woken.store(true, Ordering::Release);
+            // SAFETY: posts a payload-free message to the pump's thread
+            // queue; any thread may. A failure (the thread has exited)
+            // leaves nothing to wake.
+            let _ = unsafe { PostThreadMessageW(thread, WM_WAKE, WPARAM(0), LPARAM(0)) };
+        })
     }
 
     fn set_menu(&mut self, menu: &Menu) {

@@ -28,8 +28,11 @@ use std::collections::VecDeque;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::ptr::NonNull;
 use std::rc::Rc;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
-use super::macos_access::{MacAccess, Sink};
+use super::macos_access::{MacAccess, Sink, wake_pump};
+use super::main_queue::post_to_main;
 use super::memory_pressure::MemoryPressure;
 
 use objc2::rc::{Retained, autoreleasepool};
@@ -60,7 +63,7 @@ use crate::event::{
 };
 use crate::handler::AppHandler;
 use crate::menu::{Accel, Menu, SystemAction};
-use crate::{PlatformApp, Window};
+use crate::{LoopWaker, PlatformApp, Window};
 
 /// Events the delegate/view produce, drained by the pump between OS events.
 #[derive(Default)]
@@ -87,6 +90,23 @@ struct PumpQueue {
     /// a change (every view's `viewDidChangeEffectiveAppearance`, the workspace
     /// accessibility notification) emit one `AppearanceChanged` per real change.
     appearance: Appearance,
+    /// Set by a [`LoopWaker`] kick from any thread; drained as one
+    /// `RawEvent::Wakeup`.
+    woken: Arc<AtomicBool>,
+}
+
+impl PumpQueue {
+    /// The next synthetic event: redraw beats first, then a pending wake,
+    /// then the delegate/view queue.
+    fn pop(&mut self) -> Option<RawEvent> {
+        if let Some(w) = self.redraws.pop_front() {
+            return Some(RawEvent::RedrawRequested { window: w });
+        }
+        if self.woken.swap(false, Ordering::AcqRel) {
+            return Some(RawEvent::Wakeup);
+        }
+        self.events.pop_front()
+    }
 }
 
 /// Shared state the delegate/view mutate and the pump reads. `Rc<RefCell<..>>`
@@ -187,11 +207,7 @@ impl MacApp {
 
     /// Pull the next queued synthetic event (delegate/view-produced), if any.
     fn next_synthetic(&self) -> Option<RawEvent> {
-        let mut q = self.shared.borrow_mut();
-        if let Some(w) = q.redraws.pop_front() {
-            return Some(RawEvent::RedrawRequested { window: w });
-        }
-        q.events.pop_front()
+        self.shared.borrow_mut().pop()
     }
 }
 
@@ -219,14 +235,7 @@ impl Drop for DriveGuard {
 /// pump's own `handler.handle` is parked, so the `&mut` reborrow is unaliased.
 unsafe fn drain_and_drive(mut handler: NonNull<dyn AppHandler>, shared: &Shared) {
     loop {
-        let event = {
-            let mut q = shared.borrow_mut();
-            if let Some(w) = q.redraws.pop_front() {
-                Some(RawEvent::RedrawRequested { window: w })
-            } else {
-                q.events.pop_front()
-            }
-        };
+        let event = shared.borrow_mut().pop();
         let Some(event) = event else { break };
         // SAFETY: see the function contract — the pointer is live and unaliased
         // for the duration of this call (the pump's own `handler.handle` is
@@ -511,6 +520,19 @@ impl PlatformApp for MacApp {
 
     fn request_redraw(&mut self, window: WindowId) {
         self.shared.borrow_mut().redraws.push_back(window);
+    }
+
+    fn loop_waker(&self) -> LoopWaker {
+        extern "C" fn kick(_: *mut std::ffi::c_void) {
+            // A pump blocked in `nextEventMatchingMask:` returns only for an
+            // event, so post one; the pump then drains the flag.
+            let _ = catch_unwind(wake_pump);
+        }
+        let woken = self.shared.borrow().woken.clone();
+        LoopWaker::new(move || {
+            woken.store(true, Ordering::Release);
+            post_to_main(kick);
+        })
     }
 
     fn set_menu(&mut self, menu: &Menu) {

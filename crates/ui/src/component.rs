@@ -9,6 +9,9 @@
 //! (read by measure/layout/paint). This is the data-oriented internal that
 //! backs the object-oriented external API.
 
+use std::any::Any;
+use std::rc::Rc;
+
 use crate::animation::TranslateAnim;
 use crate::binding::BindingTable;
 use crate::content::{Content, TextRequest};
@@ -24,10 +27,12 @@ use crate::reactive::{ComputeCx, EffectStore, SemanticProjector};
 use crate::semantics::{Role, SemanticState, Semantics, SemanticsNode, SemanticsTree};
 use crate::state::{StateId, StateStore, StateValue};
 use crate::style::{BoxStyle, InteractionStyle, StyleId};
+use crate::task::{Continuation, TaskOps};
 use crate::timer::TimerRequest;
 use crate::token::Theme;
 use crate::window::{ChromeContext, WindowOpenRequest};
 use viso_render::{PathCmd, Rect, Rgba, Stroke, TextureId};
+use viso_runtime::{LoopWaker, TaskSet};
 
 /// The application entry into the tree: a component declares its children into
 /// the [`BuildCx`]. This slice has no reactive state, so `build` takes `&self`;
@@ -406,6 +411,13 @@ pub struct NodeStore {
     /// per caption), so a `Vec<NodeId>` beats a per-node flag column that the
     /// facade would have to sweep the whole arena to read.
     draggable_regions: Vec<NodeId>,
+    /// Cold: the UI tasks handlers spawned, each owned by the node whose
+    /// handler spawned it. Empty in the common tree, and then no free or frame
+    /// touches it.
+    tasks: TaskSet<Option<Continuation>, NodeId>,
+    /// Cold: the session's service registry, type-erased because this tier
+    /// cannot name it, lent to each dispatch's [`EventCx`].
+    services: Option<Rc<dyn Any>>,
 }
 
 impl NodeStore {
@@ -454,6 +466,7 @@ impl NodeStore {
         self.hovered = None;
         self.focus_scope = None;
         self.draggable_regions.clear();
+        self.tasks.clear();
     }
 
     /// The arena backing the tree.
@@ -1294,6 +1307,61 @@ impl NodeStore {
         out.append(&mut self.timer_requests);
     }
 
+    /// Point this store's tasks at the loop `waker` and lend `services` to
+    /// every dispatch. The driver calls it once, before any handler spawns; a
+    /// store that already holds tasks keeps its waker.
+    #[doc(hidden)]
+    pub fn __install_task_host(&mut self, waker: LoopWaker, services: Option<Rc<dyn Any>>) {
+        if self.tasks.is_empty() {
+            self.tasks = TaskSet::new(waker);
+        }
+        self.services = services;
+    }
+
+    /// The service registry lent to dispatches, type-erased.
+    #[doc(hidden)]
+    pub fn __services(&self) -> Option<&dyn Any> {
+        self.services.as_deref()
+    }
+
+    /// Apply the task spawns and cancellations `node`'s handler recorded. A
+    /// spawn for a node freed since is dropped unpolled.
+    pub fn apply_task_ops(&mut self, node: NodeId, ops: TaskOps) {
+        if self.arena.is_live(node) {
+            for (id, future) in ops.spawns {
+                self.tasks.spawn(id, node, future);
+            }
+        }
+        for id in ops.cancels {
+            self.tasks.cancel(id);
+        }
+    }
+
+    /// Whether a task is due a poll: spawned or woken since the last
+    /// [`poll_tasks`](Self::poll_tasks).
+    #[inline]
+    pub fn tasks_woken(&self) -> bool {
+        self.tasks.is_woken()
+    }
+
+    /// Poll the due tasks and push each finished one's continuation onto
+    /// `out` (`None` for a task that writes nothing back).
+    pub fn poll_tasks(&mut self, out: &mut Vec<Option<Continuation>>) {
+        self.tasks.poll(out);
+    }
+
+    /// The number of live tasks.
+    pub fn task_count(&self) -> usize {
+        self.tasks.len()
+    }
+
+    /// Drop every task `node` owns.
+    fn cancel_tasks_for(&mut self, node: NodeId) {
+        if !self.tasks.is_empty() {
+            self.tasks.cancel_where(|owner| owner == node);
+        }
+    }
+
     /// Enqueue a window-open request the router drained off an
     /// [`EventCx`](crate::context::EventCx) this frame. It sits in the store's
     /// transient handoff buffer until the facade drains it with
@@ -1668,6 +1736,7 @@ impl NodeStore {
                 c = next;
             }
             effects.cancel_for_node(node);
+            self.cancel_tasks_for(node);
             if self.arena.free(node) {
                 freed += 1;
             }
@@ -1717,6 +1786,7 @@ impl NodeStore {
         let mut freed = self.free_subtree(old, effects, scratch);
         self.arena.detach_child(old);
         effects.cancel_for_node(old);
+        self.cancel_tasks_for(old);
         if self.arena.free(old) {
             freed += 1;
         }

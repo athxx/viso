@@ -8,7 +8,7 @@
 
 use std::time::Duration;
 
-use viso_platform::Instant;
+use viso_platform::{Instant, LoopWaker};
 
 use viso_platform::{
     Appearance, CursorIcon, LogicalRect, PlatformApp, PlatformError, RawWindowHandle, WindowConfig,
@@ -233,6 +233,11 @@ impl<'a> RuntimeCx<'a> {
     /// [`PlatformApp::framed_windows`](viso_platform::PlatformApp::framed_windows).
     pub fn framed_windows(&self) -> bool {
         self.app.framed_windows()
+    }
+
+    /// A handle that kicks this loop from any thread.
+    pub fn loop_waker(&self) -> LoopWaker {
+        self.app.loop_waker()
     }
 }
 

@@ -23,6 +23,7 @@ pub mod input;
 pub mod phase;
 pub mod schedule;
 pub mod scheduler;
+pub mod task;
 
 pub use clock::{FixedStepClock, FrameClock, ManualClock, WallClock};
 pub use context::RuntimeCx;
@@ -35,4 +36,5 @@ pub use input::{
 pub use phase::FramePhase;
 pub use schedule::{FrameDecision, RedrawReason, RedrawReasons};
 pub use scheduler::Scheduler;
-pub use viso_platform::{Appearance, ColorScheme, CursorIcon, Insets, Instant};
+pub use task::{TaskId, TaskSet};
+pub use viso_platform::{Appearance, ColorScheme, CursorIcon, Insets, Instant, LoopWaker};

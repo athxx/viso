@@ -84,6 +84,10 @@ struct Loop {
     timeout: Cell<Option<i32>>,
     on_frame: Closure<dyn FnMut(f64)>,
     on_timeout: Closure<dyn FnMut()>,
+    /// A [`LoopWaker`](crate::LoopWaker) kick is queued as a zero-delay
+    /// timeout; later kicks before it runs add nothing.
+    kicked: Cell<bool>,
+    on_kick: Closure<dyn FnMut()>,
     /// The last `CopyRequested` answer (`Some(None)`: nothing to copy), kept
     /// for the `copy`/`cut` event that follows the shortcut's key press.
     copied: RefCell<Option<Option<String>>>,
@@ -103,6 +107,8 @@ thread_local! {
         timeout: Cell::new(None),
         on_frame: Closure::new(|_: f64| animation_frame()),
         on_timeout: Closure::new(wake),
+        kicked: Cell::new(false),
+        on_kick: Closure::new(kicked),
         copied: RefCell::new(None),
         page: RefCell::new(None),
     };
@@ -228,6 +234,30 @@ fn animation_frame() {
 
 fn wake() {
     LOOP.with(|l| l.timeout.set(None));
+    push(RawEvent::Wakeup);
+    drive();
+}
+
+/// Queue a `Wakeup` from a [`LoopWaker`](crate::LoopWaker) kick. The kick
+/// runs on the page's thread (the module is single-threaded), but may run
+/// inside a drain, so the wake goes out through the event loop.
+fn kick() {
+    if LOOP.with(|l| l.kicked.replace(true)) {
+        return;
+    }
+    let queued = LOOP.with(|l| {
+        dom_window().set_timeout_with_callback_and_timeout_and_arguments_0(
+            l.on_kick.as_ref().unchecked_ref(),
+            0,
+        )
+    });
+    if queued.is_err() {
+        LOOP.with(|l| l.kicked.set(false));
+    }
+}
+
+fn kicked() {
+    LOOP.with(|l| l.kicked.set(false));
     push(RawEvent::Wakeup);
     drive();
 }
@@ -848,6 +878,10 @@ impl PlatformApp for WebApp {
 
     fn framed_windows(&self) -> bool {
         false
+    }
+
+    fn loop_waker(&self) -> crate::LoopWaker {
+        crate::LoopWaker::new(kick)
     }
 }
 

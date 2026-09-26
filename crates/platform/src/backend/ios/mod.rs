@@ -459,6 +459,14 @@ impl PlatformApp for IosApp {
     fn framed_windows(&self) -> bool {
         false
     }
+
+    fn loop_waker(&self) -> crate::LoopWaker {
+        extern "C" fn kick(_: *mut std::ffi::c_void) {
+            push(RawEvent::Wakeup);
+            drive();
+        }
+        crate::LoopWaker::new(|| super::main_queue::post_to_main(kick))
+    }
 }
 
 pub struct IosWindow {

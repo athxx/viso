@@ -23,6 +23,11 @@ pub trait FrameClock {
     /// The current instant. The scheduler diffs consecutive samples to derive
     /// the per-frame delta.
     fn now(&mut self) -> Instant;
+
+    /// The instant the next [`now`](Self::now) would return, without
+    /// consuming a read. An out-of-frame check (is a timer due?) reads this so
+    /// it does not step a clock that advances per read.
+    fn peek(&self) -> Instant;
 }
 
 /// The production clock: reads the real monotonic clock. Zero state, one
@@ -33,6 +38,11 @@ pub struct WallClock;
 impl FrameClock for WallClock {
     #[inline]
     fn now(&mut self) -> Instant {
+        Instant::now()
+    }
+
+    #[inline]
+    fn peek(&self) -> Instant {
         Instant::now()
     }
 }
@@ -66,6 +76,11 @@ impl ManualClock {
 impl FrameClock for ManualClock {
     #[inline]
     fn now(&mut self) -> Instant {
+        self.cursor
+    }
+
+    #[inline]
+    fn peek(&self) -> Instant {
         self.cursor
     }
 }
@@ -110,6 +125,15 @@ impl FrameClock for FixedStepClock {
         }
         self.cursor
     }
+
+    #[inline]
+    fn peek(&self) -> Instant {
+        if self.started {
+            self.cursor + self.step
+        } else {
+            self.cursor
+        }
+    }
 }
 
 #[cfg(test)]
@@ -148,6 +172,22 @@ mod tests {
             step * 2,
             "each further read adds another dt"
         );
+    }
+
+    #[test]
+    fn peek_is_the_next_read_and_does_not_step() {
+        let base = Instant::now();
+        let step = Duration::from_millis(16);
+        let mut clock = FixedStepClock::new(base, step);
+        assert_eq!(
+            clock.peek(),
+            base,
+            "before the first read, peek is the base"
+        );
+        assert_eq!(clock.now(), base);
+        assert_eq!(clock.peek(), base + step, "peek names the next read");
+        assert_eq!(clock.peek(), base + step, "peeking twice does not step");
+        assert_eq!(clock.now(), base + step);
     }
 
     #[test]

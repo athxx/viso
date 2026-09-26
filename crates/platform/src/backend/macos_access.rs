@@ -95,7 +95,7 @@ impl ActionHandler for Requests {
 /// Post an application-defined event so a pump blocked in
 /// `nextEventMatchingMask:` returns and drains the queue. AppKit answers
 /// accessibility queries inside that call without returning from it.
-fn wake_pump() {
+pub(super) fn wake_pump() {
     let Some(mtm) = MainThreadMarker::new() else {
         return;
     };

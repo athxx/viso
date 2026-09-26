@@ -732,10 +732,11 @@ fn pointer_dispatch(
     let Some(mut handler) = store.take_handler(node) else {
         return Dispatched::default();
     };
-    let (capture, focus, scope, hidden, anims, timers, opens, closes, edits, stop) = {
+    let (capture, focus, scope, hidden, anims, timers, opens, closes, edits, stop, tasks) = {
         let mut ev = EventCx::__new_pointer(states, bindings, event);
         ev.__set_pointer_id(pointer);
         ev.__set_focused(store.focused());
+        ev.__set_services(store.__services());
         handler(&mut ev);
         (
             ev.__take_capture_request(),
@@ -748,9 +749,11 @@ fn pointer_dispatch(
             ev.__take_window_closes(),
             ev.__take_edits(),
             ev.__stop_requested(),
+            ev.__take_tasks(),
         )
     };
     store.restore_handler(node, handler);
+    store.apply_task_ops(node, tasks);
     // A pointer handler cannot reach the driver-owned edit registry; its
     // click-to-place and drag-select intents wait on the store for reconcile.
     for intent in edits {
@@ -807,10 +810,11 @@ fn hover_dispatch(
         buttons: PointerButtons::NONE,
         modifiers: sample.modifiers,
     };
-    let (capture, focus, scope, hidden, anims, timers, opens, closes, _stop) = {
+    let (capture, focus, scope, hidden, anims, timers, opens, closes, _stop, tasks) = {
         let mut ev = EventCx::__new_pointer(states, bindings, &event);
         ev.__set_pointer_id(pointer);
         ev.__set_focused(store.focused());
+        ev.__set_services(store.__services());
         handler(&mut ev);
         (
             ev.__take_capture_request(),
@@ -822,9 +826,11 @@ fn hover_dispatch(
             ev.__take_window_opens(),
             ev.__take_window_closes(),
             ev.__stop_requested(),
+            ev.__take_tasks(),
         )
     };
     store.restore_handler(node, handler);
+    store.apply_task_ops(node, tasks);
     // A hover handler that grabs the pointer from another node is not an
     // arbitration the router honors: hover never steals a live contact.
     let _ = apply_pointer_side_effects(
@@ -1140,9 +1146,10 @@ fn key_dispatch(
     let Some(mut handler) = store.take_key_handler(node) else {
         return Dispatched::default();
     };
-    let (request, stop, recorded, hidden, scope, anims, timers, opens, closes) = {
+    let (request, stop, recorded, hidden, scope, anims, timers, opens, closes, tasks) = {
         let mut cx = EventCx::__new_key(states, bindings, ev);
         cx.__set_focused(store.focused());
+        cx.__set_services(store.__services());
         handler(&mut cx);
         (
             cx.__take_focus_request(),
@@ -1154,9 +1161,11 @@ fn key_dispatch(
             cx.__take_timer_requests(),
             cx.__take_window_opens(),
             cx.__take_window_closes(),
+            cx.__take_tasks(),
         )
     };
     store.restore_key_handler(node, handler);
+    store.apply_task_ops(node, tasks);
     queue_edits(edits, node, recorded);
     if let Some(target) = request {
         apply_focus(store, store.focused(), target);
@@ -1219,12 +1228,13 @@ fn key_handler_dispatch(
     let Some(mut handler) = store.take_key_handler(node) else {
         return Dispatched::default();
     };
-    let (request, stop, recorded, hidden, scope, anims, timers, opens, closes) = {
+    let (request, stop, recorded, hidden, scope, anims, timers, opens, closes, tasks) = {
         let mut cx = match payload {
             KeyPayload::Ime(ev) => EventCx::__new_ime(states, bindings, ev),
             KeyPayload::TextChange(text) => EventCx::__new_text_change(states, bindings, text),
         };
         cx.__set_focused(store.focused());
+        cx.__set_services(store.__services());
         handler(&mut cx);
         (
             cx.__take_focus_request(),
@@ -1236,9 +1246,11 @@ fn key_handler_dispatch(
             cx.__take_timer_requests(),
             cx.__take_window_opens(),
             cx.__take_window_closes(),
+            cx.__take_tasks(),
         )
     };
     store.restore_key_handler(node, handler);
+    store.apply_task_ops(node, tasks);
     queue_edits(edits, node, recorded);
     if let Some(target) = request {
         apply_focus(store, store.focused(), target);
@@ -3161,5 +3173,226 @@ mod contact_tests {
             s.log(),
             vec![(9, PointerPhase::Move), (0, PointerPhase::Leave)]
         );
+    }
+}
+
+#[cfg(test)]
+mod task_tests {
+    use super::*;
+    use crate::component::{BuildCx, FlexStyle, LeafStyle};
+    use crate::context::UpdateCx;
+    use crate::layout::Size;
+    use crate::state::StateValue;
+    use std::cell::RefCell;
+    use std::rc::Rc;
+    use viso_render::Rect;
+
+    fn down(x: f32, y: f32) -> PointerEvent {
+        PointerEvent {
+            x,
+            y,
+            phase: PointerPhase::Down,
+            buttons: PointerButtons::PRIMARY,
+            modifiers: Modifiers::default(),
+        }
+    }
+
+    /// A 10x10 root over one leaf whose pointer handler is `handler`, laid out.
+    fn task_root(store: &mut NodeStore, handler: impl FnMut(&mut EventCx<'_>) + 'static) -> NodeId {
+        let root = {
+            let mut cx = BuildCx::new(store);
+            cx.flex(
+                FlexStyle {
+                    size: Size::fixed(10.0, 10.0),
+                    ..Default::default()
+                },
+                |cx| {
+                    let h = cx.leaf(LeafStyle {
+                        size: Size::fixed(10.0, 10.0),
+                        ..Default::default()
+                    });
+                    cx.on_pointer(h, handler);
+                },
+            );
+            cx.root().unwrap()
+        };
+        let mut scratch = Vec::new();
+        store.layout(
+            root,
+            Rect {
+                x: 0.0,
+                y: 0.0,
+                w: 10.0,
+                h: 10.0,
+            },
+            &mut scratch,
+        );
+        root
+    }
+
+    #[test]
+    fn a_task_spawned_by_a_handler_is_owned_by_the_store() {
+        let mut store = NodeStore::new();
+        let mut states = StateStore::new();
+        let bindings = BindingTable::new();
+        let root = task_root(&mut store, |cx| {
+            if cx.pointer().is_some_and(|p| p.phase == PointerPhase::Down) {
+                cx.spawn(std::future::pending());
+            }
+        });
+        assert!(!store.tasks_woken());
+        let mut chain = Vec::new();
+        route_pointer(
+            &mut store,
+            &mut states,
+            &bindings,
+            root,
+            down(5.0, 5.0),
+            &mut chain,
+        );
+        assert_eq!(store.task_count(), 1);
+        assert!(store.tasks_woken(), "a fresh task is due its first poll");
+        let mut out = Vec::new();
+        store.poll_tasks(&mut out);
+        assert!(out.is_empty());
+        assert!(!store.tasks_woken());
+        assert_eq!(store.task_count(), 1);
+    }
+
+    #[test]
+    fn a_finished_task_hands_its_continuation_a_state_write() {
+        let mut store = NodeStore::new();
+        let mut states = StateStore::new();
+        let bindings = BindingTable::new();
+        let count = states.alloc(StateValue::Int(0));
+        let root = task_root(&mut store, move |cx| {
+            if cx.pointer().is_some_and(|p| p.phase == PointerPhase::Down) {
+                cx.spawn_then(async { 7 }, move |cx, v: i32| {
+                    cx.set(count, StateValue::Int(v));
+                });
+            }
+        });
+        let mut chain = Vec::new();
+        route_pointer(
+            &mut store,
+            &mut states,
+            &bindings,
+            root,
+            down(5.0, 5.0),
+            &mut chain,
+        );
+        assert!(
+            !states.has_pending(),
+            "nothing is written before the task runs"
+        );
+        let mut out = Vec::new();
+        store.poll_tasks(&mut out);
+        assert_eq!(store.task_count(), 0);
+        for then in out.drain(..).flatten() {
+            then(&mut UpdateCx::__new(&mut states, &bindings, &mut store));
+        }
+        assert_eq!(states.get(count), Some(StateValue::Int(7)));
+        assert!(states.has_pending());
+    }
+
+    #[test]
+    fn freeing_the_owner_or_clearing_the_store_drops_its_tasks() {
+        let mut store = NodeStore::new();
+        let mut states = StateStore::new();
+        let bindings = BindingTable::new();
+        let spawn = |cx: &mut EventCx<'_>| {
+            if cx.pointer().is_some_and(|p| p.phase == PointerPhase::Down) {
+                cx.spawn(std::future::pending());
+            }
+        };
+        let root = task_root(&mut store, spawn);
+        let mut chain = Vec::new();
+        route_pointer(
+            &mut store,
+            &mut states,
+            &bindings,
+            root,
+            down(5.0, 5.0),
+            &mut chain,
+        );
+        assert_eq!(store.task_count(), 1);
+        let mut effects = crate::reactive::EffectStore::new();
+        store.free_subtree(root, &mut effects, &mut Vec::new());
+        assert_eq!(store.task_count(), 0);
+
+        let root = task_root(&mut store, spawn);
+        route_pointer(
+            &mut store,
+            &mut states,
+            &bindings,
+            root,
+            down(5.0, 5.0),
+            &mut chain,
+        );
+        assert_eq!(store.task_count(), 1);
+        store.clear();
+        assert_eq!(store.task_count(), 0);
+    }
+
+    #[test]
+    fn a_handler_cancels_the_task_it_spawned() {
+        let mut store = NodeStore::new();
+        let mut states = StateStore::new();
+        let bindings = BindingTable::new();
+        let spawned = Rc::new(RefCell::new(None));
+        let slot = spawned.clone();
+        let root = task_root(&mut store, move |cx| match cx.pointer().map(|p| p.phase) {
+            Some(PointerPhase::Down) => *slot.borrow_mut() = Some(cx.spawn(std::future::pending())),
+            Some(PointerPhase::Up) => {
+                if let Some(id) = slot.borrow_mut().take() {
+                    cx.cancel_task(id);
+                }
+            }
+            _ => {}
+        });
+        let mut chain = Vec::new();
+        route_pointer(
+            &mut store,
+            &mut states,
+            &bindings,
+            root,
+            down(5.0, 5.0),
+            &mut chain,
+        );
+        assert_eq!(store.task_count(), 1);
+        let up = PointerEvent {
+            phase: PointerPhase::Up,
+            buttons: PointerButtons::NONE,
+            ..down(5.0, 5.0)
+        };
+        route_pointer(&mut store, &mut states, &bindings, root, up, &mut chain);
+        assert_eq!(store.task_count(), 0);
+        assert!(spawned.borrow().is_none());
+    }
+
+    #[test]
+    fn a_handler_reads_the_services_the_store_lends() {
+        let mut store = NodeStore::new();
+        let mut states = StateStore::new();
+        let bindings = BindingTable::new();
+        store.__install_task_host(viso_runtime::LoopWaker::inert(), Some(Rc::new(42u32)));
+        let seen = Rc::new(RefCell::new(None));
+        let sink = seen.clone();
+        let root = task_root(&mut store, move |cx| {
+            *sink.borrow_mut() = cx
+                .__services()
+                .and_then(|s| s.downcast_ref::<u32>())
+                .copied();
+        });
+        let mut chain = Vec::new();
+        route_pointer(
+            &mut store,
+            &mut states,
+            &bindings,
+            root,
+            down(5.0, 5.0),
+            &mut chain,
+        );
+        assert_eq!(*seen.borrow(), Some(42));
     }
 }

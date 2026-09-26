@@ -10,6 +10,8 @@
 //! stable contract before the real capabilities are filled in.
 
 use core::marker::PhantomData;
+use std::any::Any;
+use std::future::Future;
 
 use crate::animation::TranslateAnim;
 use crate::binding::BindingTable;
@@ -17,6 +19,7 @@ use crate::component::NodeStore;
 use crate::input::{ImeEvent, KeyEvent, PointerEvent, PointerId};
 use crate::node::NodeId;
 use crate::state::{StateId, StateStore, StateValue};
+use crate::task::{self, TaskId, TaskOps};
 use crate::text_edit::EditIntent;
 use crate::timer::TimerRequest;
 use crate::window::{WindowConfig, WindowIdSlot, WindowOpenRequest};
@@ -305,6 +308,13 @@ pub struct EventCx<'a> {
     /// was focused. A modal reads it on open to remember where to send focus back
     /// when it closes (the WAI-ARIA dialog focus-restore contract).
     focused: Option<NodeId>,
+    /// Tasks a handler spawned or cancelled this dispatch, handed by the router
+    /// to the node store under the dispatching node after the handler returns.
+    /// Empty (and allocation-free) for the common dispatch that spawns nothing.
+    tasks: TaskOps,
+    /// The session's service registry, type-erased; `None` on a store the
+    /// driver lent none.
+    services: Option<&'a dyn Any>,
 }
 
 impl<'a> EventCx<'a> {
@@ -332,6 +342,8 @@ impl<'a> EventCx<'a> {
             focused: None,
             pointer_id: PointerId::MOUSE,
             text_change: None,
+            tasks: TaskOps::default(),
+            services: None,
         }
     }
 
@@ -363,6 +375,8 @@ impl<'a> EventCx<'a> {
             focused: None,
             pointer_id: PointerId::MOUSE,
             text_change: None,
+            tasks: TaskOps::default(),
+            services: None,
         }
     }
 
@@ -393,6 +407,8 @@ impl<'a> EventCx<'a> {
             focused: None,
             pointer_id: PointerId::MOUSE,
             text_change: None,
+            tasks: TaskOps::default(),
+            services: None,
         }
     }
 
@@ -423,6 +439,8 @@ impl<'a> EventCx<'a> {
             focused: None,
             pointer_id: PointerId::MOUSE,
             text_change: None,
+            tasks: TaskOps::default(),
+            services: None,
         }
     }
 
@@ -437,6 +455,61 @@ impl<'a> EventCx<'a> {
         let mut cx = Self::__new(states, bindings);
         cx.text_change = Some(text);
         cx
+    }
+
+    /// Run `future` on the UI thread as a task owned by the dispatching node:
+    /// unmounting the node drops it. The first poll comes at the next frame
+    /// boundary, and later polls whenever its waker fires, from any thread.
+    /// Hold no borrow of UI state across its `.await`s; to write state when it
+    /// finishes, use [`spawn_then`](Self::spawn_then).
+    pub fn spawn(&mut self, future: impl Future<Output = ()> + 'static) -> TaskId {
+        let id = TaskId::fresh();
+        self.tasks.spawns.push((id, task::detached(future)));
+        id
+    }
+
+    /// Run `future` like [`spawn`](Self::spawn), then hand its output to
+    /// `then` with an [`UpdateCx`] at the frame boundary after it finishes.
+    ///
+    /// ```ignore
+    /// let picked = cx.services().files().open(OpenOptions::default());
+    /// cx.spawn_then(picked, move |cx, files| {
+    ///     cx.set(count, StateValue::Int(files.map_or(0, |f| f.len() as i32)));
+    /// });
+    /// ```
+    pub fn spawn_then<T: 'static>(
+        &mut self,
+        future: impl Future<Output = T> + 'static,
+        then: impl FnOnce(&mut UpdateCx<'_>, T) + 'static,
+    ) -> TaskId {
+        let id = TaskId::fresh();
+        self.tasks.spawns.push((id, task::then(future, then)));
+        id
+    }
+
+    /// Drop task `id`, spawned by any handler of this tree. Its future is
+    /// dropped and its continuation never runs; a finished or unknown id is a
+    /// no-op.
+    pub fn cancel_task(&mut self, id: TaskId) {
+        self.tasks.cancels.push(id);
+    }
+
+    /// Lend the session's type-erased service registry to this dispatch.
+    #[doc(hidden)]
+    pub fn __set_services(&mut self, services: Option<&'a dyn Any>) {
+        self.services = services;
+    }
+
+    /// The session's type-erased service registry, if one was lent.
+    #[doc(hidden)]
+    pub fn __services(&self) -> Option<&'a dyn Any> {
+        self.services
+    }
+
+    /// Move out the task spawns and cancellations this dispatch recorded.
+    #[doc(hidden)]
+    pub fn __take_tasks(&mut self) -> TaskOps {
+        std::mem::take(&mut self.tasks)
     }
 
     /// Read the current value of a state cell. `None` for a stale handle.

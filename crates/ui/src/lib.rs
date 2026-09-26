@@ -27,6 +27,7 @@ pub mod reactive;
 pub mod semantics;
 pub mod state;
 pub mod style;
+pub mod task;
 pub mod text_edit;
 pub mod timer;
 pub mod token;
@@ -75,6 +76,7 @@ pub use reactive::{
 pub use semantics::{Role, SemanticState, Semantics, SemanticsNode, SemanticsTree};
 pub use state::{StateId, StateStore, StateValue};
 pub use style::{BoxStyle, InteractionStyle, StyleId};
+pub use task::{Continuation, TaskId, TaskOps};
 pub use text_edit::{Buffer, EditGeometry, EditIntent, EditLayout, Motion, TextEdits};
 pub use timer::{TimerId, TimerRegistry, TimerRequest};
 pub use token::{Theme, TokenId, TokenInterner, TokenNamespace};

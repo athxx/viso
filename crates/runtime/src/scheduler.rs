@@ -177,6 +177,18 @@ impl<D: FrameDriver, C: FrameClock> Scheduler<D, C> {
         }
     }
 
+    /// Hand a loop kick to the driver with a live context.
+    fn wakeup(&mut self) {
+        let state_dirty = {
+            let mut cx = RuntimeCx::new(self.app.as_mut(), Duration::ZERO, self.clock.peek());
+            self.driver.on_wakeup(&mut cx);
+            cx.state_dirty_requested()
+        };
+        if state_dirty {
+            self.reasons.add(RedrawReason::StateDirty);
+        }
+    }
+
     /// Hand a window's surface loss or return to the driver with a live
     /// context.
     fn surface(&mut self, window: WindowId, available: bool) {
@@ -306,9 +318,11 @@ impl<D: FrameDriver, C: FrameClock> AppHandler for Scheduler<D, C> {
                 self.open_windows = self.open_windows.saturating_sub(1);
             }
             RawEvent::Wakeup => {
-                // A cross-thread message woke us; treat as async completion so a
-                // frame runs to observe whatever it delivered.
+                // A cross-thread kick woke us; treat as async completion so a
+                // frame runs to observe whatever it delivered, and let the
+                // driver name the windows that frame must cover.
                 self.reasons.add(RedrawReason::AsyncCompletion);
+                self.wakeup();
             }
             RawEvent::Pointer(p) => {
                 // Resolve the window scale here — the scheduler owns the window,
@@ -666,6 +680,47 @@ mod tests {
             driver.frames, 2,
             "the first frame, then the one that publishes the tree"
         );
+    }
+
+    /// A driver that opens one window, kicks its own loop at launch, and asks
+    /// for that window's beat on the wakeup.
+    #[derive(Default)]
+    struct WakeDriver {
+        window: Option<WindowId>,
+        wakeups: u32,
+        frames: u32,
+    }
+
+    impl FrameDriver for WakeDriver {
+        fn on_launch(&mut self, cx: &mut RuntimeCx<'_>) {
+            let window = cx
+                .create_window(viso_platform::WindowConfig::default())
+                .expect("headless window");
+            self.window = Some(window);
+            let waker = cx.loop_waker();
+            std::thread::spawn(move || waker.wake()).join().unwrap();
+        }
+        fn on_geometry(&mut self, _window: WindowId, _scale: f64, _width: u32, _height: u32) {}
+        fn on_input(&mut self, _sample: InputSample) {}
+        fn run_phase(&mut self, phase: FramePhase, _cx: &mut RuntimeCx<'_>) {
+            if phase == FramePhase::Submit {
+                self.frames += 1;
+            }
+        }
+        fn on_wakeup(&mut self, cx: &mut RuntimeCx<'_>) {
+            self.wakeups += 1;
+            if let Some(window) = self.window {
+                cx.request_redraw(window);
+            }
+        }
+    }
+
+    #[test]
+    fn a_loop_kick_reaches_the_driver_and_its_redraw_runs_a_frame() {
+        let app = Box::new(HeadlessApp::scripted(vec![]));
+        let driver = Scheduler::new(app, WakeDriver::default()).run_returning();
+        assert_eq!(driver.wakeups, 1);
+        assert_eq!(driver.frames, 2, "the first frame, then the wakeup's");
     }
 
     /// A driver that records lifecycle events, frames and clipboard traffic,

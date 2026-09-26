@@ -219,4 +219,6 @@ Follow-ups carried forward:
       (ADR 0031. Runtime-verified: Android on the emulator, every call including cancel and
       deny paths; macOS Keychain. Compile-only: Windows, Linux, iOS, Web, and the macOS
       panels, share picker and notifications.)
-- [ ] `cx.services()` on the phase contexts, once the UI task protocol lands.
+- [x] `cx.services()` on the phase contexts, once the UI task protocol lands.
+      (ADR 0032. `EventCx` only: `spawn`, `spawn_then`, `cancel_task`, `services()`.
+      Other contexts deferred. Headless-verified; native kick delivery is compile-only.)

@@ -19,6 +19,9 @@ mod macos_access;
 #[cfg(target_os = "macos")]
 mod memory_pressure;
 
+#[cfg(any(target_os = "macos", target_os = "ios"))]
+mod main_queue;
+
 #[cfg(target_os = "windows")]
 pub mod windows;
 

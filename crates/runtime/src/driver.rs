@@ -127,6 +127,12 @@ pub trait FrameDriver {
     /// and redraws through `cx`. Default no-op.
     fn on_surface(&mut self, _cx: &mut RuntimeCx<'_>, _window: WindowId, _available: bool) {}
 
+    /// The loop was kicked through its [`LoopWaker`](viso_platform::LoopWaker):
+    /// a task woke, or a thread asked for a beat. The driver requests a redraw
+    /// through `cx` for each window with work due, since the kick names none.
+    /// Default no-op.
+    fn on_wakeup(&mut self, _cx: &mut RuntimeCx<'_>) {}
+
     /// Whether the driver wants continuous animation frames right now. When
     /// true, the scheduler keeps requesting redraw beats even with no input.
     fn wants_animation(&self) -> bool {

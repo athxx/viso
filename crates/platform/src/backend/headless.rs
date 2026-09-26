@@ -13,12 +13,14 @@
 //! display link.
 
 use std::collections::VecDeque;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::RawWindowHandle;
 use crate::control::{LogicalRect, PlatformError, WindowConfig, WindowId};
 use crate::event::{Appearance, CursorIcon, RawEvent};
 use crate::handler::AppHandler;
-use crate::{ControlFlow, PlatformApp, Window};
+use crate::{ControlFlow, LoopWaker, PlatformApp, Window};
 
 /// A scriptable, headless [`PlatformApp`].
 pub struct HeadlessApp {
@@ -33,6 +35,9 @@ pub struct HeadlessApp {
     clipboard: Option<String>,
     appearance: Appearance,
     framed_windows: bool,
+    /// Set by a [`LoopWaker`] kick from any thread; delivered as one
+    /// [`RawEvent::Wakeup`] ahead of the script.
+    woken: Arc<AtomicBool>,
 }
 
 impl HeadlessApp {
@@ -46,6 +51,7 @@ impl HeadlessApp {
             clipboard: None,
             appearance: Appearance::default(),
             framed_windows: true,
+            woken: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -115,6 +121,9 @@ impl HeadlessApp {
     fn next_event(&mut self) -> Option<RawEvent> {
         if let Some(w) = self.pending_redraws.pop_front() {
             return Some(RawEvent::RedrawRequested { window: w });
+        }
+        if self.woken.swap(false, Ordering::AcqRel) {
+            return Some(RawEvent::Wakeup);
         }
         self.script.pop_front()
     }
@@ -244,6 +253,11 @@ impl PlatformApp for HeadlessApp {
     fn framed_windows(&self) -> bool {
         self.framed_windows
     }
+
+    fn loop_waker(&self) -> LoopWaker {
+        let woken = self.woken.clone();
+        LoopWaker::new(move || woken.store(true, Ordering::Release))
+    }
 }
 
 /// A headless window: pure state, no OS resource.
@@ -353,6 +367,24 @@ mod tests {
         // Unknown windows are ignored.
         app.set_cursor(WindowId(99), CursorIcon::Wait);
         assert_eq!(app.cursor(WindowId(99)), None);
+    }
+
+    #[test]
+    fn a_wake_from_another_thread_delivers_one_wakeup() {
+        let mut app = HeadlessApp::scripted([RawEvent::Resumed]);
+        let waker = app.loop_waker();
+        std::thread::spawn(move || {
+            waker.wake();
+            waker.wake();
+        })
+        .join()
+        .unwrap();
+        let mut rec = Recorder(Vec::new());
+        app.run(&mut rec);
+        assert_eq!(
+            rec.0,
+            vec![RawEvent::AppLaunched, RawEvent::Wakeup, RawEvent::Resumed]
+        );
     }
 
     #[test]
