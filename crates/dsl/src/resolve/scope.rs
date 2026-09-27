@@ -7,6 +7,11 @@
 //! a name across namespaces (`state color` and `record Color` coexist) but a repeat
 //! within one namespace is a collision.
 //!
+//! A component's or system's members (its inputs, state, computed values, events and
+//! callables) live in a member table of their own, keyed by the owner's symbol: two
+//! components may each declare a `count`, and inside a component its members shadow
+//! a module declaration of the same name.
+//!
 //! Local scopes use a dense slot idiom: a `view` block, a `for` body, and a
 //! `fn`/`action`/handler body each open a scope whose bindings are dense **slots**
 //! resolved by walking the scope stack innermost-first. This is a cold-path structure
@@ -53,6 +58,8 @@ pub struct ModuleSymbol {
 #[derive(Debug, Default)]
 pub struct SymbolTable {
     entries: HashMap<(NameId, Namespace), ModuleSymbol>,
+    /// Each component's or system's own member table, by the owner's symbol.
+    members: HashMap<SymbolId, SymbolTable>,
 }
 
 impl SymbolTable {
@@ -91,7 +98,22 @@ impl SymbolTable {
             .map(|(&(name, _), &symbol)| (name, symbol))
     }
 
-    /// The number of defined symbols across all namespaces.
+    /// The member table of the component or system `owner`.
+    pub fn members(&self, owner: SymbolId) -> Option<&SymbolTable> {
+        self.members.get(&owner)
+    }
+
+    /// The member table of `owner`, created empty on first use.
+    pub fn members_mut(&mut self, owner: SymbolId) -> &mut SymbolTable {
+        self.members.entry(owner).or_default()
+    }
+
+    /// Every owner's member table, in no particular order.
+    pub fn member_tables(&self) -> impl Iterator<Item = (SymbolId, &SymbolTable)> + '_ {
+        self.members.iter().map(|(&owner, table)| (owner, table))
+    }
+
+    /// The number of defined symbols across all namespaces, members excluded.
     pub fn len(&self) -> usize {
         self.entries.len()
     }

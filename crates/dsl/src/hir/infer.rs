@@ -55,6 +55,17 @@ pub struct FieldInfo {
     pub declared_at: TextRange,
 }
 
+/// One event a component declares.
+#[derive(Debug, Clone, PartialEq)]
+pub struct EventInfo {
+    /// The event's name.
+    pub name: String,
+    /// The event's symbol, whose record fields are its payload.
+    pub symbol: SymbolId,
+    /// The span of the event's name in its declaration.
+    pub declared_at: TextRange,
+}
+
 /// What an enum variant carries.
 #[derive(Debug, Clone, PartialEq)]
 pub enum VariantPayload {
@@ -117,6 +128,17 @@ pub trait TypeEnv {
     /// What kind of declaration the symbol `id` is, when the environment knows it.
     fn symbol_kind(&self, id: SymbolId) -> Option<SymbolKind> {
         let _ = id;
+        None
+    }
+
+    /// The events of the component `component`, when the environment knows it.
+    fn component_events(&self, component: SymbolId) -> Option<&[EventInfo]> {
+        let _ = component;
+        None
+    }
+
+    /// The component whose body is being typed, when there is one.
+    fn enclosing_component(&self) -> Option<SymbolId> {
         None
     }
 }

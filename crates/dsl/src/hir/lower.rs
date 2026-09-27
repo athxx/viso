@@ -36,7 +36,7 @@ use crate::syntax::{SyntaxKind, SyntaxNode, TextRange};
 use super::capability::{CapabilityNode, CapabilitySet, propagate};
 use super::component::{MemberEnv, lower_component};
 use super::effect::{BodyContext, EffectClass, EffectCx, EffectEnv};
-use super::infer::{FieldInfo, InferCx, TypeEnv, VariantInfo, VariantPayload};
+use super::infer::{EventInfo, FieldInfo, InferCx, TypeEnv, VariantInfo, VariantPayload};
 use super::nodes::{ComponentSchema, HirCallable, HirComponent};
 use super::percent::PercentSources;
 use super::reads::ReadEnv;
@@ -643,8 +643,11 @@ struct MemberFacts {
 /// module, built over the resolver's [`SymbolTable`] and references with the facts
 /// precomputed.
 struct ModuleEnv {
-    /// Member name → symbol, both value and event namespaces, for [`MemberEnv::member_symbol`].
-    members: HashMap<String, SymbolId>,
+    /// Owner → member name → symbol, both value and event namespaces, for
+    /// [`MemberEnv::member_symbol`].
+    members: HashMap<SymbolId, HashMap<String, SymbolId>>,
+    /// The events of every component the module declares.
+    events: HashMap<SymbolId, Vec<EventInfo>>,
     /// Symbol → facts, for the type/effect/read trait methods.
     facts: HashMap<SymbolId, MemberFacts>,
     /// Component declaration syntax range → its symbol, so the env can focus on the component
@@ -657,7 +660,7 @@ struct ModuleEnv {
     component: Cell<SymbolId>,
     /// Name token span → the symbol the resolver bound it to, for nominal annotations.
     nominal: HashMap<TextRange, SymbolId>,
-    /// The fields of every record the module declares.
+    /// The fields of every record the module declares, and the payload of every event.
     records: HashMap<SymbolId, Vec<FieldInfo>>,
     /// `const` and record declaration syntax range → its symbol.
     declared: HashMap<TextRange, SymbolId>,
@@ -709,6 +712,14 @@ impl TypeEnv for ModuleEnv {
     fn symbol_kind(&self, id: SymbolId) -> Option<SymbolKind> {
         self.facts.get(&id).map(|f| f.kind)
     }
+
+    fn component_events(&self, component: SymbolId) -> Option<&[EventInfo]> {
+        self.events.get(&component).map(Vec::as_slice)
+    }
+
+    fn enclosing_component(&self) -> Option<SymbolId> {
+        Some(self.component.get())
+    }
 }
 
 impl ViewEnv for ModuleEnv {
@@ -743,7 +754,7 @@ impl EffectEnv for ModuleEnv {
 
 impl MemberEnv for ModuleEnv {
     fn member_symbol(&self, name: &str) -> Option<SymbolId> {
-        self.members.get(name).copied()
+        self.members.get(&self.component.get())?.get(name).copied()
     }
 
     fn component_symbol(&self) -> SymbolId {
@@ -763,6 +774,7 @@ impl ModuleEnv {
     ) -> ModuleEnv {
         let mut env = ModuleEnv {
             members: HashMap::new(),
+            events: HashMap::new(),
             facts: HashMap::new(),
             components: HashMap::new(),
             component: Cell::new(SymbolId::from_parts(0, 0)),
@@ -794,24 +806,32 @@ impl ModuleEnv {
                 Item::Component(c) => {
                     // Record this component's symbol keyed by its declaration span, so the env
                     // can focus on whichever component it is currently lowering (a module may
-                    // declare several). The facts/members maps below stay module-wide.
-                    if let Some(sym) = decl_symbol(table, interner, c.name(), Namespace::Type) {
-                        env.components.insert(c.syntax().text_range(), sym);
-                        env.component.set(sym);
-                        env.type_names.insert(sym, name_of(c.name()));
-                        let inputs = env.inputs_of(c, table, interner);
-                        env.inputs.insert(sym, inputs);
-                    }
+                    // declare several), and its members from its own member table.
+                    let Some(sym) = decl_symbol(table, interner, c.name(), Namespace::Type) else {
+                        continue;
+                    };
+                    env.components.insert(c.syntax().text_range(), sym);
+                    env.component.set(sym);
+                    env.type_names.insert(sym, name_of(c.name()));
+                    let Some(members) = table.members(sym) else {
+                        continue;
+                    };
+                    let inputs = env.inputs_of(c, members, interner);
+                    env.inputs.insert(sym, inputs);
                     for member in c.members() {
-                        env.record_member(&member, table, interner);
+                        env.record_member(sym, &member, members, interner);
                     }
                 }
                 Item::System(s) => {
-                    if let Some(sym) = decl_symbol(table, interner, s.name(), Namespace::Type) {
-                        env.component.set(sym);
-                    }
+                    let Some(sym) = decl_symbol(table, interner, s.name(), Namespace::Type) else {
+                        continue;
+                    };
+                    env.component.set(sym);
+                    let Some(members) = table.members(sym) else {
+                        continue;
+                    };
                     for member in s.members() {
-                        env.record_member(&member, table, interner);
+                        env.record_member(sym, &member, members, interner);
                     }
                 }
                 Item::Record(r) => {
@@ -869,8 +889,15 @@ impl ModuleEnv {
         env
     }
 
-    /// Records one member's name→symbol entry and its facts.
-    fn record_member(&mut self, member: &Member, table: &SymbolTable, interner: &mut NameInterner) {
+    /// Records one member of `owner` (looked up in its member `table`): its
+    /// name→symbol entry, its facts, and an event's payload record.
+    fn record_member(
+        &mut self,
+        owner: SymbolId,
+        member: &Member,
+        table: &SymbolTable,
+        interner: &mut NameInterner,
+    ) {
         let (name_tok, namespace, ty, kind) = match member {
             Member::Input(d) => (
                 d.name(),
@@ -902,7 +929,7 @@ impl ModuleEnv {
                     EffectClass::Read,
                 );
                 if let Some(sym) = sym {
-                    self.members.insert(name_of(d.name()), sym);
+                    self.own(owner, name_of(d.name()), sym);
                 }
                 return;
             }
@@ -917,7 +944,7 @@ impl ModuleEnv {
                     EffectClass::Action,
                 );
                 if let Some(sym) = sym {
-                    self.members.insert(name_of(d.name()), sym);
+                    self.own(owner, name_of(d.name()), sym);
                 }
                 return;
             }
@@ -932,7 +959,7 @@ impl ModuleEnv {
                     EffectClass::Task,
                 );
                 if let Some(sym) = sym {
-                    self.members.insert(name_of(d.name()), sym);
+                    self.own(owner, name_of(d.name()), sym);
                 }
                 return;
             }
@@ -947,7 +974,17 @@ impl ModuleEnv {
         let Some(sym) = table.get(name, namespace).map(|s| s.id) else {
             return;
         };
-        self.members.insert(text, sym);
+        if let Member::Event(d) = member {
+            let fields = self.event_fields(d.syntax());
+            self.records.insert(sym, fields);
+            self.type_names.insert(sym, text.clone());
+            self.events.entry(owner).or_default().push(EventInfo {
+                name: text.clone(),
+                symbol: sym,
+                declared_at: tok.text_range(),
+            });
+        }
+        self.own(owner, text, sym);
         self.facts.insert(
             sym,
             MemberFacts {
@@ -957,6 +994,32 @@ impl ModuleEnv {
                 kind,
             },
         );
+    }
+
+    /// Records `name` as the member `sym` of `owner`.
+    fn own(&mut self, owner: SymbolId, name: String, sym: SymbolId) {
+        self.members.entry(owner).or_default().insert(name, sym);
+    }
+
+    /// An event's parameters, as the fields of its payload record.
+    fn event_fields(&self, decl: &SyntaxNode) -> Vec<FieldInfo> {
+        decl.children()
+            .into_iter()
+            .filter(|c| c.kind() == SyntaxKind::EventParam)
+            .filter_map(|param| {
+                let name = param
+                    .children_with_tokens()
+                    .into_iter()
+                    .filter_map(|e| e.as_token().cloned())
+                    .find(|t| matches!(t.kind(), SyntaxKind::Ident | SyntaxKind::RawIdent))?;
+                Some(FieldInfo {
+                    name: name.text().to_string(),
+                    ty: self.annotation_of(&param),
+                    has_default: false,
+                    declared_at: name.text_range(),
+                })
+            })
+            .collect()
     }
 
     /// Records a `fn`/`action`/`task`: its effect class, and for a `fn` or `action` its
@@ -1958,5 +2021,62 @@ mod tests {
             )),
             ["E2103"]
         );
+    }
+
+    #[test]
+    fn members_of_different_components_do_not_collide() {
+        assert_clean(
+            "const n = \"module\";\n\
+             component A {\n  state n = 0\n  event changed(v: I64);\n  computed m: I64 = n\n  view { }\n}\n\
+             component B {\n  state n = \"b\"\n  event changed(v: String);\n  computed m: String = n\n  view { }\n}",
+        );
+    }
+
+    #[test]
+    fn handlers_type_their_payload_against_the_event() {
+        let stepper =
+            "component Stepper {\n  event changed(value: I64, source: String);\n  view { }\n}\n";
+        let app = |state: &str, handler: &str| {
+            format!(
+                "{stepper}component App {{\n  {state}\n  view {{ Stepper {{ {handler} }} }}\n}}"
+            )
+        };
+        assert_clean(&app("state n = 0", "on changed(ev) { n = ev.value; }"));
+        assert_clean(&app("state n = 0", "on click { n = 1; }"));
+        assert_clean(&app("state n = 0", "on changed { n = 1; }"));
+        assert_eq!(
+            codes(&app("state s = \"\"", "on changed(ev) { s = ev.value; }")),
+            ["E2103"]
+        );
+        let pkg = lower_src(&app("state n = 0", "on chnged(ev) { n = 1; }"));
+        let codes: Vec<_> = pkg.diagnostics.iter().map(|d| d.code).collect();
+        assert_eq!(codes, ["E3202"]);
+        assert_eq!(pkg.diagnostics[0].fixes[0].edits[0].replacement, "changed");
+        // A built-in widget's events are not modeled yet.
+        assert_clean("component App {\n  view { Button { on pressed { } } }\n}");
+    }
+
+    #[test]
+    fn emit_arguments_are_checked_against_the_event() {
+        let src = |body: &str| {
+            format!(
+                "component C {{\n  event changed(value: I64, source: String);\n  action go() {{ {body} }}\n  view {{ Button {{ on click {{ {body} }} }} }}\n}}"
+            )
+        };
+        assert_clean(&src("emit changed(1, \"a\");"));
+        assert_clean(&src("emit changed(source: \"a\", value: 1);"));
+        assert_clean(&src("emit changed(1, source: \"a\");"));
+        let one = |body: &str| {
+            let codes = codes(&src(body));
+            assert_eq!(codes.len(), 2, "{body}: {codes:?}");
+            assert_eq!(codes[0], codes[1]);
+            codes[0]
+        };
+        assert_eq!(one("emit chnged(1, \"a\");"), "E3202");
+        assert_eq!(one("emit changed(1);"), "E3202");
+        assert_eq!(one("emit changed(1, \"a\", 2);"), "E3202");
+        assert_eq!(one("emit changed(1, value: 2, source: \"a\");"), "E3202");
+        assert_eq!(one("emit changed(1, sourc: \"a\");"), "E3202");
+        assert_eq!(one("emit changed(\"a\", \"b\");"), "E2103");
     }
 }

@@ -1546,7 +1546,7 @@ component_member     = { attribute },
 - `input`、`event` 和 `slot` 构成公开 UI 接口；
 - `state`、`computed`、内部 Action 和节点默认是私有实现；
 - Trait 可以要求 Component 实现 Action 或 Fn；
-- 同一 Component 内的成员名称不能在同一 Namespace 冲突；
+- 同一 Component 内的成员名称不能在同一 Namespace 冲突；成员只在所属 Component（System 同理）内可见，不同 Component 可声明同名成员；成员遮蔽同名 Module 声明，局部 Binding 又遮蔽成员；
 - Value Namespace、Type Namespace 和 Event Namespace 分离，但 Formatter 应避免同名造成阅读混乱。
 
 ---
@@ -1684,7 +1684,7 @@ event_parameter      = identifier, ":", type ;
 - Event 参数类型必须可跨 Component Boundary；
 - Event 是否冒泡由 Event Schema 决定；
 - 自定义 Component Event 默认不冒泡；
-- `emit event_name(...)` 的实参与声明进行静态检查；
+- `emit event_name(...)` 只能命名所在 Component 声明的 Event；实参按位置依次、或以 `name: value` 按名称对应 Event 参数，并按参数类型检查（`E2102`/`E2103`）；未知 Event、不存在或重复给出的参数名、多余或缺少的实参报 `E3202`；
 - Event Handler 不能通过返回 Bool 隐式取消事件，必须调用 Event Context 的显式 API。
 
 ```viso
@@ -2017,7 +2017,8 @@ Canvas {
 
 - 不存在 `on click => increment()`；
 - 即使只有一条语句也必须写 Block；
-- Handler 的可选 Pattern 绑定整个 Event Payload；
+- Handler 的可选 Pattern 绑定整个 Event Payload，且必须不可反驳（`E2303`）；自定义 Component Event 的 Payload 是以其参数为字段的 Record；
+- 用户 Component 节点上的 Handler 只能命名标准事件（U7.1）或该 Component 声明的 Event，否则报 `E3202`；
 - 忽略 Payload 时省略括号；
 - Handler 自动运行在 Action Transaction 中；
 - 默认 Phase 由 Event Schema 定义，通常为 Target/Bubble；
@@ -7012,6 +7013,8 @@ parse(format(parse(valid_x))) AST-equivalent
 - 经 `state`/`computed`/`const`/局部绑定/字段访问/Record 默认值到达的 Percent 分量报 `E3104`；经函数调用、比较结果到达的不报；
 - 给 Input/Computed/Const/不可变局部绑定赋值报 `E2110`；
 - `bind` 右侧不是 State Lens 报 `E3107`，无 Converter 时两边类型不同报 `E2103`；`@bindable` 的 Event 不存在或首参数类型不符报 `E3701`；
+- 不同 Component 声明同名成员不冲突，成员遮蔽同名 Module `const`；
+- 用户 Component 节点上的未知 Event、`emit` 未知 Event 或实参与参数不符报 `E3202`；Handler Payload 字段按 Event 参数类型参与推断；
 - `font_size` 中的 `em`/`%` 以父节点字号为基准，其他 Property 以本节点字号为基准。
 
 ---

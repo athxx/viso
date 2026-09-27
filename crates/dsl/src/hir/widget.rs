@@ -238,6 +238,27 @@ pub(crate) struct ChildProps {
     members: &'static [PropSpec],
 }
 
+/// The standard events every layout node takes (U7.1).
+pub(crate) const STANDARD_EVENTS: &[&str] = &[
+    "click",
+    "tap",
+    "long_press",
+    "drag_start",
+    "drag_move",
+    "drag_end",
+    "pointer_down",
+    "pointer_move",
+    "pointer_up",
+    "pointer_cancel",
+    "hover_enter",
+    "hover_leave",
+    "scroll",
+    "key_down",
+    "key_up",
+    "focus",
+    "blur",
+];
+
 const GRID_CHILD: ChildProps = ChildProps {
     prefix: "grid",
     container: "Grid",

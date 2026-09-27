@@ -13,8 +13,10 @@
 //!    name as [`E2001`](super::ResolveErrorKind::UnresolvedModule);
 //! 3. walks the module resolving name uses: a type path's head resolves against the
 //!    type namespace (locally, then imports); a value/property path head resolves
-//!    against the value namespace and the local scope stack; an `on <event>` name
-//!    resolves against the event namespace. View-local `node` names, `for`-pattern
+//!    against the local scope stack, the enclosing component's members, the value
+//!    namespace and imports; an `on <event>` name resolves against the events of the
+//!    component the node instantiates, and an `emit` against those of the enclosing
+//!    component. A handler's payload pattern binds for its body. View-local `node` names, `for`-pattern
 //!    bindings, and `let`/parameter names open local scopes whose uses resolve to a
 //!    [`LocalSlot`](super::scope::LocalSlot).
 //!
@@ -124,14 +126,20 @@ pub fn resolve(
         early_errors.push(errors);
     }
 
-    // Second pass: resolve each module's bodies against its own table plus imports.
-    let mut resolved = Vec::with_capacity(graph.modules().len());
+    // Second pass: resolve each module's bodies against its own table plus imports,
+    // with every component's member table in the package in view (an imported
+    // component's events are part of its interface).
+    let members: MemberTables<'_> = tables.iter().flat_map(SymbolTable::member_tables).collect();
+    let mut passes = Vec::with_capacity(graph.modules().len());
     for (i, gm) in graph.modules().iter().enumerate() {
         let module_text = gm.path.display(interner);
         let cu = unit_for(units, &module_text, interner);
         let imports = build_import_env(cu.as_ref(), graph, &tables, interner);
         let mut pass = ModulePass {
             table: &tables[i],
+            members: &members,
+            owner: None,
+            node: None,
             decls: &all_decls[i],
             imports: &imports,
             interner,
@@ -145,18 +153,25 @@ pub fn resolve(
         if let Some(cu) = &cu {
             pass.resolve_unit(cu);
         }
-        // Move `refs`/`errors` out of `pass` first: this drops the `&tables[i]`
-        // borrow `pass.table` held, so the table can then be taken by value.
         let ModulePass { refs, errors, .. } = pass;
-        resolved.push(ResolvedModule {
-            table: std::mem::take(&mut tables[i]),
-            refs,
-            decls: std::mem::take(&mut all_decls[i]),
-            errors,
-        });
+        passes.push((refs, errors));
     }
-    resolved
+    drop(members);
+    tables
+        .into_iter()
+        .zip(all_decls)
+        .zip(passes)
+        .map(|((table, decls), (refs, errors))| ResolvedModule {
+            table,
+            refs,
+            decls,
+            errors,
+        })
+        .collect()
 }
+
+/// Every component's and system's member table in a package, by the owner's symbol.
+type MemberTables<'t> = std::collections::HashMap<SymbolId, &'t SymbolTable>;
 
 /// The compilation unit for a module path text, if a unit with that path parsed.
 ///
@@ -214,14 +229,12 @@ fn build_symbol_table(
             decl_path: &text,
         });
         let symbol = ModuleSymbol { id, exported };
-        out.define(name, ns, symbol, &name_tok);
+        out.define(None, name, ns, symbol, &name_tok);
         // A component's/system's members (state, computed, input, event, and the
-        // callables) are named module symbols too: an intra-component reference such
-        // as `computed x = count` resolves `count` to the member's symbol. Their
-        // fingerprint is keyed by the enclosing declaration's name so two components
-        // may each declare a `count` without colliding.
+        // callables) go in the owner's own member table, fingerprinted under the
+        // owner's name: two components may each declare a `count`.
         if let Item::Component(_) | Item::System(_) = decl {
-            define_members(&decl, &text, package, module_text, interner, &mut out);
+            define_members(&decl, id, &text, package, module_text, interner, &mut out);
         }
     }
     out.into_parts()
@@ -241,11 +254,13 @@ struct SymbolTableBuild {
 }
 
 impl SymbolTableBuild {
-    /// Defines `symbol`, declared by `name_tok`, reporting a collision: `E1101`
+    /// Defines `symbol`, declared by `name_tok`, in the module table or, for a member,
+    /// in its `owner`'s member table, reporting a collision within that table: `E1101`
     /// when the earlier declaration is spelled differently but normalizes alike,
     /// `E2002` when it is the same spelling.
     fn define(
         &mut self,
+        owner: Option<SymbolId>,
         name: NameId,
         ns: Namespace,
         symbol: ModuleSymbol,
@@ -258,7 +273,11 @@ impl SymbolTableBuild {
             name_range: range,
         });
         self.spellings.push(spelling.clone());
-        let Err(existing) = self.table.define(name, ns, symbol) else {
+        let table = match owner {
+            Some(owner) => self.table.members_mut(owner),
+            None => &mut self.table,
+        };
+        let Err(existing) = table.define(name, ns, symbol) else {
             return;
         };
         let earlier = self
@@ -284,10 +303,11 @@ impl SymbolTableBuild {
     }
 }
 
-/// Defines a component's or system's members into the module symbol table, each
-/// fingerprinted under the owner's name so members of different owners stay distinct.
+/// Defines a component's or system's members into its member table (created even
+/// when it declares none), each fingerprinted under the owner's name.
 fn define_members(
     decl: &Item,
+    owner_id: SymbolId,
     owner: &str,
     package: &str,
     module_text: &str,
@@ -299,6 +319,7 @@ fn define_members(
         Item::System(s) => s.members().collect(),
         _ => return,
     };
+    out.table.members_mut(owner_id);
     for member in members {
         let Some((name_tok, kind, ns)) = member_identity(&member) else {
             continue;
@@ -316,7 +337,7 @@ fn define_members(
             id,
             exported: false,
         };
-        out.define(name, ns, symbol, &name_tok);
+        out.define(Some(owner_id), name, ns, symbol, &name_tok);
     }
 }
 
@@ -471,6 +492,12 @@ fn ident_tokens(node: &SyntaxNode) -> Vec<crate::syntax::SyntaxToken> {
 /// The per-module resolution walk state.
 struct ModulePass<'a> {
     table: &'a SymbolTable,
+    members: &'a MemberTables<'a>,
+    /// The component or system whose body is being resolved.
+    owner: Option<SymbolId>,
+    /// The component the innermost enclosing view node instantiates, whose events its
+    /// handlers name.
+    node: Option<SymbolId>,
     /// The declaration sites of `table`'s symbols, for nearest-name suggestions.
     decls: &'a [SymbolDecl],
     imports: &'a std::collections::HashMap<NameId, ImportBinding>,
@@ -513,19 +540,73 @@ impl ModulePass<'_> {
     }
 
     fn resolve_component(&mut self, decl: &ComponentDecl) {
-        self.scopes.push();
-        for member in decl.members() {
-            self.resolve_member(member);
-        }
-        self.scopes.pop();
+        self.resolve_owner(decl.name(), decl.members());
     }
 
     fn resolve_system(&mut self, decl: &SystemDecl) {
+        self.resolve_owner(decl.name(), decl.members());
+    }
+
+    /// Resolves the members of the component or system named `name`, with its member
+    /// table in scope.
+    fn resolve_owner(
+        &mut self,
+        name: Option<crate::syntax::SyntaxToken>,
+        members: impl Iterator<Item = Member>,
+    ) {
+        let owner = name.and_then(|name| {
+            let name = self.interner.intern(&name.text());
+            self.table.get(name, Namespace::Type).map(|s| s.id)
+        });
+        let outer = std::mem::replace(&mut self.owner, owner);
         self.scopes.push();
-        for member in decl.members() {
+        for member in members {
             self.resolve_member(member);
         }
         self.scopes.pop();
+        self.owner = outer;
+    }
+
+    /// Looks `name` up among the members of `owner`.
+    fn member(&self, owner: Option<SymbolId>, name: NameId, ns: Namespace) -> Option<SymbolId> {
+        let table = self.members.get(&owner?)?;
+        table.get(name, ns).map(|s| s.id)
+    }
+
+    /// The component a view node of type `ty` instantiates, if it names one.
+    fn instantiated(&mut self, ty: Option<TypePath>) -> Option<SymbolId> {
+        let ty = ty?;
+        let segments: Vec<_> = ty.segments().collect();
+        let [head] = segments.as_slice() else {
+            return None;
+        };
+        let name = self.interner.intern(&head.text());
+        let symbol = self
+            .table
+            .get(name, Namespace::Type)
+            .map(|s| s.id)
+            .or_else(|| {
+                self.imports
+                    .get(&name)
+                    .filter(|b| b.namespace == Namespace::Type)
+                    .map(|b| b.symbol)
+            })?;
+        self.members.contains_key(&symbol).then_some(symbol)
+    }
+
+    /// Resolves an `emit`'s event against the enclosing component's events, then its
+    /// arguments.
+    fn resolve_emit(&mut self, stmt: &SyntaxNode) {
+        if let Some(event) = ident_tokens(stmt).into_iter().next() {
+            let name = self.interner.intern(&event.text());
+            if let Some(symbol) = self.member(self.owner, name, Namespace::Event) {
+                self.refs.push(ResolvedRef {
+                    range: event.text_range(),
+                    to: Resolution::Symbol(symbol),
+                });
+            }
+        }
+        self.resolve_children(stmt);
     }
 
     fn resolve_member(&mut self, member: Member) {
@@ -618,6 +699,7 @@ impl ModulePass<'_> {
                 }
             }
             SyntaxKind::Pattern => self.resolve_pattern_types(node),
+            SyntaxKind::EmitStmt => self.resolve_emit(node),
             SyntaxKind::RecordExpr => {
                 self.resolve_record_head(node);
                 self.resolve_children(node);
@@ -788,7 +870,8 @@ impl ModulePass<'_> {
                     self.resolve_node_type(&ty);
                 }
                 if let Some(body) = a.body() {
-                    self.resolve_node_body(&body);
+                    let node = self.instantiated(a.ty());
+                    self.resolve_node_body(&body, node);
                 }
             }
             ViewItem::Property(p) => self.resolve_property(&p),
@@ -834,7 +917,15 @@ impl ModulePass<'_> {
                     self.resolve_type_head(&ty, true);
                 }
             }
-            ViewItem::Fill(_) => {}
+            ViewItem::Fill(fill) => {
+                // Fill content belongs to the view that writes it, not to the node
+                // whose slot it fills.
+                if let Some(body) = fill.body() {
+                    let node = self.node.take();
+                    self.resolve_view_block(&body);
+                    self.node = node;
+                }
+            }
         }
     }
 
@@ -852,14 +943,18 @@ impl ModulePass<'_> {
             self.resolve_node_type(&ty);
         }
         if let Some(body) = node.body() {
-            self.resolve_node_body(&body);
+            let instantiated = self.instantiated(node.ty());
+            self.resolve_node_body(&body, instantiated);
         }
     }
 
-    fn resolve_node_body(&mut self, body: &NodeBody) {
+    /// Resolves a node body whose node instantiates the component `node`, if any.
+    fn resolve_node_body(&mut self, body: &NodeBody, node: Option<SymbolId>) {
+        let outer = std::mem::replace(&mut self.node, node);
         for member in body.members() {
             self.resolve_view_item(member);
         }
+        self.node = outer;
     }
 
     fn resolve_property(&mut self, binding: &PropertyBinding) {
@@ -868,19 +963,26 @@ impl ModulePass<'_> {
         }
     }
 
+    /// Resolves a handler's event against the events of the component its node
+    /// instantiates, then binds its payload pattern for its body.
     fn resolve_handler(&mut self, handler: &EventHandler) {
         if let Some(evt) = handler.event() {
             let name = self.interner.intern(&evt.text());
-            if let Some(sym) = self.table.get(name, Namespace::Event) {
+            if let Some(symbol) = self.member(self.node, name, Namespace::Event) {
                 self.refs.push(ResolvedRef {
                     range: evt.text_range(),
-                    to: Resolution::Symbol(sym.id),
+                    to: Resolution::Symbol(symbol),
                 });
             }
             // An unknown event is left unresolved rather than an error here: a
-            // handler may bind a native/schema event the resolver has no view of.
+            // handler may bind a standard or widget event the resolver has no view
+            // of; typing reports one a component does not have.
         }
         self.scopes.push();
+        if let Some(payload) = handler.payload() {
+            self.resolve_pattern_types(payload.syntax());
+            self.bind_pattern(payload.syntax());
+        }
         if let Some(body) = handler.body() {
             self.resolve_block(&body);
         }
@@ -959,12 +1061,15 @@ impl ModulePass<'_> {
         }
     }
 
-    /// Resolves one value name token: local scope first, then the module value
-    /// namespace, then imports. Returns whether it resolved.
+    /// Resolves one value name token: local scope first, then the enclosing
+    /// component's members, the module value namespace, and imports. Returns whether
+    /// it resolved.
     fn resolve_value_token(&mut self, head: &crate::syntax::SyntaxToken) -> bool {
         let name = self.interner.intern(&head.text());
         let to = if let Some(slot) = self.scopes.lookup(name) {
             Resolution::Local(slot)
+        } else if let Some(symbol) = self.member(self.owner, name, Namespace::Value) {
+            Resolution::Symbol(symbol)
         } else if let Some(sym) = self.table.get(name, Namespace::Value) {
             Resolution::Symbol(sym.id)
         } else if let Some(binding) = self.imports.get(&name) {
@@ -1138,8 +1243,12 @@ pub fn resolve_fragment(
     }
 
     let imports = std::collections::HashMap::new();
+    let members = MemberTables::new();
     let mut pass = ModulePass {
         table: &table,
+        members: &members,
+        owner: None,
+        node: None,
         decls: &[],
         imports: &imports,
         interner,
@@ -1391,8 +1500,12 @@ mod tests {
         let count = interner.intern("count");
         let count_sym = mods
             .iter()
-            .find_map(|m| m.table.get(count, Namespace::Value))
-            .expect("count is a value symbol")
+            .find_map(|m| {
+                m.table
+                    .member_tables()
+                    .find_map(|(_, t)| t.get(count, Namespace::Value))
+            })
+            .expect("count is a member value symbol")
             .id;
         let resolved = mods
             .iter()
@@ -1401,6 +1514,91 @@ mod tests {
         assert!(
             resolved,
             "`computed doubled = count` resolves `count` to its state symbol"
+        );
+    }
+
+    #[test]
+    fn members_are_scoped_to_their_owner() {
+        let mut interner = NameInterner::new();
+        let src = "const n = 1;
+            component A { state n = 0; event changed(v: I64); computed m = n; view { } }
+            component B { state n = 0; event changed(v: I64); view { } }
+            component C { computed k = n; view { A { on changed(ev) { let x = ev; } } } }";
+        let app = unit(&mut interner, &["app"], src);
+        let mods = resolve_all(vec![app], &mut interner);
+        let m = &mods[0];
+        assert!(
+            m.errors.is_empty(),
+            "no collision across owners: {:?}",
+            m.errors
+        );
+        let n = interner.intern("n");
+        let changed = interner.intern("changed");
+        let [a, b, c] = ["A", "B", "C"].map(|name| {
+            let name = interner.intern(name);
+            m.table.get(name, Namespace::Type).expect("component").id
+        });
+        let members = |owner| m.table.members(owner).expect("member table");
+        let a_n = members(a).get(n, Namespace::Value).expect("A.n").id;
+        let b_n = members(b).get(n, Namespace::Value).expect("B.n").id;
+        assert_ne!(a_n, b_n);
+        assert!(members(c).get(n, Namespace::Value).is_none());
+        let const_n = m.table.get(n, Namespace::Value).expect("const n").id;
+        let to = |range| m.refs.iter().find(|r| r.range == range).map(|r| r.to);
+        let use_in = |prefix: &str, name: &str| {
+            let start = src.find(prefix).expect("prefix") + prefix.len() - name.len();
+            let start = start as u32;
+            to(crate::syntax::TextRange::new(
+                start.into(),
+                (start + name.len() as u32).into(),
+            ))
+        };
+        // A member shadows the module `const`; outside any owner of `n`, the `const`.
+        assert_eq!(use_in("computed m = n", "n"), Some(Resolution::Symbol(a_n)));
+        assert_eq!(
+            use_in("computed k = n", "n"),
+            Some(Resolution::Symbol(const_n))
+        );
+        // `on changed` on an `A` node names `A`'s event; its payload binds for the body.
+        let a_changed = members(a)
+            .get(changed, Namespace::Event)
+            .expect("A.changed")
+            .id;
+        assert_eq!(
+            use_in("on changed", "changed"),
+            Some(Resolution::Symbol(a_changed))
+        );
+        assert!(matches!(
+            use_in("let x = ev", "ev"),
+            Some(Resolution::Local(_))
+        ));
+    }
+
+    #[test]
+    fn emit_names_an_event_of_its_component() {
+        let mut interner = NameInterner::new();
+        let src =
+            "component A { event changed(v: I64); action go() { emit changed(1); } view { } }";
+        let app = unit(&mut interner, &["app"], src);
+        let mods = resolve_all(vec![app], &mut interner);
+        let m = &mods[0];
+        let a = m
+            .table
+            .get(interner.intern("A"), Namespace::Type)
+            .expect("A")
+            .id;
+        let changed = interner.intern("changed");
+        let event = m
+            .table
+            .members(a)
+            .and_then(|t| t.get(changed, Namespace::Event));
+        let event = event.expect("A.changed").id;
+        let start = src.find("emit changed").expect("emit") as u32 + 5;
+        let range = crate::syntax::TextRange::new(start.into(), (start + 7).into());
+        assert!(
+            m.refs
+                .iter()
+                .any(|r| r.range == range && r.to == Resolution::Symbol(event))
         );
     }
 

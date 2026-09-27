@@ -29,13 +29,13 @@ use super::percent::{Carry, PercentFacts, PercentSources};
 use super::ty::Ty;
 use super::widget::{self, ChildProps, PropLookup, WidgetSchema};
 use crate::ast::{
-    AstNode, ElseBranch, NodeBody, PropertyBinding, PropertyPath, TwoWayBinding, TypePath,
-    ViewBlock, ViewFor, ViewIf, ViewItem, ViewMatch,
+    AstNode, ElseBranch, EventHandler, NodeBody, PropertyBinding, PropertyPath, TwoWayBinding,
+    TypePath, ViewBlock, ViewFor, ViewIf, ViewItem, ViewMatch,
 };
 use crate::diag::Diagnostic;
 use crate::resolve::suggest::{Candidate, attach, nearest};
 use crate::resolve::{Resolution, ResolvedRef, SymbolId};
-use crate::syntax::TextRange;
+use crate::syntax::{SyntaxToken, TextRange};
 
 /// One `input` of a user component, as a property of its nodes.
 #[derive(Debug, Clone, PartialEq)]
@@ -319,11 +319,7 @@ impl<'a> ViewWalk<'a> {
                 ViewItem::Anonymous(node) => self.node(node.ty(), node.body(), scope.inner),
                 ViewItem::Property(binding) => self.property(&binding, scope, &mut bound),
                 ViewItem::TwoWayBinding(binding) => self.two_way(&binding, scope, &mut bound),
-                ViewItem::Handler(handler) => {
-                    if let Some(body) = handler.body() {
-                        self.cx.check_handler(&body);
-                    }
-                }
+                ViewItem::Handler(handler) => self.handler(&handler, scope.owner),
                 ViewItem::If(view_if) => self.view_if(&view_if, scope),
                 ViewItem::For(view_for) => self.view_for(&view_for, scope),
                 ViewItem::Match(view_match) => self.view_match(&view_match, scope),
@@ -381,6 +377,66 @@ impl<'a> ViewWalk<'a> {
                 component: None,
             }),
         }
+    }
+
+    /// `on event(payload) { body }`: the payload pattern binds the event's payload
+    /// for the body.
+    fn handler(&mut self, handler: &EventHandler, owner: Option<&Owner<'a>>) {
+        let payload = handler
+            .event()
+            .map_or(Ty::Unknown, |event| self.event_payload(&event, owner));
+        if let Some(pattern) = handler.payload() {
+            self.cx.bind_pattern(pattern.syntax(), &payload);
+            self.cx
+                .check_irrefutable(pattern.syntax(), "a handler payload pattern");
+        }
+        if let Some(body) = handler.body() {
+            self.cx.check_handler(&body);
+        }
+    }
+
+    /// The payload type of the event `event` names on a node of `owner`. On a user
+    /// component it is a standard event or one the component declares (`E3202`
+    /// otherwise); a standard or widget event's payload is not modeled.
+    fn event_payload(&mut self, event: &SyntaxToken, owner: Option<&Owner<'a>>) -> Ty {
+        if let Some(id) = self.symbols.get(&event.text_range()).copied() {
+            return match self.env.record_fields(id) {
+                Some(_) => Ty::Named(id),
+                None => Ty::Unknown,
+            };
+        }
+        let text = event.text();
+        let name = text.trim_start_matches("r#");
+        let Some((owner, component)) = owner.and_then(|o| Some((o, o.component?))) else {
+            return Ty::Unknown;
+        };
+        if widget::STANDARD_EVENTS.contains(&name) {
+            return Ty::Unknown;
+        }
+        let declared = self.env.component_events(component).unwrap_or_default();
+        let candidates = declared
+            .iter()
+            .map(|e| Candidate {
+                name: &e.name,
+                declared_at: Some(e.declared_at),
+            })
+            .chain(widget::STANDARD_EVENTS.iter().map(|&name| Candidate {
+                name,
+                declared_at: None,
+            }));
+        let suggestions = nearest(name, candidates);
+        let range = event.text_range();
+        let mut diagnostic = Diagnostic::error(
+            "E3202",
+            range,
+            format!(
+                "`{}` has no event `{name}`: it is neither a standard event nor one the component declares",
+                owner.name
+            ),
+        );
+        attach(&mut diagnostic, range, &suggestions);
+        self.diagnostics.push(diagnostic);
+        Ty::Unknown
     }
 
     /// `path: value;`

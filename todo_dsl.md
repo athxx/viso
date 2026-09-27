@@ -69,6 +69,11 @@ the three source entries share one frontend.
 - [x] Filesystem package loader: source root, module path from file path, one module
       graph, per-file diagnostics (`package.rs`).
   - [ ] CLI glue: `tools/project` manifest → `load_package`, with the CLI command.
+- [x] Per-owner member tables: a component's or system's members are visible only in
+      it (two components may each declare `count`) and shadow module declarations; a
+      handler's event resolves against the component its node instantiates, an `emit`
+      against the enclosing one; a handler's payload pattern binds for its body
+      (`resolve/scope.rs`, `resolve/resolver.rs`).
 
 ### D0.5 — Types and inference (§19, §73–§83)
 
@@ -94,8 +99,13 @@ the three source entries share one frontend.
   - [x] Text slots take only `String`: `text: count;` is `E2103` with a
         machine-applicable `format("{}", count)` fix; `format` in a view reads its
         arguments as binding dependencies. The built-in `Display` set is fixed.
-  - [ ] Schemas beyond the baseline (native declarations), imported record/enum types,
-        `task` signatures, handler payload patterns.
+  - [ ] Schemas beyond the baseline (native declarations), imported record/enum types
+        (and imported components' event payloads), `task` signatures, standard and
+        widget event payload types.
+- [x] Event payloads `E3202`: a handler on a user component names a standard event or
+      one the component declares; its payload pattern (irrefutable) types against the
+      event's parameters; `emit` arguments match parameters by position or name and
+      type against them (`hir/view.rs`, `hir/infer/body.rs`).
 - [x] `E3104`: a property without a declared percent basis rejects `Percent`.
   - [x] Component inputs take the basis of the properties their component binds them
         to (forwarding settled to a fixed point across the module).
@@ -171,8 +181,8 @@ Goal: every Core view construct reaches a live tree through all three lowering t
 
 ### D2.1 — Handlers
 
-- [ ] Emit `UiHandler` in `ui-macros/src/emit.rs`, `hotreload/commit.rs`, `aot.rs`.
-- [ ] Event payload typing: `E3202`.
+- [ ] Emit `UiHandler` in `ui-macros/src/emit.rs`, `hotreload/commit.rs`, `aot.rs`
+      (payload typing `E3202` is checked in D0.5).
 
 ### D2.2 — Control-flow regions
 

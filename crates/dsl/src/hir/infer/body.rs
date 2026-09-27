@@ -7,7 +7,8 @@ use crate::ast::{AstNode, Block, Expr};
 use crate::diag::Diagnostic;
 use crate::hir::ty::Ty;
 use crate::resolve::Resolution;
-use crate::syntax::{SyntaxKind, SyntaxNode, TextRange};
+use crate::resolve::suggest::{Candidate, attach, nearest};
+use crate::syntax::{SyntaxKind, SyntaxNode, SyntaxToken, TextRange};
 
 impl InferCx<'_> {
     /// Gives the local bound at `at` (a parameter or pattern name token) the type
@@ -170,9 +171,7 @@ impl InferCx<'_> {
                 !tys.is_empty() && tys.iter().all(|t| *t == Ty::Never)
             }
             SyntaxKind::EmitStmt => {
-                for arg in super::call_args(stmt) {
-                    let _ = self.infer_expr(&arg, None);
-                }
+                self.infer_emit(stmt);
                 false
             }
             SyntaxKind::TransactionStmt => match child_of(stmt, SyntaxKind::Block) {
@@ -180,6 +179,131 @@ impl InferCx<'_> {
                 None => false,
             },
             _ => false,
+        }
+    }
+
+    /// `emit event(args);`: the event is one the enclosing component declares, and
+    /// the arguments give its parameters, positionally in order or by name, each typed
+    /// against its parameter. An unknown event, an argument naming no parameter or one
+    /// already given, an extra argument, and a missing one are `E3202`.
+    fn infer_emit(&mut self, stmt: &SyntaxNode) {
+        let env = self.env;
+        let args = emit_args(stmt);
+        let Some(event) = stmt
+            .children_with_tokens()
+            .into_iter()
+            .filter_map(|e| e.as_token().cloned())
+            .find(is_name)
+        else {
+            return self.infer_loose(&args);
+        };
+        let params = self
+            .symbol_at(event.text_range())
+            .and_then(|id| env.record_fields(id));
+        let Some(params) = params else {
+            if let Some(events) = env
+                .enclosing_component()
+                .and_then(|c| env.component_events(c))
+            {
+                let text = event.text();
+                let name = text.trim_start_matches("r#");
+                let candidates = events.iter().map(|e| Candidate {
+                    name: &e.name,
+                    declared_at: Some(e.declared_at),
+                });
+                let suggestions = nearest(name, candidates);
+                let range = event.text_range();
+                let mut diagnostic = Diagnostic::error(
+                    "E3202",
+                    range,
+                    format!("`emit` names an event of its component, which declares no `{name}`"),
+                );
+                attach(&mut diagnostic, range, &suggestions);
+                self.diagnostics.push(diagnostic);
+            }
+            return self.infer_loose(&args);
+        };
+        let event = event.text().to_string();
+        let mut given = vec![false; params.len()];
+        let mut next = 0;
+        let mut misfit = false;
+        for (label, value) in &args {
+            let index = match label {
+                Some(label) => params.iter().position(|p| p.name == label.text()),
+                None => {
+                    next += 1;
+                    (next <= params.len()).then(|| next - 1)
+                }
+            };
+            let at = label
+                .as_ref()
+                .map_or(value.syntax().text_range(), SyntaxToken::text_range);
+            let problem = match index {
+                Some(i) if given[i] => {
+                    Some(format!("`{}` of `{event}` is given twice", params[i].name))
+                }
+                Some(i) => {
+                    given[i] = true;
+                    let param = &params[i];
+                    if param.ty.has_unknown() {
+                        let _ = self.infer_expr(value, None);
+                    } else {
+                        let _ = self.infer_promoted(value, &param.ty);
+                    }
+                    None
+                }
+                None => Some(match label {
+                    Some(label) => format!("`{event}` has no parameter `{}`", label.text()),
+                    None => format!("`{event}` takes {} argument(s)", params.len()),
+                }),
+            };
+            if let Some(message) = problem {
+                misfit = true;
+                let mut diagnostic = Diagnostic::error("E3202", at, message);
+                if let Some(label) = label.as_ref().filter(|_| index.is_none()) {
+                    let candidates = params.iter().map(|p| Candidate {
+                        name: &p.name,
+                        declared_at: Some(p.declared_at),
+                    });
+                    let text = label.text();
+                    let suggestions = nearest(&text, candidates);
+                    attach(&mut diagnostic, at, &suggestions);
+                }
+                self.diagnostics.push(diagnostic);
+                let _ = self.infer_expr(value, None);
+            }
+        }
+        // A misfit argument is likely the missing parameter misspelled or misplaced;
+        // reporting both would say the same thing twice.
+        if misfit {
+            return;
+        }
+        let missing: Vec<_> = params
+            .iter()
+            .zip(&given)
+            .filter(|(_, given)| !**given)
+            .map(|(p, _)| p)
+            .collect();
+        if !missing.is_empty() {
+            let names: Vec<String> = missing.iter().map(|p| format!("`{}`", p.name)).collect();
+            let mut diagnostic = Diagnostic::error(
+                "E3202",
+                stmt.text_range(),
+                format!("`emit {event}` is missing {}", names.join(", ")),
+            );
+            for p in missing {
+                diagnostic
+                    .related
+                    .push((p.declared_at, format!("`{}` is declared here", p.name)));
+            }
+            self.diagnostics.push(diagnostic);
+        }
+    }
+
+    /// Types arguments that have no parameter to type them against.
+    fn infer_loose(&mut self, args: &[(Option<SyntaxToken>, Expr)]) {
+        for (_, value) in args {
+            let _ = self.infer_expr(value, None);
         }
     }
 
@@ -447,6 +571,37 @@ impl InferCx<'_> {
 }
 
 /// The first direct child of `node` of kind `kind`.
+/// The arguments of an `emit`, each with its `name:` label when it has one.
+fn emit_args(stmt: &SyntaxNode) -> Vec<(Option<SyntaxToken>, Expr)> {
+    let Some(list) = child_of(stmt, SyntaxKind::ArgumentList) else {
+        return Vec::new();
+    };
+    list.children()
+        .into_iter()
+        .filter(|a| a.kind() == SyntaxKind::Argument)
+        .filter_map(|arg| {
+            let value = first_child_expr(&arg)?;
+            let tokens: Vec<SyntaxToken> = arg
+                .children_with_tokens()
+                .into_iter()
+                .filter_map(|e| e.as_token().cloned())
+                .filter(|t| !t.kind().is_trivia())
+                .collect();
+            let label = match tokens.as_slice() {
+                [name, colon, ..] if is_name(name) && colon.kind() == SyntaxKind::Colon => {
+                    Some(name.clone())
+                }
+                _ => None,
+            };
+            Some((label, value))
+        })
+        .collect()
+}
+
+fn is_name(token: &SyntaxToken) -> bool {
+    matches!(token.kind(), SyntaxKind::Ident | SyntaxKind::RawIdent)
+}
+
 fn child_of(node: &SyntaxNode, kind: SyntaxKind) -> Option<SyntaxNode> {
     node.children().into_iter().find(|c| c.kind() == kind)
 }
