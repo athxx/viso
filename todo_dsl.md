@@ -99,8 +99,10 @@ the three source entries share one frontend.
   - [x] Text slots take only `String`: `text: count;` is `E2103` with a
         machine-applicable `format("{}", count)` fix; `format` in a view reads its
         arguments as binding dependencies. The built-in `Display` set is fixed.
-  - [ ] Schemas beyond the baseline (native declarations), `task` signatures, standard
-        and widget event payload types.
+  - [ ] Schemas beyond the baseline (native declarations), standard and widget event
+        payload types.
+  - [x] `task` signatures: a task call's arguments check against its parameters and
+        its value is the declared result; `await` keeps its operand's type.
   - [x] Imports type as declared: records, enums, callable signatures, component
         inputs, events and payloads come from package-wide declarations
         (`hir/lower.rs` `Declarations` + per-module `ModuleScope`).

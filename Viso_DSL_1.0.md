@@ -1316,6 +1316,7 @@ Task 是可挂起的结构化异步计算。
 规范：
 
 - `await` 只允许出现在 Task、Task Closure 和 Resource Loader 中；
+- Task Call 的参数按其签名检查，调用值的类型是 Task 声明的返回类型；`await` 只标出挂起点，不改变操作数的类型；
 - Task 启动时捕获 Input、State 和参数的不可变快照；
 - Task 在挂起后禁止直接访问可变 Component State；
 - Task 通过返回值把结果交还 UI Actor；

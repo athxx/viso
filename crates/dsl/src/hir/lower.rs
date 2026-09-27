@@ -1101,8 +1101,9 @@ impl ModuleScope {
             .collect()
     }
 
-    /// Records a `fn`/`action`/`task`: its effect class, and for a `fn` or `action` its
-    /// signature (a `fn` is also a value of its function type). Returns its symbol.
+    /// Records a `fn`/`action`/`task`: its effect class and signature (a `fn` is also a
+    /// value of its function type). A task call yields the task's declared result;
+    /// `await` marks where it suspends. Returns its symbol.
     fn record_callable(
         &self,
         decls: &mut Declarations,
@@ -1120,9 +1121,7 @@ impl ModuleScope {
             EffectClass::Read => Ty::Fn(params.clone(), Box::new(ret.clone())),
             _ => Ty::Unknown,
         };
-        if !matches!(effect, EffectClass::Task) {
-            decls.signatures.insert(sym, (params, ret));
-        }
+        decls.signatures.insert(sym, (params, ret));
         decls.facts.insert(
             sym,
             MemberFacts {
@@ -1607,6 +1606,25 @@ mod tests {
         assert_eq!(codes("fn f() -> I64 { let y = 1; }"), ["E2103"]);
         assert_eq!(codes("const C: String = 1;"), ["E2103"]);
         assert_eq!(codes("action save() { }\nfn f() { save(); }"), ["E2501"]);
+        assert_clean(
+            "task fetch(id: I64) -> String { return \"\"; }\n\
+             task show(id: I64) -> String { return await fetch(id); }",
+        );
+        assert_eq!(
+            codes(
+                "task fetch(id: I64) -> String { return \"\"; }\n\
+                 task count() -> I64 { return await fetch(1); }"
+            ),
+            ["E2103"]
+        );
+        assert_eq!(
+            codes(
+                "task fetch(id: I64) -> String { return \"\"; }\n\
+                 task show() -> String { return await fetch(\"a\"); }"
+            ),
+            ["E2103"]
+        );
+        assert_eq!(codes("task t() -> I64 { return \"a\"; }"), ["E2103"]);
     }
 
     #[test]
