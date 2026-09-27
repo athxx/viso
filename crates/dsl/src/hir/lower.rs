@@ -267,6 +267,17 @@ fn lower_component_item(
             percent,
         ));
     }
+    for member in decl.members() {
+        let (context, body) = match &member {
+            Member::Computed(d) => (BodyContext::Computed, d.body()),
+            Member::State(d) => (BodyContext::Initializer, d.initializer()),
+            Member::Input(d) => (BodyContext::Initializer, d.default()),
+            _ => continue,
+        };
+        if let Some(body) = body {
+            check_body(refs, context, env, body.syntax(), diagnostics);
+        }
+    }
     check_component_callables(decl, refs, env, diagnostics, cap, percent);
 
     HirComponent {
@@ -421,6 +432,13 @@ fn check_const(
     let Some(value) = decl.value() else {
         return;
     };
+    check_body(
+        refs,
+        BodyContext::Initializer,
+        env,
+        value.syntax(),
+        diagnostics,
+    );
     let want = env.annotation_of(decl.syntax());
     let mut cx = InferCx::new(refs, env);
     let _ = if want.has_unknown() {
@@ -450,6 +468,13 @@ fn check_field_defaults(
         let Some(value) = field.default() else {
             continue;
         };
+        check_body(
+            refs,
+            BodyContext::Initializer,
+            env,
+            value.syntax(),
+            diagnostics,
+        );
         let want = env.annotation_of(field.syntax());
         let _ = if want.has_unknown() {
             cx.infer_expr(&value, None)
@@ -800,6 +825,11 @@ impl EffectEnv for ModuleEnv<'_> {
             Resolution::Symbol(id) => self.decls.facts.get(id).and_then(|f| f.effect),
             Resolution::Local(_) => None,
         }
+    }
+
+    fn is_state(&self, to: &Resolution) -> bool {
+        matches!(to, Resolution::Symbol(id)
+            if self.decls.facts.get(id).is_some_and(|f| f.kind == SymbolKind::State))
     }
 }
 
@@ -1607,6 +1637,45 @@ mod tests {
         );
         assert_clean("fn f(s: Option<String>) { s?.len(); }");
         assert_eq!(codes("fn f(s: String) { s?.len(); }"), ["E2103"]);
+    }
+
+    #[test]
+    fn only_actions_and_handlers_mutate() {
+        let c = |members: &str| {
+            codes(&format!(
+                "component C {{ state n: I64 = 0; event e(); action a() {{}} {members} view {{ Text {{}} }} }}"
+            ))
+        };
+        assert!(c("action b() { n = 1; n += 1; emit e(); a(); }").is_empty());
+        assert!(c("fn f() { let mut m = n; m = 2; }").is_empty());
+        assert_eq!(c("fn f() { n = 1; }"), ["E2501"]);
+        assert_eq!(c("fn f() { n += 1; }"), ["E2501"]);
+        assert_eq!(c("fn f() { emit e(); }"), ["E2501"]);
+        assert_eq!(c("task t() -> I64 { n = 1; return 1; }"), ["E2501"]);
+        assert_eq!(c("task t() -> I64 { emit e(); return 1; }"), ["E2501"]);
+        assert_eq!(c("computed m: I64 = { n = 2; n };"), ["E2502"]);
+        assert_eq!(c("computed m: I64 = { a(); n };"), ["E2502"]);
+        assert_eq!(c("state s: I64 = { a(); 1 };"), ["E2501"]);
+        assert_eq!(
+            codes("action a() {}\nconst K: I64 = { a(); 1 };"),
+            ["E2501"]
+        );
+        assert_eq!(
+            codes("action a() {}\nrecord P { x: I64 = { a(); 1 }; }"),
+            ["E2501"]
+        );
+    }
+
+    #[test]
+    fn a_view_handler_is_an_event_body() {
+        assert_clean(
+            "component C { state n: I64 = 0; event e(); action a() {}\n\
+             view { Button { on click { a(); n += 1; emit e(); } } } }",
+        );
+        assert_eq!(
+            codes("component C { action a() {} view { Text { text: a(); } } }"),
+            ["E2502", "E2103"]
+        );
     }
 
     fn codes(src: &str) -> Vec<&'static str> {

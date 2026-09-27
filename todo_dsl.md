@@ -133,6 +133,10 @@ the three source entries share one frontend.
 - [x] Capability sets `E2601` (`hir/capability.rs`); the call graph spans the package.
 - [x] Module-level `fn`/`action`/`task` bodies are effect- and signature-checked like
       component members.
+- [x] State writes and `emit` are mutations (`E2502` in view/computed, `E2501` in
+      fn/task/initializer); `on` handlers in a view check as event bodies; computed
+      bodies, state initializers, input defaults, consts and field defaults are
+      effect-checked.
 - [x] Reactive read collection (`hir/reads.rs`); `E4201`–`E4203`.
 
 ### D0.7 — Source entries, diagnostics, formatter

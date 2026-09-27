@@ -17,6 +17,13 @@
 //!   `action` from a task is `E2501` (a task mutates through actions it *starts*, not by
 //!   calling them synchronously mid-body).
 //!
+//! Writing a `state` (an assignment whose target's root names one) and `emit` are
+//! mutations too: only an action or event body performs them — `E2502` in a view or
+//! computed, `E2501` elsewhere (a task hands its result back by returning it). An `on`
+//! handler inside a view is an event body of its own, not part of the view's reactive
+//! context. Initializers (state initializers, input defaults, `const` values, record
+//! field defaults) have a `fn`'s rights.
+//!
 //! Effect checking is deliberately decoupled from the HIR node types (built in a later
 //! section) through the [`EffectEnv`] trait, exactly as [`crate::hir::infer`] is: the
 //! only thing the checker needs from the surrounding program is *what effect class the
@@ -77,6 +84,9 @@ pub enum BodyContext {
     Event,
     /// A `task` body. May call `fn` and, directly, other `task`s.
     Task,
+    /// A state initializer, input default, `const` value or record field default. Has a
+    /// `fn`'s rights.
+    Initializer,
 }
 
 impl BodyContext {
@@ -91,7 +101,10 @@ impl BodyContext {
     fn permits(self, callee: EffectClass) -> bool {
         match self {
             // View/Computed/fn: pure and read only.
-            BodyContext::View | BodyContext::Computed | BodyContext::Fn => {
+            BodyContext::View
+            | BodyContext::Computed
+            | BodyContext::Fn
+            | BodyContext::Initializer => {
                 matches!(callee, EffectClass::Pure | EffectClass::Read)
             }
             // Action/Event: pure/read/action. (Starting a task is a spawn form, not an
@@ -111,6 +124,11 @@ impl BodyContext {
             }
         }
     }
+
+    /// Whether a body in this context may write a `state` or `emit` an event.
+    fn mutates(self) -> bool {
+        matches!(self, BodyContext::Action | BodyContext::Event)
+    }
 }
 
 /// What effect checking needs to know about the surrounding program: the effect class of
@@ -123,6 +141,9 @@ pub trait EffectEnv {
     /// call, an unresolved name, or a not-yet-modeled advanced form) — such a call is
     /// skipped by the matrix (its type-level error, if any, is `infer`'s to report).
     fn callee_effect(&self, to: &Resolution) -> Option<EffectClass>;
+
+    /// Whether a name resolves to a `state`, which only a mutating body may write.
+    fn is_state(&self, to: &Resolution) -> bool;
 }
 
 /// The effect-checking context for one body walk: the resolved-reference index, the
@@ -181,12 +202,76 @@ impl<'a> EffectCx<'a> {
     /// Recursively walks a syntax node, applying the call-matrix check at each call and
     /// descending into every child expression.
     fn walk(&mut self, node: &SyntaxNode) {
-        if node.kind() == SyntaxKind::CallExpr {
-            self.check_call(node);
+        match node.kind() {
+            SyntaxKind::CallExpr => self.check_call(node),
+            SyntaxKind::AssignStmt => self.check_write(node),
+            SyntaxKind::EmitStmt => self.check_emit(node),
+            SyntaxKind::EventHandler if self.context != BodyContext::Event => {
+                let outer = std::mem::replace(&mut self.context, BodyContext::Event);
+                for child in node.children() {
+                    self.walk(&child);
+                }
+                self.context = outer;
+                return;
+            }
+            _ => {}
         }
         for child in node.children() {
             self.walk(&child);
         }
+    }
+
+    /// Reports an assignment whose target's root is a `state` in a body that does not
+    /// mutate.
+    fn check_write(&mut self, node: &SyntaxNode) {
+        if self.context.mutates() {
+            return;
+        }
+        let Some(target) = node.children().into_iter().next() else {
+            return;
+        };
+        let head = target
+            .descendants_with_tokens()
+            .into_iter()
+            .filter_map(|e| e.as_token().cloned())
+            .find(|t| matches!(t.kind(), SyntaxKind::Ident | SyntaxKind::RawIdent));
+        let Some(head) = head else {
+            return;
+        };
+        if !self
+            .refs
+            .get(&head.text_range())
+            .is_some_and(|to| self.env.is_state(to))
+        {
+            return;
+        }
+        let what = format!("writing the state `{}`", head.text());
+        self.report_mutation(node.text_range(), &what);
+    }
+
+    /// Reports an `emit` in a body that does not mutate.
+    fn check_emit(&mut self, node: &SyntaxNode) {
+        if !self.context.mutates() {
+            self.report_mutation(node.text_range(), "`emit`");
+        }
+    }
+
+    fn report_mutation(&mut self, range: TextRange, what: &str) {
+        let context = context_word(self.context);
+        let diagnostic = if self.context.is_reactive() {
+            Diagnostic::error(
+                "E2502",
+                range,
+                format!("{what} is a side effect and is not allowed in a {context} body"),
+            )
+        } else {
+            Diagnostic::error(
+                "E2501",
+                range,
+                format!("a {context} body may not mutate: {what} belongs in an action"),
+            )
+        };
+        self.diagnostics.push(diagnostic);
     }
 
     /// Applies the call matrix to one call expression: resolves the callee's effect class
@@ -260,6 +345,7 @@ fn context_word(context: BodyContext) -> &'static str {
         BodyContext::Action => "action",
         BodyContext::Event => "event",
         BodyContext::Task => "task",
+        BodyContext::Initializer => "initializer",
     }
 }
 
@@ -282,6 +368,10 @@ mod tests {
                 Resolution::Symbol(id) => self.effects.get(id).copied(),
                 Resolution::Local(_) => None,
             }
+        }
+
+        fn is_state(&self, _to: &Resolution) -> bool {
+            false
         }
     }
 

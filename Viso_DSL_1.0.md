@@ -3301,6 +3301,8 @@ Task    Async/Cancelable
 
 静态 Effect Check 必须发生在 HIR 阶段；模块级 `fn`/`action`/`task` 的函数体与 Component 成员同样检查。
 
+写入 `state`（赋值目标的根是 `state`）与 `emit` 同属 Mutating：只有 Action/Event 函数体可以执行，View/Computed 中报 `E2502`，其他函数体报 `E2501`；Task 通过返回值交还结果。View 中的 `on` Handler 是独立的 Event 函数体，不属于 View 的 Reactive 上下文。State 初值、Input 默认值、`const` 值与 Record 字段默认值按 `fn` 的调用权检查。
+
 ---
 
 ## 82. Ownership、Value、Handle 和 Lens
