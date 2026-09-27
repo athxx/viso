@@ -1463,6 +1463,53 @@ mod tests {
     }
 
     #[test]
+    fn parent_provided_properties_are_checked_against_the_direct_parent() {
+        assert_clean(
+            "component C {\n\
+             \x20 state on = true\n\
+             \x20 view { Grid { Text { grid.row: 1; grid.column_span: 2; } \
+             Fragment { Text { grid.column: 0; } } \
+             if on { Text { grid.area: \"a\"; } } } \
+             Stack { Text { stack.layer: 1; } } Absolute { Text { absolute.top: 50%; } } }\n\
+             }",
+        );
+        assert_eq!(
+            codes("component C {\n  view { Row { Text { grid.row: 1; } } }\n}"),
+            ["E3702"]
+        );
+        assert_eq!(
+            codes("component C {\n  view { Text { stack.layer: 1; } }\n}"),
+            ["E3702"]
+        );
+        assert_eq!(
+            codes(
+                "component Card {\n  view { }\n}\n\
+                 component C {\n  view { Grid { Card { Text { grid.row: 0; } } } }\n}"
+            ),
+            ["E3702"]
+        );
+        let pkg = lower_src("component C {\n  view { Grid { Text { grid.rows: 1; } } }\n}");
+        let d = pkg
+            .diagnostics
+            .iter()
+            .find(|d| d.code == "E3101")
+            .expect("an unknown child property is E3101");
+        assert!(
+            d.notes.iter().any(|n| n.contains("row"))
+                || d.related.iter().any(|(_, m)| m.contains("row")),
+            "the misspelling suggests `row`, got {d:?}"
+        );
+        assert_eq!(
+            codes("component C {\n  view { Grid { Text { grid.row: \"a\"; } } }\n}"),
+            ["E2103"]
+        );
+        assert_eq!(
+            codes("component C {\n  view { Grid { Text { grid.row: 50%; } } }\n}"),
+            ["E2103", "E3104"]
+        );
+    }
+
+    #[test]
     fn component_inputs_are_node_properties() {
         let stepper = "component Stepper {\n\
                        \x20 @bindable(changed)\n\

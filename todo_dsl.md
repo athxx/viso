@@ -97,6 +97,9 @@ the three source entries share one frontend.
   - [ ] Schemas beyond the baseline (native declarations), imported record/enum types,
         `task` signatures, handler payload patterns.
 - [x] `E3104`: a property without a declared percent basis rejects `Percent`.
+- [x] `E3702`: `grid.*`/`stack.*`/`absolute.*` checked against the static direct parent
+      (`Fragment`/`if`/`for`/`match` are transparent; view root, slot fill and component
+      children are unknown parents); members typed from the container's child table.
 
 ### D0.6 — Effects, capabilities, reads
 

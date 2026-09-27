@@ -3,8 +3,9 @@
 //! supports `bind`, and whether it declares a percent basis.
 //!
 //! This is the static subset the spec's widget tables fix (layout, transform, text,
-//! focus, the interactive baseline, semantics, transitions, `VirtualList`). A type
-//! the table does not list is not checked here: its schema comes from native
+//! focus, the interactive baseline, semantics, transitions, `VirtualList`, and the
+//! `grid.*`/`stack.*`/`absolute.*` properties a container provides to its children).
+//! A type the table does not list is not checked here: its schema comes from native
 //! declarations this layer cannot see.
 
 use super::ty::Ty;
@@ -15,7 +16,9 @@ pub(crate) enum PropKind {
     Bool,
     Str,
     F32,
+    U16,
     U32,
+    I32,
     Color,
     Angle,
     /// `MixedLength` (any length-family value widens to it).
@@ -23,6 +26,7 @@ pub(crate) enum PropKind {
     OptString,
     OptF32,
     OptU32,
+    OptU16,
     OptU8,
     OptColor,
     OptLength,
@@ -39,13 +43,16 @@ impl PropKind {
             PropKind::Bool => Some(Ty::Bool),
             PropKind::Str => Some(Ty::String),
             PropKind::F32 => Some(Ty::F32),
+            PropKind::U16 => Some(Ty::U16),
             PropKind::U32 => Some(Ty::U32),
+            PropKind::I32 => Some(Ty::I32),
             PropKind::Color => Some(Ty::Color),
             PropKind::Angle => Some(Ty::Angle),
             PropKind::Length => Some(Ty::MixedLength),
             PropKind::OptString => opt(Ty::String),
             PropKind::OptF32 => opt(Ty::F32),
             PropKind::OptU32 => opt(Ty::U32),
+            PropKind::OptU16 => opt(Ty::U16),
             PropKind::OptU8 => opt(Ty::U8),
             PropKind::OptColor => opt(Ty::Color),
             PropKind::OptLength => opt(Ty::MixedLength),
@@ -89,8 +96,8 @@ const fn two_way(name: &'static str, kind: PropKind) -> PropSpec {
 }
 
 use PropKind::{
-    Angle, Bool, Color, F32, Length, Opaque, OptColor, OptF32, OptLength, OptString, OptU8, OptU32,
-    Str, U32,
+    Angle, Bool, Color, F32, I32, Length, Opaque, OptColor, OptF32, OptLength, OptString, OptU8,
+    OptU16, OptU32, Str, U16, U32,
 };
 
 /// Layout properties every node but `Fragment` accepts.
@@ -221,16 +228,71 @@ const VIRTUAL_LIST: &[PropSpec] = &[
     prop("overscan", U32),
 ];
 
-/// The prefixes of properties a parent provides to its children (checked against
-/// the parent, not the node itself).
-const PARENT_PREFIXES: &[&str] = &["grid", "stack", "absolute"];
+/// The properties a container provides to its direct children, written in a child's
+/// body as `prefix.member`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ChildProps {
+    pub(crate) prefix: &'static str,
+    /// The container that provides the group, for messages.
+    pub(crate) container: &'static str,
+    members: &'static [PropSpec],
+}
 
-/// A widget's schema: its own property tables, and whether it takes the common
-/// ones (every node but `Fragment` does).
+const GRID_CHILD: ChildProps = ChildProps {
+    prefix: "grid",
+    container: "Grid",
+    members: &[
+        prop("column", OptU16),
+        prop("row", OptU16),
+        prop("column_span", U16),
+        prop("row_span", U16),
+        prop("area", OptString),
+    ],
+};
+
+const STACK_CHILD: ChildProps = ChildProps {
+    prefix: "stack",
+    container: "Stack",
+    members: &[prop("align", Opaque), prop("layer", I32)],
+};
+
+const ABSOLUTE_CHILD: ChildProps = ChildProps {
+    prefix: "absolute",
+    container: "Absolute",
+    members: &[
+        based("top", OptLength),
+        based("bottom", OptLength),
+        based("start", OptLength),
+        based("end", OptLength),
+    ],
+};
+
+/// The child property group written with `prefix`, when a container provides one.
+pub(crate) fn child_props(prefix: &str) -> Option<ChildProps> {
+    [GRID_CHILD, STACK_CHILD, ABSOLUTE_CHILD]
+        .into_iter()
+        .find(|group| group.prefix == prefix)
+}
+
+impl ChildProps {
+    /// The member `name` of the group.
+    pub(crate) fn member(&self, name: &str) -> Option<PropSpec> {
+        self.members.iter().find(|p| p.name == name).copied()
+    }
+
+    /// The member names, for suggestions.
+    pub(crate) fn names(&self) -> Vec<&'static str> {
+        self.members.iter().map(|p| p.name).collect()
+    }
+}
+
+/// A widget's schema: its own property tables, whether it takes the common ones
+/// (every node but `Fragment` does), and the group it provides to its children.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct WidgetSchema {
     own: &'static [&'static [PropSpec]],
     common: bool,
+    provides: Option<ChildProps>,
 }
 
 /// What a property path names on a node.
@@ -238,39 +300,42 @@ pub(crate) struct WidgetSchema {
 pub(crate) enum PropLookup {
     /// A declared property.
     Known(PropSpec),
-    /// A property this schema does not check (a parent-provided prefix).
-    Unchecked,
     /// No such property.
     Unknown,
 }
 
 /// The built-in widget schema for a node type name, when the baseline lists it.
 pub(crate) fn builtin(name: &str) -> Option<WidgetSchema> {
-    let own: &'static [&'static [PropSpec]] = match name {
-        "Row" | "Column" => &[FLEX],
-        "Flex" => &[FLEX, FLEX_AXIS],
-        "Grid" => &[GRID],
-        "Stack" => &[STACK],
-        "Absolute" => &[],
-        "Scroll" => &[SCROLL],
+    let (own, provides): (&'static [&'static [PropSpec]], _) = match name {
+        "Row" | "Column" => (&[FLEX], None),
+        "Flex" => (&[FLEX, FLEX_AXIS], None),
+        "Grid" => (&[GRID], Some(GRID_CHILD)),
+        "Stack" => (&[STACK], Some(STACK_CHILD)),
+        "Absolute" => (&[], Some(ABSOLUTE_CHILD)),
+        "Scroll" => (&[SCROLL], None),
         "Fragment" => {
             return Some(WidgetSchema {
                 own: &[],
                 common: false,
+                provides: None,
             });
         }
-        "Text" => &[TEXT, TEXT_STYLE],
-        "TextInput" => &[TEXT_INPUT, TEXT_STYLE],
-        "Button" => &[BUTTON],
-        "Toggle" | "CheckBox" => &[CHECK],
-        "Slider" => &[SLIDER],
-        "Tabs" | "RadioGroup" => &[SELECTED],
-        "FocusScope" => &[FOCUS_SCOPE],
-        "KeyShortcut" => &[KEY_SHORTCUT],
-        "VirtualList" => &[VIRTUAL_LIST],
+        "Text" => (&[TEXT, TEXT_STYLE], None),
+        "TextInput" => (&[TEXT_INPUT, TEXT_STYLE], None),
+        "Button" => (&[BUTTON], None),
+        "Toggle" | "CheckBox" => (&[CHECK], None),
+        "Slider" => (&[SLIDER], None),
+        "Tabs" | "RadioGroup" => (&[SELECTED], None),
+        "FocusScope" => (&[FOCUS_SCOPE], None),
+        "KeyShortcut" => (&[KEY_SHORTCUT], None),
+        "VirtualList" => (&[VIRTUAL_LIST], None),
         _ => return None,
     };
-    Some(WidgetSchema { own, common: true })
+    Some(WidgetSchema {
+        own,
+        common: true,
+        provides,
+    })
 }
 
 impl WidgetSchema {
@@ -280,7 +345,19 @@ impl WidgetSchema {
         WidgetSchema {
             own: &[],
             common: true,
+            provides: None,
         }
+    }
+
+    /// The group this node provides to its direct children, if any.
+    pub(crate) fn provides(&self) -> Option<ChildProps> {
+        self.provides
+    }
+
+    /// Whether this is `Fragment`, which forms no parent: its children take the
+    /// properties of the enclosing real parent.
+    pub(crate) fn is_fragment(&self) -> bool {
+        !self.common
     }
 
     /// What the property path `segments` names on this node.
@@ -301,7 +378,6 @@ impl WidgetSchema {
                     PropLookup::Unknown
                 }
             }
-            [prefix, ..] if PARENT_PREFIXES.contains(prefix) => PropLookup::Unchecked,
             _ => PropLookup::Unknown,
         }
     }
@@ -327,7 +403,7 @@ impl WidgetSchema {
 
 #[cfg(test)]
 mod tests {
-    use super::{PropKind, PropLookup, builtin};
+    use super::{PropKind, PropLookup, builtin, child_props};
 
     #[test]
     fn lookup_covers_own_common_and_groups() {
@@ -348,12 +424,24 @@ mod tests {
             PropLookup::Known(_)
         ));
         assert_eq!(text.lookup(&["transition", "text"]), PropLookup::Unknown);
-        assert_eq!(text.lookup(&["grid", "row"]), PropLookup::Unchecked);
+        assert_eq!(text.lookup(&["grid", "row"]), PropLookup::Unknown);
         assert_eq!(text.lookup(&["txet"]), PropLookup::Unknown);
 
         let fragment = builtin("Fragment").expect("Fragment is in the baseline");
         assert_eq!(fragment.lookup(&["width"]), PropLookup::Unknown);
         assert!(builtin("Image").is_none());
+    }
+
+    #[test]
+    fn containers_provide_child_groups() {
+        let grid = builtin("Grid").and_then(|s| s.provides());
+        assert_eq!(grid.map(|g| g.prefix), Some("grid"));
+        let row = grid.and_then(|g| g.member("row"));
+        assert!(matches!(row, Some(p) if p.kind == PropKind::OptU16));
+        let absolute = child_props("absolute").and_then(|g| g.member("top"));
+        assert!(matches!(absolute, Some(p) if p.percent_basis));
+        assert!(builtin("Row").and_then(|s| s.provides()).is_none());
+        assert!(child_props("flex").is_none());
     }
 
     #[test]
