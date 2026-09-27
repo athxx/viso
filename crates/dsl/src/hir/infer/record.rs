@@ -5,7 +5,7 @@ use std::collections::HashSet;
 
 use super::{FieldInfo, InferCx, VariantPayload, compatible, first_child_expr};
 use crate::ast::{AstNode, Expr, FieldExpr};
-use crate::diag::Diagnostic;
+use crate::diag::{Applicability, Diagnostic, Fix, TextEdit};
 use crate::hir::ty::Ty;
 use crate::resolve::SymbolId;
 use crate::resolve::suggest::{Candidate, attach, nearest};
@@ -215,12 +215,10 @@ impl InferCx<'_> {
     }
 
     /// Types `recv?.field`: the field of an `Option` receiver's value, itself
-    /// optional (`Option<Option<T>>` flattens to `Option<T>`).
+    /// optional (`Option<Option<T>>` flattens to `Option<T>`). A receiver that is no
+    /// `Option` is reported and its field reads as with `.`.
     pub(super) fn infer_optional_field(&mut self, node: &SyntaxNode, expected: Option<&Ty>) -> Ty {
-        let recv = match first_child_expr(node) {
-            Some(recv) => self.infer_expr(&recv, None),
-            None => Ty::Unknown,
-        };
+        let (recv, through_option) = self.infer_optional_receiver(node);
         let Some(name) = node
             .children_with_tokens()
             .into_iter()
@@ -230,23 +228,57 @@ impl InferCx<'_> {
         else {
             return Ty::Unknown;
         };
-        let inner = match recv {
-            Ty::Option(inner) => *inner,
-            other => other,
-        };
         let want = match expected {
-            Some(Ty::Option(t)) => Some(t.as_ref()),
+            Some(Ty::Option(t)) if through_option => Some(t.as_ref()),
+            Some(t) if !through_option => Some(t),
             _ => None,
         };
-        match self.member_ty(&inner, &name, want) {
-            Some(ty) => {
-                let wrapped = match ty {
-                    Ty::Option(t) => Ty::Option(t),
-                    other => Ty::Option(Box::new(other)),
-                };
-                self.check_against(wrapped, expected, node)
-            }
+        let Some(ty) = self.member_ty(&recv, &name, want) else {
+            return Ty::Unknown;
+        };
+        let ty = match ty {
+            Ty::Option(t) => Ty::Option(t),
+            other if through_option => Ty::Option(Box::new(other)),
+            other => other,
+        };
+        self.check_against(ty, expected, node)
+    }
+
+    /// Types the receiver of `value?.member`, yielding the type the member is looked
+    /// up on and whether the receiver is an `Option`. A receiver of a known type that
+    /// is no `Option` is `E2103`, with a fix to `.`; the member then reads as with `.`.
+    pub(super) fn infer_optional_receiver(&mut self, node: &SyntaxNode) -> (Ty, bool) {
+        let recv = match first_child_expr(node) {
+            Some(recv) => self.infer_expr(&recv, None),
             None => Ty::Unknown,
+        };
+        match recv {
+            Ty::Option(inner) => (*inner, true),
+            Ty::Unknown | Ty::Never => (recv, true),
+            other => {
+                let op = node
+                    .children_with_tokens()
+                    .into_iter()
+                    .filter_map(|e| e.as_token().cloned())
+                    .find(|t| t.kind() == SyntaxKind::QuestionDot);
+                if let Some(op) = op {
+                    let message = format!(
+                        "`?.` reads through an `Option`, but the receiver is `{}`",
+                        self.describe(&other)
+                    );
+                    let mut diagnostic = Diagnostic::error("E2103", op.text_range(), message);
+                    diagnostic.fixes.push(Fix {
+                        title: "use `.`".to_string(),
+                        applicability: Applicability::MachineApplicable,
+                        edits: vec![TextEdit {
+                            range: op.text_range(),
+                            replacement: ".".to_string(),
+                        }],
+                    });
+                    self.diagnostics.push(diagnostic);
+                }
+                (other, false)
+            }
         }
     }
 

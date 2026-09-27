@@ -1393,6 +1393,7 @@ fn decl_symbol(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::diag::Applicability;
     use crate::resolve::{ModuleGraph, NameInterner, SourceUnit, resolve};
 
     /// Parses one `.vs` source as a single-module package, resolves it, and lowers it.
@@ -1578,6 +1579,36 @@ mod tests {
     }
 
     /// The diagnostic codes lowering `src` reports, in order.
+    #[test]
+    fn optional_chaining_reads_through_an_option() {
+        let decls = "record P { x: I64; tag: Option<String>; }\n";
+        assert_clean(&format!(
+            "{decls}fn f(p: Option<P>) -> Option<I64> {{ p?.x }}\n\
+             fn g(p: Option<P>) -> Option<String> {{ p?.tag }}"
+        ));
+        assert_eq!(
+            codes(&format!("{decls}fn f(p: Option<P>) -> I64 {{ p?.x }}")),
+            ["E2103"]
+        );
+        let pkg = lower_src(&format!("{decls}fn f(p: P) -> I64 {{ p?.x }}"));
+        let [diagnostic] = pkg.diagnostics.as_slice() else {
+            panic!("expected one diagnostic, got {:?}", pkg.diagnostics);
+        };
+        assert_eq!(diagnostic.code, "E2103");
+        let [fix] = diagnostic.fixes.as_slice() else {
+            panic!("expected one fix");
+        };
+        assert_eq!(fix.applicability, Applicability::MachineApplicable);
+        assert_eq!(fix.edits[0].replacement, ".");
+        assert_eq!(fix.edits[0].range, diagnostic.primary);
+        assert_eq!(
+            codes(&format!("{decls}fn f(p: P) -> Option<I64> {{ p?.x }}")),
+            ["E2103", "E2103"]
+        );
+        assert_clean("fn f(s: Option<String>) { s?.len(); }");
+        assert_eq!(codes("fn f(s: String) { s?.len(); }"), ["E2103"]);
+    }
+
     fn codes(src: &str) -> Vec<&'static str> {
         lower_src(src).diagnostics.iter().map(|d| d.code).collect()
     }

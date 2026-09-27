@@ -86,6 +86,8 @@ the three source entries share one frontend.
 - [x] State ordering `E2104`, computed cycle `E2105` (`hir/component.rs`).
 - [x] Infer the remaining expression kinds: `RecordExpr`, `ClosureExpr` (`E2401`),
       `IndexExpr`, `OptionalFieldExpr`, `TryExpr`, `RangeExpr`.
+  - [x] `?.` requires an `Option` receiver: any other known type is `E2103` with a
+        machine-applicable fix to `.` (member and method-call forms).
 - [x] Type statements and blocks: `let`, assignment target and value, `return` against
       the signature, loop `break` values.
 - [x] Match exhaustiveness `E2301` and unreachable patterns `E2302` (`hir/infer/pattern.rs`).

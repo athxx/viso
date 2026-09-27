@@ -470,6 +470,9 @@ impl<'a> InferCx<'a> {
                                 let _ = self.infer_expr(&recv, None);
                             }
                         }
+                        SyntaxKind::OptionalFieldExpr => {
+                            let _ = self.infer_optional_receiver(callee.syntax());
+                        }
                         _ => {
                             if let Ty::Fn(params, ret) = self.infer_expr(callee, None) {
                                 return self.apply_signature(&args, (params, *ret), expected, node);

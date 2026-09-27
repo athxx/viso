@@ -2736,7 +2736,7 @@ call_expression      = postfix_expression ;
 - Named Argument 必须匹配 Callable Schema；
 - 有默认值的参数可以省略；
 - 方法调用 `receiver.method(args)` 在 HIR 中解析为带 Receiver 的 Call；
-- Optional Member Call `value?.method()` 的结果为 `Option<R>`；
+- Optional Member `value?.label` 与 Optional Member Call `value?.method()` 要求 `value` 为 `Option<T>`，结果为 `Option<R>`（`R` 本身为 `Option` 时不再嵌套）；`value` 为已知的非 `Option` 类型时报 `E2103`，附可机器应用的修复：改为 `.`；
 - `?` 传播要求当前 Callable 返回兼容的 `Option` 或 `Result`；
 - 无字符串动态方法派发；Trait Object 方法通过 VTable Schema 解析。
 
