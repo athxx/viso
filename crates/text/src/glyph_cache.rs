@@ -353,6 +353,21 @@ impl Pool {
         }
     }
 
+    /// Reclaim every occupied page `in_use` rejects. Confined to this pool like
+    /// [`Self::shed`].
+    fn shed_unused(
+        &mut self,
+        in_use: impl Fn(usize) -> bool,
+        epoch: u64,
+        reclaims: &mut Vec<Reclaimed>,
+    ) {
+        for page in 0..self.pages.len() {
+            if self.pages[page].bytes > 0 && !in_use(page) {
+                self.reclaim_page(page, epoch, reclaims, None);
+            }
+        }
+    }
+
     /// Undo the most recent admission of `key` on `page` — the pixel owner could
     /// not place it — and seal the page so nothing else is aimed at it until it
     /// is reclaimed. `bitmap_bytes` must be what the admission was charged.
@@ -751,6 +766,31 @@ impl GlyphResidency {
         };
         let before = pool.evictions;
         pool.shed(pressure_bytes, epoch, reclaims);
+        pool.evictions - before
+    }
+
+    /// Shed one pool down to the pages `in_use` names, reclaiming every other
+    /// occupied page, and return how many were reclaimed.
+    ///
+    /// This is the memory-warning answer for a pool whose pixels are still
+    /// being drawn: page age cannot tell a cold page from one a retained,
+    /// unchanged frame keeps sampling, so the owner names the pages it draws
+    /// from and those keep their glyphs, pixels, and generations.
+    pub fn shed_pool_except(
+        &mut self,
+        kind: GlyphImageKind,
+        in_use: impl Fn(usize) -> bool,
+    ) -> u64 {
+        let epoch = self.epoch;
+        let reclaims = &mut self.reclaims;
+        let pool = match kind {
+            GlyphImageKind::MaskA8 => &mut self.a8,
+            GlyphImageKind::ScalableMtsdf => &mut self.mtsdf,
+            GlyphImageKind::ColorRgba8 => &mut self.rgba,
+            GlyphImageKind::OutlineVector | GlyphImageKind::ColorVector => &mut self.vector,
+        };
+        let before = pool.evictions;
+        pool.shed_unused(in_use, epoch, reclaims);
         pool.evictions - before
     }
 
@@ -1408,6 +1448,52 @@ mod tests {
         assert_eq!(res.pool_evictions(GlyphImageKind::MaskA8), 0);
         assert_eq!(res.pool_evictions(GlyphImageKind::ScalableMtsdf), 0);
         assert_eq!(res.pool_evictions(GlyphImageKind::OutlineVector), 0);
+    }
+
+    #[test]
+    fn shedding_except_keeps_the_named_pages_and_reclaims_the_rest() {
+        // Three A8 pages of two glyphs each, plus a full RGBA pool. Keeping page 1
+        // reclaims pages 0 and 2 only, whatever their age, and never the RGBA pool.
+        let page = PoolBudget::new(8, 100);
+        let mut res = GlyphResidency::with_pool_budgets(page, page, page, page);
+        let mut pages = Vec::new();
+        for g in 0..6u16 {
+            match res.get_or_admit(key_kind(g, 0, GlyphImageKind::MaskA8), 40) {
+                Admission::Admitted { page, .. } => pages.push(page),
+                other => panic!("fresh glyph admitted, got {other:?}"),
+            }
+            res.get_or_admit(key_kind(g, 0, GlyphImageKind::ColorRgba8), 40);
+        }
+        assert_eq!(pages, [0, 0, 1, 1, 2, 2]);
+        let mut reclaims = Vec::new();
+        res.take_reclaims(&mut reclaims);
+        reclaims.clear();
+        let rgba_before = res.pool_resident_bytes(GlyphImageKind::ColorRgba8);
+
+        let evicted = res.shed_pool_except(GlyphImageKind::MaskA8, |page| page == 1);
+        assert_eq!(evicted, 2);
+        res.take_reclaims(&mut reclaims);
+        let mut shed: Vec<_> = reclaims.iter().map(|r| (r.kind, r.page)).collect();
+        shed.sort_by_key(|&(_, page)| page);
+        assert_eq!(
+            shed,
+            [(GlyphImageKind::MaskA8, 0), (GlyphImageKind::MaskA8, 2)]
+        );
+        assert_eq!(res.pool_resident_glyphs(GlyphImageKind::MaskA8), 2);
+        for g in [2, 3] {
+            assert!(matches!(
+                res.get_or_admit(key_kind(g, 0, GlyphImageKind::MaskA8), 40),
+                Admission::Cached { page: 1, .. }
+            ));
+        }
+        assert_eq!(
+            res.pool_resident_bytes(GlyphImageKind::ColorRgba8),
+            rgba_before
+        );
+
+        // Nothing in use sheds the whole pool.
+        res.shed_pool_except(GlyphImageKind::MaskA8, |_| false);
+        assert_eq!(res.pool_resident_glyphs(GlyphImageKind::MaskA8), 0);
     }
 
     #[test]

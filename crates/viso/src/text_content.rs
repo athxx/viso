@@ -659,42 +659,74 @@ impl TextShaper {
         self.color_raster.forget_face(face);
     }
 
-    /// Answer an OS memory warning: reclaim every page of every glyph pool,
-    /// drop the worker's span cache, shed every face no live scope holds, and
-    /// hand the atlas planes to `retire` so the caller can release them with
-    /// their bindings. Placements die with their pages, so every retained text
-    /// payload is stale afterwards — the caller reshapes the mounted text,
-    /// which re-admits exactly the live working set into freshly created
-    /// planes. The last good layouts are kept: they hold no pixels, and
-    /// keeping them makes that reshape a re-raster only. Returns the plane
-    /// bytes retired.
+    /// Answer an OS memory warning: shed every face no live scope holds, the
+    /// worker's cold spans, and every coverage and color page no retained
+    /// layout draws from, and hand a plane left without a glyph to `retire` so
+    /// the caller can release it with its binding. Pages a drawn or staged
+    /// layout samples keep their pixels and placements: retained payloads
+    /// point into them, and page age cannot tell them from cold pages because
+    /// unchanged text is never re-rendered to touch them. The text on screen
+    /// therefore never goes missing while its coverage is re-rasterized, and a
+    /// warning repeated under sustained pressure costs no raster (§19).
+    /// Returns the plane bytes retired.
     pub(crate) fn trim(&mut self, mut retire: impl FnMut(TextureId)) -> usize {
-        for kind in [
-            GlyphImageKind::MaskA8,
-            GlyphImageKind::ScalableMtsdf,
-            GlyphImageKind::ColorRgba8,
-            GlyphImageKind::OutlineVector,
-        ] {
-            self.residency.shed_pool_to_pressure(kind, 0);
-        }
-        self.drain_reclaims();
         self.faces.shed_to_pressure_budget(0);
         self.faces.restore_budget();
         self.drop_evicted_faces();
+        let mut coverage_pages = HashSet::new();
+        let mut color_pages = HashSet::new();
+        for entry in self.slots.values() {
+            for committed in [&entry.drawn, &entry.staged].into_iter().flatten() {
+                for glyph in &committed.placed.glyphs {
+                    let mut key = GlyphKey {
+                        face: glyph.face,
+                        glyph: glyph.glyph,
+                        bucket: entry.ppem,
+                        kind: GlyphImageKind::MaskA8,
+                    };
+                    // A color glyph the color plane refused draws from coverage,
+                    // so both planes are asked.
+                    if let Some(placement) = self.coverage_uv.get(&key) {
+                        coverage_pages.insert(placement.page);
+                    }
+                    key.kind = GlyphImageKind::ColorRgba8;
+                    if let Some(placement) = self.color_uv.get(&key) {
+                        color_pages.insert(placement.page);
+                    }
+                }
+            }
+        }
+        self.residency
+            .shed_pool_except(GlyphImageKind::MaskA8, |page| {
+                coverage_pages.contains(&page)
+            });
+        self.residency
+            .shed_pool_except(GlyphImageKind::ColorRgba8, |page| {
+                color_pages.contains(&page)
+            });
+        // The MTSDF and vector pools own no pixels a layout draws from yet.
+        for kind in [GlyphImageKind::ScalableMtsdf, GlyphImageKind::OutlineVector] {
+            self.residency.shed_pool_to_pressure(kind, 0);
+        }
+        self.drain_reclaims();
         let plane = (self.atlas_size as usize) * (self.atlas_size as usize);
         let mut bytes = 0;
-        if let Some(atlas) = self.coverage_atlas.take() {
+        if self.residency.pool_resident_glyphs(GlyphImageKind::MaskA8) == 0
+            && let Some(atlas) = self.coverage_atlas.take()
+        {
             retire(atlas.texture());
             bytes += plane;
         }
-        if let Some(atlas) = self.color_atlas.take() {
+        if self
+            .residency
+            .pool_resident_glyphs(GlyphImageKind::ColorRgba8)
+            == 0
+            && let Some(atlas) = self.color_atlas.take()
+        {
             retire(atlas.texture());
             bytes += plane * COLOR_BYTES_PER_TEXEL;
         }
-        self.coverage_uv = HashMap::new();
-        self.color_uv = HashMap::new();
-        self.fate = HashMap::new();
-        self.outbox.push(ToWorker::Clear);
+        self.outbox.push(ToWorker::ShedCold);
         bytes
     }
 
@@ -2476,7 +2508,7 @@ mod tests {
     }
 
     #[test]
-    fn a_memory_trim_retires_the_atlas_and_reshaping_readmits_only_the_live_runs() {
+    fn a_memory_trim_keeps_the_mounted_text_and_sheds_only_the_dropped_runs() {
         let mut gpu = headless();
         let mut shaper = tiny_shaper();
         let first = settle(&mut shaper, &mut gpu, slot(0), &request(PAIR, 30.0), None);
@@ -2485,27 +2517,15 @@ mod tests {
         let Content::Text { atlas: old, .. } = first else {
             panic!("text content");
         };
+        shaper.retain_paragraphs(|at| at == slot(0));
 
         let mut retired = Vec::new();
         let bytes = shaper.trim(|texture| retired.push(texture));
-        assert_eq!(retired, vec![old], "only the coverage plane existed");
-        assert_eq!(bytes, (TINY_PLANE * TINY_PLANE) as usize);
-        assert_eq!(
-            shaper
-                .residency()
-                .pool_resident_bytes(GlyphImageKind::MaskA8),
-            0
+        assert!(
+            retired.is_empty(),
+            "the mounted run still samples the plane"
         );
-
-        // Reshaping the one run still mounted re-rasterizes into a fresh plane
-        // and admits its two glyphs only; the dropped run stays out.
-        let again = settle(&mut shaper, &mut gpu, slot(0), &request(PAIR, 30.0), None);
-        let Content::Text { atlas, glyphs, .. } = &again else {
-            panic!("text content");
-        };
-        assert_ne!(*atlas, old, "a retired plane is never sampled again");
-        assert_eq!(glyphs.len(), 2);
-        assert_eq!(shaper.counters().rasters(), 2);
+        assert_eq!(bytes, 0);
         let mut fresh = tiny_shaper();
         settle(
             &mut fresh,
@@ -2523,6 +2543,61 @@ mod tests {
                 .pool_resident_bytes(GlyphImageKind::MaskA8),
             "the trimmed atlas holds exactly what a cold start would",
         );
+
+        // The reshape the trim forces draws every glyph at once, from the same
+        // plane, without a raster: nothing on screen waits for the worker.
+        let Content::Text { atlas, glyphs, .. } =
+            shaper.shape(&mut gpu, slot(0), &request(PAIR, 30.0), 1.0, None)
+        else {
+            panic!("text content");
+        };
+        assert_eq!(atlas, old);
+        assert_eq!(glyphs.len(), 2);
+        drain(&mut shaper, &mut gpu);
+        assert_eq!(shaper.counters().rasters(), 0);
+
+        // A warning repeated under sustained pressure sheds nothing more.
+        shaper.end_frame();
+        shaper.trim(|texture| retired.push(texture));
+        assert!(retired.is_empty());
+        assert_eq!(
+            shaper
+                .residency()
+                .pool_resident_glyphs(GlyphImageKind::MaskA8),
+            2
+        );
+    }
+
+    #[test]
+    fn a_memory_trim_with_no_text_mounted_retires_the_plane() {
+        let mut gpu = headless();
+        let mut shaper = tiny_shaper();
+        let first = settle(&mut shaper, &mut gpu, slot(0), &request(PAIR, 30.0), None);
+        shaper.end_frame();
+        let Content::Text { atlas: old, .. } = first else {
+            panic!("text content");
+        };
+        shaper.retain_paragraphs(|_| false);
+
+        let mut retired = Vec::new();
+        let bytes = shaper.trim(|texture| retired.push(texture));
+        assert_eq!(retired, vec![old], "only the coverage plane existed");
+        assert_eq!(bytes, (TINY_PLANE * TINY_PLANE) as usize);
+        assert_eq!(
+            shaper
+                .residency()
+                .pool_resident_bytes(GlyphImageKind::MaskA8),
+            0
+        );
+
+        // Mounting the run again rasterizes into a fresh plane.
+        let again = settle(&mut shaper, &mut gpu, slot(0), &request(PAIR, 30.0), None);
+        let Content::Text { atlas, glyphs, .. } = &again else {
+            panic!("text content");
+        };
+        assert_ne!(*atlas, old, "a retired plane is never sampled again");
+        assert_eq!(glyphs.len(), 2);
+        assert_eq!(shaper.counters().rasters(), 2);
     }
 
     #[test]
@@ -3188,13 +3263,14 @@ mod tests {
         assert!(after.x <= width);
         assert_eq!(drawn_text(&shaper, slot(0)), edited);
 
-        // A memory trim keeps the lines: the reshape it forces only rasters.
+        // A memory trim keeps the lines and the coverage they draw: the
+        // reshape it forces neither reshapes nor rasters.
         shaper.end_frame();
         shaper.trim(|_| {});
         settle(&mut shaper, &mut gpu, slot(0), &wrapped(&edited), retained);
         assert_eq!(shaper.counters().reshapes(), 0);
         assert_eq!(shaper.counters().shaped_runs(), 0);
-        assert!(shaper.counters().rasters() > 0);
+        assert_eq!(shaper.counters().rasters(), 0);
     }
 
     #[test]

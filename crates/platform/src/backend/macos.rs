@@ -178,6 +178,10 @@ impl MacApp {
             if let Ok(mut q) = pressure_queue.try_borrow_mut() {
                 q.events.push_back(RawEvent::LowMemory);
             }
+            // The source fires while the pump blocks in `nextEventMatchingMask:`,
+            // which returns only for an event: post one so the warning is
+            // answered now, not whenever the next input arrives.
+            wake_pump();
         });
 
         Ok(Self {

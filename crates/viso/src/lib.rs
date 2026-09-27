@@ -1020,20 +1020,22 @@ impl WindowState {
     }
 
     /// Give back every GPU cache the next frame can rebuild: idle pooled
-    /// targets, and the whole glyph atlas. Mounted text is reshaped at once into
-    /// fresh planes, so the atlas comes back holding only the live working set
-    /// and no retained payload is left pointing at a retired page.
+    /// targets, and every glyph page no mounted text draws from. Unmounted
+    /// text is pruned first so it holds no page. Mounted text is then
+    /// reshaped, which re-admits anything a shed page held — none of its own
+    /// pages is shed, so that costs no raster and nothing on screen goes
+    /// missing.
     fn trim_memory(&mut self) {
         let (Some(gpu), Some(text)) = (self.gpu.as_mut(), self.text.as_mut()) else {
             return;
         };
-        gpu.renderer.trim_caches(&mut gpu.backend);
-        text.trim(|texture| gpu.renderer.release_texture(&mut gpu.backend, texture));
         let arena = self.store.arena();
         self.text_sources.retain(|id, _| arena.is_live(*id));
         text.retain_paragraphs(|slot| {
             arena.live_id(slot.index()).map(ParagraphSlot::from) == Some(slot)
         });
+        gpu.renderer.trim_caches(&mut gpu.backend);
+        text.trim(|texture| gpu.renderer.release_texture(&mut gpu.backend, texture));
         for (&id, request) in &self.text_sources {
             self.store.set_text_request(id, (**request).clone());
         }

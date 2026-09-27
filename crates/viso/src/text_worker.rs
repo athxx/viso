@@ -92,9 +92,9 @@ pub(crate) enum ToWorker {
     },
     /// The paragraph's node is gone: drop it and cancel its pending jobs.
     DropSlot(u64),
-    /// A memory trim: drop the span cache and the record of what was
-    /// rasterized.
-    Clear,
+    /// A memory trim: drop the spans no recent layout reused and the record
+    /// of what was rasterized.
+    ShedCold,
     Layout(Box<LayoutJob>),
     /// Rasterize the coverage of these glyphs.
     Raster {
@@ -336,18 +336,17 @@ impl SpanCache {
         self.live.len() + self.previous.len()
     }
 
-    /// Drop every span, counting each as an eviction.
-    fn clear(&mut self) {
-        self.evictions += self.len() as u64;
+    /// Drop the previous generation, counting each span as an eviction. The
+    /// live generation holds what current layouts reshape from, so it stays.
+    fn shed_cold(&mut self) {
+        self.evictions += self.previous.len() as u64;
         if inspect::ENABLED {
-            for key in self.live.keys().chain(self.previous.keys()) {
+            for key in self.previous.keys() {
                 self.ledger.evicted(key.cache_key(), None);
             }
             self.ledger_changed = true;
         }
-        self.live.clear();
         self.previous.clear();
-        self.live_bytes = 0;
         self.previous_bytes = 0;
     }
 
@@ -475,8 +474,8 @@ impl WorkerState {
                         let _ = out.send(FromWorker::Cancelled(1));
                     }
                 }
-                ToWorker::Clear => {
-                    self.spans.clear();
+                ToWorker::ShedCold => {
+                    self.spans.shed_cold();
                     self.sent.clear();
                 }
                 ToWorker::Layout(job) => {

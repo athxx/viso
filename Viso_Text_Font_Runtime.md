@@ -2953,7 +2953,7 @@ Viso Text/Font Runtime 只有同时满足下面条件才算达到 1.0 合同：
 [x] Glyph Atlas page eviction 不逐 glyph LRU
 [x] Atlas 满时不正常执行 whole-atlas reset
 [x] A8 / MTSDF / color RGBA atlas 与 Vector cache 使用独立 residency budget
-[ ] memory pressure 不引发全 Text cache 连锁清空
+[x] memory pressure 不引发全 Text cache 连锁清空
 [x] static text steady frame 不执行 resolve/shape/raster
 [x] 120/144/240Hz benchmark 有独立 regression gate
 [x] TextInput 的普通局部编辑在已加载字体下无需 IO/parse
@@ -3001,6 +3001,7 @@ Viso Text/Font Runtime 只有同时满足下面条件才算达到 1.0 合同：
 | page eviction 不逐 glyph LRU | `clock_second_chance_spares_recently_referenced`，`evicted_page_generation_bumps_and_invalidates_only_its_entries`，`touch_page_folds_recency_without_an_index_lookup` |
 | 无 whole-atlas reset | `atlas_full_evicts_a_page_never_whole_resets`，`filling_the_pool_reclaims_cold_pages_and_keeps_the_hot_glyphs`，`a_reclaimed_glyph_readmits_without_a_whole_atlas_upload`，`residency_evicts_one_page_of_one_pool_and_never_resets` |
 | 独立 residency budget | `four_pools_are_independent_no_cross_pool_eviction`，`independent_budgets_evict_at_their_own_thresholds`，`filling_the_color_pool_reclaims_nothing_from_the_coverage_pool`，`the_cache_stays_within_the_vector_pool_budget` |
+| memory pressure 不连锁清空 | pool 层 `memory_pressure_sheds_one_pool_and_leaves_the_others_whole`，`shedding_except_keeps_the_named_pages_and_reclaims_the_rest`；OS 内存警告路径 `TextShaper::trim` 只回收无 retained layout 采样的 page、span cache 的 previous generation 与未 pin 的 face：`a_memory_trim_keeps_the_mounted_text_and_sheds_only_the_dropped_runs`（挂载文本同 plane、零 raster、重复警告不再回收），`a_memory_trim_with_no_text_mounted_retires_the_plane` |
 | static steady frame 零 text work | `steady_state_frame_shapes_nothing`，`a_warm_working_set_admits_nothing_and_uploads_zero_bytes`；bench: `assert_steady_frames_do_no_text_work` |
 | 120/144/240Hz 独立 gate | bench: `assert_edit_cadence_holds_each_tier`，text `high_refresh` bench（只量 CPU 预算，不在 CI） |
 | TextInput 局部编辑无 IO/parse | `typing_into_a_covered_paragraph_loads_queries_and_parses_nothing`（face miss、system query、fallback 与 worker coverage parse 全程不变） |
@@ -3019,7 +3020,6 @@ Viso Text/Font Runtime 只有同时满足下面条件才算达到 1.0 合同：
 | MTSDF lazy promotion | 状态机已测试，runtime 不驱动 `RepresentationState`（无 transform 输入） |
 | MTSDF generation 不阻塞 frame | runtime 不生成 MTSDF |
 | settle 后 switch back | 同上，只有状态机层证据 |
-| memory pressure 不连锁清空 | pool 层 `memory_pressure_sheds_one_pool_and_leaves_the_others_whole` 成立，但 OS 内存警告路径 `TextShaper::trim` 清空全部 pool、span cache 与未 pin 的 face，违反 §19 |
 
 ---
 
