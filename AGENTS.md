@@ -52,10 +52,11 @@ The core design summary is:
 Before changing architecture-sensitive code, read:
 
 1. `Viso_Architecture.md` — the architecture contract spine. It fixes the non-violable contracts and delegates detailed subsystem specifications to standalone documents:
-   - [`Viso_DSL_1.0.md`](./Viso_DSL_1.0.md) — Viso DSL language design.
+   - [`Viso_DSL_1.0.md`](./Viso_DSL_1.0.md) — Viso DSL language specification (normative; design rationale is informative in [`Viso_DSL_Rationale.md`](./Viso_DSL_Rationale.md)).
    - [`Viso_Hot_Reload.md`](./Viso_Hot_Reload.md) — development runtime & transactional hot reload.
    - [`Viso_CLI.md`](./Viso_CLI.md) — CLI command surface, JSON protocol, and tooling contract.
    - [`Viso_Text_Font_Runtime.md`](./Viso_Text_Font_Runtime.md) — text/font runtime specification.
+   - [`Viso_Rendering.md`](./Viso_Rendering.md) — paint/renderer/GPU rendering specification.
 2. Relevant crate-level docs.
 3. Any ADR under `docs/adr/`.
 4. This `AGENTS.md`.
@@ -163,6 +164,8 @@ gpu
 runtime / platform
 ```
 
+Leaf crates (`math`, `ende`, `handle`, `macros`) sit outside this chain; `svg` sits on `render`; `ui-macros` and `lsp` sit on `dsl`. The exact allowed edges are the allowlist in `xtask/src/main.rs` (§3.6, Architecture §10).
+
 Exact low-level edges can differ where required by surface creation and runtime ownership, but the following are forbidden:
 
 ```text
@@ -173,6 +176,7 @@ platform -> studio
 ui       -> widgets
 render   -> widgets
 gpu      -> ui
+text     -> platform
 runtime  -> studio
 ```
 
@@ -185,11 +189,11 @@ Do not rely on this file or code review alone to preserve layering.
 Architecture-sensitive changes MUST keep the machine-readable policy and CI checker passing:
 
 ```text
-architecture.toml
-cargo xtask arch-check
+xtask/src/main.rs   allowed_edges() — per-crate allowlist of internal dependencies
+cargo xtask check-deps
 ```
 
-The checker should enforce crate dependency allow/deny edges and selected module-level forbidden imports. `cargo-modules` or similar tools may be used for visualization, but the repository-owned checker is the source of truth.
+The checker enforces crate dependency edges: any internal edge not in the allowlist fails, and every workspace member must have an entry. Module-level forbidden-import scanning is a target, not yet implemented. `cargo-modules` or similar tools may be used for visualization, but the repository-owned checker is the source of truth.
 
 ## 3.7 Self-build vs dependency policy
 
@@ -209,32 +213,36 @@ A target architecture contract may be Viso-owned while its first implementation 
 
 # 4. Repository Layout
 
-Target top-level layout:
+Top-level layout (`integrations/`, `extras/`, `vendor/` are target directories, created when first needed):
 
 ```text
-architecture.toml
-
 crates/
-    viso/
-    macros/
+    viso/        facade
+    macros/      GpuPod derive
+    ui-macros/   ui! / component! / view!
+    handle/
+    math/
+    ende/
     runtime/
     platform/
     gpu/
     shader/
     text/
+    svg/
     render/
     ui/
     widgets/
     dsl/
+    lsp/
     services/
 
+tools/           project (CLI/project model), future studio/migrate
 integrations/
 extras/
-tools/
 examples/
 benches/
 tests/
-docs/
+docs/            adr/
 xtask/
 vendor/
 ```
@@ -578,7 +586,7 @@ Do not launch effects from view rendering.
 
 # 11. Dirty Invalidation Rules
 
-Use explicit dirty classes, at minimum conceptually:
+Use exactly these dirty classes (`viso_ui::DirtyClass`, `crates/ui/src/dirty.rs`):
 
 ```text
 STRUCTURE
@@ -590,6 +598,8 @@ PAINT
 HIT_TEST
 SEMANTICS
 ```
+
+Do not invent other classes (no `INTERACTION`, no `input`/`resource` class); input-dependent visuals are `STYLE`/`HIT_TEST`, and resource changes are resource-key revisions, not dirty classes.
 
 Every property/state binding must define what it invalidates.
 
@@ -625,6 +635,8 @@ Stack
 Absolute
 Scroll
 ```
+
+Length values use the DSL length family `dp px sp em %` resolved to `Dp` (DSL §19, ADR 0033); sizing modes (`Fixed`, `Fill`, `Fit`, `MinContent`/`MaxContent`) are a separate concept from length units.
 
 Internal algorithms may be specialized single-pass implementations.
 
@@ -692,7 +704,7 @@ StyleId
 Theme should be semantic-token based:
 
 ```text
-color.*
+colors.*
 typography.*
 spacing.*
 radius.*
@@ -803,7 +815,7 @@ struct Painter {
 }
 
 #[repr(C)]
-#[derive(GpuInstance)]
+#[derive(GpuPod)]
 struct Instance {
     rect: Vec4,
     color: Vec4,
@@ -814,7 +826,7 @@ Do not rely on implicit assumptions like:
 
 > everything after field X in this Rust struct is GPU instance memory.
 
-The `GpuInstance` derive/compiler must validate offsets, alignment, types, and shader declarations.
+The `GpuPod` derive (`viso-macros`, re-exported by `viso-gpu`) and `InstanceSchema` validation must check offsets, alignment, types, and shader declarations.
 
 Any unsafe memory reinterpretation requires explicit safety documentation and tests.
 
@@ -910,8 +922,8 @@ component! { Tiny { view { Text {} } } } // ComponentDecl
 
 Rules:
 
-- `ui!` MUST parse only the ViewFragment entry grammar;
-- `component!` MUST parse only the ComponentDecl entry grammar;
+- `ui!` MUST parse only the ViewFragment entry grammar (exactly one root node);
+- `component!` MUST parse only the ComponentEntry grammar: optional imports/attributes followed by one component declaration, with the `component` keyword optional (DSL §22.1);
 - `view!` MUST compile an external `.vs` source through the normal module/file frontend;
 - all three forms MUST share component/native schema, name resolution, type/effect/capability checking, Typed HIR, Reactive/UI/Shader IR, and diagnostics semantics;
 - do not create a mini inline DSL or macro-only runtime semantics;
@@ -955,7 +967,9 @@ Text {
 }
 ```
 
-Imperative behavior assignment continues to use `=` / `+=` / etc.
+Imperative behavior assignment continues to use `=` / `+=` / etc. Configuration items inside `resource`/`start` blocks (`load =`, `key =`, `policy = [...]`) keep `=`.
+
+Keywords are two-tier (DSL §12, ADR 0034): strict keywords can never be binding names; contextual keywords (`state`, `style`, `key`, `event`, …) are ordinary identifiers outside their fixed positions; any keyword is allowed as a label (after `.`/`::`, field names, named arguments, enum variants). `theme` and `env` are injected context bindings, not syntax.
 
 Do not reintroduce Makepad's `:=`, `+:`, `<:`, `>:` or other assignment-family syntax. Named node identity is explicit with `node name: Type { ... }`; merge/override behavior uses explicit typed constructs.
 
@@ -1525,7 +1539,7 @@ ScriptVm runtime evaluation / App::from_script_mod
     -> Viso `.vs` compiler + dev hot-reload evaluator + schema/module instantiation
 
 implicit GPU instance struct tail
-    -> explicit GpuInstance descriptor
+    -> explicit #[derive(GpuPod)] + InstanceSchema
 ```
 
 Do not make a migration superficially compile while keeping the old semantics hidden behind new names.
@@ -1718,7 +1732,7 @@ Before finalizing a framework change, verify:
 - [ ] No unnecessary new crate was created.
 - [ ] No vague `core/common/utils` bucket was introduced.
 - [ ] Public API complexity did not increase without reason.
-- [ ] New state/property behavior has a DirtyMask contract.
+- [ ] New state/property behavior declares its `DirtyClass` set.
 - [ ] Studio/tooling dependency did not leak into runtime.
 - [ ] Pure Rust path still works without Viso DSL runtime assumptions.
 - [ ] Release path does not require developer-only metadata unnecessarily.
@@ -2037,12 +2051,11 @@ Tests should not require physical pointer interaction when a deterministic input
 The repository MUST enforce architecture policy in CI. The baseline command is:
 
 ```text
-cargo xtask arch-check
+cargo xtask check-deps
 ```
 
-The repository should also enforce:
+`check-deps` enforces crate dependency edges. The repository should also enforce:
 
-- forbidden crate dependency edges;
 - formatting/lints;
 - unit/integration tests;
 - headless UI snapshots;
@@ -2088,7 +2101,7 @@ Completion means the relevant combination of:
 - implementation complete;
 - tests added/updated;
 - format/lint clean;
-- `cargo xtask arch-check` clean for architecture-sensitive changes;
+- `cargo xtask check-deps` clean for architecture-sensitive changes;
 - runtime behavior verified;
 - performance measured if claimed or hot-path-affecting;
 - docs/ADR updated when architecture changes;
