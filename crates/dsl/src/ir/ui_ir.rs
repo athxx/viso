@@ -103,13 +103,16 @@ impl NodeKind {
     }
 }
 
-/// A dimension along one axis, mirroring `viso_ui::layout::Length`. `Dp`/`Px`
-/// units and bare numbers fold to [`LengthIr::Fixed`]; `%` and `fill` fold to
-/// [`LengthIr::Fill`]; `fit`/`auto` fold to [`LengthIr::Fit`].
+/// A dimension along one axis, mirroring `viso_ui::layout::Length`. A pure-`dp`
+/// constant folds to [`LengthIr::Fixed`]; a constant with a `%` term, such as
+/// `50%` or `100% - 16dp`, folds to [`LengthIr::Relative`]. `%` is a ratio of the
+/// parent's content box, never a fill share.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum LengthIr {
-    /// A fixed extent in logical pixels.
+    /// An exact extent in dp.
     Fixed(f32),
+    /// `fixed + pct × basis`, with `pct` a fraction of the basis (`0.5` is `50%`).
+    Relative { fixed: f32, pct: f32 },
     /// A weighted share of remaining space.
     Fill { weight: f32 },
     /// Sized to content.

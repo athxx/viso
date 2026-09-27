@@ -225,7 +225,8 @@ fn size_of(style: &AotStyle) -> Size {
 /// commit's `length_of`.
 fn length_of(len: Option<AotLength>) -> Length {
     match len {
-        Some(AotLength::Fixed(px)) => Length::Fixed(px),
+        Some(AotLength::Fixed(dp)) => Length::Fixed(dp),
+        Some(AotLength::Relative { fixed, pct }) => Length::Relative { fixed, pct },
         Some(AotLength::Fill { weight }) => Length::Fill { weight },
         Some(AotLength::Fit) | None => Length::Fit,
     }

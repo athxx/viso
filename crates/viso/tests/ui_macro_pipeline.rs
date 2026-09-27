@@ -38,13 +38,13 @@ const H: u32 = 100;
 /// assertion is on the geometry layout assigned, the stage `ui!` actually owns.
 #[test]
 fn ui_fragment_lays_out_and_drives_the_renderer() {
-    // A root sized in device pixels so layout has a concrete box to place, holding a
+    // A root sized in dp so layout has a concrete box to place, holding a
     // fixed-size child leaf. `width`/`height` fold to `Length::Fixed` in the emitter.
     let build = viso::ui! {
         Column {
-            width: 120px;
-            height: 60px;
-            Leaf { width: 40px; height: 24px; }
+            width: 120dp;
+            height: 60dp;
+            Leaf { width: 40dp; height: 24dp; }
         }
     };
 
@@ -106,6 +106,40 @@ fn ui_fragment_lays_out_and_drives_the_renderer() {
     assert_eq!(stats.draw_calls, 0, "no visible quad, no draw call");
     assert_eq!(stats.instances, 0, "no visible quad, no instance");
     renderer.submit(&mut gpu, surf, [0.0, 0.0, 0.0, 1.0], [W as f32, H as f32]);
+}
+
+/// A `%` length reaches layout as a ratio of the parent's content box: `50%` is half
+/// the surface width and `100% - 8dp` is the surface height less 8dp.
+#[test]
+fn ui_fragment_percent_lengths_resolve_against_the_parent() {
+    let build = viso::ui! {
+        Row {
+            Leaf { width: 50%; height: 100% - 8dp; }
+        }
+    };
+
+    let mut store = NodeStore::new();
+    let root = {
+        let mut cx = BuildCx::new(&mut store);
+        build(&mut cx).id()
+    };
+    let surface = Rect {
+        x: 0.0,
+        y: 0.0,
+        w: W as f32,
+        h: H as f32,
+    };
+    let mut scratch = Vec::new();
+    store.layout(root, surface, &mut scratch);
+
+    let child = store
+        .arena()
+        .links(root)
+        .unwrap()
+        .first_child
+        .expect("Row mounted its Leaf child");
+    let world = store.world(child);
+    assert_eq!((world.w, world.h), (W as f32 * 0.5, H as f32 - 8.0));
 }
 
 /// The reactive contract driven end to end: a `text: count;` property that the macro

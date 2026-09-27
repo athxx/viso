@@ -33,6 +33,7 @@ use crate::syntax::span::TextRange;
 use super::module::{ModuleGraph, ResolveErrorKind, SourceUnit};
 use super::name::{NameId, NameInterner};
 use super::scope::{LocalSlot, ModuleSymbol, Namespace, ScopeStack, SymbolTable};
+use super::suggest;
 use super::symbol::{SymbolId, SymbolIdentity, SymbolKind, fingerprint};
 
 /// What a name use resolves to.
@@ -131,6 +132,7 @@ pub fn resolve(
         let imports = build_import_env(cu.as_ref(), graph, &tables, interner);
         let mut pass = ModulePass {
             table: &tables[i],
+            decls: &all_decls[i],
             imports: &imports,
             interner,
             refs: Vec::new(),
@@ -203,8 +205,8 @@ fn build_symbol_table(
         let Some((name_tok, kind, ns)) = decl_identity(&decl) else {
             continue;
         };
-        let text = name_tok.text();
-        let name = interner.intern(&text);
+        let name = interner.intern(&name_tok.text());
+        let text = interner.text(name).unwrap_or_default().to_owned();
         let id = fingerprint(SymbolIdentity {
             package,
             module_path: module_text,
@@ -212,15 +214,7 @@ fn build_symbol_table(
             decl_path: &text,
         });
         let symbol = ModuleSymbol { id, exported };
-        out.decls.push(SymbolDecl {
-            id,
-            name_range: name_tok.text_range(),
-        });
-        if let Err(_existing) = out.table.define(name, ns, symbol) {
-            out.errors.push(
-                ResolveErrorKind::DuplicateName.to_diagnostic(Some(name_tok.text_range()), &text),
-            );
-        }
+        out.define(name, ns, symbol, &name_tok);
         // A component's/system's members (state, computed, input, event, and the
         // callables) are named module symbols too: an intra-component reference such
         // as `computed x = count` resolves `count` to the member's symbol. Their
@@ -240,10 +234,51 @@ fn build_symbol_table(
 struct SymbolTableBuild {
     table: SymbolTable,
     decls: Vec<SymbolDecl>,
+    /// The raw source spelling of each entry in `decls`, index for index, so a
+    /// collision can tell a true duplicate from an NFC-equal respelling.
+    spellings: Vec<String>,
     errors: Vec<Diagnostic>,
 }
 
 impl SymbolTableBuild {
+    /// Defines `symbol`, declared by `name_tok`, reporting a collision: `E1101`
+    /// when the earlier declaration is spelled differently but normalizes alike,
+    /// `E2002` when it is the same spelling.
+    fn define(
+        &mut self,
+        name: NameId,
+        ns: Namespace,
+        symbol: ModuleSymbol,
+        name_tok: &crate::syntax::SyntaxToken,
+    ) {
+        let spelling = name_tok.text().to_string();
+        let range = name_tok.text_range();
+        self.decls.push(SymbolDecl {
+            id: symbol.id,
+            name_range: range,
+        });
+        self.spellings.push(spelling.clone());
+        let Err(existing) = self.table.define(name, ns, symbol) else {
+            return;
+        };
+        let earlier = self
+            .decls
+            .iter()
+            .zip(&self.spellings)
+            .find(|(decl, _)| decl.id == existing.id);
+        let kind = match earlier {
+            Some((_, first)) if *first != spelling => ResolveErrorKind::NormalizationConflict,
+            _ => ResolveErrorKind::DuplicateName,
+        };
+        let mut error = kind.to_diagnostic(Some(range), &spelling);
+        if let Some((decl, first)) = earlier {
+            error
+                .related
+                .push((decl.name_range, format!("`{first}` is declared here")));
+        }
+        self.errors.push(error);
+    }
+
     fn into_parts(self) -> (SymbolTable, Vec<SymbolDecl>, Vec<Diagnostic>) {
         (self.table, self.decls, self.errors)
     }
@@ -268,8 +303,8 @@ fn define_members(
         let Some((name_tok, kind, ns)) = member_identity(&member) else {
             continue;
         };
-        let member_text = name_tok.text();
-        let name = interner.intern(&member_text);
+        let name = interner.intern(&name_tok.text());
+        let member_text = interner.text(name).unwrap_or_default();
         let decl_path = format!("{owner}::{member_text}");
         let id = fingerprint(SymbolIdentity {
             package,
@@ -281,16 +316,7 @@ fn define_members(
             id,
             exported: false,
         };
-        out.decls.push(SymbolDecl {
-            id,
-            name_range: name_tok.text_range(),
-        });
-        if let Err(_existing) = out.table.define(name, ns, symbol) {
-            out.errors.push(
-                ResolveErrorKind::DuplicateName
-                    .to_diagnostic(Some(name_tok.text_range()), &member_text),
-            );
-        }
+        out.define(name, ns, symbol, &name_tok);
     }
 }
 
@@ -432,9 +458,21 @@ fn type_or_module_path_text(node: &SyntaxNode) -> String {
     out
 }
 
+/// The identifier tokens directly under `node`, in order.
+fn ident_tokens(node: &SyntaxNode) -> Vec<crate::syntax::SyntaxToken> {
+    use crate::syntax::SyntaxKind;
+    node.children_with_tokens()
+        .into_iter()
+        .filter_map(|e| e.as_token().cloned())
+        .filter(|t| matches!(t.kind(), SyntaxKind::Ident | SyntaxKind::RawIdent))
+        .collect()
+}
+
 /// The per-module resolution walk state.
 struct ModulePass<'a> {
     table: &'a SymbolTable,
+    /// The declaration sites of `table`'s symbols, for nearest-name suggestions.
+    decls: &'a [SymbolDecl],
     imports: &'a std::collections::HashMap<NameId, ImportBinding>,
     interner: &'a mut NameInterner,
     refs: Vec<ResolvedRef>,
@@ -463,6 +501,12 @@ impl ModulePass<'_> {
             match decl {
                 Item::Component(c) => self.resolve_component(&c),
                 Item::System(s) => self.resolve_system(&s),
+                Item::Fn(f) => self.resolve_callable(f.params(), f.return_type(), f.body()),
+                Item::Action(a) => self.resolve_callable(a.params(), a.return_type(), a.body()),
+                Item::Task(t) => self.resolve_callable(t.params(), t.return_type(), t.body()),
+                Item::Record(_) | Item::Enum(_) | Item::Const(_) | Item::TypeAlias(_) => {
+                    self.resolve_body(decl.syntax());
+                }
                 _ => {}
             }
         }
@@ -515,14 +559,22 @@ impl ModulePass<'_> {
                     self.resolve_expr(&def);
                 }
             }
-            Member::Fn(f) => self.resolve_callable(f.params(), f.body()),
-            Member::Action(a) => self.resolve_callable(a.params(), a.body()),
-            Member::Task(t) => self.resolve_callable(t.params(), t.body()),
+            Member::Fn(f) => self.resolve_callable(f.params(), f.return_type(), f.body()),
+            Member::Action(a) => self.resolve_callable(a.params(), a.return_type(), a.body()),
+            Member::Task(t) => self.resolve_callable(t.params(), t.return_type(), t.body()),
             Member::Event(_) => {}
         }
     }
 
-    fn resolve_callable(&mut self, params: Vec<crate::ast::Param>, body: Option<Block>) {
+    fn resolve_callable(
+        &mut self,
+        params: Vec<crate::ast::Param>,
+        returns: Option<crate::ast::ReturnType>,
+        body: Option<Block>,
+    ) {
+        if let Some(ty) = returns {
+            self.resolve_body(ty.syntax());
+        }
         self.scopes.push();
         for p in params {
             if let Some(tok) = p.name() {
@@ -544,18 +596,178 @@ impl ModulePass<'_> {
     }
 
     fn resolve_block(&mut self, block: &Block) {
-        // Statement-level `let`/assignment binding is Slice-M territory for full
-        // flow; here we resolve every value path the block contains against the
-        // current scope so value references still resolve. A single descendant walk
-        // visits each path head exactly once.
+        self.resolve_body(block.syntax());
+    }
+
+    /// Resolves the value paths under `node`, opening a lexical scope at each
+    /// block, closure, `for` and match arm, and binding `let`, closure-parameter,
+    /// `for` and arm patterns in it so later uses resolve to a [`LocalSlot`]. A
+    /// `let` binds after its initializer, so the initializer still sees the outer
+    /// name it shadows.
+    fn resolve_body(&mut self, node: &SyntaxNode) {
         use crate::syntax::SyntaxKind;
-        for node in block.syntax().descendants() {
-            if node.kind() == SyntaxKind::PathExpr
-                && let Some(path) = PathExpr::cast(node)
-            {
-                self.resolve_value_path(&path);
+        match node.kind() {
+            SyntaxKind::PathExpr => {
+                if let Some(path) = PathExpr::cast(node.clone()) {
+                    self.resolve_value_path(&path);
+                }
+            }
+            SyntaxKind::TypePath => {
+                if let Some(ty) = TypePath::cast(node.clone()) {
+                    self.resolve_type_path(&ty);
+                }
+            }
+            SyntaxKind::Pattern => self.resolve_pattern_types(node),
+            SyntaxKind::RecordExpr => {
+                self.resolve_record_head(node);
+                self.resolve_children(node);
+            }
+            SyntaxKind::RecordExprField => {
+                // A shorthand field `{ x }` reads the value named `x`.
+                match node.first_child() {
+                    Some(value) => self.resolve_body(&value),
+                    None => {
+                        if let Some(name) = ident_tokens(node).into_iter().next() {
+                            self.resolve_value_token(&name);
+                        }
+                    }
+                }
+            }
+            SyntaxKind::Block | SyntaxKind::MatchArm | SyntaxKind::ClosureExpr => {
+                self.scopes.push();
+                self.resolve_children(node);
+                self.scopes.pop();
+            }
+            SyntaxKind::ClosureParam => {
+                for child in node.children() {
+                    if child.kind() != SyntaxKind::Pattern {
+                        self.resolve_body(&child);
+                    }
+                }
+                self.bind_patterns(node);
+            }
+            SyntaxKind::LetStmt => {
+                for child in node.children() {
+                    if child.kind() != SyntaxKind::Pattern {
+                        self.resolve_body(&child);
+                    }
+                }
+                self.bind_patterns(node);
+            }
+            SyntaxKind::ForStmt => {
+                for child in node.children() {
+                    if !matches!(child.kind(), SyntaxKind::Pattern | SyntaxKind::Block) {
+                        self.resolve_body(&child);
+                    }
+                }
+                self.scopes.push();
+                self.bind_patterns(node);
+                for child in node.children() {
+                    if child.kind() == SyntaxKind::Block {
+                        self.resolve_body(&child);
+                    }
+                }
+                self.scopes.pop();
+            }
+            _ => self.resolve_children(node),
+        }
+    }
+
+    fn resolve_children(&mut self, node: &SyntaxNode) {
+        use crate::syntax::SyntaxKind;
+        for child in node.children() {
+            self.resolve_body(&child);
+            // An arm's pattern binds for its guard and body.
+            if node.kind() == SyntaxKind::MatchArm && child.kind() == SyntaxKind::Pattern {
+                self.bind_pattern(&child);
             }
         }
+    }
+
+    /// Binds every direct `Pattern` child of `node` in the innermost scope.
+    fn bind_patterns(&mut self, node: &SyntaxNode) {
+        use crate::syntax::SyntaxKind;
+        for child in node.children() {
+            if child.kind() == SyntaxKind::Pattern {
+                self.bind_pattern(&child);
+            }
+        }
+    }
+
+    fn bind_pattern(&mut self, pattern: &SyntaxNode) {
+        let Some(pattern) = crate::ast::Pattern::cast(pattern.clone()) else {
+            return;
+        };
+        for tok in pattern.bindings() {
+            let name = self.interner.intern(&tok.text());
+            let slot = self.scopes.bind(name);
+            self.refs.push(ResolvedRef {
+                range: tok.text_range(),
+                to: Resolution::Local(slot),
+            });
+        }
+    }
+
+    /// Resolves the type heads a pattern names (`S::busy(n)`, `P { x, .. }`,
+    /// `S::idle`), without diagnosing an unknown head: `Some`/`Ok`/`Err` and
+    /// native types have no declaration.
+    fn resolve_pattern_types(&mut self, pattern: &SyntaxNode) {
+        use crate::syntax::SyntaxKind;
+        for node in pattern.descendants() {
+            match node.kind() {
+                SyntaxKind::TypePath
+                    if node.parent().map(|p| p.kind()) != Some(SyntaxKind::GenericArgs) =>
+                {
+                    if let Some(ty) = TypePath::cast(node) {
+                        self.resolve_type_head(&ty, true);
+                    }
+                }
+                SyntaxKind::QualifiedVariantPattern => {
+                    // `S::idle` / `a::S::done`: the enum is the next-to-last segment.
+                    let segments = ident_tokens(&node);
+                    if let Some(head) = segments.len().checked_sub(2).map(|i| &segments[i]) {
+                        self.resolve_type_token(head);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    /// Resolves the type a record literal names by its head token (`P { .. }`,
+    /// `a::P { .. }`), or the enum of a record-variant literal (`S::done { .. }`).
+    fn resolve_record_head(&mut self, record: &SyntaxNode) {
+        let heads = ident_tokens(record);
+        let Some(last) = heads.last() else {
+            return;
+        };
+        if !self.resolve_type_token(last)
+            && let Some(owner) = heads.len().checked_sub(2).map(|i| &heads[i])
+        {
+            self.resolve_type_token(owner);
+        }
+    }
+
+    /// Resolves `head` in the type namespace, reporting whether it named a type.
+    fn resolve_type_token(&mut self, head: &crate::syntax::SyntaxToken) -> bool {
+        let name = self.interner.intern(&head.text());
+        let symbol = self
+            .table
+            .get(name, Namespace::Type)
+            .map(|s| s.id)
+            .or_else(|| {
+                self.imports
+                    .get(&name)
+                    .filter(|b| b.namespace == Namespace::Type)
+                    .map(|b| b.symbol)
+            });
+        if let Some(symbol) = symbol {
+            self.refs.push(ResolvedRef {
+                range: head.text_range(),
+                to: Resolution::Symbol(symbol),
+            });
+        }
+        symbol.is_some()
     }
 
     fn resolve_view_block(&mut self, block: &ViewBlock) {
@@ -649,25 +861,15 @@ impl ModulePass<'_> {
     }
 
     fn resolve_for(&mut self, for_item: &ViewFor) {
-        use crate::syntax::SyntaxKind;
         // The iterable is evaluated in the outer scope — it cannot see the loop
         // pattern it is about to bind, so resolve it before pushing the loop scope.
         if let Some(iterable) = for_item.iterable() {
             self.resolve_expr(&iterable);
         }
         self.scopes.push();
-        // Bind the loop pattern's identifiers (the pattern precedes `in`).
-        if let Some(pat) = for_item
-            .syntax()
-            .children()
-            .into_iter()
-            .find(|n| n.kind() == SyntaxKind::Pattern)
-        {
-            for tok in pat.descendants_with_tokens().into_iter().filter_map(|e| {
-                e.as_token()
-                    .filter(|t| matches!(t.kind(), SyntaxKind::Ident | SyntaxKind::RawIdent))
-                    .cloned()
-            }) {
+        // Bind the loop pattern's names (the pattern precedes `in`).
+        if let Some(pat) = for_item.pattern() {
+            for tok in pat.bindings() {
                 let name = self.interner.intern(&tok.text());
                 let slot = self.scopes.bind(name);
                 self.refs.push(ResolvedRef {
@@ -705,16 +907,7 @@ impl ModulePass<'_> {
 
     /// Resolves an expression, descending into it and resolving each path head.
     fn resolve_expr(&mut self, expr: &Expr) {
-        use crate::syntax::SyntaxKind;
-        // Resolve the head of every path expression anywhere within `expr`.
-        // `descendants()` already yields `expr` itself first, so no separate prefix.
-        for node in expr.syntax().descendants() {
-            if node.kind() == SyntaxKind::PathExpr
-                && let Some(path) = PathExpr::cast(node)
-            {
-                self.resolve_value_path(&path);
-            }
-        }
+        self.resolve_body(expr.syntax());
     }
 
     /// Resolves the head segment of a value/property path: local scope first, then
@@ -731,29 +924,32 @@ impl ModulePass<'_> {
         ) {
             return;
         }
-        let text = head.text();
-        let name = self.interner.intern(&text);
-        if let Some(slot) = self.scopes.lookup(name) {
-            self.refs.push(ResolvedRef {
-                range: head.text_range(),
-                to: Resolution::Local(slot),
-            });
-            return;
+        // `S::idle` names a variant of the type `S`: a qualified head that is no
+        // value resolves in the type namespace.
+        if !self.resolve_value_token(&head) && path.segments().nth(1).is_some() {
+            self.resolve_type_token(&head);
         }
-        if let Some(sym) = self.table.get(name, Namespace::Value) {
-            self.refs.push(ResolvedRef {
-                range: head.text_range(),
-                to: Resolution::Symbol(sym.id),
-            });
-            return;
-        }
-        if let Some(binding) = self.imports.get(&name) {
-            self.refs.push(ResolvedRef {
-                range: head.text_range(),
-                to: Resolution::Symbol(binding.symbol),
-            });
-        }
-        // Otherwise: possibly a native/schema name; not diagnosed at this layer.
+    }
+
+    /// Resolves one value name token: local scope first, then the module value
+    /// namespace, then imports. Returns whether it resolved.
+    fn resolve_value_token(&mut self, head: &crate::syntax::SyntaxToken) -> bool {
+        let name = self.interner.intern(&head.text());
+        let to = if let Some(slot) = self.scopes.lookup(name) {
+            Resolution::Local(slot)
+        } else if let Some(sym) = self.table.get(name, Namespace::Value) {
+            Resolution::Symbol(sym.id)
+        } else if let Some(binding) = self.imports.get(&name) {
+            Resolution::Symbol(binding.symbol)
+        } else {
+            // Possibly a native/schema name; not diagnosed at this layer.
+            return false;
+        };
+        self.refs.push(ResolvedRef {
+            range: head.text_range(),
+            to,
+        });
+        true
     }
 
     /// Resolves the head segment of a type path against the type namespace, then
@@ -771,6 +967,26 @@ impl ModulePass<'_> {
     }
 
     fn resolve_type_head(&mut self, ty: &TypePath, defer_unresolved: bool) {
+        use crate::syntax::SyntaxKind;
+        // Generic arguments (`List<P>`) name types too.
+        for segment in ty.syntax().children() {
+            for generic in segment.children() {
+                if generic.kind() != SyntaxKind::GenericArgs {
+                    continue;
+                }
+                for arg in generic.children() {
+                    match arg.kind() {
+                        SyntaxKind::TypePath => {
+                            if let Some(arg) = TypePath::cast(arg) {
+                                self.resolve_type_head(&arg, defer_unresolved);
+                            }
+                        }
+                        SyntaxKind::TupleType => self.resolve_body(&arg),
+                        _ => {}
+                    }
+                }
+            }
+        }
         let Some(head) = ty.segments().next() else {
             return;
         };
@@ -797,10 +1013,38 @@ impl ModulePass<'_> {
         // In a fragment there is no compilation unit to declare it and no import, so
         // the name is a native/schema widget type — deferred, never diagnosed here.
         if is_user_type_name(&text) && !defer_unresolved {
-            self.errors.push(
-                ResolveErrorKind::UnresolvedType.to_diagnostic(Some(head.text_range()), &text),
-            );
+            let at = head.text_range();
+            let mut diagnostic = ResolveErrorKind::UnresolvedType.to_diagnostic(Some(at), &text);
+            let suggestions = self.nearest_types(&text);
+            suggest::attach(&mut diagnostic, at, &suggestions);
+            self.errors.push(diagnostic);
         }
+    }
+
+    /// The type-namespace names in scope nearest to `text`: this module's own type
+    /// declarations (with their declaration spans) and its type imports.
+    fn nearest_types(&self, text: &str) -> Vec<suggest::Candidate<'_>> {
+        let declared_at = |id| self.decls.iter().find(|d| d.id == id).map(|d| d.name_range);
+        let own = self
+            .table
+            .names(Namespace::Type)
+            .filter_map(|(name, symbol)| {
+                Some(suggest::Candidate {
+                    name: self.interner.text(name)?,
+                    declared_at: declared_at(symbol.id),
+                })
+            });
+        let imported = self
+            .imports
+            .iter()
+            .filter(|(_, binding)| binding.namespace == Namespace::Type)
+            .filter_map(|(&name, _)| {
+                Some(suggest::Candidate {
+                    name: self.interner.text(name)?,
+                    declared_at: None,
+                })
+            });
+        suggest::nearest(text, own.chain(imported))
     }
 }
 
@@ -868,6 +1112,7 @@ pub fn resolve_fragment(
     let imports = std::collections::HashMap::new();
     let mut pass = ModulePass {
         table: &table,
+        decls: &[],
         imports: &imports,
         interner,
         refs: Vec::new(),
@@ -1000,6 +1245,47 @@ mod tests {
     }
 
     #[test]
+    fn an_unresolved_type_suggests_the_nearest_type_names() {
+        let mut interner = NameInterner::new();
+        let lib = unit(&mut interner, &["lib"], "export record Bag { x: Int; }");
+        let src = "import lib::{ Bag }; record Badge { x: Int; } const Bade = 1; \
+                   component A { input value: Badg; view { } }";
+        let app = unit(&mut interner, &["app"], src);
+        let mods = resolve_all(vec![lib, app], &mut interner);
+        let error = mods
+            .iter()
+            .flat_map(|m| m.errors.iter())
+            .find(|d| d.code == "E2001")
+            .expect("`Badg` is E2001");
+        // The value `Bade` is as near but lives in the wrong namespace.
+        let replacements: Vec<_> = error
+            .fixes
+            .iter()
+            .map(|f| (f.applicability, f.edits[0].replacement.as_str()))
+            .collect();
+        assert_eq!(
+            replacements,
+            [
+                (crate::diag::Applicability::MaybeIncorrect, "Badge"),
+                (crate::diag::Applicability::MaybeIncorrect, "Bag"),
+            ]
+        );
+        assert!(
+            error
+                .fixes
+                .iter()
+                .all(|f| &src[range(f.edits[0].range)] == "Badg")
+        );
+        // Only the local declaration has a span in this file.
+        let related: Vec<_> = error.related.iter().map(|(r, _)| &src[range(*r)]).collect();
+        assert_eq!(related, ["Badge"]);
+    }
+
+    fn range(r: TextRange) -> std::ops::Range<usize> {
+        r.start().to_u32() as usize..r.end().to_u32() as usize
+    }
+
+    #[test]
     fn a_namespace_collision_is_reported() {
         let mut interner = NameInterner::new();
         // Two records named `Dup` collide in the type namespace.
@@ -1015,6 +1301,34 @@ mod tests {
                 .any(|d| d.code == "E2002" && d.message.contains("`Dup`")),
             "a repeated type name in one module is a collision"
         );
+    }
+
+    #[test]
+    fn an_nfc_equal_respelling_is_a_normalization_conflict() {
+        let mut interner = NameInterner::new();
+        // `café` composed and decomposed: one name after NFC, two spellings.
+        let src = "const caf\u{e9} = 1; const cafe\u{301} = 2; fn f() -> I64 { cafe\u{301} }";
+        let app = unit(&mut interner, &["app"], src);
+        let mods = resolve_all(vec![app], &mut interner);
+        let errors: Vec<_> = mods.iter().flat_map(|m| m.errors.iter()).collect();
+        let conflict = errors
+            .iter()
+            .find(|d| d.code == "E1101")
+            .unwrap_or_else(|| panic!("no E1101 in {errors:?}"));
+        assert!(!errors.iter().any(|d| d.code == "E2002"), "{errors:?}");
+        let (first, _) = conflict.related[0];
+        let at = first.start().to_u32() as usize..first.end().to_u32() as usize;
+        assert_eq!(&src[at], "caf\u{e9}");
+        // The same spelling twice stays a plain duplicate.
+        let mut interner = NameInterner::new();
+        let app = unit(&mut interner, &["app"], "const x = 1; const x = 2;");
+        let mods = resolve_all(vec![app], &mut interner);
+        let codes: Vec<_> = mods
+            .iter()
+            .flat_map(|m| m.errors.iter())
+            .map(|d| d.code)
+            .collect();
+        assert_eq!(codes, ["E2002"]);
     }
 
     #[test]

@@ -27,14 +27,16 @@
 
 mod decl;
 mod expr;
+mod incremental;
 mod patterns;
 mod stmt;
 mod types;
 mod view;
 
+use std::cell::Cell;
 use std::rc::Rc;
 
-use super::cst::{GreenBuilder, GreenNode};
+use super::cst::{GreenBuilder, GreenNode, GreenToken};
 use super::kind::SyntaxKind;
 use super::span::{TextRange, TextSize};
 use super::token::Token;
@@ -42,6 +44,7 @@ use super::token::Token;
 use crate::diag::Diagnostic;
 
 pub use super::parser::{Parse, ParseErrorKind};
+pub use incremental::IncrementalParse;
 
 /// Parses `tokens` (the full stream, trivia and the trailing [`SyntaxKind::Eof`]
 /// included) over `source` into a lossless typed CST rooted at
@@ -97,8 +100,17 @@ enum Event {
     },
     /// Closes the innermost open node.
     Finish,
-    /// Consumes `n_significant`-th significant token into the current node.
-    Token,
+    /// Consumes the next significant token into the current node, retagged as
+    /// `kind` when set: a recognized contextual keyword becomes its keyword kind
+    /// and a keyword in a label position becomes `Ident` (§12.4–§12.5).
+    ///
+    /// `len` takes only that many bytes of the token and leaves the rest as the
+    /// next significant token: a `>>`, `>=` or `>>=` split so a generic list can
+    /// close on its first `>`.
+    Token {
+        kind: Option<SyntaxKind>,
+        len: Option<u32>,
+    },
 }
 
 /// The placeholder kind of an abandoned [`Marker`]: its `Start`/`Finish` produce
@@ -115,14 +127,18 @@ const TOMBSTONE: SyntaxKind = SyntaxKind::MissingToken;
 struct Marker {
     /// Index of this marker's `Start` event.
     pos: usize,
+    /// The parser's cursor, lookahead high-water mark and error count when the
+    /// node opened, recorded for [`incremental`] reparse units.
+    opened: (usize, usize, usize),
     /// Guards against forgetting to complete/abandon a marker in debug builds.
     completed: bool,
 }
 
 impl Marker {
-    fn new(pos: usize) -> Marker {
+    fn new(pos: usize, opened: (usize, usize, usize)) -> Marker {
         Marker {
             pos,
+            opened,
             completed: false,
         }
     }
@@ -136,6 +152,16 @@ impl Marker {
             _ => unreachable!("marker must point at a Start event"),
         }
         p.events.push(Event::Finish);
+        if incremental::is_unit(kind) {
+            let (start, lookahead, errors) = self.opened;
+            p.units.push(UnitRecord {
+                kind,
+                start,
+                end: p.pos,
+                lookahead,
+                errors: errors..p.errors.len(),
+            });
+        }
         CompletedMarker { pos: self.pos }
     }
 
@@ -186,8 +212,31 @@ struct Parser<'t, 's> {
     significant: Vec<usize>,
     /// Cursor into `significant`.
     pos: usize,
+    /// Bytes of the token at the cursor already consumed by a `>` split. While
+    /// non-zero the cursor sees only the token's remainder.
+    split: u32,
     events: Vec<Event>,
     errors: Vec<Diagnostic>,
+    /// One past the farthest significant index any lookahead has inspected; a
+    /// value past `significant.len()` means the end of input was inspected.
+    lookahead: Cell<usize>,
+    /// Every completed reparse unit, in completion order.
+    units: Vec<UnitRecord>,
+}
+
+/// What [`incremental`] reparse needs to know about one completed unit node,
+/// in significant-token indices of the parser that produced it.
+#[derive(Debug, Clone)]
+struct UnitRecord {
+    kind: SyntaxKind,
+    /// The cursor when the node opened and when it closed.
+    start: usize,
+    end: usize,
+    /// The lookahead high-water mark when the node opened: everything the
+    /// parse so far depended on.
+    lookahead: usize,
+    /// The errors emitted between opening and closing the node.
+    errors: std::ops::Range<usize>,
 }
 
 impl<'t, 's> Parser<'t, 's> {
@@ -203,8 +252,11 @@ impl<'t, 's> Parser<'t, 's> {
             source,
             significant,
             pos: 0,
+            split: 0,
             events: Vec::new(),
             errors: Vec::new(),
+            lookahead: Cell::new(0),
+            units: Vec::new(),
         }
     }
 
@@ -217,9 +269,22 @@ impl<'t, 's> Parser<'t, 's> {
     /// The kind of the significant token `n` positions ahead of the cursor, or
     /// [`SyntaxKind::Eof`] past the end.
     fn nth(&self, n: usize) -> SyntaxKind {
-        self.significant
+        self.saw(n);
+        let kind = self
+            .significant
             .get(self.pos + n)
-            .map_or(SyntaxKind::Eof, |&i| self.tokens[i].kind)
+            .map_or(SyntaxKind::Eof, |&i| self.tokens[i].kind);
+        if n == 0 && self.split > 0 {
+            split_rest(kind, self.split)
+        } else {
+            kind
+        }
+    }
+
+    /// Raises the lookahead high-water mark to cover the token `n` ahead.
+    fn saw(&self, n: usize) {
+        self.lookahead
+            .set(self.lookahead.get().max(self.pos + n + 1));
     }
 
     /// The kind at the cursor.
@@ -232,14 +297,43 @@ impl<'t, 's> Parser<'t, 's> {
     /// context word (callable keywords, `empty`) that lexes as a bare
     /// identifier — never on the hot path.
     fn token_text(&self, n: usize) -> &'s str {
+        self.saw(n);
         self.significant.get(self.pos + n).map_or("", |&i| {
             let r = self.tokens[i].range;
-            &self.source[r.start().to_u32() as usize..r.end().to_u32() as usize]
+            let skip = if n == 0 { self.split } else { 0 };
+            &self.source[(r.start().to_u32() + skip) as usize..r.end().to_u32() as usize]
         })
+    }
+
+    /// The contextual keyword the token `n` ahead spells, if it is a plain
+    /// identifier whose text is one (§12.3). Whether it *acts* as a keyword is
+    /// the caller's §12.4 lookahead decision.
+    fn nth_contextual(&self, n: usize) -> Option<SyntaxKind> {
+        if self.nth(n) != SyntaxKind::Ident {
+            return None;
+        }
+        SyntaxKind::contextual_keyword(self.token_text(n))
+    }
+
+    /// Whether the token `n` ahead spells the contextual keyword `kw`.
+    fn nth_at_contextual(&self, n: usize, kw: SyntaxKind) -> bool {
+        self.nth_contextual(n) == Some(kw)
+    }
+
+    /// Whether the cursor spells the contextual keyword `kw`.
+    fn at_contextual(&self, kw: SyntaxKind) -> bool {
+        self.nth_at_contextual(0, kw)
+    }
+
+    /// Whether the token `n` ahead can name something: an identifier, a raw
+    /// identifier, or (since they lex as identifiers) a contextual keyword.
+    fn nth_is_ident(&self, n: usize) -> bool {
+        matches!(self.nth(n), SyntaxKind::Ident | SyntaxKind::RawIdent)
     }
 
     /// Whether the cursor is at end of significant input.
     fn at_end(&self) -> bool {
+        self.saw(0);
         self.pos >= self.significant.len()
     }
 
@@ -252,18 +346,77 @@ impl<'t, 's> Parser<'t, 's> {
     /// the end).
     fn offset(&self) -> TextSize {
         match self.significant.get(self.pos) {
-            Some(&i) => self.tokens[i].range.start(),
+            Some(&i) => self.tokens[i].range.start() + TextSize::from(self.split),
             None => self.tokens.last().map_or(TextSize::ZERO, |t| t.range.end()),
         }
     }
 
     /// Consumes the current significant token into the tree.
     fn bump_any(&mut self) {
+        let kind = (self.split > 0).then(|| self.current());
+        self.bump_token(kind);
+    }
+
+    /// Consumes the current significant token, recording it in the tree as
+    /// `kind` rather than its lexed kind.
+    fn bump_as(&mut self, kind: SyntaxKind) {
+        self.bump_token(Some(kind));
+    }
+
+    fn bump_token(&mut self, kind: Option<SyntaxKind>) {
         if self.at_end() {
             return;
         }
-        self.events.push(Event::Token);
+        self.events.push(Event::Token { kind, len: None });
         self.pos += 1;
+        self.split = 0;
+    }
+
+    /// Whether the cursor starts with a `>`: a `>` itself, or a `>>`, `>=` or
+    /// `>>=` whose first byte can close a generic list.
+    fn at_gt(&self) -> bool {
+        matches!(
+            self.current(),
+            SyntaxKind::Gt | SyntaxKind::Shr | SyntaxKind::Ge | SyntaxKind::ShrEq
+        )
+    }
+
+    /// Consumes one `>` closing a generic list, splitting a longer token that
+    /// starts with `>` so its remainder stays for the next production.
+    fn eat_gt(&mut self) -> bool {
+        match self.current() {
+            SyntaxKind::Gt => {
+                self.bump_any();
+                true
+            }
+            SyntaxKind::Shr | SyntaxKind::Ge | SyntaxKind::ShrEq => {
+                self.events.push(Event::Token {
+                    kind: Some(SyntaxKind::Gt),
+                    len: Some(1),
+                });
+                self.split += 1;
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// [`Parser::eat_gt`], or a missing-token error.
+    fn expect_gt(&mut self) {
+        if !self.eat_gt() {
+            self.error(ParseErrorKind::MissingToken);
+        }
+    }
+
+    /// Consumes the contextual keyword `kw` if the cursor spells it, retagging
+    /// it as `kw`.
+    fn eat_contextual(&mut self, kw: SyntaxKind) -> bool {
+        if self.at_contextual(kw) {
+            self.bump_as(kw);
+            true
+        } else {
+            false
+        }
     }
 
     /// Consumes the current token if it is `kind`, returning whether it was.
@@ -276,15 +429,23 @@ impl<'t, 's> Parser<'t, 's> {
         }
     }
 
-    /// Consumes `kind`, or records an error and inserts a `MissingToken` node in
-    /// its place, keeping the tree shape the grammar expects.
+    /// Consumes `kind`, or records an error, keeping the tree shape the grammar
+    /// expects. A closing delimiter missing at end of input is an unclosed
+    /// delimiter (E1401); any other absence is a missing token (E1404).
     fn expect(&mut self, kind: SyntaxKind) -> bool {
         if self.eat(kind) {
-            true
+            return true;
+        }
+        let closer = matches!(
+            kind,
+            SyntaxKind::RBrace | SyntaxKind::RParen | SyntaxKind::RBracket
+        );
+        if closer && self.at_end() {
+            self.error(ParseErrorKind::UnclosedDelimiter);
         } else {
             self.error(ParseErrorKind::MissingToken);
-            false
         }
+        false
     }
 
     // --- Markers ----------------------------------------------------------
@@ -296,7 +457,7 @@ impl<'t, 's> Parser<'t, 's> {
             kind: TOMBSTONE,
             forward_parent: None,
         });
-        Marker::new(pos)
+        Marker::new(pos, (self.pos, self.lookahead.get(), self.errors.len()))
     }
 
     /// Opens a node that *precedes* an already-completed node `c`, so `c` becomes
@@ -310,6 +471,14 @@ impl<'t, 's> Parser<'t, 's> {
         m
     }
 
+    /// The kind a completed node was given.
+    fn kind_of(&self, c: CompletedMarker) -> SyntaxKind {
+        match self.events[c.pos] {
+            Event::Start { kind, .. } => kind,
+            _ => unreachable!("a completed marker points at a Start event"),
+        }
+    }
+
     // --- Errors -----------------------------------------------------------
 
     /// Records a structural error at the current offset.
@@ -318,9 +487,32 @@ impl<'t, 's> Parser<'t, 's> {
         self.errors.push(kind.to_diagnostic(TextRange::new(at, at)));
     }
 
+    /// The cursor position, for a repetition loop's progress check.
+    fn cursor(&self) -> (usize, u32) {
+        (self.pos, self.split)
+    }
+
+    /// Guarantees a repetition loop advances: if the item production consumed
+    /// nothing since `before`, the current token becomes an error node (E1403)
+    /// so the loop cannot spin on input no item can start with.
+    fn ensure_progress(&mut self, before: (usize, u32)) {
+        if self.cursor() == before && !self.at_end() {
+            self.err_and_bump(ParseErrorKind::UnexpectedTokens);
+        }
+    }
+
     /// Wraps the current token in an `ErrorNode` and advances, so recovery always
     /// makes progress and the token still lands in the tree.
+    /// A stray closing delimiter reported as unexpected is an unmatched closer
+    /// (E1402).
     fn err_and_bump(&mut self, kind: ParseErrorKind) {
+        let kind = match (kind, self.current()) {
+            (
+                ParseErrorKind::UnexpectedTokens,
+                SyntaxKind::RBrace | SyntaxKind::RParen | SyntaxKind::RBracket,
+            ) => ParseErrorKind::UnmatchedCloser,
+            _ => kind,
+        };
         let m = self.start();
         self.error(kind);
         self.bump_any();
@@ -388,7 +580,18 @@ impl<'t, 's> Parser<'t, 's> {
 /// Plays the event stream into a [`GreenBuilder`], resolving `forward_parent`
 /// chains and interleaving trivia from the raw token stream so the result is
 /// lossless.
-fn build_tree(tokens: &[Token], source: &str, mut events: Vec<Event>) -> Rc<GreenNode> {
+fn build_tree(tokens: &[Token], source: &str, events: Vec<Event>) -> Rc<GreenNode> {
+    let (root, raw) = play_events(tokens, source, events);
+    debug_assert!(
+        raw_covers_all(tokens, raw),
+        "build_tree left tokens unconsumed"
+    );
+    root
+}
+
+/// [`build_tree`] without the whole-stream check: plays `events` over a token
+/// stream that may continue past them, returning the tree and the raw cursor.
+fn play_events(tokens: &[Token], source: &str, mut events: Vec<Event>) -> (Rc<GreenNode>, usize) {
     let mut builder = GreenBuilder::new();
     // Cursor over the raw token stream, so trivia are emitted in place.
     let mut raw = 0usize;
@@ -452,6 +655,8 @@ fn build_tree(tokens: &[Token], source: &str, mut events: Vec<Event>) -> Rc<Gree
     // later event to trigger its lazy flush, so it is flushed into the root just
     // before the outermost real `Finish` returns the depth to zero.
     let mut depth = 0usize;
+    // Bytes of `tokens[raw]` already emitted by a split `Token` event.
+    let mut raw_off = 0u32;
     for event in ordered {
         match event {
             Event::Start {
@@ -478,40 +683,81 @@ fn build_tree(tokens: &[Token], source: &str, mut events: Vec<Event>) -> Rc<Gree
                 }
                 builder.finish_node();
             }
-            Event::Token => {
-                emit_trivia(&mut builder, tokens, source, &mut raw);
-                emit_next_significant(&mut builder, tokens, source, &mut raw);
+            Event::Token { kind, len } => {
+                if raw_off == 0 {
+                    emit_trivia(&mut builder, tokens, source, &mut raw);
+                }
+                emit_next_significant(
+                    &mut builder,
+                    tokens,
+                    source,
+                    (&mut raw, &mut raw_off),
+                    (kind, len),
+                );
             }
         }
     }
-    let root = builder.finish();
-    debug_assert!(
-        raw_covers_all(tokens, raw),
-        "build_tree left tokens unconsumed"
-    );
-    root
+    (builder.finish(), raw)
 }
 
 /// Emits trivia at the raw cursor and then the next significant token into the
-/// builder, advancing past all of them.
+/// builder, advancing past all of them. The significant token takes `retag` as
+/// its kind when set; a `len` emits only that many bytes of it (a `>` split),
+/// tracked in `raw_off` until the token's last piece is emitted.
 fn emit_next_significant(
     builder: &mut GreenBuilder,
     tokens: &[Token],
     source: &str,
-    raw: &mut usize,
+    (raw, raw_off): (&mut usize, &mut u32),
+    (retag, len): (Option<SyntaxKind>, Option<u32>),
 ) {
     while *raw < tokens.len() {
-        let t = tokens[*raw];
+        let mut t = tokens[*raw];
         if t.kind == SyntaxKind::Eof {
             *raw += 1;
             continue;
         }
-        let is_trivia = t.kind.is_trivia();
-        builder.token_from(t, source);
-        *raw += 1;
-        if !is_trivia {
-            break;
+        if t.kind.is_trivia() {
+            builder.token_from(t, source);
+            *raw += 1;
+            continue;
         }
+        if let Some(kind) = retag {
+            t.kind = kind;
+        }
+        let start = t.range.start().to_u32() + *raw_off;
+        let end = t.range.end().to_u32();
+        match len {
+            Some(n) => {
+                let text = &source[start as usize..(start + n) as usize];
+                builder.token(GreenToken::new(t.kind, text));
+                *raw_off += n;
+            }
+            None if *raw_off > 0 => {
+                builder.token(GreenToken::new(
+                    t.kind,
+                    &source[start as usize..end as usize],
+                ));
+                *raw_off = 0;
+                *raw += 1;
+            }
+            None => {
+                builder.token_from(t, source);
+                *raw += 1;
+            }
+        }
+        break;
+    }
+}
+
+/// The kind of what remains of a `>`-led token after `consumed` bytes were split
+/// off as `>`.
+fn split_rest(kind: SyntaxKind, consumed: u32) -> SyntaxKind {
+    match (kind, consumed) {
+        (SyntaxKind::Shr, 1) => SyntaxKind::Gt,
+        (SyntaxKind::ShrEq, 1) => SyntaxKind::Ge,
+        (SyntaxKind::ShrEq, 2) | (SyntaxKind::Ge, 1) => SyntaxKind::Eq,
+        _ => kind,
     }
 }
 
@@ -536,4 +782,50 @@ fn emit_trivia(builder: &mut GreenBuilder, tokens: &[Token], source: &str, raw: 
 /// Debug check that the raw cursor consumed the whole token stream.
 fn raw_covers_all(tokens: &[Token], raw: usize) -> bool {
     tokens[raw..].iter().all(|t| t.kind == SyntaxKind::Eof)
+}
+
+/// A binding or declaration name (§12.5): an identifier, a raw identifier or a
+/// contextual keyword. A strict keyword here is E1301; it is still consumed as
+/// the name so the declaration keeps its shape.
+fn name(p: &mut Parser) {
+    if p.nth_is_ident(0) {
+        p.bump_any();
+    } else if p.current().is_strict_keyword() {
+        p.error(ParseErrorKind::ReservedIdent);
+        p.bump_as(SyntaxKind::Ident);
+    } else {
+        p.error(ParseErrorKind::MissingToken);
+    }
+}
+
+/// Whether the cursor is at a label (§12.5): any identifier or keyword.
+fn at_label(p: &Parser) -> bool {
+    p.nth_is_ident(0) || p.current().is_keyword()
+}
+
+/// A label (§12.5): member names, `::` path segments, field and variant names,
+/// named-argument and attribute labels. Any identifier or keyword is accepted
+/// and a keyword is recorded as `Ident`.
+fn label(p: &mut Parser) {
+    if p.at(SyntaxKind::RawIdent) {
+        p.bump_any();
+    } else if at_label(p) {
+        p.bump_as(SyntaxKind::Ident);
+    } else {
+        p.error(ParseErrorKind::MissingToken);
+    }
+}
+
+/// `Attribute*` — any run of `@path(args)` attributes preceding a declaration,
+/// member, node item or statement, each wrapped in its own node.
+fn attributes(p: &mut Parser) {
+    while p.at(SyntaxKind::At) {
+        let m = p.start();
+        p.bump_any(); // `@`
+        expr::path_only(p);
+        if p.at(SyntaxKind::LParen) {
+            expr::arg_list(p);
+        }
+        m.complete(p, SyntaxKind::Attribute);
+    }
 }

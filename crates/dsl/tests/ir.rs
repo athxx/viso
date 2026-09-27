@@ -67,17 +67,75 @@ fn row_and_containers_resolve_their_kind_and_axis() {
 
 #[test]
 fn static_dimensions_fold_into_style() {
-    // `dp`/`px` and bare numbers fold to a fixed extent.
-    let node = only_node("Leaf { width: 12dp; height: 34px; gap: 8; }");
+    // A `dp` constant folds to a fixed extent.
+    let node = only_node("Leaf { width: 12dp; height: 34dp; gap: 8dp; }");
     assert_eq!(node.style.width, Some(LengthIr::Fixed(12.0)));
     assert_eq!(node.style.height, Some(LengthIr::Fixed(34.0)));
     assert_eq!(node.style.gap, Some(8.0));
     assert!(node.pending.is_empty(), "constants folded, nothing pending");
 
-    // `%` folds to a fill weight.
+    // `%` is a ratio of the parent's content box, not a fill share.
     let pct = only_node("Leaf { width: 50%; height: 25%; }");
-    assert_eq!(pct.style.width, Some(LengthIr::Fill { weight: 0.5 }));
-    assert_eq!(pct.style.height, Some(LengthIr::Fill { weight: 0.25 }));
+    assert_eq!(
+        pct.style.width,
+        Some(LengthIr::Relative {
+            fixed: 0.0,
+            pct: 0.5
+        })
+    );
+    assert_eq!(
+        pct.style.height,
+        Some(LengthIr::Relative {
+            fixed: 0.0,
+            pct: 0.25
+        })
+    );
+}
+
+#[test]
+fn mixed_length_constants_fold_term_wise() {
+    let node = only_node("Leaf { width: 100% - 2 * 8dp; height: -(4dp - 10dp) / 2; }");
+    assert_eq!(
+        node.style.width,
+        Some(LengthIr::Relative {
+            fixed: -16.0,
+            pct: 1.0
+        })
+    );
+    assert_eq!(node.style.height, Some(LengthIr::Fixed(3.0)));
+    assert!(node.pending.is_empty());
+}
+
+#[test]
+fn a_negative_size_constant_clamps_to_zero() {
+    let node = only_node("Leaf { width: 4dp - 10dp; gap: -2dp; }");
+    assert_eq!(node.style.width, Some(LengthIr::Fixed(0.0)));
+    assert_eq!(node.style.gap, Some(0.0));
+}
+
+#[test]
+fn values_that_are_not_dp_or_percent_lengths_do_not_fold() {
+    // A bare number is a scalar; `px`/`sp`/`em` need an environment scalar; `pt`
+    // is not a unit; `1s` is a duration; `%` has no gap basis; a length plus a
+    // scalar and a division by zero are not lengths. None may become a fixed dp.
+    let node = only_node("Leaf { width: 12; height: 34px; gap: 8; }");
+    assert_eq!(node.style.width, None);
+    assert_eq!(node.style.height, None);
+    assert_eq!(node.style.gap, None);
+    assert_eq!(node.pending.len(), 3);
+    for source in [
+        "Leaf { width: 2sp; }",
+        "Leaf { width: 1.5em; }",
+        "Leaf { width: 12pt; }",
+        "Leaf { width: 1s; }",
+        "Leaf { width: 10dp + 1; }",
+        "Leaf { width: 10dp / 0; }",
+        "Leaf { gap: 10%; }",
+    ] {
+        let node = only_node(source);
+        assert!(node.style.is_empty(), "{source} folded to {:?}", node.style);
+        assert_eq!(node.pending.len(), 1, "{source} is left pending");
+    }
 }
 
 #[test]

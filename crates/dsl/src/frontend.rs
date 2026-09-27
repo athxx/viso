@@ -37,6 +37,26 @@ use crate::syntax::{GreenNode, SyntaxKind, SyntaxNode, TextRange, TextSize, toke
 /// it, and a file never restates it.
 pub const LANGUAGE_VERSION: &str = "1.0";
 
+/// Checks a language version a package pins (its `Viso.toml` or lockfile) against
+/// the one this compiler implements: `E1001` at `at`, the span of the version in
+/// the manifest when the caller has one, when they differ.
+pub fn check_language_version(version: &str, at: TextRange) -> Option<Diagnostic> {
+    (version != LANGUAGE_VERSION).then(|| {
+        let mut error = Diagnostic::error(
+            "E1001",
+            at,
+            format!(
+                "unknown or unsupported language version `{version}`; this compiler \
+                 implements `{LANGUAGE_VERSION}`"
+            ),
+        );
+        error.notes.push(format!(
+            "set `language = \"{LANGUAGE_VERSION}\"` in `Viso.toml`"
+        ));
+        error
+    })
+}
+
 /// The package a bare fragment's reactive sources are minted under. The fragment
 /// has no module of its own, so every `ui!` and every fragment hot reload shares
 /// this anchor, and a source name keeps one identity across both.
@@ -227,17 +247,12 @@ pub fn compile_file(source: &str, origin: &Origin) -> Compiled {
 /// component that is mounted, and lower its view.
 fn compile_unit(source: &str, parse: Parse, origin: &Origin) -> Compiled {
     let mut diagnostics = parse.errors.clone();
-    if let Some(language) = &origin.language
-        && language != LANGUAGE_VERSION
+    if let Some(error) = origin
+        .language
+        .as_deref()
+        .and_then(|language| check_language_version(language, TextRange::empty(TextSize::ZERO)))
     {
-        diagnostics.push(Diagnostic::error(
-            "E4203",
-            TextRange::empty(TextSize::ZERO),
-            format!(
-                "the package pins language version `{language}`; this compiler implements \
-                 `{LANGUAGE_VERSION}`"
-            ),
-        ));
+        diagnostics.push(error);
     }
     let root = SyntaxNode::new_root(parse.root.clone());
     let Some(cu) = CompilationUnit::cast(root.clone()) else {
@@ -457,12 +472,17 @@ fn parse_int(text: &str) -> Option<i128> {
 }
 
 /// Every value-position path head in the tree, first-appearance order,
-/// deduplicated: the names a fragment's surrounding scope must supply.
+/// deduplicated: the names a fragment's surrounding scope must supply. A callee
+/// (`format(..)`) is not one: a captured state is a value, never a function.
 fn path_heads(root: &SyntaxNode) -> Vec<String> {
     let mut seen = BTreeSet::new();
     let mut names = Vec::new();
     for node in root.descendants() {
-        let Some(path) = PathExpr::cast(node) else {
+        let callee = node.parent().is_some_and(|parent| {
+            parent.kind() == SyntaxKind::CallExpr
+                && parent.first_child().is_some_and(|first| first == node)
+        });
+        let Some(path) = PathExpr::cast(node).filter(|_| !callee) else {
             continue;
         };
         if let Some(head) = path.segments().next() {
@@ -518,7 +538,7 @@ mod tests {
     fn a_headerless_file_compiles_its_only_component() {
         let src = "component Counter {
   state count = 3;
-  view { Text { text: count; } }\n}\n";
+  view { Text { text: format(\"{}\", count); } }\n}\n";
         let compiled = compile_file(src, &origin(&["counter"]));
         assert!(!compiled.has_errors(), "{:?}", compiled.diagnostics);
         let component = compiled.component.as_ref().unwrap();
@@ -583,9 +603,18 @@ mod tests {
     fn a_pinned_language_version_must_match() {
         let mut pinned = origin(&[]);
         pinned.language = Some("2.0".to_owned());
-        assert_eq!(codes(&compile_file("component A { }", &pinned)), ["E4203"]);
+        assert_eq!(codes(&compile_file("component A { }", &pinned)), ["E1001"]);
         pinned.language = Some(LANGUAGE_VERSION.to_owned());
         assert!(!compile_file("component A { }", &pinned).has_errors());
+    }
+
+    #[test]
+    fn an_unknown_language_version_points_at_the_manifest_span() {
+        let at = TextRange::new(TextSize::from(11), TextSize::from(16));
+        let error = check_language_version("0.9", at).expect("unsupported");
+        assert_eq!((error.code, error.primary), ("E1001", at));
+        assert!(error.message.contains("`0.9`"), "{error:?}");
+        assert!(check_language_version(LANGUAGE_VERSION, at).is_none());
     }
 
     #[test]

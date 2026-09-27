@@ -29,17 +29,19 @@ fn significant_pairs(src: &str) -> Vec<(SyntaxKind, &str)> {
 
 #[test]
 fn keywords_vs_context_words() {
-    // A lowercase keyword lexes as its keyword kind...
-    assert_eq!(significant_kinds("state"), [SyntaxKind::StateKw]);
+    // A strict keyword lexes as its keyword kind...
+    assert_eq!(significant_kinds("let"), [SyntaxKind::LetKw]);
     // ...but the capitalized form is an ordinary identifier (case matters).
-    assert_eq!(significant_kinds("State"), [SyntaxKind::Ident]);
+    assert_eq!(significant_kinds("Let"), [SyntaxKind::Ident]);
+    // Contextual keywords lex as identifiers; the parser recognizes them.
+    assert_eq!(significant_kinds("state"), [SyntaxKind::Ident]);
+    assert_eq!(significant_kinds("view"), [SyntaxKind::Ident]);
     // Context words (viso, empty, prelude type names) are identifiers.
     assert_eq!(significant_kinds("viso"), [SyntaxKind::Ident]);
     assert_eq!(significant_kinds("empty"), [SyntaxKind::Ident]);
     assert_eq!(significant_kinds("Bool"), [SyntaxKind::Ident]);
     // A representative spread of keyword families.
     assert_eq!(significant_kinds("component"), [SyntaxKind::ComponentKw]);
-    assert_eq!(significant_kinds("view"), [SyntaxKind::ViewKw]);
     assert_eq!(significant_kinds("shader"), [SyntaxKind::ShaderKw]);
     assert_eq!(significant_kinds("true"), [SyntaxKind::TrueKw]);
     assert_eq!(significant_kinds("self"), [SyntaxKind::SelfValueKw]);
@@ -59,9 +61,22 @@ fn identifiers_and_raw_identifiers() {
     // A bare `r` and an ident starting with `r` are ordinary identifiers.
     assert_eq!(significant_kinds("r"), [SyntaxKind::Ident]);
     assert_eq!(significant_kinds("rust"), [SyntaxKind::Ident]);
-    // Unicode identifiers (XID approximation via std char predicates).
+    // Unicode identifiers follow XID_Start / XID_Continue.
     assert_eq!(significant_kinds("café"), [SyntaxKind::Ident]);
     assert_eq!(significant_kinds("日本語"), [SyntaxKind::Ident]);
+    // A combining mark continues an identifier (decomposed `café`).
+    assert_eq!(
+        significant_pairs("cafe\u{301}"),
+        [(SyntaxKind::Ident, "cafe\u{301}")]
+    );
+    // A non-ASCII digit continues but never starts one.
+    assert_eq!(
+        significant_pairs("x\u{661}"),
+        [(SyntaxKind::Ident, "x\u{661}")]
+    );
+    assert_ne!(significant_kinds("\u{661}x"), [SyntaxKind::Ident]);
+    // Pattern syntax (U+2E2F VERTICAL TILDE) is excluded from XID.
+    assert_ne!(significant_kinds("\u{2E2F}"), [SyntaxKind::Ident]);
 }
 
 #[test]
@@ -268,6 +283,34 @@ fn unit_suffix_literals() {
         significant_kinds("12 px"),
         [SyntaxKind::IntLiteral, SyntaxKind::Ident]
     );
+}
+
+#[test]
+fn the_suffix_set_is_closed() {
+    for ok in [
+        "12dp", "1px", "14sp", "1.5em", "250ms", "5min", "90deg", "60hz", "2khz", "1u32", "3.0f32",
+        "1e5f64", "50%",
+    ] {
+        assert!(tokenize(ok)[0].error.is_none(), "{ok} is valid");
+    }
+    for unknown in ["12pt", "3vw", "2rem", "1fr", "4mm"] {
+        let tok = tokenize(unknown)[0];
+        assert_eq!(
+            tok.kind,
+            SyntaxKind::UnitLiteral,
+            "{unknown} stays one token"
+        );
+        assert_eq!(tok.error, Some(LexError::UnknownSuffix), "{unknown}");
+        assert_eq!(LexError::UnknownSuffix.code(), "E1204");
+    }
+    for misplaced in ["1e2dp", "1e2%", "1.5u32", "1f32"] {
+        assert_eq!(
+            tokenize(misplaced)[0].error,
+            Some(LexError::MisplacedSuffix),
+            "{misplaced}"
+        );
+    }
+    assert_eq!(LexError::MisplacedSuffix.code(), "E1203");
 }
 
 #[test]

@@ -16,6 +16,9 @@
 //! the incremental path in `reparse` has a state type to thread even though the
 //! current grammar's state is empty.
 
+use icu_properties::CodePointSetData;
+use icu_properties::props::{XidContinue, XidStart};
+
 use super::kind::SyntaxKind;
 use super::span::{TextRange, TextSize};
 use super::token::{LexError, Token};
@@ -633,6 +636,7 @@ impl<'s> Lexer<'s> {
         }
 
         // An exponent `e`/`E` with optional sign makes it a float.
+        let mut exponent = false;
         if matches!(self.peek_byte(), Some(b'e' | b'E')) {
             let sign = matches!(self.peek_byte_at(1), Some(b'+' | b'-'));
             let digit_at = if sign { 2 } else { 1 };
@@ -641,6 +645,7 @@ impl<'s> Lexer<'s> {
                 .is_some_and(|b| b.is_ascii_digit())
             {
                 is_float = true;
+                exponent = true;
                 self.bump_ascii(); // 'e'/'E'
                 if sign {
                     self.bump_ascii();
@@ -661,18 +666,23 @@ impl<'s> Lexer<'s> {
             };
             if !is_modulo {
                 self.bump_ascii(); // '%'
-                return self.finish_number(start, SyntaxKind::UnitLiteral, sep_err_int);
+                let err = sep_err_int.or(exponent.then_some(LexError::MisplacedSuffix));
+                return self.finish_number(start, SyntaxKind::UnitLiteral, err);
             }
             // Otherwise leave `%` for the operator lexer.
         }
 
         // A unit or type suffix: an identifier immediately following the digits
-        // (e.g. `12px`, `1u32`, `3.0f32`). We classify it as UnitLiteral so the
+        // (e.g. `12dp`, `1u32`, `3.0f32`). We classify it as UnitLiteral so the
         // parser/HIR can split the numeric body from the suffix; a bare int/float
-        // with no suffix stays Int/Float.
+        // with no suffix stays Int/Float. The suffix set is closed: anything else
+        // is flagged, and the whole run stays one token.
         if self.peek_char().is_some_and(is_ident_start) {
+            let suffix_start = self.pos;
             self.bump_identifier_tail();
-            return self.finish_number(start, SyntaxKind::UnitLiteral, sep_err_int);
+            let suffix = &self.source[suffix_start..self.pos];
+            let err = sep_err_int.or_else(|| suffix_error(suffix, is_float, exponent));
+            return self.finish_number(start, SyntaxKind::UnitLiteral, err);
         }
 
         let kind = if is_float {
@@ -683,7 +693,7 @@ impl<'s> Lexer<'s> {
         self.finish_number(start, kind, sep_err_int)
     }
 
-    /// Emits a numeric token, attaching a separator error if one was seen.
+    /// Emits a numeric token, attaching an error if one was seen.
     fn finish_number(&self, start: usize, kind: SyntaxKind, sep_err: Option<LexError>) -> Token {
         match sep_err {
             Some(e) => self.token_err(kind, start, e),
@@ -867,6 +877,26 @@ impl<'s> Lexer<'s> {
 
 // --- Free helpers ----------------------------------------------------------
 
+/// Why a numeric suffix is invalid on its body, or `None` when it fits. A unit
+/// takes no exponent (`1e2dp`), an integer suffix only an integer body, a float
+/// suffix only a float body; any other suffix is unknown.
+fn suffix_error(suffix: &str, is_float: bool, exponent: bool) -> Option<LexError> {
+    const UNITS: [&str; 14] = [
+        "dp", "px", "sp", "em", "ns", "us", "ms", "s", "min", "deg", "rad", "turn", "hz", "khz",
+    ];
+    const INTS: [&str; 8] = ["i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64"];
+    let fits = if UNITS.contains(&suffix) {
+        !exponent
+    } else if INTS.contains(&suffix) {
+        !is_float
+    } else if matches!(suffix, "f32" | "f64") {
+        is_float
+    } else {
+        return Some(LexError::UnknownSuffix);
+    };
+    (!fits).then_some(LexError::MisplacedSuffix)
+}
+
 /// The radix for a `0x`/`0o`/`0b` prefix byte, or `None`.
 #[inline]
 fn radix_of(b: u8) -> Option<u32> {
@@ -896,20 +926,22 @@ fn is_ident_start_byte(b: u8) -> bool {
     b == b'_' || b.is_ascii_alphabetic() || b >= 0x80
 }
 
-/// Whether `ch` can start an identifier (spec section 11 — XID_start, plus `_`).
-///
-/// Uses `char::is_alphabetic` as the Unicode-aware approximation of XID_start;
-/// full Unicode 16.0 XID tables and NFC/confusable normalization land at
-/// symbol-table entry in the next slice (this keeps the crate dependency-free).
+/// Whether `ch` can start an identifier (spec section 11): `_` or `XID_Start`.
 #[inline]
 fn is_ident_start(ch: char) -> bool {
-    ch == '_' || ch.is_alphabetic() || (!ch.is_ascii() && ch.is_alphanumeric())
+    if ch.is_ascii() {
+        return ch == '_' || ch.is_ascii_alphabetic();
+    }
+    CodePointSetData::new::<XidStart>().contains(ch)
 }
 
-/// Whether `ch` can continue an identifier (spec section 11 — XID_continue).
+/// Whether `ch` can continue an identifier (spec section 11): `XID_Continue`.
 #[inline]
 fn is_ident_continue(ch: char) -> bool {
-    ch == '_' || ch.is_alphanumeric()
+    if ch.is_ascii() {
+        return ch == '_' || ch.is_ascii_alphanumeric();
+    }
+    CodePointSetData::new::<XidContinue>().contains(ch)
 }
 
 /// A cheap confusable-identifier heuristic: flag an identifier that mixes ASCII

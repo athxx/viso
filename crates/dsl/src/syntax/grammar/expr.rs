@@ -3,14 +3,14 @@
 //!
 //! ## Precedence
 //!
-//! The table has 15 binding levels, tightest first: postfix/primary, prefix
-//! unary, `as` cast, `* / %`, `+ -`, `<< >>`, comparison (`< <= > >=`),
-//! equality (`== !=`), `&`, `^`, `|`, `&&`, `||`, `??`, and range (`.. ..=`).
-//! Two families are deliberately **non-associative** — comparison and equality
-//! never chain (`a < b < c` is a diagnostic, not `(a < b) < c`), and neither do
-//! the range operators — so the parser rejects a second operator at the same
-//! level instead of silently choosing an associativity. `??` is right
-//! associative; every other binary level is left associative.
+//! The levels follow A.12, tightest first: postfix/primary, prefix unary
+//! (`! ~ + - await`), `as` cast, `* / %`, `+ -`, `<< >>`, `&`, `^`, `|`, the
+//! single comparison level (`== != < <= > >=`), `&&`, `||`, `??`, and range
+//! (`.. ..=`). Comparison and range are **non-associative**: a second operator
+//! at the same level is E2802 rather than a silently chosen associativity, and
+//! the chain still folds left so the tree keeps every operand. `??` is right
+//! associative; every other binary level is left associative. A range needs
+//! both ends; a missing one is an expected-expression error.
 //!
 //! ## Left recursion without reopening nodes
 //!
@@ -69,22 +69,20 @@ fn at_expr_start_kind(kind: SyntaxKind) -> bool {
             | SelfTypeKw
             // Prefix operators.
             | Minus
+            | Plus
             | Bang
             | Tilde
-            | Amp
-            | Star
-            // Grouping / collections.
+            | AwaitKw
+            // Grouping / collections / block.
             | LParen
             | LBracket
+            | LBrace
             // Prefix keyword expressions.
             | IfKw
             | MatchKw
-            | MoveKw
-            // A `||`/`|` closure, or a leading range `..`.
+            // A `||`/`|` closure (`move` lexes as an identifier).
             | PipePipe
             | Pipe
-            | DotDot
-            | DotDotEq
     )
 }
 
@@ -106,15 +104,14 @@ mod bp {
     pub(super) const NULLISH: u8 = 2;
     pub(super) const LOGIC_OR: u8 = 3;
     pub(super) const LOGIC_AND: u8 = 4;
-    pub(super) const BIT_OR: u8 = 5;
-    pub(super) const BIT_XOR: u8 = 6;
-    pub(super) const BIT_AND: u8 = 7;
-    pub(super) const EQUALITY: u8 = 8;
-    pub(super) const COMPARISON: u8 = 9;
-    pub(super) const SHIFT: u8 = 10;
-    pub(super) const ADD: u8 = 11;
-    pub(super) const MUL: u8 = 12;
-    pub(super) const CAST: u8 = 13;
+    pub(super) const COMPARISON: u8 = 5;
+    pub(super) const BIT_OR: u8 = 6;
+    pub(super) const BIT_XOR: u8 = 7;
+    pub(super) const BIT_AND: u8 = 8;
+    pub(super) const SHIFT: u8 = 9;
+    pub(super) const ADD: u8 = 10;
+    pub(super) const MUL: u8 = 11;
+    pub(super) const CAST: u8 = 12;
 }
 
 /// How a binary operator at a given level associates.
@@ -127,7 +124,7 @@ enum Assoc {
 }
 
 /// The level and associativity of a binary operator, or `None` if `kind` is not
-/// one. The `??` level is right-associative; comparison/equality/range are
+/// one. The `??` level is right-associative; comparison and range are
 /// non-associative; everything else is left-associative.
 fn binary_op(kind: SyntaxKind) -> Option<(u8, Assoc)> {
     use SyntaxKind::*;
@@ -136,11 +133,10 @@ fn binary_op(kind: SyntaxKind) -> Option<(u8, Assoc)> {
         QuestionQuestion => (bp::NULLISH, Assoc::Right),
         PipePipe => (bp::LOGIC_OR, Assoc::Left),
         AmpAmp => (bp::LOGIC_AND, Assoc::Left),
+        EqEq | Neq | Lt | Le | Gt | Ge => (bp::COMPARISON, Assoc::None),
         Pipe => (bp::BIT_OR, Assoc::Left),
         Caret => (bp::BIT_XOR, Assoc::Left),
         Amp => (bp::BIT_AND, Assoc::Left),
-        EqEq | Neq => (bp::EQUALITY, Assoc::None),
-        Lt | Le | Gt | Ge => (bp::COMPARISON, Assoc::None),
         Shl | Shr => (bp::SHIFT, Assoc::Left),
         Plus | Minus => (bp::ADD, Assoc::Left),
         Star | Slash | Percent => (bp::MUL, Assoc::Left),
@@ -154,10 +150,13 @@ fn binary_op(kind: SyntaxKind) -> Option<(u8, Assoc)> {
 /// non-associative operators.
 fn expr_bp(p: &mut Parser, min_bp: u8, r: Restrictions) -> Option<CompletedMarker> {
     let mut lhs = unary_expr(p, r)?;
+    // The non-associative level the previous fold used, so a second operator at
+    // that level is reported as a chain.
+    let mut non_assoc: Option<u8> = None;
 
     loop {
         // The `as` cast binds tighter than any binary operator but looser than a
-        // postfix suffix, so it is folded here at the top of the climb.
+        // unary prefix, so it is folded here at the top of the climb.
         if p.at(SyntaxKind::AsKw) && bp::CAST >= min_bp {
             let m = p.start_at(lhs);
             p.bump_any(); // `as`
@@ -173,67 +172,58 @@ fn expr_bp(p: &mut Parser, min_bp: u8, r: Restrictions) -> Option<CompletedMarke
             break;
         }
 
-        let is_range = matches!(p.current(), SyntaxKind::DotDot | SyntaxKind::DotDotEq);
+        let is_range = level == bp::RANGE;
+        if non_assoc == Some(level) {
+            p.error(if is_range {
+                ParseErrorKind::NonAssocRange
+            } else {
+                ParseErrorKind::NonAssocChain
+            });
+        }
         let m = p.start_at(lhs);
         p.bump_any(); // the operator
 
-        // Non-associative operators fold exactly once: parse a right operand that
-        // binds strictly tighter, so a second operator at the same level is left
-        // for the caller and reported as an illegal chain.
+        // Non-associative operators take a right operand that binds strictly
+        // tighter, so a second operator at the same level returns here.
         let next_min = match assoc {
             Assoc::Left | Assoc::None => level + 1,
             Assoc::Right => level,
         };
-
-        // A range operator may have no right operand (`a..`), so only parse one
-        // when an expression can start there.
-        if is_range && !at_expr_start(p) {
-            lhs = m.complete(p, SyntaxKind::RangeExpr);
-        } else {
+        // In a control-flow head a `{` opens the body, never the right operand.
+        if at_expr_start(p) && !(r.no_record && p.at(SyntaxKind::LBrace)) {
             expr_bp(p, next_min, r);
-            let kind = if is_range {
-                SyntaxKind::RangeExpr
-            } else {
-                SyntaxKind::BinaryExpr
-            };
-            lhs = m.complete(p, kind);
+        } else {
+            p.error(ParseErrorKind::ExpectedExpr);
         }
-
-        if assoc == Assoc::None {
-            // A second operator at the same non-associative level is a chain.
-            if let Some((next_level, _)) = binary_op(p.current())
-                && next_level == level
-            {
-                let err = if is_range {
-                    ParseErrorKind::NonAssocRange
-                } else {
-                    ParseErrorKind::NonAssocChain
-                };
-                p.error(err);
-            }
-            break;
-        }
+        let kind = if is_range {
+            SyntaxKind::RangeExpr
+        } else {
+            SyntaxKind::BinaryExpr
+        };
+        lhs = m.complete(p, kind);
+        non_assoc = (assoc == Assoc::None).then_some(level);
     }
     Some(lhs)
 }
 
-/// Parses a prefix unary expression (`- ! ~ & *`, and a leading range), or falls
-/// through to a postfix expression.
+/// Parses a prefix unary expression (`! ~ + - await`), or falls through to a
+/// postfix expression. A range with no start (`..hi`) is diagnosed and parsed
+/// as a range so the operand still lands in the tree.
 fn unary_expr(p: &mut Parser, r: Restrictions) -> Option<CompletedMarker> {
     use SyntaxKind::*;
     match p.current() {
-        Minus | Bang | Tilde | Amp | Star => {
+        Minus | Plus | Bang | Tilde | AwaitKw => {
             let m = p.start();
             p.bump_any();
             unary_expr(p, r);
             Some(m.complete(p, UnaryExpr))
         }
-        // A prefix range (`..hi` / `..=hi` / bare `..`).
         DotDot | DotDotEq => {
             let m = p.start();
+            p.error(ParseErrorKind::ExpectedExpr);
             p.bump_any();
             if at_expr_start(p) {
-                unary_expr(p, r);
+                expr_bp(p, bp::NULLISH, r);
             }
             Some(m.complete(p, RangeExpr))
         }
@@ -247,6 +237,15 @@ fn unary_expr(p: &mut Parser, r: Restrictions) -> Option<CompletedMarker> {
 fn postfix_expr(p: &mut Parser, r: Restrictions) -> Option<CompletedMarker> {
     let mut lhs = primary_expr(p, r)?;
     loop {
+        // `name<T>(..)` without the turbofish (E2004): recognized only when the
+        // `<...>` run reads as type arguments and a call, path or record follows,
+        // so `a < b` stays a comparison.
+        if p.at(SyntaxKind::Lt) && p.kind_of(lhs) == SyntaxKind::PathExpr && at_bare_generics(p, r)
+        {
+            p.error(ParseErrorKind::GenericWithoutTurbofish);
+            lhs = generic_suffix(p, lhs, r);
+            continue;
+        }
         lhs = match p.current() {
             SyntaxKind::LParen => {
                 let m = p.start_at(lhs);
@@ -277,47 +276,91 @@ fn postfix_expr(p: &mut Parser, r: Restrictions) -> Option<CompletedMarker> {
                 p.bump_any(); // `?`
                 m.complete(p, SyntaxKind::TryExpr)
             }
-            // A turbofish on a call: `path::<T>(...)`.
-            SyntaxKind::ColonColon if p.nth(1) == SyntaxKind::Lt => {
-                let m = p.start_at(lhs);
-                generic_call_args(p);
-                // The turbofish must be followed by a call to be meaningful; if a
-                // `(` follows, fold it in the same wrapper as a `CallExpr`.
-                if p.at(SyntaxKind::LParen) {
-                    arg_list(p);
-                    m.complete(p, SyntaxKind::CallExpr)
-                } else {
-                    m.complete(p, SyntaxKind::PathExpr)
-                }
-            }
+            // A turbofish on a call or record: `path::<T>(...)`.
+            SyntaxKind::ColonColon if p.nth(1) == SyntaxKind::Lt => generic_suffix(p, lhs, r),
             _ => break,
         };
     }
     Some(lhs)
 }
 
-/// A field/method name after `.` or `?.`: an identifier or a tuple index.
-fn field_name(p: &mut Parser) {
-    if p.at(SyntaxKind::Ident) || p.at(SyntaxKind::RawIdent) || p.at(SyntaxKind::IntLiteral) {
-        p.bump_any();
+/// Folds a generic-argument list (with or without its turbofish `::`) onto
+/// `lhs`, together with the call or record body that follows it.
+fn generic_suffix(p: &mut Parser, lhs: CompletedMarker, r: Restrictions) -> CompletedMarker {
+    let m = p.start_at(lhs);
+    super::types::generic_args(p, SyntaxKind::GenericCallArgs);
+    if p.at(SyntaxKind::LParen) {
+        arg_list(p);
+        m.complete(p, SyntaxKind::CallExpr)
+    } else if p.at(SyntaxKind::LBrace) && !r.no_record {
+        record_body(p);
+        m.complete(p, SyntaxKind::RecordExpr)
     } else {
-        p.error(ParseErrorKind::MissingToken);
+        m.complete(p, SyntaxKind::PathExpr)
     }
 }
 
-/// A `::<T, ...>` turbofish argument list on a call.
-fn generic_call_args(p: &mut Parser) {
-    let m = p.start();
-    p.bump_any(); // `::`
-    p.bump_any(); // `<`
-    while !p.at(SyntaxKind::Gt) && !p.at_end() {
-        super::types::type_(p);
-        if !p.eat(SyntaxKind::Comma) {
-            break;
+/// Whether the `<` at the cursor opens generic arguments written without a
+/// turbofish. Every argument must start like a type (an uppercase name,
+/// `Self`, `dyn`, `const`, `(` or `[`), the list must balance within the
+/// type-token alphabet, and a `(`, `::` or record `{` must follow the close.
+fn at_bare_generics(p: &Parser, r: Restrictions) -> bool {
+    use SyntaxKind::*;
+    const LIMIT: usize = 64;
+    let mut angle = 0i32;
+    let mut nest = 0i32;
+    let mut arg_start = true;
+    for n in 0..LIMIT {
+        let kind = p.nth(n);
+        if arg_start && angle == 1 && nest == 0 {
+            let type_like = match kind {
+                Ident => p.token_text(n).starts_with(|c: char| c.is_uppercase()),
+                RawIdent | SelfTypeKw | DynKw | ConstKw | LParen | LBracket => true,
+                _ => false,
+            };
+            if !type_like {
+                return false;
+            }
+        }
+        arg_start = false;
+        match kind {
+            Lt => angle += 1,
+            Gt => angle -= 1,
+            Shr => angle -= 2,
+            LParen | LBracket => nest += 1,
+            RParen | RBracket => nest -= 1,
+            Comma => arg_start = true,
+            Ident | RawIdent | ColonColon | SelfTypeKw | DynKw | ConstKw | Semi | IntLiteral
+            | Plus | Minus | Arrow => {}
+            _ => return false,
+        }
+        if angle < 0 || nest < 0 {
+            return false;
+        }
+        if angle == 0 {
+            return match p.nth(n + 1) {
+                LParen | ColonColon => true,
+                LBrace => !r.no_record,
+                _ => false,
+            };
         }
     }
-    p.expect(SyntaxKind::Gt);
-    m.complete(p, SyntaxKind::GenericCallArgs);
+    false
+}
+
+/// A field/method name after `.` or `?.`: a label or a tuple index.
+fn field_name(p: &mut Parser) {
+    if p.at(SyntaxKind::IntLiteral) {
+        p.bump_any();
+    } else {
+        super::label(p);
+    }
+}
+
+/// A const generic argument's expression (`const 4`, `const N * 2`): parsed
+/// above the comparison and shift levels so a closing `>`/`>>` ends it.
+pub(super) fn const_arg_expr(p: &mut Parser) {
+    expr_bp(p, bp::ADD, Restrictions::default());
 }
 
 /// A `( arg, ... )` call argument list. Each argument is either positional
@@ -328,6 +371,11 @@ pub(super) fn arg_list(p: &mut Parser) {
     while !p.at(SyntaxKind::RParen) && !p.at_end() {
         argument(p);
         if !p.eat(SyntaxKind::Comma) {
+            // `f(a b)`: report the missing comma and keep reading arguments.
+            if at_expr_start(p) {
+                p.error(ParseErrorKind::MissingToken);
+                continue;
+            }
             break;
         }
     }
@@ -335,11 +383,11 @@ pub(super) fn arg_list(p: &mut Parser) {
     m.complete(p, SyntaxKind::ArgumentList);
 }
 
-/// One call argument: `ident: expr` (named) or `expr` (positional).
+/// One call argument: `label: expr` (named) or `expr` (positional).
 fn argument(p: &mut Parser) {
     let m = p.start();
-    if (p.at(SyntaxKind::Ident) || p.at(SyntaxKind::RawIdent)) && p.nth(1) == SyntaxKind::Colon {
-        p.bump_any(); // name
+    if super::at_label(p) && p.nth(1) == SyntaxKind::Colon {
+        super::label(p);
         p.bump_any(); // `:`
     }
     expr(p);
@@ -348,8 +396,8 @@ fn argument(p: &mut Parser) {
 
 /// Parses a primary expression: a literal, a path (optionally a record or a
 /// call target), a parenthesized/tuple expression, a list, a closure, or an
-/// `if`/`match` expression. Records forward parse errors as `None` so the caller
-/// can recover.
+/// `if`/`match` expression, or a block. Records forward parse errors as `None`
+/// so the caller can recover.
 fn primary_expr(p: &mut Parser, r: Restrictions) -> Option<CompletedMarker> {
     use SyntaxKind::*;
     let cm = match p.current() {
@@ -359,14 +407,21 @@ fn primary_expr(p: &mut Parser, r: Restrictions) -> Option<CompletedMarker> {
             p.bump_any();
             m.complete(p, LiteralExpr)
         }
+        Ident if p.at_contextual(MoveKw) && matches!(p.nth(1), Pipe | PipePipe) => closure_expr(p),
         Ident | RawIdent | SelfValueKw | SelfTypeKw => path_or_record_expr(p, r),
         LParen => paren_or_tuple_expr(p),
         LBracket => list_expr(p),
-        PipePipe | Pipe | MoveKw => closure_expr(p),
+        LBrace => block_expr(p),
+        PipePipe | Pipe => closure_expr(p),
         IfKw => if_expr(p),
         MatchKw => match_expr(p),
-        _ => {
+        // A separator or closer belongs to the enclosing production: report the
+        // gap without consuming it.
+        Semi | Comma | RParen | RBracket | RBrace | FatArrow | Eof => {
             p.error(ParseErrorKind::ExpectedExpr);
+            return None;
+        }
+        _ => {
             p.err_and_bump(ParseErrorKind::ExpectedExpr);
             return None;
         }
@@ -382,15 +437,32 @@ fn path_or_record_expr(p: &mut Parser, r: Restrictions) -> CompletedMarker {
     path(p);
     if p.at(SyntaxKind::LBrace) {
         if r.no_record {
-            // The `{` opens the surrounding block, not a record body: flag the
-            // ambiguity and leave the brace for the block grammar.
+            if !looks_like_record_body(p) {
+                // The `{` opens the surrounding block.
+                return m.complete(p, SyntaxKind::PathExpr);
+            }
+            // A record literal written bare in the head: flag the ambiguity and
+            // still read it as a record so the real block after it parses.
             p.error(ParseErrorKind::RecordExprInHead);
-            return m.complete(p, SyntaxKind::PathExpr);
         }
         record_body(p);
         return m.complete(p, SyntaxKind::RecordExpr);
     }
     m.complete(p, SyntaxKind::PathExpr)
+}
+
+/// Whether the `{` at the cursor opens something only a record body can be:
+/// `{ label: ..`, `{ name, ..`, `{ ..base`, or an empty `{ }` directly followed
+/// by another `{`. Anything else is the control-flow block.
+fn looks_like_record_body(p: &Parser) -> bool {
+    use SyntaxKind::*;
+    let label_at = |n: usize| p.nth_is_ident(n) || p.nth(n).is_keyword();
+    match p.nth(1) {
+        DotDot => true,
+        RBrace => p.nth(2) == LBrace,
+        _ if label_at(1) => p.nth(2) == Colon || (p.nth(2) == Comma && label_at(3)),
+        _ => false,
+    }
 }
 
 /// A bare `IDENT ("::" IDENT)*` path wrapped in a `PathExpr`, used by the
@@ -401,18 +473,24 @@ pub(super) fn path_only(p: &mut Parser) {
     m.complete(p, SyntaxKind::PathExpr);
 }
 
-/// A `IDENT ("::" IDENT)*` path (segment turbofish is handled as a postfix).
+/// A `IDENT ("::" Label)*` path (segment turbofish is handled as a postfix).
 fn path(p: &mut Parser) {
     p.bump_any(); // first segment
     while p.at(SyntaxKind::ColonColon) && p.nth(1) != SyntaxKind::Lt {
         p.bump_any(); // `::`
-        if p.at(SyntaxKind::Ident) || p.at(SyntaxKind::RawIdent) {
-            p.bump_any();
-        } else {
+        if !super::at_label(p) {
             p.error(ParseErrorKind::MissingToken);
             break;
         }
+        super::label(p);
     }
+}
+
+/// A block in expression position.
+pub(super) fn block_expr(p: &mut Parser) -> CompletedMarker {
+    let m = p.start();
+    super::stmt::block(p);
+    m.complete(p, SyntaxKind::BlockExpr)
 }
 
 /// The `{ field: expr, .. }` body of a record expression.
@@ -423,11 +501,13 @@ fn record_body(p: &mut Parser) {
         if p.eat(SyntaxKind::DotDot) {
             // A functional-update spread `.. base`.
             expr(p);
-        } else if p.at(SyntaxKind::Ident) || p.at(SyntaxKind::RawIdent) {
-            p.bump_any(); // field name
-            if p.eat(SyntaxKind::Colon) {
-                expr(p);
-            }
+        } else if super::at_label(p) && p.nth(1) == SyntaxKind::Colon {
+            super::label(p);
+            p.bump_any(); // `:`
+            expr(p);
+        } else if super::at_label(p) {
+            // Shorthand `{ id }` binds a name, so a strict keyword is E1301.
+            super::name(p);
         } else {
             p.error(ParseErrorKind::ExpectedExpr);
             m.abandon(p);
@@ -482,15 +562,18 @@ fn list_expr(p: &mut Parser) -> CompletedMarker {
     m.complete(p, SyntaxKind::ListExpr)
 }
 
-/// A closure `move? (|params| | ||) (expr | block)`.
+/// A closure `move? (|params| | ||) (-> Type)? (expr | block)`.
 fn closure_expr(p: &mut Parser) -> CompletedMarker {
     let m = p.start();
-    p.eat(SyntaxKind::MoveKw);
+    p.eat_contextual(SyntaxKind::MoveKw);
     if p.at(SyntaxKind::PipePipe) {
         // An empty parameter list spelled `||`.
         p.bump_any();
     } else {
         closure_params(p);
+    }
+    if p.eat(SyntaxKind::Arrow) {
+        super::types::type_(p);
     }
     // The body is a block or a bare expression.
     if p.at(SyntaxKind::LBrace) {
@@ -508,11 +591,8 @@ fn closure_params(p: &mut Parser) {
     while !p.at(SyntaxKind::Pipe) && !p.at_end() {
         let param = p.start();
         p.eat(SyntaxKind::MutKw);
-        if p.at(SyntaxKind::Ident) || p.at(SyntaxKind::RawIdent) {
-            p.bump_any();
-        } else {
-            p.error(ParseErrorKind::MissingToken);
-        }
+        // No top-level `|` alternatives: that `|` closes the parameter list.
+        super::patterns::pattern_no_alt(p);
         if p.eat(SyntaxKind::Colon) {
             super::types::type_(p);
         }
@@ -525,8 +605,8 @@ fn closure_params(p: &mut Parser) {
     m.complete(p, SyntaxKind::ClosureParams);
 }
 
-/// An `if head { .. } else { .. }` expression. Both arms are required in
-/// expression position, but recovery tolerates a missing `else`.
+/// An `if head { .. } else { .. }` expression. The `else` arm is required in
+/// expression position; a missing one is reported and the tree keeps its shape.
 fn if_expr(p: &mut Parser) -> CompletedMarker {
     let m = p.start();
     p.bump_any(); // `if`
@@ -538,6 +618,8 @@ fn if_expr(p: &mut Parser) -> CompletedMarker {
         } else {
             super::stmt::block(p);
         }
+    } else {
+        p.error(ParseErrorKind::MissingToken);
     }
     m.complete(p, SyntaxKind::IfExpr)
 }
@@ -547,17 +629,27 @@ fn match_expr(p: &mut Parser) -> CompletedMarker {
     let m = p.start();
     p.bump_any(); // `match`
     head_expr(p);
-    p.expect(SyntaxKind::LBrace);
-    while !p.at(SyntaxKind::RBrace) && !p.at_end() {
-        match_arm(p);
-    }
-    p.expect(SyntaxKind::RBrace);
+    match_arms(p);
     m.complete(p, SyntaxKind::MatchExpr)
 }
 
-/// One `pattern (if guard)? => (expr | block)` match arm. Shared with the
-/// statement grammar's `match` statement, which parses the same arm shape.
-pub(super) fn match_arm(p: &mut Parser) {
+/// The `{ arm, ... }` arm list shared by the `match` expression and statement.
+/// Arms are comma-separated with an optional trailing comma.
+pub(super) fn match_arms(p: &mut Parser) {
+    p.expect(SyntaxKind::LBrace);
+    while !p.at(SyntaxKind::RBrace) && !p.at_end() {
+        let before = p.cursor();
+        match_arm(p);
+        if !p.eat(SyntaxKind::Comma) && !p.at(SyntaxKind::RBrace) {
+            p.error(ParseErrorKind::MissingToken);
+        }
+        p.ensure_progress(before);
+    }
+    p.expect(SyntaxKind::RBrace);
+}
+
+/// One `pattern (if guard)? => (expr | block)` match arm.
+fn match_arm(p: &mut Parser) {
     let m = p.start();
     super::patterns::pattern(p);
     if p.eat(SyntaxKind::IfKw) {
@@ -569,6 +661,5 @@ pub(super) fn match_arm(p: &mut Parser) {
     } else {
         expr(p);
     }
-    p.eat(SyntaxKind::Comma);
     m.complete(p, SyntaxKind::MatchArm);
 }

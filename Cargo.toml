@@ -98,6 +98,9 @@ icu_properties = "2.3"
 # internally (language ∈ {ja, zh}), so the public locale choice and the table
 # icu selects never disagree. Already a transitive icu dep; declared direct here.
 icu_locale_core = "2.3"
+# NFC for DSL identifiers: two spellings that normalize alike are one name in the
+# symbol table, and a distinct raw spelling of a declared name is reported.
+icu_normalizer = "2.3"
 # Pure-Rust PNG decoder for color-bitmap emoji strikes (sbix/CBDT PNG data that
 # ttf-parser hands back as raw bytes). Same decoder family makepad's color-emoji
 # path uses; decoded RGBA is premultiplied into the color glyph atlas.

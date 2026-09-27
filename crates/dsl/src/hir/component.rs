@@ -26,7 +26,7 @@ use std::collections::{BTreeSet, HashMap};
 
 use crate::ast::{AstNode, ComponentDecl, Member};
 use crate::diag::Diagnostic;
-use crate::resolve::{ResolvedRef, SymbolId};
+use crate::resolve::{Resolution, ResolvedRef, SymbolId};
 use crate::syntax::TextRange;
 
 use super::infer::{InferCx, TypeEnv};
@@ -83,6 +83,13 @@ pub fn lower_component(
     // computed carry the extra ordering/topology work below, so collect their raw shapes
     // (declaration + symbol + reactive reads) alongside the node as we go.
     let mut state_order: Vec<StateEntry> = Vec::new();
+    let nominal: HashMap<TextRange, SymbolId> = refs
+        .iter()
+        .filter_map(|r| match r.to {
+            Resolution::Symbol(id) => Some((r.range, id)),
+            Resolution::Local(_) => None,
+        })
+        .collect();
     let mut computed_order: Vec<ComputedEntry> = Vec::new();
 
     for member in decl.members() {
@@ -92,7 +99,9 @@ pub fn lower_component(
                 let symbol = env.member_symbol(&member_name);
                 let ty = input
                     .ty()
-                    .map(|t| resolve_annotation(&t, input.syntax().text_range(), diagnostics))
+                    .map(|t| {
+                        resolve_annotation(&t, &nominal, input.syntax().text_range(), diagnostics)
+                    })
                     .unwrap_or(Ty::Unknown);
                 let meta = decl_meta(
                     symbol,
@@ -118,7 +127,7 @@ pub fn lower_component(
                 let (ty, reads) = if let Some(init) = state.initializer() {
                     let expected = annotated
                         .as_ref()
-                        .map(|a| resolve_annotation(a, span, diagnostics));
+                        .map(|a| resolve_annotation(a, &nominal, span, diagnostics));
                     let mut cx = InferCx::new(refs, env);
                     let inferred = cx.infer_expr(&init, expected.as_ref());
                     diagnostics.extend(cx.into_diagnostics());
@@ -128,7 +137,7 @@ pub fn lower_component(
                     // No initializer: the type must be the annotation (or unknown).
                     let ty = annotated
                         .as_ref()
-                        .map(|a| resolve_annotation(a, span, diagnostics))
+                        .map(|a| resolve_annotation(a, &nominal, span, diagnostics))
                         .unwrap_or(Ty::Unknown);
                     (ty, BTreeSet::new())
                 };
@@ -172,7 +181,7 @@ pub fn lower_component(
                 let (ty, reads) = if let Some(body) = computed.body() {
                     let expected = annotated
                         .as_ref()
-                        .map(|a| resolve_annotation(a, span, diagnostics));
+                        .map(|a| resolve_annotation(a, &nominal, span, diagnostics));
                     let mut cx = InferCx::new(refs, env);
                     let inferred = cx.infer_expr(&body, expected.as_ref());
                     diagnostics.extend(cx.into_diagnostics());
@@ -181,7 +190,7 @@ pub fn lower_component(
                 } else {
                     let ty = annotated
                         .as_ref()
-                        .map(|a| resolve_annotation(a, span, diagnostics))
+                        .map(|a| resolve_annotation(a, &nominal, span, diagnostics))
                         .unwrap_or(Ty::Unknown);
                     (ty, BTreeSet::new())
                 };
@@ -460,19 +469,17 @@ fn is_undetermined(ty: &Ty) -> bool {
     matches!(ty, Ty::InferInt | Ty::InferFloat | Ty::Unknown)
 }
 
-/// Resolves a type annotation to a [`Ty`], emitting `E2101` for the removed `Float` type and
-/// leaving a nominal (non-builtin) name as `Unknown` this section — nominal binding lands
-/// with the end-to-end `lower` that has the resolver's type namespace. Uses the annotation's
-/// enclosing declaration span for the diagnostic.
+/// Resolves a type annotation to a [`Ty`], naming a nominal type by the symbol the resolver
+/// bound it to (`nominal`, keyed by name-token span) and emitting `E2101` for the removed
+/// `Float` type. Uses the annotation's enclosing declaration span for the diagnostic.
 fn resolve_annotation(
     path: &crate::ast::TypePath,
+    nominal: &HashMap<TextRange, SymbolId>,
     span: TextRange,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Ty {
-    match Ty::from_type_path(path) {
-        Ok(Some(ty)) => ty,
-        // A name that is not a builtin scalar/UI type: a nominal type resolved elsewhere.
-        Ok(None) => Ty::Unknown,
+    match Ty::from_annotation(path.syntax(), &|at| nominal.get(&at).copied()) {
+        Ok(ty) => ty,
         Err(err) => {
             let code: &'static str = match err {
                 TypeError::FloatRemoved => "E2101",
@@ -630,8 +637,8 @@ mod tests {
 
     #[test]
     fn members_are_classified_into_buckets() {
-        let src = "component C {\n  input title: String\n  state count = 0\n  \
-                   computed doubled: I64 = 1\n  event tapped\n  view { }\n}";
+        let src = "component C {\n  input title: String;\n  state count = 0;\n  \
+                   computed doubled: I64 = 1;\n  event tapped();\n  view { }\n}";
         let (_root, decl, refs, env) = setup(
             src,
             &[

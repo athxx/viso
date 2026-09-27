@@ -34,12 +34,12 @@ pub enum Severity {
 /// borrowed, never allocated; `message` is the kind's `message()` with any subject
 /// folded in, so it is owned. `related` carries secondary spans (a colliding
 /// definition, a cycle participant) each with its own label, and `notes` carries
-/// free-form guidance.
+/// free-form guidance, and `fixes` carries suggested source edits.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Diagnostic {
     /// How severe the diagnostic is.
     pub severity: Severity,
-    /// The stable diagnostic code (e.g. `"E2001"`, `"Parse0001"`, `"Lex0007"`).
+    /// The stable diagnostic code (e.g. `"E2001"`, `"E1205"`, `"E1401"`).
     pub code: &'static str,
     /// The primary source span the diagnostic points at.
     pub primary: TextRange,
@@ -47,8 +47,50 @@ pub struct Diagnostic {
     pub related: Vec<(TextRange, String)>,
     /// Free-form notes offering guidance beyond the one-line message.
     pub notes: Vec<String>,
+    /// Suggested source edits, each applicable on its own.
+    pub fixes: Vec<Fix>,
     /// The rendered one-line message.
     pub message: String,
+}
+
+/// How safely a [`Fix`] may be applied without a human looking at it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Applicability {
+    /// The edit is certainly what was meant; tooling may apply it unattended.
+    MachineApplicable,
+    /// The edit is a plausible guess (a nearest-name suggestion, say) and needs a
+    /// human to confirm it.
+    MaybeIncorrect,
+}
+
+impl Applicability {
+    /// The section 138 JSON spelling.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Applicability::MachineApplicable => "machine-applicable",
+            Applicability::MaybeIncorrect => "maybe-incorrect",
+        }
+    }
+}
+
+/// One replacement of a source range, in the diagnostic's own file.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TextEdit {
+    /// The range replaced.
+    pub range: TextRange,
+    /// The text put in its place.
+    pub replacement: String,
+}
+
+/// A suggested fix: a titled set of edits applied together.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Fix {
+    /// A one-line description, e.g. ``replace with `Badge` ``.
+    pub title: String,
+    /// How safely the fix may be applied unattended.
+    pub applicability: Applicability,
+    /// The edits, applied atomically.
+    pub edits: Vec<TextEdit>,
 }
 
 impl Diagnostic {
@@ -62,6 +104,7 @@ impl Diagnostic {
             primary,
             related: Vec::new(),
             notes: Vec::new(),
+            fixes: Vec::new(),
             message: message.into(),
         }
     }
@@ -74,6 +117,7 @@ impl Diagnostic {
             primary,
             related: Vec::new(),
             notes: Vec::new(),
+            fixes: Vec::new(),
             message: message.into(),
         }
     }
@@ -105,7 +149,7 @@ mod tests {
         use crate::syntax::ParseErrorKind;
         let d = ParseErrorKind::UnclosedDelimiter.to_diagnostic(span());
         assert_eq!(d.severity, Severity::Error);
-        assert_eq!(d.code, "Parse0001");
+        assert_eq!(d.code, "E1401");
         assert_eq!(d.message, ParseErrorKind::UnclosedDelimiter.message());
     }
 

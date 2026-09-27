@@ -348,7 +348,8 @@ fn size_of(style: &StyleIr) -> Size {
 /// emitter.
 fn length_of(len: Option<LengthIr>) -> Length {
     match len {
-        Some(LengthIr::Fixed(px)) => Length::Fixed(px),
+        Some(LengthIr::Fixed(dp)) => Length::Fixed(dp),
+        Some(LengthIr::Relative { fixed, pct }) => Length::Relative { fixed, pct },
         Some(LengthIr::Fill { weight }) => Length::Fill { weight },
         Some(LengthIr::Fit) | None => Length::Fit,
     }

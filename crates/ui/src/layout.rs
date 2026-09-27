@@ -62,15 +62,23 @@ pub enum Axis {
 
 /// How a single length resolves against its container.
 ///
-/// A `Fixed` length is a hard pixel size. A `Fill` length claims a share of the
+/// Every extent is in logical pixels (dp). A `Fixed` length is an exact dp
+/// size. A `Relative` length is `fixed + pct × basis`, where the basis is the
+/// parent's content box on the same axis — `50%` is a ratio of that box, not a
+/// share of what siblings leave over. A `Fill` length claims a share of the
 /// leftover space along the main axis, split between siblings by `weight`. A
-/// `Fit` length shrinks to the node's measured natural size. The measure pass
-/// already computes a natural size for every node, so `Fit` is a first-class
-/// citizen even though this slice's containers drive `Fixed` and `Fill`.
+/// `Fit` length shrinks to the node's measured natural size.
+///
+/// The measure pass runs before any basis is known, so a `Relative` length
+/// measures like `Fit` (a percentage of an indefinite size is its content) and
+/// resolves against the basis only when the parent places it. A resolved
+/// `Relative` extent is never negative.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Length {
-    /// A hard pixel length.
+    /// An exact extent in dp.
     Fixed(f32),
+    /// `fixed + pct × basis`, with `pct` a fraction of the basis (`0.5` is `50%`).
+    Relative { fixed: f32, pct: f32 },
     /// A share of leftover main-axis space, proportional to `weight`.
     Fill { weight: f32 },
     /// Shrink to the measured natural size.
@@ -81,6 +89,30 @@ impl Length {
     /// A unit-weight fill (the common "take the rest" case).
     pub const fn fill() -> Self {
         Length::Fill { weight: 1.0 }
+    }
+
+    /// An exact extent in dp.
+    pub const fn dp(v: f32) -> Self {
+        Length::Fixed(v)
+    }
+
+    /// A percentage of the basis: `Length::pct(50.0)` is `50%`.
+    pub const fn pct(percent: f32) -> Self {
+        Length::Relative {
+            fixed: 0.0,
+            pct: percent / 100.0,
+        }
+    }
+
+    /// The extent this length takes against `basis`, or `None` for `Fill`/`Fit`,
+    /// whose extent the container decides.
+    #[inline]
+    pub fn resolve(self, basis: f32) -> Option<f32> {
+        match self {
+            Length::Fixed(v) => Some(v),
+            Length::Relative { fixed, pct } => Some((fixed + pct * basis).max(0.0)),
+            Length::Fill { .. } | Length::Fit => None,
+        }
     }
 }
 
@@ -94,7 +126,7 @@ pub struct Size {
 }
 
 impl Size {
-    /// A hard-pixel box.
+    /// An exact dp box.
     pub const fn fixed(w: f32, h: f32) -> Self {
         Size {
             width: Length::Fixed(w),
@@ -388,15 +420,15 @@ impl Measured {
 }
 
 /// Resolve a single [`Length`] to its natural (measure-time) contribution: a
-/// `Fixed` is its value, a `Fit` is the already-measured natural extent, and a
-/// `Fill` contributes only its measured base (0 for a bare fill leaf) since its
-/// real size is decided by the parent's leftover-space distribution.
+/// `Fixed` is its value, a `Fit` or `Relative` is the already-measured natural
+/// extent (no basis exists yet), and a `Fill` contributes only its measured base
+/// (0 for a bare fill leaf) since its real size is decided by the parent's
+/// leftover-space distribution.
 #[inline]
 fn natural_length(length: Length, measured_natural: f32) -> f32 {
     match length {
         Length::Fixed(v) => v,
-        Length::Fit => measured_natural,
-        Length::Fill { .. } => measured_natural,
+        Length::Relative { .. } | Length::Fit | Length::Fill { .. } => measured_natural,
     }
 }
 
@@ -688,15 +720,16 @@ pub fn layout(tree: &mut impl LayoutTree, root: u32, bounds: Rect, scratch: &mut
         0.0
     };
 
-    // Sum the fixed/fit main sizes and the total fill weight in one sweep.
+    // Sum the fixed/relative/fit main sizes and the total fill weight in one
+    // sweep. A relative size resolves against the content box's main extent.
     let mut fixed_main = 0.0f32;
     let mut weight_total = 0.0f32;
     for i in 0..child_count {
         let child = scratch[start + i];
         match tree.input(child).size().on(axis) {
-            Length::Fixed(v) => fixed_main += v,
-            Length::Fit => fixed_main += tree.measured(child).on(axis),
             Length::Fill { weight } => weight_total += weight.max(0.0),
+            Length::Fit => fixed_main += tree.measured(child).on(axis),
+            len => fixed_main += len.resolve(main_extent).unwrap_or(0.0),
         }
     }
 
@@ -733,6 +766,7 @@ pub fn layout(tree: &mut impl LayoutTree, root: u32, bounds: Rect, scratch: &mut
         let size = tree.input(child).size();
         let main_size = match size.on(axis) {
             Length::Fixed(v) => v,
+            len @ Length::Relative { .. } => len.resolve(main_extent).unwrap_or(0.0),
             Length::Fit => tree.measured(child).on(axis),
             Length::Fill { weight } => {
                 if weight_total > 0.0 {
@@ -750,11 +784,9 @@ pub fn layout(tree: &mut impl LayoutTree, root: u32, bounds: Rect, scratch: &mut
             Align::Center => (natural_cross, (cross_extent - natural_cross) * 0.5),
             Align::End => (natural_cross, cross_extent - natural_cross),
         };
-        // A cross-axis Fixed request overrides alignment-derived sizing.
-        let cross_size = match (size.cross(axis), align) {
-            (Length::Fixed(v), _) => v,
-            _ => cross_size,
-        };
+        // A cross-axis Fixed or Relative request overrides alignment-derived
+        // sizing; a relative one resolves against the content box's cross extent.
+        let cross_size = size.cross(axis).resolve(cross_extent).unwrap_or(cross_size);
 
         let child_box = axis_rect(
             axis,
@@ -1233,25 +1265,26 @@ fn layout_grid(
                 h: (ry1 - ry0).max(0.0),
             };
             // Horizontal (inline axis): the child fills its cell when it requests
-            // Fill; a Fixed/Fit child hugs its own size at the cell's left edge.
+            // Fill; a Fixed/Fit child hugs its own size at the cell's left edge, and
+            // a Relative child resolves against the cell width.
             let size = tree.input(child).size();
             let cw = match size.width {
-                Length::Fixed(v) => v,
                 Length::Fit => tree.measured(child).on(Axis::Row),
                 Length::Fill { .. } => cell.w,
+                len => len.resolve(cell.w).unwrap_or(0.0),
             };
             // Vertical (block axis): a `Fill` child stretches to the cell unless the
             // grid overrides with a non-Stretch `align_items`; a Fixed/Fit child
-            // always hugs its own size and is then positioned by `align_items`.
+            // always hugs its own size, a Relative child resolves against the cell
+            // height, and either is then positioned by `align_items`.
             let stretch =
                 matches!(size.height, Length::Fill { .. }) && align_items == AlignItems::Stretch;
             let ch = if stretch {
                 cell.h
             } else {
-                match size.height {
-                    Length::Fixed(v) => v,
-                    Length::Fit | Length::Fill { .. } => tree.measured(child).on(Axis::Column),
-                }
+                size.height
+                    .resolve(cell.h)
+                    .unwrap_or_else(|| tree.measured(child).on(Axis::Column))
             };
             // Block-axis offset of the child within its cell per `align_items`.
             // Baseline aligns the child's own baseline to the row's shared baseline,
@@ -2588,6 +2621,75 @@ mod tests {
             "an oversized child remains centered on the main axis"
         );
         assert_eq!(overflow.y, 180.0);
+    }
+
+    #[test]
+    fn a_relative_length_resolves_against_the_parent_content_box() {
+        use crate::component::{BuildCx, FlexStyle, LeafStyle, NodeStore};
+        use crate::style::BoxStyle;
+
+        // A 400x200 row with 10dp padding: the content box is 380x180. The first
+        // child is `50%` wide and `100% - 20dp` tall; the second is a fill that
+        // takes what the first leaves, proving `%` is a ratio and not a share.
+        let mut store = NodeStore::new();
+        let mut ids = Vec::new();
+        let root = {
+            let mut cx = BuildCx::new(&mut store);
+            cx.flex(
+                FlexStyle {
+                    axis: Axis::Row,
+                    align: Align::Start,
+                    padding: Inset::all(10.0),
+                    size: Size::fill(),
+                    ..Default::default()
+                },
+                |cx| {
+                    let rel = cx.leaf(LeafStyle {
+                        size: Size {
+                            width: Length::pct(50.0),
+                            height: Length::Relative {
+                                fixed: -20.0,
+                                pct: 1.0,
+                            },
+                        },
+                        style: BoxStyle::NONE,
+                    });
+                    let fill = cx.leaf(LeafStyle {
+                        size: Size {
+                            width: Length::fill(),
+                            height: Length::dp(5.0),
+                        },
+                        style: BoxStyle::NONE,
+                    });
+                    ids.extend([rel.id(), fill.id()]);
+                },
+            );
+            cx.root().unwrap()
+        };
+        let mut scratch = Vec::new();
+        measure(&mut store, root.index(), &mut scratch);
+        layout(
+            &mut store,
+            root.index(),
+            surface_local(400.0, 200.0),
+            &mut scratch,
+        );
+        let rel = store.bounds(ids[0]);
+        let fill = store.bounds(ids[1]);
+        assert_eq!((rel.x, rel.y, rel.w, rel.h), (10.0, 10.0, 190.0, 160.0));
+        assert_eq!((fill.x, fill.w), (200.0, 190.0));
+    }
+
+    #[test]
+    fn a_resolved_relative_length_is_never_negative() {
+        let len = Length::Relative {
+            fixed: -50.0,
+            pct: 0.1,
+        };
+        assert_eq!(len.resolve(100.0), Some(0.0));
+        assert_eq!(len.resolve(1000.0), Some(50.0));
+        assert_eq!(Length::fill().resolve(100.0), None);
+        assert_eq!(Length::Fit.resolve(100.0), None);
     }
 
     #[test]

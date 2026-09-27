@@ -3,8 +3,8 @@ component Counter {
     state enabled = true;
     view {
         Column {
-            width: 120px;
-            Text { text: count; }
+            width: 120dp;
+            Text { text: format("{}", count); }
             Leaf { visible: enabled; }
         }
     }

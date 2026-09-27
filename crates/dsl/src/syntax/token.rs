@@ -103,6 +103,12 @@ pub enum LexError {
     /// A radix-prefixed integer (`0x` / `0o` / `0b`) had no digits after the
     /// prefix, or a digit outside its radix.
     MalformedIntLiteral,
+    /// A numeric suffix that does not fit its body: a unit after an exponent
+    /// (`1e2dp`), an integer suffix on a float (`1.5u32`), or a float suffix on an
+    /// integer (`1f32`).
+    MisplacedSuffix,
+    /// A suffix outside the closed unit and numeric-type sets (`12pt`, `3vw`).
+    UnknownSuffix,
     /// A raw string opener used more than 255 hashes (the format's limit).
     TooManyRawStringHashes,
     /// A lone `\r` not paired into a `\r\n` newline appeared in source text.
@@ -118,27 +124,28 @@ pub enum LexError {
 }
 
 impl LexError {
-    /// The stable diagnostic code for this error (spec section 30). The string is part
-    /// of the diagnostic contract and must stay stable across releases; the
-    /// `Lex` prefix namespaces the lexer's codes.
+    /// The stable diagnostic code for this error (DSL spec Appendix C). The string
+    /// is part of the diagnostic contract and must stay stable across releases.
+    /// Several variants share a code where the spec groups their cause.
     pub const fn code(self) -> &'static str {
         match self {
-            LexError::UnterminatedBlockComment => "Lex0001",
-            LexError::UnterminatedString => "Lex0002",
-            LexError::UnterminatedRawString => "Lex0003",
-            LexError::UnterminatedChar => "Lex0004",
-            LexError::MalformedChar => "Lex0005",
-            LexError::InvalidEscape => "Lex0006",
-            LexError::InvalidByteEscape => "Lex0007",
-            LexError::InvalidUnicodeEscape => "Lex0008",
-            LexError::InvalidColor => "Lex0009",
-            LexError::MalformedNumericSeparator => "Lex0010",
-            LexError::MalformedIntLiteral => "Lex0011",
-            LexError::TooManyRawStringHashes => "Lex0012",
-            LexError::BareCarriageReturn => "Lex0013",
-            LexError::NulInSource => "Lex0014",
-            LexError::ConfusableIdent => "Lex0015",
-            LexError::UnexpectedCharacter => "Lex0016",
+            LexError::ConfusableIdent => "E1102",
+            LexError::UnterminatedString
+            | LexError::UnterminatedRawString
+            | LexError::UnterminatedChar => "E1201",
+            LexError::UnterminatedBlockComment => "E1202",
+            LexError::MalformedIntLiteral | LexError::MisplacedSuffix => "E1203",
+            LexError::UnknownSuffix => "E1204",
+            LexError::InvalidEscape
+            | LexError::InvalidByteEscape
+            | LexError::InvalidUnicodeEscape => "E1205",
+            LexError::MalformedNumericSeparator => "E1206",
+            LexError::InvalidColor => "E1207",
+            LexError::MalformedChar => "E1208",
+            LexError::BareCarriageReturn
+            | LexError::NulInSource
+            | LexError::UnexpectedCharacter => "E1209",
+            LexError::TooManyRawStringHashes => "E1210",
         }
     }
 
@@ -158,6 +165,10 @@ impl LexError {
             }
             LexError::MalformedNumericSeparator => "misplaced `_` digit separator",
             LexError::MalformedIntLiteral => "integer literal has no valid digits",
+            LexError::MisplacedSuffix => "this suffix does not fit the numeric literal",
+            LexError::UnknownSuffix => {
+                "unknown unit suffix; expected dp, px, sp, em, %, a time, angle or frequency unit"
+            }
             LexError::TooManyRawStringHashes => "raw string uses more than 255 hashes",
             LexError::BareCarriageReturn => "bare carriage return is not allowed",
             LexError::NulInSource => "null byte is not allowed in source",

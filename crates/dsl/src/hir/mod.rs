@@ -33,6 +33,8 @@ mod lower;
 mod nodes;
 mod reads;
 mod ty;
+mod view;
+mod widget;
 
 pub use capability::CapabilitySet;
 pub use component::{MemberEnv, lower_component};

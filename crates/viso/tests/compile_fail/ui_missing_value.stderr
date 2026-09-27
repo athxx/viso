@@ -1,11 +1,5 @@
-error: Parse0005: expected an expression
+error: E1405: expected an expression
  --> tests/compile_fail/ui_missing_value.rs:4:26
   |
 4 |             Text { text: ; }
   |                          ^
-
-error: Parse0004: missing required token
- --> tests/compile_fail/ui_missing_value.rs:4:28
-  |
-4 |             Text { text: ; }
-  |                            ^

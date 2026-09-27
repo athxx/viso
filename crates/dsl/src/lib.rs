@@ -23,6 +23,7 @@ pub mod frontend;
 pub mod hir;
 pub mod hotreload;
 pub mod ir;
+pub mod package;
 pub mod resolve;
 pub mod syntax;
 

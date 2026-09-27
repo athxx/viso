@@ -282,12 +282,21 @@ web-hybrid
 
 ### 3.4 `headless`
 
-`headless` 是 testing/tooling target，不作为普通用户的桌面运行方式：
+`headless` 是 testing/tooling target，不是 `run` / `serve` / `package` 的 positional target（`viso run headless` 是 usage error，exit 2）。它用于：
 
 ```bash
-viso test ui --headless
+viso check headless                       # 以 headless 能力集做静态检查
+viso build headless                       # 仅供 CI/tooling 产出 headless artifact
+viso test ui                              # test/snapshot 默认 target 即 headless
 viso snapshot capture HomePage --target headless
 ```
+
+### 3.5 Target 选择语法
+
+- 以 target 为操作对象的命令（`run`、`build`、`serve`、`package`、`check`、`doctor`、`profile`）使用**可选 positional target**；省略时为当前 desktop host（`serve` 省略时见 §15）。
+- positional 已被其他对象占用的命令（`test`、`snapshot`、`inspect`、`studio`）使用 `--target <t>`。
+- `--target` 不是 global option；对接受 positional target 的命令写 `--target` 是 usage error（exit 2），例如 `viso run --target ios`。
+- 任何配置层（`Viso.toml`、`VISO_*` 环境变量）都不能改变“省略 positional = desktop host”的含义（§3.1）。
 
 ---
 
@@ -329,27 +338,27 @@ Parser 必须将两种形式归一化为同一 global option。
 
 ## 5. 配置优先级
 
-从高到低：
+从高到低（括号内为 `viso config show` / `config get` 报告的 provenance 名）：
 
 ```text
-CLI flags
+CLI flags                              (flag)
     ↓
-VISO_* environment variables
+VISO_* environment variables           (env)
     ↓
-Viso.toml target/profile override
+Viso.toml [profile.<name>] override    (profile)
     ↓
-Viso.toml project defaults
+Viso.toml project defaults             (manifest)
     ↓
-framework defaults
+framework defaults                     (default)
 ```
 
-任何命令都可以通过：
+规则：
 
-```bash
-viso config show
-```
-
-查看最终解析结果。
+- 每个配置 key 独立按上表逐层解析，取第一个有值的层。
+- 支持的环境变量：`VISO_PROFILE`、`VISO_OPT_LEVEL`、`VISO_SOURCE_MAPS`、`VISO_STRIP`。环境变量值无法解析时报 config diagnostic（C0010，exit 1），不得静默跳过该层。
+- target 只来自 positional（§3.5），不参与本优先级链。
+- `.viso/local.toml`（§12.5）只保存本机 simulator/emulator 选择，不参与 build 配置解析，不得提交到版本库。
+- 最终结果通过 `viso config show` 查看（§10）。
 
 ---
 
@@ -372,19 +381,21 @@ viso config show
 --version
 ```
 
+`--profile` 只接受 `dev|release|shipping`（§38.2）。`--target` 不在此列（§3.5）。
+
 ### 6.1 `--json`
 
-不是“把最终人类文本包成 JSON 字符串”。
-
-它切换为稳定 **Ende JSON event stream**。
+不是“把最终人类文本包成 JSON 字符串”，而是切换为 §34–§37 定义的稳定 **Ende JSON event stream**。`--json` 下 `--color` 被忽略，stdout 不含 ANSI 序列。`viso lsp`、`viso studio`、`viso completion` 不接受 `--json`（usage error，exit 2）。
 
 ### 6.2 `--quiet`
 
-只输出：
+human 模式只输出：
 
 - fatal diagnostics；
 - requested artifact paths；
 - final summary。
+
+与 `--json` 同时使用时省略 `progress` 与 `log` 事件，其余事件不变。`--quiet` 与 `--verbose` 同时出现是 usage error。
 
 ### 6.3 `--verbose`
 
@@ -416,7 +427,25 @@ viso config show
 130   interrupted by user
 ```
 
-AI/CI 不得依赖解析英文文本判断成功失败。
+失败类别 → exit code 映射（多个失败并存时取首个导致命令终止的失败；只有 diagnostics 时取 1）：
+
+```text
+source/DSL/type/capability diagnostics (E*)          1
+config diagnostics C0001, C0003–C0010, C0012          1
+test assertion / snapshot mismatch                    1
+unknown command/flag, 冲突 flag, 错误 positional      2
+C0002 manifest unreadable, C0011 target unavailable   3
+SDK/toolchain/simulator/emulator 缺失, lock 被占用     3
+Rust compile / link / shader compile 失败             4
+app crash, device 连接失败, test runner 崩溃           5
+signing / archive / exporter 失败                      6
+service protocol 违约, CLI panic                       7
+Ctrl-C / SIGINT / SIGTERM                             130
+```
+
+`--json` 模式下 `summary.payload.exit_code` 必须等于进程 exit code（§36.3）。AI/CI 不得依赖解析英文文本判断成功失败。
+
+`Viso_DSL_1.0.md` §137 的 0–3 与本表一致；其 `4 = Runtime/Backend` 对应本表 4/5，CLI exit code 以本节为准。
 
 ---
 
@@ -503,10 +532,14 @@ viso new .
 viso new smoke
 cd smoke
 viso check
-viso run headless
+viso test ui        # 默认 --target headless
 ```
 
 必须成功。
+
+### 8.5 JSON / exit codes
+
+`--json`：`progress`、一条 `result`（`payload: {path, template, files[]}`）、`summary`。目标目录非空且未给 `--force-empty-dir`：exit 2；模板写出失败：exit 7。
 
 ---
 
@@ -592,12 +625,14 @@ viso ios use <runtime>
 viso doctor --json
 ```
 
-每个 check 输出：
+每个 check 输出一个 `doctor_check` 事件（envelope 见 §35，以下只列 `type` 与 `payload`）：
 
 ```json
-{"type":"doctor_check","name":"rust","status":"ok"}
-{"type":"doctor_check","name":"android-sdk","status":"missing","code":"ENV_ANDROID_SDK"}
+{"type":"doctor_check","payload":{"name":"rust","status":"ok"}}
+{"type":"doctor_check","payload":{"name":"android-sdk","status":"missing","code":"ENV_ANDROID_SDK","suggestion":"viso android use 36"}}
 ```
+
+`status ∈ ok|warn|missing|error`。任一 check 为 `missing|error` 时 exit 3，只有 `warn` 时 exit 0。
 
 ---
 
@@ -611,13 +646,13 @@ viso doctor --json
 viso config show
 ```
 
-输出合并后的配置。
+输出合并后的配置，每个 key 附 provenance（`flag|env|profile|manifest|default`，§5）。
 
 ### 10.2 Get
 
 ```bash
 viso config get package.name
-viso config get build.default-target
+viso config get profile.release.opt_level
 ```
 
 ### 10.3 Path
@@ -658,6 +693,10 @@ viso config set arbitrary.deep.key ...
 作为核心工作流。
 
 原因：配置应接受 code review，文本文件是 source of truth。
+
+### 10.6 JSON / exit codes
+
+`show`/`get`/`path` 各输出一条 `result`（`show`：`{key: {value, origin}}` 映射；`get`：`{key, value, origin}`；`path`：`{path}`）；`validate` 每个问题一条 `diagnostic`（C0001–C0012）。Exit code 按 §7 的 config 诊断映射；`validate` 无 error 时 0。
 
 ---
 
@@ -770,7 +809,7 @@ viso android emulator stop pixel-local
 viso android emulator delete pixel35
 ```
 
-`create` 未指定 `--api` 时使用 `viso android use` 当前选择的版本。设备 model/viewport 可由预设或显式参数选择，但 ABI、system image family 和 backend 默认由 Viso 根据 host 和 API 兼容矩阵推导。
+`create` 未指定 `--api` 时使用 `viso android use` 当前选择的版本。设备 model/viewport 由 `--preset phone|tablet`（默认 `phone`）选择；ABI 与 system image family 由 Viso 根据 host 和 API 兼容矩阵推导。GPU backend 不可选（Android 固定 Vulkan，ADR-0029）。
 
 示例：
 
@@ -814,6 +853,16 @@ viso android adb --device pixel-local logcat
 ```
 
 不再额外维护一套 `viso device logs` grammar。
+
+### 11.7 JSON / exit codes
+
+- `list`、`emulator list`：一条 `result`（API/component 或 profile 列表）。
+- `use`：`progress`（下载/安装阶段）+ `result{api, installed, default}`。
+- `doctor`：同 §9.4 的 `doctor_check`。
+- `emulator create|start|stop|delete`：`device` 事件 + `summary`。
+- `adb`：不接受 `--json`，stdout/stderr 与 exit code 原样来自 adb；Viso 自身解析 SDK 失败时 exit 3。
+
+Exit code：不在支持矩阵的 API（`ANDROID_API_UNSUPPORTED`）或未知 profile 2；SDK/emulator/host virtualization 不可用 3；emulator 启动失败 5。
 
 ---
 
@@ -874,7 +923,7 @@ Viso Metal backend capability
 ```bash
 viso ios simulator list
 viso ios simulator create iphone-local
-viso ios simulator create ipad-local --profile tablet
+viso ios simulator create ipad-local --preset tablet
 viso ios simulator start iphone-local
 viso ios simulator stop iphone-local
 viso ios simulator delete iphone-local
@@ -897,7 +946,11 @@ Android/iOS 选择和 virtual-device profile 都属于 developer-machine state�
 ~/.viso/ios/
 ```
 
-项目可有 `.viso/local.toml` 覆盖，但它默认必须被 VCS ignore。SDK path、emulator serial、Simulator UUID 不进入普通 `Viso.toml`。
+项目可有 `.viso/local.toml` 覆盖本机默认 device profile（`--device` 省略时的选择），它必须被 VCS ignore，且不参与 §5 的 build 配置解析。SDK path、emulator serial、Simulator UUID 不进入 `Viso.toml`。
+
+### 12.6 JSON / exit codes
+
+JSON 合同与 §11.7 相同（`list`/`use`/`doctor`/`simulator ...`）。非 macOS host 上所有 `viso ios` 子命令 exit 3。
 
 
 ---
@@ -927,15 +980,7 @@ Dev Runtime transport
 structured diagnostics/logs
 ```
 
-不提供：
-
-```text
-viso run host
-viso run macos
-viso run windows
-viso run linux
-viso run --target ...
-```
+`viso run host|macos|windows|linux|headless` 与 `viso run --target ...` 均为 usage error（§1、§3.5）。
 
 ### 13.2 iOS / Android emulator development
 
@@ -944,18 +989,11 @@ viso run ios
 viso run android
 ```
 
-Viso 1.0 中两者只运行 simulator/emulator，不发现或部署 physical device。
-
-指定 profile：
-
-```bash
-viso run ios --device iphone-local
-viso run android --device pixel-local
-```
+目标设备语义与 `--device` 取值见 §3.2。
 
 如果没有 `--device`：
 
-1. 存在配置的 platform default profile：使用它；
+1. 存在本机默认 profile（`.viso/local.toml` 或 `~/.viso/`，§12.5）：使用它；
 2. 只有一个可用 profile：使用它；
 3. 没有 profile但当前是交互 TTY：给出创建建议或确认后创建标准 profile；
 4. 有多个且无默认：交互选择；
@@ -976,8 +1014,6 @@ launch
     ↓
 connect Dev Runtime
 ```
-
-不需要 `--simulator` / `--emulator` flag。
 
 ### 13.3 Web
 
@@ -1081,7 +1117,7 @@ Release / Shipping artifact:
 
 ### 13.8 Ctrl-C
 
-必须：
+在 §43 通用取消规则之上，`run` 额外要求：
 
 1. stop watcher；
 2. request child/emulator app graceful shutdown or detach dev session；
@@ -1089,6 +1125,11 @@ Release / Shipping artifact:
 4. keep simulator/emulator boot state by default，避免下次开发重复冷启动；
 5. second Ctrl-C force kill owned child processes。
 
+### 13.9 JSON / exit codes
+
+`--json` 事件：`progress`、`diagnostic`、`artifact`（dev artifact）、`device`、`dev`（每个 candidate revision 一条，§36）、`log`、`summary`。Dev session 中的 candidate 失败只产生 `diagnostic` + `dev{outcome:"rejected"}`，不结束命令。
+
+Exit code：首次 build 失败按 §7（1/3/4）；app 正常退出 0；app crash 或非零退出 5；Ctrl-C 结束 session 130。
 
 ---
 
@@ -1105,21 +1146,13 @@ viso build web-dom
 
 ### 14.1 Profiles
 
-内建语义：
-
-```text
-dev
-release
-shipping
-```
-
-用户可在 `Viso.toml` 定义额外 profile。
+Profile 集合固定为 `dev|release|shipping`（语义与 Dev Runtime 关系见 §38.2），不支持用户自定义 profile；未知名称报 C0009（exit 1）。`viso build` 默认 `dev`，`viso package` 默认 `shipping`（§27）。
 
 ```bash
-viso build --profile shipping web-gpu
+viso build web-gpu --profile shipping
 ```
 
-`viso build --release` 可以保留为 `--profile release` 的构建便利别名；它不适用于 `viso run`。
+`viso build --release` 是 `--profile release` 的便利别名，二者同时出现且不一致时为 usage error；它不适用于 `viso run`。
 
 ### 14.2 Build profile 不是 target
 
@@ -1169,7 +1202,7 @@ Built web-gpu (shipping)
   brotli    dist/app.wasm.br    612 KiB
 ```
 
-JSON 输出 `artifact` events。
+`--json` 事件：`progress`、`diagnostic`、每个产物一条 `artifact`、`summary`。Exit code：1（source/config diagnostics）、3（target/SDK unavailable、lock 被占用）、4（compile/link）。
 
 ---
 
@@ -1178,10 +1211,13 @@ JSON 输出 `artifact` events。
 只服务 Web target。
 
 ```bash
+viso serve             # 使用 [web] default_target；未配置时为 usage error
 viso serve web-dom
 viso serve web-gpu
 viso serve web-hybrid
 ```
+
+非 Web positional target 是 usage error（exit 2）。
 
 默认行为：
 
@@ -1208,13 +1244,19 @@ print local/network URL
 --no-hot-reload
 ```
 
+默认只监听 loopback；非 loopback `--host` 必须同时给 `--lan`，否则 usage error（Viso_Hot_Reload.md §46）。
+
+`serve` 与 `viso run web-*` 共用 Web Serve Service 与 Dev Session；区别是 `serve` 不启动浏览器开发 session（`--open` 只打开 URL），用于 LAN/HTTPS/外部浏览器访问。
+
 ### 15.2 Port selection
 
 若默认端口被占用：
 
 - human mode：自动选择相邻空闲端口并提示；
-- `--json`：输出最终端口 event；
-- 显式 `--port` 被占用：报错，不静默改端口。
+- `--json`：同样自动选择，并输出一条 `server` event（`url`、`host`、`port`）；
+- 显式 `--port` 被占用：报错（exit 3），不静默改端口。
+
+`--json` 事件：`progress`、`diagnostic`、`artifact`、`server`、`dev`、`log`、`summary`。Exit code 同 §13.9（无 app crash 分支）。
 
 ### 15.3 Security headers
 
@@ -1256,7 +1298,11 @@ viso fmt --check
 
 ### 16.3 Parser requirement
 
-Formatter 基于 Lossless CST/AST，不使用正则批量重写。
+Formatter 基于 Lossless CST/AST，不使用正则批量重写。实现复用 `viso-lsp` 同一 formatter（ADR-0018）。
+
+### 16.4 JSON / exit codes
+
+`--json`：每个需要改写（`--check` 时为未格式化）的文件一条 `result`（`payload: {file, changed}`），无法解析的文件输出 `diagnostic`，最后 `summary`。Exit code：`--check` 发现未格式化文件或存在 parse diagnostic 时 1。
 
 ---
 
@@ -1309,15 +1355,11 @@ invalid signing metadata shape
 
 ### 17.3 Watch
 
-普通开发用 `viso run`。
+普通开发用 `viso run`。编辑器/CI 需要连续静态检查时可用 `viso check --watch`；每轮输出完整 diagnostic 集合后接一条 `progress{phase:"idle"}`，只有退出时输出 `summary`。
 
-如果编辑器/CI 明确只想连续静态检查，可以：
+### 17.4 JSON / exit codes
 
-```bash
-viso check --watch
-```
-
-这不是主要应用运行模式。
+`--json`：`progress`、每条诊断一条 `diagnostic`（DSL §138 对象）、`summary`。Exit code：存在 `severity:"error"` 的诊断时 1；target unavailable 3；Rust check 失败 4。warning 不改变 exit code。
 
 ---
 
@@ -1335,9 +1377,9 @@ viso schema Button
 viso::widgets::Button
 
 Properties
-  text        String             invalidates: measure|layout|paint|semantics
-  disabled    Bool = false       invalidates: input|paint|semantics
-  icon        Option<Image>
+  text        String             invalidates: MEASURE|LAYOUT|PAINT|SEMANTICS
+  disabled    Bool = false       invalidates: STYLE|HIT_TEST|PAINT|SEMANTICS
+  icon        Option<Image>      invalidates: MEASURE|LAYOUT|PAINT
 
 Events
   click       ClickEvent
@@ -1361,7 +1403,7 @@ viso schema --search text
 viso schema Button --json
 ```
 
-必须输出稳定 schema object，不要求 AI 解析人类表格。
+输出一条 `result` event，`payload` 为 `Viso_DSL_1.0.md` §139 定义的 schema object；CLI 不定义第二套 schema JSON。Invalidation 名称只用 dirty class 规范名（`STRUCTURE STYLE MEASURE LAYOUT TRANSFORM PAINT HIT_TEST SEMANTICS`）。符号不存在时输出 `diagnostic` 并 exit 1。
 
 ### 18.3 Source origin
 
@@ -1399,6 +1441,8 @@ Suggested actions:
 
 Diagnostic code 的说明应来自 compiler diagnostics registry，而不是 CLI 自己维护副本。
 
+`--json`：一条 `result`（`payload: {code, title, explanation, suggested_commands[]}`）+ `summary`。未知 code：exit 1。
+
 ---
 
 ## 20. `viso dump`
@@ -1410,6 +1454,7 @@ viso dump ast src/app.vs
 viso dump hir src/app.vs
 viso dump ui-ir src/app.vs
 viso dump reactive-ir src/app.vs
+viso dump behavior-ir src/app.vs
 viso dump shader-ir RoundedRect
 viso dump system-ir PlayerController
 viso dump module-graph
@@ -1418,11 +1463,11 @@ viso dump module-graph
 支持：
 
 ```text
---out <path>
---pretty
---json
---symbol <path>
+--out <path>        # 写文件而不是 stdout
+--symbol <path>     # 只输出指定 symbol
 ```
+
+`--json`：一条 `result`（`payload: {kind, input, ir}`，`ir` 的形状由对应 IR 的 schema version 决定）+ `summary`；输入有 source error 时只输出 `diagnostic`，exit 1。
 
 `dump` 不属于普通应用 authoring API，但必须稳定到足以支持 compiler tests、Studio 和 AI debugging。
 
@@ -1438,23 +1483,20 @@ viso dump module-graph
 viso lsp --stdio
 ```
 
-支持：
+`viso lsp` 只定位并 exec `viso-lsp` binary（ADR-0018：同步 stdio `Content-Length` JSON-RPC loop），不在 CLI 进程内实现 language server。stdout 专属 JSON-RPC，任何日志只写 stderr；`--json` 不适用（§6.1）；没有 `summary` event。
+
+能力范围：
 
 ```text
-diagnostics
-completion
-goto definition
-find references
-rename
-hover
-semantic tokens
-formatting
-code actions
-schema lookup
-source-to-generated mapping
+ADR-0018 最小集（已实现）:
+    publishDiagnostics, goto definition, find references, rename, formatting
+
+1.0 目标（ADR-0018 明确 deferred，需后续 ADR/修订）:
+    hover, completion, semantic tokens, code actions,
+    schema lookup, source-to-generated mapping
 ```
 
-CLI 只负责 transport/launch；language intelligence 来自 `viso-dsl`/compiler services。
+Exit code：客户端 `shutdown`+`exit` 后 0；未收到 `shutdown` 即 `exit` 或 transport 损坏时 1（LSP 规范）。
 
 ---
 
@@ -1487,12 +1529,14 @@ viso test game
 viso test web --target web-dom
 ```
 
-Rust unit/integration tests仍可由 Cargo 执行；`viso test` 负责协调 Viso headless/UI/device/browser 测试。
+Rust unit/integration tests 仍可由 Cargo 执行；`viso test` 负责协调 Viso headless/UI/device/browser 测试。
+
+positional 是测试域；执行环境用 `--target <t>`（§3.5），默认 `headless`（`web` 域默认 `web-dom`）。`ios`/`android` 需要 `--device` 或本机默认 profile。
 
 ### 22.2 Headless UI
 
 ```bash
-viso test ui --headless
+viso test ui                      # 等价 --target headless
 ```
 
 可检查：
@@ -1522,16 +1566,31 @@ clock
 replay
 ```
 
+```bash
+viso test game movement --tape runs/jump.tape      # 回放 Tape，对 @probe 断言
+viso game record movement -o runs/jump.tape        # 运行中录制 Input Tape
+viso game peek <session> Player.score              # 读取运行中 System State
+```
+
+输出包含每 Tick `@probe` Trace、最终 Snapshot Hash、Entity Snapshot，以及可选的 Headless 帧截图 Sheet（`--sheet <png>`）。同一 Build + Tape 在所选 determinism 档位下 Snapshot Hash 逐字节一致（DSL §110.5）。
+
 ### 22.4 Test filters
 
 ```text
+--target <t>
+--device <id>
 --filter <pattern>
 --exact
---jobs <n>
 --fail-fast
 --nocapture
---update-snapshots
+--update-snapshots      # 显式写回 golden，等价于随后执行 snapshot update
 ```
+
+并行度使用 global `--jobs`。
+
+### 22.5 JSON / exit codes
+
+`--json`：`progress`、`diagnostic`、每个用例一条 `test`（`payload: {name, domain, status: pass|fail|skip, duration_ms, message?}`）、`summary`（含 pass/fail/skip 计数）。Exit code：有失败用例 1；source diagnostics 1；target/device 不可用 3；runner 崩溃 5。
 
 ---
 
@@ -1554,7 +1613,10 @@ selected state metadata
 
 ```bash
 viso snapshot capture HomePage
+viso snapshot capture HomePage --output out/home.snap
 ```
+
+`Viso_DSL_1.0.md` §137 的 `viso snapshot <component> --output=<path>` 即此命令。
 
 ### 23.2 Compare
 
@@ -1573,9 +1635,13 @@ viso snapshot update HomePage
 ### 23.4 Target
 
 ```bash
-viso snapshot capture HomePage --target headless
-viso snapshot capture HomePage --target ios --device ios-sim-18-pro
+viso snapshot capture HomePage                  # 默认 --target headless
+viso snapshot capture HomePage --target ios --device iphone-local
 ```
+
+### 23.5 JSON / exit codes
+
+`--json`：`capture` 每个产物一条 `artifact`；`compare` 每个 golden 一条 `test`（`status: pass|fail`，失败时附 diff artifact path）；`update` 每个写回文件一条 `artifact`；最后 `summary`。Exit code：compare 不一致 1；target/device 不可用 3；capture 渲染失败 5。
 
 ---
 
@@ -1627,7 +1693,9 @@ hot-reload diagnostics
 viso inspect query '#save_button' --json
 ```
 
-用于 AI/CI automation。
+用于 AI/CI automation。`--json`：一条 `result`（`payload: {selector, matches: [{node_id, symbol, source_span, bounds, semantics}]}`）+ `summary`。
+
+`inspect` 可用 `--target <t> [--device <id>]` 选择 Dev Session。Exit code：找不到活跃 Dev Session 3；selector 语法错误 2；零匹配不是错误（exit 0）。
 
 ---
 
@@ -1694,6 +1762,8 @@ viso profile --chrome trace.json
 
 Ende trace schema 由 tooling protocol 定义。
 
+`--json`：采样期间 `progress`，结束时一条 `profile`（`payload: {frames, duration_ms, metrics: {<§25.2 指标>: {p50, p95, max}}}`）、trace 文件对应 `artifact`、`summary`。Exit code：无 Dev Session 且无法启动 3；app crash 5。
+
 ---
 
 ## 26. `viso studio`
@@ -1710,6 +1780,8 @@ viso studio
 viso studio --target android
 viso studio --project path/to/app
 ```
+
+`studio` 是 GUI 进程，不接受 `--json`（usage error）；启动失败按 §7 返回 3/7。
 
 Studio 必须调用与 CLI 相同的：
 
@@ -1743,7 +1815,7 @@ viso package web-hybrid
 
 无 positional target 时打包当前 desktop host；不提供 `viso package macos/windows/linux` 作为普通 public grammar。
 
-默认使用 `shipping` profile，除非项目另有明确设置。
+默认 profile 为 `shipping`，可用 `--profile release` 覆盖；`--profile dev` 是 usage error（package 永不包含 Dev Runtime，§13.6）。
 
 ### 27.1 Package metadata
 
@@ -1821,6 +1893,10 @@ Viso toolchain identity
 signing status
 ```
 
+### 27.5 JSON / exit codes
+
+`--json`：`progress`、`diagnostic`、每个产物一条 `artifact`（含 `artifact.json` 本身）、`summary`。`--dry-run` 以一条 `result`（§27.3 字段）代替 `artifact`。Exit code：1（diagnostics）、3（SDK/lock）、4（build）、6（signing/archive）。
+
 ---
 
 ## 28. `viso export`
@@ -1868,6 +1944,10 @@ Unsupported
 ```
 
 任何 Unsupported 必须产生结构化 diagnostic，不允许 silently drop。
+
+### 28.3 JSON / exit codes
+
+`--json`：`progress`、`diagnostic`（含 `EXPORT_*` capability 诊断）、输出目录一条 `artifact`（`kind:"export-dir"`）、`summary`。Exit code：capability diagnostics（Unsupported、`EXPORT_HTML_DYNAMIC_REQUIRED` 等）1；exporter 写出或外部工具（如 package manager）失败 6。
 
 ---
 
@@ -1985,7 +2065,7 @@ component Counter {
 
     view {
         Column {
-            Text { text: count; }
+            Text { text: format("{}", count); }
             Button {
                 text: "Add";
                 on click { count += 1; }
@@ -2047,7 +2127,7 @@ Viso source
   -> Viso DOM runtime artifact
 ```
 
-支持完整 Viso Web DOM runtime contract，包括 Hot Reload、Viso resource system、typed runtime metadata 等。
+支持完整 Viso Web DOM runtime contract，包括 Viso resource system、typed runtime metadata，以及 dev profile 下的 Hot Reload。
 
 ### `viso export html`
 
@@ -2117,108 +2197,123 @@ suggested alternative target or rewrite
 
 ## 34. JSON 是事件流，不是最终对象
 
-长任务需要持续输出进度，所以：
+`--json` 下按行输出 JSON event（JSON Lines，UTF-8，每行一个独立合法 JSON object，行内不换行）。长任务持续输出进度，不在结束时输出单个大对象。
 
-```bash
-viso build --json
-```
-
-按行输出 JSON event（JSON Lines）。
-
-示例：
+示例（省略 envelope 公共字段）：
 
 ```json
-{"type":"progress","phase":"compile","message":"Compiling app"}
-{"type":"diagnostic","level":"warning","code":"W2104","message":"..."}
-{"type":"artifact","kind":"binary","path":"target/.../app"}
-{"type":"summary","status":"success","elapsed_ms":842}
+{"type":"progress","payload":{"phase":"compile","message":"Compiling app"}}
+{"type":"diagnostic","payload":{"schema_version":1,"severity":"warning","code":"W2104","message":"...","primary":{"file":"src/app.vs","byte_start":120,"byte_end":128,"line":7,"column_utf16":5}}}
+{"type":"artifact","payload":{"kind":"binary","path":"dist/macos/app","target":"macos","profile":"dev"}}
+{"type":"summary","payload":{"status":"success","exit_code":0,"elapsed_ms":842}}
 ```
-
-每行必须是独立合法 JSON。
 
 ---
 
 ## 35. Common event envelope
 
-逻辑结构：
-
-```text
-CliEvent {
-    type
-    schema
-    timestamp
-    session_id
-    payload
-}
-```
-
-建议字段：
-
 ```json
 {
-  "type": "diagnostic",
   "schema": "viso.cli.event",
+  "schema_version": 1,
+  "seq": 0,
+  "type": "diagnostic",
   "timestamp_ms": 1780000000000,
   "session_id": "...",
+  "command": "build",
   "payload": {}
 }
 ```
 
-内部可用 Ende derive 生成。
+```text
+schema          固定 "viso.cli.event"
+schema_version  整数；envelope 与所有 payload 共用一个版本号
+seq             本次调用内从 0 单调递增
+type            §36 事件类型
+timestamp_ms    Unix epoch 毫秒
+session_id      本次 CLI 调用的唯一 ID；viso run/serve 时等于 Dev Session 的 DevSessionId（Viso_Hot_Reload.md §4.1）
+command         顶层命令路径，如 "build"、"android emulator list"
+payload         type 对应的 payload（§36）
+```
+
+版本规则：
+
+- 同一 `schema_version` 内只允许新增 optional 字段、新增事件类型、新增 enum 值；删除/改名/改类型/改语义必须递增 `schema_version`。
+- Consumer 必须忽略未知字段与未知 `type`；遇到更高 `schema_version` 可以拒绝。
+- `diagnostic` payload 另带 DSL §138 自己的 `schema_version`，两者独立演进。
+
+内部由 Ende derive 生成，JSON 是 Ende schema 的 JSON projection。
 
 ---
 
 ## 36. Event types
 
-一等事件：
-
 ```text
-progress
-diagnostic
-artifact
-device
-test
-snapshot
-profile
-server
-log
-summary
+type          payload 关键字段
+progress      phase, message, current?, total?
+diagnostic    Viso_DSL_1.0.md §138 JSON Diagnostic 对象（原样）
+artifact      kind, path, target, profile, build_id, size, hash
+device        platform(ios|android), id, name, state(booting|ready|installing|launched|stopped)
+test          name, domain, status(pass|fail|skip), duration_ms, message?, artifacts[]?
+profile       frames, duration_ms, metrics（§25）
+server        url, host, port, lan
+dev           见下
+doctor_check  name, status(ok|warn|missing|error), code?, message?, suggestion?
+result        查询型命令的数据载荷（形状由各命令定义）
+log           level, source(app|device|tool), message
+summary       见 §36.3
 ```
+
+规则：
+
+- `result` 用于 `config`、`schema`、`explain`、`dump`、`inspect query`、`android/ios list`、`emulator/simulator list`、`package --dry-run` 等查询型命令；除 `fmt`（每文件一条）外每次调用至多一条。
+- 未单独说明 JSON 合同的命令只输出 `progress`、`diagnostic`、`summary`。
+- `--json` 模式下 app/device 的 stdout/stderr 只能以 `log` 事件出现。
 
 ### 36.1 Diagnostic
 
-```text
-level
-code
-message
-source
-span
-notes[]
-help[]
-related[]
-```
+`payload` 即 `Viso_DSL_1.0.md` §138 对象：`schema_version, severity, code, message, primary{file, byte_start, byte_end, line, column_utf16}, related[], expected?, actual?, notes[], fixes[{title, applicability, edits[{file, byte_start, byte_end, replacement}]}]`。CLI 不定义第二套 diagnostic 形状。Config 诊断（`C0001`–`C0012`）、环境诊断（如 `ENV_ANDROID_SDK`）与 exporter 诊断使用同一形状；无源码位置时 `primary` 为 `null`，Viso.toml 诊断的 `primary.file` 指向 `Viso.toml`。
 
 ### 36.2 Artifact
 
 ```text
-kind
-path
-target
-profile
-size
-hash
+kind      binary|app-bundle|apk|aab|wasm|js|asset-dir|archive|manifest|snapshot|trace|export-dir
+path      相对 project root
+target    host 解析后的实际平台名（macos|windows|linux）或逻辑 target
+profile   dev|release|shipping；export 为 null
+build_id  §46
+size      bytes
+hash      "sha256:<hex>"
 ```
 
 ### 36.3 Summary
 
-每个有限命令最终输出一次 summary：
+每个命令在 protocol 启动后恰好输出一次 `summary`，且为最后一个事件；长驻命令（`run`、`serve`、`check --watch`）在退出时输出。
 
 ```text
-status
+status          success|failure|cancelled
+exit_code       与进程 exit code 相同（§7）
 elapsed_ms
 warning_count
 error_count
 artifact_count
+```
+
+命令特有计数（如 `test` 的 `passed/failed/skipped`）作为额外字段加入。
+
+### 36.4 Dev event
+
+`viso run`/`serve` 的每个 candidate revision 输出一条 `dev`，字段取自 `Viso_Hot_Reload.md`（§4.1 identity、§8 patch class、§37 ACK/NACK、§51 stage）：
+
+```text
+dev_session_id, build_id
+base_revision, candidate_revision
+patch_class     PATCH|PATCH_WITH_SCOPED_RESET|WARM_RESTART_REQUIRED
+outcome         applied|scoped_reset|warm_restarted|rejected
+stage           rejected 时为失败所在 §51 stage（watch, parse, ..., snapshot-restore）
+diagnostic_codes[]
+last_good_revision
+elapsed_ms
 ```
 
 ---
@@ -2228,8 +2323,8 @@ artifact_count
 Human mode：
 
 ```text
-stdout -> normal result/progress
-stderr -> diagnostics/errors
+stdout -> 命令结果（查询输出、artifact path、summary）与 app stdout
+stderr -> progress、diagnostics、errors、app stderr
 ```
 
 JSON mode：
@@ -2239,7 +2334,9 @@ stdout -> protocol JSON Lines only
 stderr -> only unrecoverable pre-protocol launcher failure
 ```
 
-一旦 JSON protocol 已启动，不允许把普通 debug print 混进 stdout。
+- `--json` 已被识别后的 usage error 也以 `diagnostic` + `summary{exit_code:2}` 输出到 stdout。
+- 一旦 JSON protocol 已启动，不允许把普通 debug print 混进 stdout。
+- 例外：`viso lsp` 的 stdout 专属 LSP JSON-RPC（§21）；`viso completion` 的 stdout 是 shell script。
 
 ---
 
@@ -2251,10 +2348,9 @@ stderr -> only unrecoverable pre-protocol launcher failure
 [package]
 name = "hello-viso"
 bundle_id = "com.example.hello"
-
-[build]
-default_target = "host"
 ```
+
+未知 key 报 C0004，类型错误 C0005（exit 1）。`Viso.toml` 不提供改变默认 run/build/package target 的 key（§3.5）。
 
 ### 38.1 Web
 
@@ -2266,6 +2362,8 @@ default_target = "web-dom"
 port = 8080
 open = true
 ```
+
+`[web] default_target` 只决定无 positional 的 `viso serve`（§15），不影响 `run`/`build`/`package`/`check`。`[web.serve] port` 视为默认端口（被占用时按 §15.2 自动换端口）；显式 `--port` 才是严格端口。
 
 ### 38.2 Profiles
 
@@ -2289,15 +2387,18 @@ dev               -> Dev Runtime present
 release/shipping  -> Dev Runtime absent
 ```
 
-如果 `Viso.toml` 在 release/shipping profile 中声明 `hot_reload = true` 或同义字段，CLI 必须报配置错误，而不是静默生成可远程 patch 的发布包。
+如果 `Viso.toml` 在 release/shipping profile 中声明 `hot_reload = true` 或同义字段，CLI 必须报 C0008，而不是静默生成可远程 patch 的发布包。
+
+Profile 名只能是 `dev|release|shipping`；其他 `[profile.<name>]` 报 C0009。`opt_level ∈ 0|1|2|3|"size"`。Web 专属优化子表 `[profile.<name>.web]` 见 §14.3。
 
 ### 38.3 Android
 
 ```toml
 [target.android]
 min_sdk = 26
-backend = "vulkan"
 ```
+
+GPU backend 不是项目配置项：每个 target 的 backend 由 cfg 静态决定（Android 为 Vulkan，ADR-0029）。
 
 ### 38.4 iOS
 
@@ -2348,7 +2449,6 @@ tools/cli/
     │   ├── new.rs
     │   ├── doctor.rs
     │   ├── config.rs
-    │   ├── target.rs
     │   ├── android.rs
     │   ├── ios.rs
     │   ├── run.rs
@@ -2451,6 +2551,14 @@ CLI parser 需求：
 
 CLI grammar 是产品合同，不由 parser crate API 决定。
 
+### 42.1 `viso completion <shell>`
+
+```bash
+viso completion bash|zsh|fish|powershell
+```
+
+把由 parser metadata 生成的 completion script 写到 stdout；不读取项目、不接受 `--json`。未知 shell：exit 2。
+
 ---
 
 ## 43. Cancellation
@@ -2475,41 +2583,45 @@ child process
 server socket
 simulator/emulator install session
 temporary package directory
+lock file
 ```
 
 永久泄漏。
+
+规则：
+
+1. 第一次 SIGINT/SIGTERM（Windows Ctrl-C/Ctrl-Break）触发 cooperative cancellation：停止调度新工作，通知 service 取消（`ServiceError::Cancelled`），等待进行中的原子步骤（download rename、artifact rename、patch commit）完成或回滚。
+2. 第二次 SIGINT 强制终止本命令拥有的子进程；不终止非本命令启动的 simulator/emulator。
+3. 退出前删除 staging/temp 输出（§51）并释放本命令持有的 lock（§44）。
+4. 进程 exit code 130；若 JSON protocol 已启动，先输出 `summary{status:"cancelled", exit_code:130}`。
+5. 已完成并原子落盘的 artifact 保留；未完成的不得以部分内容出现在 `dist/`。
 
 ---
 
 ## 44. Project lock
 
-防止同一 project 同一 mutable artifact 被并发破坏。
-
-建议：
+防止同一 project 同一 mutable artifact 被并发破坏。锁是 `target/viso/locks/` 下的 advisory file（不是 `flock`）：
 
 ```text
-target/viso/locks/
+build-<target>.lock                build cache，按 target
+package-<target>.lock              dist/<target>/ 输出，按 target
+dev-<target>[-<device>].lock       dev session，按 target/device
 ```
 
-锁粒度：
-
-```text
-build cache lock
-package output lock
-dev session lock per target/device
-```
-
-允许不同 target 的独立 build 并发，只要 artifact/cache 结构安全。
+- 获取：`create_new` 原子创建；文件内容记录 holder `pid`、`acquired_unix`、description。
+- 不阻塞等待：锁被占用时立即失败，diagnostic 给出 holder pid、age 与锁路径，exit 3。
+- 释放：持有者退出时删除（含 §43 取消路径）。
+- Stale：只按 age 判定（不探测 pid 存活，pid 可能被复用）；阈值由调用命令给定，移除 stale lock 时输出 warning。
+- 不同 target 的 build/package 可以并发；同一 target 的 `run` 与 `build` 共享 `build-<target>.lock`。
 
 ---
 
 ## 45. Cache layout
 
-推荐：
-
 ```text
 target/
 └── viso/
+    ├── build/<build-id>/     # 按完整 BuildId 分目录，不同配置互不覆盖
     ├── cache/
     │   ├── dsl/
     │   ├── shader/
@@ -2521,14 +2633,22 @@ target/
     └── locks/
 
 dist/
-├── macos/
+├── macos/ | windows/ | linux/     # desktop host 解析后的平台
+├── headless/
 ├── ios/
 ├── android/
-├── web/
-└── ...
+└── web/
 ```
 
-不要在 source tree 到处生成临时中间文件。
+`target/viso/` 是可重建状态，`dist/` 是用户交付产物。`--target-dir` 只替换 `target/` 根。不要在 source tree 到处生成临时中间文件。
+
+### 45.1 `viso clean`
+
+```bash
+viso clean
+```
+
+删除 `target/viso/`（build、cache、dev、generated、traces、locks），不删除 `dist/` 与 `~/.viso/`。存在未 stale 的 lock 时拒绝执行并 exit 3。`--json`：一条 `result`（`payload: {removed: [path], freed_bytes}`）+ `summary`。
 
 ---
 
@@ -2557,7 +2677,7 @@ Studio session
 cache validation
 ```
 
-不要用时间戳单独充当 build identity。
+不要用时间戳单独充当 build identity。BuildId 的文本形式是 32 位小写 hex，用于路径、`artifact.build_id` 与 `dev.build_id`。
 
 ---
 
@@ -2689,7 +2809,7 @@ error[ENV_ANDROID_SDK]: Android SDK was not found
 Target: android
 Expected one of:
   ANDROID_HOME
-  configured SDK path in Viso.toml
+  SDK selected by `viso android use` (~/.viso/android/)
 
 Try:
   viso android list
@@ -2735,27 +2855,28 @@ choice truly ambiguous
 
 必须报结构化 ambiguity，不等待 stdin。
 
-这对 AI automation 很重要。
-
 ---
 
 # Part XIV — AI / Vibe Coding contract
 
 ## 56. AI-friendly commands
 
-AI Agent 最常用：
+`Viso_DSL_1.0.md` §137 的 AI/CI 命令合同在 CLI 中的对应：
 
-```bash
-viso check --json
-viso schema Button --json
-viso explain E3101 --json
-viso dump hir src/app.vs --json
-viso test ui --json
-viso snapshot compare --json
-viso inspect query ... --json
-viso doctor --json
-viso config show --json
+```text
+DSL §137                                    CLI
+viso fmt <paths>                            §16
+viso check [package] --json                 §17
+viso schema <symbol> --json                 §18（payload = DSL §139）
+viso explain <error-code> --json            §19
+viso dump ast|hir|ui-ir|reactive-ir|
+          behavior-ir|shader-ir|system-ir   §20
+viso test [package] --json                  §22
+viso snapshot <component> --output=<path>   viso snapshot capture <component> --output <path>（§23.1）
+viso test game <scenario> --frames --seed   §22.3
 ```
+
+另外常用：`viso snapshot compare --json`、`viso inspect query ... --json`、`viso doctor --json`、`viso config show --json`。`--json` 下所有诊断均为 DSL §138 对象（§36.1），exit code 见 §7。Workspace member 选择语法（DSL 的 `[package]`）尚未定义；在此之前 `check`/`test` 作用于 `--project` 解析出的 project。
 
 这些命令必须：
 
@@ -2808,8 +2929,6 @@ slot name
 capability
 ```
 
-这是 Viso AI authoring 的核心能力之一。
-
 ---
 
 # Part XV — Testing CLI itself
@@ -2839,7 +2958,7 @@ Help snapshot 进入 golden tests。
 ```text
 new -> check
 new -> build headless
-new -> run headless
+new -> test ui
 fmt --check
 schema lookup
 invalid .vs diagnostic
@@ -2860,9 +2979,9 @@ CLI 测试不能要求 CI 真有手机。
 Target/Device service 必须支持 fake backend：
 
 ```text
-fake ios device
+fake ios simulator
 fake android emulator
-fake disconnected device
+fake disconnected simulator/emulator
 fake signing error
 fake SDK missing
 ```
@@ -2892,7 +3011,7 @@ fake SDK missing
 serve interrupted
 run interrupted
 package interrupted
-target download interrupted
+android/ios use download interrupted
 profile interrupted
 ```
 
@@ -2973,12 +3092,29 @@ viso run ios [--device <simulator-id>]
 viso run android [--device <emulator-id>]
 viso run web-gpu|web-dom|web-hybrid [--browser <name>]
 
-viso build [ios|android|web-gpu|web-dom|web-hybrid]
+viso build [headless|ios|android|web-gpu|web-dom|web-hybrid] [--profile <p>|--release]
 viso serve [web-gpu|web-dom|web-hybrid]
-viso package [ios|android|web-gpu|web-dom|web-hybrid]
+viso package [ios|android|web-gpu|web-dom|web-hybrid] [--profile shipping|release]
+viso check [<target>]
+viso profile [<target>] [--device <id>]
+viso doctor [<target>]
 ```
 
-无 target 的 `run/build/package` 表示当前 desktop host。
+无 target 的 `run/build/package/check/profile` 表示当前 desktop host；positional 与 `--target` 的分工见 §3.5。
+
+Language / test：
+
+```text
+viso fmt [<paths>...] [--check]
+viso schema <symbol> | --search <text>
+viso explain <code>
+viso dump <ast|hir|ui-ir|reactive-ir|behavior-ir|shader-ir|system-ir|module-graph> [<file|symbol>]
+viso lsp [--stdio]
+viso test [unit|ui|game|web|all] [--target <t>] [--device <id>]
+viso snapshot <capture|compare|update> [<component>] [--target <t>] [--device <id>]
+viso inspect [query <selector>] [--run] [--target <t>]
+viso studio [--target <t>]
+```
 
 Mobile environment：
 
@@ -2995,21 +3131,16 @@ viso ios doctor
 viso ios simulator <list|create|delete|start|stop> ...
 ```
 
-Query-only target metadata 可以保留给 tooling：
+Delivery / maintenance：
 
 ```text
-viso target list
-viso target info <logical-target>
+viso export html [--out <dir>] [--static]
+viso export solid [--out <dir>]
+viso clean
+viso completion <bash|zsh|fish|powershell>
 ```
 
-`target` 不负责安装 Android/iOS SDK，也不提供 desktop `run macos/windows/linux` grammar。
-
-Export：
-
-```text
-viso export html
-viso export solid
-```
+Target 可用性通过 `viso doctor [<target>]` 查询，不提供单独的 `viso target` 命令。
 
 
 ---
@@ -3225,7 +3356,7 @@ device profile
 
 ### Automation
 
-- 所有核心命令支持 `--json`；
+- 除 `lsp`、`studio`、`completion` 外所有命令支持 `--json`，且符合 §34–§37；
 - exit codes 稳定；
 - non-TTY 不进入交互 prompt；
 - Studio/IDE/AI 使用共享 services/protocol；
@@ -3271,7 +3402,7 @@ viso check --json
 viso dump hir src/app.vs --json
 
 # Test / inspect
-viso test ui --headless
+viso test ui
 viso snapshot compare
 viso inspect
 viso profile --frames 600
@@ -3281,52 +3412,6 @@ viso package
 viso package android
 viso export html --out dist-html
 viso export solid --out web-solid
-```
-
----
-
-# Appendix B — 推荐开发闭环
-
-普通 App：
-
-```text
-viso new
-   ↓
-viso run
-   ↓
-edit Rust/.vs/assets
-   ↓
-hot reload / incremental rebuild
-   ↓
-viso check
-   ↓
-viso test
-   ↓
-viso package
-```
-
-Web 产品：
-
-```text
-viso new --template web
-   ↓
-viso serve web-dom
-   ↓
-viso check web-dom
-   ↓
-viso test web
-   ↓
-viso package web-dom
-```
-
-外部前端交付：
-
-```text
-Viso source
-   ↓
-viso export solid
-   ↓
-standalone SolidJS project
 ```
 
 ---
@@ -3349,30 +3434,3 @@ secret 出现在 --verbose log
 失败后留下半个 dist tree
 ```
 
----
-
-# 结论
-
-Viso CLI 的核心不是“命令多”，而是把 Viso 的完整开发生命周期收敛到一个一致、可自动化、可观测的入口：
-
-```text
-source
-  ↓
-check
-  ↓
-build
-  ↓
-run / serve
-  ↓
-inspect / test / profile
-  ↓
-package
-  ↓
-optional export
-```
-
-对人类：命令简单、一致。  
-对 CI：exit code 和 JSON 稳定。  
-对 Studio/IDE：复用同一 service。  
-对 AI/Vibe Coding：Schema、Diagnostics、HIR/IR、Snapshot、Inspector 都可结构化查询。  
-对架构：CLI 永远是 facade，不反向污染 Runtime/UI/GPU/DSL。

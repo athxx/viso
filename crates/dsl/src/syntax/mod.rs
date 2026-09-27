@@ -29,7 +29,7 @@ pub mod span;
 pub mod token;
 
 pub use cst::{GreenBuilder, GreenChild, GreenNode, GreenToken, flat_tree};
-pub use grammar::{Entry, parse_entry};
+pub use grammar::{Entry, IncrementalParse, parse_entry};
 pub use kind::SyntaxKind;
 pub use lexer::{LexState, Lexer, tokenize};
 pub use parser::{Parse, ParseErrorKind, parse};

@@ -16,6 +16,7 @@ mod module;
 mod name;
 mod resolver;
 mod scope;
+pub(crate) mod suggest;
 mod symbol;
 
 pub use module::{GraphModule, ModuleGraph, ModuleIndex, ModulePath, ResolveErrorKind, SourceUnit};

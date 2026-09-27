@@ -10,8 +10,9 @@
 //! everything-else-is-explicit policy. Widening never crosses the signed/unsigned
 //! boundary, never int↔float, and never narrows (including `F64 -> F32`).
 
-use crate::ast::TypePath;
+use crate::ast::{AstNode, TypePath};
 use crate::resolve::SymbolId;
+use crate::syntax::{SyntaxKind, SyntaxNode, TextRange};
 
 /// A resolved static type.
 ///
@@ -46,7 +47,10 @@ pub enum Ty {
     Dp,
     Px,
     Sp,
+    Em,
     Percent,
+    /// A linear combination of length-family terms, resolved only at layout.
+    MixedLength,
     Duration,
     Angle,
     Frequency,
@@ -62,6 +66,12 @@ pub enum Ty {
     List(Box<Ty>),
     /// `Option<T>`.
     Option(Box<Ty>),
+    /// `Result<T, E>`.
+    Result(Box<Ty>, Box<Ty>),
+    /// A half-open range `a..b` over `T`.
+    Range(Box<Ty>),
+    /// A closed range `a..=b` over `T`.
+    RangeInclusive(Box<Ty>),
 
     // --- inference placeholders ---------------------------------------------
     /// An undetermined integer literal (host default `I64` if no context pins it).
@@ -139,7 +149,9 @@ impl Ty {
             "Dp" => Ty::Dp,
             "Px" => Ty::Px,
             "Sp" => Ty::Sp,
+            "Em" => Ty::Em,
             "Percent" => Ty::Percent,
+            "MixedLength" => Ty::MixedLength,
             "Duration" => Ty::Duration,
             "Angle" => Ty::Angle,
             "Frequency" => Ty::Frequency,
@@ -164,18 +176,135 @@ impl Ty {
         Ty::from_builtin_name(&head.text())
     }
 
+    /// Lowers a type annotation node (a `TypePath` or `TupleType`) to a [`Ty`]:
+    /// builtin scalars, the structural generics (`List`, `Option`, `Result`,
+    /// `Range`, `RangeInclusive`), tuples, and nominal types through `nominal`,
+    /// which maps a head segment's span to the symbol the resolver bound it to.
+    /// A name that is neither is `Unknown` (the resolver already diagnosed a
+    /// user-looking one); `Float` anywhere is [`TypeError::FloatRemoved`].
+    pub fn from_annotation(
+        node: &SyntaxNode,
+        nominal: &dyn Fn(TextRange) -> Option<SymbolId>,
+    ) -> Result<Ty, TypeError> {
+        match node.kind() {
+            SyntaxKind::TupleType => {
+                let elems = node
+                    .children()
+                    .into_iter()
+                    .map(|c| Ty::from_annotation(&c, nominal))
+                    .collect::<Result<Vec<_>, _>>()?;
+                Ok(if elems.is_empty() {
+                    Ty::Unit
+                } else {
+                    Ty::Tuple(elems)
+                })
+            }
+            SyntaxKind::TypePath => {
+                let Some(path) = TypePath::cast(node.clone()) else {
+                    return Ok(Ty::Unknown);
+                };
+                let segments: Vec<_> = path.segments().collect();
+                let Some(last) = segments.last() else {
+                    return Ok(Ty::Unknown);
+                };
+                let args = node
+                    .children()
+                    .into_iter()
+                    .rfind(|c| c.kind() == SyntaxKind::TypePathSegment)
+                    .and_then(|seg| {
+                        seg.children()
+                            .into_iter()
+                            .find(|c| c.kind() == SyntaxKind::GenericArgs)
+                    })
+                    .map(|generic| {
+                        generic
+                            .children()
+                            .into_iter()
+                            .filter(|c| {
+                                matches!(c.kind(), SyntaxKind::TypePath | SyntaxKind::TupleType)
+                            })
+                            .map(|c| Ty::from_annotation(&c, nominal))
+                            .collect::<Result<Vec<_>, _>>()
+                    })
+                    .transpose()?
+                    .unwrap_or_default();
+                if segments.len() == 1 {
+                    let arg = |i: usize| Box::new(args.get(i).cloned().unwrap_or(Ty::Unknown));
+                    match (last.text().as_str(), args.len()) {
+                        ("List", 1) => return Ok(Ty::List(arg(0))),
+                        ("Option", 1) => return Ok(Ty::Option(arg(0))),
+                        ("Result", 2) => return Ok(Ty::Result(arg(0), arg(1))),
+                        ("Range", 1) => return Ok(Ty::Range(arg(0))),
+                        ("RangeInclusive", 1) => return Ok(Ty::RangeInclusive(arg(0))),
+                        _ => {}
+                    }
+                    if let Some(ty) = Ty::from_builtin_name(&last.text())? {
+                        return Ok(ty);
+                    }
+                }
+                // `P` and `m::P` bind the type at the last segment; a head the
+                // resolver bound is the fallback for a qualified name.
+                Ok(nominal(last.text_range())
+                    .or_else(|| nominal(segments[0].text_range()))
+                    .map_or(Ty::Unknown, Ty::Named))
+            }
+            _ => Ok(Ty::Unknown),
+        }
+    }
+
+    /// The element type a `for` loop over a value of this type binds.
+    pub fn element(&self) -> Option<&Ty> {
+        match self {
+            Ty::List(t) | Ty::Range(t) | Ty::RangeInclusive(t) => Some(t),
+            _ => None,
+        }
+    }
+
+    /// Whether this type is, or contains, the undetermined `Unknown` placeholder.
+    pub fn has_unknown(&self) -> bool {
+        match self {
+            Ty::Unknown => true,
+            Ty::Tuple(ts) => ts.iter().any(Ty::has_unknown),
+            Ty::Fn(ps, r) => ps.iter().any(Ty::has_unknown) || r.has_unknown(),
+            Ty::List(t) | Ty::Option(t) | Ty::Range(t) | Ty::RangeInclusive(t) => t.has_unknown(),
+            Ty::Result(t, e) => t.has_unknown() || e.has_unknown(),
+            _ => false,
+        }
+    }
+
     /// Whether `self` implicitly and safely widens to `target` (doc's allowed set):
     /// the signed ladder `I8→I16→I32→I64`, the unsigned ladder `U8→…→U64`, and
-    /// `F32→F64`. Equal types trivially widen. Nothing crosses signedness, nothing
-    /// goes int↔float, nothing narrows. An undetermined literal placeholder is
-    /// handled by literal typing, not here.
+    /// `F32→F64`, and any length-family member to `MixedLength`. Equal types
+    /// trivially widen. Nothing crosses signedness, nothing goes int↔float, nothing
+    /// narrows. An undetermined literal placeholder is handled by literal typing,
+    /// not here.
     pub fn widens_to(&self, target: &Ty) -> bool {
         if self == target {
             return true;
         }
+        if target == &Ty::MixedLength {
+            return self.is_length_family();
+        }
         widen_rank(self)
             .zip(widen_rank(target))
             .is_some_and(|(from, to)| from.family == to.family && from.rank <= to.rank)
+    }
+
+    /// Whether `self` is a length-family member (`Dp`, `Px`, `Sp`, `Em`, `Percent`).
+    /// `MixedLength` is their combination, not a member.
+    pub fn is_length_family(&self) -> bool {
+        matches!(self, Ty::Dp | Ty::Px | Ty::Sp | Ty::Em | Ty::Percent)
+    }
+
+    /// Whether `self` is a length-family value, including `MixedLength`.
+    pub fn is_length(&self) -> bool {
+        self.is_length_family() || self == &Ty::MixedLength
+    }
+
+    /// Whether `self` carries a UI dimension: a length, `Duration`, `Angle` or
+    /// `Frequency`.
+    pub fn is_dimensional(&self) -> bool {
+        self.is_length() || matches!(self, Ty::Duration | Ty::Angle | Ty::Frequency)
     }
 
     /// The implicit-conversion check used when a value of type `self` is supplied
@@ -260,6 +389,17 @@ mod tests {
         assert!(Ty::F32.widens_to(&Ty::F64));
         // The doc forbids the narrowing direction implicitly.
         assert!(!Ty::F64.widens_to(&Ty::F32));
+    }
+
+    #[test]
+    fn length_family_members_widen_to_mixed_length_only() {
+        for member in [Ty::Dp, Ty::Px, Ty::Sp, Ty::Em, Ty::Percent] {
+            assert!(member.widens_to(&Ty::MixedLength));
+        }
+        assert!(!Ty::MixedLength.widens_to(&Ty::Dp));
+        assert!(!Ty::Dp.widens_to(&Ty::Px));
+        assert!(!Ty::Duration.widens_to(&Ty::MixedLength));
+        assert!(!Ty::F32.widens_to(&Ty::MixedLength));
     }
 
     #[test]

@@ -83,6 +83,14 @@ impl SymbolTable {
         self.entries.get(&(name, namespace)).copied()
     }
 
+    /// Every name defined in `namespace`, in no particular order.
+    pub fn names(&self, namespace: Namespace) -> impl Iterator<Item = (NameId, ModuleSymbol)> + '_ {
+        self.entries
+            .iter()
+            .filter(move |((_, ns), _)| *ns == namespace)
+            .map(|(&(name, _), &symbol)| (name, symbol))
+    }
+
     /// The number of defined symbols across all namespaces.
     pub fn len(&self) -> usize {
         self.entries.len()

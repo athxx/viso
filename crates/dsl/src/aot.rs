@@ -167,7 +167,8 @@ fn aot_axis(axis: AxisIr) -> AotAxis {
 /// One lowered length to the package length; the variants map one-to-one.
 fn aot_length(len: LengthIr) -> AotLength {
     match len {
-        LengthIr::Fixed(px) => AotLength::Fixed(px),
+        LengthIr::Fixed(dp) => AotLength::Fixed(dp),
+        LengthIr::Relative { fixed, pct } => AotLength::Relative { fixed, pct },
         LengthIr::Fill { weight } => AotLength::Fill { weight },
         LengthIr::Fit => AotLength::Fit,
     }

@@ -26,7 +26,9 @@ pub(super) fn block(p: &mut Parser) {
     let m = p.start();
     p.expect(SyntaxKind::LBrace);
     while !p.at(SyntaxKind::RBrace) && !p.at_end() {
+        let before = p.cursor();
         statement(p);
+        p.ensure_progress(before);
     }
     p.expect(SyntaxKind::RBrace);
     m.complete(p, SyntaxKind::Block);
@@ -35,14 +37,22 @@ pub(super) fn block(p: &mut Parser) {
 /// Parses one statement (or the block's trailing tail expression). Dispatches on
 /// the leading token; anything that cannot start a statement is wrapped in an
 /// error node so recovery makes progress without dropping the token.
-fn statement(p: &mut Parser) {
+pub(super) fn statement(p: &mut Parser) {
+    super::attributes(p);
     match p.current() {
         SyntaxKind::LetKw => let_stmt(p),
         SyntaxKind::ReturnKw => return_stmt(p),
         SyntaxKind::BreakKw => break_stmt(p),
         SyntaxKind::ContinueKw => continue_stmt(p),
-        SyntaxKind::EmitKw => emit_stmt(p),
-        SyntaxKind::TransactionKw => transaction_stmt(p),
+        SyntaxKind::Ident if p.at_contextual(SyntaxKind::EmitKw) && p.nth_is_ident(1) => {
+            emit_stmt(p)
+        }
+        SyntaxKind::Ident
+            if p.at_contextual(SyntaxKind::TransactionKw) && p.nth(1) == SyntaxKind::LBrace =>
+        {
+            transaction_stmt(p)
+        }
+        SyntaxKind::LBrace => block_stmt(p),
         SyntaxKind::WhileKw => while_stmt(p),
         SyntaxKind::LoopKw => loop_stmt(p),
         SyntaxKind::ForKw => for_stmt(p),
@@ -87,9 +97,21 @@ fn expr_or_assign_stmt(p: &mut Parser) {
         p.expect(SyntaxKind::Semi);
         m.complete(p, SyntaxKind::AssignStmt);
     } else {
-        p.expect(SyntaxKind::Semi);
+        // The block's last expression may omit its `;`: it is the tail value.
+        if !p.at(SyntaxKind::RBrace) {
+            p.expect(SyntaxKind::Semi);
+        }
         m.complete(p, SyntaxKind::ExprStmt);
     }
+}
+
+/// A nested `{ ... }` block in statement position, with an optional `;`. Its
+/// value is the tail when it ends the enclosing block.
+fn block_stmt(p: &mut Parser) {
+    let m = p.start();
+    super::expr::block_expr(p);
+    p.eat(SyntaxKind::Semi);
+    m.complete(p, SyntaxKind::ExprStmt);
 }
 
 /// Whether `kind` is one of the assignment operators (`=` and the augmenting
@@ -144,12 +166,8 @@ fn continue_stmt(p: &mut Parser) {
 /// `"emit" IDENT "(" ArgumentList ")" ";"`.
 fn emit_stmt(p: &mut Parser) {
     let m = p.start();
-    p.bump_any(); // `emit`
-    if p.at(SyntaxKind::Ident) || p.at(SyntaxKind::RawIdent) {
-        p.bump_any();
-    } else {
-        p.error(ParseErrorKind::MissingToken);
-    }
+    p.bump_as(SyntaxKind::EmitKw);
+    super::name(p);
     if p.at(SyntaxKind::LParen) {
         super::expr::arg_list(p);
     } else {
@@ -162,7 +180,7 @@ fn emit_stmt(p: &mut Parser) {
 /// `"transaction" Block`.
 fn transaction_stmt(p: &mut Parser) {
     let m = p.start();
-    p.bump_any(); // `transaction`
+    p.bump_as(SyntaxKind::TransactionKw);
     block(p);
     m.complete(p, SyntaxKind::TransactionStmt);
 }
@@ -219,11 +237,7 @@ fn match_stmt(p: &mut Parser) {
     let m = p.start();
     p.bump_any(); // `match`
     super::expr::head_expr(p);
-    p.expect(SyntaxKind::LBrace);
-    while !p.at(SyntaxKind::RBrace) && !p.at_end() {
-        super::expr::match_arm(p);
-    }
-    p.expect(SyntaxKind::RBrace);
+    super::expr::match_arms(p);
     p.eat(SyntaxKind::Semi);
     m.complete(p, SyntaxKind::MatchStmt);
 }

@@ -61,28 +61,35 @@ pub enum ParseErrorKind {
     /// A view `for` loop omitted its required `key` clause; keyed identity is
     /// mandatory for repeated view content.
     ForMissingKey,
-    /// A reserved word was used where an identifier was required.
+    /// A strict keyword was used in a binding or declaration position (§12.5).
     ReservedIdent,
+    /// An expression wrote generic arguments without a turbofish (`foo<T>(x)`
+    /// instead of `foo::<T>(x)`, §26).
+    GenericWithoutTurbofish,
+    /// A const generic argument was written without its `const` marker
+    /// (`Matrix<F32, 4>` instead of `Matrix<F32, const 4>`, §26).
+    ConstArgWithoutConst,
 }
 
 impl ParseErrorKind {
-    /// The stable diagnostic code for this error (spec 30). The `Parse` prefix
-    /// namespaces the parser's codes, distinct from the lexer's `Lex` codes.
+    /// The stable Appendix C code for this error. Structural errors are
+    /// `E1401`–`E1405`; both non-associative chains share `E2802` (§63.1).
     pub const fn code(self) -> &'static str {
         match self {
-            ParseErrorKind::UnclosedDelimiter => "Parse0001",
-            ParseErrorKind::UnmatchedCloser => "Parse0002",
-            ParseErrorKind::UnexpectedTokens => "Parse0003",
-            ParseErrorKind::MissingToken => "Parse0004",
-            ParseErrorKind::ExpectedExpr => "Parse0005",
-            // Grammar-level codes from the spec's diagnostic table.
-            ParseErrorKind::NonAssocChain => "E2701",
-            ParseErrorKind::NonAssocRange => "E2702",
+            ParseErrorKind::UnclosedDelimiter => "E1401",
+            ParseErrorKind::UnmatchedCloser => "E1402",
+            ParseErrorKind::UnexpectedTokens => "E1403",
+            ParseErrorKind::MissingToken => "E1404",
+            ParseErrorKind::ExpectedExpr => "E1405",
+            ParseErrorKind::NonAssocChain | ParseErrorKind::NonAssocRange => "E2802",
             ParseErrorKind::RecordExprInHead => "E2801",
             ParseErrorKind::ChildReserved => "E3001",
             ParseErrorKind::HandlerNotArrow => "E3201",
             ParseErrorKind::ForMissingKey => "E3401",
             ParseErrorKind::ReservedIdent => "E1301",
+            ParseErrorKind::GenericWithoutTurbofish | ParseErrorKind::ConstArgWithoutConst => {
+                "E2004"
+            }
         }
     }
 
@@ -111,7 +118,15 @@ impl ParseErrorKind {
             ParseErrorKind::ForMissingKey => {
                 "a view `for` loop requires a `key` clause giving each item a stable identity"
             }
-            ParseErrorKind::ReservedIdent => "a reserved word cannot be used as an identifier",
+            ParseErrorKind::ReservedIdent => {
+                "a strict keyword cannot be a binding or declaration name; use `r#` to escape it"
+            }
+            ParseErrorKind::GenericWithoutTurbofish => {
+                "generic arguments in an expression need a turbofish: `name::<T>(..)`"
+            }
+            ParseErrorKind::ConstArgWithoutConst => {
+                "a const generic argument must be marked `const`: `<const 4>`"
+            }
         }
     }
 

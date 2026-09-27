@@ -28,7 +28,7 @@ fn find_child(node: &GreenNode, kind: SyntaxKind) -> Option<&GreenNode> {
 
 #[test]
 fn wraps_declarations_in_items() {
-    let src = "component App { view { Text {} } } state x: 0;";
+    let src = "component App { view { Text {} } } const x = 0;";
     let root = root(src);
     assert_eq!(root.kind(), SyntaxKind::Root);
     // Two top-level declarations → two Item nodes.

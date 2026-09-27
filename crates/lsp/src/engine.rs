@@ -233,7 +233,7 @@ mod tests {
         let (map, id) = doc(src);
         let doc = map.get(id).unwrap();
         let pos = at(src, "count", 0);
-        assert_eq!(rename(doc, pos, "state"), Err(RenameError::InvalidName));
+        assert_eq!(rename(doc, pos, "fn"), Err(RenameError::InvalidName));
         assert_eq!(rename(doc, pos, "a b"), Err(RenameError::InvalidName));
         assert_eq!(rename(doc, pos, ""), Err(RenameError::InvalidName));
         assert_eq!(rename(doc, pos, "1x"), Err(RenameError::InvalidName));
@@ -274,8 +274,10 @@ mod tests {
     #[test]
     fn valid_identifier_accepts_plain_and_raw() {
         assert!(is_valid_identifier("count"));
-        assert!(is_valid_identifier("r#state"));
-        assert!(!is_valid_identifier("state"));
+        assert!(is_valid_identifier("r#fn"));
+        assert!(!is_valid_identifier("fn"));
+        // A contextual keyword is an ordinary identifier outside its fixed position.
+        assert!(is_valid_identifier("state"));
         assert!(!is_valid_identifier("with space"));
         assert!(!is_valid_identifier(""));
     }

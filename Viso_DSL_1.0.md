@@ -1,6 +1,6 @@
 # Viso DSL 1.0：语言设计与形式化编译规范
 
-> 文档状态：Viso DSL 1.0 Draft / Not Final  
+> 文档状态：Viso DSL 1.0 Draft（1.0 Final 前可修订；修订前本文是兼容实现唯一的规范依据）  
 > 规范级别：语言语法、静态语义、运行时语义与编译器 Lowering 合同  
 > 目标读者：Viso 编译器、运行时、Widget、Shader、游戏 Profile、LSP 与 AI 编码代理实现者  
 > 基线日期：2026-09-08  
@@ -19,11 +19,11 @@
 - **规范性（Normative）**：决定兼容性的规则；
 - **说明性（Informative）**：用于解释，不覆盖规范性规则。
 
-本文完整定义：
+本文规范性地定义（设计判断、外部参考与实现提示见说明性文档 `Viso_DSL_Rationale.md`）：
 
-1. Viso DSL 1.0 的设计目标与可用性判断；
-2. 记录 Makepad 等外部实现中值得参考的 authoring、实时编辑与游戏经验，并明确 Viso 自身的取舍；
-3. UTF-8、标识符、注释、保留字、字面量与单位的词法规范；
+1. 清晰度硬规则与 Surface 分层；
+2. Rust 侧三种源码入口（§22.1）；
+3. UTF-8、标识符、注释、关键字、字面量与单位的词法规范；
 4. 模块、类型、组件、System、函数、行为、资源、View 与 Shader 的形式文法；
 5. 表达式、运算符优先级、结合性、闭包与 Pattern 文法；
 6. 类型推断、泛型、Trait、约束、转换和子类型规则；
@@ -44,56 +44,11 @@
 
 ---
 
-# 第一部分：总体判断与设计结论
+# 第一部分：规范总则
 
-## 1. 对人类是否足够清晰
+## 1. 清晰度硬规则与学习分层
 
-### 1.1 结论
-
-Viso DSL 1.0 的设计目标是让人类开发者获得清晰且可渐进学习的 authoring surface，同时保留完整的 VM、HIR、Shader ABI、热重载与游戏扩展能力。初学者不需要先理解这些底层实现。
-
-初学者只需先掌握以下十个概念：
-
-```text
-import
-component
-input
-state
-computed
-action
-view
-node
-property: expression;
-on event { ... }
-```
-
-最小 Counter：
-
-```viso
-import viso::widgets::{Window, Column, Text, Button};
-
-export component Counter {
-    state count = 0;
-    computed label = format("Count: {}", count);
-
-    view {
-        Window {
-            Column {
-                Text {
-                    text: label;
-                }
-
-                node add_button: Button {
-                    text: "Add";
-                    on click {
-                        count += 1;
-                    }
-                }
-            }
-        }
-    }
-}
-```
+§1.1（设计结论与最小 Counter 示例）已移至 `Viso_DSL_Rationale.md`。
 
 ### 1.2 当前规范的清晰度硬规则
 
@@ -113,298 +68,16 @@ Viso DSL 1.0 采用以下唯一规范规则：
 
 ### 1.3 学习曲线
 
-语言采用分层学习：
+语言采用分层学习；Level 与 §25.1 Surface Tier 一一对应，§151 实现阶段按同一 Tier 排序：
 
-- **Level 1：普通 UI**：Component、State、Action、View、Event；
-- **Level 2：应用状态**：Computed、Effect、Task、Resource、Keyed List；
-- **Level 3：组件库**：Slot、Template、Style、Trait、Generic；
-- **Level 4：底层能力**：Native Handle、System、Capability、Shader；
-- **Level 5：工具链**：Hot Reload Migration、Schema、IR、Compiler Plugin。
+- **Level 1（Core UI）**：Component、Input、State、Computed、Action、View、Node、Property、Event、`if`/`match`/Keyed `for`、Record/Enum、基础 `fn`；
+- **Level 2（Core System/Shader）**：`system` 与 Native Schema 提供的 Scheduler Trait（如 `FixedUpdate`）、Shader Profile Entry；
+- **Level 3（Standard）**：Effect、Task、Resource、Slot、Style、Theme、Hot Reload Migration；
+- **Level 4（Advanced）**：用户定义 Trait/Impl、一般泛型、Const Generic、`dyn` Trait、Template/Part、手写 Native 声明、细粒度 Capability 标注。
 
-高级特性不会污染 Level 1 的基本语法。
+Schema、IR 与 Compiler Plugin 属于工具链，不属于语言 Surface。高级特性不会污染 Level 1 的基本语法。
 
----
-
-## 2. 可扩展性与灵活度
-
-### 2.1 结论
-
-Viso DSL 1.0 的扩展原则是：
-
-> **扩展类型、组件、Trait、事件、Native 服务和 Profile，而不是让每个库扩展新的标点语法。**
-
-这样能同时获得：
-
-- 接近开放宿主脚本的表达能力；
-- 稳定的 Parser、Formatter 与 LSP；
-- 可静态检查的跨 Rust 边界；
-- 不需要修改解析器即可增加新 Widget、新游戏 API、新音频 API 或新数据服务。
-
-### 2.2 扩展面
-
-第三方库可以扩展：
-
-- `component` Schema；
-- `record`、`enum`、`trait` 和泛型类型；
-- Typed Event；
-- `native fn`、`native action`、`native task`；
-- `Handle<T>` 的方法；
-- System Trait，例如 `FixedUpdate`、`AudioProcess`；
-- Shader intrinsic 和受支持的纹理/Buffer 类型；
-- Attribute Schema，例如 `@derive(...)`、`@stable(...)`；
-- Widget Property 的失效标签：layout、paint、semantics、input。
-
-第三方库禁止在不修改语言规范并通过 ADR/兼容性检查的情况下引入：
-
-- 新运算符；
-- 新括号类型；
-- 新的隐式赋值符号；
-- 改变现有关键字含义；
-- 无 Schema 的动态字段；
-- 绕过 Capability 的宿主调用。
-
-### 2.3 为什么这仍然足够灵活
-
-大多数领域扩展并不真正需要新语法。例如，游戏能力可以由以下 API 提供：
-
-```viso
-import viso::game::{GameWorld, EntityId, FixedUpdate, FixedFrame};
-
-export system PlayerController implements FixedUpdate {
-    input world: Handle<GameWorld>;
-    input player: EntityId;
-
-    action fixed_update(frame: FixedFrame) {
-        let input = frame.input;
-        world.walk(player, input.move_x * 6.0f32, input.move_z * 6.0f32);
-    }
-}
-```
-
-Parser 不需要认识 `GameWorld`、`walk` 或 `FixedUpdate`；这些能力来自 Native Schema 和 Trait 合同。
-
----
-
-## 3. AI 生成友好度
-
-### 3.1 结论
-
-Viso DSL 1.0 对 AI 生成是友好的，但前提是实现下列工具合同，而不是只依赖模型记忆语法：
-
-```text
-固定 EBNF
-+ 唯一规范格式
-+ 机器可读 Schema
-+ JSON 诊断
-+ 结构化 Fix
-+ 小范围增量检查
-```
-
-### 3.2 AI 友好的具体设计
-
-- 一个概念尽量只有一种规范写法；
-- 简单语句必须有分号，避免换行敏感；
-- 没有 `child` 可选写法；
-- 没有事件处理箭头缩写；
-- 没有 `Float` 模糊别名；
-- 没有字符串形式的枚举、属性或事件；
-- 属性、事件和 Slot 都由 Schema 查询；
-- 动态列表强制 `key`；
-- 诊断包含错误码、主位置、关联位置、期望类型与自动修复；
-- Formatter 输出唯一规范形态；
-- Compiler 可以输出 AST/HIR/IR 的 JSON 摘要供 AI 检查。
-
-### 3.3 AI 仍可能出错的区域
-
-以下区域即使有形式文法，也必须依赖 Schema 和编译器检查：
-
-- Widget 是否具有某个属性；
-- Event Payload 的字段；
-- Native 方法所需 Capability；
-- 某属性影响 Layout 还是 Paint；
-- Shader Backend 是否支持某 intrinsic；
-- Resource Policy 是否可组合；
-- Trait 是否满足；
-- Hot Reload 是否允许状态迁移。
-
-因此，AI 工作流必须是“生成—检查—读取诊断—修复”，而不是一次性盲写。
-
----
-
-## 4. 表达能力与游戏能力
-
-### 4.1 普通应用表达能力
-
-语言可表达：
-
-- 声明式 UI 树；
-- 响应式状态和派生值；
-- Typed Event；
-- 动态条件与 Keyed List；
-- 同步 Action；
-- 生命周期 Effect；
-- 异步 Task；
-- 缓存 Resource；
-- Template、Slot、Style 和 Theme；
-- Native 服务；
-- GPU Shader；
-- Hot Reload 状态迁移。
-
-### 4.2 是否适合做游戏
-
-**适合。** 但必须区分“语言能力”和“游戏引擎能力”。Viso DSL 负责提供可静态检查的游戏执行语义，具体物理、ECS、音频和资产系统由 Rust Runtime/Profile 提供。
-
-Viso DSL 提供：
-
-- 状态、函数、Action、闭包和模式匹配；
-- 一等 `system`；
-- Fixed Update Trait；
-- Typed Native Handle；
-- Shader 域；
-- 事务和确定性执行模式；
-- 热重载和状态迁移。
-
-游戏 Profile 或 Rust Runtime 提供：
-
-- ECS/Entity；
-- 物理、碰撞和 Raycast；
-- 输入快照；
-- 相机；
-- 音频；
-- 场景和资源；
-- 固定步长 Scheduler；
-- GPU 绘制。
-
-因此 Viso 不需要把 `game` 设成语法关键字。它通过导入 `viso::game`、实现标准 Scheduler Trait，以及可选的 Quick Game Profile 获得游戏能力；所有路径最终进入同一套 typed scheduler/runtime。
-
-### 4.3 游戏能力边界
-
-只有 DSL 而没有 Rust 游戏 Runtime 时，语言不能凭空提供：
-
-- 高性能碰撞；
-- 复杂物理；
-- 模型和动画加载；
-- 音频混音；
-- GPU 资源管理。
-
-这与普通编程语言本身不会自动成为游戏引擎是同一回事。
-
----
-
-# 第二部分：外部参考——Makepad Authoring 与 Game 经验
-
-## 5. 参考范围与证据等级
-
-本文仅把 Makepad 当前 `dev` 分支中的 Rust 内嵌脚本体系作为外部实现参考：
-
-```text
-Rust source
-  -> script_mod! { ... }
-  -> ScriptVm
-  -> mod.prelude / mod.widgets 等脚本 namespace
-  -> Rust 类型与 Widget 注册
-  -> App::from_script_mod(...)
-```
-
-当前 Script tokenizer/parser 可观察到 Identifier、Operator、Separator、括号、字符串、多种数值宽度、颜色、RustValue、字段访问、Optional Field、算术/位运算/比较/逻辑/Range、多类 Assignment Operator，以及 `for`、`while`、`loop`、`match`、destructuring、closure 和 streaming parser checkpoint。
-
-重要说明：
-
-> Makepad 仓库没有把当前 Script Surface 发布成一份单一、权威、完整的 EBNF。本文只记录公开源码中可观察到、且对 Viso authoring/runtime 设计有参考价值的语义，不把它声明为 Makepad 官方语言标准。
-
-主要源码依据：
-
-```text
-platform/script/src/tokenizer.rs
-platform/script/src/parser.rs
-splashgame.md
-仓库内 script_mod!/ScriptVm 使用示例与开发说明
-```
-
----
-
-## 6. 当前 Makepad Script 的核心 authoring surface
-
-Viso 设计主要参考以下 authoring surface：
-
-```text
-property: value       普通属性/字段应用
-name := Type { ... }  具名实例与身份
-object +: { ... }     merge/apply
-#(rust_expr)          Rust/native bridge
-mod.widgets.*         脚本 namespace / 注册后符号访问
-```
-
-这些符号之外，Script 还拥有普通表达式、控制流、闭包和宿主注入对象，因此它既可以写 UI，也可以承载较自由的运行时脚本。
-
-### 6.1 优点
-
-- UI 表面语法紧凑，属性 `name: value` 的阅读密度高；
-- `ScriptVm` 与 Rust 注册机制让 Widget、Native 对象、游戏 API 和 Shader 能快速暴露给脚本；
-- 很适合 Studio、AI 实时生成、小型工具和游戏原型；
-- UI、普通脚本和 Shader 在视觉上保持较统一的“对象 + 属性 + 行为”模型；
-- 热更新链路与脚本执行模型结合紧密。
-
-### 6.2 结构性代价
-
-- `:=`、`+:`、`<:`、`>:`、`^:` 等符号把身份、merge、方向和 apply 语义压进标点；
-- module resolution 与 Rust/脚本注册顺序存在运行时纪律；
-- Native bridge 与动态 property/method surface 依赖运行时 VM；
-- 大型项目中的属性、事件、Native API 和模块关系难以全部提前静态验证；
-- 小型脚本的自由度与大型工程的严格语义没有明确分层。
-
----
-
-## 7. Makepad 参考经验与 Viso 1.0 的取舍
-
-Viso 保留 Makepad authoring surface 中最容易读、最有生产力的部分，但不保留隐藏语义的 Assignment-family。
-
-| 能力            | Makepad 当前 Script                   | Viso 1.0                                              |
-| --------------- | ------------------------------------- | ----------------------------------------------------- |
-| View 属性       | `property: value`                     | `property: expression;`                               |
-| 普通变量赋值    | 多类 assignment                       | `=` 与普通复合赋值                                    |
-| 具名节点身份    | `name := Type {}`                     | `node name: Type {}`                                  |
-| Merge/Apply     | `+:` 等                               | `style` / `override` / `replace` / 显式 Record Update |
-| Rust bridge     | `#(rust_expr)` + runtime registration | 生成的 Typed Native Schema                            |
-| 模块共享        | `mod.*` + 初始化/注册关系             | 编译期 Module Graph + Import                          |
-| Property lookup | 动态 surface 为主                     | Typed `PropertyId`，动态能力必须显式                  |
-| State/派生值    | 脚本变量与宿主约定                    | `state` / `computed`                                  |
-| UI 更新         | 运行时脚本/渲染约定                   | Reactive Binding + 精确 invalidation                  |
-| 列表身份        | 由代码/宿主保证                       | `for ... key ...` 强制 StableKey                      |
-| 游戏 Tick       | 宿主 `game` API / tick callback       | `system` + `FixedUpdate` Profile                      |
-| Shader          | Script/Shader 深度结合                | 独立 Shader Domain + 显式 Descriptor ABI              |
-
-Viso 的原则是：**保留紧凑度，不保留隐式语义；保留宿主扩展能力，不让运行时注册顺序成为语言模块系统。**
-
----
-
-## 8. 外部参考边界
-
-Makepad 只作为实现经验参考。本文只提取对 Viso 设计有价值的可观察经验。
-
-允许参考：
-
-```text
-紧凑 property authoring
-实时编辑与 Last-good 体验
-shader / UI / game 的工具链联动
-固定步长 game update 的开发体验
-轻量 Native API 暴露方式
-Studio/AI 自动化体验
-```
-
-禁止由参考实现反向决定：
-
-```text
-Viso public syntax
-Viso module system
-Viso identity model
-Viso reactive semantics
-Viso ABI
-Viso runtime lifecycle
-```
-
-原则：**参考有效经验，不继承兼容负担。**
+§2–§8（可扩展性、AI 友好度、表达与游戏能力的设计判断，以及 Makepad 外部参考）是说明性内容，已移至 `Viso_DSL_Rationale.md`，编号不变。
 
 ---
 
@@ -471,16 +144,22 @@ raw_identifier      = "r#", xid_start, { xid_continue } ;
 
 xid_start           = "_" | Unicode_XID_Start ;
 xid_continue        = "_" | Unicode_XID_Continue ;
+
+binding_identifier  = identifier_token ;
+label               = identifier_token | strict_keyword ;
 ```
+
+`strict_keyword` 是 §12.1、§12.2 中任一单词产生的 Keyword Token。
 
 规则：
 
 - 标识符按 Unicode NFC 规范化后进入符号表；
 - 两个源码拼写若 NFC 后相同，视为同一标识符；
+- 同一命名空间内两个声明 NFC 后相同而源码拼写不同时报告 `E1101`（相关位置指向先前声明）；拼写完全相同则是普通重复声明 `E2002`；
 - 编译器应警告 Unicode Confusable；
-- 普通标识符不得等于保留字；
-- 正文 EBNF 的 `identifier` 与合并 EBNF 的 `IDENT` 均表示 `identifier_token`；Raw Identifier 解码后仍是普通符号名；
-- `r#keyword` 可以引用名为关键字的外部 Schema 符号；
+- `normal_identifier` 不得等于严格关键字（§12.1、§12.2）；拼写等于上下文关键字（§12.3）的单词仍词法化为 `identifier_token`；
+- 正文 EBNF 的 `identifier` 与合并 EBNF 的 `IDENT` 均表示 `identifier_token`，在 Binding/声明位置即 `binding_identifier`；Label 位置使用 `label`（附录 A 为 `Label`），见 §12.5；Raw Identifier 解码后仍是普通符号名；
+- Raw Identifier 只用于在 Binding/声明位置使用严格关键字拼写，例如引用名为 `type` 的外部 Schema 符号时写 `r#type`；Label 位置与上下文关键字都不需要 `r#`；
 - 新代码不应主动创建 raw identifier；
 - `r#` 后跟 Identifier Start 时词法化为 Raw Identifier；`r` 后跟 `"` 或 `#...#"` 时词法化为 Raw String，两者使用最长合法匹配；
 - 模块、值和属性推荐 `snake_case`；
@@ -489,75 +168,92 @@ xid_continue        = "_" | Unicode_XID_Continue ;
 
 ---
 
-## 12. 保留字清单
+## 12. 关键字
 
-### 12.1 核心声明关键字
+关键字分为严格关键字与上下文关键字两层。关键字大小写敏感；库不得通过 Schema 引入新关键字。
+
+### 12.1 严格关键字
+
+严格关键字由 Lexer 产生独立 Keyword Token（附录 A 统称 `STRICT_KEYWORD`），永远不能出现在 Binding/声明位置：
 
 ```text
 import export as
 component system record enum trait impl type
 implements where for
-input state computed event slot const
-fn action effect task resource view
-style theme template part
-native requires capability
-```
-
-### 12.2 控制流和行为关键字
-
-```text
+fn action task const native shader
 let mut return break continue
 if else match while loop in
-on capture bubble emit
-transaction start await move
-when run cleanup
-success error cancelled
+true false None self Self dyn await
 ```
 
-### 12.3 View 和资源关键字
+### 12.2 保留并禁止使用
 
-```text
-node fill bind using use
-override replace preserve key
-load policy scope
-```
-
-### 12.4 Shader 关键字
-
-```text
-shader vertex fragment compute
-uniform instance varying texture sampler
-```
-
-### 12.5 类型和字面量关键字
-
-```text
-true false None
-self Self dyn
-```
-
-### 12.6 预留但当前禁止使用
-
-以下单词被保留以便提供稳定诊断或未来扩展，当前语法不会生成对应 AST：
+以下单词同属严格关键字，当前语法不生成对应 AST，保留用于稳定诊断或未来扩展：
 
 ```text
 child store merge extend inherit class
 macro unsafe extern static yield try
 ```
 
-`child` 被保留是为了让编译器输出明确的非法 View 语法诊断，而不是把它当作普通组件名。
+`child` 被保留是为了让编译器输出明确的非法 View 语法诊断（`E3001`），而不是把它当作普通组件名。
 
-### 12.7 上下文词、标准库符号与后缀
+### 12.3 上下文关键字
 
-以下不是全局保留字：
+以下单词由 Lexer 词法化为普通 `identifier_token`，只在 §12.4 列出的固定语法位置具有特殊含义；在其他位置（包括全部 Binding/声明位置）就是普通标识符：
 
-- `viso`：标准库根 Module 名，不是 Parser 关键字；应用代码 SHOULD NOT 声明同名顶层 Module，以避免导入歧义；
-- `empty`：只在 `slot ... = empty;` 的 Slot Default 上下文中具有特殊含义；
+```text
+input state computed event slot effect resource view
+style theme template part requires capability
+on capture bubble emit transaction start move
+when run cleanup success error cancelled
+node fill bind using use override replace preserve key
+load policy scope empty
+vertex fragment compute uniform instance varying texture sampler
+```
+
+EBNF 中带引号的上下文关键字（如 `"state"`）匹配文本相同的 identifier Token。`capability` 当前没有专用语法位置（`@capability` 是普通 Attribute Path），保留在本表中供 Schema 与后续版本使用。
+
+### 12.4 上下文关键字的识别位置
+
+Parser 只在下列位置、以至多 2 个 Token 的 Lookahead 把上下文关键字识别为关键字：
+
+| 位置                        | 识别形式                                                                                           |
+| --------------------------- | -------------------------------------------------------------------------------------------------- |
+| Statement/Expression 起始   | `emit IDENT`、`start IDENT`、`transaction {`、`move \|`（含 `move \|\|`）                          |
+| 顶层声明起始                | `style IDENT`、`theme IDENT`、`template IDENT`                                                     |
+| Component/System 成员起始   | `input`/`state`/`computed`/`event`/`slot`/`effect`/`resource` 后随 IDENT；`view {`                 |
+| Node Body / View Block 项起始 | `node IDENT :`、`part IDENT :`、`on IDENT`、`on capture`/`on bubble`、`bind IDENT`、`fill IDENT`、`use IDENT`、`override part`、`replace part` |
+| View 控制结构               | `if` Header 后的 `preserve STRING`；View `for` Header 中的 `key`                                    |
+| Resource Item               | `load =`、`key =`、`policy =`、`scope =`                                                           |
+| Start Handler               | `policy =`、`success (`、`error (`、`cancelled {`                                                  |
+| Effect 子句                 | `when (`、`run`、`cleanup {`                                                                       |
+| Callable 签名尾部           | `requires {`                                                                                       |
+| Two-way Binding / Style     | `bind` 之后的 `using`；Style Item 起始的 `when`                                                    |
+| Shader 成员                 | `uniform`/`instance`/`varying`/`texture`/`sampler` 后随 IDENT；`vertex (`、`fragment (`、`compute (` |
+| Slot Default                | `= empty ;`                                                                                        |
+
+不满足识别形式时按普通 identifier 解析，例如 `emit(x);` 是普通调用、`state: s;` 是名为 `state` 的 Property Binding、`let move = 1;` 声明名为 `move` 的局部变量。
+
+### 12.5 Label 位置与 Binding 位置
+
+- **Label 位置**接受任意 identifier 或关键字（严格或上下文），无需 `r#`：`.`/`?.` 之后的 Member 名、Path 中 `::` 之后的段、Record 字段声明名、Record Literal 与 Record Pattern 的字段标签、Named Argument 标签、Attribute 参数标签、Property Path 段、Enum Variant 名。例如 `token.type`、`Token::match`、`record Rule { type: String; }` 合法；
+- **Binding 位置**（`let`、参数、Pattern 绑定、Closure 参数、Import 别名以及全部声明名）只接受 `binding_identifier`：上下文关键字可用，严格关键字不可用，出现时报 `E1301`；
+- Record Literal/Pattern 的字段简写（`User { id }`）同时是 Binding 引用，因此只接受 `binding_identifier`。
+
+### 12.6 `theme` 与 `env`
+
+`theme` 与 `env` 不是 Grammar Production。它们在 Expression 中是普通 identifier，由名称解析绑定到隐式注入的 Typed Context Binding：Theme Context 在 View、Style 与 Theme 表达式中可见（§60），`env` 只在 View 中可见（§48、第十一部分）；其他位置读取按未解析符号 `E2001` 诊断。局部 Binding 可按普通词法作用域遮蔽二者（关键字策略见 ADR 0034）。`theme` 同时是 `theme IDENT` 顶层声明的上下文关键字，两种用法由 §12.4 的位置规则区分。
+
+### 12.7 标准库符号与后缀
+
+以下不是关键字：
+
+- `viso`：标准库根 Module 名；应用代码 SHOULD NOT 声明同名顶层 Module，以避免导入歧义；
 - `Bool`、`I64`、`F32`、`String` 等是 Prelude 类型符号，不是 Lexer Keyword；
 - `EffectRun::mount`、`ResourcePolicy::keep_latest` 等是普通限定路径；
 - `i32`、`f32`、`ms`、`dp` 等在紧邻数字时由 Numeric Literal Lexer 识别为后缀，不作为独立 Identifier Token。
 
-关键字大小写敏感；例如 `State` 是普通标识符，`state` 是关键字。库不得通过 Schema 把普通标识符升级为新关键字。
+例如 `State` 与 `state` 都词法化为 identifier，但只有后者在 §12.4 的位置被识别为关键字。
 
 ---
 
@@ -609,11 +305,11 @@ emit changed(count);
 以下以 block 结束的构造不使用分号：
 
 ```viso
-action increment() { ... }
-if condition { ... }
-while condition { ... }
-Text { ... }
-on click { ... }
+action increment() {}
+if condition {}
+while condition {}
+Text {}
+on click {}
 ```
 
 Block 的最后一个无分号表达式是 Tail Expression，仅允许在函数、Action、Task、闭包和普通表达式 Block 中出现；`view` 和 Node Body 不存在 Tail Expression。
@@ -729,6 +425,8 @@ r##"arbitrary # count"##
 - `Char` 在 Escape 解码后必须恰好包含一个 Unicode Scalar Value；
 - 不提供隐式字符串插值；
 - 插值统一使用 `format(...)` 或类型安全模板 API；
+- `format(template, args...)` 是编译器内建，返回 `String`：`template` 必须是字符串字面量；`{}` 按顺序消费位置实参，`{name}` 消费同名 Named Argument（`name: expr`）；`{{`、`}}` 表示字面大括号；占位符与实参在编译期逐一匹配，每个实参类型必须实现 `Display`；不支持格式说明符，也不读取 Locale；不匹配时报 `E2108`；
+- 内建 `Display` 的类型：`Bool`、全部整数与浮点类型、`Char`、`String`、单位长度 `Dp`/`Px`/`Sp`/`Em`/`Percent`、`Duration`、`Angle`、`Frequency`；`Bytes`、`Unit`、`Color`、`MixedLength`、Tuple、`List`、`Map`、`Option`、`Result`、Range、函数、`Handle`/`NodeRef` 以及 Record 与 Enum 均无 `Display`，须显式映射为文本（例如 `match` 到 `tr(...)`），否则报 `E2108`；
 - 未闭合字符串是词法错误，但 Streaming Editor Parser 可以产生 `MissingToken` CST Node 继续诊断。
 
 ---
@@ -766,22 +464,25 @@ const OVERLAY: Color = #00000080;
 
 ### 19.1 完整合法后缀
 
-| 量纲         | 后缀   | 类型        |
-| ------------ | ------ | ----------- |
-| 逻辑长度     | `dp`   | `Dp`        |
-| 设备像素     | `px`   | `Px`        |
-| 字体缩放长度 | `sp`   | `Sp`        |
-| 百分比       | `%`    | `Percent`   |
-| 时间         | `ns`   | `Duration`  |
-| 时间         | `us`   | `Duration`  |
-| 时间         | `ms`   | `Duration`  |
-| 时间         | `s`    | `Duration`  |
-| 时间         | `min`  | `Duration`  |
-| 角度         | `deg`  | `Angle`     |
-| 角度         | `rad`  | `Angle`     |
-| 角度         | `turn` | `Angle`     |
-| 频率         | `hz`   | `Frequency` |
-| 频率         | `khz`  | `Frequency` |
+| 量纲         | 后缀   | 类型        | 分类                     |
+| ------------ | ------ | ----------- | ------------------------ |
+| 逻辑长度     | `dp`   | `Dp`        | 绝对长度（布局基准单位） |
+| 设备像素     | `px`   | `Px`        | 绝对长度                 |
+| 字体缩放长度 | `sp`   | `Sp`        | 相对长度（系统字体缩放） |
+| 相对字号长度 | `em`   | `Em`        | 相对长度（节点字号）     |
+| 百分比       | `%`    | `Percent`   | 无量纲比例 / 相对长度    |
+| 时间         | `ns`   | `Duration`  |                          |
+| 时间         | `us`   | `Duration`  |                          |
+| 时间         | `ms`   | `Duration`  |                          |
+| 时间         | `s`    | `Duration`  |                          |
+| 时间         | `min`  | `Duration`  |                          |
+| 角度         | `deg`  | `Angle`     |                          |
+| 角度         | `rad`  | `Angle`     |                          |
+| 角度         | `turn` | `Angle`     |                          |
+| 频率         | `hz`   | `Frequency` |                          |
+| 频率         | `khz`  | `Frequency` |                          |
+
+`Dp`、`Px`、`Sp`、`Em` 与 `Percent` 合称 **长度族（Length Family）**。长度族之间的混合运算得到 `MixedLength`（§19.5），它没有字面量后缀。
 
 ### 19.2 词法形式
 
@@ -792,18 +493,19 @@ unit_literal      = unit_numeric_body, unit_suffix
 unit_numeric_body = decimal_digits,
                     [ ".", decimal_digits ] ;
 
-unit_suffix       = "dp" | "px" | "sp"
+unit_suffix       = "dp" | "px" | "sp" | "em"
                   | "ns" | "us" | "ms" | "s" | "min"
                   | "deg" | "rad" | "turn"
                   | "hz" | "khz" ;
 ```
 
-`numeric_body` 与后缀之间不得出现空白。
+`numeric_body` 与后缀之间不得出现空白。`unit_numeric_body` 不含指数部分：`1e2dp` 是 `E1203`。`e`/`E` 只有在其后紧跟 `[+-]? decimal_digit` 时才开始浮点指数，因此 `1em`、`1.5em` 始终词法化为 Unit Literal，`1e5` 始终是 Float Literal。
 
 ```viso
 14sp
 16dp
 1px
+1.5em
 50%
 250ms
 5min
@@ -811,32 +513,202 @@ unit_suffix       = "dp" | "px" | "sp"
 60hz
 ```
 
-`50 % 3` 是取模；`50%` 是 Percent Literal。为避免 `50%3` 的歧义，`%` 只有在紧邻数字且其后是 Trivia、分隔符、运算符或文件结束时才成为 Percent 后缀；其后紧跟数字或标识符继续字符时，`%` 是取模运算符。因此 `50%3` 与 `50 % 3` 都解析为取模。
+`50 % 3` 是取模；`50%` 是 Percent Literal。为避免 `50%3` 的歧义，`%` 只有在紧邻数字且其后是 Trivia、分隔符、运算符或文件结束时才成为 Percent 后缀；其后紧跟数字或标识符继续字符时，`%` 是取模运算符。因此 `50%3` 与 `50 % 3` 都解析为取模，`100%-8dp` 与 `100% - 8dp` 都解析为 Percent 减 Dp。
 
-### 19.3 量纲规则
+单位后缀集合是封闭的。插件、Widget Schema 和 Native 模块不得注册新的词法后缀；自定义量纲必须使用普通构造函数或 Newtype，例如 `Meters::new(12.5f64)`。这避免 Lexer 插件化、后缀冲突和 AI 猜测单位。
+
+### 19.3 量纲运算规则
+
+对任一量纲类型 `T`（长度族、`Duration`、`Angle`、`Frequency`）：
+
+| 表达式                      | 结果                             |
+| --------------------------- | -------------------------------- |
+| `T + T`、`T - T`、`-T`      | `T`                              |
+| `T * S`、`S * T`、`T / S`   | `T`，`S` 为 `F32` 或未定型数值   |
+| `T / T`                     | `F64`                            |
+| `T == T`、`T < T` 等比较    | `Bool`                           |
+| `T % T`                     | 禁止                             |
+| `T * T`                     | 禁止                             |
+
+长度族的跨单位规则：
+
+| 表达式                                           | 结果          |
+| ------------------------------------------------ | ------------- |
+| 两个不同长度族成员相加减，例如 `100% - 16dp`     | `MixedLength` |
+| `MixedLength ± 长度族成员` / `MixedLength ± MixedLength` | `MixedLength` |
+| `MixedLength * S`、`S * MixedLength`、`MixedLength / S` | `MixedLength` |
+| `-MixedLength`                                   | `MixedLength` |
+| `MixedLength` 与任何值比较、相乘、相除           | 禁止（`E2107`） |
+| 长度族与非长度量纲混合，例如 `1s + 1dp`          | 禁止（`E2103`） |
+| `Percent + 标量`，例如 `50% + 0.5`               | 禁止（`E2107`） |
 
 允许：
 
 ```viso
 let total: Duration = 1s + 250ms;
 let half_turn: Angle = 180deg;
+let inset: Dp = 16dp * 2;
+let content_width = 100% - 2 * inset;   // MixedLength
+let icon_size = 1.25em;                 // Em
 ```
 
 禁止：
 
 ```viso
-let x = 10dp + 5px;
-let y = 14sp + 2dp;
-let z = 50% + 1dp;
+let x: Dp = 10dp + 5px;        // E2106：MixedLength 不能在布局前定型为 Dp
+let y = 1s + 2dp;              // E2103：跨量纲
+let z = (100% - 8dp) < 200dp;  // E2107：MixedLength 在布局前不可比较
+let w = 10dp < 5px;            // E2103：不同单位比较
 ```
 
-跨量纲转换必须显式且由具备上下文的 API 完成：
+`MixedLength` 的求值被推迟到 Layout 阶段；它不是运行时隐式单位转换。需要具体单位值时，必须在具有 Layout Context 的受控 API 中显式解析：
 
 ```viso
 let px: Px = layout.dp_to_px(10dp);
+let resolved: Dp = layout.resolve_length(node_ref, 100% - 16dp);
 ```
 
-单位后缀集合是封闭的。插件、Widget Schema 和 Native 模块不得注册新的词法后缀；自定义量纲必须使用普通构造函数或 Newtype，例如 `Meters::new(12.5f64)`。这避免 Lexer 插件化、后缀冲突和 AI 猜测单位。
+View、Computed、Style 和 Theme 中不存在 Layout Context，因此禁止调用上述 API。
+
+### 19.4 长度解析基准（Normative）
+
+所有长度最终解析为 `Dp`；Layout 坐标系的单位是 `Dp`。像素对齐由 Layout/Render 合同负责，不属于长度语义。
+
+| 单位      | 解析为 Dp                                  | 基准来源                                   |
+| --------- | ------------------------------------------ | ------------------------------------------ |
+| `1dp`     | `1`                                        | —                                          |
+| `1px`     | `1 / scale_factor`                         | 节点所在 Surface 的 `env.window.scale_factor` |
+| `c sp`    | `text_scale_curve(c)`；线性平台为 `c × env.text_scale` | 节点所在 Adaptive Scope 的字体缩放曲线 |
+| `1em`     | 节点的 Resolved Font Size（Dp）            | Typography Context（见下）                 |
+| `1%`      | `0.01 × Percent Basis`                     | 由 Property Schema 声明（见下）            |
+
+**`sp` 与 CSS `rem`。** `sp` 是 Viso 对应 `rem` 的单位：它只随系统/用户的可访问性字体缩放变化，与节点树位置无关。Viso 不提供 `rem`；应用级"基础字号"使用 Theme Token（`theme.typography.base_size`），而不是新增单位。
+
+**非线性字体缩放。**
+
+- `sp` 分量按所在 Scope 的 `TextScaleCurve` 解析：一条由平台提供、单调不减、分段线性的 `sp → Dp` 映射；`env.text_scale` 是该曲线的名义倍率，用于查询与语义，不是解析公式；
+- 曲线来源：Android 14+ 非线性字体缩放（大字号放大幅度小于小字号）、iOS Dynamic Type 的 Content Size Category、Windows 文本缩放、Web 用户根字号；没有非线性来源的平台使用线性曲线 `c × env.text_scale`；
+- 曲线作用于**编译期折叠后的 `sp` 系数**：`8sp * 2` 与 `16sp` 解析结果相同；一个长度值只有一个 `sp` 系数，因此解析仍是 O(1)（一次分段查表）；
+- 曲线只作用于 `sp` 分量；`em` 使用已解析的 Resolved Font Size，不再二次缩放。
+
+**Scope 级缩放范围。**
+
+- `AdaptiveScope` 可声明 `text_scale_min: Option<F32>` 与 `text_scale_max: Option<F32>`，把 Scope 内的曲线截断到该名义倍率范围；用于高度受限的系统栏、Tab Bar 与紧凑工具栏；
+- Scope 内读取的 `env.text_scale` 是截断后的值；截断只影响本 Scope 子树，不影响兄弟 Scope；
+- 被截断 Scope 内的交互节点 SHOULD 通过 Semantics 提供平台的大内容预览（例如 iOS Large Content Viewer），使截断不损失可访问性。
+
+**Typography Context 与 `em`。**
+
+- 每个 Node 都有一个 Resolved Font Size；
+- Node Schema 若声明 `font_size` Property 且该 Property 已绑定，Resolved Font Size 为该值的解析结果；否则继承父 Node 的 Resolved Font Size；
+- 根 Node 的 Resolved Font Size 为当前 Theme 的 `typography.base_size`；标准 Theme Schema 的默认值为 `14sp`；
+- 在 `font_size` Property 自身的值中，`em` 与 `%` 以 **父 Node** 的 Resolved Font Size 为基准，避免自引用；例如 `font_size: 1.2em;` 与 `font_size: 120%;` 等价；
+- 在其他 Property 中，`em` 以 **当前 Node** 的 Resolved Font Size 为基准；
+- Typography Context 只沿 Node Ancestry 继承一个标量，不是 CSS 式通用 Style Cascade；其他文字属性是否继承由 Text Runtime 与 Widget Schema 决定。
+
+**Percent Basis。**
+
+- `Percent` 本身是无量纲比例：`50%` 的数值为 `0.5`；
+- 非长度 Property（例如 `opacity`、`progress`、`volume`）若 Schema 类型为 `Percent`，直接使用比例值；
+- 长度 Property 只有在其 Schema 声明 `percent_basis` 时才接受 `Percent` 或含 Percent 分量的 `MixedLength`；否则是 `E3104`；
+- 标准 Percent Basis：
+
+| Property 类别                                         | Percent Basis                     |
+| ----------------------------------------------------- | --------------------------------- |
+| `width`、`min_width`、`max_width`，水平 `padding`/`margin`/`inset` | 父节点内容盒可用宽度     |
+| `height`、`min_height`、`max_height`，垂直 `padding`/`margin`/`inset` | 父节点内容盒可用高度   |
+| 容器 `gap`                                            | 容器自身内容盒在对应轴上的尺寸    |
+| `corner_radius`                                       | 节点自身 Border Box 的较短边      |
+| `font_size`                                           | 父节点 Resolved Font Size         |
+| `line_height`                                         | 当前节点 Resolved Font Size       |
+
+- Percent Basis 不确定时（例如父节点在该轴为 Fit、Scroll 的滚动轴、无上界约束）：值若只含 Percent 分量，该 Property 退回其 Schema 默认 Sizing（通常为 `Fit`）；值若为含其他分量的 `MixedLength`，Percent 分量按 `0` 计算；两种情况 Debug Runtime 都必须报告 `E3105`（警告）；
+- `100%` 不等于"占满剩余空间"：Percent 只看基准尺寸、不感知兄弟节点；剩余空间分配使用 Schema 提供的 `Fill` / `Fr` 类 Sizing 值。
+
+### 19.5 `MixedLength`
+
+`MixedLength` 是长度族的线性组合，语义上等价于 CSS `calc()` 中只含加减和标量乘除的子集：
+
+```text
+MixedLength = dp·1dp + px·1px + sp·1sp + em·1em + pct·1%
+```
+
+规则：
+
+- `Dp`、`Px`、`Sp`、`Em`、`Percent` 到 `MixedLength` 是隐式安全拓宽（§76.1）；
+- `MixedLength` 到任何具体单位不存在隐式或 `as` 转换，只能通过 §19.3 的 Layout API 解析；
+- `MixedLength` 不支持 `min`、`max`、`clamp`；尺寸约束使用 `min_width`/`max_width` 等 Property；
+- 常量 `MixedLength` 必须在编译期折叠为五个系数；
+- 纯 Rust 路径（`viso::ui` 的长度构造与运算符）使用同一五系数模型；`ui!`、`component!`、`view!` 与纯 Rust 构造得到相同的 IR 值；
+- Property 的 Schema 类型决定其是否接受长度族、`MixedLength` 以及 `Fill`/`Fit` 等 Sizing 值。
+
+示例（Property 名由 Widget Schema 定义，此处仅为说明）：
+
+```viso
+Column {
+    padding: 1em;
+
+    Text {
+        text: title;
+        font_size: 1.25em;
+    }
+
+    Row {
+        width: 100% - 32dp;
+        gap: 0.5em;
+
+        Icon {
+            size: 1.2em;
+        }
+    }
+}
+```
+
+### 19.6 长度的依赖与失效
+
+长度 Binding 按其非零分量静态登记 Layout 依赖，不得在运行时动态追踪：
+
+| 非零分量 | 追加依赖                         | 失效                         |
+| -------- | -------------------------------- | ---------------------------- |
+| `px`     | `env.window.scale_factor`        | `MEASURE / LAYOUT`           |
+| `sp`     | `env.text_scale`                 | `MEASURE / LAYOUT`           |
+| `em`     | Resolved Font Size               | `MEASURE / LAYOUT`           |
+| `%`      | 无额外 Reactive 依赖             | 基准由父布局在同一 Layout Pass 传入，随父级 `LAYOUT` 求解 |
+
+- 某 Node 的 Resolved Font Size 变化时，只有其子树中含 `em` 分量、且未被中间 Node 的绝对 `font_size` 截断的 Binding 失效；
+- 纯 `Dp` 常量不产生任何环境依赖；
+- 失效上限由 Property Schema 的 `invalidates` 声明（§87）：接受长度的 Paint-only Property（例如 `border_width`，若 Schema 声明其不参与布局）只失效 `PAINT`，不因单位升级为 Layout。
+
+### 19.7 不支持的 CSS 单位
+
+| CSS 单位                  | Viso 1.0 替代                                              | 理由                                   |
+| ------------------------- | ---------------------------------------------------------- | -------------------------------------- |
+| `rem`                     | `sp`，或 `theme.typography.base_size` Token                | `sp` 已覆盖根字号 + 可访问性缩放       |
+| `vw` / `vh` / `vmin` / `vmax` | `%`（相对父约束）、`env.constraints`、`env.window.logical_size` | 嵌套 Adaptive Scope 中按窗口取值通常是错误的 |
+| `ex` / `ch` / `lh` / `cap` | 暂无；需要时由 Text Runtime API 提供度量                   | 依赖字体度量，1.0 不纳入长度族         |
+| `fr`                      | Grid Widget Schema 的 Typed Track 值                        | 只在 Grid Track 上下文有意义，不是长度 |
+| `cm` / `mm` / `in` / `pt` / `pc` | 暂无                                                | 物理单位与 UI 逻辑坐标无稳定关系       |
+
+### 19.8 值域与非法值
+
+- 长度 Property 的 Schema 声明值域。尺寸类（`width`、`height`、`min_*`、`max_*`、`padding`、`gap`、`corner_radius`、`border_width`、`font_size`）为非负：解析结果小于 `0` 时按 `0`；位置与偏移类（`margin`、`inset`、`offset`）允许负值；
+- 同一轴上 `min_*` 大于 `max_*` 时 `min_*` 优先，结果确定；
+- 常量折叠中长度族值除以常量 `0` 是 `E2109`；
+- 运行时解析得到非有限值（例如动态标量除数为 `0`）时，该 Property 取 Schema 默认值；Debug Runtime 报告 `E3106`（警告）并计入 `length_nonfinite` 计数器；非有限值不得进入 Layout 或 Render State（Rendering §5.9）；Release 不 panic。
+
+### 19.9 插值
+
+- 长度族值与 `MixedLength` 的 Transition 与 Animation 按五个系数逐项线性插值：对每个分量计算 `a + (b - a) × t`；
+- 因此 `50%` 到 `200dp` 的跨单位动画不需要在动画开始时解析为具体值；动画期间父尺寸、字号或 `scale_factor` 变化时，结果仍按当前基准正确解析；
+- `sp` 分量先插值系数，再经 `TextScaleCurve` 解析；
+- 插值不改变 Property 的失效类别：动画 `width` 每帧标记 `MEASURE|LAYOUT`；只需视觉缩放时使用 `scale` 变换，只走 `TRANSFORM|HIT_TEST|PAINT`（§U6.2）。
+
+### 19.10 像素对齐
+
+- Layout 坐标保持 `F32` Dp，Layout 不取整；取整只在 Render 侧按 device space 执行（Rendering §5.7）；
+- 容器给相邻子节点的共享边必须来自同一个累加边值：前一子节点的 `x + w` 与后一子节点的 `x` 是同一个 `F32`，而不是分别计算；配合 `PixelSnap::Bounds` 对两条边各自取整，在 `1.25`、`1.5`、`1.75` 等非整数 scale 下相邻背景之间不出现缝隙或重叠；
+- 只含 `px` 分量且系数为整数的 stroke/border 宽度解析为整数个 device px，标准 Widget 对其默认使用 `PixelSnap::Stroke`；与 scale 无关的一像素分隔线使用 Rendering `Hairline`（§5.8）；
+- Surface 的 `scale_factor` 变化（例如窗口移到另一块显示器）只重新折叠含 `px` 分量的 Binding（§19.6），Snap 由 Render 侧按 Rendering §5.7 重新解析。
 
 ---
 
@@ -878,7 +750,7 @@ A | B      选择
 ( A )      分组
 ```
 
-词法分析完成后，Parser 消费 Token，而不是字符流。Keyword Token 在 Lexer 阶段从普通 Identifier 中区分。
+词法分析完成后，Parser 消费 Token，而不是字符流。严格关键字在 Lexer 阶段产生独立 Keyword Token；上下文关键字词法化为 identifier，由 Parser 按 §12.4 识别。
 
 ---
 
@@ -886,14 +758,14 @@ A | B      选择
 
 ## 22. Compilation Unit
 
-普通 `.vs` package source 不需要在每个文件重复声明语言版本或 module path。语言版本来自 `Viso.toml`/lockfile，模块身份来自 package root、source root 与文件路径。
+普通 `.vs` package source 不需要在每个文件重复声明语言版本或 module path。语言版本来自 `Viso.toml`/lockfile，模块身份来自 package root、source root 与文件路径。Package 固定的语言版本不是编译器实现的版本时报告 `E1001`，主位置指向 manifest 中的版本值。
 
 ```ebnf
 compilation_unit = { import_decl },
                    { top_level_decl },
                    EOF ;
 
-module_path      = identifier, { "::", identifier } ;
+module_path      = identifier, { "::", label } ;
 ```
 
 规则：
@@ -903,6 +775,23 @@ module_path      = identifier, { "::", identifier } ;
 - Import Resolution 不依赖运行时注册顺序；
 - 编译器、Formatter、LSP 和 Hot Reload 都必须从同一 Source Context 获得 package/module identity；
 - 独立 conformance fixture 若需要显式 module identity，应由测试 harness 提供，不扩展普通 source grammar。
+
+### 22.1 Rust 侧源码入口
+
+同一语言有三种源码入口，Production 见附录 A.2：
+
+| 入口                  | Parser Entry      | 接受内容                                                                    |
+| --------------------- | ----------------- | --------------------------------------------------------------------------- |
+| `view!("path.vs")`    | `CompilationUnit` | 外部 `.vs` 文件，按普通 Module/文件前端编译（§22）                          |
+| `ui! { ... }`         | `ViewFragment`    | View 结构项序列，必须恰好生成一个根 Node，多根按 `E3002` 拒绝                  |
+| `component! { ... }`  | `ComponentEntry`  | 可选 Import 与 Attribute 后跟一个 Component 声明；`component` 关键字可省略  |
+
+规则：
+
+- 三种入口共享 Component/Native Schema、名称解析、类型/Effect/Capability 检查、Typed HIR、Reactive/UI/Shader IR 与诊断语义；入口只决定起始 Production，不引入宏专用语法或运行时语义；
+- `ui!` 不接受 Top-level Declaration、Import 或 Component 成员；`component!` 不接受其他 Top-level Declaration；
+- `.vs` 是规范外部文件格式；页面、Theme 与大型 Component 的热重载 SHOULD 使用 `view!`；内联宏的修改通常需要 Rust 增量编译，Runtime 不要求解析 Rust 源码来热重载内联宏；
+- 宏内源码的诊断 Span 映射回 Rust 源文件中的宏调用位置（§134）。
 
 ---
 
@@ -942,17 +831,29 @@ import app::model::User as AppUser;
 attribute         = "@", path, [ "(", [ attribute_args ], ")" ] ;
 attribute_args    = attribute_arg, { ",", attribute_arg }, [ "," ] ;
 attribute_arg     = expression
-                  | identifier, ":", expression ;
+                  | label, ":", expression ;
 ```
 
-标准 Attribute：
+标准 Attribute（由 Compiler 注册；其余 Attribute 由已导入 Schema 注册）：
 
-```viso
-@stable("app.counter.add_button")
-@derive(Eq, Hash, StableKey)
-@deprecated(message: "Use NewButton")
-@capability("network.http")
-```
+| Attribute                  | 作用对象                  | 含义                                                   |
+| -------------------------- | ------------------------- | ------------------------------------------------------ |
+| `@stable("id")`            | 声明、View Node、成员     | Stable Identity（§88、§115）                            |
+| `@derive(Eq, Hash, ...)`   | `record`、`enum`          | 派生标准 Trait                                          |
+| `@deprecated(message: "")` | 任意声明                  | 使用时产生弃用警告                                      |
+| `@capability("path")`      | `native` 声明             | 声明所需 Capability（§33、§95）                         |
+| `@default`                 | Component 的 `slot` 成员   | 指定 Default Slot（§45.1）                              |
+| `@bindable(event)`         | Component 的 `input` 成员  | 与同名 Component 的 `event` 配对为双向属性（§U2.2）      |
+| `@styleable`               | Component 的 `input` 成员  | 允许 Style 绑定该 Input（§U2.3）                         |
+| `@selector`                | `Bool` 的 `input`/`state`/`computed` | 公开为 Style 状态选择器（§U2.3）               |
+| `@const`                   | `fn`                      | 编译期可求值函数（§34）                                 |
+| `@migrate(from: "...")`    | `fn`                      | Hot Reload 状态迁移函数（§94）                          |
+| `@persist("key")`          | System/Component 的 `state` | 持久化状态（§106.8）                                  |
+| `@local`                   | System 的 `state`          | Presentation 层状态，Simulation 不可访问（§106.4）      |
+| `@probe`                   | System 的 `state`          | 每个 Tick 输出到测试 Trace（§110.5）                    |
+| `@shader_value`            | `record`                  | Shader 可用值类型（§98）                                |
+| `@max_iterations(n)`       | Shader 循环 Statement      | 循环迭代上限（§99）                                     |
+| `@doc("...")`              | 任意声明                  | 文档注释降低后的元数据（§10），源码中通常不手写          |
 
 规则：
 
@@ -1000,6 +901,7 @@ Standard  effect/task/resource/slot/style/theme/hot-reload migration
 
 Advanced  user-defined trait/impl/general generics/const generics/dyn trait
           template/part/handwritten native interface declarations
+          fine-grained capability annotations
 ```
 
 `Advanced` 可以存在于规范中，但不能成为 UI、Reactive、Game、Shader vertical slice 的前置条件。Rust Native Schema 是默认扩展路径。
@@ -1009,10 +911,11 @@ Advanced  user-defined trait/impl/general generics/const generics/dyn trait
 ## 26. Path、Generic 和 Where
 
 ```ebnf
-path               = identifier, { "::", identifier } ;
+path               = identifier, { "::", label } ;
 
-type_path          = type_path_segment, { "::", type_path_segment } ;
-type_path_segment  = identifier, [ generic_args ] ;
+type_path          = type_path_head, { "::", type_path_tail } ;
+type_path_head     = identifier, [ generic_args ] ;
+type_path_tail     = label, [ generic_args ] ;
 
 generic_args      = "<", generic_arg,
                     { ",", generic_arg }, [ "," ], ">" ;
@@ -1118,7 +1021,7 @@ record_decl        = "record", identifier,
                      [ where_clause ],
                      "{", { record_field }, "}" ;
 
-record_field       = { attribute }, identifier, ":", type,
+record_field       = { attribute }, label, ":", type,
                      [ "=", const_expression ], ";" ;
 ```
 
@@ -1150,7 +1053,7 @@ enum_decl          = "enum", identifier,
                      [ where_clause ],
                      "{", { enum_variant }, "}" ;
 
-enum_variant       = { attribute }, identifier,
+enum_variant       = { attribute }, label,
                      [ tuple_variant | record_variant ], ";" ;
 
 tuple_variant      = "(", [ type_list ], ")" ;
@@ -1171,8 +1074,8 @@ export enum LoadState<T, E> {
 Enum Variant 使用 Path：
 
 ```viso
-LoadState::loading
-LoadState::ready(user)
+let pending = LoadState::loading;
+let done = LoadState::ready(user);
 ```
 
 ---
@@ -1484,6 +1387,7 @@ effect persist_theme when (theme_name) run EffectRun::change {
 - `when` 中的每个表达式必须是纯表达式；
 - Effect 依赖集合由 `when` 显式给出，不通过隐式全局追踪猜测；
 - 编译器必须诊断 Effect Body 中读取但未列出的 Reactive Value，除非读取位于 `untracked(...)`；
+- `untracked(expr)` 是编译器内建：求值 `expr` 并返回其值，其中的 Reactive 读取不登记依赖；只允许出现在 Effect Body 与 `cleanup` 中，其他位置报 `E2501`；
 - Effect Body 不能直接使用赋值语句修改 State；
 - 若确实需要修改 State，必须显式使用 `transaction { ... }`；
 - Cleanup 在下次 Effect 重跑前、Component 销毁前或热重载替换前恰好执行一次；
@@ -1547,11 +1451,11 @@ resource search_result: Resource<List<SearchItem>, SearchError> {
 
 ```viso
 match search_result.state {
-    ResourceState::idle => { EmptyView {} }
-    ResourceState::loading => { Spinner {} }
-    ResourceState::ready(items) => { Results { items = items; } }
-    ResourceState::error(error) => { ErrorView { error = error; } }
-    ResourceState::reloading(items) => { Results { items = items; dimmed = true; } }
+    ResourceState::idle => { EmptyView {} },
+    ResourceState::loading => { Spinner {} },
+    ResourceState::ready(items) => { Results { items: items; } },
+    ResourceState::error(error) => { ErrorView { error: error; } },
+    ResourceState::reloading(items) => { Results { items: items; dimmed: true; } },
 }
 ```
 
@@ -1804,15 +1708,23 @@ OptionalSlot<Node>  零个或一个节点
 SlotList<Node>      零个或多个节点
 ```
 
-`empty` 是仅在 Slot Default 中合法的上下文 Token，不列为全局表达式关键字。Lexer 仍产生 Identifier，Parser 在 `slot_default` 位置解释。
+`empty` 是上下文关键字（§12.3），只在 `slot_default` 位置解释。
 
 ```viso
-slot content: Slot<Node>;
+@default slot content: Slot<Node>;
 slot leading: OptionalSlot<Node> = None;
 slot actions: SlotList<Node> = empty;
 ```
 
 调用方使用 `fill`，而不是把 Slot 名当动态属性。
+
+### 45.1 Default Slot
+
+- 一个 Component 或 Template 至多一个 Slot 标记 `@default`，多于一个报 `E3004`；
+- 调用方 Node Body 中不在 `fill` 内的结构项（`view_structure_item`，§48）按源码顺序进入 Default Slot，其结果必须满足该 Slot 的 Cardinality；
+- 目标 Component 没有 Default Slot 时，出现裸结构项报 `E3003`；
+- 同一 Node Body 同时出现裸结构项与 `fill <default_slot>` 报 `E3502`；
+- `@default` 只改变调用方的书写方式，不改变 Slot 类型与 Schema 名称。
 
 ---
 
@@ -1911,29 +1823,24 @@ native_type_decl     = "type", identifier,
 ```ebnf
 view_decl            = "view", view_block ;
 
-view_block           = "{", { view_item }, "}" ;
+view_block           = "{", { view_structure_item }, "}" ;
 
-view_item            = { attribute },
+view_structure_item  = { attribute },
                        ( named_node
                        | anonymous_node
                        | part_node
-                       | property_binding
-                       | two_way_binding
-                       | event_handler
-                       | fill_clause
                        | view_if
                        | view_for
                        | view_match
-                       | template_use
-                       | part_override
-                       | part_replace ) ;
+                       | template_use ) ;
 ```
 
 规则：
 
 - 每个 Component 必须有且仅有一个 View；
-- View 必须生成恰好一个根 Node；
-- 多个根节点必须显式包裹 `Fragment`；
+- `view_block` 只包含结构项；Property Binding、`bind`、`on`、`fill`、`override part` 与 `replace part` 只出现在 Node Body（§49）；
+- View 根 `view_block` 必须生成恰好一个根 Node；其他 `view_block`（`fill`、分支、`for` Body、Match Arm）的 Cardinality 由所在 Slot 决定（§53）；
+- 多个根节点必须显式包裹 `Fragment`。`Fragment` 是标准 Component，只有 `@default slot children: SlotList<Node>`，不产生自身 Layout/Paint 节点，子节点直接参与父节点布局；
 - View 是纯执行域；
 - View 中禁止普通 `let`、赋值、`return`、`emit`、`start`、I/O 和 Native Action；
 - View 可以读取 Input、State、Computed、Resource State 和当前 typed `env`；
@@ -1953,7 +1860,22 @@ anonymous_node       = component_type, node_body ;
 
 component_type       = type_path ;
 
-node_body            = "{", { view_item }, "}" ;
+node_body            = "{", { node_member }, "}" ;
+
+node_member          = { attribute },
+                       ( property_binding
+                       | two_way_binding
+                       | event_handler
+                       | fill_clause
+                       | named_node
+                       | anonymous_node
+                       | part_node
+                       | view_if
+                       | view_for
+                       | view_match
+                       | template_use
+                       | part_override
+                       | part_replace ) ;
 ```
 
 唯一规则：
@@ -1981,7 +1903,10 @@ node root: Window {
 
 - Named Node 只在当前 Component 实现中可见；
 - Named Node 不是公开字段；
-- 行为代码通过生成的 `NodeRef<T>` 查询它；
+- `node name: T { ... }` 在当前 Component 的 Action、Task、Effect 与 Event Handler 作用域中引入不可变绑定 `name: NodeRef<T>`；View、Computed、Style 与 Input 默认值中不可见，出现时报 `E2001`；
+- 读取 NodeRef 不建立 Reactive 依赖；
+- 目标节点未挂载（分支未激活或已销毁）时，Node Action 返回 `Result` 错误而不是 Panic；
+- `view_for` Body 内的 Named Node 不引入 NodeRef 绑定，其名称只作为 Keyed 身份种子；
 - View 纯度规则禁止在 View 外直接修改节点属性作为状态源；
 - 命令式焦点、滚动、测量等操作通过受控 Node Action 完成。
 
@@ -1992,7 +1917,7 @@ node root: Window {
 ```ebnf
 property_binding     = property_path, ":", expression, ";" ;
 
-property_path        = identifier, { ".", identifier } ;
+property_path        = label, { ".", label } ;
 ```
 
 在 Node Body 中：
@@ -2011,10 +1936,10 @@ Text {
 - 右侧必须是纯表达式；
 - 左侧必须由 Component Schema 暴露；
 - 编译器检查类型和 Property Mutability；
-- Property Schema 必须声明失效类别：`layout`、`paint`、`semantics`、`input` 或其组合；
+- Property Schema 必须声明 `invalidates` Dirty Class 集合（§87）；
 - Binding 依赖变化时只触发所需失效；
 - 同一 Property 在同一 Node Body 中绑定多次是错误；
-- Style 与显式 Property 的优先级在第 76 节定义。
+- Style 与显式 Property 的优先级在 §59 定义。
 
 ---
 
@@ -2024,7 +1949,7 @@ Text {
 two_way_binding     = "bind", property_path, "<=>", assignable_path,
                       [ "using", type_path ], ";" ;
 
-assignable_path      = identifier, { ".", identifier | index_selector } ;
+assignable_path      = identifier, { ".", label | index_selector } ;
 index_selector       = "[", expression, "]" ;
 ```
 
@@ -2050,7 +1975,7 @@ Slider {
 - 无 Converter 时两边类型必须相同；
 - Converter 必须实现 `TwoWayConverter<Model, View>`；
 - 更新必须带 Origin Token，禁止形成回声循环；
-- 同一 Property 不能同时使用 `=` 和 `bind`；
+- 同一 Property 不能同时使用 `:` 单向绑定和 `bind`；
 - `<=>` 在语言其他位置非法。
 
 ---
@@ -2097,7 +2022,7 @@ Canvas {
 - Event Payload 字段由 Schema 静态检查；
 - Handler 中允许同步 State 修改、`emit`、Action Call 和 `start`；
 - Handler 中禁止直接 `await`；
-- Event 取消使用 `event.stop_propagation()` 和 `event.prevent_default()` 等 Typed API。
+- Event 取消使用 Typed API：`event.stop_propagation()`、`event.stop_immediate_propagation()` 与 `event.prevent_default()`，语义见 §90。
 
 `=>` 仅保留给 `match` Arm，因此 Parser 和 Formatter 不会把事件写法分叉成两套。
 
@@ -2130,8 +2055,7 @@ Dialog {
 - `Slot<Node>` 必须恰好生成一个节点；
 - `OptionalSlot<Node>` 生成零或一个节点；
 - `SlotList<Node>` 可生成任意数量节点；
-- 未命名的匿名子节点只能进入 Schema 指定的 Default Slot；
-- Component 没有 Default Slot 时，裸子节点是错误；
+- 不在 `fill` 内的裸结构项进入 Default Slot（§45.1）；
 - 同一个 Single Slot 重复 `fill` 是错误。
 
 ---
@@ -2147,7 +2071,7 @@ view_if             = "if", head_expression,
 
 ```viso
 if logged_in preserve "user-panel" {
-    UserPanel { user = user; }
+    UserPanel { user: user; }
 } else {
     LoginPanel {}
 }
@@ -2218,10 +2142,10 @@ match user.state {
         Spinner {}
     },
     UserState::ready(user) => {
-        ProfileCard { user = user; }
+        ProfileCard { user: user; }
     },
     UserState::error(error) => {
-        ErrorView { message = error.message; }
+        ErrorView { message: error.message; }
     },
 }
 ```
@@ -2307,7 +2231,7 @@ use TitledCard("Profile") {
     }
 
     fill content {
-        ProfileBody { user = user; }
+        ProfileBody { user: user; }
     }
 };
 ```
@@ -2322,7 +2246,7 @@ use TitledCard("Profile") {
 - Template 递归必须有可证明的有限展开，否则编译错误；
 - 实现可以延迟 Template 实例化，但语义等价于 Typed IR 展开。
 
-在 Template 定义内部，调用方 Slot 通过标准 `SlotOutlet` Component 放入结构。`fill` 只允许出现在 Template/Component 的调用方，不能用于定义 Slot Outlet。
+在 Template 定义内部，调用方 Slot 通过标准 `SlotOutlet` Component 放入结构。`SlotOutlet` 只有一个 Property `slot`，其值是当前 Template/Component 声明的 Slot 名；它就地展开调用方为该 Slot 提供的节点，未提供时展开为 Slot 默认值（`None`/`empty` 为零个节点）。`SlotOutlet` 只能出现在声明该 Slot 的 Template/Component 的 View 中，每个 Slot 至多一个 `SlotOutlet`。`fill` 只允许出现在 Template/Component 的调用方，不能用于定义 Slot Outlet。
 
 ---
 
@@ -2384,7 +2308,7 @@ Button {
 }
 ```
 
-`styles` 的精确类型由 Component Schema 定义，通常是 `List<StyleRef<Button>>`。编译器必须检查 Style 目标类型兼容性；Style 顺序按列表从左到右应用，后者覆盖前者，节点显式 Property 最后覆盖全部 Style。不存在通过字符串名称动态查找 Style 的语义。
+`styles` 的精确类型由 Component Schema 定义，通常是 `List<StyleRef<Button>>`。Style 名在 Expression 中求值为编译期常量 `StyleRef<T>`，`T` 是其 `for` 目标 Component。编译器必须检查 Style 目标类型兼容性；Style 顺序按列表从左到右应用，后者覆盖前者，节点显式 Property 最后覆盖全部 Style。不存在通过字符串名称动态查找 Style 的语义。
 
 ---
 
@@ -2425,7 +2349,7 @@ export theme AppTheme {
 - Theme 切换通过 Reactive Context 使依赖的 Binding 失效；
 - Theme 不引入动态字符串变量查找。
 
-`theme` 是标准库定义的 Typed Reactive Context Binding，不是任意全局变量。应用根节点或测试 Harness 必须提供一个与当前 Theme Schema 匹配的 Context Value；缺失 Context 是静态配置错误或应用启动错误。组件只能读取 `theme`，Theme 切换必须通过宿主 Context API 进行原子替换。
+Expression 中的 `theme` 是普通 identifier，由名称解析绑定到隐式注入的 Typed Reactive Context Binding（§12.6），不是 Grammar Production，也不是任意全局变量；它在 View、Style 与 Theme Expression 中可见。应用根节点或测试 Harness 必须提供一个与当前 Theme Schema 匹配的 Context Value；缺失 Context 是静态配置错误或应用启动错误。组件只能读取 `theme`，Theme 切换必须通过宿主 Context API 进行原子替换。
 
 ---
 
@@ -2558,8 +2482,13 @@ coalesce_expression  = logical_or_expression,
 logical_or_expression = logical_and_expression,
                         { "||", logical_and_expression } ;
 
-logical_and_expression = bit_or_expression,
-                         { "&&", bit_or_expression } ;
+logical_and_expression = comparison_expression,
+                         { "&&", comparison_expression } ;
+
+comparison_expression = bit_or_expression,
+                        [ comparison_operator, bit_or_expression ] ;
+
+comparison_operator  = "==" | "!=" | "<" | "<=" | ">" | ">=" ;
 
 bit_or_expression    = bit_xor_expression,
                        { "|", bit_xor_expression } ;
@@ -2567,15 +2496,8 @@ bit_or_expression    = bit_xor_expression,
 bit_xor_expression   = bit_and_expression,
                        { "^", bit_and_expression } ;
 
-bit_and_expression   = equality_expression,
-                       { "&", equality_expression } ;
-
-equality_expression = comparison_expression,
-                       [ ( "==" | "!=" ), comparison_expression ] ;
-
-comparison_expression = shift_expression,
-                        [ ( "<" | "<=" | ">" | ">=" ),
-                          shift_expression ] ;
+bit_and_expression   = shift_expression,
+                       { "&", shift_expression } ;
 
 shift_expression     = additive_expression,
                        { ( "<<" | ">>" ), additive_expression } ;
@@ -2610,21 +2532,21 @@ generic_call_args    = "::", generic_args ;
 
 index_suffix         = "[", expression, "]" ;
 
-member_suffix        = ".", identifier ;
+member_suffix        = ".", label ;
 
-optional_member_suffix = "?.", identifier ;
+optional_member_suffix = "?.", label ;
 
 try_suffix           = "?" ;
 ```
 
 ### 63.1 非结合操作符
 
-比较和相等操作符是 Non-associative：
+比较与相等操作符（`== != < <= > >=`）同属一个 Non-associative 级别，与 Rust 一致；链式使用报 `E2802`：
 
-```viso
-// 非法
+```viso-invalid
 0 < x < 10;
 a == b == c;
+a < b == c;
 ```
 
 必须写成：
@@ -2648,25 +2570,24 @@ a == b && b == c;
 
 数字越小优先级越高。
 
-| 级别 | 构造                   | 结合性   | 说明                                     |
-| ---: | ---------------------- | -------- | ---------------------------------------- | -------- | ------ |
-|    1 | `()` `[]` `.` `?.` `?` | 左       | Call、Index、Member、Optional Chain、Try |
-|    2 | `! ~ + - await`        | 右       | Prefix Unary                             |
-|    3 | `as`                   | 左       | 显式转换                                 |
-|    4 | `* / %`                | 左       | 乘除余                                   |
-|    5 | `+ -`                  | 左       | 加减                                     |
-|    6 | `<< >>`                | 左       | 位移                                     |
-|    7 | `&`                    | 左       | 位与                                     |
-|    8 | `^`                    | 左       | 位异或                                   |
-|    9 | `                      | `        | 左                                       | 位或     |
-|   10 | `< <= > >=`            | 不结合   | 比较                                     |
-|   11 | `== !=`                | 不结合   | 相等                                     |
-|   12 | `&&`                   | 左、短路 | 逻辑与                                   |
-|   13 | `                      |          | `                                        | 左、短路 | 逻辑或 |
-|   14 | `??`                   | 右、短路 | Option/Nullable Coalesce                 |
-|   15 | `.. ..=`               | 不结合   | Range                                    |
+| 级别 | 构造                    | 结合性   | 说明                                     |
+| ---: | ----------------------- | -------- | ---------------------------------------- |
+|    1 | `()` `[]` `.` `?.` `?`  | 左       | Call、Index、Member、Optional Chain、Try |
+|    2 | `! ~ + - await`         | 右       | Prefix Unary                             |
+|    3 | `as`                    | 左       | 显式转换                                 |
+|    4 | `* / %`                 | 左       | 乘除余                                   |
+|    5 | `+ -`                   | 左       | 加减                                     |
+|    6 | `<< >>`                 | 左       | 位移                                     |
+|    7 | `&`                     | 左       | 位与                                     |
+|    8 | `^`                     | 左       | 位异或                                   |
+|    9 | `\|`                    | 左       | 位或                                     |
+|   10 | `== != < <= > >=`       | 不结合   | 比较与相等（§63.1）                      |
+|   11 | `&&`                    | 左、短路 | 逻辑与                                   |
+|   12 | `\|\|`                   | 左、短路 | 逻辑或                                   |
+|   13 | `??`                    | 右、短路 | Option/Nullable Coalesce                 |
+|   14 | `.. ..=`                | 不结合   | Range                                    |
 
-Assignment 不属于 Expression 优先级表。
+位运算高于比较（与 Rust 一致，不同于 C），因此 `flags & MASK == 0` 解析为 `(flags & MASK) == 0`。Assignment 不属于 Expression 优先级表。
 
 ### 64.1 `??` 语义
 
@@ -2693,9 +2614,9 @@ head_expression = expression ;
 因此：
 
 ```viso
-if ready { ... }                         // 合法
-if (Point { x: 1.0, y: 2.0 }) { ... }  // 可解析，随后通常因条件不是 Bool 报类型错
-for item in (Query { limit: 10 }.run()) key item.id { ... }
+if ready {}                              // 合法
+if (Point { x: 1.0, y: 2.0 }) {}         // 可解析，随后通常因条件不是 Bool 报类型错
+for item in (Query { limit: 10 }.run()) key item.id {}
 ```
 
 未加括号的 `Type { ... }` 在 Header 中不会吞掉控制流 Block。该限制属于 Parser Mode，不改变括号内 Expression Grammar。
@@ -2746,7 +2667,7 @@ record_expression   = path, [ generic_call_args ], "{",
                         { ",", record_initializer }, [ "," ] ],
                       "}" ;
 
-record_initializer  = identifier, ":", expression
+record_initializer  = label, ":", expression
                     | identifier
                     | "..", expression ;
 
@@ -2785,7 +2706,7 @@ User { name: "New", ..old_user }
 - 所有未显式提供的字段从 Base 复制；
 - 没有 Base 时必须提供所有无默认值字段；
 - 未知、重复或不可见字段是静态错误；
-- Record Literal 与 View Node 在不同 Parser 上下文中，且 Field 使用 `:`、Node Property 使用 `=`，不存在语法歧义。
+- Record Literal 与 View Node 由 Parser 上下文区分：Expression 位置的 `Type { ... }` 是 Record Literal，字段以 `,` 分隔；View 结构项位置的 `Type { ... }` 是 Node，Node Body 成员以 `;` 结束（§49、§50），两者不存在语法歧义。
 
 ---
 
@@ -2795,7 +2716,7 @@ User { name: "New", ..old_user }
 argument_list        = [ argument, { ",", argument }, [ "," ] ] ;
 
 argument             = expression
-                     | identifier, ":", expression ;
+                     | label, ":", expression ;
 
 call_expression      = postfix_expression ;
 ```
@@ -2942,11 +2863,12 @@ primary_pattern            = "_"
                            | qualified_variant_pattern
                            | grouped_pattern ;
 
-literal_pattern            = integer_literal
+literal_pattern            = [ "-" ], integer_literal
                            | char_literal
                            | string_literal
                            | "true"
-                           | "false" ;
+                           | "false"
+                           | "None" ;
 
 identifier_pattern         = [ "mut" ], identifier ;
 
@@ -2972,10 +2894,10 @@ constructor_pattern_payload = "(",
                                 { ",", record_pattern_field }, [ "," ] ],
                               "}" ;
 
-qualified_variant_pattern  = identifier, "::", identifier,
-                             { "::", identifier } ;
+qualified_variant_pattern  = identifier, "::", label,
+                             { "::", label } ;
 
-record_pattern_field       = identifier, ":", pattern
+record_pattern_field       = label, ":", pattern
                            | identifier
                            | ".." ;
 
@@ -3017,8 +2939,11 @@ Or Pattern
 Or Pattern 的每个分支必须绑定相同名称集合和兼容类型：
 
 ```viso
-LoadState::failed(error) | LoadState::cancelled(error) => {
-    log_error(error);
+match state {
+    LoadState::failed(error) | LoadState::cancelled(error) => {
+        log_error(error);
+    },
+    _ => {},
 }
 ```
 
@@ -3080,8 +3005,10 @@ Color
 UI 量纲类型：
 
 ```text
-Dp Px Sp Percent Duration Angle Frequency
+Dp Px Sp Em Percent MixedLength Duration Angle Frequency
 ```
+
+长度族（`Dp`、`Px`、`Sp`、`Em`、`Percent`）与 `MixedLength` 的解析基准、运算与失效规则见 §19.3–§19.6。
 
 明确决定：
 
@@ -3152,7 +3079,10 @@ Literal 定型必须检查范围和精度策略。它不等同于一个已存在
 I8 -> I16 -> I32 -> I64
 U8 -> U16 -> U32 -> U64
 F32 -> F64
+Dp | Px | Sp | Em | Percent -> MixedLength
 ```
+
+`Percent -> MixedLength` 只改变类型；目标 Property 是否接受 Percent 分量仍由其 `percent_basis` 检查（`E3104`）。Property Binding 右侧另有 Schema 驱动的值提升（`T -> Option<T>`、长度 -> `Sizing`/`EdgeInsets`），见 §U1.3；函数实参与 `let` 不适用。
 
 ### 76.2 禁止的隐式转换
 
@@ -3162,7 +3092,7 @@ F32 -> F64
 任意 float -> integer
 F64 -> F32
 宽整数 -> 窄整数
-不同 UI 量纲互转
+不同 UI 量纲互转（包括 MixedLength -> 任一具体单位）
 Color <-> Vec4F32
 Bool <-> integer
 String <-> number
@@ -3243,7 +3173,7 @@ Trait 不能声明：
 
 Trait Bound：
 
-```viso
+```text
 T: Clone + Eq + StableKey
 ```
 
@@ -3456,7 +3386,7 @@ source_symbol_id
 derived_symbol_id
 read_kind
 source_span
-invalidation_class
+invalidates
 ```
 
 ---
@@ -3483,7 +3413,7 @@ State 修改只能发生在：
 7. 验证 Key 和 Slot 不变量
 8. 原子提交 UI Patch
 9. 排队 Effect
-10. 请求 Layout/Paint/Semantics/Input 失效
+10. 按 §87 的 Dirty Class 请求失效
 ```
 
 同一外层 Transaction 中对同一 State 多次写入只产生一次 Revision 和一次下游调度。
@@ -3500,28 +3430,36 @@ State 修改只能发生在：
 
 ## 87. 精确失效
 
-每个 Property Schema 声明：
+Dirty Class 是封闭集合，与 Runtime 位集一一对应，不得扩展：
+
+| Dirty Class  | 含义                                   | 传播                           |
+| ------------ | -------------------------------------- | ------------------------------ |
+| `STRUCTURE`  | 子节点集合或顺序变化                   | 向祖先传播                     |
+| `STYLE`      | Style 解析输入变化（状态选择器、交互态） | 本节点                         |
+| `MEASURE`    | 固有尺寸变化                           | 向祖先传播到第一个 Layout Boundary |
+| `LAYOUT`     | 需要重新布局本节点子树                 | 本节点                         |
+| `TRANSFORM`  | 仅变换矩阵变化                         | 本节点                         |
+| `PAINT`      | 仅绘制输出变化                         | 本节点                         |
+| `HIT_TEST`   | 命中区域或可交互性变化                 | 本节点                         |
+| `SEMANTICS`  | 无障碍语义树变化                       | 向祖先传播                     |
+
+每个 Property Schema 必须声明 `invalidates: DirtyClass set`，例如：
 
 ```text
-affects(layout)
-affects(paint)
-affects(semantics)
-affects(input)
-affects(resource)
-```
-
-可组合：
-
-```text
-affects(layout + paint + semantics)
+text:      invalidates MEASURE | LAYOUT | PAINT | SEMANTICS
+color:     invalidates PAINT
+width:     invalidates MEASURE | LAYOUT
+transform: invalidates TRANSFORM | HIT_TEST | PAINT
 ```
 
 运行时规则：
 
-- Paint-only 修改不得无条件重算整棵 Layout；
+- 未声明 `invalidates` 的 Property 是 Schema 错误；
+- Paint-only 修改不得触发 `MEASURE`/`LAYOUT`，也不得使祖先失效；
+- Transform-only 修改只产生 `TRANSFORM | HIT_TEST | PAINT`，不得触发 `MEASURE`/`LAYOUT`；
 - Semantics-only 修改不得重建 GPU Draw List；
-- Input Region 修改必须在下一次 Pointer Dispatch 前生效；
-- Layout 修改向祖先传播到第一个 Layout Boundary；
+- `HIT_TEST` 修改必须在下一次 Pointer Dispatch 前生效；
+- Resource 变化不是 Dirty Class，而是 Resource Key Revision，经由读取它的 Binding 转换为上述类别；
 - Draw Cache 必须按 Property Revision 精确失效；
 - Animation 每帧只使实际变化的通道失效。
 
@@ -3736,7 +3674,7 @@ Parse new source
 
 ---
 
-## 95. Capability 运行时
+## 95. Capability 与执行预算运行时
 
 静态检查不能替代运行时授权。
 
@@ -3774,7 +3712,7 @@ asset.read.package
 
 ---
 
-## 96. 执行预算
+### 95.1 执行预算
 
 每个 Isolate/Profile 必须配置：
 
@@ -3796,6 +3734,8 @@ resource cache budget
 ---
 
 # 第十一部分：自适应布局与环境语义
+
+## 96. Adaptive UI
 
 ## 96.1 设计原则
 
@@ -3830,6 +3770,8 @@ env.input             : InputCapabilities
 env.text_scale        : F32
 env.reduced_motion    : Bool
 env.orientation       : Orientation
+env.layout_direction  : LayoutDirection   // §U10.1
+env.locale            : Locale            // §U10.3
 ```
 
 这些符号由标准 Native Schema 注入，Parser 不新增专用关键字。`env` 是 View 执行域的上下文绑定，只能在 View item 的表达式、Property Binding、View `if`/`match`/`for` 条件和调用的纯函数参数中使用；Component 的普通 `state` / `computed` 初始化器不能隐式读取局部 Layout Environment。
@@ -3850,20 +3792,20 @@ record LocalConstraints {
 }
 
 enum SizeClass {
-    Compact,
-    Medium,
-    Expanded,
+    Compact;
+    Medium;
+    Expanded;
 }
 
 enum Orientation {
-    Portrait,
-    Landscape,
+    Portrait;
+    Landscape;
 }
 
 enum DisplayFeature {
-    Hinge { bounds: Rect },
-    Fold { bounds: Rect },
-    Cutout { bounds: Rect },
+    Hinge { bounds: Rect; };
+    Fold { bounds: Rect; };
+    Cutout { bounds: Rect; };
 }
 ```
 
@@ -3929,7 +3871,7 @@ Adaptive Environment Read 必须进入 Reactive HIR。编译器必须区分原�
 | `env.safe_area`        | `MEASURE / LAYOUT`                                   |
 | `env.keyboard_inset`   | `MEASURE / LAYOUT`                                   |
 | `env.display_features` | 消费者声明的 `STRUCTURE / LAYOUT / HIT_TEST`         |
-| `env.input`            | `STYLE / INTERACTION`                                |
+| `env.input`            | `STYLE / HIT_TEST`                                   |
 | `env.text_scale`       | `MEASURE / LAYOUT / SEMANTICS`                       |
 | `env.reduced_motion`   | `STYLE / PAINT`，不得强制 Layout                     |
 | `env.orientation`      | 仅通知显式读取者                                     |
@@ -3953,7 +3895,7 @@ Parent computes incoming constraints
 -> Publish final geometry
 ```
 
-### 结构级响应 vs 属性级响应
+### 96.5.1 结构级响应 vs 属性级响应
 
 自适应求值区分两类响应，边界由「该值在本节点测量之前是否已确定」划定：
 
@@ -3968,7 +3910,7 @@ Parent computes incoming constraints
 
 因此结构在一次布局中「先由 incoming 值定形，再测量、再布局」是单向的：结构级分支的输入在 Measure 前已冻结，Measure 只能反过来影响属性，不能倒推回结构。
 
-禁止 View 结构直接依赖其自身尚未完成的 measured output。`AdaptiveCycle` 检测是对以上规则违例的诊断安全网，而非切换结构的主要机制——实现必须检测有限布局周期内的 `AdaptiveCycle`，并产生结构化诊断，而不是无限反复 Measure。
+禁止 View 结构直接依赖其自身尚未完成的 measured output。`AdaptiveCycle` 检测是对以上规则违例的诊断安全网，而非切换结构的主要机制——实现必须检测有限布局周期内的 `AdaptiveCycle`，并产生结构化诊断 `E4204`，而不是无限反复 Measure。
 
 ---
 
@@ -4100,6 +4042,958 @@ mouse+keyboard vs touch input
 ```
 
 同一组件在不同窗口宽度和父容器宽度下必须可以独立测试，不允许只依赖真实设备型号。
+
+---
+
+# 第十一部分 B：UI Authoring 标准面
+
+本部分章节以 `U` 编号（§U1–§U13），不占用主编号序列。
+
+## U1. 范围与规范层级
+
+本部分定义 `.vs` 编写 UI 的标准面：用户 Component 属性元数据、布局、变换、文本、动画、输入与焦点、语义、虚拟化列表、国际化、导航、状态选择器与标准 Theme Schema。
+
+本部分**不引入新语法**，只使用既有构造：Property Binding `name: expr;`（§50）、`on event { }`（§52）、`node n: T { }`（§49）、`for x in xs key k { }`（§55）、`bind p <=> s;`（§51）、Attribute（§24）、Record/Enum 表达式（§65）、Style/Theme（§59、§60）。标识符遵循关键字分层（§12，ADR 0034）：`theme`、`env` 是解析到注入 Context 的普通标识符；Property Path 段、Record 字段、Enum Variant、具名参数标签都是 Label Position，因此 `EdgeInsets.start`、`Align::end`、`semantics.role` 合法。
+
+### U1.1 规范层级
+
+- **语言级规则**（对所有 Component 生效）：Property Group 与父节点提供 Property 的解析、用户 Component 元数据 Attribute 与失效推导、事件分派、焦点顺序、语义义务、`for` 与 `VirtualList` 的挂载语义、本部分新增诊断；
+- **`viso::widgets` 标准 Schema 基线**：标准 Widget 的 Property 与 Event，每个条目给出名称、类型、默认值、失效类别与适用时的 `percent_basis`（§19.4）；
+- 失效类别只使用八个 Dirty Class：`STRUCTURE STYLE MEASURE LAYOUT TRANSFORM PAINT HIT_TEST SEMANTICS`；
+- 基线是**下限**：实现不得删除、改名或改变基线条目的类型、默认值、失效类别；可以增加 Property，但必须经 Schema Query（§139）公开；
+- 每个 Widget 的完整 Schema（额外 Property、Slot 基数、Event Payload 全部字段）以 `viso schema query` 为准；
+- 标注 **[Runtime 待实现]** 的条目：Schema 与类型检查已冻结，运行时行为尚未实现；实现落地前 Debug Runtime 对非默认值报告 `E3709`，Release 构建拒绝该值。
+
+### U1.2 失效表记法
+
+- 表中失效列是该 Property 变化时源节点被标记的 Dirty Class；
+- Layout Pass 后位置或尺寸实际改变的节点由管线派生 `TRANSFORM|HIT_TEST|PAINT`，表中不重复列出；
+- `STRUCTURE`、`MEASURE`、`SEMANTICS` 沿祖先冒泡，其余类别保持局部（ADR 0005）；
+- 长度值含 `px`、`sp`、`em` 分量时追加 §19.6 依赖；
+- 任何 Schema 不得声明 `INTERACTION` 或 `affects(...)`；纯变换变化一律是 `TRANSFORM|HIT_TEST|PAINT`。
+
+### U1.3 Property 值提升
+
+仅在 Property Binding 与 Record 字段初始化的右侧，Schema 类型允许以下隐式提升（均为编译期、无副作用）：
+
+- `T` → `Option<T>`，提升为 `Option::Some(v)`，因此 `max_width: 640dp;`、`semantics.label: tr("x");` 合法；
+- 长度族值与 `MixedLength` → `Sizing`，提升为 `Sizing::fixed(v)`（U3.2）；
+- 长度族值与 `MixedLength` → `EdgeInsets`，提升为 `EdgeInsets::all(v)`（U3.3）。
+
+一次绑定中 §76.1 拓宽与上述提升至多各发生一次（如 `Dp` → `MixedLength` → `Option<MixedLength>`）；提升不适用于函数实参与 `let`。
+
+### U1.4 明确推迟
+
+Flex 换行；`space_between`/`space_around`；单子节点 `align_self`；Row Baseline 对齐；滚动条外观、惯性、Scroll Snap（ADR 0007）；单个 `VirtualList` 多 Item Template；物理方向（`left`/`right`）Edge 写法；显式段落基础方向 Property；Grid Subgrid 与 Line Name 的 DSL 写法；共享元素转场与路由动画；自定义 Gesture Recognizer 声明；富文本 Span 树。
+
+---
+
+## U2. 用户 Component 的 Property 元数据
+
+用户 Component 的公开面由 `input`、`event`、`slot` 组成（§41–§45）。除 `@default`（§45.1）外，本节定义三个标准 Attribute，只附加在 Component 成员声明上，不改变成员语法：
+
+| Attribute          | 位置                                          | 作用                           |
+| ------------------ | --------------------------------------------- | ------------------------------ |
+| `@bindable(event)` | `input`                                       | 与 Event 配对为双向属性         |
+| `@styleable`       | `input`                                       | 允许 Style 绑定该 Input         |
+| `@selector`        | `Bool` 类型的 `input`/`state`/`computed`       | 公开为 Style 状态选择器         |
+
+### U2.1 Default Slot
+
+Default Slot 由 `@default` 标记，规则见 §45.1；示例见 U13.1 的 `SettingsSection`。裸子节点数量必须满足 Default Slot 基数（`Slot` 恰好一个，`OptionalSlot` 零或一个，`SlotList` 任意），否则 `E3502`。
+
+### U2.2 `@bindable`：Input 与 Event 配对
+
+```viso
+export component Stepper {
+    @bindable(changed)
+    input value: I64;
+    input step: I64 = 1;
+
+    event changed(value: I64);
+
+    view {
+        Row {
+            Button { text: "-"; on click { emit changed(value - step); } }
+            Text { text: format("{}", value); }
+            Button { text: "+"; on click { emit changed(value + step); } }
+        }
+    }
+}
+
+// 调用方
+Stepper { bind value <=> settings.retry_count; }
+```
+
+- `@bindable(e)` 使该 Input 在 Schema 中成为 `two_way`，可作 §51 `bind` 左侧；
+- `e` 必须在同一 Component 中声明，且首个参数类型与 Input 类型相同，否则 `E3701`；
+- Component 内部不得给 Input 赋值（§41），只能 `emit e(新值)` 表达"请求变更"；
+- `bind` 降级为 `value: lens;` 加 `on e(ev) { lens = ev.value; }`，并带 Origin Token 防回写（§123）；调用方只写 `value: x;` 时是受控单向属性，`changed` 仍会触发；
+- 标准 Widget 约定：主值的配对事件名为 `changed`，其他双向属性为 `<property>_changed`（如 `selected_changed`）。
+
+### U2.3 Styleable Input 与状态选择器
+
+```viso
+export component Chip {
+    @styleable
+    input tint: Option<Color> = Option::None;
+    input label: String;
+
+    @selector
+    input selected: Bool = false;
+
+    view {
+        Row {
+            background: tint.unwrap_or(theme.colors.surface);
+            Text { text: label; }
+        }
+    }
+}
+
+export style SelectedChip for Chip {
+    when selected { tint: Option::Some(theme.colors.accent); }
+}
+```
+
+- 用户 Component 中只有 `@styleable` Input 是 Styleable；Style 绑定其他 Input 是 §59 既有错误；
+- `@selector` 公开的选择器名等于成员名；成员非 `Bool`，或与 U12.1 标准选择器同名但语义不同，是 `E3710`；
+- 内部 `state` 可经 `@selector` 公开为只读选择器，外部仍不能读写该 State。
+
+### U2.4 用户 Component 的失效推导
+
+用户 Component **不声明**失效类别。编译器从 View 对每个 Input 的读取位置推导，并写入 Schema：
+
+| 读取位置                                        | 贡献                                    |
+| ----------------------------------------------- | --------------------------------------- |
+| 标准或原生 Widget 的 Property Binding           | 该 Property 的失效类别                  |
+| 子用户 Component 的 Input                       | 该 Input 的推导结果                     |
+| `if`/`match` 条件、`for` 迭代源、`key` 表达式   | `STRUCTURE`                             |
+| `@selector` 成员被 Style `when` 引用            | `STYLE` 加该 `when` 块内 Property 的类别 |
+| 经 `computed` 间接读取                          | 沿依赖图传递                            |
+
+- 推导是跨 Component 的最小不动点，结果确定；它是 Schema 的信息字段，不属于接口兼容性合同；
+- 源码中不存在 `affects(...)`、手写 Dirty Class 或 `INTERACTION`；
+- `viso schema query` 必须按 Input 输出推导结果，例如 `title: MEASURE|LAYOUT|PAINT|SEMANTICS`。
+
+---
+
+## U3. 布局模型
+
+### U3.1 模型与容器
+
+布局是约束下行、尺寸上行的单次遍历（ADR 0003）：父节点向子节点传递每轴可用上界（可无界），子节点返回 Border Box 尺寸，父节点决定其位置。只有带 `MEASURE`/`LAYOUT` 的脏子树重新布局；滚动、变换与动画不触发布局。所有方向都是逻辑方向：`start`/`end` 为行内方向并随 `env.layout_direction` 翻转，`top`/`bottom` 为块方向。
+
+| Widget     | 语义                                           | 默认 `width` / `height` |
+| ---------- | ---------------------------------------------- | ----------------------- |
+| `Row`      | Flex，主轴为行内方向                           | `fit` / `fit`           |
+| `Column`   | Flex，主轴为块方向                             | `fit` / `fit`           |
+| `Flex`     | 主轴由 `axis` 决定                             | `fit` / `fit`           |
+| `Stack`    | 子节点叠放于同一框内，尺寸取子节点最大值        | `fit` / `fit`           |
+| `Absolute` | 子节点按 Inset 定位，不贡献容器尺寸            | `fill` / `fill`         |
+| `Grid`     | Track 网格（ADR 0009）                         | `fill` / `fill`         |
+| `Scroll`   | 单子节点视口（ADR 0007）                       | `fill` / `fill`         |
+| `Fragment` | 零节点分组：子节点直接拼接进父节点 Slot，不接受 Property，不产生 NodeId | — |
+
+### U3.2 Sizing
+
+```viso
+export enum Sizing { fixed(MixedLength); fill { weight: F32 = 1.0; } fit; min_content; max_content; }
+```
+
+按 U1.3，`width: 100% - 32dp;` 提升为 `Sizing::fixed(...)`。
+
+| 值                | Flex 主轴                              | 交叉轴 / 非 Flex 父节点 |
+| ----------------- | -------------------------------------- | ----------------------- |
+| `fixed(v)`        | 按 §19.4 解析，再按 min/max 截断       | 同左                    |
+| `fill { weight }` | 按 `weight` 比例分配剩余空间           | 占满可用尺寸            |
+| `fit`             | 内容尺寸，受可用尺寸约束               | 同左                    |
+| `min_content`     | 最小内容尺寸（文本：最长不可断片段）   | 同左 **[Runtime 待实现]** |
+| `max_content`     | 不换行时的内容尺寸                     | 同左 **[Runtime 待实现]** |
+
+`fill` 在无界轴（如 Scroll 滚动轴）退化为 `fit` 并报告 `E3105`；`100%` 不等于 `fill`（§19.4）。
+
+### U3.3 公共布局 Property
+
+适用于除 `Fragment` 外的所有布局节点：
+
+| Property        | 类型                  | 默认                 | 失效              | percent_basis                 |
+| --------------- | --------------------- | -------------------- | ----------------- | ----------------------------- |
+| `width`         | `Sizing`              | 见 U3.1 / Widget     | `MEASURE\|LAYOUT` | 父内容盒可用宽度              |
+| `height`        | `Sizing`              | 见 U3.1 / Widget     | `MEASURE\|LAYOUT` | 父内容盒可用高度              |
+| `min_width`     | `MixedLength`         | `0dp`                | `MEASURE\|LAYOUT` | 父内容盒可用宽度              |
+| `max_width`     | `Option<MixedLength>` | `Option::None`       | `MEASURE\|LAYOUT` | 父内容盒可用宽度              |
+| `min_height`    | `MixedLength`         | `0dp`                | `MEASURE\|LAYOUT` | 父内容盒可用高度              |
+| `max_height`    | `Option<MixedLength>` | `Option::None`       | `MEASURE\|LAYOUT` | 父内容盒可用高度              |
+| `padding`       | `EdgeInsets`          | `EdgeInsets::zero()` | `MEASURE\|LAYOUT` | `start`/`end` 父宽，`top`/`bottom` 父高 |
+| `margin`        | `EdgeInsets`          | `EdgeInsets::zero()` | `MEASURE\|LAYOUT` | 同 `padding` **[Runtime 待实现]** |
+| `background`    | `Option<Color>`       | `Option::None`       | `PAINT`           | —                             |
+| `corner_radius` | `MixedLength`         | `0dp`                | `PAINT`           | 自身 Border Box 较短边        |
+| `border`        | `Option<Border>`      | `Option::None`       | `PAINT`           | —                             |
+| `styles`        | `List<StyleRef<T>>`   | `[]`                 | `STYLE`           | —                             |
+
+```viso
+export record EdgeInsets { top: MixedLength = 0dp; end: MixedLength = 0dp; bottom: MixedLength = 0dp; start: MixedLength = 0dp; }
+export record Border { width: Dp = 1dp; color: Color; }
+```
+
+- 构造函数：`EdgeInsets::zero()`、`EdgeInsets::all(v)`、`EdgeInsets::axes(inline: a, block: b)`（`a` 用于 `start`/`end`，`b` 用于 `top`/`bottom`）；
+- 按 U1.3，§19.5 的 `padding: 1em;` 提升为 `EdgeInsets::all(1em)`；
+- `margin` 不折叠；`border` 在 Border Box 内侧描边，不参与布局；
+- `min` 大于 `max` 时以 `min` 为准，Debug Runtime 报告 `E3105`；
+- `start`/`end` 在布局时按 `env.layout_direction` 解析为物理边。
+
+### U3.4 Flex 容器（`Row` / `Column` / `Flex`）
+
+| Property  | 类型          | 默认                     | 失效              | percent_basis      |
+| --------- | ------------- | ------------------------ | ----------------- | ------------------ |
+| `axis`    | `Axis`        | `Axis::row`（仅 `Flex`） | `MEASURE\|LAYOUT` | —                  |
+| `gap`     | `MixedLength` | `0dp`                    | `MEASURE\|LAYOUT` | 自身内容盒主轴尺寸 |
+| `justify` | `Justify`     | `Justify::start`         | `LAYOUT`          | —                  |
+| `align`   | `Align`       | `Align::start`           | `LAYOUT`          | —                  |
+
+- `Axis { row; column; }`；`Justify { start; center; end; }` 为主轴整体分布；`Align { start; center; end; stretch; }` 为交叉轴对齐，`stretch` 只作用于交叉轴 Sizing 为 `fit` 的子节点；
+- `Row` 主轴 `start` 是行内起点，RTL 下首个子节点位于右侧；
+- `justify` 与 `align` 不改变容器自身测量结果，只标记 `LAYOUT`。
+
+### U3.5 Grid
+
+`fr` 不是长度单位（§19），而是 Track 构造器：
+
+```viso
+export enum Track { fixed(MixedLength); fr(F32); auto; minmax(MixedLength, TrackMax); fit_content(MixedLength); }
+
+export enum TrackMax { length(MixedLength); fr(F32); }
+export enum AutoRepeat { fill; fit; }
+
+export record AdaptiveColumns { mode: AutoRepeat = AutoRepeat::fill; min: MixedLength; max: TrackMax = TrackMax::fr(1.0); }
+```
+
+标准函数 `tracks(count: U16, track: Track) -> List<Track>` 对应 CSS `repeat(n, t)`，在编译期或节点创建时展开。
+
+| Property           | 类型                      | 默认                 | 失效              | percent_basis  |
+| ------------------ | ------------------------- | -------------------- | ----------------- | -------------- |
+| `columns`          | `List<Track>`             | `[]`                 | `MEASURE\|LAYOUT` | 自身内容盒宽度 |
+| `rows`             | `List<Track>`             | `[]`                 | `MEASURE\|LAYOUT` | 自身内容盒高度 |
+| `auto_rows`        | `Track`                   | `Track::auto`        | `MEASURE\|LAYOUT` | 自身内容盒高度 |
+| `column_gap`       | `MixedLength`             | `0dp`                | `MEASURE\|LAYOUT` | 自身内容盒宽度 |
+| `row_gap`          | `MixedLength`             | `0dp`                | `MEASURE\|LAYOUT` | 自身内容盒高度 |
+| `align_items`      | `GridAlign`               | `GridAlign::stretch` | `LAYOUT`          | —              |
+| `areas`            | `List<String>`            | `[]`                 | `MEASURE\|LAYOUT` | —              |
+| `adaptive_columns` | `Option<AdaptiveColumns>` | `Option::None`       | `MEASURE\|LAYOUT` | 自身内容盒宽度 |
+
+子节点 Property（父节点提供，U3.8），失效均为 `MEASURE|LAYOUT`：`grid.column: Option<U16> = Option::None`、`grid.row: Option<U16> = Option::None`、`grid.column_span: U16 = 1`、`grid.row_span: U16 = 1`、`grid.area: Option<String> = Option::None`。
+
+- `GridAlign { stretch; start; center; end; }`；
+- 行列号从 0 开始；先放置显式定位的子节点，其余按行优先自动流入空位；隐式行使用 `auto_rows`；
+- `adaptive_columns` 存在时覆盖 `columns`，列数由可用宽度决定（ADR 0009）；
+- `areas` 每个字符串是一行，名字以空白分隔；`grid.area` 引用未知名字或名字构成非矩形区域时，Debug Runtime 报告 `E3105`。
+
+### U3.6 Stack 与 Absolute
+
+**Stack**：
+
+| Property        | 类型                  | 默认                     | 失效              |
+| --------------- | --------------------- | ------------------------ | ----------------- |
+| `content_align` | `Alignment2D`         | `Alignment2D::top_start` | `LAYOUT`          |
+| `stack.align`   | `Option<Alignment2D>` | `Option::None`           | `LAYOUT`          |
+| `stack.layer`   | `I32`                 | `0`                      | `PAINT\|HIT_TEST` |
+
+- `Alignment2D { top_start; top; top_end; start; center; end; bottom_start; bottom; bottom_end; }`；
+- Paint 顺序先按 `stack.layer` 升序、同层按源码顺序（稳定排序）；Hit Test 按 Paint 逆序；
+- `stack.layer` 不改变布局、语义与焦点顺序（二者始终按源码顺序，U7.2），不能用于重排可访问的阅读顺序；
+- **[Runtime 待实现]**。
+
+**Absolute** 子节点 Property：`absolute.top`、`absolute.bottom`、`absolute.start`、`absolute.end`，类型均为 `Option<MixedLength>`、默认 `Option::None`、失效 `LAYOUT`；`percent_basis` 为容器内容盒高度（`top`/`bottom`）或宽度（`start`/`end`）。
+
+- 某轴两端都给出且该轴 Sizing 为 `fit` 时，子节点在该轴上拉伸；两端都未给出时贴 `start`/`top`；
+- 子节点不影响容器尺寸，所以 Inset 变化只标记 `LAYOUT`；频繁移动的元素应该用 `translate`（U4），不要逐帧改 Inset；
+- **[Runtime 待实现]**。
+
+### U3.7 Scroll
+
+- `axis: ScrollAxes = ScrollAxes::vertical`（`vertical; horizontal; both;`），失效 `MEASURE|LAYOUT`；
+- 事件 `scroll_changed(ScrollChanged)`，字段为 `offset: Offset`、`viewport: SizeDp`、`content: SizeDp`；
+- 子节点在滚动轴上的约束无界；滚动偏移变化只标记视口子树 `TRANSFORM|HIT_TEST|PAINT`，不触发布局（ADR 0007）；
+- 滚轮与触控板事件先送往最内层可在该轴滚动的视口，到达边界后沿祖先链传递；
+- 命令式滚动只经 NodeRef（U7.6）。
+
+### U3.8 Property Group 与父节点提供的 Property
+
+多段 Property Path 只在两种情况下合法：
+
+- **Schema 声明的 Property Group**（`semantics.*`、`transition.*`）：每个成员是独立 PropertyId，有自己的类型与失效类别；
+- **父节点提供的 Property**（`grid.*`、`stack.*`、`absolute.*`）：由直接父节点的 Schema 声明、写在子节点 Node Body 中。编译器在同一 View Block 内静态确定父节点类型后检查前缀；父节点不提供该前缀，或父节点无法静态确定（例如子节点经 Slot 转发到未知容器、位于用户 Component 的 Default Slot 中），是 `E3702`；
+- `Fragment`、`if`、`match`、`for` 不形成父节点，其子节点使用外层真实父节点提供的 Property。
+
+---
+
+## U4. 变换、透明度与裁剪
+
+| Property           | 类型          | 默认                  | 失效                         |
+| ------------------ | ------------- | --------------------- | ---------------------------- |
+| `translate`        | `Offset`      | `Offset::zero()`      | `TRANSFORM\|HIT_TEST\|PAINT` |
+| `scale`            | `F32`         | `1.0`                 | `TRANSFORM\|HIT_TEST\|PAINT` |
+| `rotation`         | `Angle`       | `0deg`                | `TRANSFORM\|HIT_TEST\|PAINT` |
+| `transform_origin` | `Alignment2D` | `Alignment2D::center` | `TRANSFORM\|HIT_TEST\|PAINT` |
+| `opacity`          | `F32`         | `1.0`                 | `PAINT`                      |
+| `clip`             | `Bool`        | `false`               | `PAINT\|HIT_TEST`            |
+| `visible`          | `Bool`        | `true`                | `PAINT\|HIT_TEST\|SEMANTICS` |
+
+- `Offset { x: MixedLength = 0dp; y: MixedLength = 0dp; }` 不声明 `percent_basis`，含 Percent 分量是 `E3104`；
+- 变换在布局之后应用，不改变任何节点的布局尺寸与兄弟位置；Hit Test 使用变换后的几何；`translate.x` 是物理方向，不随 RTL 翻转；
+- `opacity` 截断到 `[0, 1]`；`opacity: 0.0` 的节点仍参与 Hit Test 与语义；
+- `visible: false` 保留布局空间，但不绘制、不参与命中测试，并从语义树移除；需要同时移除布局空间时使用 `if`；
+- `clip: true` 按自身 Border Box 与 `corner_radius` 裁剪子节点的绘制与命中测试；滚动视口总是裁剪。
+
+---
+
+## U5. 文本
+
+`Text` 基线（`TextInput` 共享其中的样式条目）：
+
+| Property      | 类型                  | 默认                          | 失效                                | percent_basis             |
+| ------------- | --------------------- | ----------------------------- | ----------------------------------- | ------------------------- |
+| `text`        | `String`              | `""`                          | `MEASURE\|LAYOUT\|PAINT\|SEMANTICS` | —                         |
+| `font_size`   | `MixedLength`         | `1em`（继承）                 | `MEASURE\|LAYOUT\|PAINT`            | 父节点 Resolved Font Size |
+| `font_weight` | `FontWeight`          | `FontWeight::regular`         | `MEASURE\|LAYOUT\|PAINT`            | —                         |
+| `font_family` | `Option<FontFamily>`  | `Option::None`（Theme）       | `MEASURE\|LAYOUT\|PAINT`            | —                         |
+| `line_height` | `Option<MixedLength>` | `Option::None`（字体度量）    | `MEASURE\|LAYOUT\|PAINT`            | 当前 Resolved Font Size   |
+| `color`       | `Color`               | `theme.colors.foreground`     | `PAINT`                             | —                         |
+| `soft_wrap`   | `Bool`                | `false`                       | `MEASURE\|LAYOUT\|PAINT`            | —                         |
+| `max_lines`   | `Option<U32>`         | `Option::None`                | `MEASURE\|LAYOUT\|PAINT` **[Runtime 待实现]** | —               |
+| `overflow`    | `TextOverflow`        | `TextOverflow::clip`          | `LAYOUT\|PAINT` **[Runtime 待实现]** | —                        |
+| `align`       | `TextAlign`           | `TextAlign::start`            | `LAYOUT\|PAINT`                     | —                         |
+| `selectable`  | `Bool`                | `false`                       | `HIT_TEST\|SEMANTICS`               | —                         |
+| `locale`      | `Option<Locale>`      | `Option::None`（`env.locale`）| `MEASURE\|LAYOUT\|PAINT`            | —                         |
+
+- `FontWeight { thin; light; regular; medium; semibold; bold; heavy; }`；`TextOverflow { clip; ellipsis; }`；`TextAlign { start; center; end; }`（`start`/`end` 随段落方向解析，`justify` 推迟）；
+- Schema 默认值列中的 `theme.*` 表示未绑定时读取 Theme Context；
+- **Typography Context**（§19.4）：`Text` 声明 `font_size`，设置时成为子树 Resolved Font Size 的来源；容器不声明 `font_size`，只向下传递；根节点取 `theme.typography.base_size`（默认 `14sp`）；`font_size` 变化按 §19.6 追加标记依赖当前 Resolved Font Size 的后代 Binding；
+- 源文本始终为逻辑顺序；Bidi、断行、字形选择与回退由 Text Runtime 负责，DSL 不得反转字符串或手工插入方向控制符；
+- 仅因宽度变化引起的重排不标记 `SEMANTICS`（ADR 0027）；
+- `overflow: ellipsis` 仅在 `max_lines` 有值或 `soft_wrap: false` 时生效；
+- `text` 在 Schema 中标记为 Localizable（U10.3）。
+- `String` 文本槽（`text`、`label`、`placeholder` 等）只接受 `String`（或 `Option<String>` 槽的 U1.3 提升），不做隐式 `Display` 转换：`text: count;`（`count: I64`）是 `E2103`，并附 Machine-Applicable Fix `format("{}", count)`；对无 `Display` 的类型不给出该 Fix。
+
+---
+
+## U6. 动画与转场
+
+### U6.1 `transition` Property Group
+
+```viso
+export record Transition {
+    duration: Duration = 200ms; delay: Duration = 0ms;
+    easing: Easing = Easing::ease_out; reduced: ReducedMotion = ReducedMotion::instant;
+}
+
+export enum Easing { linear; ease_in; ease_out; ease_in_out; }
+export enum ReducedMotion { instant; keep; }
+```
+
+```viso
+Row {
+    background: if selected { theme.colors.accent } else { theme.colors.surface };
+    translate: Offset { x: 0dp, y: lift };
+    transition.background: Transition { duration: theme.motion.short };
+    transition.translate: Transition { duration: theme.motion.medium, easing: Easing::ease_in_out };
+}
+```
+
+- `transition.p` 作用于同一节点的 Property `p`；`p` 必须在 Schema 中标记为 Animatable，且值类型必须是 `Transition`，否则 `E3703`；
+- 挂载后 `p` 的解析值变化才触发动画；首次挂载与 `if`/`for` 新挂载的节点直接呈现目标值；
+- Model 值立即变化并始终是事实来源，呈现值在 Duration 内插值；进行中再次变化时从当前呈现值重新出发（Retarget）；
+- 变换类 Property 的 Hit Test 使用呈现值；其他 Property 的 Hit Test 与语义使用 Model 值；
+- `transition.*` 自身的变化只影响下一次触发，不标记失效。
+
+### U6.2 可动画 Property 与逐帧失效
+
+| Property                                          | 逐帧失效                     |
+| ------------------------------------------------- | ---------------------------- |
+| `translate`、`scale`、`rotation`                  | `TRANSFORM\|HIT_TEST\|PAINT` |
+| `opacity`、`background`、`color`、`corner_radius` | `PAINT`                      |
+| `width`、`height`（仅 `fixed` 值之间）            | `MEASURE\|LAYOUT`            |
+
+对 `width`/`height` 设置 transition 合法但每帧重新布局；`viso check` 对 `VirtualList` Item Template 中的这类 transition 报告性能提示。其他 Property 不可动画。
+
+### U6.3 `Animation` 句柄
+
+命令式动画经 Named Node 的 NodeRef 发起（U7.6），返回 UI Handle：
+
+```viso
+export enum Animate { translate(Offset); scale(F32); rotation(Angle); opacity(F32); }
+
+// NodeRef<T>：fn animate(self, target: Animate, spec: Transition) -> Animation;
+// Animation：fn cancel(self); fn finish(self); fn is_running(self) -> Bool;
+
+component Shake {
+    state shaking: Option<Animation> = Option::None;
+
+    action shake() {
+        let spec = Transition { duration: 80ms, easing: Easing::ease_in_out };
+        shaking = Option::Some(card.animate(Animate::translate(Offset { x: 8dp, y: 0dp }), spec));
+    }
+
+    view {
+        node card: Column {
+            on animation_end(e) { if e.finished { shaking = Option::None; } }
+        }
+    }
+}
+```
+
+- `animate` 只能在 Action、Event Handler 与 `start` Handler 中调用；基线目标只含变换类与 `opacity`，因此命令式动画永不触发布局；
+- 结束或取消时目标节点收到 `animation_end(AnimationEnd)`，字段为 `target: Animate`、`finished: Bool`（被 `cancel()` 或新动画打断时为 `false`）；
+- 结束后呈现值回到该 Property 当前的 Model 值；需要保持终值时在 `animation_end` 中写入 State，或直接使用 U6.1 Transition；
+- 同一节点同一目标上的新动画取消旧动画；
+- `Animation` 与 `NodeRef` 生命周期相同（§83）：节点 Dispose 或热重载后失效，对失效句柄调用是 No-op，Debug Runtime 报告警告。
+
+### U6.4 Reduced Motion
+
+`env.reduced_motion == true` 时，运行时按 `Transition.reduced` 处理 U6.1 与 U6.3 的动画：`instant` 跳过插值直接呈现终值，仍派发 `finished: true` 的 `animation_end`；`keep` 照常播放，只用于传达信息的必要动画（如进度指示）。作者无需读取 `env.reduced_motion` 来关闭动画，只有在需要改变动画之外的呈现时才读取。
+
+---
+
+## U7. 输入、手势与焦点
+
+### U7.1 标准事件
+
+以下事件对所有布局节点可用。声明 Handler 即在该节点注册对应命中测试或识别器；未声明的节点不参与该类输入。
+
+| Event                                          | Payload          | 默认 Phase | 冒泡     | 来源                                             |
+| ---------------------------------------------- | ---------------- | ---------- | -------- | ------------------------------------------------ |
+| `click`                                        | `ClickEvent`     | Bubble     | 是       | 激活：指针轻点、焦点上 Enter/Space、辅助技术 Click |
+| `tap`                                          | `TapEvent`       | Bubble     | 是       | 手势竞技场 Tap（仅指针）                         |
+| `long_press`                                   | `LongPressEvent` | Bubble     | 是       | 手势竞技场                                       |
+| `drag_start` / `drag_move` / `drag_end`        | `DragEvent`      | Bubble     | 是       | 手势竞技场 Pan                                   |
+| `pointer_down` / `_move` / `_up` / `_cancel`   | `PointerEvent`   | Bubble     | 是       | 原始指针                                         |
+| `hover_enter` / `hover_leave`                  | `HoverEvent`     | Target     | 否       | ADR 0022                                         |
+| `scroll`                                       | `ScrollEvent`    | Bubble     | 按轴传递 | 滚轮与触控板（ADR 0007）                         |
+| `key_down` / `key_up`                          | `KeyEvent`       | Bubble     | 沿焦点链 | 焦点节点                                         |
+| `focus` / `blur`                               | `FocusEvent`     | Target     | 否       | 焦点系统                                         |
+
+Payload 基线字段：
+
+- `PointerEvent`：`position: Point`（节点局部 dp）、`button: PointerButton`（`primary; secondary; middle;`）、`buttons: PointerButtons`、`pointer_kind: PointerKind`（`mouse; touch; pen;`）、`modifiers: Modifiers`（`shift`、`control`、`alt`、`logo: Bool`）；
+- `KeyEvent`：`key: Key`、`repeat: Bool`、`modifiers: Modifiers`；文本输入与 IME 组字不经 `key_down`，由 `TextInput` 内部处理（CLAUDE.md §13）；
+- `DragEvent`：`position: Point`、`delta: Offset`、`total: Offset`。
+
+规则：
+
+- 分派顺序 Capture → Target → Bubble → Default Action（§52），可用 `event.stop_propagation()` 与 `event.prevent_default()` 中断；
+- `tap`、`long_press`、`drag_*` 在手势竞技场竞争，胜者独占该指针序列；`click` 不参与竞争，但同一节点上 `drag` 胜出时不产生 `click`；
+- `hover_*` 不是语义事件：触摸设备上不触发，指针 Capture 期间被抑制；任何功能不得只依赖 hover（U8.2）；
+- Handler 在 Action Transaction 中运行，可以 `start` Task；Task 随节点子树 Dispose 取消（ADR 0032）。
+
+### U7.2 `focusable` 与焦点顺序
+
+| Property    | 类型   | 默认                           | 失效                         |
+| ----------- | ------ | ------------------------------ | ---------------------------- |
+| `focusable` | `Bool` | `false`；标准交互 Widget 为 `true` | `SEMANTICS`              |
+| `autofocus` | `Bool` | `false`                        | —（仅挂载时读取）            |
+| `enabled`   | `Bool` | `true`（交互 Widget）          | `STYLE\|HIT_TEST\|SEMANTICS` |
+
+- 焦点顺序是 Focus Scope 内可聚焦节点的**源码先序顺序**，不随 RTL 翻转，也不受 `stack.layer`、`translate` 影响；
+- 不提供正数 `tab_index`，需要调整顺序时调整源码结构；
+- Tab / Shift+Tab 在当前 Scope 内前后移动；组合 Widget（`Tabs`、`RadioGroup`、`VirtualList`）内部用方向键漫游，对外只占一个 Tab 停靠点；
+- `enabled: false` 的节点不可聚焦、不接收指针与键盘事件，语义上暴露为 disabled，并激活 `disabled` 选择器；
+- 焦点移动时旧节点与新节点都标记 `PAINT|SEMANTICS`（ADR 0030）。
+
+### U7.3 Focus Scope
+
+`FocusScope` 是不参与布局的包装节点，有两个 Property：`trap: Bool = false`（为真时 Tab 在 Scope 内循环，焦点不能移出）与 `restore_focus: Bool = true`（Scope Dispose 后焦点回到进入 Scope 前的节点）。两者只在焦点移动时读取，不标记失效。`Modal`、`Sheet`、`Popup` 内置 `trap: true` 的 Scope。
+
+### U7.4 键盘快捷键
+
+```viso
+KeyShortcut {
+    chord: KeyChord { key: Key::char('s'), primary: true };
+    on triggered { save(); }
+}
+```
+
+- `KeyShortcut` 是零尺寸不可见节点，不参与布局、Paint 与语义；
+- `chord: KeyChord` 必填，字段为 `key: Key` 与 `primary`、`shift`、`alt`、`control: Bool = false`；`primary` 在 macOS 映射为 Command，其他平台映射为 Control；
+- `scope: ShortcutScope = ShortcutScope::parent`：`parent` 表示焦点位于父节点子树内时生效，`window` 表示整个窗口；
+- 冲突时焦点链上最近的快捷键生效；焦点位于 `TextInput` 时，不带修饰键的快捷键不触发；
+- 快捷键导出到语义树，作为宿主节点的 `keyboard_shortcut` 描述。
+
+### U7.5 交互 Widget 基线
+
+以下条目补充 U3–U5 的公共 Property；所有交互 Widget 均有 `enabled`（U7.2）且默认 `focusable: true`。
+
+| Widget       | Property（类型 = 默认；失效）                                                                 | Event                  |
+| ------------ | --------------------------------------------------------------------------------------------- | ---------------------- |
+| `Button`     | `text: String = ""`（Localizable；`MEASURE\|LAYOUT\|PAINT\|SEMANTICS`）                    | `click`                |
+| `Toggle`     | `checked: Bool = false`（two_way；`PAINT\|SEMANTICS`）；`label: String = ""`（Localizable；`MEASURE\|LAYOUT\|PAINT\|SEMANTICS`） | `changed(value: Bool)` |
+| `CheckBox`   | 同 `Toggle`                                                                                   | `changed(value: Bool)` |
+| `Slider`     | `value: F32 = 0.0`（two_way；`PAINT\|SEMANTICS`）；`min: F32 = 0.0`、`max: F32 = 1.0`、`step: Option<F32> = Option::None`（`PAINT\|SEMANTICS`） | `changed(value: F32)` |
+| `TextInput`  | `value: String = ""`（two_way；`MEASURE\|LAYOUT\|PAINT\|SEMANTICS`）；`placeholder: String = ""`（Localizable；同上）；`secure: Bool = false`（同上）；`invalid: Bool = false`（`STYLE\|SEMANTICS`） | `changed(value: String)`、`submitted` |
+| `Tabs`、`RadioGroup` | `selected: U32 = 0`（two_way；`STYLE\|PAINT\|SEMANTICS`）                             | `selected_changed(value: U32)` |
+
+`Toggle` 使用 `checked` 而不是 `on`：`on` 是 View Item 起始位置的 Contextual Keyword，同时 `checked` 与语义状态同名（ADR 0021）。
+
+### U7.6 NodeRef 动作
+
+Named Node `n` 在同一 Component 的 Action 与 Handler 中以 `n: NodeRef<T>` 可见（§49.1）：
+
+| 方法                                            | 适用 `T`      | 效果                                              |
+| ----------------------------------------------- | ------------- | ------------------------------------------------- |
+| `n.focus()` / `n.blur()`                        | 可聚焦节点    | 程序化焦点移动，不激活 `focus_visible`            |
+| `n.scroll_into_view()`                          | 任意          | 最近祖先视口以最小滚动使 `n` 可见                 |
+| `n.scroll_to(offset)` / `n.scroll_by(delta)`    | `Scroll`      | 只标记 `TRANSFORM\|HIT_TEST\|PAINT`               |
+| `n.scroll_to_key(key)` / `n.scroll_to_index(i)` | `VirtualList` | 见 U9.3                                           |
+| `n.animate(target, spec)`                       | 任意          | 见 U6.3                                           |
+
+在 View、Computed 与 `fn` 中调用这些方法是 §83 纯度错误；对已 Dispose 节点调用是 No-op，Debug Runtime 报告警告。
+
+---
+
+## U8. 语义
+
+### U8.1 `semantics` Property Group
+
+所有成员的失效类别均为 `SEMANTICS`：
+
+| Property                  | 类型             | 默认                            |
+| ------------------------- | ---------------- | ------------------------------- |
+| `semantics.role`          | `Role`           | Widget 默认角色                 |
+| `semantics.label`         | `Option<String>` | `Option::None`（由内容推导）    |
+| `semantics.hint`          | `Option<String>` | `Option::None`                  |
+| `semantics.value`         | `Option<String>` | `Option::None`（由 Widget 投影）|
+| `semantics.live`          | `LiveRegion`     | `LiveRegion::off`               |
+| `semantics.hidden`        | `Bool`           | `false`                         |
+| `semantics.heading_level` | `Option<U8>`     | `Option::None`                  |
+
+- `Role { group; button; check_box; slider; radio; label; text_field; tab; tab_list; navigation; dialog; status; region; tree; tree_item; heading; image; list; list_item; }`，其中 `heading`、`image`、`list`、`list_item` 为 **[Runtime 待实现]**；
+- `LiveRegion { off; polite; assertive; }`；
+- 默认角色：`Button` → `button`；`Toggle`、`CheckBox` → `check_box`；`Slider` → `slider`；`TextInput` → `text_field`；`Tabs` → `tab_list`，每页为 `tab`；`RadioGroup` 每项为 `radio`；`Text` → `label`；`Modal`、`Sheet` → `dialog`；`Toast` → `status`（隐含 `polite`）；`NavigationStack` → `navigation`；`VirtualList` → `list`；容器 → `group`。
+
+### U8.2 规则
+
+- **只影响语义**：`semantics.*` 变化只标记 `SEMANTICS`，不得引起布局或 Paint；
+- **状态投影**：`checked`、`value`、`range`、`expanded`、`selected` 由 Widget Property 自动投影（ADR 0021），作者不应在 `semantics.value` 中重复；
+- **交互节点必须可访问**（CLAUDE.md §15）：在非标准交互 Widget 的节点（如 `Row`）或用户 Component 根节点上声明 `click`、`tap`、`long_press`、`drag_*` 或 `key_down` Handler 时，该节点必须：(1) 设置非 `group` 的 `semantics.role`；(2) 有可访问名称（`semantics.label` 或可推导的文本内容）；(3) 有等价键盘路径，即 `focusable: true` 且处理 `click`，只处理 `tap`/`pointer_*` 不算。违反 (1) 或 (2) 是 `E3704`，违反 (3) 是 `E3708`，两者默认为警告，`viso check --a11y strict` 提升为错误；
+- **Live Region**：设置 `semantics.live` 的子树文本变化时由 AccessKit 通告，`polite` 排队、`assertive` 打断；表单错误文本应使用 `polite`；
+- **隐藏**：`semantics.hidden: true` 把子树从语义树移除但保留绘制，用于纯装饰；`visible: false` 同时移除绘制与语义；
+- **辅助技术动作**：Focus、Click、Increment、Decrement 走普通输入路径（ADR 0030），触发同一套 Handler。
+
+---
+
+## U9. 列表：`for` 与 `VirtualList`
+
+### U9.1 语义划分
+
+- 普通 `for x in xs key k { }`（§55）在 Reconcile 时**挂载全部**元素，适合有界小集合；
+- `VirtualList` 只挂载视口内及 Overscan 区域的元素，适合任意长度集合；
+- 两者使用同一 `for` 写法：`VirtualList` 的 Node Body 必须**恰好**含一个 `for` 作为 Item Template，编译器将其降级为虚拟化模板而不是立即挂载；缺少 `key`、出现多个 `for` 或存在其他子节点是 `E3707`。
+
+### U9.2 Schema 基线
+
+| Property                   | 类型           | 默认            | 失效              | percent_basis          |
+| -------------------------- | -------------- | --------------- | ----------------- | ---------------------- |
+| `axis`                     | `Axis`         | `Axis::column`  | `MEASURE\|LAYOUT` | —                      |
+| `estimated_extent`         | `MixedLength`  | `30dp`          | `LAYOUT`          | 不声明（Percent 为 `E3104`） |
+| `overscan`                 | `U32`          | `4`             | `LAYOUT`          | —                      |
+| `width` / `height`         | `Sizing`       | `fill` / `fill` | `MEASURE\|LAYOUT` | 见 U3.3                |
+| `on visible_range_changed` | `VisibleRange` | —               | —                 | —                      |
+
+`VisibleRange` 字段为 `first: U64`、`last: U64`、`count: U64`。
+
+### U9.3 运行时语义（ADR 0008）
+
+- **结构**：Scroll 视口内一张主轴范围固定的画布，行高由 Fenwick 树维护；未测量行使用 `estimated_extent`（可写 `em`，按列表节点的 Resolved Font Size 解析），测量后更新；
+- **身份**：`key` 值经 `StableKey` 映射为 `ItemKey`，作为行身份；重排时存活行保留宿主节点与局部状态并重新锚定；滚动锚点保持在锚定行上，插入与删除不引起视觉跳动；
+- **回收**：离开 Overscan 窗口的行宿主进入回收池按 Template 复用；复用即重新绑定新 Item，标记该行子树 `MEASURE|LAYOUT|PAINT`，**不**标记 `STRUCTURE`；行被回收时其局部 `state` 丢弃、行内 `start` 的 Task 取消，需要跨滚动保留的数据应放在列表外的 Model 中；
+- **滚动**：只标记 `TRANSFORM|HIT_TEST|PAINT`；进入视口的新行按上述规则挂载或复用；
+- **命令式滚动**：`n.scroll_to_key(key)` 与 `n.scroll_to_index(i)` 可滚动到尚未挂载的行；未知 `key` 是 No-op；
+- **语义**：列表 Role 为 `list`，每行为 `list_item`，语义树报告集合总数与行位置。
+
+---
+
+## U10. 国际化与 RTL
+
+### U10.1 逻辑方向与 `env.layout_direction`
+
+§96.2 的 `env` 包含本部分使用的两个字段：`layout_direction: LayoutDirection`（`LayoutDirection { ltr; rtl; }`）与 `locale: Locale`（BCP-47）。读取 `env.layout_direction` 的失效为 `MEASURE|LAYOUT`，读取 `env.locale` 为 `MEASURE|LAYOUT|PAINT|SEMANTICS`。
+
+- 所有 `start`/`end`、`Row` 主轴、Grid 列序与 `absolute.start`/`absolute.end` 都按 `env.layout_direction` 自动解析，作者不需要读取它来翻转布局；它只用于非布局决策；
+- 标准 Widget 的方向性图标（返回、展开箭头等）自动镜像；用户 `Icon`/`Image` 可设 `mirror_in_rtl: Bool = false`（失效 `PAINT`）；
+- 变换（U4）、Canvas 坐标与指针坐标都是物理坐标，不翻转；
+- Adaptive Scope（§96）可以局部覆盖 `layout_direction` 与 `locale`，例如内嵌的外语段落。
+
+### U10.2 Bidi
+
+字符串以逻辑顺序存储与传递。段落基础方向默认由首个强方向字符决定，无强方向字符时回退到 `env.layout_direction`。双向重排、镜像字符与光标移动全部由 Text Runtime 负责。
+
+### U10.3 `tr` 与 Localizable Property
+
+`tr` 是库 API（`viso::i18n`），不是语法：
+
+```viso
+// fn tr(key: MessageKey, args: List<TrArg> = []) -> String;
+// fn tr_arg<T: TrValue>(name: String, value: T) -> TrArg;
+
+Text { text: tr("inbox.unread", [tr_arg("count", unread)]); }
+```
+
+- 字符串字面量在期望 `MessageKey` 处于编译期转换为 `MessageKey` 并与项目消息目录核对；键不存在或参数名/类型与目录不符是 `E3706`；
+- 复数、性别与数字格式由目录的消息格式决定；`tr` 对 `env.locale` 建立响应式依赖；
+- `tr` 可在 View、Computed、Style、Action 中使用；它读取 Context，因此不能在纯 `fn` 中使用。需要在 `fn` 中选择文案时让 `fn` 返回 `MessageKey`，由 View 调用 `tr`（U13.3）；
+- Schema 把用户可见文本 Property 标记为 Localizable：`Text.text`、`Button.text`、`Toggle.label`、`TextInput.placeholder`、`semantics.label`、`semantics.hint` 以及各 Widget 的标题文本；
+- 在 Localizable Property 上用字符串拼接或含字面文字的 `format(...)` 构造文本是 `E3705`（警告），应改用带参数的 `tr`，因为语序因语言而异；只含单个占位符的 `format("{}", n)` 不受限；
+- 纯字面量默认不报错；`viso check --i18n strict` 对 Localizable Property 上的字面量也报告 `E3705`。
+
+---
+
+## U11. 导航
+
+路由是 **Rust 中定义的类型化路由**（CLAUDE.md §32）。DSL 不声明路由表，只使用经 Native Schema 导入的 `Route` Enum 与宿主提供的句柄 `Navigator<R>`：
+
+`Navigator<R>` 的方法：响应式读取 `current() -> R`、`can_pop() -> Bool`；命令 `push(route)`、`replace(route)`、`pop()`、`reset(route)`。
+
+```viso
+import app::routes::Route;
+
+export component Shell {
+    input nav: Navigator<Route>;
+    input has_unsaved_changes: Bool = false;
+
+    view {
+        Column {
+            Button { text: tr("nav.settings"); on click { nav.push(Route::settings); } }
+            RouterView {
+                navigator: nav;
+                height: Sizing::fill {};
+                on back_requested(e) { if has_unsaved_changes { e.prevent_default(); } }
+            }
+        }
+    }
+}
+```
+
+- `push`、`replace`、`pop`、`reset` 只能在 Action 与 Handler 中调用；一个 Transaction 内的多次导航在提交时合并为一次；
+- `current()`、`can_pop()` 可在 View 与 Computed 中读取，产生 `STRUCTURE` 依赖；
+- `RouterView` 是导航出口：按 `navigator.current()` 与 Rust 注册的 Route→Page 映射挂载页面，页面切换是 `STRUCTURE`；页面节点以路由值为 Key，返回栈中已有页面时保留其状态；
+- 系统返回（Android Back、Escape、边缘手势）先派发 `back_requested` 给最内层 `RouterView`，未被 `prevent_default()` 时执行 `pop()`；`can_pop()` 为假时事件交给宿主；
+- 路由参数经 Route Variant 字段传递，URL 与深链接解析在 Rust 中完成；
+- 页面切换后焦点移到新页面首个 `heading`，没有时移到页面根节点；转场动画推迟。
+
+---
+
+## U12. 状态选择器与标准 Theme
+
+### U12.1 标准状态选择器
+
+Widget Schema 从下表中声明它支持的选择器；Style 使用 Widget 不支持的选择器是 §59 既有错误。
+
+| 选择器          | 为真条件                                          |
+| --------------- | ------------------------------------------------- |
+| `hover`         | 指针悬停于节点（ADR 0022；触摸设备恒为假）        |
+| `pressed`       | 主按钮按下、仍在节点内且未被手势竞技场判负        |
+| `focused`       | 节点持有焦点                                      |
+| `focus_visible` | `focused` 且焦点由键盘或辅助技术移入              |
+| `disabled`      | `enabled == false`                                |
+| `checked`       | `Toggle`、`CheckBox`、`Radio` 的选中值            |
+| `selected`      | `Tab`、列表行等的选中态                           |
+| `expanded`      | 可展开 Widget 处于展开态                          |
+| `invalid`       | 输入 Widget 的 `invalid: Bool` 为真               |
+| `dragging`      | 节点是当前拖动手势的胜者                          |
+
+- 选择器变化时源节点标记 `STYLE`，加上所有引用该选择器的 `when` 块中 Property 失效类别的并集（只切换颜色的 hover 是 `STYLE|PAINT`）；
+- 同一 Style 内 `when` 块按源码顺序应用，后者覆盖前者；标准 Style 按"静止 → `hover` → `pressed` → `focus_visible` → `disabled`"书写，得到 `pressed > hover > 静止` 的优先级；
+- 节点显式 Property 优先于所有 Style（§59），因此依赖选择器的外观应写在 Style 中。
+
+### U12.2 标准 Theme Schema
+
+`theme` Context 的类型是 `viso::theme::Theme`；`theme X { ... }` 未给出的字段取 Record 默认值，无默认值字段必须提供。
+
+```viso
+export record Theme {
+    colors: ColorPalette;
+    typography: TypographyScale = TypographyScale {};
+    spacing: SpacingScale = SpacingScale {};
+    radius: RadiusScale = RadiusScale {};
+    elevation: ElevationScale;
+    motion: MotionScale = MotionScale {};
+}
+```
+
+| Record            | 字段（类型 = 默认）                                                                 |
+| ----------------- | ----------------------------------------------------------------------------------- |
+| `ColorPalette`    | 均为 `Color`、无默认：`background` `foreground` `surface` `on_surface` `primary` `on_primary` `primary_hover` `accent` `muted` `outline` `error` `on_error` `focus_ring` `scrim` |
+| `TypographyScale` | `base_size: Sp = 14sp`、`family: FontFamily = FontFamily::system_ui`、`caption_size: Em = 0.85em`、`title_size: Em = 1.25em`、`headline_size: Em = 1.6em` |
+| `SpacingScale`    | 均为 `Dp`：`xsmall = 2dp`、`small = 4dp`、`medium = 8dp`、`large = 16dp`、`xlarge = 24dp` |
+| `RadiusScale`     | 均为 `Dp`：`small = 4dp`、`medium = 8dp`、`large = 12dp`                            |
+| `ElevationScale`  | 均为 `Shadow`、无默认：`low` `medium` `high`；`Shadow { offset_y: Dp; blur: Dp; color: Color; }` |
+| `MotionScale`     | `short: Duration = 100ms`、`medium = 200ms`、`long = 350ms`、`standard: Easing = Easing::ease_out`、`emphasized: Easing = Easing::ease_in_out` |
+
+- `typography.*_size` 是 `Em`，用作 `font_size` 时相对父节点 Resolved Font Size（§19.4）；需要与嵌套深度无关的层级时，写成 `theme.typography.base_size` 的倍数；
+- 读取 `theme.*` 的 Binding 在 Theme 整体替换时按各自 Property 的失效类别失效，替换本身不引入额外 Dirty Class；
+- 应用自定义 Theme 字段通过扩展 Record 提供，扩展方式沿用 §60 的 Theme Base 规则。
+
+---
+
+## U13. 完整示例
+
+以下示例只使用本部分与 §40–§60 定义的构造。
+
+### U13.1 设置页：分组与双向绑定开关
+
+```viso
+import viso::widgets::{Scroll, Column, Row, Text, Toggle, Slider};
+import viso::i18n::tr;
+
+export record AppSettings { notifications: Bool = true; dark_mode: Bool = false; volume: F32 = 0.5; }
+
+export component SettingsSection {
+    input title: String;
+
+    @default
+    slot content: SlotList<Node> = empty;
+
+    view {
+        Column {
+            width: Sizing::fill {};
+            gap: theme.spacing.small;
+            padding: EdgeInsets::axes(inline: theme.spacing.large, block: theme.spacing.medium);
+            Text {
+                text: title;
+                font_size: theme.typography.title_size;
+                font_weight: FontWeight::semibold;
+                semantics.role: Role::heading;
+                semantics.heading_level: 2;
+            }
+            SlotOutlet { slot: content; }
+        }
+    }
+}
+
+export component SettingsPage {
+    state settings: AppSettings = AppSettings {};
+
+    view {
+        Scroll {
+            Column {
+                width: Sizing::fill {};
+                max_width: 640dp;
+                SettingsSection {
+                    title: tr("settings.general");
+                    Toggle { label: tr("settings.notifications"); bind checked <=> settings.notifications; }
+                    Toggle { label: tr("settings.dark_mode"); bind checked <=> settings.dark_mode; }
+                }
+                SettingsSection {
+                    title: tr("settings.sound");
+                    Row {
+                        width: Sizing::fill {};
+                        gap: theme.spacing.medium;
+                        align: Align::center;
+                        Text { text: tr("settings.volume"); }
+                        Slider {
+                            width: Sizing::fill {};
+                            enabled: settings.notifications;
+                            semantics.label: tr("settings.volume");
+                            bind value <=> settings.volume;
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+```
+
+`SettingsSection` 的裸子节点进入其 `@default`。`Toggle.checked` 与 `Slider.value` 在 Schema 中为 `two_way`，配对事件为 `changed`。`settings.notifications` 只经 `Slider.enabled` 影响 `STYLE|HIT_TEST|SEMANTICS`，不引起 `STRUCTURE`。
+
+### U13.2 聊天消息列表：虚拟化、Keyed、自适应
+
+```viso
+import viso::widgets::{VirtualList, Column, Row, Text};
+import viso::i18n::tr;
+
+export record ChatMessage { id: MessageId; author: String; body: String; mine: Bool; }
+
+component MessageBubble {
+    input message: ChatMessage;
+    input compact: Bool = false;
+
+    computed bubble_max: Percent = if compact { 85% } else { 60% };
+
+    view {
+        Row {
+            width: Sizing::fill {};
+            justify: if message.mine { Justify::end } else { Justify::start };
+            padding: EdgeInsets::axes(inline: theme.spacing.medium, block: theme.spacing.xsmall);
+            Column {
+                max_width: bubble_max;
+                padding: 0.6em;
+                corner_radius: theme.radius.large;
+                background: if message.mine { theme.colors.primary } else { theme.colors.surface };
+                if !message.mine {
+                    Text { text: message.author; font_size: theme.typography.caption_size; color: theme.colors.muted; }
+                }
+                Text {
+                    text: message.body;
+                    soft_wrap: true;
+                    selectable: true;
+                    color: if message.mine { theme.colors.on_primary } else { theme.colors.on_surface };
+                }
+            }
+        }
+    }
+}
+
+export component ChatMessageList {
+    input messages: List<ChatMessage>;
+
+    action jump_to(id: MessageId) { list.scroll_to_key(id); }
+
+    view {
+        node list: VirtualList {
+            height: Sizing::fill {};
+            estimated_extent: 3.5em;
+            overscan: 6;
+            semantics.label: tr("chat.messages");
+            for message in messages key message.id {
+                MessageBubble {
+                    message: message;
+                    compact: env.size_class == SizeClass::Compact;
+                }
+            }
+        }
+    }
+}
+```
+
+`for` 位于 `VirtualList` 内，是 Item Template，只挂载可见行与 Overscan 行。`message.id` 是行身份，新消息插入时既有行保留状态与锚点。`bubble_max` 的 Percent 以行内容盒宽度为基准；`env.size_class` 变化只标记 `MEASURE|LAYOUT`。`estimated_extent: 3.5em` 随 `env.text_scale` 与 `theme.typography.base_size` 缩放。
+
+### U13.3 表单：计算校验、禁用提交、错误文本与 Task 提交
+
+```viso
+import viso::widgets::{Column, Text, TextInput, Button, Spinner};
+import viso::i18n::{tr, MessageKey};
+
+export record SignupForm { email: String = ""; password: String = ""; }
+
+@derive(Eq)
+export enum FieldIssue { malformed; too_short; }
+
+@derive(Eq)
+export enum SubmitPhase { idle; submitting; failed(String); done; }
+
+fn check_email(value: String) -> Option<FieldIssue> {
+    if !value.is_empty() && !value.contains("@") { return Option::Some(FieldIssue::malformed); }
+    return Option::None;
+}
+
+fn check_password(value: String) -> Option<FieldIssue> {
+    if !value.is_empty() && value.length() < 8 { return Option::Some(FieldIssue::too_short); }
+    return Option::None;
+}
+
+fn issue_key(issue: FieldIssue) -> MessageKey {
+    return match issue {
+        FieldIssue::malformed => "form.email.malformed",
+        FieldIssue::too_short => "form.password.too_short",
+    };
+}
+
+task create_account(form: SignupForm) -> Result<AccountId, SignupError>
+    requires { network::http } {
+    return await Accounts::create(form);
+}
+
+component FieldError {
+    input issue: Option<FieldIssue>;
+
+    view {
+        match issue {
+            Option::Some(found) => {
+                Text {
+                    text: tr(issue_key(found));
+                    color: theme.colors.error;
+                    semantics.live: LiveRegion::polite;
+                }
+            },
+            Option::None => {},
+        }
+    }
+}
+
+export component SignupPage {
+    event signed_up(id: AccountId);
+
+    state form: SignupForm = SignupForm {};
+    state phase: SubmitPhase = SubmitPhase::idle;
+
+    computed email_issue: Option<FieldIssue> = check_email(form.email);
+    computed password_issue: Option<FieldIssue> = check_password(form.password);
+    computed complete: Bool = !form.email.is_empty() && !form.password.is_empty();
+    computed valid: Bool = complete && email_issue == Option::None && password_issue == Option::None;
+    computed submitting: Bool = phase == SubmitPhase::submitting;
+
+    action submit() {
+        if !valid || submitting { return; }
+        phase = SubmitPhase::submitting;
+
+        start create_account(form) as submit_job {
+            policy = [TaskPolicy::keep_latest];
+            success(id) { phase = SubmitPhase::done; emit signed_up(id); }
+            error(reason) { phase = SubmitPhase::failed(reason.message()); }
+            cancelled { phase = SubmitPhase::idle; }
+        };
+    }
+
+    view {
+        Column {
+            gap: theme.spacing.medium;
+            padding: EdgeInsets::all(theme.spacing.large);
+            node email_field: TextInput {
+                placeholder: tr("form.email");
+                invalid: email_issue != Option::None;
+                enabled: !submitting;
+                autofocus: true;
+                bind value <=> form.email;
+                on submitted { password_field.focus(); }
+            }
+            FieldError { issue: email_issue; }
+            node password_field: TextInput {
+                placeholder: tr("form.password");
+                secure: true;
+                invalid: password_issue != Option::None;
+                enabled: !submitting;
+                bind value <=> form.password;
+                on submitted { submit(); }
+            }
+            FieldError { issue: password_issue; }
+            Button {
+                text: tr("form.create_account");
+                enabled: valid && !submitting;
+                on click { submit(); }
+            }
+            match phase {
+                SubmitPhase::submitting => {
+                    Spinner { semantics.label: tr("form.submitting"); }
+                },
+                SubmitPhase::failed(message) => {
+                    Text {
+                        text: message;
+                        color: theme.colors.error;
+                        semantics.live: LiveRegion::assertive;
+                    }
+                },
+                _ => {},
+            }
+        }
+    }
+}
+```
+
+- 校验状态全部是 `computed`；`valid` 为假或正在提交时 Button `enabled` 为假，从而激活 `disabled` 选择器、在语义上暴露为 disabled 且不可聚焦；
+- `fn` 只返回 `MessageKey`，`tr` 在 View 中调用，切换 Locale 时错误文本随之更新；`FieldError.issue` 被推导为 `STRUCTURE`（U2.4，因为它是 `match` 条件）；
+- `submit` 同步写入 `phase` 后启动 Task 且不等待；三个 Handler 各在新 Transaction 中回写 `phase`；`keep_latest` 保证重复提交只保留最后一次；页面 Dispose 时 Task 取消（ADR 0032）；
+- `password_field.focus()` 是 U7.6 的 NodeRef 动作；
+- 字段错误位于 `polite` Live Region，提交失败文本位于 `assertive` Live Region。
 
 ---
 
@@ -4411,9 +5305,15 @@ Viso DSL 1.0 的语言表达能力足以承载从快速原型到结构化游戏 
 - Shader 和实例化绘制；
 - 热重载；
 - Last-good 运行版本；
-- 可记录、可重放的确定性测试。
+- 可记录、可重放的确定性测试；
+- 编译期检查的 Simulation / Derived / Local 状态分层（§106.4）；
+- 编译器生成的 Snapshot/Restore：回放、回滚、存档、时间回溯调试（§106.7）；
+- 可快照的 Tick 计时器与冷却（§106.6）；
+- 带迁移的持久化状态（§106.8）；
+- Typed 输入映射与手柄/触屏等价检查（§106.3）；
+- 跨平台确定性浮点 Profile（§106.5）。
 
-不同之处是：长期游戏状态放在明确的 `system state` 中，Tick 通过 Trait/Scheduler 调用，而不是依赖某个动态全局对象和长期闭包的隐式捕获。
+不同之处是：长期游戏状态放在明确的 `system state` 中，Tick 通过 Trait/Scheduler 调用，而不是依赖某个动态全局对象和长期闭包的隐式捕获。确定性也不是约定，而是类型检查：Simulation 代码读不到 Presentation 状态、Wall Clock 和未注入的随机源。
 
 ---
 
@@ -4541,6 +5441,17 @@ Quick Game **不得** 通过 UI frame callback、任意 wall clock、全局 muta
 
 当游戏需要独立 Physics/AI/Combat/Audio/Networking 等生命周期时，SHOULD 拆成多个标准 `system ... implements FixedUpdate/FrameUpdate/...`。
 
+### 105.2 Quick Game Kit
+
+`viso::game::kit` 是标准库提供的高层 typed API：地形、基础模型、相机 Rig（第三人称、追随、俯视）、Prefab（角色、载具）、行为（巡逻、追逐、游荡）、粒子与合成音效。它同样只是 Native Schema，不是 Parser 特例。
+
+规则：
+
+- Kit 调用 Lower 为普通 GameWorld 命令（§108），与手写 System 语义一致；
+- 每个 Kit 方法在 Schema 中声明所属层（§106.4）：修改 World 的是 `native action`，粒子、音效、相机抖动和 Debug Draw 是 Presentation Command；
+- 模型、Tag、音效与动作都是 Typed Enum 或 Resource Key，不接受任意字符串；
+- 调用未知方法或 Variant 报 `E2001`，诊断必须在 `related` 与 `fixes`（§138）中给出最近候选：按编辑距离排序，并按 Receiver 类型与期望类型过滤，使 AI 一步修正。
+
 ---
 
 ## 106. 固定步长 Scheduler 语义
@@ -4581,12 +5492,184 @@ render_interpolation_policy
 - 每个 Tick 有 Instruction/Native Call Budget；
 - Tick 超限时采用 Profile 策略，不能无限阻塞 UI Thread。
 
+### 106.1 时钟、暂停与超限
+
+```text
+tick:       U64       单调递增；只有 World Rebuild 和 Restore 会改变它
+fixed_dt:   Duration  Profile 编译期常量，默认 1/60 s
+time_scale: F32       只缩放 Wall Time 到 Tick 累加器的速率，不改变 fixed_dt
+paused:     Bool      暂停时不累加；FrameUpdate 照常运行
+```
+
+`frame.time()` 定义为 `tick × fixed_dt`，不是 Wall Clock，Logic-only Reload 不重置它。
+
+超限策略由 Profile 选择：
+
+```viso
+export enum TickOverrun {
+    DropTime,
+    SlowMotion,
+}
+```
+
+- `DropTime`（默认）：累加器超过 `max_catch_up_steps` 后丢弃剩余时间；
+- `SlowMotion`：保留累加时间，不丢 Tick，游戏整体变慢；
+- 两种策略都计入 `game.overrun_ticks` 与 `game.dropped_time` 计数器；
+- 调试器可 `step(n)` 单步推进 n 个 Tick，单步与正常运行走同一 Scheduler 路径。
+
+### 106.2 输入边沿语义
+
+- 每个 Fixed Tick 看到一份冻结的 `InputSnapshot`；
+- 一个渲染帧可能运行 0 个或多个 Tick。`pressed`/`released` 边沿归属到它发生之后的第一个 Tick，并且只被看到一次：0 个 Tick 的帧不丢边沿，多个 Tick 的帧不重复边沿；
+- `held` 与 Axis 在同一渲染帧的多个 Tick 中取相同值；
+- 同一 Tick 内按下又释放时，`pressed` 与 `released` 都为真；
+- 文本输入、IME 和 UI 焦点中的按键不进入 Game 输入，除非 `GameViewport` 持有输入焦点。
+
+### 106.3 Typed 输入映射
+
+未声明映射时使用 `viso::game` 的默认动作集 `InputAction` / `InputAxis`。游戏用普通 Enum 声明自己的动作，用常量声明映射：
+
+```viso
+import viso::game::{InputMap, Key, KeySet, PadButton, PadStick};
+
+@derive(Eq, Hash, InputAction)
+export enum Act {
+    Jump,
+    Fire,
+}
+
+export const CONTROLS: InputMap<Act> = InputMap::new()
+    .key(Key::Space, Act::Jump)
+    .pad(PadButton::South, Act::Jump)
+    .key(Key::J, Act::Fire)
+    .pad(PadButton::West, Act::Fire)
+    .move_axes(KeySet::wasd(), PadStick::Left);
+```
+
+使用：`frame.input.pressed(Act::Jump)`、`frame.input.move_axes()`；相机相对移动写 `frame.input.move_axes().relative_to(camera_yaw)`。
+
+规则：
+
+- `InputMap` 构造方法都是 `@const`，映射在编译期求值并进入 Schema；
+- 死区与对角线归一化（长度不超过 1）由 `InputMap` 统一处理；
+- 目标平台包含手柄或触屏时，缺少对应路径的动作报 `E9107`（警告）；
+- `InputSnapshot` 只保存动作与轴的值，不保存原始按键，所以 Input Tape 与键位重映射无关。
+
+### 106.4 状态分层
+
+Game Profile 把状态分为三层：
+
+| 层         | 声明                    | 可写入方                                           | 进入 Snapshot    | 联机复制     |
+| ---------- | ----------------------- | -------------------------------------------------- | ---------------- | ------------ |
+| Simulation | System `state`（默认）  | `start`、FixedUpdate、CollisionListener            | 是               | 是           |
+| Derived    | `computed`              | 只读 Simulation 状态，不可写                        | 否，Restore 后重算 | 否，各端重算 |
+| Local      | `@local state`          | FrameUpdate、UI、Presentation                       | 否               | 否           |
+
+Simulation 域是 `start`、FixedUpdate、CollisionListener 以及从它们可达的 `fn`/`action`。编译期规则：
+
+- Simulation 域读写 `@local` 状态，或使用 Presentation 方法的返回值，报 `E9103`；
+- Simulation 域使用非确定性来源报 `E9104`：Wall Clock、`Task`/`await`、未预加载的 Resource 结果、未注入的 Random、未声明有序的 Hash 容器迭代、宿主超越函数（§106.5）、UI State 与 Adaptive Environment；
+- Simulation 状态类型必须实现 `Snapshot`。值类型自动派生；闭包、`Task` 与未声明 Snapshot 的 Handle 不能实现，否则报 `E9105`；
+- Presentation 可以只读 Simulation 状态，读到的是本帧提交的 World Revision。
+
+Simulation 可以触发粒子、音效、相机抖动和 Debug Draw，但只能作为 Presentation Command：
+
+- 命令返回 `()`，不能影响 Simulation；
+- 命令按 `(tick, source_system, sequence)` 标识；回放、回滚重算与 Restore 时，已交付 Tick 的命令不重复交付；
+- Debug Draw 命令在 Release 中被移除。
+
+因此“玩法不依赖本地表现状态”是编译期保证。回放、回滚、存档和热重载都建立在这一分层上。
+
+### 106.5 确定性浮点
+
+`viso.toml` 的 `[game] determinism` 选择：
+
+```text
+same_binary      默认；同一目标、同一二进制可逐 Tick 重放
+cross_platform   所有 Tier-1 目标上 Snapshot Hash 逐字节一致；联机回滚要求此档
+```
+
+`cross_platform` 要求：
+
+- 禁止 FMA 收缩、fast-math、浮点重结合，禁止平台间不一致的 denormal 处理；
+- `sin`/`cos`/`atan2`/`exp`/`log`/`pow` 使用 `viso::math` 的确定性实现，不调用宿主 libm；
+- `sqrt` 与四则运算按 IEEE 754 最近偶数舍入；
+- 归约与迭代顺序固定；并行浮点归约按固定分块顺序合并；
+- Physics 等 Native World 在 Schema 中声明自己满足哪一档，不满足时报 `E9104`。
+
+### 106.6 Tick 计时器与冷却
+
+```viso
+import viso::game::{Cooldown, TickTimer};
+
+export system Gun implements FixedUpdate {
+    state cooldown: Cooldown = Cooldown::new(250ms);
+    state wave: TickTimer = TickTimer::every(10s);
+
+    action fixed_update(frame: FixedFrame) {
+        if frame.input.held(Act::Fire) && cooldown.ready(frame.tick) {
+            cooldown = cooldown.fire(frame.tick);
+        }
+
+        if wave.due(frame.tick) {
+            wave = wave.rearm(frame.tick);
+        }
+    }
+}
+```
+
+- `fixed_dt` 是编译期常量，`Duration` 在编译期换算为整数 Tick（向上取整）；运行时只比较 Tick，不累加浮点时间；
+- Timer 是普通值类型：进入 Snapshot，可回放、可迁移、可在调试器中查看；
+- 不提供注册闭包的 `every`/`after` API；在 Simulation 状态中存闭包报 `E9105`；
+- 只修改 Timer 初始值的 Logic-only Reload 保留当前剩余 Tick（§94.1）。
+
+### 106.7 Snapshot 与 Restore
+
+编译器为每个 Game Session 生成：
+
+```text
+GameSnapshot {
+    build_hash
+    tick
+    rng_state
+    world      // Native World 通过 Schema 声明的 snapshot/restore
+    systems    // 每个 System 的 Simulation State，按 Stable ID 排序
+}
+```
+
+- Snapshot 只包含 Simulation 层；Derived 在 Restore 后重算，Local 保留当前值；
+- 编码使用 Ende 二进制，按 Stable ID 与字段 Schema 版本化，可跨 Logic-only Reload 读取；
+- `restore(snapshot(s))` 后继续运行，与不中断运行逐 Tick 一致；
+- 用途：Input Tape 回放、联机回滚、存档、时间回溯调试、热重载前后对比；
+- Native World 未声明 snapshot 能力时，这些功能在诊断中明确降级，不静默失效。
+
+### 106.8 持久化状态
+
+```viso
+export system Progress implements FixedUpdate {
+    @persist("best_score")
+    state best: I64 = 0;
+
+    action fixed_update(frame: FixedFrame) {}
+}
+```
+
+- `@persist(key)` 的键在 App 内唯一，类型必须实现 `Snapshot`，并需要 `storage.persist` Capability（§95）；违反时报 `E9106`；
+- 在 `start` 之前加载；加载失败时使用 Initializer，并产生诊断事件；
+- 写入在 Tick Boundary 合并，按 Profile 策略节流，并在 App Suspend 时落盘；Tick 内不做同步 IO；
+- 类型变化走 §94.1 迁移规则与 `@migrate`。
+
+### 106.9 渲染插值
+
+- `RenderFrame.alpha: F32` 取值 `[0, 1)`，等于累加器余量除以 `fixed_dt`；
+- World 为每个 Entity 保留上一 Tick 与当前 Tick 的 Transform，Render Extraction 默认按 `alpha` 插值；`teleport` 标记本 Tick 不插值；
+- FrameUpdate 属于 Presentation：只读 Simulation，只写 Local。
+
 ---
 
 ## 107. 完整游戏 System 示例
 
 ```viso
-
 import viso::game::{
     GameWorld,
     EntityId,
@@ -4595,6 +5678,9 @@ import viso::game::{
     CollisionListener,
     CollisionEvent,
     SpawnDesc,
+    InputAxis,
+    InputAction,
+    GameTag,
 };
 
 export system PlayerController implements FixedUpdate + CollisionListener {
@@ -4686,6 +5772,25 @@ then per-system sequence
 
 这些是 Game Profile 语义，不污染通用 UI DSL。
 
+### 108.1 迭代与查询
+
+- `world.query(tag)` 与 `world.entities()` 按 EntityId 分配顺序迭代；
+- 同一 Session 内 EntityId 不复用，槽位复用时 Generation 递增；
+- Tag 是 `@derive(GameTag)` 的用户 Enum 或 Schema Enum，不是字符串；
+- 迭代中的 Remove/Spawn 进入 Command Buffer，迭代结束后提交。
+
+### 108.2 Release 执行形态
+
+- Dev 使用 Bytecode，以支持 Logic-only Reload；
+- Release 可以把 System IR 降低为 Rust，与 App 一起编译。语义以 Bytecode 为准，两者对同一 Input Tape 做差分测试，Snapshot Hash 必须一致；
+- Native Lowering 的性能收益是假设，由 Release Benchmark 证实后才能成为默认。
+
+### 108.3 AudioProcess 实时域
+
+- `AudioProcess` System 在音频线程运行，属于 Presentation 层；
+- 禁止堆分配、`Task`/`await`、锁、Resource 加载、未标 `realtime` 的 Native 调用以及无静态上限的循环，违反时报 `E9108`；
+- 与其他 System 只通过有界无锁队列传递 typed message。
+
 ---
 
 ## 109. HUD 和游戏场景组合
@@ -4726,7 +5831,18 @@ UI Binding 对 Game Observable Handle 的读取必须通过 Schema 标记为 Rea
 
 ## 110. 游戏热重载
 
-Game Profile 支持两层热重载：
+编译器按 Stable ID Diff 选择重载层，并把结果写进 Reload 诊断：
+
+| 改动                                             | 重载层                                                   |
+| ------------------------------------------------ | -------------------------------------------------------- |
+| 只改 Simulation 域的 Action/`fn` 体              | Logic-only                                               |
+| 只改 `@local` 状态、FrameUpdate、HUD             | Presentation-only：Frame Boundary 切换，不触碰 Simulation |
+| Simulation State 类型或 Initializer 变化         | Logic-only + State Migration（§94.1）                    |
+| `start` 或 World 构建变化                        | World Rebuild，按 Stable Entity Key 迁移                 |
+| `InputMap` 常量                                  | Logic-only；已录制的 Tape 不受影响                        |
+| Shader                                           | Shader Reload                                            |
+
+开发者可以强制 World Rebuild。除 World Rebuild 外，`tick`、RNG 状态与 Timer 剩余 Tick 都保留。
 
 ### 110.1 Logic-only Reload
 
@@ -4751,6 +5867,22 @@ Game Profile 支持两层热重载：
 - 失败继续使用当前可用 Pipeline；
 - 错误回传源码位置和 Backend 日志。
 
+### 110.4 回溯重放（Dev）
+
+- Dev Runtime 维护 Snapshot 环形缓冲（默认最近 10 s），并持续记录 Input Tape；
+- Logic-only Reload 后可以选择“从 T−k 重放”：Restore 旧 Snapshot，用新代码重跑记录的输入，再从当前 Tick 继续；
+- 开发者由此直接看到改动对刚才那段玩法的影响，不必手动重现。
+
+### 110.5 游戏测试与 AI 工具合同
+
+命令形状由 `Viso_CLI.md` §22.3 定义：`viso test game`、`viso game record`、`viso game peek`。
+
+- Input Tape 是版本化 Ende 文件，包含 Seed、Build Hash、determinism 档位、`fixed_dt`，以及按 Tick 的 InputSnapshot（动作与轴，不含原始按键）；另有可手写的文本形式，例如 `30: press Jump`、`31..90: axis move = (1, 0)`；
+- `@probe` 状态每个 Tick 输出到 JSON Trace，Scenario 可以对 Probe 断言；
+- 测试输出 Snapshot Hash、最终 Entity Snapshot，以及可选的 Headless 帧截图 Sheet；
+- 同一 Build + Tape 的 Snapshot Hash 在所选 determinism 档位下逐字节一致；
+- `--json` 使用 §138 同一 Diagnostic Schema，AI 可以据此闭环。
+
 ---
 
 ## 111. 游戏能力验收矩阵
@@ -4760,7 +5892,12 @@ Game Profile 支持两层热重载：
 | Quick Game   | `system implements QuickGame` | 同一 Fixed Scheduler | 完整       |
 | 固定 Tick    |     `system + trait + action` |            Scheduler | 完整       |
 | 持久状态     |                `system state` |          State Store | 完整       |
-| 输入         |               Typed Value/API |         Input Mapper | 完整       |
+| 状态分层     |    `@local` + 编译期域检查    |     Scheduler/World | 完整       |
+| Snapshot/回滚 |           编译器生成 Snapshot |    World Snapshot | 需 Runtime |
+| 计时器       |         `Cooldown`/`TickTimer` |          值类型      | 完整       |
+| 存档         |                   `@persist`  |     Storage Service | 完整       |
+| 确定性浮点   |          `cross_platform` 档位 |       `viso::math` | 需 Runtime |
+| 输入         |   Typed Enum + `InputMap` 常量 |         Input Mapper | 完整       |
 | 物理         |             Typed Handle Call |       Physics Engine | 需 Runtime |
 | 碰撞         |            Typed Action/Event |         Event Buffer | 完整       |
 | Entity/ECS   |                Generic/Handle |                  ECS | 需 Runtime |
@@ -4768,6 +5905,8 @@ Game Profile 支持两层热重载：
 | Shader       |                 Shader Domain |          GPU Backend | 完整       |
 | 热重载       |              Symbol/Migration |       Reload Runtime | 完整       |
 | AI 生成      |        EBNF/Schema/Diagnostic |              CLI/LSP | 完整       |
+| 测试/回放    |            `@probe` + Input Tape |      Headless Runner | 完整       |
+| 联机         |          Simulation 层 = 复制集 |  Netcode（P3）      | 需 Runtime |
 | AAA 资产管线 |                        可调用 |           需专门工具 | 非语言本身 |
 
 因此答案不是“DSL 自己就是游戏引擎”，而是“DSL 有足够语义承载游戏 Runtime，并且不需要牺牲类型和工具能力”。
@@ -4823,6 +5962,7 @@ CST 要求：
 - 保留所有 Token、注释和空白；
 - 允许 `ErrorNode` 和 `MissingToken`；
 - Parser 遇到错误后同步到 `;`、`,`、`}` 或声明关键字；
+- 结构性语法错误使用 `E1401`–`E1405`（附录 C），不使用临时前缀码；
 - 一次编辑尽可能报告多个独立错误；
 - Incremental Reparse 只替换受影响 Green Tree；
 - Formatter 基于 CST/AST，不以正则重写源码；
@@ -5085,7 +6225,7 @@ UiNodeTemplate {
             property_id: Button::text
             value_fn: read Computed(label)
             dependencies: [Computed(label)]
-            invalidation: Layout + Paint + Semantics
+            invalidates: MEASURE | LAYOUT | PAINT | SEMANTICS
         }
     ]
 }
@@ -5098,7 +6238,7 @@ UiNodeTemplate {
 ## 122. Property Binding Lowering
 
 ```viso
-width = panel_width;
+width: panel_width;
 ```
 
 Lower 为：
@@ -5115,6 +6255,16 @@ ReactiveBinding {
 ```
 
 首次 Mount 执行 Eval。后续仅在依赖 Revision 变化时执行。新值与已提交值按 Property Schema Equality Policy 比较；相同则不提交 SetProperty。
+
+长度值的 Lowering：
+
+- 纯 `Dp` 常量直接 Lower 为 Layout 的 Fixed 值；
+- 其余长度族值与 `MixedLength` Lower 为定长 `LengthTerms { dp, px, sp, em, pct: F32 }`，常量在编译期折叠，不产生表达式树或堆分配；
+- `LengthTerms` 与其依赖掩码存放在 Binding 侧表，不进入 Layout 热存储；环境分量在依赖变化时预折叠：`fixed = dp + px / scale_factor + text_scale_curve(sp) + em × resolved_font_size`；
+- Layout 热存储只保存 `ResolvedLength { fixed: F32, pct: F32 }`（8 字节），Layout 求解是一次 `fixed + pct × percent_basis`；纯 `Dp` 常量 `pct = 0`，与 Fixed 路径同成本；
+- `font_size` 与 `line_height` 的 Percent 基准是字号，在 Typography 解析时折叠进 `fixed`，Layout 看到的 `pct` 为 `0`；
+- 环境值变化时只重新折叠依赖掩码命中的 Binding（§19.6），不重新求值整棵树；
+- `LengthTerms` 的非零分量掩码在编译期确定，并按 §19.6 写入 Binding 的环境依赖与 `invalidates` 集合（§87）。
 
 ---
 
@@ -5135,7 +6285,7 @@ ModelToView {
 }
 
 ViewToModel {
-    event: value_changed
+    event: changed
     convert: TextConverter::to_model
     write_state: draft
     ignore_origin: binding_id
@@ -5367,6 +6517,9 @@ SystemIr {
     ordering_constraints
     thread_domain
     determinism_class
+    state_tiers        // 每个 State 的 Simulation/Local 层
+    snapshot_layout    // Simulation State 的 Stable ID 与字段 Schema
+    persist_keys
 }
 ```
 
@@ -5501,15 +6654,7 @@ viso snapshot <component> --output=<path>
 viso test game <scenario> --frames=<n> --seed=<seed> --json
 ```
 
-命令退出码：
-
-```text
-0 成功
-1 源码/测试错误
-2 CLI 使用错误
-3 工具链/环境错误
-4 Runtime/Backend 故障
-```
+命令退出码以 `Viso_CLI.md` §7 为准（`0` 成功、`1` diagnostics 失败、`2` CLI 使用错误、`3` 环境/工具链不可用、`4` 构建失败、`5` 运行期/设备失败、`6` 打包失败、`7` 工具服务失败、`130` 用户中断）。
 
 ---
 
@@ -5580,7 +6725,7 @@ viso schema viso::widgets::Button --json
       "type": "String",
       "required": false,
       "default": "",
-      "affects": ["layout", "paint", "semantics"]
+      "invalidates": ["MEASURE", "LAYOUT", "PAINT", "SEMANTICS"]
     }
   ],
   "events": [
@@ -5633,6 +6778,7 @@ AI 应：
 6. 异步工作使用 Task/Resource；
 7. 状态变化依赖自动响应式，不手工全树 Render；
 8. 响应式布局优先使用 `env.size_class` / `env.constraints`，不按设备名称硬编码；
+   长度默认用 `dp`；随文字缩放的尺寸用 `sp`/`em`；相对父级用 `%` 或 `MixedLength`（如 `100% - 16dp`）；`px` 只用于发丝线和像素对齐；
 9. Safe Area、Keyboard、Foldable 使用 typed adaptive environment；
 10. 小型游戏可使用 `QuickGame`，多子系统游戏使用完整 System/Trait；
 11. Shader 使用定宽类型；
@@ -5699,51 +6845,68 @@ AddTraitImpl
 
 ## 151. 实现阶段
 
-### P0：语言核心
+阶段与 §25.1 Surface Tier 对齐：P0、P1 只实现 Core，P2 实现 Standard，P3 实现 Advanced；后一阶段不得成为前一阶段 Vertical Slice 的前置条件。
+
+### P0：Core 语言前端
 
 - Lexer；
 - Lossless CST；
-- Module/Import；
+- Module/Import 与三种源码入口（§22.1）；
 - Record/Enum；
 - Component/Input/State/Computed/Action/View；
-- Node、Property、Block Event；
+- Node、Property、Block Event、`if`/`match`/Keyed `for`；
+- 基础 `fn`、`system` 声明；
 - Expression/Operator/Pattern；
 - Type Inference；
 - Formatter；
 - JSON Diagnostic。
 
-### P1：响应式、自适应和结构 UI
+### P1：Core 运行时、自适应与 System
 
 - Reactive Graph；
 - Transaction；
 - Keyed List；
 - Conditional Preserve；
-- Slot；
 - UI Diff/Patch；
 - Last-good Hot Reload；
 - Typed Adaptive Environment；
 - LocalConstraints / AdaptiveScope / SizeClass；
 - SafeArea / KeyboardInset / DisplayFeature；
-- Adaptive branch dependency tests。
+- Adaptive branch dependency tests；
+- System 与 `FixedUpdate` / `FrameUpdate`；
+- Quick Game Profile；
+- Deterministic InputSnapshot / replay contract；
+- Tick 时钟、超限策略与单步（§106.1）；
+- 输入边沿语义与 `InputMap`（§106.2、§106.3）；
+- 状态分层与 Simulation 域检查（§106.4，`E9103`–`E9105`）；
+- `Cooldown`/`TickTimer`（§106.6）；
+- Snapshot/Restore（§106.7）；
+- 游戏重载层分类（§110）；
+- Typed Native Schema；
+- Shader Profile Entry、Shader IR 和 ABI。
 
-### P2：行为、System 与 Game Core
+### P2：Standard
 
 - Effect；
 - Task；
 - Resource；
-- Trait/Generic；
-- System；
-- Typed Native Schema；
-- Capability；
-- `FixedUpdate` / `FrameUpdate`；
-- Quick Game Profile；
-- Deterministic InputSnapshot / replay contract。
+- Slot；
+- Style/Theme；
+- Hot Reload State Migration；
+- Capability 检查；
+- `@persist`（§106.8）；
+- AudioProcess 实时域检查（§108.3）；
+- 回溯重放与 `@probe`/Input Tape 工具（§110.4、§110.5）。
 
-### P3：高级能力
+### P3：Advanced
 
-- Template/Part/Style/Theme；
-- Shader IR 和 ABI；
+- 用户定义 Trait/Impl、一般泛型、Const Generic、`dyn` Trait；
+- Template/Part；
+- 手写 Native 声明；
 - 多 System Game Profile / physics integration contract；
+- `cross_platform` 确定性浮点（§106.5）；
+- System IR 的 Release Native Lowering（§108.2）；
+- 联机复制与回滚；
 - AI Structured Edit；
 - Cross-backend Validation。
 
@@ -5763,7 +6926,8 @@ AddTraitImpl
 - Control Head 中未加括号 Record Expression 被拒绝；
 - Block Item 起始的 `if`/`match` 与 Tail Expression 分类固定；
 - Closure `||` 与逻辑或区分；
-- Unit `%` 与 Modulo `%` 区分，包括 `50%`、`50%3` 和 `50 % 3`；
+- Unit `%` 与 Modulo `%` 区分，包括 `50%`、`50%3`、`50 % 3` 和 `100%-8dp`；
+- `1em`、`1.5em` 为 Unit Literal，`1e5` 为 Float，`1e2dp` 为 `E1203`；
 - Numeric Separator、Escape、Raw String Hash 数量的边界测试；
 - `=>` 只在 Match；
 - `<=>` 只在 Bind；
@@ -5772,7 +6936,18 @@ AddTraitImpl
 - 深度和 Token 数预算；
 - 未闭合字符串/注释/Block 恢复；
 - Unicode Identifier 和 Confusable；
+- 上下文关键字在 §12.4 位置之外按 identifier 解析，严格关键字在 Label 位置被接受、在 Binding 位置报 `E1301`；
 - Incremental Reparse 等价全量 Parse。
+
+### 152.1 文档示例测试
+
+本文与 `Viso_DSL_Rationale.md` 中的代码块受 CI 检查：
+
+- ` ```viso ` 块必须被以下任一入口完整接受：`CompilationUnit`、`ComponentMember*`、`NodeMember*`、Block Body（`Statement* TailExpression?`）或 `Expression`；第三部分（词法规范）中的块只要求完整 Tokenize；
+- ` ```viso-invalid ` 块必须在上述全部入口下产生至少一个 Parser 诊断；
+- ` ```viso ` 块中注释之外不得出现 `...` 等占位符；
+- 可解析但有类型或语义错误的示例（例如标注 `E2103` 的块）仍使用 ` ```viso `，其诊断由类型验收（§153）覆盖；
+- 非 Viso 语法片段（Trait Bound 片段、IR 转储、Schema 摘要）使用 ` ```text `。
 
 Fuzz：
 
@@ -5802,7 +6977,10 @@ parse(format(parse(valid_x))) AST-equivalent
 - Native Ownership；
 - State 前向引用拒绝；
 - Computed 无环前向依赖接受；
-- Computed Cycle 输出路径。
+- Computed Cycle 输出路径；
+- 长度族跨单位加减得到 `MixedLength`，`MixedLength` 赋给具体单位报 `E2106`，比较/相乘报 `E2107`；
+- 无 `percent_basis` 的 Property 接受 Percent 报 `E3104`；
+- `font_size` 中的 `em`/`%` 以父节点字号为基准，其他 Property 以本节点字号为基准。
 
 ---
 
@@ -5845,6 +7023,14 @@ parse(format(parse(valid_x))) AST-equivalent
 - Entity Key 迁移；
 - Shader Reload 失败保留当前可用 Pipeline；
 - Headless Simulation 可输出 Entity Snapshot；
+- 0 个与多个 Tick 的渲染帧中，每个输入边沿恰好被看到一次；
+- Simulation 域访问 `@local` 或非确定性来源在编译期被拒绝；
+- `restore(snapshot(s))` 后继续运行与不中断运行逐 Tick 一致；
+- 回滚重算不重复交付 Presentation Command；
+- Timer 以整数 Tick 计时，Logic-only Reload 保留剩余 Tick；
+- `@persist` 状态跨进程重启保留，类型变化走迁移；
+- 重载层分类与 §110 表一致；
+- `cross_platform` 档位下同一 Tape 在所有 Tier-1 目标 Snapshot Hash 一致；
 - CPU Reference Shader 与至少一个 GPU Backend Golden Image 在容差内一致。
 
 ---
@@ -5918,7 +7104,7 @@ AI 成功不能只看“能编译”；还需 Snapshot、Event Trace 或 Game Ta
 Viso DSL 1.0 的首个可交付实现必须满足：
 
 - 规范中的核心 EBNF 与 Parser 测试一一对应；
-- 保留字清单由 Lexer 测试锁定；
+- 严格关键字与上下文关键字清单由 Lexer/Parser 测试锁定；
 - 运算符优先级由 Golden AST 锁定；
 - `child`、事件箭头、`Float` 和非规范 Resource 写法均有定向诊断；
 - State 前向引用规则唯一；
@@ -5951,7 +7137,15 @@ CHAR_LITERAL
 COLOR_LITERAL
 UNIT_LITERAL
 DOC_COMMENT
+STRICT_KEYWORD
 END_OF_FILE
+```
+
+`STRICT_KEYWORD` 指 §12.1、§12.2 中任一严格关键字 Token。上下文关键字（§12.3）由 Lexer 产生 `IDENT`；带引号的上下文关键字终结符（如 `"state"`）匹配文本相同的 `IDENT`，识别位置见 §12.4。Binding/声明位置使用 `IDENT`；Label 位置使用：
+
+```ebnf
+Label
+    ::= IDENT | STRICT_KEYWORD
 ```
 
 Trivia 不进入普通 Production，但保留在 Lossless CST。
@@ -5964,8 +7158,14 @@ Trivia 不进入普通 Production，但保留在 Lossless CST。
 CompilationUnit
     ::= ImportDecl* TopLevelDecl* END_OF_FILE
 
+ViewFragment
+    ::= ViewStructureItem* END_OF_FILE
+
+ComponentEntry
+    ::= ImportDecl* Attribute* ( ComponentDecl | ComponentDeclBody ) END_OF_FILE
+
 ModulePath
-    ::= IDENT ( "::" IDENT )*
+    ::= IDENT ( "::" Label )*
 
 ImportDecl
     ::= "import" ModulePath ImportSuffix? ";"
@@ -6006,7 +7206,7 @@ AttributeArgs
 
 AttributeArg
     ::= Expression
-     |  IDENT ":" Expression
+     |  Label ":" Expression
 ```
 
 ---
@@ -6015,13 +7215,10 @@ AttributeArg
 
 ```ebnf
 Path
-    ::= IDENT ( "::" IDENT )*
+    ::= IDENT ( "::" Label )*
 
 TypePath
-    ::= TypePathSegment ( "::" TypePathSegment )*
-
-TypePathSegment
-    ::= IDENT GenericArgs?
+    ::= IDENT GenericArgs? ( "::" Label GenericArgs? )*
 
 GenericArgs
     ::= "<" GenericArg ( "," GenericArg )* ","? ">"
@@ -6110,14 +7307,14 @@ RecordDecl
         "{" RecordField* "}"
 
 RecordField
-    ::= Attribute* IDENT ":" Type ( "=" ConstExpression )? ";"
+    ::= Attribute* Label ":" Type ( "=" ConstExpression )? ";"
 
 EnumDecl
     ::= "enum" IDENT GenericParams? ImplementsClause? WhereClause?
         "{" EnumVariant* "}"
 
 EnumVariant
-    ::= Attribute* IDENT VariantPayload? ";"
+    ::= Attribute* Label VariantPayload? ";"
 
 VariantPayload
     ::= "(" TypeList? ")"
@@ -6230,7 +7427,10 @@ TaskSignature
 
 ```ebnf
 ComponentDecl
-    ::= "component" IDENT GenericParams? ImplementsClause? WhereClause?
+    ::= "component" ComponentDeclBody
+
+ComponentDeclBody
+    ::= IDENT GenericParams? ImplementsClause? WhereClause?
         "{" ComponentMember* "}"
 
 ComponentMember
@@ -6397,7 +7597,7 @@ PropertyBinding
     ::= PropertyPath ":" Expression ";"
 
 PropertyPath
-    ::= IDENT ( "." IDENT )*
+    ::= Label ( "." Label )*
 
 TwoWayBinding
     ::= "bind" PropertyPath "<=>" AssignablePath
@@ -6632,7 +7832,7 @@ AssignablePath
     ::= IDENT AssignableSuffix*
 
 AssignableSuffix
-    ::= "." IDENT | "[" Expression "]"
+    ::= "." Label | "[" Expression "]"
 
 ExpressionStatement
     ::= Expression ";"
@@ -6694,7 +7894,13 @@ LogicalOrExpression
     ::= LogicalAndExpression ( "||" LogicalAndExpression )*
 
 LogicalAndExpression
-    ::= BitOrExpression ( "&&" BitOrExpression )*
+    ::= ComparisonExpression ( "&&" ComparisonExpression )*
+
+ComparisonExpression
+    ::= BitOrExpression ( ComparisonOperator BitOrExpression )?
+
+ComparisonOperator
+    ::= "==" | "!=" | "<" | "<=" | ">" | ">="
 
 BitOrExpression
     ::= BitXorExpression ( "|" BitXorExpression )*
@@ -6703,15 +7909,7 @@ BitXorExpression
     ::= BitAndExpression ( "^" BitAndExpression )*
 
 BitAndExpression
-    ::= EqualityExpression ( "&" EqualityExpression )*
-
-EqualityExpression
-    ::= ComparisonExpression
-        ( ( "==" | "!=" ) ComparisonExpression )?
-
-ComparisonExpression
-    ::= ShiftExpression
-        ( ( "<" | "<=" | ">" | ">=" ) ShiftExpression )?
+    ::= ShiftExpression ( "&" ShiftExpression )*
 
 ShiftExpression
     ::= AdditiveExpression ( ( "<<" | ">>" ) AdditiveExpression )*
@@ -6736,8 +7934,8 @@ PostfixExpression
 PostfixSuffix
     ::= GenericCallArgs? "(" ArgumentList ")"
      |  "[" Expression "]"
-     |  "." IDENT
-     |  "?." IDENT
+     |  "." Label
+     |  "?." Label
      |  "?"
 
 GenericCallArgs
@@ -6782,7 +7980,7 @@ RecordInitializerList
     ::= RecordInitializer ( "," RecordInitializer )* ","?
 
 RecordInitializer
-    ::= IDENT ":" Expression
+    ::= Label ":" Expression
      |  IDENT
      |  ".." Expression
 
@@ -6815,7 +8013,7 @@ ArgumentList
 
 Argument
     ::= Expression
-     |  IDENT ":" Expression
+     |  Label ":" Expression
 ```
 
 Named Argument 的语法歧义由 Parser 在 Call Argument Context 中解决；普通 `Path` 后的 `:` 不构成 Expression。`HeadExpression` 使用与 `Expression` 相同的 Production，但按 §64.2 禁止最外层未加括号的 `RecordExpression`。
@@ -6832,7 +8030,7 @@ OrPattern
     ::= BindingPattern ( "|" BindingPattern )*
 
 BindingPattern
-    ::= IDENT "@" RangePattern
+    ::= "mut"? IDENT "@" RangePattern
      |  RangePattern
 
 RangePattern
@@ -6849,8 +8047,8 @@ PrimaryPattern
      |  "(" Pattern ")"
 
 LiteralPattern
-    ::= INT_LITERAL | CHAR_LITERAL | STRING_LITERAL
-     |  "true" | "false"
+    ::= "-"? INT_LITERAL | CHAR_LITERAL | STRING_LITERAL
+     |  "true" | "false" | "None"
 
 IdentifierPattern
     ::= "mut"? IDENT
@@ -6874,10 +8072,10 @@ ConstructorPatternPayload
               ( "," RecordPatternField )* ","? )? "}"
 
 QualifiedVariantPattern
-    ::= IDENT "::" IDENT ( "::" IDENT )*
+    ::= IDENT "::" Label ( "::" Label )*
 
 RecordPatternField
-    ::= IDENT ":" Pattern | IDENT | ".."
+    ::= Label ":" Pattern | IDENT | ".."
 ```
 
 裸单段 `IDENT` 一律是 Binding Pattern。无 Payload Enum Variant 必须写限定 Path，例如 `State::idle`；带 Payload 的 Constructor 由紧随其后的 `(...)` 或 `{...}` 消除歧义。
@@ -6892,7 +8090,7 @@ RecordPatternField
 |    2 | `on click => ...` 与 Block Handler | Handler 只能写 `on click { ... }` 或 `on click(event) { ... }`        | `E3201`，可包成 Block       |
 |    3 | `Float`、F64、Shader F32           | 删除 `Float`；Host 和 Shader 都使用 F32/F64 明确宽度，Shader 禁止 F64 | `E2101` / `E8102`           |
 |    4 | Resource 子句漂移                  | 只允许 Resource Config Block；Policy 只允许 Typed List                | `E4301` / `E4302`           |
-|    5 | `sp`、`min` 等单位未闭合           | 后缀全集固定为 dp/px/sp/%/ns/us/ms/s/min/deg/rad/turn/hz/khz          | `E1204` 未知单位            |
+|    5 | `sp`、`min` 等单位未闭合           | 后缀全集固定为 dp/px/sp/em/%/ns/us/ms/s/min/deg/rad/turn/hz/khz       | `E1204` 未知单位            |
 |    6 | State 前向引用                     | 一律禁止；Computed 可建立无环前向依赖图                               | `E2104` 指向声明与引用      |
 |    7 | Branch/List 都叫 key               | Branch 使用 `preserve "literal"`；List 使用 `key expression`          | `E3301` / `E3401`           |
 
@@ -6908,7 +8106,7 @@ RecordPatternField
 
 ---
 
-# 附录 C：建议的稳定错误码
+# 附录 C：稳定错误码（Normative）
 
 | 错误码 | 含义                                                    |
 | ------ | ------------------------------------------------------- |
@@ -6921,7 +8119,16 @@ RecordPatternField
 | E1204  | 未知单位后缀                                            |
 | E1205  | 非法字符串/字符 Escape                                  |
 | E1206  | 非法 Numeric Separator 或后缀边界                       |
-| E1301  | 保留字被当普通标识符使用                                |
+| E1207  | 非法颜色字面量                                          |
+| E1208  | 字符字面量必须恰好包含一个字符                          |
+| E1209  | 非法源字符（NUL、孤立 `\r`、无法开始任何 Token 的字符） |
+| E1210  | Raw String 定界 `#` 超过 255 个                         |
+| E1301  | 严格关键字用于 Binding/声明位置（§12.5）                |
+| E1401  | 未闭合定界符 `(` `[` `{`                                |
+| E1402  | 多余的闭合定界符                                        |
+| E1403  | 无法开始任何声明/语句的 Token（已归入 `ErrorNode`）     |
+| E1404  | 缺少文法要求的 Token（以 `MissingToken` 占位）          |
+| E1405  | 此处需要 Expression                                     |
 | E2001  | 未解析符号                                              |
 | E2002  | Import 歧义                                             |
 | E2003  | 值初始化循环                                            |
@@ -6931,6 +8138,10 @@ RecordPatternField
 | E2103  | 类型不匹配                                              |
 | E2104  | State Initializer 前向引用                              |
 | E2105  | Computed 循环依赖                                       |
+| E2106  | MixedLength 不能在布局前定型为具体单位                  |
+| E2107  | 非法量纲运算（MixedLength 比较/乘除、Percent 加标量等） |
+| E2108  | `format` 模板与实参不匹配（§17）                        |
+| E2109  | 长度族值常量除以 0（§19.8）                             |
 | E2201  | Trait Bound 未满足                                      |
 | E2202  | Trait Impl 重叠或歧义                                   |
 | E2301  | 非穷尽 Match                                            |
@@ -6942,12 +8153,17 @@ RecordPatternField
 | E2701  | 类型不能实现 StableKey                                  |
 | E2702  | 重复 Runtime Key                                        |
 | E2801  | Control Head 中的 Record Expression 必须加括号          |
+| E2802  | 非结合操作符链式使用（§63.1）                           |
 | E3001  | 已删除的 `child` 关键字                                 |
 | E3002  | View Cardinality 不满足                                 |
 | E3003  | Component 没有 Default Slot                             |
+| E3004  | 多个 Slot 标记 `@default`（§45.1）                      |
 | E3101  | 未知 Property                                           |
 | E3102  | Property 重复绑定                                       |
 | E3103  | Property 不支持双向绑定                                 |
+| E3104  | Property 未声明 Percent Basis，不接受 Percent           |
+| E3105  | Percent Basis 不确定（Debug Runtime 警告）              |
+| E3106  | 长度解析为非有限值（Debug Runtime 警告，§19.8）         |
 | E3201  | 已删除的事件箭头语法                                    |
 | E3202  | 未知 Event 或错误 Payload                               |
 | E3301  | Conditional Preserve 必须是静态字符串                   |
@@ -6956,11 +8172,22 @@ RecordPatternField
 | E3501  | 未知 Slot/Part                                          |
 | E3502  | Slot Cardinality 冲突                                   |
 | E3601  | Template 无限递归                                       |
+| E3701  | `@bindable` 配对错误（§U2.2）                           |
+| E3702  | 父节点提供的 Property 用于错误或无法静态确定的父节点（§U3.8） |
+| E3703  | `transition` 用于不可动画 Property 或类型不符（§U6.1）  |
+| E3704  | 交互节点缺少 Role 或可访问名称（警告，§U8.2）           |
+| E3705  | Localizable Property 上的文本拼接/字面格式化（警告，§U10.3） |
+| E3706  | `tr` 键或参数与消息目录不符（§U10.3）                   |
+| E3707  | `VirtualList` Item Template 误用（§U9.1）               |
+| E3708  | 交互节点缺少等价键盘路径（警告，§U8.2）                 |
+| E3709  | 标注 [Runtime 待实现] 的 Property 使用了非默认值（§U1.1） |
+| E3710  | `@selector` 误用（§U2.3）                               |
 | E4101  | Action 中使用 Await                                     |
 | E4102  | Task 跨挂起访问可变 State                               |
 | E4201  | Effect 读取未声明依赖                                   |
 | E4202  | Reactive Cycle                                          |
 | E4203  | Effect Run Policy 与依赖列表不兼容                      |
+| E4204  | Adaptive Cycle（§96.5）                                 |
 | E4301  | Resource 缺少或重复 Load/Key                            |
 | E4302  | Resource Policy 冲突                                    |
 | E4401  | Start 目标不是 Task                                     |
@@ -6978,165 +8205,20 @@ RecordPatternField
 | E8104  | Shader ABI 不匹配                                       |
 | E9101  | Game System Order 循环                                  |
 | E9102  | Fixed Tick 预算超限                                     |
+| E9103  | Simulation 域访问 Local 状态或 Presentation 返回值（§106.4） |
+| E9104  | Simulation 域使用非确定性来源（§106.4、§106.5）          |
+| E9105  | Simulation 状态类型未实现 Snapshot（§106.4）             |
+| E9106  | `@persist` 键重复、类型不可持久化或缺少 Capability（§106.8） |
+| E9107  | 输入动作缺少目标平台的手柄/触屏路径（警告，§106.3）      |
+| E9108  | AudioProcess 实时域违规（§108.3）                        |
 
 错误码文案可以改进，但错误码语义不得在同一 Major 版本中复用。
 
 ---
 
-# 附录 D：可直接交给实现 AI 的主提示词
+# 附录 D–F（已移出）
 
-```text
-你正在实现 Viso DSL 1.0。唯一语言规范是
-`docs/language/viso-dsl-1.0.md`，其中附录 A 的 EBNF 是权威 Parser 合同。
-
-必须遵循：
-
-1. 不得发明规范外语法、关键字、单位或隐式类型转换。
-2. 不得加入 `child`、事件箭头、`Float`、`:=`、`+:` 等已删除语法。
-3. Lexer 必须保留 Trivia 和完整 Source Range。
-4. Parser 必须建立 Lossless CST，并对不完整源码产生 ErrorNode/MissingToken，禁止 panic。
-5. AST 必须分别保留 ViewFor、BehaviorFor、PropertyBinding、Assignment、EventHandler、MatchArm、Resource、Shader 等节点，不得过早揉成通用 Map/Call。
-6. Name Resolution、Type Check、Effect Check、Capability Check 必须在 HIR 完成。
-7. 每实现一个 EBNF Production，都同时添加：
-   - 至少一个合法测试；
-   - 至少两个非法/恢复测试；
-   - Formatter round-trip 测试；
-   - 必要的 JSON Diagnostic Golden Test。
-8. 每个功能 PR 要小且可回滚，不得一次全库重写。
-9. 修改语法前先更新规范、Parser Golden、Formatter、Schema Golden 和测试；未经批准不得偏离规范。
-10. UI 状态更新必须通过 Transaction 和 Reactive Graph，不得要求用户手工 render 全树。
-11. 动态 View List 强制 Stable Key；Branch Cache 使用 Preserve Literal，二者不得共用实现入口。
-12. Native 调用必须通过 Typed Schema、Capability、Ownership 和 Thread Domain 检查。
-13. Shader 必须使用安全 Descriptor ABI，禁止从 Rust 结构某字段向后读取任意内存。
-14. 游戏 Tick 通过 System Trait/Scheduler 实现；Parser 不得硬编码 `game` 对象或具体引擎 API。
-15. 任何失败的 Hot Reload 都必须保留 Last-good Code/UI/World。
-
-每轮工作流程：
-
-A. 阅读规范对应章节和 EBNF Production。
-B. 检查现有 AST/HIR/Runtime 边界。
-C. 写失败测试。
-D. 实现最小功能。
-E. 运行 fmt、parser tests、type tests、runtime tests。
-F. 输出 JSON Diagnostic 样例和 IR Dump。
-G. 更新 `docs/language/STATUS.md`，记录：已完成、未完成、偏差、风险、下一 PR。
-
-不得通过以下方式“解决”错误：
-
-- 把类型改成 String/Dynamic；
-- 忽略未知 Property/Event；
-- 在 View 中执行副作用；
-- 用数组索引作为通用 Key；
-- Catch Native Panic 后静默继续；
-- Hot Reload 失败后清空 UI；
-- 删除测试或降低断言；
-- 通过正则修改 Parser 语义。
-
-开始前先输出本次计划、涉及 Production、预期 AST/HIR、测试矩阵和回滚点；然后直接实施，不要要求用户再次确认已经明确的设计。
-```
-
----
-
-# 附录 E：设计质量复评
-
-以下为架构判断，不是性能 Benchmark：
-
-| 维度           |   评估 | 成立条件                                    | 主要剩余风险                             |
-| -------------- | -----: | ------------------------------------------- | ---------------------------------------- |
-| 人类清晰度     | 8.8/10 | 文档、Formatter、Schema 同步                | 关键字数量较多，高级区分需教学           |
-| 易上手性       | 8.4/10 | Quick Start 只展示 Level 1                  | 一开始展示 Effect/Task/Shader 会造成负担 |
-| 可扩展性       | 9.2/10 | 扩展 Schema/Trait/Profile，不扩标点         | Plugin Schema 版本管理复杂               |
-| 灵活度         | 9.0/10 | 保留 Native/System/Shader Escape Hatch      | 严格类型会比动态脚本多写一些声明         |
-| AI 生成友好    | 9.4/10 | EBNF + Schema + JSON Diagnostic 真正实现    | 只写文档而不做工具时评分会大幅下降       |
-| 表达能力       | 9.1/10 | 标准库和 Runtime API 完整                   | DSL 不应承担所有底层算法                 |
-| 游戏能力       | 9.0/10 | 有 Game Profile、ECS/物理/输入/音频 Runtime | 大型游戏资产与编辑器仍是独立工程         |
-| 编译器可落地性 | 9.0/10 | 按阶段实现，不一次性全做                    | 类型、响应式和热重载组合工程量很大       |
-
-### E.1 人类清晰度的关键判断
-
-新版不是“语法越少越好”，而是“同一概念只有一种写法”：
-
-```text
-匿名孩子       Type {}
-具名孩子       node name: Type {}
-属性           name = expression;
-双向绑定       bind name <=> state;
-事件           on click { ... }
-动态列表       for ... key ... {}
-分支缓存       if ... preserve "..." {}
-同步修改       action
-异步工作       task/resource
-帧循环         system implements Trait
-```
-
-这组规则可以形成稳定心智模型。
-
-### E.2 可扩展性的关键判断
-
-Viso 的灵活性来自：
-
-```text
-类型系统
-+ Trait
-+ Component Schema
-+ Native Handle
-+ System Scheduler
-+ Shader Domain
-+ Profile
-```
-
-而不是来自不断增加 `@#$:+` 组合。这样新增游戏、音频、图表、地图、编辑器或数据库领域时无需修改核心 Parser。
-
-### E.3 AI 友好的关键判断
-
-仅有 EBNF 仍不够。AI 友好度取决于：
-
-```text
-语法唯一性
-+ 可查询 Schema
-+ 机器可读诊断
-+ 自动 Fix
-+ AST/HIR Dump
-+ Snapshot/Test Harness
-```
-
-本文把这些定义为语言交付的一部分，而不是后续可有可无的附属工具。
-
-### E.4 游戏能力的关键判断
-
-Viso 可以同时承载快速游戏原型与结构化 System 游戏逻辑的关键原因是：
-
-- Behavior Language 有控制流、Pattern、Closure 和 Typed Call；
-- System 有长期 State；
-- Trait 把 Tick/Collision 等 Hook 标准化；
-- Native Handle 注入 ECS/物理/输入/音频；
-- Shader 域负责 GPU 代码；
-- Hot Reload 在 Tick/Frame Boundary 原子切换；
-- Game Profile 定义确定性和预算。
-
-因此类型更严格并没有削弱游戏能力，反而让 AI 生成的游戏逻辑更容易检查、回放和迁移。
-
----
-
-# 附录 F：资料与证据说明
-
-## F.1 Makepad 外部参考依据
-
-本文把 Makepad 当前公开源码中可观察到的 Script、实时编辑、游戏 authoring、Shader/Widget 与工具链经验作为外部参考。
-
-主要源码入口：
-
-- <https://github.com/visoui/makepad/blob/dev/platform/script/src/tokenizer.rs>
-- <https://github.com/visoui/makepad/blob/dev/platform/script/src/parser.rs>
-- <https://github.com/visoui/makepad/blob/dev/splashgame.md>
-
-## F.2 证据边界
-
-- 本文没有声称 Makepad 官方发布过一份当前 Script 的完整 EBNF；
-- Makepad Script 的文法/语义描述仅用于外部实现经验参考；
-- Viso EBNF 是 Viso DSL 1.0 Draft 的 Parser 合同；
-- Game Profile 示例证明的是语言承载能力，不代表物理、ECS、音频和资产系统已经自动实现；
-- 性能结论必须由 Viso 实现后的 Benchmark 验证。
+附录 D（实现 AI 主提示词）、附录 E（设计质量复评）与附录 F（资料与证据说明）是说明性内容，已移至 `Viso_DSL_Rationale.md`，编号不变。
 
 ---
 

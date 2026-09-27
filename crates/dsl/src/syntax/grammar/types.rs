@@ -138,39 +138,67 @@ fn type_path_as_bound(p: &mut Parser) {
 }
 
 /// A `Segment ("::" Segment)*` type path; each segment is a name plus an
-/// optional generic-argument list.
-fn type_path(p: &mut Parser) {
-    type_path_segment(p);
+/// optional generic-argument list. Segments after the first are labels.
+pub(super) fn type_path(p: &mut Parser) {
+    type_path_segment(p, true);
     while p.at(SyntaxKind::ColonColon) {
         p.bump_any(); // `::`
-        type_path_segment(p);
+        type_path_segment(p, false);
     }
 }
 
-/// One `IDENT GenericArgs?` type-path segment.
-fn type_path_segment(p: &mut Parser) {
+/// One `IDENT GenericArgs?` type-path segment (`Label GenericArgs?` after `::`).
+fn type_path_segment(p: &mut Parser, first: bool) {
     let m = p.start();
     if p.at(SyntaxKind::Ident) || p.at(SyntaxKind::RawIdent) || p.at(SyntaxKind::SelfTypeKw) {
         p.bump_any();
+    } else if !first {
+        super::label(p);
     } else {
         p.error(ParseErrorKind::MissingToken);
     }
     if p.at(SyntaxKind::Lt) {
-        generic_args(p);
+        generic_args(p, SyntaxKind::GenericArgs);
     }
     m.complete(p, SyntaxKind::TypePathSegment);
 }
 
-/// A `< Type, ... >` generic-argument list on a type-path segment.
-fn generic_args(p: &mut Parser) {
+/// A `::`? `< GenericArg, ... >` list completed as `kind` — `GenericArgs` on a
+/// type segment, `GenericCallArgs` for an expression turbofish. A closing `>`
+/// may be the first half of a `>>`/`>=`/`>>=` token.
+pub(super) fn generic_args(p: &mut Parser, kind: SyntaxKind) {
     let m = p.start();
-    p.bump_any(); // `<`
-    while !p.at(SyntaxKind::Gt) && !p.at_end() {
-        type_(p);
+    p.eat(SyntaxKind::ColonColon);
+    p.expect(SyntaxKind::Lt);
+    while !p.at_gt() && !p.at_end() {
+        generic_arg(p);
         if !p.eat(SyntaxKind::Comma) {
             break;
         }
     }
-    p.expect(SyntaxKind::Gt);
-    m.complete(p, SyntaxKind::GenericArgs);
+    p.expect_gt();
+    m.complete(p, kind);
+}
+
+/// One `Type | "const" ConstExpression` generic argument. A value written
+/// without `const` (`Matrix<F32, 4>`) is E2004 and still parsed as the const
+/// argument it was meant to be.
+fn generic_arg(p: &mut Parser) {
+    use SyntaxKind::*;
+    match p.current() {
+        ConstKw => {
+            let m = p.start();
+            p.bump_any(); // `const`
+            super::expr::const_arg_expr(p);
+            m.complete(p, ConstGenericArg);
+        }
+        IntLiteral | FloatLiteral | UnitLiteral | StringLiteral | RawStringLiteral
+        | CharLiteral | TrueKw | FalseKw | Minus | LBrace => {
+            let m = p.start();
+            p.error(ParseErrorKind::ConstArgWithoutConst);
+            super::expr::const_arg_expr(p);
+            m.complete(p, ConstGenericArg);
+        }
+        _ => type_(p),
+    }
 }

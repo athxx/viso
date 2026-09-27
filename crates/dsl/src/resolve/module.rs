@@ -27,6 +27,7 @@ use crate::syntax::grammar::Parse;
 use crate::syntax::span::TextRange;
 
 use super::name::{NameId, NameInterner};
+use super::suggest;
 
 /// A `::`-separated module path, interned segment by segment.
 ///
@@ -111,6 +112,9 @@ pub enum ResolveErrorKind {
     DuplicateName,
     /// The import graph contains a cycle.
     CyclicImport,
+    /// A declaration's name is NFC-equal to, but spelled differently from, a name
+    /// already declared in the same namespace.
+    NormalizationConflict,
 }
 
 impl ResolveErrorKind {
@@ -120,6 +124,7 @@ impl ResolveErrorKind {
             ResolveErrorKind::UnresolvedModule | ResolveErrorKind::UnresolvedType => "E2001",
             ResolveErrorKind::AmbiguousModule | ResolveErrorKind::DuplicateName => "E2002",
             ResolveErrorKind::CyclicImport => "E2003",
+            ResolveErrorKind::NormalizationConflict => "E1101",
         }
     }
 
@@ -131,6 +136,9 @@ impl ResolveErrorKind {
             ResolveErrorKind::AmbiguousModule => "two source units declare the same module",
             ResolveErrorKind::DuplicateName => "name is already declared in this scope",
             ResolveErrorKind::CyclicImport => "modules form an import cycle",
+            ResolveErrorKind::NormalizationConflict => {
+                "name normalizes (NFC) to one already declared with a different spelling"
+            }
         }
     }
 
@@ -176,6 +184,9 @@ pub struct ModuleGraph {
     modules: Vec<GraphModule>,
     /// Diagnostics gathered during the build, in a deterministic order.
     errors: Vec<Diagnostic>,
+    /// The module whose source each entry of `errors` points into, index for index;
+    /// `None` for a whole-graph fact (a duplicate module path, a cycle member).
+    owners: Vec<Option<ModuleIndex>>,
 }
 
 impl ModuleGraph {
@@ -188,6 +199,7 @@ impl ModuleGraph {
     /// the resulting edge set reported as [`ResolveErrorKind::CyclicImport`].
     pub fn build(units: &[SourceUnit], interner: &NameInterner) -> Self {
         let mut errors = Vec::new();
+        let mut owners = Vec::new();
 
         // Deterministic order: sort units by module-path text (borrowing, so the
         // caller keeps the units). Ties (duplicate module paths) are ambiguities,
@@ -202,6 +214,7 @@ impl ModuleGraph {
             let key = unit.path.display(interner);
             if index_of.contains_key(&key) {
                 errors.push(ResolveErrorKind::AmbiguousModule.to_diagnostic(None, &key));
+                owners.push(None);
                 continue;
             }
             index_of.insert(key, ModuleIndex(kept.len() as u32));
@@ -210,7 +223,7 @@ impl ModuleGraph {
 
         // Resolve each unit's import declarations to edges.
         let mut modules: Vec<GraphModule> = Vec::with_capacity(kept.len());
-        for unit in &kept {
+        for (index, unit) in kept.iter().enumerate() {
             let mut imports = Vec::new();
             if let Some(cu) = unit.compilation_unit() {
                 for import in cu.imports() {
@@ -220,10 +233,21 @@ impl ModuleGraph {
                     let target = module_path_text(&path_node);
                     match index_of.get(&target) {
                         Some(&idx) => imports.push(idx),
-                        None => errors.push(
-                            ResolveErrorKind::UnresolvedModule
-                                .to_diagnostic(Some(path_node.syntax().text_range()), &target),
-                        ),
+                        None => {
+                            let at = path_node.syntax().text_range();
+                            let mut diagnostic =
+                                ResolveErrorKind::UnresolvedModule.to_diagnostic(Some(at), &target);
+                            let suggestions = suggest::nearest(
+                                &target,
+                                index_of.keys().map(|path| suggest::Candidate {
+                                    name: path,
+                                    declared_at: None,
+                                }),
+                            );
+                            suggest::attach(&mut diagnostic, at, &suggestions);
+                            errors.push(diagnostic);
+                            owners.push(Some(ModuleIndex(index as u32)));
+                        }
                     }
                 }
             }
@@ -236,7 +260,11 @@ impl ModuleGraph {
             });
         }
 
-        let graph = Self { modules, errors };
+        let graph = Self {
+            modules,
+            errors,
+            owners,
+        };
         graph.detect_cycles(interner)
     }
 
@@ -293,6 +321,7 @@ impl ModuleGraph {
                     ResolveErrorKind::CyclicImport
                         .to_diagnostic(None, &self.modules[i].path.display(interner)),
                 );
+                self.owners.push(None);
             }
         }
         self
@@ -306,6 +335,25 @@ impl ModuleGraph {
     /// The build diagnostics, in deterministic order.
     pub fn errors(&self) -> &[Diagnostic] {
         &self.errors
+    }
+
+    /// The build diagnostics whose spans point into `module`'s source.
+    pub fn module_errors(&self, module: ModuleIndex) -> impl Iterator<Item = &Diagnostic> {
+        self.owned_by(Some(module))
+    }
+
+    /// The build diagnostics that are facts about the whole graph (a duplicate module
+    /// path, a cycle member) rather than about one source.
+    pub fn graph_errors(&self) -> impl Iterator<Item = &Diagnostic> {
+        self.owned_by(None)
+    }
+
+    fn owned_by(&self, owner: Option<ModuleIndex>) -> impl Iterator<Item = &Diagnostic> {
+        self.errors
+            .iter()
+            .zip(&self.owners)
+            .filter(move |(_, o)| **o == owner)
+            .map(|(d, _)| d)
     }
 
     /// The index of a module by its `::`-joined path text, if present.
@@ -389,6 +437,23 @@ mod tests {
                 .any(|d| d.code == "E2001" && d.message.contains("`a`")),
             "importing an absent module is E2001"
         );
+    }
+
+    #[test]
+    fn a_missing_import_target_suggests_the_nearest_module_path() {
+        let mut interner = NameInterner::new();
+        let src = "import widget::badge; component B { }";
+        let units = vec![
+            unit(&mut interner, &["widgets", "badge"], "record Badge { }"),
+            unit(&mut interner, &["b"], src),
+        ];
+        let graph = ModuleGraph::build(&units, &interner);
+        let error = &graph.errors()[0];
+        assert_eq!(error.fixes.len(), 1);
+        let edit = &error.fixes[0].edits[0];
+        assert_eq!(edit.replacement, "widgets::badge");
+        let at = edit.range.start().to_u32() as usize..edit.range.end().to_u32() as usize;
+        assert_eq!(&src[at], "widget::badge");
     }
 
     #[test]

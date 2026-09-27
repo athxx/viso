@@ -14,16 +14,23 @@
 //! nor gate the slice. Their resolution lands when their consumer does.
 
 use super::super::kind::SyntaxKind;
-use super::{ParseErrorKind, Parser};
+use super::{ParseErrorKind, Parser, attributes, label, name};
 
 /// `ImportDecl* TopLevelDecl* EOF` — the body of a `.vs` file / `view!` entry.
 pub(super) fn compilation_unit(p: &mut Parser) {
     while !p.at_end() {
-        if p.at(SyntaxKind::ImportKw) {
-            import_decl(p);
-        } else {
-            top_level_decl(p);
-        }
+        let before = p.cursor();
+        compilation_unit_item(p);
+        p.ensure_progress(before);
+    }
+}
+
+/// One item of a compilation unit: an import or a top-level declaration.
+pub(super) fn compilation_unit_item(p: &mut Parser) {
+    if p.at(SyntaxKind::ImportKw) {
+        import_decl(p);
+    } else {
+        top_level_decl(p);
     }
 }
 
@@ -44,7 +51,9 @@ pub(super) fn component_entry(p: &mut Parser) {
     if !p.at_end() {
         p.error(ParseErrorKind::UnexpectedTokens);
         while !p.at_end() {
+            let before = p.cursor();
             top_level_decl(p);
+            p.ensure_progress(before);
         }
     }
 }
@@ -79,13 +88,13 @@ fn import_decl(p: &mut Parser) {
     m.complete(p, SyntaxKind::ImportDecl);
 }
 
-/// `IDENT ("::" IDENT)*` — a module path.
+/// `IDENT ("::" Label)*` — a module path.
 fn module_path(p: &mut Parser) {
     let m = p.start();
     name(p);
     while p.at(SyntaxKind::ColonColon) && p.nth(1) != SyntaxKind::LBrace {
         p.bump_any(); // `::`
-        name(p);
+        label(p);
     }
     m.complete(p, SyntaxKind::ModulePath);
 }
@@ -106,7 +115,7 @@ fn import_item(p: &mut Parser) {
 /// `Attribute* "export"? DeclCore` — one top-level declaration. Leading attributes
 /// and an `export` prefix are consumed into the declaration's own node so a later
 /// pass reads them from one place.
-fn top_level_decl(p: &mut Parser) {
+pub(super) fn top_level_decl(p: &mut Parser) {
     attributes(p);
     let exported = p.at(SyntaxKind::ExportKw);
     if exported {
@@ -134,15 +143,15 @@ fn decl_core(p: &mut Parser) {
         SyntaxKind::ActionKw => fn_like_decl(p, SyntaxKind::ActionDecl),
         SyntaxKind::TaskKw => fn_like_decl(p, SyntaxKind::TaskDecl),
         // Standard/Advanced declarations parsed but not resolved this slice.
-        SyntaxKind::TraitKw
-        | SyntaxKind::ImplKw
-        | SyntaxKind::TemplateKw
-        | SyntaxKind::StyleKw
-        | SyntaxKind::ThemeKw
-        | SyntaxKind::ShaderKw
-        | SyntaxKind::NativeKw
-        | SyntaxKind::EffectKw
-        | SyntaxKind::ResourceKw => advanced_decl(p),
+        SyntaxKind::TraitKw | SyntaxKind::ImplKw | SyntaxKind::ShaderKw | SyntaxKind::NativeKw => {
+            advanced_decl(p, None)
+        }
+        SyntaxKind::Ident if p.nth_is_ident(1) => match p.nth_contextual(0) {
+            Some(kw @ (SyntaxKind::TemplateKw | SyntaxKind::StyleKw | SyntaxKind::ThemeKw)) => {
+                advanced_decl(p, Some(kw))
+            }
+            _ => p.err_and_bump(ParseErrorKind::UnexpectedTokens),
+        },
         _ => p.err_and_bump(ParseErrorKind::UnexpectedTokens),
     }
 }
@@ -190,26 +199,45 @@ fn system_decl(p: &mut Parser) {
 fn member_block(p: &mut Parser, f: fn(&mut Parser)) {
     p.expect(SyntaxKind::LBrace);
     while !p.at(SyntaxKind::RBrace) && !p.at_end() {
+        let before = p.cursor();
         f(p);
+        p.ensure_progress(before);
     }
     p.expect(SyntaxKind::RBrace);
 }
 
 /// One component/system member: dispatched on its leading keyword.
-fn member(p: &mut Parser) {
+pub(super) fn member(p: &mut Parser) {
     attributes(p);
+    // A member keyword is recognized before a name; a strict keyword there is
+    // still that member (its name then reports E1301).
+    let contextual = if p.nth_is_ident(1) || p.nth(1).is_keyword() {
+        p.nth_contextual(0)
+    } else {
+        None
+    };
+    match contextual {
+        Some(SyntaxKind::InputKw) => return input_decl(p),
+        Some(SyntaxKind::StateKw) => return state_decl(p),
+        Some(SyntaxKind::ComputedKw) => return computed_decl(p),
+        Some(SyntaxKind::EventKw) => return event_decl(p),
+        Some(SyntaxKind::SlotKw) => return slot_decl(p),
+        Some(kw @ (SyntaxKind::EffectKw | SyntaxKind::ResourceKw)) => {
+            return advanced_decl(p, Some(kw));
+        }
+        _ => {}
+    }
     match p.current() {
-        SyntaxKind::InputKw => input_decl(p),
-        SyntaxKind::StateKw => state_decl(p),
-        SyntaxKind::ComputedKw => computed_decl(p),
-        SyntaxKind::EventKw => event_decl(p),
-        SyntaxKind::SlotKw => slot_decl(p),
+        SyntaxKind::Ident
+            if p.at_contextual(SyntaxKind::ViewKw) && p.nth(1) == SyntaxKind::LBrace =>
+        {
+            super::view::view_decl(p)
+        }
         SyntaxKind::ConstKw => const_decl(p),
         SyntaxKind::FnKw => fn_like_decl(p, SyntaxKind::FnDecl),
         SyntaxKind::ActionKw => fn_like_decl(p, SyntaxKind::ActionDecl),
         SyntaxKind::TaskKw => fn_like_decl(p, SyntaxKind::TaskDecl),
-        SyntaxKind::ViewKw => super::view::view_decl(p),
-        SyntaxKind::EffectKw | SyntaxKind::ResourceKw | SyntaxKind::NativeKw => advanced_decl(p),
+        SyntaxKind::NativeKw => advanced_decl(p, None),
         _ => p.err_and_bump(ParseErrorKind::UnexpectedTokens),
     }
 }
@@ -217,7 +245,7 @@ fn member(p: &mut Parser) {
 /// `"input" IDENT ":" Type ("=" DefaultExpression)? ";"`.
 fn input_decl(p: &mut Parser) {
     let m = p.start();
-    p.bump_any(); // `input`
+    p.bump_as(SyntaxKind::InputKw);
     name(p);
     p.expect(SyntaxKind::Colon);
     super::types::type_(p);
@@ -232,15 +260,18 @@ fn input_decl(p: &mut Parser) {
 /// from the initializer, so only the `=` initializer is required.
 fn state_decl(p: &mut Parser) {
     let m = p.start();
-    p.bump_any(); // `state`
+    p.bump_as(SyntaxKind::StateKw);
     name(p);
     if p.eat(SyntaxKind::Colon) {
         super::types::type_(p);
     }
-    if p.eat(SyntaxKind::Eq) {
-        super::expr::expr(p);
-    } else {
+    // A missing `=` still parses the value that follows, so recovery reports
+    // only the absent token.
+    if !p.eat(SyntaxKind::Eq) {
         p.error(ParseErrorKind::MissingToken);
+    }
+    if !p.at(SyntaxKind::Semi) {
+        super::expr::expr(p);
     }
     p.expect(SyntaxKind::Semi);
     m.complete(p, SyntaxKind::StateDecl);
@@ -249,15 +280,18 @@ fn state_decl(p: &mut Parser) {
 /// `"computed" IDENT (":" Type)? "=" Expression ";"`.
 fn computed_decl(p: &mut Parser) {
     let m = p.start();
-    p.bump_any(); // `computed`
+    p.bump_as(SyntaxKind::ComputedKw);
     name(p);
     if p.eat(SyntaxKind::Colon) {
         super::types::type_(p);
     }
-    if p.eat(SyntaxKind::Eq) {
-        super::expr::expr(p);
-    } else {
+    // A missing `=` still parses the value that follows, so recovery reports
+    // only the absent token.
+    if !p.eat(SyntaxKind::Eq) {
         p.error(ParseErrorKind::MissingToken);
+    }
+    if !p.at(SyntaxKind::Semi) {
+        super::expr::expr(p);
     }
     p.expect(SyntaxKind::Semi);
     m.complete(p, SyntaxKind::ComputedDecl);
@@ -266,7 +300,7 @@ fn computed_decl(p: &mut Parser) {
 /// `"event" IDENT "(" EventParameterList ")" ";"`.
 fn event_decl(p: &mut Parser) {
     let m = p.start();
-    p.bump_any(); // `event`
+    p.bump_as(SyntaxKind::EventKw);
     name(p);
     p.expect(SyntaxKind::LParen);
     while !p.at(SyntaxKind::RParen) && !p.at_end() {
@@ -293,13 +327,13 @@ fn event_param(p: &mut Parser) {
 /// the context word `empty`.
 fn slot_decl(p: &mut Parser) {
     let m = p.start();
-    p.bump_any(); // `slot`
+    p.bump_as(SyntaxKind::SlotKw);
     name(p);
     p.expect(SyntaxKind::Colon);
     super::types::type_(p);
     if p.eat(SyntaxKind::Eq) {
         // The default is `None` or the `empty` context word; consume either.
-        if p.at(SyntaxKind::NoneKw) || p.at(SyntaxKind::Ident) {
+        if p.at(SyntaxKind::NoneKw) || (p.at(SyntaxKind::Ident) && p.token_text(0) == "empty") {
             p.bump_any();
         } else {
             p.error(ParseErrorKind::MissingToken);
@@ -320,17 +354,19 @@ fn record_decl(p: &mut Parser) {
     where_clause(p);
     p.expect(SyntaxKind::LBrace);
     while !p.at(SyntaxKind::RBrace) && !p.at_end() {
+        let before = p.cursor();
         record_field(p);
+        p.ensure_progress(before);
     }
     p.expect(SyntaxKind::RBrace);
     m.complete(p, SyntaxKind::RecordDecl);
 }
 
-/// `Attribute* IDENT ":" Type ("=" ConstExpression)? ";"` — one record field.
+/// `Attribute* Label ":" Type ("=" ConstExpression)? ";"` — one record field.
 fn record_field(p: &mut Parser) {
     let m = p.start();
     attributes(p);
-    name(p);
+    label(p);
     p.expect(SyntaxKind::Colon);
     super::types::type_(p);
     if p.eat(SyntaxKind::Eq) {
@@ -351,18 +387,20 @@ fn enum_decl(p: &mut Parser) {
     where_clause(p);
     p.expect(SyntaxKind::LBrace);
     while !p.at(SyntaxKind::RBrace) && !p.at_end() {
+        let before = p.cursor();
         enum_variant(p);
+        p.ensure_progress(before);
     }
     p.expect(SyntaxKind::RBrace);
     m.complete(p, SyntaxKind::EnumDecl);
 }
 
-/// `Attribute* IDENT VariantPayload? ";"` where a payload is a tuple `"(" TypeList
+/// `Attribute* Label VariantPayload? ";"` where a payload is a tuple `"(" TypeList
 /// ")"` or a record `"{" RecordField* "}"`.
 fn enum_variant(p: &mut Parser) {
     let m = p.start();
     attributes(p);
-    name(p);
+    label(p);
     match p.current() {
         SyntaxKind::LParen => {
             let pay = p.start();
@@ -380,7 +418,9 @@ fn enum_variant(p: &mut Parser) {
             let pay = p.start();
             p.bump_any(); // `{`
             while !p.at(SyntaxKind::RBrace) && !p.at_end() {
+                let before = p.cursor();
                 record_field(p);
+                p.ensure_progress(before);
             }
             p.expect(SyntaxKind::RBrace);
             pay.complete(p, SyntaxKind::VariantPayload);
@@ -397,10 +437,13 @@ fn type_alias_decl(p: &mut Parser) {
     p.bump_any(); // `type`
     name(p);
     generic_params(p);
-    if p.eat(SyntaxKind::Eq) {
-        super::types::type_(p);
-    } else {
+    // A missing `=` still parses the value that follows, so recovery reports
+    // only the absent token.
+    if !p.eat(SyntaxKind::Eq) {
         p.error(ParseErrorKind::MissingToken);
+    }
+    if !p.at(SyntaxKind::Semi) {
+        super::types::type_(p);
     }
     p.expect(SyntaxKind::Semi);
     m.complete(p, SyntaxKind::TypeAliasDecl);
@@ -413,10 +456,13 @@ fn const_decl(p: &mut Parser) {
     name(p);
     p.expect(SyntaxKind::Colon);
     super::types::type_(p);
-    if p.eat(SyntaxKind::Eq) {
-        super::expr::expr(p);
-    } else {
+    // A missing `=` still parses the value that follows, so recovery reports
+    // only the absent token.
+    if !p.eat(SyntaxKind::Eq) {
         p.error(ParseErrorKind::MissingToken);
+    }
+    if !p.at(SyntaxKind::Semi) {
+        super::expr::expr(p);
     }
     p.expect(SyntaxKind::Semi);
     m.complete(p, SyntaxKind::ConstDecl);
@@ -479,9 +525,9 @@ fn return_type(p: &mut Parser) {
 /// `("requires" "{" CapabilityPath ("," CapabilityPath)* ","? "}")?` — an optional
 /// capability clause. Each capability path is a plain type path.
 fn capability_clause(p: &mut Parser) {
-    if p.at(SyntaxKind::RequiresKw) {
+    if p.at_contextual(SyntaxKind::RequiresKw) && p.nth(1) == SyntaxKind::LBrace {
         let m = p.start();
-        p.bump_any(); // `requires`
+        p.bump_as(SyntaxKind::RequiresKw);
         p.expect(SyntaxKind::LBrace);
         while !p.at(SyntaxKind::RBrace) && !p.at_end() {
             super::types::type_(p);
@@ -495,23 +541,36 @@ fn capability_clause(p: &mut Parser) {
 }
 
 /// `("<" GenericParam ("," GenericParam)* ","? ">")?` — an optional generic
-/// parameter list. Each parameter is a name with optional `: TraitBounds`.
+/// parameter list. A parameter is `IDENT (":" TraitBounds)? ("=" Type)?` or
+/// `"const" IDENT ":" Type ("=" ConstExpression)?`.
 fn generic_params(p: &mut Parser) {
     if p.at(SyntaxKind::Lt) {
         let m = p.start();
         p.bump_any(); // `<`
-        while !p.at(SyntaxKind::Gt) && !p.at_end() {
+        while !p.at_gt() && !p.at_end() {
             let g = p.start();
-            name(p);
-            if p.eat(SyntaxKind::Colon) {
-                super::types::trait_bounds(p);
+            if p.eat(SyntaxKind::ConstKw) {
+                name(p);
+                p.expect(SyntaxKind::Colon);
+                super::types::type_(p);
+                if p.eat(SyntaxKind::Eq) {
+                    super::expr::const_arg_expr(p);
+                }
+            } else {
+                name(p);
+                if p.eat(SyntaxKind::Colon) {
+                    super::types::trait_bounds(p);
+                }
+                if p.eat(SyntaxKind::Eq) {
+                    super::types::type_(p);
+                }
             }
             g.complete(p, SyntaxKind::GenericParam);
             if !p.eat(SyntaxKind::Comma) {
                 break;
             }
         }
-        p.expect(SyntaxKind::Gt);
+        p.expect_gt();
         m.complete(p, SyntaxKind::GenericParams);
     }
 }
@@ -548,9 +607,12 @@ fn where_clause(p: &mut Parser) {
 /// this slice. It is consumed up to and including its brace group (or terminating
 /// `;`) as a balanced run and wrapped in an [`SyntaxKind::AdvancedItem`], so it
 /// parses losslessly without contributing to resolution.
-fn advanced_decl(p: &mut Parser) {
+fn advanced_decl(p: &mut Parser, contextual: Option<SyntaxKind>) {
     let m = p.start();
-    p.bump_any(); // the leading keyword
+    match contextual {
+        Some(kw) => p.bump_as(kw),
+        None => p.bump_any(), // the leading strict keyword
+    }
     loop {
         match p.current() {
             SyntaxKind::LBrace => {
@@ -588,28 +650,5 @@ fn skip_braced_group(p: &mut Parser) {
             _ if p.at_end() => break,
             _ => p.bump_any(),
         }
-    }
-}
-
-/// Consumes any run of `@attr(...)` attributes preceding a declaration.
-fn attributes(p: &mut Parser) {
-    while p.at(SyntaxKind::At) {
-        let m = p.start();
-        p.bump_any(); // `@`
-        super::expr::path_only(p);
-        if p.at(SyntaxKind::LParen) {
-            super::expr::arg_list(p);
-        }
-        m.complete(p, SyntaxKind::Attribute);
-    }
-}
-
-/// Consumes an identifier name (plain or raw), recording a diagnostic if the
-/// current token is not name-like.
-fn name(p: &mut Parser) {
-    if p.at(SyntaxKind::Ident) || p.at(SyntaxKind::RawIdent) {
-        p.bump_any();
-    } else {
-        p.error(ParseErrorKind::MissingToken);
     }
 }

@@ -19,12 +19,12 @@
 //! its `Type { ... }` directly, and a named one as `node name: Type { ... }`.
 
 use super::super::kind::SyntaxKind;
-use super::{ParseErrorKind, Parser};
+use super::{ParseErrorKind, Parser, attributes, label, name};
 
 /// `"view" ViewBlock` — the `view { ... }` member of a component.
 pub(super) fn view_decl(p: &mut Parser) {
     let m = p.start();
-    p.bump_any(); // `view`
+    p.bump_as(SyntaxKind::ViewKw);
     view_block(p);
     m.complete(p, SyntaxKind::ViewDecl);
 }
@@ -33,7 +33,9 @@ pub(super) fn view_decl(p: &mut Parser) {
 /// surrounding braces a `view` declaration would add.
 pub(super) fn view_fragment_items(p: &mut Parser) {
     while !p.at_end() {
+        let before = p.cursor();
         view_structure_item(p);
+        p.ensure_progress(before);
     }
 }
 
@@ -42,7 +44,9 @@ fn view_block(p: &mut Parser) {
     let m = p.start();
     p.expect(SyntaxKind::LBrace);
     while !p.at(SyntaxKind::RBrace) && !p.at_end() {
+        let before = p.cursor();
         view_structure_item(p);
+        p.ensure_progress(before);
     }
     p.expect(SyntaxKind::RBrace);
     m.complete(p, SyntaxKind::ViewBlock);
@@ -53,18 +57,20 @@ fn view_block(p: &mut Parser) {
 /// into the item they decorate.
 fn view_structure_item(p: &mut Parser) {
     attributes(p);
+    match view_keyword(p) {
+        Some(SyntaxKind::NodeKw) => return named_node(p),
+        Some(SyntaxKind::PartKw) => return part_node(p),
+        Some(SyntaxKind::UseKw) => return template_use(p),
+        _ => {}
+    }
     match p.current() {
-        SyntaxKind::NodeKw => named_node(p),
-        SyntaxKind::PartKw => part_node(p),
         SyntaxKind::IfKw => view_if(p),
         SyntaxKind::ForKw => view_for(p),
         SyntaxKind::MatchKw => view_match(p),
-        SyntaxKind::UseKw => template_use(p),
         SyntaxKind::ChildKw => {
-            // `child` was Makepad's implicit slot; it is reserved and no longer a
-            // node. Flag it, then still consume a node body so recovery continues.
-            p.error(ParseErrorKind::ChildReserved);
-            anonymous_node(p);
+            // `child` is reserved and no longer a node: flag it and drop just the
+            // word, so the node that follows parses as an ordinary anonymous node.
+            p.err_and_bump(ParseErrorKind::ChildReserved);
         }
         _ if super::types::at_type_start(p) => anonymous_node(p),
         _ => p.err_and_bump(ParseErrorKind::UnexpectedTokens),
@@ -74,7 +80,7 @@ fn view_structure_item(p: &mut Parser) {
 /// `"node" IDENT ":" ComponentType NodeBody`.
 fn named_node(p: &mut Parser) {
     let m = p.start();
-    p.bump_any(); // `node`
+    p.bump_as(SyntaxKind::NodeKw);
     name(p);
     p.expect(SyntaxKind::Colon);
     component_type(p);
@@ -85,7 +91,7 @@ fn named_node(p: &mut Parser) {
 /// `"part" IDENT ":" ComponentType NodeBody`.
 fn part_node(p: &mut Parser) {
     let m = p.start();
-    p.bump_any(); // `part`
+    p.bump_as(SyntaxKind::PartKw);
     name(p);
     p.expect(SyntaxKind::Colon);
     component_type(p);
@@ -111,7 +117,9 @@ fn node_body(p: &mut Parser) {
     let m = p.start();
     p.expect(SyntaxKind::LBrace);
     while !p.at(SyntaxKind::RBrace) && !p.at_end() {
+        let before = p.cursor();
         node_member(p);
+        p.ensure_progress(before);
     }
     p.expect(SyntaxKind::RBrace);
     m.complete(p, SyntaxKind::NodeBody);
@@ -123,20 +131,22 @@ fn node_body(p: &mut Parser) {
 /// tried as a property binding (`PropertyPath : Expr ;`).
 fn node_member(p: &mut Parser) {
     attributes(p);
+    match view_keyword(p) {
+        Some(SyntaxKind::OnKw) => return event_handler(p),
+        Some(SyntaxKind::BindKw) => return two_way_binding(p),
+        Some(SyntaxKind::FillKw) => return fill_clause(p),
+        Some(SyntaxKind::NodeKw) => return named_node(p),
+        Some(SyntaxKind::PartKw) => return part_node(p),
+        Some(SyntaxKind::UseKw) => return template_use(p),
+        Some(SyntaxKind::OverrideKw) => return part_override(p),
+        Some(SyntaxKind::ReplaceKw) => return part_replace(p),
+        _ => {}
+    }
     match p.current() {
-        SyntaxKind::OnKw => event_handler(p),
-        SyntaxKind::BindKw => two_way_binding(p),
-        SyntaxKind::FillKw => fill_clause(p),
-        SyntaxKind::NodeKw => named_node(p),
-        SyntaxKind::PartKw => part_node(p),
         SyntaxKind::IfKw => view_if(p),
         SyntaxKind::ForKw => view_for(p),
         SyntaxKind::MatchKw => view_match(p),
-        SyntaxKind::UseKw => template_use(p),
-        SyntaxKind::OverrideKw => part_override(p),
-        SyntaxKind::ReplaceKw => part_replace(p),
         SyntaxKind::ChildKw => {
-            p.error(ParseErrorKind::ChildReserved);
             p.err_and_bump(ParseErrorKind::ChildReserved);
         }
         // A leading name is either a nested anonymous node (`Type { ... }`) or a
@@ -149,8 +159,33 @@ fn node_member(p: &mut Parser) {
                 property_binding(p);
             }
         }
+        // A property path is a label, so `type: x;` binds a property named `type`.
+        k if k.is_keyword() && matches!(p.nth(1), SyntaxKind::Colon | SyntaxKind::Dot) => {
+            property_binding(p)
+        }
         _ => p.err_and_bump(ParseErrorKind::UnexpectedTokens),
     }
+}
+
+/// The contextual keyword the cursor acts as at a node-body / view-block item
+/// start (§12.4): `node IDENT :`, `part IDENT :`, `on IDENT`, `bind IDENT`,
+/// `fill IDENT`, `use IDENT`, `override part`, `replace part`. Otherwise the
+/// word is an ordinary identifier (`on: x;` binds a property named `on`).
+fn view_keyword(p: &Parser) -> Option<SyntaxKind> {
+    let kw = p.nth_contextual(0)?;
+    let ok = match kw {
+        SyntaxKind::NodeKw | SyntaxKind::PartKw => {
+            p.nth_is_ident(1) && p.nth(2) == SyntaxKind::Colon
+        }
+        SyntaxKind::OnKw | SyntaxKind::BindKw | SyntaxKind::FillKw | SyntaxKind::UseKw => {
+            p.nth_is_ident(1)
+        }
+        SyntaxKind::OverrideKw | SyntaxKind::ReplaceKw => {
+            p.nth_at_contextual(1, SyntaxKind::PartKw)
+        }
+        _ => false,
+    };
+    ok.then_some(kw)
 }
 
 /// Whether the upcoming tokens are an anonymous node rather than a property
@@ -188,13 +223,13 @@ fn property_binding(p: &mut Parser) {
     m.complete(p, SyntaxKind::PropertyBinding);
 }
 
-/// `IDENT ("." IDENT)*` — a dotted property path.
+/// `Label ("." Label)*` — a dotted property path.
 fn property_path(p: &mut Parser) {
     let m = p.start();
-    name(p);
+    label(p);
     while p.at(SyntaxKind::Dot) {
         p.bump_any(); // `.`
-        name(p);
+        label(p);
     }
     m.complete(p, SyntaxKind::PropertyPath);
 }
@@ -202,11 +237,11 @@ fn property_path(p: &mut Parser) {
 /// `"bind" PropertyPath "<=>" AssignablePath ("using" TypePath)? ";"`.
 fn two_way_binding(p: &mut Parser) {
     let m = p.start();
-    p.bump_any(); // `bind`
+    p.bump_as(SyntaxKind::BindKw);
     property_path(p);
     p.expect(SyntaxKind::BidiArrow);
     assignable_path(p);
-    if p.eat(SyntaxKind::UsingKw) {
+    if p.eat_contextual(SyntaxKind::UsingKw) {
         super::types::type_(p);
     }
     p.expect(SyntaxKind::Semi);
@@ -222,7 +257,7 @@ fn assignable_path(p: &mut Parser) {
         match p.current() {
             SyntaxKind::Dot => {
                 p.bump_any(); // `.`
-                name(p);
+                label(p);
             }
             SyntaxKind::LBracket => {
                 p.bump_any(); // `[`
@@ -239,8 +274,10 @@ fn assignable_path(p: &mut Parser) {
 /// is diagnosed as E3201: handlers always use a block.
 fn event_handler(p: &mut Parser) {
     let m = p.start();
-    p.bump_any(); // `on`
-    let _ = p.eat(SyntaxKind::CaptureKw) || p.eat(SyntaxKind::BubbleKw);
+    p.bump_as(SyntaxKind::OnKw);
+    if p.nth_is_ident(1) {
+        let _ = p.eat_contextual(SyntaxKind::CaptureKw) || p.eat_contextual(SyntaxKind::BubbleKw);
+    }
     name(p);
     if p.at(SyntaxKind::LParen) {
         p.bump_any(); // `(`
@@ -251,8 +288,7 @@ fn event_handler(p: &mut Parser) {
         // `on click => expr` — the old arrow form is rejected in favor of a block.
         p.error(ParseErrorKind::HandlerNotArrow);
         p.bump_any(); // `=>`
-        super::expr::expr(p);
-        p.eat(SyntaxKind::Semi);
+        super::stmt::statement(p);
     } else {
         super::stmt::block(p);
     }
@@ -262,7 +298,7 @@ fn event_handler(p: &mut Parser) {
 /// `"fill" IDENT ViewBlock` — content projected into a named slot.
 fn fill_clause(p: &mut Parser) {
     let m = p.start();
-    p.bump_any(); // `fill`
+    p.bump_as(SyntaxKind::FillKw);
     name(p);
     view_block(p);
     m.complete(p, SyntaxKind::FillClause);
@@ -274,7 +310,13 @@ fn view_if(p: &mut Parser) {
     let m = p.start();
     p.bump_any(); // `if`
     super::expr::head_expr(p);
-    if p.eat(SyntaxKind::PreserveKw) {
+    if p.at_contextual(SyntaxKind::PreserveKw)
+        && matches!(
+            p.nth(1),
+            SyntaxKind::StringLiteral | SyntaxKind::RawStringLiteral
+        )
+    {
+        p.bump_as(SyntaxKind::PreserveKw);
         if p.at(SyntaxKind::StringLiteral) || p.at(SyntaxKind::RawStringLiteral) {
             p.bump_any();
         } else {
@@ -303,7 +345,7 @@ fn view_for(p: &mut Parser) {
         p.error(ParseErrorKind::MissingToken);
     }
     super::expr::head_expr(p);
-    if p.eat(SyntaxKind::KeyKw) {
+    if p.eat_contextual(SyntaxKind::KeyKw) {
         super::expr::head_expr(p);
     } else {
         p.error(ParseErrorKind::ForMissingKey);
@@ -344,14 +386,14 @@ fn view_match_arm(p: &mut Parser) {
 /// "}"`. Parsed as an advanced item until part metaprogramming resolution lands.
 fn part_override(p: &mut Parser) {
     let m = p.start();
-    p.bump_any(); // `override`
-    p.expect(SyntaxKind::PartKw);
+    p.bump_as(SyntaxKind::OverrideKw);
+    p.bump_as(SyntaxKind::PartKw);
     name(p);
     p.expect(SyntaxKind::LBrace);
     while !p.at(SyntaxKind::RBrace) && !p.at_end() {
         match p.current() {
-            SyntaxKind::OnKw => event_handler(p),
-            SyntaxKind::BindKw => two_way_binding(p),
+            SyntaxKind::Ident if view_keyword(p) == Some(SyntaxKind::OnKw) => event_handler(p),
+            SyntaxKind::Ident if view_keyword(p) == Some(SyntaxKind::BindKw) => two_way_binding(p),
             SyntaxKind::Ident | SyntaxKind::RawIdent => property_binding(p),
             _ => p.err_and_bump(ParseErrorKind::UnexpectedTokens),
         }
@@ -363,8 +405,8 @@ fn part_override(p: &mut Parser) {
 /// `"replace" "part" IDENT ViewBlock`. Parsed as an advanced item for now.
 fn part_replace(p: &mut Parser) {
     let m = p.start();
-    p.bump_any(); // `replace`
-    p.expect(SyntaxKind::PartKw);
+    p.bump_as(SyntaxKind::ReplaceKw);
+    p.bump_as(SyntaxKind::PartKw);
     name(p);
     view_block(p);
     m.complete(p, SyntaxKind::AdvancedItem);
@@ -375,7 +417,7 @@ fn part_replace(p: &mut Parser) {
 /// recovery is clean.
 fn template_use(p: &mut Parser) {
     let m = p.start();
-    p.bump_any(); // `use`
+    p.bump_as(SyntaxKind::UseKw);
     super::types::type_(p);
     if p.at(SyntaxKind::LParen) {
         super::expr::arg_list(p);
@@ -386,28 +428,4 @@ fn template_use(p: &mut Parser) {
         p.eat(SyntaxKind::Semi);
     }
     m.complete(p, SyntaxKind::AdvancedItem);
-}
-
-/// Consumes any run of `@attr(...)` attributes preceding an item, each wrapped in
-/// its own node so a later pass can read them.
-fn attributes(p: &mut Parser) {
-    while p.at(SyntaxKind::At) {
-        let m = p.start();
-        p.bump_any(); // `@`
-        super::expr::path_only(p);
-        if p.at(SyntaxKind::LParen) {
-            super::expr::arg_list(p);
-        }
-        m.complete(p, SyntaxKind::Attribute);
-    }
-}
-
-/// Consumes an identifier name (plain or raw), recording a diagnostic if the
-/// current token is not name-like.
-fn name(p: &mut Parser) {
-    if p.at(SyntaxKind::Ident) || p.at(SyntaxKind::RawIdent) {
-        p.bump_any();
-    } else {
-        p.error(ParseErrorKind::MissingToken);
-    }
 }

@@ -14,3 +14,6 @@ rust-version.workspace = true
 [dependencies]
 viso-ui = { workspace = true }
 viso-ende = { workspace = true }
+# XID_Start/XID_Continue for identifier lexing and NFC for symbol-table entry.
+icu_properties = { workspace = true }
+icu_normalizer = { workspace = true }

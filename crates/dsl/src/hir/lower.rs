@@ -19,24 +19,28 @@
 //! pass is Viso-owned; it consumes the resolver's durable [`SymbolId`] identities and
 //! slot-based locals unchanged.
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 
-use crate::ast::{AstNode, CompilationUnit, ComponentDecl, Item, Member, TypePath};
+use crate::ast::{
+    AstNode, Block, CompilationUnit, ComponentDecl, ConstDecl, EnumVariant, InputDecl, Item,
+    Member, Param, RecordDecl, RecordField, ReturnType, TypePath,
+};
 use crate::diag::Diagnostic;
 use crate::resolve::{
     ModuleGraph, NameInterner, Namespace, Resolution, ResolvedModule, ResolvedRef, SourceUnit,
     SymbolId, SymbolTable,
 };
-use crate::syntax::{SyntaxNode, TextRange};
+use crate::syntax::{SyntaxKind, SyntaxNode, TextRange};
 
 use super::capability::{CapabilityNode, CapabilitySet, propagate};
 use super::component::{MemberEnv, lower_component};
 use super::effect::{BodyContext, EffectClass, EffectCx, EffectEnv};
-use super::infer::TypeEnv;
-use super::nodes::{HirCallable, HirComponent};
+use super::infer::{FieldInfo, InferCx, TypeEnv, VariantInfo, VariantPayload};
+use super::nodes::{ComponentSchema, HirCallable, HirComponent};
 use super::reads::ReadEnv;
 use super::ty::Ty;
+use super::view::{InputProp, ViewEnv, check_view};
 
 /// The typed HIR of a whole package: every component lowered, every free callable, and every
 /// diagnostic the type/effect/capability checks raised across all modules.
@@ -54,6 +58,9 @@ pub struct LoweredPackage {
     pub callables: Vec<HirCallable>,
     /// The diagnostics lowering raised (type/effect/capability), across all modules.
     pub diagnostics: Vec<Diagnostic>,
+    /// The slice of `diagnostics` each module raised, index-parallel to the graph's
+    /// modules, so a multi-file caller can attribute each one to its source.
+    pub module_diagnostics: Vec<std::ops::Range<usize>>,
 }
 
 /// Lowers a whole resolved package into its typed HIR.
@@ -75,8 +82,11 @@ pub fn lower(
     let mut components = Vec::new();
     let mut callables = Vec::new();
     let mut diagnostics = Vec::new();
+    let mut module_diagnostics = Vec::with_capacity(graph.modules().len());
 
     for (i, gm) in graph.modules().iter().enumerate() {
+        let start = diagnostics.len();
+        module_diagnostics.push(start..start);
         let Some(resolved_module) = resolved.get(i) else {
             continue;
         };
@@ -88,7 +98,7 @@ pub fn lower(
         // Build the per-module environment: intern member names to look their symbols up in
         // the module table, and record each member's facts, so the `&self` trait methods are
         // pure lookups during the body walks.
-        let env = ModuleEnvBuilder::build(&cu, &resolved_module.table, interner);
+        let env = ModuleEnv::build(&cu, &resolved_module.table, &resolved_module.refs, interner);
 
         lower_module(
             &cu,
@@ -98,6 +108,7 @@ pub fn lower(
             &mut callables,
             &mut diagnostics,
         );
+        module_diagnostics[i] = start..diagnostics.len();
     }
 
     // Debug-only HIR-complete assertion (spec node-contract section): no core node may keep
@@ -112,6 +123,7 @@ pub fn lower(
         components,
         callables,
         diagnostics,
+        module_diagnostics,
     }
 }
 
@@ -141,12 +153,46 @@ fn lower_module(
         };
         // A `system` shares the component member surface but is not a `ComponentDecl`; its
         // dedicated lowering lands with its consumer slice (system hooks / scheduler schema).
-        // Module-level `fn`/`action`/`task` likewise lower fully with their consumer. This
-        // slice covers the component vertical; unhandled declarations are left for those slices
-        // rather than fabricated here.
-        if let Item::Component(c) = decl {
-            let component = lower_component_item(&c, refs, env, diagnostics, &mut cap);
-            components.push(component);
+        // Module-level `fn`/`action`/`task` bodies, `const` values and record field defaults
+        // are type-checked here; their HIR nodes land with their consumer slice.
+        match decl {
+            Item::Component(c) => {
+                let component = lower_component_item(&c, refs, env, diagnostics, &mut cap);
+                components.push(component);
+            }
+            Item::Const(c) => check_const(&c, refs, env, diagnostics),
+            Item::Record(r) => check_field_defaults(&r, refs, env, diagnostics),
+            Item::Fn(f) => {
+                check_signature(
+                    refs,
+                    env,
+                    &f.params(),
+                    f.return_type(),
+                    f.body(),
+                    diagnostics,
+                );
+            }
+            Item::Action(a) => {
+                check_signature(
+                    refs,
+                    env,
+                    &a.params(),
+                    a.return_type(),
+                    a.body(),
+                    diagnostics,
+                );
+            }
+            Item::Task(t) => {
+                check_signature(
+                    refs,
+                    env,
+                    &t.params(),
+                    t.return_type(),
+                    t.body(),
+                    diagnostics,
+                );
+            }
+            _ => {}
         }
         let _ = &mut *callables;
     }
@@ -167,6 +213,7 @@ fn lower_component_item(
 ) -> HirComponent {
     env.focus_component(decl);
     let schema = lower_component(decl, refs, env, diagnostics);
+    env.record_inferred(&schema);
     let source_origin = decl.syntax().text_range();
 
     // Effect-check the view body (a reactive context) and every callable body in its context.
@@ -174,6 +221,7 @@ fn lower_component_item(
         && let Some(block) = view.block()
     {
         check_body(refs, BodyContext::View, env, block.syntax(), diagnostics);
+        check_view(refs, env, &block, diagnostics);
     }
     check_component_callables(decl, refs, env, diagnostics, cap, &schema.callables);
 
@@ -195,24 +243,30 @@ fn check_component_callables(
     lowered: &[HirCallable],
 ) {
     for member in decl.members() {
-        let (context, body, clause, name) = match &member {
+        let (context, body, clause, name, params, ret) = match &member {
             Member::Fn(f) => (
                 BodyContext::Fn,
                 f.body(),
                 f.capability_clause(),
                 name_of(f.name()),
+                f.params(),
+                f.return_type(),
             ),
             Member::Action(a) => (
                 BodyContext::Action,
                 a.body(),
                 a.capability_clause(),
                 name_of(a.name()),
+                a.params(),
+                a.return_type(),
             ),
             Member::Task(t) => (
                 BodyContext::Task,
                 t.body(),
                 t.capability_clause(),
                 name_of(t.name()),
+                t.params(),
+                t.return_type(),
             ),
             _ => continue,
         };
@@ -220,6 +274,7 @@ fn check_component_callables(
         if let Some(block) = &body {
             check_body(refs, context, env, block.syntax(), diagnostics);
         }
+        check_signature(refs, env, &params, ret, body.clone(), diagnostics);
 
         // Register in the capability graph, keyed by the callable's node span so its inferred
         // set can be written back onto the matching lowered node.
@@ -248,6 +303,72 @@ fn check_body(
 ) {
     let mut cx = EffectCx::new(refs, context, env);
     cx.check_node(node);
+    diagnostics.extend(cx.into_diagnostics());
+}
+
+/// Type-checks a callable body against its signature: each parameter binds its annotated
+/// type, and the body's value and every `return` meet the declared return type (`Unit`
+/// when none is declared).
+fn check_signature(
+    refs: &[ResolvedRef],
+    env: &ModuleEnv,
+    params: &[Param],
+    ret: Option<ReturnType>,
+    body: Option<Block>,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    let Some(body) = body else {
+        return;
+    };
+    let params: Vec<(TextRange, Ty)> = params
+        .iter()
+        .filter_map(|p| Some((p.name()?.text_range(), env.annotation_of(p.syntax()))))
+        .collect();
+    let ret = ret.map(|r| env.annotation_of(r.syntax()));
+    let mut cx = InferCx::new(refs, env);
+    cx.check_callable(&params, ret.as_ref(), &body);
+    diagnostics.extend(cx.into_diagnostics());
+}
+
+/// Types a `const` value against its annotation.
+fn check_const(
+    decl: &ConstDecl,
+    refs: &[ResolvedRef],
+    env: &ModuleEnv,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    let Some(value) = decl.value() else {
+        return;
+    };
+    let want = env.annotation_of(decl.syntax());
+    let mut cx = InferCx::new(refs, env);
+    let _ = if want.has_unknown() {
+        cx.infer_expr(&value, None)
+    } else {
+        cx.infer_promoted(&value, &want)
+    };
+    diagnostics.extend(cx.into_diagnostics());
+}
+
+/// Types each record field default against its field type.
+fn check_field_defaults(
+    decl: &RecordDecl,
+    refs: &[ResolvedRef],
+    env: &ModuleEnv,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    let mut cx = InferCx::new(refs, env);
+    for field in decl.fields() {
+        let Some(value) = field.default() else {
+            continue;
+        };
+        let want = env.annotation_of(field.syntax());
+        let _ = if want.has_unknown() {
+            cx.infer_expr(&value, None)
+        } else {
+            cx.infer_promoted(&value, &want)
+        };
+    }
     diagnostics.extend(cx.into_diagnostics());
 }
 
@@ -442,21 +563,22 @@ impl CapabilityGraphBuilder {
 
 // --- The concrete module environment ----------------------------------------------------
 
-/// The facts the environment answers about one member symbol, cached from the pre-pass so the
+/// The facts the environment answers about one symbol, cached from the pre-pass so the
 /// `&self` trait methods are pure lookups.
 struct MemberFacts {
-    /// The member's type when it is a reactive source (`state`/`input`/`computed`), for
-    /// `TypeEnv::resolution_ty`. `Unknown` when its type is not yet known from the declaration.
+    /// The symbol's declared type (a member's or `const`'s annotation, a `fn`'s function
+    /// type), for `TypeEnv::resolution_ty`. `Unknown` when the declaration does not fix it.
     ty: Ty,
-    /// The member's effect class when it is a callable, for `EffectEnv::callee_effect`.
+    /// The symbol's effect class when it is a callable, for `EffectEnv::callee_effect`.
     effect: Option<EffectClass>,
     /// Whether the member is a reactive source (`state`/`input`/`computed`), for
     /// `ReadEnv::reactive_source`.
     is_reactive_source: bool,
 }
 
-/// The concrete [`MemberEnv`]/[`TypeEnv`]/[`ReadEnv`]/[`EffectEnv`] for one module, built over
-/// the resolver's [`SymbolTable`] with the member facts precomputed.
+/// The concrete [`MemberEnv`]/[`TypeEnv`]/[`ViewEnv`]/[`ReadEnv`]/[`EffectEnv`] for one
+/// module, built over the resolver's [`SymbolTable`] and references with the facts
+/// precomputed.
 struct ModuleEnv {
     /// Member name → symbol, both value and event namespaces, for [`MemberEnv::member_symbol`].
     members: HashMap<String, SymbolId>,
@@ -470,26 +592,59 @@ struct ModuleEnv {
     /// resolve), but a module may declare several components, so the *current* one is set per
     /// component before its `lower_component` call. `Cell` keeps the trait methods `&self`.
     component: Cell<SymbolId>,
+    /// Name token span → the symbol the resolver bound it to, for nominal annotations.
+    nominal: HashMap<TextRange, SymbolId>,
+    /// The fields of every record the module declares.
+    records: HashMap<SymbolId, Vec<FieldInfo>>,
+    /// The variants of every enum the module declares.
+    enums: HashMap<SymbolId, Vec<VariantInfo>>,
+    /// The declared name of every record, enum and component, for diagnostics.
+    type_names: HashMap<SymbolId, String>,
+    /// The `(params, ret)` signature of every `fn` and `action`.
+    signatures: HashMap<SymbolId, (Vec<Ty>, Ty)>,
+    /// The inputs of every component the module declares, as node properties.
+    inputs: HashMap<SymbolId, Vec<InputProp>>,
+    /// The types lowering inferred for unannotated `state`/`computed` members, recorded
+    /// as each component lowers so later body walks see them.
+    inferred: RefCell<HashMap<SymbolId, Ty>>,
 }
 
 impl TypeEnv for ModuleEnv {
     fn resolution_ty(&self, to: &Resolution) -> Option<Ty> {
         match to {
-            Resolution::Symbol(id) => self.facts.get(id).and_then(|f| {
-                if f.is_reactive_source && !matches!(f.ty, Ty::Unknown) {
-                    Some(f.ty.clone())
-                } else {
-                    None
-                }
-            }),
+            Resolution::Symbol(id) => self
+                .facts
+                .get(id)
+                .map(|f| f.ty.clone())
+                .filter(|ty| *ty != Ty::Unknown)
+                .or_else(|| self.inferred.borrow().get(id).cloned()),
             Resolution::Local(_) => None,
         }
     }
 
-    fn callee_signature(&self, _to: &Resolution) -> Option<(Vec<Ty>, Ty)> {
-        // Signature-typed calls land with public-callable signature lowering; this slice does
-        // not synthesize signatures from bodies.
-        None
+    fn callee_signature(&self, to: &Resolution) -> Option<(Vec<Ty>, Ty)> {
+        match to {
+            Resolution::Symbol(id) => self.signatures.get(id).cloned(),
+            Resolution::Local(_) => None,
+        }
+    }
+
+    fn record_fields(&self, ty: SymbolId) -> Option<&[FieldInfo]> {
+        self.records.get(&ty).map(Vec::as_slice)
+    }
+
+    fn enum_variants(&self, ty: SymbolId) -> Option<&[VariantInfo]> {
+        self.enums.get(&ty).map(Vec::as_slice)
+    }
+
+    fn type_name(&self, ty: SymbolId) -> Option<&str> {
+        self.type_names.get(&ty).map(String::as_str)
+    }
+}
+
+impl ViewEnv for ModuleEnv {
+    fn component_inputs(&self, component: SymbolId) -> Option<&[InputProp]> {
+        self.inputs.get(&component).map(Vec::as_slice)
     }
 }
 
@@ -528,26 +683,34 @@ impl MemberEnv for ModuleEnv {
 }
 
 impl ModuleEnv {
-    /// Points the environment at the component about to be lowered (keyed by its declaration's
-    /// syntax range, recorded in the pre-pass), so `component_symbol` answers with its symbol.
-    fn focus_component(&self, decl: &ComponentDecl) {
-        if let Some(sym) = self.components.get(&decl.syntax().text_range()) {
-            self.component.set(*sym);
-        }
-    }
-}
-
-/// Builds a [`ModuleEnv`] from a compilation unit and its resolved symbol table.
-struct ModuleEnvBuilder;
-
-impl ModuleEnvBuilder {
-    /// Walks every component/system member once (with the interner, to intern names and query
-    /// the table) and records the name→symbol map and the per-symbol facts.
-    fn build(cu: &CompilationUnit, table: &SymbolTable, interner: &mut NameInterner) -> ModuleEnv {
-        let mut members: HashMap<String, SymbolId> = HashMap::new();
-        let mut facts: HashMap<SymbolId, MemberFacts> = HashMap::new();
-        let mut components: HashMap<TextRange, SymbolId> = HashMap::new();
-        let mut default_component = SymbolId::from_parts(0, 0);
+    /// Walks every declaration once (with the interner, to intern names and query the
+    /// table) and records the name→symbol map, the per-symbol facts, and the record, enum,
+    /// signature and component-input tables.
+    fn build(
+        cu: &CompilationUnit,
+        table: &SymbolTable,
+        refs: &[ResolvedRef],
+        interner: &mut NameInterner,
+    ) -> ModuleEnv {
+        let mut env = ModuleEnv {
+            members: HashMap::new(),
+            facts: HashMap::new(),
+            components: HashMap::new(),
+            component: Cell::new(SymbolId::from_parts(0, 0)),
+            nominal: refs
+                .iter()
+                .filter_map(|r| match r.to {
+                    Resolution::Symbol(id) => Some((r.range, id)),
+                    Resolution::Local(_) => None,
+                })
+                .collect(),
+            records: HashMap::new(),
+            enums: HashMap::new(),
+            type_names: HashMap::new(),
+            signatures: HashMap::new(),
+            inputs: HashMap::new(),
+            inferred: RefCell::default(),
+        };
 
         for item in cu.items() {
             let decl = match item {
@@ -557,91 +720,149 @@ impl ModuleEnvBuilder {
                 },
                 other => other,
             };
-            let member_list = match &decl {
+            match &decl {
                 Item::Component(c) => {
                     // Record this component's symbol keyed by its declaration span, so the env
                     // can focus on whichever component it is currently lowering (a module may
                     // declare several). The facts/members maps below stay module-wide.
                     if let Some(sym) = decl_symbol(table, interner, c.name(), Namespace::Type) {
-                        components.insert(c.syntax().text_range(), sym);
-                        default_component = sym;
+                        env.components.insert(c.syntax().text_range(), sym);
+                        env.component.set(sym);
+                        env.type_names.insert(sym, name_of(c.name()));
+                        let inputs = env.inputs_of(c);
+                        env.inputs.insert(sym, inputs);
                     }
-                    c.members().collect::<Vec<_>>()
+                    for member in c.members() {
+                        env.record_member(&member, table, interner);
+                    }
                 }
                 Item::System(s) => {
                     if let Some(sym) = decl_symbol(table, interner, s.name(), Namespace::Type) {
-                        default_component = sym;
+                        env.component.set(sym);
                     }
-                    s.members().collect::<Vec<_>>()
+                    for member in s.members() {
+                        env.record_member(&member, table, interner);
+                    }
                 }
-                _ => continue,
-            };
-
-            for member in member_list {
-                Self::record_member(&member, table, interner, &mut members, &mut facts);
+                Item::Record(r) => {
+                    if let Some(sym) = decl_symbol(table, interner, r.name(), Namespace::Type) {
+                        let fields = r.fields().filter_map(|f| env.field_info(&f)).collect();
+                        env.records.insert(sym, fields);
+                        env.type_names.insert(sym, name_of(r.name()));
+                    }
+                }
+                Item::Enum(e) => {
+                    if let Some(sym) = decl_symbol(table, interner, e.name(), Namespace::Type) {
+                        let variants = e.variants().filter_map(|v| env.variant_info(&v)).collect();
+                        env.enums.insert(sym, variants);
+                        env.type_names.insert(sym, name_of(e.name()));
+                    }
+                }
+                Item::Const(c) => {
+                    if let Some(sym) = decl_symbol(table, interner, c.name(), Namespace::Value) {
+                        let ty = env.annotation_of(c.syntax());
+                        env.facts.insert(
+                            sym,
+                            MemberFacts {
+                                ty,
+                                effect: None,
+                                is_reactive_source: false,
+                            },
+                        );
+                    }
+                }
+                Item::Fn(f) => {
+                    let (params, ret) = (f.params(), f.return_type());
+                    env.record_callable(table, interner, f.name(), &params, ret, EffectClass::Read);
+                }
+                Item::Action(a) => {
+                    let (params, ret) = (a.params(), a.return_type());
+                    env.record_callable(
+                        table,
+                        interner,
+                        a.name(),
+                        &params,
+                        ret,
+                        EffectClass::Action,
+                    );
+                }
+                Item::Task(t) => {
+                    let (params, ret) = (t.params(), t.return_type());
+                    env.record_callable(table, interner, t.name(), &params, ret, EffectClass::Task);
+                }
+                _ => {}
             }
         }
-
-        ModuleEnv {
-            members,
-            facts,
-            components,
-            component: Cell::new(default_component),
-        }
+        env
     }
 
     /// Records one member's name→symbol entry and its facts.
-    fn record_member(
-        member: &Member,
-        table: &SymbolTable,
-        interner: &mut NameInterner,
-        members: &mut HashMap<String, SymbolId>,
-        facts: &mut HashMap<SymbolId, MemberFacts>,
-    ) {
-        let (name_tok, namespace, ty, effect, is_source) = match member {
+    fn record_member(&mut self, member: &Member, table: &SymbolTable, interner: &mut NameInterner) {
+        let (name_tok, namespace, ty, is_source) = match member {
             Member::Input(d) => (
                 d.name(),
                 Namespace::Value,
-                d.ty().map(|t| annotation_ty(&t)).unwrap_or(Ty::Unknown),
-                None,
+                self.annotation_of(d.syntax()),
                 true,
             ),
             Member::State(d) => (
                 d.name(),
                 Namespace::Value,
-                d.ty().map(|t| annotation_ty(&t)).unwrap_or(Ty::Unknown),
-                None,
+                self.annotation_of(d.syntax()),
                 true,
             ),
             Member::Computed(d) => (
                 d.name(),
                 Namespace::Value,
-                d.ty().map(|t| annotation_ty(&t)).unwrap_or(Ty::Unknown),
-                None,
+                self.annotation_of(d.syntax()),
                 true,
             ),
-            Member::Event(d) => (d.name(), Namespace::Event, Ty::Unit, None, false),
-            Member::Fn(d) => (
-                d.name(),
-                Namespace::Value,
-                Ty::Unit,
-                Some(EffectClass::Read),
-                false,
-            ),
-            Member::Action(d) => (
-                d.name(),
-                Namespace::Value,
-                Ty::Unit,
-                Some(EffectClass::Action),
-                false,
-            ),
-            Member::Task(d) => (
-                d.name(),
-                Namespace::Value,
-                Ty::Unit,
-                Some(EffectClass::Task),
-                false,
-            ),
+            Member::Event(d) => (d.name(), Namespace::Event, Ty::Unknown, false),
+            Member::Fn(d) => {
+                let (params, ret) = (d.params(), d.return_type());
+                let sym = self.record_callable(
+                    table,
+                    interner,
+                    d.name(),
+                    &params,
+                    ret,
+                    EffectClass::Read,
+                );
+                if let Some(sym) = sym {
+                    self.members.insert(name_of(d.name()), sym);
+                }
+                return;
+            }
+            Member::Action(d) => {
+                let (params, ret) = (d.params(), d.return_type());
+                let sym = self.record_callable(
+                    table,
+                    interner,
+                    d.name(),
+                    &params,
+                    ret,
+                    EffectClass::Action,
+                );
+                if let Some(sym) = sym {
+                    self.members.insert(name_of(d.name()), sym);
+                }
+                return;
+            }
+            Member::Task(d) => {
+                let (params, ret) = (d.params(), d.return_type());
+                let sym = self.record_callable(
+                    table,
+                    interner,
+                    d.name(),
+                    &params,
+                    ret,
+                    EffectClass::Task,
+                );
+                if let Some(sym) = sym {
+                    self.members.insert(name_of(d.name()), sym);
+                }
+                return;
+            }
             Member::View(_) => return,
         };
 
@@ -653,16 +874,185 @@ impl ModuleEnvBuilder {
         let Some(sym) = table.get(name, namespace).map(|s| s.id) else {
             return;
         };
-        members.insert(text, sym);
-        facts.insert(
+        self.members.insert(text, sym);
+        self.facts.insert(
             sym,
             MemberFacts {
                 ty,
-                effect,
+                effect: None,
                 is_reactive_source: is_source,
             },
         );
     }
+
+    /// Records a `fn`/`action`/`task`: its effect class, and for a `fn` or `action` its
+    /// signature (a `fn` is also a value of its function type). Returns its symbol.
+    fn record_callable(
+        &mut self,
+        table: &SymbolTable,
+        interner: &mut NameInterner,
+        name: Option<crate::syntax::SyntaxToken>,
+        params: &[Param],
+        ret: Option<ReturnType>,
+        effect: EffectClass,
+    ) -> Option<SymbolId> {
+        let sym = decl_symbol(table, interner, name, Namespace::Value)?;
+        let params: Vec<Ty> = params
+            .iter()
+            .map(|p| self.annotation_of(p.syntax()))
+            .collect();
+        let ret = ret.map_or(Ty::Unit, |r| self.annotation_of(r.syntax()));
+        let ty = match effect {
+            EffectClass::Read => Ty::Fn(params.clone(), Box::new(ret.clone())),
+            _ => Ty::Unknown,
+        };
+        if !matches!(effect, EffectClass::Task) {
+            self.signatures.insert(sym, (params, ret));
+        }
+        self.facts.insert(
+            sym,
+            MemberFacts {
+                ty,
+                effect: Some(effect),
+                is_reactive_source: false,
+            },
+        );
+        Some(sym)
+    }
+
+    /// The inputs of a component as node properties. An input preceded by a
+    /// `@bindable(event)` attribute is two-way.
+    fn inputs_of(&self, decl: &ComponentDecl) -> Vec<InputProp> {
+        let mut inputs = Vec::new();
+        let mut bindable = false;
+        for child in decl.syntax().children() {
+            match child.kind() {
+                SyntaxKind::Attribute => bindable |= is_bindable(&child),
+                SyntaxKind::InputDecl => {
+                    if let Some(name) = InputDecl::cast(child.clone()).and_then(|d| d.name()) {
+                        inputs.push(InputProp {
+                            name: name.text().trim_start_matches("r#").to_string(),
+                            ty: self.annotation_of(&child),
+                            two_way: bindable,
+                            declared_at: name.text_range(),
+                        });
+                    }
+                    bindable = false;
+                }
+                _ => bindable = false,
+            }
+        }
+        inputs
+    }
+
+    /// One record field (of a record or a record-payload variant).
+    fn field_info(&self, field: &RecordField) -> Option<FieldInfo> {
+        let name = field.name()?;
+        Some(FieldInfo {
+            name: name.text().to_string(),
+            ty: self.annotation_of(field.syntax()),
+            has_default: field.default().is_some(),
+            declared_at: name.text_range(),
+        })
+    }
+
+    /// One enum variant and its payload: none, `( T,* )`, or `{ field,* }`.
+    fn variant_info(&self, variant: &EnumVariant) -> Option<VariantInfo> {
+        let name = variant.name()?;
+        let payload = match variant
+            .syntax()
+            .children()
+            .into_iter()
+            .find(|c| c.kind() == SyntaxKind::VariantPayload)
+        {
+            None => VariantPayload::Unit,
+            Some(payload) => {
+                let is_tuple = payload
+                    .children_with_tokens()
+                    .into_iter()
+                    .filter_map(|e| e.as_token().cloned())
+                    .any(|t| t.kind() == SyntaxKind::LParen);
+                if is_tuple {
+                    VariantPayload::Tuple(
+                        payload
+                            .children()
+                            .into_iter()
+                            .filter(is_type_node)
+                            .map(|c| self.annotation(&c))
+                            .collect(),
+                    )
+                } else {
+                    VariantPayload::Record(
+                        payload
+                            .children()
+                            .into_iter()
+                            .filter_map(RecordField::cast)
+                            .filter_map(|f| self.field_info(&f))
+                            .collect(),
+                    )
+                }
+            }
+        };
+        Some(VariantInfo {
+            name: name.text().to_string(),
+            payload,
+            declared_at: name.text_range(),
+        })
+    }
+
+    /// The type annotated on `node` (its first type child), `Unknown` when absent.
+    fn annotation_of(&self, node: &SyntaxNode) -> Ty {
+        node.children()
+            .into_iter()
+            .find(is_type_node)
+            .map_or(Ty::Unknown, |ty| self.annotation(&ty))
+    }
+
+    /// A type node lowered to a [`Ty`], nominal names through the resolver's bindings. An
+    /// annotation that does not lower is `Unknown` (its diagnostic is raised where the
+    /// declaration itself is lowered).
+    fn annotation(&self, ty: &SyntaxNode) -> Ty {
+        Ty::from_annotation(ty, &|at| self.nominal.get(&at).copied()).unwrap_or(Ty::Unknown)
+    }
+
+    /// Points the environment at the component about to be lowered (keyed by its declaration's
+    /// syntax range, recorded in the pre-pass), so `component_symbol` answers with its symbol.
+    fn focus_component(&self, decl: &ComponentDecl) {
+        if let Some(sym) = self.components.get(&decl.syntax().text_range()) {
+            self.component.set(*sym);
+        }
+    }
+
+    /// Records the types lowering inferred for a component's unannotated `state` and
+    /// `computed` members.
+    fn record_inferred(&self, schema: &ComponentSchema) {
+        let mut inferred = self.inferred.borrow_mut();
+        let metas = schema
+            .states
+            .iter()
+            .map(|s| &s.meta)
+            .chain(schema.computeds.iter().map(|c| &c.meta));
+        for meta in metas {
+            if let Some(id) = meta.resolved_symbol
+                && !meta.inferred_type.has_unknown()
+            {
+                inferred.insert(id, meta.inferred_type.clone());
+            }
+        }
+    }
+}
+
+/// Whether `node` is a type annotation node.
+fn is_type_node(node: &SyntaxNode) -> bool {
+    matches!(node.kind(), SyntaxKind::TypePath | SyntaxKind::TupleType)
+}
+
+/// Whether an attribute is `@bindable(..)`.
+fn is_bindable(attr: &SyntaxNode) -> bool {
+    attr.children()
+        .into_iter()
+        .find(|c| c.kind() == SyntaxKind::PathExpr)
+        .is_some_and(|p| p.text().to_string().trim() == "bindable")
 }
 
 /// The symbol a top-level declaration name interns to in `namespace`, if the table has it.
@@ -675,16 +1065,6 @@ fn decl_symbol(
     let tok = name_tok?;
     let name = interner.intern(&tok.text());
     table.get(name, namespace).map(|s| s.id)
-}
-
-/// A type annotation lowered to a [`Ty`], mapping a removed/unknown/nominal annotation to
-/// `Unknown` (the env only needs a concrete builtin type for its `resolution_ty` answers; the
-/// full annotation diagnostics are `lower_component`'s to raise).
-fn annotation_ty(path: &TypePath) -> Ty {
-    match Ty::from_type_path(path) {
-        Ok(Some(ty)) => ty,
-        _ => Ty::Unknown,
-    }
 }
 
 #[cfg(test)]
@@ -749,6 +1129,216 @@ mod tests {
             pkg.diagnostics.iter().all(|d| d.code != "E2601"),
             "an over-broad requires clause is allowed (it is an upper bound), got {:?}",
             pkg.diagnostics
+        );
+    }
+
+    /// The diagnostic codes lowering `src` reports, in order.
+    fn codes(src: &str) -> Vec<&'static str> {
+        lower_src(src).diagnostics.iter().map(|d| d.code).collect()
+    }
+
+    fn assert_clean(src: &str) {
+        let pkg = lower_src(src);
+        assert!(
+            pkg.diagnostics.is_empty(),
+            "expected no diagnostics, got {:?}",
+            pkg.diagnostics
+        );
+    }
+
+    #[test]
+    fn fn_signatures_type_bodies_and_calls() {
+        assert_clean(
+            "fn square(x: I64) -> I64 { x * x }\n\
+             fn twice(x: I64) -> I64 { return square(square(x)); }\n\
+             const LIMIT: I64 = 4;",
+        );
+        assert_eq!(codes("fn f(x: I64) -> String { x }"), ["E2103"]);
+        assert_eq!(
+            codes("fn f(x: I64) -> I64 { x }\nconst C: I64 = f(\"a\");"),
+            ["E2103"]
+        );
+        assert_eq!(codes("fn f() -> I64 { let y = 1; }"), ["E2103"]);
+        assert_eq!(codes("const C: String = 1;"), ["E2103"]);
+    }
+
+    #[test]
+    fn statements_and_closures() {
+        assert_clean(
+            "fn f(n: I64) -> I64 {\n\
+             \x20 let mut total = 0;\n\
+             \x20 for i in 0..n { total += i; }\n\
+             \x20 loop { if total > 10 { break; } total += 1; }\n\
+             \x20 let found = total;\n\
+             \x20 let add = |a: I64, b: I64| a + b;\n\
+             \x20 add(found, 1)\n\
+             }",
+        );
+        assert_eq!(codes("fn f() { let c = |a| a; }"), ["E2401"]);
+        assert_eq!(codes("fn f() { break; }"), ["E2103"]);
+        assert_eq!(codes("fn f() { while true { break 1; } }"), ["E2103"]);
+    }
+
+    #[test]
+    fn records_and_enums_type_nominally() {
+        let decls = "record P { x: I64; y: I64 = 0; }\n\
+                     enum Shape { Dot; Circle(I64); Rect { w: I64; }; }\n";
+        assert_clean(&format!(
+            "{decls}fn f(p: P) -> I64 {{ p.x + p.y }}\n\
+             fn g() -> P {{ P {{ x: 1 }} }}\n\
+             fn h(s: Shape) -> I64 {{ match s {{ Shape::Dot => 0, Shape::Circle(r) => r, Shape::Rect {{ w }} => w }} }}"
+        ));
+        let pkg = lower_src(&format!("{decls}fn f(p: P) -> I64 {{ p.z }}"));
+        let codes: Vec<_> = pkg.diagnostics.iter().map(|d| d.code).collect();
+        assert_eq!(codes, ["E2001"]);
+        assert_eq!(
+            self::codes(&format!("{decls}fn g() -> P {{ P {{ y: 1 }} }}")),
+            ["E2103"],
+            "a field without a default must be given"
+        );
+        assert_eq!(
+            self::codes(&format!("{decls}fn g() -> P {{ P {{ x: \"a\" }} }}")),
+            ["E2103"]
+        );
+        assert_eq!(
+            self::codes(&format!("{decls}record Q {{ n: I64 = \"a\"; }}")),
+            ["E2103"],
+            "a field default is typed against the field"
+        );
+    }
+
+    #[test]
+    fn match_exhaustiveness_and_reachability() {
+        let decls = "enum Shape { Dot; Circle(I64); }\n";
+        assert_eq!(
+            codes(&format!(
+                "{decls}fn h(s: Shape) -> I64 {{ match s {{ Shape::Dot => 0 }} }}"
+            )),
+            ["E2301"]
+        );
+        assert_eq!(
+            codes(&format!(
+                "{decls}fn h(s: Shape) -> I64 {{ match s {{ _ => 0, Shape::Dot => 1 }} }}"
+            )),
+            ["E2302"]
+        );
+    }
+
+    #[test]
+    fn format_templates_are_checked() {
+        assert_clean("fn f(n: I64) -> String { format(\"{} of {total}\", n, total: 3) }");
+        assert_eq!(
+            codes("fn f(n: I64) -> String { format(\"{} {}\", n) }"),
+            ["E2108"]
+        );
+        assert_eq!(
+            codes("fn f(n: I64) -> String { format(\"{x}\", n) }"),
+            ["E2108", "E2108"]
+        );
+    }
+
+    #[test]
+    fn a_text_property_takes_only_a_string() {
+        assert_clean(
+            "component C {\n  state n = 0\n  view { Text { text: format(\"{}\", n); } }\n}",
+        );
+        let src = "component C {\n  state n = 0\n  view { Text { text: n; } }\n}";
+        let pkg = lower_src(src);
+        let codes: Vec<_> = pkg.diagnostics.iter().map(|d| d.code).collect();
+        assert_eq!(codes, ["E2103"]);
+        let fix = pkg.diagnostics[0]
+            .fixes
+            .first()
+            .expect("a wrap-in-format fix");
+        assert_eq!(
+            fix.applicability,
+            crate::diag::Applicability::MachineApplicable
+        );
+        assert_eq!(fix.edits[0].replacement, "format(\"{}\", n)");
+        assert_eq!(&src[fix.edits[0].range.as_usize()], "n");
+
+        let decls = "record P { x: I64; }\n";
+        let pkg = lower_src(&format!(
+            "{decls}component C {{\n  input p: P\n  view {{ Text {{ text: p; }} }}\n}}"
+        ));
+        assert!(
+            pkg.diagnostics.iter().all(|d| d.fixes.is_empty()),
+            "a record has no `Display`, so no format fix is offered"
+        );
+        assert_eq!(
+            self::codes(&format!(
+                "{decls}fn f(p: P) -> String {{ format(\"{{}}\", p) }}"
+            )),
+            ["E2108"]
+        );
+    }
+
+    #[test]
+    fn view_properties_are_checked_against_the_schema() {
+        assert_clean(
+            "component C {\n\
+             \x20 state on = true\n\
+             \x20 view { Column { width: 50%; Toggle { bind checked <=> on; } Text { text: \"a\"; opacity: 0.5; } } }\n\
+             }",
+        );
+        let pkg = lower_src("component C {\n  view { Text { opacty: 0.5; } }\n}");
+        let d = pkg
+            .diagnostics
+            .iter()
+            .find(|d| d.code == "E3101")
+            .expect("an unknown property is E3101");
+        assert!(
+            d.notes.iter().any(|n| n.contains("opacity"))
+                || d.related.iter().any(|(_, m)| m.contains("opacity")),
+            "the misspelling suggests `opacity`, got {d:?}"
+        );
+        assert_eq!(
+            codes("component C {\n  view { Text { text: \"a\"; text: \"b\"; } }\n}"),
+            ["E3102"]
+        );
+        assert_eq!(
+            codes("component C {\n  state s = \"a\"\n  view { Text { bind text <=> s; } }\n}"),
+            ["E3103"]
+        );
+        assert_eq!(
+            codes("component C {\n  view { Text { translate: 50%; } }\n}"),
+            ["E3104"]
+        );
+        assert_eq!(
+            codes("component C {\n  view { Toggle { checked: 1; } }\n}"),
+            ["E2103"]
+        );
+    }
+
+    #[test]
+    fn component_inputs_are_node_properties() {
+        let stepper = "component Stepper {\n\
+                       \x20 @bindable(changed)\n\
+                       \x20 input value: I64\n\
+                       \x20 input step: I64 = 1\n\
+                       \x20 event changed(value: I64)\n\
+                       \x20 view { }\n\
+                       }\n";
+        assert_clean(&format!(
+            "{stepper}component App {{\n  state n = 0\n  view {{ Stepper {{ bind value <=> n; step: 2; }} }}\n}}"
+        ));
+        assert_eq!(
+            codes(&format!(
+                "{stepper}component App {{\n  state n = 0\n  view {{ Stepper {{ bind step <=> n; }} }}\n}}"
+            )),
+            ["E3103"]
+        );
+        assert_eq!(
+            codes(&format!(
+                "{stepper}component App {{\n  view {{ Stepper {{ stpe: 2; }} }}\n}}"
+            )),
+            ["E3101"]
+        );
+        assert_eq!(
+            codes(&format!(
+                "{stepper}component App {{\n  view {{ Stepper {{ step: \"a\"; }} }}\n}}"
+            )),
+            ["E2103"]
         );
     }
 }

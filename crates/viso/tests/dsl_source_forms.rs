@@ -15,8 +15,8 @@ viso::component! {
         state enabled = true;
         view {
             Column {
-                width: 120px;
-                Text { text: count; }
+                width: 120dp;
+                Text { text: format("{}", count); }
                 Leaf { visible: enabled; }
             }
         }
@@ -150,8 +150,8 @@ fn fragment() -> Mounted {
     let enabled = states.alloc(StateValue::Bool(true));
     let build = viso::ui! {
         Column {
-            width: 120px;
-            Text { text: count; }
+            width: 120dp;
+            Text { text: format("{}", count); }
             Leaf { visible: enabled; }
         }
     };

@@ -54,7 +54,7 @@ pub fn emit_view(
     // Reject it explicitly rather than silently drop siblings.
     if tree.items.len() != 1 {
         return Err(format!(
-            "a view must have exactly one root node, found {}",
+            "E3002: a view must have exactly one root node, found {}",
             tree.items.len()
         ));
     }
@@ -318,7 +318,10 @@ fn size_tokens(style: &StyleIr) -> TokenStream {
 /// `::viso_ui::Length::…` from an optional folded [`LengthIr`]; `None` -> `Fit`.
 fn length_tokens(length: Option<LengthIr>) -> TokenStream {
     match length {
-        Some(LengthIr::Fixed(px)) => quote! { ::viso_ui::Length::Fixed(#px) },
+        Some(LengthIr::Fixed(dp)) => quote! { ::viso_ui::Length::Fixed(#dp) },
+        Some(LengthIr::Relative { fixed, pct }) => {
+            quote! { ::viso_ui::Length::Relative { fixed: #fixed, pct: #pct } }
+        }
         Some(LengthIr::Fill { weight }) => quote! { ::viso_ui::Length::Fill { weight: #weight } },
         Some(LengthIr::Fit) | None => quote! { ::viso_ui::Length::Fit },
     }

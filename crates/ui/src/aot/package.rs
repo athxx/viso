@@ -141,11 +141,13 @@ pub enum AotAxis {
 }
 
 /// A folded length, the compact twin of `viso_ui::layout::Length`. `Fit` needs no
-/// payload; `Fixed`/`Fill` each carry one `f32`.
+/// payload; `Fixed`/`Fill` each carry one `f32`; `Relative` carries two.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum AotLength {
-    /// A hard pixel length.
+    /// An exact extent in dp.
     Fixed(f32),
+    /// `fixed + pct × basis`, with `pct` a fraction of the basis.
+    Relative { fixed: f32, pct: f32 },
     /// A weighted share of leftover main-axis space.
     Fill { weight: f32 },
     /// Sized to the measured natural size.
@@ -185,6 +187,7 @@ const STYLE_HAS_GAP: u8 = 1 << 3;
 const LEN_FIXED: u8 = 0;
 const LEN_FILL: u8 = 1;
 const LEN_FIT: u8 = 2;
+const LEN_RELATIVE: u8 = 3;
 
 impl Encode for AotLength {
     fn encode(&self, enc: &mut Encoder) {
@@ -198,6 +201,11 @@ impl Encode for AotLength {
                 enc.write_f32(*weight);
             }
             AotLength::Fit => enc.write_u8(LEN_FIT),
+            AotLength::Relative { fixed, pct } => {
+                enc.write_u8(LEN_RELATIVE);
+                enc.write_f32(*fixed);
+                enc.write_f32(*pct);
+            }
         }
     }
 }
@@ -211,6 +219,10 @@ impl Decode for AotLength {
                 weight: dec.read_f32()?,
             }),
             LEN_FIT => Ok(AotLength::Fit),
+            LEN_RELATIVE => Ok(AotLength::Relative {
+                fixed: dec.read_f32()?,
+                pct: dec.read_f32()?,
+            }),
             _ => Err(DecodeError::Malformed { offset }),
         }
     }
@@ -405,7 +417,10 @@ mod tests {
                     style: AotStyle {
                         axis: Some(AotAxis::Column),
                         width: Some(AotLength::Fixed(320.0)),
-                        height: Some(AotLength::Fill { weight: 2.0 }),
+                        height: Some(AotLength::Relative {
+                            fixed: -16.0,
+                            pct: 1.0,
+                        }),
                         gap: Some(8.0),
                     },
                     child_count: 2,
@@ -414,7 +429,7 @@ mod tests {
                     kind: AotNodeKind::Scroll,
                     style: AotStyle {
                         axis: Some(AotAxis::Row),
-                        width: None,
+                        width: Some(AotLength::Fill { weight: 2.0 }),
                         height: Some(AotLength::Fit),
                         gap: None,
                     },

@@ -26,6 +26,7 @@
 pub mod binding_ir;
 pub mod dirty_map;
 pub mod keys;
+mod length;
 pub mod ui_ir;
 
 pub use binding_ir::{BindingEdge, BindingIr, BindingKind, NodeKey, lower_bindings};
@@ -37,10 +38,9 @@ pub use ui_ir::{
 };
 
 use crate::ast::{
-    AnonymousNode, AstNode, Expr, LiteralExpr, NamedNode, NodeBody, PathExpr, PropertyBinding,
-    TypePath, ViewBlock, ViewFor, ViewIf, ViewItem, ViewMatch,
+    AnonymousNode, AstNode, Expr, NamedNode, NodeBody, PathExpr, PropertyBinding, TypePath,
+    ViewBlock, ViewFor, ViewIf, ViewItem, ViewMatch,
 };
-use crate::syntax::SyntaxKind;
 use crate::syntax::span::TextRange;
 
 /// Lowers a `ui!` view fragment's items into a [`UiTree`].
@@ -186,21 +186,21 @@ fn fold_property(prop: &PropertyBinding, style: &mut StyleIr, pending: &mut Vec<
 /// `false` leaves the property to become a pending binding.
 fn fold_static(name: &str, value: &Expr, style: &mut StyleIr) -> bool {
     match name {
-        "width" => match fold_length(value) {
+        "width" => match length::fold_size(value) {
             Some(len) => {
                 style.width = Some(len);
                 true
             }
             None => false,
         },
-        "height" => match fold_length(value) {
+        "height" => match length::fold_size(value) {
             Some(len) => {
                 style.height = Some(len);
                 true
             }
             None => false,
         },
-        "gap" | "spacing" => match fold_number(value) {
+        "gap" | "spacing" => match length::fold_gap(value) {
             Some(n) => {
                 style.gap = Some(n);
                 true
@@ -219,47 +219,6 @@ fn fold_static(name: &str, value: &Expr, style: &mut StyleIr) -> bool {
         // constants are left to the emitter via a pending record so nothing is
         // silently dropped. Returning false routes them to `pending`.
         _ => false,
-    }
-}
-
-/// Folds an expression into a [`LengthIr`], if it is a constant dimension.
-///
-/// `12dp`/`12px`/bare `12` fold to `Fixed`; `50%` folds to a `Fill` weight. A
-/// non-constant value (a state path, an expression) yields `None` and becomes a
-/// pending binding. The `fill`/`fit` length keywords are not yet expression
-/// atoms in the grammar, so they never reach here; when that surface lands they
-/// fold to [`LengthIr::Fill`]/[`LengthIr::Fit`] via the same seam.
-fn fold_length(value: &Expr) -> Option<LengthIr> {
-    let lit = LiteralExpr::cast(value.syntax().clone())?;
-    let token = lit.token()?;
-    match token.kind() {
-        SyntaxKind::IntLiteral | SyntaxKind::FloatLiteral => {
-            numeric_prefix(&token.text()).map(LengthIr::Fixed)
-        }
-        SyntaxKind::UnitLiteral => {
-            let text = token.text();
-            if text.trim_end().ends_with('%') {
-                let n = numeric_prefix(text.trim_end_matches('%'))?;
-                Some(LengthIr::Fill { weight: n / 100.0 })
-            } else {
-                // `12dp`, `12px`, `12pt`, … — a fixed logical-pixel extent.
-                numeric_prefix(&text).map(LengthIr::Fixed)
-            }
-        }
-        _ => None,
-    }
-}
-
-/// Folds an expression into a plain `f32`, if it is a constant number (with or
-/// without a `dp`/`px` unit suffix).
-fn fold_number(value: &Expr) -> Option<f32> {
-    let lit = LiteralExpr::cast(value.syntax().clone())?;
-    let token = lit.token()?;
-    match token.kind() {
-        SyntaxKind::IntLiteral | SyntaxKind::FloatLiteral | SyntaxKind::UnitLiteral => {
-            numeric_prefix(&token.text())
-        }
-        _ => None,
     }
 }
 
@@ -282,19 +241,6 @@ fn path_ident(value: &Expr) -> Option<String> {
         return None;
     }
     Some(first.text())
-}
-
-/// Parses the leading numeric run of a literal's spelling into an `f32`, dropping
-/// any trailing unit/type suffix (`12dp` → `12.0`, `1.5f32` → `1.5`).
-fn numeric_prefix(text: &str) -> Option<f32> {
-    let end = text
-        .find(|c: char| !(c.is_ascii_digit() || c == '.' || c == '-' || c == '+'))
-        .unwrap_or(text.len());
-    let head = &text[..end];
-    if head.is_empty() {
-        return None;
-    }
-    head.parse::<f32>().ok()
 }
 
 /// The type name a [`TypePath`] denotes — its last segment (`ui::Text` → `Text`).

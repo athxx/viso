@@ -10,7 +10,18 @@
 //! (AGENTS section 7.2). The identity that leaves the compiler is [`super::SymbolId`],
 //! not `NameId`; a `NameId` is only meaningful within the interner that minted it.
 
+use std::borrow::Cow;
 use std::collections::HashMap;
+
+use icu_normalizer::ComposingNormalizerBorrowed;
+
+/// The NFC form of an identifier spelling; ASCII is already normalized.
+pub(crate) fn nfc(text: &str) -> Cow<'_, str> {
+    if text.is_ascii() {
+        return Cow::Borrowed(text);
+    }
+    ComposingNormalizerBorrowed::new_nfc().normalize(text)
+}
 
 /// A dense handle to an interned name string, unique within one [`NameInterner`].
 ///
@@ -32,8 +43,9 @@ impl NameId {
 /// A string→[`NameId`] interner with reverse lookup.
 ///
 /// Interning is idempotent: the same text always returns the same `NameId` within
-/// one interner. The reverse direction ([`NameInterner::text`]) recovers the
-/// original string for diagnostics.
+/// one interner. Text is keyed by its NFC form (spec section 11), so two spellings
+/// that normalize alike are one name; the reverse direction
+/// ([`NameInterner::text`]) recovers that normalized string.
 #[derive(Debug, Default)]
 pub struct NameInterner {
     /// Interned strings, indexed by `NameId`.
@@ -48,16 +60,19 @@ impl NameInterner {
         Self::default()
     }
 
-    /// Interns `text`, returning its stable-within-this-interner [`NameId`].
+    /// Interns the NFC form of `text`, returning its stable-within-this-interner
+    /// [`NameId`].
     ///
-    /// Repeated calls with equal text return the same id without allocating again.
+    /// Repeated calls with NFC-equal text return the same id without allocating
+    /// again.
     pub fn intern(&mut self, text: &str) -> NameId {
-        if let Some(&id) = self.lookup.get(text) {
+        let text = nfc(text);
+        if let Some(&id) = self.lookup.get(text.as_ref()) {
             return id;
         }
         let id = NameId(self.names.len() as u32);
-        self.names.push(text.to_owned());
-        self.lookup.insert(text.to_owned(), id);
+        self.names.push(text.clone().into_owned());
+        self.lookup.insert(text.into_owned(), id);
         id
     }
 
@@ -95,5 +110,14 @@ mod tests {
         assert_eq!(interner.text(a), Some("count"));
         assert_eq!(interner.text(c), Some("label"));
         assert_eq!(interner.len(), 2, "only two distinct names");
+    }
+
+    #[test]
+    fn nfc_equal_spellings_intern_to_one_name() {
+        let mut interner = NameInterner::new();
+        let composed = interner.intern("caf\u{e9}");
+        let decomposed = interner.intern("cafe\u{301}");
+        assert_eq!(composed, decomposed);
+        assert_eq!(interner.text(decomposed), Some("caf\u{e9}"));
     }
 }

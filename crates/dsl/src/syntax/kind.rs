@@ -525,6 +525,14 @@ pub enum SyntaxKind {
     QualifiedVariantPattern,
     /// One `IDENT (":" Pattern)?` / `".."` field in a record constructor pattern (A.13).
     RecordPatternField,
+    /// A `".." IDENT?` rest item inside a list pattern (A.13).
+    RestPattern,
+    /// A `"(" Pattern ")"` grouped pattern (A.13).
+    ParenPattern,
+    /// A `Block` in expression position (A.12 `PrimaryExpression`).
+    BlockExpr,
+    /// A `"const" ConstExpression` generic argument (§26).
+    ConstGenericArg,
 
     // Advanced (parsed, not resolved this slice).
     /// A declaration in the Advanced tier (`trait`/`impl`/`template`/`style`/
@@ -549,8 +557,8 @@ impl SyntaxKind {
         )
     }
 
-    /// Whether this kind is one of the closed keyword set (spec section 12.1–12.6).
-    /// Context words (section 12.7) are `Ident`, so they return `false`.
+    /// Whether this kind is a keyword kind, strict or contextual (spec section
+    /// 12). Context words (section 12.7) are `Ident`, so they return `false`.
     #[inline]
     pub fn is_keyword(self) -> bool {
         // Keywords occupy one contiguous run in the enum: from the first
@@ -606,8 +614,128 @@ impl SyntaxKind {
         )
     }
 
-    /// Classify an identifier's text as its keyword kind, or [`Self::Ident`] if
-    /// it is not a keyword. A closed `match` on the byte string — no map, no
+    /// Whether this kind is a contextual keyword (spec section 12.3). The lexer
+    /// never produces one: the word lexes as [`Self::Ident`], and the parser
+    /// retags it only where section 12.4 recognizes it.
+    #[inline]
+    pub fn is_contextual_keyword(self) -> bool {
+        matches!(
+            self,
+            Self::InputKw
+                | Self::StateKw
+                | Self::ComputedKw
+                | Self::EventKw
+                | Self::SlotKw
+                | Self::EffectKw
+                | Self::ResourceKw
+                | Self::ViewKw
+                | Self::StyleKw
+                | Self::ThemeKw
+                | Self::TemplateKw
+                | Self::PartKw
+                | Self::RequiresKw
+                | Self::CapabilityKw
+                | Self::OnKw
+                | Self::CaptureKw
+                | Self::BubbleKw
+                | Self::EmitKw
+                | Self::TransactionKw
+                | Self::StartKw
+                | Self::MoveKw
+                | Self::WhenKw
+                | Self::RunKw
+                | Self::CleanupKw
+                | Self::SuccessKw
+                | Self::ErrorKw
+                | Self::CancelledKw
+                | Self::NodeKw
+                | Self::FillKw
+                | Self::BindKw
+                | Self::UsingKw
+                | Self::UseKw
+                | Self::OverrideKw
+                | Self::ReplaceKw
+                | Self::PreserveKw
+                | Self::KeyKw
+                | Self::LoadKw
+                | Self::PolicyKw
+                | Self::ScopeKw
+                | Self::VertexKw
+                | Self::FragmentKw
+                | Self::ComputeKw
+                | Self::UniformKw
+                | Self::InstanceKw
+                | Self::VaryingKw
+                | Self::TextureKw
+                | Self::SamplerKw
+        )
+    }
+
+    /// Whether this kind is a strict keyword (spec sections 12.1–12.2): a word
+    /// that can never be a binding or declaration name.
+    #[inline]
+    pub fn is_strict_keyword(self) -> bool {
+        self.is_keyword() && !self.is_contextual_keyword()
+    }
+
+    /// The contextual keyword `text` spells, if any (spec section 12.3). Used by
+    /// the parser at the section 12.4 recognition positions.
+    #[inline]
+    pub fn contextual_keyword(text: &str) -> Option<SyntaxKind> {
+        Some(match text {
+            "input" => Self::InputKw,
+            "state" => Self::StateKw,
+            "computed" => Self::ComputedKw,
+            "event" => Self::EventKw,
+            "slot" => Self::SlotKw,
+            "effect" => Self::EffectKw,
+            "resource" => Self::ResourceKw,
+            "view" => Self::ViewKw,
+            "style" => Self::StyleKw,
+            "theme" => Self::ThemeKw,
+            "template" => Self::TemplateKw,
+            "part" => Self::PartKw,
+            "requires" => Self::RequiresKw,
+            "capability" => Self::CapabilityKw,
+            "on" => Self::OnKw,
+            "capture" => Self::CaptureKw,
+            "bubble" => Self::BubbleKw,
+            "emit" => Self::EmitKw,
+            "transaction" => Self::TransactionKw,
+            "start" => Self::StartKw,
+            "move" => Self::MoveKw,
+            "when" => Self::WhenKw,
+            "run" => Self::RunKw,
+            "cleanup" => Self::CleanupKw,
+            "success" => Self::SuccessKw,
+            "error" => Self::ErrorKw,
+            "cancelled" => Self::CancelledKw,
+            "node" => Self::NodeKw,
+            "fill" => Self::FillKw,
+            "bind" => Self::BindKw,
+            "using" => Self::UsingKw,
+            "use" => Self::UseKw,
+            "override" => Self::OverrideKw,
+            "replace" => Self::ReplaceKw,
+            "preserve" => Self::PreserveKw,
+            "key" => Self::KeyKw,
+            "load" => Self::LoadKw,
+            "policy" => Self::PolicyKw,
+            "scope" => Self::ScopeKw,
+            "vertex" => Self::VertexKw,
+            "fragment" => Self::FragmentKw,
+            "compute" => Self::ComputeKw,
+            "uniform" => Self::UniformKw,
+            "instance" => Self::InstanceKw,
+            "varying" => Self::VaryingKw,
+            "texture" => Self::TextureKw,
+            "sampler" => Self::SamplerKw,
+            _ => return None,
+        })
+    }
+
+    /// Classify an identifier's text as its strict keyword kind, or
+    /// [`Self::Ident`] if it is not one; contextual keywords lex as identifiers. A closed `match` on the byte string — no map, no
     /// allocation — because the keyword set is small and fixed (spec section 12).
     ///
     /// `text` must be the exact source spelling of a normal identifier (not a
@@ -628,25 +756,11 @@ impl SyntaxKind {
             "implements" => Self::ImplementsKw,
             "where" => Self::WhereKw,
             "for" => Self::ForKw,
-            "input" => Self::InputKw,
-            "state" => Self::StateKw,
-            "computed" => Self::ComputedKw,
-            "event" => Self::EventKw,
-            "slot" => Self::SlotKw,
             "const" => Self::ConstKw,
             "fn" => Self::FnKw,
             "action" => Self::ActionKw,
-            "effect" => Self::EffectKw,
             "task" => Self::TaskKw,
-            "resource" => Self::ResourceKw,
-            "view" => Self::ViewKw,
-            "style" => Self::StyleKw,
-            "theme" => Self::ThemeKw,
-            "template" => Self::TemplateKw,
-            "part" => Self::PartKw,
             "native" => Self::NativeKw,
-            "requires" => Self::RequiresKw,
-            "capability" => Self::CapabilityKw,
 
             "let" => Self::LetKw,
             "mut" => Self::MutKw,
@@ -659,43 +773,8 @@ impl SyntaxKind {
             "while" => Self::WhileKw,
             "loop" => Self::LoopKw,
             "in" => Self::InKw,
-            "on" => Self::OnKw,
-            "capture" => Self::CaptureKw,
-            "bubble" => Self::BubbleKw,
-            "emit" => Self::EmitKw,
-            "transaction" => Self::TransactionKw,
-            "start" => Self::StartKw,
             "await" => Self::AwaitKw,
-            "move" => Self::MoveKw,
-            "when" => Self::WhenKw,
-            "run" => Self::RunKw,
-            "cleanup" => Self::CleanupKw,
-            "success" => Self::SuccessKw,
-            "error" => Self::ErrorKw,
-            "cancelled" => Self::CancelledKw,
-
-            "node" => Self::NodeKw,
-            "fill" => Self::FillKw,
-            "bind" => Self::BindKw,
-            "using" => Self::UsingKw,
-            "use" => Self::UseKw,
-            "override" => Self::OverrideKw,
-            "replace" => Self::ReplaceKw,
-            "preserve" => Self::PreserveKw,
-            "key" => Self::KeyKw,
-            "load" => Self::LoadKw,
-            "policy" => Self::PolicyKw,
-            "scope" => Self::ScopeKw,
-
             "shader" => Self::ShaderKw,
-            "vertex" => Self::VertexKw,
-            "fragment" => Self::FragmentKw,
-            "compute" => Self::ComputeKw,
-            "uniform" => Self::UniformKw,
-            "instance" => Self::InstanceKw,
-            "varying" => Self::VaryingKw,
-            "texture" => Self::TextureKw,
-            "sampler" => Self::SamplerKw,
 
             "true" => Self::TrueKw,
             "false" => Self::FalseKw,

@@ -578,38 +578,48 @@ ast_node!(
     FillClause = FillClause
 );
 ast_node!(
-    /// A pattern: a wildcard `_`, a binding name, an enum-variant path, or a
-    /// literal. The grammar wraps every pattern in one `Pattern` node; the finer
-    /// pattern productions (tuple/record/range/alternatives) land with their slice.
+    /// A pattern (A.13). Every pattern and subpattern is a `Pattern` node whose
+    /// single child is the production that matched (identifier, wildcard,
+    /// literal, tuple, list, constructor, qualified variant, range, `@` binding
+    /// or `|` alternatives).
     Pattern = Pattern
 );
 
 impl Pattern {
-    /// Every identifier token in the pattern, in order. For a bare binding
-    /// (`item`) this is the single bound name; for an enum-variant path
-    /// (`Status::Active`) these are the path segments, not bindings.
-    pub fn names(&self) -> impl Iterator<Item = SyntaxToken> + '_ {
+    /// Every name this pattern binds, in source order: identifier patterns,
+    /// `name @ ..` bindings, list rests (`..rest`) and record-field shorthands
+    /// (`Point { x }`). Qualified variant and constructor path segments are not
+    /// bindings.
+    pub fn bindings(&self) -> Vec<SyntaxToken> {
         self.syntax
-            .children_with_tokens()
+            .descendants()
             .into_iter()
-            .filter_map(|e| e.as_token().cloned())
-            .filter(|t| matches!(t.kind(), SyntaxKind::Ident | SyntaxKind::RawIdent))
+            .filter_map(|n| {
+                let binds = match n.kind() {
+                    SyntaxKind::IdentPattern
+                    | SyntaxKind::BindingPattern
+                    | SyntaxKind::RestPattern => true,
+                    SyntaxKind::RecordPatternField => !n
+                        .children_with_tokens()
+                        .into_iter()
+                        .any(|e| e.as_token().is_some_and(|t| t.kind() == SyntaxKind::Colon)),
+                    _ => false,
+                };
+                binds.then(|| support::name_token(&n)).flatten()
+            })
+            .collect()
     }
 
-    /// The bound binding name when this pattern is a bare identifier (a `for`
-    /// loop variable or an event payload binding). `None` for a path pattern
-    /// (which has a `::` separator), a wildcard, or a literal.
+    /// The bound name when this pattern is a single identifier pattern (`item`
+    /// or `mut item`), as a `for` loop variable or an event payload binding.
+    /// `None` for any other pattern shape.
     pub fn binding_name(&self) -> Option<SyntaxToken> {
-        let has_path_sep = self
-            .syntax
-            .children_with_tokens()
-            .into_iter()
-            .filter_map(|e| e.as_token().cloned())
-            .any(|t| t.kind() == SyntaxKind::ColonColon);
-        if has_path_sep {
-            return None;
+        let inner = self.syntax.first_child()?;
+        if inner.kind() == SyntaxKind::IdentPattern {
+            support::name_token(&inner)
+        } else {
+            None
         }
-        self.names().next()
     }
 }
 
@@ -970,22 +980,29 @@ impl BinaryExpr {
 }
 
 impl UnaryExpr {
-    /// The prefix operator token (`-`, `!`, `~`, `&`, `*`).
+    /// The prefix operator token (`-`, `+`, `!`, `~`, `await`).
     pub fn op(&self) -> Option<SyntaxToken> {
         support::token(&self.syntax, |k| {
             matches!(
                 k,
                 SyntaxKind::Minus
+                    | SyntaxKind::Plus
                     | SyntaxKind::Bang
                     | SyntaxKind::Tilde
-                    | SyntaxKind::Amp
-                    | SyntaxKind::Star
+                    | SyntaxKind::AwaitKw
             )
         })
     }
 
     /// The operand expression.
     pub fn operand(&self) -> Option<Expr> {
+        support::child(&self.syntax)
+    }
+}
+
+impl ParenExpr {
+    /// The parenthesized expression.
+    pub fn inner(&self) -> Option<Expr> {
         support::child(&self.syntax)
     }
 }
@@ -1087,6 +1104,7 @@ impl Expr {
                 | SyntaxKind::IfExpr
                 | SyntaxKind::MatchExpr
                 | SyntaxKind::ClosureExpr
+                | SyntaxKind::BlockExpr
         )
     }
 }

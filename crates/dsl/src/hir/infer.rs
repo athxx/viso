@@ -25,13 +25,53 @@
 //! the environment, so this module is testable against a stub environment without the
 //! component-lowering machinery existing yet.
 
+mod body;
+mod format;
+mod pattern;
+mod record;
+
 use std::collections::HashMap;
 
-use crate::ast::{AstNode, CallExpr, CastExpr, Expr, FieldExpr, PathExpr, TypePath};
+use crate::ast::{AstNode, CallExpr, CastExpr, Expr, PathExpr, TypePath};
 use crate::diag::Diagnostic;
 use crate::hir::ty::{Ty, TypeError, WidenError};
-use crate::resolve::{Resolution, ResolvedRef};
-use crate::syntax::{SyntaxKind, SyntaxNode, TextRange};
+use crate::resolve::{LocalSlot, Resolution, ResolvedRef, SymbolId};
+use crate::syntax::{SyntaxKind, SyntaxNode, SyntaxToken, TextRange};
+
+/// One field of a record type or of a record-payload enum variant.
+#[derive(Debug, Clone, PartialEq)]
+pub struct FieldInfo {
+    /// The field's name.
+    pub name: String,
+    /// The field's declared type.
+    pub ty: Ty,
+    /// Whether the declaration gives the field a default, so an initializer may omit it.
+    pub has_default: bool,
+    /// The span of the field's name in its declaration.
+    pub declared_at: TextRange,
+}
+
+/// What an enum variant carries.
+#[derive(Debug, Clone, PartialEq)]
+pub enum VariantPayload {
+    /// `idle;`
+    Unit,
+    /// `ready(T);`
+    Tuple(Vec<Ty>),
+    /// `failed { code: I64; }`
+    Record(Vec<FieldInfo>),
+}
+
+/// One variant of an enum type.
+#[derive(Debug, Clone, PartialEq)]
+pub struct VariantInfo {
+    /// The variant's name.
+    pub name: String,
+    /// What the variant carries.
+    pub payload: VariantPayload,
+    /// The span of the variant's name in its declaration.
+    pub declared_at: TextRange,
+}
 
 /// What inference needs to know about the surrounding program: the type of a resolved
 /// name and the signature of a callable it resolves to. Supplying this as a trait keeps
@@ -49,6 +89,34 @@ pub trait TypeEnv {
     /// used in callee position. `None` if the resolution is not a callable (a plain
     /// value call is then an `E2103`).
     fn callee_signature(&self, to: &Resolution) -> Option<(Vec<Ty>, Ty)>;
+
+    /// The fields of the record type `ty` names, when it is a record the environment
+    /// knows.
+    fn record_fields(&self, ty: SymbolId) -> Option<&[FieldInfo]> {
+        let _ = ty;
+        None
+    }
+
+    /// The variants of the enum type `ty` names, when it is an enum the environment
+    /// knows.
+    fn enum_variants(&self, ty: SymbolId) -> Option<&[VariantInfo]> {
+        let _ = ty;
+        None
+    }
+
+    /// The declared name of the nominal type `ty`, for diagnostics.
+    fn type_name(&self, ty: SymbolId) -> Option<&str> {
+        let _ = ty;
+        None
+    }
+}
+
+/// One enclosing loop during a body walk.
+struct LoopFrame {
+    /// Whether this is a `loop` (the only loop a `break` may carry a value out of).
+    carries_value: bool,
+    /// The type the loop's `break` values unify to so far.
+    break_ty: Option<Ty>,
 }
 
 /// The inference context for one expression walk: the resolved-reference index (so a
@@ -62,6 +130,13 @@ pub struct InferCx<'a> {
     env: &'a dyn TypeEnv,
     /// Diagnostics accumulated during the walk.
     diagnostics: Vec<Diagnostic>,
+    /// The type each local binding was given, keyed by its slot.
+    locals: HashMap<LocalSlot, Ty>,
+    /// The return type of each enclosing callable or closure, innermost last; `None`
+    /// when a closure's return type is still unknown.
+    returns: Vec<Option<Ty>>,
+    /// The enclosing loops, innermost last.
+    loops: Vec<LoopFrame>,
 }
 
 impl<'a> InferCx<'a> {
@@ -75,6 +150,9 @@ impl<'a> InferCx<'a> {
             refs: index,
             env,
             diagnostics: Vec::new(),
+            locals: HashMap::new(),
+            returns: Vec::new(),
+            loops: Vec::new(),
         }
     }
 
@@ -96,9 +174,26 @@ impl<'a> InferCx<'a> {
         let node = expr.syntax();
         match node.kind() {
             SyntaxKind::LiteralExpr => self.infer_literal(node, expected),
-            SyntaxKind::PathExpr => self.check_against(self.infer_path(node), expected, node),
+            SyntaxKind::PathExpr => {
+                let ty = self.infer_path(node, expected);
+                self.check_against(ty, expected, node)
+            }
             SyntaxKind::FieldExpr => self.infer_field(node, expected),
-            SyntaxKind::CallExpr => self.infer_call(node),
+            SyntaxKind::OptionalFieldExpr => self.infer_optional_field(node, expected),
+            SyntaxKind::RecordExpr => self.infer_record(node, expected),
+            SyntaxKind::CallExpr => self.infer_call(node, expected),
+            SyntaxKind::IndexExpr => self.infer_index(node, expected),
+            SyntaxKind::TryExpr => self.infer_try(node, expected),
+            SyntaxKind::RangeExpr => self.infer_range(node, expected),
+            SyntaxKind::ClosureExpr => self.infer_closure(node, expected, false),
+            SyntaxKind::BlockExpr => match node
+                .children()
+                .into_iter()
+                .find(|c| c.kind() == SyntaxKind::Block)
+            {
+                Some(block) => self.infer_block(&block, expected),
+                None => Ty::Unknown,
+            },
             SyntaxKind::BinaryExpr => self.infer_binary(node, expected),
             SyntaxKind::UnaryExpr => self.infer_unary(node, expected),
             SyntaxKind::CastExpr => self.infer_cast(node),
@@ -110,9 +205,6 @@ impl<'a> InferCx<'a> {
             SyntaxKind::ListExpr => self.infer_list(node, expected),
             SyntaxKind::IfExpr => self.infer_if(node, expected),
             SyntaxKind::MatchExpr => self.infer_match(node, expected),
-            // Advanced / not-yet-inferred forms lower to a placeholder this slice
-            // (index/range/try/optional-field/record/closure); they resolve when their
-            // consumer lands. They do not participate in numeric typing, so no diagnostic.
             _ => Ty::Unknown,
         }
     }
@@ -140,12 +232,33 @@ impl<'a> InferCx<'a> {
                 self.check_against(Ty::String, expected, node)
             }
             SyntaxKind::ColorLiteral => self.check_against(Ty::Color, expected, node),
-            // A unit literal (`10dp`, `50%`) carries its dimension in the suffix; the
-            // dimensional-suffix table is a later concern. Type it against the expected
-            // dimension when one is given, else leave it undetermined.
-            SyntaxKind::UnitLiteral => expected.cloned().unwrap_or(Ty::Unknown),
+            SyntaxKind::NoneKw => match expected {
+                Some(Ty::Option(_) | Ty::Unknown) => expected.cloned().unwrap_or(Ty::Unknown),
+                _ => self.check_against(Ty::Option(Box::new(Ty::Unknown)), expected, node),
+            },
+            SyntaxKind::UnitLiteral => self.type_unit_literal(&tok.text(), expected, node),
             _ => Ty::Unknown,
         }
+    }
+
+    /// Types a suffixed literal by its suffix (§19.1): a unit suffix gives its
+    /// dimension and a numeric type suffix (`2u8`, `1.5f32`) its scalar, range
+    /// checked. An unknown suffix was already reported by the lexer.
+    fn type_unit_literal(&mut self, text: &str, expected: Option<&Ty>, node: &SyntaxNode) -> Ty {
+        let Some((body, produced)) = split_unit_literal(text) else {
+            return expected.cloned().unwrap_or(Ty::Unknown);
+        };
+        if is_integer_ty(&produced)
+            && let Some(v) = parse_int_literal(body)
+            && !int_fits(v, &produced)
+        {
+            self.diagnostics.push(Diagnostic::error(
+                "E2103",
+                node.text_range(),
+                format!("integer literal out of range for `{}`", ty_name(&produced)),
+            ));
+        }
+        self.check_against(produced, expected, node)
     }
 
     /// Types an integer literal. With an integer `expected` type it instantiates there
@@ -213,89 +326,293 @@ impl<'a> InferCx<'a> {
         }
     }
 
-    /// Resolves a `PathExpr` to a type via the refs index and the environment.
-    fn infer_path(&self, node: &SyntaxNode) -> Ty {
+    /// Types a `PathExpr`: a local, a symbol the environment types, an enum variant
+    /// (`S::idle`, or the constructor `S::ready`), or `Option::None`.
+    fn infer_path(&mut self, node: &SyntaxNode, expected: Option<&Ty>) -> Ty {
         let Some(path) = PathExpr::cast(node.clone()) else {
             return Ty::Unknown;
         };
-        let Some(head) = path.segments().next() else {
+        let segments: Vec<SyntaxToken> = path.segments().collect();
+        let Some(head) = segments.first() else {
             return Ty::Unknown;
         };
-        match self.refs.get(&head.text_range()) {
-            Some(to) => self.env.resolution_ty(to).unwrap_or(Ty::Unknown),
-            None => Ty::Unknown,
+        match self.refs.get(&head.text_range()).copied() {
+            Some(Resolution::Symbol(id)) if segments.len() >= 2 => {
+                match self.env.enum_variants(id) {
+                    Some(_) => self.variant_value(id, &segments[1]),
+                    None => Ty::Unknown,
+                }
+            }
+            Some(to) if segments.len() == 1 => self.resolution_ty(&to),
+            Some(_) => Ty::Unknown,
+            None => match builtin_variant(&segments) {
+                Some("None") => match expected {
+                    Some(Ty::Option(_)) => expected.cloned().unwrap_or(Ty::Unknown),
+                    _ => Ty::Option(Box::new(Ty::Unknown)),
+                },
+                _ => Ty::Unknown,
+            },
         }
     }
 
-    /// Types a field access. Field-type resolution needs the record/component schema the
-    /// receiver's type names, which a later section supplies through the environment; for
-    /// now the receiver is inferred (so its own diagnostics fire) and the field yields a
-    /// placeholder checked against `expected` only when trivially known.
-    fn infer_field(&mut self, node: &SyntaxNode, expected: Option<&Ty>) -> Ty {
-        if let Some(field) = FieldExpr::cast(node.clone())
-            && let Some(recv) = field.receiver()
-        {
-            let _ = self.infer_expr(&recv, None);
+    /// The type of a resolved name: a local's bound type, else the environment's answer.
+    fn resolution_ty(&self, to: &Resolution) -> Ty {
+        match to {
+            Resolution::Local(slot) => self.locals.get(slot).cloned().unwrap_or(Ty::Unknown),
+            Resolution::Symbol(_) => self.env.resolution_ty(to).unwrap_or(Ty::Unknown),
         }
-        // Field-type lookup is a schema query deferred to component lowering; the
-        // placeholder is intentionally undetermined here and does not force `expected`.
-        let _ = expected;
-        Ty::Unknown
+    }
+
+    /// The symbol the name token at `range` resolves to, if it is a symbol.
+    fn symbol_at(&self, range: TextRange) -> Option<SymbolId> {
+        match self.refs.get(&range) {
+            Some(Resolution::Symbol(id)) => Some(*id),
+            _ => None,
+        }
     }
 
     /// Types a call: resolves the callee's signature, then checks each argument against
     /// its parameter type (widening allowed, `E2102`/`E2103` otherwise) and returns the
-    /// declared return type.
-    fn infer_call(&mut self, node: &SyntaxNode) -> Ty {
+    /// declared return type. `Some`/`Ok`/`Err` construct from the expected type, and
+    /// `format` is checked against its template.
+    fn infer_call(&mut self, node: &SyntaxNode, expected: Option<&Ty>) -> Ty {
         let Some(call) = CallExpr::cast(node.clone()) else {
             return Ty::Unknown;
         };
-        let sig = call.callee().and_then(|callee| {
-            let callee_node = callee.syntax();
-            if callee_node.kind() == SyntaxKind::PathExpr
-                && let Some(head) =
-                    PathExpr::cast(callee_node.clone()).and_then(|p| p.segments().next())
-                && let Some(to) = self.refs.get(&head.text_range())
-            {
-                return self.env.callee_signature(to);
-            }
-            None
-        });
-
+        let callee = call.callee();
         let args = call_args(node);
-        match sig {
-            Some((params, ret)) => {
-                for (i, arg) in args.iter().enumerate() {
-                    let expected = params.get(i);
-                    let _ = self.infer_expr(arg, expected);
-                }
-                ret
+        let path = callee
+            .as_ref()
+            .filter(|c| c.syntax().kind() == SyntaxKind::PathExpr)
+            .and_then(|c| PathExpr::cast(c.syntax().clone()));
+        let segments: Vec<SyntaxToken> = path
+            .as_ref()
+            .map(|p| p.segments().collect())
+            .unwrap_or_default();
+        let head = segments
+            .first()
+            .and_then(|h| self.refs.get(&h.text_range()).copied());
+
+        if head.is_none() && !segments.is_empty() {
+            if segments.len() == 1 && segments[0].text() == "format" {
+                let ty = self.check_format(node);
+                return self.check_against(ty, expected, node);
             }
+            if let Some(ctor) = builtin_variant(&segments)
+                && ctor != "None"
+            {
+                return self.infer_builtin_ctor(ctor, &args, expected, node);
+            }
+        }
+
+        let sig = match (head, segments.len()) {
+            (Some(Resolution::Local(slot)), 1) => match self.locals.get(&slot) {
+                Some(Ty::Fn(params, ret)) => Some((params.clone(), (**ret).clone())),
+                _ => None,
+            },
+            (Some(Resolution::Symbol(id)), n) if n >= 2 && self.env.enum_variants(id).is_some() => {
+                match self.variant_value(id, &segments[1]) {
+                    Ty::Fn(params, ret) => Some((params, *ret)),
+                    _ => None,
+                }
+            }
+            (Some(to), 1) => self.env.callee_signature(&to),
+            _ => {
+                // A method or computed callee: infer its receiver for its own diagnostics.
+                if let Some(callee) = &callee {
+                    match callee.syntax().kind() {
+                        SyntaxKind::PathExpr => {}
+                        SyntaxKind::FieldExpr => {
+                            if let Some(recv) = first_child_expr(callee.syntax()) {
+                                let _ = self.infer_expr(&recv, None);
+                            }
+                        }
+                        _ => {
+                            if let Ty::Fn(params, ret) = self.infer_expr(callee, None) {
+                                return self.apply_signature(&args, (params, *ret), expected, node);
+                            }
+                        }
+                    }
+                }
+                None
+            }
+        };
+
+        match sig {
+            Some(sig) => self.apply_signature(&args, sig, expected, node),
             None => {
                 // Unknown callee signature: still infer arguments so their own
-                // diagnostics fire, then leave the result undetermined.
+                // diagnostics fire, then leave the result undetermined. A closure here
+                // takes its parameter types from a signature this pass cannot see.
                 for arg in &args {
-                    let _ = self.infer_expr(arg, None);
+                    if arg.syntax().kind() == SyntaxKind::ClosureExpr {
+                        let _ = self.infer_closure(arg.syntax(), None, true);
+                    } else {
+                        let _ = self.infer_expr(arg, None);
+                    }
                 }
                 Ty::Unknown
             }
         }
     }
 
+    /// Checks `args` against a known signature and yields its return type.
+    fn apply_signature(
+        &mut self,
+        args: &[Expr],
+        (params, ret): (Vec<Ty>, Ty),
+        expected: Option<&Ty>,
+        node: &SyntaxNode,
+    ) -> Ty {
+        for (i, arg) in args.iter().enumerate() {
+            let _ = self.infer_expr(arg, params.get(i));
+        }
+        if ret == Ty::Unknown {
+            return ret;
+        }
+        self.check_against(ret, expected, node)
+    }
+
+    /// Types `Some(v)`, `Ok(v)` and `Err(e)` from the expected `Option`/`Result`.
+    fn infer_builtin_ctor(
+        &mut self,
+        ctor: &str,
+        args: &[Expr],
+        expected: Option<&Ty>,
+        node: &SyntaxNode,
+    ) -> Ty {
+        let (inner_expected, ok_expected, err_expected) = match expected {
+            Some(Ty::Option(t)) => (Some(t.as_ref()), None, None),
+            Some(Ty::Result(t, e)) => (None, Some(t.as_ref()), Some(e.as_ref())),
+            _ => (None, None, None),
+        };
+        let want = match ctor {
+            "Some" => inner_expected,
+            "Ok" => ok_expected,
+            _ => err_expected,
+        };
+        let inner = match args.first() {
+            Some(arg) => self.infer_expr(arg, want),
+            None => Ty::Unknown,
+        };
+        for extra in args.iter().skip(1) {
+            let _ = self.infer_expr(extra, None);
+        }
+        let produced = match (ctor, expected) {
+            ("Some", _) => Ty::Option(Box::new(inner)),
+            ("Ok", Some(Ty::Result(_, e))) => Ty::Result(Box::new(inner), e.clone()),
+            ("Ok", _) => Ty::Result(Box::new(inner), Box::new(Ty::Unknown)),
+            (_, Some(Ty::Result(t, _))) => Ty::Result(t.clone(), Box::new(inner)),
+            _ => Ty::Result(Box::new(Ty::Unknown), Box::new(inner)),
+        };
+        self.check_against(produced, expected, node)
+    }
+
+    /// Types `recv[index]`: a `List<T>` element is a `T`, and the index is an integer.
+    fn infer_index(&mut self, node: &SyntaxNode, expected: Option<&Ty>) -> Ty {
+        let exprs = child_exprs(node);
+        let recv = exprs
+            .first()
+            .map_or(Ty::Unknown, |e| self.infer_expr(e, None));
+        if let Some(index) = exprs.get(1) {
+            let ty = self.infer_expr(index, None);
+            if !matches!(ty, Ty::Unknown | Ty::Never) && !is_integer_ty(&ty) {
+                let message = format!("a list index is an integer, found `{}`", self.describe(&ty));
+                self.diagnostics.push(Diagnostic::error(
+                    "E2103",
+                    index.syntax().text_range(),
+                    message,
+                ));
+            }
+        }
+        match recv {
+            Ty::List(elem) => self.check_against(*elem, expected, node),
+            _ => Ty::Unknown,
+        }
+    }
+
+    /// Types `expr?`: it unwraps an `Option<T>` or `Result<T, E>` to `T`.
+    fn infer_try(&mut self, node: &SyntaxNode, expected: Option<&Ty>) -> Ty {
+        let Some(inner) = first_child_expr(node) else {
+            return Ty::Unknown;
+        };
+        match self.infer_expr(&inner, None) {
+            Ty::Option(t) | Ty::Result(t, _) => self.check_against(*t, expected, node),
+            Ty::Unknown | Ty::Never => Ty::Unknown,
+            other => {
+                let message = format!(
+                    "the `?` operator needs an `Option` or a `Result`, found `{}`",
+                    self.describe(&other)
+                );
+                self.diagnostics
+                    .push(Diagnostic::error("E2103", node.text_range(), message));
+                Ty::Unknown
+            }
+        }
+    }
+
+    /// Types `a..b` / `a..=b`: both bounds share one element type.
+    fn infer_range(&mut self, node: &SyntaxNode, expected: Option<&Ty>) -> Ty {
+        let inclusive = node
+            .children_with_tokens()
+            .into_iter()
+            .filter_map(|e| e.as_token().cloned())
+            .any(|t| t.kind() == SyntaxKind::DotDotEq);
+        let want = match expected {
+            Some(Ty::Range(t) | Ty::RangeInclusive(t)) => Some(t.as_ref().clone()),
+            _ => None,
+        };
+        let bounds = child_exprs(node);
+        let mut order: Vec<&Expr> = bounds.iter().collect();
+        // A typed bound instantiates a bare one, so the typed side goes first.
+        order.sort_by_key(|e| is_bare_number(e));
+        let mut elem = want.clone();
+        for bound in order {
+            let context = want.clone().or_else(|| elem.clone().filter(is_numeric_ty));
+            let ty = self.infer_expr(bound, context.as_ref());
+            elem = match elem {
+                None => Some(ty),
+                Some(prev) => match unify(&prev, &ty) {
+                    Some(u) => Some(u),
+                    None => {
+                        let message = format!(
+                            "range bounds have different types: `{}` and `{}`",
+                            self.describe(&prev),
+                            self.describe(&ty)
+                        );
+                        self.diagnostics.push(Diagnostic::error(
+                            "E2103",
+                            node.text_range(),
+                            message,
+                        ));
+                        Some(prev)
+                    }
+                },
+            };
+        }
+        let elem = Box::new(elem.unwrap_or(Ty::Unknown));
+        let produced = if inclusive {
+            Ty::RangeInclusive(elem)
+        } else {
+            Ty::Range(elem)
+        };
+        self.check_against(produced, expected, node)
+    }
+
     /// Types a binary expression. Comparison/logical operators yield `Bool`; arithmetic
     /// and bitwise operators yield the operands' common numeric type (widened to fit),
-    /// with `E2102` on an illegal implicit mix.
+    /// with `E2102` on an illegal implicit mix. Dimensional operands follow §19.3.
+    ///
+    /// A bare number (an unsuffixed literal, or `-`/`()`/arithmetic over them) takes
+    /// its type from the other operand, so the typed side is inferred first.
     fn infer_binary(&mut self, node: &SyntaxNode, expected: Option<&Ty>) -> Ty {
         let mut operands = child_exprs(node);
         let rhs = operands.pop();
         let lhs = operands.pop();
         let op = binary_op_kind(node);
-
-        let lty = lhs
-            .map(|e| self.infer_expr(&e, None))
-            .unwrap_or(Ty::Unknown);
-        // Comparisons/logicals produce Bool regardless of numeric widening direction.
-        if matches!(
+        let lhs_bare = lhs.as_ref().is_some_and(is_bare_number);
+        let rhs_bare = rhs.as_ref().is_some_and(is_bare_number);
+        let relational = matches!(
             op,
             Some(
                 SyntaxKind::EqEq
@@ -304,25 +621,44 @@ impl<'a> InferCx<'a> {
                     | SyntaxKind::Le
                     | SyntaxKind::Gt
                     | SyntaxKind::Ge
-                    | SyntaxKind::AmpAmp
-                    | SyntaxKind::PipePipe
             )
-        ) {
-            if let Some(r) = rhs {
-                let _ = self.infer_expr(&r, None);
+        );
+        let logical = matches!(op, Some(SyntaxKind::AmpAmp | SyntaxKind::PipePipe));
+        // Only an arithmetic result type can instantiate the operands.
+        let context = expected.filter(|t| !relational && !logical && is_numeric_ty(t));
+
+        let (lty, rty) = if lhs_bare && !rhs_bare {
+            let rty = self.infer_operand(rhs.as_ref(), None);
+            let lty = self.infer_operand(lhs.as_ref(), numeric(&rty));
+            (lty, rty)
+        } else {
+            let lty = self.infer_operand(lhs.as_ref(), if lhs_bare { context } else { None });
+            let want = if rhs_bare { numeric(&lty) } else { None };
+            let rty = self.infer_operand(rhs.as_ref(), want);
+            (lty, rty)
+        };
+
+        if relational || logical {
+            if relational && (lty.is_dimensional() || rty.is_dimensional()) {
+                self.check_dimension_comparison(&lty, &rty, node);
             }
             return self.check_against(Ty::Bool, expected, node);
         }
+        if lty != Ty::Unknown
+            && rty != Ty::Unknown
+            && (lty.is_dimensional() || rty.is_dimensional())
+        {
+            let scale = |ty: &Ty, bare: bool| ty == &Ty::F32 || (bare && is_numeric_ty(ty));
+            let result = self.infer_dimension_arith(
+                op,
+                (&lty, scale(&lty, lhs_bare)),
+                (&rty, scale(&rty, rhs_bare)),
+                rhs.as_ref(),
+                node,
+            );
+            return self.check_against(result, expected, node);
+        }
 
-        // Arithmetic/bitwise: the right operand types against the left (so a literal on
-        // one side instantiates at the other's type where possible).
-        let rty = match rhs {
-            Some(r) => {
-                let want = if lty == Ty::Unknown { None } else { Some(&lty) };
-                self.infer_expr(&r, want)
-            }
-            None => Ty::Unknown,
-        };
         let result = unify_numeric(&lty, &rty).unwrap_or_else(|| {
             // A non-widenable numeric mix is an illegal implicit conversion.
             if is_numeric_ty(&lty) && is_numeric_ty(&rty) && lty != rty {
@@ -339,6 +675,113 @@ impl<'a> InferCx<'a> {
             }
         });
         self.check_against(result, expected, node)
+    }
+
+    fn infer_operand(&mut self, expr: Option<&Expr>, expected: Option<&Ty>) -> Ty {
+        expr.map_or(Ty::Unknown, |e| self.infer_expr(e, expected))
+    }
+
+    /// The §19.3 arithmetic table for a binary expression with a dimensional operand.
+    /// Each side carries whether it may act as a scale factor (`F32` or a bare
+    /// number). An illegal combination is reported and yields `Unknown`.
+    fn infer_dimension_arith(
+        &mut self,
+        op: Option<SyntaxKind>,
+        (l, l_scale): (&Ty, bool),
+        (r, r_scale): (&Ty, bool),
+        rhs: Option<&Expr>,
+        node: &SyntaxNode,
+    ) -> Ty {
+        let cross = l.is_dimensional() && r.is_dimensional() && !(l.is_length() && r.is_length());
+        let (code, message) = match op {
+            Some(SyntaxKind::Plus | SyntaxKind::Minus) => {
+                if l == r {
+                    return l.clone();
+                }
+                if l.is_length() && r.is_length() {
+                    return Ty::MixedLength;
+                }
+                if cross {
+                    (
+                        "E2103",
+                        format!("cannot combine `{}` with `{}`", ty_name(l), ty_name(r)),
+                    )
+                } else {
+                    (
+                        "E2107",
+                        format!(
+                            "cannot add or subtract `{}` and `{}`; a dimensional value only combines with the same dimension",
+                            ty_name(l),
+                            ty_name(r)
+                        ),
+                    )
+                }
+            }
+            Some(SyntaxKind::Star) => {
+                if l.is_dimensional() && r_scale {
+                    return l.clone();
+                }
+                if r.is_dimensional() && l_scale {
+                    return r.clone();
+                }
+                (
+                    "E2107",
+                    "a dimensional value can only be scaled by an `F32` or a bare number"
+                        .to_owned(),
+                )
+            }
+            Some(SyntaxKind::Slash) => {
+                if l.is_dimensional() && r_scale {
+                    if l.is_length() && rhs.and_then(bare_value) == Some(0.0) {
+                        ("E2109", "a length divided by constant zero".to_owned())
+                    } else {
+                        return l.clone();
+                    }
+                } else if l == r && l != &Ty::MixedLength {
+                    return Ty::F64;
+                } else if cross {
+                    (
+                        "E2103",
+                        format!("cannot divide `{}` by `{}`", ty_name(l), ty_name(r)),
+                    )
+                } else {
+                    (
+                        "E2107",
+                        format!("cannot divide `{}` by `{}`", ty_name(l), ty_name(r)),
+                    )
+                }
+            }
+            _ => (
+                "E2107",
+                "this operator is not defined for dimensional values".to_owned(),
+            ),
+        };
+        self.diagnostics
+            .push(Diagnostic::error(code, node.text_range(), message));
+        Ty::Unknown
+    }
+
+    /// A relational comparison with a dimensional operand: only two values of the same
+    /// concrete dimension compare; a `MixedLength` is unordered until layout.
+    fn check_dimension_comparison(&mut self, l: &Ty, r: &Ty, node: &SyntaxNode) {
+        if l == &Ty::Unknown || r == &Ty::Unknown {
+            return;
+        }
+        let (code, message) = if l == &Ty::MixedLength || r == &Ty::MixedLength {
+            (
+                "E2107",
+                "a `MixedLength` cannot be compared before layout".to_owned(),
+            )
+        } else if l != r {
+            (
+                "E2103",
+                format!("cannot compare `{}` with `{}`", ty_name(l), ty_name(r)),
+            )
+        } else {
+            return;
+        };
+        self.diagnostics
+            .push(Diagnostic::error(code, node.text_range(), message));
     }
 
     /// Types a unary expression: `!` on `Bool` -> `Bool`; `-`/`~` preserve the operand's
@@ -419,7 +862,7 @@ impl<'a> InferCx<'a> {
     /// branch result types unify (`E2103` if they cannot).
     fn infer_if(&mut self, node: &SyntaxNode, expected: Option<&Ty>) -> Ty {
         // An IfExpr's children are: condition Expr, then Block, optional else (Block or
-        // IfExpr). We type the condition against Bool and unify the block tail types.
+        // IfExpr). We type the condition against Bool and unify the block types.
         let mut branch_tys = Vec::new();
         let mut saw_cond = false;
         for child in node.children() {
@@ -431,7 +874,7 @@ impl<'a> InferCx<'a> {
                     }
                 }
                 SyntaxKind::Block => {
-                    branch_tys.push(self.infer_block_tail(&child, expected));
+                    branch_tys.push(self.infer_block(&child, expected));
                 }
                 k if Expr::can_cast(k) => {
                     // else-if chain.
@@ -445,69 +888,36 @@ impl<'a> InferCx<'a> {
         self.unify_branches(&branch_tys, expected, node)
     }
 
-    /// Types a `match` expression: the arm result types unify (`E2103` otherwise). The
-    /// scrutinee is inferred for its own diagnostics.
+    /// Types a `match` expression: the arms bind against the scrutinee's type, their
+    /// result types unify (`E2103` otherwise), and the arms must be exhaustive.
     fn infer_match(&mut self, node: &SyntaxNode, expected: Option<&Ty>) -> Ty {
-        if let Some(scrut) = first_child_expr(node) {
-            let _ = self.infer_expr(&scrut, None);
-        }
-        let mut arm_tys = Vec::new();
-        for arm in node.children() {
-            if arm.kind() == SyntaxKind::MatchArm {
-                // An arm's value is its trailing Block or Expr (after the pattern and an
-                // optional guard). Take the last child that is a block/expr.
-                if let Some(block) = arm
-                    .children()
-                    .into_iter()
-                    .rev()
-                    .find(|c| c.kind() == SyntaxKind::Block)
-                {
-                    arm_tys.push(self.infer_block_tail(&block, expected));
-                } else if let Some(value) = arm.children().into_iter().rev().find_map(Expr::cast) {
-                    arm_tys.push(self.infer_expr(&value, expected));
-                }
-            }
-        }
+        let arm_tys = self.check_match(node, expected);
         self.unify_branches(&arm_tys, expected, node)
     }
 
-    /// The type a block evaluates to: the type of its trailing tail expression, or `Unit`
-    /// if it ends in a statement. Statements are not re-inferred here beyond the tail
-    /// (statement-level inference is a component-lowering concern); this keeps `if`/`match`
-    /// result unification working on the common expression-bodied-block shape.
-    fn infer_block_tail(&mut self, block: &SyntaxNode, expected: Option<&Ty>) -> Ty {
-        // Every statement is wrapped: the parser always folds a trailing expression into
-        // an `ExprStmt` (a missing `;` is a recovered diagnostic, not a distinct node). So
-        // the block's value is the `Expr` inside its last `ExprStmt`.
-        match block
-            .children()
-            .into_iter()
-            .rev()
-            .find(|c| c.kind() == SyntaxKind::ExprStmt)
-        {
-            Some(stmt) => match first_child_expr(&stmt) {
-                Some(tail) => self.infer_expr(&tail, expected),
-                None => Ty::Unit,
-            },
-            None => Ty::Unit,
-        }
-    }
-
     /// Unifies branch result types into one type, emitting `E2103` on the given node when
-    /// they are incompatible. An empty set (no branches) is `Unit`.
+    /// they are incompatible. A diverging branch (`Never`) takes any type; an empty set
+    /// (no branches) is `Unit`.
     fn unify_branches(&mut self, tys: &[Ty], expected: Option<&Ty>, node: &SyntaxNode) -> Ty {
+        if !tys.is_empty() && tys.iter().all(|t| t == &Ty::Never) {
+            return Ty::Never;
+        }
         let mut acc: Option<Ty> = expected.cloned();
         for t in tys {
             acc = match acc {
                 None => Some(t.clone()),
-                Some(prev) => match unify_numeric(&prev, t) {
+                Some(prev) => match unify(&prev, t) {
                     Some(u) => Some(u),
-                    None if &prev == t => Some(prev),
                     None => {
+                        let message = format!(
+                            "incompatible types across branches: `{}` and `{}`",
+                            self.describe(&prev),
+                            self.describe(t)
+                        );
                         self.diagnostics.push(Diagnostic::error(
                             "E2103",
                             node.text_range(),
-                            "incompatible types across branches",
+                            message,
                         ));
                         Some(prev)
                     }
@@ -518,12 +928,21 @@ impl<'a> InferCx<'a> {
     }
 
     /// Resolves a type annotation to a [`Ty`], emitting `E2101` for `Float` and `E2103`
-    /// for an unknown builtin name. A nominal (non-builtin) name is left as `Unknown`
-    /// here — nominal type resolution is a symbol-table query the environment owns.
+    /// for an unknown builtin name.
     fn resolve_annotation(&mut self, path: &TypePath, range: TextRange) -> Ty {
-        match Ty::from_type_path(path) {
-            Ok(Some(ty)) => ty,
-            Ok(None) => Ty::Unknown,
+        self.annotation_ty(path.syntax(), range)
+    }
+
+    /// Lowers a type annotation node (a `TypePath` or `TupleType`), naming nominal
+    /// types by the symbols the resolver bound their heads to.
+    fn annotation_ty(&mut self, node: &SyntaxNode, range: TextRange) -> Ty {
+        let refs = &self.refs;
+        let nominal = |at: TextRange| match refs.get(&at) {
+            Some(Resolution::Symbol(id)) => Some(*id),
+            _ => None,
+        };
+        match Ty::from_annotation(node, &nominal) {
+            Ok(ty) => ty,
             Err(err) => {
                 self.diagnostics
                     .push(Diagnostic::error(err.code(), range, err.message()));
@@ -534,34 +953,45 @@ impl<'a> InferCx<'a> {
         }
     }
 
-    /// Checks a produced type against an expected type: identical or a legal widening is
-    /// accepted (returning the *expected* type so it flows outward), else the appropriate
-    /// diagnostic (`E2102` for an illegal numeric widening, `E2103` for any other
-    /// mismatch) is emitted and the expected type is returned to bound error cascades.
+    /// Checks a produced type against an expected type: identical, structurally equal
+    /// modulo undetermined parts, or a legal widening is accepted (returning the
+    /// *expected* type so it flows outward), else the appropriate diagnostic (`E2102`
+    /// for an illegal numeric widening, `E2103` for any other mismatch) is emitted and
+    /// the expected type is returned to bound error cascades. A diverging `Never`
+    /// satisfies any expectation.
     fn check_against(&mut self, produced: Ty, expected: Option<&Ty>, node: &SyntaxNode) -> Ty {
         let Some(target) = expected else {
             return produced;
         };
-        if &produced == target || produced == Ty::Unknown || target == &Ty::Unknown {
-            return if produced == Ty::Unknown {
-                target.clone()
-            } else {
-                produced
-            };
+        if produced == Ty::Never {
+            return target.clone();
+        }
+        if compatible(&produced, target) {
+            return merge(target, &produced);
+        }
+        if produced == Ty::MixedLength && target.is_length_family() {
+            let message = format!(
+                "a `MixedLength` cannot be typed as `{}` before layout",
+                self.describe(target)
+            );
+            self.diagnostics
+                .push(Diagnostic::error("E2106", node.text_range(), message));
+            return target.clone();
+        }
+        if produced.widens_to(target) {
+            return target.clone();
         }
         if is_numeric_ty(&produced) && is_numeric_ty(target) {
             match produced.check_implicit_widen(target) {
                 Ok(()) => target.clone(),
                 Err(WidenError::IllegalImplicit) => {
-                    self.diagnostics.push(Diagnostic::error(
-                        "E2102",
-                        node.text_range(),
-                        format!(
-                            "illegal implicit conversion from `{}` to `{}`; an explicit cast is required",
-                            ty_name(&produced),
-                            ty_name(target)
-                        ),
-                    ));
+                    let message = format!(
+                        "illegal implicit conversion from `{}` to `{}`; an explicit cast is required",
+                        self.describe(&produced),
+                        self.describe(target)
+                    );
+                    self.diagnostics
+                        .push(Diagnostic::error("E2102", node.text_range(), message));
                     target.clone()
                 }
             }
@@ -573,15 +1003,101 @@ impl<'a> InferCx<'a> {
 
     /// Emits an `E2103` type mismatch.
     fn emit_mismatch(&mut self, produced: &Ty, target: &Ty, range: TextRange) {
-        self.diagnostics.push(Diagnostic::error(
-            "E2103",
-            range,
-            format!(
-                "type mismatch: expected `{}`, found `{}`",
-                ty_name(target),
-                ty_name(produced)
-            ),
-        ));
+        let message = format!(
+            "type mismatch: expected `{}`, found `{}`",
+            self.describe(target),
+            self.describe(produced)
+        );
+        self.diagnostics
+            .push(Diagnostic::error("E2103", range, message));
+    }
+
+    /// A type as source spells it, for diagnostic messages.
+    fn describe(&self, ty: &Ty) -> String {
+        let list = |tys: &[Ty]| {
+            tys.iter()
+                .map(|t| self.describe(t))
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
+        match ty {
+            Ty::Named(id) => self.env.type_name(*id).unwrap_or("<named>").to_string(),
+            Ty::Tuple(tys) => format!("({})", list(tys)),
+            Ty::Fn(params, ret) => format!("fn({}) -> {}", list(params), self.describe(ret)),
+            Ty::List(t) => format!("List<{}>", self.describe(t)),
+            Ty::Option(t) => format!("Option<{}>", self.describe(t)),
+            Ty::Result(t, e) => format!("Result<{}, {}>", self.describe(t), self.describe(e)),
+            Ty::Range(t) => format!("Range<{}>", self.describe(t)),
+            Ty::RangeInclusive(t) => format!("RangeInclusive<{}>", self.describe(t)),
+            _ => ty_name(ty).to_string(),
+        }
+    }
+}
+
+/// Whether two types agree once their undetermined (`Unknown`) parts are ignored.
+fn compatible(a: &Ty, b: &Ty) -> bool {
+    match (a, b) {
+        (Ty::Unknown, _) | (_, Ty::Unknown) => true,
+        (Ty::Tuple(xs), Ty::Tuple(ys)) => {
+            xs.len() == ys.len() && xs.iter().zip(ys).all(|(x, y)| compatible(x, y))
+        }
+        (Ty::Fn(xp, xr), Ty::Fn(yp, yr)) => {
+            xp.len() == yp.len()
+                && xp.iter().zip(yp).all(|(x, y)| compatible(x, y))
+                && compatible(xr, yr)
+        }
+        (Ty::List(x), Ty::List(y))
+        | (Ty::Option(x), Ty::Option(y))
+        | (Ty::Range(x), Ty::Range(y))
+        | (Ty::RangeInclusive(x), Ty::RangeInclusive(y)) => compatible(x, y),
+        (Ty::Result(xt, xe), Ty::Result(yt, ye)) => compatible(xt, yt) && compatible(xe, ye),
+        _ => a == b,
+    }
+}
+
+/// `a` with its undetermined parts filled from the compatible `b`.
+fn merge(a: &Ty, b: &Ty) -> Ty {
+    let boxed = |x: &Ty, y: &Ty| Box::new(merge(x, y));
+    match (a, b) {
+        (Ty::Unknown, _) => b.clone(),
+        (Ty::Tuple(xs), Ty::Tuple(ys)) => {
+            Ty::Tuple(xs.iter().zip(ys).map(|(x, y)| merge(x, y)).collect())
+        }
+        (Ty::Fn(xp, xr), Ty::Fn(yp, yr)) => Ty::Fn(
+            xp.iter().zip(yp).map(|(x, y)| merge(x, y)).collect(),
+            boxed(xr, yr),
+        ),
+        (Ty::List(x), Ty::List(y)) => Ty::List(boxed(x, y)),
+        (Ty::Option(x), Ty::Option(y)) => Ty::Option(boxed(x, y)),
+        (Ty::Range(x), Ty::Range(y)) => Ty::Range(boxed(x, y)),
+        (Ty::RangeInclusive(x), Ty::RangeInclusive(y)) => Ty::RangeInclusive(boxed(x, y)),
+        (Ty::Result(xt, xe), Ty::Result(yt, ye)) => Ty::Result(boxed(xt, yt), boxed(xe, ye)),
+        _ => a.clone(),
+    }
+}
+
+/// The common type of two values that meet (branch results, range bounds): a
+/// diverging side takes the other, numerics unify, and structural types agree
+/// modulo undetermined parts.
+fn unify(a: &Ty, b: &Ty) -> Option<Ty> {
+    match (a, b) {
+        (Ty::Never, _) => Some(b.clone()),
+        (_, Ty::Never) => Some(a.clone()),
+        _ => unify_numeric(a, b).or_else(|| compatible(a, b).then(|| merge(a, b))),
+    }
+}
+
+/// The builtin `Option`/`Result` constructor a path names, when it names one:
+/// `Some`, `None`, `Ok`, `Err`, or their `Option::`/`Result::` qualified forms.
+fn builtin_variant(segments: &[SyntaxToken]) -> Option<&'static str> {
+    let texts: Vec<String> = segments.iter().map(|t| t.text().to_string()).collect();
+    let texts: Vec<&str> = texts.iter().map(String::as_str).collect();
+    match texts.as_slice() {
+        ["Some"] | ["Option", "Some"] => Some("Some"),
+        ["None"] | ["Option", "None"] => Some("None"),
+        ["Ok"] | ["Result", "Ok"] => Some("Ok"),
+        ["Err"] | ["Result", "Err"] => Some("Err"),
+        _ => None,
     }
 }
 
@@ -624,6 +1140,112 @@ fn unify_numeric(a: &Ty, b: &Ty) -> Option<Ty> {
     } else {
         None
     }
+}
+
+/// A numeric type as an instantiation context for a bare number.
+fn numeric(ty: &Ty) -> Option<&Ty> {
+    is_numeric_ty(ty).then_some(ty)
+}
+
+/// Whether `expr` is a bare number: an unsuffixed literal, or `-`, parentheses or
+/// arithmetic over bare numbers. Such a value has no type of its own until context
+/// instantiates it.
+fn is_bare_number(expr: &Expr) -> bool {
+    let node = expr.syntax();
+    match node.kind() {
+        SyntaxKind::LiteralExpr => bare_literal_token(node).is_some(),
+        SyntaxKind::ParenExpr | SyntaxKind::UnaryExpr => {
+            (node.kind() == SyntaxKind::ParenExpr || unary_op_kind(node) == Some(SyntaxKind::Minus))
+                && first_child_expr(node).is_some_and(|e| is_bare_number(&e))
+        }
+        SyntaxKind::BinaryExpr => {
+            matches!(
+                binary_op_kind(node),
+                Some(SyntaxKind::Plus | SyntaxKind::Minus | SyntaxKind::Star | SyntaxKind::Slash)
+            ) && child_exprs(node).iter().all(is_bare_number)
+        }
+        _ => false,
+    }
+}
+
+/// The value of a bare number, or `None` when it is not one or does not fold
+/// (a division by zero inside it).
+fn bare_value(expr: &Expr) -> Option<f64> {
+    let node = expr.syntax();
+    match node.kind() {
+        SyntaxKind::LiteralExpr => {
+            let tok = bare_literal_token(node)?;
+            match tok.kind() {
+                SyntaxKind::IntLiteral => parse_int_literal(&tok.text()).map(|v| v as f64),
+                _ => parse_float_literal(&tok.text()),
+            }
+        }
+        SyntaxKind::ParenExpr => bare_value(&first_child_expr(node)?),
+        SyntaxKind::UnaryExpr if unary_op_kind(node) == Some(SyntaxKind::Minus) => {
+            bare_value(&first_child_expr(node)?).map(|v| -v)
+        }
+        SyntaxKind::BinaryExpr => {
+            let operands = child_exprs(node);
+            let [lhs, rhs] = operands.as_slice() else {
+                return None;
+            };
+            let (a, b) = (bare_value(lhs)?, bare_value(rhs)?);
+            match binary_op_kind(node)? {
+                SyntaxKind::Plus => Some(a + b),
+                SyntaxKind::Minus => Some(a - b),
+                SyntaxKind::Star => Some(a * b),
+                SyntaxKind::Slash if b != 0.0 => Some(a / b),
+                _ => None,
+            }
+        }
+        _ => None,
+    }
+}
+
+/// The literal token of an unsuffixed numeric literal expression.
+fn bare_literal_token(node: &SyntaxNode) -> Option<SyntaxToken> {
+    node.children_with_tokens()
+        .into_iter()
+        .find_map(|e| e.as_token().cloned())
+        .filter(|t| matches!(t.kind(), SyntaxKind::IntLiteral | SyntaxKind::FloatLiteral))
+}
+
+/// Splits a suffixed literal into its numeric body and the type its suffix names
+/// (§19.1). `None` for a suffix outside the closed set.
+fn split_unit_literal(text: &str) -> Option<(&str, Ty)> {
+    const SUFFIXES: [(&str, Ty); 25] = [
+        ("dp", Ty::Dp),
+        ("px", Ty::Px),
+        ("sp", Ty::Sp),
+        ("em", Ty::Em),
+        ("%", Ty::Percent),
+        ("ns", Ty::Duration),
+        ("us", Ty::Duration),
+        ("ms", Ty::Duration),
+        ("s", Ty::Duration),
+        ("min", Ty::Duration),
+        ("deg", Ty::Angle),
+        ("rad", Ty::Angle),
+        ("turn", Ty::Angle),
+        ("hz", Ty::Frequency),
+        ("khz", Ty::Frequency),
+        ("i8", Ty::I8),
+        ("i16", Ty::I16),
+        ("i32", Ty::I32),
+        ("i64", Ty::I64),
+        ("u8", Ty::U8),
+        ("u16", Ty::U16),
+        ("u32", Ty::U32),
+        ("u64", Ty::U64),
+        ("f32", Ty::F32),
+        ("f64", Ty::F64),
+    ];
+    // The longest matching suffix wins, so `ms` is not read as `s`.
+    SUFFIXES
+        .iter()
+        .filter(|(suffix, _)| text.len() > suffix.len() && text.ends_with(suffix))
+        .max_by_key(|(suffix, _)| suffix.len())
+        .map(|(suffix, ty)| (&text[..text.len() - suffix.len()], ty.clone()))
 }
 
 /// The inclusive integer range representable by an integer scalar type, as `i128` so both
@@ -728,7 +1350,9 @@ fn ty_name(ty: &Ty) -> &'static str {
         Ty::Dp => "Dp",
         Ty::Px => "Px",
         Ty::Sp => "Sp",
+        Ty::Em => "Em",
         Ty::Percent => "Percent",
+        Ty::MixedLength => "MixedLength",
         Ty::Duration => "Duration",
         Ty::Angle => "Angle",
         Ty::Frequency => "Frequency",
@@ -737,6 +1361,9 @@ fn ty_name(ty: &Ty) -> &'static str {
         Ty::Fn(_, _) => "<fn>",
         Ty::List(_) => "<list>",
         Ty::Option(_) => "<option>",
+        Ty::Result(_, _) => "<result>",
+        Ty::Range(_) => "<range>",
+        Ty::RangeInclusive(_) => "<range-inclusive>",
         Ty::InferInt => "<int>",
         Ty::InferFloat => "<float>",
         Ty::Unknown => "<unknown>",
@@ -787,6 +1414,24 @@ fn unary_op_kind(node: &SyntaxNode) -> Option<SyntaxKind> {
         .into_iter()
         .filter_map(|e| e.as_token().map(|t| t.kind()))
         .find(|k| matches!(k, SyntaxKind::Minus | SyntaxKind::Bang | SyntaxKind::Tilde))
+}
+
+/// Whether a token kind is an assignment operator (`=` or an augmenting one).
+fn is_assign_op(k: SyntaxKind) -> bool {
+    matches!(
+        k,
+        SyntaxKind::Eq
+            | SyntaxKind::PlusEq
+            | SyntaxKind::MinusEq
+            | SyntaxKind::StarEq
+            | SyntaxKind::SlashEq
+            | SyntaxKind::PercentEq
+            | SyntaxKind::AmpEq
+            | SyntaxKind::PipeEq
+            | SyntaxKind::CaretEq
+            | SyntaxKind::ShlEq
+            | SyntaxKind::ShrEq
+    )
 }
 
 /// Whether a token kind is a binary operator.
@@ -1091,6 +1736,128 @@ mod tests {
         let ty = cx.infer_expr(&expr, None);
         assert_eq!(ty, Ty::Unit);
         assert_eq!(codes(cx.diagnostics()), ["E2103"]);
+    }
+
+    // --- dimensional arithmetic (§19.3) -------------------------------------
+
+    /// Infers a fragment where `name` is bound to a symbol of type `ty`.
+    fn infer_bound(src: &str, name: &str, ty: Ty, expected: Option<&Ty>) -> (Ty, Vec<Diagnostic>) {
+        let (root, expr) = parse_fragment(src);
+        let mut env = StubEnv::default();
+        let id = SymbolId::from_parts(9, 0);
+        env.tys.insert(id, ty);
+        let refs = [ResolvedRef {
+            range: ident_range(&root, name),
+            to: Resolution::Symbol(id),
+        }];
+        let mut cx = InferCx::new(&refs, &env);
+        let ty = cx.infer_expr(&expr, expected);
+        (ty, cx.into_diagnostics())
+    }
+
+    #[test]
+    fn unit_literals_type_by_suffix() {
+        for (src, ty) in [
+            ("16dp", Ty::Dp),
+            ("1px", Ty::Px),
+            ("14sp", Ty::Sp),
+            ("1.5em", Ty::Em),
+            ("50%", Ty::Percent),
+            ("250ms", Ty::Duration),
+            ("5min", Ty::Duration),
+            ("90deg", Ty::Angle),
+            ("60hz", Ty::Frequency),
+            ("2khz", Ty::Frequency),
+            ("2u8", Ty::U8),
+            ("1.5f32", Ty::F32),
+        ] {
+            let (got, diags) = infer_bare(src);
+            assert_eq!(got, ty, "{src}");
+            assert!(diags.is_empty(), "{src}: {diags:?}");
+        }
+    }
+
+    #[test]
+    fn a_suffixed_integer_is_range_checked() {
+        let (ty, diags) = infer_bare("300u8");
+        assert_eq!(ty, Ty::U8);
+        assert_eq!(codes(&diags), ["E2103"]);
+    }
+
+    #[test]
+    fn same_dimension_arithmetic_keeps_the_dimension() {
+        for (src, ty) in [
+            ("1s + 250ms", Ty::Duration),
+            ("16dp * 2", Ty::Dp),
+            ("2 * 16dp", Ty::Dp),
+            ("16dp / 2", Ty::Dp),
+            ("-(8dp)", Ty::Dp),
+            ("100dp / 50dp", Ty::F64),
+        ] {
+            let (got, diags) = infer_bare(src);
+            assert_eq!(got, ty, "{src}");
+            assert!(diags.is_empty(), "{src}: {diags:?}");
+        }
+    }
+
+    #[test]
+    fn mixing_length_units_gives_mixed_length() {
+        let (ty, diags) = infer_bound("100% - 2 * inset", "inset", Ty::Dp, None);
+        assert_eq!(ty, Ty::MixedLength);
+        assert!(diags.is_empty(), "{diags:?}");
+        let (ty, diags) = infer_bare("(100% - 8dp) / 2");
+        assert_eq!(ty, Ty::MixedLength);
+        assert!(diags.is_empty(), "{diags:?}");
+    }
+
+    #[test]
+    fn a_length_widens_to_mixed_length() {
+        let (ty, diags) = infer_expecting("8dp", &Ty::MixedLength);
+        assert_eq!(ty, Ty::MixedLength);
+        assert!(diags.is_empty(), "{diags:?}");
+    }
+
+    #[test]
+    fn a_mixed_length_cannot_take_a_concrete_unit() {
+        let (_, diags) = infer_expecting("10dp + 5px", &Ty::Dp);
+        assert_eq!(codes(&diags), ["E2106"]);
+    }
+
+    #[test]
+    fn illegal_dimensional_operations_are_reported() {
+        for (src, code) in [
+            ("1s + 2dp", "E2103"),
+            ("10dp < 5px", "E2103"),
+            ("(100% - 8dp) < 200dp", "E2107"),
+            ("50% + 0.5", "E2107"),
+            ("2dp * 3dp", "E2107"),
+            ("10dp % 3dp", "E2107"),
+            ("1 / 2dp", "E2107"),
+            ("8dp / 0", "E2109"),
+            ("8dp / (1 - 1)", "E2109"),
+        ] {
+            let (_, diags) = infer_bare(src);
+            assert_eq!(codes(&diags), [code], "{src}");
+        }
+    }
+
+    #[test]
+    fn a_typed_integer_is_not_a_scale_factor() {
+        let (_, diags) = infer_bound("16dp * k", "k", Ty::I64, None);
+        assert_eq!(codes(&diags), ["E2107"]);
+        let (ty, diags) = infer_bound("16dp * k", "k", Ty::F32, None);
+        assert_eq!(ty, Ty::Dp);
+        assert!(diags.is_empty(), "{diags:?}");
+    }
+
+    #[test]
+    fn a_bare_number_instantiates_at_the_typed_operand() {
+        let (ty, diags) = infer_bound("1 + small", "small", Ty::I8, None);
+        assert_eq!(ty, Ty::I8);
+        assert!(diags.is_empty(), "{diags:?}");
+        let (ty, diags) = infer_expecting("1 + 2", &Ty::U8);
+        assert_eq!(ty, Ty::U8);
+        assert!(diags.is_empty(), "{diags:?}");
     }
 
     // --- malformed input does not panic ------------------------------------

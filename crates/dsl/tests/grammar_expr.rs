@@ -107,7 +107,7 @@ fn turbofish_call_is_a_call_expr() {
 fn comparison_chain_is_non_associative() {
     assert!(
         has_error("a < b < c", ParseErrorKind::NonAssocChain),
-        "chained comparison must be diagnosed E2701"
+        "chained comparison must be diagnosed E2802"
     );
     // A single comparison is fine.
     assert!(!has_error("a < b", ParseErrorKind::NonAssocChain));
@@ -117,7 +117,7 @@ fn comparison_chain_is_non_associative() {
 fn range_chain_is_non_associative() {
     assert!(
         has_error("a .. b .. c", ParseErrorKind::NonAssocRange),
-        "chained range must be diagnosed E2702"
+        "chained range must be diagnosed E2802"
     );
 }
 

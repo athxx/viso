@@ -40,7 +40,7 @@ pub fn ui(input: TokenStream) -> TokenStream {
 /// from the invoking file, the package and language version from `Viso.toml`.
 ///
 /// ```ignore
-/// component! { Counter { state count = 0; view { Text { text: count; } } } }
+/// component! { Counter { state count = 0; view { Text { text: format("{}", count); } } } }
 /// ```
 #[proc_macro]
 pub fn component(input: TokenStream) -> TokenStream {

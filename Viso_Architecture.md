@@ -60,7 +60,7 @@ component! {
         state count = 0;
         view {
             Column {
-                Text { text: count; }
+                Text { text: format("{}", count); }
             }
         }
     }
@@ -93,7 +93,7 @@ Viso 1.0 将以下地基问题定义为正式架构决策：
 2. **`Handle<T>`：只表达 typed identity/capability，不直接暴露跨帧 `&T`/`&mut T`。** 读写必须通过受 context 约束的 query/action/property API，避免绕过 reactive invalidation 和生命周期检查。
 3. **Transform：与 Layout 使用独立的失效/传播平面。** 二者默认共享 `NodeId` 和结构语义，但 transform/scroll/animation 可在不触发布局的情况下局部更新。
 4. **自研与依赖必须分级。** Viso 只在决定差异化、热路径和语义所有权的部分强制自研；Unicode/shaping、accessibility bridge、async executor、网络/TLS、媒体 codec 等优先复用成熟实现，并由 Viso 自己掌握 integration/cache/ABI contract。
-5. **模块边界必须机器化验证。** crate DAG 与关键 module import 规则进入 `cargo xtask arch-check`/CI，不再只依赖 AGENTS.md 和 code review。
+5. **模块边界必须机器化验证。** crate DAG 由 `cargo xtask check-deps`（`xtask/src/main.rs` 中的 allowlist）在 CI 验证，不再只依赖 AGENTS.md 和 code review；module 级 import 规则检查仍是目标（§10.2）。
 6. **Reactive dynamic fallback 必须显式、可计数、可 benchmark。** 编译器能够静态解析的绑定不得静默掉入动态路径。
 7. **Web/Mobile/Linux backend 采用 tier + capability 模型。** Tier-1 明确优化现代主后端；兼容后端可追加，但不得反向把 renderer 设计压成最低公分母。
 8. **Viso DSL 使用 `ui!` / `view!` / `component!` 三个语义化 Rust 入口。** `ui!` 解析 View Fragment，`component!` 解析 Component，`view!("...vs")` 编译外部 `.vs`；三者共享同一 schema/HIR/IR/runtime 语义。`.vs` 是唯一 canonical 外部 DSL 文件扩展名。
@@ -420,10 +420,11 @@ Constraints
 以及必要宏/属性宏：
 
 ```text
-#[component]
-ui! { ... }
-view!("...vs")
-routes!
+ui! { ... }          // 当前：viso-ui-macros
+component! { ... }   // 当前：viso-ui-macros
+view!("...vs")       // 当前：viso-ui-macros
+#[component]         // 目标，尚未实现
+routes!              // 目标，尚未实现
 ```
 
 高级模块必须显式进入：
@@ -471,7 +472,7 @@ impl Application for App {
     fn new(cx: &mut AppCx) -> Self {
         Self {
             window: Window::new(cx, ui! {
-                Label { text: "Hello Viso" }
+                Label { text: "Hello Viso"; }
             }),
         }
     }
@@ -537,7 +538,7 @@ struct App {
 
 ## 7. Component 模型
 
-用户侧组件应该非常普通：
+用户侧组件应该非常普通。以下是**目标 authoring 形态**（`#[component]` 尚未实现；当前 Component 通过 `Component::build(&mut BuildCx)` 命令式构建，reactive 接线经 `BuildCx::with_reactive`，见 ADR 0003 / 0006）：
 
 ```rust
 #[component]
@@ -549,16 +550,18 @@ impl Counter {
     fn view(&self) -> impl View {
         ui! {
             Column {
-                Label { text: format_args!("Count: {}", self.count.get()) }
+                Label { text: format("{}", count); }
                 Button {
-                    text: "Add"
-                    on_click: |_| self.count.update(|v| *v += 1)
+                    text: "Add";
+                    on click { count += 1; }
                 }
             }
         }
     }
 }
 ```
+
+DSL 语法（property binding 用 `property: expr;`，命名节点用 `node name: Type { ... }`，行为赋值用 `=`）以 `Viso_DSL_1.0.md` 为准。
 
 但是 `view()` 的作者体验不代表运行时每次真的构造新树。
 
@@ -588,52 +591,35 @@ State Dependency Table
 
 # Part III — Workspace、crate 与依赖边界
 
-## 8. 推荐顶层仓库
+## 8. 顶层仓库
+
+当前（与根 `Cargo.toml` workspace members 一致）：
 
 ```text
 viso/
-├── Cargo.toml
-├── README.md
-├── ARCHITECTURE.md
-├── Viso_CLI.md
-├── Viso_Hot_Reload.md
-├── Viso_Text_Font_Runtime.md
-├── AGENTS.md
-├── architecture.toml
-├── rustfmt.toml
-│
+├── Cargo.toml / Cargo.lock / rustfmt.toml
+├── AGENTS.md（= CLAUDE.md）
+├── Viso_Architecture.md        本文（架构合同主干）
+├── Viso_DSL_1.0.md / Viso_Hot_Reload.md / Viso_CLI.md
+├── Viso_Rendering.md / Viso_Text_Font_Runtime.md
 ├── crates/
-│   ├── viso/
-│   ├── macros/
-│   ├── ende/
-│   ├── math/
-│   ├── runtime/
-│   ├── platform/
-│   ├── gpu/
-│   ├── shader/
-│   ├── text/
-│   ├── render/
-│   ├── ui/
-│   ├── widgets/
-│   ├── dsl/
+│   ├── viso/        facade
+│   ├── macros/      viso-macros（proc-macro 叶子）
+│   ├── ui-macros/   viso-ui-macros（ui! / component! / view!）
+│   ├── math/  ende/  handle/
+│   ├── runtime/  platform/
+│   ├── gpu/  shader/  text/  render/  svg/
+│   ├── ui/  widgets/
+│   ├── dsl/  lsp/
 │   └── services/
-│
-├── integrations/
-├── extras/
-│
-├── tools/
-│   ├── cli/
-│   ├── inspector/
-│   ├── studio/
-│   └── packager/
-│
-├── examples/
-├── benches/
-├── tests/
-├── docs/
-├── xtask/
-└── vendor/
+├── tools/project/   viso-project（项目发现/配置/构建身份）
+├── libs/woff2/      viso-woff2（调用方侧 WOFF2 解压，ADR 0028；libs/base64、libs/lz4 存在但不是 workspace member）
+├── examples/        hello_world、01-counter
+├── benches/  tests/  docs/adr/
+└── xtask/           cargo xtask check-deps 等
 ```
+
+目标（尚未建立）：`integrations/`（tokio/tracing/serde/accesskit 等 adapter）、`extras/`（code-editor/markdown/pdf/browser/charts/map/xr）、`tools/cli`（`viso` CLI）、`tools/inspector`、`tools/studio`、`tools/packager`、`vendor/`。新增目录或 crate 时必须同步 §9、§10 与 xtask allowlist。
 
 ### 8.1 为什么不是几十个 crate
 
@@ -687,18 +673,16 @@ Facade。基本不实现热路径逻辑。
 
 ### `viso-macros`
 
-Proc macros：
+proc-macro 叶子 crate（DAG 无依赖）。当前提供：
 
-- `#[component]`；
-- `ui! { ... }` inline DSL frontend；
-- `view!("...vs")` external DSL module reference/build integration；
-- state/binding metadata；
-- shader instance layout；
-- Viso DSL schema；
-- static template 生成；
-- compile-time diagnostics。
+- `#[derive(GpuPod)]`：GPU instance/uniform 显式布局（ADR 0001 中称为 `GpuInstance` ABI）；
+- `packaged_fonts!`：build-time 字体登记。
 
-`viso-macros` 不拥有第二套 DSL parser。inline/file source 都必须复用 `viso-dsl` 的 frontend/HIR 语义；宏层只负责 Rust token/span、build artifact 与 typed API glue。
+目标（尚未实现）：`#[component]`、state/binding metadata 等 derive/attribute 宏。
+
+### `viso-ui-macros`
+
+`ui! { ... }` / `component! { ... }` / `view!("...vs")` 三个 DSL 入口（ADR 0014）。它依赖 `viso-dsl`，复用同一 frontend/HIR/UI IR，并生成 `viso_ui::` builder 代码；不拥有第二套 DSL parser。宏层只负责 Rust token/span、build artifact 与 typed API glue。
 
 ### `viso-ende`
 
@@ -712,7 +696,7 @@ Viso-owned Encode/Decode infrastructure：
 - Studio/Inspector/Profiler/Hot Reload transport；
 - core typed ID 的 canonical wire representation。
 
-不支持 RON；不承担 image/audio/video media codec；不作为 frame 内部数据模型。Serde compatibility 位于 `integrations/serde`。
+不支持 RON；不承担 image/audio/video media codec；不作为 frame 内部数据模型。Serde compatibility 属于目标 `integrations/serde`。
 
 ### `viso-math`
 
@@ -774,14 +758,18 @@ OS abstraction：
 - lifecycle；
 - app activation；
 - native handles；
-- accessibility bridge hook；
-- Native system-font query/load primitive（按需、无 framework-owned FontDB）。
+- accessibility bridge（AccessKit `TreeUpdate`，ADR 0030）；
+- `LoopWaker` 跨线程唤醒（ADR 0032）。
 
-平台实现初期放在同一 crate 的 `os/` 目录，必要时再拆独立 backend crate。
+系统字体**不**在 `viso-platform`：`SystemFontProvider` / `ColorGlyphRasterizer` trait 在 `viso-text`，CoreText 实现在 facade（ADR 0026）。原生窗口句柄类型在叶子 crate `viso-handle`。平台实现放在同一 crate 的 `backend/` 目录，必要时再拆独立 backend crate。
+
+### `viso-handle`
+
+叶子 crate，只定义 `RawWindowHandle`：由 `viso-platform` 产生、`viso-gpu` 消费以创建 surface，使二者无需互相依赖。
 
 ### `viso-gpu`
 
-极薄 GPU RHI：
+极薄 GPU RHI（backend 由 `viso_gpu::Backend` 按 cfg 静态选择，ADR 0029）：
 
 - device；
 - queue；
@@ -832,6 +820,12 @@ OS abstraction：
 - GPU upload plan；
 - frame packet。
 
+详细规范见 `Viso_Rendering.md`。
+
+### `viso-svg`
+
+SVG 输入通道：bytes 一次性解析为规范化 vector scene，lower 为与其他来源相同的 retained `viso_render::Primitive` 流；不是逐帧 renderer。
+
 ### `viso-ui`
 
 - NodeArena；
@@ -843,7 +837,8 @@ OS abstraction：
 - input/focus/gesture；
 - semantics；
 - animation；
-- paint node bridge。
+- paint node bridge；
+- Release AOT package loader（`crates/ui/src/aot`，ADR 0016）。
 
 ### `viso-widgets`
 
@@ -864,26 +859,19 @@ PDF/browser/chart/map 等不是基础 widget，放 optional package/integration�
 - tokenizer/CST/AST/HIR；
 - type checker；
 - module graph；
-- UI IR；
-- hot reload diff；
-- hot-reload state preservation metadata；
+- UI IR / Binding IR（ADR 0014）、Shader IR（ADR 0017）；
+- transactional hot reload engine（`crates/dsl/src/hotreload`：plan → diff → migrate → commit，ADR 0015）；
+- Release AOT emitter（ADR 0016）；
 - source map；
-- 可选 dynamic VM adapter。
+- 可选 dynamic VM adapter（目标）。
+
+### `viso-lsp`
+
+`.vs` formatter 与 language server（ADR 0018）：analysis engine + 薄 stdio frontend，只依赖 `viso-dsl`。
 
 ### `viso-services`
 
-统一 app service protocol：
-
-- file；
-- share；
-- notifications；
-- permissions；
-- camera；
-- location；
-- secure storage；
-- haptics；
-- media；
-- networking adapter。
+统一 app service protocol。当前（ADR 0031）：files、share、notifications、permissions、secure_storage、haptics；`Reply<T>` 一次性应答，`Services` 注册表。目标：camera、location、media、networking adapter。
 
 低频 service 可以使用 trait object，避免把所有 OS 逻辑塞回 platform/runtime。
 
@@ -891,95 +879,57 @@ PDF/browser/chart/map 等不是基础 widget，放 optional package/integration�
 
 ## 10. Crate 依赖 DAG
 
-推荐逻辑依赖：
+**当前合同**是 `xtask/src/main.rs` 的 `allowed_edges()` allowlist，由 `cargo xtask check-deps` 在 CI 执行；不在表中的 workspace 内部边一律拒绝。本节与该 allowlist 不一致时以 allowlist 为准，并应同步修正本节。
 
-```text
-                       viso
-                        │
-              ┌─────────┼──────────┐
-              │         │          │
-          widgets       dsl     services
-              │         │          │
-              └────┬────┘          │
-                   ↓               │
-                   ui              │
-                   │               │
-                   ↓               │
-                 render            │
-               ┌───┴────┐          │
-               ↓        ↓          │
-             text     shader       │
-               └───┬────┘          │
-                   ↓               │
-                  gpu              │
-                   │               │
-                   └──────┬────────┘
-                          ↓
-                       runtime
-                          │
-                          ↓
-                       platform
+| crate | 允许依赖 |
+|---|---|
+| `viso`（facade） | runtime, ui, ui-macros, widgets, dsl, services, render, svg, gpu, platform, handle, text, shader, macros |
+| `viso-widgets` | ui |
+| `viso-ui-macros` | dsl |
+| `viso-lsp` | dsl |
+| `viso-dsl` | ui, ende |
+| `viso-services` | runtime, platform |
+| `viso-ui` | render, runtime, ende, text |
+| `viso-svg` | render, math |
+| `viso-render` | math, text, shader, gpu |
+| `viso-text` | gpu |
+| `viso-shader` | gpu |
+| `viso-gpu` | runtime, handle, macros |
+| `viso-runtime` | platform |
+| `viso-platform` | handle |
+| `viso-math` / `viso-ende` / `viso-handle` / `viso-macros` / `viso-project` | —（叶子） |
 
-`viso-math` 位于数值/几何依赖底层，被 gpu/shader/text/render/ui 等按需单向依赖：
-
-    gpu ─────┐
-    shader ──┤
-    text ────┤
-    render ──┼──> viso-math
-    ui ──────┤
-    widgets ─┤
-    game/extras ┘
-```
-
-`viso-ende` 是低层共享基础设施，不位于 frame 数据流主链：
-
-```text
-             dsl        runtime       tools
-              │            │            │
-              └──────┬─────┴─────┬──────┘
-                     ↓           ↓
-                 viso-ende   (typed runtime memory)
-
-Ende 不依赖 math/ui/render/gpu/widgets/platform/dsl/runtime；上层按需单向依赖 Ende。`viso-math` 与 `viso-ende` 彼此不形成强制依赖。
-```
-
-实际 Rust DAG 可以微调，例如 runtime/platform/gpu 的底部关系因 surface creation 需要通过小接口反转，但必须保持以下禁令：
+`viso-math` 当前只被 render/svg 使用；其他 crate 需要时必须先加 allowlist 边。`viso-ende` 被 ui/dsl 使用，不位于 frame 数据流主链。
 
 ### 10.1 禁止依赖
 
-- `platform -> ui`：禁止；
-- `platform -> widgets`：禁止；
-- `platform -> dsl`：禁止；
-- `gpu -> ui`：禁止；
-- `render -> widgets`：禁止；
-- `ui -> widgets`：禁止；
-- `ui -> Studio`：禁止；
-- `runtime -> Studio`：禁止；
+以下边无论 allowlist 如何演进都不得出现（与 AGENTS.md §3.5 一致）：
+
+- `platform -> ui / widgets / dsl / Studio`；
+- `ui -> widgets`；
+- `render -> widgets`；
+- `gpu -> ui`；
+- `text -> platform`（系统字体经 `viso-text` trait 由 facade 实现，ADR 0026）；
+- `ui / runtime -> Studio / tools`；
 - `viso-dsl -> concrete widget implementation`：原则上禁止，使用 schema/registry；
-- framework core crate 依赖 app/example：绝对禁止。
-- `viso-ende -> math/runtime/ui/render/gpu/widgets/platform/dsl`：禁止；Ende 必须保持低层、无框架反向依赖；
-- `viso-math -> ende/runtime/platform/gpu/shader/text/render/ui/widgets/dsl/services`：禁止；Math 必须保持纯数值/几何底层；
+- framework core crate 依赖 app/example：绝对禁止；
+- `viso-ende` / `viso-math` 依赖任何框架 crate：禁止，二者保持叶子；
 - `viso-math` public ABI 依赖 pointer width、`usize` 或 backend SIMD type：禁止；
 - `viso-math` struct 内存布局直接作为 GPU uniform/instance wire ABI：禁止；
 - frame hot path 通过 Ende encode/decode 传递 Node/Layout/Paint 数据：禁止。
 
 ### 10.2 边界必须由 CI 机器化验证
 
-AGENTS.md 里的 dependency 规则不是“建议”。仓库应维护机器可读的 architecture policy（例如 `architecture.toml`），并由：
+AGENTS.md 里的 dependency 规则不是“建议”。当前 `cargo xtask check-deps` 基于各 crate `Cargo.toml` 验证 crate allow/deny edge。
 
-```text
-cargo xtask arch-check
-```
+目标（尚未实现）：
 
-至少验证：
-
-- crate allow/deny edge（基于 `cargo metadata`）；
-- framework crate 不得反向依赖 `tools/`、`examples/`、Studio；
-- `platform/ui/render/gpu/dsl` 等关键 module 的 forbidden import；
+- framework crate 不得反向依赖 `tools/`、`examples/`、Studio 的自动检查；
+- `platform/ui/render/gpu/dsl` 等关键 module 的 forbidden import 扫描（first-party AST/import scanner）；
 - target-only dependency 不得泄漏到其他 target；
 - public facade re-export 不得绕过稳定性等级。
 
-module-level 规则初期可以通过 first-party AST/import scanner 实现；`cargo-modules` 等工具可用于可视化和辅助诊断，但 CI 的最终合同应由 Viso 自己控制，避免边界只存在于文档。
+CI 的最终合同由 Viso 自己控制（xtask），`cargo-modules` 等工具只用于可视化和辅助诊断。
 
 ### 10.3 允许的反向通知
 
@@ -1538,29 +1488,9 @@ Serde 继续作为 ecosystem integration；Ende 是 Viso internal architecture�
 
 ### 10.5.2 crate 与 public namespace
 
-Workspace：
+当前 `crates/ende/src`（ADR 0012）：`encode.rs` / `decode.rs`（Binary `Encoder`/`Decoder` 与 `Encode`/`Decode` trait）、`wire.rs`（`WireId`、`ProtocolTag`）、`json.rs`（只写 JSON emitter）。目标可按需拆出 `limits`、`json` decoder 等模块，但保持单一 `viso-ende` crate，不额外制造 derive/core/schema crate。
 
-```text
-crates/
-├── ende/
-│   ├── Cargo.toml        # package = "viso-ende"
-│   └── src/
-│       ├── lib.rs
-│       ├── encode.rs
-│       ├── decode.rs
-│       ├── error.rs
-│       ├── limits.rs
-│       ├── bin/
-│       │   ├── mod.rs
-│       │   ├── encoder.rs
-│       │   └── decoder.rs
-│       └── json/
-│           ├── mod.rs
-│           ├── encoder.rs
-│           └── decoder.rs
-```
-
-Derive proc macros 放在现有 `viso-macros`，不额外制造一串 derive/core/schema crate：
+`#[derive(Encode, Decode)]` 是目标（尚未实现，当前为手写 impl），计划放在 proc-macro 叶子 `viso-macros`：
 
 ```rust
 #[derive(Encode, Decode)]
@@ -1703,7 +1633,9 @@ message.encode(&mut BinEncoder::new(&mut buffer))?;
 
 ```text
 canonical little-endian
-fixed-width integer for core IDs/counters
+fixed-width little-endian scalars
+unsigned LEB128 varint for byte/string/collection lengths
+zig-zag varint for signed integers where the codec uses varint
 IEEE-754 fixed-width float representation
 explicit enum discriminant
 length-prefixed UTF-8 string/bytes
@@ -1912,7 +1844,7 @@ Ende JSON 优先：
 
 JSON 不作为 frame/runtime 内部高速消息的默认格式。
 
-JSON encoder/decoder 必须共享 Ende 的：
+当前 `json.rs` 只有手写 write-only emitter（无 serde）；目标 JSON decoder 落地时，encoder/decoder 必须共享 Ende 的：
 
 - type/schema metadata；
 - limits/error model；
@@ -1949,12 +1881,7 @@ Rust ecosystem interop -> Serde adapter
 
 ### 10.5.15 Ende 与 `viso-macros`
 
-现有 `viso-macros` 提供：
-
-```text
-#[derive(Encode)]
-#[derive(Decode)]
-```
+目标：`viso-macros` 提供 `#[derive(Encode)]` / `#[derive(Decode)]`（尚未实现）。
 
 derive 必须生成直接 field encode/decode，不建立运行时 reflection map。
 
@@ -1968,7 +1895,7 @@ Macro expansion 必须：
 
 ### 10.5.16 Ende 与 Identity Architecture
 
-Ende 必须为 Viso 核心 ID 提供显式实现：
+当前 `wire.rs` 的 `WireId` 是 1 字节 `IdKind` tag（`Name`/`Symbol`/`Custom(u8)`）+ varint `u64`；`ProtocolTag` 为 `b"VE"` magic + `WIRE_VERSION`。Ende 只定义 ID 的 wire *格式*，不拥有 ID 类型。以下为目标 artifact 表示（128-bit `SymbolId` 的最终 wire 形式仍待定）：
 
 ```text
 NameId          通常不持久编码
@@ -2071,7 +1998,7 @@ Viso Ende 不追求：
 - 直接序列化 Rust memory layout；
 - 给 GPU buffer layout 提供通用 serialization；
 - 让 frame data 在 Encode/Decode 后才能流转；
-- 为极限 wire size 默认引入复杂 varint/delta/compression。
+- 为极限 wire size 默认引入 delta/compression 等复杂编码（长度与有符号整数的 LEB128 / zig-zag varint 是 ADR 0012 的基础格式，不属此列）。
 
 如果 benchmark 表明特定 remote/snapshot 流量需要压缩，应把 compression 作为 Ende payload 外层或专用协议层处理，而不是污染基础 field encoding。
 
@@ -2128,7 +2055,7 @@ Viso Runtime
 
 ### 11.2 Frame phases
 
-一帧建议明确为：
+一帧固定为十二个语义阶段（ADR 0001；代码中为 `viso_runtime::FramePhase::ORDER`）：
 
 ```text
 1. CollectInput
@@ -2181,20 +2108,21 @@ fn layout(&mut self, cx: &mut LayoutCx<'_>, constraints: Constraints) -> Size;
 
 不能把 `redraw()` 作为业务层的常规责任。
 
-Runtime 需要聚合以下原因：
+Runtime 聚合以下原因（`viso_runtime::RedrawReason`）：
 
 ```text
-Input dirty
-State dirty
-Animation active
-Timer due
-Async completion
-Window resize
-External surface invalidation
-Viso hot reload
+InputDirty
+StateDirty
+AnimationActive
+TimerDue
+AsyncCompletion
+WindowResize
+ExternalSurfaceInvalidation
+HotReload
+FirstFrame        // 启动首帧，由 scheduler 拥有（ADR 0004）
 ```
 
-最终决定：
+最终决定（`FrameDecision`）：
 
 ```text
 NoFrame
@@ -2203,7 +2131,7 @@ ImmediateFrame
 BackgroundMaintenance
 ```
 
-多个 state mutation 在一个输入事件中自动 batch。
+多个 state mutation 在一个输入事件中自动 batch。一次性 timer 由 driver 持有，最近 deadline 以 `WaitUntil` 驱动平台 pump，而不是轮询（ADR 0019）。
 
 ### 12.1 Idle 必须真正 idle
 
@@ -2219,24 +2147,7 @@ BackgroundMaintenance
 
 ## 13. Async runtime
 
-提供最小官方 API：
-
-```rust
-let task = cx.spawn(async move {
-    api.fetch_user().await
-});
-```
-
-结果可以绑定组件生命周期：
-
-```rust
-cx.spawn_scoped(async move {
-    let data = load().await?;
-    Ok(AppAction::Loaded(data))
-});
-```
-
-Scope 被销毁时自动取消或 detach，策略显式。
+最小官方 API 是 handler 上下文的 `cx.spawn(...)` / `cx.spawn_then(...)`：task 归 handler 所在节点所有，节点释放时自动取消；`spawn_then` 的续体在帧边界拿到 `UpdateCx` 写回状态（§13.2，ADR 0032）。
 
 ### 13.1 核心协议
 
@@ -2252,12 +2163,7 @@ Viso 自己拥有的是 **UI task protocol，而不是一套通用 async runtime
 
 通用 work-stealing executor、I/O reactor、HTTP/TLS 等不进入 Viso 核心。默认发行版可以绑定一个经过验证的 executor adapter，但它不能拥有 UI main loop。
 
-Tokio/Smol 作为 adapter：
-
-```text
-viso-tokio
-viso-smol
-```
+Tokio/Smol 作为 adapter（目标，尚未建立）：`viso-tokio`、`viso-smol`。
 
 不把所有 adapter 组合直接做成核心 crate feature matrix。
 
@@ -2561,7 +2467,7 @@ Binding metadata：
 struct Binding {
     target: NodeId,
     kind: BindingKind,
-    dirty: DirtyMask,
+    dirty: DirtyClass,
     evaluator: BindingEvaluator,
 }
 ```
@@ -2574,22 +2480,16 @@ struct Binding {
 
 ## 19. Dirty flags
 
-建议至少区分：
+Dirty class 固定为以下八个，不得增减或改名（ADR 0001；代码 `viso_ui::dirty::DirtyClass`）：
 
 ```rust
-bitflags! {
-    struct DirtyMask: u16 {
-        const STRUCTURE = 1 << 0;
-        const STYLE     = 1 << 1;
-        const MEASURE   = 1 << 2;
-        const LAYOUT    = 1 << 3;
-        const TRANSFORM = 1 << 4;
-        const PAINT     = 1 << 5;
-        const HIT_TEST  = 1 << 6;
-        const SEMANTICS = 1 << 7;
-    }
-}
+pub struct DirtyClass(u8);
+// STRUCTURE = 1 << 0   STYLE  = 1 << 1   MEASURE  = 1 << 2   LAYOUT    = 1 << 3
+// TRANSFORM = 1 << 4   PAINT  = 1 << 5   HIT_TEST = 1 << 6   SEMANTICS = 1 << 7
+// BUBBLING  = STRUCTURE | MEASURE | SEMANTICS   // 沿父链上传；其余只标记本节点
 ```
+
+不存在 `INPUT` / `INTERACTION` / `RESOURCE` dirty class：交互状态变化标记 `STYLE` 和/或 `HIT_TEST`；资源更新是 Resource key 的 revision，由持有该资源的属性再映射为具体 class；Effect 也不是 dirty class（ADR 0005）。
 
 属性需要定义自己的 invalidation contract。
 
@@ -2597,13 +2497,13 @@ bitflags! {
 
 | 变化 | Dirty |
 |---|---|
+| 子节点增删/重排 | STRUCTURE（VirtualList 行 remount 只标 LAYOUT，ADR 0008） |
 | text 内容 | MEASURE + LAYOUT + PAINT + SEMANTICS |
-| text color | PAINT |
-| background | PAINT |
+| text color / background | PAINT |
 | width | MEASURE + LAYOUT |
-| transform | TRANSFORM + HIT_TEST + PAINT bounds |
+| transform / scroll offset | TRANSFORM + HIT_TEST + PAINT（永不 MEASURE/LAYOUT；`scroll_by`，ADR 0007） |
 | aria/label | SEMANTICS |
-| hover state | STYLE，随后由 style diff 决定 PAINT/LAYOUT |
+| hover/pressed/focus 状态 | STYLE，随后由 style diff 决定 PAINT/LAYOUT；命中区域变化另标 HIT_TEST |
 | visibility | LAYOUT/PAINT/HIT_TEST/SEMANTICS，具体取决于模式 |
 
 ### 19.1 Dirty propagation
@@ -2613,9 +2513,9 @@ bitflags! {
 例如：
 
 - `PAINT` 通常不需要让祖先 layout dirty；
-- `MEASURE` 需要传播到受 child intrinsic size 影响的祖先，直到 fixed constraint boundary；
+- `MEASURE` 需要传播到受 child intrinsic size 影响的祖先，停在两个轴都是 Fixed 的祖先（ADR 0008）；
 - `TRANSFORM` 可以只影响 transform subtree；
-- `SEMANTICS` 只更新 semantics tree 对应分支。
+- `STRUCTURE` / `MEASURE` / `SEMANTICS` 属于 `BUBBLING`，沿父链上传；`SEMANTICS` 上传后仍只重建 semantics tree 的对应分支。
 
 需要专门的 propagation rules，而不是简单 `parent.redraw()`。
 
@@ -2628,14 +2528,17 @@ Layout change
   -> MEASURE/LAYOUT
   -> may update transform base rect
 
-Scroll / translate / scale / opacity-only animation
-  -> TRANSFORM / HIT_TEST / PAINT bounds
-  -> no MEASURE/LAYOUT by default
+Scroll / translate / scale / rotate
+  -> TRANSFORM | HIT_TEST | PAINT
+  -> never MEASURE/LAYOUT
+
+opacity / color-only animation
+  -> PAINT
 ```
 
 默认 transform parent 跟随 UI parent；overlay、portal、独立 layer 等场景可以显式拥有不同的 transform/paint parent。该能力必须通过受控 API 表达，不能靠任意矩阵引用形成不可追踪图。
 
-这样做的主要目的不是“架构漂亮”，而是保证滚动和 transform animation 不因为层级传播而触发布局。
+目的：滚动和 transform animation 不因层级传播而触发布局。
 
 ---
 
@@ -2725,16 +2628,28 @@ Absolute
 Scroll
 ```
 
-以及：
+布局单位是 `Dp`（density-independent）。公开 API 区分两件事：
+
+**长度族**（DSL 字面量，全部 resolve 为 `Dp`；规范见 `Viso_DSL_1.0.md` §19）：
 
 ```text
-Auto
-Px
-Percent
-Fr
-MinContent
-MaxContent
+dp  px  sp  em  %
+1px = 1 / scale_factor dp      c sp = text_scale_curve(c) dp（线性平台为 c × text_scale）
+1em = 节点 Resolved Font Size   % 按 Property Schema 声明的 percent_basis 解析
 ```
+
+跨单位加减得到 `MixedLength`，lower 为 `LengthTerms { dp, px, sp, em, pct: F32 }`；没有 min/max/clamp。不支持 rem、vw/vh、ex/ch/lh、物理单位；`fr` 不是长度单位，只是 Grid track 值。Layout 热存储只保存预折叠的 `ResolvedLength { fixed, pct }`；值域、插值与像素对齐见 DSL §19.8–§19.10（ADR 0033）。
+
+**Sizing mode**（每轴如何求尺寸）：
+
+```text
+Fixed(length)        // 当前 viso_ui::layout::Length::Fixed
+Fill { weight }      // 当前 Length::Fill；Grid 中对应 Fr
+Fit                  // 当前 Length::Fit；即 Auto
+MinContent / MaxContent / Percent   // 目标
+```
+
+Grid track 使用独立的 `TrackSizing { Fixed, Fr, Auto, Percent, Minmax, FitContent, FlexMin }`（ADR 0009）。
 
 内部使用高性能专用算法，不默认引入通用 constraint solver。
 
@@ -2918,9 +2833,9 @@ IME 不应只是 TextInput 的平台 patch。
 
 开发阶段可以写：
 
-```text
-background: token(color.surface)
-radius: token(radius.md)
+```viso
+background: theme.colors.surface;
+radius: theme.radius.md;
 ```
 
 编译后：
@@ -2945,7 +2860,7 @@ Computed Style
     ↓
 Style Diff
     ↓
-DirtyMask
+DirtyClass
 ```
 
 普通帧若 state/theme 未变化，不重新 cascade/resolve。
@@ -2985,14 +2900,7 @@ AnimationTrack {
 
 对 transform/opacity/color 等属性使用 specialized evaluator。
 
-尽量把 animation dirty 限定到：
-
-- TRANSFORM；
-- PAINT；
-
-避免无意义触发布局。
-
-只有 width/height 等 layout property animation 才触发 layout。
+animation dirty 按属性限定：transform 动画标 `TRANSFORM | HIT_TEST | PAINT`，opacity/color 动画只标 `PAINT`；只有 width/height 等 layout property animation 才标 `MEASURE | LAYOUT`。
 
 ---
 
@@ -3069,22 +2977,7 @@ GPU
 
 ### 30.2 Primitive 分类
 
-建议稳定的底层 primitive：
-
-```text
-Quad
-Border
-GlyphRun
-Image
-VectorPath
-Mesh2D
-Mesh3D
-Clip
-Layer
-Custom
-```
-
-其中 Border 可与 Quad 合并实现，取决于 pipeline 设计。
+ADR 0001 固定的最小 primitive 合同是 `Quad` / `GlyphRun` / `Image` / `Path` / `Mesh` / `Layer`（§15.3）。当前 `viso_render::Primitive` 在此之上增加了 analytic shape（RRect/Ellipse/Capsule/Line）、Gradient、AnalyticShadow、material 等 lane；完整分类、lane 选择与 Layer 合成（opacity == 1 用 scissor clip，< 1 走 offscreen + composite，ADR 0002）见 `Viso_Rendering.md`。
 
 ---
 
@@ -3137,9 +3030,11 @@ struct BatchKey {
 
 典型数据：
 
+当前 derive 名为 `#[derive(GpuPod)]`（`viso-macros`），ADR 0001 称之为 `GpuInstance` ABI：
+
 ```rust
 #[repr(C)]
-#[derive(GpuInstance)]
+#[derive(GpuPod)]
 struct QuadInstance {
     rect: [f32; 4],
     color: [f32; 4],
@@ -3167,7 +3062,7 @@ struct ButtonPainter {
 }
 
 #[repr(C)]
-#[derive(GpuInstance)]
+#[derive(GpuPod)]
 struct ButtonInstance {
     rect: Vec4,
     color: Vec4,
@@ -3336,692 +3231,77 @@ Mismatch 在编译/热重载时失败，不允许 silent memory corruption。
 
 ## 37. Text 是独立性能子系统
 
-`viso-text` 的详细实现规范独立定义在 `Viso_Text_Font_Runtime.md`。Architecture 只固定以下不可违反的合同。
+完整规范：`Viso_Text_Font_Runtime.md`（以下简称 Text 规范）。本节只列不可违反的合同；细节、数值与 benchmark 以 Text 规范和 ADR 0025–0028 为准。
 
-### 37.1 不建立 framework-owned FontDB
+### 37.1 字体来源与解析
 
-Native App 普通启动和普通文字绘制**不得扫描、枚举、解析整台机器的系统字体集合**。
+- **不建立 framework-owned FontDB。** 普通启动与普通文字绘制不得扫描、枚举或解析整台机器的系统字体。完整枚举只允许作为显式请求的异步 cold service（`SystemFontCatalog`，例如 Font Picker）。
+- 解析顺序：`FontRequest → Resolve Cache → App packaged/dynamic fonts → OS fallback → Missing Glyph policy`。App 字体优先，缺字继续进入系统 fallback。
+- 系统字体经 `viso-text` 定义的 `SystemFontProvider` / `ColorGlyphRasterizer` trait 按需查询，facade 提供实现（当前 macOS CoreText；Windows/Linux/Android 为目标）。negative cache 与 fallback 顺序在 `viso-text`；禁止 `text -> platform`（ADR 0026）。
+- Native 可以完全不打包字体；WASM/Canvas 没有隐式系统字体，无字体时 shape 为空而不 panic。
+- `assets/fonts/` 在 build time 自动登记为 compact `FontManifest`，runtime 首次使用才 lazy load；网络/用户/文档字体经显式 `FontProvider` 注入。
+- **输入只接受 SFNT（TTF/OTF/TTC/OTC）。** 框架不解码 WOFF2；调用方先解压（例如 `libs/woff2`）（ADR 0028）。
 
-默认流程：
+### 37.2 Fallback 与 Emoji
 
-```text
-FontRequest
-    ↓
-small Resolve Cache
-    ↓ miss
-App packaged/dynamic fonts
-    ↓ miss / coverage miss
-Native OS font/fallback resolver
-    ↓
-Resolved FontFaceId
-```
+- CJK/混排 fallback 按 shaping run / cluster 进行，禁止逐字符扫描字体；`zh-Hans`/`zh-Hant`/`ja`/`ko` 是 fallback key 的一部分；首次 OS fallback 结果进入 bounded `FallbackPlan` cache。
+- Emoji grapheme/ZWJ/VS16/肤色/旗帜/keycap 序列保持原子，不拆到多个字体。
 
-系统字体由 `viso-platform` 的窄 adapter 按需查询：
+### 37.3 Glyph representation
 
-```text
-macOS / iOS  -> CoreText cascade/fallback
-Windows      -> DirectWrite matching/fallback
-Linux        -> fontconfig-backed matching/coverage
-Android      -> platform font matcher/configuration adapter
-```
+五种 `GlyphImageKind`：`MaskA8`（默认，稳定 UI/小字/CJK）、`ScalableMtsdf`（持续 zoom/scale/rotation 时异步 promotion）、`OutlineVector`（极端放大/高精度，retained）、`ColorRgba8`、`ColorVector`。硬规则：
 
-这些系统设施是 resolver backend，不是 Viso public FontDB。系统路径、native handle、pointer 不进入稳定 ABI。
+- 变换稳定后异步回到精确 A8 Coverage；promotion/settle 有 hysteresis；纯 scroll translation、opacity、color、clip 不触发 promotion；
+- 禁止 FontFace load 时预生成 distance field，禁止为 CJK 整套字体预生成；
+- 各 representation 独立 residency pool 与 accounting；representation 决策挂在 retained run 上，不逐帧逐 glyph 重算。
 
-完整系统字体枚举只允许作为明确请求的异步 `SystemFontCatalog` cold service，例如 Font Picker；它不属于 App startup 或普通 Text resolution。
+### 37.4 Cache 边界
 
-### 37.2 Native 默认不要求 App 打包字体
+四层独立 cache（ADR 0025）：Font Resolve Cache、byte-budgeted Segmented LRU Font Face Cache（recency 不逐 glyph 更新）、Shaping/Paragraph Cache、按 page 做 frame-age/CLOCK 淘汰的 Glyph Atlas（禁止逐 glyph LRU 与正常压力下 `atlas full -> clear all`）。一层 eviction 不连带清空其他层；内存压力按冷到热逐级释放，不以 `clear()` 作为普通策略。
 
-Native `Text` 没有指定 family，且 App/theme 没有显式 default family 时：
+### 37.5 高刷新率与 world-ready 正确性
 
-```text
-SystemUi
-    ↓
-OS default UI face
-    ↓
-OS locale/script/character fallback
-```
+- **稳态帧不 shape。** Text/font/layout 未变时，稳态帧 0 system font query、0 font IO/parse、0 shaping、0 glyph raster/MTSDF 生成、0 per-glyph 分配/同步、0 BiDi/line-break/grapheme/CaretMap 重算。高刷滚动只更新 transform/clip。
+- 大字体 parse、large paragraph shaping、可线程化 raster 进入 worker/staging；主线程只做有预算的 commit。
+- 复杂文字以 UAX #29 / #9 / #14 + locale tailoring 为基线；logical text 是 source truth，BiDi visual reorder 在断行后按行执行；UTF-8/UTF-16 offset、grapheme、cluster、glyph index 使用不同 typed identity；caret/selection/hit-test/IME 共享 logical↔visual 映射；incremental 结果必须与 full recompute 等价。宽度感知 reflow 见 ADR 0027。
+- Unicode 官方 conformance corpus 与 CJK/RTL/IME golden corpus 进入 CI；核心 regression gate：系统字体数量不能让普通 App startup 产生线性 parse 成本。
 
-因此普通 Native App 可以完全没有 `assets/fonts/`，仍正确使用系统 Latin、CJK、Emoji 和其他系统 fallback 字体。
+### 37.6 Benchmark 覆盖（合同）
 
-如果 App 提供自己的字体：
+Text profiler counter 列表以 Text 规范为准。Benchmark 至少覆盖：Native 无 packaged fonts；系统安装 3000 fonts 的 startup；CJK 10k chars cold/warm；mixed zh/ja/ko；Emoji ZWJ cluster；UAX #9/#14/#29 conformance corpus；BiDi mixed RTL/LTR + numbers + isolates；BiDi dual-caret / multiline selection / hit-test roundtrip；CJK kinsoku；Arabic unsafe-break reshape；CJK/RTL IME composition；font picker 500 faces scan；large CJK font memory pressure；WASM zero-font startup；WASM packaged SFNT first use；60/120/144/240Hz static/scroll/editor workloads。
 
-```text
-App exact family/style
-    ↓ coverage miss
-App fallback chain
-    ↓ miss
-OS system fallback
-    ↓
-Missing Glyph policy
-```
+### 37.7 Ownership
 
-App 字体优先，但缺字默认继续进入系统 fallback。
-
-### 37.3 `assets/fonts/` build-time 自动登记，runtime lazy load
-
-Viso build scanner 自动识别：
-
-```text
-assets/fonts/*.ttf
-assets/fonts/*.otf
-assets/fonts/*.ttc
-assets/fonts/*.otc
-```
-
-构建时只提取必要 metadata 并生成 compact `FontManifest`：
-
-```text
-family / style / weight / stretch / face index / variation metadata
-        ↓
-AssetId / content hash
-```
-
-**自动登记不等于启动时自动解析。**
-
-Runtime 只有第一次真正使用某个 face 时才读/解码/解析并进入 Font Face Cache。
-
-不在 build asset graph 中的网络字体、用户字体、文档内嵌字体仍通过显式 runtime API / `FontProvider` 注入。
-
-### 37.4 CJK fallback 必须按 run/cluster，不逐字符找字体
-
-错误实现：
-
-```text
-U+4F60
-    ↓
-scan all system fonts
-    ↓
-find one cmap containing it
-```
-
-Viso 禁止这种路径。
-
-正确流程：
-
-```text
-Unicode/BiDi segmentation
-    ↓
-script/language shaping run
-    ↓
-requested/App face coverage check
-    ↓ contiguous coverage miss
-OS fallback resolver(text range, locale, style, base face)
-    ↓
-fallback face + mapped run length
-    ↓
-shape mapped run
-```
-
-`zh-Hans`、`zh-Hant`、`ja`、`ko` 必须作为 fallback policy 的语言输入，不把所有 Han 字符机械映射到同一个框架字体。
-
-首次 OS fallback 后可以把常用 candidate 放入 bounded `FallbackPlan` cache；后续先用已加载 face 的 local coverage accelerator 验证，能覆盖就直接复用，不能覆盖才再次调用 OS resolver。
-
-### 37.5 Emoji 必须保持 grapheme/ZWJ cluster 原子性
-
-以下序列不能拆到多个字体：
-
-```text
-VS15 / VS16
-ZWJ sequence
-skin-tone modifier
-regional-indicator flag
-keycap sequence
-family/person emoji sequence
-```
-
-Native 默认把完整 Emoji cluster 交给 OS fallback，系统选择当前平台 Emoji face。
-
-Glyph representation 至少区分：
-
-```text
-MaskA8          stable ordinary UI / small text / CJK
-ScalableMtsdf   sustained zoom / scale / rotation / world-space text
-OutlineVector   extreme zoom / high-precision vector text
-ColorRgba8      rasterized color emoji / color glyph
-ColorVector     retained vector color glyph when source/backend supports it
-```
-
-普通 UI 默认是 `MaskA8`。可缩放路径使用 `ScalableMtsdf`；极端放大或精确 vector 场景允许 `OutlineVector`；Color Glyph 使用独立 RGBA/Vector 路径。
-
-### 37.5.1 Glyph 渲染采用 Quality/Performance-first Adaptive Pipeline
-
-Viso 1.0 的核心不是“统一使用一种 glyph atlas”，而是根据**稳定/运动状态和有效屏幕尺寸**选择成本最低且质量最高的 representation：
-
-```text
-Stable UI / small text / CJK
-    -> exact A8 Coverage
-
-Continuous zoom / scale animation / rotation
-    -> lazy MTSDF
-
-Transform settles
-    -> async exact Coverage at settled raster bucket
-    -> frame-boundary switch back
-
-Extreme zoom / high-precision vector
-    -> retained OutlineVector
-
-Color Emoji / Color Glyph
-    -> source-aware RGBA / ColorVector
-```
-
-硬规则：
-
-- `Label` / `Button` / `TextInput` / Editor / Document / 正常 CJK 默认使用目标 device-pixel bucket 的高质量 A8 Coverage；
-- sustained transform 才异步 promotion 到 MTSDF；FontFace load 时禁止为整套字体预生成 distance field；
-- MTSDF 的 RGB 保存 multi-channel distance，Alpha 保存 true signed distance；距离通道按 linear value 使用；
-- promotion 在 worker/staging 中完成，pending 时继续绘制 last-good representation，不能阻塞当前 frame；
-- transform 稳定后，后台准备新尺寸的 exact Coverage，并在安全 frame boundary 切回，以恢复最佳小字/CJK 清晰度并释放冷 MTSDF residency；
-- policy 必须有 hysteresis，不因瞬时 scale 抖动在 Coverage/MTSDF 间来回切换；纯 scroll translation、opacity、color、clip 变化不触发 promotion；
-- MTSDF entry 有明确 quality window；超出后异步生成更合适的 MTSDF bucket，或在极端放大/精确需求下使用 retained OutlineVector；禁止把一个低分辨率 distance field 无限放大；
-- OutlineVector/path/mesh 必须 retained/cache，稳态高刷帧不得重复 tessellate；
-- 普通单通道 SDF 不作为独立常规 lane；可缩放 monochrome glyph 统一使用 MTSDF；
-- 不允许每个 glyph 永久 pin Coverage + MTSDF + Vector 多份表示；只允许切换过渡窗口短暂重叠，随后按各自 residency policy 淘汰；
-- CJK 的 MTSDF/Vector 只对 visible/near-visible 的真实变换工作集按需生成，禁止 whole-font 预生成；
-- A8 Coverage、MTSDF、RGBA Color atlas 和 Vector Glyph cache 使用独立 residency/accounting；
-- representation decision 挂在 retained run/group metadata 上，不在 120/144/240Hz 每帧逐 glyph 重算。
-
-详细 promotion/settle-back、MTSDF bucket、OutlineVector、atlas key、page policy 与 benchmark 见 `Viso_Text_Font_Runtime.md`。
-
-### 37.6 WASM / Canvas 没有隐式系统字体
-
-WASM/Canvas runtime 不拥有：
-
-```text
-SystemFontResolver
-CSS system-ui implicit fallback
-browser local-font enumeration
-Viso bundled default font
-```
-
-但是项目 `assets/fonts/` 与 Native 一样会在 build 时自动进入 `FontManifest`。
-
-所以：
-
-```text
-WASM project without packaged/external fonts
-    -> zero available fonts
-
-WASM project with assets/fonts/Inter.ttf
-    -> manifest knows Inter
-    -> first use lazily fetches Inter
-```
-
-外部/远程字体通过 `FontProvider` 注入；按字符加载描述 coverage 可渐进获得，传输层必须支持 batching/subsetting，而不是强制“一字符一个 HTTP”。
-
-### 37.7 字体输入格式：SFNT-only（WOFF2 由调用方解压）
-
-Viso 1.0 packaged/external 输入只接受已解码的 SFNT 容器：
-
-```text
-TTF / OTF / TTC / OTC
-```
-
-框架不解码/解压 WOFF2。持有 WOFF2 的调用方必须先自行把它解压成 SFNT（build pipeline 或运行时），再喂给框架；或者通过 External FontProvider 注入已解码的 SFNT 字节。归一后的 face 直接进入 Text pipeline：
-
-```text
-SFNT (TTF/OTF/TTC/OTC)
-    ↓
-FontFace
-    ↓
-Shaping / Raster
-```
-
-重型 font parse 仍不进入 UI frame hot path。
-
-### 37.8 分层缓存：Resolve + SLRU Face + Shaping + Atlas
-
-固定四层：
-
-```text
-1. Font Resolve Cache
-       request -> face/fallback/negative result
-
-2. Font Face Cache
-       byte-budgeted Segmented LRU (SLRU)
-
-3. Shaping / Paragraph Cache
-       independent bounded cache
-
-4. Glyph Atlas
-       page + frame-age + CLOCK/second-chance
-```
-
-禁止一个总 LRU 管所有字体相关资源。
-
-#### Font Face SLRU
-
-```text
-new/cold face
-    ↓
-Probation
-    ↓ second meaningful reuse
-Protected
-    ↓ budget pressure
-demote / evict cold Probation
-```
-
-预算按 bytes，不按“font 数量”。Cost 至少考虑 decoded bytes、parsed tables、shaper state、variation/coverage state 和 retained platform cost。
-
-SLRU recency **不得每 glyph 更新**；同一 face 在一个 frame/paragraph epoch 内的多次使用必须合并 touch。
-
-#### Glyph Atlas
-
-GPU glyph atlas 不做逐 glyph LRU：
-
-```text
-AtlasPage {
-    generation
-    last_used_epoch
-    in_flight state
-    occupancy
-    format
-}
-```
-
-空间不足时按 page 做 CLOCK/frame-age eviction，只失效该 page，正常压力下禁止 `atlas full -> clear all glyphs`。
-
-Atlas residency 至少按 representation 分离：
-
-```text
-A8 Coverage Pages
-MTSDF Pages
-RGBA Color Pages
-Retained Vector Glyph Cache
-```
-
-不能让偶发 MTSDF/Emoji workload 挤掉普通 UI/CJK 的 Coverage hot set；page key 必须包含 `GlyphImageKind` 与对应 raster/MTSDF bucket。
-
-### 37.9 高刷新率合同
-
-Frame interval：
-
-```text
-60Hz    16.67 ms
-120Hz    8.33 ms
-144Hz    6.94 ms
-240Hz    4.17 ms
-```
-
-Viso 的目标不是“每帧更快地 shape”，而是**稳态帧不 shape**。
-
-Text/font/layout 未变化时，稳态帧必须趋近：
-
-```text
-0 system font query
-0 font IO
-0 font parse
-0 coverage build
-0 shaping
-0 glyph raster
-0 MTSDF generation
-0 representation-policy recompute per glyph
-0 Face SLRU mutation per glyph
-0 heap allocation per glyph
-0 synchronization per glyph
-```
-
-正常路径：
-
-```text
-Retained Paragraph
-    ↓
-Retained ShapedRun
-    ↓
-stable GlyphImageKind / representation metadata
-    ↓
-AtlasEntry(page, rect, generation)
-    ↓
-reused GPU instance/batch
-```
-
-高刷滚动已有文字主要更新 transform/clip；不能因为 scroll 每帧 reshape/raster。
-
-新行进入 VirtualList/CodeEditor viewport 时采用：
-
-```text
-visible-first
-near-viewport prefetch
-background
-```
-
-优先级，尽量在进入屏幕前完成 shaping/raster。
-
-大字体 parse、font catalog、large paragraph shaping、可线程化 raster 等进入 worker/staging；主线程只做有预算的 commit。
-
-详细的 60/120/144/240Hz work budget、TextInput latency 和 benchmark gate 见 `Viso_Text_Font_Runtime.md`。
-
-### 37.10 World-Ready 复杂文字正确性合同
-
-字体能显示出来不等于 Text Runtime 正确。Viso 1.0 把复杂文字、换行和编辑映射定义为独立 correctness contract，完整规范见 `Viso_Text_Font_Runtime.md`。
-
-规范基线至少包括：
-
-```text
-UAX #29  grapheme/word segmentation
-UAX #9   paragraph BiDi / isolate / embedding levels / per-line reorder
-UAX #14  line-break opportunities
-+ locale tailoring
-+ shaping-safe break boundary
-```
-
-Canonical paragraph pipeline：
-
-```text
-logical UTF text
-    ↓
-grapheme segmentation
-    ↓
-BiDi paragraph analysis
-    ↓
-script/language/style + font itemization
-    ↓
-shaping
-    ↓
-UAX #14 + locale-tailored break candidates
-    ↓
-shaping-safe boundary validation / reshape when needed
-    ↓
-line formation
-    ↓
-per-line BiDi visual reorder
-    ↓
-VisualRuns / CaretMap / HitTestMap / SelectionFragments
-```
-
-硬规则：
-
-- 不把 RTL 文本简单 reverse；logical text 永远是 source truth；
-- 最终 BiDi visual reorder 在 line boundary 确定后按行执行；
-- UTF-8 offset、UTF-16 offset、grapheme、shaping cluster、glyph index 使用不同 typed identity/mapping；
-- renderer 不隐式 normalization source text；
-- CJK line breaking 采用 UAX #14 + `zh-Hans` / `zh-Hant` / `ja` / `ko` locale tailoring；
-- opening/closing punctuation、iteration/prolonged-sound 等禁则由 locale data/policy 决定，不使用一张框架全亚洲硬编码表；
-- Thai/Lao/Khmer 等允许 locale/dictionary segmentation provider；hyphenation 是独立 optional service；
-- Unicode-allowed break 若处于 shaping unsafe boundary，必须在 worker reshape 边界 run，不能直接切 glyph array；
-- BiDi boundary/soft-wrap 处同一 logical offset 可通过 `Upstream/Downstream` affinity 对应不同 visual caret；
-- ligature caret 优先使用 font GDEF/shaper caret metadata，普通 caret 不进入非法 grapheme interior；
-- selection 以 logical range 为 source truth，绘制时允许拆成多个 visual fragments；
-- hit testing 必须 `screen -> visual line/run -> cluster -> logical TextPosition + affinity`，禁止按平均 glyph width 猜 index；
-- IME composition 使用 logical range + revision；平台 UTF-16 offset 通过局部 mapping 转换；candidate rect 使用 visual caret mapping；
-- incremental paragraph result 必须与 full conformant recompute 等价。
-
-性能边界：
-
-```text
-steady frame:
-0 BiDi recompute
-0 line-break recompute
-0 grapheme resegmentation
-0 CaretMap rebuild
-0 hit-test map rebuild
-```
-
-所有 shaping 继续遵守 worker-only 合同。大 paragraph 的 BiDi、line break、boundary reshape、caret/hit-test map build 可以 worker/staged；owner/UI thread 只更新 revision、dirty range、dispatch 和 validated commit。
-
-Unicode official conformance corpus (`BidiTest` / `BidiCharacterTest` / `LineBreakTest` / `GraphemeBreakTest` / `WordBreakTest`) 与 Arabic/Hebrew/CJK/Indic/Thai/IME/BiDi-caret golden corpus 必须进入 CI。
-
-### 37.11 Cache 生命周期独立
-
-Face SLRU eviction 不等于：
-
-```text
-clear shaping cache
-clear paragraph layout
-clear glyph atlas
-```
-
-已有 paragraph/shaped run/glyph atlas 在 revision/generation 仍有效时可以继续渲染。只有未来真正需要 reshape 或新 glyph raster 时才重新 lazy load face。
-
-Memory pressure 按冷到热逐级释放：
-
-```text
-old resolve entries
-    ↓
-global shaping cold entries
-    ↓
-Face SLRU Probation
-    ↓
-Face Protected cold entries
-    ↓
-non-inflight cold atlas pages
-```
-
-不得用 `font_cache.clear()` / `glyph_atlas.clear()` 作为普通内存压力策略。
-
-### 37.12 性能与可观测性
-
-至少暴露：
-
-```text
-font_resolve_hit/miss
-system_font_query_count/time
-system_fallback_query_count
-fallback_plan_hit/miss
-font_face_slru_hit/miss
-font_face_probation/protected_bytes
-font_face_evictions
-shaping_hit/miss/time
-grapheme_segment_time
-bidi_resolve_count/time
-line_break_count/time
-paragraph_reflow_lines
-caret_map_build_time
-hit_test_query_count
-ime_composition_revision_drops
-glyph_raster_count/time
-atlas_a8/mtsdf/rgba_bytes
-atlas_page_evictions
-glyph_upload_bytes
-missing_cluster_count
-text_main_thread_maintenance_time
-```
-
-Benchmark 必须覆盖：
-
-```text
-Native 无 packaged fonts
-系统安装 3000 fonts 的 startup
-CJK 10k chars cold/warm
-mixed zh/ja/ko
-Emoji ZWJ cluster
-UAX #9/#14/#29 conformance corpus
-BiDi mixed RTL/LTR + numbers + isolates
-BiDi dual-caret / multiline selection / hit-test roundtrip
-CJK kinsoku zh-Hans/zh-Hant/ja/ko
-Arabic unsafe-break boundary reshape
-CJK/RTL IME composition
-font picker 500 faces scan
-large CJK font memory pressure
-WASM zero-font startup
-WASM packaged SFNT first use
-60/120/144/240Hz static/scroll/editor workloads
-```
-
-核心 regression gate：
-
-> **系统字体数量不能让普通 App startup 产生线性 font parse 成本；静态文字高刷稳态帧不得重新 resolve/shape/raster。**
-
-### 37.13 Ownership boundary
-
-`viso-text` 拥有：
-
-```text
-FontManifest semantics
-FontResolver/fallback policy
-Font Face SLRU
-coverage accelerator
-shaping/paragraph cache
-UAX #9/#14/#29 integration contract
-locale line-break tailoring
-logical/visual TextPosition + caret/selection/hit-test/IME mapping
-TextWork scheduling
-font revision/invalidation
-glyph identity/residency contract
-text profiler counters
-```
-
-`viso-platform` 只拥有 Native 字体 query/load primitive。
-
-`viso-render` 拥有 GPU atlas texture/page/upload mechanics。
-
-Viso 不要求重写 Unicode/BiDi/shaping/font-raster 标准算法；这些可复用成熟实现，但 resolver、cache、invalidation、GPU residency 和高刷性能合同由 Viso 自己拥有。
-
-完整规范：`Viso_Text_Font_Runtime.md`。
+`viso-text` 拥有 FontManifest 语义、resolver/fallback policy、Face SLRU、coverage accelerator、shaping/paragraph cache、Unicode integration、typed text position 与 caret/selection/hit-test/IME 映射、TextWork 调度、font revision/invalidation、glyph residency 合同与 profiler counters。标准算法复用成熟实现（`unicode-bidi`、`rustybuzz`、`ttf-parser` 等，ADR 0025）。facade 拥有系统字体 binding；`viso-render` 拥有 GPU atlas texture/page/upload 机制。
 
 ---
 
 # Part XIV — Viso DSL、热更新与语言工程
 
+本 Part 只固定 DSL 与 Runtime 的边界合同。语言本身（词法、文法、类型系统、运行时语义、lowering）的唯一规范是 **`Viso_DSL_1.0.md`**（下称 DSL 规范）；Dev Runtime 与热更新协议的唯一规范是 **`Viso_Hot_Reload.md`**。二者与本节冲突时，以已接受 ADR 为准，其次以对应专项规范为准。
+
 ## 38. 定位：Viso DSL 是一等 Authoring Layer，不是 UI Runtime 的地基
 
-必须保持依赖方向：
-
-```text
-viso-dsl
-     ↓
- viso-ui
-```
-
-而不是：
-
-```text
-viso-ui
-     ↓
-Script VM
-```
-
-纯 Rust 应用即使完全关闭 `hot-reload` feature，UI runtime、layout、renderer、widgets 的基础能力仍然成立。
+- 依赖方向固定为 `viso-dsl -> viso-ui`，`viso-ui` 永不依赖 `viso-dsl` 或 Script VM（§10）。纯 Rust 应用完全关闭 `hot-reload` feature 时，UI runtime、layout、renderer、widgets 的基础能力仍然成立。
+- Release 加载路径只在 `viso-ui::aot`，不得触达 `viso-dsl`（ADR 0016）。
 
 ### 38.1 三个 Rust 入口，一套语言语义
 
-Viso DSL 正式支持三个 Rust-side authoring entry point：
+`ui!`（ViewFragment）、`component!`（ComponentDecl）、`view!(path)`（`.vs` CompilationUnit）见 §0.1 与 ADR 0014；当前由 `viso-ui-macros` 提供。三者只允许**入口 production** 不同，必须共享 lexer/token model、component/native schema、name resolution、type/effect/capability checking、Typed HIR、Reactive IR、UI IR、Shader IR 与 diagnostics/source maps。
 
-```rust
-// View Fragment grammar
-let toolbar = ui! {
-    Row {
-        Button { text: "Save"; }
-    }
-};
+它们是构建期 compiler frontend，不代表运行时宏系统，不允许每帧展开/rebuild UI。Release 中所有入口生成相同的 compact AOT descriptors/IR，启动时不 parse `.vs`，也不解析 Rust source。
 
-// External .vs source
-let page = view!("features/home/view.vs");
+### 38.2 语言 Surface 分层
 
-// Inline Component grammar
-component! {
-    Counter {
-        state count = 0;
-        view {
-            Column {
-                Text { text: count; }
-            }
-        }
-    }
-}
-```
+语言能力按 Core / Standard / Advanced 分层（关键字分层见 DSL 规范「关键字」与 ADR 0034，Proposed）。硬规则：
 
-三者必须共享：
+- Advanced Surface（用户定义 trait/impl、通用泛型、Template/Part 元编程、手写 native 声明、compiler plugins 等）不得阻塞 1.0 vertical slice，并在 Quick Start、formatter 示例与 AI context 中隔离；
+- `.vs` 不是第二门必须完整重实现 Rust 的通用语言；
+- 语言团队维护 feature matrix，每个 production 标注 `stable / preview / reserved`。
 
-```text
-lexer/token model
-component/native schema
-name resolution
-type/effect/capability checking
-Typed HIR
-Reactive IR
-UI IR
-Shader IR
-diagnostics/source maps
-```
+### 38.3 Authoring 规则（摘要）
 
-允许 parser 有不同**入口 production**，不允许有不同**语言语义**：
-
-```text
-ui!          -> ViewFragment entry
-component!   -> ComponentDecl entry
-view!(path)  -> .vs CompilationUnit entry
-```
-
-`ui!` 和 `component!` 是 Rust proc-macro/compiler frontend；它们不代表运行时宏系统，也不允许每次 frame 展开/rebuild UI。`view!` 在构建期把外部 `.vs` 纳入 module graph；Dev watcher 可以独立重新编译该文件并进行 transactional hot reload。
-
-Release 中所有入口都必须生成相同的 compact AOT descriptors/IR，不在启动时 parse `.vs`，也不要求 runtime 解析 Rust source。
-
-### 38.2 DSL 的定位：不是 Rust 2，也不是纯模板语言
-
-Viso DSL 必须同时做到 **极低 authoring 摩擦** 和 **足够开放的实时 UI/游戏能力**；同时不能把 `.vs` 做成第二门必须重新实现完整 Rust 的通用语言。
-
-因此语言能力按 Surface 分层：
-
-**Core Surface（必须先稳定）**
-
-```text
-import
-component / input / state / computed / action / view
-record / enum
-node / property / event / if / match / keyed for
-system + imported scheduler traits
-basic fn / expression / pattern
-shader interface + shader body
-```
-
-**Standard Surface（应用工程能力）**
-
-```text
-effect / task / resource
-slot
-style / theme
-structured async + cancellation
-hot-reload migration metadata
-```
-
-**Advanced Surface（不得阻塞 1.0 vertical slice）**
-
-```text
-user-defined trait / impl
-general generics / const generics
-trait objects
-Template / Part meta-programming
-hand-written native declarations
-fine-grained capability annotations
-compiler plugins
-```
-
-Advanced Surface 可以长期存在，但在实现顺序、Quick Start、默认 formatter examples 和 AI context 中必须被隔离。普通 UI 和普通游戏脚本不应要求理解这些能力。
-
-### 38.3 Viso DSL 的 authoring 规则
-
-Viso DSL 的 surface 直接围绕“声明式 UI 与 imperative behavior 可一眼区分”设计：
-
-```viso
-Text {
-    text: label;
-    color: theme.colors.foreground;
-}
-```
-
-Property Binding 使用 `:`；行为赋值继续使用普通 assignment：
-
-```viso
-count = value;
-count += 1;
-```
-
-命名节点显式写为：
-
-```viso
-node add_button: Button {
-    text: "Add";
-}
-```
-
-Viso 不使用一组隐式 apply/merge 运算符来表达节点创建、覆盖或继承；merge、style、override、replace、record update 都必须拥有独立、可类型检查的语义构造。
-
-这样 Property Binding 和 imperative assignment 在 AST 与视觉层都天然分离，同时保持 DSL 紧凑、易读、易生成。分号作为普通 property/behavior statement 的稳定终止符，避免依赖换行敏感语法，并有利于 Lossless CST、formatter 与 incremental parser。
-
-### 38.4 普通 `.vs` 文件不强迫写语言头和 module 头
-
-语言版本由 `Viso.toml` / package lock 决定；module path 默认由 package + source path 决定。普通文件因此可以直接从 import/declaration 开始：
+Property Binding 使用 `property: expr;`，imperative 代码使用 `=` / `+=`；命名节点写作 `node name: Type { ... }`；事件处理只有 `on event { ... }` block 形式。Viso 不使用隐式 apply/merge 运算符；merge、style、override、replace、record update 必须是独立、可类型检查的构造。分号是 property/behavior statement 的稳定终止符。
 
 ```viso
 import viso::widgets::{Column, Text, Button};
@@ -4031,8 +3311,8 @@ export component Counter {
 
     view {
         Column {
-            Text { text: count; }
-            Button {
+            Text { text: format("{}", count); }
+            node add_button: Button {
                 text: "Add";
                 on click { count += 1; }
             }
@@ -4041,403 +3321,52 @@ export component Counter {
 }
 ```
 
-显式 language/module header 可以保留给 compiler conformance fixtures、generated standalone modules 或未来 package interchange，但不应成为正常 app authoring 的必写 ceremony。
-
-### 38.5 类型显式度：边界严格，私有局部允许推断
-
-必须显式类型：
-
-```text
-public/exported API
-input/event/slot/native/shader interface
-persistent external schema boundary
-```
-
-可以推断：
-
-```text
-private state (from stable initializer)
-private computed
-local let
-closure parameters with expected type
-numeric literal width from typed property/schema
-```
-
-因此 Counter 可以写 `state count = 0;`。编译器仍把最终推断类型写入 schema；若热重载时 inferred type 改变，按普通 schema migration 规则处理，不能静默重解释内存。
-
-### 38.6 Capability 与 Native：默认推导，不把安全机制变成样板代码
-
-Native surface 默认由 Rust derive/schema 或 generated interface 提供；普通用户不应手写 `native fn/action/task` 声明来连接每个 Rust API。
-
-Capability 从实际 native call graph 推导，并与 package/profile grant 比较。`requires { ... }` 只作为 public API 的显式 contract/assertion，而不是每个函数都必须重复的 ceremony。
-
-### 38.7 游戏支持必须早于“完整通用类型系统”
-
-Game support 是 Viso 的一等 vertical slice，不等待 user-defined Trait/Impl/Const Generic 完成。
-
-MVP 只要求 compiler 能消费 Native Schema 已定义的 scheduler traits：
-
-```viso
-system PlayerController implements FixedUpdate {
-    input world: Handle<GameWorld>;
-    state speed = 6.0f32;
-
-    action fixed_update(frame: FixedFrame) {
-        world.walk(player, frame.input.move_x * speed, frame.input.move_z * speed);
-    }
-}
-```
-
-第三方 Rust crate 可以通过 schema 提供新的 system traits。**用户定义新 Trait/Impl 是 Advanced Surface，不是 Game Profile 的前置条件。**
-
-同时标准库应提供适合原型的小型 game facade，让几十行 demo 不必先设计完整 ECS/System graph；该 facade 最终 lower/注册到相同 scheduler/runtime，不新增 parser 关键字。
-
-### 38.8 Viso DSL 1.0 的形式化规范与实现范围
-
-Viso DSL 1.0 的形式化规范必须覆盖：Lossless CST→AST→Typed HIR、多执行域 IR、State/Computed/Action/Task 区分、Keyed List、Transactional Hot Reload、Shader Descriptor ABI、Schema/JSON diagnostics、System/Game Profile。
-
-Viso 1.0 不把所有高级 production 都当成首个可运行 vertical slice 的前置条件。语言团队应维护 `Core / Standard / Advanced` feature matrix，并为每个 production 标注 maturity：`stable / preview / reserved`。
+- 普通 `.vs` 不写语言头或 module 头：语言版本来自 `Viso.toml`/lockfile，module identity 来自 package root + source path；conformance fixture 需要显式 identity 时由 test harness 提供，不扩展普通 grammar（DSL 规范「Compilation Unit」）。
+- 类型显式度：public/exported API、input/event/slot/native/shader interface、外部持久化 schema 边界必须显式类型；private state/computed、local let、有期望类型的 closure 参数可推断。推断结果写入 schema；热重载时推断类型改变按 schema migration 处理。**1.0 核心没有 Dynamic 类型，无法推断的值不得回退成 dynamic**（DSL 规范「类型推断边界」）。
+- Native surface 默认由 Rust schema 或 generated interface 提供；Capability 从实际 native call graph 推导并与 package/profile grant 比较，`requires { ... }` 只是 public API 的显式 assertion。
+- Game support 是一等 vertical slice，只要求 compiler 消费 Native Schema 定义的 scheduler traits（如 `system PlayerController implements FixedUpdate { ... }`），不等待用户定义 Trait/Impl；小型 game facade lower 到同一 scheduler，不新增 parser 关键字（DSL 规范「游戏表达能力与 Game Profile」）。
 
 ## 39. Viso 编译管线
 
 ```text
-Source
-  ↓
-Streaming Tokenizer
-  ↓
-Lossless CST
-  ↓
-AST
-  ↓
-Name Resolution / Module Graph
-  ↓
-Typed HIR
-  ↓
-┌─────────────────────────────┐
-│ UI IR / Binding IR          │
-│ Shader IR                   │
-│ Optional Script Bytecode    │
-└─────────────────────────────┘
+Source → Streaming Tokenizer → Lossless CST → AST → Name Resolution / Module Graph → Typed HIR
+      → UI IR / Binding IR | Shader IR | (目标) Optional Script Bytecode
 ```
 
-### 39.1 Lossless CST 必须存在
-
-原因：
-
-- formatter 保留注释；
-- rename/refactor 精确；
-- incremental parse；
-- AI 结构化修改；
-- IDE code action；
-- hot reload structural diff；
-- 一次报告多个错误。
-
-不能只从 token 直接走向 runtime opcode，然后把所有语言工具需求事后补丁式恢复。
-
-### 39.2 Typed HIR
-
-组件接口默认强类型：
-
-```text
-component Counter {
-    state count: i32 = 0
-    input title: String
-    output changed(value: i32)
-}
-```
-
-应在开发期发现：
-
-- 属性拼写；
-- 类型不匹配；
-- 不存在的 callback；
-- 错误枚举；
-- shader uniform type mismatch；
-- invalid resource；
-- read-only property mutation；
-- 模块循环依赖。
-
-### 39.3 Dynamic 是 escape hatch
-
-允许：
-
-```text
-let payload: dynamic = ...
-```
-
-但大型 UI 的常规 property、component schema、event payload 不应默认 dynamic。
-
----
+- Lossless CST 必须存在（ADR 0010），服务 formatter 保留注释、精确 rename、incremental parse、AI 结构化修改、IDE code action、hot reload structural diff 与一次报告多个错误；禁止从 token 直接走向 runtime opcode。
+- Typed HIR 与 type/effect/capability checking 见 ADR 0011/0013；开发期必须发现属性拼写、类型不匹配、不存在的 event、错误枚举、shader uniform 类型不匹配、invalid resource、read-only property mutation 与模块循环依赖。
 
 ## 40. Rust Schema Bridge
 
-Rust 组件通过 derive/macro 自动生成 schema：
+Viso DSL compiler 依赖 `ComponentSchema { type_id, name, properties, events, slots }` 一类 schema，不直接操作 Rust 对象内存布局。自动生成 schema 的 `#[derive(Component, Reflect)]` 属于**目标**；当前 schema 由 `viso-dsl` 内的 native schema 表与 `viso-ui` 描述提供。
 
-```rust
-#[derive(Component, Reflect)]
-pub struct Button {
-    #[prop]
-    pub text: Text,
-
-    #[style]
-    pub style: ButtonStyle,
-}
-```
-
-生成概念：
-
-```rust
-ComponentSchema {
-    type_id,
-    name,
-    properties,
-    events,
-    slots,
-}
-```
-
-Viso DSL compiler 依赖 schema，不直接操作 Rust 对象内存布局。
-
-### 40.1 ID 编译
-
-源码：
-
-```text
-text
-background
-primary
-my_button
-```
-
-开发模式保留字符串用于 diagnostics。
-
-IR/runtime 使用：
-
-```text
-PropertyId(u32)
-TokenId(u32)
-NodeKey(u32/u64)
-ComponentTypeId(u32)
-```
-
-release hot path 不做字符串属性查找。
-
----
+IR/runtime 使用 `PropertyId`、`TokenId`、`NodeKey`、`ComponentTypeId` 等数值 ID；开发模式保留字符串用于 diagnostics；**release hot path 不做字符串属性查找**。
 
 ## 41. 开发运行与 Release AOT
 
-### Dev artifact
-
-`viso run` 构建 Dev artifact。Dev 允许保留：
-
-```text
-CST/HIR incremental cache
-source map / debug name
-schema reflection
-hot-reload Symbol/source metadata
-Dev Runtime
-PatchBundle receiver/apply path
-DevSnapshot capture/restore endpoint
-Inspector development hooks
-```
-
-Dev Runtime 的完整协议见仓库根目录 **`Viso_Hot_Reload.md`**。
-
-### Release / Shipping artifact
-
-Release 默认构建步骤：
-
-```text
-.vs source / ui! ViewFragment / component! ComponentDecl
-    ↓ build time (same frontend/HIR)
-Typed HIR
-    ↓
-Compact UI IR / Shader blobs
-    ↓
-embedded asset / generated Rust data
-```
-
-启动时：
-
-- 不重新 parse `.vs` source；
-- 不重新 type-check；
-- 不需要完整 source symbol string table；
-- 直接 instantiate compact AOT IR。
-
-更重要的是，Release/Shipping **完全不编入**：
-
-```text
-Dev transport listener
-PatchBundle decoder/apply engine
-DevSnapshot endpoint
-hot-reload command handlers
-hot-reload-only state-preservation metadata
-remote development control surface
-```
-
-这不是 `hot_reload = false` 的运行时开关，而是 build graph/feature boundary。Release 中不能通过环境变量、配置文件或隐藏端口重新开启 Hot Reload。
-
-Release steady-state frame loop 不允许因为开发期能力保留：
-
-```text
-per-frame dev socket poll
-hot_reload_enabled branch
-hot-reload SymbolId lookup
-patch revision check
-```
-
-Debug symbols/crash source maps是否保留是另一项 build policy，不得因此把 Dev Runtime 带回 Release。
-
----
+- **Dev artifact**（`viso run`）可以保留 CST/HIR incremental cache、source map/debug name、schema reflection、hot-reload Symbol/source metadata、Dev Runtime、PatchBundle receiver/apply path、DevSnapshot endpoint 与 Inspector hooks。
+- **Release artifact**：`.vs` / `ui!` / `component!` 在构建期经同一 frontend 生成 compact UI IR / Shader blobs，以 embedded asset 或 generated Rust data 形式打包（ADR 0016）。启动时不 parse、不 type-check、不需要完整 source symbol string table。
+- Release **完全不编入** Dev transport listener、PatchBundle decoder/apply engine、DevSnapshot endpoint、hot-reload command handler、hot-reload-only 元数据与远程开发控制面。这是 build graph/feature boundary，不是运行时开关；不得通过环境变量、配置或隐藏端口重新开启。Release 稳态帧不得有 per-frame dev socket poll、`hot_reload_enabled` 分支、SymbolId lookup 或 patch revision check。Debug symbols/crash source map 是另一项 build policy。
 
 ## 42. Development Runtime & Transactional Hot Reload
 
-Hot Reload 是 Viso 1.0 的开发期正式架构，但详细实现独立定义在 **`Viso_Hot_Reload.md`**。Architecture 固定以下不可违反的合同。
+完整协议见 `Viso_Hot_Reload.md`，事务引擎位于 `crates/dsl/src/hotreload/`（ADR 0015）。Architecture 固定以下合同：
 
-### 42.1 Multi-lane update
-
-```text
-.vs UI/behavior -> Typed Semantic Patch
-Game System     -> Fixed Tick-boundary System Patch
-Shader          -> Validated Pipeline Patch
-Asset / Font    -> Resource Revision Patch
-Rust            -> Incremental Build + Stateful Warm Restart
-```
-
-不要强迫所有 source change 走同一种 reload mechanism。
-
-### 42.2 Transaction
-
-所有可原地应用的 candidate：
-
-```text
-Compile candidate
-    ↓
-Validate schema/type/capability
-    ↓
-Compute semantic/structural diff
-    ↓
-Build state-preservation plan
-    ↓
-Stage shader/resources/runtime descriptors
-    ↓
-Wait correct domain atomic boundary
-    ↓
-Atomic commit
-    ↓
-Targeted dirty propagation
-```
-
-失败：
-
-```text
-NACK / rollback staged candidate
-keep last-good running app
-```
-
-运行中的 retained state 不能在 validation 尚未完成时被半修改。
-
-### 42.3 Domain atomic boundary
-
-```text
-UI / Reactive Patch   -> Frame Boundary
-Game System Patch     -> Fixed Tick Boundary
-Shader Patch          -> GPU-safe Frame Boundary
-Resource Patch        -> Resource-ready + Frame Boundary
-Rust executable       -> Warm Restart Boundary
-```
-
-### 42.4 State preservation
-
-必须有明确规则：
-
-- stable component/state SymbolId；
-- compatible state slot保留；
-- incompatible private state只 reset 最窄 scope；
-- child reorder使用 StableKey/稳定声明身份；
-- focus、scroll、selection、animation各自有 preservation contract；
-- shader failure保留 last-good pipeline；
-- Game logic patch保留 compatible World/System state；
-- Rust Warm Restart只恢复 typed DevSnapshot，不 dump raw process memory。
-
-### 42.5 Rust 不做任意机器码注入
-
-Viso 1.0 不以 JIT arbitrary Rust、随机 machine-code page replacement 或通用 dylib swap 作为跨平台 Hot Reload 方案。
-
-Rust change：
-
-```text
-incremental build while old app keeps running
-    ↓
-build success
-    ↓
-capture typed DevSnapshot
-    ↓
-replace/reinstall/relaunch Dev artifact
-    ↓
-reconnect
-    ↓
-restore compatible state
-```
-
-iOS/Android 的该流程只要求 Simulator/Emulator。
-
-### 42.6 Ende protocol
-
-Host ↔ Dev Runtime patch 使用 `viso-ende` Binary；CLI/Studio diagnostics 使用 Ende JSON。Patch 必须拥有 session/build/revision/schema identity，禁止乱序 blind apply。
-
-### 42.7 Last-good
-
-编辑中的 `.vs`、Shader、Game System 或资源 candidate 失败时，运行中的 App 继续使用最后一次成功 revision。开发错误不能把画面替换成 half-built tree 或 invalid pipeline。
-
----
+1. **Multi-lane**：`.vs` UI/behavior → Typed Semantic Patch；Game System → Fixed Tick-boundary System Patch；Shader → Validated Pipeline Patch；Asset/Font → Resource Revision Patch；Rust → Incremental Build + Stateful Warm Restart。
+2. **Transaction**：compile → validate schema/type/capability → semantic diff → state-preservation plan → stage → 等待对应 domain boundary → atomic commit → targeted dirty propagation；失败则 NACK/rollback 并保留 last-good。validation 完成前不得半修改 retained state。
+3. **Domain boundary**：UI/Reactive → Frame Boundary；Game System → Fixed Tick Boundary；Shader → GPU-safe Frame Boundary；Resource → Resource-ready + Frame Boundary；Rust → Warm Restart Boundary。
+4. **State preservation**：stable SymbolId；compatible state slot 保留；incompatible private state 只 reset 最窄 scope；child reorder 用 StableKey；focus/scroll/selection/animation 各有 preservation contract；Rust Warm Restart 只恢复 typed DevSnapshot，不 dump raw memory。
+5. **不注入任意 Rust 机器码**：不以 JIT、machine-code page replacement 或通用 dylib swap 作为跨平台方案；Rust 修改走 incremental build → DevSnapshot → relaunch → restore。iOS/Android 只要求 Simulator/Emulator。
+6. **协议**：Host ↔ Dev Runtime patch 使用 `viso-ende` Binary，CLI/Studio diagnostics 使用 Ende JSON；Patch 带 session/build/revision/schema identity，禁止乱序 blind apply。
+7. **Last-good**：失败 candidate 不得把画面替换成 half-built tree 或 invalid pipeline。
 
 ## 43. Viso 模块系统
 
-支持：
-
-```text
-module app.home;
-import widgets::{Button, Label, Column};
-import theme::AppTheme;
-export component Home { ... }
-```
-
-编译器负责：
-
-- module graph；
-- topo sort；
-- cycle detection；
-- public/private；
-- resource namespace；
-- shader namespace；
-- incremental module rebuild。
-
-不再让业务开发者靠手工注册调用顺序保证 UI 能启动。
-
----
+编译器负责 module graph、topo sort、cycle detection、public/private、resource/shader namespace 与 incremental module rebuild；业务代码不靠手工注册顺序保证 UI 能启动（ADR 0011；DSL 规范「Compilation Unit」「Import」）。普通源码不写 `module` 声明（§38.3）。
 
 ## 44. Capability-based dynamic scripting
 
-如果保留完整 VM，必须是 capability model：
-
-```text
-capabilities {
-    ui
-    timer
-    network("api.example.com")
-    asset_read("assets/**")
-}
-```
-
-用于：
-
-- AI 生成预览；
-- 第三方插件；
-- Studio sandbox；
-- 用户脚本。
-
-VM 的 instruction/time budget 仍保留，但不替代 capability security。
+静态 capability 检查不能替代运行时授权：每个 Isolate/Module 持有 Capability Set，Native Call 时验证，失败返回 `CapabilityDenied` 而不是 panic；AI Preview 默认只有最小 UI/GPU/package-asset 能力（DSL 规范「Capability 运行时」）。若保留完整 VM（目标：AI 预览、第三方插件、Studio sandbox、用户脚本），instruction/time budget 保留，但不替代 capability security。
 
 ---
 
@@ -4445,97 +3374,20 @@ VM 的 instruction/time budget 仍保留，但不替代 capability security。
 
 ## 45. 一个 `viso-widgets`，内部模块化
 
-不一开始拆：
+不预先拆成 `viso-widgets-core/app/adaptive` 等多个 crate，所有官方基础 widget 在单一 `viso-widgets` 内按模块组织。
 
-```text
-viso-widgets-core
-viso-widgets-app
-viso-widgets-adaptive
-```
+**当前**（`crates/widgets/src/`）：`containers.rs`、`grid.rs`（ADR 0009）、`list.rs`（VirtualList，ADR 0008）、`scroll.rs`（ADR 0007）、`text.rs`、`image.rs`、`icon.rs`，以及 `controls/`（button、checkbox、radio、toggle、slider、text_input、tabs、splitter、popup、modal、sheet、toast、navigation_stack、caption_bar、`dock/`（ADR 0023）、`file_tree/`（ADR 0024））。
 
-先在单一 crate 中：
+**目标分组**（informative；按子系统而不是按类型机械拆分）：
 
-```text
-widgets/src/
-├── lib.rs
-├── controls/
-├── containers/
-├── navigation/
-├── overlays/
-├── adaptive/
-├── desktop/
-└── theme/
-```
-
-### 45.1 controls
-
-```text
-button
-label
-text_input
-checkbox
-radio
-toggle
-slider
-dropdown
-image
-icon
-progress
-```
-
-### 45.2 containers
-
-```text
-row
-column
-flex
-grid
-stack
-scroll
-list
-splitter
-```
-
-### 45.3 navigation
-
-```text
-page
-router_view
-navigation_stack
-tabs
-tab_bar
-```
-
-### 45.4 overlays
-
-```text
-popup
-modal
-tooltip
-toast
-sheet
-menu
-```
-
-### 45.5 adaptive
-
-```text
-safe_area
-keyboard_avoiding
-adaptive_split
-adaptive_navigation
-responsive_grid
-```
-
-### 45.6 desktop
-
-```text
-window_shell
-menu_bar
-dock
-tabs
-resize_region
-```
+| 分组 | 目标内容 |
+|---|---|
+| controls | button、label、text_input、checkbox、radio、toggle、slider、dropdown、image、icon、progress |
+| containers | row、column、flex、grid、stack、scroll、list、splitter |
+| navigation | page、router_view、navigation_stack、tabs、tab_bar |
+| overlays | popup、modal、tooltip、toast、sheet、menu |
+| adaptive | safe_area、keyboard_avoiding、adaptive_split、adaptive_navigation、responsive_grid |
+| desktop | window_shell、menu_bar、dock、resize_region |
 
 ---
 
@@ -4565,32 +3417,13 @@ XR
 - 不在普通 `paint` 每帧 heap allocate；
 - 不在事件热路径字符串找 child；
 - 不持有任意 `Rc<RefCell<Node>>`；
-- 有明确 DirtyMask；
+- 有明确 DirtyClass；
 - TextInput 使用 text subsystem；
 - List 必须 virtualized；
 - animation 不默认引发布局；
 - accessibility 信息完整。
 
-复杂 widget 的目录按“子系统”拆，不按“一类型一文件”机械拆。
-
-例如：
-
-```text
-text_input/
-├── mod.rs
-├── edit.rs
-├── selection.rs
-├── ime.rs
-├── layout.rs
-├── paint.rs
-└── semantics.rs
-```
-
-简单 Button 保持：
-
-```text
-button.rs
-```
+复杂 widget 的目录按“子系统”拆（例如 `dock/`、`file_tree/`，或将来的 `text_input/{edit,selection,ime,layout,paint,semantics}.rs`），简单 widget 保持单文件（`button.rs`）。
 
 ---
 
@@ -4598,31 +3431,18 @@ button.rs
 
 ## 48. Platform 保持窄
 
-初始目录：
+当前目录（`crates/platform/src/`）：
 
 ```text
-crates/platform/src/
-├── lib.rs
-├── event.rs
-├── window.rs
-├── surface.rs
-├── cursor.rs
-├── clipboard.rs
-├── lifecycle.rs
-├── handles.rs
-├── system_font.rs
-└── os/
-    ├── macos/
-    ├── ios/
-    ├── windows/
-    ├── linux/
-    ├── android/
-    └── web/
+lib.rs  event.rs  handler.rs  control.rs  menu.rs  time.rs  wake.rs
+accessibility.rs  access_mirror.rs            # AccessKit 桥（ADR 0030）
+backend/
+├── mod.rs  headless.rs  main_queue.rs  memory_pressure.rs  utf16.rs
+├── macos.rs  macos_access.rs
+└── ios/  windows/  linux/  android/  web/
 ```
 
-平台 backend 初期不因“架构图漂亮”立刻拆成 6 个 crate。
-
-当某 backend 依赖、构建或维护成本足够大时再拆。
+窗口/表面句柄类型在 `viso-handle`；系统字体不在 platform（ADR 0026，§37.1）。各 backend 初期不拆成独立 crate，只有当某 backend 的依赖、构建或维护成本足够大时再拆。
 
 ### 48.1 Backend 支持等级与 capability contract
 
@@ -4655,7 +3475,8 @@ Tier-2 compatibility backend 可以存在，例如 Linux OpenGL、Android GLES �
 - business networking；
 - Studio protocol；
 - high-level media UI；
-- renderer batching。
+- renderer batching；
+- 系统字体发现、fallback 与字体解析（ADR 0026）。
 
 ---
 
@@ -4669,21 +3490,7 @@ let file = cx.services().files().open(...).await?;
 cx.services().share().text("hello").await?;
 ```
 
-典型 service：
-
-```text
-permissions
-clipboard
-files
-share
-camera
-location
-notifications
-secure_storage
-haptics
-network
-media
-```
+当前协议见 §49.3（ADR 0031）；clipboard、camera、location、network、media 等为目标协议。上面 `clipboard()` 调用只示意形态，非当前 API。
 
 ### 49.1 为什么 service 可以用 dyn
 
@@ -4932,7 +3739,7 @@ Theme：
 theme.vs
 ```
 
-Route 默认 Rust：
+Route 默认 Rust（目标，`routes!` 尚未实现）：
 
 ```rust
 routes! {
@@ -4957,148 +3764,17 @@ Shader 允许嵌入 `.vs`；只有高级复用场景才允许独立 `.shader`。
 
 ### 54.1 Command surface
 
-Viso 1.0 开发命令遵循 **host implicit / mobile explicit**：
+完整命令分组（PROJECT / MOBILE DEV ENVIRONMENT / DEVELOP / LANGUAGE / TEST·DEBUG / DELIVERY / MAINTENANCE）以 `Viso_CLI.md` 为准。不可违反的规则：
 
-```text
-PROJECT
-    viso new
-    viso doctor
-    viso config
+- **host implicit / mobile explicit**：无参数 `viso run/build/package` 表示当前 desktop host；移动与 Web 用逻辑 target（`run ios|android|web-gpu|web-dom|web-hybrid`）。Public CLI 不提供 `run macos|windows|linux|host`、`--target`、`ios --simulator`、`android --emulator`；macOS/Windows/Linux 是 Platform backend resolution，不是用户选择的 development target。
+- `run ios/android` 只面向 Simulator/Emulator，`--device` 只选择 Viso virtual-device profile。`viso android|ios use ...` 修改 developer-machine state，不修改 Git tracked `Viso.toml`。开发期不要求 signing/provisioning/physical device；它们只属于 `viso package ios`。
 
-MOBILE DEV ENVIRONMENT
-    viso android list|use|doctor
-    viso android emulator list|create|delete|start|stop
-    viso android adb ...
+### 54.2 Build / package / export 与 `run` watcher
 
-    viso ios list|use|doctor
-    viso ios simulator list|create|delete|start|stop
+- `build` → Viso application artifact；`package` → distributable artifact；`export` → 外部生态 source/static artifact（例如 `export html|solid`）。SolidJS 是 exporter，不是 Viso 中间表示或核心依赖。
+- 普通开发只需 `viso run`（或移动/Web 逻辑 target）。`run` 负责 Rust/`.vs` incremental build、shader/asset/font watcher、transactional hot reload、Rust stateful Warm Restart、last-good、Simulator/Emulator launch/install、structured diagnostics 与可选 Inspector/Profile attach；不需要独立 `watch` 命令（`Viso_Hot_Reload.md`）。
 
-DEVELOP
-    viso run
-    viso run ios [--device <simulator-profile>]
-    viso run android [--device <emulator-profile>]
-    viso run web-gpu|web-dom|web-hybrid
-    viso build [ios|android|web-*]
-    viso serve [web-*]
-
-LANGUAGE
-    viso fmt
-    viso check
-    viso schema
-    viso explain
-    viso dump ast|hir|ui-ir|reactive-ir|shader-ir|system-ir
-    viso lsp
-
-TEST / DEBUG
-    viso test
-    viso snapshot
-    viso inspect
-    viso profile
-    viso studio
-
-DELIVERY
-    viso package [ios|android|web-*]
-    viso export html|solid
-
-MAINTENANCE
-    viso clean
-    viso completion
-```
-
-无参数 `viso run/build/package` 表示当前 desktop host。Public development CLI 不提供：
-
-```text
-viso run macos
-viso run windows
-viso run linux
-viso run host
-viso run --target ...
-viso run ios --simulator
-viso run android --emulator
-```
-
-macOS/Windows/Linux 是 Platform backend resolution，不是普通用户需要选择的 development target。
-
-### 54.2 Mobile dev environment 与 delivery 分离
-
-Viso 1.0 的 `run ios/android` 只面向 Simulator/Emulator：
-
-```text
-viso run ios      -> iOS Simulator
-viso run android  -> Android Emulator
-```
-
-`--device` 只选择 Viso virtual-device profile。
-
-Android 开发环境：
-
-```text
-viso android list
-viso android use <api>
-viso android doctor
-viso android emulator ...
-viso android adb ...
-```
-
-`use <api>` 负责确保 Viso 验证过的 platform-tools/ADB、platform、build-tools、NDK、emulator 与 compatible system image 存在并选为本机默认。它修改 developer-machine state，不修改 Git tracked `Viso.toml`。
-
-iOS Simulator 开发环境：
-
-```text
-viso ios list
-viso ios use <runtime>
-viso ios doctor
-viso ios simulator ...
-```
-
-开发期不要求 signing identity/provisioning/physical device。Signing 和 store distribution 只属于 `viso package ios`。
-
-### 54.3 Build / package / export 与 `run` watcher
-
-```text
-build
-    -> Viso application artifact
-
-package
-    -> distributable artifact
-
-export
-    -> foreign ecosystem source/static artifact
-```
-
-因此：
-
-```text
-viso build web-dom
-viso package android
-viso export html
-viso export solid
-```
-
-SolidJS 是 exporter，不是 Viso 中间表示或核心依赖。
-
-普通开发只需要：
-
-```text
-viso run
-```
-
-或移动/Web逻辑 target。`run` 负责：
-
-- Rust incremental build；
-- `.vs` incremental compile；
-- shader/asset/font watcher；
-- transactional hot reload；
-- Rust stateful Warm Restart；
-- Last-good runtime；
-- Simulator/Emulator launch/install；
-- structured diagnostics；
-- optional Inspector/Profile attachment。
-
-不要求普通用户额外运行独立 `watch` 命令。完整 Hot Reload contract 见 `Viso_Hot_Reload.md`。
-
-
-### 54.4 Machine-readable output 是正式协议
+### 54.3 Machine-readable output 是正式协议
 
 所有可自动化命令必须支持：
 
@@ -5120,40 +3796,13 @@ summary
 
 事件结构和 exit code 必须稳定，CI、Studio、IDE、LSP 和 AI agent 不得依赖解析人类文本。
 
-### 54.5 CLI 不复制业务实现
+### 54.4 CLI 不复制业务实现
 
-目标结构：
+CLI、Studio、IDE/LSP 与 CI 共享同一组 compiler / build / inspect / package 领域服务。CLI command handler 只负责参数解析、project/config resolution、调用 domain service、人类/JSON 输出与 exit code；不得在目标 `tools/cli` 内重新实现 DSL compiler、GPU compiler、packager、Android/iOS simulator protocol 或 Inspector runtime。
 
-```text
-                     shared tooling services
-                  /        |        |        \
-              viso CLI   Studio    IDE/LSP    CI
-                  |          |         |        |
-                  +----------+---------+--------+
-                             |
-              compiler / build / inspect / package APIs
-```
+### 54.5 CLI 非目标
 
-CLI command handler 只负责：
-
-- 参数解析；
-- project/config resolution；
-- 调用 domain service；
-- 人类/JSON 输出；
-- exit code。
-
-不得在 `tools/cli` 内重新实现 DSL compiler、GPU compiler、packager、Android/iOS simulator protocol 或 Inspector runtime。
-
-### 54.6 CLI 非目标
-
-`viso` 不成为：
-
-- Cargo/crates.io dependency manager 的替代品；
-- Git 替代品；
-- 通用 shell task runner；
-- Docker/CI 平台；
-- 数据库 schema 管理工具；
-- arbitrary package manager。
+`viso` 不替代 Cargo/crates.io、Git、通用 shell task runner、Docker/CI 平台、数据库 schema 工具或任意 package manager。
 
 CLI 只聚焦 Viso-specific 的 source → check → build → run → inspect → test → package → export 生命周期。
 
@@ -5216,14 +3865,13 @@ main-thread task time
 任何 dirty 都可在 debug/profile build 查询原因：
 
 ```text
-Node 381 marked LAYOUT dirty
+Node 381 marked MEASURE dirty
 because:
   property Text changed
   from state App.feed.items[3].title
   at src/features/feed/view.vs:82
 ```
 
-这是复杂增量系统可维护的关键。
 
 ---
 
@@ -5520,6 +4168,8 @@ Viso DSL、Shader、Layout strict lint、Migration 共用 diagnostics 基础设�
 
 # Part XXIV — Makepad 参考实现与设计经验
 
+> §63 首段（不建立兼容层、不复制耦合边界）是规范；§63.1–§63.7 为 informative 背景。
+
 ## 63. 参考边界
 
 Makepad 只作为 Viso 设计过程中的外部参考资料。Viso 不建立 Makepad API/ABI 兼容层，不提供项目转换命令，不在 runtime 中识别 Makepad 类型，也不把 Makepad 的模块注册、Widget 生命周期或脚本执行模型作为 Viso public contract。
@@ -5592,6 +4242,8 @@ Makepad 在跨平台构建、Studio、远程 UI 操作、截图、profile 等方
 
 # Part XXV — Viso 1.0 实施路线图
 
+> **Informative。** 本 Part 是路线图，不是规范性合同；与 Part 0–XXIV 或已接受 ADR 冲突时以后者为准。进度以 `docs/adr/` 为准：Phase 0 已由 ADR 0001 关闭；Phase 1–8 的已落地切片分别见 ADR 0004/0019/0020/0032（runtime/platform）、0002/0029（GPU/renderer）、0003（tree）、0007–0009/0022/0030（layout/input/semantics）、0005/0021（reactive）、0010/0011/0013–0018（DSL/hot reload/AOT/shader/tooling）、0023/0024（widgets）、0031/0032（services/async）。Phase 9 的 CLI/Studio/Inspector 尚未开始（当前只有 `tools/project`）。
+
 ## 64. Phase 0 — 固定 Architecture Contract
 
 ### 目标
@@ -5611,11 +4263,11 @@ Makepad 在跨平台构建、Studio、远程 UI 操作、截图、profile 等方
 9. 固定 `.vs` 为唯一 canonical DSL 扩展名；
 10. 固定 Dev-only Hot Reload / Rust Warm Restart contract，并建立 `Viso_Hot_Reload.md`；
 11. 固定 Text/Font Runtime contract，并建立 `Viso_Text_Font_Runtime.md`；
-11. 固定 renderer primitive contract；
-12. 固定 GPU instance ABI；
-13. 建立 benchmark 与 characterization suite；
-14. 建立 `architecture.toml` + `cargo xtask arch-check`；
-15. 建立 dependency/unsafe/perf CI gates。
+12. 固定 renderer primitive contract；
+13. 固定 GPU instance ABI；
+14. 建立 benchmark 与 characterization suite；
+15. 建立 crate 依赖 allowlist 检查（当前 `cargo xtask check-deps`，§10.2）；
+16. 建立 dependency/unsafe/perf CI gates。
 
 ### 退出标准
 
@@ -5672,7 +4324,7 @@ fn main() {
 5. render pass / render graph；
 6. `Quad`, `GlyphRun`, `Image`, `Path`, `Mesh`, `Clip`, `Layer` primitives；
 7. automatic batching；
-8. explicit `GpuInstance` descriptor；
+8. explicit `#[derive(GpuPod)]` instance descriptor；
 9. render counters/profiler；
 10. screenshot golden tests。
 
@@ -5750,22 +4402,7 @@ NodeId(index, generation)
 
 ### Layout 取舍
 
-公开 API 使用：
-
-```text
-Auto
-Px
-Percent
-Fr
-Min/Max
-Row
-Column
-Stack
-Grid
-Absolute
-```
-
-内部算法可使用单遍 cursor、缓存 measure、局部 relayout 等优化，但这些实现细节不泄漏成用户正确性要求。
+公开 API 使用 Row/Column/Stack/Grid/Absolute 容器、`Dp` 长度族与 sizing mode（§22）。内部算法可使用单遍 cursor、缓存 measure、局部 relayout 等优化，但这些实现细节不泄漏成用户正确性要求。
 
 ### 退出标准
 
@@ -5786,7 +4423,7 @@ Absolute
 
 1. `StateId` / typed state slot；
 2. transaction batching；
-3. `DirtyMask`；
+3. `DirtyClass`；
 4. binding metadata；
 5. static dependency fast path；
 6. dynamic fallback 仅作为显式 escape hatch；
@@ -5973,240 +4610,15 @@ CLI、Studio、IDE、CI 都是共享 tooling services 的客户，不允许各�
 
 ## 74. Framework repo 最终建议
 
-```text
-viso/
-├── Cargo.toml
-├── Cargo.lock
-├── README.md
-├── ARCHITECTURE.md
-├── Viso_CLI.md
-├── Viso_Hot_Reload.md
-├── Viso_Text_Font_Runtime.md
-├── AGENTS.md
-├── SECURITY.md
-├── rustfmt.toml
-│
-├── crates/
-│   ├── viso/
-│   │   ├── Cargo.toml
-│   │   └── src/
-│   │       ├── lib.rs
-│   │       └── prelude.rs
-│   │
-│   ├── macros/
-│   │   ├── Cargo.toml
-│   │   └── src/
-│   │       ├── lib.rs
-│   │       ├── component.rs
-│   │       ├── binding.rs
-│   │       └── gpu_instance.rs
-│   │
-│   ├── ende/
-│   │   ├── Cargo.toml
-│   │   └── src/
-│   │       ├── lib.rs
-│   │       ├── encode.rs
-│   │       ├── decode.rs
-│   │       ├── error.rs
-│   │       ├── bin/
-│   │       └── json/
-│   │
-│   ├── math/
-│   │   ├── Cargo.toml              # package = "viso-math"
-│   │   └── src/
-│   │       ├── lib.rs
-│   │       ├── scalar.rs
-│   │       ├── vector.rs
-│   │       ├── matrix.rs
-│   │       ├── geometry.rs
-│   │       └── transform.rs
-│   │
-│   ├── runtime/
-│   │   └── src/
-│   │       ├── lib.rs
-│   │       ├── app.rs
-│   │       ├── loop.rs
-│   │       ├── frame.rs
-│   │       ├── scheduler.rs
-│   │       ├── task/
-│   │       ├── timer.rs
-│   │       ├── mailbox.rs
-│   │       └── resource.rs
-│   │
-│   ├── platform/
-│   │   └── src/
-│   │       ├── lib.rs
-│   │       ├── event.rs
-│   │       ├── window.rs
-│   │       ├── surface.rs
-│   │       ├── lifecycle.rs
-│   │       ├── handles.rs
-│   │       └── os/
-│   │           ├── macos/
-│   │           ├── ios/
-│   │           ├── windows/
-│   │           ├── linux/
-│   │           ├── android/
-│   │           ├── web/
-│   │           └── headless/
-│   │
-│   ├── gpu/
-│   │   └── src/
-│   │       ├── lib.rs
-│   │       ├── device.rs
-│   │       ├── resource.rs
-│   │       ├── pipeline.rs
-│   │       ├── command.rs
-│   │       ├── surface.rs
-│   │       ├── caps.rs
-│   │       └── backend/
-│   │
-│   ├── shader/
-│   │   └── src/
-│   │       ├── lib.rs
-│   │       ├── syntax/
-│   │       ├── hir/
-│   │       ├── ir/
-│   │       ├── validate/
-│   │       └── codegen/
-│   │
-│   ├── text/
-│   │   └── src/
-│   │       ├── lib.rs
-│   │       ├── font_request.rs
-│   │       ├── font_manifest.rs
-│   │       ├── font_format.rs
-│   │       ├── resolver.rs
-│   │       ├── app_fonts.rs
-│   │       ├── system_fonts.rs
-│   │       ├── font_provider.rs
-│   │       ├── font_cache.rs
-│   │       ├── fallback.rs
-│   │       ├── coverage.rs
-│   │       ├── progressive.rs
-│   │       ├── shaping.rs
-│   │       ├── segment.rs
-│   │       ├── bidi.rs
-│   │       ├── line_break.rs
-│   │       ├── line_break_tailoring.rs
-│   │       ├── text_position.rs
-│   │       ├── caret.rs
-│   │       ├── hit_test.rs
-│   │       ├── selection.rs
-│   │       ├── ime.rs
-│   │       ├── paragraph.rs
-│   │       ├── text_work.rs
-│   │       ├── glyph_representation.rs
-│   │       ├── mtsdf.rs
-│   │       ├── outline_cache.rs
-│   │       └── glyph_cache.rs
-│   │
-│   ├── render/
-│   │   └── src/
-│   │       ├── lib.rs
-│   │       ├── primitive.rs
-│   │       ├── paint_cache.rs
-│   │       ├── clip.rs
-│   │       ├── layer.rs
-│   │       ├── batch.rs
-│   │       ├── atlas/
-│   │       ├── graph/
-│   │       └── frame_packet.rs
-│   │
-│   ├── ui/
-│   │   └── src/
-│   │       ├── lib.rs
-│   │       ├── node/
-│   │       ├── component/
-│   │       ├── state/
-│   │       ├── layout/
-│   │       ├── input/
-│   │       ├── focus/
-│   │       ├── gesture/
-│   │       ├── style/
-│   │       ├── animation/
-│   │       ├── semantics/
-│   │       └── paint/
-│   │
-│   ├── widgets/
-│   │   └── src/
-│   │       ├── lib.rs
-│   │       ├── controls/
-│   │       ├── containers/
-│   │       ├── navigation/
-│   │       ├── overlays/
-│   │       ├── adaptive/
-│   │       ├── desktop/
-│   │       └── theme/
-│   │
-│   ├── dsl/
-│   │   └── src/
-│   │       ├── lib.rs
-│   │       ├── syntax/
-│   │       ├── cst/
-│   │       ├── ast/
-│   │       ├── module/
-│   │       ├── hir/
-│   │       ├── ui_ir/
-│   │       ├── binding/
-│   │       ├── reload/
-│   │       └── vm/
-│   │
-│   └── services/
-│       └── src/
-│           ├── lib.rs
-│           ├── permissions.rs
-│           ├── files.rs
-│           ├── clipboard.rs
-│           ├── share.rs
-│           ├── notifications.rs
-│           ├── camera.rs
-│           ├── location.rs
-│           ├── storage.rs
-│           └── network.rs
-│
-├── integrations/
-│   ├── tokio/
-│   ├── tracing/
-│   ├── serde/
-│   ├── accesskit/
-│   └── robius/
-│
-├── extras/
-│   ├── code-editor/
-│   ├── markdown/
-│   ├── pdf/
-│   ├── browser/
-│   ├── charts/
-│   ├── map/
-│   └── xr/
-│
-├── tools/
-│   ├── cli/
-│   ├── inspector/
-│   ├── studio/
-│   └── packager/
-│
-├── examples/
-│   ├── 00-minimal/
-│   ├── 01-counter/
-│   ├── 02-layout/
-│   ├── 03-state/
-│   ├── 04-navigation/
-│   ├── 05-async/
-│   ├── 06-list/
-│   ├── 07-text-input/
-│   ├── 08-adaptive/
-│   ├── 09-accessibility/
-│   ├── 10-custom-shader/
-│   └── 99-full-app/
-│
-├── benches/
-├── tests/
-├── docs/
-├── xtask/
-└── vendor/
-```
+当前仓库结构与 crate 清单见 §8/§9，依赖方向见 §10；本节不再重复一份目录树。目标补充（informative）：
+
+- `integrations/`：tokio、tracing、serde、robius 等 adapter crate；
+- `extras/`：code-editor、markdown、pdf、browser、charts、map、xr；
+- `tools/`：cli、inspector、studio、packager；
+- `examples/`：按 `00-minimal`、`01-counter`、`02-layout` … `10-custom-shader`、`99-full-app` 渐进编号；
+- `vendor/`：第三方 fork（§76）。
+
+crate 内部目录遵循 §75（简单概念一个文件，复杂子系统一个目录）；不在本文冻结每个 crate 的文件清单。
 
 ---
 
@@ -6249,7 +4661,7 @@ rustybuzz fork
 map/ai/game 等高阶扩展
 ```
 
-全部重新塞进一个模糊 `libs/`。
+全部重新塞进一个模糊 `libs/`。当前 `libs/` 只放框架自有、可独立复用的小型算法 crate（如 `viso-woff2`），不放第三方 fork。
 
 ---
 
@@ -6257,27 +4669,21 @@ map/ai/game 等高阶扩展
 
 ## 77. `run::<App>()`
 
-签名概念：
+当前签名（`crates/viso/src/lib.rs`）：
 
 ```rust
-pub fn run<A: Application>() -> !;
-```
+pub fn run<A: Application>();
 
-Web 等平台可能不是传统 `!`，可以内部平台化，public surface 保持统一。
-
-Application：
-
-```rust
 pub trait Application: Sized + 'static {
-    fn new(cx: &mut AppCx<'_>) -> Self;
-
-    fn resumed(&mut self, _cx: &mut AppCx<'_>) {}
-    fn suspended(&mut self, _cx: &mut AppCx<'_>) {}
-    fn low_memory(&mut self, _cx: &mut AppCx<'_>) {}
+    fn new(cx: &mut AppCx) -> Self;
+    fn window_config(&self) -> WindowConfig { WindowConfig::default() }
+    fn build(&mut self, cx: &mut BuildCx<'_>) {}
+    fn menu(&self) -> Option<viso_platform::Menu> { None }
+    fn on_menu_command(&mut self, command: viso_platform::MenuCommandId) {}
 }
 ```
 
-事件不一定全部由 `Application` 手工接收；UI runtime 自己 route。
+`run` 拥有 platform event pump 与 frame scheduler，无原生 backend 时回退 headless，直到最后一个窗口关闭才返回（ADR 0006/0020）。`resumed`/`suspended`/`low_memory` 等 lifecycle hook 为目标（§50）。事件不由 `Application` 手工接收；UI runtime 自己 route。
 
 ---
 
@@ -6352,7 +4758,7 @@ Inspector query 可以使用字符串，但不属于 steady-state UI hot path。
 
 ```rust
 trait Painter {
-    type Instance: GpuInstance;
+    type Instance: GpuPod;
 
     fn paint(
         &mut self,
@@ -6373,63 +4779,118 @@ trait Painter {
 
 # Part XXVIII — 关键架构决策记录（ADR 摘要）
 
-## ADR-001：单一 facade crate
+## `docs/adr/` 决策索引（规范来源）
+
+`docs/adr/NNNN-*.md` 是已接受架构决策的唯一记录；本文与 ADR 冲突时以 ADR 为准。
+
+| ADR | 标题 | 状态 |
+|---|---|---|
+| 0001 | Phase 0 Architecture Contract | Accepted |
+| 0002 | Layer offscreen compositing（由 opacity 触发） | Accepted |
+| 0003 | Retained widget tree：SoA node store、imperative build、direct flex | Accepted |
+| 0004 | First-frame trigger：scheduler 拥有启动 redraw | Accepted |
+| 0005 | Reactive state：SoA StateStore、hybrid bindings、memo-gated computed、scoped effects | Accepted |
+| 0006 | Application scene seam、reactive-reach BuildCx、pointer-phase access | Accepted |
+| 0007 | Scroll：viewport transform、clip、wheel routing | Accepted |
+| 0008 | VirtualList：scroll viewport、per-frame reconcile、recycle pool | Accepted |
+| 0009 | Grid layout：track sizing、placement、two-axis solver | Accepted |
+| 0010 | `.vs` lexer、lossless green-tree CST、coarse parser | Accepted |
+| 0011 | `.vs` typed AST、name resolution、module graph、unified diagnostics | Accepted |
+| 0012 | `viso-math` 与 `viso-ende`：两个自有 leaf foundation | Accepted |
+| 0013 | `.vs` Typed HIR 与 type/effect/capability checking | Accepted |
+| 0014 | UI IR + Binding IR 与 `ui!` proc-macro | Accepted |
+| 0015 | Transactional hot reload（compile → diff → migrate → commit） | Accepted |
+| 0016 | Release AOT package（compact IR asset，load path 不含 compiler） | Accepted |
+| 0017 | Shader IR（typed single source、ABI cross-check、last-good hot reload） | Accepted |
+| 0018 | Formatter 与 LSP（`viso-lsp`） | Accepted |
+| 0019 | One-shot timers 与 deadline-driven frame scheduling（`WaitUntil`） | Accepted |
+| 0020 | Multi-window：per-window retained state、deferred open/close、platform close seam | Accepted |
+| 0021 | Reactive semantic-state projection | Accepted |
+| 0022 | Hover：per-node enter/leave synthesis | Accepted |
+| 0023 | Dock live re-layout 与 tree-as-warm-state | Accepted |
+| 0024 | File tree flattened-visible-row model | Accepted |
+| 0025 | Text subsystem ownership 与 cache boundaries | Accepted |
+| 0026 | System-font provider 与 color-glyph rasterizer seam（trait 在 viso-text，CoreText 在 facade） | Accepted |
+| 0027 | Width-aware text reflow | Accepted |
+| 0028 | SFNT-only font input（WOFF2 由调用方解压） | Accepted |
+| 0029 | GPU backend static selection per target | Accepted |
+| 0030 | Accessibility OS bridge（AccessKit） | Accepted |
+| 0031 | Service protocols：一个 registry、one-shot reply、每 OS 一个实现 | Accepted |
+| 0032 | UI task protocol：loop-thread task、cross-thread wake、node-scoped cancellation | Accepted |
+| 0033 | Relative length units：`em`、Percent basis、`MixedLength` | Accepted |
+| 0034 | DSL keyword tiers 与 label positions | Proposed |
+
+## 文内架构取舍摘要（AD-01 … AD-24）
+
+以下条目是早于 `docs/adr/` 的设计取舍摘要，编号为 **AD-xx**（原“ADR-0xx”，编号一一对应，例如原 ADR-022 = AD-22）。其他文档中的旧写法（如 `docs/adr/0028` 中的“ADR-022”）均指这里的 AD 条目，而非 `docs/adr/00xx`。有对应 ADR 文件的条目在标题下注明；无对应文件的条目仍是规范性取舍，但若与后续 ADR 冲突，以 ADR 为准。
+
+### AD-01：单一 facade crate
 
 **决定**：普通用户只依赖 `viso`。  
 **原因**：隐藏内部拆分，降低 onboarding 和 API churn。  
 **代价**：facade 需要谨慎维护 re-export 与 features。
 
-## ADR-002：Retained Tree，不采用 Virtual DOM
+### AD-02：Retained Tree，不采用 Virtual DOM
+
+*对应 ADR 0003（retained tree / imperative build）、ADR 0005（reactive dirty）。*
 
 **决定**：状态变化直接 invalidation retained node/property。  
 **原因**：更符合 Viso 的性能定位，避免通用 rebuild/diff 成本。  
 **代价**：reactive dependency、structure mutation 和 hot reload 实现更复杂。
 
-## ADR-003：NodeArena + generational ID
+### AD-03：NodeArena + generational ID
+
+*对应 ADR 0003（SoA node store）。*
 
 **决定**：Node identity 使用 arena ID。  
 **原因**：局部性、低分配、稳定 handle、避免 RefCell。  
 **代价**：需要明确 storage/lifetime/handle validity。
 
-## ADR-004：UI Tree 不做全 ECS
+### AD-04：UI Tree 不做全 ECS
 
 **决定**：保留 parent/child UI tree，热数据采用 DOD。  
 **原因**：UI 的 ancestry 语义强，纯 ECS 会让 layout/focus/semantics 复杂化。  
 **代价**：需要设计好 tree + side arrays。
 
-## ADR-005：Viso DSL 不作为 UI runtime 基础依赖
+### AD-05：Viso DSL 不作为 UI runtime 基础依赖
+
+*对应 ADR 0014/0015/0016 的依赖方向约束。*
 
 **决定**：`dsl -> ui`，不是 `ui -> dsl`。  
 **原因**：纯 Rust、AOT、测试、可维护性。  
 **代价**：需要 schema/IR bridge。
 
-## ADR-006：Release AOT
+### AD-06：Release AOT
+
+*对应 ADR 0016。*
 
 **决定**：默认 release 不 parse `.vs`。  
 **原因**：启动、内存、性能、错误提前发现。  
 **代价**：build pipeline 更复杂。
 
-## ADR-007：GPU backend 静态选择
+### AD-07：GPU backend 静态选择
 
-文件记录：[ADR 0029](docs/adr/0029-gpu-backend-static-selection.md)。
+*对应 ADR 0029。*
 
 **决定**：源代码统一 RHI，target release 尽量单 backend specialization。  
 **原因**：避免热路径 dyn dispatch 和最低公分母。  
 **代价**：backend 维护成本高于完全依赖通用抽象。
 
-## ADR-008：自动 batching
+### AD-08：自动 batching
 
 **决定**：batch 是 renderer 责任。  
 **原因**：用户不应该靠 `new_batch` 维持正确性。  
 **代价**：renderer 需要更强 z-order/clip/layer 模型。
 
-## ADR-009：官方 async protocol，不强绑 Tokio
+### AD-09：官方 async protocol，不强绑 Tokio
+
+*对应 ADR 0032（loop-thread task、`LoopWaker`、adapter 不随该决定发布）。*
 
 **决定**：Viso main loop 拥有 scheduling；Tokio/Smol 为 adapter。  
 **原因**：控制 frame/vsync/lifecycle，减少 feature matrix。  
 **代价**：需要维护小型 task bridge/runtime。
 
-## ADR-010：Progressive project structure
+### AD-10：Progressive project structure
 
 **决定**：feature 从 `mod.rs + view.vs` 起步，复杂再拆。  
 **原因**：同时适配小/大项目。  
@@ -6437,7 +4898,9 @@ trait Painter {
 
 ---
 
-## ADR-011：Node hot storage 使用 hybrid indexed SoA
+### AD-11：Node hot storage 使用 hybrid indexed SoA
+
+*对应 ADR 0003。*
 
 **决定**：compact `NodeMeta` AoS + 同索引 hot SoA stores + sparse cold tables。
 
@@ -6445,7 +4908,7 @@ trait Painter {
 
 **代价**：store schema 演进需要更严格的 memory accounting；部分 node 会在 hot store 中保留 sentinel/compact slot。
 
-## ADR-012：`Handle<T>` 不直接暴露组件内部 state 借用
+### AD-12：`Handle<T>` 不直接暴露组件内部 state 借用
 
 **决定**：Handle 表达 identity/capability；状态读写通过 context-scoped query、typed property/action/update API。
 
@@ -6453,7 +4916,9 @@ trait Painter {
 
 **代价**：某些内部高级代码比直接 `&mut T` 多一层显式 API。
 
-## ADR-013：Transform 与 Layout 使用独立失效平面
+### AD-13：Transform 与 Layout 使用独立失效平面
+
+*对应 ADR 0007（TRANSFORM|HIT_TEST|PAINT，§19.2）。*
 
 **决定**：共享 `NodeId`，独立 TransformStore/dirty propagation；scroll/transform animation 默认不触发布局。
 
@@ -6461,7 +4926,9 @@ trait Painter {
 
 **代价**：hit-test、clip、world transform cache 需要明确同步规则。
 
-## ADR-014：自研范围使用 Ownership Ladder
+### AD-14：自研范围使用 Ownership Ladder
+
+*对应 ADR 0012、0025。*
 
 **决定**：UI runtime/reactive/render integration/DSL/HIR/Shader ABI 等核心语义自研；标准算法和通用基础设施优先依赖成熟实现并通过窄边界隔离。
 
@@ -6469,7 +4936,9 @@ trait Painter {
 
 **代价**：需要持续维护依赖评估、替换层和版本兼容测试。
 
-## ADR-015：Viso DSL 使用 `ui!` / `view!` / `component!` 与 `.vs` 文件
+### AD-15：Viso DSL 使用 `ui!` / `view!` / `component!` 与 `.vs` 文件
+
+*对应 ADR 0014。*
 
 **决定**：`ui!` 使用 ViewFragment parser entry，`component!` 使用 ComponentDecl entry，`view!("...vs")` 使用外部 `.vs` CompilationUnit；三者共享同一 schema/type/effect checker、Typed HIR、Reactive/UI/Shader IR 和 runtime contracts。`.vs` 是唯一 canonical 外部文件扩展名。
 
@@ -6477,7 +4946,7 @@ trait Painter {
 
 **代价**：compiler/source-map 必须支持 Rust macro span 与 file span 两种 source origin，并维护少量明确 parser entry points。
 
-## ADR-016：Identity 使用 Stable Symbol + Typed Dense Runtime ID
+### AD-16：Identity 使用 Stable Symbol + Typed Dense Runtime ID
 
 **决定**：compiler-local 名字使用 `NameId`，跨编译稳定身份使用 128-bit `SymbolId`，运行时热路径 lower 为 `PropertyId` / `EventId` / `ComponentTypeId` / `ShaderId` 等 typed dense ID；具体 UI 实例使用 generational `NodeId`。
 
@@ -6485,23 +4954,27 @@ trait Painter {
 
 **代价**：需要显式 link/lowering 阶段和更多 typed newtype，但这些类型在 release 中没有额外抽象成本。
 
-## ADR-017：Viso 自研 `viso-ende`
+### AD-17：Viso 自研 `viso-ende`
+
+*对应 ADR 0012（derive 为目标，§10.5.15）。*
 
 **决定**：Viso 内部协议、cache、snapshot、tool transport 使用 Viso-owned Ende Binary/JSON contract；RON 不属于 Viso；Serde 只作为生态 integration。
 
 **理由**：协议 ABI、分配行为、bounded decode、typed ID wire representation 与工具链版本语义属于框架架构。
 
-**代价**：需要维护 derive、binary/json encoder/decoder、fuzz 与 compatibility tests。
+**代价**：需要维护 binary/json encoder/decoder、fuzz 与 compatibility tests，以及目标中的 derive。
 
-## ADR-018：基础数值与几何使用独立 `viso-math`
+### AD-18：基础数值与几何使用独立 `viso-math`
 
-**决定**：`viso-math` 提供 allocation-free vector/matrix/rect/size/transform/geometry primitives，并位于 Runtime/GPU/Render/UI 下层。Math ABI 不等于 GPU ABI。
+*对应 ADR 0012（`viso-math` 是 DAG 叶子；当前只被 render/svg 使用，§10）。*
+
+**决定**：`viso-math` 提供 allocation-free vector/matrix/rect/size/transform/geometry primitives，是无依赖的 DAG 叶子，可被任意上层 crate 使用。Math ABI 不等于 GPU ABI。
 
 **理由**：这些类型横跨 layout、input、render、shader interface、text geometry、animation 与 game；不应被某个上层 subsystem 所有。
 
 **代价**：需要严格控制 crate scope，防止 `math` 退化成新的 `utils/core` 垃圾桶。
 
-## ADR-019：`viso` CLI 是统一 Tooling Facade
+### AD-19：`viso` CLI 是统一 Tooling Facade
 
 **决定**：项目创建、环境诊断、build/run/serve、language tooling、test/inspect/profile、package/export 统一通过 `viso`；CLI、Studio、IDE、CI 复用同一套 tooling services。Desktop host 由无参数 `viso run` 隐式确定；Android/iOS 开发环境分别使用 `viso android` / `viso ios`。
 
@@ -6509,7 +4982,9 @@ trait Painter {
 
 **代价**：需要稳定 command grammar、Ende JSON machine protocol、exit codes，以及 Android Emulator/iOS Simulator tooling adapter。
 
-## ADR-020：Hot Reload 只存在于 Dev artifact
+### AD-20：Hot Reload 只存在于 Dev artifact
+
+*对应 ADR 0015、0016。*
 
 **决定**：Dev Runtime、Hot Reload transport、PatchBundle apply、DevSnapshot endpoint 与 hot-reload-only metadata 只编入 Dev artifact；Release/Shipping build graph完全不包含这些路径，不能在运行时重新开启。
 
@@ -6517,7 +4992,7 @@ trait Painter {
 
 **代价**：Rust/native 修改不能在 release artifact 上动态注入；开发期必须通过 Dev artifact，Rust code change使用 Stateful Warm Restart。
 
-## ADR-021：Development CLI 采用 host implicit、mobile simulator/emulator explicit
+### AD-21：Development CLI 采用 host implicit、mobile simulator/emulator explicit
 
 **决定**：macOS/Windows/Linux开发统一使用 `viso run`；不提供 `viso run macos/windows/linux/host`。`viso run ios/android` 只面向 Simulator/Emulator，`--device` 只选虚拟设备 profile。Android/iOS SDK/runtime环境由平台子命令管理；physical-device debugging不属于 Viso 1.0 development CLI。
 
@@ -6525,17 +5000,19 @@ trait Painter {
 
 **代价**：如果未来加入真机调试，需要单独定义其 security/signing/connection contract，不能偷偷扩展当前 `--device` 语义。
 
+### AD-22：字体系统采用 On-demand OS Fallback + byte-budgeted SLRU + page-aged Atlas
 
-## ADR-022：字体系统采用 On-demand OS Fallback + byte-budgeted SLRU + page-aged Atlas
+*对应 ADR 0025/0026；packaged-WOFF2 条款已被 ADR 0028 取代。*
 
 **决定**：Viso 不在启动时扫描系统字体，也不建立 framework-owned FontDB。`assets/fonts/` 在 build-time 自动进入 compact `FontManifest`，Runtime lazy load；Native 无 App font 时直接使用系统 UI/font fallback，CJK/Emoji 以 locale-aware cluster/run 交给 OS resolver；WASM/Canvas 无隐式系统字体，但可使用 packaged SFNT 字体或 External FontProvider。Loaded Font Face 使用按字节预算的 Segmented LRU；Shaping Cache 独立；glyph texture atlas 使用 page-level frame-age/CLOCK 淘汰。稳态高刷文字帧不得执行 resolve/parse/shape/raster。
 
 **理由**：避免系统字体数量影响启动，减少常驻内存和一次性 font-picker scan pollution；复用 OS 已有的 CJK/Emoji fallback 能力而不是复制 FontDB；SLRU 保护真正热 face；page-aged atlas 避免逐 glyph LRU 与 full-atlas reset；Retained ShapedRun/AtlasEntry 让 120/144/240Hz 的成本与变化量而不是总 glyph 数相关。
 
-**代价**：首次 cold system fallback 和新 glyph raster 仍有成本，因此必须有 Resolve/FallbackPlan cache、prewarm、worker/staging、viewport prefetch、main-thread work budget、memory-pressure policy 与高刷 benchmark。完整合同见 `Viso_Text_Font_Runtime.md`。本 ADR 的 packaged-WOFF2 条款已被 ADR 0028（packaged/external 字体输入仅接受 SFNT，WOFF2 由调用方解压）取代：框架不再解码 WOFF2。
+**代价**：首次 cold system fallback 和新 glyph raster 仍有成本，因此必须有 Resolve/FallbackPlan cache、prewarm、worker/staging、viewport prefetch、main-thread work budget、memory-pressure policy 与高刷 benchmark。完整合同见 `Viso_Text_Font_Runtime.md`。框架不解码 WOFF2（ADR 0028）。
 
+### AD-23：Glyph 渲染使用 Adaptive Coverage + MTSDF + Vector Pipeline
 
-## ADR-023：Glyph 渲染使用 Adaptive Coverage + MTSDF + Vector Pipeline
+*对应 ADR 0025。*
 
 **决定**：稳定 UI、小字号、CJK、编辑器和文档默认使用目标 device-pixel bucket 的 A8 Coverage；持续 zoom/scale/rotation 的 monochrome glyph 按需异步 promotion 为 MTSDF；变换稳定后重新生成精确 Coverage 并切回；极端 zoom/高精度场景使用 retained OutlineVector；Color Glyph 使用独立 RGBA/Vector 路径。MTSDF/Vector 都不是 FontFace load 时的 eager 资源，也不能永久与 Coverage 为所有 glyph 双份常驻。
 
@@ -6543,8 +5020,9 @@ trait Painter {
 
 **代价**：需要 representation state machine、MTSDF generation/bucket、Vector cache、跨 representation revision/generation validation 与独立 residency budget；这些复杂度由内部实现承担，不暴露给普通 App authoring。完整合同见 `Viso_Text_Font_Runtime.md`。
 
+### AD-24：World-Ready Text 使用 Unicode 标准基线 + Logical/Visual 双映射
 
-## ADR-024：World-Ready Text 使用 Unicode 标准基线 + Logical/Visual 双映射
+*对应 ADR 0025、0027。*
 
 **决定**：复杂文字正确性统一建立在 UAX #9 / #14 / #29、locale-tailored line breaking、shaping-safe break、typed logical position 与 retained visual mapping 上；BiDi caret、selection、hit testing、IME 共享同一 logical↔visual paragraph contract。
 
@@ -6557,6 +5035,8 @@ trait Painter {
 ---
 
 # Part XXIX — 风险与取舍
+
+> **Informative。** 风险与缓解措施；其中引用的合同以对应正文章节与 ADR 为准。
 
 ## 81. 风险：NodeArena 可能使 API 变得“过底层”
 
@@ -6606,13 +5086,9 @@ Viso 1.0 进一步规定：
 
 ## 84. 风险：crate 太少导致编译慢/边界不够硬
 
-当前建议十余个 crate 是起点，不是永远不拆。
+当前的 crate 集合（§9）是起点，不是永远不拆；拆分依据必须是测量与依赖边界，而不是目录美学。
 
-拆分依据必须是测量/依赖边界，而不是目录美学。
-
-边界不能只靠人工复盘。Viso 1.0 要求 CI 每次运行 `cargo xtask arch-check`；周期性架构复盘只负责评估是否需要拆 crate。
-
-持续检查：
+边界不能只靠人工复盘：CI 每次运行 `cargo xtask check-deps`（§10.2）；周期性架构复盘只评估是否需要拆 crate。持续检查（crate 级为当前，module 级与其余项为目标）：
 
 - forbidden crate/module edges；
 - compile timings；
@@ -6769,6 +5245,7 @@ State Transaction
 Binding Queue
     ↓
 Dirty Propagation
+    ├── STRUCTURE
     ├── STYLE
     ├── MEASURE
     ├── LAYOUT
@@ -6796,7 +5273,7 @@ Metal / D3D12 / Vulkan / WebGPU
 
 # Appendix B — State 更新完整示例
 
-用户：
+用户（示意；当前 API 通过 `StateId` 与 handler context 写入，ADR 0005/0006）：
 
 ```rust
 self.count.set(self.count.get() + 1);
@@ -6821,7 +5298,7 @@ Binding12 evaluates text
 Text content version++
 Node81 MEASURE|LAYOUT|PAINT|SEMANTICS
         ↓
-propagate layout only to nearest intrinsic-size ancestor
+MEASURE bubbles until an ancestor Fixed on both axes (§19.1)
 
 Binding13 evaluates float
 Node82 PAINT
@@ -6905,38 +5382,11 @@ Heap allocations/frame                   0
 
 # Appendix E — 推荐 `prelude`
 
-建议只包含稳定高频项：
+当前 prelude 以 `crates/viso/src/lib.rs` 的 `pub mod prelude` 为准。原则：只包含稳定、高频、无歧义的项；不要把 renderer/GPU/platform 内部类型 re-export 进 prelude。
 
-```rust
-pub mod prelude {
-    pub use crate::{run, Application};
-    pub use viso_ui::{
-        AppCx,
-        Component,
-        Handle,
-        State,
-        Computed,
-        View,
-    };
-    pub use viso_widgets::{
-        Window,
-        Row,
-        Column,
-        Stack,
-        Scroll,
-        List,
-        Label,
-        Button,
-        TextInput,
-        Image,
-    };
-    pub use viso_math::{Rect, Size, Vec2};
-    pub use viso_render::Color;
-    pub use viso_macros::{component, ui, view, routes};
-}
-```
+当前包含（摘要）：`Application`、`run`、`AppCx`、`BuildCx`、`NodeId`、`DirtyClass`、`StateId`/`StateValue`、layout style（`FlexStyle`、`GridStyle`、`TrackSizing` 等）、`Role`/`Semantics`、已落地的官方 widget 及其 style/handle、`window`/`WindowConfig`/`WindowHandle`、`Menu`/`MenuCommandId`/`Accel`/`SystemAction`、`ServicesExt` 与 `ui!`。
 
-不要把所有 renderer/GPU/platform types re-export 进 prelude。
+目标补充：`Computed`、`Event`、`Task`、`Route`、`Theme`、`Color`、`Vec2`、`Rect`、`Constraints`，以及 `component!` / `view!`（已在 `viso-ui-macros` 实现，尚未进入 prelude）和目标宏 `routes!`、`#[component]`。
 
 ---
 
@@ -7000,17 +5450,17 @@ Box<dyn HitTestNode>
 
 以下问题不再属于 open questions：
 
-1. Node hot storage：**hybrid indexed SoA**（ADR-011）；
-2. `Handle<T>`：**不直接暴露跨帧 typed state borrow/mutation**（ADR-012）；
-3. Transform：**与 Layout 使用独立失效平面，共享 NodeId**（ADR-013）；
-4. 自研/依赖：**使用 Ownership Ladder**（ADR-014）；
-5. DSL source form：**`ui!` / `component!` / `view!("...vs")` 共享 schema/HIR/IR/runtime，`.vs` 为唯一 canonical 外部格式**（ADR-015）；
-6. Identity：**128-bit Stable `SymbolId` + typed dense runtime IDs + generational `NodeId`**（ADR-016）；
-7. Ende：**Viso-owned Binary/JSON，RON 不进入 Viso core，Serde 只做 integration**（ADR-017）；
-8. Math：**独立 `viso-math`，allocation-free 基础数值/几何 ABI，Math ABI 与 GPU ABI 分离**（ADR-018）；
-9. CLI：**`viso` 是统一 Tooling Facade，CLI/Studio/IDE/CI 共用 tooling services**（ADR-019）；
-10. Hot Reload：**仅 Dev artifact 编入，Release/Shipping 完全移除 Dev Runtime/patch/DevSnapshot 路径**（ADR-020）；
-11. Development target：**desktop host implicit；iOS/Android 只面向 Simulator/Emulator，平台开发环境使用 `viso ios/android`**（ADR-021）。
+1. Node hot storage：**hybrid indexed SoA**（AD-11）；
+2. `Handle<T>`：**不直接暴露跨帧 typed state borrow/mutation**（AD-12）；
+3. Transform：**与 Layout 使用独立失效平面，共享 NodeId**（AD-13）；
+4. 自研/依赖：**使用 Ownership Ladder**（AD-14）；
+5. DSL source form：**`ui!` / `component!` / `view!("...vs")` 共享 schema/HIR/IR/runtime，`.vs` 为唯一 canonical 外部格式**（AD-15）；
+6. Identity：**128-bit Stable `SymbolId` + typed dense runtime IDs + generational `NodeId`**（AD-16）；
+7. Ende：**Viso-owned Binary/JSON，RON 不进入 Viso core，Serde 只做 integration**（AD-17）；
+8. Math：**独立 `viso-math`，allocation-free 基础数值/几何 ABI，Math ABI 与 GPU ABI 分离**（AD-18）；
+9. CLI：**`viso` 是统一 Tooling Facade，CLI/Studio/IDE/CI 共用 tooling services**（AD-19）；
+10. Hot Reload：**仅 Dev artifact 编入，Release/Shipping 完全移除 Dev Runtime/patch/DevSnapshot 路径**（AD-20）；
+11. Development target：**desktop host implicit；iOS/Android 只面向 Simulator/Emulator，平台开发环境使用 `viso ios/android`**（AD-21）。
 
 这些决定应尽早被 prototype/benchmark 验证，但验证的默认动作是调整实现参数，而不是重新打开核心语义。若要推翻，必须新 ADR。
 
@@ -7033,7 +5483,7 @@ Box<dyn HitTestNode>
 
 ---
 
-# Appendix H — 来源与设计依据
+# Appendix H — 来源与设计依据（informative）
 
 本文综合了：
 
@@ -7051,7 +5501,7 @@ Makepad 仅作为外部参考资料；本文只定义 Viso 自身架构。
 
 # 结论
 
-Viso 最重要的不是“目录变得漂亮”，而是同时建立三层稳定契约：
+Viso 同时维护三层稳定契约：
 
 ### 对用户
 
@@ -7067,20 +5517,7 @@ fn main() {
 
 ### 对框架维护者
 
-```text
-runtime
-platform
-gpu
-shader
-text
-render
-ui
-widgets
-dsl
-services
-```
-
-依赖边界明确、职责可测试、工具链可观测。
+crate 清单与依赖 allowlist 见 §9/§10（`cargo xtask check-deps`）：依赖边界明确、职责可测试、工具链可观测。
 
 ### 对 CPU / GPU
 
@@ -7104,4 +5541,4 @@ static backend specialization
 > **开发期 dynamic，发布期 AOT。**  
 > **冷路径抽象，热路径扁平。**
 
-只要后续所有架构决策都能通过这四条和可重复 benchmark 检验，Viso 就可以同时拥有极简开发体验、清晰工程结构和非常高的性能上限。
+后续架构决策应能通过这四条与可重复 benchmark 检验。
