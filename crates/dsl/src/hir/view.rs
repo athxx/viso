@@ -11,10 +11,10 @@
 //! length property without a percent basis is `E3104`. A component input has the basis
 //! of the properties its component binds it to: one whose value reaches a property
 //! without a basis has none, and one whose value reaches another component's input has
-//! that input's; this is settled across the module once every view is walked
-//! ([`check_percent_flow`]).
-//! A node type the schema baseline does not list and that is no component of this
-//! module is not checked.
+//! that input's; this is settled across the package once every view is walked
+//! ([`check_percent_flow`], [`check_input_bases`]).
+//! A node type the schema baseline does not list and that is no component of the
+//! package is not checked.
 //!
 //! A `grid.*`/`stack.*`/`absolute.*` property is checked against the node's direct
 //! parent: `Fragment`, `if`, `for` and `match` form no parent, so the parent is the
@@ -49,12 +49,11 @@ pub(crate) struct InputProp {
     pub(crate) symbol: Option<SymbolId>,
 }
 
-/// An input of a component this module declares: the component and the input's
-/// index among its inputs.
+/// An input of a component: the component and the input's index among its inputs.
 type InputKey = (SymbolId, usize);
 
 /// What one view gives the properties and inputs that care whether a value carries a
-/// `Percent` component, settled across the module by [`check_percent_flow`].
+/// `Percent` component, settled by [`check_percent_flow`].
 #[derive(Debug, Default)]
 pub(crate) struct PercentFlow {
     /// The component whose view this is.
@@ -75,14 +74,14 @@ struct Sink {
 enum SinkTo {
     /// A length property without a percent basis.
     Unbased(String),
-    /// A component's input, whose basis is settled across the module.
+    /// A component's input, whose basis is settled across the package.
     Input(InputKey),
 }
 
-/// What the view walk needs beyond type inference: the inputs of the components the
-/// module declares.
+/// What the view walk needs beyond type inference: the inputs of the components in
+/// the package.
 pub(crate) trait ViewEnv: TypeEnv {
-    /// The inputs of the component `component`, when this module declares it.
+    /// The inputs of the component `component`.
     fn component_inputs(&self, component: SymbolId) -> Option<&[InputProp]>;
 }
 
@@ -121,15 +120,28 @@ pub(crate) fn check_view(
     walk.flow
 }
 
+/// What a module's views say about the percent bases of component inputs, settled across
+/// the package by [`check_input_bases`].
+#[derive(Debug, Default)]
+pub(crate) struct InputFlows {
+    /// Each input a binding leaves without a basis: where, and why.
+    unbased: Vec<(InputKey, TextRange, String)>,
+    /// Each value of an input (`.0`) passed to another input (`.1`), where, and why.
+    forwards: Vec<(InputKey, InputKey, TextRange, String)>,
+    /// Each value carrying a `Percent` passed to an input, where, and the input's
+    /// description.
+    percent_args: Vec<(InputKey, TextRange, String)>,
+}
+
 /// Reports each value carrying a `Percent` component bound to a length property
-/// without a percent basis as `E3104`; then settles, from every view's `flows`, which
-/// component inputs have no basis, and reports each such value given to one likewise.
+/// without a percent basis as `E3104`, and returns what the module's `flows` say about
+/// the bases of component inputs.
 pub(crate) fn check_percent_flow(
     flows: &[PercentFlow],
     facts: &PercentFacts,
     env: &dyn ViewEnv,
     diagnostics: &mut Vec<Diagnostic>,
-) {
+) -> InputFlows {
     let mut input_of: HashMap<SymbolId, InputKey> = HashMap::new();
     for component in flows.iter().filter_map(|f| f.own) {
         for (index, input) in env
@@ -155,11 +167,15 @@ pub(crate) fn check_percent_flow(
             })
             .collect()
     };
-    // Each unbased input, with the binding that makes it so: the value's range and a
-    // description of where it goes.
-    let mut unbased: HashMap<InputKey, (TextRange, String)> = HashMap::new();
-    let mut forwards: Vec<(InputKey, InputKey, TextRange)> = Vec::new();
-    let mut percent_args: Vec<(InputKey, TextRange)> = Vec::new();
+    let describe = |(component, index): InputKey| {
+        let name = env.type_name(component).unwrap_or("?");
+        let input = env
+            .component_inputs(component)
+            .and_then(|inputs| inputs.get(index))
+            .map_or("?", |i| i.name.as_str());
+        format!("`{input}` of `{name}`")
+    };
+    let mut out = InputFlows::default();
     for sink in flows.iter().flat_map(|f| &f.sinks) {
         let percent = facts.percent(&sink.carry);
         match &sink.to {
@@ -178,60 +194,66 @@ pub(crate) fn check_percent_flow(
                     diagnostics.push(diagnostic);
                 }
                 for key in reached(&sink.carry) {
-                    unbased
-                        .entry(key)
-                        .or_insert_with(|| (sink.at, format!("bound to `{property}` here")));
+                    out.unbased
+                        .push((key, sink.at, format!("bound to `{property}` here")));
                 }
             }
             SinkTo::Input(to) => {
                 if percent.is_some() {
-                    percent_args.push((*to, sink.at));
+                    out.percent_args.push((*to, sink.at, describe(*to)));
                 }
-                forwards.extend(
-                    reached(&sink.carry)
-                        .into_iter()
-                        .map(|from| (from, *to, sink.at)),
-                );
+                for from in reached(&sink.carry) {
+                    let reason = format!("passed to {} here", describe(*to));
+                    out.forwards.push((from, *to, sink.at, reason));
+                }
             }
         }
     }
-    let describe = |(component, index): InputKey| {
-        let name = env.type_name(component).unwrap_or("?");
-        let input = env
-            .component_inputs(component)
-            .and_then(|inputs| inputs.get(index))
-            .map_or("?", |i| i.name.as_str());
-        (input.to_string(), name.to_string())
-    };
+    out
+}
+
+/// Settles, from every module's [`InputFlows`] (index-parallel to `diagnostics`), which
+/// component inputs have no percent basis, and reports each value carrying a `Percent`
+/// passed to one as `E3104` in the module that passes it. The binding that leaves the
+/// input without a basis is related when it is in the same module.
+pub(crate) fn check_input_bases(modules: &[InputFlows], diagnostics: &mut [Vec<Diagnostic>]) {
+    let mut unbased: HashMap<InputKey, (usize, TextRange, &str)> = HashMap::new();
+    for (module, flows) in modules.iter().enumerate() {
+        for (key, at, reason) in &flows.unbased {
+            unbased.entry(*key).or_insert((module, *at, reason));
+        }
+    }
     loop {
         let mut changed = false;
-        for (from, to, at) in &forwards {
-            if unbased.contains_key(to) && !unbased.contains_key(from) {
-                let (input, component) = describe(*to);
-                let reason = format!("passed to `{input}` of `{component}` here");
-                unbased.insert(*from, (*at, reason));
-                changed = true;
+        for (module, flows) in modules.iter().enumerate() {
+            for (from, to, at, reason) in &flows.forwards {
+                if unbased.contains_key(to) && !unbased.contains_key(from) {
+                    unbased.insert(*from, (module, *at, reason));
+                    changed = true;
+                }
             }
         }
         if !changed {
             break;
         }
     }
-    for (key, at) in &percent_args {
-        let Some((used_at, reason)) = unbased.get(key) else {
-            continue;
-        };
-        let (input, component) = describe(*key);
-        let mut diagnostic = Diagnostic::error(
-            "E3104",
-            *at,
-            format!(
-                "`{input}` of `{component}` has no percent basis, so it does not accept a \
-                 `Percent` value"
-            ),
-        );
-        diagnostic.related.push((*used_at, reason.clone()));
-        diagnostics.push(diagnostic);
+    for (module, flows) in modules.iter().enumerate() {
+        for (key, at, input) in &flows.percent_args {
+            let Some((from, used_at, reason)) = unbased.get(key) else {
+                continue;
+            };
+            let mut diagnostic = Diagnostic::error(
+                "E3104",
+                *at,
+                format!("{input} has no percent basis, so it does not accept a `Percent` value"),
+            );
+            if *from == module {
+                diagnostic.related.push((*used_at, reason.to_string()));
+            }
+            if let Some(out) = diagnostics.get_mut(module) {
+                out.push(diagnostic);
+            }
+        }
     }
 }
 
@@ -291,7 +313,7 @@ struct Declared {
 enum Basis {
     Yes,
     No,
-    /// A component input: settled across the module.
+    /// A component input: settled across the package.
     Input(InputKey),
 }
 
@@ -355,7 +377,7 @@ impl<'a> ViewWalk<'a> {
         self.items(body.members(), scope);
     }
 
-    /// The schema of a node type: a component this module declares, else a built-in
+    /// The schema of a node type: a component of the package, else a built-in
     /// widget the baseline lists.
     fn owner_of(&self, ty: &TypePath) -> Option<Owner<'a>> {
         let segments: Vec<_> = ty.segments().collect();

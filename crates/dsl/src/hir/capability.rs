@@ -127,8 +127,9 @@ pub struct CapabilityNode {
 /// and earns an `E2601`, in deterministic missing-capability order.
 ///
 /// Returns the inferred set per callable (index-parallel to `nodes`) so the caller can
-/// write each into its `HirCallable` metadata, plus the diagnostics.
-pub fn propagate(nodes: &[CapabilityNode]) -> (Vec<CapabilitySet>, Vec<Diagnostic>) {
+/// write each into its `HirCallable` metadata, plus each diagnostic with the index of the
+/// callable it is about.
+pub fn propagate(nodes: &[CapabilityNode]) -> (Vec<CapabilitySet>, Vec<(usize, Diagnostic)>) {
     // Seed each callable with its own direct conferrals, then union callee sets in until a
     // full pass adds nothing. Each callable's set only grows, so the fixed point is reached
     // in at most `nodes.len()` passes even through cycles.
@@ -154,13 +155,16 @@ pub fn propagate(nodes: &[CapabilityNode]) -> (Vec<CapabilitySet>, Vec<Diagnosti
         if let Some((declared, span)) = &node.declared {
             let missing = declared.missing_from(&inferred[i]);
             if !missing.is_empty() {
-                diagnostics.push(Diagnostic::error(
+                diagnostics.push((
+                    i,
+                    Diagnostic::error(
                     "E2601",
                     *span,
                     format!(
                         "this callable requires the capability {} but its `requires` clause does not declare {}",
                         quote_list(&missing),
                         if missing.len() == 1 { "it" } else { "them" }
+                    ),
                     ),
                 ));
             }
@@ -320,8 +324,9 @@ mod tests {
         ];
         let (_, diags) = propagate(&nodes);
         assert_eq!(diags.len(), 1);
-        assert_eq!(diags[0].code, "E2601");
-        assert_eq!(diags[0].primary, span);
+        assert_eq!(diags[0].0, 0);
+        assert_eq!(diags[0].1.code, "E2601");
+        assert_eq!(diags[0].1.primary, span);
     }
 
     #[test]

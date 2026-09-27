@@ -99,16 +99,19 @@ the three source entries share one frontend.
   - [x] Text slots take only `String`: `text: count;` is `E2103` with a
         machine-applicable `format("{}", count)` fix; `format` in a view reads its
         arguments as binding dependencies. The built-in `Display` set is fixed.
-  - [ ] Schemas beyond the baseline (native declarations), imported record/enum types
-        (and imported components' event payloads), `task` signatures, standard and
-        widget event payload types.
+  - [ ] Schemas beyond the baseline (native declarations), `task` signatures, standard
+        and widget event payload types.
+  - [x] Imports type as declared: records, enums, callable signatures, component
+        inputs, events and payloads come from package-wide declarations
+        (`hir/lower.rs` `Declarations` + per-module `ModuleScope`).
 - [x] Event payloads `E3202`: a handler on a user component names a standard event or
       one the component declares; its payload pattern (irrefutable) types against the
       event's parameters; `emit` arguments match parameters by position or name and
       type against them (`hir/view.rs`, `hir/infer/body.rs`).
 - [x] `E3104`: a property without a declared percent basis rejects `Percent`.
   - [x] Component inputs take the basis of the properties their component binds them
-        to (forwarding settled to a fixed point across the module).
+        to (forwarding settled to a fixed point across the package; an imported
+        component's input keeps its basis).
   - [x] Percent components tracked through values (state/computed/const/locals,
         field access, indexing, record defaults) to a module fixed point; only
         length-holding properties are checked; calls and closures stay opaque.
@@ -123,7 +126,9 @@ the three source entries share one frontend.
 ### D0.6 — Effects, capabilities, reads
 
 - [x] Effect classes and call matrix `E2501`/`E2502` (`hir/effect.rs`).
-- [x] Capability sets `E2601` (`hir/capability.rs`).
+- [x] Capability sets `E2601` (`hir/capability.rs`); the call graph spans the package.
+- [x] Module-level `fn`/`action`/`task` bodies are effect- and signature-checked like
+      component members.
 - [x] Reactive read collection (`hir/reads.rs`); `E4201`–`E4203`.
 
 ### D0.7 — Source entries, diagnostics, formatter

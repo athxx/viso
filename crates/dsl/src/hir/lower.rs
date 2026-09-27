@@ -41,7 +41,9 @@ use super::nodes::{ComponentSchema, HirCallable, HirComponent};
 use super::percent::PercentSources;
 use super::reads::ReadEnv;
 use super::ty::Ty;
-use super::view::{InputProp, PercentFlow, ViewEnv, check_percent_flow, check_view};
+use super::view::{
+    InputFlows, InputProp, PercentFlow, ViewEnv, check_input_bases, check_percent_flow, check_view,
+};
 
 /// The typed HIR of a whole package: every component lowered, every free callable, and every
 /// diagnostic the type/effect/capability checks raised across all modules.
@@ -82,34 +84,62 @@ pub fn lower(
     let _ = package;
     let mut components = Vec::new();
     let mut callables = Vec::new();
+
+    // First pass: every module's declarations into one package table (a module types what
+    // it imports exactly as what it declares), and each module's own scope.
+    let mut decls = Declarations::default();
+    let modules: Vec<Option<(CompilationUnit, ModuleScope)>> = graph
+        .modules()
+        .iter()
+        .enumerate()
+        .map(|(i, gm)| {
+            let resolved_module = resolved.get(i)?;
+            let module_text = gm.path.display(interner);
+            let cu = unit_for(units, &module_text, interner)?;
+            let scope = ModuleScope::build(
+                &cu,
+                &resolved_module.table,
+                &resolved_module.refs,
+                interner,
+                &mut decls,
+            );
+            Some((cu, scope))
+        })
+        .collect();
+
+    // Second pass: lower each module against the package table. The capability call graph
+    // spans the package, so a call into an imported callable is an edge like any other.
+    let mut per_module: Vec<Vec<Diagnostic>> = Vec::with_capacity(modules.len());
+    let mut input_flows: Vec<InputFlows> = Vec::with_capacity(modules.len());
+    let mut cap = CapabilityGraphBuilder::default();
+    for (i, module) in modules.iter().enumerate() {
+        let mut module_diagnostics = Vec::new();
+        let mut flows = InputFlows::default();
+        if let (Some((cu, scope)), Some(resolved_module)) = (module, resolved.get(i)) {
+            let env = ModuleEnv::new(&decls, scope);
+            cap.module = i;
+            flows = lower_module(
+                cu,
+                &resolved_module.refs,
+                &env,
+                &mut components,
+                &mut callables,
+                &mut module_diagnostics,
+                &mut cap,
+            );
+        }
+        per_module.push(module_diagnostics);
+        input_flows.push(flows);
+    }
+    cap.finish(&mut components, &mut per_module);
+    check_input_bases(&input_flows, &mut per_module);
+
     let mut diagnostics = Vec::new();
-    let mut module_diagnostics = Vec::with_capacity(graph.modules().len());
-
-    for (i, gm) in graph.modules().iter().enumerate() {
+    let mut module_diagnostics = Vec::with_capacity(per_module.len());
+    for module in per_module {
         let start = diagnostics.len();
-        module_diagnostics.push(start..start);
-        let Some(resolved_module) = resolved.get(i) else {
-            continue;
-        };
-        let module_text = gm.path.display(interner);
-        let Some(cu) = unit_for(units, &module_text, interner) else {
-            continue;
-        };
-
-        // Build the per-module environment: intern member names to look their symbols up in
-        // the module table, and record each member's facts, so the `&self` trait methods are
-        // pure lookups during the body walks.
-        let env = ModuleEnv::build(&cu, &resolved_module.table, &resolved_module.refs, interner);
-
-        lower_module(
-            &cu,
-            &resolved_module.refs,
-            &env,
-            &mut components,
-            &mut callables,
-            &mut diagnostics,
-        );
-        module_diagnostics[i] = start..diagnostics.len();
+        diagnostics.extend(module);
+        module_diagnostics.push(start..diagnostics.len());
     }
 
     // Debug-only HIR-complete assertion (spec node-contract section): no core node may keep
@@ -129,20 +159,17 @@ pub fn lower(
 }
 
 /// Lowers one compilation unit's components/systems and module-level callables, running the
-/// effect and capability checks over their bodies.
+/// effect checks over their bodies and registering every callable in the capability graph;
+/// returns what its views say about the percent bases of component inputs.
 fn lower_module(
     cu: &CompilationUnit,
     refs: &[ResolvedRef],
-    env: &ModuleEnv,
+    env: &ModuleEnv<'_>,
     components: &mut Vec<HirComponent>,
     callables: &mut Vec<HirCallable>,
     diagnostics: &mut Vec<Diagnostic>,
-) {
-    // Collect the capability call graph as we lower: one node per callable (component members
-    // and module-level), its declared `requires {}` bound, and — this slice — no call edges
-    // to other-callable indices yet, because a callee resolves to a `SymbolId` and the graph
-    // is index-based. We map symbol → node index first, then fill edges in a second scan.
-    let mut cap = CapabilityGraphBuilder::new();
+    cap: &mut CapabilityGraphBuilder,
+) -> InputFlows {
     let mut flows = Vec::new();
     let mut percent = PercentSources::default();
 
@@ -160,51 +187,44 @@ fn lower_module(
         // are type-checked here; their HIR nodes land with their consumer slice.
         match decl {
             Item::Component(c) => {
-                let component = lower_component_item(
-                    &c,
-                    refs,
-                    env,
-                    diagnostics,
-                    &mut cap,
-                    &mut flows,
-                    &mut percent,
-                );
+                let component =
+                    lower_component_item(&c, refs, env, diagnostics, cap, &mut flows, &mut percent);
                 components.push(component);
             }
             Item::Const(c) => check_const(&c, refs, env, diagnostics, &mut percent),
             Item::Record(r) => check_field_defaults(&r, refs, env, diagnostics, &mut percent),
             Item::Fn(f) => {
-                check_signature(
-                    refs,
-                    env,
-                    &f.params(),
-                    f.return_type(),
-                    f.body(),
-                    diagnostics,
-                    &mut percent,
-                );
+                let callable = Callable {
+                    context: BodyContext::Fn,
+                    symbol: env.scope.declared.get(&f.syntax().text_range()).copied(),
+                    params: f.params(),
+                    ret: f.return_type(),
+                    body: f.body(),
+                    clause: f.capability_clause(),
+                };
+                check_callable(&callable, refs, env, diagnostics, cap, &mut percent);
             }
             Item::Action(a) => {
-                check_signature(
-                    refs,
-                    env,
-                    &a.params(),
-                    a.return_type(),
-                    a.body(),
-                    diagnostics,
-                    &mut percent,
-                );
+                let callable = Callable {
+                    context: BodyContext::Action,
+                    symbol: env.scope.declared.get(&a.syntax().text_range()).copied(),
+                    params: a.params(),
+                    ret: a.return_type(),
+                    body: a.body(),
+                    clause: a.capability_clause(),
+                };
+                check_callable(&callable, refs, env, diagnostics, cap, &mut percent);
             }
             Item::Task(t) => {
-                check_signature(
-                    refs,
-                    env,
-                    &t.params(),
-                    t.return_type(),
-                    t.body(),
-                    diagnostics,
-                    &mut percent,
-                );
+                let callable = Callable {
+                    context: BodyContext::Task,
+                    symbol: env.scope.declared.get(&t.syntax().text_range()).copied(),
+                    params: t.params(),
+                    ret: t.return_type(),
+                    body: t.body(),
+                    clause: t.capability_clause(),
+                };
+                check_callable(&callable, refs, env, diagnostics, cap, &mut percent);
             }
             _ => {}
         }
@@ -212,11 +232,7 @@ fn lower_module(
     }
 
     let facts = percent.solve();
-    check_percent_flow(&flows, &facts, env, diagnostics);
-
-    // Resolve the capability call graph to a fixed point and write each inferred set back onto
-    // its callable node, then append any `requires {}` violations.
-    cap.finish(components, diagnostics);
+    check_percent_flow(&flows, &facts, env, diagnostics)
 }
 
 /// Lowers one `component` declaration: schema + view/callable effect checks, registering each
@@ -225,7 +241,7 @@ fn lower_module(
 fn lower_component_item(
     decl: &ComponentDecl,
     refs: &[ResolvedRef],
-    env: &ModuleEnv,
+    env: &ModuleEnv<'_>,
     diagnostics: &mut Vec<Diagnostic>,
     cap: &mut CapabilityGraphBuilder,
     flows: &mut Vec<PercentFlow>,
@@ -251,15 +267,7 @@ fn lower_component_item(
             percent,
         ));
     }
-    check_component_callables(
-        decl,
-        refs,
-        env,
-        diagnostics,
-        cap,
-        &schema.callables,
-        percent,
-    );
+    check_component_callables(decl, refs, env, diagnostics, cap, percent);
 
     HirComponent {
         schema,
@@ -267,67 +275,90 @@ fn lower_component_item(
     }
 }
 
-/// Effect-checks each `fn`/`action`/`task` body of a component in its body context and
-/// registers each callable in the capability graph (its declared `requires {}` bound and the
-/// callables its body calls).
+/// Checks each `fn`/`action`/`task` of a component (see [`check_callable`]).
 fn check_component_callables(
     decl: &ComponentDecl,
     refs: &[ResolvedRef],
-    env: &ModuleEnv,
+    env: &ModuleEnv<'_>,
     diagnostics: &mut Vec<Diagnostic>,
     cap: &mut CapabilityGraphBuilder,
-    lowered: &[HirCallable],
     percent: &mut PercentSources,
 ) {
     for member in decl.members() {
-        let (context, body, clause, name, params, ret) = match &member {
-            Member::Fn(f) => (
-                BodyContext::Fn,
-                f.body(),
-                f.capability_clause(),
-                name_of(f.name()),
-                f.params(),
-                f.return_type(),
-            ),
-            Member::Action(a) => (
-                BodyContext::Action,
-                a.body(),
-                a.capability_clause(),
-                name_of(a.name()),
-                a.params(),
-                a.return_type(),
-            ),
-            Member::Task(t) => (
-                BodyContext::Task,
-                t.body(),
-                t.capability_clause(),
-                name_of(t.name()),
-                t.params(),
-                t.return_type(),
-            ),
+        let callable = match &member {
+            Member::Fn(f) => Callable {
+                context: BodyContext::Fn,
+                symbol: env.member_symbol(&name_of(f.name())),
+                params: f.params(),
+                ret: f.return_type(),
+                body: f.body(),
+                clause: f.capability_clause(),
+            },
+            Member::Action(a) => Callable {
+                context: BodyContext::Action,
+                symbol: env.member_symbol(&name_of(a.name())),
+                params: a.params(),
+                ret: a.return_type(),
+                body: a.body(),
+                clause: a.capability_clause(),
+            },
+            Member::Task(t) => Callable {
+                context: BodyContext::Task,
+                symbol: env.member_symbol(&name_of(t.name())),
+                params: t.params(),
+                ret: t.return_type(),
+                body: t.body(),
+                clause: t.capability_clause(),
+            },
             _ => continue,
         };
-
-        if let Some(block) = &body {
-            check_body(refs, context, env, block.syntax(), diagnostics);
-        }
-        check_signature(refs, env, &params, ret, body.clone(), diagnostics, percent);
-
-        // Register in the capability graph, keyed by the callable's node span so its inferred
-        // set can be written back onto the matching lowered node.
-        let symbol = env.member_symbol(&name);
-        let declared = clause.map(|c| (capability_set_of(&c), c.syntax().text_range()));
-        let calls = body
-            .as_ref()
-            .map(|b| callee_symbols(refs, b.syntax()))
-            .unwrap_or_default();
-        // The node span identifies which lowered callable receives the inferred set.
-        let node_span = lowered
-            .iter()
-            .find(|hc| symbol.is_some() && hc.meta.resolved_symbol == symbol)
-            .map(|hc| hc.meta.source_origin);
-        cap.add(symbol, declared, calls, node_span);
+        check_callable(&callable, refs, env, diagnostics, cap, percent);
     }
+}
+
+/// A `fn`/`action`/`task` declaration, a component's or the module's.
+struct Callable {
+    context: BodyContext,
+    symbol: Option<SymbolId>,
+    params: Vec<Param>,
+    ret: Option<ReturnType>,
+    body: Option<Block>,
+    clause: Option<crate::ast::CapabilityClause>,
+}
+
+/// Effect-checks a callable's body in its body context, types it against its signature,
+/// and registers it in the capability graph (its declared `requires {}` bound and the
+/// callables its body calls).
+fn check_callable(
+    callable: &Callable,
+    refs: &[ResolvedRef],
+    env: &ModuleEnv<'_>,
+    diagnostics: &mut Vec<Diagnostic>,
+    cap: &mut CapabilityGraphBuilder,
+    percent: &mut PercentSources,
+) {
+    let body = &callable.body;
+    if let Some(block) = body {
+        check_body(refs, callable.context, env, block.syntax(), diagnostics);
+    }
+    check_signature(
+        refs,
+        env,
+        &callable.params,
+        callable.ret.clone(),
+        body.clone(),
+        diagnostics,
+        percent,
+    );
+    let declared = callable
+        .clause
+        .as_ref()
+        .map(|c| (capability_set_of(c), c.syntax().text_range()));
+    let calls = body
+        .as_ref()
+        .map(|b| callee_symbols(refs, b.syntax()))
+        .unwrap_or_default();
+    cap.add(callable.symbol, declared, calls);
 }
 
 /// Runs an effect-check body walk in `context`, appending any `E2501`/`E2502` it raises.
@@ -348,7 +379,7 @@ fn check_body(
 /// when none is declared).
 fn check_signature(
     refs: &[ResolvedRef],
-    env: &ModuleEnv,
+    env: &ModuleEnv<'_>,
     params: &[Param],
     ret: Option<ReturnType>,
     body: Option<Block>,
@@ -383,7 +414,7 @@ fn check_signature(
 fn check_const(
     decl: &ConstDecl,
     refs: &[ResolvedRef],
-    env: &ModuleEnv,
+    env: &ModuleEnv<'_>,
     diagnostics: &mut Vec<Diagnostic>,
     percent: &mut PercentSources,
 ) {
@@ -397,7 +428,7 @@ fn check_const(
     } else {
         cx.infer_promoted(&value, &want)
     };
-    if let Some(symbol) = env.declared.get(&decl.syntax().text_range()) {
+    if let Some(symbol) = env.scope.declared.get(&decl.syntax().text_range()) {
         percent.define(Resolution::Symbol(*symbol), cx.carry(value.syntax()));
     }
     percent.extend(cx.take_percent_defs());
@@ -409,11 +440,11 @@ fn check_const(
 fn check_field_defaults(
     decl: &RecordDecl,
     refs: &[ResolvedRef],
-    env: &ModuleEnv,
+    env: &ModuleEnv<'_>,
     diagnostics: &mut Vec<Diagnostic>,
     percent: &mut PercentSources,
 ) {
-    let record = env.declared.get(&decl.syntax().text_range()).copied();
+    let record = env.scope.declared.get(&decl.syntax().text_range()).copied();
     let mut cx = InferCx::new(refs, env);
     for field in decl.fields() {
         let Some(value) = field.default() else {
@@ -529,54 +560,49 @@ fn unit_for(
 // --- Capability call graph builder ------------------------------------------------------
 
 /// One pending capability-graph entry as lowering scans callables: the callable's symbol (its
-/// graph identity), its declared `requires {}` bound, the symbols it calls, and the span of the
-/// lowered node its inferred set should be written back onto.
+/// graph identity and the lowered node its inferred set is written back onto), its declared
+/// `requires {}` bound, the symbols it calls, and the module it is declared in.
 struct PendingCallable {
     symbol: Option<SymbolId>,
     declared: Option<(CapabilitySet, TextRange)>,
     calls: Vec<SymbolId>,
-    node_span: Option<TextRange>,
+    module: usize,
 }
 
-/// Accumulates callables into a symbol-keyed capability call graph, then resolves it and writes
-/// inferred sets back onto the lowered callable nodes.
+/// Accumulates the package's callables into a symbol-keyed capability call graph, then
+/// resolves it and writes inferred sets back onto the lowered callable nodes.
+#[derive(Default)]
 struct CapabilityGraphBuilder {
     pending: Vec<PendingCallable>,
+    /// The module the callables being added are declared in.
+    module: usize,
 }
 
 impl CapabilityGraphBuilder {
-    fn new() -> Self {
-        CapabilityGraphBuilder {
-            pending: Vec::new(),
-        }
-    }
-
-    /// Records one callable.
+    /// Records one callable of the current module.
     fn add(
         &mut self,
         symbol: Option<SymbolId>,
         declared: Option<(CapabilitySet, TextRange)>,
         calls: Vec<SymbolId>,
-        node_span: Option<TextRange>,
     ) {
         self.pending.push(PendingCallable {
             symbol,
             declared,
             calls,
-            node_span,
+            module: self.module,
         });
     }
 
-    /// Resolves the graph: maps symbols to node indices, turns each call into an edge (dropping
-    /// calls to callables outside this module — their capability facts join when their module
-    /// lowers), runs [`propagate`], writes each inferred set back onto the lowered callable with
-    /// the matching span, and appends any `E2601` diagnostics.
-    fn finish(self, components: &mut [HirComponent], diagnostics: &mut Vec<Diagnostic>) {
+    /// Resolves the graph: maps symbols to node indices, turns each call into an edge (a
+    /// call to anything but a callable of the package — a native, a closure — adds none),
+    /// runs [`propagate`], writes each inferred set back onto the lowered callable with the
+    /// same symbol, and appends each `E2601` to its module's diagnostics.
+    fn finish(self, components: &mut [HirComponent], diagnostics: &mut [Vec<Diagnostic>]) {
         if self.pending.is_empty() {
             return;
         }
 
-        // Symbol → node index, for edge resolution.
         let mut index_of: HashMap<SymbolId, usize> = HashMap::with_capacity(self.pending.len());
         for (i, p) in self.pending.iter().enumerate() {
             if let Some(sym) = p.symbol {
@@ -601,22 +627,33 @@ impl CapabilityGraphBuilder {
             .collect();
 
         let (inferred, diags) = propagate(&nodes);
-        diagnostics.extend(diags);
-
-        // Write each inferred set back onto the lowered callable node with the matching span.
-        for (p, set) in self.pending.iter().zip(inferred) {
-            if set.is_empty() {
-                continue;
+        for (node, diagnostic) in diags {
+            if let Some(module) = diagnostics.get_mut(self.pending[node].module) {
+                module.push(diagnostic);
             }
-            let Some(span) = p.node_span else {
-                continue;
-            };
-            for component in components.iter_mut() {
-                for callable in component.schema.callables.iter_mut() {
-                    if callable.meta.source_origin == span {
-                        callable.meta.capability_set = set.clone();
-                    }
-                }
+        }
+
+        let mut inferred_of: HashMap<SymbolId, CapabilitySet> = HashMap::new();
+        for (p, set) in self.pending.iter().zip(inferred) {
+            if let Some(sym) = p.symbol
+                && !set.is_empty()
+            {
+                inferred_of.insert(sym, set);
+            }
+        }
+        if inferred_of.is_empty() {
+            return;
+        }
+        for callable in components
+            .iter_mut()
+            .flat_map(|c| c.schema.callables.iter_mut())
+        {
+            if let Some(set) = callable
+                .meta
+                .resolved_symbol
+                .and_then(|sym| inferred_of.get(&sym))
+            {
+                callable.meta.capability_set = set.clone();
             }
         }
     }
@@ -639,48 +676,62 @@ struct MemberFacts {
     kind: SymbolKind,
 }
 
-/// The concrete [`MemberEnv`]/[`TypeEnv`]/[`ViewEnv`]/[`ReadEnv`]/[`EffectEnv`] for one
-/// module, built over the resolver's [`SymbolTable`] and references with the facts
-/// precomputed.
-struct ModuleEnv {
-    /// Owner → member name → symbol, both value and event namespaces, for
-    /// [`MemberEnv::member_symbol`].
-    members: HashMap<SymbolId, HashMap<String, SymbolId>>,
-    /// The events of every component the module declares.
+/// Every declaration in the package, keyed by its durable symbol: what each one is, the
+/// fields of each record and event payload, the variants of each enum, and each
+/// component's inputs and events.
+#[derive(Default)]
+struct Declarations {
+    /// The events of every component.
     events: HashMap<SymbolId, Vec<EventInfo>>,
     /// Symbol → facts, for the type/effect/read trait methods.
     facts: HashMap<SymbolId, MemberFacts>,
-    /// Component declaration syntax range → its symbol, so the env can focus on the component
-    /// currently being lowered without confusing several components in one module.
-    components: HashMap<TextRange, SymbolId>,
-    /// The component currently being lowered, answered by [`MemberEnv::component_symbol`]. The
-    /// facts/members maps cover every component in the module (so cross-member references
-    /// resolve), but a module may declare several components, so the *current* one is set per
-    /// component before its `lower_component` call. `Cell` keeps the trait methods `&self`.
-    component: Cell<SymbolId>,
-    /// Name token span → the symbol the resolver bound it to, for nominal annotations.
-    nominal: HashMap<TextRange, SymbolId>,
-    /// The fields of every record the module declares, and the payload of every event.
+    /// The fields of every record, and the payload of every event.
     records: HashMap<SymbolId, Vec<FieldInfo>>,
-    /// `const` and record declaration syntax range → its symbol.
-    declared: HashMap<TextRange, SymbolId>,
-    /// The variants of every enum the module declares.
+    /// The variants of every enum.
     enums: HashMap<SymbolId, Vec<VariantInfo>>,
-    /// The declared name of every record, enum and component, for diagnostics.
+    /// The declared name of every record, enum, event and component, for diagnostics.
     type_names: HashMap<SymbolId, String>,
     /// The `(params, ret)` signature of every `fn` and `action`.
     signatures: HashMap<SymbolId, (Vec<Ty>, Ty)>,
-    /// The inputs of every component the module declares, as node properties.
+    /// The inputs of every component, as node properties.
     inputs: HashMap<SymbolId, Vec<InputProp>>,
+}
+
+/// What one module adds to the package [`Declarations`]: its owners' member names, its
+/// declarations' spans, and the resolver's bindings for its type annotations.
+#[derive(Default)]
+struct ModuleScope {
+    /// Owner → member name → symbol, both value and event namespaces, for
+    /// [`MemberEnv::member_symbol`].
+    members: HashMap<SymbolId, HashMap<String, SymbolId>>,
+    /// Component declaration syntax range → its symbol, so the env can focus on the component
+    /// currently being lowered without confusing several components in one module.
+    components: HashMap<TextRange, SymbolId>,
+    /// Name token span → the symbol the resolver bound it to, for nominal annotations.
+    nominal: HashMap<TextRange, SymbolId>,
+    /// `const`, record and module-level callable declaration syntax range → its symbol.
+    declared: HashMap<TextRange, SymbolId>,
+}
+
+/// The concrete [`MemberEnv`]/[`TypeEnv`]/[`ViewEnv`]/[`ReadEnv`]/[`EffectEnv`] for one
+/// module: its scope over the package declarations.
+struct ModuleEnv<'p> {
+    decls: &'p Declarations,
+    scope: &'p ModuleScope,
+    /// The component currently being lowered, answered by [`MemberEnv::component_symbol`]. A
+    /// module may declare several components, so the *current* one is set per component
+    /// before its `lower_component` call. `Cell` keeps the trait methods `&self`.
+    component: Cell<SymbolId>,
     /// The types lowering inferred for unannotated `state`/`computed` members, recorded
     /// as each component lowers so later body walks see them.
     inferred: RefCell<HashMap<SymbolId, Ty>>,
 }
 
-impl TypeEnv for ModuleEnv {
+impl TypeEnv for ModuleEnv<'_> {
     fn resolution_ty(&self, to: &Resolution) -> Option<Ty> {
         match to {
             Resolution::Symbol(id) => self
+                .decls
                 .facts
                 .get(id)
                 .map(|f| f.ty.clone())
@@ -692,29 +743,29 @@ impl TypeEnv for ModuleEnv {
 
     fn callee_signature(&self, to: &Resolution) -> Option<(Vec<Ty>, Ty)> {
         match to {
-            Resolution::Symbol(id) => self.signatures.get(id).cloned(),
+            Resolution::Symbol(id) => self.decls.signatures.get(id).cloned(),
             Resolution::Local(_) => None,
         }
     }
 
     fn record_fields(&self, ty: SymbolId) -> Option<&[FieldInfo]> {
-        self.records.get(&ty).map(Vec::as_slice)
+        self.decls.records.get(&ty).map(Vec::as_slice)
     }
 
     fn enum_variants(&self, ty: SymbolId) -> Option<&[VariantInfo]> {
-        self.enums.get(&ty).map(Vec::as_slice)
+        self.decls.enums.get(&ty).map(Vec::as_slice)
     }
 
     fn type_name(&self, ty: SymbolId) -> Option<&str> {
-        self.type_names.get(&ty).map(String::as_str)
+        self.decls.type_names.get(&ty).map(String::as_str)
     }
 
     fn symbol_kind(&self, id: SymbolId) -> Option<SymbolKind> {
-        self.facts.get(&id).map(|f| f.kind)
+        self.decls.facts.get(&id).map(|f| f.kind)
     }
 
     fn component_events(&self, component: SymbolId) -> Option<&[EventInfo]> {
-        self.events.get(&component).map(Vec::as_slice)
+        self.decls.events.get(&component).map(Vec::as_slice)
     }
 
     fn enclosing_component(&self) -> Option<SymbolId> {
@@ -722,16 +773,16 @@ impl TypeEnv for ModuleEnv {
     }
 }
 
-impl ViewEnv for ModuleEnv {
+impl ViewEnv for ModuleEnv<'_> {
     fn component_inputs(&self, component: SymbolId) -> Option<&[InputProp]> {
-        self.inputs.get(&component).map(Vec::as_slice)
+        self.decls.inputs.get(&component).map(Vec::as_slice)
     }
 }
 
-impl ReadEnv for ModuleEnv {
+impl ReadEnv for ModuleEnv<'_> {
     fn reactive_source(&self, to: &Resolution) -> Option<SymbolId> {
         match to {
-            Resolution::Symbol(id) => self.facts.get(id).and_then(|f| {
+            Resolution::Symbol(id) => self.decls.facts.get(id).and_then(|f| {
                 if f.is_reactive_source {
                     Some(*id)
                 } else {
@@ -743,18 +794,22 @@ impl ReadEnv for ModuleEnv {
     }
 }
 
-impl EffectEnv for ModuleEnv {
+impl EffectEnv for ModuleEnv<'_> {
     fn callee_effect(&self, to: &Resolution) -> Option<EffectClass> {
         match to {
-            Resolution::Symbol(id) => self.facts.get(id).and_then(|f| f.effect),
+            Resolution::Symbol(id) => self.decls.facts.get(id).and_then(|f| f.effect),
             Resolution::Local(_) => None,
         }
     }
 }
 
-impl MemberEnv for ModuleEnv {
+impl MemberEnv for ModuleEnv<'_> {
     fn member_symbol(&self, name: &str) -> Option<SymbolId> {
-        self.members.get(&self.component.get())?.get(name).copied()
+        self.scope
+            .members
+            .get(&self.component.get())?
+            .get(name)
+            .copied()
     }
 
     fn component_symbol(&self) -> SymbolId {
@@ -762,22 +817,60 @@ impl MemberEnv for ModuleEnv {
     }
 }
 
-impl ModuleEnv {
+impl<'p> ModuleEnv<'p> {
+    fn new(decls: &'p Declarations, scope: &'p ModuleScope) -> Self {
+        ModuleEnv {
+            decls,
+            scope,
+            component: Cell::new(SymbolId::from_parts(0, 0)),
+            inferred: RefCell::default(),
+        }
+    }
+
+    /// The type annotated on `node`, through this module's bindings.
+    fn annotation_of(&self, node: &SyntaxNode) -> Ty {
+        self.scope.annotation_of(node)
+    }
+
+    /// Points the environment at the component about to be lowered (keyed by its declaration's
+    /// syntax range, recorded in the pre-pass), so `component_symbol` answers with its symbol.
+    fn focus_component(&self, decl: &ComponentDecl) {
+        if let Some(sym) = self.scope.components.get(&decl.syntax().text_range()) {
+            self.component.set(*sym);
+        }
+    }
+
+    /// Records the types lowering inferred for a component's unannotated `state` and
+    /// `computed` members.
+    fn record_inferred(&self, schema: &ComponentSchema) {
+        let mut inferred = self.inferred.borrow_mut();
+        let metas = schema
+            .states
+            .iter()
+            .map(|s| &s.meta)
+            .chain(schema.computeds.iter().map(|c| &c.meta));
+        for meta in metas {
+            if let Some(id) = meta.resolved_symbol
+                && !meta.inferred_type.has_unknown()
+            {
+                inferred.insert(id, meta.inferred_type.clone());
+            }
+        }
+    }
+}
+
+impl ModuleScope {
     /// Walks every declaration once (with the interner, to intern names and query the
-    /// table) and records the name→symbol map, the per-symbol facts, and the record, enum,
-    /// signature and component-input tables.
+    /// table), recording the module's member names and declaration spans here and each
+    /// declaration's facts, fields, variants, signature and inputs into `decls`.
     fn build(
         cu: &CompilationUnit,
         table: &SymbolTable,
         refs: &[ResolvedRef],
         interner: &mut NameInterner,
-    ) -> ModuleEnv {
-        let mut env = ModuleEnv {
-            members: HashMap::new(),
-            events: HashMap::new(),
-            facts: HashMap::new(),
-            components: HashMap::new(),
-            component: Cell::new(SymbolId::from_parts(0, 0)),
+        decls: &mut Declarations,
+    ) -> ModuleScope {
+        let mut scope = ModuleScope {
             nominal: refs
                 .iter()
                 .filter_map(|r| match r.to {
@@ -785,13 +878,7 @@ impl ModuleEnv {
                     Resolution::Local(_) => None,
                 })
                 .collect(),
-            records: HashMap::new(),
-            declared: HashMap::new(),
-            enums: HashMap::new(),
-            type_names: HashMap::new(),
-            signatures: HashMap::new(),
-            inputs: HashMap::new(),
-            inferred: RefCell::default(),
+            ..ModuleScope::default()
         };
 
         for item in cu.items() {
@@ -810,50 +897,51 @@ impl ModuleEnv {
                     let Some(sym) = decl_symbol(table, interner, c.name(), Namespace::Type) else {
                         continue;
                     };
-                    env.components.insert(c.syntax().text_range(), sym);
-                    env.component.set(sym);
-                    env.type_names.insert(sym, name_of(c.name()));
+                    scope.components.insert(c.syntax().text_range(), sym);
+                    decls.type_names.insert(sym, name_of(c.name()));
                     let Some(members) = table.members(sym) else {
                         continue;
                     };
-                    let inputs = env.inputs_of(c, members, interner);
-                    env.inputs.insert(sym, inputs);
+                    let inputs = scope.inputs_of(c, members, interner);
+                    decls.inputs.insert(sym, inputs);
                     for member in c.members() {
-                        env.record_member(sym, &member, members, interner);
+                        scope.record_member(decls, sym, &member, members, interner);
                     }
                 }
                 Item::System(s) => {
                     let Some(sym) = decl_symbol(table, interner, s.name(), Namespace::Type) else {
                         continue;
                     };
-                    env.component.set(sym);
                     let Some(members) = table.members(sym) else {
                         continue;
                     };
                     for member in s.members() {
-                        env.record_member(sym, &member, members, interner);
+                        scope.record_member(decls, sym, &member, members, interner);
                     }
                 }
                 Item::Record(r) => {
                     if let Some(sym) = decl_symbol(table, interner, r.name(), Namespace::Type) {
-                        let fields = r.fields().filter_map(|f| env.field_info(&f)).collect();
-                        env.records.insert(sym, fields);
-                        env.declared.insert(r.syntax().text_range(), sym);
-                        env.type_names.insert(sym, name_of(r.name()));
+                        let fields = r.fields().filter_map(|f| scope.field_info(&f)).collect();
+                        decls.records.insert(sym, fields);
+                        scope.declared.insert(r.syntax().text_range(), sym);
+                        decls.type_names.insert(sym, name_of(r.name()));
                     }
                 }
                 Item::Enum(e) => {
                     if let Some(sym) = decl_symbol(table, interner, e.name(), Namespace::Type) {
-                        let variants = e.variants().filter_map(|v| env.variant_info(&v)).collect();
-                        env.enums.insert(sym, variants);
-                        env.type_names.insert(sym, name_of(e.name()));
+                        let variants = e
+                            .variants()
+                            .filter_map(|v| scope.variant_info(&v))
+                            .collect();
+                        decls.enums.insert(sym, variants);
+                        decls.type_names.insert(sym, name_of(e.name()));
                     }
                 }
                 Item::Const(c) => {
                     if let Some(sym) = decl_symbol(table, interner, c.name(), Namespace::Value) {
-                        env.declared.insert(c.syntax().text_range(), sym);
-                        let ty = env.annotation_of(c.syntax());
-                        env.facts.insert(
+                        scope.declared.insert(c.syntax().text_range(), sym);
+                        let ty = scope.annotation_of(c.syntax());
+                        decls.facts.insert(
                             sym,
                             MemberFacts {
                                 ty,
@@ -866,33 +954,42 @@ impl ModuleEnv {
                 }
                 Item::Fn(f) => {
                     let (params, ret) = (f.params(), f.return_type());
-                    env.record_callable(table, interner, f.name(), &params, ret, EffectClass::Read);
+                    let sym = decl_symbol(table, interner, f.name(), Namespace::Value).map(|sym| {
+                        scope.record_callable(decls, sym, &params, ret, EffectClass::Read)
+                    });
+                    scope
+                        .declared
+                        .extend(sym.map(|sym| (f.syntax().text_range(), sym)));
                 }
                 Item::Action(a) => {
                     let (params, ret) = (a.params(), a.return_type());
-                    env.record_callable(
-                        table,
-                        interner,
-                        a.name(),
-                        &params,
-                        ret,
-                        EffectClass::Action,
-                    );
+                    let sym = decl_symbol(table, interner, a.name(), Namespace::Value).map(|sym| {
+                        scope.record_callable(decls, sym, &params, ret, EffectClass::Action)
+                    });
+                    scope
+                        .declared
+                        .extend(sym.map(|sym| (a.syntax().text_range(), sym)));
                 }
                 Item::Task(t) => {
                     let (params, ret) = (t.params(), t.return_type());
-                    env.record_callable(table, interner, t.name(), &params, ret, EffectClass::Task);
+                    let sym = decl_symbol(table, interner, t.name(), Namespace::Value).map(|sym| {
+                        scope.record_callable(decls, sym, &params, ret, EffectClass::Task)
+                    });
+                    scope
+                        .declared
+                        .extend(sym.map(|sym| (t.syntax().text_range(), sym)));
                 }
                 _ => {}
             }
         }
-        env
+        scope
     }
 
     /// Records one member of `owner` (looked up in its member `table`): its
     /// name→symbol entry, its facts, and an event's payload record.
     fn record_member(
         &mut self,
+        decls: &mut Declarations,
         owner: SymbolId,
         member: &Member,
         table: &SymbolTable,
@@ -920,14 +1017,8 @@ impl ModuleEnv {
             Member::Event(d) => (d.name(), Namespace::Event, Ty::Unknown, SymbolKind::Event),
             Member::Fn(d) => {
                 let (params, ret) = (d.params(), d.return_type());
-                let sym = self.record_callable(
-                    table,
-                    interner,
-                    d.name(),
-                    &params,
-                    ret,
-                    EffectClass::Read,
-                );
+                let sym = decl_symbol(table, interner, d.name(), Namespace::Value)
+                    .map(|sym| self.record_callable(decls, sym, &params, ret, EffectClass::Read));
                 if let Some(sym) = sym {
                     self.own(owner, name_of(d.name()), sym);
                 }
@@ -935,14 +1026,8 @@ impl ModuleEnv {
             }
             Member::Action(d) => {
                 let (params, ret) = (d.params(), d.return_type());
-                let sym = self.record_callable(
-                    table,
-                    interner,
-                    d.name(),
-                    &params,
-                    ret,
-                    EffectClass::Action,
-                );
+                let sym = decl_symbol(table, interner, d.name(), Namespace::Value)
+                    .map(|sym| self.record_callable(decls, sym, &params, ret, EffectClass::Action));
                 if let Some(sym) = sym {
                     self.own(owner, name_of(d.name()), sym);
                 }
@@ -950,14 +1035,8 @@ impl ModuleEnv {
             }
             Member::Task(d) => {
                 let (params, ret) = (d.params(), d.return_type());
-                let sym = self.record_callable(
-                    table,
-                    interner,
-                    d.name(),
-                    &params,
-                    ret,
-                    EffectClass::Task,
-                );
+                let sym = decl_symbol(table, interner, d.name(), Namespace::Value)
+                    .map(|sym| self.record_callable(decls, sym, &params, ret, EffectClass::Task));
                 if let Some(sym) = sym {
                     self.own(owner, name_of(d.name()), sym);
                 }
@@ -976,16 +1055,16 @@ impl ModuleEnv {
         };
         if let Member::Event(d) = member {
             let fields = self.event_fields(d.syntax());
-            self.records.insert(sym, fields);
-            self.type_names.insert(sym, text.clone());
-            self.events.entry(owner).or_default().push(EventInfo {
+            decls.records.insert(sym, fields);
+            decls.type_names.insert(sym, text.clone());
+            decls.events.entry(owner).or_default().push(EventInfo {
                 name: text.clone(),
                 symbol: sym,
                 declared_at: tok.text_range(),
             });
         }
         self.own(owner, text, sym);
-        self.facts.insert(
+        decls.facts.insert(
             sym,
             MemberFacts {
                 ty,
@@ -1025,15 +1104,13 @@ impl ModuleEnv {
     /// Records a `fn`/`action`/`task`: its effect class, and for a `fn` or `action` its
     /// signature (a `fn` is also a value of its function type). Returns its symbol.
     fn record_callable(
-        &mut self,
-        table: &SymbolTable,
-        interner: &mut NameInterner,
-        name: Option<crate::syntax::SyntaxToken>,
+        &self,
+        decls: &mut Declarations,
+        sym: SymbolId,
         params: &[Param],
         ret: Option<ReturnType>,
         effect: EffectClass,
-    ) -> Option<SymbolId> {
-        let sym = decl_symbol(table, interner, name, Namespace::Value)?;
+    ) -> SymbolId {
         let params: Vec<Ty> = params
             .iter()
             .map(|p| self.annotation_of(p.syntax()))
@@ -1044,9 +1121,9 @@ impl ModuleEnv {
             _ => Ty::Unknown,
         };
         if !matches!(effect, EffectClass::Task) {
-            self.signatures.insert(sym, (params, ret));
+            decls.signatures.insert(sym, (params, ret));
         }
-        self.facts.insert(
+        decls.facts.insert(
             sym,
             MemberFacts {
                 ty,
@@ -1059,7 +1136,7 @@ impl ModuleEnv {
                 },
             },
         );
-        Some(sym)
+        sym
     }
 
     /// The inputs of a component as node properties. An input preceded by a
@@ -1167,32 +1244,6 @@ impl ModuleEnv {
     fn annotation(&self, ty: &SyntaxNode) -> Ty {
         Ty::from_annotation(ty, &|at| self.nominal.get(&at).copied()).unwrap_or(Ty::Unknown)
     }
-
-    /// Points the environment at the component about to be lowered (keyed by its declaration's
-    /// syntax range, recorded in the pre-pass), so `component_symbol` answers with its symbol.
-    fn focus_component(&self, decl: &ComponentDecl) {
-        if let Some(sym) = self.components.get(&decl.syntax().text_range()) {
-            self.component.set(*sym);
-        }
-    }
-
-    /// Records the types lowering inferred for a component's unannotated `state` and
-    /// `computed` members.
-    fn record_inferred(&self, schema: &ComponentSchema) {
-        let mut inferred = self.inferred.borrow_mut();
-        let metas = schema
-            .states
-            .iter()
-            .map(|s| &s.meta)
-            .chain(schema.computeds.iter().map(|c| &c.meta));
-        for meta in metas {
-            if let Some(id) = meta.resolved_symbol
-                && !meta.inferred_type.has_unknown()
-            {
-                inferred.insert(id, meta.inferred_type.clone());
-            }
-        }
-    }
 }
 
 /// Whether `node` is a type annotation node.
@@ -1204,7 +1255,7 @@ fn is_type_node(node: &SyntaxNode) -> bool {
 /// Checks each `@bindable` in a component body (`E3701` otherwise): it marks an
 /// `input` and names, as its one argument, an event of the same component whose first
 /// parameter has the input's type — the event a `bind` writes back through.
-fn check_bindable(decl: &ComponentDecl, env: &ModuleEnv, diagnostics: &mut Vec<Diagnostic>) {
+fn check_bindable(decl: &ComponentDecl, env: &ModuleEnv<'_>, diagnostics: &mut Vec<Diagnostic>) {
     let members = decl.syntax().children();
     let mut events: HashMap<String, &SyntaxNode> = HashMap::new();
     for member in &members {
@@ -1242,7 +1293,7 @@ fn bindable_pairing(
     attr: &SyntaxNode,
     member: &SyntaxNode,
     events: &HashMap<String, &SyntaxNode>,
-    env: &ModuleEnv,
+    env: &ModuleEnv<'_>,
 ) -> Result<(), String> {
     if member.kind() != SyntaxKind::InputDecl {
         return Err("`@bindable` marks an `input`".to_string());
@@ -1405,6 +1456,128 @@ mod tests {
         );
     }
 
+    /// Lowers `app` as a package with a `lib` module holding `lib`, returning the
+    /// diagnostic codes each module raised.
+    fn lower_with_lib(lib: &str, app: &str) -> (Vec<&'static str>, Vec<&'static str>) {
+        let mut interner = NameInterner::new();
+        let mut unit = |path: &str, src: &str| {
+            let tokens = crate::syntax::tokenize(src);
+            let parse = crate::syntax::grammar::parse(&tokens, src);
+            SourceUnit::new(
+                crate::resolve::ModulePath::intern(&mut interner, &[path]),
+                parse,
+            )
+        };
+        let units = vec![unit("lib", lib), unit("app", app)];
+        let graph = ModuleGraph::build(&units, &interner);
+        let resolved = resolve(&graph, &units, &mut interner, "app");
+        for module in &resolved {
+            assert!(module.errors.is_empty(), "{:?}", module.errors);
+        }
+        let pkg = lower(&graph, &units, &resolved, &mut interner, "app");
+        let mut by_module =
+            graph
+                .modules()
+                .iter()
+                .zip(&pkg.module_diagnostics)
+                .map(|(module, range)| {
+                    let codes = pkg.diagnostics[range.clone()].iter().map(|d| d.code);
+                    (module.path.display(&interner), codes.collect::<Vec<_>>())
+                });
+        let mut lib_codes = Vec::new();
+        let mut app_codes = Vec::new();
+        for (path, codes) in by_module.by_ref() {
+            match path.as_str() {
+                "lib" => lib_codes = codes,
+                _ => app_codes = codes,
+            }
+        }
+        (lib_codes, app_codes)
+    }
+
+    #[test]
+    fn imported_records_and_enums_type_as_declared() {
+        let lib = "export record P { x: I64; y: I64 = 0; }\n\
+                   export enum Shape { Dot; Circle(I64); }";
+        let app = |body: &str| lower_with_lib(lib, &format!("import lib::{{ P, Shape }};\n{body}"));
+        let clean = (vec![], vec![]);
+        assert_eq!(app("fn f(p: P) -> I64 { p.x + p.y }"), clean);
+        assert_eq!(app("fn g() -> P { P { x: 1 } }"), clean);
+        assert_eq!(
+            app("fn h(s: Shape) -> I64 { match s { Shape::Dot => 0, Shape::Circle(r) => r } }"),
+            clean
+        );
+        assert_eq!(app("fn f(p: P) -> String { p.x }").1, ["E2103"]);
+        assert_eq!(app("fn f(p: P) -> I64 { p.z }").1, ["E2001"]);
+        assert_eq!(app("fn g() -> P { P { y: 1 } }").1, ["E2103"]);
+        assert_eq!(
+            app("fn h(s: Shape) -> I64 { match s { Shape::Dot => 0 } }").1,
+            ["E2301"]
+        );
+    }
+
+    #[test]
+    fn imported_callables_check_their_calls() {
+        let lib = "export fn twice(x: I64) -> I64 { x * 2 }\n\
+                   export action save() { }";
+        let app =
+            |body: &str| lower_with_lib(lib, &format!("import lib::{{ twice, save }};\n{body}"));
+        assert_eq!(app("const C: I64 = twice(1);"), (vec![], vec![]));
+        assert_eq!(app("const C: String = twice(1);").1, ["E2103"]);
+        assert_eq!(app("fn f() { save(); }").1, ["E2501"]);
+    }
+
+    #[test]
+    fn imported_components_check_their_properties_and_events() {
+        let lib = "export component Card {\n\
+                   \x20 input title: String;\n\
+                   \x20 event picked(index: I64);\n\
+                   \x20 view { }\n\
+                   }";
+        let app = |node: &str| {
+            lower_with_lib(
+                lib,
+                &format!(
+                    "import lib::{{ Card }};\ncomponent App {{\n  state n = 0;\n  view {{ Card {{ {node} }} }}\n}}"
+                ),
+            )
+        };
+        assert_eq!(
+            app("title: \"a\"; on picked(ev) { n = ev.index; }"),
+            (vec![], vec![])
+        );
+        assert_eq!(app("title: 1;").1, ["E2103"]);
+        assert_eq!(
+            app("on picked(ev) { let s: String = ev.index; }").1,
+            ["E2103"]
+        );
+        assert_eq!(app("on pick { }").1, ["E3202"]);
+    }
+
+    #[test]
+    fn an_imported_input_keeps_its_percent_basis() {
+        let lib = "export component Card {\n\
+                   \x20 input size: MixedLength = 0dp\n\
+                   \x20 input shift: MixedLength = 0dp\n\
+                   \x20 view { Column { width: size + 4dp; translate: Offset { x: shift, y: 0dp }; } }\n\
+                   }\n\
+                   export component Frame {\n\
+                   \x20 input inset: MixedLength = 0dp\n\
+                   \x20 view { Card { shift: inset; } }\n\
+                   }";
+        let app = |node: &str| {
+            lower_with_lib(
+                lib,
+                &format!(
+                    "import lib::{{ Card, Frame }};\ncomponent App {{\n  view {{ {node} }}\n}}"
+                ),
+            )
+        };
+        assert_eq!(app("Card { size: 50%; shift: 4dp; }"), (vec![], vec![]));
+        assert_eq!(app("Card { shift: 50%; }"), (vec![], vec!["E3104"]));
+        assert_eq!(app("Frame { inset: 10%; }"), (vec![], vec!["E3104"]));
+    }
+
     /// The diagnostic codes lowering `src` reports, in order.
     fn codes(src: &str) -> Vec<&'static str> {
         lower_src(src).diagnostics.iter().map(|d| d.code).collect()
@@ -1433,6 +1606,7 @@ mod tests {
         );
         assert_eq!(codes("fn f() -> I64 { let y = 1; }"), ["E2103"]);
         assert_eq!(codes("const C: String = 1;"), ["E2103"]);
+        assert_eq!(codes("action save() { }\nfn f() { save(); }"), ["E2501"]);
     }
 
     #[test]

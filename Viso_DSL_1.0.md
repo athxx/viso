@@ -611,9 +611,9 @@ View、Computed、Style 和 Theme 中不存在 Layout Context，因此禁止调�
 - `Percent` 本身是无量纲比例：`50%` 的数值为 `0.5`；
 - 非长度 Property（例如 `opacity`、`progress`、`volume`）若 Schema 类型为 `Percent`，直接使用比例值；
 - 长度 Property 只有在其 Schema 声明 `percent_basis` 时才接受 `Percent` 或含 Percent 分量的 `MixedLength`；否则是 `E3104`；类型不能容纳长度的 Property（`Bool`、数值、`Percent` 比例等）不参与此检查，Percent 在其上只按类型检查；
-- 值是否含 Percent 分量由编译期值流分析决定：值书写了 `%` 字面量或 `Percent` 类型的操作数，或引用了含 Percent 分量的值——`state`（初值与所有赋值）、`computed`、`const`、局部绑定（初值、模式解构的值、所有赋值）、省略了带 Percent 默认值字段的 Record 字面量；算术、字段访问、下标、Record/List/Tuple 字面量、`if`/`match`/Block 的结果值保留分量；条件、`match` 被匹配值、守卫与比较/逻辑运算的结果不携带分量；函数调用与 Closure 的结果只按其返回类型判断。分析在模块内求定点；诊断的相关位置指向书写 Percent 的位置；
+- 值是否含 Percent 分量由编译期值流分析决定：值书写了 `%` 字面量或 `Percent` 类型的操作数，或引用了含 Percent 分量的值——`state`（初值与所有赋值）、`computed`、`const`、局部绑定（初值、模式解构的值、所有赋值）、省略了带 Percent 默认值字段的 Record 字面量；算术、字段访问、下标、Record/List/Tuple 字面量、`if`/`match`/Block 的结果值保留分量；条件、`match` 被匹配值、守卫与比较/逻辑运算的结果不携带分量；函数调用与 Closure 的结果只按其返回类型判断。分析在模块内求定点（名称的定义属于其模块）；诊断的相关位置指向书写 Percent 的位置；
 - 编译期不可见的 Percent 分量（例如经函数返回值或双向绑定到达）在无 `percent_basis` 的 Property 上按 `0` 计算，Debug Runtime 报告 `E3105`（警告）；
-- 用户 Component 的 `input` 不书写 `percent_basis`，其基准由该 Component 自身 View 中的绑定推导：Input 的值按上述值流（经 `state`、`computed`、局部绑定、字段访问、下标等，不经函数调用或 Closure）到达无 `percent_basis` 的长度 Property 时，该 Input 无基准；到达另一个 Component 的 Input 时，继承该 Input 的结论；推导在模块内所有 View 检查完毕后求定点。向无基准的 Input 传入含 Percent 分量的值是 `E3104`，诊断的相关位置指向使其无基准的绑定；只经其他途径使用的 Input 视为有基准；
+- 用户 Component 的 `input` 不书写 `percent_basis`，其基准由该 Component 自身 View 中的绑定推导：Input 的值按上述值流（经 `state`、`computed`、局部绑定、字段访问、下标等，不经函数调用或 Closure）到达无 `percent_basis` 的长度 Property 时，该 Input 无基准；到达另一个 Component 的 Input 时，继承该 Input 的结论；推导在 Package 内所有 View 检查完毕后求定点，导入的 Component 的 Input 保留其在导出模块中推导的结论。向无基准的 Input 传入含 Percent 分量的值是 `E3104`，报告在传入值的模块，诊断的相关位置指向使其无基准的绑定；只经其他途径使用的 Input 视为有基准；
 - 标准 Percent Basis：
 
 | Property 类别                                         | Percent Basis                     |
@@ -825,6 +825,7 @@ import app::model::User as AppUser;
 - `::*` 不属于 Viso 1.0 语法；
 - Import Resolution 不依赖运行时注册顺序；
 - Import Cycle 中只有纯类型边可以被允许；值初始化环必须报错。
+- 导入的名称与其导出模块中的声明是同一符号：Record/Enum 类型、Callable 签名与 Effect Class、Component 的 Input/Event/Slot 在导入方按声明检查，与本模块声明无差别。
 
 ---
 
@@ -1191,7 +1192,7 @@ capability_path     = module_path ;
 - 一个调用点所需的 Capability 集合是被调用项声明集合的并集；
 - 调用者没有所需 Capability 时必须产生静态错误；
 - 动态加载模块还必须在运行时再次进行 Capability 检查。
-- Private callable 的 Capability 集合默认由 Typed Call Graph 推导；显式 `requires { ... }` 用作公开安全合同或上界断言，不要求每个私有函数重复书写。
+- Private callable 的 Capability 集合默认由 Typed Call Graph 推导，调用图覆盖整个 Package（经 import 的调用同样传播）；显式 `requires { ... }` 用作公开安全合同或上界断言，不要求每个私有函数重复书写。
 
 示例：
 
@@ -3297,7 +3298,7 @@ Task    Async/Cancelable
 | System FixedUpdate Action |          是 |                 是 |              否 | 受 Profile 限制 |           否 |
 | Shader                    | Shader `fn` |                 否 |              否 |              否 |           否 |
 
-静态 Effect Check 必须发生在 HIR 阶段。
+静态 Effect Check 必须发生在 HIR 阶段；模块级 `fn`/`action`/`task` 的函数体与 Component 成员同样检查。
 
 ---
 
