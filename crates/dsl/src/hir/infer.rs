@@ -26,13 +26,14 @@
 //! component-lowering machinery existing yet.
 
 mod body;
+mod carry;
 mod format;
 mod pattern;
 mod record;
 
 pub(crate) use pattern::MatchCheck;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::ast::{AstNode, CallExpr, CastExpr, Expr, PathExpr, TypePath};
 use crate::diag::Diagnostic;
@@ -139,6 +140,10 @@ pub struct InferCx<'a> {
     returns: Vec<Option<Ty>>,
     /// The enclosing loops, innermost last.
     loops: Vec<LoopFrame>,
+    /// Every expression whose own type is `Percent`.
+    percent_typed: HashSet<TextRange>,
+    /// What the walk has defined names as, for the module's percent flow.
+    percent_defs: Vec<(Resolution, crate::hir::percent::Carry)>,
 }
 
 impl<'a> InferCx<'a> {
@@ -155,6 +160,8 @@ impl<'a> InferCx<'a> {
             locals: HashMap::new(),
             returns: Vec::new(),
             loops: Vec::new(),
+            percent_typed: HashSet::new(),
+            percent_defs: Vec::new(),
         }
     }
 
@@ -174,7 +181,7 @@ impl<'a> InferCx<'a> {
     /// checked here (the caller checks against its own expectation, if any).
     pub fn infer_expr(&mut self, expr: &Expr, expected: Option<&Ty>) -> Ty {
         let node = expr.syntax();
-        match node.kind() {
+        let ty = match node.kind() {
             SyntaxKind::LiteralExpr => self.infer_literal(node, expected),
             SyntaxKind::PathExpr => {
                 let ty = self.infer_path(node, expected);
@@ -208,7 +215,9 @@ impl<'a> InferCx<'a> {
             SyntaxKind::IfExpr => self.infer_if(node, expected),
             SyntaxKind::MatchExpr => self.infer_match(node, expected),
             _ => Ty::Unknown,
-        }
+        };
+        self.note_percent(&ty, node);
+        ty
     }
 
     /// Types a numeric/scalar literal. A numeric literal instantiates at `expected` when
@@ -962,6 +971,7 @@ impl<'a> InferCx<'a> {
     /// the expected type is returned to bound error cascades. A diverging `Never`
     /// satisfies any expectation.
     fn check_against(&mut self, produced: Ty, expected: Option<&Ty>, node: &SyntaxNode) -> Ty {
+        self.note_percent(&produced, node);
         let Some(target) = expected else {
             return produced;
         };

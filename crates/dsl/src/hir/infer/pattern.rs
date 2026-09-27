@@ -598,6 +598,10 @@ impl InferCx<'_> {
             Some(s) => self.infer_expr(s, None),
             None => Ty::Unknown,
         };
+        let carry = scrutinee
+            .as_ref()
+            .map(|s| self.carry(s.syntax()))
+            .unwrap_or_default();
         let mut arm_tys = Vec::new();
         let mut check = MatchCheck::new();
         for arm in node
@@ -611,6 +615,7 @@ impl InferCx<'_> {
                 .find(|c| c.kind() == SyntaxKind::Pattern);
             if let Some(pattern) = &pattern {
                 self.bind_arm(&mut check, pattern, &scrutinee_ty);
+                self.define_pattern(pattern, &carry);
             }
             let exprs: Vec<Expr> = arm.children().into_iter().filter_map(Expr::cast).collect();
             let block = arm

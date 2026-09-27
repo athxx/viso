@@ -5,11 +5,12 @@
 //!
 //! Property checks: an unknown property is `E3101`, a property bound twice in one
 //! body (by `:` or `bind`) is `E3102`, `bind` on a property that is not two-way is
-//! `E3103`, and a `Percent` value on a property without a percent basis is `E3104`.
-//! A component input has the basis of the properties its component binds it to: one
-//! bound (alone or as a length operand) to a property without a basis has none, and
-//! one forwarded to another component's input has that input's; this is settled
-//! across the module once every view is walked ([`check_percent_flow`]).
+//! `E3103`, and a value carrying a `Percent` component (see [`super::percent`]) on a
+//! length property without a percent basis is `E3104`. A component input has the basis
+//! of the properties its component binds it to: one whose value reaches a property
+//! without a basis has none, and one whose value reaches another component's input has
+//! that input's; this is settled across the module once every view is walked
+//! ([`check_percent_flow`]).
 //! A node type the schema baseline does not list and that is no component of this
 //! module is not checked.
 //!
@@ -22,6 +23,7 @@
 use std::collections::HashMap;
 
 use super::infer::{InferCx, MatchCheck, TypeEnv};
+use super::percent::{Carry, PercentFacts, PercentSources};
 use super::ty::Ty;
 use super::widget::{self, ChildProps, PropLookup, WidgetSchema};
 use crate::ast::{
@@ -31,7 +33,7 @@ use crate::ast::{
 use crate::diag::Diagnostic;
 use crate::resolve::suggest::{Candidate, attach, nearest};
 use crate::resolve::{Resolution, ResolvedRef, SymbolId};
-use crate::syntax::{SyntaxKind, SyntaxNode, TextRange};
+use crate::syntax::TextRange;
 
 /// One `input` of a user component, as a property of its nodes.
 #[derive(Debug, Clone, PartialEq)]
@@ -49,17 +51,30 @@ pub(crate) struct InputProp {
 /// index among its inputs.
 type InputKey = (SymbolId, usize);
 
-/// What one view reveals about the percent basis of component inputs, settled across
-/// the module by [`check_percent_flow`].
+/// What one view gives the properties and inputs that care whether a value carries a
+/// `Percent` component, settled across the module by [`check_percent_flow`].
 #[derive(Debug, Default)]
 pub(crate) struct PercentFlow {
-    /// An own input bound to a property without a basis: the binding's value and the
-    /// property.
-    unbased: Vec<(InputKey, TextRange, String)>,
-    /// An own input forwarded to another component's input (at the value's range).
-    forwards: Vec<(InputKey, InputKey, TextRange)>,
-    /// A `Percent` value given to a component's input, at the value's range.
-    percent_args: Vec<(InputKey, TextRange)>,
+    /// The component whose view this is.
+    own: Option<SymbolId>,
+    sinks: Vec<Sink>,
+}
+
+/// One property binding whose value must not, or might not, carry a `Percent`.
+#[derive(Debug)]
+struct Sink {
+    carry: Carry,
+    /// The bound value.
+    at: TextRange,
+    to: SinkTo,
+}
+
+#[derive(Debug)]
+enum SinkTo {
+    /// A length property without a percent basis.
+    Unbased(String),
+    /// A component's input, whose basis is settled across the module.
+    Input(InputKey),
 }
 
 /// What the view walk needs beyond type inference: the inputs of the components the
@@ -70,13 +85,15 @@ pub(crate) trait ViewEnv: TypeEnv {
 }
 
 /// Types the view block of the component `component`, appending what it finds to
-/// `diagnostics`; returns what it reveals about input percent bases.
+/// `diagnostics` and what its handlers and patterns define names as to `percent`;
+/// returns the bindings the module's percent flow settles.
 pub(crate) fn check_view(
     refs: &[ResolvedRef],
     env: &dyn ViewEnv,
     component: Option<SymbolId>,
     block: &ViewBlock,
     diagnostics: &mut Vec<Diagnostic>,
+    percent: &mut PercentSources,
 ) -> PercentFlow {
     let symbols = refs
         .iter()
@@ -89,31 +106,91 @@ pub(crate) fn check_view(
         cx: InferCx::new(refs, env),
         env,
         symbols,
-        own: component.and_then(|c| Some((c, env.component_inputs(c)?))),
-        flow: PercentFlow::default(),
+        flow: PercentFlow {
+            own: component,
+            sinks: Vec::new(),
+        },
         diagnostics: Vec::new(),
     };
     walk.items(block.items(), Scope::ROOT);
+    percent.extend(walk.cx.take_percent_defs());
     diagnostics.extend(walk.cx.into_diagnostics());
     diagnostics.extend(walk.diagnostics);
     walk.flow
 }
 
-/// Settles which component inputs have no percent basis from every view's `flows`,
-/// and reports each `Percent` value given to one as `E3104`.
+/// Reports each value carrying a `Percent` component bound to a length property
+/// without a percent basis as `E3104`; then settles, from every view's `flows`, which
+/// component inputs have no basis, and reports each such value given to one likewise.
 pub(crate) fn check_percent_flow(
     flows: &[PercentFlow],
+    facts: &PercentFacts,
     env: &dyn ViewEnv,
     diagnostics: &mut Vec<Diagnostic>,
 ) {
+    let mut input_of: HashMap<SymbolId, InputKey> = HashMap::new();
+    for component in flows.iter().filter_map(|f| f.own) {
+        for (index, input) in env
+            .component_inputs(component)
+            .unwrap_or(&[])
+            .iter()
+            .enumerate()
+        {
+            if let Some(symbol) = input.symbol {
+                input_of.insert(symbol, (component, index));
+            }
+        }
+    }
+    let reached = |carry: &Carry| -> Vec<InputKey> {
+        let wanted =
+            |n: Resolution| matches!(n, Resolution::Symbol(s) if input_of.contains_key(&s));
+        facts
+            .reached(carry, wanted)
+            .into_iter()
+            .filter_map(|n| match n {
+                Resolution::Symbol(s) => input_of.get(&s).copied(),
+                Resolution::Local(_) => None,
+            })
+            .collect()
+    };
     // Each unbased input, with the binding that makes it so: the value's range and a
     // description of where it goes.
     let mut unbased: HashMap<InputKey, (TextRange, String)> = HashMap::new();
-    for flow in flows {
-        for (key, at, property) in &flow.unbased {
-            unbased
-                .entry(*key)
-                .or_insert_with(|| (*at, format!("bound to `{property}` here")));
+    let mut forwards: Vec<(InputKey, InputKey, TextRange)> = Vec::new();
+    let mut percent_args: Vec<(InputKey, TextRange)> = Vec::new();
+    for sink in flows.iter().flat_map(|f| &f.sinks) {
+        let percent = facts.percent(&sink.carry);
+        match &sink.to {
+            SinkTo::Unbased(property) => {
+                if let Some(origin) = percent {
+                    let message = format!(
+                        "`{property}` has no percent basis, so it does not accept a value \
+                         with a `Percent` component"
+                    );
+                    let mut diagnostic = Diagnostic::error("E3104", sink.at, message);
+                    if !(sink.at.start() <= origin.start() && origin.end() <= sink.at.end()) {
+                        diagnostic
+                            .related
+                            .push((origin, "the `Percent` comes from here".to_string()));
+                    }
+                    diagnostics.push(diagnostic);
+                }
+                for key in reached(&sink.carry) {
+                    unbased
+                        .entry(key)
+                        .or_insert_with(|| (sink.at, format!("bound to `{property}` here")));
+                }
+            }
+            SinkTo::Input(to) => {
+                if percent.is_some() {
+                    percent_args.push((*to, sink.at));
+                }
+                forwards.extend(
+                    reached(&sink.carry)
+                        .into_iter()
+                        .map(|from| (from, *to, sink.at)),
+                );
+            }
         }
     }
     let describe = |(component, index): InputKey| {
@@ -126,7 +203,7 @@ pub(crate) fn check_percent_flow(
     };
     loop {
         let mut changed = false;
-        for (from, to, at) in flows.iter().flat_map(|f| &f.forwards) {
+        for (from, to, at) in &forwards {
             if unbased.contains_key(to) && !unbased.contains_key(from) {
                 let (input, component) = describe(*to);
                 let reason = format!("passed to `{input}` of `{component}` here");
@@ -138,7 +215,7 @@ pub(crate) fn check_percent_flow(
             break;
         }
     }
-    for (key, at) in flows.iter().flat_map(|f| &f.percent_args) {
+    for (key, at) in &percent_args {
         let Some((used_at, reason)) = unbased.get(key) else {
             continue;
         };
@@ -226,8 +303,6 @@ struct ViewWalk<'a> {
     cx: InferCx<'a>,
     env: &'a dyn ViewEnv,
     symbols: HashMap<TextRange, SymbolId>,
-    /// The component whose view this is, with its inputs.
-    own: Option<(SymbolId, &'a [InputProp])>,
     flow: PercentFlow,
     diagnostics: Vec<Diagnostic>,
 }
@@ -319,7 +394,7 @@ impl<'a> ViewWalk<'a> {
         let Some(value) = binding.value() else {
             return;
         };
-        let ty = match declared.as_ref().and_then(|d| d.ty.as_ref()) {
+        let _ = match declared.as_ref().and_then(|d| d.ty.as_ref()) {
             Some(want) if is_text(want) => self.cx.infer_text_value(&value, want),
             Some(want) => self.cx.infer_promoted(&value, want),
             None => self.cx.infer_expr(&value, None),
@@ -328,68 +403,16 @@ impl<'a> ViewWalk<'a> {
             return;
         };
         let at = value.syntax().text_range();
-        let percent = ty == Ty::Percent || has_percent_literal(value.syntax());
-        let carried = self.carried_inputs(value.syntax());
-        match declared.basis {
-            Basis::Yes => {}
-            Basis::No => {
-                if percent {
-                    let message = format!(
-                        "`{}` has no percent basis, so it does not accept a `Percent` value",
-                        path_text(&path)
-                    );
-                    self.diagnostics
-                        .push(Diagnostic::error("E3104", at, message));
-                }
-                let property = path_text(&path);
-                self.flow
-                    .unbased
-                    .extend(carried.into_iter().map(|k| (k, at, property.clone())));
-            }
-            Basis::Input(key) => {
-                if percent {
-                    self.flow.percent_args.push((key, at));
-                }
-                self.flow
-                    .forwards
-                    .extend(carried.into_iter().map(|k| (k, key, at)));
-            }
-        }
-    }
-
-    /// The inputs of this view's own component a value carries into its property: those
-    /// it names outside a call, index, field access or closure (whose results are other
-    /// values).
-    fn carried_inputs(&self, value: &SyntaxNode) -> Vec<InputKey> {
-        let Some((component, inputs)) = self.own else {
-            return Vec::new();
+        let to = match declared.basis {
+            Basis::Yes => return,
+            Basis::No if !holds_length(declared.ty.as_ref()) => return,
+            Basis::No => SinkTo::Unbased(path_text(&path)),
+            Basis::Input(key) => SinkTo::Input(key),
         };
-        let mut carried = Vec::new();
-        let mut stack = vec![value.clone()];
-        while let Some(node) = stack.pop() {
-            match node.kind() {
-                SyntaxKind::CallExpr
-                | SyntaxKind::IndexExpr
-                | SyntaxKind::FieldExpr
-                | SyntaxKind::OptionalFieldExpr
-                | SyntaxKind::ClosureExpr => continue,
-                SyntaxKind::PathExpr => {
-                    let tokens = node.descendants_with_tokens().into_iter();
-                    for token in tokens.filter_map(|e| e.as_token().cloned()) {
-                        let Some(symbol) = self.symbols.get(&token.text_range()) else {
-                            continue;
-                        };
-                        if let Some(index) = inputs.iter().position(|i| i.symbol == Some(*symbol))
-                            && !carried.contains(&(component, index))
-                        {
-                            carried.push((component, index));
-                        }
-                    }
-                }
-                _ => stack.extend(node.children()),
-            }
+        let carry = self.cx.carry(value.syntax());
+        if carry.spelled.is_some() || !carry.names.is_empty() {
+            self.flow.sinks.push(Sink { carry, at, to });
         }
-        carried
     }
 
     /// `bind path <=> source;`
@@ -590,6 +613,10 @@ impl<'a> ViewWalk<'a> {
         let element = iterable.element().cloned().unwrap_or(Ty::Unknown);
         if let Some(pattern) = view_for.pattern() {
             self.cx.bind_pattern(pattern.syntax(), &element);
+            if let Some(iterable) = view_for.iterable() {
+                let carry = self.cx.carry(iterable.syntax());
+                self.cx.define_pattern(pattern.syntax(), &carry);
+            }
             self.cx
                 .check_irrefutable(pattern.syntax(), "a `for` pattern");
         }
@@ -607,11 +634,16 @@ impl<'a> ViewWalk<'a> {
             Some(scrutinee) => self.cx.infer_expr(scrutinee, None),
             None => Ty::Unknown,
         };
+        let carry = scrutinee
+            .as_ref()
+            .map(|s| self.cx.carry(s.syntax()))
+            .unwrap_or_default();
         let mut check = MatchCheck::new();
         for arm in view_match.arms() {
             let pattern = arm.pattern();
             if let Some(pattern) = &pattern {
                 self.cx.bind_arm(&mut check, pattern.syntax(), &ty);
+                self.cx.define_pattern(pattern.syntax(), &carry);
             }
             let guard = arm.guard();
             if let Some(guard) = &guard {
@@ -649,11 +681,18 @@ fn path_text(path: &PropertyPath) -> String {
         .join(".")
 }
 
-/// Whether a value spells a `%` length anywhere (`50%`, `50% + 4dp`,
-/// `Offset { x: 50%, .. }`).
-fn has_percent_literal(node: &SyntaxNode) -> bool {
-    node.descendants_with_tokens()
-        .into_iter()
-        .filter_map(|e| e.as_token().cloned())
-        .any(|t| t.kind() == SyntaxKind::UnitLiteral && t.text().ends_with('%'))
+/// Whether a property of the declared type `ty` may hold a length that a `Percent`
+/// component would need a basis for (a `Percent` itself is a ratio, not a length).
+fn holds_length(ty: Option<&Ty>) -> bool {
+    match ty {
+        None => true,
+        Some(ty) => match ty {
+            Ty::Dp | Ty::Px | Ty::Sp | Ty::Em | Ty::MixedLength | Ty::Named(_) | Ty::Unknown => {
+                true
+            }
+            Ty::Option(inner) | Ty::List(inner) => holds_length(Some(inner)),
+            Ty::Tuple(tys) => tys.iter().any(|t| holds_length(Some(t))),
+            _ => false,
+        },
+    }
 }

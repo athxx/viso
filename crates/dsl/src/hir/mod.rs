@@ -31,13 +31,14 @@ mod effect;
 mod infer;
 mod lower;
 mod nodes;
+mod percent;
 mod reads;
 mod ty;
 mod view;
 mod widget;
 
 pub use capability::CapabilitySet;
-pub use component::{MemberEnv, lower_component};
+pub use component::MemberEnv;
 pub use effect::{BodyContext, EffectClass, EffectCx, EffectEnv};
 pub use infer::{InferCx, TypeEnv};
 pub use lower::{LoweredPackage, lower};

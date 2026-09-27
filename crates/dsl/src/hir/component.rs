@@ -34,6 +34,7 @@ use super::nodes::{
     CallableKind, ComponentSchema, HirCallable, HirComputed, HirEvent, HirInput, HirMeta, HirState,
     OwnershipMode,
 };
+use super::percent::PercentSources;
 use super::reads::{ReadEnv, collect_reads};
 use super::ty::{Ty, TypeError};
 
@@ -57,11 +58,12 @@ pub trait MemberEnv: TypeEnv + ReadEnv {
 /// `diagnostics`. The `refs` are the enclosing module's resolved references (so an
 /// initializer/body expression's names resolve); `env` answers the type/read/symbol
 /// questions.
-pub fn lower_component(
+pub(crate) fn lower_component(
     decl: &ComponentDecl,
     refs: &[ResolvedRef],
     env: &dyn MemberEnv,
     diagnostics: &mut Vec<Diagnostic>,
+    percent: &mut PercentSources,
 ) -> ComponentSchema {
     let name = decl
         .name()
@@ -130,6 +132,10 @@ pub fn lower_component(
                         .map(|a| resolve_annotation(a, &nominal, span, diagnostics));
                     let mut cx = InferCx::new(refs, env);
                     let inferred = cx.infer_expr(&init, expected.as_ref());
+                    if let Some(symbol) = symbol {
+                        percent.define(Resolution::Symbol(symbol), cx.carry(init.syntax()));
+                    }
+                    percent.extend(cx.take_percent_defs());
                     diagnostics.extend(cx.into_diagnostics());
                     let reads = collect_reads(refs, env, &init);
                     (expected.unwrap_or(inferred), reads)
@@ -184,6 +190,10 @@ pub fn lower_component(
                         .map(|a| resolve_annotation(a, &nominal, span, diagnostics));
                     let mut cx = InferCx::new(refs, env);
                     let inferred = cx.infer_expr(&body, expected.as_ref());
+                    if let Some(symbol) = symbol {
+                        percent.define(Resolution::Symbol(symbol), cx.carry(body.syntax()));
+                    }
+                    percent.extend(cx.take_percent_defs());
                     diagnostics.extend(cx.into_diagnostics());
                     let reads = collect_reads(refs, env, &body);
                     (expected.unwrap_or(inferred), reads)
@@ -650,7 +660,13 @@ mod tests {
             &[],
         );
         let mut diags = Vec::new();
-        let schema = lower_component(&decl, &refs, &env, &mut diags);
+        let schema = lower_component(
+            &decl,
+            &refs,
+            &env,
+            &mut diags,
+            &mut PercentSources::default(),
+        );
         assert_eq!(schema.name, "C");
         assert_eq!(schema.inputs.len(), 1);
         assert_eq!(schema.states.len(), 1);
@@ -668,7 +684,13 @@ mod tests {
         let (_root, decl, refs, env) =
             setup(src, &[("count", count), ("total", total)], &[count, total]);
         let mut diags = Vec::new();
-        let _ = lower_component(&decl, &refs, &env, &mut diags);
+        let _ = lower_component(
+            &decl,
+            &refs,
+            &env,
+            &mut diags,
+            &mut PercentSources::default(),
+        );
         assert!(
             diags.iter().all(|d| d.code != "E2104"),
             "reading earlier state is legal, got {diags:?}"
@@ -687,7 +709,13 @@ mod tests {
             &[first, second],
         );
         let mut diags = Vec::new();
-        let _ = lower_component(&decl, &refs, &env, &mut diags);
+        let _ = lower_component(
+            &decl,
+            &refs,
+            &env,
+            &mut diags,
+            &mut PercentSources::default(),
+        );
         assert_eq!(
             diags.iter().filter(|d| d.code == "E2104").count(),
             1,
@@ -701,7 +729,13 @@ mod tests {
         let count = SymbolId::from_parts(2, 0);
         let (_root, decl, refs, env) = setup(src, &[("count", count)], &[]);
         let mut diags = Vec::new();
-        let schema = lower_component(&decl, &refs, &env, &mut diags);
+        let schema = lower_component(
+            &decl,
+            &refs,
+            &env,
+            &mut diags,
+            &mut PercentSources::default(),
+        );
         assert_eq!(schema.states.len(), 1);
         // `0` with no annotation takes the host default I64 and is not undetermined.
         assert_eq!(schema.states[0].meta.inferred_type, Ty::I64);
@@ -718,7 +752,13 @@ mod tests {
         let b = SymbolId::from_parts(3, 0);
         let (_root, decl, refs, env) = setup(src, &[("a", a), ("b", b)], &[a, b]);
         let mut diags = Vec::new();
-        let schema = lower_component(&decl, &refs, &env, &mut diags);
+        let schema = lower_component(
+            &decl,
+            &refs,
+            &env,
+            &mut diags,
+            &mut PercentSources::default(),
+        );
         let order: Vec<&str> = schema.computeds.iter().map(|c| c.name.as_str()).collect();
         assert_eq!(
             order,
@@ -736,7 +776,13 @@ mod tests {
         let b = SymbolId::from_parts(3, 0);
         let (_root, decl, refs, env) = setup(src, &[("a", a), ("b", b)], &[a, b]);
         let mut diags = Vec::new();
-        let _ = lower_component(&decl, &refs, &env, &mut diags);
+        let _ = lower_component(
+            &decl,
+            &refs,
+            &env,
+            &mut diags,
+            &mut PercentSources::default(),
+        );
         let cycle: Vec<&Diagnostic> = diags.iter().filter(|d| d.code == "E2105").collect();
         assert_eq!(cycle.len(), 1, "one cycle diagnostic, got {diags:?}");
         // The full path is carried in related spans (both members plus the close-back).
@@ -756,7 +802,13 @@ mod tests {
         let (_root, decl, refs, env) =
             setup(src, &[("count", count), ("total", total)], &[count, total]);
         let mut diags = Vec::new();
-        let schema = lower_component(&decl, &refs, &env, &mut diags);
+        let schema = lower_component(
+            &decl,
+            &refs,
+            &env,
+            &mut diags,
+            &mut PercentSources::default(),
+        );
         let total_node = schema
             .states
             .iter()
@@ -779,7 +831,8 @@ mod tests {
                     component: SymbolId::from_parts(999, 0),
                 };
                 let mut diags = Vec::new();
-                let _ = lower_component(&decl, &[], &env, &mut diags);
+                let _ =
+                    lower_component(&decl, &[], &env, &mut diags, &mut PercentSources::default());
             }
         }
     }

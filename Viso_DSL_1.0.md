@@ -610,8 +610,10 @@ View、Computed、Style 和 Theme 中不存在 Layout Context，因此禁止调�
 
 - `Percent` 本身是无量纲比例：`50%` 的数值为 `0.5`；
 - 非长度 Property（例如 `opacity`、`progress`、`volume`）若 Schema 类型为 `Percent`，直接使用比例值；
-- 长度 Property 只有在其 Schema 声明 `percent_basis` 时才接受 `Percent` 或含 Percent 分量的 `MixedLength`；否则是 `E3104`；
-- 用户 Component 的 `input` 不书写 `percent_basis`，其基准由该 Component 自身 View 中的绑定推导：Input 作为值或长度运算分量（不经函数调用、下标、字段访问或 Closure）绑定到无 `percent_basis` 的 Property 时，该 Input 无基准；转发给另一个 Component 的 Input 时，继承该 Input 的结论；推导在模块内所有 View 检查完毕后求定点。向无基准的 Input 传入 Percent 是 `E3104`，诊断的相关位置指向使其无基准的绑定；只经其他途径使用的 Input 视为有基准；
+- 长度 Property 只有在其 Schema 声明 `percent_basis` 时才接受 `Percent` 或含 Percent 分量的 `MixedLength`；否则是 `E3104`；类型不能容纳长度的 Property（`Bool`、数值、`Percent` 比例等）不参与此检查，Percent 在其上只按类型检查；
+- 值是否含 Percent 分量由编译期值流分析决定：值书写了 `%` 字面量或 `Percent` 类型的操作数，或引用了含 Percent 分量的值——`state`（初值与所有赋值）、`computed`、`const`、局部绑定（初值、模式解构的值、所有赋值）、省略了带 Percent 默认值字段的 Record 字面量；算术、字段访问、下标、Record/List/Tuple 字面量、`if`/`match`/Block 的结果值保留分量；条件、`match` 被匹配值、守卫与比较/逻辑运算的结果不携带分量；函数调用与 Closure 的结果只按其返回类型判断。分析在模块内求定点；诊断的相关位置指向书写 Percent 的位置；
+- 编译期不可见的 Percent 分量（例如经函数返回值或双向绑定到达）在无 `percent_basis` 的 Property 上按 `0` 计算，Debug Runtime 报告 `E3105`（警告）；
+- 用户 Component 的 `input` 不书写 `percent_basis`，其基准由该 Component 自身 View 中的绑定推导：Input 的值按上述值流（经 `state`、`computed`、局部绑定、字段访问、下标等，不经函数调用或 Closure）到达无 `percent_basis` 的长度 Property 时，该 Input 无基准；到达另一个 Component 的 Input 时，继承该 Input 的结论；推导在模块内所有 View 检查完毕后求定点。向无基准的 Input 传入含 Percent 分量的值是 `E3104`，诊断的相关位置指向使其无基准的绑定；只经其他途径使用的 Input 视为有基准；
 - 标准 Percent Basis：
 
 | Property 类别                                         | Percent Basis                     |
@@ -7006,6 +7008,7 @@ parse(format(parse(valid_x))) AST-equivalent
 - Computed Cycle 输出路径；
 - 长度族跨单位加减得到 `MixedLength`，`MixedLength` 赋给具体单位报 `E2106`，比较/相乘报 `E2107`；
 - 无 `percent_basis` 的 Property 接受 Percent 报 `E3104`；
+- 经 `state`/`computed`/`const`/局部绑定/字段访问/Record 默认值到达的 Percent 分量报 `E3104`；经函数调用、比较结果到达的不报；
 - `font_size` 中的 `em`/`%` 以父节点字号为基准，其他 Property 以本节点字号为基准。
 
 ---

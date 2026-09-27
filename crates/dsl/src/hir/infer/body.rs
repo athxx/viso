@@ -152,6 +152,10 @@ impl InferCx<'_> {
                 let elem = iterable.element().cloned().unwrap_or(Ty::Unknown);
                 if let Some(pattern) = child_of(stmt, SyntaxKind::Pattern) {
                     self.bind_pattern(&pattern, &elem);
+                    if let Some(iter) = first_child_expr(stmt) {
+                        let carry = self.carry(iter.syntax());
+                        self.define_pattern(&pattern, &carry);
+                    }
                     self.check_irrefutable(&pattern, "a `for` pattern");
                 }
                 let _ = self.loop_body(stmt, false);
@@ -199,6 +203,10 @@ impl InferCx<'_> {
         };
         if let Some(pattern) = child_of(stmt, SyntaxKind::Pattern) {
             self.bind_pattern(&pattern, &ty);
+            if let Some(init) = first_child_expr(stmt) {
+                let carry = self.carry(init.syntax());
+                self.define_pattern(&pattern, &carry);
+            }
             self.check_irrefutable(&pattern, "a `let` pattern");
         }
         init == Ty::Never
@@ -230,6 +238,9 @@ impl InferCx<'_> {
             let _ = self.infer_expr(value, Some(&target));
         } else {
             let _ = self.infer_expr(value, None);
+        }
+        if let Some(target) = exprs.first() {
+            self.define_target(target.syntax(), value.syntax());
         }
     }
 

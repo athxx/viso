@@ -38,6 +38,7 @@ use super::component::{MemberEnv, lower_component};
 use super::effect::{BodyContext, EffectClass, EffectCx, EffectEnv};
 use super::infer::{FieldInfo, InferCx, TypeEnv, VariantInfo, VariantPayload};
 use super::nodes::{ComponentSchema, HirCallable, HirComponent};
+use super::percent::PercentSources;
 use super::reads::ReadEnv;
 use super::ty::Ty;
 use super::view::{InputProp, PercentFlow, ViewEnv, check_percent_flow, check_view};
@@ -143,6 +144,7 @@ fn lower_module(
     // is index-based. We map symbol → node index first, then fill edges in a second scan.
     let mut cap = CapabilityGraphBuilder::new();
     let mut flows = Vec::new();
+    let mut percent = PercentSources::default();
 
     for item in cu.items() {
         let decl = match item {
@@ -158,12 +160,19 @@ fn lower_module(
         // are type-checked here; their HIR nodes land with their consumer slice.
         match decl {
             Item::Component(c) => {
-                let component =
-                    lower_component_item(&c, refs, env, diagnostics, &mut cap, &mut flows);
+                let component = lower_component_item(
+                    &c,
+                    refs,
+                    env,
+                    diagnostics,
+                    &mut cap,
+                    &mut flows,
+                    &mut percent,
+                );
                 components.push(component);
             }
-            Item::Const(c) => check_const(&c, refs, env, diagnostics),
-            Item::Record(r) => check_field_defaults(&r, refs, env, diagnostics),
+            Item::Const(c) => check_const(&c, refs, env, diagnostics, &mut percent),
+            Item::Record(r) => check_field_defaults(&r, refs, env, diagnostics, &mut percent),
             Item::Fn(f) => {
                 check_signature(
                     refs,
@@ -172,6 +181,7 @@ fn lower_module(
                     f.return_type(),
                     f.body(),
                     diagnostics,
+                    &mut percent,
                 );
             }
             Item::Action(a) => {
@@ -182,6 +192,7 @@ fn lower_module(
                     a.return_type(),
                     a.body(),
                     diagnostics,
+                    &mut percent,
                 );
             }
             Item::Task(t) => {
@@ -192,6 +203,7 @@ fn lower_module(
                     t.return_type(),
                     t.body(),
                     diagnostics,
+                    &mut percent,
                 );
             }
             _ => {}
@@ -199,7 +211,8 @@ fn lower_module(
         let _ = &mut *callables;
     }
 
-    check_percent_flow(&flows, env, diagnostics);
+    let facts = percent.solve();
+    check_percent_flow(&flows, &facts, env, diagnostics);
 
     // Resolve the capability call graph to a fixed point and write each inferred set back onto
     // its callable node, then append any `requires {}` violations.
@@ -216,9 +229,10 @@ fn lower_component_item(
     diagnostics: &mut Vec<Diagnostic>,
     cap: &mut CapabilityGraphBuilder,
     flows: &mut Vec<PercentFlow>,
+    percent: &mut PercentSources,
 ) -> HirComponent {
     env.focus_component(decl);
-    let schema = lower_component(decl, refs, env, diagnostics);
+    let schema = lower_component(decl, refs, env, diagnostics, percent);
     env.record_inferred(&schema);
     let source_origin = decl.syntax().text_range();
 
@@ -233,9 +247,18 @@ fn lower_component_item(
             Some(env.component_symbol()),
             &block,
             diagnostics,
+            percent,
         ));
     }
-    check_component_callables(decl, refs, env, diagnostics, cap, &schema.callables);
+    check_component_callables(
+        decl,
+        refs,
+        env,
+        diagnostics,
+        cap,
+        &schema.callables,
+        percent,
+    );
 
     HirComponent {
         schema,
@@ -253,6 +276,7 @@ fn check_component_callables(
     diagnostics: &mut Vec<Diagnostic>,
     cap: &mut CapabilityGraphBuilder,
     lowered: &[HirCallable],
+    percent: &mut PercentSources,
 ) {
     for member in decl.members() {
         let (context, body, clause, name, params, ret) = match &member {
@@ -286,7 +310,7 @@ fn check_component_callables(
         if let Some(block) = &body {
             check_body(refs, context, env, block.syntax(), diagnostics);
         }
-        check_signature(refs, env, &params, ret, body.clone(), diagnostics);
+        check_signature(refs, env, &params, ret, body.clone(), diagnostics, percent);
 
         // Register in the capability graph, keyed by the callable's node span so its inferred
         // set can be written back onto the matching lowered node.
@@ -328,6 +352,7 @@ fn check_signature(
     ret: Option<ReturnType>,
     body: Option<Block>,
     diagnostics: &mut Vec<Diagnostic>,
+    percent: &mut PercentSources,
 ) {
     let Some(body) = body else {
         return;
@@ -339,6 +364,7 @@ fn check_signature(
     let ret = ret.map(|r| env.annotation_of(r.syntax()));
     let mut cx = InferCx::new(refs, env);
     cx.check_callable(&params, ret.as_ref(), &body);
+    percent.extend(cx.take_percent_defs());
     diagnostics.extend(cx.into_diagnostics());
 }
 
@@ -348,6 +374,7 @@ fn check_const(
     refs: &[ResolvedRef],
     env: &ModuleEnv,
     diagnostics: &mut Vec<Diagnostic>,
+    percent: &mut PercentSources,
 ) {
     let Some(value) = decl.value() else {
         return;
@@ -359,16 +386,23 @@ fn check_const(
     } else {
         cx.infer_promoted(&value, &want)
     };
+    if let Some(symbol) = env.declared.get(&decl.syntax().text_range()) {
+        percent.define(Resolution::Symbol(*symbol), cx.carry(value.syntax()));
+    }
+    percent.extend(cx.take_percent_defs());
     diagnostics.extend(cx.into_diagnostics());
 }
 
-/// Types each record field default against its field type.
+/// Types each record field default against its field type; a record literal that omits
+/// a defaulted field carries what the defaults do.
 fn check_field_defaults(
     decl: &RecordDecl,
     refs: &[ResolvedRef],
     env: &ModuleEnv,
     diagnostics: &mut Vec<Diagnostic>,
+    percent: &mut PercentSources,
 ) {
+    let record = env.declared.get(&decl.syntax().text_range()).copied();
     let mut cx = InferCx::new(refs, env);
     for field in decl.fields() {
         let Some(value) = field.default() else {
@@ -380,7 +414,11 @@ fn check_field_defaults(
         } else {
             cx.infer_promoted(&value, &want)
         };
+        if let Some(record) = record {
+            percent.define(Resolution::Symbol(record), cx.carry(value.syntax()));
+        }
     }
+    percent.extend(cx.take_percent_defs());
     diagnostics.extend(cx.into_diagnostics());
 }
 
@@ -608,6 +646,8 @@ struct ModuleEnv {
     nominal: HashMap<TextRange, SymbolId>,
     /// The fields of every record the module declares.
     records: HashMap<SymbolId, Vec<FieldInfo>>,
+    /// `const` and record declaration syntax range → its symbol.
+    declared: HashMap<TextRange, SymbolId>,
     /// The variants of every enum the module declares.
     enums: HashMap<SymbolId, Vec<VariantInfo>>,
     /// The declared name of every record, enum and component, for diagnostics.
@@ -717,6 +757,7 @@ impl ModuleEnv {
                 })
                 .collect(),
             records: HashMap::new(),
+            declared: HashMap::new(),
             enums: HashMap::new(),
             type_names: HashMap::new(),
             signatures: HashMap::new(),
@@ -760,6 +801,7 @@ impl ModuleEnv {
                     if let Some(sym) = decl_symbol(table, interner, r.name(), Namespace::Type) {
                         let fields = r.fields().filter_map(|f| env.field_info(&f)).collect();
                         env.records.insert(sym, fields);
+                        env.declared.insert(r.syntax().text_range(), sym);
                         env.type_names.insert(sym, name_of(r.name()));
                     }
                 }
@@ -772,6 +814,7 @@ impl ModuleEnv {
                 }
                 Item::Const(c) => {
                     if let Some(sym) = decl_symbol(table, interner, c.name(), Namespace::Value) {
+                        env.declared.insert(c.syntax().text_range(), sym);
                         let ty = env.annotation_of(c.syntax());
                         env.facts.insert(
                             sym,
@@ -1528,7 +1571,7 @@ mod tests {
         );
         assert_eq!(
             codes("component C {\n  view { Grid { Text { grid.row: 50%; } } }\n}"),
-            ["E2103", "E3104"]
+            ["E2103"]
         );
     }
 
@@ -1558,6 +1601,87 @@ mod tests {
             )),
             ["E3104"]
         );
+    }
+
+    #[test]
+    fn a_percent_component_flows_through_values() {
+        let decls = "record At { x: MixedLength; y: MixedLength; }\n";
+        let flagged = |body: &str| codes(&format!("{decls}component C {{\n{body}\n}}"));
+        // Through a state initializer, a computed, a field access and a local.
+        assert_eq!(
+            flagged("  state o = At { x: 50%, y: 0dp }\n  view { Text { translate: o; } }"),
+            ["E3104"]
+        );
+        assert_eq!(
+            flagged(
+                "  state w = 50%\n  computed c = w + 4dp\n\
+                 \x20 view { Text { translate: Offset { x: c, y: 0dp }; } }"
+            ),
+            ["E3104"]
+        );
+        assert_eq!(
+            flagged(
+                "  state o = At { x: 50%, y: 0dp }\n\
+                 \x20 view { Text { translate: Offset { x: o.x, y: 0dp }; } }"
+            ),
+            ["E3104"]
+        );
+        assert_eq!(
+            flagged(
+                "  state x: MixedLength = 0dp\n  action go() { let p = 25%; x = p + 1dp; }\n\
+                 \x20 view { Text { translate: Offset { x: x, y: 0dp }; } }"
+            ),
+            ["E3104"]
+        );
+        // The diagnostic points back at the spelled `Percent`.
+        let pkg = lower_src(&format!(
+            "{decls}component C {{\n  state o = At {{ x: 50%, y: 0dp }}\n  view {{ Text {{ translate: o; }} }}\n}}"
+        ));
+        let (_, reason) = &pkg.diagnostics[0].related[0];
+        assert!(reason.contains("comes from"), "{reason}");
+
+        // A call's result, a comparison and a percent-typed ratio carry no component.
+        assert_clean(
+            "fn f(p: Percent) -> MixedLength { 0dp }\n\
+             component C {\n  state w = 50%\n\
+             \x20 view { Text { translate: Offset { x: f(w), y: 0dp }; visible: w > 10%; } }\n}",
+        );
+        assert_clean(&format!(
+            "{decls}component C {{\n  state o = At {{ x: 4dp, y: 0dp }}\n  view {{ Text {{ translate: o; }} }}\n}}"
+        ));
+    }
+
+    #[test]
+    fn record_defaults_carry_into_literals_that_omit_them() {
+        let decls = "record Pad { x: MixedLength = 50%; y: MixedLength = 0dp; }\n";
+        assert_eq!(
+            codes(&format!(
+                "{decls}component C {{\n  state p = Pad {{ y: 1dp }}\n  view {{ Text {{ translate: p; }} }}\n}}"
+            )),
+            ["E3104"]
+        );
+        assert_clean(&format!(
+            "{decls}component C {{\n  state p = Pad {{ x: 1dp, y: 1dp }}\n  view {{ Text {{ translate: p; }} }}\n}}"
+        ));
+    }
+
+    #[test]
+    fn an_input_reached_through_a_computed_has_no_basis() {
+        let card = "component Card {\n\
+                    \x20 input shift: MixedLength = 0dp\n\
+                    \x20 computed moved = shift + 4dp\n\
+                    \x20 view { Column { translate: Offset { x: moved, y: 0dp }; } }\n\
+                    }\n";
+        assert_clean(&format!(
+            "{card}component App {{\n  view {{ Card {{ shift: 4dp; }} }}\n}}"
+        ));
+        let pkg = lower_src(&format!(
+            "{card}component App {{\n  state s = 50%\n  view {{ Card {{ shift: s; }} }}\n}}"
+        ));
+        let found: Vec<_> = pkg.diagnostics.iter().map(|d| d.code).collect();
+        assert_eq!(found, ["E3104"]);
+        let (_, reason) = &pkg.diagnostics[0].related[0];
+        assert!(reason.contains("translate"), "{reason}");
     }
 
     #[test]
