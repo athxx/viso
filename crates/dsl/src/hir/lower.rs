@@ -40,7 +40,7 @@ use super::infer::{FieldInfo, InferCx, TypeEnv, VariantInfo, VariantPayload};
 use super::nodes::{ComponentSchema, HirCallable, HirComponent};
 use super::reads::ReadEnv;
 use super::ty::Ty;
-use super::view::{InputProp, ViewEnv, check_view};
+use super::view::{InputProp, PercentFlow, ViewEnv, check_percent_flow, check_view};
 
 /// The typed HIR of a whole package: every component lowered, every free callable, and every
 /// diagnostic the type/effect/capability checks raised across all modules.
@@ -142,6 +142,7 @@ fn lower_module(
     // to other-callable indices yet, because a callee resolves to a `SymbolId` and the graph
     // is index-based. We map symbol → node index first, then fill edges in a second scan.
     let mut cap = CapabilityGraphBuilder::new();
+    let mut flows = Vec::new();
 
     for item in cu.items() {
         let decl = match item {
@@ -157,7 +158,8 @@ fn lower_module(
         // are type-checked here; their HIR nodes land with their consumer slice.
         match decl {
             Item::Component(c) => {
-                let component = lower_component_item(&c, refs, env, diagnostics, &mut cap);
+                let component =
+                    lower_component_item(&c, refs, env, diagnostics, &mut cap, &mut flows);
                 components.push(component);
             }
             Item::Const(c) => check_const(&c, refs, env, diagnostics),
@@ -197,19 +199,23 @@ fn lower_module(
         let _ = &mut *callables;
     }
 
+    check_percent_flow(&flows, env, diagnostics);
+
     // Resolve the capability call graph to a fixed point and write each inferred set back onto
     // its callable node, then append any `requires {}` violations.
     cap.finish(components, diagnostics);
 }
 
 /// Lowers one `component` declaration: schema + view/callable effect checks, registering each
-/// callable in the capability graph.
+/// callable in the capability graph and collecting what its view reveals about input percent
+/// bases into `flows`.
 fn lower_component_item(
     decl: &ComponentDecl,
     refs: &[ResolvedRef],
     env: &ModuleEnv,
     diagnostics: &mut Vec<Diagnostic>,
     cap: &mut CapabilityGraphBuilder,
+    flows: &mut Vec<PercentFlow>,
 ) -> HirComponent {
     env.focus_component(decl);
     let schema = lower_component(decl, refs, env, diagnostics);
@@ -221,7 +227,13 @@ fn lower_component_item(
         && let Some(block) = view.block()
     {
         check_body(refs, BodyContext::View, env, block.syntax(), diagnostics);
-        check_view(refs, env, &block, diagnostics);
+        flows.push(check_view(
+            refs,
+            env,
+            Some(env.component_symbol()),
+            &block,
+            diagnostics,
+        ));
     }
     check_component_callables(decl, refs, env, diagnostics, cap, &schema.callables);
 
@@ -729,7 +741,7 @@ impl ModuleEnv {
                         env.components.insert(c.syntax().text_range(), sym);
                         env.component.set(sym);
                         env.type_names.insert(sym, name_of(c.name()));
-                        let inputs = env.inputs_of(c);
+                        let inputs = env.inputs_of(c, table, interner);
                         env.inputs.insert(sym, inputs);
                     }
                     for member in c.members() {
@@ -922,7 +934,12 @@ impl ModuleEnv {
 
     /// The inputs of a component as node properties. An input preceded by a
     /// `@bindable(event)` attribute is two-way.
-    fn inputs_of(&self, decl: &ComponentDecl) -> Vec<InputProp> {
+    fn inputs_of(
+        &self,
+        decl: &ComponentDecl,
+        table: &SymbolTable,
+        interner: &mut NameInterner,
+    ) -> Vec<InputProp> {
         let mut inputs = Vec::new();
         let mut bindable = false;
         for child in decl.syntax().children() {
@@ -935,6 +952,12 @@ impl ModuleEnv {
                             ty: self.annotation_of(&child),
                             two_way: bindable,
                             declared_at: name.text_range(),
+                            symbol: decl_symbol(
+                                table,
+                                interner,
+                                Some(name.clone()),
+                                Namespace::Value,
+                            ),
                         });
                     }
                     bindable = false;
@@ -1506,6 +1529,34 @@ mod tests {
         assert_eq!(
             codes("component C {\n  view { Grid { Text { grid.row: 50%; } } }\n}"),
             ["E2103", "E3104"]
+        );
+    }
+
+    #[test]
+    fn input_percent_basis_follows_its_bindings() {
+        let card = "component Card {\n\
+                    \x20 input size: MixedLength = 0dp\n\
+                    \x20 input shift: MixedLength = 0dp\n\
+                    \x20 view { Column { width: size + 4dp; translate: Offset { x: shift, y: 0dp }; } }\n\
+                    }\n";
+        assert_clean(&format!(
+            "{card}component App {{\n  view {{ Card {{ size: 50%; shift: 4dp; }} }}\n}}"
+        ));
+        let pkg = lower_src(&format!(
+            "{card}component App {{\n  view {{ Card {{ shift: 50%; }} }}\n}}"
+        ));
+        let found: Vec<_> = pkg.diagnostics.iter().map(|d| d.code).collect();
+        assert_eq!(found, ["E3104"]);
+        let (_, reason) = &pkg.diagnostics[0].related[0];
+        assert!(reason.contains("translate"), "{reason}");
+
+        // Forwarded through another component's input, declared later in the module.
+        assert_eq!(
+            codes(&format!(
+                "component App {{\n  view {{ Frame {{ inset: 10%; }} }}\n}}\n\
+                 component Frame {{\n  input inset: MixedLength = 0dp\n  view {{ Card {{ shift: inset; }} }}\n}}\n{card}"
+            )),
+            ["E3104"]
         );
     }
 

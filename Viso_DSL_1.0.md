@@ -611,6 +611,7 @@ View、Computed、Style 和 Theme 中不存在 Layout Context，因此禁止调�
 - `Percent` 本身是无量纲比例：`50%` 的数值为 `0.5`；
 - 非长度 Property（例如 `opacity`、`progress`、`volume`）若 Schema 类型为 `Percent`，直接使用比例值；
 - 长度 Property 只有在其 Schema 声明 `percent_basis` 时才接受 `Percent` 或含 Percent 分量的 `MixedLength`；否则是 `E3104`；
+- 用户 Component 的 `input` 不书写 `percent_basis`，其基准由该 Component 自身 View 中的绑定推导：Input 作为值或长度运算分量（不经函数调用、下标、字段访问或 Closure）绑定到无 `percent_basis` 的 Property 时，该 Input 无基准；转发给另一个 Component 的 Input 时，继承该 Input 的结论；推导在模块内所有 View 检查完毕后求定点。向无基准的 Input 传入 Percent 是 `E3104`，诊断的相关位置指向使其无基准的绑定；只经其他途径使用的 Input 视为有基准；
 - 标准 Percent Basis：
 
 | Property 类别                                         | Percent Basis                     |
