@@ -253,7 +253,12 @@ impl InferCx<'_> {
     /// The type of member `name` on a value of type `recv`, or `None` when the
     /// receiver's type does not say (reporting `E2001` for a name a known record or
     /// tuple lacks).
-    fn member_ty(&mut self, recv: &Ty, name: &SyntaxToken, expected: Option<&Ty>) -> Option<Ty> {
+    pub(super) fn member_ty(
+        &mut self,
+        recv: &Ty,
+        name: &SyntaxToken,
+        expected: Option<&Ty>,
+    ) -> Option<Ty> {
         let text = name.text();
         match recv {
             Ty::Named(id) => {

@@ -203,6 +203,9 @@ impl InferCx<'_> {
         };
         if let Some(pattern) = child_of(stmt, SyntaxKind::Pattern) {
             self.bind_pattern(&pattern, &ty);
+            if super::lens::has_mut(stmt) {
+                self.mark_mutable_in(&pattern);
+            }
             if let Some(init) = first_child_expr(stmt) {
                 let carry = self.carry(init.syntax());
                 self.define_pattern(&pattern, &carry);
@@ -217,7 +220,11 @@ impl InferCx<'_> {
     fn infer_assign(&mut self, stmt: &SyntaxNode) {
         let exprs = child_exprs(stmt);
         let target = match exprs.first() {
-            Some(target) => self.infer_expr(target, None),
+            Some(target) => {
+                let ty = self.infer_expr(target, None);
+                self.check_writable(target.syntax());
+                ty
+            }
             None => Ty::Unknown,
         };
         let Some(value) = exprs.get(1) else {
@@ -379,6 +386,9 @@ impl InferCx<'_> {
         let expected_params = expected_params.filter(|ps| ps.len() == params.len());
         let mut param_tys = Vec::with_capacity(params.len());
         for (i, param) in params.iter().enumerate() {
+            if super::lens::has_mut(param) {
+                self.mark_mutable_in(param);
+            }
             let annotation = param
                 .children()
                 .into_iter()

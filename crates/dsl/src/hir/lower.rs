@@ -29,7 +29,7 @@ use crate::ast::{
 use crate::diag::Diagnostic;
 use crate::resolve::{
     ModuleGraph, NameInterner, Namespace, Resolution, ResolvedModule, ResolvedRef, SourceUnit,
-    SymbolId, SymbolTable,
+    SymbolId, SymbolKind, SymbolTable,
 };
 use crate::syntax::{SyntaxKind, SyntaxNode, TextRange};
 
@@ -232,6 +232,7 @@ fn lower_component_item(
     percent: &mut PercentSources,
 ) -> HirComponent {
     env.focus_component(decl);
+    check_bindable(decl, env, diagnostics);
     let schema = lower_component(decl, refs, env, diagnostics, percent);
     env.record_inferred(&schema);
     let source_origin = decl.syntax().text_range();
@@ -357,12 +358,22 @@ fn check_signature(
     let Some(body) = body else {
         return;
     };
+    let ret = ret.map(|r| env.annotation_of(r.syntax()));
+    let mut cx = InferCx::new(refs, env);
+    for param in params.iter().filter(|p| {
+        p.syntax()
+            .children_with_tokens()
+            .into_iter()
+            .any(|e| e.as_token().is_some_and(|t| t.kind() == SyntaxKind::MutKw))
+    }) {
+        if let Some(name) = param.name() {
+            cx.mark_mutable(name.text_range());
+        }
+    }
     let params: Vec<(TextRange, Ty)> = params
         .iter()
         .filter_map(|p| Some((p.name()?.text_range(), env.annotation_of(p.syntax()))))
         .collect();
-    let ret = ret.map(|r| env.annotation_of(r.syntax()));
-    let mut cx = InferCx::new(refs, env);
     cx.check_callable(&params, ret.as_ref(), &body);
     percent.extend(cx.take_percent_defs());
     diagnostics.extend(cx.into_diagnostics());
@@ -624,6 +635,8 @@ struct MemberFacts {
     /// Whether the member is a reactive source (`state`/`input`/`computed`), for
     /// `ReadEnv::reactive_source`.
     is_reactive_source: bool,
+    /// What kind of declaration the symbol is, for `TypeEnv::symbol_kind`.
+    kind: SymbolKind,
 }
 
 /// The concrete [`MemberEnv`]/[`TypeEnv`]/[`ViewEnv`]/[`ReadEnv`]/[`EffectEnv`] for one
@@ -691,6 +704,10 @@ impl TypeEnv for ModuleEnv {
 
     fn type_name(&self, ty: SymbolId) -> Option<&str> {
         self.type_names.get(&ty).map(String::as_str)
+    }
+
+    fn symbol_kind(&self, id: SymbolId) -> Option<SymbolKind> {
+        self.facts.get(&id).map(|f| f.kind)
     }
 }
 
@@ -822,6 +839,7 @@ impl ModuleEnv {
                                 ty,
                                 effect: None,
                                 is_reactive_source: false,
+                                kind: SymbolKind::Const,
                             },
                         );
                     }
@@ -853,26 +871,26 @@ impl ModuleEnv {
 
     /// Records one member's name→symbol entry and its facts.
     fn record_member(&mut self, member: &Member, table: &SymbolTable, interner: &mut NameInterner) {
-        let (name_tok, namespace, ty, is_source) = match member {
+        let (name_tok, namespace, ty, kind) = match member {
             Member::Input(d) => (
                 d.name(),
                 Namespace::Value,
                 self.annotation_of(d.syntax()),
-                true,
+                SymbolKind::Input,
             ),
             Member::State(d) => (
                 d.name(),
                 Namespace::Value,
                 self.annotation_of(d.syntax()),
-                true,
+                SymbolKind::State,
             ),
             Member::Computed(d) => (
                 d.name(),
                 Namespace::Value,
                 self.annotation_of(d.syntax()),
-                true,
+                SymbolKind::Computed,
             ),
-            Member::Event(d) => (d.name(), Namespace::Event, Ty::Unknown, false),
+            Member::Event(d) => (d.name(), Namespace::Event, Ty::Unknown, SymbolKind::Event),
             Member::Fn(d) => {
                 let (params, ret) = (d.params(), d.return_type());
                 let sym = self.record_callable(
@@ -935,7 +953,8 @@ impl ModuleEnv {
             MemberFacts {
                 ty,
                 effect: None,
-                is_reactive_source: is_source,
+                is_reactive_source: kind != SymbolKind::Event,
+                kind,
             },
         );
     }
@@ -970,6 +989,11 @@ impl ModuleEnv {
                 ty,
                 effect: Some(effect),
                 is_reactive_source: false,
+                kind: match effect {
+                    EffectClass::Action => SymbolKind::Action,
+                    EffectClass::Task => SymbolKind::Task,
+                    EffectClass::Pure | EffectClass::Read => SymbolKind::Function,
+                },
             },
         );
         Some(sym)
@@ -1114,6 +1138,126 @@ fn is_type_node(node: &SyntaxNode) -> bool {
 }
 
 /// Whether an attribute is `@bindable(..)`.
+/// Checks each `@bindable` in a component body (`E3701` otherwise): it marks an
+/// `input` and names, as its one argument, an event of the same component whose first
+/// parameter has the input's type — the event a `bind` writes back through.
+fn check_bindable(decl: &ComponentDecl, env: &ModuleEnv, diagnostics: &mut Vec<Diagnostic>) {
+    let members = decl.syntax().children();
+    let mut events: HashMap<String, &SyntaxNode> = HashMap::new();
+    for member in &members {
+        if member.kind() == SyntaxKind::EventDecl
+            && let Some(name) = support_name(member)
+        {
+            events.insert(name, member);
+        }
+    }
+    let mut pending: Vec<&SyntaxNode> = Vec::new();
+    for member in &members {
+        if member.kind() == SyntaxKind::Attribute {
+            if is_bindable(member) {
+                pending.push(member);
+            }
+            continue;
+        }
+        for attr in pending.drain(..) {
+            if let Err(message) = bindable_pairing(attr, member, &events, env) {
+                diagnostics.push(Diagnostic::error("E3701", attr.text_range(), message));
+            }
+        }
+    }
+    for attr in pending {
+        diagnostics.push(Diagnostic::error(
+            "E3701",
+            attr.text_range(),
+            "`@bindable` marks an `input`",
+        ));
+    }
+}
+
+/// Why `attr` (a `@bindable`) does not pair `member` with an event, if it does not.
+fn bindable_pairing(
+    attr: &SyntaxNode,
+    member: &SyntaxNode,
+    events: &HashMap<String, &SyntaxNode>,
+    env: &ModuleEnv,
+) -> Result<(), String> {
+    if member.kind() != SyntaxKind::InputDecl {
+        return Err("`@bindable` marks an `input`".to_string());
+    }
+    let input = support_name(member).unwrap_or_default();
+    let args: Vec<SyntaxNode> = attr
+        .children()
+        .into_iter()
+        .find(|c| c.kind() == SyntaxKind::ArgumentList)
+        .map(|list| {
+            list.children()
+                .into_iter()
+                .filter(|c| c.kind() == SyntaxKind::Argument)
+                .collect()
+        })
+        .unwrap_or_default();
+    let usage = || {
+        format!(
+            "`@bindable` names the event that writes `{input}` back: `@bindable(changed)` with `event changed(value: T)`"
+        )
+    };
+    let [arg] = args.as_slice() else {
+        return Err(usage());
+    };
+    let labeled = arg
+        .children_with_tokens()
+        .into_iter()
+        .any(|e| e.as_token().is_some_and(|t| t.kind() == SyntaxKind::Colon));
+    let event = match arg.children().as_slice() {
+        [path] if !labeled && path.kind() == SyntaxKind::PathExpr => {
+            crate::ast::PathExpr::cast(path.clone())
+                .map(|p| p.segments().collect::<Vec<_>>())
+                .and_then(|segments| match segments.as_slice() {
+                    [name] => Some(name.text().trim_start_matches("r#").to_string()),
+                    _ => None,
+                })
+        }
+        _ => None,
+    };
+    let Some(event) = event else {
+        return Err(usage());
+    };
+    let Some(decl) = events.get(&event) else {
+        return Err(format!(
+            "`@bindable` names `{event}`, but this component declares no event `{event}`"
+        ));
+    };
+    let Some(param) = decl
+        .children()
+        .into_iter()
+        .find(|c| c.kind() == SyntaxKind::EventParam)
+    else {
+        return Err(format!(
+            "event `{event}` carries no value to write `{input}` back with; give it a first parameter"
+        ));
+    };
+    let want = env.annotation_of(member);
+    let have = env.annotation_of(&param);
+    if !want.has_unknown() && !have.has_unknown() && want != have {
+        let cx = InferCx::new(&[], env);
+        return Err(format!(
+            "event `{event}` writes `{input}` back with its first parameter, of type `{}`, but `{input}` is `{}`",
+            cx.describe(&have),
+            cx.describe(&want),
+        ));
+    }
+    Ok(())
+}
+
+/// The name a declaration node declares, without a raw-identifier prefix.
+fn support_name(node: &SyntaxNode) -> Option<String> {
+    node.children_with_tokens()
+        .into_iter()
+        .filter_map(|e| e.as_token().cloned())
+        .find(|t| matches!(t.kind(), SyntaxKind::Ident | SyntaxKind::RawIdent))
+        .map(|t| t.text().trim_start_matches("r#").to_string())
+}
+
 fn is_bindable(attr: &SyntaxNode) -> bool {
     attr.children()
         .into_iter()
@@ -1682,6 +1826,106 @@ mod tests {
         assert_eq!(found, ["E3104"]);
         let (_, reason) = &pkg.diagnostics[0].related[0];
         assert!(reason.contains("translate"), "{reason}");
+    }
+
+    #[test]
+    fn assignments_write_only_state_and_mutable_locals() {
+        assert_clean(
+            "record P { x: I64 }\n\
+             component C {\n\
+             \x20 state n = 0\n\
+             \x20 state p = P { x: 1 }\n\
+             \x20 state xs: List<I64> = []\n\
+             \x20 action a(mut k: I64) {\n\
+             \x20   let mut m = 1;\n\
+             \x20   m += 1;\n\
+             \x20   k = m;\n\
+             \x20   n = k;\n\
+             \x20   p.x = 2;\n\
+             \x20   xs[0] = 3;\n\
+             \x20   let f = |mut q: I64| { q = 1; q };\n\
+             \x20   let (mut r, s) = (1, 2);\n\
+             \x20   r = s + f(0);\n\
+             \x20 }\n\
+             \x20 view { }\n\
+             }",
+        );
+        let body = |decls: &str, stmt: &str| {
+            codes(&format!(
+                "const K: I64 = 1;\ncomponent C {{\n  input i: I64\n  state n = 0\n  computed c: I64 = n + 1\n{decls}  action a(k: I64) {{ {stmt} }}\n  view {{ }}\n}}"
+            ))
+        };
+        assert_eq!(body("", "i = 1;"), ["E2110"]);
+        assert_eq!(body("", "c = 1;"), ["E2110"]);
+        assert_eq!(body("", "K = 1;"), ["E2110"]);
+        assert_eq!(body("", "k = 1;"), ["E2110"]);
+        assert_eq!(body("", "let m = 1; m += 1;"), ["E2110"]);
+        assert_eq!(body("", "let (m, j) = (1, 2); m = j;"), ["E2110"]);
+        assert_eq!(body("", "(n) = 1;"), ["E2110"]);
+        assert_eq!(body("", "n = 1;"), Vec::<&str>::new());
+    }
+
+    #[test]
+    fn bind_sources_are_state_lenses_of_the_property_type() {
+        let stepper = "record P { x: I64, label: String }\n\
+                       component Stepper {\n\
+                       \x20 @bindable(changed)\n\
+                       \x20 input value: I64\n\
+                       \x20 event changed(value: I64)\n\
+                       \x20 view { }\n\
+                       }\n";
+        let app = |members: &str, bind: &str| {
+            codes(&format!(
+                "{stepper}component App {{\n  input i: I64\n  state n = 0\n  state p = P {{ x: 1, label: \"a\" }}\n  state xs: List<I64> = []\n  computed c: I64 = n + 1\n{members}  view {{ {bind} }}\n}}"
+            ))
+        };
+        let none = Vec::<&str>::new();
+        assert_eq!(app("", "Stepper { bind value <=> n; }"), none);
+        assert_eq!(app("", "Stepper { bind value <=> p.x; }"), none);
+        assert_eq!(app("", "Stepper { bind value <=> xs[0]; }"), none);
+        assert_eq!(app("", "Stepper { bind value <=> i; }"), ["E3107"]);
+        assert_eq!(app("", "Stepper { bind value <=> c; }"), ["E3107"]);
+        assert_eq!(
+            app("", "for k in xs { Stepper { bind value <=> k; } }"),
+            ["E3107"]
+        );
+        assert_eq!(app("", "Stepper { bind value <=> p.label; }"), ["E2103"]);
+        assert_eq!(
+            app("", "Stepper { bind value <=> p.label using Parse; }"),
+            none
+        );
+        assert_eq!(app("", "Stepper { bind value <=> xs[\"a\"]; }"), ["E2103"]);
+    }
+
+    #[test]
+    fn bindable_names_an_event_writing_the_input_back() {
+        let stepper = |attr: &str, member: &str, event: &str| {
+            codes(&format!(
+                "component Stepper {{\n  {attr}\n  {member}\n  {event}\n  view {{ }}\n}}"
+            ))
+        };
+        let none = Vec::<&str>::new();
+        let input = "input value: I64";
+        let changed = "event changed(value: I64)";
+        assert_eq!(stepper("@bindable(changed)", input, changed), none);
+        assert_eq!(stepper("@bindable(moved)", input, changed), ["E3701"]);
+        assert_eq!(stepper("@bindable", input, changed), ["E3701"]);
+        assert_eq!(
+            stepper("@bindable(changed, changed)", input, changed),
+            ["E3701"]
+        );
+        assert_eq!(
+            stepper("@bindable(changed)", input, "event changed(value: String)"),
+            ["E3701"]
+        );
+        assert_eq!(
+            stepper("@bindable(changed)", input, "event changed()"),
+            ["E3701"]
+        );
+        assert_eq!(
+            stepper("@bindable(changed)", "state value: I64 = 0", changed),
+            ["E3701"]
+        );
     }
 
     #[test]

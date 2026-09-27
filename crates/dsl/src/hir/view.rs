@@ -5,7 +5,9 @@
 //!
 //! Property checks: an unknown property is `E3101`, a property bound twice in one
 //! body (by `:` or `bind`) is `E3102`, `bind` on a property that is not two-way is
-//! `E3103`, and a value carrying a `Percent` component (see [`super::percent`]) on a
+//! `E3103`, a `bind` source that is no State Lens is `E3107` and one whose type is not
+//! the property's (without a `using` converter) is `E2103`, and a value carrying a
+//! `Percent` component (see [`super::percent`]) on a
 //! length property without a percent basis is `E3104`. A component input has the basis
 //! of the properties its component binds it to: one whose value reaches a property
 //! without a basis has none, and one whose value reaches another component's input has
@@ -422,12 +424,31 @@ impl<'a> ViewWalk<'a> {
         scope: Scope<'_, 'a>,
         bound: &mut HashMap<String, TextRange>,
     ) {
+        let source = binding.source().map(|source| self.cx.infer_lens(&source));
         let Some(path) = binding.target() else {
             return;
         };
-        if let Some(declared) = self.declared(&path, scope, bound)
-            && !declared.two_way
+        let Some(declared) = self.declared(&path, scope, bound) else {
+            return;
+        };
+        if let (Some(want), Some(have), None) = (&declared.ty, &source, binding.using_ty())
+            && !want.has_unknown()
+            && !have.has_unknown()
+            && want != have
         {
+            let message = format!(
+                "`bind` needs both sides to be the same type: `{}` is `{}`, the source is `{}`; convert with `using`",
+                path_text(&path),
+                self.cx.describe(want),
+                self.cx.describe(have),
+            );
+            self.diagnostics.push(Diagnostic::error(
+                "E2103",
+                binding.syntax().text_range(),
+                message,
+            ));
+        }
+        if !declared.two_way {
             let on = scope
                 .owner
                 .map_or(String::new(), |o| format!(" on `{}`", o.name));

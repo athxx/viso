@@ -28,6 +28,7 @@
 mod body;
 mod carry;
 mod format;
+mod lens;
 mod pattern;
 mod record;
 
@@ -38,7 +39,7 @@ use std::collections::{HashMap, HashSet};
 use crate::ast::{AstNode, CallExpr, CastExpr, Expr, PathExpr, TypePath};
 use crate::diag::Diagnostic;
 use crate::hir::ty::{Ty, TypeError, WidenError};
-use crate::resolve::{LocalSlot, Resolution, ResolvedRef, SymbolId};
+use crate::resolve::{LocalSlot, Resolution, ResolvedRef, SymbolId, SymbolKind};
 use crate::syntax::{SyntaxKind, SyntaxNode, SyntaxToken, TextRange};
 
 /// One field of a record type or of a record-payload enum variant.
@@ -112,6 +113,12 @@ pub trait TypeEnv {
         let _ = ty;
         None
     }
+
+    /// What kind of declaration the symbol `id` is, when the environment knows it.
+    fn symbol_kind(&self, id: SymbolId) -> Option<SymbolKind> {
+        let _ = id;
+        None
+    }
 }
 
 /// One enclosing loop during a body walk.
@@ -144,6 +151,8 @@ pub struct InferCx<'a> {
     percent_typed: HashSet<TextRange>,
     /// What the walk has defined names as, for the module's percent flow.
     percent_defs: Vec<(Resolution, crate::hir::percent::Carry)>,
+    /// The locals declared `mut`, which alone may be assigned.
+    mutable: HashSet<LocalSlot>,
 }
 
 impl<'a> InferCx<'a> {
@@ -162,6 +171,7 @@ impl<'a> InferCx<'a> {
             loops: Vec::new(),
             percent_typed: HashSet::new(),
             percent_defs: Vec::new(),
+            mutable: HashSet::new(),
         }
     }
 
@@ -1025,7 +1035,7 @@ impl<'a> InferCx<'a> {
     }
 
     /// A type as source spells it, for diagnostic messages.
-    fn describe(&self, ty: &Ty) -> String {
+    pub(crate) fn describe(&self, ty: &Ty) -> String {
         let list = |tys: &[Ty]| {
             tys.iter()
                 .map(|t| self.describe(t))

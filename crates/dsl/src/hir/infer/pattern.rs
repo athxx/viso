@@ -262,11 +262,17 @@ impl InferCx<'_> {
             SyntaxKind::IdentPattern => {
                 if let Some(name) = name_token(pattern) {
                     self.bind_local(name.text_range(), ty.clone());
+                    if super::lens::has_mut(pattern) {
+                        self.mark_mutable(name.text_range());
+                    }
                 }
             }
             SyntaxKind::BindingPattern => {
                 if let Some(name) = name_token(pattern) {
                     self.bind_local(name.text_range(), ty.clone());
+                    if super::lens::has_mut(pattern) {
+                        self.mark_mutable(name.text_range());
+                    }
                 }
                 for child in pattern.children() {
                     self.bind_pattern(&child, ty);

@@ -105,6 +105,10 @@ the three source entries share one frontend.
 - [x] `E3702`: `grid.*`/`stack.*`/`absolute.*` checked against the static direct parent
       (`Fragment`/`if`/`for`/`match` are transparent; view root, slot fill and component
       children are unknown parents); members typed from the container's child table.
+- [x] Writability: `E2110` assignment to anything but a `state` or `mut` local (through
+      field/index); `bind` source must be a State Lens `E3107`, of the property's exact
+      type without `using` (`E2103`); `@bindable` pairs an input with an event of its
+      type `E3701` (`hir/infer/lens.rs`, `hir/lower.rs`).
 
 ### D0.6 — Effects, capabilities, reads
 
@@ -181,7 +185,8 @@ Goal: every Core view construct reaches a live tree through all three lowering t
 - [ ] Resolve user components instead of defaulting unknown types to `NodeKind::Leaf`.
 - [ ] Widget schema registry: properties, events, slots, percent basis.
 - [ ] Default slot `E3003`/`E3004`; slot cardinality `E3502`; unknown slot `E3501`.
-- [ ] Two-way binding (§123): `E3103`, `@bindable` `E3701`.
+- [ ] Two-way binding (§123) lowering: write-back through the `@bindable` event
+      (compile-time `E3103`/`E3107`/`E3701` are checked in D0.5).
 
 ### D2.4 — Reactive graph
 
@@ -333,7 +338,8 @@ timers (§104–§111).
 
 ## D8 — Advanced surface (P3)
 
-- [ ] User traits, impls, general generics, const generics, `dyn` (`E2201`, `E2202`).
+- [ ] User traits, impls, general generics, const generics, `dyn` (`E2201`, `E2202`);
+      `bind … using C` checks `C: TwoWayConverter<Source, Target>`.
 - [ ] `template` / `part` (`E3601`).
 - [ ] Handwritten `native` declarations.
 - [ ] Multi-system game profile and physics integration contract.

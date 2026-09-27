@@ -1561,7 +1561,7 @@ input_decl           = "input", identifier, ":", type,
 规则：
 
 - Input 是父组件传入的只读值；
-- Component 内禁止给 Input 赋值；
+- Component 内禁止给 Input 赋值（`E2110`）；
 - Input 默认值必须是纯、确定的 Default Expression；
 - Input 默认值禁止读取另一个 Input、State、Computed、Native Runtime 或当前时间；
 - 没有默认值的 Input 是必填属性；
@@ -1973,9 +1973,9 @@ Slider {
 规则：
 
 - 左侧 Property 必须在 Schema 中声明 `two_way`；
-- 右侧必须是可赋值的 State Lens；
-- 右侧不能是 Input、Computed、Const、Resource Payload 临时值或普通函数返回值；
-- 无 Converter 时两边类型必须相同；
+- 右侧必须是可赋值的 State Lens：以当前 Component 的 `state` 为根，经 `.label`/`[index]` 到达其字段或元素；
+- 右侧不能是 Input、Computed、Const、局部绑定、Resource Payload 临时值或普通函数返回值，否则 `E3107`；
+- 无 Converter 时两边类型必须相同（`E2103`），不做 §U1.3 的值提升或数值加宽；
 - Converter 必须实现 `TwoWayConverter<Model, View>`；
 - 更新必须带 Origin Token，禁止形成回声循环；
 - 同一 Property 不能同时使用 `:` 单向绑定和 `bind`；
@@ -2461,6 +2461,7 @@ loop_statement       = "loop", block ;
 - Statement Attribute 必须在 Schema 中声明可作用于对应 Statement Kind；例如 Shader 循环可使用 `@max_iterations(64)`，但同一 Attribute 作用于普通 `let` 时必须报错；
 - Statement Attribute 只产生 HIR 元数据，禁止改变 Tokenization、优先级或基础控制流语义；
 - Assignment 不是 Expression，禁止 `a = b = c;`；
+- 赋值目标的根必须是 `state` 或 `let mut`/`mut` 绑定的局部名，经 `.label`/`[index]` 到达其字段或元素；以 Input、Computed、Const、Callable、不可变局部绑定（含参数与 Pattern 绑定）为根，或根不是名字（调用结果、`?.`、`?` 等），报 `E2110`；
 - `return` 只允许在 Callable/Closure 中；
 - `break value;` 只允许从 `loop` 返回值；
 - `continue` 只允许在 Behavior Loop 中；
@@ -2980,7 +2981,7 @@ match state {
 ## 71. `let`、Shadowing 与作用域
 
 - `let` 默认不可变；
-- 修改局部变量必须声明 `let mut`；
+- 修改局部变量必须声明 `let mut`（或 Pattern/参数中的 `mut`），否则 `E2110`；
 - 同一 Lexical Block 可以 Shadow 外层名称；
 - 同一 Block 中不能重复声明尚在同一作用域内的名称；
 - State、Input、Computed 名称不允许被 Component 顶层成员 Shadow；
@@ -4154,7 +4155,7 @@ Stepper { bind value <=> settings.retry_count; }
 ```
 
 - `@bindable(e)` 使该 Input 在 Schema 中成为 `two_way`，可作 §51 `bind` 左侧；
-- `e` 必须在同一 Component 中声明，且首个参数类型与 Input 类型相同，否则 `E3701`；
+- `@bindable` 只能标注 `input`，参数恰好是一个 Event 名；`e` 必须在同一 Component 中声明，且首个参数类型与 Input 类型相同；违反任一条是 `E3701`；
 - Component 内部不得给 Input 赋值（§41），只能 `emit e(新值)` 表达"请求变更"；
 - `bind` 降级为 `value: lens;` 加 `on e(ev) { lens = ev.value; }`，并带 Origin Token 防回写（§123）；调用方只写 `value: x;` 时是受控单向属性，`changed` 仍会触发；
 - 标准 Widget 约定：主值的配对事件名为 `changed`，其他双向属性为 `<property>_changed`（如 `selected_changed`）。
@@ -7009,6 +7010,8 @@ parse(format(parse(valid_x))) AST-equivalent
 - 长度族跨单位加减得到 `MixedLength`，`MixedLength` 赋给具体单位报 `E2106`，比较/相乘报 `E2107`；
 - 无 `percent_basis` 的 Property 接受 Percent 报 `E3104`；
 - 经 `state`/`computed`/`const`/局部绑定/字段访问/Record 默认值到达的 Percent 分量报 `E3104`；经函数调用、比较结果到达的不报；
+- 给 Input/Computed/Const/不可变局部绑定赋值报 `E2110`；
+- `bind` 右侧不是 State Lens 报 `E3107`，无 Converter 时两边类型不同报 `E2103`；`@bindable` 的 Event 不存在或首参数类型不符报 `E3701`；
 - `font_size` 中的 `em`/`%` 以父节点字号为基准，其他 Property 以本节点字号为基准。
 
 ---
@@ -8171,6 +8174,7 @@ RecordPatternField
 | E2107  | 非法量纲运算（MixedLength 比较/乘除、Percent 加标量等） |
 | E2108  | `format` 模板与实参不匹配（§17）                        |
 | E2109  | 长度族值常量除以 0（§19.8）                             |
+| E2110  | 赋值目标不可写（§62.1）                                 |
 | E2201  | Trait Bound 未满足                                      |
 | E2202  | Trait Impl 重叠或歧义                                   |
 | E2301  | 非穷尽 Match                                            |
@@ -8195,6 +8199,7 @@ RecordPatternField
 | E3104  | Property 未声明 Percent Basis，不接受 Percent           |
 | E3105  | Percent Basis 不确定（Debug Runtime 警告）              |
 | E3106  | 长度解析为非有限值（Debug Runtime 警告，§19.8）         |
+| E3107  | `bind` 右侧不是 State Lens（§51）                       |
 | E3201  | 已删除的事件箭头语法                                    |
 | E3202  | 未知 Event 或错误 Payload                               |
 | E3301  | Conditional Preserve 必须是静态字符串                   |

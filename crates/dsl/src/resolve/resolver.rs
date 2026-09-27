@@ -816,7 +816,25 @@ impl ModulePass<'_> {
                     self.scopes.pop();
                 }
             }
-            ViewItem::TwoWayBinding(_) | ViewItem::Fill(_) => {}
+            ViewItem::TwoWayBinding(b) => {
+                // The source head is a value of the enclosing scope, left unresolved
+                // when it is a host name; each `[index]` is an expression.
+                if let Some(source) = b.source() {
+                    if let Some(head) = source.segments().next() {
+                        self.resolve_value_token(&head);
+                    }
+                    for index in source.syntax().children() {
+                        if let Some(index) = crate::ast::Expr::cast(index) {
+                            self.resolve_expr(&index);
+                        }
+                    }
+                }
+                // A converter no declaration names is a native one.
+                if let Some(ty) = b.using_ty() {
+                    self.resolve_type_head(&ty, true);
+                }
+            }
+            ViewItem::Fill(_) => {}
         }
     }
 
