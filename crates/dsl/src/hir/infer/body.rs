@@ -129,7 +129,7 @@ impl InferCx<'_> {
             SyntaxKind::ContinueStmt => {
                 if self.loops.is_empty() {
                     self.diagnostics.push(Diagnostic::error(
-                        "E2103",
+                        "E2803",
                         stmt.text_range(),
                         "`continue` outside a loop",
                     ));
@@ -152,6 +152,7 @@ impl InferCx<'_> {
                 let elem = iterable.element().cloned().unwrap_or(Ty::Unknown);
                 if let Some(pattern) = child_of(stmt, SyntaxKind::Pattern) {
                     self.bind_pattern(&pattern, &elem);
+                    self.check_irrefutable(&pattern, "a `for` pattern");
                 }
                 let _ = self.loop_body(stmt, false);
                 false
@@ -180,7 +181,7 @@ impl InferCx<'_> {
 
     /// `let pattern (: T)? = init;`: the initializer types against the annotation,
     /// and the pattern binds the annotated (else inferred) type. A `let` pattern
-    /// must match every value (`E2301` otherwise).
+    /// must be irrefutable (`E2303` otherwise).
     fn infer_let(&mut self, stmt: &SyntaxNode) -> bool {
         let annotation = stmt
             .children()
@@ -198,7 +199,7 @@ impl InferCx<'_> {
         };
         if let Some(pattern) = child_of(stmt, SyntaxKind::Pattern) {
             self.bind_pattern(&pattern, &ty);
-            self.check_irrefutable(&pattern, &ty);
+            self.check_irrefutable(&pattern, "a `let` pattern");
         }
         init == Ty::Never
     }
@@ -237,7 +238,7 @@ impl InferCx<'_> {
         let value = first_child_expr(stmt);
         let Some(frame) = self.returns.last().cloned() else {
             self.diagnostics.push(Diagnostic::error(
-                "E2103",
+                "E2803",
                 stmt.text_range(),
                 "`return` outside a function or closure",
             ));
@@ -264,7 +265,7 @@ impl InferCx<'_> {
         let value = first_child_expr(stmt);
         let Some(frame) = self.loops.last() else {
             self.diagnostics.push(Diagnostic::error(
-                "E2103",
+                "E2803",
                 stmt.text_range(),
                 "`break` outside a loop",
             ));
@@ -278,7 +279,7 @@ impl InferCx<'_> {
         let ty = match &value {
             Some(value) if !carries_value => {
                 self.diagnostics.push(Diagnostic::error(
-                    "E2103",
+                    "E2803",
                     stmt.text_range(),
                     "`break` with a value is only allowed in `loop`",
                 ));
@@ -393,6 +394,7 @@ impl InferCx<'_> {
             };
             if let Some(pattern) = child_of(param, SyntaxKind::Pattern) {
                 self.bind_pattern(&pattern, &ty);
+                self.check_irrefutable(&pattern, "a closure parameter");
             }
             param_tys.push(ty);
         }

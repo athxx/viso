@@ -1175,8 +1175,12 @@ mod tests {
              }",
         );
         assert_eq!(codes("fn f() { let c = |a| a; }"), ["E2401"]);
-        assert_eq!(codes("fn f() { break; }"), ["E2103"]);
-        assert_eq!(codes("fn f() { while true { break 1; } }"), ["E2103"]);
+        assert_eq!(codes("fn f() { break; }"), ["E2803"]);
+        assert_eq!(codes("fn f() { while true { break 1; } }"), ["E2803"]);
+        assert_eq!(
+            codes("fn f() { loop { let c = || { continue; }; } }"),
+            ["E2803"]
+        );
     }
 
     #[test]
@@ -1221,6 +1225,154 @@ mod tests {
                 "{decls}fn h(s: Shape) -> I64 {{ match s {{ _ => 0, Shape::Dot => 1 }} }}"
             )),
             ["E2302"]
+        );
+    }
+
+    /// The single diagnostic `src` produces, as `(code, message)`.
+    fn only(src: &str) -> (&'static str, String) {
+        let pkg = lower_src(src);
+        match pkg.diagnostics.as_slice() {
+            [d] => (d.code, d.message.clone()),
+            other => panic!("expected one diagnostic, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn integer_char_and_string_matches() {
+        let (code, message) = only("fn f(n: U8) -> I64 { match n { 0 => 0, 1..=9 => 1 } }");
+        assert_eq!(code, "E2301");
+        assert!(message.contains("`10..=255`"), "{message}");
+        assert_clean("fn f(n: U8) -> I64 { match n { 0 => 0, 1..=9 => 1, 10..=255 => 2 } }");
+        assert_clean("fn f(n: I8) -> I64 { match n { -128..0 => 0, 0 => 1, 1..=127 => 2 } }");
+        assert_eq!(
+            codes("fn f(n: U8) -> I64 { match n { 0..=200 => 0, 5 => 1, _ => 2 } }"),
+            ["E2302"]
+        );
+        let (code, message) = only("fn f(n: I64) -> I64 { match n { 0 => 0, 2 => 1 } }");
+        assert_eq!(code, "E2301");
+        assert!(message.contains("`1`"), "{message}");
+        let (_, message) =
+            only("fn f(n: U8) -> I64 { match n { 0 => 0, 2 => 1, 4 => 2, 6 => 3, 8 => 4 } }");
+        assert!(message.ends_with("and 1 more not covered"), "{message}");
+        assert_clean(
+            "fn f(c: Char) -> I64 { match c { '\\0'..='\\u{D7FF}' => 0, '\\u{E000}'..='\\u{10FFFF}' => 1 } }",
+        );
+        assert_eq!(
+            codes("fn f(c: Char) -> I64 { match c { 'a' => 0 } }"),
+            ["E2301"]
+        );
+        assert_eq!(
+            codes("fn f(s: String) -> I64 { match s { \"a\" => 0, \"a\" => 1, _ => 2 } }"),
+            ["E2302"]
+        );
+        assert_eq!(
+            codes("fn f(s: String) -> I64 { match s { \"a\" => 0 } }"),
+            ["E2301"]
+        );
+        assert_clean(
+            "fn f(o: Option<U8>) -> I64 { match o { Some(0..=127) => 0, Some(128..=255) => 1, None => 2 } }",
+        );
+    }
+
+    #[test]
+    fn list_matches() {
+        assert_clean("fn f(l: List<I64>) -> I64 { match l { [] => 0, [x, ..] => x } }");
+        assert_clean(
+            "fn f(l: List<Bool>) -> I64 { match l { [] => 0, [true, ..] => 1, [.., false] => 2, [false, .., true] => 3 } }",
+        );
+        let (code, message) = only("fn f(l: List<I64>) -> I64 { match l { [] => 0, [_] => 1 } }");
+        assert_eq!(code, "E2301");
+        assert!(message.contains("`[_, _, ..]`"), "{message}");
+        assert_eq!(
+            codes("fn f(l: List<I64>) -> I64 { match l { [..] => 0, [_, _] => 1 } }"),
+            ["E2302"]
+        );
+        assert_eq!(
+            codes("fn f(l: List<I64>) -> I64 { match l { [.., _, ..] => 0, _ => 1 } }"),
+            ["E2103"]
+        );
+    }
+
+    #[test]
+    fn pattern_shapes_are_typed() {
+        assert_eq!(
+            codes("fn f(n: U8) -> I64 { match n { 256 => 0, _ => 1 } }"),
+            ["E2103"]
+        );
+        assert_eq!(
+            codes("fn f(x: F64) -> I64 { match x { 1 => 0, _ => 1 } }"),
+            ["E2103"]
+        );
+        assert_eq!(
+            codes("fn f(n: I64) -> I64 { match n { \"a\" => 0, _ => 1 } }"),
+            ["E2103"]
+        );
+        assert_eq!(
+            codes("fn f(n: I64) -> I64 { match n { Some(x) => x, _ => 1 } }"),
+            ["E2103"]
+        );
+        assert_eq!(
+            codes("fn f(n: I64) -> I64 { match n { 'a'..=9 => 0, _ => 1 } }"),
+            ["E2103"]
+        );
+        assert_eq!(
+            codes("fn f(n: I64) -> I64 { match n { 5..1 => 0, _ => 1 } }"),
+            ["E2103"]
+        );
+        assert_eq!(
+            codes("fn f(n: I64) -> I64 { match n { [x] => x, _ => 1 } }"),
+            ["E2103"]
+        );
+        assert_eq!(
+            codes("fn f(t: (I64, I64)) -> I64 { match t { (a, b, c) => a } }"),
+            ["E2103"]
+        );
+    }
+
+    #[test]
+    fn irrefutable_positions() {
+        let decls = "record P { x: I64; y: I64; }\nenum E { A(I64); B; }\n";
+        assert_clean(&format!(
+            "{decls}fn f(p: P, t: (I64, P)) -> I64 {{\n\
+             \x20 let P {{ x, .. }} = p;\n\
+             \x20 let (a, P {{ y: b, .. }}) = t;\n\
+             \x20 for (i, q) in [(1, p)] {{ }}\n\
+             \x20 let g = |(m, n): (I64, I64)| m + n;\n\
+             \x20 x + a + b\n\
+             }}"
+        ));
+        let (code, message) = only(&format!(
+            "{decls}fn f(o: Option<I64>) {{ let Option::Some(x) = o; }}"
+        ));
+        assert_eq!(code, "E2303");
+        assert!(message.contains("`let`"), "{message}");
+        assert_eq!(
+            codes(&format!("{decls}fn f(e: E) {{ let E::A(x) = e; }}")),
+            ["E2303"]
+        );
+        assert_eq!(codes("fn f(t: (I64, I64)) { let (0, y) = t; }"), ["E2303"]);
+        assert_eq!(
+            codes("fn f(l: List<I64>) { for [x] in [l] { } }"),
+            ["E2303"]
+        );
+        assert_eq!(codes("fn f() { let g = |1: I64| 0; }"), ["E2303"]);
+    }
+
+    #[test]
+    fn view_matches_are_checked() {
+        let decls = "enum Tab { Home; Settings; }\n";
+        assert_clean(&format!(
+            "{decls}component C {{\n  state t = Tab::Home\n  view {{ match t {{ Tab::Home => {{ Text {{ }} }}, Tab::Settings => {{ Text {{ }} }} }} }}\n}}"
+        ));
+        assert_eq!(
+            codes(&format!(
+                "{decls}component C {{\n  state t = Tab::Home\n  view {{ match t {{ Tab::Home => {{ Text {{ }} }} }} }}\n}}"
+            )),
+            ["E2301"]
+        );
+        assert_eq!(
+            codes("component C {\n  view { for Some(x) in [Some(1)] { Text { } } }\n}"),
+            ["E2303"]
         );
     }
 

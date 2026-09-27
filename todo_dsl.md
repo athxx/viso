@@ -84,7 +84,10 @@ the three source entries share one frontend.
 - [x] Type statements and blocks: `let`, assignment target and value, `return` against
       the signature, loop `break` values.
 - [x] Match exhaustiveness `E2301` and unreachable patterns `E2302` (`hir/infer/pattern.rs`).
-  - [ ] Integer-range and list-pattern exhaustiveness; `match` inside `view`.
+  - [x] Integer-range and list-pattern exhaustiveness; `match` inside `view`.
+  - [x] Pattern shapes typed against the scrutinee (`E2103`); refutable patterns in
+        `let`/`for`/closure parameters `E2303`; misplaced `return`/`break`/`continue`
+        `E2803`.
 - [x] `E2108`: `format` template vs arguments (`hir/infer/format.rs`).
 - [x] Property values typed against the widget schema: `E3101`–`E3103` (`hir/view.rs`,
       baseline schema in `hir/widget.rs`).

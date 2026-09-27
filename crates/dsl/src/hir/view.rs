@@ -1,6 +1,7 @@
 //! View body typing: every node's property bindings against its schema (the
 //! built-in widget baseline or a user component's inputs), handler bodies, and the
-//! structural `if`/`for`/`match` regions.
+//! structural `if`/`for`/`match` regions (a view `match` is checked for
+//! exhaustiveness and unreachable arms like a behavior one).
 //!
 //! Property checks: an unknown property is `E3101`, a property bound twice in one
 //! body (by `:` or `bind`) is `E3102`, `bind` on a property that is not two-way is
@@ -10,7 +11,7 @@
 
 use std::collections::HashMap;
 
-use super::infer::{InferCx, TypeEnv};
+use super::infer::{InferCx, MatchCheck, TypeEnv};
 use super::ty::Ty;
 use super::widget::{self, PropLookup, WidgetSchema};
 use crate::ast::{
@@ -302,6 +303,8 @@ impl<'a> ViewWalk<'a> {
         let element = iterable.element().cloned().unwrap_or(Ty::Unknown);
         if let Some(pattern) = view_for.pattern() {
             self.cx.bind_pattern(pattern.syntax(), &element);
+            self.cx
+                .check_irrefutable(pattern.syntax(), "a `for` pattern");
         }
         if let Some(key) = view_for.key() {
             let _ = self.cx.infer_expr(&key, None);
@@ -312,21 +315,33 @@ impl<'a> ViewWalk<'a> {
     }
 
     fn view_match(&mut self, view_match: &ViewMatch, owner: Option<&Owner<'a>>) {
-        let scrutinee = match view_match.scrutinee() {
-            Some(scrutinee) => self.cx.infer_expr(&scrutinee, None),
+        let scrutinee = view_match.scrutinee();
+        let ty = match &scrutinee {
+            Some(scrutinee) => self.cx.infer_expr(scrutinee, None),
             None => Ty::Unknown,
         };
+        let mut check = MatchCheck::new();
         for arm in view_match.arms() {
-            if let Some(pattern) = arm.pattern() {
-                self.cx.bind_pattern(pattern.syntax(), &scrutinee);
+            let pattern = arm.pattern();
+            if let Some(pattern) = &pattern {
+                self.cx.bind_arm(&mut check, pattern.syntax(), &ty);
             }
-            if let Some(guard) = arm.guard() {
-                let _ = self.cx.infer_expr(&guard, Some(&Ty::Bool));
+            let guard = arm.guard();
+            if let Some(guard) = &guard {
+                let _ = self.cx.infer_expr(guard, Some(&Ty::Bool));
             }
             if let Some(body) = arm.body() {
                 self.items(body.items(), owner);
             }
+            if let Some(pattern) = &pattern {
+                self.cx
+                    .add_arm(&mut check, pattern.syntax(), &ty, guard.is_some());
+            }
         }
+        let at = scrutinee.map_or(view_match.syntax().text_range(), |s| {
+            s.syntax().text_range()
+        });
+        self.cx.finish_match(check, &ty, at);
     }
 }
 

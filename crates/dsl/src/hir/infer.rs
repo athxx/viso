@@ -30,6 +30,8 @@ mod format;
 mod pattern;
 mod record;
 
+pub(crate) use pattern::MatchCheck;
+
 use std::collections::HashMap;
 
 use crate::ast::{AstNode, CallExpr, CastExpr, Expr, PathExpr, TypePath};
@@ -1248,10 +1250,16 @@ fn split_unit_literal(text: &str) -> Option<(&str, Ty)> {
         .map(|(suffix, ty)| (&text[..text.len() - suffix.len()], ty.clone()))
 }
 
+/// Whether `value` is representable by `ty`; any value fits a type that is no
+/// integer scalar.
+fn int_fits(value: i128, ty: &Ty) -> bool {
+    int_bounds(ty).is_none_or(|(lo, hi)| value >= lo && value <= hi)
+}
+
 /// The inclusive integer range representable by an integer scalar type, as `i128` so both
 /// signed and unsigned widths fit.
-fn int_fits(value: i128, ty: &Ty) -> bool {
-    let (lo, hi): (i128, i128) = match ty {
+fn int_bounds(ty: &Ty) -> Option<(i128, i128)> {
+    let bounds = match ty {
         Ty::I8 => (i8::MIN as i128, i8::MAX as i128),
         Ty::I16 => (i16::MIN as i128, i16::MAX as i128),
         Ty::I32 => (i32::MIN as i128, i32::MAX as i128),
@@ -1260,9 +1268,9 @@ fn int_fits(value: i128, ty: &Ty) -> bool {
         Ty::U16 => (0, u16::MAX as i128),
         Ty::U32 => (0, u32::MAX as i128),
         Ty::U64 => (0, u64::MAX as i128),
-        _ => return true,
+        _ => return None,
     };
-    value >= lo && value <= hi
+    Some(bounds)
 }
 
 /// Parses an integer literal's decimal/hex/octal/binary digits into an `i128`, stripping a

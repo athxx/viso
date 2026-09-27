@@ -684,11 +684,13 @@ impl ModulePass<'_> {
         }
     }
 
-    /// Binds every direct `Pattern` child of `node` in the innermost scope.
+    /// Resolves the type heads of every direct `Pattern` child of `node` and binds
+    /// its names in the innermost scope.
     fn bind_patterns(&mut self, node: &SyntaxNode) {
         use crate::syntax::SyntaxKind;
         for child in node.children() {
             if child.kind() == SyntaxKind::Pattern {
+                self.resolve_pattern_types(&child);
                 self.bind_pattern(&child);
             }
         }
@@ -798,13 +800,20 @@ impl ModulePass<'_> {
                 if let Some(scrutinee) = m.scrutinee() {
                     self.resolve_expr(&scrutinee);
                 }
-                for block in m
-                    .syntax()
-                    .descendants()
-                    .into_iter()
-                    .filter_map(ViewBlock::cast)
-                {
-                    self.resolve_view_block(&block);
+                // Each arm's pattern binds for its guard and body.
+                for arm in m.arms() {
+                    self.scopes.push();
+                    if let Some(pattern) = arm.pattern() {
+                        self.resolve_pattern_types(pattern.syntax());
+                        self.bind_pattern(pattern.syntax());
+                    }
+                    if let Some(guard) = arm.guard() {
+                        self.resolve_expr(&guard);
+                    }
+                    if let Some(body) = arm.body() {
+                        self.resolve_view_block(&body);
+                    }
+                    self.scopes.pop();
                 }
             }
             ViewItem::TwoWayBinding(_) | ViewItem::Fill(_) => {}
@@ -869,6 +878,7 @@ impl ModulePass<'_> {
         self.scopes.push();
         // Bind the loop pattern's names (the pattern precedes `in`).
         if let Some(pat) = for_item.pattern() {
+            self.resolve_pattern_types(pat.syntax());
             for tok in pat.bindings() {
                 let name = self.interner.intern(&tok.text());
                 let slot = self.scopes.bind(name);

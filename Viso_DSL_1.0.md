@@ -2153,7 +2153,7 @@ match user.state {
 规则：
 
 - `=>` 只在 Match Arm 中合法；
-- Match 必须穷尽，除非存在 `_` Arm；
+- Match 的穷尽与可达性检查与 Behavior Match 相同（§68、§70.3）：非穷尽报 `E2301`，不可达 Arm 报 `E2302` 警告；
 - Guard 必须为纯 Bool Expression；
 - 每个 Arm 的 View 输出必须满足同一 Slot Cardinality；
 - Pattern Binding 的作用域仅限 Guard 和对应 View Block。
@@ -2454,13 +2454,14 @@ loop_statement       = "loop", block ;
 
 ### 62.1 Statement 约束
 
-- `let` Pattern 必须是 Irrefutable Pattern；
+- `let` Pattern、`for` Pattern（Behavior 与 View）和 Closure 参数 Pattern 必须是 Irrefutable Pattern（§70.1），否则报 `E2303`；
 - Statement Attribute 必须在 Schema 中声明可作用于对应 Statement Kind；例如 Shader 循环可使用 `@max_iterations(64)`，但同一 Attribute 作用于普通 `let` 时必须报错；
 - Statement Attribute 只产生 HIR 元数据，禁止改变 Tokenization、优先级或基础控制流语义；
 - Assignment 不是 Expression，禁止 `a = b = c;`；
 - `return` 只允许在 Callable/Closure 中；
 - `break value;` 只允许从 `loop` 返回值；
 - `continue` 只允许在 Behavior Loop 中；
+- 违反以上三条（`return`/`break`/`continue` 出现在不允许的位置，或 `break value;` 不在 `loop` 中）报 `E2803`；
 - Behavior `for` 没有 `key`；`key` 只属于 View `for`；
 - `transaction` 在 Action/Event Handler 中嵌套复用当前事务；在 Effect/Task Completion 中显式创建 UI 事务；
 - 普通 `fn` 中禁止 `transaction`；
@@ -2772,8 +2773,9 @@ match_arm            = pattern,
 
 规则：
 
-- Match 必须穷尽；
-- 不可达 Arm 必须警告，CI Strict Mode 可提升为错误；
+- Match 必须穷尽，否则报 `E2301`，诊断列出至多 4 个缺失 Pattern（其余以 “and N more” 汇总）；
+- 不可达 Arm 报 `E2302` 警告，CI Strict Mode 可提升为错误；
+- 带 Guard 的 Arm 不参与穷尽性计算；
 - Guard 必须为 Bool 且无副作用；
 - 所有 Arm 的结果类型必须统一；
 - Statement Match 的结果类型为 `Unit`；
@@ -2815,6 +2817,7 @@ start scheduler.after(250ms, move || {
 
 ### 69.1 Closure 推断
 
+- 参数 Pattern 必须是 Irrefutable Pattern（§70.1）；
 - 参数类型可以由期望的 Function Type 推断；
 - 没有期望类型且参数未标注时是错误；
 - 返回类型可由 Tail Expression 推断；
@@ -2920,12 +2923,14 @@ Refutable：
 ```text
 Literal
 Range
-Enum Variant
-List 长度 Pattern
+Enum Variant（类型有多于一个构造形式时）
+List Pattern
 Or Pattern
 ```
 
-`let` 和普通参数只能使用 Irrefutable Pattern。`match`、`if let`（未来版本）和 Event Payload Handler 可以使用 Refutable Pattern；Event Handler Pattern 不匹配时该 Handler 被跳过。
+分类是语法性的：Tuple/Record 只因其子 Pattern 而 Refutable；即使 Or Pattern 的分支合起来覆盖全部值（例如 `true | false`），它仍是 Refutable。
+
+`let`、`for`（Behavior 与 View）和 Closure 参数只能使用 Irrefutable Pattern，否则报 `E2303`。`match`、`if let`（未来版本）和 Event Payload Handler 可以使用 Refutable Pattern；Event Handler Pattern 不匹配时该 Handler 被跳过。
 
 消歧规则是强制性的：
 
@@ -2934,7 +2939,27 @@ Or Pattern
 - 带 Payload 的构造式必须紧跟 `(...)` 或 `{...}`，例如 `Option::Some(value)`、`Point { x, y }`；
 - Parser 不得根据首字母大小写猜测“绑定还是 Variant”。
 
-### 70.2 Or Pattern
+Pattern 类型规则（违反均报 `E2103`）：
+
+- 整数 Literal 只匹配整数类型，且值必须在该类型范围内；浮点类型不能用 Pattern 匹配，必须用 `==` 比较；
+- Char、String、Bool Literal 分别只匹配 `Char`、`String`、`Bool`；`None` 只匹配 `Option<T>`；
+- Range Pattern 的两端必须是同类 Literal（整数或 Char），且下界不大于上界；空 Range 是错误；
+- List Pattern 只匹配 `List<T>`，最多包含一个 `..`；
+- Tuple Pattern 的元素数必须等于 Tuple 类型的元素数；`()` 匹配 `Unit`；
+- 构造式 Pattern 的类型必须与被匹配类型兼容。
+
+### 70.3 穷尽性
+
+穷尽性检查按构造形式拆分值域：
+
+- `Bool` 由 `true`、`false` 构成；`Option`/`Result` 与 Enum 由各自 Variant 构成；
+- 整数类型按其完整取值范围、`Char` 按 Unicode Scalar Value 范围（`'\0'..='\u{D7FF}'` 与 `'\u{E000}'..='\u{10FFFF}'`）拆分为区间；Literal 与 Range Pattern 共同覆盖这些区间，相邻缺失区间在诊断中合并显示；
+- `List<T>` 按长度拆分：`[a, b]` 只覆盖长度 2，`[a, .., b]` 覆盖长度 ≥ 2；
+- `String` 的取值不可枚举，必须有 Wildcard 或 Binding Arm。
+
+Pattern 存在类型错误时不再报告该 Match 的 `E2301`，避免级联诊断。
+
+### 70.4 Or Pattern
 
 Or Pattern 的每个分支必须绑定相同名称集合和兼容类型：
 
@@ -8146,6 +8171,7 @@ RecordPatternField
 | E2202  | Trait Impl 重叠或歧义                                   |
 | E2301  | 非穷尽 Match                                            |
 | E2302  | 不可达 Pattern                                          |
+| E2303  | `let`/`for`/Closure 参数使用 Refutable Pattern（§70.1） |
 | E2401  | Closure 参数无法推断                                    |
 | E2501  | Effect Kind 调用违规                                    |
 | E2502  | View/Computed 中存在副作用                              |
@@ -8154,6 +8180,7 @@ RecordPatternField
 | E2702  | 重复 Runtime Key                                        |
 | E2801  | Control Head 中的 Record Expression 必须加括号          |
 | E2802  | 非结合操作符链式使用（§63.1）                           |
+| E2803  | `return`/`break`/`continue` 位置非法（§62.1）           |
 | E3001  | 已删除的 `child` 关键字                                 |
 | E3002  | View Cardinality 不满足                                 |
 | E3003  | Component 没有 Default Slot                             |
