@@ -603,16 +603,10 @@ opt_level = 2
 ";
         let dev = resolved(manifest, &Overrides::default(), &Env::empty());
         assert_eq!(dev.opt_level.value, OptLevel::One);
-        assert_eq!(
-            dev.opt_level.origin,
-            Origin::ManifestProfile {
-                profile: Profile::Dev,
-                span: Span {
-                    line: 5,
-                    column: 13
-                },
-            }
-        );
+        let Origin::ManifestProfile { profile, span } = dev.opt_level.origin else {
+            panic!("expected a profile origin, got {:?}", dev.opt_level.origin);
+        };
+        assert_eq!((profile, span.line, span.column), (Profile::Dev, 5, 13));
 
         let release = resolved(
             manifest,

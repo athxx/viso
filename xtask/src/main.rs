@@ -224,6 +224,15 @@ fn allowed_edges() -> BTreeMap<&'static str, Allowed> {
                 deps: &[],
             },
         ),
+        // The `viso` command: argument parsing, output and exit codes over the
+        // project model and the compiler it orchestrates (CLI sections 39-41).
+        (
+            "viso-cli",
+            Allowed {
+                dir: "tools/cli",
+                deps: &["viso-project", "viso-dsl"],
+            },
+        ),
     ])
 }
 

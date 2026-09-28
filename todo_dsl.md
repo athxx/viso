@@ -68,7 +68,9 @@ the three source entries share one frontend.
   - [x] Filter by expected type once member and variant lookup raise `E2001` (D0.5).
 - [x] Filesystem package loader: source root, module path from file path, one module
       graph, per-file diagnostics (`package.rs`).
-  - [ ] CLI glue: `tools/project` manifest → `load_package`, with the CLI command.
+  - [x] CLI glue: `viso check` (`tools/cli`) locates the project, maps its manifest
+        to `load_package` and prints each diagnostic under its source line, with
+        `Viso_CLI.md` §7 exit codes; `Viso.toml` spans carry byte ranges.
 - [x] Per-owner member tables: a component's or system's members are visible only in
       it (two components may each declare `count`) and shadow module declarations; a
       handler's event resolves against the component its node instantiates, an `emit`

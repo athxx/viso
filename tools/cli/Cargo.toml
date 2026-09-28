@@ -1,0 +1,29 @@
+[package]
+name = "viso-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+
+# The `viso` command (Viso_CLI.md section 39). Command handlers only orchestrate:
+# the project model comes from `viso-project`, the compiler from `viso-dsl`, and
+# this crate owns argument parsing, output and exit codes (section 40).
+[dependencies]
+viso-dsl = { workspace = true }
+viso-project = { workspace = true }
+# A mature parser rather than a hand-rolled one (section 42): subcommands, global
+# options accepted before or after the subcommand, generated help and stable usage
+# errors. Color and terminal detection stay off; human output is plain text.
+clap = { version = "4.6", default-features = false, features = [
+    "std",
+    "help",
+    "usage",
+    "error-context",
+    "suggestions",
+    "derive",
+] }
+
+[[bin]]
+name = "viso"
+path = "src/main.rs"

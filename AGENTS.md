@@ -236,7 +236,7 @@ crates/
     lsp/
     services/
 
-tools/           project (CLI/project model), future studio/migrate
+tools/           project (project model), cli (`viso`), future studio/migrate
 integrations/
 extras/
 examples/

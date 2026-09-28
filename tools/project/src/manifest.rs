@@ -254,7 +254,7 @@ impl Manifest {
         let doc: Document<&str> = match Document::parse(text) {
             Ok(doc) => doc,
             Err(err) => {
-                let span = err.span().map(|range| Span::from_offset(text, range.start));
+                let span = err.span().map(|range| Span::from_range(text, range));
                 let mut diag = ConfigDiagnostic::error(
                     ConfigCode::ManifestSyntax,
                     err.message().trim().to_string(),
@@ -710,9 +710,7 @@ impl<'a> Reader<'a> {
         };
         let mut out = Vec::with_capacity(array.len());
         for value in array.iter() {
-            let span = self
-                .span_of(value.span())
-                .unwrap_or(Span { line: 1, column: 1 });
+            let span = self.span_of(value.span()).unwrap_or(Span::FILE_START);
             match value.as_str() {
                 Some(s) => out.push(Spanned::new(s.to_string(), span)),
                 None => self.diags.push(
@@ -803,7 +801,7 @@ impl<'a> Reader<'a> {
     /// range, and a key-level span is still the right line.
     fn value_span(&self, t: &dyn TableLike, key: &str, item: &Item) -> Span {
         self.span_of(item.span().or_else(|| self.key_range(t, key)))
-            .unwrap_or(Span { line: 1, column: 1 })
+            .unwrap_or(Span::FILE_START)
     }
 
     fn key_range(&self, t: &dyn TableLike, key: &str) -> Option<std::ops::Range<usize>> {
@@ -811,7 +809,7 @@ impl<'a> Reader<'a> {
     }
 
     fn span_of(&self, range: Option<std::ops::Range<usize>>) -> Option<Span> {
-        range.map(|r| Span::from_offset(self.text, r.start))
+        range.map(|r| Span::from_range(self.text, r))
     }
 }
 

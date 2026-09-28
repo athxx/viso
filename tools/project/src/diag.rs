@@ -17,28 +17,49 @@
 use std::fmt;
 use std::path::{Path, PathBuf};
 
-/// A 1-based line/column position in a manifest, derived from a byte range.
+/// A place in a manifest: the byte range a value or key occupies, and the 1-based
+/// line/column its start resolves to.
 ///
 /// Columns count `char`s, not bytes, so a diagnostic under a non-ASCII value
-/// points where the user's editor puts the caret.
+/// points where the user's editor puts the caret. The byte range is what a JSON
+/// diagnostic reports (`byte_start`/`byte_end`) and what a compiler diagnostic about
+/// a manifest value underlines.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Span {
     /// 1-based line.
     pub line: u32,
     /// 1-based column, counted in characters.
     pub column: u32,
+    /// Byte offset of the first byte.
+    pub start: u32,
+    /// Byte offset one past the last byte.
+    pub end: u32,
 }
 
 impl Span {
-    /// Resolves a byte offset into `text` to a line/column.
+    /// The start of the file, for a problem no narrower place is known for.
+    pub const FILE_START: Span = Span {
+        line: 1,
+        column: 1,
+        start: 0,
+        end: 0,
+    };
+
+    /// Resolves a byte offset into `text` to an empty span there.
     ///
     /// An offset past the end clamps to the last position rather than failing —
     /// a span is a hint for the reader, and a clamped hint beats no diagnostic.
     pub fn from_offset(text: &str, offset: usize) -> Self {
-        let offset = offset.min(text.len());
+        Self::from_range(text, offset..offset)
+    }
+
+    /// Resolves a byte range of `text`, clamped to it, to a span.
+    pub fn from_range(text: &str, range: std::ops::Range<usize>) -> Self {
+        let start = range.start.min(text.len());
+        let end = range.end.clamp(start, text.len());
         let mut line = 1u32;
         let mut column = 1u32;
-        for ch in text[..offset].chars() {
+        for ch in text[..start].chars() {
             if ch == '\n' {
                 line += 1;
                 column = 1;
@@ -46,7 +67,12 @@ impl Span {
                 column += 1;
             }
         }
-        Self { line, column }
+        Self {
+            line,
+            column,
+            start: start as u32,
+            end: end as u32,
+        }
     }
 }
 
@@ -314,12 +340,16 @@ mod tests {
         }
     }
 
+    fn position(span: Span) -> (u32, u32) {
+        (span.line, span.column)
+    }
+
     #[test]
     fn a_span_counts_lines_and_characters_not_bytes() {
         let text = "a = 1\nb = \"日本語\"\nc = 3\n";
         assert_eq!(
             Span::from_offset(text, 0),
-            Span { line: 1, column: 1 },
+            Span::FILE_START,
             "start of file"
         );
 
@@ -328,32 +358,52 @@ mod tests {
         // still be right. Checking `c`'s line proves the newline scan, and the
         // in-string offset below proves the character counting.
         let c_at = text.find("c = 3").unwrap();
-        assert_eq!(Span::from_offset(text, c_at), Span { line: 3, column: 1 });
+        assert_eq!(position(Span::from_offset(text, c_at)), (3, 1));
 
         let jp = text.find("日").unwrap();
-        assert_eq!(Span::from_offset(text, jp), Span { line: 2, column: 6 });
+        assert_eq!(position(Span::from_offset(text, jp)), (2, 6));
         assert_eq!(
-            Span::from_offset(text, jp + "日本".len()),
-            Span { line: 2, column: 8 },
+            position(Span::from_offset(text, jp + "日本".len())),
+            (2, 8),
             "two characters in, not six bytes in"
         );
     }
 
     #[test]
+    fn a_range_keeps_its_bytes_and_resolves_its_start() {
+        let text = "a = 1\nname = \"日本\"\n";
+        let value = text.find('"').unwrap()..text.len() - 1;
+        let span = Span::from_range(text, value.clone());
+        assert_eq!(position(span), (2, 8));
+        assert_eq!(
+            (span.start as usize, span.end as usize),
+            (value.start, value.end)
+        );
+
+        // An inverted or overlong range clamps to an empty or in-bounds one.
+        let span = Span::from_range(text, std::ops::Range { start: 9, end: 3 });
+        assert_eq!((span.start, span.end), (9, 9));
+        let span = Span::from_range(text, 2..9999);
+        assert_eq!(span.end as usize, text.len());
+    }
+
+    #[test]
     fn an_offset_past_the_end_clamps_instead_of_panicking() {
         let text = "x = 1\n";
+        let end = Span::from_offset(text, 9999);
         assert_eq!(
-            Span::from_offset(text, 9999),
-            Span { line: 2, column: 1 },
+            position(end),
+            (2, 1),
             "clamped to the position just past the trailing newline"
         );
+        assert_eq!((end.start, end.end), (6, 6));
     }
 
     #[test]
     fn the_human_form_names_the_code_the_file_and_the_position() {
         let d = ConfigDiagnostic::error(ConfigCode::UnknownKey, "unknown key `packge`")
             .at("Viso.toml")
-            .span(Span { line: 3, column: 1 })
+            .span(Span::from_offset("\n\npackge = 1\n", 2))
             .note("did you mean `package`?");
         assert_eq!(
             d.to_string(),

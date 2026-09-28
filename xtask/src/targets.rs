@@ -21,7 +21,7 @@ pub const TARGETS: &[&str] = &[
 ];
 
 /// Workspace crates that run only on the developer machine.
-const HOST_TOOLS: &[&str] = &["xtask", "viso-project", "viso-lsp"];
+const HOST_TOOLS: &[&str] = &["xtask", "viso-project", "viso-cli", "viso-lsp"];
 
 pub fn check_targets(args: &[String]) -> ExitCode {
     let targets = match selected(args) {

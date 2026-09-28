@@ -49,9 +49,11 @@ pub struct LoadedFile {
 /// A loaded, resolved and lowered package.
 #[derive(Debug)]
 pub struct LoadedPackage {
-    /// Diagnostics no single source file owns: the manifest's (`E1001`, spanned in
-    /// `Viso.toml`) and the module graph's (a duplicate module path, a cycle).
-    pub package_diagnostics: Vec<Diagnostic>,
+    /// The manifest's diagnostics (`E1001`), spanned in `Viso.toml`.
+    pub manifest_diagnostics: Vec<Diagnostic>,
+    /// The module graph's diagnostics (a duplicate module path, a cycle member):
+    /// facts about the whole package, with no source position.
+    pub graph_diagnostics: Vec<Diagnostic>,
     /// Every source file, in path order.
     pub files: Vec<LoadedFile>,
     /// Files and directories that could not be read.
@@ -66,7 +68,8 @@ impl LoadedPackage {
     pub fn has_errors(&self) -> bool {
         let error = |d: &Diagnostic| d.severity == crate::diag::Severity::Error;
         !self.unreadable.is_empty()
-            || self.package_diagnostics.iter().any(error)
+            || self.manifest_diagnostics.iter().any(error)
+            || self.graph_diagnostics.iter().any(error)
             || self.files.iter().flat_map(|f| &f.diagnostics).any(error)
     }
 }
@@ -105,12 +108,12 @@ pub fn load_package(root: &Path, manifest: PackageManifest<'_>) -> LoadedPackage
     }
 
     let graph = ModuleGraph::build(&units, &interner);
-    let mut package_diagnostics: Vec<Diagnostic> = manifest
+    let manifest_diagnostics: Vec<Diagnostic> = manifest
         .language
         .and_then(|(version, at)| check_language_version(version, at))
         .into_iter()
         .collect();
-    package_diagnostics.extend(graph.graph_errors().cloned());
+    let graph_diagnostics: Vec<Diagnostic> = graph.graph_errors().cloned().collect();
 
     let resolved = resolve(&graph, &units, &mut interner, manifest.name);
     let hir = lower(&graph, &units, &resolved, &mut interner, manifest.name);
@@ -135,7 +138,8 @@ pub fn load_package(root: &Path, manifest: PackageManifest<'_>) -> LoadedPackage
     }
 
     LoadedPackage {
-        package_diagnostics,
+        manifest_diagnostics,
+        graph_diagnostics,
         files,
         unreadable,
         hir,
@@ -245,12 +249,12 @@ mod tests {
     }
 
     #[test]
-    fn an_unsupported_manifest_language_is_a_package_diagnostic() {
+    fn an_unsupported_manifest_language_is_a_manifest_diagnostic() {
         let s = Scratch::new("language");
         s.write("src/main.vs", "component App { view { } }");
         let at = TextRange::new(TextSize::from(30), TextSize::from(35));
         let package = load_package(&s.0, manifest(Some(("9.9", at))));
-        let error = &package.package_diagnostics[0];
+        let error = &package.manifest_diagnostics[0];
         assert_eq!((error.code, error.primary), ("E1001", at));
         assert!(package.files[0].diagnostics.is_empty());
     }
@@ -261,7 +265,7 @@ mod tests {
         s.write("src/ui.vs", "const A = 1;");
         s.write("src/ui/mod.vs", "const B = 2;");
         let package = load_package(&s.0, manifest(None));
-        let codes: Vec<_> = package.package_diagnostics.iter().map(|d| d.code).collect();
+        let codes: Vec<_> = package.graph_diagnostics.iter().map(|d| d.code).collect();
         assert_eq!(codes, ["E2002"]);
     }
 

@@ -20,6 +20,7 @@ members = [
     "crates/lsp",
     "crates/services",
     "tools/project",
+    "tools/cli",
     "xtask",
     "libs/woff2",
     "examples/hello_world",

@@ -613,13 +613,14 @@ viso/
 │   ├── dsl/  lsp/
 │   └── services/
 ├── tools/project/   viso-project（项目发现/配置/构建身份）
+├── tools/cli/       viso-cli（`viso` 命令：参数、输出、exit code）
 ├── libs/woff2/      viso-woff2（调用方侧 WOFF2 解压，ADR 0028；libs/base64、libs/lz4 存在但不是 workspace member）
 ├── examples/        hello_world、01-counter
 ├── benches/  tests/  docs/adr/
 └── xtask/           cargo xtask check-deps 等
 ```
 
-目标（尚未建立）：`integrations/`（tokio/tracing/serde/accesskit 等 adapter）、`extras/`（code-editor/markdown/pdf/browser/charts/map/xr）、`tools/cli`（`viso` CLI）、`tools/inspector`、`tools/studio`、`tools/packager`、`vendor/`。新增目录或 crate 时必须同步 §9、§10 与 xtask allowlist。
+目标（尚未建立）：`integrations/`（tokio/tracing/serde/accesskit 等 adapter）、`extras/`（code-editor/markdown/pdf/browser/charts/map/xr）、`tools/inspector`、`tools/studio`、`tools/packager`、`vendor/`。新增目录或 crate 时必须同步 §9、§10 与 xtask allowlist。
 
 ### 8.1 为什么不是几十个 crate
 
@@ -869,6 +870,10 @@ PDF/browser/chart/map 等不是基础 widget，放 optional package/integration�
 
 `.vs` formatter 与 language server（ADR 0018）：analysis engine + 薄 stdio frontend，只依赖 `viso-dsl`。
 
+### `viso-cli`
+
+`viso` 命令（`Viso_CLI.md` §39–§41）：参数解析、project/config resolution、调用 `viso-project` 与 `viso-dsl`、human 输出与 exit code；不实现任何 domain service。当前命令：`check`。
+
 ### `viso-services`
 
 统一 app service protocol。当前（ADR 0031）：files、share、notifications、permissions、secure_storage、haptics；`Reply<T>` 一次性应答，`Services` 注册表。目标：camera、location、media、networking adapter。
@@ -887,6 +892,7 @@ PDF/browser/chart/map 等不是基础 widget，放 optional package/integration�
 | `viso-widgets` | ui |
 | `viso-ui-macros` | dsl |
 | `viso-lsp` | dsl |
+| `viso-cli` | project, dsl |
 | `viso-dsl` | ui, ende |
 | `viso-services` | runtime, platform |
 | `viso-ui` | render, runtime, ende, text |
@@ -4242,7 +4248,7 @@ Makepad 在跨平台构建、Studio、远程 UI 操作、截图、profile 等方
 
 # Part XXV — Viso 1.0 实施路线图
 
-> **Informative。** 本 Part 是路线图，不是规范性合同；与 Part 0–XXIV 或已接受 ADR 冲突时以后者为准。进度以 `docs/adr/` 为准：Phase 0 已由 ADR 0001 关闭；Phase 1–8 的已落地切片分别见 ADR 0004/0019/0020/0032（runtime/platform）、0002/0029（GPU/renderer）、0003（tree）、0007–0009/0022/0030（layout/input/semantics）、0005/0021（reactive）、0010/0011/0013–0018（DSL/hot reload/AOT/shader/tooling）、0023/0024（widgets）、0031/0032（services/async）。Phase 9 的 CLI/Studio/Inspector 尚未开始（当前只有 `tools/project`）。
+> **Informative。** 本 Part 是路线图，不是规范性合同；与 Part 0–XXIV 或已接受 ADR 冲突时以后者为准。进度以 `docs/adr/` 为准：Phase 0 已由 ADR 0001 关闭；Phase 1–8 的已落地切片分别见 ADR 0004/0019/0020/0032（runtime/platform）、0002/0029（GPU/renderer）、0003（tree）、0007–0009/0022/0030（layout/input/semantics）、0005/0021（reactive）、0010/0011/0013–0018（DSL/hot reload/AOT/shader/tooling）、0023/0024（widgets）、0031/0032（services/async）。Phase 9 的 CLI 已起步（`tools/project` 与 `tools/cli` 的 `viso check`），Studio/Inspector 尚未开始。
 
 ## 64. Phase 0 — 固定 Architecture Contract
 
