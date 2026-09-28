@@ -1359,7 +1359,7 @@ invalid signing metadata shape
 
 ### 17.4 JSON / exit codes
 
-`--json`：`progress`、每条诊断一条 `diagnostic`（DSL §138 对象）、`summary`。Exit code：存在 `severity:"error"` 的诊断时 1；target unavailable 3；Rust check 失败 4。warning 不改变 exit code。
+`--json`：`progress`、每条诊断一条 `diagnostic`（DSL §138 对象）、`summary`（包已加载时另带 `package`、`file_count`）。Exit code：存在 `severity:"error"` 的诊断时 1；target unavailable 3；Rust check 失败 4。warning 不改变 exit code。
 
 ---
 
@@ -2203,7 +2203,7 @@ suggested alternative target or rewrite
 
 ```json
 {"type":"progress","payload":{"phase":"compile","message":"Compiling app"}}
-{"type":"diagnostic","payload":{"schema_version":1,"severity":"warning","code":"W2104","message":"...","primary":{"file":"src/app.vs","byte_start":120,"byte_end":128,"line":7,"column_utf16":5}}}
+{"type":"diagnostic","payload":{"schema_version":"1.0","severity":"warning","code":"W2104","message":"...","primary":{"file":"src/app.vs","byte_start":120,"byte_end":128,"line":7,"column_utf16":5,"end_line":7,"end_column_utf16":13}}}
 {"type":"artifact","payload":{"kind":"binary","path":"dist/macos/app","target":"macos","profile":"dev"}}
 {"type":"summary","payload":{"status":"success","exit_code":0,"elapsed_ms":842}}
 ```
@@ -2272,7 +2272,15 @@ summary       见 §36.3
 
 ### 36.1 Diagnostic
 
-`payload` 即 `Viso_DSL_1.0.md` §138 对象：`schema_version, severity, code, message, primary{file, byte_start, byte_end, line, column_utf16}, related[], expected?, actual?, notes[], fixes[{title, applicability, edits[{file, byte_start, byte_end, replacement}]}]`。CLI 不定义第二套 diagnostic 形状。Config 诊断（`C0001`–`C0012`）、环境诊断（如 `ENV_ANDROID_SDK`）与 exporter 诊断使用同一形状；无源码位置时 `primary` 为 `null`，Viso.toml 诊断的 `primary.file` 指向 `Viso.toml`。
+`payload` 即 `Viso_DSL_1.0.md` §138 对象：`schema_version, severity, code, message, primary{file, byte_start, byte_end, line, column_utf16, end_line, end_column_utf16}, related[{…位置字段, message}], expected?, actual?, notes[], fixes[{title, applicability, edits[{file, byte_start, byte_end, replacement}]}]`。CLI 不定义第二套 diagnostic 形状。Config 诊断（`C0001`–`C0012`）、环境诊断（如 `ENV_ANDROID_SDK`）、exporter 诊断与 CLI 自身诊断使用同一形状；无源码位置时 `primary` 为 `null`，Viso.toml 诊断的 `primary.file` 指向 `Viso.toml`。
+
+CLI 自身诊断 code：
+
+```text
+CLI_USAGE               命令行无法解析（--json 已识别时，§37）   exit 2
+ENV_CURRENT_DIR         当前目录不可读                           exit 3
+ENV_SOURCE_UNREADABLE   命令需要的源文件不可读                   exit 3
+```
 
 ### 36.2 Artifact
 

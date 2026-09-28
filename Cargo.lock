@@ -2435,6 +2435,7 @@ version = "0.0.0"
 dependencies = [
  "clap",
  "viso-dsl",
+ "viso-ende",
  "viso-project",
 ]
 

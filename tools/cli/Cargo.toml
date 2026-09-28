@@ -8,9 +8,11 @@ repository.workspace = true
 
 # The `viso` command (Viso_CLI.md section 39). Command handlers only orchestrate:
 # the project model comes from `viso-project`, the compiler from `viso-dsl`, and
-# this crate owns argument parsing, output and exit codes (section 40).
+# this crate owns argument parsing, output and exit codes (section 40). The JSON
+# event stream is written with `viso-ende`'s writer, the one JSON emitter.
 [dependencies]
 viso-dsl = { workspace = true }
+viso-ende = { workspace = true }
 viso-project = { workspace = true }
 # A mature parser rather than a hand-rolled one (section 42): subcommands, global
 # options accepted before or after the subcommand, generated help and stable usage

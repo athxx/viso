@@ -6715,7 +6715,9 @@ viso test game <scenario> --frames=<n> --seed=<seed> --json
     "byte_start": 422,
     "byte_end": 427,
     "line": 18,
-    "column_utf16": 9
+    "column_utf16": 9,
+    "end_line": 18,
+    "end_column_utf16": 14
   },
   "related": [],
   "expected": ["anonymous node", "node <name>: <Component>"],
@@ -6737,6 +6739,8 @@ viso test game <scenario> --frames=<n> --seed=<seed> --json
   ]
 }
 ```
+
+位置对象（`primary` 与 `related[]` 的元素）：`file` 相对 project root、以 `/` 分隔；`byte_start`/`byte_end` 为文件内字节区间；`line`/`column_utf16` 为起点、`end_line`/`end_column_utf16` 为终点，行与列都从 1 起，列按 UTF-16 code unit 计。`related[]` 元素另带 `message`（该位置的标签）。无源码位置的诊断 `primary` 为 `null`、`related` 为空。`fixes[].edits[].file` 同 `file`。
 
 要求：
 

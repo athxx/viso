@@ -1,5 +1,5 @@
-//! Human-readable output (`Viso_CLI.md` section 37): diagnostics and progress to
-//! stderr, the summary to stdout.
+//! Human-readable output (`Viso_CLI.md` section 37): diagnostics to stderr, the
+//! summary to stdout.
 //!
 //! A diagnostic prints its header, its location and the source line under a caret
 //! underline, then its related spans, notes and fix titles:
@@ -16,112 +16,56 @@
 use std::fmt::{self, Write as _};
 use std::io::Write as _;
 use std::ops::Range;
-use std::path::Path;
 
-use viso_dsl::{Diagnostic, LineIndex, Severity, TextSize};
-use viso_project::ConfigDiagnostic;
+use super::{Location, Report, Source};
 
-/// A file diagnostics can point into: where it is, how to name it, and its text.
-pub struct Source<'a> {
-    path: &'a Path,
-    display: String,
-    text: &'a str,
-    lines: LineIndex,
+/// Writes `report` to stderr, followed by a blank line.
+pub(super) fn print(report: &Report<'_>) {
+    let mut text = render(report);
+    text.push('\n');
+    let _ = std::io::stderr().lock().write_all(text.as_bytes());
 }
 
-impl<'a> Source<'a> {
-    /// A source at `path`, named relative to `root` when it lies below it.
-    pub fn new(path: &'a Path, root: &Path, text: &'a str) -> Self {
-        Self {
-            path,
-            display: path
-                .strip_prefix(root)
-                .unwrap_or(path)
-                .display()
-                .to_string(),
-            text,
-            lines: LineIndex::new(text),
-        }
-    }
-
-    /// The 1-based line and character column of a byte offset.
-    fn position(&self, offset: usize) -> (u32, u32) {
-        let at = self.lines.line_col_scalar(TextSize::new(offset as u32));
-        (at.line + 1, at.column + 1)
-    }
-
-    /// The line holding `offset`, without its terminator, and its start offset.
-    fn line_at(&self, offset: usize) -> (&'a str, usize) {
-        let column = self
-            .lines
-            .line_col_utf8(TextSize::new(offset as u32))
-            .column;
-        let start = offset - column as usize;
-        let rest = &self.text[start..];
-        let line = rest.split('\n').next().unwrap_or(rest);
-        (line.strip_suffix('\r').unwrap_or(line), start)
-    }
+fn render(report: &Report<'_>) -> String {
+    let mut out = String::new();
+    // Writing to a `String` cannot fail.
+    let _ = write(&mut out, report);
+    out
 }
 
-/// Where a report points.
-enum Location<'a> {
-    /// A byte range of a source whose text is at hand.
-    Span(&'a Source<'a>, Range<usize>),
-    /// A position rendered ahead of time, when the text is not at hand.
-    Point(String),
-    /// Nowhere in particular.
-    None,
-}
-
-/// One diagnostic in the renderer's terms, whichever service raised it.
-struct Report<'a> {
-    severity: &'static str,
-    code: &'a str,
-    message: &'a str,
-    location: Location<'a>,
-    related: Vec<(Range<usize>, &'a str)>,
-    notes: &'a [String],
-    helps: Vec<&'a str>,
-}
-
-impl Report<'_> {
-    fn render(&self) -> String {
-        let mut out = String::new();
-        // Writing to a `String` cannot fail.
-        let _ = self.write(&mut out);
-        out
-    }
-
-    fn write(&self, out: &mut String) -> fmt::Result {
-        writeln!(out, "{}[{}]: {}", self.severity, self.code, self.message)?;
-        let mut gutter = 0;
-        match &self.location {
-            Location::Span(source, range) => {
-                let last = std::iter::once(range)
-                    .chain(self.related.iter().map(|(range, _)| range))
-                    .map(|range| source.position(range.start).0)
-                    .max()
-                    .unwrap_or(1);
-                gutter = last.to_string().len();
-                let (line, column) = source.position(range.start);
-                writeln!(out, "{:gutter$}--> {}:{line}:{column}", "", source.display)?;
-                writeln!(out, "{:gutter$} |", "")?;
-                snippet(out, source, range, '^', "", gutter)?;
-                for (range, label) in &self.related {
-                    snippet(out, source, range, '-', label, gutter)?;
-                }
+fn write(out: &mut String, report: &Report<'_>) -> fmt::Result {
+    writeln!(
+        out,
+        "{}[{}]: {}",
+        report.severity, report.code, report.message
+    )?;
+    let mut gutter = 0;
+    match &report.location {
+        Location::Span(source, range) => {
+            let last = std::iter::once(range)
+                .chain(report.related.iter().map(|(range, _)| range))
+                .map(|range| source.position(range.start).0)
+                .max()
+                .unwrap_or(1);
+            gutter = last.to_string().len();
+            let (line, column) = source.position(range.start);
+            writeln!(out, "{:gutter$}--> {}:{line}:{column}", "", source.name)?;
+            writeln!(out, "{:gutter$} |", "")?;
+            snippet(out, source, range, '^', "", gutter)?;
+            for (range, label) in &report.related {
+                snippet(out, source, range, '-', label, gutter)?;
             }
-            Location::Point(point) => writeln!(out, " --> {point}")?,
-            Location::None => {}
         }
-        for note in self.notes {
-            writeln!(out, "{:gutter$} = note: {note}", "")?;
-        }
-        for help in &self.helps {
-            writeln!(out, "{:gutter$} = help: {help}", "")?;
-        }
-        Ok(())
+        Location::Point { file, line, column } => writeln!(out, " --> {file}:{line}:{column}")?,
+        Location::None => {}
     }
+    for note in report.notes {
+        writeln!(out, "{:gutter$} = note: {note}", "")?;
+    }
+    for fix in report.fixes {
+        writeln!(out, "{:gutter$} = help: {}", "", fix.title)?;
+    }
+    Ok(())
 }
 
 /// One source line with `range` underlined by `mark`, and an optional label after
@@ -134,7 +78,7 @@ fn snippet(
     label: &str,
     gutter: usize,
 ) -> fmt::Result {
-    let start = range.start.min(source.text.len());
+    let start = source.clamp(range.start);
     let (text, line_start) = source.line_at(start);
     let (line, _) = source.position(start);
     let line_end = line_start + text.len();
@@ -156,106 +100,8 @@ fn snippet(
     writeln!(out, "{:gutter$} | {pad}{underline}{label}", "")
 }
 
-/// The human output of one command run: counts what it prints so the summary and
-/// the exit code agree with it.
-pub struct Human {
-    quiet: bool,
-    errors: usize,
-    warnings: usize,
-}
-
-impl Human {
-    /// Output that prints warnings and notes unless `quiet`.
-    pub fn new(quiet: bool) -> Self {
-        Self {
-            quiet,
-            errors: 0,
-            warnings: 0,
-        }
-    }
-
-    /// The errors reported so far.
-    pub fn errors(&self) -> usize {
-        self.errors
-    }
-
-    /// Reports a compiler diagnostic, in `source` when it has a source position.
-    pub fn source(&mut self, source: Option<&Source<'_>>, diagnostic: &Diagnostic) {
-        let severity = match diagnostic.severity {
-            Severity::Error => "error",
-            Severity::Warning => "warning",
-            Severity::Note => "note",
-        };
-        let report = Report {
-            severity,
-            code: diagnostic.code,
-            message: &diagnostic.message,
-            location: match source {
-                Some(source) => Location::Span(source, diagnostic.primary.as_usize()),
-                None => Location::None,
-            },
-            related: diagnostic
-                .related
-                .iter()
-                .map(|(range, label)| (range.as_usize(), label.as_str()))
-                .collect(),
-            notes: &diagnostic.notes,
-            helps: diagnostic.fixes.iter().map(|f| f.title.as_str()).collect(),
-        };
-        self.emit(diagnostic.severity == Severity::Error, &report);
-    }
-
-    /// Reports a project or configuration diagnostic, with its source line when
-    /// `manifest` is the file it points into.
-    pub fn config(&mut self, manifest: Option<&Source<'_>>, diagnostic: &ConfigDiagnostic) {
-        let code = diagnostic.code.as_str();
-        let location = match (&diagnostic.path, diagnostic.span) {
-            (Some(path), Some(span)) => match manifest.filter(|m| m.path == path) {
-                Some(manifest) => Location::Span(manifest, span.start as usize..span.end as usize),
-                None => Location::Point(format!("{}:{span}", path.display())),
-            },
-            (Some(path), None) => Location::Point(path.display().to_string()),
-            (None, _) => Location::None,
-        };
-        let report = Report {
-            severity: diagnostic.severity.as_str(),
-            code,
-            message: &diagnostic.message,
-            location,
-            related: Vec::new(),
-            notes: &diagnostic.notes,
-            helps: Vec::new(),
-        };
-        self.emit(diagnostic.is_error(), &report);
-    }
-
-    /// Reports an error no service raised as a diagnostic.
-    pub fn failure(&mut self, message: impl fmt::Display) {
-        self.errors += 1;
-        eprintln!("error: {message}");
-    }
-
-    /// Prints the one-line summary of a check to stdout.
-    pub fn summary(&self, package: &str, files: usize) {
-        println!("{}", summary(package, files, self.errors, self.warnings));
-    }
-
-    fn emit(&mut self, error: bool, report: &Report<'_>) {
-        if error {
-            self.errors += 1;
-        } else {
-            self.warnings += 1;
-            if self.quiet {
-                return;
-            }
-        }
-        let mut text = report.render();
-        text.push('\n');
-        let _ = std::io::stderr().lock().write_all(text.as_bytes());
-    }
-}
-
-fn summary(package: &str, files: usize, errors: usize, warnings: usize) -> String {
+/// The one-line summary of a check.
+pub(super) fn summary(package: &str, files: usize, errors: usize, warnings: usize) -> String {
     let count = |n: usize, what: &str| format!("{n} {what}{}", if n == 1 { "" } else { "s" });
     let mut line = format!("checked `{package}`: {}", count(files, "file"));
     match (errors, warnings) {
@@ -274,8 +120,10 @@ fn summary(package: &str, files: usize, errors: usize, warnings: usize) -> Strin
 
 #[cfg(test)]
 mod tests {
-    use viso_dsl::TextRange;
+    use std::path::Path;
+
     use viso_dsl::diag::{Applicability, Fix};
+    use viso_dsl::{Diagnostic, TextRange, TextSize};
 
     use super::*;
 
@@ -287,8 +135,8 @@ mod tests {
         )
     }
 
-    fn render(source: &Source<'_>, diagnostic: &Diagnostic) -> String {
-        let report = Report {
+    fn render_in(source: &Source<'_>, diagnostic: &Diagnostic) -> String {
+        render(&Report {
             severity: "error",
             code: diagnostic.code,
             message: &diagnostic.message,
@@ -299,9 +147,8 @@ mod tests {
                 .map(|(range, label)| (range.as_usize(), label.as_str()))
                 .collect(),
             notes: &diagnostic.notes,
-            helps: diagnostic.fixes.iter().map(|f| f.title.as_str()).collect(),
-        };
-        report.render()
+            fixes: &diagnostic.fixes,
+        })
     }
 
     #[test]
@@ -320,7 +167,7 @@ mod tests {
             edits: Vec::new(),
         });
         assert_eq!(
-            render(&source, &error),
+            render_in(&source, &error),
             "error[E2001]: unresolved `Pointt`\n \
              --> src/app.vs:2:11\n  \
              |\n\
@@ -342,9 +189,27 @@ mod tests {
             TextRange::new(TextSize::new(1), TextSize::new(5)),
             "m",
         );
-        assert!(render(&source, &wide).contains("1 | ab\n  |  ^\n"));
+        assert!(render_in(&source, &wide).contains("1 | ab\n  |  ^\n"));
         let empty = Diagnostic::error("E1", TextRange::empty(TextSize::new(5)), "m");
-        assert!(render(&source, &empty).contains("2 | cd\n  |   ^\n"));
+        assert!(render_in(&source, &empty).contains("2 | cd\n  |   ^\n"));
+    }
+
+    #[test]
+    fn a_diagnostic_without_a_location_is_its_header_and_notes() {
+        let notes = ["try `--help`".to_string()];
+        let text = render(&Report {
+            severity: "error",
+            code: "CLI_USAGE",
+            message: "unexpected argument",
+            location: Location::None,
+            related: Vec::new(),
+            notes: &notes,
+            fixes: &[],
+        });
+        assert_eq!(
+            text,
+            "error[CLI_USAGE]: unexpected argument\n = note: try `--help`\n"
+        );
     }
 
     #[test]

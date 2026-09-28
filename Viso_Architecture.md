@@ -872,7 +872,7 @@ PDF/browser/chart/map 等不是基础 widget，放 optional package/integration�
 
 ### `viso-cli`
 
-`viso` 命令（`Viso_CLI.md` §39–§41）：参数解析、project/config resolution、调用 `viso-project` 与 `viso-dsl`、human 输出与 exit code；不实现任何 domain service。当前命令：`check`。
+`viso` 命令（`Viso_CLI.md` §39–§41）：参数解析、project/config resolution、调用 `viso-project` 与 `viso-dsl`、human 输出与 JSON event stream（经 `viso-ende` 的 `JsonWriter`）、exit code；不实现任何 domain service。当前命令：`check`。
 
 ### `viso-services`
 
@@ -892,7 +892,7 @@ PDF/browser/chart/map 等不是基础 widget，放 optional package/integration�
 | `viso-widgets` | ui |
 | `viso-ui-macros` | dsl |
 | `viso-lsp` | dsl |
-| `viso-cli` | project, dsl |
+| `viso-cli` | project, dsl, ende |
 | `viso-dsl` | ui, ende |
 | `viso-services` | runtime, platform |
 | `viso-ui` | render, runtime, ende, text |

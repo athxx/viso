@@ -230,7 +230,7 @@ fn allowed_edges() -> BTreeMap<&'static str, Allowed> {
             "viso-cli",
             Allowed {
                 dir: "tools/cli",
-                deps: &["viso-project", "viso-dsl"],
+                deps: &["viso-project", "viso-dsl", "viso-ende"],
             },
         ),
     ])

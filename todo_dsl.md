@@ -149,8 +149,13 @@ the three source entries share one frontend.
 - [x] One frontend behind `ui!`, `component!`, `view!("x.vs")` (`frontend.rs`,
       `ui-macros`); `E3002` view cardinality.
 - [x] Shared `Diagnostic` type (`diag.rs`).
-- [ ] JSON diagnostic output matching §138: `schema_version`, byte + UTF-16 ranges,
-      `expected`/`actual`, `related`, `fixes` with applicability, atomic multi-file fix.
+- [x] JSON diagnostic output matching §138: `viso check --json` streams §138 objects
+      in the CLI event envelope — `schema_version`, byte + 1-based UTF-16 ranges (both
+      ends), labeled `related`, `fixes` with applicability — for compiler, config and
+      CLI diagnostics, then one `summary`; usage errors too (`tools/cli/src/output`).
+  - [ ] `expected`/`actual`: no diagnostic fills them yet.
+  - [ ] Multi-file fixes: a `TextEdit` names no file, so every edit lands in the
+        diagnostic's own file.
 - [x] Token-stream formatter (`crates/lsp/src/format`).
 - [ ] Formatter idempotence over every parser golden: `fmt(fmt(x)) == fmt(x)`.
 - [x] LSP definition / references / rename / formatting / diagnostics (`crates/lsp`).

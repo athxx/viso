@@ -9,16 +9,19 @@ use viso_dsl::package::{PackageManifest, load_package};
 use viso_dsl::{TextRange, TextSize};
 use viso_project::{ConfigDiagnostic, Project, Span};
 
-use super::{DIAGNOSTICS, ENVIRONMENT, SUCCESS};
+use super::{DIAGNOSTICS, ENV_CURRENT_DIR, ENV_SOURCE_UNREADABLE, ENVIRONMENT, SUCCESS};
 use crate::args::Global;
-use crate::output::human::{Human, Source};
+use crate::output::{Output, Source};
 
-pub fn run(global: &Global) -> u8 {
-    let mut out = Human::new(global.quiet);
+pub fn run(global: &Global, out: &mut Output) -> u8 {
     let cwd = match std::env::current_dir() {
         Ok(cwd) => cwd,
         Err(error) => {
-            out.failure(format_args!("cannot read the current directory: {error}"));
+            out.failure(
+                ENV_CURRENT_DIR,
+                &format!("cannot read the current directory: {error}"),
+                &[],
+            );
             return ENVIRONMENT;
         }
     };
@@ -26,7 +29,7 @@ pub fn run(global: &Global) -> u8 {
         Ok(project) => project,
         Err(diagnostics) => {
             for diagnostic in &diagnostics {
-                out.config(None, diagnostic);
+                config_in_its_file(out, diagnostic);
             }
             return failure_code(&diagnostics);
         }
@@ -75,12 +78,16 @@ pub fn run(global: &Global) -> u8 {
         }
     }
     for (path, error) in &package.unreadable {
-        out.failure(format_args!(
-            "cannot read `{}`: {error}",
-            relative(&project.root, path).display()
-        ));
+        out.failure(
+            ENV_SOURCE_UNREADABLE,
+            &format!(
+                "cannot read `{}`: {error}",
+                relative(&project.root, path).display()
+            ),
+            &[],
+        );
     }
-    out.summary(name, package.files.len());
+    out.checked(name, package.files.len());
 
     // A source that could not be read leaves the check incomplete, which is an
     // environment failure whatever the rest of the package says.
@@ -90,6 +97,19 @@ pub fn run(global: &Global) -> u8 {
         DIAGNOSTICS
     } else {
         SUCCESS
+    }
+}
+
+/// Reports a diagnostic from a project that failed to load, reading the file it
+/// points into so the report can show the line.
+fn config_in_its_file(out: &mut Output, diagnostic: &ConfigDiagnostic) {
+    if let (Some(path), Some(_)) = (&diagnostic.path, diagnostic.span)
+        && let Ok(text) = fs::read_to_string(path)
+    {
+        let root = path.parent().unwrap_or(Path::new(""));
+        out.config(Some(&Source::new(path, root, &text)), diagnostic);
+    } else {
+        out.config(None, diagnostic);
     }
 }
 

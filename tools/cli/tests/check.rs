@@ -179,3 +179,129 @@ fn usage_errors_exit_2_and_help_and_version_exit_0() {
         format!("viso {}\n", env!("CARGO_PKG_VERSION"))
     );
 }
+
+/// The event lines of a `--json` run, each checked to open with the envelope and
+/// its sequence number; returns the lines.
+fn events(output: &Output) -> Vec<String> {
+    let lines: Vec<String> = stdout(output).lines().map(str::to_string).collect();
+    for (seq, line) in lines.iter().enumerate() {
+        let envelope = format!(r#"{{"schema":"viso.cli.event","schema_version":1,"seq":{seq},"#);
+        assert!(line.starts_with(&envelope), "{line}");
+        assert!(line.ends_with("}}"), "{line}");
+    }
+    lines
+}
+
+#[test]
+fn json_streams_one_event_per_line_and_ends_with_the_summary() {
+    let s = Scratch::new("json");
+    s.write("Viso.toml", MANIFEST).write(
+        "src/app.vs",
+        "component App {\n    input b: Badgee;\n    view { }\n}\n",
+    );
+    let out = viso(&s.0, &["check", "--json"]);
+    assert_eq!(code(&out), 1);
+    assert_eq!(stderr(&out), "");
+    let lines = events(&out);
+    assert_eq!(lines.len(), 2, "{lines:?}");
+    assert!(lines[0].contains(r#""type":"diagnostic","#), "{}", lines[0]);
+    assert!(lines[0].contains(r#""command":"check","#), "{}", lines[0]);
+    assert!(
+        lines[0].contains(concat!(
+            r#""severity":"error","code":"E2001","#,
+            r#""message":"type does not exist: `Badgee`","#,
+            r#""primary":{"file":"src/app.vs","byte_start":29,"byte_end":35,"line":2,"#,
+            r#""column_utf16":14,"end_line":2,"end_column_utf16":20}"#,
+        )),
+        "{}",
+        lines[0]
+    );
+    assert!(lines[1].contains(r#""type":"summary","#), "{}", lines[1]);
+    assert!(
+        lines[1].contains(r#""status":"failure","exit_code":1,"#),
+        "{}",
+        lines[1]
+    );
+    assert!(
+        lines[1].contains(
+            r#""warning_count":0,"error_count":1,"artifact_count":0,"package":"demo","file_count":1}}"#
+        ),
+        "{}",
+        lines[1]
+    );
+}
+
+#[test]
+fn json_quiet_still_streams_warnings() {
+    let s = Scratch::new("json-quiet");
+    s.write("Viso.toml", "[package]\nname = \"demo\"\npackge = 1\n")
+        .write("src/app.vs", "component App { view { } }");
+    let out = viso(&s.0, &["--json", "-q", "check"]);
+    assert_eq!(code(&out), 0);
+    let lines = events(&out);
+    assert_eq!(lines.len(), 2, "{lines:?}");
+    assert!(
+        lines[0].contains(r#""code":"C0004","#)
+            && lines[0].contains(r#""primary":{"file":"Viso.toml","#),
+        "{}",
+        lines[0]
+    );
+    assert!(
+        lines[1].contains(r#""status":"success","exit_code":0,"#),
+        "{}",
+        lines[1]
+    );
+}
+
+#[test]
+fn json_reports_a_usage_error_as_events() {
+    let cwd = std::env::temp_dir();
+    let out = viso(&cwd, &["--json", "check", "--no-such-flag"]);
+    assert_eq!(code(&out), 2);
+    assert_eq!(stderr(&out), "");
+    let lines = events(&out);
+    assert_eq!(lines.len(), 2, "{lines:?}");
+    assert!(
+        lines[0].contains(r#""code":"CLI_USAGE","#) && lines[0].contains(r#""primary":null"#),
+        "{}",
+        lines[0]
+    );
+    assert!(
+        lines[1].contains(r#""status":"failure","exit_code":2,"#),
+        "{}",
+        lines[1]
+    );
+
+    // Without `--json` clap's own message goes to stderr.
+    let plain = viso(&cwd, &["check", "--no-such-flag"]);
+    assert_eq!(stdout(&plain), "");
+    assert!(stderr(&plain).starts_with("error: "), "{}", stderr(&plain));
+}
+
+#[test]
+fn json_without_a_project_still_ends_with_a_summary() {
+    let s = Scratch::new("json-missing");
+    let out = viso(&s.0, &["check", "--json", "--project", "."]);
+    assert_eq!(code(&out), 1);
+    let lines = events(&out);
+    assert_eq!(lines.len(), 2, "{lines:?}");
+    assert!(lines[0].contains(r#""code":"C0001","#), "{}", lines[0]);
+    assert!(
+        lines[1].contains(r#""exit_code":1,"#) && !lines[1].contains("package"),
+        "{}",
+        lines[1]
+    );
+}
+
+#[test]
+fn a_manifest_syntax_error_shows_its_line() {
+    let s = Scratch::new("syntax");
+    s.write("Viso.toml", "[package\n");
+    let out = viso(&s.0, &["check"]);
+    assert_eq!(code(&out), 1);
+    let err = stderr(&out);
+    assert!(
+        err.contains(" --> Viso.toml:1:9\n  |\n1 | [package\n"),
+        "{err}"
+    );
+}
