@@ -83,6 +83,9 @@ enum SinkTo {
 pub(crate) trait ViewEnv: TypeEnv {
     /// The inputs of the component `component`.
     fn component_inputs(&self, component: SymbolId) -> Option<&[InputProp]>;
+
+    /// The prelude type named `name`.
+    fn standard_type(&self, name: &str) -> Option<SymbolId>;
 }
 
 /// Types the view block of the component `component`, appending what it finds to
@@ -417,9 +420,10 @@ impl<'a> ViewWalk<'a> {
         }
     }
 
-    /// The payload type of the event `event` names on a node of `owner`. On a user
-    /// component it is a standard event or one the component declares (`E3202`
-    /// otherwise); a standard or widget event's payload is not modeled.
+    /// The payload type of the event `event` names on a node of `owner`: one the user
+    /// component declares, else one of the node's schema — its own or a standard event,
+    /// whose payload is a prelude record (`Unit` for a bare signal). Any other name is
+    /// `E3202`; a node type without a schema is not checked.
     fn event_payload(&mut self, event: &SyntaxToken, owner: Option<&Owner<'a>>) -> Ty {
         if let Some(id) = self.symbols.get(&event.text_range()).copied() {
             return match self.env.record_fields(id) {
@@ -427,35 +431,45 @@ impl<'a> ViewWalk<'a> {
                 None => Ty::Unknown,
             };
         }
-        let text = event.text();
-        let name = text.trim_start_matches("r#");
-        let Some((owner, component)) = owner.and_then(|o| Some((o, o.component?))) else {
+        let Some(owner) = owner else {
             return Ty::Unknown;
         };
-        if widget::STANDARD_EVENTS.contains(&name) {
-            return Ty::Unknown;
+        let text = event.text();
+        let name = text.trim_start_matches("r#");
+        if let Some(spec) = owner.schema.event(name) {
+            return match spec.payload {
+                Some(payload) => self
+                    .env
+                    .standard_type(payload)
+                    .map_or(Ty::Unknown, Ty::Named),
+                None => Ty::Unit,
+            };
         }
-        let declared = self.env.component_events(component).unwrap_or_default();
+        let declared = owner
+            .component
+            .and_then(|c| self.env.component_events(c))
+            .unwrap_or_default();
         let candidates = declared
             .iter()
             .map(|e| Candidate {
                 name: &e.name,
                 declared_at: Some(e.declared_at),
             })
-            .chain(widget::STANDARD_EVENTS.iter().map(|&name| Candidate {
+            .chain(owner.schema.event_names().map(|name| Candidate {
                 name,
                 declared_at: None,
             }));
         let suggestions = nearest(name, candidates);
         let range = event.text_range();
-        let mut diagnostic = Diagnostic::error(
-            "E3202",
-            range,
+        let message = if owner.component.is_some() {
             format!(
                 "`{}` has no event `{name}`: it is neither a standard event nor one the component declares",
                 owner.name
-            ),
-        );
+            )
+        } else {
+            format!("`{}` has no event `{name}`", owner.name)
+        };
+        let mut diagnostic = Diagnostic::error("E3202", range, message);
         attach(&mut diagnostic, range, &suggestions);
         self.diagnostics.push(diagnostic);
         Ty::Unknown

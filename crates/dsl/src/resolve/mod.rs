@@ -14,6 +14,7 @@
 
 mod module;
 mod name;
+pub(crate) mod prelude;
 mod resolver;
 mod scope;
 pub(crate) mod suggest;

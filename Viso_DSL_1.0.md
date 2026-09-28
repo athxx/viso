@@ -822,6 +822,7 @@ import app::model::User as AppUser;
 规则：
 
 - 不支持隐式 Prelude 以外的 wildcard import；
+- 隐式 Prelude 除标量类型外还导出 U7.1 的输入类型与标准事件 Payload、U6.3 的 `Animate`/`AnimationEnd`、U7.4 的 `KeyChord`/`ShortcutScope`、U3.7 的 `ScrollChanged`/`SizeDp` 与 U7.5 的 Widget 事件 Payload；名称按本模块声明 → Import → Prelude 查找，本模块声明或 Import 的同名符号遮蔽 Prelude；
 - `::*` 不属于 Viso 1.0 语法；
 - Import Resolution 不依赖运行时注册顺序；
 - Import Cycle 中只有纯类型边可以被允许；值初始化环必须报错。
@@ -2020,7 +2021,7 @@ Canvas {
 - 不存在 `on click => increment()`；
 - 即使只有一条语句也必须写 Block；
 - Handler 的可选 Pattern 绑定整个 Event Payload，且必须不可反驳（`E2303`）；自定义 Component Event 的 Payload 是以其参数为字段的 Record；
-- 用户 Component 节点上的 Handler 只能命名标准事件（U7.1）或该 Component 声明的 Event，否则报 `E3202`；
+- Handler 只能命名节点接受的 Event，否则报 `E3202`：用户 Component 节点接受标准事件（U7.1）与该 Component 声明的 Event；内置 Widget 接受其 Schema 声明的 Event（U3.7、U7.4、U7.5）及标准事件，不参与布局的 `FocusScope`、`KeyShortcut` 与 `Fragment` 不接受标准事件；
 - 忽略 Payload 时省略括号；
 - Handler 自动运行在 Action Transaction 中；
 - 默认 Phase 由 Event Schema 定义，通常为 Target/Bubble；
@@ -4346,7 +4347,7 @@ export record AdaptiveColumns { mode: AutoRepeat = AutoRepeat::fill; min: MixedL
 ### U3.7 Scroll
 
 - `axis: ScrollAxes = ScrollAxes::vertical`（`vertical; horizontal; both;`），失效 `MEASURE|LAYOUT`；
-- 事件 `scroll_changed(ScrollChanged)`，字段为 `offset: Offset`、`viewport: SizeDp`、`content: SizeDp`；
+- 事件 `scroll_changed(ScrollChanged)`，字段为 `offset: Offset`、`viewport: SizeDp`、`content: SizeDp`（`SizeDp { width: Dp; height: Dp; }`）；
 - 子节点在滚动轴上的约束无界；滚动偏移变化只标记视口子树 `TRANSFORM|HIT_TEST|PAINT`，不触发布局（ADR 0007）；
 - 滚轮与触控板事件先送往最内层可在该轴滚动的视口，到达边界后沿祖先链传递；
 - 命令式滚动只经 NodeRef（U7.6）。
@@ -4510,7 +4511,14 @@ Payload 基线字段：
 
 - `PointerEvent`：`position: Point`（节点局部 dp）、`button: PointerButton`（`primary; secondary; middle;`）、`buttons: PointerButtons`、`pointer_kind: PointerKind`（`mouse; touch; pen;`）、`modifiers: Modifiers`（`shift`、`control`、`alt`、`logo: Bool`）；
 - `KeyEvent`：`key: Key`、`repeat: Bool`、`modifiers: Modifiers`；文本输入与 IME 组字不经 `key_down`，由 `TextInput` 内部处理（CLAUDE.md §13）；
-- `DragEvent`：`position: Point`、`delta: Offset`、`total: Offset`。
+- `DragEvent`：`position: Point`、`delta: Offset`、`total: Offset`；
+- `ClickEvent`：`position: Option<Point>`（键盘与辅助技术激活时为 `Option::None`）、`modifiers: Modifiers`；
+- `TapEvent`、`LongPressEvent`、`HoverEvent`：`position: Point`、`pointer_kind: PointerKind`；
+- `ScrollEvent`：`delta: Offset`、`modifiers: Modifiers`；
+- `FocusEvent`：`focus_visible: Bool`（焦点由键盘移动时为 `true`）；
+- `Point { x: Dp; y: Dp; }`；`PointerButtons { primary; secondary; middle: Bool }`；`Key` 为 `char(Char); enter; escape; tab; backspace; delete; space; arrow_up; arrow_down; arrow_left; arrow_right; home; end; page_up; page_down; function(U8); unidentified;`。
+
+以上类型、U6.3 的 `Animate`/`AnimationEnd` 与 U7.5 的 Widget 事件 Payload 由隐式 Prelude 导出（§23）。
 
 规则：
 
@@ -4564,6 +4572,8 @@ KeyShortcut {
 | `Slider`     | `value: F32 = 0.0`（two_way；`PAINT\|SEMANTICS`）；`min: F32 = 0.0`、`max: F32 = 1.0`、`step: Option<F32> = Option::None`（`PAINT\|SEMANTICS`） | `changed(value: F32)` |
 | `TextInput`  | `value: String = ""`（two_way；`MEASURE\|LAYOUT\|PAINT\|SEMANTICS`）；`placeholder: String = ""`（Localizable；同上）；`secure: Bool = false`（同上）；`invalid: Bool = false`（`STYLE\|SEMANTICS`） | `changed(value: String)`、`submitted` |
 | `Tabs`、`RadioGroup` | `selected: U32 = 0`（two_way；`STYLE\|PAINT\|SEMANTICS`）                             | `selected_changed(value: U32)` |
+
+Widget 事件的 Payload 是 Prelude Record：`Toggle`/`CheckBox` 的 `changed` 为 `ToggleChanged`，`Slider` 为 `SliderChanged`，`TextInput` 为 `TextChanged`，`selected_changed` 为 `SelectionChanged`，字段均为 `value`；`submitted` 与 `triggered` 无 Payload。
 
 `Toggle` 使用 `checked` 而不是 `on`：`on` 是 View Item 起始位置的 Contextual Keyword，同时 `checked` 与语义状态同名（ADR 0021）。
 
@@ -7018,7 +7028,7 @@ parse(format(parse(valid_x))) AST-equivalent
 - 给 Input/Computed/Const/不可变局部绑定赋值报 `E2110`；
 - `bind` 右侧不是 State Lens 报 `E3107`，无 Converter 时两边类型不同报 `E2103`；`@bindable` 的 Event 不存在或首参数类型不符报 `E3701`；
 - 不同 Component 声明同名成员不冲突，成员遮蔽同名 Module `const`；
-- 用户 Component 节点上的未知 Event、`emit` 未知 Event 或实参与参数不符报 `E3202`；Handler Payload 字段按 Event 参数类型参与推断；
+- 节点不接受的 Event、`emit` 未知 Event 或实参与参数不符报 `E3202`；Handler Payload 字段按 Event 参数类型或标准 Payload Record（U7.1）参与推断；
 - `font_size` 中的 `em`/`%` 以父节点字号为基准，其他 Property 以本节点字号为基准。
 
 ---

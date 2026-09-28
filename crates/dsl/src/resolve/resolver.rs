@@ -34,6 +34,7 @@ use crate::syntax::span::TextRange;
 
 use super::module::{ModuleGraph, ResolveErrorKind, SourceUnit};
 use super::name::{NameId, NameInterner};
+use super::prelude::Prelude;
 use super::scope::{LocalSlot, ModuleSymbol, Namespace, ScopeStack, SymbolTable};
 use super::suggest;
 use super::symbol::{SymbolId, SymbolIdentity, SymbolKind, fingerprint};
@@ -111,6 +112,7 @@ pub fn resolve(
     interner: &mut NameInterner,
     package: &str,
 ) -> Vec<ResolvedModule> {
+    let prelude = Prelude::load(interner);
     // First pass: every module's public symbol table, so cross-module imports can be
     // resolved before any module body is walked.
     let mut tables: Vec<SymbolTable> = Vec::with_capacity(graph.modules().len());
@@ -137,6 +139,7 @@ pub fn resolve(
         let imports = build_import_env(cu.as_ref(), graph, &tables, interner);
         let mut pass = ModulePass {
             table: &tables[i],
+            prelude: &prelude.module.table,
             members: &members,
             owner: None,
             node: None,
@@ -168,6 +171,43 @@ pub fn resolve(
             errors,
         })
         .collect()
+}
+
+/// Resolves a single self-contained unit (no imports, no prelude) as the module
+/// `module_text` of `package`.
+pub(super) fn resolve_standalone(
+    cu: &CompilationUnit,
+    package: &str,
+    module_text: &str,
+    interner: &mut NameInterner,
+) -> ResolvedModule {
+    let (table, decls, errors) = build_symbol_table(Some(cu), package, module_text, interner);
+    let members: MemberTables<'_> = table.member_tables().collect();
+    let empty = SymbolTable::new();
+    let imports = std::collections::HashMap::new();
+    let mut pass = ModulePass {
+        table: &table,
+        prelude: &empty,
+        members: &members,
+        owner: None,
+        node: None,
+        decls: &decls,
+        imports: &imports,
+        interner,
+        refs: Vec::new(),
+        errors,
+        scopes: ScopeStack::new(),
+        defer_unresolved_types: false,
+    };
+    pass.resolve_unit(cu);
+    let ModulePass { refs, errors, .. } = pass;
+    drop(members);
+    ResolvedModule {
+        table,
+        refs,
+        decls,
+        errors,
+    }
 }
 
 /// Every component's and system's member table in a package, by the owner's symbol.
@@ -492,6 +532,9 @@ fn ident_tokens(node: &SyntaxNode) -> Vec<crate::syntax::SyntaxToken> {
 /// The per-module resolution walk state.
 struct ModulePass<'a> {
     table: &'a SymbolTable,
+    /// The standard prelude's table, consulted after the module's own declarations and
+    /// its imports.
+    prelude: &'a SymbolTable,
     members: &'a MemberTables<'a>,
     /// The component or system whose body is being resolved.
     owner: Option<SymbolId>,
@@ -581,16 +624,7 @@ impl ModulePass<'_> {
             return None;
         };
         let name = self.interner.intern(&head.text());
-        let symbol = self
-            .table
-            .get(name, Namespace::Type)
-            .map(|s| s.id)
-            .or_else(|| {
-                self.imports
-                    .get(&name)
-                    .filter(|b| b.namespace == Namespace::Type)
-                    .map(|b| b.symbol)
-            })?;
+        let symbol = self.type_symbol(name)?;
         self.members.contains_key(&symbol).then_some(symbol)
     }
 
@@ -835,16 +869,7 @@ impl ModulePass<'_> {
     /// Resolves `head` in the type namespace, reporting whether it named a type.
     fn resolve_type_token(&mut self, head: &crate::syntax::SyntaxToken) -> bool {
         let name = self.interner.intern(&head.text());
-        let symbol = self
-            .table
-            .get(name, Namespace::Type)
-            .map(|s| s.id)
-            .or_else(|| {
-                self.imports
-                    .get(&name)
-                    .filter(|b| b.namespace == Namespace::Type)
-                    .map(|b| b.symbol)
-            });
+        let symbol = self.type_symbol(name);
         if let Some(symbol) = symbol {
             self.refs.push(ResolvedRef {
                 range: head.text_range(),
@@ -1062,8 +1087,8 @@ impl ModulePass<'_> {
     }
 
     /// Resolves one value name token: local scope first, then the enclosing
-    /// component's members, the module value namespace, and imports. Returns whether
-    /// it resolved.
+    /// component's members, the module value namespace, imports, and the prelude.
+    /// Returns whether it resolved.
     fn resolve_value_token(&mut self, head: &crate::syntax::SyntaxToken) -> bool {
         let name = self.interner.intern(&head.text());
         let to = if let Some(slot) = self.scopes.lookup(name) {
@@ -1074,6 +1099,8 @@ impl ModulePass<'_> {
             Resolution::Symbol(sym.id)
         } else if let Some(binding) = self.imports.get(&name) {
             Resolution::Symbol(binding.symbol)
+        } else if let Some(sym) = self.standard(name, Namespace::Value) {
+            Resolution::Symbol(sym)
         } else {
             // Possibly a native/schema name; not diagnosed at this layer.
             return false;
@@ -1125,19 +1152,10 @@ impl ModulePass<'_> {
         };
         let text = head.text();
         let name = self.interner.intern(&text);
-        if let Some(sym) = self.table.get(name, Namespace::Type) {
+        if let Some(symbol) = self.type_symbol(name) {
             self.refs.push(ResolvedRef {
                 range: head.text_range(),
-                to: Resolution::Symbol(sym.id),
-            });
-            return;
-        }
-        if let Some(binding) = self.imports.get(&name)
-            && binding.namespace == Namespace::Type
-        {
-            self.refs.push(ResolvedRef {
-                range: head.text_range(),
-                to: Resolution::Symbol(binding.symbol),
+                to: Resolution::Symbol(symbol),
             });
             return;
         }
@@ -1154,8 +1172,32 @@ impl ModulePass<'_> {
         }
     }
 
+    /// The type `name` names: this module's declaration, then a type import, then the
+    /// prelude's.
+    fn type_symbol(&self, name: NameId) -> Option<SymbolId> {
+        self.table
+            .get(name, Namespace::Type)
+            .map(|s| s.id)
+            .or_else(|| {
+                self.imports
+                    .get(&name)
+                    .filter(|b| b.namespace == Namespace::Type)
+                    .map(|b| b.symbol)
+            })
+            .or_else(|| self.standard(name, Namespace::Type))
+    }
+
+    /// The prelude's exported symbol `name` in `ns`.
+    fn standard(&self, name: NameId, ns: Namespace) -> Option<SymbolId> {
+        self.prelude
+            .get(name, ns)
+            .filter(|s| s.exported)
+            .map(|s| s.id)
+    }
+
     /// The type-namespace names in scope nearest to `text`: this module's own type
-    /// declarations (with their declaration spans) and its type imports.
+    /// declarations (with their declaration spans), its type imports and the prelude's
+    /// types.
     fn nearest_types(&self, text: &str) -> Vec<suggest::Candidate<'_>> {
         let declared_at = |id| self.decls.iter().find(|d| d.id == id).map(|d| d.name_range);
         let own = self
@@ -1177,7 +1219,17 @@ impl ModulePass<'_> {
                     declared_at: None,
                 })
             });
-        suggest::nearest(text, own.chain(imported))
+        let standard = self
+            .prelude
+            .names(Namespace::Type)
+            .filter(|(_, symbol)| symbol.exported)
+            .filter_map(|(name, _)| {
+                Some(suggest::Candidate {
+                    name: self.interner.text(name)?,
+                    declared_at: None,
+                })
+            });
+        suggest::nearest(text, own.chain(imported).chain(standard))
     }
 }
 
@@ -1244,8 +1296,10 @@ pub fn resolve_fragment(
 
     let imports = std::collections::HashMap::new();
     let members = MemberTables::new();
+    let prelude = SymbolTable::new();
     let mut pass = ModulePass {
         table: &table,
+        prelude: &prelude,
         members: &members,
         owner: None,
         node: None,
@@ -1379,6 +1433,32 @@ mod tests {
                 .any(|d| d.code == "E2001" && d.message.contains("`Missing`")),
             "an unknown PascalCase type is E2001"
         );
+    }
+
+    #[test]
+    fn prelude_types_resolve_and_are_suggested() {
+        let mut interner = NameInterner::new();
+        let src = "component A { input at: Point; input miss: Pointt; view { } }";
+        let app = unit(&mut interner, &["app"], src);
+        let mods = resolve_all(vec![app], &mut interner);
+        let point = interner.intern("Point");
+        let prelude = Prelude::load(&mut interner);
+        let standard = prelude
+            .module
+            .table
+            .get(point, Namespace::Type)
+            .expect("Point")
+            .id;
+        assert!(
+            mods[0]
+                .refs
+                .iter()
+                .any(|r| r.to == Resolution::Symbol(standard))
+        );
+        let errors: Vec<_> = mods[0].errors.iter().map(|d| d.code).collect();
+        assert_eq!(errors, ["E2001"]);
+        let fix = &mods[0].errors[0].fixes[0].edits[0];
+        assert_eq!(fix.replacement, "Point");
     }
 
     #[test]

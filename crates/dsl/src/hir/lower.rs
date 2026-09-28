@@ -27,6 +27,7 @@ use crate::ast::{
     Member, Param, RecordDecl, RecordField, ReturnType, TypePath,
 };
 use crate::diag::Diagnostic;
+use crate::resolve::prelude::Prelude;
 use crate::resolve::{
     ModuleGraph, NameInterner, Namespace, Resolution, ResolvedModule, ResolvedRef, SourceUnit,
     SymbolId, SymbolKind, SymbolTable,
@@ -88,6 +89,18 @@ pub fn lower(
     // First pass: every module's declarations into one package table (a module types what
     // it imports exactly as what it declares), and each module's own scope.
     let mut decls = Declarations::default();
+    let prelude = Prelude::load(interner);
+    ModuleScope::build(
+        &prelude.unit,
+        &prelude.module.table,
+        &prelude.module.refs,
+        interner,
+        &mut decls,
+    );
+    decls.standard = prelude
+        .types(interner)
+        .map(|(name, id)| (name.to_owned(), id))
+        .collect();
     let modules: Vec<Option<(CompilationUnit, ModuleScope)>> = graph
         .modules()
         .iter()
@@ -720,6 +733,8 @@ struct Declarations {
     signatures: HashMap<SymbolId, (Vec<Ty>, Ty)>,
     /// The inputs of every component, as node properties.
     inputs: HashMap<SymbolId, Vec<InputProp>>,
+    /// The prelude's types by name.
+    standard: HashMap<String, SymbolId>,
 }
 
 /// What one module adds to the package [`Declarations`]: its owners' member names, its
@@ -801,6 +816,10 @@ impl TypeEnv for ModuleEnv<'_> {
 impl ViewEnv for ModuleEnv<'_> {
     fn component_inputs(&self, component: SymbolId) -> Option<&[InputProp]> {
         self.decls.inputs.get(&component).map(Vec::as_slice)
+    }
+
+    fn standard_type(&self, name: &str) -> Option<SymbolId> {
+        self.decls.standard.get(name).copied()
     }
 }
 
@@ -2344,8 +2363,83 @@ mod tests {
         let codes: Vec<_> = pkg.diagnostics.iter().map(|d| d.code).collect();
         assert_eq!(codes, ["E3202"]);
         assert_eq!(pkg.diagnostics[0].fixes[0].edits[0].replacement, "changed");
-        // A built-in widget's events are not modeled yet.
-        assert_clean("component App {\n  view { Button { on pressed { } } }\n}");
+        // A built-in widget takes its own events and the standard ones.
+        let pkg = lower_src("component App {\n  view { Button { on clik { } } }\n}");
+        let codes: Vec<_> = pkg.diagnostics.iter().map(|d| d.code).collect();
+        assert_eq!(codes, ["E3202"]);
+        assert_eq!(pkg.diagnostics[0].fixes[0].edits[0].replacement, "click");
+    }
+
+    #[test]
+    fn standard_and_widget_events_type_their_payload() {
+        let app = |state: &str, node: &str| {
+            format!("component App {{\n  {state}\n  view {{ {node} }}\n}}")
+        };
+        assert_clean(&app(
+            "state n: Dp = 0dp",
+            "Row { on pointer_down(e) { n = e.position.x; } }",
+        ));
+        assert_eq!(
+            codes(&app(
+                "state s = \"\"",
+                "Row { on pointer_down(e) { s = e.position.x; } }"
+            )),
+            ["E2103"]
+        );
+        assert_clean(&app(
+            "state p: Option<Point> = Option::None",
+            "Button { on click(e) { p = e.position; } }",
+        ));
+        assert_eq!(
+            codes(&app(
+                "state p = Point { x: 0dp, y: 0dp }",
+                "Button { on click(e) { p = e.position; } }"
+            )),
+            ["E2103"]
+        );
+        assert_clean(&app(
+            "state b = PointerButton::primary\n  state k: Option<Key> = Option::None",
+            "Column { on pointer_up(e) { b = e.button; } on key_down(e) { k = Option::Some(e.key); } }",
+        ));
+        assert_clean(&app(
+            "state f: F32 = 0.0",
+            "Slider { on changed(ev) { f = ev.value; } }",
+        ));
+        assert_eq!(
+            codes(&app(
+                "state s = \"\"",
+                "Slider { on changed(ev) { s = ev.value; } }"
+            )),
+            ["E2103"]
+        );
+        assert_clean(&app(
+            "state t = \"\"\n  state done = false",
+            "TextInput { on changed(ev) { t = ev.value; } on submitted { done = true; } }",
+        ));
+        assert_clean(&app(
+            "state ok = false",
+            "Stack { on animation_end(e) { ok = e.finished; } }",
+        ));
+        let pkg = lower_src(&app("", "Slider { on chaned(e) { } }"));
+        let found: Vec<_> = pkg.diagnostics.iter().map(|d| d.code).collect();
+        assert_eq!(found, ["E3202"]);
+        assert_eq!(pkg.diagnostics[0].fixes[0].edits[0].replacement, "changed");
+        assert_eq!(codes(&app("", "Row { on changed(e) { } }")), ["E3202"]);
+        assert_eq!(codes(&app("", "FocusScope { on click { } }")), ["E3202"]);
+        assert_clean(&app(
+            "state n = 0",
+            "KeyShortcut { on triggered { n += 1; } }",
+        ));
+    }
+
+    #[test]
+    fn prelude_types_are_in_scope_and_shadowed_by_declarations() {
+        assert_clean(
+            "component C {\n  state o: Offset = Offset { x: 4dp }\n  state k = KeyChord { key: Key::char('s'), primary: true }\n  view { Column { translate: Offset::zero(); } }\n}",
+        );
+        assert_clean(
+            "record Point { a: I64 }\ncomponent C {\n  state p = Point { a: 1 }\n  view { }\n}",
+        );
     }
 
     #[test]

@@ -238,26 +238,57 @@ pub(crate) struct ChildProps {
     members: &'static [PropSpec],
 }
 
-/// The standard events every layout node takes (U7.1).
-pub(crate) const STANDARD_EVENTS: &[&str] = &[
-    "click",
-    "tap",
-    "long_press",
-    "drag_start",
-    "drag_move",
-    "drag_end",
-    "pointer_down",
-    "pointer_move",
-    "pointer_up",
-    "pointer_cancel",
-    "hover_enter",
-    "hover_leave",
-    "scroll",
-    "key_down",
-    "key_up",
-    "focus",
-    "blur",
+/// An event a node takes: its name and the prelude record its payload is, if it has
+/// one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct EventSpec {
+    pub(crate) name: &'static str,
+    pub(crate) payload: Option<&'static str>,
+}
+
+const fn event(name: &'static str, payload: &'static str) -> EventSpec {
+    EventSpec {
+        name,
+        payload: Some(payload),
+    }
+}
+
+const fn signal(name: &'static str) -> EventSpec {
+    EventSpec {
+        name,
+        payload: None,
+    }
+}
+
+/// The standard events every layout node takes (U7.1), and the end of an animation
+/// it plays (U6.3).
+pub(crate) const STANDARD_EVENTS: &[EventSpec] = &[
+    event("click", "ClickEvent"),
+    event("tap", "TapEvent"),
+    event("long_press", "LongPressEvent"),
+    event("drag_start", "DragEvent"),
+    event("drag_move", "DragEvent"),
+    event("drag_end", "DragEvent"),
+    event("pointer_down", "PointerEvent"),
+    event("pointer_move", "PointerEvent"),
+    event("pointer_up", "PointerEvent"),
+    event("pointer_cancel", "PointerEvent"),
+    event("hover_enter", "HoverEvent"),
+    event("hover_leave", "HoverEvent"),
+    event("scroll", "ScrollEvent"),
+    event("key_down", "KeyEvent"),
+    event("key_up", "KeyEvent"),
+    event("focus", "FocusEvent"),
+    event("blur", "FocusEvent"),
+    event("animation_end", "AnimationEnd"),
 ];
+
+const TOGGLE_EVENTS: &[EventSpec] = &[event("changed", "ToggleChanged")];
+const SLIDER_EVENTS: &[EventSpec] = &[event("changed", "SliderChanged")];
+const TEXT_INPUT_EVENTS: &[EventSpec] = &[event("changed", "TextChanged"), signal("submitted")];
+const SELECTED_EVENTS: &[EventSpec] = &[event("selected_changed", "SelectionChanged")];
+const SCROLL_EVENTS: &[EventSpec] = &[event("scroll_changed", "ScrollChanged")];
+const KEY_SHORTCUT_EVENTS: &[EventSpec] = &[signal("triggered")];
 
 const GRID_CHILD: ChildProps = ChildProps {
     prefix: "grid",
@@ -308,12 +339,15 @@ impl ChildProps {
 }
 
 /// A widget's schema: its own property tables, whether it takes the common ones
-/// (every node but `Fragment` does), and the group it provides to its children.
+/// (every node but `Fragment` does), the group it provides to its children, its own
+/// events, and whether it takes the standard ones (every layout node does).
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct WidgetSchema {
     own: &'static [&'static [PropSpec]],
     common: bool,
     provides: Option<ChildProps>,
+    events: &'static [EventSpec],
+    standard_events: bool,
 }
 
 /// What a property path names on a node.
@@ -327,36 +361,45 @@ pub(crate) enum PropLookup {
 
 /// The built-in widget schema for a node type name, when the baseline lists it.
 pub(crate) fn builtin(name: &str) -> Option<WidgetSchema> {
-    let (own, provides): (&'static [&'static [PropSpec]], _) = match name {
-        "Row" | "Column" => (&[FLEX], None),
-        "Flex" => (&[FLEX, FLEX_AXIS], None),
-        "Grid" => (&[GRID], Some(GRID_CHILD)),
-        "Stack" => (&[STACK], Some(STACK_CHILD)),
-        "Absolute" => (&[], Some(ABSOLUTE_CHILD)),
-        "Scroll" => (&[SCROLL], None),
-        "Fragment" => {
-            return Some(WidgetSchema {
-                own: &[],
-                common: false,
-                provides: None,
-            });
-        }
-        "Text" => (&[TEXT, TEXT_STYLE], None),
-        "TextInput" => (&[TEXT_INPUT, TEXT_STYLE], None),
-        "Button" => (&[BUTTON], None),
-        "Toggle" | "CheckBox" => (&[CHECK], None),
-        "Slider" => (&[SLIDER], None),
-        "Tabs" | "RadioGroup" => (&[SELECTED], None),
-        "FocusScope" => (&[FOCUS_SCOPE], None),
-        "KeyShortcut" => (&[KEY_SHORTCUT], None),
-        "VirtualList" => (&[VIRTUAL_LIST], None),
-        _ => return None,
-    };
-    Some(WidgetSchema {
+    let layout = |own, provides, events| WidgetSchema {
         own,
         common: true,
         provides,
-    })
+        events,
+        standard_events: true,
+    };
+    let schema = match name {
+        "Row" | "Column" => layout(&[FLEX], None, &[]),
+        "Flex" => layout(&[FLEX, FLEX_AXIS], None, &[]),
+        "Grid" => layout(&[GRID], Some(GRID_CHILD), &[]),
+        "Stack" => layout(&[STACK], Some(STACK_CHILD), &[]),
+        "Absolute" => layout(&[], Some(ABSOLUTE_CHILD), &[]),
+        "Scroll" => layout(&[SCROLL], None, SCROLL_EVENTS),
+        "Fragment" => WidgetSchema {
+            own: &[],
+            common: false,
+            provides: None,
+            events: &[],
+            standard_events: false,
+        },
+        "Text" => layout(&[TEXT, TEXT_STYLE], None, &[]),
+        "TextInput" => layout(&[TEXT_INPUT, TEXT_STYLE], None, TEXT_INPUT_EVENTS),
+        "Button" => layout(&[BUTTON], None, &[]),
+        "Toggle" | "CheckBox" => layout(&[CHECK], None, TOGGLE_EVENTS),
+        "Slider" => layout(&[SLIDER], None, SLIDER_EVENTS),
+        "Tabs" | "RadioGroup" => layout(&[SELECTED], None, SELECTED_EVENTS),
+        "FocusScope" => WidgetSchema {
+            standard_events: false,
+            ..layout(&[FOCUS_SCOPE], None, &[])
+        },
+        "KeyShortcut" => WidgetSchema {
+            standard_events: false,
+            ..layout(&[KEY_SHORTCUT], None, KEY_SHORTCUT_EVENTS)
+        },
+        "VirtualList" => layout(&[VIRTUAL_LIST], None, &[]),
+        _ => return None,
+    };
+    Some(schema)
 }
 
 impl WidgetSchema {
@@ -367,7 +410,28 @@ impl WidgetSchema {
             own: &[],
             common: true,
             provides: None,
+            events: &[],
+            standard_events: true,
         }
+    }
+
+    /// The event `name` this node takes: one of its own, else a standard one.
+    pub(crate) fn event(&self, name: &str) -> Option<EventSpec> {
+        self.event_specs().find(|e| e.name == name)
+    }
+
+    /// The names of the events this node takes, for suggestions.
+    pub(crate) fn event_names(&self) -> impl Iterator<Item = &'static str> + '_ {
+        self.event_specs().map(|e| e.name)
+    }
+
+    fn event_specs(&self) -> impl Iterator<Item = EventSpec> + '_ {
+        let standard = if self.standard_events {
+            STANDARD_EVENTS
+        } else {
+            &[]
+        };
+        self.events.iter().chain(standard).copied()
     }
 
     /// The group this node provides to its direct children, if any.
@@ -463,6 +527,31 @@ mod tests {
         assert!(matches!(absolute, Some(p) if p.percent_basis));
         assert!(builtin("Row").and_then(|s| s.provides()).is_none());
         assert!(child_props("flex").is_none());
+    }
+
+    #[test]
+    fn events_are_own_then_standard() {
+        let slider = builtin("Slider").expect("Slider is in the baseline");
+        assert_eq!(
+            slider.event("changed").and_then(|e| e.payload),
+            Some("SliderChanged")
+        );
+        assert_eq!(
+            slider.event("click").and_then(|e| e.payload),
+            Some("ClickEvent")
+        );
+        let input = builtin("TextInput").expect("TextInput is in the baseline");
+        assert!(matches!(input.event("submitted"), Some(e) if e.payload.is_none()));
+        let shortcut = builtin("KeyShortcut").expect("KeyShortcut is in the baseline");
+        assert!(shortcut.event("triggered").is_some());
+        assert!(shortcut.event("click").is_none());
+        assert!(
+            builtin("FocusScope")
+                .and_then(|s| s.event("click"))
+                .is_none()
+        );
+        assert!(builtin("Fragment").and_then(|s| s.event("click")).is_none());
+        assert!(builtin("Row").and_then(|s| s.event("changed")).is_none());
     }
 
     #[test]
