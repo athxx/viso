@@ -25,7 +25,8 @@ the three source entries share one frontend.
 
 - [x] Streaming tokenizer, trivia preserved, errors carried per span (`syntax/lexer.rs`).
 - [x] Longest-match unit suffixes, `1em` vs exponent, radix/separator rules.
-- [x] Spec codes `E1102`, `E1201`–`E1210`, `E1301` (`tests/lexer.rs`).
+- [x] Spec codes `E1102`, `E1201`–`E1210`, `E1301` (`tests/lexer.rs`); every lexer
+      code pinned to its variant, Appendix C row and a snippet (`tests/lex_codes.rs`).
 - [x] `E1001`: unknown language version from `Viso.toml`/lockfile (§22,
       `frontend::check_language_version`).
 - [x] `E1101`: identifier NFC normalization conflict; identifiers lex by XID and intern
@@ -107,7 +108,6 @@ the three source entries share one frontend.
         exports the input types and payload records, shadowed by declarations and
         imports; each built-in widget lists its own events, and a handler naming an
         event its node does not take is `E3202` (`hir/widget.rs`, `hir/view.rs`).
-  - [ ] Schemas beyond the baseline (native declarations).
   - [x] `task` signatures: a task call's arguments check against its parameters and
         its value is the declared result; `await` keeps its operand's type.
   - [x] Imports type as declared: records, enums, callable signatures, component
@@ -170,7 +170,8 @@ the three source entries share one frontend.
 
 ### Done
 
-- [ ] Every D0 `[ ]` above closed; Appendix C codes emitted by D0 each have a test.
+- [x] Every D0 `[ ]` above closed; Appendix C codes emitted by D0 each have a test
+      (the frontend's unreachable non-root cast is an invariant, not a code).
 
 ---
 
@@ -224,7 +225,8 @@ Goal: every Core view construct reaches a live tree through all three lowering t
 ### D2.3 — Components and slots in views
 
 - [ ] Resolve user components instead of defaulting unknown types to `NodeKind::Leaf`.
-- [ ] Widget schema registry: properties, events, slots, percent basis.
+- [ ] Widget schema registry: properties, events, slots, percent basis, from native
+      declarations instead of the baseline table in `hir/widget.rs`.
 - [ ] Default slot `E3003`/`E3004`; slot cardinality `E3502`; unknown slot `E3501`.
 - [ ] Two-way binding (§123) lowering: write-back through the `@bindable` event
       (compile-time `E3103`/`E3107`/`E3701` are checked in D0.5).

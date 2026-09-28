@@ -180,14 +180,8 @@ pub fn compile_fragment(source: &str) -> Compiled {
     let parse = parse_entry(&tokenize(source), source, Entry::ViewFragment);
     let root = SyntaxNode::new_root(parse.root.clone());
     let mut diagnostics = parse.errors.clone();
-    let Some(fragment) = ViewFragment::cast(root.clone()) else {
-        diagnostics.push(Diagnostic::error(
-            "E4200",
-            whole(source),
-            "the source is not a view fragment",
-        ));
-        return Compiled::empty(diagnostics);
-    };
+    let fragment =
+        ViewFragment::cast(root.clone()).expect("the view-fragment entry roots a ViewFragment");
 
     let names = path_heads(&root);
     let name_refs: Vec<&str> = names.iter().map(String::as_str).collect();
@@ -255,14 +249,8 @@ fn compile_unit(source: &str, parse: Parse, origin: &Origin) -> Compiled {
         diagnostics.push(error);
     }
     let root = SyntaxNode::new_root(parse.root.clone());
-    let Some(cu) = CompilationUnit::cast(root.clone()) else {
-        diagnostics.push(Diagnostic::error(
-            "E4200",
-            whole(source),
-            "the source is not a compilation unit",
-        ));
-        return Compiled::empty(diagnostics);
-    };
+    let cu =
+        CompilationUnit::cast(root.clone()).expect("every module entry roots a CompilationUnit");
 
     let mut interner = NameInterner::new();
     let segments: Vec<&str> = origin.module.iter().map(String::as_str).collect();
