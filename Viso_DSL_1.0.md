@@ -107,7 +107,7 @@ U+000A LINE FEED
 U+000D CARRIAGE RETURN
 ```
 
-其他 Unicode 空白字符在字符串和注释外不属于空白 Token；Compiler 必须报告不可见字符诊断。Viso 1.0 的 XID 与 NFC 数据表固定使用 Unicode 16.0；实现必须按同一数据表执行标识符规范化与校验。
+其他 Unicode 空白字符在字符串和注释外不属于空白 Token；Compiler 必须报告不可见字符诊断。Viso 1.0 的 XID 与 NFC 数据表固定使用 Unicode 17.0；实现必须按同一数据表执行标识符规范化与校验。
 
 注释：
 

@@ -369,6 +369,19 @@ fn escape_bounds() {
     assert_eq!(tokenize(r#""\q""#)[0].error, Some(LexError::InvalidEscape));
 }
 
+#[test]
+fn identifier_tables_are_unicode_17() {
+    // Sidetic and CJK Extension J letters are new in Unicode 17.0.
+    for letter in ["\u{10940}", "\u{323B0}"] {
+        assert_eq!(significant_pairs(letter), [(SyntaxKind::Ident, letter)]);
+    }
+    // A reserved code point starts no token.
+    assert_eq!(
+        tokenize("\u{378}")[0].error,
+        Some(LexError::UnexpectedCharacter)
+    );
+}
+
 // --- Malformed-input recovery ----------------------------------------------
 
 #[test]

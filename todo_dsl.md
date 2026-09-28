@@ -30,7 +30,8 @@ the three source entries share one frontend.
 - [x] `E1001`: unknown language version from `Viso.toml`/lockfile (§22,
       `frontend::check_language_version`).
 - [x] `E1101`: identifier NFC normalization conflict; identifiers lex by XID and intern
-      by NFC (`resolve/name.rs`, `resolve/resolver.rs`).
+      by NFC (`resolve/name.rs`, `resolve/resolver.rs`); the XID and NFC tables are
+      Unicode 17.0 (ICU4X 2.3), pinned by a 17.0-only letter (`tests/lexer.rs`).
 
 ### D0.2 — Lossless CST and incremental layer
 
