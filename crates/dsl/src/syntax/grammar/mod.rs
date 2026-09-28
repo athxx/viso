@@ -41,7 +41,7 @@ use super::kind::SyntaxKind;
 use super::span::{TextRange, TextSize};
 use super::token::Token;
 
-use crate::diag::Diagnostic;
+use crate::diag::{Applicability, Diagnostic, Fix, TextEdit};
 
 pub use super::parser::{Parse, ParseErrorKind};
 pub use incremental::IncrementalParse;
@@ -499,6 +499,35 @@ impl<'t, 's> Parser<'t, 's> {
         if self.cursor() == before && !self.at_end() {
             self.err_and_bump(ParseErrorKind::UnexpectedTokens);
         }
+    }
+
+    /// Flags the reserved `child` at the cursor and drops just the word, so the
+    /// node that follows parses as an ordinary anonymous node. When a type
+    /// follows, deleting the word and the whitespace after it is the fix.
+    fn reserved_child(&mut self) {
+        let at = self.significant[self.pos];
+        let range = self.tokens[at].range;
+        let mut diagnostic = ParseErrorKind::ChildReserved
+            .to_diagnostic(range)
+            .expecting(["anonymous node", "node <name>: <Component>"], "child");
+        if matches!(self.nth(1), SyntaxKind::Ident | SyntaxKind::RawIdent) {
+            let end = self.tokens[at + 1..]
+                .iter()
+                .find(|t| t.kind != SyntaxKind::Whitespace)
+                .map_or(range.end(), |t| t.range.start());
+            diagnostic.fixes.push(Fix {
+                title: "remove `child`".to_string(),
+                applicability: Applicability::MachineApplicable,
+                edits: vec![TextEdit {
+                    range: TextRange::new(range.start(), end),
+                    replacement: String::new(),
+                }],
+            });
+        }
+        let m = self.start();
+        self.errors.push(diagnostic);
+        self.bump_any();
+        m.complete(self, SyntaxKind::ErrorNode);
     }
 
     /// Wraps the current token in an `ErrorNode` and advances, so recovery always

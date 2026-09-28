@@ -232,6 +232,22 @@ fn json_streams_one_event_per_line_and_ends_with_the_summary() {
 }
 
 #[test]
+fn json_names_what_a_mismatch_expected_and_found() {
+    let s = Scratch::new("json-mismatch");
+    s.write("Viso.toml", MANIFEST)
+        .write("src/app.vs", "fn f() -> I64 {\n    \"a\"\n}\n");
+    let out = viso(&s.0, &["check", "--json"]);
+    assert_eq!(code(&out), 1);
+    let lines = events(&out);
+    assert!(
+        lines[0].contains(r#""code":"E2103","#)
+            && lines[0].contains(r#""expected":["I64"],"actual":"String","#),
+        "{}",
+        lines[0]
+    );
+}
+
+#[test]
 fn json_quiet_still_streams_warnings() {
     let s = Scratch::new("json-quiet");
     s.write("Viso.toml", "[package]\nname = \"demo\"\npackge = 1\n")

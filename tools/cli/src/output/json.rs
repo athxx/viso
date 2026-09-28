@@ -148,6 +148,17 @@ fn diagnostic(w: &mut JsonWriter, report: &Report<'_>) {
         }
     }
     w.end_array();
+    w.name("expected");
+    w.begin_array();
+    for expected in report.expected {
+        w.string(expected);
+    }
+    w.end_array();
+    w.name("actual");
+    match report.actual {
+        Some(actual) => w.string(actual),
+        None => w.null(),
+    }
     w.name("notes");
     w.begin_array();
     for note in report.notes {
@@ -250,6 +261,7 @@ mod tests {
         let at = text.find("Badgee").unwrap();
         let source = Source::new(Path::new("/p/src/app.vs"), Path::new("/p"), text);
         let notes = ["names are case-sensitive".to_string()];
+        let expected = ["Badge".to_string(), "Bridge".to_string()];
         let fixes = [Fix {
             title: "replace with `Badge`".to_string(),
             applicability: Applicability::MaybeIncorrect,
@@ -264,6 +276,8 @@ mod tests {
             message: "unresolved \"Badgee\"",
             location: Location::Span(&source, at..at + 6),
             related: vec![(0..5, "declared here")],
+            expected: &expected,
+            actual: Some("Badgee"),
             notes: &notes,
             fixes: &fixes,
         };
@@ -277,6 +291,7 @@ mod tests {
                 r#""related":[{"file":"src/app.vs","byte_start":0,"byte_end":5,"#,
                 r#""line":1,"column_utf16":1,"end_line":1,"end_column_utf16":6,"#,
                 r#""message":"declared here"}],"#,
+                r#""expected":["Badge","Bridge"],"actual":"Badgee","#,
                 r#""notes":["names are case-sensitive"],"#,
                 r#""fixes":[{"title":"replace with `Badge`","#,
                 r#""applicability":"maybe-incorrect","#,
@@ -298,12 +313,14 @@ mod tests {
                 column: 1,
             },
             related: Vec::new(),
+            expected: &[],
+            actual: None,
             notes: &[],
             fixes: &[],
         };
         assert_eq!(
             written(&report),
-            r#"{"schema_version":"1.0","severity":"warning","code":"C0004","message":"unknown key","primary":null,"related":[],"notes":[],"fixes":[]}"#
+            r#"{"schema_version":"1.0","severity":"warning","code":"C0004","message":"unknown key","primary":null,"related":[],"expected":[],"actual":null,"notes":[],"fixes":[]}"#
         );
     }
 }

@@ -262,11 +262,11 @@ impl InferCx<'_> {
                     .filter_map(|e| e.as_token().cloned())
                     .find(|t| t.kind() == SyntaxKind::QuestionDot);
                 if let Some(op) = op {
-                    let message = format!(
-                        "`?.` reads through an `Option`, but the receiver is `{}`",
-                        self.describe(&other)
-                    );
-                    let mut diagnostic = Diagnostic::error("E2103", op.text_range(), message);
+                    let actual = self.describe(&other);
+                    let message =
+                        format!("`?.` reads through an `Option`, but the receiver is `{actual}`");
+                    let mut diagnostic = Diagnostic::error("E2103", op.text_range(), message)
+                        .expecting(["Option<T>"], actual);
                     diagnostic.fixes.push(Fix {
                         title: "use `.`".to_string(),
                         applicability: Applicability::MachineApplicable,

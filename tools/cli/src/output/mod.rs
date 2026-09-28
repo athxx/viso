@@ -114,6 +114,11 @@ struct Report<'a> {
     location: Location<'a>,
     /// Secondary ranges in the primary location's source, each with a label.
     related: Vec<(Range<usize>, &'a str)>,
+    /// What would have been accepted and what was found, for a mismatch. Only the
+    /// event stream carries them; human text leaves them to the message, which
+    /// already says them.
+    expected: &'a [String],
+    actual: Option<&'a str>,
     notes: &'a [String],
     /// Suggested edits, in the primary location's source.
     fixes: &'a [Fix],
@@ -182,6 +187,8 @@ impl Output {
                 message: &diagnostic.message,
                 location,
                 related,
+                expected: &diagnostic.expected,
+                actual: diagnostic.actual.as_deref(),
                 notes: &diagnostic.notes,
                 fixes: &diagnostic.fixes,
             },
@@ -210,6 +217,8 @@ impl Output {
                 message: &diagnostic.message,
                 location,
                 related: Vec::new(),
+                expected: &[],
+                actual: None,
                 notes: &diagnostic.notes,
                 fixes: &[],
             },
@@ -226,6 +235,8 @@ impl Output {
                 message,
                 location: Location::None,
                 related: Vec::new(),
+                expected: &[],
+                actual: None,
                 notes,
                 fixes: &[],
             },

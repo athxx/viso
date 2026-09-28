@@ -33,8 +33,9 @@ pub enum Severity {
 /// `code` is a `'static` string from the emitting kind's `code()` table, so it is
 /// borrowed, never allocated; `message` is the kind's `message()` with any subject
 /// folded in, so it is owned. `related` carries secondary spans (a colliding
-/// definition, a cycle participant) each with its own label, and `notes` carries
-/// free-form guidance, and `fixes` carries suggested source edits.
+/// definition, a cycle participant) each with its own label, `expected` and
+/// `actual` name what the source should have held and what it held, `notes`
+/// carries free-form guidance, and `fixes` carries suggested source edits.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Diagnostic {
     /// How severe the diagnostic is.
@@ -45,6 +46,12 @@ pub struct Diagnostic {
     pub primary: TextRange,
     /// Secondary spans with labels (a colliding declaration, a cycle member, …).
     pub related: Vec<(TextRange, String)>,
+    /// What would have been accepted at the primary span, each alternative as
+    /// source spells it (a type, a construct); empty when the diagnostic is not a
+    /// mismatch.
+    pub expected: Vec<String>,
+    /// What the primary span holds instead, as source spells it.
+    pub actual: Option<String>,
     /// Free-form notes offering guidance beyond the one-line message.
     pub notes: Vec<String>,
     /// Suggested source edits, each applicable on its own.
@@ -103,6 +110,8 @@ impl Diagnostic {
             code,
             primary,
             related: Vec::new(),
+            expected: Vec::new(),
+            actual: None,
             notes: Vec::new(),
             fixes: Vec::new(),
             message: message.into(),
@@ -116,10 +125,24 @@ impl Diagnostic {
             code,
             primary,
             related: Vec::new(),
+            expected: Vec::new(),
+            actual: None,
             notes: Vec::new(),
             fixes: Vec::new(),
             message: message.into(),
         }
+    }
+
+    /// This diagnostic as a mismatch: `expected` lists what would have been
+    /// accepted and `actual` names what was found.
+    pub fn expecting<S: Into<String>>(
+        mut self,
+        expected: impl IntoIterator<Item = S>,
+        actual: impl Into<String>,
+    ) -> Self {
+        self.expected = expected.into_iter().map(Into::into).collect();
+        self.actual = Some(actual.into());
+        self
     }
 }
 

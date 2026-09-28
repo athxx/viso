@@ -158,6 +158,37 @@ fn child_is_reserved() {
 }
 
 #[test]
+fn a_reserved_child_before_a_type_is_removed_by_its_fix() {
+    let src = view_of("child\n  Column { }");
+    let errors = parse(&tokenize(&src), &src).errors;
+    let [error] = errors.as_slice() else {
+        panic!("expected one error, got {errors:?}");
+    };
+    let at = src.find("child").unwrap();
+    assert_eq!(error.primary.as_usize(), at..at + "child".len());
+    assert_eq!(
+        error.expected,
+        ["anonymous node", "node <name>: <Component>"]
+    );
+    assert_eq!(error.actual.as_deref(), Some("child"));
+    let [fix] = error.fixes.as_slice() else {
+        panic!("expected one fix, got {:?}", error.fixes);
+    };
+    let [edit] = fix.edits.as_slice() else {
+        panic!("expected one edit");
+    };
+    let mut fixed = src.clone();
+    fixed.replace_range(edit.range.as_usize(), &edit.replacement);
+    assert_eq!(fixed, view_of("Column { }"));
+    assert!(parse(&tokenize(&fixed), &fixed).errors.is_empty());
+
+    // Without a type after it there is nothing to keep, so no fix is offered.
+    let src = view_of("child { }");
+    let errors = parse(&tokenize(&src), &src).errors;
+    assert!(errors.iter().all(|e| e.fixes.is_empty()), "{errors:?}");
+}
+
+#[test]
 fn view_fragment_entry_parses_bare_items() {
     // `ui!` parses view items with no surrounding component/view wrapper.
     let root = fragment("Button { text: \"Save\"; on click { } }");

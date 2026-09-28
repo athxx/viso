@@ -153,7 +153,10 @@ the three source entries share one frontend.
       in the CLI event envelope — `schema_version`, byte + 1-based UTF-16 ranges (both
       ends), labeled `related`, `fixes` with applicability — for compiler, config and
       CLI diagnostics, then one `summary`; usage errors too (`tools/cli/src/output`).
-  - [ ] `expected`/`actual`: no diagnostic fills them yet.
+  - [x] `expected`/`actual`: type mismatches (`E2103`, `E2102`: declared vs found,
+        branches, range bounds, `?`/`?.` receivers, list indices, `bind` sides) and
+        `E3001` fill them; `E3001` also carries a machine-applicable fix when a type
+        follows `child`.
   - [ ] Multi-file fixes: a `TextEdit` names no file, so every edit lands in the
         diagnostic's own file.
 - [x] Token-stream formatter (`crates/lsp/src/format`).

@@ -67,11 +67,7 @@ fn view_structure_item(p: &mut Parser) {
         SyntaxKind::IfKw => view_if(p),
         SyntaxKind::ForKw => view_for(p),
         SyntaxKind::MatchKw => view_match(p),
-        SyntaxKind::ChildKw => {
-            // `child` is reserved and no longer a node: flag it and drop just the
-            // word, so the node that follows parses as an ordinary anonymous node.
-            p.err_and_bump(ParseErrorKind::ChildReserved);
-        }
+        SyntaxKind::ChildKw => p.reserved_child(),
         _ if super::types::at_type_start(p) => anonymous_node(p),
         _ => p.err_and_bump(ParseErrorKind::UnexpectedTokens),
     }
@@ -146,9 +142,7 @@ fn node_member(p: &mut Parser) {
         SyntaxKind::IfKw => view_if(p),
         SyntaxKind::ForKw => view_for(p),
         SyntaxKind::MatchKw => view_match(p),
-        SyntaxKind::ChildKw => {
-            p.err_and_bump(ParseErrorKind::ChildReserved);
-        }
+        SyntaxKind::ChildKw => p.reserved_child(),
         // A leading name is either a nested anonymous node (`Type { ... }`) or a
         // property binding (`path : expr ;`). A `{` after the type marks the node;
         // otherwise it is a property path.

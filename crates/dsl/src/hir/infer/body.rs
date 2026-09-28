@@ -68,12 +68,12 @@ impl InferCx<'_> {
                     .filter_map(|e| e.as_token().cloned())
                     .rfind(|t| !t.kind().is_trivia())
                     .map_or(block.text_range(), |t| t.text_range());
-                let message = format!(
-                    "this block has no value; expected `{}`",
-                    self.describe(want)
+                let expected = self.describe(want);
+                let message = format!("this block has no value; expected `{expected}`");
+                self.diagnostics.push(
+                    Diagnostic::error("E2103", range, message)
+                        .expecting([expected], self.describe(&Ty::Unit)),
                 );
-                self.diagnostics
-                    .push(Diagnostic::error("E2103", range, message));
                 want.clone()
             }
             _ => Ty::Unit,
@@ -394,9 +394,12 @@ impl InferCx<'_> {
                 let _ = self.infer_expr(&value, frame.as_ref());
             }
             (None, Some(ret)) if !matches!(ret, Ty::Unit | Ty::Unknown) => {
-                let message = format!("`return` needs a value of type `{}`", self.describe(&ret));
-                self.diagnostics
-                    .push(Diagnostic::error("E2103", stmt.text_range(), message));
+                let expected = self.describe(&ret);
+                let message = format!("`return` needs a value of type `{expected}`");
+                self.diagnostics.push(
+                    Diagnostic::error("E2103", stmt.text_range(), message)
+                        .expecting([expected], self.describe(&Ty::Unit)),
+                );
             }
             (None, _) => {}
         }

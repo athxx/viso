@@ -2,7 +2,7 @@
 //! field or element of one (`E2110` otherwise), and a `bind` source is a State Lens —
 //! a `state` of the component or a field or element of one (`E3107` otherwise).
 
-use super::{InferCx, first_child_expr, is_integer_ty};
+use super::{INTEGER_TYPES, InferCx, first_child_expr, is_integer_ty};
 use crate::ast::{AssignablePath, AstNode, Expr, PathExpr};
 use crate::diag::Diagnostic;
 use crate::hir::ty::Ty;
@@ -121,15 +121,12 @@ impl InferCx<'_> {
             } else if let Some(index) = part.as_node().and_then(|n| Expr::cast(n.clone())) {
                 let index_ty = self.infer_expr(&index, None);
                 if !matches!(index_ty, Ty::Unknown | Ty::Never) && !is_integer_ty(&index_ty) {
-                    let message = format!(
-                        "a list index is an integer, found `{}`",
-                        self.describe(&index_ty)
+                    let actual = self.describe(&index_ty);
+                    let message = format!("a list index is an integer, found `{actual}`");
+                    self.diagnostics.push(
+                        Diagnostic::error("E2103", index.syntax().text_range(), message)
+                            .expecting(INTEGER_TYPES, actual),
                     );
-                    self.diagnostics.push(Diagnostic::error(
-                        "E2103",
-                        index.syntax().text_range(),
-                        message,
-                    ));
                 }
                 ty = match ty {
                     Ty::List(elem) => *elem,

@@ -528,17 +528,15 @@ impl<'a> ViewWalk<'a> {
             && !have.has_unknown()
             && want != have
         {
+            let (expected, actual) = (self.cx.describe(want), self.cx.describe(have));
             let message = format!(
-                "`bind` needs both sides to be the same type: `{}` is `{}`, the source is `{}`; convert with `using`",
+                "`bind` needs both sides to be the same type: `{}` is `{expected}`, the source is `{actual}`; convert with `using`",
                 path_text(&path),
-                self.cx.describe(want),
-                self.cx.describe(have),
             );
-            self.diagnostics.push(Diagnostic::error(
-                "E2103",
-                binding.syntax().text_range(),
-                message,
-            ));
+            self.diagnostics.push(
+                Diagnostic::error("E2103", binding.syntax().text_range(), message)
+                    .expecting([expected], actual),
+            );
         }
         if !declared.two_way {
             let on = scope

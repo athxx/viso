@@ -146,6 +146,8 @@ mod tests {
                 .iter()
                 .map(|(range, label)| (range.as_usize(), label.as_str()))
                 .collect(),
+            expected: &diagnostic.expected,
+            actual: diagnostic.actual.as_deref(),
             notes: &diagnostic.notes,
             fixes: &diagnostic.fixes,
         })
@@ -203,6 +205,8 @@ mod tests {
             message: "unexpected argument",
             location: Location::None,
             related: Vec::new(),
+            expected: &[],
+            actual: None,
             notes: &notes,
             fixes: &[],
         });

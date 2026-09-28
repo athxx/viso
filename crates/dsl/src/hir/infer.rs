@@ -563,12 +563,12 @@ impl<'a> InferCx<'a> {
         if let Some(index) = exprs.get(1) {
             let ty = self.infer_expr(index, None);
             if !matches!(ty, Ty::Unknown | Ty::Never) && !is_integer_ty(&ty) {
-                let message = format!("a list index is an integer, found `{}`", self.describe(&ty));
-                self.diagnostics.push(Diagnostic::error(
-                    "E2103",
-                    index.syntax().text_range(),
-                    message,
-                ));
+                let actual = self.describe(&ty);
+                let message = format!("a list index is an integer, found `{actual}`");
+                self.diagnostics.push(
+                    Diagnostic::error("E2103", index.syntax().text_range(), message)
+                        .expecting(INTEGER_TYPES, actual),
+                );
             }
         }
         match recv {
@@ -586,12 +586,13 @@ impl<'a> InferCx<'a> {
             Ty::Option(t) | Ty::Result(t, _) => self.check_against(*t, expected, node),
             Ty::Unknown | Ty::Never => Ty::Unknown,
             other => {
-                let message = format!(
-                    "the `?` operator needs an `Option` or a `Result`, found `{}`",
-                    self.describe(&other)
+                let actual = self.describe(&other);
+                let message =
+                    format!("the `?` operator needs an `Option` or a `Result`, found `{actual}`");
+                self.diagnostics.push(
+                    Diagnostic::error("E2103", node.text_range(), message)
+                        .expecting(["Option<T>", "Result<T, E>"], actual),
                 );
-                self.diagnostics
-                    .push(Diagnostic::error("E2103", node.text_range(), message));
                 Ty::Unknown
             }
         }
@@ -621,16 +622,14 @@ impl<'a> InferCx<'a> {
                 Some(prev) => match unify(&prev, &ty) {
                     Some(u) => Some(u),
                     None => {
+                        let (expected, actual) = (self.describe(&prev), self.describe(&ty));
                         let message = format!(
-                            "range bounds have different types: `{}` and `{}`",
-                            self.describe(&prev),
-                            self.describe(&ty)
+                            "range bounds have different types: `{expected}` and `{actual}`"
                         );
-                        self.diagnostics.push(Diagnostic::error(
-                            "E2103",
-                            node.text_range(),
-                            message,
-                        ));
+                        self.diagnostics.push(
+                            Diagnostic::error("E2103", node.text_range(), message)
+                                .expecting([expected], actual),
+                        );
                         Some(prev)
                     }
                 },
@@ -955,16 +954,14 @@ impl<'a> InferCx<'a> {
                 Some(prev) => match unify(&prev, t) {
                     Some(u) => Some(u),
                     None => {
+                        let (expected, actual) = (self.describe(&prev), self.describe(t));
                         let message = format!(
-                            "incompatible types across branches: `{}` and `{}`",
-                            self.describe(&prev),
-                            self.describe(t)
+                            "incompatible types across branches: `{expected}` and `{actual}`"
                         );
-                        self.diagnostics.push(Diagnostic::error(
-                            "E2103",
-                            node.text_range(),
-                            message,
-                        ));
+                        self.diagnostics.push(
+                            Diagnostic::error("E2103", node.text_range(), message)
+                                .expecting([expected], actual),
+                        );
                         Some(prev)
                     }
                 },
@@ -1032,13 +1029,14 @@ impl<'a> InferCx<'a> {
             match produced.check_implicit_widen(target) {
                 Ok(()) => target.clone(),
                 Err(WidenError::IllegalImplicit) => {
+                    let (expected, actual) = (self.describe(target), self.describe(&produced));
                     let message = format!(
-                        "illegal implicit conversion from `{}` to `{}`; an explicit cast is required",
-                        self.describe(&produced),
-                        self.describe(target)
+                        "illegal implicit conversion from `{actual}` to `{expected}`; an explicit cast is required"
                     );
-                    self.diagnostics
-                        .push(Diagnostic::error("E2102", node.text_range(), message));
+                    self.diagnostics.push(
+                        Diagnostic::error("E2102", node.text_range(), message)
+                            .expecting([expected], actual),
+                    );
                     target.clone()
                 }
             }
@@ -1050,13 +1048,10 @@ impl<'a> InferCx<'a> {
 
     /// Emits an `E2103` type mismatch.
     fn emit_mismatch(&mut self, produced: &Ty, target: &Ty, range: TextRange) {
-        let message = format!(
-            "type mismatch: expected `{}`, found `{}`",
-            self.describe(target),
-            self.describe(produced)
-        );
+        let (expected, actual) = (self.describe(target), self.describe(produced));
+        let message = format!("type mismatch: expected `{expected}`, found `{actual}`");
         self.diagnostics
-            .push(Diagnostic::error("E2103", range, message));
+            .push(Diagnostic::error("E2103", range, message).expecting([expected], actual));
     }
 
     /// A type as source spells it, for diagnostic messages.
@@ -1151,6 +1146,9 @@ fn builtin_variant(segments: &[SyntaxToken]) -> Option<&'static str> {
 // --- free helpers ------------------------------------------------------------
 
 /// Whether `ty` is one of the integer scalar types.
+/// The integer scalar types, as source spells them.
+pub(crate) const INTEGER_TYPES: [&str; 8] = ["I8", "I16", "I32", "I64", "U8", "U16", "U32", "U64"];
+
 fn is_integer_ty(ty: &Ty) -> bool {
     matches!(
         ty,
