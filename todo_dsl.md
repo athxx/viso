@@ -38,6 +38,10 @@ the three source entries share one frontend.
 - [x] Single-edit incremental re-lex (`syntax/reparse.rs`).
 - [x] Incremental reparse: reuse unchanged green subtrees after an edit (§135).
   - [x] Test: an edit inside one member reuses every sibling member's green node.
+  - [x] Bench (`benches/incremental_reparse.rs`, release): one keystroke in a
+        1000-action component reparses in place in ~90 µs against ~8.1 ms for a full
+        parse (10 actions: ~9 µs vs ~96 µs); the in-place cost still grows with the
+        file through the token and unit tables.
 
 ### D0.3 — Grammar (Appendix A)
 

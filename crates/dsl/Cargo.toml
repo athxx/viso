@@ -17,3 +17,10 @@ viso-ende = { workspace = true }
 # XID_Start/XID_Continue for identifier lexing and NFC for symbol-table entry.
 icu_properties = { workspace = true }
 icu_normalizer = { workspace = true }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+criterion = "0.7"
+
+[[bench]]
+name = "incremental_reparse"
+harness = false
