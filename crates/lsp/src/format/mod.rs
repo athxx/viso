@@ -12,6 +12,9 @@
 //!   ends the line after it; a block close `}` starts on its own line.
 //! - Property/type binding punctuation is tightened per DSL style
 //!   (architecture section 21.5.2): no space before `:` `;` `,`, one space after.
+//! - Generic angle brackets hug their contents and the name before them
+//!   (`List<List<I64>>`); these are the only tokens told apart by their parent
+//!   node, since `<` and `>` are also comparison operators.
 //! - Surplus blank lines are folded (a run of blank lines collapses to at most
 //!   one), and comments are preserved in place — a line comment ends its line, a
 //!   block comment is spaced like an ordinary token.
@@ -44,22 +47,47 @@ pub fn format(source: &str) -> String {
     let root = SyntaxNode::new_root(parsed.root.clone());
 
     // The flat leaf-token stream in source order, whitespace dropped, comments
-    // kept. Each entry is (kind, text).
-    let tokens: Vec<(SyntaxKind, String)> = root
+    // kept. Each entry is (kind, text, whether it is a generic angle bracket).
+    let tokens: Vec<(SyntaxKind, String, bool)> = root
         .descendants_with_tokens()
         .into_iter()
-        .filter_map(|el| el.as_token().map(|t| (t.kind(), t.text())))
-        .filter(|(kind, _)| *kind != SyntaxKind::Whitespace)
+        .filter_map(|el| {
+            el.as_token().map(|t| {
+                (
+                    t.kind(),
+                    t.text(),
+                    is_generic_angle(t.kind(), t.parent().kind()),
+                )
+            })
+        })
+        .filter(|(kind, _, _)| *kind != SyntaxKind::Whitespace)
         .collect();
 
     let mut printer = Printer::new();
     for i in 0..tokens.len() {
-        let (kind, text) = &tokens[i];
-        let prev = i.checked_sub(1usize).map(|j| tokens[j].0);
-        let next = tokens.get(i + 1).map(|(k, _)| *k);
-        printer.emit(*kind, text, prev, next);
+        let (kind, text, angle) = &tokens[i];
+        let prev = i.checked_sub(1usize).map(|j| Prev {
+            kind: tokens[j].0,
+            angle: tokens[j].2,
+        });
+        let next = tokens.get(i + 1).map(|(k, _, _)| *k);
+        printer.emit(*kind, text, *angle, prev, next);
     }
     printer.finish()
+}
+
+/// Whether a token of `kind` under a `parent` node is a generic list's `<` or `>`.
+fn is_generic_angle(kind: SyntaxKind, parent: SyntaxKind) -> bool {
+    matches!(kind, SyntaxKind::Lt | SyntaxKind::Gt)
+        && matches!(parent, SyntaxKind::GenericParams | SyntaxKind::GenericArgs)
+}
+
+/// The token before the one being emitted.
+#[derive(Clone, Copy)]
+struct Prev {
+    kind: SyntaxKind,
+    /// It is a generic angle bracket.
+    angle: bool,
 }
 
 /// Accumulates formatted output, tracking indentation depth and pending
@@ -88,15 +116,18 @@ impl Printer {
     }
 
     /// Emits one token, applying spacing relative to `prev` (the previous
-    /// non-whitespace token kind, if any) and `next` (the following kind, used only
-    /// to keep an empty `{}` block inline).
+    /// non-whitespace token, if any) and `next` (the following kind, used only to
+    /// keep an empty `{}` block inline). `angle` marks a generic angle bracket.
     fn emit(
         &mut self,
         kind: SyntaxKind,
         text: &str,
-        prev: Option<SyntaxKind>,
+        angle: bool,
+        prev: Option<Prev>,
         next: Option<SyntaxKind>,
     ) {
+        let prev_angle = prev.is_some_and(|p| p.angle);
+        let prev = prev.map(|p| p.kind);
         if kind == SyntaxKind::RBrace {
             // Close brace dedents. It starts its own line *unless* the block is empty
             // (the immediately preceding token was its own `{`), in which case the
@@ -112,7 +143,7 @@ impl Printer {
         self.flush_breaks();
 
         if !self.at_line_start {
-            if self.wants_space_before(kind, prev) {
+            if self.wants_space_before(kind, angle, prev, prev_angle) {
                 self.out.push(' ');
             }
         } else {
@@ -148,11 +179,22 @@ impl Printer {
     /// Whether a space is required between `prev` and the token about to be emitted.
     ///
     /// The default is one space (token separation); the exceptions tighten the DSL
-    /// binding/call punctuation.
-    fn wants_space_before(&self, kind: SyntaxKind, prev: Option<SyntaxKind>) -> bool {
+    /// binding/call punctuation and generic angle brackets.
+    fn wants_space_before(
+        &self,
+        kind: SyntaxKind,
+        angle: bool,
+        prev: Option<SyntaxKind>,
+        prev_angle: bool,
+    ) -> bool {
         let Some(prev) = prev else {
             return false;
         };
+        // A generic `<` hugs its name and its first argument; a generic `>` hugs
+        // its last argument.
+        if angle || (prev_angle && prev == SyntaxKind::Lt) {
+            return false;
+        }
         // No space *before* these: they hug the preceding token.
         if matches!(
             kind,
@@ -307,6 +349,18 @@ mod tests {
         let formatted = format(src);
         assert!(formatted.contains("x: Int;"), "got:\n{formatted}");
         assert!(formatted.contains("y: Int;"), "got:\n{formatted}");
+    }
+
+    #[test]
+    fn format_hugs_generic_angles_but_spaces_comparisons() {
+        assert_eq!(
+            format("type M = List < List < I64 > >;"),
+            "type M = List<List<I64>>;\n"
+        );
+        assert_eq!(
+            format("fn f < T > (x: Map<String,T>) -> Bool { return a<b; }"),
+            "fn f<T>(x: Map<String, T>) -> Bool {\n    return a < b;\n}\n"
+        );
     }
 
     #[test]

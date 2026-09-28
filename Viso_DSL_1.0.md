@@ -6802,6 +6802,7 @@ Formatter 必须规范：
 - 简单语句分号；
 - Trailing Comma 用于多行列表、参数和 Record；
 - 一个空格围绕二元 Operator；
+- 泛型参数与实参的 `<` `>` 紧贴两侧（`List<List<I64>>`），不按二元 Operator 加空格；
 - `on event {}` 永不变成箭头；
 - 永不输出 `child`；
 - 类型使用 canonical 名称 `F32/F64`；

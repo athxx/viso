@@ -157,7 +157,9 @@ the three source entries share one frontend.
   - [ ] Multi-file fixes: a `TextEdit` names no file, so every edit lands in the
         diagnostic's own file.
 - [x] Token-stream formatter (`crates/lsp/src/format`).
-- [ ] Formatter idempotence over every parser golden: `fmt(fmt(x)) == fmt(x)`.
+- [x] Formatter idempotence over every parser golden: `fmt(fmt(x)) == fmt(x)`, the
+      parse leaves and codes unchanged, broken input included (`lsp/tests/format_golden.rs`
+      over the shared corpus `dsl/tests/golden/parser_cases.rs`); generic `<` `>` hug.
 - [x] LSP definition / references / rename / formatting / diagnostics (`crates/lsp`).
 
 ### Done
