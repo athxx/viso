@@ -66,15 +66,21 @@ pub fn run(global: &Global, out: &mut Output) -> u8 {
         },
     );
     for diagnostic in &package.manifest_diagnostics {
-        out.source(manifest.as_ref(), diagnostic);
+        out.source(manifest.as_ref(), &[], diagnostic);
     }
     for diagnostic in &package.graph_diagnostics {
-        out.source(None, diagnostic);
+        out.source(None, &[], diagnostic);
     }
-    for file in &package.files {
-        let source = Source::new(&file.path, &project.root, &file.source);
+    let sources: Vec<Source<'_>> = package
+        .files
+        .iter()
+        .map(|file| {
+            Source::new(&file.path, &project.root, &file.source).of_module(file.module.join("::"))
+        })
+        .collect();
+    for (file, source) in package.files.iter().zip(&sources) {
         for diagnostic in &file.diagnostics {
-            out.source(Some(&source), diagnostic);
+            out.source(Some(source), &sources, diagnostic);
         }
     }
     for (path, error) in &package.unreadable {

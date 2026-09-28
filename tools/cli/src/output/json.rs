@@ -115,7 +115,6 @@ impl Stream {
 
 /// The section 138 diagnostic object.
 fn diagnostic(w: &mut JsonWriter, report: &Report<'_>) {
-    let source = report.location.source();
     w.begin_object();
     w.name("schema_version");
     w.string(DIAGNOSTIC_SCHEMA_VERSION);
@@ -138,14 +137,12 @@ fn diagnostic(w: &mut JsonWriter, report: &Report<'_>) {
     }
     w.name("related");
     w.begin_array();
-    if let Some(source) = source {
-        for (range, label) in &report.related {
-            w.begin_object();
-            position(w, source, range);
-            w.name("message");
-            w.string(label);
-            w.end_object();
-        }
+    for related in &report.related {
+        w.begin_object();
+        position(w, related.source, &related.range);
+        w.name("message");
+        w.string(related.label);
+        w.end_object();
     }
     w.end_array();
     w.name("expected");
@@ -167,27 +164,27 @@ fn diagnostic(w: &mut JsonWriter, report: &Report<'_>) {
     w.end_array();
     w.name("fixes");
     w.begin_array();
-    for fix in report.fixes {
+    for fix in &report.fixes {
         w.begin_object();
         w.name("title");
-        w.string(&fix.title);
+        w.string(fix.title);
         w.name("applicability");
-        w.string(fix.applicability.as_str());
+        w.string(fix.applicability);
         w.name("edits");
         w.begin_array();
         for edit in &fix.edits {
             w.begin_object();
             w.name("file");
-            match source {
+            match edit.source {
                 Some(source) => w.string(&source.name),
                 None => w.null(),
             }
             w.name("byte_start");
-            w.uint(u64::from(edit.range.start().to_u32()));
+            w.uint(edit.range.start as u64);
             w.name("byte_end");
-            w.uint(u64::from(edit.range.end().to_u32()));
+            w.uint(edit.range.end as u64);
             w.name("replacement");
-            w.string(&edit.replacement);
+            w.string(edit.replacement);
             w.end_object();
         }
         w.end_array();
@@ -238,10 +235,11 @@ fn session_id() -> String {
 mod tests {
     use std::path::Path;
 
-    use viso_dsl::diag::{Applicability, Fix, TextEdit};
-    use viso_dsl::{TextRange, TextSize};
+    use viso_dsl::diag::{Applicability, Fix, Related, TextEdit};
+    use viso_dsl::{Diagnostic, TextRange, TextSize};
 
     use super::*;
+    use crate::output::compiler_report;
 
     fn range(start: usize, end: usize) -> TextRange {
         TextRange::new(TextSize::new(start as u32), TextSize::new(end as u32))
@@ -260,27 +258,18 @@ mod tests {
         let text = "const s = \"😀\"; input b: Badgee;\n";
         let at = text.find("Badgee").unwrap();
         let source = Source::new(Path::new("/p/src/app.vs"), Path::new("/p"), text);
-        let notes = ["names are case-sensitive".to_string()];
-        let expected = ["Badge".to_string(), "Bridge".to_string()];
-        let fixes = [Fix {
+        let mut error = Diagnostic::error("E2001", range(at, at + 6), "unresolved \"Badgee\"")
+            .expecting(["Badge", "Bridge"], "Badgee");
+        error
+            .related
+            .push(Related::new(range(0, 5), "declared here"));
+        error.notes.push("names are case-sensitive".to_string());
+        error.fixes.push(Fix {
             title: "replace with `Badge`".to_string(),
             applicability: Applicability::MaybeIncorrect,
-            edits: vec![TextEdit {
-                range: range(at, at + 6),
-                replacement: "Badge".to_string(),
-            }],
-        }];
-        let report = Report {
-            severity: "error",
-            code: "E2001",
-            message: "unresolved \"Badgee\"",
-            location: Location::Span(&source, at..at + 6),
-            related: vec![(0..5, "declared here")],
-            expected: &expected,
-            actual: Some("Badgee"),
-            notes: &notes,
-            fixes: &fixes,
-        };
+            edits: vec![TextEdit::new(range(at, at + 6), "Badge")],
+        });
+        let report = compiler_report(Some(&source), &[], &error);
         assert_eq!(
             written(&report),
             concat!(
@@ -302,6 +291,45 @@ mod tests {
     }
 
     #[test]
+    fn related_ranges_and_edits_name_the_file_of_their_module() {
+        let app = "import lib::{ Point };";
+        let lib = "record Point { x: I64; }";
+        let root = Path::new("/p");
+        let package = [
+            Source::new(Path::new("/p/src/main.vs"), root, app).of_module(String::new()),
+            Source::new(Path::new("/p/src/lib.vs"), root, lib).of_module("lib".to_string()),
+        ];
+        let mut error = Diagnostic::error("E2001", range(14, 19), "not exported");
+        error
+            .related
+            .push(Related::in_module("lib", range(7, 12), "declared here"));
+        error.fixes.push(Fix {
+            title: "export it".to_string(),
+            applicability: Applicability::MaybeIncorrect,
+            edits: vec![
+                TextEdit::in_module("lib", range(0, 0), "export "),
+                TextEdit::in_module("", range(0, 0), ""),
+                TextEdit::in_module("gone", range(0, 0), ""),
+            ],
+        });
+        let json = written(&compiler_report(Some(&package[0]), &package, &error));
+        assert!(
+            json.contains(
+                r#""related":[{"file":"src/lib.vs","byte_start":7,"byte_end":12,"line":1,"column_utf16":8,"#
+            ),
+            "{json}"
+        );
+        assert!(
+            json.contains(concat!(
+                r#""edits":[{"file":"src/lib.vs","byte_start":0,"byte_end":0,"replacement":"export "},"#,
+                r#"{"file":"src/main.vs","byte_start":0,"byte_end":0,"replacement":""},"#,
+                r#"{"file":null,"byte_start":0,"byte_end":0,"replacement":""}]"#,
+            )),
+            "{json}"
+        );
+    }
+
+    #[test]
     fn a_diagnostic_without_its_text_has_a_null_primary() {
         let report = Report {
             severity: "warning",
@@ -316,7 +344,7 @@ mod tests {
             expected: &[],
             actual: None,
             notes: &[],
-            fixes: &[],
+            fixes: Vec::new(),
         };
         assert_eq!(
             written(&report),

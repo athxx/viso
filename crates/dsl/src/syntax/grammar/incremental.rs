@@ -431,11 +431,12 @@ fn shift_index(index: usize, delta: i64) -> usize {
 fn shift_diagnostic(diagnostic: &Diagnostic, delta: i64) -> Diagnostic {
     let mut shifted = diagnostic.clone();
     shifted.primary = shift_range(shifted.primary, delta);
-    for (range, _) in &mut shifted.related {
-        *range = shift_range(*range, delta);
+    // Only spans in this file move; another module's file is not being edited.
+    for related in shifted.related.iter_mut().filter(|r| r.module.is_none()) {
+        related.range = shift_range(related.range, delta);
     }
     for fix in &mut shifted.fixes {
-        for edit in &mut fix.edits {
+        for edit in fix.edits.iter_mut().filter(|e| e.module.is_none()) {
             edit.range = shift_range(edit.range, delta);
         }
     }

@@ -23,6 +23,8 @@ pub struct Source<'a> {
     /// The path relative to the project root when it lies below it, with `/`
     /// separators on every host.
     name: String,
+    /// The `::`-joined path of the module the file holds, for a package source.
+    module: Option<String>,
     text: &'a str,
     lines: LineIndex,
 }
@@ -43,9 +45,17 @@ impl<'a> Source<'a> {
         Self {
             path,
             name,
+            module: None,
             text,
             lines: LineIndex::new(text),
         }
+    }
+
+    /// This source as the file of the module `module` (`::`-joined, `""` for the
+    /// root module), so diagnostics of other files can point into it.
+    pub fn of_module(mut self, module: String) -> Self {
+        self.module = Some(module);
+        self
     }
 
     /// An offset clamped into the text.
@@ -97,13 +107,26 @@ enum Location<'a> {
     None,
 }
 
-impl<'a> Location<'a> {
-    fn source(&self) -> Option<&'a Source<'a>> {
-        match self {
-            Location::Span(source, _) => Some(source),
-            _ => None,
-        }
-    }
+/// A labeled secondary range, in its own source.
+struct Secondary<'a> {
+    source: &'a Source<'a>,
+    range: Range<usize>,
+    label: &'a str,
+}
+
+/// A suggested fix, each edit resolved to the source it changes.
+struct Suggestion<'a> {
+    title: &'a str,
+    applicability: &'static str,
+    edits: Vec<Edit<'a>>,
+}
+
+/// One edit of a [`Suggestion`]; `source` is `None` when the file it changes is
+/// not at hand.
+struct Edit<'a> {
+    source: Option<&'a Source<'a>>,
+    range: Range<usize>,
+    replacement: &'a str,
 }
 
 /// One diagnostic in the renderers' terms, whichever service raised it.
@@ -112,16 +135,16 @@ struct Report<'a> {
     code: &'a str,
     message: &'a str,
     location: Location<'a>,
-    /// Secondary ranges in the primary location's source, each with a label.
-    related: Vec<(Range<usize>, &'a str)>,
+    /// Secondary ranges, each with a label, in the primary location's source or
+    /// another file of the package.
+    related: Vec<Secondary<'a>>,
     /// What would have been accepted and what was found, for a mismatch. Only the
     /// event stream carries them; human text leaves them to the message, which
     /// already says them.
     expected: &'a [String],
     actual: Option<&'a str>,
     notes: &'a [String],
-    /// Suggested edits, in the primary location's source.
-    fixes: &'a [Fix],
+    fixes: Vec<Suggestion<'a>>,
 }
 
 /// The output of one command run.
@@ -160,39 +183,16 @@ impl Output {
     }
 
     /// Reports a compiler diagnostic, in `source` when it has a source position.
-    pub fn source(&mut self, source: Option<&Source<'_>>, diagnostic: &Diagnostic) {
-        let severity = match diagnostic.severity {
-            Severity::Error => "error",
-            Severity::Warning => "warning",
-            Severity::Note => "note",
-        };
-        let location = match source {
-            Some(source) => Location::Span(source, diagnostic.primary.as_usize()),
-            None => Location::None,
-        };
-        // Related ranges only mean something next to the text they index.
-        let related = match source {
-            Some(_) => diagnostic
-                .related
-                .iter()
-                .map(|(range, label)| (range.as_usize(), label.as_str()))
-                .collect(),
-            None => Vec::new(),
-        };
-        self.emit(
-            diagnostic.severity == Severity::Error,
-            &Report {
-                severity,
-                code: diagnostic.code,
-                message: &diagnostic.message,
-                location,
-                related,
-                expected: &diagnostic.expected,
-                actual: diagnostic.actual.as_deref(),
-                notes: &diagnostic.notes,
-                fixes: &diagnostic.fixes,
-            },
-        );
+    /// `package` holds the package's module sources, which its related ranges and
+    /// fixes may point into.
+    pub fn source(
+        &mut self,
+        source: Option<&Source<'_>>,
+        package: &[Source<'_>],
+        diagnostic: &Diagnostic,
+    ) {
+        let report = compiler_report(source, package, diagnostic);
+        self.emit(diagnostic.severity == Severity::Error, &report);
     }
 
     /// Reports a project or configuration diagnostic, with its source line when
@@ -220,7 +220,7 @@ impl Output {
                 expected: &[],
                 actual: None,
                 notes: &diagnostic.notes,
-                fixes: &[],
+                fixes: Vec::new(),
             },
         );
     }
@@ -238,7 +238,7 @@ impl Output {
                 expected: &[],
                 actual: None,
                 notes,
-                fixes: &[],
+                fixes: Vec::new(),
             },
         );
     }
@@ -281,5 +281,68 @@ impl Output {
             Form::Human if !error && self.quiet => {}
             Form::Human => human::print(report),
         }
+    }
+}
+
+/// A compiler diagnostic as a [`Report`]: in `source` when it has one, its related
+/// ranges and edits in the file of the module each names (`source` for none).
+/// A range with no file at hand to show it in is dropped; an edit keeps its
+/// place but names no file.
+fn compiler_report<'a>(
+    source: Option<&'a Source<'a>>,
+    package: &'a [Source<'a>],
+    diagnostic: &'a Diagnostic,
+) -> Report<'a> {
+    let severity = match diagnostic.severity {
+        Severity::Error => "error",
+        Severity::Warning => "warning",
+        Severity::Note => "note",
+    };
+    let file = |module: Option<&str>| match module {
+        None => source,
+        Some(module) => package.iter().find(|s| s.module.as_deref() == Some(module)),
+    };
+    let location = match source {
+        Some(source) => Location::Span(source, diagnostic.primary.as_usize()),
+        None => Location::None,
+    };
+    let related = diagnostic
+        .related
+        .iter()
+        .filter_map(|r| {
+            Some(Secondary {
+                source: file(r.module.as_deref())?,
+                range: r.range.as_usize(),
+                label: &r.label,
+            })
+        })
+        .collect();
+    let fixes = diagnostic
+        .fixes
+        .iter()
+        .map(|fix: &'a Fix| Suggestion {
+            title: &fix.title,
+            applicability: fix.applicability.as_str(),
+            edits: fix
+                .edits
+                .iter()
+                .map(|edit| Edit {
+                    source: file(edit.module.as_deref()),
+                    range: edit.range.as_usize(),
+                    replacement: &edit.replacement,
+                })
+                .collect(),
+        })
+        .collect();
+    Report {
+        severity,
+        code: diagnostic.code,
+        message: &diagnostic.message,
+        location,
+        related,
+        expected: &diagnostic.expected,
+        actual: diagnostic.actual.as_deref(),
+        notes: &diagnostic.notes,
+        fixes,
     }
 }

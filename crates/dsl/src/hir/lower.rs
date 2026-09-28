@@ -94,12 +94,18 @@ pub fn lower(
         &prelude.unit,
         &prelude.module.table,
         &prelude.module.refs,
+        None,
         interner,
         &mut decls,
     );
     decls.standard = prelude
         .types(interner)
         .map(|(name, id)| (name.to_owned(), id))
+        .collect();
+    decls.module_paths = graph
+        .modules()
+        .iter()
+        .map(|gm| gm.path.display(interner))
         .collect();
     let modules: Vec<Option<(CompilationUnit, ModuleScope)>> = graph
         .modules()
@@ -113,6 +119,7 @@ pub fn lower(
                 &cu,
                 &resolved_module.table,
                 &resolved_module.refs,
+                Some(i),
                 interner,
                 &mut decls,
             );
@@ -129,7 +136,7 @@ pub fn lower(
         let mut module_diagnostics = Vec::new();
         let mut flows = InputFlows::default();
         if let (Some((cu, scope)), Some(resolved_module)) = (module, resolved.get(i)) {
-            let env = ModuleEnv::new(&decls, scope);
+            let env = ModuleEnv::new(&decls, scope, i);
             cap.module = i;
             flows = lower_module(
                 cu,
@@ -735,6 +742,11 @@ struct Declarations {
     inputs: HashMap<SymbolId, Vec<InputProp>>,
     /// The prelude's types by name.
     standard: HashMap<String, SymbolId>,
+    /// The index of the module declaring each record, enum, event, component and
+    /// system; the prelude's are absent, having no file to point into.
+    homes: HashMap<SymbolId, usize>,
+    /// The `::`-joined path of every module, by graph index.
+    module_paths: Vec<String>,
 }
 
 /// What one module adds to the package [`Declarations`]: its owners' member names, its
@@ -751,6 +763,8 @@ struct ModuleScope {
     nominal: HashMap<TextRange, SymbolId>,
     /// `const`, record and module-level callable declaration syntax range → its symbol.
     declared: HashMap<TextRange, SymbolId>,
+    /// The module's graph index, or `None` for the prelude.
+    home: Option<usize>,
 }
 
 /// The concrete [`MemberEnv`]/[`TypeEnv`]/[`ViewEnv`]/[`ReadEnv`]/[`EffectEnv`] for one
@@ -765,6 +779,8 @@ struct ModuleEnv<'p> {
     /// The types lowering inferred for unannotated `state`/`computed` members, recorded
     /// as each component lowers so later body walks see them.
     inferred: RefCell<HashMap<SymbolId, Ty>>,
+    /// The module's graph index.
+    module: usize,
 }
 
 impl TypeEnv for ModuleEnv<'_> {
@@ -810,6 +826,16 @@ impl TypeEnv for ModuleEnv<'_> {
 
     fn enclosing_component(&self) -> Option<SymbolId> {
         Some(self.component.get())
+    }
+
+    fn declaration_site(
+        &self,
+        owner: SymbolId,
+        range: TextRange,
+    ) -> Option<(Option<&str>, TextRange)> {
+        let home = *self.decls.homes.get(&owner)?;
+        let module = (home != self.module).then(|| self.decls.module_paths[home].as_str());
+        Some((module, range))
     }
 }
 
@@ -867,12 +893,13 @@ impl MemberEnv for ModuleEnv<'_> {
 }
 
 impl<'p> ModuleEnv<'p> {
-    fn new(decls: &'p Declarations, scope: &'p ModuleScope) -> Self {
+    fn new(decls: &'p Declarations, scope: &'p ModuleScope, module: usize) -> Self {
         ModuleEnv {
             decls,
             scope,
             component: Cell::new(SymbolId::from_parts(0, 0)),
             inferred: RefCell::default(),
+            module,
         }
     }
 
@@ -909,6 +936,13 @@ impl<'p> ModuleEnv<'p> {
 }
 
 impl ModuleScope {
+    /// Records that `sym` is declared in this module.
+    fn place(&self, decls: &mut Declarations, sym: SymbolId) {
+        if let Some(home) = self.home {
+            decls.homes.insert(sym, home);
+        }
+    }
+
     /// Walks every declaration once (with the interner, to intern names and query the
     /// table), recording the module's member names and declaration spans here and each
     /// declaration's facts, fields, variants, signature and inputs into `decls`.
@@ -916,10 +950,12 @@ impl ModuleScope {
         cu: &CompilationUnit,
         table: &SymbolTable,
         refs: &[ResolvedRef],
+        home: Option<usize>,
         interner: &mut NameInterner,
         decls: &mut Declarations,
     ) -> ModuleScope {
         let mut scope = ModuleScope {
+            home,
             nominal: refs
                 .iter()
                 .filter_map(|r| match r.to {
@@ -947,6 +983,7 @@ impl ModuleScope {
                         continue;
                     };
                     scope.components.insert(c.syntax().text_range(), sym);
+                    scope.place(decls, sym);
                     decls.type_names.insert(sym, name_of(c.name()));
                     let Some(members) = table.members(sym) else {
                         continue;
@@ -961,6 +998,7 @@ impl ModuleScope {
                     let Some(sym) = decl_symbol(table, interner, s.name(), Namespace::Type) else {
                         continue;
                     };
+                    scope.place(decls, sym);
                     let Some(members) = table.members(sym) else {
                         continue;
                     };
@@ -972,6 +1010,7 @@ impl ModuleScope {
                     if let Some(sym) = decl_symbol(table, interner, r.name(), Namespace::Type) {
                         let fields = r.fields().filter_map(|f| scope.field_info(&f)).collect();
                         decls.records.insert(sym, fields);
+                        scope.place(decls, sym);
                         scope.declared.insert(r.syntax().text_range(), sym);
                         decls.type_names.insert(sym, name_of(r.name()));
                     }
@@ -983,6 +1022,7 @@ impl ModuleScope {
                             .filter_map(|v| scope.variant_info(&v))
                             .collect();
                         decls.enums.insert(sym, variants);
+                        scope.place(decls, sym);
                         decls.type_names.insert(sym, name_of(e.name()));
                     }
                 }
@@ -1105,6 +1145,7 @@ impl ModuleScope {
         if let Member::Event(d) = member {
             let fields = self.event_fields(d.syntax());
             decls.records.insert(sym, fields);
+            self.place(decls, sym);
             decls.type_names.insert(sym, text.clone());
             decls.events.entry(owner).or_default().push(EventInfo {
                 name: text.clone(),
@@ -1507,7 +1548,8 @@ mod tests {
 
     /// Lowers `app` as a package with a `lib` module holding `lib`, returning the
     /// diagnostic codes each module raised.
-    fn lower_with_lib(lib: &str, app: &str) -> (Vec<&'static str>, Vec<&'static str>) {
+    /// The diagnostics of `lib` and `app` lowered as one package, by module.
+    fn lower_pair(lib: &str, app: &str) -> (Vec<Diagnostic>, Vec<Diagnostic>) {
         let mut interner = NameInterner::new();
         let mut unit = |path: &str, src: &str| {
             let tokens = crate::syntax::tokenize(src);
@@ -1524,24 +1566,22 @@ mod tests {
             assert!(module.errors.is_empty(), "{:?}", module.errors);
         }
         let pkg = lower(&graph, &units, &resolved, &mut interner, "app");
-        let mut by_module =
-            graph
-                .modules()
-                .iter()
-                .zip(&pkg.module_diagnostics)
-                .map(|(module, range)| {
-                    let codes = pkg.diagnostics[range.clone()].iter().map(|d| d.code);
-                    (module.path.display(&interner), codes.collect::<Vec<_>>())
-                });
-        let mut lib_codes = Vec::new();
-        let mut app_codes = Vec::new();
-        for (path, codes) in by_module.by_ref() {
-            match path.as_str() {
-                "lib" => lib_codes = codes,
-                _ => app_codes = codes,
+        let mut lib_diagnostics = Vec::new();
+        let mut app_diagnostics = Vec::new();
+        for (module, range) in graph.modules().iter().zip(&pkg.module_diagnostics) {
+            let diagnostics = pkg.diagnostics[range.clone()].to_vec();
+            match module.path.display(&interner).as_str() {
+                "lib" => lib_diagnostics = diagnostics,
+                _ => app_diagnostics = diagnostics,
             }
         }
-        (lib_codes, app_codes)
+        (lib_diagnostics, app_diagnostics)
+    }
+
+    fn lower_with_lib(lib: &str, app: &str) -> (Vec<&'static str>, Vec<&'static str>) {
+        let (lib, app) = lower_pair(lib, app);
+        let codes = |ds: Vec<Diagnostic>| ds.iter().map(|d| d.code).collect();
+        (codes(lib), codes(app))
     }
 
     #[test]
@@ -1601,6 +1641,30 @@ mod tests {
             ["E2103"]
         );
         assert_eq!(app("on pick { }").1, ["E3202"]);
+    }
+
+    #[test]
+    fn a_suggestion_declared_in_another_module_names_it() {
+        let lib = "export component Card {\n\
+                   \x20 input title: String;\n\
+                   \x20 event picked(index: I64);\n\
+                   \x20 view { }\n\
+                   }";
+        let app = |node: &str| {
+            let src = format!(
+                "import lib::{{ Card }};\ncomponent App {{\n  view {{ Card {{ {node} }} }}\n}}"
+            );
+            let (_, app) = lower_pair(lib, &src);
+            assert_eq!(app.len(), 1, "{app:?}");
+            let related = app[0].related[0].clone();
+            let at = related.range.start().to_u32() as usize;
+            (
+                related.module,
+                &lib[at..related.range.end().to_u32() as usize],
+            )
+        };
+        assert_eq!(app("on pickd { }"), (Some("lib".to_string()), "picked"));
+        assert_eq!(app("titl: \"a\";"), (Some("lib".to_string()), "title"));
     }
 
     #[test]
@@ -2025,7 +2089,7 @@ mod tests {
             .expect("an unknown property is E3101");
         assert!(
             d.notes.iter().any(|n| n.contains("opacity"))
-                || d.related.iter().any(|(_, m)| m.contains("opacity")),
+                || d.related.iter().any(|r| r.label.contains("opacity")),
             "the misspelling suggests `opacity`, got {d:?}"
         );
         assert_eq!(
@@ -2080,7 +2144,7 @@ mod tests {
             .expect("an unknown child property is E3101");
         assert!(
             d.notes.iter().any(|n| n.contains("row"))
-                || d.related.iter().any(|(_, m)| m.contains("row")),
+                || d.related.iter().any(|r| r.label.contains("row")),
             "the misspelling suggests `row`, got {d:?}"
         );
         assert_eq!(
@@ -2108,7 +2172,7 @@ mod tests {
         ));
         let found: Vec<_> = pkg.diagnostics.iter().map(|d| d.code).collect();
         assert_eq!(found, ["E3104"]);
-        let (_, reason) = &pkg.diagnostics[0].related[0];
+        let reason = &pkg.diagnostics[0].related[0].label;
         assert!(reason.contains("translate"), "{reason}");
 
         // Forwarded through another component's input, declared later in the module.
@@ -2155,7 +2219,7 @@ mod tests {
         let pkg = lower_src(&format!(
             "{decls}component C {{\n  state o = At {{ x: 50%, y: 0dp }}\n  view {{ Text {{ translate: o; }} }}\n}}"
         ));
-        let (_, reason) = &pkg.diagnostics[0].related[0];
+        let reason = &pkg.diagnostics[0].related[0].label;
         assert!(reason.contains("comes from"), "{reason}");
 
         // A call's result, a comparison and a percent-typed ratio carry no component.
@@ -2198,7 +2262,7 @@ mod tests {
         ));
         let found: Vec<_> = pkg.diagnostics.iter().map(|d| d.code).collect();
         assert_eq!(found, ["E3104"]);
-        let (_, reason) = &pkg.diagnostics[0].related[0];
+        let reason = &pkg.diagnostics[0].related[0].label;
         assert!(reason.contains("translate"), "{reason}");
     }
 

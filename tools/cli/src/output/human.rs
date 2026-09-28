@@ -2,15 +2,21 @@
 //! summary to stdout.
 //!
 //! A diagnostic prints its header, its location and the source line under a caret
-//! underline, then its related spans, notes and fix titles:
+//! underline, then its related spans, notes and fix titles. A related span in
+//! another file follows a `:::` line naming it:
 //!
 //! ```text
-//! error[E2001]: unresolved name `Pointt`
-//!  --> src/app.vs:3:14
+//! error[E2001]: imported name is not exported: `lib::Point`
+//!  --> src/app.vs:1:15
 //!   |
-//! 3 |     state p: Pointt;
-//!   |              ^^^^^^
-//!   = help: replace with `Point`
+//! 1 | import lib::{ Point };
+//!   |               ^^^^^
+//!   |
+//!  ::: src/lib.vs:1:8
+//!   |
+//! 1 | record Point { x: I64; }
+//!   |        ----- declared here without `export`
+//!   = help: export `Point` from `lib`
 //! ```
 
 use std::fmt::{self, Write as _};
@@ -42,9 +48,13 @@ fn write(out: &mut String, report: &Report<'_>) -> fmt::Result {
     let mut gutter = 0;
     match &report.location {
         Location::Span(source, range) => {
-            let last = std::iter::once(range)
-                .chain(report.related.iter().map(|(range, _)| range))
-                .map(|range| source.position(range.start).0)
+            let last = std::iter::once(source.position(range.start).0)
+                .chain(
+                    report
+                        .related
+                        .iter()
+                        .map(|r| r.source.position(r.range.start).0),
+                )
                 .max()
                 .unwrap_or(1);
             gutter = last.to_string().len();
@@ -52,8 +62,16 @@ fn write(out: &mut String, report: &Report<'_>) -> fmt::Result {
             writeln!(out, "{:gutter$}--> {}:{line}:{column}", "", source.name)?;
             writeln!(out, "{:gutter$} |", "")?;
             snippet(out, source, range, '^', "", gutter)?;
-            for (range, label) in &report.related {
-                snippet(out, source, range, '-', label, gutter)?;
+            let mut shown: &Source<'_> = source;
+            for related in &report.related {
+                if !std::ptr::eq(related.source, shown) {
+                    shown = related.source;
+                    let (line, column) = shown.position(related.range.start);
+                    writeln!(out, "{:gutter$} |", "")?;
+                    writeln!(out, "{:gutter$}::: {}:{line}:{column}", "", shown.name)?;
+                    writeln!(out, "{:gutter$} |", "")?;
+                }
+                snippet(out, shown, &related.range, '-', related.label, gutter)?;
             }
         }
         Location::Point { file, line, column } => writeln!(out, " --> {file}:{line}:{column}")?,
@@ -62,7 +80,7 @@ fn write(out: &mut String, report: &Report<'_>) -> fmt::Result {
     for note in report.notes {
         writeln!(out, "{:gutter$} = note: {note}", "")?;
     }
-    for fix in report.fixes {
+    for fix in &report.fixes {
         writeln!(out, "{:gutter$} = help: {}", "", fix.title)?;
     }
     Ok(())
@@ -122,10 +140,11 @@ pub(super) fn summary(package: &str, files: usize, errors: usize, warnings: usiz
 mod tests {
     use std::path::Path;
 
-    use viso_dsl::diag::{Applicability, Fix};
+    use viso_dsl::diag::{Applicability, Fix, Related};
     use viso_dsl::{Diagnostic, TextRange, TextSize};
 
     use super::*;
+    use crate::output::compiler_report;
 
     fn range(text: &str, needle: &str) -> TextRange {
         let start = text.find(needle).unwrap();
@@ -136,21 +155,7 @@ mod tests {
     }
 
     fn render_in(source: &Source<'_>, diagnostic: &Diagnostic) -> String {
-        render(&Report {
-            severity: "error",
-            code: diagnostic.code,
-            message: &diagnostic.message,
-            location: Location::Span(source, diagnostic.primary.as_usize()),
-            related: diagnostic
-                .related
-                .iter()
-                .map(|(range, label)| (range.as_usize(), label.as_str()))
-                .collect(),
-            expected: &diagnostic.expected,
-            actual: diagnostic.actual.as_deref(),
-            notes: &diagnostic.notes,
-            fixes: &diagnostic.fixes,
-        })
+        render(&compiler_report(Some(source), &[], diagnostic))
     }
 
     #[test]
@@ -161,7 +166,7 @@ mod tests {
         let mut error = Diagnostic::error("E2001", range(text, "Pointt"), "unresolved `Pointt`");
         error
             .related
-            .push((range(text, "\"日本\""), "declared here".to_string()));
+            .push(Related::new(range(text, "\"日本\""), "declared here"));
         error.notes.push("names are case-sensitive".to_string());
         error.fixes.push(Fix {
             title: "replace with `Point`".to_string(),
@@ -179,6 +184,39 @@ mod tests {
              |           ---- declared here\n  \
              = note: names are case-sensitive\n  \
              = help: replace with `Point`\n"
+        );
+    }
+
+    #[test]
+    fn a_related_span_in_another_file_follows_a_line_naming_it() {
+        let app = "import lib::{ Point };\n";
+        let lib = "record Point { x: I64; }\n";
+        let root = Path::new("/p");
+        let package = [
+            Source::new(Path::new("/p/src/app.vs"), root, app).of_module("app".to_string()),
+            Source::new(Path::new("/p/src/lib.vs"), root, lib).of_module("lib".to_string()),
+        ];
+        let mut error = Diagnostic::error("E2001", range(app, "Point"), "not exported");
+        error.related.push(Related::in_module(
+            "lib",
+            range(lib, "Point"),
+            "declared here",
+        ));
+        error
+            .related
+            .push(Related::in_module("gone", range(lib, "x"), "dropped"));
+        assert_eq!(
+            render(&compiler_report(Some(&package[0]), &package, &error)),
+            "error[E2001]: not exported\n \
+             --> src/app.vs:1:15\n  \
+             |\n\
+             1 | import lib::{ Point };\n  \
+             |               ^^^^^\n  \
+             |\n \
+             ::: src/lib.vs:1:8\n  \
+             |\n\
+             1 | record Point { x: I64; }\n  \
+             |        ----- declared here\n"
         );
     }
 
@@ -208,7 +246,7 @@ mod tests {
             expected: &[],
             actual: None,
             notes: &notes,
-            fixes: &[],
+            fixes: Vec::new(),
         });
         assert_eq!(
             text,

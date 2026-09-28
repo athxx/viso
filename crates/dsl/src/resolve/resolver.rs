@@ -27,10 +27,10 @@ use crate::ast::{
     NodeBody, PathExpr, PropertyBinding, SystemDecl, TypePath, ViewBlock, ViewFor, ViewIf,
     ViewItem,
 };
-use crate::diag::Diagnostic;
+use crate::diag::{Applicability, Diagnostic, Fix, Related, TextEdit};
 use crate::hir::Ty;
 use crate::syntax::SyntaxNode;
-use crate::syntax::span::TextRange;
+use crate::syntax::span::{TextRange, TextSize};
 
 use super::module::{ModuleGraph, ResolveErrorKind, SourceUnit};
 use super::name::{NameId, NameInterner};
@@ -76,6 +76,9 @@ pub struct SymbolDecl {
     pub id: SymbolId,
     /// The span of the declaration's name token.
     pub name_range: TextRange,
+    /// Where `export ` goes to export the declaration (its keyword, after any
+    /// attributes); `None` for one already exported and for a member.
+    pub export_at: Option<TextSize>,
 }
 
 /// The result of resolving one module: its symbol table, its resolved references,
@@ -90,6 +93,16 @@ pub struct ResolvedModule {
     pub decls: Vec<SymbolDecl>,
     /// Diagnostics from this module's resolution.
     pub errors: Vec<Diagnostic>,
+}
+
+/// A module's import environment.
+#[derive(Default)]
+struct ImportEnv {
+    /// Local name → the symbol it imports.
+    bindings: std::collections::HashMap<NameId, ImportBinding>,
+    /// The local names of imports that name nothing, already reported, so their
+    /// uses raise nothing more.
+    unresolved: std::collections::HashSet<NameId>,
 }
 
 /// One import binding: a local name mapped to the exported symbol it names.
@@ -136,7 +149,15 @@ pub fn resolve(
     for (i, gm) in graph.modules().iter().enumerate() {
         let module_text = gm.path.display(interner);
         let cu = unit_for(units, &module_text, interner);
-        let imports = build_import_env(cu.as_ref(), graph, &tables, interner);
+        let mut errors = std::mem::take(&mut early_errors[i]);
+        let imports = build_import_env(
+            cu.as_ref(),
+            graph,
+            &tables,
+            &all_decls,
+            interner,
+            &mut errors,
+        );
         let mut pass = ModulePass {
             table: &tables[i],
             prelude: &prelude.module.table,
@@ -147,7 +168,7 @@ pub fn resolve(
             imports: &imports,
             interner,
             refs: Vec::new(),
-            errors: std::mem::take(&mut early_errors[i]),
+            errors,
             scopes: ScopeStack::new(),
             // The component frontend has declarations/imports; a genuinely missing
             // user type is a real error here.
@@ -184,7 +205,7 @@ pub(super) fn resolve_standalone(
     let (table, decls, errors) = build_symbol_table(Some(cu), package, module_text, interner);
     let members: MemberTables<'_> = table.member_tables().collect();
     let empty = SymbolTable::new();
-    let imports = std::collections::HashMap::new();
+    let imports = ImportEnv::default();
     let mut pass = ModulePass {
         table: &table,
         prelude: &empty,
@@ -270,6 +291,9 @@ fn build_symbol_table(
         });
         let symbol = ModuleSymbol { id, exported };
         out.define(None, name, ns, symbol, &name_tok);
+        if !exported && let Some(last) = out.decls.last_mut() {
+            last.export_at = Some(keyword_start(decl.syntax()));
+        }
         // A component's/system's members (state, computed, input, event, and the
         // callables) go in the owner's own member table, fingerprinted under the
         // owner's name: two components may each declare a `count`.
@@ -311,6 +335,7 @@ impl SymbolTableBuild {
         self.decls.push(SymbolDecl {
             id: symbol.id,
             name_range: range,
+            export_at: None,
         });
         self.spellings.push(spelling.clone());
         let table = match owner {
@@ -331,9 +356,10 @@ impl SymbolTableBuild {
         };
         let mut error = kind.to_diagnostic(Some(range), &spelling);
         if let Some((decl, first)) = earlier {
-            error
-                .related
-                .push((decl.name_range, format!("`{first}` is declared here")));
+            error.related.push(Related::new(
+                decl.name_range,
+                format!("`{first}` is declared here"),
+            ));
         }
         self.errors.push(error);
     }
@@ -419,15 +445,34 @@ fn decl_identity(item: &Item) -> Option<(crate::syntax::SyntaxToken, SymbolKind,
     Some(triple)
 }
 
+/// Where `export ` goes on the top-level declaration `node`: its first token that is
+/// neither trivia nor part of an attribute.
+fn keyword_start(node: &SyntaxNode) -> TextSize {
+    use crate::syntax::SyntaxKind;
+    node.children_with_tokens()
+        .into_iter()
+        .find(|el| match el.as_token() {
+            Some(t) => !t.kind().is_trivia(),
+            None => el.kind() != SyntaxKind::Attribute,
+        })
+        .map_or(node.text_range().start(), |el| el.text_range().start())
+}
+
 /// Builds a module's import environment: local name to the exported symbol it names.
+///
+/// An item naming a declaration its module does not export is `E2001`, pointing at
+/// the declaration and offering to export it; it still binds, so its uses type as
+/// the declaration. An item naming nothing is `E2001` with the nearest exported
+/// names, and binds nothing.
 fn build_import_env(
     cu: Option<&CompilationUnit>,
     graph: &ModuleGraph,
     tables: &[SymbolTable],
+    decls: &[Vec<SymbolDecl>],
     interner: &mut NameInterner,
-) -> std::collections::HashMap<NameId, ImportBinding> {
-    use std::collections::HashMap;
-    let mut env: HashMap<NameId, ImportBinding> = HashMap::new();
+    errors: &mut Vec<Diagnostic>,
+) -> ImportEnv {
+    let mut env = ImportEnv::default();
     let Some(cu) = cu else {
         return env;
     };
@@ -440,6 +485,8 @@ fn build_import_env(
             continue; // the module graph already reported this as E2001
         };
         let target_table = &tables[idx.as_usize()];
+        let target_decls = &decls[idx.as_usize()];
+        let target_path = graph.modules()[idx.as_usize()].path.display(interner);
         // `import a::{ x, y as z };` — selective items into the local environment.
         for item in import.items() {
             let Some(name_tok) = item.name() else {
@@ -451,36 +498,98 @@ fn build_import_env(
                 .and_then(|r| r.name())
                 .map(|t| t.text())
                 .unwrap_or_else(|| orig.clone());
-            if let Some((symbol, ns)) = lookup_exported(target_table, interner, &orig) {
-                let local = interner.intern(&local_text);
-                env.insert(
-                    local,
-                    ImportBinding {
-                        symbol,
-                        namespace: ns,
-                    },
-                );
+            let local = interner.intern(&local_text);
+            let at = name_tok.text_range();
+            let subject = format!("{target_path}::{orig}");
+            let Some((symbol, namespace)) = lookup_import(target_table, interner, &orig) else {
+                let mut diagnostic =
+                    ResolveErrorKind::UnresolvedImport.to_diagnostic(Some(at), &subject);
+                let suggestions =
+                    nearest_exports(&orig, target_table, target_decls, &target_path, interner);
+                suggest::attach(&mut diagnostic, at, &suggestions);
+                errors.push(diagnostic);
+                env.unresolved.insert(local);
+                continue;
+            };
+            if !symbol.exported {
+                let mut diagnostic =
+                    ResolveErrorKind::PrivateImport.to_diagnostic(Some(at), &subject);
+                if let Some(decl) = target_decls.iter().find(|d| d.id == symbol.id) {
+                    diagnostic.related.push(Related::in_module(
+                        target_path.as_str(),
+                        decl.name_range,
+                        "declared here without `export`",
+                    ));
+                    if let Some(export_at) = decl.export_at {
+                        diagnostic.fixes.push(Fix {
+                            title: format!("export `{orig}` from `{target_path}`"),
+                            applicability: Applicability::MaybeIncorrect,
+                            edits: vec![TextEdit::in_module(
+                                target_path.as_str(),
+                                TextRange::empty(export_at),
+                                "export ",
+                            )],
+                        });
+                    }
+                }
+                errors.push(diagnostic);
             }
+            env.bindings.insert(
+                local,
+                ImportBinding {
+                    symbol: symbol.id,
+                    namespace,
+                },
+            );
         }
     }
     env
 }
 
-/// Looks an exported name up in a module's table across every namespace.
-fn lookup_exported(
+/// Looks a name up in a module's table across every namespace, preferring an
+/// exported declaration.
+fn lookup_import(
     table: &SymbolTable,
     interner: &mut NameInterner,
     name_text: &str,
-) -> Option<(SymbolId, Namespace)> {
+) -> Option<(ModuleSymbol, Namespace)> {
     let name = interner.intern(name_text);
-    for ns in [Namespace::Type, Namespace::Value, Namespace::Event] {
-        if let Some(sym) = table.get(name, ns)
-            && sym.exported
-        {
-            return Some((sym.id, ns));
+    let found = [Namespace::Type, Namespace::Value, Namespace::Event]
+        .into_iter()
+        .filter_map(|ns| Some((table.get(name, ns)?, ns)));
+    let mut first = None;
+    for (symbol, ns) in found {
+        if symbol.exported {
+            return Some((symbol, ns));
         }
+        first.get_or_insert((symbol, ns));
     }
-    None
+    first
+}
+
+/// The exported names of the module `path` (whose table and declarations are
+/// `table` and `decls`) nearest to `text`.
+fn nearest_exports<'a>(
+    text: &str,
+    table: &'a SymbolTable,
+    decls: &'a [SymbolDecl],
+    path: &'a str,
+    interner: &'a NameInterner,
+) -> Vec<suggest::Candidate<'a>> {
+    let exported = [Namespace::Type, Namespace::Value, Namespace::Event]
+        .into_iter()
+        .flat_map(|ns| table.names(ns))
+        .filter(|(_, symbol)| symbol.exported)
+        .filter_map(|(name, symbol)| {
+            Some(suggest::Candidate {
+                name: interner.text(name)?,
+                declared_at: decls
+                    .iter()
+                    .find(|d| d.id == symbol.id)
+                    .map(|d| (Some(path), d.name_range)),
+            })
+        });
+    suggest::nearest(text, exported)
 }
 
 /// The `::`-joined identifier text of a path-like syntax node (module path, type
@@ -543,7 +652,7 @@ struct ModulePass<'a> {
     node: Option<SymbolId>,
     /// The declaration sites of `table`'s symbols, for nearest-name suggestions.
     decls: &'a [SymbolDecl],
-    imports: &'a std::collections::HashMap<NameId, ImportBinding>,
+    imports: &'a ImportEnv,
     interner: &'a mut NameInterner,
     refs: Vec<ResolvedRef>,
     errors: Vec<Diagnostic>,
@@ -1097,7 +1206,7 @@ impl ModulePass<'_> {
             Resolution::Symbol(symbol)
         } else if let Some(sym) = self.table.get(name, Namespace::Value) {
             Resolution::Symbol(sym.id)
-        } else if let Some(binding) = self.imports.get(&name) {
+        } else if let Some(binding) = self.imports.bindings.get(&name) {
             Resolution::Symbol(binding.symbol)
         } else if let Some(sym) = self.standard(name, Namespace::Value) {
             Resolution::Symbol(sym)
@@ -1163,7 +1272,8 @@ impl ModulePass<'_> {
         // by a user declaration, so only a name that looks user-defined is flagged.
         // In a fragment there is no compilation unit to declare it and no import, so
         // the name is a native/schema widget type — deferred, never diagnosed here.
-        if is_user_type_name(&text) && !defer_unresolved {
+        if is_user_type_name(&text) && !defer_unresolved && !self.imports.unresolved.contains(&name)
+        {
             let at = head.text_range();
             let mut diagnostic = ResolveErrorKind::UnresolvedType.to_diagnostic(Some(at), &text);
             let suggestions = self.nearest_types(&text);
@@ -1180,6 +1290,7 @@ impl ModulePass<'_> {
             .map(|s| s.id)
             .or_else(|| {
                 self.imports
+                    .bindings
                     .get(&name)
                     .filter(|b| b.namespace == Namespace::Type)
                     .map(|b| b.symbol)
@@ -1199,7 +1310,12 @@ impl ModulePass<'_> {
     /// declarations (with their declaration spans), its type imports and the prelude's
     /// types.
     fn nearest_types(&self, text: &str) -> Vec<suggest::Candidate<'_>> {
-        let declared_at = |id| self.decls.iter().find(|d| d.id == id).map(|d| d.name_range);
+        let declared_at = |id| {
+            self.decls
+                .iter()
+                .find(|d| d.id == id)
+                .map(|d| (None, d.name_range))
+        };
         let own = self
             .table
             .names(Namespace::Type)
@@ -1211,6 +1327,7 @@ impl ModulePass<'_> {
             });
         let imported = self
             .imports
+            .bindings
             .iter()
             .filter(|(_, binding)| binding.namespace == Namespace::Type)
             .filter_map(|(&name, _)| {
@@ -1294,7 +1411,7 @@ pub fn resolve_fragment(
         source_ids.push(id);
     }
 
-    let imports = std::collections::HashMap::new();
+    let imports = ImportEnv::default();
     let members = MemberTables::new();
     let prelude = SymbolTable::new();
     let mut pass = ModulePass {
@@ -1494,12 +1611,75 @@ mod tests {
                 .all(|f| &src[range(f.edits[0].range)] == "Badg")
         );
         // Only the local declaration has a span in this file.
-        let related: Vec<_> = error.related.iter().map(|(r, _)| &src[range(*r)]).collect();
+        let related: Vec<_> = error.related.iter().map(|r| &src[range(r.range)]).collect();
         assert_eq!(related, ["Badge"]);
     }
 
     fn range(r: TextRange) -> std::ops::Range<usize> {
         r.start().to_u32() as usize..r.end().to_u32() as usize
+    }
+
+    #[test]
+    fn an_import_of_a_private_declaration_offers_to_export_it() {
+        let mut interner = NameInterner::new();
+        let lib_src = "@deprecated\nrecord Point { x: Int; }";
+        let lib = unit(&mut interner, &["lib"], lib_src);
+        let src = "import lib::{ Point }; component A { input origin: Point; view { } }";
+        let app = unit(&mut interner, &["app"], src);
+        let mods = resolve_all(vec![lib, app], &mut interner);
+        let errors: Vec<_> = mods.iter().flat_map(|m| m.errors.iter()).collect();
+        assert_eq!(errors.len(), 1, "{errors:?}");
+        let error = errors[0];
+        assert_eq!(error.code, "E2001");
+        assert!(error.message.contains("not exported"), "{}", error.message);
+        assert_eq!(&src[range(error.primary)], "Point");
+        let related = &error.related[0];
+        assert_eq!(related.module.as_deref(), Some("lib"));
+        assert_eq!(&lib_src[range(related.range)], "Point");
+        let edit = &error.fixes[0].edits[0];
+        assert_eq!(edit.module.as_deref(), Some("lib"));
+        let keyword = lib_src.find("record").unwrap();
+        assert_eq!(range(edit.range), keyword..keyword);
+        assert_eq!(edit.replacement, "export ");
+        // The import still binds, so its use raises nothing more.
+        let point = interner.intern("Point");
+        let id = mods
+            .iter()
+            .find_map(|m| m.table.get(point, Namespace::Type))
+            .unwrap()
+            .id;
+        assert!(
+            mods.iter()
+                .flat_map(|m| m.refs.iter())
+                .any(|r| r.to == Resolution::Symbol(id))
+        );
+    }
+
+    #[test]
+    fn an_import_of_a_missing_name_suggests_the_modules_exports() {
+        let mut interner = NameInterner::new();
+        let lib_src = "export record Point { x: Int; } record Pont2 { x: Int; }";
+        let lib = unit(&mut interner, &["lib"], lib_src);
+        let src = "import lib::{ Pont }; component A { input origin: Pont; view { } }";
+        let app = unit(&mut interner, &["app"], src);
+        let mods = resolve_all(vec![lib, app], &mut interner);
+        let errors: Vec<_> = mods.iter().flat_map(|m| m.errors.iter()).collect();
+        // One error at the import; the use of the name it failed to bind is quiet.
+        assert_eq!(errors.len(), 1, "{errors:?}");
+        let error = errors[0];
+        assert_eq!(error.code, "E2001");
+        let at = src.find("Pont").unwrap();
+        assert_eq!(range(error.primary), at..at + 4);
+        // Only exported names are offered, each declared in `lib`.
+        let replacements: Vec<_> = error
+            .fixes
+            .iter()
+            .map(|f| f.edits[0].replacement.as_str())
+            .collect();
+        assert_eq!(replacements, ["Point"]);
+        assert_eq!(error.fixes[0].edits[0].module, None);
+        assert_eq!(error.related[0].module.as_deref(), Some("lib"));
+        assert_eq!(&lib_src[range(error.related[0].range)], "Point");
     }
 
     #[test]
@@ -1533,7 +1713,7 @@ mod tests {
             .find(|d| d.code == "E1101")
             .unwrap_or_else(|| panic!("no E1101 in {errors:?}"));
         assert!(!errors.iter().any(|d| d.code == "E2002"), "{errors:?}");
-        let (first, _) = conflict.related[0];
+        let first = conflict.related[0].range;
         let at = first.start().to_u32() as usize..first.end().to_u32() as usize;
         assert_eq!(&src[at], "caf\u{e9}");
         // The same spelling twice stays a plain duplicate.

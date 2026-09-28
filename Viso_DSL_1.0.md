@@ -826,6 +826,7 @@ import app::model::User as AppUser;
 - `::*` 不属于 Viso 1.0 语法；
 - Import Resolution 不依赖运行时注册顺序；
 - Import Cycle 中只有纯类型边可以被允许；值初始化环必须报错。
+- 导入的名称必须是目标模块 `export` 的声明，否则报 `E2001`：名称存在但未导出时，相关位置指向其声明，并给出在目标模块文件中插入 `export` 的 Fix（`maybe-incorrect`），导入仍按该声明绑定；名称不存在时给出目标模块最近的导出名，该名称在导入方的使用处不再重复报告；
 - 导入的名称与其导出模块中的声明是同一符号：Record/Enum 类型、Callable 签名与 Effect Class、Component 的 Input/Event/Slot 在导入方按声明检查，与本模块声明无差别。
 
 ---
@@ -6740,7 +6741,7 @@ viso test game <scenario> --frames=<n> --seed=<seed> --json
 }
 ```
 
-位置对象（`primary` 与 `related[]` 的元素）：`file` 相对 project root、以 `/` 分隔；`byte_start`/`byte_end` 为文件内字节区间；`line`/`column_utf16` 为起点、`end_line`/`end_column_utf16` 为终点，行与列都从 1 起，列按 UTF-16 code unit 计。`related[]` 元素另带 `message`（该位置的标签）。无源码位置的诊断 `primary` 为 `null`、`related` 为空。`expected` 列出 primary 处可被接受的各个形式（类型或构造，按源码写法），`actual` 为该处实际所写；诊断不是失配时 `expected` 为空数组、`actual` 为 `null`。`fixes[].edits[].file` 同 `file`。
+位置对象（`primary` 与 `related[]` 的元素）：`file` 相对 project root、以 `/` 分隔；`byte_start`/`byte_end` 为文件内字节区间；`line`/`column_utf16` 为起点、`end_line`/`end_column_utf16` 为终点，行与列都从 1 起，列按 UTF-16 code unit 计。`related[]` 元素另带 `message`（该位置的标签）。无源码位置的诊断 `primary` 为 `null`、`related` 为空。`expected` 列出 primary 处可被接受的各个形式（类型或构造，按源码写法），`actual` 为该处实际所写；诊断不是失配时 `expected` 为空数组、`actual` 为 `null`。`related[]` 与 `fixes[].edits[]` 可以指向 primary 所在文件以外的 Package 文件（例如导入目标模块中的声明），各自的 `file` 给出其文件；`fixes[].edits[].file` 的取值规则同 `file`。
 
 要求：
 

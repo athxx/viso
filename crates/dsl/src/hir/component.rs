@@ -25,7 +25,7 @@
 use std::collections::{BTreeSet, HashMap};
 
 use crate::ast::{AstNode, ComponentDecl, Member};
-use crate::diag::Diagnostic;
+use crate::diag::{Diagnostic, Related};
 use crate::resolve::{Resolution, ResolvedRef, SymbolId};
 use crate::syntax::TextRange;
 
@@ -456,12 +456,12 @@ fn report_cycle(
     );
     // The full cycle path, in traversal order, closing back to the entry.
     for &member in &cycle {
-        diag.related.push((
+        diag.related.push(Related::new(
             computeds[member].span,
             format!("`{}` is part of the cycle", computeds[member].node.name),
         ));
     }
-    diag.related.push((
+    diag.related.push(Related::new(
         computeds[entry].span,
         format!("… which depends back on `{}`", computeds[entry].node.name),
     ));

@@ -156,10 +156,10 @@ impl InferCx<'_> {
             diagnostic.fixes.push(Fix {
                 title: "wrap the value in `format(\"{}\", ..)`".to_string(),
                 applicability: Applicability::MachineApplicable,
-                edits: vec![TextEdit {
+                edits: vec![TextEdit::new(
                     range,
-                    replacement: format!("format(\"{{}}\", {})", source.trim()),
-                }],
+                    format!("format(\"{{}}\", {})", source.trim()),
+                )],
             });
         }
         ty

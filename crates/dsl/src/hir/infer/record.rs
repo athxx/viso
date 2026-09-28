@@ -3,7 +3,7 @@
 
 use std::collections::HashSet;
 
-use super::{FieldInfo, InferCx, VariantPayload, compatible, first_child_expr};
+use super::{FieldInfo, InferCx, TypeEnv, VariantPayload, compatible, first_child_expr};
 use crate::ast::{AstNode, Expr, FieldExpr};
 use crate::diag::{Applicability, Diagnostic, Fix, TextEdit};
 use crate::hir::ty::Ty;
@@ -40,7 +40,7 @@ impl InferCx<'_> {
                     .collect();
                 let owner_name = self.describe(&Ty::Named(owner));
                 let message = format!("no variant `{text}` on `{owner_name}`");
-                self.unknown_member(name, message, &candidates, &[]);
+                self.unknown_member(owner, name, message, &candidates, &[]);
                 Ty::Unknown
             }
         }
@@ -133,7 +133,9 @@ impl InferCx<'_> {
                     let message = format!("no field `{name}` on `{owner_name}`");
                     let candidates = field_candidates(fields);
                     let fitting = fitting_names(fields, &found);
-                    self.unknown_member(&label, message, &candidates, &fitting);
+                    if let Some(owner) = owner {
+                        self.unknown_member(owner, &label, message, &candidates, &fitting);
+                    }
                 }
             }
         }
@@ -187,7 +189,7 @@ impl InferCx<'_> {
                     last.text(),
                     self.describe(&Ty::Named(id))
                 );
-                self.unknown_member(last, message, &candidates, &[]);
+                self.unknown_member(id, last, message, &candidates, &[]);
                 None
             }
         }
@@ -270,10 +272,7 @@ impl InferCx<'_> {
                     diagnostic.fixes.push(Fix {
                         title: "use `.`".to_string(),
                         applicability: Applicability::MachineApplicable,
-                        edits: vec![TextEdit {
-                            range: op.text_range(),
-                            replacement: ".".to_string(),
-                        }],
+                        edits: vec![TextEdit::new(op.text_range(), ".")],
                     });
                     self.diagnostics.push(diagnostic);
                 }
@@ -303,7 +302,7 @@ impl InferCx<'_> {
                     Some(want) => fitting_names(&fields, want),
                     None => Vec::new(),
                 };
-                self.unknown_member(name, message, &field_candidates(&fields), &fitting);
+                self.unknown_member(*id, name, message, &field_candidates(&fields), &fitting);
                 None
             }
             Ty::Tuple(tys) => match text.parse::<usize>().ok().and_then(|i| tys.get(i)) {
@@ -322,21 +321,29 @@ impl InferCx<'_> {
 
     /// Reports an `E2001` unknown member at `name`, suggesting the nearest of
     /// `fitting` (the candidates whose type fits the use) and, when none of those
-    /// is near, the nearest of all `candidates`.
+    /// is near, the nearest of all `candidates`. The candidates are declared in
+    /// `owner`.
     fn unknown_member(
         &mut self,
+        owner: SymbolId,
         name: &SyntaxToken,
         message: String,
         candidates: &[(String, TextRange)],
         fitting: &[String],
     ) {
         let text = name.text();
-        fn to_candidate((n, at): &(String, TextRange)) -> Candidate<'_> {
+        let env = self.env;
+        fn candidate<'c>(
+            env: &'c dyn TypeEnv,
+            owner: SymbolId,
+            (n, at): &'c (String, TextRange),
+        ) -> Candidate<'c> {
             Candidate {
                 name: n.as_str(),
-                declared_at: Some(*at),
+                declared_at: env.declaration_site(owner, *at),
             }
         }
+        let to_candidate = |c| candidate(env, owner, c);
         let mut suggestions = nearest(
             &text,
             candidates

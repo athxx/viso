@@ -2342,6 +2342,8 @@ stdout -> protocol JSON Lines only
 stderr -> only unrecoverable pre-protocol launcher failure
 ```
 
+Human diagnostic：头行 `severity[code]: message`，其后 ` --> file:line:column` 与带下划线（`^`）的源码行；`related` 逐条以 `-` 下划线加标签显示，位于另一文件时先输出一行 ` ::: file:line:column`；最后是 `= note:` 与每个 Fix 的 `= help:` 标题。列按字符计。
+
 - `--json` 已被识别后的 usage error 也以 `diagnostic` + `summary{exit_code:2}` 输出到 stdout。
 - 一旦 JSON protocol 已启动，不允许把普通 debug print 混进 stdout。
 - 例外：`viso lsp` 的 stdout 专属 LSP JSON-RPC（§21）；`viso completion` 的 stdout 是 shell script。

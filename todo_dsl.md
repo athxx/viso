@@ -157,8 +157,11 @@ the three source entries share one frontend.
         branches, range bounds, `?`/`?.` receivers, list indices, `bind` sides) and
         `E3001` fill them; `E3001` also carries a machine-applicable fix when a type
         follows `child`.
-  - [ ] Multi-file fixes: a `TextEdit` names no file, so every edit lands in the
-        diagnostic's own file.
+  - [x] Multi-file fixes: `Related` and `TextEdit` name their module; a candidate
+        declared in another module points into its file; importing a non-exported
+        name is `E2001` with an `export` fix in the target file, a missing one lists
+        the target's nearest exports; the CLI resolves each span to its file (JSON
+        `file`, human `:::` line).
 - [x] Token-stream formatter (`crates/lsp/src/format`).
 - [x] Formatter idempotence over every parser golden: `fmt(fmt(x)) == fmt(x)`, the
       parse leaves and codes unchanged, broken input included (`lsp/tests/format_golden.rs`

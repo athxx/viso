@@ -106,6 +106,10 @@ pub enum ResolveErrorKind {
     UnresolvedModule,
     /// A type path named a user type no declaration or import provides.
     UnresolvedType,
+    /// An import named a declaration its module does not export.
+    PrivateImport,
+    /// An import named nothing its module declares.
+    UnresolvedImport,
     /// Two source units declared the same module path.
     AmbiguousModule,
     /// A name was declared twice within one namespace.
@@ -121,7 +125,10 @@ impl ResolveErrorKind {
     /// The stable diagnostic code (spec section 30).
     pub const fn code(self) -> &'static str {
         match self {
-            ResolveErrorKind::UnresolvedModule | ResolveErrorKind::UnresolvedType => "E2001",
+            ResolveErrorKind::UnresolvedModule
+            | ResolveErrorKind::UnresolvedType
+            | ResolveErrorKind::PrivateImport
+            | ResolveErrorKind::UnresolvedImport => "E2001",
             ResolveErrorKind::AmbiguousModule | ResolveErrorKind::DuplicateName => "E2002",
             ResolveErrorKind::CyclicImport => "E2003",
             ResolveErrorKind::NormalizationConflict => "E1101",
@@ -133,6 +140,8 @@ impl ResolveErrorKind {
         match self {
             ResolveErrorKind::UnresolvedModule => "imported module does not exist",
             ResolveErrorKind::UnresolvedType => "type does not exist",
+            ResolveErrorKind::PrivateImport => "imported name is not exported",
+            ResolveErrorKind::UnresolvedImport => "imported name does not exist",
             ResolveErrorKind::AmbiguousModule => "two source units declare the same module",
             ResolveErrorKind::DuplicateName => "name is already declared in this scope",
             ResolveErrorKind::CyclicImport => "modules form an import cycle",

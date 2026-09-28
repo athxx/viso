@@ -248,6 +248,37 @@ fn json_names_what_a_mismatch_expected_and_found() {
 }
 
 #[test]
+fn an_import_of_a_private_record_points_into_its_file_and_fixes_it_there() {
+    let s = Scratch::new("private-import");
+    s.write("Viso.toml", MANIFEST)
+        .write("src/shapes.vs", "record Point { x: I64; }\n")
+        .write(
+            "src/main.vs",
+            "import shapes::{ Point };\ncomponent App { input p: Point; view { } }\n",
+        );
+    let out = viso(&s.0, &["check"]);
+    assert_eq!(code(&out), 1);
+    assert!(
+        stderr(&out).contains(
+            " ::: src/shapes.vs:1:8\n  |\n1 | record Point { x: I64; }\n  |        ----- declared here without `export`\n"
+        ),
+        "{}",
+        stderr(&out)
+    );
+    let out = viso(&s.0, &["check", "--json"]);
+    let lines = events(&out);
+    assert_eq!(lines.len(), 2, "{lines:?}");
+    assert!(
+        lines[0].contains(r#""related":[{"file":"src/shapes.vs","byte_start":7,"byte_end":12,"#)
+            && lines[0].contains(
+                r#""edits":[{"file":"src/shapes.vs","byte_start":0,"byte_end":0,"replacement":"export "}]"#
+            ),
+        "{}",
+        lines[0]
+    );
+}
+
+#[test]
 fn json_quiet_still_streams_warnings() {
     let s = Scratch::new("json-quiet");
     s.write("Viso.toml", "[package]\nname = \"demo\"\npackge = 1\n")

@@ -518,10 +518,7 @@ impl<'t, 's> Parser<'t, 's> {
             diagnostic.fixes.push(Fix {
                 title: "remove `child`".to_string(),
                 applicability: Applicability::MachineApplicable,
-                edits: vec![TextEdit {
-                    range: TextRange::new(range.start(), end),
-                    replacement: String::new(),
-                }],
+                edits: vec![TextEdit::new(TextRange::new(range.start(), end), "")],
             });
         }
         let m = self.start();

@@ -45,7 +45,7 @@ pub struct Diagnostic {
     /// The primary source span the diagnostic points at.
     pub primary: TextRange,
     /// Secondary spans with labels (a colliding declaration, a cycle member, …).
-    pub related: Vec<(TextRange, String)>,
+    pub related: Vec<Related>,
     /// What would have been accepted at the primary span, each alternative as
     /// source spells it (a type, a construct); empty when the diagnostic is not a
     /// mismatch.
@@ -80,13 +80,77 @@ impl Applicability {
     }
 }
 
-/// One replacement of a source range, in the diagnostic's own file.
+/// A secondary span of a [`Diagnostic`], with its label.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Related {
+    /// The `::`-joined path of the module whose file holds `range` (`""` for the
+    /// package root module), or `None` for the diagnostic's own file.
+    pub module: Option<String>,
+    /// The span.
+    pub range: TextRange,
+    /// What the span is, e.g. ``"`Badge` is declared here"``.
+    pub label: String,
+}
+
+impl Related {
+    /// A span in the diagnostic's own file.
+    pub fn new(range: TextRange, label: impl Into<String>) -> Self {
+        Self {
+            module: None,
+            range,
+            label: label.into(),
+        }
+    }
+
+    /// A span in the file of `module`.
+    pub fn in_module(
+        module: impl Into<String>,
+        range: TextRange,
+        label: impl Into<String>,
+    ) -> Self {
+        Self {
+            module: Some(module.into()),
+            range,
+            label: label.into(),
+        }
+    }
+}
+
+/// One replacement of a source range. A [`Fix`]'s edits may span several files
+/// and apply together.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TextEdit {
+    /// The `::`-joined path of the module whose file is edited (`""` for the
+    /// package root module), or `None` for the diagnostic's own file.
+    pub module: Option<String>,
     /// The range replaced.
     pub range: TextRange,
     /// The text put in its place.
     pub replacement: String,
+}
+
+impl TextEdit {
+    /// A replacement in the diagnostic's own file.
+    pub fn new(range: TextRange, replacement: impl Into<String>) -> Self {
+        Self {
+            module: None,
+            range,
+            replacement: replacement.into(),
+        }
+    }
+
+    /// A replacement in the file of `module`.
+    pub fn in_module(
+        module: impl Into<String>,
+        range: TextRange,
+        replacement: impl Into<String>,
+    ) -> Self {
+        Self {
+            module: Some(module.into()),
+            range,
+            replacement: replacement.into(),
+        }
+    }
 }
 
 /// A suggested fix: a titled set of edits applied together.

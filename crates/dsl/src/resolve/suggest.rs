@@ -4,17 +4,19 @@
 //!
 //! Cold path: this runs only when a name already failed to resolve.
 
-use crate::diag::{Applicability, Diagnostic, Fix, TextEdit};
+use crate::diag::{Applicability, Diagnostic, Fix, Related, TextEdit};
 use crate::syntax::TextRange;
 
 /// At most this many suggestions are offered.
 const MAX_SUGGESTIONS: usize = 3;
 
-/// One suggestion candidate: its spelling and, when it is declared in the same
-/// file as the diagnostic, the span of its declaration name.
+/// One suggestion candidate: its spelling and, when known, where its declaration
+/// name is.
 pub(crate) struct Candidate<'a> {
     pub(crate) name: &'a str,
-    pub(crate) declared_at: Option<TextRange>,
+    /// The declaring module's `::`-joined path, or `None` for the diagnostic's own
+    /// file, and the span of the declaration name.
+    pub(crate) declared_at: Option<(Option<&'a str>, TextRange)>,
 }
 
 /// The Levenshtein distance between `a` and `b`, over Unicode scalar values.
@@ -60,18 +62,17 @@ pub(crate) fn nearest<'a>(
 /// candidate, and one `maybe-incorrect` fix per candidate replacing `at`.
 pub(crate) fn attach(diagnostic: &mut Diagnostic, at: TextRange, suggestions: &[Candidate<'_>]) {
     for s in suggestions {
-        if let Some(range) = s.declared_at {
-            diagnostic
-                .related
-                .push((range, format!("`{}` is declared here", s.name)));
+        if let Some((module, range)) = s.declared_at {
+            diagnostic.related.push(Related {
+                module: module.map(str::to_owned),
+                range,
+                label: format!("`{}` is declared here", s.name),
+            });
         }
         diagnostic.fixes.push(Fix {
             title: format!("replace with `{}`", s.name),
             applicability: Applicability::MaybeIncorrect,
-            edits: vec![TextEdit {
-                range: at,
-                replacement: s.name.to_owned(),
-            }],
+            edits: vec![TextEdit::new(at, s.name)],
         });
     }
     if !suggestions.is_empty() {

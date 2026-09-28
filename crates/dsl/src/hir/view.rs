@@ -32,7 +32,7 @@ use crate::ast::{
     AstNode, ElseBranch, EventHandler, NodeBody, PropertyBinding, PropertyPath, TwoWayBinding,
     TypePath, ViewBlock, ViewFor, ViewIf, ViewItem, ViewMatch,
 };
-use crate::diag::Diagnostic;
+use crate::diag::{Diagnostic, Related};
 use crate::resolve::suggest::{Candidate, attach, nearest};
 use crate::resolve::{Resolution, ResolvedRef, SymbolId};
 use crate::syntax::{SyntaxToken, TextRange};
@@ -192,7 +192,7 @@ pub(crate) fn check_percent_flow(
                     if !(sink.at.start() <= origin.start() && origin.end() <= sink.at.end()) {
                         diagnostic
                             .related
-                            .push((origin, "the `Percent` comes from here".to_string()));
+                            .push(Related::new(origin, "the `Percent` comes from here"));
                     }
                     diagnostics.push(diagnostic);
                 }
@@ -251,7 +251,9 @@ pub(crate) fn check_input_bases(modules: &[InputFlows], diagnostics: &mut [Vec<D
                 format!("{input} has no percent basis, so it does not accept a `Percent` value"),
             );
             if *from == module {
-                diagnostic.related.push((*used_at, reason.to_string()));
+                diagnostic
+                    .related
+                    .push(Related::new(*used_at, reason.to_string()));
             }
             if let Some(out) = diagnostics.get_mut(module) {
                 out.push(diagnostic);
@@ -453,7 +455,9 @@ impl<'a> ViewWalk<'a> {
             .iter()
             .map(|e| Candidate {
                 name: &e.name,
-                declared_at: Some(e.declared_at),
+                declared_at: owner
+                    .component
+                    .and_then(|c| self.env.declaration_site(c, e.declared_at)),
             })
             .chain(owner.schema.event_names().map(|name| Candidate {
                 name,
@@ -573,7 +577,7 @@ impl<'a> ViewWalk<'a> {
             );
             diagnostic
                 .related
-                .push((*first, "first bound here".to_string()));
+                .push(Related::new(*first, "first bound here"));
             self.diagnostics.push(diagnostic);
         } else {
             bound.insert(text.clone(), range);
@@ -622,9 +626,13 @@ impl<'a> ViewWalk<'a> {
                     })
                     .collect();
                 if names.len() == 1 {
-                    candidates.extend(owner.inputs.iter().map(|i| Candidate {
-                        name: &i.name,
-                        declared_at: Some(i.declared_at),
+                    candidates.extend(owner.inputs.iter().map(|i| {
+                        Candidate {
+                            name: &i.name,
+                            declared_at: owner
+                                .component
+                                .and_then(|c| self.env.declaration_site(c, i.declared_at)),
+                        }
                     }));
                 }
                 let suggestions = nearest(last, candidates);

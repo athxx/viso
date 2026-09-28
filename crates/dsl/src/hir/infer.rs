@@ -141,6 +141,19 @@ pub trait TypeEnv {
     fn enclosing_component(&self) -> Option<SymbolId> {
         None
     }
+
+    /// Where the declaration at `range` inside `owner` (one of its fields, variants,
+    /// events or inputs) can be shown: the declaring module's `::`-joined path, or
+    /// `None` for the module being typed, and the range. `None` when `owner` has no
+    /// source file in the package, as the prelude's declarations do not.
+    fn declaration_site(
+        &self,
+        owner: SymbolId,
+        range: TextRange,
+    ) -> Option<(Option<&str>, TextRange)> {
+        let _ = owner;
+        Some((None, range))
+    }
 }
 
 /// One enclosing loop during a body walk.

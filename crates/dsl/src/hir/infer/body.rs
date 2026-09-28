@@ -4,7 +4,7 @@
 
 use super::{InferCx, LoopFrame, child_exprs, first_child_expr, is_numeric_ty};
 use crate::ast::{AstNode, Block, Expr};
-use crate::diag::Diagnostic;
+use crate::diag::{Diagnostic, Related};
 use crate::hir::ty::Ty;
 use crate::resolve::Resolution;
 use crate::resolve::suggest::{Candidate, attach, nearest};
@@ -199,17 +199,16 @@ impl InferCx<'_> {
         };
         let params = self
             .symbol_at(event.text_range())
-            .and_then(|id| env.record_fields(id));
-        let Some(params) = params else {
-            if let Some(events) = env
-                .enclosing_component()
-                .and_then(|c| env.component_events(c))
+            .and_then(|id| Some((id, env.record_fields(id)?)));
+        let Some((event_symbol, params)) = params else {
+            if let Some(component) = env.enclosing_component()
+                && let Some(events) = env.component_events(component)
             {
                 let text = event.text();
                 let name = text.trim_start_matches("r#");
                 let candidates = events.iter().map(|e| Candidate {
                     name: &e.name,
-                    declared_at: Some(e.declared_at),
+                    declared_at: env.declaration_site(component, e.declared_at),
                 });
                 let suggestions = nearest(name, candidates);
                 let range = event.text_range();
@@ -263,7 +262,7 @@ impl InferCx<'_> {
                 if let Some(label) = label.as_ref().filter(|_| index.is_none()) {
                     let candidates = params.iter().map(|p| Candidate {
                         name: &p.name,
-                        declared_at: Some(p.declared_at),
+                        declared_at: env.declaration_site(event_symbol, p.declared_at),
                     });
                     let text = label.text();
                     let suggestions = nearest(&text, candidates);
@@ -292,9 +291,10 @@ impl InferCx<'_> {
                 format!("`emit {event}` is missing {}", names.join(", ")),
             );
             for p in missing {
-                diagnostic
-                    .related
-                    .push((p.declared_at, format!("`{}` is declared here", p.name)));
+                diagnostic.related.push(Related::new(
+                    p.declared_at,
+                    format!("`{}` is declared here", p.name),
+                ));
             }
             self.diagnostics.push(diagnostic);
         }
