@@ -1,0 +1,37 @@
+behavior-ir 1
+component Records states=[point, picked] inputs=[] events=[]
+
+fn#0 Point.y field-default params=0 regs=1
+    0: r0 = const 1.0
+    1: return r0
+
+fn#1 Records.nudge action params=1 regs=11
+    0: r1 = state[0]
+    1: r2 = r1.0
+    2: r3 = add.f64 r2, r0
+    3: r4 = state[0]
+    4: r4.0 = r3
+    5: state[0] = r4
+    6: r5 = state[0]
+    7: r6 = r5.1
+    8: r7 = state[0]
+    9: r8 = r7.1
+   10: r9 = make #0 (r6, r8)
+   11: state[0] = r9
+   12: r10 = const ()
+   13: return r10
+
+fn#2 Records.first fn params=1 regs=3
+    0: r1 = const 0
+    1: r2 = r0[r1]
+    2: return r2
+
+fn#3 Records.point state-init params=0 regs=3
+    0: r0 = const 2.0
+    1: r1 = call fn#0 ()
+    2: r2 = make #0 (r0, r1)
+    3: return r2
+
+fn#4 Records.picked state-init params=0 regs=1
+    0: r0 = const nil
+    1: return r0

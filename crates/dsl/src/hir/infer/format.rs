@@ -9,7 +9,7 @@ use crate::syntax::{SyntaxKind, SyntaxNode, TextRange};
 
 /// One placeholder of a template.
 #[derive(Debug, PartialEq)]
-enum Hole {
+pub(crate) enum Hole {
     /// `{}`: the next positional argument.
     Positional,
     /// `{name}`: the named argument `name:`.
@@ -172,7 +172,7 @@ impl InferCx<'_> {
 }
 
 /// The text of a template given as a string literal, and whether it is raw.
-fn template_literal(expr: &Expr) -> Option<(String, bool)> {
+pub(crate) fn template_literal(expr: &Expr) -> Option<(String, bool)> {
     let node = expr.syntax();
     if node.kind() != SyntaxKind::LiteralExpr {
         return None;
@@ -203,7 +203,7 @@ fn template_literal(expr: &Expr) -> Option<(String, bool)> {
 /// The placeholders of a template body (between the quotes), or why it is
 /// malformed. In a non-raw template, `\` escapes are skipped (so `\u{..}` is not
 /// a placeholder).
-fn parse_template(text: &str, raw: bool) -> Result<Vec<Hole>, String> {
+pub(crate) fn parse_template(text: &str, raw: bool) -> Result<Vec<Hole>, String> {
     let mut holes = Vec::new();
     let mut chars = text.chars().peekable();
     while let Some(c) = chars.next() {
@@ -330,4 +330,79 @@ mod tests {
         // A raw template has no escapes.
         assert!(parse_template("\\u{41}", true).is_err());
     }
+}
+
+/// One piece of a parsed template: literal text or a placeholder.
+#[derive(Debug, PartialEq)]
+pub(crate) enum Piece {
+    /// Literal text, with `{{`/`}}` and (in a non-raw template) escapes resolved.
+    Text(String),
+    /// A placeholder.
+    Hole(Hole),
+}
+
+/// The pieces of a template's body text in order, `None` when the template is
+/// malformed (already an `E2108`) or an escape is.
+pub(crate) fn template_pieces(text: &str, raw: bool) -> Option<Vec<Piece>> {
+    let mut pieces = Vec::new();
+    let mut literal = String::new();
+    let flush = |literal: &mut String, pieces: &mut Vec<Piece>| -> Option<()> {
+        if !literal.is_empty() {
+            let text = if raw {
+                std::mem::take(literal)
+            } else {
+                let text = super::pattern::unescape(literal)?;
+                literal.clear();
+                text
+            };
+            pieces.push(Piece::Text(text));
+        }
+        Some(())
+    };
+    let mut chars = text.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '\\' if !raw => {
+                literal.push(c);
+                let escaped = chars.next()?;
+                literal.push(escaped);
+                if escaped == 'u' && chars.peek() == Some(&'{') {
+                    for c in chars.by_ref() {
+                        literal.push(c);
+                        if c == '}' {
+                            break;
+                        }
+                    }
+                }
+            }
+            '{' if chars.peek() == Some(&'{') => {
+                chars.next();
+                literal.push('{');
+            }
+            '}' if chars.peek() == Some(&'}') => {
+                chars.next();
+                literal.push('}');
+            }
+            '{' => {
+                let mut inner = String::new();
+                for c in chars.by_ref() {
+                    if c == '}' {
+                        break;
+                    }
+                    inner.push(c);
+                }
+                flush(&mut literal, &mut pieces)?;
+                let inner = inner.trim();
+                pieces.push(Piece::Hole(if inner.is_empty() {
+                    Hole::Positional
+                } else {
+                    Hole::Named(inner.to_string())
+                }));
+            }
+            '}' => return None,
+            _ => literal.push(c),
+        }
+    }
+    flush(&mut literal, &mut pieces)?;
+    Some(pieces)
 }

@@ -22,6 +22,7 @@ use crate::ast::{
     AstNode, CompilationUnit, ComponentDecl, Expr, Item, LiteralExpr, Member, PathExpr, UnaryExpr,
     ViewFragment,
 };
+use crate::behavior::Program;
 use crate::diag::{Diagnostic, Severity};
 use crate::hir::{ConstValue, HirComponent, SourceSet, Ty};
 use crate::ir::{
@@ -152,6 +153,8 @@ pub struct Compiled {
     pub sources: Vec<Source>,
     /// Every diagnostic, of every severity, from every stage, in stage order.
     pub diagnostics: Vec<Diagnostic>,
+    /// Every body of the unit lowered to the Behavior IR.
+    pub behavior: Program,
 }
 
 impl Compiled {
@@ -211,6 +214,7 @@ pub fn compile_fragment(source: &str) -> Compiled {
         keys,
         sources,
         diagnostics,
+        behavior: Program::default(),
     }
 }
 
@@ -260,14 +264,15 @@ fn compile_unit(source: &str, parse: Parse, origin: &Origin) -> Compiled {
     diagnostics.extend(graph.errors().iter().cloned());
     let mut resolved = resolve(&graph, &units, &mut interner, &origin.package);
     let lowered = crate::hir::lower(&graph, &units, &resolved, &mut interner, &origin.package);
+    let behavior = lowered.behavior;
     let Some(module) = resolved.pop() else {
-        return Compiled::empty(diagnostics);
+        return Compiled::empty(diagnostics, behavior);
     };
     diagnostics.extend(module.errors.iter().cloned());
     diagnostics.extend(lowered.diagnostics.iter().cloned());
 
     let Some(decl) = mounted_component(&cu, source, &mut diagnostics) else {
-        return Compiled::empty(diagnostics);
+        return Compiled::empty(diagnostics, behavior);
     };
     let range = decl.syntax().text_range();
     let Some(component) = lowered
@@ -275,7 +280,7 @@ fn compile_unit(source: &str, parse: Parse, origin: &Origin) -> Compiled {
         .into_iter()
         .find(|c| c.source_origin == range)
     else {
-        return Compiled::empty(diagnostics);
+        return Compiled::empty(diagnostics, behavior);
     };
 
     let sources = component_sources(&component, &decl);
@@ -296,11 +301,12 @@ fn compile_unit(source: &str, parse: Parse, origin: &Origin) -> Compiled {
         keys,
         sources,
         diagnostics,
+        behavior,
     }
 }
 
 impl Compiled {
-    fn empty(diagnostics: Vec<Diagnostic>) -> Self {
+    fn empty(diagnostics: Vec<Diagnostic>, behavior: Program) -> Self {
         Self {
             component: None,
             tree: UiTree { items: Vec::new() },
@@ -308,6 +314,7 @@ impl Compiled {
             keys: KeyIr::default(),
             sources: Vec::new(),
             diagnostics,
+            behavior,
         }
     }
 }

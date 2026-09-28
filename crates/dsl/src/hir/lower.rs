@@ -26,7 +26,10 @@ use crate::ast::{
     AstNode, Block, CompilationUnit, ComponentDecl, ConstDecl, EnumVariant, InputDecl, Item,
     Member, Param, RecordDecl, RecordField, ReturnType, TypePath,
 };
-use crate::diag::Diagnostic;
+use crate::behavior::Program;
+use crate::behavior::ir::FunctionKind;
+use crate::behavior::lower::{Def, ProgramBuilder, lower_body, lower_value, unsupported};
+use crate::diag::{Diagnostic, Severity};
 use crate::resolve::prelude::Prelude;
 use crate::resolve::{
     ModuleGraph, NameInterner, Namespace, Resolution, ResolvedModule, ResolvedRef, SourceUnit,
@@ -65,6 +68,9 @@ pub struct LoweredPackage {
     /// The slice of `diagnostics` each module raised, index-parallel to the graph's
     /// modules, so a multi-file caller can attribute each one to its source.
     pub module_diagnostics: Vec<std::ops::Range<usize>>,
+    /// Every body lowered to the Behavior IR, with the reason each one that cannot
+    /// run cannot.
+    pub behavior: Program,
 }
 
 /// Lowers a whole resolved package into its typed HIR.
@@ -132,11 +138,12 @@ pub fn lower(
     let mut per_module: Vec<Vec<Diagnostic>> = Vec::with_capacity(modules.len());
     let mut input_flows: Vec<InputFlows> = Vec::with_capacity(modules.len());
     let mut cap = CapabilityGraphBuilder::default();
+    let behavior = RefCell::new(ProgramBuilder::new());
     for (i, module) in modules.iter().enumerate() {
         let mut module_diagnostics = Vec::new();
         let mut flows = InputFlows::default();
         if let (Some((cu, scope)), Some(resolved_module)) = (module, resolved.get(i)) {
-            let env = ModuleEnv::new(&decls, scope, i);
+            let env = ModuleEnv::new(&decls, scope, i, &behavior);
             cap.module = i;
             flows = lower_module(
                 cu,
@@ -175,6 +182,7 @@ pub fn lower(
         callables,
         diagnostics,
         module_diagnostics,
+        behavior: behavior.into_inner().finish(),
     }
 }
 
@@ -215,6 +223,8 @@ fn lower_module(
             Item::Record(r) => check_field_defaults(&r, refs, env, diagnostics, &mut percent),
             Item::Fn(f) => {
                 let callable = Callable {
+                    name: name_of(f.name()),
+                    kind: FunctionKind::Fn,
                     context: BodyContext::Fn,
                     symbol: env.scope.declared.get(&f.syntax().text_range()).copied(),
                     params: f.params(),
@@ -226,6 +236,8 @@ fn lower_module(
             }
             Item::Action(a) => {
                 let callable = Callable {
+                    name: name_of(a.name()),
+                    kind: FunctionKind::Action,
                     context: BodyContext::Action,
                     symbol: env.scope.declared.get(&a.syntax().text_range()).copied(),
                     params: a.params(),
@@ -237,6 +249,8 @@ fn lower_module(
             }
             Item::Task(t) => {
                 let callable = Callable {
+                    name: name_of(t.name()),
+                    kind: FunctionKind::Fn,
                     context: BodyContext::Task,
                     symbol: env.scope.declared.get(&t.syntax().text_range()).copied(),
                     params: t.params(),
@@ -271,6 +285,8 @@ fn lower_component_item(
     check_bindable(decl, env, diagnostics);
     let schema = lower_component(decl, refs, env, diagnostics, percent);
     env.record_inferred(&schema);
+    env.behavior.borrow_mut().component(&schema);
+    lower_member_values(decl, refs, env, &schema, diagnostics);
     let source_origin = decl.syntax().text_range();
 
     // Effect-check the view body (a reactive context) and every callable body in its context.
@@ -315,9 +331,12 @@ fn check_component_callables(
     cap: &mut CapabilityGraphBuilder,
     percent: &mut PercentSources,
 ) {
+    let component = name_of(decl.name());
     for member in decl.members() {
         let callable = match &member {
             Member::Fn(f) => Callable {
+                name: format!("{component}.{}", name_of(f.name())),
+                kind: FunctionKind::Fn,
                 context: BodyContext::Fn,
                 symbol: env.member_symbol(&name_of(f.name())),
                 params: f.params(),
@@ -326,6 +345,8 @@ fn check_component_callables(
                 clause: f.capability_clause(),
             },
             Member::Action(a) => Callable {
+                name: format!("{component}.{}", name_of(a.name())),
+                kind: FunctionKind::Action,
                 context: BodyContext::Action,
                 symbol: env.member_symbol(&name_of(a.name())),
                 params: a.params(),
@@ -334,6 +355,8 @@ fn check_component_callables(
                 clause: a.capability_clause(),
             },
             Member::Task(t) => Callable {
+                name: format!("{component}.{}", name_of(t.name())),
+                kind: FunctionKind::Fn,
                 context: BodyContext::Task,
                 symbol: env.member_symbol(&name_of(t.name())),
                 params: t.params(),
@@ -349,6 +372,10 @@ fn check_component_callables(
 
 /// A `fn`/`action`/`task` declaration, a component's or the module's.
 struct Callable {
+    /// Its name in the Behavior IR (`Component.member` for a component member).
+    name: String,
+    /// What it lowers to.
+    kind: FunctionKind,
     context: BodyContext,
     symbol: Option<SymbolId>,
     params: Vec<Param>,
@@ -372,15 +399,28 @@ fn check_callable(
     if let Some(block) = body {
         check_body(refs, callable.context, env, block.syntax(), diagnostics);
     }
-    check_signature(
-        refs,
-        env,
-        &callable.params,
-        callable.ret.clone(),
-        body.clone(),
-        diagnostics,
-        percent,
-    );
+    let def = Def {
+        name: callable.name.clone(),
+        kind: callable.kind,
+        symbol: callable.symbol,
+        module: env.module,
+        into: None,
+    };
+    let def = if callable.context == BodyContext::Task {
+        let at = body
+            .as_ref()
+            .map_or_else(|| TextRange::empty(0.into()), |b| b.syntax().text_range());
+        unsupported(
+            &mut env.behavior.borrow_mut(),
+            def,
+            "is a `task`, which runs on the task runtime",
+            at,
+        );
+        None
+    } else {
+        Some(def)
+    };
+    check_signature(refs, env, callable, diagnostics, percent, def);
     let declared = callable
         .clause
         .as_ref()
@@ -411,18 +451,18 @@ fn check_body(
 fn check_signature(
     refs: &[ResolvedRef],
     env: &ModuleEnv<'_>,
-    params: &[Param],
-    ret: Option<ReturnType>,
-    body: Option<Block>,
+    callable: &Callable,
     diagnostics: &mut Vec<Diagnostic>,
     percent: &mut PercentSources,
+    def: Option<Def>,
 ) {
-    let Some(body) = body else {
+    let Some(body) = &callable.body else {
         return;
     };
-    let ret = ret.map(|r| env.annotation_of(r.syntax()));
+    let returns_value = callable.ret.is_some();
+    let ret = callable.ret.as_ref().map(|r| env.annotation_of(r.syntax()));
     let mut cx = InferCx::new(refs, env);
-    for param in params.iter().filter(|p| {
+    for param in callable.params.iter().filter(|p| {
         p.syntax()
             .children_with_tokens()
             .into_iter()
@@ -432,11 +472,21 @@ fn check_signature(
             cx.mark_mutable(name.text_range());
         }
     }
-    let params: Vec<(TextRange, Ty)> = params
+    let params: Vec<(TextRange, Ty)> = callable
+        .params
         .iter()
         .filter_map(|p| Some((p.name()?.text_range(), env.annotation_of(p.syntax()))))
         .collect();
-    cx.check_callable(&params, ret.as_ref(), &body);
+    cx.check_callable(&params, ret.as_ref(), body);
+    if let Some(def) = def {
+        let mut b = env.behavior.borrow_mut();
+        if has_errors(cx.diagnostics()) {
+            unsupported(&mut b, def, TYPE_ERRORS, body.syntax().text_range());
+        } else {
+            let spans: Vec<TextRange> = params.iter().map(|(at, _)| *at).collect();
+            lower_body(&mut b, &cx, def, &spans, body, returns_value);
+        }
+    }
     percent.extend(cx.take_percent_defs());
     diagnostics.extend(cx.into_diagnostics());
 }
@@ -466,9 +516,18 @@ fn check_const(
     } else {
         cx.infer_promoted(&value, &want)
     };
-    if let Some(symbol) = env.scope.declared.get(&decl.syntax().text_range()) {
-        percent.define(Resolution::Symbol(*symbol), cx.carry(value.syntax()));
+    let symbol = env.scope.declared.get(&decl.syntax().text_range()).copied();
+    if let Some(symbol) = symbol {
+        percent.define(Resolution::Symbol(symbol), cx.carry(value.syntax()));
     }
+    let def = Def {
+        name: name_of(decl.name()),
+        kind: FunctionKind::Const,
+        symbol,
+        module: env.module,
+        into: None,
+    };
+    lower_checked(env, &cx, def, &value, 0);
     percent.extend(cx.take_percent_defs());
     diagnostics.extend(cx.into_diagnostics());
 }
@@ -483,11 +542,13 @@ fn check_field_defaults(
     percent: &mut PercentSources,
 ) {
     let record = env.scope.declared.get(&decl.syntax().text_range()).copied();
+    let record_name = name_of(decl.name());
     let mut cx = InferCx::new(refs, env);
-    for field in decl.fields() {
+    for (index, field) in decl.fields().enumerate() {
         let Some(value) = field.default() else {
             continue;
         };
+        let errors = cx.diagnostics().len();
         check_body(
             refs,
             BodyContext::Initializer,
@@ -503,10 +564,113 @@ fn check_field_defaults(
         };
         if let Some(record) = record {
             percent.define(Resolution::Symbol(record), cx.carry(value.syntax()));
+            let name = format!("{record_name}.{}", name_of(field.name()));
+            let slot = env
+                .behavior
+                .borrow_mut()
+                .field_default_slot(record, index as u32, &name);
+            let def = Def {
+                name,
+                kind: FunctionKind::FieldDefault,
+                symbol: Some(record),
+                module: env.module,
+                into: Some(slot),
+            };
+            lower_checked(env, &cx, def, &value, errors);
         }
     }
     percent.extend(cx.take_percent_defs());
     diagnostics.extend(cx.into_diagnostics());
+}
+
+/// The reason a body whose typing raised an error cannot run.
+const TYPE_ERRORS: &str = "has type errors";
+
+/// Whether `diagnostics` holds an error.
+fn has_errors(diagnostics: &[Diagnostic]) -> bool {
+    diagnostics.iter().any(|d| d.severity == Severity::Error)
+}
+
+/// Lowers the value `value` that `cx` typed, unless its typing raised an error
+/// (any of `cx`'s diagnostics from index `from` on).
+fn lower_checked(
+    env: &ModuleEnv<'_>,
+    cx: &InferCx<'_>,
+    def: Def,
+    value: &crate::ast::Expr,
+    from: usize,
+) -> crate::behavior::ir::FuncId {
+    let mut b = env.behavior.borrow_mut();
+    if has_errors(&cx.diagnostics()[from..]) {
+        unsupported(&mut b, def, TYPE_ERRORS, value.syntax().text_range())
+    } else {
+        lower_value(&mut b, cx, def, value)
+    }
+}
+
+/// Lowers each `state` initializer, `computed` body and `input` default of a
+/// component to the Behavior IR.
+///
+/// The values are typed again here against the members' settled types: the
+/// schema pass types each one before the types of the members it reads are all
+/// inferred. Only an `input` default's diagnostics are new; the others were
+/// reported by the schema pass.
+fn lower_member_values(
+    decl: &ComponentDecl,
+    refs: &[ResolvedRef],
+    env: &ModuleEnv<'_>,
+    schema: &ComponentSchema,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    let settled = |name: &str| {
+        schema
+            .states
+            .iter()
+            .map(|s| (&s.name, &s.meta))
+            .chain(schema.computeds.iter().map(|c| (&c.name, &c.meta)))
+            .chain(schema.inputs.iter().map(|i| (&i.name, &i.meta)))
+            .find(|(n, _)| n.as_str() == name)
+            .map(|(_, meta)| meta)
+    };
+    for member in decl.members() {
+        let (kind, name, value) = match &member {
+            Member::State(d) => (FunctionKind::StateInit, d.name(), d.initializer()),
+            Member::Computed(d) => (FunctionKind::Computed, d.name(), d.body()),
+            Member::Input(d) => (FunctionKind::InputDefault, d.name(), d.default()),
+            _ => continue,
+        };
+        let name = name_of(name);
+        let (Some(value), Some(meta)) = (value, settled(&name)) else {
+            continue;
+        };
+        let want = &meta.inferred_type;
+        let mut cx = InferCx::new(refs, env);
+        let _ = if want.has_unknown() {
+            cx.infer_expr(&value, None)
+        } else {
+            cx.infer_promoted(&value, want)
+        };
+        let def = Def {
+            name: format!("{}.{name}", schema.name),
+            kind,
+            symbol: meta.resolved_symbol,
+            module: env.module,
+            into: None,
+        };
+        let func = lower_checked(env, &cx, def, &value, 0);
+        if let Some(symbol) = meta.resolved_symbol {
+            match kind {
+                FunctionKind::StateInit => env.behavior.borrow_mut().state_init(symbol, func),
+                FunctionKind::InputDefault => {
+                    env.behavior.borrow_mut().input_default(symbol, func);
+                }
+                _ => {}
+            }
+        }
+        if kind == FunctionKind::InputDefault {
+            diagnostics.extend(cx.into_diagnostics());
+        }
+    }
 }
 
 /// Whether every core HIR node in the package carries a determined type (the HIR-complete
@@ -781,6 +945,8 @@ struct ModuleEnv<'p> {
     inferred: RefCell<HashMap<SymbolId, Ty>>,
     /// The module's graph index.
     module: usize,
+    /// The package's Behavior IR, which each body joins once it is typed.
+    behavior: &'p RefCell<ProgramBuilder>,
 }
 
 impl TypeEnv for ModuleEnv<'_> {
@@ -893,13 +1059,19 @@ impl MemberEnv for ModuleEnv<'_> {
 }
 
 impl<'p> ModuleEnv<'p> {
-    fn new(decls: &'p Declarations, scope: &'p ModuleScope, module: usize) -> Self {
+    fn new(
+        decls: &'p Declarations,
+        scope: &'p ModuleScope,
+        module: usize,
+        behavior: &'p RefCell<ProgramBuilder>,
+    ) -> Self {
         ModuleEnv {
             decls,
             scope,
             component: Cell::new(SymbolId::from_parts(0, 0)),
             inferred: RefCell::default(),
             module,
+            behavior,
         }
     }
 

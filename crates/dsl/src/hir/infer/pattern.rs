@@ -35,7 +35,7 @@ enum Pat {
 
 /// A value constructor.
 #[derive(Debug, Clone, PartialEq)]
-enum Ctor {
+pub(crate) enum Ctor {
     Bool(bool),
     Some,
     None,
@@ -57,7 +57,7 @@ enum Ctor {
 
 /// The lengths a list pattern matches.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Slice {
+pub(crate) enum Slice {
     /// Exactly `n` elements.
     Fixed(usize),
     /// At least `prefix + suffix` elements, of which the first `prefix` and the
@@ -209,7 +209,7 @@ impl Ctor {
 }
 
 /// What a literal pattern spells.
-enum Lit {
+pub(crate) enum Lit {
     /// An integer, `None` when it does not fit any scalar type.
     Int(Option<i128>),
     /// A character, `None` when malformed (already a lexical error).
@@ -506,7 +506,7 @@ impl InferCx<'_> {
     }
 
     /// The constructor a constructor or qualified-variant pattern names.
-    fn pattern_ctor(&self, pattern: &SyntaxNode) -> Option<Ctor> {
+    pub(crate) fn pattern_ctor(&self, pattern: &SyntaxNode) -> Option<Ctor> {
         let segments: Vec<SyntaxToken> = match pattern.kind() {
             SyntaxKind::QualifiedVariantPattern => ident_tokens(pattern),
             _ => {
@@ -1131,7 +1131,7 @@ fn head_ctors(rows: &[Vec<Pat>]) -> Vec<Ctor> {
 }
 
 /// What a literal pattern spells, or `None` for another node.
-fn literal(node: &SyntaxNode) -> Option<Lit> {
+pub(crate) fn literal(node: &SyntaxNode) -> Option<Lit> {
     if node.kind() != SyntaxKind::LiteralPattern {
         return None;
     }
@@ -1183,7 +1183,7 @@ fn literal(node: &SyntaxNode) -> Option<Lit> {
 
 /// The inclusive value bounds of a range pattern whose ends are both integer or
 /// both `Char` literals.
-fn range_bounds(node: &SyntaxNode) -> Option<(i128, i128)> {
+pub(crate) fn range_bounds(node: &SyntaxNode) -> Option<(i128, i128)> {
     let ends: Vec<Option<(i128, bool)>> = node
         .children()
         .iter()
@@ -1205,7 +1205,7 @@ fn range_bounds(node: &SyntaxNode) -> Option<(i128, i128)> {
 
 /// The value a string or char literal body spells, `None` when an escape is
 /// malformed (already a lexical error).
-fn unescape(body: &str) -> Option<String> {
+pub(crate) fn unescape(body: &str) -> Option<String> {
     let mut out = String::with_capacity(body.len());
     let mut chars = body.chars();
     while let Some(c) = chars.next() {
@@ -1246,7 +1246,7 @@ fn unescape(body: &str) -> Option<String> {
 }
 
 /// The identifier tokens directly in `node`.
-fn ident_tokens(node: &SyntaxNode) -> Vec<SyntaxToken> {
+pub(crate) fn ident_tokens(node: &SyntaxNode) -> Vec<SyntaxToken> {
     node.children_with_tokens()
         .into_iter()
         .filter_map(|e| e.as_token().cloned())
@@ -1255,12 +1255,12 @@ fn ident_tokens(node: &SyntaxNode) -> Vec<SyntaxToken> {
 }
 
 /// The first identifier token directly in `node`.
-fn name_token(node: &SyntaxNode) -> Option<SyntaxToken> {
+pub(crate) fn name_token(node: &SyntaxNode) -> Option<SyntaxToken> {
     ident_tokens(node).into_iter().next()
 }
 
 /// Whether `node` is a rest pattern `..`, bare or wrapped in a `Pattern`.
-fn is_rest(node: &SyntaxNode) -> bool {
+pub(crate) fn is_rest(node: &SyntaxNode) -> bool {
     node.kind() == SyntaxKind::RestPattern
         || (node.kind() == SyntaxKind::Pattern
             && node

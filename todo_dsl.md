@@ -187,10 +187,12 @@ nodes.
 
 ### D1.1 — Behavior IR
 
-- [ ] Lower typed HIR bodies to a register-based Behavior IR: locals, calls, field and
+- [x] Lower typed HIR bodies to a register-based Behavior IR: locals, calls, field and
       index access, record/enum construction, match decision trees, loops, `emit`.
-- [ ] Evaluation order per §133; operator lowering per §132.
-- [ ] Source map from every IR instruction to its origin (§134).
+- [x] Evaluation order per §133; operator lowering per §132.
+- [x] Source map from every IR instruction to its origin (§134).
+- [x] Record `..base` spread: checked and lowered (it was skipped by the checker).
+- [x] Goldens under `crates/dsl/tests/golden/behavior/` (`BLESS=1`).
 
 ### D1.2 — Bytecode VM
 

@@ -1,0 +1,78 @@
+behavior-ir 1
+component Loops states=[label] inputs=[] events=[]
+
+fn#0 Loops.sum fn params=1 regs=14
+    0: r1 = const 0
+    1: r2 = r0
+    2: r3 = len r2
+    3: r4 = const 0
+    4: r5 = lt.i64 r4, r3
+    5: jump @21 unless r5
+    6: r6 = r2[r4]
+    7: r8 = const 10
+    8: r9 = gt.i64 r6, r8
+    9: r7 = r9
+   10: jump @14 unless r7
+   11: r10 = const 100
+   12: r11 = lt.i64 r6, r10
+   13: r7 = r11
+   14: jump @18 unless r7
+   15: r12 = add.i64 r1, r6
+   16: r1 = r12
+   17: jump @18
+   18: r13 = const 1
+   19: r4 = add.i64 r4, r13
+   20: jump @4
+   21: return r1
+
+fn#1 Loops.count fn params=1 regs=22
+    0: r1 = const 0
+    1: r2 = const 0
+    2: r3 = make #0 (r2, r0)
+    3: r4 = r3.0
+    4: r5 = r3.1
+    5: r6 = le.i64 r4, r5
+    6: jump @23 unless r6
+    7: r7 = r4
+    8: r8 = const 3
+    9: r9 = rem.i64 r7, r8
+   10: r10 = const 0
+   11: r11 = eq r9, r10
+   12: jump @15 unless r11
+   13: jump @18
+   14: jump @15
+   15: r12 = const 1
+   16: r13 = add.i64 r1, r12
+   17: r1 = r13
+   18: r14 = eq r4, r5
+   19: jump @23 if r14
+   20: r15 = const 1
+   21: r4 = add.i64 r4, r15
+   22: jump @5
+   23: r16 = const 0
+   24: r17 = const true
+   25: jump @34 unless r17
+   26: r18 = const 1
+   27: r19 = add.i64 r16, r18
+   28: r16 = r19
+   29: r20 = gt.i64 r16, r0
+   30: jump @33 unless r20
+   31: jump @34
+   32: jump @33
+   33: jump @24
+   34: r21 = add.i64 r1, r16
+   35: return r21
+
+fn#2 Loops.apply fn params=1 regs=4
+    0: r1 = closure fn#4 [r0]
+    1: r2 = const 3
+    2: r3 = call r1 (r2)
+    3: return r3
+
+fn#3 Loops.label state-init params=0 regs=1
+    0: r0 = const ""
+    1: return r0
+
+fn#4 Loops.apply/closure closure params=1 captures=[r1] regs=3
+    0: r2 = add.i64 r0, r1
+    1: return r2

@@ -1,7 +1,7 @@
 //! What a typed expression may carry a `Percent` component from (see
 //! [`crate::hir::percent`]), and the definitions a body walk gives its names.
 
-use super::{InferCx, binary_op_kind, child_exprs, first_child_expr};
+use super::{InferCx, binary_op_kind, child_exprs, first_child_expr, is_spread, record_spread};
 use crate::ast::AstNode;
 use crate::hir::percent::Carry;
 use crate::hir::ty::Ty;
@@ -114,6 +114,7 @@ impl InferCx<'_> {
             .children()
             .into_iter()
             .filter(|c| c.kind() == SyntaxKind::RecordExprField)
+            .filter(|c| !is_spread(c))
         {
             let label = tokens(&field).into_iter().find(is_ident);
             match first_child_expr(&field) {
@@ -130,7 +131,7 @@ impl InferCx<'_> {
             }
             given.extend(label.map(|t| t.text().to_string()));
         }
-        let base = first_child_expr(node);
+        let base = record_spread(node);
         if let Some(base) = &base {
             self.carry_into(base.syntax(), carry);
         }

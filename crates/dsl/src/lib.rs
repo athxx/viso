@@ -18,6 +18,7 @@
 
 pub mod aot;
 pub mod ast;
+pub mod behavior;
 pub mod diag;
 pub mod frontend;
 pub mod hir;

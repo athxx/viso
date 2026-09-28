@@ -28,7 +28,7 @@
 mod capability;
 mod component;
 mod effect;
-mod infer;
+pub(crate) mod infer;
 mod lower;
 mod nodes;
 mod percent;

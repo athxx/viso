@@ -1566,7 +1566,7 @@ input_decl           = "input", identifier, ":", type,
 
 - Input 是父组件传入的只读值；
 - Component 内禁止给 Input 赋值（`E2110`）；
-- Input 默认值必须是纯、确定的 Default Expression；
+- Input 默认值必须是纯、确定的 Default Expression，其类型须与声明类型相容（`E2103`）；
 - Input 默认值禁止读取另一个 Input、State、Computed、Native Runtime 或当前时间；
 - 没有默认值的 Input 是必填属性；
 - Input 类型是 Component Schema 的一部分，改变类型属于接口兼容性变更；
@@ -6632,6 +6632,8 @@ template expansion callsite
 macro/schema generated origin
 inlined function origin
 ```
+
+Behavior IR 的每个 Function 记录其定义模块与名称（Definition Origin），每条 Instruction 记录 Primary Span；Template 展开、Schema 生成与内联不产生 Behavior IR 之前，其余三项为空。
 
 诊断展示：
 

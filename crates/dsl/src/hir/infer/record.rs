@@ -3,7 +3,9 @@
 
 use std::collections::HashSet;
 
-use super::{FieldInfo, InferCx, TypeEnv, VariantPayload, compatible, first_child_expr};
+use super::{
+    FieldInfo, InferCx, TypeEnv, VariantPayload, compatible, first_child_expr, record_spread,
+};
 use crate::ast::{AstNode, Expr, FieldExpr};
 use crate::diag::{Applicability, Diagnostic, Fix, TextEdit};
 use crate::hir::ty::Ty;
@@ -140,7 +142,7 @@ impl InferCx<'_> {
             }
         }
 
-        let base = first_child_expr(node);
+        let base = record_spread(node);
         if let Some(base) = &base {
             let want = owner.map(Ty::Named);
             let _ = self.infer_expr(base, want.as_ref());

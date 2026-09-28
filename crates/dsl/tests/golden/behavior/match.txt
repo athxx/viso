@@ -1,0 +1,69 @@
+behavior-ir 1
+component Shapes states=[label] inputs=[] events=[]
+
+fn#0 Shapes.classify fn params=1 regs=13
+    0: r2 = const 0
+    1: r3 = eq r0, r2
+    2: jump @6 unless r3
+    3: r4 = const "zero"
+    4: r1 = r4
+    5: jump @22
+    6: r5 = const 1
+    7: r6 = eq r0, r5
+    8: jump @10 unless r6
+    9: jump @13
+   10: r7 = const 2
+   11: r8 = eq r0, r7
+   12: jump @16 unless r8
+   13: r9 = const "few"
+   14: r1 = r9
+   15: jump @22
+   16: r10 = display.signed r0
+   17: r11 = const "many "
+   18: r12 = concat (r11, r10)
+   19: r1 = r12
+   20: jump @22
+   21: unreachable
+   22: return r1
+
+fn#1 Shapes.digit fn params=1 regs=7
+    0: switch r0 from 1 [@1, @4, @7, @10] else @13
+    1: r2 = const 10
+    2: r1 = r2
+    3: jump @16
+    4: r3 = const 20
+    5: r1 = r3
+    6: jump @16
+    7: r4 = const 30
+    8: r1 = r4
+    9: jump @16
+   10: r5 = const 40
+   11: r1 = r5
+   12: jump @16
+   13: r6 = const 0
+   14: r1 = r6
+   15: jump @16
+   16: return r1
+
+fn#2 Shapes.area fn params=1 regs=10
+    0: r2 = tag r0
+    1: switch r2 from 0 [@2, @8, @12] else @15
+    2: r3 = r0.0
+    3: r4 = const 3.0
+    4: r5 = mul.f64 r4, r3
+    5: r6 = mul.f64 r5, r3
+    6: r1 = r6
+    7: jump @16
+    8: r7 = r0.0
+    9: r8 = mul.f64 r7, r7
+   10: r1 = r8
+   11: jump @16
+   12: r9 = const 0.0
+   13: r1 = r9
+   14: jump @16
+   15: unreachable
+   16: return r1
+
+fn#3 Shapes.label state-init params=0 regs=1
+    0: r0 = const ""
+    1: return r0

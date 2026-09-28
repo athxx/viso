@@ -25,11 +25,11 @@
 //! the environment, so this module is testable against a stub environment without the
 //! component-lowering machinery existing yet.
 
-mod body;
+pub(crate) mod body;
 mod carry;
-mod format;
+pub(crate) mod format;
 mod lens;
-mod pattern;
+pub(crate) mod pattern;
 mod record;
 
 pub(crate) use pattern::MatchCheck;
@@ -188,6 +188,10 @@ pub struct InferCx<'a> {
     percent_defs: Vec<(Resolution, crate::hir::percent::Carry)>,
     /// The locals declared `mut`, which alone may be assigned.
     mutable: HashSet<LocalSlot>,
+    /// The type each expression was given, keyed by its span and kind (a span alone
+    /// is shared by a wrapper and its only child). A re-typed expression keeps its
+    /// last type, the one its context settled on.
+    types: HashMap<(TextRange, SyntaxKind), Ty>,
 }
 
 impl<'a> InferCx<'a> {
@@ -207,7 +211,24 @@ impl<'a> InferCx<'a> {
             percent_typed: HashSet::new(),
             percent_defs: Vec::new(),
             mutable: HashSet::new(),
+            types: HashMap::new(),
         }
+    }
+
+    /// The type inference gave `expr`, when the walk reached it.
+    pub(crate) fn type_of(&self, expr: &Expr) -> Option<&Ty> {
+        let node = expr.syntax();
+        self.types.get(&(node.text_range(), node.kind()))
+    }
+
+    /// What the name token at `range` resolves to.
+    pub(crate) fn resolution_at(&self, range: TextRange) -> Option<Resolution> {
+        self.refs.get(&range).copied()
+    }
+
+    /// The surrounding-program type oracle.
+    pub(crate) fn env(&self) -> &'a dyn TypeEnv {
+        self.env
     }
 
     /// Consumes the context, returning the diagnostics it gathered.
@@ -262,6 +283,8 @@ impl<'a> InferCx<'a> {
             _ => Ty::Unknown,
         };
         self.note_percent(&ty, node);
+        self.types
+            .insert((node.text_range(), node.kind()), ty.clone());
         ty
     }
 
@@ -412,7 +435,7 @@ impl<'a> InferCx<'a> {
     }
 
     /// The type of a resolved name: a local's bound type, else the environment's answer.
-    fn resolution_ty(&self, to: &Resolution) -> Ty {
+    pub(crate) fn resolution_ty(&self, to: &Resolution) -> Ty {
         match to {
             Resolution::Local(slot) => self.locals.get(slot).cloned().unwrap_or(Ty::Unknown),
             Resolution::Symbol(_) => self.env.resolution_ty(to).unwrap_or(Ty::Unknown),
@@ -420,7 +443,7 @@ impl<'a> InferCx<'a> {
     }
 
     /// The symbol the name token at `range` resolves to, if it is a symbol.
-    fn symbol_at(&self, range: TextRange) -> Option<SymbolId> {
+    pub(crate) fn symbol_at(&self, range: TextRange) -> Option<SymbolId> {
         match self.refs.get(&range) {
             Some(Resolution::Symbol(id)) => Some(*id),
             _ => None,
@@ -462,8 +485,13 @@ impl<'a> InferCx<'a> {
         }
 
         let sig = match (head, segments.len()) {
-            (Some(Resolution::Local(slot)), 1) => match self.locals.get(&slot) {
-                Some(Ty::Fn(params, ret)) => Some((params.clone(), (**ret).clone())),
+            (Some(Resolution::Local(slot)), 1) => match self.locals.get(&slot).cloned() {
+                Some(Ty::Fn(params, ret)) => {
+                    if let Some(callee) = &callee {
+                        let _ = self.infer_expr(callee, None);
+                    }
+                    Some((params, *ret))
+                }
                 _ => None,
             },
             (Some(Resolution::Symbol(id)), n) if n >= 2 && self.env.enum_variants(id).is_some() => {
@@ -1144,7 +1172,7 @@ fn unify(a: &Ty, b: &Ty) -> Option<Ty> {
 
 /// The builtin `Option`/`Result` constructor a path names, when it names one:
 /// `Some`, `None`, `Ok`, `Err`, or their `Option::`/`Result::` qualified forms.
-fn builtin_variant(segments: &[SyntaxToken]) -> Option<&'static str> {
+pub(crate) fn builtin_variant(segments: &[SyntaxToken]) -> Option<&'static str> {
     let texts: Vec<String> = segments.iter().map(|t| t.text().to_string()).collect();
     let texts: Vec<&str> = texts.iter().map(String::as_str).collect();
     match texts.as_slice() {
@@ -1162,7 +1190,7 @@ fn builtin_variant(segments: &[SyntaxToken]) -> Option<&'static str> {
 /// The integer scalar types, as source spells them.
 pub(crate) const INTEGER_TYPES: [&str; 8] = ["I8", "I16", "I32", "I64", "U8", "U16", "U32", "U64"];
 
-fn is_integer_ty(ty: &Ty) -> bool {
+pub(crate) fn is_integer_ty(ty: &Ty) -> bool {
     matches!(
         ty,
         Ty::I8 | Ty::I16 | Ty::I32 | Ty::I64 | Ty::U8 | Ty::U16 | Ty::U32 | Ty::U64
@@ -1170,18 +1198,18 @@ fn is_integer_ty(ty: &Ty) -> bool {
 }
 
 /// Whether `ty` is one of the float scalar types.
-fn is_float_ty(ty: &Ty) -> bool {
+pub(crate) fn is_float_ty(ty: &Ty) -> bool {
     matches!(ty, Ty::F32 | Ty::F64)
 }
 
 /// Whether `ty` is any numeric scalar (integer or float).
-fn is_numeric_ty(ty: &Ty) -> bool {
+pub(crate) fn is_numeric_ty(ty: &Ty) -> bool {
     is_integer_ty(ty) || is_float_ty(ty)
 }
 
 /// The common numeric type of two operand types: the one the other widens to, if either
 /// direction is a legal safe widening; `None` when they are not numerically unifiable.
-fn unify_numeric(a: &Ty, b: &Ty) -> Option<Ty> {
+pub(crate) fn unify_numeric(a: &Ty, b: &Ty) -> Option<Ty> {
     if a == b {
         return Some(a.clone());
     }
@@ -1270,7 +1298,7 @@ fn bare_literal_token(node: &SyntaxNode) -> Option<SyntaxToken> {
 
 /// Splits a suffixed literal into its numeric body and the type its suffix names
 /// (§19.1). `None` for a suffix outside the closed set.
-fn split_unit_literal(text: &str) -> Option<(&str, Ty)> {
+pub(crate) fn split_unit_literal(text: &str) -> Option<(&str, Ty)> {
     const SUFFIXES: [(&str, Ty); 25] = [
         ("dp", Ty::Dp),
         ("px", Ty::Px),
@@ -1332,7 +1360,7 @@ fn int_bounds(ty: &Ty) -> Option<(i128, i128)> {
 /// Parses an integer literal's decimal/hex/octal/binary digits into an `i128`, stripping a
 /// trailing type suffix and `_` separators. `None` if it does not fit `i128` (a value that
 /// large is out of range for every scalar anyway).
-fn parse_int_literal(text: &str) -> Option<i128> {
+pub(crate) fn parse_int_literal(text: &str) -> Option<i128> {
     // Strip a type suffix: digits/`0x`.. body then optional `I32`/`u8`/... — split at the
     // first ASCII letter that is not part of a radix prefix.
     let body = strip_int_suffix(text);
@@ -1382,7 +1410,7 @@ fn strip_int_suffix(text: &str) -> &str {
 }
 
 /// Parses a float literal's body into an `f64`, stripping a type suffix and `_`.
-fn parse_float_literal(text: &str) -> Option<f64> {
+pub(crate) fn parse_float_literal(text: &str) -> Option<f64> {
     let body = match text.find(['f', 'F']) {
         Some(idx) if idx > 0 => &text[..idx],
         _ => text,
@@ -1435,20 +1463,37 @@ fn ty_name(ty: &Ty) -> &'static str {
 }
 
 /// The direct `Expr` children of a node, in order.
-fn child_exprs(node: &SyntaxNode) -> Vec<Expr> {
+pub(crate) fn child_exprs(node: &SyntaxNode) -> Vec<Expr> {
     node.children().into_iter().filter_map(Expr::cast).collect()
 }
 
 /// The first direct `Expr` child of a node.
-fn first_child_expr(node: &SyntaxNode) -> Option<Expr> {
+pub(crate) fn first_child_expr(node: &SyntaxNode) -> Option<Expr> {
     node.children().into_iter().find_map(Expr::cast)
+}
+
+/// The `..base` of a record literal: the value of its spread field.
+pub(crate) fn record_spread(node: &SyntaxNode) -> Option<Expr> {
+    node.children()
+        .into_iter()
+        .filter(is_spread)
+        .find_map(|f| first_child_expr(&f))
+}
+
+/// Whether a `RecordExprField` is the literal's `..base` spread.
+pub(crate) fn is_spread(field: &SyntaxNode) -> bool {
+    field.kind() == SyntaxKind::RecordExprField
+        && field
+            .children_with_tokens()
+            .into_iter()
+            .any(|e| e.as_token().is_some_and(|t| t.kind() == SyntaxKind::DotDot))
 }
 
 /// The argument expressions of a call. Arguments live in the call's `ArgumentList`
 /// child, each wrapped in an `Argument` node (which, for a named argument, holds a
 /// leading `ident :` before the value expression); we project each `Argument`'s value
 /// expression in order.
-fn call_args(node: &SyntaxNode) -> Vec<Expr> {
+pub(crate) fn call_args(node: &SyntaxNode) -> Vec<Expr> {
     let mut args = Vec::new();
     for child in node.children() {
         if child.kind() == SyntaxKind::ArgumentList {
@@ -1465,7 +1510,7 @@ fn call_args(node: &SyntaxNode) -> Vec<Expr> {
 }
 
 /// The operator token kind of a binary expression (the operator token between operands).
-fn binary_op_kind(node: &SyntaxNode) -> Option<SyntaxKind> {
+pub(crate) fn binary_op_kind(node: &SyntaxNode) -> Option<SyntaxKind> {
     node.children_with_tokens()
         .into_iter()
         .filter_map(|e| e.as_token().map(|t| t.kind()))
@@ -1473,7 +1518,7 @@ fn binary_op_kind(node: &SyntaxNode) -> Option<SyntaxKind> {
 }
 
 /// The operator token kind of a unary expression.
-fn unary_op_kind(node: &SyntaxNode) -> Option<SyntaxKind> {
+pub(crate) fn unary_op_kind(node: &SyntaxNode) -> Option<SyntaxKind> {
     node.children_with_tokens()
         .into_iter()
         .filter_map(|e| e.as_token().map(|t| t.kind()))
@@ -1481,7 +1526,7 @@ fn unary_op_kind(node: &SyntaxNode) -> Option<SyntaxKind> {
 }
 
 /// Whether a token kind is an assignment operator (`=` or an augmenting one).
-fn is_assign_op(k: SyntaxKind) -> bool {
+pub(crate) fn is_assign_op(k: SyntaxKind) -> bool {
     matches!(
         k,
         SyntaxKind::Eq

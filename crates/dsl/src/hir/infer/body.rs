@@ -573,9 +573,8 @@ impl InferCx<'_> {
     }
 }
 
-/// The first direct child of `node` of kind `kind`.
 /// The arguments of an `emit`, each with its `name:` label when it has one.
-fn emit_args(stmt: &SyntaxNode) -> Vec<(Option<SyntaxToken>, Expr)> {
+pub(crate) fn emit_args(stmt: &SyntaxNode) -> Vec<(Option<SyntaxToken>, Expr)> {
     let Some(list) = child_of(stmt, SyntaxKind::ArgumentList) else {
         return Vec::new();
     };
@@ -601,16 +600,18 @@ fn emit_args(stmt: &SyntaxNode) -> Vec<(Option<SyntaxToken>, Expr)> {
         .collect()
 }
 
-fn is_name(token: &SyntaxToken) -> bool {
+/// Whether `token` is a plain or raw identifier.
+pub(crate) fn is_name(token: &SyntaxToken) -> bool {
     matches!(token.kind(), SyntaxKind::Ident | SyntaxKind::RawIdent)
 }
 
-fn child_of(node: &SyntaxNode, kind: SyntaxKind) -> Option<SyntaxNode> {
+/// The first direct child of `node` of kind `kind`.
+pub(crate) fn child_of(node: &SyntaxNode, kind: SyntaxKind) -> Option<SyntaxNode> {
     node.children().into_iter().find(|c| c.kind() == kind)
 }
 
 /// Whether an `if` statement has an `else` branch.
-fn has_else(stmt: &SyntaxNode) -> bool {
+pub(crate) fn has_else(stmt: &SyntaxNode) -> bool {
     stmt.children_with_tokens()
         .into_iter()
         .filter_map(|e| e.as_token().cloned())
