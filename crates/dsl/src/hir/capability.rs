@@ -93,8 +93,8 @@ impl CapabilitySet {
     }
 }
 
-/// One callable in the capability call graph: what it *directly* confers (its own native
-/// capabilities — empty until a native schema exists), whether it declared a `requires {}`
+/// One callable in the capability call graph: what it *directly* requires (the
+/// capabilities of the native functions its body calls), whether it declared a `requires {}`
 /// upper bound, and the callables it calls.
 ///
 /// Indices into the graph's callable slice identify nodes; a call edge is such an index.
@@ -102,9 +102,8 @@ impl CapabilitySet {
 /// dense fixed point over a `Vec`, and so a caller that has no symbol (an anonymous event
 /// handler) still participates.
 pub struct CapabilityNode {
-    /// The capabilities this callable confers on its own (native calls in its body). Empty
-    /// in this slice — no native schema declares conferrals yet — but the machinery unions
-    /// it in so the source drops in without a propagation change.
+    /// The capabilities this callable requires on its own: those of the native functions
+    /// its body calls.
     pub direct: CapabilitySet,
     /// The declared `requires {}` upper bound, when the callable wrote one, with the span
     /// to anchor an `E2601` on. `None` for a callable with no clause (its inferred set is

@@ -35,6 +35,21 @@ pub struct Global {
 pub enum Command {
     /// Check the project's `.vs` sources and `Viso.toml` without building.
     Check,
+    /// Show the typed schema of a widget, native library, function or type.
+    Schema(SchemaArgs),
+}
+
+/// What `viso schema` looks up (section 18.1).
+#[derive(Debug, Args)]
+pub struct SchemaArgs {
+    /// The symbol, by full path or a `::`-suffix of it, optionally with
+    /// `.member`: `Button`, `viso::widgets::Button`, `Button.text`,
+    /// `text::upper`.
+    #[arg(required_unless_present = "search", conflicts_with = "search")]
+    pub symbol: Option<String>,
+    /// List every symbol and member whose path contains TERM, ignoring case.
+    #[arg(long, value_name = "TERM")]
+    pub search: Option<String>,
 }
 
 impl Command {
@@ -42,6 +57,7 @@ impl Command {
     pub fn name(&self) -> &'static str {
         match self {
             Command::Check => "check",
+            Command::Schema(_) => "schema",
         }
     }
 }
@@ -99,5 +115,24 @@ mod tests {
             Some("check")
         );
         assert_eq!(named_command(&["chekc"]), None);
+    }
+
+    #[test]
+    fn schema_takes_a_symbol_or_a_search() {
+        let cli = Cli::try_parse_from(["viso", "schema", "Button.text", "--json"]).unwrap();
+        assert!(
+            matches!(cli.command, Command::Schema(SchemaArgs { symbol: Some(s), search: None }) if s == "Button.text")
+        );
+        assert!(cli.global.json);
+        let cli = Cli::try_parse_from(["viso", "schema", "--search", "text"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Command::Schema(SchemaArgs {
+                symbol: None,
+                search: Some(_)
+            })
+        ));
+        assert!(Cli::try_parse_from(["viso", "schema"]).is_err());
+        assert!(Cli::try_parse_from(["viso", "schema", "Button", "--search", "x"]).is_err());
     }
 }

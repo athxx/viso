@@ -13,6 +13,7 @@
 use crate::ast::{AstNode, TypePath};
 use crate::resolve::SymbolId;
 use crate::syntax::{SyntaxKind, SyntaxNode, TextRange};
+use viso_behavior::native::{NativeId, SchemaTy};
 
 /// A resolved static type.
 ///
@@ -58,6 +59,8 @@ pub enum Ty {
     // --- nominal & structural -----------------------------------------------
     /// A nominal type: a record/enum/component/type-alias, identified by its symbol.
     Named(SymbolId),
+    /// A native handle type, identified by its registered path.
+    Native(NativeId),
     /// A tuple `(A, B, ...)` — structural.
     Tuple(Vec<Ty>),
     /// A function type `(params) -> ret` — structural.
@@ -179,12 +182,12 @@ impl Ty {
     /// Lowers a type annotation node (a `TypePath` or `TupleType`) to a [`Ty`]:
     /// builtin scalars, the structural generics (`List`, `Option`, `Result`,
     /// `Range`, `RangeInclusive`), tuples, and nominal types through `nominal`,
-    /// which maps a head segment's span to the symbol the resolver bound it to.
+    /// which maps a head segment's span to the type the resolver bound it to.
     /// A name that is neither is `Unknown` (the resolver already diagnosed a
     /// user-looking one); `Float` anywhere is [`TypeError::FloatRemoved`].
     pub fn from_annotation(
         node: &SyntaxNode,
-        nominal: &dyn Fn(TextRange) -> Option<SymbolId>,
+        nominal: &dyn Fn(TextRange) -> Option<Ty>,
     ) -> Result<Ty, TypeError> {
         match node.kind() {
             SyntaxKind::TupleType => {
@@ -246,9 +249,23 @@ impl Ty {
                 // resolver bound is the fallback for a qualified name.
                 Ok(nominal(last.text_range())
                     .or_else(|| nominal(segments[0].text_range()))
-                    .map_or(Ty::Unknown, Ty::Named))
+                    .unwrap_or(Ty::Unknown))
             }
             _ => Ok(Ty::Unknown),
+        }
+    }
+
+    /// The type a native schema type denotes.
+    pub fn from_schema(ty: &SchemaTy) -> Ty {
+        match ty {
+            SchemaTy::Unit => Ty::Unit,
+            SchemaTy::Bool => Ty::Bool,
+            SchemaTy::I64 => Ty::I64,
+            SchemaTy::F64 => Ty::F64,
+            SchemaTy::String => Ty::String,
+            SchemaTy::List(t) => Ty::List(Box::new(Ty::from_schema(t))),
+            SchemaTy::Option(t) => Ty::Option(Box::new(Ty::from_schema(t))),
+            SchemaTy::Handle(path) => Ty::Native(NativeId::of(path)),
         }
     }
 

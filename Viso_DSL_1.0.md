@@ -1821,6 +1821,19 @@ native_type_decl     = "type", identifier,
 - Native Handle 方法也按 `fn/action/task` 分类；
 - Schema 必须声明线程域、Capability、参数所有权、错误类型和 Hot Reload 可迁移性。
 
+### 47.1 生成的 Native Schema
+
+Native Schema 由 Rust 侧生成（ADR 0036）：一个 Native Library 是一条模块路径（如 `viso::text`）下带版本的函数与 Handle 类型集合；编译器与运行时共享同一个 Registry，`.vs` 不重复声明签名。标准 Registry 含 `viso::text`、`viso::math`、`viso::time`（`Stopwatch`）与 `viso::clipboard`。
+
+- 每个函数记录：名称、`fn`/`action`/`task` 分类、参数与返回的 Schema 类型、所需 Capability、线程域（`any`/`ui`/`worker`）、`deterministic`、`realtime_safe` 与每次调用的预算成本；每个 Handle 类型记录方法、所有权（`shared`/`borrowed`）与线程域；
+- 调用经 Import 或完整路径解析：`import viso::text;` 后写 `text::upper(s)`，`import viso::math::{clamp};` 后写 `clamp(x, 0.0, 1.0)`，`import viso::time::Stopwatch;` 后写 `Stopwatch::start()`；Handle 方法写 `watch.elapsed_ms()`，Receiver 作为第一个参数。未注册的路径或方法为 `E2001`；
+- Effect 分类：`deterministic` 的 `fn` 为 Pure，其余 `fn` 为 Read，`action` 为 Action，`task` 为 Task；在 View/Computed 中调用 `action` 为 `E2502`；
+- Capability 推断：调用所在的 Callable 直接需要该函数的 Capability，并沿调用图传递（§95）；
+- `E6102`：`worker` 线程域的函数只能在 `task` Body 中调用；`borrowed` Handle 只在接收它的那次调用内有效，不得存入 `state`、`input`、`computed`、Event Payload、`const`、Record 字段或作为返回值，只能作为参数传递或保存在局部变量；
+- 编译产物记录每个 Native Import 的路径、参数个数与签名哈希；运行前 `link` 到 Registry：路径未注册或签名不同为 `E6101`，不链接任何 Import；未链接即调用为 `E7105`；
+- Native 返回错误或 Panic 为 `E7106` Runtime Fault 并回滚当前 Transaction；Native 已产生的外部副作用（如写剪贴板）不回滚；
+- `viso schema` 以 §139 对象输出 Native Library、函数与 Handle 类型的 Schema。
+
 ---
 
 # 第七部分：完整语法——View、节点、Template、Style 与 Theme
@@ -3352,11 +3365,13 @@ Behavior 执行器（ADR 0035）产生的 Fault 及其诊断码：
 
 | Fault                                   | 代码    |
 | --------------------------------------- | ------- |
-| 指令预算超限 / 调用深度超限             | `E7101` |
+| 指令预算 / 调用深度 / Native 调用配额超限 | `E7101` |
 | 内存预算超限                            | `E7102` |
 | 整数溢出 / 除以零 / 移位量越界          | `E7103` |
 | 索引越界                                | `E7104` |
-| 函数无法运行（含编译错误）/ 缺少必需 Input / 内部不变量失败 | `E7105` |
+| 函数无法运行（含编译错误、未链接的 Native）/ 缺少必需 Input / 内部不变量失败 | `E7105` |
+| Native 调用缺少 Capability 授权         | `E6103` |
+| Native 函数返回错误或 Panic             | `E7106` |
 
 整数运算按其类型宽度检查：结果超出范围即 `E7103`，不回绕；移位量必须在 `0..bits` 内，移出宽度的位丢弃。浮点遵循 IEEE 754，`F32` 每步结果舍入到 `f32`。浮点插值文本使用最短可往返十进制形式（`1`、`0.1`、`inf`、`NaN`）。每个 Fault 携带所在函数与源 Span。
 
@@ -3748,7 +3763,7 @@ Native Call 发生时验证：
 required_capability subset_of isolate_capabilities
 ```
 
-失败返回 `CapabilityDenied`，不得绕过到 Rust Panic。
+失败返回 `CapabilityDenied`（`E6103`），不得绕过到 Rust Panic。Capability Set 在链接 Native Import 时给定；缺少授权的 Import 仍然链接，调用时才产生 `E6103`，因此不调用该函数的代码不受影响。
 
 AI 生成的 Preview 默认仅有：
 
@@ -3781,7 +3796,7 @@ resource cache budget
 
 超限产生 Runtime Fault 并回滚当前 Transaction。预算不能通过递归 Task、热重载或 Native Callback 重置规避。
 
-计量口径：instruction budget 每执行一条指令计一单位；memory budget 计外层调用期间字符串、列表、聚合值与闭包分配的字节数；call depth 计嵌套调用帧数。每次外层调用从满额预算开始。
+计量口径：instruction budget 每执行一条指令计一单位；memory budget 计外层调用期间字符串、列表、聚合值与闭包分配的字节数；call depth 计嵌套调用帧数；native call quota 每次 Native 调用计一单位（默认 1024），超限为 `E7101`。每次外层调用从满额预算开始。
 
 ---
 
@@ -6809,6 +6824,16 @@ viso schema viso::widgets::Button --json
 }
 ```
 
+对象字段：
+
+- `kind`：`component`、`native_library`、`native_function` 或 `native_type`；查询 `Symbol.member` 时另有 `member`，`inputs`/`events`/`functions` 只保留该成员；
+- `inputs`：Component 的 Property（分组 Property 写作 `semantics.label`，`invalidates` 为该 Binding 实际失效的 Dirty Class 规范名，`two_way` 标记可 `bind`），或 Native 函数的参数；`default` 未记录时为 `null`；
+- `events`：`bubbles` 为 Capture → Target → Bubble 路由的输入事件为真；Component 自身事件不冒泡；
+- `capabilities`：函数自身所需，或 Library/Type 全部函数所需的并集；
+- 非 Component 另有 `functions`（每项：`name`、`symbol`、`kind`、`method`、`params`、`returns`、`capabilities`、`thread`、`deterministic`、`realtime_safe`、`cost`）；`native_library` 另有 `types`；`native_type` 另有 `ownership` 与 `thread`。
+
+未知符号为 `E2001`，附最近的符号或成员名。
+
 AI 在使用未知 Component/Property/Event 前必须查询 Schema 或依赖已锁定版本的本地索引。
 
 ---
@@ -8279,6 +8304,7 @@ RecordPatternField
 | E7103  | 算术故障：整数溢出、除以零、移位量越界（运行时）        |
 | E7104  | 索引越界（运行时）                                      |
 | E7105  | 函数无法运行、缺少必需 Input 或内部故障（运行时）       |
+| E7106  | Native 函数失败：返回错误或 Panic（运行时）             |
 | E8101  | Shader 使用 Host-only 类型                              |
 | E8102  | Shader 使用 F64                                         |
 | E8103  | Shader Loop 无静态上限                                  |

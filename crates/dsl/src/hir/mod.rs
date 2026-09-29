@@ -31,11 +31,12 @@ mod effect;
 pub(crate) mod infer;
 mod lower;
 mod nodes;
+mod ownership;
 mod percent;
 mod reads;
 mod ty;
 mod view;
-mod widget;
+pub(crate) mod widget;
 
 pub use capability::CapabilitySet;
 pub use component::MemberEnv;

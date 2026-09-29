@@ -10,6 +10,9 @@
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+
+use viso_behavior::native::Natives;
 
 use crate::diag::Diagnostic;
 use crate::frontend::{check_language_version, module_path};
@@ -77,6 +80,16 @@ impl LoadedPackage {
 /// Loads the package rooted at `root`: every `.vs` file below its source root,
 /// resolved and lowered as one module graph.
 pub fn load_package(root: &Path, manifest: PackageManifest<'_>) -> LoadedPackage {
+    load_package_in(root, manifest, Natives::standard())
+}
+
+/// [`load_package`] with native paths resolved against `natives` instead of
+/// the standard libraries alone.
+pub fn load_package_in(
+    root: &Path,
+    manifest: PackageManifest<'_>,
+    natives: Arc<Natives>,
+) -> LoadedPackage {
     let mut unreadable = Vec::new();
     let mut paths = Vec::new();
     collect_sources(&root.join(SOURCE_ROOT), &mut paths, &mut unreadable);
@@ -107,7 +120,7 @@ pub fn load_package(root: &Path, manifest: PackageManifest<'_>) -> LoadedPackage
         });
     }
 
-    let graph = ModuleGraph::build(&units, &interner);
+    let graph = ModuleGraph::build_with(&units, &interner, natives);
     let manifest_diagnostics: Vec<Diagnostic> = manifest
         .language
         .and_then(|(version, at)| check_language_version(version, at))

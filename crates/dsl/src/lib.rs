@@ -26,6 +26,7 @@ pub mod hotreload;
 pub mod ir;
 pub mod package;
 pub mod resolve;
+pub mod schema;
 pub mod syntax;
 
 pub use diag::{Diagnostic, Severity};

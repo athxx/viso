@@ -25,6 +25,13 @@ impl Program {
                 component.events.join(", "),
             );
         }
+        for (i, native) in self.natives.iter().enumerate() {
+            let _ = writeln!(
+                out,
+                "native#{i} {} params={} signature={:016x}",
+                native.path, native.params, native.signature
+            );
+        }
         for (i, function) in self.functions.iter().enumerate() {
             let _ = write_function(&mut out, i, function);
         }
@@ -89,6 +96,9 @@ fn write_inst(out: &mut String, inst: &Inst) -> fmt::Result {
         ),
         Inst::Call { dst, func, args } => {
             write!(out, "{} = call fn#{} ({})", reg(*dst), func.0, regs(args))
+        }
+        Inst::Native { dst, import, args } => {
+            write!(out, "{} = native#{import} ({})", reg(*dst), regs(args))
         }
         Inst::CallValue { dst, callee, args } => write!(
             out,

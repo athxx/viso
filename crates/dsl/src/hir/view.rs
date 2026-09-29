@@ -103,7 +103,7 @@ pub(crate) fn check_view(
         .iter()
         .filter_map(|r| match r.to {
             Resolution::Symbol(id) => Some((r.range, id)),
-            Resolution::Local(_) => None,
+            Resolution::Local(_) | Resolution::Native(_) => None,
         })
         .collect();
     let mut walk = ViewWalk {
@@ -166,7 +166,7 @@ pub(crate) fn check_percent_flow(
             .into_iter()
             .filter_map(|n| match n {
                 Resolution::Symbol(s) => input_of.get(&s).copied(),
-                Resolution::Local(_) => None,
+                Resolution::Local(_) | Resolution::Native(_) => None,
             })
             .collect()
     };

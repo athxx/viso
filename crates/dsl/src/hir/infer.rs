@@ -29,8 +29,11 @@ pub(crate) mod body;
 mod carry;
 pub(crate) mod format;
 mod lens;
+mod native;
 pub(crate) mod pattern;
 mod record;
+
+pub use native::NativeCall;
 
 pub(crate) use pattern::MatchCheck;
 
@@ -41,6 +44,7 @@ use crate::diag::Diagnostic;
 use crate::hir::ty::{Ty, TypeError, WidenError};
 use crate::resolve::{LocalSlot, Resolution, ResolvedRef, SymbolId, SymbolKind};
 use crate::syntax::{SyntaxKind, SyntaxNode, SyntaxToken, TextRange};
+use viso_behavior::native::{NativeId, Natives};
 
 /// One field of a record type or of a record-payload enum variant.
 #[derive(Debug, Clone, PartialEq)]
@@ -142,6 +146,16 @@ pub trait TypeEnv {
         None
     }
 
+    /// The native registry paths resolved against, when the environment has one.
+    fn natives(&self) -> Option<&Natives> {
+        None
+    }
+
+    /// Notes that the call at `call` is bound to the native function `id`.
+    fn record_native(&self, call: TextRange, id: NativeId) {
+        let _ = (call, id);
+    }
+
     /// Where the declaration at `range` inside `owner` (one of its fields, variants,
     /// events or inputs) can be shown: the declaring module's `::`-joined path, or
     /// `None` for the module being typed, and the range. `None` when `owner` has no
@@ -192,6 +206,8 @@ pub struct InferCx<'a> {
     /// is shared by a wrapper and its only child). A re-typed expression keeps its
     /// last type, the one its context settled on.
     types: HashMap<(TextRange, SyntaxKind), Ty>,
+    /// Every call bound to a native function, keyed by the call's span.
+    native_calls: HashMap<TextRange, NativeCall>,
 }
 
 impl<'a> InferCx<'a> {
@@ -212,6 +228,7 @@ impl<'a> InferCx<'a> {
             percent_defs: Vec::new(),
             mutable: HashSet::new(),
             types: HashMap::new(),
+            native_calls: HashMap::new(),
         }
     }
 
@@ -422,6 +439,7 @@ impl<'a> InferCx<'a> {
                     None => Ty::Unknown,
                 }
             }
+            Some(Resolution::Native(id)) => self.native_value(id, node.text_range()),
             Some(to) if segments.len() == 1 => self.resolution_ty(&to),
             Some(_) => Ty::Unknown,
             None => match builtin_variant(&segments) {
@@ -439,6 +457,7 @@ impl<'a> InferCx<'a> {
         match to {
             Resolution::Local(slot) => self.locals.get(slot).cloned().unwrap_or(Ty::Unknown),
             Resolution::Symbol(_) => self.env.resolution_ty(to).unwrap_or(Ty::Unknown),
+            Resolution::Native(_) => Ty::Unknown,
         }
     }
 
@@ -500,6 +519,12 @@ impl<'a> InferCx<'a> {
                     _ => None,
                 }
             }
+            (Some(Resolution::Native(id)), _) => {
+                let at = callee
+                    .as_ref()
+                    .map_or(node.text_range(), |c| c.syntax().text_range());
+                self.native_path_call(id, node, at)
+            }
             (Some(to), 1) => self.env.callee_signature(&to),
             _ => {
                 // A method or computed callee: infer its receiver for its own diagnostics.
@@ -507,8 +532,16 @@ impl<'a> InferCx<'a> {
                     match callee.syntax().kind() {
                         SyntaxKind::PathExpr => {}
                         SyntaxKind::FieldExpr => {
-                            if let Some(recv) = first_child_expr(callee.syntax()) {
-                                let _ = self.infer_expr(&recv, None);
+                            if let Some(recv) = first_child_expr(callee.syntax())
+                                && let Ty::Native(ty) = self.infer_expr(&recv, None)
+                            {
+                                return self.native_method_call(
+                                    ty,
+                                    callee.syntax(),
+                                    &args,
+                                    expected,
+                                    node,
+                                );
                             }
                         }
                         SyntaxKind::OptionalFieldExpr => {
@@ -1021,10 +1054,7 @@ impl<'a> InferCx<'a> {
     /// types by the symbols the resolver bound their heads to.
     fn annotation_ty(&mut self, node: &SyntaxNode, range: TextRange) -> Ty {
         let refs = &self.refs;
-        let nominal = |at: TextRange| match refs.get(&at) {
-            Some(Resolution::Symbol(id)) => Some(*id),
-            _ => None,
-        };
+        let nominal = |at: TextRange| refs.get(&at).and_then(|r| r.nominal());
         match Ty::from_annotation(node, &nominal) {
             Ok(ty) => ty,
             Err(err) => {
@@ -1105,6 +1135,7 @@ impl<'a> InferCx<'a> {
         };
         match ty {
             Ty::Named(id) => self.env.type_name(*id).unwrap_or("<named>").to_string(),
+            Ty::Native(id) => self.native_type_name(*id),
             Ty::Tuple(tys) => format!("({})", list(tys)),
             Ty::Fn(params, ret) => format!("fn({}) -> {}", list(params), self.describe(ret)),
             Ty::List(t) => format!("List<{}>", self.describe(t)),
@@ -1449,6 +1480,7 @@ fn ty_name(ty: &Ty) -> &'static str {
         Ty::Angle => "Angle",
         Ty::Frequency => "Frequency",
         Ty::Named(_) => "<named>",
+        Ty::Native(_) => "<native>",
         Ty::Tuple(_) => "<tuple>",
         Ty::Fn(_, _) => "<fn>",
         Ty::List(_) => "<list>",
@@ -1589,14 +1621,14 @@ mod tests {
         fn resolution_ty(&self, to: &Resolution) -> Option<Ty> {
             match to {
                 Resolution::Symbol(id) => self.tys.get(id).cloned(),
-                Resolution::Local(_) => None,
+                Resolution::Local(_) | Resolution::Native(_) => None,
             }
         }
 
         fn callee_signature(&self, to: &Resolution) -> Option<(Vec<Ty>, Ty)> {
             match to {
                 Resolution::Symbol(id) => self.sigs.get(id).cloned(),
-                Resolution::Local(_) => None,
+                Resolution::Local(_) | Resolution::Native(_) => None,
             }
         }
     }

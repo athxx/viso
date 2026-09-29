@@ -32,12 +32,13 @@ use crate::hir::Ty;
 use crate::syntax::SyntaxNode;
 use crate::syntax::span::{TextRange, TextSize};
 
-use super::module::{ModuleGraph, ResolveErrorKind, SourceUnit};
+use super::module::{ModuleGraph, NativeBinding, ResolveErrorKind, SourceUnit};
 use super::name::{NameId, NameInterner};
 use super::prelude::Prelude;
 use super::scope::{LocalSlot, ModuleSymbol, Namespace, ScopeStack, SymbolTable};
 use super::suggest;
 use super::symbol::{SymbolId, SymbolIdentity, SymbolKind, fingerprint};
+use viso_behavior::native::{NativeId, Natives};
 
 /// What a name use resolves to.
 ///
@@ -50,6 +51,21 @@ pub enum Resolution {
     Symbol(SymbolId),
     /// A lexically-bound local (a `let`, parameter, `for` pattern, or `node` name).
     Local(LocalSlot),
+    /// A registered native function, method or handle type (a value path's head
+    /// carries the whole path it names, `text::upper` or `Stopwatch::start`).
+    Native(NativeId),
+}
+
+impl Resolution {
+    /// The type a type-position name resolving here denotes: a declaration's
+    /// nominal type or a native handle type. A local names no type.
+    pub fn nominal(self) -> Option<Ty> {
+        match self {
+            Resolution::Symbol(id) => Some(Ty::Named(id)),
+            Resolution::Native(id) => Some(Ty::Native(id)),
+            Resolution::Local(_) => None,
+        }
+    }
 }
 
 /// One resolved name use: the source span it occupies and what it resolves to.
@@ -103,6 +119,9 @@ struct ImportEnv {
     /// The local names of imports that name nothing, already reported, so their
     /// uses raise nothing more.
     unresolved: std::collections::HashSet<NameId>,
+    /// Local name → the full path of the native library, function or type it
+    /// imports.
+    natives: std::collections::HashMap<NameId, String>,
 }
 
 /// One import binding: a local name mapped to the exported symbol it names.
@@ -152,6 +171,7 @@ pub fn resolve(
         let mut errors = std::mem::take(&mut early_errors[i]);
         let imports = build_import_env(
             cu.as_ref(),
+            &gm.natives,
             graph,
             &tables,
             &all_decls,
@@ -166,6 +186,7 @@ pub fn resolve(
             node: None,
             decls: &all_decls[i],
             imports: &imports,
+            natives: graph.natives(),
             interner,
             refs: Vec::new(),
             errors,
@@ -206,6 +227,7 @@ pub(super) fn resolve_standalone(
     let members: MemberTables<'_> = table.member_tables().collect();
     let empty = SymbolTable::new();
     let imports = ImportEnv::default();
+    let natives = Natives::new();
     let mut pass = ModulePass {
         table: &table,
         prelude: &empty,
@@ -214,6 +236,7 @@ pub(super) fn resolve_standalone(
         node: None,
         decls: &decls,
         imports: &imports,
+        natives: &natives,
         interner,
         refs: Vec::new(),
         errors,
@@ -466,6 +489,7 @@ fn keyword_start(node: &SyntaxNode) -> TextSize {
 /// names, and binds nothing.
 fn build_import_env(
     cu: Option<&CompilationUnit>,
+    natives: &[NativeBinding],
     graph: &ModuleGraph,
     tables: &[SymbolTable],
     decls: &[Vec<SymbolDecl>],
@@ -473,6 +497,10 @@ fn build_import_env(
     errors: &mut Vec<Diagnostic>,
 ) -> ImportEnv {
     let mut env = ImportEnv::default();
+    for binding in natives {
+        env.natives
+            .insert(interner.intern(&binding.local), binding.path.clone());
+    }
     let Some(cu) = cu else {
         return env;
     };
@@ -653,6 +681,8 @@ struct ModulePass<'a> {
     /// The declaration sites of `table`'s symbols, for nearest-name suggestions.
     decls: &'a [SymbolDecl],
     imports: &'a ImportEnv,
+    /// The native registry native import paths resolve against.
+    natives: &'a Natives,
     interner: &'a mut NameInterner,
     refs: Vec<ResolvedRef>,
     errors: Vec<Diagnostic>,
@@ -1188,11 +1218,82 @@ impl ModulePass<'_> {
         ) {
             return;
         }
+        if self.resolve_value_token(&head) {
+            return;
+        }
+        let name = self.interner.intern(&head.text());
+        if let Some(base) = self.imports.natives.get(&name) {
+            let rest: Vec<_> = path.segments().skip(1).collect();
+            self.resolve_native(&head, base, &rest, false);
+            return;
+        }
         // `S::idle` names a variant of the type `S`: a qualified head that is no
         // value resolves in the type namespace.
-        if !self.resolve_value_token(&head) && path.segments().nth(1).is_some() {
+        if path.segments().nth(1).is_some() {
             self.resolve_type_token(&head);
         }
+    }
+
+    /// Resolves the path `head::rest..` whose head imports the native `base`:
+    /// the function (or, for a type position, handle type) it names is recorded
+    /// on `head` as [`Resolution::Native`]; a path naming neither is
+    /// [`E2001`](ResolveErrorKind::UnresolvedNative) at its first unknown
+    /// segment, with the nearest registered names.
+    fn resolve_native(
+        &mut self,
+        head: &crate::syntax::SyntaxToken,
+        base: &str,
+        rest: &[crate::syntax::SyntaxToken],
+        ty: bool,
+    ) {
+        let mut path = base.to_owned();
+        let mut last = head.clone();
+        for segment in rest {
+            let found = if ty {
+                self.natives.ty(&path).is_some()
+            } else {
+                self.natives.function(&path).is_some()
+            };
+            if found {
+                break;
+            }
+            path.push_str("::");
+            path.push_str(&segment.text());
+            last = segment.clone();
+        }
+        let id = if ty {
+            self.natives.ty(&path).map(|t| t.id)
+        } else {
+            self.natives.function(&path).map(|f| f.id)
+        };
+        if let Some(id) = id {
+            self.refs.push(ResolvedRef {
+                range: head.text_range(),
+                to: Resolution::Native(id),
+            });
+            return;
+        }
+        let at = last.text_range();
+        let mut diagnostic = ResolveErrorKind::UnresolvedNative.to_diagnostic(Some(at), &path);
+        let parent = path.rsplit_once("::").map_or("", |(p, _)| p);
+        let names: Vec<&str> = self
+            .natives
+            .functions()
+            .iter()
+            .map(|f| &*f.path)
+            .chain(self.natives.types().iter().map(|t| &*t.path))
+            .filter_map(|p| p.strip_prefix(parent)?.strip_prefix("::"))
+            .filter(|n| !n.contains("::"))
+            .collect();
+        let suggestions = suggest::nearest(
+            &last.text(),
+            names.into_iter().map(|name| suggest::Candidate {
+                name,
+                declared_at: None,
+            }),
+        );
+        suggest::attach(&mut diagnostic, at, &suggestions);
+        self.errors.push(diagnostic);
     }
 
     /// Resolves one value name token: local scope first, then the enclosing
@@ -1266,6 +1367,11 @@ impl ModulePass<'_> {
                 range: head.text_range(),
                 to: Resolution::Symbol(symbol),
             });
+            return;
+        }
+        if let Some(base) = self.imports.natives.get(&name) {
+            let rest: Vec<_> = ty.segments().skip(1).collect();
+            self.resolve_native(&head, base, &rest, true);
             return;
         }
         // Built-in/native types (Int, Text, Color, ...) are provided by schema, not
@@ -1414,6 +1520,7 @@ pub fn resolve_fragment(
     let imports = ImportEnv::default();
     let members = MemberTables::new();
     let prelude = SymbolTable::new();
+    let natives = Natives::new();
     let mut pass = ModulePass {
         table: &table,
         prelude: &prelude,
@@ -1422,6 +1529,7 @@ pub fn resolve_fragment(
         node: None,
         decls: &[],
         imports: &imports,
+        natives: &natives,
         interner,
         refs: Vec::new(),
         errors: Vec::new(),

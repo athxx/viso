@@ -20,7 +20,9 @@ mod scope;
 pub(crate) mod suggest;
 mod symbol;
 
-pub use module::{GraphModule, ModuleGraph, ModuleIndex, ModulePath, ResolveErrorKind, SourceUnit};
+pub use module::{
+    GraphModule, ModuleGraph, ModuleIndex, ModulePath, NativeBinding, ResolveErrorKind, SourceUnit,
+};
 pub use name::{NameId, NameInterner};
 pub use resolver::{
     Resolution, ResolvedFragment, ResolvedModule, ResolvedRef, SymbolDecl, resolve,

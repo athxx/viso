@@ -13,9 +13,11 @@ mod stmt;
 
 use std::collections::{HashMap, HashSet};
 
+use viso_behavior::native::{NativeEntry, NativeId};
+
 use super::ir::{
-    Body, ComponentLayout, Const, FuncId, Function, FunctionKind, Inst, Num, Program, Reg,
-    Unsupported,
+    Body, ComponentLayout, Const, FuncId, Function, FunctionKind, Inst, NativeImport, Num, Program,
+    Reg, Unsupported,
 };
 use crate::ast::{AstNode, Block, Expr};
 use crate::hir::infer::InferCx;
@@ -45,6 +47,8 @@ pub(crate) struct ProgramBuilder {
     events: HashMap<SymbolId, u32>,
     /// The default of each record field, by record and field index.
     field_defaults: HashMap<(SymbolId, u32), FuncId>,
+    /// The import index of each native function a body calls.
+    natives: HashMap<NativeId, u32>,
 }
 
 /// What a lowered function is.
@@ -206,6 +210,20 @@ impl ProgramBuilder {
         });
         self.field_defaults.insert((record, index), id);
         id
+    }
+
+    /// The import index of the native function `entry`, adding the import on
+    /// its first call.
+    fn native(&mut self, entry: &NativeEntry) -> u32 {
+        *self.natives.entry(entry.id).or_insert_with(|| {
+            let imports = &mut self.program.natives;
+            imports.push(NativeImport {
+                path: entry.path.clone(),
+                signature: entry.function.signature(),
+                params: entry.function.params.len() as u16,
+            });
+            (imports.len() - 1) as u32
+        })
     }
 
     /// The finished program. A function that calls, or closes over, one that

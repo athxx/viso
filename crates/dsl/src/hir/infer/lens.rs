@@ -90,6 +90,7 @@ impl InferCx<'_> {
                 Some(SymbolKind::Const) => Some("a `const`"),
                 Some(_) => Some("not a value"),
             },
+            Some(Resolution::Native(_)) => Some("a native"),
             None => None,
         };
         if let Some(reason) = reason {

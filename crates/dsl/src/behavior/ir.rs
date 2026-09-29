@@ -22,6 +22,8 @@
 //! representation and is not lowered. A unit enum variant is its tag; a payload
 //! variant, a record, a tuple and a range are aggregates.
 
+pub use viso_behavior::NativeImport;
+
 use crate::resolve::SymbolId;
 use crate::syntax::TextRange;
 
@@ -231,6 +233,13 @@ pub enum Inst {
         callee: Reg,
         args: Vec<Reg>,
     },
+    /// `dst = native(args..)`, `import` indexing the program's native imports;
+    /// a method's receiver is its first argument.
+    Native {
+        dst: Reg,
+        import: u32,
+        args: Vec<Reg>,
+    },
     /// `dst` = a closure over `func` capturing `captures` by value.
     Closure {
         dst: Reg,
@@ -403,6 +412,8 @@ pub struct Program {
     pub functions: Vec<Function>,
     /// Every component's layout, in lowering order.
     pub components: Vec<ComponentLayout>,
+    /// Every native function a body calls, by import index.
+    pub natives: Vec<NativeImport>,
 }
 
 impl Program {

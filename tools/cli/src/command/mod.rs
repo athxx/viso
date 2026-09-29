@@ -2,6 +2,7 @@
 //! returns the process exit code.
 
 mod check;
+mod schema;
 
 use crate::args::{Cli, Command, Global};
 use crate::output::Output;
@@ -26,8 +27,9 @@ pub const ENV_SOURCE_UNREADABLE: &str = "ENV_SOURCE_UNREADABLE";
 /// code.
 pub fn run(cli: &Cli) -> u8 {
     let mut out = Output::new(&cli.global, Some(cli.command.name()));
-    let code = match cli.command {
+    let code = match &cli.command {
         Command::Check => check::run(&cli.global, &mut out),
+        Command::Schema(args) => schema::run(args, &mut out),
     };
     out.finish(code)
 }

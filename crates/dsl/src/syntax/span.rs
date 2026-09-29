@@ -138,6 +138,12 @@ impl TextRange {
     pub const fn contains(self, offset: TextSize) -> bool {
         self.start.0 <= offset.0 && offset.0 < self.end.0
     }
+
+    /// Whether `other` lies within `self`.
+    #[inline]
+    pub const fn contains_range(self, other: TextRange) -> bool {
+        self.start.0 <= other.start.0 && other.end.0 <= self.end.0
+    }
 }
 
 impl From<TextRange> for Range<usize> {

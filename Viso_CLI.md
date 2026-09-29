@@ -1397,6 +1397,10 @@ viso schema Button.text
 viso schema --search text
 ```
 
+符号按完整路径或其任意 `::` 后缀匹配（`Button`、`text::upper`、`viso::time::Stopwatch`）；后缀匹配多个符号时报告全部候选并 exit 1。`.member` 收窄到一个 Property、Event 或方法。可查询内置 Widget 与 Native Registry 中的 Library、函数和 Handle 类型。
+
+`--search TERM` 不区分大小写地列出路径包含 `TERM` 的符号与成员，每行一个路径及其类型或签名；无匹配时 exit 0。`--json` 输出一条 `result`，`payload: {query, matches: [{path, kind, detail}]}`。
+
 ### 18.2 AI/tool use
 
 ```bash

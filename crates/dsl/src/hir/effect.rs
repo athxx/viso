@@ -42,6 +42,7 @@ use crate::ast::{AstNode, CallExpr, Expr, PathExpr};
 use crate::diag::Diagnostic;
 use crate::resolve::{Resolution, ResolvedRef};
 use crate::syntax::{SyntaxKind, SyntaxNode, TextRange};
+use viso_behavior::native::ThreadDomain;
 
 /// The effect a callable carries — the doc's four-way classification.
 ///
@@ -144,6 +145,13 @@ pub trait EffectEnv {
 
     /// Whether a name resolves to a `state`, which only a mutating body may write.
     fn is_state(&self, to: &Resolution) -> bool;
+
+    /// The effect class and thread domain of the native function the call at
+    /// `call` is bound to, when it is bound to one.
+    fn native_call(&self, call: TextRange) -> Option<(EffectClass, ThreadDomain)> {
+        let _ = call;
+        None
+    }
 }
 
 /// The effect-checking context for one body walk: the resolved-reference index, the
@@ -278,7 +286,22 @@ impl<'a> EffectCx<'a> {
     /// and, if the body's context does not permit it, emits `E2502` (in a reactive/pure
     /// context) or `E2501` (otherwise).
     fn check_call(&mut self, node: &SyntaxNode) {
-        let Some(callee_effect) = self.callee_effect(node) else {
+        let native = self.env.native_call(node.text_range());
+        if let Some((_, ThreadDomain::Worker)) = native
+            && self.context != BodyContext::Task
+        {
+            self.diagnostics.push(Diagnostic::error(
+                "E6102",
+                node.text_range(),
+                format!(
+                    "this native runs on a worker thread; a {} body runs on the UI thread, \
+                     so call it from a `task`",
+                    context_word(self.context)
+                ),
+            ));
+            return;
+        }
+        let Some(callee_effect) = native.map(|n| n.0).or_else(|| self.callee_effect(node)) else {
             return;
         };
         if self.context.permits(callee_effect) {
@@ -366,7 +389,7 @@ mod tests {
         fn callee_effect(&self, to: &Resolution) -> Option<EffectClass> {
             match to {
                 Resolution::Symbol(id) => self.effects.get(id).copied(),
-                Resolution::Local(_) => None,
+                Resolution::Local(_) | Resolution::Native(_) => None,
             }
         }
 

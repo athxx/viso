@@ -306,7 +306,8 @@ fn displayable(env: &dyn TypeEnv, ty: &Ty) -> bool {
         | Ty::Option(_)
         | Ty::Result(..)
         | Ty::Range(_)
-        | Ty::RangeInclusive(_) => false,
+        | Ty::RangeInclusive(_)
+        | Ty::Native(_) => false,
     }
 }
 

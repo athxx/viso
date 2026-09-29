@@ -13,6 +13,7 @@ use std::path::Path;
 
 use viso_dsl::diag::Fix;
 use viso_dsl::{Diagnostic, LineIndex, Severity, TextSize};
+use viso_ende::JsonWriter;
 use viso_project::ConfigDiagnostic;
 
 use crate::args::Global;
@@ -241,6 +242,16 @@ impl Output {
                 fixes: Vec::new(),
             },
         );
+    }
+
+    /// Reports the command's result: a `result` event whose payload `payload`
+    /// writes, or the human text `text` builds. A result is not a diagnostic, so
+    /// `--quiet` keeps it.
+    pub fn result(&mut self, payload: impl FnOnce(&mut JsonWriter), text: impl FnOnce() -> String) {
+        match &mut self.form {
+            Form::Json(stream) => stream.result(payload),
+            Form::Human => print!("{}", text()),
+        }
     }
 
     /// Records what a check covered, for the summary.

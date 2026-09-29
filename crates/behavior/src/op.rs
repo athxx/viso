@@ -271,6 +271,9 @@ pub enum Op {
     Call { dst: u16, ext: u32 },
     /// Call the closure in a register. Operands: `callee, argc, args..`.
     CallValue { dst: u16, ext: u32 },
+    /// Call a native function. Operands: `import, argc, args..`, `import`
+    /// indexing the module's [`NativeImport`](crate::NativeImport)s.
+    Native { dst: u16, ext: u32 },
     /// Create a closure. Operands: `func, n, captures..`.
     Closure { dst: u16, ext: u32 },
     /// Create an aggregate. Operands: `tag, n, fields..`.

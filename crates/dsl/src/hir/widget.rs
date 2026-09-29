@@ -31,11 +31,35 @@ pub(crate) enum PropKind {
     OptColor,
     OptLength,
     /// A native schema type (`Sizing`, `EdgeInsets`, `Offset`, an enum, ...) this
-    /// layer does not model; the value is inferred without an expectation.
-    Opaque,
+    /// layer does not model, by its spec name; the value is inferred without an
+    /// expectation.
+    Opaque(&'static str),
 }
 
 impl PropKind {
+    /// The type's source name.
+    pub(crate) fn name(self) -> &'static str {
+        match self {
+            PropKind::Bool => "Bool",
+            PropKind::Str => "String",
+            PropKind::F32 => "F32",
+            PropKind::U16 => "U16",
+            PropKind::U32 => "U32",
+            PropKind::I32 => "I32",
+            PropKind::Color => "Color",
+            PropKind::Angle => "Angle",
+            PropKind::Length => "MixedLength",
+            PropKind::OptString => "Option<String>",
+            PropKind::OptF32 => "Option<F32>",
+            PropKind::OptU32 => "Option<U32>",
+            PropKind::OptU16 => "Option<U16>",
+            PropKind::OptU8 => "Option<U8>",
+            PropKind::OptColor => "Option<Color>",
+            PropKind::OptLength => "Option<MixedLength>",
+            PropKind::Opaque(name) => name,
+        }
+    }
+
     /// The type a binding's value is checked against, or `None` for an opaque one.
     pub(crate) fn ty(self) -> Option<Ty> {
         let opt = |t: Ty| Some(Ty::Option(Box::new(t)));
@@ -56,7 +80,7 @@ impl PropKind {
             PropKind::OptU8 => opt(Ty::U8),
             PropKind::OptColor => opt(Ty::Color),
             PropKind::OptLength => opt(Ty::MixedLength),
-            PropKind::Opaque => None,
+            PropKind::Opaque(_) => None,
         }
     }
 }
@@ -102,26 +126,26 @@ use PropKind::{
 
 /// Layout properties every node but `Fragment` accepts.
 const LAYOUT: &[PropSpec] = &[
-    based("width", Opaque),
-    based("height", Opaque),
+    based("width", Opaque("Sizing")),
+    based("height", Opaque("Sizing")),
     based("min_width", Length),
     based("min_height", Length),
     based("max_width", OptLength),
     based("max_height", OptLength),
-    based("padding", Opaque),
-    based("margin", Opaque),
+    based("padding", Opaque("EdgeInsets")),
+    based("margin", Opaque("EdgeInsets")),
     based("corner_radius", Length),
     prop("background", OptColor),
-    prop("border", Opaque),
-    prop("styles", Opaque),
+    prop("border", Opaque("Option<Border>")),
+    prop("styles", Opaque("List<StyleRef<T>>")),
 ];
 
 /// Transform, opacity and clip properties every node accepts.
 const TRANSFORM: &[PropSpec] = &[
-    prop("translate", Opaque),
+    prop("translate", Opaque("Offset")),
     prop("scale", F32),
     prop("rotation", Angle),
-    prop("transform_origin", Opaque),
+    prop("transform_origin", Opaque("Alignment2D")),
     prop("opacity", F32),
     prop("clip", Bool),
     prop("visible", Bool),
@@ -136,11 +160,11 @@ const FOCUS: &[PropSpec] = &[
 
 /// The members of the `semantics.*` group.
 const SEMANTICS: &[PropSpec] = &[
-    prop("role", Opaque),
+    prop("role", Opaque("Role")),
     prop("label", OptString),
     prop("hint", OptString),
     prop("value", OptString),
-    prop("live", Opaque),
+    prop("live", Opaque("LiveRegion")),
     prop("hidden", Bool),
     prop("heading_level", OptU8),
 ];
@@ -160,40 +184,40 @@ const ANIMATABLE: &[&str] = &[
 
 const FLEX: &[PropSpec] = &[
     based("gap", Length),
-    prop("justify", Opaque),
-    prop("align", Opaque),
+    prop("justify", Opaque("Justify")),
+    prop("align", Opaque("Align")),
 ];
 
-const FLEX_AXIS: &[PropSpec] = &[prop("axis", Opaque)];
+const FLEX_AXIS: &[PropSpec] = &[prop("axis", Opaque("Axis"))];
 
 const GRID: &[PropSpec] = &[
-    based("columns", Opaque),
-    based("rows", Opaque),
-    based("auto_rows", Opaque),
+    based("columns", Opaque("List<Track>")),
+    based("rows", Opaque("List<Track>")),
+    based("auto_rows", Opaque("Track")),
     based("column_gap", Length),
     based("row_gap", Length),
-    prop("align_items", Opaque),
-    prop("areas", Opaque),
-    based("adaptive_columns", Opaque),
+    prop("align_items", Opaque("GridAlign")),
+    prop("areas", Opaque("List<String>")),
+    based("adaptive_columns", Opaque("Option<AdaptiveColumns>")),
 ];
 
-const STACK: &[PropSpec] = &[prop("content_align", Opaque)];
+const STACK: &[PropSpec] = &[prop("content_align", Opaque("Alignment2D"))];
 
-const SCROLL: &[PropSpec] = &[prop("axis", Opaque)];
+const SCROLL: &[PropSpec] = &[prop("axis", Opaque("Axis"))];
 
 /// Text style properties shared by `Text` and `TextInput`.
 const TEXT_STYLE: &[PropSpec] = &[
     based("font_size", Length),
-    prop("font_weight", Opaque),
-    prop("font_family", Opaque),
+    prop("font_weight", Opaque("FontWeight")),
+    prop("font_family", Opaque("Option<FontFamily>")),
     based("line_height", OptLength),
     prop("color", Color),
     prop("soft_wrap", Bool),
     prop("max_lines", OptU32),
-    prop("overflow", Opaque),
-    prop("align", Opaque),
+    prop("overflow", Opaque("TextOverflow")),
+    prop("align", Opaque("TextAlign")),
     prop("selectable", Bool),
-    prop("locale", Opaque),
+    prop("locale", Opaque("Option<Locale>")),
 ];
 
 const TEXT: &[PropSpec] = &[prop("text", Str)];
@@ -220,10 +244,13 @@ const SELECTED: &[PropSpec] = &[two_way("selected", U32)];
 
 const FOCUS_SCOPE: &[PropSpec] = &[prop("trap", Bool), prop("restore_focus", Bool)];
 
-const KEY_SHORTCUT: &[PropSpec] = &[prop("chord", Opaque), prop("scope", Opaque)];
+const KEY_SHORTCUT: &[PropSpec] = &[
+    prop("chord", Opaque("KeyChord")),
+    prop("scope", Opaque("ShortcutScope")),
+];
 
 const VIRTUAL_LIST: &[PropSpec] = &[
-    prop("axis", Opaque),
+    prop("axis", Opaque("Axis")),
     prop("estimated_extent", Length),
     prop("overscan", U32),
 ];
@@ -238,18 +265,28 @@ pub(crate) struct ChildProps {
     members: &'static [PropSpec],
 }
 
-/// An event a node takes: its name and the prelude record its payload is, if it has
-/// one.
+/// An event a node takes: its name, the prelude record its payload is, if it has
+/// one, and whether it bubbles up the ancestor route after its target.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct EventSpec {
     pub(crate) name: &'static str,
     pub(crate) payload: Option<&'static str>,
+    pub(crate) bubbles: bool,
 }
 
 const fn event(name: &'static str, payload: &'static str) -> EventSpec {
     EventSpec {
         name,
         payload: Some(payload),
+        bubbles: false,
+    }
+}
+
+/// An input event routed capture → target → bubble.
+const fn routed(name: &'static str, payload: &'static str) -> EventSpec {
+    EventSpec {
+        bubbles: true,
+        ..event(name, payload)
     }
 }
 
@@ -257,27 +294,28 @@ const fn signal(name: &'static str) -> EventSpec {
     EventSpec {
         name,
         payload: None,
+        bubbles: false,
     }
 }
 
 /// The standard events every layout node takes (U7.1), and the end of an animation
 /// it plays (U6.3).
 pub(crate) const STANDARD_EVENTS: &[EventSpec] = &[
-    event("click", "ClickEvent"),
-    event("tap", "TapEvent"),
-    event("long_press", "LongPressEvent"),
-    event("drag_start", "DragEvent"),
-    event("drag_move", "DragEvent"),
-    event("drag_end", "DragEvent"),
-    event("pointer_down", "PointerEvent"),
-    event("pointer_move", "PointerEvent"),
-    event("pointer_up", "PointerEvent"),
-    event("pointer_cancel", "PointerEvent"),
+    routed("click", "ClickEvent"),
+    routed("tap", "TapEvent"),
+    routed("long_press", "LongPressEvent"),
+    routed("drag_start", "DragEvent"),
+    routed("drag_move", "DragEvent"),
+    routed("drag_end", "DragEvent"),
+    routed("pointer_down", "PointerEvent"),
+    routed("pointer_move", "PointerEvent"),
+    routed("pointer_up", "PointerEvent"),
+    routed("pointer_cancel", "PointerEvent"),
     event("hover_enter", "HoverEvent"),
     event("hover_leave", "HoverEvent"),
-    event("scroll", "ScrollEvent"),
-    event("key_down", "KeyEvent"),
-    event("key_up", "KeyEvent"),
+    routed("scroll", "ScrollEvent"),
+    routed("key_down", "KeyEvent"),
+    routed("key_up", "KeyEvent"),
     event("focus", "FocusEvent"),
     event("blur", "FocusEvent"),
     event("animation_end", "AnimationEnd"),
@@ -305,7 +343,10 @@ const GRID_CHILD: ChildProps = ChildProps {
 const STACK_CHILD: ChildProps = ChildProps {
     prefix: "stack",
     container: "Stack",
-    members: &[prop("align", Opaque), prop("layer", I32)],
+    members: &[
+        prop("align", Opaque("Option<Alignment2D>")),
+        prop("layer", I32),
+    ],
 };
 
 const ABSOLUTE_CHILD: ChildProps = ChildProps {
@@ -358,6 +399,29 @@ pub(crate) enum PropLookup {
     /// No such property.
     Unknown,
 }
+
+/// Every node type name the baseline lists, in [`builtin`]'s order.
+pub(crate) const BUILTIN_NAMES: &[&str] = &[
+    "Row",
+    "Column",
+    "Flex",
+    "Grid",
+    "Stack",
+    "Absolute",
+    "Scroll",
+    "Fragment",
+    "Text",
+    "TextInput",
+    "Button",
+    "Toggle",
+    "CheckBox",
+    "Slider",
+    "Tabs",
+    "RadioGroup",
+    "FocusScope",
+    "KeyShortcut",
+    "VirtualList",
+];
 
 /// The built-in widget schema for a node type name, when the baseline lists it.
 pub(crate) fn builtin(name: &str) -> Option<WidgetSchema> {
@@ -425,7 +489,8 @@ impl WidgetSchema {
         self.event_specs().map(|e| e.name)
     }
 
-    fn event_specs(&self) -> impl Iterator<Item = EventSpec> + '_ {
+    /// Every event this node takes: its own, then the standard ones.
+    pub(crate) fn event_specs(&self) -> impl Iterator<Item = EventSpec> + '_ {
         let standard = if self.standard_events {
             STANDARD_EVENTS
         } else {
@@ -458,7 +523,7 @@ impl WidgetSchema {
                 .map_or(PropLookup::Unknown, |p| PropLookup::Known(*p)),
             [group, member] if *group == "transition" && self.common => {
                 if ANIMATABLE.contains(member) {
-                    PropLookup::Known(prop("transition", Opaque))
+                    PropLookup::Known(prop("transition", Opaque("Transition")))
                 } else {
                     PropLookup::Unknown
                 }
@@ -476,6 +541,17 @@ impl WidgetSchema {
         }
     }
 
+    /// Every property this node takes, by its path: its own and the common ones,
+    /// then the `semantics.*` group.
+    pub(crate) fn properties(&self) -> impl Iterator<Item = (String, PropSpec)> + '_ {
+        let semantics: &'static [PropSpec] = if self.common { SEMANTICS } else { &[] };
+        self.flat().map(|p| (p.name.to_owned(), *p)).chain(
+            semantics
+                .iter()
+                .map(|p| (format!("semantics.{}", p.name), *p)),
+        )
+    }
+
     fn flat(&self) -> impl Iterator<Item = &'static PropSpec> + '_ {
         let common: &'static [&'static [PropSpec]] = if self.common {
             &[LAYOUT, TRANSFORM, FOCUS]
@@ -489,6 +565,13 @@ impl WidgetSchema {
 #[cfg(test)]
 mod tests {
     use super::{PropKind, PropLookup, builtin, child_props};
+
+    #[test]
+    fn every_listed_name_has_a_schema() {
+        for name in super::BUILTIN_NAMES {
+            assert!(builtin(name).is_some(), "{name}");
+        }
+    }
 
     #[test]
     fn lookup_covers_own_common_and_groups() {

@@ -22,6 +22,8 @@
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 
+use viso_behavior::native::{NativeId, NativeKind, Natives, ThreadDomain};
+
 use crate::ast::{
     AstNode, Block, CompilationUnit, ComponentDecl, ConstDecl, EnumVariant, InputDecl, Item,
     Member, Param, RecordDecl, RecordField, ReturnType, TypePath,
@@ -42,6 +44,7 @@ use super::component::{MemberEnv, lower_component};
 use super::effect::{BodyContext, EffectClass, EffectCx, EffectEnv};
 use super::infer::{EventInfo, FieldInfo, InferCx, TypeEnv, VariantInfo, VariantPayload};
 use super::nodes::{ComponentSchema, HirCallable, HirComponent};
+use super::ownership::check_stored;
 use super::percent::PercentSources;
 use super::reads::ReadEnv;
 use super::ty::Ty;
@@ -143,7 +146,7 @@ pub fn lower(
         let mut module_diagnostics = Vec::new();
         let mut flows = InputFlows::default();
         if let (Some((cu, scope)), Some(resolved_module)) = (module, resolved.get(i)) {
-            let env = ModuleEnv::new(&decls, scope, i, &behavior);
+            let env = ModuleEnv::new(&decls, scope, i, &behavior, graph.natives());
             cap.module = i;
             flows = lower_module(
                 cu,
@@ -285,6 +288,7 @@ fn lower_component_item(
     check_bindable(decl, env, diagnostics);
     let schema = lower_component(decl, refs, env, diagnostics, percent);
     env.record_inferred(&schema);
+    check_schema_ownership(&schema, env, diagnostics);
     env.behavior.borrow_mut().component(&schema);
     lower_member_values(decl, refs, env, &schema, diagnostics);
     let source_origin = decl.syntax().text_range();
@@ -293,7 +297,6 @@ fn lower_component_item(
     if let Some(view) = decl.view()
         && let Some(block) = view.block()
     {
-        check_body(refs, BodyContext::View, env, block.syntax(), diagnostics);
         flows.push(check_view(
             refs,
             env,
@@ -302,6 +305,7 @@ fn lower_component_item(
             diagnostics,
             percent,
         ));
+        check_body(refs, BodyContext::View, env, block.syntax(), diagnostics);
     }
     for member in decl.members() {
         let (context, body) = match &member {
@@ -319,6 +323,31 @@ fn lower_component_item(
     HirComponent {
         schema,
         source_origin,
+    }
+}
+
+/// Reports each `state`, `input`, `computed` and event payload of a component
+/// that holds a borrowed native handle (`E6102`).
+fn check_schema_ownership(
+    schema: &ComponentSchema,
+    env: &ModuleEnv<'_>,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    let places = schema
+        .states
+        .iter()
+        .map(|s| ("a `state`", &s.meta))
+        .chain(schema.inputs.iter().map(|i| ("an `input`", &i.meta)))
+        .chain(schema.computeds.iter().map(|c| ("a `computed`", &c.meta)))
+        .chain(schema.events.iter().map(|e| ("an event payload", &e.meta)));
+    for (place, meta) in places {
+        check_stored(
+            &meta.inferred_type,
+            env.natives,
+            place,
+            meta.source_origin,
+            diagnostics,
+        );
     }
 }
 
@@ -396,9 +425,6 @@ fn check_callable(
     percent: &mut PercentSources,
 ) {
     let body = &callable.body;
-    if let Some(block) = body {
-        check_body(refs, callable.context, env, block.syntax(), diagnostics);
-    }
     let def = Def {
         name: callable.name.clone(),
         kind: callable.kind,
@@ -421,6 +447,9 @@ fn check_callable(
         Some(def)
     };
     check_signature(refs, env, callable, diagnostics, percent, def);
+    if let Some(block) = body {
+        check_body(refs, callable.context, env, block.syntax(), diagnostics);
+    }
     let declared = callable
         .clause
         .as_ref()
@@ -429,7 +458,11 @@ fn check_callable(
         .as_ref()
         .map(|b| callee_symbols(refs, b.syntax()))
         .unwrap_or_default();
-    cap.add(callable.symbol, declared, calls);
+    let direct = body
+        .as_ref()
+        .map(|b| env.native_capabilities(b.syntax().text_range()))
+        .unwrap_or_default();
+    cap.add(callable.symbol, direct, declared, calls);
 }
 
 /// Runs an effect-check body walk in `context`, appending any `E2501`/`E2502` it raises.
@@ -461,6 +494,15 @@ fn check_signature(
     };
     let returns_value = callable.ret.is_some();
     let ret = callable.ret.as_ref().map(|r| env.annotation_of(r.syntax()));
+    if let (Some(ty), Some(at)) = (&ret, &callable.ret) {
+        check_stored(
+            ty,
+            env.natives,
+            "a returned value",
+            at.syntax().text_range(),
+            diagnostics,
+        );
+    }
     let mut cx = InferCx::new(refs, env);
     for param in callable.params.iter().filter(|p| {
         p.syntax()
@@ -502,6 +544,20 @@ fn check_const(
     let Some(value) = decl.value() else {
         return;
     };
+    let want = env.annotation_of(decl.syntax());
+    let mut cx = InferCx::new(refs, env);
+    let ty = if want.has_unknown() {
+        cx.infer_expr(&value, None)
+    } else {
+        cx.infer_promoted(&value, &want)
+    };
+    check_stored(
+        &ty,
+        env.natives,
+        "a `const`",
+        decl.syntax().text_range(),
+        diagnostics,
+    );
     check_body(
         refs,
         BodyContext::Initializer,
@@ -509,13 +565,6 @@ fn check_const(
         value.syntax(),
         diagnostics,
     );
-    let want = env.annotation_of(decl.syntax());
-    let mut cx = InferCx::new(refs, env);
-    let _ = if want.has_unknown() {
-        cx.infer_expr(&value, None)
-    } else {
-        cx.infer_promoted(&value, &want)
-    };
     let symbol = env.scope.declared.get(&decl.syntax().text_range()).copied();
     if let Some(symbol) = symbol {
         percent.define(Resolution::Symbol(symbol), cx.carry(value.syntax()));
@@ -545,10 +594,23 @@ fn check_field_defaults(
     let record_name = name_of(decl.name());
     let mut cx = InferCx::new(refs, env);
     for (index, field) in decl.fields().enumerate() {
+        let want = env.annotation_of(field.syntax());
+        check_stored(
+            &want,
+            env.natives,
+            "a record field",
+            field.syntax().text_range(),
+            diagnostics,
+        );
         let Some(value) = field.default() else {
             continue;
         };
         let errors = cx.diagnostics().len();
+        let _ = if want.has_unknown() {
+            cx.infer_expr(&value, None)
+        } else {
+            cx.infer_promoted(&value, &want)
+        };
         check_body(
             refs,
             BodyContext::Initializer,
@@ -556,12 +618,6 @@ fn check_field_defaults(
             value.syntax(),
             diagnostics,
         );
-        let want = env.annotation_of(field.syntax());
-        let _ = if want.has_unknown() {
-            cx.infer_expr(&value, None)
-        } else {
-            cx.infer_promoted(&value, &want)
-        };
         if let Some(record) = record {
             percent.define(Resolution::Symbol(record), cx.carry(value.syntax()));
             let name = format!("{record_name}.{}", name_of(field.name()));
@@ -773,6 +829,8 @@ fn unit_for(
 /// `requires {}` bound, the symbols it calls, and the module it is declared in.
 struct PendingCallable {
     symbol: Option<SymbolId>,
+    /// The capabilities the native functions its body calls require.
+    direct: CapabilitySet,
     declared: Option<(CapabilitySet, TextRange)>,
     calls: Vec<SymbolId>,
     module: usize,
@@ -792,11 +850,13 @@ impl CapabilityGraphBuilder {
     fn add(
         &mut self,
         symbol: Option<SymbolId>,
+        direct: CapabilitySet,
         declared: Option<(CapabilitySet, TextRange)>,
         calls: Vec<SymbolId>,
     ) {
         self.pending.push(PendingCallable {
             symbol,
+            direct,
             declared,
             calls,
             module: self.module,
@@ -823,9 +883,7 @@ impl CapabilityGraphBuilder {
             .pending
             .iter()
             .map(|p| CapabilityNode {
-                // No native schema declares direct conferrals yet, so every callable's own
-                // set is empty; the machinery unions callee sets in regardless.
-                direct: CapabilitySet::new(),
+                direct: p.direct.clone(),
                 declared: p.declared.clone(),
                 calls: p
                     .calls
@@ -923,8 +981,8 @@ struct ModuleScope {
     /// Component declaration syntax range → its symbol, so the env can focus on the component
     /// currently being lowered without confusing several components in one module.
     components: HashMap<TextRange, SymbolId>,
-    /// Name token span → the symbol the resolver bound it to, for nominal annotations.
-    nominal: HashMap<TextRange, SymbolId>,
+    /// Name token span → the type the resolver bound it to, for nominal annotations.
+    nominal: HashMap<TextRange, Ty>,
     /// `const`, record and module-level callable declaration syntax range → its symbol.
     declared: HashMap<TextRange, SymbolId>,
     /// The module's graph index, or `None` for the prelude.
@@ -947,6 +1005,11 @@ struct ModuleEnv<'p> {
     module: usize,
     /// The package's Behavior IR, which each body joins once it is typed.
     behavior: &'p RefCell<ProgramBuilder>,
+    /// The native registry the module's native paths resolved against.
+    natives: &'p Natives,
+    /// Call expression range → the native function it calls, recorded as each body is
+    /// typed so its effect walk sees the native's effect and thread domain.
+    native_calls: RefCell<HashMap<TextRange, NativeId>>,
 }
 
 impl TypeEnv for ModuleEnv<'_> {
@@ -959,14 +1022,22 @@ impl TypeEnv for ModuleEnv<'_> {
                 .map(|f| f.ty.clone())
                 .filter(|ty| *ty != Ty::Unknown)
                 .or_else(|| self.inferred.borrow().get(id).cloned()),
-            Resolution::Local(_) => None,
+            Resolution::Local(_) | Resolution::Native(_) => None,
         }
+    }
+
+    fn natives(&self) -> Option<&Natives> {
+        Some(self.natives)
+    }
+
+    fn record_native(&self, call: TextRange, id: NativeId) {
+        self.native_calls.borrow_mut().insert(call, id);
     }
 
     fn callee_signature(&self, to: &Resolution) -> Option<(Vec<Ty>, Ty)> {
         match to {
             Resolution::Symbol(id) => self.decls.signatures.get(id).cloned(),
-            Resolution::Local(_) => None,
+            Resolution::Local(_) | Resolution::Native(_) => None,
         }
     }
 
@@ -1025,7 +1096,7 @@ impl ReadEnv for ModuleEnv<'_> {
                     None
                 }
             }),
-            Resolution::Local(_) => None,
+            Resolution::Local(_) | Resolution::Native(_) => None,
         }
     }
 }
@@ -1034,8 +1105,20 @@ impl EffectEnv for ModuleEnv<'_> {
     fn callee_effect(&self, to: &Resolution) -> Option<EffectClass> {
         match to {
             Resolution::Symbol(id) => self.decls.facts.get(id).and_then(|f| f.effect),
-            Resolution::Local(_) => None,
+            Resolution::Local(_) | Resolution::Native(_) => None,
         }
+    }
+
+    fn native_call(&self, call: TextRange) -> Option<(EffectClass, ThreadDomain)> {
+        let id = *self.native_calls.borrow().get(&call)?;
+        let function = self.natives.function_by_id(id)?.function;
+        let class = match function.kind {
+            NativeKind::Fn if function.deterministic => EffectClass::Pure,
+            NativeKind::Fn => EffectClass::Read,
+            NativeKind::Action => EffectClass::Action,
+            NativeKind::Task => EffectClass::Task,
+        };
+        Some((class, function.thread))
     }
 
     fn is_state(&self, to: &Resolution) -> bool {
@@ -1064,6 +1147,7 @@ impl<'p> ModuleEnv<'p> {
         scope: &'p ModuleScope,
         module: usize,
         behavior: &'p RefCell<ProgramBuilder>,
+        natives: &'p Natives,
     ) -> Self {
         ModuleEnv {
             decls,
@@ -1072,7 +1156,24 @@ impl<'p> ModuleEnv<'p> {
             inferred: RefCell::default(),
             module,
             behavior,
+            natives,
+            native_calls: RefCell::default(),
         }
+    }
+
+    /// The capabilities the native functions called within `body` require.
+    fn native_capabilities(&self, body: TextRange) -> CapabilitySet {
+        let mut set = CapabilitySet::new();
+        for (call, id) in self.native_calls.borrow().iter() {
+            if body.contains_range(*call)
+                && let Some(entry) = self.natives.function_by_id(*id)
+            {
+                for capability in entry.function.capabilities {
+                    set.insert(*capability);
+                }
+            }
+        }
+        set
     }
 
     /// The type annotated on `node`, through this module's bindings.
@@ -1130,10 +1231,7 @@ impl ModuleScope {
             home,
             nominal: refs
                 .iter()
-                .filter_map(|r| match r.to {
-                    Resolution::Symbol(id) => Some((r.range, id)),
-                    Resolution::Local(_) => None,
-                })
+                .filter_map(|r| Some((r.range, r.to.nominal()?)))
                 .collect(),
             ..ModuleScope::default()
         };
@@ -1503,7 +1601,7 @@ impl ModuleScope {
     /// annotation that does not lower is `Unknown` (its diagnostic is raised where the
     /// declaration itself is lowered).
     fn annotation(&self, ty: &SyntaxNode) -> Ty {
-        Ty::from_annotation(ty, &|at| self.nominal.get(&at).copied()).unwrap_or(Ty::Unknown)
+        Ty::from_annotation(ty, &|at| self.nominal.get(&at).cloned()).unwrap_or(Ty::Unknown)
     }
 }
 
@@ -1929,7 +2027,7 @@ mod tests {
         );
         assert_eq!(
             codes("component C { action a() {} view { Text { text: a(); } } }"),
-            ["E2502", "E2103"]
+            ["E2103", "E2502"]
         );
     }
 

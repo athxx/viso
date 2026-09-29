@@ -9,7 +9,7 @@ use crate::hir::Ty;
 use crate::hir::infer::body::{child_of, emit_args};
 use crate::hir::infer::format::{Hole, Piece, template_literal, template_pieces};
 use crate::hir::infer::pattern::unescape;
-use crate::hir::infer::{VariantInfo, VariantPayload, is_spread, record_spread};
+use crate::hir::infer::{NativeCall, VariantInfo, VariantPayload, is_spread, record_spread};
 use crate::hir::infer::{
     binary_op_kind, builtin_variant, child_exprs, first_child_expr, is_integer_ty,
     parse_float_literal, parse_int_literal, split_unit_literal, unary_op_kind, unify_numeric,
@@ -385,6 +385,9 @@ impl Lowerer<'_, '_> {
                 None => match self.cx.resolution_at(label.text_range()) {
                     Some(Resolution::Local(slot)) => self.local(slot)?,
                     Some(Resolution::Symbol(id)) => self.symbol_value(id, name)?,
+                    Some(Resolution::Native(_)) => {
+                        return self.bail(format!("the shorthand `{name}` names a native"));
+                    }
                     None => return self.bail(format!("the shorthand `{name}` names nothing")),
                 },
             };
@@ -445,6 +448,9 @@ impl Lowerer<'_, '_> {
         let Some(call) = CallExpr::cast(node.clone()) else {
             return self.bail("a malformed call");
         };
+        if let Some(native) = self.cx.native_call(node.text_range()) {
+            return self.native(&call, native);
+        }
         let Some(callee) = call.callee() else {
             return self.bail("a call without a callee");
         };
@@ -535,6 +541,35 @@ impl Lowerer<'_, '_> {
                 Ok(dst)
             }
         }
+    }
+
+    /// A call bound to a native function: the receiver of a method call, then
+    /// the arguments, evaluate in source order.
+    fn native(&mut self, call: &CallExpr, native: NativeCall) -> Lower<Reg> {
+        let Some(entry) = self.env.natives().and_then(|n| n.function_by_id(native.id)) else {
+            return self.bail("the native this calls is not registered");
+        };
+        let args = emit_args(call.syntax());
+        if args.iter().any(|(label, _)| label.is_some()) {
+            return self.bail("named native arguments are not supported");
+        }
+        let mut exprs = Vec::with_capacity(args.len() + 1);
+        if native.receiver {
+            let Some(receiver) = call
+                .callee()
+                .and_then(|c| FieldExpr::cast(c.syntax().clone()))
+                .and_then(|f| f.receiver())
+            else {
+                return self.bail("a method call without a receiver");
+            };
+            exprs.push(receiver);
+        }
+        exprs.extend(args.into_iter().map(|(_, e)| e));
+        let args = self.operands(&exprs)?;
+        let import = self.b.native(entry);
+        let dst = self.reg();
+        self.emit(Inst::Native { dst, import, args });
+        Ok(dst)
     }
 
     /// `format(template, args..)`: the arguments evaluate in source order, each

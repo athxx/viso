@@ -46,7 +46,7 @@ impl Program {
                     .collect(),
             })
             .collect();
-        Module::new(chunks, components)
+        Module::new(chunks, components, self.natives.clone())
     }
 }
 
@@ -260,6 +260,10 @@ impl Emitter {
             Inst::Call { dst, func, args } => Op::Call {
                 dst: reg(*dst),
                 ext: self.operands(&[func.0], args),
+            },
+            Inst::Native { dst, import, args } => Op::Native {
+                dst: reg(*dst),
+                ext: self.operands(&[*import], args),
             },
             Inst::CallValue { dst, callee, args } => Op::CallValue {
                 dst: reg(*dst),

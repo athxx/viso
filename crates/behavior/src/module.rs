@@ -104,15 +104,30 @@ impl Component {
     }
 }
 
-/// A verified set of chunks and component layouts.
+/// A native function a module calls: the path it was compiled against and
+/// the hash of the schema signature it was checked with. Linking resolves it
+/// against a registry once.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NativeImport {
+    /// The function's full path, such as `viso::text::upper`.
+    pub path: Box<str>,
+    /// The [`NativeFunction::signature`](crate::native::NativeFunction::signature)
+    /// it was compiled against.
+    pub signature: u64,
+    /// The number of arguments a call passes.
+    pub params: u16,
+}
+
+/// A verified set of chunks, component layouts and native imports.
 ///
 /// Construction checks every register, jump target, operand-table range,
-/// constant, chunk reference, state/input slot and event index, so the
-/// interpreter only meets well-formed code.
+/// constant, chunk and native reference, state/input slot and event index,
+/// so the interpreter only meets well-formed code.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Module {
     chunks: Box<[Chunk]>,
     components: Box<[Component]>,
+    natives: Box<[NativeImport]>,
 }
 
 /// Why a module failed verification.
@@ -139,10 +154,15 @@ impl std::error::Error for VerifyError {}
 
 impl Module {
     /// Verifies and builds a module.
-    pub fn new(chunks: Vec<Chunk>, components: Vec<Component>) -> Result<Module, VerifyError> {
+    pub fn new(
+        chunks: Vec<Chunk>,
+        components: Vec<Component>,
+        natives: Vec<NativeImport>,
+    ) -> Result<Module, VerifyError> {
         let module = Module {
             chunks: chunks.into(),
             components: components.into(),
+            natives: natives.into(),
         };
         let mut max_states = 0;
         let mut max_inputs = 0;
@@ -173,6 +193,7 @@ impl Module {
                 .iter()
                 .map(|c| (c.params, c.captures.len()))
                 .collect(),
+            natives: module.natives.iter().map(|n| n.params).collect(),
             states: max_states,
             inputs: max_inputs,
             events: max_events,
@@ -210,12 +231,19 @@ impl Module {
     pub fn layout(&self, index: u32) -> &Component {
         &self.components[index as usize]
     }
+
+    /// Every native import, by index.
+    pub fn natives(&self) -> &[NativeImport] {
+        &self.natives
+    }
 }
 
 /// What instructions may reference.
 struct Limits {
     /// Each chunk's parameter and capture counts.
     chunks: Vec<(u16, usize)>,
+    /// Each native import's parameter count.
+    natives: Vec<u16>,
     states: usize,
     inputs: usize,
     events: usize,
@@ -406,6 +434,19 @@ impl Verifier<'_> {
                 let head = self.list(ext, 1)?;
                 self.chunk(head[0], self.code.ext[ext as usize + 1], 0)
             }
+            Op::Native { dst, ext } => {
+                self.reg(dst)?;
+                let head = self.list(ext, 1)?;
+                let argc = self.code.ext[ext as usize + 1];
+                match self.limits.natives.get(head[0] as usize) {
+                    None => Err(format!("native import {} is out of range", head[0])),
+                    Some(&params) if u32::from(params) != argc => Err(format!(
+                        "native import {} takes {params} arguments, not {argc}",
+                        head[0]
+                    )),
+                    Some(_) => Ok(()),
+                }
+            }
             Op::CallValue { dst, ext } => {
                 self.reg(dst)?;
                 let head = self.list(ext, 1)?;
@@ -492,7 +533,7 @@ mod tests {
     }
 
     fn verify(chunks: Vec<Chunk>) -> Result<Module, VerifyError> {
-        Module::new(chunks, Vec::new())
+        Module::new(chunks, Vec::new(), Vec::new())
     }
 
     #[test]

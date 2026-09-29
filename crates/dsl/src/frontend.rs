@@ -17,6 +17,9 @@
 use std::collections::BTreeSet;
 use std::path::{Component, Path};
 use std::rc::Rc;
+use std::sync::Arc;
+
+use viso_behavior::native::Natives;
 
 use crate::ast::{
     AstNode, CompilationUnit, ComponentDecl, Expr, Item, LiteralExpr, Member, PathExpr, UnaryExpr,
@@ -231,19 +234,25 @@ pub fn compile_component(source: &str, origin: &Origin) -> Compiled {
         )),
         errors: parse.errors,
     };
-    compile_unit(source, unit, origin)
+    compile_unit(source, unit, origin, Natives::standard())
 }
 
 /// Compiles a `.vs` file for `view!`: the unit's exported component, or its only
 /// component when it exports none.
 pub fn compile_file(source: &str, origin: &Origin) -> Compiled {
+    compile_file_in(source, origin, Natives::standard())
+}
+
+/// [`compile_file`] with native paths resolved against `natives` instead of
+/// the standard libraries alone.
+pub fn compile_file_in(source: &str, origin: &Origin, natives: Arc<Natives>) -> Compiled {
     let parse = parse_entry(&tokenize(source), source, Entry::CompilationUnit);
-    compile_unit(source, parse, origin)
+    compile_unit(source, parse, origin, natives)
 }
 
 /// The module frontend over one parsed unit: resolve, lower to typed HIR, pick the
 /// component that is mounted, and lower its view.
-fn compile_unit(source: &str, parse: Parse, origin: &Origin) -> Compiled {
+fn compile_unit(source: &str, parse: Parse, origin: &Origin, natives: Arc<Natives>) -> Compiled {
     let mut diagnostics = parse.errors.clone();
     if let Some(error) = origin
         .language
@@ -260,7 +269,7 @@ fn compile_unit(source: &str, parse: Parse, origin: &Origin) -> Compiled {
     let segments: Vec<&str> = origin.module.iter().map(String::as_str).collect();
     let path = ModulePath::intern(&mut interner, &segments);
     let units = vec![SourceUnit::new(path, parse)];
-    let graph = ModuleGraph::build(&units, &interner);
+    let graph = ModuleGraph::build_with(&units, &interner, natives);
     diagnostics.extend(graph.errors().iter().cloned());
     let mut resolved = resolve(&graph, &units, &mut interner, &origin.package);
     let lowered = crate::hir::lower(&graph, &units, &resolved, &mut interner, &origin.package);

@@ -203,10 +203,10 @@ nodes.
 
 ### D1.3 — Typed native schema (§103)
 
-- [ ] Generated Rust schema: methods, `native action` vs query, thread domain,
+- [x] Generated Rust schema: methods, `native action` vs query, thread domain,
       capability, ownership. `E6101`, `E6102`.
-- [ ] Native call op with a `native_calls` budget (§95.1 native call quota).
-- [ ] `viso schema <path>` query output (§139).
+- [x] Native call op with a `native_calls` budget (§95.1 native call quota).
+- [x] `viso schema <path>` query output (§139).
 
 ### Done
 

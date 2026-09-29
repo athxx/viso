@@ -3,6 +3,8 @@
 use std::fmt;
 use std::rc::Rc;
 
+use crate::native::NativeHandle;
+
 /// A runtime value: 16 bytes, cheap to clone (heap values are shared and
 /// copied on write).
 ///
@@ -18,6 +20,7 @@ use std::rc::Rc;
 /// | `List<T>`                                     | `List`                 |
 /// | record, tuple, range, payload enum variant    | `Agg`                  |
 /// | closure                                       | `Closure`              |
+/// | native handle                                 | `Handle`               |
 /// | `None` / `Some(x)`                            | `Nil` / `x`            |
 #[derive(Clone, Default)]
 pub enum Value {
@@ -37,6 +40,8 @@ pub enum Value {
     Agg(Rc<Aggregate>),
     /// A closure.
     Closure(Rc<Closure>),
+    /// A native handle.
+    Handle(Rc<NativeHandle>),
 }
 
 const _: () = assert!(std::mem::size_of::<Value>() == 16);
@@ -115,12 +120,13 @@ impl Value {
             Value::List(l) => HEADER + l.len() as u64 * slot,
             Value::Agg(a) => HEADER + 8 + a.fields.len() as u64 * slot,
             Value::Closure(c) => HEADER + 8 + c.captures.len() as u64 * slot,
+            Value::Handle(_) => HEADER + slot,
         }
     }
 }
 
 /// Structural equality; floats compare by IEEE rules (`NaN != NaN`), closures
-/// by identity.
+/// and handles by identity.
 impl PartialEq for Value {
     fn eq(&self, other: &Value) -> bool {
         match (self, other) {
@@ -131,6 +137,7 @@ impl PartialEq for Value {
             (Value::List(a), Value::List(b)) => a == b,
             (Value::Agg(a), Value::Agg(b)) => a == b,
             (Value::Closure(a), Value::Closure(b)) => Rc::ptr_eq(a, b),
+            (Value::Handle(a), Value::Handle(b)) => Rc::ptr_eq(a, b),
             _ => false,
         }
     }
@@ -153,6 +160,7 @@ impl fmt::Debug for Value {
                 t.finish()
             }
             Value::Closure(c) => write!(f, "closure fn#{}", c.func),
+            Value::Handle(h) => write!(f, "{h:?}"),
         }
     }
 }

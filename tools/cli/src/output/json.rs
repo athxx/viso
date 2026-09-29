@@ -46,6 +46,11 @@ impl Stream {
         self.event("diagnostic", |w| diagnostic(w, report));
     }
 
+    /// Writes a `result` event with the payload `payload` writes.
+    pub(super) fn result(&mut self, payload: impl FnOnce(&mut JsonWriter)) {
+        self.event("result", payload);
+    }
+
     /// Writes the closing `summary` event. `checked` is the package and file count
     /// of a check that got as far as loading the package.
     pub(super) fn summary(

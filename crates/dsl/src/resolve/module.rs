@@ -19,6 +19,9 @@
 //! owned paths are appropriate (AGENTS section 7.2).
 
 use std::collections::BTreeMap;
+use std::sync::Arc;
+
+use viso_behavior::native::Natives;
 
 use crate::ast::{AstNode, CompilationUnit};
 use crate::diag::Diagnostic;
@@ -110,6 +113,8 @@ pub enum ResolveErrorKind {
     PrivateImport,
     /// An import named nothing its module declares.
     UnresolvedImport,
+    /// A path through a native import named no registered function or type.
+    UnresolvedNative,
     /// Two source units declared the same module path.
     AmbiguousModule,
     /// A name was declared twice within one namespace.
@@ -128,7 +133,8 @@ impl ResolveErrorKind {
             ResolveErrorKind::UnresolvedModule
             | ResolveErrorKind::UnresolvedType
             | ResolveErrorKind::PrivateImport
-            | ResolveErrorKind::UnresolvedImport => "E2001",
+            | ResolveErrorKind::UnresolvedImport
+            | ResolveErrorKind::UnresolvedNative => "E2001",
             ResolveErrorKind::AmbiguousModule | ResolveErrorKind::DuplicateName => "E2002",
             ResolveErrorKind::CyclicImport => "E2003",
             ResolveErrorKind::NormalizationConflict => "E1101",
@@ -142,6 +148,7 @@ impl ResolveErrorKind {
             ResolveErrorKind::UnresolvedType => "type does not exist",
             ResolveErrorKind::PrivateImport => "imported name is not exported",
             ResolveErrorKind::UnresolvedImport => "imported name does not exist",
+            ResolveErrorKind::UnresolvedNative => "native function or type does not exist",
             ResolveErrorKind::AmbiguousModule => "two source units declare the same module",
             ResolveErrorKind::DuplicateName => "name is already declared in this scope",
             ResolveErrorKind::CyclicImport => "modules form an import cycle",
@@ -185,6 +192,19 @@ pub struct GraphModule {
     /// The units this module imports, as indices into the graph (unresolved imports
     /// are dropped after emitting [`ResolveErrorKind::UnresolvedModule`]).
     pub imports: Vec<ModuleIndex>,
+    /// The local names this module's imports bind to registered natives.
+    pub natives: Vec<NativeBinding>,
+}
+
+/// A local name an `import` binds to a registered native library, function or
+/// handle type.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NativeBinding {
+    /// The local name: the item, the last path segment, or the rename.
+    pub local: String,
+    /// The full native path it names, such as `viso::text` or
+    /// `viso::time::Stopwatch`.
+    pub path: String,
 }
 
 /// The deterministic import graph over a set of [`SourceUnit`]s.
@@ -196,6 +216,8 @@ pub struct ModuleGraph {
     /// The module whose source each entry of `errors` points into, index for index;
     /// `None` for a whole-graph fact (a duplicate module path, a cycle member).
     owners: Vec<Option<ModuleIndex>>,
+    /// The native registry imports resolve against besides the package's modules.
+    natives: Arc<Natives>,
 }
 
 impl ModuleGraph {
@@ -206,7 +228,20 @@ impl ModuleGraph {
     /// [`ResolveErrorKind::AmbiguousModule`], import edges resolved by path lookup
     /// (unknown targets → [`ResolveErrorKind::UnresolvedModule`]), then any cycle in
     /// the resulting edge set reported as [`ResolveErrorKind::CyclicImport`].
+    /// Imports resolve against the standard native libraries too.
     pub fn build(units: &[SourceUnit], interner: &NameInterner) -> Self {
+        Self::build_with(units, interner, Natives::standard())
+    }
+
+    /// As [`ModuleGraph::build`], with imports of the libraries, functions and
+    /// handle types `natives` registers binding their local names (an item a
+    /// registered library does not declare is
+    /// [`E2001`](ResolveErrorKind::UnresolvedImport)).
+    pub fn build_with(
+        units: &[SourceUnit],
+        interner: &NameInterner,
+        natives: Arc<Natives>,
+    ) -> Self {
         let mut errors = Vec::new();
         let mut owners = Vec::new();
 
@@ -234,6 +269,7 @@ impl ModuleGraph {
         let mut modules: Vec<GraphModule> = Vec::with_capacity(kept.len());
         for (index, unit) in kept.iter().enumerate() {
             let mut imports = Vec::new();
+            let mut bound = Vec::new();
             if let Some(cu) = unit.compilation_unit() {
                 for import in cu.imports() {
                     let Some(path_node) = import.path() else {
@@ -242,17 +278,31 @@ impl ModuleGraph {
                     let target = module_path_text(&path_node);
                     match index_of.get(&target) {
                         Some(&idx) => imports.push(idx),
+                        None if native_import(
+                            &natives,
+                            &import,
+                            &target,
+                            &mut bound,
+                            &mut errors,
+                        ) =>
+                        {
+                            owners.resize(errors.len(), Some(ModuleIndex(index as u32)));
+                        }
                         None => {
                             let at = path_node.syntax().text_range();
                             let mut diagnostic =
                                 ResolveErrorKind::UnresolvedModule.to_diagnostic(Some(at), &target);
-                            let suggestions = suggest::nearest(
-                                &target,
-                                index_of.keys().map(|path| suggest::Candidate {
-                                    name: path,
-                                    declared_at: None,
-                                }),
-                            );
+                            let libraries = natives.libraries().iter().map(|l| l.path);
+                            let suggestions =
+                                suggest::nearest(
+                                    &target,
+                                    index_of.keys().map(String::as_str).chain(libraries).map(
+                                        |path| suggest::Candidate {
+                                            name: path,
+                                            declared_at: None,
+                                        },
+                                    ),
+                                );
                             suggest::attach(&mut diagnostic, at, &suggestions);
                             errors.push(diagnostic);
                             owners.push(Some(ModuleIndex(index as u32)));
@@ -266,6 +316,7 @@ impl ModuleGraph {
             modules.push(GraphModule {
                 path: unit.path.clone(),
                 imports,
+                natives: bound,
             });
         }
 
@@ -273,6 +324,7 @@ impl ModuleGraph {
             modules,
             errors,
             owners,
+            natives,
         };
         graph.detect_cycles(interner)
     }
@@ -365,6 +417,11 @@ impl ModuleGraph {
             .map(|(d, _)| d)
     }
 
+    /// The native registry the graph's imports resolved against.
+    pub fn natives(&self) -> &Arc<Natives> {
+        &self.natives
+    }
+
     /// The index of a module by its `::`-joined path text, if present.
     pub fn index_of(&self, path_text: &str, interner: &NameInterner) -> Option<ModuleIndex> {
         self.modules
@@ -372,6 +429,76 @@ impl ModuleGraph {
             .position(|m| m.path.display(interner) == path_text)
             .map(|i| ModuleIndex(i as u32))
     }
+}
+
+/// Binds an `import` of the native `target` into `bound`: a whole library,
+/// function or handle type under its last segment or rename, or a library's
+/// selected items, an item the library does not declare being
+/// [`E2001`](ResolveErrorKind::UnresolvedImport) in `errors`. Returns whether
+/// `target` names a native at all.
+fn native_import(
+    natives: &Natives,
+    import: &crate::ast::ImportDecl,
+    target: &str,
+    bound: &mut Vec<NativeBinding>,
+    errors: &mut Vec<Diagnostic>,
+) -> bool {
+    let renamed = |rename: Option<crate::ast::RenameClause>, name: &str| {
+        rename
+            .and_then(|r| r.name())
+            .map_or_else(|| name.to_owned(), |t| t.text().to_string())
+    };
+    let items: Vec<_> = import.items().collect();
+    if let Some(library) = natives.library(target) {
+        if items.is_empty() {
+            let last = target.rsplit("::").next().unwrap_or(target);
+            bound.push(NativeBinding {
+                local: renamed(import.rename(), last),
+                path: target.to_owned(),
+            });
+        }
+        for item in items {
+            let Some(name) = item.name() else {
+                continue;
+            };
+            let text = name.text();
+            let path = format!("{target}::{text}");
+            if natives.function(&path).is_some() || natives.ty(&path).is_some() {
+                bound.push(NativeBinding {
+                    local: renamed(item.rename(), &text),
+                    path,
+                });
+                continue;
+            }
+            let at = name.text_range();
+            let mut diagnostic = ResolveErrorKind::UnresolvedImport.to_diagnostic(Some(at), &path);
+            let names = library
+                .functions
+                .iter()
+                .map(|f| f.name)
+                .chain(library.types.iter().map(|t| t.name));
+            let suggestions = suggest::nearest(
+                &text,
+                names.map(|name| suggest::Candidate {
+                    name,
+                    declared_at: None,
+                }),
+            );
+            suggest::attach(&mut diagnostic, at, &suggestions);
+            errors.push(diagnostic);
+        }
+        return true;
+    }
+    let item =
+        natives.function(target).is_some_and(|f| f.owner.is_none()) || natives.ty(target).is_some();
+    if item && items.is_empty() {
+        let last = target.rsplit("::").next().unwrap_or(target);
+        bound.push(NativeBinding {
+            local: renamed(import.rename(), last),
+            path: target.to_owned(),
+        });
+    }
+    item && items.is_empty()
 }
 
 /// The `::`-joined text of a syntax `ModulePath` node (from an `import` decl).

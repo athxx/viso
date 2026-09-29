@@ -401,6 +401,7 @@ impl Lowerer<'_, '_> {
                         Some(&(_, Place::Input(_))) => self.bail("an `input` is read-only"),
                         None => self.bail("only a local or a `state` can be assigned"),
                     },
+                    Some(Resolution::Native(_)) => self.bail("a native cannot be assigned"),
                     None => self.bail("an assignment to an unresolved name"),
                 }
             }

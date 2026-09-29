@@ -85,12 +85,9 @@ pub(crate) fn lower_component(
     // computed carry the extra ordering/topology work below, so collect their raw shapes
     // (declaration + symbol + reactive reads) alongside the node as we go.
     let mut state_order: Vec<StateEntry> = Vec::new();
-    let nominal: HashMap<TextRange, SymbolId> = refs
+    let nominal: HashMap<TextRange, Ty> = refs
         .iter()
-        .filter_map(|r| match r.to {
-            Resolution::Symbol(id) => Some((r.range, id)),
-            Resolution::Local(_) => None,
-        })
+        .filter_map(|r| Some((r.range, r.to.nominal()?)))
         .collect();
     let mut computed_order: Vec<ComputedEntry> = Vec::new();
 
@@ -484,11 +481,11 @@ fn is_undetermined(ty: &Ty) -> bool {
 /// `Float` type. Uses the annotation's enclosing declaration span for the diagnostic.
 fn resolve_annotation(
     path: &crate::ast::TypePath,
-    nominal: &HashMap<TextRange, SymbolId>,
+    nominal: &HashMap<TextRange, Ty>,
     span: TextRange,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Ty {
-    match Ty::from_annotation(path.syntax(), &|at| nominal.get(&at).copied()) {
+    match Ty::from_annotation(path.syntax(), &|at| nominal.get(&at).cloned()) {
         Ok(ty) => ty,
         Err(err) => {
             let code: &'static str = match err {

@@ -3,9 +3,13 @@
 //! the component instance.
 
 use std::rc::Rc;
+use std::sync::Arc;
 
+use viso_behavior::native::{
+    Clipboard, NativeLibrary, NativeObject, NativeType, Natives, Obj, STANDARD, ThreadDomain,
+};
 use viso_behavior::{Aggregate, Budget, Fault, FaultKind, Instance, Module, Value, Vm};
-use viso_dsl::frontend::{Origin, compile_file};
+use viso_dsl::frontend::{Origin, compile_file, compile_file_in};
 
 fn origin() -> Origin {
     Origin {
@@ -221,6 +225,7 @@ component C {
         instructions: 10_000,
         memory: 1 << 16,
         depth: 64,
+        ..Budget::default()
     };
     let mut vm = Vm::new(module, budget);
     let mut instance = vm.instantiate(c, []).unwrap();
@@ -419,4 +424,214 @@ fn a_warmed_up_action_spends_a_fixed_instruction_count() {
         first.instructions > 0 && first.instructions < 16,
         "{first:?}"
     );
+}
+
+/// The error codes of compiling `source` against `natives`.
+fn native_errors(source: &str, natives: Arc<Natives>) -> Vec<String> {
+    compile_file_in(source, &origin(), natives)
+        .errors()
+        .map(|d| d.code.to_string())
+        .collect()
+}
+
+/// A VM over `source`, linked against the standard natives with `grants`.
+fn linked(source: &str, component: &str, grants: &[&str]) -> (Vm, Instance) {
+    let (mut vm, instance) = instance(source, component);
+    vm.link(&Natives::standard(), grants).expect("link");
+    (vm, instance)
+}
+
+const NATIVES: &str = r#"
+import viso::text;
+import viso::math::{clamp, sqrt};
+import viso::time::Stopwatch;
+import viso::clipboard;
+
+component Tools {
+    state label = "";
+    state root = 0.0;
+    state elapsed = -1.0;
+
+    computed shout: String = text::upper(label);
+
+    action rename(to: String) {
+        label = text::trim(to);
+    }
+
+    action measure(x: F64) {
+        root = sqrt(clamp(x, 0.0, 100.0));
+    }
+
+    action bad_clamp() {
+        root = clamp(1.0, 2.0, 1.0);
+    }
+
+    action time() {
+        let watch = Stopwatch::start();
+        elapsed = watch.elapsed_ms();
+    }
+
+    action copy() {
+        clipboard::write_text(label);
+    }
+
+    view { Text { text: shout; } }
+}
+"#;
+
+#[test]
+fn native_functions_run_in_the_vm_after_linking() {
+    let (mut vm, mut tools) = linked(NATIVES, "Tools", &[]);
+    call(&mut vm, &mut tools, "rename", &[Value::str("  ada ")]).expect("rename");
+    assert_eq!(tools.states()[0], Value::str("ada"));
+    let shout = call(&mut vm, &mut tools, "shout", &[]).expect("shout");
+    assert_eq!(shout, Value::str("ADA"));
+
+    call(&mut vm, &mut tools, "measure", &[Value::Float(400.0)]).expect("measure");
+    assert_eq!(tools.states()[1], Value::Float(10.0));
+}
+
+#[test]
+fn a_native_handle_method_takes_its_receiver_first() {
+    let (mut vm, mut tools) = linked(NATIVES, "Tools", &[]);
+    call(&mut vm, &mut tools, "time", &[]).expect("time");
+    let elapsed = tools.states()[2].as_float().expect("elapsed");
+    assert!(elapsed >= 0.0, "{elapsed}");
+}
+
+#[test]
+fn a_native_error_faults_the_call() {
+    let (mut vm, mut tools) = linked(NATIVES, "Tools", &[]);
+    let fault = call(&mut vm, &mut tools, "bad_clamp", &[]).expect_err("empty range");
+    assert_eq!(fault.kind, FaultKind::NativeFailure);
+    assert_eq!(fault.kind.code(), "E7106");
+    assert_eq!(tools.states()[1], Value::Float(0.0));
+}
+
+#[test]
+fn an_unlinked_native_cannot_run() {
+    let (mut vm, mut tools) = instance(NATIVES, "Tools");
+    let fault = call(&mut vm, &mut tools, "measure", &[Value::Float(4.0)]).expect_err("unlinked");
+    assert_eq!(fault.kind, FaultKind::Unsupported);
+}
+
+#[test]
+fn an_ungranted_capability_faults_at_the_call() {
+    struct Memory(Rc<std::cell::RefCell<String>>);
+    impl Clipboard for Memory {
+        fn read_text(&mut self) -> Option<String> {
+            Some(self.0.borrow().clone())
+        }
+        fn write_text(&mut self, text: &str) {
+            *self.0.borrow_mut() = text.to_owned();
+        }
+    }
+
+    let (mut vm, mut tools) = linked(NATIVES, "Tools", &[]);
+    let fault = call(&mut vm, &mut tools, "copy", &[]).expect_err("denied");
+    assert_eq!(fault.kind, FaultKind::CapabilityDenied);
+    assert_eq!(fault.kind.code(), "E6103");
+
+    let (mut vm, mut tools) = linked(NATIVES, "Tools", &["clipboard.write"]);
+    let board = Rc::new(std::cell::RefCell::new(String::new()));
+    let service: Box<dyn Clipboard> = Box::new(Memory(board.clone()));
+    vm.services_mut().insert(service);
+    call(&mut vm, &mut tools, "rename", &[Value::str("hi")]).expect("rename");
+    call(&mut vm, &mut tools, "copy", &[]).expect("copy");
+    assert_eq!(*board.borrow(), "hi");
+}
+
+#[test]
+fn native_calls_spend_their_own_budget() {
+    let source = r#"
+import viso::math;
+component Loop {
+    state total = 0.0;
+    action run(n: I64) {
+        for i in 0..n { total = math::abs(total) + 1.0; }
+    }
+    view { Text { text: "x"; } }
+}
+"#;
+    let module = module(source);
+    let index = module.component("Loop").expect("component");
+    let budget = Budget {
+        native_calls: 3,
+        ..Budget::default()
+    };
+    let mut vm = Vm::new(module, budget);
+    vm.link(&Natives::standard(), &[]).expect("link");
+    let mut looped = vm.instantiate(index, []).expect("instantiate");
+    call(&mut vm, &mut looped, "run", &[Value::Int(3)]).expect("within budget");
+    let fault = call(&mut vm, &mut looped, "run", &[Value::Int(4)]).expect_err("over budget");
+    assert_eq!(fault.kind, FaultKind::NativeCallBudget);
+    assert_eq!(fault.kind.code(), "E7101");
+}
+
+#[test]
+fn linking_rejects_a_registry_without_the_import() {
+    let (mut vm, _) = instance(NATIVES, "Tools");
+    let conflict = vm.link(&Natives::new(), &[]).expect_err("unregistered");
+    assert_eq!(conflict.code(), "E6101");
+}
+
+#[test]
+fn a_native_capability_joins_the_callable_capability_set() {
+    let compiled = compile_file(NATIVES, &origin());
+    let component = compiled.component.expect("component");
+    let set = |name: &str| {
+        let callable = component.schema.callables.iter().find(|c| c.name == name);
+        callable.expect("callable").meta.capability_set.clone()
+    };
+    assert!(set("copy").contains("clipboard.write"));
+    assert!(!set("rename").contains("clipboard.write"));
+}
+
+#[test]
+fn native_misuse_is_diagnosed() {
+    let standard = Natives::standard;
+    let unknown = "import viso::text;\ncomponent A { computed x: String = text::shout(\"a\"); view { Text { text: x; } } }";
+    assert_eq!(native_errors(unknown, standard()), ["E2001"]);
+
+    let action = "import viso::time::Stopwatch;\ncomponent A { computed x: F64 = Stopwatch::start().elapsed_ms(); view { Text { text: \"a\"; } } }";
+    assert!(native_errors(action, standard()).contains(&"E2502".to_owned()));
+}
+
+static CUSTOM: NativeLibrary = NativeLibrary {
+    path: "app::device",
+    version: 1,
+    functions: &[
+        viso_behavior::native!(fn "scan" |_cx| -> i64 { Ok(1) }).on(ThreadDomain::Worker),
+        viso_behavior::native!(fn "lease" |_cx| -> Obj<Lease> { Ok(Obj::new(Lease)) }),
+    ],
+    types: &[NativeType::new("Lease", &[]).borrowed()],
+};
+
+#[derive(Debug)]
+struct Lease;
+
+impl NativeObject for Lease {
+    const PATH: &'static str = "app::device::Lease";
+}
+
+fn custom() -> Arc<Natives> {
+    let mut natives = Natives::new();
+    natives.extend(STANDARD).expect("standard");
+    natives.register(&CUSTOM).expect("custom");
+    Arc::new(natives)
+}
+
+#[test]
+fn a_worker_native_outside_a_task_is_diagnosed() {
+    let source = "import app::device;\ncomponent A { state n = 0; action go() { n = device::scan(); } view { Text { text: \"a\"; } } }";
+    assert_eq!(native_errors(source, custom()), ["E6102"]);
+}
+
+#[test]
+fn a_borrowed_native_handle_cannot_be_stored() {
+    let stored = "import app::device;\ncomponent A { state held = device::lease(); view { Text { text: \"a\"; } } }";
+    assert_eq!(native_errors(stored, custom()), ["E6102"]);
+
+    let local = "import app::device;\ncomponent A { action go() { let l = device::lease(); } view { Text { text: \"a\"; } } }";
+    assert_eq!(native_errors(local, custom()), Vec::<String>::new());
 }

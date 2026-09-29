@@ -16,13 +16,20 @@
 //! (strings, lists, aggregates, closures, event payloads, copies made by a write
 //! into a shared value) is charged against the memory budget, and the call
 //! nesting is bounded.
+//!
+//! A native call spends its schema's cost in instructions and one unit of the
+//! native call quota, and its result is charged against the memory budget. A
+//! native error or panic is a [`FaultKind::NativeFailure`] fault; the native's
+//! own side effects are outside the transaction and are not rolled back.
 
 use std::fmt;
 use std::mem;
+use std::panic::{self, AssertUnwindSafe};
 use std::rc::Rc;
 
 use crate::arith;
 use crate::module::{Code, Module, Span};
+use crate::native::{NativeCx, NativeFunction, Natives, SchemaConflict, Services, ThreadDomain};
 use crate::op::{DisplayKind, Op};
 use crate::value::{Aggregate, Closure, Value};
 
@@ -35,15 +42,18 @@ pub struct Budget {
     pub memory: u64,
     /// The deepest call nesting, counting the entry chunk.
     pub depth: u32,
+    /// The native calls it may make.
+    pub native_calls: u32,
 }
 
 impl Default for Budget {
-    /// 16 Mi instructions, 64 MiB and 256 nested calls.
+    /// 16 Mi instructions, 64 MiB, 256 nested calls and 1024 native calls.
     fn default() -> Budget {
         Budget {
             instructions: 1 << 24,
             memory: 64 << 20,
             depth: 256,
+            native_calls: 1024,
         }
     }
 }
@@ -57,6 +67,8 @@ pub enum FaultKind {
     CallDepth,
     /// The memory budget ran out.
     MemoryBudget,
+    /// The native call quota ran out.
+    NativeCallBudget,
     /// An integer result was out of its type's range.
     Overflow,
     /// An integer division or remainder by zero.
@@ -65,8 +77,13 @@ pub enum FaultKind {
     ShiftRange,
     /// A list index outside the list.
     IndexOutOfBounds,
-    /// A chunk without a body was called.
+    /// A chunk without a body, an unlinked native or a native on a thread
+    /// domain the interpreter does not provide was called.
     Unsupported,
+    /// A native was called without a capability it requires.
+    CapabilityDenied,
+    /// A native function returned an error or panicked.
+    NativeFailure,
     /// An instance was created without a required input.
     MissingInput,
     /// The code broke an invariant the compiler guarantees (a value of the
@@ -78,11 +95,15 @@ impl FaultKind {
     /// The stable diagnostic code.
     pub fn code(self) -> &'static str {
         match self {
-            FaultKind::InstructionBudget | FaultKind::CallDepth => "E7101",
+            FaultKind::InstructionBudget | FaultKind::CallDepth | FaultKind::NativeCallBudget => {
+                "E7101"
+            }
             FaultKind::MemoryBudget => "E7102",
             FaultKind::Overflow | FaultKind::DivideByZero | FaultKind::ShiftRange => "E7103",
             FaultKind::IndexOutOfBounds => "E7104",
             FaultKind::Unsupported | FaultKind::MissingInput | FaultKind::Internal => "E7105",
+            FaultKind::NativeFailure => "E7106",
+            FaultKind::CapabilityDenied => "E6103",
         }
     }
 
@@ -92,11 +113,14 @@ impl FaultKind {
             FaultKind::InstructionBudget => "the instruction budget is exhausted",
             FaultKind::CallDepth => "the call depth budget is exhausted",
             FaultKind::MemoryBudget => "the memory budget is exhausted",
+            FaultKind::NativeCallBudget => "the native call quota is exhausted",
             FaultKind::Overflow => "integer overflow",
             FaultKind::DivideByZero => "integer division by zero",
             FaultKind::ShiftRange => "shift amount out of range",
             FaultKind::IndexOutOfBounds => "index out of bounds",
             FaultKind::Unsupported => "the called function cannot run",
+            FaultKind::CapabilityDenied => "a required capability is not granted",
+            FaultKind::NativeFailure => "a native function failed",
             FaultKind::MissingInput => "a required input has no value",
             FaultKind::Internal => "internal behavior fault",
         }
@@ -163,6 +187,8 @@ pub struct Cost {
     pub instructions: u64,
     /// Heap bytes charged.
     pub memory: u64,
+    /// Native calls made.
+    pub native_calls: u32,
 }
 
 /// A component instance: its state and input values, a revision that rises
@@ -243,14 +269,30 @@ struct Cursor {
     base: usize,
 }
 
+/// A linked native import.
+#[derive(Clone, Copy)]
+struct Linked {
+    function: &'static NativeFunction,
+    /// The first capability it requires that was not granted.
+    denied: Option<&'static str>,
+}
+
 /// A behavior interpreter over one module.
 ///
 /// It owns reusable scratch space (the register stack, call frames, undo log
 /// and event queue), so a warmed-up invocation that allocates no values
 /// performs no heap allocation.
+///
+/// Before a module's natives can run, [`Vm::link`] resolves them against a
+/// registry; natives reach the host through the [`Services`] installed with
+/// [`Vm::services_mut`].
 pub struct Vm {
     module: Rc<Module>,
     budget: Budget,
+    linked: Box<[Option<Linked>]>,
+    services: Services,
+    native_args: Vec<Value>,
+    native_calls: u32,
     stack: Vec<Value>,
     frames: Vec<Frame>,
     fuel: u64,
@@ -267,8 +309,12 @@ impl Vm {
     /// An interpreter for `module` with `budget` per invocation.
     pub fn new(module: Rc<Module>, budget: Budget) -> Vm {
         Vm {
+            linked: vec![None; module.natives().len()].into(),
             module,
             budget,
+            services: Services::default(),
+            native_args: Vec::new(),
+            native_calls: 0,
             stack: Vec::new(),
             frames: Vec::new(),
             fuel: 0,
@@ -300,7 +346,55 @@ impl Vm {
         Cost {
             instructions: self.budget.instructions.saturating_sub(self.fuel),
             memory: self.allocated,
+            native_calls: self.native_calls,
         }
+    }
+
+    /// Resolves every native import of the module against `natives`, granting
+    /// `capabilities`. A native requiring a capability outside the grant still
+    /// links, and calling it faults with [`FaultKind::CapabilityDenied`].
+    ///
+    /// # Errors
+    ///
+    /// A [`SchemaConflict`] (`E6101`) if an import is not registered or was
+    /// compiled against a different signature; no import is then linked.
+    pub fn link(&mut self, natives: &Natives, capabilities: &[&str]) -> Result<(), SchemaConflict> {
+        let linked = self
+            .module
+            .natives()
+            .iter()
+            .map(|import| {
+                let conflict = |message: String| SchemaConflict {
+                    path: import.path.to_string(),
+                    message,
+                };
+                let Some(entry) = natives.function(&import.path) else {
+                    return Err(conflict(format!("`{}` is not registered", import.path)));
+                };
+                let function = entry.function;
+                if function.signature() != import.signature
+                    || function.params.len() != usize::from(import.params)
+                {
+                    return Err(conflict(format!(
+                        "`{}` was compiled against another schema than the registered `{function:?}`",
+                        import.path
+                    )));
+                }
+                let denied = function
+                    .capabilities
+                    .iter()
+                    .copied()
+                    .find(|c| !capabilities.contains(c));
+                Ok(Some(Linked { function, denied }))
+            })
+            .collect::<Result<_, _>>()?;
+        self.linked = linked;
+        Ok(())
+    }
+
+    /// The host services natives use.
+    pub fn services_mut(&mut self) -> &mut Services {
+        &mut self.services
     }
 
     /// Creates an instance of component `component` with the given input
@@ -389,6 +483,7 @@ impl Vm {
     ) -> Result<Outcome, Fault> {
         self.fuel = self.budget.instructions;
         self.allocated = 0;
+        self.native_calls = 0;
         self.detail.clear();
         self.marks.clear();
         self.marks.resize(instance.states.len().div_ceil(64), 0);
@@ -743,6 +838,7 @@ impl Vm {
                     });
                     continue;
                 }
+                Op::Native { dst, ext } => (dst, self.call_native(code, base, ext as usize)?),
                 Op::Unreachable => {
                     return self.trap(FaultKind::Internal, "reached unreachable code".into());
                 }
@@ -874,6 +970,76 @@ impl Vm {
             }
             _ => return Err(FaultKind::Internal),
         })
+    }
+
+    /// Runs the [`Op::Native`] whose operands start at `ext[at]`.
+    #[inline(never)]
+    fn call_native(&mut self, code: &Code, base: usize, at: usize) -> Step<Value> {
+        let import = code.ext[at] as usize;
+        let argc = code.ext[at + 1] as usize;
+        let module = Rc::clone(&self.module);
+        let path = &module.natives()[import].path;
+        let Some(Linked { function, denied }) = self.linked[import] else {
+            return self.trap(
+                FaultKind::Unsupported,
+                format!("native `{path}` is not linked"),
+            );
+        };
+        if let Some(capability) = denied {
+            return self.trap(
+                FaultKind::CapabilityDenied,
+                format!("native `{path}` requires capability `{capability}`, which is not granted"),
+            );
+        }
+        if function.thread == ThreadDomain::Worker {
+            return self.trap(
+                FaultKind::Unsupported,
+                format!("native `{path}` runs on a worker thread, which this interpreter does not provide"),
+            );
+        }
+        if self.native_calls >= self.budget.native_calls {
+            return Err(FaultKind::NativeCallBudget);
+        }
+        self.native_calls += 1;
+        // The instruction itself already spent one unit.
+        let extra = u64::from(function.cost.saturating_sub(1));
+        if self.fuel < extra {
+            self.fuel = 0;
+            return Err(FaultKind::InstructionBudget);
+        }
+        self.fuel -= extra;
+        let mut args = mem::take(&mut self.native_args);
+        args.clear();
+        args.extend(
+            code.ext[at + 2..at + 2 + argc]
+                .iter()
+                .map(|&r| self.stack[base + r as usize].clone()),
+        );
+        let services = &mut self.services;
+        let result = panic::catch_unwind(AssertUnwindSafe(|| {
+            (function.call)(&mut NativeCx::new(services), &args)
+        }));
+        args.clear();
+        self.native_args = args;
+        match result {
+            Ok(Ok(value)) => {
+                self.charge(value.heap_bytes())?;
+                Ok(value)
+            }
+            Ok(Err(error)) => self.trap(
+                FaultKind::NativeFailure,
+                format!("native `{path}` failed: {error}"),
+            ),
+            Err(payload) => {
+                let reason = payload
+                    .downcast_ref::<&str>()
+                    .copied()
+                    .or_else(|| payload.downcast_ref::<String>().map(String::as_str))
+                    .unwrap_or("an unknown reason");
+                let detail = format!("native `{path}` panicked: {reason}");
+                self.trap(FaultKind::NativeFailure, detail)
+            }
+        }
     }
 
     /// Suspends the current frame (resuming at `cur.pc` into register `dst`)
