@@ -2430,6 +2430,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "viso-behavior"
+version = "0.0.0"
+
+[[package]]
 name = "viso-cli"
 version = "0.0.0"
 dependencies = [
@@ -2446,6 +2450,7 @@ dependencies = [
  "criterion",
  "icu_normalizer",
  "icu_properties",
+ "viso-behavior",
  "viso-ende",
  "viso-ui",
 ]

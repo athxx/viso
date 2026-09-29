@@ -115,7 +115,17 @@ fn allowed_edges() -> BTreeMap<&'static str, Allowed> {
             "viso-dsl",
             Allowed {
                 dir: "crates/dsl",
-                deps: &["viso-ui", "viso-ende"],
+                deps: &["viso-ui", "viso-ende", "viso-behavior"],
+            },
+        ),
+        // The behavior bytecode and interpreter the DSL compiler lowers `fn`/`action`
+        // bodies to. A leaf: `viso-runtime` and `viso-ui` never depend on it, so a
+        // pure Rust app links no VM (ADR 0035).
+        (
+            "viso-behavior",
+            Allowed {
+                dir: "crates/behavior",
+                deps: &[],
             },
         ),
         // The formatter / language-server tooling for `.vs` (Slice R). A pure

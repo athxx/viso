@@ -1,0 +1,12 @@
+[package]
+name = "viso-behavior"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+# LEAF. The behavior bytecode and its interpreter: what runs `fn`/`action`
+# bodies, computed values and initializers. The DSL compiler lowers to it; a
+# release loader can run it without the compiler. `viso-runtime` does not
+# depend on it, so a pure Rust app never links a VM.
+[dependencies]

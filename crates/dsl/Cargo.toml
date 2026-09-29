@@ -14,6 +14,7 @@ rust-version.workspace = true
 [dependencies]
 viso-ui = { workspace = true }
 viso-ende = { workspace = true }
+viso-behavior = { workspace = true }
 # XID_Start/XID_Continue for identifier lexing and NFC for symbol-table entry.
 icu_properties = { workspace = true }
 icu_normalizer = { workspace = true }
@@ -23,4 +24,8 @@ criterion = "0.7"
 
 [[bench]]
 name = "incremental_reparse"
+harness = false
+
+[[bench]]
+name = "behavior_vm"
 harness = false

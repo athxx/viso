@@ -196,20 +196,21 @@ nodes.
 
 ### D1.2 — Bytecode VM
 
-- [ ] Compact bytecode and an interpreter in a crate that `runtime` does not depend on.
-- [ ] Instruction and native-call budgets: `E7101`, `E7102` (§95).
-- [ ] Action transactions: writes commit at the action end, never mid-body (§86).
-- [ ] Bench: interpreter cost per simple action (release measurement).
+- [x] Compact bytecode and an interpreter in a crate that `runtime` does not depend on.
+- [x] Instruction, depth and memory budgets: `E7101`, `E7102` (§95).
+- [x] Action transactions: writes commit at the action end, never mid-body (§86).
+- [x] Bench: interpreter cost per simple action (release measurement).
 
 ### D1.3 — Typed native schema (§103)
 
 - [ ] Generated Rust schema: methods, `native action` vs query, thread domain,
       capability, ownership. `E6101`, `E6102`.
+- [ ] Native call op with a `native_calls` budget (§95.1 native call quota).
 - [ ] `viso schema <path>` query output (§139).
 
 ### Done
 
-- [ ] A counter component increments through a real `action` body in a headless test.
+- [x] A counter component increments through a real `action` body in a headless test.
 
 ---
 

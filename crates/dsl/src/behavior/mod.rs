@@ -9,6 +9,7 @@
 
 pub mod ir;
 
+mod codegen;
 mod dump;
 pub(crate) mod lower;
 

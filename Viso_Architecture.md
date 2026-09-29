@@ -864,7 +864,11 @@ PDF/browser/chart/map 等不是基础 widget，放 optional package/integration�
 - transactional hot reload engine（`crates/dsl/src/hotreload`：plan → diff → migrate → commit，ADR 0015）；
 - Release AOT emitter（ADR 0016）；
 - source map；
-- 可选 dynamic VM adapter（目标）。
+- Behavior IR → bytecode lowering（`Program::bytecode`，ADR 0035）。
+
+### `viso-behavior`
+
+Behavior bytecode 格式、verifier 与 interpreter（ADR 0035）：寄存器 VM、8 字节指令、事务 undo log、执行预算与 Runtime Fault（`E7101`–`E7105`）。叶子 crate，不依赖任何 workspace crate；`runtime` / `ui` / `widgets` 不得依赖它。
 
 ### `viso-lsp`
 
@@ -893,7 +897,7 @@ PDF/browser/chart/map 等不是基础 widget，放 optional package/integration�
 | `viso-ui-macros` | dsl |
 | `viso-lsp` | dsl |
 | `viso-cli` | project, dsl, ende |
-| `viso-dsl` | ui, ende |
+| `viso-dsl` | ui, ende, behavior |
 | `viso-services` | runtime, platform |
 | `viso-ui` | render, runtime, ende, text |
 | `viso-svg` | render, math |
@@ -903,7 +907,7 @@ PDF/browser/chart/map 等不是基础 widget，放 optional package/integration�
 | `viso-gpu` | runtime, handle, macros |
 | `viso-runtime` | platform |
 | `viso-platform` | handle |
-| `viso-math` / `viso-ende` / `viso-handle` / `viso-macros` / `viso-project` | —（叶子） |
+| `viso-math` / `viso-ende` / `viso-handle` / `viso-macros` / `viso-project` / `viso-behavior` | —（叶子） |
 
 `viso-math` 当前只被 render/svg 使用；其他 crate 需要时必须先加 allowlist 边。`viso-ende` 被 ui/dsl 使用，不位于 frame 数据流主链。
 
@@ -920,6 +924,7 @@ PDF/browser/chart/map 等不是基础 widget，放 optional package/integration�
 - `viso-dsl -> concrete widget implementation`：原则上禁止，使用 schema/registry；
 - framework core crate 依赖 app/example：绝对禁止；
 - `viso-ende` / `viso-math` 依赖任何框架 crate：禁止，二者保持叶子；
+- `runtime / ui / widgets -> behavior`：禁止，Pure Rust UI 不依赖 DSL 执行器；
 - `viso-math` public ABI 依赖 pointer width、`usize` 或 backend SIMD type：禁止；
 - `viso-math` struct 内存布局直接作为 GPU uniform/instance wire ABI：禁止；
 - frame hot path 通过 Ende encode/decode 传递 Node/Layout/Paint 数据：禁止。

@@ -3348,6 +3348,18 @@ ShaderBackendFailure
 HotReloadMigrationFailure
 ```
 
+Behavior 执行器（ADR 0035）产生的 Fault 及其诊断码：
+
+| Fault                                   | 代码    |
+| --------------------------------------- | ------- |
+| 指令预算超限 / 调用深度超限             | `E7101` |
+| 内存预算超限                            | `E7102` |
+| 整数溢出 / 除以零 / 移位量越界          | `E7103` |
+| 索引越界                                | `E7104` |
+| 函数无法运行（含编译错误）/ 缺少必需 Input / 内部不变量失败 | `E7105` |
+
+整数运算按其类型宽度检查：结果超出范围即 `E7103`，不回绕；移位量必须在 `0..bits` 内，移出宽度的位丢弃。浮点遵循 IEEE 754，`F32` 每步结果舍入到 `f32`。浮点插值文本使用最短可往返十进制形式（`1`、`0.1`、`inf`、`NaN`）。每个 Fault 携带所在函数与源 Span。
+
 Runtime Fault 不应伪装成业务 Error。Isolate Policy 决定它导致：
 
 - 回滚当前 Transaction；
@@ -3453,6 +3465,8 @@ State 修改只能发生在：
 ```
 
 同一外层 Transaction 中对同一 State 多次写入只产生一次 Revision 和一次下游调度。
+
+写入就地发生：每个 State Slot 在一个 Transaction 内的首次写入把旧值记入 undo log。外层调用成功结束时，若有写入则 Revision 加一并标记被写 Slot 为 dirty；Action 体内不存在中途提交。嵌套调用（Action 调用 Action 或 `fn`）加入外层 Transaction。读取 Computed 是无写入的 Transaction，不增加 Revision。
 
 失败时：
 
@@ -3766,6 +3780,8 @@ resource cache budget
 ```
 
 超限产生 Runtime Fault 并回滚当前 Transaction。预算不能通过递归 Task、热重载或 Native Callback 重置规避。
+
+计量口径：instruction budget 每执行一条指令计一单位；memory budget 计外层调用期间字符串、列表、聚合值与闭包分配的字节数；call depth 计嵌套调用帧数。每次外层调用从满额预算开始。
 
 ---
 
@@ -8260,6 +8276,9 @@ RecordPatternField
 | E6103  | Capability Denied（运行时）                             |
 | E7101  | 执行预算超限                                            |
 | E7102  | 内存预算超限                                            |
+| E7103  | 算术故障：整数溢出、除以零、移位量越界（运行时）        |
+| E7104  | 索引越界（运行时）                                      |
+| E7105  | 函数无法运行、缺少必需 Input 或内部故障（运行时）       |
 | E8101  | Shader 使用 Host-only 类型                              |
 | E8102  | Shader 使用 F64                                         |
 | E8103  | Shader Loop 无静态上限                                  |
