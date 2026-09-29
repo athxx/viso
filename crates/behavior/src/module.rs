@@ -36,6 +36,10 @@ pub enum ChunkKind {
     /// A view event handler: the payload arrives in `r0`, then the bindings of
     /// every enclosing `for`/`match` region the handler reads.
     Handler,
+    /// A view region's pure entry (an arm choice, an iterable, a key): the
+    /// bindings of every enclosing `for`/`match` region arrive first, then the
+    /// entry's subject when it takes one.
+    RegionEntry,
 }
 
 /// A runnable body.
@@ -88,8 +92,8 @@ pub struct Component {
     pub input_defaults: Box<[Option<u32>]>,
     /// The `fn`/`action`/`computed` members, by name.
     pub members: Box<[(Box<str>, u32)]>,
-    /// The view's event handler chunks, in source order; a view node names
-    /// its handlers by index into this table.
+    /// The view's handler table, in source order: its event handlers, which a
+    /// view node names by index, and its regions' entries.
     pub handlers: Box<[u32]>,
 }
 
@@ -195,12 +199,18 @@ impl Module {
             }
             for &chunk in component.handlers.iter() {
                 let handler = &module.chunks[chunk as usize];
-                if handler.kind != ChunkKind::Handler || handler.params == 0 {
+                let entry = match handler.kind {
+                    ChunkKind::Handler => handler.params > 0,
+                    ChunkKind::RegionEntry => true,
+                    _ => false,
+                };
+                if !entry {
                     return Err(VerifyError {
                         chunk,
                         pc: None,
                         message: format!(
-                            "component `{}` names a handler chunk that does not take a payload",
+                            "component `{}` names a handler-table chunk that is neither an \
+                             event handler taking a payload nor a region entry",
                             component.name
                         ),
                     });
@@ -612,5 +622,26 @@ mod tests {
         let ops = vec![Op::LoadState { dst: 0, slot: 0 }, Op::Return { src: 0 }];
         let e = verify(vec![chunk(0, 1, ops)]).unwrap_err();
         assert_eq!(e.message, "state slot 0 is out of range");
+    }
+
+    #[test]
+    fn the_handler_table_takes_payload_handlers_and_region_entries() {
+        let table = |kind, params| {
+            let mut entry = chunk(params, 1, vec![Op::Nil { dst: 0 }, Op::Return { src: 0 }]);
+            entry.kind = kind;
+            let component = Component {
+                name: "View".into(),
+                handlers: Box::new([0]),
+                ..Component::default()
+            };
+            Module::new(vec![entry], vec![component], Vec::new())
+        };
+        assert!(table(ChunkKind::Handler, 1).is_ok());
+        assert!(table(ChunkKind::RegionEntry, 0).is_ok());
+        assert!(
+            table(ChunkKind::Handler, 0).is_err(),
+            "a handler takes a payload"
+        );
+        assert!(table(ChunkKind::Computed, 0).is_err());
     }
 }

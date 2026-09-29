@@ -359,7 +359,7 @@ pub(crate) fn lower_handler(
             l.destructure(pattern, event, ty)?;
         }
         for ((pattern, ty), src) in scope.iter().zip(regions) {
-            l.destructure(pattern, src, ty)?;
+            l.bind_matched(pattern, src, ty)?;
         }
         l.block(body.syntax(), false)?;
         let src = l.unit();
@@ -374,6 +374,164 @@ pub(crate) fn lower_handler(
             symbol: def.symbol,
             module: def.module,
             params: 1 + scope.len() as u32,
+            captures: Vec::new(),
+            body,
+        },
+        def.into,
+    )
+}
+
+/// What a view region's entry function computes from the enclosing regions'
+/// scope values.
+pub(crate) enum RegionEntry<'e> {
+    /// A conditional's arm choice: the index of the first arm whose condition
+    /// holds (an `else` arm, `None`, always holds), or `-1`.
+    Conditions(&'e [Option<Expr>]),
+    /// A `match` region's scrutinee.
+    Value(&'e Expr),
+    /// A `for` region's iterable: a list, or an integer range tagged
+    /// [`viso_view::HALF_OPEN`] or [`viso_view::CLOSED`].
+    Items(&'e Expr),
+    /// A `for` item's key: the item arrives after the scope and is bound by
+    /// `pattern` (of type `element`) before `key` runs.
+    Key {
+        /// The `for` pattern.
+        pattern: &'e SyntaxNode,
+        /// The item type.
+        element: &'e Ty,
+        /// The key expression.
+        key: &'e Expr,
+    },
+    /// A `match` region's arm choice: the scrutinee (of type `ty`) arrives after
+    /// the scope; the index of the first arm whose pattern and guard pass, or `-1`.
+    Arms {
+        /// Each arm's pattern and guard.
+        arms: &'e [(SyntaxNode, Option<Expr>)],
+        /// The scrutinee type.
+        ty: &'e Ty,
+    },
+}
+
+impl RegionEntry<'_> {
+    /// Whether the entry takes a value after the scope (a `for` item, a
+    /// scrutinee).
+    pub(crate) fn takes_subject(&self) -> bool {
+        matches!(self, RegionEntry::Key { .. } | RegionEntry::Arms { .. })
+    }
+}
+
+/// Lowers a view region's entry: a pure function of the enclosing regions'
+/// values `scope` (each bound by its pattern), plus the entry's subject when it
+/// [takes one](RegionEntry::takes_subject).
+pub(crate) fn lower_region_entry(
+    b: &mut ProgramBuilder,
+    cx: &InferCx<'_>,
+    def: Def,
+    scope: &[(SyntaxNode, Ty)],
+    entry: &RegionEntry<'_>,
+    at: TextRange,
+) -> FuncId {
+    let mut l = Lowerer::new(cx, b, &def, at);
+    let result = (|| {
+        let regions: Vec<Reg> = scope.iter().map(|_| l.reg()).collect();
+        let subject = if entry.takes_subject() {
+            Some(l.reg())
+        } else {
+            None
+        };
+        for ((pattern, ty), src) in scope.iter().zip(regions) {
+            l.bind_matched(pattern, src, ty)?;
+        }
+        let chosen = |l: &mut Lowerer<'_, '_>, index: usize| {
+            let src = l.constant(Const::Int(index as i128));
+            l.emit(Inst::Return { src });
+        };
+        match entry {
+            RegionEntry::Conditions(conditions) => {
+                for (index, condition) in conditions.iter().enumerate() {
+                    match condition {
+                        Some(condition) => {
+                            let range = condition.syntax().text_range();
+                            l.at(range, |l| -> Lower<()> {
+                                let holds = l.expr(condition)?;
+                                let skip = l.jump_if(holds, false);
+                                chosen(l, index);
+                                l.patch_here(&[skip]);
+                                Ok(())
+                            })?;
+                        }
+                        None => chosen(&mut l, index),
+                    }
+                }
+                let src = l.constant(Const::Int(-1));
+                l.emit(Inst::Return { src });
+            }
+            RegionEntry::Value(value) => {
+                let src = l.expr(value)?;
+                l.emit(Inst::Return { src });
+            }
+            RegionEntry::Items(items) => {
+                let mut src = l.expr(items)?;
+                if let Ty::Range(element) | Ty::RangeInclusive(element) = l.ty(items)? {
+                    if num_of(&element).is_none_or(|num| num.is_float()) {
+                        return l.bail("only an integer range can be iterated");
+                    }
+                    if matches!(l.ty(items)?, Ty::RangeInclusive(_)) {
+                        let bounds = [0, 1].map(|index| {
+                            let dst = l.reg();
+                            l.emit(Inst::Field { dst, src, index });
+                            dst
+                        });
+                        src = l.reg();
+                        l.emit(Inst::Make {
+                            dst: src,
+                            tag: viso_view::CLOSED,
+                            fields: bounds.to_vec(),
+                        });
+                    }
+                }
+                l.emit(Inst::Return { src });
+            }
+            RegionEntry::Key {
+                pattern,
+                element,
+                key,
+            } => {
+                let item = subject.expect("a key entry takes its item");
+                l.bind_matched(pattern, item, element)?;
+                let src = l.expr(key)?;
+                l.emit(Inst::Return { src });
+            }
+            RegionEntry::Arms { arms, ty } => {
+                let src = subject.expect("an arm choice takes its scrutinee");
+                for (index, (pattern, guard)) in arms.iter().enumerate() {
+                    l.at(pattern.text_range(), |l| -> Lower<()> {
+                        let mut fails = Vec::new();
+                        l.test(pattern, src, ty, &mut fails)?;
+                        if let Some(guard) = guard {
+                            let pass = l.expr(guard)?;
+                            fails.push(l.jump_if(pass, false));
+                        }
+                        chosen(l, index);
+                        l.patch_here(&fails);
+                        Ok(())
+                    })?;
+                }
+                let src = l.constant(Const::Int(-1));
+                l.emit(Inst::Return { src });
+            }
+        }
+        Ok(())
+    })();
+    let body = result.map(|()| l.frames.pop().unwrap_or_default().body);
+    let params = scope.len() as u32 + u32::from(entry.takes_subject());
+    b.define(
+        Function {
+            name: def.name,
+            kind: def.kind,
+            symbol: def.symbol,
+            module: def.module,
+            params,
             captures: Vec::new(),
             body,
         },

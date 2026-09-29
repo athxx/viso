@@ -26,6 +26,7 @@ pub mod paint;
 pub mod reactive;
 pub mod semantics;
 pub mod state;
+pub mod structure;
 pub mod style;
 pub mod task;
 pub mod text_edit;
@@ -75,6 +76,7 @@ pub use reactive::{
 };
 pub use semantics::{Role, SemanticState, Semantics, SemanticsNode, SemanticsTree};
 pub use state::{StateId, StateStore, StateValue};
+pub use structure::{StructureCx, run_structure_hooks};
 pub use style::{BoxStyle, InteractionStyle, StyleId};
 pub use task::{Continuation, TaskId, TaskOps};
 pub use text_edit::{Buffer, EditGeometry, EditIntent, EditLayout, Motion, TextEdits};

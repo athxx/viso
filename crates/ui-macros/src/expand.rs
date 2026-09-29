@@ -10,7 +10,9 @@
 //! - `view!` expands to a builder closure that allocates the file's component's
 //!   states and mounts its view, and makes the `.vs` file a compile dependency.
 //!
-//! A component's states mount from constant initializers; a view that reads an
+//! A component's states mount from constant initializers; a state no UI cell
+//! holds (a string, a list) mounts as the revision cell its behavior tracks it
+//! through, when the view has behavior to run against it. A view that reads an
 //! `input` or `computed` is reported rather than mounted wrong.
 
 use std::collections::{BTreeSet, HashMap};
@@ -200,8 +202,10 @@ fn mount<'a>(compiled: &'a Compiled, report: &Report<'_>) -> syn::Result<Mounted
     let Some(component) = &compiled.component else {
         return Err(report.at(None, "the frontend produced no component to mount"));
     };
+    let behavior = view_behavior(compiled).map_err(|errors| report.mount_errors(errors))?;
     let mut errors = Vec::new();
     let mut idents = HashMap::new();
+    let mut tracked = BTreeSet::new();
     let mut states = Vec::new();
     let mut allocations = TokenStream::new();
     for source in &compiled.sources {
@@ -210,6 +214,16 @@ fn mount<'a>(compiled: &'a Compiled, report: &Report<'_>) -> syn::Result<Mounted
         };
         let declared = declared_at(component, source);
         let Some(value) = initial.as_ref().and_then(state_value) else {
+            if let Some(behavior) = &behavior
+                && behavior.slot(source.symbol).is_some()
+            {
+                let local = format_ident!("__viso_t{}", tracked.len());
+                allocations
+                    .extend(quote! { let #local = cx.state(::viso_ui::StateValue::Int(0)); });
+                idents.insert(source.symbol, local);
+                tracked.insert(source.symbol);
+                continue;
+            }
             errors.push(report.at(
                 declared,
                 format!(
@@ -252,9 +266,8 @@ fn mount<'a>(compiled: &'a Compiled, report: &Report<'_>) -> syn::Result<Mounted
         }
     }
     combine(errors)?;
-    let behavior = view_behavior(compiled).map_err(|errors| report.mount_errors(errors))?;
     if let Some(behavior) = &behavior {
-        allocations.extend(host_tokens(behavior, &idents));
+        allocations.extend(host_tokens(behavior, &idents, &tracked));
     }
     let root = emit_view(
         &compiled.tree,
@@ -271,16 +284,25 @@ fn mount<'a>(compiled: &'a Compiled, report: &Report<'_>) -> syn::Result<Mounted
     })
 }
 
-/// The `__viso_host` a view with handlers dispatches into: the component's
+/// The `__viso_host` a view with behavior dispatches into: the component's
 /// module, embedded as bytes and decoded once per thread, mirrored into the
-/// states the expansion allocated.
-fn host_tokens(behavior: &ViewBehavior, idents: &HashMap<SymbolId, Ident>) -> TokenStream {
+/// states the expansion allocated, and tracking the `tracked` ones through
+/// their revision cells.
+fn host_tokens(
+    behavior: &ViewBehavior,
+    idents: &HashMap<SymbolId, Ident>,
+    tracked: &BTreeSet<SymbolId>,
+) -> TokenStream {
     let bytes = Literal::byte_string(&behavior.bytes);
     let component = &behavior.component;
     let mirrors = behavior.slots.iter().filter_map(|(symbol, slot)| {
         let local = idents.get(symbol)?;
         let slot = *slot as usize;
-        Some(quote! { __viso_view.mirror(#slot, #local); })
+        Some(if tracked.contains(symbol) {
+            quote! { __viso_view.track(#slot, #local); }
+        } else {
+            quote! { __viso_view.mirror(#slot, #local); }
+        })
     });
     quote! {
         let __viso_host = ::viso_view::__embedded(#bytes, #component);

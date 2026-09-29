@@ -30,7 +30,6 @@ use std::collections::{BTreeSet, HashMap};
 use crate::ast::Expr;
 use crate::diag::Diagnostic;
 use crate::hir::{ReadEnv, collect_reads};
-use crate::ir::binding_ir::NodeKey;
 use crate::ir::ui_ir::{UiFor, UiItem, UiNode, UiTree};
 use crate::resolve::{ResolvedRef, SymbolId};
 use crate::syntax::SyntaxNode;
@@ -42,14 +41,12 @@ use crate::syntax::span::TextRange;
 /// read even when the parse recovered.
 pub const KEYLESS_STATEFUL_FOR: &str = "E3402";
 
-/// One resolved keyed repetition: the template node the `for` mounts under, the
-/// reactive sources its key expression reads, and whether it carried a key at
-/// all.
+/// One resolved keyed repetition: the region, the reactive sources its key
+/// expression reads, and whether it carried a key at all.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct KeyedFor {
-    /// The template node this `for` region occupies (pre-order, shared with the
-    /// Binding IR's [`NodeKey`] numbering).
-    pub node: NodeKey,
+    /// The region declaration's span, its [`UiFor::origin`](super::ui_ir::UiFor).
+    pub origin: TextRange,
     /// The reactive sources the key expression reads, deterministically ordered.
     /// Empty when the key is a constant / loop-local, or when there is no key.
     pub key_reads: BTreeSet<SymbolId>,
@@ -75,8 +72,7 @@ pub struct KeyIr {
 /// parsed root (to recover key expressions by span), the resolver's references,
 /// and a [`ReadEnv`] classifying reactive sources.
 ///
-/// The walk shares the Binding IR's pre-order [`NodeKey`] numbering so a `KeyedFor`
-/// and a `BindingEdge` refer to the same template node. Each keyed `for` records
+/// Each keyed `for` records
 /// its key's reactive reads; each keyless `for` with a stateful body produces one
 /// [`KEYLESS_STATEFUL_FOR`] warning.
 pub fn analyze_keys(
@@ -90,7 +86,6 @@ pub fn analyze_keys(
         refs,
         env,
         ir: KeyIr::default(),
-        next_key: 0,
     };
     for item in &tree.items {
         ctx.walk_item(item);
@@ -104,20 +99,11 @@ struct KeyCtx<'a> {
     refs: &'a [ResolvedRef],
     env: &'a dyn ReadEnv,
     ir: KeyIr,
-    next_key: u32,
 }
 
 impl KeyCtx<'_> {
-    /// Assigns the next pre-order [`NodeKey`], matching the Binding IR numbering.
-    fn take_key(&mut self) -> NodeKey {
-        let key = NodeKey(self.next_key);
-        self.next_key += 1;
-        key
-    }
-
-    /// Walks one item in pre-order. A node consumes one key then descends; a
-    /// control-flow region descends into its branches (its own body items each
-    /// take keys as nodes do), and a `for` region records a [`KeyedFor`].
+    /// Walks one item in pre-order: a node and an `if`/`match` region descend,
+    /// and a `for` region records a [`KeyedFor`].
     fn walk_item(&mut self, item: &UiItem) {
         match item {
             UiItem::Node(node) => self.walk_node(node),
@@ -139,9 +125,8 @@ impl KeyCtx<'_> {
         }
     }
 
-    /// Walks a node: consumes its key, then descends into its children.
+    /// Walks a node's children.
     fn walk_node(&mut self, node: &UiNode) {
-        let _ = self.take_key();
         for child in &node.children {
             self.walk_item(child);
         }
@@ -149,9 +134,8 @@ impl KeyCtx<'_> {
 
     /// Records a `for` region: recovers its key reads (if keyed), decides whether
     /// its body is stateful, emits the strict finding for a keyless stateful body,
-    /// then descends into the body so its nodes keep the shared numbering.
+    /// then descends into the body for nested regions.
     fn walk_for(&mut self, vf: &UiFor) {
-        let node = self.take_key();
         let keyed = vf.key.is_some();
         let key_reads = match vf.key.and_then(|span| self.exprs.get(&span)) {
             Some(expr) => collect_reads(self.refs, self.env, expr),
@@ -167,7 +151,7 @@ impl KeyCtx<'_> {
             ));
         }
         self.ir.fors.push(KeyedFor {
-            node,
+            origin: vf.origin,
             key_reads,
             keyed,
             stateful,

@@ -8,10 +8,13 @@ use std::rc::Rc;
 use viso_ende::{Decode, DecodeError, Decoder, Encode, Encoder, ProtocolTag};
 use viso_ui::aot::{AotPackage, instantiate_indexed};
 use viso_ui::state::StateKey;
-use viso_ui::{BindingTable, NodeId, NodeStore, StateStore, StateValue, VirtualLists};
+use viso_ui::{
+    BindingTable, EffectStore, NodeId, NodeStore, StateStore, StateValue, StructureCx, VirtualLists,
+};
 
 use crate::attach::{Route, attach_node};
 use crate::host::{HostError, ViewHost};
+use crate::regions::{ViewRegions, mount_regions};
 use crate::route::EventRoute;
 
 /// A compiled view with behavior, as a release build embeds it.
@@ -28,6 +31,9 @@ pub struct ViewPackage {
     pub states: Vec<ViewState>,
     /// The node handlers, grouped by node in ascending node order.
     pub handlers: Vec<ViewHandler>,
+    /// The control-flow regions, mounted under the nodes of
+    /// [`ui`](Self::ui).
+    pub regions: ViewRegions,
 }
 
 /// A component state held in a UI cell.
@@ -38,6 +44,9 @@ pub struct ViewState {
     /// The component's state slot the cell mirrors, `None` for a cell no
     /// handler writes.
     pub slot: Option<u32>,
+    /// Whether the cell holds a revision of a state no cell can hold (a
+    /// string, a list) rather than its value; see [`ViewHost::track`].
+    pub tracked: bool,
     /// The cell's initial value.
     pub initial: StateValue,
 }
@@ -95,7 +104,8 @@ pub fn load_view(
 }
 
 /// Instantiates a decoded view into the runtime: its state cells first, with
-/// their initial values, then the tree, then the host and its handlers.
+/// their initial values, then the tree, then the host, its handlers and its
+/// control-flow regions.
 pub fn instantiate_view(
     package: &ViewPackage,
     store: &mut NodeStore,
@@ -110,6 +120,7 @@ pub fn instantiate_view(
             .map_err(ViewLoadError::Host)?;
         Some(host)
     };
+    let mut cells = Vec::with_capacity(package.states.len());
     for state in &package.states {
         let id = match states.id_for_key(state.key) {
             Some(id) => id,
@@ -119,8 +130,13 @@ pub fn instantiate_view(
                 id
             }
         };
+        cells.push((state.key, id));
         if let (Some(host), Some(slot)) = (&mut host, state.slot) {
-            host.mirror(slot as usize, id);
+            if state.tracked {
+                host.track(slot as usize, id);
+            } else {
+                host.mirror(slot as usize, id);
+            }
         }
     }
     let mut node_ids = Vec::new();
@@ -136,6 +152,18 @@ pub fn instantiate_view(
         routes.clear();
         routes.extend(group.iter().map(|h| (h.route, h.handler)));
         attach_node(store, &host, id, &routes, &[]);
+    }
+    if !package.regions.is_empty() {
+        // A first mount frees nothing, so no effect is ever cancelled here.
+        let mut effects = EffectStore::default();
+        let mut cx = StructureCx {
+            store,
+            states,
+            bindings,
+            effects: &mut effects,
+        };
+        let regions = Rc::new(package.regions.clone());
+        mount_regions(&mut cx, regions, &host, &node_ids, &cells);
     }
     Ok(LoadedView {
         root,
@@ -166,6 +194,7 @@ impl Encode for ViewPackage {
             enc.write_u64(state.key.hi);
             enc.write_u64(state.key.lo);
             enc.write_varint(state.slot.map_or(0, |slot| u64::from(slot) + 1));
+            enc.write_bool(state.tracked);
             match state.initial {
                 StateValue::Int(n) => {
                     enc.write_u8(0);
@@ -193,6 +222,7 @@ impl Encode for ViewPackage {
             enc.write_u8(handler.route as u8);
             enc.write_varint(u64::from(handler.handler));
         }
+        self.regions.encode(enc);
     }
 }
 
@@ -211,6 +241,7 @@ impl Decode for ViewPackage {
             let hi = dec.read_u64()?;
             let lo = dec.read_u64()?;
             let slot = read_u32(dec)?.checked_sub(1);
+            let tracked = dec.read_bool()?;
             let offset = dec.position();
             let initial = match dec.read_u8()? {
                 0 => StateValue::Int(dec.read_i32()?),
@@ -227,6 +258,7 @@ impl Decode for ViewPackage {
             states.push(ViewState {
                 key: StateKey::from_parts(hi, lo),
                 slot,
+                tracked,
                 initial,
             });
         }
@@ -244,12 +276,14 @@ impl Decode for ViewPackage {
                 handler,
             });
         }
+        let regions = ViewRegions::decode(dec)?;
         Ok(ViewPackage {
             ui,
             behavior,
             component,
             states,
             handlers,
+            regions,
         })
     }
 }
@@ -267,6 +301,7 @@ mod tests {
             states: vec![ViewState {
                 key: StateKey::from_parts(7, 9),
                 slot: Some(0),
+                tracked: false,
                 initial: StateValue::Int(3),
             }],
             handlers: vec![ViewHandler {
@@ -274,11 +309,12 @@ mod tests {
                 route: EventRoute::Click,
                 handler: 0,
             }],
+            regions: ViewRegions::default(),
         };
         let bytes = package.encode_to_vec();
         assert_eq!(ViewPackage::decode_from_slice(&bytes), Ok(package));
         let mut bad = bytes.clone();
-        let route = bytes.len() - 2;
+        let route = bytes.len() - 2 - ViewRegions::default().encode_to_vec().len();
         bad[route] = 99;
         assert!(ViewPackage::decode_from_slice(&bad).is_err());
     }

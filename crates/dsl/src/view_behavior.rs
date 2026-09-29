@@ -1,15 +1,16 @@
 //! A compiled view's behavior as a runtime mounts it: the component's bytecode,
-//! the UI cell each of its states is mirrored into, and each view node's
-//! handler routes.
+//! the UI cell each of its states is held in, each view node's handler routes
+//! and the view's control-flow regions.
 //!
 //! The macros, the hot reload commit and the release package all mount a view's
-//! handlers from this one table, so a handler runs the same under every target.
+//! handlers and regions from this one table, so they run the same under every
+//! target.
 
 use std::rc::Rc;
 
 use viso_behavior::Module;
 use viso_ui::StateValue;
-use viso_view::{EventRoute, Route, ViewHost};
+use viso_view::{EventRoute, Route, ViewHost, ViewRegions};
 
 use crate::frontend::{Compiled, SourceKind};
 use crate::hir::ConstValue;
@@ -17,8 +18,9 @@ use crate::ir::binding_ir::NodeKey;
 use crate::ir::ui_ir::{UiItem, UiNode};
 use crate::resolve::SymbolId;
 use crate::syntax::TextRange;
+use crate::view_regions::{has_regions, structure_errors, view_regions};
 
-/// The diagnostic code of a handler that does not mount.
+/// The diagnostic code of a handler or a region that does not mount.
 pub const UNMOUNTED_HANDLER: &str = "E3711";
 
 /// Why a view's behavior does not mount.
@@ -40,7 +42,7 @@ impl MountError {
         )
     }
 
-    fn new(at: Option<TextRange>, message: impl Into<String>) -> Self {
+    pub(crate) fn new(at: Option<TextRange>, message: impl Into<String>) -> Self {
         Self {
             at,
             message: message.into(),
@@ -57,8 +59,10 @@ pub struct ViewBehavior {
     pub bytes: Vec<u8>,
     /// The component the view mounts.
     pub component: String,
-    /// Each mirrored state source and its slot in the component.
+    /// Each state source and its slot in the component.
     pub slots: Vec<(SymbolId, u32)>,
+    /// The control-flow regions, empty for a view without any.
+    pub regions: ViewRegions,
     /// Each node's routes, by ascending node key; a node without handlers is
     /// absent.
     routes: Vec<(NodeKey, Vec<Route>)>,
@@ -79,6 +83,13 @@ impl ViewBehavior {
             .map(|(key, routes)| (*key, routes.as_slice()))
     }
 
+    /// The wire form of [`regions`](Self::regions), which a macro expansion
+    /// embeds.
+    pub fn region_bytes(&self) -> Vec<u8> {
+        use viso_ende::Encode;
+        self.regions.encode_to_vec()
+    }
+
     /// The slot of state source `symbol`.
     pub fn slot(&self, symbol: SymbolId) -> Option<u32> {
         self.slots
@@ -88,26 +99,32 @@ impl ViewBehavior {
     }
 }
 
-/// The behavior of `compiled`'s view: `None` when no node declares a handler,
-/// so a view without behavior mounts no VM.
+/// The behavior of `compiled`'s view: `None` when no node declares a handler
+/// and the view has no region, so a view without behavior mounts no VM.
 ///
 /// # Errors
 ///
-/// Every handler that does not mount: one on a fragment (which has no component
-/// to run against), one for an event the runtime does not deliver, and one whose
-/// body the behavior lowering does not represent.
+/// Every handler and region that does not mount: a region at the root or
+/// content under a `VirtualList`, a handler or a region in a fragment (which
+/// has no component to run against), a handler for an event the runtime does
+/// not deliver, and a handler or region entry whose body the behavior lowering
+/// does not represent.
 pub fn view_behavior(compiled: &Compiled) -> Result<Option<ViewBehavior>, Vec<MountError>> {
-    let mut errors = Vec::new();
+    let mut errors = structure_errors(&compiled.tree);
+    if !errors.is_empty() {
+        return Err(errors);
+    }
     let mut sites = Vec::new();
     let mut key = 0;
     for item in &compiled.tree.items {
         collect(item, &mut key, &mut sites);
     }
-    if sites.is_empty() {
+    let regions = has_regions(&compiled.tree);
+    if sites.is_empty() && !regions {
         return Ok(None);
     }
     let Some(component) = &compiled.component else {
-        return Err(sites
+        let mut errors: Vec<MountError> = sites
             .iter()
             .map(|(_, _, at)| {
                 MountError::new(
@@ -116,7 +133,20 @@ pub fn view_behavior(compiled: &Compiled) -> Result<Option<ViewBehavior>, Vec<Mo
                      against; declare it with `component!`",
                 )
             })
-            .collect());
+            .collect();
+        if regions {
+            errors.push(MountError::new(
+                compiled.tree.items.first().map(|item| match item {
+                    UiItem::Node(node) => node.origin,
+                    UiItem::If(region) => region.origin,
+                    UiItem::For(region) => region.origin,
+                    UiItem::Match(region) => region.origin,
+                }),
+                "a `ui!` fragment has no component state for a control-flow region \
+                 to run against; declare it with `component!`",
+            ));
+        }
+        return Err(errors);
     };
     let name = &component.schema.name;
     let Some(layout) = compiled.behavior.component(name) else {
@@ -156,6 +186,13 @@ pub fn view_behavior(compiled: &Compiled) -> Result<Option<ViewBehavior>, Vec<Mo
             _ => routes.push((node, vec![(route, index)])),
         }
     }
+    let regions = match view_regions(compiled, layout, &routes) {
+        Ok(regions) => regions,
+        Err(region_errors) => {
+            errors.extend(region_errors);
+            ViewRegions::default()
+        }
+    };
     let module = match compiled.behavior.bytecode() {
         Ok(module) => module,
         Err(error) => {
@@ -192,6 +229,7 @@ pub fn view_behavior(compiled: &Compiled) -> Result<Option<ViewBehavior>, Vec<Mo
         bytes,
         component: name.clone(),
         slots,
+        regions,
         routes,
     }))
 }

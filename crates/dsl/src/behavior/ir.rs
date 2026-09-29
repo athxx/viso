@@ -320,6 +320,8 @@ pub enum FunctionKind {
     FieldDefault,
     /// A view event handler.
     Handler,
+    /// A view region's entry: an arm choice, an iterable or a key.
+    RegionEntry,
 }
 
 impl FunctionKind {
@@ -335,6 +337,7 @@ impl FunctionKind {
             FunctionKind::Const => "const",
             FunctionKind::FieldDefault => "field-default",
             FunctionKind::Handler => "handler",
+            FunctionKind::RegionEntry => "region-entry",
         }
     }
 }

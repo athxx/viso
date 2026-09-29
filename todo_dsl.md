@@ -226,9 +226,9 @@ Goal: every Core view construct reaches a live tree through all three lowering t
 
 ### D2.2 — Control-flow regions
 
-- [ ] `if`/`match` regions: mount, switch arms, `preserve` (`E3301`).
-- [ ] Keyed `for`: reorder moves retained nodes (`ir/keys.rs` already mints keys).
-- [ ] All three targets accept control flow; today they reject it.
+- [x] `if`/`match` regions: mount, switch arms, `preserve` (`E3301`).
+- [x] Keyed `for`: reorder moves retained nodes (`ir/keys.rs` already mints keys).
+- [x] All three targets accept control flow; today they reject it.
 
 ### D2.3 — Components and slots in views
 

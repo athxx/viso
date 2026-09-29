@@ -25,15 +25,18 @@
 //!    container's offset back to the value the migration plan preserved.
 //! 5. **Targeted dirty + flush** — mark exactly the rebound nodes dirty and flush
 //!    the migrated state set, so only the changed nodes recompute.
-//! 6. **Handlers** — create the view's host, or reload it keeping each state by
-//!    name, mirror its states into the migrated cells, and reinstall every node's
-//!    handler routes; a view with no handlers drops its host and every handler.
+//! 6. **Handlers and regions** — create the view's host, or reload it keeping
+//!    each state by name, link its states to the migrated cells, reinstall every
+//!    static node's handler routes, and mount the view's control-flow regions
+//!    under the static nodes; a view with no behavior drops its host and every
+//!    handler.
 //!
-//! This slice commits the **static-node subset** the compile-time emitter also
-//! targets: a single-root template of flex / grid / scroll / leaf nodes. A template
-//! carrying a control-flow region (`if` / `for` / `match`) is rejected by `plan`'s
-//! caller path before commit — the same subset boundary the `ui!` emitter enforces —
-//! so the commit never has to interpret one.
+//! The commit authors the *static* nodes of a template (those outside every
+//! region) the way the `ui!` emitter does; the regions' content is mounted by
+//! the view runtime from the same templates the emitter and the release package
+//! embed. A reload into or out of a template with regions takes the full
+//! rebuild path: region-mounted nodes have no template slot the fast path could
+//! reuse them by.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -45,15 +48,16 @@ use crate::ir::binding_ir::NodeKey;
 use crate::ir::dirty_map::DirtyClass as IrDirtyClass;
 use crate::ir::ui_ir::{AxisIr, LengthIr, NodeKind, StyleIr, UiItem, UiNode, UiTree};
 use crate::resolve::SymbolId;
+use crate::view_regions::{StaticNodes, has_regions};
 
-use viso_view::{ViewHost, attach_node};
+use viso_view::{ViewHost, attach_node, mount_regions};
 
 use viso_ui::state::{StateKey, StateMigration};
 use viso_ui::virtual_list::VirtualLists;
 use viso_ui::{
     Axis, Binding, BindingTable, BuildCx, DirtyClass, EffectStore, FlexStyle, Handle, LeafStyle,
     Length, NodeId, NodeStore, ScrollStyle, SemanticProjector, Size, StateId, StateStore,
-    StateValue, TextEdits,
+    StateValue, StructureCx, TextEdits,
 };
 
 /// What the commit did to the live runtime, for introspection and tests
@@ -170,19 +174,25 @@ pub fn commit(
     let changed: Vec<StateId> = symbol_to_state.iter().map(|&(_, id)| id).collect();
     rt.store.flush_state_transactions(&changed, rt.bindings);
 
-    // Step 6 — handlers, against the nodes and cells the reload now names.
-    mount_handlers(rt, plan, &key_to_node, &symbol_to_state, &mut report);
+    // Step 6 — handlers and regions, against the nodes and cells the reload now
+    // names.
+    mount_behavior(rt, plan, &key_to_node, &symbol_to_state, &mut report);
 
     report
 }
 
-/// Creates or reloads the view's host, mirrors its states into the migrated cells
-/// and reinstalls every live node's handler routes, replacing the prior ones.
+/// Creates or reloads the view's host, links its states to the migrated cells,
+/// reinstalls every static node's handler routes, replacing the prior ones, and
+/// mounts the view's regions under the static nodes.
+///
+/// A state a cell holds is mirrored; one no cell holds (a string, a list) is
+/// tracked through its integer revision cell, which is what a region reading it
+/// depends on.
 ///
 /// A recompiled module that does not mount keeps no host and no handler, and is
 /// counted in [`HotReloadReport::handlers_lost`]: the candidate's behavior was
 /// verified and linked while planning, so this is a defensive path.
-fn mount_handlers(
+fn mount_behavior(
     rt: &mut LiveRuntime<'_>,
     plan: &CandidatePlan,
     key_to_node: &[(NodeKey, NodeId)],
@@ -205,8 +215,13 @@ fn mount_handlers(
         {
             let mut mirrored = host.borrow_mut();
             for &(symbol, slot) in &view.slots {
-                if let Some(id) = lookup_state(symbol_to_state, symbol) {
+                let Some(id) = lookup_state(symbol_to_state, symbol) else {
+                    continue;
+                };
+                if plan.initial(symbol).is_some() {
                     mirrored.mirror(slot as usize, id);
+                } else {
+                    mirrored.track(slot as usize, id);
                 }
             }
         }
@@ -217,6 +232,28 @@ fn mount_handlers(
             Some((view, host)) => attach_node(rt.store, host, node, view.routes(key), &[]),
             None => rt.store.clear_event_handlers(node),
         }
+    }
+    if let Some((view, host)) = &host
+        && !view.regions.is_empty()
+    {
+        let statics = StaticNodes::of(&plan.tree);
+        let mut nodes = vec![None; statics.len()];
+        for &(key, node) in key_to_node {
+            if let Some(ordinal) = statics.ordinal(key) {
+                nodes[ordinal as usize] = Some(node);
+            }
+        }
+        let cells: Vec<(StateKey, StateId)> = symbol_to_state
+            .iter()
+            .map(|&(symbol, id)| (StateKey::from_parts(symbol.hi, symbol.lo), id))
+            .collect();
+        let mut cx = StructureCx {
+            store: rt.store,
+            states: rt.states,
+            bindings: rt.bindings,
+            effects: rt.effects,
+        };
+        mount_regions(&mut cx, Rc::new(view.regions.clone()), host, &nodes, &cells);
     }
     *rt.view = host.map(|(_, host)| host);
 }
@@ -238,7 +275,8 @@ fn apply_structural(
 ) -> (Vec<(NodeKey, NodeId)>, bool) {
     let mut map: Vec<(NodeKey, NodeId)> = Vec::new();
 
-    if patch.is_structure_preserving() {
+    let regions = has_regions(tree) || rt.store.structure_hook_count() > 0;
+    if patch.is_structure_preserving() && !regions {
         // Fast path: reuse every live node in place. Map each template NodeKey to
         // the live node at the same pre-order slot by walking the retained tree.
         if let Some(root) = rt.root {
@@ -263,8 +301,8 @@ fn apply_structural(
 
 /// Pre-order walk of the live retained tree assigning each node the same
 /// [`NodeKey`] the emitter and the diff assign it: a node takes the next key, then
-/// its children are numbered in order. Mirrors `diff::flatten` for the static-node
-/// subset (no control-flow regions reach the commit).
+/// its children are numbered in order. Mirrors `diff::flatten` for a tree without
+/// control-flow regions, the only one the fast path walks.
 fn collect_live_preorder(
     store: &NodeStore,
     node: NodeId,
@@ -281,13 +319,14 @@ fn collect_live_preorder(
     }
 }
 
-/// Build the candidate template into the (cleared) live store through a reactive
-/// [`BuildCx`], recording each node's template [`NodeKey`] as it is authored so the
-/// map stays in the shared pre-order. Returns the new root, if any.
+/// Build the candidate template's static nodes into the (cleared) live store
+/// through a reactive [`BuildCx`], recording each node's template [`NodeKey`] as
+/// it is authored. Returns the new root, if any.
 ///
-/// This is the runtime twin of the compile-time emitter (`ui-macros`): it walks the
-/// same static-node subset and issues the same `flex` / `grid` / `scroll` / `leaf`
-/// builder calls in the same order, so the runtime `NodeKey` numbering matches the
+/// This is the runtime twin of the compile-time emitter (`ui-macros`): it issues
+/// the same `flex` / `grid` / `scroll` / `leaf` builder calls in the same order,
+/// and numbers the nodes it does not author (a region's content, the children of
+/// a node that authors none) without building them, so each key matches the
 /// binding edges' numbering exactly.
 fn build_tree(
     rt: &mut LiveRuntime<'_>,
@@ -318,8 +357,8 @@ fn build_item(
     map: &mut Vec<(NodeKey, NodeId)>,
 ) {
     let UiItem::Node(node) = item else {
-        // Control-flow regions are out of this slice's scope and are rejected
-        // before commit; nothing to author here.
+        // A region's content is mounted by the view runtime after the build.
+        skip_item(item, next);
         return;
     };
     let key = NodeKey(*next);
@@ -351,10 +390,44 @@ fn build_node(
                 build_item(cx, child, next, map);
             }
         }),
-        // A VirtualList needs a `for` body, which is a control-flow region rejected
-        // before commit; treat it as a leaf here so the static-node subset stays
-        // total without an unreachable panic.
-        NodeKind::VirtualList | NodeKind::Leaf => cx.leaf(leaf_style(&node.style)),
+        // A VirtualList mounts its own items, and a view gives it none.
+        NodeKind::VirtualList | NodeKind::Leaf => {
+            for child in &node.children {
+                skip_item(child, next);
+            }
+            cx.leaf(leaf_style(&node.style))
+        }
+    }
+}
+
+/// Advances `next` past every node under `item`, authoring none of them.
+fn skip_item(item: &UiItem, next: &mut u32) {
+    match item {
+        UiItem::Node(node) => {
+            *next += 1;
+            for child in &node.children {
+                skip_item(child, next);
+            }
+        }
+        UiItem::If(region) => {
+            for arm in &region.arms {
+                for item in &arm.items {
+                    skip_item(item, next);
+                }
+            }
+        }
+        UiItem::For(region) => {
+            for item in &region.body {
+                skip_item(item, next);
+            }
+        }
+        UiItem::Match(region) => {
+            for arm in &region.arms {
+                for item in &arm.items {
+                    skip_item(item, next);
+                }
+            }
+        }
     }
 }
 

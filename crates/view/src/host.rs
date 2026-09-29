@@ -5,7 +5,9 @@ use std::fmt;
 use std::rc::Rc;
 
 use viso_behavior::native::{Natives, SchemaConflict};
-use viso_behavior::{Budget, Event, Fault, FaultKind, Instance, LoadError, Module, Value, Vm};
+use viso_behavior::{
+    Budget, ChunkKind, Event, Fault, FaultKind, Instance, LoadError, Module, Value, Vm,
+};
 use viso_ui::{EventCx, StateId, StateStore, StateValue};
 
 /// Where a view's state cells are read and written: the [`StateStore`] outside a
@@ -62,13 +64,25 @@ impl fmt::Display for HostError {
 
 impl std::error::Error for HostError {}
 
+/// How a state slot reaches its UI cell.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Link {
+    /// The cell holds the state's value.
+    Mirror(StateId),
+    /// The cell holds a revision of a state only the instance holds.
+    Track(StateId),
+}
+
 /// One mounted component's behavior: its instance on the VM, the UI state cell
 /// each of its states is mirrored into, and its view's handler table.
 ///
 /// The UI state store is the authoritative copy of every mirrored state. Before
 /// a handler runs, the host copies each mirrored cell into the instance; after
 /// it commits, the host writes back exactly the slots the handler wrote. A state
-/// the store cannot hold (a string, a list) lives only in the instance.
+/// the store cannot hold (a string, a list) lives only in the instance and is
+/// *tracked* instead: its UI cell holds a revision the host raises after each
+/// committed write, so the bindings and regions that read it still see the
+/// change.
 ///
 /// A handler fault rolls its transaction back, is kept as
 /// [`last_fault`](Self::last_fault), and never unwinds into the event router.
@@ -80,8 +94,8 @@ pub struct ViewHost {
     broken: Option<Fault>,
     /// The handler chunks, by handler index.
     handlers: Box<[u32]>,
-    /// The mirrored UI cell of each state slot.
-    mirror: Vec<Option<StateId>>,
+    /// The UI cell linked to each state slot.
+    mirror: Vec<Option<Link>>,
     /// Reused call arguments: the payload, then the region bindings.
     args: Vec<Value>,
     /// Reused list of slots a dispatch wrote.
@@ -148,13 +162,75 @@ impl ViewHost {
     /// Mirrors state slot `slot` into UI cell `id`. Returns `false`, mirroring
     /// nothing, for a slot out of range.
     pub fn mirror(&mut self, slot: usize, id: StateId) -> bool {
+        self.link(slot, Link::Mirror(id))
+    }
+
+    /// Tracks state slot `slot`, a value no UI cell holds, through the integer
+    /// revision cell `id`: the host raises it after every committed write of the
+    /// slot. Returns `false`, tracking nothing, for a slot out of range.
+    pub fn track(&mut self, slot: usize, id: StateId) -> bool {
+        self.link(slot, Link::Track(id))
+    }
+
+    fn link(&mut self, slot: usize, link: Link) -> bool {
         match self.mirror.get_mut(slot) {
             Some(cell) => {
-                *cell = Some(id);
+                *cell = Some(link);
                 true
             }
             None => false,
         }
+    }
+
+    /// Copies each mirrored cell into the instance.
+    fn sync(&mut self, cells: &dyn StateCells) {
+        for (slot, link) in self.mirror.iter().enumerate() {
+            let Some(Link::Mirror(id)) = *link else {
+                continue;
+            };
+            if let Some(value) = cells.get(id).and_then(to_value) {
+                self.instance.set_state(slot, value);
+            }
+        }
+    }
+
+    /// The chunk of handler-table entry `entry`, which must be of `kind`, or
+    /// the fault a call of it reports.
+    fn chunk(&self, entry: u32, kind: ChunkKind) -> Result<u32, Fault> {
+        if let Some(fault) = &self.broken {
+            return Err(fault.clone());
+        }
+        self.handlers
+            .get(entry as usize)
+            .copied()
+            .filter(|&chunk| {
+                self.module()
+                    .chunks()
+                    .get(chunk as usize)
+                    .is_some_and(|c| c.kind == kind)
+            })
+            .ok_or_else(|| Fault {
+                kind: FaultKind::Internal,
+                at: None,
+                message: format!("the view has no {kind:?} entry {entry}"),
+            })
+    }
+
+    /// Evaluates the pure entry `entry` of the handler table (a region's
+    /// selector, iterable or key) with `args` against the current states, and
+    /// returns its value. Nothing it does is kept: it writes no state and its
+    /// events are dropped.
+    pub fn evaluate(
+        &mut self,
+        entry: u32,
+        args: &[Value],
+        cells: &dyn StateCells,
+    ) -> Result<Value, Fault> {
+        let chunk = self.chunk(entry, ChunkKind::RegionEntry)?;
+        self.sync(cells);
+        let result = self.vm.call(&mut self.instance, chunk, args);
+        self.instance.clear_dirty();
+        result.map(|outcome| outcome.value)
     }
 
     /// The number of handlers the view declares.
@@ -175,23 +251,14 @@ impl ViewHost {
         scope: &[Value],
         cells: &mut dyn StateCells,
     ) -> bool {
-        if let Some(fault) = &self.broken {
-            self.fault = Some(fault.clone());
-            return false;
-        }
-        let Some(&chunk) = self.handlers.get(handler as usize) else {
-            self.fault = Some(Fault {
-                kind: FaultKind::Internal,
-                at: None,
-                message: format!("the view has no handler {handler}"),
-            });
-            return false;
-        };
-        for (slot, id) in self.mirror.iter().enumerate() {
-            if let Some(value) = id.and_then(|id| cells.get(id)).and_then(to_value) {
-                self.instance.set_state(slot, value);
+        let chunk = match self.chunk(handler, ChunkKind::Handler) {
+            Ok(chunk) => chunk,
+            Err(fault) => {
+                self.fault = Some(fault);
+                return false;
             }
-        }
+        };
+        self.sync(cells);
         self.args.clear();
         self.args.push(payload);
         self.args.extend_from_slice(scope);
@@ -204,14 +271,21 @@ impl ViewHost {
                 self.written.extend(self.instance.dirty());
                 self.instance.clear_dirty();
                 for &slot in &self.written {
-                    let Some(id) = self.mirror[slot] else {
-                        continue;
-                    };
-                    let Some(witness) = cells.get(id) else {
-                        continue;
-                    };
-                    if let Some(value) = to_state(&self.instance.states()[slot], witness) {
-                        cells.set(id, value);
+                    match self.mirror[slot] {
+                        Some(Link::Mirror(id)) => {
+                            let Some(witness) = cells.get(id) else {
+                                continue;
+                            };
+                            if let Some(value) = to_state(&self.instance.states()[slot], witness) {
+                                cells.set(id, value);
+                            }
+                        }
+                        Some(Link::Track(id)) => {
+                            if let Some(StateValue::Int(revision)) = cells.get(id) {
+                                cells.set(id, StateValue::Int(revision.wrapping_add(1)));
+                            }
+                        }
+                        None => {}
                     }
                 }
                 true
@@ -221,6 +295,12 @@ impl ViewHost {
                 false
             }
         }
+    }
+
+    /// Keeps `fault`, raised outside a dispatch (by a region's entry, or a value
+    /// a region cannot mount), as [`last_fault`](Self::last_fault).
+    pub fn record_fault(&mut self, fault: Fault) {
+        self.fault = Some(fault);
     }
 
     /// The most recent dispatch fault, if any.

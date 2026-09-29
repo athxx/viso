@@ -158,6 +158,47 @@ impl NodeArena {
         true
     }
 
+    /// Link the orphan `child` under `parent` immediately before its child
+    /// `before`, or last when `before` is `None`. A no-op returning `false` when
+    /// a node is stale, `child` still has a parent, or `before` is not a child
+    /// of `parent`.
+    pub fn insert_before(&mut self, parent: NodeId, child: NodeId, before: Option<NodeId>) -> bool {
+        if !self.is_live(parent) || self.links(child).is_none_or(|l| l.parent.is_some()) {
+            return false;
+        }
+        let Some(before) = before else {
+            return self.append_child(parent, child);
+        };
+        let Some(prev) = self
+            .links(before)
+            .filter(|l| l.parent == Some(parent))
+            .map(|l| l.prev_sibling)
+        else {
+            return false;
+        };
+        match prev {
+            Some(prev) => {
+                if let Some(links) = self.links_mut(prev) {
+                    links.next_sibling = Some(child);
+                }
+            }
+            None => {
+                if let Some(links) = self.links_mut(parent) {
+                    links.first_child = Some(child);
+                }
+            }
+        }
+        if let Some(links) = self.links_mut(before) {
+            links.prev_sibling = Some(child);
+        }
+        if let Some(links) = self.links_mut(child) {
+            links.parent = Some(parent);
+            links.prev_sibling = prev;
+            links.next_sibling = Some(before);
+        }
+        true
+    }
+
     /// Unlink `child` from its parent and siblings, leaving it a live orphan
     /// (parent/prev/next cleared, but the slot stays occupied and its generation
     /// is untouched — the id remains valid). This is the detach half of node
@@ -232,6 +273,29 @@ mod tests {
         assert!(!arena.is_live(a), "stale handle must be detectable");
         // Double free is rejected.
         assert!(!arena.free(a));
+    }
+
+    #[test]
+    fn insert_before_links_at_the_anchor() {
+        let mut arena = NodeArena::new();
+        let parent = arena.alloc();
+        let a = arena.alloc();
+        let b = arena.alloc();
+        let c = arena.alloc();
+        arena.append_child(parent, b);
+        assert!(arena.insert_before(parent, a, Some(b)));
+        assert!(arena.insert_before(parent, c, None));
+        assert!(
+            !arena.insert_before(parent, c, Some(a)),
+            "c already has a parent"
+        );
+        let order: Vec<_> = std::iter::successors(arena.links(parent).unwrap().first_child, |n| {
+            arena.links(*n).unwrap().next_sibling
+        })
+        .collect();
+        assert_eq!(order, [a, b, c]);
+        assert_eq!(arena.links(b).unwrap().prev_sibling, Some(a));
+        assert_eq!(arena.links(parent).unwrap().last_child, Some(c));
     }
 
     #[test]

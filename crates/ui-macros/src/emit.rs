@@ -15,15 +15,15 @@
 //!
 //! The walk replicates the Binding IR's pre-order [`NodeKey`] numbering exactly, so
 //! the `Handle` captured for each builder call aligns with the `NodeKey` each edge
-//! targets. Control-flow regions (`if`/`for`/`match`) are recorded in the IR but
-//! their runtime reconciliation is not mounted; rather than mount them wrong
-//! (which would desync the NodeKey numbering and misroute every later binding),
-//! the emitter reports an error, preserving the "no silent wrong lowering"
-//! invariant.
+//! targets. The emitter authors only the *static* nodes, those outside every
+//! control-flow region (`if`/`for`/`match`): it numbers a region's content
+//! without building it, records each static node's id by its static pre-order
+//! index, and after the build hands those ids to the view runtime, which mounts
+//! the regions from the templates the expansion embeds.
 
 use std::collections::HashMap;
 
-use proc_macro2::{Span, TokenStream};
+use proc_macro2::{Literal, Span, TokenStream};
 use quote::quote;
 use syn::Ident;
 
@@ -33,22 +33,18 @@ use viso_dsl::ir::ui_ir::{AxisIr, LengthIr, NodeKind, StyleIr, UiItem, UiNode, U
 use viso_dsl::resolve::SymbolId;
 use viso_dsl::view_behavior::ViewBehavior;
 
-/// A control-flow region encountered by the emitter, named for the diagnostic.
-struct ControlFlow {
-    kind: &'static str,
-}
-
 /// Lowers a view's [`UiTree`] + [`BindingIr`] to the builder expression.
 ///
 /// `sources` maps each reactive-source [`SymbolId`] to the Rust identifier of the
 /// `StateId` in scope where the expression expands: the caller's own for a `ui!`
 /// fragment, a local the expansion allocates for a component's `state`.
 ///
-/// `behavior` is the view's handler table: each node with routes attaches them to
-/// the `__viso_host` in scope where the expression expands.
+/// `behavior` is the view's handler table and regions: each node with routes
+/// attaches them to the `__viso_host` in scope where the expression expands, and
+/// the regions mount on it under the static nodes once the tree is built.
 ///
-/// Returns `Err` with the message if the view has other than one root, contains a
-/// control-flow region, or binds a source `sources` does not name.
+/// Returns `Err` with the message if the view has other than one root, has a
+/// region but no behavior to run it, or binds a source `sources` does not name.
 pub fn emit_view(
     tree: &UiTree,
     bindings: &BindingIr,
@@ -73,21 +69,45 @@ pub fn emit_view(
         edges_by_node.entry(edge.node).or_default().push(edge);
     }
 
+    let regions = behavior.filter(|behavior| !behavior.regions.is_empty());
+    if regions.is_none() && viso_dsl::view_regions::has_regions(tree) {
+        return Err("internal: a view with regions has no behavior to run them".into());
+    }
     let mut ctx = Emit {
         edges_by_node,
         sources,
         behavior,
         next_key: 0,
-        control_flow: None,
+        next_static: 0,
+        record_ids: regions.is_some(),
         missing_source: None,
     };
-    let root = ctx.emit_item(&tree.items[0]);
+    let mut root = ctx.emit_item(&tree.items[0]);
 
-    if let Some(cf) = ctx.control_flow {
-        return Err(format!(
-            "a view does not mount a `{}` region; lift the branch into Rust",
-            cf.kind
-        ));
+    if let Some(behavior) = regions {
+        let bytes = Literal::byte_string(&behavior.region_bytes());
+        let count = ctx.next_static as usize;
+        let mut cells: Vec<(&SymbolId, &Ident)> = sources.iter().collect();
+        cells.sort_unstable_by_key(|(symbol, _)| (symbol.hi, symbol.lo));
+        let cells = cells.into_iter().map(|(symbol, local)| {
+            let (hi, lo) = (symbol.hi, symbol.lo);
+            quote! { (::viso_ui::state::StateKey::from_parts(#hi, #lo), #local) }
+        });
+        root = quote! {
+            {
+                let mut __viso_ids: [::core::option::Option<::viso_ui::NodeId>; #count] =
+                    [::core::option::Option::None; #count];
+                let __viso_root = #root;
+                ::viso_view::__mount_embedded(
+                    cx,
+                    #bytes,
+                    &__viso_host,
+                    &__viso_ids,
+                    &[#(#cells),*],
+                );
+                __viso_root
+            }
+        };
     }
     if let Some(id) = ctx.missing_source {
         return Err(format!(
@@ -105,7 +125,10 @@ struct Emit<'a> {
     sources: &'a HashMap<SymbolId, Ident>,
     behavior: Option<&'a ViewBehavior>,
     next_key: u32,
-    control_flow: Option<ControlFlow>,
+    /// The next static pre-order index.
+    next_static: u32,
+    /// Whether each static node's id is recorded for the regions to mount under.
+    record_ids: bool,
     missing_source: Option<SymbolId>,
 }
 
@@ -117,46 +140,46 @@ impl Emit<'_> {
         key
     }
 
-    /// Emits one item's tokens. A node consumes one key then descends; a
-    /// control-flow region records the first-seen kind (deferred) and still walks
-    /// its branches so any node it contains keeps the shared numbering aligned with
-    /// the Binding IR — the emitter aborts on the region afterward.
+    /// Emits one item's tokens: a node is built; a region is numbered but not
+    /// built, its content mounted by the view runtime.
     fn emit_item(&mut self, item: &UiItem) -> TokenStream {
         match item {
             UiItem::Node(node) => self.emit_node(node),
-            UiItem::If(vi) => {
-                self.note_control_flow("if");
-                for arm in &vi.arms {
-                    for item in &arm.items {
-                        let _ = self.emit_item(item);
-                    }
-                }
-                quote! {}
-            }
-            UiItem::For(vf) => {
-                self.note_control_flow("for");
-                for item in &vf.body {
-                    let _ = self.emit_item(item);
-                }
-                quote! {}
-            }
-            UiItem::Match(vm) => {
-                self.note_control_flow("match");
-                for arm in &vm.arms {
-                    for item in &arm.items {
-                        let _ = self.emit_item(item);
-                    }
-                }
+            _ => {
+                self.skip_item(item);
                 quote! {}
             }
         }
     }
 
-    /// Records the first control-flow region seen (later ones are subsumed by the
-    /// single diagnostic).
-    fn note_control_flow(&mut self, kind: &'static str) {
-        if self.control_flow.is_none() {
-            self.control_flow = Some(ControlFlow { kind });
+    /// Advances the numbering past every node under `item`, building none.
+    fn skip_item(&mut self, item: &UiItem) {
+        match item {
+            UiItem::Node(node) => {
+                self.take_key();
+                for child in &node.children {
+                    self.skip_item(child);
+                }
+            }
+            UiItem::If(region) => {
+                for arm in &region.arms {
+                    for item in &arm.items {
+                        self.skip_item(item);
+                    }
+                }
+            }
+            UiItem::For(region) => {
+                for item in &region.body {
+                    self.skip_item(item);
+                }
+            }
+            UiItem::Match(region) => {
+                for arm in &region.arms {
+                    for item in &arm.items {
+                        self.skip_item(item);
+                    }
+                }
+            }
         }
     }
 
@@ -165,6 +188,17 @@ impl Emit<'_> {
     /// targets this node against that handle.
     fn emit_node(&mut self, node: &UiNode) -> TokenStream {
         let key = self.take_key();
+        let ordinal = self.next_static as usize;
+        self.next_static += 1;
+
+        // A node that authors no children (a leaf, a `VirtualList`, which mounts
+        // its own items) numbers them without building them.
+        let authors_children = node.kind.is_container() && node.kind != NodeKind::VirtualList;
+        if !authors_children {
+            for child in &node.children {
+                self.skip_item(child);
+            }
+        }
 
         // Children are executed as statements inside the builder closure, which
         // returns `()`. Each child item's block evaluates to its own `Handle`; as a
@@ -173,6 +207,7 @@ impl Emit<'_> {
         let children: Vec<TokenStream> = node
             .children
             .iter()
+            .filter(|_| authors_children)
             .map(|c| {
                 let item = self.emit_item(c);
                 quote! { #item; }
@@ -185,6 +220,11 @@ impl Emit<'_> {
 
         let binds = self.emit_binds(key);
         let attach = self.emit_attach(key);
+        let record = if self.record_ids {
+            quote! { __viso_ids[#ordinal] = ::core::option::Option::Some(#handle_ident.id()); }
+        } else {
+            quote! {}
+        };
 
         // A leaf's builder takes no closure, so its children (there are none for a
         // real leaf) are dropped by `emit_builder_call`. Containers thread the child
@@ -194,6 +234,7 @@ impl Emit<'_> {
                 let #handle_ident = #build_call;
                 #binds
                 #attach
+                #record
                 #handle_ident
             }
         }
@@ -236,13 +277,13 @@ impl Emit<'_> {
                             size: #size,
                             ..::core::default::Default::default()
                         },
-                        |cx| { #child_block },
+                        0,
+                        |_, _| {},
                     )
                 }
             }
             NodeKind::Leaf => {
                 let style = leaf_style_tokens(&node.style);
-                // A leaf has no builder closure; a Text-like leaf carries no children.
                 quote! { cx.leaf(#style) }
             }
         }

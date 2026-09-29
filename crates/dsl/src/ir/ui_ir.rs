@@ -199,6 +199,9 @@ pub struct UiIf {
 pub struct UiIfArm {
     /// The condition expression's span, or `None` for the trailing `else`.
     pub condition: Option<TextRange>,
+    /// The `preserve` identity of the arm: leaving it caches the mounted
+    /// instance instead of destroying it.
+    pub preserve: Option<String>,
     /// The items mounted when this arm is taken.
     pub items: Vec<UiItem>,
 }

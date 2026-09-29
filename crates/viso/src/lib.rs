@@ -1946,6 +1946,17 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
                         //    dynamic edges, so a derivation's node is dirtied
                         //    once, by the pass above.)
                         ws.store.flush_state_transactions(&ws.changed, &ws.bindings);
+                        //    Then control-flow regions: a view whose regions read
+                        //    a changed cell mounts, switches or reorders their
+                        //    nodes, after the flush so a node it frees has taken
+                        //    its marks.
+                        viso_ui::run_structure_hooks(
+                            &mut ws.store,
+                            &mut ws.states,
+                            &mut ws.bindings,
+                            &mut ws.effects,
+                            &ws.changed,
+                        );
                         // 3. Semantic-state projections: re-run those whose cells
                         //    changed, each writing its node's `semantic_state`
                         //    column (and marking SEMANTICS) — both stores are live

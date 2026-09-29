@@ -2103,12 +2103,12 @@ if logged_in preserve "user-panel" {
 
 规范：
 
-- `preserve` 后必须是编译期 String Literal；
+- `preserve` 后必须是编译期 String Literal，否则报 `E3301`；
 - 它不是普通 Key Expression；
-- String 在当前 Component 的 Conditional Namespace 中必须唯一；
+- String 在当前 Component 的 Conditional Namespace 中必须唯一，重复使用报 `E3301`（附带首次使用位置）；
 - 不写 `preserve` 时，离开分支会销毁其 Node、State、Effect、Task 和 Resource Scope；
-- 写 `preserve` 时，离开分支会把分支实例移入受限缓存；
-- 缓存容量和逐出策略由 Runtime Profile 控制；
+- 写 `preserve` 时，离开分支会把分支实例移入受限缓存，回到该分支时原 Node 身份（`NodeId`）复用；
+- 缓存容量和逐出策略由 Runtime Profile 控制；默认 Profile 每个分支缓存最近一个实例；
 - `preserve` 不得用于无限动态值；动态集合必须使用 Keyed List；
 - Branch 条件必须是 Bool；
 - 各分支输出必须满足所在 Slot 的 Cardinality。
@@ -2139,7 +2139,7 @@ for item in items key item.id {
 - Key Expression 的类型必须实现 `StableKey`；
 - Key Expression 只能读取 Loop Pattern、不可变外部值和纯函数；
 - 同一帧同一列表中 Key 必须唯一；
-- Runtime 发现重复 Key 必须产生结构化诊断，Debug 模式拒绝提交该 UI Patch；
+- Runtime 发现重复 Key 必须产生结构化 Fault（记录在宿主上），并拒绝提交该列表的 UI Patch：列表保留上一次提交的项；
 - 使用索引作为 Key 只在集合长度和顺序被证明静态不变时允许；否则警告或错误；
 - Key 决定 Child Component State、焦点、动画、Task 和 Resource 的迁移身份；
 - 项目移动只生成 Move Patch，不销毁重建；
@@ -2181,6 +2181,16 @@ match user.state {
 - Guard 必须为纯 Bool Expression；
 - 每个 Arm 的 View 输出必须满足同一 Slot Cardinality；
 - Pattern Binding 的作用域仅限 Guard 和对应 View Block。
+
+### 56.1 控制流区域的挂载（§54–§56 共用）
+
+- `if`、`match` 与 Keyed `for` 在 `component!`、`view!`、Hot Reload 与 Release Package 中以同一张区域模板挂载：区域外的静态 Node 由目标直接构建，区域内的 Node 是模板，由 Runtime 在其所在父 Node 下挂载、切换和重排；
+- 区域的分支选择、Scrutinee、Iterable 与 Key 各是所在 Component Handler 表中的一个纯 Region Entry Chunk，以外层区域的绑定为参数求值，不写 State、不产生 Event；
+- 区域读取的 State 变化时，Runtime 在该帧 State Flush 之后重新求值并只修改变化的区域；读取 String/List 等 UI State Cell 无法容纳的 State 时，由修订计数 Cell 触发；
+- 区域内 Node 的 Handler 以 Payload 加外层 `for`/`match` 绑定运行（§52）；
+- Region Entry 运行期 Fault 保留当前结构并记录在宿主上；
+- View 的根必须是 Node，根上的控制流区域报 `E3711`；`VirtualList` 尚不从 View 挂载内容，其子项报 `E3711`；`ui!` Fragment 没有 Component State，不能包含控制流区域（`E3711`）；
+- Hot Reload 中出现 `E3711` 时保留 Last-good 区域；含控制流区域的 View 在 Hot Reload 中整树重建，按名称保留 State。
 
 ---
 
@@ -8271,7 +8281,7 @@ RecordPatternField
 | E3107  | `bind` 右侧不是 State Lens（§51）                       |
 | E3201  | 已删除的事件箭头语法                                    |
 | E3202  | 未知 Event 或错误 Payload                               |
-| E3301  | Conditional Preserve 必须是静态字符串                   |
+| E3301  | Conditional Preserve 必须是静态字符串，且在 Component 中唯一 |
 | E3401  | View For 缺少 Key                                       |
 | E3402  | Key Expression 不稳定                                   |
 | E3501  | 未知 Slot/Part                                          |
@@ -8287,7 +8297,7 @@ RecordPatternField
 | E3708  | 交互节点缺少等价键盘路径（警告，§U8.2）                 |
 | E3709  | 标注 [Runtime 待实现] 的 Property 使用了非默认值（§U1.1） |
 | E3710  | `@selector` 误用（§U2.3）                               |
-| E3711  | Handler 未能挂载：Runtime 未投递该 Event 或 Behavior 未能 Lower（§52） |
+| E3711  | Handler 或控制流区域未能挂载：Runtime 未投递该 Event、Behavior 未能 Lower，或区域位于 View 根、`VirtualList` 内或 `ui!` Fragment 中（§52、§56.1） |
 | E4101  | Action 中使用 Await                                     |
 | E4102  | Task 跨挂起访问可变 State                               |
 | E4201  | Effect 读取未声明依赖                                   |

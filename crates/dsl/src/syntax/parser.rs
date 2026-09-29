@@ -61,6 +61,9 @@ pub enum ParseErrorKind {
     /// A view `for` loop omitted its required `key` clause; keyed identity is
     /// mandatory for repeated view content.
     ForMissingKey,
+    /// A conditional's `preserve` was not followed by a string literal; a branch
+    /// cache identity is a compile-time string.
+    PreserveNotLiteral,
     /// A strict keyword was used in a binding or declaration position (§12.5).
     ReservedIdent,
     /// An expression wrote generic arguments without a turbofish (`foo<T>(x)`
@@ -86,6 +89,7 @@ impl ParseErrorKind {
             ParseErrorKind::ChildReserved => "E3001",
             ParseErrorKind::HandlerNotArrow => "E3201",
             ParseErrorKind::ForMissingKey => "E3401",
+            ParseErrorKind::PreserveNotLiteral => "E3301",
             ParseErrorKind::ReservedIdent => "E1301",
             ParseErrorKind::GenericWithoutTurbofish | ParseErrorKind::ConstArgWithoutConst => {
                 "E2004"
@@ -117,6 +121,9 @@ impl ParseErrorKind {
             }
             ParseErrorKind::ForMissingKey => {
                 "a view `for` loop requires a `key` clause giving each item a stable identity"
+            }
+            ParseErrorKind::PreserveNotLiteral => {
+                "`preserve` takes a string literal naming the branch: `preserve \"panel\"`"
             }
             ParseErrorKind::ReservedIdent => {
                 "a strict keyword cannot be a binding or declaration name; use `r#` to escape it"

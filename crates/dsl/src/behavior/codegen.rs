@@ -66,6 +66,7 @@ fn chunk(function: &ir::Function) -> Chunk {
         FunctionKind::Const => ChunkKind::Const,
         FunctionKind::FieldDefault => ChunkKind::FieldDefault,
         FunctionKind::Handler => ChunkKind::Handler,
+        FunctionKind::RegionEntry => ChunkKind::RegionEntry,
     };
     let params = u16::try_from(function.params).unwrap_or(u16::MAX);
     let frame = match &function.body {

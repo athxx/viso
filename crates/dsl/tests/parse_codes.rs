@@ -72,6 +72,12 @@ const PINNED: &[(ParseErrorKind, &str, Entry, &str)] = &[
         "for i in xs { T { } }",
     ),
     (
+        ParseErrorKind::PreserveNotLiteral,
+        "E3301",
+        Entry::ViewFragment,
+        "if a preserve name { T { } }",
+    ),
+    (
         ParseErrorKind::ReservedIdent,
         "E1301",
         Entry::CompilationUnit,

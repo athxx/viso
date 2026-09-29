@@ -418,6 +418,9 @@ pub struct NodeStore {
     /// Cold: the session's service registry, type-erased because this tier
     /// cannot name it, lent to each dispatch's [`EventCx`].
     services: Option<Rc<dyn Any>>,
+    /// Cold: the structure hooks of the mounted views, one per view with
+    /// control-flow regions. Empty in a tree without regions.
+    structure_hooks: Vec<crate::structure::StructureHook>,
 }
 
 impl NodeStore {
@@ -467,6 +470,7 @@ impl NodeStore {
         self.focus_scope = None;
         self.draggable_regions.clear();
         self.tasks.clear();
+        self.structure_hooks.clear();
     }
 
     /// The arena backing the tree.
@@ -658,6 +662,33 @@ impl NodeStore {
     #[inline]
     pub fn arena_append_child(&mut self, parent: NodeId, child: NodeId) -> bool {
         self.arena.append_child(parent, child)
+    }
+
+    /// Links the orphan `child` under `parent` immediately before `before`, or
+    /// last when `before` is `None`, marking `parent` for re-measure. Returns
+    /// `false` (a no-op) under the conditions of [`NodeArena::insert_before`].
+    pub fn arena_insert_before(
+        &mut self,
+        parent: NodeId,
+        child: NodeId,
+        before: Option<NodeId>,
+    ) -> bool {
+        let linked = self.arena.insert_before(parent, child, before);
+        if linked {
+            self.mark_dirty(
+                parent,
+                DirtyClass::MEASURE | DirtyClass::LAYOUT | DirtyClass::PAINT,
+            );
+        }
+        linked
+    }
+
+    pub(crate) fn structure_hooks(&self) -> &[crate::structure::StructureHook] {
+        &self.structure_hooks
+    }
+
+    pub(crate) fn structure_hooks_mut(&mut self) -> &mut Vec<crate::structure::StructureHook> {
+        &mut self.structure_hooks
     }
 
     /// The parent of `child` in the arena, or `None` for a root or a stale handle.
@@ -1801,6 +1832,37 @@ impl NodeStore {
             freed += 1;
         }
         self.arena.append_child(parent, new);
+        freed
+    }
+
+    /// Free `root` and its whole subtree, unlinking it from its parent (which is
+    /// marked for re-measure) and cancelling each freed node's effects and tasks.
+    /// Returns the number of nodes freed, 0 for a stale `root`.
+    ///
+    /// The unmount of a control-flow region's fragment. `scratch` is the same
+    /// reusable stack [`free_subtree`](Self::free_subtree) takes.
+    pub fn free_tree(
+        &mut self,
+        root: NodeId,
+        effects: &mut EffectStore,
+        scratch: &mut Vec<NodeId>,
+    ) -> u32 {
+        if !self.arena.is_live(root) {
+            return 0;
+        }
+        let mut freed = self.free_subtree(root, effects, scratch);
+        if let Some(parent) = self.parent(root) {
+            self.arena.detach_child(root);
+            self.mark_dirty(
+                parent,
+                DirtyClass::MEASURE | DirtyClass::LAYOUT | DirtyClass::PAINT,
+            );
+        }
+        effects.cancel_for_node(root);
+        self.cancel_tasks_for(root);
+        if self.arena.free(root) {
+            freed += 1;
+        }
         freed
     }
 
@@ -3096,6 +3158,32 @@ impl<'a> BuildCx<'a> {
             .expect("bind() requires a with_reactive BuildCx")
             .bind(state, node.id, class);
         node
+    }
+
+    /// Runs `f` over this build's stores as a [`StructureCx`], for a view that
+    /// mounts its control-flow regions under the nodes it just built. A mount
+    /// frees nothing, so the context's effect store is a fresh empty one.
+    /// Requires a [`BuildCx::with_reactive`] cx (see [`BuildCx::state`]).
+    ///
+    /// [`StructureCx`]: crate::structure::StructureCx
+    pub fn structure<R>(
+        &mut self,
+        f: impl FnOnce(&mut crate::structure::StructureCx<'_>) -> R,
+    ) -> R {
+        let mut effects = crate::reactive::EffectStore::default();
+        let mut cx = crate::structure::StructureCx {
+            store: &mut *self.store,
+            states: self
+                .states
+                .as_deref_mut()
+                .expect("structure() requires a with_reactive BuildCx"),
+            bindings: self
+                .bindings
+                .as_deref_mut()
+                .expect("structure() requires a with_reactive BuildCx"),
+            effects: &mut effects,
+        };
+        f(&mut cx)
     }
 
     /// Give `node` an interaction-state box selection: record the resting /

@@ -125,9 +125,8 @@ impl StructuralPatch {
 ///
 /// The numbering discipline is copied exactly from `lower_bindings` / `analyze_keys`
 /// (see [`crate::ir::binding_ir`], [`crate::ir::keys`]): a node consumes one key
-/// then descends into its children; a `for` region consumes one key then descends
-/// into its body; `if`/`match` regions consume no key of their own and descend into
-/// every arm's items. Any drift from that order would make a diff key name a
+/// then descends into its children; a region consumes no key of its own and
+/// descends into every arm's items (a `for`'s body). Any drift from that order would make a diff key name a
 /// different runtime node than the binding edges do, so this walk is the contract.
 fn flatten(tree: &UiTree) -> Vec<(NodeKey, Identity)> {
     let mut out = Vec::new();
@@ -138,11 +137,7 @@ fn flatten(tree: &UiTree) -> Vec<(NodeKey, Identity)> {
     out
 }
 
-/// Pre-order walk of one item, mirroring the shared numbering. `for` regions are
-/// treated as a keyed slot (they consume a key) whose identity is a synthetic
-/// container marker, so an old `for` aligns with a new `for` at the same slot; a
-/// `for` becoming a plain node (or vice versa) reads as a replace, exactly as a
-/// type change does.
+/// Pre-order walk of one item, mirroring the shared numbering.
 fn flatten_item(item: &UiItem, next: &mut u32, out: &mut Vec<(NodeKey, Identity)>) {
     match item {
         UiItem::Node(node) => {
@@ -160,8 +155,6 @@ fn flatten_item(item: &UiItem, next: &mut u32, out: &mut Vec<(NodeKey, Identity)
             }
         }
         UiItem::For(vf) => {
-            let key = take_key(next);
-            out.push((key, for_identity()));
             for item in &vf.body {
                 flatten_item(item, next, out);
             }
@@ -176,22 +169,11 @@ fn flatten_item(item: &UiItem, next: &mut u32, out: &mut Vec<(NodeKey, Identity)
     }
 }
 
-/// Take the next pre-order key, matching `LowerCtx::take_key` / `KeyCtx::take_key`.
+/// Take the next pre-order key, matching the Binding IR's `LowerCtx::take_key`.
 fn take_key(next: &mut u32) -> NodeKey {
     let key = NodeKey(*next);
     *next += 1;
     key
-}
-
-/// The synthetic identity of a `for` region's own slot. A `for` occupies one key
-/// in the shared numbering but has no authored type name; giving it a stable
-/// reserved identity lets two `for` regions at the same slot compare equal (kept)
-/// while a `for`-vs-node mismatch compares unequal (replace).
-fn for_identity() -> Identity {
-    Identity {
-        type_name: "<for>".to_string(),
-        kind: NodeKind::Leaf,
-    }
 }
 
 /// Compute the directed structural patch from the last-good template `old` to the

@@ -38,6 +38,21 @@ impl Lowerer<'_, '_> {
         }
     }
 
+    /// Binds a pattern the value is known to match (a view region's scope: the
+    /// arm a `match` region mounted, or a `for` item) to `src`. A mismatch is a
+    /// broken caller invariant and traps.
+    pub(super) fn bind_matched(&mut self, pattern: &SyntaxNode, src: Reg, ty: &Ty) -> Lower<()> {
+        let mut fails = Vec::new();
+        self.test(pattern, src, ty, &mut fails)?;
+        if !fails.is_empty() {
+            let over = self.jump();
+            self.patch_here(&fails);
+            self.emit(Inst::Unreachable);
+            self.patch_here(&[over]);
+        }
+        Ok(())
+    }
+
     /// A `match`. With `value`, each arm's value lands in one register.
     pub(super) fn match_value(&mut self, node: &SyntaxNode, value: bool) -> Lower<Option<Reg>> {
         let Some(scrutinee) = crate::hir::infer::first_child_expr(node) else {
@@ -294,7 +309,7 @@ impl Lowerer<'_, '_> {
 
     /// Tests `src: ty` against `pattern`, pushing the jumps taken on a mismatch
     /// onto `fails` and binding the pattern's names on a match.
-    fn test(
+    pub(super) fn test(
         &mut self,
         pattern: &SyntaxNode,
         src: Reg,

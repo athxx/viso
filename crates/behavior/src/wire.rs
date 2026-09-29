@@ -173,7 +173,7 @@ fn read_component(dec: &mut Decoder<'_>) -> Result<Component, DecodeError> {
     })
 }
 
-const CHUNK_KINDS: [ChunkKind; 9] = [
+const CHUNK_KINDS: [ChunkKind; 10] = [
     ChunkKind::Fn,
     ChunkKind::Action,
     ChunkKind::Closure,
@@ -183,6 +183,7 @@ const CHUNK_KINDS: [ChunkKind; 9] = [
     ChunkKind::Const,
     ChunkKind::FieldDefault,
     ChunkKind::Handler,
+    ChunkKind::RegionEntry,
 ];
 
 fn write_chunk(enc: &mut Encoder, c: &Chunk) {

@@ -263,12 +263,17 @@ fn lower_if(vi: &ViewIf) -> UiIf {
 fn collect_if_arms(vi: &ViewIf, arms: &mut Vec<UiIfArm>) {
     let condition = vi.condition().map(|e| e.syntax().text_range());
     let items = vi.then_block().map(block_items).unwrap_or_default();
-    arms.push(UiIfArm { condition, items });
+    arms.push(UiIfArm {
+        condition,
+        preserve: vi.preserve_name(),
+        items,
+    });
 
     match vi.else_branch() {
         Some(crate::ast::ElseBranch::If(nested)) => collect_if_arms(&nested, arms),
         Some(crate::ast::ElseBranch::Block(block)) => arms.push(UiIfArm {
             condition: None,
+            preserve: None,
             items: block_items(block),
         }),
         None => {}

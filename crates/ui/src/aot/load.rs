@@ -23,7 +23,7 @@
 use viso_ende::{Decode, DecodeError};
 
 use crate::binding::BindingTable;
-use crate::component::{BuildCx, FlexStyle, LeafStyle, NodeStore, ScrollStyle};
+use crate::component::{BuildCx, FlexStyle, Handle, LeafStyle, NodeStore, ScrollStyle};
 use crate::dirty::DirtyClass;
 use crate::layout::{Axis, Length, Size};
 use crate::node::NodeId;
@@ -164,28 +164,31 @@ fn build_node(
 
     // The handle is recorded at this node's own pre-order `index`, so ordering is
     // independent of when the closure authors children (which fill higher indices).
-    let handle = match node.kind {
-        AotNodeKind::Flex => cx.flex(flex_style(&node.style), |cx| {
-            for _ in 0..child_count {
-                build_node(cx, nodes, cursor, node_ids);
-            }
-        }),
-        AotNodeKind::Grid => cx.grid(Default::default(), |cx| {
-            for _ in 0..child_count {
-                build_node(cx, nodes, cursor, node_ids);
-            }
-        }),
-        AotNodeKind::Scroll => cx.scroll(scroll_style(&node.style), |cx| {
-            for _ in 0..child_count {
-                build_node(cx, nodes, cursor, node_ids);
-            }
-        }),
-        // A leaf hosts no child region; the emitter guarantees `child_count == 0` for
-        // a leaf, so nothing is descended into here (a `VirtualList` collapses to a
-        // leaf on the package side, exactly as the commit twin treats it).
-        AotNodeKind::Leaf => cx.leaf(leaf_style(&node.style)),
-    };
+    let handle = build_aot_node(cx, node, |cx| {
+        for _ in 0..child_count {
+            build_node(cx, nodes, cursor, node_ids);
+        }
+    });
     node_ids[index] = Some(handle.id());
+}
+
+/// Authors one packaged node through the builder its [`AotNodeKind`] selects,
+/// with `children` run inside a container (a leaf never runs it). The one
+/// builder selection every path that authors from packaged node data shares.
+pub fn build_aot_node(
+    cx: &mut BuildCx<'_>,
+    node: &AotNode,
+    children: impl FnOnce(&mut BuildCx<'_>),
+) -> Handle {
+    match node.kind {
+        AotNodeKind::Flex => cx.flex(flex_style(&node.style), children),
+        AotNodeKind::Grid => cx.grid(Default::default(), children),
+        AotNodeKind::Scroll => cx.scroll(scroll_style(&node.style), children),
+        // A leaf hosts no child region; the emitter guarantees `child_count == 0`
+        // for a leaf (a `VirtualList` collapses to a leaf on the package side,
+        // exactly as the commit twin treats it).
+        AotNodeKind::Leaf => cx.leaf(leaf_style(&node.style)),
+    }
 }
 
 /// The flex builder style for a packaged container, mirroring the commit's

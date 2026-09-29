@@ -304,17 +304,17 @@ fn view_if(p: &mut Parser) {
     let m = p.start();
     p.bump_any(); // `if`
     super::expr::head_expr(p);
-    if p.at_contextual(SyntaxKind::PreserveKw)
-        && matches!(
-            p.nth(1),
-            SyntaxKind::StringLiteral | SyntaxKind::RawStringLiteral
-        )
-    {
+    if p.at_contextual(SyntaxKind::PreserveKw) {
         p.bump_as(SyntaxKind::PreserveKw);
         if p.at(SyntaxKind::StringLiteral) || p.at(SyntaxKind::RawStringLiteral) {
             p.bump_any();
         } else {
-            p.error(ParseErrorKind::MissingToken);
+            // A dynamic or missing identity: consume what stands in its place so
+            // the block still parses.
+            p.error(ParseErrorKind::PreserveNotLiteral);
+            if !p.at(SyntaxKind::LBrace) {
+                super::expr::head_expr(p);
+            }
         }
     }
     view_block(p);

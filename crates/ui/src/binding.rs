@@ -205,6 +205,27 @@ impl BindingTable {
         self.runs.clear();
     }
 
+    /// Drop every static edge whose node `keep` rejects, keeping the others in
+    /// their order. The unmount half of a control-flow region: the edges of the
+    /// nodes it freed go with them. Cold path (structural change only).
+    pub fn retain_static(&mut self, mut keep: impl FnMut(NodeId) -> bool) {
+        let mut write = 0usize;
+        for run in &mut self.runs {
+            let start = run.start as usize;
+            let end = start + run.len as usize;
+            run.start = write as u32;
+            for read in start..end {
+                let edge = self.edges[read];
+                if keep(edge.node) {
+                    self.edges[write] = edge;
+                    write += 1;
+                }
+            }
+            run.len = write as u32 - run.start;
+        }
+        self.edges.truncate(write);
+    }
+
     /// Replace the static region with a fresh compiled edge set.
     ///
     /// Equivalent to [`Self::clear_static`] followed by a [`Self::bind`] for each
@@ -303,6 +324,37 @@ mod tests {
     }
     fn node(arena: &mut NodeArena) -> NodeId {
         arena.alloc()
+    }
+
+    #[test]
+    fn retain_static_drops_the_rejected_nodes_edges() {
+        let mut states = StateStore::new();
+        let mut arena = NodeArena::new();
+        let mut table = BindingTable::new();
+        let (s, t) = (state(&mut states), state(&mut states));
+        let (a, b) = (node(&mut arena), node(&mut arena));
+        table.bind(s, a, DirtyClass::PAINT);
+        table.bind(s, b, DirtyClass::PAINT);
+        table.bind(t, b, DirtyClass::LAYOUT);
+        table.bind(t, a, DirtyClass::LAYOUT);
+        table.retain_static(|n| n != b);
+        assert_eq!(
+            table.for_state(s),
+            [Binding {
+                node: a,
+                class: DirtyClass::PAINT
+            }]
+        );
+        assert_eq!(
+            table.for_state(t),
+            [Binding {
+                node: a,
+                class: DirtyClass::LAYOUT
+            }]
+        );
+        table.bind(s, b, DirtyClass::PAINT);
+        assert_eq!(table.for_state(s).len(), 2);
+        assert_eq!(table.for_state(t).len(), 1);
     }
 
     #[test]

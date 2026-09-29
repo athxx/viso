@@ -18,12 +18,17 @@
 mod attach;
 mod host;
 mod package;
+mod regions;
 mod route;
 
 pub use attach::{Route, attach, attach_node};
 pub use host::{__embedded, HostError, StateCells, ViewHost};
 pub use package::{
     LoadedView, ViewHandler, ViewLoadError, ViewPackage, ViewState, instantiate_view, load_view,
+};
+pub use regions::{
+    __mount_embedded, ArmTemplate, CLOSED, GroupTemplate, HALF_OPEN, ItemTemplate, MAX_RANGE_ITEMS,
+    RegionKind, RegionTemplate, SlotTemplate, ViewRegions, mount_regions,
 };
 pub use route::{EventRoute, PAYLOAD_ENUMS, PAYLOAD_RECORDS};
 pub use viso_behavior::{Fault, Module, Value};

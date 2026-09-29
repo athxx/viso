@@ -306,7 +306,8 @@ mod binding {
     use viso_dsl::ir::binding_ir::BindingKind;
     use viso_dsl::ir::keys::KEYLESS_STATEFUL_FOR;
     use viso_dsl::ir::{
-        BindingIr, DirtyClass, NodeKey, UiTree, analyze_keys, lower_bindings, lower_fragment_items,
+        BindingIr, DirtyClass, NodeKey, UiItem, UiTree, analyze_keys, lower_bindings,
+        lower_fragment_items,
     };
     use viso_dsl::resolve::{NameInterner, ResolvedRef, SymbolId, resolve_fragment};
     use viso_dsl::syntax::grammar::{Entry, parse_entry};
@@ -441,7 +442,10 @@ mod binding {
             key.diagnostics.is_empty(),
             "a keyed stateful for draws no warning"
         );
-        assert_eq!(f.node, NodeKey(0), "the for occupies pre-order node 0");
+        let UiItem::For(region) = &tree.items[0] else {
+            panic!("the root item is the for region");
+        };
+        assert_eq!(f.origin, region.origin, "the entry names its region");
     }
 
     #[test]

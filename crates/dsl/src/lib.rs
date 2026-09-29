@@ -29,6 +29,7 @@ pub mod resolve;
 pub mod schema;
 pub mod syntax;
 pub mod view_behavior;
+pub mod view_regions;
 
 pub use diag::{Diagnostic, Severity};
 pub use hir::{Ty, TypeError, WidenError};

@@ -30,11 +30,13 @@ use super::percent::{Carry, PercentFacts, PercentSources};
 use super::ty::Ty;
 use super::widget::{self, ChildProps, PropLookup, WidgetSchema};
 use crate::ast::{
-    AstNode, ElseBranch, EventHandler, NodeBody, PropertyBinding, PropertyPath, TwoWayBinding,
-    TypePath, ViewBlock, ViewFor, ViewIf, ViewItem, ViewMatch,
+    AstNode, ElseBranch, EventHandler, Expr, NodeBody, PropertyBinding, PropertyPath,
+    TwoWayBinding, TypePath, ViewBlock, ViewFor, ViewIf, ViewItem, ViewMatch,
 };
 use crate::behavior::FunctionKind;
-use crate::behavior::lower::{Def, ProgramBuilder, lower_handler, unsupported_with};
+use crate::behavior::lower::{
+    Def, ProgramBuilder, RegionEntry, lower_handler, lower_region_entry, unsupported_with,
+};
 use crate::diag::{Diagnostic, Related, Severity};
 use crate::resolve::suggest::{Candidate, attach, nearest};
 use crate::resolve::{Resolution, ResolvedRef, SymbolId};
@@ -133,6 +135,7 @@ pub(crate) fn check_view<'a>(
         diagnostics: Vec::new(),
         sink,
         regions: Vec::new(),
+        preserves: HashMap::new(),
     };
     walk.items(block.items(), Scope::ROOT);
     percent.extend(walk.cx.take_percent_defs());
@@ -357,6 +360,8 @@ struct ViewWalk<'a> {
     /// The pattern and value type of each enclosing `for`/`match` region, outermost
     /// first: what a handler inside receives after its payload.
     regions: Vec<(SyntaxNode, Ty)>,
+    /// Each `preserve` identity the view names, at its first use.
+    preserves: HashMap<String, TextRange>,
 }
 
 impl<'a> ViewWalk<'a> {
@@ -766,21 +771,64 @@ impl<'a> ViewWalk<'a> {
         None
     }
 
+    /// An `if`/`else if`/`else` chain: every condition is typed first, then the
+    /// chain's arm choice lowers as one region entry, then each arm body walks.
     fn view_if(&mut self, view_if: &ViewIf, scope: Scope<'_, 'a>) {
-        if let Some(condition) = view_if.condition() {
-            let _ = self.cx.infer_expr(&condition, Some(&Ty::Bool));
+        let errors = self.error_count();
+        let mut conditions: Vec<Option<Expr>> = Vec::new();
+        let mut blocks: Vec<Option<ViewBlock>> = Vec::new();
+        let mut link = Some(view_if.clone());
+        while let Some(arm) = link.take() {
+            let condition = arm.condition();
+            if let Some(condition) = &condition {
+                let _ = self.cx.infer_expr(condition, Some(&Ty::Bool));
+            }
+            self.preserve(&arm);
+            conditions.push(condition);
+            blocks.push(arm.then_block());
+            match arm.else_branch() {
+                Some(ElseBranch::If(nested)) => link = Some(nested),
+                Some(ElseBranch::Block(block)) => {
+                    conditions.push(None);
+                    blocks.push(Some(block));
+                }
+                None => {}
+            }
         }
-        if let Some(block) = view_if.then_block() {
+        let at = view_if.syntax().text_range();
+        self.region_entry(errors, "if", at, &RegionEntry::Conditions(&conditions));
+        for block in blocks.into_iter().flatten() {
             self.items(block.items(), scope);
         }
-        match view_if.else_branch() {
-            Some(ElseBranch::If(nested)) => self.view_if(&nested, scope),
-            Some(ElseBranch::Block(block)) => self.items(block.items(), scope),
-            None => {}
+    }
+
+    /// Records a `preserve` identity; one a sibling branch of the component
+    /// already names is `E3301`.
+    fn preserve(&mut self, view_if: &ViewIf) {
+        let (Some(name), Some(token)) = (view_if.preserve_name(), view_if.preserve()) else {
+            return;
+        };
+        let at = token.text_range();
+        match self.preserves.get(&name) {
+            Some(first) => {
+                let mut diagnostic = Diagnostic::error(
+                    "E3301",
+                    at,
+                    format!("the preserve identity \"{name}\" is already used in this component"),
+                );
+                diagnostic
+                    .related
+                    .push(Related::new(*first, "first used here"));
+                self.diagnostics.push(diagnostic);
+            }
+            None => {
+                self.preserves.insert(name, at);
+            }
         }
     }
 
     fn view_for(&mut self, view_for: &ViewFor, scope: Scope<'_, 'a>) {
+        let errors = self.error_count();
         let iterable = match view_for.iterable() {
             Some(iterable) => self.cx.infer_expr(&iterable, None),
             None => Ty::Unknown,
@@ -798,12 +846,29 @@ impl<'a> ViewWalk<'a> {
         if let Some(key) = view_for.key() {
             let _ = self.cx.infer_expr(&key, None);
         }
+        let pattern = view_for.pattern().map(|p| p.syntax().clone());
+        if let Some(iterable) = view_for.iterable() {
+            let at = iterable.syntax().text_range();
+            self.region_entry(errors, "for", at, &RegionEntry::Items(&iterable));
+        }
+        if let (Some(pattern), Some(key)) = (&pattern, view_for.key()) {
+            let entry = RegionEntry::Key {
+                pattern,
+                element: &element,
+                key: &key,
+            };
+            self.region_entry(errors, "key", key.syntax().text_range(), &entry);
+        }
         if let Some(body) = view_for.body() {
+            let pattern = pattern.unwrap_or_else(|| view_for.syntax().clone());
+            self.regions.push((pattern, element));
             self.items(body.items(), scope);
+            self.regions.pop();
         }
     }
 
     fn view_match(&mut self, view_match: &ViewMatch, scope: Scope<'_, 'a>) {
+        let errors = self.error_count();
         let scrutinee = view_match.scrutinee();
         let ty = match &scrutinee {
             Some(scrutinee) => self.cx.infer_expr(scrutinee, None),
@@ -814,6 +879,8 @@ impl<'a> ViewWalk<'a> {
             .map(|s| self.cx.carry(s.syntax()))
             .unwrap_or_default();
         let mut check = MatchCheck::new();
+        let mut arms: Vec<(SyntaxNode, Option<Expr>)> = Vec::new();
+        let mut bodies: Vec<(SyntaxNode, Option<ViewBlock>)> = Vec::new();
         for arm in view_match.arms() {
             let pattern = arm.pattern();
             if let Some(pattern) = &pattern {
@@ -824,18 +891,59 @@ impl<'a> ViewWalk<'a> {
             if let Some(guard) = &guard {
                 let _ = self.cx.infer_expr(guard, Some(&Ty::Bool));
             }
-            if let Some(body) = arm.body() {
-                self.items(body.items(), scope);
-            }
             if let Some(pattern) = &pattern {
                 self.cx
                     .add_arm(&mut check, pattern.syntax(), &ty, guard.is_some());
+                arms.push((pattern.syntax().clone(), guard));
+                bodies.push((pattern.syntax().clone(), arm.body()));
             }
         }
-        let at = scrutinee.map_or(view_match.syntax().text_range(), |s| {
-            s.syntax().text_range()
-        });
+        let at = scrutinee
+            .as_ref()
+            .map_or(view_match.syntax().text_range(), |s| {
+                s.syntax().text_range()
+            });
         self.cx.finish_match(check, &ty, at);
+        if let Some(scrutinee) = &scrutinee {
+            self.region_entry(errors, "match", at, &RegionEntry::Value(scrutinee));
+        }
+        let entry = RegionEntry::Arms {
+            arms: &arms,
+            ty: &ty,
+        };
+        let origin = view_match.syntax().text_range();
+        self.region_entry(errors, "arm", origin, &entry);
+        for (pattern, body) in bodies {
+            let Some(body) = body else {
+                continue;
+            };
+            self.regions.push((pattern, ty.clone()));
+            self.items(body.items(), scope);
+            self.regions.pop();
+        }
+    }
+
+    /// Lowers a region entry registered at `at` in the component's handler
+    /// table; one whose expressions reported errors since `errors` cannot run.
+    fn region_entry(&mut self, errors: usize, what: &str, at: TextRange, entry: &RegionEntry<'_>) {
+        let Some(sink) = &self.sink else {
+            return;
+        };
+        let def = Def {
+            name: format!("{}.{what}", sink.component),
+            kind: FunctionKind::RegionEntry,
+            symbol: None,
+            module: sink.module,
+            into: None,
+        };
+        let mut b = sink.builder.borrow_mut();
+        let func = if self.error_count() > errors {
+            let params = self.regions.len() as u32 + u32::from(entry.takes_subject());
+            unsupported_with(&mut b, def, params, "has type errors", at)
+        } else {
+            lower_region_entry(&mut b, &self.cx, def, &self.regions, entry, at)
+        };
+        b.handler(at, func);
     }
 }
 

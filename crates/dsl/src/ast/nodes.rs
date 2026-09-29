@@ -767,6 +767,18 @@ impl ViewIf {
         })
     }
 
+    /// The `preserve` identity as the literal's body is written, without its
+    /// delimiters: two branches naming the same body share one identity.
+    pub fn preserve_name(&self) -> Option<String> {
+        let token = self.preserve()?;
+        let text = token.text().to_string();
+        let body = match token.kind() {
+            SyntaxKind::RawStringLiteral => text.trim_start_matches('r').trim_matches('#'),
+            _ => text.as_str(),
+        };
+        Some(body.strip_prefix('"')?.strip_suffix('"')?.to_string())
+    }
+
     /// The `then` view block (the first block child).
     pub fn then_block(&self) -> Option<ViewBlock> {
         support::child(&self.syntax)
