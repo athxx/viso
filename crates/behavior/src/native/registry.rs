@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use std::fmt;
 use std::sync::{Arc, OnceLock};
 
-use super::{NativeFunction, NativeId, NativeLibrary, NativeType, standard};
+use super::{NativeFunction, NativeId, NativeLibrary, NativeType, NativeWidget, standard};
 
 /// A registered native function or handle method.
 #[derive(Debug, Clone)]
@@ -49,6 +49,15 @@ pub struct NativeTypeEntry {
     pub library: &'static NativeLibrary,
 }
 
+/// A registered widget.
+#[derive(Debug, Clone, Copy)]
+pub struct NativeWidgetEntry {
+    /// Its declaration.
+    pub widget: &'static NativeWidget,
+    /// The library declaring it.
+    pub library: &'static NativeLibrary,
+}
+
 /// Two schemas for one native path (`E6101`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SchemaConflict {
@@ -80,13 +89,16 @@ enum Item {
 }
 
 /// A set of native libraries, one version per library path, with every
-/// function, method and handle type addressable by path and by [`NativeId`].
+/// function, method and handle type addressable by path and by [`NativeId`],
+/// and every widget by its type name.
 #[derive(Debug, Default)]
 pub struct Natives {
     libraries: Vec<&'static NativeLibrary>,
     functions: Vec<NativeEntry>,
     types: Vec<NativeTypeEntry>,
     ids: HashMap<NativeId, Item>,
+    widgets: Vec<NativeWidgetEntry>,
+    widget_names: HashMap<&'static str, u32>,
 }
 
 impl Natives {
@@ -135,9 +147,10 @@ impl Natives {
     ///
     /// # Errors
     ///
-    /// A [`SchemaConflict`] if another version of its path is registered, or
-    /// if one of its paths is already registered with a different schema; the
-    /// registry is then unchanged.
+    /// A [`SchemaConflict`] if another version of its path is registered, if
+    /// one of its paths is already registered with a different schema, or if
+    /// one of its widget names is already declared differently; the registry
+    /// is then unchanged.
     pub fn register(&mut self, library: &'static NativeLibrary) -> Result<(), SchemaConflict> {
         let conflict = |path: &str, message: String| SchemaConflict {
             path: path.to_owned(),
@@ -227,7 +240,32 @@ impl Natives {
                 ));
             }
         }
+        let mut names: HashMap<&str, ()> = HashMap::new();
+        for widget in library.widgets {
+            let path = format!("{}::{}", library.path, widget.name);
+            if names.insert(widget.name, ()).is_some() {
+                return Err(conflict(&path, format!("`{path}` is declared twice")));
+            }
+            if let Some(&i) = self.widget_names.get(widget.name)
+                && self.widgets[i as usize].widget != widget
+            {
+                return Err(conflict(
+                    &path,
+                    format!(
+                        "the widget `{}` is declared by `{}` and `{}` differently",
+                        widget.name, self.widgets[i as usize].library.path, library.path
+                    ),
+                ));
+            }
+        }
         self.libraries.push(library);
+        for widget in library.widgets {
+            if !self.widget_names.contains_key(widget.name) {
+                self.widget_names
+                    .insert(widget.name, self.widgets.len() as u32);
+                self.widgets.push(NativeWidgetEntry { widget, library });
+            }
+        }
         for f in functions {
             if !self.ids.contains_key(&f.id) {
                 self.ids
@@ -257,6 +295,17 @@ impl Natives {
     /// Every handle type, in registration order.
     pub fn types(&self) -> &[NativeTypeEntry] {
         &self.types
+    }
+
+    /// Every widget, in registration order.
+    pub fn widgets(&self) -> &[NativeWidgetEntry] {
+        &self.widgets
+    }
+
+    /// The widget a view names `name`.
+    pub fn widget(&self, name: &str) -> Option<&'static NativeWidget> {
+        let &i = self.widget_names.get(name)?;
+        Some(self.widgets[i as usize].widget)
     }
 
     /// Whether `path` is a registered library path.

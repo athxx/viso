@@ -605,6 +605,7 @@ static CUSTOM: NativeLibrary = NativeLibrary {
         viso_behavior::native!(fn "lease" |_cx| -> Obj<Lease> { Ok(Obj::new(Lease)) }),
     ],
     types: &[NativeType::new("Lease", &[]).borrowed()],
+    widgets: &[],
 };
 
 #[derive(Debug)]

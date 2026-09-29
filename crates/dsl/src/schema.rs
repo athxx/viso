@@ -1,4 +1,4 @@
-//! Schema queries: the typed schema of a built-in widget, a native library, a
+//! Schema queries: the typed schema of a native widget, a native library, a
 //! native function or a native handle type, as the one object tools read
 //! (`viso schema`, section 139).
 //!
@@ -8,21 +8,17 @@
 //! or method (`Button.text`, `Stopwatch.elapsed_ms`). Cold path: this runs once
 //! per tool request.
 
-use viso_behavior::native::{NativeEntry, NativeFunction, NativeLibrary, NativeTypeEntry};
+use viso_behavior::native::{
+    NativeEntry, NativeFunction, NativeLibrary, NativeTypeEntry, NativeWidgetEntry,
+};
 pub use viso_behavior::native::{NativeKind, Natives, Ownership, ThreadDomain};
 use viso_ende::JsonWriter;
 
 use crate::diag::Diagnostic;
-use crate::hir::widget::{self, WidgetSchema};
+use crate::hir::widget::WidgetSchema;
 use crate::ir::{DirtyClass, property_dirty_class};
 use crate::resolve::suggest::{Candidate, nearest};
 use crate::syntax::TextRange;
-
-/// The module path the built-in widgets live under.
-pub const WIDGETS: &str = "viso::widgets";
-
-/// The schema version of the built-in widget baseline.
-const WIDGET_VERSION: &str = "1.0";
 
 /// The dirty classes in canonical order, with their names.
 const DIRTY_NAMES: [(DirtyClass, &str); 8] = [
@@ -173,7 +169,7 @@ pub struct SearchHit {
 /// A symbol a query can name.
 #[derive(Clone, Copy)]
 enum Symbol<'a> {
-    Widget(&'static str),
+    Widget(&'a NativeWidgetEntry),
     Library(&'static NativeLibrary),
     Function(&'a NativeEntry),
     Type(&'a NativeTypeEntry),
@@ -182,7 +178,7 @@ enum Symbol<'a> {
 impl Symbol<'_> {
     fn path(&self) -> String {
         match self {
-            Symbol::Widget(name) => format!("{WIDGETS}::{name}"),
+            Symbol::Widget(entry) => format!("{}::{}", entry.library.path, entry.widget.name),
             Symbol::Library(library) => library.path.to_owned(),
             Symbol::Function(entry) => entry.path.to_string(),
             Symbol::Type(entry) => entry.path.to_string(),
@@ -193,10 +189,7 @@ impl Symbol<'_> {
 /// Every symbol a query can name, in a stable order: widgets, then each
 /// library, its functions and its types.
 fn symbols(natives: &Natives) -> Vec<Symbol<'_>> {
-    let mut all: Vec<Symbol<'_>> = widget::BUILTIN_NAMES
-        .iter()
-        .map(|&name| Symbol::Widget(name))
-        .collect();
+    let mut all: Vec<Symbol<'_>> = natives.widgets().iter().map(Symbol::Widget).collect();
     for &library in natives.libraries() {
         all.push(Symbol::Library(library));
         let under = |path: &str| {
@@ -395,15 +388,15 @@ fn schema_of(symbol: Symbol<'_>, natives: &Natives) -> Schema {
         handle: None,
     };
     match symbol {
-        Symbol::Widget(name) => {
-            let widget: WidgetSchema = widget::builtin(name).expect("a listed widget");
+        Symbol::Widget(entry) => {
+            let widget = WidgetSchema::of(entry.widget);
             Schema {
                 inputs: widget
                     .properties()
                     .map(|(path, p)| InputSchema {
                         invalidates: dirty_names(property_dirty_class(&path)),
                         name: path,
-                        ty: p.kind.name().to_owned(),
+                        ty: p.ty.to_owned(),
                         required: false,
                         default: None,
                         two_way: p.two_way,
@@ -418,7 +411,8 @@ fn schema_of(symbol: Symbol<'_>, natives: &Natives) -> Schema {
                         cancelable: e.bubbles,
                     })
                     .collect(),
-                ..empty(SchemaKind::Component, WIDGET_VERSION.to_owned())
+                slots: widget.slot_names().map(str::to_owned).collect(),
+                ..empty(SchemaKind::Component, entry.library.version.to_string())
             }
         }
         Symbol::Library(library) => {
@@ -769,7 +763,7 @@ mod tests {
         assert_eq!(
             w.as_str(),
             concat!(
-                r#"{"kind":"component","symbol":"viso::widgets::Button","version":"1.0","#,
+                r#"{"kind":"component","symbol":"viso::widgets::Button","version":"1","#,
                 r#""member":"text","inputs":[{"name":"text","type":"String","required":false,"#,
                 r#""default":null,"invalidates":["MEASURE","LAYOUT","PAINT","SEMANTICS"]}],"#,
                 r#""events":[],"slots":[],"parts":[],"capabilities":[]}"#

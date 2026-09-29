@@ -20,6 +20,7 @@ static TEST: NativeLibrary = NativeLibrary {
         crate::native!(fn "sum" |_cx, items: Vec<i64>| -> i64 { Ok(items.iter().sum()) }).cost(10),
     ],
     types: &[NativeType::new("Frame", &[]).borrowed()],
+    widgets: &[],
 };
 
 static TEST_V2: NativeLibrary = NativeLibrary { version: 2, ..TEST };
@@ -33,6 +34,7 @@ static OTHER_UPPER: NativeLibrary = NativeLibrary {
         }),
     ],
     types: &[],
+    widgets: &[],
 };
 
 static TWICE: NativeLibrary = NativeLibrary {
@@ -43,6 +45,7 @@ static TWICE: NativeLibrary = NativeLibrary {
         crate::native!(fn "f" |_cx| -> i64 { Ok(2) }),
     ],
     types: &[],
+    widgets: &[],
 };
 
 #[test]
@@ -278,4 +281,47 @@ fn handles_carry_native_objects() {
     assert!(ms.as_float().is_some_and(|ms| ms >= 0.0));
     let e = (elapsed.function.call)(&mut cx, &[Value::Int(1)]).unwrap_err();
     assert_eq!(e.message, "argument `this` does not match its schema type");
+}
+
+static ROW_AGAIN: NativeLibrary = NativeLibrary {
+    path: "other",
+    version: 1,
+    functions: &[],
+    types: &[],
+    widgets: &[NativeWidget::new("Row", WidgetNode::Leaf)],
+};
+
+#[test]
+fn the_standard_widgets_are_indexed_by_name() {
+    let natives = Natives::standard();
+    let row = natives.widget("Row").expect("Row is a standard widget");
+    assert_eq!(row.node, WidgetNode::Flex(FlexAxis::Row));
+    assert_eq!(
+        row.default_slot().map(|s| s.cardinality),
+        Some(SlotCardinality::Many)
+    );
+    assert!(row.property("width").is_some_and(|p| p.percent_basis));
+    assert!(row.event("click").is_some_and(|e| e.bubbles));
+    let slider = natives
+        .widget("Slider")
+        .expect("Slider is a standard widget");
+    assert!(slider.default_slot().is_none());
+    assert_eq!(
+        slider.write_back("value").and_then(|e| e.payload),
+        Some("SliderChanged")
+    );
+    assert!(slider.write_back("min").is_none());
+    let tabs = natives.widget("Tabs").expect("Tabs is a standard widget");
+    assert_eq!(
+        tabs.write_back("selected").map(|e| e.name),
+        Some("selected_changed")
+    );
+    assert!(natives.widget("Leaf").is_none());
+}
+
+#[test]
+fn a_widget_declared_twice_differently_conflicts() {
+    let error = Natives::with(&[&ROW_AGAIN]).expect_err("conflicts");
+    assert_eq!(error.code(), "E6101");
+    assert_eq!(error.path, "other::Row");
 }

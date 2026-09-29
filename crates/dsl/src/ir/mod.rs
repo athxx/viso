@@ -37,131 +37,162 @@ pub use ui_ir::{
     UiMatch, UiMatchArm, UiNode, UiTree,
 };
 
+use viso_behavior::native::{FlexAxis, Natives, WidgetNode};
+
 use crate::ast::{
-    AnonymousNode, AstNode, Expr, NamedNode, NodeBody, PathExpr, PropertyBinding, TypePath,
-    ViewBlock, ViewFor, ViewIf, ViewItem, ViewMatch,
+    AstNode, Expr, NodeBody, PathExpr, PropertyBinding, TypePath, ViewBlock, ViewFor, ViewIf,
+    ViewItem, ViewMatch,
 };
 use crate::syntax::span::TextRange;
+
+/// A lowered view: its template, and every node type name it wrote that no
+/// registered widget declares (each with the span of its type path).
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct LoweredView {
+    /// The retained-tree template.
+    pub tree: UiTree,
+    /// The unregistered node type names, in source order.
+    pub unknown: Vec<(String, TextRange)>,
+}
 
 /// Lowers a `ui!` view fragment's items into a [`UiTree`].
 ///
 /// This is the shared-frontend entry the emitter drives after
 /// tokenize/parse/resolve: it walks the fragment's top-level [`ViewItem`]s and
-/// produces the static template. Property values that fold to compile-time
-/// constants become style; everything else is recorded as a
+/// produces the static template. Each node lowers to the retained node its
+/// widget declaration in `natives` names; a `Fragment` splices its children into
+/// the enclosing item list, and a type no widget declares mounts nothing and is
+/// reported in [`LoweredView::unknown`]. Property values that fold to
+/// compile-time constants become style; everything else is recorded as a
 /// [`PendingProperty`] for the Binding IR pass to resolve against the resolver's
 /// refs and the component schema.
-pub fn lower_fragment_items(items: impl Iterator<Item = ViewItem>) -> UiTree {
-    UiTree {
-        items: items.filter_map(lower_item).collect(),
+pub fn lower_fragment_items(
+    items: impl Iterator<Item = ViewItem>,
+    natives: &Natives,
+) -> LoweredView {
+    let mut lowering = Lowering {
+        natives,
+        unknown: Vec::new(),
+    };
+    let mut out = Vec::new();
+    for item in items {
+        lowering.item(item, &mut out);
+    }
+    LoweredView {
+        tree: UiTree { items: out },
+        unknown: lowering.unknown,
     }
 }
 
-/// Lowers a component's `view` block into a [`UiTree`].
-pub fn lower_view_block(block: &ViewBlock) -> UiTree {
-    lower_fragment_items(block.items())
+/// Lowers a component's `view` block into a [`UiTree`]; see
+/// [`lower_fragment_items`].
+pub fn lower_view_block(block: &ViewBlock, natives: &Natives) -> LoweredView {
+    lower_fragment_items(block.items(), natives)
 }
 
-/// Lowers one view item into a [`UiItem`], or `None` for an item that carries no
-/// mounted structure on its own (a bare property/handler at fragment top level,
-/// which the grammar does not produce, or an unsupported advanced item).
-fn lower_item(item: ViewItem) -> Option<UiItem> {
-    match item {
-        ViewItem::Named(node) => lower_named(&node).map(UiItem::Node),
-        ViewItem::Anonymous(node) => lower_anonymous(&node).map(UiItem::Node),
-        ViewItem::If(vi) => Some(UiItem::If(lower_if(&vi))),
-        ViewItem::For(vf) => Some(UiItem::For(lower_for(&vf))),
-        ViewItem::Match(vm) => Some(UiItem::Match(lower_match(&vm))),
-        // Property/handler/two-way/fill only appear inside a node body, where
-        // `lower_body` consumes them; at item level they carry no node.
-        ViewItem::Property(_)
-        | ViewItem::Handler(_)
-        | ViewItem::TwoWayBinding(_)
-        | ViewItem::Fill(_) => None,
-    }
+/// The state of one view lowering.
+struct Lowering<'a> {
+    natives: &'a Natives,
+    unknown: Vec<(String, TextRange)>,
 }
 
-/// Lowers a `node name: Type { ... }` declaration.
-fn lower_named(node: &NamedNode) -> Option<UiNode> {
-    let type_name = type_name_of(node.ty()?);
-    let local_name = node.name().map(|t| t.text());
-    Some(build_node(
-        type_name,
-        local_name,
-        node.body(),
-        node.syntax().text_range(),
-    ))
-}
-
-/// Lowers an anonymous `Type { ... }` declaration.
-fn lower_anonymous(node: &AnonymousNode) -> Option<UiNode> {
-    let type_name = type_name_of(node.ty()?);
-    Some(build_node(
-        type_name,
-        None,
-        node.body(),
-        node.syntax().text_range(),
-    ))
-}
-
-/// Assembles a [`UiNode`] from its type, optional local name, and body: folds
-/// static properties into style, records reactive properties as pending, and
-/// descends into child nodes.
-fn build_node(
-    type_name: String,
-    local_name: Option<String>,
-    body: Option<NodeBody>,
-    origin: TextRange,
-) -> UiNode {
-    let kind = NodeKind::from_type_name(&type_name);
-    let mut style = StyleIr::default();
-    // A container type implies its arrangement axis before any property does.
-    match type_name.as_str() {
-        "Row" | "HStack" => style.axis = Some(AxisIr::Row),
-        "Column" | "VStack" => style.axis = Some(AxisIr::Column),
-        _ => {}
-    }
-
-    let mut pending = Vec::new();
-    let mut handlers = Vec::new();
-    let mut children = Vec::new();
-
-    if let Some(body) = body {
-        for member in body.members() {
-            match member {
-                ViewItem::Property(prop) => fold_property(&prop, &mut style, &mut pending),
-                ViewItem::Handler(h) => {
-                    handlers.push(UiHandler {
-                        event: h.event().map(|t| t.text()).unwrap_or_default(),
-                        origin: h.syntax().text_range(),
-                    });
-                }
-                // Nested structure and control flow are children.
-                ViewItem::Named(_)
-                | ViewItem::Anonymous(_)
-                | ViewItem::If(_)
-                | ViewItem::For(_)
-                | ViewItem::Match(_) => {
-                    if let Some(child) = lower_item(member) {
-                        children.push(child);
-                    }
-                }
-                // Two-way bindings and fills are placeholder-lowered later
-                // (advanced semantics); they mount no child node here.
-                ViewItem::TwoWayBinding(_) | ViewItem::Fill(_) => {}
+impl Lowering<'_> {
+    /// Lowers one view item onto `out`. A property, handler, two-way binding or
+    /// fill carries no mounted structure on its own: it only appears inside a
+    /// node body, where [`Lowering::node`] consumes it.
+    fn item(&mut self, item: ViewItem, out: &mut Vec<UiItem>) {
+        match item {
+            ViewItem::Named(node) => {
+                let local_name = node.name().map(|t| t.text());
+                self.node(
+                    node.ty(),
+                    local_name,
+                    node.body(),
+                    node.syntax().text_range(),
+                    out,
+                );
             }
+            ViewItem::Anonymous(node) => {
+                self.node(
+                    node.ty(),
+                    None,
+                    node.body(),
+                    node.syntax().text_range(),
+                    out,
+                );
+            }
+            ViewItem::If(vi) => out.push(UiItem::If(self.lower_if(&vi))),
+            ViewItem::For(vf) => out.push(UiItem::For(self.lower_for(&vf))),
+            ViewItem::Match(vm) => out.push(UiItem::Match(self.lower_match(&vm))),
+            ViewItem::Property(_)
+            | ViewItem::Handler(_)
+            | ViewItem::TwoWayBinding(_)
+            | ViewItem::Fill(_) => {}
         }
     }
 
-    UiNode {
-        type_name,
-        local_name,
-        kind,
-        style,
-        pending,
-        handlers,
-        children,
-        origin,
+    /// Lowers a node of type `ty` onto `out`: the retained node its widget
+    /// declares, with static properties folded into style, reactive ones pending
+    /// and child items lowered in order; a `Fragment`'s children directly.
+    fn node(
+        &mut self,
+        ty: Option<TypePath>,
+        local_name: Option<String>,
+        body: Option<NodeBody>,
+        origin: TextRange,
+        out: &mut Vec<UiItem>,
+    ) {
+        let Some(ty) = ty else { return };
+        let type_name = type_name_of(&ty);
+        let Some(widget) = self.natives.widget(&type_name) else {
+            self.unknown.push((type_name, ty.syntax().text_range()));
+            return;
+        };
+        let mut style = StyleIr::default();
+        let kind = match widget.node {
+            WidgetNode::Flex(axis) => {
+                style.axis = match axis {
+                    FlexAxis::Row => Some(AxisIr::Row),
+                    FlexAxis::Column => Some(AxisIr::Column),
+                    FlexAxis::Property => None,
+                };
+                NodeKind::Flex
+            }
+            WidgetNode::Grid => NodeKind::Grid,
+            WidgetNode::Scroll => NodeKind::Scroll,
+            WidgetNode::VirtualList => NodeKind::VirtualList,
+            WidgetNode::Leaf => NodeKind::Leaf,
+            WidgetNode::Fragment => {
+                for member in body.iter().flat_map(|b| b.members()) {
+                    self.item(member, out);
+                }
+                return;
+            }
+        };
+
+        let mut pending = Vec::new();
+        let mut handlers = Vec::new();
+        let mut children = Vec::new();
+        for member in body.iter().flat_map(|b| b.members()) {
+            match member {
+                ViewItem::Property(prop) => fold_property(&prop, &mut style, &mut pending),
+                ViewItem::Handler(h) => handlers.push(UiHandler {
+                    event: h.event().map(|t| t.text()).unwrap_or_default(),
+                    origin: h.syntax().text_range(),
+                }),
+                other => self.item(other, &mut children),
+            }
+        }
+        out.push(UiItem::Node(UiNode {
+            type_name,
+            local_name,
+            kind,
+            style,
+            pending,
+            handlers,
+            children,
+            origin,
+        }));
     }
 }
 
@@ -244,74 +275,83 @@ fn path_ident(value: &Expr) -> Option<String> {
 }
 
 /// The type name a [`TypePath`] denotes — its last segment (`ui::Text` → `Text`).
-fn type_name_of(ty: TypePath) -> String {
+fn type_name_of(ty: &TypePath) -> String {
     ty.segments().last().map(|t| t.text()).unwrap_or_default()
 }
 
-/// Lowers an `if / else if / else` view region into a [`UiIf`].
-fn lower_if(vi: &ViewIf) -> UiIf {
-    let mut arms = Vec::new();
-    collect_if_arms(vi, &mut arms);
-    UiIf {
-        arms,
-        origin: vi.syntax().text_range(),
+impl Lowering<'_> {
+    /// Lowers an `if / else if / else` view region into a [`UiIf`].
+    fn lower_if(&mut self, vi: &ViewIf) -> UiIf {
+        let mut arms = Vec::new();
+        self.collect_if_arms(vi, &mut arms);
+        UiIf {
+            arms,
+            origin: vi.syntax().text_range(),
+        }
     }
-}
 
-/// Walks an `if`/`else if`/`else` chain into flat arms, each with its condition
-/// span (or `None` for the trailing `else`) and mounted items.
-fn collect_if_arms(vi: &ViewIf, arms: &mut Vec<UiIfArm>) {
-    let condition = vi.condition().map(|e| e.syntax().text_range());
-    let items = vi.then_block().map(block_items).unwrap_or_default();
-    arms.push(UiIfArm {
-        condition,
-        preserve: vi.preserve_name(),
-        items,
-    });
+    /// Walks an `if`/`else if`/`else` chain into flat arms, each with its condition
+    /// span (or `None` for the trailing `else`) and mounted items.
+    fn collect_if_arms(&mut self, vi: &ViewIf, arms: &mut Vec<UiIfArm>) {
+        let condition = vi.condition().map(|e| e.syntax().text_range());
+        let items = vi
+            .then_block()
+            .map(|b| self.block_items(b))
+            .unwrap_or_default();
+        arms.push(UiIfArm {
+            condition,
+            preserve: vi.preserve_name(),
+            items,
+        });
 
-    match vi.else_branch() {
-        Some(crate::ast::ElseBranch::If(nested)) => collect_if_arms(&nested, arms),
-        Some(crate::ast::ElseBranch::Block(block)) => arms.push(UiIfArm {
-            condition: None,
-            preserve: None,
-            items: block_items(block),
-        }),
-        None => {}
+        match vi.else_branch() {
+            Some(crate::ast::ElseBranch::If(nested)) => self.collect_if_arms(&nested, arms),
+            Some(crate::ast::ElseBranch::Block(block)) => arms.push(UiIfArm {
+                condition: None,
+                preserve: None,
+                items: self.block_items(block),
+            }),
+            None => {}
+        }
     }
-}
 
-/// Lowers a `for pattern in iterable key key { ... }` region into a [`UiFor`].
-fn lower_for(vf: &ViewFor) -> UiFor {
-    UiFor {
-        binding: vf
-            .pattern()
-            .and_then(|p| p.binding_name())
-            .map(|t| t.text()),
-        iterable: vf.iterable().map(|e| e.syntax().text_range()),
-        key: vf.key().map(|e| e.syntax().text_range()),
-        body: vf.body().map(block_items).unwrap_or_default(),
-        origin: vf.syntax().text_range(),
+    /// Lowers a `for pattern in iterable key key { ... }` region into a [`UiFor`].
+    fn lower_for(&mut self, vf: &ViewFor) -> UiFor {
+        UiFor {
+            binding: vf
+                .pattern()
+                .and_then(|p| p.binding_name())
+                .map(|t| t.text()),
+            iterable: vf.iterable().map(|e| e.syntax().text_range()),
+            key: vf.key().map(|e| e.syntax().text_range()),
+            body: vf.body().map(|b| self.block_items(b)).unwrap_or_default(),
+            origin: vf.syntax().text_range(),
+        }
     }
-}
 
-/// Lowers a `match scrutinee { arm, ... }` region into a [`UiMatch`].
-fn lower_match(vm: &ViewMatch) -> UiMatch {
-    let arms = vm
-        .arms()
-        .map(|arm| UiMatchArm {
-            pattern: arm.pattern().map(|p| p.syntax().text_range()),
-            guard: arm.guard().map(|e| e.syntax().text_range()),
-            items: arm.body().map(block_items).unwrap_or_default(),
-        })
-        .collect();
-    UiMatch {
-        scrutinee: vm.scrutinee().map(|e| e.syntax().text_range()),
-        arms,
-        origin: vm.syntax().text_range(),
+    /// Lowers a `match scrutinee { arm, ... }` region into a [`UiMatch`].
+    fn lower_match(&mut self, vm: &ViewMatch) -> UiMatch {
+        let arms = vm
+            .arms()
+            .map(|arm| UiMatchArm {
+                pattern: arm.pattern().map(|p| p.syntax().text_range()),
+                guard: arm.guard().map(|e| e.syntax().text_range()),
+                items: arm.body().map(|b| self.block_items(b)).unwrap_or_default(),
+            })
+            .collect();
+        UiMatch {
+            scrutinee: vm.scrutinee().map(|e| e.syntax().text_range()),
+            arms,
+            origin: vm.syntax().text_range(),
+        }
     }
-}
 
-/// Lowers the items of a nested view block, in source order.
-fn block_items(block: ViewBlock) -> Vec<UiItem> {
-    block.items().filter_map(lower_item).collect()
+    /// Lowers the items of a nested view block, in source order.
+    fn block_items(&mut self, block: ViewBlock) -> Vec<UiItem> {
+        let mut out = Vec::new();
+        for item in block.items() {
+            self.item(item, &mut out);
+        }
+        out
+    }
 }

@@ -27,7 +27,7 @@ fn clicker(body: &str) -> String {
                 Column {{
                     width: 200dp;
                     height: 100dp;
-                    Leaf {{ width: 100dp; height: 50dp; {body} }}
+                    Text {{ width: 100dp; height: 50dp; {body} }}
                 }}
             }}
         }}"

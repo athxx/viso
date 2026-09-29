@@ -25,10 +25,12 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
 
+use viso_behavior::native::Natives;
+
 use super::infer::{InferCx, MatchCheck, TypeEnv};
 use super::percent::{Carry, PercentFacts, PercentSources};
 use super::ty::Ty;
-use super::widget::{self, ChildProps, PropLookup, WidgetSchema};
+use super::widget::{self, ChildProps, PropLookup, WidgetSchema, value_ty};
 use crate::ast::{
     AstNode, ElseBranch, EventHandler, Expr, NodeBody, PropertyBinding, PropertyPath,
     TwoWayBinding, TypePath, ViewBlock, ViewFor, ViewIf, ViewItem, ViewMatch,
@@ -91,6 +93,9 @@ pub(crate) trait ViewEnv: TypeEnv {
 
     /// The prelude type named `name`.
     fn standard_type(&self, name: &str) -> Option<SymbolId>;
+
+    /// The native registry the view's widgets are declared in.
+    fn widgets(&self) -> &Natives;
 }
 
 /// Where a view's event handlers lower to: the component layout registered last
@@ -410,9 +415,9 @@ impl<'a> ViewWalk<'a> {
         self.items(body.members(), scope);
     }
 
-    /// The schema of a node type: a component of the package, else a built-in
-    /// widget the baseline lists.
-    fn owner_of(&self, ty: &TypePath) -> Option<Owner<'a>> {
+    /// The schema of a node type: a component of the package, else a registered
+    /// native widget; a name that is neither is `E2001`.
+    fn owner_of(&mut self, ty: &TypePath) -> Option<Owner<'a>> {
         let segments: Vec<_> = ty.segments().collect();
         let [head] = segments.as_slice() else {
             return None;
@@ -425,12 +430,30 @@ impl<'a> ViewWalk<'a> {
                 component: Some(*id),
                 schema: WidgetSchema::user_component(),
             }),
-            None => Some(Owner {
-                schema: widget::builtin(&name)?,
-                name,
-                inputs: &[],
-                component: None,
-            }),
+            None => {
+                let Some(schema) = widget::widget(self.env.widgets(), &name) else {
+                    let range = head.text_range();
+                    let candidates = self.env.widgets().widgets().iter().map(|entry| Candidate {
+                        name: entry.widget.name,
+                        declared_at: None,
+                    });
+                    let suggestions = nearest(&name, candidates);
+                    let mut diagnostic = Diagnostic::error(
+                        "E2001",
+                        range,
+                        format!("no component or widget is named `{name}`"),
+                    );
+                    attach(&mut diagnostic, range, &suggestions);
+                    self.diagnostics.push(diagnostic);
+                    return None;
+                };
+                Some(Owner {
+                    schema,
+                    name,
+                    inputs: &[],
+                    component: None,
+                })
+            }
         }
     }
 
@@ -650,7 +673,7 @@ impl<'a> ViewWalk<'a> {
             .collect();
         if let [prefix, members @ ..] = segments.as_slice()
             && !members.is_empty()
-            && let Some(group) = widget::child_props(prefix)
+            && let Some(group) = widget::child_props(self.env.widgets(), prefix)
         {
             return self.provided(group, members, &text, range, scope.outer);
         }
@@ -671,7 +694,7 @@ impl<'a> ViewWalk<'a> {
         let names: Vec<&str> = segments.iter().map(String::as_str).collect();
         match owner.schema.lookup(&names) {
             PropLookup::Known(spec) => Some(Declared {
-                ty: spec.kind.ty(),
+                ty: value_ty(spec.ty),
                 two_way: spec.two_way,
                 basis: Basis::of(spec.percent_basis),
             }),
@@ -732,7 +755,7 @@ impl<'a> ViewWalk<'a> {
                 };
                 if let Some(spec) = spec {
                     return Some(Declared {
-                        ty: spec.kind.ty(),
+                        ty: value_ty(spec.ty),
                         two_way: spec.two_way,
                         basis: Basis::of(spec.percent_basis),
                     });

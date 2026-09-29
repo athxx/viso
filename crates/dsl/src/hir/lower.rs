@@ -1091,6 +1091,10 @@ impl ViewEnv for ModuleEnv<'_> {
     fn standard_type(&self, name: &str) -> Option<SymbolId> {
         self.decls.standard.get(name).copied()
     }
+
+    fn widgets(&self) -> &Natives {
+        self.natives
+    }
 }
 
 impl ReadEnv for ModuleEnv<'_> {

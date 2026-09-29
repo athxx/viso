@@ -44,7 +44,7 @@ fn ui_fragment_lays_out_and_drives_the_renderer() {
         Column {
             width: 120dp;
             height: 60dp;
-            Leaf { width: 40dp; height: 24dp; }
+            Text { width: 40dp; height: 24dp; }
         }
     };
 
@@ -114,7 +114,7 @@ fn ui_fragment_lays_out_and_drives_the_renderer() {
 fn ui_fragment_percent_lengths_resolve_against_the_parent() {
     let build = viso::ui! {
         Row {
-            Leaf { width: 50%; height: 100% - 8dp; }
+            Text { width: 50%; height: 100% - 8dp; }
         }
     };
 

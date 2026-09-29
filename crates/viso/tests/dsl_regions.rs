@@ -23,27 +23,27 @@ viso::component! {
                 Row {
                     width: 400dp;
                     height: 20dp;
-                    Leaf { width: 20dp; height: 20dp; on click { open = !open; } }
-                    Leaf { width: 20dp; height: 20dp; on click { mode += 1; } }
-                    Leaf { width: 20dp; height: 20dp; on click { items = [3, 1, 2]; } }
-                    Leaf { width: 20dp; height: 20dp; on click { items = [1, 1]; } }
+                    Text { width: 20dp; height: 20dp; on click { open = !open; } }
+                    Text { width: 20dp; height: 20dp; on click { mode += 1; } }
+                    Text { width: 20dp; height: 20dp; on click { items = [3, 1, 2]; } }
+                    Text { width: 20dp; height: 20dp; on click { items = [1, 1]; } }
                 }
                 Column {
                     width: 400dp;
                     height: 60dp;
                     if open preserve "panel" {
-                        Leaf { width: 10dp; height: 10dp; }
+                        Text { width: 10dp; height: 10dp; }
                     } else {
-                        Leaf { width: 10dp; height: 10dp; }
-                        Leaf { width: 10dp; height: 10dp; }
+                        Text { width: 10dp; height: 10dp; }
+                        Text { width: 10dp; height: 10dp; }
                     }
                 }
                 Column {
                     width: 400dp;
                     height: 60dp;
                     match mode {
-                        0 => { Leaf { width: 10dp; height: 10dp; } },
-                        1 => { Row { width: 10dp; height: 10dp; Leaf { width: 5dp; height: 5dp; } } },
+                        0 => { Text { width: 10dp; height: 10dp; } },
+                        1 => { Row { width: 10dp; height: 10dp; Text { width: 5dp; height: 5dp; } } },
                         _ => { },
                     }
                 }
@@ -51,7 +51,7 @@ viso::component! {
                     width: 400dp;
                     height: 20dp;
                     for item in items key item {
-                        Leaf { width: 20dp; height: 20dp; on click { picked = item; } }
+                        Text { width: 20dp; height: 20dp; on click { picked = item; } }
                     }
                 }
             }

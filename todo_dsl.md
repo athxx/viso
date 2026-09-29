@@ -233,7 +233,7 @@ Goal: every Core view construct reaches a live tree through all three lowering t
 ### D2.3 — Components and slots in views
 
 - [ ] Resolve user components instead of defaulting unknown types to `NodeKind::Leaf`.
-- [ ] Widget schema registry: properties, events, slots, percent basis, from native
+- [x] Widget schema registry: properties, events, slots, percent basis, from native
       declarations instead of the baseline table in `hir/widget.rs`.
 - [ ] Default slot `E3003`/`E3004`; slot cardinality `E3502`; unknown slot `E3501`.
 - [ ] Two-way binding (§123) lowering: write-back through the `@bindable` event

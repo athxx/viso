@@ -9,6 +9,7 @@
 //! covers the dirty-class table directly, since its bit assignments are
 //! load-bearing for the emitter that decomposes them back into runtime constants.
 
+use viso_behavior::native::Natives;
 use viso_dsl::ast::{AstNode, ViewFragment};
 use viso_dsl::ir::{
     AxisIr, DirtyClass, LengthIr, NodeKind, UiItem, UiNode, lower_fragment_items,
@@ -21,7 +22,9 @@ use viso_dsl::syntax::{SyntaxNode, tokenize};
 fn lower(src: &str) -> Vec<UiItem> {
     let root = SyntaxNode::new_root(parse_entry(&tokenize(src), src, Entry::ViewFragment).root);
     let fragment = ViewFragment::cast(root).expect("a ViewFragment root");
-    lower_fragment_items(fragment.items()).items
+    let lowered = lower_fragment_items(fragment.items(), &Natives::standard());
+    assert!(lowered.unknown.is_empty(), "{:?}", lowered.unknown);
+    lowered.tree.items
 }
 
 /// The sole node at the top level of a lowered fragment.
@@ -60,22 +63,47 @@ fn row_and_containers_resolve_their_kind_and_axis() {
     assert_eq!(only_node("Row { }").style.axis, Some(AxisIr::Row));
     assert_eq!(only_node("Grid { }").kind, NodeKind::Grid);
     assert_eq!(only_node("Scroll { }").kind, NodeKind::Scroll);
-    assert_eq!(only_node("List { }").kind, NodeKind::VirtualList);
-    // An unknown type falls back to a leaf until component resolution lands.
-    assert_eq!(only_node("Sparkline { }").kind, NodeKind::Leaf);
+    assert_eq!(only_node("VirtualList { }").kind, NodeKind::VirtualList);
+    assert_eq!(only_node("Stack { }").kind, NodeKind::Flex);
+    assert_eq!(only_node("Button { }").kind, NodeKind::Leaf);
+}
+
+#[test]
+fn a_fragment_splices_its_children_and_an_unknown_type_mounts_nothing() {
+    let column = only_node("Column { Fragment { Text { } Button { } } Text { } }");
+    let types: Vec<_> = column
+        .children
+        .iter()
+        .map(|item| match item {
+            UiItem::Node(n) => n.type_name.as_str(),
+            other => panic!("expected a node, got {other:?}"),
+        })
+        .collect();
+    assert_eq!(types, ["Text", "Button", "Text"]);
+
+    let src = "Column { Sparkline { } }";
+    let root = SyntaxNode::new_root(parse_entry(&tokenize(src), src, Entry::ViewFragment).root);
+    let fragment = ViewFragment::cast(root).expect("a ViewFragment root");
+    let lowered = lower_fragment_items(fragment.items(), &Natives::standard());
+    assert_eq!(lowered.unknown.len(), 1);
+    assert_eq!(lowered.unknown[0].0, "Sparkline");
+    match &lowered.tree.items[0] {
+        UiItem::Node(n) => assert!(n.children.is_empty()),
+        other => panic!("expected a node, got {other:?}"),
+    }
 }
 
 #[test]
 fn static_dimensions_fold_into_style() {
     // A `dp` constant folds to a fixed extent.
-    let node = only_node("Leaf { width: 12dp; height: 34dp; gap: 8dp; }");
+    let node = only_node("Text { width: 12dp; height: 34dp; gap: 8dp; }");
     assert_eq!(node.style.width, Some(LengthIr::Fixed(12.0)));
     assert_eq!(node.style.height, Some(LengthIr::Fixed(34.0)));
     assert_eq!(node.style.gap, Some(8.0));
     assert!(node.pending.is_empty(), "constants folded, nothing pending");
 
     // `%` is a ratio of the parent's content box, not a fill share.
-    let pct = only_node("Leaf { width: 50%; height: 25%; }");
+    let pct = only_node("Text { width: 50%; height: 25%; }");
     assert_eq!(
         pct.style.width,
         Some(LengthIr::Relative {
@@ -94,7 +122,7 @@ fn static_dimensions_fold_into_style() {
 
 #[test]
 fn mixed_length_constants_fold_term_wise() {
-    let node = only_node("Leaf { width: 100% - 2 * 8dp; height: -(4dp - 10dp) / 2; }");
+    let node = only_node("Text { width: 100% - 2 * 8dp; height: -(4dp - 10dp) / 2; }");
     assert_eq!(
         node.style.width,
         Some(LengthIr::Relative {
@@ -108,7 +136,7 @@ fn mixed_length_constants_fold_term_wise() {
 
 #[test]
 fn a_negative_size_constant_clamps_to_zero() {
-    let node = only_node("Leaf { width: 4dp - 10dp; gap: -2dp; }");
+    let node = only_node("Text { width: 4dp - 10dp; gap: -2dp; }");
     assert_eq!(node.style.width, Some(LengthIr::Fixed(0.0)));
     assert_eq!(node.style.gap, Some(0.0));
 }
@@ -118,19 +146,19 @@ fn values_that_are_not_dp_or_percent_lengths_do_not_fold() {
     // A bare number is a scalar; `px`/`sp`/`em` need an environment scalar; `pt`
     // is not a unit; `1s` is a duration; `%` has no gap basis; a length plus a
     // scalar and a division by zero are not lengths. None may become a fixed dp.
-    let node = only_node("Leaf { width: 12; height: 34px; gap: 8; }");
+    let node = only_node("Text { width: 12; height: 34px; gap: 8; }");
     assert_eq!(node.style.width, None);
     assert_eq!(node.style.height, None);
     assert_eq!(node.style.gap, None);
     assert_eq!(node.pending.len(), 3);
     for source in [
-        "Leaf { width: 2sp; }",
-        "Leaf { width: 1.5em; }",
-        "Leaf { width: 12pt; }",
-        "Leaf { width: 1s; }",
-        "Leaf { width: 10dp + 1; }",
-        "Leaf { width: 10dp / 0; }",
-        "Leaf { gap: 10%; }",
+        "Text { width: 2sp; }",
+        "Text { width: 1.5em; }",
+        "Text { width: 12pt; }",
+        "Text { width: 1s; }",
+        "Text { width: 10dp + 1; }",
+        "Text { width: 10dp / 0; }",
+        "Text { gap: 10%; }",
     ] {
         let node = only_node(source);
         assert!(node.style.is_empty(), "{source} folded to {:?}", node.style);
@@ -178,7 +206,7 @@ fn handlers_are_recorded_on_the_node() {
 
 #[test]
 fn if_region_flattens_its_arms() {
-    let items = lower("if ready { Text { } } else { Spinner { } }");
+    let items = lower("if ready { Text { } } else { Button { } }");
     let vi = match &items[0] {
         UiItem::If(vi) => vi,
         other => panic!("expected an if region, got {other:?}"),
@@ -195,7 +223,7 @@ fn if_region_flattens_its_arms() {
     );
 
     // `else if` chains into a third arm with its own condition.
-    let chained = lower("if a { X { } } else if b { Y { } } else { Z { } }");
+    let chained = lower("if a { Text { } } else if b { Button { } } else { Toggle { } }");
     let ci = match &chained[0] {
         UiItem::If(vi) => vi,
         other => panic!("expected an if region, got {other:?}"),
@@ -223,7 +251,7 @@ fn for_region_records_binding_iterable_and_key() {
 
 #[test]
 fn match_region_records_scrutinee_and_arms() {
-    let items = lower("match status { Active => { Text { } }, Idle => { Spinner { } } }");
+    let items = lower("match status { Active => { Text { } }, Idle => { Button { } } }");
     let vm = match &items[0] {
         UiItem::Match(vm) => vm,
         other => panic!("expected a match region, got {other:?}"),
@@ -301,6 +329,7 @@ fn dirty_class_bit_positions_are_stable() {
 mod binding {
     use std::collections::BTreeSet;
 
+    use viso_behavior::native::Natives;
     use viso_dsl::ast::{AstNode, ViewFragment};
     use viso_dsl::hir::SourceSet;
     use viso_dsl::ir::binding_ir::BindingKind;
@@ -327,7 +356,7 @@ mod binding {
     fn setup(src: &str, sources: &[Source]) -> (UiTree, SyntaxNode, Vec<ResolvedRef>, SourceSet) {
         let root = SyntaxNode::new_root(parse_entry(&tokenize(src), src, Entry::ViewFragment).root);
         let fragment = ViewFragment::cast(root.clone()).expect("a ViewFragment root");
-        let tree = lower_fragment_items(fragment.items());
+        let tree = lower_fragment_items(fragment.items(), &Natives::standard()).tree;
 
         let names: Vec<&str> = sources.iter().map(|s| s.name).collect();
         let mut interner = NameInterner::new();
@@ -383,7 +412,7 @@ mod binding {
         // `width: base + delta` reads two states; each independently invalidates
         // the node, so it becomes two static edges carrying the width dirty class.
         let sources = [source("base", 1), source("delta", 2)];
-        let (tree, root, refs, env) = setup("Leaf { width: base + delta; }", &sources);
+        let (tree, root, refs, env) = setup("Text { width: base + delta; }", &sources);
         let ir = lower_bindings(&tree, &root, &refs, &env);
 
         assert_eq!(ir.edges.len(), 2, "one edge per reactive source read");

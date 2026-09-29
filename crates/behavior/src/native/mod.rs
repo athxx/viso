@@ -10,6 +10,9 @@
 //! function's parameter and return types from its Rust signature, so the schema
 //! cannot drift from the code.
 //!
+//! A library also declares the widgets a view instantiates ([`NativeWidget`]):
+//! their properties, events and slots, and the retained node each lowers to.
+//!
 //! A [`Natives`] registry collects libraries; the compiler resolves native
 //! paths against it and a module records each native it calls as a
 //! [`NativeImport`](crate::NativeImport) (path and signature hash). Linking a
@@ -23,6 +26,8 @@
 mod registry;
 mod standard;
 mod value;
+mod widget;
+mod widgets;
 
 use std::any::{Any, TypeId};
 use std::collections::HashMap;
@@ -30,9 +35,14 @@ use std::fmt;
 
 use crate::value::Value;
 
-pub use registry::{NativeEntry, NativeTypeEntry, Natives, SchemaConflict};
+pub use registry::{NativeEntry, NativeTypeEntry, NativeWidgetEntry, Natives, SchemaConflict};
 pub use standard::{Clipboard, STANDARD, Stopwatch};
 pub use value::{NativeHandle, NativeObject, NativeValue, Obj};
+pub use widget::{
+    FlexAxis, NativeWidget, PropertyGroup, SlotCardinality, WidgetEvent, WidgetNode,
+    WidgetProperty, WidgetSlot,
+};
+pub use widgets::COMPONENT;
 
 /// A native function's effect kind, which fixes the contexts that may call it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -299,8 +309,8 @@ impl NativeType {
     }
 }
 
-/// A versioned set of native functions and handle types under one module
-/// path.
+/// A versioned set of native functions, handle types and widgets under one
+/// module path.
 #[derive(Debug, Clone, Copy)]
 pub struct NativeLibrary {
     /// Its module path, such as `viso::text`.
@@ -311,6 +321,8 @@ pub struct NativeLibrary {
     pub functions: &'static [NativeFunction],
     /// Its handle types.
     pub types: &'static [NativeType],
+    /// Its widgets, which a view names by their bare type name.
+    pub widgets: &'static [NativeWidget],
 }
 
 /// A stable numeric identity of a native function or type: a hash of its full

@@ -64,9 +64,8 @@ pub struct UiNode {
     pub origin: TextRange,
 }
 
-/// Which `viso_ui::BuildCx` builder call a node maps to. The mapping is by the
-/// node's type name; an unrecognized type defaults to [`NodeKind::Leaf`] (a
-/// primitive with no child region) until a schema pass resolves user components.
+/// Which `viso_ui::BuildCx` builder call a node maps to: the retained node its
+/// native widget declaration names.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NodeKind {
     /// A flex container (`Row`/`Column`/`Flex`/`Stack`) → `cx.flex`.
@@ -77,23 +76,11 @@ pub enum NodeKind {
     Scroll,
     /// A virtualized list → `cx.virtual_list`.
     VirtualList,
-    /// A leaf primitive (`Text`, `Image`, an unknown type) → `cx.leaf`.
+    /// A leaf primitive (`Text`, `Button`) → `cx.leaf`.
     Leaf,
 }
 
 impl NodeKind {
-    /// The builder call a node type maps to. Container types get their matching
-    /// container call; everything else is a leaf until component resolution lands.
-    pub fn from_type_name(name: &str) -> Self {
-        match name {
-            "Row" | "Column" | "Flex" | "Stack" | "HStack" | "VStack" => NodeKind::Flex,
-            "Grid" => NodeKind::Grid,
-            "Scroll" | "ScrollView" => NodeKind::Scroll,
-            "VirtualList" | "List" => NodeKind::VirtualList,
-            _ => NodeKind::Leaf,
-        }
-    }
-
     /// Whether this kind hosts a child region the emitter descends into.
     pub fn is_container(self) -> bool {
         matches!(

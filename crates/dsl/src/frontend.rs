@@ -195,7 +195,15 @@ pub fn compile_fragment(source: &str) -> Compiled {
     let resolved = resolve_fragment(&fragment, &name_refs, &mut interner, FRAGMENT_PACKAGE);
     diagnostics.extend(resolved.errors.iter().cloned());
 
-    let tree = lower_fragment_items(fragment.items());
+    let lowered = lower_fragment_items(fragment.items(), &Natives::standard());
+    for (name, at) in &lowered.unknown {
+        diagnostics.push(Diagnostic::error(
+            "E2001",
+            *at,
+            format!("no widget is named `{name}`"),
+        ));
+    }
+    let tree = lowered.tree;
     let env = SourceSet::new(resolved.sources.iter().copied());
     let bindings = lower_bindings(&tree, &root, &resolved.refs, &env);
     let keys = analyze_keys(&tree, &root, &resolved.refs, &env);
@@ -293,10 +301,11 @@ fn compile_unit(source: &str, parse: Parse, origin: &Origin, natives: Arc<Native
     };
 
     let sources = component_sources(&component, &decl);
+    // The view checker has already reported every unregistered node type.
     let tree = decl
         .view()
         .and_then(|view| view.block())
-        .map(|block| lower_view_block(&block))
+        .map(|block| lower_view_block(&block, graph.natives()).tree)
         .unwrap_or(UiTree { items: Vec::new() });
     let env = SourceSet::new(sources.iter().map(|s| s.symbol));
     let bindings = lower_bindings(&tree, &root, &module.refs, &env);

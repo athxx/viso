@@ -19,7 +19,7 @@ component Counter {
         Column {
             width: 120dp;
             Text { text: format(\"{}\", count); }
-            Leaf { visible: enabled; }
+            Text { visible: enabled; }
         }
     }
 }

@@ -17,7 +17,7 @@ viso::component! {
             Column {
                 width: 120dp;
                 Text { text: format("{}", count); }
-                Leaf { visible: enabled; }
+                Text { visible: enabled; }
             }
         }
     }
@@ -152,7 +152,7 @@ fn fragment() -> Mounted {
         Column {
             width: 120dp;
             Text { text: format("{}", count); }
-            Leaf { visible: enabled; }
+            Text { visible: enabled; }
         }
     };
     Mounted::mount(states, |cx| (build(cx), [count, enabled]))

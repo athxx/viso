@@ -1,12 +1,14 @@
 //! The standard native libraries every registry holds: `viso::text`,
-//! `viso::math`, `viso::time` and `viso::clipboard`.
+//! `viso::math`, `viso::time`, `viso::clipboard` and the widgets of
+//! `viso::widgets`.
 
 use std::time::Instant;
 
 use super::{NativeError, NativeFunction, NativeLibrary, NativeObject, NativeType, Obj};
 
 /// Every standard library.
-pub static STANDARD: &[&NativeLibrary] = &[&TEXT, &MATH, &TIME, &CLIPBOARD];
+pub static STANDARD: &[&NativeLibrary] =
+    &[&TEXT, &MATH, &TIME, &CLIPBOARD, &super::widgets::WIDGETS];
 
 /// Text functions; `len` counts Unicode scalar values.
 static TEXT: NativeLibrary = NativeLibrary {
@@ -29,6 +31,7 @@ static TEXT: NativeLibrary = NativeLibrary {
         .deterministic(),
     ],
     types: &[],
+    widgets: &[],
 };
 
 /// `F64` math.
@@ -65,6 +68,7 @@ static MATH: NativeLibrary = NativeLibrary {
         .realtime_safe(),
     ],
     types: &[],
+    widgets: &[],
 };
 
 /// A running clock, the object behind a `viso::time::Stopwatch` handle.
@@ -90,6 +94,7 @@ static TIME: NativeLibrary = NativeLibrary {
     version: 1,
     functions: &[],
     types: &[NativeType::new("Stopwatch", &STOPWATCH_METHODS)],
+    widgets: &[],
 };
 
 /// The host clipboard service natives read and write, installed on a
@@ -119,4 +124,5 @@ static CLIPBOARD: NativeLibrary = NativeLibrary {
         .requires(&["clipboard.write"]),
     ],
     types: &[],
+    widgets: &[],
 };

@@ -15,7 +15,7 @@ viso::component! {
             Column {
                 width: 200dp;
                 height: 100dp;
-                Leaf {
+                Text {
                     width: 100dp;
                     height: 50dp;
                     on click { count += 1; }
