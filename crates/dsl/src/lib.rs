@@ -28,6 +28,7 @@ pub mod package;
 pub mod resolve;
 pub mod schema;
 pub mod syntax;
+pub mod view_behavior;
 
 pub use diag::{Diagnostic, Severity};
 pub use hir::{Ty, TypeError, WidenError};

@@ -215,12 +215,7 @@ fn live_commit_child_counts(source: &str) -> Vec<usize> {
 
     // An empty last-good baseline: the empty→candidate diff is all-inserts, so the
     // commit takes the first-build path and mounts the whole tree.
-    let baseline = CandidatePlan {
-        tree: viso_dsl::ir::ui_ir::UiTree { items: Vec::new() },
-        bindings: Default::default(),
-        sources: Vec::new(),
-        source_names: Vec::new(),
-    };
+    let baseline = CandidatePlan::default();
 
     let mut rt = LiveRuntime {
         store: &mut store,
@@ -232,6 +227,7 @@ fn live_commit_child_counts(source: &str) -> Vec<usize> {
         projectors: &mut projectors,
         root: None,
         scratch: &mut scratch,
+        view: &mut None,
     };
     hot_reload(&mut rt, &baseline, source, &LiveAnchors::default()).expect("commits");
     let root = rt.root.expect("mounted root");

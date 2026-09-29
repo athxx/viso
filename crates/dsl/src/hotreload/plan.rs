@@ -16,11 +16,15 @@
 //! (each a name-derived, compile-stable [`SymbolId`]). Those identities are the
 //! durable keys the diff and migration stages align old and new state against.
 
+use viso_ui::StateValue;
+
 use crate::diag::Diagnostic;
-use crate::frontend::compile_fragment;
+use crate::frontend::{Compiled, Origin, SourceKind, compile_file, compile_fragment};
 use crate::ir::binding_ir::BindingIr;
 use crate::ir::ui_ir::UiTree;
 use crate::resolve::SymbolId;
+use crate::syntax::TextRange;
+use crate::view_behavior::{ViewBehavior, state_value, view_behavior};
 
 /// A successfully compiled and validated reload candidate — pure data, no live
 /// tree touched.
@@ -28,7 +32,7 @@ use crate::resolve::SymbolId;
 /// The three arrays are index-aligned only in the sense that [`sources`] and
 /// [`source_names`] are 1:1 (name `source_names[i]` minted `sources[i]`); the
 /// tree and bindings key into the source set by [`SymbolId`].
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct CandidatePlan {
     /// The recompiled static template.
     pub tree: UiTree,
@@ -38,6 +42,11 @@ pub struct CandidatePlan {
     pub sources: Vec<SymbolId>,
     /// The source name that minted each identity, aligned 1:1 with [`sources`].
     pub source_names: Vec<String>,
+    /// Each source's initial cell value, aligned 1:1 with [`sources`]: a state's
+    /// constant initializer, `None` for a source the reload does not initialize.
+    pub initials: Vec<Option<StateValue>>,
+    /// The view's behavior, `None` when no node declares a handler.
+    pub view: Option<ViewBehavior>,
 }
 
 impl CandidatePlan {
@@ -48,6 +57,12 @@ impl CandidatePlan {
             .iter()
             .position(|n| n == name)
             .map(|i| self.sources[i])
+    }
+
+    /// The initial cell value of source `symbol`, if the reload initializes it.
+    pub fn initial(&self, symbol: SymbolId) -> Option<StateValue> {
+        let index = self.sources.iter().position(|s| *s == symbol)?;
+        self.initials.get(index).copied().flatten()
     }
 }
 
@@ -62,20 +77,52 @@ impl CandidatePlan {
 /// keyless stateful `for`) are non-fatal and left in the IR for a lint pass,
 /// matching the build-time frontend.
 pub fn plan(source: &str) -> Result<CandidatePlan, Vec<Diagnostic>> {
-    let compiled = compile_fragment(source);
+    candidate(compile_fragment(source))
+}
+
+/// Compile and validate a `.vs` file into a [`CandidatePlan`] for its component's
+/// view, handlers included, or return the fatal diagnostics. Pure, like [`plan`].
+pub fn plan_view(source: &str, origin: &Origin) -> Result<CandidatePlan, Vec<Diagnostic>> {
+    candidate(compile_file(source, origin))
+}
+
+/// The candidate for a compiled source: its fatal diagnostics, including every
+/// handler that does not mount, or its plan.
+fn candidate(compiled: Compiled) -> Result<CandidatePlan, Vec<Diagnostic>> {
     if compiled.has_errors() {
         return Err(compiled.errors().cloned().collect());
     }
-    let (sources, source_names) = compiled
-        .sources
-        .into_iter()
-        .map(|source| (source.symbol, source.name))
-        .unzip();
+    let fallback = compiled
+        .component
+        .as_ref()
+        .map_or(TextRange::empty(0.into()), |component| {
+            component.source_origin
+        });
+    let view = view_behavior(&compiled).map_err(|errors| {
+        errors
+            .iter()
+            .map(|error| error.diagnostic(fallback))
+            .collect::<Vec<_>>()
+    })?;
+    let mut sources = Vec::with_capacity(compiled.sources.len());
+    let mut source_names = Vec::with_capacity(compiled.sources.len());
+    let mut initials = Vec::with_capacity(compiled.sources.len());
+    for source in compiled.sources {
+        let initial = match &source.kind {
+            SourceKind::State { initial } => initial.as_ref().and_then(state_value),
+            _ => None,
+        };
+        sources.push(source.symbol);
+        source_names.push(source.name);
+        initials.push(initial);
+    }
     Ok(CandidatePlan {
         tree: compiled.tree,
         bindings: compiled.bindings,
         sources,
         source_names,
+        initials,
+        view,
     })
 }
 

@@ -318,6 +318,8 @@ pub enum FunctionKind {
     Const,
     /// A record field default.
     FieldDefault,
+    /// A view event handler.
+    Handler,
 }
 
 impl FunctionKind {
@@ -332,6 +334,7 @@ impl FunctionKind {
             FunctionKind::InputDefault => "input-default",
             FunctionKind::Const => "const",
             FunctionKind::FieldDefault => "field-default",
+            FunctionKind::Handler => "handler",
         }
     }
 }
@@ -396,12 +399,23 @@ pub struct ComponentLayout {
     pub input_defaults: Vec<Option<FuncId>>,
     /// The `fn`/`action`/`computed` members, by name.
     pub members: Vec<(String, FuncId)>,
+    /// The view's event handlers, by the source range of their `on` item; a
+    /// handler's index here is the one its view node names.
+    pub handlers: Vec<(TextRange, FuncId)>,
 }
 
 impl ComponentLayout {
     /// The member named `name`.
     pub fn member(&self, name: &str) -> Option<FuncId> {
         self.members.iter().find(|(n, _)| n == name).map(|m| m.1)
+    }
+
+    /// The index of the handler whose `on` item spans `at`.
+    pub fn handler(&self, at: TextRange) -> Option<u32> {
+        self.handlers
+            .iter()
+            .position(|(site, _)| *site == at)
+            .map(|i| i as u32)
     }
 }
 

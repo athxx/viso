@@ -13,6 +13,8 @@ description = "Rust-native, GPU-first, cross-platform application framework."
 viso-runtime = { workspace = true }
 viso-ui = { workspace = true }
 viso-ui-macros = { workspace = true }
+# The handler host the DSL macros' expansions dispatch into (`::viso_view::…`).
+viso-view = { workspace = true }
 viso-widgets = { workspace = true }
 viso-dsl = { workspace = true }
 viso-services = { workspace = true }

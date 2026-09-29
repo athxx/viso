@@ -5,8 +5,10 @@ edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
 
-# LEAF. The behavior bytecode and its interpreter: what runs `fn`/`action`
-# bodies, computed values and initializers. The DSL compiler lowers to it; a
-# release loader can run it without the compiler. `viso-runtime` does not
-# depend on it, so a pure Rust app never links a VM.
+# The behavior bytecode and its interpreter: what runs `fn`/`action` bodies,
+# handlers, computed values and initializers. The DSL compiler lowers to it; a
+# release loader runs it without the compiler. Its only internal edge is the
+# codec of its module wire form. `viso-runtime` and `viso-ui` do not depend on
+# it, so a pure Rust app never links a VM.
 [dependencies]
+viso-ende = { path = "../ende" }

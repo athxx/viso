@@ -1,0 +1,15 @@
+[package]
+name = "viso-view"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+# The runtime a compiled view's behavior runs in: a component instance on the
+# behavior VM, its states mirrored into the UI state store, and the node event
+# handlers that dispatch into it. Only an app whose views carry behavior links
+# it; `viso-ui` never depends on it, so a pure Rust app links no VM.
+[dependencies]
+viso-ui = { workspace = true }
+viso-behavior = { workspace = true }
+viso-ende = { workspace = true }

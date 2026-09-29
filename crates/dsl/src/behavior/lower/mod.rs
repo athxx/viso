@@ -168,7 +168,16 @@ impl ProgramBuilder {
             state_inits: vec![None; schema.states.len()],
             input_defaults: vec![None; schema.inputs.len()],
             members,
+            handlers: Vec::new(),
         });
+    }
+
+    /// Records `func` as the handler of the `on` item at `at` in the view of
+    /// the component registered last.
+    pub(crate) fn handler(&mut self, at: TextRange, func: FuncId) {
+        if let Some(layout) = self.program.components.last_mut() {
+            layout.handlers.push((at, func));
+        }
     }
 
     /// Records `func` as the initializer of the state `state`.
@@ -330,15 +339,68 @@ pub(crate) fn lower_value(
     )
 }
 
-/// Adds a function that cannot run, for `reason` at `at`.
-pub(crate) fn unsupported(b: &mut ProgramBuilder, def: Def, reason: &str, at: TextRange) -> FuncId {
+/// Lowers a view event handler body. The event payload arrives in `r0` and is
+/// destructured by `payload` (its pattern and type); the values of the
+/// enclosing view regions the handler sits in arrive in the registers after
+/// it, each destructured by its `scope` pattern.
+pub(crate) fn lower_handler(
+    b: &mut ProgramBuilder,
+    cx: &InferCx<'_>,
+    def: Def,
+    payload: Option<(&SyntaxNode, &Ty)>,
+    scope: &[(SyntaxNode, Ty)],
+    body: &Block,
+) -> FuncId {
+    let mut l = Lowerer::new(cx, b, &def, body.syntax().text_range());
+    let result = (|| {
+        let event = l.reg();
+        let regions: Vec<Reg> = scope.iter().map(|_| l.reg()).collect();
+        if let Some((pattern, ty)) = payload {
+            l.destructure(pattern, event, ty)?;
+        }
+        for ((pattern, ty), src) in scope.iter().zip(regions) {
+            l.destructure(pattern, src, ty)?;
+        }
+        l.block(body.syntax(), false)?;
+        let src = l.unit();
+        l.emit(Inst::Return { src });
+        Ok(())
+    })();
+    let body = result.map(|()| l.frames.pop().unwrap_or_default().body);
     b.define(
         Function {
             name: def.name,
             kind: def.kind,
             symbol: def.symbol,
             module: def.module,
-            params: 0,
+            params: 1 + scope.len() as u32,
+            captures: Vec::new(),
+            body,
+        },
+        def.into,
+    )
+}
+
+/// Adds a function that cannot run, for `reason` at `at`.
+pub(crate) fn unsupported(b: &mut ProgramBuilder, def: Def, reason: &str, at: TextRange) -> FuncId {
+    unsupported_with(b, def, 0, reason, at)
+}
+
+/// Adds a function of `params` arguments that cannot run, for `reason` at `at`.
+pub(crate) fn unsupported_with(
+    b: &mut ProgramBuilder,
+    def: Def,
+    params: u32,
+    reason: &str,
+    at: TextRange,
+) -> FuncId {
+    b.define(
+        Function {
+            name: def.name,
+            kind: def.kind,
+            symbol: def.symbol,
+            module: def.module,
+            params,
             captures: Vec::new(),
             body: Err(Unsupported {
                 reason: reason.to_string(),

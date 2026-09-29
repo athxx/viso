@@ -33,6 +33,9 @@ pub enum ChunkKind {
     Const,
     /// A record field default.
     FieldDefault,
+    /// A view event handler: the payload arrives in `r0`, then the bindings of
+    /// every enclosing `for`/`match` region the handler reads.
+    Handler,
 }
 
 /// A runnable body.
@@ -85,6 +88,9 @@ pub struct Component {
     pub input_defaults: Box<[Option<u32>]>,
     /// The `fn`/`action`/`computed` members, by name.
     pub members: Box<[(Box<str>, u32)]>,
+    /// The view's event handler chunks, in source order; a view node names
+    /// its handlers by index into this table.
+    pub handlers: Box<[u32]>,
 }
 
 impl Component {
@@ -125,9 +131,9 @@ pub struct NativeImport {
 /// so the interpreter only meets well-formed code.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Module {
-    chunks: Box<[Chunk]>,
-    components: Box<[Component]>,
-    natives: Box<[NativeImport]>,
+    pub(crate) chunks: Box<[Chunk]>,
+    pub(crate) components: Box<[Component]>,
+    pub(crate) natives: Box<[NativeImport]>,
 }
 
 /// Why a module failed verification.
@@ -176,13 +182,27 @@ impl Module {
                 .iter()
                 .chain(component.input_defaults.iter())
                 .flatten()
-                .chain(component.members.iter().map(|m| &m.1));
+                .chain(component.members.iter().map(|m| &m.1))
+                .chain(component.handlers.iter());
             for &chunk in refs {
                 if chunk as usize >= module.chunks.len() {
                     return Err(VerifyError {
                         chunk,
                         pc: None,
                         message: format!("component `{}` names a missing chunk", component.name),
+                    });
+                }
+            }
+            for &chunk in component.handlers.iter() {
+                let handler = &module.chunks[chunk as usize];
+                if handler.kind != ChunkKind::Handler || handler.params == 0 {
+                    return Err(VerifyError {
+                        chunk,
+                        pc: None,
+                        message: format!(
+                            "component `{}` names a handler chunk that does not take a payload",
+                            component.name
+                        ),
                     });
                 }
             }
@@ -272,6 +292,13 @@ fn verify_chunk(index: u32, chunk: &Chunk, limits: &Limits) -> Result<(), Verify
             None,
             "the span table does not match the instructions".into(),
         ));
+    }
+    if code
+        .consts
+        .iter()
+        .any(|c| matches!(c, Value::Closure(_) | Value::Handle(_)))
+    {
+        return Err(fail(None, "a constant that is not plain data".into()));
     }
     let Some(last) = code.ops.last() else {
         return Err(fail(None, "an empty body".into()));

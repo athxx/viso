@@ -22,6 +22,7 @@
 //! provide the group, or one that is not statically known (the view root, a slot
 //! fill, the children of a user component), is `E3702`.
 
+use std::cell::RefCell;
 use std::collections::HashMap;
 
 use super::infer::{InferCx, MatchCheck, TypeEnv};
@@ -32,10 +33,12 @@ use crate::ast::{
     AstNode, ElseBranch, EventHandler, NodeBody, PropertyBinding, PropertyPath, TwoWayBinding,
     TypePath, ViewBlock, ViewFor, ViewIf, ViewItem, ViewMatch,
 };
-use crate::diag::{Diagnostic, Related};
+use crate::behavior::FunctionKind;
+use crate::behavior::lower::{Def, ProgramBuilder, lower_handler, unsupported_with};
+use crate::diag::{Diagnostic, Related, Severity};
 use crate::resolve::suggest::{Candidate, attach, nearest};
 use crate::resolve::{Resolution, ResolvedRef, SymbolId};
-use crate::syntax::{SyntaxToken, TextRange};
+use crate::syntax::{SyntaxNode, SyntaxToken, TextRange};
 
 /// One `input` of a user component, as a property of its nodes.
 #[derive(Debug, Clone, PartialEq)]
@@ -88,16 +91,29 @@ pub(crate) trait ViewEnv: TypeEnv {
     fn standard_type(&self, name: &str) -> Option<SymbolId>;
 }
 
+/// Where a view's event handlers lower to: the component layout registered last
+/// in `builder`, for the component `component` of module `module`.
+pub(crate) struct HandlerSink<'a> {
+    /// The package's behavior.
+    pub builder: &'a RefCell<ProgramBuilder>,
+    /// The module the view is declared in.
+    pub module: usize,
+    /// The component's name.
+    pub component: &'a str,
+}
+
 /// Types the view block of the component `component`, appending what it finds to
 /// `diagnostics` and what its handlers and patterns define names as to `percent`;
-/// returns the bindings the module's percent flow settles.
-pub(crate) fn check_view(
-    refs: &[ResolvedRef],
-    env: &dyn ViewEnv,
+/// returns the bindings the module's percent flow settles. With a `sink`, every
+/// event handler lowers to a handler function of the component.
+pub(crate) fn check_view<'a>(
+    refs: &'a [ResolvedRef],
+    env: &'a dyn ViewEnv,
     component: Option<SymbolId>,
     block: &ViewBlock,
     diagnostics: &mut Vec<Diagnostic>,
     percent: &mut PercentSources,
+    sink: Option<HandlerSink<'a>>,
 ) -> PercentFlow {
     let symbols = refs
         .iter()
@@ -115,6 +131,8 @@ pub(crate) fn check_view(
             sinks: Vec::new(),
         },
         diagnostics: Vec::new(),
+        sink,
+        regions: Vec::new(),
     };
     walk.items(block.items(), Scope::ROOT);
     percent.extend(walk.cx.take_percent_defs());
@@ -334,6 +352,11 @@ struct ViewWalk<'a> {
     symbols: HashMap<TextRange, SymbolId>,
     flow: PercentFlow,
     diagnostics: Vec<Diagnostic>,
+    /// Where handlers lower to.
+    sink: Option<HandlerSink<'a>>,
+    /// The pattern and value type of each enclosing `for`/`match` region, outermost
+    /// first: what a handler inside receives after its payload.
+    regions: Vec<(SyntaxNode, Ty)>,
 }
 
 impl<'a> ViewWalk<'a> {
@@ -409,6 +432,7 @@ impl<'a> ViewWalk<'a> {
     /// `on event(payload) { body }`: the payload pattern binds the event's payload
     /// for the body.
     fn handler(&mut self, handler: &EventHandler, owner: Option<&Owner<'a>>) {
+        let errors = self.error_count();
         let payload = handler
             .event()
             .map_or(Ty::Unknown, |event| self.event_payload(&event, owner));
@@ -417,9 +441,41 @@ impl<'a> ViewWalk<'a> {
             self.cx
                 .check_irrefutable(pattern.syntax(), "a handler payload pattern");
         }
-        if let Some(body) = handler.body() {
-            self.cx.check_handler(&body);
-        }
+        let Some(body) = handler.body() else {
+            return;
+        };
+        self.cx.check_handler(&body);
+        let Some(sink) = &self.sink else {
+            return;
+        };
+        let event = handler
+            .event()
+            .map_or_else(String::new, |e| e.text().to_string());
+        let def = Def {
+            name: format!("{}.on_{}", sink.component, event.trim_start_matches("r#")),
+            kind: FunctionKind::Handler,
+            symbol: None,
+            module: sink.module,
+            into: None,
+        };
+        let at = handler.syntax().text_range();
+        let mut b = sink.builder.borrow_mut();
+        let func = if self.error_count() > errors {
+            let params = 1 + self.regions.len() as u32;
+            unsupported_with(&mut b, def, params, "has type errors", at)
+        } else {
+            let pattern = handler.payload().map(|p| p.syntax().clone());
+            let payload = pattern.as_ref().map(|p| (p, &payload));
+            lower_handler(&mut b, &self.cx, def, payload, &self.regions, &body)
+        };
+        b.handler(at, func);
+    }
+
+    /// The errors reported so far.
+    fn error_count(&self) -> usize {
+        let is_error = |d: &&Diagnostic| d.severity == Severity::Error;
+        self.cx.diagnostics().iter().filter(is_error).count()
+            + self.diagnostics.iter().filter(is_error).count()
     }
 
     /// The payload type of the event `event` names on a node of `owner`: one the user

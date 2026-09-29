@@ -233,6 +233,17 @@ impl Instance {
         self.inputs[slot] = value;
     }
 
+    /// Sets state `slot` from outside a transaction, as a host that keeps the
+    /// authoritative copy of a state elsewhere does before a call. Neither marks
+    /// the slot written nor raises the revision.
+    ///
+    /// # Panics
+    ///
+    /// If `slot` is out of range.
+    pub fn set_state(&mut self, slot: usize, value: Value) {
+        self.states[slot] = value;
+    }
+
     /// The number of committed transactions that wrote state.
     pub fn revision(&self) -> u64 {
         self.revision

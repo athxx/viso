@@ -20,7 +20,7 @@ use crate::ir::dirty_map::{DirtyClass, property_dirty_class};
 use crate::syntax::span::TextRange;
 
 /// The retained-tree template a view fragment or component view lowers to.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct UiTree {
     /// The top-level items, in source order.
     pub items: Vec<UiItem>,

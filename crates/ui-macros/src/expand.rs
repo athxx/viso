@@ -17,12 +17,14 @@ use std::collections::{BTreeSet, HashMap};
 use std::fmt::Display;
 use std::path::{Path, PathBuf};
 
-use proc_macro2::{Span, TokenStream};
+use proc_macro2::{Literal, Span, TokenStream};
 use quote::{format_ident, quote};
 use syn::{Ident, LitStr};
 use viso_dsl::frontend::{self, Compiled, Source, SourceKind};
 use viso_dsl::hir::{ConstValue, HirComponent};
+use viso_dsl::resolve::SymbolId;
 use viso_dsl::syntax::{LineIndex, TextRange};
+use viso_dsl::view_behavior::{MountError, UNMOUNTED_HANDLER, ViewBehavior, view_behavior};
 
 use crate::emit::emit_view;
 use crate::package;
@@ -39,7 +41,8 @@ pub fn ui(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
             .iter()
             .filter_map(|source| Some((source.symbol, rust_ident(&source.name).ok()?)))
             .collect();
-        let root = emit_view(&compiled.tree, &compiled.bindings, &idents)
+        view_behavior(&compiled).map_err(|errors| report.mount_errors(errors))?;
+        let root = emit_view(&compiled.tree, &compiled.bindings, &idents, None)
             .map_err(|message| report.at(None, message))?;
         Ok(quote! {
             |cx: &mut ::viso_ui::BuildCx<'_>| -> ::viso_ui::Handle { #root }
@@ -165,6 +168,14 @@ impl Report<'_> {
         }
     }
 
+    /// Every handler that does not mount, as one combined error.
+    fn mount_errors(&self, errors: Vec<MountError>) -> syn::Error {
+        let errors = errors
+            .into_iter()
+            .map(|error| self.at(error.at, format!("{UNMOUNTED_HANDLER}: {}", error.message)));
+        combine(errors).expect_err("a failed mount reports at least one error")
+    }
+
     /// Every error diagnostic of `compiled`, as one combined error.
     fn check(&self, compiled: &Compiled) -> syn::Result<()> {
         let errors = compiled.errors().map(|diagnostic| {
@@ -241,14 +252,43 @@ fn mount<'a>(compiled: &'a Compiled, report: &Report<'_>) -> syn::Result<Mounted
         }
     }
     combine(errors)?;
-    let root = emit_view(&compiled.tree, &compiled.bindings, &idents)
-        .map_err(|message| report.at(component.schema.view, message))?;
+    let behavior = view_behavior(compiled).map_err(|errors| report.mount_errors(errors))?;
+    if let Some(behavior) = &behavior {
+        allocations.extend(host_tokens(behavior, &idents));
+    }
+    let root = emit_view(
+        &compiled.tree,
+        &compiled.bindings,
+        &idents,
+        behavior.as_ref(),
+    )
+    .map_err(|message| report.at(component.schema.view, message))?;
     Ok(Mounted {
         component,
         states,
         allocations,
         root,
     })
+}
+
+/// The `__viso_host` a view with handlers dispatches into: the component's
+/// module, embedded as bytes and decoded once per thread, mirrored into the
+/// states the expansion allocated.
+fn host_tokens(behavior: &ViewBehavior, idents: &HashMap<SymbolId, Ident>) -> TokenStream {
+    let bytes = Literal::byte_string(&behavior.bytes);
+    let component = &behavior.component;
+    let mirrors = behavior.slots.iter().filter_map(|(symbol, slot)| {
+        let local = idents.get(symbol)?;
+        let slot = *slot as usize;
+        Some(quote! { __viso_view.mirror(#slot, #local); })
+    });
+    quote! {
+        let __viso_host = ::viso_view::__embedded(#bytes, #component);
+        {
+            let mut __viso_view = __viso_host.borrow_mut();
+            #(#mirrors)*
+        }
+    }
 }
 
 /// The declaration span of one of the component's sources.

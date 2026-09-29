@@ -21,8 +21,10 @@ pub mod native;
 mod op;
 mod value;
 mod vm;
+mod wire;
 
 pub use module::{Chunk, ChunkKind, Code, Component, Module, NativeImport, Span, VerifyError};
 pub use op::{Arith, ArithOp, DisplayKind, Num, Op};
 pub use value::{Aggregate, Closure, Value};
 pub use vm::{Budget, Cost, Event, Fault, FaultKind, Instance, Location, Outcome, Vm};
+pub use wire::LoadError;

@@ -70,11 +70,27 @@ pub fn instantiate(
     bindings: &mut BindingTable,
     lists: &mut VirtualLists,
 ) -> Option<NodeId> {
+    let mut node_ids = Vec::new();
+    instantiate_indexed(pkg, store, states, bindings, lists, &mut node_ids)
+}
+
+/// [`instantiate`], also leaving each package node's live [`NodeId`] in
+/// `node_ids` at its pre-order index, for a caller that attaches more to the
+/// nodes it built (a view's event handlers).
+pub fn instantiate_indexed(
+    pkg: &AotPackage,
+    store: &mut NodeStore,
+    states: &mut StateStore,
+    bindings: &mut BindingTable,
+    lists: &mut VirtualLists,
+    node_ids: &mut Vec<Option<NodeId>>,
+) -> Option<NodeId> {
     // Phase one: author the retained tree, recording node_index -> live NodeId by
     // pre-order index. The `BuildCx` borrows the state store, so binding is deferred
     // to phase two. The map is pre-sized and each slot is filled at its own index,
     // so a container's id lands before its children's regardless of author order.
-    let mut node_ids: Vec<Option<NodeId>> = vec![None; pkg.nodes.len()];
+    node_ids.clear();
+    node_ids.resize(pkg.nodes.len(), None);
     // The AOT package has no editable-text node yet (the compiler does not lower a
     // `text_input`), so a throwaway registry satisfies the reactive-cx contract
     // without threading an edit registry through the public loader API.
@@ -94,7 +110,7 @@ pub fn instantiate(
         );
         let mut cursor = 0usize;
         while cursor < pkg.nodes.len() {
-            build_node(&mut cx, &pkg.nodes, &mut cursor, &mut node_ids);
+            build_node(&mut cx, &pkg.nodes, &mut cursor, node_ids);
         }
         cx.root()
     };

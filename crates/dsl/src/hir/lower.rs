@@ -49,7 +49,8 @@ use super::percent::PercentSources;
 use super::reads::ReadEnv;
 use super::ty::Ty;
 use super::view::{
-    InputFlows, InputProp, PercentFlow, ViewEnv, check_input_bases, check_percent_flow, check_view,
+    HandlerSink, InputFlows, InputProp, PercentFlow, ViewEnv, check_input_bases,
+    check_percent_flow, check_view,
 };
 
 /// The typed HIR of a whole package: every component lowered, every free callable, and every
@@ -297,6 +298,11 @@ fn lower_component_item(
     if let Some(view) = decl.view()
         && let Some(block) = view.block()
     {
+        let sink = HandlerSink {
+            builder: env.behavior,
+            module: env.module,
+            component: &schema.name,
+        };
         flows.push(check_view(
             refs,
             env,
@@ -304,6 +310,7 @@ fn lower_component_item(
             &block,
             diagnostics,
             percent,
+            Some(sink),
         ));
         check_body(refs, BodyContext::View, env, block.syntax(), diagnostics);
     }

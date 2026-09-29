@@ -25,6 +25,9 @@
 //!    container's offset back to the value the migration plan preserved.
 //! 5. **Targeted dirty + flush** — mark exactly the rebound nodes dirty and flush
 //!    the migrated state set, so only the changed nodes recompute.
+//! 6. **Handlers** — create the view's host, or reload it keeping each state by
+//!    name, mirror its states into the migrated cells, and reinstall every node's
+//!    handler routes; a view with no handlers drops its host and every handler.
 //!
 //! This slice commits the **static-node subset** the compile-time emitter also
 //! targets: a single-root template of flex / grid / scroll / leaf nodes. A template
@@ -32,12 +35,18 @@
 //! caller path before commit — the same subset boundary the `ui!` emitter enforces —
 //! so the commit never has to interpret one.
 
+use std::cell::RefCell;
+use std::rc::Rc;
+
 use crate::hotreload::diff::StructuralPatch;
 use crate::hotreload::migrate::{LiveAnchors, MigrationPlan};
 use crate::hotreload::plan::CandidatePlan;
 use crate::ir::binding_ir::NodeKey;
 use crate::ir::dirty_map::DirtyClass as IrDirtyClass;
 use crate::ir::ui_ir::{AxisIr, LengthIr, NodeKind, StyleIr, UiItem, UiNode, UiTree};
+use crate::resolve::SymbolId;
+
+use viso_view::{ViewHost, attach_node};
 
 use viso_ui::state::{StateKey, StateMigration};
 use viso_ui::virtual_list::VirtualLists;
@@ -65,6 +74,9 @@ pub struct HotReloadReport {
     /// Scroll containers whose offset could not be restored because their slot did
     /// not survive.
     pub scroll_lost: u32,
+    /// Whether the view's handlers were dropped because its recompiled behavior
+    /// did not mount.
+    pub handlers_lost: bool,
 }
 
 /// The live runtime the commit mutates, gathered as a bundle of borrows so the
@@ -94,6 +106,9 @@ pub struct LiveRuntime<'a> {
     /// Caller-owned scratch reused across subtree frees so the commit allocates no
     /// per-node stack.
     pub scratch: &'a mut Vec<NodeId>,
+    /// The host the view's handlers dispatch into, `None` while the view declares
+    /// none. The commit creates, reloads or drops it.
+    pub view: &'a mut Option<Rc<RefCell<ViewHost>>>,
 }
 
 /// Apply a validated reload candidate to the live runtime and report what happened.
@@ -126,7 +141,7 @@ pub fn commit(
     // value across (the reload preserves running state); a new symbol allocates a
     // fresh neutral cell. The returned map lets the rebind step turn an edge's
     // SymbolId into the live StateId it drives.
-    let symbol_to_state = migrate_states(rt.states, migration, &mut report);
+    let symbol_to_state = migrate_states(rt.states, plan, migration, &mut report);
 
     // Step 3 — rebind. Replace the whole static binding table with the recompiled
     // edges, mapping each edge's NodeKey to its live node and each source SymbolId
@@ -155,7 +170,55 @@ pub fn commit(
     let changed: Vec<StateId> = symbol_to_state.iter().map(|&(_, id)| id).collect();
     rt.store.flush_state_transactions(&changed, rt.bindings);
 
+    // Step 6 — handlers, against the nodes and cells the reload now names.
+    mount_handlers(rt, plan, &key_to_node, &symbol_to_state, &mut report);
+
     report
+}
+
+/// Creates or reloads the view's host, mirrors its states into the migrated cells
+/// and reinstalls every live node's handler routes, replacing the prior ones.
+///
+/// A recompiled module that does not mount keeps no host and no handler, and is
+/// counted in [`HotReloadReport::handlers_lost`]: the candidate's behavior was
+/// verified and linked while planning, so this is a defensive path.
+fn mount_handlers(
+    rt: &mut LiveRuntime<'_>,
+    plan: &CandidatePlan,
+    key_to_node: &[(NodeKey, NodeId)],
+    symbol_to_state: &[(SymbolId, StateId)],
+    report: &mut HotReloadReport,
+) {
+    let host = plan.view.as_ref().and_then(|view| {
+        let module = Rc::clone(&view.module);
+        let mounted = match rt.view.take() {
+            Some(host) => {
+                let reloaded = host.borrow_mut().reload(module, &view.component);
+                reloaded.map(|()| host)
+            }
+            None => ViewHost::new(module, &view.component).map(|h| Rc::new(RefCell::new(h))),
+        };
+        let Ok(host) = mounted else {
+            report.handlers_lost = true;
+            return None;
+        };
+        {
+            let mut mirrored = host.borrow_mut();
+            for &(symbol, slot) in &view.slots {
+                if let Some(id) = lookup_state(symbol_to_state, symbol) {
+                    mirrored.mirror(slot as usize, id);
+                }
+            }
+        }
+        Some((view, host))
+    });
+    for &(key, node) in key_to_node {
+        match &host {
+            Some((view, host)) => attach_node(rt.store, host, node, view.routes(key), &[]),
+            None => rt.store.clear_event_handlers(node),
+        }
+    }
+    *rt.view = host.map(|(_, host)| host);
 }
 
 /// Walk the candidate template in the shared pre-order numbering, deciding per node
@@ -375,9 +438,10 @@ fn axis_of(axis: AxisIr) -> Axis {
 /// (running state is preserved across a reload) and resets only a brand-new cell.
 fn migrate_states(
     states: &mut StateStore,
+    plan: &CandidatePlan,
     migration: &MigrationPlan,
     report: &mut HotReloadReport,
-) -> Vec<(crate::resolve::SymbolId, StateId)> {
+) -> Vec<(SymbolId, StateId)> {
     use crate::hotreload::migrate::StateAction;
 
     let mut out = Vec::new();
@@ -398,11 +462,11 @@ fn migrate_states(
                 out.push((m.symbol, id));
             }
             StateAction::New => {
-                // A brand-new source: allocate a neutral cell keyed by identity.
-                // The app authors the real initial value on its next build; the
-                // reload only needs the cell to exist so its bindings resolve.
-                let (id, _outcome) =
-                    states.migrate_state(key, StateValue::Int(0), |_prior, new| Some(new));
+                // A brand-new source: allocate a cell keyed by identity, holding
+                // the state's constant initializer, or a neutral value for a source
+                // the reload does not initialize.
+                let initial = plan.initial(m.symbol).unwrap_or(StateValue::Int(0));
+                let (id, _outcome) = states.migrate_state(key, initial, |_prior, new| Some(new));
                 report.reset += 1;
                 out.push((m.symbol, id));
             }
@@ -428,7 +492,7 @@ fn rebind_static(
     bindings: &mut BindingTable,
     plan: &CandidatePlan,
     key_to_node: &[(NodeKey, NodeId)],
-    symbol_to_state: &[(crate::resolve::SymbolId, StateId)],
+    symbol_to_state: &[(SymbolId, StateId)],
     dirty_marks: &mut Vec<(NodeId, DirtyClass)>,
 ) {
     let mut edges: Vec<(StateId, Binding)> = Vec::new();
@@ -510,10 +574,7 @@ fn lookup_node(map: &[(NodeKey, NodeId)], key: NodeKey) -> Option<NodeId> {
 
 /// Find the live state cell a source [`SymbolId`] maps to. Linear over the small
 /// per-template map; cold reload path.
-fn lookup_state(
-    map: &[(crate::resolve::SymbolId, StateId)],
-    symbol: crate::resolve::SymbolId,
-) -> Option<StateId> {
+fn lookup_state(map: &[(SymbolId, StateId)], symbol: SymbolId) -> Option<StateId> {
     map.iter().find(|(s, _)| *s == symbol).map(|(_, id)| *id)
 }
 

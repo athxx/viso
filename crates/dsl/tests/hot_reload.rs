@@ -17,6 +17,9 @@
 //! 3. a structural edit migrates state by durable identity and reports focus / scroll
 //!    that could not survive the rebuild.
 
+use std::cell::RefCell;
+use std::rc::Rc;
+
 use viso_dsl::hotreload::{CandidatePlan, HotReloadReport, LiveAnchors, LiveRuntime, hot_reload};
 use viso_ui::state::StateKey;
 use viso_ui::virtual_list::VirtualLists;
@@ -24,6 +27,7 @@ use viso_ui::{
     BindingTable, EffectStore, NodeId, NodeStore, SemanticProjector, StateStore, StateValue,
     TextEdits,
 };
+use viso_view::ViewHost;
 
 /// The mutable live runtime a headless reload commits into, owned by the test so it
 /// outlives the borrows a `LiveRuntime` bundles.
@@ -37,6 +41,7 @@ struct Live {
     projectors: SemanticProjector,
     root: Option<NodeId>,
     scratch: Vec<NodeId>,
+    view: Option<Rc<RefCell<ViewHost>>>,
 }
 
 impl Live {
@@ -51,6 +56,7 @@ impl Live {
             projectors: SemanticProjector::new(),
             root: None,
             scratch: Vec::new(),
+            view: None,
         }
     }
 
@@ -66,6 +72,7 @@ impl Live {
             projectors: &mut self.projectors,
             root: self.root,
             scratch: &mut self.scratch,
+            view: &mut self.view,
         }
     }
 }
@@ -74,12 +81,7 @@ impl Live {
 /// a real fragment against it diffs empty→candidate as all-inserts (non-preserving),
 /// so the commit takes the full build path and mounts the first live tree.
 fn empty_baseline() -> CandidatePlan {
-    CandidatePlan {
-        tree: viso_dsl::ir::ui_ir::UiTree { items: Vec::new() },
-        bindings: Default::default(),
-        sources: Vec::new(),
-        source_names: Vec::new(),
-    }
+    CandidatePlan::default()
 }
 
 /// Mount `source` into a fresh runtime and return the runtime plus the candidate that

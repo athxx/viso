@@ -44,6 +44,7 @@ impl Program {
                     .iter()
                     .map(|(n, f)| (n.as_str().into(), f.0))
                     .collect(),
+                handlers: c.handlers.iter().map(|(_, f)| f.0).collect(),
             })
             .collect();
         Module::new(chunks, components, self.natives.clone())
@@ -64,6 +65,7 @@ fn chunk(function: &ir::Function) -> Chunk {
         FunctionKind::InputDefault => ChunkKind::InputDefault,
         FunctionKind::Const => ChunkKind::Const,
         FunctionKind::FieldDefault => ChunkKind::FieldDefault,
+        FunctionKind::Handler => ChunkKind::Handler,
     };
     let params = u16::try_from(function.params).unwrap_or(u16::MAX);
     let frame = match &function.body {

@@ -2044,6 +2044,9 @@ Canvas {
 - Handler 中允许同步 State 修改、`emit`、Action Call 和 `start`；
 - Handler 中禁止直接 `await`；
 - Event 取消使用 Typed API：`event.stop_propagation()`、`event.stop_immediate_propagation()` 与 `event.prevent_default()`，语义见 §90。
+- Handler 在 `component!`、`view!`、Hot Reload 与 Release Package 中以同一张 Handler 表挂载：每个 Handler 是所在 Component 的一个 Behavior Chunk，节点只登记 `(Event 路由, Handler 下标)`，State 写入在 Transaction 结束时回写 UI State Cell；
+- `ui!` Fragment 没有 Component State，不能声明 Handler；Runtime 尚未投递的标准事件（如 `long_press`、`scroll`、`focus`）或 Behavior 无法 Lower 的 Handler 体报 `E3711`；Hot Reload 中出现 `E3711` 时保留 Last-good Handler；
+- Handler 运行期 Fault 只中止该次调用、不回写任何 State，Fault 记录在宿主上。
 
 `=>` 仅保留给 `match` Arm，因此 Parser 和 Formatter 不会把事件写法分叉成两套。
 
@@ -8284,6 +8287,7 @@ RecordPatternField
 | E3708  | 交互节点缺少等价键盘路径（警告，§U8.2）                 |
 | E3709  | 标注 [Runtime 待实现] 的 Property 使用了非默认值（§U1.1） |
 | E3710  | `@selector` 误用（§U2.3）                               |
+| E3711  | Handler 未能挂载：Runtime 未投递该 Event 或 Behavior 未能 Lower（§52） |
 | E4101  | Action 中使用 Await                                     |
 | E4102  | Task 跨挂起访问可变 State                               |
 | E4201  | Effect 读取未声明依赖                                   |

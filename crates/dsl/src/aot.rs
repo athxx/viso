@@ -27,10 +27,14 @@
 //! compiler absent.
 
 use viso_ende::Encode;
+use viso_ui::StateValue;
 use viso_ui::aot::{AotAxis, AotEdge, AotLength, AotNode, AotNodeKind, AotPackage, AotStyle};
+use viso_ui::state::StateKey;
+use viso_view::{ViewHandler, ViewPackage, ViewState};
 
 use crate::diag::Diagnostic;
-use crate::hotreload::plan::{CandidatePlan, plan};
+use crate::frontend::Origin;
+use crate::hotreload::plan::{CandidatePlan, plan, plan_view};
 use crate::ir::ui_ir::{AxisIr, LengthIr, NodeKind, StyleIr, UiItem, UiNode, UiTree};
 
 /// Compile a fragment source straight into an encoded release package blob, or the
@@ -45,6 +49,60 @@ use crate::ir::ui_ir::{AxisIr, LengthIr, NodeKind, StyleIr, UiItem, UiNode, UiTr
 pub fn build_package(source: &str) -> Result<Vec<u8>, Vec<Diagnostic>> {
     let plan = plan(source)?;
     Ok(emit_package(&plan).encode_to_vec())
+}
+
+/// Compile the component of a `.vs` file into an encoded [`ViewPackage`] blob —
+/// its tree, its state cells and, when a node declares a handler, its behavior
+/// module and handler table — or the fatal diagnostics.
+pub fn build_view_package(source: &str, origin: &Origin) -> Result<Vec<u8>, Vec<Diagnostic>> {
+    let plan = plan_view(source, origin)?;
+    Ok(emit_view_package(&plan).encode_to_vec())
+}
+
+/// Lower a validated [`CandidatePlan`] into a [`ViewPackage`]: [`emit_package`]'s
+/// tree, a cell per initialized state, and the view's behavior.
+///
+/// A handler names its node by the pre-order index the tree's binding edges use.
+pub fn emit_view_package(plan: &CandidatePlan) -> ViewPackage {
+    let ui = emit_package(plan);
+    let view = plan.view.as_ref();
+    let states = plan
+        .sources
+        .iter()
+        .zip(&plan.initials)
+        .filter_map(|(&symbol, initial)| {
+            let initial: StateValue = (*initial)?;
+            Some(ViewState {
+                key: StateKey::from_parts(symbol.hi, symbol.lo),
+                slot: view.and_then(|view| view.slot(symbol)),
+                initial,
+            })
+        })
+        .collect();
+    let Some(view) = view else {
+        return ViewPackage {
+            ui,
+            states,
+            ..ViewPackage::default()
+        };
+    };
+    let handlers = view
+        .nodes()
+        .flat_map(|(key, routes)| {
+            routes.iter().map(move |&(route, handler)| ViewHandler {
+                node: key.0,
+                route,
+                handler,
+            })
+        })
+        .collect();
+    ViewPackage {
+        ui,
+        behavior: view.bytes.clone(),
+        component: view.component.clone(),
+        states,
+        handlers,
+    }
 }
 
 /// Lower a compiled, validated [`CandidatePlan`] into a compact [`AotPackage`].
@@ -68,7 +126,7 @@ pub fn emit_package(plan: &CandidatePlan) -> AotPackage {
     let mut edges: Vec<AotEdge> = Vec::with_capacity(plan.bindings.static_edges().count());
     for edge in plan.bindings.static_edges() {
         edges.push(AotEdge {
-            state: viso_ui::state::StateKey::from_parts(edge.source.hi, edge.source.lo),
+            state: StateKey::from_parts(edge.source.hi, edge.source.lo),
             node: edge.node.0,
             class: edge.class.bits(),
         });

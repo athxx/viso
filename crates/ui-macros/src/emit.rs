@@ -31,6 +31,7 @@ use viso_dsl::ir::binding_ir::{BindingEdge, BindingIr, NodeKey};
 use viso_dsl::ir::dirty_map::DirtyClass;
 use viso_dsl::ir::ui_ir::{AxisIr, LengthIr, NodeKind, StyleIr, UiItem, UiNode, UiTree};
 use viso_dsl::resolve::SymbolId;
+use viso_dsl::view_behavior::ViewBehavior;
 
 /// A control-flow region encountered by the emitter, named for the diagnostic.
 struct ControlFlow {
@@ -43,12 +44,16 @@ struct ControlFlow {
 /// `StateId` in scope where the expression expands: the caller's own for a `ui!`
 /// fragment, a local the expansion allocates for a component's `state`.
 ///
+/// `behavior` is the view's handler table: each node with routes attaches them to
+/// the `__viso_host` in scope where the expression expands.
+///
 /// Returns `Err` with the message if the view has other than one root, contains a
 /// control-flow region, or binds a source `sources` does not name.
 pub fn emit_view(
     tree: &UiTree,
     bindings: &BindingIr,
     sources: &HashMap<SymbolId, Ident>,
+    behavior: Option<&ViewBehavior>,
 ) -> Result<TokenStream, String> {
     // A view mounts one root; a multi-root view has no single Handle to return.
     // Reject it explicitly rather than silently drop siblings.
@@ -71,6 +76,7 @@ pub fn emit_view(
     let mut ctx = Emit {
         edges_by_node,
         sources,
+        behavior,
         next_key: 0,
         control_flow: None,
         missing_source: None,
@@ -97,6 +103,7 @@ pub fn emit_view(
 struct Emit<'a> {
     edges_by_node: HashMap<NodeKey, Vec<&'a BindingEdge>>,
     sources: &'a HashMap<SymbolId, Ident>,
+    behavior: Option<&'a ViewBehavior>,
     next_key: u32,
     control_flow: Option<ControlFlow>,
     missing_source: Option<SymbolId>,
@@ -177,6 +184,7 @@ impl Emit<'_> {
         let build_call = self.emit_builder_call(node, &child_block);
 
         let binds = self.emit_binds(key);
+        let attach = self.emit_attach(key);
 
         // A leaf's builder takes no closure, so its children (there are none for a
         // real leaf) are dropped by `emit_builder_call`. Containers thread the child
@@ -185,6 +193,7 @@ impl Emit<'_> {
             {
                 let #handle_ident = #build_call;
                 #binds
+                #attach
                 #handle_ident
             }
         }
@@ -261,6 +270,27 @@ impl Emit<'_> {
             });
         }
         quote! { #( #calls )* }
+    }
+}
+
+impl Emit<'_> {
+    /// The `::viso_view::attach` call installing `key`'s handler routes, if it
+    /// declares any.
+    fn emit_attach(&self, key: NodeKey) -> TokenStream {
+        let Some(routes) = self.behavior.map(|behavior| behavior.routes(key)) else {
+            return quote! {};
+        };
+        if routes.is_empty() {
+            return quote! {};
+        }
+        let handle_ident = node_handle_ident(key);
+        let routes = routes.iter().map(|(route, index)| {
+            let variant = Ident::new(route.variant(), Span::call_site());
+            quote! { (::viso_view::EventRoute::#variant, #index) }
+        });
+        quote! {
+            ::viso_view::attach(cx, &__viso_host, #handle_ident, &[#(#routes),*], &[]);
+        }
     }
 }
 

@@ -221,7 +221,7 @@ Goal: every Core view construct reaches a live tree through all three lowering t
 
 ### D2.1 — Handlers
 
-- [ ] Emit `UiHandler` in `ui-macros/src/emit.rs`, `hotreload/commit.rs`, `aot.rs`
+- [x] Emit `UiHandler` in `ui-macros/src/emit.rs`, `hotreload/commit.rs`, `aot.rs`
       (payload typing `E3202` is checked in D0.5).
 
 ### D2.2 — Control-flow regions

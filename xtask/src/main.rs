@@ -51,6 +51,7 @@ fn allowed_edges() -> BTreeMap<&'static str, Allowed> {
                     "viso-ui-macros",
                     "viso-widgets",
                     "viso-dsl",
+                    "viso-view",
                     "viso-services",
                     "viso-render",
                     "viso-svg",
@@ -115,17 +116,28 @@ fn allowed_edges() -> BTreeMap<&'static str, Allowed> {
             "viso-dsl",
             Allowed {
                 dir: "crates/dsl",
-                deps: &["viso-ui", "viso-ende", "viso-behavior"],
+                deps: &["viso-ui", "viso-ende", "viso-behavior", "viso-view"],
+            },
+        ),
+        // The runtime a compiled view's behavior runs in: a component instance on
+        // the behavior VM, mirrored into UI state cells, and the node handlers
+        // that dispatch into it. `viso-ui` never depends on it (ADR 0037).
+        (
+            "viso-view",
+            Allowed {
+                dir: "crates/view",
+                deps: &["viso-ui", "viso-behavior", "viso-ende"],
             },
         ),
         // The behavior bytecode and interpreter the DSL compiler lowers `fn`/`action`
-        // bodies to. A leaf: `viso-runtime` and `viso-ui` never depend on it, so a
-        // pure Rust app links no VM (ADR 0035).
+        // bodies to. `viso-runtime` and `viso-ui` never depend on it, so a pure Rust
+        // app links no VM (ADR 0035); its binary module form is encoded through
+        // `viso-ende` (ADR 0037).
         (
             "viso-behavior",
             Allowed {
                 dir: "crates/behavior",
-                deps: &[],
+                deps: &["viso-ende"],
             },
         ),
         // The formatter / language-server tooling for `.vs` (Slice R). A pure

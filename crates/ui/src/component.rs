@@ -1573,6 +1573,16 @@ impl NodeStore {
         self.key_handlers[id.index() as usize] = Some(handler);
     }
 
+    /// Detach a node's pointer and key handlers, as a reload does before it
+    /// attaches the recompiled ones to a retained node. A live-guarded write.
+    pub fn clear_event_handlers(&mut self, id: NodeId) {
+        if !self.arena.is_live(id) {
+            return;
+        }
+        self.handlers[id.index() as usize] = None;
+        self.key_handlers[id.index() as usize] = None;
+    }
+
     /// Whether a live node currently carries a key handler.
     #[inline]
     pub fn has_key_handler(&self, id: NodeId) -> bool {

@@ -2423,6 +2423,7 @@ dependencies = [
  "viso-text",
  "viso-ui",
  "viso-ui-macros",
+ "viso-view",
  "viso-widgets",
  "wasm-bindgen-futures",
  "windows",
@@ -2432,6 +2433,9 @@ dependencies = [
 [[package]]
 name = "viso-behavior"
 version = "0.0.0"
+dependencies = [
+ "viso-ende",
+]
 
 [[package]]
 name = "viso-cli"
@@ -2453,6 +2457,7 @@ dependencies = [
  "viso-behavior",
  "viso-ende",
  "viso-ui",
+ "viso-view",
 ]
 
 [[package]]
@@ -2666,6 +2671,15 @@ dependencies = [
  "syn 2.0.119",
  "toml_edit",
  "viso-dsl",
+]
+
+[[package]]
+name = "viso-view"
+version = "0.0.0"
+dependencies = [
+ "viso-behavior",
+ "viso-ende",
+ "viso-ui",
 ]
 
 [[package]]

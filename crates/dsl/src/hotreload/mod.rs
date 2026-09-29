@@ -29,9 +29,10 @@ pub use diff::{InsertedNode, KeptNode, RemovedNode, ReplacedNode, StructuralPatc
 pub use migrate::{
     LiveAnchors, MigrationPlan, ScrollMigration, StateAction, StateMigration, migrate,
 };
-pub use plan::{CandidatePlan, plan};
+pub use plan::{CandidatePlan, plan, plan_view};
 
 use crate::diag::Diagnostic;
+use crate::frontend::Origin;
 
 /// The result of a successful hot reload transaction: what the commit did to the
 /// live runtime, plus the compiled candidate that is now the last-good template.
@@ -72,7 +73,30 @@ pub fn hot_reload(
     // Stage 1 — compile + validate the candidate. Any fatal diagnostic returns here,
     // before anything mutates.
     let candidate = plan(source)?;
+    Ok(transact(rt, last_good, candidate, anchors))
+}
 
+/// [`hot_reload`] for the component of a `.vs` file: the same transaction, over a
+/// candidate compiled by the file frontend, so the view's handlers, state
+/// initializers and behavior reload with its tree.
+pub fn hot_reload_view(
+    rt: &mut LiveRuntime<'_>,
+    last_good: &CandidatePlan,
+    source: &str,
+    origin: &Origin,
+    anchors: &LiveAnchors,
+) -> Result<HotReload, Vec<Diagnostic>> {
+    let candidate = plan_view(source, origin)?;
+    Ok(transact(rt, last_good, candidate, anchors))
+}
+
+/// Stages 2-4 over a validated candidate.
+fn transact(
+    rt: &mut LiveRuntime<'_>,
+    last_good: &CandidatePlan,
+    candidate: CandidatePlan,
+    anchors: &LiveAnchors,
+) -> HotReload {
     // Stages 2-3 — pure planning over the two templates and the live anchors.
     let patch = diff(&last_good.tree, &candidate.tree);
     let migration = migrate(&last_good.sources, &candidate.sources, &patch, anchors);
@@ -80,5 +104,5 @@ pub fn hot_reload(
     // Stage 4 — the only mutating stage. Infallible by construction.
     let report = commit(rt, &candidate, &patch, &migration, anchors);
 
-    Ok(HotReload { report, candidate })
+    HotReload { report, candidate }
 }
