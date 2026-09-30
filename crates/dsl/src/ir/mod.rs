@@ -484,15 +484,6 @@ impl<'a, 'l> Lowering<'a, 'l> {
             ));
             return;
         }
-        if self.guarded && !schema.states.is_empty() {
-            self.unmounted.push((
-                origin,
-                format!(
-                    "`{type_name}` has state, which a component inside an `if`, `for` or `match` cannot keep yet"
-                ),
-            ));
-            return;
-        }
         let parent = self.instance();
         let mut args = Vec::new();
         let mut handlers = Vec::new();
@@ -597,6 +588,7 @@ impl<'a, 'l> Lowering<'a, 'l> {
             parent,
             identity,
             depth: self.depth,
+            regional: self.guarded,
             args,
             handlers,
         });

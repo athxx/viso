@@ -50,7 +50,7 @@ use crate::ir::ui_ir::{AxisIr, LengthIr, NodeKind, StyleIr, UiItem, UiNode, UiTr
 use crate::resolve::SymbolId;
 use crate::view_regions::{StaticNodes, has_regions};
 
-use viso_view::{ViewHost, attach_node, mount_regions};
+use viso_view::{Scope, ViewHost, attach_node, mount_regions};
 
 use viso_ui::state::{StateKey, StateMigration};
 use viso_ui::virtual_list::VirtualLists;
@@ -235,7 +235,7 @@ fn mount_behavior(
                 node,
                 view.routes(key),
                 view.control(key),
-                &[],
+                &Scope::EMPTY,
             ),
             None => rt.store.clear_event_handlers(node),
         }
@@ -299,6 +299,9 @@ fn apply_structural(
     // forward by absolute restore, and kept *state* cells survive by identity in
     // the state store (which the node rebuild does not touch). Per-slot instance
     // reuse across a structural edit is a later refinement (see ADR 0015).
+    if let Some(host) = rt.view.as_ref() {
+        host.borrow_mut().release_regions(rt.states);
+    }
     rt.store.clear();
     rt.bindings.clear_static();
     let new_root = build_tree(rt, tree, &mut map);

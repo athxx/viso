@@ -27,6 +27,12 @@
 //! scrutinees; when an item or a scrutinee changes in place, its nodes'
 //! handlers are re-attached with the new bindings.
 //!
+//! Each mount of an arm or an item keeps the states of the component instances
+//! it mounts ([`LocalTemplate`]), started from their initializers with the
+//! mount's bindings: two items of a `for` mounting the same component keep two
+//! sets of states, which follow their items' keys when the items reorder, stay
+//! with a `preserve` arm switched away, and are dropped with the mount.
+//!
 //! A region entry that faults, a value a region cannot mount, and a repeated
 //! key keep the region's current content and record the fault on the host.
 
@@ -38,12 +44,13 @@ use viso_behavior::{Fault, FaultKind, Value};
 use viso_ende::{Decode, DecodeError, Decoder, Encode, Encoder, ProtocolTag};
 use viso_ui::aot::{AotNode, build_aot_node};
 use viso_ui::state::StateKey;
-use viso_ui::{BuildCx, DirtyClass, NodeId, StateId, StructureCx};
+use viso_ui::{BuildCx, DirtyClass, NodeId, StateId, StateValue, StructureCx};
 
 use crate::attach::{Route, attach_node};
 use crate::control::Control;
 use crate::host::ViewHost;
 use crate::route::EventRoute;
+use crate::scope::{Locals, Scope};
 
 /// The most items a range region mounts; a longer range faults instead of
 /// allocating an unbounded tree.
@@ -74,9 +81,9 @@ impl ViewRegions {
 pub struct RegionTemplate {
     /// What decides the region's content.
     pub kind: RegionKind,
-    /// The cells the region's entries read, by index into
-    /// [`ViewRegions::states`]: a change to one re-evaluates the region.
-    pub deps: Vec<u32>,
+    /// The cells the region's entries read: a change to one re-evaluates the
+    /// region.
+    pub deps: Vec<CellRef>,
     /// The arms, in source order; a `for` has one, its body.
     pub arms: Vec<ArmTemplate>,
 }
@@ -110,6 +117,26 @@ pub enum RegionKind {
     },
 }
 
+/// A state cell a region reads or a region node binds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum CellRef {
+    /// A cell of the view, by index into [`ViewRegions::states`].
+    Shared(u32),
+    /// The component state slot of an instance region content mounts, which
+    /// the enclosing mount of that content keeps ([`ArmTemplate::locals`]).
+    Local(u32),
+}
+
+/// A state of a component instance an arm mounts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LocalTemplate {
+    /// The component state slot.
+    pub slot: u32,
+    /// Its initializer, by index into the view's handler table, called with
+    /// the mount's bindings; `None` starts the state `Nil`.
+    pub init: Option<u32>,
+}
+
 /// The aggregate tag of a half-open integer range a `for` region iterates.
 pub const HALF_OPEN: u32 = 0;
 
@@ -122,6 +149,9 @@ pub struct ArmTemplate {
     /// Whether switching away keeps the arm's nodes for when it is chosen
     /// again.
     pub preserve: bool,
+    /// The states of the component instances the arm mounts outside its
+    /// nested regions, ascending by slot: each mount of the arm keeps its own.
+    pub locals: Vec<LocalTemplate>,
     /// The arm's content, flattened in pre-order.
     pub items: Vec<ItemTemplate>,
 }
@@ -133,9 +163,9 @@ pub enum ItemTemplate {
     Node {
         /// The packaged node.
         node: AotNode,
-        /// Its state edges: a cell index into [`ViewRegions::states`] and the
-        /// [`DirtyClass`] bits a change of the cell marks.
-        edges: Vec<(u32, u8)>,
+        /// Its state edges: a cell and the [`DirtyClass`] bits a change of the
+        /// cell marks.
+        edges: Vec<(CellRef, u8)>,
         /// Its handler routes.
         routes: Vec<Route>,
         /// Its built-in response, for a native control node.
@@ -204,15 +234,30 @@ pub fn mount_regions(
             })
         })
         .collect();
-    let deps: Vec<StateId> = regions
+    let mut deps: Vec<StateId> = regions
         .regions
         .iter()
         .flat_map(|region| &region.deps)
-        .filter_map(|&cell| resolved.get(cell as usize).copied().flatten())
+        .filter_map(|cell| match *cell {
+            CellRef::Shared(cell) => resolved.get(cell as usize).copied().flatten(),
+            CellRef::Local(_) => None,
+        })
         .collect();
+    let keeps = regions
+        .regions
+        .iter()
+        .flat_map(|region| &region.arms)
+        .any(|arm| !arm.locals.is_empty());
+    let pulse = keeps.then(|| {
+        let pulse = cx.states.alloc(StateValue::Int(0));
+        host.borrow_mut().adopt_pulse(pulse);
+        deps.push(pulse);
+        pulse
+    });
     let mut mounted = Mounted {
         regions,
         cells: resolved,
+        pulse,
         host: Rc::clone(host),
         groups,
         scratch: Vec::new(),
@@ -318,9 +363,12 @@ struct Frag {
     roots: Vec<Slot>,
     /// Its nodes with a region among their children.
     groups: Vec<Group>,
-    /// The bindings its handlers and nested regions receive: the enclosing
-    /// regions' and this item's or scrutinee's.
-    scope: Vec<Value>,
+    /// What its handlers and nested regions run with: the enclosing regions'
+    /// bindings and this item's or scrutinee's, and the enclosing mounts'
+    /// instance states and [`own`](Self::own).
+    scope: Scope,
+    /// The instance states this mount keeps.
+    own: Option<Rc<Locals>>,
     /// Each node with handlers, and its item index in the arm template.
     routed: Vec<(NodeId, u32)>,
 }
@@ -364,6 +412,9 @@ struct Mounted {
     regions: Rc<ViewRegions>,
     /// The live cell of each [`ViewRegions::states`] key.
     cells: Vec<Option<StateId>>,
+    /// The cell raised with every write of a state a mount of region content
+    /// keeps, `None` for regions that mount no component instance.
+    pulse: Option<StateId>,
     /// Shared with the view's node handlers: the hook runs after the flush and
     /// a handler from a dispatched event, both on the cold path and neither
     /// inside the other, so the borrow is never re-entered.
@@ -377,6 +428,7 @@ impl Mounted {
         let Mounted {
             regions,
             cells,
+            pulse,
             host,
             groups,
             scratch,
@@ -385,14 +437,14 @@ impl Mounted {
             cx,
             regions,
             cells,
+            pulse: *pulse,
             host,
             changed,
             scratch,
-            args: Vec::new(),
             freed: false,
         };
         for group in groups.iter_mut() {
-            patch.slots(&mut group.slots, &[], group.parent, None, false);
+            patch.slots(&mut group.slots, &Scope::EMPTY, group.parent, None, false);
         }
         if patch.freed {
             let arena = patch.cx.store.arena();
@@ -406,10 +458,10 @@ struct Patch<'p, 'c> {
     cx: &'p mut StructureCx<'c>,
     regions: &'p ViewRegions,
     cells: &'p [Option<StateId>],
+    pulse: Option<StateId>,
     host: &'p Rc<RefCell<ViewHost>>,
     changed: &'p [StateId],
     scratch: &'p mut Vec<NodeId>,
-    args: Vec<Value>,
     freed: bool,
 }
 
@@ -419,7 +471,7 @@ impl Patch<'_, '_> {
     fn slots(
         &mut self,
         slots: &mut [Slot],
-        scope: &[Value],
+        scope: &Scope,
         parent: NodeId,
         mut anchor: Option<NodeId>,
         force: bool,
@@ -459,7 +511,7 @@ impl Patch<'_, '_> {
     fn mount(
         &mut self,
         mount: &mut Mount,
-        scope: &[Value],
+        scope: &Scope,
         parent: NodeId,
         anchor: Option<NodeId>,
         force: bool,
@@ -469,11 +521,11 @@ impl Patch<'_, '_> {
         let touched = force
             || mount.fresh
             || template.deps.iter().any(|&cell| {
-                self.cells
-                    .get(cell as usize)
-                    .copied()
-                    .flatten()
-                    .is_some_and(|id| self.changed.contains(&id))
+                let id = match cell {
+                    CellRef::Shared(cell) => self.cells.get(cell as usize).copied().flatten(),
+                    CellRef::Local(slot) => scope.cell(slot),
+                };
+                id.is_some_and(|id| self.changed.contains(&id))
             });
         mount.fresh = false;
         let region = mount.region;
@@ -556,7 +608,7 @@ impl Patch<'_, '_> {
         &mut self,
         arms: Arms<'_>,
         next: Option<usize>,
-        scope: &[Value],
+        scope: &Scope,
         subject: Option<&Value>,
         parent: NodeId,
         anchor: Option<NodeId>,
@@ -598,19 +650,24 @@ impl Patch<'_, '_> {
     fn frag(
         &mut self,
         frag: &mut Frag,
-        scope: &[Value],
+        scope: &Scope,
         extra: Option<&Value>,
         parent: NodeId,
         anchor: Option<NodeId>,
         mut force: bool,
     ) {
-        let current = frag.scope.len() == scope.len() + usize::from(extra.is_some())
-            && frag.scope[..scope.len()] == *scope
-            && extra.is_none_or(|extra| frag.scope[scope.len()] == *extra);
+        let values = &frag.scope.values;
+        let locals = &frag.scope.locals;
+        let current = values.len() == scope.values.len() + usize::from(extra.is_some())
+            && values[..scope.values.len()] == *scope.values
+            && extra.is_none_or(|extra| values[scope.values.len()] == *extra)
+            && locals.len() == scope.locals.len() + usize::from(frag.own.is_some())
+            && locals
+                .iter()
+                .zip(&scope.locals)
+                .all(|(a, b)| Rc::ptr_eq(a, b));
         if !current {
-            frag.scope.clear();
-            frag.scope.extend_from_slice(scope);
-            frag.scope.extend(extra.cloned());
+            frag.scope = frag_scope(scope, extra, frag.own.as_ref());
             let items = &self.regions.regions[frag.region as usize].arms[frag.arm as usize].items;
             for &(id, index) in &frag.routed {
                 if let ItemTemplate::Node {
@@ -642,7 +699,7 @@ impl Patch<'_, '_> {
         items: &mut Vec<Item>,
         values: Vec<Value>,
         keys: Vec<Key>,
-        scope: &[Value],
+        scope: &Scope,
         parent: NodeId,
     ) {
         let mut index: HashMap<&Key, usize> = HashMap::with_capacity(items.len());
@@ -674,7 +731,7 @@ impl Patch<'_, '_> {
     }
 
     /// The items a `for` iterates, or `None` after recording why not.
-    fn iterate(&mut self, entry: u32, scope: &[Value]) -> Option<Vec<Value>> {
+    fn iterate(&mut self, entry: u32, scope: &Scope) -> Option<Vec<Value>> {
         let value = self.evaluate(entry, scope, None)?;
         match value {
             Value::List(list) => Some(Rc::unwrap_or_clone(list)),
@@ -706,7 +763,7 @@ impl Patch<'_, '_> {
     }
 
     /// Each item's key, or `None` after recording why a key is unusable.
-    fn keys(&mut self, entry: Option<u32>, values: &[Value], scope: &[Value]) -> Option<Vec<Key>> {
+    fn keys(&mut self, entry: Option<u32>, values: &[Value], scope: &Scope) -> Option<Vec<Key>> {
         let mut keys = Vec::with_capacity(values.len());
         let mut seen = HashSet::with_capacity(values.len());
         for (at, value) in values.iter().enumerate() {
@@ -737,16 +794,12 @@ impl Patch<'_, '_> {
         Some(keys)
     }
 
-    /// Calls entry `entry` with `scope` and `extra`, or records its fault.
-    fn evaluate(&mut self, entry: u32, scope: &[Value], extra: Option<&Value>) -> Option<Value> {
-        self.args.clear();
-        self.args.extend_from_slice(scope);
-        self.args.extend(extra.cloned());
+    /// Calls entry `entry` in `scope` with `extra`, or records its fault.
+    fn evaluate(&mut self, entry: u32, scope: &Scope, extra: Option<&Value>) -> Option<Value> {
         let Ok(mut host) = self.host.try_borrow_mut() else {
             return None;
         };
-        let result = host.evaluate(entry, &self.args, &*self.cx.states);
-        self.args.clear();
+        let result = host.evaluate(entry, scope, extra, &*self.cx.states);
         match result {
             Ok(value) => Some(value),
             Err(fault) => {
@@ -767,18 +820,21 @@ impl Patch<'_, '_> {
         None
     }
 
-    /// Mounts arm `arm` of region `region` as the last children of `parent`.
-    /// Its nested regions start empty and mount on their first patch.
+    /// Mounts arm `arm` of region `region` as the last children of `parent`,
+    /// starting the instance states it keeps. Its nested regions start empty
+    /// and mount on their first patch.
     fn build(
         &mut self,
         region: u32,
         arm: u32,
-        scope: &[Value],
+        scope: &Scope,
         extra: Option<&Value>,
         parent: NodeId,
     ) -> Frag {
         let regions = self.regions;
-        let items = &regions.regions[region as usize].arms[arm as usize].items;
+        let template = &regions.regions[region as usize].arms[arm as usize];
+        let items = &template.items;
+        let own = self.keep(&template.locals, scope, extra);
         let mut roots = Vec::new();
         let mut groups = Vec::new();
         let mut built = Vec::new();
@@ -803,8 +859,7 @@ impl Patch<'_, '_> {
             }
         }
         self.cx.store.mark_dirty(parent, relayout());
-        let mut frag_scope = scope.to_vec();
-        frag_scope.extend(extra.cloned());
+        let frag_scope = frag_scope(scope, extra, own.as_ref());
         let mut routed = Vec::new();
         for (id, index) in built {
             let ItemTemplate::Node {
@@ -817,10 +872,14 @@ impl Patch<'_, '_> {
                 continue;
             };
             for &(cell, class) in edges {
-                if let Some(Some(state)) = self.cells.get(cell as usize) {
+                let state = match cell {
+                    CellRef::Shared(cell) => self.cells.get(cell as usize).copied().flatten(),
+                    CellRef::Local(slot) => frag_scope.cell(slot),
+                };
+                if let Some(state) = state {
                     self.cx
                         .bindings
-                        .bind(*state, id, DirtyClass::from_bits(class));
+                        .bind(state, id, DirtyClass::from_bits(class));
                 }
             }
             if !routes.is_empty() || control.is_some() {
@@ -834,8 +893,37 @@ impl Patch<'_, '_> {
             roots,
             groups,
             scope: frag_scope,
+            own,
             routed,
         }
+    }
+
+    /// The instance states `locals` a new mount in `scope`, with the binding
+    /// `extra`, keeps: their initial values and a revision cell each.
+    fn keep(
+        &mut self,
+        locals: &[LocalTemplate],
+        scope: &Scope,
+        extra: Option<&Value>,
+    ) -> Option<Rc<Locals>> {
+        let pulse = self.pulse.filter(|_| !locals.is_empty())?;
+        let Ok(mut host) = self.host.try_borrow_mut() else {
+            return None;
+        };
+        let init = frag_scope(scope, extra, None);
+        let values = host.initialize(locals, &init, &*self.cx.states);
+        let cells = locals
+            .iter()
+            .map(|_| self.cx.states.alloc(StateValue::Int(0)))
+            .collect();
+        let kept = Rc::new(Locals {
+            slots: locals.iter().map(|local| local.slot).collect(),
+            values: RefCell::new(values),
+            cells,
+            pulse,
+        });
+        host.adopt(&kept);
+        Some(kept)
     }
 
     /// Unlinks `frag`'s nodes from `parent`, keeping them alive.
@@ -866,9 +954,13 @@ impl Patch<'_, '_> {
         }
     }
 
-    /// Frees `frag`'s nodes, and the nodes its nested regions keep.
+    /// Frees `frag`'s nodes and instance states, and those its nested regions
+    /// keep.
     fn free(&mut self, frag: Frag) {
         self.freed = true;
+        if let Some(own) = &frag.own {
+            own.release(self.cx.states);
+        }
         for slot in frag.roots {
             self.free_slot(slot);
         }
@@ -909,6 +1001,17 @@ struct Arms<'m> {
     active: &'m mut Option<usize>,
     live: &'m mut Option<Frag>,
     kept: &'m mut Vec<Option<Frag>>,
+}
+
+/// The scope of a mount in `scope` with the binding `extra`, keeping `own`.
+fn frag_scope(scope: &Scope, extra: Option<&Value>, own: Option<&Rc<Locals>>) -> Scope {
+    let mut values = Vec::with_capacity(scope.values.len() + 1);
+    values.extend_from_slice(&scope.values);
+    values.extend(extra.cloned());
+    let mut locals = Vec::with_capacity(scope.locals.len() + usize::from(own.is_some()));
+    locals.extend(scope.locals.iter().cloned());
+    locals.extend(own.cloned());
+    Scope { values, locals }
 }
 
 /// The arm an arm choice names: `None` for `-1` or a value out of range.
@@ -970,20 +1073,25 @@ fn read_u32(dec: &mut Decoder<'_>) -> Result<u32, DecodeError> {
     u32::try_from(dec.read_varint()?).map_err(|_| DecodeError::Malformed { offset })
 }
 
-fn write_u32s(enc: &mut Encoder, values: &[u32]) {
-    enc.write_varint(values.len() as u64);
-    for &value in values {
-        enc.write_varint(u64::from(value));
-    }
+/// A cell reference as one varint: the index or slot, then whether it is
+/// [`CellRef::Local`] in the low bit.
+fn write_cell(enc: &mut Encoder, cell: CellRef) {
+    let (index, local) = match cell {
+        CellRef::Shared(index) => (index, 0),
+        CellRef::Local(slot) => (slot, 1),
+    };
+    enc.write_varint((u64::from(index) << 1) | local);
 }
 
-fn read_u32s(dec: &mut Decoder<'_>) -> Result<Vec<u32>, DecodeError> {
-    let count = dec.read_varint()?;
-    let mut values = Vec::with_capacity(bounded(count));
-    for _ in 0..count {
-        values.push(read_u32(dec)?);
-    }
-    Ok(values)
+fn read_cell(dec: &mut Decoder<'_>) -> Result<CellRef, DecodeError> {
+    let offset = dec.position();
+    let raw = dec.read_varint()?;
+    let index = u32::try_from(raw >> 1).map_err(|_| DecodeError::Malformed { offset })?;
+    Ok(if raw & 1 == 0 {
+        CellRef::Shared(index)
+    } else {
+        CellRef::Local(index)
+    })
 }
 
 impl Encode for ViewRegions {
@@ -1012,10 +1120,18 @@ impl Encode for ViewRegions {
                     enc.write_varint(key.map_or(0, |key| u64::from(key) + 1));
                 }
             }
-            write_u32s(enc, &region.deps);
+            enc.write_varint(region.deps.len() as u64);
+            for &cell in &region.deps {
+                write_cell(enc, cell);
+            }
             enc.write_varint(region.arms.len() as u64);
             for arm in &region.arms {
                 enc.write_bool(arm.preserve);
+                enc.write_varint(arm.locals.len() as u64);
+                for local in &arm.locals {
+                    enc.write_varint(u64::from(local.slot));
+                    enc.write_varint(local.init.map_or(0, |init| u64::from(init) + 1));
+                }
                 enc.write_varint(arm.items.len() as u64);
                 for item in &arm.items {
                     match item {
@@ -1029,7 +1145,7 @@ impl Encode for ViewRegions {
                             node.encode(enc);
                             enc.write_varint(edges.len() as u64);
                             for &(cell, class) in edges {
-                                enc.write_varint(u64::from(cell));
+                                write_cell(enc, cell);
                                 enc.write_u8(class);
                             }
                             enc.write_varint(routes.len() as u64);
@@ -1097,11 +1213,23 @@ impl Decode for ViewRegions {
                 },
                 _ => return Err(DecodeError::Malformed { offset }),
             };
-            let deps = read_u32s(dec)?;
+            let count = dec.read_varint()?;
+            let mut deps = Vec::with_capacity(bounded(count));
+            for _ in 0..count {
+                deps.push(read_cell(dec)?);
+            }
             let count = dec.read_varint()?;
             let mut arms = Vec::with_capacity(bounded(count));
             for _ in 0..count {
                 let preserve = dec.read_bool()?;
+                let count = dec.read_varint()?;
+                let mut locals = Vec::with_capacity(bounded(count));
+                for _ in 0..count {
+                    locals.push(LocalTemplate {
+                        slot: read_u32(dec)?,
+                        init: read_u32(dec)?.checked_sub(1),
+                    });
+                }
                 let count = dec.read_varint()?;
                 let mut items = Vec::with_capacity(bounded(count));
                 for _ in 0..count {
@@ -1112,7 +1240,7 @@ impl Decode for ViewRegions {
                             let count = dec.read_varint()?;
                             let mut edges = Vec::with_capacity(bounded(count));
                             for _ in 0..count {
-                                edges.push((read_u32(dec)?, dec.read_u8()?));
+                                edges.push((read_cell(dec)?, dec.read_u8()?));
                             }
                             let count = dec.read_varint()?;
                             let mut routes = Vec::with_capacity(bounded(count));
@@ -1138,7 +1266,11 @@ impl Decode for ViewRegions {
                         _ => return Err(DecodeError::Malformed { offset }),
                     });
                 }
-                arms.push(ArmTemplate { preserve, items });
+                arms.push(ArmTemplate {
+                    preserve,
+                    locals,
+                    items,
+                });
             }
             regions.push(RegionTemplate { kind, deps, arms });
         }
@@ -1178,6 +1310,10 @@ impl ViewRegions {
         let states = self.states.len();
         let regions = self.regions.len();
         let check = |ok: bool| if ok { Ok(()) } else { Err(()) };
+        let shared = |cell: CellRef| match cell {
+            CellRef::Shared(index) => (index as usize) < states,
+            CellRef::Local(_) => true,
+        };
         let mut named = vec![false; regions];
         let mut name = |region: u32, by: Option<usize>| -> Result<(), ()> {
             let index = region as usize;
@@ -1193,13 +1329,14 @@ impl ViewRegions {
             }
         }
         for (at, region) in self.regions.iter().enumerate() {
-            check(region.deps.iter().all(|&cell| (cell as usize) < states))?;
+            check(region.deps.iter().all(|&cell| shared(cell)))?;
             let arms = match region.kind {
                 RegionKind::For { .. } => region.arms.len() == 1,
                 RegionKind::If { .. } | RegionKind::Match { .. } => true,
             };
             check(arms)?;
             for arm in &region.arms {
+                check(arm.locals.windows(2).all(|w| w[0].slot < w[1].slot))?;
                 // The children still owed to the open nodes; an item owed to
                 // none is a new top-level item.
                 let mut owed = 0usize;
@@ -1207,7 +1344,7 @@ impl ViewRegions {
                     owed = owed.saturating_sub(1);
                     match item {
                         ItemTemplate::Node { node, edges, .. } => {
-                            check(edges.iter().all(|&(cell, _)| (cell as usize) < states))?;
+                            check(edges.iter().all(|&(cell, _)| shared(cell)))?;
                             check(node.kind.is_container() || node.child_count == 0)?;
                             owed += node.child_count as usize;
                         }
@@ -1242,13 +1379,23 @@ mod tests {
             regions: vec![
                 RegionTemplate {
                     kind: RegionKind::If { select: 0 },
-                    deps: vec![0],
+                    deps: vec![CellRef::Shared(0), CellRef::Local(5)],
                     arms: vec![ArmTemplate {
                         preserve: true,
+                        locals: vec![
+                            LocalTemplate {
+                                slot: 5,
+                                init: Some(4),
+                            },
+                            LocalTemplate {
+                                slot: 6,
+                                init: None,
+                            },
+                        ],
                         items: vec![
                             ItemTemplate::Node {
                                 node: node(AotNodeKind::Flex, 1),
-                                edges: vec![(0, 4)],
+                                edges: vec![(CellRef::Shared(0), 4), (CellRef::Local(6), 1)],
                                 routes: vec![(EventRoute::Click, 1)],
                                 control: None,
                             },
@@ -1264,6 +1411,7 @@ mod tests {
                     deps: vec![],
                     arms: vec![ArmTemplate {
                         preserve: false,
+                        locals: vec![],
                         items: vec![ItemTemplate::Node {
                             node: node(AotNodeKind::Leaf, 0),
                             edges: vec![],
@@ -1281,10 +1429,18 @@ mod tests {
         let bytes = regions.encode_to_vec();
         assert_eq!(ViewRegions::decode_from_slice(&bytes), Ok(regions.clone()));
 
-        let mut dangling = regions;
+        let mut dangling = regions.clone();
         dangling.groups[0].slots[1] = SlotTemplate::Region(1);
         let bytes = dangling.encode_to_vec();
         assert!(ViewRegions::decode_from_slice(&bytes).is_err());
+
+        let mut unknown = regions.clone();
+        unknown.regions[0].deps[0] = CellRef::Shared(1);
+        assert!(ViewRegions::decode_from_slice(&unknown.encode_to_vec()).is_err());
+
+        let mut unordered = regions;
+        unordered.regions[0].arms[0].locals.reverse();
+        assert!(ViewRegions::decode_from_slice(&unordered.encode_to_vec()).is_err());
     }
 
     #[test]

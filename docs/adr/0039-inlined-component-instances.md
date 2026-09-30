@@ -40,11 +40,26 @@ second instance lifecycle to every target.
   child state binds its hidden state. A read of an input binds whatever the
   caller's argument reads, resolved through the caller's own instance.
 - Hidden states are ordinary mounted states, so hot reload keeps them by
-  name and the release package carries them unchanged. The runtime and the
-  package format do not change.
+  name and the release package carries them unchanged.
+- The hidden states of an instance inside a region belong to each mount of
+  the region content: one set per keyed item and per entry into an arm.
+  - Their initializers join the handler table as entries the region runs
+    with its scope values when it mounts the instance. `ComponentLayout`
+    records them per instance as `RegionalStates`, and the compiler creates
+    no global cell for them.
+  - Each arm template lists the slots it keeps (`LocalTemplate`). A mount
+    holds their values and one revision cell per slot.
+  - A dependency or binding edge names either a shared cell or a kept slot
+    (`CellRef`). A region resolves a kept slot through its scope.
+  - Before any call in its scope, the host loads the kept values into the
+    VM slots. A write to a kept slot is stored back into the mount and
+    raises the slot's revision and the view's pulse cell, so the view's
+    structure hook sees it.
+  - The states follow the key, are dropped with the item or with an arm
+    that is not preserved, and are released when hot reload rebuilds the
+    regions.
 - Anything that cannot be inlined is `E3711`:
   - a component that mounts itself;
-  - a stateful instance inside a region;
   - `bind … using` to an input;
   - properties or handlers forwarded to a view that does not mount exactly one
     node;
@@ -62,5 +77,6 @@ second instance lifecycle to every target.
   state on reload. Naming the node pins the identity.
 - A caller's handler runs synchronously at the `emit`, inside the child's
   transaction.
-- Stateful instances in regions need per-item hidden state and remain open.
-  So do instances in `ui!` fragments and components from other files.
+- A regional instance's state starts over on each hot reload, because the
+  regions are rebuilt. It is not kept by name.
+- Instances in `ui!` fragments and components from other files remain open.

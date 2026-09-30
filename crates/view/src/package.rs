@@ -17,6 +17,7 @@ use crate::control::Control;
 use crate::host::{HostError, ViewHost};
 use crate::regions::{ViewRegions, mount_regions};
 use crate::route::EventRoute;
+use crate::scope::Scope;
 
 /// A compiled view with behavior, as a release build embeds it.
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -177,7 +178,7 @@ pub fn instantiate_view(
         }
         let control = controls.next_if(|c| c.node == node).map(|c| c.control);
         if let Some(Some(id)) = node_ids.get(node as usize).copied() {
-            attach_node(store, &host, id, &routes, control, &[]);
+            attach_node(store, &host, id, &routes, control, &Scope::EMPTY);
         }
     }
     if !package.regions.is_empty() {

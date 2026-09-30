@@ -9,7 +9,9 @@
 //! instance:
 //!
 //! - its states are hidden states of the mounted component, appended to its
-//!   layout and named by the instance's identity ([`hidden_state`]);
+//!   layout and named by the instance's identity ([`hidden_state`]); an
+//!   instance a control-flow region mounts starts them from entries the
+//!   region content runs when it mounts the instance ([`RegionalStates`]);
 //! - an input read calls the caller's argument entry for that input (else the
 //!   component's default, else `None`);
 //! - an `emit` calls each handler the caller wires to the event, with the
@@ -26,7 +28,7 @@ use std::collections::HashMap;
 
 use super::ir::{
     Body, ComponentLayout, Const, FuncId, Function, FunctionKind, Inst, PathStep, Program, Reg,
-    Site, Unsupported,
+    RegionalStates, Site, Unsupported,
 };
 use super::lower::block_unsupported;
 use crate::ir::{UiInstance, UiTree};
@@ -207,7 +209,35 @@ impl Inliner<'_> {
             self.child.state_inits.iter().map(|f| f.map(own)).collect();
         let layout = &mut self.program.components[self.root];
         layout.handlers.extend(handlers);
-        layout.state_inits.extend(inits);
+        if !self.instance.regional {
+            layout.state_inits.extend(inits);
+            return;
+        }
+        // Region content runs the initializers with its scope values each
+        // time it mounts the instance, so they join the handler table at
+        // sites no view item has.
+        layout.state_inits.extend(inits.iter().map(|_| None));
+        let entries = inits
+            .into_iter()
+            .enumerate()
+            .map(|(state, init)| {
+                let func = init?;
+                let at = TextRange::empty(TextSize::from(state as u32));
+                layout.handlers.push((
+                    Site {
+                        instance: self.id,
+                        at,
+                    },
+                    func,
+                ));
+                Some(layout.handlers.len() as u32 - 1)
+            })
+            .collect();
+        layout.regional.push(RegionalStates {
+            instance: self.id,
+            base: self.base,
+            inits: entries,
+        });
     }
 
     /// The function the caller registered at `at` in the view of the

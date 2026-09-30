@@ -3,19 +3,19 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use viso_behavior::Value;
 use viso_ui::{BuildCx, DispatchPhase, EventCx, Handle, NodeId, NodeStore};
 
 use crate::control::Control;
 use crate::host::ViewHost;
 use crate::route::EventRoute;
+use crate::scope::Scope;
 
 /// One handler a node declares: the event it runs on and its index in the
 /// view's handler table.
 pub type Route = (EventRoute, u32);
 
 /// Installs `routes` and the built-in response of `control` on the node `node`
-/// names, dispatching into `host` with the enclosing regions' bindings `scope`,
+/// names, dispatching into `host` in `scope`,
 /// and returns the handle so authoring chains inline.
 pub fn attach(
     cx: &mut BuildCx<'_>,
@@ -23,7 +23,7 @@ pub fn attach(
     node: Handle,
     routes: &[Route],
     control: Option<Control>,
-    scope: &[Value],
+    scope: &Scope,
 ) -> Handle {
     let (keys, pointers) = split(routes, control);
     if let Some(pointers) = pointers {
@@ -47,7 +47,7 @@ pub fn attach_node(
     id: NodeId,
     routes: &[Route],
     control: Option<Control>,
-    scope: &[Value],
+    scope: &Scope,
 ) {
     store.clear_event_handlers(id);
     let (keys, pointers) = split(routes, control);
@@ -88,10 +88,10 @@ fn handler(
     host: &Rc<RefCell<ViewHost>>,
     routes: Vec<Route>,
     control: Option<Control>,
-    scope: &[Value],
+    scope: &Scope,
 ) -> impl FnMut(&mut EventCx<'_>) + 'static {
     let host = Rc::clone(host);
-    let scope: Box<[Value]> = scope.into();
+    let scope = scope.clone();
     move |cx: &mut EventCx<'_>| {
         let Ok(mut host) = host.try_borrow_mut() else {
             return;

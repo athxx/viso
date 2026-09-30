@@ -16,5 +16,6 @@ pub(crate) mod lower;
 
 pub(crate) use instance::{hidden_state, inline_instances};
 pub use ir::{
-    Body, ComponentLayout, FuncId, Function, FunctionKind, Inst, Program, Reg, Site, Unsupported,
+    Body, ComponentLayout, FuncId, Function, FunctionKind, Inst, Program, Reg, RegionalStates,
+    Site, Unsupported,
 };

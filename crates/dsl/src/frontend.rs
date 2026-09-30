@@ -156,6 +156,10 @@ pub struct Compiled {
     /// Every reactive source in scope of the view, in declaration (or, for a
     /// fragment, first-read) order.
     pub sources: Vec<Source>,
+    /// The hidden states of the instances a control-flow region mounts, which
+    /// each mount of the region content keeps for itself instead of a state
+    /// cell of the view.
+    pub regional: Vec<Source>,
     /// Every diagnostic, of every severity, from every stage, in stage order.
     pub diagnostics: Vec<Diagnostic>,
     /// Every body of the unit lowered to the Behavior IR.
@@ -226,6 +230,7 @@ pub fn compile_fragment(source: &str) -> Compiled {
         bindings,
         keys,
         sources,
+        regional: Vec::new(),
         diagnostics,
         behavior: Program::default(),
     }
@@ -345,6 +350,7 @@ fn compile_unit(source: &str, parse: Parse, origin: &Origin, natives: Arc<Native
 
     let mut sources = component_sources(&components[mounted], &decl);
     let own = sources.len();
+    let mut regional = Vec::new();
     let mut instances = Vec::with_capacity(tree.instances.len());
     for instance in &tree.instances {
         let mut inlined = InstanceSources::default();
@@ -376,24 +382,34 @@ fn compile_unit(source: &str, parse: Parse, origin: &Origin, natives: Arc<Native
                 decl_path: &decl_path,
             });
             inlined.states.push((source.symbol, symbol));
-            sources.push(Source {
+            let hidden = Source {
                 name,
                 symbol,
                 kind: source.kind,
-            });
+            };
+            if instance.regional {
+                regional.push(hidden);
+            } else {
+                sources.push(hidden);
+            }
         }
         instances.push(inlined);
     }
     let hidden = sources.split_off(own);
-    let env = SourceSet::new(sources.iter().chain(&hidden).map(|s| s.symbol).chain(
-        tree.instances.iter().flat_map(|i| {
-            components
-                .iter()
-                .find(|c| c.schema.symbol == i.component)
-                .map(instance_symbols)
-                .unwrap_or_default()
-        }),
-    ));
+    let env = SourceSet::new(
+        sources
+            .iter()
+            .chain(&hidden)
+            .chain(&regional)
+            .map(|s| s.symbol)
+            .chain(tree.instances.iter().flat_map(|i| {
+                components
+                    .iter()
+                    .find(|c| c.schema.symbol == i.component)
+                    .map(instance_symbols)
+                    .unwrap_or_default()
+            })),
+    );
     let bindings = lower_view_bindings(&tree, &root, &module.refs, &env, &instances);
     let keys = analyze_keys(&tree, &root, &module.refs, &env);
     diagnostics.extend(keys.diagnostics.iter().cloned());
@@ -405,6 +421,7 @@ fn compile_unit(source: &str, parse: Parse, origin: &Origin, natives: Arc<Native
         bindings,
         keys,
         sources,
+        regional,
         diagnostics,
         behavior,
     }
@@ -445,6 +462,7 @@ impl Compiled {
             bindings: BindingIr::default(),
             keys: KeyIr::default(),
             sources: Vec::new(),
+            regional: Vec::new(),
             diagnostics,
             behavior,
         }

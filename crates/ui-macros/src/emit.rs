@@ -356,7 +356,7 @@ impl Emit<'_> {
             None => quote! { ::core::option::Option::None },
         };
         quote! {
-            ::viso_view::attach(cx, &__viso_host, #handle_ident, &[#(#routes),*], #control, &[]);
+            ::viso_view::attach(cx, &__viso_host, #handle_ident, &[#(#routes),*], #control, &::viso_view::Scope::EMPTY);
         }
     }
 }

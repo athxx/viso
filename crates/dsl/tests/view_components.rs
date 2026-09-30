@@ -2,7 +2,8 @@
 //! and the release package: a stateless component repeated by a keyed `for`
 //! and switched by an `if` hands its events to its caller's handlers, a
 //! stateful one keeps its state per instance, and a `bind` writes a
-//! component's change back into the caller's state.
+//! component's change back into the caller's state. An instance an `if`, a
+//! `for` or a `match` mounts keeps its state per mount.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -329,19 +330,163 @@ fn a_component_mounting_itself_is_e3711() {
     assert!(codes.contains(&"E3711".to_string()), "{codes:?}");
 }
 
-#[test]
-fn a_stateful_component_in_a_region_is_e3711() {
-    let codes = codes(
-        "component Counter {
-            state count = 0;
-            view { Text {} }
+const REGIONAL: &str = r#"
+component Tally {
+    input seed: I64;
+    event counted(value: I64);
+    state count = seed * 10;
+    view {
+        Row {
+            width: 400dp;
+            height: 20dp;
+            Text { width: 20dp; height: 20dp; on click { count += 1; emit counted(count); } }
+            if count > seed * 10 + 1 {
+                Text { width: 20dp; height: 20dp; }
+            }
         }
-        export component App {
-            state show = true;
-            view { Column { if show { Counter {} } } }
-        }",
-    );
-    assert_eq!(codes, ["E3711"]);
+    }
+}
+
+export component App {
+    state items = [1, 2, 3];
+    state show = true;
+    state keep = true;
+    state mode = 0;
+    state last = 0;
+    view {
+        Column {
+            width: 400dp;
+            height: 300dp;
+            Row {
+                width: 400dp;
+                height: 20dp;
+                Text { width: 20dp; height: 20dp; on click { items = [3, 1, 2]; } }
+                Text { width: 20dp; height: 20dp; on click { items = [1, 3]; } }
+                Text { width: 20dp; height: 20dp; on click { items = [1, 2, 3]; } }
+                Text { width: 20dp; height: 20dp; on click { show = !show; } }
+                Text { width: 20dp; height: 20dp; on click { keep = !keep; } }
+                Text { width: 20dp; height: 20dp; on click { mode = 1 - mode; } }
+            }
+            Column {
+                width: 400dp;
+                height: 60dp;
+                for item in items key item {
+                    Tally { seed: item; on counted(event) { last = event.value; } }
+                }
+            }
+            Column {
+                width: 400dp;
+                height: 20dp;
+                if show {
+                    Tally { seed: 7; on counted(event) { last = event.value; } }
+                }
+            }
+            Column {
+                width: 400dp;
+                height: 20dp;
+                if keep preserve "kept" {
+                    Tally { seed: 8; on counted(event) { last = event.value; } }
+                }
+            }
+            Column {
+                width: 400dp;
+                height: 20dp;
+                match mode {
+                    0 => { Tally { seed: 4; on counted(event) { last = event.value; } } },
+                    _ => { Tally { seed: 5; on counted(event) { last = event.value; } } },
+                }
+            }
+        }
+    }
+}
+"#;
+
+fn regional() -> [Rt; 2] {
+    [Rt::reloaded(REGIONAL), Rt::packaged(REGIONAL)]
+}
+
+impl Rt {
+    /// Clicks the tally at `y` and returns the count it reports.
+    fn tally(&mut self, y: f32) -> Option<Value> {
+        self.click(5.0, y);
+        assert!(!self.faulted());
+        self.state("last")
+    }
+}
+
+#[test]
+fn each_instance_a_for_mounts_keeps_its_own_state_from_its_item() {
+    for mut rt in regional() {
+        assert_eq!(rt.tally(25.0), Some(Value::Int(11)));
+        assert_eq!(rt.tally(25.0), Some(Value::Int(12)));
+        assert_eq!(rt.tally(45.0), Some(Value::Int(21)));
+        assert_eq!(rt.tally(65.0), Some(Value::Int(31)));
+        assert_eq!(rt.tally(25.0), Some(Value::Int(13)));
+    }
+}
+
+#[test]
+fn a_region_inside_an_instance_reads_that_instances_state() {
+    for mut rt in regional() {
+        let rows = rt.region(1);
+        rt.tally(25.0);
+        assert_eq!(rt.children(rows[0]).len(), 1);
+        rt.tally(25.0);
+        assert_eq!(rt.children(rows[0]).len(), 2);
+        assert_eq!(rt.children(rows[1]).len(), 1);
+    }
+}
+
+#[test]
+fn an_instances_state_follows_its_key() {
+    for mut rt in regional() {
+        rt.tally(25.0);
+        rt.tally(65.0);
+        rt.click(5.0, 5.0);
+        assert_eq!(rt.tally(25.0), Some(Value::Int(32)));
+        assert_eq!(rt.tally(45.0), Some(Value::Int(12)));
+        assert_eq!(rt.tally(65.0), Some(Value::Int(21)));
+    }
+}
+
+#[test]
+fn a_removed_instance_starts_over() {
+    for mut rt in regional() {
+        rt.tally(45.0);
+        rt.click(25.0, 5.0);
+        assert_eq!(rt.region(1).len(), 2);
+        assert_eq!(rt.tally(45.0), Some(Value::Int(31)));
+        rt.click(45.0, 5.0);
+        assert_eq!(rt.tally(45.0), Some(Value::Int(21)));
+        assert_eq!(rt.tally(65.0), Some(Value::Int(32)));
+    }
+}
+
+#[test]
+fn an_if_restarts_its_instance_and_a_preserved_one_keeps_it() {
+    for mut rt in regional() {
+        assert_eq!(rt.tally(85.0), Some(Value::Int(71)));
+        assert_eq!(rt.tally(105.0), Some(Value::Int(81)));
+        rt.click(65.0, 5.0);
+        rt.click(85.0, 5.0);
+        assert!(rt.region(2).is_empty());
+        assert!(rt.region(3).is_empty());
+        rt.click(65.0, 5.0);
+        rt.click(85.0, 5.0);
+        assert_eq!(rt.tally(85.0), Some(Value::Int(71)));
+        assert_eq!(rt.tally(105.0), Some(Value::Int(82)));
+    }
+}
+
+#[test]
+fn a_match_arm_mounts_its_own_instance() {
+    for mut rt in regional() {
+        assert_eq!(rt.tally(125.0), Some(Value::Int(41)));
+        rt.click(105.0, 5.0);
+        assert_eq!(rt.tally(125.0), Some(Value::Int(51)));
+        rt.click(105.0, 5.0);
+        assert_eq!(rt.tally(125.0), Some(Value::Int(41)));
+    }
 }
 
 #[test]
