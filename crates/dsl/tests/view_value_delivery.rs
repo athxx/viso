@@ -1,7 +1,8 @@
 //! Reactive property values under hot reload and the release package: a label
 //! and the labels a keyed `for` repeats show their text at mount and again when
-//! a state they read changes, and a reload that keeps the tree replaces the
-//! view's value hook rather than adding one.
+//! a state they read changes, a reload that keeps the tree replaces the view's
+//! value hook rather than adding one, and a handler's writes commit as one
+//! transaction.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -13,7 +14,8 @@ use viso_ui::Rect;
 use viso_ui::virtual_list::VirtualLists;
 use viso_ui::{
     BindingTable, EffectStore, NodeId, NodeStore, PointerButtons, PointerEvent, PointerPhase,
-    PointerRouter, SemanticProjector, StateStore, TextEdits, run_structure_hooks,
+    PointerRouter, SemanticProjector, StateId, StateStore, StateValue, TextEdits,
+    run_structure_hooks,
 };
 use viso_view::{ViewHost, load_view};
 
@@ -53,6 +55,25 @@ component Flat {
             height: 300dp;
             Text { width: 20dp; height: 20dp; on click { count += 1; } }
             Text { width: 100dp; height: 20dp; text: format("{} items", count); }
+        }
+    }
+}
+"#;
+
+const BATCH: &str = r#"
+component Batch {
+    state count = 0;
+    state items = [1];
+    view {
+        Column {
+            width: 400dp;
+            height: 300dp;
+            Text {
+                width: 100dp;
+                height: 20dp;
+                text: format("{} items", count);
+                on click { count += 1; items = [1, 2]; count += 1; items = [3]; }
+            }
         }
     }
 }
@@ -147,7 +168,8 @@ impl Rt {
     }
 
     /// A primary click at `(x, y)`, then the frame's flush and structure hooks.
-    fn click(&mut self, x: f32, y: f32) {
+    /// Returns the cells the frame changed and how many hooks ran.
+    fn click(&mut self, x: f32, y: f32) -> (Vec<StateId>, u32) {
         let root = self.root.expect("mounted");
         let mut chain = Vec::new();
         for phase in [PointerPhase::Down, PointerPhase::Up] {
@@ -171,7 +193,7 @@ impl Rt {
         self.states.take_pending(&mut changed);
         self.store
             .flush_state_transactions(&changed, &self.bindings);
-        run_structure_hooks(
+        let ran = run_structure_hooks(
             &mut self.store,
             &mut self.states,
             &mut self.bindings,
@@ -179,6 +201,7 @@ impl Rt {
             &changed,
         );
         self.layout();
+        (changed, ran)
     }
 
     /// The texts declared since the last call, by node.
@@ -224,4 +247,22 @@ fn a_reload_keeping_the_tree_replaces_the_value_hook() {
 
     rt.click(5.0, 5.0);
     assert_eq!(rt.declared(), [(label, "2 things".to_owned())], "once");
+}
+
+#[test]
+fn a_handler_writing_twice_commits_one_revision_and_one_delivery() {
+    for mut rt in [Rt::reloaded(BATCH), Rt::packaged(BATCH)] {
+        assert_eq!(rt.texts(), ["0 items"]);
+        let (changed, ran) = rt.click(5.0, 5.0);
+        let mut values: Vec<Option<StateValue>> =
+            changed.iter().map(|&id| rt.states.get(id)).collect();
+        values.sort_by_key(|value| format!("{value:?}"));
+        assert_eq!(
+            values,
+            [Some(StateValue::Int(1)), Some(StateValue::Int(2))],
+            "`items` raises its revision once and `count` lands once"
+        );
+        assert_eq!(ran, 1, "one hook run for the frame");
+        assert_eq!(rt.texts(), ["2 items"], "one delivery");
+    }
 }
