@@ -10,7 +10,8 @@ use std::rc::Rc;
 
 use viso_behavior::Module;
 use viso_ui::StateValue;
-use viso_view::{Control, ControlKind, EventRoute, Route, ViewHost, ViewRegions};
+pub use viso_view::Control;
+use viso_view::{ControlKind, EventRoute, Route, ViewHost, ViewRegions};
 
 use crate::behavior::Site;
 use crate::frontend::{Compiled, SourceKind};

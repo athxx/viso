@@ -51,6 +51,7 @@ use crate::control::Control;
 use crate::host::ViewHost;
 use crate::route::EventRoute;
 use crate::scope::{Locals, Scope};
+use crate::values::{Shown, control_cells};
 
 /// The most items a range region mounts; a longer range faults instead of
 /// allocating an unbounded tree.
@@ -197,6 +198,11 @@ pub enum SlotTemplate {
 /// Mounts `regions` under the static nodes `nodes` (indexed by static
 /// pre-order), resolving each state key through `cells`, and registers the
 /// structure hook that re-shapes them. The regions' entries run on `host`.
+///
+/// A node the regions mount shows its values as a static node does: they are
+/// delivered when it mounts or its mount's bindings change, and again when a
+/// cell they read changes, so the hook also depends on every shared cell a
+/// content node's values read.
 pub fn mount_regions(
     cx: &mut StructureCx<'_>,
     regions: Rc<ViewRegions>,
@@ -222,10 +228,10 @@ pub fn mount_regions(
                 .iter()
                 .map(|slot| match *slot {
                     SlotTemplate::Node(index) => node(index).map(Slot::Node),
-                    SlotTemplate::Region(region) => Some(Slot::Region(Mount::new(
+                    SlotTemplate::Region(region) => Some(Slot::Region(Box::new(Mount::new(
                         region,
                         &regions.regions[region as usize],
-                    ))),
+                    )))),
                 })
                 .collect::<Option<Vec<_>>>()?;
             Some(Group {
@@ -243,6 +249,21 @@ pub fn mount_regions(
             CellRef::Local(_) => None,
         })
         .collect();
+    {
+        let view = host.borrow();
+        let controls = regions
+            .regions
+            .iter()
+            .flat_map(|region| &region.arms)
+            .flat_map(|arm| &arm.items)
+            .filter_map(|item| match item {
+                ItemTemplate::Node { control, .. } => control.as_ref(),
+                _ => None,
+            });
+        for control in controls {
+            control_cells(control, &Scope::EMPTY, &view, &mut deps);
+        }
+    }
     let keeps = regions
         .regions
         .iter()
@@ -263,6 +284,7 @@ pub fn mount_regions(
         scratch: Vec::new(),
     };
     mounted.patch(cx, &[]);
+    host.borrow_mut().mark_regions();
     cx.store
         .add_structure_hook(deps, move |cx, changed| mounted.patch(cx, changed));
 }
@@ -315,10 +337,11 @@ impl Key {
     }
 }
 
-/// A child position under a mounted parent.
+/// A child position under a mounted parent: a region is boxed, so a group of
+/// plain nodes packs one id per position.
 enum Slot {
     Node(NodeId),
-    Region(Mount),
+    Region(Box<Mount>),
 }
 
 /// A mounted node with a region among its children.
@@ -371,6 +394,8 @@ struct Frag {
     own: Option<Rc<Locals>>,
     /// Each node with handlers, and its item index in the arm template.
     routed: Vec<(NodeId, u32)>,
+    /// Each node showing a value of the view.
+    shown: Vec<Shown>,
 }
 
 impl Mount {
@@ -679,6 +704,18 @@ impl Patch<'_, '_> {
             }
             force = true;
         }
+        if !frag.shown.is_empty()
+            && let Ok(mut host) = self.host.try_borrow_mut()
+        {
+            for shown in &mut frag.shown {
+                if !current {
+                    shown.rescope(frag.scope.clone(), &host);
+                }
+                if force || shown.reads_any(self.changed) {
+                    shown.deliver(self.cx, &mut host);
+                }
+            }
+        }
         let Frag {
             roots,
             groups,
@@ -861,6 +898,7 @@ impl Patch<'_, '_> {
         self.cx.store.mark_dirty(parent, relayout());
         let frag_scope = frag_scope(scope, extra, own.as_ref());
         let mut routed = Vec::new();
+        let mut shown = Vec::new();
         for (id, index) in built {
             let ItemTemplate::Node {
                 edges,
@@ -886,6 +924,13 @@ impl Patch<'_, '_> {
                 attach_node(self.cx.store, self.host, id, routes, *control, &frag_scope);
                 routed.push((id, index as u32));
             }
+            if let Some(control) = *control
+                && let Ok(mut host) = self.host.try_borrow_mut()
+            {
+                let mut node = Shown::new(id, control, frag_scope.clone(), &host);
+                node.deliver(self.cx, &mut host);
+                shown.push(node);
+            }
         }
         Frag {
             region,
@@ -895,6 +940,7 @@ impl Patch<'_, '_> {
             scope: frag_scope,
             own,
             routed,
+            shown,
         }
     }
 
@@ -1038,10 +1084,10 @@ fn build_item(
     let index = *cursor;
     *cursor += 1;
     match &items[index] {
-        ItemTemplate::Region(region) => out.push(Slot::Region(Mount::new(
+        ItemTemplate::Region(region) => out.push(Slot::Region(Box::new(Mount::new(
             *region,
             &regions.regions[*region as usize],
-        ))),
+        )))),
         ItemTemplate::Node { node, .. } => {
             let mut children = Vec::new();
             let count = node.child_count;

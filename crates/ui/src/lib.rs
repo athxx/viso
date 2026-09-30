@@ -76,7 +76,7 @@ pub use reactive::{
 };
 pub use semantics::{Role, SemanticState, Semantics, SemanticsNode, SemanticsTree};
 pub use state::{StateId, StateStore, StateValue};
-pub use structure::{StructureCx, run_structure_hooks};
+pub use structure::{StructureCx, StructureHookId, run_structure_hooks};
 pub use style::{BoxStyle, InteractionStyle, StyleId};
 pub use task::{Continuation, TaskId, TaskOps};
 pub use text_edit::{Buffer, EditGeometry, EditIntent, EditLayout, Motion, TextEdits};

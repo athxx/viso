@@ -8,7 +8,7 @@ use viso_behavior::native::{Natives, SchemaConflict};
 use viso_behavior::{
     Budget, ChunkKind, Event, Fault, FaultKind, Instance, LoadError, Module, Value, Vm,
 };
-use viso_ui::{EventCx, StateId, StateStore, StateValue};
+use viso_ui::{EventCx, NodeStore, StateId, StateStore, StateValue, StructureHookId};
 
 use crate::regions::LocalTemplate;
 use crate::scope::{Locals, Scope};
@@ -113,12 +113,17 @@ pub struct ViewHost {
     /// The cells the view's mounted regions allocated: each region mount's
     /// pulse cell, and the region content mounts keeping instance states.
     regions: RegionCells,
+    /// The structure hook re-delivering the values the view's static nodes
+    /// show, replaced when they mount again.
+    values: Option<StructureHookId>,
 }
 
 /// The UI cells a view's regions allocate while it runs, released with the
 /// view.
 #[derive(Debug, Default)]
 struct RegionCells {
+    /// Whether regions are mounted under the view's nodes.
+    mounted: bool,
     pulses: Vec<StateId>,
     locals: Vec<Weak<Locals>>,
     /// The length at which [`locals`](Self::locals) next drops its dead
@@ -157,6 +162,7 @@ impl ViewHost {
             fault: None,
             events: Vec::new(),
             regions: RegionCells::default(),
+            values: None,
         })
     }
 
@@ -344,6 +350,34 @@ impl ViewHost {
         regions.locals.push(Rc::downgrade(locals));
     }
 
+    /// Records that regions mount under the view's nodes.
+    pub(crate) fn mark_regions(&mut self) {
+        self.regions.mounted = true;
+    }
+
+    /// Whether regions are mounted under the view's nodes, which only a
+    /// rebuild of its tree unmounts.
+    pub fn has_regions(&self) -> bool {
+        self.regions.mounted
+    }
+
+    /// Drops the structure hook re-delivering the static nodes' values, as
+    /// unmounting the view without clearing its tree does.
+    pub fn release_values(&mut self, store: &mut NodeStore) {
+        if let Some(hook) = self.values.take() {
+            store.remove_structure_hook(hook);
+        }
+    }
+
+    /// Swaps in `hook` as the one re-delivering the static nodes' values and
+    /// returns the one it replaces.
+    pub(crate) fn replace_values_hook(
+        &mut self,
+        hook: Option<StructureHookId>,
+    ) -> Option<StructureHookId> {
+        std::mem::replace(&mut self.values, hook)
+    }
+
     /// Keeps a region mount's pulse cell, freed with the view.
     pub(crate) fn adopt_pulse(&mut self, pulse: StateId) {
         self.regions.pulses.push(pulse);
@@ -361,6 +395,7 @@ impl ViewHost {
             states.free(pulse);
         }
         self.regions.prune = 0;
+        self.regions.mounted = false;
     }
 
     /// The number of handlers the view declares.
@@ -458,7 +493,8 @@ impl ViewHost {
     /// Replaces the module with a recompiled one, as a hot reload does. Each
     /// state the new component still declares keeps its value by name; the
     /// others start from their new initializers. Mirrors are cleared: the caller
-    /// mirrors the new layout's slots again.
+    /// mirrors the new layout's slots again. The cells and hooks the view's
+    /// mounts registered stay the host's, for the caller to release or replace.
     pub fn reload(&mut self, module: Rc<Module>, component: &str) -> Result<(), HostError> {
         let mut next = ViewHost::new(module, component)?;
         if let (Some(old), Some(new)) = (self.instance.component(), next.instance.component()) {
@@ -473,6 +509,8 @@ impl ViewHost {
             }
         }
         next.events = std::mem::take(&mut self.events);
+        next.regions = std::mem::take(&mut self.regions);
+        next.values = self.values.take();
         *self = next;
         Ok(())
     }

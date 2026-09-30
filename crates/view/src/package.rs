@@ -18,6 +18,7 @@ use crate::host::{HostError, ViewHost};
 use crate::regions::{ViewRegions, mount_regions};
 use crate::route::EventRoute;
 use crate::scope::Scope;
+use crate::values::mount_values;
 
 /// A compiled view with behavior, as a release build embeds it.
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -117,8 +118,8 @@ pub fn load_view(
 }
 
 /// Instantiates a decoded view into the runtime: its state cells first, with
-/// their initial values, then the tree, then the host, its handlers and its
-/// control-flow regions.
+/// their initial values, then the tree, then the host, its handlers, its
+/// control-flow regions and the values its nodes show.
 pub fn instantiate_view(
     package: &ViewPackage,
     store: &mut NodeStore,
@@ -181,18 +182,24 @@ pub fn instantiate_view(
             attach_node(store, &host, id, &routes, control, &Scope::EMPTY);
         }
     }
+    // A first mount frees nothing, so no effect is ever cancelled here.
+    let mut effects = EffectStore::default();
+    let mut cx = StructureCx {
+        store,
+        states,
+        bindings,
+        effects: &mut effects,
+    };
     if !package.regions.is_empty() {
-        // A first mount frees nothing, so no effect is ever cancelled here.
-        let mut effects = EffectStore::default();
-        let mut cx = StructureCx {
-            store,
-            states,
-            bindings,
-            effects: &mut effects,
-        };
         let regions = Rc::new(package.regions.clone());
         mount_regions(&mut cx, regions, &host, &node_ids, &cells);
     }
+    let shown: Vec<(NodeId, Control)> = package
+        .controls
+        .iter()
+        .filter_map(|c| Some((node_ids.get(c.node as usize).copied().flatten()?, c.control)))
+        .collect();
+    mount_values(&mut cx, &host, &shown);
     Ok(LoadedView {
         root,
         host: Some(host),

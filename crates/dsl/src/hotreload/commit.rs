@@ -50,7 +50,7 @@ use crate::ir::ui_ir::{AxisIr, LengthIr, NodeKind, StyleIr, UiItem, UiNode, UiTr
 use crate::resolve::SymbolId;
 use crate::view_regions::{StaticNodes, has_regions};
 
-use viso_view::{Scope, ViewHost, attach_node, mount_regions};
+use viso_view::{Scope, ViewHost, attach_node, mount_regions, mount_values};
 
 use viso_ui::state::{StateKey, StateMigration};
 use viso_ui::virtual_list::VirtualLists;
@@ -182,8 +182,9 @@ pub fn commit(
 }
 
 /// Creates or reloads the view's host, links its states to the migrated cells,
-/// reinstalls every static node's handler routes, replacing the prior ones, and
-/// mounts the view's regions under the static nodes.
+/// reinstalls every static node's handler routes, replacing the prior ones,
+/// mounts the view's regions under the static nodes, and delivers the values
+/// the static nodes show, replacing the hook that re-delivered the prior ones.
 ///
 /// A state a cell holds is mirrored; one no cell holds (a string, a list) is
 /// tracked through its integer revision cell, which is what a region reading it
@@ -204,6 +205,9 @@ fn mount_behavior(
         let mounted = match rt.view.take() {
             Some(host) => {
                 let reloaded = host.borrow_mut().reload(module, &view.component);
+                if reloaded.is_err() {
+                    host.borrow_mut().release_values(rt.store);
+                }
                 reloaded.map(|()| host)
             }
             None => ViewHost::new(module, &view.component).map(|h| Rc::new(RefCell::new(h))),
@@ -262,6 +266,19 @@ fn mount_behavior(
         };
         mount_regions(&mut cx, Rc::new(view.regions.clone()), host, &nodes, &cells);
     }
+    if let Some((view, host)) = &host {
+        let shown: Vec<_> = key_to_node
+            .iter()
+            .filter_map(|&(key, node)| Some((node, view.control(key)?)))
+            .collect();
+        let mut cx = StructureCx {
+            store: rt.store,
+            states: rt.states,
+            bindings: rt.bindings,
+            effects: rt.effects,
+        };
+        mount_values(&mut cx, host, &shown);
+    }
     *rt.view = host.map(|(_, host)| host);
 }
 
@@ -282,7 +299,11 @@ fn apply_structural(
 ) -> (Vec<(NodeKey, NodeId)>, bool) {
     let mut map: Vec<(NodeKey, NodeId)> = Vec::new();
 
-    let regions = has_regions(tree) || rt.store.structure_hook_count() > 0;
+    let regions = has_regions(tree)
+        || rt
+            .view
+            .as_ref()
+            .is_some_and(|host| host.borrow().has_regions());
     if patch.is_structure_preserving() && !regions {
         // Fast path: reuse every live node in place. Map each template NodeKey to
         // the live node at the same pre-order slot by walking the retained tree.
