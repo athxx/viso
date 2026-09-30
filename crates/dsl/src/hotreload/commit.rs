@@ -229,7 +229,14 @@ fn mount_behavior(
     });
     for &(key, node) in key_to_node {
         match &host {
-            Some((view, host)) => attach_node(rt.store, host, node, view.routes(key), &[]),
+            Some((view, host)) => attach_node(
+                rt.store,
+                host,
+                node,
+                view.routes(key),
+                view.control(key),
+                &[],
+            ),
             None => rt.store.clear_event_handlers(node),
         }
     }

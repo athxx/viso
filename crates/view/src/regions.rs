@@ -41,6 +41,7 @@ use viso_ui::state::StateKey;
 use viso_ui::{BuildCx, DirtyClass, NodeId, StateId, StructureCx};
 
 use crate::attach::{Route, attach_node};
+use crate::control::Control;
 use crate::host::ViewHost;
 use crate::route::EventRoute;
 
@@ -137,6 +138,8 @@ pub enum ItemTemplate {
         edges: Vec<(u32, u8)>,
         /// Its handler routes.
         routes: Vec<Route>,
+        /// Its built-in response, for a native control node.
+        control: Option<Control>,
     },
     /// A nested region, by index into [`ViewRegions::regions`]; it counts as one
     /// child of the node it sits in.
@@ -610,8 +613,11 @@ impl Patch<'_, '_> {
             frag.scope.extend(extra.cloned());
             let items = &self.regions.regions[frag.region as usize].arms[frag.arm as usize].items;
             for &(id, index) in &frag.routed {
-                if let ItemTemplate::Node { routes, .. } = &items[index as usize] {
-                    attach_node(self.cx.store, self.host, id, routes, &frag.scope);
+                if let ItemTemplate::Node {
+                    routes, control, ..
+                } = &items[index as usize]
+                {
+                    attach_node(self.cx.store, self.host, id, routes, *control, &frag.scope);
                 }
             }
             force = true;
@@ -801,7 +807,13 @@ impl Patch<'_, '_> {
         frag_scope.extend(extra.cloned());
         let mut routed = Vec::new();
         for (id, index) in built {
-            let ItemTemplate::Node { edges, routes, .. } = &items[index] else {
+            let ItemTemplate::Node {
+                edges,
+                routes,
+                control,
+                ..
+            } = &items[index]
+            else {
                 continue;
             };
             for &(cell, class) in edges {
@@ -811,8 +823,8 @@ impl Patch<'_, '_> {
                         .bind(*state, id, DirtyClass::from_bits(class));
                 }
             }
-            if !routes.is_empty() {
-                attach_node(self.cx.store, self.host, id, routes, &frag_scope);
+            if !routes.is_empty() || control.is_some() {
+                attach_node(self.cx.store, self.host, id, routes, *control, &frag_scope);
                 routed.push((id, index as u32));
             }
         }
@@ -1011,6 +1023,7 @@ impl Encode for ViewRegions {
                             node,
                             edges,
                             routes,
+                            control,
                         } => {
                             enc.write_u8(0);
                             node.encode(enc);
@@ -1023,6 +1036,10 @@ impl Encode for ViewRegions {
                             for &(route, handler) in routes {
                                 enc.write_u8(route as u8);
                                 enc.write_varint(u64::from(handler));
+                            }
+                            enc.write_bool(control.is_some());
+                            if let Some(control) = control {
+                                control.encode(enc);
                             }
                         }
                         ItemTemplate::Region(region) => {
@@ -1105,10 +1122,16 @@ impl Decode for ViewRegions {
                                     .ok_or(DecodeError::Malformed { offset })?;
                                 routes.push((route, read_u32(dec)?));
                             }
+                            let control = if dec.read_bool()? {
+                                Some(Control::decode(dec)?)
+                            } else {
+                                None
+                            };
                             ItemTemplate::Node {
                                 node,
                                 edges,
                                 routes,
+                                control,
                             }
                         }
                         1 => ItemTemplate::Region(read_u32(dec)?),
@@ -1227,6 +1250,7 @@ mod tests {
                                 node: node(AotNodeKind::Flex, 1),
                                 edges: vec![(0, 4)],
                                 routes: vec![(EventRoute::Click, 1)],
+                                control: None,
                             },
                             ItemTemplate::Region(1),
                         ],
@@ -1244,6 +1268,7 @@ mod tests {
                             node: node(AotNodeKind::Leaf, 0),
                             edges: vec![],
                             routes: vec![],
+                            control: Some(Control::new(crate::ControlKind::Toggle)),
                         }],
                     }],
                 },

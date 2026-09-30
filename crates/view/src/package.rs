@@ -13,6 +13,7 @@ use viso_ui::{
 };
 
 use crate::attach::{Route, attach_node};
+use crate::control::Control;
 use crate::host::{HostError, ViewHost};
 use crate::regions::{ViewRegions, mount_regions};
 use crate::route::EventRoute;
@@ -31,9 +32,20 @@ pub struct ViewPackage {
     pub states: Vec<ViewState>,
     /// The node handlers, grouped by node in ascending node order.
     pub handlers: Vec<ViewHandler>,
+    /// The native control nodes, in ascending node order.
+    pub controls: Vec<ViewControl>,
     /// The control-flow regions, mounted under the nodes of
     /// [`ui`](Self::ui).
     pub regions: ViewRegions,
+}
+
+/// A native control node of [`ViewPackage::ui`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ViewControl {
+    /// The pre-order index of the node in [`ViewPackage::ui`].
+    pub node: u32,
+    /// Its built-in response and the entries it reads.
+    pub control: Control,
 }
 
 /// A component state held in a UI cell.
@@ -145,13 +157,28 @@ pub fn instantiate_view(
         return Ok(LoadedView { root, host: None });
     };
     let mut routes: Vec<Route> = Vec::new();
-    for group in package.handlers.chunk_by(|a, b| a.node == b.node) {
-        let Some(Some(id)) = node_ids.get(group[0].node as usize).copied() else {
-            continue;
+    let mut groups = package
+        .handlers
+        .chunk_by(|a, b| a.node == b.node)
+        .peekable();
+    let mut controls = package.controls.iter().peekable();
+    loop {
+        let group_node = groups.peek().map(|g| g[0].node);
+        let control_node = controls.peek().map(|c| c.node);
+        let node = match (group_node, control_node) {
+            (Some(g), Some(c)) => g.min(c),
+            (Some(n), None) | (None, Some(n)) => n,
+            (None, None) => break,
         };
         routes.clear();
-        routes.extend(group.iter().map(|h| (h.route, h.handler)));
-        attach_node(store, &host, id, &routes, &[]);
+        if group_node == Some(node) {
+            let group = groups.next().unwrap_or_default();
+            routes.extend(group.iter().map(|h| (h.route, h.handler)));
+        }
+        let control = controls.next_if(|c| c.node == node).map(|c| c.control);
+        if let Some(Some(id)) = node_ids.get(node as usize).copied() {
+            attach_node(store, &host, id, &routes, control, &[]);
+        }
     }
     if !package.regions.is_empty() {
         // A first mount frees nothing, so no effect is ever cancelled here.
@@ -222,6 +249,11 @@ impl Encode for ViewPackage {
             enc.write_u8(handler.route as u8);
             enc.write_varint(u64::from(handler.handler));
         }
+        enc.write_varint(self.controls.len() as u64);
+        for control in &self.controls {
+            enc.write_varint(u64::from(control.node));
+            control.control.encode(enc);
+        }
         self.regions.encode(enc);
     }
 }
@@ -276,6 +308,13 @@ impl Decode for ViewPackage {
                 handler,
             });
         }
+        let count = dec.read_varint()?;
+        let mut controls = Vec::with_capacity(bounded_capacity(count));
+        for _ in 0..count {
+            let node = read_u32(dec)?;
+            let control = Control::decode(dec)?;
+            controls.push(ViewControl { node, control });
+        }
         let regions = ViewRegions::decode(dec)?;
         Ok(ViewPackage {
             ui,
@@ -283,6 +322,7 @@ impl Decode for ViewPackage {
             component,
             states,
             handlers,
+            controls,
             regions,
         })
     }
@@ -309,12 +349,13 @@ mod tests {
                 route: EventRoute::Click,
                 handler: 0,
             }],
+            controls: Vec::new(),
             regions: ViewRegions::default(),
         };
         let bytes = package.encode_to_vec();
         assert_eq!(ViewPackage::decode_from_slice(&bytes), Ok(package));
         let mut bad = bytes.clone();
-        let route = bytes.len() - 2 - ViewRegions::default().encode_to_vec().len();
+        let route = bytes.len() - 3 - ViewRegions::default().encode_to_vec().len();
         bad[route] = 99;
         assert!(ViewPackage::decode_from_slice(&bad).is_err());
     }

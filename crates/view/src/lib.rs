@@ -16,15 +16,18 @@
 //! the cold event path, never during layout or paint.
 
 mod attach;
+mod control;
 mod host;
 mod package;
 mod regions;
 mod route;
 
 pub use attach::{Route, attach, attach_node};
+pub use control::{Control, ControlInput, ControlKind};
 pub use host::{__embedded, HostError, StateCells, ViewHost};
 pub use package::{
-    LoadedView, ViewHandler, ViewLoadError, ViewPackage, ViewState, instantiate_view, load_view,
+    LoadedView, ViewControl, ViewHandler, ViewLoadError, ViewPackage, ViewState, instantiate_view,
+    load_view,
 };
 pub use regions::{
     __mount_embedded, ArmTemplate, CLOSED, GroupTemplate, HALF_OPEN, ItemTemplate, MAX_RANGE_ITEMS,

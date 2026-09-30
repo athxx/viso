@@ -4,8 +4,9 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use viso_behavior::Value;
-use viso_ui::{BuildCx, EventCx, Handle, NodeId, NodeStore};
+use viso_ui::{BuildCx, DispatchPhase, EventCx, Handle, NodeId, NodeStore};
 
+use crate::control::Control;
 use crate::host::ViewHost;
 use crate::route::EventRoute;
 
@@ -13,58 +14,71 @@ use crate::route::EventRoute;
 /// view's handler table.
 pub type Route = (EventRoute, u32);
 
-/// Installs `routes` on the node `node` names, dispatching into `host` with the
-/// enclosing regions' bindings `scope`, and returns the handle so authoring
-/// chains inline.
+/// Installs `routes` and the built-in response of `control` on the node `node`
+/// names, dispatching into `host` with the enclosing regions' bindings `scope`,
+/// and returns the handle so authoring chains inline.
 pub fn attach(
     cx: &mut BuildCx<'_>,
     host: &Rc<RefCell<ViewHost>>,
     node: Handle,
     routes: &[Route],
+    control: Option<Control>,
     scope: &[Value],
 ) -> Handle {
-    let (keys, pointers) = split(routes);
-    if !pointers.is_empty() {
-        cx.on_pointer(node, handler(host, pointers, scope));
+    let (keys, pointers) = split(routes, control);
+    if let Some(pointers) = pointers {
+        cx.on_pointer(node, handler(host, pointers, control, scope));
     }
-    if !keys.is_empty() {
-        cx.on_key(node, handler(host, keys, scope));
+    if let Some(keys) = keys {
+        cx.on_key(node, handler(host, keys, control, scope));
         cx.focusable(node, true);
     }
     node
 }
 
-/// Installs `routes` on node `id`, replacing its prior handlers: one pointer
-/// handler for the pointer routes, one key handler (and focusability) for the
-/// key routes. A node with no route of a kind keeps no handler of that kind.
+/// Installs `routes` and the built-in response of `control` on node `id`,
+/// replacing its prior handlers: one pointer handler for the pointer routes,
+/// one key handler (and focusability) for the key routes, and both for a
+/// control and the routes it reports. A node with nothing of a kind keeps no
+/// handler of that kind.
 pub fn attach_node(
     store: &mut NodeStore,
     host: &Rc<RefCell<ViewHost>>,
     id: NodeId,
     routes: &[Route],
+    control: Option<Control>,
     scope: &[Value],
 ) {
     store.clear_event_handlers(id);
-    let (keys, pointers) = split(routes);
-    if !pointers.is_empty() {
-        store.set_pointer_handler(id, Box::new(handler(host, pointers, scope)));
+    let (keys, pointers) = split(routes, control);
+    if let Some(pointers) = pointers {
+        store.set_pointer_handler(id, Box::new(handler(host, pointers, control, scope)));
     }
-    if !keys.is_empty() {
-        store.set_key_handler(id, Box::new(handler(host, keys, scope)));
+    if let Some(keys) = keys {
+        store.set_key_handler(id, Box::new(handler(host, keys, control, scope)));
         store.set_focusable(id, true);
     }
 }
 
-/// `routes` split into its key routes and its pointer routes.
-fn split(routes: &[Route]) -> (Vec<Route>, Vec<Route>) {
-    routes
-        .iter()
-        .copied()
-        .partition(|(route, _)| route.is_key())
+/// The routes a key handler runs and the routes a pointer handler runs, `None`
+/// for a kind of handler the node needs none of. A control drives both, and the
+/// routes it reports run from either.
+fn split(routes: &[Route], control: Option<Control>) -> (Option<Vec<Route>>, Option<Vec<Route>>) {
+    let pick = |key: bool| {
+        let picked: Vec<Route> = routes
+            .iter()
+            .copied()
+            .filter(|(route, _)| route.is_control() || route.is_key() == key)
+            .collect();
+        (control.is_some() || !picked.is_empty()).then_some(picked)
+    };
+    (pick(true), pick(false))
 }
 
-/// The node handler that runs every route of `routes` the sample under dispatch
-/// fires, in declaration order.
+/// The node handler that runs `control`'s response to the sample under
+/// dispatch, then every route of `routes` the sample fires, in declaration
+/// order: a standard route on the target and bubble legs of the walk, a
+/// control's route when the control reports it.
 ///
 /// A handler never runs inside another: the router takes a node's handler out
 /// of the store before calling it and state writes are deferred to the flush, so
@@ -73,17 +87,25 @@ fn split(routes: &[Route]) -> (Vec<Route>, Vec<Route>) {
 fn handler(
     host: &Rc<RefCell<ViewHost>>,
     routes: Vec<Route>,
+    control: Option<Control>,
     scope: &[Value],
 ) -> impl FnMut(&mut EventCx<'_>) + 'static {
     let host = Rc::clone(host);
     let scope: Box<[Value]> = scope.into();
     move |cx: &mut EventCx<'_>| {
+        let Ok(mut host) = host.try_borrow_mut() else {
+            return;
+        };
+        let change = control.and_then(|control| control.drive(&mut host, &scope, cx));
+        let bubbles = cx.phase() != DispatchPhase::Capture;
         for &(route, index) in &routes {
-            let Some(payload) = route.payload(cx) else {
-                continue;
-            };
-            let Ok(mut host) = host.try_borrow_mut() else {
-                return;
+            let payload = match &change {
+                Some((changed, value)) if *changed == route => value.clone(),
+                _ if !bubbles => continue,
+                _ => match route.payload(cx) {
+                    Some(payload) => payload,
+                    None => continue,
+                },
             };
             host.dispatch(index, payload, &scope, cx);
         }

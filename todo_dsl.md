@@ -252,11 +252,22 @@ Goal: every Core view construct reaches a live tree through all three lowering t
       (compile-time `E3103`/`E3107`/`E3701` are checked in D0.5).
   - [x] Component input `bind`: argument reads the lens, the paired event writes it back.
   - [x] `bind … using` on a component input is `E3711`.
-  - [ ] Native widget `changed` delivery for a native `bind`.
+  - [x] Native widget `changed` delivery for a native `bind`.
+    - [x] Built-in control responses (`viso-view` `Control`): toggle, slider, tab
+          strip / radio group, text field; they read their value and range from
+          handler-table entries and report `changed` / `selected_changed` /
+          `submitted`.
+    - [x] Controls carried by hot reload, the view package, region templates and
+          the macros; a native `bind` writes back through the paired event.
+    - [x] One dispatch per sample: a DSL handler runs on the target and bubble
+          legs only; a pointer payload position is local to the node.
+    - [x] `bind … using` on a native property is `E3711` (no converter yet).
 
 ### D2.4 — Reactive graph
 
 - [ ] Computed nodes with precise invalidation from `hir/reads.rs` edges.
+- [ ] Reactive property values reach their nodes (a text's content, a bound
+      control's displayed value, a text field's seeded buffer).
 - [ ] Transaction batching; reactive cycle `E4202` at runtime.
 
 ### D2.5 — Lengths at layout

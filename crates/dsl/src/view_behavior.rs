@@ -10,7 +10,7 @@ use std::rc::Rc;
 
 use viso_behavior::Module;
 use viso_ui::StateValue;
-use viso_view::{EventRoute, Route, ViewHost, ViewRegions};
+use viso_view::{Control, ControlKind, EventRoute, Route, ViewHost, ViewRegions};
 
 use crate::behavior::Site;
 use crate::frontend::{Compiled, SourceKind};
@@ -67,6 +67,8 @@ pub struct ViewBehavior {
     /// Each node's routes, by ascending node key; a node without handlers is
     /// absent.
     routes: Vec<(NodeKey, Vec<Route>)>,
+    /// Each native control node's response, by ascending node key.
+    controls: Vec<(NodeKey, Control)>,
 }
 
 impl ViewBehavior {
@@ -82,6 +84,19 @@ impl ViewBehavior {
         self.routes
             .iter()
             .map(|(key, routes)| (*key, routes.as_slice()))
+    }
+
+    /// The built-in response of the native control node `key`.
+    pub fn control(&self, key: NodeKey) -> Option<Control> {
+        self.controls
+            .binary_search_by_key(&key, |(k, _)| *k)
+            .ok()
+            .map(|i| self.controls[i].1)
+    }
+
+    /// Every native control node, by ascending node key.
+    pub fn controls(&self) -> impl Iterator<Item = (NodeKey, Control)> + '_ {
+        self.controls.iter().copied()
     }
 
     /// The wire form of [`regions`](Self::regions), which a macro expansion
@@ -100,8 +115,9 @@ impl ViewBehavior {
     }
 }
 
-/// The behavior of `compiled`'s view: `None` when no node declares a handler
-/// and the view has no region, so a view without behavior mounts no VM.
+/// The behavior of `compiled`'s view: `None` when no node declares a handler,
+/// the view has no region and no native control of a component, so a view
+/// without behavior mounts no VM.
 ///
 /// # Errors
 ///
@@ -115,19 +131,19 @@ pub fn view_behavior(compiled: &Compiled) -> Result<Option<ViewBehavior>, Vec<Mo
     if !errors.is_empty() {
         return Err(errors);
     }
-    let mut sites = Vec::new();
-    let mut key = 0;
+    let mut walk = Walk::default();
     for item in &compiled.tree.items {
-        collect(item, &mut key, &mut sites);
+        walk.item(item);
     }
+    let Walk { sites, nodes, .. } = walk;
     let regions = has_regions(&compiled.tree);
-    if sites.is_empty() && !regions {
+    if sites.is_empty() && !regions && (nodes.is_empty() || compiled.component.is_none()) {
         return Ok(None);
     }
     let Some(component) = &compiled.component else {
         let mut errors: Vec<MountError> = sites
             .iter()
-            .map(|(_, _, site)| {
+            .map(|(_, _, _, site)| {
                 MountError::new(
                     Some(site.at),
                     "a `ui!` fragment has no component state for a handler to run \
@@ -157,9 +173,10 @@ pub fn view_behavior(compiled: &Compiled) -> Result<Option<ViewBehavior>, Vec<Mo
         )]);
     };
     let mut routes: Vec<(NodeKey, Vec<Route>)> = Vec::new();
-    for (node, event, site) in sites {
+    for (node, kind, event, site) in sites {
         let at = site.at;
-        let Some(route) = EventRoute::of(event) else {
+        let route = EventRoute::of(event).or_else(|| kind?.route(event));
+        let Some(route) = route else {
             errors.push(MountError::new(
                 Some(at),
                 format!("the runtime does not deliver `{event}` events yet"),
@@ -188,7 +205,39 @@ pub fn view_behavior(compiled: &Compiled) -> Result<Option<ViewBehavior>, Vec<Mo
             _ => routes.push((node, vec![(route, index)])),
         }
     }
-    let regions = match view_regions(compiled, layout, &routes) {
+    let mut controls = Vec::with_capacity(nodes.len());
+    for (key, kind, node) in nodes {
+        let mut control = Control::new(kind);
+        for (property, at) in &node.control_reads {
+            let Some(input) = kind.input(property) else {
+                continue;
+            };
+            let site = Site {
+                instance: node.instance,
+                at: *at,
+            };
+            let Some(index) = layout.handler(site) else {
+                errors.push(MountError::new(
+                    Some(*at),
+                    "internal: the control's value was not lowered",
+                ));
+                continue;
+            };
+            let function = compiled
+                .behavior
+                .function(layout.handlers[index as usize].1);
+            if let Err(unsupported) = &function.body {
+                errors.push(MountError::new(
+                    Some(unsupported.at),
+                    format!("the control's `{property}` {}", unsupported.reason),
+                ));
+                continue;
+            }
+            control.set_entry(input, index);
+        }
+        controls.push((key, control));
+    }
+    let regions = match view_regions(compiled, layout, &routes, &controls) {
         Ok(regions) => regions,
         Err(region_errors) => {
             errors.extend(region_errors);
@@ -233,49 +282,66 @@ pub fn view_behavior(compiled: &Compiled) -> Result<Option<ViewBehavior>, Vec<Mo
         slots,
         regions,
         routes,
+        controls,
     }))
 }
 
-/// Records every handler under `item` as `(node, event, at)`, numbering nodes
-/// in the pre-order the Binding IR keys them by.
-fn collect<'a>(item: &'a UiItem, key: &mut u32, sites: &mut Vec<(NodeKey, &'a str, Site)>) {
-    let walk = |items: &'a [UiItem], key: &mut u32, sites: &mut Vec<_>| {
-        for item in items {
-            collect(item, key, sites);
-        }
-    };
-    match item {
-        UiItem::Node(node) => node_sites(node, key, sites),
-        UiItem::If(region) => {
-            for arm in &region.arms {
-                walk(&arm.items, key, sites);
-            }
-        }
-        UiItem::For(region) => walk(&region.body, key, sites),
-        UiItem::Match(region) => {
-            for arm in &region.arms {
-                walk(&arm.items, key, sites);
-            }
-        }
-    }
+/// The handler sites and native control nodes of a view, numbered in the
+/// pre-order the Binding IR keys nodes by.
+#[derive(Default)]
+struct Walk<'a> {
+    /// The next node key.
+    key: u32,
+    /// Each handler: its node, the node's control kind, its event and its site.
+    sites: Vec<(NodeKey, Option<ControlKind>, &'a str, Site)>,
+    /// Each native control node.
+    nodes: Vec<(NodeKey, ControlKind, &'a UiNode)>,
 }
 
-fn node_sites<'a>(node: &'a UiNode, key: &mut u32, sites: &mut Vec<(NodeKey, &'a str, Site)>) {
-    let own = NodeKey(*key);
-    *key += 1;
-    for handler in &node.handlers {
-        let event = handler.event.trim_start_matches("r#");
-        sites.push((
-            own,
-            event,
-            Site {
-                instance: handler.instance,
-                at: handler.origin,
-            },
-        ));
+impl<'a> Walk<'a> {
+    fn item(&mut self, item: &'a UiItem) {
+        match item {
+            UiItem::Node(node) => self.node(node),
+            UiItem::If(region) => {
+                for arm in &region.arms {
+                    self.items(&arm.items);
+                }
+            }
+            UiItem::For(region) => self.items(&region.body),
+            UiItem::Match(region) => {
+                for arm in &region.arms {
+                    self.items(&arm.items);
+                }
+            }
+        }
     }
-    for child in &node.children {
-        collect(child, key, sites);
+
+    fn items(&mut self, items: &'a [UiItem]) {
+        for item in items {
+            self.item(item);
+        }
+    }
+
+    fn node(&mut self, node: &'a UiNode) {
+        let own = NodeKey(self.key);
+        self.key += 1;
+        let kind = ControlKind::of(&node.type_name);
+        if let Some(kind) = kind {
+            self.nodes.push((own, kind, node));
+        }
+        for handler in &node.handlers {
+            let event = handler.event.trim_start_matches("r#");
+            self.sites.push((
+                own,
+                kind,
+                event,
+                Site {
+                    instance: handler.instance,
+                    at: handler.origin,
+                },
+            ));
+        }
+        self.items(&node.children);
     }
 }
 

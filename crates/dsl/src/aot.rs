@@ -32,7 +32,7 @@ use viso_ende::Encode;
 use viso_ui::StateValue;
 use viso_ui::aot::{AotAxis, AotEdge, AotLength, AotNode, AotNodeKind, AotPackage, AotStyle};
 use viso_ui::state::StateKey;
-use viso_view::{ViewHandler, ViewPackage, ViewState};
+use viso_view::{ViewControl, ViewHandler, ViewPackage, ViewState};
 
 use crate::diag::Diagnostic;
 use crate::frontend::Origin;
@@ -111,12 +111,22 @@ pub fn emit_view_package(plan: &CandidatePlan) -> ViewPackage {
             })
         })
         .collect();
+    let controls = view
+        .controls()
+        .filter_map(|(key, control)| {
+            Some(ViewControl {
+                node: statics.ordinal(key)?,
+                control,
+            })
+        })
+        .collect();
     ViewPackage {
         ui,
         behavior: view.bytes.clone(),
         component: view.component.clone(),
         states,
         handlers,
+        controls,
         regions: view.regions.clone(),
     }
 }

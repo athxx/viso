@@ -13,8 +13,8 @@ use std::collections::{HashMap, HashSet};
 
 use viso_ui::state::StateKey;
 use viso_view::{
-    ArmTemplate, GroupTemplate, ItemTemplate, RegionKind, RegionTemplate, Route, SlotTemplate,
-    ViewRegions,
+    ArmTemplate, Control, GroupTemplate, ItemTemplate, RegionKind, RegionTemplate, Route,
+    SlotTemplate, ViewRegions,
 };
 
 use crate::aot::{aot_kind, aot_style};
@@ -149,6 +149,7 @@ pub(crate) fn view_regions(
     compiled: &Compiled,
     layout: &ComponentLayout,
     routes: &[(NodeKey, Vec<Route>)],
+    controls: &[(NodeKey, Control)],
 ) -> Result<ViewRegions, Vec<MountError>> {
     let mut edges: HashMap<NodeKey, Vec<(SymbolId, u8)>> = HashMap::new();
     for edge in compiled.bindings.static_edges() {
@@ -172,6 +173,7 @@ pub(crate) fn view_regions(
         program: &compiled.behavior,
         layout,
         routes,
+        controls,
         edges,
         slots,
         cells: HashMap::new(),
@@ -196,6 +198,7 @@ struct Builder<'a> {
     program: &'a Program,
     layout: &'a ComponentLayout,
     routes: &'a [(NodeKey, Vec<Route>)],
+    controls: &'a [(NodeKey, Control)],
     edges: HashMap<NodeKey, Vec<(SymbolId, u8)>>,
     /// The state source of each component state slot.
     slots: Vec<Option<SymbolId>>,
@@ -343,11 +346,17 @@ impl Builder<'_> {
             .routes
             .binary_search_by_key(&key, |(k, _)| *k)
             .map_or_else(|_| Vec::new(), |i| self.routes[i].1.clone());
+        let control = self
+            .controls
+            .binary_search_by_key(&key, |(k, _)| *k)
+            .ok()
+            .map(|i| self.controls[i].1);
         let at = out.len();
         out.push(ItemTemplate::Node {
             node: node_template(node),
             edges,
             routes,
+            control,
         });
         if !authors_children(node) {
             self.skip(&node.children);

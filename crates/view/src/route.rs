@@ -32,11 +32,18 @@ pub enum EventRoute {
     KeyDown = 7,
     /// `key_up` (`KeyEvent`): a key release routed to the node.
     KeyUp = 8,
+    /// A control's `changed`: the value it reports after a toggle, a slide or
+    /// a settled edit.
+    Changed = 9,
+    /// A text field's `submitted`: Enter pressed in it.
+    Submitted = 10,
+    /// A tab strip's or radio group's `selected_changed`.
+    SelectedChanged = 11,
 }
 
 impl EventRoute {
     /// Every route, by discriminant.
-    pub const ALL: [EventRoute; 9] = [
+    pub const ALL: [EventRoute; 12] = [
         EventRoute::Click,
         EventRoute::Tap,
         EventRoute::PointerDown,
@@ -46,14 +53,18 @@ impl EventRoute {
         EventRoute::HoverLeave,
         EventRoute::KeyDown,
         EventRoute::KeyUp,
+        EventRoute::Changed,
+        EventRoute::Submitted,
+        EventRoute::SelectedChanged,
     ];
 
-    /// The route of DSL event `event`, `None` for an event the runtime does not
-    /// deliver.
+    /// The route of standard DSL event `event`, `None` for an event the runtime
+    /// does not deliver. A control's own events route through
+    /// [`ControlKind::route`](crate::ControlKind::route).
     pub fn of(event: &str) -> Option<EventRoute> {
         EventRoute::ALL
             .into_iter()
-            .find(|route| route.event() == event)
+            .find(|route| !route.is_control() && route.event() == event)
     }
 
     /// The DSL event name.
@@ -68,6 +79,9 @@ impl EventRoute {
             EventRoute::HoverLeave => "hover_leave",
             EventRoute::KeyDown => "key_down",
             EventRoute::KeyUp => "key_up",
+            EventRoute::Changed => "changed",
+            EventRoute::Submitted => "submitted",
+            EventRoute::SelectedChanged => "selected_changed",
         }
     }
 
@@ -83,6 +97,9 @@ impl EventRoute {
             EventRoute::HoverLeave => "HoverLeave",
             EventRoute::KeyDown => "KeyDown",
             EventRoute::KeyUp => "KeyUp",
+            EventRoute::Changed => "Changed",
+            EventRoute::Submitted => "Submitted",
+            EventRoute::SelectedChanged => "SelectedChanged",
         }
     }
 
@@ -96,9 +113,21 @@ impl EventRoute {
         matches!(self, EventRoute::KeyDown | EventRoute::KeyUp)
     }
 
-    /// The payload this dispatch delivers for the route, `None` when the sample
-    /// under dispatch is not one the route fires on.
+    /// Whether a control reports it, from whichever sample drives the control.
+    pub fn is_control(self) -> bool {
+        matches!(
+            self,
+            EventRoute::Changed | EventRoute::Submitted | EventRoute::SelectedChanged
+        )
+    }
+
+    /// The payload this dispatch delivers for a standard route, `None` when the
+    /// sample under dispatch is not one the route fires on. A pointer
+    /// position is local to the dispatching node.
     pub fn payload(self, cx: &EventCx<'_>) -> Option<Value> {
+        if self.is_control() {
+            return None;
+        }
         if self.is_key() {
             let key = cx.key()?;
             return (key.pressed == (self == EventRoute::KeyDown)).then(|| key_event(key));
@@ -110,12 +139,13 @@ impl EventRoute {
             EventRoute::PointerMove => PointerPhase::Move,
             EventRoute::HoverEnter => PointerPhase::Enter,
             EventRoute::HoverLeave => PointerPhase::Leave,
-            EventRoute::KeyDown | EventRoute::KeyUp => return None,
+            _ => return None,
         };
         if pointer.phase != phase {
             return None;
         }
-        let position = point(pointer.x, pointer.y);
+        let (x, y) = cx.rect().map_or((0.0, 0.0), |r| (r.x, r.y));
+        let position = point(pointer.x - x, pointer.y - y);
         let kind = pointer_kind(cx.pointer_id());
         Some(match self {
             EventRoute::Click => record([position, modifiers(pointer.modifiers)]),
@@ -383,11 +413,13 @@ mod tests {
     #[test]
     fn every_route_round_trips_through_its_name_and_discriminant() {
         for route in EventRoute::ALL {
-            assert_eq!(EventRoute::of(route.event()), Some(route));
+            let named = (!route.is_control()).then_some(route);
+            assert_eq!(EventRoute::of(route.event()), named);
             assert_eq!(EventRoute::from_u8(route as u8), Some(route));
         }
         assert_eq!(EventRoute::of("drag_start"), None);
-        assert_eq!(EventRoute::from_u8(9), None);
+        assert_eq!(EventRoute::of("changed"), None);
+        assert_eq!(EventRoute::from_u8(12), None);
     }
 
     #[test]

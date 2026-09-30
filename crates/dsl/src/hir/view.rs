@@ -36,6 +36,7 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 
 use viso_behavior::native::{Natives, SlotCardinality, WidgetNode};
+use viso_view::ControlKind;
 
 use super::infer::{InferCx, MatchCheck, TypeEnv};
 use super::nodes::HirSlot;
@@ -326,6 +327,16 @@ impl Owner<'_> {
 
     fn default_slot(&self) -> Option<&SlotSpec<'_>> {
         self.slots.iter().find(|s| s.default)
+    }
+
+    /// Whether `path` is a property a native control reads its current value
+    /// or range from.
+    fn reads_control(&self, path: &PropertyPath) -> bool {
+        self.component.is_none()
+            && match (ControlKind::of(&self.name), path_segments(path).as_slice()) {
+                (Some(kind), [name]) => kind.input(name).is_some(),
+                _ => false,
+            }
     }
 
     /// Whether this is a `SlotOutlet`.
@@ -1077,6 +1088,10 @@ impl<'a> ViewWalk<'a> {
             // The inlined component reads its input through this argument.
             self.region_entry(errors, "arg", at, &RegionEntry::Value(&value));
         }
+        if scope.owner.is_some_and(|owner| owner.reads_control(&path)) {
+            // The native control reads its current value or range here.
+            self.region_entry(errors, "control", at, &RegionEntry::Value(&value));
+        }
         let to = match declared.basis {
             Basis::Yes => return,
             Basis::No if !holds_length(declared.ty.as_ref()) => return,
@@ -1110,7 +1125,20 @@ impl<'a> ViewWalk<'a> {
             binding.source(),
             binding.using_ty(),
         ) {
-            self.write_back(errors, binding, &lens);
+            self.write_back(errors, binding, &lens, true);
+        }
+        if let (Some(owner), true, Some(lens), None) = (
+            scope.owner,
+            declared.two_way,
+            binding.source(),
+            binding.using_ty(),
+        ) && owner.component.is_none()
+            && let [name] = path_segments(&path).as_slice()
+            && owner.schema.native().write_back(name).is_some()
+        {
+            // The native widget's change event writes the source; a control
+            // reads the source as its current value.
+            self.write_back(errors, binding, &lens, owner.reads_control(&path));
         }
         if let (Some(want), Some(have), None) = (&declared.ty, &source, binding.using_ty())
             && !want.has_unknown()
@@ -1451,13 +1479,21 @@ impl<'a> ViewWalk<'a> {
 
     /// Lowers a region entry registered at `at` in the component's handler
     /// table; one whose expressions reported errors since `errors` cannot run.
-    /// The two functions a `bind` to a two-way component input lowers to: the
-    /// argument its input reads (the source's current value, at the source) and
-    /// the handler of the paired event writing the event's value back to the
-    /// source (at the binding).
-    fn write_back(&mut self, errors: usize, binding: &TwoWayBinding, source: &AssignablePath) {
-        let at = source.syntax().text_range();
-        self.region_entry(errors, "arg", at, &RegionEntry::Lens(source));
+    /// The functions a `bind` to a two-way property lowers to: when `reads`,
+    /// the value the component input or native control reads (the source's
+    /// current value, at the source), and the handler of the paired event
+    /// writing the event's value back to the source (at the binding).
+    fn write_back(
+        &mut self,
+        errors: usize,
+        binding: &TwoWayBinding,
+        source: &AssignablePath,
+        reads: bool,
+    ) {
+        if reads {
+            let at = source.syntax().text_range();
+            self.region_entry(errors, "arg", at, &RegionEntry::Lens(source));
+        }
         let Some(sink) = &self.sink else {
             return;
         };
@@ -1531,6 +1567,13 @@ fn is_text(ty: &Ty) -> bool {
         Ty::Option(inner) => **inner == Ty::String,
         _ => false,
     }
+}
+
+/// The segments of a property path, raw-identifier prefixes stripped.
+fn path_segments(path: &PropertyPath) -> Vec<String> {
+    path.segments()
+        .map(|t| t.text().trim_start_matches("r#").to_string())
+        .collect()
 }
 
 /// The dotted source text of a property path.

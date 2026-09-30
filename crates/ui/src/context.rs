@@ -16,13 +16,14 @@ use std::future::Future;
 use crate::animation::TranslateAnim;
 use crate::binding::BindingTable;
 use crate::component::NodeStore;
-use crate::input::{ImeEvent, KeyEvent, PointerEvent, PointerId};
-use crate::node::NodeId;
+use crate::input::{DispatchPhase, ImeEvent, KeyEvent, PointerEvent, PointerId};
+use crate::node::{NodeArena, NodeId};
 use crate::state::{StateId, StateStore, StateValue};
 use crate::task::{self, TaskId, TaskOps};
 use crate::text_edit::EditIntent;
 use crate::timer::TimerRequest;
 use crate::window::{WindowConfig, WindowIdSlot, WindowOpenRequest};
+use viso_render::Rect;
 
 macro_rules! phase_cx {
     ($(#[$m:meta])* $name:ident) => {
@@ -315,6 +316,23 @@ pub struct EventCx<'a> {
     /// The session's service registry, type-erased; `None` on a store the
     /// driver lent none.
     services: Option<&'a dyn Any>,
+    /// Where the dispatching node sits in the tree, lent by the router; `None`
+    /// on the state-only paths.
+    place: Option<Place<'a>>,
+}
+
+/// The dispatching node and the tree it sits in, lent to an [`EventCx`] so a
+/// control can read its geometry and which of its children the event passed
+/// through.
+#[derive(Clone, Copy)]
+struct Place<'a> {
+    arena: &'a NodeArena,
+    node: NodeId,
+    rect: Rect,
+    phase: DispatchPhase,
+    /// The dispatching node's child on the path to the target; `None` at the
+    /// target itself.
+    through: Option<NodeId>,
 }
 
 impl<'a> EventCx<'a> {
@@ -344,6 +362,7 @@ impl<'a> EventCx<'a> {
             text_change: None,
             tasks: TaskOps::default(),
             services: None,
+            place: None,
         }
     }
 
@@ -377,6 +396,7 @@ impl<'a> EventCx<'a> {
             text_change: None,
             tasks: TaskOps::default(),
             services: None,
+            place: None,
         }
     }
 
@@ -409,6 +429,7 @@ impl<'a> EventCx<'a> {
             text_change: None,
             tasks: TaskOps::default(),
             services: None,
+            place: None,
         }
     }
 
@@ -441,6 +462,7 @@ impl<'a> EventCx<'a> {
             text_change: None,
             tasks: TaskOps::default(),
             services: None,
+            place: None,
         }
     }
 
@@ -582,6 +604,80 @@ impl<'a> EventCx<'a> {
     #[inline]
     pub fn focused(&self) -> Option<NodeId> {
         self.focused
+    }
+
+    /// The node whose handler is running, or `None` on the state-only paths.
+    #[inline]
+    pub fn node(&self) -> Option<NodeId> {
+        self.place.map(|p| p.node)
+    }
+
+    /// The dispatching node's scrolled, world-space rect — the one hit testing
+    /// uses, so a pointer sample's position is relative to its origin.
+    #[inline]
+    pub fn rect(&self) -> Option<Rect> {
+        self.place.map(|p| p.rect)
+    }
+
+    /// Which leg of the capture → target → bubble walk this dispatch is on: an
+    /// ancestor's handler runs twice per routed event, once capturing and once
+    /// bubbling.
+    #[inline]
+    pub fn phase(&self) -> DispatchPhase {
+        self.place.map_or(DispatchPhase::Target, |p| p.phase)
+    }
+
+    /// Which of the dispatching node's children the event passed through on its
+    /// way to the target, counted from the first child. `None` when the
+    /// dispatching node is the target itself.
+    pub fn child_index(&self) -> Option<u32> {
+        let place = self.place?;
+        let through = place.through?;
+        let mut index = 0;
+        let mut child = place.arena.links(place.node)?.first_child;
+        while let Some(c) = child {
+            if c == through {
+                return Some(index);
+            }
+            index += 1;
+            child = place.arena.links(c)?.next_sibling;
+        }
+        None
+    }
+
+    /// How many children the dispatching node has.
+    pub fn child_count(&self) -> u32 {
+        let Some(place) = self.place else {
+            return 0;
+        };
+        let mut count = 0;
+        let mut child = place.arena.links(place.node).and_then(|l| l.first_child);
+        while let Some(c) = child {
+            count += 1;
+            child = place.arena.links(c).and_then(|l| l.next_sibling);
+        }
+        count
+    }
+
+    /// Lend the dispatching node's place in the tree: its arena, id, world rect,
+    /// the leg of the walk and the child on the path to the target.
+    #[doc(hidden)]
+    #[inline]
+    pub fn __set_place(
+        &mut self,
+        arena: &'a NodeArena,
+        node: NodeId,
+        rect: Rect,
+        phase: DispatchPhase,
+        through: Option<NodeId>,
+    ) {
+        self.place = Some(Place {
+            arena,
+            node,
+            rect,
+            phase,
+            through,
+        });
     }
 
     /// Lend the current focus slot into the cx so a handler can read it via
