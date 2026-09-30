@@ -1,10 +1,11 @@
-//! The built-in response of a native control node — a toggle flipping, a slider
-//! following the pointer, a tab strip selecting a child, a text field editing —
-//! and the change event it reports.
+//! A native node whose displayed value the view drives: the built-in response of
+//! a control — a toggle flipping, a slider following the pointer, a tab strip
+//! selecting a child, a text field editing — with the change event it reports,
+//! and a label showing its text.
 //!
-//! A control reads its current value and range from pure entries of the view's
+//! A node reads its current value and range from pure entries of the view's
 //! handler table, evaluated against the states when a sample arrives, so the
-//! change it reports is always relative to what the view holds.
+//! change a control reports is always relative to what the view holds.
 
 use std::rc::Rc;
 
@@ -19,7 +20,7 @@ use crate::host::ViewHost;
 use crate::route::EventRoute;
 use crate::scope::Scope;
 
-/// Which built-in control a node is.
+/// Which view-driven native node a node is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[repr(u8)]
 pub enum ControlKind {
@@ -32,27 +33,32 @@ pub enum ControlKind {
     /// arrows and Home/End move the selection.
     Select = 2,
     /// `TextInput`: pointer, key and IME samples edit its text; every settled
-    /// edit reports the new text, and Enter submits.
+    /// edit reports the new text, and Enter submits. Its `value` seeds the text.
     TextInput = 3,
+    /// `Text` and `Button`: shows the text of its `text`; it has no built-in
+    /// response.
+    Label = 4,
 }
 
 impl ControlKind {
     /// Every kind, by discriminant.
-    pub const ALL: [ControlKind; 4] = [
+    pub const ALL: [ControlKind; 5] = [
         ControlKind::Toggle,
         ControlKind::Slider,
         ControlKind::Select,
         ControlKind::TextInput,
+        ControlKind::Label,
     ];
 
-    /// The control native widget `widget` is, `None` for a widget with no
-    /// built-in response.
+    /// The kind native widget `widget` is, `None` for a widget whose displayed
+    /// value the view does not drive.
     pub fn of(widget: &str) -> Option<ControlKind> {
         Some(match widget {
             "Toggle" | "CheckBox" => ControlKind::Toggle,
             "Slider" => ControlKind::Slider,
             "Tabs" | "RadioGroup" => ControlKind::Select,
             "TextInput" => ControlKind::TextInput,
+            "Text" | "Button" => ControlKind::Label,
             _ => return None,
         })
     }
@@ -67,6 +73,11 @@ impl ControlKind {
             _ => return None,
         };
         self.reports(route).then_some(route)
+    }
+
+    /// Whether the node responds to pointer and key samples itself.
+    pub fn responds(self) -> bool {
+        self != ControlKind::Label
     }
 
     /// Whether the control reports `route`.
@@ -86,7 +97,9 @@ impl ControlKind {
         Some(match (self, property) {
             (ControlKind::Toggle, "checked")
             | (ControlKind::Slider, "value")
-            | (ControlKind::Select, "selected") => ControlInput::Value,
+            | (ControlKind::Select, "selected")
+            | (ControlKind::TextInput, "value")
+            | (ControlKind::Label, "text") => ControlInput::Value,
             (ControlKind::Slider, "min") => ControlInput::Min,
             (ControlKind::Slider, "max") => ControlInput::Max,
             (ControlKind::Slider, "step") => ControlInput::Step,
@@ -101,6 +114,7 @@ impl ControlKind {
             ControlKind::Slider => "Slider",
             ControlKind::Select => "Select",
             ControlKind::TextInput => "TextInput",
+            ControlKind::Label => "Label",
         }
     }
 
@@ -113,7 +127,7 @@ impl ControlKind {
 /// A value a control reads from the view.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ControlInput {
-    /// Its current value: `checked`, `value` or `selected`.
+    /// Its current value: `checked`, `value`, `selected` or a label's `text`.
     Value,
     /// A slider's lower bound.
     Min,
@@ -123,9 +137,9 @@ pub enum ControlInput {
     Step,
 }
 
-/// A native control node: its kind and the handler-table entries that evaluate
-/// its current value and range. An absent entry reads the property's default:
-/// `false`, `0`, a `0..1` range and no step.
+/// A view-driven native node: its kind and the handler-table entries that
+/// evaluate its current value and range. An absent entry reads the property's
+/// default: `false`, `0`, an empty text, a `0..1` range and no step.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Control {
     /// Which control it is.
@@ -196,6 +210,7 @@ impl Control {
             ControlKind::Slider => self.slider(host, scope, cx),
             ControlKind::Select => self.select(host, scope, cx),
             ControlKind::TextInput => text_input(cx),
+            ControlKind::Label => None,
         }
     }
 
@@ -475,8 +490,14 @@ mod tests {
         for kind in ControlKind::ALL {
             assert_eq!(ControlKind::from_u8(kind as u8), Some(kind));
         }
-        assert_eq!(ControlKind::from_u8(4), None);
+        assert_eq!(ControlKind::from_u8(5), None);
         assert_eq!(ControlKind::of("CheckBox"), Some(ControlKind::Toggle));
+        assert_eq!(ControlKind::of("Button"), Some(ControlKind::Label));
+        assert!(!ControlKind::Label.responds());
+        assert_eq!(
+            ControlKind::TextInput.input("value"),
+            Some(ControlInput::Value)
+        );
         assert_eq!(
             ControlKind::Select.route("selected_changed"),
             Some(EventRoute::SelectedChanged)

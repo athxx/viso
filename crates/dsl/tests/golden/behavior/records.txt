@@ -35,3 +35,9 @@ fn#3 Records.point state-init params=0 regs=3
 fn#4 Records.picked state-init params=0 regs=1
     0: r0 = const nil
     1: return r0
+
+fn#5 Records.value region-entry params=0 regs=3
+    0: r0 = state[0]
+    1: r1 = r0.0
+    2: r2 = display.f64 r1
+    3: return r2

@@ -62,8 +62,9 @@ pub fn attach_node(
 
 /// The routes a key handler runs and the routes a pointer handler runs, `None`
 /// for a kind of handler the node needs none of. A control drives both, and the
-/// routes it reports run from either.
+/// routes it reports run from either; a label responds to nothing.
 fn split(routes: &[Route], control: Option<Control>) -> (Option<Vec<Route>>, Option<Vec<Route>>) {
+    let control = control.filter(|control| control.kind.responds());
     let pick = |key: bool| {
         let picked: Vec<Route> = routes
             .iter()

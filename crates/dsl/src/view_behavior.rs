@@ -67,7 +67,8 @@ pub struct ViewBehavior {
     /// Each node's routes, by ascending node key; a node without handlers is
     /// absent.
     routes: Vec<(NodeKey, Vec<Route>)>,
-    /// Each native control node's response, by ascending node key.
+    /// Each view-driven native node, by ascending node key: a control's
+    /// response and a label's text.
     controls: Vec<(NodeKey, Control)>,
 }
 
@@ -86,7 +87,8 @@ impl ViewBehavior {
             .map(|(key, routes)| (*key, routes.as_slice()))
     }
 
-    /// The built-in response of the native control node `key`.
+    /// The view-driven native node `key`: a control's response or a label's
+    /// text.
     pub fn control(&self, key: NodeKey) -> Option<Control> {
         self.controls
             .binary_search_by_key(&key, |(k, _)| *k)
@@ -94,7 +96,7 @@ impl ViewBehavior {
             .map(|i| self.controls[i].1)
     }
 
-    /// Every native control node, by ascending node key.
+    /// Every view-driven native node, by ascending node key.
     pub fn controls(&self) -> impl Iterator<Item = (NodeKey, Control)> + '_ {
         self.controls.iter().copied()
     }
@@ -116,7 +118,7 @@ impl ViewBehavior {
 }
 
 /// The behavior of `compiled`'s view: `None` when no node declares a handler,
-/// the view has no region and no native control of a component, so a view
+/// the view has no region and no view-driven native node of a component, so a view
 /// without behavior mounts no VM.
 ///
 /// # Errors
@@ -286,7 +288,7 @@ pub fn view_behavior(compiled: &Compiled) -> Result<Option<ViewBehavior>, Vec<Mo
     }))
 }
 
-/// The handler sites and native control nodes of a view, numbered in the
+/// The handler sites and view-driven native nodes of a view, numbered in the
 /// pre-order the Binding IR keys nodes by.
 #[derive(Default)]
 struct Walk<'a> {
@@ -294,7 +296,7 @@ struct Walk<'a> {
     key: u32,
     /// Each handler: its node, the node's control kind, its event and its site.
     sites: Vec<(NodeKey, Option<ControlKind>, &'a str, Site)>,
-    /// Each native control node.
+    /// Each view-driven native node: a control, or a label showing a text.
     nodes: Vec<(NodeKey, ControlKind, &'a UiNode)>,
 }
 
@@ -326,7 +328,9 @@ impl<'a> Walk<'a> {
         let own = NodeKey(self.key);
         self.key += 1;
         let kind = ControlKind::of(&node.type_name);
-        if let Some(kind) = kind {
+        if let Some(kind) = kind
+            && (kind.responds() || !node.control_reads.is_empty())
+        {
             self.nodes.push((own, kind, node));
         }
         for handler in &node.handlers {

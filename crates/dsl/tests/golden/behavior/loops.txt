@@ -64,7 +64,7 @@ fn#1 Loops.count fn params=1 regs=22
    35: return r21
 
 fn#2 Loops.apply fn params=1 regs=4
-    0: r1 = closure fn#4 [r0]
+    0: r1 = closure fn#5 [r0]
     1: r2 = const 3
     2: r3 = call r1 (r2)
     3: return r3
@@ -73,6 +73,10 @@ fn#3 Loops.label state-init params=0 regs=1
     0: r0 = const ""
     1: return r0
 
-fn#4 Loops.apply/closure closure params=1 captures=[r1] regs=3
+fn#4 Loops.value region-entry params=0 regs=1
+    0: r0 = state[0]
+    1: return r0
+
+fn#5 Loops.apply/closure closure params=1 captures=[r1] regs=3
     0: r2 = add.i64 r0, r1
     1: return r2
