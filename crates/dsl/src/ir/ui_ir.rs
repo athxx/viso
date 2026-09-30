@@ -17,6 +17,7 @@
 //! construct the runtime `Size`/`Axis`/style structs.
 
 use crate::ir::dirty_map::{DirtyClass, property_dirty_class};
+use crate::resolve::SymbolId;
 use crate::syntax::span::TextRange;
 
 /// The retained-tree template a view fragment or component view lowers to.
@@ -24,6 +25,42 @@ use crate::syntax::span::TextRange;
 pub struct UiTree {
     /// The top-level items, in source order.
     pub items: Vec<UiItem>,
+    /// The user-component instances the view inlines, in pre-order: instance
+    /// `i` is `instances[i - 1]`, and instance `0` is the view's own component.
+    pub instances: Vec<UiInstance>,
+}
+
+impl UiTree {
+    /// The inlined instance `instance`, or `None` for the view's own component.
+    pub fn instance(&self, instance: u32) -> Option<&UiInstance> {
+        let index = instance.checked_sub(1)?;
+        self.instances.get(index as usize)
+    }
+}
+
+/// One user-component node a view inlines: the component's own view mounts in
+/// its place, its functions running against the mounted view's component with
+/// the caller's arguments and handlers wired in.
+#[derive(Debug, Clone, PartialEq)]
+pub struct UiInstance {
+    /// The component.
+    pub component: SymbolId,
+    /// The instance whose view names the node.
+    pub parent: u32,
+    /// A name stable across edits that keep the path of named nodes and
+    /// component types to it: the parent's, then the node's local name or its
+    /// type and ordinal among the parent's instances of that type.
+    pub identity: String,
+    /// How many `for`/`match` regions enclose the node, counted from the
+    /// mounted view's root: the scope values the instance's functions take
+    /// before their own.
+    pub depth: u32,
+    /// The value of each input the caller binds, by input slot: the source
+    /// range of the value, whose entry the parent registers there.
+    pub args: Vec<(u32, TextRange)>,
+    /// The caller's handler of each of the component's events it handles, by
+    /// event name: the range the parent registers it at.
+    pub handlers: Vec<(String, TextRange)>,
 }
 
 /// One item in a view block: a mounted node or a control-flow region.
@@ -62,6 +99,9 @@ pub struct UiNode {
     pub children: Vec<UiItem>,
     /// The node declaration's source span.
     pub origin: TextRange,
+    /// The component instance whose view the node belongs to: `0` for the
+    /// view's own component, else an index into [`UiTree::instances`] plus one.
+    pub instance: u32,
 }
 
 /// Which `viso_ui::BuildCx` builder call a node maps to: the retained node its
@@ -149,15 +189,23 @@ pub struct PendingProperty {
     pub value: TextRange,
     /// The dirty classes a write to this property invalidates (section 11).
     pub dirty: DirtyClass,
+    /// The component instance whose view the value belongs to: `0` for the
+    /// view's own component, else an index into [`UiTree::instances`] plus one.
+    pub instance: u32,
 }
 
 impl PendingProperty {
-    /// A pending property from its name and value span, tagging it with the
-    /// dirty class its name maps to.
-    pub fn new(name: impl Into<String>, value: TextRange) -> Self {
+    /// A pending property of the instance `instance` from its name and value
+    /// span, tagging it with the dirty class its name maps to.
+    pub fn new(name: impl Into<String>, value: TextRange, instance: u32) -> Self {
         let name = name.into();
         let dirty = property_dirty_class(&name);
-        Self { name, value, dirty }
+        Self {
+            name,
+            value,
+            dirty,
+            instance,
+        }
     }
 }
 
@@ -168,6 +216,9 @@ pub struct UiHandler {
     pub event: String,
     /// The handler declaration's span.
     pub origin: TextRange,
+    /// The component instance whose view the handler belongs to: `0` for the
+    /// view's own component, else an index into [`UiTree::instances`] plus one.
+    pub instance: u32,
 }
 
 /// A conditional region. Each branch carries the condition's span (for the
@@ -179,6 +230,9 @@ pub struct UiIf {
     pub arms: Vec<UiIfArm>,
     /// The region declaration's span.
     pub origin: TextRange,
+    /// The component instance whose view the region belongs to: `0` for the
+    /// view's own component, else an index into [`UiTree::instances`] plus one.
+    pub instance: u32,
 }
 
 /// One arm of a [`UiIf`].
@@ -207,6 +261,9 @@ pub struct UiFor {
     pub body: Vec<UiItem>,
     /// The region declaration's span.
     pub origin: TextRange,
+    /// The component instance whose view the region belongs to: `0` for the
+    /// view's own component, else an index into [`UiTree::instances`] plus one.
+    pub instance: u32,
 }
 
 /// A selection region. Each arm carries its pattern/guard spans and body.
@@ -218,6 +275,9 @@ pub struct UiMatch {
     pub arms: Vec<UiMatchArm>,
     /// The region declaration's span.
     pub origin: TextRange,
+    /// The component instance whose view the region belongs to: `0` for the
+    /// view's own component, else an index into [`UiTree::instances`] plus one.
+    pub instance: u32,
 }
 
 /// One arm of a [`UiMatch`].

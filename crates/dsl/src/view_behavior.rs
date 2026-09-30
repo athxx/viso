@@ -12,6 +12,7 @@ use viso_behavior::Module;
 use viso_ui::StateValue;
 use viso_view::{EventRoute, Route, ViewHost, ViewRegions};
 
+use crate::behavior::Site;
 use crate::frontend::{Compiled, SourceKind};
 use crate::hir::ConstValue;
 use crate::ir::binding_ir::NodeKey;
@@ -126,9 +127,9 @@ pub fn view_behavior(compiled: &Compiled) -> Result<Option<ViewBehavior>, Vec<Mo
     let Some(component) = &compiled.component else {
         let mut errors: Vec<MountError> = sites
             .iter()
-            .map(|(_, _, at)| {
+            .map(|(_, _, site)| {
                 MountError::new(
-                    Some(*at),
+                    Some(site.at),
                     "a `ui!` fragment has no component state for a handler to run \
                      against; declare it with `component!`",
                 )
@@ -156,7 +157,8 @@ pub fn view_behavior(compiled: &Compiled) -> Result<Option<ViewBehavior>, Vec<Mo
         )]);
     };
     let mut routes: Vec<(NodeKey, Vec<Route>)> = Vec::new();
-    for (node, event, at) in sites {
+    for (node, event, site) in sites {
+        let at = site.at;
         let Some(route) = EventRoute::of(event) else {
             errors.push(MountError::new(
                 Some(at),
@@ -164,7 +166,7 @@ pub fn view_behavior(compiled: &Compiled) -> Result<Option<ViewBehavior>, Vec<Mo
             ));
             continue;
         };
-        let Some(index) = layout.handler(at) else {
+        let Some(index) = layout.handler(site) else {
             errors.push(MountError::new(
                 Some(at),
                 "internal: the handler was not lowered",
@@ -236,7 +238,7 @@ pub fn view_behavior(compiled: &Compiled) -> Result<Option<ViewBehavior>, Vec<Mo
 
 /// Records every handler under `item` as `(node, event, at)`, numbering nodes
 /// in the pre-order the Binding IR keys them by.
-fn collect<'a>(item: &'a UiItem, key: &mut u32, sites: &mut Vec<(NodeKey, &'a str, TextRange)>) {
+fn collect<'a>(item: &'a UiItem, key: &mut u32, sites: &mut Vec<(NodeKey, &'a str, Site)>) {
     let walk = |items: &'a [UiItem], key: &mut u32, sites: &mut Vec<_>| {
         for item in items {
             collect(item, key, sites);
@@ -258,12 +260,19 @@ fn collect<'a>(item: &'a UiItem, key: &mut u32, sites: &mut Vec<(NodeKey, &'a st
     }
 }
 
-fn node_sites<'a>(node: &'a UiNode, key: &mut u32, sites: &mut Vec<(NodeKey, &'a str, TextRange)>) {
+fn node_sites<'a>(node: &'a UiNode, key: &mut u32, sites: &mut Vec<(NodeKey, &'a str, Site)>) {
     let own = NodeKey(*key);
     *key += 1;
     for handler in &node.handlers {
         let event = handler.event.trim_start_matches("r#");
-        sites.push((own, event, handler.origin));
+        sites.push((
+            own,
+            event,
+            Site {
+                instance: handler.instance,
+                at: handler.origin,
+            },
+        ));
     }
     for child in &node.children {
         collect(child, key, sites);

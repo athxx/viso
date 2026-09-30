@@ -25,14 +25,16 @@ use crate::ast::{
     AstNode, CompilationUnit, ComponentDecl, Expr, Item, LiteralExpr, Member, PathExpr, UnaryExpr,
     ViewFragment,
 };
-use crate::behavior::Program;
+use crate::behavior::{Program, hidden_state, inline_instances};
 use crate::diag::{Diagnostic, Severity};
-use crate::hir::{ConstValue, HirComponent, SourceSet, Ty};
+use crate::hir::{ConstValue, HirComponent, SourceSet, Ty, write_backs};
 use crate::ir::{
-    BindingIr, KeyIr, UiTree, analyze_keys, lower_bindings, lower_fragment_items, lower_view_block,
+    BindingIr, ComponentLibrary, InstanceSources, KeyIr, LibraryComponent, UiTree, analyze_keys,
+    lower_bindings, lower_component_view, lower_fragment_items, lower_view_bindings,
 };
 use crate::resolve::{
-    ModuleGraph, ModulePath, NameInterner, SourceUnit, SymbolId, resolve, resolve_fragment,
+    ModuleGraph, ModulePath, NameInterner, SourceUnit, SymbolId, SymbolIdentity, SymbolKind,
+    fingerprint, resolve, resolve_fragment,
 };
 use crate::syntax::grammar::{Entry, Parse, parse_entry};
 use crate::syntax::{GreenNode, SyntaxKind, SyntaxNode, TextRange, TextSize, tokenize};
@@ -276,12 +278,12 @@ fn compile_unit(source: &str, parse: Parse, origin: &Origin, natives: Arc<Native
     let mut interner = NameInterner::new();
     let segments: Vec<&str> = origin.module.iter().map(String::as_str).collect();
     let path = ModulePath::intern(&mut interner, &segments);
-    let units = vec![SourceUnit::new(path, parse)];
+    let units = vec![SourceUnit::new(path.clone(), parse)];
     let graph = ModuleGraph::build_with(&units, &interner, natives);
     diagnostics.extend(graph.errors().iter().cloned());
     let mut resolved = resolve(&graph, &units, &mut interner, &origin.package);
     let lowered = crate::hir::lower(&graph, &units, &resolved, &mut interner, &origin.package);
-    let behavior = lowered.behavior;
+    let mut behavior = lowered.behavior;
     let Some(module) = resolved.pop() else {
         return Compiled::empty(diagnostics, behavior);
     };
@@ -292,28 +294,113 @@ fn compile_unit(source: &str, parse: Parse, origin: &Origin, natives: Arc<Native
         return Compiled::empty(diagnostics, behavior);
     };
     let range = decl.syntax().text_range();
-    let Some(component) = lowered
-        .components
-        .into_iter()
-        .find(|c| c.source_origin == range)
-    else {
+    let mut components = lowered.components;
+    let Some(mounted) = components.iter().position(|c| c.source_origin == range) else {
         return Compiled::empty(diagnostics, behavior);
     };
 
-    let sources = component_sources(&component, &decl);
-    // The view checker has already reported every unregistered node type.
-    let tree = decl
+    // Every component of the unit is one the mounted view may inline.
+    let decls: Vec<ComponentDecl> = component_decls(&cu);
+    let decl_of = |c: &HirComponent| {
+        decls
+            .iter()
+            .find(|d| d.syntax().text_range() == c.source_origin)
+            .cloned()
+    };
+    let library = ComponentLibrary::new(
+        &module.refs,
+        components
+            .iter()
+            .filter_map(|c| {
+                let decl = decl_of(c)?;
+                Some(LibraryComponent {
+                    schema: &c.schema,
+                    write_backs: write_backs(&decl),
+                    decl,
+                })
+            })
+            .collect(),
+    );
+    let root_symbol = components[mounted].schema.symbol;
+    let lowered_view = decl
         .view()
         .and_then(|view| view.block())
-        .map(|block| lower_view_block(&block, graph.natives()).tree)
-        .unwrap_or(UiTree { items: Vec::new() });
-    let env = SourceSet::new(sources.iter().map(|s| s.symbol));
-    let bindings = lower_bindings(&tree, &root, &module.refs, &env);
+        .map(|block| lower_component_view(&block, graph.natives(), &library, root_symbol));
+    drop(library);
+    // The view checker has already reported every unregistered node type.
+    let tree = match lowered_view {
+        Some(view) => {
+            for (at, reason) in view.unmounted {
+                diagnostics.push(Diagnostic::error(
+                    "E3711",
+                    at,
+                    format!("the component cannot be mounted here: {reason}"),
+                ));
+            }
+            view.tree
+        }
+        None => UiTree::default(),
+    };
+    inline_instances(&mut behavior, root_symbol, &tree);
+
+    let mut sources = component_sources(&components[mounted], &decl);
+    let own = sources.len();
+    let mut instances = Vec::with_capacity(tree.instances.len());
+    for instance in &tree.instances {
+        let mut inlined = InstanceSources::default();
+        let child = components
+            .iter()
+            .find(|c| c.schema.symbol == instance.component);
+        let child_decl = child.and_then(decl_of);
+        let (Some(child), Some(child_decl)) = (child, child_decl) else {
+            instances.push(inlined);
+            continue;
+        };
+        inlined.inputs = child
+            .schema
+            .inputs
+            .iter()
+            .map(|i| i.meta.resolved_symbol)
+            .collect();
+        let module_path = path.display(&interner);
+        for source in component_sources(child, &child_decl) {
+            if !matches!(source.kind, SourceKind::State { .. }) {
+                continue;
+            }
+            let name = hidden_state(&instance.identity, &source.name);
+            let decl_path = format!("{}.{name}", components[mounted].schema.name);
+            let symbol = fingerprint(SymbolIdentity {
+                package: &origin.package,
+                module_path: &module_path,
+                kind: SymbolKind::State,
+                decl_path: &decl_path,
+            });
+            inlined.states.push((source.symbol, symbol));
+            sources.push(Source {
+                name,
+                symbol,
+                kind: source.kind,
+            });
+        }
+        instances.push(inlined);
+    }
+    let hidden = sources.split_off(own);
+    let env = SourceSet::new(sources.iter().chain(&hidden).map(|s| s.symbol).chain(
+        tree.instances.iter().flat_map(|i| {
+            components
+                .iter()
+                .find(|c| c.schema.symbol == i.component)
+                .map(instance_symbols)
+                .unwrap_or_default()
+        }),
+    ));
+    let bindings = lower_view_bindings(&tree, &root, &module.refs, &env, &instances);
     let keys = analyze_keys(&tree, &root, &module.refs, &env);
     diagnostics.extend(keys.diagnostics.iter().cloned());
+    sources.extend(hidden);
 
     Compiled {
-        component: Some(component),
+        component: Some(components.swap_remove(mounted)),
         tree,
         bindings,
         keys,
@@ -323,11 +410,38 @@ fn compile_unit(source: &str, parse: Parse, origin: &Origin, natives: Arc<Native
     }
 }
 
+/// Every component the unit declares, exported or not.
+fn component_decls(cu: &CompilationUnit) -> Vec<ComponentDecl> {
+    cu.items()
+        .filter_map(|item| match item {
+            Item::Component(decl) => Some(decl),
+            Item::Export(export) => match export.declaration() {
+                Some(Item::Component(decl)) => Some(decl),
+                _ => None,
+            },
+            _ => None,
+        })
+        .collect()
+}
+
+/// The states and inputs of `component`, the reactive sources an inlined
+/// instance's view reads.
+fn instance_symbols(component: &HirComponent) -> Vec<SymbolId> {
+    let schema = &component.schema;
+    schema
+        .states
+        .iter()
+        .map(|s| s.meta.resolved_symbol)
+        .chain(schema.inputs.iter().map(|i| i.meta.resolved_symbol))
+        .flatten()
+        .collect()
+}
+
 impl Compiled {
     fn empty(diagnostics: Vec<Diagnostic>, behavior: Program) -> Self {
         Self {
             component: None,
-            tree: UiTree { items: Vec::new() },
+            tree: UiTree::default(),
             bindings: BindingIr::default(),
             keys: KeyIr::default(),
             sources: Vec::new(),

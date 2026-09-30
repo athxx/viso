@@ -17,9 +17,9 @@ use viso_behavior::native::{NativeEntry, NativeId};
 
 use super::ir::{
     Body, ComponentLayout, Const, FuncId, Function, FunctionKind, Inst, NativeImport, Num, Program,
-    Reg, Unsupported,
+    Reg, Site, Unsupported,
 };
-use crate::ast::{AstNode, Block, Expr};
+use crate::ast::{AssignablePath, AstNode, Block, Expr};
 use crate::hir::infer::InferCx;
 use crate::hir::{CallableKind, ComponentSchema, Ty, TypeEnv};
 use crate::resolve::{LocalSlot, Resolution, SymbolId};
@@ -176,7 +176,7 @@ impl ProgramBuilder {
     /// the component registered last.
     pub(crate) fn handler(&mut self, at: TextRange, func: FuncId) {
         if let Some(layout) = self.program.components.last_mut() {
-            layout.handlers.push((at, func));
+            layout.handlers.push((Site::own(at), func));
         }
     }
 
@@ -238,35 +238,42 @@ impl ProgramBuilder {
     /// The finished program. A function that calls, or closes over, one that
     /// cannot run cannot run either.
     pub(crate) fn finish(mut self) -> Program {
-        loop {
-            let mut changed = false;
-            for i in 0..self.program.functions.len() {
-                let Ok(body) = &self.program.functions[i].body else {
-                    continue;
+        block_unsupported(&mut self.program);
+        self.program
+    }
+}
+
+/// Makes every function of `program` that calls or closes over one with no
+/// body to run have none either, naming the callee and its reason.
+pub(crate) fn block_unsupported(program: &mut Program) {
+    loop {
+        let mut changed = false;
+        for i in 0..program.functions.len() {
+            let Ok(body) = &program.functions[i].body else {
+                continue;
+            };
+            let blocked = body.insts.iter().zip(&body.spans).find_map(|(inst, at)| {
+                let callee = match inst {
+                    Inst::Call { func, .. } | Inst::Closure { func, .. } => *func,
+                    _ => return None,
                 };
-                let blocked = body.insts.iter().zip(&body.spans).find_map(|(inst, at)| {
-                    let callee = match inst {
-                        Inst::Call { func, .. } | Inst::Closure { func, .. } => *func,
-                        _ => return None,
-                    };
-                    let callee = &self.program.functions[callee.0 as usize];
-                    let reason = callee.body.as_ref().err()?;
-                    Some(Unsupported {
-                        reason: format!(
-                            "calls `{}`, which cannot run: {}",
-                            callee.name, reason.reason
-                        ),
-                        at: *at,
-                    })
-                });
-                if let Some(blocked) = blocked {
-                    self.program.functions[i].body = Err(blocked);
-                    changed = true;
-                }
+                let callee = &program.functions[callee.0 as usize];
+                let reason = callee.body.as_ref().err()?;
+                Some(Unsupported {
+                    reason: format!(
+                        "calls `{}`, which cannot run: {}",
+                        callee.name, reason.reason
+                    ),
+                    at: *at,
+                })
+            });
+            if let Some(blocked) = blocked {
+                program.functions[i].body = Err(blocked);
+                changed = true;
             }
-            if !changed {
-                return self.program;
-            }
+        }
+        if !changed {
+            return;
         }
     }
 }
@@ -410,6 +417,8 @@ pub(crate) enum RegionEntry<'e> {
         /// The scrutinee type.
         ty: &'e Ty,
     },
+    /// The current value of a `bind` source, the value its two-way input reads.
+    Lens(&'e AssignablePath),
 }
 
 impl RegionEntry<'_> {
@@ -468,6 +477,11 @@ pub(crate) fn lower_region_entry(
             }
             RegionEntry::Value(value) => {
                 let src = l.expr(value)?;
+                l.emit(Inst::Return { src });
+            }
+            RegionEntry::Lens(source) => {
+                let (slot, path) = l.lens(source)?;
+                let src = l.read_state(slot, &path);
                 l.emit(Inst::Return { src });
             }
             RegionEntry::Items(items) => {
@@ -532,6 +546,52 @@ pub(crate) fn lower_region_entry(
             symbol: def.symbol,
             module: def.module,
             params,
+            captures: Vec::new(),
+            body,
+        },
+        def.into,
+    )
+}
+
+/// Lowers the write-back of a `bind` to a two-way component input: a handler
+/// of the event the input is paired with, writing the event's first parameter
+/// to `source`. The payload arrives in `r0`, the enclosing regions' values
+/// `scope` after it.
+pub(crate) fn lower_write_back(
+    b: &mut ProgramBuilder,
+    cx: &InferCx<'_>,
+    def: Def,
+    scope: &[(SyntaxNode, Ty)],
+    source: &AssignablePath,
+    at: TextRange,
+) -> FuncId {
+    let mut l = Lowerer::new(cx, b, &def, at);
+    let result = (|| {
+        let event = l.reg();
+        let regions: Vec<Reg> = scope.iter().map(|_| l.reg()).collect();
+        for ((pattern, ty), src) in scope.iter().zip(regions) {
+            l.bind_matched(pattern, src, ty)?;
+        }
+        let (slot, path) = l.lens(source)?;
+        let value = l.reg();
+        l.emit(Inst::Field {
+            dst: value,
+            src: event,
+            index: 0,
+        });
+        l.write_state(slot, path, value);
+        let src = l.unit();
+        l.emit(Inst::Return { src });
+        Ok(())
+    })();
+    let body = result.map(|()| l.frames.pop().unwrap_or_default().body);
+    b.define(
+        Function {
+            name: def.name,
+            kind: def.kind,
+            symbol: def.symbol,
+            module: def.module,
+            params: 1 + scope.len() as u32,
             captures: Vec::new(),
             body,
         },

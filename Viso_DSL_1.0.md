@@ -1553,6 +1553,19 @@ component_member     = { attribute },
 - 同一 Component 内的成员名称不能在同一 Namespace 冲突；成员只在所属 Component（System 同理）内可见，不同 Component 可声明同名成员；成员遮蔽同名 Module 声明，局部 Binding 又遮蔽成员；
 - Value Namespace、Type Namespace 和 Event Namespace 分离，但 Formatter 应避免同名造成阅读混乱。
 
+### 40.1 Component 实例的挂载
+
+View 中类型为同一文件内 Component 的 Node 是该 Component 的一个实例。实例在编译期内联进挂载它的 View，`component!`、`view!`、Hot Reload 与 Release Package 挂载同一结果：
+
+- 实例的 View 在该 Node 的位置挂载，成为外层 View 的一部分；实例不单独挂载 Component，也不产生额外的 Node；
+- 实例的每个 State 是外层 Component 的一个隐藏 State，名为 `实例身份.State 名`；实例身份是从外层 View 到该实例的路径，每段是实例的局部名，没有局部名时为 `类型名#序号`（序号按同一父实例下同类型实例的出现次序）；Hot Reload 按名称保留隐藏 State；
+- 实例读取 Input 时求值调用方的实参（以调用方所在区域的绑定为参数），无实参时取 Input 默认值，都没有时为 `None`；实例 View 中读取 Input 的 Property 绑定到实参所读的 Source，读取自身 State 的 Property 绑定到对应隐藏 State；
+- 实例 `emit` 一个 Event 时，按调用方声明顺序同步运行调用方为该 Event 写的每个 Handler，Payload 是以 Event 参数为字段的 Record；调用方未处理的 Event 不产生任何效果；
+- 与 Event 同名以外的 Property 和 Handler 作用于实例 View 的根 Node；
+- 实例可以位于 `if`、`match` 与 Keyed `for` 中，区域绑定对实例的 Input 实参与 Handler 可见（§56.1）；
+- 以下情形报 `E3711`：Component 直接或间接挂载自身；带 State 的 Component 位于控制流区域中；`bind` 目标为 Component Input 且带 `using`；向 View 不恰好挂载一个 Node 的实例传入非 Input Property 或非 Event Handler；类型为其他文件的 Component；
+- `ui!` Fragment 不内联 Component 实例。
+
 ---
 
 ## 41. Input
@@ -6387,6 +6400,8 @@ ViewToModel {
 
 Converter Error 必须有 Schema 策略：拒绝更新、显示 Validation State 或产生 Event。不得静默写入错误值。
 
+目标为 Component Input（U2.2）的 `bind value <=> x;` Lower 为 `value: x;` 加 `on changed(event) { x = event.value; }`：Input 实参读取 `x`，`@bindable` 配对 Event 的首个参数写回 `x` 的 Lens；这类 `bind` 不接受 `using`（`E3711`）。
+
 ---
 
 ## 124. Event Handler Lowering
@@ -8301,7 +8316,7 @@ RecordPatternField
 | E3708  | 交互节点缺少等价键盘路径（警告，§U8.2）                 |
 | E3709  | 标注 [Runtime 待实现] 的 Property 使用了非默认值（§U1.1） |
 | E3710  | `@selector` 误用（§U2.3）                               |
-| E3711  | Handler 或控制流区域未能挂载：Runtime 未投递该 Event、Behavior 未能 Lower，或区域位于 View 根、`VirtualList` 内或 `ui!` Fragment 中（§52、§56.1） |
+| E3711  | Handler、控制流区域或 Component 实例未能挂载：Runtime 未投递该 Event、Behavior 未能 Lower，区域位于 View 根、`VirtualList` 内或 `ui!` Fragment 中，或实例无法内联（§40.1、§52、§56.1、§123） |
 | E4101  | Action 中使用 Await                                     |
 | E4102  | Task 跨挂起访问可变 State                               |
 | E4201  | Effect 读取未声明依赖                                   |

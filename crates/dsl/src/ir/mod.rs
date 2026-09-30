@@ -29,30 +29,82 @@ pub mod keys;
 mod length;
 pub mod ui_ir;
 
-pub use binding_ir::{BindingEdge, BindingIr, BindingKind, NodeKey, lower_bindings};
+pub use binding_ir::{
+    BindingEdge, BindingIr, BindingKind, InstanceSources, NodeKey, lower_bindings,
+    lower_view_bindings,
+};
 pub use dirty_map::{DirtyClass, property_dirty_class};
 pub use keys::{KEYLESS_STATEFUL_FOR, KeyIr, KeyedFor, analyze_keys};
 pub use ui_ir::{
-    AxisIr, LengthIr, NodeKind, PendingProperty, StyleIr, UiFor, UiHandler, UiIf, UiIfArm, UiItem,
-    UiMatch, UiMatchArm, UiNode, UiTree,
+    AxisIr, LengthIr, NodeKind, PendingProperty, StyleIr, UiFor, UiHandler, UiIf, UiIfArm,
+    UiInstance, UiItem, UiMatch, UiMatchArm, UiNode, UiTree,
 };
+
+use std::collections::HashMap;
 
 use viso_behavior::native::{FlexAxis, Natives, WidgetNode};
 
 use crate::ast::{
-    AstNode, Expr, NodeBody, PathExpr, PropertyBinding, TypePath, ViewBlock, ViewFor, ViewIf,
-    ViewItem, ViewMatch,
+    AstNode, ComponentDecl, Expr, NodeBody, PathExpr, PropertyBinding, TypePath, ViewBlock,
+    ViewFor, ViewIf, ViewItem, ViewMatch,
 };
+use crate::hir::ComponentSchema;
+use crate::resolve::{Resolution, ResolvedRef, SymbolId};
 use crate::syntax::span::TextRange;
 
-/// A lowered view: its template, and every node type name it wrote that no
-/// registered widget declares (each with the span of its type path).
+/// A lowered view: its template, every node type name it wrote that neither a
+/// registered widget nor a component of the library declares (each with the
+/// span of its type path), and every component node that does not mount.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct LoweredView {
     /// The retained-tree template.
     pub tree: UiTree,
-    /// The unregistered node type names, in source order.
+    /// The unknown node type names, in source order.
     pub unknown: Vec<(String, TextRange)>,
+    /// Each component node the view cannot inline, and why.
+    pub unmounted: Vec<(TextRange, String)>,
+}
+
+/// The components a view may inline: the ones declared in the same unit as
+/// the mounted component, with the node types that name them.
+#[derive(Debug, Default)]
+pub struct ComponentLibrary<'a> {
+    /// The declaration each resolved name names, by the name's range: the
+    /// component of a node-type head.
+    heads: HashMap<TextRange, SymbolId>,
+    components: Vec<LibraryComponent<'a>>,
+}
+
+/// One component of a [`ComponentLibrary`].
+#[derive(Debug)]
+pub struct LibraryComponent<'a> {
+    /// Its typed schema.
+    pub schema: &'a ComponentSchema,
+    /// Its declaration, whose view is inlined.
+    pub decl: ComponentDecl,
+    /// Each two-way input, by its index among the inputs, and the event that
+    /// writes it back.
+    pub write_backs: Vec<(usize, String)>,
+}
+
+impl<'a> ComponentLibrary<'a> {
+    /// The library of `components`, whose node-type heads resolve through
+    /// `refs`.
+    pub fn new(refs: &[ResolvedRef], components: Vec<LibraryComponent<'a>>) -> Self {
+        let heads = refs
+            .iter()
+            .filter_map(|r| match r.to {
+                Resolution::Symbol(id) => Some((r.range, id)),
+                Resolution::Local(_) | Resolution::Native(_) => None,
+            })
+            .collect();
+        ComponentLibrary { heads, components }
+    }
+
+    /// The component `id`.
+    fn get(&self, id: SymbolId) -> Option<&LibraryComponent<'a>> {
+        self.components.iter().find(|c| c.schema.symbol == id)
+    }
 }
 
 /// Lowers a `ui!` view fragment's items into a [`UiTree`].
@@ -70,33 +122,125 @@ pub fn lower_fragment_items(
     items: impl Iterator<Item = ViewItem>,
     natives: &Natives,
 ) -> LoweredView {
-    let mut lowering = Lowering {
-        natives,
-        unknown: Vec::new(),
-    };
+    let library = ComponentLibrary::default();
+    let mut lowering = Lowering::new(natives, &library, None);
     let mut out = Vec::new();
     for item in items {
         lowering.item(item, &mut out);
     }
-    LoweredView {
-        tree: UiTree { items: out },
-        unknown: lowering.unknown,
-    }
+    lowering.finish(out)
 }
 
 /// Lowers a component's `view` block into a [`UiTree`]; see
-/// [`lower_fragment_items`].
+/// [`lower_fragment_items`]. No other component is inlined.
 pub fn lower_view_block(block: &ViewBlock, natives: &Natives) -> LoweredView {
     lower_fragment_items(block.items(), natives)
 }
 
-/// The state of one view lowering.
-struct Lowering<'a> {
-    natives: &'a Natives,
-    unknown: Vec<(String, TextRange)>,
+/// Lowers the view `block` of the component `root` into a [`UiTree`], inlining
+/// every node of a component of `library`: its own view mounts in the node's
+/// place as instance `i` of [`UiTree::instances`], with the caller's
+/// arguments, event handlers and slot fills wired in. The caller's other
+/// properties and handlers apply to the inlined view's single root node.
+///
+/// A component node that cannot be inlined mounts nothing of its caller's
+/// wiring and is reported in [`LoweredView::unmounted`]: a component mounting
+/// itself, a component with state inside a control-flow region, properties or
+/// standard handlers on a component whose view is not exactly one node, a slot
+/// placed deeper in `for`/`match` regions than its caller's node, a `bind`
+/// through `using`, and a component another unit declares.
+pub fn lower_component_view(
+    block: &ViewBlock,
+    natives: &Natives,
+    library: &ComponentLibrary<'_>,
+    root: SymbolId,
+) -> LoweredView {
+    let mut lowering = Lowering::new(natives, library, Some(root));
+    let out = lowering.items(block.items());
+    lowering.finish(out)
 }
 
-impl Lowering<'_> {
+/// The state of one view lowering.
+struct Lowering<'a, 'l> {
+    natives: &'a Natives,
+    library: &'a ComponentLibrary<'l>,
+    unknown: Vec<(String, TextRange)>,
+    unmounted: Vec<(TextRange, String)>,
+    instances: Vec<UiInstance>,
+    /// Each component view being lowered, the mounted one first.
+    frames: Vec<Frame>,
+    /// The frame whose items are being lowered.
+    current: usize,
+    /// How many `for`/`match` regions enclose the items being lowered.
+    depth: u32,
+    /// Whether any control-flow region encloses the items being lowered.
+    guarded: bool,
+    /// How many unnamed nodes of each component each instance has inlined.
+    ordinals: HashMap<(u32, SymbolId), u32>,
+}
+
+/// One component view being lowered.
+struct Frame {
+    /// Its instance: `0` for the mounted component.
+    instance: u32,
+    /// The components being inlined into each other down to this one.
+    chain: Vec<SymbolId>,
+    /// What the caller fills each slot with.
+    fills: Vec<(String, Vec<ViewItem>)>,
+    /// The caller's frame, and the regions enclosing the caller's node.
+    caller: Option<(usize, u32)>,
+}
+
+impl<'a, 'l> Lowering<'a, 'l> {
+    fn new(
+        natives: &'a Natives,
+        library: &'a ComponentLibrary<'l>,
+        root: Option<SymbolId>,
+    ) -> Self {
+        Lowering {
+            natives,
+            library,
+            unknown: Vec::new(),
+            unmounted: Vec::new(),
+            instances: Vec::new(),
+            frames: vec![Frame {
+                instance: 0,
+                chain: root.into_iter().collect(),
+                fills: Vec::new(),
+                caller: None,
+            }],
+            current: 0,
+            depth: 0,
+            guarded: false,
+            ordinals: HashMap::new(),
+        }
+    }
+
+    fn finish(self, items: Vec<UiItem>) -> LoweredView {
+        LoweredView {
+            tree: UiTree {
+                items,
+                instances: self.instances,
+            },
+            unknown: self.unknown,
+            unmounted: self.unmounted,
+        }
+    }
+
+    /// The instance whose view is being lowered.
+    fn instance(&self) -> u32 {
+        self.frames[self.current].instance
+    }
+
+    /// Lowers `items` in order.
+    fn items(&mut self, items: impl Iterator<Item = ViewItem>) -> Vec<UiItem> {
+        let mut out = Vec::new();
+        for item in items {
+            self.item(item, &mut out);
+        }
+        out
+    }
+
     /// Lowers one view item onto `out`. A property, handler, two-way binding or
     /// fill carries no mounted structure on its own: it only appears inside a
     /// node body, where [`Lowering::node`] consumes it.
@@ -146,7 +290,8 @@ impl Lowering<'_> {
 
     /// Lowers a node of type `ty` onto `out`: the retained node its widget
     /// declares, with static properties folded into style, reactive ones pending
-    /// and child items lowered in order; a `Fragment`'s children directly.
+    /// and child items lowered in order; a `Fragment`'s children directly; a
+    /// component's view inlined.
     fn node(
         &mut self,
         ty: Option<TypePath>,
@@ -157,6 +302,20 @@ impl Lowering<'_> {
     ) {
         let Some(ty) = ty else { return };
         let type_name = type_name_of(&ty);
+        let head = ty.segments().next().map(|t| t.text_range());
+        if let Some(id) = head.and_then(|head| self.library.heads.get(&head).copied()) {
+            if self.library.get(id).is_some() {
+                self.component(id, type_name, local_name, body, origin, out);
+            } else {
+                self.unmounted.push((
+                    ty.syntax().text_range(),
+                    format!(
+                        "`{type_name}` is declared in another file; a view inlines the components of its own file"
+                    ),
+                ));
+            }
+            return;
+        }
         let Some(widget) = self.natives.widget(&type_name) else {
             self.unknown.push((type_name, ty.syntax().text_range()));
             return;
@@ -181,20 +340,25 @@ impl Lowering<'_> {
                 }
                 return;
             }
-            // The view mounts as the root, which no caller fills: every slot
-            // is empty.
-            WidgetNode::Outlet => return,
+            WidgetNode::Outlet => {
+                self.outlet(body.as_ref(), origin, out);
+                return;
+            }
         };
 
+        let instance = self.instance();
         let mut pending = Vec::new();
         let mut handlers = Vec::new();
         let mut children = Vec::new();
         for member in body.iter().flat_map(|b| b.members()) {
             match member {
-                ViewItem::Property(prop) => fold_property(&prop, &mut style, &mut pending),
+                ViewItem::Property(prop) => {
+                    fold_property(&prop, instance, &mut style, &mut pending)
+                }
                 ViewItem::Handler(h) => handlers.push(UiHandler {
                     event: h.event().map(|t| t.text()).unwrap_or_default(),
                     origin: h.syntax().text_range(),
+                    instance,
                 }),
                 other => self.child(other, &mut children),
             }
@@ -208,13 +372,243 @@ impl Lowering<'_> {
             handlers,
             children,
             origin,
+            instance,
         }));
+    }
+
+    /// A `SlotOutlet`: the items the caller fills the slot with, lowered in
+    /// the caller's view; nothing in the mounted component, which no caller
+    /// fills.
+    fn outlet(&mut self, body: Option<&NodeBody>, origin: TextRange, out: &mut Vec<UiItem>) {
+        let Some((caller, depth)) = self.frames[self.current].caller else {
+            return;
+        };
+        let name = body
+            .into_iter()
+            .flat_map(|b| b.members())
+            .find_map(|m| match m {
+                ViewItem::Property(p)
+                    if p.path().is_some_and(|path| {
+                        path.segments().map(|t| t.text()).collect::<Vec<_>>() == ["slot"]
+                    }) =>
+                {
+                    p.value().as_ref().and_then(path_ident)
+                }
+                _ => None,
+            });
+        let Some(name) = name else { return };
+        let Some(items) = self.frames[self.current]
+            .fills
+            .iter()
+            .find(|(slot, _)| *slot == name)
+            .map(|(_, items)| items.clone())
+        else {
+            return;
+        };
+        if self.depth != depth {
+            self.unmounted.push((
+                origin,
+                format!(
+                    "the slot `{name}` is placed inside a `for` or `match` of the component, which its caller's items cannot run in"
+                ),
+            ));
+            return;
+        }
+        let callee = std::mem::replace(&mut self.current, caller);
+        for item in items {
+            self.item(item, out);
+        }
+        self.current = callee;
+    }
+
+    /// Inlines a node of the library component `id` onto `out`.
+    fn component(
+        &mut self,
+        id: SymbolId,
+        type_name: String,
+        local_name: Option<String>,
+        body: Option<NodeBody>,
+        origin: TextRange,
+        out: &mut Vec<UiItem>,
+    ) {
+        let library = self.library;
+        let Some(component) = library.get(id) else {
+            return;
+        };
+        let schema = component.schema;
+        if self.frames[self.current].chain.contains(&id) {
+            self.unmounted.push((
+                origin,
+                format!("`{type_name}` mounts itself, which would never end"),
+            ));
+            return;
+        }
+        if self.guarded && !schema.states.is_empty() {
+            self.unmounted.push((
+                origin,
+                format!(
+                    "`{type_name}` has state, which a component inside an `if`, `for` or `match` cannot keep yet"
+                ),
+            ));
+            return;
+        }
+        let parent = self.instance();
+        let mut args = Vec::new();
+        let mut handlers = Vec::new();
+        let mut forwarded = Vec::new();
+        let mut forwarded_handlers = Vec::new();
+        let mut fills: Vec<(String, Vec<ViewItem>)> = Vec::new();
+        let default_slot = schema
+            .slots
+            .iter()
+            .find(|s| s.default)
+            .map(|s| s.name.clone());
+        let input_slot = |name: &str| schema.inputs.iter().position(|i| i.name == name);
+        for member in body.iter().flat_map(|b| b.members()) {
+            match member {
+                ViewItem::Property(prop) => {
+                    let segments: Vec<String> = prop
+                        .path()
+                        .map(|p| p.segments().map(|t| t.text()).collect())
+                        .unwrap_or_default();
+                    let slot = match segments.as_slice() {
+                        [name] => input_slot(name.trim_start_matches("r#")),
+                        _ => None,
+                    };
+                    match (slot, prop.value()) {
+                        (Some(slot), Some(value)) => {
+                            args.push((slot as u32, value.syntax().text_range()))
+                        }
+                        (Some(_), None) => {}
+                        (None, _) => forwarded.push(prop),
+                    }
+                }
+                ViewItem::Handler(h) => {
+                    let event = h.event().map(|t| t.text()).unwrap_or_default();
+                    let event = event.trim_start_matches("r#");
+                    if schema.events.iter().any(|e| e.name == event) {
+                        handlers.push((event.to_string(), h.syntax().text_range()));
+                    } else {
+                        forwarded_handlers.push(h);
+                    }
+                }
+                ViewItem::TwoWayBinding(bind) => {
+                    if bind.using_ty().is_some() {
+                        self.unmounted.push((
+                            bind.syntax().text_range(),
+                            "a `bind` to a component input writes back as is; convert with `using` on a native property".to_string(),
+                        ));
+                        continue;
+                    }
+                    let target: Vec<String> = bind
+                        .target()
+                        .map(|p| p.segments().map(|t| t.text()).collect())
+                        .unwrap_or_default();
+                    let Some(slot) = (match target.as_slice() {
+                        [name] => input_slot(name.trim_start_matches("r#")),
+                        _ => None,
+                    }) else {
+                        continue;
+                    };
+                    let Some((_, event)) = component
+                        .write_backs
+                        .iter()
+                        .find(|(input, _)| *input == slot)
+                    else {
+                        continue;
+                    };
+                    if let Some(source) = bind.source() {
+                        args.push((slot as u32, source.syntax().text_range()));
+                        handlers.push((event.clone(), bind.syntax().text_range()));
+                    }
+                }
+                ViewItem::Fill(fill) => {
+                    let name = fill.name().map(|t| t.text()).unwrap_or_default();
+                    let items = fill.body().iter().flat_map(|b| b.items()).collect();
+                    fills.push((name.trim_start_matches("r#").to_string(), items));
+                }
+                item => {
+                    if let Some(slot) = &default_slot {
+                        match fills.iter_mut().find(|(name, _)| name == slot) {
+                            Some((_, items)) => items.push(item),
+                            None => fills.push((slot.clone(), vec![item])),
+                        }
+                    }
+                }
+            }
+        }
+
+        let segment = match &local_name {
+            Some(name) => name.clone(),
+            None => {
+                let ordinal = self.ordinals.entry((parent, id)).or_insert(0);
+                let segment = format!("{type_name}#{ordinal}");
+                *ordinal += 1;
+                segment
+            }
+        };
+        let identity = match self.instances.get(parent.wrapping_sub(1) as usize) {
+            Some(parent) => format!("{}/{segment}", parent.identity),
+            None => segment,
+        };
+        self.instances.push(UiInstance {
+            component: id,
+            parent,
+            identity,
+            depth: self.depth,
+            args,
+            handlers,
+        });
+        let instance = self.instances.len() as u32;
+        let mut chain = self.frames[self.current].chain.clone();
+        chain.push(id);
+        self.frames.push(Frame {
+            instance,
+            chain,
+            fills,
+            caller: Some((self.current, self.depth)),
+        });
+        let caller = std::mem::replace(&mut self.current, self.frames.len() - 1);
+        let mut inner = match component.decl.view().and_then(|v| v.block()) {
+            Some(block) => self.items(block.items()),
+            None => Vec::new(),
+        };
+        self.current = caller;
+
+        if !forwarded.is_empty() || !forwarded_handlers.is_empty() {
+            match inner.as_mut_slice() {
+                [UiItem::Node(root)] => {
+                    for prop in &forwarded {
+                        fold_property(prop, parent, &mut root.style, &mut root.pending);
+                    }
+                    for h in &forwarded_handlers {
+                        root.handlers.push(UiHandler {
+                            event: h.event().map(|t| t.text()).unwrap_or_default(),
+                            origin: h.syntax().text_range(),
+                            instance: parent,
+                        });
+                    }
+                }
+                _ => self.unmounted.push((
+                    origin,
+                    format!(
+                        "the properties and standard handlers of `{type_name}` apply to its view's root node, but its view does not mount exactly one node"
+                    ),
+                )),
+            }
+        }
+        out.extend(inner);
     }
 }
 
 /// Folds one property binding: a compile-time-constant value updates [`StyleIr`];
 /// anything else becomes a [`PendingProperty`] for the Binding IR pass.
-fn fold_property(prop: &PropertyBinding, style: &mut StyleIr, pending: &mut Vec<PendingProperty>) {
+fn fold_property(
+    prop: &PropertyBinding,
+    instance: u32,
+    style: &mut StyleIr,
+    pending: &mut Vec<PendingProperty>,
+) {
     let Some(path) = prop.path() else { return };
     // The bound property is the path's leading segment (`width`, `axis`, `text`).
     let Some(name) = path.segments().next().map(|t| t.text()) else {
@@ -225,7 +619,11 @@ fn fold_property(prop: &PropertyBinding, style: &mut StyleIr, pending: &mut Vec<
     if fold_static(&name, &value, style) {
         return;
     }
-    pending.push(PendingProperty::new(name, value.syntax().text_range()));
+    pending.push(PendingProperty::new(
+        name,
+        value.syntax().text_range(),
+        instance,
+    ));
 }
 
 /// Attempts to fold a property value into static style. Returns `true` when the
@@ -295,14 +693,17 @@ fn type_name_of(ty: &TypePath) -> String {
     ty.segments().last().map(|t| t.text()).unwrap_or_default()
 }
 
-impl Lowering<'_> {
+impl Lowering<'_, '_> {
     /// Lowers an `if / else if / else` view region into a [`UiIf`].
     fn lower_if(&mut self, vi: &ViewIf) -> UiIf {
         let mut arms = Vec::new();
+        let guarded = std::mem::replace(&mut self.guarded, true);
         self.collect_if_arms(vi, &mut arms);
+        self.guarded = guarded;
         UiIf {
             arms,
             origin: vi.syntax().text_range(),
+            instance: self.instance(),
         }
     }
 
@@ -333,6 +734,7 @@ impl Lowering<'_> {
 
     /// Lowers a `for pattern in iterable key key { ... }` region into a [`UiFor`].
     fn lower_for(&mut self, vf: &ViewFor) -> UiFor {
+        let body = self.enclosed(|l| vf.body().map(|b| l.block_items(b)).unwrap_or_default());
         UiFor {
             binding: vf
                 .pattern()
@@ -340,34 +742,44 @@ impl Lowering<'_> {
                 .map(|t| t.text()),
             iterable: vf.iterable().map(|e| e.syntax().text_range()),
             key: vf.key().map(|e| e.syntax().text_range()),
-            body: vf.body().map(|b| self.block_items(b)).unwrap_or_default(),
+            body,
             origin: vf.syntax().text_range(),
+            instance: self.instance(),
         }
+    }
+
+    /// Runs `lower` over the items of a `for` or `match` region, which each
+    /// take the region's value.
+    fn enclosed<T>(&mut self, lower: impl FnOnce(&mut Self) -> T) -> T {
+        let guarded = std::mem::replace(&mut self.guarded, true);
+        self.depth += 1;
+        let out = lower(self);
+        self.depth -= 1;
+        self.guarded = guarded;
+        out
     }
 
     /// Lowers a `match scrutinee { arm, ... }` region into a [`UiMatch`].
     fn lower_match(&mut self, vm: &ViewMatch) -> UiMatch {
-        let arms = vm
-            .arms()
-            .map(|arm| UiMatchArm {
-                pattern: arm.pattern().map(|p| p.syntax().text_range()),
-                guard: arm.guard().map(|e| e.syntax().text_range()),
-                items: arm.body().map(|b| self.block_items(b)).unwrap_or_default(),
-            })
-            .collect();
+        let arms = self.enclosed(|l| {
+            vm.arms()
+                .map(|arm| UiMatchArm {
+                    pattern: arm.pattern().map(|p| p.syntax().text_range()),
+                    guard: arm.guard().map(|e| e.syntax().text_range()),
+                    items: arm.body().map(|b| l.block_items(b)).unwrap_or_default(),
+                })
+                .collect()
+        });
         UiMatch {
             scrutinee: vm.scrutinee().map(|e| e.syntax().text_range()),
             arms,
             origin: vm.syntax().text_range(),
+            instance: self.instance(),
         }
     }
 
     /// Lowers the items of a nested view block, in source order.
     fn block_items(&mut self, block: ViewBlock) -> Vec<UiItem> {
-        let mut out = Vec::new();
-        for item in block.items() {
-            self.item(item, &mut out);
-        }
-        out
+        self.items(block.items())
     }
 }

@@ -43,12 +43,14 @@ use super::percent::{Carry, PercentFacts, PercentSources};
 use super::ty::Ty;
 use super::widget::{self, ChildProps, PropLookup, WidgetSchema, value_ty};
 use crate::ast::{
-    AstNode, ElseBranch, EventHandler, Expr, FillClause, NodeBody, PathExpr, PropertyBinding,
-    PropertyPath, TwoWayBinding, TypePath, ViewBlock, ViewFor, ViewIf, ViewItem, ViewMatch,
+    AssignablePath, AstNode, ElseBranch, EventHandler, Expr, FillClause, NodeBody, PathExpr,
+    PropertyBinding, PropertyPath, TwoWayBinding, TypePath, ViewBlock, ViewFor, ViewIf, ViewItem,
+    ViewMatch,
 };
 use crate::behavior::FunctionKind;
 use crate::behavior::lower::{
-    Def, ProgramBuilder, RegionEntry, lower_handler, lower_region_entry, unsupported_with,
+    Def, ProgramBuilder, RegionEntry, lower_handler, lower_region_entry, lower_write_back,
+    unsupported_with,
 };
 use crate::diag::{Diagnostic, Related, Severity};
 use crate::resolve::suggest::{Candidate, attach, nearest};
@@ -1051,6 +1053,7 @@ impl<'a> ViewWalk<'a> {
         scope: Scope<'_, 'a>,
         bound: &mut HashMap<String, TextRange>,
     ) {
+        let errors = self.error_count();
         let declared = binding
             .path()
             .and_then(|path| self.declared(&path, scope, bound));
@@ -1070,6 +1073,10 @@ impl<'a> ViewWalk<'a> {
             return;
         };
         let at = value.syntax().text_range();
+        if matches!(declared.basis, Basis::Input(_)) {
+            // The inlined component reads its input through this argument.
+            self.region_entry(errors, "arg", at, &RegionEntry::Value(&value));
+        }
         let to = match declared.basis {
             Basis::Yes => return,
             Basis::No if !holds_length(declared.ty.as_ref()) => return,
@@ -1089,6 +1096,7 @@ impl<'a> ViewWalk<'a> {
         scope: Scope<'_, 'a>,
         bound: &mut HashMap<String, TextRange>,
     ) {
+        let errors = self.error_count();
         let source = binding.source().map(|source| self.cx.infer_lens(&source));
         let Some(path) = binding.target() else {
             return;
@@ -1096,6 +1104,14 @@ impl<'a> ViewWalk<'a> {
         let Some(declared) = self.declared(&path, scope, bound) else {
             return;
         };
+        if let (Basis::Input(_), true, Some(lens), None) = (
+            declared.basis,
+            declared.two_way,
+            binding.source(),
+            binding.using_ty(),
+        ) {
+            self.write_back(errors, binding, &lens);
+        }
         if let (Some(want), Some(have), None) = (&declared.ty, &source, binding.using_ty())
             && !want.has_unknown()
             && !have.has_unknown()
@@ -1435,6 +1451,34 @@ impl<'a> ViewWalk<'a> {
 
     /// Lowers a region entry registered at `at` in the component's handler
     /// table; one whose expressions reported errors since `errors` cannot run.
+    /// The two functions a `bind` to a two-way component input lowers to: the
+    /// argument its input reads (the source's current value, at the source) and
+    /// the handler of the paired event writing the event's value back to the
+    /// source (at the binding).
+    fn write_back(&mut self, errors: usize, binding: &TwoWayBinding, source: &AssignablePath) {
+        let at = source.syntax().text_range();
+        self.region_entry(errors, "arg", at, &RegionEntry::Lens(source));
+        let Some(sink) = &self.sink else {
+            return;
+        };
+        let def = Def {
+            name: format!("{}.write_back", sink.component),
+            kind: FunctionKind::Handler,
+            symbol: None,
+            module: sink.module,
+            into: None,
+        };
+        let at = binding.syntax().text_range();
+        let mut b = sink.builder.borrow_mut();
+        let func = if self.error_count() > errors {
+            let params = 1 + self.regions.len() as u32;
+            unsupported_with(&mut b, def, params, "has type errors", at)
+        } else {
+            lower_write_back(&mut b, &self.cx, def, &self.regions, source, at)
+        };
+        b.handler(at, func);
+    }
+
     fn region_entry(&mut self, errors: usize, what: &str, at: TextRange, entry: &RegionEntry<'_>) {
         let Some(sink) = &self.sink else {
             return;

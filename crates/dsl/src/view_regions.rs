@@ -18,7 +18,7 @@ use viso_view::{
 };
 
 use crate::aot::{aot_kind, aot_style};
-use crate::behavior::ir::{ComponentLayout, FuncId, Inst, Program};
+use crate::behavior::ir::{ComponentLayout, FuncId, Inst, Program, Site};
 use crate::frontend::{Compiled, SourceKind};
 use crate::ir::binding_ir::NodeKey;
 use crate::ir::ui_ir::{NodeKind, UiItem, UiNode, UiTree};
@@ -269,7 +269,7 @@ impl Builder<'_> {
         let index = self.out.regions.len() as u32;
         let (kind, entries, preserves) = match item {
             UiItem::If(region) => {
-                let select = self.entry(Some(region.origin), region.origin);
+                let select = self.entry(region.instance, Some(region.origin), region.origin);
                 (
                     RegionKind::If { select },
                     vec![select],
@@ -281,8 +281,8 @@ impl Builder<'_> {
                 )
             }
             UiItem::Match(region) => {
-                let scrutinee = self.entry(region.scrutinee, region.origin);
-                let select = self.entry(Some(region.origin), region.origin);
+                let scrutinee = self.entry(region.instance, region.scrutinee, region.origin);
+                let select = self.entry(region.instance, Some(region.origin), region.origin);
                 (
                     RegionKind::Match { scrutinee, select },
                     vec![scrutinee, select],
@@ -290,8 +290,10 @@ impl Builder<'_> {
                 )
             }
             UiItem::For(region) => {
-                let items = self.entry(region.iterable, region.origin);
-                let key = region.key.map(|key| self.entry(Some(key), region.origin));
+                let items = self.entry(region.instance, region.iterable, region.origin);
+                let key = region
+                    .key
+                    .map(|key| self.entry(region.instance, Some(key), region.origin));
                 (
                     RegionKind::For { items, key },
                     [items].into_iter().chain(key).collect(),
@@ -359,10 +361,10 @@ impl Builder<'_> {
         }
     }
 
-    /// The handler-table index of the entry registered at `at`, reported at
-    /// `origin` when it is missing or does not run.
-    fn entry(&mut self, at: Option<TextRange>, origin: TextRange) -> u32 {
-        let Some(index) = at.and_then(|at| self.layout.handler(at)) else {
+    /// The handler-table index of the entry registered at `at` in the view of
+    /// `instance`, reported at `origin` when it is missing or does not run.
+    fn entry(&mut self, instance: u32, at: Option<TextRange>, origin: TextRange) -> u32 {
+        let Some(index) = at.and_then(|at| self.layout.handler(Site { instance, at })) else {
             self.errors.push(MountError::new(
                 Some(at.unwrap_or(origin)),
                 "internal: the region entry was not lowered",

@@ -2,7 +2,7 @@
 
 use super::super::ir::{Const, Inst, Num, PathStep, Reg};
 use super::{LoopCx, Lower, Lowerer, Place};
-use crate::ast::{AstNode, Expr};
+use crate::ast::{AssignablePath, AstNode, Expr};
 use crate::hir::Ty;
 use crate::hir::infer::body::{child_of, emit_args, is_name};
 use crate::hir::infer::{child_exprs, first_child_expr, is_assign_op};
@@ -489,6 +489,78 @@ impl Lowerer<'_, '_> {
                 self.emit(Inst::StoreState { slot, src: root });
             }
         }
+    }
+
+    /// The state slot a `bind` source names and the steps into it, its indices
+    /// evaluated in order.
+    pub(super) fn lens(&mut self, source: &AssignablePath) -> Lower<(u32, Vec<PathStep>)> {
+        let mut parts = source.syntax().children_with_tokens().into_iter();
+        let Some(head) = parts
+            .by_ref()
+            .filter_map(|e| e.as_token().cloned())
+            .find(is_name)
+        else {
+            return self.bail("a `bind` without a source");
+        };
+        let (slot, mut ty) = match self.cx.resolution_at(head.text_range()) {
+            Some(Resolution::Symbol(id)) => match self.b.places.get(&id) {
+                Some(&(_, Place::State(slot))) => {
+                    let ty = self.env.resolution_ty(&Resolution::Symbol(id));
+                    (slot, ty.unwrap_or(Ty::Unknown))
+                }
+                _ => return self.bail("a `bind` writes back to a `state`"),
+            },
+            _ => return self.bail("a `bind` writes back to a `state`"),
+        };
+        let mut path = Vec::new();
+        let mut after_dot = false;
+        for part in parts {
+            if let Some(token) = part.as_token() {
+                match token.kind() {
+                    SyntaxKind::Dot => after_dot = true,
+                    _ if after_dot && is_name(token) => {
+                        after_dot = false;
+                        let text = token.text();
+                        let index = self.field_index(&ty, text.trim_start_matches("r#"))?;
+                        ty = match &ty {
+                            Ty::Named(id) => self
+                                .env
+                                .record_fields(*id)
+                                .and_then(|fields| fields.get(index as usize))
+                                .map_or(Ty::Unknown, |f| f.ty.clone()),
+                            Ty::Tuple(elems) => {
+                                elems.get(index as usize).cloned().unwrap_or(Ty::Unknown)
+                            }
+                            _ => Ty::Unknown,
+                        };
+                        path.push(PathStep::Field(index));
+                    }
+                    _ => {}
+                }
+            } else if let Some(index) = part.as_node().and_then(|n| Expr::cast(n.clone())) {
+                let reg = self.expr(&index)?;
+                path.push(PathStep::Index(if self.is_local(reg) {
+                    self.copy(reg)
+                } else {
+                    reg
+                }));
+                ty = match ty {
+                    Ty::List(element) => *element,
+                    _ => Ty::Unknown,
+                };
+            }
+        }
+        Ok((slot, path))
+    }
+
+    /// The current value of the state `slot` along `path`.
+    pub(super) fn read_state(&mut self, slot: u32, path: &[PathStep]) -> Reg {
+        self.read(&Root::State(slot), path)
+    }
+
+    /// Writes `src` to the state `slot` along `path`.
+    pub(super) fn write_state(&mut self, slot: u32, path: Vec<PathStep>, src: Reg) {
+        self.write(Root::State(slot), path, src);
     }
 
     /// `emit event(args);`: the arguments evaluate in source order and pass in the

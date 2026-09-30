@@ -402,9 +402,28 @@ pub struct ComponentLayout {
     pub input_defaults: Vec<Option<FuncId>>,
     /// The `fn`/`action`/`computed` members, by name.
     pub members: Vec<(String, FuncId)>,
-    /// The view's event handlers, by the source range of their `on` item; a
-    /// handler's index here is the one its view node names.
-    pub handlers: Vec<(TextRange, FuncId)>,
+    /// The view's event handlers and region entries, by the site they are
+    /// registered at; a handler's index here is the one its view node names.
+    pub handlers: Vec<(Site, FuncId)>,
+}
+
+/// Where a view function is registered: the component instance of the
+/// mounted view it belongs to (`0` for the view's own component, one per
+/// user-component node its view inlines) and the source range of the view
+/// item it lowers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct Site {
+    /// The component instance.
+    pub instance: u32,
+    /// The view item.
+    pub at: TextRange,
+}
+
+impl Site {
+    /// The site of the item at `at` in the view's own component.
+    pub fn own(at: TextRange) -> Site {
+        Site { instance: 0, at }
+    }
 }
 
 impl ComponentLayout {
@@ -413,11 +432,11 @@ impl ComponentLayout {
         self.members.iter().find(|(n, _)| n == name).map(|m| m.1)
     }
 
-    /// The index of the handler whose `on` item spans `at`.
-    pub fn handler(&self, at: TextRange) -> Option<u32> {
+    /// The index of the function registered at `site`.
+    pub fn handler(&self, site: Site) -> Option<u32> {
         self.handlers
             .iter()
-            .position(|(site, _)| *site == at)
+            .position(|(s, _)| *s == site)
             .map(|i| i as u32)
     }
 }
