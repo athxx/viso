@@ -228,6 +228,28 @@ impl Buffer {
         }
     }
 
+    /// Seed the buffer from its node's declared `request`: take its style, and
+    /// its text unless the buffer already holds it, then put the caret at the
+    /// end and end any composition. A buffer that already holds the text keeps
+    /// its caret, selection and composition, so the state a field writes back
+    /// seeds nothing. Returns whether the text or the style changed.
+    pub fn seed(&mut self, request: &TextRequest) -> bool {
+        let styled = self.font_size != request.font_size
+            || self.color != request.color
+            || self.locale != request.locale;
+        self.font_size = request.font_size;
+        self.color = request.color;
+        self.locale.clone_from(&request.locale);
+        if self.text == request.text {
+            return styled;
+        }
+        self.text.clone_from(&request.text);
+        self.sel = Selection::caret(TextPosition::upstream(TextOffset(self.text.len())));
+        self.composition = ImeComposition::default();
+        self.revision = self.revision.next();
+        true
+    }
+
     /// Whether an IME composition is currently active.
     #[inline]
     pub fn has_composition(&self) -> bool {
@@ -565,6 +587,12 @@ impl TextEdits {
 /// lines for visual caret motion and click placement; `None` (no text runtime)
 /// leaves Left/Right logical and clicks unresolved.
 ///
+/// Text field seeds the store queued ([`NodeStore::seed_text`]) apply first,
+/// registering a buffer for a field that has none; a seed re-declares the text
+/// only when it changed it, and never counts as an edit the driver reports.
+///
+/// [`NodeStore::seed_text`]: crate::component::NodeStore::seed_text
+///
 /// The steady path is a no-op: a buffer with no queued intent is skipped, and a
 /// buffer whose intents were all caret moves re-declares nothing. Returns the
 /// number of nodes whose text was re-declared this frame — a steady-state
@@ -579,6 +607,27 @@ pub fn reconcile(
     edits: &mut TextEdits,
     geometry: Option<&dyn EditGeometry>,
 ) -> u32 {
+    let mut redeclared = 0;
+    if store.has_text_seeds() {
+        let mut seeds = Vec::new();
+        store.take_text_seeds(&mut seeds);
+        for (node, request) in seeds {
+            if !store.arena().is_live(node) {
+                continue;
+            }
+            let changed = match edits.get_mut(node) {
+                Some(buffer) => buffer.seed(&request),
+                None => {
+                    edits.register(node, Box::new(Buffer::with_request(&request)));
+                    true
+                }
+            };
+            if changed {
+                store.set_text_request(node, request);
+                redeclared += 1;
+            }
+        }
+    }
     if store.has_edit_requests() {
         let mut requests = Vec::new();
         store.take_edit_requests(&mut requests);
@@ -588,7 +637,6 @@ pub fn reconcile(
             }
         }
     }
-    let mut redeclared = 0;
     for i in 0..edits.buffers.len() {
         let Some((node, buffer)) = edits.buffers[i].as_mut() else {
             continue;
@@ -1190,6 +1238,51 @@ mod tests {
         });
         cx.root();
         h.id()
+    }
+
+    fn seed(text: &str) -> TextRequest {
+        TextRequest {
+            text: text.to_owned(),
+            font_size: 14.0,
+            color: Rgba::TRANSPARENT,
+            soft_wrap: false,
+            locale: None,
+        }
+    }
+
+    #[test]
+    fn a_seed_registers_a_field_and_replaces_only_a_different_text() {
+        let mut store = crate::component::NodeStore::new();
+        let id = live_node(&mut store);
+        let mut edits = TextEdits::new();
+        let mut requests = Vec::new();
+        store.seed_text(id, seed("Ada"));
+        assert_eq!(reconcile(&mut store, &mut edits, None), 1);
+        let buffer = edits.get(id).expect("the seed registers a buffer");
+        assert_eq!((buffer.text.as_str(), buffer.font_size), ("Ada", 14.0));
+        store.take_text_requests(&mut requests);
+        assert_eq!(requests.len(), 1, "the seeded text is declared");
+
+        // The caret moved by the user survives a seed of the text it holds.
+        edits.get_mut(id).unwrap().queue(EditIntent::Move {
+            motion: Motion::Home,
+            extend: false,
+        });
+        reconcile(&mut store, &mut edits, None);
+        store.seed_text(id, seed("Ada"));
+        assert_eq!(reconcile(&mut store, &mut edits, None), 0);
+        assert_eq!(edits.get(id).unwrap().sel.focus.offset, TextOffset(0));
+        store.take_text_requests(&mut requests);
+        assert!(requests.is_empty(), "an equal seed declares nothing");
+
+        store.seed_text(id, seed("Grace"));
+        assert_eq!(reconcile(&mut store, &mut edits, None), 1);
+        let buffer = edits.get(id).unwrap();
+        assert_eq!(buffer.text, "Grace");
+        assert_eq!(buffer.sel.focus.offset, TextOffset(5), "caret at the end");
+        let mut changed = Vec::new();
+        edits.take_changed(&mut changed);
+        assert!(changed.is_empty(), "a seed is not an edit");
     }
 
     #[test]

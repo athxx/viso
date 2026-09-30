@@ -6,7 +6,9 @@
 //! every write, and installs node event handlers that turn an input sample into
 //! the DSL event payload and dispatch it ([`attach`]). The macros, the hot
 //! reload commit and the release package ([`ViewPackage`]) all install handlers
-//! through it, so the three targets run a handler the same way.
+//! through it, so the three targets run a handler the same way. The values its
+//! nodes show — a label's text, a text field's seeded buffer — are delivered
+//! the same way ([`mount_values`]).
 //!
 //! A host is shared as `Rc<RefCell<ViewHost>>` by the `'static` handler boxes
 //! of every node of its view. The sharing is the point: the nodes of one view
@@ -22,6 +24,7 @@ mod package;
 mod regions;
 mod route;
 mod scope;
+mod values;
 
 pub use attach::{Route, attach, attach_node};
 pub use control::{Control, ControlInput, ControlKind};
@@ -37,4 +40,5 @@ pub use regions::{
 };
 pub use route::{EventRoute, PAYLOAD_ENUMS, PAYLOAD_RECORDS};
 pub use scope::Scope;
+pub use values::mount_values;
 pub use viso_behavior::{Fault, Module, Value};

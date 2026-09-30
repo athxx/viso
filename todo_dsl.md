@@ -281,7 +281,7 @@ Goal: every Core view construct reaches a live tree through all three lowering t
   - [x] A `Text`'s or `Button`'s `text` and a `TextInput`'s `value` compile to
         handler-table value entries; `ViewBehavior` carries them with their
         target.
-  - [ ] The view runtime evaluates them at mount and re-evaluates only the
+  - [x] The view runtime evaluates them at mount and re-evaluates only the
         entries whose read states changed, skipping an equal value.
   - [ ] Controls project their value and range into semantic state.
   - [ ] The macros, hot-reload commit, view package and region templates all
