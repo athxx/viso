@@ -76,8 +76,18 @@ impl CandidatePlan {
 /// commit). Warnings (e.g. a
 /// keyless stateful `for`) are non-fatal and left in the IR for a lint pass,
 /// matching the build-time frontend.
+///
+/// A fragment's Rust-scope components mount only through `ui!`, so each is
+/// `E2001` here: the fragment has no Rust scope to name them in.
 pub fn plan(source: &str) -> Result<CandidatePlan, Vec<Diagnostic>> {
-    candidate(compile_fragment(source))
+    let mut compiled = compile_fragment(source);
+    let unknown = std::mem::take(&mut compiled.rust_components);
+    compiled.diagnostics.extend(
+        unknown.into_iter().map(|(name, at)| {
+            Diagnostic::error("E2001", at, format!("no widget is named `{name}`"))
+        }),
+    );
+    candidate(compiled)
 }
 
 /// Compile and validate a `.vs` file into a [`CandidatePlan`] for its component's

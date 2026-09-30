@@ -55,7 +55,8 @@ use crate::syntax::span::TextRange;
 
 /// A lowered view: its template, every node type name it wrote that neither a
 /// registered widget nor a component of the library declares (each with the
-/// span of its type path), and every component node that does not mount.
+/// span of its type path), and every component node that does not mount. A
+/// `ui!` fragment keeps each unknown type as a [`NodeKind::Component`] node.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct LoweredView {
     /// The retained-tree template.
@@ -114,17 +115,20 @@ impl<'a> ComponentLibrary<'a> {
 /// tokenize/parse/resolve: it walks the fragment's top-level [`ViewItem`]s and
 /// produces the static template. Each node lowers to the retained node its
 /// widget declaration in `natives` names; a `Fragment` splices its children into
-/// the enclosing item list, and a type no widget declares mounts nothing and is
-/// reported in [`LoweredView::unknown`]. Property values that fold to
-/// compile-time constants become style; everything else is recorded as a
-/// [`PendingProperty`] for the Binding IR pass to resolve against the resolver's
-/// refs and the component schema.
+/// the enclosing item list, and a type no widget declares is reported in
+/// [`LoweredView::unknown`] and kept as a [`NodeKind::Component`] node, a
+/// component of the surrounding Rust scope. Such a node takes no properties,
+/// handlers or children; any it has is reported in [`LoweredView::unmounted`].
+/// Property values that fold to compile-time constants become style; everything
+/// else is recorded as a [`PendingProperty`] for the Binding IR pass to resolve
+/// against the resolver's refs and the component schema.
 pub fn lower_fragment_items(
     items: impl Iterator<Item = ViewItem>,
     natives: &Natives,
 ) -> LoweredView {
     let library = ComponentLibrary::default();
     let mut lowering = Lowering::new(natives, &library, None);
+    lowering.rust_scope = true;
     let mut out = Vec::new();
     for item in items {
         lowering.item(item, &mut out);
@@ -132,10 +136,13 @@ pub fn lower_fragment_items(
     lowering.finish(out)
 }
 
-/// Lowers a component's `view` block into a [`UiTree`]; see
-/// [`lower_fragment_items`]. No other component is inlined.
+/// Lowers a component's `view` block into a [`UiTree`] like a fragment, but
+/// an unknown type mounts nothing. No other component is inlined.
 pub fn lower_view_block(block: &ViewBlock, natives: &Natives) -> LoweredView {
-    lower_fragment_items(block.items(), natives)
+    let library = ComponentLibrary::default();
+    let mut lowering = Lowering::new(natives, &library, None);
+    let out = lowering.items(block.items());
+    lowering.finish(out)
 }
 
 /// Lowers the view `block` of the component `root` into a [`UiTree`], inlining
@@ -146,7 +153,7 @@ pub fn lower_view_block(block: &ViewBlock, natives: &Natives) -> LoweredView {
 ///
 /// A component node that cannot be inlined mounts nothing of its caller's
 /// wiring and is reported in [`LoweredView::unmounted`]: a component mounting
-/// itself, a component with state inside a control-flow region, properties or
+/// itself, properties or
 /// standard handlers on a component whose view is not exactly one node, a slot
 /// placed deeper in `for`/`match` regions than its caller's node, a `bind`
 /// through `using`, and a component another unit declares.
@@ -178,6 +185,9 @@ struct Lowering<'a, 'l> {
     guarded: bool,
     /// How many unnamed nodes of each component each instance has inlined.
     ordinals: HashMap<(u32, SymbolId), u32>,
+    /// Whether an unknown type names a component of the surrounding Rust
+    /// scope, as in a `ui!` fragment.
+    rust_scope: bool,
 }
 
 /// One component view being lowered.
@@ -214,6 +224,7 @@ impl<'a, 'l> Lowering<'a, 'l> {
             depth: 0,
             guarded: false,
             ordinals: HashMap::new(),
+            rust_scope: false,
         }
     }
 
@@ -319,6 +330,9 @@ impl<'a, 'l> Lowering<'a, 'l> {
         }
         let Some(widget) = self.natives.widget(&type_name) else {
             self.unknown.push((type_name, ty.syntax().text_range()));
+            if self.rust_scope {
+                self.rust_component(&ty, local_name, body.as_ref(), origin, out);
+            }
             return;
         };
         let mut style = StyleIr::default();
@@ -414,6 +428,37 @@ impl<'a, 'l> Lowering<'a, 'l> {
             children,
             origin,
             instance,
+        }));
+    }
+
+    /// A node of the Rust-scope component `ty`, which mounts through its own
+    /// `build` and so takes nothing from the fragment.
+    fn rust_component(
+        &mut self,
+        ty: &TypePath,
+        local_name: Option<String>,
+        body: Option<&NodeBody>,
+        origin: TextRange,
+        out: &mut Vec<UiItem>,
+    ) {
+        if let Some(member) = body.and_then(|b| b.members().next()) {
+            self.unmounted.push((
+                member.syntax().text_range(),
+                "a Rust component mounts its own view; it takes no properties, handlers or children here".to_string(),
+            ));
+        }
+        let path: Vec<String> = ty.segments().map(|t| t.text()).collect();
+        out.push(UiItem::Node(UiNode {
+            type_name: path.join("::"),
+            local_name,
+            kind: NodeKind::Component,
+            style: StyleIr::default(),
+            pending: Vec::new(),
+            handlers: Vec::new(),
+            control_reads: Vec::new(),
+            children: Vec::new(),
+            origin,
+            instance: self.instance(),
         }));
     }
 

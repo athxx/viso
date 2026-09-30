@@ -1565,7 +1565,7 @@ View 中类型为同一文件内 Component 的 Node 是该 Component 的一个�
 - 实例可以位于 `if`、`match` 与 Keyed `for` 中，区域绑定对实例的 Input 实参、State 初值与 Handler 可见（§56.1）；
 - 控制流区域中的实例，其 State 属于区域的每次挂载：Keyed `for` 的每个 Item、`if`/`match` 的每次进入各有一份，以区域绑定求值初值；State 随 Key 移动，Item 移除或离开无 `preserve` 的分支即丢弃，`preserve` 分支缓存期间保留；这类 State 不按名称跨 Hot Reload 保留，含控制流区域的 View 整树重建时从初值重新开始；
 - 以下情形报 `E3711`：Component 直接或间接挂载自身；`bind` 目标为 Component Input 且带 `using`；向 View 不恰好挂载一个 Node 的实例传入非 Input Property 或非 Event Handler；类型为其他文件的 Component；
-- `ui!` Fragment 不内联 Component 实例。
+- `ui!` Fragment 中不是内置 Widget 的类型是外围 Rust 作用域以 `component!` 声明的 Component（可写作 Rust 路径，如 `widgets::Tally`），由其 `build` 挂载，每个实例自带 State 与 Handler；这类 Node 不接受 Property、Handler 与子项（`E3711`），名称无法解析时由 Rust 在该位置报错；Hot Reload 与 Release Package 的 Fragment 没有 Rust 作用域，这类类型报 `E2001`。
 
 ---
 
@@ -8321,7 +8321,7 @@ RecordPatternField
 | E3708  | 交互节点缺少等价键盘路径（警告，§U8.2）                 |
 | E3709  | 标注 [Runtime 待实现] 的 Property 使用了非默认值（§U1.1） |
 | E3710  | `@selector` 误用（§U2.3）                               |
-| E3711  | Handler、控制流区域或 Component 实例未能挂载：Runtime 未投递该 Event、Behavior 未能 Lower，区域位于 View 根、`VirtualList` 内或 `ui!` Fragment 中，或实例无法内联，或 `bind` 带尚未挂载的 `using` Converter（§40.1、§52、§56.1、§123） |
+| E3711  | Handler、控制流区域或 Component 实例未能挂载：Runtime 未投递该 Event、Behavior 未能 Lower，区域位于 View 根、`VirtualList` 内或 `ui!` Fragment 中，或实例无法内联，或 `ui!` Fragment 中的 Rust Component 带 Property、Handler 或子项，或 `bind` 带尚未挂载的 `using` Converter（§40.1、§52、§56.1、§123） |
 | E4101  | Action 中使用 Await                                     |
 | E4102  | Task 跨挂起访问可变 State                               |
 | E4201  | Effect 读取未声明依赖                                   |

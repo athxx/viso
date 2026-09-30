@@ -242,7 +242,8 @@ Goal: every Core view construct reaches a live tree through all three lowering t
         components of other files.
   - [x] Stateful instances inside `if`/`for`/`match`: per-mount kept states
         (`view/scope.rs`), initializers run with the region's scope values.
-  - [ ] Component instances in `ui!` fragments.
+  - [x] Component instances in `ui!` fragments: Rust-scope `component!` types mount
+        through their `build`; `E2001` on hot reload and the release package.
 - [x] Widget schema registry: properties, events, slots, percent basis, from native
       declarations instead of the baseline table in `hir/widget.rs`.
 - [x] Default slot `E3003`/`E3004`; slot cardinality `E3502`; unknown slot `E3501`.

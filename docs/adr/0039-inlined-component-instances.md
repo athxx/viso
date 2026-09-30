@@ -64,6 +64,13 @@ second instance lifecycle to every target.
   - properties or handlers forwarded to a view that does not mount exactly one
     node;
   - a component from another file.
+- A `ui!` fragment has no file of components to inline. A type no widget
+  declares there is a component of the surrounding Rust scope, declared with
+  `component!`, and the macro mounts it by calling its generated `build`. Each
+  such instance allocates its own states and host; the node takes no
+  properties, handlers or children (`E3711`), and an unresolved name is a
+  Rust path error at the node. A hot reload or release fragment has no Rust
+  scope, so there the type is `E2001`.
 
 ## Consequences
 
@@ -79,4 +86,6 @@ second instance lifecycle to every target.
   transaction.
 - A regional instance's state starts over on each hot reload, because the
   regions are rebuilt. It is not kept by name.
-- Instances in `ui!` fragments and components from other files remain open.
+- A `ui!` instance costs its own host and its own state cells, and the
+  fragment cannot pass it inputs or handle its events.
+- Components from other files remain open.

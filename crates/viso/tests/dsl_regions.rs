@@ -59,6 +59,22 @@ viso::component! {
     }
 }
 
+viso::component! {
+    Tally {
+        state open = false;
+        view {
+            Column {
+                width: 20dp;
+                height: 40dp;
+                Text { width: 20dp; height: 20dp; on click { open = !open; } }
+                if open {
+                    Text { width: 20dp; height: 20dp; }
+                }
+            }
+        }
+    }
+}
+
 /// A mounted view, laid out at the origin.
 struct Mounted {
     store: NodeStore,
@@ -226,4 +242,24 @@ fn a_for_item_reaches_its_handler() {
     form.click(45.0, 5.0);
     form.click(5.0, 150.0);
     assert_eq!(form.states.get(picked), Some(StateValue::Int(3)));
+}
+
+#[test]
+fn each_component_a_fragment_mounts_keeps_its_own_state() {
+    let build = viso::ui! {
+        Row {
+            width: 400dp;
+            height: 40dp;
+            Tally { }
+            Tally { }
+        }
+    };
+    let mut form = Mounted::mount(|cx| (build(cx), None));
+    assert_eq!([form.region(0).len(), form.region(1).len()], [1, 1]);
+    form.click(25.0, 5.0);
+    assert_eq!([form.region(0).len(), form.region(1).len()], [1, 2]);
+    form.click(5.0, 5.0);
+    assert_eq!([form.region(0).len(), form.region(1).len()], [2, 2]);
+    form.click(25.0, 5.0);
+    assert_eq!([form.region(0).len(), form.region(1).len()], [2, 1]);
 }

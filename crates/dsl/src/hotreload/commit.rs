@@ -400,8 +400,9 @@ fn build_node(
                 build_item(cx, child, next, map);
             }
         }),
-        // A VirtualList mounts its own items, and a view gives it none.
-        NodeKind::VirtualList | NodeKind::Leaf => {
+        // A VirtualList mounts its own items, and a view gives it none. A
+        // Rust-scope component never reaches a commit: `plan` rejects it.
+        NodeKind::VirtualList | NodeKind::Leaf | NodeKind::Component => {
             for child in &node.children {
                 skip_item(child, next);
             }

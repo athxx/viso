@@ -69,7 +69,7 @@ fn row_and_containers_resolve_their_kind_and_axis() {
 }
 
 #[test]
-fn a_fragment_splices_its_children_and_an_unknown_type_mounts_nothing() {
+fn a_fragment_splices_its_children_and_an_unknown_type_is_a_rust_component() {
     let column = only_node("Column { Fragment { Text { } Button { } } Text { } }");
     let types: Vec<_> = column
         .children
@@ -87,9 +87,29 @@ fn a_fragment_splices_its_children_and_an_unknown_type_mounts_nothing() {
     let lowered = lower_fragment_items(fragment.items(), &Natives::standard());
     assert_eq!(lowered.unknown.len(), 1);
     assert_eq!(lowered.unknown[0].0, "Sparkline");
-    match &lowered.tree.items[0] {
-        UiItem::Node(n) => assert!(n.children.is_empty()),
-        other => panic!("expected a node, got {other:?}"),
+    assert!(lowered.unmounted.is_empty());
+    let UiItem::Node(column) = &lowered.tree.items[0] else {
+        panic!("expected a node");
+    };
+    match column.children.as_slice() {
+        [UiItem::Node(n)] => {
+            assert_eq!(n.kind, NodeKind::Component);
+            assert_eq!(n.type_name, "Sparkline");
+        }
+        other => panic!("expected one component node, got {other:?}"),
+    }
+
+    let src = "Column { widgets::Sparkline { width: 4dp; } }";
+    let root = SyntaxNode::new_root(parse_entry(&tokenize(src), src, Entry::ViewFragment).root);
+    let fragment = ViewFragment::cast(root).expect("a ViewFragment root");
+    let lowered = lower_fragment_items(fragment.items(), &Natives::standard());
+    assert_eq!(lowered.unmounted.len(), 1);
+    let UiItem::Node(column) = &lowered.tree.items[0] else {
+        panic!("expected a node");
+    };
+    match column.children.as_slice() {
+        [UiItem::Node(n)] => assert_eq!(n.type_name, "widgets::Sparkline"),
+        other => panic!("expected one component node, got {other:?}"),
     }
 }
 
