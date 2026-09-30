@@ -2062,6 +2062,8 @@ Canvas {
 - Handler 中禁止直接 `await`；
 - Event 取消使用 Typed API：`event.stop_propagation()`、`event.stop_immediate_propagation()` 与 `event.prevent_default()`，语义见 §90。
 - Handler 在 `component!`、`view!`、Hot Reload 与 Release Package 中以同一张 Handler 表挂载：每个 Handler 是所在 Component 的一个 Behavior Chunk，节点只登记 `(Event 路由, Handler 下标)`，State 写入在 Transaction 结束时回写 UI State Cell；
+- 一次输入样本对每个节点只运行一次 Handler：未写 `capture` 的 Handler 在 Target 与 Bubble 段运行，祖先节点上的 Handler 不因 Capture 段再运行一次；
+- 内置控件（`Toggle`/`CheckBox`、`Slider`、`Tabs`/`RadioGroup`、`TextInput`）的内建响应随同一张 Handler 表挂载：控件从 Handler 表中的纯表达式条目读取当前值与范围（`checked`、`value`、`min`、`max`、`step`、`selected`），据样本算出新值后投递 Schema 声明的 `changed`、`selected_changed` 或 `submitted`；
 - `ui!` Fragment 没有 Component State，不能声明 Handler；Runtime 尚未投递的标准事件（如 `long_press`、`scroll`、`focus`）或 Behavior 无法 Lower 的 Handler 体报 `E3711`；Hot Reload 中出现 `E3711` 时保留 Last-good Handler；
 - Handler 运行期 Fault 只中止该次调用、不回写任何 State，Fault 记录在宿主上。
 
@@ -6402,6 +6404,8 @@ Converter Error 必须有 Schema 策略：拒绝更新、显示 Validation State
 
 目标为 Component Input（U2.2）的 `bind value <=> x;` Lower 为 `value: x;` 加 `on changed(event) { x = event.value; }`：Input 实参读取 `x`，`@bindable` 配对 Event 的首个参数写回 `x` 的 Lens；这类 `bind` 不接受 `using`（`E3711`）。
 
+目标为内置 Widget 双向 Property 的 `bind checked <=> on;` 同样 Lower 为读取 `on` 的 Property 条目加写回 Handler：控件的内建响应读取该条目得到当前值，投递 Property 配对的 Event（主 Property 为 `changed`，其余为 `<name>_changed`）；写回 Handler 取 Payload 首个字段写入 `on` 的 Lens，在作者声明的同名 Handler 之前运行。Converter 尚未挂载，带 `using` 的内置 Widget `bind` 报 `E3711`。
+
 ---
 
 ## 124. Event Handler Lowering
@@ -8316,7 +8320,7 @@ RecordPatternField
 | E3708  | 交互节点缺少等价键盘路径（警告，§U8.2）                 |
 | E3709  | 标注 [Runtime 待实现] 的 Property 使用了非默认值（§U1.1） |
 | E3710  | `@selector` 误用（§U2.3）                               |
-| E3711  | Handler、控制流区域或 Component 实例未能挂载：Runtime 未投递该 Event、Behavior 未能 Lower，区域位于 View 根、`VirtualList` 内或 `ui!` Fragment 中，或实例无法内联（§40.1、§52、§56.1、§123） |
+| E3711  | Handler、控制流区域或 Component 实例未能挂载：Runtime 未投递该 Event、Behavior 未能 Lower，区域位于 View 根、`VirtualList` 内或 `ui!` Fragment 中，或实例无法内联，或 `bind` 带尚未挂载的 `using` Converter（§40.1、§52、§56.1、§123） |
 | E4101  | Action 中使用 Await                                     |
 | E4102  | Task 跨挂起访问可变 State                               |
 | E4201  | Effect 读取未声明依赖                                   |

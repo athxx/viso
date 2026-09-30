@@ -1,6 +1,7 @@
 //! A view's `on` handlers run under the macros: a click on a `component!` or
 //! `view!` node runs its handler body in the behavior VM, whose state write lands
-//! in the UI cell and flushes through the view's static edges.
+//! in the UI cell and flushes through the view's static edges; a native control
+//! writes its change back through a `bind`.
 
 use viso::render::Rect;
 use viso::ui::{
@@ -20,6 +21,23 @@ viso::component! {
                     height: 50dp;
                     on click { count += 1; }
                     on key_down(event) { count += 10; }
+                }
+            }
+        }
+    }
+}
+
+viso::component! {
+    Switch {
+        state on = false;
+        view {
+            Column {
+                width: 200dp;
+                height: 100dp;
+                Toggle {
+                    width: 40dp;
+                    height: 20dp;
+                    bind checked <=> on;
                 }
             }
         }
@@ -132,4 +150,16 @@ fn a_click_outside_the_node_runs_nothing() {
         form.click(150.0, 80.0);
         assert_eq!(form.count(), Some(StateValue::Int(0)));
     }
+}
+
+#[test]
+fn a_bound_toggle_writes_its_flip_back() {
+    let mut form = Mounted::mount(|cx| {
+        let (Switch { on }, root) = Switch::build(cx);
+        (root, on)
+    });
+    form.click(10.0, 10.0);
+    assert_eq!(form.count(), Some(StateValue::Bool(true)));
+    form.click(10.0, 10.0);
+    assert_eq!(form.count(), Some(StateValue::Bool(false)));
 }

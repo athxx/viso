@@ -281,6 +281,18 @@ use crate::text_edit::TextEdits;
 /// app-level ancestor behind the dialog.
 pub struct PointerRouter;
 
+/// Which leg of the capture → target → bubble walk a dispatch is on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum DispatchPhase {
+    /// Root down to just above the target.
+    Capture,
+    /// The target itself, and a dispatch that walks no chain.
+    #[default]
+    Target,
+    /// Just above the target back up to the root.
+    Bubble,
+}
+
 impl PointerRouter {
     /// Hit-test `ev`, then dispatch capture → target → bubble along the target's
     /// ancestry, driving each node's handler (if any) with a fresh [`EventCx`]
@@ -450,8 +462,8 @@ fn route_sample(
             hit
         }
     };
-    dispatch_chain(store, root, target, chain, |s, n| {
-        pointer_dispatch(s, states, bindings, n, pointer, ev)
+    dispatch_chain(store, root, target, chain, |s, n, hop| {
+        pointer_dispatch(s, states, bindings, n, hop, pointer, ev)
     })
 }
 
@@ -657,7 +669,8 @@ fn axis_vec(axis: Axis, value: f32) -> Vec2 {
 }
 
 /// Build `target`'s root-first ancestry chain and dispatch capture → target →
-/// bubble, calling `dispatch` for each node on the path. Shared by pointer, key,
+/// bubble, calling `dispatch` for each node on the path with its [`Hop`]. Shared
+/// by pointer, key,
 /// and IME routing — only the target source (hit-test vs focus) and the handler
 /// column that `dispatch` reads differ; the walk itself is one and the same.
 ///
@@ -670,7 +683,7 @@ fn dispatch_chain(
     _root: NodeId,
     target: NodeId,
     chain: &mut Vec<NodeId>,
-    mut dispatch: impl FnMut(&mut NodeStore, NodeId) -> Dispatched,
+    mut dispatch: impl FnMut(&mut NodeStore, NodeId, Hop) -> Dispatched,
 ) -> bool {
     chain.clear();
     // Build the chain root-first by walking parent links up from the target and
@@ -694,28 +707,60 @@ fn dispatch_chain(
     // further node on the chain is visited (in this phase or the next).
     //
     // Capture: root down to, but not including, target.
-    for &node in &chain[..n - 1] {
-        let d = dispatch(store, node);
+    for (i, &node) in chain[..n - 1].iter().enumerate() {
+        let d = dispatch(
+            store,
+            node,
+            Hop::ancestor(DispatchPhase::Capture, chain[i + 1]),
+        );
         ran |= d.ran;
         if d.stop {
             return ran;
         }
     }
     // Target: exactly once.
-    let d = dispatch(store, target);
+    let d = dispatch(store, target, Hop::TARGET);
     ran |= d.ran;
     if d.stop {
         return ran;
     }
     // Bubble: the node just below the target, up to root.
-    for &node in chain[..n - 1].iter().rev() {
-        let d = dispatch(store, node);
+    for (i, &node) in chain[..n - 1].iter().enumerate().rev() {
+        let d = dispatch(
+            store,
+            node,
+            Hop::ancestor(DispatchPhase::Bubble, chain[i + 1]),
+        );
         ran |= d.ran;
         if d.stop {
             return ran;
         }
     }
     ran
+}
+
+/// Where on the dispatch chain a node's handler runs: the leg of the walk, and
+/// the node's child on the path to the target (`None` at the target).
+#[derive(Clone, Copy)]
+struct Hop {
+    phase: DispatchPhase,
+    through: Option<NodeId>,
+}
+
+impl Hop {
+    /// The target, or a node dispatched alone.
+    const TARGET: Hop = Hop {
+        phase: DispatchPhase::Target,
+        through: None,
+    };
+
+    /// An ancestor on `phase`, reached through its child `through`.
+    fn ancestor(phase: DispatchPhase, through: NodeId) -> Hop {
+        Hop {
+            phase,
+            through: Some(through),
+        }
+    }
 }
 
 /// Call one node's *pointer* handler if it has one, moving it out of the store
@@ -726,6 +771,7 @@ fn pointer_dispatch(
     states: &mut StateStore,
     bindings: &BindingTable,
     node: NodeId,
+    hop: Hop,
     pointer: PointerId,
     event: &PointerEvent,
 ) -> Dispatched {
@@ -737,6 +783,13 @@ fn pointer_dispatch(
         ev.__set_pointer_id(pointer);
         ev.__set_focused(store.focused());
         ev.__set_services(store.__services());
+        ev.__set_place(
+            store.arena(),
+            node,
+            store.world(node),
+            hop.phase,
+            hop.through,
+        );
         handler(&mut ev);
         (
             ev.__take_capture_request(),
@@ -815,6 +868,13 @@ fn hover_dispatch(
         ev.__set_pointer_id(pointer);
         ev.__set_focused(store.focused());
         ev.__set_services(store.__services());
+        ev.__set_place(
+            store.arena(),
+            node,
+            store.world(node),
+            DispatchPhase::Target,
+            None,
+        );
         handler(&mut ev);
         (
             ev.__take_capture_request(),
@@ -1078,7 +1138,7 @@ impl KeyRouter {
             chain.clear();
             return false;
         };
-        dispatch_chain(store, root, target, chain, |s, n| {
+        dispatch_chain(store, root, target, chain, |s, n, _| {
             key_dispatch(s, states, bindings, edits, n, &ev)
         })
     }
@@ -1099,7 +1159,7 @@ impl KeyRouter {
             chain.clear();
             return false;
         };
-        dispatch_chain(store, root, target, chain, |s, n| {
+        dispatch_chain(store, root, target, chain, |s, n, _| {
             ime_dispatch(s, states, bindings, edits, n, &ev)
         })
     }
@@ -1150,6 +1210,13 @@ fn key_dispatch(
         let mut cx = EventCx::__new_key(states, bindings, ev);
         cx.__set_focused(store.focused());
         cx.__set_services(store.__services());
+        cx.__set_place(
+            store.arena(),
+            node,
+            store.world(node),
+            DispatchPhase::Target,
+            None,
+        );
         handler(&mut cx);
         (
             cx.__take_focus_request(),
@@ -1235,6 +1302,13 @@ fn key_handler_dispatch(
         };
         cx.__set_focused(store.focused());
         cx.__set_services(store.__services());
+        cx.__set_place(
+            store.arena(),
+            node,
+            store.world(node),
+            DispatchPhase::Target,
+            None,
+        );
         handler(&mut cx);
         (
             cx.__take_focus_request(),
@@ -1290,10 +1364,9 @@ fn queue_edits(edits: &mut TextEdits, node: NodeId, recorded: Vec<crate::text_ed
     if recorded.is_empty() {
         return;
     }
-    if let Some(buffer) = edits.get_mut(node) {
-        for intent in recorded {
-            buffer.queue(intent);
-        }
+    let buffer = edits.editing(node);
+    for intent in recorded {
+        buffer.queue(intent);
     }
 }
 

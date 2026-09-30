@@ -472,15 +472,19 @@ fn single_line(s: &str) -> std::borrow::Cow<'_, str> {
 }
 
 /// The driver-owned registry of edit buffers, indexed by the editable node's
-/// [`NodeId::index`]. A dense `Vec` (not a per-node HashMap and not a NodeStore
+/// [`NodeId::index`]. A node is editable once a buffer is registered for it or
+/// once a handler records an edit intent on it, which starts it an empty
+/// buffer. A dense `Vec` (not a per-node HashMap and not a NodeStore
 /// column): the heap-heavy, rarely-touched buffer stays off the hot SoA columns,
 /// and reconcile looks a buffer up by one index. Mirrors
 /// [`crate::virtual_list::VirtualLists`].
 #[derive(Default)]
 pub struct TextEdits {
-    /// `buffers[node_index]` is the buffer for that editable node, or `None` for
-    /// a non-editable node (the common case).
-    buffers: Vec<Option<Box<Buffer>>>,
+    /// `buffers[node_index]` is the buffer for that editable node with the node
+    /// that owns it, or `None` for a non-editable node (the common case). A
+    /// buffer whose owner was freed is never lent to the node that reuses its
+    /// index.
+    buffers: Vec<Option<(NodeId, Box<Buffer>)>>,
     /// Nodes whose text [`reconcile`] changed since the driver last drained them
     /// with [`TextEdits::take_changed`], in edit order, each at most once.
     changed: Vec<NodeId>,
@@ -513,24 +517,35 @@ impl TextEdits {
         if i >= self.buffers.len() {
             self.buffers.resize_with(i + 1, || None);
         }
-        self.buffers[i] = Some(buffer);
+        self.buffers[i] = Some((node, buffer));
     }
 
     /// The buffer registered for `node`, if any.
     #[inline]
     pub fn get(&self, node: NodeId) -> Option<&Buffer> {
-        self.buffers
-            .get(node.index() as usize)
-            .and_then(|b| b.as_deref())
+        match self.buffers.get(node.index() as usize) {
+            Some(Some((owner, buffer))) if *owner == node => Some(buffer),
+            _ => None,
+        }
     }
 
-    /// Mutable access to the buffer registered for `node`, if any. The router
-    /// uses this to queue a deferred intent onto the editing node.
+    /// Mutable access to the buffer registered for `node`, if any.
     #[inline]
     pub fn get_mut(&mut self, node: NodeId) -> Option<&mut Buffer> {
-        self.buffers
-            .get_mut(node.index() as usize)
-            .and_then(|b| b.as_deref_mut())
+        match self.buffers.get_mut(node.index() as usize) {
+            Some(Some((owner, buffer))) if *owner == node => Some(buffer),
+            _ => None,
+        }
+    }
+
+    /// `node`'s buffer, starting it an empty one if it has none. The router
+    /// queues a recorded intent here, so a node a handler edits needs no
+    /// registration up front.
+    pub fn editing(&mut self, node: NodeId) -> &mut Buffer {
+        if self.get(node).is_none() {
+            self.register(node, Box::default());
+        }
+        self.get_mut(node).expect("registered above")
     }
 
     /// Whether any buffer is registered (lets a frame skip reconcile entirely).
@@ -568,25 +583,26 @@ pub fn reconcile(
         let mut requests = Vec::new();
         store.take_edit_requests(&mut requests);
         for (node, intent) in requests {
-            if let Some(buffer) = edits.get_mut(node) {
-                buffer.queue(intent);
+            if store.arena().is_live(node) {
+                edits.editing(node).queue(intent);
             }
         }
     }
     let mut redeclared = 0;
     for i in 0..edits.buffers.len() {
-        let Some(buffer) = edits.buffers[i].as_deref_mut() else {
+        let Some((node, buffer)) = edits.buffers[i].as_mut() else {
             continue;
         };
         if !buffer.is_dirty() {
             continue;
         }
-        let Some(node) = store.arena().live_id(i as u32) else {
+        let node = *node;
+        if !store.arena().is_live(node) {
             // The node was freed (whole-tree rebuild raced the registry clear);
             // drop the stale buffer defensively.
             edits.buffers[i] = None;
             continue;
-        };
+        }
         let placed = geometry.and_then(|g| g.layout(node)).map(|layout| {
             let world = store.world(node);
             Placed {

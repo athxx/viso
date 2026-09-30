@@ -95,6 +95,11 @@ pub struct UiNode {
     pub pending: Vec<PendingProperty>,
     /// Event handlers declared on the node, by event name and source span.
     pub handlers: Vec<UiHandler>,
+    /// The value each control property of a native control node reads its
+    /// current value or range from (`checked`, `value`, `selected`, `min`,
+    /// `max`, `step`), by property name and the span of the expression or
+    /// `bind` source, where its entry is registered.
+    pub control_reads: Vec<(String, TextRange)>,
     /// The node's children, in source order.
     pub children: Vec<UiItem>,
     /// The node declaration's source span.

@@ -43,10 +43,11 @@ pub use ui_ir::{
 use std::collections::HashMap;
 
 use viso_behavior::native::{FlexAxis, Natives, WidgetNode};
+use viso_view::ControlKind;
 
 use crate::ast::{
-    AstNode, ComponentDecl, Expr, NodeBody, PathExpr, PropertyBinding, TypePath, ViewBlock,
-    ViewFor, ViewIf, ViewItem, ViewMatch,
+    AstNode, ComponentDecl, Expr, NodeBody, PathExpr, PropertyBinding, PropertyPath, TypePath,
+    ViewBlock, ViewFor, ViewIf, ViewItem, ViewMatch,
 };
 use crate::hir::ComponentSchema;
 use crate::resolve::{Resolution, ResolvedRef, SymbolId};
@@ -347,12 +348,23 @@ impl<'a, 'l> Lowering<'a, 'l> {
         };
 
         let instance = self.instance();
+        let control = ControlKind::of(&type_name);
         let mut pending = Vec::new();
         let mut handlers = Vec::new();
+        // Write-backs lead the node's handlers, so an author's handler for the
+        // same event sees the bound state already written.
+        let mut write_backs = 0;
+        let mut control_reads = Vec::new();
         let mut children = Vec::new();
         for member in body.iter().flat_map(|b| b.members()) {
             match member {
                 ViewItem::Property(prop) => {
+                    if let (Some(kind), Some(name), Some(value)) =
+                        (control, single_segment(prop.path()), prop.value())
+                        && kind.input(&name).is_some()
+                    {
+                        control_reads.push((name, value.syntax().text_range()));
+                    }
                     fold_property(&prop, instance, &mut style, &mut pending)
                 }
                 ViewItem::Handler(h) => handlers.push(UiHandler {
@@ -360,6 +372,34 @@ impl<'a, 'l> Lowering<'a, 'l> {
                     origin: h.syntax().text_range(),
                     instance,
                 }),
+                ViewItem::TwoWayBinding(bind) => {
+                    let (Some(name), Some(source)) = (single_segment(bind.target()), bind.source())
+                    else {
+                        continue;
+                    };
+                    if bind.using_ty().is_some() {
+                        self.unmounted.push((
+                            bind.syntax().text_range(),
+                            "a `bind … using` converter is not mounted yet; bind a property of the source's type".to_string(),
+                        ));
+                        continue;
+                    }
+                    let Some(event) = widget.write_back(&name) else {
+                        continue;
+                    };
+                    if control.is_some_and(|kind| kind.input(&name).is_some()) {
+                        control_reads.push((name, source.syntax().text_range()));
+                    }
+                    handlers.insert(
+                        write_backs,
+                        UiHandler {
+                            event: event.name.to_string(),
+                            origin: bind.syntax().text_range(),
+                            instance,
+                        },
+                    );
+                    write_backs += 1;
+                }
                 other => self.child(other, &mut children),
             }
         }
@@ -370,6 +410,7 @@ impl<'a, 'l> Lowering<'a, 'l> {
             style,
             pending,
             handlers,
+            control_reads,
             children,
             origin,
             instance,
@@ -496,7 +537,7 @@ impl<'a, 'l> Lowering<'a, 'l> {
                     if bind.using_ty().is_some() {
                         self.unmounted.push((
                             bind.syntax().text_range(),
-                            "a `bind` to a component input writes back as is; convert with `using` on a native property".to_string(),
+                            "a `bind` to a component input writes back as is and takes no `using` converter".to_string(),
                         ));
                         continue;
                     }
@@ -599,6 +640,17 @@ impl<'a, 'l> Lowering<'a, 'l> {
         }
         out.extend(inner);
     }
+}
+
+/// The one segment of a property path, `None` for a longer path.
+fn single_segment(path: Option<PropertyPath>) -> Option<String> {
+    let path = path?;
+    let mut segments = path.segments();
+    let first = segments.next()?.text();
+    segments
+        .next()
+        .is_none()
+        .then(|| first.trim_start_matches("r#").to_string())
 }
 
 /// Folds one property binding: a compile-time-constant value updates [`StyleIr`];

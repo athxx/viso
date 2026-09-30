@@ -315,13 +315,14 @@ impl Emit<'_> {
 }
 
 impl Emit<'_> {
-    /// The `::viso_view::attach` call installing `key`'s handler routes, if it
-    /// declares any.
+    /// The `::viso_view::attach` call installing `key`'s handler routes and
+    /// native control response, if it has any.
     fn emit_attach(&self, key: NodeKey) -> TokenStream {
-        let Some(routes) = self.behavior.map(|behavior| behavior.routes(key)) else {
+        let Some(behavior) = self.behavior else {
             return quote! {};
         };
-        if routes.is_empty() {
+        let (routes, control) = (behavior.routes(key), behavior.control(key));
+        if routes.is_empty() && control.is_none() {
             return quote! {};
         }
         let handle_ident = node_handle_ident(key);
@@ -329,8 +330,33 @@ impl Emit<'_> {
             let variant = Ident::new(route.variant(), Span::call_site());
             quote! { (::viso_view::EventRoute::#variant, #index) }
         });
+        let control = match control {
+            Some(control) => {
+                let kind = Ident::new(control.kind.variant(), Span::call_site());
+                let entry = |entry: Option<u32>| match entry {
+                    Some(entry) => quote! { ::core::option::Option::Some(#entry) },
+                    None => quote! { ::core::option::Option::None },
+                };
+                let (value, min, max, step) = (
+                    entry(control.value),
+                    entry(control.min),
+                    entry(control.max),
+                    entry(control.step),
+                );
+                quote! {
+                    ::core::option::Option::Some(::viso_view::Control {
+                        kind: ::viso_view::ControlKind::#kind,
+                        value: #value,
+                        min: #min,
+                        max: #max,
+                        step: #step,
+                    })
+                }
+            }
+            None => quote! { ::core::option::Option::None },
+        };
         quote! {
-            ::viso_view::attach(cx, &__viso_host, #handle_ident, &[#(#routes),*], &[]);
+            ::viso_view::attach(cx, &__viso_host, #handle_ident, &[#(#routes),*], #control, &[]);
         }
     }
 }
