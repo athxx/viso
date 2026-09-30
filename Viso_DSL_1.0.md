@@ -3515,6 +3515,8 @@ State 修改只能发生在：
 
 同一外层 Transaction 中对同一 State 多次写入只产生一次 Revision 和一次下游调度。
 
+一帧的 State Flush 取出该帧已提交的写集合，依次调度 Computed、直接 Binding、控制流区域与节点值、语义状态投影和 Effect；调度中产生的新写入（如区域挂载写入实例 State）在同一帧再调度一轮，直到没有待处理写入。连续 16 轮后仍有待处理写入即 Reactive Cycle：Runtime 停止本帧调度，报告 `E4202`，丢弃尚未调度的变化（已写入的值保留，只是其下游不再运行），下一帧不继承这些变化。
+
 写入就地发生：每个 State Slot 在一个 Transaction 内的首次写入把旧值记入 undo log。外层调用成功结束时，若有写入则 Revision 加一并标记被写 Slot 为 dirty；Action 体内不存在中途提交。嵌套调用（Action 调用 Action 或 `fn`）加入外层 Transaction。读取 Computed 是无写入的 Transaction，不增加 Revision。
 
 失败时：

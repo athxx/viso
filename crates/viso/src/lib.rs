@@ -1928,48 +1928,23 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
                             ));
                         }
                     }
-                    // Drain this frame's pending state writes once and fan the
-                    // same changed set through the three downstream reactors, in
-                    // order. Many writes in one transaction collapse here; a
-                    // frame with no writes touches nothing.
-                    if ws.states.has_pending() {
-                        ws.states.take_pending(&mut ws.changed);
-                        // 1. Derivations first: a memo-gated re-eval dirties a
-                        //    node only when its derived value actually changed,
-                        //    so any dirtying it produces is in place before
-                        //    Measure/Layout.
-                        ws.computeds
-                            .wake_computed(&ws.changed, &ws.states, &mut ws.store);
-                        // 2. Direct bindings: turn each changed cell into targeted
-                        //    node dirtying through the compiled static +
-                        //    dynamic-script edges. (Computed no longer registers
-                        //    dynamic edges, so a derivation's node is dirtied
-                        //    once, by the pass above.)
-                        ws.store.flush_state_transactions(&ws.changed, &ws.bindings);
-                        //    Then control-flow regions: a view whose regions read
-                        //    a changed cell mounts, switches or reorders their
-                        //    nodes, after the flush so a node it frees has taken
-                        //    its marks.
-                        viso_ui::run_structure_hooks(
-                            &mut ws.store,
-                            &mut ws.states,
-                            &mut ws.bindings,
-                            &mut ws.effects,
-                            &ws.changed,
-                        );
-                        // 3. Semantic-state projections: re-run those whose cells
-                        //    changed, each writing its node's `semantic_state`
-                        //    column (and marking SEMANTICS) — both stores are live
-                        //    here, so a control's checked/value/range reaches the
-                        //    node column without the derive pass reading state.
-                        ws.projectors.wake(&ws.changed, &ws.states, &mut ws.store);
-                        // 4. Effects: re-run those whose dependencies changed. An
-                        //    effect that writes state records it as pending for
-                        //    the next frame; the scheduler carries state-dirty
-                        //    forward, so a follow-up frame runs — no in-frame
-                        //    cascade.
-                        ws.effects.wake(&ws.changed, &ws.states);
-                        ws.changed.clear();
+                    // Flush this frame's pending state writes through the
+                    // derivations, bindings, structure hooks, semantic-state
+                    // projections and effects, re-flushing any write a hook
+                    // makes while settling, in this same frame. Many writes in
+                    // one transaction collapse into one round; a frame with no
+                    // writes touches nothing. A flush that never settles is a
+                    // reactive cycle: it stops at a bound and drops the rest.
+                    if let Err(cycle) = viso_ui::settle_states(
+                        &mut ws.store,
+                        &mut ws.states,
+                        &mut ws.bindings,
+                        &mut ws.computeds,
+                        &mut ws.projectors,
+                        &mut ws.effects,
+                        &mut ws.changed,
+                    ) {
+                        eprintln!("[viso] {cycle}");
                     }
                 }
 
