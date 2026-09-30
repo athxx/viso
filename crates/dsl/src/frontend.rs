@@ -27,7 +27,7 @@ use crate::ast::{
 };
 use crate::behavior::{Program, hidden_state, inline_instances};
 use crate::diag::{Diagnostic, Severity};
-use crate::hir::{ConstValue, HirComponent, SourceSet, Ty, write_backs};
+use crate::hir::{ConstValue, DerivedReads, HirComponent, SourceSet, Ty, write_backs};
 use crate::ir::{
     BindingIr, ComponentLibrary, InstanceSources, KeyIr, LibraryComponent, UiTree, analyze_keys,
     lower_bindings, lower_component_view, lower_fragment_items, lower_view_bindings,
@@ -416,7 +416,8 @@ fn compile_unit(source: &str, parse: Parse, origin: &Origin, natives: Arc<Native
                     .unwrap_or_default()
             })),
     );
-    let bindings = lower_view_bindings(&tree, &root, &module.refs, &env, &instances);
+    let derived = DerivedReads::merged(components.iter().map(|c| &c.schema.derived));
+    let bindings = lower_view_bindings(&tree, &root, &module.refs, &env, &derived, &instances);
     let keys = analyze_keys(&tree, &root, &module.refs, &env);
     diagnostics.extend(keys.diagnostics.iter().cloned());
     sources.extend(hidden);
@@ -503,7 +504,7 @@ fn mounted_component(
         1 => candidates.into_iter().next(),
         0 => {
             diagnostics.push(Diagnostic::error(
-                "E4201",
+                "E2005",
                 whole(source),
                 "the source declares no component to mount",
             ));
@@ -511,7 +512,7 @@ fn mounted_component(
         }
         _ => {
             diagnostics.push(Diagnostic::error(
-                "E4202",
+                "E2006",
                 candidates[1].syntax().text_range(),
                 "the source declares several components; export the one to mount",
             ));
@@ -707,6 +708,40 @@ mod tests {
     }
 
     #[test]
+    fn a_binding_through_a_computed_or_a_function_binds_its_states() {
+        let src = "component C {
+  state a = 1;
+  state b = 2;
+  state c = 3;
+  computed sum: I64 = a + total();
+  computed twice: I64 = sum * 2;
+  fn total() -> I64 { b }
+  view { Text { text: format(\"{}\", twice); } Text { text: format(\"{}\", c); } }\n}\n";
+        let compiled = compile_file(src, &origin(&[]));
+        assert!(!compiled.has_errors(), "{:?}", compiled.diagnostics);
+        let names = |node: u32| {
+            let mut names: Vec<&str> = compiled
+                .bindings
+                .static_edges()
+                .filter(|e| e.node.0 == node)
+                .map(|e| compiled.source(e.source).unwrap().name.as_str())
+                .collect();
+            names.sort_unstable();
+            names
+        };
+        let root = compiled.bindings.static_edges().next().unwrap().node.0;
+        assert_eq!(names(root), ["a", "b"]);
+        assert_eq!(names(root + 1), ["c"]);
+        assert!(
+            compiled.bindings.static_edges().all(|e| matches!(
+                compiled.source(e.source).unwrap().kind,
+                SourceKind::State { .. }
+            )),
+            "every edge names a state"
+        );
+    }
+
+    #[test]
     fn the_component_keyword_is_optional_inline() {
         let compiled = compile_component("Tiny { view { Text {} } }", &origin(&[]));
         assert!(!compiled.has_errors(), "{:?}", compiled.diagnostics);
@@ -738,14 +773,14 @@ mod tests {
     #[test]
     fn a_file_without_a_component_is_reported() {
         let compiled = compile_file("record P { x: F32; }", &origin(&[]));
-        assert_eq!(codes(&compiled), ["E4201"]);
+        assert_eq!(codes(&compiled), ["E2005"]);
         assert!(compiled.component.is_none());
     }
 
     #[test]
     fn several_components_need_one_exported() {
         let src = "component A { }\ncomponent B { }";
-        assert_eq!(codes(&compile_file(src, &origin(&[]))), ["E4202"]);
+        assert_eq!(codes(&compile_file(src, &origin(&[]))), ["E2006"]);
         let exported = "component A { }\nexport component B { }";
         let compiled = compile_file(exported, &origin(&[]));
         assert!(!compiled.has_errors(), "{:?}", compiled.diagnostics);

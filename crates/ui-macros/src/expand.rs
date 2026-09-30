@@ -250,16 +250,13 @@ fn mount<'a>(compiled: &'a Compiled, report: &Report<'_>) -> syn::Result<Mounted
         let Some(source) = compiled.source(edge.source) else {
             continue;
         };
-        let kind = match source.kind {
-            SourceKind::Input => "input",
-            SourceKind::Computed => "computed",
-            _ => continue,
-        };
-        if unmounted.insert(source.symbol) {
+        // A binding through a computed or a function names the states beneath it,
+        // so only a root input, which no caller supplies here, is left unmounted.
+        if source.kind == SourceKind::Input && unmounted.insert(source.symbol) {
             errors.push(report.at(
                 declared_at(component, source),
                 format!(
-                    "the view reads {kind} `{}`; a mounted view reads only states",
+                    "the view reads input `{}`; a mounted view reads only states",
                     source.name
                 ),
             ));

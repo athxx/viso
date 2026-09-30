@@ -23,6 +23,7 @@ use crate::syntax::TextRange;
 
 use super::capability::CapabilitySet;
 use super::effect::EffectClass;
+use super::reads::DerivedReads;
 use super::ty::Ty;
 
 /// How a binding owns the value it holds — the doc's ownership-mode axis of the node
@@ -226,6 +227,8 @@ pub struct ComponentSchema {
     pub callables: Vec<HirCallable>,
     /// The `view` declaration's source span, when the component has one.
     pub view: Option<TextRange>,
+    /// What each `computed` and `fn` member reads once its calls are followed.
+    pub derived: DerivedReads,
 }
 
 /// A fully lowered component: its schema plus its own declaration span.

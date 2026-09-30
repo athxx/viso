@@ -37,7 +37,7 @@ use super::nodes::{
     HirState, OwnershipMode,
 };
 use super::percent::PercentSources;
-use super::reads::{ReadEnv, collect_reads};
+use super::reads::{DerivedReads, ReadEnv, WithDerived, collect_reads, collect_reads_in};
 use super::ty::{Ty, TypeError};
 
 /// What component lowering needs from the surrounding program, beyond the type and read
@@ -82,7 +82,9 @@ pub(crate) fn lower_component(
         slots: slots_of(decl, diagnostics),
         callables: Vec::new(),
         view: None,
+        derived: DerivedReads::default(),
     };
+    schema.derived = derived_reads(decl, refs, env);
 
     // Classify members into buckets in source order, lowering each to its node. State and
     // computed carry the extra ordering/topology work below, so collect their raw shapes
@@ -285,6 +287,34 @@ pub(crate) fn lower_component(
     schema.computeds = order_computeds(computed_order, diagnostics);
 
     schema
+}
+
+/// The transitive reads of `decl`'s derived members: each `computed` and `fn` reads
+/// the states and inputs it names plus whatever the derived members it names read.
+fn derived_reads(decl: &ComponentDecl, refs: &[ResolvedRef], env: &dyn MemberEnv) -> DerivedReads {
+    let derived: Vec<(SymbolId, crate::syntax::SyntaxNode)> = decl
+        .members()
+        .filter_map(|member| {
+            let (name, node) = match &member {
+                Member::Computed(c) => (token_text(c.name()), c.syntax().clone()),
+                Member::Fn(f) => (token_text(f.name()), f.syntax().clone()),
+                _ => return None,
+            };
+            Some((env.member_symbol(&name)?, node))
+        })
+        .collect();
+    let symbols: BTreeSet<SymbolId> = derived.iter().map(|(s, _)| *s).collect();
+    let is_derived = |symbol: SymbolId| symbols.contains(&symbol);
+    let with = WithDerived {
+        env,
+        derived: &is_derived,
+    };
+    DerivedReads::new(
+        derived
+            .iter()
+            .map(|(symbol, node)| (*symbol, collect_reads_in(refs, &with, node)))
+            .collect(),
+    )
 }
 
 /// A `state` member captured for the ordering pass: its symbol, the reactive sources its

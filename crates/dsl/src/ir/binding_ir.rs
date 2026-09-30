@@ -30,7 +30,7 @@ use std::collections::BTreeSet;
 use std::collections::HashMap;
 
 use crate::ast::{AstNode, Expr};
-use crate::hir::{ReadEnv, collect_reads};
+use crate::hir::{DerivedReads, ReadEnv, WithDerived, collect_reads};
 use crate::ir::dirty_map::DirtyClass;
 use crate::ir::ui_ir::{PendingProperty, UiItem, UiNode, UiTree};
 use crate::resolve::{ResolvedRef, SymbolId};
@@ -112,7 +112,7 @@ pub fn lower_bindings(
     refs: &[ResolvedRef],
     env: &dyn ReadEnv,
 ) -> BindingIr {
-    lower_view_bindings(tree, root, refs, env, &[])
+    lower_view_bindings(tree, root, refs, env, &DerivedReads::default(), &[])
 }
 
 /// The reactive sources of one inlined instance of a [`UiTree`]: what its
@@ -132,14 +132,22 @@ pub struct InstanceSources {
 /// instance's view of one of its component's states binds the hidden state
 /// keeping it; a read of an input binds whatever the caller's argument reads,
 /// through the caller's own instance in turn. Any other read of an inlined view
-/// binds nothing.
+/// binds nothing. A read of a `computed` or a call of a `fn` binds the states and
+/// inputs beneath it, as `derived` records them.
 pub fn lower_view_bindings(
     tree: &UiTree,
     root: &SyntaxNode,
     refs: &[ResolvedRef],
     env: &dyn ReadEnv,
+    derived: &DerivedReads,
     instances: &[InstanceSources],
 ) -> BindingIr {
+    let is_derived = |symbol: SymbolId| derived.is_derived(symbol);
+    let with = WithDerived {
+        env,
+        derived: &is_derived,
+    };
+    let env: &dyn ReadEnv = &with;
     let exprs = index_exprs(root);
     let mut substitutions: Vec<HashMap<SymbolId, Vec<SymbolId>>> = Vec::new();
     for (instance, sources) in tree.instances.iter().zip(instances) {
@@ -153,7 +161,7 @@ pub fn lower_view_bindings(
                 continue;
             };
             let Some(expr) = exprs.get(&at) else { continue };
-            let reads = collect_reads(refs, env, expr);
+            let reads = derived.flatten(collect_reads(refs, env, expr));
             let reads = substitute(&substitutions, instance.parent, reads);
             map.insert(*input, reads);
         }
@@ -163,6 +171,7 @@ pub fn lower_view_bindings(
         exprs,
         refs,
         env,
+        derived,
         substitutions,
         ir: BindingIr::default(),
         next_key: 0,
@@ -206,6 +215,8 @@ struct LowerCtx<'a> {
     exprs: HashMap<TextRange, Expr>,
     refs: &'a [ResolvedRef],
     env: &'a dyn ReadEnv,
+    /// The base reads of each derived member.
+    derived: &'a DerivedReads,
     /// What each inlined instance's reads bind, by instance minus one.
     substitutions: Vec<HashMap<SymbolId, Vec<SymbolId>>>,
     ir: BindingIr,
@@ -268,7 +279,9 @@ impl LowerCtx<'_> {
         let Some(expr) = self.exprs.get(&pending.value) else {
             return;
         };
-        let reads = collect_reads(self.refs, self.env, expr);
+        let reads = self
+            .derived
+            .flatten(collect_reads(self.refs, self.env, expr));
         for source in substitute(&self.substitutions, pending.instance, reads) {
             self.ir.edges.push(BindingEdge {
                 source,
