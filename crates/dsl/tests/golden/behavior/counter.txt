@@ -20,3 +20,8 @@ fn#1 Counter.doubled computed params=0 regs=3
 fn#2 Counter.count state-init params=0 regs=1
     0: r0 = const 0
     1: return r0
+
+fn#3 Counter.value region-entry params=0 regs=2
+    0: r0 = call fn#1 ()
+    1: r1 = display.signed r0
+    2: return r1

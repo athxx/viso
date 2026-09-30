@@ -67,3 +67,7 @@ fn#2 Shapes.area fn params=1 regs=10
 fn#3 Shapes.label state-init params=0 regs=1
     0: r0 = const ""
     1: return r0
+
+fn#4 Shapes.value region-entry params=0 regs=1
+    0: r0 = state[0]
+    1: return r0

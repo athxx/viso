@@ -278,8 +278,9 @@ Goal: every Core view construct reaches a live tree through all three lowering t
         changes; a faulted transaction discards the memo it touched.
 - [ ] Reactive property values reach their nodes (a text's content, a bound
       control's displayed value, a text field's seeded buffer).
-  - [ ] A `Text`'s and a `TextInput`'s `text` compile to handler-table value
-        entries; `ViewBehavior` carries them with their target.
+  - [x] A `Text`'s or `Button`'s `text` and a `TextInput`'s `value` compile to
+        handler-table value entries; `ViewBehavior` carries them with their
+        target.
   - [ ] The view runtime evaluates them at mount and re-evaluates only the
         entries whose read states changed, skipping an equal value.
   - [ ] Controls project their value and range into semantic state.

@@ -329,8 +329,8 @@ impl Owner<'_> {
         self.slots.iter().find(|s| s.default)
     }
 
-    /// Whether `path` is a property a native control reads its current value
-    /// or range from.
+    /// Whether `path` is a property a view-driven native node reads its
+    /// current value or range from: a control's, or a label's text.
     fn reads_control(&self, path: &PropertyPath) -> bool {
         self.component.is_none()
             && match (ControlKind::of(&self.name), path_segments(path).as_slice()) {
@@ -1089,8 +1089,8 @@ impl<'a> ViewWalk<'a> {
             self.region_entry(errors, "arg", at, &RegionEntry::Value(&value));
         }
         if scope.owner.is_some_and(|owner| owner.reads_control(&path)) {
-            // The native control reads its current value or range here.
-            self.region_entry(errors, "control", at, &RegionEntry::Value(&value));
+            // The native node reads its current value or range here.
+            self.region_entry(errors, "value", at, &RegionEntry::Value(&value));
         }
         let to = match declared.basis {
             Basis::Yes => return,
