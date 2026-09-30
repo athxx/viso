@@ -400,6 +400,13 @@ pub struct NodeStore {
     /// [`reconcile`](crate::text_edit::reconcile), which drains them onto each
     /// node's buffer. Empty and allocation-free in a frame with no text click.
     edit_requests: Vec<(NodeId, crate::text_edit::EditIntent)>,
+    /// Cold, transient handoff buffer (not index-aligned): the text each text
+    /// field is seeded with from the state it shows, sitting here between the
+    /// view runtime, which holds the store but not the
+    /// [`TextEdits`](crate::text_edit::TextEdits) registry, and
+    /// [`reconcile`](crate::text_edit::reconcile), which seeds each node's
+    /// buffer. Empty in a frame whose shown states did not change.
+    text_seeds: Vec<(NodeId, TextRequest)>,
     /// Cold retained slot (not index-aligned): the nodes a caption widget
     /// declared as draggable self-drawn-caption regions, in declaration order. A
     /// self-drawn-chrome window's caption registers its blank band here at build
@@ -464,6 +471,7 @@ impl NodeStore {
         self.window_closes.clear();
         self.text_reflows.clear();
         self.edit_requests.clear();
+        self.text_seeds.clear();
         self.focused = None;
         self.contacts.clear();
         self.hovered = None;
@@ -1290,6 +1298,29 @@ impl NodeStore {
     pub fn take_edit_requests(&mut self, out: &mut Vec<(NodeId, crate::text_edit::EditIntent)>) {
         out.clear();
         out.append(&mut self.edit_requests);
+    }
+
+    /// Seed text field `node` with `request`: its declared style, and its text
+    /// unless the field already holds it. It waits here until
+    /// [`reconcile`](crate::text_edit::reconcile) seeds the node's edit buffer,
+    /// before that frame's edits apply. A seed reports no change: it is the
+    /// state the field shows, not an edit. A stale handle is a no-op.
+    pub fn seed_text(&mut self, node: NodeId, request: TextRequest) {
+        if self.arena.is_live(node) {
+            self.text_seeds.push((node, request));
+        }
+    }
+
+    /// Whether any text field seed is waiting for reconcile.
+    #[inline]
+    pub fn has_text_seeds(&self) -> bool {
+        !self.text_seeds.is_empty()
+    }
+
+    /// Move every queued text field seed out into `out` (cleared first).
+    pub fn take_text_seeds(&mut self, out: &mut Vec<(NodeId, TextRequest)>) {
+        out.clear();
+        out.append(&mut self.text_seeds);
     }
 
     /// Enqueue a transform animation the router drained off an

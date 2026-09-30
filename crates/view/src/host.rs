@@ -248,6 +248,29 @@ impl ViewHost {
             })
     }
 
+    /// Appends to `out` the cells whose change can change the value of pure
+    /// entry `entry` in `scope`: the cell of each state it reads, following its
+    /// calls, or every cell of the view and of `scope` when it calls a closure
+    /// value, whose reads are not known.
+    pub(crate) fn entry_cells(&self, entry: u32, scope: &Scope, out: &mut Vec<StateId>) {
+        let Ok(chunk) = self.chunk(entry, ChunkKind::RegionEntry) else {
+            return;
+        };
+        let reads = self.vm.reads(chunk);
+        let linked = |slot: usize| match self.mirror.get(slot) {
+            Some(Some(Link::Mirror(id) | Link::Track(id))) => Some(*id),
+            _ => None,
+        };
+        if reads.opaque {
+            out.extend((0..self.mirror.len()).filter_map(linked));
+            out.extend(scope.locals.iter().flat_map(|locals| locals.cells.iter()));
+            return;
+        }
+        for slot in reads.states {
+            out.extend(scope.cell(slot).or_else(|| linked(slot as usize)));
+        }
+    }
+
     /// Evaluates the pure entry `entry` of the handler table (a region's
     /// selector, iterable or key) with the bindings of `scope`, then `extra`,
     /// against the current states, and returns its value. Nothing it does is

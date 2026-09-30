@@ -2065,7 +2065,7 @@ Canvas {
 - Handler 在 `component!`、`view!`、Hot Reload 与 Release Package 中以同一张 Handler 表挂载：每个 Handler 是所在 Component 的一个 Behavior Chunk，节点只登记 `(Event 路由, Handler 下标)`，State 写入在 Transaction 结束时回写 UI State Cell；
 - 一次输入样本对每个节点只运行一次 Handler：未写 `capture` 的 Handler 在 Target 与 Bubble 段运行，祖先节点上的 Handler 不因 Capture 段再运行一次；
 - 内置控件（`Toggle`/`CheckBox`、`Slider`、`Tabs`/`RadioGroup`、`TextInput`）的内建响应随同一张 Handler 表挂载：控件从 Handler 表中的纯表达式条目读取当前值与范围（`checked`、`value`、`min`、`max`、`step`、`selected`），据样本算出新值后投递 Schema 声明的 `changed`、`selected_changed` 或 `submitted`；
-- 节点显示的反应式属性值同样是 Handler 表中的纯表达式条目：`Text`/`Button` 的 `text`、`TextInput` 的 `value` 与控件的 `checked`、`value`、`selected`、`min`、`max`；
+- 节点显示的反应式属性值同样是 Handler 表中的纯表达式条目：`Text`/`Button` 的 `text`、`TextInput` 的 `value` 与控件的 `checked`、`value`、`selected`、`min`、`max`。节点挂载时求值一次；之后只有其条目（沿调用传递）所读 State 在该帧变化时才重新求值，与节点当前显示值相等的结果不投递；`Text`/`Button` 的值成为节点文本，`TextInput` 的值播种其编辑缓冲（缓冲已持有相同文本时不重置光标，播种不算编辑、不投递 `changed`）；条目求值 Fault 保留节点原值并记录在宿主上；
 - `ui!` Fragment 没有 Component State，不能声明 Handler；Runtime 尚未投递的标准事件（如 `long_press`、`scroll`、`focus`）或 Behavior 无法 Lower 的 Handler 体报 `E3711`；Hot Reload 中出现 `E3711` 时保留 Last-good Handler；
 - Handler 运行期 Fault 只中止该次调用、不回写任何 State，Fault 记录在宿主上。
 
