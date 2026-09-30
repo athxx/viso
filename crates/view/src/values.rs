@@ -1,5 +1,5 @@
-//! Delivering the values a view's nodes show: a label's text and a text
-//! field's seeded buffer.
+//! Delivering the values a view's nodes show: a label's text, a text field's
+//! seeded buffer, and a control's value and range as its semantic state.
 //!
 //! A node's value is a pure entry of the view's handler table. It is evaluated
 //! when the node mounts and again only when a cell it reads changes, and a value
@@ -10,7 +10,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use viso_behavior::Value;
-use viso_ui::{NodeId, Rgba, StateId, StructureCx, TextRequest};
+use viso_ui::{NodeId, NodeStore, Rgba, SemanticState, StateId, StructureCx, TextRequest};
 
 use crate::control::{Control, ControlKind};
 use crate::host::ViewHost;
@@ -76,8 +76,9 @@ pub(crate) struct Shown {
     scope: Scope,
     /// The cells its entries read, ascending.
     deps: Box<[StateId]>,
-    /// The value it shows, `None` before the first delivery.
-    value: Option<Value>,
+    /// The value, lower bound and upper bound it shows, `None` before the
+    /// first delivery.
+    shows: Option<[Value; 3]>,
 }
 
 impl Shown {
@@ -97,7 +98,7 @@ impl Shown {
             control,
             scope,
             deps: deps.into(),
-            value: None,
+            shows: None,
         }
     }
 
@@ -112,23 +113,29 @@ impl Shown {
         })
     }
 
-    /// Evaluates its value against the current states and delivers it unless
-    /// the node already shows it. A fault is kept as the host's
+    /// Evaluates its value and range against the current states and delivers
+    /// them unless the node already shows them. A fault is kept as the host's
     /// [`last_fault`](ViewHost::last_fault) and leaves the node as it is.
     pub(crate) fn deliver(&mut self, cx: &mut StructureCx<'_>, host: &mut ViewHost) {
-        let value = match self.control.value {
-            Some(entry) => match host.evaluate(entry, &self.scope, None, &*cx.states) {
-                Ok(value) => value,
+        let mut shows = [Value::Nil, Value::Nil, Value::Nil];
+        for (value, entry) in
+            shows
+                .iter_mut()
+                .zip([self.control.value, self.control.min, self.control.max])
+        {
+            let Some(entry) = entry else { continue };
+            match host.evaluate(entry, &self.scope, None, &*cx.states) {
+                Ok(evaluated) => *value = evaluated,
                 Err(fault) => {
                     host.record_fault(fault);
                     return;
                 }
-            },
-            None => Value::Nil,
-        };
-        if self.value.as_ref() == Some(&value) {
+            }
+        }
+        if self.shows.as_ref() == Some(&shows) {
             return;
         }
+        let [value, min, max] = &shows;
         let text = || TextRequest {
             text: value.as_str().unwrap_or_default().to_owned(),
             font_size: FONT_SIZE,
@@ -136,11 +143,46 @@ impl Shown {
             soft_wrap: false,
             locale: None,
         };
+        let store = &mut *cx.store;
         match self.control.kind {
-            ControlKind::Label => cx.store.set_text_request(self.node, text()),
-            ControlKind::TextInput => cx.store.seed_text(self.node, text()),
-            ControlKind::Toggle | ControlKind::Slider | ControlKind::Select => {}
+            ControlKind::Label => store.set_text_request(self.node, text()),
+            ControlKind::TextInput => store.seed_text(self.node, text()),
+            ControlKind::Toggle => {
+                let checked = value.as_int().is_some_and(|v| v != 0);
+                store.set_semantic_state(self.node, SemanticState::checked(checked));
+            }
+            ControlKind::Slider => {
+                let (min, max) = (float(min, 0.0), float(max, 1.0));
+                let state = SemanticState {
+                    value: Some(float(value, min)),
+                    range: Some((min, max)),
+                    ..SemanticState::default()
+                };
+                store.set_semantic_state(self.node, state);
+            }
+            ControlKind::Select => select(store, self.node, value.as_int().unwrap_or(0)),
         }
-        self.value = Some(value);
+        self.shows = Some(shows);
     }
+}
+
+/// Marks the child of `node` at `selected` selected and each other child not.
+fn select(store: &mut NodeStore, node: NodeId, selected: i64) {
+    let links = |store: &NodeStore, id| store.arena().links(id).copied();
+    let mut child = links(store, node).and_then(|l| l.first_child);
+    let mut index = 0;
+    while let Some(id) = child {
+        child = links(store, id).and_then(|l| l.next_sibling);
+        let state = SemanticState {
+            selected: Some(index == selected),
+            ..SemanticState::default()
+        };
+        store.set_semantic_state(id, state);
+        index += 1;
+    }
+}
+
+/// A `Float` value as `f32`, `default` for any other.
+fn float(value: &Value, default: f32) -> f32 {
+    value.as_float().map_or(default, |v| v as f32)
 }
