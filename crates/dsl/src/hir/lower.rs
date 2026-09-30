@@ -1679,41 +1679,12 @@ fn bindable_pairing(
         return Err("`@bindable` marks an `input`".to_string());
     }
     let input = support_name(member).unwrap_or_default();
-    let args: Vec<SyntaxNode> = attr
-        .children()
-        .into_iter()
-        .find(|c| c.kind() == SyntaxKind::ArgumentList)
-        .map(|list| {
-            list.children()
-                .into_iter()
-                .filter(|c| c.kind() == SyntaxKind::Argument)
-                .collect()
-        })
-        .unwrap_or_default();
     let usage = || {
         format!(
             "`@bindable` names the event that writes `{input}` back: `@bindable(changed)` with `event changed(value: T)`"
         )
     };
-    let [arg] = args.as_slice() else {
-        return Err(usage());
-    };
-    let labeled = arg
-        .children_with_tokens()
-        .into_iter()
-        .any(|e| e.as_token().is_some_and(|t| t.kind() == SyntaxKind::Colon));
-    let event = match arg.children().as_slice() {
-        [path] if !labeled && path.kind() == SyntaxKind::PathExpr => {
-            crate::ast::PathExpr::cast(path.clone())
-                .map(|p| p.segments().collect::<Vec<_>>())
-                .and_then(|segments| match segments.as_slice() {
-                    [name] => Some(name.text().trim_start_matches("r#").to_string()),
-                    _ => None,
-                })
-        }
-        _ => None,
-    };
-    let Some(event) = event else {
+    let Some(event) = bindable_event(attr) else {
         return Err(usage());
     };
     let Some(decl) = events.get(&event) else {
@@ -1750,6 +1721,60 @@ fn support_name(node: &SyntaxNode) -> Option<String> {
         .filter_map(|e| e.as_token().cloned())
         .find(|t| matches!(t.kind(), SyntaxKind::Ident | SyntaxKind::RawIdent))
         .map(|t| t.text().trim_start_matches("r#").to_string())
+}
+
+/// The event a `@bindable(event)` attribute names: its single unlabeled
+/// one-segment argument.
+fn bindable_event(attr: &SyntaxNode) -> Option<String> {
+    let list = attr
+        .children()
+        .into_iter()
+        .find(|c| c.kind() == SyntaxKind::ArgumentList)?;
+    let args: Vec<SyntaxNode> = list
+        .children()
+        .into_iter()
+        .filter(|c| c.kind() == SyntaxKind::Argument)
+        .collect();
+    let [arg] = args.as_slice() else {
+        return None;
+    };
+    let labeled = arg
+        .children_with_tokens()
+        .into_iter()
+        .any(|e| e.as_token().is_some_and(|t| t.kind() == SyntaxKind::Colon));
+    match arg.children().as_slice() {
+        [path] if !labeled && path.kind() == SyntaxKind::PathExpr => {
+            crate::ast::PathExpr::cast(path.clone())
+                .map(|p| p.segments().collect::<Vec<_>>())
+                .and_then(|segments| match segments.as_slice() {
+                    [name] => Some(name.text().trim_start_matches("r#").to_string()),
+                    _ => None,
+                })
+        }
+        _ => None,
+    }
+}
+
+/// Each two-way input of `decl` and the event that writes it back: an input
+/// preceded by a `@bindable(event)` attribute, by its index among the inputs.
+pub(crate) fn write_backs(decl: &ComponentDecl) -> Vec<(usize, String)> {
+    let mut out = Vec::new();
+    let mut inputs = 0;
+    let mut event = None;
+    for child in decl.syntax().children() {
+        match child.kind() {
+            SyntaxKind::Attribute if is_bindable(&child) => event = bindable_event(&child),
+            SyntaxKind::Attribute => {}
+            SyntaxKind::InputDecl => {
+                if let Some(event) = event.take() {
+                    out.push((inputs, event));
+                }
+                inputs += 1;
+            }
+            _ => event = None,
+        }
+    }
+    out
 }
 
 fn is_bindable(attr: &SyntaxNode) -> bool {

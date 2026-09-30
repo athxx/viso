@@ -232,15 +232,27 @@ Goal: every Core view construct reaches a live tree through all three lowering t
 
 ### D2.3 — Components and slots in views
 
-- [ ] Resolve user components instead of defaulting unknown types to `NodeKind::Leaf`.
+- [x] Resolve user components instead of defaulting unknown types to `NodeKind::Leaf`.
+  - [x] Same-file component instances inline into the mounting view (`ir/mod.rs`),
+        with per-instance function copies (`behavior/instance.rs`).
+  - [x] Instance state as hidden mounted state `identity.state`, kept by hot reload.
+  - [x] Input reads call the caller's argument entry; `emit` runs the caller's handlers.
+  - [x] Inlined-view bindings substitute instance sources (`lower_view_bindings`).
+  - [x] `E3711` for self-mounting, stateful instances in regions, forwarded props on a
+        multi-root view, and components of other files.
+  - [ ] Stateful instances inside `if`/`for`/`match`.
+  - [ ] Component instances in `ui!` fragments.
 - [x] Widget schema registry: properties, events, slots, percent basis, from native
       declarations instead of the baseline table in `hir/widget.rs`.
 - [x] Default slot `E3003`/`E3004`; slot cardinality `E3502`; unknown slot `E3501`.
   - [x] `slot` declarations in the component schema (`E2103` for a non-slot type).
   - [x] Cardinality counted over region arms; `SlotOutlet` placement checks.
   - [x] `fill` lowers into a native widget's children.
-- [ ] Two-way binding (§123) lowering: write-back through the `@bindable` event
+- [x] Two-way binding (§123) lowering: write-back through the `@bindable` event
       (compile-time `E3103`/`E3107`/`E3701` are checked in D0.5).
+  - [x] Component input `bind`: argument reads the lens, the paired event writes it back.
+  - [x] `bind … using` on a component input is `E3711`.
+  - [ ] Native widget `changed` delivery for a native `bind`.
 
 ### D2.4 — Reactive graph
 

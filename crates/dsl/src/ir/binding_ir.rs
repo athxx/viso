@@ -112,10 +112,58 @@ pub fn lower_bindings(
     refs: &[ResolvedRef],
     env: &dyn ReadEnv,
 ) -> BindingIr {
+    lower_view_bindings(tree, root, refs, env, &[])
+}
+
+/// The reactive sources of one inlined instance of a [`UiTree`]: what its
+/// view's reads of its component's states and inputs stand for in the mounted
+/// component.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct InstanceSources {
+    /// Each state of the component and the hidden state of the mounted
+    /// component that keeps it for the instance.
+    pub states: Vec<(SymbolId, SymbolId)>,
+    /// Each input of the component, by slot.
+    pub inputs: Vec<Option<SymbolId>>,
+}
+
+/// [`lower_bindings`] for a view that inlines component instances, `instances`
+/// holding each one's sources in [`UiTree::instances`] order. A read in an
+/// instance's view of one of its component's states binds the hidden state
+/// keeping it; a read of an input binds whatever the caller's argument reads,
+/// through the caller's own instance in turn. Any other read of an inlined view
+/// binds nothing.
+pub fn lower_view_bindings(
+    tree: &UiTree,
+    root: &SyntaxNode,
+    refs: &[ResolvedRef],
+    env: &dyn ReadEnv,
+    instances: &[InstanceSources],
+) -> BindingIr {
+    let exprs = index_exprs(root);
+    let mut substitutions: Vec<HashMap<SymbolId, Vec<SymbolId>>> = Vec::new();
+    for (instance, sources) in tree.instances.iter().zip(instances) {
+        let mut map: HashMap<SymbolId, Vec<SymbolId>> = sources
+            .states
+            .iter()
+            .map(|&(state, hidden)| (state, vec![hidden]))
+            .collect();
+        for &(slot, at) in &instance.args {
+            let Some(Some(input)) = sources.inputs.get(slot as usize) else {
+                continue;
+            };
+            let Some(expr) = exprs.get(&at) else { continue };
+            let reads = collect_reads(refs, env, expr);
+            let reads = substitute(&substitutions, instance.parent, reads);
+            map.insert(*input, reads);
+        }
+        substitutions.push(map);
+    }
     let mut ctx = LowerCtx {
-        exprs: index_exprs(root),
+        exprs,
         refs,
         env,
+        substitutions,
         ir: BindingIr::default(),
         next_key: 0,
         dynamic_nodes: BTreeSet::new(),
@@ -127,6 +175,30 @@ pub fn lower_bindings(
     ctx.ir
 }
 
+/// What the reads `reads` in the view of `instance` bind in the mounted
+/// component, deduplicated in order.
+fn substitute(
+    substitutions: &[HashMap<SymbolId, Vec<SymbolId>>],
+    instance: u32,
+    reads: impl IntoIterator<Item = SymbolId>,
+) -> Vec<SymbolId> {
+    let Some(index) = instance.checked_sub(1) else {
+        return reads.into_iter().collect();
+    };
+    let Some(map) = substitutions.get(index as usize) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for read in reads {
+        for &source in map.get(&read).into_iter().flatten() {
+            if !out.contains(&source) {
+                out.push(source);
+            }
+        }
+    }
+    out
+}
+
 /// The mutable state threaded through the pre-order lowering walk.
 struct LowerCtx<'a> {
     /// Every `Expr` in the view, keyed by its span, so a pending property's value
@@ -134,6 +206,8 @@ struct LowerCtx<'a> {
     exprs: HashMap<TextRange, Expr>,
     refs: &'a [ResolvedRef],
     env: &'a dyn ReadEnv,
+    /// What each inlined instance's reads bind, by instance minus one.
+    substitutions: Vec<HashMap<SymbolId, Vec<SymbolId>>>,
     ir: BindingIr,
     next_key: u32,
     /// Template nodes that took a dynamic edge, counted distinctly.
@@ -195,7 +269,7 @@ impl LowerCtx<'_> {
             return;
         };
         let reads = collect_reads(self.refs, self.env, expr);
-        for source in reads {
+        for source in substitute(&self.substitutions, pending.instance, reads) {
             self.ir.edges.push(BindingEdge {
                 source,
                 node,
