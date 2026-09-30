@@ -28,6 +28,7 @@ use std::panic::{self, AssertUnwindSafe};
 use std::rc::Rc;
 
 use crate::arith;
+use crate::memo::{self, Memo, ReadGraph, Reads};
 use crate::module::{Code, Module, Span};
 use crate::native::{NativeCx, NativeFunction, Natives, SchemaConflict, Services, ThreadDomain};
 use crate::op::{DisplayKind, Op};
@@ -89,6 +90,8 @@ pub enum FaultKind {
     /// The code broke an invariant the compiler guarantees (a value of the
     /// wrong kind, an `Unreachable` reached, a mismatched call).
     Internal,
+    /// A computed's evaluation reached the same computed again.
+    ReactiveCycle,
 }
 
 impl FaultKind {
@@ -104,6 +107,7 @@ impl FaultKind {
             FaultKind::Unsupported | FaultKind::MissingInput | FaultKind::Internal => "E7105",
             FaultKind::NativeFailure => "E7106",
             FaultKind::CapabilityDenied => "E6103",
+            FaultKind::ReactiveCycle => "E4202",
         }
     }
 
@@ -123,6 +127,7 @@ impl FaultKind {
             FaultKind::NativeFailure => "a native function failed",
             FaultKind::MissingInput => "a required input has no value",
             FaultKind::Internal => "internal behavior fault",
+            FaultKind::ReactiveCycle => "a computed depends on itself",
         }
     }
 }
@@ -192,8 +197,9 @@ pub struct Cost {
 }
 
 /// A component instance: its state and input values, a revision that rises
-/// once per committed transaction that wrote state, and the set of state slots
-/// written since the host last cleared it.
+/// once per committed transaction that wrote state, the set of state slots
+/// written since the host last cleared it, and the cached value of each
+/// computed evaluated since a slot it reads last changed.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct Instance {
     component: Option<u32>,
@@ -201,6 +207,8 @@ pub struct Instance {
     inputs: Vec<Value>,
     revision: u64,
     dirty: Vec<u64>,
+    graph: Option<Rc<ReadGraph>>,
+    memo: Vec<Memo>,
 }
 
 impl Instance {
@@ -230,7 +238,10 @@ impl Instance {
     ///
     /// If `slot` is out of range.
     pub fn set_input(&mut self, slot: usize, value: Value) {
-        self.inputs[slot] = value;
+        if self.inputs[slot] != value {
+            self.inputs[slot] = value;
+            self.forget(|graph| graph.input_readers(slot));
+        }
     }
 
     /// Sets state `slot` from outside a transaction, as a host that keeps the
@@ -241,7 +252,32 @@ impl Instance {
     ///
     /// If `slot` is out of range.
     pub fn set_state(&mut self, slot: usize, value: Value) {
-        self.states[slot] = value;
+        if self.states[slot] != value {
+            self.states[slot] = value;
+            self.forget_state(slot);
+        }
+    }
+
+    /// Empties the cache entries of the computeds reading state `slot`.
+    #[inline]
+    fn forget_state(&mut self, slot: usize) {
+        self.forget(|graph| graph.state_readers(slot));
+    }
+
+    /// Empties the cache entries `readers` names.
+    fn forget(&mut self, readers: impl FnOnce(&ReadGraph) -> &[u32]) {
+        let Some(graph) = &self.graph else { return };
+        for &entry in readers(graph) {
+            self.memo[entry as usize] = Memo::Empty;
+        }
+    }
+
+    /// Whether computed `chunk`'s value is cached.
+    pub fn is_cached(&self, chunk: u32) -> bool {
+        self.graph
+            .as_ref()
+            .and_then(|graph| graph.entry(chunk))
+            .is_some_and(|entry| matches!(self.memo[entry], Memo::Ready(_)))
     }
 
     /// The number of committed transactions that wrote state.
@@ -312,6 +348,9 @@ pub struct Vm {
     marks: Vec<u64>,
     events: Vec<Event>,
     detail: String,
+    graph: Rc<ReadGraph>,
+    /// Whether the running invocation's instance caches against `graph`.
+    memo: bool,
 }
 
 type Step<T> = Result<T, FaultKind>;
@@ -321,6 +360,8 @@ impl Vm {
     pub fn new(module: Rc<Module>, budget: Budget) -> Vm {
         Vm {
             linked: vec![None; module.natives().len()].into(),
+            graph: Rc::new(ReadGraph::new(&module)),
+            memo: false,
             module,
             budget,
             services: Services::default(),
@@ -340,6 +381,16 @@ impl Vm {
     /// The module it runs.
     pub fn module(&self) -> &Rc<Module> {
         &self.module
+    }
+
+    /// What chunk `chunk` reads, following every call and closure it makes:
+    /// the slots whose change can change its result.
+    ///
+    /// # Panics
+    ///
+    /// If `chunk` is out of range.
+    pub fn reads(&self, chunk: u32) -> Reads {
+        memo::reads(&self.module, chunk)
     }
 
     /// The per-invocation budget.
@@ -428,6 +479,8 @@ impl Vm {
             inputs: vec![Value::Nil; layout.inputs.len()],
             revision: 0,
             dirty: vec![0; layout.states.len().div_ceil(64)],
+            memo: vec![Memo::Empty; self.graph.entries()],
+            graph: Some(Rc::clone(&self.graph)),
         };
         let mut given = vec![false; layout.inputs.len()];
         for (slot, value) in inputs {
@@ -445,11 +498,13 @@ impl Vm {
                     message: format!("`{}` requires input `{}`", layout.name, layout.inputs[slot]),
                 });
             };
-            instance.inputs[slot] = self.call(&mut instance, chunk, &[])?.value;
+            let value = self.call(&mut instance, chunk, &[])?.value;
+            instance.set_input(slot, value);
         }
         for (slot, init) in layout.state_inits.iter().enumerate() {
             if let Some(chunk) = *init {
-                instance.states[slot] = self.call(&mut instance, chunk, &[])?.value;
+                let value = self.call(&mut instance, chunk, &[])?.value;
+                instance.set_state(slot, value);
             }
         }
         instance.clear_dirty();
@@ -498,6 +553,21 @@ impl Vm {
         self.detail.clear();
         self.marks.clear();
         self.marks.resize(instance.states.len().div_ceil(64), 0);
+        self.memo = instance
+            .graph
+            .as_ref()
+            .is_some_and(|graph| Rc::ptr_eq(graph, &self.graph));
+        if self.memo
+            && let Some(entry) = self.graph.entry(chunk)
+        {
+            if let Memo::Ready(value) = &instance.memo[entry] {
+                return Ok(Outcome {
+                    value: value.clone(),
+                    events: Vec::new(),
+                });
+            }
+            instance.memo[entry] = Memo::Evaluating;
+        }
         let module = Rc::clone(&self.module);
         let mut cursor = Cursor {
             chunk,
@@ -523,6 +593,12 @@ impl Vm {
             Err(kind) => {
                 while let Some((slot, old)) = self.undo.pop() {
                     instance.states[slot as usize] = old;
+                    instance.forget_state(slot as usize);
+                }
+                for memo in &mut instance.memo {
+                    if *memo == Memo::Evaluating {
+                        *memo = Memo::Empty;
+                    }
                 }
                 self.events.clear();
                 self.stack.clear();
@@ -667,6 +743,9 @@ impl Vm {
                     } else {
                         *target = value;
                     }
+                    if self.memo {
+                        instance.forget_state(slot as usize);
+                    }
                     continue;
                 }
                 Op::LoadInput { dst, slot } => {
@@ -734,6 +813,24 @@ impl Vm {
                     let at = ext as usize;
                     let func = code.ext[at];
                     let argc = code.ext[at + 1] as usize;
+                    if self.memo
+                        && let Some(entry) = self.graph.entry(func)
+                    {
+                        match &instance.memo[entry] {
+                            Memo::Ready(value) => {
+                                self.stack[base + usize::from(dst)] = value.clone();
+                                continue;
+                            }
+                            Memo::Evaluating => {
+                                let name = &module.chunk(func).name;
+                                return self.trap(
+                                    FaultKind::ReactiveCycle,
+                                    format!("computed `{name}` depends on itself"),
+                                );
+                            }
+                            Memo::Empty => instance.memo[entry] = Memo::Evaluating,
+                        }
+                    }
                     let body = self.body(module, func)?;
                     let callee = module.chunk(func);
                     let args = &code.ext[at + 2..at + 2 + argc];
@@ -828,6 +925,11 @@ impl Vm {
                 Op::Return { src } => {
                     let value = mem::take(&mut self.stack[base + usize::from(src)]);
                     self.stack.truncate(base);
+                    if self.memo
+                        && let Some(entry) = self.graph.entry(cur.chunk)
+                    {
+                        instance.memo[entry] = Memo::Ready(value.clone());
+                    }
                     let Some(frame) = self.frames.pop() else {
                         return Ok(value);
                     };

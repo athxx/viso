@@ -16,6 +16,7 @@
 //! dimensional scalars are `Float`; `None` is `Nil` and `Some(x)` is `x`.
 
 mod arith;
+mod memo;
 mod module;
 pub mod native;
 mod op;
@@ -23,6 +24,7 @@ mod value;
 mod vm;
 mod wire;
 
+pub use memo::Reads;
 pub use module::{Chunk, ChunkKind, Code, Component, Module, NativeImport, Span, VerifyError};
 pub use op::{Arith, ArithOp, DisplayKind, Num, Op};
 pub use value::{Aggregate, Closure, Value};
