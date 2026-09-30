@@ -267,13 +267,13 @@ Goal: every Core view construct reaches a live tree through all three lowering t
 
 ### D2.4 — Reactive graph
 
-- [ ] Computed nodes with precise invalidation from `hir/reads.rs` edges.
+- [x] Computed nodes with precise invalidation from `hir/reads.rs` edges.
   - [x] Reads propagate through calls: a computed's and a binding's read set
         include what the functions and computeds it calls read; a binding edge
         through a computed names the states beneath it.
   - [x] Component selection diagnostics are `E2005` / `E2006`, freeing
         `E4201` / `E4202` for their Appendix C meaning.
-  - [ ] Per-instance computed memo on the VM: a zero-argument computed is
+  - [x] Per-instance computed memo on the VM: a zero-argument computed is
         evaluated once and reused until a state or input it reads (transitively)
         changes; a faulted transaction discards the memo it touched.
 - [ ] Reactive property values reach their nodes (a text's content, a bound

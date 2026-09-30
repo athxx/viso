@@ -636,3 +636,99 @@ fn a_borrowed_native_handle_cannot_be_stored() {
     let local = "import app::device;\ncomponent A { action go() { let l = device::lease(); } view { Text { text: \"a\"; } } }";
     assert_eq!(native_errors(local, custom()), Vec::<String>::new());
 }
+
+const MEMO: &str = r#"
+component M {
+    state a = 1;
+    state b = 10;
+    computed doubled: I64 = a * 2;
+    computed total: I64 = doubled + offset();
+    fn offset() -> I64 { b }
+
+    action bump() { a += 1; }
+    action touch_b() { b += 1; }
+    action boom(items: List<I64>) {
+        a += 1;
+        let x = doubled;
+        a += items[5] + x;
+    }
+
+    view { Text { text: format("{n}", n: total); } }
+}
+"#;
+
+#[test]
+fn a_computed_is_evaluated_once_until_a_read_slot_changes() {
+    let (mut vm, mut m) = instance(MEMO, "M");
+    let total = member(&vm, &m, "total");
+    let doubled = member(&vm, &m, "doubled");
+    assert!(!m.is_cached(total));
+    assert_eq!(call(&mut vm, &mut m, "total", &[]).unwrap(), Value::Int(12));
+    assert!(m.is_cached(total) && m.is_cached(doubled));
+    let first = vm.cost().instructions;
+    assert_eq!(call(&mut vm, &mut m, "total", &[]).unwrap(), Value::Int(12));
+    assert_eq!(vm.cost().instructions, 0, "a cached read runs no code");
+    assert!(first > 0);
+
+    // `b` is read by `total` through `offset`, not by `doubled`.
+    call(&mut vm, &mut m, "touch_b", &[]).unwrap();
+    assert!(!m.is_cached(total), "a write through a call invalidates");
+    assert!(m.is_cached(doubled), "an unread slot leaves the cache");
+    assert_eq!(call(&mut vm, &mut m, "total", &[]).unwrap(), Value::Int(13));
+
+    call(&mut vm, &mut m, "bump", &[]).unwrap();
+    assert!(!m.is_cached(total) && !m.is_cached(doubled));
+    assert_eq!(call(&mut vm, &mut m, "total", &[]).unwrap(), Value::Int(15));
+}
+
+#[test]
+fn a_host_write_invalidates_only_on_change() {
+    let (mut vm, mut m) = instance(MEMO, "M");
+    let doubled = member(&vm, &m, "doubled");
+    call(&mut vm, &mut m, "doubled", &[]).unwrap();
+    m.set_state(0, Value::Int(1));
+    assert!(m.is_cached(doubled), "an equal value keeps the cache");
+    m.set_state(0, Value::Int(4));
+    assert!(!m.is_cached(doubled));
+    assert_eq!(
+        call(&mut vm, &mut m, "doubled", &[]).unwrap(),
+        Value::Int(8)
+    );
+}
+
+#[test]
+fn a_faulted_transaction_discards_what_it_computed() {
+    let (mut vm, mut m) = instance(MEMO, "M");
+    let doubled = member(&vm, &m, "doubled");
+    call(&mut vm, &mut m, "doubled", &[]).unwrap();
+    // `boom` writes `a`, reads `doubled` at the written value, then faults.
+    call(&mut vm, &mut m, "boom", &[ints(&[1])]).unwrap_err();
+    assert_eq!(m.states()[0], Value::Int(1));
+    assert!(
+        !m.is_cached(doubled),
+        "a value seen only inside the fault is gone"
+    );
+    assert_eq!(
+        call(&mut vm, &mut m, "doubled", &[]).unwrap(),
+        Value::Int(2)
+    );
+}
+
+#[test]
+fn a_computed_reaching_itself_is_a_reactive_cycle() {
+    let (mut vm, mut c) = instance(
+        r#"
+component C {
+    state a = 1;
+    computed x: I64 = a + again();
+    fn again() -> I64 { x }
+    view { Text { text: format("{n}", n: x); } }
+}
+"#,
+        "C",
+    );
+    let fault = call(&mut vm, &mut c, "x", &[]).unwrap_err();
+    assert_eq!(fault.kind, FaultKind::ReactiveCycle);
+    assert_eq!(fault.kind.code(), "E4202");
+    assert!(!c.is_cached(member(&vm, &c, "x")));
+}
