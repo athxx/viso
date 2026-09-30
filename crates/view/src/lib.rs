@@ -21,6 +21,7 @@ mod host;
 mod package;
 mod regions;
 mod route;
+mod scope;
 
 pub use attach::{Route, attach, attach_node};
 pub use control::{Control, ControlInput, ControlKind};
@@ -30,8 +31,10 @@ pub use package::{
     load_view,
 };
 pub use regions::{
-    __mount_embedded, ArmTemplate, CLOSED, GroupTemplate, HALF_OPEN, ItemTemplate, MAX_RANGE_ITEMS,
-    RegionKind, RegionTemplate, SlotTemplate, ViewRegions, mount_regions,
+    __mount_embedded, ArmTemplate, CLOSED, CellRef, GroupTemplate, HALF_OPEN, ItemTemplate,
+    LocalTemplate, MAX_RANGE_ITEMS, RegionKind, RegionTemplate, SlotTemplate, ViewRegions,
+    mount_regions,
 };
 pub use route::{EventRoute, PAYLOAD_ENUMS, PAYLOAD_RECORDS};
+pub use scope::Scope;
 pub use viso_behavior::{Fault, Module, Value};

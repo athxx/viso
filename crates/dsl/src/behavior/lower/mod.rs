@@ -169,6 +169,7 @@ impl ProgramBuilder {
             input_defaults: vec![None; schema.inputs.len()],
             members,
             handlers: Vec::new(),
+            regional: Vec::new(),
         });
     }
 

@@ -17,6 +17,7 @@ use viso_ui::{
 
 use crate::host::ViewHost;
 use crate::route::EventRoute;
+use crate::scope::Scope;
 
 /// Which built-in control a node is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -184,7 +185,7 @@ impl Control {
     pub(crate) fn drive(
         &self,
         host: &mut ViewHost,
-        scope: &[Value],
+        scope: &Scope,
         cx: &mut EventCx<'_>,
     ) -> Option<(EventRoute, Value)> {
         if cx.phase() == DispatchPhase::Capture {
@@ -201,7 +202,7 @@ impl Control {
     fn toggle(
         &self,
         host: &mut ViewHost,
-        scope: &[Value],
+        scope: &Scope,
         cx: &mut EventCx<'_>,
     ) -> Option<(EventRoute, Value)> {
         let flips = match (cx.pointer(), cx.key()) {
@@ -219,7 +220,7 @@ impl Control {
     fn slider(
         &self,
         host: &mut ViewHost,
-        scope: &[Value],
+        scope: &Scope,
         cx: &mut EventCx<'_>,
     ) -> Option<(EventRoute, Value)> {
         if cx.phase() != DispatchPhase::Target {
@@ -282,7 +283,7 @@ impl Control {
     fn select(
         &self,
         host: &mut ViewHost,
-        scope: &[Value],
+        scope: &Scope,
         cx: &mut EventCx<'_>,
     ) -> Option<(EventRoute, Value)> {
         if let Some(p) = cx.pointer() {
@@ -433,9 +434,9 @@ fn activates(k: &KeyEvent) -> bool {
 }
 
 /// The value of entry `entry`, `Nil` for an absent entry or one that faults.
-fn read(host: &mut ViewHost, entry: Option<u32>, scope: &[Value], cx: &EventCx<'_>) -> Value {
+fn read(host: &mut ViewHost, entry: Option<u32>, scope: &Scope, cx: &EventCx<'_>) -> Value {
     entry
-        .and_then(|entry| host.evaluate(entry, scope, cx).ok())
+        .and_then(|entry| host.evaluate(entry, scope, None, cx).ok())
         .unwrap_or(Value::Nil)
 }
 

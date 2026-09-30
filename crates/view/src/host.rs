@@ -2,13 +2,16 @@
 
 use std::cell::RefCell;
 use std::fmt;
-use std::rc::Rc;
+use std::rc::{Rc, Weak};
 
 use viso_behavior::native::{Natives, SchemaConflict};
 use viso_behavior::{
     Budget, ChunkKind, Event, Fault, FaultKind, Instance, LoadError, Module, Value, Vm,
 };
 use viso_ui::{EventCx, StateId, StateStore, StateValue};
+
+use crate::regions::LocalTemplate;
+use crate::scope::{Locals, Scope};
 
 /// Where a view's state cells are read and written: the [`StateStore`] outside a
 /// dispatch, the [`EventCx`] during one (whose writes are deferred to the flush).
@@ -84,6 +87,11 @@ enum Link {
 /// committed write, so the bindings and regions that read it still see the
 /// change.
 ///
+/// The states of an instance a control-flow region mounts have no cell of the
+/// view: each mount of the region content keeps its own values, which the host
+/// loads into the instance before every call in that content's [`Scope`] and
+/// stores back after a committed write.
+///
 /// A handler fault rolls its transaction back, is kept as
 /// [`last_fault`](Self::last_fault), and never unwinds into the event router.
 pub struct ViewHost {
@@ -102,6 +110,20 @@ pub struct ViewHost {
     written: Vec<usize>,
     fault: Option<Fault>,
     events: Vec<Event>,
+    /// The cells the view's mounted regions allocated: each region mount's
+    /// pulse cell, and the region content mounts keeping instance states.
+    regions: RegionCells,
+}
+
+/// The UI cells a view's regions allocate while it runs, released with the
+/// view.
+#[derive(Debug, Default)]
+struct RegionCells {
+    pulses: Vec<StateId>,
+    locals: Vec<Weak<Locals>>,
+    /// The length at which [`locals`](Self::locals) next drops its dead
+    /// entries.
+    prune: usize,
 }
 
 impl ViewHost {
@@ -134,6 +156,7 @@ impl ViewHost {
             written: Vec::new(),
             fault: None,
             events: Vec::new(),
+            regions: RegionCells::default(),
         })
     }
 
@@ -182,14 +205,23 @@ impl ViewHost {
         }
     }
 
-    /// Copies each mirrored cell into the instance.
-    fn sync(&mut self, cells: &dyn StateCells) {
+    /// Copies each mirrored cell, and each state `scope` keeps, into the
+    /// instance.
+    fn sync(&mut self, scope: &Scope, cells: &dyn StateCells) {
         for (slot, link) in self.mirror.iter().enumerate() {
             let Some(Link::Mirror(id)) = *link else {
                 continue;
             };
             if let Some(value) = cells.get(id).and_then(to_value) {
                 self.instance.set_state(slot, value);
+            }
+        }
+        for locals in &scope.locals {
+            let values = locals.values.borrow();
+            for (&slot, value) in locals.slots.iter().zip(values.iter()) {
+                if (slot as usize) < self.instance.states().len() {
+                    self.instance.set_state(slot as usize, value.clone());
+                }
             }
         }
     }
@@ -217,20 +249,95 @@ impl ViewHost {
     }
 
     /// Evaluates the pure entry `entry` of the handler table (a region's
-    /// selector, iterable or key) with `args` against the current states, and
-    /// returns its value. Nothing it does is kept: it writes no state and its
-    /// events are dropped.
+    /// selector, iterable or key) with the bindings of `scope`, then `extra`,
+    /// against the current states, and returns its value. Nothing it does is
+    /// kept: it writes no state and its events are dropped.
     pub fn evaluate(
         &mut self,
         entry: u32,
-        args: &[Value],
+        scope: &Scope,
+        extra: Option<&Value>,
         cells: &dyn StateCells,
     ) -> Result<Value, Fault> {
         let chunk = self.chunk(entry, ChunkKind::RegionEntry)?;
-        self.sync(cells);
-        let result = self.vm.call(&mut self.instance, chunk, args);
+        self.sync(scope, cells);
+        self.args.clear();
+        self.args.extend_from_slice(&scope.values);
+        self.args.extend(extra.cloned());
+        let result = self.vm.call(&mut self.instance, chunk, &self.args);
+        self.args.clear();
         self.instance.clear_dirty();
         result.map(|outcome| outcome.value)
+    }
+
+    /// The initial values of the instance states `locals` a mount of region
+    /// content keeps, each initializer run with the bindings of `scope` after
+    /// the ones before it. A state without an initializer, and every state
+    /// after a faulting one, starts `Nil`; the fault is kept as
+    /// [`last_fault`](Self::last_fault).
+    pub(crate) fn initialize(
+        &mut self,
+        locals: &[LocalTemplate],
+        scope: &Scope,
+        cells: &dyn StateCells,
+    ) -> Box<[Value]> {
+        self.sync(scope, cells);
+        let mut values = vec![Value::Nil; locals.len()];
+        for (value, local) in values.iter_mut().zip(locals) {
+            let Some(entry) = local.init else {
+                continue;
+            };
+            let result = self.chunk(entry, ChunkKind::StateInit).and_then(|chunk| {
+                self.vm
+                    .call(&mut self.instance, chunk, &scope.values)
+                    .map(|outcome| outcome.value)
+            });
+            match result {
+                Ok(initial) => {
+                    if (local.slot as usize) < self.instance.states().len() {
+                        self.instance
+                            .set_state(local.slot as usize, initial.clone());
+                    }
+                    *value = initial;
+                }
+                Err(fault) => {
+                    self.fault = Some(fault);
+                    break;
+                }
+            }
+        }
+        self.instance.clear_dirty();
+        values.into_boxed_slice()
+    }
+
+    /// Keeps `locals`, a mount of region content, so the view's release frees
+    /// its cells if the mount is still alive then.
+    pub(crate) fn adopt(&mut self, locals: &Rc<Locals>) {
+        let regions = &mut self.regions;
+        if regions.locals.len() >= regions.prune {
+            regions.locals.retain(|weak| weak.strong_count() > 0);
+            regions.prune = (regions.locals.len() * 2).max(16);
+        }
+        regions.locals.push(Rc::downgrade(locals));
+    }
+
+    /// Keeps a region mount's pulse cell, freed with the view.
+    pub(crate) fn adopt_pulse(&mut self, pulse: StateId) {
+        self.regions.pulses.push(pulse);
+    }
+
+    /// Frees the cells the view's regions allocated, as unmounting or
+    /// rebuilding the view's tree does.
+    pub fn release_regions(&mut self, states: &mut StateStore) {
+        for locals in self.regions.locals.drain(..) {
+            if let Some(locals) = locals.upgrade() {
+                locals.release(states);
+            }
+        }
+        for pulse in self.regions.pulses.drain(..) {
+            states.free(pulse);
+        }
+        self.regions.prune = 0;
     }
 
     /// The number of handlers the view declares.
@@ -238,8 +345,8 @@ impl ViewHost {
         self.handlers.len()
     }
 
-    /// Runs handler `handler` with `payload` and the enclosing regions'
-    /// bindings `scope`, as one transaction over the component's states.
+    /// Runs handler `handler` with `payload` in `scope`, as one transaction
+    /// over the component's states.
     ///
     /// Returns whether it committed. A fault is kept as
     /// [`last_fault`](Self::last_fault); the transaction's writes and events are
@@ -248,7 +355,7 @@ impl ViewHost {
         &mut self,
         handler: u32,
         payload: Value,
-        scope: &[Value],
+        scope: &Scope,
         cells: &mut dyn StateCells,
     ) -> bool {
         let chunk = match self.chunk(handler, ChunkKind::Handler) {
@@ -258,10 +365,10 @@ impl ViewHost {
                 return false;
             }
         };
-        self.sync(cells);
+        self.sync(scope, &*cells);
         self.args.clear();
         self.args.push(payload);
-        self.args.extend_from_slice(scope);
+        self.args.extend_from_slice(&scope.values);
         let result = self.vm.call(&mut self.instance, chunk, &self.args);
         self.args.clear();
         match result {
@@ -285,7 +392,14 @@ impl ViewHost {
                                 cells.set(id, StateValue::Int(revision.wrapping_add(1)));
                             }
                         }
-                        None => {}
+                        None => {
+                            let value = &self.instance.states()[slot];
+                            for locals in scope.locals.iter().rev() {
+                                if locals.store(slot as u32, value.clone(), cells) {
+                                    break;
+                                }
+                            }
+                        }
                     }
                 }
                 true

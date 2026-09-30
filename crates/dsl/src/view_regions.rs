@@ -6,15 +6,16 @@
 //! every region arm included. A target authors only the *static* nodes — those
 //! outside every region — and names them by their pre-order among themselves,
 //! the index [`StaticNodes`] maps a [`NodeKey`] to. Everything a region mounts
-//! is a template: its nodes, their state edges and handler routes, and the
-//! handler-table entries that decide what it mounts.
+//! is a template: its nodes, their state edges and handler routes, the
+//! handler-table entries that decide what it mounts, and the states of the
+//! component instances each mount of an arm keeps.
 
 use std::collections::{HashMap, HashSet};
 
 use viso_ui::state::StateKey;
 use viso_view::{
-    ArmTemplate, Control, GroupTemplate, ItemTemplate, RegionKind, RegionTemplate, Route,
-    SlotTemplate, ViewRegions,
+    ArmTemplate, CellRef, Control, GroupTemplate, ItemTemplate, LocalTemplate, RegionKind,
+    RegionTemplate, Route, SlotTemplate, ViewRegions,
 };
 
 use crate::aot::{aot_kind, aot_style};
@@ -169,6 +170,16 @@ pub(crate) fn view_regions(
                 .map(|s| s.symbol)
         })
         .collect();
+    let regional = compiled
+        .regional
+        .iter()
+        .filter_map(|s| {
+            Some((
+                s.symbol,
+                layout.states.iter().position(|n| *n == s.name)? as u32,
+            ))
+        })
+        .collect();
     let mut builder = Builder {
         program: &compiled.behavior,
         layout,
@@ -176,6 +187,8 @@ pub(crate) fn view_regions(
         controls,
         edges,
         slots,
+        regional,
+        claimed: HashSet::new(),
         cells: HashMap::new(),
         out: ViewRegions::default(),
         errors: Vec::new(),
@@ -202,6 +215,10 @@ struct Builder<'a> {
     edges: HashMap<NodeKey, Vec<(SymbolId, u8)>>,
     /// The state source of each component state slot.
     slots: Vec<Option<SymbolId>>,
+    /// The slot of each state source of an instance a region mounts.
+    regional: HashMap<SymbolId, u32>,
+    /// The instances whose states an arm already keeps.
+    claimed: HashSet<u32>,
     /// Each state's index in [`ViewRegions::states`].
     cells: HashMap<SymbolId, u32>,
     out: ViewRegions,
@@ -314,11 +331,14 @@ impl Builder<'_> {
         let mut arms_out = Vec::with_capacity(preserves.len());
         for (items, preserve) in arms(item).into_iter().zip(preserves) {
             let mut out = Vec::new();
+            let mut locals = Vec::new();
             for item in items {
-                self.content(item, &mut out);
+                self.content(item, &mut out, &mut locals);
             }
+            locals.sort_unstable_by_key(|local: &LocalTemplate| local.slot);
             arms_out.push(ArmTemplate {
                 preserve,
+                locals,
                 items: out,
             });
         }
@@ -326,13 +346,39 @@ impl Builder<'_> {
         index
     }
 
-    /// Flattens one item of a region arm into `out`, in pre-order.
-    fn content(&mut self, item: &UiItem, out: &mut Vec<ItemTemplate>) {
+    /// Flattens one item of a region arm into `out`, in pre-order, and
+    /// collects into `locals` the states of the instances whose view first
+    /// appears there.
+    fn content(
+        &mut self,
+        item: &UiItem,
+        out: &mut Vec<ItemTemplate>,
+        locals: &mut Vec<LocalTemplate>,
+    ) {
         let UiItem::Node(node) = item else {
             let region = self.region(item);
             out.push(ItemTemplate::Region(region));
             return;
         };
+        if node.instance != 0 && self.claimed.insert(node.instance) {
+            let states = self
+                .layout
+                .regional
+                .iter()
+                .find(|r| r.instance == node.instance);
+            if let Some(states) = states {
+                locals.extend(
+                    states
+                        .inits
+                        .iter()
+                        .enumerate()
+                        .map(|(at, &init)| LocalTemplate {
+                            slot: states.base + at as u32,
+                            init,
+                        }),
+                );
+            }
+        }
         let key = NodeKey(self.key);
         self.key += 1;
         let edges = self
@@ -340,7 +386,13 @@ impl Builder<'_> {
             .remove(&key)
             .unwrap_or_default()
             .into_iter()
-            .map(|(symbol, bits)| (self.cell(symbol), bits))
+            .map(|(symbol, bits)| {
+                let cell = match self.regional.get(&symbol) {
+                    Some(&slot) => CellRef::Local(slot),
+                    None => CellRef::Shared(self.cell(symbol)),
+                };
+                (cell, bits)
+            })
             .collect();
         let routes = self
             .routes
@@ -363,7 +415,7 @@ impl Builder<'_> {
             return;
         }
         for child in &node.children {
-            self.content(child, out);
+            self.content(child, out, locals);
         }
         if let ItemTemplate::Node { node: template, .. } = &mut out[at] {
             template.child_count = node.children.len() as u32;
@@ -394,7 +446,7 @@ impl Builder<'_> {
 
     /// The cells `entries` read, ascending: every state their bodies, and the
     /// functions and closures those call, load.
-    fn deps(&mut self, entries: &[u32]) -> Vec<u32> {
+    fn deps(&mut self, entries: &[u32]) -> Vec<CellRef> {
         let mut seen: HashSet<FuncId> = HashSet::new();
         let mut stack: Vec<FuncId> = entries
             .iter()
@@ -416,12 +468,19 @@ impl Builder<'_> {
                 }
             }
         }
-        let symbols: Vec<SymbolId> = slots
-            .into_iter()
-            .filter_map(|slot| self.slots.get(slot as usize).copied().flatten())
-            .collect();
-        let mut deps: Vec<u32> = symbols.into_iter().map(|s| self.cell(s)).collect();
-        deps.sort_unstable();
+        let local: HashSet<u32> = self.regional.values().copied().collect();
+        let mut deps: Vec<CellRef> = Vec::with_capacity(slots.len());
+        for slot in slots {
+            if local.contains(&slot) {
+                deps.push(CellRef::Local(slot));
+            } else if let Some(symbol) = self.slots.get(slot as usize).copied().flatten() {
+                deps.push(CellRef::Shared(self.cell(symbol)));
+            }
+        }
+        deps.sort_unstable_by_key(|cell| match *cell {
+            CellRef::Shared(index) => (0, index),
+            CellRef::Local(slot) => (1, slot),
+        });
         deps.dedup();
         deps
     }

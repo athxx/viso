@@ -405,6 +405,22 @@ pub struct ComponentLayout {
     /// The view's event handlers and region entries, by the site they are
     /// registered at; a handler's index here is the one its view node names.
     pub handlers: Vec<(Site, FuncId)>,
+    /// Each inlined instance a control-flow region mounts, in instance order:
+    /// its states start from these entries each time region content mounts it,
+    /// not from [`state_inits`](Self::state_inits).
+    pub regional: Vec<RegionalStates>,
+}
+
+/// The states of an inlined instance a control-flow region mounts: each mount
+/// of the region content keeps its own values for them.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RegionalStates {
+    /// The instance.
+    pub instance: u32,
+    /// The mounted slot of its first state; the others follow in order.
+    pub base: u32,
+    /// The handler-table index of each state's initializer, by state.
+    pub inits: Vec<Option<u32>>,
 }
 
 /// Where a view function is registered: the component instance of the

@@ -55,6 +55,10 @@ pub struct UiInstance {
     /// mounted view's root: the scope values the instance's functions take
     /// before their own.
     pub depth: u32,
+    /// Whether a control-flow region encloses the node: its states then live
+    /// with the region content that mounts it, one set per mount, instead of
+    /// in the mounted component.
+    pub regional: bool,
     /// The value of each input the caller binds, by input slot: the source
     /// range of the value, whose entry the parent registers there.
     pub args: Vec<(u32, TextRange)>,

@@ -238,9 +238,10 @@ Goal: every Core view construct reaches a live tree through all three lowering t
   - [x] Instance state as hidden mounted state `identity.state`, kept by hot reload.
   - [x] Input reads call the caller's argument entry; `emit` runs the caller's handlers.
   - [x] Inlined-view bindings substitute instance sources (`lower_view_bindings`).
-  - [x] `E3711` for self-mounting, stateful instances in regions, forwarded props on a
-        multi-root view, and components of other files.
-  - [ ] Stateful instances inside `if`/`for`/`match`.
+  - [x] `E3711` for self-mounting, forwarded props on a multi-root view, and
+        components of other files.
+  - [x] Stateful instances inside `if`/`for`/`match`: per-mount kept states
+        (`view/scope.rs`), initializers run with the region's scope values.
   - [ ] Component instances in `ui!` fragments.
 - [x] Widget schema registry: properties, events, slots, percent basis, from native
       declarations instead of the baseline table in `hir/widget.rs`.
