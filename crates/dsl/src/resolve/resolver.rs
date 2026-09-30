@@ -431,7 +431,8 @@ fn define_members(
 }
 
 /// The name token, symbol kind, and namespace of a component/system member, or `None`
-/// for a member that mints no module symbol (the `view` block itself).
+/// for a member that mints no module symbol: the `view` block itself, and a `slot`,
+/// which `fill` and `SlotOutlet` name within the component's schema.
 fn member_identity(
     member: &crate::ast::Member,
 ) -> Option<(crate::syntax::SyntaxToken, SymbolKind, Namespace)> {
@@ -444,7 +445,7 @@ fn member_identity(
         Member::Fn(d) => (d.name()?, SymbolKind::Function, Namespace::Value),
         Member::Action(d) => (d.name()?, SymbolKind::Action, Namespace::Value),
         Member::Task(d) => (d.name()?, SymbolKind::Task, Namespace::Value),
-        Member::View(_) => return None,
+        Member::Slot(_) | Member::View(_) => return None,
     };
     Some(triple)
 }
@@ -816,7 +817,7 @@ impl ModulePass<'_> {
             Member::Fn(f) => self.resolve_callable(f.params(), f.return_type(), f.body()),
             Member::Action(a) => self.resolve_callable(a.params(), a.return_type(), a.body()),
             Member::Task(t) => self.resolve_callable(t.params(), t.return_type(), t.body()),
-            Member::Event(_) => {}
+            Member::Event(_) | Member::Slot(_) => {}
         }
     }
 

@@ -11,7 +11,6 @@
 
 use viso_behavior::native::{
     COMPONENT, NativeWidget, Natives, PropertyGroup, WidgetEvent, WidgetNode, WidgetProperty,
-    WidgetSlot,
 };
 
 use super::ty::Ty;
@@ -149,16 +148,6 @@ impl WidgetSchema {
         self.widget.node == WidgetNode::Fragment
     }
 
-    /// The slot `name`.
-    pub(crate) fn slot(&self, name: &str) -> Option<&'static WidgetSlot> {
-        self.widget.slot(name)
-    }
-
-    /// The default slot, which bare child items fill.
-    pub(crate) fn default_slot(&self) -> Option<&'static WidgetSlot> {
-        self.widget.default_slot()
-    }
-
     /// The slot names, for suggestions.
     pub(crate) fn slot_names(&self) -> impl Iterator<Item = &'static str> + '_ {
         self.widget.slots.iter().map(|s| s.name)
@@ -292,9 +281,12 @@ mod tests {
         let slider = builtin("Slider").expect("Slider is registered");
         assert!(matches!(slider.lookup(&["value"]), PropLookup::Known(p) if p.two_way));
         assert!(matches!(slider.lookup(&["min"]), PropLookup::Known(p) if !p.two_way));
-        assert!(slider.default_slot().is_none());
+        assert!(slider.native().default_slot().is_none());
         let column = builtin("Column").expect("Column is registered");
-        assert_eq!(column.default_slot().map(|s| s.name), Some("children"));
+        assert_eq!(
+            column.native().default_slot().map(|s| s.name),
+            Some("children")
+        );
     }
 
     #[test]

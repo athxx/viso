@@ -16,6 +16,8 @@
 
 use std::collections::BTreeSet;
 
+use viso_behavior::native::SlotCardinality;
+
 use crate::resolve::SymbolId;
 use crate::syntax::TextRange;
 
@@ -185,6 +187,19 @@ pub struct HirCallable {
     pub meta: HirMeta,
 }
 
+/// A `slot` of a component: what its callers fill with `fill` or bare child items.
+#[derive(Debug, Clone, PartialEq)]
+pub struct HirSlot {
+    /// The slot's name.
+    pub name: String,
+    /// How many nodes it takes, from its type.
+    pub cardinality: SlotCardinality,
+    /// Whether `@default` marks it: bare child items of a caller's node fill it.
+    pub default: bool,
+    /// The slot name's source span.
+    pub declared_at: TextRange,
+}
+
 /// The typed schema of one component: its members grouped by kind, in declaration order.
 ///
 /// This is the spec member-classification result — every core member of a `component`
@@ -205,6 +220,8 @@ pub struct ComponentSchema {
     pub computeds: Vec<HirComputed>,
     /// The `event` declarations.
     pub events: Vec<HirEvent>,
+    /// The `slot` declarations, in declaration order.
+    pub slots: Vec<HirSlot>,
     /// The `fn`/`action`/`task` members and event handlers.
     pub callables: Vec<HirCallable>,
     /// The `view` declaration's source span, when the component has one.

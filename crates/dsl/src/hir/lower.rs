@@ -43,7 +43,7 @@ use super::capability::{CapabilityNode, CapabilitySet, propagate};
 use super::component::{MemberEnv, lower_component};
 use super::effect::{BodyContext, EffectClass, EffectCx, EffectEnv};
 use super::infer::{EventInfo, FieldInfo, InferCx, TypeEnv, VariantInfo, VariantPayload};
-use super::nodes::{ComponentSchema, HirCallable, HirComponent};
+use super::nodes::{ComponentSchema, HirCallable, HirComponent, HirSlot};
 use super::ownership::check_stored;
 use super::percent::PercentSources;
 use super::reads::ReadEnv;
@@ -969,6 +969,8 @@ struct Declarations {
     signatures: HashMap<SymbolId, (Vec<Ty>, Ty)>,
     /// The inputs of every component, as node properties.
     inputs: HashMap<SymbolId, Vec<InputProp>>,
+    /// The slots of every component, which its callers fill.
+    slots: HashMap<SymbolId, Vec<HirSlot>>,
     /// The prelude's types by name.
     standard: HashMap<String, SymbolId>,
     /// The index of the module declaring each record, enum, event, component and
@@ -1086,6 +1088,10 @@ impl TypeEnv for ModuleEnv<'_> {
 impl ViewEnv for ModuleEnv<'_> {
     fn component_inputs(&self, component: SymbolId) -> Option<&[InputProp]> {
         self.decls.inputs.get(&component).map(Vec::as_slice)
+    }
+
+    fn component_slots(&self, component: SymbolId) -> Option<&[HirSlot]> {
+        self.decls.slots.get(&component).map(Vec::as_slice)
     }
 
     fn standard_type(&self, name: &str) -> Option<SymbolId> {
@@ -1271,6 +1277,10 @@ impl ModuleScope {
                     };
                     let inputs = scope.inputs_of(c, members, interner);
                     decls.inputs.insert(sym, inputs);
+                    // The component's own lowering reports what is wrong with its slots.
+                    decls
+                        .slots
+                        .insert(sym, super::component::slots_of(c, &mut Vec::new()));
                     for member in c.members() {
                         scope.record_member(decls, sym, &member, members, interner);
                     }
@@ -1412,7 +1422,7 @@ impl ModuleScope {
                 }
                 return;
             }
-            Member::View(_) => return,
+            Member::Slot(_) | Member::View(_) => return,
         };
 
         let Some(tok) = name_tok else {
@@ -2412,7 +2422,7 @@ mod tests {
         );
         assert_eq!(
             codes(
-                "component Card {\n  view { }\n}\n\
+                "component Card {\n  @default slot body: SlotList<Node>;\n  view { }\n}\n\
                  component C {\n  view { Grid { Card { Text { grid.row: 0; } } } }\n}"
             ),
             ["E3702"]
@@ -2809,5 +2819,158 @@ mod tests {
         assert_eq!(one("emit changed(1, value: 2, source: \"a\");"), "E3202");
         assert_eq!(one("emit changed(1, sourc: \"a\");"), "E3202");
         assert_eq!(one("emit changed(\"a\", \"b\");"), "E2103");
+    }
+
+    const PANEL: &str = "component Panel {\n\
+         \x20 slot header: Slot<Node>;\n\
+         \x20 slot footer: OptionalSlot<Node>;\n\
+         \x20 @default slot body: SlotList<Node>;\n\
+         \x20 view { Column { SlotOutlet { slot: header; } SlotOutlet { slot: body; } SlotOutlet { slot: footer; } } }\n\
+         }\n";
+
+    fn with_panel(view: &str) -> Vec<&'static str> {
+        codes(&format!(
+            "{PANEL}component C {{\n  state on = true;\n  state items = [1, 2];\n  view {{ {view} }}\n}}"
+        ))
+    }
+
+    #[test]
+    fn slots_are_filled_by_cardinality() {
+        assert_clean(&format!(
+            "{PANEL}component C {{\n  state on = true;\n  view {{ Panel {{ \
+             fill header {{ if on {{ Text {{}} }} else {{ Row {{}} }} }} \
+             Text {{}} Text {{}} }} }}\n}}"
+        ));
+        assert_clean(&format!(
+            "{PANEL}component C {{\n  view {{ Panel {{ fill header {{ Fragment {{ Text {{}} }} }} \
+             fill footer {{ Text {{}} }} fill body {{ Text {{}} }} }} }}\n}}"
+        ));
+        assert_clean("component C {\n  view { Scroll { fill content { Column {} } } }\n}");
+        assert_eq!(
+            with_panel("Panel { Text {} }"),
+            ["E3502"],
+            "header unfilled"
+        );
+        assert_eq!(
+            with_panel("Panel { fill header { if on { Text {} } } }"),
+            ["E3502"],
+            "an `if` without `else` may fill nothing"
+        );
+        assert_eq!(
+            with_panel("Panel { fill header { for i in items key i { Text {} } } }"),
+            ["E3502"]
+        );
+        assert_eq!(
+            with_panel("Panel { fill header { Text {} } fill footer { Text {} Text {} } }"),
+            ["E3502"]
+        );
+        assert_eq!(
+            with_panel("Panel { fill header { Text {} } fill header { Text {} } }"),
+            ["E3502"],
+            "a single slot is filled once"
+        );
+        assert_eq!(
+            with_panel("Panel { fill header { Text {} } Text {} fill body { Text {} } }"),
+            ["E3502"],
+            "bare items and `fill` of the default slot"
+        );
+        assert_eq!(
+            codes("component C {\n  view { Scroll { Column {} Column {} } }\n}"),
+            ["E3502"]
+        );
+    }
+
+    #[test]
+    fn a_node_without_a_default_slot_takes_no_bare_items() {
+        let pkg = lower_src("component C {\n  view { Column { Text { Row {} } } }\n}");
+        assert_eq!(
+            pkg.diagnostics.iter().map(|d| d.code).collect::<Vec<_>>(),
+            ["E3003"]
+        );
+        assert_eq!(
+            codes(
+                "component Card {\n  slot title: Slot<Node>;\n  view { }\n}\n\
+                 component C {\n  view { Card { Text {} } }\n}"
+            ),
+            ["E3003", "E3502"],
+            "no default slot, and `title` is left unfilled"
+        );
+        let pkg = lower_src(&format!(
+            "{PANEL}component C {{\n  view {{ Panel {{ fill heder {{ Text {{}} }} fill header {{ Text {{}} }} }} }}\n}}"
+        ));
+        let d = pkg
+            .diagnostics
+            .iter()
+            .find(|d| d.code == "E3501")
+            .expect("an unknown slot is E3501");
+        assert!(
+            d.notes.iter().any(|n| n.contains("header"))
+                || d.related.iter().any(|r| r.label.contains("header")),
+            "the misspelling suggests `header`, got {d:?}"
+        );
+        assert_eq!(pkg.diagnostics.len(), 1, "{:?}", pkg.diagnostics);
+    }
+
+    #[test]
+    fn slot_declarations_are_checked() {
+        assert_eq!(
+            codes(
+                "component C {\n  @default slot a: SlotList<Node>;\n  \
+                 @default slot b: SlotList<Node>;\n  view { Column {} }\n}"
+            ),
+            ["E3004"]
+        );
+        assert_eq!(
+            codes("component C {\n  slot a: Slot<String>;\n  view { Column {} }\n}"),
+            ["E2103"]
+        );
+        assert_eq!(
+            codes("component C {\n  slot a: Slot<Node> = empty;\n  view { Column {} }\n}"),
+            ["E3502"]
+        );
+        assert_clean(
+            "component C {\n  slot a: OptionalSlot<Node> = None;\n  \
+             slot b: SlotList<Node> = empty;\n  \
+             view { Column { SlotOutlet { slot: a; } SlotOutlet { slot: b; } } }\n}",
+        );
+    }
+
+    #[test]
+    fn an_outlet_places_one_slot_of_its_own_component_once() {
+        assert_eq!(
+            codes(
+                "component C {\n  slot a: SlotList<Node>;\n  \
+                 view { Column { SlotOutlet { slot: b; } } }\n}"
+            ),
+            ["E3501"]
+        );
+        assert_eq!(
+            codes("component C {\n  view { Column { SlotOutlet {} } }\n}"),
+            ["E3501"]
+        );
+        assert_eq!(
+            codes(
+                "component C {\n  slot a: SlotList<Node>;\n  \
+                 view { Column { SlotOutlet { slot: a; } SlotOutlet { slot: a; } } }\n}"
+            ),
+            ["E3502"]
+        );
+        assert_eq!(
+            codes(
+                "component C {\n  slot a: SlotList<Node>;\n  state items = [1];\n  \
+                 view { Column { for i in items key i { SlotOutlet { slot: a; } } } }\n}"
+            ),
+            ["E3502"]
+        );
+        assert_eq!(
+            codes(
+                "component Wrap {\n  slot a: Slot<Node>;\n  \
+                 view { Column { SlotOutlet { slot: a; } } }\n}\n\
+                 component C {\n  slot a: Slot<Node>;\n  \
+                 view { Wrap { fill a { SlotOutlet { slot: a; } } } }\n}"
+            ),
+            Vec::<&str>::new(),
+            "an outlet forwards the caller's slot, counted by its cardinality"
+        );
     }
 }

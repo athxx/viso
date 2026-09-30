@@ -94,6 +94,27 @@ fn a_fragment_splices_its_children_and_an_unknown_type_mounts_nothing() {
 }
 
 #[test]
+fn a_fill_lowers_to_the_widgets_children_and_an_outlet_mounts_nothing() {
+    let column = only_node(
+        "Column { fill children { Text { } } Fragment { fill children { Button { } } } \
+         SlotOutlet { slot: body; } Scroll { fill content { Row { } } } }",
+    );
+    let types: Vec<_> = column
+        .children
+        .iter()
+        .map(|item| match item {
+            UiItem::Node(n) => n.type_name.as_str(),
+            other => panic!("expected a node, got {other:?}"),
+        })
+        .collect();
+    assert_eq!(types, ["Text", "Button", "Scroll"]);
+    match &column.children[2] {
+        UiItem::Node(scroll) => assert_eq!(scroll.children.len(), 1),
+        other => panic!("expected a node, got {other:?}"),
+    }
+}
+
+#[test]
 fn static_dimensions_fold_into_style() {
     // A `dp` constant folds to a fixed extent.
     let node = only_node("Text { width: 12dp; height: 34dp; gap: 8dp; }");

@@ -21,19 +21,30 @@
 //! nearest enclosing real node in the same view block. A parent that does not
 //! provide the group, or one that is not statically known (the view root, a slot
 //! fill, the children of a user component), is `E3702`.
+//!
+//! Slot checks: a node's bare structure items fill its default slot, so a node
+//! type without one that has any is `E3003`; `fill` naming a slot the node type
+//! does not declare is `E3501`; and each slot must take as many nodes as its
+//! cardinality admits — counted over every arm of a region, a `for` taking any
+//! number — or it is `E3502`, as are bare items next to `fill` of the default
+//! slot and a second `fill` of a single slot. A `SlotOutlet` names a slot of the
+//! component whose view it is in (`E3501` otherwise); a second outlet of one
+//! slot, or one inside a `for`, would place the caller's nodes twice and is
+//! `E3502`.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
 
-use viso_behavior::native::Natives;
+use viso_behavior::native::{Natives, SlotCardinality, WidgetNode};
 
 use super::infer::{InferCx, MatchCheck, TypeEnv};
+use super::nodes::HirSlot;
 use super::percent::{Carry, PercentFacts, PercentSources};
 use super::ty::Ty;
 use super::widget::{self, ChildProps, PropLookup, WidgetSchema, value_ty};
 use crate::ast::{
-    AstNode, ElseBranch, EventHandler, Expr, NodeBody, PropertyBinding, PropertyPath,
-    TwoWayBinding, TypePath, ViewBlock, ViewFor, ViewIf, ViewItem, ViewMatch,
+    AstNode, ElseBranch, EventHandler, Expr, FillClause, NodeBody, PathExpr, PropertyBinding,
+    PropertyPath, TwoWayBinding, TypePath, ViewBlock, ViewFor, ViewIf, ViewItem, ViewMatch,
 };
 use crate::behavior::FunctionKind;
 use crate::behavior::lower::{
@@ -91,6 +102,9 @@ pub(crate) trait ViewEnv: TypeEnv {
     /// The inputs of the component `component`.
     fn component_inputs(&self, component: SymbolId) -> Option<&[InputProp]>;
 
+    /// The slots of the component `component`.
+    fn component_slots(&self, component: SymbolId) -> Option<&[HirSlot]>;
+
     /// The prelude type named `name`.
     fn standard_type(&self, name: &str) -> Option<SymbolId>;
 
@@ -141,6 +155,8 @@ pub(crate) fn check_view<'a>(
         sink,
         regions: Vec::new(),
         preserves: HashMap::new(),
+        outlets: HashMap::new(),
+        repeated: 0,
     };
     walk.items(block.items(), Scope::ROOT);
     percent.extend(walk.cx.take_percent_defs());
@@ -296,7 +312,102 @@ struct Owner<'e> {
     inputs: &'e [InputProp],
     /// The user component the node instantiates; its children fill its default slot.
     component: Option<SymbolId>,
+    /// The slots its callers fill: the component's, else the widget's.
+    slots: Vec<SlotSpec<'e>>,
     schema: WidgetSchema,
+}
+
+impl Owner<'_> {
+    fn slot(&self, name: &str) -> Option<&SlotSpec<'_>> {
+        self.slots.iter().find(|s| s.name == name)
+    }
+
+    fn default_slot(&self) -> Option<&SlotSpec<'_>> {
+        self.slots.iter().find(|s| s.default)
+    }
+
+    /// Whether this is a `SlotOutlet`.
+    fn is_outlet(&self) -> bool {
+        self.component.is_none() && self.schema.native().node == WidgetNode::Outlet
+    }
+}
+
+/// One slot of a node type.
+#[derive(Debug, Clone, Copy)]
+struct SlotSpec<'e> {
+    name: &'e str,
+    cardinality: SlotCardinality,
+    default: bool,
+    /// Where a user component declares it.
+    declared_at: Option<TextRange>,
+}
+
+/// How many nodes some structure items mount: at least `min`, at most `max`
+/// (`None` for no bound).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Count {
+    min: usize,
+    max: Option<usize>,
+}
+
+impl Count {
+    const NONE: Count = Count {
+        min: 0,
+        max: Some(0),
+    };
+    const ONE: Count = Count {
+        min: 1,
+        max: Some(1),
+    };
+    const ANY: Count = Count { min: 0, max: None };
+
+    /// The nodes a slot of `cardinality` may take.
+    fn of(cardinality: SlotCardinality) -> Count {
+        match cardinality {
+            SlotCardinality::One => Count::ONE,
+            SlotCardinality::Optional => Count {
+                min: 0,
+                max: Some(1),
+            },
+            SlotCardinality::Many => Count::ANY,
+        }
+    }
+
+    /// Both, one after the other.
+    fn then(self, next: Count) -> Count {
+        Count {
+            min: self.min + next.min,
+            max: self.max.zip(next.max).map(|(a, b)| a + b),
+        }
+    }
+
+    /// Either one or the other.
+    fn or(self, other: Count) -> Count {
+        Count {
+            min: self.min.min(other.min),
+            max: self.max.zip(other.max).map(|(a, b)| a.max(b)),
+        }
+    }
+
+    /// Whether every count this can be satisfies `cardinality`.
+    fn fits(self, cardinality: SlotCardinality) -> bool {
+        let slot = Count::of(cardinality);
+        self.min >= slot.min
+            && match (self.max, slot.max) {
+                (_, None) => true,
+                (Some(have), Some(most)) => have <= most,
+                (None, Some(_)) => false,
+            }
+    }
+
+    fn describe(self) -> String {
+        match (self.min, self.max) {
+            (min, Some(max)) if min == max => format!("{min}"),
+            (min, Some(max)) => format!("{min} to {max}"),
+            (0, None) => "any number of".to_string(),
+            (min, None) => format!("{min} or more"),
+        }
+    }
 }
 
 /// The direct parent of the nodes in a body, as far as parent-provided properties
@@ -367,6 +478,10 @@ struct ViewWalk<'a> {
     regions: Vec<(SyntaxNode, Ty)>,
     /// Each `preserve` identity the view names, at its first use.
     preserves: HashMap<String, TextRange>,
+    /// Each slot of the component a `SlotOutlet` places, at its first outlet.
+    outlets: HashMap<String, TextRange>,
+    /// How many `for` bodies enclose the items being walked.
+    repeated: usize,
 }
 
 impl<'a> ViewWalk<'a> {
@@ -384,8 +499,15 @@ impl<'a> ViewWalk<'a> {
                 ViewItem::For(view_for) => self.view_for(&view_for, scope),
                 ViewItem::Match(view_match) => self.view_match(&view_match, scope),
                 ViewItem::Fill(fill) => {
+                    // A fill's nodes are the filled node's children when it is a
+                    // widget; a component places them where its view says.
+                    let fill_scope = Scope {
+                        owner: None,
+                        outer: scope.inner,
+                        inner: scope.inner,
+                    };
                     if let Some(body) = fill.body() {
-                        self.items(body.items(), Scope::ROOT);
+                        self.items(body.items(), fill_scope);
                     }
                 }
             }
@@ -394,7 +516,14 @@ impl<'a> ViewWalk<'a> {
 
     /// A node whose parent is `parent`.
     fn node(&mut self, ty: Option<TypePath>, body: Option<NodeBody>, parent: Parent<'_>) {
+        let at = ty.as_ref().map(|ty| ty.syntax().text_range());
         let owner = ty.and_then(|ty| self.owner_of(&ty));
+        if let (Some(owner), Some(at)) = (&owner, at) {
+            if owner.is_outlet() {
+                self.outlet(body.as_ref(), at);
+            }
+            self.slots(owner, body.as_ref(), at);
+        }
         let Some(body) = body else {
             return;
         };
@@ -428,6 +557,18 @@ impl<'a> ViewWalk<'a> {
                 name,
                 inputs: self.env.component_inputs(*id)?,
                 component: Some(*id),
+                slots: self
+                    .env
+                    .component_slots(*id)
+                    .unwrap_or_default()
+                    .iter()
+                    .map(|s| SlotSpec {
+                        name: &s.name,
+                        cardinality: s.cardinality,
+                        default: s.default,
+                        declared_at: Some(s.declared_at),
+                    })
+                    .collect(),
                 schema: WidgetSchema::user_component(),
             }),
             None => {
@@ -448,11 +589,351 @@ impl<'a> ViewWalk<'a> {
                     return None;
                 };
                 Some(Owner {
+                    slots: schema
+                        .native()
+                        .slots
+                        .iter()
+                        .map(|s| SlotSpec {
+                            name: s.name,
+                            cardinality: s.cardinality,
+                            default: s.default,
+                            declared_at: None,
+                        })
+                        .collect(),
                     schema,
                     name,
                     inputs: &[],
                     component: None,
                 })
+            }
+        }
+    }
+
+    /// Checks what fills the slots of a node of `owner` (whose type is at `at`):
+    /// its bare structure items the default slot, each `fill` the slot it names.
+    fn slots(&mut self, owner: &Owner<'a>, body: Option<&NodeBody>, at: TextRange) {
+        let mut bare: Option<(TextRange, Count)> = None;
+        let mut fills: Vec<(&str, TextRange, Count)> = Vec::new();
+        let members: Vec<ViewItem> = body.iter().flat_map(|b| b.members()).collect();
+        let mut named: Vec<(FillClause, SlotSpec<'_>)> = Vec::new();
+        for member in &members {
+            if let ViewItem::Fill(fill) = member {
+                let Some(name) = fill.name() else {
+                    continue;
+                };
+                let text = name.text();
+                let text = text.trim_start_matches("r#");
+                match owner.slot(text) {
+                    Some(slot) => named.push((fill.clone(), *slot)),
+                    None => self.unknown_slot(owner, text, name.text_range()),
+                }
+                continue;
+            }
+            let count = self.count(std::slice::from_ref(member));
+            if count == Count::NONE && !is_structure(member) {
+                continue;
+            }
+            let range = member.syntax().text_range();
+            bare = Some(match bare {
+                Some((first, sum)) => (first, sum.then(count)),
+                None => (range, count),
+            });
+        }
+        let default = owner.default_slot().copied();
+        if let Some((first, _)) = bare
+            && default.is_none()
+        {
+            let mut message = format!(
+                "`{}` has no default slot, so it takes no child items",
+                owner.name
+            );
+            if !owner.slots.is_empty() {
+                let names: Vec<_> = owner
+                    .slots
+                    .iter()
+                    .map(|s| format!("`{}`", s.name))
+                    .collect();
+                message.push_str(&format!("; fill one of its slots: {}", names.join(", ")));
+            }
+            self.diagnostics
+                .push(Diagnostic::error("E3003", first, message));
+        }
+        for (fill, slot) in &named {
+            let Some(name) = fill.name() else {
+                continue;
+            };
+            let range = name.text_range();
+            if slot.default
+                && let Some((first, _)) = bare
+            {
+                let mut diagnostic = Diagnostic::error(
+                    "E3502",
+                    range,
+                    format!(
+                        "`{}` is the default slot and the bare child items already fill it;                          move them into this `fill`",
+                        slot.name
+                    ),
+                );
+                diagnostic
+                    .related
+                    .push(Related::new(first, "a bare child item"));
+                self.diagnostics.push(diagnostic);
+                continue;
+            }
+            if let Some((_, first, _)) = fills.iter().find(|(n, ..)| *n == slot.name)
+                && slot.cardinality != SlotCardinality::Many
+            {
+                let mut diagnostic = Diagnostic::error(
+                    "E3502",
+                    range,
+                    format!(
+                        "the slot `{}` is a `{}` and is already filled",
+                        slot.name,
+                        slot.cardinality.type_name()
+                    ),
+                );
+                diagnostic
+                    .related
+                    .push(Related::new(*first, "first filled here"));
+                self.diagnostics.push(diagnostic);
+                continue;
+            }
+            let items: Vec<ViewItem> = fill.body().iter().flat_map(|b| b.items()).collect();
+            let count = self.count(&items);
+            match fills.iter_mut().find(|(n, ..)| *n == slot.name) {
+                Some(entry) => entry.2 = entry.2.then(count),
+                None => fills.push((slot.name, range, count)),
+            }
+        }
+        if let (Some(slot), Some((first, count))) = (default, bare) {
+            fills.push((slot.name, first, count));
+        }
+        for slot in &owner.slots {
+            let (range, count) = fills
+                .iter()
+                .find(|(n, ..)| *n == slot.name)
+                .map_or((at, Count::NONE), |(_, range, count)| (*range, *count));
+            if count.fits(slot.cardinality) {
+                continue;
+            }
+            let message = format!(
+                "the slot `{}` of `{}` is a `{}`, but {} nodes fill it",
+                slot.name,
+                owner.name,
+                slot.cardinality.type_name(),
+                count.describe()
+            );
+            let mut diagnostic = Diagnostic::error("E3502", range, message);
+            if let Some((module, declared)) = slot.declared_at.and_then(|d| {
+                owner
+                    .component
+                    .and_then(|c| self.env.declaration_site(c, d))
+            }) {
+                let label = format!("`{}` is declared here", slot.name);
+                diagnostic.related.push(match module {
+                    Some(module) => Related::in_module(module, declared, label),
+                    None => Related::new(declared, label),
+                });
+            }
+            self.diagnostics.push(diagnostic);
+        }
+    }
+
+    /// `fill name` naming no slot of `owner`: `E3501`.
+    fn unknown_slot(&mut self, owner: &Owner<'a>, name: &str, range: TextRange) {
+        let candidates = owner.slots.iter().map(|s| Candidate {
+            name: s.name,
+            declared_at: s.declared_at.and_then(|d| {
+                owner
+                    .component
+                    .and_then(|c| self.env.declaration_site(c, d))
+            }),
+        });
+        let suggestions = nearest(name, candidates);
+        let mut diagnostic = Diagnostic::error(
+            "E3501",
+            range,
+            format!("`{}` has no slot `{name}`", owner.name),
+        );
+        attach(&mut diagnostic, range, &suggestions);
+        self.diagnostics.push(diagnostic);
+    }
+
+    /// How many nodes `items` mount, over every arm of their regions.
+    fn count(&self, items: &[ViewItem]) -> Count {
+        items.iter().fold(Count::NONE, |sum, item| {
+            let one = match item {
+                ViewItem::Named(node) => self.node_count(node.ty(), node.body()),
+                ViewItem::Anonymous(node) => self.node_count(node.ty(), node.body()),
+                ViewItem::If(view_if) => {
+                    let mut arms: Option<Count> = None;
+                    let mut link = Some(view_if.clone());
+                    let mut exhaustive = false;
+                    while let Some(arm) = link.take() {
+                        let block = self.block_count(arm.then_block());
+                        arms = Some(arms.map_or(block, |a| a.or(block)));
+                        match arm.else_branch() {
+                            Some(ElseBranch::If(nested)) => link = Some(nested),
+                            Some(ElseBranch::Block(block)) => {
+                                let block = self.block_count(Some(block));
+                                arms = arms.map(|a| a.or(block));
+                                exhaustive = true;
+                            }
+                            None => {}
+                        }
+                    }
+                    let arms = arms.unwrap_or(Count::NONE);
+                    if exhaustive {
+                        arms
+                    } else {
+                        arms.or(Count::NONE)
+                    }
+                }
+                ViewItem::Match(view_match) => view_match
+                    .arms()
+                    .map(|arm| self.block_count(arm.body()))
+                    .reduce(Count::or)
+                    .unwrap_or(Count::NONE),
+                ViewItem::For(_) => Count::ANY,
+                ViewItem::Property(_)
+                | ViewItem::Handler(_)
+                | ViewItem::TwoWayBinding(_)
+                | ViewItem::Fill(_) => Count::NONE,
+            };
+            sum.then(one)
+        })
+    }
+
+    fn block_count(&self, block: Option<ViewBlock>) -> Count {
+        let items: Vec<ViewItem> = block.iter().flat_map(|b| b.items()).collect();
+        self.count(&items)
+    }
+
+    /// How many nodes a node of type `ty` mounts: a `Fragment` its children, a
+    /// `SlotOutlet` what its slot takes, any other one.
+    fn node_count(&self, ty: Option<TypePath>, body: Option<NodeBody>) -> Count {
+        let segments: Vec<_> = ty.iter().flat_map(|t| t.segments()).collect();
+        let [head] = segments.as_slice() else {
+            return Count::ONE;
+        };
+        if self.symbols.contains_key(&head.text_range()) {
+            return Count::ONE;
+        }
+        let node = self.env.widgets().widget(&head.text()).map(|w| w.node);
+        let members = || -> Vec<ViewItem> { body.iter().flat_map(|b| b.members()).collect() };
+        match node {
+            Some(WidgetNode::Fragment) => {
+                let members = members();
+                let fills = members.iter().filter_map(|m| match m {
+                    ViewItem::Fill(fill) => Some(self.block_count(fill.body())),
+                    _ => None,
+                });
+                fills.fold(self.count(&members), Count::then)
+            }
+            Some(WidgetNode::Outlet) => members()
+                .iter()
+                .find_map(|m| match m {
+                    ViewItem::Property(p) => p
+                        .path()
+                        .filter(|path| path_text(path) == "slot")
+                        .and_then(|_| p.value())
+                        .and_then(|v| slot_name(&v)),
+                    _ => None,
+                })
+                .and_then(|name| self.own_slot(&name))
+                .map_or(Count::NONE, |slot| Count::of(slot.cardinality)),
+            _ => Count::ONE,
+        }
+    }
+
+    /// The slot `name` of the component whose view this is.
+    fn own_slot(&self, name: &str) -> Option<&'a HirSlot> {
+        let own = self.flow.own?;
+        self.env
+            .component_slots(own)?
+            .iter()
+            .find(|s| s.name == name)
+    }
+
+    /// A `SlotOutlet` whose type is at `at`: its `slot:` names a slot of the
+    /// component whose view it is in, placed by no other outlet and not once per
+    /// item of a `for`.
+    fn outlet(&mut self, body: Option<&NodeBody>, at: TextRange) {
+        let value = body
+            .into_iter()
+            .flat_map(|b| b.members())
+            .find_map(|m| match m {
+                ViewItem::Property(p)
+                    if p.path().is_some_and(|path| path_text(&path) == "slot") =>
+                {
+                    p.value()
+                }
+                _ => None,
+            });
+        let Some(value) = value else {
+            self.diagnostics.push(Diagnostic::error(
+                "E3501",
+                at,
+                "a `SlotOutlet` names the slot it places with `slot: name;`",
+            ));
+            return;
+        };
+        let range = value.syntax().text_range();
+        let Some(name) = slot_name(&value) else {
+            self.diagnostics.push(Diagnostic::error(
+                "E3501",
+                range,
+                "`slot:` takes the name of a slot of this component",
+            ));
+            return;
+        };
+        let declared = self
+            .flow
+            .own
+            .and_then(|own| self.env.component_slots(own))
+            .unwrap_or_default();
+        if !declared.iter().any(|s| s.name == name) {
+            let own = self.flow.own;
+            let candidates = declared.iter().map(|s| Candidate {
+                name: &s.name,
+                declared_at: own.and_then(|c| self.env.declaration_site(c, s.declared_at)),
+            });
+            let suggestions = nearest(&name, candidates);
+            let message = if own.is_some() {
+                format!("this component has no slot `{name}`")
+            } else {
+                format!(
+                    "a `SlotOutlet` places a slot of the component whose view it is in, and this view belongs to none, so it has no slot `{name}`"
+                )
+            };
+            let mut diagnostic = Diagnostic::error("E3501", range, message);
+            attach(&mut diagnostic, range, &suggestions);
+            self.diagnostics.push(diagnostic);
+            return;
+        }
+        if self.repeated > 0 {
+            self.diagnostics.push(Diagnostic::error(
+                "E3502",
+                at,
+                format!(
+                    "a `SlotOutlet` inside a `for` would place the nodes of `{name}` once per item"
+                ),
+            ));
+        }
+        match self.outlets.get(&name) {
+            Some(first) => {
+                let mut diagnostic = Diagnostic::error(
+                    "E3502",
+                    at,
+                    format!("the slot `{name}` is already placed by another `SlotOutlet`"),
+                );
+                diagnostic
+                    .related
+                    .push(Related::new(*first, "first placed here"));
+                self.diagnostics.push(diagnostic);
+            }
+            None => {
+                self.outlets.insert(name, at);
             }
         }
     }
@@ -576,6 +1057,10 @@ impl<'a> ViewWalk<'a> {
         let Some(value) = binding.value() else {
             return;
         };
+        if scope.owner.is_some_and(Owner::is_outlet) {
+            // `slot:` names a slot, checked by `outlet`; it is no value.
+            return;
+        }
         let _ = match declared.as_ref().and_then(|d| d.ty.as_ref()) {
             Some(want) if is_text(want) => self.cx.infer_text_value(&value, want),
             Some(want) => self.cx.infer_promoted(&value, want),
@@ -885,7 +1370,9 @@ impl<'a> ViewWalk<'a> {
         if let Some(body) = view_for.body() {
             let pattern = pattern.unwrap_or_else(|| view_for.syntax().clone());
             self.regions.push((pattern, element));
+            self.repeated += 1;
             self.items(body.items(), scope);
+            self.repeated -= 1;
             self.regions.pop();
         }
     }
@@ -967,6 +1454,29 @@ impl<'a> ViewWalk<'a> {
             lower_region_entry(&mut b, &self.cx, def, &self.regions, entry, at)
         };
         b.handler(at, func);
+    }
+}
+
+/// Whether `item` is a structure item, one that fills a slot even when it
+/// mounts no node (an empty `Fragment`, a `for` over nothing).
+fn is_structure(item: &ViewItem) -> bool {
+    matches!(
+        item,
+        ViewItem::Named(_)
+            | ViewItem::Anonymous(_)
+            | ViewItem::If(_)
+            | ViewItem::For(_)
+            | ViewItem::Match(_)
+    )
+}
+
+/// The slot name `slot: name;` spells: a bare identifier.
+fn slot_name(value: &Expr) -> Option<String> {
+    let path = PathExpr::cast(value.syntax().clone())?;
+    let segments: Vec<_> = path.segments().collect();
+    match segments.as_slice() {
+        [name] => Some(name.text().trim_start_matches("r#").to_string()),
+        _ => None,
     }
 }
 

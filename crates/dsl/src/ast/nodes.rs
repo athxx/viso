@@ -167,6 +167,10 @@ ast_node!(
     EventDecl = EventDecl
 );
 ast_node!(
+    /// `slot IDENT : Type (= None | = empty)? ;`.
+    SlotDecl = SlotDecl
+);
+ast_node!(
     /// `const IDENT : Type = Expr ;`.
     ConstDecl = ConstDecl
 );
@@ -381,6 +385,28 @@ impl EventDecl {
     /// The event's name.
     pub fn name(&self) -> Option<SyntaxToken> {
         support::name_token(&self.syntax)
+    }
+}
+
+impl SlotDecl {
+    /// The slot's name.
+    pub fn name(&self) -> Option<SyntaxToken> {
+        support::name_token(&self.syntax)
+    }
+
+    /// The slot's type: `Slot<Node>`, `OptionalSlot<Node>` or `SlotList<Node>`.
+    pub fn ty(&self) -> Option<TypePath> {
+        support::child(&self.syntax)
+    }
+
+    /// The `= None` / `= empty` default, when written.
+    pub fn default(&self) -> Option<SyntaxToken> {
+        self.syntax
+            .children_with_tokens()
+            .into_iter()
+            .filter_map(|e| e.as_token().cloned())
+            .skip_while(|t| t.kind() != SyntaxKind::Eq)
+            .find(|t| matches!(t.kind(), SyntaxKind::NoneKw | SyntaxKind::Ident))
     }
 }
 
@@ -1217,6 +1243,7 @@ pub enum Member {
     State(StateDecl),
     Computed(ComputedDecl),
     Event(EventDecl),
+    Slot(SlotDecl),
     Fn(FnDecl),
     Action(ActionDecl),
     Task(TaskDecl),
@@ -1231,6 +1258,7 @@ impl AstNode for Member {
                 | SyntaxKind::StateDecl
                 | SyntaxKind::ComputedDecl
                 | SyntaxKind::EventDecl
+                | SyntaxKind::SlotDecl
                 | SyntaxKind::FnDecl
                 | SyntaxKind::ActionDecl
                 | SyntaxKind::TaskDecl
@@ -1243,6 +1271,7 @@ impl AstNode for Member {
             SyntaxKind::StateDecl => Member::State(StateDecl { syntax: node }),
             SyntaxKind::ComputedDecl => Member::Computed(ComputedDecl { syntax: node }),
             SyntaxKind::EventDecl => Member::Event(EventDecl { syntax: node }),
+            SyntaxKind::SlotDecl => Member::Slot(SlotDecl { syntax: node }),
             SyntaxKind::FnDecl => Member::Fn(FnDecl { syntax: node }),
             SyntaxKind::ActionDecl => Member::Action(ActionDecl { syntax: node }),
             SyntaxKind::TaskDecl => Member::Task(TaskDecl { syntax: node }),
@@ -1257,6 +1286,7 @@ impl AstNode for Member {
             Member::State(n) => n.syntax(),
             Member::Computed(n) => n.syntax(),
             Member::Event(n) => n.syntax(),
+            Member::Slot(n) => n.syntax(),
             Member::Fn(n) => n.syntax(),
             Member::Action(n) => n.syntax(),
             Member::Task(n) => n.syntax(),

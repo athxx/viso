@@ -46,7 +46,7 @@ fn json_is_one_result_event_with_the_schema_object() {
     assert_eq!(lines.len(), 2, "{text}");
     assert!(lines[0].contains(r#""type":"result""#), "{}", lines[0]);
     assert!(
-        lines[0].contains(r#""payload":{"kind":"component","symbol":"viso::widgets::Button","version":"1.0","inputs":["#),
+        lines[0].contains(r#""payload":{"kind":"component","symbol":"viso::widgets::Button","version":"1","inputs":["#),
         "{}",
         lines[0]
     );

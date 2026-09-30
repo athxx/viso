@@ -26,6 +26,9 @@ pub enum WidgetNode {
     /// A zero-node grouping: its children join the parent's slot, and it takes
     /// no properties.
     Fragment,
+    /// Where a component's view places one of its slots: the nodes its caller
+    /// fills the slot with, or none when the caller leaves it empty.
+    Outlet,
 }
 
 /// The main axis of a [`WidgetNode::Flex`].

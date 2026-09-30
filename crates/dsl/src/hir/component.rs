@@ -24,15 +24,17 @@
 
 use std::collections::{BTreeSet, HashMap};
 
-use crate::ast::{AstNode, ComponentDecl, Member};
+use viso_behavior::native::SlotCardinality;
+
+use crate::ast::{AstNode, ComponentDecl, Member, SlotDecl};
 use crate::diag::{Diagnostic, Related};
 use crate::resolve::{Resolution, ResolvedRef, SymbolId};
 use crate::syntax::TextRange;
 
 use super::infer::{InferCx, TypeEnv};
 use super::nodes::{
-    CallableKind, ComponentSchema, HirCallable, HirComputed, HirEvent, HirInput, HirMeta, HirState,
-    OwnershipMode,
+    CallableKind, ComponentSchema, HirCallable, HirComputed, HirEvent, HirInput, HirMeta, HirSlot,
+    HirState, OwnershipMode,
 };
 use super::percent::PercentSources;
 use super::reads::{ReadEnv, collect_reads};
@@ -77,6 +79,7 @@ pub(crate) fn lower_component(
         states: Vec::new(),
         computeds: Vec::new(),
         events: Vec::new(),
+        slots: slots_of(decl, diagnostics),
         callables: Vec::new(),
         view: None,
     };
@@ -268,6 +271,7 @@ pub(crate) fn lower_component(
             Member::View(view) => {
                 schema.view = Some(view.syntax().text_range());
             }
+            Member::Slot(_) => {}
         }
     }
 
@@ -550,6 +554,103 @@ fn callable_node(
             source_origin,
         ),
     }
+}
+
+/// The `slot` members of `decl`, in declaration order, with the `@default` attribute
+/// that marks the one bare child items fill. A second `@default` is `E3004`; a type
+/// other than `Slot<Node>`, `OptionalSlot<Node>` or `SlotList<Node>` is `E2103` (the
+/// slot then takes any number of nodes, so its callers are not diagnosed again); a
+/// default on a `Slot<Node>`, which takes exactly one node, is `E3502`.
+pub(crate) fn slots_of(decl: &ComponentDecl, diagnostics: &mut Vec<Diagnostic>) -> Vec<HirSlot> {
+    let mut slots: Vec<HirSlot> = Vec::new();
+    let mut marked: Option<TextRange> = None;
+    for child in decl.syntax().children() {
+        if child.kind() == crate::syntax::SyntaxKind::Attribute {
+            if attribute_name(&child).as_deref() == Some("default") {
+                marked = Some(child.text_range());
+            }
+            continue;
+        }
+        let attribute = marked.take();
+        let Some(slot) = SlotDecl::cast(child) else {
+            continue;
+        };
+        let Some(name) = slot.name() else {
+            continue;
+        };
+        let text = slot.ty().map(|t| t.syntax().text().to_string());
+        let spelled: String = text
+            .iter()
+            .flat_map(|t| t.chars())
+            .filter(|c| !c.is_whitespace())
+            .collect();
+        let kinds = [
+            SlotCardinality::One,
+            SlotCardinality::Optional,
+            SlotCardinality::Many,
+        ];
+        let cardinality = kinds.into_iter().find(|c| c.type_name() == spelled);
+        let cardinality = match cardinality {
+            Some(c) => c,
+            None => {
+                let at = slot
+                    .ty()
+                    .map_or(name.text_range(), |t| t.syntax().text_range());
+                diagnostics.push(
+                    Diagnostic::error(
+                        "E2103",
+                        at,
+                        format!(
+                            "a slot's type is `Slot<Node>`, `OptionalSlot<Node>` or `SlotList<Node>`, not `{spelled}`"
+                        ),
+                    )
+                    .expecting(kinds.map(SlotCardinality::type_name), spelled.clone()),
+                );
+                SlotCardinality::Many
+            }
+        };
+        if let (SlotCardinality::One, Some(default)) = (cardinality, slot.default()) {
+            diagnostics.push(Diagnostic::error(
+                "E3502",
+                default.text_range(),
+                "a `Slot<Node>` takes exactly one node, so it has no default; declare it `OptionalSlot<Node>` or `SlotList<Node>`",
+            ));
+        }
+        let default = match (attribute, slots.iter().find(|s| s.default)) {
+            (Some(at), Some(first)) => {
+                let mut diagnostic = Diagnostic::error(
+                    "E3004",
+                    at,
+                    format!(
+                        "only one slot can be `@default`, and `{}` already is",
+                        first.name
+                    ),
+                );
+                diagnostic
+                    .related
+                    .push(Related::new(first.declared_at, "the default slot"));
+                diagnostics.push(diagnostic);
+                false
+            }
+            (attribute, _) => attribute.is_some(),
+        };
+        slots.push(HirSlot {
+            name: name.text().trim_start_matches("r#").to_string(),
+            cardinality,
+            default,
+            declared_at: name.text_range(),
+        });
+    }
+    slots
+}
+
+/// The path an attribute names: `default` for `@default`.
+fn attribute_name(attr: &crate::syntax::SyntaxNode) -> Option<String> {
+    let path = attr
+        .children()
+        .into_iter()
+        .find(|c| c.kind() == crate::syntax::SyntaxKind::PathExpr)?;
+    Some(path.text().to_string().trim().to_string())
 }
 
 #[cfg(test)]

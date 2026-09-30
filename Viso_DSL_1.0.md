@@ -1717,6 +1717,8 @@ SlotList<Node>      零个或多个节点
 
 `empty` 是上下文关键字（§12.3），只在 `slot_default` 位置解释。
 
+Slot 类型只能是以上三种，其他类型报 `E2103`。`Slot<Node>` 必须由调用方填充，不能声明默认值（写 `= None`/`= empty` 报 `E3502`）；调用方未填充 `Slot<Node>` 同样报 `E3502`。Native Widget 的 Slot 由其 Native Schema 声明：容器（`Row`、`Column`、`Flex`、`Grid`、`Stack`、`Absolute`、`Fragment` 等）有 Default Slot `children: SlotList<Node>`，`Scroll` 有 Default Slot `content: OptionalSlot<Node>`，叶子 Widget（`Text`、`Button`、`TextInput` 等）没有 Slot。
+
 ```viso
 @default slot content: Slot<Node>;
 slot leading: OptionalSlot<Node> = None;
@@ -1731,6 +1733,8 @@ slot actions: SlotList<Node> = empty;
 - 调用方 Node Body 中不在 `fill` 内的结构项（`view_structure_item`，§48）按源码顺序进入 Default Slot，其结果必须满足该 Slot 的 Cardinality；
 - 目标 Component 没有 Default Slot 时，出现裸结构项报 `E3003`；
 - 同一 Node Body 同时出现裸结构项与 `fill <default_slot>` 报 `E3502`；
+- `fill` 的名字不是目标声明的 Slot 报 `E3501`；同一 Node Body 对 `Slot`/`OptionalSlot` 多次 `fill` 报 `E3502`，对 `SlotList` 多次 `fill` 按源码顺序拼接；
+- Cardinality 按结构项可能产生的节点数区间静态检查，区间内每个取值都必须满足 Slot 类型：普通节点计 1；`Fragment` 计其子项之和；`SlotOutlet` 计被转发 Slot 类型的区间；`if` 取各分支区间的并（无 `else` 时含 0）；`match` 取各分支区间的并；`for` 计零个或多个；
 - `@default` 只改变调用方的书写方式，不改变 Slot 类型与 Schema 名称。
 
 ---
@@ -2280,7 +2284,7 @@ use TitledCard("Profile") {
 - Template 递归必须有可证明的有限展开，否则编译错误；
 - 实现可以延迟 Template 实例化，但语义等价于 Typed IR 展开。
 
-在 Template 定义内部，调用方 Slot 通过标准 `SlotOutlet` Component 放入结构。`SlotOutlet` 只有一个 Property `slot`，其值是当前 Template/Component 声明的 Slot 名；它就地展开调用方为该 Slot 提供的节点，未提供时展开为 Slot 默认值（`None`/`empty` 为零个节点）。`SlotOutlet` 只能出现在声明该 Slot 的 Template/Component 的 View 中，每个 Slot 至多一个 `SlotOutlet`。`fill` 只允许出现在 Template/Component 的调用方，不能用于定义 Slot Outlet。
+在 Template 定义内部，调用方 Slot 通过标准 `SlotOutlet` Component 放入结构。`SlotOutlet` 只有一个 Property `slot`，其值是当前 Template/Component 声明的 Slot 名；它就地展开调用方为该 Slot 提供的节点，未提供时展开为 Slot 默认值（`None`/`empty` 为零个节点）。`SlotOutlet` 只能出现在声明该 Slot 的 Template/Component 的 View 中，每个 Slot 至多一个 `SlotOutlet`。`fill` 只允许出现在 Template/Component 的调用方，不能用于定义 Slot Outlet。缺少 `slot`、其值不是单个标识符、或不是当前 Component 声明的 Slot 报 `E3501`；同一 Slot 的第二个 `SlotOutlet`，或位于 `for` 内（会把调用方节点放置多次）的 `SlotOutlet` 报 `E3502`。
 
 ---
 

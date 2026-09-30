@@ -131,6 +131,19 @@ impl Lowering<'_> {
         }
     }
 
+    /// Lowers one member of a widget's body onto its children: a `fill`'s items
+    /// in place, since a widget's slots are all its children.
+    fn child(&mut self, member: ViewItem, children: &mut Vec<UiItem>) {
+        match member {
+            ViewItem::Fill(fill) => {
+                for item in fill.body().iter().flat_map(|b| b.items()) {
+                    self.item(item, children);
+                }
+            }
+            other => self.item(other, children),
+        }
+    }
+
     /// Lowers a node of type `ty` onto `out`: the retained node its widget
     /// declares, with static properties folded into style, reactive ones pending
     /// and child items lowered in order; a `Fragment`'s children directly.
@@ -164,10 +177,13 @@ impl Lowering<'_> {
             WidgetNode::Leaf => NodeKind::Leaf,
             WidgetNode::Fragment => {
                 for member in body.iter().flat_map(|b| b.members()) {
-                    self.item(member, out);
+                    self.child(member, out);
                 }
                 return;
             }
+            // The view mounts as the root, which no caller fills: every slot
+            // is empty.
+            WidgetNode::Outlet => return,
         };
 
         let mut pending = Vec::new();
@@ -180,7 +196,7 @@ impl Lowering<'_> {
                     event: h.event().map(|t| t.text()).unwrap_or_default(),
                     origin: h.syntax().text_range(),
                 }),
-                other => self.item(other, &mut children),
+                other => self.child(other, &mut children),
             }
         }
         out.push(UiItem::Node(UiNode {
