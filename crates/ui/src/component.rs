@@ -425,9 +425,9 @@ pub struct NodeStore {
     /// Cold: the session's service registry, type-erased because this tier
     /// cannot name it, lent to each dispatch's [`EventCx`].
     services: Option<Rc<dyn Any>>,
-    /// Cold: the structure hooks of the mounted views, one per view with
-    /// control-flow regions. Empty in a tree without regions.
-    structure_hooks: Vec<crate::structure::StructureHook>,
+    /// Cold: the structure hooks of the mounted views: one per view with
+    /// control-flow regions, and one per view whose nodes show reactive values.
+    structure_hooks: crate::structure::StructureHooks,
 }
 
 impl NodeStore {
@@ -691,11 +691,11 @@ impl NodeStore {
         linked
     }
 
-    pub(crate) fn structure_hooks(&self) -> &[crate::structure::StructureHook] {
+    pub(crate) fn structure_hooks(&self) -> &crate::structure::StructureHooks {
         &self.structure_hooks
     }
 
-    pub(crate) fn structure_hooks_mut(&mut self) -> &mut Vec<crate::structure::StructureHook> {
+    pub(crate) fn structure_hooks_mut(&mut self) -> &mut crate::structure::StructureHooks {
         &mut self.structure_hooks
     }
 

@@ -31,7 +31,7 @@ use viso_dsl::ir::binding_ir::{BindingEdge, BindingIr, NodeKey};
 use viso_dsl::ir::dirty_map::DirtyClass;
 use viso_dsl::ir::ui_ir::{AxisIr, LengthIr, NodeKind, StyleIr, UiItem, UiNode, UiTree};
 use viso_dsl::resolve::SymbolId;
-use viso_dsl::view_behavior::ViewBehavior;
+use viso_dsl::view_behavior::{Control, ViewBehavior};
 
 /// Lowers a view's [`UiTree`] + [`BindingIr`] to the builder expression.
 ///
@@ -41,7 +41,8 @@ use viso_dsl::view_behavior::ViewBehavior;
 ///
 /// `behavior` is the view's handler table and regions: each node with routes
 /// attaches them to the `__viso_host` in scope where the expression expands, and
-/// the regions mount on it under the static nodes once the tree is built.
+/// the regions mount on it under the static nodes once the tree is built, and
+/// then the values the static nodes show are delivered.
 ///
 /// Returns `Err` with the message if the view has other than one root, has a
 /// region but no behavior to run it, or binds a source `sources` does not name.
@@ -80,6 +81,7 @@ pub fn emit_view(
         next_key: 0,
         next_static: 0,
         record_ids: regions.is_some(),
+        shown: Vec::new(),
         missing_source: None,
         error: None,
     };
@@ -110,6 +112,19 @@ pub fn emit_view(
             }
         };
     }
+    if !ctx.shown.is_empty() {
+        let count = ctx.shown.len();
+        let controls = &ctx.shown;
+        root = quote! {
+            {
+                let mut __viso_shown: [::core::option::Option<::viso_ui::NodeId>; #count] =
+                    [::core::option::Option::None; #count];
+                let __viso_root = #root;
+                ::viso_view::__mount_values(cx, &__viso_host, &__viso_shown, &[#(#controls),*]);
+                __viso_root
+            }
+        };
+    }
     if let Some(message) = ctx.error {
         return Err(message);
     }
@@ -133,6 +148,9 @@ struct Emit<'a> {
     next_static: u32,
     /// Whether each static node's id is recorded for the regions to mount under.
     record_ids: bool,
+    /// The control of each static node showing a view value, in the order the
+    /// nodes record their ids.
+    shown: Vec<TokenStream>,
     missing_source: Option<SymbolId>,
     /// The first node that cannot be built.
     error: Option<String>,
@@ -232,6 +250,14 @@ impl Emit<'_> {
 
         let binds = self.emit_binds(key);
         let attach = self.emit_attach(key);
+        let show = match self.behavior.and_then(|behavior| behavior.control(key)) {
+            Some(control) => {
+                let index = self.shown.len();
+                self.shown.push(control_tokens(control));
+                quote! { __viso_shown[#index] = ::core::option::Option::Some(#handle_ident.id()); }
+            }
+            None => quote! {},
+        };
         let record = if self.record_ids {
             quote! { __viso_ids[#ordinal] = ::core::option::Option::Some(#handle_ident.id()); }
         } else {
@@ -247,6 +273,7 @@ impl Emit<'_> {
                 #binds
                 #attach
                 #record
+                #show
                 #handle_ident
             }
         }
@@ -353,31 +380,37 @@ impl Emit<'_> {
         });
         let control = match control {
             Some(control) => {
-                let kind = Ident::new(control.kind.variant(), Span::call_site());
-                let entry = |entry: Option<u32>| match entry {
-                    Some(entry) => quote! { ::core::option::Option::Some(#entry) },
-                    None => quote! { ::core::option::Option::None },
-                };
-                let (value, min, max, step) = (
-                    entry(control.value),
-                    entry(control.min),
-                    entry(control.max),
-                    entry(control.step),
-                );
-                quote! {
-                    ::core::option::Option::Some(::viso_view::Control {
-                        kind: ::viso_view::ControlKind::#kind,
-                        value: #value,
-                        min: #min,
-                        max: #max,
-                        step: #step,
-                    })
-                }
+                let control = control_tokens(control);
+                quote! { ::core::option::Option::Some(#control) }
             }
             None => quote! { ::core::option::Option::None },
         };
         quote! {
             ::viso_view::attach(cx, &__viso_host, #handle_ident, &[#(#routes),*], #control, &::viso_view::Scope::EMPTY);
+        }
+    }
+}
+
+/// The `::viso_view::Control` expression of `control`.
+fn control_tokens(control: Control) -> TokenStream {
+    let kind = Ident::new(control.kind.variant(), Span::call_site());
+    let entry = |entry: Option<u32>| match entry {
+        Some(entry) => quote! { ::core::option::Option::Some(#entry) },
+        None => quote! { ::core::option::Option::None },
+    };
+    let (value, min, max, step) = (
+        entry(control.value),
+        entry(control.min),
+        entry(control.max),
+        entry(control.step),
+    );
+    quote! {
+        ::viso_view::Control {
+            kind: ::viso_view::ControlKind::#kind,
+            value: #value,
+            min: #min,
+            max: #max,
+            step: #step,
         }
     }
 }

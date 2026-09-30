@@ -40,5 +40,5 @@ pub use regions::{
 };
 pub use route::{EventRoute, PAYLOAD_ENUMS, PAYLOAD_RECORDS};
 pub use scope::Scope;
-pub use values::mount_values;
+pub use values::{__mount_values, mount_values};
 pub use viso_behavior::{Fault, Module, Value};

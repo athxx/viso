@@ -276,7 +276,7 @@ Goal: every Core view construct reaches a live tree through all three lowering t
   - [x] Per-instance computed memo on the VM: a zero-argument computed is
         evaluated once and reused until a state or input it reads (transitively)
         changes; a faulted transaction discards the memo it touched.
-- [ ] Reactive property values reach their nodes (a text's content, a bound
+- [x] Reactive property values reach their nodes (a text's content, a bound
       control's displayed value, a text field's seeded buffer).
   - [x] A `Text`'s or `Button`'s `text` and a `TextInput`'s `value` compile to
         handler-table value entries; `ViewBehavior` carries them with their
@@ -284,7 +284,7 @@ Goal: every Core view construct reaches a live tree through all three lowering t
   - [x] The view runtime evaluates them at mount and re-evaluates only the
         entries whose read states changed, skipping an equal value.
   - [x] Controls project their value and range into semantic state.
-  - [ ] The macros, hot-reload commit, view package and region templates all
+  - [x] The macros, hot-reload commit, view package and region templates all
         deliver them.
 - [ ] Transaction batching; reactive cycle `E4202` at runtime.
   - [ ] Several writes in one dispatch commit one revision and one delivery.

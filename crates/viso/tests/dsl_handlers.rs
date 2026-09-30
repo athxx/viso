@@ -1,12 +1,14 @@
 //! A view's `on` handlers run under the macros: a click on a `component!` or
 //! `view!` node runs its handler body in the behavior VM, whose state write lands
 //! in the UI cell and flushes through the view's static edges; a native control
-//! writes its change back through a `bind`.
+//! writes its change back through a `bind`, and a label reading a state shows
+//! its text again after the write.
 
 use viso::render::Rect;
 use viso::ui::{
-    BindingTable, BuildCx, Handle, NodeId, NodeStore, PointerButtons, PointerEvent, PointerPhase,
-    PointerRouter, SemanticProjector, StateId, StateStore, StateValue, TextEdits, VirtualLists,
+    BindingTable, BuildCx, EffectStore, Handle, NodeId, NodeStore, PointerButtons, PointerEvent,
+    PointerPhase, PointerRouter, SemanticProjector, StateId, StateStore, StateValue, TextEdits,
+    VirtualLists, run_structure_hooks,
 };
 
 viso::component! {
@@ -44,11 +46,30 @@ viso::component! {
     }
 }
 
+viso::component! {
+    Tally {
+        state count = 1;
+        view {
+            Column {
+                width: 200dp;
+                height: 100dp;
+                Text {
+                    width: 100dp;
+                    height: 50dp;
+                    text: format("{} taps", count);
+                    on click { count += 1; }
+                }
+            }
+        }
+    }
+}
+
 /// A mounted clicker, laid out at the origin.
 struct Mounted {
     store: NodeStore,
     states: StateStore,
     bindings: BindingTable,
+    effects: EffectStore,
     root: NodeId,
     count: StateId,
 }
@@ -83,12 +104,13 @@ impl Mounted {
             store,
             states,
             bindings,
+            effects: EffectStore::new(),
             root: root.id(),
             count,
         }
     }
 
-    /// A primary click at `(x, y)`, then the state flush.
+    /// A primary click at `(x, y)`, then the state flush and structure hooks.
     fn click(&mut self, x: f32, y: f32) {
         let mut chain = Vec::new();
         for phase in [PointerPhase::Down, PointerPhase::Up] {
@@ -112,6 +134,20 @@ impl Mounted {
         self.states.take_pending(&mut changed);
         self.store
             .flush_state_transactions(&changed, &self.bindings);
+        run_structure_hooks(
+            &mut self.store,
+            &mut self.states,
+            &mut self.bindings,
+            &mut self.effects,
+            &changed,
+        );
+    }
+
+    /// The texts declared since the last call.
+    fn texts(&mut self) -> Vec<String> {
+        let mut requests = Vec::new();
+        self.store.take_text_requests(&mut requests);
+        requests.into_iter().map(|(_, r)| r.text).collect()
     }
 
     fn count(&self) -> Option<StateValue> {
@@ -162,4 +198,18 @@ fn a_bound_toggle_writes_its_flip_back() {
     assert_eq!(form.count(), Some(StateValue::Bool(true)));
     form.click(10.0, 10.0);
     assert_eq!(form.count(), Some(StateValue::Bool(false)));
+}
+
+#[test]
+fn a_label_shows_its_text_at_build_and_after_a_write() {
+    let mut form = Mounted::mount(|cx| {
+        let (Tally { count }, root) = Tally::build(cx);
+        (root, count)
+    });
+    assert_eq!(form.texts(), ["1 taps"]);
+    form.click(20.0, 20.0);
+    assert_eq!(form.count(), Some(StateValue::Int(2)));
+    assert_eq!(form.texts(), ["2 taps"]);
+    form.click(150.0, 80.0);
+    assert!(form.texts().is_empty(), "no write, no text");
 }
