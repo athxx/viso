@@ -283,7 +283,7 @@ Goal: every Core view construct reaches a live tree through all three lowering t
         target.
   - [x] The view runtime evaluates them at mount and re-evaluates only the
         entries whose read states changed, skipping an equal value.
-  - [ ] Controls project their value and range into semantic state.
+  - [x] Controls project their value and range into semantic state.
   - [ ] The macros, hot-reload commit, view package and region templates all
         deliver them.
 - [ ] Transaction batching; reactive cycle `E4202` at runtime.
