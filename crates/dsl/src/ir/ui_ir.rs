@@ -127,6 +127,10 @@ pub enum NodeKind {
     VirtualList,
     /// A leaf primitive (`Text`, `Button`) → `cx.leaf`.
     Leaf,
+    /// A component the Rust scope around a `ui!` fragment declares with
+    /// `component!`, mounted by its `build`; its [`UiNode::type_name`] is the
+    /// Rust path. Only a `ui!` fragment has one.
+    Component,
 }
 
 impl NodeKind {

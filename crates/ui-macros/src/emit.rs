@@ -81,6 +81,7 @@ pub fn emit_view(
         next_static: 0,
         record_ids: regions.is_some(),
         missing_source: None,
+        error: None,
     };
     let mut root = ctx.emit_item(&tree.items[0]);
 
@@ -109,6 +110,9 @@ pub fn emit_view(
             }
         };
     }
+    if let Some(message) = ctx.error {
+        return Err(message);
+    }
     if let Some(id) = ctx.missing_source {
         return Err(format!(
             "internal: a binding references source symbol {id:?} that was not among \
@@ -130,6 +134,8 @@ struct Emit<'a> {
     /// Whether each static node's id is recorded for the regions to mount under.
     record_ids: bool,
     missing_source: Option<SymbolId>,
+    /// The first node that cannot be built.
+    error: Option<String>,
 }
 
 impl Emit<'_> {
@@ -216,7 +222,13 @@ impl Emit<'_> {
         let child_block = quote! { #( #children )* };
 
         let handle_ident = node_handle_ident(key);
-        let build_call = self.emit_builder_call(node, &child_block);
+        let build_call = match self.emit_builder_call(node, &child_block) {
+            Ok(call) => call,
+            Err(message) => {
+                self.error.get_or_insert(message);
+                quote! { ::core::unreachable!() }
+            }
+        };
 
         let binds = self.emit_binds(key);
         let attach = self.emit_attach(key);
@@ -241,8 +253,12 @@ impl Emit<'_> {
     }
 
     /// The `cx.<builder>(<style>, <children>)` (or `cx.leaf(<style>)`) call for a node.
-    fn emit_builder_call(&self, node: &UiNode, child_block: &TokenStream) -> TokenStream {
-        match node.kind {
+    fn emit_builder_call(
+        &self,
+        node: &UiNode,
+        child_block: &TokenStream,
+    ) -> Result<TokenStream, String> {
+        Ok(match node.kind {
             NodeKind::Flex => {
                 let style = flex_style_tokens(&node.style);
                 quote! { cx.flex(#style, |cx| { #child_block }) }
@@ -286,7 +302,12 @@ impl Emit<'_> {
                 let style = leaf_style_tokens(&node.style);
                 quote! { cx.leaf(#style) }
             }
-        }
+            NodeKind::Component => {
+                let path = syn::parse_str::<syn::Path>(&node.type_name)
+                    .map_err(|_| format!("`{}` is not a Rust path", node.type_name))?;
+                quote! { #path::build(cx).1 }
+            }
+        })
     }
 
     /// The `cx.bind(<state>, <handle>, <DirtyClass>)` calls for every static edge on

@@ -140,6 +140,22 @@ fn a_corrupt_asset_is_rejected_not_a_panic() {
 }
 
 #[test]
+fn a_fragment_without_a_rust_scope_names_no_rust_component() {
+    // A package or a reload has no Rust scope to resolve `Sparkline` in, so an
+    // unknown type is an unknown widget on both, at the node.
+    let source = "Column { Sparkline { } }";
+    for diagnostics in [
+        build_package(source).expect_err("does not package"),
+        viso_dsl::hotreload::plan(source).expect_err("does not plan"),
+    ] {
+        let codes: Vec<_> = diagnostics.iter().map(|d| d.code).collect();
+        assert_eq!(codes, ["E2001"]);
+        let at: std::ops::Range<usize> = diagnostics[0].primary.into();
+        assert_eq!(&source[at], "Sparkline");
+    }
+}
+
+#[test]
 fn the_packaged_tree_matches_the_live_commit_tree_structurally() {
     // Both the live commit (Slice O) and the AOT package (Slice P) descend from the same
     // frontend, so from one source they must build the same-shape tree. We can't compare

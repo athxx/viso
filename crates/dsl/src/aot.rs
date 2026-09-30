@@ -221,13 +221,14 @@ fn emit_node(node: &UiNode, nodes: &mut Vec<AotNode>) {
 
 /// The package builder kind for a lowered [`NodeKind`], mirroring the commit's
 /// builder selection: `VirtualList` collapses to a leaf (content under it is
-/// rejected), everything else maps one-to-one.
+/// rejected), everything else maps one-to-one. A Rust-scope component never
+/// reaches a package: [`plan`] rejects it.
 pub(crate) fn aot_kind(kind: NodeKind) -> AotNodeKind {
     match kind {
         NodeKind::Flex => AotNodeKind::Flex,
         NodeKind::Grid => AotNodeKind::Grid,
         NodeKind::Scroll => AotNodeKind::Scroll,
-        NodeKind::VirtualList | NodeKind::Leaf => AotNodeKind::Leaf,
+        NodeKind::VirtualList | NodeKind::Leaf | NodeKind::Component => AotNodeKind::Leaf,
     }
 }
 

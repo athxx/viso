@@ -1,0 +1,5 @@
+error: E3711: the component cannot be mounted here: a Rust component mounts its own view; it takes no properties, handlers or children here
+  --> tests/compile_fail/ui_component_property.rs:10:21
+   |
+10 |             Tally { width: 4dp; }
+   |                     ^^^^^

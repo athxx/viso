@@ -160,6 +160,9 @@ pub struct Compiled {
     /// each mount of the region content keeps for itself instead of a state
     /// cell of the view.
     pub regional: Vec<Source>,
+    /// The type name and span of each node of a fragment that no widget
+    /// declares, a component of the surrounding Rust scope, in source order.
+    pub rust_components: Vec<(String, TextRange)>,
     /// Every diagnostic, of every severity, from every stage, in stage order.
     pub diagnostics: Vec<Diagnostic>,
     /// Every body of the unit lowered to the Behavior IR.
@@ -187,7 +190,9 @@ impl Compiled {
 
 /// Compiles a `ui!` view fragment. Its reactive sources are the value-position
 /// path heads, supplied by the surrounding Rust scope; a head that turns out to be
-/// a node or loop-local simply yields no edge.
+/// a node or loop-local simply yields no edge. A node type no widget declares is
+/// a [`NodeKind::Component`](crate::ir::ui_ir::NodeKind::Component) of that
+/// scope; a target that has no Rust scope rejects it.
 pub fn compile_fragment(source: &str) -> Compiled {
     let parse = parse_entry(&tokenize(source), source, Entry::ViewFragment);
     let root = SyntaxNode::new_root(parse.root.clone());
@@ -202,11 +207,11 @@ pub fn compile_fragment(source: &str) -> Compiled {
     diagnostics.extend(resolved.errors.iter().cloned());
 
     let lowered = lower_fragment_items(fragment.items(), &Natives::standard());
-    for (name, at) in &lowered.unknown {
+    for (at, reason) in &lowered.unmounted {
         diagnostics.push(Diagnostic::error(
-            "E2001",
+            "E3711",
             *at,
-            format!("no widget is named `{name}`"),
+            format!("the component cannot be mounted here: {reason}"),
         ));
     }
     let tree = lowered.tree;
@@ -231,6 +236,7 @@ pub fn compile_fragment(source: &str) -> Compiled {
         keys,
         sources,
         regional: Vec::new(),
+        rust_components: lowered.unknown,
         diagnostics,
         behavior: Program::default(),
     }
@@ -422,6 +428,7 @@ fn compile_unit(source: &str, parse: Parse, origin: &Origin, natives: Arc<Native
         keys,
         sources,
         regional,
+        rust_components: Vec::new(),
         diagnostics,
         behavior,
     }
@@ -463,6 +470,7 @@ impl Compiled {
             keys: KeyIr::default(),
             sources: Vec::new(),
             regional: Vec::new(),
+            rust_components: Vec::new(),
             diagnostics,
             behavior,
         }
