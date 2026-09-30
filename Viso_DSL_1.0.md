@@ -8268,6 +8268,8 @@ RecordPatternField
 | E2002  | Import 歧义                                             |
 | E2003  | 值初始化循环                                            |
 | E2004  | 表达式泛型缺少 Turbofish 或 Const Argument 缺少 `const` |
+| E2005  | 源文件未声明可挂载的组件                                |
+| E2006  | 源文件声明多个组件且未导出要挂载的那个                  |
 | E2101  | `Float` 类型已删除                                      |
 | E2102  | 非法隐式数值转换                                        |
 | E2103  | 类型不匹配                                              |

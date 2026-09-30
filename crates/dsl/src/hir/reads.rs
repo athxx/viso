@@ -17,7 +17,7 @@
 //! The result is an ordered [`BTreeSet<SymbolId>`] so a binding's dependency set is
 //! deterministic across runs (spec determinism requirement).
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use crate::ast::{AstNode, Expr, PathExpr};
 use crate::resolve::{Resolution, ResolvedRef, SymbolId};
@@ -76,6 +76,118 @@ pub fn collect_reads(refs: &[ResolvedRef], env: &dyn ReadEnv, expr: &Expr) -> BT
     let mut reads = BTreeSet::new();
     walk(&index, env, expr.syntax(), &mut reads);
     reads
+}
+
+/// [`collect_reads`] over any syntax node — a whole declaration rather than one
+/// expression, such as a function member's parameters and body.
+pub fn collect_reads_in(
+    refs: &[ResolvedRef],
+    env: &dyn ReadEnv,
+    node: &SyntaxNode,
+) -> BTreeSet<SymbolId> {
+    let mut index: HashMap<TextRange, Resolution> = HashMap::with_capacity(refs.len());
+    for r in refs {
+        index.insert(r.range, r.to);
+    }
+    let mut reads = BTreeSet::new();
+    walk(&index, env, node, &mut reads);
+    reads
+}
+
+/// What each *derived* member of a component — a `computed` or a `fn` — reads once
+/// every call is followed: the states and inputs beneath it.
+///
+/// A binding or a computed that calls a function or reads another computed observes
+/// whatever that callee reads, so its invalidation edges must name those states, not
+/// the callee (spec reactive-graph and `ComputedNode` sections). The table maps each
+/// derived symbol to its transitive base reads; [`DerivedReads::flatten`] rewrites a
+/// read set through it. Cycles are harmless here: the closure is a fixpoint, and a
+/// computed cycle is reported by the topology pass as `E2105`.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct DerivedReads {
+    of: BTreeMap<SymbolId, BTreeSet<SymbolId>>,
+}
+
+impl DerivedReads {
+    /// The closure of `direct`, each derived member's direct reads: base sources and
+    /// the derived members it mentions.
+    pub fn new(direct: BTreeMap<SymbolId, BTreeSet<SymbolId>>) -> Self {
+        let mut of: BTreeMap<SymbolId, BTreeSet<SymbolId>> = direct
+            .iter()
+            .map(|(key, reads)| {
+                let base = reads.iter().copied().filter(|r| !direct.contains_key(r));
+                (*key, base.collect())
+            })
+            .collect();
+        // Monotone growth over a finite set: each pass adds a callee's base reads to
+        // its callers until nothing is added.
+        loop {
+            let mut changed = false;
+            for (key, reads) in &direct {
+                for callee in reads.iter().filter(|r| *r != key && direct.contains_key(r)) {
+                    let beneath = of[callee].clone();
+                    let entry = of.get_mut(key).expect("every key has an entry");
+                    for read in beneath {
+                        changed |= entry.insert(read);
+                    }
+                }
+            }
+            if !changed {
+                return Self { of };
+            }
+        }
+    }
+
+    /// The union of several components' tables; derived symbols are unique per member.
+    pub fn merged<'a>(tables: impl IntoIterator<Item = &'a DerivedReads>) -> Self {
+        let mut of = BTreeMap::new();
+        for table in tables {
+            of.extend(table.of.iter().map(|(k, v)| (*k, v.clone())));
+        }
+        Self { of }
+    }
+
+    /// Whether `symbol` is a derived member this table knows.
+    pub fn is_derived(&self, symbol: SymbolId) -> bool {
+        self.of.contains_key(&symbol)
+    }
+
+    /// The base reads of derived member `symbol`.
+    pub fn of(&self, symbol: SymbolId) -> Option<&BTreeSet<SymbolId>> {
+        self.of.get(&symbol)
+    }
+
+    /// `reads` with every derived member replaced by its base reads.
+    pub fn flatten(&self, reads: impl IntoIterator<Item = SymbolId>) -> BTreeSet<SymbolId> {
+        let mut out = BTreeSet::new();
+        for read in reads {
+            match self.of.get(&read) {
+                Some(beneath) => out.extend(beneath.iter().copied()),
+                None => {
+                    out.insert(read);
+                }
+            }
+        }
+        out
+    }
+}
+
+/// A [`ReadEnv`] that also counts a mention of a derived member as a read, so a
+/// collected set can be flattened through [`DerivedReads`].
+pub struct WithDerived<'a> {
+    /// The environment classifying base reactive sources.
+    pub env: &'a dyn ReadEnv,
+    /// The derived members a mention of which is a read.
+    pub derived: &'a dyn Fn(SymbolId) -> bool,
+}
+
+impl ReadEnv for WithDerived<'_> {
+    fn reactive_source(&self, to: &Resolution) -> Option<SymbolId> {
+        match to {
+            Resolution::Symbol(id) if (self.derived)(*id) => Some(*id),
+            _ => self.env.reactive_source(to),
+        }
+    }
 }
 
 /// Recursively walks a syntax node, recording a reactive read for every path head that
@@ -216,6 +328,22 @@ mod tests {
         };
         let reads = collect_reads(&refs, &env, &expr);
         assert_eq!(reads.len(), 1);
+    }
+
+    #[test]
+    fn derived_reads_follow_calls_to_a_fixpoint() {
+        let [a, b, f, g, h] = [1, 2, 3, 4, 5].map(|i| SymbolId::from_parts(i, 0));
+        // f reads a and g; g reads b and f (a cycle); h reads f.
+        let derived = DerivedReads::new(BTreeMap::from([
+            (f, BTreeSet::from([a, g])),
+            (g, BTreeSet::from([b, f])),
+            (h, BTreeSet::from([f])),
+        ]));
+        for member in [f, g, h] {
+            assert_eq!(derived.of(member), Some(&BTreeSet::from([a, b])));
+        }
+        assert_eq!(derived.flatten([h, a]), BTreeSet::from([a, b]));
+        assert_eq!(derived.flatten([b]), BTreeSet::from([b]));
     }
 
     #[test]

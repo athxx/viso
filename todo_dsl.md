@@ -268,9 +268,27 @@ Goal: every Core view construct reaches a live tree through all three lowering t
 ### D2.4 — Reactive graph
 
 - [ ] Computed nodes with precise invalidation from `hir/reads.rs` edges.
+  - [x] Reads propagate through calls: a computed's and a binding's read set
+        include what the functions and computeds it calls read; a binding edge
+        through a computed names the states beneath it.
+  - [x] Component selection diagnostics are `E2005` / `E2006`, freeing
+        `E4201` / `E4202` for their Appendix C meaning.
+  - [ ] Per-instance computed memo on the VM: a zero-argument computed is
+        evaluated once and reused until a state or input it reads (transitively)
+        changes; a faulted transaction discards the memo it touched.
 - [ ] Reactive property values reach their nodes (a text's content, a bound
       control's displayed value, a text field's seeded buffer).
+  - [ ] A `Text`'s and a `TextInput`'s `text` compile to handler-table value
+        entries; `ViewBehavior` carries them with their target.
+  - [ ] The view runtime evaluates them at mount and re-evaluates only the
+        entries whose read states changed, skipping an equal value.
+  - [ ] Controls project their value and range into semantic state.
+  - [ ] The macros, hot-reload commit, view package and region templates all
+        deliver them.
 - [ ] Transaction batching; reactive cycle `E4202` at runtime.
+  - [ ] Several writes in one dispatch commit one revision and one delivery.
+  - [ ] Writes made while settling a frame re-flush up to a bound; past it the
+        loop stops with `E4202`.
 
 ### D2.5 — Lengths at layout
 
