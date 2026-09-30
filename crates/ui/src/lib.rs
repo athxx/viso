@@ -16,6 +16,7 @@ pub mod component;
 pub mod content;
 pub mod context;
 pub mod dirty;
+pub mod flush;
 pub mod grid;
 pub mod hit_test;
 pub mod input;
@@ -45,6 +46,7 @@ pub use component::{
 pub use content::{Content, TextRequest};
 pub use context::EventCx;
 pub use dirty::DirtyClass;
+pub use flush::{ReactiveCycle, SETTLE_ROUNDS, settle_states};
 pub use grid::{
     AdaptiveColumns, AutoRepeat, GridAreas, GridPlacement, GridStyle, LineNames, TrackMax,
     TrackSizing, repeat, repeated,

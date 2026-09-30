@@ -286,9 +286,9 @@ Goal: every Core view construct reaches a live tree through all three lowering t
   - [x] Controls project their value and range into semantic state.
   - [x] The macros, hot-reload commit, view package and region templates all
         deliver them.
-- [ ] Transaction batching; reactive cycle `E4202` at runtime.
+- [x] Transaction batching; reactive cycle `E4202` at runtime.
   - [x] Several writes in one dispatch commit one revision and one delivery.
-  - [ ] Writes made while settling a frame re-flush up to a bound; past it the
+  - [x] Writes made while settling a frame re-flush up to a bound; past it the
         loop stops with `E4202`.
 
 ### D2.5 — Lengths at layout
