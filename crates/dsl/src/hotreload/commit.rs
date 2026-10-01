@@ -62,8 +62,10 @@ use viso_view::{
 };
 
 use crate::diag::Diagnostic;
+use crate::hotreload::compat::Retyping;
 use crate::hotreload::migrate::{Retype, StateAction};
 
+use viso_behavior::Fault;
 use viso_ui::state::{StateKey, StateMigration};
 use viso_ui::virtual_list::VirtualLists;
 use viso_ui::{
@@ -753,14 +755,26 @@ fn migrate_states(
             }
             StateAction::Convert | StateAction::Reset => {
                 let retype = migration.retype(m.symbol);
+                let mut fault = None;
                 let converted = retype.and_then(|retype| {
-                    let conversion = retype.conversion.as_ref()?;
                     let old = match retype.from_slot {
                         Some(slot) => prior?.current(slot as usize, &*states)?,
                         None if retype.held => vm_value(states.get(states.id_for_key(key)?)?)?,
                         None => return None,
                     };
-                    conversion.apply(&old, &mut |chunk| next.as_deref_mut()?.run(chunk, &[]).ok())
+                    let mut convert = |conversion: &Retyping| {
+                        conversion
+                            .apply(&old, &mut |chunk| next.as_deref_mut()?.run(chunk, &[]).ok())
+                    };
+                    if let Some(value) = retype.conversion.as_ref().and_then(&mut convert) {
+                        return Some(value);
+                    }
+                    let (conversion, chunk) = retype.migrator.as_ref()?;
+                    let value = convert(conversion)?;
+                    next.as_deref_mut()?
+                        .run(*chunk, &[value])
+                        .map_err(|error| fault = Some(error))
+                        .ok()
                 });
                 let initial = plan.initial(m.symbol);
                 let slot = slot_of(m.symbol);
@@ -793,7 +807,7 @@ fn migrate_states(
                         };
                         report.reset += 1;
                         if let Some(retype) = retype {
-                            report.notices.push(reset_notice(retype));
+                            report.notices.push(reset_notice(retype, fault.as_ref()));
                         }
                         id
                     }
@@ -827,16 +841,20 @@ fn revision(prior: StateValue, new: StateValue) -> StateValue {
     }
 }
 
-/// The `E5101` warning that a state's live value was reset.
-fn reset_notice(retype: &Retype) -> Diagnostic {
-    Diagnostic::warning(
-        "E5101",
-        retype.at,
-        format!(
+/// The `E5101` warning that a state's live value was reset, its `@migrate`
+/// function having raised `fault` when it did.
+fn reset_notice(retype: &Retype, fault: Option<&Fault>) -> Diagnostic {
+    let message = match fault {
+        Some(fault) => format!(
+            "the state `{}` was reset: its migration from `{}` to `{}` failed: {}",
+            retype.name, retype.from, retype.to, fault.message
+        ),
+        None => format!(
             "the state `{}` was reset: its live value of type `{}` does not convert to `{}`",
             retype.name, retype.from, retype.to
         ),
-    )
+    };
+    Diagnostic::warning("E5101", retype.at, message)
 }
 
 /// Replace the static edges of the view's nodes with the recompiled edges,

@@ -32,7 +32,7 @@ pub use migrate::{
     LiveAnchors, MigrationPlan, Retype, ScrollMigration, SlotMigration, StateAction,
     StateMigration, migrate,
 };
-pub use plan::{CandidatePlan, plan, plan_view};
+pub use plan::{CandidatePlan, MigrateFn, plan, plan_view};
 
 use crate::diag::Diagnostic;
 use crate::frontend::Origin;

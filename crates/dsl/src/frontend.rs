@@ -27,7 +27,9 @@ use crate::ast::{
 };
 use crate::behavior::{Program, hidden_state, inline_instances};
 use crate::diag::{Diagnostic, Severity};
-use crate::hir::{ConstValue, DerivedReads, HirComponent, SourceSet, Ty, TypeSchemas, write_backs};
+use crate::hir::{
+    ConstValue, DerivedReads, HirComponent, Migrator, SourceSet, Ty, TypeSchemas, write_backs,
+};
 use crate::ir::{
     BindingIr, ComponentLibrary, InstanceSources, KeyIr, LibraryComponent, UiTree, analyze_keys,
     lower_bindings, lower_component_view, lower_fragment_items, lower_view_bindings,
@@ -175,6 +177,8 @@ pub struct Compiled {
     pub behavior: Program,
     /// The unit's record and enum declarations.
     pub types: TypeSchemas,
+    /// The unit's `@migrate` functions.
+    pub migrators: Vec<Migrator>,
 }
 
 impl Compiled {
@@ -248,6 +252,7 @@ pub fn compile_fragment(source: &str) -> Compiled {
         diagnostics,
         behavior: Program::default(),
         types: TypeSchemas::default(),
+        migrators: Vec::new(),
     }
 }
 
@@ -442,6 +447,7 @@ fn compile_unit(source: &str, parse: Parse, origin: &Origin, natives: Arc<Native
         diagnostics,
         behavior,
         types: lowered.types,
+        migrators: lowered.migrators,
     }
 }
 
@@ -485,6 +491,7 @@ impl Compiled {
             diagnostics,
             behavior,
             types: TypeSchemas::default(),
+            migrators: Vec::new(),
         }
     }
 }

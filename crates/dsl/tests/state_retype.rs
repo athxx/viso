@@ -1,12 +1,14 @@
 //! A state whose type an edit changes: its live value converts into the new
 //! type when the new type holds it — a number into a float, a record into one
 //! with a defaulted field, an enum into one with its variants reordered — and is
-//! otherwise reset to the new initializer with an `E5101` notice.
+//! otherwise carried through the `@migrate` function from its old type, or
+//! reset to the new initializer with an `E5101` notice.
 
 use std::cell::RefCell;
 use std::rc::Rc;
 
 use viso_behavior::Value;
+use viso_dsl::aot::build_view_package;
 use viso_dsl::frontend::Origin;
 use viso_dsl::hotreload::{
     CandidatePlan, HotReloadReport, LiveAnchors, LiveRuntime, hot_reload_view,
@@ -328,5 +330,150 @@ fn a_recursive_record_converts_at_every_depth() {
             Value::List(Rc::new(Vec::new())),
             Value::Int(9)
         ]
+    );
+}
+
+#[test]
+fn a_migrate_function_carries_a_state_into_an_unrelated_type() {
+    let mut live = Live::default();
+    live.reload(&view("", "state on = 0;", "on click { on += 3; }"));
+    live.click();
+
+    let migrate = "@migrate(from: \"I64\") fn positive(old: I64) -> Bool { old > 0 }";
+    let report = live.reload(&view(
+        migrate,
+        "state on = false;",
+        "on click { on = !on; }",
+    ));
+    assert!(report.notices.is_empty(), "{:?}", report.notices);
+    assert_eq!(live.cell("on"), Some(StateValue::Bool(true)));
+    live.click();
+    assert_eq!(live.cell("on"), Some(StateValue::Bool(false)));
+}
+
+#[test]
+fn a_component_member_migrates_a_converted_value() {
+    let mut live = Live::default();
+    live.reload(&view(
+        "record Point { x: I64; }",
+        "state point = Point { x: 0 };",
+        "on click { point.x += 4; }",
+    ));
+    live.click();
+
+    // The old `Point` converts into the edited one, which the member then
+    // carries into the new type.
+    let report = live.reload(&view(
+        "record Point { x: I64; y: I64 = 7; }",
+        "state point = 0;
+        @migrate(from: \"Point\") fn flatten(old: Point) -> I64 { old.x * 100 + old.y }",
+        "on click { point += 1; }",
+    ));
+    assert!(report.notices.is_empty(), "{:?}", report.notices);
+    assert_eq!(live.cell("point"), Some(StateValue::Int(407)));
+}
+
+#[test]
+fn a_value_the_conversion_misses_falls_back_to_the_migrate_function() {
+    let mut live = Live::default();
+    live.reload(&view("", "state count = 0;", "on click { count += 300; }"));
+    live.click();
+
+    let migrate =
+        "@migrate(from: \"I64\") fn clamp(old: I64) -> I8 { if old > 127 { 127 } else { 0 } }";
+    let report = live.reload(&view(
+        migrate,
+        "state count: I8 = 0;",
+        "on click { count += 0; }",
+    ));
+    assert!(report.notices.is_empty(), "{:?}", report.notices);
+    assert_eq!(live.cell("count"), Some(StateValue::Int(127)));
+}
+
+#[test]
+fn a_faulting_migrate_function_resets_with_its_fault() {
+    let mut live = Live::default();
+    live.reload(&view("", "state count = 0;", "on click { count += 1; }"));
+    live.click();
+
+    let migrate = "@migrate(from: \"I64\") fn broken(old: I64) -> Bool { 10 / (old - old) > 0 }";
+    let report = live.reload(&view(
+        migrate,
+        "state count = true;",
+        "on click { count = false; }",
+    ));
+    assert_eq!(live.cell("count"), Some(StateValue::Bool(true)), "reset");
+    let [notice] = &report.notices[..] else {
+        panic!("one notice: {:?}", report.notices);
+    };
+    assert_eq!(notice.code, "E5101");
+    assert!(notice.message.contains("failed"), "{}", notice.message);
+}
+
+/// The diagnostic codes and messages a component with the declarations
+/// `types` fails to package with.
+fn errors(types: &str, members: &str) -> Vec<(String, String)> {
+    let origin = Origin {
+        package: "app".into(),
+        module: vec!["clicker".into()],
+        language: None,
+    };
+    build_view_package(
+        &view(
+            types,
+            &format!("state on = false; {members}"),
+            "on click { on = !on; }",
+        ),
+        &origin,
+    )
+    .expect_err("does not package")
+    .into_iter()
+    .map(|d| (d.code.to_string(), d.message))
+    .collect()
+}
+
+#[test]
+fn a_misused_migrate_is_e3712() {
+    let cases = [
+        (
+            "@migrate(from: \"I64\") record R { x: I64; }",
+            "marks a `fn`",
+        ),
+        (
+            "@migrate fn f(old: I64) -> Bool { true }",
+            "@migrate(from: \"I64\")",
+        ),
+        (
+            "@migrate(to: \"I64\") fn f(old: I64) -> Bool { true }",
+            "@migrate(from: \"I64\")",
+        ),
+        (
+            "@migrate(from: \"I64\") fn f(old: I64, more: I64) -> Bool { true }",
+            "one parameter",
+        ),
+        (
+            "@migrate(from: \"I64\") fn f(old: String) -> Bool { true }",
+            "but its parameter is `String`",
+        ),
+        ("@migrate(from: \"I64\") fn f(old: I64) { }", "declare it"),
+        (
+            "@migrate(from: \"I64\") fn f(old: I64) -> Bool { true }
+            @migrate(from: \"I64\") fn g(old: I64) -> Bool { false }",
+            "a second `@migrate` function",
+        ),
+    ];
+    for (types, expected) in cases {
+        let errors = errors(types, "");
+        assert!(
+            errors
+                .iter()
+                .any(|(code, message)| code == "E3712" && message.contains(expected)),
+            "{types}: {errors:?}"
+        );
+    }
+    let members = errors("", "@migrate(from: \"I64\") fn f(old: I64) { }");
+    assert!(
+        members.iter().any(|(code, _)| code == "E3712"),
+        "{members:?}"
     );
 }
