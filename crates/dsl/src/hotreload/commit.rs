@@ -12,20 +12,20 @@
 //!
 //! The commit applies the decisions in a fixed order:
 //!
-//! 1. **Structural patch** — reuse each kept node's live instance in place; rebuild
-//!    a re-typed node's subtree; build inserts fresh; free removes. Reusing a kept
-//!    instance is what carries its runtime state, scroll, focus, and animation
-//!    across the reload untouched — the whole point of a directed minimal diff.
+//! 1. **Structural patch** — a structure-preserving edit reuses every live
+//!    node in place, so all its runtime state stays untouched. Any other edit
+//!    rebuilds the view's subtree, and each kept node's migratable state —
+//!    focus, a viewport's scroll offset, a text field's edit buffer — moves from
+//!    its old node to the node that rebuilt it; focus and scroll that do not
+//!    carry are reported lost.
 //! 2. **State migration** — for each surviving reactive source, migrate its live
 //!    cell by durable [`SymbolId`] identity (bridged to the runtime `StateKey`);
 //!    allocate fresh cells for new sources.
 //! 3. **Rebind** — replace the view's static edges with the recompiled ones,
 //!    mapping each edge's template [`NodeKey`] to the live node it now names.
-//! 4. **Absolute focus / scroll restore** — put focus and each surviving scroll
-//!    container's offset back to the value the migration plan preserved.
-//! 5. **Targeted dirty + flush** — mark exactly the rebound nodes dirty and flush
+//! 4. **Targeted dirty + flush** — mark exactly the rebound nodes dirty and flush
 //!    the migrated state set, so only the changed nodes recompute.
-//! 6. **Handlers and regions** — create the view's host, or reload it keeping
+//! 5. **Handlers and regions** — create the view's host, or reload it keeping
 //!    each state by name, link its states to the migrated cells, reinstall every
 //!    static node's handler routes, and mount the view's control-flow regions
 //!    under the static nodes; a view with no behavior drops its host and every
@@ -49,7 +49,7 @@ use std::rc::Rc;
 
 use crate::aot::node_lengths;
 use crate::hotreload::diff::StructuralPatch;
-use crate::hotreload::migrate::{LiveAnchors, MigrationPlan};
+use crate::hotreload::migrate::{MigrationPlan, NodeMigration};
 use crate::hotreload::plan::CandidatePlan;
 use crate::ir::binding_ir::NodeKey;
 use crate::ir::dirty_map::DirtyClass as IrDirtyClass;
@@ -66,12 +66,13 @@ use crate::hotreload::compat::Retyping;
 use crate::hotreload::migrate::{Retype, StateAction};
 
 use viso_behavior::Fault;
+use viso_behavior::native::MigratableState;
 use viso_ui::state::{StateKey, StateMigration};
 use viso_ui::virtual_list::VirtualLists;
 use viso_ui::{
-    Axis, BindingTable, BuildCx, DirtyClass, EffectStore, FlexStyle, GridStyle, Handle, LeafStyle,
-    Length, NodeId, NodeStore, ScrollStyle, SemanticProjector, Size, StateId, StateStore,
-    StateValue, StructureCx, TextEdits,
+    Axis, BindingTable, Buffer, BuildCx, DirtyClass, EffectStore, FlexStyle, GridStyle, Handle,
+    LeafStyle, Length, NodeId, NodeStore, ScrollStyle, SemanticProjector, Size, StateId,
+    StateStore, StateValue, StructureCx, TextEdits, Vec2,
 };
 
 /// What the commit did to the live runtime, for introspection and tests
@@ -145,23 +146,21 @@ pub struct LiveRuntime<'a> {
 ///
 /// `plan` is the recompiled candidate (template + binding edges + reactive-source
 /// identities); `patch` aligns the last-good and candidate templates by
-/// [`NodeKey`]; `migration` carries the per-cell / focus / scroll decisions;
-/// `anchors` are the live focus / scroll facts those decisions were made against,
-/// so the commit can count precisely what did not survive.
+/// [`NodeKey`]; `migration` carries the per-cell decisions and the node state
+/// each kept node carries.
 pub fn commit(
     rt: &mut LiveRuntime<'_>,
     plan: &CandidatePlan,
     patch: &StructuralPatch,
     migration: &MigrationPlan,
-    anchors: &LiveAnchors,
 ) -> HotReloadReport {
     let mut report = HotReloadReport::default();
 
-    // Step 1 — structural patch. Reuse kept instances in place; rebuild the
-    // re-typed / inserted / removed subtrees. The key-to-node map records, per
-    // template NodeKey, the live node it now names, so the rebind step can map an
-    // edge's NodeKey to a runtime NodeId without a search.
-    let (key_to_node, rebuilt) = apply_structural(rt, &plan.tree, patch);
+    // Step 1 — structural patch. Reuse the live nodes in place, or rebuild the
+    // view carrying each kept node's migratable state. The key-to-node map
+    // records, per template NodeKey, the live node it now names, so the rebind
+    // step can map an edge's NodeKey to a runtime NodeId without a search.
+    let key_to_node = apply_structural(rt, &plan.tree, patch, migration, &mut report);
 
     // Step 2 — state migration by durable identity. A kept symbol carries its live
     // value across (the reload preserves running state); a new symbol allocates a
@@ -199,12 +198,7 @@ pub fn commit(
         &mut dirty_marks,
     );
 
-    // Step 4 — absolute focus / scroll restore. Focus and each surviving scroll
-    // container's offset go back to the migration-preserved value; a lost focus or
-    // an unrestorable scroll is recorded, never silently dropped.
-    restore_focus_and_scroll(rt, migration, anchors, rebuilt, &key_to_node, &mut report);
-
-    // Step 5 — targeted dirty + flush. Mark exactly the rebound nodes dirty, then
+    // Step 4 — targeted dirty + flush. Mark exactly the rebound nodes dirty, then
     // flush the migrated state set so only the changed nodes recompute. The commit
     // touches nothing beyond these nodes.
     for (node, class) in &dirty_marks {
@@ -213,7 +207,7 @@ pub fn commit(
     let changed: Vec<StateId> = symbol_to_state.iter().map(|&(_, id)| id).collect();
     rt.store.flush_state_transactions(&changed, rt.bindings);
 
-    // Step 6 — handlers and regions, against the nodes and cells the reload now
+    // Step 5 — handlers and regions, against the nodes and cells the reload now
     // names.
     mount_behavior(rt, plan, next, &key_to_node, &symbol_to_state, &mut report);
 
@@ -335,45 +329,39 @@ fn mount_behavior(
     *rt.view = host.map(|(_, host)| host);
 }
 
-/// Walk the candidate template in the shared pre-order numbering, deciding per node
-/// whether to reuse the live instance (a `keep`) or build a fresh subtree (a
-/// `replace` / `insert`), and free the last-good tree's dropped slots (`remove`).
-/// Returns the template `NodeKey` → live `NodeId` map the rebind step keys against.
+/// Apply the structural patch and return the template `NodeKey` → live
+/// `NodeId` map the rebind step keys against, ascending by key.
 ///
-/// For the common structure-preserving edit every node is a keep: the walk visits
-/// the live tree in the same pre-order the emitter numbered it, so slot `k` maps to
-/// the live node at pre-order position `k` with no teardown — the kept instance and
-/// all its runtime state stay exactly in place. A non-preserving edit rebuilds only
-/// the changed subtrees through the same builder the `ui!` emitter targets.
+/// A structure-preserving edit of a region-free view reuses every live node:
+/// the candidate numbers its nodes exactly as the last-good tree did, so each
+/// key keeps naming its node and all its runtime state stays in place. Any
+/// other edit frees the view's subtree and builds the candidate in its place
+/// through the same builder the `ui!` emitter targets; kept state cells survive
+/// by identity in the state store, which the node rebuild does not touch, and
+/// each kept node's migratable node state moves to the node that rebuilt it.
 fn apply_structural(
     rt: &mut LiveRuntime<'_>,
     tree: &UiTree,
     patch: &StructuralPatch,
-) -> (Vec<(NodeKey, NodeId)>, bool) {
+    migration: &MigrationPlan,
+    report: &mut HotReloadReport,
+) -> Vec<(NodeKey, NodeId)> {
     let regions = has_regions(tree)
         || rt
             .view
             .as_ref()
             .is_some_and(|host| host.borrow().has_regions());
     if patch.is_structure_preserving() && !regions && rt.root.is_some() {
-        // Fast path: reuse every live node in place at its template slot.
-        let mut map = std::mem::take(rt.nodes);
-        if map.is_empty()
-            && let Some(root) = rt.root
-        {
-            map = static_nodes(rt.store, root, tree);
-        }
+        let map = std::mem::take(rt.nodes);
         let mut next: u32 = 0;
         for item in &tree.items {
             restyle_item(rt.store, item, &mut next, &map);
         }
-        return (map, false);
+        return map;
     }
 
-    // Structural edit: free the view's subtree and build the candidate in its
-    // place. Kept state cells survive by identity in the state store, which the
-    // node rebuild does not touch, and the migration plan carries surviving
-    // focus and scroll forward.
+    let carried = carry_out(rt, &migration.nodes);
+    let (focused, scrolled) = rt.root.map_or((false, 0), |root| census(rt, root));
     if let Some(host) = rt.view.as_ref() {
         let mut host = host.borrow_mut();
         host.release_regions(rt.store, rt.states);
@@ -395,7 +383,100 @@ fn apply_structural(
     }
     rt.root = new_root;
     map.sort_unstable_by_key(|&(key, _)| key);
-    (map, true)
+
+    let (refocused, restored) = carry_in(rt, carried, &map);
+    if focused && !refocused {
+        rt.store.set_focused(None);
+        report.focus_lost = true;
+    }
+    report.scroll_lost = scrolled - restored;
+    map
+}
+
+/// The node state one kept node carries across a rebuild.
+struct Carried {
+    /// The node's key in the candidate.
+    to: NodeKey,
+    /// Whether it held focus.
+    focus: bool,
+    /// Its nonzero scroll offset.
+    scroll: Option<Vec2>,
+    /// Its edit buffer: text, caret, selection and composition.
+    buffer: Option<Box<Buffer>>,
+}
+
+/// Lift from the live nodes of the last-good tree the state each of `nodes`
+/// carries, before the tree is freed.
+fn carry_out(rt: &mut LiveRuntime<'_>, nodes: &[NodeMigration]) -> Vec<Carried> {
+    let focused = rt.store.focused();
+    let mut out = Vec::new();
+    for migration in nodes {
+        let Some(old) = lookup_node(rt.nodes, migration.from) else {
+            continue;
+        };
+        let carries = |state| migration.carries.contains(state);
+        let offset = rt.store.scroll(old);
+        let carried = Carried {
+            to: migration.to,
+            focus: carries(MigratableState::FOCUS) && focused == Some(old),
+            scroll: (carries(MigratableState::SCROLL) && offset != Vec2::ZERO).then_some(offset),
+            buffer: carries(MigratableState::SELECTION)
+                .then(|| rt.text_edits.take(old))
+                .flatten(),
+        };
+        if carried.focus || carried.scroll.is_some() || carried.buffer.is_some() {
+            out.push(carried);
+        }
+    }
+    out
+}
+
+/// Whether the subtree at `root` holds the focus, and how many of its nodes
+/// hold a nonzero scroll offset.
+fn census(rt: &mut LiveRuntime<'_>, root: NodeId) -> (bool, u32) {
+    let focused = rt.store.focused();
+    let (mut focus, mut scrolled) = (false, 0);
+    let stack = &mut *rt.scratch;
+    stack.clear();
+    stack.push(root);
+    while let Some(node) = stack.pop() {
+        focus |= focused == Some(node);
+        scrolled += u32::from(rt.store.scroll(node) != Vec2::ZERO);
+        let mut child = rt.store.arena().links(node).and_then(|l| l.first_child);
+        while let Some(id) = child {
+            stack.push(id);
+            child = rt.store.arena().links(id).and_then(|l| l.next_sibling);
+        }
+    }
+    (focus, scrolled)
+}
+
+/// Settle each carried state on the node that rebuilt its kept node, and
+/// return whether the focus moved and how many scroll offsets did.
+fn carry_in(
+    rt: &mut LiveRuntime<'_>,
+    carried: Vec<Carried>,
+    map: &[(NodeKey, NodeId)],
+) -> (bool, u32) {
+    let (mut refocused, mut restored) = (false, 0);
+    for carried in carried {
+        let Some(node) = lookup_node(map, carried.to) else {
+            continue;
+        };
+        if carried.focus {
+            rt.store.set_focused(Some(node));
+            refocused = true;
+        }
+        if let Some(offset) = carried.scroll {
+            rt.store.restore_scroll(node, offset);
+            restored += 1;
+        }
+        if let Some(buffer) = carried.buffer {
+            rt.store.set_text_request(node, buffer.request());
+            rt.text_edits.register(node, buffer);
+        }
+    }
+    (refocused, restored)
 }
 
 /// The static template slots of a region-free view built from `tree` and
@@ -894,62 +975,6 @@ fn rebind_static(
         bindings.bind(state, node, class);
         dirty_marks.push((node, class));
     }
-}
-
-/// Restore focus and each surviving scroll container's offset to the value the
-/// migration plan preserved, and record any that could not survive.
-///
-/// Focus survives iff its slot was kept; the commit reads the live focused node,
-/// which is still valid on the structure-preserving path (the instance was reused).
-/// On a full structural rebuild the old focus target is gone, so a `focus_survives`
-/// of `Some(false)` (or a focused node that no longer resolves) records a lost
-/// focus. Scroll offsets are restored absolutely, clamped to the container's new
-/// range by `set_scroll`.
-fn restore_focus_and_scroll(
-    rt: &mut LiveRuntime<'_>,
-    migration: &MigrationPlan,
-    anchors: &LiveAnchors,
-    rebuilt: bool,
-    key_to_node: &[(NodeKey, NodeId)],
-    report: &mut HotReloadReport,
-) {
-    // Focus: the migration decided whether the focused slot survives. A full
-    // structural rebuild replaces every instance, so any prior focus target is gone
-    // regardless of slot identity; otherwise focus is lost only if its slot did not
-    // survive. When focus is lost, clear it and record the loss; when it survives on
-    // the structure-preserving path, the reused instance still holds focus.
-    let focus_lost = if anchors.focused.is_some() {
-        rebuilt || migration.focus_survives == Some(false)
-    } else {
-        false
-    };
-    if focus_lost {
-        rt.store.set_focused(None);
-        report.focus_lost = true;
-    }
-
-    if rebuilt {
-        // A full rebuild replaced every scroll container with a fresh zero-offset
-        // instance, so no live scroll can be carried forward in this slice
-        // (per-slot reuse across a structural edit is a later refinement — ADR
-        // 0015). Every live scroll anchor is therefore lost.
-        report.scroll_lost = anchors.scrolled.len() as u32;
-        return;
-    }
-
-    // Structure-preserving path: each surviving container keeps its absolute offset
-    // on its reused instance. The migration plan lists exactly the containers whose
-    // slot survived; re-applying the current offset (clamped to the possibly-new
-    // range by `set_scroll`) keeps it valid. A scrolled anchor absent from the plan
-    // had its slot replaced or removed, so it is counted as lost.
-    for s in &migration.scroll {
-        if let Some(node) = lookup_node(key_to_node, s.node) {
-            let current = rt.store.scroll(node);
-            rt.store.set_scroll(node, current);
-        }
-    }
-    report.scroll_lost =
-        (anchors.scrolled.len() as u32).saturating_sub(migration.scroll.len() as u32);
 }
 
 /// Find the live node a template [`NodeKey`] maps to in the ascending map.

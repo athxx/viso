@@ -407,6 +407,10 @@ pub struct NodeStore {
     /// [`reconcile`](crate::text_edit::reconcile), which seeds each node's
     /// buffer. Empty in a frame whose shown states did not change.
     text_seeds: Vec<(NodeId, TextRequest)>,
+    /// Cold, transient (not index-aligned): the scroll offsets a hot reload
+    /// carries onto freshly built viewports, applied by the next layout once
+    /// their scroll range is known. Empty outside the frame after a reload.
+    scroll_restores: Vec<(NodeId, Vec2)>,
     /// Cold retained slot (not index-aligned): the nodes a caption widget
     /// declared as draggable self-drawn-caption regions, in declaration order. A
     /// self-drawn-chrome window's caption registers its blank band here at build
@@ -476,6 +480,7 @@ impl NodeStore {
         self.text_reflows.clear();
         self.edit_requests.clear();
         self.text_seeds.clear();
+        self.scroll_restores.clear();
         self.focused = None;
         self.contacts.clear();
         self.hovered = None;
@@ -1087,6 +1092,25 @@ impl NodeStore {
             id,
             DirtyClass::TRANSFORM | DirtyClass::HIT_TEST | DirtyClass::PAINT,
         );
+    }
+
+    /// Restore a scroll viewport's offset once the next layout has measured its
+    /// content: a freshly built viewport has no scroll range yet, so the offset
+    /// waits and is then applied through [`set_scroll`](Self::set_scroll),
+    /// clamped to the range that layout found. A hot reload carries a kept
+    /// viewport's offset onto the node that rebuilt it this way. Cold path.
+    pub fn restore_scroll(&mut self, id: NodeId, offset: Vec2) {
+        if self.arena.is_live(id) {
+            self.scroll_restores.push((id, offset));
+        }
+    }
+
+    /// Apply every waiting [`restore_scroll`](Self::restore_scroll), after a
+    /// layout pass and before the world rects are resolved.
+    fn settle_scroll_restores(&mut self) {
+        while let Some((id, offset)) = self.scroll_restores.pop() {
+            self.set_scroll(id, offset);
+        }
     }
 
     /// Set a node's world-space translate to an absolute `offset`, moving the
@@ -2141,6 +2165,7 @@ impl NodeStore {
         layout::measure(self, root.index(), scratch);
         scratch.clear();
         layout::layout(self, root.index(), surface, scratch);
+        self.settle_scroll_restores();
         self.resolve_transforms(root);
     }
 
@@ -2274,6 +2299,8 @@ impl NodeStore {
         // resolving from the tree root, not from each redo root in isolation.
         // Skipped entirely on a redo-free frame (a pure TRANSFORM/PAINT frame,
         // whose world the facade resolves through its own TRANSFORM-gated call).
+        // A waiting scroll restore marks TRANSFORM, so it is resolved either way.
+        self.settle_scroll_restores();
         if !redo_roots.is_empty() {
             self.resolve_transforms(root);
         }

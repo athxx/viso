@@ -217,7 +217,7 @@ fn child_counts_walk(store: &NodeStore, node: NodeId, out: &mut Vec<usize>) {
 /// Mount `source` through the Slice O live commit and return its pre-order child-count
 /// shape — the reference the AOT tree is compared against.
 fn live_commit_child_counts(source: &str) -> Vec<usize> {
-    use viso_dsl::hotreload::{CandidatePlan, LiveAnchors, LiveRuntime, hot_reload};
+    use viso_dsl::hotreload::{CandidatePlan, LiveRuntime, hot_reload};
     use viso_ui::{EffectStore, SemanticProjector};
 
     let mut store = NodeStore::new();
@@ -247,7 +247,7 @@ fn live_commit_child_counts(source: &str) -> Vec<usize> {
         nodes: &mut nodes,
         view: &mut None,
     };
-    hot_reload(&mut rt, &baseline, source, &LiveAnchors::default()).expect("commits");
+    hot_reload(&mut rt, &baseline, source).expect("commits");
     let root = rt.root.expect("mounted root");
     child_counts(&store, root)
 }
@@ -274,7 +274,7 @@ fn boxes(store: &mut NodeStore, root: NodeId, env: viso_ui::LengthEnv) -> Vec<(f
 
 #[test]
 fn packaged_environment_lengths_resolve_as_the_live_commit_does() {
-    use viso_dsl::hotreload::{CandidatePlan, LiveAnchors, LiveRuntime, hot_reload};
+    use viso_dsl::hotreload::{CandidatePlan, LiveRuntime, hot_reload};
     use viso_ui::{EffectStore, LengthEnv, SemanticProjector};
 
     let source = "Row { gap: 2px; Column { font_size: 125%; width: 50% - 4px; \
@@ -323,7 +323,7 @@ fn packaged_environment_lengths_resolve_as_the_live_commit_does() {
         view: &mut None,
     };
     let baseline = CandidatePlan::default();
-    hot_reload(&mut live, &baseline, source, &LiveAnchors::default()).expect("commits");
+    hot_reload(&mut live, &baseline, source).expect("commits");
     let committed = live.root.expect("mounted root");
 
     for env in envs {

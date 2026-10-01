@@ -3808,6 +3808,17 @@ fn positive(old: I64) -> Bool { old > 0 }
 - Part/Slot Contract 改变：验证调用方后原子更新；
 - 焦点、选择、滚动和动画必须由 Widget Schema 标记可迁移字段。
 
+结构 Diff 在每个父节点内按子节点序列对齐两棵模板树：Type、`node` 名与节点种类都相同的节点对齐为保留，对齐区间内剩余的节点按顺序配对为 Replace，其子节点继续对齐；Control-flow Region 只与同一形式（`if`/`for`/`match`）、同分支数的 Region 对齐。因此在前面插入或删除无关兄弟节点不会改变其余节点的保留关系。
+
+结构性重建时，被保留节点按其 Widget Schema 标记的字段迁移到重建它的新节点：
+
+- `focus`：所有布局 Widget——旧节点持有焦点时新节点获得焦点；
+- `scroll`：`Scroll`——非零滚动偏移在新节点首次布局后恢复（按新内容范围钳制）；
+- `selection`：`TextInput`——编辑缓冲（文本、Caret/选区、IME Composition）整体迁移；
+- 被 Replace 或删除的节点的这些状态丢弃：视图内的焦点因此丢失时报告 `focus_lost`，每个丢失的非零滚动偏移计入 `scroll_lost`；
+- 结构保持的编辑原地复用所有节点，上述状态不动；
+- Region 内挂载的节点暂不迁移；动画字段在 DSL 转场运行时落地前不迁移。
+
 ---
 
 ## 95. Capability 与执行预算运行时

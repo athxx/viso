@@ -188,6 +188,37 @@ impl WidgetSlot {
     }
 }
 
+/// The live state of a widget's node a hot reload carries to the node that
+/// replaces it in a rebuilt tree, when the diff keeps the node.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct MigratableState(u8);
+
+impl MigratableState {
+    /// Nothing carries.
+    pub const NONE: MigratableState = MigratableState(0);
+    /// Keyboard focus.
+    pub const FOCUS: MigratableState = MigratableState(1);
+    /// A scroll viewport's offset.
+    pub const SCROLL: MigratableState = MigratableState(1 << 1);
+    /// A text field's edit buffer: its caret, selection and text.
+    pub const SELECTION: MigratableState = MigratableState(1 << 2);
+
+    /// Both sets.
+    pub const fn with(self, other: MigratableState) -> MigratableState {
+        MigratableState(self.0 | other.0)
+    }
+
+    /// Whether every state in `other` carries.
+    pub const fn contains(self, other: MigratableState) -> bool {
+        self.0 & other.0 == other.0
+    }
+
+    /// Whether nothing carries.
+    pub const fn is_empty(self) -> bool {
+        self.0 == 0
+    }
+}
+
 /// A native widget: a node type a view instantiates by name.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct NativeWidget {
@@ -206,6 +237,8 @@ pub struct NativeWidget {
     pub events: &'static [&'static [WidgetEvent]],
     /// Its slots.
     pub slots: &'static [WidgetSlot],
+    /// The live state of its node a hot reload carries.
+    pub migratable: MigratableState,
 }
 
 impl NativeWidget {
@@ -219,6 +252,7 @@ impl NativeWidget {
             provides: None,
             events: &[],
             slots: &[],
+            migratable: MigratableState::NONE,
         }
     }
 
@@ -249,6 +283,12 @@ impl NativeWidget {
     /// Takes `slots`.
     pub const fn slots(mut self, slots: &'static [WidgetSlot]) -> Self {
         self.slots = slots;
+        self
+    }
+
+    /// Carries `state` across a hot reload, on top of what it carries already.
+    pub const fn migratable(mut self, state: MigratableState) -> Self {
+        self.migratable = self.migratable.with(state);
         self
     }
 

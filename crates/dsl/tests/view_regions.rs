@@ -8,7 +8,7 @@ use std::rc::Rc;
 
 use viso_dsl::aot::build_view_package;
 use viso_dsl::frontend::Origin;
-use viso_dsl::hotreload::{CandidatePlan, LiveAnchors, LiveRuntime, hot_reload_view};
+use viso_dsl::hotreload::{CandidatePlan, LiveRuntime, hot_reload_view};
 use viso_ui::Rect;
 use viso_ui::virtual_list::VirtualLists;
 use viso_ui::{
@@ -131,14 +131,7 @@ impl Rt {
             nodes: &mut self.nodes,
             view: &mut self.view,
         };
-        let done = hot_reload_view(
-            &mut live,
-            &self.last_good,
-            source,
-            &origin(),
-            &LiveAnchors::default(),
-        )
-        .expect("reloads");
+        let done = hot_reload_view(&mut live, &self.last_good, source, &origin()).expect("reloads");
         self.root = live.root;
         self.last_good = done.candidate;
         self.layout();
@@ -369,16 +362,7 @@ fn a_region_rolls_back_when_its_reload_does_not_mount() {
         view: &mut rt.view,
     };
     let broken = SOURCE.replace("key item", "key missing");
-    assert!(
-        hot_reload_view(
-            &mut live,
-            &rt.last_good,
-            &broken,
-            &origin(),
-            &LiveAnchors::default()
-        )
-        .is_err()
-    );
+    assert!(hot_reload_view(&mut live, &rt.last_good, &broken, &origin()).is_err());
     assert_eq!(rt.region(3), before);
     rt.click(45.0, 5.0);
     assert_eq!(

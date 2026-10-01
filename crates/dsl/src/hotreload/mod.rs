@@ -7,8 +7,8 @@
 //!
 //! ```text
 //! compile candidate  (plan)     — recompile + validate, pure
-//!   → structural diff (diff)    — align old/new templates by NodeKey, pure
-//!   → migration plan  (migrate) — match state/focus/scroll by identity, pure
+//!   → structural diff (diff)    — align old/new templates per parent, pure
+//!   → migration plan  (migrate) — match state by identity, node state by keep, pure
 //!   → atomic commit   (commit)  — the only stage that touches the live tree
 //! ```
 //!
@@ -29,8 +29,7 @@ pub use commit::{HotReloadReport, LiveRuntime, commit, static_nodes};
 pub use compat::{Conversion, IntType, Retyping, retype};
 pub use diff::{InsertedNode, KeptNode, RemovedNode, ReplacedNode, StructuralPatch, diff};
 pub use migrate::{
-    LiveAnchors, MigrationPlan, Retype, ScrollMigration, SlotMigration, StateAction,
-    StateMigration, migrate,
+    MigrationPlan, NodeMigration, Retype, SlotMigration, StateAction, StateMigration, migrate,
 };
 pub use plan::{CandidatePlan, MigrateFn, plan, plan_view};
 
@@ -66,18 +65,16 @@ pub struct HotReload {
 /// candidate to adopt as the next baseline.
 ///
 /// `last_good` is the template the live tree currently matches (its `tree` and
-/// reactive-source `sources`); `anchors` are the live focus / scroll facts to
-/// preserve where the structure allows; `rt` is the live runtime to commit into.
+/// reactive-source `sources`); `rt` is the live runtime to commit into.
 pub fn hot_reload(
     rt: &mut LiveRuntime<'_>,
     last_good: &CandidatePlan,
     source: &str,
-    anchors: &LiveAnchors,
 ) -> Result<HotReload, Vec<Diagnostic>> {
     // Stage 1 — compile + validate the candidate. Any fatal diagnostic returns here,
     // before anything mutates.
     let candidate = plan(source)?;
-    Ok(transact(rt, last_good, candidate, anchors))
+    Ok(transact(rt, last_good, candidate))
 }
 
 /// [`hot_reload`] for the component of a `.vs` file: the same transaction, over a
@@ -88,10 +85,9 @@ pub fn hot_reload_view(
     last_good: &CandidatePlan,
     source: &str,
     origin: &Origin,
-    anchors: &LiveAnchors,
 ) -> Result<HotReload, Vec<Diagnostic>> {
     let candidate = plan_view(source, origin)?;
-    Ok(transact(rt, last_good, candidate, anchors))
+    Ok(transact(rt, last_good, candidate))
 }
 
 /// Stages 2-4 over a candidate already compiled by [`plan`] or [`plan_view`]:
@@ -101,9 +97,8 @@ pub fn transact(
     rt: &mut LiveRuntime<'_>,
     last_good: &CandidatePlan,
     candidate: CandidatePlan,
-    anchors: &LiveAnchors,
 ) -> HotReload {
-    // Stages 2-3 — pure planning over the two templates and the live anchors.
+    // Stages 2-3 — pure planning over the two templates.
     let patch = diff(&last_good.tree, &candidate.tree);
     let mut migration = migrate(
         &last_good.sources,
@@ -111,12 +106,20 @@ pub fn transact(
         behavior_slots(last_good),
         behavior_slots(&candidate),
         &patch,
-        anchors,
     );
     retype(last_good, &candidate, &mut migration);
 
+    // A region-free view mounted outside the commit names its static nodes by
+    // walking the last-good template over the live tree.
+    if rt.nodes.is_empty()
+        && let Some(root) = rt.root
+        && !crate::view_regions::has_regions(&last_good.tree)
+    {
+        *rt.nodes = static_nodes(rt.store, root, &last_good.tree);
+    }
+
     // Stage 4 — the only mutating stage. Infallible by construction.
-    let report = commit(rt, &candidate, &patch, &migration, anchors);
+    let report = commit(rt, &candidate, &patch, &migration);
 
     HotReload { report, candidate }
 }

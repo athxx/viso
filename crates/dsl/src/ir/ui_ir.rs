@@ -19,6 +19,7 @@
 use crate::ir::dirty_map::{DirtyClass, property_dirty_class};
 use crate::resolve::SymbolId;
 use crate::syntax::span::TextRange;
+use viso_behavior::native::MigratableState;
 
 /// The retained-tree template a view fragment or component view lowers to.
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -111,6 +112,9 @@ pub struct UiNode {
     /// The component instance whose view the node belongs to: `0` for the
     /// view's own component, else an index into [`UiTree::instances`] plus one.
     pub instance: u32,
+    /// The live state of the node a hot reload carries when it keeps the node,
+    /// as its widget schema marks it.
+    pub migratable: MigratableState,
 }
 
 /// Which `viso_ui::BuildCx` builder call a node maps to: the retained node its

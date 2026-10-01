@@ -42,7 +42,7 @@ pub use ui_ir::{
 
 use std::collections::HashMap;
 
-use viso_behavior::native::{FlexAxis, Natives, WidgetNode};
+use viso_behavior::native::{FlexAxis, MigratableState, Natives, WidgetNode};
 use viso_view::ControlKind;
 
 use crate::ast::{
@@ -429,6 +429,7 @@ impl<'a, 'l> Lowering<'a, 'l> {
             children,
             origin,
             instance,
+            migratable: widget.migratable,
         }));
     }
 
@@ -460,6 +461,7 @@ impl<'a, 'l> Lowering<'a, 'l> {
             children: Vec::new(),
             origin,
             instance: self.instance(),
+            migratable: MigratableState::NONE,
         }));
     }
 

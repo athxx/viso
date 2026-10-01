@@ -250,6 +250,18 @@ impl Buffer {
         true
     }
 
+    /// The text request that declares the buffer's text in its resident
+    /// style. An edit buffer is single-line: it clips and scrolls, never wraps.
+    pub fn request(&self) -> TextRequest {
+        TextRequest {
+            text: self.text.clone(),
+            font_size: self.font_size,
+            color: self.color,
+            soft_wrap: false,
+            locale: self.locale.clone(),
+        }
+    }
+
     /// Whether an IME composition is currently active.
     #[inline]
     pub fn has_composition(&self) -> bool {
@@ -560,6 +572,16 @@ impl TextEdits {
         }
     }
 
+    /// Unregister `node`'s buffer and hand it back, so a hot reload can carry
+    /// it to the node that rebuilds `node`.
+    pub fn take(&mut self, node: NodeId) -> Option<Box<Buffer>> {
+        let slot = self.buffers.get_mut(node.index() as usize)?;
+        match slot {
+            Some((owner, _)) if *owner == node => slot.take().map(|(_, buffer)| buffer),
+            _ => None,
+        }
+    }
+
     /// `node`'s buffer, starting it an empty one if it has none. The router
     /// queues a recorded intent here, so a node a handler edits needs no
     /// registration up front.
@@ -664,15 +686,7 @@ pub fn reconcile(
         }
         // Re-declare the text self-contained from the buffer's resident style;
         // the original request was consumed by shaping and cannot be read back.
-        let request = TextRequest {
-            text: buffer.text.clone(),
-            font_size: buffer.font_size,
-            color: buffer.color,
-            // An edit buffer is single-line here: it clips/scrolls, never wraps.
-            soft_wrap: false,
-            locale: buffer.locale.clone(),
-        };
-        store.set_text_request(node, request);
+        store.set_text_request(node, buffer.request());
         if !edits.changed.contains(&node) {
             edits.changed.push(node);
         }
