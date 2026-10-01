@@ -1469,6 +1469,21 @@ relaunch/install time
 restore time
 ```
 
+当前实现（`.vs` 单属性编辑，release）：`viso` 的 `hot_reload::tests::edit_to_pixels`
+（`#[ignore]`，`cargo test --release -p viso --features hot-reload --lib -- --ignored
+edit_to_pixels --nocapture`）测从写盘到重绘完成的延迟，分为 watcher 检测（写盘 → staged）
+与管线（reload + relayout + repaint，不含 GPU upload/submit）。Apple M4 上 60 次编辑：
+
+```text
+detect          min 26 ms  median 43 ms  p95 60 ms
+pipeline        min 0.5 ms median 0.9 ms p95 1.3 ms
+edit-to-pixels  min 28 ms  median 44 ms  p95 61 ms
+```
+
+延迟几乎全部来自 watcher 的轮询相位（POLL 25 ms）加 settle 窗口（SETTLE 25 ms，§7.1）；
+缩短它需要平台文件事件（FSEvents/kqueue、inotify、ReadDirectoryChangesW）替代轮询，
+尚未实现。GPU 上传与呈现不在测量内。
+
 ---
 
 ## 49. Hot patch targets
