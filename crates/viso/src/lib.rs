@@ -64,6 +64,8 @@ mod text_worker;
 use text_content::{ParagraphSlot, TextShaper};
 
 mod window;
+#[cfg(feature = "hot-reload")]
+mod hot_reload;
 pub use window::{WindowBuilder, WindowHandle, window};
 
 pub use viso_ui::context::AppCx;
@@ -444,6 +446,10 @@ struct AppDriver<A: Application> {
     /// The session's service registry, lent type-erased to every window's
     /// store. Created on launch unless injected (a headless session, a test).
     services: Option<Rc<dyn Any>>,
+    /// The development session: the mounted views, their watched files and
+    /// the reloads staged for the next frame.
+    #[cfg(feature = "hot-reload")]
+    hot_reload: hot_reload::HotReloadSession,
 }
 
 /// The fonts an app registered at init, installed into every window's shaper.
@@ -678,6 +684,8 @@ impl<A: Application> AppDriver<A> {
             pending_closes: Vec::new(),
             fonts: SessionFonts::default(),
             services: services.map(|s| Rc::new(s) as Rc<dyn Any>),
+            #[cfg(feature = "hot-reload")]
+            hot_reload: hot_reload::HotReloadSession::default(),
         }
     }
 
@@ -1507,6 +1515,8 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
         if !framed {
             ws.safe_area_root = ws.root;
         }
+        #[cfg(feature = "hot-reload")]
+        self.hot_reload.adopt(|| cx.loop_waker(), &mut ws);
         self.windows.push(ws);
     }
 
@@ -1758,6 +1768,8 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
         // A loop kick: a task woke (or was spawned), or a timer deadline
         // elapsed. Frame the windows with work, so the frame polls the tasks
         // and fires the timers.
+        #[cfg(feature = "hot-reload")]
+        self.hot_reload.wakeup(cx);
         let now = cx.frame_now();
         for ws in &self.windows {
             let timer_due = ws.timers.earliest().is_some_and(|at| at <= now);
@@ -1896,6 +1908,10 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
         // (section 45: we iterate all windows, never key one).
         match phase {
             FramePhase::FlushStateTransactions => {
+                // Commit the edits the watcher staged before the windows flush,
+                // so a reload's writes settle and paint this frame.
+                #[cfg(feature = "hot-reload")]
+                self.hot_reload.reload(&mut self.windows);
                 for ws in &mut self.windows {
                     // Start any animations a handler requested this frame — a
                     // sheet sliding in queued a `TranslateAnim` through
@@ -2051,6 +2067,8 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
                         if !framed {
                             ws.safe_area_root = ws.root;
                         }
+                        #[cfg(feature = "hot-reload")]
+                        self.hot_reload.adopt(|| cx.loop_waker(), &mut ws);
                         self.windows.push(ws);
                     }
                 }
@@ -2312,6 +2330,8 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
         if let Some(ws) = self.window_mut(window) {
             ws.effects.cancel_all();
         }
+        #[cfg(feature = "hot-reload")]
+        self.hot_reload.close(window);
         self.windows.retain(|w| w.window != window);
     }
 

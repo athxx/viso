@@ -268,6 +268,17 @@ fn a_record_spread_of_another_type_is_an_error() {
 }
 
 #[test]
+fn a_state_missing_its_initializer_is_an_error_not_a_panic() {
+    let source = "component C {\n    state count = ;\n    view { Text {} }\n}\n";
+    let compiled = compile_file(source, &origin());
+    assert!(
+        compiled.errors().next().is_some(),
+        "{:#?}",
+        compiled.diagnostics
+    );
+}
+
+#[test]
 fn an_input_default_is_checked_against_its_type() {
     let source = "component C {\n    input n: I64 = \"five\";\n    view { Text {} }\n}\n";
     let compiled = compile_file(source, &origin());
