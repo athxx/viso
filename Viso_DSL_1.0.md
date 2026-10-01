@@ -499,7 +499,7 @@ unit_suffix       = "dp" | "px" | "sp" | "em"
                   | "hz" | "khz" ;
 ```
 
-`numeric_body` 与后缀之间不得出现空白。`unit_numeric_body` 不含指数部分：`1e2dp` 是 `E1203`。`e`/`E` 只有在其后紧跟 `[+-]? decimal_digit` 时才开始浮点指数，因此 `1em`、`1.5em` 始终词法化为 Unit Literal，`1e5` 始终是 Float Literal。
+`numeric_body` 与后缀之间不得出现空白。`unit_numeric_body` 不含指数部分：`1e2dp` 是 `E1203`。`e`/`E` 只有在其后紧跟 `[+-]? decimal_digit` 时才开始浮点指数，因此 `1em`、`1.5em` 始终词法化为 Unit Literal，`1e5` 始终是 Float Literal。`ui!` 与 `component!` 的源文本先经 Rust 词法：Rust 把 `1em`、`1.5em` 读作缺少数字的指数并拒绝，因此内联宏中不能书写 `em` 字面量；`em` 长度写在 `.vs`（`view!`）中，纯 Rust 路径使用 `LengthTerms::em`。
 
 ```viso
 14sp
@@ -643,6 +643,7 @@ MixedLength = dp·1dp + px·1px + sp·1sp + em·1em + pct·1%
 - `MixedLength` 不支持 `min`、`max`、`clamp`；尺寸约束使用 `min_width`/`max_width` 等 Property；
 - 常量 `MixedLength` 必须在编译期折叠为五个系数；
 - 纯 Rust 路径（`viso::ui` 的长度构造与运算符）使用同一五系数模型；`ui!`、`component!`、`view!` 与纯 Rust 构造得到相同的 IR 值；
+- 纯 Rust 表面：`LengthTerms`（`LengthTerms::dp/px/sp/em/pct` 构造，`+`、`-`、一元 `-`、与 `F32` 的 `*`/`/` 逐项运算）表示一个五系数值；`NodeLengths { width, height, gap, font_size }` 是一个 Node 读取环境的长度；`BuildCx::bind_lengths` / `NodeStore::bind_lengths` 绑定它们，在下一次 Layout 开始时按 `LengthEnv { scale_factor, text_scale, base_font_size }` 与 Typography Context 折叠；`NodeStore::set_length_env` 移动环境；
 - Property 的 Schema 类型决定其是否接受长度族、`MixedLength` 以及 `Fill`/`Fit` 等 Sizing 值。
 
 示例（Property 名由 Widget Schema 定义，此处仅为说明）：
@@ -6370,12 +6371,14 @@ ReactiveBinding {
 
 长度值的 Lowering：
 
-- 纯 `Dp` 常量直接 Lower 为 Layout 的 Fixed 值；
+- 只含 `dp` 与 `%` 分量的常量直接 Lower 为 Layout 的 Fixed 或 Relative 值，不进入 Binding 侧表；
 - 其余长度族值与 `MixedLength` Lower 为定长 `LengthTerms { dp, px, sp, em, pct: F32 }`，常量在编译期折叠，不产生表达式树或堆分配；
 - `LengthTerms` 与其依赖掩码存放在 Binding 侧表，不进入 Layout 热存储；环境分量在依赖变化时预折叠：`fixed = dp + px / scale_factor + text_scale_curve(sp) + em × resolved_font_size`；
 - Layout 热存储只保存 `ResolvedLength { fixed: F32, pct: F32 }`（8 字节），Layout 求解是一次 `fixed + pct × percent_basis`；纯 `Dp` 常量 `pct = 0`，与 Fixed 路径同成本；
 - `font_size` 与 `line_height` 的 Percent 基准是字号，在 Typography 解析时折叠进 `fixed`，Layout 看到的 `pct` 为 `0`；
-- 环境值变化时只重新折叠依赖掩码命中的 Binding（§19.6），不重新求值整棵树；
+- 环境值变化时只重新折叠依赖掩码命中的 Binding（§19.6），不重新求值整棵树；折叠结果未变的 Node 不标脏；
+- Percent Basis 是否确定由父布局沿 Layout 递归传入；重新布局的子树根自其祖先链求得；
+- `E3105`/`E3106` 每个 Node 每类只报告一次，经 `NodeStore::take_length_warnings` 取出，Release 中为空；`NodeStore::length_stats` 的 `nonfinite`（即 `length_nonfinite`）与 `indefinite_basis` 计数器在所有构建中计数；
 - `LengthTerms` 的非零分量掩码在编译期确定，并按 §19.6 写入 Binding 的环境依赖与 `invalidates` 集合（§87）。
 
 ---

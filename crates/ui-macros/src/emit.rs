@@ -29,7 +29,9 @@ use syn::Ident;
 
 use viso_dsl::ir::binding_ir::{BindingEdge, BindingIr, NodeKey};
 use viso_dsl::ir::dirty_map::DirtyClass;
-use viso_dsl::ir::ui_ir::{AxisIr, LengthIr, NodeKind, StyleIr, UiItem, UiNode, UiTree};
+use viso_dsl::ir::ui_ir::{
+    AxisIr, LengthIr, LengthsIr, NodeKind, StyleIr, TermsIr, UiItem, UiNode, UiTree,
+};
 use viso_dsl::resolve::SymbolId;
 use viso_dsl::view_behavior::{Control, ViewBehavior};
 
@@ -248,6 +250,7 @@ impl Emit<'_> {
             }
         };
 
+        let lengths = lengths_tokens(node.style.lengths(), &handle_ident);
         let binds = self.emit_binds(key);
         let attach = self.emit_attach(key);
         let show = match self.behavior.and_then(|behavior| behavior.control(key)) {
@@ -270,6 +273,7 @@ impl Emit<'_> {
         quote! {
             {
                 let #handle_ident = #build_call;
+                #lengths
                 #binds
                 #attach
                 #record
@@ -431,7 +435,7 @@ fn flex_style_tokens(style: &StyleIr) -> TokenStream {
     if let Some(gap) = style.gap {
         fields.push(quote! { gap: #gap });
     }
-    if style.width.is_some() || style.height.is_some() {
+    if has_size(style) {
         let size = size_tokens(style);
         fields.push(quote! { size: #size });
     }
@@ -445,7 +449,7 @@ fn flex_style_tokens(style: &StyleIr) -> TokenStream {
 
 /// `::viso_ui::LeafStyle { size?, .. }` from a folded [`StyleIr`].
 fn leaf_style_tokens(style: &StyleIr) -> TokenStream {
-    if style.width.is_some() || style.height.is_some() {
+    if has_size(style) {
         let size = size_tokens(style);
         quote! {
             ::viso_ui::LeafStyle {
@@ -455,6 +459,52 @@ fn leaf_style_tokens(style: &StyleIr) -> TokenStream {
         }
     } else {
         quote! { ::core::default::Default::default() }
+    }
+}
+
+/// Whether the node authored a width or a height, folded or environment-bound.
+fn has_size(style: &StyleIr) -> bool {
+    style.width.is_some()
+        || style.height.is_some()
+        || style.lengths().width.is_some()
+        || style.lengths().height.is_some()
+}
+
+/// `cx.bind_lengths(handle, ::viso_ui::NodeLengths { .. });` for a node with
+/// environment lengths, and nothing otherwise.
+fn lengths_tokens(lengths: &LengthsIr, handle: &Ident) -> TokenStream {
+    if lengths.is_empty() {
+        return quote! {};
+    }
+    let width = terms_tokens(lengths.width);
+    let height = terms_tokens(lengths.height);
+    let gap = terms_tokens(lengths.gap);
+    let font_size = terms_tokens(lengths.font_size);
+    quote! {
+        cx.bind_lengths(#handle, ::viso_ui::NodeLengths {
+            width: #width,
+            height: #height,
+            gap: #gap,
+            font_size: #font_size,
+        });
+    }
+}
+
+/// `Option<::viso_ui::LengthTerms>` from optional [`TermsIr`].
+fn terms_tokens(terms: Option<TermsIr>) -> TokenStream {
+    match terms {
+        Some(TermsIr {
+            dp,
+            px,
+            sp,
+            em,
+            pct,
+        }) => quote! {
+            ::core::option::Option::Some(::viso_ui::LengthTerms {
+                dp: #dp, px: #px, sp: #sp, em: #em, pct: #pct,
+            })
+        },
+        None => quote! { ::core::option::Option::None },
     }
 }
 

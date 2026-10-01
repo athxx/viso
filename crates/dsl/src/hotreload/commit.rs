@@ -41,6 +41,7 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
+use crate::aot::node_lengths;
 use crate::hotreload::diff::StructuralPatch;
 use crate::hotreload::migrate::{LiveAnchors, MigrationPlan};
 use crate::hotreload::plan::CandidatePlan;
@@ -55,9 +56,9 @@ use viso_view::{Scope, ViewHost, attach_node, mount_regions, mount_values};
 use viso_ui::state::{StateKey, StateMigration};
 use viso_ui::virtual_list::VirtualLists;
 use viso_ui::{
-    Axis, Binding, BindingTable, BuildCx, DirtyClass, EffectStore, FlexStyle, Handle, LeafStyle,
-    Length, NodeId, NodeStore, ScrollStyle, SemanticProjector, Size, StateId, StateStore,
-    StateValue, StructureCx, TextEdits,
+    Axis, Binding, BindingTable, BuildCx, DirtyClass, EffectStore, FlexStyle, GridStyle, Handle,
+    LeafStyle, Length, NodeId, NodeStore, ScrollStyle, SemanticProjector, Size, StateId,
+    StateStore, StateValue, StructureCx, TextEdits,
 };
 
 /// What the commit did to the live runtime, for introspection and tests
@@ -311,6 +312,10 @@ fn apply_structural(
             let mut next: u32 = 0;
             collect_live_preorder(rt.store, root, &mut next, &mut map);
         }
+        let mut next: u32 = 0;
+        for item in &tree.items {
+            restyle_item(rt.store, item, &mut next, &map);
+        }
         return (map, false);
     }
 
@@ -347,6 +352,71 @@ fn collect_live_preorder(
     while let Some(c) = child {
         collect_live_preorder(store, c, next, out);
         child = store.arena().links(c).and_then(|l| l.next_sibling);
+    }
+}
+
+/// Re-apply one template item's static style to the live node at its key: the
+/// built size and gap, and the bound environment lengths. A kept node keeps its
+/// runtime state; only a request that moved is rewritten and dirtied. An axis
+/// bound to environment lengths keeps its folded value until its terms change.
+fn restyle_item(store: &mut NodeStore, item: &UiItem, next: &mut u32, map: &[(NodeKey, NodeId)]) {
+    let UiItem::Node(node) = item else {
+        skip_item(item, next);
+        return;
+    };
+    let key = NodeKey(*next);
+    *next += 1;
+    let live = map
+        .binary_search_by_key(&key, |(k, _)| *k)
+        .ok()
+        .map(|at| map[at].1);
+    match node.kind {
+        NodeKind::Flex | NodeKind::Grid | NodeKind::Scroll => {
+            for child in &node.children {
+                restyle_item(store, child, next, map);
+            }
+        }
+        NodeKind::VirtualList | NodeKind::Leaf | NodeKind::Component => {
+            for child in &node.children {
+                skip_item(child, next);
+            }
+        }
+    }
+    let Some(live) = live else {
+        return;
+    };
+    let style = &node.style;
+    let (mut size, gap) = match node.kind {
+        NodeKind::Flex => {
+            let built = flex_style(style);
+            (built.size, Some(built.gap))
+        }
+        NodeKind::Grid => {
+            let built = GridStyle::default();
+            (built.size, Some(built.column_gap))
+        }
+        NodeKind::Scroll => (scroll_style(style).size, None),
+        NodeKind::VirtualList | NodeKind::Leaf | NodeKind::Component => {
+            (leaf_style(style).size, None)
+        }
+    };
+    if let Some(current) = store.size_request(live) {
+        if style.lengths().width.is_some() {
+            size.width = current.width;
+        }
+        if style.lengths().height.is_some() {
+            size.height = current.height;
+        }
+    }
+    store.set_fixed_size(live, size);
+    if let Some(gap) = gap
+        && style.lengths().gap.is_none()
+    {
+        store.set_gap(live, gap);
+    }
+    match node_lengths(style.lengths()) {
+        Some(lengths) => store.bind_lengths(live, lengths),
+        None => store.unbind_lengths(live),
     }
 }
 
@@ -395,6 +465,9 @@ fn build_item(
     let key = NodeKey(*next);
     *next += 1;
     let handle = build_node(cx, node, next, map);
+    if let Some(lengths) = node_lengths(node.style.lengths()) {
+        cx.bind_lengths(handle, lengths);
+    }
     map.push((key, handle.id()));
 }
 
@@ -474,7 +547,7 @@ fn flex_style(style: &StyleIr) -> FlexStyle {
     if let Some(gap) = style.gap {
         out.gap = gap;
     }
-    if style.width.is_some() || style.height.is_some() {
+    if has_size(style) {
         out.size = size_of(style);
     }
     out
@@ -487,7 +560,7 @@ fn scroll_style(style: &StyleIr) -> ScrollStyle {
     if let Some(axis) = style.axis {
         out.axis = axis_of(axis);
     }
-    if style.width.is_some() || style.height.is_some() {
+    if has_size(style) {
         out.size = size_of(style);
     }
     out
@@ -497,10 +570,19 @@ fn scroll_style(style: &StyleIr) -> ScrollStyle {
 /// authored a width or height, else the default.
 fn leaf_style(style: &StyleIr) -> LeafStyle {
     let mut out = LeafStyle::default();
-    if style.width.is_some() || style.height.is_some() {
+    if has_size(style) {
         out.size = size_of(style);
     }
     out
+}
+
+/// Whether the node authored a width or a height, static or bound to the
+/// environment, mirroring the emitter's `has_size`.
+fn has_size(style: &StyleIr) -> bool {
+    style.width.is_some()
+        || style.height.is_some()
+        || style.lengths().width.is_some()
+        || style.lengths().height.is_some()
 }
 
 /// The runtime [`Size`] for a lowered style, mirroring the emitter's `size_tokens`:

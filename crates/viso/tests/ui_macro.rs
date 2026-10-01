@@ -108,3 +108,61 @@ fn reactive_fragment_compiles_a_static_binding_edge() {
         "the text binding dirties precisely its dirty-class set"
     );
 }
+
+/// `px` and `sp` lengths compile to bound term sums the store folds at layout
+/// against the window's scale factor and text scale, and re-fold when the
+/// environment moves. (Rust's lexer reads `1.5em` as a malformed exponent, so an
+/// `em` length is authored in `.vs`.)
+#[test]
+fn environment_lengths_fold_at_layout_and_follow_the_environment() {
+    use viso::render::Rect;
+    use viso::ui::LengthEnv;
+
+    let build = viso::ui! {
+        Row {
+            Column {
+                font_size: 20dp;
+                width: 100dp;
+                Text { width: 50% - 20dp; height: 2sp + 4px; }
+            }
+        }
+    };
+    let mut store = NodeStore::new();
+    let root = {
+        let mut cx = BuildCx::new(&mut store);
+        build(&mut cx).id()
+    };
+    let column = store.arena().links(root).unwrap().first_child.unwrap();
+    let text = store.arena().links(column).unwrap().first_child.unwrap();
+    let surface = Rect {
+        x: 0.0,
+        y: 0.0,
+        w: 400.0,
+        h: 300.0,
+    };
+    store.layout(root, surface, &mut Vec::new());
+    assert_eq!(
+        store.bounds(text).w,
+        30.0,
+        "50% of the column's 100dp, less 20dp"
+    );
+    assert_eq!(store.bounds(text).h, 6.0, "2sp + 4px at scale 1");
+    assert_eq!(store.resolved_font_size(text), Some(20.0));
+
+    store.set_length_env(LengthEnv {
+        scale_factor: 2.0,
+        text_scale: 1.5,
+        ..LengthEnv::default()
+    });
+    store.layout(root, surface, &mut Vec::new());
+    assert_eq!(
+        store.bounds(text).w,
+        30.0,
+        "a dp-and-percent width reads no environment"
+    );
+    assert_eq!(
+        store.bounds(text).h,
+        5.0,
+        "2sp + 4px at text scale 1.5, scale 2"
+    );
+}

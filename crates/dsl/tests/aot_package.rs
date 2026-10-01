@@ -249,3 +249,86 @@ fn live_commit_child_counts(source: &str) -> Vec<usize> {
     let root = rt.root.expect("mounted root");
     child_counts(&store, root)
 }
+
+/// Each node's laid-out width and height in pre-order, in a 400×300 surface under
+/// environment `env`.
+fn boxes(store: &mut NodeStore, root: NodeId, env: viso_ui::LengthEnv) -> Vec<(f32, f32)> {
+    store.set_length_env(env);
+    let surface = viso_ui::Rect {
+        x: 0.0,
+        y: 0.0,
+        w: 400.0,
+        h: 300.0,
+    };
+    store.layout(root, surface, &mut Vec::new());
+    preorder(store, Some(root))
+        .into_iter()
+        .map(|id| {
+            let b = store.bounds(id);
+            (b.w, b.h)
+        })
+        .collect()
+}
+
+#[test]
+fn packaged_environment_lengths_resolve_as_the_live_commit_does() {
+    use viso_dsl::hotreload::{CandidatePlan, LiveAnchors, LiveRuntime, hot_reload};
+    use viso_ui::{EffectStore, LengthEnv, SemanticProjector};
+
+    let source = "Row { gap: 2px; Column { font_size: 125%; width: 50% - 4px; \
+                  Text { width: 2em; height: 3sp + 1px; } } Text { width: 10dp; } }";
+    let envs = [
+        LengthEnv::default(),
+        LengthEnv {
+            scale_factor: 2.0,
+            text_scale: 1.5,
+            ..LengthEnv::default()
+        },
+    ];
+
+    let blob = build_package(source).expect("compiles to a package");
+    let mut rt = Runtime::new();
+    let packaged = load_from_bytes(
+        &blob,
+        &mut rt.store,
+        &mut rt.states,
+        &mut rt.bindings,
+        &mut rt.lists,
+    )
+    .expect("loads")
+    .expect("has a root");
+
+    let mut store = NodeStore::new();
+    let mut states = StateStore::new();
+    let mut bindings = BindingTable::new();
+    let mut effects = EffectStore::new();
+    let mut lists = VirtualLists::new();
+    let mut text_edits = TextEdits::new();
+    let mut projectors = SemanticProjector::new();
+    let mut scratch: Vec<NodeId> = Vec::new();
+    let mut live = LiveRuntime {
+        store: &mut store,
+        states: &mut states,
+        bindings: &mut bindings,
+        effects: &mut effects,
+        lists: &mut lists,
+        text_edits: &mut text_edits,
+        projectors: &mut projectors,
+        root: None,
+        scratch: &mut scratch,
+        view: &mut None,
+    };
+    let baseline = CandidatePlan::default();
+    hot_reload(&mut live, &baseline, source, &LiveAnchors::default()).expect("commits");
+    let committed = live.root.expect("mounted root");
+
+    for env in envs {
+        let expected = boxes(&mut store, committed, env);
+        assert_eq!(boxes(&mut rt.store, packaged, env), expected, "{env:?}");
+        // 125% of the root's 14sp, then 2em of that.
+        let font = 14.0 * env.text_scale * 1.25;
+        assert_eq!(expected[2].0, 2.0 * font, "{env:?}");
+        assert_eq!(expected[2].1, 3.0 * env.text_scale + 1.0 / env.scale_factor);
+        assert_eq!(expected[1].0, 200.0 - 4.0 / env.scale_factor);
+    }
+}

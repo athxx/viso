@@ -288,3 +288,87 @@ fn structural_edit_migrates_state_and_reports_focus_and_scroll() {
     // is internally consistent.
     let _ = HotReloadReport::default();
 }
+
+/// Lay the live tree out in a 400×300 surface and return each node's width and
+/// height in pre-order.
+fn boxes(live: &mut Live) -> Vec<(f32, f32)> {
+    let root = live.root.expect("a mounted root");
+    let surface = viso_ui::Rect {
+        x: 0.0,
+        y: 0.0,
+        w: 400.0,
+        h: 300.0,
+    };
+    live.store.layout(root, surface, &mut Vec::new());
+    preorder(&live.store, live.root)
+        .into_iter()
+        .map(|id| {
+            let b = live.store.bounds(id);
+            (b.w, b.h)
+        })
+        .collect()
+}
+
+#[test]
+fn a_size_edit_patches_kept_nodes_in_place() {
+    // A static size edit, a static-to-environment edit and an `em` reading the
+    // column's font size each reach the reused instances.
+    let (mut live, last_good) = mount(
+        "Row { Column { font_size: 20dp; width: 100dp; Text { width: 10dp; height: 10dp; } } }",
+    );
+    let before = preorder(&live.store, live.root);
+    assert_eq!(boxes(&mut live)[2], (10.0, 10.0));
+
+    let edits = [
+        (
+            "Row { Column { font_size: 20dp; width: 100dp; Text { width: 30dp; height: 10dp; } } }",
+            (30.0, 10.0),
+        ),
+        (
+            "Row { Column { font_size: 20dp; width: 100dp; Text { width: 1.5em; height: 2sp; } } }",
+            (30.0, 2.0),
+        ),
+        (
+            "Row { Column { font_size: 10dp; width: 100dp; Text { width: 1.5em; height: 2sp; } } }",
+            (15.0, 2.0),
+        ),
+        (
+            "Row { Column { width: 100dp; Text { width: 12dp; height: 2sp; } } }",
+            (12.0, 2.0),
+        ),
+    ];
+    let mut last_good = last_good;
+    for (source, expected) in edits {
+        let done = {
+            let mut rt = live.runtime();
+            hot_reload(&mut rt, &last_good, source, &LiveAnchors::default())
+                .unwrap_or_else(|e| panic!("{source} reloads: {e:?}"))
+        };
+        assert_eq!(
+            preorder(&live.store, live.root),
+            before,
+            "{source} reuses every node"
+        );
+        assert_eq!(boxes(&mut live)[2], expected, "{source}");
+        last_good = done.candidate;
+    }
+    let text = before[2];
+    assert_eq!(live.store.bound_lengths(text).map(|l| l.width), Some(None));
+    assert_eq!(
+        live.store.resolved_font_size(text),
+        Some(14.0),
+        "the font source is gone"
+    );
+}
+
+#[test]
+fn a_mounted_environment_length_follows_the_environment() {
+    let (mut live, _) = mount("Row { Text { width: 8px + 2sp; height: 10dp; } }");
+    assert_eq!(boxes(&mut live)[1], (10.0, 10.0));
+    live.store.set_length_env(viso_ui::LengthEnv {
+        scale_factor: 2.0,
+        text_scale: 2.0,
+        ..viso_ui::LengthEnv::default()
+    });
+    assert_eq!(boxes(&mut live)[1], (8.0, 10.0));
+}
