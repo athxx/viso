@@ -328,7 +328,7 @@ fn apply_structural(
         if map.is_empty()
             && let Some(root) = rt.root
         {
-            map = static_nodes(rt.store, root);
+            map = static_nodes(rt.store, root, tree);
         }
         let mut next: u32 = 0;
         for item in &tree.items {
@@ -365,34 +365,48 @@ fn apply_structural(
     (map, true)
 }
 
-/// The static template slots of a region-free view mounted at `root`, by
-/// ascending [`NodeKey`]: the live tree in the pre-order the emitter numbers
-/// its nodes. A view with regions records its static nodes at mount instead,
-/// since region content interleaves with them.
-pub fn static_nodes(store: &NodeStore, root: NodeId) -> Vec<(NodeKey, NodeId)> {
+/// The static template slots of a region-free view built from `tree` and
+/// mounted at `root`, by ascending [`NodeKey`]: the template and the live tree
+/// walked together in the pre-order the emitter numbers nodes in. A node that
+/// authors no children (a leaf, a `VirtualList` mounting its own items) numbers
+/// its template children without naming a live node for them. A view with
+/// regions records its static nodes at mount instead, since region content
+/// interleaves with them.
+pub fn static_nodes(store: &NodeStore, root: NodeId, tree: &UiTree) -> Vec<(NodeKey, NodeId)> {
     let mut out = Vec::new();
     let mut next = 0;
-    collect_live_preorder(store, root, &mut next, &mut out);
+    if let Some(UiItem::Node(node)) = tree.items.first() {
+        static_walk(store, node, Some(root), &mut next, &mut out);
+    }
     out
 }
 
-/// Pre-order walk of the live retained tree assigning each node the same
-/// [`NodeKey`] the emitter and the diff assign it: a node takes the next key, then
-/// its children are numbered in order. Mirrors `diff::flatten` for a tree without
-/// control-flow regions.
-fn collect_live_preorder(
+fn static_walk(
     store: &NodeStore,
-    node: NodeId,
+    node: &UiNode,
+    live: Option<NodeId>,
     next: &mut u32,
     out: &mut Vec<(NodeKey, NodeId)>,
 ) {
-    let key = NodeKey(*next);
+    out.extend(live.map(|id| (NodeKey(*next), id)));
     *next += 1;
-    out.push((key, node));
-    let mut child = store.arena().links(node).and_then(|l| l.first_child);
-    while let Some(c) = child {
-        collect_live_preorder(store, c, next, out);
-        child = store.arena().links(c).and_then(|l| l.next_sibling);
+    let authors = matches!(
+        node.kind,
+        NodeKind::Flex | NodeKind::Grid | NodeKind::Scroll
+    );
+    let links = |id: NodeId| store.arena().links(id);
+    let mut child = live
+        .filter(|_| authors)
+        .and_then(|id| links(id)?.first_child);
+    for item in &node.children {
+        match item {
+            UiItem::Node(template) => {
+                let at = child;
+                child = at.and_then(|id| links(id)?.next_sibling);
+                static_walk(store, template, at, next, out);
+            }
+            region => skip_item(region, next),
+        }
     }
 }
 

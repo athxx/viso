@@ -145,6 +145,21 @@ source file watcher
 state-preservation bookkeeping that is only needed by Dev Runtime
 ```
 
+### 1.3 `view!` 挂载记录
+
+`hot-reload` feature 打开时，每个 `view!` 挂载在树建好后向 UI 线程的挂载队列登记一条记录：
+
+- `.vs` 文件路径与编译时的源码；
+- 编译所用的模块身份（package、module path、language 版本）；
+- 挂载根节点；
+- 每个状态 cell 及其由 `SymbolId` 得出的持久 key；
+- behavior host（有 behavior 时）；
+- 含 region 的 view 还记录每个静态节点的模板 `NodeKey`，因为 region 内容与静态节点交错，单凭树无法还原。
+
+Dev session 在帧边界取走这些记录。
+
+feature 关闭时登记宏展开为空：二进制里既没有记录代码，也没有 `.vs` 源码文本。
+
 ---
 
 ## 2. `viso run` 是唯一普通入口

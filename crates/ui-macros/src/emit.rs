@@ -46,6 +46,10 @@ use viso_dsl::view_behavior::{Control, ViewBehavior};
 /// the regions mount on it under the static nodes once the tree is built, and
 /// then the values the static nodes show are delivered.
 ///
+/// `record` is the mount record a `view!` hands the development session, every
+/// field but the root and the static nodes, which the emitter supplies once the
+/// tree is built; `None` for a form that records no mount.
+///
 /// Returns `Err` with the message if the view has other than one root, has a
 /// region but no behavior to run it, or binds a source `sources` does not name.
 pub fn emit_view(
@@ -53,6 +57,7 @@ pub fn emit_view(
     bindings: &BindingIr,
     sources: &HashMap<SymbolId, Ident>,
     behavior: Option<&ViewBehavior>,
+    record: Option<TokenStream>,
 ) -> Result<TokenStream, String> {
     // A view mounts one root; a multi-root view has no single Handle to return.
     // Reject it explicitly rather than silently drop siblings.
@@ -83,11 +88,13 @@ pub fn emit_view(
         next_key: 0,
         next_static: 0,
         record_ids: regions.is_some(),
+        static_keys: Vec::new(),
         shown: Vec::new(),
         missing_source: None,
         error: None,
     };
     let mut root = ctx.emit_item(&tree.items[0]);
+    let mut record = record;
 
     if let Some(behavior) = regions {
         let bytes = Literal::byte_string(&behavior.region_bytes());
@@ -97,6 +104,16 @@ pub fn emit_view(
         let cells = cells.into_iter().map(|(symbol, local)| {
             let (hi, lo) = (symbol.hi, symbol.lo);
             quote! { (::viso_ui::state::StateKey::from_parts(#hi, #lo), #local) }
+        });
+        let mounted = record.take().map(|record| {
+            let keys = &ctx.static_keys;
+            quote! {
+                ::viso_view::__record_mount! {
+                    root: __viso_root.id(),
+                    #record
+                    nodes: ::viso_view::__static_nodes(&[#(#keys),*], &__viso_ids),
+                }
+            }
         });
         root = quote! {
             {
@@ -110,6 +127,7 @@ pub fn emit_view(
                     &__viso_ids,
                     &[#(#cells),*],
                 );
+                #mounted
                 __viso_root
             }
         };
@@ -123,6 +141,19 @@ pub fn emit_view(
                     [::core::option::Option::None; #count];
                 let __viso_root = #root;
                 ::viso_view::__mount_values(cx, &__viso_host, &__viso_shown, &[#(#controls),*]);
+                __viso_root
+            }
+        };
+    }
+    if let Some(record) = record {
+        root = quote! {
+            {
+                let __viso_root = #root;
+                ::viso_view::__record_mount! {
+                    root: __viso_root.id(),
+                    #record
+                    nodes: ::std::vec::Vec::new(),
+                }
                 __viso_root
             }
         };
@@ -150,6 +181,8 @@ struct Emit<'a> {
     next_static: u32,
     /// Whether each static node's id is recorded for the regions to mount under.
     record_ids: bool,
+    /// The template key of each recorded static node, by static ordinal.
+    static_keys: Vec<u32>,
     /// The control of each static node showing a view value, in the order the
     /// nodes record their ids.
     shown: Vec<TokenStream>,
@@ -216,6 +249,9 @@ impl Emit<'_> {
         let key = self.take_key();
         let ordinal = self.next_static as usize;
         self.next_static += 1;
+        if self.record_ids {
+            self.static_keys.push(key.0);
+        }
 
         // A node that authors no children (a leaf, a `VirtualList`, which mounts
         // its own items) numbers them without building them.

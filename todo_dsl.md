@@ -337,7 +337,7 @@ Goal: a file edit reaches the running app as one transaction or not at all.
   - [x] The commit is scoped to the view's own subtree: it frees and rebuilds
         in place under the same parent and sibling position, swaps only the
         view's static edges and region hooks, and keeps the rest of the window.
-  - [ ] `view!` records each mount (file, source, origin, root, state cells,
+  - [x] `view!` records each mount (file, source, origin, root, state cells,
         host, static nodes) under the `hot-reload` feature; without it the
         record is a no-op and no source text reaches the binary.
   - [ ] A dev-only watcher thread polls the mounted files, settles a burst of

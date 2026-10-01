@@ -22,7 +22,7 @@ use std::path::{Path, PathBuf};
 use proc_macro2::{Literal, Span, TokenStream};
 use quote::{format_ident, quote};
 use syn::{Ident, LitStr};
-use viso_dsl::frontend::{self, Compiled, Source, SourceKind};
+use viso_dsl::frontend::{self, Compiled, Origin, Source, SourceKind};
 use viso_dsl::hir::{ConstValue, HirComponent};
 use viso_dsl::resolve::SymbolId;
 use viso_dsl::syntax::{LineIndex, TextRange};
@@ -44,7 +44,7 @@ pub fn ui(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
             .filter_map(|source| Some((source.symbol, rust_ident(&source.name).ok()?)))
             .collect();
         view_behavior(&compiled).map_err(|errors| report.mount_errors(errors))?;
-        let root = emit_view(&compiled.tree, &compiled.bindings, &idents, None)
+        let root = emit_view(&compiled.tree, &compiled.bindings, &idents, None, None)
             .map_err(|message| report.at(None, message))?;
         Ok(quote! {
             |cx: &mut ::viso_ui::BuildCx<'_>| -> ::viso_ui::Handle { #root }
@@ -66,7 +66,7 @@ pub fn component(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
             states,
             allocations,
             root,
-        } = mount(&compiled, &report)?;
+        } = mount(&compiled, &report, None)?;
         let name = rust_ident(&component.schema.name)
             .map_err(|message| report.at(Some(component.source_origin), message))?;
         let doc = format!("The `{name}` component's state ids.");
@@ -123,7 +123,7 @@ pub fn view(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
         report.check(&compiled)?;
         let Mounted {
             allocations, root, ..
-        } = mount(&compiled, &report)?;
+        } = mount(&compiled, &report, Some((dependency, &origin)))?;
         Ok(quote! {
             {
                 const _: &str = ::core::include_str!(#dependency);
@@ -198,7 +198,14 @@ struct Mounted<'a> {
     root: TokenStream,
 }
 
-fn mount<'a>(compiled: &'a Compiled, report: &Report<'_>) -> syn::Result<Mounted<'a>> {
+/// `record` is the `.vs` file a `view!` mounts and the module identity it
+/// compiles under, which the mount records for the development session; `None`
+/// for a form that records no mount.
+fn mount<'a>(
+    compiled: &'a Compiled,
+    report: &Report<'_>,
+    record: Option<(&str, &Origin)>,
+) -> syn::Result<Mounted<'a>> {
     let Some(component) = &compiled.component else {
         return Err(report.at(None, "the frontend produced no component to mount"));
     };
@@ -266,11 +273,14 @@ fn mount<'a>(compiled: &'a Compiled, report: &Report<'_>) -> syn::Result<Mounted
     if let Some(behavior) = &behavior {
         allocations.extend(host_tokens(behavior, &idents, &tracked));
     }
+    let record =
+        record.map(|(file, origin)| record_tokens(file, origin, &idents, behavior.is_some()));
     let root = emit_view(
         &compiled.tree,
         &compiled.bindings,
         &idents,
         behavior.as_ref(),
+        record,
     )
     .map_err(|message| report.at(component.schema.view, message))?;
     Ok(Mounted {
@@ -307,6 +317,43 @@ fn host_tokens(
             let mut __viso_view = __viso_host.borrow_mut();
             #(#mirrors)*
         }
+    }
+}
+
+/// The fields of a `view!` mount record the expansion knows before the tree is
+/// built: the file and its source, the module identity, every state cell by its
+/// durable key, and the behavior host.
+fn record_tokens(
+    file: &str,
+    origin: &Origin,
+    idents: &HashMap<SymbolId, Ident>,
+    behavior: bool,
+) -> TokenStream {
+    let package = &origin.package;
+    let module = &origin.module;
+    let language = match &origin.language {
+        Some(language) => quote! { ::core::option::Option::Some(#language) },
+        None => quote! { ::core::option::Option::None },
+    };
+    let mut cells: Vec<(&SymbolId, &Ident)> = idents.iter().collect();
+    cells.sort_unstable_by_key(|(symbol, _)| (symbol.hi, symbol.lo));
+    let cells = cells.into_iter().map(|(symbol, local)| {
+        let (hi, lo) = (symbol.hi, symbol.lo);
+        quote! { (::viso_ui::state::StateKey::from_parts(#hi, #lo), #local) }
+    });
+    let host = if behavior {
+        quote! { ::core::option::Option::Some(::std::rc::Rc::clone(&__viso_host)) }
+    } else {
+        quote! { ::core::option::Option::None }
+    };
+    quote! {
+        file: #file,
+        source: ::core::include_str!(#file),
+        package: #package,
+        module: [#(#module),*],
+        language: #language,
+        cells: [#(#cells),*],
+        host: #host,
     }
 }
 
