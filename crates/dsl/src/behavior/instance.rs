@@ -27,8 +27,8 @@
 use std::collections::HashMap;
 
 use super::ir::{
-    Body, ComponentLayout, Const, FuncId, Function, FunctionKind, Inst, PathStep, Program, Reg,
-    RegionalStates, Site, Unsupported,
+    Body, ComponentLayout, Const, EnvSlot, FuncId, Function, FunctionKind, Inst, PathStep, Program,
+    Reg, RegionalStates, Site, Unsupported,
 };
 use super::lower::block_unsupported;
 use crate::ir::{UiInstance, UiTree};
@@ -209,6 +209,11 @@ impl Inliner<'_> {
             self.child.state_inits.iter().map(|f| f.map(own)).collect();
         let layout = &mut self.program.components[self.root];
         layout.handlers.extend(handlers);
+        layout.env.extend(self.child.env.iter().map(|e| EnvSlot {
+            slot: self.base + e.slot,
+            field: e.field,
+            instance: self.id,
+        }));
         if !self.instance.regional {
             layout.state_inits.extend(inits);
             return;

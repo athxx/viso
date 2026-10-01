@@ -181,7 +181,10 @@ pub fn build_aot_node(
     children: impl FnOnce(&mut BuildCx<'_>),
 ) -> Handle {
     let handle = match node.kind {
-        AotNodeKind::Flex => cx.flex(flex_style(&node.style), children),
+        AotNodeKind::Flex => match node.style.scope {
+            Some(scope) => cx.adaptive_scope(scope.basis, flex_style(&node.style), children),
+            None => cx.flex(flex_style(&node.style), children),
+        },
         AotNodeKind::Grid => cx.grid(Default::default(), children),
         AotNodeKind::Scroll => cx.scroll(scroll_style(&node.style), children),
         // A leaf hosts no child region; the emitter guarantees `child_count == 0`

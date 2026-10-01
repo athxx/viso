@@ -9,6 +9,7 @@
 
 #![forbid(unsafe_op_in_unsafe_fn)]
 
+pub mod adaptive;
 pub mod animation;
 pub mod aot;
 pub mod binding;

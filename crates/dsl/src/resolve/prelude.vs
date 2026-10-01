@@ -1,5 +1,6 @@
 // The standard types every module sees without an import: input geometry and state,
-// the payloads of the standard events, and the payloads of the built-in widget events.
+// the payloads of the standard events, the payloads of the built-in widget events and
+// the adaptive environment a view reads as `env`.
 // A module's own declarations and its imports shadow these names.
 
 export record Point { x: Dp; y: Dp; }
@@ -65,3 +66,48 @@ export record ToggleChanged { value: Bool; }
 export record SliderChanged { value: F32; }
 export record TextChanged { value: String; }
 export record SelectionChanged { value: U32; }
+
+export record Rect { x: Dp; y: Dp; width: Dp; height: Dp; }
+export record Insets { top: Dp; right: Dp; bottom: Dp; left: Dp; }
+
+export record WindowMetrics { logical_size: SizeDp; scale_factor: F32; }
+export record LocalConstraints {
+    min_width: Dp;
+    max_width: Option<Dp>;
+    min_height: Dp;
+    max_height: Option<Dp>;
+}
+export enum SizeClass { Compact; Medium; Expanded; }
+export enum Orientation { Portrait; Landscape; }
+export record KeyboardInset { height: Dp; }
+export enum DisplayFeature {
+    Hinge { bounds: Rect; };
+    Fold { bounds: Rect; };
+    Cutout { bounds: Rect; };
+}
+export enum PointerPrecision { fine; coarse; unavailable; }
+export record InputCapabilities {
+    primary_pointer_precision: PointerPrecision;
+    hover_available: Bool;
+    keyboard_available: Bool;
+    touch_available: Bool;
+    pen_available: Bool;
+    gamepad_available: Bool;
+}
+export enum LayoutDirection { ltr; rtl; }
+export record Locale { tag: String; }
+
+export record Environment {
+    window: WindowMetrics;
+    constraints: LocalConstraints;
+    size_class: SizeClass;
+    safe_area: Insets;
+    keyboard_inset: KeyboardInset;
+    display_features: List<DisplayFeature>;
+    input: InputCapabilities;
+    text_scale: F32;
+    reduced_motion: Bool;
+    orientation: Orientation;
+    layout_direction: LayoutDirection;
+    locale: Locale;
+}

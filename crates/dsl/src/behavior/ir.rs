@@ -24,6 +24,8 @@
 
 pub use viso_behavior::NativeImport;
 
+use viso_ui::adaptive::EnvField;
+
 use crate::resolve::SymbolId;
 use crate::syntax::TextRange;
 
@@ -409,6 +411,21 @@ pub struct ComponentLayout {
     /// its states start from these entries each time region content mounts it,
     /// not from [`state_inits`](Self::state_inits).
     pub regional: Vec<RegionalStates>,
+    /// Each `env` field the view reads, held in a state slot the runtime
+    /// fills rather than an initializer.
+    pub env: Vec<EnvSlot>,
+}
+
+/// An `env` field a view reads and the state slot that holds it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EnvSlot {
+    /// The state slot.
+    pub slot: u32,
+    /// The field.
+    pub field: EnvField,
+    /// The component instance that reads it (`0` for the view's own
+    /// component).
+    pub instance: u32,
 }
 
 /// The states of an inlined instance a control-flow region mounts: each mount
@@ -446,6 +463,15 @@ impl ComponentLayout {
     /// The member named `name`.
     pub fn member(&self, name: &str) -> Option<FuncId> {
         self.members.iter().find(|(n, _)| n == name).map(|m| m.1)
+    }
+
+    /// The state slot holding the field `field` the instance `instance`
+    /// reads.
+    pub fn env_slot(&self, instance: u32, field: EnvField) -> Option<u32> {
+        self.env
+            .iter()
+            .find(|e| e.instance == instance && e.field == field)
+            .map(|e| e.slot)
     }
 
     /// The index of the function registered at `site`.

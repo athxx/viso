@@ -36,8 +36,8 @@ pub use binding_ir::{
 pub use dirty_map::{DirtyClass, property_dirty_class};
 pub use keys::{KEYLESS_STATEFUL_FOR, KeyIr, KeyedFor, analyze_keys};
 pub use ui_ir::{
-    AxisIr, LengthIr, LengthsIr, NodeKind, PendingProperty, StyleIr, TermsIr, UiFor, UiHandler,
-    UiIf, UiIfArm, UiInstance, UiItem, UiMatch, UiMatchArm, UiNode, UiTree,
+    AxisIr, LengthIr, LengthsIr, NodeKind, PendingProperty, ScopeIr, StyleIr, TermsIr, UiFor,
+    UiHandler, UiIf, UiIfArm, UiInstance, UiItem, UiMatch, UiMatchArm, UiNode, UiTree,
 };
 
 use std::collections::HashMap;
@@ -98,7 +98,7 @@ impl<'a> ComponentLibrary<'a> {
             .iter()
             .filter_map(|r| match r.to {
                 Resolution::Symbol(id) => Some((r.range, id)),
-                Resolution::Local(_) | Resolution::Native(_) => None,
+                Resolution::Local(_) | Resolution::Native(_) | Resolution::Env => None,
             })
             .collect();
         ComponentLibrary { heads, components }
@@ -346,6 +346,11 @@ impl<'a, 'l> Lowering<'a, 'l> {
                 };
                 NodeKind::Flex
             }
+            WidgetNode::AdaptiveScope => {
+                style.axis = Some(AxisIr::Column);
+                style.scope = Some(ScopeIr::default());
+                NodeKind::Flex
+            }
             WidgetNode::Grid => NodeKind::Grid,
             WidgetNode::Scroll => NodeKind::Scroll,
             WidgetNode::VirtualList => NodeKind::VirtualList,
@@ -417,6 +422,14 @@ impl<'a, 'l> Lowering<'a, 'l> {
                 }
                 other => self.child(other, &mut children),
             }
+        }
+        if style.scope.is_some()
+            && let Some(at) = pending.iter().position(|p| p.name == "basis")
+        {
+            self.unmounted.push((
+                pending.remove(at).value,
+                "an adaptive scope's `basis` is a constant `dp` length".to_string(),
+            ));
         }
         out.push(UiItem::Node(UiNode {
             type_name,
@@ -774,6 +787,13 @@ fn fold_static(name: &str, value: &Expr, style: &mut StyleIr) -> bool {
                 true
             }
             None => false,
+        },
+        "basis" if style.scope.is_some() => match length::fold_gap(value) {
+            Some(Lowered::Layout(LengthIr::Fixed(n))) => {
+                style.scope = Some(ScopeIr { basis: Some(n) });
+                true
+            }
+            _ => false,
         },
         "axis" | "direction" => match fold_axis(value) {
             Some(axis) => {

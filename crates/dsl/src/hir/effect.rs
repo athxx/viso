@@ -389,7 +389,7 @@ mod tests {
         fn callee_effect(&self, to: &Resolution) -> Option<EffectClass> {
             match to {
                 Resolution::Symbol(id) => self.effects.get(id).copied(),
-                Resolution::Local(_) | Resolution::Native(_) => None,
+                Resolution::Local(_) | Resolution::Native(_) | Resolution::Env => None,
             }
         }
 

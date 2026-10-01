@@ -217,8 +217,7 @@ pub fn commit(
 
 /// Installs `next`, the recompiled behavior's host the migration carried each
 /// kept state into, in place of the prior one; links its states to the migrated
-/// cells,
-/// reinstalls every static node's handler routes, replacing the prior ones,
+/// cells and its `env` slots to the environment, reinstalls every static node's handler routes, replacing the prior ones,
 /// mounts the view's regions under the static nodes, and delivers the values
 /// the static nodes show, replacing the hook that re-delivered the prior ones.
 ///
@@ -243,6 +242,7 @@ fn mount_behavior(
         let mut host = host.borrow_mut();
         host.release_regions(rt.store, rt.states);
         host.release_values(rt.store);
+        host.release_env(rt.states);
     }
     let host = plan.view.as_ref().zip(next).and_then(|(view, next)| {
         let mounted = match (rt.view.take(), next) {
@@ -255,6 +255,7 @@ fn mount_behavior(
                 let mut host = host.borrow_mut();
                 host.release_regions(rt.store, rt.states);
                 host.release_values(rt.store);
+                host.release_env(rt.states);
                 None
             }
             (None, Err(_)) => None,
@@ -275,6 +276,14 @@ fn mount_behavior(
                     mirrored.track(slot as usize, id);
                 }
             }
+            for read in &view.env {
+                let anchor = key_to_node
+                    .binary_search_by_key(&read.anchor, |&(key, _)| key)
+                    .ok()
+                    .map(|index| key_to_node[index].1);
+                mirrored.link_env(read.slot as usize, read.field, anchor, rt.states);
+            }
+            mirrored.prune_env(rt.states);
         }
         Some((view, host))
     });
@@ -355,7 +364,7 @@ fn apply_structural(
         let map = std::mem::take(rt.nodes);
         let mut next: u32 = 0;
         for item in &tree.items {
-            restyle_item(rt.store, item, &mut next, &map);
+            restyle_item(rt.store, rt.states, item, &mut next, &map);
         }
         return map;
     }
@@ -527,8 +536,15 @@ fn static_walk(
 /// Re-apply one template item's static style to the live node at its key: the
 /// built size and gap, and the bound environment lengths. A kept node keeps its
 /// runtime state; only a request that moved is rewritten and dirtied. An axis
-/// bound to environment lengths keeps its folded value until its terms change.
-fn restyle_item(store: &mut NodeStore, item: &UiItem, next: &mut u32, map: &[(NodeKey, NodeId)]) {
+/// bound to environment lengths keeps its folded value until its terms change,
+/// and the node is marked an adaptive scope exactly when the template is one.
+fn restyle_item(
+    store: &mut NodeStore,
+    states: &mut StateStore,
+    item: &UiItem,
+    next: &mut u32,
+    map: &[(NodeKey, NodeId)],
+) {
     let UiItem::Node(node) = item else {
         skip_item(item, next);
         return;
@@ -542,7 +558,7 @@ fn restyle_item(store: &mut NodeStore, item: &UiItem, next: &mut u32, map: &[(No
     match node.kind {
         NodeKind::Flex | NodeKind::Grid | NodeKind::Scroll => {
             for child in &node.children {
-                restyle_item(store, child, next, map);
+                restyle_item(store, states, child, next, map);
             }
         }
         NodeKind::VirtualList | NodeKind::Leaf | NodeKind::Component => {
@@ -586,6 +602,12 @@ fn restyle_item(store: &mut NodeStore, item: &UiItem, next: &mut u32, map: &[(No
     match node_lengths(style.lengths()) {
         Some(lengths) => store.bind_lengths(live, lengths),
         None => store.unbind_lengths(live),
+    }
+    match style.scope {
+        Some(scope) => states.mark_adaptive_scope(live, scope.basis),
+        None => {
+            states.unmark_adaptive_scope(live);
+        }
     }
 }
 
@@ -648,11 +670,17 @@ fn build_node(
     map: &mut Vec<(NodeKey, NodeId)>,
 ) -> Handle {
     match node.kind {
-        NodeKind::Flex => cx.flex(flex_style(&node.style), |cx| {
-            for child in &node.children {
-                build_item(cx, child, next, map);
+        NodeKind::Flex => {
+            let children = |cx: &mut BuildCx<'_>| {
+                for child in &node.children {
+                    build_item(cx, child, next, map);
+                }
+            };
+            match node.style.scope {
+                Some(scope) => cx.adaptive_scope(scope.basis, flex_style(&node.style), children),
+                None => cx.flex(flex_style(&node.style), children),
             }
-        }),
+        }
         NodeKind::Grid => cx.grid(Default::default(), |cx| {
             for child in &node.children {
                 build_item(cx, child, next, map);

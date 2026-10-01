@@ -8,8 +8,10 @@ use viso_behavior::native::{Natives, SchemaConflict};
 use viso_behavior::{
     Budget, ChunkKind, Event, Fault, FaultKind, Instance, LoadError, Module, Value, Vm,
 };
-use viso_ui::{EventCx, NodeStore, StateId, StateStore, StateValue, StructureHookId};
+use viso_ui::adaptive::{AdaptiveEnv, AnchorId, EnvField};
+use viso_ui::{EventCx, NodeId, NodeStore, StateId, StateStore, StateValue, StructureHookId};
 
+use crate::env::env_value;
 use crate::regions::LocalTemplate;
 use crate::scope::{Locals, Scope};
 
@@ -20,6 +22,8 @@ pub trait StateCells {
     fn get(&self, id: StateId) -> Option<StateValue>;
     /// Writes cell `id`, returning whether the id was live.
     fn set(&mut self, id: StateId, value: StateValue) -> bool;
+    /// The adaptive environment the view's `env` reads see.
+    fn env(&self) -> &AdaptiveEnv;
 }
 
 impl StateCells for StateStore {
@@ -30,6 +34,10 @@ impl StateCells for StateStore {
     fn set(&mut self, id: StateId, value: StateValue) -> bool {
         StateStore::set(self, id, value)
     }
+
+    fn env(&self) -> &AdaptiveEnv {
+        StateStore::env(self)
+    }
 }
 
 impl StateCells for EventCx<'_> {
@@ -39,6 +47,10 @@ impl StateCells for EventCx<'_> {
 
     fn set(&mut self, id: StateId, value: StateValue) -> bool {
         EventCx::set(self, id, value)
+    }
+
+    fn env(&self) -> &AdaptiveEnv {
+        EventCx::env(self)
     }
 }
 
@@ -74,6 +86,22 @@ enum Link {
     Mirror(StateId),
     /// The cell holds a revision of a state only the instance holds.
     Track(StateId),
+    /// The cell holds the revision of the `env` field the slot reads; see
+    /// [`EnvLink`].
+    Env(StateId),
+}
+
+/// A state slot holding an `env` field, filled from the environment before a
+/// call whenever the field's revision cell has moved since the last fill.
+#[derive(Debug, Clone, Copy)]
+struct EnvLink {
+    slot: u32,
+    field: EnvField,
+    /// Where an anchored field resolves.
+    anchor: Option<AnchorId>,
+    cell: StateId,
+    /// The revision the slot was last filled at.
+    seen: Option<StateValue>,
 }
 
 /// One mounted component's behavior: its instance on the VM, the UI state cell
@@ -91,6 +119,9 @@ enum Link {
 /// view: each mount of the region content keeps its own values, which the host
 /// loads into the instance before every call in that content's [`Scope`] and
 /// stores back after a committed write.
+///
+/// A slot holding an `env` field is filled from the environment, its VM value
+/// rebuilt only when the field's revision cell moves.
 ///
 /// A handler fault rolls its transaction back, is kept as
 /// [`last_fault`](Self::last_fault), and never unwinds into the event router.
@@ -116,6 +147,11 @@ pub struct ViewHost {
     /// The structure hook re-delivering the values the view's static nodes
     /// show, replaced when they mount again.
     values: Option<StructureHookId>,
+    /// The slots holding `env` fields.
+    env: Vec<EnvLink>,
+    /// The environment anchor of each static component root that reads an
+    /// anchored field.
+    anchors: Vec<(NodeId, AnchorId)>,
 }
 
 /// The UI cells a view's regions allocate while it runs, released with the
@@ -165,6 +201,8 @@ impl ViewHost {
             events: Vec::new(),
             regions: RegionCells::default(),
             values: None,
+            env: Vec::new(),
+            anchors: Vec::new(),
         })
     }
 
@@ -195,6 +233,10 @@ impl ViewHost {
     pub fn current(&self, slot: usize, cells: &dyn StateCells) -> Option<Value> {
         match self.mirror.get(slot)? {
             Some(Link::Mirror(id)) => cells.get(*id).and_then(vm_value),
+            Some(Link::Env(_)) => {
+                let link = self.env.iter().find(|link| link.slot as usize == slot)?;
+                Some(env_value(link.field, cells.env(), link.anchor))
+            }
             _ => self.instance.states().get(slot).cloned(),
         }
     }
@@ -247,6 +289,84 @@ impl ViewHost {
         self.link(slot, Link::Track(id))
     }
 
+    /// Fills state slot `slot` with `env` field `field`, resolved for an
+    /// anchored field at `anchor`, the root of the component instance that
+    /// reads it. Returns `false`, linking nothing, for a slot out of range or
+    /// an anchored field without an anchor.
+    pub fn link_env(
+        &mut self,
+        slot: usize,
+        field: EnvField,
+        anchor: Option<NodeId>,
+        states: &mut StateStore,
+    ) -> bool {
+        if slot >= self.mirror.len() {
+            return false;
+        }
+        let (cell, anchor) = if field.anchored() {
+            let Some(node) = anchor else {
+                return false;
+            };
+            let anchor = match self.anchors.iter().find(|(n, _)| *n == node) {
+                Some(&(_, anchor)) => anchor,
+                None => {
+                    let anchor = states.anchor_env(node, None);
+                    self.anchors.push((node, anchor));
+                    anchor
+                }
+            };
+            (states.anchor_cell(anchor, field), Some(anchor))
+        } else {
+            (states.env_cell(field), None)
+        };
+        let Some(cell) = cell else {
+            return false;
+        };
+        self.env.retain(|link| link.slot as usize != slot);
+        self.env.push(EnvLink {
+            slot: slot as u32,
+            field,
+            anchor,
+            cell,
+            seen: None,
+        });
+        self.link(slot, Link::Env(cell))
+    }
+
+    /// Releases each environment anchor no `env` slot resolves at any more,
+    /// as relinking a reloaded view leaves the anchors of its old nodes.
+    pub fn prune_env(&mut self, states: &mut StateStore) {
+        let env = &self.env;
+        self.anchors.retain(|&(_, anchor)| {
+            let used = env.iter().any(|link| link.anchor == Some(anchor));
+            if !used {
+                states.release_anchor(anchor);
+            }
+            used
+        });
+    }
+
+    /// The revision cell of each linked `env` slot, by ascending slot.
+    pub(crate) fn env_cells(&self) -> Vec<(u32, StateId)> {
+        let mut cells: Vec<(u32, StateId)> =
+            self.env.iter().map(|link| (link.slot, link.cell)).collect();
+        cells.sort_unstable_by_key(|&(slot, _)| slot);
+        cells
+    }
+
+    /// Unlinks every `env` slot and releases the view's environment anchors,
+    /// as unmounting the view does.
+    pub fn release_env(&mut self, states: &mut StateStore) {
+        for link in self.env.drain(..) {
+            if let Some(Some(Link::Env(_))) = self.mirror.get(link.slot as usize) {
+                self.mirror[link.slot as usize] = None;
+            }
+        }
+        for (_, anchor) in self.anchors.drain(..) {
+            states.release_anchor(anchor);
+        }
+    }
+
     fn link(&mut self, slot: usize, link: Link) -> bool {
         match self.mirror.get_mut(slot) {
             Some(cell) => {
@@ -257,8 +377,8 @@ impl ViewHost {
         }
     }
 
-    /// Copies each mirrored cell, and each state `scope` keeps, into the
-    /// instance.
+    /// Copies each mirrored cell, each `env` field whose revision moved, and
+    /// each state `scope` keeps, into the instance.
     fn sync(&mut self, scope: &Scope, cells: &dyn StateCells) {
         for (slot, link) in self.mirror.iter().enumerate() {
             let Some(Link::Mirror(id)) = *link else {
@@ -268,7 +388,19 @@ impl ViewHost {
                 self.instance.set_state(slot, value);
             }
         }
+        for link in &mut self.env {
+            let revision = cells.get(link.cell);
+            if revision.is_some() && revision == link.seen {
+                continue;
+            }
+            link.seen = revision;
+            if (link.slot as usize) < self.instance.states().len() {
+                let value = env_value(link.field, cells.env(), link.anchor);
+                self.instance.set_state(link.slot as usize, value);
+            }
+        }
         for locals in &scope.locals {
+            locals.refresh(cells);
             let values = locals.values.borrow();
             for (&slot, value) in locals.slots.iter().zip(values.iter()) {
                 if (slot as usize) < self.instance.states().len() {
@@ -310,7 +442,7 @@ impl ViewHost {
         };
         let reads = self.vm.reads(chunk);
         let linked = |slot: usize| match self.mirror.get(slot) {
-            Some(Some(Link::Mirror(id) | Link::Track(id))) => Some(*id),
+            Some(Some(Link::Mirror(id) | Link::Track(id) | Link::Env(id))) => Some(*id),
             _ => None,
         };
         if reads.opaque {
@@ -501,6 +633,7 @@ impl ViewHost {
                                 cells.set(id, StateValue::Int(revision.wrapping_add(1)));
                             }
                         }
+                        Some(Link::Env(_)) => {}
                         None => {
                             let value = &self.instance.states()[slot];
                             for locals in scope.locals.iter().rev() {
@@ -544,13 +677,16 @@ impl ViewHost {
     /// Replaces the instance with `next`, a host of the recompiled module into
     /// which the caller has [set](Self::set_state) each state it carries, as a
     /// hot reload does. Its mirrors start cleared: the caller mirrors the new
-    /// layout's slots again. The undrained events, and the cells and hooks the
-    /// view's mounts registered, stay this host's, for the caller to release
-    /// or replace.
+    /// layout's slots, and links its `env` slots, again. The undrained events,
+    /// the environment anchors, and the cells and hooks the view's mounts
+    /// registered, stay this host's, for the caller to reuse, release or
+    /// replace; [`prune_env`](Self::prune_env) releases the anchors relinking
+    /// left unused.
     pub fn reload(&mut self, mut next: ViewHost) {
         next.events = std::mem::take(&mut self.events);
         next.regions = std::mem::take(&mut self.regions);
         next.values = self.values.take();
+        next.anchors = std::mem::take(&mut self.anchors);
         *self = next;
     }
 }

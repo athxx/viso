@@ -146,6 +146,10 @@ const SLIDER: &[WidgetProperty] = &[
 
 const SELECTED: &[WidgetProperty] = &[two_way("selected", "U32")];
 
+/// The constant width an `AdaptiveScope` classifies instead of the width its
+/// parent gives it.
+const ADAPTIVE_SCOPE: &[WidgetProperty] = &[prop("basis", "Option<MixedLength>")];
+
 const FOCUS_SCOPE: &[WidgetProperty] = &[prop("trap", "Bool"), prop("restore_focus", "Bool")];
 
 const KEY_SHORTCUT: &[WidgetProperty] =
@@ -264,6 +268,12 @@ pub(super) static WIDGETS: NativeLibrary = NativeLibrary {
             "Flex",
             FLEX_NODE,
             &[FLEX, FLEX_AXIS, LAYOUT, TRANSFORM, FOCUS],
+        )
+        .slots(CHILDREN),
+        layout(
+            "AdaptiveScope",
+            WidgetNode::AdaptiveScope,
+            &[ADAPTIVE_SCOPE, FLEX, LAYOUT, TRANSFORM, FOCUS],
         )
         .slots(CHILDREN),
         layout("Grid", WidgetNode::Grid, &[GRID, LAYOUT, TRANSFORM, FOCUS])

@@ -132,6 +132,16 @@ pub struct AotStyle {
     /// The lengths that read the environment (`px`, `sp`, `em`), which the
     /// loader binds to fold at layout; boxed, as few nodes have any.
     pub lengths: Option<Box<NodeLengths>>,
+    /// The adaptive scope the node establishes, when it is one.
+    pub scope: Option<AotScope>,
+}
+
+/// An adaptive scope: the node its subtree's size class classifies.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct AotScope {
+    /// The constant width in dp it classifies, else the width its parent
+    /// gives it.
+    pub basis: Option<f32>,
 }
 
 /// A folded layout axis, the compact twin of `viso_ui::layout::Axis`.
@@ -187,6 +197,8 @@ const STYLE_HAS_WIDTH: u8 = 1 << 1;
 const STYLE_HAS_HEIGHT: u8 = 1 << 2;
 const STYLE_HAS_GAP: u8 = 1 << 3;
 const STYLE_HAS_LENGTHS: u8 = 1 << 4;
+const STYLE_IS_SCOPE: u8 = 1 << 5;
+const STYLE_HAS_BASIS: u8 = 1 << 6;
 
 // Environment lengths are a byte naming the bound properties, then each one's
 // terms as a byte naming the non-zero terms followed by their values.
@@ -355,6 +367,12 @@ impl Encode for AotStyle {
         if self.lengths.is_some() {
             mask |= STYLE_HAS_LENGTHS;
         }
+        if let Some(scope) = self.scope {
+            mask |= STYLE_IS_SCOPE;
+            if scope.basis.is_some() {
+                mask |= STYLE_HAS_BASIS;
+            }
+        }
         enc.write_u8(mask);
         if let Some(axis) = self.axis {
             enc.write_u8(match axis {
@@ -374,12 +392,19 @@ impl Encode for AotStyle {
         if let Some(lengths) = &self.lengths {
             lengths.encode(enc);
         }
+        if let Some(basis) = self.scope.and_then(|scope| scope.basis) {
+            enc.write_f32(basis);
+        }
     }
 }
 
 impl Decode for AotStyle {
     fn decode(dec: &mut Decoder) -> Result<Self, DecodeError> {
+        let offset = dec.position();
         let mask = dec.read_u8()?;
+        if mask & STYLE_HAS_BASIS != 0 && mask & STYLE_IS_SCOPE == 0 || mask >> 7 != 0 {
+            return Err(DecodeError::Malformed { offset });
+        }
         let axis = if mask & STYLE_HAS_AXIS != 0 {
             let offset = dec.position();
             Some(match dec.read_u8()? {
@@ -410,12 +435,23 @@ impl Decode for AotStyle {
         } else {
             None
         };
+        let scope = if mask & STYLE_IS_SCOPE != 0 {
+            let basis = if mask & STYLE_HAS_BASIS != 0 {
+                Some(dec.read_f32()?)
+            } else {
+                None
+            };
+            Some(AotScope { basis })
+        } else {
+            None
+        };
         Ok(AotStyle {
             axis,
             width,
             height,
             gap,
             lengths,
+            scope,
         })
     }
 }
@@ -544,6 +580,7 @@ mod tests {
                         }),
                         gap: Some(8.0),
                         lengths: None,
+                        scope: Some(AotScope { basis: Some(600.0) }),
                     },
                     child_count: 2,
                 },
@@ -559,6 +596,7 @@ mod tests {
                             font_size: Some(LengthTerms::em(1.25)),
                             ..NodeLengths::default()
                         })),
+                        scope: Some(AotScope::default()),
                     },
                     child_count: 0,
                 },

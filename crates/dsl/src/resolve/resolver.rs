@@ -54,6 +54,9 @@ pub enum Resolution {
     /// A registered native function, method or handle type (a value path's head
     /// carries the whole path it names, `text::upper` or `Stopwatch::start`).
     Native(NativeId),
+    /// The adaptive environment `env` a view reads, typed `Environment`: the View
+    /// execution domain's context binding, which no declaration provides.
+    Env,
 }
 
 impl Resolution {
@@ -63,7 +66,7 @@ impl Resolution {
         match self {
             Resolution::Symbol(id) => Some(Ty::Named(id)),
             Resolution::Native(id) => Some(Ty::Native(id)),
-            Resolution::Local(_) => None,
+            Resolution::Local(_) | Resolution::Env => None,
         }
     }
 }
@@ -194,6 +197,7 @@ pub fn resolve(
             // The component frontend has declarations/imports; a genuinely missing
             // user type is a real error here.
             defer_unresolved_types: false,
+            in_view: false,
         };
         if let Some(cu) = &cu {
             pass.resolve_unit(cu);
@@ -242,6 +246,7 @@ pub(super) fn resolve_standalone(
         errors,
         scopes: ScopeStack::new(),
         defer_unresolved_types: false,
+        in_view: false,
     };
     pass.resolve_unit(cu);
     let ModulePass { refs, errors, .. } = pass;
@@ -667,6 +672,12 @@ fn ident_tokens(node: &SyntaxNode) -> Vec<crate::syntax::SyntaxToken> {
         .collect()
 }
 
+/// The name of the adaptive environment a view reads.
+const ENV: &str = "env";
+
+/// The code of a read of `env` outside the View execution domain.
+const ENV_OUTSIDE_VIEW: &str = "E2111";
+
 /// The per-module resolution walk state.
 struct ModulePass<'a> {
     table: &'a SymbolTable,
@@ -695,6 +706,8 @@ struct ModulePass<'a> {
     /// deferred value-path head in [`ModulePass::resolve_value_path`]); the component
     /// frontend keeps `false` so a genuinely missing user type still surfaces.
     defer_unresolved_types: bool,
+    /// Whether the walk is inside a view, the execution domain `env` is bound in.
+    in_view: bool,
 }
 
 impl ModulePass<'_> {
@@ -787,7 +800,9 @@ impl ModulePass<'_> {
         match member {
             Member::View(v) => {
                 if let Some(block) = v.block() {
+                    self.in_view = true;
                     self.resolve_view_block(&block);
+                    self.in_view = false;
                 }
             }
             Member::Computed(c) => {
@@ -1312,6 +1327,17 @@ impl ModulePass<'_> {
             Resolution::Symbol(binding.symbol)
         } else if let Some(sym) = self.standard(name, Namespace::Value) {
             Resolution::Symbol(sym)
+        } else if head.text() == ENV {
+            if !self.in_view {
+                self.errors.push(Diagnostic::error(
+                    ENV_OUTSIDE_VIEW,
+                    head.text_range(),
+                    "`env` is read only in a view: its items, property bindings, \
+                     conditions and handlers; pass the value a state or function needs"
+                        .to_string(),
+                ));
+            }
+            Resolution::Env
         } else {
             // Possibly a native/schema name; not diagnosed at this layer.
             return false;
@@ -1538,6 +1564,8 @@ pub fn resolve_fragment(
         // A fragment's node types are native/schema-provided (no imports, no unit),
         // so an unresolved PascalCase name defers instead of raising E2001.
         defer_unresolved_types: true,
+        // A fragment is a view.
+        in_view: true,
     };
     // A fragment's items are top-level (no `ViewBlock` wrapper); open one scope for
     // node-name / loop-pattern locals, matching `resolve_view_block`.

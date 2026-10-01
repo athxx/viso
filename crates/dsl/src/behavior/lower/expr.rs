@@ -1,5 +1,7 @@
 //! Expressions: every expression lowers to the register holding its value.
 
+use viso_ui::adaptive::EnvField;
+
 use super::super::ir::{
     BinaryOp, Const, DisplayKind, Function, FunctionKind, Inst, Num, Reg, UnaryOp,
 };
@@ -202,6 +204,7 @@ impl Lowerer<'_, '_> {
             Some(Resolution::Symbol(id)) if segments.len() == 1 => {
                 self.symbol_value(id, &head.text())
             }
+            Some(Resolution::Env) if segments.len() == 1 => self.env_value(),
             None if builtin_variant(&segments) == Some("None") => Ok(self.constant(Const::Nil)),
             _ => self.bail("this path has no runtime value yet"),
         }
@@ -250,6 +253,47 @@ impl Lowerer<'_, '_> {
         }
     }
 
+    /// The whole `env`, an `Environment` of every field's slot.
+    pub(super) fn env_value(&mut self) -> Lower<Reg> {
+        let fields = EnvField::ALL
+            .into_iter()
+            .map(|field| self.env_field(field))
+            .collect::<Lower<Vec<Reg>>>()?;
+        let dst = self.reg();
+        self.emit(Inst::Make {
+            dst,
+            tag: 0,
+            fields,
+        });
+        Ok(dst)
+    }
+
+    /// The `env` field `field`, read from the slot the runtime fills.
+    fn env_field(&mut self, field: EnvField) -> Lower<Reg> {
+        let Some(slot) = self.b.env_slot(field) else {
+            return self.bail("`env` is read only in a component's view");
+        };
+        let dst = self.reg();
+        self.emit(Inst::LoadState { dst, slot });
+        Ok(dst)
+    }
+
+    /// The field `name` of `recv` when `recv` is the bare `env`.
+    fn env_member(&self, recv: &Expr, name: &str) -> Option<EnvField> {
+        let path = PathExpr::cast(recv.syntax().clone())?;
+        let mut segments = path.segments();
+        let head = segments.next()?;
+        if segments.next().is_some()
+            || !matches!(
+                self.cx.resolution_at(head.text_range()),
+                Some(Resolution::Env)
+            )
+        {
+            return None;
+        }
+        EnvField::named(name)
+    }
+
     // --- members -------------------------------------------------------------
 
     /// The field index `name` reads on a value of type `recv`.
@@ -275,8 +319,13 @@ impl Lowerer<'_, '_> {
         let (Some(recv), Some(name)) = (field.receiver(), field.field()) else {
             return self.bail("a field access without a receiver or name");
         };
+        let name = name.text();
+        let name = name.trim_start_matches("r#");
+        if let Some(field) = self.env_member(&recv, name) {
+            return self.env_field(field);
+        }
         let ty = self.ty(&recv)?;
-        let index = self.field_index(&ty, name.text().trim_start_matches("r#"))?;
+        let index = self.field_index(&ty, name)?;
         let src = self.expr(&recv)?;
         let dst = self.reg();
         self.emit(Inst::Field { dst, src, index });
@@ -388,6 +437,7 @@ impl Lowerer<'_, '_> {
                     Some(Resolution::Native(_)) => {
                         return self.bail(format!("the shorthand `{name}` names a native"));
                     }
+                    Some(Resolution::Env) => self.env_value()?,
                     None => return self.bail(format!("the shorthand `{name}` names nothing")),
                 },
             };

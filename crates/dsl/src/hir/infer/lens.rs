@@ -61,6 +61,7 @@ impl InferCx<'_> {
                 Some(SymbolKind::State) | None => return,
                 Some(_) => "it is not a variable",
             },
+            Some(Resolution::Env) => "the adaptive environment is read-only; a view only reads it",
             _ => return,
         };
         let message = format!("cannot assign to `{}`: {reason}", name.text());
@@ -91,6 +92,7 @@ impl InferCx<'_> {
                 Some(_) => Some("not a value"),
             },
             Some(Resolution::Native(_)) => Some("a native"),
+            Some(Resolution::Env) => Some("the adaptive environment, which a view only reads"),
             None => None,
         };
         if let Some(reason) = reason {

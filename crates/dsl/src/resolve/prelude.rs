@@ -1,5 +1,6 @@
 //! The standard prelude: the types every module names without an import — input
-//! geometry and state, and the payloads of the standard and built-in widget events.
+//! geometry and state, the payloads of the standard and built-in widget events, and
+//! the adaptive environment a view reads as `env`.
 //!
 //! It is ordinary `.vs` source (`prelude.vs`) resolved like a module of the `viso`
 //! package, so its [`SymbolId`](super::SymbolId)s are durable and every consumer that
@@ -8,6 +9,7 @@
 //! prelude name.
 
 use super::resolver::{ResolvedModule, resolve_standalone};
+use super::symbol::{SymbolIdentity, SymbolKind, fingerprint};
 use super::{NameInterner, Namespace, SymbolId};
 use crate::ast::{AstNode, CompilationUnit};
 use crate::syntax::grammar::parse;
@@ -17,6 +19,16 @@ use crate::syntax::{SyntaxNode, tokenize};
 pub(crate) const PRELUDE_MODULE: &str = "viso";
 
 const SOURCE: &str = include_str!("prelude.vs");
+
+/// The prelude record a view's `env` is typed by.
+pub(crate) fn environment() -> SymbolId {
+    fingerprint(SymbolIdentity {
+        package: PRELUDE_MODULE,
+        module_path: PRELUDE_MODULE,
+        kind: SymbolKind::Record,
+        decl_path: "Environment",
+    })
+}
 
 /// The parsed and resolved prelude.
 pub(crate) struct Prelude {
@@ -71,8 +83,23 @@ mod tests {
             "Key",
             "AnimationEnd",
             "SliderChanged",
+            "Rect",
+            "Insets",
+            "WindowMetrics",
+            "LocalConstraints",
+            "SizeClass",
+            "Orientation",
+            "KeyboardInset",
+            "DisplayFeature",
+            "PointerPrecision",
+            "InputCapabilities",
+            "LayoutDirection",
+            "Locale",
+            "Environment",
         ] {
             assert!(names.contains(&expected), "missing {expected}");
         }
+        let types: Vec<_> = prelude.types(&interner).collect();
+        assert!(types.contains(&("Environment", environment())));
     }
 }

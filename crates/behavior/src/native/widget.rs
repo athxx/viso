@@ -15,6 +15,9 @@ pub enum WidgetNode {
     /// A flex container: along the inline axis, the block axis, or the axis
     /// its `axis` property names.
     Flex(FlexAxis),
+    /// A block-axis flex container that re-establishes the size class for
+    /// its subtree from its own width.
+    AdaptiveScope,
     /// A track grid.
     Grid,
     /// A single-child scroll viewport.

@@ -36,12 +36,13 @@
 //! A region entry that faults, a value a region cannot mount, and a repeated
 //! key keep the region's current content and record the fault on the host.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
 use viso_behavior::{Fault, FaultKind, Value};
 use viso_ende::{Decode, DecodeError, Decoder, Encode, Encoder, ProtocolTag};
+use viso_ui::adaptive::{AnchorId, EnvField};
 use viso_ui::aot::{AotNode, build_aot_node};
 use viso_ui::state::StateKey;
 use viso_ui::{BuildCx, DirtyClass, NodeId, StateId, StateValue, StructureCx};
@@ -50,7 +51,7 @@ use crate::attach::{Route, attach_node};
 use crate::control::Control;
 use crate::host::ViewHost;
 use crate::route::EventRoute;
-use crate::scope::{Locals, Scope};
+use crate::scope::{LocalEnv, Locals, Scope};
 use crate::values::{Shown, control_cells};
 
 /// The most items a range region mounts; a longer range faults instead of
@@ -138,6 +139,17 @@ pub struct LocalTemplate {
     pub init: Option<u32>,
 }
 
+/// An `env` field a component instance an arm mounts reads.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EnvTemplate {
+    /// The component state slot the field fills.
+    pub slot: u32,
+    /// The field.
+    pub field: EnvField,
+    /// The node its anchored fields resolve at, by item index in the arm.
+    pub anchor: u32,
+}
+
 /// The aggregate tag of a half-open integer range a `for` region iterates.
 pub const HALF_OPEN: u32 = 0;
 
@@ -153,6 +165,9 @@ pub struct ArmTemplate {
     /// The states of the component instances the arm mounts outside its
     /// nested regions, ascending by slot: each mount of the arm keeps its own.
     pub locals: Vec<LocalTemplate>,
+    /// The `env` fields those instances read, ascending by slot: each mount of
+    /// the arm resolves its own anchored fields.
+    pub env: Vec<EnvTemplate>,
     /// The arm's content, flattened in pre-order.
     pub items: Vec<ItemTemplate>,
 }
@@ -218,6 +233,7 @@ pub fn mount_regions(
         .iter()
         .map(|key| cells.iter().find(|(k, _)| k == key).map(|(_, id)| *id))
         .collect();
+    let env = host.borrow().env_cells();
     let node = |index: u32| nodes.get(index as usize).copied().flatten();
     let groups = regions
         .groups
@@ -246,7 +262,7 @@ pub fn mount_regions(
         .flat_map(|region| &region.deps)
         .filter_map(|cell| match *cell {
             CellRef::Shared(cell) => resolved.get(cell as usize).copied().flatten(),
-            CellRef::Local(_) => None,
+            CellRef::Local(slot) => env_cell(&env, slot),
         })
         .collect();
     {
@@ -264,11 +280,15 @@ pub fn mount_regions(
             control_cells(control, &Scope::EMPTY, &view, &mut deps);
         }
     }
-    let keeps = regions
-        .regions
-        .iter()
-        .flat_map(|region| &region.arms)
-        .any(|arm| !arm.locals.is_empty());
+    let arms = || regions.regions.iter().flat_map(|region| &region.arms);
+    for read in arms().flat_map(|arm| &arm.env) {
+        if let Some(cell) = cx.states.env_cell(read.field)
+            && !deps.contains(&cell)
+        {
+            deps.push(cell);
+        }
+    }
+    let keeps = arms().any(|arm| !arm.locals.is_empty() || !arm.env.is_empty());
     let pulse = keeps.then(|| {
         let pulse = cx.states.alloc(StateValue::Int(0));
         host.borrow_mut().adopt_pulse(pulse);
@@ -278,6 +298,7 @@ pub fn mount_regions(
     let mut mounted = Mounted {
         regions,
         cells: resolved,
+        env,
         pulse,
         host: Rc::clone(host),
         groups,
@@ -438,6 +459,9 @@ struct Mounted {
     regions: Rc<ViewRegions>,
     /// The live cell of each [`ViewRegions::states`] key.
     cells: Vec<Option<StateId>>,
+    /// The revision cell of each `env` slot of the view's static instances,
+    /// by ascending slot.
+    env: Vec<(u32, StateId)>,
     /// The cell raised with every write of a state a mount of region content
     /// keeps, `None` for regions that mount no component instance.
     pulse: Option<StateId>,
@@ -454,6 +478,7 @@ impl Mounted {
         let Mounted {
             regions,
             cells,
+            env,
             pulse,
             host,
             groups,
@@ -463,6 +488,7 @@ impl Mounted {
             cx,
             regions,
             cells,
+            env,
             pulse: *pulse,
             host,
             changed,
@@ -484,6 +510,7 @@ struct Patch<'p, 'c> {
     cx: &'p mut StructureCx<'c>,
     regions: &'p ViewRegions,
     cells: &'p [Option<StateId>],
+    env: &'p [(u32, StateId)],
     pulse: Option<StateId>,
     host: &'p Rc<RefCell<ViewHost>>,
     changed: &'p [StateId],
@@ -492,6 +519,16 @@ struct Patch<'p, 'c> {
 }
 
 impl Patch<'_, '_> {
+    /// The live cell `cell` names in `scope`: a view cell, a state the
+    /// enclosing mounts keep, or else the `env` field a static instance's
+    /// slot holds.
+    fn cell(&self, cell: CellRef, scope: &Scope) -> Option<StateId> {
+        match cell {
+            CellRef::Shared(cell) => self.cells.get(cell as usize).copied().flatten(),
+            CellRef::Local(slot) => scope.cell(slot).or_else(|| env_cell(self.env, slot)),
+        }
+    }
+
     /// Brings `slots`, the children of `parent` that precede `anchor`, up to
     /// date and into place. `force` re-evaluates every region among them.
     fn slots(
@@ -547,11 +584,8 @@ impl Patch<'_, '_> {
         let touched = force
             || mount.fresh
             || template.deps.iter().any(|&cell| {
-                let id = match cell {
-                    CellRef::Shared(cell) => self.cells.get(cell as usize).copied().flatten(),
-                    CellRef::Local(slot) => scope.cell(slot),
-                };
-                id.is_some_and(|id| self.changed.contains(&id))
+                self.cell(cell, scope)
+                    .is_some_and(|id| self.changed.contains(&id))
             });
         mount.fresh = false;
         let region = mount.region;
@@ -872,7 +906,6 @@ impl Patch<'_, '_> {
         let regions = self.regions;
         let template = &regions.regions[region as usize].arms[arm as usize];
         let items = &template.items;
-        let own = self.keep(&template.locals, scope, extra);
         let mut roots = Vec::new();
         let mut groups = Vec::new();
         let mut built = Vec::new();
@@ -897,6 +930,7 @@ impl Patch<'_, '_> {
             }
         }
         self.cx.store.mark_dirty(parent, relayout());
+        let own = self.keep(template, scope, extra, &built);
         let frag_scope = frag_scope(scope, extra, own.as_ref());
         let mut routed = Vec::new();
         let mut shown = Vec::new();
@@ -911,11 +945,7 @@ impl Patch<'_, '_> {
                 continue;
             };
             for &(cell, class) in edges {
-                let state = match cell {
-                    CellRef::Shared(cell) => self.cells.get(cell as usize).copied().flatten(),
-                    CellRef::Local(slot) => frag_scope.cell(slot),
-                };
-                if let Some(state) = state {
+                if let Some(state) = self.cell(cell, &frag_scope) {
                     self.cx
                         .bindings
                         .bind(state, id, DirtyClass::from_bits(class));
@@ -945,28 +975,86 @@ impl Patch<'_, '_> {
         }
     }
 
-    /// The instance states `locals` a new mount in `scope`, with the binding
-    /// `extra`, keeps: their initial values and a revision cell each.
+    /// The instance states and `env` slots a new mount of `arm` in `scope`,
+    /// with the binding `extra`, keeps: the states' initial values and a
+    /// revision cell each, and for each `env` slot the field's cell, anchored
+    /// at the mounted node `built` holds for its anchor item.
     fn keep(
         &mut self,
-        locals: &[LocalTemplate],
+        arm: &ArmTemplate,
         scope: &Scope,
         extra: Option<&Value>,
+        built: &[(NodeId, usize)],
     ) -> Option<Rc<Locals>> {
-        let pulse = self.pulse.filter(|_| !locals.is_empty())?;
+        let pulse = self
+            .pulse
+            .filter(|_| !arm.locals.is_empty() || !arm.env.is_empty())?;
         let Ok(mut host) = self.host.try_borrow_mut() else {
             return None;
         };
         let init = frag_scope(scope, extra, None);
-        let values = host.initialize(locals, &init, &*self.cx.states);
-        let cells = locals
-            .iter()
-            .map(|_| self.cx.states.alloc(StateValue::Int(0)))
-            .collect();
+        let initial = host.initialize(&arm.locals, &init, &*self.cx.states);
+        let count = arm.locals.len() + arm.env.len();
+        let mut slots = Vec::with_capacity(count);
+        let mut values = Vec::with_capacity(count);
+        let mut cells = Vec::with_capacity(count);
+        let mut env = Vec::with_capacity(arm.env.len());
+        let mut anchors: Vec<(u32, AnchorId)> = Vec::new();
+        let mut states = arm.locals.iter().zip(initial).peekable();
+        let mut reads = arm.env.iter().peekable();
+        loop {
+            let read = match (states.peek(), reads.peek()) {
+                (None, None) => break,
+                (Some((local, _)), Some(read)) => read.slot < local.slot,
+                (None, Some(_)) => true,
+                (Some(_), None) => false,
+            };
+            if !read {
+                if let Some((local, value)) = states.next() {
+                    slots.push(local.slot);
+                    values.push(value);
+                    cells.push(self.cx.states.alloc(StateValue::Int(0)));
+                }
+                continue;
+            }
+            let Some(read) = reads.next() else {
+                break;
+            };
+            let (cell, anchor) = if read.field.anchored() {
+                let anchor = match anchors.iter().find(|(item, _)| *item == read.anchor) {
+                    Some(&(_, anchor)) => Some(anchor),
+                    None => built
+                        .iter()
+                        .find(|&&(_, item)| item == read.anchor as usize)
+                        .map(|&(node, _)| {
+                            let anchor = self.cx.states.anchor_env(node, Some(pulse));
+                            anchors.push((read.anchor, anchor));
+                            anchor
+                        }),
+                };
+                let cell = anchor.and_then(|anchor| self.cx.states.anchor_cell(anchor, read.field));
+                (cell, anchor)
+            } else {
+                (self.cx.states.env_cell(read.field), None)
+            };
+            let Some(cell) = cell else {
+                continue;
+            };
+            env.push(LocalEnv {
+                at: slots.len() as u32,
+                field: read.field,
+                anchor,
+                seen: Cell::new(None),
+            });
+            slots.push(read.slot);
+            values.push(Value::Nil);
+            cells.push(cell);
+        }
         let kept = Rc::new(Locals {
-            slots: locals.iter().map(|local| local.slot).collect(),
-            values: RefCell::new(values),
-            cells,
+            slots: slots.into(),
+            values: RefCell::new(values.into()),
+            cells: cells.into(),
+            env: env.into(),
             pulse,
         });
         host.adopt(&kept);
@@ -1048,6 +1136,13 @@ struct Arms<'m> {
     active: &'m mut Option<usize>,
     live: &'m mut Option<Frag>,
     kept: &'m mut Vec<Option<Frag>>,
+}
+
+/// The revision cell of `env` slot `slot` in `env`, sorted by slot.
+fn env_cell(env: &[(u32, StateId)], slot: u32) -> Option<StateId> {
+    env.binary_search_by_key(&slot, |&(s, _)| s)
+        .ok()
+        .map(|index| env[index].1)
 }
 
 /// The scope of a mount in `scope` with the binding `extra`, keeping `own`.
@@ -1179,6 +1274,12 @@ impl Encode for ViewRegions {
                     enc.write_varint(u64::from(local.slot));
                     enc.write_varint(local.init.map_or(0, |init| u64::from(init) + 1));
                 }
+                enc.write_varint(arm.env.len() as u64);
+                for env in &arm.env {
+                    enc.write_varint(u64::from(env.slot));
+                    enc.write_u8(env.field.tag());
+                    enc.write_varint(u64::from(env.anchor));
+                }
                 enc.write_varint(arm.items.len() as u64);
                 for item in &arm.items {
                     match item {
@@ -1278,6 +1379,19 @@ impl Decode for ViewRegions {
                     });
                 }
                 let count = dec.read_varint()?;
+                let mut env = Vec::with_capacity(bounded(count));
+                for _ in 0..count {
+                    let slot = read_u32(dec)?;
+                    let offset = dec.position();
+                    let field = EnvField::from_tag(dec.read_u8()?)
+                        .ok_or(DecodeError::Malformed { offset })?;
+                    env.push(EnvTemplate {
+                        slot,
+                        field,
+                        anchor: read_u32(dec)?,
+                    });
+                }
+                let count = dec.read_varint()?;
                 let mut items = Vec::with_capacity(bounded(count));
                 for _ in 0..count {
                     let offset = dec.position();
@@ -1316,6 +1430,7 @@ impl Decode for ViewRegions {
                 arms.push(ArmTemplate {
                     preserve,
                     locals,
+                    env,
                     items,
                 });
             }
@@ -1384,6 +1499,16 @@ impl ViewRegions {
             check(arms)?;
             for arm in &region.arms {
                 check(arm.locals.windows(2).all(|w| w[0].slot < w[1].slot))?;
+                check(arm.env.windows(2).all(|w| w[0].slot < w[1].slot))?;
+                check(arm.env.iter().all(|env| {
+                    arm.locals
+                        .binary_search_by_key(&env.slot, |l| l.slot)
+                        .is_err()
+                        && matches!(
+                            arm.items.get(env.anchor as usize),
+                            Some(ItemTemplate::Node { .. })
+                        )
+                }))?;
                 // The children still owed to the open nodes; an item owed to
                 // none is a new top-level item.
                 let mut owed = 0usize;
@@ -1439,6 +1564,11 @@ mod tests {
                                 init: None,
                             },
                         ],
+                        env: vec![EnvTemplate {
+                            slot: 7,
+                            field: EnvField::SizeClass,
+                            anchor: 0,
+                        }],
                         items: vec![
                             ItemTemplate::Node {
                                 node: node(AotNodeKind::Flex, 1),
@@ -1459,6 +1589,7 @@ mod tests {
                     arms: vec![ArmTemplate {
                         preserve: false,
                         locals: vec![],
+                        env: vec![],
                         items: vec![ItemTemplate::Node {
                             node: node(AotNodeKind::Leaf, 0),
                             edges: vec![],
@@ -1485,9 +1616,17 @@ mod tests {
         unknown.regions[0].deps[0] = CellRef::Shared(1);
         assert!(ViewRegions::decode_from_slice(&unknown.encode_to_vec()).is_err());
 
-        let mut unordered = regions;
+        let mut unordered = regions.clone();
         unordered.regions[0].arms[0].locals.reverse();
         assert!(ViewRegions::decode_from_slice(&unordered.encode_to_vec()).is_err());
+
+        let mut misanchored = regions.clone();
+        misanchored.regions[0].arms[0].env[0].anchor = 1;
+        assert!(ViewRegions::decode_from_slice(&misanchored.encode_to_vec()).is_err());
+
+        let mut overlapping = regions;
+        overlapping.regions[0].arms[0].env[0].slot = 6;
+        assert!(ViewRegions::decode_from_slice(&overlapping.encode_to_vec()).is_err());
     }
 
     #[test]

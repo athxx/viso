@@ -1565,7 +1565,7 @@ View 中类型为同一文件内 Component 的 Node 是该 Component 的一个�
 - 与 Event 同名以外的 Property 和 Handler 作用于实例 View 的根 Node；
 - 实例可以位于 `if`、`match` 与 Keyed `for` 中，区域绑定对实例的 Input 实参、State 初值与 Handler 可见（§56.1）；
 - 控制流区域中的实例，其 State 属于区域的每次挂载：Keyed `for` 的每个 Item、`if`/`match` 的每次进入各有一份，以区域绑定求值初值；State 随 Key 移动，Item 移除或离开无 `preserve` 的分支即丢弃，`preserve` 分支缓存期间保留；这类 State 不按名称跨 Hot Reload 保留，含控制流区域的 View 整树重建时从初值重新开始；
-- 以下情形报 `E3711`：Component 直接或间接挂载自身；`bind` 目标为 Component Input 且带 `using`；向 View 不恰好挂载一个 Node 的实例传入非 Input Property 或非 Event Handler；类型为其他文件的 Component；
+- 以下情形报 `E3711`：Component 直接或间接挂载自身；`bind` 目标为 Component Input 且带 `using`；向 View 不恰好挂载一个 Node 的实例传入非 Input Property 或非 Event Handler；类型为其他文件的 Component；`AdaptiveScope` 的 `basis` 不是常量 `dp` 长度（§96.3）；
 - `ui!` Fragment 中不是内置 Widget 的类型是外围 Rust 作用域以 `component!` 声明的 Component（可写作 Rust 路径，如 `widgets::Tally`），由其 `build` 挂载，每个实例自带 State 与 Handler；这类 Node 不接受 Property、Handler 与子项（`E3711`），名称无法解析时由 Rust 在该位置报错；Hot Reload 与 Release Package 的 Fragment 没有 Rust 作用域，这类类型报 `E2001`。
 
 ---
@@ -2514,7 +2514,7 @@ loop_statement       = "loop", block ;
 - Statement Attribute 必须在 Schema 中声明可作用于对应 Statement Kind；例如 Shader 循环可使用 `@max_iterations(64)`，但同一 Attribute 作用于普通 `let` 时必须报错；
 - Statement Attribute 只产生 HIR 元数据，禁止改变 Tokenization、优先级或基础控制流语义；
 - Assignment 不是 Expression，禁止 `a = b = c;`；
-- 赋值目标的根必须是 `state` 或 `let mut`/`mut` 绑定的局部名，经 `.label`/`[index]` 到达其字段或元素；以 Input、Computed、Const、Callable、不可变局部绑定（含参数与 Pattern 绑定）为根，或根不是名字（调用结果、`?.`、`?` 等），报 `E2110`；
+- 赋值目标的根必须是 `state` 或 `let mut`/`mut` 绑定的局部名，经 `.label`/`[index]` 到达其字段或元素；以 Input、Computed、Const、Callable、`env`、不可变局部绑定（含参数与 Pattern 绑定）为根，或根不是名字（调用结果、`?.`、`?` 等），报 `E2110`；
 - `return` 只允许在 Callable/Closure 中；
 - `break value;` 只允许从 `loop` 返回值；
 - `continue` 只允许在 Behavior Loop 中；
@@ -3914,7 +3914,7 @@ env.constraints       : LocalConstraints
 env.size_class        : SizeClass
 env.safe_area         : Insets
 env.keyboard_inset    : KeyboardInset
-env.display_features  : ReadOnlyList<DisplayFeature>
+env.display_features  : List<DisplayFeature>
 env.input             : InputCapabilities
 env.text_scale        : F32
 env.reduced_motion    : Bool
@@ -3923,13 +3923,17 @@ env.layout_direction  : LayoutDirection   // §U10.1
 env.locale            : Locale            // §U10.3
 ```
 
-这些符号由标准 Native Schema 注入，Parser 不新增专用关键字。`env` 是 View 执行域的上下文绑定，只能在 View item 的表达式、Property Binding、View `if`/`match`/`for` 条件和调用的纯函数参数中使用；Component 的普通 `state` / `computed` 初始化器不能隐式读取局部 Layout Environment。
+这些符号由标准 Native Schema 注入，Parser 不新增专用关键字。`env` 是 View 执行域的上下文绑定，只能在 View item 的表达式、Property Binding、View `if`/`match`/`for` 条件、View Handler 和调用的纯函数参数中使用；Component 的普通 `state` / `computed` 初始化器与成员 Callable 不能隐式读取局部 Layout Environment，否则报 `E2111`，需要它的值经参数传入。
+
+`env` 整体类型为 Prelude 的 `Environment` 记录，字段顺序即上表顺序；`env.<field>` 的类型即该字段类型。`env` 只读：以 `env` 为根的赋值报 `E2110`。同名局部绑定（参数、`let`、Pattern）遮蔽 `env`。`display_features` 与 `env` 的其余部分一样只读，因而用普通 `List`。
+
+每个 Component 实例各自读取 `env`：`window`、`safe_area` 等窗口级字段对全部实例相同；`constraints` 与 `size_class` 锚定在读取它的 Component 实例的根节点——`constraints` 是该根节点收到的 incoming constraints，`size_class` 来自该根节点自身或其最近祖先中的 Adaptive Scope。
 
 典型类型：
 
 ```viso
 record WindowMetrics {
-    logical_size: Size;
+    logical_size: SizeDp;
     scale_factor: F32;
 }
 
@@ -3956,7 +3960,15 @@ enum DisplayFeature {
     Fold { bounds: Rect; };
     Cutout { bounds: Rect; };
 }
+
+record Rect { x: Dp; y: Dp; width: Dp; height: Dp; }
+record Insets { top: Dp; right: Dp; bottom: Dp; left: Dp; }
+record KeyboardInset { height: Dp; }
+enum LayoutDirection { ltr; rtl; }
+record Locale { tag: String; }   // BCP 47
 ```
+
+`InputCapabilities` 见 §96.7。
 
 `WindowMetrics` 描述整个应用窗口；`LocalConstraints` 描述当前 Component 从父布局接收到的局部约束。两者语义不同，禁止互相替代。
 
@@ -3969,6 +3981,8 @@ enum DisplayFeature {
 默认标准库可以提供 Compact/Medium/Expanded 策略，但 breakpoint 数值属于 Theme/Profile/Design System，不属于语言语法常量。应用可以提供自己的 `SizeClassPolicy`。
 
 根 Adaptive Scope 必须有有限的可用宽度。局部 `AdaptiveScope` 若收到 `max_width = None` 的无界约束，默认继承父 Scope 的 `SizeClass`；只有显式提供有限 `basis` 时才建立新的 SizeClass。实现不得偷偷用设备型号或全局 Window Width 代替无界局部约束。
+
+`AdaptiveScope` 是纵向排列子节点的 Flex 容器（属性同 `Column`），另有可选的 `basis: Option<MixedLength>`：给出时按该宽度分类，否则按父级传给它的 incoming 宽度分类。`basis` 必须是编译期常量的 `dp` 长度，否则报 `E3711`。宽度变化但 SizeClass 不变时，Scope 之下的结构不重建。
 
 推荐：
 
@@ -4110,6 +4124,8 @@ touch_available
 pen_available
 gamepad_available
 ```
+
+`primary_pointer_precision` 的类型为 `PointerPrecision { fine; coarse; unavailable; }`，其余字段为 `Bool`。
 
 因此组件可以做能力适配：
 
@@ -8331,6 +8347,7 @@ RecordPatternField
 | E2108  | `format` 模板与实参不匹配（§17）                        |
 | E2109  | 长度族值常量除以 0（§19.8）                             |
 | E2110  | 赋值目标不可写（§62.1）                                 |
+| E2111  | `env` 用在 View 执行域之外（§96.2）                     |
 | E2201  | Trait Bound 未满足                                      |
 | E2202  | Trait Impl 重叠或歧义                                   |
 | E2301  | 非穷尽 Match                                            |

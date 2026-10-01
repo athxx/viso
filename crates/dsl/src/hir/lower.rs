@@ -32,7 +32,7 @@ use crate::behavior::Program;
 use crate::behavior::ir::FunctionKind;
 use crate::behavior::lower::{Def, ProgramBuilder, lower_body, lower_value, unsupported};
 use crate::diag::{Diagnostic, Related, Severity};
-use crate::resolve::prelude::Prelude;
+use crate::resolve::prelude::{Prelude, environment};
 use crate::resolve::{
     ModuleGraph, NameInterner, Namespace, Resolution, ResolvedModule, ResolvedRef, SourceUnit,
     SymbolId, SymbolKind, SymbolTable,
@@ -1080,6 +1080,7 @@ impl TypeEnv for ModuleEnv<'_> {
                 .map(|f| f.ty.clone())
                 .filter(|ty| *ty != Ty::Unknown)
                 .or_else(|| self.inferred.borrow().get(id).cloned()),
+            Resolution::Env => Some(Ty::Named(environment())),
             Resolution::Local(_) | Resolution::Native(_) => None,
         }
     }
@@ -1095,7 +1096,7 @@ impl TypeEnv for ModuleEnv<'_> {
     fn callee_signature(&self, to: &Resolution) -> Option<(Vec<Ty>, Ty)> {
         match to {
             Resolution::Symbol(id) => self.decls.signatures.get(id).cloned(),
-            Resolution::Local(_) | Resolution::Native(_) => None,
+            Resolution::Local(_) | Resolution::Native(_) | Resolution::Env => None,
         }
     }
 
@@ -1162,7 +1163,7 @@ impl ReadEnv for ModuleEnv<'_> {
                     None
                 }
             }),
-            Resolution::Local(_) | Resolution::Native(_) => None,
+            Resolution::Local(_) | Resolution::Native(_) | Resolution::Env => None,
         }
     }
 }
@@ -1171,7 +1172,7 @@ impl EffectEnv for ModuleEnv<'_> {
     fn callee_effect(&self, to: &Resolution) -> Option<EffectClass> {
         match to {
             Resolution::Symbol(id) => self.decls.facts.get(id).and_then(|f| f.effect),
-            Resolution::Local(_) | Resolution::Native(_) => None,
+            Resolution::Local(_) | Resolution::Native(_) | Resolution::Env => None,
         }
     }
 

@@ -1,12 +1,14 @@
 //! What region content runs with: the bindings of the enclosing `for` items and
 //! `match` scrutinees, and the states of the component instances it mounts.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use viso_behavior::Value;
+use viso_ui::adaptive::{AnchorId, EnvField};
 use viso_ui::{StateId, StateStore, StateValue};
 
+use crate::env::env_value;
 use crate::host::StateCells;
 
 /// The bindings and instance states a handler, a control or a region entry
@@ -45,6 +47,11 @@ impl Scope {
 /// A UI cell per state holds a revision the host raises after each committed
 /// write, so the bindings and regions that read the state see the change, and
 /// the view's pulse cell is raised with it to wake the view's structure hook.
+///
+/// An `env` slot's cell is the field's revision cell: the window's for a
+/// window-wide field, shared with every reader, or the mount's own anchor's,
+/// which wakes the pulse when it moves. Its value is rebuilt from the
+/// environment when that revision moved since the last build.
 #[derive(Debug)]
 pub(crate) struct Locals {
     /// The component state slots, ascending.
@@ -53,8 +60,24 @@ pub(crate) struct Locals {
     pub(crate) values: RefCell<Box<[Value]>>,
     /// The revision cell of each slot.
     pub(crate) cells: Box<[StateId]>,
-    /// The cell raised with any of [`cells`](Self::cells).
+    /// The `env` slots among [`slots`](Self::slots), ascending.
+    pub(crate) env: Box<[LocalEnv]>,
+    /// The cell raised with any of [`cells`](Self::cells) a write raises.
     pub(crate) pulse: StateId,
+}
+
+/// An `env` slot a mount of region content keeps.
+#[derive(Debug)]
+pub(crate) struct LocalEnv {
+    /// The slot's index in [`Locals::slots`].
+    pub(crate) at: u32,
+    pub(crate) field: EnvField,
+    /// The anchor its anchored field resolves at; `None` for a window-wide
+    /// field.
+    pub(crate) anchor: Option<AnchorId>,
+    /// The revision of the slot's cell its value was built at; `None` before
+    /// the first build.
+    pub(crate) seen: Cell<Option<i32>>,
 }
 
 impl Locals {
@@ -67,12 +90,23 @@ impl Locals {
         self.at(slot).map(|at| self.cells[at])
     }
 
+    fn env_at(&self, at: usize) -> Option<&LocalEnv> {
+        self.env
+            .binary_search_by_key(&at, |env| env.at as usize)
+            .ok()
+            .map(|index| &self.env[index])
+    }
+
     /// Keeps `value` as the value of `slot` and raises its revision; returns
-    /// `false`, keeping nothing, for a slot this mount does not keep.
+    /// `false`, keeping nothing, for a slot this mount does not keep. An `env`
+    /// slot is read-only and keeps its value.
     pub(crate) fn store(&self, slot: u32, value: Value, cells: &mut dyn StateCells) -> bool {
         let Some(at) = self.at(slot) else {
             return false;
         };
+        if self.env_at(at).is_some() {
+            return true;
+        }
         self.values.borrow_mut()[at] = value;
         for id in [self.cells[at], self.pulse] {
             if let Some(StateValue::Int(revision)) = cells.get(id) {
@@ -82,10 +116,41 @@ impl Locals {
         true
     }
 
-    /// Frees the revision cells.
+    /// Rebuilds each `env` slot whose cell's revision moved since its last
+    /// build.
+    pub(crate) fn refresh(&self, cells: &dyn StateCells) {
+        if self.env.is_empty() {
+            return;
+        }
+        let mut values = self.values.borrow_mut();
+        for env in &self.env {
+            let at = env.at as usize;
+            let revision = match cells.get(self.cells[at]) {
+                Some(StateValue::Int(revision)) => Some(revision),
+                _ => None,
+            };
+            if revision.is_some() && revision == env.seen.get() {
+                continue;
+            }
+            env.seen.set(revision);
+            values[at] = env_value(env.field, cells.env(), env.anchor);
+        }
+    }
+
+    /// Frees the revision cells and releases the anchors; a window-wide `env`
+    /// cell is the window's and stays.
     pub(crate) fn release(&self, states: &mut StateStore) {
-        for &id in &self.cells {
-            states.free(id);
+        for (at, &id) in self.cells.iter().enumerate() {
+            match self.env_at(at) {
+                None => {
+                    states.free(id);
+                }
+                Some(env) => {
+                    if let Some(anchor) = env.anchor {
+                        states.release_anchor(anchor);
+                    }
+                }
+            }
         }
     }
 }

@@ -15,9 +15,11 @@ use std::collections::{HashMap, HashSet};
 
 use viso_behavior::native::{NativeEntry, NativeId};
 
+use viso_ui::adaptive::EnvField;
+
 use super::ir::{
-    Body, ComponentLayout, Const, FuncId, Function, FunctionKind, Inst, NativeImport, Num, Program,
-    Reg, Site, Unsupported,
+    Body, ComponentLayout, Const, EnvSlot, FuncId, Function, FunctionKind, Inst, NativeImport, Num,
+    Program, Reg, Site, Unsupported,
 };
 use crate::ast::{AssignablePath, AstNode, Block, Expr};
 use crate::hir::infer::InferCx;
@@ -64,6 +66,12 @@ pub(crate) struct Def {
     /// The placeholder it fills, when one was reserved for it (a record field
     /// default a literal referenced before the record was lowered).
     pub into: Option<FuncId>,
+}
+
+/// The name of the state slot holding the `env` field `field`; no source
+/// name contains the `.`.
+pub(crate) fn env_state(field: EnvField) -> String {
+    format!("env.{}", field.name())
 }
 
 /// The reason a function that was referenced but never defined has.
@@ -170,7 +178,26 @@ impl ProgramBuilder {
             members,
             handlers: Vec::new(),
             regional: Vec::new(),
+            env: Vec::new(),
         });
+    }
+
+    /// The state slot of the component registered last that holds the `env`
+    /// field `field` its view reads, allocated on first read.
+    pub(crate) fn env_slot(&mut self, field: EnvField) -> Option<u32> {
+        let layout = self.program.components.last_mut()?;
+        if let Some(slot) = layout.env_slot(0, field) {
+            return Some(slot);
+        }
+        let slot = layout.states.len() as u32;
+        layout.states.push(env_state(field));
+        layout.state_inits.push(None);
+        layout.env.push(EnvSlot {
+            slot,
+            field,
+            instance: 0,
+        });
+        Some(slot)
     }
 
     /// Records `func` as the handler of the `on` item at `at` in the view of

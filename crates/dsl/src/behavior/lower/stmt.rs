@@ -402,6 +402,7 @@ impl Lowerer<'_, '_> {
                         None => self.bail("only a local or a `state` can be assigned"),
                     },
                     Some(Resolution::Native(_)) => self.bail("a native cannot be assigned"),
+                    Some(Resolution::Env) => self.bail("`env` is read-only"),
                     None => self.bail("an assignment to an unresolved name"),
                 }
             }
