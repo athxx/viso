@@ -332,7 +332,7 @@ Goal: every Core view construct reaches a live tree through all three lowering t
 Goal: a file edit reaches the running app as one transaction or not at all.
 
 - [x] Pure stages `plan` → `diff` → `migrate` and atomic `commit` (`hotreload/`).
-- [ ] Dev server: file watch → `compile_file` → plan → commit on the UI thread at a frame
+- [x] Dev server: file watch → `compile_file` → plan → commit on the UI thread at a frame
       boundary; last-good kept on any failure (§94).
   - [x] The commit is scoped to the view's own subtree: it frees and rebuilds
         in place under the same parent and sibling position, swaps only the
@@ -345,10 +345,10 @@ Goal: a file edit reaches the running app as one transaction or not at all.
   - [x] The window drains changes at the frame boundary and runs the
         transaction; each view keeps a revision and its last-good candidate,
         and a failed candidate changes nothing.
-- [ ] Behavior bytecode swap together with the UI patch.
-  - [ ] The host's VM states migrate by `SymbolId` through the same migration
+- [x] Behavior bytecode swap together with the UI patch.
+  - [x] The host's VM states migrate by `SymbolId` through the same migration
         plan as the UI cells, not by name.
-  - [ ] A handler-body edit reloads in a running window with every state kept.
+  - [x] A handler-body edit reloads in a running window with every state kept.
 - [ ] State migration by `SymbolId`: keep, safe widening, record field with default,
       `@migrate(from:)` functions, reset notice (§94.1). `E5101`, `E5102`.
   - [ ] The candidate carries each state's type; the compatibility matrix

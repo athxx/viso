@@ -290,11 +290,15 @@ fn report(path: &str, source: &str, diagnostics: &[Diagnostic]) {
 mod tests {
     use std::time::{Duration, Instant};
 
-    use viso_ui::{BuildCx, NodeStore, StateValue};
+    use viso_ui::{
+        BuildCx, NodeStore, PointerButtons, PointerEvent, PointerPhase, PointerRouter, Rect,
+        StateValue,
+    };
 
     use super::*;
 
     const COUNTER: &str = include_str!("../../tests/fixtures/counter.vs");
+    const CLICKER: &str = include_str!("../../tests/fixtures/clicker.vs");
 
     fn children(store: &NodeStore, parent: NodeId) -> Vec<NodeId> {
         let mut out = Vec::new();
@@ -309,6 +313,18 @@ mod tests {
     /// A window that mounts the counter view, recorded as if built from a
     /// temporary copy of its file, and that file.
     fn mounted(name: &str) -> (WindowState, PathBuf) {
+        mounted_with(name, COUNTER, |cx| {
+            viso_ui_macros::view!("../../tests/fixtures/counter.vs")(cx).id()
+        })
+    }
+
+    /// A window whose build `mount`s one view of `source`, recorded as if
+    /// built from a temporary copy of its file, and that file.
+    fn mounted_with(
+        name: &str,
+        source: &str,
+        mount: impl FnOnce(&mut BuildCx<'_>) -> NodeId,
+    ) -> (WindowState, PathBuf) {
         let mut ws = WindowState::new(WindowId(1));
         let root = {
             let mut cx = BuildCx::with_reactive(
@@ -319,13 +335,13 @@ mod tests {
                 &mut ws.text_edits,
                 &mut ws.projectors,
             );
-            viso_ui_macros::view!("../../tests/fixtures/counter.vs")(&mut cx).id()
+            mount(&mut cx)
         };
         ws.root = Some(root);
         let dir = std::env::temp_dir().join(format!("viso-session-{}-{name}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("counter.vs");
-        std::fs::write(&path, COUNTER).unwrap();
+        let path = dir.join("view.vs");
+        std::fs::write(&path, source).unwrap();
         let mut records = Vec::new();
         take_mounts(&mut records);
         let [mut record] = <[MountRecord; 1]>::try_from(records)
@@ -382,6 +398,73 @@ mod tests {
         assert_eq!(root, session.views[0].root);
         assert_eq!(children(&ws.store, root).len(), 3);
         assert_eq!(count(&ws, &session), Some(StateValue::Int(5)));
+    }
+
+    /// A primary click inside the clicker's leaf, then the state flush.
+    fn click(ws: &mut WindowState) {
+        let root = ws.root.expect("mounted");
+        let surface = Rect {
+            x: 0.0,
+            y: 0.0,
+            w: 400.0,
+            h: 300.0,
+        };
+        ws.store.layout(root, surface, &mut Vec::new());
+        let mut chain = Vec::new();
+        for phase in [PointerPhase::Down, PointerPhase::Up] {
+            let event = PointerEvent {
+                x: 20.0,
+                y: 20.0,
+                phase,
+                buttons: PointerButtons::PRIMARY,
+                modifiers: Default::default(),
+            };
+            PointerRouter::route(
+                &mut ws.store,
+                &mut ws.states,
+                &ws.bindings,
+                root,
+                event,
+                &mut chain,
+            );
+        }
+        let mut changed = Vec::new();
+        ws.states.take_pending(&mut changed);
+        ws.store.flush_state_transactions(&changed, &ws.bindings);
+    }
+
+    /// The VM value of the clicker's `log`.
+    fn log(session: &HotReloadSession) -> Option<String> {
+        let host = session.views[0].host.as_ref()?.borrow();
+        Some(host.state(host.state_slot("log")?)?.as_str()?.to_owned())
+    }
+
+    #[test]
+    fn a_handler_body_edit_reloads_with_every_state_kept() {
+        let (mut ws, path) = mounted_with("handler", CLICKER, |cx| {
+            viso_ui_macros::view!("../../tests/fixtures/clicker.vs")(cx).id()
+        });
+        let mut session = HotReloadSession::default();
+        session.adopt(|| LoopWaker::new(|| {}), &mut ws);
+        click(&mut ws);
+        assert_eq!(count(&ws, &session), Some(StateValue::Int(1)));
+        assert_eq!(log(&session).as_deref(), Some("one"));
+
+        let edited = CLICKER.replace(
+            "on click { count += 1; log = \"one\"; }",
+            "on click { count += 10; }",
+        );
+        assert_ne!(edited, CLICKER);
+        std::fs::write(&path, &edited).unwrap();
+        assert!(staged(&mut session));
+        session.reload(std::slice::from_mut(&mut ws));
+        assert_eq!(session.files[0].revision, 1);
+        assert_eq!(count(&ws, &session), Some(StateValue::Int(1)));
+        assert_eq!(log(&session).as_deref(), Some("one"));
+
+        click(&mut ws);
+        assert_eq!(count(&ws, &session), Some(StateValue::Int(11)));
+        assert_eq!(log(&session).as_deref(), Some("one"));
     }
 
     #[test]

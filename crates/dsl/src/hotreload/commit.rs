@@ -188,13 +188,21 @@ pub fn commit(
 
     // Step 6 — handlers and regions, against the nodes and cells the reload now
     // names.
-    mount_behavior(rt, plan, &key_to_node, &symbol_to_state, &mut report);
+    mount_behavior(
+        rt,
+        plan,
+        migration,
+        &key_to_node,
+        &symbol_to_state,
+        &mut report,
+    );
 
     *rt.nodes = key_to_node;
     report
 }
 
-/// Creates or reloads the view's host, links its states to the migrated cells,
+/// Creates or reloads the view's host, carrying each kept state's VM value by
+/// identity, links its states to the migrated cells,
 /// reinstalls every static node's handler routes, replacing the prior ones,
 /// mounts the view's regions under the static nodes, and delivers the values
 /// the static nodes show, replacing the hook that re-delivered the prior ones.
@@ -209,6 +217,7 @@ pub fn commit(
 fn mount_behavior(
     rt: &mut LiveRuntime<'_>,
     plan: &CandidatePlan,
+    migration: &MigrationPlan,
     key_to_node: &[(NodeKey, NodeId)],
     symbol_to_state: &[(SymbolId, StateId)],
     report: &mut HotReloadReport,
@@ -224,7 +233,8 @@ fn mount_behavior(
         let module = Rc::clone(&view.module);
         let mounted = match rt.view.take() {
             Some(host) => {
-                let reloaded = host.borrow_mut().reload(module, &view.component);
+                let carried = migration.slots.iter().map(|slot| (slot.from, slot.to));
+                let reloaded = host.borrow_mut().reload(module, &view.component, carried);
                 if reloaded.is_err() {
                     host.borrow_mut().release_values(rt.store);
                 }

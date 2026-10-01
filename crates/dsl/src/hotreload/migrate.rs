@@ -68,6 +68,17 @@ pub struct ScrollMigration {
     pub node: NodeKey,
 }
 
+/// One behavior state slot whose value the reloaded host carries: the state
+/// kept its identity, so its VM value moves from the last-good component's
+/// slot to the candidate's.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SlotMigration {
+    /// The state's slot in the last-good component.
+    pub from: u32,
+    /// The state's slot in the candidate component.
+    pub to: u32,
+}
+
 /// The migration plan: the per-state decisions plus whether focus and each live
 /// scroll offset survive. Pure data — the commit stage applies it.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -75,6 +86,10 @@ pub struct MigrationPlan {
     /// Every reactive source across both templates, with its migration action, in
     /// deterministic identity order.
     pub states: Vec<StateMigration>,
+    /// The behavior state slots the reloaded host carries, ascending by
+    /// candidate slot. The VM values follow the same identity match as the UI
+    /// cells, never the state names.
+    pub slots: Vec<SlotMigration>,
     /// Scroll containers whose absolute offset the commit restores, in slot order.
     pub scroll: Vec<ScrollMigration>,
     /// Whether the currently focused node survives the reload. `false` means focus
@@ -123,8 +138,9 @@ pub struct LiveAnchors {
     pub scrolled: Vec<NodeKey>,
 }
 
-/// Compute the migration plan from the old/new reactive-source identity sets, the
-/// structural patch aligning the templates, and the live focus/scroll anchors.
+/// Compute the migration plan from the old/new reactive-source identity sets,
+/// the old/new behavior state slots by identity, the structural patch aligning
+/// the templates, and the live focus/scroll anchors.
 ///
 /// Pure: reads only its inputs, allocates only the returned plan. State is matched
 /// by identity (a `BTreeSet` union so the output is deterministic and each symbol
@@ -134,6 +150,8 @@ pub struct LiveAnchors {
 pub fn migrate(
     old_sources: &[SymbolId],
     new_sources: &[SymbolId],
+    old_slots: &[(SymbolId, u32)],
+    new_slots: &[(SymbolId, u32)],
     patch: &StructuralPatch,
     anchors: &LiveAnchors,
 ) -> MigrationPlan {
@@ -152,6 +170,17 @@ pub fn migrate(
         states.push(StateMigration { symbol, action });
     }
 
+    // A behavior slot is carried iff its state is kept: present in both sets.
+    let mut slots: Vec<SlotMigration> = new_slots
+        .iter()
+        .filter(|(symbol, _)| old_set.contains(symbol) && new_set.contains(symbol))
+        .filter_map(|&(symbol, to)| {
+            let &(_, from) = old_slots.iter().find(|(old, _)| *old == symbol)?;
+            Some(SlotMigration { from, to })
+        })
+        .collect();
+    slots.sort_unstable_by_key(|slot| slot.to);
+
     // The kept slots — the only slots whose live focus/scroll can be preserved,
     // because only they reuse the same live instance.
     let kept: BTreeSet<NodeKey> = patch.keep.iter().map(|k| k.key).collect();
@@ -167,6 +196,7 @@ pub fn migrate(
 
     MigrationPlan {
         states,
+        slots,
         scroll,
         focus_survives,
     }
@@ -195,6 +225,8 @@ mod tests {
         let plan = migrate(
             &[sym(1)],
             &[sym(1)],
+            &[],
+            &[],
             &kept_patch(&[]),
             &LiveAnchors::default(),
         );
@@ -209,6 +241,8 @@ mod tests {
         let plan = migrate(
             &[sym(1), sym(2)],
             &[sym(2), sym(3)],
+            &[],
+            &[],
             &kept_patch(&[]),
             &LiveAnchors::default(),
         );
@@ -221,12 +255,32 @@ mod tests {
     }
 
     #[test]
+    fn a_kept_state_carries_its_behavior_slot_by_identity() {
+        // old slots: 1@0, 2@1; new slots: 3@0, 2@1, 1@2. Slot 3 is new.
+        let plan = migrate(
+            &[sym(1), sym(2)],
+            &[sym(1), sym(2), sym(3)],
+            &[(sym(1), 0), (sym(2), 1)],
+            &[(sym(3), 0), (sym(2), 1), (sym(1), 2)],
+            &kept_patch(&[]),
+            &LiveAnchors::default(),
+        );
+        assert_eq!(
+            plan.slots,
+            vec![
+                SlotMigration { from: 1, to: 1 },
+                SlotMigration { from: 0, to: 2 },
+            ]
+        );
+    }
+
+    #[test]
     fn focus_survives_when_its_slot_is_kept() {
         let anchors = LiveAnchors {
             focused: Some(NodeKey(2)),
             scrolled: vec![],
         };
-        let plan = migrate(&[], &[], &kept_patch(&[0, 1, 2]), &anchors);
+        let plan = migrate(&[], &[], &[], &[], &kept_patch(&[0, 1, 2]), &anchors);
         assert_eq!(plan.focus_survives, Some(true));
     }
 
@@ -237,13 +291,20 @@ mod tests {
             scrolled: vec![],
         };
         // Slot 2 replaced/removed → not in keep set → focus lost.
-        let plan = migrate(&[], &[], &kept_patch(&[0, 1]), &anchors);
+        let plan = migrate(&[], &[], &[], &[], &kept_patch(&[0, 1]), &anchors);
         assert_eq!(plan.focus_survives, Some(false));
     }
 
     #[test]
     fn nothing_focused_yields_no_focus_migration() {
-        let plan = migrate(&[], &[], &kept_patch(&[0]), &LiveAnchors::default());
+        let plan = migrate(
+            &[],
+            &[],
+            &[],
+            &[],
+            &kept_patch(&[0]),
+            &LiveAnchors::default(),
+        );
         assert_eq!(plan.focus_survives, None);
     }
 
@@ -254,7 +315,7 @@ mod tests {
             // Slot 1 survives (kept); slot 3 does not.
             scrolled: vec![NodeKey(1), NodeKey(3)],
         };
-        let plan = migrate(&[], &[], &kept_patch(&[0, 1, 2]), &anchors);
+        let plan = migrate(&[], &[], &[], &[], &kept_patch(&[0, 1, 2]), &anchors);
         assert_eq!(
             plan.scroll.len(),
             1,

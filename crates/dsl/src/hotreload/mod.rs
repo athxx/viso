@@ -27,12 +27,14 @@ pub mod plan;
 pub use commit::{HotReloadReport, LiveRuntime, commit, static_nodes};
 pub use diff::{InsertedNode, KeptNode, RemovedNode, ReplacedNode, StructuralPatch, diff};
 pub use migrate::{
-    LiveAnchors, MigrationPlan, ScrollMigration, StateAction, StateMigration, migrate,
+    LiveAnchors, MigrationPlan, ScrollMigration, SlotMigration, StateAction, StateMigration,
+    migrate,
 };
 pub use plan::{CandidatePlan, plan, plan_view};
 
 use crate::diag::Diagnostic;
 use crate::frontend::Origin;
+use crate::resolve::SymbolId;
 
 /// The result of a successful hot reload transaction: what the commit did to the
 /// live runtime, plus the compiled candidate that is now the last-good template.
@@ -101,10 +103,22 @@ pub fn transact(
 ) -> HotReload {
     // Stages 2-3 — pure planning over the two templates and the live anchors.
     let patch = diff(&last_good.tree, &candidate.tree);
-    let migration = migrate(&last_good.sources, &candidate.sources, &patch, anchors);
+    let migration = migrate(
+        &last_good.sources,
+        &candidate.sources,
+        behavior_slots(last_good),
+        behavior_slots(&candidate),
+        &patch,
+        anchors,
+    );
 
     // Stage 4 — the only mutating stage. Infallible by construction.
     let report = commit(rt, &candidate, &patch, &migration, anchors);
 
     HotReload { report, candidate }
+}
+
+/// The behavior state slots of `plan`, by identity; empty without a behavior.
+fn behavior_slots(plan: &CandidatePlan) -> &[(SymbolId, u32)] {
+    plan.view.as_ref().map_or(&[], |view| &view.slots)
 }
