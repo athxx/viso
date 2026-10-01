@@ -42,7 +42,9 @@ use crate::syntax::{SyntaxKind, SyntaxNode, TextRange};
 use super::capability::{CapabilityNode, CapabilitySet, propagate};
 use super::component::{MemberEnv, lower_component};
 use super::effect::{BodyContext, EffectClass, EffectCx, EffectEnv};
-use super::infer::{EventInfo, FieldInfo, InferCx, TypeEnv, VariantInfo, VariantPayload};
+use super::infer::{
+    EventInfo, FieldInfo, InferCx, TypeEnv, TypeSchemas, VariantInfo, VariantPayload,
+};
 use super::nodes::{ComponentSchema, HirCallable, HirComponent, HirSlot};
 use super::ownership::check_stored;
 use super::percent::PercentSources;
@@ -75,6 +77,8 @@ pub struct LoweredPackage {
     /// Every body lowered to the Behavior IR, with the reason each one that cannot
     /// run cannot.
     pub behavior: Program,
+    /// The package's record and enum declarations, the prelude's included.
+    pub types: TypeSchemas,
 }
 
 /// Lowers a whole resolved package into its typed HIR.
@@ -189,6 +193,7 @@ pub fn lower(
         diagnostics,
         module_diagnostics,
         behavior: behavior.into_inner().finish(),
+        types: std::mem::take(&mut decls.types),
     }
 }
 
@@ -960,12 +965,9 @@ struct Declarations {
     events: HashMap<SymbolId, Vec<EventInfo>>,
     /// Symbol → facts, for the type/effect/read trait methods.
     facts: HashMap<SymbolId, MemberFacts>,
-    /// The fields of every record, and the payload of every event.
-    records: HashMap<SymbolId, Vec<FieldInfo>>,
-    /// The variants of every enum.
-    enums: HashMap<SymbolId, Vec<VariantInfo>>,
-    /// The declared name of every record, enum, event and component, for diagnostics.
-    type_names: HashMap<SymbolId, String>,
+    /// The fields of every record and event payload, the variants of every enum, and
+    /// the declared name of every record, enum, event and component.
+    types: TypeSchemas,
     /// The `(params, ret)` signature of every `fn` and `action`.
     signatures: HashMap<SymbolId, (Vec<Ty>, Ty)>,
     /// The inputs of every component, as node properties.
@@ -1052,15 +1054,15 @@ impl TypeEnv for ModuleEnv<'_> {
     }
 
     fn record_fields(&self, ty: SymbolId) -> Option<&[FieldInfo]> {
-        self.decls.records.get(&ty).map(Vec::as_slice)
+        self.decls.types.records.get(&ty).map(Vec::as_slice)
     }
 
     fn enum_variants(&self, ty: SymbolId) -> Option<&[VariantInfo]> {
-        self.decls.enums.get(&ty).map(Vec::as_slice)
+        self.decls.types.enums.get(&ty).map(Vec::as_slice)
     }
 
     fn type_name(&self, ty: SymbolId) -> Option<&str> {
-        self.decls.type_names.get(&ty).map(String::as_str)
+        self.decls.types.names.get(&ty).map(String::as_str)
     }
 
     fn symbol_kind(&self, id: SymbolId) -> Option<SymbolKind> {
@@ -1272,7 +1274,7 @@ impl ModuleScope {
                     };
                     scope.components.insert(c.syntax().text_range(), sym);
                     scope.place(decls, sym);
-                    decls.type_names.insert(sym, name_of(c.name()));
+                    decls.types.names.insert(sym, name_of(c.name()));
                     let Some(members) = table.members(sym) else {
                         continue;
                     };
@@ -1301,10 +1303,10 @@ impl ModuleScope {
                 Item::Record(r) => {
                     if let Some(sym) = decl_symbol(table, interner, r.name(), Namespace::Type) {
                         let fields = r.fields().filter_map(|f| scope.field_info(&f)).collect();
-                        decls.records.insert(sym, fields);
+                        decls.types.records.insert(sym, fields);
                         scope.place(decls, sym);
                         scope.declared.insert(r.syntax().text_range(), sym);
-                        decls.type_names.insert(sym, name_of(r.name()));
+                        decls.types.names.insert(sym, name_of(r.name()));
                     }
                 }
                 Item::Enum(e) => {
@@ -1313,9 +1315,9 @@ impl ModuleScope {
                             .variants()
                             .filter_map(|v| scope.variant_info(&v))
                             .collect();
-                        decls.enums.insert(sym, variants);
+                        decls.types.enums.insert(sym, variants);
                         scope.place(decls, sym);
-                        decls.type_names.insert(sym, name_of(e.name()));
+                        decls.types.names.insert(sym, name_of(e.name()));
                     }
                 }
                 Item::Const(c) => {
@@ -1436,9 +1438,9 @@ impl ModuleScope {
         };
         if let Member::Event(d) = member {
             let fields = self.event_fields(d.syntax());
-            decls.records.insert(sym, fields);
+            decls.types.records.insert(sym, fields);
             self.place(decls, sym);
-            decls.type_names.insert(sym, text.clone());
+            decls.types.names.insert(sym, text.clone());
             decls.events.entry(owner).or_default().push(EventInfo {
                 name: text.clone(),
                 symbol: sym,

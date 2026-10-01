@@ -216,7 +216,7 @@ fn mount<'a>(
     let mut states = Vec::new();
     let mut allocations = TokenStream::new();
     for source in &compiled.sources {
-        let SourceKind::State { initial } = &source.kind else {
+        let SourceKind::State { initial, .. } = &source.kind else {
             continue;
         };
         let declared = declared_at(component, source);

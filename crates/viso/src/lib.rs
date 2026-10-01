@@ -63,9 +63,9 @@ mod text_harness;
 mod text_worker;
 use text_content::{ParagraphSlot, TextShaper};
 
-mod window;
 #[cfg(feature = "hot-reload")]
 mod hot_reload;
+mod window;
 pub use window::{WindowBuilder, WindowHandle, window};
 
 pub use viso_ui::context::AppCx;

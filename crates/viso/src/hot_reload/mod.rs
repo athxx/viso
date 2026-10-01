@@ -197,12 +197,14 @@ impl HotReloadSession {
                     continue;
                 }
             };
+            let mut notices = Vec::new();
             for view in views.iter_mut().filter(|view| view.file == index) {
                 let Some(ws) = windows.iter_mut().find(|ws| ws.window == view.window) else {
                     continue;
                 };
-                candidate = commit_view(ws, view, &last_good, candidate, scratch);
+                candidate = commit_view(ws, view, &last_good, candidate, scratch, &mut notices);
             }
+            report(file.path, &source, &notices);
             file.last_good = Some(candidate);
             file.revision += 1;
         }
@@ -217,6 +219,7 @@ fn commit_view(
     last_good: &CandidatePlan,
     candidate: CandidatePlan,
     scratch: &mut Vec<NodeId>,
+    notices: &mut Vec<Diagnostic>,
 ) -> CandidatePlan {
     // The store maps a durable key to one cell; a file mounted twice points the
     // keys at the mount being committed.
@@ -250,7 +253,12 @@ fn commit_view(
         scratch,
         view: &mut view.host,
     };
-    let reload = transact(&mut live, last_good, candidate, &anchors);
+    let mut reload = transact(&mut live, last_good, candidate, &anchors);
+    for notice in reload.report.notices.drain(..) {
+        if !notices.contains(&notice) {
+            notices.push(notice);
+        }
+    }
     let root = live.root;
     if ws.root == Some(old_root) {
         ws.root = root;
@@ -270,8 +278,9 @@ fn commit_view(
     reload.candidate
 }
 
-/// Reports a candidate that does not compile; the mounts keep their last-good
-/// candidate.
+/// Reports the diagnostics of an edit: the errors of a candidate that does not
+/// compile, whose mounts keep their last-good candidate, or the notices of one
+/// committed.
 fn report(path: &str, source: &str, diagnostics: &[Diagnostic]) {
     let lines = LineIndex::new(source);
     for diagnostic in diagnostics {

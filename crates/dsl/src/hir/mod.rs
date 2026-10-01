@@ -41,7 +41,7 @@ pub(crate) mod widget;
 pub use capability::CapabilitySet;
 pub use component::MemberEnv;
 pub use effect::{BodyContext, EffectClass, EffectCx, EffectEnv};
-pub use infer::{InferCx, TypeEnv};
+pub use infer::{FieldInfo, InferCx, TypeEnv, TypeSchemas, VariantInfo, VariantPayload};
 pub(crate) use lower::write_backs;
 pub use lower::{LoweredPackage, lower};
 pub use nodes::{

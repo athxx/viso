@@ -20,15 +20,17 @@
 //! explicit identity-keyed migration of state, focus, and scroll.
 
 pub mod commit;
+pub mod compat;
 pub mod diff;
 pub mod migrate;
 pub mod plan;
 
 pub use commit::{HotReloadReport, LiveRuntime, commit, static_nodes};
+pub use compat::{Conversion, IntType, Retyping, retype};
 pub use diff::{InsertedNode, KeptNode, RemovedNode, ReplacedNode, StructuralPatch, diff};
 pub use migrate::{
-    LiveAnchors, MigrationPlan, ScrollMigration, SlotMigration, StateAction, StateMigration,
-    migrate,
+    LiveAnchors, MigrationPlan, Retype, ScrollMigration, SlotMigration, StateAction,
+    StateMigration, migrate,
 };
 pub use plan::{CandidatePlan, plan, plan_view};
 
@@ -103,7 +105,7 @@ pub fn transact(
 ) -> HotReload {
     // Stages 2-3 — pure planning over the two templates and the live anchors.
     let patch = diff(&last_good.tree, &candidate.tree);
-    let migration = migrate(
+    let mut migration = migrate(
         &last_good.sources,
         &candidate.sources,
         behavior_slots(last_good),
@@ -111,6 +113,7 @@ pub fn transact(
         &patch,
         anchors,
     );
+    retype(last_good, &candidate, &mut migration);
 
     // Stage 4 — the only mutating stage. Infallible by construction.
     let report = commit(rt, &candidate, &patch, &migration, anchors);
