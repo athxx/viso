@@ -298,7 +298,7 @@ mod tests {
     use super::*;
 
     const COUNTER: &str = include_str!("../../tests/fixtures/counter.vs");
-    const CLICKER: &str = include_str!("../../tests/fixtures/clicker.vs");
+    const LOGGER: &str = include_str!("../../tests/fixtures/logger.vs");
 
     fn children(store: &NodeStore, parent: NodeId) -> Vec<NodeId> {
         let mut out = Vec::new();
@@ -400,7 +400,7 @@ mod tests {
         assert_eq!(count(&ws, &session), Some(StateValue::Int(5)));
     }
 
-    /// A primary click inside the clicker's leaf, then the state flush.
+    /// A primary click inside the logger's leaf, then the state flush.
     fn click(ws: &mut WindowState) {
         let root = ws.root.expect("mounted");
         let surface = Rect {
@@ -433,7 +433,7 @@ mod tests {
         ws.store.flush_state_transactions(&changed, &ws.bindings);
     }
 
-    /// The VM value of the clicker's `log`.
+    /// The VM value of the logger's `log`.
     fn log(session: &HotReloadSession) -> Option<String> {
         let host = session.views[0].host.as_ref()?.borrow();
         Some(host.state(host.state_slot("log")?)?.as_str()?.to_owned())
@@ -441,8 +441,8 @@ mod tests {
 
     #[test]
     fn a_handler_body_edit_reloads_with_every_state_kept() {
-        let (mut ws, path) = mounted_with("handler", CLICKER, |cx| {
-            viso_ui_macros::view!("../../tests/fixtures/clicker.vs")(cx).id()
+        let (mut ws, path) = mounted_with("handler", LOGGER, |cx| {
+            viso_ui_macros::view!("../../tests/fixtures/logger.vs")(cx).id()
         });
         let mut session = HotReloadSession::default();
         session.adopt(|| LoopWaker::new(|| {}), &mut ws);
@@ -450,11 +450,11 @@ mod tests {
         assert_eq!(count(&ws, &session), Some(StateValue::Int(1)));
         assert_eq!(log(&session).as_deref(), Some("one"));
 
-        let edited = CLICKER.replace(
+        let edited = LOGGER.replace(
             "on click { count += 1; log = \"one\"; }",
             "on click { count += 10; }",
         );
-        assert_ne!(edited, CLICKER);
+        assert_ne!(edited, LOGGER);
         std::fs::write(&path, &edited).unwrap();
         assert!(staged(&mut session));
         session.reload(std::slice::from_mut(&mut ws));
