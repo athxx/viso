@@ -159,6 +159,40 @@ pub enum LengthIr {
     Fit,
 }
 
+/// A length's five terms, mirroring `viso_ui::LengthTerms`: a length with a
+/// `px`, `sp` or `em` term, folded against the node's environment at layout.
+/// `pct` is a fraction of the basis (`0.5` is `50%`).
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct TermsIr {
+    pub dp: f32,
+    pub px: f32,
+    pub sp: f32,
+    pub em: f32,
+    pub pct: f32,
+}
+
+/// A node's lengths that fold against its environment at layout, mirroring
+/// `viso_ui::NodeLengths`. The node builds with its [`StyleIr`] and binds
+/// these on top.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct LengthsIr {
+    pub width: Option<TermsIr>,
+    pub height: Option<TermsIr>,
+    pub gap: Option<TermsIr>,
+    /// The node's font size, the typography source of its subtree.
+    pub font_size: Option<TermsIr>,
+}
+
+impl LengthsIr {
+    /// Whether the node binds no environment length.
+    pub fn is_empty(&self) -> bool {
+        self.width.is_none()
+            && self.height.is_none()
+            && self.gap.is_none()
+            && self.font_size.is_none()
+    }
+}
+
 /// The layout axis a container arranges along, mirroring `viso_ui::layout::Axis`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AxisIr {
@@ -182,12 +216,35 @@ pub struct StyleIr {
     pub height: Option<LengthIr>,
     /// The folded gap between children, when a constant `gap`/`spacing` set one.
     pub gap: Option<f32>,
+    /// The constant lengths that fold against the environment at layout;
+    /// boxed, as few nodes have any. Read through [`lengths`](Self::lengths).
+    pub lengths: Option<Box<LengthsIr>>,
 }
 
 impl StyleIr {
     /// Whether nothing was folded — the node takes the runtime default style.
     pub fn is_empty(&self) -> bool {
-        self.axis.is_none() && self.width.is_none() && self.height.is_none() && self.gap.is_none()
+        self.axis.is_none()
+            && self.width.is_none()
+            && self.height.is_none()
+            && self.gap.is_none()
+            && self.lengths().is_empty()
+    }
+
+    /// The lengths that fold against the environment, empty when there are none.
+    pub fn lengths(&self) -> &LengthsIr {
+        const NONE: LengthsIr = LengthsIr {
+            width: None,
+            height: None,
+            gap: None,
+            font_size: None,
+        };
+        self.lengths.as_deref().unwrap_or(&NONE)
+    }
+
+    /// The lengths, allocated on first write.
+    pub fn lengths_mut(&mut self) -> &mut LengthsIr {
+        self.lengths.get_or_insert_with(Box::default)
     }
 }
 

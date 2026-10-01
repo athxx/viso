@@ -5,14 +5,15 @@
 //! scalar `/` combine coefficients without resolving any unit. `100% - 16dp`
 //! therefore folds to `{ dp: -16, pct: 100 }`, never to a pixel number.
 //!
-//! Only the terms layout can resolve without an environment scalar lower here:
-//! `dp` becomes the fixed part and `%` the basis ratio. A value with a `px`, `sp`
-//! or `em` term depends on `scale_factor`, text scale or the resolved font size,
-//! so it is left pending rather than folded to a wrong constant. A bare number is
-//! a scalar, not a length, and never folds into one.
+//! A value of only `dp` and `%` terms lowers straight to a layout length: `dp`
+//! becomes the fixed part and `%` the basis ratio. A value with a `px`, `sp` or
+//! `em` term depends on `scale_factor`, text scale or the resolved font size, so
+//! it lowers to its five terms, which the runtime folds at layout against the
+//! node's environment. A bare number is a scalar, not a length, and never folds
+//! into one.
 
 use crate::ast::{AstNode, BinaryExpr, Expr, LiteralExpr, ParenExpr, UnaryExpr};
-use crate::ir::ui_ir::LengthIr;
+use crate::ir::ui_ir::{LengthIr, TermsIr};
 use crate::syntax::SyntaxKind;
 
 /// The five coefficients of a length-family constant.
@@ -57,6 +58,26 @@ impl Terms {
     fn needs_env(self) -> bool {
         self.px != 0.0 || self.sp != 0.0 || self.em != 0.0
     }
+
+    /// The terms as the runtime folds them, with `%` as a fraction.
+    fn lower(self) -> TermsIr {
+        TermsIr {
+            dp: self.dp,
+            px: self.px,
+            sp: self.sp,
+            em: self.em,
+            pct: self.pct / 100.0,
+        }
+    }
+}
+
+/// A length constant as it lowers.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(super) enum Lowered {
+    /// A length layout resolves as is.
+    Layout(LengthIr),
+    /// A length that folds against the node's environment at layout.
+    Env(TermsIr),
 }
 
 /// A folded constant: a scalar or a length-family value.
@@ -66,37 +87,55 @@ enum Folded {
     Length(Terms),
 }
 
-/// Folds a size property (`width`, `height`) into a [`LengthIr`].
+/// Folds a size property (`width`, `height`).
 ///
 /// A pure-`dp` constant is `Fixed`, clamped to the non-negative size domain
 /// (§19.8); one with a `%` term is `Relative`, whose clamp happens at layout once
-/// the basis is known. Anything else — a non-constant, a scalar, a non-length
-/// unit, an environment term, a non-finite result — yields `None`.
-pub(super) fn fold_size(value: &Expr) -> Option<LengthIr> {
-    let Folded::Length(t) = fold(value)? else {
-        return None;
-    };
-    if !t.is_finite() || t.needs_env() {
-        return None;
+/// the basis is known; one with an environment term keeps its terms. Anything
+/// else — a non-constant, a scalar, a non-length unit, a non-finite result —
+/// yields `None`.
+pub(super) fn fold_size(value: &Expr) -> Option<Lowered> {
+    let t = fold_length(value)?;
+    if t.needs_env() {
+        return Some(Lowered::Env(t.lower()));
     }
-    if t.pct == 0.0 {
-        Some(LengthIr::Fixed(t.dp.max(0.0)))
+    Some(Lowered::Layout(if t.pct == 0.0 {
+        LengthIr::Fixed(t.dp.max(0.0))
     } else {
-        Some(LengthIr::Relative {
+        LengthIr::Relative {
             fixed: t.dp,
             pct: t.pct / 100.0,
-        })
-    }
+        }
+    }))
 }
 
-/// Folds a gap property into a dp extent. A gap has no percent basis, so only a
-/// pure-`dp` constant folds; the result is clamped non-negative (§19.8).
-pub(super) fn fold_gap(value: &Expr) -> Option<f32> {
-    let Folded::Length(t) = fold(value)? else {
+/// Folds a gap property. Only a constant without a `%` term folds: a pure-`dp`
+/// one to its extent, clamped non-negative (§19.8), one with an environment
+/// term to its terms.
+pub(super) fn fold_gap(value: &Expr) -> Option<Lowered> {
+    let t = fold_length(value)?;
+    if t.pct != 0.0 {
         return None;
-    };
-    let dp_only = t.is_finite() && !t.needs_env() && t.pct == 0.0;
-    dp_only.then_some(t.dp.max(0.0))
+    }
+    Some(if t.needs_env() {
+        Lowered::Env(t.lower())
+    } else {
+        Lowered::Layout(LengthIr::Fixed(t.dp.max(0.0)))
+    })
+}
+
+/// Folds a `font_size` property to its terms: every unit, `em` and `%` reading
+/// the parent's font size, resolves in the typography context at layout.
+pub(super) fn fold_font_size(value: &Expr) -> Option<TermsIr> {
+    fold_length(value).map(Terms::lower)
+}
+
+/// A finite length-family constant's terms.
+fn fold_length(value: &Expr) -> Option<Terms> {
+    match fold(value)? {
+        Folded::Length(t) if t.is_finite() => Some(t),
+        _ => None,
+    }
 }
 
 fn fold(expr: &Expr) -> Option<Folded> {

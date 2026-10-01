@@ -32,6 +32,7 @@
 
 use viso_ende::{Decode, DecodeError, Decoder, Encode, Encoder, ProtocolTag};
 
+use crate::length::{LengthTerms, NodeLengths};
 use crate::state::StateKey;
 
 /// A compact, self-describing release UI package: the retained node tree and its
@@ -118,7 +119,7 @@ impl AotNodeKind {
 /// Each optional dimension is a folded [`AotLength`]; `None` means the node authored
 /// no value and takes the runtime builder default — the same "unset ⇒ default"
 /// meaning `commit.rs`'s `flex_style`/`scroll_style`/`leaf_style` apply.
-#[derive(Debug, Clone, Copy, PartialEq, Default)]
+#[derive(Debug, Clone, PartialEq, Default)]
 pub struct AotStyle {
     /// The container arrangement axis, when the node fixed one.
     pub axis: Option<AotAxis>,
@@ -128,6 +129,9 @@ pub struct AotStyle {
     pub height: Option<AotLength>,
     /// The folded gap between children, when a constant property set one.
     pub gap: Option<f32>,
+    /// The lengths that read the environment (`px`, `sp`, `em`), which the
+    /// loader binds to fold at layout; boxed, as few nodes have any.
+    pub lengths: Option<Box<NodeLengths>>,
 }
 
 /// A folded layout axis, the compact twin of `viso_ui::layout::Axis`.
@@ -182,6 +186,19 @@ const STYLE_HAS_AXIS: u8 = 1 << 0;
 const STYLE_HAS_WIDTH: u8 = 1 << 1;
 const STYLE_HAS_HEIGHT: u8 = 1 << 2;
 const STYLE_HAS_GAP: u8 = 1 << 3;
+const STYLE_HAS_LENGTHS: u8 = 1 << 4;
+
+// Environment lengths are a byte naming the bound properties, then each one's
+// terms as a byte naming the non-zero terms followed by their values.
+const LENGTHS_WIDTH: u8 = 1 << 0;
+const LENGTHS_HEIGHT: u8 = 1 << 1;
+const LENGTHS_GAP: u8 = 1 << 2;
+const LENGTHS_FONT_SIZE: u8 = 1 << 3;
+const TERMS_DP: u8 = 1 << 0;
+const TERMS_PX: u8 = 1 << 1;
+const TERMS_SP: u8 = 1 << 2;
+const TERMS_EM: u8 = 1 << 3;
+const TERMS_PCT: u8 = 1 << 4;
 
 // A length is one discriminant byte, then the payload for the variants that carry one.
 const LEN_FIXED: u8 = 0;
@@ -228,6 +245,98 @@ impl Decode for AotLength {
     }
 }
 
+/// The terms of a length in the order the term byte names them.
+fn terms_of(terms: &LengthTerms) -> [f32; 5] {
+    [terms.dp, terms.px, terms.sp, terms.em, terms.pct]
+}
+
+fn encode_terms(terms: &LengthTerms, enc: &mut Encoder) {
+    let values = terms_of(terms);
+    let mut mask = 0u8;
+    for (bit, value) in values.iter().enumerate() {
+        if *value != 0.0 {
+            mask |= 1 << bit;
+        }
+    }
+    enc.write_u8(mask);
+    for value in values {
+        if value != 0.0 {
+            enc.write_f32(value);
+        }
+    }
+}
+
+fn decode_terms(dec: &mut Decoder) -> Result<LengthTerms, DecodeError> {
+    let offset = dec.position();
+    let mask = dec.read_u8()?;
+    if mask & !(TERMS_DP | TERMS_PX | TERMS_SP | TERMS_EM | TERMS_PCT) != 0 {
+        return Err(DecodeError::Malformed { offset });
+    }
+    let mut values = [0.0f32; 5];
+    for (bit, value) in values.iter_mut().enumerate() {
+        if mask & (1 << bit) != 0 {
+            *value = dec.read_f32()?;
+        }
+    }
+    let [dp, px, sp, em, pct] = values;
+    Ok(LengthTerms {
+        dp,
+        px,
+        sp,
+        em,
+        pct,
+    })
+}
+
+/// The bound properties of `lengths` in the order the property byte names them.
+fn properties(lengths: &NodeLengths) -> [Option<LengthTerms>; 4] {
+    [
+        lengths.width,
+        lengths.height,
+        lengths.gap,
+        lengths.font_size,
+    ]
+}
+
+impl Encode for NodeLengths {
+    fn encode(&self, enc: &mut Encoder) {
+        let present = properties(self);
+        let mut mask = 0u8;
+        for (bit, terms) in present.iter().enumerate() {
+            if terms.is_some() {
+                mask |= 1 << bit;
+            }
+        }
+        enc.write_u8(mask);
+        for terms in present.iter().flatten() {
+            encode_terms(terms, enc);
+        }
+    }
+}
+
+impl Decode for NodeLengths {
+    fn decode(dec: &mut Decoder) -> Result<Self, DecodeError> {
+        let offset = dec.position();
+        let mask = dec.read_u8()?;
+        if mask & !(LENGTHS_WIDTH | LENGTHS_HEIGHT | LENGTHS_GAP | LENGTHS_FONT_SIZE) != 0 {
+            return Err(DecodeError::Malformed { offset });
+        }
+        let mut present = [None; 4];
+        for (bit, terms) in present.iter_mut().enumerate() {
+            if mask & (1 << bit) != 0 {
+                *terms = Some(decode_terms(dec)?);
+            }
+        }
+        let [width, height, gap, font_size] = present;
+        Ok(NodeLengths {
+            width,
+            height,
+            gap,
+            font_size,
+        })
+    }
+}
+
 impl Encode for AotStyle {
     fn encode(&self, enc: &mut Encoder) {
         let mut mask = 0u8;
@@ -242,6 +351,9 @@ impl Encode for AotStyle {
         }
         if self.gap.is_some() {
             mask |= STYLE_HAS_GAP;
+        }
+        if self.lengths.is_some() {
+            mask |= STYLE_HAS_LENGTHS;
         }
         enc.write_u8(mask);
         if let Some(axis) = self.axis {
@@ -258,6 +370,9 @@ impl Encode for AotStyle {
         }
         if let Some(gap) = self.gap {
             enc.write_f32(gap);
+        }
+        if let Some(lengths) = &self.lengths {
+            lengths.encode(enc);
         }
     }
 }
@@ -290,11 +405,17 @@ impl Decode for AotStyle {
         } else {
             None
         };
+        let lengths = if mask & STYLE_HAS_LENGTHS != 0 {
+            Some(Box::new(NodeLengths::decode(dec)?))
+        } else {
+            None
+        };
         Ok(AotStyle {
             axis,
             width,
             height,
             gap,
+            lengths,
         })
     }
 }
@@ -422,6 +543,7 @@ mod tests {
                             pct: 1.0,
                         }),
                         gap: Some(8.0),
+                        lengths: None,
                     },
                     child_count: 2,
                 },
@@ -432,6 +554,11 @@ mod tests {
                         width: Some(AotLength::Fill { weight: 2.0 }),
                         height: Some(AotLength::Fit),
                         gap: None,
+                        lengths: Some(Box::new(NodeLengths {
+                            width: Some(LengthTerms::pct(50.0) - LengthTerms::px(1.0)),
+                            font_size: Some(LengthTerms::em(1.25)),
+                            ..NodeLengths::default()
+                        })),
                     },
                     child_count: 0,
                 },

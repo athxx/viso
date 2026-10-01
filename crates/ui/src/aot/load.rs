@@ -180,7 +180,7 @@ pub fn build_aot_node(
     node: &AotNode,
     children: impl FnOnce(&mut BuildCx<'_>),
 ) -> Handle {
-    match node.kind {
+    let handle = match node.kind {
         AotNodeKind::Flex => cx.flex(flex_style(&node.style), children),
         AotNodeKind::Grid => cx.grid(Default::default(), children),
         AotNodeKind::Scroll => cx.scroll(scroll_style(&node.style), children),
@@ -188,7 +188,11 @@ pub fn build_aot_node(
         // for a leaf (a `VirtualList` collapses to a leaf on the package side,
         // exactly as the commit twin treats it).
         AotNodeKind::Leaf => cx.leaf(leaf_style(&node.style)),
+    };
+    if let Some(lengths) = &node.style.lengths {
+        cx.bind_lengths(handle, **lengths);
     }
+    handle
 }
 
 /// The flex builder style for a packaged container, mirroring the commit's
@@ -202,7 +206,7 @@ fn flex_style(style: &AotStyle) -> FlexStyle {
     if let Some(gap) = style.gap {
         out.gap = gap;
     }
-    if style.width.is_some() || style.height.is_some() {
+    if has_size(style) {
         out.size = size_of(style);
     }
     out
@@ -215,7 +219,7 @@ fn scroll_style(style: &AotStyle) -> ScrollStyle {
     if let Some(axis) = style.axis {
         out.axis = axis_of(axis);
     }
-    if style.width.is_some() || style.height.is_some() {
+    if has_size(style) {
         out.size = size_of(style);
     }
     out
@@ -225,10 +229,21 @@ fn scroll_style(style: &AotStyle) -> ScrollStyle {
 /// node authored a width or height, else the default.
 fn leaf_style(style: &AotStyle) -> LeafStyle {
     let mut out = LeafStyle::default();
-    if style.width.is_some() || style.height.is_some() {
+    if has_size(style) {
         out.size = size_of(style);
     }
     out
+}
+
+/// Whether the node authored a width or a height, folded or bound to the
+/// environment, mirroring the commit's `has_size`.
+fn has_size(style: &AotStyle) -> bool {
+    style.width.is_some()
+        || style.height.is_some()
+        || style
+            .lengths
+            .as_ref()
+            .is_some_and(|lengths| lengths.width.is_some() || lengths.height.is_some())
 }
 
 /// The runtime [`Size`] for a packaged style, mirroring the commit's `size_of`: an

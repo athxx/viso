@@ -36,8 +36,8 @@ pub use binding_ir::{
 pub use dirty_map::{DirtyClass, property_dirty_class};
 pub use keys::{KEYLESS_STATEFUL_FOR, KeyIr, KeyedFor, analyze_keys};
 pub use ui_ir::{
-    AxisIr, LengthIr, NodeKind, PendingProperty, StyleIr, UiFor, UiHandler, UiIf, UiIfArm,
-    UiInstance, UiItem, UiMatch, UiMatchArm, UiNode, UiTree,
+    AxisIr, LengthIr, LengthsIr, NodeKind, PendingProperty, StyleIr, TermsIr, UiFor, UiHandler,
+    UiIf, UiIfArm, UiInstance, UiItem, UiMatch, UiMatchArm, UiNode, UiTree,
 };
 
 use std::collections::HashMap;
@@ -52,6 +52,7 @@ use crate::ast::{
 use crate::hir::ComponentSchema;
 use crate::resolve::{Resolution, ResolvedRef, SymbolId};
 use crate::syntax::span::TextRange;
+use length::Lowered;
 
 /// A lowered view: its template, every node type name it wrote that neither a
 /// registered widget nor a component of the library declares (each with the
@@ -721,22 +722,53 @@ fn fold_property(
 fn fold_static(name: &str, value: &Expr, style: &mut StyleIr) -> bool {
     match name {
         "width" => match length::fold_size(value) {
-            Some(len) => {
+            Some(Lowered::Layout(len)) => {
                 style.width = Some(len);
+                if let Some(lengths) = &mut style.lengths {
+                    lengths.width = None;
+                }
+                true
+            }
+            Some(Lowered::Env(terms)) => {
+                style.width = None;
+                style.lengths_mut().width = Some(terms);
                 true
             }
             None => false,
         },
         "height" => match length::fold_size(value) {
-            Some(len) => {
+            Some(Lowered::Layout(len)) => {
                 style.height = Some(len);
+                if let Some(lengths) = &mut style.lengths {
+                    lengths.height = None;
+                }
+                true
+            }
+            Some(Lowered::Env(terms)) => {
+                style.height = None;
+                style.lengths_mut().height = Some(terms);
                 true
             }
             None => false,
         },
         "gap" | "spacing" => match length::fold_gap(value) {
-            Some(n) => {
+            Some(Lowered::Layout(LengthIr::Fixed(n))) => {
                 style.gap = Some(n);
+                if let Some(lengths) = &mut style.lengths {
+                    lengths.gap = None;
+                }
+                true
+            }
+            Some(Lowered::Env(terms)) => {
+                style.gap = None;
+                style.lengths_mut().gap = Some(terms);
+                true
+            }
+            _ => false,
+        },
+        "font_size" => match length::fold_font_size(value) {
+            Some(terms) => {
+                style.lengths_mut().font_size = Some(terms);
                 true
             }
             None => false,

@@ -29,15 +29,17 @@
 //! compiler absent.
 
 use viso_ende::Encode;
-use viso_ui::StateValue;
 use viso_ui::aot::{AotAxis, AotEdge, AotLength, AotNode, AotNodeKind, AotPackage, AotStyle};
 use viso_ui::state::StateKey;
+use viso_ui::{LengthTerms, NodeLengths, StateValue};
 use viso_view::{ViewControl, ViewHandler, ViewPackage, ViewState};
 
 use crate::diag::Diagnostic;
 use crate::frontend::Origin;
 use crate::hotreload::plan::{CandidatePlan, plan, plan_view};
-use crate::ir::ui_ir::{AxisIr, LengthIr, NodeKind, StyleIr, UiItem, UiNode, UiTree};
+use crate::ir::ui_ir::{
+    AxisIr, LengthIr, LengthsIr, NodeKind, StyleIr, TermsIr, UiItem, UiNode, UiTree,
+};
 use crate::view_regions::StaticNodes;
 
 /// Compile a fragment source straight into an encoded release package blob, or the
@@ -241,6 +243,29 @@ pub(crate) fn aot_style(style: &StyleIr) -> AotStyle {
         width: style.width.map(aot_length),
         height: style.height.map(aot_length),
         gap: style.gap,
+        lengths: node_lengths(style.lengths()).map(Box::new),
+    }
+}
+
+/// The node's environment lengths as the runtime binds them, or `None` for a
+/// node with none, the twin of the emitter's `lengths_tokens`.
+pub(crate) fn node_lengths(lengths: &LengthsIr) -> Option<NodeLengths> {
+    (!lengths.is_empty()).then(|| NodeLengths {
+        width: lengths.width.map(terms_of),
+        height: lengths.height.map(terms_of),
+        gap: lengths.gap.map(terms_of),
+        font_size: lengths.font_size.map(terms_of),
+    })
+}
+
+/// One lowered term sum to the runtime [`LengthTerms`].
+fn terms_of(terms: TermsIr) -> LengthTerms {
+    LengthTerms {
+        dp: terms.dp,
+        px: terms.px,
+        sp: terms.sp,
+        em: terms.em,
+        pct: terms.pct,
     }
 }
 

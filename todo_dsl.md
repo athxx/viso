@@ -295,14 +295,14 @@ Goal: every Core view construct reaches a live tree through all three lowering t
 
 - [x] `%` and `dp` fold to `LengthIr::Relative` / `Fixed` (`ir/length.rs`);
       `Length::Relative` in `viso-ui`, AOT tag `LEN_RELATIVE`.
-- [ ] `px`/`sp`/`em` terms: lower to a `LengthTerms` value resolved at layout with
+- [x] `px`/`sp`/`em` terms: lower to a `LengthTerms` value resolved at layout with
       `scale_factor`, text scale and resolved font size (ADR 0033).
   - [x] `viso-ui` `LengthTerms` / `NodeLengths` bound in a sparse side table and
         folded at layout start against `LengthEnv`; only bindings whose inputs
         changed refold, and only a changed value dirties its node. Release
         bench `length_fold`.
   - [x] The facade follows the window scale factor.
-  - [ ] Lowering: a constant with any `px`/`sp`/`em` term lands in `LengthsIr`;
+  - [x] Lowering: a constant with any `px`/`sp`/`em` term lands in `LengthsIr`;
         the macros, the hot-reload commit (patching kept nodes in place) and
         the AOT package bind it, and packaged boxes match live ones.
 - [x] Typography context passes resolved font size down the ancestry.

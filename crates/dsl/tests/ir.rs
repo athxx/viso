@@ -12,7 +12,7 @@
 use viso_behavior::native::Natives;
 use viso_dsl::ast::{AstNode, ViewFragment};
 use viso_dsl::ir::{
-    AxisIr, DirtyClass, LengthIr, NodeKind, UiItem, UiNode, lower_fragment_items,
+    AxisIr, DirtyClass, LengthIr, NodeKind, TermsIr, UiItem, UiNode, lower_fragment_items,
     property_dirty_class,
 };
 use viso_dsl::syntax::grammar::{Entry, parse_entry};
@@ -183,28 +183,68 @@ fn a_negative_size_constant_clamps_to_zero() {
 }
 
 #[test]
-fn values_that_are_not_dp_or_percent_lengths_do_not_fold() {
-    // A bare number is a scalar; `px`/`sp`/`em` need an environment scalar; `pt`
-    // is not a unit; `1s` is a duration; `%` has no gap basis; a length plus a
-    // scalar and a division by zero are not lengths. None may become a fixed dp.
-    let node = only_node("Text { width: 12; height: 34px; gap: 8; }");
-    assert_eq!(node.style.width, None);
-    assert_eq!(node.style.height, None);
-    assert_eq!(node.style.gap, None);
+fn values_that_are_not_lengths_do_not_fold() {
+    // A bare number is a scalar; `pt` is not a unit; `1s` is a duration; `%` has
+    // no gap basis; a length plus a scalar and a division by zero are not
+    // lengths. None may become a fixed dp or an environment length.
+    let node = only_node("Text { width: 12; height: 34pt; gap: 8; }");
+    assert!(node.style.is_empty(), "folded to {:?}", node.style);
     assert_eq!(node.pending.len(), 3);
     for source in [
-        "Text { width: 2sp; }",
-        "Text { width: 1.5em; }",
         "Text { width: 12pt; }",
         "Text { width: 1s; }",
         "Text { width: 10dp + 1; }",
         "Text { width: 10dp / 0; }",
         "Text { gap: 10%; }",
+        "Text { font_size: 50% + 1; }",
     ] {
         let node = only_node(source);
         assert!(node.style.is_empty(), "{source} folded to {:?}", node.style);
         assert_eq!(node.pending.len(), 1, "{source} is left pending");
     }
+}
+
+#[test]
+fn environment_lengths_lower_to_terms_resolved_at_layout() {
+    // `px`, `sp` and `em` read the scale factor, the text scale and the font
+    // size, so they lower to term sums the runtime folds, not to a fixed dp.
+    let node = only_node(
+        "Text { width: 50% + 2sp - 1px; height: 1.5em; gap: 4dp + 1px; font_size: 120%; }",
+    );
+    assert!(node.pending.is_empty(), "every length lowered");
+    assert_eq!(node.style.width, None);
+    assert_eq!(node.style.height, None);
+    assert_eq!(node.style.gap, None);
+    let terms = |dp, px, sp, em, pct| {
+        Some(TermsIr {
+            dp,
+            px,
+            sp,
+            em,
+            pct,
+        })
+    };
+    assert_eq!(node.style.lengths().width, terms(0.0, -1.0, 2.0, 0.0, 0.5));
+    assert_eq!(node.style.lengths().height, terms(0.0, 0.0, 0.0, 1.5, 0.0));
+    assert_eq!(node.style.lengths().gap, terms(4.0, 1.0, 0.0, 0.0, 0.0));
+    assert_eq!(
+        node.style.lengths().font_size,
+        terms(0.0, 0.0, 0.0, 0.0, 1.2)
+    );
+
+    // A font size in dp alone is still a term sum: it is an absolute source
+    // the subtree's `em` reads.
+    let node = only_node("Text { font_size: 16dp; }");
+    assert_eq!(
+        node.style.lengths().font_size,
+        terms(16.0, 0.0, 0.0, 0.0, 0.0)
+    );
+
+    // A static length on the same node stays on the layout fast path.
+    let node = only_node("Text { width: 10dp; height: 2sp; }");
+    assert_eq!(node.style.width, Some(LengthIr::Fixed(10.0)));
+    assert_eq!(node.style.lengths().width, None);
+    assert_eq!(node.style.lengths().height, terms(0.0, 0.0, 2.0, 0.0, 0.0));
 }
 
 #[test]
