@@ -703,6 +703,8 @@ scoped reset
 or explicit user-defined dev conversion hook
 ```
 
+dev conversion hook 即 `@migrate(from: "T")` 函数（DSL §94.1）：静态不可转换或活值转换失败时，活值先按转换表转换为其参数类型，再由新 module 的该函数算出新值；函数 Fault 时按重置处理，`E5101` 附带 Fault 信息。
+
 禁止 reinterpret raw memory。重置只作用于该状态：其他状态照常保留，reload 照常提交，并报告 `E5101` 警告。两个状态持有同一 stable identity 时 candidate 被拒绝（`E5102`）。
 
 ---

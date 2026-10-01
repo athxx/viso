@@ -31,7 +31,7 @@ use crate::ast::{
 use crate::behavior::Program;
 use crate::behavior::ir::FunctionKind;
 use crate::behavior::lower::{Def, ProgramBuilder, lower_body, lower_value, unsupported};
-use crate::diag::{Diagnostic, Severity};
+use crate::diag::{Diagnostic, Related, Severity};
 use crate::resolve::prelude::Prelude;
 use crate::resolve::{
     ModuleGraph, NameInterner, Namespace, Resolution, ResolvedModule, ResolvedRef, SourceUnit,
@@ -79,6 +79,23 @@ pub struct LoweredPackage {
     pub behavior: Program,
     /// The package's record and enum declarations, the prelude's included.
     pub types: TypeSchemas,
+    /// Every `@migrate` function, across all modules, in module then source order.
+    pub migrators: Vec<Migrator>,
+}
+
+/// A `fn` marked `@migrate(from: "T")`: hot reload calls it to carry a state
+/// whose type changed from `T` to the function's return type, when the value
+/// does not convert by itself.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Migrator {
+    /// The old state type, as source spells it.
+    pub from: String,
+    /// The type of its one parameter, which the old value converts into.
+    pub param: Ty,
+    /// The new state type it returns.
+    pub ret: Ty,
+    /// The function.
+    pub symbol: SymbolId,
 }
 
 /// Lowers a whole resolved package into its typed HIR.
@@ -147,6 +164,7 @@ pub fn lower(
     let mut input_flows: Vec<InputFlows> = Vec::with_capacity(modules.len());
     let mut cap = CapabilityGraphBuilder::default();
     let behavior = RefCell::new(ProgramBuilder::new());
+    let mut migrators = Vec::new();
     for (i, module) in modules.iter().enumerate() {
         let mut module_diagnostics = Vec::new();
         let mut flows = InputFlows::default();
@@ -162,6 +180,7 @@ pub fn lower(
                 &mut module_diagnostics,
                 &mut cap,
             );
+            collect_migrators(cu, &env, &mut module_diagnostics, &mut migrators);
         }
         per_module.push(module_diagnostics);
         input_flows.push(flows);
@@ -194,6 +213,32 @@ pub fn lower(
         module_diagnostics,
         behavior: behavior.into_inner().finish(),
         types: std::mem::take(&mut decls.types),
+        migrators: migrators.into_iter().map(|(_, m)| m).collect(),
+    }
+}
+
+/// Checks the `@migrate` functions of one compilation unit, at module level
+/// and in each component, into `migrators`.
+fn collect_migrators(
+    cu: &CompilationUnit,
+    env: &ModuleEnv<'_>,
+    diagnostics: &mut Vec<Diagnostic>,
+    migrators: &mut Vec<(TextRange, Migrator)>,
+) {
+    check_migrators(cu.syntax(), env, diagnostics, migrators, &|f| {
+        env.scope.declared.get(&f.text_range()).copied()
+    });
+    for item in cu.items() {
+        let decl = match item {
+            Item::Export(e) => e.declaration(),
+            other => Some(other),
+        };
+        if let Some(Item::Component(c)) = decl {
+            env.focus_component(&c);
+            check_migrators(c.syntax(), env, diagnostics, migrators, &|f| {
+                env.member_symbol(&support_name(f)?)
+            });
+        }
     }
 }
 
@@ -226,6 +271,7 @@ fn lower_module(
         // are type-checked here; their HIR nodes land with their consumer slice.
         match decl {
             Item::Component(c) => {
+                env.focus_component(&c);
                 let component =
                     lower_component_item(&c, refs, env, diagnostics, cap, &mut flows, &mut percent);
                 components.push(component);
@@ -1781,10 +1827,184 @@ pub(crate) fn write_backs(decl: &ComponentDecl) -> Vec<(usize, String)> {
 }
 
 fn is_bindable(attr: &SyntaxNode) -> bool {
+    attribute_is(attr, "bindable")
+}
+
+/// Whether an attribute's path is the one-segment `name`.
+fn attribute_is(attr: &SyntaxNode, name: &str) -> bool {
     attr.children()
         .into_iter()
         .find(|c| c.kind() == SyntaxKind::PathExpr)
-        .is_some_and(|p| p.text().to_string().trim() == "bindable")
+        .is_some_and(|p| p.text().to_string().trim() == name)
+}
+
+/// Checks each `@migrate` among the children of `parent` (a module or a component
+/// body; `E3712` otherwise) and records each valid one in `migrators`, by the range
+/// of its attribute: it marks a `fn`, names the old type as its one argument
+/// `from: "T"`, and the `fn` takes one parameter of type `T` and returns the new
+/// type. At most one `fn` migrates a pair of types. `symbol` is the symbol of a
+/// `fn` declaration node.
+fn check_migrators(
+    parent: &SyntaxNode,
+    env: &ModuleEnv<'_>,
+    diagnostics: &mut Vec<Diagnostic>,
+    migrators: &mut Vec<(TextRange, Migrator)>,
+    symbol: &dyn Fn(&SyntaxNode) -> Option<SymbolId>,
+) {
+    let mut pending: Vec<SyntaxNode> = Vec::new();
+    for child in parent.children() {
+        if child.kind() == SyntaxKind::Attribute {
+            if attribute_is(&child, "migrate") {
+                pending.push(child);
+            }
+            continue;
+        }
+        let target = match child.kind() {
+            SyntaxKind::ExportDecl => child
+                .children()
+                .into_iter()
+                .find(|c| !matches!(c.kind(), SyntaxKind::Attribute)),
+            _ => Some(child.clone()),
+        };
+        for attr in pending.drain(..) {
+            let at = attr.text_range();
+            let migrator = target
+                .as_ref()
+                .ok_or_else(|| "`@migrate` marks a `fn`".to_string())
+                .and_then(|target| migrator(&attr, target, env, symbol));
+            let migrator = match migrator {
+                Ok(migrator) => migrator,
+                Err(message) => {
+                    diagnostics.push(Diagnostic::error("E3712", at, message));
+                    continue;
+                }
+            };
+            if let Some((first, _)) = migrators
+                .iter()
+                .find(|(_, m)| m.from == migrator.from && m.ret == migrator.ret)
+            {
+                let cx = InferCx::new(&[], env);
+                let mut diagnostic = Diagnostic::error(
+                    "E3712",
+                    at,
+                    format!(
+                        "a second `@migrate` function from `{}` to `{}`",
+                        migrator.from,
+                        cx.describe(&migrator.ret)
+                    ),
+                );
+                if parent.text_range().contains_range(*first) {
+                    diagnostic
+                        .related
+                        .push(Related::new(*first, "the first is marked here"));
+                }
+                diagnostics.push(diagnostic);
+                continue;
+            }
+            migrators.push((at, migrator));
+        }
+    }
+    for attr in pending {
+        diagnostics.push(Diagnostic::error(
+            "E3712",
+            attr.text_range(),
+            "`@migrate` marks a `fn`",
+        ));
+    }
+}
+
+/// The migration `attr` (a `@migrate`) makes of `target`, or why it makes none.
+fn migrator(
+    attr: &SyntaxNode,
+    target: &SyntaxNode,
+    env: &ModuleEnv<'_>,
+    symbol: &dyn Fn(&SyntaxNode) -> Option<SymbolId>,
+) -> Result<Migrator, String> {
+    if target.kind() != SyntaxKind::FnDecl {
+        return Err("`@migrate` marks a `fn`".to_string());
+    }
+    let Some(from) = migrate_from(attr) else {
+        return Err(
+            "`@migrate` names the state type it migrates from: `@migrate(from: \"I64\")`"
+                .to_string(),
+        );
+    };
+    let Some(symbol) = symbol(target) else {
+        return Err("internal: the `@migrate` function has no symbol".to_string());
+    };
+    let Some((params, ret)) = env.decls.signatures.get(&symbol) else {
+        return Err("internal: the `@migrate` function has no signature".to_string());
+    };
+    let name = support_name(target).unwrap_or_default();
+    let [param] = params.as_slice() else {
+        return Err(format!(
+            "`{name}` migrates a `{from}`, so it takes that value as its one parameter"
+        ));
+    };
+    let has_ret = target
+        .children()
+        .into_iter()
+        .any(|c| c.kind() == SyntaxKind::ReturnType);
+    if !has_ret {
+        return Err(format!("`{name}` returns the state's new type; declare it"));
+    }
+    let cx = InferCx::new(&[], env);
+    let spelled = cx.describe(param);
+    if !param.has_unknown() && spelled != from {
+        return Err(format!(
+            "`{name}` migrates a `{from}`, but its parameter is `{spelled}`"
+        ));
+    }
+    Ok(Migrator {
+        from,
+        param: param.clone(),
+        ret: ret.clone(),
+        symbol,
+    })
+}
+
+/// The type a `@migrate(from: "T")` attribute names: its single argument,
+/// labeled `from`, a plain string literal.
+fn migrate_from(attr: &SyntaxNode) -> Option<String> {
+    let list = attr
+        .children()
+        .into_iter()
+        .find(|c| c.kind() == SyntaxKind::ArgumentList)?;
+    let args: Vec<SyntaxNode> = list
+        .children()
+        .into_iter()
+        .filter(|c| c.kind() == SyntaxKind::Argument)
+        .collect();
+    let [arg] = args.as_slice() else {
+        return None;
+    };
+    let label = arg
+        .children_with_tokens()
+        .into_iter()
+        .filter_map(|e| e.as_token().cloned())
+        .find(|t| !t.kind().is_trivia())?;
+    if label.text() != "from" {
+        return None;
+    }
+    let values = arg.children();
+    let [value] = values.as_slice() else {
+        return None;
+    };
+    if value.kind() != SyntaxKind::LiteralExpr {
+        return None;
+    }
+    let token = value
+        .children_with_tokens()
+        .into_iter()
+        .filter_map(|e| e.as_token().cloned())
+        .find(|t| !t.kind().is_trivia())?;
+    if token.kind() != SyntaxKind::StringLiteral {
+        return None;
+    }
+    let text = token.text();
+    let body = text.strip_prefix('"')?.strip_suffix('"')?;
+    let from = super::infer::pattern::unescape(body)?;
+    (!from.is_empty() && !from.contains('{')).then_some(from)
 }
 
 /// The symbol a top-level declaration name interns to in `namespace`, if the table has it.

@@ -18,7 +18,7 @@
 
 use viso_ui::StateValue;
 
-use crate::behavior::ir::FuncId;
+use crate::behavior::ir::{FuncId, FunctionKind};
 use crate::diag::{Diagnostic, Related};
 use crate::frontend::{Compiled, Origin, Source, SourceKind, compile_file, compile_fragment};
 use crate::hir::{Ty, TypeSchemas};
@@ -57,8 +57,23 @@ pub struct CandidatePlan {
     /// The behavior function computing each defaulted record field, by record
     /// and field index, ascending.
     pub field_defaults: Vec<((SymbolId, u32), FuncId)>,
+    /// The `@migrate` functions a retyped state may be carried by.
+    pub migrators: Vec<MigrateFn>,
     /// The view's behavior, `None` when no node declares a handler.
     pub view: Option<ViewBehavior>,
+}
+
+/// A `@migrate(from: "T")` function of a candidate.
+#[derive(Clone, Debug, PartialEq)]
+pub struct MigrateFn {
+    /// The old state type it migrates, as source spells it.
+    pub from: String,
+    /// The type of its parameter.
+    pub param: Ty,
+    /// The new state type it returns.
+    pub ret: Ty,
+    /// The behavior function.
+    pub func: FuncId,
 }
 
 impl CandidatePlan {
@@ -146,6 +161,7 @@ fn candidate(compiled: Compiled) -> Result<CandidatePlan, Vec<Diagnostic>> {
             .map(|error| error.diagnostic(fallback))
             .collect::<Vec<_>>()
     })?;
+    let migrators = migrators(&compiled);
     let mut sources = Vec::with_capacity(compiled.sources.len());
     let mut source_names = Vec::with_capacity(compiled.sources.len());
     let mut initials = Vec::with_capacity(compiled.sources.len());
@@ -175,9 +191,29 @@ fn candidate(compiled: Compiled) -> Result<CandidatePlan, Vec<Diagnostic>> {
         types,
         declared,
         schemas: compiled.types,
+        migrators,
         field_defaults: compiled.behavior.field_defaults,
         view,
     })
+}
+
+/// The `@migrate` functions of `compiled` that lowered to a runnable body.
+fn migrators(compiled: &Compiled) -> Vec<MigrateFn> {
+    compiled
+        .migrators
+        .iter()
+        .filter_map(|m| {
+            let at = compiled.behavior.functions.iter().position(|f| {
+                f.symbol == Some(m.symbol) && f.kind == FunctionKind::Fn && f.body.is_ok()
+            })?;
+            Some(MigrateFn {
+                from: m.from.clone(),
+                param: m.param.clone(),
+                ret: m.ret.clone(),
+                func: FuncId(at as u32),
+            })
+        })
+        .collect()
 }
 
 /// An `E5102` for each source whose identity an earlier source of the view

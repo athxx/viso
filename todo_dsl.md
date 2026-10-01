@@ -349,14 +349,14 @@ Goal: a file edit reaches the running app as one transaction or not at all.
   - [x] The host's VM states migrate by `SymbolId` through the same migration
         plan as the UI cells, not by name.
   - [x] A handler-body edit reloads in a running window with every state kept.
-- [ ] State migration by `SymbolId`: keep, safe widening, record field with default,
+- [x] State migration by `SymbolId`: keep, safe widening, record field with default,
       `@migrate(from:)` functions, reset notice (§94.1). `E5101`, `E5102`.
   - [x] The candidate carries each state's type; the compatibility matrix
         decides keep, safe widening, record extension with defaults, an enum
         whose active variant survives, or reset.
   - [x] A reset is a `E5101` notice naming the state and both types; a
         `SymbolId` minted twice in a candidate is `E5102` and rejects it.
-  - [ ] `@migrate(from: "T")` is a registered `fn` attribute, checked
+  - [x] `@migrate(from: "T")` is a registered `fn` attribute, checked
         (one parameter of the old type, returning the state's type) and
         lowered; the commit calls it with the old value instead of resetting.
 - [ ] Node migration: focus, selection, scroll, animation fields from widget schema

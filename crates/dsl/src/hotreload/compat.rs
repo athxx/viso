@@ -253,15 +253,20 @@ pub fn retype(last_good: &CandidatePlan, candidate: &CandidatePlan, migration: &
         if exact && same_form {
             continue;
         }
-        let conversion = if exact {
-            Some(Retyping {
+        let from = last_good.schemas.describe(old);
+        let (conversion, migrator) = if exact {
+            let keep = Retyping {
                 root: Conversion::Keep,
                 named: Vec::new(),
-            })
+            };
+            (Some(keep), None)
         } else {
-            Matrix::new(last_good, candidate).retyping(old, new)
+            (
+                Matrix::new(last_good, candidate).retyping(old, new),
+                migrate_fn(last_good, candidate, &from, old, new),
+            )
         };
-        state.action = if conversion.is_some() {
+        state.action = if conversion.is_some() || migrator.is_some() {
             StateAction::Convert
         } else {
             StateAction::Reset
@@ -275,13 +280,39 @@ pub fn retype(last_good: &CandidatePlan, candidate: &CandidatePlan, migration: &
             symbol,
             name,
             conversion,
-            from: last_good.schemas.describe(old),
+            migrator,
+            from,
             to: candidate.schemas.describe(new),
             at,
             from_slot: slot_of(last_good, symbol),
             held,
         });
     }
+}
+
+/// The `@migrate` function of `candidate` that carries a value of `old` (a
+/// type of `last_good`, which spells it `from`) into `new`, and how the value
+/// converts into its parameter; the function is its behavior chunk.
+fn migrate_fn(
+    last_good: &CandidatePlan,
+    candidate: &CandidatePlan,
+    from: &str,
+    old: &Ty,
+    new: &Ty,
+) -> Option<(Retyping, u32)> {
+    candidate.migrators.iter().find_map(|m| {
+        let returns = Exact {
+            old: &candidate.schemas,
+            new: &candidate.schemas,
+            visiting: Vec::new(),
+        }
+        .equal(&m.ret, new);
+        if m.from != from || !returns {
+            return None;
+        }
+        let conversion = Matrix::new(last_good, candidate).retyping(old, &m.param)?;
+        Some((conversion, m.func.0))
+    })
 }
 
 /// The behavior state slot of `symbol` in `plan`.

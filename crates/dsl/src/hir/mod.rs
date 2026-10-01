@@ -43,7 +43,7 @@ pub use component::MemberEnv;
 pub use effect::{BodyContext, EffectClass, EffectCx, EffectEnv};
 pub use infer::{FieldInfo, InferCx, TypeEnv, TypeSchemas, VariantInfo, VariantPayload};
 pub(crate) use lower::write_backs;
-pub use lower::{LoweredPackage, lower};
+pub use lower::{LoweredPackage, Migrator, lower};
 pub use nodes::{
     CallableKind, ComponentSchema, ConstValue, HirCallable, HirComponent, HirComputed, HirEvent,
     HirInput, HirMeta, HirSlot, HirState, OwnershipMode,

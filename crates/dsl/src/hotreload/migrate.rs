@@ -119,6 +119,10 @@ pub struct Retype {
     pub name: String,
     /// How its live value converts, `None` when its old type does not convert.
     pub conversion: Option<Retyping>,
+    /// The `@migrate` function a value `conversion` does not carry goes
+    /// through: how the value converts into its parameter, and its behavior
+    /// chunk.
+    pub migrator: Option<(Retyping, u32)>,
     /// Its old and new types, as source spells them.
     pub from: String,
     pub to: String,

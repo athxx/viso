@@ -3784,7 +3784,21 @@ Parse new source
 
 Record 与 Enum 可以递归：递归引用按同一份转换。新增字段的默认值由新代码计算；计算失败视为不兼容。
 
-不兼容时：查找 `@migrate` 函数；没有则状态回到新 Initializer，reload 照常提交，并产生 `E5101` 警告（状态名、旧类型、新类型，指向新声明）。同一视图中两个状态持有同一 Stable ID 时整个 reload 被拒绝（`E5102`），保留 last-good。
+不兼容时（静态不可转换，或活值不被新类型容纳）：查找 `@migrate` 函数；没有则状态回到新 Initializer，reload 照常提交，并产生 `E5101` 警告（状态名、旧类型、新类型，指向新声明）。
+
+`@migrate(from: "T")` 标记一个模块级或 Component 成员 `fn`，把旧类型拼写为 `T` 的状态带入该函数的返回类型：
+
+```viso
+@migrate(from: "I64")
+fn positive(old: I64) -> Bool { old > 0 }
+```
+
+- `from` 是旧类型的源码拼写（与诊断中的类型拼写一致，如 `"I64"`、`"Point"`、`"List<I64>"`）；
+- 函数恰好一个参数，类型与 `from` 一致，并显式声明返回类型；
+- 状态的旧类型拼写为 `from`、新类型与返回类型完全一致时选中该函数；活值先按转换表转换为参数类型（同名 Record 新增带默认值字段等），再以新代码调用该函数，返回值成为新活值；
+- 同一 `from` 与返回类型只能有一个 `@migrate` 函数；
+- 函数执行失败（Fault）时状态回到新 Initializer，`E5101` 警告附带 Fault 信息；
+- 用错 `@migrate`（标记的不是 `fn`、缺少或错写 `from`、参数个数或类型不符、未声明返回类型、重复）报 `E3712`。同一视图中两个状态持有同一 Stable ID 时整个 reload 被拒绝（`E5102`），保留 last-good。
 
 ### 94.2 Node Migration
 
@@ -8350,6 +8364,7 @@ RecordPatternField
 | E3709  | 标注 [Runtime 待实现] 的 Property 使用了非默认值（§U1.1） |
 | E3710  | `@selector` 误用（§U2.3）                               |
 | E3711  | Handler、控制流区域或 Component 实例未能挂载：Runtime 未投递该 Event、Behavior 未能 Lower，区域位于 View 根、`VirtualList` 内或 `ui!` Fragment 中，或实例无法内联，或 `ui!` Fragment 中的 Rust Component 带 Property、Handler 或子项，或 `bind` 带尚未挂载的 `using` Converter（§40.1、§52、§56.1、§123） |
+| E3712  | `@migrate` 误用：不标记 `fn`、`from` 缺失或不是类型拼写字符串、参数不是恰好一个 `from` 类型参数、未声明返回类型，或同一 `from` 与返回类型重复（§94.1） |
 | E4101  | Action 中使用 Await                                     |
 | E4102  | Task 跨挂起访问可变 State                               |
 | E4201  | Effect 读取未声明依赖                                   |
@@ -8360,7 +8375,7 @@ RecordPatternField
 | E4302  | Resource Policy 冲突                                    |
 | E4401  | Start 目标不是 Task                                     |
 | E4501  | 无主 Detached Task                                      |
-| E5101  | Hot Reload 状态重置：活值不可转换为新类型（警告）       |
+| E5101  | Hot Reload 状态重置：活值不可转换为新类型，或 `@migrate` 函数执行失败（警告） |
 | E5102  | Hot Reload Stable ID 冲突（拒绝 reload）                |
 | E6101  | Native Schema 版本冲突                                  |
 | E6102  | Native Ownership/Thread Domain 违规                     |
