@@ -5,16 +5,24 @@
 //!
 //! A file is compiled once per edit and the candidate is committed to each of
 //! its mounts in turn; a candidate that does not compile changes no mount, and
-//! the file keeps its last-good candidate and revision. Without the feature
-//! this module is not compiled and a `view!` records nothing.
+//! the file keeps its last-good candidate and revision. Each edit yields one
+//! [`ReloadEvent`], sent to `viso run` over the dev channel when the app was
+//! launched by it and printed to stderr otherwise; while a file's latest edit
+//! is rejected, each window mounting it shows the failure over its last-good
+//! UI. Without the feature this module is not compiled and a `view!` records
+//! nothing.
 
+mod link;
+pub(crate) mod overlay;
 mod watch;
 
 use std::cell::RefCell;
 use std::path::PathBuf;
 use std::rc::Rc;
+use std::time::Instant;
 
 use viso_dsl::frontend::Origin;
+use viso_dsl::hotreload::event::{ReloadEvent, ReloadOutcome, ReloadStage};
 use viso_dsl::hotreload::{CandidatePlan, LiveRuntime, plan_view, static_nodes, transact};
 use viso_dsl::ir::binding_ir::NodeKey;
 use viso_dsl::{Diagnostic, LineIndex};
@@ -25,6 +33,7 @@ use viso_ui::state::{StateId, StateKey};
 use viso_view::{MountRecord, ViewHost, take_mounts};
 
 use crate::WindowState;
+use link::DevLink;
 use watch::{Watcher, content_hash};
 
 /// The hot reload session of an app: its mounted views, their files and the
@@ -32,6 +41,9 @@ use watch::{Watcher, content_hash};
 #[derive(Default)]
 pub(crate) struct HotReloadSession {
     watcher: Option<Watcher>,
+    /// The dev channel to `viso run`, opened with the watcher when the
+    /// environment names one.
+    link: Option<DevLink>,
     files: Vec<ViewFile>,
     views: Vec<LiveView>,
     /// Scratch the mount queue drains into.
@@ -49,10 +61,15 @@ struct ViewFile {
     /// The candidate the mounts match, compiled from `embedded` on the first
     /// edit.
     last_good: Option<CandidatePlan>,
-    /// The number of edits committed.
+    /// The revision the mounts match: 0 for `embedded`, else the candidate
+    /// revision last committed.
     revision: u32,
+    /// The revision of the latest edit, committed or not.
+    candidates: u32,
     /// The latest settled edit, not yet committed.
     staged: Option<String>,
+    /// The overlay lines of the latest edit while it is rejected.
+    failure: Option<Vec<String>>,
 }
 
 /// One mount of a file in a window.
@@ -76,6 +93,9 @@ impl HotReloadSession {
         if self.records.is_empty() {
             return;
         }
+        if self.watcher.is_none() {
+            self.link = DevLink::from_env();
+        }
         let watcher = self.watcher.get_or_insert_with(|| Watcher::spawn(waker()));
         for record in self.records.drain(..) {
             let file = match self.files.iter().position(|file| file.path == record.file) {
@@ -96,7 +116,9 @@ impl HotReloadSession {
                         },
                         last_good: None,
                         revision: 0,
+                        candidates: 0,
                         staged: None,
+                        failure: None,
                     });
                     self.files.len() - 1
                 }
@@ -154,8 +176,8 @@ impl HotReloadSession {
     }
 
     /// Commits every staged edit to its mounts, at the frame boundary before
-    /// the windows flush. A mount recorded since the last adoption is not a
-    /// window's build (a list row) and is not tracked.
+    /// the windows flush, and reports each. A mount recorded since the last
+    /// adoption is not a window's build (a list row) and is not tracked.
     pub(crate) fn reload(&mut self, windows: &mut [WindowState]) {
         take_mounts(&mut self.records);
         self.records.clear();
@@ -166,8 +188,10 @@ impl HotReloadSession {
             files,
             views,
             scratch,
+            link,
             ..
         } = self;
+        let mut failures_changed = false;
         views.retain(|view| {
             windows
                 .iter()
@@ -177,6 +201,7 @@ impl HotReloadSession {
             let Some(source) = file.staged.take() else {
                 continue;
             };
+            let started = Instant::now();
             let last_good = match file.last_good.take() {
                 Some(plan) => plan,
                 None => match plan_view(file.embedded, &file.origin) {
@@ -187,37 +212,113 @@ impl HotReloadSession {
                     }
                 },
             };
-            let mut candidate = match plan_view(&source, &file.origin) {
-                Ok(candidate) => candidate,
-                Err(diagnostics) => {
-                    report(file.path, &source, &diagnostics);
-                    file.last_good = Some(last_good);
-                    continue;
-                }
+            file.candidates += 1;
+            let mut event = ReloadEvent {
+                file: file.path.into(),
+                source: String::new(),
+                base_revision: file.revision,
+                candidate_revision: file.candidates,
+                last_good_revision: file.revision,
+                outcome: ReloadOutcome::Rejected,
+                stage: ReloadStage::RuntimeCommit,
+                elapsed_us: 0,
+                mounts: 0,
+                migrated: 0,
+                reset: 0,
+                focus_lost: 0,
+                scroll_lost: 0,
+                handlers_lost: 0,
+                diagnostics: Vec::new(),
             };
-            let mut notices = Vec::new();
-            for view in views.iter_mut().filter(|view| view.file == index) {
-                let Some(ws) = windows.iter_mut().find(|ws| ws.window == view.window) else {
-                    continue;
-                };
-                candidate = commit_view(ws, view, &last_good, candidate, scratch, &mut notices);
+            match plan_view(&source, &file.origin) {
+                Ok(mut candidate) => {
+                    for view in views.iter_mut().filter(|view| view.file == index) {
+                        let Some(ws) = windows.iter_mut().find(|ws| ws.window == view.window)
+                        else {
+                            continue;
+                        };
+                        candidate =
+                            commit_view(ws, view, &last_good, candidate, scratch, &mut event);
+                    }
+                    file.last_good = Some(candidate);
+                    file.revision = file.candidates;
+                    event.last_good_revision = file.revision;
+                    event.outcome = if event.focus_lost > 0
+                        || event.scroll_lost > 0
+                        || event.handlers_lost > 0
+                        || event.diagnostics.iter().any(|d| d.code == "E5101")
+                    {
+                        ReloadOutcome::ScopedReset
+                    } else {
+                        ReloadOutcome::Applied
+                    };
+                    failures_changed |= file.failure.take().is_some();
+                }
+                Err(diagnostics) => {
+                    file.last_good = Some(last_good);
+                    event.stage = ReloadStage::of_rejection(&diagnostics);
+                    event.diagnostics = diagnostics;
+                    file.failure = Some(overlay::failure_lines(
+                        file.path,
+                        &source,
+                        &event.diagnostics,
+                    ));
+                    failures_changed = true;
+                }
             }
-            report(file.path, &source, &notices);
-            file.last_good = Some(candidate);
-            file.revision += 1;
+            event.elapsed_us = u64::try_from(started.elapsed().as_micros()).unwrap_or(u64::MAX);
+            match link {
+                Some(link) => {
+                    event.source = source;
+                    link.send(event);
+                }
+                None => report(file.path, &source, &event.diagnostics),
+            }
+        }
+        if failures_changed {
+            show_failures(files, views, windows, scratch);
         }
     }
 }
 
-/// Commits `candidate` to the mount `view` in `ws`, and returns it for the
-/// file's next mount.
+/// Shows over each window that mounts a file the failures of the files it
+/// mounts, or removes its overlay when none fails.
+fn show_failures(
+    files: &[ViewFile],
+    views: &[LiveView],
+    windows: &mut [WindowState],
+    scratch: &mut Vec<NodeId>,
+) {
+    let mut mounted: Vec<usize> = Vec::new();
+    for ws in windows {
+        mounted.clear();
+        for view in views.iter().filter(|view| view.window == ws.window) {
+            if !mounted.contains(&view.file) {
+                mounted.push(view.file);
+            }
+        }
+        if mounted.is_empty() {
+            continue;
+        }
+        let lines: Vec<&str> = mounted
+            .iter()
+            .filter_map(|&file| files[file].failure.as_deref())
+            .flatten()
+            .map(String::as_str)
+            .collect();
+        overlay::show(ws, &lines, scratch);
+    }
+}
+
+/// Commits `candidate` to the mount `view` in `ws`, adds what it kept and lost
+/// to `event`, and returns the candidate for the file's next mount.
 fn commit_view(
     ws: &mut WindowState,
     view: &mut LiveView,
     last_good: &CandidatePlan,
     candidate: CandidatePlan,
     scratch: &mut Vec<NodeId>,
-    notices: &mut Vec<Diagnostic>,
+    event: &mut ReloadEvent,
 ) -> CandidatePlan {
     // The store maps a durable key to one cell; a file mounted twice points the
     // keys at the mount being committed.
@@ -242,9 +343,16 @@ fn commit_view(
         view: &mut view.host,
     };
     let mut reload = transact(&mut live, last_good, candidate);
-    for notice in reload.report.notices.drain(..) {
-        if !notices.contains(&notice) {
-            notices.push(notice);
+    let report = &mut reload.report;
+    event.mounts += 1;
+    event.migrated += report.migrated;
+    event.reset += report.reset;
+    event.focus_lost += u32::from(report.focus_lost);
+    event.scroll_lost += report.scroll_lost;
+    event.handlers_lost += u32::from(report.handlers_lost);
+    for notice in report.notices.drain(..) {
+        if !event.diagnostics.contains(&notice) {
+            event.diagnostics.push(notice);
         }
     }
     let root = live.root;
@@ -266,9 +374,9 @@ fn commit_view(
     reload.candidate
 }
 
-/// Reports the diagnostics of an edit: the errors of a candidate that does not
-/// compile, whose mounts keep their last-good candidate, or the notices of one
-/// committed.
+/// Prints the diagnostics of an edit when no dev channel carries them: the
+/// errors of a candidate that does not compile, whose mounts keep their
+/// last-good candidate, or the notices of one committed.
 fn report(path: &str, source: &str, diagnostics: &[Diagnostic]) {
     let lines = LineIndex::new(source);
     for diagnostic in diagnostics {
@@ -285,6 +393,7 @@ fn report(path: &str, source: &str, diagnostics: &[Diagnostic]) {
 
 #[cfg(test)]
 mod tests {
+    use std::path::Path;
     use std::time::{Duration, Instant};
 
     use viso_ui::{
@@ -485,6 +594,66 @@ mod tests {
             session.files[0].last_good.is_some(),
             "the last-good is kept"
         );
+        assert!(ws.dev_overlay.is_some(), "the failure is shown");
+
+        std::fs::write(&path, COUNTER.replace("width: 120dp;", "width: 140dp;")).unwrap();
+        assert!(staged(&mut session));
+        session.reload(std::slice::from_mut(&mut ws));
+        assert_eq!(session.files[0].revision, 2);
+        assert!(ws.dev_overlay.is_none(), "a good edit clears the failure");
+    }
+
+    /// Writes `source` to `path` and runs the reload it triggers.
+    fn save(session: &mut HotReloadSession, ws: &mut WindowState, path: &Path, source: &str) {
+        std::fs::write(path, source).unwrap();
+        assert!(staged(session), "the watcher delivers the edit");
+        session.reload(std::slice::from_mut(ws));
+    }
+
+    /// The live values of the view's states.
+    fn values(ws: &WindowState, session: &HotReloadSession) -> Vec<StateValue> {
+        let cells = &session.views[0].cells;
+        cells
+            .iter()
+            .filter_map(|&(_, id)| ws.states.get(id))
+            .collect()
+    }
+
+    #[test]
+    fn label_and_state_type_edits_keep_unrelated_state() {
+        let (mut ws, path) = mounted("unrelated");
+        let mut session = HotReloadSession::default();
+        session.adopt(|| LoopWaker::new(|| {}), &mut ws);
+        for &(_, id) in &session.views[0].cells {
+            let edited = match ws.states.get(id) {
+                Some(StateValue::Int(_)) => StateValue::Int(5),
+                _ => StateValue::Bool(false),
+            };
+            ws.states.set(id, edited);
+        }
+
+        let labelled = COUNTER.replace(
+            "Text { visible: enabled; }",
+            "Text { visible: enabled; text: \"Saved\"; }",
+        );
+        save(&mut session, &mut ws, &path, &labelled);
+        assert_eq!(session.files[0].revision, 1);
+        let kept = values(&ws, &session);
+        assert!(kept.contains(&StateValue::Int(5)) && kept.contains(&StateValue::Bool(false)));
+
+        let retyped = labelled.replace("state count = 0;", "state count: F64 = 0.0;");
+        save(&mut session, &mut ws, &path, &retyped);
+        assert_eq!(session.files[0].revision, 2);
+        let kept = values(&ws, &session);
+        assert!(kept.contains(&StateValue::Float(5.0)), "{kept:?}");
+        assert!(kept.contains(&StateValue::Bool(false)), "{kept:?}");
+
+        let root = ws.root;
+        save(&mut session, &mut ws, &path, &retyped.replace("0.0;", ";"));
+        assert_eq!(session.files[0].revision, 2);
+        assert_eq!(ws.root, root, "the last-good UI stays");
+        assert_eq!(values(&ws, &session), kept);
+        assert!(ws.dev_overlay.is_some());
     }
 
     #[test]

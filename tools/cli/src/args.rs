@@ -1,5 +1,6 @@
 //! The command grammar (`Viso_CLI.md` sections 1 and 6).
 
+use std::ffi::OsString;
 use std::path::PathBuf;
 
 use clap::{Args, Parser, Subcommand};
@@ -35,8 +36,19 @@ pub struct Global {
 pub enum Command {
     /// Check the project's `.vs` sources and `Viso.toml` without building.
     Check,
+    /// Build the project as a dev artifact and run it on this machine, hot
+    /// reloading its `.vs` views as they are saved.
+    Run(RunArgs),
     /// Show the typed schema of a widget, native library, function or type.
     Schema(SchemaArgs),
+}
+
+/// What `viso run` passes on (section 13.4).
+#[derive(Debug, Args)]
+pub struct RunArgs {
+    /// Arguments for the app, after `--`.
+    #[arg(last = true, value_name = "APP_ARGS")]
+    pub app_args: Vec<OsString>,
 }
 
 /// What `viso schema` looks up (section 18.1).
@@ -57,6 +69,7 @@ impl Command {
     pub fn name(&self) -> &'static str {
         match self {
             Command::Check => "check",
+            Command::Run(_) => "run",
             Command::Schema(_) => "schema",
         }
     }
@@ -115,6 +128,18 @@ mod tests {
             Some("check")
         );
         assert_eq!(named_command(&["chekc"]), None);
+    }
+
+    #[test]
+    fn run_passes_what_follows_the_separator_to_the_app() {
+        let cli =
+            Cli::try_parse_from(["viso", "run", "--json", "--", "--open", "demo.vs"]).unwrap();
+        assert!(cli.global.json);
+        assert!(
+            matches!(&cli.command, Command::Run(RunArgs { app_args }) if app_args == &["--open", "demo.vs"])
+        );
+        assert!(Cli::try_parse_from(["viso", "run", "host"]).is_err());
+        assert!(!wants_json(&["run", "--", "--json"]));
     }
 
     #[test]

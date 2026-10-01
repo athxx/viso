@@ -12,6 +12,7 @@ use std::ops::Range;
 use std::path::Path;
 
 use viso_dsl::diag::Fix;
+use viso_dsl::hotreload::event::ReloadEvent;
 use viso_dsl::{Diagnostic, LineIndex, Severity, TextSize};
 use viso_ende::JsonWriter;
 use viso_project::ConfigDiagnostic;
@@ -251,6 +252,39 @@ impl Output {
         match &mut self.form {
             Form::Json(stream) => stream.result(payload),
             Form::Human => print!("{}", text()),
+        }
+    }
+
+    /// Reports a phase of a long command as a `progress` event. Human text
+    /// leaves progress to the tools that print their own, and `--quiet` drops it.
+    pub fn progress(&mut self, phase: &str, message: &str) {
+        if let Form::Json(stream) = &mut self.form
+            && !self.quiet
+        {
+            stream.progress(phase, message);
+        }
+    }
+
+    /// Reports a line from `source` (`app`, `device` or `tool`) at `level`: a
+    /// `log` event, which `--quiet` drops, or a line on stderr.
+    pub fn log(&mut self, level: &str, source: &str, message: &str) {
+        match &mut self.form {
+            Form::Json(stream) => {
+                if !self.quiet {
+                    stream.log(level, source, message);
+                }
+            }
+            Form::Human => eprintln!("[viso] {message}"),
+        }
+    }
+
+    /// Reports a hot reload attempt of `file` in the dev session `session` of
+    /// the build `build_id`: a `dev` event, or one line on stderr. Its
+    /// diagnostics are reported on their own.
+    pub fn dev(&mut self, file: &Source<'_>, session: &str, build_id: &str, event: &ReloadEvent) {
+        match &mut self.form {
+            Form::Json(stream) => stream.dev(&file.name, session, build_id, event),
+            Form::Human => eprintln!("{}", human::dev(&file.name, event)),
         }
     }
 

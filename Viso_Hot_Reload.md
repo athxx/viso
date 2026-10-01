@@ -1226,6 +1226,14 @@ PatchNack {
 
 NACK 后 running app 保持 last-good revision。
 
+### 37.1 当前实现：`.vs` reload event
+
+`.vs` 的每次 candidate 产出一条 `ReloadEvent`（`viso_dsl::hotreload::event`），把 ACK 与 NACK 合为一种形状：`file, base_revision, candidate_revision, last_good_revision, outcome(applied|scoped_reset|rejected), stage, elapsed, mounts, migrated, reset, focus_lost, scroll_lost, handlers_lost, diagnostics[]`（诊断带 span 与 candidate 源文本，接收方据此给出行列）。
+
+- `candidate_revision` 每个 candidate 递增，成功即成为 `last_good_revision`；rejected 时 `stage` 是 §51 中的失败 stage（`parse`、`resolve`、`typecheck`、`capability`、`state-compat`、`shader-compile`），成功时为 `runtime-commit`；
+- 由 `viso run` 启动时（§46 transport），event 经 dev channel 发回 CLI，CLI 输出 `diagnostic` + `dev`（`Viso_CLI.md` §36.4）；否则 app 自己在 stderr 打印诊断；
+- rejected 时，每个 mount 该文件的 window 在 last-good UI 之上画一块 overlay，列出错误（至多 8 条，余数汇总）；下一个成功的 candidate 移除它。overlay 是 window store 中的 detached subtree，不在 semantics tree、不接受输入；release 不编译它。
+
 ---
 
 # Part XIII — Staging and Atomic Boundaries
@@ -1418,6 +1426,8 @@ control inspector
 - unknown session rejected；
 - malformed Ende payload bounded decode；
 - Release artifact 根本没有此 endpoint。
+
+当前实现：`viso run` 在 `127.0.0.1` 临时端口监听，经 `VISO_DEV_RUNTIME`/`VISO_DEV_TOKEN` 交给 app；app 拒绝非 loopback 地址；首帧须是带 128-bit session token 与 protocol version 的 hello，否则丢弃连接；帧长上限 4 MiB。handshake 尚未绑定 project/build。
 
 ---
 

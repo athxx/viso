@@ -372,12 +372,12 @@ Goal: a file edit reaches the running app as one transaction or not at all.
         scroll offset is reported.
   - [ ] Animation fields carry (needs the DSL transition runtime).
   - [ ] Nodes a region mounts carry their state.
-- [ ] Reload diagnostics shown in-app and through `--json`.
-  - [ ] Each reload yields a stage-labelled event (revision, outcome,
+- [x] Reload diagnostics shown in-app and through `--json`.
+  - [x] Each reload yields a stage-labelled event (revision, outcome,
         elapsed, counts, diagnostics with spans).
-  - [ ] A failed reload shows an in-app overlay over the last-good UI until
+  - [x] A failed reload shows an in-app overlay over the last-good UI until
         the next good one.
-  - [ ] `viso run --json` streams the events in the CLI envelope.
+  - [x] `viso run --json` streams the events in the CLI envelope.
 - [ ] Bench: edit-to-pixels latency for a one-property change (release measurement).
 
 ### Done

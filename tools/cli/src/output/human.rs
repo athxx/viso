@@ -23,6 +23,8 @@ use std::fmt::{self, Write as _};
 use std::io::Write as _;
 use std::ops::Range;
 
+use viso_dsl::hotreload::event::{ReloadEvent, ReloadOutcome};
+
 use super::{Location, Report, Source};
 
 /// Writes `report` to stderr, followed by a blank line.
@@ -30,6 +32,28 @@ pub(super) fn print(report: &Report<'_>) {
     let mut text = render(report);
     text.push('\n');
     let _ = std::io::stderr().lock().write_all(text.as_bytes());
+}
+
+/// The line a hot reload attempt of `file` prints.
+pub(super) fn dev(file: &str, event: &ReloadEvent) -> String {
+    let ms = event.elapsed_us as f64 / 1000.0;
+    let revision = event.candidate_revision;
+    match event.outcome {
+        ReloadOutcome::Rejected => format!(
+            "hot reload: {file} revision {revision} rejected at {}; keeping revision {} ({ms:.1} ms)",
+            event.stage.as_str(),
+            event.last_good_revision
+        ),
+        outcome => format!(
+            "hot reload: {file} revision {revision} {} to {} mount(s) in {ms:.1} ms",
+            if outcome == ReloadOutcome::ScopedReset {
+                "applied with a scoped reset"
+            } else {
+                "applied"
+            },
+            event.mounts
+        ),
+    }
 }
 
 fn render(report: &Report<'_>) -> String {

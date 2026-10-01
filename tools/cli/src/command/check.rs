@@ -108,7 +108,7 @@ pub fn run(global: &Global, out: &mut Output) -> u8 {
 
 /// Reports a diagnostic from a project that failed to load, reading the file it
 /// points into so the report can show the line.
-fn config_in_its_file(out: &mut Output, diagnostic: &ConfigDiagnostic) {
+pub(super) fn config_in_its_file(out: &mut Output, diagnostic: &ConfigDiagnostic) {
     if let (Some(path), Some(_)) = (&diagnostic.path, diagnostic.span)
         && let Ok(text) = fs::read_to_string(path)
     {
@@ -120,7 +120,7 @@ fn config_in_its_file(out: &mut Output, diagnostic: &ConfigDiagnostic) {
 }
 
 /// The exit code of the first error that stopped the command.
-fn failure_code(diagnostics: &[ConfigDiagnostic]) -> u8 {
+pub(super) fn failure_code(diagnostics: &[ConfigDiagnostic]) -> u8 {
     diagnostics
         .iter()
         .find(|d| d.is_error())
