@@ -644,6 +644,8 @@ InsertNode(parent, position, type, initial bindings)
 
 同一窗口中 view 之外的内容（兄弟节点、其它 view、宿主 Rust UI）不受影响。
 
+结构性 patch 释放旧子树前，按 migration plan 取出每个被保留节点的可迁移状态（焦点、非零滚动偏移、编辑缓冲，以 Widget Schema 标记为准，DSL §94.2），重建后按候选 `NodeKey` 装到新节点；滚动偏移推迟到新节点首次布局后恢复。焦点原在该 view 内而未迁移时清除焦点并报告 `focus_lost`，未迁移的非零滚动偏移计入 `scroll_lost`。
+
 ---
 
 # Part VI — State Preservation
@@ -723,6 +725,8 @@ animation progress when animation identity remains compatible
 ```
 
 每类状态必须有自己的 preservation contract。
+
+当前 contract：focus owner、scroll offset 与 text editing（文本、选区、composition）随被保留节点迁移（见 Commit 作用域）；animation progress 待 DSL 转场运行时落地。
 
 不能用“dump UI object memory”实现。
 

@@ -10,9 +10,7 @@ use std::rc::Rc;
 use viso_behavior::Value;
 use viso_dsl::aot::build_view_package;
 use viso_dsl::frontend::Origin;
-use viso_dsl::hotreload::{
-    CandidatePlan, HotReloadReport, LiveAnchors, LiveRuntime, hot_reload_view,
-};
+use viso_dsl::hotreload::{CandidatePlan, HotReloadReport, LiveRuntime, hot_reload_view};
 use viso_dsl::ir::binding_ir::NodeKey;
 use viso_ui::virtual_list::VirtualLists;
 use viso_ui::{
@@ -76,14 +74,8 @@ impl Live {
             module: vec!["clicker".into()],
             language: None,
         };
-        let done = hot_reload_view(
-            &mut rt,
-            &self.last_good,
-            source,
-            &origin,
-            &LiveAnchors::default(),
-        )
-        .expect("the edit compiles");
+        let done =
+            hot_reload_view(&mut rt, &self.last_good, source, &origin).expect("the edit compiles");
         self.root = rt.root;
         self.last_good = done.candidate;
         let surface = Rect {

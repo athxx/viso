@@ -15,9 +15,7 @@ use std::path::PathBuf;
 use std::rc::Rc;
 
 use viso_dsl::frontend::Origin;
-use viso_dsl::hotreload::{
-    CandidatePlan, LiveAnchors, LiveRuntime, plan_view, static_nodes, transact,
-};
+use viso_dsl::hotreload::{CandidatePlan, LiveRuntime, plan_view, static_nodes, transact};
 use viso_dsl::ir::binding_ir::NodeKey;
 use viso_dsl::{Diagnostic, LineIndex};
 use viso_platform::{LoopWaker, WindowId};
@@ -229,16 +227,6 @@ fn commit_view(
     if view.nodes.is_empty() {
         view.nodes = static_nodes(&ws.store, view.root, &last_good.tree);
     }
-    let focused = ws.store.focused().and_then(|focused| {
-        view.nodes
-            .iter()
-            .find(|&&(_, node)| node == focused)
-            .map(|&(key, _)| key)
-    });
-    let anchors = LiveAnchors {
-        focused,
-        scrolled: Vec::new(),
-    };
     let old_root = view.root;
     let mut live = LiveRuntime {
         store: &mut ws.store,
@@ -253,7 +241,7 @@ fn commit_view(
         scratch,
         view: &mut view.host,
     };
-    let mut reload = transact(&mut live, last_good, candidate, &anchors);
+    let mut reload = transact(&mut live, last_good, candidate);
     for notice in reload.report.notices.drain(..) {
         if !notices.contains(&notice) {
             notices.push(notice);

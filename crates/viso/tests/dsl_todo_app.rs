@@ -17,7 +17,7 @@ use viso::ui::{
 };
 use viso_dsl::aot::build_view_package;
 use viso_dsl::frontend::Origin;
-use viso_dsl::hotreload::{CandidatePlan, LiveAnchors, LiveRuntime, hot_reload_view};
+use viso_dsl::hotreload::{CandidatePlan, LiveRuntime, hot_reload_view};
 use viso_view::{ViewHost, load_view};
 
 const SOURCE: &str = include_str!("fixtures/todo_app.vs");
@@ -132,14 +132,7 @@ impl Rt {
             nodes: &mut rt.nodes,
             view: &mut rt.view,
         };
-        hot_reload_view(
-            &mut live,
-            &CandidatePlan::default(),
-            SOURCE,
-            &origin(),
-            &LiveAnchors::default(),
-        )
-        .expect("reloads");
+        hot_reload_view(&mut live, &CandidatePlan::default(), SOURCE, &origin()).expect("reloads");
         rt.root = live.root;
         rt
     }

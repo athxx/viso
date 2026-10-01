@@ -5,8 +5,8 @@
 
 use super::NativeLibrary;
 use super::widget::{
-    FlexAxis, NativeWidget, PropertyGroup, SlotCardinality, WidgetEvent, WidgetNode,
-    WidgetProperty, WidgetSlot,
+    FlexAxis, MigratableState, NativeWidget, PropertyGroup, SlotCardinality, WidgetEvent,
+    WidgetNode, WidgetProperty, WidgetSlot,
 };
 
 const fn prop(name: &'static str, ty: &'static str) -> WidgetProperty {
@@ -239,6 +239,7 @@ const fn layout(
         .properties(properties)
         .groups(GROUPS)
         .events(&[STANDARD_EVENTS])
+        .migratable(MigratableState::FOCUS)
 }
 
 const ROW: WidgetNode = WidgetNode::Flex(FlexAxis::Row);
@@ -280,7 +281,8 @@ pub(super) static WIDGETS: NativeLibrary = NativeLibrary {
             &[SCROLL, LAYOUT, TRANSFORM, FOCUS],
         )
         .events(&[SCROLL_EVENTS, STANDARD_EVENTS])
-        .slots(CONTENT),
+        .slots(CONTENT)
+        .migratable(MigratableState::SCROLL),
         NativeWidget::new("Fragment", WidgetNode::Fragment).slots(CHILDREN),
         NativeWidget::new("SlotOutlet", WidgetNode::Outlet).properties(&[SLOT_OUTLET]),
         layout(
@@ -293,7 +295,8 @@ pub(super) static WIDGETS: NativeLibrary = NativeLibrary {
             WidgetNode::Leaf,
             &[TEXT_INPUT, TEXT_STYLE, LAYOUT, TRANSFORM, FOCUS],
         )
-        .events(&[TEXT_INPUT_EVENTS, STANDARD_EVENTS]),
+        .events(&[TEXT_INPUT_EVENTS, STANDARD_EVENTS])
+        .migratable(MigratableState::SELECTION),
         layout(
             "Button",
             WidgetNode::Leaf,

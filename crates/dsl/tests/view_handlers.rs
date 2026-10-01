@@ -8,7 +8,7 @@ use std::rc::Rc;
 
 use viso_dsl::aot::build_view_package;
 use viso_dsl::frontend::Origin;
-use viso_dsl::hotreload::{CandidatePlan, LiveAnchors, LiveRuntime, hot_reload_view};
+use viso_dsl::hotreload::{CandidatePlan, LiveRuntime, hot_reload_view};
 use viso_dsl::view_behavior::UNMOUNTED_HANDLER;
 use viso_ui::Rect;
 use viso_ui::virtual_list::VirtualLists;
@@ -90,13 +90,7 @@ impl Live {
             nodes: &mut self.nodes,
             view: &mut self.view,
         };
-        let done = hot_reload_view(
-            &mut rt,
-            &self.last_good,
-            source,
-            &origin(),
-            &LiveAnchors::default(),
-        )?;
+        let done = hot_reload_view(&mut rt, &self.last_good, source, &origin())?;
         self.root = rt.root;
         self.last_good = done.candidate;
         layout(&mut self.store, self.root);

@@ -5,7 +5,8 @@
 //! headless runtime — no window, no GPU, deterministic — exactly as `todo.md`'s
 //! Slice O exit criteria require. Each test mounts a first live tree, then reloads
 //! new source into it and asserts the transaction's effect on the retained node
-//! tree, the reactive state cells, and the focus / scroll anchors.
+//! tree, the reactive state cells, and the focus, scroll and edit state of
+//! kept nodes.
 //!
 //! The three cases mirror the plan's testing section:
 //!
@@ -14,13 +15,14 @@
 //! 2. an invalid edit is rejected before commit — the live tree and every state cell
 //!    are field-for-field identical to the last-good build (the transaction never
 //!    mutated anything);
-//! 3. a structural edit migrates state by durable identity and reports focus / scroll
-//!    that could not survive the rebuild.
+//! 3. a structural edit migrates state by durable identity, carries a kept
+//!    node's focus, scroll and edit buffer to its rebuilt node, and reports the
+//!    focus and scroll that could not survive the rebuild.
 
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use viso_dsl::hotreload::{CandidatePlan, HotReloadReport, LiveAnchors, LiveRuntime, hot_reload};
+use viso_dsl::hotreload::{CandidatePlan, LiveRuntime, hot_reload};
 use viso_ui::state::StateKey;
 use viso_ui::virtual_list::VirtualLists;
 use viso_ui::{
@@ -95,8 +97,8 @@ fn mount(source: &str) -> (Live, CandidatePlan) {
     let baseline = empty_baseline();
     let done = {
         let mut rt = live.runtime();
-        let done = hot_reload(&mut rt, &baseline, source, &LiveAnchors::default())
-            .expect("initial mount compiles and commits");
+        let done =
+            hot_reload(&mut rt, &baseline, source).expect("initial mount compiles and commits");
         live.root = rt.root;
         done
     };
@@ -155,7 +157,6 @@ fn valid_edit_atomically_patches_and_reuses_instances() {
             &mut rt,
             &last_good,
             "Row { Text { text: label; color: label; } }",
-            &LiveAnchors::default(),
         )
         .expect("valid edit commits");
         live.root = rt.root;
@@ -189,13 +190,8 @@ fn invalid_edit_keeps_last_good_field_for_field() {
     // `?` before `commit` — nothing is allowed to mutate.
     let err = {
         let mut rt = live.runtime();
-        hot_reload(
-            &mut rt,
-            &last_good,
-            "Row { Text { text: ;;; } }",
-            &LiveAnchors::default(),
-        )
-        .expect_err("malformed fragment is rejected")
+        hot_reload(&mut rt, &last_good, "Row { Text { text: ;;; } }")
+            .expect_err("malformed fragment is rejected")
     };
     assert!(!err.is_empty(), "the rejection carries fatal diagnostics");
 
@@ -214,14 +210,43 @@ fn invalid_edit_keeps_last_good_field_for_field() {
     );
 }
 
+/// Lay the live tree out on a fixed surface, settling any carried scroll.
+fn lay_out(live: &mut Live) {
+    let root = live.root.expect("mounted");
+    let surface = viso_ui::Rect {
+        x: 0.0,
+        y: 0.0,
+        w: 400.0,
+        h: 300.0,
+    };
+    live.store.layout(root, surface, &mut Vec::new());
+}
+
+/// Reload `source` into `live` over `last_good`, returning the commit.
+fn reload(
+    live: &mut Live,
+    last_good: &CandidatePlan,
+    source: &str,
+) -> viso_dsl::hotreload::HotReload {
+    let mut rt = live.runtime();
+    let done = hot_reload(&mut rt, last_good, source).expect("the edit commits");
+    live.root = rt.root;
+    lay_out(live);
+    done
+}
+
+const SCROLLED: &str = "width: 100dp; height: 50dp;";
+const TALL: &str = "width: 100dp; height: 400dp;";
+
 #[test]
 fn structural_edit_migrates_state_and_reports_focus_and_scroll() {
-    // Mount a tree with a scroll container and a bound source, focus the root, and
-    // scroll the container — then structurally re-type a node so the diff is
-    // non-preserving and the commit rebuilds.
-    let (mut live, last_good) = mount("Scroll { Text { text: count; } }");
+    // Re-typing the inner node rebuilds the tree: the kept scroll container
+    // carries its offset, and the focus on the replaced node is lost.
+    let (mut live, last_good) = mount(&format!(
+        "Scroll {{ {SCROLLED} Text {{ {TALL} text: count; }} }}"
+    ));
+    lay_out(&mut live);
 
-    // Establish a running state value, focus, and scroll to migrate.
     let symbol = last_good
         .symbol_for_name("count")
         .expect("count is a source");
@@ -229,67 +254,120 @@ fn structural_edit_migrates_state_and_reports_focus_and_scroll() {
     let count_id = live.states.id_for_key(key).expect("count cell exists");
     assert!(live.states.set(count_id, StateValue::Int(42)));
 
-    let nodes = preorder(&live.store, live.root);
-    let scroll_node = nodes[0];
-    let text_node = nodes[1];
+    let [scroll_node, text_node] = preorder(&live.store, live.root)[..] else {
+        panic!("Scroll + Text mounted");
+    };
     live.store.set_focused(Some(text_node));
-    // A non-zero scroll offset the migration must decide about.
     live.store
         .scroll_by(scroll_node, viso_ui::Vec2::new(0.0, 50.0));
-    let scrolled_slots = if live.store.scroll(scroll_node).y > 0.0 {
-        vec![viso_dsl::ir::binding_ir::NodeKey(0)]
-    } else {
-        // The freshly mounted container may have no scroll range yet; then there is
-        // no live offset to preserve and the anchor set is empty.
-        Vec::new()
-    };
+    assert_eq!(
+        live.store.scroll(scroll_node).y,
+        50.0,
+        "the container scrolls"
+    );
 
-    let anchors = LiveAnchors {
-        focused: Some(viso_dsl::ir::binding_ir::NodeKey(1)),
-        scrolled: scrolled_slots.clone(),
-    };
+    let done = reload(
+        &mut live,
+        &last_good,
+        &format!("Scroll {{ {SCROLLED} Button {{ {TALL} text: count; }} }}"),
+    );
 
-    // Structural edit: the inner Text becomes a Button — identity changes at slot 1,
-    // so the diff is a replace (non-preserving) and the commit rebuilds the tree.
-    let done = {
-        let mut rt = live.runtime();
-        let done = hot_reload(
-            &mut rt,
-            &last_good,
-            "Scroll { Button { text: count; } }",
-            &anchors,
-        )
-        .expect("structural edit commits");
-        live.root = rt.root;
-        done
-    };
-
-    // State is migrated by durable SymbolId identity: `count` is in both templates,
-    // so its running value carries across the rebuild untouched.
     assert_eq!(
         state_of(&live, &done.candidate, "count"),
         Some(StateValue::Int(42)),
         "a same-identity source keeps its value through a structural rebuild"
     );
-
-    // Focus was on a slot that the rebuild replaced with fresh instances, so it is
-    // reported lost.
-    assert!(
-        done.report.focus_lost,
-        "focus on a rebuilt slot is reported lost"
-    );
-
-    // A live scroll offset cannot survive a full rebuild in this slice; if one was
-    // established, the report counts it lost.
+    let [scroll_node, button] = preorder(&live.store, live.root)[..] else {
+        panic!("Scroll + Button mounted");
+    };
+    assert_ne!(button, text_node, "the replaced node is rebuilt");
+    assert!(done.report.focus_lost, "focus on a replaced node is lost");
+    assert_eq!(live.store.focused(), None);
     assert_eq!(
-        done.report.scroll_lost,
-        scrolled_slots.len() as u32,
-        "every live scroll anchor is reported lost across a rebuild"
+        done.report.scroll_lost, 0,
+        "the kept container's offset carries"
+    );
+    assert_eq!(live.store.scroll(scroll_node).y, 50.0);
+}
+
+#[test]
+fn focus_and_scroll_follow_their_nodes_past_an_inserted_sibling() {
+    let (mut live, last_good) = mount(&format!(
+        "Column {{ Scroll {{ {SCROLLED} Text {{ {TALL} text: count; }} }} }}"
+    ));
+    lay_out(&mut live);
+    let [_, scroll_node, text_node] = preorder(&live.store, live.root)[..] else {
+        panic!("Column + Scroll + Text mounted");
+    };
+    live.store.set_focused(Some(text_node));
+    live.store
+        .scroll_by(scroll_node, viso_ui::Vec2::new(0.0, 30.0));
+
+    // A sibling inserted before the scroll container shifts every later key.
+    let done = reload(
+        &mut live,
+        &last_good,
+        &format!(
+            "Column {{ Text {{ text: count; }} Scroll {{ {SCROLLED} Text {{ {TALL} text: count; }} }} }}"
+        ),
+    );
+    let [_, _, scroll_node, text_node] = preorder(&live.store, live.root)[..] else {
+        panic!("Column + Text + Scroll + Text mounted");
+    };
+    assert!(!done.report.focus_lost);
+    assert_eq!(done.report.scroll_lost, 0);
+    assert_eq!(
+        live.store.focused(),
+        Some(text_node),
+        "focus follows its node"
+    );
+    assert_eq!(
+        live.store.scroll(scroll_node).y,
+        30.0,
+        "scroll follows its node"
     );
 
-    // The rebuild reset no kept source (only `count`, which was kept), and the report
-    // is internally consistent.
-    let _ = HotReloadReport::default();
+    // Removing the scroll container loses its offset, and the focus inside it.
+    let done = reload(
+        &mut live,
+        &done.candidate,
+        "Column { Text { text: count; } }",
+    );
+    assert!(done.report.focus_lost);
+    assert_eq!(done.report.scroll_lost, 1);
+    assert_eq!(live.store.focused(), None);
+}
+
+#[test]
+fn a_text_input_keeps_its_text_and_selection_across_a_rebuild() {
+    let (mut live, last_good) = mount("Column { TextInput { width: 100dp; height: 20dp; } }");
+    lay_out(&mut live);
+    let [_, input] = preorder(&live.store, live.root)[..] else {
+        panic!("Column + TextInput mounted");
+    };
+    let mut buffer = viso_ui::Buffer::with_text("hello");
+    buffer.sel = viso_ui::Selection {
+        anchor: viso_ui::TextPosition::upstream(viso_ui::TextOffset(1)),
+        focus: viso_ui::TextPosition::upstream(viso_ui::TextOffset(4)),
+    };
+    live.text_edits.register(input, Box::new(buffer.clone()));
+
+    let done = reload(
+        &mut live,
+        &last_good,
+        "Column { Text { text: label; } TextInput { width: 100dp; height: 20dp; } }",
+    );
+    assert_eq!(done.report.scroll_lost, 0);
+    let [_, _, rebuilt] = preorder(&live.store, live.root)[..] else {
+        panic!("Column + Text + TextInput mounted");
+    };
+    assert_ne!(rebuilt, input, "the tree is rebuilt");
+    let carried = live.text_edits.get(rebuilt).expect("the buffer carries");
+    assert_eq!((&carried.text, carried.sel), (&buffer.text, buffer.sel));
+    assert!(
+        live.text_edits.get(input).is_none(),
+        "the old node holds none"
+    );
 }
 
 /// The children of `parent`, in order.
@@ -313,7 +391,6 @@ fn a_rebuild_replaces_only_the_views_subtree_in_place() {
             &mut rt,
             &empty_baseline(),
             "Column { Text { text: first; } Text { text: last; } }",
-            &LiveAnchors::default(),
         )
         .expect("the outer content mounts");
         (done, rt.root.expect("the outer content has a root"))
@@ -332,13 +409,8 @@ fn a_rebuild_replaces_only_the_views_subtree_in_place() {
     // Mount the view between the outer column's children.
     let last_good = {
         let mut rt = live.runtime();
-        let done = hot_reload(
-            &mut rt,
-            &empty_baseline(),
-            "Row { Text { text: label; } }",
-            &LiveAnchors::default(),
-        )
-        .expect("the view mounts");
+        let done = hot_reload(&mut rt, &empty_baseline(), "Row { Text { text: label; } }")
+            .expect("the view mounts");
         live.root = rt.root;
         done.candidate
     };
@@ -349,13 +421,8 @@ fn a_rebuild_replaces_only_the_views_subtree_in_place() {
     // A structural edit rebuilds the view.
     {
         let mut rt = live.runtime();
-        hot_reload(
-            &mut rt,
-            &last_good,
-            "Row { Button { text: label; } }",
-            &LiveAnchors::default(),
-        )
-        .expect("the structural edit commits");
+        hot_reload(&mut rt, &last_good, "Row { Button { text: label; } }")
+            .expect("the structural edit commits");
         live.root = rt.root;
     }
     let rebuilt = live.root.unwrap();
@@ -436,7 +503,7 @@ fn a_size_edit_patches_kept_nodes_in_place() {
     for (source, expected) in edits {
         let done = {
             let mut rt = live.runtime();
-            hot_reload(&mut rt, &last_good, source, &LiveAnchors::default())
+            hot_reload(&mut rt, &last_good, source)
                 .unwrap_or_else(|e| panic!("{source} reloads: {e:?}"))
         };
         assert_eq!(

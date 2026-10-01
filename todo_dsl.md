@@ -361,8 +361,17 @@ Goal: a file edit reaches the running app as one transaction or not at all.
         lowered; the commit calls it with the old value instead of resetting.
 - [ ] Node migration: focus, selection, scroll, animation fields from widget schema
       (§94.2).
-  - [ ] Widget schemas mark their migratable fields; a node kept with the same
-        type carries them across a structural rebuild by `NodeKey`.
+  - [x] Widget schemas mark their migratable fields (`MigratableState`: focus
+        on every layout widget, scroll on `Scroll`, selection on `TextInput`)
+        and the UI IR node carries the mark.
+  - [x] The structural diff aligns each parent's children by type, node name
+        and kind, so an inserted or removed sibling leaves the rest kept, and a
+        region aligns only with one of the same form and arm count.
+  - [x] A node kept with the same type carries its focus, scroll offset and
+        edit buffer across a structural rebuild by `NodeKey`; a lost focus or
+        scroll offset is reported.
+  - [ ] Animation fields carry (needs the DSL transition runtime).
+  - [ ] Nodes a region mounts carry their state.
 - [ ] Reload diagnostics shown in-app and through `--json`.
   - [ ] Each reload yields a stage-labelled event (revision, outcome,
         elapsed, counts, diagnostics with spans).

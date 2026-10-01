@@ -39,8 +39,8 @@ pub use registry::{NativeEntry, NativeTypeEntry, NativeWidgetEntry, Natives, Sch
 pub use standard::{Clipboard, STANDARD, Stopwatch};
 pub use value::{NativeHandle, NativeObject, NativeValue, Obj};
 pub use widget::{
-    FlexAxis, NativeWidget, PropertyGroup, SlotCardinality, WidgetEvent, WidgetNode,
-    WidgetProperty, WidgetSlot,
+    FlexAxis, MigratableState, NativeWidget, PropertyGroup, SlotCardinality, WidgetEvent,
+    WidgetNode, WidgetProperty, WidgetSlot,
 };
 pub use widgets::COMPONENT;
 
