@@ -334,12 +334,41 @@ Goal: a file edit reaches the running app as one transaction or not at all.
 - [x] Pure stages `plan` → `diff` → `migrate` and atomic `commit` (`hotreload/`).
 - [ ] Dev server: file watch → `compile_file` → plan → commit on the UI thread at a frame
       boundary; last-good kept on any failure (§94).
+  - [x] The commit is scoped to the view's own subtree: it frees and rebuilds
+        in place under the same parent and sibling position, swaps only the
+        view's static edges and region hooks, and keeps the rest of the window.
+  - [ ] `view!` records each mount (file, source, origin, root, state cells,
+        host, static nodes) under the `hot-reload` feature; without it the
+        record is a no-op and no source text reaches the binary.
+  - [ ] A dev-only watcher thread polls the mounted files, settles a burst of
+        writes, skips content-identical saves by hash and wakes the loop.
+  - [ ] The window drains changes at the frame boundary and runs the
+        transaction; each view keeps a revision and its last-good candidate,
+        and a failed candidate changes nothing.
 - [ ] Behavior bytecode swap together with the UI patch.
+  - [ ] The host's VM states migrate by `SymbolId` through the same migration
+        plan as the UI cells, not by name.
+  - [ ] A handler-body edit reloads in a running window with every state kept.
 - [ ] State migration by `SymbolId`: keep, safe widening, record field with default,
       `@migrate(from:)` functions, reset notice (§94.1). `E5101`, `E5102`.
+  - [ ] The candidate carries each state's type; the compatibility matrix
+        decides keep, safe widening, record extension with defaults, an enum
+        whose active variant survives, or reset.
+  - [ ] A reset is a `E5101` notice naming the state and both types; a
+        `SymbolId` minted twice in a candidate is `E5102` and rejects it.
+  - [ ] `@migrate(from: "T")` is a registered `fn` attribute, checked
+        (one parameter of the old type, returning the state's type) and
+        lowered; the commit calls it with the old value instead of resetting.
 - [ ] Node migration: focus, selection, scroll, animation fields from widget schema
       (§94.2).
+  - [ ] Widget schemas mark their migratable fields; a node kept with the same
+        type carries them across a structural rebuild by `NodeKey`.
 - [ ] Reload diagnostics shown in-app and through `--json`.
+  - [ ] Each reload yields a stage-labelled event (revision, outcome,
+        elapsed, counts, diagnostics with spans).
+  - [ ] A failed reload shows an in-app overlay over the last-good UI until
+        the next good one.
+  - [ ] `viso run --json` streams the events in the CLI envelope.
 - [ ] Bench: edit-to-pixels latency for a one-property change (release measurement).
 
 ### Done

@@ -609,6 +609,17 @@ InsertNode(parent, position, type, initial bindings)
 
 具名/稳定 sibling 的 state/focus 不应因为前面插入无关节点而丢失。
 
+### Commit 作用域
+
+一次 commit 只触及被 reload 的 view 自己的子树：
+
+- 结构保持的 patch 按模板 `NodeKey` 原地复用该 view 的每个静态节点；
+- 结构性 patch 释放该 view 的根并在**同一父节点、同一兄弟位置**重建新根（无父节点时成为新的独立根）；
+- rebind 只替换该 view 节点的静态边，其它节点的边保持不变；
+- 只移除该 view 自己注册的 region / value hook。
+
+同一窗口中 view 之外的内容（兄弟节点、其它 view、宿主 Rust UI）不受影响。
+
 ---
 
 # Part VI — State Preservation

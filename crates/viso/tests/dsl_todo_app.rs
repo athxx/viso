@@ -93,6 +93,7 @@ struct Rt {
     projectors: SemanticProjector,
     root: Option<NodeId>,
     scratch: Vec<NodeId>,
+    nodes: Vec<(viso_dsl::ir::binding_ir::NodeKey, NodeId)>,
     view: Option<Rc<RefCell<ViewHost>>>,
 }
 
@@ -128,6 +129,7 @@ impl Rt {
             projectors: &mut rt.projectors,
             root: None,
             scratch: &mut rt.scratch,
+            nodes: &mut rt.nodes,
             view: &mut rt.view,
         };
         hot_reload_view(

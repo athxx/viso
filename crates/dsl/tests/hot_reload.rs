@@ -41,6 +41,7 @@ struct Live {
     projectors: SemanticProjector,
     root: Option<NodeId>,
     scratch: Vec<NodeId>,
+    nodes: Vec<(viso_dsl::ir::binding_ir::NodeKey, NodeId)>,
     view: Option<Rc<RefCell<ViewHost>>>,
 }
 
@@ -56,6 +57,7 @@ impl Live {
             projectors: SemanticProjector::new(),
             root: None,
             scratch: Vec::new(),
+            nodes: Vec::new(),
             view: None,
         }
     }
@@ -72,6 +74,7 @@ impl Live {
             projectors: &mut self.projectors,
             root: self.root,
             scratch: &mut self.scratch,
+            nodes: &mut self.nodes,
             view: &mut self.view,
         }
     }
@@ -287,6 +290,98 @@ fn structural_edit_migrates_state_and_reports_focus_and_scroll() {
     // The rebuild reset no kept source (only `count`, which was kept), and the report
     // is internally consistent.
     let _ = HotReloadReport::default();
+}
+
+/// The children of `parent`, in order.
+fn children(store: &NodeStore, parent: NodeId) -> Vec<NodeId> {
+    let mut out = Vec::new();
+    let mut child = store.arena().links(parent).and_then(|l| l.first_child);
+    while let Some(c) = child {
+        out.push(c);
+        child = store.arena().links(c).and_then(|l| l.next_sibling);
+    }
+    out
+}
+
+#[test]
+fn a_rebuild_replaces_only_the_views_subtree_in_place() {
+    // Content the view is mounted into, built and owned outside the view.
+    let mut live = Live::new();
+    let (outer, outer_root) = {
+        let mut rt = live.runtime();
+        let done = hot_reload(
+            &mut rt,
+            &empty_baseline(),
+            "Column { Text { text: first; } Text { text: last; } }",
+            &LiveAnchors::default(),
+        )
+        .expect("the outer content mounts");
+        (done, rt.root.expect("the outer content has a root"))
+    };
+    live.nodes.clear();
+    let [first, last] = children(&live.store, outer_root)[..] else {
+        panic!("the outer column has two children");
+    };
+    let first_state = {
+        let symbol = outer.candidate.symbol_for_name("first").unwrap();
+        live.states
+            .id_for_key(StateKey::from_parts(symbol.hi, symbol.lo))
+            .unwrap()
+    };
+
+    // Mount the view between the outer column's children.
+    let last_good = {
+        let mut rt = live.runtime();
+        let done = hot_reload(
+            &mut rt,
+            &empty_baseline(),
+            "Row { Text { text: label; } }",
+            &LiveAnchors::default(),
+        )
+        .expect("the view mounts");
+        live.root = rt.root;
+        done.candidate
+    };
+    let view_root = live.root.unwrap();
+    live.store
+        .arena_insert_before(outer_root, view_root, Some(last));
+
+    // A structural edit rebuilds the view.
+    {
+        let mut rt = live.runtime();
+        hot_reload(
+            &mut rt,
+            &last_good,
+            "Row { Button { text: label; } }",
+            &LiveAnchors::default(),
+        )
+        .expect("the structural edit commits");
+        live.root = rt.root;
+    }
+    let rebuilt = live.root.unwrap();
+    assert_ne!(rebuilt, view_root, "the view's root was rebuilt");
+    assert!(
+        !live.store.arena().is_live(view_root),
+        "the old root is freed"
+    );
+    assert_eq!(
+        children(&live.store, outer_root),
+        vec![first, rebuilt, last],
+        "the rebuilt view takes the old one's place among its siblings"
+    );
+    assert!(
+        live.bindings
+            .for_state(first_state)
+            .iter()
+            .any(|edge| edge.node == first),
+        "a sibling's edges survive the view's rebind"
+    );
+    assert_eq!(
+        live.nodes.len(),
+        2,
+        "the view's slots are its own two nodes"
+    );
+    assert_eq!(live.nodes[0].1, rebuilt);
 }
 
 /// Lay the live tree out in a 400×300 surface and return each node's width and

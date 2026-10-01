@@ -115,6 +115,7 @@ struct Rt {
     projectors: SemanticProjector,
     root: Option<NodeId>,
     scratch: Vec<NodeId>,
+    nodes: Vec<(viso_dsl::ir::binding_ir::NodeKey, NodeId)>,
     view: Option<Rc<RefCell<ViewHost>>>,
     last_good: CandidatePlan,
 }
@@ -156,6 +157,7 @@ impl Rt {
             projectors: &mut self.projectors,
             root: self.root,
             scratch: &mut self.scratch,
+            nodes: &mut self.nodes,
             view: &mut self.view,
         };
         let done = hot_reload_view(
