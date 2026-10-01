@@ -428,6 +428,10 @@ pub struct NodeStore {
     /// Cold: the structure hooks of the mounted views: one per view with
     /// control-flow regions, and one per view whose nodes show reactive values.
     structure_hooks: crate::structure::StructureHooks,
+    /// Cold: the nodes whose lengths read the environment (`px`, `sp`, `em`),
+    /// re-folded into `layout` when it changes. Empty in a tree of plain `dp`
+    /// and `%` lengths.
+    lengths: crate::length::LengthBindings,
 }
 
 impl NodeStore {
@@ -479,6 +483,7 @@ impl NodeStore {
         self.draggable_regions.clear();
         self.tasks.clear();
         self.structure_hooks.clear();
+        self.lengths.clear();
     }
 
     /// The arena backing the tree.
@@ -699,6 +704,19 @@ impl NodeStore {
         &mut self.structure_hooks
     }
 
+    pub(crate) fn lengths(&self) -> &crate::length::LengthBindings {
+        &self.lengths
+    }
+
+    pub(crate) fn lengths_mut(&mut self) -> &mut crate::length::LengthBindings {
+        &mut self.lengths
+    }
+
+    /// The layout input of live node `id`.
+    pub(crate) fn layout_input_mut(&mut self, id: NodeId) -> &mut LayoutInput {
+        &mut self.layout[id.index() as usize]
+    }
+
     /// The parent of `child` in the arena, or `None` for a root or a stale handle.
     /// A read-only ancestry query the sibling of [`arena_detach`](Self::arena_detach)
     /// / [`arena_append_child`](Self::arena_append_child) needs: to re-home a node
@@ -854,13 +872,58 @@ impl NodeStore {
     /// [`set_absolute_rows_extent`](Self::set_absolute_rows_extent), but general over
     /// both axes and any length kind — a reconcile step holding `&mut NodeStore` calls
     /// this to size a host it owns (a floating dock panel's fixed-size host) to a
-    /// runtime rectangle without rebuilding the subtree. A no-op for a stale handle.
+    /// runtime rectangle without rebuilding the subtree. A no-op for a stale handle
+    /// or an unchanged size.
     pub fn set_fixed_size(&mut self, id: NodeId, size: Size) {
         if !self.arena.is_live(id) {
             return;
         }
-        *self.layout[id.index() as usize].size_mut() = size;
+        let slot = self.layout[id.index() as usize].size_mut();
+        if *slot == size {
+            return;
+        }
+        *slot = size;
         self.mark_dirty(id, DirtyClass::LAYOUT | DirtyClass::PAINT);
+    }
+
+    /// The size node `id` requests of its parent, or `None` for a stale handle.
+    pub fn size_request(&self, id: NodeId) -> Option<Size> {
+        self.arena
+            .is_live(id)
+            .then(|| self.layout[id.index() as usize].size())
+    }
+
+    /// Rewrite a Flex container's main-axis gap, or both of a Grid's gaps, in
+    /// place, marking it `MEASURE | LAYOUT | PAINT`. A no-op for a stale handle,
+    /// an unchanged gap or a node with no gap.
+    pub fn set_gap(&mut self, id: NodeId, value: f32) {
+        if !self.arena.is_live(id) {
+            return;
+        }
+        match &mut self.layout[id.index() as usize] {
+            LayoutInput::Flex { gap, .. } => {
+                if *gap == value {
+                    return;
+                }
+                *gap = value;
+            }
+            LayoutInput::Grid {
+                column_gap,
+                row_gap,
+                ..
+            } => {
+                if *column_gap == value && *row_gap == value {
+                    return;
+                }
+                *column_gap = value;
+                *row_gap = value;
+            }
+            _ => return,
+        }
+        self.mark_dirty(
+            id,
+            DirtyClass::MEASURE | DirtyClass::LAYOUT | DirtyClass::PAINT,
+        );
     }
 
     /// Rewrite a Flex or Grid container's padding in place, marking it
@@ -2073,6 +2136,7 @@ impl NodeStore {
     /// existing scroll is re-applied). A later scroll updates `world` on its own
     /// via [`resolve_transforms`](Self::resolve_transforms) without re-laying out.
     pub fn layout(&mut self, root: NodeId, surface: Rect, scratch: &mut Vec<u32>) {
+        self.fold_lengths();
         scratch.clear();
         layout::measure(self, root.index(), scratch);
         scratch.clear();
@@ -2161,6 +2225,7 @@ impl NodeStore {
         if !self.arena.is_live(root) {
             return (0, 0);
         }
+        self.fold_lengths();
 
         // Roots for the redo: the shallowest nodes whose subtree must be
         // recomputed. A MEASURE change flows through its parent's child
@@ -2197,7 +2262,8 @@ impl NodeStore {
             layout::measure(self, redo.index(), scratch);
             measured += self.subtree_len(redo);
             scratch.clear();
-            layout::layout(self, redo.index(), bounds, scratch);
+            let basis = self.basis_of(redo, root);
+            layout::layout_on(self, redo.index(), bounds, basis, scratch);
             laid_out += self.subtree_len(redo);
         }
         // Re-place `bounds` into `world`, exactly as the whole-tree
@@ -2212,6 +2278,18 @@ impl NodeStore {
             self.resolve_transforms(root);
         }
         (measured, laid_out)
+    }
+
+    /// The percent basis node `id`'s box gives its children, as a layout from
+    /// `root` down reaches it.
+    fn basis_of(&self, id: NodeId, root: NodeId) -> layout::Basis {
+        match self.parent(id) {
+            Some(parent) if id != root => self.basis_of(parent, root).child(
+                self.layout[parent.index() as usize],
+                self.layout[id.index() as usize],
+            ),
+            _ => layout::Basis::DEFINITE,
+        }
     }
 
     /// Rebuild the primitive list when any paint-affecting invalidation is
@@ -2449,6 +2527,10 @@ impl LayoutTree for NodeStore {
     #[inline]
     fn hidden(&self, index: u32) -> bool {
         self.hidden[index as usize]
+    }
+
+    fn report_length(&mut self, index: u32, issue: crate::length::LengthIssue) {
+        self.report_length_issue(index, issue);
     }
 
     fn request_text_reflow(&mut self, index: u32, width: f32) {
@@ -2978,6 +3060,12 @@ impl<'a> BuildCx<'a> {
         );
 
         Handle { id: viewport }
+    }
+
+    /// Binds environment-dependent `lengths` to the node `handle` declared;
+    /// they fold at the first layout (see [`NodeStore::bind_lengths`]).
+    pub fn bind_lengths(&mut self, handle: Handle, lengths: crate::length::NodeLengths) {
+        self.store.bind_lengths(handle.id, lengths);
     }
 
     /// Declare a leaf node.

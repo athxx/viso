@@ -787,6 +787,7 @@ impl WindowState {
         // rasterizes glyphs at the surface's real scale. A window with no scale
         // reported (or a value the platform cannot supply) falls back to 1x.
         ws.dpi = cx.scale_factor(window).unwrap_or(1.0) as f32;
+        ws.follow_scale_factor();
 
         // Bring up the GPU for this window when it exposes a real windowing
         // handle: create the device, attach a surface to that handle, and build
@@ -1042,6 +1043,15 @@ impl WindowState {
         self.shape_pending_text();
     }
 
+    /// Resolves `px` lengths against the window's current scale factor.
+    fn follow_scale_factor(&mut self) {
+        let env = self.store.length_env();
+        self.store.set_length_env(viso_ui::LengthEnv {
+            scale_factor: self.dpi.max(1.0),
+            ..env
+        });
+    }
+
     /// The surface size in logical points: the physical surface divided by the
     /// device scale factor. This is the coordinate space layout and paint run in
     /// (fixed sizes and spacers are authored in logical points), and the space
@@ -1081,6 +1091,14 @@ impl WindowState {
         let (measured, laid_out) =
             self.store
                 .relayout_dirty(root, surface, &mut self.scratch, &mut self.redo_roots);
+        for warning in self.store.take_length_warnings() {
+            eprintln!(
+                "[viso] {}: node {:?}: {:?}",
+                warning.issue.code(),
+                warning.node,
+                warning.issue
+            );
+        }
         // Re-derive world rects when a transform-only class is pending. A frame
         // that relaid anything already resolved transforms inside `relayout_dirty`
         // (which folds fresh `bounds` into `world` from the root, as the whole-tree
@@ -1510,6 +1528,7 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
         // (unreported) keeps the prior value rather than collapsing to zero.
         if scale > 0.0 {
             ws.dpi = scale as f32;
+            ws.follow_scale_factor();
         }
         if let Some(gpu) = &mut ws.gpu {
             if let Some(surface) = gpu.surface {

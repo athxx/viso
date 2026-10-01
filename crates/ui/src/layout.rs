@@ -9,6 +9,7 @@
 //! data with no heap allocation per node.
 
 use crate::grid::{AdaptiveColumns, AutoRepeat, GridPlacement, TrackMax, TrackSizing};
+use crate::length::LengthIssue;
 use viso_render::Rect;
 
 /// A two-component vector in physical pixels — a scroll offset or a
@@ -497,6 +498,103 @@ pub trait LayoutTree {
     fn request_text_reflow(&mut self, index: u32, width: f32) {
         let _ = (index, width);
     }
+    /// Record that node `index`'s length could not resolve as authored: a
+    /// percent term met an indefinite basis. A no-op by default.
+    fn report_length(&mut self, index: u32, issue: LengthIssue) {
+        let _ = (index, issue);
+    }
+}
+
+/// Whether a box is a definite percent basis on each axis: its extent does not
+/// come from its own content. The root's box is definite; a box that fits its
+/// content, and a scroll content's scrolling axis, are not.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Basis {
+    /// The horizontal extent is definite.
+    pub width: bool,
+    /// The vertical extent is definite.
+    pub height: bool,
+}
+
+impl Basis {
+    /// Definite on both axes, as the root is.
+    pub const DEFINITE: Self = Self {
+        width: true,
+        height: true,
+    };
+
+    #[inline]
+    fn on(self, axis: Axis) -> bool {
+        match axis {
+            Axis::Row => self.width,
+            Axis::Column => self.height,
+        }
+    }
+
+    #[inline]
+    fn pack(axis: Axis, main: bool, cross: bool) -> Self {
+        match axis {
+            Axis::Row => Self {
+                width: main,
+                height: cross,
+            },
+            Axis::Column => Self {
+                width: cross,
+                height: main,
+            },
+        }
+    }
+
+    /// The basis a child of a box on this basis lays out its own children on.
+    /// `parent` is the box's layout input, `child` the child's.
+    pub fn child(self, parent: LayoutInput, child: LayoutInput) -> Self {
+        let size = child.size();
+        match parent {
+            LayoutInput::Flex { axis, align, .. } => {
+                let main = self.on(axis);
+                let cross = self.on(cross_of(axis));
+                let main = match size.on(axis) {
+                    Length::Fixed(_) => true,
+                    Length::Relative { fixed, .. } => main || fixed != 0.0,
+                    Length::Fill { .. } => main,
+                    Length::Fit => false,
+                };
+                let cross = match size.cross(axis) {
+                    Length::Fixed(_) => true,
+                    Length::Relative { fixed, .. } => cross || fixed != 0.0,
+                    Length::Fill { .. } | Length::Fit => cross && align == Align::Stretch,
+                };
+                Self::pack(axis, main, cross)
+            }
+            LayoutInput::Scroll { axis, .. } | LayoutInput::AbsoluteRows { axis, .. } => {
+                Self::pack(axis, false, self.on(cross_of(axis)))
+            }
+            LayoutInput::Grid { align_items, .. } => Self {
+                width: !matches!(size.width, Length::Fit),
+                height: match size.height {
+                    Length::Fit => false,
+                    Length::Fill { .. } => align_items == AlignItems::Stretch,
+                    Length::Fixed(_) | Length::Relative { .. } => true,
+                },
+            },
+            LayoutInput::Leaf { .. } => self,
+        }
+    }
+}
+
+/// The extent a `Relative` length `fixed + pct × basis` takes: on a definite
+/// basis the sum, never negative; on an indefinite one a pure percentage falls
+/// back to `fallback` (what `Fit` would take) and a mixed length counts its
+/// percent as `0`, and layout reports [`LengthIssue::IndefiniteBasis`].
+#[inline]
+fn relative_extent(fixed: f32, pct: f32, basis: f32, definite: bool, fallback: f32) -> f32 {
+    if definite {
+        (fixed + pct * basis).max(0.0)
+    } else if fixed == 0.0 {
+        fallback
+    } else {
+        fixed.max(0.0)
+    }
 }
 
 /// Bottom-up measure pass: compute every node's natural size.
@@ -659,6 +757,18 @@ pub fn measure(tree: &mut impl LayoutTree, root: u32, scratch: &mut Vec<u32>) {
 /// laid recursively into the boxes computed here. `scratch` is a reusable
 /// child-id buffer.
 pub fn layout(tree: &mut impl LayoutTree, root: u32, bounds: Rect, scratch: &mut Vec<u32>) {
+    layout_on(tree, root, bounds, Basis::DEFINITE, scratch);
+}
+
+/// [`layout`] a node whose box is a percent basis only where `basis` says: a
+/// subtree re-laid in place passes the basis its ancestry gives it.
+pub fn layout_on(
+    tree: &mut impl LayoutTree,
+    root: u32,
+    bounds: Rect,
+    basis: Basis,
+    scratch: &mut Vec<u32>,
+) {
     // A hidden subtree lays out to a zero rect at the parent-assigned origin and
     // its children are never placed — it measured to zero, so the parent already
     // gave it a zero-extent slot; short-circuiting here also spares the whole
@@ -687,11 +797,11 @@ pub fn layout(tree: &mut impl LayoutTree, root: u32, bounds: Rect, scratch: &mut
             ..
         } => (axis, gap, padding, align, justify),
         LayoutInput::Scroll { axis, .. } => {
-            layout_scroll(tree, root, bounds, axis, scratch);
+            layout_scroll(tree, root, bounds, axis, basis, scratch);
             return;
         }
         LayoutInput::AbsoluteRows { axis, .. } => {
-            layout_absolute_rows(tree, root, bounds, axis, scratch);
+            layout_absolute_rows(tree, root, bounds, axis, basis, scratch);
             return;
         }
         LayoutInput::Leaf { .. } => return, // Leaf: bounds are final.
@@ -714,6 +824,8 @@ pub fn layout(tree: &mut impl LayoutTree, root: u32, bounds: Rect, scratch: &mut
     let cross = cross_of(axis);
     let main_extent = rect_len(bounds, axis) - padding.main(axis);
     let cross_extent = rect_len(bounds, cross) - padding.cross(axis);
+    let main_definite = basis.on(axis);
+    let cross_definite = basis.on(cross);
     let gaps_total = if child_count > 1 {
         gap * (child_count as f32 - 1.0)
     } else {
@@ -729,7 +841,11 @@ pub fn layout(tree: &mut impl LayoutTree, root: u32, bounds: Rect, scratch: &mut
         match tree.input(child).size().on(axis) {
             Length::Fill { weight } => weight_total += weight.max(0.0),
             Length::Fit => fixed_main += tree.measured(child).on(axis),
-            len => fixed_main += len.resolve(main_extent).unwrap_or(0.0),
+            Length::Fixed(v) => fixed_main += v,
+            Length::Relative { fixed, pct } => {
+                let natural = tree.measured(child).on(axis);
+                fixed_main += relative_extent(fixed, pct, main_extent, main_definite, natural);
+            }
         }
     }
 
@@ -763,10 +879,17 @@ pub fn layout(tree: &mut impl LayoutTree, root: u32, bounds: Rect, scratch: &mut
     // id is `Copy`d out before the recursive `&mut scratch` borrow.
     for i in 0..child_count {
         let child = scratch[start + i];
-        let size = tree.input(child).size();
+        let input = tree.input(child);
+        let size = input.size();
         let main_size = match size.on(axis) {
             Length::Fixed(v) => v,
-            len @ Length::Relative { .. } => len.resolve(main_extent).unwrap_or(0.0),
+            Length::Relative { fixed, pct } => {
+                if !main_definite {
+                    tree.report_length(child, LengthIssue::IndefiniteBasis);
+                }
+                let natural = tree.measured(child).on(axis);
+                relative_extent(fixed, pct, main_extent, main_definite, natural)
+            }
             Length::Fit => tree.measured(child).on(axis),
             Length::Fill { weight } => {
                 if weight_total > 0.0 {
@@ -786,7 +909,16 @@ pub fn layout(tree: &mut impl LayoutTree, root: u32, bounds: Rect, scratch: &mut
         };
         // A cross-axis Fixed or Relative request overrides alignment-derived
         // sizing; a relative one resolves against the content box's cross extent.
-        let cross_size = size.cross(axis).resolve(cross_extent).unwrap_or(cross_size);
+        let cross_size = match size.cross(axis) {
+            Length::Fixed(v) => v,
+            Length::Relative { fixed, pct } => {
+                if !cross_definite {
+                    tree.report_length(child, LengthIssue::IndefiniteBasis);
+                }
+                relative_extent(fixed, pct, cross_extent, cross_definite, cross_size)
+            }
+            Length::Fill { .. } | Length::Fit => cross_size,
+        };
 
         let child_box = axis_rect(
             axis,
@@ -804,7 +936,8 @@ pub fn layout(tree: &mut impl LayoutTree, root: u32, bounds: Rect, scratch: &mut
             cross_size
         };
         tree.request_text_reflow(child, assigned_width);
-        layout(tree, child, child_box, scratch);
+        let child_basis = basis.child(tree.input(root), input);
+        layout_on(tree, child, child_box, child_basis, scratch);
 
         cursor += main_size + gap;
     }
@@ -828,6 +961,7 @@ fn layout_scroll(
     root: u32,
     bounds: Rect,
     axis: Axis,
+    basis: Basis,
     scratch: &mut Vec<u32>,
 ) {
     let start = scratch.len();
@@ -856,7 +990,14 @@ fn layout_scroll(
         cross_size,
     );
     tree.set_content(root, axis_pack_vec(axis, main_size, cross_size));
-    layout(tree, content, content_box, scratch);
+    // The scrolling axis is unbounded: a fill there takes the content's
+    // natural extent, as a fit does.
+    let input = tree.input(content);
+    if matches!(input.size().on(axis), Length::Fill { .. }) {
+        tree.report_length(content, LengthIssue::IndefiniteBasis);
+    }
+    let content_basis = basis.child(tree.input(root), input);
+    layout_on(tree, content, content_box, content_basis, scratch);
 }
 
 /// Lay out an [`LayoutInput::AbsoluteRows`] canvas: place each mounted child at
@@ -871,6 +1012,7 @@ fn layout_absolute_rows(
     root: u32,
     bounds: Rect,
     axis: Axis,
+    basis: Basis,
     scratch: &mut Vec<u32>,
 ) {
     let start = scratch.len();
@@ -904,7 +1046,8 @@ fn layout_absolute_rows(
             main_size,
             cross_size,
         );
-        layout(tree, child, child_box, scratch);
+        let child_basis = basis.child(tree.input(root), tree.input(child));
+        layout_on(tree, child, child_box, child_basis, scratch);
     }
     scratch.truncate(start);
 }
@@ -1333,7 +1476,8 @@ fn layout_grid(
                     sub_rows.then(|| (&s.row_sizes[ci(r.row, r.row_span, &s.row_sizes)], row_gap));
                 layout_grid(tree, child, child_box, col_slice, row_slice, scratch);
             } else {
-                layout(tree, child, child_box, scratch);
+                let child_basis = Basis::DEFINITE.child(tree.input(root), tree.input(child));
+                layout_on(tree, child, child_box, child_basis, scratch);
             }
         }
     });

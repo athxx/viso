@@ -22,6 +22,7 @@ pub mod hit_test;
 pub mod input;
 pub mod inspect;
 pub mod layout;
+pub mod length;
 pub mod node;
 pub mod paint;
 pub mod reactive;
@@ -61,7 +62,10 @@ pub use inspect::{
     InspectFlags, InspectKind, InspectNode, InspectSnapshot, InspectTree, PaintRange, PaintRanges,
     paint_ranges, snapshot_ui,
 };
-pub use layout::{Align, Axis, Inset, Justify, Length, Size, Vec2};
+pub use layout::{Align, Axis, Basis, Inset, Justify, Length, Size, Vec2};
+pub use length::{
+    LengthDeps, LengthEnv, LengthIssue, LengthStats, LengthTerms, LengthWarning, NodeLengths,
+};
 pub use node::{NodeArena, NodeId, NodeLinks};
 pub use paint::paint_tree;
 pub use viso_runtime::Instant;

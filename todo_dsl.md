@@ -297,8 +297,23 @@ Goal: every Core view construct reaches a live tree through all three lowering t
       `Length::Relative` in `viso-ui`, AOT tag `LEN_RELATIVE`.
 - [ ] `px`/`sp`/`em` terms: lower to a `LengthTerms` value resolved at layout with
       `scale_factor`, text scale and resolved font size (ADR 0033).
-- [ ] Typography context passes resolved font size down the ancestry.
-- [ ] `E3105` indeterminate basis and `E3106` non-finite length as debug warnings.
+  - [x] `viso-ui` `LengthTerms` / `NodeLengths` bound in a sparse side table and
+        folded at layout start against `LengthEnv`; only bindings whose inputs
+        changed refold, and only a changed value dirties its node. Release
+        bench `length_fold`.
+  - [x] The facade follows the window scale factor.
+  - [ ] Lowering: a constant with any `px`/`sp`/`em` term lands in `LengthsIr`;
+        the macros, the hot-reload commit (patching kept nodes in place) and
+        the AOT package bind it, and packaged boxes match live ones.
+- [x] Typography context passes resolved font size down the ancestry.
+  - [x] `font_size` makes a node the typography source of its subtree; `em` and
+        `%` inside it read the parent's, the root reads `base_font_size`.
+  - [x] `resolved_font_size` reads a node's folded size.
+- [x] `E3105` indeterminate basis and `E3106` non-finite length as debug warnings.
+  - [x] The percent basis's definiteness threads through layout; an indefinite
+        one resolves `%` to `0`.
+  - [x] Each is reported once per node and kind through
+        `take_length_warnings` in debug builds; `length_stats` always counts.
 
 ### Done
 
