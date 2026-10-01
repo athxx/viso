@@ -608,6 +608,10 @@ struct WindowState {
     /// Reusable buffer of redo roots for incremental relayout, owned here so a
     /// relayout allocates nothing on the hot path.
     redo_roots: Vec<NodeId>,
+    /// The failed-reload panel drawn over the tree, while an edit of a view
+    /// this window mounts does not compile.
+    #[cfg(feature = "hot-reload")]
+    dev_overlay: Option<NodeId>,
     /// How much each layer recomputed on the most recent frame — surfaced for
     /// diagnostics and asserted by tests to confirm only the dirty subtree moved.
     recompute: FrameRecompute,
@@ -736,6 +740,8 @@ impl WindowState {
             primitives: Vec::new(),
             scratch: Vec::new(),
             redo_roots: Vec::new(),
+            #[cfg(feature = "hot-reload")]
+            dev_overlay: None,
             recompute: FrameRecompute::default(),
             awaiting_first_frame: true,
             text: None,
@@ -1133,6 +1139,8 @@ impl WindowState {
             self.store.resolve_interaction_styles(&self.states);
         }
         let painted = self.store.repaint_dirty(root, &mut self.primitives);
+        #[cfg(feature = "hot-reload")]
+        let painted = painted + hot_reload::overlay::paint(self, surface, painted);
         self.recompute = FrameRecompute {
             measured,
             laid_out,

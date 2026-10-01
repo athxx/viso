@@ -11,6 +11,7 @@ use std::io::Write as _;
 use std::ops::Range;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
+use viso_dsl::hotreload::event::ReloadEvent;
 use viso_ende::JsonWriter;
 
 use super::{Location, Report, Source};
@@ -49,6 +50,37 @@ impl Stream {
     /// Writes a `result` event with the payload `payload` writes.
     pub(super) fn result(&mut self, payload: impl FnOnce(&mut JsonWriter)) {
         self.event("result", payload);
+    }
+
+    /// Writes a `progress` event.
+    pub(super) fn progress(&mut self, phase: &str, message: &str) {
+        self.event("progress", |w| {
+            w.begin_object();
+            w.name("phase");
+            w.string(phase);
+            w.name("message");
+            w.string(message);
+            w.end_object();
+        });
+    }
+
+    /// Writes a `log` event.
+    pub(super) fn log(&mut self, level: &str, source: &str, message: &str) {
+        self.event("log", |w| {
+            w.begin_object();
+            w.name("level");
+            w.string(level);
+            w.name("source");
+            w.string(source);
+            w.name("message");
+            w.string(message);
+            w.end_object();
+        });
+    }
+
+    /// Writes the `dev` event of a hot reload attempt of `file`.
+    pub(super) fn dev(&mut self, file: &str, session: &str, build_id: &str, event: &ReloadEvent) {
+        self.event("dev", |w| dev(w, file, session, build_id, event));
     }
 
     /// Writes the closing `summary` event. `checked` is the package and file count
@@ -116,6 +148,52 @@ impl Stream {
         // says how the command went.
         let _ = std::io::stdout().lock().write_all(line.as_bytes());
     }
+}
+
+/// The section 36.4 `dev` payload, then what the commit kept and lost.
+fn dev(w: &mut JsonWriter, file: &str, session: &str, build_id: &str, event: &ReloadEvent) {
+    w.begin_object();
+    w.name("dev_session_id");
+    w.string(session);
+    w.name("build_id");
+    w.string(build_id);
+    w.name("file");
+    w.string(file);
+    w.name("base_revision");
+    w.uint(u64::from(event.base_revision));
+    w.name("candidate_revision");
+    w.uint(u64::from(event.candidate_revision));
+    w.name("patch_class");
+    match event.outcome.patch_class() {
+        Some(class) => w.string(class),
+        None => w.null(),
+    }
+    w.name("outcome");
+    w.string(event.outcome.as_str());
+    w.name("stage");
+    w.string(event.stage.as_str());
+    w.name("diagnostic_codes");
+    w.begin_array();
+    for code in event.codes() {
+        w.string(code);
+    }
+    w.end_array();
+    w.name("last_good_revision");
+    w.uint(u64::from(event.last_good_revision));
+    w.name("elapsed_ms");
+    w.number(event.elapsed_us as f64 / 1000.0);
+    for (name, count) in [
+        ("mounts", event.mounts),
+        ("migrated", event.migrated),
+        ("reset", event.reset),
+        ("focus_lost", event.focus_lost),
+        ("scroll_lost", event.scroll_lost),
+        ("handlers_lost", event.handlers_lost),
+    ] {
+        w.name(name);
+        w.uint(u64::from(count));
+    }
+    w.end_object();
 }
 
 /// The section 138 diagnostic object.
@@ -331,6 +409,43 @@ mod tests {
                 r#"{"file":null,"byte_start":0,"byte_end":0,"replacement":""}]"#,
             )),
             "{json}"
+        );
+    }
+
+    #[test]
+    fn a_rejected_reload_is_a_dev_payload_with_its_stage_and_codes() {
+        use viso_dsl::hotreload::event::{ReloadOutcome, ReloadStage};
+        let event = ReloadEvent {
+            file: "/p/src/view.vs".into(),
+            source: "state count = ;".into(),
+            base_revision: 2,
+            candidate_revision: 3,
+            last_good_revision: 2,
+            outcome: ReloadOutcome::Rejected,
+            stage: ReloadStage::Parse,
+            elapsed_us: 1500,
+            mounts: 0,
+            migrated: 0,
+            reset: 0,
+            focus_lost: 0,
+            scroll_lost: 0,
+            handlers_lost: 0,
+            diagnostics: vec![
+                Diagnostic::error("E1001", range(14, 14), "expected an expression"),
+                Diagnostic::error("E1001", range(15, 15), "expected an expression"),
+            ],
+        };
+        let mut w = JsonWriter::new();
+        dev(&mut w, "src/view.vs", "s1", "b1", &event);
+        assert_eq!(
+            w.into_string(),
+            concat!(
+                r#"{"dev_session_id":"s1","build_id":"b1","file":"src/view.vs","#,
+                r#""base_revision":2,"candidate_revision":3,"patch_class":null,"#,
+                r#""outcome":"rejected","stage":"parse","diagnostic_codes":["E1001"],"#,
+                r#""last_good_revision":2,"elapsed_ms":1.5,"mounts":0,"migrated":0,"#,
+                r#""reset":0,"focus_lost":0,"scroll_lost":0,"handlers_lost":0}"#,
+            )
         );
     }
 
