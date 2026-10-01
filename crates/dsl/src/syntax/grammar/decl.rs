@@ -266,11 +266,12 @@ fn state_decl(p: &mut Parser) {
         super::types::type_(p);
     }
     // A missing `=` still parses the value that follows, so recovery reports
-    // only the absent token.
-    if !p.eat(SyntaxKind::Eq) {
+    // only the absent token; an `=` with no value is a missing expression.
+    let eq = p.eat(SyntaxKind::Eq);
+    if !eq {
         p.error(ParseErrorKind::MissingToken);
     }
-    if !p.at(SyntaxKind::Semi) {
+    if eq || !p.at(SyntaxKind::Semi) {
         super::expr::expr(p);
     }
     p.expect(SyntaxKind::Semi);
@@ -286,11 +287,12 @@ fn computed_decl(p: &mut Parser) {
         super::types::type_(p);
     }
     // A missing `=` still parses the value that follows, so recovery reports
-    // only the absent token.
-    if !p.eat(SyntaxKind::Eq) {
+    // only the absent token; an `=` with no value is a missing expression.
+    let eq = p.eat(SyntaxKind::Eq);
+    if !eq {
         p.error(ParseErrorKind::MissingToken);
     }
-    if !p.at(SyntaxKind::Semi) {
+    if eq || !p.at(SyntaxKind::Semi) {
         super::expr::expr(p);
     }
     p.expect(SyntaxKind::Semi);
@@ -457,11 +459,12 @@ fn const_decl(p: &mut Parser) {
     p.expect(SyntaxKind::Colon);
     super::types::type_(p);
     // A missing `=` still parses the value that follows, so recovery reports
-    // only the absent token.
-    if !p.eat(SyntaxKind::Eq) {
+    // only the absent token; an `=` with no value is a missing expression.
+    let eq = p.eat(SyntaxKind::Eq);
+    if !eq {
         p.error(ParseErrorKind::MissingToken);
     }
-    if !p.at(SyntaxKind::Semi) {
+    if eq || !p.at(SyntaxKind::Semi) {
         super::expr::expr(p);
     }
     p.expect(SyntaxKind::Semi);
