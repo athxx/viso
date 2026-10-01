@@ -540,6 +540,12 @@ impl<'a> EventCx<'a> {
         self.states.get(id)
     }
 
+    /// The adaptive environment, as of the last settle.
+    #[inline]
+    pub fn env(&self) -> &crate::adaptive::AdaptiveEnv {
+        self.states.env()
+    }
+
     /// Write a state value. Deferred: recorded in this frame's pending set and
     /// applied to bound nodes by the flush phase, not here. Returns whether the
     /// write landed (the handle was live). Setting the current value is a no-op.

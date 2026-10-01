@@ -468,7 +468,9 @@ impl<'a> InferCx<'a> {
     pub(crate) fn resolution_ty(&self, to: &Resolution) -> Ty {
         match to {
             Resolution::Local(slot) => self.locals.get(slot).cloned().unwrap_or(Ty::Unknown),
-            Resolution::Symbol(_) => self.env.resolution_ty(to).unwrap_or(Ty::Unknown),
+            Resolution::Symbol(_) | Resolution::Env => {
+                self.env.resolution_ty(to).unwrap_or(Ty::Unknown)
+            }
             Resolution::Native(_) => Ty::Unknown,
         }
     }
@@ -1660,14 +1662,14 @@ mod tests {
         fn resolution_ty(&self, to: &Resolution) -> Option<Ty> {
             match to {
                 Resolution::Symbol(id) => self.tys.get(id).cloned(),
-                Resolution::Local(_) | Resolution::Native(_) => None,
+                Resolution::Local(_) | Resolution::Native(_) | Resolution::Env => None,
             }
         }
 
         fn callee_signature(&self, to: &Resolution) -> Option<(Vec<Ty>, Ty)> {
             match to {
                 Resolution::Symbol(id) => self.sigs.get(id).cloned(),
-                Resolution::Local(_) | Resolution::Native(_) => None,
+                Resolution::Local(_) | Resolution::Native(_) | Resolution::Env => None,
             }
         }
     }

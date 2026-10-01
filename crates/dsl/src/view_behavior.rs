@@ -10,6 +10,7 @@ use std::rc::Rc;
 
 use viso_behavior::Module;
 use viso_ui::StateValue;
+use viso_ui::adaptive::EnvField;
 pub use viso_view::Control;
 use viso_view::{ControlKind, EventRoute, Route, ViewHost, ViewRegions};
 
@@ -71,6 +72,20 @@ pub struct ViewBehavior {
     /// Each view-driven native node, by ascending node key: a control's
     /// response and a label's text.
     controls: Vec<(NodeKey, Control)>,
+    /// Each `env` field the view reads.
+    pub env: Vec<EnvRead>,
+}
+
+/// An `env` field a view reads.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EnvRead {
+    /// The component's state slot holding it.
+    pub slot: u32,
+    /// The field.
+    pub field: EnvField,
+    /// The root node of the component instance that reads it, where its
+    /// anchored fields resolve.
+    pub anchor: NodeKey,
 }
 
 impl ViewBehavior {
@@ -138,7 +153,12 @@ pub fn view_behavior(compiled: &Compiled) -> Result<Option<ViewBehavior>, Vec<Mo
     for item in &compiled.tree.items {
         walk.item(item);
     }
-    let Walk { sites, nodes, .. } = walk;
+    let Walk {
+        sites,
+        nodes,
+        roots,
+        ..
+    } = walk;
     let regions = has_regions(&compiled.tree);
     if sites.is_empty() && !regions && (nodes.is_empty() || compiled.component.is_none()) {
         return Ok(None);
@@ -277,6 +297,18 @@ pub fn view_behavior(compiled: &Compiled) -> Result<Option<ViewBehavior>, Vec<Mo
         .filter(|source| matches!(source.kind, SourceKind::State { .. }))
         .filter_map(|source| Some((source.symbol, states.state(&source.name)? as u32)))
         .collect();
+    let env = layout
+        .env
+        .iter()
+        .filter_map(|read| {
+            let &(_, anchor) = roots.iter().find(|(i, _)| *i == read.instance)?;
+            Some(EnvRead {
+                slot: read.slot,
+                field: read.field,
+                anchor,
+            })
+        })
+        .collect();
     let bytes = module.encode();
     Ok(Some(ViewBehavior {
         module,
@@ -286,6 +318,7 @@ pub fn view_behavior(compiled: &Compiled) -> Result<Option<ViewBehavior>, Vec<Mo
         regions,
         routes,
         controls,
+        env,
     }))
 }
 
@@ -299,6 +332,8 @@ struct Walk<'a> {
     sites: Vec<(NodeKey, Option<ControlKind>, &'a str, Site)>,
     /// Each view-driven native node: a control, or a label showing a text.
     nodes: Vec<(NodeKey, ControlKind, &'a UiNode)>,
+    /// Each component instance's root node, the first of its view's nodes.
+    roots: Vec<(u32, NodeKey)>,
 }
 
 impl<'a> Walk<'a> {
@@ -328,6 +363,9 @@ impl<'a> Walk<'a> {
     fn node(&mut self, node: &'a UiNode) {
         let own = NodeKey(self.key);
         self.key += 1;
+        if !self.roots.iter().any(|(i, _)| *i == node.instance) {
+            self.roots.push((node.instance, own));
+        }
         let kind = ControlKind::of(&node.type_name);
         if let Some(kind) = kind
             && (kind.responds() || !node.control_reads.is_empty())

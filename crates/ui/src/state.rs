@@ -21,6 +21,8 @@
 
 use std::collections::HashMap;
 
+use crate::adaptive::AdaptiveEnv;
+
 /// A compact generational handle to a stored state value.
 ///
 /// Like [`crate::node::NodeId`], the generation makes a handle to a freed slot
@@ -124,6 +126,9 @@ pub struct StateStore {
     /// at build/reload time, never on a frame path (section 45), so a hash map
     /// is fine.
     keys: HashMap<StateKey, StateId>,
+    /// The adaptive environment, published through revision cells of this
+    /// store.
+    pub(crate) env: AdaptiveEnv,
 }
 
 impl StateStore {

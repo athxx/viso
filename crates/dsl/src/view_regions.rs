@@ -14,8 +14,8 @@ use std::collections::{HashMap, HashSet};
 
 use viso_ui::state::StateKey;
 use viso_view::{
-    ArmTemplate, CellRef, Control, GroupTemplate, ItemTemplate, LocalTemplate, RegionKind,
-    RegionTemplate, Route, SlotTemplate, ViewRegions,
+    ArmTemplate, CellRef, Control, EnvTemplate, GroupTemplate, ItemTemplate, LocalTemplate,
+    RegionKind, RegionTemplate, Route, SlotTemplate, ViewRegions,
 };
 
 use crate::aot::{aot_kind, aot_style};
@@ -332,13 +332,16 @@ impl Builder<'_> {
         for (items, preserve) in arms(item).into_iter().zip(preserves) {
             let mut out = Vec::new();
             let mut locals = Vec::new();
+            let mut env = Vec::new();
             for item in items {
-                self.content(item, &mut out, &mut locals);
+                self.content(item, &mut out, &mut locals, &mut env);
             }
             locals.sort_unstable_by_key(|local: &LocalTemplate| local.slot);
+            env.sort_unstable_by_key(|env: &EnvTemplate| env.slot);
             arms_out.push(ArmTemplate {
                 preserve,
                 locals,
+                env,
                 items: out,
             });
         }
@@ -348,12 +351,14 @@ impl Builder<'_> {
 
     /// Flattens one item of a region arm into `out`, in pre-order, and
     /// collects into `locals` the states of the instances whose view first
-    /// appears there.
+    /// appears there, and into `env` the `env` fields they read, anchored at
+    /// the instance's root.
     fn content(
         &mut self,
         item: &UiItem,
         out: &mut Vec<ItemTemplate>,
         locals: &mut Vec<LocalTemplate>,
+        env: &mut Vec<EnvTemplate>,
     ) {
         let UiItem::Node(node) = item else {
             let region = self.region(item);
@@ -367,16 +372,18 @@ impl Builder<'_> {
                 .iter()
                 .find(|r| r.instance == node.instance);
             if let Some(states) = states {
-                locals.extend(
-                    states
-                        .inits
-                        .iter()
-                        .enumerate()
-                        .map(|(at, &init)| LocalTemplate {
-                            slot: states.base + at as u32,
-                            init,
+                let anchor = out.len() as u32;
+                for (at, &init) in states.inits.iter().enumerate() {
+                    let slot = states.base + at as u32;
+                    match self.layout.env.iter().find(|env| env.slot == slot) {
+                        Some(read) => env.push(EnvTemplate {
+                            slot,
+                            field: read.field,
+                            anchor,
                         }),
-                );
+                        None => locals.push(LocalTemplate { slot, init }),
+                    }
+                }
             }
         }
         let key = NodeKey(self.key);
@@ -415,7 +422,7 @@ impl Builder<'_> {
             return;
         }
         for child in &node.children {
-            self.content(child, out, locals);
+            self.content(child, out, locals, env);
         }
         if let ItemTemplate::Node { node: template, .. } = &mut out[at] {
             template.child_count = node.children.len() as u32;
@@ -471,7 +478,7 @@ impl Builder<'_> {
         let local: HashSet<u32> = self.regional.values().copied().collect();
         let mut deps: Vec<CellRef> = Vec::with_capacity(slots.len());
         for slot in slots {
-            if local.contains(&slot) {
+            if local.contains(&slot) || self.layout.env.iter().any(|env| env.slot == slot) {
                 deps.push(CellRef::Local(slot));
             } else if let Some(symbol) = self.slots.get(slot as usize).copied().flatten() {
                 deps.push(CellRef::Shared(self.cell(symbol)));

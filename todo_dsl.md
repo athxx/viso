@@ -393,12 +393,75 @@ Goal: a file edit reaches the running app as one transaction or not at all.
 
 ## D4 — Adaptive UI (P1)
 
-- [ ] Typed adaptive environment, `LocalConstraints`, `AdaptiveScope`, `SizeClass`
-      (§96.2–§96.3).
-- [ ] Layout-phase evaluation order and `E4204` adaptive cycle (§96.5).
-- [ ] `SafeArea`, `KeyboardInset`, `DisplayFeature` (§96.6).
-- [ ] State preservation across adaptive branches (§96.8).
-- [ ] §96.10 acceptance scenarios as tests.
+Goal: views read a typed, layout-phase environment (`env`) whose changes invalidate
+exactly the readers they reach, with structural branches that converge or report
+`E4204` (§96).
+
+### D4.1 — Typed environment in the compiler
+
+- [x] Prelude environment types: `Rect`, `Insets`, `WindowMetrics`, `LocalConstraints`,
+      `KeyboardInset`, `InputCapabilities`, `PointerPrecision`, `Locale`, `SizeClass`,
+      `Orientation`, `LayoutDirection`, `DisplayFeature`, `Environment` (§96.2–§96.3,
+      §96.7, §U10.1).
+- [x] `env` resolves as the View execution domain's context binding typed `Environment`;
+      a local shadows it; reading it outside a view is `E2111`; it is not writable.
+- [x] `env.<field>` lowers to a per-component environment slot that each inlined child
+      instance gets its own copy of; a bare `env` reads every field.
+- [x] The view package carries each environment slot's field and anchor node, in both
+      the live and the encoded form.
+
+### D4.2 — Runtime environment
+
+- [x] `AdaptiveEnv`: every field a revision cell raised only on change, with a settable
+      `SizeClassPolicy`.
+  - [x] Window-wide fields share one cell per field; `update_env` raises only the
+        fields that changed.
+  - [x] `SizeClassPolicy` (medium 600, expanded 840); a zero-width window is compact.
+- [x] Anchored fields: `size_class` and `constraints` per instance, resolved from the
+      nearest `AdaptiveScope` ancestor (else the window), written only on change.
+  - [x] `anchor_env` / `anchor_cell` / `release_anchor` (generation-checked) and a
+        wake cell per anchor.
+  - [x] `settle_env` resolves incoming constraints through content-sized parents and
+        scroll viewports; an unbounded scope inherits the class above.
+- [x] The view host reads environment slots (VM values cached per revision) and region
+      and value hooks depend on them; regional instances bind their own anchors.
+  - [x] Static instances: the package's `env` reads link at mount, in live commit,
+        release package and `__link_env` under the macros; released with the host.
+  - [x] Region hooks depend on the window cells of every arm's env reads.
+  - [x] An arm's instance env (`EnvTemplate`) merges into its locals: window cells
+        shared, anchored ones on a per-mount anchor woken through the arm's pulse,
+        released on unmount.
+  - [x] Headless tests: reloaded and packaged view, `component!`, `view!` and `ui!`.
+- [x] `AdaptiveScope` widget: classifies by its incoming max width (optional static
+      `basis`); a resize that keeps the class rebuilds nothing.
+  - [x] Schema widget (a column) with `basis: Option<MixedLength>`; a non-constant or
+        non-`dp` basis is `E3711`.
+  - [x] Built by `BuildCx::adaptive_scope` on every path (macros, live commit,
+        release package, regions); hot reload re-marks a kept node; dead scopes are
+        pruned at settle.
+
+### D4.3 — Layout-phase evaluation and `E4204`
+
+- [ ] Frame order: layout → environment settle → state settle → relayout, bounded; a
+      structure that does not converge reports `E4204` and keeps the last structure
+      (§96.5).
+
+### D4.4 — Safe area, keyboard and display features
+
+- [ ] The app feeds window metrics, safe area, keyboard inset, display features, input
+      capabilities, text scale, reduced motion and locale into the environment;
+      headless tests set them directly.
+- [ ] `SafeArea` and `KeyboardAvoiding` widgets pad from the environment, without
+      double-padding under the root safe-area wrap.
+- [ ] `DisplayFeature` hinge/fold/cutout list readable from a view (§96.6).
+
+### D4.5 — Preservation and acceptance
+
+- [ ] Focus, scroll offset and text survive switching adaptive branches when the node
+      is preserved (§96.8).
+- [ ] §96.10 acceptance matrix as headless tests: phone portrait/landscape, tablet
+      full/split, desktop narrow/wide, keyboard, safe area, fold/hinge, text scale,
+      mouse vs touch.
 
 ---
 

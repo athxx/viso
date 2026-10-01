@@ -37,8 +37,9 @@ pub struct MountRecord {
     /// The behavior host the view's nodes dispatch into, if it has behavior.
     pub host: Option<Rc<RefCell<ViewHost>>>,
     /// The template key of each static node of a view with regions, which
-    /// interleave with the static nodes so the tree alone does not name them;
-    /// empty for a view without regions.
+    /// interleave with the static nodes so the tree alone does not name them,
+    /// or with `env` reads, which anchor at them; empty for a view with
+    /// neither.
     pub nodes: Vec<(u32, NodeId)>,
 }
 
@@ -58,7 +59,7 @@ pub fn take_mounts(out: &mut Vec<MountRecord>) {
     MOUNTS.with(|mounts| out.append(&mut mounts.borrow_mut()));
 }
 
-/// The static nodes of a view with regions, pairing each static ordinal's
+/// The static nodes of a view with regions or `env` reads, pairing each static ordinal's
 /// template key with the node recorded for it.
 #[doc(hidden)]
 pub fn __static_nodes(keys: &[u32], ids: &[Option<NodeId>]) -> Vec<(u32, NodeId)> {

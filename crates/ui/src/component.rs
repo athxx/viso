@@ -2819,6 +2819,22 @@ impl<'a> BuildCx<'a> {
         Handle { id }
     }
 
+    /// Declare a flex container that is an adaptive scope: the readers under
+    /// it get the size class of `basis` dp when given, else of the width its
+    /// parent gives it. A node-only cx builds the container alone.
+    pub fn adaptive_scope(
+        &mut self,
+        basis: Option<f32>,
+        style: FlexStyle,
+        children: impl FnOnce(&mut BuildCx<'_>),
+    ) -> Handle {
+        let handle = self.flex(style, children);
+        if let Some(states) = self.states.as_deref_mut() {
+            states.mark_adaptive_scope(handle.id, basis);
+        }
+        handle
+    }
+
     /// Declare a grid container and its children. The `children` closure runs
     /// with this grid as the active parent; each child lands in a cell (auto-flow
     /// unless a preceding [`BuildCx::place`] pinned it). A child inside a cell

@@ -29,10 +29,12 @@
 //! compiler absent.
 
 use viso_ende::Encode;
-use viso_ui::aot::{AotAxis, AotEdge, AotLength, AotNode, AotNodeKind, AotPackage, AotStyle};
+use viso_ui::aot::{
+    AotAxis, AotEdge, AotLength, AotNode, AotNodeKind, AotPackage, AotScope, AotStyle,
+};
 use viso_ui::state::StateKey;
 use viso_ui::{LengthTerms, NodeLengths, StateValue};
-use viso_view::{ViewControl, ViewHandler, ViewPackage, ViewState};
+use viso_view::{ViewControl, ViewEnv, ViewHandler, ViewPackage, ViewState};
 
 use crate::diag::Diagnostic;
 use crate::frontend::Origin;
@@ -122,6 +124,17 @@ pub fn emit_view_package(plan: &CandidatePlan) -> ViewPackage {
             })
         })
         .collect();
+    let env = view
+        .env
+        .iter()
+        .filter_map(|read| {
+            Some(ViewEnv {
+                slot: read.slot,
+                field: read.field,
+                anchor: statics.ordinal(read.anchor)?,
+            })
+        })
+        .collect();
     ViewPackage {
         ui,
         behavior: view.bytes.clone(),
@@ -130,6 +143,7 @@ pub fn emit_view_package(plan: &CandidatePlan) -> ViewPackage {
         handlers,
         controls,
         regions: view.regions.clone(),
+        env,
     }
 }
 
@@ -244,6 +258,7 @@ pub(crate) fn aot_style(style: &StyleIr) -> AotStyle {
         height: style.height.map(aot_length),
         gap: style.gap,
         lengths: node_lengths(style.lengths()).map(Box::new),
+        scope: style.scope.map(|scope| AotScope { basis: scope.basis }),
     }
 }
 

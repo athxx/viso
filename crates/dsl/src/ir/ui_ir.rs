@@ -223,6 +223,16 @@ pub struct StyleIr {
     /// The constant lengths that fold against the environment at layout;
     /// boxed, as few nodes have any. Read through [`lengths`](Self::lengths).
     pub lengths: Option<Box<LengthsIr>>,
+    /// The adaptive scope the node establishes, when it is one.
+    pub scope: Option<ScopeIr>,
+}
+
+/// An adaptive scope: the node its subtree's `env.size_class` classifies.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct ScopeIr {
+    /// The constant width in dp it classifies, else the width its parent
+    /// gives it.
+    pub basis: Option<f32>,
 }
 
 impl StyleIr {
@@ -233,6 +243,7 @@ impl StyleIr {
             && self.height.is_none()
             && self.gap.is_none()
             && self.lengths().is_empty()
+            && self.scope.is_none()
     }
 
     /// The lengths that fold against the environment, empty when there are none.

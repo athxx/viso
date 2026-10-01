@@ -6,6 +6,7 @@ use std::fmt;
 use std::rc::Rc;
 
 use viso_ende::{Decode, DecodeError, Decoder, Encode, Encoder, ProtocolTag};
+use viso_ui::adaptive::EnvField;
 use viso_ui::aot::{AotPackage, instantiate_indexed};
 use viso_ui::state::StateKey;
 use viso_ui::{
@@ -39,6 +40,20 @@ pub struct ViewPackage {
     /// The control-flow regions, mounted under the nodes of
     /// [`ui`](Self::ui).
     pub regions: ViewRegions,
+    /// The `env` fields the view's static instances read.
+    pub env: Vec<ViewEnv>,
+}
+
+/// An `env` field a view reads.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ViewEnv {
+    /// The component's state slot holding it.
+    pub slot: u32,
+    /// The field.
+    pub field: EnvField,
+    /// The pre-order index in [`ViewPackage::ui`] of the root node of the
+    /// component instance that reads it, where its anchored fields resolve.
+    pub anchor: u32,
 }
 
 /// A native control node of [`ViewPackage::ui`].
@@ -118,8 +133,8 @@ pub fn load_view(
 }
 
 /// Instantiates a decoded view into the runtime: its state cells first, with
-/// their initial values, then the tree, then the host, its handlers, its
-/// control-flow regions and the values its nodes show.
+/// their initial values, then the tree, then the host, its `env` reads, its
+/// handlers, its control-flow regions and the values its nodes show.
 pub fn instantiate_view(
     package: &ViewPackage,
     store: &mut NodeStore,
@@ -155,6 +170,12 @@ pub fn instantiate_view(
     }
     let mut node_ids = Vec::new();
     let root = instantiate_indexed(&package.ui, store, states, bindings, lists, &mut node_ids);
+    if let Some(host) = &mut host {
+        for read in &package.env {
+            let anchor = node_ids.get(read.anchor as usize).copied().flatten();
+            host.link_env(read.slot as usize, read.field, anchor, states);
+        }
+    }
     let Some(host) = host.map(|host| Rc::new(RefCell::new(host))) else {
         return Ok(LoadedView { root, host: None });
     };
@@ -263,6 +284,12 @@ impl Encode for ViewPackage {
             control.control.encode(enc);
         }
         self.regions.encode(enc);
+        enc.write_varint(self.env.len() as u64);
+        for env in &self.env {
+            enc.write_varint(u64::from(env.slot));
+            enc.write_u8(env.field.tag());
+            enc.write_varint(u64::from(env.anchor));
+        }
     }
 }
 
@@ -324,6 +351,20 @@ impl Decode for ViewPackage {
             controls.push(ViewControl { node, control });
         }
         let regions = ViewRegions::decode(dec)?;
+        let count = dec.read_varint()?;
+        let mut env = Vec::with_capacity(bounded_capacity(count));
+        for _ in 0..count {
+            let slot = read_u32(dec)?;
+            let offset = dec.position();
+            let field =
+                EnvField::from_tag(dec.read_u8()?).ok_or(DecodeError::Malformed { offset })?;
+            let anchor = read_u32(dec)?;
+            env.push(ViewEnv {
+                slot,
+                field,
+                anchor,
+            });
+        }
         Ok(ViewPackage {
             ui,
             behavior,
@@ -332,6 +373,7 @@ impl Decode for ViewPackage {
             handlers,
             controls,
             regions,
+            env,
         })
     }
 }
@@ -359,12 +401,21 @@ mod tests {
             }],
             controls: Vec::new(),
             regions: ViewRegions::default(),
+            env: vec![ViewEnv {
+                slot: 1,
+                field: EnvField::SizeClass,
+                anchor: 0,
+            }],
         };
         let bytes = package.encode_to_vec();
         assert_eq!(ViewPackage::decode_from_slice(&bytes), Ok(package));
         let mut bad = bytes.clone();
-        let route = bytes.len() - 3 - ViewRegions::default().encode_to_vec().len();
+        let env = 4;
+        let route = bytes.len() - env - 3 - ViewRegions::default().encode_to_vec().len();
         bad[route] = 99;
+        assert!(ViewPackage::decode_from_slice(&bad).is_err());
+        let mut bad = bytes.clone();
+        bad[bytes.len() - 2] = 12;
         assert!(ViewPackage::decode_from_slice(&bad).is_err());
     }
 }

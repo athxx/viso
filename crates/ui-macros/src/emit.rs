@@ -87,7 +87,7 @@ pub fn emit_view(
         behavior,
         next_key: 0,
         next_static: 0,
-        record_ids: regions.is_some(),
+        record_ids: regions.is_some() || behavior.is_some_and(|b| !b.env.is_empty()),
         static_keys: Vec::new(),
         shown: Vec::new(),
         missing_source: None,
@@ -96,14 +96,39 @@ pub fn emit_view(
     let mut root = ctx.emit_item(&tree.items[0]);
     let mut record = record;
 
-    if let Some(behavior) = regions {
-        let bytes = Literal::byte_string(&behavior.region_bytes());
+    if let Some(behavior) = behavior.filter(|_| ctx.record_ids) {
         let count = ctx.next_static as usize;
-        let mut cells: Vec<(&SymbolId, &Ident)> = sources.iter().collect();
-        cells.sort_unstable_by_key(|(symbol, _)| (symbol.hi, symbol.lo));
-        let cells = cells.into_iter().map(|(symbol, local)| {
-            let (hi, lo) = (symbol.hi, symbol.lo);
-            quote! { (::viso_ui::state::StateKey::from_parts(#hi, #lo), #local) }
+        let reads = behavior.env.iter().map(|read| {
+            let slot = read.slot as usize;
+            let field = read.field.tag();
+            let anchor = match ctx.static_keys.iter().position(|&key| key == read.anchor.0) {
+                Some(ordinal) => quote! { ::core::option::Option::Some(#ordinal) },
+                None => quote! { ::core::option::Option::None },
+            };
+            quote! { (#slot, #field, #anchor) }
+        });
+        let link = if behavior.env.is_empty() {
+            quote! {}
+        } else {
+            quote! { ::viso_view::__link_env(cx, &__viso_host, &__viso_ids, &[#(#reads),*]); }
+        };
+        let mount = regions.map(|behavior| {
+            let bytes = Literal::byte_string(&behavior.region_bytes());
+            let mut cells: Vec<(&SymbolId, &Ident)> = sources.iter().collect();
+            cells.sort_unstable_by_key(|(symbol, _)| (symbol.hi, symbol.lo));
+            let cells = cells.into_iter().map(|(symbol, local)| {
+                let (hi, lo) = (symbol.hi, symbol.lo);
+                quote! { (::viso_ui::state::StateKey::from_parts(#hi, #lo), #local) }
+            });
+            quote! {
+                ::viso_view::__mount_embedded(
+                    cx,
+                    #bytes,
+                    &__viso_host,
+                    &__viso_ids,
+                    &[#(#cells),*],
+                );
+            }
         });
         let mounted = record.take().map(|record| {
             let keys = &ctx.static_keys;
@@ -120,13 +145,8 @@ pub fn emit_view(
                 let mut __viso_ids: [::core::option::Option<::viso_ui::NodeId>; #count] =
                     [::core::option::Option::None; #count];
                 let __viso_root = #root;
-                ::viso_view::__mount_embedded(
-                    cx,
-                    #bytes,
-                    &__viso_host,
-                    &__viso_ids,
-                    &[#(#cells),*],
-                );
+                #link
+                #mount
                 #mounted
                 __viso_root
             }
@@ -179,7 +199,8 @@ struct Emit<'a> {
     next_key: u32,
     /// The next static pre-order index.
     next_static: u32,
-    /// Whether each static node's id is recorded for the regions to mount under.
+    /// Whether each static node's id is recorded, for the regions to mount
+    /// under and the `env` reads to anchor at.
     record_ids: bool,
     /// The template key of each recorded static node, by static ordinal.
     static_keys: Vec<u32>,
@@ -328,7 +349,16 @@ impl Emit<'_> {
         Ok(match node.kind {
             NodeKind::Flex => {
                 let style = flex_style_tokens(&node.style);
-                quote! { cx.flex(#style, |cx| { #child_block }) }
+                match node.style.scope {
+                    Some(scope) => {
+                        let basis = match scope.basis {
+                            Some(basis) => quote! { ::core::option::Option::Some(#basis) },
+                            None => quote! { ::core::option::Option::None },
+                        };
+                        quote! { cx.adaptive_scope(#basis, #style, |cx| { #child_block }) }
+                    }
+                    None => quote! { cx.flex(#style, |cx| { #child_block }) },
+                }
             }
             NodeKind::Grid => {
                 // Grid style beyond the shared axis/size seam is a consuming-slice
