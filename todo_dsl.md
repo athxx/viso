@@ -378,11 +378,15 @@ Goal: a file edit reaches the running app as one transaction or not at all.
   - [x] A failed reload shows an in-app overlay over the last-good UI until
         the next good one.
   - [x] `viso run --json` streams the events in the CLI envelope.
-- [ ] Bench: edit-to-pixels latency for a one-property change (release measurement).
+- [x] Bench: edit-to-pixels latency for a one-property change (release measurement).
+  - [x] Release measurement split into watcher detection and reload +
+        relayout + repaint (median 44 ms, of which the pipeline is 0.9 ms).
+- [ ] Platform file events instead of polling, removing the poll and settle
+      latency that dominates edit-to-pixels.
 
 ### Done
 
-- [ ] Editing a label, a handler body and a state type in a running app each apply
+- [x] Editing a label, a handler body and a state type in a running app each apply
       without losing unrelated state; a broken edit leaves the last-good UI.
 
 ---

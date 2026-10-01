@@ -656,6 +656,67 @@ mod tests {
         assert!(ws.dev_overlay.is_some());
     }
 
+    /// Edit-to-pixels latency of a one-property edit, split into the
+    /// watcher's detection (save to staged) and the pipeline (reload, relayout
+    /// and repaint, without a GPU upload). A release measurement:
+    /// `cargo test --release -p viso --features hot-reload --lib -- --ignored
+    /// edit_to_pixels --nocapture`.
+    #[test]
+    #[ignore = "a release measurement"]
+    fn edit_to_pixels() {
+        const EDITS: usize = 60;
+        let (mut ws, path) = mounted("latency");
+        ws.surface_size = (800, 600);
+        let mut session = HotReloadSession::default();
+        session.adopt(|| LoopWaker::new(|| {}), &mut ws);
+        // A child's width, so the edit moves pixels (the root fills the
+        // surface). The first save adds the property and is not sampled.
+        let source = |width: f32| {
+            COUNTER.replace(
+                "Text { visible: enabled; }",
+                &format!("Text {{ visible: enabled; width: {width}dp; }}"),
+            )
+        };
+        save(&mut session, &mut ws, &path, &source(30.0));
+        ws.relayout_and_paint();
+        let mut detect = Vec::with_capacity(EDITS);
+        let mut pipeline = Vec::with_capacity(EDITS);
+        for n in 0..EDITS {
+            let width = if n % 2 == 0 { 40.0 } else { 30.0 };
+            // Spread the saves over the watcher's poll phase.
+            std::thread::sleep(Duration::from_millis(5 + (n as u64 * 7) % 25));
+            let saved = Instant::now();
+            std::fs::write(&path, source(width)).unwrap();
+            while !session.stage() {
+                std::thread::yield_now();
+            }
+            let staged = Instant::now();
+            session.reload(std::slice::from_mut(&mut ws));
+            ws.relayout_and_paint();
+            let painted = Instant::now();
+            assert_eq!(session.files[0].revision, n as u32 + 2);
+            let root = ws.root.unwrap();
+            assert_eq!(ws.store.bounds(children(&ws.store, root)[1]).w, width);
+            detect.push(staged - saved);
+            pipeline.push(painted - staged);
+        }
+        let summary = |name: &str, samples: &mut [Duration]| {
+            samples.sort();
+            let ms = |d: Duration| d.as_secs_f64() * 1e3;
+            println!(
+                "{name}: min {:.3} ms, median {:.3} ms, p95 {:.3} ms, max {:.3} ms",
+                ms(samples[0]),
+                ms(samples[samples.len() / 2]),
+                ms(samples[samples.len() * 95 / 100]),
+                ms(samples[samples.len() - 1]),
+            );
+        };
+        let mut total: Vec<Duration> = detect.iter().zip(&pipeline).map(|(d, p)| *d + *p).collect();
+        summary("detect", &mut detect);
+        summary("pipeline", &mut pipeline);
+        summary("edit-to-pixels", &mut total);
+    }
+
     #[test]
     fn a_mount_whose_window_closed_is_dropped() {
         let (mut ws, _) = mounted("closed");
