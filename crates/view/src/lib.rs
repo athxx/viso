@@ -20,6 +20,8 @@
 mod attach;
 mod control;
 mod host;
+#[cfg(feature = "hot-reload")]
+mod mounts;
 mod package;
 mod regions;
 mod route;
@@ -29,6 +31,8 @@ mod values;
 pub use attach::{Route, attach, attach_node};
 pub use control::{Control, ControlInput, ControlKind};
 pub use host::{__embedded, HostError, StateCells, ViewHost};
+#[cfg(feature = "hot-reload")]
+pub use mounts::{__mounted_view, __static_nodes, MountRecord, take_mounts};
 pub use package::{
     LoadedView, ViewControl, ViewHandler, ViewLoadError, ViewPackage, ViewState, instantiate_view,
     load_view,
@@ -42,3 +46,11 @@ pub use route::{EventRoute, PAYLOAD_ENUMS, PAYLOAD_RECORDS};
 pub use scope::Scope;
 pub use values::{__mount_values, mount_values};
 pub use viso_behavior::{Fault, Module, Value};
+
+/// Records nothing: the build has no development session to hand mounts to.
+#[cfg(not(feature = "hot-reload"))]
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __record_mount {
+    ($($record:tt)*) => {};
+}

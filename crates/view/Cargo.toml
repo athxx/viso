@@ -13,3 +13,8 @@ rust-version.workspace = true
 viso-ui = { workspace = true }
 viso-behavior = { workspace = true }
 viso-ende = { workspace = true }
+
+[features]
+# Records every `view!` mount for the development session that hot-reloads it.
+# Off, a mount records nothing and no `.vs` source reaches the binary.
+hot-reload = []

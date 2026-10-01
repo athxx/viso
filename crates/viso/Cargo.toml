@@ -53,7 +53,9 @@ default = []
 # Kept small and stable on purpose — no giant feature cartesian product
 # (§5). Backends resolve from the target, not from user feature combos.
 mobile = []
-hot-reload = []
+# The development session: every `view!` mount is recorded, its `.vs` file
+# watched and each edit committed as one hot reload transaction.
+hot-reload = ["viso-view/hot-reload"]
 # Text runtime explanations — every fallback walk, cache miss and eviction —
 # for the Inspector; compiled out otherwise.
 inspector = ["viso-text/inspector"]
