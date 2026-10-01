@@ -64,6 +64,12 @@ pub const CASES: &[Case] = &[
     ),
     unit("StateDecl", "component C { state count = 0; }", OK),
     unit("StateDecl", "component C { state fn = 0; }", &["E1301"]),
+    unit(
+        "StateDecl",
+        "component C { state count: F64 = ; }",
+        &["E1405"],
+    ),
+    unit("ComputedDecl", "component C { computed d = ; }", &["E1405"]),
     unit("ComputedDecl", "component C { computed d: I64 = 1; }", OK),
     unit(
         "ComputedDecl",
@@ -123,6 +129,7 @@ pub const CASES: &[Case] = &[
     unit("TypeAlias", "type Id I64;", &["E1404"]),
     unit("ConstDecl", "const N: I64 = 4;", OK),
     unit("ConstDecl", "const N: I64 4;", &["E1404"]),
+    unit("ConstDecl", "const N: I64 = ;", &["E1405"]),
     // --- Generics (§26) --------------------------------------------------
     unit(
         "GenericParams",
