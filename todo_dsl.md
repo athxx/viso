@@ -317,8 +317,13 @@ Goal: every Core view construct reaches a live tree through all three lowering t
 
 ### Done
 
-- [ ] A todo-list app with `if`, keyed `for`, handlers and a user component runs
+- [x] A todo-list app with `if`, keyed `for`, handlers and a user component runs
       identically through `ui!`, hot-reload commit and the AOT package.
+  - [x] `view!`, the hot-reload commit and the package mount one `.vs` app and
+        reach the same tree and boxes after every click (`dsl_todo_app.rs`).
+  - [x] `ui!` mounts the same app declared by `component!`, the user component
+        written where it is mounted (a `component!` declares one component and
+        a `ui!` instance takes no property), and matches frame for frame.
 
 ---
 
