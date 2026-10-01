@@ -90,8 +90,10 @@ pub fn hot_reload_view(
     Ok(transact(rt, last_good, candidate, anchors))
 }
 
-/// Stages 2-4 over a validated candidate.
-fn transact(
+/// Stages 2-4 over a candidate already compiled by [`plan`] or [`plan_view`]:
+/// a session that mounts one file several times compiles the edit once and
+/// commits it to each mount in turn, threading the returned candidate through.
+pub fn transact(
     rt: &mut LiveRuntime<'_>,
     last_good: &CandidatePlan,
     candidate: CandidatePlan,

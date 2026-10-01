@@ -340,9 +340,9 @@ Goal: a file edit reaches the running app as one transaction or not at all.
   - [x] `view!` records each mount (file, source, origin, root, state cells,
         host, static nodes) under the `hot-reload` feature; without it the
         record is a no-op and no source text reaches the binary.
-  - [ ] A dev-only watcher thread polls the mounted files, settles a burst of
+  - [x] A dev-only watcher thread polls the mounted files, settles a burst of
         writes, skips content-identical saves by hash and wakes the loop.
-  - [ ] The window drains changes at the frame boundary and runs the
+  - [x] The window drains changes at the frame boundary and runs the
         transaction; each view keeps a revision and its last-good candidate,
         and a failed candidate changes nothing.
 - [ ] Behavior bytecode swap together with the UI patch.

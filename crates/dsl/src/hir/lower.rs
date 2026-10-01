@@ -173,11 +173,13 @@ pub fn lower(
         module_diagnostics.push(start..diagnostics.len());
     }
 
-    // Debug-only HIR-complete assertion (spec node-contract section): no core node may keep
-    // an undetermined type into the finished package. A residue is a lowering bug, not a user
-    // error (user type errors surface as diagnostics), so this is a debug invariant.
+    // Debug-only HIR-complete assertion (spec node-contract section): no core node of a
+    // package that compiled cleanly may keep an undetermined type. A user error recovers
+    // with an undetermined type and surfaces as a diagnostic, so only a residue without one
+    // is a lowering bug.
     debug_assert!(
-        hir_is_complete(&components, &callables),
+        diagnostics.iter().any(|d| d.severity == Severity::Error)
+            || hir_is_complete(&components, &callables),
         "lowering left an undetermined type on a core HIR node"
     );
 
@@ -744,8 +746,7 @@ fn hir_is_complete(components: &[HirComponent], callables: &[HirCallable]) -> bo
     for component in components {
         for state in &component.schema.states {
             // A state whose type was annotated may be a nominal `Unknown` (resolved elsewhere
-            // this slice); an omitted-type state that stayed undetermined already earned an
-            // E2103, so only assert on annotated-or-determined nodes.
+            // this slice); an omitted-type state must have been determined.
             if !state.type_was_annotated && state.meta.type_is_undetermined() {
                 return false;
             }
