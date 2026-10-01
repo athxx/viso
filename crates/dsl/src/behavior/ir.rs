@@ -466,9 +466,20 @@ pub struct Program {
     pub components: Vec<ComponentLayout>,
     /// Every native function a body calls, by import index.
     pub natives: Vec<NativeImport>,
+    /// The function computing each defaulted record field, by record and field
+    /// index, ascending.
+    pub field_defaults: Vec<((SymbolId, u32), FuncId)>,
 }
 
 impl Program {
+    /// The function computing the default of field `index` of record `record`.
+    pub fn field_default(&self, record: SymbolId, index: u32) -> Option<FuncId> {
+        self.field_defaults
+            .binary_search_by_key(&(record, index), |&(key, _)| key)
+            .ok()
+            .map(|at| self.field_defaults[at].1)
+    }
+
     /// The function `id`.
     pub fn function(&self, id: FuncId) -> &Function {
         &self.functions[id.0 as usize]

@@ -57,7 +57,12 @@ use crate::ir::ui_ir::{AxisIr, LengthIr, NodeKind, StyleIr, UiItem, UiNode, UiTr
 use crate::resolve::SymbolId;
 use crate::view_regions::{StaticNodes, has_regions};
 
-use viso_view::{Scope, ViewHost, attach_node, mount_regions, mount_values};
+use viso_view::{
+    HostError, Scope, ViewHost, attach_node, cell_value, mount_regions, mount_values, vm_value,
+};
+
+use crate::diag::Diagnostic;
+use crate::hotreload::migrate::{Retype, StateAction};
 
 use viso_ui::state::{StateKey, StateMigration};
 use viso_ui::virtual_list::VirtualLists;
@@ -73,12 +78,15 @@ use viso_ui::{
 /// template is out of this slice's scope before commit.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct HotReloadReport {
-    /// Reactive source cells that survived the reload keeping their live value
-    /// (kept or safely widened).
+    /// Reactive source cells that survived the reload keeping their live value,
+    /// verbatim or converted into the state's new type.
     pub migrated: u32,
-    /// Reactive source cells reset to a fresh initializer (a new source, or an
-    /// incompatible value change).
+    /// Reactive source cells reset to a fresh initializer (a new source, or a
+    /// live value that does not convert into the state's new type).
     pub reset: u32,
+    /// An `E5101` warning for each state whose live value was reset because it
+    /// does not convert into the state's new type.
+    pub notices: Vec<Diagnostic>,
     /// Whether a previously focused node lost focus because its template slot did
     /// not survive the reload.
     pub focus_lost: bool,
@@ -157,7 +165,24 @@ pub fn commit(
     // value across (the reload preserves running state); a new symbol allocates a
     // fresh neutral cell. The returned map lets the rebind step turn an edge's
     // SymbolId into the live StateId it drives.
-    let symbol_to_state = migrate_states(rt.states, plan, migration, &mut report);
+    // The recompiled behavior's host is created first, so the migration can set
+    // each carried state into it while the prior host still holds the old
+    // values.
+    let mut next = plan
+        .view
+        .as_ref()
+        .map(|view| ViewHost::new(Rc::clone(&view.module), &view.component));
+    let symbol_to_state = {
+        let prior = rt.view.as_ref().map(|host| host.borrow());
+        migrate_states(
+            rt.states,
+            prior.as_deref(),
+            next.as_mut().and_then(|next| next.as_mut().ok()),
+            plan,
+            migration,
+            &mut report,
+        )
+    };
 
     // Step 3 — rebind. Replace the view's static edges with the recompiled ones,
     // mapping each edge's NodeKey to its live node and each source SymbolId to
@@ -188,21 +213,15 @@ pub fn commit(
 
     // Step 6 — handlers and regions, against the nodes and cells the reload now
     // names.
-    mount_behavior(
-        rt,
-        plan,
-        migration,
-        &key_to_node,
-        &symbol_to_state,
-        &mut report,
-    );
+    mount_behavior(rt, plan, next, &key_to_node, &symbol_to_state, &mut report);
 
     *rt.nodes = key_to_node;
     report
 }
 
-/// Creates or reloads the view's host, carrying each kept state's VM value by
-/// identity, links its states to the migrated cells,
+/// Installs `next`, the recompiled behavior's host the migration carried each
+/// kept state into, in place of the prior one; links its states to the migrated
+/// cells,
 /// reinstalls every static node's handler routes, replacing the prior ones,
 /// mounts the view's regions under the static nodes, and delivers the values
 /// the static nodes show, replacing the hook that re-delivered the prior ones.
@@ -217,7 +236,7 @@ pub fn commit(
 fn mount_behavior(
     rt: &mut LiveRuntime<'_>,
     plan: &CandidatePlan,
-    migration: &MigrationPlan,
+    next: Option<Result<ViewHost, HostError>>,
     key_to_node: &[(NodeKey, NodeId)],
     symbol_to_state: &[(SymbolId, StateId)],
     report: &mut HotReloadReport,
@@ -229,20 +248,22 @@ fn mount_behavior(
         host.release_regions(rt.store, rt.states);
         host.release_values(rt.store);
     }
-    let host = plan.view.as_ref().and_then(|view| {
-        let module = Rc::clone(&view.module);
-        let mounted = match rt.view.take() {
-            Some(host) => {
-                let carried = migration.slots.iter().map(|slot| (slot.from, slot.to));
-                let reloaded = host.borrow_mut().reload(module, &view.component, carried);
-                if reloaded.is_err() {
-                    host.borrow_mut().release_values(rt.store);
-                }
-                reloaded.map(|()| host)
+    let host = plan.view.as_ref().zip(next).and_then(|(view, next)| {
+        let mounted = match (rt.view.take(), next) {
+            (Some(host), Ok(next)) => {
+                host.borrow_mut().reload(next);
+                Some(host)
             }
-            None => ViewHost::new(module, &view.component).map(|h| Rc::new(RefCell::new(h))),
+            (None, Ok(next)) => Some(Rc::new(RefCell::new(next))),
+            (Some(host), Err(_)) => {
+                let mut host = host.borrow_mut();
+                host.release_regions(rt.store, rt.states);
+                host.release_values(rt.store);
+                None
+            }
+            (None, Err(_)) => None,
         };
-        let Ok(host) = mounted else {
+        let Some(host) = mounted else {
             report.handlers_lost = true;
             return None;
         };
@@ -678,39 +699,105 @@ fn axis_of(axis: AxisIr) -> Axis {
     }
 }
 
-/// Migrate every reactive-source cell named in the plan by durable identity, and
-/// count the outcome. A kept symbol carries its live value across unchanged; a new
-/// symbol allocates a fresh neutral cell. Returns the `SymbolId` → live `StateId`
-/// map the rebind step keys against, one entry per surviving-or-new source.
+/// Migrate each reactive source's live cell by durable identity, and carry each
+/// kept state's live value into `next`, the recompiled behavior's host.
 ///
 /// The migration key is the source's [`SymbolId`], bridged to the runtime
-/// [`StateKey`] by its `(hi, lo)` parts — the two share a `#[repr(C)]` layout so no
-/// UI-side dependency on the compiler is needed. The value-level decision uses a
-/// widen closure over [`StateValue`]: this slice keeps a kept cell's value verbatim
-/// (running state is preserved across a reload) and resets only a brand-new cell.
+/// [`StateKey`] by its `(hi, lo)` parts — the two share a `#[repr(C)]` layout so
+/// no UI-side dependency on the compiler is needed. A kept state keeps its value
+/// verbatim; a converted one carries its value converted into the new type, each
+/// new record field's default computed by `next`; a reset one, or one whose
+/// value does not convert after all (a removed variant it holds, a default that
+/// faults), restarts from its new initializer and is reported as an `E5101`.
+///
+/// A state a cell holds (`plan.initial` is `Some`) is written through its cell;
+/// one tracked through an integer revision cell has its revision bumped, so each
+/// region reading it re-reads the value `next` now holds.
 fn migrate_states(
     states: &mut StateStore,
+    prior: Option<&ViewHost>,
+    mut next: Option<&mut ViewHost>,
     plan: &CandidatePlan,
     migration: &MigrationPlan,
     report: &mut HotReloadReport,
 ) -> Vec<(SymbolId, StateId)> {
-    use crate::hotreload::migrate::StateAction;
-
+    let slot_of = |symbol: SymbolId| {
+        let view = plan.view.as_ref()?;
+        view.slots
+            .iter()
+            .find(|&&(s, _)| s == symbol)
+            .map(|&(_, slot)| slot as usize)
+    };
     let mut out = Vec::new();
     for m in &migration.states {
         let key = StateKey::from_parts(m.symbol.hi, m.symbol.lo);
         match m.action {
             StateAction::Keep => {
-                // Preserve the running value: the widen closure returns the prior
-                // value unchanged, so migrate_state reports `Kept` and the cell
-                // keeps its identity and value. `new_initial` is only used if the
-                // key is somehow absent, which a Keep guarantees it is not.
+                // The running value is preserved: the widen closure returns the
+                // prior value unchanged, so the cell keeps its identity and
+                // value. `new_initial` is only used if the key is somehow absent,
+                // which a Keep guarantees it is not.
                 let (id, outcome) =
                     states.migrate_state(key, StateValue::Int(0), |prior, _new| Some(prior));
                 match outcome {
                     StateMigration::Kept | StateMigration::Widened => report.migrated += 1,
                     StateMigration::Reset => report.reset += 1,
                 }
+                if let (Some(slot), Some(prior), Some(next)) =
+                    (migration.slot(m.symbol), prior, next.as_deref_mut())
+                    && let Some(value) = prior.current(slot.from as usize, &*states)
+                {
+                    next.set_state(slot.to as usize, value);
+                }
+                out.push((m.symbol, id));
+            }
+            StateAction::Convert | StateAction::Reset => {
+                let retype = migration.retype(m.symbol);
+                let converted = retype.and_then(|retype| {
+                    let conversion = retype.conversion.as_ref()?;
+                    let old = match retype.from_slot {
+                        Some(slot) => prior?.current(slot as usize, &*states)?,
+                        None if retype.held => vm_value(states.get(states.id_for_key(key)?)?)?,
+                        None => return None,
+                    };
+                    conversion.apply(&old, &mut |chunk| next.as_deref_mut()?.run(chunk, &[]).ok())
+                });
+                let initial = plan.initial(m.symbol);
+                let slot = slot_of(m.symbol);
+                let written = converted.and_then(|value| {
+                    let cell = match initial {
+                        Some(initial) => Some(cell_value(&value, initial)?),
+                        None => None,
+                    };
+                    if let (Some(slot), Some(next)) = (slot, next.as_deref_mut()) {
+                        next.set_state(slot, value);
+                    }
+                    Some(cell)
+                });
+                let id = match written {
+                    Some(cell) => {
+                        let (id, _) = states.migrate_state(
+                            key,
+                            cell.unwrap_or(StateValue::Int(0)),
+                            |prior, new| Some(cell.unwrap_or_else(|| revision(prior, new))),
+                        );
+                        report.migrated += 1;
+                        id
+                    }
+                    None => {
+                        let (id, _) = match initial {
+                            Some(initial) => states.migrate_state(key, initial, |_, _| None),
+                            None => states.migrate_state(key, StateValue::Int(0), |prior, new| {
+                                Some(revision(prior, new))
+                            }),
+                        };
+                        report.reset += 1;
+                        if let Some(retype) = retype {
+                            report.notices.push(reset_notice(retype));
+                        }
+                        id
+                    }
+                };
                 out.push((m.symbol, id));
             }
             StateAction::New => {
@@ -729,6 +816,27 @@ fn migrate_states(
         }
     }
     out
+}
+
+/// The next value of a tracked state's revision cell: the prior revision plus
+/// one, or `new` when the cell held a mirrored value before.
+fn revision(prior: StateValue, new: StateValue) -> StateValue {
+    match prior {
+        StateValue::Int(n) => StateValue::Int(n.wrapping_add(1)),
+        _ => new,
+    }
+}
+
+/// The `E5101` warning that a state's live value was reset.
+fn reset_notice(retype: &Retype) -> Diagnostic {
+    Diagnostic::warning(
+        "E5101",
+        retype.at,
+        format!(
+            "the state `{}` was reset: its live value of type `{}` does not convert to `{}`",
+            retype.name, retype.from, retype.to
+        ),
+    )
 }
 
 /// Replace the static edges of the view's nodes with the recompiled edges,

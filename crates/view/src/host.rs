@@ -190,6 +190,50 @@ impl ViewHost {
         self.instance.states().get(slot)
     }
 
+    /// The authoritative value of state slot `slot`: its mirrored cell's in
+    /// `cells`, or the instance's for a slot no cell mirrors.
+    pub fn current(&self, slot: usize, cells: &dyn StateCells) -> Option<Value> {
+        match self.mirror.get(slot)? {
+            Some(Link::Mirror(id)) => cells.get(*id).and_then(vm_value),
+            _ => self.instance.states().get(slot).cloned(),
+        }
+    }
+
+    /// Sets the instance's state slot `slot`, as a hot reload carries a value
+    /// into a new instance. Returns `false` for a slot out of range.
+    pub fn set_state(&mut self, slot: usize, value: Value) -> bool {
+        if slot >= self.instance.states().len() {
+            return false;
+        }
+        self.instance.set_state(slot, value);
+        self.instance.clear_dirty();
+        true
+    }
+
+    /// Runs chunk `chunk`, a record field default or a `fn`, with `args`
+    /// against the instance, and returns its value. Nothing it does is kept:
+    /// it writes no state and its events are dropped.
+    pub fn run(&mut self, chunk: u32, args: &[Value]) -> Result<Value, Fault> {
+        if let Some(fault) = &self.broken {
+            return Err(fault.clone());
+        }
+        let callable = self
+            .module()
+            .chunks()
+            .get(chunk as usize)
+            .is_some_and(|c| matches!(c.kind, ChunkKind::FieldDefault | ChunkKind::Fn));
+        if !callable {
+            return Err(Fault {
+                kind: FaultKind::Internal,
+                at: None,
+                message: format!("chunk {chunk} is not a function"),
+            });
+        }
+        let result = self.vm.call(&mut self.instance, chunk, args);
+        self.instance.clear_dirty();
+        result.map(|outcome| outcome.value)
+    }
+
     /// Mirrors state slot `slot` into UI cell `id`. Returns `false`, mirroring
     /// nothing, for a slot out of range.
     pub fn mirror(&mut self, slot: usize, id: StateId) -> bool {
@@ -220,7 +264,7 @@ impl ViewHost {
             let Some(Link::Mirror(id)) = *link else {
                 continue;
             };
-            if let Some(value) = cells.get(id).and_then(to_value) {
+            if let Some(value) = cells.get(id).and_then(vm_value) {
                 self.instance.set_state(slot, value);
             }
         }
@@ -447,7 +491,8 @@ impl ViewHost {
                             let Some(witness) = cells.get(id) else {
                                 continue;
                             };
-                            if let Some(value) = to_state(&self.instance.states()[slot], witness) {
+                            if let Some(value) = cell_value(&self.instance.states()[slot], witness)
+                            {
                                 cells.set(id, value);
                             }
                         }
@@ -496,34 +541,17 @@ impl ViewHost {
         self.events.drain(..)
     }
 
-    /// Replaces the module with a recompiled one, as a hot reload does. Each
-    /// `(prior, slot)` pair in `carried` moves the value of the prior state slot
-    /// into the new component's slot; the migration plan pairs the slots by the
-    /// states' durable identity, so a renamed or re-typed state is not carried
-    /// by name. The others start from their new initializers. Mirrors are
-    /// cleared: the caller mirrors the new layout's slots again. The cells and
-    /// hooks the view's mounts registered stay the host's, for the caller to
-    /// release or replace.
-    pub fn reload(
-        &mut self,
-        module: Rc<Module>,
-        component: &str,
-        carried: impl IntoIterator<Item = (u32, u32)>,
-    ) -> Result<(), HostError> {
-        let mut next = ViewHost::new(module, component)?;
-        let prior = self.instance.states();
-        for (from, to) in carried {
-            if let Some(value) = prior.get(from as usize)
-                && (to as usize) < next.instance.states().len()
-            {
-                next.instance.set_state(to as usize, value.clone());
-            }
-        }
+    /// Replaces the instance with `next`, a host of the recompiled module into
+    /// which the caller has [set](Self::set_state) each state it carries, as a
+    /// hot reload does. Its mirrors start cleared: the caller mirrors the new
+    /// layout's slots again. The undrained events, and the cells and hooks the
+    /// view's mounts registered, stay this host's, for the caller to release
+    /// or replace.
+    pub fn reload(&mut self, mut next: ViewHost) {
         next.events = std::mem::take(&mut self.events);
         next.regions = std::mem::take(&mut self.regions);
         next.values = self.values.take();
         *self = next;
-        Ok(())
     }
 }
 
@@ -540,7 +568,7 @@ impl fmt::Debug for ViewHost {
 
 /// A mirrored UI value as the VM represents it: `Bool` is an integer, `F32` a
 /// float. A color has no VM form.
-fn to_value(value: StateValue) -> Option<Value> {
+pub fn vm_value(value: StateValue) -> Option<Value> {
     match value {
         StateValue::Int(n) => Some(Value::Int(i64::from(n))),
         StateValue::Float(x) => Some(Value::Float(f64::from(x))),
@@ -551,7 +579,7 @@ fn to_value(value: StateValue) -> Option<Value> {
 
 /// A VM value as the UI cell whose current value `witness` fixes its kind.
 /// `None` when the value does not fit the cell.
-fn to_state(value: &Value, witness: StateValue) -> Option<StateValue> {
+pub fn cell_value(value: &Value, witness: StateValue) -> Option<StateValue> {
     match witness {
         StateValue::Int(_) => Some(StateValue::Int(i32::try_from(value.as_int()?).ok()?)),
         StateValue::Float(_) => Some(StateValue::Float(value.as_float()? as f32)),

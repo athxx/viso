@@ -3766,6 +3766,26 @@ Parse new source
 - 类型不兼容：查找显式 `@migrate(from: "...")` 函数；
 - 无迁移函数：使用新 Initializer，且产生状态重置通知。
 
+状态转换表是封闭的，按旧类型与新类型的声明比较（不比较源码行号，也不按名字猜），对活值逐层应用：
+
+| 旧类型 → 新类型                                  | 规则                                                                     |
+| ------------------------------------------------ | ------------------------------------------------------------------------ |
+| `T → T`（同一类型，Record/Enum 声明逐字段相同）    | 保留原值                                                                 |
+| 整数 → 更宽的整数（`I32 → I64`、`U8 → I16` …）     | 保留原值                                                                 |
+| 整数 → 其他整数类型                               | 新类型容纳活值时转换，否则不兼容                                           |
+| 整数 → `F32` / `F64`                              | 浮点能精确表示活值时转换（`I64` 在 `F64` 下为 ±2^53 内），否则不兼容        |
+| `F32 → F64`                                       | 保留原值                                                                 |
+| `T → Option<U>`（`T` 不是 `Option`/`Unit`）       | `T → U` 转换后成为 `Some`                                                |
+| `Option<T> → Option<U>`、`List<T> → List<U>`      | `None` 保持；每个元素按 `T → U` 转换                                     |
+| Tuple、Range、`Result<T, E>`                      | 按位置 / `Ok`、`Err` 负载逐个转换，元数须相同                              |
+| 同一 Record 声明                                  | 按字段名保留并转换；删除的字段丢弃；新增字段取其默认值，无默认值则不兼容    |
+| 同一 Enum 声明                                    | 按 Variant 名映射，负载按位置（tuple）或字段名（record）转换；活值所在 Variant 被删除或负载不可转换时不兼容 |
+| 函数类型、其他组合                                | 不兼容                                                                   |
+
+Record 与 Enum 可以递归：递归引用按同一份转换。新增字段的默认值由新代码计算；计算失败视为不兼容。
+
+不兼容时：查找 `@migrate` 函数；没有则状态回到新 Initializer，reload 照常提交，并产生 `E5101` 警告（状态名、旧类型、新类型，指向新声明）。同一视图中两个状态持有同一 Stable ID 时整个 reload 被拒绝（`E5102`），保留 last-good。
+
 ### 94.2 Node Migration
 
 - 同 ID、同 Type：保留局部 Widget State；
@@ -8340,8 +8360,8 @@ RecordPatternField
 | E4302  | Resource Policy 冲突                                    |
 | E4401  | Start 目标不是 Task                                     |
 | E4501  | 无主 Detached Task                                      |
-| E5101  | Hot Reload 类型不兼容                                   |
-| E5102  | Hot Reload Stable ID 冲突                               |
+| E5101  | Hot Reload 状态重置：活值不可转换为新类型（警告）       |
+| E5102  | Hot Reload Stable ID 冲突（拒绝 reload）                |
 | E6101  | Native Schema 版本冲突                                  |
 | E6102  | Native Ownership/Thread Domain 违规                     |
 | E6103  | Capability Denied（运行时）                             |

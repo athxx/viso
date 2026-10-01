@@ -29,18 +29,26 @@
 
 use std::collections::BTreeSet;
 
+use crate::hotreload::compat::Retyping;
 use crate::hotreload::diff::StructuralPatch;
 use crate::ir::binding_ir::NodeKey;
 use crate::resolve::SymbolId;
+use crate::syntax::TextRange;
 
 /// What happens to one reactive-source state cell across the reload, keyed by its
 /// compile-stable [`SymbolId`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StateAction {
-    /// The symbol is present in both templates: keep the live cell. The commit
-    /// decides, against the cell's current [`viso_ui::StateValue`], whether the
-    /// value is kept as-is or safely widened; either way the cell is not reset.
+    /// The symbol is present in both templates with the same type and cell
+    /// form: keep the live cell and value as they are.
     Keep,
+    /// The symbol is present in both templates and its live value converts
+    /// into its new type by its [`Retype`]; a value with no counterpart in the
+    /// new type (an active variant that was removed) is reset instead.
+    Convert,
+    /// The symbol is present in both templates but its old type does not
+    /// convert into the new one: reset it to its new initializer and notify.
+    Reset,
     /// The symbol is only in the candidate: allocate a fresh cell from its
     /// initializer.
     New,
@@ -73,6 +81,8 @@ pub struct ScrollMigration {
 /// slot to the candidate's.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SlotMigration {
+    /// The state's identity.
+    pub symbol: SymbolId,
     /// The state's slot in the last-good component.
     pub from: u32,
     /// The state's slot in the candidate component.
@@ -96,6 +106,28 @@ pub struct MigrationPlan {
     /// was lost (the focused slot was replaced or removed); the report records it.
     /// `None` means nothing was focused, so there is nothing to migrate.
     pub focus_survives: Option<bool>,
+    /// Each converted or reset state's types and conversion, by the order the
+    /// states were refined.
+    pub retypes: Vec<Retype>,
+}
+
+/// A kept state whose type, or the form its cell holds, changed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Retype {
+    pub symbol: SymbolId,
+    /// The state's name in the candidate.
+    pub name: String,
+    /// How its live value converts, `None` when its old type does not convert.
+    pub conversion: Option<Retyping>,
+    /// Its old and new types, as source spells them.
+    pub from: String,
+    pub to: String,
+    /// Its declaration in the candidate.
+    pub at: TextRange,
+    /// Its behavior slot in the last-good component.
+    pub from_slot: Option<u32>,
+    /// Whether its last-good cell held its value rather than a revision.
+    pub held: bool,
 }
 
 impl MigrationPlan {
@@ -103,8 +135,23 @@ impl MigrationPlan {
     pub fn kept(&self) -> impl Iterator<Item = SymbolId> + '_ {
         self.states
             .iter()
-            .filter(|m| m.action == StateAction::Keep)
+            .filter(|m| {
+                matches!(
+                    m.action,
+                    StateAction::Keep | StateAction::Convert | StateAction::Reset
+                )
+            })
             .map(|m| m.symbol)
+    }
+
+    /// The retype of the kept state `symbol`, if its type or cell form changed.
+    pub fn retype(&self, symbol: SymbolId) -> Option<&Retype> {
+        self.retypes.iter().find(|r| r.symbol == symbol)
+    }
+
+    /// The behavior slot migration of state `symbol`.
+    pub fn slot(&self, symbol: SymbolId) -> Option<SlotMigration> {
+        self.slots.iter().copied().find(|s| s.symbol == symbol)
     }
 
     /// The symbols the commit allocates fresh (candidate-only).
@@ -176,7 +223,7 @@ pub fn migrate(
         .filter(|(symbol, _)| old_set.contains(symbol) && new_set.contains(symbol))
         .filter_map(|&(symbol, to)| {
             let &(_, from) = old_slots.iter().find(|(old, _)| *old == symbol)?;
-            Some(SlotMigration { from, to })
+            Some(SlotMigration { symbol, from, to })
         })
         .collect();
     slots.sort_unstable_by_key(|slot| slot.to);
@@ -199,6 +246,7 @@ pub fn migrate(
         slots,
         scroll,
         focus_survives,
+        retypes: Vec::new(),
     }
 }
 
@@ -268,8 +316,16 @@ mod tests {
         assert_eq!(
             plan.slots,
             vec![
-                SlotMigration { from: 1, to: 1 },
-                SlotMigration { from: 0, to: 2 },
+                SlotMigration {
+                    symbol: sym(2),
+                    from: 1,
+                    to: 1,
+                },
+                SlotMigration {
+                    symbol: sym(1),
+                    from: 0,
+                    to: 2,
+                },
             ]
         );
     }

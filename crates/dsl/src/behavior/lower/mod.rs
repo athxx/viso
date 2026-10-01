@@ -240,6 +240,9 @@ impl ProgramBuilder {
     /// cannot run cannot run either.
     pub(crate) fn finish(mut self) -> Program {
         block_unsupported(&mut self.program);
+        let mut defaults: Vec<_> = self.field_defaults.into_iter().collect();
+        defaults.sort_unstable_by_key(|&(key, _)| key);
+        self.program.field_defaults = defaults;
         self.program
     }
 }

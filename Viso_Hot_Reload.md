@@ -679,14 +679,15 @@ same record schema
 
 ### Explicitly convertible
 
-是否允许：
-
 ```text
 I32 -> I64
 F32 -> F64
+I64 -> F64            活值在 ±2^53 内
+record + 带默认值字段
+enum 重排 / 删除未持有的 variant
 ```
 
-必须由 Viso 1.0 state-conversion table 明确定义；不能让 runtime 猜。
+由 Viso 1.0 state-conversion table（DSL §94.1）明确定义；不能让 runtime 猜。转换表在 commit 前作为纯数据算出（每个状态一份 `Retyping`），commit 只对活值应用它：behavior 的状态读取旧 host 的活值、转换后写入新 host，UI cell 镜像的状态再写回 cell；新增字段的默认值由新 module 计算。
 
 ### Incompatible
 
@@ -702,7 +703,7 @@ scoped reset
 or explicit user-defined dev conversion hook
 ```
 
-禁止 reinterpret raw memory。
+禁止 reinterpret raw memory。重置只作用于该状态：其他状态照常保留，reload 照常提交，并报告 `E5101` 警告。两个状态持有同一 stable identity 时 candidate 被拒绝（`E5102`）。
 
 ---
 

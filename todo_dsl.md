@@ -351,10 +351,10 @@ Goal: a file edit reaches the running app as one transaction or not at all.
   - [x] A handler-body edit reloads in a running window with every state kept.
 - [ ] State migration by `SymbolId`: keep, safe widening, record field with default,
       `@migrate(from:)` functions, reset notice (§94.1). `E5101`, `E5102`.
-  - [ ] The candidate carries each state's type; the compatibility matrix
+  - [x] The candidate carries each state's type; the compatibility matrix
         decides keep, safe widening, record extension with defaults, an enum
         whose active variant survives, or reset.
-  - [ ] A reset is a `E5101` notice naming the state and both types; a
+  - [x] A reset is a `E5101` notice naming the state and both types; a
         `SymbolId` minted twice in a candidate is `E5102` and rejects it.
   - [ ] `@migrate(from: "T")` is a registered `fn` attribute, checked
         (one parameter of the old type, returning the state's type) and

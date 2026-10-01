@@ -92,6 +92,18 @@ pub struct VariantInfo {
     pub declared_at: TextRange,
 }
 
+/// The record and enum declarations of a package, by symbol: what a hot reload
+/// compares a state's old and new type against.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct TypeSchemas {
+    /// The fields of every record, and the payload of every event.
+    pub records: HashMap<SymbolId, Vec<FieldInfo>>,
+    /// The variants of every enum.
+    pub enums: HashMap<SymbolId, Vec<VariantInfo>>,
+    /// The declared name of every record, enum, event and component.
+    pub names: HashMap<SymbolId, String>,
+}
+
 /// What inference needs to know about the surrounding program: the type of a resolved
 /// name and the signature of a callable it resolves to. Supplying this as a trait keeps
 /// inference independent of the HIR node types (which a later section builds) — the
@@ -1127,24 +1139,51 @@ impl<'a> InferCx<'a> {
 
     /// A type as source spells it, for diagnostic messages.
     pub(crate) fn describe(&self, ty: &Ty) -> String {
-        let list = |tys: &[Ty]| {
-            tys.iter()
-                .map(|t| self.describe(t))
-                .collect::<Vec<_>>()
-                .join(", ")
-        };
-        match ty {
-            Ty::Named(id) => self.env.type_name(*id).unwrap_or("<named>").to_string(),
-            Ty::Native(id) => self.native_type_name(*id),
-            Ty::Tuple(tys) => format!("({})", list(tys)),
-            Ty::Fn(params, ret) => format!("fn({}) -> {}", list(params), self.describe(ret)),
-            Ty::List(t) => format!("List<{}>", self.describe(t)),
-            Ty::Option(t) => format!("Option<{}>", self.describe(t)),
-            Ty::Result(t, e) => format!("Result<{}, {}>", self.describe(t), self.describe(e)),
-            Ty::Range(t) => format!("Range<{}>", self.describe(t)),
-            Ty::RangeInclusive(t) => format!("RangeInclusive<{}>", self.describe(t)),
-            _ => ty_name(ty).to_string(),
-        }
+        spell(
+            ty,
+            &|id| self.env.type_name(id).unwrap_or("<named>").to_string(),
+            &|id| self.native_type_name(id),
+        )
+    }
+}
+
+impl TypeSchemas {
+    /// A type as source spells it, its nominal types named by these
+    /// declarations.
+    pub fn describe(&self, ty: &Ty) -> String {
+        spell(
+            ty,
+            &|id| {
+                self.names
+                    .get(&id)
+                    .map_or("<named>", String::as_str)
+                    .to_string()
+            },
+            &|_| "<native>".to_string(),
+        )
+    }
+}
+
+/// A type as source spells it, each nominal type named by `named` and each
+/// native type by `native`.
+fn spell(
+    ty: &Ty,
+    named: &dyn Fn(SymbolId) -> String,
+    native: &dyn Fn(NativeId) -> String,
+) -> String {
+    let one = |t: &Ty| spell(t, named, native);
+    let list = |tys: &[Ty]| tys.iter().map(one).collect::<Vec<_>>().join(", ");
+    match ty {
+        Ty::Named(id) => named(*id),
+        Ty::Native(id) => native(*id),
+        Ty::Tuple(tys) => format!("({})", list(tys)),
+        Ty::Fn(params, ret) => format!("fn({}) -> {}", list(params), one(ret)),
+        Ty::List(t) => format!("List<{}>", one(t)),
+        Ty::Option(t) => format!("Option<{}>", one(t)),
+        Ty::Result(t, e) => format!("Result<{}, {}>", one(t), one(e)),
+        Ty::Range(t) => format!("Range<{}>", one(t)),
+        Ty::RangeInclusive(t) => format!("RangeInclusive<{}>", one(t)),
+        _ => ty_name(ty).to_string(),
     }
 }
 

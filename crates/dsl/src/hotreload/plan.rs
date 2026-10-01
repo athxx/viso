@@ -18,8 +18,10 @@
 
 use viso_ui::StateValue;
 
-use crate::diag::Diagnostic;
-use crate::frontend::{Compiled, Origin, SourceKind, compile_file, compile_fragment};
+use crate::behavior::ir::FuncId;
+use crate::diag::{Diagnostic, Related};
+use crate::frontend::{Compiled, Origin, Source, SourceKind, compile_file, compile_fragment};
+use crate::hir::{Ty, TypeSchemas};
 use crate::ir::binding_ir::BindingIr;
 use crate::ir::ui_ir::UiTree;
 use crate::resolve::SymbolId;
@@ -45,6 +47,16 @@ pub struct CandidatePlan {
     /// Each source's initial cell value, aligned 1:1 with [`sources`]: a state's
     /// constant initializer, `None` for a source the reload does not initialize.
     pub initials: Vec<Option<StateValue>>,
+    /// Each source's type, aligned 1:1 with [`sources`]: a state's inferred
+    /// type, [`Ty::Unknown`] for any other source.
+    pub types: Vec<Ty>,
+    /// Where each source is declared, aligned 1:1 with [`sources`].
+    pub declared: Vec<TextRange>,
+    /// The record and enum declarations the types name.
+    pub schemas: TypeSchemas,
+    /// The behavior function computing each defaulted record field, by record
+    /// and field index, ascending.
+    pub field_defaults: Vec<((SymbolId, u32), FuncId)>,
     /// The view's behavior, `None` when no node declares a handler.
     pub view: Option<ViewBehavior>,
 }
@@ -63,6 +75,21 @@ impl CandidatePlan {
     pub fn initial(&self, symbol: SymbolId) -> Option<StateValue> {
         let index = self.sources.iter().position(|s| *s == symbol)?;
         self.initials.get(index).copied().flatten()
+    }
+
+    /// The type and declaration of source `symbol`.
+    pub fn declaration(&self, symbol: SymbolId) -> Option<(&Ty, TextRange)> {
+        let index = self.sources.iter().position(|s| *s == symbol)?;
+        Some((self.types.get(index)?, *self.declared.get(index)?))
+    }
+
+    /// The behavior function computing field `index` of record `record`'s
+    /// default.
+    pub fn field_default(&self, record: SymbolId, index: u32) -> Option<FuncId> {
+        self.field_defaults
+            .binary_search_by_key(&(record, index), |&(at, _)| at)
+            .ok()
+            .map(|at| self.field_defaults[at].1)
     }
 }
 
@@ -97,10 +124,15 @@ pub fn plan_view(source: &str, origin: &Origin) -> Result<CandidatePlan, Vec<Dia
 }
 
 /// The candidate for a compiled source: its fatal diagnostics, including every
-/// handler that does not mount, or its plan.
+/// handler that does not mount and every identity two sources share, or its
+/// plan.
 fn candidate(compiled: Compiled) -> Result<CandidatePlan, Vec<Diagnostic>> {
     if compiled.has_errors() {
         return Err(compiled.errors().cloned().collect());
+    }
+    let collisions = collisions(&compiled);
+    if !collisions.is_empty() {
+        return Err(collisions);
     }
     let fallback = compiled
         .component
@@ -117,14 +149,22 @@ fn candidate(compiled: Compiled) -> Result<CandidatePlan, Vec<Diagnostic>> {
     let mut sources = Vec::with_capacity(compiled.sources.len());
     let mut source_names = Vec::with_capacity(compiled.sources.len());
     let mut initials = Vec::with_capacity(compiled.sources.len());
+    let mut types = Vec::with_capacity(compiled.sources.len());
+    let mut declared = Vec::with_capacity(compiled.sources.len());
     for source in compiled.sources {
-        let initial = match &source.kind {
-            SourceKind::State { initial } => initial.as_ref().and_then(state_value),
-            _ => None,
+        let (initial, ty, at) = match source.kind {
+            SourceKind::State {
+                initial,
+                ty,
+                declared,
+            } => (initial.as_ref().and_then(state_value), ty, declared),
+            _ => (None, Ty::Unknown, fallback),
         };
         sources.push(source.symbol);
         source_names.push(source.name);
         initials.push(initial);
+        types.push(ty);
+        declared.push(at);
     }
     Ok(CandidatePlan {
         tree: compiled.tree,
@@ -132,14 +172,69 @@ fn candidate(compiled: Compiled) -> Result<CandidatePlan, Vec<Diagnostic>> {
         sources,
         source_names,
         initials,
+        types,
+        declared,
+        schemas: compiled.types,
+        field_defaults: compiled.behavior.field_defaults,
         view,
     })
+}
+
+/// An `E5102` for each source whose identity an earlier source of the view
+/// already holds: the reload would migrate two states into one cell. The
+/// states of region content are not cells: each mount holds its own.
+fn collisions(compiled: &Compiled) -> Vec<Diagnostic> {
+    let all = &compiled.sources;
+    let mut out = Vec::new();
+    for (index, source) in all.iter().enumerate() {
+        let Some(first) = all[..index].iter().find(|s| s.symbol == source.symbol) else {
+            continue;
+        };
+        let at = |s: &Source| match s.kind {
+            SourceKind::State { declared, .. } => declared,
+            _ => TextRange::empty(0.into()),
+        };
+        let mut diagnostic = Diagnostic::error(
+            "E5102",
+            at(source),
+            format!(
+                "the state `{}` has the same stable identity as `{}`",
+                source.name, first.name
+            ),
+        );
+        diagnostic
+            .related
+            .push(Related::new(at(first), "the identity is first held here"));
+        out.push(diagnostic);
+    }
+    out
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::diag::Severity;
+
+    #[test]
+    fn two_states_of_one_identity_are_rejected() {
+        let origin = Origin {
+            package: "app".into(),
+            module: vec!["view".into()],
+            language: None,
+        };
+        let mut compiled = compile_file(
+            "component C { state a = 0; state b = 0; view { Text {} } }",
+            &origin,
+        );
+        assert!(collisions(&compiled).is_empty());
+        let first = compiled.sources[0].symbol;
+        compiled.sources[1].symbol = first;
+        let [error] = <[Diagnostic; 1]>::try_from(collisions(&compiled)).expect("one collision");
+        assert_eq!((error.code, error.severity), ("E5102", Severity::Error));
+        assert!(error.message.contains("`b`") && error.message.contains("`a`"));
+        assert_eq!(error.related.len(), 1);
+        assert!(candidate(compiled).is_err(), "the candidate is rejected");
+    }
 
     #[test]
     fn valid_fragment_compiles_to_a_plan() {

@@ -27,7 +27,7 @@ use crate::ast::{
 };
 use crate::behavior::{Program, hidden_state, inline_instances};
 use crate::diag::{Diagnostic, Severity};
-use crate::hir::{ConstValue, DerivedReads, HirComponent, SourceSet, Ty, write_backs};
+use crate::hir::{ConstValue, DerivedReads, HirComponent, SourceSet, Ty, TypeSchemas, write_backs};
 use crate::ir::{
     BindingIr, ComponentLibrary, InstanceSources, KeyIr, LibraryComponent, UiTree, analyze_keys,
     lower_bindings, lower_component_view, lower_fragment_items, lower_view_bindings,
@@ -124,7 +124,13 @@ pub enum SourceKind {
     /// A fragment read of a name the surrounding Rust scope supplies.
     External,
     /// A component `state`, with its initializer when it folds to a constant.
-    State { initial: Option<ConstValue> },
+    State {
+        initial: Option<ConstValue>,
+        /// The state's type, declared or inferred.
+        ty: Ty,
+        /// The span of the state's declaration.
+        declared: TextRange,
+    },
     /// A component `input`.
     Input,
     /// A component `computed`.
@@ -167,6 +173,8 @@ pub struct Compiled {
     pub diagnostics: Vec<Diagnostic>,
     /// Every body of the unit lowered to the Behavior IR.
     pub behavior: Program,
+    /// The unit's record and enum declarations.
+    pub types: TypeSchemas,
 }
 
 impl Compiled {
@@ -239,6 +247,7 @@ pub fn compile_fragment(source: &str) -> Compiled {
         rust_components: lowered.unknown,
         diagnostics,
         behavior: Program::default(),
+        types: TypeSchemas::default(),
     }
 }
 
@@ -432,6 +441,7 @@ fn compile_unit(source: &str, parse: Parse, origin: &Origin, natives: Arc<Native
         rust_components: Vec::new(),
         diagnostics,
         behavior,
+        types: lowered.types,
     }
 }
 
@@ -474,6 +484,7 @@ impl Compiled {
             rust_components: Vec::new(),
             diagnostics,
             behavior,
+            types: TypeSchemas::default(),
         }
     }
 }
@@ -545,7 +556,11 @@ fn component_sources(component: &HirComponent, decl: &ComponentDecl) -> Vec<Sour
         sources.push(Source {
             name: state.name.clone(),
             symbol,
-            kind: SourceKind::State { initial },
+            kind: SourceKind::State {
+                initial,
+                ty: state.meta.inferred_type.clone(),
+                declared: state.meta.source_origin,
+            },
         });
     }
     for input in &schema.inputs {
@@ -698,12 +713,11 @@ mod tests {
         let component = compiled.component.as_ref().unwrap();
         assert_eq!(component.schema.name, "Counter");
         assert_eq!(compiled.sources.len(), 1);
-        assert_eq!(
-            compiled.sources[0].kind,
-            SourceKind::State {
-                initial: Some(ConstValue::Int(3, Ty::I64))
-            }
-        );
+        let SourceKind::State { initial, ty, .. } = &compiled.sources[0].kind else {
+            panic!("{:?}", compiled.sources[0].kind);
+        };
+        assert_eq!(*initial, Some(ConstValue::Int(3, Ty::I64)));
+        assert_eq!(*ty, Ty::I64);
         assert_eq!(compiled.bindings.static_edges().count(), 1);
     }
 
@@ -756,7 +770,7 @@ mod tests {
             .sources
             .iter()
             .map(|source| match &source.kind {
-                SourceKind::State { initial } => initial.clone(),
+                SourceKind::State { initial, .. } => initial.clone(),
                 other => panic!("{other:?}"),
             })
             .collect();

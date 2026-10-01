@@ -30,7 +30,7 @@ mod values;
 
 pub use attach::{Route, attach, attach_node};
 pub use control::{Control, ControlInput, ControlKind};
-pub use host::{__embedded, HostError, StateCells, ViewHost};
+pub use host::{__embedded, HostError, StateCells, ViewHost, cell_value, vm_value};
 #[cfg(feature = "hot-reload")]
 pub use mounts::{__mounted_view, __static_nodes, MountRecord, take_mounts};
 pub use package::{
