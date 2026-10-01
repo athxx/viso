@@ -19,8 +19,8 @@
 //! 2. **State migration** — for each surviving reactive source, migrate its live
 //!    cell by durable [`SymbolId`] identity (bridged to the runtime `StateKey`);
 //!    allocate fresh cells for new sources.
-//! 3. **Rebind** — replace the whole static binding table with the recompiled
-//!    edges, mapping each edge's template [`NodeKey`] to the live node it now names.
+//! 3. **Rebind** — replace the view's static edges with the recompiled ones,
+//!    mapping each edge's template [`NodeKey`] to the live node it now names.
 //! 4. **Absolute focus / scroll restore** — put focus and each surviving scroll
 //!    container's offset back to the value the migration plan preserved.
 //! 5. **Targeted dirty + flush** — mark exactly the rebound nodes dirty and flush
@@ -34,9 +34,15 @@
 //! The commit authors the *static* nodes of a template (those outside every
 //! region) the way the `ui!` emitter does; the regions' content is mounted by
 //! the view runtime from the same templates the emitter and the release package
-//! embed. A reload into or out of a template with regions takes the full
-//! rebuild path: region-mounted nodes have no template slot the fast path could
-//! reuse them by.
+//! embed. A reload into or out of a template with regions takes the rebuild
+//! path: region-mounted nodes have no template slot the fast path could reuse
+//! them by.
+//!
+//! The commit touches only the view's own subtree. A rebuild frees the view's
+//! root and builds the new one under the same parent at the same sibling
+//! position; the rebind replaces only the edges of the view's nodes; and the
+//! view's region and value hooks are the only hooks it removes. A window
+//! holding other content around the view keeps it untouched.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -56,9 +62,9 @@ use viso_view::{Scope, ViewHost, attach_node, mount_regions, mount_values};
 use viso_ui::state::{StateKey, StateMigration};
 use viso_ui::virtual_list::VirtualLists;
 use viso_ui::{
-    Axis, Binding, BindingTable, BuildCx, DirtyClass, EffectStore, FlexStyle, GridStyle, Handle,
-    LeafStyle, Length, NodeId, NodeStore, ScrollStyle, SemanticProjector, Size, StateId,
-    StateStore, StateValue, StructureCx, TextEdits,
+    Axis, BindingTable, BuildCx, DirtyClass, EffectStore, FlexStyle, GridStyle, Handle, LeafStyle,
+    Length, NodeId, NodeStore, ScrollStyle, SemanticProjector, Size, StateId, StateStore,
+    StateValue, StructureCx, TextEdits,
 };
 
 /// What the commit did to the live runtime, for introspection and tests
@@ -105,9 +111,14 @@ pub struct LiveRuntime<'a> {
     /// The semantic-state projection registry, needed to author any freshly built
     /// stateful subtree (a control's projection registers here).
     pub projectors: &'a mut SemanticProjector,
-    /// The current tree root, produced by the last-good build. Updated in place if
-    /// the root node is itself re-typed.
+    /// The view's root node, produced by the last-good build. A rebuild replaces
+    /// it in place under its parent (or as a new parentless root) and updates
+    /// this field.
     pub root: Option<NodeId>,
+    /// The live node of each of the view's static template slots, ascending by
+    /// [`NodeKey`]. The commit maintains it; a caller adopting a tree it mounted
+    /// itself seeds it with [`static_nodes`] or from the ids its mount recorded.
+    pub nodes: &'a mut Vec<(NodeKey, NodeId)>,
     /// Caller-owned scratch reused across subtree frees so the commit allocates no
     /// per-node stack.
     pub scratch: &'a mut Vec<NodeId>,
@@ -148,12 +159,12 @@ pub fn commit(
     // SymbolId into the live StateId it drives.
     let symbol_to_state = migrate_states(rt.states, plan, migration, &mut report);
 
-    // Step 3 — rebind. Replace the whole static binding table with the recompiled
-    // edges, mapping each edge's NodeKey to its live node and each source SymbolId
-    // to its migrated cell. A dense one-shot rebuild keeps the `for_state` slices
-    // contiguous (AGENTS 10.2).
+    // Step 3 — rebind. Replace the view's static edges with the recompiled ones,
+    // mapping each edge's NodeKey to its live node and each source SymbolId to
+    // its migrated cell.
     let mut dirty_marks: Vec<(NodeId, DirtyClass)> = Vec::new();
     rebind_static(
+        rt.store,
         rt.bindings,
         plan,
         &key_to_node,
@@ -179,6 +190,7 @@ pub fn commit(
     // names.
     mount_behavior(rt, plan, &key_to_node, &symbol_to_state, &mut report);
 
+    *rt.nodes = key_to_node;
     report
 }
 
@@ -201,6 +213,13 @@ fn mount_behavior(
     symbol_to_state: &[(SymbolId, StateId)],
     report: &mut HotReloadReport,
 ) {
+    if plan.view.is_none()
+        && let Some(host) = rt.view.take()
+    {
+        let mut host = host.borrow_mut();
+        host.release_regions(rt.store, rt.states);
+        host.release_values(rt.store);
+    }
     let host = plan.view.as_ref().and_then(|view| {
         let module = Rc::clone(&view.module);
         let mounted = match rt.view.take() {
@@ -298,19 +317,18 @@ fn apply_structural(
     tree: &UiTree,
     patch: &StructuralPatch,
 ) -> (Vec<(NodeKey, NodeId)>, bool) {
-    let mut map: Vec<(NodeKey, NodeId)> = Vec::new();
-
     let regions = has_regions(tree)
         || rt
             .view
             .as_ref()
             .is_some_and(|host| host.borrow().has_regions());
-    if patch.is_structure_preserving() && !regions {
-        // Fast path: reuse every live node in place. Map each template NodeKey to
-        // the live node at the same pre-order slot by walking the retained tree.
-        if let Some(root) = rt.root {
-            let mut next: u32 = 0;
-            collect_live_preorder(rt.store, root, &mut next, &mut map);
+    if patch.is_structure_preserving() && !regions && rt.root.is_some() {
+        // Fast path: reuse every live node in place at its template slot.
+        let mut map = std::mem::take(rt.nodes);
+        if map.is_empty()
+            && let Some(root) = rt.root
+        {
+            map = static_nodes(rt.store, root);
         }
         let mut next: u32 = 0;
         for item in &tree.items {
@@ -319,26 +337,49 @@ fn apply_structural(
         return (map, false);
     }
 
-    // Structural edit: rebuild the whole template fresh. The kept nodes are rebuilt
-    // too here — this slice's structural path favors a correct, simple rebuild over
-    // per-slot surgery; the migration plan still carries surviving scroll/focus
-    // forward by absolute restore, and kept *state* cells survive by identity in
-    // the state store (which the node rebuild does not touch). Per-slot instance
-    // reuse across a structural edit is a later refinement (see ADR 0015).
+    // Structural edit: free the view's subtree and build the candidate in its
+    // place. Kept state cells survive by identity in the state store, which the
+    // node rebuild does not touch, and the migration plan carries surviving
+    // focus and scroll forward.
     if let Some(host) = rt.view.as_ref() {
-        host.borrow_mut().release_regions(rt.states);
+        let mut host = host.borrow_mut();
+        host.release_regions(rt.store, rt.states);
+        host.release_values(rt.store);
     }
-    rt.store.clear();
-    rt.bindings.clear_static();
+    let mut placement = None;
+    if let Some(old) = rt.root.take() {
+        let before = rt.store.arena().links(old).and_then(|l| l.next_sibling);
+        placement = rt.store.parent(old).map(|parent| (parent, before));
+        rt.store.free_tree(old, rt.effects, rt.scratch);
+    }
+    let arena = rt.store.arena();
+    rt.bindings.retain_static(|node| arena.is_live(node));
+    rt.nodes.clear();
+    let mut map = Vec::new();
     let new_root = build_tree(rt, tree, &mut map);
+    if let (Some((parent, before)), Some(root)) = (placement, new_root) {
+        rt.store.arena_insert_before(parent, root, before);
+    }
     rt.root = new_root;
+    map.sort_unstable_by_key(|&(key, _)| key);
     (map, true)
+}
+
+/// The static template slots of a region-free view mounted at `root`, by
+/// ascending [`NodeKey`]: the live tree in the pre-order the emitter numbers
+/// its nodes. A view with regions records its static nodes at mount instead,
+/// since region content interleaves with them.
+pub fn static_nodes(store: &NodeStore, root: NodeId) -> Vec<(NodeKey, NodeId)> {
+    let mut out = Vec::new();
+    let mut next = 0;
+    collect_live_preorder(store, root, &mut next, &mut out);
+    out
 }
 
 /// Pre-order walk of the live retained tree assigning each node the same
 /// [`NodeKey`] the emitter and the diff assign it: a node takes the next key, then
 /// its children are numbered in order. Mirrors `diff::flatten` for a tree without
-/// control-flow regions, the only one the fast path walks.
+/// control-flow regions.
 fn collect_live_preorder(
     store: &NodeStore,
     node: NodeId,
@@ -666,23 +707,32 @@ fn migrate_states(
     out
 }
 
-/// Replace the whole static binding table with the recompiled edges, mapping each
-/// edge's template [`NodeKey`] to its live [`NodeId`] and each source [`SymbolId`]
-/// to its migrated [`StateId`]. Collects the (node, class) pairs to mark dirty so
-/// the rebound nodes recompute once after the flush.
+/// Replace the static edges of the view's nodes with the recompiled edges,
+/// mapping each edge's template [`NodeKey`] to its live [`NodeId`] and each
+/// source [`SymbolId`] to its migrated [`StateId`]. The edges of every other
+/// live node stay; those of a node the structural step freed are dropped.
+/// Collects the (node, class) pairs to mark dirty so the rebound nodes
+/// recompute once after the flush.
 ///
 /// An edge whose node or source did not survive the migration is skipped — that
 /// can only happen for a slot the structural patch removed or a symbol the plan
 /// dropped, neither of which the candidate's own edges should reference, so it is a
 /// defensive skip, not a normal path.
 fn rebind_static(
+    store: &NodeStore,
     bindings: &mut BindingTable,
     plan: &CandidatePlan,
     key_to_node: &[(NodeKey, NodeId)],
     symbol_to_state: &[(SymbolId, StateId)],
     dirty_marks: &mut Vec<(NodeId, DirtyClass)>,
 ) {
-    let mut edges: Vec<(StateId, Binding)> = Vec::new();
+    let order = |id: &NodeId| (id.index(), id.generation());
+    let mut statics: Vec<NodeId> = key_to_node.iter().map(|&(_, node)| node).collect();
+    statics.sort_unstable_by_key(order);
+    let arena = store.arena();
+    bindings.retain_static(|node| {
+        arena.is_live(node) && statics.binary_search_by_key(&order(&node), order).is_err()
+    });
     for edge in plan.bindings.static_edges() {
         let Some(node) = lookup_node(key_to_node, edge.node) else {
             continue;
@@ -691,10 +741,9 @@ fn rebind_static(
             continue;
         };
         let class = to_runtime_class(edge.class);
-        edges.push((state, Binding { node, class }));
+        bindings.bind(state, node, class);
         dirty_marks.push((node, class));
     }
-    bindings.rebuild_static(edges);
 }
 
 /// Restore focus and each surviving scroll container's offset to the value the
@@ -753,10 +802,11 @@ fn restore_focus_and_scroll(
         (anchors.scrolled.len() as u32).saturating_sub(migration.scroll.len() as u32);
 }
 
-/// Find the live node a template [`NodeKey`] maps to. Linear over the small
-/// per-template map; cold reload path.
+/// Find the live node a template [`NodeKey`] maps to in the ascending map.
 fn lookup_node(map: &[(NodeKey, NodeId)], key: NodeKey) -> Option<NodeId> {
-    map.iter().find(|(k, _)| *k == key).map(|(_, n)| *n)
+    map.binary_search_by_key(&key, |(k, _)| *k)
+        .ok()
+        .map(|at| map[at].1)
 }
 
 /// Find the live state cell a source [`SymbolId`] maps to. Linear over the small

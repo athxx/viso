@@ -228,6 +228,7 @@ fn live_commit_child_counts(source: &str) -> Vec<usize> {
     let mut text_edits = TextEdits::new();
     let mut projectors = SemanticProjector::new();
     let mut scratch: Vec<NodeId> = Vec::new();
+    let mut nodes = Vec::new();
 
     // An empty last-good baseline: the empty→candidate diff is all-inserts, so the
     // commit takes the first-build path and mounts the whole tree.
@@ -243,6 +244,7 @@ fn live_commit_child_counts(source: &str) -> Vec<usize> {
         projectors: &mut projectors,
         root: None,
         scratch: &mut scratch,
+        nodes: &mut nodes,
         view: &mut None,
     };
     hot_reload(&mut rt, &baseline, source, &LiveAnchors::default()).expect("commits");
@@ -306,6 +308,7 @@ fn packaged_environment_lengths_resolve_as_the_live_commit_does() {
     let mut text_edits = TextEdits::new();
     let mut projectors = SemanticProjector::new();
     let mut scratch: Vec<NodeId> = Vec::new();
+    let mut nodes = Vec::new();
     let mut live = LiveRuntime {
         store: &mut store,
         states: &mut states,
@@ -316,6 +319,7 @@ fn packaged_environment_lengths_resolve_as_the_live_commit_does() {
         projectors: &mut projectors,
         root: None,
         scratch: &mut scratch,
+        nodes: &mut nodes,
         view: &mut None,
     };
     let baseline = CandidatePlan::default();

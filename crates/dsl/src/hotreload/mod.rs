@@ -24,7 +24,7 @@ pub mod diff;
 pub mod migrate;
 pub mod plan;
 
-pub use commit::{HotReloadReport, LiveRuntime, commit};
+pub use commit::{HotReloadReport, LiveRuntime, commit, static_nodes};
 pub use diff::{InsertedNode, KeptNode, RemovedNode, ReplacedNode, StructuralPatch, diff};
 pub use migrate::{
     LiveAnchors, MigrationPlan, ScrollMigration, StateAction, StateMigration, migrate,

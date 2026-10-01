@@ -86,6 +86,7 @@ struct Rt {
     projectors: SemanticProjector,
     root: Option<NodeId>,
     scratch: Vec<NodeId>,
+    nodes: Vec<(viso_dsl::ir::binding_ir::NodeKey, NodeId)>,
     view: Option<Rc<RefCell<ViewHost>>>,
     last_good: CandidatePlan,
 }
@@ -127,6 +128,7 @@ impl Rt {
             projectors: &mut self.projectors,
             root: self.root,
             scratch: &mut self.scratch,
+            nodes: &mut self.nodes,
             view: &mut self.view,
         };
         let done = hot_reload_view(
@@ -363,6 +365,7 @@ fn a_region_rolls_back_when_its_reload_does_not_mount() {
         projectors: &mut rt.projectors,
         root: rt.root,
         scratch: &mut rt.scratch,
+        nodes: &mut rt.nodes,
         view: &mut rt.view,
     };
     let broken = SOURCE.replace("key item", "key missing");

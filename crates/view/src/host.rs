@@ -124,6 +124,8 @@ pub struct ViewHost {
 struct RegionCells {
     /// Whether regions are mounted under the view's nodes.
     mounted: bool,
+    /// The structure hook of each region mount, removed with the view.
+    hooks: Vec<StructureHookId>,
     pulses: Vec<StateId>,
     locals: Vec<Weak<Locals>>,
     /// The length at which [`locals`](Self::locals) next drops its dead
@@ -350,9 +352,10 @@ impl ViewHost {
         regions.locals.push(Rc::downgrade(locals));
     }
 
-    /// Records that regions mount under the view's nodes.
-    pub(crate) fn mark_regions(&mut self) {
+    /// Records that regions mount under the view's nodes, patched by `hook`.
+    pub(crate) fn mark_regions(&mut self, hook: StructureHookId) {
         self.regions.mounted = true;
+        self.regions.hooks.push(hook);
     }
 
     /// Whether regions are mounted under the view's nodes, which only a
@@ -383,9 +386,12 @@ impl ViewHost {
         self.regions.pulses.push(pulse);
     }
 
-    /// Frees the cells the view's regions allocated, as unmounting or
-    /// rebuilding the view's tree does.
-    pub fn release_regions(&mut self, states: &mut StateStore) {
+    /// Removes the view's region hooks and frees the cells its regions
+    /// allocated, as unmounting or rebuilding the view's tree does.
+    pub fn release_regions(&mut self, store: &mut NodeStore, states: &mut StateStore) {
+        for hook in self.regions.hooks.drain(..) {
+            store.remove_structure_hook(hook);
+        }
         for locals in self.regions.locals.drain(..) {
             if let Some(locals) = locals.upgrade() {
                 locals.release(states);

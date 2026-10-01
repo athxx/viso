@@ -284,9 +284,10 @@ pub fn mount_regions(
         scratch: Vec::new(),
     };
     mounted.patch(cx, &[]);
-    host.borrow_mut().mark_regions();
-    cx.store
+    let hook = cx
+        .store
         .add_structure_hook(deps, move |cx, changed| mounted.patch(cx, changed));
+    host.borrow_mut().mark_regions(hook);
 }
 
 /// [`mount_regions`] for the encoded regions a macro expansion embeds, run over
