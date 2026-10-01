@@ -497,21 +497,26 @@ impl ViewHost {
     }
 
     /// Replaces the module with a recompiled one, as a hot reload does. Each
-    /// state the new component still declares keeps its value by name; the
-    /// others start from their new initializers. Mirrors are cleared: the caller
-    /// mirrors the new layout's slots again. The cells and hooks the view's
-    /// mounts registered stay the host's, for the caller to release or replace.
-    pub fn reload(&mut self, module: Rc<Module>, component: &str) -> Result<(), HostError> {
+    /// `(prior, slot)` pair in `carried` moves the value of the prior state slot
+    /// into the new component's slot; the migration plan pairs the slots by the
+    /// states' durable identity, so a renamed or re-typed state is not carried
+    /// by name. The others start from their new initializers. Mirrors are
+    /// cleared: the caller mirrors the new layout's slots again. The cells and
+    /// hooks the view's mounts registered stay the host's, for the caller to
+    /// release or replace.
+    pub fn reload(
+        &mut self,
+        module: Rc<Module>,
+        component: &str,
+        carried: impl IntoIterator<Item = (u32, u32)>,
+    ) -> Result<(), HostError> {
         let mut next = ViewHost::new(module, component)?;
-        if let (Some(old), Some(new)) = (self.instance.component(), next.instance.component()) {
-            let old_layout = self.module().layout(old);
-            let new_layout = Rc::clone(next.module());
-            let new_layout = new_layout.layout(new);
-            for (slot, name) in new_layout.states.iter().enumerate() {
-                if let Some(prior) = old_layout.state(name) {
-                    next.instance
-                        .set_state(slot, self.instance.states()[prior].clone());
-                }
+        let prior = self.instance.states();
+        for (from, to) in carried {
+            if let Some(value) = prior.get(from as usize)
+                && (to as usize) < next.instance.states().len()
+            {
+                next.instance.set_state(to as usize, value.clone());
             }
         }
         next.events = std::mem::take(&mut self.events);

@@ -661,6 +661,8 @@ preservation policy
 
 不是 source line number。
 
+UI 状态 cell 与 behavior VM 的状态 slot 走同一份 migration plan：plan 按 `SymbolId` 把 last-good 组件的 slot 与 candidate 组件的 slot 配对，reload 后的 host 把每个保留状态的 VM 值从旧 slot 搬到新 slot。状态改名、组件改名（`SymbolId` 随声明路径变化）或被删除时不按名字搬运，新 slot 从其 initializer 开始。handler 体的编辑只换 bytecode，每个状态（包括没有 UI cell 镜像的 `String`、`List`、record）保持原值。
+
 ---
 
 ## 14. Compatibility

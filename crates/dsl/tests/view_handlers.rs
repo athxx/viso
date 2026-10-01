@@ -34,6 +34,22 @@ fn clicker(body: &str) -> String {
     )
 }
 
+/// A component `name` declaring `states`, whose leaf handles `body`.
+fn tagger(name: &str, states: &str, body: &str) -> String {
+    format!(
+        "component {name} {{
+            {states}
+            view {{
+                Column {{
+                    width: 200dp;
+                    height: 100dp;
+                    Text {{ width: 100dp; height: 50dp; {body} }}
+                }}
+            }}
+        }}"
+    )
+}
+
 fn origin() -> Origin {
     Origin {
         package: "app".into(),
@@ -85,6 +101,13 @@ impl Live {
         self.last_good = done.candidate;
         layout(&mut self.store, self.root);
         Ok(())
+    }
+
+    /// The VM value of the string state `name`, which no UI cell mirrors.
+    fn text(&self, name: &str) -> Option<String> {
+        let host = self.view.as_ref()?.borrow();
+        let slot = host.state_slot(name)?;
+        Some(host.state(slot)?.as_str()?.to_owned())
     }
 
     fn count(&self) -> Option<StateValue> {
@@ -148,6 +171,50 @@ fn a_reload_keeps_the_count_and_swaps_the_handler() {
     );
     live.click();
     assert_eq!(live.count(), Some(StateValue::Int(6)));
+}
+
+#[test]
+fn a_handler_body_edit_keeps_every_vm_state_by_identity() {
+    let mut live = Live::default();
+    live.reload(&tagger(
+        "Clicker",
+        "state count = 0; state log = \"\";",
+        "on click { log = \"clicked\"; count += 1; }",
+    ))
+    .expect("mounts");
+    live.click();
+    assert_eq!(live.text("log").as_deref(), Some("clicked"));
+
+    // The states swap slots and the handler body changes.
+    live.reload(&tagger(
+        "Clicker",
+        "state log = \"\"; state count = 0;",
+        "on click { count += 2; }",
+    ))
+    .expect("reloads");
+    assert_eq!(live.text("log").as_deref(), Some("clicked"));
+    assert_eq!(live.count(), Some(StateValue::Int(1)));
+    live.click();
+    assert_eq!(live.count(), Some(StateValue::Int(3)));
+    assert_eq!(live.text("log").as_deref(), Some("clicked"));
+}
+
+#[test]
+fn a_state_whose_identity_changed_starts_over_in_the_vm() {
+    let mut live = Live::default();
+    let states = "state count = 0; state log = \"\";";
+    live.reload(&tagger(
+        "Clicker",
+        states,
+        "on click { log = \"clicked\"; }",
+    ))
+    .expect("mounts");
+    live.click();
+    // Renaming the component re-mints every state's identity, though the
+    // state names are unchanged.
+    live.reload(&tagger("Tagger", states, "on click { log = \"clicked\"; }"))
+        .expect("reloads");
+    assert_eq!(live.text("log").as_deref(), Some(""));
 }
 
 #[test]
