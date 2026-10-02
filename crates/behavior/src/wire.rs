@@ -13,6 +13,9 @@ use std::rc::Rc;
 
 use viso_ende::{Decode, DecodeError, Decoder, Encode, Encoder, ProtocolTag};
 
+use crate::game::{
+    Action, InputBindings, InputSchema, Key, KeySet, MoveSource, PadButton, PadStick, TouchButton,
+};
 use crate::module::{
     Chunk, ChunkKind, Code, Component, Module, NativeImport, Span, System, VerifyError,
 };
@@ -65,6 +68,10 @@ impl Module {
             enc.write_u64(n.signature);
             enc.write_u16(n.params);
         });
+        enc.write_bool(self.input().is_some());
+        if let Some(input) = self.input() {
+            write_input(&mut enc, input);
+        }
         enc.into_bytes()
     }
 
@@ -98,8 +105,18 @@ impl Module {
                 params: dec.read_u16()?,
             })
         })?;
+        let input = if dec.read_bool()? {
+            Some(read_input(&mut dec)?)
+        } else {
+            None
+        };
         dec.finish()?;
-        Module::new(chunks, components, systems, natives).map_err(LoadError::Verify)
+        let module =
+            Module::new(chunks, components, systems, natives).map_err(LoadError::Verify)?;
+        match input {
+            Some(input) => module.with_input(input).map_err(LoadError::Verify),
+            None => Ok(module),
+        }
     }
 }
 
@@ -153,6 +170,84 @@ fn read_refs(dec: &mut Decoder<'_>) -> Result<Box<[Option<u32>]>, DecodeError> {
         n => u32::try_from(n - 1).map(Some).map_err(|_| malformed(dec)),
     })?;
     Ok(refs.into())
+}
+
+fn write_input(enc: &mut Encoder, input: &InputSchema) {
+    enc.write_str(&input.name);
+    write_list(enc, &input.actions, |enc, a| enc.write_str(a));
+    let b = &input.bindings;
+    write_list(enc, &b.keys, |enc, (key, action)| {
+        enc.write_u8(*key as u8);
+        enc.write_varint(u64::from(action.0));
+    });
+    write_list(enc, &b.pads, |enc, (button, action)| {
+        enc.write_u8(*button as u8);
+        enc.write_varint(u64::from(action.0));
+    });
+    write_list(enc, &b.touches, |enc, (button, action)| {
+        enc.write_u8(*button as u8);
+        enc.write_varint(u64::from(action.0));
+    });
+    enc.write_bool(b.move_axes.is_some());
+    if let Some(source) = b.move_axes {
+        let k = source.keys;
+        for key in [k.up, k.left, k.down, k.right] {
+            enc.write_u8(key as u8);
+        }
+        enc.write_u8(source.stick as u8);
+    }
+    enc.write_f64(b.dead_zone);
+}
+
+fn read_input(dec: &mut Decoder<'_>) -> Result<InputSchema, DecodeError> {
+    fn variant<T>(dec: &mut Decoder<'_>, of: fn(i64) -> Option<T>) -> Result<T, DecodeError> {
+        let i = dec.read_u8()?;
+        of(i64::from(i)).ok_or_else(|| malformed(dec))
+    }
+    let name = dec.read_str()?.into();
+    let actions = read_list(dec, |dec| Ok(dec.read_str()?.into()))?.into();
+    let keys = read_list(dec, |dec| {
+        Ok((
+            variant(dec, Key::from_index)?,
+            Action(read_u32_varint(dec)?),
+        ))
+    })?;
+    let pads = read_list(dec, |dec| {
+        Ok((
+            variant(dec, PadButton::from_index)?,
+            Action(read_u32_varint(dec)?),
+        ))
+    })?;
+    let touches = read_list(dec, |dec| {
+        Ok((
+            variant(dec, TouchButton::from_index)?,
+            Action(read_u32_varint(dec)?),
+        ))
+    })?;
+    let move_axes = if dec.read_bool()? {
+        let keys = KeySet {
+            up: variant(dec, Key::from_index)?,
+            left: variant(dec, Key::from_index)?,
+            down: variant(dec, Key::from_index)?,
+            right: variant(dec, Key::from_index)?,
+        };
+        let stick = variant(dec, PadStick::from_index)?;
+        Some(MoveSource { keys, stick })
+    } else {
+        None
+    };
+    let dead_zone = dec.read_f64()?;
+    Ok(InputSchema {
+        name,
+        actions,
+        bindings: InputBindings {
+            keys,
+            pads,
+            touches,
+            move_axes,
+            dead_zone,
+        },
+    })
 }
 
 fn read_u32_varint(dec: &mut Decoder<'_>) -> Result<u32, DecodeError> {
@@ -849,6 +944,7 @@ mod tests {
             components: components.into(),
             systems: module.systems().to_vec().into(),
             natives: module.natives().to_vec().into(),
+            input: None,
         };
         bytes = bad.encode();
         assert!(matches!(Module::decode(&bytes), Err(LoadError::Verify(_))));

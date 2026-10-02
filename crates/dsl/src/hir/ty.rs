@@ -255,17 +255,19 @@ impl Ty {
         }
     }
 
-    /// The type a native schema type denotes.
-    pub fn from_schema(ty: &SchemaTy) -> Ty {
+    /// The type a native schema type denotes; an input action is `action`,
+    /// the compiled package's action enum.
+    pub fn from_schema(ty: &SchemaTy, action: &Ty) -> Ty {
         match ty {
             SchemaTy::Unit => Ty::Unit,
             SchemaTy::Bool => Ty::Bool,
             SchemaTy::I64 => Ty::I64,
             SchemaTy::F64 => Ty::F64,
             SchemaTy::String => Ty::String,
-            SchemaTy::List(t) => Ty::List(Box::new(Ty::from_schema(t))),
-            SchemaTy::Option(t) => Ty::Option(Box::new(Ty::from_schema(t))),
-            SchemaTy::Handle(path) => Ty::Native(NativeId::of(path)),
+            SchemaTy::List(t) => Ty::List(Box::new(Ty::from_schema(t, action))),
+            SchemaTy::Option(t) => Ty::Option(Box::new(Ty::from_schema(t, action))),
+            SchemaTy::Handle(path) | SchemaTy::Enum(path) => Ty::Native(NativeId::of(path)),
+            SchemaTy::Action => action.clone(),
         }
     }
 

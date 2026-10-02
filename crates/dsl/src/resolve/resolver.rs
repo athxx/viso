@@ -1336,8 +1336,9 @@ impl ModulePass<'_> {
     }
 
     /// Resolves the path `head::rest..` whose head imports the native `base`:
-    /// the function (or, for a type position, handle type) it names is recorded
-    /// on `head` as [`Resolution::Native`]; a path naming neither is
+    /// the function or schema enum variant (or, for a type position, handle
+    /// type) it names is recorded on `head` as [`Resolution::Native`]; a path
+    /// naming none is
     /// [`E2001`](ResolveErrorKind::UnresolvedNative) at its first unknown
     /// segment, with the nearest registered names.
     fn resolve_native(
@@ -1349,11 +1350,17 @@ impl ModulePass<'_> {
     ) {
         let mut path = base.to_owned();
         let mut last = head.clone();
+        let value = |natives: &Natives, path: &str| {
+            natives
+                .function(path)
+                .map(|f| f.id)
+                .or_else(|| natives.variant(path).map(|_| NativeId::of(path)))
+        };
         for segment in rest {
             let found = if ty {
                 self.natives.ty(&path).is_some()
             } else {
-                self.natives.function(&path).is_some()
+                value(self.natives, &path).is_some()
             };
             if found {
                 break;
@@ -1365,7 +1372,7 @@ impl ModulePass<'_> {
         let id = if ty {
             self.natives.ty(&path).map(|t| t.id)
         } else {
-            self.natives.function(&path).map(|f| f.id)
+            value(self.natives, &path)
         };
         if let Some(id) = id {
             self.refs.push(ResolvedRef {
@@ -1377,6 +1384,11 @@ impl ModulePass<'_> {
         let at = last.text_range();
         let mut diagnostic = ResolveErrorKind::UnresolvedNative.to_diagnostic(Some(at), &path);
         let parent = path.rsplit_once("::").map_or("", |(p, _)| p);
+        let variants: Vec<&str> = self
+            .natives
+            .ty(parent)
+            .map_or(&[][..], |t| t.ty.variants)
+            .to_vec();
         let names: Vec<&str> = self
             .natives
             .functions()
@@ -1385,6 +1397,7 @@ impl ModulePass<'_> {
             .chain(self.natives.types().iter().map(|t| &*t.path))
             .filter_map(|p| p.strip_prefix(parent)?.strip_prefix("::"))
             .filter(|n| !n.contains("::"))
+            .chain(variants)
             .collect();
         let suggestions = suggest::nearest(
             &last.text(),

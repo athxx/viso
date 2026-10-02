@@ -163,6 +163,12 @@ pub trait TypeEnv {
         None
     }
 
+    /// The type of an input action in the package: the enum its `InputMap`
+    /// maps, or `viso::game::InputAction`.
+    fn input_action(&self) -> Ty {
+        Ty::Native(NativeId::of(viso_behavior::game::InputAction::PATH))
+    }
+
     /// Notes that the call at `call` is bound to the native function `id`.
     fn record_native(&self, call: TextRange, id: NativeId) {
         let _ = (call, id);
@@ -451,7 +457,10 @@ impl<'a> InferCx<'a> {
                     None => Ty::Unknown,
                 }
             }
-            Some(Resolution::Native(id)) => self.native_value(id, node.text_range()),
+            Some(Resolution::Native(id)) => match self.native_variant(id) {
+                Some(variant) => self.check_against(Ty::Native(variant.ty), expected, node),
+                None => self.native_value(id, node.text_range()),
+            },
             Some(to) if segments.len() == 1 => self.resolution_ty(&to),
             Some(_) => Ty::Unknown,
             None => match builtin_variant(&segments) {

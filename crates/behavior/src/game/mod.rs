@@ -13,8 +13,13 @@
 //! collision events queued for it to every `CollisionListener`, event by event.
 //! Ticks share one instruction and native call budget each; frames share
 //! another.
+//!
+//! Each tick reads a frozen [`InputSnapshot`] through `frame.input`: the
+//! actions of the package's `InputMap` (or the default [`InputAction`] set)
+//! and the move vector, edges delivered once (see [`input`]).
 
 mod clock;
+pub mod input;
 mod scheduler;
 
 use std::cell::Cell;
@@ -25,6 +30,10 @@ use crate::native::{
 };
 
 pub use clock::{Clock, TickOverrun};
+pub use input::{
+    Action, INPUT_ACTION_DERIVE, InputAction, InputAxis, InputBindings, InputMap, InputSchema,
+    InputSnapshot, Key, KeySet, MoveAxes, MoveSource, PadButton, PadStick, TouchButton,
+};
 pub use scheduler::{Scheduler, SystemFault};
 
 /// The identity of the `FixedUpdate.fixed_update` hook.
@@ -40,6 +49,7 @@ pub const COLLISION: NativeId = NativeId::of("viso::game::CollisionListener::col
 pub struct FixedFrame {
     tick: Cell<u64>,
     dt: f64,
+    input: Obj<InputSnapshot>,
 }
 
 impl NativeObject for FixedFrame {
@@ -76,7 +86,7 @@ fn signed(tick: u64) -> i64 {
     i64::try_from(tick).unwrap_or(i64::MAX)
 }
 
-static FIXED_FRAME_METHODS: [NativeFunction; 3] = [
+static FIXED_FRAME_METHODS: [NativeFunction; 4] = [
     crate::native!(fn "tick" |_cx, this: Obj<FixedFrame>| -> i64 { Ok(signed(this.tick.get())) })
         .deterministic()
         .realtime_safe(),
@@ -88,6 +98,12 @@ static FIXED_FRAME_METHODS: [NativeFunction; 3] = [
     })
     .deterministic()
     .realtime_safe(),
+    crate::native!(fn "input" |_cx, this: Obj<FixedFrame>| -> Obj<InputSnapshot> {
+        Ok(this.input.clone())
+    })
+    .deterministic()
+    .realtime_safe()
+    .property(),
 ];
 
 static RENDER_FRAME_METHODS: [NativeFunction; 2] = [
@@ -115,9 +131,9 @@ static COLLISION_EVENT_METHODS: [NativeFunction; 3] = [
     .realtime_safe(),
 ];
 
-/// The scheduler traits and the frame handles their hooks receive. The
-/// handles are borrowed: a hook reads them during its call and cannot keep
-/// them.
+/// The scheduler traits, the frame handles their hooks receive and the typed
+/// input surface. The frame and input handles are borrowed: a hook reads them
+/// during its call and cannot keep them.
 pub(crate) static GAME: NativeLibrary = NativeLibrary {
     path: "viso::game",
     version: 1,
@@ -126,6 +142,16 @@ pub(crate) static GAME: NativeLibrary = NativeLibrary {
         NativeType::new("FixedFrame", &FIXED_FRAME_METHODS).borrowed(),
         NativeType::new("RenderFrame", &RENDER_FRAME_METHODS).borrowed(),
         NativeType::new("CollisionEvent", &COLLISION_EVENT_METHODS).borrowed(),
+        NativeType::new("InputSnapshot", &input::INPUT_SNAPSHOT_METHODS).borrowed(),
+        NativeType::new("MoveAxes", &input::MOVE_AXES_METHODS).borrowed(),
+        NativeType::new("InputMap", &input::INPUT_MAP_METHODS),
+        NativeType::new("KeySet", &input::KEY_SET_METHODS),
+        NativeType::enumeration("Key", Key::VARIANTS),
+        NativeType::enumeration("PadButton", PadButton::VARIANTS),
+        NativeType::enumeration("PadStick", PadStick::VARIANTS),
+        NativeType::enumeration("TouchButton", TouchButton::VARIANTS),
+        NativeType::enumeration("InputAction", InputAction::VARIANTS),
+        NativeType::enumeration("InputAxis", InputAxis::VARIANTS),
     ],
     traits: &[
         NativeTrait {
@@ -159,6 +185,7 @@ pub(crate) static GAME: NativeLibrary = NativeLibrary {
             }],
         },
     ],
+    derives: &[input::INPUT_ACTION_DERIVE],
     widgets: &[],
 };
 

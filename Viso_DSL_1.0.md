@@ -1087,6 +1087,8 @@ let pending = LoadState::loading;
 let done = LoadState::ready(user);
 ```
 
+`@derive(..)` 的每个实参是一个裸 Trait 名：编译器提供的 `Eq`、`Hash`、`StableKey`、`Snapshot`，或某个 Native Library 在 Schema 中声明的 Derive（如 `viso::game` 的 `InputAction`，无需 Import）；其他名字或非裸名实参报 `E2001`（附最近候选）。Schema Derive 只用于所有 Variant 都不带 Payload 的 Enum，否则报 `E2201`。
+
 ---
 
 ## 30. Trait
@@ -1164,6 +1166,8 @@ const_decl         = "const", identifier, ":", type,
 ```
 
 `const_expression` 是可在编译期求值的 Expression 子集，禁止 I/O、State、Native Action、Task、Resource 和非确定性调用。
+
+需要在编译期得到值的 `const`（如 `InputMap`，§106.3）只由字面量、取负的数、Enum 无 Payload Variant（含 Schema Enum）与 `@const` Native 调用构成：其他表达式或非 `@const` 调用报 `E2501`；`@const` Native 拒绝实参（如越界的死区半径）报 `E2112`。
 
 ---
 
@@ -1846,7 +1850,9 @@ native_type_decl     = "type", identifier,
 
 Native Schema 由 Rust 侧生成（ADR 0036）：一个 Native Library 是一条模块路径（如 `viso::text`）下带版本的函数与 Handle 类型集合；编译器与运行时共享同一个 Registry，`.vs` 不重复声明签名。标准 Registry 含 `viso::text`、`viso::math`、`viso::time`（`Stopwatch`）与 `viso::clipboard`。
 
-- 每个函数记录：名称、`fn`/`action`/`task` 分类、参数与返回的 Schema 类型、所需 Capability、线程域（`any`/`ui`/`worker`）、`deterministic`、`realtime_safe` 与每次调用的预算成本；每个 Handle 类型记录方法、所有权（`shared`/`borrowed`）与线程域；
+- 每个函数记录：名称、`fn`/`action`/`task` 分类、参数与返回的 Schema 类型、所需 Capability、线程域（`any`/`ui`/`worker`）、`deterministic`、`realtime_safe`、`@const`（编译期可求值，隐含 `deterministic`）与每次调用的预算成本；每个 Handle 类型记录方法、所有权（`shared`/`borrowed`）与线程域；
+- Schema Enum 是带 Variant 的 Native 类型，值为 Variant 序号而非 Handle：`import viso::game::Key;` 后写 `Key::Space`，未知 Variant 为 `E2001`（附最近候选）；
+- Property 是只有 Receiver 参数的方法，写 `frame.input`，不加括号；对 Property 加 `()` 报 `E2103`，读取未声明的 Property 报 `E2001`；
 - 调用经 Import 或完整路径解析：`import viso::text;` 后写 `text::upper(s)`，`import viso::math::{clamp};` 后写 `clamp(x, 0.0, 1.0)`，`import viso::time::Stopwatch;` 后写 `Stopwatch::start()`；Handle 方法写 `watch.elapsed_ms()`，Receiver 作为第一个参数。未注册的路径或方法为 `E2001`；
 - Effect 分类：`deterministic` 的 `fn` 为 Pure，其余 `fn` 为 Read，`action` 为 Action，`task` 为 Task；在 View/Computed 中调用 `action` 为 `E2502`；
 - Capability 推断：调用所在的 Callable 直接需要该函数的 Capability，并沿调用图传递（§95）；
@@ -5726,11 +5732,11 @@ export enum TickOverrun {
 
 ### 106.2 输入边沿语义
 
-- 每个 Fixed Tick 看到一份冻结的 `InputSnapshot`；
+- 每个 Fixed Tick 经 `frame.input` 看到一份冻结的 `InputSnapshot`（Borrowed Handle）：`pressed`/`released`/`held(action)`、`axis(InputAxis::move_x)` 与 `move_axes()`；
 - 一个渲染帧可能运行 0 个或多个 Tick。`pressed`/`released` 边沿归属到它发生之后的第一个 Tick，并且只被看到一次：0 个 Tick 的帧不丢边沿，多个 Tick 的帧不重复边沿；
 - `held` 与 Axis 在同一渲染帧的多个 Tick 中取相同值；
 - 同一 Tick 内按下又释放时，`pressed` 与 `released` 都为真；
-- 文本输入、IME 和 UI 焦点中的按键不进入 Game 输入，除非 `GameViewport` 持有输入焦点。
+- 文本输入、IME 和 UI 焦点中的按键不进入 Game 输入，除非 `GameViewport` 持有输入焦点；失去输入焦点时释放全部按键、按钮与摇杆，仍按下的动作在下一个 Tick 得到 `released`。
 
 ### 106.3 Typed 输入映射
 
@@ -5741,8 +5747,8 @@ import viso::game::{InputMap, Key, KeySet, PadButton, PadStick};
 
 @derive(Eq, Hash, InputAction)
 export enum Act {
-    Jump,
-    Fire,
+    Jump;
+    Fire;
 }
 
 export const CONTROLS: InputMap<Act> = InputMap::new()
@@ -5753,13 +5759,16 @@ export const CONTROLS: InputMap<Act> = InputMap::new()
     .move_axes(KeySet::wasd(), PadStick::Left);
 ```
 
-使用：`frame.input.pressed(Act::Jump)`、`frame.input.move_axes()`；相机相对移动写 `frame.input.move_axes().relative_to(camera_yaw)`。
+使用：`frame.input.pressed(Act::Jump)`、`frame.input.move_axes()`（Property `x` 向右、`y` 向前）；相机相对移动写 `frame.input.move_axes().relative_to(camera_yaw)`。
 
 规则：
 
-- `InputMap` 构造方法都是 `@const`，映射在编译期求值并进入 Schema；
-- 死区与对角线归一化（长度不超过 1）由 `InputMap` 统一处理；
-- 目标平台包含手柄或触屏时，缺少对应路径的动作报 `E9107`（警告）；
+- 一个 Package 至多声明一个 `const NAME: InputMap<E>`，再声明报 `E2202`；`E` 必须派生 `InputAction`，或是默认的 `InputAction` 本身（重映射默认动作集），否则报 `E2201`；
+- Package 的每个输入动作都是 `E` 类型：`pressed`/`released`/`held` 接受 `E` 的 Variant，传入其他类型报 `E2103`；未声明映射时 `E` 是 `InputAction`（`jump`、`fire`、`interact`、`pause`），默认绑定 `Space`/`J`/`E`/`Escape`、`South`/`West`/`North`/`Start` 与四个触屏按钮，移动轴为 `KeySet::wasd()` 加左摇杆；
+- `InputMap` 构造方法都是 `@const`，映射在编译期求值（§32）并进入 Schema：`new()`、`key(Key, E)`、`pad(PadButton, E)`、`touch(TouchButton, E)`、`move_axes(KeySet, PadStick)`、`dead_zone(r)`；`KeySet` 由 `wasd()`、`arrows()` 或 `of(up, left, down, right)` 构造；
+- 一个动作可以有多个绑定，任一绑定按下即 `held`，边沿只在整个动作的 `held` 变化时产生；
+- 死区与对角线归一化（长度不超过 1）由 `InputMap` 统一处理：摇杆半径不超过 `dead_zone`（默认 0.2，取值 `[0, 1)`）时为 0，之外线性映射到 `(0, 1]`；键盘方向与摇杆相加后长度超过 1 时归一化；
+- 目标平台包含手柄或触屏时，缺少对应路径的动作报 `E9107`（警告）：桌面宿主包含手柄，声明了移动端 Target 的 Package 包含触屏；
 - `InputSnapshot` 只保存动作与轴的值，不保存原始按键，所以 Input Tape 与键位重映射无关。
 
 ### 106.4 状态分层
@@ -8381,6 +8390,7 @@ RecordPatternField
 | E2109  | 长度族值常量除以 0（§19.8）                             |
 | E2110  | 赋值目标不可写（§62.1）                                 |
 | E2111  | `env` 用在 View 执行域之外（§96.2）                     |
+| E2112  | `@const` Native 在编译期拒绝其实参（§32）               |
 | E2201  | Trait Bound 未满足                                      |
 | E2202  | Trait Impl 重叠或歧义                                   |
 | E2301  | 非穷尽 Match                                            |

@@ -21,6 +21,7 @@ static TEST: NativeLibrary = NativeLibrary {
     ],
     types: &[NativeType::new("Frame", &[]).borrowed()],
     traits: &[],
+    derives: &[],
     widgets: &[],
 };
 
@@ -36,6 +37,7 @@ static OTHER_UPPER: NativeLibrary = NativeLibrary {
     ],
     types: &[],
     traits: &[],
+    derives: &[],
     widgets: &[],
 };
 
@@ -48,6 +50,7 @@ static TWICE: NativeLibrary = NativeLibrary {
     ],
     types: &[],
     traits: &[],
+    derives: &[],
     widgets: &[],
 };
 
@@ -292,6 +295,7 @@ static ROW_AGAIN: NativeLibrary = NativeLibrary {
     functions: &[],
     types: &[],
     traits: &[],
+    derives: &[],
     widgets: &[NativeWidget::new("Row", WidgetNode::Leaf)],
 };
 
