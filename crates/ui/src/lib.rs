@@ -48,7 +48,10 @@ pub use component::{
 pub use content::{Content, TextRequest};
 pub use context::EventCx;
 pub use dirty::DirtyClass;
-pub use flush::{ReactiveCycle, SETTLE_ROUNDS, settle_states};
+pub use flush::{
+    ADAPTIVE_ROUNDS, AdaptiveCycle, ReactiveCycle, SETTLE_ROUNDS, Unsettled, settle_adaptive,
+    settle_states,
+};
 pub use grid::{
     AdaptiveColumns, AutoRepeat, GridAreas, GridPlacement, GridStyle, LineNames, TrackMax,
     TrackSizing, repeat, repeated,

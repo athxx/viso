@@ -1,7 +1,13 @@
 //! The adaptive environment under the macros: a `component!` reads `env` in a
 //! region's choice and in a handler, and an instance a `view!` file's region
-//! mounts reads its own `env` fields, each as of the last settle.
+//! mounts reads its own `env` fields, each as of the last settle; the frame
+//! loop settles the environment against each layout it runs.
 
+use std::time::Duration;
+
+use viso::__test_support::drive_scripted;
+use viso::platform::{RawEvent, WindowId};
+use viso::prelude::*;
 use viso::render::Rect;
 use viso::ui::adaptive::Environment;
 use viso::ui::{
@@ -212,4 +218,70 @@ fn a_component_under_an_adaptive_scope_reads_the_scope_class() {
     };
     form.update_env(|e| e.window.width = 1000.0);
     assert_eq!(region(&form), 1, "the scope classifies its 300dp");
+}
+
+/// Two adaptive scopes, 300dp and 900dp wide, each holding an `Adaptive`.
+struct ScopedApp;
+
+impl Application for ScopedApp {
+    fn new(_cx: &mut AppCx) -> Self {
+        ScopedApp
+    }
+
+    fn window_config(&self) -> WindowConfig {
+        WindowConfig {
+            caption: false,
+            ..Default::default()
+        }
+    }
+
+    fn build(&mut self, cx: &mut BuildCx<'_>) {
+        let build = viso::ui! {
+            Row {
+                width: 1200dp;
+                height: 300dp;
+                Column {
+                    width: 300dp;
+                    height: 300dp;
+                    AdaptiveScope { Adaptive {} }
+                }
+                Column {
+                    width: 900dp;
+                    height: 300dp;
+                    AdaptiveScope { Adaptive {} }
+                }
+            }
+        };
+        build(cx);
+    }
+}
+
+#[test]
+fn the_frame_loop_settles_the_environment_against_its_layout() {
+    let app = drive_scripted::<ScopedApp>(
+        vec![RawEvent::RedrawRequested {
+            window: WindowId(1),
+        }],
+        Duration::from_millis(16),
+    );
+    let store = app.store();
+    let children = |node: NodeId| {
+        let arena = store.arena();
+        let mut out = Vec::new();
+        let mut child = arena.links(node).and_then(|l| l.first_child);
+        while let Some(c) = child {
+            out.push(c);
+            child = arena.links(c).and_then(|l| l.next_sibling);
+        }
+        out
+    };
+    let regions: Vec<usize> = children(app.root().expect("a root"))
+        .into_iter()
+        .map(|column| {
+            let adaptive = children(children(column)[0])[0];
+            children(children(adaptive)[1]).len()
+        })
+        .collect();
+    assert_eq!(regions, [1, 2], "compact at 300dp, expanded at 900dp");
+    assert!(!app.states().env().unsettled());
 }
