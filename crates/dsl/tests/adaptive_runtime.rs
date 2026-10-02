@@ -1,7 +1,9 @@
 //! The adaptive environment at runtime, under hot reload and the release
 //! package: a region on `env.size_class` switches arms when the window's class
-//! changes, a handler reads the environment as of the last settle, and an
-//! instance a region mounts reads its own `env` fields.
+//! changes, a handler reads the environment as of the last settle, an
+//! instance a region mounts reads its own `env` fields, avoiding regions pad
+//! what the system covers of them, and a view lays out around the display
+//! features.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -11,6 +13,7 @@ use viso_dsl::frontend::Origin;
 use viso_dsl::hotreload::{CandidatePlan, LiveRuntime, hot_reload_view};
 use viso_ui::Rect;
 use viso_ui::adaptive::Environment;
+use viso_ui::layout::{Inset, LayoutInput, LayoutTree};
 use viso_ui::virtual_list::VirtualLists;
 use viso_ui::{
     BindingTable, EffectStore, NodeId, NodeStore, PointerButtons, PointerEvent, PointerPhase,
@@ -404,4 +407,144 @@ fn a_non_constant_basis_is_reported() {
     let compiled = viso_dsl::frontend::compile_file(source, &origin());
     let codes: Vec<String> = compiled.errors().map(|d| d.code.to_string()).collect();
     assert_eq!(codes, ["E3711"]);
+}
+
+const AVOIDING: &str = r#"
+export component Avoiding {
+    view {
+        Column {
+            width: 400dp;
+            height: 300dp;
+            SafeArea {
+                width: 400dp;
+                height: 100dp;
+                Text { width: 10dp; height: 10dp; }
+            }
+            KeyboardAvoiding {
+                width: 400dp;
+                height: 200dp;
+                Text { width: 10dp; height: 10dp; }
+            }
+        }
+    }
+}
+"#;
+
+impl Rt {
+    /// Changes the environment, then pads every avoiding region against the
+    /// layout until it holds still.
+    fn avoid(&mut self, change: impl FnOnce(&mut Environment)) {
+        self.states.update_env(change);
+        while self.states.pad_avoiding(&mut self.store) {
+            self.layout();
+        }
+        self.states.settle_env(&self.store);
+        self.flush();
+    }
+
+    /// The padding of each of the root's children.
+    fn paddings(&self) -> Vec<Inset> {
+        let root = self.root.expect("mounted");
+        self.children(root)
+            .into_iter()
+            .map(|node| match self.store.input(node.index()) {
+                LayoutInput::Flex { padding, .. } => padding,
+                _ => Inset::default(),
+            })
+            .collect()
+    }
+}
+
+fn inset(top: f32, bottom: f32) -> Inset {
+    Inset {
+        top,
+        bottom,
+        ..Inset::default()
+    }
+}
+
+#[test]
+fn avoiding_regions_pad_what_the_system_covers_of_them() {
+    for mut rt in [Rt::reloaded(AVOIDING), Rt::packaged(AVOIDING)] {
+        rt.avoid(|_| {});
+        assert_eq!(rt.paddings(), [Inset::default(), Inset::default()]);
+        rt.avoid(|e| {
+            e.safe_area = inset(30.0, 20.0);
+            e.keyboard_inset = 150.0;
+        });
+        assert_eq!(
+            rt.paddings(),
+            [inset(30.0, 0.0), inset(0.0, 150.0)],
+            "the top bar covers the safe area, the keyboard the lower region"
+        );
+        let text = rt.children(rt.children(rt.root.expect("mounted"))[0])[0];
+        assert_eq!(
+            rt.store.bounds(text).y,
+            30.0,
+            "content moves out from under"
+        );
+        rt.avoid(|e| e.keyboard_inset = 0.0);
+        assert_eq!(rt.paddings(), [inset(30.0, 0.0), Inset::default()]);
+    }
+}
+
+#[test]
+fn a_padded_avoiding_region_is_reported() {
+    for widget in ["SafeArea", "KeyboardAvoiding"] {
+        let source = format!(
+            "export component A {{ view {{ {widget} {{ padding: 4dp; Row {{ width: 10dp; }} }} }} }}"
+        );
+        let compiled = viso_dsl::frontend::compile_file(&source, &origin());
+        let codes: Vec<String> = compiled.errors().map(|d| d.code.to_string()).collect();
+        assert_eq!(codes, ["E3711"], "{widget}");
+    }
+}
+
+const FOLDED: &str = r#"
+export component Folded {
+    view {
+        Column {
+            width: 400dp;
+            height: 300dp;
+            for feature in env.display_features key match feature {
+                DisplayFeature::Hinge { .. } => 0,
+                DisplayFeature::Fold { .. } => 1,
+                DisplayFeature::Cutout { .. } => 2,
+            } {
+                match feature {
+                    DisplayFeature::Hinge { .. } => { Text { width: 10dp; height: 10dp; } },
+                    _ => { },
+                }
+            }
+        }
+    }
+}
+"#;
+
+#[test]
+fn a_view_lays_out_around_the_display_features() {
+    use viso_ui::adaptive::{DisplayFeature, DisplayFeatureKind};
+    let feature = |kind| DisplayFeature {
+        kind,
+        bounds: Rect {
+            x: 196.0,
+            y: 0.0,
+            w: 8.0,
+            h: 300.0,
+        },
+    };
+    for mut rt in [Rt::reloaded(FOLDED), Rt::packaged(FOLDED)] {
+        rt.update_env(|_| {});
+        let root = rt.root.expect("mounted");
+        assert_eq!(rt.children(root).len(), 0, "a flat screen");
+        rt.update_env(|e| {
+            e.display_features = vec![
+                feature(DisplayFeatureKind::Hinge),
+                feature(DisplayFeatureKind::Cutout),
+            ]
+        });
+        assert_eq!(rt.children(root).len(), 1, "one hinge");
+        rt.update_env(|e| e.display_features.clear());
+        assert_eq!(rt.children(root).len(), 0, "unfolded");
+    }
 }

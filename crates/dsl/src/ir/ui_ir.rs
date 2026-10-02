@@ -20,6 +20,7 @@ use crate::ir::dirty_map::{DirtyClass, property_dirty_class};
 use crate::resolve::SymbolId;
 use crate::syntax::span::TextRange;
 use viso_behavior::native::MigratableState;
+pub use viso_ui::adaptive::Avoid;
 
 /// The retained-tree template a view fragment or component view lowers to.
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -225,6 +226,9 @@ pub struct StyleIr {
     pub lengths: Option<Box<LengthsIr>>,
     /// The adaptive scope the node establishes, when it is one.
     pub scope: Option<ScopeIr>,
+    /// What the node keeps its content clear of, when it is an avoiding
+    /// region.
+    pub avoid: Option<Avoid>,
 }
 
 /// An adaptive scope: the node its subtree's `env.size_class` classifies.
@@ -244,6 +248,7 @@ impl StyleIr {
             && self.gap.is_none()
             && self.lengths().is_empty()
             && self.scope.is_none()
+            && self.avoid.is_none()
     }
 
     /// The lengths that fold against the environment, empty when there are none.

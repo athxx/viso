@@ -1565,7 +1565,7 @@ View 中类型为同一文件内 Component 的 Node 是该 Component 的一个�
 - 与 Event 同名以外的 Property 和 Handler 作用于实例 View 的根 Node；
 - 实例可以位于 `if`、`match` 与 Keyed `for` 中，区域绑定对实例的 Input 实参、State 初值与 Handler 可见（§56.1）；
 - 控制流区域中的实例，其 State 属于区域的每次挂载：Keyed `for` 的每个 Item、`if`/`match` 的每次进入各有一份，以区域绑定求值初值；State 随 Key 移动，Item 移除或离开无 `preserve` 的分支即丢弃，`preserve` 分支缓存期间保留；这类 State 不按名称跨 Hot Reload 保留，含控制流区域的 View 整树重建时从初值重新开始；
-- 以下情形报 `E3711`：Component 直接或间接挂载自身；`bind` 目标为 Component Input 且带 `using`；向 View 不恰好挂载一个 Node 的实例传入非 Input Property 或非 Event Handler；类型为其他文件的 Component；`AdaptiveScope` 的 `basis` 不是常量 `dp` 长度（§96.3）；
+- 以下情形报 `E3711`：Component 直接或间接挂载自身；`bind` 目标为 Component Input 且带 `using`；向 View 不恰好挂载一个 Node 的实例传入非 Input Property 或非 Event Handler；类型为其他文件的 Component；`AdaptiveScope` 的 `basis` 不是常量 `dp` 长度（§96.3）；`SafeArea` 或 `KeyboardAvoiding` 带 `padding`（§96.6）；
 - `ui!` Fragment 中不是内置 Widget 的类型是外围 Rust 作用域以 `component!` 声明的 Component（可写作 Rust 路径，如 `widgets::Tally`），由其 `build` 挂载，每个实例自带 State 与 Handler；这类 Node 不接受 Property、Handler 与子项（`E3711`），名称无法解析时由 Rust 在该位置报错；Hot Reload 与 Release Package 的 Fragment 没有 Rust 作用域，这类类型报 `E2001`。
 
 ---
@@ -4112,6 +4112,10 @@ view {
 
 Fold/Hinge/Cutout 必须通过 `env.display_features` 暴露为 typed geometry。业务代码不应直接解析平台私有字符串。
 
+`SafeArea` 与 `KeyboardAvoiding` 是纵向排列子节点的 Flex 容器（属性同 `Column`）。其 Padding 由 Runtime 决定：每条边的 Padding 是系统遮挡带伸入该节点盒的深度，遮挡带从窗口根节点的盒的对应边量起，`SafeArea` 的遮挡带为 `env.safe_area` 的四边，`KeyboardAvoiding` 的遮挡带为底边 `env.keyboard_inset`。因此已被祖先（包括 Runtime 为全屏窗口在根上加的 Safe Area 内边距）或外层同类区域让出的部分不再重复 Padding，嵌套区域只 Pad 一次。内容决定尺寸的轴上，尾边按不含该区域自身 Padding 的盒计量，一次布局即收敛。Padding 在布局之后、Anchor 求值之前更新（§96.5），区域位置或遮挡变化时重新计算，未变化时不写入。作者为 `SafeArea` 或 `KeyboardAvoiding` 写 `padding` 报 `E3711`：应 Pad 其内容。
+
+窗口打开时以及每次尺寸、Scale Factor、Safe Area、键盘高度变化时，Runtime 把窗口的逻辑尺寸与 Scale Factor、`safe_area`、`keyboard_inset` 写入该窗口的环境；系统外观变化时写入 `reduced_motion`。值未变化的字段不写入，不唤醒读取者。平台未报告的字段（`text_scale`、`locale`、`display_features`）保持默认值；Headless 测试直接设置环境。
+
 ---
 
 ## 96.7 Input 与 Accessibility Adaptive
@@ -4128,6 +4132,8 @@ gamepad_available
 ```
 
 `primary_pointer_precision` 的类型为 `PointerPrecision { fine; coarse; unavailable; }`，其余字段为 `Bool`。
+
+Runtime 从输入推断这些能力：窗口打开时，手机与平板目标假定 `coarse` 触摸、无 Hover 与硬件键盘，其他目标假定 `fine` 鼠标与键盘；此后最近一次使用的 Pointer 种类成为主 Pointer（鼠标为 `fine` 并带 Hover，触摸为 `coarse`，笔为 `fine`），用过的设备标记为可用，按下硬件键标记 `keyboard_available`。
 
 因此组件可以做能力适配：
 
@@ -8393,7 +8399,7 @@ RecordPatternField
 | E3708  | 交互节点缺少等价键盘路径（警告，§U8.2）                 |
 | E3709  | 标注 [Runtime 待实现] 的 Property 使用了非默认值（§U1.1） |
 | E3710  | `@selector` 误用（§U2.3）                               |
-| E3711  | Handler、控制流区域或 Component 实例未能挂载：Runtime 未投递该 Event、Behavior 未能 Lower，区域位于 View 根、`VirtualList` 内或 `ui!` Fragment 中，或实例无法内联，或 `ui!` Fragment 中的 Rust Component 带 Property、Handler 或子项，或 `bind` 带尚未挂载的 `using` Converter（§40.1、§52、§56.1、§123） |
+| E3711  | Handler、控制流区域或 Component 实例未能挂载：Runtime 未投递该 Event、Behavior 未能 Lower，区域位于 View 根、`VirtualList` 内或 `ui!` Fragment 中，或实例无法内联，或 `ui!` Fragment 中的 Rust Component 带 Property、Handler 或子项，或 `bind` 带尚未挂载的 `using` Converter，或 `AdaptiveScope` 的 `basis` 不是常量、`SafeArea`/`KeyboardAvoiding` 带 `padding`（§40.1、§52、§56.1、§96.3、§96.6、§123） |
 | E3712  | `@migrate` 误用：不标记 `fn`、`from` 缺失或不是类型拼写字符串、参数不是恰好一个 `from` 类型参数、未声明返回类型，或同一 `from` 与返回类型重复（§94.1） |
 | E4101  | Action 中使用 Await                                     |
 | E4102  | Task 跨挂起访问可变 State                               |

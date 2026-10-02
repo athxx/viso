@@ -276,6 +276,18 @@ pub(super) static WIDGETS: NativeLibrary = NativeLibrary {
             &[ADAPTIVE_SCOPE, FLEX, LAYOUT, TRANSFORM, FOCUS],
         )
         .slots(CHILDREN),
+        layout(
+            "SafeArea",
+            WidgetNode::SafeArea,
+            &[FLEX, LAYOUT, TRANSFORM, FOCUS],
+        )
+        .slots(CHILDREN),
+        layout(
+            "KeyboardAvoiding",
+            WidgetNode::KeyboardAvoiding,
+            &[FLEX, LAYOUT, TRANSFORM, FOCUS],
+        )
+        .slots(CHILDREN),
         layout("Grid", WidgetNode::Grid, &[GRID, LAYOUT, TRANSFORM, FOCUS])
             .provides(&GRID_CHILD)
             .slots(CHILDREN),

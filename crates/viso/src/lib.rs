@@ -56,6 +56,7 @@ use viso_ui::{
 use viso_widgets::caption_bar;
 
 mod accessibility;
+mod environment;
 pub mod services;
 pub mod system_fonts;
 mod text_content;
@@ -802,6 +803,7 @@ impl WindowState {
         // reported (or a value the platform cannot supply) falls back to 1x.
         ws.dpi = cx.scale_factor(window).unwrap_or(1.0) as f32;
         ws.follow_scale_factor();
+        ws.seed_environment(cx.appearance());
 
         // Bring up the GPU for this window when it exposes a real windowing
         // handle: create the device, attach a surface to that handle, and build
@@ -1583,6 +1585,7 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
                 DirtyClass::MEASURE | DirtyClass::LAYOUT | DirtyClass::PAINT,
             );
         }
+        ws.report_window();
     }
 
     fn on_input(&mut self, sample: viso_runtime::InputSample) {
@@ -1644,6 +1647,7 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
                     id: viso_ui::PointerId(p.pointer.0),
                     direct: p.kind != viso_runtime::PointerKind::Mouse,
                 };
+                environment::note_pointer(&mut ws.states, p.kind);
                 PointerRouter::route_contact(
                     &mut ws.store,
                     &mut ws.states,
@@ -1662,6 +1666,7 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
                 // backward). Every other key routes to the focused node's
                 // ancestry so a control can react to it.
                 let modifiers = lower_modifiers(k.modifiers);
+                environment::note_key(&mut ws.states);
                 if matches!(k.key, viso_runtime::Key::Tab) && k.pressed {
                     focus_next(&mut ws.store, root, !modifiers.shift);
                 } else {
@@ -1873,6 +1878,13 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
         if let Some(ws) = self.window_mut(window) {
             ws.safe_area = insets;
             ws.apply_safe_area();
+            ws.report_window();
+        }
+    }
+
+    fn on_appearance(&mut self, appearance: viso_platform::Appearance) {
+        for ws in &mut self.windows {
+            environment::report_appearance(&mut ws.states, appearance);
         }
     }
 
@@ -1880,6 +1892,7 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
         if let Some(ws) = self.window_mut(window) {
             ws.keyboard_inset = height;
             ws.apply_safe_area();
+            ws.report_window();
         }
     }
 

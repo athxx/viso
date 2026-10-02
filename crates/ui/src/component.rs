@@ -2835,6 +2835,23 @@ impl<'a> BuildCx<'a> {
         handle
     }
 
+    /// Declare a flex container keeping its content clear of `avoid`: once
+    /// laid out it is padded by its style's padding plus the part of its box
+    /// `avoid` covers. A node-only cx builds the container alone.
+    pub fn avoiding(
+        &mut self,
+        avoid: crate::adaptive::Avoid,
+        style: FlexStyle,
+        children: impl FnOnce(&mut BuildCx<'_>),
+    ) -> Handle {
+        let base = style.padding;
+        let handle = self.flex(style, children);
+        if let Some(states) = self.states.as_deref_mut() {
+            states.mark_avoiding(handle.id, avoid, base);
+        }
+        handle
+    }
+
     /// Declare a grid container and its children. The `children` closure runs
     /// with this grid as the active parent; each child lands in a cell (auto-flow
     /// unless a preceding [`BuildCx::place`] pinned it). A child inside a cell

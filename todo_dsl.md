@@ -458,9 +458,27 @@ exactly the readers they reach, with structural branches that converge or report
 - [ ] The app feeds window metrics, safe area, keyboard inset, display features, input
       capabilities, text scale, reduced motion and locale into the environment;
       headless tests set them directly.
-- [ ] `SafeArea` and `KeyboardAvoiding` widgets pad from the environment, without
+  - [x] Window logical size and scale factor, safe area and keyboard inset written at
+        open (before the build) and on every geometry, safe-area and keyboard change.
+  - [x] `reduced_motion` from the system appearance at open and on every change.
+  - [x] Input capabilities: a touch default on phones and tablets, then inferred from
+        the pointer kinds and hardware keys the window sees.
+  - [x] A field is written only when its value changes; headless tests set the
+        environment directly.
+  - [ ] Text scale, locale and display features: no platform backend reports them yet.
+- [x] `SafeArea` and `KeyboardAvoiding` widgets pad from the environment, without
       double-padding under the root safe-area wrap.
-- [ ] `DisplayFeature` hinge/fold/cutout list readable from a view (§96.6).
+  - [x] Native widgets lowered to a Column-like flex marked as avoiding, through the
+        macros, hot reload (including restyle) and the release package.
+  - [x] Padding is the depth the covered band reaches into the region's box, measured
+        from the window root, so a wrapped or nested region pads once; a content-sized
+        axis converges in one layout.
+  - [x] Padded after each layout and before anchors resolve, inside the adaptive
+        settle and its round bound.
+  - [x] Authored `padding` on either widget is `E3711`.
+- [x] `DisplayFeature` hinge/fold/cutout list readable from a view (§96.6).
+  - [x] A view iterates and matches `env.display_features` and rebuilds when it
+        changes, under hot reload and the release package.
 
 ### D4.5 — Preservation and acceptance
 

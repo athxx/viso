@@ -36,8 +36,8 @@ pub use binding_ir::{
 pub use dirty_map::{DirtyClass, property_dirty_class};
 pub use keys::{KEYLESS_STATEFUL_FOR, KeyIr, KeyedFor, analyze_keys};
 pub use ui_ir::{
-    AxisIr, LengthIr, LengthsIr, NodeKind, PendingProperty, ScopeIr, StyleIr, TermsIr, UiFor,
-    UiHandler, UiIf, UiIfArm, UiInstance, UiItem, UiMatch, UiMatchArm, UiNode, UiTree,
+    Avoid, AxisIr, LengthIr, LengthsIr, NodeKind, PendingProperty, ScopeIr, StyleIr, TermsIr,
+    UiFor, UiHandler, UiIf, UiIfArm, UiInstance, UiItem, UiMatch, UiMatchArm, UiNode, UiTree,
 };
 
 use std::collections::HashMap;
@@ -351,6 +351,14 @@ impl<'a, 'l> Lowering<'a, 'l> {
                 style.scope = Some(ScopeIr::default());
                 NodeKind::Flex
             }
+            WidgetNode::SafeArea | WidgetNode::KeyboardAvoiding => {
+                style.axis = Some(AxisIr::Column);
+                style.avoid = Some(match widget.node {
+                    WidgetNode::SafeArea => Avoid::SafeArea,
+                    _ => Avoid::Keyboard,
+                });
+                NodeKind::Flex
+            }
             WidgetNode::Grid => NodeKind::Grid,
             WidgetNode::Scroll => NodeKind::Scroll,
             WidgetNode::VirtualList => NodeKind::VirtualList,
@@ -429,6 +437,14 @@ impl<'a, 'l> Lowering<'a, 'l> {
             self.unmounted.push((
                 pending.remove(at).value,
                 "an adaptive scope's `basis` is a constant `dp` length".to_string(),
+            ));
+        }
+        if style.avoid.is_some()
+            && let Some(at) = pending.iter().position(|p| p.name == "padding")
+        {
+            self.unmounted.push((
+                pending.remove(at).value,
+                format!("a `{type_name}`'s padding is the area it avoids; pad its content instead"),
             ));
         }
         out.push(UiItem::Node(UiNode {

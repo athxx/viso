@@ -30,7 +30,7 @@ use syn::Ident;
 use viso_dsl::ir::binding_ir::{BindingEdge, BindingIr, NodeKey};
 use viso_dsl::ir::dirty_map::DirtyClass;
 use viso_dsl::ir::ui_ir::{
-    AxisIr, LengthIr, LengthsIr, NodeKind, StyleIr, TermsIr, UiItem, UiNode, UiTree,
+    Avoid, AxisIr, LengthIr, LengthsIr, NodeKind, StyleIr, TermsIr, UiItem, UiNode, UiTree,
 };
 use viso_dsl::resolve::SymbolId;
 use viso_dsl::view_behavior::{Control, ViewBehavior};
@@ -357,7 +357,22 @@ impl Emit<'_> {
                         };
                         quote! { cx.adaptive_scope(#basis, #style, |cx| { #child_block }) }
                     }
-                    None => quote! { cx.flex(#style, |cx| { #child_block }) },
+                    None => match node.style.avoid {
+                        Some(avoid) => {
+                            let avoid = match avoid {
+                                Avoid::SafeArea => quote! { SafeArea },
+                                Avoid::Keyboard => quote! { Keyboard },
+                            };
+                            quote! {
+                                cx.avoiding(
+                                    ::viso_ui::adaptive::Avoid::#avoid,
+                                    #style,
+                                    |cx| { #child_block },
+                                )
+                            }
+                        }
+                        None => quote! { cx.flex(#style, |cx| { #child_block }) },
+                    },
                 }
             }
             NodeKind::Grid => {
