@@ -1102,9 +1102,32 @@ impl WindowState {
             w: lw,
             h: lh,
         };
-        let (measured, laid_out) =
+        let (mut measured, mut laid_out) =
             self.store
                 .relayout_dirty(root, surface, &mut self.scratch, &mut self.redo_roots);
+        // Settle the adaptive environment against the boxes just placed: an
+        // anchor whose constraints or size class moved wakes its readers, their
+        // writes flush, and the tree lays out again until nothing moves. A frame
+        // that placed nothing and changed no environment input resolves nothing.
+        let (scratch, redo_roots) = (&mut self.scratch, &mut self.redo_roots);
+        if let Err(cycle) = viso_ui::settle_adaptive(
+            &mut self.store,
+            &mut self.states,
+            &mut self.bindings,
+            &mut self.computeds,
+            &mut self.projectors,
+            &mut self.effects,
+            &mut self.changed,
+            measured + laid_out > 0,
+            |store| {
+                let (m, l) = store.relayout_dirty(root, surface, scratch, redo_roots);
+                measured += m;
+                laid_out += l;
+                m + l > 0
+            },
+        ) {
+            eprintln!("[viso] {cycle}");
+        }
         for warning in self.store.take_length_warnings() {
             eprintln!(
                 "[viso] {}: node {:?}: {:?}",

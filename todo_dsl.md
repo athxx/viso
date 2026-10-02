@@ -442,9 +442,16 @@ exactly the readers they reach, with structural branches that converge or report
 
 ### D4.3 — Layout-phase evaluation and `E4204`
 
-- [ ] Frame order: layout → environment settle → state settle → relayout, bounded; a
+- [x] Frame order: layout → environment settle → state settle → relayout, bounded; a
       structure that does not converge reports `E4204` and keeps the last structure
       (§96.5).
+  - [x] `settle_adaptive` (bounded by `ADAPTIVE_ROUNDS`): a frame that placed nothing
+        and changed no environment input resolves nothing.
+  - [x] `AdaptiveCycle` (`E4204`): the anchors keep their new values, the reactions
+        are dropped, and the next frame is quiet.
+  - [x] The facade's relayout runs it after every incremental layout.
+  - [x] Tests: convergence across three layouts, a self-moving class as a cycle, and
+        the frame loop resolving two scopes on its first frame.
 
 ### D4.4 — Safe area, keyboard and display features
 

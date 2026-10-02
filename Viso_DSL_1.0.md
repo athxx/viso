@@ -4075,6 +4075,8 @@ Parent computes incoming constraints
 
 禁止 View 结构直接依赖其自身尚未完成的 measured output。`AdaptiveCycle` 检测是对以上规则违例的诊断安全网，而非切换结构的主要机制——实现必须检测有限布局周期内的 `AdaptiveCycle`，并产生结构化诊断 `E4204`，而不是无限反复 Measure。
 
+帧内顺序：Layout → 以本次布局结果 settle 环境（重算每个 anchor 的 `constraints` 与 `size_class`，只抬升真正变化的字段）→ settle 被唤醒的状态与结构 → 再 Layout，直至没有 anchor 变化。本帧既未放置任何节点、环境输入也未变化时不做任何解析。该循环有界；越界即 `E4204`：anchor 保留新值，但对它们的响应被丢弃，帧保留最后一次的结构，下一帧不再重复振荡。
+
 ---
 
 ## 96.6 Safe Area、Keyboard 与 Foldable

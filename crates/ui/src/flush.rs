@@ -10,6 +10,12 @@
 //! cycle: past [`SETTLE_ROUNDS`] the flush stops and drops what is still
 //! pending, so a cycle costs a bounded amount of one frame rather than every
 //! frame after it.
+//!
+//! A layout then settles the adaptive environment against the boxes it placed:
+//! a value that moved wakes its readers, the states they write settle, and the
+//! tree lays out again, until no anchor moves. A structure that keeps moving
+//! the constraints that select it is an adaptive cycle: past
+//! [`ADAPTIVE_ROUNDS`] the frame keeps the last structure.
 
 use crate::binding::BindingTable;
 use crate::component::NodeStore;
@@ -19,6 +25,10 @@ use crate::structure::run_structure_hooks;
 
 /// How many rounds one frame's flush runs before it stops as a reactive cycle.
 pub const SETTLE_ROUNDS: u32 = 16;
+
+/// How many layouts one frame's adaptive settle runs before it stops as an
+/// adaptive cycle.
+pub const ADAPTIVE_ROUNDS: u32 = 8;
 
 /// A frame whose flush did not settle within [`SETTLE_ROUNDS`] rounds.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -94,10 +104,99 @@ pub fn settle_states(
     Ok(rounds)
 }
 
+/// A frame whose layout did not settle the adaptive environment within
+/// [`ADAPTIVE_ROUNDS`] layouts: the structure the environment selects keeps
+/// moving the constraints that select it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AdaptiveCycle {
+    /// How many environment cells the last settle raised, and were dropped.
+    /// The anchors hold their new values; only the reactions to them do not
+    /// run, so the frame keeps its last structure.
+    pub dropped: usize,
+}
+
+impl AdaptiveCycle {
+    /// The diagnostic code of an adaptive cycle.
+    pub const CODE: &'static str = "E4204";
+}
+
+impl std::fmt::Display for AdaptiveCycle {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{}: the adaptive environment did not settle within {ADAPTIVE_ROUNDS} \
+             layouts; kept the last structure and dropped the changes of {} cell(s)",
+            Self::CODE,
+            self.dropped
+        )
+    }
+}
+
+/// Why a frame's layout stopped before it settled.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Unsettled {
+    /// A state flush inside the settle did not settle.
+    Reactive(ReactiveCycle),
+    /// The environment did not settle.
+    Adaptive(AdaptiveCycle),
+}
+
+impl std::fmt::Display for Unsettled {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Unsettled::Reactive(cycle) => cycle.fmt(f),
+            Unsettled::Adaptive(cycle) => cycle.fmt(f),
+        }
+    }
+}
+
+/// Settles the adaptive environment against the layout that just ran:
+/// resolves every anchor, and while that moves a value, settles the states it
+/// wakes and lays out again through `relayout`, which returns whether it
+/// placed anything. `laid_out` is whether the layout before the call placed
+/// anything; a frame that placed nothing and changed no environment input
+/// resolves nothing. Returns how many layouts it ran.
+#[allow(clippy::too_many_arguments)]
+pub fn settle_adaptive(
+    store: &mut NodeStore,
+    states: &mut StateStore,
+    bindings: &mut BindingTable,
+    computeds: &mut ComputedStore,
+    projectors: &mut SemanticProjector,
+    effects: &mut EffectStore,
+    changed: &mut Vec<StateId>,
+    mut laid_out: bool,
+    mut relayout: impl FnMut(&mut NodeStore) -> bool,
+) -> Result<u32, Unsettled> {
+    let mut rounds = 0;
+    while (laid_out || states.env().unsettled()) && states.settle_env(store) {
+        if rounds == ADAPTIVE_ROUNDS {
+            changed.clear();
+            states.take_pending(changed);
+            let dropped = changed.len();
+            changed.clear();
+            return Err(Unsettled::Adaptive(AdaptiveCycle { dropped }));
+        }
+        rounds += 1;
+        settle_states(
+            store, states, bindings, computeds, projectors, effects, changed,
+        )
+        .map_err(Unsettled::Reactive)?;
+        laid_out = relayout(store);
+    }
+    Ok(rounds)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::adaptive::{AnchorId, EnvField, SizeClass};
+    use crate::component::{BuildCx, FlexStyle, LeafStyle};
+    use crate::dirty::DirtyClass;
+    use crate::layout::{Axis, Length, Size};
+    use crate::node::NodeId;
     use crate::state::StateValue;
+    use viso_render::Rect;
 
     #[derive(Default)]
     struct Stores {
@@ -129,6 +228,161 @@ mod tests {
             Some(StateValue::Int(n)) => n,
             other => panic!("an int cell, not {other:?}"),
         }
+    }
+
+    /// A 1000dp row holding a filling column with an adaptive scope inside,
+    /// and a content-sized column whose 10dp-high leaf a hook resizes by the
+    /// scope's class: `width` maps each class to the leaf's width.
+    struct Squeeze {
+        root: NodeId,
+        surface: Rect,
+        scratch: Vec<u32>,
+        redo: Vec<NodeId>,
+        anchor: AnchorId,
+    }
+
+    impl Squeeze {
+        fn new(stores: &mut Stores, start: f32, width: fn(SizeClass) -> f32) -> Squeeze {
+            let column = |size| FlexStyle {
+                axis: Axis::Column,
+                size,
+                ..Default::default()
+            };
+            let (mut scope, mut inner, mut leaf) = (None, None, None);
+            let root = {
+                let mut cx = BuildCx::new(&mut stores.store);
+                cx.flex(
+                    FlexStyle {
+                        size: Size::fixed(1000.0, 100.0),
+                        ..Default::default()
+                    },
+                    |cx| {
+                        cx.flex(column(Size::fill()), |cx| {
+                            scope = Some(
+                                cx.flex(column(Size::fill()), |cx| {
+                                    inner = Some(
+                                        cx.leaf(LeafStyle {
+                                            size: Size::fixed(10.0, 10.0),
+                                            ..Default::default()
+                                        })
+                                        .id(),
+                                    );
+                                })
+                                .id(),
+                            );
+                        });
+                        cx.flex(
+                            column(Size {
+                                width: Length::Fit,
+                                height: Length::Fill { weight: 1.0 },
+                            }),
+                            |cx| {
+                                leaf = Some(
+                                    cx.leaf(LeafStyle {
+                                        size: Size::fixed(start, 10.0),
+                                        ..Default::default()
+                                    })
+                                    .id(),
+                                );
+                            },
+                        );
+                    },
+                );
+                cx.root().unwrap()
+            };
+            let leaf = leaf.unwrap();
+            stores.states.mark_adaptive_scope(scope.unwrap(), None);
+            let anchor = stores.states.anchor_env(inner.unwrap(), None);
+            let class = stores
+                .states
+                .anchor_cell(anchor, EnvField::SizeClass)
+                .unwrap();
+            stores.store.add_structure_hook([class], move |cx, _| {
+                let class = cx.states.env().size_class(anchor).unwrap();
+                cx.store
+                    .set_fixed_size(leaf, Size::fixed(width(class), 10.0));
+                cx.store.mark_dirty(leaf, DirtyClass::MEASURE);
+            });
+            let surface = Rect {
+                x: 0.0,
+                y: 0.0,
+                w: 1000.0,
+                h: 100.0,
+            };
+            let mut scratch = Vec::new();
+            stores.store.layout(root, surface, &mut scratch);
+            Squeeze {
+                root,
+                surface,
+                scratch,
+                redo: Vec::new(),
+                anchor,
+            }
+        }
+
+        fn frame(&mut self, stores: &mut Stores) -> Result<u32, Unsettled> {
+            let Squeeze {
+                root,
+                surface,
+                scratch,
+                redo,
+                ..
+            } = self;
+            let (measured, laid_out) = stores.store.relayout_dirty(*root, *surface, scratch, redo);
+            settle_adaptive(
+                &mut stores.store,
+                &mut stores.states,
+                &mut stores.bindings,
+                &mut stores.computeds,
+                &mut stores.projectors,
+                &mut stores.effects,
+                &mut stores.changed,
+                measured + laid_out > 0,
+                |store| {
+                    let (measured, laid_out) = store.relayout_dirty(*root, *surface, scratch, redo);
+                    measured + laid_out > 0
+                },
+            )
+        }
+    }
+
+    #[test]
+    fn a_structure_the_environment_selects_converges_in_one_frame() {
+        let mut stores = Stores::default();
+        let mut tree = Squeeze::new(&mut stores, 100.0, |class| match class {
+            SizeClass::Expanded => 500.0,
+            _ => 300.0,
+        });
+        assert_eq!(
+            tree.frame(&mut stores),
+            Ok(3),
+            "expanded at 900dp, compact at 500dp, medium at 700dp"
+        );
+        assert_eq!(
+            stores.states.env().size_class(tree.anchor),
+            Some(SizeClass::Medium)
+        );
+        assert_eq!(
+            tree.frame(&mut stores),
+            Ok(0),
+            "a settled frame resolves nothing"
+        );
+    }
+
+    #[test]
+    fn a_structure_that_moves_its_own_class_stops_as_an_adaptive_cycle() {
+        let mut stores = Stores::default();
+        let mut tree = Squeeze::new(&mut stores, 100.0, |class| match class {
+            SizeClass::Compact => 100.0,
+            _ => 600.0,
+        });
+        let Err(Unsettled::Adaptive(cycle)) = tree.frame(&mut stores) else {
+            panic!("the class flips every layout");
+        };
+        assert_eq!(cycle, AdaptiveCycle { dropped: 1 });
+        assert_eq!(AdaptiveCycle::CODE, "E4204");
+        assert!(!stores.states.has_pending(), "its changes are dropped");
+        assert_eq!(tree.frame(&mut stores), Ok(0), "the last structure holds");
     }
 
     #[test]
