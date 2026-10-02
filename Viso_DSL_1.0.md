@@ -4180,6 +4180,12 @@ view {
 
 这里 `model` 属于分支外状态，所以切换布局不会丢失业务数据；`compact-shell` 自己的局部 UI 状态在离开后可以进入 Preserve Cache。需要真正跨 Shell 维持同一个 Child Node 实例时，应使用具备 identity-preserving slot contract 的标准 Adaptive Container，而不是依赖两个不同 Conditional Branch 自动合并身份。
 
+`preserve` 分支离开时其节点只被摘下、不被释放，回来时重新挂上同一批节点（同一 `NodeId`），因此节点按身份保存的局部状态——scroll offset、文本编辑缓冲区（文本、selection、IME 组合）——原样保留。焦点规则：
+
+- 分支被摘下时，若焦点节点或 Focus Scope 位于该分支内，二者随分支离开：焦点被清空（键盘与 IME 事件不再送达不可见节点），Focus Scope 被解除，分支记住它们；
+- 分支回来时，焦点与 Focus Scope 各自在当时仍空闲（期间没有其他节点取得）时恢复到原节点，否则丢弃；
+- 未标 `preserve` 的分支离开即释放节点，以上局部状态随之丢失。
+
 ---
 
 ## 96.9 Adaptive Authoring 规则

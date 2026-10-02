@@ -482,11 +482,21 @@ exactly the readers they reach, with structural branches that converge or report
 
 ### D4.5 — Preservation and acceptance
 
-- [ ] Focus, scroll offset and text survive switching adaptive branches when the node
+- [x] Focus, scroll offset and text survive switching adaptive branches when the node
       is preserved (§96.8).
-- [ ] §96.10 acceptance matrix as headless tests: phone portrait/landscape, tablet
+  - [x] An arm set aside takes the focus and the focus scope with it, so keys never
+        reach a hidden node; returning gives each back unless something else took it.
+  - [x] Scroll offsets and text-editing buffers keep their values across the switch
+        (the nodes keep their identity).
+  - [x] Tested on the hot-reloaded and the packaged view.
+- [x] §96.10 acceptance matrix as headless tests: phone portrait/landscape, tablet
       full/split, desktop narrow/wide, keyboard, safe area, fold/hinge, text scale,
       mouse vs touch.
+  - [x] One view's branches and avoiding regions checked against every scenario, on
+        the hot-reloaded and the packaged view.
+  - [x] Scenarios: phone portrait/landscape, tablet full/split, desktop narrow/wide,
+        keyboard shown/hidden, safe-area change, fold/hinge, text scale, mouse and
+        keyboard vs touch.
 
 ---
 

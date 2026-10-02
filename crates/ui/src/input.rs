@@ -1096,6 +1096,60 @@ pub fn focus_node(store: &mut NodeStore, node: NodeId) -> bool {
     true
 }
 
+/// The focus a subtree took with it when it was unlinked to be kept: the
+/// focused node and the focus scope, each only if it lay in that subtree.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ParkedFocus {
+    focus: Option<NodeId>,
+    scope: Option<NodeId>,
+}
+
+/// Takes the focus and the focus scope from nodes no longer in the tree
+/// `attached` is in — a subtree just unlinked to be kept — so key and IME
+/// events stop reaching a node nobody sees. Returns what it took, for
+/// [`unpark_focus`] when the subtree returns. Cold: walks two ancestries.
+pub fn park_focus(store: &mut NodeStore, attached: NodeId) -> ParkedFocus {
+    let tree = topmost(store, attached);
+    let unlinked = |store: &NodeStore, node: Option<NodeId>| {
+        node.filter(|&n| store.arena().is_live(n) && topmost(store, n) != tree)
+    };
+    let parked = ParkedFocus {
+        focus: unlinked(store, store.focused()),
+        scope: unlinked(store, store.focus_scope()),
+    };
+    if parked.scope.is_some() {
+        store.set_focus_scope(None);
+    }
+    if parked.focus.is_some() {
+        apply_focus(store, parked.focus, None);
+        store.mark_dirty(attached, DirtyClass::SEMANTICS);
+    }
+    parked
+}
+
+/// Gives back what [`park_focus`] took once its subtree is linked again: the
+/// focus scope and the focus, each only if nothing else took it meanwhile.
+pub fn unpark_focus(store: &mut NodeStore, parked: ParkedFocus) {
+    if let Some(scope) = parked.scope
+        && store.focus_scope().is_none()
+    {
+        store.set_focus_scope(Some(scope));
+    }
+    if let Some(node) = parked.focus
+        && store.focused().is_none()
+    {
+        focus_node(store, node);
+    }
+}
+
+/// The root of the tree `node` is linked into.
+fn topmost(store: &NodeStore, mut node: NodeId) -> NodeId {
+    while let Some(parent) = store.arena().links(node).and_then(|l| l.parent) {
+        node = parent;
+    }
+    node
+}
+
 /// Move the focus slot from `old` to `new`, repainting both (the focus-ring
 /// leaves the old node and lands on the new) and marking both semantically
 /// changed (a focus move is a semantic event, so the derived accessibility tree
@@ -2094,6 +2148,43 @@ mod tests {
         assert_eq!(focus_next(&mut store, root, false), Some(a));
         assert!(!focus_node(&mut store, root));
         assert_eq!(store.focused(), Some(a));
+    }
+
+    #[test]
+    fn a_subtree_set_aside_takes_its_focus_and_gives_it_back() {
+        let (mut store, root, [a, b, c]) = three_focusable_leaves();
+        store.set_focused(Some(b));
+        store.set_focus_scope(Some(b));
+        store.arena_detach(b);
+        let parked = park_focus(&mut store, root);
+        assert_eq!(store.focused(), None, "keys stop reaching the hidden node");
+        assert_eq!(store.focus_scope(), None);
+        assert!(store.dirty(root).contains(DirtyClass::SEMANTICS));
+        assert_eq!(
+            park_focus(&mut store, root),
+            ParkedFocus::default(),
+            "nothing left to take"
+        );
+        store.arena_append_child(root, b);
+        unpark_focus(&mut store, parked);
+        assert_eq!(store.focused(), Some(b));
+        assert_eq!(store.focus_scope(), Some(b));
+
+        store.set_focus_scope(None);
+        store.arena_detach(b);
+        let parked = park_focus(&mut store, root);
+        focus_node(&mut store, c);
+        store.arena_append_child(root, b);
+        unpark_focus(&mut store, parked);
+        assert_eq!(store.focused(), Some(c), "focus taken meanwhile stays");
+
+        store.arena_detach(a);
+        assert_eq!(
+            park_focus(&mut store, root),
+            ParkedFocus::default(),
+            "focus outside the subtree stays"
+        );
+        assert_eq!(store.focused(), Some(c));
     }
 
     #[test]
