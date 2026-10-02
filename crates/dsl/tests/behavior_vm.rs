@@ -606,6 +606,7 @@ static CUSTOM: NativeLibrary = NativeLibrary {
     ],
     types: &[NativeType::new("Lease", &[]).borrowed()],
     traits: &[],
+    derives: &[],
     widgets: &[],
 };
 

@@ -105,16 +105,26 @@ impl fmt::Display for SchemaConflict {
 
 impl std::error::Error for SchemaConflict {}
 
+/// A variant of a registered schema enum.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NativeVariant {
+    /// The enum.
+    pub ty: NativeId,
+    /// Its index, the value it is represented by.
+    pub index: u32,
+}
+
 #[derive(Debug, Clone, Copy)]
 enum Item {
     Function(u32),
     Type(u32),
     Trait(u32),
+    Variant(NativeVariant),
 }
 
 /// A set of native libraries, one version per library path, with every
-/// function, method, handle type and trait addressable by path and by
-/// [`NativeId`], and every widget by its type name.
+/// function, method, handle type, enum variant and trait addressable by path
+/// and by [`NativeId`], and every widget by its type name.
 #[derive(Debug, Default)]
 pub struct Natives {
     libraries: Vec<&'static NativeLibrary>,
@@ -197,9 +207,18 @@ impl Natives {
         }
         let mut functions = Vec::new();
         let mut types = Vec::new();
+        let mut variants = Vec::new();
         for ty in library.types {
             let path = format!("{}::{}", library.path, ty.name);
             let id = NativeId::of(&path);
+            for (index, name) in ty.variants.iter().enumerate() {
+                let path = format!("{path}::{name}");
+                let variant = NativeVariant {
+                    ty: id,
+                    index: index as u32,
+                };
+                variants.push((NativeId::of(&path), path, variant));
+            }
             for method in ty.methods {
                 let path = format!("{path}::{}", method.name);
                 functions.push(NativeEntry {
@@ -245,7 +264,8 @@ impl Natives {
             .iter()
             .map(|f| (f.id, &*f.path))
             .chain(types.iter().map(|t| (t.id, &*t.path)))
-            .chain(traits.iter().map(|t| (t.id, &*t.path)));
+            .chain(traits.iter().map(|t| (t.id, &*t.path)))
+            .chain(variants.iter().map(|(id, path, _)| (*id, path.as_str())));
         for (id, path) in paths {
             if fresh.insert(id, path).is_some() {
                 return Err(conflict(path, format!("`{path}` is declared twice")));
@@ -268,7 +288,9 @@ impl Natives {
                     let new = types.iter().find(|t| t.id == id);
                     &*old.path == path
                         && new.is_some_and(|new| {
-                            old.ty.ownership == new.ty.ownership && old.ty.thread == new.ty.thread
+                            old.ty.ownership == new.ty.ownership
+                                && old.ty.thread == new.ty.thread
+                                && old.ty.variants == new.ty.variants
                         })
                 }
                 Item::Trait(i) => {
@@ -277,6 +299,8 @@ impl Natives {
                     &*old.path == path
                         && new.is_some_and(|new| old.native_trait == new.native_trait)
                 }
+                // The enum's own entry compares its variants.
+                Item::Variant(_) => true,
             };
             if !same {
                 return Err(conflict(
@@ -329,6 +353,9 @@ impl Natives {
                 self.ids.insert(t.id, Item::Trait(self.traits.len() as u32));
                 self.traits.push(t);
             }
+        }
+        for (id, _, variant) in variants {
+            self.ids.entry(id).or_insert(Item::Variant(variant));
         }
         Ok(())
     }
@@ -384,7 +411,7 @@ impl Natives {
     pub fn function_by_id(&self, id: NativeId) -> Option<&NativeEntry> {
         match self.ids.get(&id)? {
             Item::Function(i) => self.functions.get(*i as usize),
-            Item::Type(_) | Item::Trait(_) => None,
+            Item::Type(_) | Item::Trait(_) | Item::Variant(_) => None,
         }
     }
 
@@ -398,7 +425,7 @@ impl Natives {
     pub fn ty_by_id(&self, id: NativeId) -> Option<&NativeTypeEntry> {
         match self.ids.get(&id)? {
             Item::Type(i) => self.types.get(*i as usize),
-            Item::Function(_) | Item::Trait(_) => None,
+            Item::Function(_) | Item::Trait(_) | Item::Variant(_) => None,
         }
     }
 
@@ -412,8 +439,32 @@ impl Natives {
     pub fn native_trait_by_id(&self, id: NativeId) -> Option<&NativeTraitEntry> {
         match self.ids.get(&id)? {
             Item::Trait(i) => self.traits.get(*i as usize),
-            Item::Function(_) | Item::Type(_) => None,
+            Item::Function(_) | Item::Type(_) | Item::Variant(_) => None,
         }
+    }
+
+    /// The schema enum variant at `path`, such as `viso::game::Key::Space`.
+    pub fn variant(&self, path: &str) -> Option<NativeVariant> {
+        let variant = self.variant_by_id(NativeId::of(path))?;
+        let ty = self.ty_by_id(variant.ty)?;
+        let name = ty.ty.variants[variant.index as usize];
+        (path.strip_suffix(name)?.strip_suffix("::")? == &*ty.path).then_some(variant)
+    }
+
+    /// The schema enum variant `id`.
+    pub fn variant_by_id(&self, id: NativeId) -> Option<NativeVariant> {
+        match self.ids.get(&id)? {
+            Item::Variant(variant) => Some(*variant),
+            Item::Function(_) | Item::Type(_) | Item::Trait(_) => None,
+        }
+    }
+
+    /// The library declaring the derive `name`.
+    pub fn derive(&self, name: &str) -> Option<&'static NativeLibrary> {
+        self.libraries
+            .iter()
+            .copied()
+            .find(|l| l.derives.contains(&name))
     }
 
     /// The method or associated function `name` of handle type `ty`.

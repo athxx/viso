@@ -3,7 +3,7 @@
 //! recorded, so effect checking, capability inference and lowering see the
 //! function it calls without resolving it again.
 
-use viso_behavior::native::{NativeEntry, NativeId};
+use viso_behavior::native::{NativeEntry, NativeId, NativeVariant};
 
 use super::InferCx;
 use crate::ast::{AstNode, Expr, FieldExpr};
@@ -22,18 +22,24 @@ pub struct NativeCall {
     pub receiver: bool,
 }
 
-/// A native function's parameter and return types.
-fn signature(entry: &NativeEntry) -> (Vec<Ty>, Ty) {
-    let params = entry
-        .function
-        .params
-        .iter()
-        .map(|p| Ty::from_schema(&p.ty))
-        .collect();
-    (params, Ty::from_schema(&entry.function.ret))
-}
-
 impl InferCx<'_> {
+    /// A native function's parameter and return types.
+    fn signature(&self, entry: &NativeEntry) -> (Vec<Ty>, Ty) {
+        let action = self.env.input_action();
+        let params = entry
+            .function
+            .params
+            .iter()
+            .map(|p| Ty::from_schema(&p.ty, &action))
+            .collect();
+        (params, Ty::from_schema(&entry.function.ret, &action))
+    }
+
+    /// The schema enum variant `id` names, if it names one.
+    pub(super) fn native_variant(&self, id: NativeId) -> Option<NativeVariant> {
+        self.env.natives()?.variant_by_id(id)
+    }
+
     /// The signature of a call through a path naming the native `id` (a
     /// function, or a handle method called with its receiver first), recording
     /// the call. A handle type is not callable.
@@ -54,7 +60,7 @@ impl InferCx<'_> {
             return None;
         };
         self.record_native(node.text_range(), id, false);
-        Some(signature(entry))
+        Some(self.signature(entry))
     }
 
     /// Types `receiver.method(args)` on a native handle type `ty`: the method's
@@ -76,9 +82,21 @@ impl InferCx<'_> {
         };
         let text = name.text();
         match natives.method(ty, &text).filter(|m| m.is_method(natives)) {
+            Some(entry) if entry.function.property => {
+                let short = self.native_type_name(ty);
+                self.diagnostics.push(Diagnostic::error(
+                    "E2103",
+                    name.text_range(),
+                    format!("`{short}.{text}` is a property: read it without `()`"),
+                ));
+                for arg in args {
+                    let _ = self.infer_expr(arg, None);
+                }
+                Ty::Unknown
+            }
             Some(entry) => {
                 let id = entry.id;
-                let (mut params, ret) = signature(entry);
+                let (mut params, ret) = self.signature(entry);
                 params.remove(0);
                 self.record_native(node.text_range(), id, true);
                 self.apply_signature(args, (params, ret), expected, node)
@@ -113,6 +131,49 @@ impl InferCx<'_> {
                 Ty::Unknown
             }
         }
+    }
+
+    /// Types `receiver.name` on a native handle type `ty`: a property's
+    /// value, recording the call. Any other name is `E2001`, with the nearest
+    /// property names.
+    pub(super) fn native_property(
+        &mut self,
+        ty: NativeId,
+        name: &crate::syntax::SyntaxToken,
+        node: &SyntaxNode,
+    ) -> Ty {
+        let Some(natives) = self.env.natives() else {
+            return Ty::Unknown;
+        };
+        let text = name.text();
+        let property = natives
+            .method(ty, &text)
+            .filter(|m| m.function.property && m.is_method(natives));
+        if let Some(entry) = property {
+            let id = entry.id;
+            let (_, ret) = self.signature(entry);
+            self.record_native(node.text_range(), id, true);
+            return ret;
+        }
+        let short = self.native_type_name(ty);
+        let mut diagnostic = Diagnostic::error(
+            "E2001",
+            name.text_range(),
+            format!("`{short}` has no property `{text}`"),
+        );
+        let properties = natives
+            .ty_by_id(ty)
+            .into_iter()
+            .flat_map(|t| t.ty.methods.iter())
+            .filter(|m| m.property)
+            .map(|m| Candidate {
+                name: m.name,
+                declared_at: None,
+            });
+        let suggestions = nearest(&text, properties);
+        attach(&mut diagnostic, name.text_range(), &suggestions);
+        self.diagnostics.push(diagnostic);
+        Ty::Unknown
     }
 
     /// A path naming a native used as a value, not called: `E2103`.

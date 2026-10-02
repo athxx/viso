@@ -13,6 +13,7 @@ mod stmt;
 
 use std::collections::{HashMap, HashSet};
 
+use viso_behavior::game::InputSchema;
 use viso_behavior::native::{NativeEntry, NativeId};
 
 use viso_ui::adaptive::EnvField;
@@ -197,6 +198,11 @@ impl ProgramBuilder {
             component: component as u32,
             hooks,
         });
+    }
+
+    /// Sets the package's input schema.
+    pub(crate) fn input(&mut self, schema: InputSchema) {
+        self.program.input = Some(schema);
     }
 
     /// Puts the systems in run order: those in `order` by their place in it,

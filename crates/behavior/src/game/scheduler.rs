@@ -2,8 +2,10 @@
 
 use std::mem;
 
+use super::input::InputLatch;
 use super::{
-    COLLISION, Clock, CollisionEvent, FIXED_UPDATE, FRAME_UPDATE, FixedFrame, RenderFrame,
+    COLLISION, Clock, CollisionEvent, FIXED_UPDATE, FRAME_UPDATE, FixedFrame, InputSchema,
+    InputSnapshot, Key, PadButton, PadStick, RenderFrame, TouchButton,
 };
 use crate::native::{NativeObject, NativeValue, Obj};
 use crate::{Budget, Fault, FaultKind, Instance, Value, Vm};
@@ -44,6 +46,11 @@ enum Phase {
 /// discards that call's state writes, is recorded as a [`SystemFault`], and the
 /// next system still runs, except when the shared budget ran out, which skips
 /// the rest of the tick (`E9102`) or frame.
+///
+/// The host reports device input between frames ([`key`](Self::key),
+/// [`pad`](Self::pad), [`stick`](Self::stick), [`touch`](Self::touch)); each
+/// tick reads it frozen through `frame.input`, mapped by the module's input
+/// schema or the default `InputAction` set.
 pub struct Scheduler {
     vm: Vm,
     clock: Clock,
@@ -53,6 +60,7 @@ pub struct Scheduler {
     frame: Box<[Hook]>,
     collision: Box<[Hook]>,
     fixed_frame: Value,
+    input: InputLatch,
     render_frame: Value,
     collision_event: Value,
     collisions: Vec<(i64, i64)>,
@@ -87,6 +95,14 @@ impl Scheduler {
             bind(&mut collision, COLLISION);
         }
         let fixed_dt = clock.fixed_dt();
+        let standard;
+        let schema = match module.input() {
+            Some(schema) => schema,
+            None => {
+                standard = InputSchema::standard();
+                &standard
+            }
+        };
         Ok(Scheduler {
             budget: vm.budget(),
             vm,
@@ -98,7 +114,9 @@ impl Scheduler {
             fixed_frame: handle(FixedFrame {
                 tick: 0.into(),
                 dt: fixed_dt,
+                input: Obj::new(InputSnapshot::new(schema.actions.len())),
             }),
+            input: InputLatch::new(schema),
             render_frame: handle(RenderFrame::default()),
             collision_event: handle(CollisionEvent::default()),
             collisions: Vec::new(),
@@ -151,6 +169,33 @@ impl Scheduler {
         mem::take(&mut self.faults)
     }
 
+    /// Reports key `key` going down or up.
+    pub fn key(&mut self, key: Key, down: bool) {
+        self.input.key(key, down);
+    }
+
+    /// Reports gamepad button `button` going down or up.
+    pub fn pad(&mut self, button: PadButton, down: bool) {
+        self.input.pad(button, down);
+    }
+
+    /// Reports the position of gamepad stick `stick`, each axis in `[-1, 1]`
+    /// with `y` up.
+    pub fn stick(&mut self, stick: PadStick, x: f64, y: f64) {
+        self.input.stick(stick, x, y);
+    }
+
+    /// Reports touch button `button` going down or up.
+    pub fn touch(&mut self, button: TouchButton, down: bool) {
+        self.input.touch(button, down);
+    }
+
+    /// Releases every key, button and stick, as when the game view loses
+    /// input focus: each held action is released on the next tick.
+    pub fn release_input(&mut self) {
+        self.input.release_all();
+    }
+
     /// Queues a contact between bodies `first` and `second` for the
     /// `CollisionListener`s of the next tick.
     pub fn push_collision(&mut self, first: i64, second: i64) {
@@ -191,7 +236,9 @@ impl Scheduler {
 
     fn run_tick(&mut self) {
         let tick = self.clock.tick();
-        object::<FixedFrame>(&self.fixed_frame).tick.set(tick);
+        let frame = object::<FixedFrame>(&self.fixed_frame);
+        frame.tick.set(tick);
+        self.input.deliver(&frame.input);
         mem::swap(&mut self.collisions, &mut self.delivering);
         let mut left = self.budget;
         'tick: {

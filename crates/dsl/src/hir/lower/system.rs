@@ -8,7 +8,7 @@ use viso_behavior::native::NativeId;
 use crate::ast::{AstNode, Member, SystemDecl, SystemOrder};
 use crate::diag::{Diagnostic, Related};
 use crate::hir::component::MemberEnv;
-use crate::hir::infer::InferCx;
+use crate::hir::infer::{InferCx, TypeEnv};
 use crate::resolve::SymbolId;
 use crate::syntax::TextRange;
 
@@ -99,7 +99,12 @@ pub(super) fn hooks(
                 continue;
             }
             bound_names.push((hook.name, at));
-            let expected: Vec<Ty> = hook.params.iter().map(|p| Ty::from_schema(&p.ty)).collect();
+            let action = env.input_action();
+            let expected: Vec<Ty> = hook
+                .params
+                .iter()
+                .map(|p| Ty::from_schema(&p.ty, &action))
+                .collect();
             let cx = InferCx::new(&[], env);
             let signature = format!(
                 "action {}({})",

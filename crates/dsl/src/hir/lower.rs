@@ -55,7 +55,10 @@ use super::view::{
     check_percent_flow, check_view,
 };
 
+mod input;
 mod system;
+
+pub use input::InputDevices;
 
 /// The typed HIR of a whole package: every component lowered, every free callable, and every
 /// diagnostic the type/effect/capability checks raised across all modules.
@@ -107,13 +110,15 @@ pub struct Migrator {
 /// `graph.modules()` (the resolver's output). `interner` is threaded through so the per-module
 /// environment pre-pass can intern member names to query the module's [`SymbolTable`], and
 /// `package` is the package identity (unused by lowering directly but kept for symmetry with
-/// [`crate::resolve::resolve`] and future native-schema keying).
+/// [`crate::resolve::resolve`] and future native-schema keying). `devices` are the input
+/// devices the package's targets have, which every input action needs a binding for.
 pub fn lower(
     graph: &ModuleGraph,
     units: &[SourceUnit],
     resolved: &[ResolvedModule],
     interner: &mut NameInterner,
     package: &str,
+    devices: InputDevices,
 ) -> LoweredPackage {
     let _ = package;
     let mut components = Vec::new();
@@ -159,6 +164,8 @@ pub fn lower(
             Some((cu, scope))
         })
         .collect();
+    decls.input_action = Some(input::action_type(&decls));
+    decls.devices = devices;
 
     // Second pass: lower each module against the package table. The capability call graph
     // spans the package, so a call into an imported callable is an edge like any other.
@@ -299,7 +306,11 @@ fn lower_module(
                 systems.push(system::node(&s, symbol, env, diagnostics));
                 components.push(component);
             }
-            Item::Const(c) => check_const(&c, refs, env, diagnostics, &mut percent),
+            Item::Const(c) => {
+                check_const(&c, refs, env, diagnostics, &mut percent);
+                input::lower_map(&c, refs, env, diagnostics);
+            }
+            Item::Enum(e) => input::check_derives(&e, env, diagnostics),
             Item::Record(r) => check_field_defaults(&r, refs, env, diagnostics, &mut percent),
             Item::Fn(f) => {
                 let callable = Callable {
@@ -1045,6 +1056,14 @@ struct Declarations {
     slots: HashMap<SymbolId, Vec<HirSlot>>,
     /// Every system, which `@after`/`@before` may name.
     systems: HashSet<SymbolId>,
+    /// Every enum deriving `InputAction`.
+    input_derives: HashSet<SymbolId>,
+    /// Every `InputMap` constant, in module order; the first is the package's.
+    input_maps: Vec<input::MapDecl>,
+    /// The type of an input action, once every module is declared.
+    input_action: Option<Ty>,
+    /// The input devices the package's targets have.
+    devices: InputDevices,
     /// The prelude's types by name.
     standard: HashMap<String, SymbolId>,
     /// The index of the module declaring each record, enum, event, component and
@@ -1066,7 +1085,8 @@ struct ModuleScope {
     components: HashMap<TextRange, SymbolId>,
     /// Name token span → the type the resolver bound it to, for nominal annotations.
     nominal: HashMap<TextRange, Ty>,
-    /// `const`, record and module-level callable declaration syntax range → its symbol.
+    /// `const`, record, enum and module-level callable declaration syntax range → its
+    /// symbol.
     declared: HashMap<TextRange, SymbolId>,
     /// The module's graph index, or `None` for the prelude.
     home: Option<usize>,
@@ -1112,6 +1132,10 @@ impl TypeEnv for ModuleEnv<'_> {
 
     fn natives(&self) -> Option<&Natives> {
         Some(self.natives)
+    }
+
+    fn input_action(&self) -> Ty {
+        self.decls.input_action.clone().unwrap_or(Ty::Unknown)
     }
 
     fn record_native(&self, call: TextRange, id: NativeId) {
@@ -1390,13 +1414,22 @@ impl ModuleScope {
                             .collect();
                         decls.types.enums.insert(sym, variants);
                         scope.place(decls, sym);
+                        scope.declared.insert(e.syntax().text_range(), sym);
                         decls.types.names.insert(sym, name_of(e.name()));
+                        let derives = e.derives().into_iter().flat_map(|(_, names)| names);
+                        if derives
+                            .flatten()
+                            .any(|n| n.text() == viso_behavior::game::INPUT_ACTION_DERIVE)
+                        {
+                            decls.input_derives.insert(sym);
+                        }
                     }
                 }
                 Item::Const(c) => {
                     if let Some(sym) = decl_symbol(table, interner, c.name(), Namespace::Value) {
                         scope.declared.insert(c.syntax().text_range(), sym);
                         let ty = scope.annotation_of(c.syntax());
+                        input::collect_map(c, sym, &ty, &scope, decls);
                         decls.facts.insert(
                             sym,
                             MemberFacts {
@@ -2062,7 +2095,14 @@ mod tests {
         let units = vec![unit];
         let graph = ModuleGraph::build(&units, &interner);
         let resolved = resolve(&graph, &units, &mut interner, "app");
-        lower(&graph, &units, &resolved, &mut interner, "app")
+        lower(
+            &graph,
+            &units,
+            &resolved,
+            &mut interner,
+            "app",
+            InputDevices::default(),
+        )
     }
 
     #[test]
@@ -2131,7 +2171,14 @@ mod tests {
         for module in &resolved {
             assert!(module.errors.is_empty(), "{:?}", module.errors);
         }
-        let pkg = lower(&graph, &units, &resolved, &mut interner, "app");
+        let pkg = lower(
+            &graph,
+            &units,
+            &resolved,
+            &mut interner,
+            "app",
+            InputDevices::default(),
+        );
         let mut lib_diagnostics = Vec::new();
         let mut app_diagnostics = Vec::new();
         for (module, range) in graph.modules().iter().zip(&pkg.module_diagnostics) {

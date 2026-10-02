@@ -205,6 +205,12 @@ impl Lowerer<'_, '_> {
                 self.symbol_value(id, &head.text())
             }
             Some(Resolution::Env) if segments.len() == 1 => self.env_value(),
+            Some(Resolution::Native(id)) => {
+                match self.env.natives().and_then(|n| n.variant_by_id(id)) {
+                    Some(variant) => Ok(self.constant(Const::Tag(variant.index))),
+                    None => self.bail("a native used as a value"),
+                }
+            }
             None if builtin_variant(&segments) == Some("None") => Ok(self.constant(Const::Nil)),
             _ => self.bail("this path has no runtime value yet"),
         }
@@ -323,6 +329,16 @@ impl Lowerer<'_, '_> {
         let name = name.trim_start_matches("r#");
         if let Some(field) = self.env_member(&recv, name) {
             return self.env_field(field);
+        }
+        if let Some(native) = self.cx.native_call(node.text_range()) {
+            let Some(entry) = self.env.natives().and_then(|n| n.function_by_id(native.id)) else {
+                return self.bail("the native this reads is not registered");
+            };
+            let args = self.operands(&[recv])?;
+            let import = self.b.native(entry);
+            let dst = self.reg();
+            self.emit(Inst::Native { dst, import, args });
+            return Ok(dst);
         }
         let ty = self.ty(&recv)?;
         let index = self.field_index(&ty, name)?;

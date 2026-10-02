@@ -24,6 +24,7 @@
 
 pub use viso_behavior::NativeImport;
 
+use viso_behavior::game::InputSchema;
 use viso_behavior::native::NativeId;
 use viso_ui::adaptive::EnvField;
 
@@ -512,6 +513,9 @@ pub struct Program {
     /// The function computing each defaulted record field, by record and field
     /// index, ascending.
     pub field_defaults: Vec<((SymbolId, u32), FuncId)>,
+    /// The package's input schema, from its `InputMap` constant; `None` when
+    /// its systems read the default `InputAction` set.
+    pub input: Option<InputSchema>,
 }
 
 impl Program {

@@ -11,7 +11,13 @@
 //! cannot drift from the code.
 //!
 //! A library may declare the scheduler traits a `system` implements
-//! ([`NativeTrait`]), each a set of hooks the system defines as actions.
+//! ([`NativeTrait`]), each a set of hooks the system defines as actions, and
+//! the derives a unit-only `enum` may name in `@derive(..)`.
+//!
+//! A [`NativeType`] with variants is a schema enum: its values are variant
+//! indices, written `Key::Space`, not handles. A function marked
+//! [`constant`](NativeFunction::constant) is `@const`: the compiler may run it
+//! while it evaluates a `const`.
 //!
 //! A library also declares the widgets a view instantiates ([`NativeWidget`]):
 //! their properties, events and slots, and the retained node each lowers to.
@@ -39,7 +45,8 @@ use std::fmt;
 use crate::value::Value;
 
 pub use registry::{
-    NativeEntry, NativeTraitEntry, NativeTypeEntry, NativeWidgetEntry, Natives, SchemaConflict,
+    NativeEntry, NativeTraitEntry, NativeTypeEntry, NativeVariant, NativeWidgetEntry, Natives,
+    SchemaConflict,
 };
 pub use standard::{Clipboard, STANDARD, Stopwatch};
 pub use value::{NativeHandle, NativeObject, NativeValue, Obj};
@@ -135,6 +142,12 @@ pub enum SchemaTy {
     Option(&'static SchemaTy),
     /// The native handle type at this path.
     Handle(&'static str),
+    /// The schema enum at this path, a variant index.
+    Enum(&'static str),
+    /// An input action of the compiled package: a variant of the `InputAction`
+    /// enum its `InputMap` maps, or of `viso::game::InputAction` when it
+    /// declares none.
+    Action,
 }
 
 impl fmt::Display for SchemaTy {
@@ -147,7 +160,10 @@ impl fmt::Display for SchemaTy {
             SchemaTy::String => f.write_str("String"),
             SchemaTy::List(t) => write!(f, "List<{t}>"),
             SchemaTy::Option(t) => write!(f, "Option<{t}>"),
-            SchemaTy::Handle(path) => f.write_str(path.rsplit("::").next().unwrap_or(path)),
+            SchemaTy::Handle(path) | SchemaTy::Enum(path) => {
+                f.write_str(path.rsplit("::").next().unwrap_or(path))
+            }
+            SchemaTy::Action => f.write_str("Action"),
         }
     }
 }
@@ -191,6 +207,12 @@ pub struct NativeFunction {
     pub realtime_safe: bool,
     /// The instruction-budget units a call spends.
     pub cost: u32,
+    /// Whether it is `@const`: deterministic, effect-free and evaluable while
+    /// the compiler evaluates a `const`.
+    pub constant: bool,
+    /// Whether it is a property: a method without parameters besides its
+    /// receiver, read as `value.name` rather than called.
+    pub property: bool,
     /// The Rust implementation.
     pub call: Thunk,
 }
@@ -215,6 +237,8 @@ impl NativeFunction {
             deterministic: false,
             realtime_safe: false,
             cost: 1,
+            constant: false,
+            property: false,
             call,
         }
     }
@@ -241,6 +265,19 @@ impl NativeFunction {
     /// Marks it realtime-safe.
     pub const fn realtime_safe(mut self) -> NativeFunction {
         self.realtime_safe = true;
+        self
+    }
+
+    /// Marks it `@const`, and so deterministic.
+    pub const fn constant(self) -> NativeFunction {
+        let mut f = self.deterministic();
+        f.constant = true;
+        f
+    }
+
+    /// Makes it a property, read as `value.name`.
+    pub const fn property(mut self) -> NativeFunction {
+        self.property = true;
         self
     }
 
@@ -277,11 +314,13 @@ impl fmt::Debug for NativeFunction {
     }
 }
 
-/// A native handle type.
+/// A native handle type, or a schema enum when it has variants.
 #[derive(Debug, Clone, Copy)]
 pub struct NativeType {
     /// Its name within its library.
     pub name: &'static str,
+    /// Its variants, in index order; empty for a handle type.
+    pub variants: &'static [&'static str],
     /// Who may hold a handle.
     pub ownership: Ownership,
     /// The thread its handles live and drop on.
@@ -295,10 +334,27 @@ impl NativeType {
     pub const fn new(name: &'static str, methods: &'static [NativeFunction]) -> NativeType {
         NativeType {
             name,
+            variants: &[],
             ownership: Ownership::Shared,
             thread: ThreadDomain::Ui,
             methods,
         }
+    }
+
+    /// A schema enum of `variants`, a plain value any thread may hold.
+    pub const fn enumeration(name: &'static str, variants: &'static [&'static str]) -> NativeType {
+        NativeType {
+            name,
+            variants,
+            ownership: Ownership::Shared,
+            thread: ThreadDomain::Any,
+            methods: &[],
+        }
+    }
+
+    /// Whether it is a schema enum.
+    pub const fn is_enum(&self) -> bool {
+        !self.variants.is_empty()
     }
 
     /// Makes its handles borrowed.
@@ -350,6 +406,8 @@ pub struct NativeLibrary {
     pub types: &'static [NativeType],
     /// Its scheduler traits.
     pub traits: &'static [NativeTrait],
+    /// The derives it declares, each applicable to a unit-only `enum`.
+    pub derives: &'static [&'static str],
     /// Its widgets, which a view names by their bare type name.
     pub widgets: &'static [NativeWidget],
 }
@@ -392,7 +450,7 @@ impl Fnv {
 
     fn ty(&mut self, ty: &SchemaTy) {
         self.write(ty.to_string().as_bytes());
-        if let SchemaTy::Handle(path) = ty {
+        if let SchemaTy::Handle(path) | SchemaTy::Enum(path) = ty {
             self.write(path.as_bytes());
         }
         self.write(b",");

@@ -291,53 +291,18 @@ impl SystemDecl {
             .filter_map(TypePath::cast)
     }
 
-    /// Its `@after(..)` and `@before(..)` attributes, the run of attributes
-    /// preceding the declaration or its `export`, in source order: which way
-    /// each orders the system, the attribute and the name each argument
+    /// Its `@after(..)` and `@before(..)` attributes, in source order: which
+    /// way each orders the system, the attribute and the name each argument
     /// gives, `None` for an argument that is not one bare name.
     pub fn ordering(&self) -> Vec<(SystemOrder, SyntaxNode, Vec<Option<SyntaxToken>>)> {
-        let decl = self
-            .syntax
-            .parent()
-            .filter(|p| p.kind() == SyntaxKind::ExportDecl)
-            .unwrap_or_else(|| self.syntax.clone());
-        let mut attrs: Vec<SyntaxNode> =
-            std::iter::successors(decl.prev_sibling(), SyntaxNode::prev_sibling)
-                .take_while(|n| n.kind() == SyntaxKind::Attribute)
-                .collect();
-        attrs.reverse();
-        attrs
+        decl_attributes(&self.syntax)
             .into_iter()
-            .filter_map(|attr| {
-                let path = attr
-                    .children()
-                    .into_iter()
-                    .find(|c| c.kind() == SyntaxKind::PathExpr)?;
-                let order = match path.text().to_string().trim() {
+            .filter_map(|(name, attr, args)| {
+                let order = match name.as_str() {
                     "after" => SystemOrder::After,
                     "before" => SystemOrder::Before,
                     _ => return None,
                 };
-                let args =
-                    attr.children()
-                        .into_iter()
-                        .filter(|c| c.kind() == SyntaxKind::ArgumentList)
-                        .flat_map(|list| list.children())
-                        .filter(|c| c.kind() == SyntaxKind::Argument)
-                        .map(|arg| {
-                            let labeled = arg.children_with_tokens().into_iter().any(|e| {
-                                e.as_token().is_some_and(|t| t.kind() == SyntaxKind::Colon)
-                            });
-                            let children = arg.children();
-                            let [path] = children.as_slice() else {
-                                return None;
-                            };
-                            let path = PathExpr::cast(path.clone()).filter(|_| !labeled)?;
-                            let mut segments = path.segments();
-                            let name = segments.next()?;
-                            segments.next().is_none().then_some(name)
-                        })
-                        .collect();
                 Some((order, attr, args))
             })
             .collect()
@@ -351,6 +316,53 @@ impl SystemDecl {
             syntax: self.syntax.clone(),
         }
     }
+}
+
+/// The attributes of the declaration `decl`: the run of attributes preceding
+/// it or its `export`, in source order, each with its name, its node and the
+/// name each argument gives, `None` for an argument that is not one bare name.
+pub fn decl_attributes(decl: &SyntaxNode) -> Vec<(String, SyntaxNode, Vec<Option<SyntaxToken>>)> {
+    let decl = decl
+        .parent()
+        .filter(|p| p.kind() == SyntaxKind::ExportDecl)
+        .unwrap_or_else(|| decl.clone());
+    let mut attrs: Vec<SyntaxNode> =
+        std::iter::successors(decl.prev_sibling(), SyntaxNode::prev_sibling)
+            .take_while(|n| n.kind() == SyntaxKind::Attribute)
+            .collect();
+    attrs.reverse();
+    attrs
+        .into_iter()
+        .filter_map(|attr| {
+            let path = attr
+                .children()
+                .into_iter()
+                .find(|c| c.kind() == SyntaxKind::PathExpr)?;
+            let name = path.text().to_string().trim().to_owned();
+            let args = attr
+                .children()
+                .into_iter()
+                .filter(|c| c.kind() == SyntaxKind::ArgumentList)
+                .flat_map(|list| list.children())
+                .filter(|c| c.kind() == SyntaxKind::Argument)
+                .map(|arg| {
+                    let labeled = arg
+                        .children_with_tokens()
+                        .into_iter()
+                        .any(|e| e.as_token().is_some_and(|t| t.kind() == SyntaxKind::Colon));
+                    let children = arg.children();
+                    let [path] = children.as_slice() else {
+                        return None;
+                    };
+                    let path = PathExpr::cast(path.clone()).filter(|_| !labeled)?;
+                    let mut segments = path.segments();
+                    let name = segments.next()?;
+                    segments.next().is_none().then_some(name)
+                })
+                .collect();
+            Some((name, attr, args))
+        })
+        .collect()
 }
 
 /// Which way an `@after`/`@before` attribute orders a system against the
@@ -401,6 +413,17 @@ impl EnumDecl {
     /// The enum's variants, in order.
     pub fn variants(&self) -> impl Iterator<Item = EnumVariant> {
         support::children(&self.syntax)
+    }
+
+    /// Its `@derive(..)` attributes, in source order: the attribute and the
+    /// name each argument gives, `None` for an argument that is not one bare
+    /// name.
+    pub fn derives(&self) -> Vec<(SyntaxNode, Vec<Option<SyntaxToken>>)> {
+        decl_attributes(&self.syntax)
+            .into_iter()
+            .filter(|(name, _, _)| name == "derive")
+            .map(|(_, attr, args)| (attr, args))
+            .collect()
     }
 }
 

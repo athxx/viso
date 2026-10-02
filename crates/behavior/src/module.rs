@@ -2,6 +2,7 @@
 
 use std::fmt;
 
+use crate::game::InputSchema;
 use crate::native::NativeId;
 use crate::op::Op;
 use crate::value::Value;
@@ -149,7 +150,8 @@ impl System {
     }
 }
 
-/// A verified set of chunks, component layouts, systems and native imports.
+/// A verified set of chunks, component layouts, systems and native imports,
+/// and the input schema its systems read.
 ///
 /// Construction checks every register, jump target, operand-table range,
 /// constant, chunk and native reference, state/input slot and event index,
@@ -161,6 +163,7 @@ pub struct Module {
     pub(crate) components: Box<[Component]>,
     pub(crate) systems: Box<[System]>,
     pub(crate) natives: Box<[NativeImport]>,
+    pub(crate) input: Option<Box<InputSchema>>,
 }
 
 /// Why a module failed verification.
@@ -199,6 +202,7 @@ impl Module {
             components: components.into(),
             systems: systems.into(),
             natives: natives.into(),
+            input: None,
         };
         let mut max_states = 0;
         let mut max_inputs = 0;
@@ -299,6 +303,48 @@ impl Module {
             verify_chunk(index as u32, chunk, &limits)?;
         }
         Ok(module)
+    }
+
+    /// The module with `schema` as the input its systems read, in place of
+    /// the default `InputAction` set.
+    ///
+    /// # Errors
+    ///
+    /// A [`VerifyError`] if the schema declares no action, a binding names an
+    /// action it does not declare, or its dead zone is outside `[0, 1)`.
+    pub fn with_input(mut self, schema: InputSchema) -> Result<Module, VerifyError> {
+        let fail = |message: String| VerifyError {
+            chunk: 0,
+            pc: None,
+            message,
+        };
+        if schema.actions.is_empty() {
+            return Err(fail(format!(
+                "the input schema `{}` declares no action",
+                schema.name
+            )));
+        }
+        if let Some(action) = schema.bindings.max_action()
+            && action.0 as usize >= schema.actions.len()
+        {
+            return Err(fail(format!(
+                "a binding of `{}` names action {}, which it does not declare",
+                schema.name, action.0
+            )));
+        }
+        if !(0.0..1.0).contains(&schema.bindings.dead_zone) {
+            return Err(fail(format!(
+                "the dead zone of `{}` is outside [0, 1)",
+                schema.name
+            )));
+        }
+        self.input = Some(Box::new(schema));
+        Ok(self)
+    }
+
+    /// The input schema its systems read, unless they read the default set.
+    pub fn input(&self) -> Option<&InputSchema> {
+        self.input.as_deref()
     }
 
     /// Every chunk.

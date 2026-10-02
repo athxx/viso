@@ -212,6 +212,10 @@ impl InferCx<'_> {
         let Some(name) = field.field() else {
             return Ty::Unknown;
         };
+        if let Ty::Native(ty) = recv {
+            let ty = self.native_property(ty, &name, node);
+            return self.check_against(ty, expected, node);
+        }
         match self.member_ty(&recv, &name, expected) {
             Some(ty) => self.check_against(ty, expected, node),
             None => Ty::Unknown,

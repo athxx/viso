@@ -38,6 +38,7 @@ static TEXT: NativeLibrary = NativeLibrary {
     ],
     types: &[],
     traits: &[],
+    derives: &[],
     widgets: &[],
 };
 
@@ -76,6 +77,7 @@ static MATH: NativeLibrary = NativeLibrary {
     ],
     types: &[],
     traits: &[],
+    derives: &[],
     widgets: &[],
 };
 
@@ -103,6 +105,7 @@ static TIME: NativeLibrary = NativeLibrary {
     functions: &[],
     types: &[NativeType::new("Stopwatch", &STOPWATCH_METHODS)],
     traits: &[],
+    derives: &[],
     widgets: &[],
 };
 
@@ -134,5 +137,6 @@ static CLIPBOARD: NativeLibrary = NativeLibrary {
     ],
     types: &[],
     traits: &[],
+    derives: &[],
     widgets: &[],
 };

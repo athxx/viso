@@ -168,6 +168,21 @@ impl<T: NativeObject> Obj<T> {
     }
 }
 
+impl<T: NativeObject> Clone for Obj<T> {
+    fn clone(&self) -> Obj<T> {
+        Obj {
+            handle: Rc::clone(&self.handle),
+            object: PhantomData,
+        }
+    }
+}
+
+impl<T: NativeObject> fmt::Debug for Obj<T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Debug::fmt(&*self.handle, f)
+    }
+}
+
 impl<T: NativeObject> Deref for Obj<T> {
     type Target = T;
 

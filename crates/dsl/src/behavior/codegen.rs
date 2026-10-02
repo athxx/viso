@@ -55,7 +55,11 @@ impl Program {
                 hooks: s.hooks.iter().map(|&(hook, f)| (hook, f.0)).collect(),
             })
             .collect();
-        Module::new(chunks, components, systems, self.natives.clone())
+        let module = Module::new(chunks, components, systems, self.natives.clone())?;
+        match &self.input {
+            Some(input) => module.with_input(input.clone()),
+            None => Ok(module),
+        }
     }
 }
 

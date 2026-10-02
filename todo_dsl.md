@@ -531,11 +531,28 @@ timers (§104–§111).
 
 ### D5.2 — Input
 
-- [ ] Edge semantics: each edge seen exactly once across 0 or many ticks per frame
+- [x] Edge semantics: each edge seen exactly once across 0 or many ticks per frame
       (§106.2).
-- [ ] `@derive(InputAction)` enums and `@const` `InputMap` with move axes, dead zone,
+  - [x] Scheduler host input (`key`/`pad`/`stick`/`touch`/`release_input`) latched
+        per action; `pressed`/`released` go to the first tick after, `held` and axes
+        hold for every tick of a frame, press+release in one window is both edges.
+  - [x] `frame.input` property: a borrowed `InputSnapshot` (`pressed`/`released`/
+        `held`/`axis`/`move_axes`) refilled each tick without allocation.
+- [x] `@derive(InputAction)` enums and `@const` `InputMap` with move axes, dead zone,
       diagonal normalization (§106.3).
-- [ ] `E9107` missing gamepad/touch path for the target platforms.
+  - [x] Native schema: schema enums (`Key::Space`), properties, `@const` natives,
+        library derives; `SchemaTy::Action` is the package's action enum.
+  - [x] `@derive(..)` checked: standard or schema derive (`E2001`), schema derive only
+        on a unit-only enum (`E2201`).
+  - [x] One `InputMap<E>` per package (`E2202`), `E` derives `InputAction` or is
+        `InputAction` (`E2201`); actions typed `E` (`E2103`).
+  - [x] Compile-time evaluation of the map from literals, variants and `@const`
+        natives (`E2501`, `E2112`) into the module's input schema (wire round trip).
+  - [x] Radial dead zone (default 0.2) and keys+stick normalized to length ≤ 1;
+        `relative_to(yaw)` for camera-relative movement.
+- [x] `E9107` missing gamepad/touch path for the target platforms.
+  - [x] `InputDevices` from the package targets (desktop host → gamepad, mobile
+        target → touch); one warning per action and device.
 
 ### D5.3 — State tiers and determinism
 

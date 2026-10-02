@@ -5,6 +5,7 @@
 use std::fs;
 use std::path::Path;
 
+use viso_dsl::hir::InputDevices;
 use viso_dsl::package::{PackageManifest, load_package};
 use viso_dsl::{TextRange, TextSize};
 use viso_project::{ConfigDiagnostic, Project, Span};
@@ -57,6 +58,12 @@ pub fn run(global: &Global, out: &mut Output) -> u8 {
         &project.root,
         PackageManifest {
             name,
+            // The host is a desktop, which takes gamepads; a mobile target
+            // takes touch.
+            devices: InputDevices {
+                gamepad: true,
+                touch: project.manifest.targets != Default::default(),
+            },
             language: project
                 .manifest
                 .package
