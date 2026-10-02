@@ -44,6 +44,7 @@ use viso_behavior::{Fault, FaultKind, Value};
 use viso_ende::{Decode, DecodeError, Decoder, Encode, Encoder, ProtocolTag};
 use viso_ui::adaptive::{AnchorId, EnvField};
 use viso_ui::aot::{AotNode, build_aot_node};
+use viso_ui::input::{ParkedFocus, park_focus, unpark_focus};
 use viso_ui::state::StateKey;
 use viso_ui::{BuildCx, DirtyClass, NodeId, StateId, StateValue, StructureCx};
 
@@ -383,12 +384,13 @@ struct Mount {
 
 enum Content {
     /// An `if` or a `match`: the scrutinee (`Nil` for an `if`), the chosen arm
-    /// and its nodes, and the kept nodes of each `preserve` arm.
+    /// and its nodes, and the kept nodes of each `preserve` arm with the focus
+    /// they took with them.
     Arms {
         subject: Value,
         active: Option<usize>,
         live: Option<Frag>,
-        kept: Vec<Option<Frag>>,
+        kept: Vec<Option<(Frag, ParkedFocus)>>,
     },
     /// A `for`: its items in order.
     List(Vec<Item>),
@@ -681,11 +683,12 @@ impl Patch<'_, '_> {
             live,
             kept,
         } = arms;
+        let mut parked = ParkedFocus::default();
         if next != *active {
             if let (Some(old), Some(was)) = (live.take(), *active) {
                 if template.arms[was].preserve {
-                    self.detach(&old, parent);
-                    kept[was] = Some(old);
+                    let taken = self.detach(&old, parent);
+                    kept[was] = Some((old, taken));
                 } else {
                     self.free(old);
                 }
@@ -693,7 +696,10 @@ impl Patch<'_, '_> {
             *active = next;
             if let Some(arm) = next {
                 let frag = match kept[arm].take() {
-                    Some(frag) => frag,
+                    Some((frag, taken)) => {
+                        parked = taken;
+                        frag
+                    }
                     None => self.build(region, arm as u32, scope, subject, parent),
                 };
                 *live = Some(frag);
@@ -703,6 +709,7 @@ impl Patch<'_, '_> {
         if let Some(frag) = live {
             self.frag(frag, scope, subject, parent, anchor, force);
         }
+        unpark_focus(self.cx.store, parked);
     }
 
     /// Brings `frag` up to date under the bindings `scope` and `extra`, and into
@@ -1061,10 +1068,12 @@ impl Patch<'_, '_> {
         Some(kept)
     }
 
-    /// Unlinks `frag`'s nodes from `parent`, keeping them alive.
-    fn detach(&mut self, frag: &Frag, parent: NodeId) {
+    /// Unlinks `frag`'s nodes from `parent`, keeping them alive, and takes
+    /// the focus they hold with them.
+    fn detach(&mut self, frag: &Frag, parent: NodeId) -> ParkedFocus {
         self.detach_slots(&frag.roots);
         self.cx.store.mark_dirty(parent, relayout());
+        park_focus(self.cx.store, parent)
     }
 
     fn detach_slots(&mut self, slots: &[Slot]) {
@@ -1115,7 +1124,8 @@ impl Patch<'_, '_> {
             }
             Slot::Region(mount) => match mount.content {
                 Content::Arms { live, kept, .. } => {
-                    for frag in live.into_iter().chain(kept.into_iter().flatten()) {
+                    let kept = kept.into_iter().flatten().map(|(frag, _)| frag);
+                    for frag in live.into_iter().chain(kept) {
                         self.free(frag);
                     }
                 }
@@ -1135,7 +1145,7 @@ struct Arms<'m> {
     template: &'m RegionTemplate,
     active: &'m mut Option<usize>,
     live: &'m mut Option<Frag>,
-    kept: &'m mut Vec<Option<Frag>>,
+    kept: &'m mut Vec<Option<(Frag, ParkedFocus)>>,
 }
 
 /// The revision cell of `env` slot `slot` in `env`, sorted by slot.

@@ -2,8 +2,9 @@
 //! package: a region on `env.size_class` switches arms when the window's class
 //! changes, a handler reads the environment as of the last settle, an
 //! instance a region mounts reads its own `env` fields, avoiding regions pad
-//! what the system covers of them, and a view lays out around the display
-//! features.
+//! what the system covers of them, a view lays out around the display
+//! features, a preserved branch keeps its focus, scroll and text, and one view
+//! adapts across the devices and system states it meets.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -546,5 +547,339 @@ fn a_view_lays_out_around_the_display_features() {
         assert_eq!(rt.children(root).len(), 1, "one hinge");
         rt.update_env(|e| e.display_features.clear());
         assert_eq!(rt.children(root).len(), 0, "unfolded");
+    }
+}
+
+const PRESERVING: &str = r#"
+export component Preserving {
+    view {
+        Column {
+            width: 400dp;
+            height: 300dp;
+            if env.size_class == SizeClass::Compact preserve "compact" {
+                Scroll {
+                    width: 100dp;
+                    height: 50dp;
+                    Column { width: 100dp; height: 500dp; }
+                }
+                TextInput { width: 100dp; height: 20dp; }
+            } else {
+                Text { width: 10dp; height: 10dp; }
+            }
+        }
+    }
+}
+"#;
+
+#[test]
+fn a_preserved_branch_keeps_its_focus_scroll_and_text() {
+    use viso_ui::{Buffer, Vec2};
+    for mut rt in [Rt::reloaded(PRESERVING), Rt::packaged(PRESERVING)] {
+        rt.update_env(|_| {});
+        let root = rt.root.expect("mounted");
+        let [scroll, input] = rt.children(root)[..] else {
+            panic!("the compact branch is shown");
+        };
+        rt.store.set_scroll(scroll, Vec2 { x: 0.0, y: 40.0 });
+        assert_eq!(rt.store.scroll(scroll).y, 40.0);
+        rt.text_edits
+            .register(input, Box::new(Buffer::with_text("draft")));
+        assert!(viso_ui::focus_node(&mut rt.store, input));
+
+        rt.update_env(|e| e.window.width = 1000.0);
+        assert_eq!(rt.children(root).len(), 1, "the wide branch is shown");
+        assert_eq!(rt.store.focused(), None, "keys never reach a hidden node");
+
+        rt.update_env(|e| e.window.width = 400.0);
+        assert_eq!(rt.children(root), [scroll, input], "the same nodes return");
+        assert_eq!(rt.store.scroll(scroll).y, 40.0);
+        assert_eq!(
+            rt.text_edits.get(input).map(|b| &b.text),
+            Some(&Buffer::with_text("draft").text)
+        );
+        assert_eq!(rt.store.focused(), Some(input), "the focus comes back");
+    }
+}
+
+const MATRIX: &str = r#"
+export component Matrix {
+    view {
+        Column {
+            width: 400dp;
+            height: 300dp;
+            SafeArea {
+                width: 400dp;
+                height: 100dp;
+                Row {
+                    width: 400dp;
+                    height: 10dp;
+                    match env.size_class {
+                        SizeClass::Compact => { Text { width: 10dp; height: 10dp; } },
+                        SizeClass::Medium => {
+                            Text { width: 10dp; height: 10dp; }
+                            Text { width: 10dp; height: 10dp; }
+                        },
+                        SizeClass::Expanded => {
+                            Text { width: 10dp; height: 10dp; }
+                            Text { width: 10dp; height: 10dp; }
+                            Text { width: 10dp; height: 10dp; }
+                        },
+                    }
+                }
+                Row {
+                    width: 400dp;
+                    height: 10dp;
+                    if env.orientation == Orientation::Landscape { Text { width: 10dp; height: 10dp; } }
+                }
+                Row {
+                    width: 400dp;
+                    height: 10dp;
+                    if env.keyboard_inset.height > 0dp { Text { width: 10dp; height: 10dp; } }
+                }
+                Row {
+                    width: 400dp;
+                    height: 10dp;
+                    if env.safe_area.top > 0dp || env.safe_area.left > 0dp {
+                        Text { width: 10dp; height: 10dp; }
+                    }
+                }
+                Row {
+                    width: 400dp;
+                    height: 10dp;
+                    for feature in env.display_features key match feature {
+                        DisplayFeature::Hinge { .. } => 0,
+                        DisplayFeature::Fold { .. } => 1,
+                        DisplayFeature::Cutout { .. } => 2,
+                    } {
+                        Text { width: 10dp; height: 10dp; }
+                    }
+                }
+                Row {
+                    width: 400dp;
+                    height: 10dp;
+                    if env.text_scale > 1.5 { Text { width: 10dp; height: 10dp; } }
+                }
+                Row {
+                    width: 400dp;
+                    height: 10dp;
+                    if env.input.touch_available {
+                        Text { width: 10dp; height: 10dp; }
+                    } else if env.input.hover_available {
+                        Text { width: 10dp; height: 10dp; }
+                        Text { width: 10dp; height: 10dp; }
+                    }
+                }
+            }
+            KeyboardAvoiding {
+                width: 400dp;
+                height: 200dp;
+                Text { width: 10dp; height: 10dp; }
+            }
+        }
+    }
+}
+"#;
+
+/// A device and the state its system is in.
+struct Scenario {
+    name: &'static str,
+    env: Environment,
+    /// The children of each row: size class (1 compact, 2 medium, 3
+    /// expanded), landscape, keyboard shown, safe area, display features,
+    /// large text, and input (1 touch, 2 mouse and keyboard).
+    rows: [usize; 7],
+    /// The padding of the safe-area and the keyboard-avoiding region.
+    paddings: [Inset; 2],
+}
+
+fn scenarios() -> Vec<Scenario> {
+    use viso_ui::adaptive::{
+        DisplayFeature, DisplayFeatureKind, InputCapabilities, PointerPrecision, WindowMetrics,
+    };
+    let window = |width, height| WindowMetrics {
+        width,
+        height,
+        scale_factor: 2.0,
+    };
+    let touch = InputCapabilities {
+        primary_pointer_precision: PointerPrecision::Coarse,
+        hover_available: false,
+        keyboard_available: false,
+        touch_available: true,
+        ..InputCapabilities::default()
+    };
+    let phone = Environment {
+        window: window(390.0, 844.0),
+        safe_area: inset(47.0, 34.0),
+        input: touch,
+        ..Environment::default()
+    };
+    let tablet = Environment {
+        window: window(1024.0, 1366.0),
+        safe_area: inset(24.0, 20.0),
+        input: touch,
+        ..Environment::default()
+    };
+    let desktop = Environment {
+        window: window(1600.0, 900.0),
+        ..Environment::default()
+    };
+    let none = Inset::default();
+    vec![
+        Scenario {
+            name: "phone portrait",
+            env: phone.clone(),
+            rows: [1, 0, 0, 1, 0, 0, 1],
+            paddings: [inset(47.0, 0.0), none],
+        },
+        Scenario {
+            name: "phone landscape",
+            env: Environment {
+                window: window(844.0, 390.0),
+                safe_area: Inset {
+                    left: 47.0,
+                    right: 47.0,
+                    bottom: 21.0,
+                    top: 0.0,
+                },
+                ..phone.clone()
+            },
+            // 750dp clear of the safe area: medium.
+            rows: [2, 1, 0, 1, 0, 0, 1],
+            paddings: [
+                Inset {
+                    left: 47.0,
+                    right: 47.0,
+                    ..none
+                },
+                none,
+            ],
+        },
+        Scenario {
+            name: "keyboard shown",
+            env: Environment {
+                keyboard_inset: 150.0,
+                ..phone.clone()
+            },
+            rows: [1, 0, 1, 1, 0, 0, 1],
+            paddings: [inset(47.0, 0.0), inset(0.0, 150.0)],
+        },
+        Scenario {
+            name: "keyboard over the whole region",
+            env: Environment {
+                keyboard_inset: 336.0,
+                ..phone.clone()
+            },
+            rows: [1, 0, 1, 1, 0, 0, 1],
+            paddings: [inset(47.0, 0.0), inset(0.0, 200.0)],
+        },
+        Scenario {
+            name: "keyboard hidden",
+            env: phone.clone(),
+            rows: [1, 0, 0, 1, 0, 0, 1],
+            paddings: [inset(47.0, 0.0), none],
+        },
+        Scenario {
+            name: "safe area change",
+            env: Environment {
+                safe_area: inset(59.0, 34.0),
+                ..phone.clone()
+            },
+            rows: [1, 0, 0, 1, 0, 0, 1],
+            paddings: [inset(59.0, 0.0), none],
+        },
+        Scenario {
+            name: "tablet full screen",
+            env: tablet.clone(),
+            rows: [3, 0, 0, 1, 0, 0, 1],
+            paddings: [inset(24.0, 0.0), none],
+        },
+        Scenario {
+            name: "tablet split view",
+            env: Environment {
+                window: window(507.0, 1366.0),
+                ..tablet.clone()
+            },
+            rows: [1, 0, 0, 1, 0, 0, 1],
+            paddings: [inset(24.0, 0.0), none],
+        },
+        Scenario {
+            name: "desktop narrow",
+            env: Environment {
+                window: window(700.0, 800.0),
+                ..desktop.clone()
+            },
+            rows: [2, 0, 0, 0, 0, 0, 2],
+            paddings: [none, none],
+        },
+        Scenario {
+            name: "desktop wide",
+            env: desktop.clone(),
+            rows: [3, 1, 0, 0, 0, 0, 2],
+            paddings: [none, none],
+        },
+        Scenario {
+            name: "folded on its hinge",
+            env: Environment {
+                window: window(800.0, 600.0),
+                display_features: vec![DisplayFeature {
+                    kind: DisplayFeatureKind::Hinge,
+                    bounds: Rect {
+                        x: 396.0,
+                        y: 0.0,
+                        w: 8.0,
+                        h: 600.0,
+                    },
+                }],
+                ..desktop.clone()
+            },
+            rows: [2, 1, 0, 0, 1, 0, 2],
+            paddings: [none, none],
+        },
+        Scenario {
+            name: "large text",
+            env: Environment {
+                text_scale: 2.0,
+                ..desktop.clone()
+            },
+            rows: [3, 1, 0, 0, 0, 1, 2],
+            paddings: [none, none],
+        },
+        Scenario {
+            name: "touch on the desktop",
+            env: Environment {
+                input: InputCapabilities {
+                    touch_available: true,
+                    ..desktop.input
+                },
+                ..desktop.clone()
+            },
+            rows: [3, 1, 0, 0, 0, 0, 1],
+            paddings: [none, none],
+        },
+    ]
+}
+
+#[test]
+fn one_view_adapts_to_every_device_and_system_state() {
+    for mut rt in [Rt::reloaded(MATRIX), Rt::packaged(MATRIX)] {
+        let root = rt.root.expect("mounted");
+        let safe = rt.children(root)[0];
+        for scenario in scenarios() {
+            let env = scenario.env.clone();
+            rt.avoid(|e| *e = env);
+            let rows: Vec<usize> = rt
+                .children(safe)
+                .into_iter()
+                .map(|row| rt.children(row).len())
+                .collect();
+            assert_eq!(rows, scenario.rows, "{}: the branches", scenario.name);
+            assert_eq!(
+                rt.paddings(),
+                scenario.paddings,
+                "{}: the avoiding regions",
+                scenario.name
+            );
+        }
     }
 }
