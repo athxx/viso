@@ -1,14 +1,20 @@
 //! The standard native libraries every registry holds: `viso::text`,
-//! `viso::math`, `viso::time`, `viso::clipboard` and the widgets of
-//! `viso::widgets`.
+//! `viso::math`, `viso::time`, `viso::clipboard`, the scheduler traits of
+//! `viso::game` and the widgets of `viso::widgets`.
 
 use std::time::Instant;
 
 use super::{NativeError, NativeFunction, NativeLibrary, NativeObject, NativeType, Obj};
 
 /// Every standard library.
-pub static STANDARD: &[&NativeLibrary] =
-    &[&TEXT, &MATH, &TIME, &CLIPBOARD, &super::widgets::WIDGETS];
+pub static STANDARD: &[&NativeLibrary] = &[
+    &TEXT,
+    &MATH,
+    &TIME,
+    &CLIPBOARD,
+    &crate::game::GAME,
+    &super::widgets::WIDGETS,
+];
 
 /// Text functions; `len` counts Unicode scalar values.
 static TEXT: NativeLibrary = NativeLibrary {
@@ -31,6 +37,7 @@ static TEXT: NativeLibrary = NativeLibrary {
         .deterministic(),
     ],
     types: &[],
+    traits: &[],
     widgets: &[],
 };
 
@@ -68,6 +75,7 @@ static MATH: NativeLibrary = NativeLibrary {
         .realtime_safe(),
     ],
     types: &[],
+    traits: &[],
     widgets: &[],
 };
 
@@ -94,6 +102,7 @@ static TIME: NativeLibrary = NativeLibrary {
     version: 1,
     functions: &[],
     types: &[NativeType::new("Stopwatch", &STOPWATCH_METHODS)],
+    traits: &[],
     widgets: &[],
 };
 
@@ -124,5 +133,6 @@ static CLIPBOARD: NativeLibrary = NativeLibrary {
         .requires(&["clipboard.write"]),
     ],
     types: &[],
+    traits: &[],
     widgets: &[],
 };

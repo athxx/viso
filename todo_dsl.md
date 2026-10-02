@@ -507,12 +507,27 @@ timers (§104–§111).
 
 ### D5.1 — Scheduler and clock
 
-- [ ] `FixedUpdate` / `FrameUpdate` / `CollisionListener` hooks bound from `SystemIr`
+- [x] `FixedUpdate` / `FrameUpdate` / `CollisionListener` hooks bound from `SystemIr`
       (§131), no hard-coded names.
-- [ ] Fixed-step loop with `tick`, `fixed_dt`, `time_scale`, `paused`, `step(n)`;
+  - [x] Native Schema traits (`NativeTrait` + hooks) registered and importable.
+  - [x] `viso::game` library: the three traits and `FixedFrame` / `RenderFrame` /
+        `CollisionEvent` handles.
+  - [x] `implements` resolves against imported traits (`E2001`); each hook needs a
+        matching `action` (`E2201`); two traits sharing a hook are `E2202`.
+  - [x] Systems lower like components; `Module.systems` carries the hook→chunk table
+        and survives the wire format.
+  - [x] A system declares no `view` / `event` / `slot` (`E9109`); a systems-only source
+        is not `E2005`.
+- [x] Fixed-step loop with `tick`, `fixed_dt`, `time_scale`, `paused`, `step(n)`;
       `frame.time() = tick × fixed_dt` (§106.1).
-- [ ] `TickOverrun::{DropTime, SlowMotion}`; `game.overrun_ticks`, `game.dropped_time`.
-- [ ] System order and `E9101`; tick budget `E9102`.
+  - [x] `Clock`: accumulator, scaled wall time, pause, `step(n)` through the same path.
+  - [x] `Scheduler`: FixedUpdate per tick, collisions after, FrameUpdate per frame
+        (also while paused).
+- [x] `TickOverrun::{DropTime, SlowMotion}`; `game.overrun_ticks`, `game.dropped_time`.
+- [x] System order and `E9101`; tick budget `E9102`.
+  - [x] `@after(System)` / `@before(System)`; stable topological order; cycle `E9101`.
+  - [x] Per-tick cumulative instruction budget; exhaustion skips the rest of the tick
+        and reports `E9102`.
 
 ### D5.2 — Input
 

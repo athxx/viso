@@ -280,6 +280,87 @@ impl SystemDecl {
     pub fn members(&self) -> impl Iterator<Item = Member> {
         support::children(&self.syntax)
     }
+
+    /// The trait bounds of its `implements` clause, in order.
+    pub fn implements(&self) -> impl Iterator<Item = TypePath> {
+        self.syntax
+            .children()
+            .into_iter()
+            .filter(|n| n.kind() == SyntaxKind::ImplementsClause)
+            .flat_map(|clause| clause.children())
+            .filter_map(TypePath::cast)
+    }
+
+    /// Its `@after(..)` and `@before(..)` attributes, the run of attributes
+    /// preceding the declaration or its `export`, in source order: which way
+    /// each orders the system, the attribute and the name each argument
+    /// gives, `None` for an argument that is not one bare name.
+    pub fn ordering(&self) -> Vec<(SystemOrder, SyntaxNode, Vec<Option<SyntaxToken>>)> {
+        let decl = self
+            .syntax
+            .parent()
+            .filter(|p| p.kind() == SyntaxKind::ExportDecl)
+            .unwrap_or_else(|| self.syntax.clone());
+        let mut attrs: Vec<SyntaxNode> =
+            std::iter::successors(decl.prev_sibling(), SyntaxNode::prev_sibling)
+                .take_while(|n| n.kind() == SyntaxKind::Attribute)
+                .collect();
+        attrs.reverse();
+        attrs
+            .into_iter()
+            .filter_map(|attr| {
+                let path = attr
+                    .children()
+                    .into_iter()
+                    .find(|c| c.kind() == SyntaxKind::PathExpr)?;
+                let order = match path.text().to_string().trim() {
+                    "after" => SystemOrder::After,
+                    "before" => SystemOrder::Before,
+                    _ => return None,
+                };
+                let args =
+                    attr.children()
+                        .into_iter()
+                        .filter(|c| c.kind() == SyntaxKind::ArgumentList)
+                        .flat_map(|list| list.children())
+                        .filter(|c| c.kind() == SyntaxKind::Argument)
+                        .map(|arg| {
+                            let labeled = arg.children_with_tokens().into_iter().any(|e| {
+                                e.as_token().is_some_and(|t| t.kind() == SyntaxKind::Colon)
+                            });
+                            let children = arg.children();
+                            let [path] = children.as_slice() else {
+                                return None;
+                            };
+                            let path = PathExpr::cast(path.clone()).filter(|_| !labeled)?;
+                            let mut segments = path.segments();
+                            let name = segments.next()?;
+                            segments.next().is_none().then_some(name)
+                        })
+                        .collect();
+                Some((order, attr, args))
+            })
+            .collect()
+    }
+
+    /// The system as a component: the same node, whose members lower like a
+    /// component's. Lowering rejects a system's `view`, `event` and `slot`
+    /// members.
+    pub fn as_component(&self) -> ComponentDecl {
+        ComponentDecl {
+            syntax: self.syntax.clone(),
+        }
+    }
+}
+
+/// Which way an `@after`/`@before` attribute orders a system against the
+/// systems it names.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SystemOrder {
+    /// `@after`: the system runs after them.
+    After,
+    /// `@before`: the system runs before them.
+    Before,
 }
 
 impl RecordDecl {

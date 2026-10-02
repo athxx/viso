@@ -23,6 +23,7 @@ pub use nodes::{
     InputDecl, Item, ListExpr, LiteralExpr, MatchExpr, Member, ModulePath, NamedNode, NodeBody,
     NodeMember, Param, ParamList, ParenExpr, PathExpr, Pattern, PropertyBinding, PropertyPath,
     RangeExpr, RecordDecl, RecordExpr, RecordField, RenameClause, ReturnType, SlotDecl, StateDecl,
-    SystemDecl, TaskDecl, TryExpr, TupleExpr, TwoWayBinding, TypeAliasDecl, TypePath, UnaryExpr,
-    ViewBlock, ViewDecl, ViewFor, ViewFragment, ViewIf, ViewItem, ViewMatch, ViewMatchArm,
+    SystemDecl, SystemOrder, TaskDecl, TryExpr, TupleExpr, TwoWayBinding, TypeAliasDecl, TypePath,
+    UnaryExpr, ViewBlock, ViewDecl, ViewFor, ViewFragment, ViewIf, ViewItem, ViewMatch,
+    ViewMatchArm,
 };

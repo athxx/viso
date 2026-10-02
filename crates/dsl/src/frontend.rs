@@ -496,8 +496,18 @@ impl Compiled {
     }
 }
 
+/// Whether the unit declares a `system`, exported or not.
+fn declares_system(cu: &CompilationUnit) -> bool {
+    cu.items().any(|item| match item {
+        Item::System(_) => true,
+        Item::Export(export) => matches!(export.declaration(), Some(Item::System(_))),
+        _ => false,
+    })
+}
+
 /// The component a unit mounts: its single exported component, else its single
-/// component. Anything else is ambiguous or empty and reported.
+/// component. A unit of systems without a component mounts nothing. Anything
+/// else is ambiguous or empty and reported.
 fn mounted_component(
     cu: &CompilationUnit,
     source: &str,
@@ -520,6 +530,8 @@ fn mounted_component(
     let candidates = if exported.is_empty() { all } else { exported };
     match candidates.len() {
         1 => candidates.into_iter().next(),
+        // A source of systems runs under a scheduler and mounts nothing.
+        0 if declares_system(cu) => None,
         0 => {
             diagnostics.push(Diagnostic::error(
                 "E2005",

@@ -432,7 +432,7 @@ impl ModuleGraph {
 }
 
 /// Binds an `import` of the native `target` into `bound`: a whole library,
-/// function or handle type under its last segment or rename, or a library's
+/// function, handle type or trait under its last segment or rename, or a library's
 /// selected items, an item the library does not declare being
 /// [`E2001`](ResolveErrorKind::UnresolvedImport) in `errors`. Returns whether
 /// `target` names a native at all.
@@ -463,7 +463,10 @@ fn native_import(
             };
             let text = name.text();
             let path = format!("{target}::{text}");
-            if natives.function(&path).is_some() || natives.ty(&path).is_some() {
+            if natives.function(&path).is_some()
+                || natives.ty(&path).is_some()
+                || natives.native_trait(&path).is_some()
+            {
                 bound.push(NativeBinding {
                     local: renamed(item.rename(), &text),
                     path,
@@ -476,7 +479,8 @@ fn native_import(
                 .functions
                 .iter()
                 .map(|f| f.name)
-                .chain(library.types.iter().map(|t| t.name));
+                .chain(library.types.iter().map(|t| t.name))
+                .chain(library.traits.iter().map(|t| t.name));
             let suggestions = suggest::nearest(
                 &text,
                 names.map(|name| suggest::Candidate {
@@ -489,8 +493,9 @@ fn native_import(
         }
         return true;
     }
-    let item =
-        natives.function(target).is_some_and(|f| f.owner.is_none()) || natives.ty(target).is_some();
+    let item = natives.function(target).is_some_and(|f| f.owner.is_none())
+        || natives.ty(target).is_some()
+        || natives.native_trait(target).is_some();
     if item && items.is_empty() {
         let last = target.rsplit("::").next().unwrap_or(target);
         bound.push(NativeBinding {

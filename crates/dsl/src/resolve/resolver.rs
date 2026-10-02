@@ -740,7 +740,92 @@ impl ModulePass<'_> {
     }
 
     fn resolve_system(&mut self, decl: &SystemDecl) {
+        for bound in decl.implements() {
+            self.resolve_bound(&bound);
+        }
+        for (_, _, names) in decl.ordering() {
+            for name in names.into_iter().flatten() {
+                self.resolve_ordered(&name);
+            }
+        }
         self.resolve_owner(decl.name(), decl.members());
+    }
+
+    /// Resolves a system an `@after`/`@before` names, in the type namespace
+    /// (`E2001` with the nearest types otherwise).
+    fn resolve_ordered(&mut self, name: &crate::syntax::SyntaxToken) {
+        let text = name.text();
+        let at = name.text_range();
+        let interned = self.interner.intern(&text);
+        if let Some(symbol) = self.type_symbol(interned) {
+            self.refs.push(ResolvedRef {
+                range: at,
+                to: Resolution::Symbol(symbol),
+            });
+            return;
+        }
+        let mut diagnostic = ResolveErrorKind::UnresolvedType.to_diagnostic(Some(at), &text);
+        let suggestions = self.nearest_types(&text);
+        suggest::attach(&mut diagnostic, at, &suggestions);
+        self.errors.push(diagnostic);
+    }
+
+    /// Resolves one `implements` bound: an imported native trait is recorded as
+    /// [`Resolution::Native`], a path into a native import naming neither a
+    /// trait nor a type is [`E2001`](ResolveErrorKind::UnresolvedNative) with
+    /// the nearest traits, and anything else resolves as a type for lowering
+    /// to reject.
+    fn resolve_bound(&mut self, bound: &TypePath) {
+        let Some(head) = bound.segments().next() else {
+            return;
+        };
+        let name = self.interner.intern(&head.text());
+        if self.type_symbol(name).is_some() {
+            self.resolve_type_head(bound, false);
+            return;
+        }
+        let Some(base) = self.imports.natives.get(&name) else {
+            self.resolve_type_head(bound, false);
+            return;
+        };
+        let mut path = base.clone();
+        let mut last = head.clone();
+        for segment in bound.segments().skip(1) {
+            path.push_str("::");
+            path.push_str(&segment.text());
+            last = segment;
+        }
+        if let Some(t) = self.natives.native_trait(&path) {
+            self.refs.push(ResolvedRef {
+                range: head.text_range(),
+                to: Resolution::Native(t.id),
+            });
+            return;
+        }
+        if self.natives.ty(&path).is_some() {
+            // A native type, which lowering rejects as a bound.
+            self.resolve_type_head(bound, false);
+            return;
+        }
+        let at = last.text_range();
+        let mut diagnostic = ResolveErrorKind::UnresolvedNative.to_diagnostic(Some(at), &path);
+        let parent = path.rsplit_once("::").map_or("", |(p, _)| p);
+        let names: Vec<&str> = self
+            .natives
+            .traits()
+            .iter()
+            .filter_map(|t| t.path.strip_prefix(parent)?.strip_prefix("::"))
+            .filter(|n| !n.contains("::"))
+            .collect();
+        let suggestions = suggest::nearest(
+            &last.text(),
+            names.into_iter().map(|name| suggest::Candidate {
+                name,
+                declared_at: None,
+            }),
+        );
+        suggest::attach(&mut diagnostic, at, &suggestions);
+        self.errors.push(diagnostic);
     }
 
     /// Resolves the members of the component or system named `name`, with its member

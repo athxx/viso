@@ -20,7 +20,7 @@
 //! slot-based locals unchanged.
 
 use std::cell::{Cell, RefCell};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use viso_behavior::native::{NativeId, NativeKind, Natives, ThreadDomain};
 
@@ -54,6 +54,8 @@ use super::view::{
     HandlerSink, InputFlows, InputProp, PercentFlow, ViewEnv, check_input_bases,
     check_percent_flow, check_view,
 };
+
+mod system;
 
 /// The typed HIR of a whole package: every component lowered, every free callable, and every
 /// diagnostic the type/effect/capability checks raised across all modules.
@@ -165,6 +167,7 @@ pub fn lower(
     let mut cap = CapabilityGraphBuilder::default();
     let behavior = RefCell::new(ProgramBuilder::new());
     let mut migrators = Vec::new();
+    let mut systems = Vec::new();
     for (i, module) in modules.iter().enumerate() {
         let mut module_diagnostics = Vec::new();
         let mut flows = InputFlows::default();
@@ -179,6 +182,7 @@ pub fn lower(
                 &mut callables,
                 &mut module_diagnostics,
                 &mut cap,
+                &mut systems,
             );
             collect_migrators(cu, &env, &mut module_diagnostics, &mut migrators);
         }
@@ -187,6 +191,8 @@ pub fn lower(
     }
     cap.finish(&mut components, &mut per_module);
     check_input_bases(&input_flows, &mut per_module);
+    let order = system::order(&systems, &mut per_module);
+    behavior.borrow_mut().order_systems(&order);
 
     let mut diagnostics = Vec::new();
     let mut module_diagnostics = Vec::with_capacity(per_module.len());
@@ -218,7 +224,7 @@ pub fn lower(
 }
 
 /// Checks the `@migrate` functions of one compilation unit, at module level
-/// and in each component, into `migrators`.
+/// and in each component and system, into `migrators`.
 fn collect_migrators(
     cu: &CompilationUnit,
     env: &ModuleEnv<'_>,
@@ -233,7 +239,12 @@ fn collect_migrators(
             Item::Export(e) => e.declaration(),
             other => Some(other),
         };
-        if let Some(Item::Component(c)) = decl {
+        let component = match decl {
+            Some(Item::Component(c)) => Some(c),
+            Some(Item::System(s)) => Some(s.as_component()),
+            _ => None,
+        };
+        if let Some(c) = component {
             env.focus_component(&c);
             check_migrators(c.syntax(), env, diagnostics, migrators, &|f| {
                 env.member_symbol(&support_name(f)?)
@@ -245,6 +256,7 @@ fn collect_migrators(
 /// Lowers one compilation unit's components/systems and module-level callables, running the
 /// effect checks over their bodies and registering every callable in the capability graph;
 /// returns what its views say about the percent bases of component inputs.
+#[allow(clippy::too_many_arguments)]
 fn lower_module(
     cu: &CompilationUnit,
     refs: &[ResolvedRef],
@@ -253,6 +265,7 @@ fn lower_module(
     callables: &mut Vec<HirCallable>,
     diagnostics: &mut Vec<Diagnostic>,
     cap: &mut CapabilityGraphBuilder,
+    systems: &mut Vec<system::SystemNode>,
 ) -> InputFlows {
     let mut flows = Vec::new();
     let mut percent = PercentSources::default();
@@ -265,8 +278,6 @@ fn lower_module(
             },
             other => other,
         };
-        // A `system` shares the component member surface but is not a `ComponentDecl`; its
-        // dedicated lowering lands with its consumer slice (system hooks / scheduler schema).
         // Module-level `fn`/`action`/`task` bodies, `const` values and record field defaults
         // are type-checked here; their HIR nodes land with their consumer slice.
         match decl {
@@ -274,6 +285,18 @@ fn lower_module(
                 env.focus_component(&c);
                 let component =
                     lower_component_item(&c, refs, env, diagnostics, cap, &mut flows, &mut percent);
+                components.push(component);
+            }
+            Item::System(s) => {
+                let c = s.as_component();
+                env.focus_component(&c);
+                system::check_members(&s, diagnostics);
+                let component =
+                    lower_component_item(&c, refs, env, diagnostics, cap, &mut flows, &mut percent);
+                let hooks = system::hooks(&s, env, diagnostics);
+                let symbol = component.schema.symbol;
+                env.behavior.borrow_mut().system(symbol, &hooks);
+                systems.push(system::node(&s, symbol, env, diagnostics));
                 components.push(component);
             }
             Item::Const(c) => check_const(&c, refs, env, diagnostics, &mut percent),
@@ -1020,6 +1043,8 @@ struct Declarations {
     inputs: HashMap<SymbolId, Vec<InputProp>>,
     /// The slots of every component, which its callers fill.
     slots: HashMap<SymbolId, Vec<HirSlot>>,
+    /// Every system, which `@after`/`@before` may name.
+    systems: HashSet<SymbolId>,
     /// The prelude's types by name.
     standard: HashMap<String, SymbolId>,
     /// The index of the module declaring each record, enum, event, component and
@@ -1311,15 +1336,28 @@ impl ModuleScope {
                 },
                 other => other,
             };
+            let system = match &decl {
+                Item::System(s) => Some(s.as_component()),
+                _ => None,
+            };
             match &decl {
-                Item::Component(c) => {
+                Item::Component(_) | Item::System(_) => {
                     // Record this component's symbol keyed by its declaration span, so the env
                     // can focus on whichever component it is currently lowering (a module may
-                    // declare several), and its members from its own member table.
+                    // declare several), and its members from its own member table. A system
+                    // is a component without a view.
+                    let c = match (&decl, &system) {
+                        (Item::Component(c), _) => c,
+                        (_, Some(c)) => c,
+                        _ => continue,
+                    };
                     let Some(sym) = decl_symbol(table, interner, c.name(), Namespace::Type) else {
                         continue;
                     };
                     scope.components.insert(c.syntax().text_range(), sym);
+                    if system.is_some() {
+                        decls.systems.insert(sym);
+                    }
                     scope.place(decls, sym);
                     decls.types.names.insert(sym, name_of(c.name()));
                     let Some(members) = table.members(sym) else {
@@ -1332,18 +1370,6 @@ impl ModuleScope {
                         .slots
                         .insert(sym, super::component::slots_of(c, &mut Vec::new()));
                     for member in c.members() {
-                        scope.record_member(decls, sym, &member, members, interner);
-                    }
-                }
-                Item::System(s) => {
-                    let Some(sym) = decl_symbol(table, interner, s.name(), Namespace::Type) else {
-                        continue;
-                    };
-                    scope.place(decls, sym);
-                    let Some(members) = table.members(sym) else {
-                        continue;
-                    };
-                    for member in s.members() {
                         scope.record_member(decls, sym, &member, members, interner);
                     }
                 }

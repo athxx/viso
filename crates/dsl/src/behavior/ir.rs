@@ -24,6 +24,7 @@
 
 pub use viso_behavior::NativeImport;
 
+use viso_behavior::native::NativeId;
 use viso_ui::adaptive::EnvField;
 
 use crate::resolve::SymbolId;
@@ -483,13 +484,29 @@ impl ComponentLayout {
     }
 }
 
+/// A `system`: the component layout a scheduler instantiates and the member
+/// action implementing each hook of the traits it implements.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SystemLayout {
+    /// The system.
+    pub symbol: SymbolId,
+    /// Its layout, an index into [`Program::components`].
+    pub component: u32,
+    /// Each hook, by its identity, and the action implementing it, in the
+    /// order the traits declare them.
+    pub hooks: Vec<(NativeId, FuncId)>,
+}
+
 /// A package's lowered behavior.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct Program {
     /// Every function, by [`FuncId`].
     pub functions: Vec<Function>,
-    /// Every component's layout, in lowering order.
+    /// Every component's layout, in lowering order; a system's too.
     pub components: Vec<ComponentLayout>,
+    /// Every system, in the order a scheduler runs them: `@after`/`@before`
+    /// first, then declaration order.
+    pub systems: Vec<SystemLayout>,
     /// Every native function a body calls, by import index.
     pub natives: Vec<NativeImport>,
     /// The function computing each defaulted record field, by record and field
