@@ -13,15 +13,15 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use viso_behavior::{
-    Arith, ArithOp, Chunk, ChunkKind, Code, Component, DisplayKind, Module, Num, Op, Span, Value,
-    VerifyError,
+    Arith, ArithOp, Chunk, ChunkKind, Code, Component, DisplayKind, Module, Num, Op, Span, System,
+    Value, VerifyError,
 };
 
 use super::ir::{self, BinaryOp, Const, FunctionKind, Inst, PathStep, Program, Reg, UnaryOp};
 
 impl Program {
     /// The program as a verified bytecode module: chunk `i` is function `i`,
-    /// and component layouts keep their order.
+    /// and component layouts and systems keep their order.
     ///
     /// # Errors
     ///
@@ -47,7 +47,15 @@ impl Program {
                 handlers: c.handlers.iter().map(|(_, f)| f.0).collect(),
             })
             .collect();
-        Module::new(chunks, components, self.natives.clone())
+        let systems = self
+            .systems
+            .iter()
+            .map(|s| System {
+                component: s.component,
+                hooks: s.hooks.iter().map(|&(hook, f)| (hook, f.0)).collect(),
+            })
+            .collect();
+        Module::new(chunks, components, systems, self.natives.clone())
     }
 }
 

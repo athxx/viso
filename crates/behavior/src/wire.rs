@@ -13,7 +13,10 @@ use std::rc::Rc;
 
 use viso_ende::{Decode, DecodeError, Decoder, Encode, Encoder, ProtocolTag};
 
-use crate::module::{Chunk, ChunkKind, Code, Component, Module, NativeImport, Span, VerifyError};
+use crate::module::{
+    Chunk, ChunkKind, Code, Component, Module, NativeImport, Span, System, VerifyError,
+};
+use crate::native::NativeId;
 use crate::op::{Arith, ArithOp, DisplayKind, Num, Op};
 use crate::value::{Aggregate, Value};
 
@@ -50,6 +53,13 @@ impl Module {
         ProtocolTag::current().encode(&mut enc);
         write_list(&mut enc, self.chunks(), write_chunk);
         write_list(&mut enc, self.components(), write_component);
+        write_list(&mut enc, self.systems(), |enc, s| {
+            enc.write_varint(u64::from(s.component));
+            write_list(enc, &s.hooks, |enc, (hook, chunk)| {
+                enc.write_u64(hook.0);
+                enc.write_varint(u64::from(*chunk));
+            });
+        });
         write_list(&mut enc, self.natives(), |enc, n| {
             enc.write_str(&n.path);
             enc.write_u64(n.signature);
@@ -72,6 +82,15 @@ impl Module {
         }
         let chunks = read_list(&mut dec, read_chunk)?;
         let components = read_list(&mut dec, read_component)?;
+        let systems = read_list(&mut dec, |dec| {
+            Ok(System {
+                component: read_u32_varint(dec)?,
+                hooks: read_list(dec, |dec| {
+                    Ok((NativeId(dec.read_u64()?), read_u32_varint(dec)?))
+                })?
+                .into(),
+            })
+        })?;
         let natives = read_list(&mut dec, |dec| {
             Ok(NativeImport {
                 path: dec.read_str()?.into(),
@@ -80,7 +99,7 @@ impl Module {
             })
         })?;
         dec.finish()?;
-        Module::new(chunks, components, natives).map_err(LoadError::Verify)
+        Module::new(chunks, components, systems, natives).map_err(LoadError::Verify)
     }
 }
 
@@ -771,20 +790,35 @@ mod tests {
             captures: Box::new([]),
             body: Err("unsupported".into()),
         };
+        let tick = Chunk {
+            name: "Counter.tick".into(),
+            kind: ChunkKind::Action,
+            ..missing.clone()
+        };
         let component = Component {
             name: "Counter".into(),
             states: Box::new(["count".into()]),
             state_inits: Box::new([None]),
             handlers: Box::new([0]),
-            members: Box::new([("f".into(), 1)]),
+            members: Box::new([("f".into(), 1), ("tick".into(), 2)]),
             ..Component::default()
         };
+        let systems = vec![System {
+            component: 0,
+            hooks: Box::new([(NativeId(0x0123_4567_89ab_cdef), 2)]),
+        }];
         let natives = vec![NativeImport {
             path: "viso::text::upper".into(),
             signature: 0xdead_beef,
             params: 1,
         }];
-        Module::new(vec![handler, missing], vec![component], natives).unwrap()
+        Module::new(
+            vec![handler, missing, tick],
+            vec![component],
+            systems,
+            natives,
+        )
+        .unwrap()
     }
 
     #[test]
@@ -813,9 +847,31 @@ mod tests {
         let bad = Module {
             chunks: chunks.into(),
             components: components.into(),
+            systems: module.systems().to_vec().into(),
             natives: module.natives().to_vec().into(),
         };
         bytes = bad.encode();
         assert!(matches!(Module::decode(&bytes), Err(LoadError::Verify(_))));
+    }
+
+    #[test]
+    fn a_system_hook_must_be_an_action_of_its_component() {
+        let module = sample();
+        let with = |hooks: Box<[(NativeId, u32)]>| {
+            Module::new(
+                module.chunks().to_vec(),
+                module.components().to_vec(),
+                vec![System {
+                    component: 0,
+                    hooks,
+                }],
+                module.natives().to_vec(),
+            )
+        };
+        // `f` is a member but a `fn`; chunk 0 is a handler, no member.
+        assert!(with(Box::new([(NativeId(1), 1)])).is_err());
+        assert!(with(Box::new([(NativeId(1), 0)])).is_err());
+        assert!(with(Box::new([(NativeId(1), 2), (NativeId(1), 2)])).is_err());
+        assert!(with(Box::new([(NativeId(1), 2)])).is_ok());
     }
 }

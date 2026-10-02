@@ -11,11 +11,14 @@
 //! writes and emitted events are pending until it returns, then commit together
 //! as one revision; a [`Fault`] discards them and leaves the instance as it was.
 //!
+//! The [`game`] module drives a module's `system`s on a fixed-step clock.
+//!
 //! Values have one representation per source type (see [`Value`]): integers,
 //! `Bool`, `Char`, `Color`, `()` and unit enum variants are `Int`; floats and
 //! dimensional scalars are `Float`; `None` is `Nil` and `Some(x)` is `x`.
 
 mod arith;
+pub mod game;
 mod memo;
 mod module;
 pub mod native;
@@ -25,7 +28,9 @@ mod vm;
 mod wire;
 
 pub use memo::Reads;
-pub use module::{Chunk, ChunkKind, Code, Component, Module, NativeImport, Span, VerifyError};
+pub use module::{
+    Chunk, ChunkKind, Code, Component, Module, NativeImport, Span, System, VerifyError,
+};
 pub use op::{Arith, ArithOp, DisplayKind, Num, Op};
 pub use value::{Aggregate, Closure, Value};
 pub use vm::{Budget, Cost, Event, Fault, FaultKind, Instance, Location, Outcome, Vm};

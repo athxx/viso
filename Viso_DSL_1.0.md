@@ -858,6 +858,8 @@ attribute_arg     = expression
 | `@persist("key")`          | System/Component 的 `state` | 持久化状态（§106.8）                                  |
 | `@local`                   | System 的 `state`          | Presentation 层状态，Simulation 不可访问（§106.4）      |
 | `@probe`                   | System 的 `state`          | 每个 Tick 输出到测试 Trace（§110.5）                    |
+| `@after(System, ...)`      | `system`                  | 在所列 System 之后运行（§106）                          |
+| `@before(System, ...)`     | `system`                  | 在所列 System 之前运行（§106）                          |
 | `@shader_value`            | `record`                  | Shader 可用值类型（§98）                                |
 | `@max_iterations(n)`       | Shader 循环 Statement      | 循环迭代上限（§99）                                     |
 | `@doc("...")`              | 任意声明                  | 文档注释降低后的元数据（§10），源码中通常不手写          |
@@ -5545,6 +5547,13 @@ collision
 
 这些来自 `viso::game` Native Schema。第三方可替换物理、ECS 或渲染实现而不修改语法。
 
+`system` 规则：
+
+- `system` 与 `component` 共享 `input`/`state`/`computed`/`fn`/`action` 成员面，但只由 Scheduler 驱动、从不挂载，声明 `view`、`event` 或 `slot` 报 `E9109`；只声明 System 的源文件不要求可挂载组件（不报 `E2005`）；
+- `implements` 的每个 Bound 必须是 Native Schema 提供的 Scheduler Trait，同一 Trait 至多出现一次，否则报 `E2201`；
+- Trait 的每个 Hook 需要同名 `action`，参数类型与 Hook 声明一致且不返回值，否则报 `E2201`；两个 Bound 声明同名 Hook 报 `E2202`；
+- Hook 按 Hook 身份（Trait 路径 + Hook 名的 Native Id）绑定到 `action`，编译器不按名字认识任何 Hook；Scheduler 将自己认识的 Hook 身份映射到阶段。
+
 ---
 
 ### 105.1 Quick Game Profile
@@ -5680,6 +5689,14 @@ render_interpolation_policy
 - 每个 Tick 有 Instruction/Native Call Budget；
 - Tick 超限时采用 Profile 策略，不能无限阻塞 UI Thread。
 
+`system_order`：
+
+- `@after(A, B)` / `@before(C)` 声明偏序，参数必须是 System 名，否则报 `E2001`；
+- 编译器在 Package 内做稳定拓扑排序：无约束的 System 保持声明顺序（模块图顺序，再源码顺序）；顺序成环报 `E9101`；
+- 一个 Tick 按该顺序运行全部 `FixedUpdate`，再把排队到该 Tick 的碰撞事件逐个投递给全部 `CollisionListener`；一帧先运行它欠下的全部 Tick，再按顺序运行全部 `FrameUpdate`；
+- 每次 Hook 调用是独立事务：Fault 丢弃该调用的状态写入并被记录，下一个 System 照常运行；
+- 一个 Tick 的全部 Hook 共享一份 Instruction/Native Call Budget，一帧的 `FrameUpdate` 共享另一份；Tick 预算耗尽报 `E9102` 并跳过该 Tick 余下的 Hook，Tick 仍然计数。
+
 ### 106.1 时钟、暂停与超限
 
 ```text
@@ -5700,10 +5717,12 @@ export enum TickOverrun {
 }
 ```
 
-- `DropTime`（默认）：累加器超过 `max_catch_up_steps` 后丢弃剩余时间；
-- `SlowMotion`：保留累加时间，不丢 Tick，游戏整体变慢；
-- 两种策略都计入 `game.overrun_ticks` 与 `game.dropped_time` 计数器；
-- 调试器可 `step(n)` 单步推进 n 个 Tick，单步与正常运行走同一 Scheduler 路径。
+每帧把 Wall Time × `time_scale` 加入累加器，每满一个 `fixed_dt` 欠一个 Tick，一帧至多运行 `max_catch_up_steps`（默认 8）个；负数或非有限的 Wall Time / `time_scale` 按 0 处理。
+
+- `DropTime`（默认）：累加器超过 `max_catch_up_steps` 后丢弃剩余时间，保留不足一个 Tick 的余量；
+- `SlowMotion`：保留累加时间，不丢 Tick，游戏整体变慢；保留量至多一帧的追赶量（`max_catch_up_steps × fixed_dt`），超出部分仍被丢弃，防止积压无限增长；
+- 两种策略都计入 `game.overrun_ticks`（各帧欠下而超出上限的 Tick 数之和）与 `game.dropped_time`（被丢弃的缩放后秒数）计数器；
+- 调试器可 `step(n)` 单步推进 n 个 Tick，暂停时同样可用，单步与正常运行走同一 Scheduler 路径。
 
 ### 106.2 输入边沿语义
 
@@ -8440,6 +8459,7 @@ RecordPatternField
 | E9106  | `@persist` 键重复、类型不可持久化或缺少 Capability（§106.8） |
 | E9107  | 输入动作缺少目标平台的手柄/触屏路径（警告，§106.3）      |
 | E9108  | AudioProcess 实时域违规（§108.3）                        |
+| E9109  | System 声明 `view`、`event` 或 `slot` 成员（§105）        |
 
 错误码文案可以改进，但错误码语义不得在同一 Major 版本中复用。
 

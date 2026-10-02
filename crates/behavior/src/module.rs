@@ -1,7 +1,8 @@
-//! Chunks, component layouts and the verified module.
+//! Chunks, component layouts, systems and the verified module.
 
 use std::fmt;
 
+use crate::native::NativeId;
 use crate::op::Op;
 use crate::value::Value;
 
@@ -129,15 +130,36 @@ pub struct NativeImport {
     pub params: u16,
 }
 
-/// A verified set of chunks, component layouts and native imports.
+/// A `system`: a component a scheduler drives through the hooks of the
+/// traits it implements.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct System {
+    /// Its component layout.
+    pub component: u32,
+    /// Its hooks, in the order its traits declare them: each the identity of
+    /// a trait hook ([`NativeId::of`] `viso::game::FixedUpdate::fixed_update`)
+    /// and the member action implementing it.
+    pub hooks: Box<[(NativeId, u32)]>,
+}
+
+impl System {
+    /// The action implementing hook `hook`.
+    pub fn hook(&self, hook: NativeId) -> Option<u32> {
+        self.hooks.iter().find(|h| h.0 == hook).map(|h| h.1)
+    }
+}
+
+/// A verified set of chunks, component layouts, systems and native imports.
 ///
 /// Construction checks every register, jump target, operand-table range,
 /// constant, chunk and native reference, state/input slot and event index,
-/// so the interpreter only meets well-formed code.
+/// and that every system hook is an action of its own component, so the
+/// interpreter only meets well-formed code.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Module {
     pub(crate) chunks: Box<[Chunk]>,
     pub(crate) components: Box<[Component]>,
+    pub(crate) systems: Box<[System]>,
     pub(crate) natives: Box<[NativeImport]>,
 }
 
@@ -164,15 +186,18 @@ impl fmt::Display for VerifyError {
 impl std::error::Error for VerifyError {}
 
 impl Module {
-    /// Verifies and builds a module.
+    /// Verifies and builds a module; `systems` are in the order a scheduler
+    /// runs them.
     pub fn new(
         chunks: Vec<Chunk>,
         components: Vec<Component>,
+        systems: Vec<System>,
         natives: Vec<NativeImport>,
     ) -> Result<Module, VerifyError> {
         let module = Module {
             chunks: chunks.into(),
             components: components.into(),
+            systems: systems.into(),
             natives: natives.into(),
         };
         let mut max_states = 0;
@@ -215,6 +240,47 @@ impl Module {
                             component.name
                         ),
                     });
+                }
+            }
+        }
+        for (i, system) in module.systems.iter().enumerate() {
+            let fail = |chunk: u32, message: String| VerifyError {
+                chunk,
+                pc: None,
+                message,
+            };
+            let Some(layout) = module.components.get(system.component as usize) else {
+                return Err(fail(0, format!("system {i} names a missing component")));
+            };
+            if module.systems[..i]
+                .iter()
+                .any(|s| s.component == system.component)
+            {
+                return Err(fail(
+                    0,
+                    format!("component `{}` is listed as two systems", layout.name),
+                ));
+            }
+            for (n, &(hook, chunk)) in system.hooks.iter().enumerate() {
+                let action = layout.members.iter().any(|m| m.1 == chunk)
+                    && module
+                        .chunks
+                        .get(chunk as usize)
+                        .is_some_and(|c| c.kind == ChunkKind::Action);
+                if !action {
+                    return Err(fail(
+                        chunk,
+                        format!(
+                            "a hook of system `{}` is not one of its actions",
+                            layout.name
+                        ),
+                    ));
+                }
+                if system.hooks[..n].iter().any(|h| h.0 == hook) {
+                    return Err(fail(
+                        chunk,
+                        format!("system `{}` binds one hook twice", layout.name),
+                    ));
                 }
             }
         }
@@ -261,6 +327,11 @@ impl Module {
     /// The layout of component `index`.
     pub fn layout(&self, index: u32) -> &Component {
         &self.components[index as usize]
+    }
+
+    /// Every system, in run order.
+    pub fn systems(&self) -> &[System] {
+        &self.systems
     }
 
     /// Every native import, by index.
@@ -571,7 +642,7 @@ mod tests {
     }
 
     fn verify(chunks: Vec<Chunk>) -> Result<Module, VerifyError> {
-        Module::new(chunks, Vec::new(), Vec::new())
+        Module::new(chunks, Vec::new(), Vec::new(), Vec::new())
     }
 
     #[test]
@@ -635,7 +706,7 @@ mod tests {
                 handlers: Box::new([0]),
                 ..Component::default()
             };
-            Module::new(vec![entry], vec![component], Vec::new())
+            Module::new(vec![entry], vec![component], Vec::new(), Vec::new())
         };
         assert!(table(ChunkKind::Handler, 1).is_ok());
         assert!(table(ChunkKind::RegionEntry, 0).is_ok());

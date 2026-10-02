@@ -261,6 +261,7 @@ pub(super) static WIDGETS: NativeLibrary = NativeLibrary {
     version: 1,
     functions: &[],
     types: &[],
+    traits: &[],
     widgets: &[
         layout("Row", ROW, &[FLEX, LAYOUT, TRANSFORM, FOCUS]).slots(CHILDREN),
         layout("Column", COLUMN, &[FLEX, LAYOUT, TRANSFORM, FOCUS]).slots(CHILDREN),

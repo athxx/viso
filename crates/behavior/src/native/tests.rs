@@ -20,6 +20,7 @@ static TEST: NativeLibrary = NativeLibrary {
         crate::native!(fn "sum" |_cx, items: Vec<i64>| -> i64 { Ok(items.iter().sum()) }).cost(10),
     ],
     types: &[NativeType::new("Frame", &[]).borrowed()],
+    traits: &[],
     widgets: &[],
 };
 
@@ -34,6 +35,7 @@ static OTHER_UPPER: NativeLibrary = NativeLibrary {
         }),
     ],
     types: &[],
+    traits: &[],
     widgets: &[],
 };
 
@@ -45,6 +47,7 @@ static TWICE: NativeLibrary = NativeLibrary {
         crate::native!(fn "f" |_cx| -> i64 { Ok(2) }),
     ],
     types: &[],
+    traits: &[],
     widgets: &[],
 };
 
@@ -142,7 +145,7 @@ fn call_module(path: &str, params: u16) -> (Vm, u32) {
         signature,
         params,
     };
-    let module = Module::new(vec![chunk], Vec::new(), vec![import]).expect("verified");
+    let module = Module::new(vec![chunk], Vec::new(), Vec::new(), vec![import]).expect("verified");
     (Vm::new(Rc::new(module), Budget::default()), 0)
 }
 
@@ -288,6 +291,7 @@ static ROW_AGAIN: NativeLibrary = NativeLibrary {
     version: 1,
     functions: &[],
     types: &[],
+    traits: &[],
     widgets: &[NativeWidget::new("Row", WidgetNode::Leaf)],
 };
 

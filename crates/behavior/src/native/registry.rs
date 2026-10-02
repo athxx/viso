@@ -5,7 +5,9 @@ use std::collections::HashMap;
 use std::fmt;
 use std::sync::{Arc, OnceLock};
 
-use super::{NativeFunction, NativeId, NativeLibrary, NativeType, NativeWidget, standard};
+use super::{
+    NativeFunction, NativeId, NativeLibrary, NativeTrait, NativeType, NativeWidget, standard,
+};
 
 /// A registered native function or handle method.
 #[derive(Debug, Clone)]
@@ -49,6 +51,27 @@ pub struct NativeTypeEntry {
     pub library: &'static NativeLibrary,
 }
 
+/// A registered scheduler trait.
+#[derive(Debug, Clone)]
+pub struct NativeTraitEntry {
+    /// Its full path, such as `viso::game::FixedUpdate`.
+    pub path: Box<str>,
+    /// Its stable identity.
+    pub id: NativeId,
+    /// Its schema.
+    pub native_trait: &'static NativeTrait,
+    /// The library declaring it.
+    pub library: &'static NativeLibrary,
+}
+
+impl NativeTraitEntry {
+    /// The identity of its hook `name`: [`NativeId::of`] the hook's full path,
+    /// `viso::game::FixedUpdate::fixed_update`.
+    pub fn hook_id(&self, name: &str) -> NativeId {
+        NativeId::of(&format!("{}::{name}", self.path))
+    }
+}
+
 /// A registered widget.
 #[derive(Debug, Clone, Copy)]
 pub struct NativeWidgetEntry {
@@ -86,16 +109,18 @@ impl std::error::Error for SchemaConflict {}
 enum Item {
     Function(u32),
     Type(u32),
+    Trait(u32),
 }
 
 /// A set of native libraries, one version per library path, with every
-/// function, method and handle type addressable by path and by [`NativeId`],
-/// and every widget by its type name.
+/// function, method, handle type and trait addressable by path and by
+/// [`NativeId`], and every widget by its type name.
 #[derive(Debug, Default)]
 pub struct Natives {
     libraries: Vec<&'static NativeLibrary>,
     functions: Vec<NativeEntry>,
     types: Vec<NativeTypeEntry>,
+    traits: Vec<NativeTraitEntry>,
     ids: HashMap<NativeId, Item>,
     widgets: Vec<NativeWidgetEntry>,
     widget_names: HashMap<&'static str, u32>,
@@ -192,6 +217,19 @@ impl Natives {
                 library,
             });
         }
+        let traits: Vec<NativeTraitEntry> = library
+            .traits
+            .iter()
+            .map(|native_trait| {
+                let path = format!("{}::{}", library.path, native_trait.name);
+                NativeTraitEntry {
+                    id: NativeId::of(&path),
+                    path: path.into(),
+                    native_trait,
+                    library,
+                }
+            })
+            .collect();
         for function in library.functions {
             let path = format!("{}::{}", library.path, function.name);
             functions.push(NativeEntry {
@@ -206,7 +244,8 @@ impl Natives {
         let paths = functions
             .iter()
             .map(|f| (f.id, &*f.path))
-            .chain(types.iter().map(|t| (t.id, &*t.path)));
+            .chain(types.iter().map(|t| (t.id, &*t.path)))
+            .chain(traits.iter().map(|t| (t.id, &*t.path)));
         for (id, path) in paths {
             if fresh.insert(id, path).is_some() {
                 return Err(conflict(path, format!("`{path}` is declared twice")));
@@ -231,6 +270,12 @@ impl Natives {
                         && new.is_some_and(|new| {
                             old.ty.ownership == new.ty.ownership && old.ty.thread == new.ty.thread
                         })
+                }
+                Item::Trait(i) => {
+                    let old = &self.traits[i as usize];
+                    let new = traits.iter().find(|t| t.id == id);
+                    &*old.path == path
+                        && new.is_some_and(|new| old.native_trait == new.native_trait)
                 }
             };
             if !same {
@@ -279,6 +324,12 @@ impl Natives {
                 self.types.push(t);
             }
         }
+        for t in traits {
+            if !self.ids.contains_key(&t.id) {
+                self.ids.insert(t.id, Item::Trait(self.traits.len() as u32));
+                self.traits.push(t);
+            }
+        }
         Ok(())
     }
 
@@ -295,6 +346,11 @@ impl Natives {
     /// Every handle type, in registration order.
     pub fn types(&self) -> &[NativeTypeEntry] {
         &self.types
+    }
+
+    /// Every scheduler trait, in registration order.
+    pub fn traits(&self) -> &[NativeTraitEntry] {
+        &self.traits
     }
 
     /// Every widget, in registration order.
@@ -328,7 +384,7 @@ impl Natives {
     pub fn function_by_id(&self, id: NativeId) -> Option<&NativeEntry> {
         match self.ids.get(&id)? {
             Item::Function(i) => self.functions.get(*i as usize),
-            Item::Type(_) => None,
+            Item::Type(_) | Item::Trait(_) => None,
         }
     }
 
@@ -342,7 +398,21 @@ impl Natives {
     pub fn ty_by_id(&self, id: NativeId) -> Option<&NativeTypeEntry> {
         match self.ids.get(&id)? {
             Item::Type(i) => self.types.get(*i as usize),
-            Item::Function(_) => None,
+            Item::Function(_) | Item::Trait(_) => None,
+        }
+    }
+
+    /// The scheduler trait at `path`.
+    pub fn native_trait(&self, path: &str) -> Option<&NativeTraitEntry> {
+        self.native_trait_by_id(NativeId::of(path))
+            .filter(|t| &*t.path == path)
+    }
+
+    /// The scheduler trait `id`.
+    pub fn native_trait_by_id(&self, id: NativeId) -> Option<&NativeTraitEntry> {
+        match self.ids.get(&id)? {
+            Item::Trait(i) => self.traits.get(*i as usize),
+            Item::Function(_) | Item::Type(_) => None,
         }
     }
 

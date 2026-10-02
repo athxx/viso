@@ -10,6 +10,9 @@
 //! function's parameter and return types from its Rust signature, so the schema
 //! cannot drift from the code.
 //!
+//! A library may declare the scheduler traits a `system` implements
+//! ([`NativeTrait`]), each a set of hooks the system defines as actions.
+//!
 //! A library also declares the widgets a view instantiates ([`NativeWidget`]):
 //! their properties, events and slots, and the retained node each lowers to.
 //!
@@ -35,7 +38,9 @@ use std::fmt;
 
 use crate::value::Value;
 
-pub use registry::{NativeEntry, NativeTypeEntry, NativeWidgetEntry, Natives, SchemaConflict};
+pub use registry::{
+    NativeEntry, NativeTraitEntry, NativeTypeEntry, NativeWidgetEntry, Natives, SchemaConflict,
+};
 pub use standard::{Clipboard, STANDARD, Stopwatch};
 pub use value::{NativeHandle, NativeObject, NativeValue, Obj};
 pub use widget::{
@@ -309,8 +314,30 @@ impl NativeType {
     }
 }
 
-/// A versioned set of native functions, handle types and widgets under one
-/// module path.
+/// A scheduler hook a [`NativeTrait`] declares: an `action` every implementing
+/// `system` defines under this name with exactly these parameter types.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct NativeHook {
+    /// The action's name.
+    pub name: &'static str,
+    /// Its parameters.
+    pub params: &'static [Param],
+}
+
+/// A trait a `system` implements to be driven by a scheduler: a set of hooks,
+/// each bound to the system action of its name. The compiler knows no hook by
+/// name; the scheduler that consumes the trait binds each hook's identity
+/// ([`NativeId::of`] its full path) to a phase.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct NativeTrait {
+    /// Its name within its library.
+    pub name: &'static str,
+    /// Its hooks.
+    pub hooks: &'static [NativeHook],
+}
+
+/// A versioned set of native functions, handle types, traits and widgets under
+/// one module path.
 #[derive(Debug, Clone, Copy)]
 pub struct NativeLibrary {
     /// Its module path, such as `viso::text`.
@@ -321,35 +348,45 @@ pub struct NativeLibrary {
     pub functions: &'static [NativeFunction],
     /// Its handle types.
     pub types: &'static [NativeType],
+    /// Its scheduler traits.
+    pub traits: &'static [NativeTrait],
     /// Its widgets, which a view names by their bare type name.
     pub widgets: &'static [NativeWidget],
 }
 
-/// A stable numeric identity of a native function or type: a hash of its full
-/// path.
+/// A stable numeric identity of a native function, type, trait or trait hook:
+/// a hash of its full path.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct NativeId(pub u64);
 
 impl NativeId {
     /// The identity of the native at `path`.
-    pub fn of(path: &str) -> NativeId {
-        let mut h = Fnv::new();
-        h.write(path.as_bytes());
-        NativeId(h.finish())
+    pub const fn of(path: &str) -> NativeId {
+        let bytes = path.as_bytes();
+        let mut h = FNV_OFFSET;
+        let mut i = 0;
+        while i < bytes.len() {
+            h = (h ^ bytes[i] as u64).wrapping_mul(FNV_PRIME);
+            i += 1;
+        }
+        NativeId(h)
     }
 }
+
+const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+const FNV_PRIME: u64 = 0x0100_0000_01b3;
 
 /// 64-bit FNV-1a.
 struct Fnv(u64);
 
 impl Fnv {
     fn new() -> Fnv {
-        Fnv(0xcbf2_9ce4_8422_2325)
+        Fnv(FNV_OFFSET)
     }
 
     fn write(&mut self, bytes: &[u8]) {
         for &b in bytes {
-            self.0 = (self.0 ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3);
+            self.0 = (self.0 ^ u64::from(b)).wrapping_mul(FNV_PRIME);
         }
     }
 

@@ -19,7 +19,7 @@ use viso_ui::adaptive::EnvField;
 
 use super::ir::{
     Body, ComponentLayout, Const, EnvSlot, FuncId, Function, FunctionKind, Inst, NativeImport, Num,
-    Program, Reg, Site, Unsupported,
+    Program, Reg, Site, SystemLayout, Unsupported,
 };
 use crate::ast::{AssignablePath, AstNode, Block, Expr};
 use crate::hir::infer::InferCx;
@@ -180,6 +180,32 @@ impl ProgramBuilder {
             regional: Vec::new(),
             env: Vec::new(),
         });
+    }
+
+    /// Registers the component registered last as the system `symbol`,
+    /// each hook implemented by the member action `action`.
+    pub(crate) fn system(&mut self, symbol: SymbolId, hooks: &[(NativeId, SymbolId)]) {
+        let Some(component) = self.program.components.len().checked_sub(1) else {
+            return;
+        };
+        let hooks = hooks
+            .iter()
+            .filter_map(|&(hook, action)| Some((hook, *self.by_symbol.get(&action)?)))
+            .collect();
+        self.program.systems.push(SystemLayout {
+            symbol,
+            component: component as u32,
+            hooks,
+        });
+    }
+
+    /// Puts the systems in run order: those in `order` by their place in it,
+    /// then the rest as registered.
+    pub(crate) fn order_systems(&mut self, order: &[SymbolId]) {
+        let rank = |s: &SystemLayout| order.iter().position(|&o| o == s.symbol);
+        self.program
+            .systems
+            .sort_by_key(|s| rank(s).unwrap_or(usize::MAX));
     }
 
     /// The state slot of the component registered last that holds the `env`
