@@ -18,6 +18,12 @@ pub enum WidgetNode {
     /// A block-axis flex container that re-establishes the size class for
     /// its subtree from its own width.
     AdaptiveScope,
+    /// A block-axis flex container padded by the part of its box the safe
+    /// area covers.
+    SafeArea,
+    /// A block-axis flex container padded by the part of its box the
+    /// software keyboard covers.
+    KeyboardAvoiding,
     /// A track grid.
     Grid,
     /// A single-child scroll viewport.

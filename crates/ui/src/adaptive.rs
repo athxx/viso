@@ -191,6 +191,15 @@ pub struct DisplayFeature {
     pub bounds: Rect,
 }
 
+/// What an avoiding region keeps its content clear of.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Avoid {
+    /// The edges the system reserves: the environment's safe area.
+    SafeArea,
+    /// The software keyboard: the environment's keyboard inset at the bottom.
+    Keyboard,
+}
+
 /// The input devices available.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct InputCapabilities {
@@ -385,6 +394,9 @@ pub struct AdaptiveEnv {
     free: Vec<u32>,
     /// The adaptive scopes and their static bases, by ascending node index.
     scopes: Vec<(NodeId, Option<f32>)>,
+    /// The avoiding regions: each node, what it avoids and the padding it was
+    /// authored with, by ascending node index.
+    avoiding: Vec<(NodeId, Avoid, Inset)>,
     /// Whether something the anchors resolve from changed outside a layout
     /// since the last settle.
     unsettled: bool,
@@ -513,6 +525,39 @@ fn content_sized(nodes: &NodeStore, node: NodeId, axis: Axis) -> bool {
     }
 }
 
+/// The padding of avoiding region `node`: `base` plus, on each edge, how far
+/// the band `covered` reserves along that edge of its root's box reaches into
+/// its box. An edge its content decides grows with the padding it is given,
+/// so that edge is measured without it.
+fn avoid_padding(nodes: &NodeStore, node: NodeId, covered: Inset, base: Inset) -> Inset {
+    let mut root = node;
+    while let Some(parent) = nodes.parent(root) {
+        root = parent;
+    }
+    let frame = nodes.bounds(root);
+    let b = nodes.bounds(node);
+    let now = match nodes.input(node.index()) {
+        LayoutInput::Flex { padding, .. } => padding,
+        _ => base,
+    };
+    let grown = |axis: Axis, now: f32, base: f32| {
+        if content_sized(nodes, node, axis) {
+            now - base
+        } else {
+            0.0
+        }
+    };
+    let right = b.x + b.w - grown(Axis::Row, now.right, base.right);
+    let bottom = b.y + b.h - grown(Axis::Column, now.bottom, base.bottom);
+    let reach = |depth: f32, extent: f32| depth.max(0.0).min(extent);
+    Inset {
+        left: base.left + reach(frame.x + covered.left - b.x, b.w),
+        top: base.top + reach(frame.y + covered.top - b.y, b.h),
+        right: base.right + reach(right - (frame.x + frame.w - covered.right), b.w),
+        bottom: base.bottom + reach(bottom - (frame.y + frame.h - covered.bottom), b.h),
+    }
+}
+
 fn padding_on(padding: Inset, axis: Axis) -> f32 {
     match axis {
         Axis::Row => padding.left + padding.right,
@@ -548,6 +593,9 @@ impl StateStore {
                 .env
                 .policy
                 .classify(self.env.env.content_constraints().max_width.unwrap_or(0.0));
+            self.env.unsettled = true;
+        }
+        if self.env.env.keyboard_inset != before.keyboard_inset && !self.env.avoiding.is_empty() {
             self.env.unsettled = true;
         }
         changed
@@ -673,6 +721,62 @@ impl StateStore {
             }
             _ => false,
         }
+    }
+
+    /// Marks `node` a region keeping its content clear of `avoid`: once laid
+    /// out, it is padded by `base` plus the part of its box `avoid` covers.
+    pub fn mark_avoiding(&mut self, node: NodeId, avoid: Avoid, base: Inset) {
+        let avoiding = &mut self.env.avoiding;
+        match avoiding.binary_search_by_key(&node.index(), |(n, ..)| n.index()) {
+            Ok(at) => avoiding[at] = (node, avoid, base),
+            Err(at) => avoiding.insert(at, (node, avoid, base)),
+        }
+        self.env.unsettled = true;
+    }
+
+    /// Unmarks `node` as an avoiding region. Returns whether it was one; its
+    /// padding stays as last placed.
+    pub fn unmark_avoiding(&mut self, node: NodeId) -> bool {
+        let avoiding = &mut self.env.avoiding;
+        match avoiding.binary_search_by_key(&node.index(), |(n, ..)| n.index()) {
+            Ok(at) if avoiding[at].0 == node => {
+                avoiding.remove(at);
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// Pads every avoiding region of the laid-out `nodes` by the part of its
+    /// box what it avoids covers, measured against its root's box. A region a
+    /// padded ancestor already keeps clear gets nothing more, so regions nest
+    /// and sit under a padded root without padding twice. Returns whether any
+    /// padding changed; the changed regions are marked for relayout.
+    pub fn pad_avoiding(&mut self, nodes: &mut NodeStore) -> bool {
+        if self.env.avoiding.is_empty() {
+            return false;
+        }
+        let arena = nodes.arena();
+        self.env.avoiding.retain(|&(node, ..)| arena.is_live(node));
+        let env = &self.env.env;
+        let mut changed = false;
+        for &(node, avoid, base) in &self.env.avoiding {
+            let covered = match avoid {
+                Avoid::SafeArea => env.safe_area,
+                Avoid::Keyboard => Inset {
+                    bottom: env.keyboard_inset,
+                    ..Inset::default()
+                },
+            };
+            let padding = avoid_padding(nodes, node, covered, base);
+            if let LayoutInput::Flex { padding: now, .. } = nodes.input(node.index())
+                && now != padding
+            {
+                nodes.set_padding(node, padding);
+                changed = true;
+            }
+        }
+        changed
     }
 
     /// Resolves every anchor against the laid-out `nodes`, raising the cells
@@ -1002,5 +1106,203 @@ mod tests {
         let next = states.anchor_env(tree.plain, None);
         assert_ne!(next, plain, "a reused slot is a new anchor");
         assert_eq!(states.env().anchor_count(), 1);
+    }
+
+    /// A 400×800 column padded by `root_padding` holding a filling column,
+    /// `outer`, and inside it `inner`, `inner_height` tall around a 10dp leaf.
+    struct Regions {
+        nodes: NodeStore,
+        root: NodeId,
+        outer: NodeId,
+        inner: NodeId,
+    }
+
+    fn regions(root_padding: Inset, inner_height: Length) -> Regions {
+        let mut nodes = NodeStore::new();
+        let (mut outer, mut inner) = (None, None);
+        let root = {
+            let mut cx = BuildCx::new(&mut nodes);
+            cx.flex(
+                FlexStyle {
+                    axis: Axis::Column,
+                    padding: root_padding,
+                    ..Default::default()
+                },
+                |cx| {
+                    outer = Some(
+                        cx.flex(
+                            FlexStyle {
+                                axis: Axis::Column,
+                                size: Size::fill(),
+                                ..Default::default()
+                            },
+                            |cx| {
+                                let style = FlexStyle {
+                                    axis: Axis::Column,
+                                    size: Size {
+                                        width: Length::Fill { weight: 1.0 },
+                                        height: inner_height,
+                                    },
+                                    ..Default::default()
+                                };
+                                inner = Some(
+                                    cx.flex(style, |cx| {
+                                        cx.leaf(LeafStyle {
+                                            size: Size::fixed(10.0, 10.0),
+                                            ..Default::default()
+                                        });
+                                    })
+                                    .id(),
+                                );
+                            },
+                        )
+                        .id(),
+                    );
+                },
+            );
+            cx.root().unwrap()
+        };
+        let mut regions = Regions {
+            nodes,
+            root,
+            outer: outer.unwrap(),
+            inner: inner.unwrap(),
+        };
+        regions.layout();
+        regions
+    }
+
+    impl Regions {
+        fn layout(&mut self) {
+            let surface = Rect {
+                x: 0.0,
+                y: 0.0,
+                w: 400.0,
+                h: 800.0,
+            };
+            self.nodes.layout(self.root, surface, &mut Vec::new());
+        }
+
+        fn padding(&self, node: NodeId) -> Inset {
+            match self.nodes.input(node.index()) {
+                LayoutInput::Flex { padding, .. } => padding,
+                other => panic!("not a flex: {other:?}"),
+            }
+        }
+
+        /// Pads and relays out until nothing changes, returning the rounds.
+        fn settle(&mut self, states: &mut StateStore) -> u32 {
+            let mut rounds = 0;
+            while states.pad_avoiding(&mut self.nodes) {
+                rounds += 1;
+                assert!(rounds < 4, "avoiding regions did not settle");
+                self.layout();
+            }
+            rounds
+        }
+    }
+
+    fn inset(left: f32, top: f32, right: f32, bottom: f32) -> Inset {
+        Inset {
+            left,
+            top,
+            right,
+            bottom,
+        }
+    }
+
+    fn safe(states: &mut StateStore) {
+        states.update_env(|env| {
+            env.safe_area = inset(0.0, 40.0, 0.0, 20.0);
+        });
+    }
+
+    #[test]
+    fn a_safe_area_pads_the_part_of_its_box_the_system_covers() {
+        let mut states = StateStore::new();
+        let mut r = regions(Inset::default(), Length::Fill { weight: 1.0 });
+        safe(&mut states);
+        states.mark_avoiding(r.outer, Avoid::SafeArea, inset(5.0, 0.0, 5.0, 0.0));
+        assert_eq!(r.settle(&mut states), 1);
+        assert_eq!(
+            r.padding(r.outer),
+            inset(5.0, 40.0, 5.0, 20.0),
+            "on its base"
+        );
+        assert_eq!(r.nodes.bounds(r.inner).y, 40.0);
+        assert!(!states.pad_avoiding(&mut r.nodes), "settled");
+    }
+
+    #[test]
+    fn nested_and_wrapped_regions_pad_once() {
+        let mut states = StateStore::new();
+        let mut r = regions(Inset::default(), Length::Fill { weight: 1.0 });
+        safe(&mut states);
+        states.mark_avoiding(r.outer, Avoid::SafeArea, Inset::default());
+        states.mark_avoiding(r.inner, Avoid::SafeArea, Inset::default());
+        r.settle(&mut states);
+        assert_eq!(r.padding(r.outer), inset(0.0, 40.0, 0.0, 20.0));
+        assert_eq!(
+            r.padding(r.inner),
+            Inset::default(),
+            "the outer keeps it clear"
+        );
+
+        let mut states = StateStore::new();
+        let mut r = regions(inset(0.0, 40.0, 0.0, 20.0), Length::Fill { weight: 1.0 });
+        safe(&mut states);
+        states.mark_avoiding(r.outer, Avoid::SafeArea, Inset::default());
+        assert_eq!(r.settle(&mut states), 0, "a padded root keeps it clear");
+    }
+
+    #[test]
+    fn a_keyboard_region_pads_what_the_keyboard_covers_beyond_the_safe_area() {
+        let mut states = StateStore::new();
+        let mut r = regions(Inset::default(), Length::Fill { weight: 1.0 });
+        safe(&mut states);
+        states.mark_avoiding(r.outer, Avoid::SafeArea, Inset::default());
+        states.mark_avoiding(r.inner, Avoid::Keyboard, Inset::default());
+        r.settle(&mut states);
+        assert_eq!(r.padding(r.inner), Inset::default(), "no keyboard");
+
+        states.update_env(|env| env.keyboard_inset = 300.0);
+        assert!(states.env().unsettled(), "a keyboard change resettles");
+        r.settle(&mut states);
+        assert_eq!(r.padding(r.inner), inset(0.0, 0.0, 0.0, 280.0));
+        let inner = r.nodes.bounds(r.inner);
+        assert_eq!(
+            inner.y + inner.h,
+            780.0,
+            "the keyboard pad sits inside the safe one"
+        );
+
+        states.update_env(|env| env.keyboard_inset = 0.0);
+        r.settle(&mut states);
+        assert_eq!(
+            r.padding(r.inner),
+            Inset::default(),
+            "the keyboard went away"
+        );
+    }
+
+    #[test]
+    fn a_region_its_content_sizes_settles_at_once() {
+        let mut states = StateStore::new();
+        let mut r = regions(Inset::default(), Length::Fit);
+        states.update_env(|env| env.safe_area = inset(0.0, 0.0, 0.0, 795.0));
+        states.mark_avoiding(r.inner, Avoid::SafeArea, Inset::default());
+        assert_eq!(r.settle(&mut states), 1);
+        assert_eq!(r.padding(r.inner).bottom, 5.0, "the unpadded box's overlap");
+    }
+
+    #[test]
+    fn a_removed_region_is_forgotten() {
+        let mut states = StateStore::new();
+        let mut r = regions(Inset::default(), Length::Fill { weight: 1.0 });
+        states.mark_avoiding(r.inner, Avoid::SafeArea, Inset::default());
+        assert!(states.unmark_avoiding(r.inner));
+        assert!(!states.unmark_avoiding(r.inner));
+        safe(&mut states);
+        assert!(!states.pad_avoiding(&mut r.nodes));
     }
 }

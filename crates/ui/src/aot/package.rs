@@ -32,6 +32,7 @@
 
 use viso_ende::{Decode, DecodeError, Decoder, Encode, Encoder, ProtocolTag};
 
+use crate::adaptive::Avoid;
 use crate::length::{LengthTerms, NodeLengths};
 use crate::state::StateKey;
 
@@ -134,6 +135,9 @@ pub struct AotStyle {
     pub lengths: Option<Box<NodeLengths>>,
     /// The adaptive scope the node establishes, when it is one.
     pub scope: Option<AotScope>,
+    /// What the node keeps its content clear of, when it is an avoiding
+    /// region.
+    pub avoid: Option<Avoid>,
 }
 
 /// An adaptive scope: the node its subtree's size class classifies.
@@ -199,6 +203,7 @@ const STYLE_HAS_GAP: u8 = 1 << 3;
 const STYLE_HAS_LENGTHS: u8 = 1 << 4;
 const STYLE_IS_SCOPE: u8 = 1 << 5;
 const STYLE_HAS_BASIS: u8 = 1 << 6;
+const STYLE_AVOIDS: u8 = 1 << 7;
 
 // Environment lengths are a byte naming the bound properties, then each one's
 // terms as a byte naming the non-zero terms followed by their values.
@@ -373,6 +378,9 @@ impl Encode for AotStyle {
                 mask |= STYLE_HAS_BASIS;
             }
         }
+        if self.avoid.is_some() {
+            mask |= STYLE_AVOIDS;
+        }
         enc.write_u8(mask);
         if let Some(axis) = self.axis {
             enc.write_u8(match axis {
@@ -395,6 +403,12 @@ impl Encode for AotStyle {
         if let Some(basis) = self.scope.and_then(|scope| scope.basis) {
             enc.write_f32(basis);
         }
+        if let Some(avoid) = self.avoid {
+            enc.write_u8(match avoid {
+                Avoid::SafeArea => 0,
+                Avoid::Keyboard => 1,
+            });
+        }
     }
 }
 
@@ -402,7 +416,7 @@ impl Decode for AotStyle {
     fn decode(dec: &mut Decoder) -> Result<Self, DecodeError> {
         let offset = dec.position();
         let mask = dec.read_u8()?;
-        if mask & STYLE_HAS_BASIS != 0 && mask & STYLE_IS_SCOPE == 0 || mask >> 7 != 0 {
+        if mask & STYLE_HAS_BASIS != 0 && mask & STYLE_IS_SCOPE == 0 {
             return Err(DecodeError::Malformed { offset });
         }
         let axis = if mask & STYLE_HAS_AXIS != 0 {
@@ -445,6 +459,16 @@ impl Decode for AotStyle {
         } else {
             None
         };
+        let avoid = if mask & STYLE_AVOIDS != 0 {
+            let offset = dec.position();
+            Some(match dec.read_u8()? {
+                0 => Avoid::SafeArea,
+                1 => Avoid::Keyboard,
+                _ => return Err(DecodeError::Malformed { offset }),
+            })
+        } else {
+            None
+        };
         Ok(AotStyle {
             axis,
             width,
@@ -452,6 +476,7 @@ impl Decode for AotStyle {
             gap,
             lengths,
             scope,
+            avoid,
         })
     }
 }
@@ -581,6 +606,7 @@ mod tests {
                         gap: Some(8.0),
                         lengths: None,
                         scope: Some(AotScope { basis: Some(600.0) }),
+                        avoid: None,
                     },
                     child_count: 2,
                 },
@@ -596,7 +622,8 @@ mod tests {
                             font_size: Some(LengthTerms::em(1.25)),
                             ..NodeLengths::default()
                         })),
-                        scope: Some(AotScope::default()),
+                        scope: None,
+                        avoid: Some(Avoid::Keyboard),
                     },
                     child_count: 0,
                 },

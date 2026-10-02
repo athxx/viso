@@ -67,6 +67,7 @@ use crate::hotreload::migrate::{Retype, StateAction};
 
 use viso_behavior::Fault;
 use viso_behavior::native::MigratableState;
+use viso_ui::layout::Inset;
 use viso_ui::state::{StateKey, StateMigration};
 use viso_ui::virtual_list::VirtualLists;
 use viso_ui::{
@@ -609,6 +610,14 @@ fn restyle_item(
             states.unmark_adaptive_scope(live);
         }
     }
+    match style.avoid {
+        Some(avoid) => states.mark_avoiding(live, avoid, Inset::default()),
+        None => {
+            if states.unmark_avoiding(live) {
+                store.set_padding(live, Inset::default());
+            }
+        }
+    }
 }
 
 /// Build the candidate template's static nodes into the (cleared) live store
@@ -676,9 +685,12 @@ fn build_node(
                     build_item(cx, child, next, map);
                 }
             };
-            match node.style.scope {
-                Some(scope) => cx.adaptive_scope(scope.basis, flex_style(&node.style), children),
-                None => cx.flex(flex_style(&node.style), children),
+            match (node.style.scope, node.style.avoid) {
+                (Some(scope), _) => {
+                    cx.adaptive_scope(scope.basis, flex_style(&node.style), children)
+                }
+                (None, Some(avoid)) => cx.avoiding(avoid, flex_style(&node.style), children),
+                (None, None) => cx.flex(flex_style(&node.style), children),
             }
         }
         NodeKind::Grid => cx.grid(Default::default(), |cx| {

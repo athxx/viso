@@ -259,6 +259,7 @@ pub(crate) fn aot_style(style: &StyleIr) -> AotStyle {
         gap: style.gap,
         lengths: node_lengths(style.lengths()).map(Box::new),
         scope: style.scope.map(|scope| AotScope { basis: scope.basis }),
+        avoid: style.avoid,
     }
 }
 

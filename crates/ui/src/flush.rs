@@ -150,12 +150,14 @@ impl std::fmt::Display for Unsettled {
     }
 }
 
-/// Settles the adaptive environment against the layout that just ran:
-/// resolves every anchor, and while that moves a value, settles the states it
+/// Settles the adaptive environment against the layout that just ran: pads
+/// every avoiding region by what the system now covers of it, then resolves
+/// every anchor, and while either moves something, settles the states it
 /// wakes and lays out again through `relayout`, which returns whether it
-/// placed anything. `laid_out` is whether the layout before the call placed
-/// anything; a frame that placed nothing and changed no environment input
-/// resolves nothing. Returns how many layouts it ran.
+/// placed anything. Anchors resolve only once the regions hold still, so they
+/// read the boxes the frame presents. `laid_out` is whether the layout before
+/// the call placed anything; a frame that placed nothing and changed no
+/// environment input resolves nothing. Returns how many layouts it ran.
 #[allow(clippy::too_many_arguments)]
 pub fn settle_adaptive(
     store: &mut NodeStore,
@@ -169,7 +171,12 @@ pub fn settle_adaptive(
     mut relayout: impl FnMut(&mut NodeStore) -> bool,
 ) -> Result<u32, Unsettled> {
     let mut rounds = 0;
-    while (laid_out || states.env().unsettled()) && states.settle_env(store) {
+    while laid_out || states.env().unsettled() {
+        let padded = states.pad_avoiding(store);
+        let moved = !padded && states.settle_env(store);
+        if !padded && !moved {
+            break;
+        }
         if rounds == ADAPTIVE_ROUNDS {
             changed.clear();
             states.take_pending(changed);
@@ -178,10 +185,12 @@ pub fn settle_adaptive(
             return Err(Unsettled::Adaptive(AdaptiveCycle { dropped }));
         }
         rounds += 1;
-        settle_states(
-            store, states, bindings, computeds, projectors, effects, changed,
-        )
-        .map_err(Unsettled::Reactive)?;
+        if moved {
+            settle_states(
+                store, states, bindings, computeds, projectors, effects, changed,
+            )
+            .map_err(Unsettled::Reactive)?;
+        }
         laid_out = relayout(store);
     }
     Ok(rounds)
@@ -190,10 +199,10 @@ pub fn settle_adaptive(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::adaptive::{AnchorId, EnvField, SizeClass};
+    use crate::adaptive::{AnchorId, Avoid, EnvField, SizeClass};
     use crate::component::{BuildCx, FlexStyle, LeafStyle};
     use crate::dirty::DirtyClass;
-    use crate::layout::{Axis, Length, Size};
+    use crate::layout::{Axis, Inset, Length, Size};
     use crate::node::NodeId;
     use crate::state::StateValue;
     use viso_render::Rect;
@@ -383,6 +392,68 @@ mod tests {
         assert_eq!(AdaptiveCycle::CODE, "E4204");
         assert!(!stores.states.has_pending(), "its changes are dropped");
         assert_eq!(tree.frame(&mut stores), Ok(0), "the last structure holds");
+    }
+
+    #[test]
+    fn an_anchor_inside_an_avoiding_region_reads_the_padded_box() {
+        let mut stores = Stores::default();
+        let fill = FlexStyle {
+            axis: Axis::Column,
+            size: Size::fill(),
+            ..Default::default()
+        };
+        let mut inner = None;
+        let mut region = None;
+        let root = {
+            let mut cx = BuildCx::new(&mut stores.store);
+            cx.flex(
+                FlexStyle {
+                    size: Size::fixed(1000.0, 100.0),
+                    ..Default::default()
+                },
+                |cx| {
+                    let boxed = FlexStyle {
+                        size: Size::fixed(1000.0, 100.0),
+                        ..fill
+                    };
+                    let handle = cx.avoiding(Avoid::SafeArea, boxed, |cx| {
+                        inner = Some(cx.flex(fill, |_| {}).id());
+                    });
+                    region = Some(handle.id());
+                },
+            );
+            cx.root().unwrap()
+        };
+        stores
+            .states
+            .mark_avoiding(region.unwrap(), Avoid::SafeArea, Inset::default());
+        let anchor = stores.states.anchor_env(inner.unwrap(), None);
+        let surface = Rect {
+            x: 0.0,
+            y: 0.0,
+            w: 1000.0,
+            h: 100.0,
+        };
+        let mut scratch = Vec::new();
+        stores.store.layout(root, surface, &mut scratch);
+        let mut tree = Squeeze {
+            root,
+            surface,
+            scratch,
+            redo: Vec::new(),
+            anchor,
+        };
+        tree.frame(&mut stores).unwrap();
+        let height = |stores: &Stores| stores.states.env().constraints(anchor).unwrap().max_height;
+        assert_eq!(height(&stores), Some(100.0));
+        stores.states.update_env(|env| env.safe_area.top = 30.0);
+        assert_eq!(
+            tree.frame(&mut stores),
+            Ok(2),
+            "one layout pads the region, one resolves the anchor in it"
+        );
+        assert_eq!(height(&stores), Some(70.0));
+        assert_eq!(tree.frame(&mut stores), Ok(0));
     }
 
     #[test]

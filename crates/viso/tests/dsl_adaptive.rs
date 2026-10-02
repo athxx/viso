@@ -1,7 +1,8 @@
 //! The adaptive environment under the macros: a `component!` reads `env` in a
 //! region's choice and in a handler, and an instance a `view!` file's region
 //! mounts reads its own `env` fields, each as of the last settle; the frame
-//! loop settles the environment against each layout it runs.
+//! loop settles the environment against each layout it runs, and the platform
+//! feeds it.
 
 use std::time::Duration;
 
@@ -284,4 +285,110 @@ fn the_frame_loop_settles_the_environment_against_its_layout() {
         .collect();
     assert_eq!(regions, [1, 2], "compact at 300dp, expanded at 900dp");
     assert!(!app.states().env().unsettled());
+}
+
+/// A full-screen app whose content avoids the system UI on its own as well.
+struct AvoidingApp;
+
+impl Application for AvoidingApp {
+    fn new(_cx: &mut AppCx) -> Self {
+        AvoidingApp
+    }
+
+    fn build(&mut self, cx: &mut BuildCx<'_>) {
+        let build = viso::ui! {
+            SafeArea {
+                width: 100%;
+                height: 100%;
+                KeyboardAvoiding {
+                    width: 100%;
+                    height: 100%;
+                    Text { width: 10dp; height: 10dp; }
+                }
+            }
+        };
+        build(cx);
+    }
+}
+
+#[test]
+fn the_platform_feeds_the_environment_and_regions_pad_once() {
+    use viso::platform::{
+        Appearance, Insets, Modifiers, PointerButtons as Buttons, PointerId, PointerKind,
+        PointerPhase as Phase, RawPointer,
+    };
+    use viso::ui::adaptive::PointerPrecision;
+    use viso::ui::layout::{Inset, LayoutInput, LayoutTree};
+    let window = WindowId(1);
+    let touch = RawPointer {
+        pointer: PointerId(7),
+        kind: PointerKind::Touch,
+        ..RawPointer::mouse(
+            window,
+            5.0,
+            5.0,
+            Buttons::PRIMARY,
+            Modifiers::default(),
+            Phase::Down,
+        )
+    };
+    let app = viso::__test_support::drive_scripted_full_screen::<AvoidingApp>(
+        vec![
+            RawEvent::Resized {
+                window,
+                width: 400,
+                height: 800,
+            },
+            RawEvent::SafeAreaChanged {
+                window,
+                insets: Insets {
+                    top: 47.0,
+                    left: 0.0,
+                    bottom: 34.0,
+                    right: 0.0,
+                },
+            },
+            RawEvent::KeyboardInsetChanged {
+                window,
+                height: 300.0,
+            },
+            RawEvent::AppearanceChanged(Appearance {
+                reduce_motion: true,
+                ..Appearance::default()
+            }),
+            RawEvent::Pointer(touch),
+            RawEvent::RedrawRequested { window },
+        ],
+        Duration::from_millis(16),
+    );
+    let env = app.states().env().environment();
+    assert_eq!((env.window.width, env.window.height), (400.0, 800.0));
+    assert_eq!(env.safe_area.top, 47.0);
+    assert_eq!(env.safe_area.bottom, 34.0);
+    assert_eq!(env.keyboard_inset, 300.0);
+    assert!(env.reduced_motion);
+    assert_eq!(
+        env.input.primary_pointer_precision,
+        PointerPrecision::Coarse
+    );
+    assert!(env.input.touch_available);
+
+    let store = app.store();
+    let first = |node: NodeId| {
+        store
+            .arena()
+            .links(node)
+            .and_then(|l| l.first_child)
+            .expect("a child")
+    };
+    let safe_area = first(app.root().expect("a root"));
+    let keyboard = first(safe_area);
+    for region in [safe_area, keyboard] {
+        let LayoutInput::Flex { padding, .. } = store.input(region.index()) else {
+            panic!("a region is a flex");
+        };
+        assert_eq!(padding, Inset::default(), "the root already avoids it all");
+    }
+    let text = store.world(first(keyboard));
+    assert_eq!(text.y, 47.0, "padded once");
 }
