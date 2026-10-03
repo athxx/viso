@@ -37,7 +37,10 @@ use web_sys::{
 use super::web_translate::{css_cursor, css_px, is_apple, keyboard_inset, pixels};
 use crate::accessibility::accesskit;
 use crate::control::{ControlFlow, LogicalRect, PlatformError, WindowConfig, WindowId};
-use crate::event::{Appearance, ColorScheme, CursorIcon, Insets, PointerButtons, RawEvent};
+use crate::event::{
+    Appearance, ColorScheme, CursorIcon, DisplayFeature, DisplayFeatureKind, Insets,
+    PointerButtons, RawEvent,
+};
 use crate::handler::AppHandler;
 use crate::menu::Menu;
 use crate::{Instant, PlatformApp, RawWindowHandle, Window};
@@ -77,6 +80,8 @@ struct Loop {
     /// A drain is on the stack; nested callbacks only queue.
     driving: Cell<bool>,
     appearance: Cell<Appearance>,
+    /// The browser's preferred language, as BCP 47.
+    locale: RefCell<String>,
     suspended: Cell<bool>,
     focused: Cell<bool>,
     /// The pending `requestAnimationFrame` and `setTimeout` handles.
@@ -101,6 +106,7 @@ thread_local! {
         handler: Cell::new(None),
         driving: Cell::new(false),
         appearance: Cell::new(Appearance::default()),
+        locale: RefCell::new(String::new()),
         suspended: Cell::new(false),
         focused: Cell::new(false),
         frame: Cell::new(None),
@@ -320,6 +326,8 @@ struct Page {
     unidentified: Cell<bool>,
     keyboard: Cell<f64>,
     insets: Cell<Insets>,
+    /// The viewport segments' hinges and folds over the canvas.
+    features: RefCell<Vec<DisplayFeature>>,
     soft_keyboard: Cell<bool>,
     cursor: Cell<CursorIcon>,
     listeners: RefCell<Vec<Listener>>,
@@ -391,6 +399,7 @@ fn update_geometry(page: &Page, scale: f64, size: (u32, u32)) {
     }
     report_safe_area(page);
     report_keyboard(page);
+    report_display_features(page);
     drive();
 }
 
@@ -464,6 +473,88 @@ fn report_safe_area(page: &Page) {
     }
 }
 
+/// The hinges and folds between the viewport's segments (the Viewport
+/// Segments API of foldable and dual-screen devices), over the canvas in
+/// logical points from its top-left corner. Segments side by side or
+/// stacked meet at a fold, or at a hinge as wide as the gap between them.
+fn display_features_of(page: &Page) -> Vec<DisplayFeature> {
+    let segments = Reflect::get(&dom_window(), &"viewport".into())
+        .ok()
+        .filter(|viewport| viewport.is_object())
+        .and_then(|viewport| Reflect::get(&viewport, &"segments".into()).ok())
+        .filter(Array::is_array)
+        .map(|segments| Array::from(&segments));
+    let Some(segments) = segments else {
+        return Vec::new();
+    };
+    let rect = |value: JsValue| {
+        let get = |name: &str| {
+            Reflect::get(&value, &name.into())
+                .ok()
+                .and_then(|v| v.as_f64())
+                .unwrap_or(0.0)
+        };
+        (get("left"), get("top"), get("right"), get("bottom"))
+    };
+    let rects: Vec<_> = segments.iter().map(rect).collect();
+    let (x, y) = page.origin();
+    let (width, height) = page.logical_size();
+    let mut features = Vec::new();
+    for pair in rects.windows(2) {
+        let ((l0, t0, r0, b0), (l1, t1, r1, b1)) = (pair[0], pair[1]);
+        // The band between two segments: vertical when they sit side by side.
+        let (left, top, right, bottom) = if l1 >= r0 {
+            (r0, t0.max(t1), l1, b0.min(b1))
+        } else if t1 >= b0 {
+            (l0.max(l1), b0, r0.min(r1), t1)
+        } else {
+            continue;
+        };
+        let (left, right, top, bottom) = (left - x, right - x, top - y, bottom - y);
+        if !crosses(left, right, width) || !crosses(top, bottom, height) {
+            continue;
+        }
+        let (left, right) = (left.clamp(0.0, width), right.clamp(0.0, width));
+        let (top, bottom) = (top.clamp(0.0, height), bottom.clamp(0.0, height));
+        let kind = if right > left && bottom > top {
+            DisplayFeatureKind::Hinge
+        } else {
+            DisplayFeatureKind::Fold
+        };
+        features.push(DisplayFeature {
+            kind,
+            bounds: LogicalRect {
+                x: left,
+                y: top,
+                width: right - left,
+                height: bottom - top,
+            },
+        });
+    }
+    features
+}
+
+/// Whether the span `lo..hi` crosses `0..extent`: overlaps its inside, or
+/// for an empty span lies strictly within it.
+fn crosses(lo: f64, hi: f64, extent: f64) -> bool {
+    if hi > lo {
+        lo < extent && hi > 0.0
+    } else {
+        lo > 0.0 && lo < extent
+    }
+}
+
+fn report_display_features(page: &Page) {
+    let features = display_features_of(page);
+    if *page.features.borrow() != features {
+        page.features.replace(features.clone());
+        push(RawEvent::DisplayFeaturesChanged {
+            window: WINDOW,
+            features,
+        });
+    }
+}
+
 /// The on-screen keyboard's cover of the canvas: what the visual viewport
 /// lost below the canvas's bottom edge. Pinch-zoomed pages report none.
 fn report_keyboard(page: &Page) {
@@ -506,6 +597,55 @@ fn current_appearance() -> Appearance {
         },
         high_contrast: CONTRAST.iter().any(|q| matches(q)),
         reduce_motion: matches(REDUCED_MOTION),
+        text_scale: text_scale(),
+    }
+}
+
+/// The user's default font size (`medium`, which page styles cannot
+/// change) over the 16px browsers ship with.
+fn text_scale() -> f32 {
+    let doc = document();
+    let (Some(root), Ok(element)) = (doc.document_element(), doc.create_element("span")) else {
+        return 1.0;
+    };
+    if element
+        .set_attribute(
+            "style",
+            "position:absolute;visibility:hidden;font-size:medium",
+        )
+        .is_err()
+        || root.append_child(&element).is_err()
+    {
+        return 1.0;
+    }
+    let size = dom_window()
+        .get_computed_style(&element)
+        .ok()
+        .flatten()
+        .map_or(0.0, |style| {
+            css_px(&style.get_property_value("font-size").unwrap_or_default())
+        });
+    element.remove();
+    if size > 0.0 {
+        (size / 16.0) as f32
+    } else {
+        1.0
+    }
+}
+
+/// The browser's preferred language.
+fn current_locale() -> String {
+    dom_window()
+        .navigator()
+        .language()
+        .map_or_else(|| "und".to_owned(), |tag| crate::locale::bcp47(&tag))
+}
+
+fn report_locale() {
+    let now = current_locale();
+    if LOOP.with(|l| l.locale.replace(now.clone())) != now {
+        push(RawEvent::LocaleChanged { locale: now });
+        drive();
     }
 }
 
@@ -604,8 +744,14 @@ impl WebApp {
                 set_suspended(document().hidden())
             }),
             Listener::new(&doc, "fullscreenchange", |_| report_fullscreen()),
-            Listener::new(&window, "focus", |_| set_focused(true)),
+            Listener::new(&window, "focus", |_| {
+                // The default font size has no change event; a return from
+                // the browser's settings is when it changes.
+                report_appearance();
+                set_focused(true)
+            }),
             Listener::new(&window, "blur", |_| set_focused(false)),
+            Listener::new(&window, "languagechange", |_| report_locale()),
         ];
         for query in [DARK, CONTRAST[0], CONTRAST[1], REDUCED_MOTION] {
             if let Some(list) = media(query) {
@@ -624,6 +770,7 @@ impl WebApp {
         }
         LOOP.with(|l| {
             l.appearance.set(current_appearance());
+            l.locale.replace(current_locale());
             l.suspended.set(doc.hidden());
             l.focused.set(doc.has_focus().unwrap_or(true));
         });
@@ -711,6 +858,7 @@ impl PlatformApp for WebApp {
             unidentified: Cell::new(false),
             keyboard: Cell::new(0.0),
             insets: Cell::new(Insets::default()),
+            features: RefCell::new(Vec::new()),
             soft_keyboard: Cell::new(false),
             cursor: Cell::new(CursorIcon::Default),
             listeners: RefCell::new(Vec::new()),
@@ -874,6 +1022,18 @@ impl PlatformApp for WebApp {
 
     fn appearance(&self) -> Appearance {
         LOOP.with(|l| l.appearance.get())
+    }
+
+    fn locale(&self) -> String {
+        LOOP.with(|l| l.locale.borrow().clone())
+    }
+
+    fn display_features(&self, window: WindowId) -> Vec<DisplayFeature> {
+        self.window
+            .as_ref()
+            .filter(|_| window == WINDOW)
+            .map(|w| w.page.features.borrow().clone())
+            .unwrap_or_default()
     }
 
     fn framed_windows(&self) -> bool {

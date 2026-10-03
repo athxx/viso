@@ -1,4 +1,5 @@
-//! System appearance from the XDG desktop portal's Settings interface over
+//! System appearance, the text scale included, from the XDG desktop
+//! portal's Settings interface over
 //! the session bus. A background thread owns the D-Bus connection, reads the
 //! initial values and then follows `SettingChanged`, waking the event loop
 //! with each new [`Appearance`].
@@ -87,6 +88,8 @@ impl Settings {
             self.value(APPEARANCE, "contrast").and_then(as_u32),
             self.value(GNOME_INTERFACE, "enable-animations")
                 .and_then(|v| bool::try_from(&*v).ok()),
+            self.value(GNOME_INTERFACE, "text-scaling-factor")
+                .and_then(|v| f64::try_from(&*v).ok()),
         )
     }
 

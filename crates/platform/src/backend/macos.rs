@@ -47,9 +47,10 @@ use objc2_app_kit::{
     NSWorkspaceAccessibilityDisplayOptionsDidChangeNotification,
 };
 use objc2_foundation::{
-    MainThreadMarker, NSArray, NSAttributedString, NSAttributedStringKey, NSDate,
-    NSDefaultRunLoopMode, NSNotification, NSObject, NSObjectProtocol, NSPoint, NSProcessInfo,
-    NSRange, NSRangePointer, NSRect, NSSize, NSString,
+    MainThreadMarker, NSArray, NSAttributedString, NSAttributedStringKey,
+    NSCurrentLocaleDidChangeNotification, NSDate, NSDefaultRunLoopMode, NSLocale, NSNotification,
+    NSNotificationCenter, NSObject, NSObjectProtocol, NSPoint, NSProcessInfo, NSRange,
+    NSRangePointer, NSRect, NSSize, NSString,
 };
 
 use crate::RawWindowHandle;
@@ -57,11 +58,12 @@ use crate::control::{
     ControlFlow, LogicalRect, PlatformError, WindowChrome, WindowConfig, WindowId,
 };
 use crate::event::{
-    AcceptCell, Appearance, ClipboardReply, ClipboardShortcut, ColorScheme, CursorIcon, KeyCode,
-    Modifiers, PointerButtons, PointerPhase, RawEvent, RawImePreedit, RawKey, RawPointer,
-    RawScroll, RawText, clipboard_shortcut,
+    AcceptCell, Appearance, ClipboardReply, ClipboardShortcut, ColorScheme, CursorIcon,
+    DisplayFeature, DisplayFeatureKind, KeyCode, Modifiers, PointerButtons, PointerPhase, RawEvent,
+    RawImePreedit, RawKey, RawPointer, RawScroll, RawText, clipboard_shortcut,
 };
 use crate::handler::AppHandler;
+use crate::locale;
 use crate::menu::{Accel, Menu, SystemAction};
 use crate::{LoopWaker, PlatformApp, Window};
 
@@ -90,6 +92,9 @@ struct PumpQueue {
     /// a change (every view's `viewDidChangeEffectiveAppearance`, the workspace
     /// accessibility notification) emit one `AppearanceChanged` per real change.
     appearance: Appearance,
+    /// The locale last reported, so a notification that changes nothing the
+    /// app sees emits no `LocaleChanged`.
+    locale: String,
     /// Set by a [`LoopWaker`] kick from any thread; drained as one
     /// `RawEvent::Wakeup`.
     woken: Arc<AtomicBool>,
@@ -144,6 +149,7 @@ impl MacApp {
         app.setActivationPolicy(NSApplicationActivationPolicy::Regular);
         let shared: Shared = Rc::new(RefCell::new(PumpQueue {
             appearance: current_appearance(&app),
+            locale: current_locale(),
             ..PumpQueue::default()
         }));
 
@@ -171,6 +177,13 @@ impl MacApp {
                     Some(NSWorkspaceAccessibilityDisplayOptionsDidChangeNotification),
                     None,
                 );
+            // The preferred languages change outside the app, in Settings.
+            NSNotificationCenter::defaultCenter().addObserver_selector_name_object(
+                &app_delegate,
+                sel!(currentLocaleChanged:),
+                Some(NSCurrentLocaleDidChangeNotification),
+                None,
+            );
         }
 
         let pressure_queue = shared.clone();
@@ -301,7 +314,71 @@ fn current_appearance(app: &NSApplication) -> Appearance {
         },
         high_contrast: workspace.accessibilityDisplayShouldIncreaseContrast(),
         reduce_motion: workspace.accessibilityDisplayShouldReduceMotion(),
+        // macOS has no system text size an app can read.
+        text_scale: 1.0,
     }
+}
+
+/// The user's first preferred language, as a BCP 47 tag.
+fn current_locale() -> String {
+    NSLocale::preferredLanguages()
+        .firstObject()
+        .map_or_else(|| "und".to_owned(), |tag| locale::bcp47(&tag.to_string()))
+}
+
+/// Re-read the locale and enqueue `LocaleChanged` if it moved.
+fn report_locale(shared: &Shared) {
+    let now = current_locale();
+    let mut q = shared.borrow_mut();
+    if q.locale != now {
+        q.locale.clone_from(&now);
+        q.events.push_back(RawEvent::LocaleChanged { locale: now });
+    }
+}
+
+/// The camera housing of a notched display where it crosses `window`'s
+/// content: in windowed mode it sits in the menu bar, so only a window that
+/// reaches the top edge (full screen, or placed there) meets it.
+fn notch_features(window: &NSWindow) -> Vec<DisplayFeature> {
+    let Some(screen) = window.screen() else {
+        return Vec::new();
+    };
+    let insets = screen.safeAreaInsets();
+    let (left, right) = (
+        screen.auxiliaryTopLeftArea(),
+        screen.auxiliaryTopRightArea(),
+    );
+    if insets.top <= 0.0 || left.size.width <= 0.0 || right.size.width <= 0.0 {
+        return Vec::new();
+    }
+    let frame = screen.frame();
+    // The auxiliary areas are documented in screen coordinates; place them
+    // in the global space the window frame uses when they are not already.
+    let inside = left.origin.x >= frame.origin.x
+        && left.origin.y >= frame.origin.y
+        && left.origin.x + left.size.width <= frame.origin.x + frame.size.width;
+    let dx = if inside { 0.0 } else { frame.origin.x };
+    let top = frame.origin.y + frame.size.height;
+    let notch_x0 = left.origin.x + left.size.width + dx;
+    let notch_x1 = right.origin.x + dx;
+    let notch_y0 = top - insets.top;
+    let content = window.contentRectForFrameRect(window.frame());
+    let x0 = notch_x0.max(content.origin.x);
+    let x1 = notch_x1.min(content.origin.x + content.size.width);
+    let y0 = notch_y0.max(content.origin.y);
+    let y1 = top.min(content.origin.y + content.size.height);
+    if x1 <= x0 || y1 <= y0 {
+        return Vec::new();
+    }
+    vec![DisplayFeature {
+        kind: DisplayFeatureKind::Cutout,
+        bounds: LogicalRect::new(
+            x0 - content.origin.x,
+            content.origin.y + content.size.height - y1,
+            x1 - x0,
+            y1 - y0,
+        ),
+    }]
 }
 
 /// Re-read the appearance and enqueue `AppearanceChanged` if it moved.
@@ -655,6 +732,18 @@ impl PlatformApp for MacApp {
     fn appearance(&self) -> Appearance {
         current_appearance(&self.app)
     }
+
+    fn locale(&self) -> String {
+        current_locale()
+    }
+
+    fn display_features(&self, window: WindowId) -> Vec<DisplayFeature> {
+        self.windows
+            .iter()
+            .find(|w| w.id == window)
+            .map(|w| notch_features(&w.window))
+            .unwrap_or_default()
+    }
 }
 
 /// A native macOS window plus its retained content view and delegate.
@@ -731,6 +820,8 @@ struct DelegateIvars {
     /// OS hides the traffic lights and draws its own title bar, so `windowDidResize`
     /// must not re-measure or re-report the (now absent) traffic-light box.
     is_fullscreen: Cell<bool>,
+    /// The display features last reported for the window.
+    features: RefCell<Vec<DisplayFeature>>,
 }
 
 define_class!(
@@ -805,6 +896,9 @@ define_class!(
                 } else {
                     None
                 };
+                if let Some(nswin) = &nswin {
+                    self.report_features(nswin);
+                }
                 {
                     let mut q = shared.borrow_mut();
                     q.events.push_back(RawEvent::ScaleFactorChanged {
@@ -834,6 +928,30 @@ define_class!(
                     // thread inside that loop, where the pump's own `handle` is
                     // suspended, so the reborrow is unaliased. See `drain_and_drive`.
                     unsafe { drain_and_drive(drive, &shared) };
+                }
+            }));
+        }
+
+        #[unsafe(method(windowDidMove:))]
+        fn window_did_move(&self, notification: &NSNotification) {
+            let _ = catch_unwind(AssertUnwindSafe(|| {
+                if let Some(nswin) = notification
+                    .object()
+                    .and_then(|o| o.downcast::<NSWindow>().ok())
+                {
+                    self.report_features(&nswin);
+                }
+            }));
+        }
+
+        #[unsafe(method(windowDidChangeScreen:))]
+        fn window_did_change_screen(&self, notification: &NSNotification) {
+            let _ = catch_unwind(AssertUnwindSafe(|| {
+                if let Some(nswin) = notification
+                    .object()
+                    .and_then(|o| o.downcast::<NSWindow>().ok())
+                {
+                    self.report_features(&nswin);
                 }
             }));
         }
@@ -924,8 +1042,27 @@ impl WindowDelegate {
             shared,
             chrome,
             is_fullscreen: Cell::new(false),
+            features: RefCell::new(Vec::new()),
         });
         unsafe { msg_send![super(this), init] }
+    }
+
+    /// Re-reads the display features crossing `nswin` and enqueues
+    /// `DisplayFeaturesChanged` if they moved.
+    fn report_features(&self, nswin: &NSWindow) {
+        let ivars = self.ivars();
+        let now = notch_features(nswin);
+        if *ivars.features.borrow() != now {
+            ivars.features.replace(now.clone());
+            ivars
+                .shared
+                .borrow_mut()
+                .events
+                .push_back(RawEvent::DisplayFeaturesChanged {
+                    window: ivars.window,
+                    features: now,
+                });
+        }
     }
 
     fn push_focus(&self, focused: bool) {
@@ -997,6 +1134,13 @@ define_class!(
             let shared = self.ivars().shared.clone();
             let mtm = self.mtm();
             let _ = catch_unwind(AssertUnwindSafe(|| report_appearance(&shared, mtm)));
+        }
+
+        #[unsafe(method(currentLocaleChanged:))]
+        fn current_locale_changed(&self, _notification: &NSNotification) {
+            let shared = self.ivars().shared.clone();
+            let _ = catch_unwind(AssertUnwindSafe(|| report_locale(&shared)));
+            wake_pump();
         }
     }
 );

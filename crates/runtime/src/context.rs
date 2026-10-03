@@ -229,6 +229,16 @@ impl<'a> RuntimeCx<'a> {
         self.app.appearance()
     }
 
+    /// The user's locale now, a BCP 47 tag.
+    pub fn locale(&self) -> String {
+        self.app.locale()
+    }
+
+    /// The hinges, folds and cutouts crossing `window`'s content now.
+    pub fn display_features(&self, window: WindowId) -> Vec<viso_platform::DisplayFeature> {
+        self.app.display_features(window)
+    }
+
     /// Whether windows are movable desktop windows that carry a caption; see
     /// [`PlatformApp::framed_windows`](viso_platform::PlatformApp::framed_windows).
     pub fn framed_windows(&self) -> bool {

@@ -81,6 +81,8 @@ struct PumpQueue {
     /// The appearance last reported, so each of the several broadcast
     /// messages that signal a change emits one `AppearanceChanged`.
     appearance: Appearance,
+    /// The locale last reported.
+    locale: String,
     /// Wheel lines (vertical) and characters (horizontal) per notch.
     wheel: (u32, u32),
     /// Set by a [`LoopWaker`] kick from any thread; drained as one
@@ -343,6 +345,7 @@ impl WinApp {
         };
         let shared = Rc::new(RefCell::new(PumpQueue {
             appearance: system::read_appearance(),
+            locale: system::read_locale(),
             wheel: system::read_wheel_settings(),
             ..PumpQueue::default()
         }));
@@ -661,6 +664,10 @@ impl PlatformApp for WinApp {
 
     fn appearance(&self) -> Appearance {
         self.shared.borrow().appearance
+    }
+
+    fn locale(&self) -> String {
+        self.shared.borrow().locale.clone()
     }
 }
 

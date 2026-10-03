@@ -803,7 +803,7 @@ impl WindowState {
         // reported (or a value the platform cannot supply) falls back to 1x.
         ws.dpi = cx.scale_factor(window).unwrap_or(1.0) as f32;
         ws.follow_scale_factor();
-        ws.seed_environment(cx.appearance());
+        ws.seed_environment(cx.appearance(), &cx.locale(), &cx.display_features(window));
 
         // Bring up the GPU for this window when it exposes a real windowing
         // handle: create the device, attach a surface to that handle, and build
@@ -1884,7 +1884,23 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
 
     fn on_appearance(&mut self, appearance: viso_platform::Appearance) {
         for ws in &mut self.windows {
-            environment::report_appearance(&mut ws.states, appearance);
+            ws.report_appearance(appearance);
+        }
+    }
+
+    fn on_locale(&mut self, locale: &str) {
+        for ws in &mut self.windows {
+            environment::report_locale(&mut ws.states, locale);
+        }
+    }
+
+    fn on_display_features(
+        &mut self,
+        window: WindowId,
+        features: &[viso_platform::DisplayFeature],
+    ) {
+        if let Some(ws) = self.window_mut(window) {
+            environment::report_display_features(&mut ws.states, features);
         }
     }
 

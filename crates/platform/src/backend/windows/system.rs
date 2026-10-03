@@ -5,6 +5,7 @@ use std::ffi::c_void;
 use std::time::Duration;
 
 use ::windows::Win32::Foundation::{GlobalFree, HANDLE, HGLOBAL, HWND};
+use ::windows::Win32::Globalization::GetUserDefaultLocaleName;
 use ::windows::Win32::Graphics::Dwm::{DWMWA_USE_IMMERSIVE_DARK_MODE, DwmSetWindowAttribute};
 use ::windows::Win32::Graphics::Gdi::{
     GetMonitorInfoW, MONITOR_DEFAULTTONEAREST, MONITORINFO, MonitorFromWindow,
@@ -30,6 +31,7 @@ use ::windows::core::{BOOL, PCWSTR, w};
 use super::translate;
 use super::{Restore, Shared, WindowState, menu};
 use crate::event::{Appearance, ColorScheme, CursorIcon, RawEvent};
+use crate::locale;
 
 const CF_UNICODETEXT: u32 = 13;
 
@@ -192,7 +194,30 @@ pub(super) fn read_appearance() -> Appearance {
         },
         high_contrast,
         reduce_motion: !animate,
+        text_scale: read_text_scale(),
     }
+}
+
+/// Settings > Accessibility > Text size, a percentage from 100 to 225.
+fn read_text_scale() -> f32 {
+    read_dword(
+        w!("Software\\Microsoft\\Accessibility"),
+        w!("TextScaleFactor"),
+    )
+    .filter(|percent| (100..=500).contains(percent))
+    .map_or(1.0, |percent| percent as f32 / 100.0)
+}
+
+/// The user's default locale, as a BCP 47 tag.
+pub(super) fn read_locale() -> String {
+    // LOCALE_NAME_MAX_LENGTH.
+    let mut name = [0u16; 85];
+    // SAFETY: `name` is a writable buffer of the length passed.
+    let len = unsafe { GetUserDefaultLocaleName(&mut name) };
+    if len <= 1 {
+        return "und".to_owned();
+    }
+    locale::bcp47(&String::from_utf16_lossy(&name[..len as usize - 1]))
 }
 
 /// Wheel lines per vertical notch and characters per horizontal notch.
@@ -221,9 +246,14 @@ pub(super) fn set_dark_title(hwnd: HWND, dark: bool) {
 pub(super) fn refresh_settings(shared: &Shared) {
     let appearance = read_appearance();
     let wheel = read_wheel_settings();
+    let locale = read_locale();
     let windows = {
         let mut q = shared.borrow_mut();
         q.wheel = wheel;
+        if q.locale != locale {
+            q.locale.clone_from(&locale);
+            q.events.push_back(RawEvent::LocaleChanged { locale });
+        }
         if q.appearance == appearance {
             return;
         }

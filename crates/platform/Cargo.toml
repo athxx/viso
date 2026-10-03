@@ -41,6 +41,7 @@ objc2-foundation = { version = "0.3", features = [
     "NSRange",
     "NSValue",
     "NSThread",
+    "NSLocale",
 ] }
 objc2-app-kit = { version = "0.3", features = [
     "NSApplication",
@@ -60,6 +61,7 @@ objc2-app-kit = { version = "0.3", features = [
     "NSAppearance",
     "NSWorkspace",
     "NSAccessibility",
+    "NSScreen",
 ] }
 
 # iOS / iPadOS: UIKit via objc2 (default features: every class the backend
@@ -137,6 +139,7 @@ windows = { version = "0.62", features = [
     "Win32_System_Memory",
     "Win32_System_Registry",
     "Win32_System_Threading",
+    "Win32_Globalization",
 ] }
 
 # Linux and the BSDs: X11 through XCB (libxcb loaded at runtime), Wayland
