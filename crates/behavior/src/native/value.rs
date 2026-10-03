@@ -59,6 +59,36 @@ impl NativeValue for i64 {
     }
 }
 
+/// An `F32` holds a value exactly representable as `f32`.
+impl NativeValue for f32 {
+    const TY: SchemaTy = SchemaTy::F32;
+
+    fn from_value(value: &Value) -> Option<f32> {
+        value.as_float().map(|v| v as f32)
+    }
+
+    fn into_value(self) -> Value {
+        Value::Float(f64::from(self))
+    }
+}
+
+/// A whole number of fixed-step ticks the compiler converted a constant
+/// `Duration` argument to ([`SchemaTy::Ticks`]); never negative.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct Ticks(pub i64);
+
+impl NativeValue for Ticks {
+    const TY: SchemaTy = SchemaTy::Ticks;
+
+    fn from_value(value: &Value) -> Option<Ticks> {
+        value.as_int().filter(|&t| t >= 0).map(Ticks)
+    }
+
+    fn into_value(self) -> Value {
+        Value::Int(self.0)
+    }
+}
+
 impl NativeValue for f64 {
     const TY: SchemaTy = SchemaTy::F64;
 

@@ -163,6 +163,12 @@ pub trait TypeEnv {
         None
     }
 
+    /// The ticks a second of the game's fixed step, which a tick duration
+    /// argument is converted with.
+    fn tick_rate(&self) -> u32 {
+        viso_behavior::DEFAULT_TICK_RATE
+    }
+
     /// The type of an input action in the package: the enum its `InputMap`
     /// maps, or `viso::game::InputAction`.
     fn input_action(&self) -> Ty {
@@ -226,6 +232,9 @@ pub struct InferCx<'a> {
     types: HashMap<(TextRange, SyntaxKind), Ty>,
     /// Every call bound to a native function, keyed by the call's span.
     native_calls: HashMap<TextRange, NativeCall>,
+    /// The whole ticks each tick duration argument of a native call converts
+    /// to, keyed by the argument's span.
+    ticks: HashMap<TextRange, i64>,
 }
 
 impl<'a> InferCx<'a> {
@@ -247,6 +256,7 @@ impl<'a> InferCx<'a> {
             mutable: HashSet::new(),
             types: HashMap::new(),
             native_calls: HashMap::new(),
+            ticks: HashMap::new(),
         }
     }
 
@@ -546,7 +556,13 @@ impl<'a> InferCx<'a> {
                 let at = callee
                     .as_ref()
                     .map_or(node.text_range(), |c| c.syntax().text_range());
-                self.native_path_call(id, node, at)
+                let sig = self.native_path_call(id, node, at);
+                if let Some(sig) = sig {
+                    let ty = self.apply_signature(&args, sig, expected, node);
+                    self.native_ticks(id, &args, false);
+                    return ty;
+                }
+                None
             }
             (Some(to), 1) => self.env.callee_signature(&to),
             _ => {
@@ -1413,6 +1429,21 @@ pub(crate) fn split_unit_literal(text: &str) -> Option<(&str, Ty)> {
         .filter(|(suffix, _)| text.len() > suffix.len() && text.ends_with(suffix))
         .max_by_key(|(suffix, _)| suffix.len())
         .map(|(suffix, ty)| (&text[..text.len() - suffix.len()], ty.clone()))
+}
+
+/// The factor a dimension suffix scales its number by to the dimension's base
+/// unit (seconds, degrees, hertz); 1 for a base unit or a non-dimension suffix.
+pub(crate) fn unit_scale(suffix: &str) -> f64 {
+    match suffix {
+        "ns" => 1e-9,
+        "us" => 1e-6,
+        "ms" => 1e-3,
+        "min" => 60.0,
+        "rad" => 180.0 / std::f64::consts::PI,
+        "turn" => 360.0,
+        "khz" => 1000.0,
+        _ => 1.0,
+    }
 }
 
 /// Whether `value` is representable by `ty`; any value fits a type that is no

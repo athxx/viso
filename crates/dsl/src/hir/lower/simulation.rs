@@ -22,13 +22,17 @@ use crate::syntax::{SyntaxKind, SyntaxNode, TextRange};
 use super::{Declarations, HirComponent, InputDevices, ModuleEnv, Ty, name_of};
 
 /// What the package's targets are and how it is built: what game input and
-/// determinism checks hold it to, and whether debug draw is compiled out.
+/// determinism checks hold it to, the fixed step its games run at, and
+/// whether debug draw is compiled out.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TargetProfile {
     /// The input devices the targets have.
     pub devices: InputDevices,
     /// The determinism tier the Simulation domain needs (`[game] determinism`).
     pub determinism: Determinism,
+    /// The ticks a second of the fixed step (`[game] tick_rate`), at least 1:
+    /// tick timers convert their durations with it.
+    pub tick_rate: u32,
     /// A release build, which removes debug draw.
     pub release: bool,
 }
@@ -38,6 +42,7 @@ impl Default for TargetProfile {
         TargetProfile {
             devices: InputDevices::default(),
             determinism: Determinism::SameBinary,
+            tick_rate: viso_behavior::DEFAULT_TICK_RATE,
             release: false,
         }
     }
@@ -139,6 +144,7 @@ impl Domains {
                     let component = system.as_component();
                     env.focus_component(&component);
                     let system_name = name_of(system.name());
+                    let system_symbol = env.component_symbol();
                     let states = components
                         .iter()
                         .find(|c| c.source_origin == system.syntax().text_range())
@@ -163,13 +169,16 @@ impl Domains {
                                 .iter()
                                 .find(|s| symbol.is_some() && s.meta.resolved_symbol == symbol)
                             {
-                                check_snapshot(
-                                    &state.meta.inferred_type,
-                                    &name,
-                                    &node,
-                                    env,
-                                    diagnostics,
-                                );
+                                let ty = &state.meta.inferred_type;
+                                if check_snapshot(ty, &name, &node, env, diagnostics)
+                                    && let Some(symbol) = symbol
+                                {
+                                    env.behavior.borrow_mut().snapshot_state(
+                                        system_symbol,
+                                        symbol,
+                                        schema_hash(ty, env),
+                                    );
+                                }
                             }
                         } else if let Some(attr) = local {
                             misplaced_local(&attr, diagnostics);
@@ -179,7 +188,6 @@ impl Domains {
                             self.bodies.insert(symbol, body(qualified, &node));
                         }
                     }
-                    let system_symbol = env.component_symbol();
                     for (owner, bound) in hooks {
                         if *owner != system_symbol {
                             continue;
@@ -348,17 +356,17 @@ fn misplaced_local(attr: &SyntaxNode, diagnostics: &mut Vec<Diagnostic>) {
     ));
 }
 
-/// `E9105` unless a value of `ty` can be captured in a snapshot.
+/// Whether a value of `ty` can be captured in a snapshot; `E9105` if not.
 fn check_snapshot(
     ty: &Ty,
     name: &str,
     node: &SyntaxNode,
     env: &ModuleEnv<'_>,
     diagnostics: &mut Vec<Diagnostic>,
-) {
+) -> bool {
     let mut seen = HashSet::new();
     let Some(why) = not_snapshot(ty, env, &mut seen) else {
-        return;
+        return true;
     };
     let at = node
         .children_with_tokens()
@@ -379,6 +387,99 @@ fn check_snapshot(
         "a Simulation state is snapshotted every tick",
     ));
     diagnostics.push(diagnostic);
+    false
+}
+
+/// A hash of the schema of `ty`: its structure with every record's field
+/// names and every enum's variants spelled out, so a snapshot value restores
+/// only into a state whose type would read it the same way.
+fn schema_hash(ty: &Ty, env: &ModuleEnv<'_>) -> u64 {
+    let mut text = String::new();
+    schema_text(ty, env, &mut Vec::new(), &mut text);
+    text.bytes().fold(0xcbf2_9ce4_8422_2325, |h, b| {
+        (h ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3)
+    })
+}
+
+fn schema_text(ty: &Ty, env: &ModuleEnv<'_>, open: &mut Vec<SymbolId>, out: &mut String) {
+    use std::fmt::Write;
+    let each = |items: &[Ty], open: &mut Vec<SymbolId>, out: &mut String| {
+        for item in items {
+            schema_text(item, env, open, out);
+            out.push(',');
+        }
+    };
+    match ty {
+        Ty::Named(id) => {
+            let _ = write!(out, "{:x}{:x}", id.hi, id.lo);
+            if open.contains(id) {
+                return;
+            }
+            open.push(*id);
+            if let Some(fields) = env.record_fields(*id) {
+                out.push('{');
+                for field in fields {
+                    out.push_str(&field.name);
+                    out.push(':');
+                    schema_text(&field.ty, env, open, out);
+                    out.push(',');
+                }
+                out.push('}');
+            } else if let Some(variants) = env.enum_variants(*id) {
+                out.push('[');
+                for variant in variants {
+                    out.push_str(&variant.name);
+                    match &variant.payload {
+                        VariantPayload::Unit => {}
+                        VariantPayload::Tuple(items) => {
+                            out.push('(');
+                            each(items, open, out);
+                            out.push(')');
+                        }
+                        VariantPayload::Record(fields) => {
+                            out.push('{');
+                            for field in fields {
+                                out.push_str(&field.name);
+                                out.push(':');
+                                schema_text(&field.ty, env, open, out);
+                                out.push(',');
+                            }
+                            out.push('}');
+                        }
+                    }
+                    out.push(',');
+                }
+                out.push(']');
+            }
+            open.pop();
+        }
+        Ty::Tuple(items) => {
+            out.push('(');
+            each(items, open, out);
+            out.push(')');
+        }
+        Ty::List(t) | Ty::Option(t) | Ty::Range(t) | Ty::RangeInclusive(t) => {
+            let head = match ty {
+                Ty::List(_) => "List<",
+                Ty::Option(_) => "Option<",
+                Ty::Range(_) => "Range<",
+                _ => "RangeInclusive<",
+            };
+            out.push_str(head);
+            schema_text(t, env, open, out);
+            out.push('>');
+        }
+        Ty::Result(a, b) => {
+            out.push_str("Result<");
+            schema_text(a, env, open, out);
+            out.push(',');
+            schema_text(b, env, open, out);
+            out.push('>');
+        }
+        other => {
+            let _ = write!(out, "{other:?}");
+        }
+    }
 }
 
 /// Why a value of `ty` cannot be snapshotted, or `None` when it can: value
@@ -389,7 +490,7 @@ fn not_snapshot(ty: &Ty, env: &ModuleEnv<'_>, seen: &mut HashSet<SymbolId>) -> O
         Ty::Fn(..) => Some("a closure has no snapshot".to_owned()),
         Ty::Native(id) => {
             let entry = env.natives.ty_by_id(*id)?;
-            (!entry.ty.snapshot).then(|| {
+            (!entry.ty.snapshots()).then(|| {
                 let name = entry.path.rsplit("::").next().unwrap_or(&entry.path);
                 format!("the native handle `{name}` declares no snapshot")
             })

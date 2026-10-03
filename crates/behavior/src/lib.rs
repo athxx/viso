@@ -29,7 +29,8 @@ mod wire;
 
 pub use memo::Reads;
 pub use module::{
-    Chunk, ChunkKind, Code, Component, Module, NativeImport, Span, System, VerifyError,
+    Chunk, ChunkKind, Code, Component, DEFAULT_TICK_RATE, Module, NativeImport, SnapshotSlot, Span,
+    StableId, System, VerifyError,
 };
 pub use op::{Arith, ArithOp, DisplayKind, Num, Op};
 pub use value::{Aggregate, Closure, Value};

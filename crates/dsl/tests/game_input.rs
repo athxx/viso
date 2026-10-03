@@ -4,7 +4,7 @@
 
 use std::rc::Rc;
 
-use viso_behavior::game::{Clock, InputAction, Key, PadButton, PadStick, Scheduler};
+use viso_behavior::game::{InputAction, Key, PadButton, PadStick, Scheduler};
 use viso_behavior::native::Natives;
 use viso_behavior::{Budget, Module, Value, Vm};
 use viso_dsl::Severity;
@@ -25,7 +25,8 @@ fn module(source: &str) -> Rc<Module> {
     let compiled = compile_file(&format!("{IMPORTS}{source}"), &origin());
     let errors: Vec<_> = compiled.errors().collect();
     assert!(errors.is_empty(), "{errors:#?}");
-    Rc::new(compiled.behavior.bytecode().expect("verified bytecode"))
+    let module = compiled.behavior.bytecode().expect("verified bytecode");
+    Rc::new(module.with_tick_rate(4).expect("a tick rate"))
 }
 
 /// The error codes of `source`, which a system makes a source that needs no
@@ -41,7 +42,7 @@ fn codes(source: &str) -> Vec<String> {
 fn scheduler(module: Rc<Module>) -> Scheduler {
     let mut vm = Vm::new(module, Budget::default());
     vm.link(&Natives::standard(), &[]).expect("link");
-    Scheduler::new(vm, Clock::new(0.25)).expect("systems instantiate")
+    Scheduler::new(vm).expect("systems instantiate")
 }
 
 fn state(scheduler: &Scheduler, name: &str) -> Value {

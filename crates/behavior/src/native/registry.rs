@@ -25,15 +25,16 @@ pub struct NativeEntry {
 }
 
 impl NativeEntry {
-    /// Whether it is a method called on a handle: its first parameter is the
-    /// owning type.
+    /// Whether it is a method called on a handle or value: its first
+    /// parameter is the owning type.
     pub fn is_method(&self, natives: &Natives) -> bool {
         let Some(owner) = self.owner.and_then(|id| natives.ty_by_id(id)) else {
             return false;
         };
         matches!(
             self.function.params.first().map(|p| p.ty),
-            Some(super::SchemaTy::Handle(path)) if path == &*owner.path
+            Some(super::SchemaTy::Handle(path) | super::SchemaTy::Value(path))
+                if path == &*owner.path
         )
     }
 }

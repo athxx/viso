@@ -131,6 +131,29 @@ pub struct NativeImport {
     pub params: u16,
 }
 
+/// The durable identity of a declaration: the 128-bit fingerprint of its
+/// package, module, kind and path, unchanged by edits elsewhere and by
+/// source reordering.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
+pub struct StableId {
+    /// The high 64 bits.
+    pub hi: u64,
+    /// The low 64 bits.
+    pub lo: u64,
+}
+
+/// A Simulation state of a system that a game snapshot captures.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SnapshotSlot {
+    /// The state's stable identity.
+    pub id: StableId,
+    /// Its slot in the system's layout.
+    pub slot: u32,
+    /// A hash of its type's schema: a snapshot value restores only into a
+    /// state of the same schema.
+    pub schema: u64,
+}
+
 /// A `system`: a component a scheduler drives through the hooks of the
 /// traits it implements.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -141,6 +164,11 @@ pub struct System {
     /// a trait hook ([`NativeId::of`] `viso::game::FixedUpdate::fixed_update`)
     /// and the member action implementing it.
     pub hooks: Box<[(NativeId, u32)]>,
+    /// Its stable identity.
+    pub id: StableId,
+    /// Its Simulation states, by ascending stable identity; its `@local`
+    /// states are not among them.
+    pub snapshot: Box<[SnapshotSlot]>,
 }
 
 impl System {
@@ -151,7 +179,7 @@ impl System {
 }
 
 /// A verified set of chunks, component layouts, systems and native imports,
-/// and the input schema its systems read.
+/// the input schema its systems read and the tick rate of their fixed step.
 ///
 /// Construction checks every register, jump target, operand-table range,
 /// constant, chunk and native reference, state/input slot and event index,
@@ -164,7 +192,11 @@ pub struct Module {
     pub(crate) systems: Box<[System]>,
     pub(crate) natives: Box<[NativeImport]>,
     pub(crate) input: Option<Box<InputSchema>>,
+    pub(crate) tick_rate: u32,
 }
+
+/// The tick rate of a module that declares none, 60 Hz.
+pub const DEFAULT_TICK_RATE: u32 = 60;
 
 /// Why a module failed verification.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -203,6 +235,7 @@ impl Module {
             systems: systems.into(),
             natives: natives.into(),
             input: None,
+            tick_rate: DEFAULT_TICK_RATE,
         };
         let mut max_states = 0;
         let mut max_inputs = 0;
@@ -287,6 +320,30 @@ impl Module {
                     ));
                 }
             }
+            if module.systems[..i].iter().any(|s| s.id == system.id) {
+                return Err(fail(
+                    0,
+                    format!("system `{}` shares a stable identity", layout.name),
+                ));
+            }
+            for (n, state) in system.snapshot.iter().enumerate() {
+                if state.slot as usize >= layout.states.len() {
+                    return Err(fail(
+                        0,
+                        format!("system `{}` snapshots a missing state", layout.name),
+                    ));
+                }
+                if n > 0 && system.snapshot[n - 1].id >= state.id {
+                    return Err(fail(
+                        0,
+                        format!(
+                            "the snapshot states of system `{}` are not in ascending \
+                             identity order",
+                            layout.name
+                        ),
+                    ));
+                }
+            }
         }
         let limits = Limits {
             chunks: module
@@ -345,6 +402,29 @@ impl Module {
     /// The input schema its systems read, unless they read the default set.
     pub fn input(&self) -> Option<&InputSchema> {
         self.input.as_deref()
+    }
+
+    /// The module with its systems stepping `tick_rate` ticks a second.
+    ///
+    /// # Errors
+    ///
+    /// A [`VerifyError`] if `tick_rate` is 0.
+    pub fn with_tick_rate(mut self, tick_rate: u32) -> Result<Module, VerifyError> {
+        if tick_rate == 0 {
+            return Err(VerifyError {
+                chunk: 0,
+                pc: None,
+                message: "a tick rate is at least 1 Hz".to_owned(),
+            });
+        }
+        self.tick_rate = tick_rate;
+        Ok(self)
+    }
+
+    /// The ticks a second its systems step, the compile-time fixed step its
+    /// tick timers were converted with.
+    pub fn tick_rate(&self) -> u32 {
+        self.tick_rate
     }
 
     /// Every chunk.

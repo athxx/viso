@@ -13,11 +13,12 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use viso_behavior::{
-    Arith, ArithOp, Chunk, ChunkKind, Code, Component, DisplayKind, Module, Num, Op, Span, System,
-    Value, VerifyError,
+    Arith, ArithOp, Chunk, ChunkKind, Code, Component, DisplayKind, Module, Num, Op, SnapshotSlot,
+    Span, StableId, System, Value, VerifyError,
 };
 
 use super::ir::{self, BinaryOp, Const, FunctionKind, Inst, PathStep, Program, Reg, UnaryOp};
+use crate::resolve::SymbolId;
 
 impl Program {
     /// The program as a verified bytecode module: chunk `i` is function `i`,
@@ -50,16 +51,41 @@ impl Program {
         let systems = self
             .systems
             .iter()
-            .map(|s| System {
-                component: s.component,
-                hooks: s.hooks.iter().map(|&(hook, f)| (hook, f.0)).collect(),
+            .map(|s| {
+                let mut snapshot: Vec<SnapshotSlot> = s
+                    .snapshot
+                    .iter()
+                    .map(|&(state, slot, schema)| SnapshotSlot {
+                        id: stable(state),
+                        slot,
+                        schema,
+                    })
+                    .collect();
+                snapshot.sort_by_key(|state| state.id);
+                System {
+                    component: s.component,
+                    hooks: s.hooks.iter().map(|&(hook, f)| (hook, f.0)).collect(),
+                    id: stable(s.symbol),
+                    snapshot: snapshot.into(),
+                }
             })
             .collect();
-        let module = Module::new(chunks, components, systems, self.natives.clone())?;
+        let mut module = Module::new(chunks, components, systems, self.natives.clone())?;
+        if let Some(rate) = self.tick_rate {
+            module = module.with_tick_rate(rate)?;
+        }
         match &self.input {
             Some(input) => module.with_input(input.clone()),
             None => Ok(module),
         }
+    }
+}
+
+/// A declaration's durable identity on the runtime side.
+fn stable(symbol: SymbolId) -> StableId {
+    StableId {
+        hi: symbol.hi,
+        lo: symbol.lo,
     }
 }
 

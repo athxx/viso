@@ -4,7 +4,7 @@
 use std::rc::Rc;
 use std::sync::Arc;
 
-use viso_behavior::game::{Clock, Scheduler};
+use viso_behavior::game::Scheduler;
 use viso_behavior::native::{NativeLibrary, Natives, STANDARD};
 use viso_behavior::{Budget, Module, Value, Vm};
 use viso_dsl::frontend::{Origin, compile_file_for};
@@ -53,7 +53,12 @@ fn natives() -> Arc<Natives> {
     Arc::new(natives)
 }
 
+/// Compiles `source` for a 4 Hz fixed step under `profile`.
 fn compile(source: &str, profile: TargetProfile) -> viso_dsl::frontend::Compiled {
+    let profile = TargetProfile {
+        tick_rate: 4,
+        ..profile
+    };
     compile_file_for(&format!("{IMPORTS}{source}"), &origin(), natives(), profile)
 }
 
@@ -79,7 +84,7 @@ fn scheduler(module: Rc<Module>) -> Scheduler {
     let mut vm = Vm::new(module, Budget::default());
     vm.link(&natives(), &[]).expect("link");
     vm.services_mut().insert(Played::default());
-    Scheduler::new(vm, Clock::new(0.25)).expect("systems instantiate")
+    Scheduler::new(vm).expect("systems instantiate")
 }
 
 fn played(game: &mut Scheduler) -> Vec<i64> {

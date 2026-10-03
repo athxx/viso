@@ -199,7 +199,24 @@ impl ProgramBuilder {
             symbol,
             component: component as u32,
             hooks,
+            snapshot: Vec::new(),
         });
+    }
+
+    /// Adds the state `state` of system `system` to what a game snapshot
+    /// captures, under its type's schema hash `schema`.
+    pub(crate) fn snapshot_state(&mut self, system: SymbolId, state: SymbolId, schema: u64) {
+        let Some(&(_, Place::State(slot))) = self.places.get(&state) else {
+            return;
+        };
+        if let Some(layout) = self.program.systems.iter_mut().find(|s| s.symbol == system) {
+            layout.snapshot.push((state, slot, schema));
+        }
+    }
+
+    /// Sets the ticks a second of the systems' fixed step.
+    pub(crate) fn tick_rate(&mut self, tick_rate: u32) {
+        self.program.tick_rate = Some(tick_rate);
     }
 
     /// Makes debug draw calls lower to nothing.
@@ -950,7 +967,7 @@ impl<'l, 'a> Lowerer<'l, 'a> {
 }
 
 /// Whether evaluating `node` may assign a local.
-fn assigns(node: &SyntaxNode) -> bool {
+pub(super) fn assigns(node: &SyntaxNode) -> bool {
     node.descendants()
         .iter()
         .any(|n| n.kind() == SyntaxKind::AssignStmt)

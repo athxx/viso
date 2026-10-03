@@ -17,7 +17,8 @@ use crate::game::{
     Action, InputBindings, InputSchema, Key, KeySet, MoveSource, PadButton, PadStick, TouchButton,
 };
 use crate::module::{
-    Chunk, ChunkKind, Code, Component, Module, NativeImport, Span, System, VerifyError,
+    Chunk, ChunkKind, Code, Component, Module, NativeImport, SnapshotSlot, Span, StableId, System,
+    VerifyError,
 };
 use crate::native::NativeId;
 use crate::op::{Arith, ArithOp, DisplayKind, Num, Op};
@@ -62,6 +63,12 @@ impl Module {
                 enc.write_u64(hook.0);
                 enc.write_varint(u64::from(*chunk));
             });
+            write_stable_id(enc, s.id);
+            write_list(enc, &s.snapshot, |enc, state| {
+                write_stable_id(enc, state.id);
+                enc.write_varint(u64::from(state.slot));
+                enc.write_u64(state.schema);
+            });
         });
         write_list(&mut enc, self.natives(), |enc, n| {
             enc.write_str(&n.path);
@@ -72,6 +79,7 @@ impl Module {
         if let Some(input) = self.input() {
             write_input(&mut enc, input);
         }
+        enc.write_varint(u64::from(self.tick_rate()));
         enc.into_bytes()
     }
 
@@ -96,6 +104,15 @@ impl Module {
                     Ok((NativeId(dec.read_u64()?), read_u32_varint(dec)?))
                 })?
                 .into(),
+                id: read_stable_id(dec)?,
+                snapshot: read_list(dec, |dec| {
+                    Ok(SnapshotSlot {
+                        id: read_stable_id(dec)?,
+                        slot: read_u32_varint(dec)?,
+                        schema: dec.read_u64()?,
+                    })
+                })?
+                .into(),
             })
         })?;
         let natives = read_list(&mut dec, |dec| {
@@ -110,9 +127,11 @@ impl Module {
         } else {
             None
         };
+        let tick_rate = read_u32_varint(&mut dec)?;
         dec.finish()?;
-        let module =
-            Module::new(chunks, components, systems, natives).map_err(LoadError::Verify)?;
+        let module = Module::new(chunks, components, systems, natives)
+            .and_then(|m| m.with_tick_rate(tick_rate))
+            .map_err(LoadError::Verify)?;
         match input {
             Some(input) => module.with_input(input).map_err(LoadError::Verify),
             None => Ok(module),
@@ -124,14 +143,18 @@ impl Module {
 /// request a huge buffer before the bytes run out.
 const MAX_PREALLOC: u64 = 4096;
 
-fn write_list<T>(enc: &mut Encoder, items: &[T], mut write: impl FnMut(&mut Encoder, &T)) {
+pub(crate) fn write_list<T>(
+    enc: &mut Encoder,
+    items: &[T],
+    mut write: impl FnMut(&mut Encoder, &T),
+) {
     enc.write_varint(items.len() as u64);
     for item in items {
         write(enc, item);
     }
 }
 
-fn read_list<'a, T>(
+pub(crate) fn read_list<'a, T>(
     dec: &mut Decoder<'a>,
     mut read: impl FnMut(&mut Decoder<'a>) -> Result<T, DecodeError>,
 ) -> Result<Vec<T>, DecodeError> {
@@ -143,10 +166,22 @@ fn read_list<'a, T>(
     Ok(items)
 }
 
-fn malformed(dec: &Decoder<'_>) -> DecodeError {
+pub(crate) fn malformed(dec: &Decoder<'_>) -> DecodeError {
     DecodeError::Malformed {
         offset: dec.position(),
     }
+}
+
+pub(crate) fn write_stable_id(enc: &mut Encoder, id: StableId) {
+    enc.write_u64(id.hi);
+    enc.write_u64(id.lo);
+}
+
+pub(crate) fn read_stable_id(dec: &mut Decoder<'_>) -> Result<StableId, DecodeError> {
+    Ok(StableId {
+        hi: dec.read_u64()?,
+        lo: dec.read_u64()?,
+    })
 }
 
 fn write_names(enc: &mut Encoder, names: &[Box<str>]) {
@@ -250,7 +285,7 @@ fn read_input(dec: &mut Decoder<'_>) -> Result<InputSchema, DecodeError> {
     })
 }
 
-fn read_u32_varint(dec: &mut Decoder<'_>) -> Result<u32, DecodeError> {
+pub(crate) fn read_u32_varint(dec: &mut Decoder<'_>) -> Result<u32, DecodeError> {
     let n = dec.read_varint()?;
     u32::try_from(n).map_err(|_| malformed(dec))
 }
@@ -374,7 +409,7 @@ const VALUE_AGG: u8 = 5;
 /// The deepest constant nesting a decoder follows.
 const MAX_VALUE_DEPTH: u32 = 64;
 
-fn write_value(enc: &mut Encoder, value: &Value) {
+pub(crate) fn write_value(enc: &mut Encoder, value: &Value) {
     match value {
         Value::Nil | Value::Closure(_) | Value::Handle(_) => enc.write_u8(VALUE_NIL),
         Value::Int(i) => {
@@ -401,7 +436,7 @@ fn write_value(enc: &mut Encoder, value: &Value) {
     }
 }
 
-fn read_value(dec: &mut Decoder<'_>) -> Result<Value, DecodeError> {
+pub(crate) fn read_value(dec: &mut Decoder<'_>) -> Result<Value, DecodeError> {
     read_nested_value(dec, 0)
 }
 
@@ -901,6 +936,12 @@ mod tests {
         let systems = vec![System {
             component: 0,
             hooks: Box::new([(NativeId(0x0123_4567_89ab_cdef), 2)]),
+            id: StableId { hi: 7, lo: 9 },
+            snapshot: Box::new([SnapshotSlot {
+                id: StableId { hi: 1, lo: 2 },
+                slot: 0,
+                schema: 0xfeed,
+            }]),
         }];
         let natives = vec![NativeImport {
             path: "viso::text::upper".into(),
@@ -914,12 +955,43 @@ mod tests {
             natives,
         )
         .unwrap()
+        .with_tick_rate(30)
+        .unwrap()
     }
 
     #[test]
     fn a_module_round_trips() {
         let module = sample();
-        assert_eq!(Module::decode(&module.encode()).unwrap(), module);
+        let decoded = Module::decode(&module.encode()).unwrap();
+        assert_eq!(decoded.tick_rate(), 30);
+        assert_eq!(decoded, module);
+    }
+
+    #[test]
+    fn a_system_snapshots_its_own_states_in_identity_order() {
+        let module = sample();
+        let rebuild = |snapshot: Vec<SnapshotSlot>| {
+            let mut systems = module.systems().to_vec();
+            systems[0].snapshot = snapshot.into();
+            Module::new(
+                module.chunks().to_vec(),
+                module.components().to_vec(),
+                systems,
+                module.natives().to_vec(),
+            )
+        };
+        let slot = |lo, slot| SnapshotSlot {
+            id: StableId { hi: 0, lo },
+            slot,
+            schema: 0,
+        };
+        assert!(rebuild(vec![slot(1, 0)]).is_ok());
+        assert!(rebuild(vec![slot(1, 1)]).is_err(), "a missing state");
+        assert!(
+            rebuild(vec![slot(2, 0), slot(1, 0)]).is_err(),
+            "out of order"
+        );
+        assert!(module.clone().with_tick_rate(0).is_err());
     }
 
     #[test]
@@ -945,6 +1017,7 @@ mod tests {
             systems: module.systems().to_vec().into(),
             natives: module.natives().to_vec().into(),
             input: None,
+            tick_rate: module.tick_rate(),
         };
         bytes = bad.encode();
         assert!(matches!(Module::decode(&bytes), Err(LoadError::Verify(_))));
@@ -960,6 +1033,8 @@ mod tests {
                 vec![System {
                     component: 0,
                     hooks,
+                    id: StableId::default(),
+                    snapshot: Box::new([]),
                 }],
                 module.natives().to_vec(),
             )

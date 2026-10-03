@@ -262,11 +262,15 @@ impl Ty {
             SchemaTy::Unit => Ty::Unit,
             SchemaTy::Bool => Ty::Bool,
             SchemaTy::I64 => Ty::I64,
+            SchemaTy::F32 => Ty::F32,
             SchemaTy::F64 => Ty::F64,
+            SchemaTy::Ticks => Ty::Duration,
             SchemaTy::String => Ty::String,
             SchemaTy::List(t) => Ty::List(Box::new(Ty::from_schema(t, action))),
             SchemaTy::Option(t) => Ty::Option(Box::new(Ty::from_schema(t, action))),
-            SchemaTy::Handle(path) | SchemaTy::Enum(path) => Ty::Native(NativeId::of(path)),
+            SchemaTy::Handle(path) | SchemaTy::Value(path) | SchemaTy::Enum(path) => {
+                Ty::Native(NativeId::of(path))
+            }
             SchemaTy::Action => action.clone(),
         }
     }

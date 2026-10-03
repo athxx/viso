@@ -5,7 +5,7 @@
 use std::rc::Rc;
 use std::sync::Arc;
 
-use viso_behavior::game::{COLLISION, Clock, FIXED_UPDATE, FRAME_UPDATE, Scheduler, TickOverrun};
+use viso_behavior::game::{COLLISION, FIXED_UPDATE, FRAME_UPDATE, Scheduler, TickOverrun};
 use viso_behavior::native::{
     HookDomain, NativeHook, NativeLibrary, NativeTrait, Natives, Param, STANDARD, SchemaTy,
 };
@@ -27,7 +27,8 @@ fn module(source: &str) -> Rc<Module> {
     let compiled = compile_file(&format!("{IMPORTS}{source}"), &origin());
     let errors: Vec<_> = compiled.errors().collect();
     assert!(errors.is_empty(), "{errors:#?}");
-    Rc::new(compiled.behavior.bytecode().expect("verified bytecode"))
+    let module = compiled.behavior.bytecode().expect("verified bytecode");
+    Rc::new(module.with_tick_rate(4).expect("a tick rate"))
 }
 
 /// The error codes of `source` after the scheduler imports.
@@ -42,7 +43,7 @@ fn codes(source: &str) -> Vec<String> {
 fn scheduler(module: Rc<Module>) -> Scheduler {
     let mut vm = Vm::new(module, Budget::default());
     vm.link(&Natives::standard(), &[]).expect("link");
-    Scheduler::new(vm, Clock::new(0.25)).expect("systems instantiate")
+    Scheduler::new(vm).expect("systems instantiate")
 }
 
 /// State `name` of the instance of system `system`.

@@ -1852,7 +1852,7 @@ Native Schema 由 Rust 侧生成（ADR 0036）：一个 Native Library 是一条
 
 - 每个函数记录：名称、`fn`/`action`/`task` 分类、参数与返回的 Schema 类型、所需 Capability、线程域（`any`/`ui`/`worker`）、`deterministic`、`realtime_safe`、`@const`（编译期可求值，隐含 `deterministic`）与每次调用的预算成本；每个 Handle 类型记录方法、所有权（`shared`/`borrowed`）与线程域；
 - Schema Enum 是带 Variant 的 Native 类型，值为 Variant 序号而非 Handle：`import viso::game::Key;` 后写 `Key::Space`，未知 Variant 为 `E2001`（附最近候选）；
-- 每个函数声明可复现档位（`none`/`same_binary`/`cross_platform`）：`deterministic` 的函数默认 `cross_platform`，调用宿主超越函数的声明 `same_binary`，时钟、随机与 I/O 为 `none`；Presentation 函数（粒子、音效、相机抖动）与 Debug Draw 函数在 Schema 中标记；Handle 类型声明能否进入 Snapshot，Schema Enum 总能；Scheduler Hook 声明所属层（Simulation/Presentation）；
+- 每个函数声明可复现档位（`none`/`same_binary`/`cross_platform`）：`deterministic` 的函数默认 `cross_platform`，调用宿主超越函数的声明 `same_binary`，时钟、随机与 I/O 为 `none`；Presentation 函数（粒子、音效、相机抖动）与 Debug Draw 函数在 Schema 中标记；Schema Enum 与 Native 值类型（如 `Cooldown`，由 Native 构造与读取的纯数据，按内容比较）能进入 Snapshot，Handle 的对象位于解释器之外，不能进入；`Duration` 参数可声明为 Tick 时长：实参必须是编译期常量（Duration 字面量及其加减、与数字的乘除），编译器按 Package 的 Tick 频率向上取整换算为整数 Tick，非常量报 `E2501`，为负或超出 `I64` 报 `E2112`；Scheduler Hook 声明所属层（Simulation/Presentation）；
 - Property 是只有 Receiver 参数的方法，写 `frame.input`，不加括号；对 Property 加 `()` 报 `E2103`，读取未声明的 Property 报 `E2001`；
 - 调用经 Import 或完整路径解析：`import viso::text;` 后写 `text::upper(s)`，`import viso::math::{clamp};` 后写 `clamp(x, 0.0, 1.0)`，`import viso::time::Stopwatch;` 后写 `Stopwatch::start()`；Handle 方法写 `watch.elapsed_ms()`，Receiver 作为第一个参数。未注册的路径或方法为 `E2001`；
 - Effect 分类：`deterministic` 的 `fn` 为 Pure，其余 `fn` 为 Read，`action` 为 Action，`task` 为 Task；在 View/Computed 中调用 `action` 为 `E2502`；
@@ -5708,7 +5708,7 @@ render_interpolation_policy
 
 ```text
 tick:       U64       单调递增；只有 World Rebuild 和 Restore 会改变它
-fixed_dt:   Duration  Profile 编译期常量，默认 1/60 s
+fixed_dt:   Duration  Profile 编译期常量 1 / tick_rate；`[game] tick_rate` 取 1..=1000 Hz，默认 60
 time_scale: F32       只缩放 Wall Time 到 Tick 累加器的速率，不改变 fixed_dt
 paused:     Bool      暂停时不累加；FrameUpdate 照常运行
 ```
@@ -5787,7 +5787,7 @@ Simulation 域是 `start`、FixedUpdate、CollisionListener（Schema 中声明�
 - `@local` 只标记 System 的 `state`，标在其他成员或 Component 上报 `E9103`；
 - Simulation 域读写 `@local` 状态，或调用返回非 `()` 的 Presentation 方法，报 `E9103`；诊断的 note 指出该 Callable 由哪个 Hook 可达；
 - Simulation 域使用非确定性来源报 `E9104`：Wall Clock、`Task`/`await`、未预加载的 Resource 结果、未注入的 Random、未声明有序的 Hash 容器迭代、宿主超越函数（§106.5）、UI State 与 Adaptive Environment；Native 的可复现档位低于 Package 的 `[game] determinism`（默认 `same_binary`）即为非确定性来源；
-- Simulation 状态类型必须实现 `Snapshot`。值类型自动派生；闭包、`Task` 与未声明 Snapshot 的 Handle 不能实现，否则报 `E9105`；
+- Simulation 状态类型必须实现 `Snapshot`。值类型、Schema Enum 与 Native 值类型自动派生；闭包、`Task` 与 Native Handle 不能实现，否则报 `E9105`；
 - Presentation 可以只读 Simulation 状态，读到的是本帧提交的 World Revision。
 
 Simulation 可以触发粒子、音效、相机抖动和 Debug Draw，但只能作为 Presentation Command：
@@ -5825,18 +5825,20 @@ export system Gun implements FixedUpdate {
     state wave: TickTimer = TickTimer::every(10s);
 
     action fixed_update(frame: FixedFrame) {
-        if frame.input.held(Act::Fire) && cooldown.ready(frame.tick) {
-            cooldown = cooldown.fire(frame.tick);
+        if frame.input.held(Act::Fire) && cooldown.ready(frame.tick()) {
+            cooldown = cooldown.fire(frame.tick());
         }
 
-        if wave.due(frame.tick) {
-            wave = wave.rearm(frame.tick);
+        if wave.due(frame.tick()) {
+            wave = wave.rearm(frame.tick());
         }
     }
 }
 ```
 
-- `fixed_dt` 是编译期常量，`Duration` 在编译期换算为整数 Tick（向上取整）；运行时只比较 Tick，不累加浮点时间；
+- `fixed_dt` 是编译期常量，`Duration` 在编译期换算为整数 Tick（向上取整，先舍入到整纳秒再做整数除法，`300ms` 在 4 Hz 下为 2 Tick）；实参必须是编译期常量，否则报 `E2501`，为负报 `E2112`；运行时只比较 Tick，不累加浮点时间；
+- `Cooldown::new(d)` 初始即就绪：`ready(tick)`、`fire(tick)` 返回 `d` 之后才再次就绪的新值、`remaining(tick)`；
+- `TickTimer::every(d)` 首次在 Tick `d` 到期（不足一个 Tick 按一个 Tick），`due(tick)`、`remaining(tick)`；`rearm(tick)` 把到期点推到 `tick` 之后的第一个周期整倍数，迟到的检查不漂移也不补发，未到期时不变；
 - Timer 是普通值类型：进入 Snapshot，可回放、可迁移、可在调试器中查看；
 - 不提供注册闭包的 `every`/`after` API；在 Simulation 状态中存闭包报 `E9105`；
 - 只修改 Timer 初始值的 Logic-only Reload 保留当前剩余 Tick（§94.1）。
@@ -5856,7 +5858,9 @@ GameSnapshot {
 ```
 
 - Snapshot 只包含 Simulation 层；Derived 在 Restore 后重算，Local 保留当前值；
-- 编码使用 Ende 二进制，按 Stable ID 与字段 Schema 版本化，可跨 Logic-only Reload 读取；
+- 内存中的 Snapshot 共享不可变的状态值，取一次不复制状态，供回滚与时间回溯；`build_hash` 是 Module 的哈希；
+- 编码使用 Ende 二进制，按 Stable ID 与字段 Schema 版本化，可跨 Logic-only Reload 读取：System 与 State 按 Stable ID 升序，浮点按位写出，编码是规范的，Snapshot Hash 即其 64 位 FNV-1a；Restore 只写回 Stable ID 与类型 Schema 哈希（Record 字段名、Enum Variant 逐层展开）都一致的状态，其余保持当前值并计入 `mismatched`/`missing`；
+- 截断或非 Snapshot 的数据解码报错，不 Panic；
 - `restore(snapshot(s))` 后继续运行，与不中断运行逐 Tick 一致；
 - 用途：Input Tape 回放、联机回滚、存档、时间回溯调试、热重载前后对比；
 - Native World 未声明 snapshot 能力时，这些功能在诊断中明确降级，不静默失效。
@@ -5879,7 +5883,7 @@ export system Progress implements FixedUpdate {
 
 ### 106.9 渲染插值
 
-- `RenderFrame.alpha: F32` 取值 `[0, 1)`，等于累加器余量除以 `fixed_dt`；
+- `frame.alpha(): F32` 取值 `[0, 1)`，等于累加器余量除以 `fixed_dt`；`SlowMotion` 积压超过一个 Tick 时取小于 1 的最大值；
 - World 为每个 Entity 保留上一 Tick 与当前 Tick 的 Transform，Render Extraction 默认按 `alpha` 插值；`teleport` 标记本 Tick 不插值；
 - FrameUpdate 属于 Presentation：只读 Simulation，只写 Local。
 
@@ -8392,7 +8396,7 @@ RecordPatternField
 | E2109  | 长度族值常量除以 0（§19.8）                             |
 | E2110  | 赋值目标不可写（§62.1）                                 |
 | E2111  | `env` 用在 View 执行域之外（§96.2）                     |
-| E2112  | `@const` Native 在编译期拒绝其实参（§32）               |
+| E2112  | `@const` Native 或 Tick 时长参数在编译期拒绝其实参（§32、§106.6） |
 | E2201  | Trait Bound 未满足                                      |
 | E2202  | Trait Impl 重叠或歧义                                   |
 | E2301  | 非穷尽 Match                                            |
