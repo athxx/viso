@@ -120,7 +120,7 @@ pub fn transact(
     }
 
     // Stage 4 — the only mutating stage. Infallible by construction.
-    let report = commit(rt, &candidate, &patch, &migration);
+    let report = commit(rt, &last_good.tree, &candidate, &patch, &migration);
 
     HotReload { report, candidate }
 }

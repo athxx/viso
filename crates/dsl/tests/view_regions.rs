@@ -1,14 +1,16 @@
 //! A view's control-flow regions under hot reload and the release package: an
 //! `if` switches arms and keeps a `preserve` arm's nodes, a `match` switches on
 //! its scrutinee, a keyed `for` moves its retained nodes on a reorder and hands
-//! each item to its handlers, and a repeated key faults without re-shaping.
+//! each item to its handlers, and a repeated key faults without re-shaping;
+//! across a reload that rebuilds the view, the nodes a region mounts carry
+//! their focus and scroll offset to the nodes built for the same items.
 
 use std::cell::RefCell;
 use std::rc::Rc;
 
 use viso_dsl::aot::build_view_package;
 use viso_dsl::frontend::Origin;
-use viso_dsl::hotreload::{CandidatePlan, LiveRuntime, hot_reload_view};
+use viso_dsl::hotreload::{CandidatePlan, HotReloadReport, LiveRuntime, hot_reload_view};
 use viso_ui::Rect;
 use viso_ui::virtual_list::VirtualLists;
 use viso_ui::{
@@ -117,7 +119,7 @@ impl Rt {
         rt
     }
 
-    fn reload(&mut self, source: &str) {
+    fn reload(&mut self, source: &str) -> HotReloadReport {
         let mut live = LiveRuntime {
             store: &mut self.store,
             states: &mut self.states,
@@ -135,6 +137,7 @@ impl Rt {
         self.root = live.root;
         self.last_good = done.candidate;
         self.layout();
+        done.report
     }
 
     fn layout(&mut self) {
@@ -370,4 +373,79 @@ fn a_region_rolls_back_when_its_reload_does_not_mount() {
         vec![before[2], before[0], before[1]],
         "the last-good hook runs"
     );
+}
+
+const SCROLLERS: &str = r#"
+component Scrollers {
+    state items = [1, 2, 3];
+    state open = true;
+    view {
+        Column {
+            width: 400dp;
+            height: 300dp;
+            Column {
+                width: 400dp;
+                height: 100dp;
+                for item in items key item {
+                    Scroll {
+                        width: 100dp;
+                        height: 20dp;
+                        Text { width: 100dp; height: 200dp; }
+                    }
+                }
+            }
+            Column {
+                width: 400dp;
+                height: 100dp;
+                if open {
+                    Text { width: 10dp; height: 10dp; }
+                }
+            }
+        }
+    }
+}
+"#;
+
+#[test]
+fn nodes_a_region_mounts_carry_their_state_across_a_rebuild() {
+    let mut rt = Rt::reloaded(SCROLLERS);
+    let rows = rt.region(0);
+    assert_eq!(rows.len(), 3);
+    rt.store.scroll_by(rows[1], viso_ui::Vec2::new(0.0, 30.0));
+    rt.store.scroll_by(rows[2], viso_ui::Vec2::new(0.0, 60.0));
+    let [panel] = rt.region(1)[..] else {
+        panic!("the then arm");
+    };
+    rt.store.set_focused(Some(panel));
+
+    // A sibling ahead of both regions shifts every key and rebuilds the view.
+    let shifted = SCROLLERS.replacen(
+        "height: 300dp;",
+        "height: 300dp;\n            Text { width: 10dp; height: 10dp; }",
+        1,
+    );
+    let report = rt.reload(&shifted);
+    assert!(!report.focus_lost);
+    assert_eq!(report.scroll_lost, 0);
+    let rebuilt = rt.region(1);
+    assert!(
+        rebuilt.iter().all(|row| !rows.contains(row)),
+        "rebuilt rows"
+    );
+    let rows = rebuilt;
+    let offsets: Vec<f32> = rows.iter().map(|&row| rt.store.scroll(row).y).collect();
+    assert_eq!(offsets, [0.0, 30.0, 60.0], "each item keeps its offset");
+    let [panel] = rt.region(2)[..] else {
+        panic!("the then arm");
+    };
+    assert_eq!(
+        rt.store.focused(),
+        Some(panel),
+        "the arm's node keeps the focus"
+    );
+
+    // A row no longer a scroll container loses its offset.
+    let report = rt.reload(&shifted.replacen("Scroll {", "Column {", 1));
+    assert_eq!(report.scroll_lost, 2);
+    assert!(!report.focus_lost);
 }

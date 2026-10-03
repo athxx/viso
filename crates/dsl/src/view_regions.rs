@@ -87,6 +87,103 @@ impl StaticNodes {
     }
 }
 
+/// The [`NodeKey`] of every node a region of `tree` mounts, by the region,
+/// arm and arm item [`view_regions`] lowers it to, ascending.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct RegionKeys {
+    keys: Vec<((u32, u32, u32), NodeKey)>,
+}
+
+impl RegionKeys {
+    /// The region numbering of `tree`.
+    pub fn of(tree: &UiTree) -> Self {
+        let mut walk = RegionWalk::default();
+        for item in &tree.items {
+            walk.item(item);
+        }
+        walk.out.keys.sort_unstable_by_key(|&(at, _)| at);
+        walk.out
+    }
+
+    /// The key of the node item `item` of arm `arm` of region `region` mounts.
+    pub fn key(&self, region: u32, arm: u32, item: u32) -> Option<NodeKey> {
+        self.keys
+            .binary_search_by_key(&(region, arm, item), |&(at, _)| at)
+            .ok()
+            .map(|index| self.keys[index].1)
+    }
+}
+
+/// The [`Builder`] walk's counters alone: the next key and region index.
+#[derive(Default)]
+struct RegionWalk {
+    key: u32,
+    regions: u32,
+    out: RegionKeys,
+}
+
+impl RegionWalk {
+    fn item(&mut self, item: &UiItem) {
+        let UiItem::Node(node) = item else {
+            self.region(item);
+            return;
+        };
+        self.key += 1;
+        if authors_children(node) {
+            for child in &node.children {
+                self.item(child);
+            }
+        } else {
+            self.skip(&node.children);
+        }
+    }
+
+    fn skip(&mut self, items: &[UiItem]) {
+        for item in items {
+            match item {
+                UiItem::Node(node) => {
+                    self.key += 1;
+                    self.skip(&node.children);
+                }
+                _ => {
+                    for items in arms(item) {
+                        self.skip(items);
+                    }
+                }
+            }
+        }
+    }
+
+    fn region(&mut self, item: &UiItem) {
+        let region = self.regions;
+        self.regions += 1;
+        for (arm, items) in arms(item).into_iter().enumerate() {
+            let mut at = 0;
+            for item in items {
+                self.content(item, region, arm as u32, &mut at);
+            }
+        }
+    }
+
+    fn content(&mut self, item: &UiItem, region: u32, arm: u32, at: &mut u32) {
+        let UiItem::Node(node) = item else {
+            self.region(item);
+            *at += 1;
+            return;
+        };
+        self.out.keys.push(((region, arm, *at), NodeKey(self.key)));
+        self.key += 1;
+        *at += 1;
+        if authors_children(node) {
+            for child in &node.children {
+                self.content(child, region, arm, at);
+            }
+        } else {
+            self.skip(&node.children);
+        }
+    }
+}
+
 /// Whether `tree` has a control-flow region.
 pub fn has_regions(tree: &UiTree) -> bool {
     fn any(items: &[UiItem]) -> bool {

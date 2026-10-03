@@ -16,7 +16,9 @@
 //!    node in place, so all its runtime state stays untouched. Any other edit
 //!    rebuilds the view's subtree, and each kept node's migratable state —
 //!    focus, a viewport's scroll offset, a text field's edit buffer — moves from
-//!    its old node to the node that rebuilt it; focus and scroll that do not
+//!    its old node to the node that rebuilt it. A node a region mounts moves to
+//!    the node the remounted region builds from the same item for the same
+//!    `for` item keys, once step 5 has mounted it; focus and scroll that do not
 //!    carry are reported lost.
 //! 2. **State migration** — for each surviving reactive source, migrate its live
 //!    cell by durable [`SymbolId`] identity (bridged to the runtime `StateKey`);
@@ -55,10 +57,11 @@ use crate::ir::binding_ir::NodeKey;
 use crate::ir::dirty_map::DirtyClass as IrDirtyClass;
 use crate::ir::ui_ir::{AxisIr, LengthIr, NodeKind, StyleIr, UiItem, UiNode, UiTree};
 use crate::resolve::SymbolId;
-use crate::view_regions::{StaticNodes, has_regions};
+use crate::view_regions::{RegionKeys, StaticNodes, has_regions};
 
 use viso_view::{
-    HostError, Scope, ViewHost, attach_node, cell_value, mount_regions, mount_values, vm_value,
+    HostError, ItemKey, Scope, ViewHost, attach_node, cell_value, mount_regions, mount_values,
+    vm_value,
 };
 
 use crate::diag::Diagnostic;
@@ -145,12 +148,13 @@ pub struct LiveRuntime<'a> {
 /// succeeded, so every decision here is a plain application. The order is the one
 /// the module docs fix; each step reads only the plan data and the live runtime.
 ///
-/// `plan` is the recompiled candidate (template + binding edges + reactive-source
-/// identities); `patch` aligns the last-good and candidate templates by
-/// [`NodeKey`]; `migration` carries the per-cell decisions and the node state
-/// each kept node carries.
+/// `last_good` is the template the live tree was built from; `plan` is the
+/// recompiled candidate (template + binding edges + reactive-source
+/// identities); `patch` aligns the two templates by [`NodeKey`]; `migration`
+/// carries the per-cell decisions and the node state each kept node carries.
 pub fn commit(
     rt: &mut LiveRuntime<'_>,
+    last_good: &UiTree,
     plan: &CandidatePlan,
     patch: &StructuralPatch,
     migration: &MigrationPlan,
@@ -161,7 +165,7 @@ pub fn commit(
     // view carrying each kept node's migratable state. The key-to-node map
     // records, per template NodeKey, the live node it now names, so the rebind
     // step can map an edge's NodeKey to a runtime NodeId without a search.
-    let key_to_node = apply_structural(rt, &plan.tree, patch, migration, &mut report);
+    let (key_to_node, pending) = apply_structural(rt, last_good, &plan.tree, patch, migration);
 
     // Step 2 — state migration by durable identity. A kept symbol carries its live
     // value across (the reload preserves running state); a new symbol allocates a
@@ -211,6 +215,9 @@ pub fn commit(
     // Step 5 — handlers and regions, against the nodes and cells the reload now
     // names.
     mount_behavior(rt, plan, next, &key_to_node, &symbol_to_state, &mut report);
+    if let Some(pending) = pending {
+        settle_carried(rt, &plan.tree, pending, &mut report);
+    }
 
     *rt.nodes = key_to_node;
     report
@@ -340,7 +347,8 @@ fn mount_behavior(
 }
 
 /// Apply the structural patch and return the template `NodeKey` → live
-/// `NodeId` map the rebind step keys against, ascending by key.
+/// `NodeId` map the rebind step keys against, ascending by key, and after a
+/// rebuild what still waits for the regions to mount.
 ///
 /// A structure-preserving edit of a region-free view reuses every live node:
 /// the candidate numbers its nodes exactly as the last-good tree did, so each
@@ -351,11 +359,11 @@ fn mount_behavior(
 /// each kept node's migratable node state moves to the node that rebuilt it.
 fn apply_structural(
     rt: &mut LiveRuntime<'_>,
+    last_good: &UiTree,
     tree: &UiTree,
     patch: &StructuralPatch,
     migration: &MigrationPlan,
-    report: &mut HotReloadReport,
-) -> Vec<(NodeKey, NodeId)> {
+) -> (Vec<(NodeKey, NodeId)>, Option<Pending>) {
     let regions = has_regions(tree)
         || rt
             .view
@@ -367,10 +375,11 @@ fn apply_structural(
         for item in &tree.items {
             restyle_item(rt.store, rt.states, item, &mut next, &map);
         }
-        return map;
+        return (map, None);
     }
 
     let carried = carry_out(rt, &migration.nodes);
+    let regional = carry_out_regions(rt, last_good, &migration.nodes);
     let (focused, scrolled) = rt.root.map_or((false, 0), |root| census(rt, root));
     if let Some(host) = rt.view.as_ref() {
         let mut host = host.borrow_mut();
@@ -394,19 +403,69 @@ fn apply_structural(
     rt.root = new_root;
     map.sort_unstable_by_key(|&(key, _)| key);
 
-    let (refocused, restored) = carry_in(rt, carried, &map);
-    if focused && !refocused {
+    let (refocused, restored) = carry_in(rt, carried, |key, _| lookup_node(&map, key));
+    let pending = Pending {
+        regional,
+        focused,
+        scrolled,
+        refocused,
+        restored,
+    };
+    (map, Some(pending))
+}
+
+/// A rebuild's node state that waits for the candidate's regions to mount.
+struct Pending {
+    /// What the nodes the last-good regions mounted carry.
+    regional: Vec<Carried>,
+    /// Whether the last-good subtree held the focus, and how many of its nodes
+    /// a scroll offset.
+    focused: bool,
+    scrolled: u32,
+    /// Whether the focus, and how many offsets, the static nodes took.
+    refocused: bool,
+    restored: u32,
+}
+
+/// Settles what the last-good regions' nodes carry on the nodes the
+/// candidate's regions mounted, then reports the focus and the offsets no node
+/// took.
+fn settle_carried(
+    rt: &mut LiveRuntime<'_>,
+    tree: &UiTree,
+    pending: Pending,
+    report: &mut HotReloadReport,
+) {
+    let mut mounted: Vec<(NodeKey, Vec<ItemKey>, NodeId)> = Vec::new();
+    if !pending.regional.is_empty()
+        && let Some(host) = rt.view.as_ref()
+    {
+        let keys = RegionKeys::of(tree);
+        for node in host.borrow().region_nodes(rt.store) {
+            if let Some(key) = keys.key(node.region, node.arm, node.item) {
+                mounted.push((key, node.path, node.node));
+            }
+        }
+    }
+    let (refocused, restored) = carry_in(rt, pending.regional, |key, path| {
+        mounted
+            .iter()
+            .find(|(k, p, _)| *k == key && Some(p.as_slice()) == path)
+            .map(|&(_, _, node)| node)
+    });
+    if pending.focused && !(pending.refocused || refocused) {
         rt.store.set_focused(None);
         report.focus_lost = true;
     }
-    report.scroll_lost = scrolled - restored;
-    map
+    report.scroll_lost = pending.scrolled.saturating_sub(pending.restored + restored);
 }
 
 /// The node state one kept node carries across a rebuild.
 struct Carried {
     /// The node's key in the candidate.
     to: NodeKey,
+    /// For a node a region mounts, the keys of the `for` items it sits in.
+    path: Option<Vec<ItemKey>>,
     /// Whether it held focus.
     focus: bool,
     /// Its nonzero scroll offset.
@@ -418,27 +477,62 @@ struct Carried {
 /// Lift from the live nodes of the last-good tree the state each of `nodes`
 /// carries, before the tree is freed.
 fn carry_out(rt: &mut LiveRuntime<'_>, nodes: &[NodeMigration]) -> Vec<Carried> {
-    let focused = rt.store.focused();
     let mut out = Vec::new();
     for migration in nodes {
-        let Some(old) = lookup_node(rt.nodes, migration.from) else {
-            continue;
-        };
-        let carries = |state| migration.carries.contains(state);
-        let offset = rt.store.scroll(old);
-        let carried = Carried {
-            to: migration.to,
-            focus: carries(MigratableState::FOCUS) && focused == Some(old),
-            scroll: (carries(MigratableState::SCROLL) && offset != Vec2::ZERO).then_some(offset),
-            buffer: carries(MigratableState::SELECTION)
-                .then(|| rt.text_edits.take(old))
-                .flatten(),
-        };
-        if carried.focus || carried.scroll.is_some() || carried.buffer.is_some() {
-            out.push(carried);
+        if let Some(old) = lookup_node(rt.nodes, migration.from) {
+            out.extend(lift(rt, old, migration, None));
         }
     }
     out
+}
+
+/// Lift the state each node the last-good regions mount carries, pairing it
+/// with its `for` item keys; `last_good` numbers the regions' items.
+fn carry_out_regions(
+    rt: &mut LiveRuntime<'_>,
+    last_good: &UiTree,
+    nodes: &[NodeMigration],
+) -> Vec<Carried> {
+    let Some(host) = rt.view.as_ref().map(Rc::clone) else {
+        return Vec::new();
+    };
+    let mounted = host.borrow().region_nodes(rt.store);
+    if mounted.is_empty() || nodes.is_empty() {
+        return Vec::new();
+    }
+    let keys = RegionKeys::of(last_good);
+    let mut out = Vec::new();
+    for node in mounted {
+        let Some(key) = keys.key(node.region, node.arm, node.item) else {
+            continue;
+        };
+        if let Some(migration) = nodes.iter().find(|migration| migration.from == key) {
+            out.extend(lift(rt, node.node, migration, Some(node.path)));
+        }
+    }
+    out
+}
+
+/// The state the live node `old` carries as far as `migration` marks it,
+/// `None` when it holds none.
+fn lift(
+    rt: &mut LiveRuntime<'_>,
+    old: NodeId,
+    migration: &NodeMigration,
+    path: Option<Vec<ItemKey>>,
+) -> Option<Carried> {
+    let carries = |state| migration.carries.contains(state);
+    let offset = rt.store.scroll(old);
+    let carried = Carried {
+        to: migration.to,
+        path,
+        focus: carries(MigratableState::FOCUS) && rt.store.focused() == Some(old),
+        scroll: (carries(MigratableState::SCROLL) && offset != Vec2::ZERO).then_some(offset),
+        buffer: carries(MigratableState::SELECTION)
+            .then(|| rt.text_edits.take(old))
+            .flatten(),
+    };
+    (carried.focus || carried.scroll.is_some() || carried.buffer.is_some()).then_some(carried)
 }
 
 /// Whether the subtree at `root` holds the focus, and how many of its nodes
@@ -461,16 +555,17 @@ fn census(rt: &mut LiveRuntime<'_>, root: NodeId) -> (bool, u32) {
     (focus, scrolled)
 }
 
-/// Settle each carried state on the node that rebuilt its kept node, and
-/// return whether the focus moved and how many scroll offsets did.
+/// Settle each carried state on the node `rebuilt` names for its candidate
+/// key and `for` item keys, and return whether the focus moved and how many
+/// scroll offsets did.
 fn carry_in(
     rt: &mut LiveRuntime<'_>,
     carried: Vec<Carried>,
-    map: &[(NodeKey, NodeId)],
+    rebuilt: impl Fn(NodeKey, Option<&[ItemKey]>) -> Option<NodeId>,
 ) -> (bool, u32) {
     let (mut refocused, mut restored) = (false, 0);
     for carried in carried {
-        let Some(node) = lookup_node(map, carried.to) else {
+        let Some(node) = rebuilt(carried.to, carried.path.as_deref()) else {
             continue;
         };
         if carried.focus {

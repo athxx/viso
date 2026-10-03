@@ -371,7 +371,12 @@ Goal: a file edit reaches the running app as one transaction or not at all.
         edit buffer across a structural rebuild by `NodeKey`; a lost focus or
         scroll offset is reported.
   - [ ] Animation fields carry (needs the DSL transition runtime).
-  - [ ] Nodes a region mounts carry their state.
+  - [x] Nodes a region mounts carry their state.
+    - [x] The view runtime lists the nodes its regions show, each with its arm item
+          and the keys of the `for` items around it.
+    - [x] The commit lifts their state before the rebuild and settles it on the
+          nodes the remounted regions build from the same kept item for the same
+          keys; what no node takes counts as lost.
 - [x] Reload diagnostics shown in-app and through `--json`.
   - [x] Each reload yields a stage-labelled event (revision, outcome,
         elapsed, counts, diagnostics with spans).

@@ -3826,7 +3826,8 @@ fn positive(old: I64) -> Bool { old > 0 }
 - `selection`：`TextInput`——编辑缓冲（文本、Caret/选区、IME Composition）整体迁移；
 - 被 Replace 或删除的节点的这些状态丢弃：视图内的焦点因此丢失时报告 `focus_lost`，每个丢失的非零滚动偏移计入 `scroll_lost`；
 - 结构保持的编辑原地复用所有节点，上述状态不动；
-- Region 内挂载的节点暂不迁移；动画字段在 DSL 转场运行时落地前不迁移。
+- Region 挂载的节点同样迁移：旧节点与新节点由同一模板节点（经结构 Diff 保留）构建、且外层每个 `for` 的 Item Key 相同时配对；`if`/`match` 只迁移当前所选分支的节点，切走并保留（`preserve`）的分支随重建丢弃；
+- 动画字段在 DSL 转场运行时落地前不迁移。
 
 ---
 
