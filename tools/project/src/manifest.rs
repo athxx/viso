@@ -156,11 +156,14 @@ pub enum GameDeterminism {
     CrossPlatform,
 }
 
-/// `[game]` (DSL section 106.5).
+/// `[game]` (DSL sections 106.1, 106.5).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Game {
     /// `determinism`.
     pub determinism: Option<Spanned<GameDeterminism>>,
+    /// `tick_rate`: the fixed step's ticks a second, 1 to 1000; 60 when
+    /// absent.
+    pub tick_rate: Option<Spanned<u32>>,
 }
 
 /// `[web]` (section 38.1). Parsed now, honored by a deferred phase.
@@ -540,9 +543,10 @@ impl<'a> Reader<'a> {
 
         let game = match self.table(root, "game") {
             Some(t) => {
-                self.deny_unknown(t, &["determinism"], "game");
+                self.deny_unknown(t, &["determinism", "tick_rate"], "game");
                 Game {
                     determinism: self.determinism(t, "determinism", "game"),
+                    tick_rate: self.tick_rate(t, "tick_rate", "game"),
                 }
             }
             None => Game::default(),
@@ -688,6 +692,24 @@ impl<'a> Reader<'a> {
                     ConfigDiagnostic::error(
                         ConfigCode::InvalidValue,
                         format!("`{path}.{key}` must be a non-negative SDK level"),
+                    )
+                    .at(self.path)
+                    .span(raw.span),
+                );
+                None
+            }
+        }
+    }
+
+    fn tick_rate(&mut self, t: &dyn TableLike, key: &str, path: &str) -> Option<Spanned<u32>> {
+        let raw = self.integer(t, key, path)?;
+        match u32::try_from(raw.value) {
+            Ok(rate @ 1..=1000) => Some(Spanned::new(rate, raw.span)),
+            _ => {
+                self.diags.push(
+                    ConfigDiagnostic::error(
+                        ConfigCode::InvalidValue,
+                        format!("`{path}.{key}` is a tick rate from 1 to 1000 Hz"),
                     )
                     .at(self.path)
                     .span(raw.span),
@@ -1280,5 +1302,18 @@ members = ["apps/one", "apps/two"]
         assert!(m.game.determinism.is_none());
         let diags = errors("[package]\nname = \"g\"\n[game]\ndeterminism = \"exact\"\n");
         assert_eq!(diags[0].code, ConfigCode::InvalidValue);
+    }
+
+    #[test]
+    fn game_tick_rate_is_from_1_to_1000_hz() {
+        let (m, warnings) = parse("[package]\nname = \"g\"\n[game]\ntick_rate = 30\n");
+        assert!(warnings.is_empty(), "{warnings:?}");
+        assert_eq!(m.game.tick_rate.unwrap().value, 30);
+        for bad in ["0", "1001", "-5"] {
+            let diags = errors(&format!(
+                "[package]\nname = \"g\"\n[game]\ntick_rate = {bad}\n"
+            ));
+            assert_eq!(diags[0].code, ConfigCode::InvalidValue, "{bad}");
+        }
     }
 }

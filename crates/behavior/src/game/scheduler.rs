@@ -3,6 +3,7 @@
 use std::mem;
 
 use super::input::InputLatch;
+use super::snapshot::{GameSnapshot, Restored, SystemState, fnv};
 use super::{
     COLLISION, Clock, CollisionEvent, FIXED_UPDATE, FRAME_UPDATE, FixedFrame, InputSchema,
     InputSnapshot, Key, PadButton, PadStick, RenderFrame, TouchButton,
@@ -69,8 +70,16 @@ enum Phase {
 /// in key order unless that tick was delivered before, so a replayed or
 /// rolled-back tick ([`rewind_to`](Self::rewind_to)) issues nothing twice. A
 /// faulting hook's commands are discarded with its state writes.
+///
+/// The clock steps the module's compile-time tick rate. A
+/// [`snapshot`](Self::snapshot) captures every system's Simulation states at
+/// a tick boundary; [`restore`](Self::restore) puts them back, recomputes
+/// what derives from them and keeps `@local` states, and the game then runs
+/// tick for tick as if it had never left that tick.
 pub struct Scheduler {
     vm: Vm,
+    /// A hash of the module, identifying the build a snapshot came from.
+    build: u64,
     clock: Clock,
     budget: Budget,
     instances: Vec<Instance>,
@@ -93,15 +102,17 @@ pub struct Scheduler {
 }
 
 impl Scheduler {
-    /// A scheduler running `vm`'s module on `clock`, creating one instance of
-    /// every system. The `vm`'s budget becomes the budget each tick's hooks
-    /// share, and each frame's: memory and depth stay per call.
+    /// A scheduler running `vm`'s module on a clock at its tick rate,
+    /// creating one instance of every system. The `vm`'s budget becomes the
+    /// budget each tick's hooks share, and each frame's: memory and depth stay
+    /// per call.
     ///
     /// # Errors
     ///
     /// The fault of a system whose instance could not be created.
-    pub fn new(mut vm: Vm, clock: Clock) -> Result<Scheduler, Fault> {
+    pub fn new(mut vm: Vm) -> Result<Scheduler, Fault> {
         let module = vm.module().clone();
+        let clock = Clock::at_rate(module.tick_rate());
         let mut instances = Vec::with_capacity(module.systems().len());
         let (mut fixed, mut frame, mut collision) = (Vec::new(), Vec::new(), Vec::new());
         for (index, system) in module.systems().iter().enumerate() {
@@ -129,6 +140,7 @@ impl Scheduler {
         };
         Ok(Scheduler {
             budget: vm.budget(),
+            build: fnv(&module.encode()),
             vm,
             clock,
             fixed: fixed.into(),
@@ -159,7 +171,7 @@ impl Scheduler {
         &self.clock
     }
 
-    /// The clock, to pause, scale or change its overrun policy.
+    /// The clock, to pause, scale, cap catch-up or change its overrun policy.
     pub fn clock_mut(&mut self) -> &mut Clock {
         &mut self.clock
     }
@@ -237,6 +249,64 @@ impl Scheduler {
         self.clock.rewind(tick);
     }
 
+    /// The Simulation state of every system now, at a tick boundary.
+    pub fn snapshot(&self) -> GameSnapshot {
+        let module = self.vm.module();
+        let mut systems: Vec<SystemState> = module
+            .systems()
+            .iter()
+            .zip(&self.instances)
+            .map(|(system, instance)| SystemState {
+                id: system.id,
+                states: system
+                    .snapshot
+                    .iter()
+                    .map(|s| (s.id, s.schema, instance.states()[s.slot as usize].clone()))
+                    .collect(),
+            })
+            .collect();
+        systems.sort_by_key(|s| s.id);
+        GameSnapshot {
+            build: self.build,
+            tick: self.clock.tick(),
+            systems: systems.into(),
+        }
+    }
+
+    /// Restores `snapshot`: the clock goes to its tick and every Simulation
+    /// state it holds under the same identity and schema takes its value;
+    /// computeds reading them recompute and `@local` states keep theirs.
+    /// Commands of ticks already delivered are not delivered again when they
+    /// rerun. A snapshot of another build restores the states it shares with
+    /// this one.
+    pub fn restore(&mut self, snapshot: &GameSnapshot) -> Restored {
+        let mut restored = Restored::default();
+        let module = self.vm.module().clone();
+        for (system, instance) in module.systems().iter().zip(&mut self.instances) {
+            let saved = snapshot
+                .systems
+                .binary_search_by_key(&system.id, |s| s.id)
+                .ok()
+                .map(|i| &snapshot.systems[i].states[..]);
+            for state in system.snapshot.iter() {
+                let found = saved.and_then(|states| {
+                    let i = states.binary_search_by_key(&state.id, |s| s.0).ok()?;
+                    Some(&states[i])
+                });
+                match found {
+                    Some((_, schema, value)) if *schema == state.schema => {
+                        instance.set_state(state.slot as usize, value.clone());
+                        restored.states += 1;
+                    }
+                    Some(_) => restored.mismatched += 1,
+                    None => restored.missing += 1,
+                }
+            }
+        }
+        self.clock.rewind(snapshot.tick);
+        restored
+    }
+
     /// Presentation commands delivered so far.
     pub fn delivered_commands(&self) -> u64 {
         self.delivered_commands
@@ -269,6 +339,7 @@ impl Scheduler {
             0.0
         });
         frame.time.set(self.clock.time());
+        frame.alpha.set(self.clock.alpha());
         let mut left = self.budget;
         for i in 0..self.frame.len() {
             let arg = self.render_frame.clone();

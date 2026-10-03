@@ -496,6 +496,9 @@ pub struct SystemLayout {
     /// Each hook, by its identity, and the action implementing it, in the
     /// order the traits declare them.
     pub hooks: Vec<(NativeId, FuncId)>,
+    /// Each Simulation state a game snapshot captures: its declaration, slot
+    /// and type schema hash.
+    pub snapshot: Vec<(SymbolId, u32, u64)>,
 }
 
 /// A package's lowered behavior.
@@ -516,6 +519,9 @@ pub struct Program {
     /// The package's input schema, from its `InputMap` constant; `None` when
     /// its systems read the default `InputAction` set.
     pub input: Option<InputSchema>,
+    /// The ticks a second of its systems' fixed step; `None` for the
+    /// default.
+    pub tick_rate: Option<u32>,
 }
 
 impl Program {

@@ -17,10 +17,18 @@
 //! Each tick reads a frozen [`InputSnapshot`] through `frame.input`: the
 //! actions of the package's `InputMap` (or the default [`InputAction`] set)
 //! and the move vector, edges delivered once (see [`input`]).
+//!
+//! The fixed step is the module's compile-time tick rate. [`Cooldown`] and
+//! [`TickTimer`] count its whole ticks. A [`GameSnapshot`] captures the
+//! Simulation state of every system, and restoring it resumes tick for tick
+//! as if never interrupted. `RenderFrame.alpha()` is how far the frame is
+//! into the next tick, for interpolation.
 
 mod clock;
 pub mod input;
 mod scheduler;
+mod snapshot;
+mod timer;
 
 use std::cell::Cell;
 
@@ -35,6 +43,8 @@ pub use input::{
     InputSnapshot, Key, KeySet, MoveAxes, MoveSource, PadButton, PadStick, TouchButton,
 };
 pub use scheduler::{CommandKey, Scheduler, SystemFault};
+pub use snapshot::{GameSnapshot, Restored};
+pub use timer::{Cooldown, TickTimer};
 
 /// The identity of the `FixedUpdate.fixed_update` hook.
 pub const FIXED_UPDATE: NativeId = NativeId::of("viso::game::FixedUpdate::fixed_update");
@@ -62,6 +72,7 @@ impl NativeObject for FixedFrame {
 pub struct RenderFrame {
     dt: Cell<f64>,
     time: Cell<f64>,
+    alpha: Cell<f32>,
 }
 
 impl NativeObject for RenderFrame {
@@ -106,11 +117,14 @@ static FIXED_FRAME_METHODS: [NativeFunction; 4] = [
     .property(),
 ];
 
-static RENDER_FRAME_METHODS: [NativeFunction; 2] = [
+static RENDER_FRAME_METHODS: [NativeFunction; 3] = [
     crate::native!(fn "dt" |_cx, this: Obj<RenderFrame>| -> f64 { Ok(this.dt.get()) })
         .deterministic()
         .realtime_safe(),
     crate::native!(fn "time" |_cx, this: Obj<RenderFrame>| -> f64 { Ok(this.time.get()) })
+        .deterministic()
+        .realtime_safe(),
+    crate::native!(fn "alpha" |_cx, this: Obj<RenderFrame>| -> f32 { Ok(this.alpha.get()) })
         .deterministic()
         .realtime_safe(),
 ];
@@ -146,6 +160,8 @@ pub(crate) static GAME: NativeLibrary = NativeLibrary {
         NativeType::new("MoveAxes", &input::MOVE_AXES_METHODS).borrowed(),
         NativeType::new("InputMap", &input::INPUT_MAP_METHODS),
         NativeType::new("KeySet", &input::KEY_SET_METHODS),
+        NativeType::value("Cooldown", &timer::COOLDOWN_METHODS),
+        NativeType::value("TickTimer", &timer::TICK_TIMER_METHODS),
         NativeType::enumeration("Key", Key::VARIANTS),
         NativeType::enumeration("PadButton", PadButton::VARIANTS),
         NativeType::enumeration("PadStick", PadStick::VARIANTS),

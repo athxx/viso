@@ -1,5 +1,6 @@
 use super::*;
 use crate::native::Natives;
+use crate::value::Value;
 
 #[test]
 fn whole_fixed_steps_come_due_and_the_fraction_carries() {
@@ -221,4 +222,62 @@ fn the_standard_registry_holds_the_input_schema() {
     assert!(input.function.property);
     let new = natives.function("viso::game::InputMap::new").unwrap();
     assert!(new.function.constant && new.function.deterministic);
+}
+
+#[test]
+fn alpha_is_the_carried_fraction_of_a_tick_below_one() {
+    let mut clock = Clock::at_rate(4);
+    assert_eq!(clock.fixed_dt(), 0.25);
+    assert_eq!(clock.alpha(), 0.0);
+    clock.advance(0.3125);
+    assert_eq!(clock.alpha(), 0.25);
+    // A slow-motion backlog keeps more than a tick, which still weighs below 1.
+    clock.set_overrun(TickOverrun::SlowMotion);
+    clock.set_max_catch_up_steps(1);
+    clock.advance(1.0);
+    assert!(clock.alpha() < 1.0 && clock.alpha() > 0.99);
+}
+
+#[test]
+fn a_cooldown_blocks_for_its_period_after_firing() {
+    let ready = Cooldown::new(3);
+    assert!(ready.ready(0));
+    let fired = ready.fire(10);
+    assert!(!fired.ready(12));
+    assert_eq!(fired.remaining(11), 2);
+    assert!(fired.ready(13));
+    assert_eq!(fired.remaining(20), 0);
+    let free = Cooldown::new(0).fire(5);
+    assert!(free.ready(5));
+}
+
+#[test]
+fn a_tick_timer_rearms_on_its_phase_without_drift() {
+    let timer = TickTimer::every(4);
+    assert!(!timer.due(3));
+    assert!(timer.due(4));
+    assert_eq!(timer.rearm(3), timer, "not due yet");
+    let next = timer.rearm(4);
+    assert!(!next.due(7) && next.due(8));
+    // Checked late, it skips the missed periods and stays on phase.
+    let late = timer.rearm(13);
+    assert_eq!(late.remaining(13), 3);
+    assert!(TickTimer::every(0).rearm(1).due(2), "at least one tick");
+}
+
+#[test]
+fn timer_values_round_trip_and_are_schema_value_types() {
+    use crate::native::NativeValue;
+    let cooldown = Cooldown::new(5).fire(2);
+    assert_eq!(Cooldown::from_value(&cooldown.into_value()), Some(cooldown));
+    let timer = TickTimer::every(3).rearm(7);
+    assert_eq!(TickTimer::from_value(&timer.into_value()), Some(timer));
+    assert_eq!(TickTimer::from_value(&Value::Int(1)), None);
+    let natives = Natives::standard();
+    let ty = natives.ty(Cooldown::PATH).expect("Cooldown is registered");
+    assert!(ty.ty.value && ty.ty.snapshots());
+    let fire = natives.function("viso::game::Cooldown::fire").unwrap();
+    assert!(fire.is_method(&natives));
+    let new = natives.function("viso::game::TickTimer::every").unwrap();
+    assert_eq!(new.function.params[0].ty, crate::native::SchemaTy::Ticks);
 }

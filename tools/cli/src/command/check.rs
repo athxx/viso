@@ -69,6 +69,11 @@ pub fn run(global: &Global, out: &mut Output) -> u8 {
                     Some(GameDeterminism::CrossPlatform) => Determinism::CrossPlatform,
                     Some(GameDeterminism::SameBinary) | None => Determinism::SameBinary,
                 },
+                tick_rate: project
+                    .manifest
+                    .game
+                    .tick_rate
+                    .map_or(TargetProfile::default().tick_rate, |rate| rate.value),
                 release: false,
             },
             language: project

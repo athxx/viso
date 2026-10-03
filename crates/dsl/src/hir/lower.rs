@@ -178,6 +178,7 @@ pub fn lower(
     let mut cap = CapabilityGraphBuilder::default();
     let behavior = RefCell::new(ProgramBuilder::new());
     behavior.borrow_mut().strip_debug_draw(profile.release);
+    behavior.borrow_mut().tick_rate(profile.tick_rate);
     let mut domains = simulation::Domains::default();
     let mut migrators = Vec::new();
     let mut systems = Vec::new();
@@ -1157,6 +1158,10 @@ impl TypeEnv for ModuleEnv<'_> {
 
     fn input_action(&self) -> Ty {
         self.decls.input_action.clone().unwrap_or(Ty::Unknown)
+    }
+
+    fn tick_rate(&self) -> u32 {
+        self.decls.profile.tick_rate
     }
 
     fn record_native(&self, call: TextRange, id: NativeId) {

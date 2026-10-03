@@ -65,9 +65,27 @@ impl Clock {
         }
     }
 
+    /// A clock stepping `1 / tick_rate` seconds, as [`Clock::new`] does.
+    ///
+    /// # Panics
+    ///
+    /// If `tick_rate` is 0.
+    pub fn at_rate(tick_rate: u32) -> Clock {
+        assert!(tick_rate > 0, "a tick rate is at least 1 Hz");
+        Clock::new(1.0 / f64::from(tick_rate))
+    }
+
     /// The seconds one tick stands for.
     pub fn fixed_dt(&self) -> f64 {
         self.fixed_dt
+    }
+
+    /// How far into the next tick the accumulated time is, in `[0, 1)`: the
+    /// weight a frame interpolates the last two ticks with.
+    pub fn alpha(&self) -> f32 {
+        // The largest `f32` below 1.
+        const BELOW_ONE: f32 = 1.0 - f32::EPSILON / 2.0;
+        ((self.accumulator / self.fixed_dt) as f32).clamp(0.0, BELOW_ONE)
     }
 
     /// The ticks run so far.
@@ -179,6 +197,7 @@ impl Clock {
         self.tick += 1;
     }
 
+    /// Moves the clock to `tick`, keeping the accumulated time.
     pub(crate) fn rewind(&mut self, tick: u64) {
         self.tick = tick;
     }

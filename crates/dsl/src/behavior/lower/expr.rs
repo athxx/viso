@@ -1,11 +1,12 @@
 //! Expressions: every expression lowers to the register holding its value.
 
+use viso_behavior::native::SchemaTy;
 use viso_ui::adaptive::EnvField;
 
 use super::super::ir::{
     BinaryOp, Const, DisplayKind, Function, FunctionKind, Inst, Num, Reg, UnaryOp,
 };
-use super::{Frame, Lower, Lowerer, Place, num_of};
+use super::{Frame, Lower, Lowerer, Place, assigns, num_of};
 use crate::ast::{AstNode, CallExpr, CastExpr, Expr, FieldExpr, PathExpr};
 use crate::hir::Ty;
 use crate::hir::infer::body::{child_of, emit_args};
@@ -15,6 +16,7 @@ use crate::hir::infer::{NativeCall, VariantInfo, VariantPayload, is_spread, reco
 use crate::hir::infer::{
     binary_op_kind, builtin_variant, child_exprs, first_child_expr, is_integer_ty,
     parse_float_literal, parse_int_literal, split_unit_literal, unary_op_kind, unify_numeric,
+    unit_scale,
 };
 use crate::resolve::{Resolution, SymbolId, SymbolKind};
 use crate::syntax::{SyntaxKind, SyntaxNode, SyntaxToken};
@@ -635,7 +637,23 @@ impl Lowerer<'_, '_> {
             exprs.push(receiver);
         }
         exprs.extend(args.into_iter().map(|(_, e)| e));
-        let args = self.operands(&exprs)?;
+        let params = entry.function.params;
+        let mut args = Vec::with_capacity(exprs.len());
+        for (i, e) in exprs.iter().enumerate() {
+            let mut reg = if params.get(i).is_some_and(|p| p.ty == SchemaTy::Ticks) {
+                // A tick duration was converted to whole ticks while typing.
+                let Some(ticks) = self.cx.ticks_at(e.syntax().text_range()) else {
+                    return self.bail("a tick duration that is not a compile-time constant");
+                };
+                self.constant(Const::Int(i128::from(ticks)))
+            } else {
+                self.expr(e)?
+            };
+            if self.is_local(reg) && exprs[i + 1..].iter().any(|l| assigns(l.syntax())) {
+                reg = self.copy(reg);
+            }
+            args.push(reg);
+        }
         let import = self.b.native(entry);
         let dst = self.reg();
         self.emit(Inst::Native { dst, import, args });
@@ -1033,17 +1051,7 @@ fn unit_literal(text: &str) -> Option<Const> {
         Some(v) => v as f64,
         None => parse_float_literal(body)?,
     };
-    let scale = match suffix {
-        "ns" => 1e-9,
-        "us" => 1e-6,
-        "ms" => 1e-3,
-        "min" => 60.0,
-        "rad" => 180.0 / std::f64::consts::PI,
-        "turn" => 360.0,
-        "khz" => 1000.0,
-        _ => 1.0,
-    };
-    Some(Const::Float(round(value * scale, &ty)))
+    Some(Const::Float(round(value * unit_scale(suffix), &ty)))
 }
 
 /// A `#rgb`, `#rgba`, `#rrggbb` or `#rrggbbaa` color as `0xRRGGBBAA`.

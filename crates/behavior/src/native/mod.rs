@@ -15,7 +15,10 @@
 //! the derives a unit-only `enum` may name in `@derive(..)`.
 //!
 //! A [`NativeType`] with variants is a schema enum: its values are variant
-//! indices, written `Key::Space`, not handles. A function marked
+//! indices, written `Key::Space`, not handles. A [`NativeType::value`] is a
+//! value type: plain data its natives build, such as a game `Cooldown`. A
+//! [`SchemaTy::Ticks`] parameter takes a constant `Duration` the compiler
+//! converts to whole fixed-step ticks. A function marked
 //! [`constant`](NativeFunction::constant) is `@const`: the compiler may run it
 //! while it evaluates a `const`.
 //!
@@ -49,7 +52,7 @@ pub use registry::{
     SchemaConflict,
 };
 pub use standard::{Clipboard, STANDARD, Stopwatch};
-pub use value::{NativeHandle, NativeObject, NativeValue, Obj};
+pub use value::{NativeHandle, NativeObject, NativeValue, Obj, Ticks};
 pub use widget::{
     FlexAxis, MigratableState, NativeWidget, PropertyGroup, SlotCardinality, WidgetEvent,
     WidgetNode, WidgetProperty, WidgetSlot,
@@ -156,8 +159,14 @@ pub enum SchemaTy {
     Bool,
     /// `I64`.
     I64,
+    /// `F32`.
+    F32,
     /// `F64`.
     F64,
+    /// A `Duration` the compiler converts to whole ticks of the game's fixed
+    /// step, rounding up: the argument is a compile-time constant and the
+    /// native receives an `I64` tick count. A parameter type only.
+    Ticks,
     /// `String`.
     String,
     /// `List<T>`.
@@ -166,6 +175,8 @@ pub enum SchemaTy {
     Option(&'static SchemaTy),
     /// The native handle type at this path.
     Handle(&'static str),
+    /// The native value type at this path ([`NativeType::value`]).
+    Value(&'static str),
     /// The schema enum at this path, a variant index.
     Enum(&'static str),
     /// An input action of the compiled package: a variant of the `InputAction`
@@ -180,11 +191,13 @@ impl fmt::Display for SchemaTy {
             SchemaTy::Unit => f.write_str("()"),
             SchemaTy::Bool => f.write_str("Bool"),
             SchemaTy::I64 => f.write_str("I64"),
+            SchemaTy::F32 => f.write_str("F32"),
             SchemaTy::F64 => f.write_str("F64"),
+            SchemaTy::Ticks => f.write_str("Duration"),
             SchemaTy::String => f.write_str("String"),
             SchemaTy::List(t) => write!(f, "List<{t}>"),
             SchemaTy::Option(t) => write!(f, "Option<{t}>"),
-            SchemaTy::Handle(path) | SchemaTy::Enum(path) => {
+            SchemaTy::Handle(path) | SchemaTy::Value(path) | SchemaTy::Enum(path) => {
                 f.write_str(path.rsplit("::").next().unwrap_or(path))
             }
             SchemaTy::Action => f.write_str("Action"),
@@ -371,7 +384,8 @@ impl fmt::Debug for NativeFunction {
     }
 }
 
-/// A native handle type, or a schema enum when it has variants.
+/// A native handle type, a schema enum when it has variants, or a native
+/// value type.
 #[derive(Debug, Clone, Copy)]
 pub struct NativeType {
     /// Its name within its library.
@@ -382,9 +396,9 @@ pub struct NativeType {
     pub ownership: Ownership,
     /// The thread its handles live and drop on.
     pub thread: ThreadDomain,
-    /// Whether a game state may hold it: its object can be captured in and
-    /// restored from a snapshot. A schema enum always can.
-    pub snapshot: bool,
+    /// Whether its values are plain data, an aggregate of numbers the
+    /// interpreter copies and a snapshot captures, rather than handles.
+    pub value: bool,
     /// Its methods and associated functions.
     pub methods: &'static [NativeFunction],
 }
@@ -397,7 +411,21 @@ impl NativeType {
             variants: &[],
             ownership: Ownership::Shared,
             thread: ThreadDomain::Ui,
-            snapshot: false,
+            value: false,
+            methods,
+        }
+    }
+
+    /// A native value type: its natives build and read plain data (an
+    /// aggregate of `Int`s and `Float`s), which any thread may hold, values
+    /// compare by content, and a game snapshot captures.
+    pub const fn value(name: &'static str, methods: &'static [NativeFunction]) -> NativeType {
+        NativeType {
+            name,
+            variants: &[],
+            ownership: Ownership::Shared,
+            thread: ThreadDomain::Any,
+            value: true,
             methods,
         }
     }
@@ -409,7 +437,7 @@ impl NativeType {
             variants,
             ownership: Ownership::Shared,
             thread: ThreadDomain::Any,
-            snapshot: true,
+            value: false,
             methods: &[],
         }
     }
@@ -417,6 +445,13 @@ impl NativeType {
     /// Whether it is a schema enum.
     pub const fn is_enum(&self) -> bool {
         !self.variants.is_empty()
+    }
+
+    /// Whether a game state may hold it: a schema enum or a value type, whose
+    /// values a snapshot captures. A handle's object lives outside the
+    /// interpreter and never does.
+    pub const fn snapshots(&self) -> bool {
+        self.value || self.is_enum()
     }
 
     /// Makes its handles borrowed.
@@ -428,12 +463,6 @@ impl NativeType {
     /// Lives on `thread`.
     pub const fn on(mut self, thread: ThreadDomain) -> NativeType {
         self.thread = thread;
-        self
-    }
-
-    /// Lets a game state hold it.
-    pub const fn snapshot(mut self) -> NativeType {
-        self.snapshot = true;
         self
     }
 }
@@ -532,8 +561,12 @@ impl Fnv {
 
     fn ty(&mut self, ty: &SchemaTy) {
         self.write(ty.to_string().as_bytes());
-        if let SchemaTy::Handle(path) | SchemaTy::Enum(path) = ty {
-            self.write(path.as_bytes());
+        match ty {
+            SchemaTy::Handle(path) | SchemaTy::Value(path) | SchemaTy::Enum(path) => {
+                self.write(path.as_bytes());
+            }
+            SchemaTy::Ticks => self.write(b"ticks"),
+            _ => {}
         }
         self.write(b",");
     }
