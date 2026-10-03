@@ -38,29 +38,32 @@ pub enum ControlKind {
     /// `Text` and `Button`: shows the text of its `text`; it has no built-in
     /// response.
     Label = 4,
+    /// Any other native node: it shows only its [`Look`] and has no built-in
+    /// response.
+    Plain = 5,
 }
 
 impl ControlKind {
     /// Every kind, by discriminant.
-    pub const ALL: [ControlKind; 5] = [
+    pub const ALL: [ControlKind; 6] = [
         ControlKind::Toggle,
         ControlKind::Slider,
         ControlKind::Select,
         ControlKind::TextInput,
         ControlKind::Label,
+        ControlKind::Plain,
     ];
 
-    /// The kind native widget `widget` is, `None` for a widget whose displayed
-    /// value the view does not drive.
-    pub fn of(widget: &str) -> Option<ControlKind> {
-        Some(match widget {
+    /// The kind native widget `widget` is.
+    pub fn of(widget: &str) -> ControlKind {
+        match widget {
             "Toggle" | "CheckBox" => ControlKind::Toggle,
             "Slider" => ControlKind::Slider,
             "Tabs" | "RadioGroup" => ControlKind::Select,
             "TextInput" => ControlKind::TextInput,
             "Text" | "Button" => ControlKind::Label,
-            _ => return None,
-        })
+            _ => ControlKind::Plain,
+        }
     }
 
     /// The route of the control's event `event`, `None` for one it does not
@@ -77,7 +80,7 @@ impl ControlKind {
 
     /// Whether the node responds to pointer and key samples itself.
     pub fn responds(self) -> bool {
-        self != ControlKind::Label
+        !matches!(self, ControlKind::Label | ControlKind::Plain)
     }
 
     /// Whether the control reports `route`.
@@ -95,6 +98,8 @@ impl ControlKind {
     /// Which of [`Control`]'s entries the widget property `property` fills.
     pub fn input(self, property: &str) -> Option<ControlInput> {
         Some(match (self, property) {
+            (_, "background") => ControlInput::Background,
+            (_, "opacity") => ControlInput::Opacity,
             (ControlKind::Toggle, "checked")
             | (ControlKind::Slider, "value")
             | (ControlKind::Select, "selected")
@@ -115,6 +120,7 @@ impl ControlKind {
             ControlKind::Select => "Select",
             ControlKind::TextInput => "TextInput",
             ControlKind::Label => "Label",
+            ControlKind::Plain => "Plain",
         }
     }
 
@@ -135,6 +141,10 @@ pub enum ControlInput {
     Max,
     /// A slider's step.
     Step,
+    /// The node's `background`.
+    Background,
+    /// The node's `opacity`.
+    Opacity,
 }
 
 /// A view-driven native node: its kind and the handler-table entries that
@@ -152,6 +162,18 @@ pub struct Control {
     pub max: Option<u32>,
     /// The entry of a slider's step.
     pub step: Option<u32>,
+    /// The entries of the look it shows.
+    pub look: Look,
+}
+
+/// The handler-table entries of the look a node shows: an absent entry leaves
+/// the node as it was built (no fill, opaque).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Look {
+    /// Its `background`: a color, or `None` for no fill.
+    pub background: Option<u32>,
+    /// Its `opacity`.
+    pub opacity: Option<u32>,
 }
 
 /// The fraction of a slider's range one arrow key moves a stepless slider.
@@ -169,6 +191,7 @@ impl Control {
             min: None,
             max: None,
             step: None,
+            look: Look::default(),
         }
     }
 
@@ -179,6 +202,8 @@ impl Control {
             ControlInput::Min => self.min,
             ControlInput::Max => self.max,
             ControlInput::Step => self.step,
+            ControlInput::Background => self.look.background,
+            ControlInput::Opacity => self.look.opacity,
         }
     }
 
@@ -189,6 +214,8 @@ impl Control {
             ControlInput::Min => &mut self.min,
             ControlInput::Max => &mut self.max,
             ControlInput::Step => &mut self.step,
+            ControlInput::Background => &mut self.look.background,
+            ControlInput::Opacity => &mut self.look.opacity,
         };
         *slot = Some(entry);
     }
@@ -210,7 +237,7 @@ impl Control {
             ControlKind::Slider => self.slider(host, scope, cx),
             ControlKind::Select => self.select(host, scope, cx),
             ControlKind::TextInput => text_input(cx),
-            ControlKind::Label => None,
+            ControlKind::Label | ControlKind::Plain => None,
         }
     }
 
@@ -333,7 +360,15 @@ impl Control {
 impl Encode for Control {
     fn encode(&self, enc: &mut Encoder) {
         enc.write_u8(self.kind as u8);
-        for entry in [self.value, self.min, self.max, self.step] {
+        let look = self.look;
+        for entry in [
+            self.value,
+            self.min,
+            self.max,
+            self.step,
+            look.background,
+            look.opacity,
+        ] {
             enc.write_varint(entry.map_or(0, |e| u64::from(e) + 1));
         }
     }
@@ -355,6 +390,10 @@ impl Decode for Control {
             min: entry()?,
             max: entry()?,
             step: entry()?,
+            look: Look {
+                background: entry()?,
+                opacity: entry()?,
+            },
         })
     }
 }
@@ -490,10 +529,17 @@ mod tests {
         for kind in ControlKind::ALL {
             assert_eq!(ControlKind::from_u8(kind as u8), Some(kind));
         }
-        assert_eq!(ControlKind::from_u8(5), None);
-        assert_eq!(ControlKind::of("CheckBox"), Some(ControlKind::Toggle));
-        assert_eq!(ControlKind::of("Button"), Some(ControlKind::Label));
+        assert_eq!(ControlKind::from_u8(6), None);
+        assert_eq!(ControlKind::of("CheckBox"), ControlKind::Toggle);
+        assert_eq!(ControlKind::of("Button"), ControlKind::Label);
+        assert_eq!(ControlKind::of("Column"), ControlKind::Plain);
         assert!(!ControlKind::Label.responds());
+        assert!(!ControlKind::Plain.responds());
+        assert_eq!(
+            ControlKind::Plain.input("opacity"),
+            Some(ControlInput::Opacity)
+        );
+        assert_eq!(ControlKind::Plain.input("text"), None);
         assert_eq!(
             ControlKind::TextInput.input("value"),
             Some(ControlInput::Value)
@@ -513,6 +559,10 @@ mod tests {
             min: None,
             max: Some(7),
             step: None,
+            look: Look {
+                background: Some(3),
+                opacity: None,
+            },
         };
         let bytes = control.encode_to_vec();
         assert_eq!(Control::decode_from_slice(&bytes), Ok(control));

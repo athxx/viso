@@ -256,6 +256,9 @@ pub struct NodeStore {
     /// during the main walk and emits them last, so top-layer content draws over
     /// the rest of the scene without a z-index sort.
     overlay: Vec<bool>,
+    /// Hot: each node's opacity, applied to it and its subtree as one layer.
+    /// Default `1.0`; `0.0` paints nothing.
+    opacity: Vec<f32>,
     /// Cold: per-node pointer handler, index-aligned but mostly `None`. Read
     /// only when a node lands on a hit's dispatch chain, so it lives off the hot
     /// columns as an owned box rather than an inline fat pointer.
@@ -464,6 +467,7 @@ impl NodeStore {
         self.hittable.clear();
         self.hidden.clear();
         self.overlay.clear();
+        self.opacity.clear();
         self.handlers.clear();
         self.focusable.clear();
         self.key_handlers.clear();
@@ -1600,6 +1604,44 @@ impl NodeStore {
         self.mark_dirty(id, DirtyClass::LAYOUT | DirtyClass::PAINT);
     }
 
+    /// A node's opacity (default `1.0`).
+    #[inline]
+    pub fn opacity(&self, id: NodeId) -> f32 {
+        self.opacity[id.index() as usize]
+    }
+
+    /// Set the opacity a node and its subtree paint at, clamped to `[0, 1]`
+    /// (a non-finite value is opaque). A live-guarded write that marks PAINT
+    /// only when the value changes: opacity never moves a box.
+    pub fn set_opacity(&mut self, id: NodeId, opacity: f32) {
+        if !self.arena.is_live(id) {
+            return;
+        }
+        let opacity = if opacity.is_finite() {
+            opacity.clamp(0.0, 1.0)
+        } else {
+            1.0
+        };
+        let slot = &mut self.opacity[id.index() as usize];
+        if *slot != opacity {
+            *slot = opacity;
+            self.mark_dirty(id, DirtyClass::PAINT);
+        }
+    }
+
+    /// Set the color a node's box fills with, keeping its radius and border. A
+    /// live-guarded write that marks PAINT only when the color changes.
+    pub fn set_fill(&mut self, id: NodeId, fill: Rgba) {
+        if !self.arena.is_live(id) {
+            return;
+        }
+        let style = &mut self.style[id.index() as usize];
+        if style.fill != fill {
+            style.fill = fill;
+            self.mark_dirty(id, DirtyClass::PAINT);
+        }
+    }
+
     /// Whether a node is an overlay — painted in the deferred top layer, over
     /// every non-overlay node regardless of tree position (default `false`).
     #[inline]
@@ -2101,6 +2143,7 @@ impl NodeStore {
             self.hittable[i] = true;
             self.hidden[i] = false;
             self.overlay[i] = false;
+            self.opacity[i] = 1.0;
             self.handlers[i] = None;
             self.focusable[i] = false;
             self.key_handlers[i] = None;
@@ -2137,6 +2180,7 @@ impl NodeStore {
             self.hittable.push(true);
             self.hidden.push(false);
             self.overlay.push(false);
+            self.opacity.push(1.0);
             self.handlers.push(None);
             self.focusable.push(false);
             self.key_handlers.push(None);

@@ -1,6 +1,7 @@
 //! Delivering the values a view's nodes show: a label's text, a text field's
-//! seeded buffer, and a control's value and range as its semantic state. A
-//! text field with no `value` is never seeded: its text is what its user types.
+//! seeded buffer, a control's value and range as its semantic state, and any
+//! node's look (its `background` and `opacity`). A text field with no `value`
+//! is never seeded: its text is what its user types.
 //!
 //! A node's value is a pure entry of the view's handler table. It is evaluated
 //! when the node mounts and again only when a cell it reads changes, and a value
@@ -101,13 +102,23 @@ pub(crate) fn control_cells(
     host: &ViewHost,
     out: &mut Vec<StateId>,
 ) {
-    for entry in [control.value, control.min, control.max]
-        .into_iter()
-        .flatten()
+    let look = control.look;
+    for entry in [
+        control.value,
+        control.min,
+        control.max,
+        look.background,
+        look.opacity,
+    ]
+    .into_iter()
+    .flatten()
     {
         host.entry_cells(entry, scope, out);
     }
 }
+
+/// How many values a node shows.
+const SHOWN: usize = 5;
 
 /// A node showing a value of the view.
 pub(crate) struct Shown {
@@ -117,9 +128,9 @@ pub(crate) struct Shown {
     scope: Scope,
     /// The cells its entries read, ascending.
     deps: Box<[StateId]>,
-    /// The value, lower bound and upper bound it shows, `None` before the
-    /// first delivery.
-    shows: Option<[Value; 3]>,
+    /// The value, lower bound, upper bound, background and opacity it shows,
+    /// `None` before the first delivery.
+    shows: Option<[Value; SHOWN]>,
 }
 
 impl Shown {
@@ -162,12 +173,15 @@ impl Shown {
     /// them unless the node already shows them. A fault is kept as the host's
     /// [`last_fault`](ViewHost::last_fault) and leaves the node as it is.
     pub(crate) fn deliver(&mut self, cx: &mut StructureCx<'_>, host: &mut ViewHost) {
-        let mut shows = [Value::Nil, Value::Nil, Value::Nil];
-        for (value, entry) in
-            shows
-                .iter_mut()
-                .zip([self.control.value, self.control.min, self.control.max])
-        {
+        let control = self.control;
+        let mut shows: [Value; SHOWN] = Default::default();
+        for (value, entry) in shows.iter_mut().zip([
+            control.value,
+            control.min,
+            control.max,
+            control.look.background,
+            control.look.opacity,
+        ]) {
             let Some(entry) = entry else { continue };
             match host.evaluate(entry, &self.scope, None, &*cx.states) {
                 Ok(evaluated) => *value = evaluated,
@@ -177,10 +191,19 @@ impl Shown {
                 }
             }
         }
-        if self.shows.as_ref() == Some(&shows) {
+        let prior = self.shows.as_ref();
+        if prior == Some(&shows) {
             return;
         }
-        let [value, min, max] = &shows;
+        let [value, min, max, background, opacity] = &shows;
+        let changed = |at: usize| prior.is_none_or(|prior| prior[at] != shows[at]);
+        let store = &mut *cx.store;
+        if control.look.background.is_some() && changed(3) {
+            store.set_fill(self.node, color(background));
+        }
+        if control.look.opacity.is_some() && changed(4) {
+            store.set_opacity(self.node, float(opacity, 1.0));
+        }
         let text = || TextRequest {
             text: value.as_str().unwrap_or_default().to_owned(),
             font_size: FONT_SIZE,
@@ -188,8 +211,12 @@ impl Shown {
             soft_wrap: false,
             locale: None,
         };
-        let store = &mut *cx.store;
-        match self.control.kind {
+        if prior.is_some() && (0..3).all(|at| !changed(at)) {
+            self.shows = Some(shows);
+            return;
+        }
+        match control.kind {
+            ControlKind::Plain => {}
             ControlKind::Label => store.set_text_request(self.node, text()),
             ControlKind::TextInput if self.control.value.is_some() => {
                 store.seed_text(self.node, text());
@@ -227,6 +254,20 @@ fn select(store: &mut NodeStore, node: NodeId, selected: i64) {
         };
         store.set_semantic_state(id, state);
         index += 1;
+    }
+}
+
+/// A `Color` value (`0xRRGGBBAA`) as a fill, transparent for `None`.
+fn color(value: &Value) -> Rgba {
+    let Some(rgba) = value.as_int() else {
+        return Rgba::TRANSPARENT;
+    };
+    let channel = |shift: u32| ((rgba >> shift) & 0xff) as f32 / 255.0;
+    Rgba {
+        r: channel(24),
+        g: channel(16),
+        b: channel(8),
+        a: channel(0),
     }
 }
 

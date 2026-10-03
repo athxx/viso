@@ -30,7 +30,7 @@ mod scope;
 mod values;
 
 pub use attach::{Route, attach, attach_node};
-pub use control::{Control, ControlInput, ControlKind};
+pub use control::{Control, ControlInput, ControlKind, Look};
 pub use env::{__link_env, env_value};
 pub use host::{__embedded, HostError, StateCells, ViewHost, cell_value, vm_value};
 #[cfg(feature = "hot-reload")]

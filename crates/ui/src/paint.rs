@@ -74,12 +74,25 @@ fn paint_subtree(
     if !arena.is_live(root) {
         return;
     }
-    // A hidden node paints neither its own quad/content nor any descendant.
-    if store.hidden(root) {
+    // A hidden node paints neither its own quad/content nor any descendant, and
+    // neither does a fully transparent one.
+    let opacity = store.opacity(root);
+    if store.hidden(root) || opacity <= 0.0 {
         return;
     }
 
     let world = store.world(root);
+    // A translucent node composites itself and its subtree as one layer over
+    // its own box.
+    let faded = opacity < 1.0;
+    if faded {
+        out.push(Primitive::Layer(LayerClip {
+            clip: world,
+            opacity,
+            blur_sigma: 0.0,
+            backdrop_sigma: 0.0,
+        }));
+    }
     let style = store.style(root);
     if style.is_visible() {
         out.push(Primitive::Quad(Quad {
@@ -124,6 +137,9 @@ fn paint_subtree(
     }
 
     if scroll_clip {
+        out.push(Primitive::LayerEnd);
+    }
+    if faded {
         out.push(Primitive::LayerEnd);
     }
 }
@@ -237,6 +253,50 @@ mod tests {
         b: 0.0,
         a: 1.0,
     };
+
+    #[test]
+    fn a_translucent_node_paints_its_subtree_as_one_layer() {
+        let mut store = NodeStore::new();
+        let (root, leaf) = {
+            let mut cx = BuildCx::new(&mut store);
+            let mut leaf = None;
+            cx.flex(FlexStyle::default(), |cx| {
+                leaf = Some(
+                    cx.leaf(LeafStyle {
+                        size: Size::fixed(10.0, 10.0),
+                        style: BoxStyle::solid(RED),
+                    })
+                    .id(),
+                );
+            });
+            (cx.root().unwrap(), leaf.unwrap())
+        };
+        let surface = Rect {
+            x: 0.0,
+            y: 0.0,
+            w: 100.0,
+            h: 100.0,
+        };
+        store.layout(root, surface, &mut Vec::new());
+        store.set_opacity(root, 0.5);
+        assert!(store.dirty(root).contains(DirtyClass::PAINT));
+        let mut out = Vec::new();
+        paint_tree(&store, root, &mut out);
+        assert_eq!(out.len(), 3, "layer, leaf, layer end");
+        assert!(matches!(out[0], Primitive::Layer(l) if l.opacity == 0.5));
+        assert!(matches!(out[2], Primitive::LayerEnd));
+
+        let green = Rgba { g: 1.0, ..RED };
+        store.set_fill(leaf, green);
+        store.set_opacity(root, 0.0);
+        out.clear();
+        paint_tree(&store, root, &mut out);
+        assert!(out.is_empty(), "a transparent node paints nothing");
+        store.set_opacity(root, f32::NAN);
+        out.clear();
+        paint_tree(&store, root, &mut out);
+        assert!(matches!(out[..], [Primitive::Quad(q)] if q.color == green));
+    }
 
     #[test]
     fn transparent_container_emits_only_visible_leaves() {

@@ -371,6 +371,17 @@ Goal: a file edit reaches the running app as one transaction or not at all.
         edit buffer across a structural rebuild by `NodeKey`; a lost focus or
         scroll offset is reported.
   - [ ] Animation fields carry (needs the DSL transition runtime).
+    - [x] A node's look reaches it: `background` and `opacity` compile to value entries
+          on any native node (`ControlKind::Plain` when it drives nothing else) and are
+          delivered by the macros, hot-reload commit, view package and regions;
+          `NodeStore::set_fill` / `set_opacity`, opacity painting its subtree as a layer.
+    - [ ] `transition.background` / `transition.opacity` (§U6.1, §U6.4): the shown value
+          interpolates after mount, retargets, and is instant under reduced motion.
+    - [ ] An in-flight transition carries to the node that rebuilds its kept node.
+    - [ ] Not yet animatable because the property itself does not reach its node:
+          `translate` and `corner_radius` (the VM has no `MixedLength`), `scale` and
+          `rotation` (no transform channel), text `color` (baked into shaping), and
+          `width`/`height`.
   - [x] Nodes a region mounts carry their state.
     - [x] The view runtime lists the nodes its regions show, each with its arm item
           and the keys of the `for` items around it.

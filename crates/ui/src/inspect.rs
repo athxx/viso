@@ -313,7 +313,7 @@ impl PaintRanges {
 ///
 /// A cold-path introspection surface (architecture section 34/62): it re-walks
 /// the tree with the identical pre-order + deferred-overlay + visibility /
-/// hidden / scroll-clip rules as `paint_tree`, but wraps each node's emission in
+/// hidden / opacity / scroll-clip rules as `paint_tree`, but wraps each node's emission in
 /// a [`PaintRange`] recording. It is kept out of the steady frame path (the
 /// frame calls `paint_tree`; a tool or test calls this), so the hot walk carries
 /// no range-recording branch. `out` is not cleared — append semantics match
@@ -353,7 +353,8 @@ fn paint_subtree_ranges(
     if !arena.is_live(root) {
         return;
     }
-    if store.hidden(root) {
+    let opacity = store.opacity(root);
+    if store.hidden(root) || opacity <= 0.0 {
         return;
     }
 
@@ -368,6 +369,15 @@ fn paint_subtree_ranges(
     });
 
     let world = store.world(root);
+    let faded = opacity < 1.0;
+    if faded {
+        out.push(Primitive::Layer(LayerClip {
+            clip: world,
+            opacity,
+            blur_sigma: 0.0,
+            backdrop_sigma: 0.0,
+        }));
+    }
     let style = store.style(root);
     if style.is_visible() {
         out.push(Primitive::Quad(Quad {
@@ -403,6 +413,9 @@ fn paint_subtree_ranges(
     }
 
     if scroll_clip {
+        out.push(Primitive::LayerEnd);
+    }
+    if faded {
         out.push(Primitive::LayerEnd);
     }
 
@@ -963,6 +976,7 @@ mod tests {
         store.arena_append_child(root, b);
         store.set_content_payload(a, text_content());
         store.set_content_payload(b, text_content());
+        store.set_opacity(a, 0.5);
 
         let mut from_paint = Vec::new();
         crate::paint::paint_tree(&store, root, &mut from_paint);
