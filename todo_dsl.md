@@ -386,8 +386,15 @@ Goal: a file edit reaches the running app as one transaction or not at all.
 - [x] Bench: edit-to-pixels latency for a one-property change (release measurement).
   - [x] Release measurement split into watcher detection and reload +
         relayout + repaint (median 44 ms, of which the pipeline is 0.9 ms).
-- [ ] Platform file events instead of polling, removing the poll and settle
+- [x] Platform file events instead of polling, removing the poll and settle
       latency that dominates edit-to-pixels.
+  - [x] kqueue (macOS, iOS, FreeBSD), inotify (Linux, Android) and
+        `ReadDirectoryChangesW` (Windows) over each file's directory, so atomic saves
+        report; a file no backend covers is polled as before.
+  - [x] A 5 ms quiet window where every write reports (kqueue, Windows), none where
+        an event marks a completed write (inotify).
+  - [x] Release edit-to-pixels on macOS: median 44 ms → 6.6 ms (detect 5.8 ms);
+        Linux and Windows compile and lint clean but are not measured.
 
 ### Done
 
