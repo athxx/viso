@@ -556,12 +556,26 @@ timers (§104–§111).
 
 ### D5.3 — State tiers and determinism
 
-- [ ] `@local` state; Simulation domain = hooks plus reachable callables (§106.4).
-- [ ] `E9103` Simulation touching Local or Presentation return values.
-- [ ] `E9104` non-deterministic sources in Simulation.
-- [ ] `Snapshot` trait, auto-derived for value types; `E9105`.
-- [ ] Presentation commands keyed `(tick, source_system, sequence)`, not redelivered on
+- [x] `@local` state; Simulation domain = hooks plus reachable callables (§106.4).
+  - [x] Hook domain declared in the schema (`FixedUpdate`/`CollisionListener`
+        Simulation, `FrameUpdate` Presentation); reachability over the package call
+        graph, each finding noting the hook that reaches it.
+  - [x] `@local` only on a system `state` (`E9103` otherwise).
+- [x] `E9103` Simulation touching Local or Presentation return values.
+- [x] `E9104` non-deterministic sources in Simulation.
+  - [x] Native determinism tier (`none`/`same_binary`/`cross_platform`) against
+        `[game] determinism` (manifest + CLI); native tasks, `task` calls, `await`,
+        `env`.
+- [x] `Snapshot` trait, auto-derived for value types; `E9105`.
+  - [x] Value types, records, enums, tuples and containers derive it; closures and
+        handles whose type declares no snapshot do not.
+- [x] Presentation commands keyed `(tick, source_system, sequence)`, not redelivered on
       replay or rollback; debug draw stripped in release.
+  - [x] Deferred by the VM in Simulation hooks, discarded with a faulting hook,
+        delivered after the tick in key order behind a delivery watermark
+        (`rewind_to`, counters).
+  - [x] Release profile lowers debug draw calls to nothing; the VM also drops them in
+        release builds.
 
 ### D5.4 — Timers, snapshots, interpolation
 

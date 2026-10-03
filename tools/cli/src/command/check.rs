@@ -5,10 +5,10 @@
 use std::fs;
 use std::path::Path;
 
-use viso_dsl::hir::InputDevices;
+use viso_dsl::hir::{Determinism, InputDevices, TargetProfile};
 use viso_dsl::package::{PackageManifest, load_package};
 use viso_dsl::{TextRange, TextSize};
-use viso_project::{ConfigDiagnostic, Project, Span};
+use viso_project::{ConfigDiagnostic, GameDeterminism, Project, Span};
 
 use super::{DIAGNOSTICS, ENV_CURRENT_DIR, ENV_SOURCE_UNREADABLE, ENVIRONMENT, SUCCESS};
 use crate::args::Global;
@@ -60,9 +60,16 @@ pub fn run(global: &Global, out: &mut Output) -> u8 {
             name,
             // The host is a desktop, which takes gamepads; a mobile target
             // takes touch.
-            devices: InputDevices {
-                gamepad: true,
-                touch: project.manifest.targets != Default::default(),
+            profile: TargetProfile {
+                devices: InputDevices {
+                    gamepad: true,
+                    touch: project.manifest.targets != Default::default(),
+                },
+                determinism: match project.manifest.game.determinism.map(|d| d.value) {
+                    Some(GameDeterminism::CrossPlatform) => Determinism::CrossPlatform,
+                    Some(GameDeterminism::SameBinary) | None => Determinism::SameBinary,
+                },
+                release: false,
             },
             language: project
                 .manifest

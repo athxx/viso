@@ -43,10 +43,11 @@ pub use component::MemberEnv;
 pub use effect::{BodyContext, EffectClass, EffectCx, EffectEnv};
 pub use infer::{FieldInfo, InferCx, TypeEnv, TypeSchemas, VariantInfo, VariantPayload};
 pub(crate) use lower::write_backs;
-pub use lower::{InputDevices, LoweredPackage, Migrator, lower};
+pub use lower::{InputDevices, LoweredPackage, Migrator, TargetProfile, lower};
 pub use nodes::{
     CallableKind, ComponentSchema, ConstValue, HirCallable, HirComponent, HirComputed, HirEvent,
     HirInput, HirMeta, HirSlot, HirState, OwnershipMode,
 };
 pub use reads::{DerivedReads, ReadEnv, SourceSet, WithDerived, collect_reads};
 pub use ty::{Ty, TypeError, WidenError};
+pub use viso_behavior::native::Determinism;

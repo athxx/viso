@@ -12,7 +12,9 @@
 
 use std::cell::Cell;
 
-use crate::native::{NativeError, NativeFunction, NativeObject, NativeValue, Obj, SchemaTy};
+use crate::native::{
+    Determinism, NativeError, NativeFunction, NativeObject, NativeValue, Obj, SchemaTy,
+};
 use crate::value::Value;
 
 /// The derive that makes a unit-only enum an action set an `InputMap` maps.
@@ -620,6 +622,7 @@ pub(super) static MOVE_AXES_METHODS: [NativeFunction; 4] = [
     })
     .deterministic()
     .realtime_safe(),
+    // The host `sin`/`cos` reproduce on one build and target only.
     crate::native!(fn "relative_to" |_cx, this: Obj<MoveAxes>, yaw: f64| -> Obj<MoveAxes> {
         let (sin, cos) = yaw.sin_cos();
         let (x, y) = (this.x.get(), this.y.get());
@@ -627,5 +630,7 @@ pub(super) static MOVE_AXES_METHODS: [NativeFunction; 4] = [
             x: Cell::new(x * cos - y * sin),
             y: Cell::new(x * sin + y * cos),
         }))
-    }),
+    })
+    .deterministic()
+    .reproducible(Determinism::SameBinary),
 ];

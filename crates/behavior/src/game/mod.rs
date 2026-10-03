@@ -25,8 +25,8 @@ mod scheduler;
 use std::cell::Cell;
 
 use crate::native::{
-    NativeFunction, NativeHook, NativeId, NativeLibrary, NativeObject, NativeTrait, NativeType,
-    Obj, Param, SchemaTy,
+    HookDomain, NativeFunction, NativeHook, NativeId, NativeLibrary, NativeObject, NativeTrait,
+    NativeType, Obj, Param, SchemaTy,
 };
 
 pub use clock::{Clock, TickOverrun};
@@ -34,7 +34,7 @@ pub use input::{
     Action, INPUT_ACTION_DERIVE, InputAction, InputAxis, InputBindings, InputMap, InputSchema,
     InputSnapshot, Key, KeySet, MoveAxes, MoveSource, PadButton, PadStick, TouchButton,
 };
-pub use scheduler::{Scheduler, SystemFault};
+pub use scheduler::{CommandKey, Scheduler, SystemFault};
 
 /// The identity of the `FixedUpdate.fixed_update` hook.
 pub const FIXED_UPDATE: NativeId = NativeId::of("viso::game::FixedUpdate::fixed_update");
@@ -162,6 +162,7 @@ pub(crate) static GAME: NativeLibrary = NativeLibrary {
                     name: "frame",
                     ty: SchemaTy::Handle(FixedFrame::PATH),
                 }],
+                domain: HookDomain::Simulation,
             }],
         },
         NativeTrait {
@@ -172,6 +173,7 @@ pub(crate) static GAME: NativeLibrary = NativeLibrary {
                     name: "frame",
                     ty: SchemaTy::Handle(RenderFrame::PATH),
                 }],
+                domain: HookDomain::Presentation,
             }],
         },
         NativeTrait {
@@ -182,6 +184,7 @@ pub(crate) static GAME: NativeLibrary = NativeLibrary {
                     name: "event",
                     ty: SchemaTy::Handle(CollisionEvent::PATH),
                 }],
+                domain: HookDomain::Simulation,
             }],
         },
     ],

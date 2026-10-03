@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use viso_behavior::game::{COLLISION, Clock, FIXED_UPDATE, FRAME_UPDATE, Scheduler, TickOverrun};
 use viso_behavior::native::{
-    NativeHook, NativeLibrary, NativeTrait, Natives, Param, STANDARD, SchemaTy,
+    HookDomain, NativeHook, NativeLibrary, NativeTrait, Natives, Param, STANDARD, SchemaTy,
 };
 use viso_behavior::{Budget, Module, Value, Vm};
 use viso_dsl::frontend::{Origin, compile_file, compile_file_in};
@@ -332,6 +332,7 @@ static TWIN: NativeLibrary = NativeLibrary {
                     name: "dt",
                     ty: SchemaTy::F64,
                 }],
+                domain: HookDomain::Simulation,
             }],
         },
         NativeTrait {
@@ -342,6 +343,7 @@ static TWIN: NativeLibrary = NativeLibrary {
                     name: "dt",
                     ty: SchemaTy::F64,
                 }],
+                domain: HookDomain::Simulation,
             }],
         },
     ],

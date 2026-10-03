@@ -41,7 +41,7 @@ pub use config::{
 pub use diag::{ConfigCode, ConfigDiagnostic, Severity, Span};
 pub use discovery::{MANIFEST_NAME, Project, find_root};
 pub use fingerprint::{BuildId, FINGERPRINT_VERSION, Hash128, ProjectFingerprint, Toolchain};
-pub use manifest::{Manifest, ParseOutcome, Spanned};
+pub use manifest::{GameDeterminism, Manifest, ParseOutcome, Spanned};
 pub use target::{ArtifactKind, DevRuntime, HostOs, OptLevel, Profile, Target};
 
 /// Locates a project and resolves its configuration in one step.

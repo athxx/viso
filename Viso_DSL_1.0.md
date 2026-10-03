@@ -1852,6 +1852,7 @@ Native Schema 由 Rust 侧生成（ADR 0036）：一个 Native Library 是一条
 
 - 每个函数记录：名称、`fn`/`action`/`task` 分类、参数与返回的 Schema 类型、所需 Capability、线程域（`any`/`ui`/`worker`）、`deterministic`、`realtime_safe`、`@const`（编译期可求值，隐含 `deterministic`）与每次调用的预算成本；每个 Handle 类型记录方法、所有权（`shared`/`borrowed`）与线程域；
 - Schema Enum 是带 Variant 的 Native 类型，值为 Variant 序号而非 Handle：`import viso::game::Key;` 后写 `Key::Space`，未知 Variant 为 `E2001`（附最近候选）；
+- 每个函数声明可复现档位（`none`/`same_binary`/`cross_platform`）：`deterministic` 的函数默认 `cross_platform`，调用宿主超越函数的声明 `same_binary`，时钟、随机与 I/O 为 `none`；Presentation 函数（粒子、音效、相机抖动）与 Debug Draw 函数在 Schema 中标记；Handle 类型声明能否进入 Snapshot，Schema Enum 总能；Scheduler Hook 声明所属层（Simulation/Presentation）；
 - Property 是只有 Receiver 参数的方法，写 `frame.input`，不加括号；对 Property 加 `()` 报 `E2103`，读取未声明的 Property 报 `E2001`；
 - 调用经 Import 或完整路径解析：`import viso::text;` 后写 `text::upper(s)`，`import viso::math::{clamp};` 后写 `clamp(x, 0.0, 1.0)`，`import viso::time::Stopwatch;` 后写 `Stopwatch::start()`；Handle 方法写 `watch.elapsed_ms()`，Receiver 作为第一个参数。未注册的路径或方法为 `E2001`；
 - Effect 分类：`deterministic` 的 `fn` 为 Pure，其余 `fn` 为 Read，`action` 为 Action，`task` 为 Task；在 View/Computed 中调用 `action` 为 `E2502`；
@@ -5781,18 +5782,19 @@ Game Profile 把状态分为三层：
 | Derived    | `computed`              | 只读 Simulation 状态，不可写                        | 否，Restore 后重算 | 否，各端重算 |
 | Local      | `@local state`          | FrameUpdate、UI、Presentation                       | 否               | 否           |
 
-Simulation 域是 `start`、FixedUpdate、CollisionListener 以及从它们可达的 `fn`/`action`。编译期规则：
+Simulation 域是 `start`、FixedUpdate、CollisionListener（Schema 中声明为 Simulation 的 Hook）以及从它们可达的 `fn`/`action`/`computed`，跨模块沿调用图计算。编译期规则：
 
-- Simulation 域读写 `@local` 状态，或使用 Presentation 方法的返回值，报 `E9103`；
-- Simulation 域使用非确定性来源报 `E9104`：Wall Clock、`Task`/`await`、未预加载的 Resource 结果、未注入的 Random、未声明有序的 Hash 容器迭代、宿主超越函数（§106.5）、UI State 与 Adaptive Environment；
+- `@local` 只标记 System 的 `state`，标在其他成员或 Component 上报 `E9103`；
+- Simulation 域读写 `@local` 状态，或调用返回非 `()` 的 Presentation 方法，报 `E9103`；诊断的 note 指出该 Callable 由哪个 Hook 可达；
+- Simulation 域使用非确定性来源报 `E9104`：Wall Clock、`Task`/`await`、未预加载的 Resource 结果、未注入的 Random、未声明有序的 Hash 容器迭代、宿主超越函数（§106.5）、UI State 与 Adaptive Environment；Native 的可复现档位低于 Package 的 `[game] determinism`（默认 `same_binary`）即为非确定性来源；
 - Simulation 状态类型必须实现 `Snapshot`。值类型自动派生；闭包、`Task` 与未声明 Snapshot 的 Handle 不能实现，否则报 `E9105`；
 - Presentation 可以只读 Simulation 状态，读到的是本帧提交的 World Revision。
 
 Simulation 可以触发粒子、音效、相机抖动和 Debug Draw，但只能作为 Presentation Command：
 
-- 命令返回 `()`，不能影响 Simulation；
+- 命令返回 `()`，不能影响 Simulation；Simulation 域调用 Presentation 函数时不立即执行，而是作为命令推迟到该 Tick 结束后按键序交付；发生 Fault 的 Hook 发出的命令随其状态写入一起丢弃；Presentation 域（FrameUpdate）中直接执行；
 - 命令按 `(tick, source_system, sequence)` 标识；回放、回滚重算与 Restore 时，已交付 Tick 的命令不重复交付；
-- Debug Draw 命令在 Release 中被移除。
+- Debug Draw 命令在 Release 中被移除：调用连同实参求值都不生成代码。
 
 因此“玩法不依赖本地表现状态”是编译期保证。回放、回滚、存档和热重载都建立在这一分层上。
 
@@ -8463,7 +8465,7 @@ RecordPatternField
 | E8104  | Shader ABI 不匹配                                       |
 | E9101  | Game System Order 循环                                  |
 | E9102  | Fixed Tick 预算超限                                     |
-| E9103  | Simulation 域访问 Local 状态或 Presentation 返回值（§106.4） |
+| E9103  | Simulation 域访问 Local 状态或 Presentation 返回值，或 `@local` 误用（§106.4） |
 | E9104  | Simulation 域使用非确定性来源（§106.4、§106.5）          |
 | E9105  | Simulation 状态类型未实现 Snapshot（§106.4）             |
 | E9106  | `@persist` 键重复、类型不可持久化或缺少 Capability（§106.8） |

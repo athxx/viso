@@ -9,7 +9,7 @@ use viso_behavior::native::Natives;
 use viso_behavior::{Budget, Module, Value, Vm};
 use viso_dsl::Severity;
 use viso_dsl::frontend::{Origin, compile_file, compile_file_for};
-use viso_dsl::hir::InputDevices;
+use viso_dsl::hir::{InputDevices, TargetProfile};
 
 fn origin() -> Origin {
     Origin {
@@ -252,7 +252,11 @@ fn an_action_without_a_binding_for_a_target_device_is_warned() {
         gamepad: true,
         touch: true,
     };
-    let compiled = compile_file_for(&source, &origin(), Natives::standard(), devices);
+    let profile = TargetProfile {
+        devices,
+        ..TargetProfile::default()
+    };
+    let compiled = compile_file_for(&source, &origin(), Natives::standard(), profile);
     let warnings: Vec<_> = compiled
         .diagnostics
         .iter()

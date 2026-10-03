@@ -146,6 +146,23 @@ pub struct WebServe {
     pub open: Option<Spanned<bool>>,
 }
 
+/// `[game] determinism`: how reproducible a game's simulation must be.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum GameDeterminism {
+    /// The same build on the same target replays tick for tick.
+    #[default]
+    SameBinary,
+    /// Every Tier-1 target produces byte-identical snapshot hashes.
+    CrossPlatform,
+}
+
+/// `[game]` (DSL section 106.5).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Game {
+    /// `determinism`.
+    pub determinism: Option<Spanned<GameDeterminism>>,
+}
+
 /// `[web]` (section 38.1). Parsed now, honored by a deferred phase.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Web {
@@ -236,6 +253,8 @@ pub struct Manifest {
     pub export: Export,
     /// `[workspace]`.
     pub workspace: Workspace,
+    /// `[game]`.
+    pub game: Game,
 }
 
 impl Manifest {
@@ -364,6 +383,7 @@ impl<'a> Reader<'a> {
                 "target",
                 "export",
                 "workspace",
+                "game",
             ],
             "",
         );
@@ -518,6 +538,16 @@ impl<'a> Reader<'a> {
             None => Workspace::default(),
         };
 
+        let game = match self.table(root, "game") {
+            Some(t) => {
+                self.deny_unknown(t, &["determinism"], "game");
+                Game {
+                    determinism: self.determinism(t, "determinism", "game"),
+                }
+            }
+            None => Game::default(),
+        };
+
         Manifest {
             path: path.to_path_buf(),
             package,
@@ -527,6 +557,7 @@ impl<'a> Reader<'a> {
             targets,
             export,
             workspace,
+            game,
         }
     }
 
@@ -664,6 +695,33 @@ impl<'a> Reader<'a> {
                 None
             }
         }
+    }
+
+    fn determinism(
+        &mut self,
+        t: &dyn TableLike,
+        key: &str,
+        path: &str,
+    ) -> Option<Spanned<GameDeterminism>> {
+        let raw = self.string(t, key, path)?;
+        let value = match raw.value.as_str() {
+            "same_binary" => GameDeterminism::SameBinary,
+            "cross_platform" => GameDeterminism::CrossPlatform,
+            other => {
+                self.diags.push(
+                    ConfigDiagnostic::error(
+                        ConfigCode::InvalidValue,
+                        format!(
+                            "`{path}.{key}` is `same_binary` or `cross_platform`, not `{other}`"
+                        ),
+                    )
+                    .at(self.path)
+                    .span(raw.span),
+                );
+                return None;
+            }
+        };
+        Some(Spanned::new(value, raw.span))
     }
 
     fn target(&mut self, t: &dyn TableLike, key: &str, path: &str) -> Option<Spanned<Target>> {
@@ -1207,5 +1265,20 @@ members = ["apps/one", "apps/two"]
             nearest("package_manger", &["out_dir", "package_manager"]),
             Some("package_manager")
         );
+    }
+
+    #[test]
+    fn game_determinism_is_one_of_two_tiers() {
+        let (m, warnings) =
+            parse("[package]\nname = \"g\"\n[game]\ndeterminism = \"cross_platform\"\n");
+        assert!(warnings.is_empty(), "{warnings:?}");
+        assert_eq!(
+            m.game.determinism.unwrap().value,
+            GameDeterminism::CrossPlatform
+        );
+        let (m, _) = parse("[package]\nname = \"g\"\n");
+        assert!(m.game.determinism.is_none());
+        let diags = errors("[package]\nname = \"g\"\n[game]\ndeterminism = \"exact\"\n");
+        assert_eq!(diags[0].code, ConfigCode::InvalidValue);
     }
 }

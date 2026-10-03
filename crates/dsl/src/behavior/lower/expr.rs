@@ -615,6 +615,10 @@ impl Lowerer<'_, '_> {
         let Some(entry) = self.env.natives().and_then(|n| n.function_by_id(native.id)) else {
             return self.bail("the native this calls is not registered");
         };
+        if entry.function.debug_draw && self.b.strips_debug_draw() {
+            // Debug draw is removed from release builds, arguments and all.
+            return Ok(self.unit());
+        }
         let args = emit_args(call.syntax());
         if args.iter().any(|(label, _)| label.is_some()) {
             return self.bail("named native arguments are not supported");

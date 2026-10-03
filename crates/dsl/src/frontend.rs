@@ -28,7 +28,7 @@ use crate::ast::{
 use crate::behavior::{Program, hidden_state, inline_instances};
 use crate::diag::{Diagnostic, Severity};
 use crate::hir::{
-    ConstValue, DerivedReads, HirComponent, InputDevices, Migrator, SourceSet, Ty, TypeSchemas,
+    ConstValue, DerivedReads, HirComponent, Migrator, SourceSet, TargetProfile, Ty, TypeSchemas,
     write_backs,
 };
 use crate::ir::{
@@ -275,7 +275,7 @@ pub fn compile_component(source: &str, origin: &Origin) -> Compiled {
         unit,
         origin,
         Natives::standard(),
-        InputDevices::default(),
+        TargetProfile::default(),
     )
 }
 
@@ -288,19 +288,18 @@ pub fn compile_file(source: &str, origin: &Origin) -> Compiled {
 /// [`compile_file`] with native paths resolved against `natives` instead of
 /// the standard libraries alone.
 pub fn compile_file_in(source: &str, origin: &Origin, natives: Arc<Natives>) -> Compiled {
-    compile_file_for(source, origin, natives, InputDevices::default())
+    compile_file_for(source, origin, natives, TargetProfile::default())
 }
 
-/// [`compile_file_in`] for targets with `devices`, which every input action
-/// needs a binding for.
+/// [`compile_file_in`] for the targets and build `profile` describes.
 pub fn compile_file_for(
     source: &str,
     origin: &Origin,
     natives: Arc<Natives>,
-    devices: InputDevices,
+    profile: TargetProfile,
 ) -> Compiled {
     let parse = parse_entry(&tokenize(source), source, Entry::CompilationUnit);
-    compile_unit(source, parse, origin, natives, devices)
+    compile_unit(source, parse, origin, natives, profile)
 }
 
 /// The module frontend over one parsed unit: resolve, lower to typed HIR, pick the
@@ -310,7 +309,7 @@ fn compile_unit(
     parse: Parse,
     origin: &Origin,
     natives: Arc<Natives>,
-    devices: InputDevices,
+    profile: TargetProfile,
 ) -> Compiled {
     let mut diagnostics = parse.errors.clone();
     if let Some(error) = origin
@@ -337,7 +336,7 @@ fn compile_unit(
         &resolved,
         &mut interner,
         &origin.package,
-        devices,
+        profile,
     );
     let mut behavior = lowered.behavior;
     let Some(module) = resolved.pop() else {

@@ -7,8 +7,8 @@ use super::{
     COLLISION, Clock, CollisionEvent, FIXED_UPDATE, FRAME_UPDATE, FixedFrame, InputSchema,
     InputSnapshot, Key, PadButton, PadStick, RenderFrame, TouchButton,
 };
-use crate::native::{NativeObject, NativeValue, Obj};
-use crate::{Budget, Fault, FaultKind, Instance, Value, Vm};
+use crate::native::{NativeObject, NativeValue, Obj, Services};
+use crate::{Budget, Deferred, Fault, FaultKind, Instance, Value, Vm};
 
 /// A fault a system hook raised: its state changes were discarded.
 #[derive(Debug, Clone)]
@@ -23,6 +23,18 @@ pub struct SystemFault {
     pub code: &'static str,
     /// The fault.
     pub fault: Fault,
+}
+
+/// The identity of a Presentation command a Simulation hook issued.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct CommandKey {
+    /// The tick it was issued in.
+    pub tick: u64,
+    /// The issuing system, an index into
+    /// [`Module::systems`](crate::Module::systems).
+    pub system: usize,
+    /// Its place among that system's commands of that tick.
+    pub sequence: u32,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -51,6 +63,12 @@ enum Phase {
 /// [`pad`](Self::pad), [`stick`](Self::stick), [`touch`](Self::touch)); each
 /// tick reads it frozen through `frame.input`, mapped by the module's input
 /// schema or the default `InputAction` set.
+///
+/// A Presentation native a Simulation hook calls does not run then: it is a
+/// command keyed `(tick, source system, sequence)`, delivered after its tick
+/// in key order unless that tick was delivered before, so a replayed or
+/// rolled-back tick ([`rewind_to`](Self::rewind_to)) issues nothing twice. A
+/// faulting hook's commands are discarded with its state writes.
 pub struct Scheduler {
     vm: Vm,
     clock: Clock,
@@ -66,6 +84,12 @@ pub struct Scheduler {
     collisions: Vec<(i64, i64)>,
     delivering: Vec<(i64, i64)>,
     faults: Vec<SystemFault>,
+    commands: Vec<(CommandKey, Deferred)>,
+    sequences: Box<[u32]>,
+    /// The first tick whose commands have not been delivered.
+    delivered: u64,
+    delivered_commands: u64,
+    replayed_commands: u64,
 }
 
 impl Scheduler {
@@ -107,7 +131,6 @@ impl Scheduler {
             budget: vm.budget(),
             vm,
             clock,
-            instances,
             fixed: fixed.into(),
             frame: frame.into(),
             collision: collision.into(),
@@ -122,6 +145,12 @@ impl Scheduler {
             collisions: Vec::new(),
             delivering: Vec::new(),
             faults: Vec::new(),
+            commands: Vec::new(),
+            sequences: vec![0; module.systems().len()].into(),
+            delivered: 0,
+            delivered_commands: 0,
+            replayed_commands: 0,
+            instances,
         })
     }
 
@@ -138,6 +167,11 @@ impl Scheduler {
     /// The interpreter.
     pub fn vm(&self) -> &Vm {
         &self.vm
+    }
+
+    /// The host services the systems' natives use.
+    pub fn services_mut(&mut self) -> &mut Services {
+        self.vm.services_mut()
     }
 
     /// The budget each tick's hooks share, and each frame's.
@@ -196,6 +230,24 @@ impl Scheduler {
         self.input.release_all();
     }
 
+    /// Rewinds the clock to `tick`, to replay or roll back from there; the
+    /// caller restores the systems' state. Commands of ticks already
+    /// delivered are not delivered again.
+    pub fn rewind_to(&mut self, tick: u64) {
+        self.clock.rewind(tick);
+    }
+
+    /// Presentation commands delivered so far.
+    pub fn delivered_commands(&self) -> u64 {
+        self.delivered_commands
+    }
+
+    /// Presentation commands a replayed tick issued again and that were not
+    /// delivered.
+    pub fn replayed_commands(&self) -> u64 {
+        self.replayed_commands
+    }
+
     /// Queues a contact between bodies `first` and `second` for the
     /// `CollisionListener`s of the next tick.
     pub fn push_collision(&mut self, first: i64, second: i64) {
@@ -241,6 +293,8 @@ impl Scheduler {
         self.input.deliver(&frame.input);
         mem::swap(&mut self.collisions, &mut self.delivering);
         let mut left = self.budget;
+        self.sequences.fill(0);
+        self.vm.defer_presentation(true);
         'tick: {
             for i in 0..self.fixed.len() {
                 let arg = self.fixed_frame.clone();
@@ -265,8 +319,37 @@ impl Scheduler {
                 }
             }
         }
+        self.vm.defer_presentation(false);
         self.delivering.clear();
+        self.deliver_commands(tick);
         self.clock.finish_tick();
+    }
+
+    /// Delivers the commands `tick` issued in key order, unless an earlier
+    /// run of `tick` delivered them.
+    fn deliver_commands(&mut self, tick: u64) {
+        if tick < self.delivered {
+            self.replayed_commands += self.commands.len() as u64;
+            self.commands.clear();
+            return;
+        }
+        self.delivered = tick + 1;
+        let mut commands = mem::take(&mut self.commands);
+        // Hooks issue in run order, which the key order follows except across
+        // collision events; a stable sort keeps each system's sequence.
+        commands.sort_by_key(|(key, _)| *key);
+        for (key, command) in commands.drain(..) {
+            self.delivered_commands += 1;
+            if let Err(fault) = self.vm.deliver(&command) {
+                self.faults.push(SystemFault {
+                    system: key.system,
+                    tick,
+                    code: fault.kind.code(),
+                    fault,
+                });
+            }
+        }
+        self.commands = commands;
     }
 
     /// Runs one hook on what is left of the shared budget; false when the
@@ -279,6 +362,19 @@ impl Scheduler {
         let cost = self.vm.cost();
         left.instructions = left.instructions.saturating_sub(cost.instructions);
         left.native_calls = left.native_calls.saturating_sub(cost.native_calls);
+        if phase == Phase::Tick {
+            let tick = self.clock.tick();
+            let sequence = &mut self.sequences[hook.system];
+            for command in self.vm.deferred_mut().drain(..) {
+                let key = CommandKey {
+                    tick,
+                    system: hook.system,
+                    sequence: *sequence,
+                };
+                *sequence += 1;
+                self.commands.push((key, command));
+            }
+        }
         let Err(fault) = result else {
             return true;
         };
