@@ -387,9 +387,8 @@ impl<'a, 'l> Lowering<'a, 'l> {
         for member in body.iter().flat_map(|b| b.members()) {
             match member {
                 ViewItem::Property(prop) => {
-                    if let (Some(kind), Some(name), Some(value)) =
-                        (control, single_segment(prop.path()), prop.value())
-                        && kind.input(&name).is_some()
+                    if let (Some(name), Some(value)) = (single_segment(prop.path()), prop.value())
+                        && control.input(&name).is_some()
                     {
                         control_reads.push((name, value.syntax().text_range()));
                     }
@@ -415,7 +414,7 @@ impl<'a, 'l> Lowering<'a, 'l> {
                     let Some(event) = widget.write_back(&name) else {
                         continue;
                     };
-                    if control.is_some_and(|kind| kind.input(&name).is_some()) {
+                    if control.input(&name).is_some() {
                         control_reads.push((name, source.syntax().text_range()));
                     }
                     handlers.insert(

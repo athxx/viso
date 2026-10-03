@@ -198,7 +198,7 @@ pub fn view_behavior(compiled: &Compiled) -> Result<Option<ViewBehavior>, Vec<Mo
     let mut routes: Vec<(NodeKey, Vec<Route>)> = Vec::new();
     for (node, kind, event, site) in sites {
         let at = site.at;
-        let route = EventRoute::of(event).or_else(|| kind?.route(event));
+        let route = EventRoute::of(event).or_else(|| kind.route(event));
         let Some(route) = route else {
             errors.push(MountError::new(
                 Some(at),
@@ -329,7 +329,7 @@ struct Walk<'a> {
     /// The next node key.
     key: u32,
     /// Each handler: its node, the node's control kind, its event and its site.
-    sites: Vec<(NodeKey, Option<ControlKind>, &'a str, Site)>,
+    sites: Vec<(NodeKey, ControlKind, &'a str, Site)>,
     /// Each view-driven native node: a control, or a label showing a text.
     nodes: Vec<(NodeKey, ControlKind, &'a UiNode)>,
     /// Each component instance's root node, the first of its view's nodes.
@@ -367,9 +367,7 @@ impl<'a> Walk<'a> {
             self.roots.push((node.instance, own));
         }
         let kind = ControlKind::of(&node.type_name);
-        if let Some(kind) = kind
-            && (kind.responds() || !node.control_reads.is_empty())
-        {
+        if kind.responds() || !node.control_reads.is_empty() {
             self.nodes.push((own, kind, node));
         }
         for handler in &node.handlers {

@@ -333,8 +333,8 @@ impl Owner<'_> {
     /// current value or range from: a control's, or a label's text.
     fn reads_control(&self, path: &PropertyPath) -> bool {
         self.component.is_none()
-            && match (ControlKind::of(&self.name), path_segments(path).as_slice()) {
-                (Some(kind), [name]) => kind.input(name).is_some(),
+            && match path_segments(path).as_slice() {
+                [name] => ControlKind::of(&self.name).input(name).is_some(),
                 _ => false,
             }
     }
