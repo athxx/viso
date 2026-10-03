@@ -40,9 +40,9 @@ pub use package::{
     instantiate_view, load_view,
 };
 pub use regions::{
-    __mount_embedded, ArmTemplate, CLOSED, CellRef, EnvTemplate, GroupTemplate, HALF_OPEN,
-    ItemTemplate, LocalTemplate, MAX_RANGE_ITEMS, RegionKind, RegionTemplate, SlotTemplate,
-    ViewRegions, mount_regions,
+    __mount_embedded, ArmTemplate, CLOSED, CellRef, EnvTemplate, GroupTemplate, HALF_OPEN, ItemKey,
+    ItemTemplate, LocalTemplate, MAX_RANGE_ITEMS, RegionKind, RegionNode, RegionTemplate,
+    SlotTemplate, ViewRegions, mount_regions,
 };
 pub use route::{EventRoute, PAYLOAD_ENUMS, PAYLOAD_RECORDS};
 pub use scope::Scope;

@@ -46,7 +46,7 @@ use viso_ui::adaptive::{AnchorId, EnvField};
 use viso_ui::aot::{AotNode, build_aot_node};
 use viso_ui::input::{ParkedFocus, park_focus, unpark_focus};
 use viso_ui::state::StateKey;
-use viso_ui::{BuildCx, DirtyClass, NodeId, StateId, StateValue, StructureCx};
+use viso_ui::{BuildCx, DirtyClass, NodeId, NodeStore, StateId, StateValue, StructureCx};
 
 use crate::attach::{Route, attach_node};
 use crate::control::Control;
@@ -296,7 +296,7 @@ pub fn mount_regions(
         deps.push(pulse);
         pulse
     });
-    let mut mounted = Mounted {
+    let mounted = Mounted {
         regions,
         cells: resolved,
         env,
@@ -305,11 +305,13 @@ pub fn mount_regions(
         groups,
         scratch: Vec::new(),
     };
-    mounted.patch(cx, &[]);
-    let hook = cx
-        .store
-        .add_structure_hook(deps, move |cx, changed| mounted.patch(cx, changed));
-    host.borrow_mut().mark_regions(hook);
+    let mounted = Rc::new(RefCell::new(mounted));
+    mounted.borrow_mut().patch(cx, &[]);
+    let kept = Rc::clone(&mounted);
+    let hook = cx.store.add_structure_hook(deps, move |cx, changed| {
+        kept.borrow_mut().patch(cx, changed);
+    });
+    host.borrow_mut().mark_regions(hook, &mounted);
 }
 
 /// [`mount_regions`] for the encoded regions a macro expansion embeds, run over
@@ -330,6 +332,26 @@ pub fn __mount_embedded(
     let regions = ViewRegions::decode_from_slice(bytes)
         .unwrap_or_else(|error| panic!("embedded view regions do not decode: {error}"));
     cx.structure(|cx| mount_regions(cx, Rc::new(regions), host, nodes, cells));
+}
+
+/// The identity of an item of a keyed `for`, as its key evaluated.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct ItemKey(Key);
+
+/// A node a view's regions mount.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RegionNode {
+    /// Its region, by index into [`ViewRegions::regions`].
+    pub region: u32,
+    /// The arm of the region that mounted it.
+    pub arm: u32,
+    /// The item it was built from, by index into the arm's
+    /// [`items`](ArmTemplate::items).
+    pub item: u32,
+    /// The keys of the `for` items it sits in, outermost first.
+    pub path: Vec<ItemKey>,
+    /// The node.
+    pub node: NodeId,
 }
 
 /// An item's identity in a keyed `for`.
@@ -457,7 +479,7 @@ fn first_of(slots: &[Slot]) -> Option<NodeId> {
 }
 
 /// A view's mounted regions, owned by its structure hook.
-struct Mounted {
+pub(crate) struct Mounted {
     regions: Rc<ViewRegions>,
     /// The live cell of each [`ViewRegions::states`] key.
     cells: Vec<Option<StateId>>,
@@ -476,6 +498,18 @@ struct Mounted {
 }
 
 impl Mounted {
+    /// Appends every node the regions show to `out`: the content of each
+    /// chosen arm and of each `for` item, nested regions included; an arm
+    /// switched away and kept is not shown.
+    pub(crate) fn census(&self, store: &NodeStore, out: &mut Vec<RegionNode>) {
+        let mut path = Vec::new();
+        for slot in self.groups.iter().flat_map(|group| &group.slots) {
+            if let Slot::Region(mount) = slot {
+                census_mount(&self.regions, mount, store, &mut path, out);
+            }
+        }
+    }
+
     fn patch(&mut self, cx: &mut StructureCx<'_>, changed: &[StateId]) {
         let Mounted {
             regions,
@@ -1178,6 +1212,124 @@ fn relayout() -> DirtyClass {
 }
 
 /// Authors the item at `cursor` and its subtree, pushing its slot to `out`.
+fn census_mount(
+    regions: &ViewRegions,
+    mount: &Mount,
+    store: &NodeStore,
+    path: &mut Vec<ItemKey>,
+    out: &mut Vec<RegionNode>,
+) {
+    match &mount.content {
+        Content::Arms { live, .. } => {
+            if let Some(frag) = live {
+                census_frag(regions, frag, store, path, out);
+            }
+        }
+        Content::List(items) => {
+            for item in items {
+                path.push(ItemKey(item.key.clone()));
+                census_frag(regions, &item.frag, store, path, out);
+                path.pop();
+            }
+        }
+    }
+}
+
+fn census_frag(
+    regions: &ViewRegions,
+    frag: &Frag,
+    store: &NodeStore,
+    path: &mut Vec<ItemKey>,
+    out: &mut Vec<RegionNode>,
+) {
+    let mut census = Census {
+        regions,
+        frag,
+        items: &regions.regions[frag.region as usize].arms[frag.arm as usize].items,
+        store,
+        path,
+        out,
+        cursor: 0,
+    };
+    for slot in &frag.roots {
+        census.slot(slot);
+    }
+}
+
+/// One fragment's walk: its mounted nodes against the arm's pre-order items.
+struct Census<'a> {
+    regions: &'a ViewRegions,
+    frag: &'a Frag,
+    items: &'a [ItemTemplate],
+    store: &'a NodeStore,
+    path: &'a mut Vec<ItemKey>,
+    out: &'a mut Vec<RegionNode>,
+    /// The next item.
+    cursor: usize,
+}
+
+impl Census<'_> {
+    fn slot(&mut self, slot: &Slot) {
+        match slot {
+            Slot::Node(id) => self.node(*id),
+            Slot::Region(mount) => {
+                let at = self.cursor;
+                self.cursor += 1;
+                if matches!(self.items.get(at), Some(ItemTemplate::Region(_))) {
+                    census_mount(self.regions, mount, self.store, self.path, self.out);
+                }
+            }
+        }
+    }
+
+    /// The node `id`, built from the next item, and its children: the slots
+    /// of its group when it has a region among them, else its children in
+    /// the tree, one per child item.
+    fn node(&mut self, id: NodeId) {
+        let at = self.cursor;
+        let Some(ItemTemplate::Node { node, .. }) = self.items.get(at) else {
+            self.skip();
+            return;
+        };
+        self.cursor += 1;
+        self.out.push(RegionNode {
+            region: self.frag.region,
+            arm: self.frag.arm,
+            item: at as u32,
+            path: self.path.clone(),
+            node: id,
+        });
+        if let Some(group) = self.frag.groups.iter().find(|group| group.parent == id) {
+            for slot in &group.slots {
+                self.slot(slot);
+            }
+            return;
+        }
+        let arena = self.store.arena();
+        let mut child = arena.links(id).and_then(|l| l.first_child);
+        for _ in 0..node.child_count {
+            match child {
+                Some(next) => {
+                    child = arena.links(next).and_then(|l| l.next_sibling);
+                    self.node(next);
+                }
+                None => self.skip(),
+            }
+        }
+    }
+
+    /// Steps past the next item and its children.
+    fn skip(&mut self) {
+        let at = self.cursor;
+        self.cursor += 1;
+        if let Some(ItemTemplate::Node { node, .. }) = self.items.get(at) {
+            for _ in 0..node.child_count {
+                self.skip();
+            }
+        }
+    }
+}
+
 fn build_item(
     cx: &mut BuildCx<'_>,
     regions: &ViewRegions,

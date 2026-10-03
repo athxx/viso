@@ -12,7 +12,7 @@ use viso_ui::adaptive::{AdaptiveEnv, AnchorId, EnvField};
 use viso_ui::{EventCx, NodeId, NodeStore, StateId, StateStore, StateValue, StructureHookId};
 
 use crate::env::env_value;
-use crate::regions::LocalTemplate;
+use crate::regions::{LocalTemplate, Mounted, RegionNode};
 use crate::scope::{Locals, Scope};
 
 /// Where a view's state cells are read and written: the [`StateStore`] outside a
@@ -162,6 +162,8 @@ struct RegionCells {
     mounted: bool,
     /// The structure hook of each region mount, removed with the view.
     hooks: Vec<StructureHookId>,
+    /// The content each hook keeps mounted, read by [`ViewHost::region_nodes`].
+    mounts: Vec<Weak<RefCell<Mounted>>>,
     pulses: Vec<StateId>,
     locals: Vec<Weak<Locals>>,
     /// The length at which [`locals`](Self::locals) next drops its dead
@@ -529,9 +531,10 @@ impl ViewHost {
     }
 
     /// Records that regions mount under the view's nodes, patched by `hook`.
-    pub(crate) fn mark_regions(&mut self, hook: StructureHookId) {
+    pub(crate) fn mark_regions(&mut self, hook: StructureHookId, mounted: &Rc<RefCell<Mounted>>) {
         self.regions.mounted = true;
         self.regions.hooks.push(hook);
+        self.regions.mounts.push(Rc::downgrade(mounted));
     }
 
     /// Whether regions are mounted under the view's nodes, which only a
@@ -562,12 +565,24 @@ impl ViewHost {
         self.regions.pulses.push(pulse);
     }
 
+    /// Every node the view's regions mount and show, with the arm item it was
+    /// built from and the keys of the `for` items around it, so a reload can
+    /// pair each with the node that replaces it.
+    pub fn region_nodes(&self, store: &NodeStore) -> Vec<RegionNode> {
+        let mut out = Vec::new();
+        for mounted in self.regions.mounts.iter().filter_map(Weak::upgrade) {
+            mounted.borrow().census(store, &mut out);
+        }
+        out
+    }
+
     /// Removes the view's region hooks and frees the cells its regions
     /// allocated, as unmounting or rebuilding the view's tree does.
     pub fn release_regions(&mut self, store: &mut NodeStore, states: &mut StateStore) {
         for hook in self.regions.hooks.drain(..) {
             store.remove_structure_hook(hook);
         }
+        self.regions.mounts.clear();
         for locals in self.regions.locals.drain(..) {
             if let Some(locals) = locals.upgrade() {
                 locals.release(states);
