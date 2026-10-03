@@ -11,8 +11,9 @@
 
 use std::any::Any;
 use std::rc::Rc;
+use std::time::Duration;
 
-use crate::animation::TranslateAnim;
+use crate::animation::{LookTransition, LookValue, Timing, TranslateAnim};
 use crate::binding::BindingTable;
 use crate::content::{Content, TextRequest};
 use crate::context::EventCx;
@@ -359,6 +360,10 @@ pub struct NodeStore {
     /// store, not the driver's registry, so the animation cannot be applied in
     /// place — the same deferral the text-request queue uses.
     animation_requests: Vec<TranslateAnim>,
+    /// Cold, not index-aligned: the look properties moving toward a new value,
+    /// at most one per node and property. Empty while nothing moves, so a
+    /// settled frame never walks it.
+    transitions: Vec<LookTransition>,
     /// Cold, transient handoff buffer (not index-aligned): one-shot timer arms a
     /// handler requested this frame, sitting here between the router (which drains
     /// them off the [`EventCx`](crate::context::EventCx) after a dispatch and
@@ -478,6 +483,7 @@ impl NodeStore {
         self.content_payload.clear();
         self.text_request.clear();
         self.animation_requests.clear();
+        self.transitions.clear();
         self.timer_requests.clear();
         self.window_opens.clear();
         self.window_closes.clear();
@@ -1617,6 +1623,11 @@ impl NodeStore {
         if !self.arena.is_live(id) {
             return;
         }
+        self.settle(id, &LookValue::Opacity(opacity));
+        self.write_opacity(id, opacity);
+    }
+
+    fn write_opacity(&mut self, id: NodeId, opacity: f32) {
         let opacity = if opacity.is_finite() {
             opacity.clamp(0.0, 1.0)
         } else {
@@ -1635,10 +1646,90 @@ impl NodeStore {
         if !self.arena.is_live(id) {
             return;
         }
+        self.settle(id, &LookValue::Fill(fill));
+        self.write_fill(id, fill);
+    }
+
+    fn write_fill(&mut self, id: NodeId, fill: Rgba) {
         let style = &mut self.style[id.index() as usize];
         if style.fill != fill {
             style.fill = fill;
             self.mark_dirty(id, DirtyClass::PAINT);
+        }
+    }
+
+    /// The value of the look property `of` names that a node shows now.
+    fn shown(&self, id: NodeId, of: &LookValue) -> LookValue {
+        let i = id.index() as usize;
+        match of {
+            LookValue::Fill(_) => LookValue::Fill(self.style[i].fill),
+            LookValue::Opacity(_) => LookValue::Opacity(self.opacity[i]),
+        }
+    }
+
+    fn write_look(&mut self, id: NodeId, value: LookValue) {
+        match value {
+            LookValue::Fill(fill) => self.write_fill(id, fill),
+            LookValue::Opacity(opacity) => self.write_opacity(id, opacity),
+        }
+    }
+
+    /// Drops the transition moving the property `of` names on `id`, if any.
+    fn settle(&mut self, id: NodeId, of: &LookValue) {
+        if let Some(at) = self.transitions.iter().position(|t| t.moves(id, of)) {
+            self.transitions.swap_remove(at);
+        }
+    }
+
+    /// Moves a node's look property to `to` over `timing`, starting from the
+    /// value it shows now: one already moving retargets from where it is. An
+    /// instant timing, or a target the node already shows with nothing in
+    /// flight, writes at once. Each frame's
+    /// [`tick_transitions`](Self::tick_transitions) writes the value it shows,
+    /// marking PAINT. A stale handle is a no-op.
+    pub fn transition(&mut self, id: NodeId, to: LookValue, timing: Timing) {
+        if !self.arena.is_live(id) {
+            return;
+        }
+        let from = self.shown(id, &to);
+        let moving = self.transitions.iter().position(|t| t.moves(id, &to));
+        if timing.is_instant() || (moving.is_none() && from == to) {
+            self.settle(id, &to);
+            self.write_look(id, to);
+            return;
+        }
+        let transition = LookTransition::new(id, from, to, timing);
+        match moving {
+            Some(at) if self.transitions[at].to == to => {}
+            Some(at) => self.transitions[at] = transition,
+            None => self.transitions.push(transition),
+        }
+    }
+
+    /// Whether any look property is moving: the frame loop keeps beating
+    /// while one is.
+    #[inline]
+    pub fn is_transitioning(&self) -> bool {
+        !self.transitions.is_empty()
+    }
+
+    /// Advances every moving look property by `delta`, writing the value each
+    /// node shows; one that arrives is written at its target and dropped, as is
+    /// one whose node is gone. A flat pass with no allocation.
+    pub fn tick_transitions(&mut self, delta: Duration) {
+        let mut i = self.transitions.len();
+        while i > 0 {
+            i -= 1;
+            let node = self.transitions[i].node;
+            if !self.arena.is_live(node) {
+                self.transitions.swap_remove(i);
+                continue;
+            }
+            let (value, done) = self.transitions[i].advance(delta);
+            self.write_look(node, value);
+            if done {
+                self.transitions.swap_remove(i);
+            }
         }
     }
 

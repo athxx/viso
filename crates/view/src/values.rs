@@ -3,6 +3,12 @@
 //! node's look (its `background` and `opacity`). A text field with no `value`
 //! is never seeded: its text is what its user types.
 //!
+//! A look value with a `transition.*` entry moves to each new value over the
+//! transition that entry evaluates to when the value changes; the first value
+//! a node shows, and every value under reduced motion with an `instant`
+//! transition, shows at once. The cells a transition reads are no
+//! dependencies: changing one changes only the next move.
+//!
 //! A node's value is a pure entry of the view's handler table. It is evaluated
 //! when the node mounts and again only when a cell it reads changes, and a value
 //! equal to the one the node shows delivers nothing, so a frame that changes
@@ -12,7 +18,10 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use viso_behavior::Value;
-use viso_ui::{BuildCx, NodeId, NodeStore, Rgba, SemanticState, StateId, StructureCx, TextRequest};
+use viso_ui::{
+    BuildCx, Easing, LookValue, NodeId, NodeStore, Rgba, SemanticState, Srgb, StateId, StructureCx,
+    TextRequest, Timing,
+};
 
 use crate::control::{Control, ControlKind};
 use crate::host::ViewHost;
@@ -197,12 +206,39 @@ impl Shown {
         }
         let [value, min, max, background, opacity] = &shows;
         let changed = |at: usize| prior.is_none_or(|prior| prior[at] != shows[at]);
-        let store = &mut *cx.store;
-        if control.look.background.is_some() && changed(3) {
-            store.set_fill(self.node, color(background));
+        let look = control.look;
+        let mut moves: [Option<Timing>; 2] = [None; 2];
+        for (at, (shown, transition)) in [
+            (3, (look.background, look.background_transition)),
+            (4, (look.opacity, look.opacity_transition)),
+        ] {
+            let (Some(_), Some(transition), Some(_)) = (shown, transition, prior) else {
+                continue;
+            };
+            if !changed(at) {
+                continue;
+            }
+            match host.evaluate(transition, &self.scope, None, &*cx.states) {
+                Ok(spec) => {
+                    let reduced = cx.states.env().environment().reduced_motion;
+                    moves[at - 3] = Some(timing(&spec, reduced));
+                }
+                Err(fault) => host.record_fault(fault),
+            }
         }
-        if control.look.opacity.is_some() && changed(4) {
-            store.set_opacity(self.node, float(opacity, 1.0));
+        let store = &mut *cx.store;
+        for (at, entry, value) in [
+            (3, look.background, LookValue::Fill(color(background))),
+            (4, look.opacity, LookValue::Opacity(float(opacity, 1.0))),
+        ] {
+            if entry.is_none() || !changed(at) {
+                continue;
+            }
+            match (moves[at - 3], value) {
+                (Some(timing), value) => store.transition(self.node, value, timing),
+                (None, LookValue::Fill(fill)) => store.set_fill(self.node, fill),
+                (None, LookValue::Opacity(opacity)) => store.set_opacity(self.node, opacity),
+            }
         }
         let text = || TextRequest {
             text: value.as_str().unwrap_or_default().to_owned(),
@@ -257,17 +293,40 @@ fn select(store: &mut NodeStore, node: NodeId, selected: i64) {
     }
 }
 
-/// A `Color` value (`0xRRGGBBAA`) as a fill, transparent for `None`.
+/// A `Color` value (sRGB `0xRRGGBBAA`) as a fill, transparent for `None`.
 fn color(value: &Value) -> Rgba {
-    let Some(rgba) = value.as_int() else {
-        return Rgba::TRANSPARENT;
+    match value.as_int() {
+        Some(rgba) => Srgb::from_rgba32(rgba as u32).into_linear_straight(),
+        None => Rgba::TRANSPARENT,
+    }
+}
+
+/// The timing of a `Transition` value (`duration`, `delay`, `easing`,
+/// `reduced`): instant when `reduced_motion` holds and its `reduced` is
+/// `instant`. A negative or non-finite time is zero.
+fn timing(spec: &Value, reduced_motion: bool) -> Timing {
+    let Value::Agg(spec) = spec else {
+        return Timing::default();
     };
-    let channel = |shift: u32| ((rgba >> shift) & 0xff) as f32 / 255.0;
-    Rgba {
-        r: channel(24),
-        g: channel(16),
-        b: channel(8),
-        a: channel(0),
+    let field = |at: usize| spec.fields.get(at);
+    let time = |at: usize| {
+        let seconds = field(at).and_then(Value::as_float).unwrap_or(0.0);
+        std::time::Duration::try_from_secs_f64(seconds).unwrap_or_default()
+    };
+    let tag = |at: usize| field(at).and_then(Value::as_int).unwrap_or(0);
+    if reduced_motion && tag(3) == 0 {
+        return Timing::default();
+    }
+    let easing = match tag(2) {
+        0 => Easing::Linear,
+        1 => Easing::EaseIn,
+        3 => Easing::EaseInOut,
+        _ => Easing::EaseOut,
+    };
+    Timing {
+        duration: time(0),
+        delay: time(1),
+        easing,
     }
 }
 

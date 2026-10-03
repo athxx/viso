@@ -1,20 +1,47 @@
 //! A view's look on its nodes: `background` and `opacity`, constant or read
 //! from state, reach the retained nodes at mount and again only when a state
 //! they read changes, on the hot-reloaded and the packaged view, and inside a
-//! region.
+//! region; with a `transition.*` a changed value moves in over time.
 
 use std::cell::RefCell;
 use std::rc::Rc;
+use std::time::Duration;
 
 use viso_dsl::aot::build_view_package;
-use viso_dsl::frontend::Origin;
+use viso_dsl::frontend::{Origin, compile_file};
 use viso_dsl::hotreload::{CandidatePlan, LiveRuntime, hot_reload_view};
 use viso_ui::virtual_list::VirtualLists;
 use viso_ui::{
     BindingTable, EffectStore, NodeId, NodeStore, PointerButtons, PointerEvent, PointerPhase,
-    PointerRouter, Rect, Rgba, SemanticProjector, StateStore, TextEdits, run_structure_hooks,
+    PointerRouter, Rect, Rgba, SemanticProjector, Srgb, StateStore, TextEdits, run_structure_hooks,
 };
 use viso_view::{ViewHost, load_view};
+
+const FADE: &str = r#"
+component Fade {
+    state lit = false;
+    view {
+        Column {
+            width: 400dp;
+            height: 300dp;
+            Text {
+                width: 20dp;
+                height: 20dp;
+                background: if lit { #ff0000 } else { #ff000000 };
+                opacity: if lit { 1.0f32 } else { 0.0f32 };
+                transition.opacity: Transition { duration: 100ms, easing: Easing::linear };
+                transition.background: Transition {
+                    duration: 100ms,
+                    delay: 50ms,
+                    easing: Easing::linear,
+                    reduced: ReducedMotion::keep,
+                };
+                on click { lit = !lit; }
+            }
+        }
+    }
+}
+"#;
 
 const SOURCE: &str = r#"
 component Look {
@@ -69,6 +96,14 @@ struct Rt {
 
 impl Rt {
     fn reloaded() -> Self {
+        Rt::reload(SOURCE)
+    }
+
+    fn packaged() -> Self {
+        Rt::package(SOURCE)
+    }
+
+    fn reload(source: &str) -> Self {
         let mut rt = Rt::default();
         let mut live = LiveRuntime {
             store: &mut rt.store,
@@ -83,14 +118,14 @@ impl Rt {
             nodes: &mut rt.nodes,
             view: &mut rt.view,
         };
-        hot_reload_view(&mut live, &CandidatePlan::default(), SOURCE, &origin()).expect("reloads");
+        hot_reload_view(&mut live, &CandidatePlan::default(), source, &origin()).expect("reloads");
         rt.root = live.root;
         rt.layout();
         rt
     }
 
-    fn packaged() -> Self {
-        let blob = build_view_package(SOURCE, &origin()).expect("packages");
+    fn package(source: &str) -> Self {
+        let blob = build_view_package(source, &origin()).expect("packages");
         let mut rt = Rt::default();
         let view = load_view(
             &blob,
@@ -173,7 +208,7 @@ fn a_nodes_look_follows_the_state_it_reads() {
     for mut rt in [Rt::reloaded(), Rt::packaged()] {
         let root = rt.root.expect("mounted");
         let fill = rt.store.style(root).fill;
-        assert_eq!(fill, rgba(16.0 / 255.0, 32.0 / 255.0, 48.0 / 255.0, 1.0));
+        assert_eq!(fill, Srgb::from_rgba32(0x102030ff).into_linear_straight());
         let [text, region] = rt.children(root)[..] else {
             panic!("a text and a region column");
         };
@@ -196,4 +231,75 @@ fn a_nodes_look_follows_the_state_it_reads() {
             "a region node shows its look"
         );
     }
+}
+
+#[test]
+fn a_changed_look_moves_in_over_its_transition() {
+    let ms = Duration::from_millis;
+    for mut rt in [Rt::reload(FADE), Rt::package(FADE)] {
+        let root = rt.root.expect("mounted");
+        let [text] = rt.children(root)[..] else {
+            panic!("the text");
+        };
+        assert_eq!(rt.store.opacity(text), 0.0, "the first value shows at once");
+        assert!(!rt.store.is_transitioning());
+
+        rt.click(5.0, 5.0);
+        assert_eq!(rt.store.opacity(text), 0.0, "a changed value moves in");
+        rt.store.tick_transitions(ms(50));
+        assert_eq!(rt.store.opacity(text), 0.5);
+        assert_eq!(
+            rt.store.style(text).fill.a,
+            0.0,
+            "the background waits out its delay"
+        );
+        rt.store.tick_transitions(ms(50));
+        assert_eq!(rt.store.opacity(text), 1.0);
+        assert_eq!(rt.store.style(text).fill, rgba(1.0, 0.0, 0.0, 0.5));
+        rt.store.tick_transitions(ms(50));
+        assert_eq!(rt.store.style(text).fill, rgba(1.0, 0.0, 0.0, 1.0));
+        assert!(!rt.store.is_transitioning(), "both arrived");
+
+        rt.states.update_env(|env| env.reduced_motion = true);
+        rt.click(5.0, 5.0);
+        assert_eq!(
+            rt.store.opacity(text),
+            0.0,
+            "an instant transition skips its move under reduced motion"
+        );
+        rt.store.tick_transitions(ms(100));
+        assert_eq!(
+            rt.store.style(text).fill,
+            rgba(1.0, 0.0, 0.0, 0.5),
+            "a kept transition still moves"
+        );
+        assert!(rt.store.is_transitioning());
+    }
+}
+
+/// The error codes a view whose text node binds `property: value;` compiles with.
+fn codes(property: &str, value: &str) -> Vec<String> {
+    let source =
+        format!("export component A {{ view {{ Text {{ width: 10dp; {property}: {value}; }} }} }}");
+    compile_file(&source, &origin())
+        .errors()
+        .map(|d| d.code.to_string())
+        .collect()
+}
+
+#[test]
+fn a_transition_names_an_animatable_property_and_takes_a_transition() {
+    let spec = "Transition { duration: 100ms }";
+    assert_eq!(codes("transition.opacity", spec), Vec::<String>::new());
+    assert_eq!(
+        codes("transition.background", "Transition {}"),
+        Vec::<String>::new()
+    );
+    assert_eq!(codes("transition.opacity", "100ms"), ["E3703"]);
+    assert_eq!(codes("transition.text", spec), ["E3703"]);
+    assert_eq!(
+        codes("transition.translate", spec),
+        ["E3711"],
+        "a transition the runtime does not play yet is no silent no-op"
+    );
 }
