@@ -1706,6 +1706,56 @@ impl NodeStore {
         }
     }
 
+    /// Shows `value` on a node as a view's first delivery does: at once, unless
+    /// the property is moving, when the move heads to `value` instead (keeping
+    /// its clock when it already does). A stale handle is a no-op.
+    pub fn present(&mut self, id: NodeId, value: LookValue) {
+        if !self.arena.is_live(id) {
+            return;
+        }
+        match self.transitions.iter().position(|t| t.moves(id, &value)) {
+            None => self.write_look(id, value),
+            Some(at) => {
+                let timing = self.transitions[at].timing;
+                self.transition(id, value, timing);
+            }
+        }
+    }
+
+    /// Moves the transitions in flight on `id` out into `out`, leaving the node
+    /// at the value it shows.
+    pub fn lift_transitions(&mut self, id: NodeId, out: &mut Vec<LookTransition>) {
+        let mut i = self.transitions.len();
+        while i > 0 {
+            i -= 1;
+            if self.transitions[i].node == id {
+                out.push(self.transitions.swap_remove(i));
+            }
+        }
+    }
+
+    /// Resumes on `id` a transition lifted from the node it replaces: the
+    /// property shows where the move was and carries on toward the value `id`
+    /// shows now, on its clock when that is still its target, else from where
+    /// it was over its timing. A stale handle is a no-op.
+    pub fn resume_transition(&mut self, id: NodeId, mut moving: LookTransition) {
+        if !self.arena.is_live(id) {
+            return;
+        }
+        let target = self.shown(id, &moving.to);
+        let (at, done) = moving.at();
+        self.settle(id, &target);
+        self.write_look(id, at);
+        if done {
+            self.write_look(id, target);
+        } else if moving.to == target {
+            moving.node = id;
+            self.transitions.push(moving);
+        } else {
+            self.transition(id, target, moving.timing);
+        }
+    }
+
     /// Whether any look property is moving: the frame loop keeps beating
     /// while one is.
     #[inline]

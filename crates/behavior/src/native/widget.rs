@@ -211,6 +211,8 @@ impl MigratableState {
     pub const SCROLL: MigratableState = MigratableState(1 << 1);
     /// A text field's edit buffer: its caret, selection and text.
     pub const SELECTION: MigratableState = MigratableState(1 << 2);
+    /// A look property's transition in flight.
+    pub const ANIMATION: MigratableState = MigratableState(1 << 3);
 
     /// Both sets.
     pub const fn with(self, other: MigratableState) -> MigratableState {

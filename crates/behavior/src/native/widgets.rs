@@ -243,7 +243,7 @@ const fn layout(
         .properties(properties)
         .groups(GROUPS)
         .events(&[STANDARD_EVENTS])
-        .migratable(MigratableState::FOCUS)
+        .migratable(MigratableState::FOCUS.with(MigratableState::ANIMATION))
 }
 
 const ROW: WidgetNode = WidgetNode::Flex(FlexAxis::Row);

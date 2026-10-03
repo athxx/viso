@@ -38,7 +38,7 @@ pub mod token;
 pub mod virtual_list;
 pub mod window;
 
-pub use animation::{AnimationRegistry, Easing, LookValue, Timing, TranslateAnim};
+pub use animation::{AnimationRegistry, Easing, LookTransition, LookValue, Timing, TranslateAnim};
 // The frame clock's time point (wasm-safe), named by timers and deadlines.
 pub use binding::{Binding, BindingTable};
 pub use component::{

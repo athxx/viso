@@ -75,8 +75,8 @@ use viso_ui::state::{StateKey, StateMigration};
 use viso_ui::virtual_list::VirtualLists;
 use viso_ui::{
     Axis, BindingTable, Buffer, BuildCx, DirtyClass, EffectStore, FlexStyle, GridStyle, Handle,
-    LeafStyle, Length, NodeId, NodeStore, ScrollStyle, SemanticProjector, Size, StateId,
-    StateStore, StateValue, StructureCx, TextEdits, Vec2,
+    LeafStyle, Length, LookTransition, NodeId, NodeStore, ScrollStyle, SemanticProjector, Size,
+    StateId, StateStore, StateValue, StructureCx, TextEdits, Vec2,
 };
 
 /// What the commit did to the live runtime, for introspection and tests
@@ -403,13 +403,15 @@ fn apply_structural(
     rt.root = new_root;
     map.sort_unstable_by_key(|&(key, _)| key);
 
-    let (refocused, restored) = carry_in(rt, carried, |key, _| lookup_node(&map, key));
+    let mut moving = Vec::new();
+    let (refocused, restored) = carry_in(rt, carried, |key, _| lookup_node(&map, key), &mut moving);
     let pending = Pending {
         regional,
         focused,
         scrolled,
         refocused,
         restored,
+        moving,
     };
     (map, Some(pending))
 }
@@ -425,15 +427,18 @@ struct Pending {
     /// Whether the focus, and how many offsets, the static nodes took.
     refocused: bool,
     restored: u32,
+    /// The look transitions in flight the static nodes take once their values
+    /// are delivered.
+    moving: Vec<(NodeId, LookTransition)>,
 }
 
 /// Settles what the last-good regions' nodes carry on the nodes the
-/// candidate's regions mounted, then reports the focus and the offsets no node
-/// took.
+/// candidate's regions mounted, resumes every carried transition on the value
+/// its node now shows, then reports the focus and the offsets no node took.
 fn settle_carried(
     rt: &mut LiveRuntime<'_>,
     tree: &UiTree,
-    pending: Pending,
+    mut pending: Pending,
     report: &mut HotReloadReport,
 ) {
     let mut mounted: Vec<(NodeKey, Vec<ItemKey>, NodeId)> = Vec::new();
@@ -447,12 +452,20 @@ fn settle_carried(
             }
         }
     }
-    let (refocused, restored) = carry_in(rt, pending.regional, |key, path| {
-        mounted
-            .iter()
-            .find(|(k, p, _)| *k == key && Some(p.as_slice()) == path)
-            .map(|&(_, _, node)| node)
-    });
+    let (refocused, restored) = carry_in(
+        rt,
+        pending.regional,
+        |key, path| {
+            mounted
+                .iter()
+                .find(|(k, p, _)| *k == key && Some(p.as_slice()) == path)
+                .map(|&(_, _, node)| node)
+        },
+        &mut pending.moving,
+    );
+    for (node, moving) in pending.moving {
+        rt.store.resume_transition(node, moving);
+    }
     if pending.focused && !(pending.refocused || refocused) {
         rt.store.set_focused(None);
         report.focus_lost = true;
@@ -472,6 +485,8 @@ struct Carried {
     scroll: Option<Vec2>,
     /// Its edit buffer: text, caret, selection and composition.
     buffer: Option<Box<Buffer>>,
+    /// Its look transitions in flight.
+    moving: Vec<LookTransition>,
 }
 
 /// Lift from the live nodes of the last-good tree the state each of `nodes`
@@ -523,6 +538,10 @@ fn lift(
 ) -> Option<Carried> {
     let carries = |state| migration.carries.contains(state);
     let offset = rt.store.scroll(old);
+    let mut moving = Vec::new();
+    if carries(MigratableState::ANIMATION) {
+        rt.store.lift_transitions(old, &mut moving);
+    }
     let carried = Carried {
         to: migration.to,
         path,
@@ -531,8 +550,13 @@ fn lift(
         buffer: carries(MigratableState::SELECTION)
             .then(|| rt.text_edits.take(old))
             .flatten(),
+        moving,
     };
-    (carried.focus || carried.scroll.is_some() || carried.buffer.is_some()).then_some(carried)
+    let holds = carried.focus
+        || carried.scroll.is_some()
+        || carried.buffer.is_some()
+        || !carried.moving.is_empty();
+    holds.then_some(carried)
 }
 
 /// Whether the subtree at `root` holds the focus, and how many of its nodes
@@ -557,11 +581,13 @@ fn census(rt: &mut LiveRuntime<'_>, root: NodeId) -> (bool, u32) {
 
 /// Settle each carried state on the node `rebuilt` names for its candidate
 /// key and `for` item keys, and return whether the focus moved and how many
-/// scroll offsets did.
+/// scroll offsets did. The transitions in flight wait in `moving` for the
+/// values the reload delivers.
 fn carry_in(
     rt: &mut LiveRuntime<'_>,
     carried: Vec<Carried>,
     rebuilt: impl Fn(NodeKey, Option<&[ItemKey]>) -> Option<NodeId>,
+    moving: &mut Vec<(NodeId, LookTransition)>,
 ) -> (bool, u32) {
     let (mut refocused, mut restored) = (false, 0);
     for carried in carried {
@@ -580,6 +606,7 @@ fn carry_in(
             rt.store.set_text_request(node, buffer.request());
             rt.text_edits.register(node, buffer);
         }
+        moving.extend(carried.moving.into_iter().map(|m| (node, m)));
     }
     (refocused, restored)
 }

@@ -315,6 +315,17 @@ Goal: every Core view construct reaches a live tree through all three lowering t
   - [x] Each is reported once per node and kind through
         `take_length_warnings` in debug builds; `length_stats` always counts.
 
+### D2.6 — Animation (§U6)
+
+- [x] `transition.background` / `transition.opacity` play (see D3's animation
+      fields).
+- [ ] The other animatable properties' transitions; each is E3711 until its
+      property reaches its node: `translate` and `corner_radius` (the VM has no
+      `MixedLength`), `scale` and `rotation` (no transform channel), text `color`
+      (baked into shaping), and `width`/`height`.
+- [ ] `NodeRef::animate` returning an `Animation` handle, with `animation_end`
+      (§U6.3).
+
 ### Done
 
 - [x] A todo-list app with `if`, keyed `for`, handlers and a user component runs
@@ -359,10 +370,11 @@ Goal: a file edit reaches the running app as one transaction or not at all.
   - [x] `@migrate(from: "T")` is a registered `fn` attribute, checked
         (one parameter of the old type, returning the state's type) and
         lowered; the commit calls it with the old value instead of resetting.
-- [ ] Node migration: focus, selection, scroll, animation fields from widget schema
+- [x] Node migration: focus, selection, scroll, animation fields from widget schema
       (§94.2).
   - [x] Widget schemas mark their migratable fields (`MigratableState`: focus
-        on every layout widget, scroll on `Scroll`, selection on `TextInput`)
+        and animation on every layout widget, scroll on `Scroll`, selection on
+        `TextInput`)
         and the UI IR node carries the mark.
   - [x] The structural diff aligns each parent's children by type, node name
         and kind, so an inserted or removed sibling leaves the rest kept, and a
@@ -370,7 +382,7 @@ Goal: a file edit reaches the running app as one transaction or not at all.
   - [x] A node kept with the same type carries its focus, scroll offset and
         edit buffer across a structural rebuild by `NodeKey`; a lost focus or
         scroll offset is reported.
-  - [ ] Animation fields carry (needs the DSL transition runtime).
+  - [x] Animation fields carry: every transition the runtime plays.
     - [x] A node's look reaches it: `background` and `opacity` compile to value entries
           on any native node (`ControlKind::Plain` when it drives nothing else) and are
           delivered by the macros, hot-reload commit, view package and regions;
@@ -390,11 +402,14 @@ Goal: a file edit reaches the running app as one transaction or not at all.
             animatable member the runtime does not play yet is E3711, not a
             silent no-op.
       - [x] `background` colors convert from sRGB to linear.
-    - [ ] An in-flight transition carries to the node that rebuilds its kept node.
-    - [ ] Not yet animatable because the property itself does not reach its node:
-          `translate` and `corner_radius` (the VM has no `MixedLength`), `scale` and
-          `rotation` (no transform channel), text `color` (baked into shaping), and
-          `width`/`height`.
+    - [x] An in-flight transition carries to the node that rebuilds its kept node.
+      - [x] `MigratableState::ANIMATION` on every layout widget; the rebuild lifts a
+            kept node's moves and resumes them once the new view delivers its
+            values, a region's nodes included: the same target keeps its clock, a
+            new one turns from the shown value.
+      - [x] A structure-preserving edit's re-delivery does not cut a move
+            (`NodeStore::present`).
+    - The other properties' transitions are D2.6.
   - [x] Nodes a region mounts carry their state.
     - [x] The view runtime lists the nodes its regions show, each with its arm item
           and the keys of the `for` items around it.

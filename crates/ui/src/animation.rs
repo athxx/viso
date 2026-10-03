@@ -278,14 +278,17 @@ impl LookValue {
     }
 }
 
-/// A node's look property moving from the value it showed toward `to`.
+/// A node's look property moving from the value it showed toward its target.
+/// A rebuild lifts one off the node it leaves
+/// ([`NodeStore::lift_transitions`]) and resumes it on the node that replaces
+/// it ([`NodeStore::resume_transition`]).
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub(crate) struct LookTransition {
+pub struct LookTransition {
     pub(crate) node: NodeId,
     from: LookValue,
     pub(crate) to: LookValue,
     elapsed: Duration,
-    timing: Timing,
+    pub(crate) timing: Timing,
 }
 
 impl LookTransition {
@@ -309,6 +312,11 @@ impl LookTransition {
     /// Advances it by `delta`: the value it shows now, and whether it is done.
     pub(crate) fn advance(&mut self, delta: Duration) -> (LookValue, bool) {
         self.elapsed = self.elapsed.saturating_add(delta);
+        self.at()
+    }
+
+    /// The value it shows at its elapsed time, and whether it is done.
+    pub(crate) fn at(&self) -> (LookValue, bool) {
         let Some(moving) = self.elapsed.checked_sub(self.timing.delay) else {
             return (self.from, false);
         };
@@ -639,5 +647,53 @@ mod tests {
         store.clear();
         store.tick_transitions(Duration::from_millis(16));
         assert!(!store.is_transitioning());
+    }
+
+    #[test]
+    fn presenting_keeps_a_move_heading_there_and_turns_one_heading_elsewhere() {
+        let (mut store, node) = one_leaf();
+        store.transition(node, LookValue::Opacity(0.0), linear(100));
+        store.tick_transitions(Duration::from_millis(50));
+        store.present(node, LookValue::Opacity(0.0));
+        store.tick_transitions(Duration::from_millis(25));
+        assert_eq!(store.opacity(node), 0.25, "the same target keeps its clock");
+
+        store.present(node, LookValue::Opacity(1.0));
+        store.tick_transitions(Duration::from_millis(50));
+        assert_eq!(store.opacity(node), 0.625, "from 0.25 halfway to 1.0");
+
+        let (mut idle, other) = one_leaf();
+        idle.present(other, LookValue::Opacity(0.5));
+        assert_eq!(idle.opacity(other), 0.5, "nothing moving shows at once");
+        assert!(!idle.is_transitioning());
+    }
+
+    #[test]
+    fn a_lifted_transition_resumes_on_the_node_that_replaces_it() {
+        let (mut store, old) = one_leaf();
+        store.transition(old, LookValue::Opacity(0.0), linear(100));
+        store.tick_transitions(Duration::from_millis(50));
+        let mut lifted = Vec::new();
+        store.lift_transitions(old, &mut lifted);
+        assert_eq!(lifted.len(), 1);
+        assert!(!store.is_transitioning());
+
+        let (mut next, node) = one_leaf();
+        next.set_opacity(node, 0.0);
+        next.resume_transition(node, lifted[0]);
+        assert_eq!(next.opacity(node), 0.5, "it shows where the move was");
+        next.tick_transitions(Duration::from_millis(25));
+        assert_eq!(next.opacity(node), 0.25, "on the move's clock");
+
+        let (mut turned, node) = one_leaf();
+        turned.set_opacity(node, 1.0);
+        turned.resume_transition(node, lifted[0]);
+        assert_eq!(turned.opacity(node), 0.5);
+        turned.tick_transitions(Duration::from_millis(50));
+        assert_eq!(
+            turned.opacity(node),
+            0.75,
+            "a new target turns it from there"
+        );
     }
 }

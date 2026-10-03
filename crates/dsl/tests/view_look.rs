@@ -92,6 +92,8 @@ struct Rt {
     scratch: Vec<NodeId>,
     nodes: Vec<(viso_dsl::ir::binding_ir::NodeKey, NodeId)>,
     view: Option<Rc<RefCell<ViewHost>>>,
+    /// The candidate a reload made live.
+    plan: CandidatePlan,
 }
 
 impl Rt {
@@ -105,23 +107,29 @@ impl Rt {
 
     fn reload(source: &str) -> Self {
         let mut rt = Rt::default();
-        let mut live = LiveRuntime {
-            store: &mut rt.store,
-            states: &mut rt.states,
-            bindings: &mut rt.bindings,
-            effects: &mut rt.effects,
-            lists: &mut rt.lists,
-            text_edits: &mut rt.text_edits,
-            projectors: &mut rt.projectors,
-            root: None,
-            scratch: &mut rt.scratch,
-            nodes: &mut rt.nodes,
-            view: &mut rt.view,
-        };
-        hot_reload_view(&mut live, &CandidatePlan::default(), source, &origin()).expect("reloads");
-        rt.root = live.root;
-        rt.layout();
+        rt.edit(source);
         rt
+    }
+
+    /// Reloads `source` over the live view.
+    fn edit(&mut self, source: &str) {
+        let mut live = LiveRuntime {
+            store: &mut self.store,
+            states: &mut self.states,
+            bindings: &mut self.bindings,
+            effects: &mut self.effects,
+            lists: &mut self.lists,
+            text_edits: &mut self.text_edits,
+            projectors: &mut self.projectors,
+            root: self.root,
+            scratch: &mut self.scratch,
+            nodes: &mut self.nodes,
+            view: &mut self.view,
+        };
+        let done = hot_reload_view(&mut live, &self.plan, source, &origin()).expect("reloads");
+        self.root = live.root;
+        self.plan = done.candidate;
+        self.layout();
     }
 
     fn package(source: &str) -> Self {
@@ -302,4 +310,101 @@ fn a_transition_names_an_animatable_property_and_takes_a_transition() {
         ["E3711"],
         "a transition the runtime does not play yet is no silent no-op"
     );
+}
+
+/// A view whose text, and a text its region mounts, fade with `lit`; `{lead}`
+/// opens its column and `{target}` is the lit opacity.
+fn carried(lead: &str, target: &str) -> String {
+    format!(
+        "component Carry {{
+    state lit = false;
+    view {{
+        Column {{
+            width: 400dp;
+            height: 300dp;
+            {lead}
+            Text {{
+                width: 20dp;
+                height: 20dp;
+                opacity: if lit {{ {target} }} else {{ 0.0f32 }};
+                transition.opacity: Transition {{ duration: 100ms, easing: Easing::linear }};
+                on click {{ lit = !lit; }}
+            }}
+            Column {{
+                width: 100dp;
+                height: 100dp;
+                if true {{
+                    Text {{
+                        width: 10dp;
+                        height: 10dp;
+                        opacity: if lit {{ 1.0f32 }} else {{ 0.0f32 }};
+                        transition.opacity: Transition {{ duration: 100ms, easing: Easing::linear }};
+                    }}
+                }}
+            }}
+        }}
+    }}
+}}"
+    )
+}
+
+#[test]
+fn a_transition_in_flight_carries_across_a_reload() {
+    let ms = Duration::from_millis;
+    // A property edit of a region-free view keeps its nodes and their moves.
+    let mut rt = Rt::reload(FADE);
+    rt.click(5.0, 5.0);
+    rt.store.tick_transitions(ms(50));
+    rt.edit(&FADE.replace("width: 400dp", "width: 401dp"));
+    let root = rt.root.expect("mounted");
+    let [text] = rt.children(root)[..] else {
+        panic!("the text");
+    };
+    assert_eq!(
+        rt.store.opacity(text),
+        0.5,
+        "the edit keeps the shown value"
+    );
+    rt.store.tick_transitions(ms(25));
+    assert_eq!(rt.store.opacity(text), 0.75, "and the move's clock");
+
+    // A rebuild carries each kept node's move, a region's included.
+    let mut rt = Rt::reload(&carried("", "1.0f32"));
+    rt.click(5.0, 5.0);
+    rt.store.tick_transitions(ms(50));
+    let root = rt.root.expect("mounted");
+    let [text, _] = rt.children(root)[..] else {
+        panic!("the text and the region column");
+    };
+    assert_eq!(rt.store.opacity(text), 0.5, "mid-move before the edit");
+    rt.edit(&carried("Row { width: 5dp; height: 5dp; }", "1.0f32"));
+    let root = rt.root.expect("mounted");
+    let [_, text, column] = rt.children(root)[..] else {
+        panic!("a new row, the text and the region column");
+    };
+    let [shown] = rt.children(column)[..] else {
+        panic!("the region's text");
+    };
+    assert_eq!(
+        rt.store.opacity(text),
+        0.5,
+        "the rebuilt node shows the move"
+    );
+    assert_eq!(rt.store.opacity(shown), 0.5, "so does the region's");
+    rt.store.tick_transitions(ms(25));
+    assert_eq!(rt.store.opacity(text), 0.75);
+    assert_eq!(rt.store.opacity(shown), 0.75);
+
+    // A new target turns the carried move from where it is.
+    rt.edit(&carried("", "0.25f32"));
+    let root = rt.root.expect("mounted");
+    let [text, _] = rt.children(root)[..] else {
+        panic!("the text and the region column");
+    };
+    assert_eq!(rt.store.opacity(text), 0.75);
+    rt.store.tick_transitions(ms(50));
+    assert_eq!(rt.store.opacity(text), 0.5, "from 0.75 halfway to 0.25");
+    rt.store.tick_transitions(ms(50));
+    assert_eq!(rt.store.opacity(text), 0.25);
+    assert!(!rt.store.is_transitioning(), "both arrived");
 }
