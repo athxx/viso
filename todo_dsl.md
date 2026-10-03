@@ -375,8 +375,21 @@ Goal: a file edit reaches the running app as one transaction or not at all.
           on any native node (`ControlKind::Plain` when it drives nothing else) and are
           delivered by the macros, hot-reload commit, view package and regions;
           `NodeStore::set_fill` / `set_opacity`, opacity painting its subtree as a layer.
-    - [ ] `transition.background` / `transition.opacity` (§U6.1, §U6.4): the shown value
+    - [x] `transition.background` / `transition.opacity` (§U6.1, §U6.4): the shown value
           interpolates after mount, retargets, and is instant under reduced motion.
+      - [x] Prelude `Transition` / `Easing` / `ReducedMotion`; prelude record field
+            defaults are lowered, so a `Transition { … }` literal fills what it omits.
+      - [x] `NodeStore::transition` / `tick_transitions`: a flat list of moving
+            fills and opacities, retargeting from the shown value; a fill mixes in
+            premultiplied linear light; a direct write ends a move.
+      - [x] Value delivery moves a changed look over its transition entry (read
+            only on change, no dependency); the first value and reduced motion
+            with `instant` show at once; the facade ticks and keeps beating while
+            a move is in flight, then halts.
+      - [x] E3703 for a non-`Transition` value or a non-animatable member; an
+            animatable member the runtime does not play yet is E3711, not a
+            silent no-op.
+      - [x] `background` colors convert from sRGB to linear.
     - [ ] An in-flight transition carries to the node that rebuilds its kept node.
     - [ ] Not yet animatable because the property itself does not reach its node:
           `translate` and `corner_radius` (the VM has no `MixedLength`), `scale` and

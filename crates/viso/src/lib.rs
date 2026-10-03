@@ -1002,6 +1002,11 @@ impl WindowState {
         }
     }
 
+    /// Whether a node of the window is mid-slide or a look property mid-move.
+    fn is_animating(&self) -> bool {
+        !self.animations.is_empty() || self.store.is_transitioning()
+    }
+
     /// Whether the text worker still owes results a later frame commits.
     fn text_work_pending(&self) -> bool {
         self.text.as_ref().is_some_and(TextShaper::has_pending_work)
@@ -1992,6 +1997,9 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
                     if !ws.animations.is_empty() {
                         ws.animations.tick(&mut ws.store, cx.frame_delta());
                     }
+                    if ws.store.is_transitioning() {
+                        ws.store.tick_transitions(cx.frame_delta());
+                    }
                     // Arm any one-shot timers a handler requested this frame (a
                     // toast's auto-dismiss), then fire every timer whose deadline
                     // this frame's instant has crossed. Arming resolves each
@@ -2367,7 +2375,7 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
                     // falls idle, holding the zero-CPU-when-idle contract.
                     // Text the worker still owes is committed by a later frame,
                     // so keep beating until it lands.
-                    if !ws.animations.is_empty() || ws.text_work_pending() {
+                    if ws.is_animating() || ws.text_work_pending() {
                         cx.request_redraw(ws.window);
                     }
                 }
@@ -2404,7 +2412,7 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
         // `request_redraw` self-reschedule in `PostFrameCleanup`.
         self.windows
             .iter()
-            .any(|w| !w.animations.is_empty() || w.text_work_pending())
+            .any(|w| w.is_animating() || w.text_work_pending())
     }
 
     fn next_timer_deadline(&self) -> Option<viso_runtime::Instant> {

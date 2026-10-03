@@ -132,7 +132,7 @@ pub fn lower(
     // it imports exactly as what it declares), and each module's own scope.
     let mut decls = Declarations::default();
     let prelude = Prelude::load(interner);
-    ModuleScope::build(
+    let prelude_scope = ModuleScope::build(
         &prelude.unit,
         &prelude.module.table,
         &prelude.module.refs,
@@ -204,6 +204,7 @@ pub fn lower(
         per_module.push(module_diagnostics);
         input_flows.push(flows);
     }
+    lower_prelude_defaults(&prelude, &prelude_scope, &decls, &behavior, graph.natives());
     cap.finish(&mut components, &mut per_module);
     check_input_bases(&input_flows, &mut per_module);
     domains.check(&decls, graph.natives(), profile, &mut per_module);
@@ -269,6 +270,51 @@ fn collect_migrators(
     }
 }
 
+/// Lowers the prelude record field defaults the package's record literals
+/// run, with no source span: the prelude is no module of the package.
+fn lower_prelude_defaults(
+    prelude: &Prelude,
+    scope: &ModuleScope,
+    decls: &Declarations,
+    behavior: &RefCell<ProgramBuilder>,
+    natives: &Natives,
+) {
+    let wanted = behavior.borrow().unlowered_defaults();
+    if wanted.is_empty() {
+        return;
+    }
+    let env = ModuleEnv::new(decls, scope, 0, behavior, natives);
+    let mut diagnostics = Vec::new();
+    let mut percent = PercentSources::default();
+    for item in prelude.unit.items() {
+        let Item::Export(export) = item else { continue };
+        let Some(Item::Record(record)) = export.declaration() else {
+            continue;
+        };
+        let Some(&symbol) = scope.declared.get(&record.syntax().text_range()) else {
+            continue;
+        };
+        let wants = |index: u32| wanted.binary_search(&(symbol, index)).is_ok();
+        if (0..record.fields().count() as u32).any(wants) {
+            check_field_defaults(
+                &record,
+                &prelude.module.refs,
+                &env,
+                &mut diagnostics,
+                &mut percent,
+                wants,
+            );
+        }
+    }
+    debug_assert!(diagnostics.is_empty(), "the prelude's defaults do not type");
+    let mut builder = behavior.borrow_mut();
+    for &(record, index) in &wanted {
+        if let Some(id) = builder.field_default(record, index) {
+            builder.unspan(id);
+        }
+    }
+}
+
 /// Lowers one compilation unit's components/systems and module-level callables, running the
 /// effect checks over their bodies and registering every callable in the capability graph;
 /// returns what its views say about the percent bases of component inputs.
@@ -324,7 +370,9 @@ fn lower_module(
                 input::lower_map(&c, refs, env, diagnostics);
             }
             Item::Enum(e) => input::check_derives(&e, env, diagnostics),
-            Item::Record(r) => check_field_defaults(&r, refs, env, diagnostics, &mut percent),
+            Item::Record(r) => {
+                check_field_defaults(&r, refs, env, diagnostics, &mut percent, |_| true);
+            }
             Item::Fn(f) => {
                 let callable = Callable {
                     name: name_of(f.name()),
@@ -697,19 +745,23 @@ fn check_const(
     diagnostics.extend(cx.into_diagnostics());
 }
 
-/// Types each record field default against its field type; a record literal that omits
-/// a defaulted field carries what the defaults do.
+/// Types each record field default `wanted` names by index against its field type; a
+/// record literal that omits a defaulted field carries what the defaults do.
 fn check_field_defaults(
     decl: &RecordDecl,
     refs: &[ResolvedRef],
     env: &ModuleEnv<'_>,
     diagnostics: &mut Vec<Diagnostic>,
     percent: &mut PercentSources,
+    wanted: impl Fn(u32) -> bool,
 ) {
     let record = env.scope.declared.get(&decl.syntax().text_range()).copied();
     let record_name = name_of(decl.name());
     let mut cx = InferCx::new(refs, env);
     for (index, field) in decl.fields().enumerate() {
+        if !wanted(index as u32) {
+            continue;
+        }
         let want = env.annotation_of(field.syntax());
         check_stored(
             &want,

@@ -329,14 +329,13 @@ impl Owner<'_> {
         self.slots.iter().find(|s| s.default)
     }
 
-    /// Whether `path` is a property a view-driven native node reads its
-    /// current value or range from: a control's, or a label's text.
+    /// Whether `path` is a property a view-driven native node reads: a
+    /// control's value or range, a label's text, or its look.
     fn reads_control(&self, path: &PropertyPath) -> bool {
         self.component.is_none()
-            && match path_segments(path).as_slice() {
-                [name] => ControlKind::of(&self.name).input(name).is_some(),
-                _ => false,
-            }
+            && ControlKind::of(&self.name)
+                .input(&path_text(path))
+                .is_some()
     }
 
     /// Whether this is a `SlotOutlet`.
@@ -1075,15 +1074,31 @@ impl<'a> ViewWalk<'a> {
             // `slot:` names a slot, checked by `outlet`; it is no value.
             return;
         }
-        let _ = match declared.as_ref().and_then(|d| d.ty.as_ref()) {
+        let transition = binding.path().filter(is_transition);
+        let have = match declared.as_ref().and_then(|d| d.ty.as_ref()) {
             Some(want) if is_text(want) => self.cx.infer_text_value(&value, want),
             Some(want) => self.cx.infer_promoted(&value, want),
             None => self.cx.infer_expr(&value, None),
         };
+        let at = value.syntax().text_range();
+        if let (Some(path), Some(_), Some(want)) = (
+            &transition,
+            &declared,
+            self.env.standard_type("Transition").map(Ty::Named),
+        ) && !have.has_unknown()
+            && have != want
+        {
+            let message = format!(
+                "`{}` takes a `Transition`, not `{}`",
+                path_text(path),
+                self.cx.describe(&have),
+            );
+            self.diagnostics
+                .push(Diagnostic::error("E3703", at, message));
+        }
         let (Some(declared), Some(path)) = (&declared, binding.path()) else {
             return;
         };
-        let at = value.syntax().text_range();
         if matches!(declared.basis, Basis::Input(_)) {
             // The inlined component reads its input through this argument.
             self.region_entry(errors, "arg", at, &RegionEntry::Value(&value));
@@ -1227,6 +1242,15 @@ impl<'a> ViewWalk<'a> {
                 two_way: spec.two_way,
                 basis: Basis::of(spec.percent_basis),
             }),
+            PropLookup::Unknown if names.len() == 2 && names[0] == "transition" => {
+                let message = format!(
+                    "`{}` has no animatable property `{}` for `{text}`",
+                    owner.name, names[1],
+                );
+                self.diagnostics
+                    .push(Diagnostic::error("E3703", range, message));
+                None
+            }
             PropLookup::Unknown => {
                 let last = names.last().copied().unwrap_or_default();
                 let mut candidates: Vec<Candidate<'_>> = owner
@@ -1574,6 +1598,14 @@ fn path_segments(path: &PropertyPath) -> Vec<String> {
     path.segments()
         .map(|t| t.text().trim_start_matches("r#").to_string())
         .collect()
+}
+
+/// Whether `path` is a member of the `transition.*` group.
+fn is_transition(path: &PropertyPath) -> bool {
+    path.segments()
+        .next()
+        .is_some_and(|head| head.text() == "transition")
+        && path.segments().count() == 2
 }
 
 /// The dotted source text of a property path.

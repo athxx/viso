@@ -21,6 +21,10 @@
 //!   animation frame's `recompute` also confirms `laid_out == 0` while world
 //!   still moved.
 //!
+//! - **a view's look transition plays through the loop** — a click on a
+//!   `component!` node whose `opacity` has a `transition.opacity` moves the
+//!   opacity in over the following frames, and the loop halts once it arrives.
+//!
 //! The clock is a `FixedStepClock` (injected via the hidden `__test_support`
 //! seam): the pump loops internally while `wants_animation` holds, so the test
 //! cannot advance a manual cursor between beats — a fixed step per frame drives
@@ -185,5 +189,88 @@ fn animation_frame_moves_world_without_relayout() {
         (world.y - bounds.y).abs() > 1.0,
         "world advanced away from bounds on a layout-clean frame (moved by ~{})",
         world.y - bounds.y
+    );
+}
+
+viso::component! {
+    Fade {
+        state lit = false;
+        view {
+            Column {
+                width: 800dp;
+                height: 600dp;
+                opacity: if lit { 1.0f32 } else { 0.2f32 };
+                transition.opacity: Transition { duration: 80ms, easing: Easing::linear };
+                on click { lit = true; }
+            }
+        }
+    }
+}
+
+/// An app showing one `Fade` as its window root.
+struct FadeApp;
+
+impl Application for FadeApp {
+    fn new(_cx: &mut AppCx) -> Self {
+        FadeApp
+    }
+
+    fn window_config(&self) -> WindowConfig {
+        WindowConfig {
+            caption: false,
+            ..Default::default()
+        }
+    }
+
+    fn build(&mut self, cx: &mut BuildCx<'_>) {
+        let build = viso::ui! { Fade {} };
+        build(cx);
+    }
+}
+
+#[test]
+fn a_look_transition_plays_through_the_facade_loop() {
+    let (x, y) = (SURFACE_W as f64 / 2.0, SURFACE_H as f64 / 2.0);
+    let press = |phase| {
+        RawEvent::Pointer(RawPointer::mouse(
+            WindowId(1),
+            x,
+            y,
+            RawButtons::PRIMARY,
+            Modifiers::default(),
+            phase,
+        ))
+    };
+    let redraw = RawEvent::RedrawRequested {
+        window: WindowId(1),
+    };
+    let app = drive_scripted::<FadeApp>(
+        vec![
+            redraw.clone(),
+            press(RawPhase::Down),
+            press(RawPhase::Up),
+            redraw,
+        ],
+        STEP,
+    );
+    let store = app.store();
+    let mut opacities = Vec::new();
+    let mut pending = vec![app.root().expect("FadeApp declares a root")];
+    while let Some(node) = pending.pop() {
+        opacities.push(store.opacity(node));
+        let mut child = store.arena().links(node).and_then(|l| l.first_child);
+        while let Some(c) = child {
+            pending.push(c);
+            child = store.arena().links(c).and_then(|l| l.next_sibling);
+        }
+    }
+    assert!(
+        opacities.iter().all(|&o| o == 1.0),
+        "the opacity arrived at its target through the loop: {opacities:?}"
+    );
+    assert!(!store.is_transitioning());
+    assert!(
+        !app.wants_animation(),
+        "the loop halts once the look settles (zero-CPU-when-idle)"
     );
 }

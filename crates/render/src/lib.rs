@@ -130,7 +130,7 @@ pub use scene::store::Brush;
 // keyed so an unchanged chain skips re-resolution. Consumed by the render walk
 // and the widget layer, not by normal apps (§3.2 — not in the prelude).
 pub use scene::store::{ClipChainDescriptor, ClipComposition, ClipFillRule, ClipMaskKey};
-pub use viso_math::{ExtendMode, InterpolationSpace};
+pub use viso_math::{ExtendMode, InterpolationSpace, Srgb};
 
 /// The Image test texture: a 4×4 red/blue checkerboard, BGRA8, top-left origin,
 /// premultiplied (opaque, so premultiplied == straight).

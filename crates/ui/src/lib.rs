@@ -38,7 +38,7 @@ pub mod token;
 pub mod virtual_list;
 pub mod window;
 
-pub use animation::{AnimationRegistry, Easing, TranslateAnim};
+pub use animation::{AnimationRegistry, Easing, LookValue, Timing, TranslateAnim};
 // The frame clock's time point (wasm-safe), named by timers and deadlines.
 pub use binding::{Binding, BindingTable};
 pub use component::{
@@ -96,7 +96,7 @@ pub use virtual_list::{
     HeightCache, HeightTree, ItemBuilder, VirtualListState, VirtualLists, absorb_measurements,
     reconcile, set_item_count,
 };
-pub use viso_render::{Border, LineJoin, PathCmd, Point, Rect, Rgba, Stroke, TextureId};
+pub use viso_render::{Border, LineJoin, PathCmd, Point, Rect, Rgba, Srgb, Stroke, TextureId};
 pub use viso_text::selection::Selection;
 pub use viso_text::{CaretAffinity, TextOffset, TextPosition};
 pub use window::{ChromeContext, WindowChrome, WindowConfig, WindowIdSlot, WindowOpenRequest};

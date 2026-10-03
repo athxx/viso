@@ -489,7 +489,12 @@ fn control_tokens(control: Control) -> TokenStream {
         entry(control.max),
         entry(control.step),
     );
-    let (background, opacity) = (entry(control.look.background), entry(control.look.opacity));
+    let look = control.look;
+    let (background, opacity) = (entry(look.background), entry(look.opacity));
+    let (background_transition, opacity_transition) = (
+        entry(look.background_transition),
+        entry(look.opacity_transition),
+    );
     quote! {
         ::viso_view::Control {
             kind: ::viso_view::ControlKind::#kind,
@@ -500,6 +505,8 @@ fn control_tokens(control: Control) -> TokenStream {
             look: ::viso_view::Look {
                 background: #background,
                 opacity: #opacity,
+                background_transition: #background_transition,
+                opacity_transition: #opacity_transition,
             },
         }
     }

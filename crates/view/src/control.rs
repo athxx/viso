@@ -95,11 +95,14 @@ impl ControlKind {
         )
     }
 
-    /// Which of [`Control`]'s entries the widget property `property` fills.
+    /// Which of [`Control`]'s entries the widget property `property` fills; a
+    /// group member is named by its dotted path (`transition.opacity`).
     pub fn input(self, property: &str) -> Option<ControlInput> {
         Some(match (self, property) {
             (_, "background") => ControlInput::Background,
             (_, "opacity") => ControlInput::Opacity,
+            (_, "transition.background") => ControlInput::BackgroundTransition,
+            (_, "transition.opacity") => ControlInput::OpacityTransition,
             (ControlKind::Toggle, "checked")
             | (ControlKind::Slider, "value")
             | (ControlKind::Select, "selected")
@@ -145,6 +148,10 @@ pub enum ControlInput {
     Background,
     /// The node's `opacity`.
     Opacity,
+    /// The node's `transition.background`.
+    BackgroundTransition,
+    /// The node's `transition.opacity`.
+    OpacityTransition,
 }
 
 /// A view-driven native node: its kind and the handler-table entries that
@@ -167,13 +174,18 @@ pub struct Control {
 }
 
 /// The handler-table entries of the look a node shows: an absent entry leaves
-/// the node as it was built (no fill, opaque).
+/// the node as it was built (no fill, opaque), and a value with no transition
+/// shows at once.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Look {
     /// Its `background`: a color, or `None` for no fill.
     pub background: Option<u32>,
     /// Its `opacity`.
     pub opacity: Option<u32>,
+    /// Its `transition.background`: how a new background moves in.
+    pub background_transition: Option<u32>,
+    /// Its `transition.opacity`: how a new opacity moves in.
+    pub opacity_transition: Option<u32>,
 }
 
 /// The fraction of a slider's range one arrow key moves a stepless slider.
@@ -204,6 +216,8 @@ impl Control {
             ControlInput::Step => self.step,
             ControlInput::Background => self.look.background,
             ControlInput::Opacity => self.look.opacity,
+            ControlInput::BackgroundTransition => self.look.background_transition,
+            ControlInput::OpacityTransition => self.look.opacity_transition,
         }
     }
 
@@ -216,6 +230,8 @@ impl Control {
             ControlInput::Step => &mut self.step,
             ControlInput::Background => &mut self.look.background,
             ControlInput::Opacity => &mut self.look.opacity,
+            ControlInput::BackgroundTransition => &mut self.look.background_transition,
+            ControlInput::OpacityTransition => &mut self.look.opacity_transition,
         };
         *slot = Some(entry);
     }
@@ -368,6 +384,8 @@ impl Encode for Control {
             self.step,
             look.background,
             look.opacity,
+            look.background_transition,
+            look.opacity_transition,
         ] {
             enc.write_varint(entry.map_or(0, |e| u64::from(e) + 1));
         }
@@ -393,6 +411,8 @@ impl Decode for Control {
             look: Look {
                 background: entry()?,
                 opacity: entry()?,
+                background_transition: entry()?,
+                opacity_transition: entry()?,
             },
         })
     }
@@ -541,6 +561,11 @@ mod tests {
         );
         assert_eq!(ControlKind::Plain.input("text"), None);
         assert_eq!(
+            ControlKind::Label.input("transition.opacity"),
+            Some(ControlInput::OpacityTransition)
+        );
+        assert_eq!(ControlKind::Label.input("transition.scale"), None);
+        assert_eq!(
             ControlKind::TextInput.input("value"),
             Some(ControlInput::Value)
         );
@@ -562,6 +587,8 @@ mod tests {
             look: Look {
                 background: Some(3),
                 opacity: None,
+                background_transition: None,
+                opacity_transition: Some(4),
             },
         };
         let bytes = control.encode_to_vec();

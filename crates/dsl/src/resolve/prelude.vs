@@ -59,6 +59,12 @@ export record KeyEvent { key: Key; repeat: Bool; modifiers: Modifiers; }
 export record FocusEvent { focus_visible: Bool; }
 export record ScrollChanged { offset: Offset; viewport: SizeDp; content: SizeDp; }
 
+export enum Easing { linear; ease_in; ease_out; ease_in_out; }
+export enum ReducedMotion { instant; keep; }
+export record Transition {
+    duration: Duration = 200ms; delay: Duration = 0ms;
+    easing: Easing = Easing::ease_out; reduced: ReducedMotion = ReducedMotion::instant;
+}
 export enum Animate { translate(Offset); scale(F32); rotation(Angle); opacity(F32); }
 export record AnimationEnd { target: Animate; finished: Bool; }
 

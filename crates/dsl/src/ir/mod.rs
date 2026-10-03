@@ -387,10 +387,20 @@ impl<'a, 'l> Lowering<'a, 'l> {
         for member in body.iter().flat_map(|b| b.members()) {
             match member {
                 ViewItem::Property(prop) => {
-                    if let (Some(name), Some(value)) = (single_segment(prop.path()), prop.value())
-                        && control.input(&name).is_some()
-                    {
-                        control_reads.push((name, value.syntax().text_range()));
+                    if let (Some(name), Some(value)) = (dotted(prop.path()), prop.value()) {
+                        let at = value.syntax().text_range();
+                        if control.input(&name).is_some() {
+                            control_reads.push((name, at));
+                        } else if let Some(member) = name.strip_prefix("transition.")
+                            && widget
+                                .group("transition")
+                                .is_some_and(|g| g.member(member).is_some())
+                        {
+                            self.unmounted.push((
+                                at,
+                                format!("`{name}` does not play yet; `transition.background` and `transition.opacity` do"),
+                            ));
+                        }
                     }
                     fold_property(&prop, instance, &mut style, &mut pending)
                 }
@@ -711,6 +721,15 @@ impl<'a, 'l> Lowering<'a, 'l> {
 }
 
 /// The one segment of a property path, `None` for a longer path.
+/// A property path's dotted text (`opacity`, `transition.opacity`).
+fn dotted(path: Option<PropertyPath>) -> Option<String> {
+    let segments: Vec<String> = path?
+        .segments()
+        .map(|t| t.text().trim_start_matches("r#").to_string())
+        .collect();
+    (!segments.is_empty()).then(|| segments.join("."))
+}
+
 fn single_segment(path: Option<PropertyPath>) -> Option<String> {
     let path = path?;
     let mut segments = path.segments();

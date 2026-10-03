@@ -1,5 +1,5 @@
-//! Transform-only animation: a small retained registry that advances per-node
-//! world-space translates over time.
+//! Animation: a small retained registry that advances per-node world-space
+//! translates over time, and the look transitions a node store runs.
 //!
 //! An animation here is a [`TranslateAnim`]: a node sliding from one
 //! world-space offset to another over a fixed duration, shaped by an
@@ -15,12 +15,18 @@
 //! empties itself as animations finish so the frame loop can halt (the
 //! zero-CPU-when-idle contract — a driver's `wants_animation` reads
 //! [`is_empty`](AnimationRegistry::is_empty)).
+//!
+//! A look transition moves a node's fill or opacity to a new value over a
+//! [`Timing`]: the store keeps the moving ones in a flat list beside its
+//! columns and the driver ticks it each frame, a PAINT-only write
+//! ([`NodeStore::transition`]).
 
 use std::time::Duration;
 
 use crate::component::NodeStore;
 use crate::layout::Vec2;
 use crate::node::NodeId;
+use viso_render::Rgba;
 
 /// A standard easing curve mapping normalized time `t ∈ [0, 1]` onto eased
 /// progress, also in `[0, 1]`. These are the WAI/Material cubic curves: linear
@@ -213,6 +219,104 @@ impl AnimationRegistry {
                 }
             }
         }
+    }
+}
+
+/// How a look property moves to a new value: it holds for `delay`, then moves
+/// over `duration` shaped by `easing`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Timing {
+    /// The time the move takes.
+    pub duration: Duration,
+    /// The time before the move begins.
+    pub delay: Duration,
+    /// The curve shaping the move.
+    pub easing: Easing,
+}
+
+impl Timing {
+    /// Whether a move with this timing ends the moment it starts.
+    #[inline]
+    pub fn is_instant(&self) -> bool {
+        self.duration.is_zero() && self.delay.is_zero()
+    }
+}
+
+/// A value of a node's look a transition moves.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum LookValue {
+    /// The color its box fills with.
+    Fill(Rgba),
+    /// The opacity it and its subtree paint at.
+    Opacity(f32),
+}
+
+impl LookValue {
+    /// Whether `self` and `other` are values of the same property.
+    #[inline]
+    fn same_property(&self, other: &LookValue) -> bool {
+        std::mem::discriminant(self) == std::mem::discriminant(other)
+    }
+
+    /// The value `t` of the way from `self` to `to` (of the same property). A
+    /// fill moves in premultiplied linear light, so a fade from transparent
+    /// keeps its hue instead of passing through black.
+    fn lerp(self, to: LookValue, t: f32) -> LookValue {
+        match (self, to) {
+            (LookValue::Opacity(a), LookValue::Opacity(b)) => LookValue::Opacity(a + (b - a) * t),
+            (LookValue::Fill(a), LookValue::Fill(b)) => {
+                let (mut mixed, b) = (a.premultiply(), b.premultiply());
+                let mix = |x: f32, y: f32| x + (y - x) * t;
+                mixed.r = mix(mixed.r, b.r);
+                mixed.g = mix(mixed.g, b.g);
+                mixed.b = mix(mixed.b, b.b);
+                mixed.a = mix(mixed.a, b.a);
+                LookValue::Fill(mixed.unpremultiply())
+            }
+            _ => to,
+        }
+    }
+}
+
+/// A node's look property moving from the value it showed toward `to`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct LookTransition {
+    pub(crate) node: NodeId,
+    from: LookValue,
+    pub(crate) to: LookValue,
+    elapsed: Duration,
+    timing: Timing,
+}
+
+impl LookTransition {
+    pub(crate) fn new(node: NodeId, from: LookValue, to: LookValue, timing: Timing) -> Self {
+        LookTransition {
+            node,
+            from,
+            to,
+            elapsed: Duration::ZERO,
+            timing,
+        }
+    }
+
+    /// Whether it moves the same property of the same node as `value` on
+    /// `node`.
+    #[inline]
+    pub(crate) fn moves(&self, node: NodeId, value: &LookValue) -> bool {
+        self.node == node && self.to.same_property(value)
+    }
+
+    /// Advances it by `delta`: the value it shows now, and whether it is done.
+    pub(crate) fn advance(&mut self, delta: Duration) -> (LookValue, bool) {
+        self.elapsed = self.elapsed.saturating_add(delta);
+        let Some(moving) = self.elapsed.checked_sub(self.timing.delay) else {
+            return (self.from, false);
+        };
+        if moving >= self.timing.duration {
+            return (self.to, true);
+        }
+        let t = moving.as_secs_f32() / self.timing.duration.as_secs_f32();
+        (self.from.lerp(self.to, self.timing.easing.apply(t)), false)
     }
 }
 
@@ -439,5 +543,101 @@ mod tests {
         reg.tick(&mut store, Duration::from_millis(16));
         assert!(reg.is_empty(), "an animation on a dead node is dropped");
         assert!(!fired.get(), "dropping a dead-node anim never runs on_done");
+    }
+
+    fn linear(ms: u64) -> Timing {
+        Timing {
+            duration: Duration::from_millis(ms),
+            delay: Duration::ZERO,
+            easing: Easing::Linear,
+        }
+    }
+
+    const RED: Rgba = Rgba {
+        r: 1.0,
+        g: 0.0,
+        b: 0.0,
+        a: 1.0,
+    };
+
+    #[test]
+    fn a_look_transition_moves_from_the_shown_value_and_settles() {
+        let (mut store, node) = one_leaf();
+        store.transition(node, LookValue::Opacity(0.0), linear(100));
+        assert_eq!(store.opacity(node), 1.0, "it starts from the shown value");
+        assert!(store.is_transitioning());
+
+        store.tick_transitions(Duration::from_millis(50));
+        assert_eq!(store.opacity(node), 0.5);
+        store.tick_transitions(Duration::from_millis(60));
+        assert_eq!(store.opacity(node), 0.0, "it arrives at the target");
+        assert!(
+            !store.is_transitioning(),
+            "an arrived transition is dropped"
+        );
+    }
+
+    #[test]
+    fn a_retarget_starts_from_where_the_value_is() {
+        let (mut store, node) = one_leaf();
+        store.transition(node, LookValue::Opacity(0.0), linear(100));
+        store.tick_transitions(Duration::from_millis(50));
+        store.transition(node, LookValue::Opacity(1.0), linear(100));
+        store.tick_transitions(Duration::from_millis(50));
+        assert_eq!(store.opacity(node), 0.75, "from 0.5 halfway to 1.0");
+        assert!(store.is_transitioning());
+
+        store.transition(node, LookValue::Opacity(1.0), linear(100));
+        store.tick_transitions(Duration::from_millis(50));
+        assert_eq!(store.opacity(node), 1.0, "the same target keeps its clock");
+    }
+
+    #[test]
+    fn a_delay_holds_the_shown_value() {
+        let (mut store, node) = one_leaf();
+        let timing = Timing {
+            delay: Duration::from_millis(40),
+            ..linear(100)
+        };
+        store.transition(node, LookValue::Opacity(0.0), timing);
+        store.tick_transitions(Duration::from_millis(40));
+        assert_eq!(store.opacity(node), 1.0);
+        store.tick_transitions(Duration::from_millis(50));
+        assert_eq!(store.opacity(node), 0.5);
+    }
+
+    #[test]
+    fn a_fill_fades_in_without_losing_its_hue() {
+        let (mut store, node) = one_leaf();
+        store.transition(node, LookValue::Fill(RED), linear(100));
+        store.tick_transitions(Duration::from_millis(50));
+        let fill = store.style(node).fill;
+        assert_eq!((fill.r, fill.g, fill.b, fill.a), (1.0, 0.0, 0.0, 0.5));
+    }
+
+    #[test]
+    fn an_instant_timing_or_a_direct_write_settles_at_once() {
+        let (mut store, node) = one_leaf();
+        store.transition(node, LookValue::Fill(RED), Timing::default());
+        assert_eq!(store.style(node).fill, RED);
+        assert!(!store.is_transitioning());
+
+        store.transition(node, LookValue::Opacity(0.0), linear(100));
+        store.set_opacity(node, 0.25);
+        assert!(!store.is_transitioning(), "a direct write ends the move");
+        store.tick_transitions(Duration::from_millis(50));
+        assert_eq!(store.opacity(node), 0.25);
+
+        store.transition(node, LookValue::Opacity(0.25), linear(100));
+        assert!(!store.is_transitioning(), "the shown target moves nothing");
+    }
+
+    #[test]
+    fn a_transition_on_a_dead_node_is_dropped() {
+        let (mut store, node) = one_leaf();
+        store.transition(node, LookValue::Opacity(0.0), linear(100));
+        store.clear();
+        store.tick_transitions(Duration::from_millis(16));
+        assert!(!store.is_transitioning());
     }
 }

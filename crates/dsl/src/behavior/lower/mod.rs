@@ -310,6 +310,38 @@ impl ProgramBuilder {
         id
     }
 
+    /// The field defaults a record literal reserved that nothing has lowered.
+    pub(crate) fn unlowered_defaults(&self) -> Vec<(SymbolId, u32)> {
+        let unlowered = |id: &FuncId| {
+            matches!(
+                &self.program.functions[id.0 as usize].body,
+                Err(unsupported) if unsupported.reason == NO_BODY
+            )
+        };
+        let mut keys: Vec<_> = self
+            .field_defaults
+            .iter()
+            .filter(|(_, id)| unlowered(id))
+            .map(|(&key, _)| key)
+            .collect();
+        keys.sort_unstable();
+        keys
+    }
+
+    /// The function computing the default of field `index` of `record`, if
+    /// one is reserved.
+    pub(crate) fn field_default(&self, record: SymbolId, index: u32) -> Option<FuncId> {
+        self.field_defaults.get(&(record, index)).copied()
+    }
+
+    /// Clears the source spans of the body of `id`, lowered from source no
+    /// module of the package holds.
+    pub(crate) fn unspan(&mut self, id: FuncId) {
+        if let Ok(body) = &mut self.program.functions[id.0 as usize].body {
+            body.spans.fill(TextRange::empty(0.into()));
+        }
+    }
+
     /// The import index of the native function `entry`, adding the import on
     /// its first call.
     fn native(&mut self, entry: &NativeEntry) -> u32 {
