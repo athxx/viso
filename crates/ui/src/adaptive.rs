@@ -171,6 +171,38 @@ pub enum LayoutDirection {
     Rtl,
 }
 
+impl LayoutDirection {
+    /// The direction a BCP 47 locale's script writes in: its script subtag
+    /// when it has one, otherwise its language's usual script.
+    pub fn of_locale(locale: &str) -> LayoutDirection {
+        const RTL_SCRIPTS: [&str; 10] = [
+            "adlm", "arab", "hebr", "mand", "mend", "nkoo", "rohg", "samr", "syrc", "thaa",
+        ];
+        const RTL_LANGUAGES: [&str; 22] = [
+            "ar", "arc", "azb", "ckb", "dv", "fa", "glk", "he", "iw", "ji", "khw", "ks", "lrc",
+            "mzn", "nqo", "pnb", "ps", "sd", "syr", "ug", "ur", "yi",
+        ];
+        let mut parts = locale.split(['-', '_']);
+        let language = parts.next().unwrap_or_default();
+        let script = parts
+            .next()
+            .filter(|part| part.len() == 4 && part.bytes().all(|b| b.is_ascii_alphabetic()));
+        let rtl = match script {
+            Some(script) => RTL_SCRIPTS
+                .iter()
+                .any(|rtl| rtl.eq_ignore_ascii_case(script)),
+            None => RTL_LANGUAGES
+                .iter()
+                .any(|rtl| rtl.eq_ignore_ascii_case(language)),
+        };
+        if rtl {
+            LayoutDirection::Rtl
+        } else {
+            LayoutDirection::Ltr
+        }
+    }
+}
+
 /// What a [`DisplayFeature`] is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum DisplayFeatureKind {
@@ -863,6 +895,44 @@ mod tests {
             env.window.width = width;
             env.window.height = height;
         });
+    }
+
+    #[test]
+    fn a_locale_names_its_layout_direction() {
+        for rtl in [
+            "ar",
+            "ar-EG",
+            "he",
+            "fa-IR",
+            "ur",
+            "yi",
+            "ks-Arab",
+            "az-Arab-IR",
+            "pa-Arab",
+        ] {
+            assert_eq!(
+                LayoutDirection::of_locale(rtl),
+                LayoutDirection::Rtl,
+                "{rtl}"
+            );
+        }
+        for ltr in [
+            "en-US",
+            "und",
+            "",
+            "zh-Hans-CN",
+            "az",
+            "pa",
+            "ar-Latn",
+            "ug-Cyrl",
+            "arn",
+        ] {
+            assert_eq!(
+                LayoutDirection::of_locale(ltr),
+                LayoutDirection::Ltr,
+                "{ltr}"
+            );
+        }
     }
 
     #[test]

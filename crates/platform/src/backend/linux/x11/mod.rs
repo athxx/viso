@@ -197,6 +197,11 @@ impl PlatformApp for X11App {
         self.x11.borrow().pump.appearance
     }
 
+    fn locale(&self) -> String {
+        // The process locale is fixed at launch.
+        crate::locale::from_environment(|name| std::env::var(name).ok())
+    }
+
     fn loop_waker(&self) -> crate::LoopWaker {
         self.waker.loop_waker()
     }

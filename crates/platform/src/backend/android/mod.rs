@@ -39,11 +39,12 @@ use super::utf16::byte_offset;
 use crate::accessibility::AccessRequest;
 use crate::control::{ControlFlow, LogicalRect, PlatformError, WindowConfig, WindowId};
 use crate::event::{
-    AcceptCell, Appearance, ClipboardReply, ClipboardShortcut, ColorScheme, CursorIcon, Insets,
-    PointerButtons, PointerKind, RawEvent, RawImePreedit, RawKey, RawPointer, RawScroll, RawText,
-    clipboard_shortcut,
+    AcceptCell, Appearance, ClipboardReply, ClipboardShortcut, ColorScheme, CursorIcon,
+    DisplayFeature, DisplayFeatureKind, Insets, PointerButtons, PointerKind, RawEvent,
+    RawImePreedit, RawKey, RawPointer, RawScroll, RawText, clipboard_shortcut,
 };
 use crate::handler::AppHandler;
+use crate::locale;
 use crate::menu::Menu;
 use crate::{Instant, PlatformApp, RawWindowHandle, Window};
 
@@ -98,7 +99,12 @@ pub(super) enum Msg {
     Config {
         density: f64,
         appearance: i32,
+        font_scale: f32,
+        locale: String,
     },
+    /// The display cutouts' bounding rects, `[left, top, right, bottom]` in
+    /// px.
+    Cutouts(Vec<[i32; 4]>),
     LowMemory,
     Touch(Touch),
     /// Mouse wheel / touchpad scroll at `at`, in pixels.
@@ -297,6 +303,9 @@ struct Loop {
     launched: Cell<bool>,
     density: Cell<f64>,
     appearance: Cell<Appearance>,
+    locale: RefCell<String>,
+    /// The display cutouts, `[left, top, right, bottom]` in px.
+    cutouts: RefCell<Vec<[i32; 4]>>,
     bars: Cell<[i32; 4]>,
     ime: Cell<i32>,
     visible: Cell<bool>,
@@ -325,6 +334,8 @@ thread_local! {
         launched: Cell::new(false),
         density: Cell::new(1.0),
         appearance: Cell::new(Appearance::default()),
+        locale: RefCell::new(String::new()),
+        cutouts: RefCell::new(Vec::new()),
         bars: Cell::new([0; 4]),
         ime: Cell::new(0),
         visible: Cell::new(true),
@@ -347,7 +358,7 @@ fn push_to_window(event: RawEvent) {
     }
 }
 
-fn appearance_of(bits: i32) -> Appearance {
+fn appearance_of(bits: i32, font_scale: f32) -> Appearance {
     Appearance {
         color_scheme: if bits & 1 != 0 {
             ColorScheme::Dark
@@ -356,7 +367,32 @@ fn appearance_of(bits: i32) -> Appearance {
         },
         high_contrast: bits & 2 != 0,
         reduce_motion: bits & 4 != 0,
+        text_scale: if font_scale.is_finite() && font_scale > 0.0 {
+            font_scale
+        } else {
+            1.0
+        },
     }
+}
+
+/// The display cutouts as display features, in dp.
+fn display_features() -> Vec<DisplayFeature> {
+    LOOP.with(|l| {
+        let density = l.density.get().max(f64::MIN_POSITIVE);
+        l.cutouts
+            .borrow()
+            .iter()
+            .map(|&[left, top, right, bottom]| DisplayFeature {
+                kind: DisplayFeatureKind::Cutout,
+                bounds: LogicalRect::new(
+                    f64::from(left) / density,
+                    f64::from(top) / density,
+                    f64::from(right - left) / density,
+                    f64::from(bottom - top) / density,
+                ),
+            })
+            .collect()
+    })
 }
 
 fn safe_area() -> Insets {
@@ -482,13 +518,23 @@ fn apply(msg: Msg) {
         Msg::Config {
             density,
             appearance,
+            font_scale,
+            locale,
         } => {
-            let appearance = appearance_of(appearance);
+            let appearance = appearance_of(appearance, font_scale);
             let launched = LOOP.with(|l| l.launched.get());
             if LOOP.with(|l| l.appearance.replace(appearance)) != appearance && launched {
                 push(RawEvent::AppearanceChanged(appearance));
             }
+            let locale = locale::bcp47(&locale);
+            if LOOP.with(|l| l.locale.replace(locale.clone())) != locale && launched {
+                push(RawEvent::LocaleChanged { locale });
+            }
             if LOOP.with(|l| l.density.replace(density)) != density {
+                push_to_window(RawEvent::DisplayFeaturesChanged {
+                    window: WINDOW,
+                    features: display_features(),
+                });
                 let (width, height) = LOOP.with(|l| l.size.get());
                 push_to_window(RawEvent::ScaleFactorChanged {
                     window: WINDOW,
@@ -503,6 +549,14 @@ fn apply(msg: Msg) {
                 push_to_window(RawEvent::KeyboardInsetChanged {
                     window: WINDOW,
                     height: keyboard_height(),
+                });
+            }
+        }
+        Msg::Cutouts(rects) => {
+            if LOOP.with(|l| l.cutouts.replace(rects.clone())) != rects {
+                push_to_window(RawEvent::DisplayFeaturesChanged {
+                    window: WINDOW,
+                    features: display_features(),
                 });
             }
         }
@@ -756,7 +810,9 @@ impl AndroidApp {
             l.choreographer.set(choreographer);
             l.post_frame64.set(post64);
             l.density.set(launch.density);
-            l.appearance.set(appearance_of(launch.appearance));
+            l.appearance
+                .set(appearance_of(launch.appearance, launch.font_scale));
+            *l.locale.borrow_mut() = locale::bcp47(&launch.locale);
         });
         Ok(Self { window: None })
     }
@@ -903,6 +959,18 @@ impl PlatformApp for AndroidApp {
 
     fn appearance(&self) -> Appearance {
         LOOP.with(|l| l.appearance.get())
+    }
+
+    fn locale(&self) -> String {
+        LOOP.with(|l| l.locale.borrow().clone())
+    }
+
+    fn display_features(&self, window: WindowId) -> Vec<DisplayFeature> {
+        if window == WINDOW {
+            display_features()
+        } else {
+            Vec::new()
+        }
     }
 
     fn update_accessibility(&mut self, window: WindowId, update: accesskit::TreeUpdate) {

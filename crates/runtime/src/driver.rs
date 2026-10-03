@@ -10,7 +10,9 @@
 
 use viso_platform::Instant;
 
-use viso_platform::{AccessRequest, Appearance, Insets, LogicalRect, MenuCommandId, WindowId};
+use viso_platform::{
+    AccessRequest, Appearance, DisplayFeature, Insets, LogicalRect, MenuCommandId, WindowId,
+};
 
 use crate::context::RuntimeCx;
 use crate::input::InputSample;
@@ -110,6 +112,13 @@ pub trait FrameDriver {
     /// The on-screen keyboard now covers `height` logical points at the bottom
     /// of `window`. Default no-op.
     fn on_keyboard_inset(&mut self, _window: WindowId, _height: f64) {}
+
+    /// The hinges, folds and cutouts crossing `window`'s content changed to
+    /// `features`. Default no-op.
+    fn on_display_features(&mut self, _window: WindowId, _features: &[DisplayFeature]) {}
+
+    /// The user's locale changed to `locale`, a BCP 47 tag. Default no-op.
+    fn on_locale(&mut self, _locale: &str) {}
 
     /// An assistive technology started or stopped listening to `window`, or
     /// asked for an action on one of its nodes. Default no-op.

@@ -455,7 +455,7 @@ exactly the readers they reach, with structural branches that converge or report
 
 ### D4.4 — Safe area, keyboard and display features
 
-- [ ] The app feeds window metrics, safe area, keyboard inset, display features, input
+- [x] The app feeds window metrics, safe area, keyboard inset, display features, input
       capabilities, text scale, reduced motion and locale into the environment;
       headless tests set them directly.
   - [x] Window logical size and scale factor, safe area and keyboard inset written at
@@ -465,7 +465,15 @@ exactly the readers they reach, with structural branches that converge or report
         the pointer kinds and hardware keys the window sees.
   - [x] A field is written only when its value changes; headless tests set the
         environment directly.
-  - [ ] Text scale, locale and display features: no platform backend reports them yet.
+  - [x] Text scale from the system appearance, also moving the window's `sp` lengths:
+        iOS content size category, Android font scale, Windows text size, the GNOME
+        text-scaling factor, the Web default font size; macOS has none to read (1.0).
+  - [x] Locale as BCP 47, with the layout direction its script reads in, at open and on
+        every change: macOS/iOS preferred language, Android configuration, Windows user
+        locale, Web `navigator.language`; Linux reads the process locale at launch.
+  - [x] Display features per window at open and on every change: the macOS notch and
+        Android display cutouts as `Cutout`, Web viewport segments as `Hinge`/`Fold`;
+        iOS, Windows and Linux report none (no public source).
 - [x] `SafeArea` and `KeyboardAvoiding` widgets pad from the environment, without
       double-padding under the root safe-area wrap.
   - [x] Native widgets lowered to a Column-like flex marked as avoiding, through the

@@ -62,6 +62,9 @@ public class VisoActivity extends Activity implements SurfaceHolder.Callback2 {
     private VisoView view;
     private int lastAppearance = -1;
     private float lastDensity = -1;
+    private float lastFontScale = -1;
+    private String lastLocale = "";
+    private int[] lastCutouts = new int[0];
 
     @Override
     protected void onCreate(Bundle state) {
@@ -96,9 +99,12 @@ public class VisoActivity extends Activity implements SurfaceHolder.Callback2 {
         setContentView(view);
         view.requestFocus();
 
+        Configuration config = getResources().getConfiguration();
         lastDensity = density();
-        lastAppearance = appearance(getResources().getConfiguration());
-        nativeStart(this, lastDensity, lastAppearance);
+        lastAppearance = appearance(config);
+        lastFontScale = config.fontScale;
+        lastLocale = locale(config);
+        nativeStart(this, lastDensity, lastAppearance, lastFontScale, lastLocale);
     }
 
     private String libraryName() {
@@ -132,6 +138,15 @@ public class VisoActivity extends Activity implements SurfaceHolder.Callback2 {
             bits |= APPEARANCE_REDUCE_MOTION;
         }
         return bits;
+    }
+
+    /** The user's first locale, a BCP 47 tag. */
+    @SuppressWarnings("deprecation")
+    private static String locale(Configuration config) {
+        if (Build.VERSION.SDK_INT >= 24) {
+            return config.getLocales().get(0).toLanguageTag();
+        }
+        return config.locale.toLanguageTag();
     }
 
     private boolean highContrast() {
@@ -178,18 +193,46 @@ public class VisoActivity extends Activity implements SurfaceHolder.Callback2 {
             }
         }
         nativeInsets(top, left, bottom, right, ime);
+        int[] cutouts = new int[0];
+        if (Build.VERSION.SDK_INT >= 28) {
+            DisplayCutout cutout = insets.getDisplayCutout();
+            if (cutout != null) {
+                java.util.List<android.graphics.Rect> rects = cutout.getBoundingRects();
+                cutouts = new int[rects.size() * 4];
+                for (int i = 0; i < rects.size(); i++) {
+                    android.graphics.Rect r = rects.get(i);
+                    cutouts[i * 4] = r.left;
+                    cutouts[i * 4 + 1] = r.top;
+                    cutouts[i * 4 + 2] = r.right;
+                    cutouts[i * 4 + 3] = r.bottom;
+                }
+            }
+        }
+        if (!java.util.Arrays.equals(cutouts, lastCutouts)) {
+            lastCutouts = cutouts;
+            nativeCutouts(cutouts);
+        }
+    }
+
+    /** Report the configuration if anything the native side reads changed. */
+    private void reportConfig(Configuration config) {
+        int appearance = appearance(config);
+        float density = density();
+        String locale = locale(config);
+        if (appearance != lastAppearance || density != lastDensity
+                || config.fontScale != lastFontScale || !locale.equals(lastLocale)) {
+            lastAppearance = appearance;
+            lastDensity = density;
+            lastFontScale = config.fontScale;
+            lastLocale = locale;
+            nativeConfig(density, appearance, config.fontScale, locale);
+        }
     }
 
     @Override
     public void onConfigurationChanged(Configuration config) {
         super.onConfigurationChanged(config);
-        int appearance = appearance(config);
-        float density = density();
-        if (appearance != lastAppearance || density != lastDensity) {
-            lastAppearance = appearance;
-            lastDensity = density;
-            nativeConfig(density, appearance);
-        }
+        reportConfig(config);
     }
 
     @Override
@@ -209,11 +252,7 @@ public class VisoActivity extends Activity implements SurfaceHolder.Callback2 {
         super.onResume();
         // Accessibility settings have no change broadcast; re-read them when
         // the user comes back, which is where they are changed from.
-        int appearance = appearance(getResources().getConfiguration());
-        if (appearance != lastAppearance) {
-            lastAppearance = appearance;
-            nativeConfig(density(), appearance);
-        }
+        reportConfig(getResources().getConfiguration());
     }
 
     @Override
@@ -336,7 +375,8 @@ public class VisoActivity extends Activity implements SurfaceHolder.Callback2 {
 
     // The native loop.
 
-    static native void nativeStart(VisoActivity activity, float density, int appearance);
+    static native void nativeStart(VisoActivity activity, float density, int appearance,
+            float fontScale, String locale);
 
     static native void nativeDestroy();
 
@@ -352,7 +392,11 @@ public class VisoActivity extends Activity implements SurfaceHolder.Callback2 {
 
     static native void nativeInsets(int top, int left, int bottom, int right, int ime);
 
-    static native void nativeConfig(float density, int appearance);
+    static native void nativeConfig(float density, int appearance, float fontScale,
+            String locale);
+
+    /** The display cutouts' bounding rects, four ints (left, top, right, bottom) each, in px. */
+    static native void nativeCutouts(int[] rects);
 
     static native void nativeLowMemory();
 

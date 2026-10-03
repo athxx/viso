@@ -500,13 +500,47 @@ pub enum ColorScheme {
 }
 
 /// System-wide presentation preferences.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Appearance {
     pub color_scheme: ColorScheme,
     /// The user asked for increased contrast.
     pub high_contrast: bool,
     /// The user asked for reduced motion.
     pub reduce_motion: bool,
+    /// The user's preferred text size relative to the platform's default
+    /// size: `1.0` where the platform has no such setting.
+    pub text_scale: f32,
+}
+
+impl Default for Appearance {
+    fn default() -> Self {
+        Appearance {
+            color_scheme: ColorScheme::Light,
+            high_contrast: false,
+            reduce_motion: false,
+            text_scale: 1.0,
+        }
+    }
+}
+
+/// What part of the display a [`DisplayFeature`] is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum DisplayFeatureKind {
+    /// A physical hinge between two screens, which shows nothing.
+    Hinge,
+    /// A fold in a flexible screen, which shows content but bends it.
+    Fold,
+    /// A camera or sensor cutout, which shows nothing.
+    Cutout,
+}
+
+/// A hinge, fold or cutout crossing a window's content.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct DisplayFeature {
+    /// What it is.
+    pub kind: DisplayFeatureKind,
+    /// Where it crosses the content, in logical points from its top-left.
+    pub bounds: LogicalRect,
 }
 
 /// Edge insets in logical points.
@@ -658,6 +692,17 @@ pub enum RawEvent {
     /// The on-screen keyboard now covers `height` logical points at the bottom
     /// of the window (`0.0` once it is gone).
     KeyboardInsetChanged { window: WindowId, height: f64 },
+    /// The hinges, folds and cutouts crossing `window`'s content changed;
+    /// `features` is the whole new list. The current list is also readable
+    /// from [`PlatformApp::display_features`](crate::PlatformApp::display_features).
+    DisplayFeaturesChanged {
+        window: WindowId,
+        features: Vec<DisplayFeature>,
+    },
+    /// The user's locale changed, a BCP 47 tag such as `en-US` or
+    /// `zh-Hans-CN`. The current one is also readable from
+    /// [`PlatformApp::locale`](crate::PlatformApp::locale).
+    LocaleChanged { locale: String },
     /// The OS asked the focused content for its selection: copy it, or cut it
     /// when `cut` is set. The handler answers through `reply`; the backend then
     /// writes the answer to the system clipboard.

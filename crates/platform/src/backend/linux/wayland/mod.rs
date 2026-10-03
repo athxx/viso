@@ -211,6 +211,11 @@ impl PlatformApp for WaylandApp {
         self.wl.borrow().state.pump.appearance
     }
 
+    fn locale(&self) -> String {
+        // The process locale is fixed at launch.
+        crate::locale::from_environment(|name| std::env::var(name).ok())
+    }
+
     fn loop_waker(&self) -> crate::LoopWaker {
         self.wl.borrow().state.waker.loop_waker()
     }

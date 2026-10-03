@@ -1,11 +1,15 @@
 //! The adaptive environment as the platform reports it: each window's metrics,
-//! safe area and keyboard, the system appearance, and the input devices its
-//! input reveals. A field is written only when its value changes, so a steady
+//! safe area, keyboard and display features, the system appearance, text
+//! scale and locale, and the input devices its input reveals. A field is written only when its value changes, so a steady
 //! stream of input touches nothing.
 
 use viso_platform::{Appearance, PointerKind};
+use viso_render::Rect;
 use viso_ui::StateStore;
-use viso_ui::adaptive::{InputCapabilities, PointerPrecision, WindowMetrics};
+use viso_ui::adaptive::{
+    DisplayFeature, DisplayFeatureKind, InputCapabilities, LayoutDirection, PointerPrecision,
+    WindowMetrics,
+};
 use viso_ui::layout::Inset;
 
 use crate::WindowState;
@@ -13,10 +17,41 @@ use crate::WindowState;
 impl WindowState {
     /// Seeds a new window's environment before its tree is built, so every
     /// region selects its first arm against the real window.
-    pub(crate) fn seed_environment(&mut self, appearance: Appearance) {
+    pub(crate) fn seed_environment(
+        &mut self,
+        appearance: Appearance,
+        locale: &str,
+        features: &[viso_platform::DisplayFeature],
+    ) {
         self.report_window();
         initial_input(&mut self.states);
-        report_appearance(&mut self.states, appearance);
+        self.report_appearance(appearance);
+        report_locale(&mut self.states, locale);
+        report_display_features(&mut self.states, features);
+    }
+
+    /// Writes the parts of the system appearance the environment carries; the
+    /// text scale also resizes the window's `sp` lengths.
+    pub(crate) fn report_appearance(&mut self, appearance: Appearance) {
+        let text_scale = if appearance.text_scale.is_finite() && appearance.text_scale > 0.0 {
+            appearance.text_scale
+        } else {
+            1.0
+        };
+        let now = self.states.env().environment();
+        if now.reduced_motion != appearance.reduce_motion || now.text_scale != text_scale {
+            self.states.update_env(|env| {
+                env.reduced_motion = appearance.reduce_motion;
+                env.text_scale = text_scale;
+            });
+        }
+        let lengths = self.store.length_env();
+        if lengths.text_scale != text_scale {
+            self.store.set_length_env(viso_ui::LengthEnv {
+                text_scale,
+                ..lengths
+            });
+        }
     }
 
     /// Writes the window's logical size and scale factor, safe area and
@@ -61,10 +96,41 @@ fn report_metrics(
     });
 }
 
-/// Writes the parts of the system appearance the environment carries.
-pub(crate) fn report_appearance(states: &mut StateStore, appearance: Appearance) {
-    if states.env().environment().reduced_motion != appearance.reduce_motion {
-        states.update_env(|env| env.reduced_motion = appearance.reduce_motion);
+/// Writes the user's locale and the layout direction its script reads in.
+pub(crate) fn report_locale(states: &mut StateStore, locale: &str) {
+    let direction = LayoutDirection::of_locale(locale);
+    let now = states.env().environment();
+    if now.locale != locale || now.layout_direction != direction {
+        states.update_env(|env| {
+            locale.clone_into(&mut env.locale);
+            env.layout_direction = direction;
+        });
+    }
+}
+
+/// Writes the hinges, folds and cutouts over a window.
+pub(crate) fn report_display_features(
+    states: &mut StateStore,
+    features: &[viso_platform::DisplayFeature],
+) {
+    let features: Vec<_> = features
+        .iter()
+        .map(|feature| DisplayFeature {
+            kind: match feature.kind {
+                viso_platform::DisplayFeatureKind::Hinge => DisplayFeatureKind::Hinge,
+                viso_platform::DisplayFeatureKind::Fold => DisplayFeatureKind::Fold,
+                viso_platform::DisplayFeatureKind::Cutout => DisplayFeatureKind::Cutout,
+            },
+            bounds: Rect {
+                x: feature.bounds.x as f32,
+                y: feature.bounds.y as f32,
+                w: feature.bounds.width as f32,
+                h: feature.bounds.height as f32,
+            },
+        })
+        .collect();
+    if states.env().environment().display_features != features {
+        states.update_env(|env| env.display_features = features);
     }
 }
 

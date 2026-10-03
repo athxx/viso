@@ -26,6 +26,7 @@ pub mod backend;
 pub mod control;
 pub mod event;
 pub mod handler;
+mod locale;
 pub mod menu;
 pub mod time;
 pub mod wake;
@@ -36,9 +37,10 @@ pub use control::{
     WindowId,
 };
 pub use event::{
-    AcceptCell, Appearance, ClipboardReply, ClipboardShortcut, ColorScheme, CursorIcon, Insets,
-    KeyCode, Modifiers, PointerButtons, PointerId, PointerKind, PointerPhase, RawEvent,
-    RawImePreedit, RawKey, RawPointer, RawScroll, RawText, clipboard_shortcut,
+    AcceptCell, Appearance, ClipboardReply, ClipboardShortcut, ColorScheme, CursorIcon,
+    DisplayFeature, DisplayFeatureKind, Insets, KeyCode, Modifiers, PointerButtons, PointerId,
+    PointerKind, PointerPhase, RawEvent, RawImePreedit, RawKey, RawPointer, RawScroll, RawText,
+    clipboard_shortcut,
 };
 pub use handler::AppHandler;
 pub use menu::{Accel, Menu, MenuCommandId, SystemAction};
@@ -159,6 +161,19 @@ pub trait PlatformApp {
     /// The current system appearance. Changes arrive as
     /// [`RawEvent::AppearanceChanged`].
     fn appearance(&self) -> Appearance;
+
+    /// The user's locale, a BCP 47 tag (`und` when the platform reports
+    /// none). Changes arrive as [`RawEvent::LocaleChanged`].
+    fn locale(&self) -> String {
+        "und".to_owned()
+    }
+
+    /// The hinges, folds and cutouts crossing `window`'s content now.
+    /// Changes arrive as [`RawEvent::DisplayFeaturesChanged`].
+    fn display_features(&self, window: WindowId) -> Vec<DisplayFeature> {
+        let _ = window;
+        Vec::new()
+    }
 
     /// Whether windows are desktop windows the user moves and resizes, so a
     /// self-drawn caption belongs on them. `false` where the app owns the

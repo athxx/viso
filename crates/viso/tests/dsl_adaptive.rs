@@ -314,10 +314,10 @@ impl Application for AvoidingApp {
 #[test]
 fn the_platform_feeds_the_environment_and_regions_pad_once() {
     use viso::platform::{
-        Appearance, Insets, Modifiers, PointerButtons as Buttons, PointerId, PointerKind,
-        PointerPhase as Phase, RawPointer,
+        Appearance, DisplayFeature, DisplayFeatureKind, Insets, LogicalRect, Modifiers,
+        PointerButtons as Buttons, PointerId, PointerKind, PointerPhase as Phase, RawPointer,
     };
-    use viso::ui::adaptive::PointerPrecision;
+    use viso::ui::adaptive::{DisplayFeatureKind as Kind, LayoutDirection, PointerPrecision};
     use viso::ui::layout::{Inset, LayoutInput, LayoutTree};
     let window = WindowId(1);
     let touch = RawPointer {
@@ -354,8 +354,19 @@ fn the_platform_feeds_the_environment_and_regions_pad_once() {
             },
             RawEvent::AppearanceChanged(Appearance {
                 reduce_motion: true,
+                text_scale: 1.5,
                 ..Appearance::default()
             }),
+            RawEvent::LocaleChanged {
+                locale: "ar-EG".to_owned(),
+            },
+            RawEvent::DisplayFeaturesChanged {
+                window,
+                features: vec![DisplayFeature {
+                    kind: DisplayFeatureKind::Hinge,
+                    bounds: LogicalRect::new(196.0, 0.0, 8.0, 800.0),
+                }],
+            },
             RawEvent::Pointer(touch),
             RawEvent::RedrawRequested { window },
         ],
@@ -367,6 +378,25 @@ fn the_platform_feeds_the_environment_and_regions_pad_once() {
     assert_eq!(env.safe_area.bottom, 34.0);
     assert_eq!(env.keyboard_inset, 300.0);
     assert!(env.reduced_motion);
+    assert_eq!(env.text_scale, 1.5);
+    assert_eq!(
+        app.store().length_env().text_scale,
+        1.5,
+        "sp lengths follow"
+    );
+    assert_eq!(env.locale, "ar-EG");
+    assert_eq!(env.layout_direction, LayoutDirection::Rtl);
+    assert_eq!(env.display_features.len(), 1);
+    assert_eq!(env.display_features[0].kind, Kind::Hinge);
+    assert_eq!(
+        env.display_features[0].bounds,
+        Rect {
+            x: 196.0,
+            y: 0.0,
+            w: 8.0,
+            h: 800.0
+        }
+    );
     assert_eq!(
         env.input.primary_pointer_precision,
         PointerPrecision::Coarse

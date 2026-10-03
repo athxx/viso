@@ -67,6 +67,8 @@ static JAVA: OnceLock<Java> = OnceLock::new();
 pub(super) struct Launch {
     pub density: f64,
     pub appearance: i32,
+    pub font_scale: f32,
+    pub locale: String,
 }
 
 static LAUNCH: OnceLock<Launch> = OnceLock::new();
@@ -418,10 +420,10 @@ pub unsafe extern "system" fn JNI_OnLoad(vm: *mut JavaVM, _reserved: *mut c_void
 /// `env` must be the calling thread's environment and `class` the
 /// `VisoActivity` class.
 unsafe fn register_natives(env: *mut JNIEnv, class: jclass) -> bool {
-    let natives: [(&CStr, &CStr, *mut c_void); 16] = [
+    let natives: [(&CStr, &CStr, *mut c_void); 17] = [
         (
             c"nativeStart",
-            c"(Ldev/viso/VisoActivity;FI)V",
+            c"(Ldev/viso/VisoActivity;FIFLjava/lang/String;)V",
             native_start as *mut c_void,
         ),
         (c"nativeDestroy", c"()V", native_destroy as *mut c_void),
@@ -439,7 +441,12 @@ unsafe fn register_natives(env: *mut JNIEnv, class: jclass) -> bool {
         (c"nativeLifecycle", c"(Z)V", native_lifecycle as *mut c_void),
         (c"nativeFocus", c"(Z)V", native_focus as *mut c_void),
         (c"nativeInsets", c"(IIIII)V", native_insets as *mut c_void),
-        (c"nativeConfig", c"(FI)V", native_config as *mut c_void),
+        (
+            c"nativeConfig",
+            c"(FIFLjava/lang/String;)V",
+            native_config as *mut c_void,
+        ),
+        (c"nativeCutouts", c"([I)V", native_cutouts as *mut c_void),
         (c"nativeLowMemory", c"()V", native_low_memory as *mut c_void),
         (
             c"nativeTouch",
@@ -494,8 +501,12 @@ extern "system" fn native_start(
     activity: jobject,
     density: jfloat,
     appearance: jint,
+    font_scale: jfloat,
+    locale: jstring,
 ) {
     let Some(java) = JAVA.get() else { return };
+    // SAFETY: `locale` is a live string or null.
+    let locale = unsafe { read_string(env, locale) }.unwrap_or_default();
     // SAFETY: `activity` is a live local reference; the global reference
     // made from it replaces (and deletes) the previous activity's.
     unsafe {
@@ -510,12 +521,16 @@ extern "system" fn native_start(
         .set(Launch {
             density: f64::from(density),
             appearance,
+            font_scale,
+            locale: locale.clone(),
         })
         .is_ok();
     if !first {
         send(Msg::Config {
             density: f64::from(density),
             appearance,
+            font_scale,
+            locale,
         });
         send(Msg::Recreated);
         return;
@@ -583,15 +598,37 @@ extern "system" fn native_insets(
 }
 
 extern "system" fn native_config(
-    _env: *mut JNIEnv,
+    env: *mut JNIEnv,
     _class: jclass,
     density: jfloat,
     appearance: jint,
+    font_scale: jfloat,
+    locale: jstring,
 ) {
+    // SAFETY: `locale` is a live string or null.
+    let locale = unsafe { read_string(env, locale) }.unwrap_or_default();
     send(Msg::Config {
         density: f64::from(density),
         appearance,
+        font_scale,
+        locale,
     });
+}
+
+extern "system" fn native_cutouts(env: *mut JNIEnv, _class: jclass, rects: jintArray) {
+    // SAFETY: `rects` is a live `int[]`; the region read stays within the
+    // length the VM reports.
+    let values = unsafe {
+        let len = env_call!(env, GetArrayLength, rects).max(0);
+        let mut values = vec![0; len as usize];
+        env_call!(env, GetIntArrayRegion, rects, 0, len, values.as_mut_ptr());
+        if !check(env) {
+            return;
+        }
+        values
+    };
+    let rects = values.as_chunks::<4>().0.to_vec();
+    send(Msg::Cutouts(rects));
 }
 
 extern "system" fn native_low_memory(_env: *mut JNIEnv, _class: jclass) {

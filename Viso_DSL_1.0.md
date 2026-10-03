@@ -4123,7 +4123,15 @@ Fold/Hinge/Cutout 必须通过 `env.display_features` 暴露为 typed geometry�
 
 `SafeArea` 与 `KeyboardAvoiding` 是纵向排列子节点的 Flex 容器（属性同 `Column`）。其 Padding 由 Runtime 决定：每条边的 Padding 是系统遮挡带伸入该节点盒的深度，遮挡带从窗口根节点的盒的对应边量起，`SafeArea` 的遮挡带为 `env.safe_area` 的四边，`KeyboardAvoiding` 的遮挡带为底边 `env.keyboard_inset`。因此已被祖先（包括 Runtime 为全屏窗口在根上加的 Safe Area 内边距）或外层同类区域让出的部分不再重复 Padding，嵌套区域只 Pad 一次。内容决定尺寸的轴上，尾边按不含该区域自身 Padding 的盒计量，一次布局即收敛。Padding 在布局之后、Anchor 求值之前更新（§96.5），区域位置或遮挡变化时重新计算，未变化时不写入。作者为 `SafeArea` 或 `KeyboardAvoiding` 写 `padding` 报 `E3711`：应 Pad 其内容。
 
-窗口打开时以及每次尺寸、Scale Factor、Safe Area、键盘高度变化时，Runtime 把窗口的逻辑尺寸与 Scale Factor、`safe_area`、`keyboard_inset` 写入该窗口的环境；系统外观变化时写入 `reduced_motion`。值未变化的字段不写入，不唤醒读取者。平台未报告的字段（`text_scale`、`locale`、`display_features`）保持默认值；Headless 测试直接设置环境。
+窗口打开时以及每次尺寸、Scale Factor、Safe Area、键盘高度、Display Feature 变化时，Runtime 把窗口的逻辑尺寸与 Scale Factor、`safe_area`、`keyboard_inset`、`display_features` 写入该窗口的环境；系统外观变化时写入 `reduced_motion` 与 `text_scale`，`text_scale` 同时移动该窗口 `sp` 长度的名义倍率；系统语言变化时把 `locale`（BCP 47）与其书写方向 `layout_direction`（Script 子标签优先，否则按语言的常用 Script）写入每个窗口。值未变化的字段不写入，不唤醒读取者。Headless 测试直接设置环境。
+
+平台来源（平台未报告的值保持默认：`text_scale` 1.0、`locale` `und`、无 Display Feature）：
+
+| 字段 | macOS | iOS | Android | Windows | Linux | Web |
+| --- | --- | --- | --- | --- | --- | --- |
+| `text_scale` | 无系统字号，1.0 | Content Size Category 的正文字号 / 17 | `Configuration.fontScale` | 辅助功能文本大小 | Portal / GNOME `text-scaling-factor` | 用户默认字号（`medium`）/ 16 |
+| `locale` | 首选语言，随系统变化 | 首选语言，随系统变化 | `Configuration` 首个 Locale | 用户默认 Locale，随设置广播变化 | `LC_ALL` / `LC_MESSAGES` / `LANG`，启动时读取 | `navigator.language`，随 `languagechange` 变化 |
+| `display_features` | 刘海为 `Cutout` | 无 | `DisplayCutout` 为 `Cutout` | 无 | 无 | Viewport Segments 之间的 `Hinge` / `Fold` |
 
 ---
 

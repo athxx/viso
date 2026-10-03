@@ -427,6 +427,14 @@ impl<D: FrameDriver, C: FrameClock> AppHandler for Scheduler<D, C> {
                 self.driver.on_keyboard_inset(window, height);
                 self.reasons.add(RedrawReason::InputDirty);
             }
+            RawEvent::DisplayFeaturesChanged { window, features } => {
+                self.driver.on_display_features(window, &features);
+                self.reasons.add(RedrawReason::InputDirty);
+            }
+            RawEvent::LocaleChanged { locale } => {
+                self.driver.on_locale(&locale);
+                self.reasons.add(RedrawReason::InputDirty);
+            }
             RawEvent::CopyRequested { window, cut, reply } => {
                 // The driver answers synchronously through `reply`; the backend
                 // reads it once this returns. A cut edits content, so redraw.

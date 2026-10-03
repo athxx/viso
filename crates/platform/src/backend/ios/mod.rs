@@ -31,8 +31,9 @@ use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, NSObject};
 use objc2::{ClassType, MainThreadMarker, MainThreadOnly, Message, define_class, msg_send, sel};
 use objc2_foundation::{
-    NSDictionary, NSNotification, NSNotificationCenter, NSObjectProtocol, NSRunLoop,
-    NSRunLoopCommonModes, NSString, NSTimer, NSValue, ns_string,
+    NSCurrentLocaleDidChangeNotification, NSDictionary, NSLocale, NSNotification,
+    NSNotificationCenter, NSObjectProtocol, NSRunLoop, NSRunLoopCommonModes, NSString, NSTimer,
+    NSValue, ns_string,
 };
 use objc2_quartz_core::{CADisplayLink, CAFrameRateRange};
 use objc2_ui_kit::{
@@ -41,6 +42,12 @@ use objc2_ui_kit::{
     UIAccessibilityIsReduceMotionEnabled, UIAccessibilityReduceMotionStatusDidChangeNotification,
     UIAccessibilitySwitchControlStatusDidChangeNotification,
     UIAccessibilityVoiceOverStatusDidChangeNotification, UIApplication, UIApplicationDelegate,
+    UIContentSizeCategory, UIContentSizeCategoryAccessibilityExtraExtraExtraLarge,
+    UIContentSizeCategoryAccessibilityExtraExtraLarge,
+    UIContentSizeCategoryAccessibilityExtraLarge, UIContentSizeCategoryAccessibilityLarge,
+    UIContentSizeCategoryAccessibilityMedium, UIContentSizeCategoryExtraExtraExtraLarge,
+    UIContentSizeCategoryExtraExtraLarge, UIContentSizeCategoryExtraLarge,
+    UIContentSizeCategoryExtraSmall, UIContentSizeCategoryMedium, UIContentSizeCategorySmall,
     UIKeyboardFrameEndUserInfoKey, UIKeyboardWillChangeFrameNotification, UIPasteboard,
     UIResponder, UIScene, UISceneConfiguration, UISceneConnectionOptions, UISceneDelegate,
     UISceneSession, UIScreen, UITraitCollection, UITraitEnvironment, UIUserInterfaceStyle,
@@ -51,6 +58,7 @@ use self::view::VisoView;
 use crate::control::{ControlFlow, LogicalRect, PlatformError, WindowConfig, WindowId};
 use crate::event::{Appearance, ColorScheme, CursorIcon, RawEvent};
 use crate::handler::AppHandler;
+use crate::locale;
 use crate::menu::Menu;
 use crate::{Instant, PlatformApp, RawWindowHandle, Window, accesskit};
 
@@ -71,6 +79,7 @@ struct Loop {
     /// A drain is on the stack; nested callbacks only queue.
     driving: Cell<bool>,
     appearance: Cell<Appearance>,
+    locale: RefCell<String>,
     launched: Cell<bool>,
     suspended: Cell<bool>,
     focused: Cell<bool>,
@@ -89,6 +98,7 @@ thread_local! {
         handler: Cell::new(None),
         driving: Cell::new(false),
         appearance: Cell::new(Appearance::default()),
+        locale: RefCell::new(String::new()),
         launched: Cell::new(false),
         suspended: Cell::new(false),
         focused: Cell::new(false),
@@ -222,6 +232,48 @@ fn appearance_of(traits: &UITraitCollection) -> Appearance {
         high_contrast: contrast == UIAccessibilityContrast::High
             || UIAccessibilityDarkerSystemColorsEnabled(),
         reduce_motion: UIAccessibilityIsReduceMotionEnabled(),
+        // SAFETY: as above.
+        text_scale: text_scale_of(&*unsafe { traits.preferredContentSizeCategory() }),
+    }
+}
+
+/// The text scale of a Dynamic Type size: its body text size over the
+/// default (`Large`, 17 pt) body size.
+fn text_scale_of(category: &UIContentSizeCategory) -> f32 {
+    // SAFETY: the categories are immutable UIKit constants.
+    let sizes = unsafe {
+        [
+            (UIContentSizeCategoryExtraSmall, 14.0),
+            (UIContentSizeCategorySmall, 15.0),
+            (UIContentSizeCategoryMedium, 16.0),
+            (UIContentSizeCategoryExtraLarge, 19.0),
+            (UIContentSizeCategoryExtraExtraLarge, 21.0),
+            (UIContentSizeCategoryExtraExtraExtraLarge, 23.0),
+            (UIContentSizeCategoryAccessibilityMedium, 28.0),
+            (UIContentSizeCategoryAccessibilityLarge, 33.0),
+            (UIContentSizeCategoryAccessibilityExtraLarge, 40.0),
+            (UIContentSizeCategoryAccessibilityExtraExtraLarge, 47.0),
+            (UIContentSizeCategoryAccessibilityExtraExtraExtraLarge, 53.0),
+        ]
+    };
+    sizes
+        .iter()
+        .find(|(name, _)| name.isEqualToString(category))
+        .map_or(1.0, |(_, size)| size / 17.0)
+}
+
+/// The user's first preferred language, as a BCP 47 tag.
+fn current_locale() -> String {
+    NSLocale::preferredLanguages()
+        .firstObject()
+        .map_or_else(|| "und".to_owned(), |tag| locale::bcp47(&tag.to_string()))
+}
+
+/// Re-read the locale and queue `LocaleChanged` if it moved.
+fn report_locale() {
+    let now = current_locale();
+    if LOOP.with(|l| l.locale.replace(now.clone())) != now {
+        push(RawEvent::LocaleChanged { locale: now });
     }
 }
 
@@ -314,6 +366,7 @@ impl IosApp {
                     sel!(assistiveTechnologyChanged:),
                     UIAccessibilitySwitchControlStatusDidChangeNotification,
                 ),
+                (sel!(localeChanged:), NSCurrentLocaleDidChangeNotification),
             ] {
                 center.addObserver_selector_name_object(&target, selector, Some(name), None);
             }
@@ -324,6 +377,7 @@ impl IosApp {
         let appearance = appearance_of(&traits);
         LOOP.with(|l| {
             l.appearance.set(appearance);
+            *l.locale.borrow_mut() = current_locale();
             *l.target.borrow_mut() = Some(target);
         });
         Ok(Self { mtm, window: None })
@@ -456,6 +510,10 @@ impl PlatformApp for IosApp {
         LOOP.with(|l| l.appearance.get())
     }
 
+    fn locale(&self) -> String {
+        LOOP.with(|l| l.locale.borrow().clone())
+    }
+
     fn framed_windows(&self) -> bool {
         false
     }
@@ -570,6 +628,14 @@ define_class!(
                     None => unsafe { UITraitCollection::currentTraitCollection() },
                 };
                 report_appearance(&traits);
+                drive();
+            });
+        }
+
+        #[unsafe(method(localeChanged:))]
+        fn locale_changed(&self, _note: &NSNotification) {
+            guarded(|| {
+                report_locale();
                 drive();
             });
         }

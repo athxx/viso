@@ -18,7 +18,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::RawWindowHandle;
 use crate::control::{LogicalRect, PlatformError, WindowConfig, WindowId};
-use crate::event::{Appearance, CursorIcon, RawEvent};
+use crate::event::{Appearance, CursorIcon, DisplayFeature, RawEvent};
 use crate::handler::AppHandler;
 use crate::{ControlFlow, LoopWaker, PlatformApp, Window};
 
@@ -34,6 +34,9 @@ pub struct HeadlessApp {
     /// `request_paste` hands back.
     clipboard: Option<String>,
     appearance: Appearance,
+    locale: String,
+    /// What [`PlatformApp::display_features`] reports for every window.
+    display_features: Vec<DisplayFeature>,
     framed_windows: bool,
     /// Set by a [`LoopWaker`] kick from any thread; delivered as one
     /// [`RawEvent::Wakeup`] ahead of the script.
@@ -50,6 +53,8 @@ impl HeadlessApp {
             pending_redraws: VecDeque::new(),
             clipboard: None,
             appearance: Appearance::default(),
+            locale: "und".to_owned(),
+            display_features: Vec::new(),
             framed_windows: true,
             woken: Arc::new(AtomicBool::new(false)),
         }
@@ -69,6 +74,19 @@ impl HeadlessApp {
     /// test a change also enqueue the matching [`RawEvent::AppearanceChanged`].
     pub fn set_appearance(&mut self, appearance: Appearance) {
         self.appearance = appearance;
+    }
+
+    /// Set the locale [`PlatformApp::locale`] reports. Scripts that test a
+    /// change also enqueue the matching [`RawEvent::LocaleChanged`].
+    pub fn set_locale(&mut self, locale: &str) {
+        self.locale = locale.to_owned();
+    }
+
+    /// Set the display features [`PlatformApp::display_features`] reports
+    /// for every window. Scripts that test a change also enqueue the
+    /// matching [`RawEvent::DisplayFeaturesChanged`].
+    pub fn set_display_features(&mut self, features: Vec<DisplayFeature>) {
+        self.display_features = features;
     }
 
     /// Set what [`PlatformApp::framed_windows`] reports, to stand in for a
@@ -250,6 +268,18 @@ impl PlatformApp for HeadlessApp {
         self.appearance
     }
 
+    fn locale(&self) -> String {
+        self.locale.clone()
+    }
+
+    fn display_features(&self, window: WindowId) -> Vec<DisplayFeature> {
+        if self.windows.iter().any(|w| w.id == window) {
+            self.display_features.clone()
+        } else {
+            Vec::new()
+        }
+    }
+
     fn framed_windows(&self) -> bool {
         self.framed_windows
     }
@@ -396,9 +426,29 @@ mod tests {
             color_scheme: ColorScheme::Dark,
             high_contrast: true,
             reduce_motion: false,
+            text_scale: 1.5,
         };
         app.set_appearance(dark);
         assert_eq!(app.appearance(), dark);
+    }
+
+    #[test]
+    fn locale_and_display_features_are_scriptable() {
+        use crate::control::LogicalRect;
+        use crate::event::DisplayFeatureKind;
+        let mut app = HeadlessApp::new();
+        assert_eq!(app.locale(), "und");
+        app.set_locale("he-IL");
+        assert_eq!(app.locale(), "he-IL");
+        let window = app.create_window(WindowConfig::default()).unwrap();
+        assert!(app.display_features(window).is_empty());
+        let fold = DisplayFeature {
+            kind: DisplayFeatureKind::Fold,
+            bounds: LogicalRect::new(0.0, 400.0, 600.0, 0.0),
+        };
+        app.set_display_features(vec![fold]);
+        assert_eq!(app.display_features(window), [fold]);
+        assert!(app.display_features(WindowId(window.0 + 1)).is_empty());
     }
 
     #[test]
