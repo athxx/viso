@@ -7,7 +7,9 @@
 //! transition that entry evaluates to when the value changes; the first value
 //! a node shows, and every value under reduced motion with an `instant`
 //! transition, shows at once. The cells a transition reads are no
-//! dependencies: changing one changes only the next move.
+//! dependencies: changing one changes only the next move. A first delivery to
+//! a node already moving, as a hot reload's is, heads the move to its value
+//! rather than cutting it.
 //!
 //! A node's value is a pure entry of the view's handler table. It is evaluated
 //! when the node mounts and again only when a cell it reads changes, and a value
@@ -236,6 +238,7 @@ impl Shown {
             }
             match (moves[at - 3], value) {
                 (Some(timing), value) => store.transition(self.node, value, timing),
+                (None, value) if prior.is_none() => store.present(self.node, value),
                 (None, LookValue::Fill(fill)) => store.set_fill(self.node, fill),
                 (None, LookValue::Opacity(opacity)) => store.set_opacity(self.node, opacity),
             }
