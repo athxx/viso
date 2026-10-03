@@ -164,7 +164,7 @@ feature 关闭时登记宏展开为空：二进制里既没有记录代码，也
 
 app driver 在每个窗口同步构建完成后立即领取该窗口的挂载记录；之后才登记的挂载（例如列表行）不是窗口构建的一部分，不被跟踪。窗口关闭或挂载根已被释放时，对应挂载被丢弃。
 
-- **Watcher**：首个挂载启动一条进程级 watcher 线程。线程每 25ms 对每个被跟踪文件做一次 `stat`；(长度, mtime) 戳变化后须稳定 25ms 才读取文件，编辑器的 truncate/write/rename 连写合并为一次变更；内容 hash 与上次交付（初始为编译时嵌入的源码）相同则在线程内丢弃（§7.2）。首轮 poll 必读文件，构建与启动之间的编辑也会到达。变更经 channel 交给 UI 线程并唤醒 loop；session 析构时线程退出并被 join。
+- **Watcher**：首个挂载启动一条进程级 watcher 线程，阻塞在平台文件事件上（macOS/iOS/FreeBSD 为 kqueue，Linux/Android 为 inotify，Windows 为 `ReadDirectoryChangesW`），监听每个被跟踪文件所在目录，原子保存（写临时文件再 rename 到位）与原地写入都会报告。文件的事件停止满后端的静默窗口后读取：inotify 只订阅表示写入完成的 `IN_CLOSE_WRITE`/`IN_MOVED_TO`，窗口为 0；kqueue 与 Windows 每次写入都会报告，窗口为 5ms，使编辑器的 truncate/write 连写合并为一次变更。无后端或目录无法监听的文件退回轮询：每 25ms 一次 `stat`，(长度, mtime) 戳稳定 25ms 后读取。内容 hash 与上次交付（初始为编译时嵌入的源码）相同则在线程内丢弃（§7.2）。文件开始跟踪时立即读取一次，构建与启动之间的编辑也会到达。变更经 channel 交给 UI 线程并唤醒 loop；session 析构时唤醒等待、线程退出并被 join。
 - **帧边界**：唤醒只把变更暂存并为挂载该文件的窗口请求一帧；提交发生在下一帧 `FlushStateTransactions` 开头、窗口 flush 之前，因此一次 reload 的写入在同一帧结算并绘制。同一文件在提交前的多次变更只保留最新一次。
 - **每次编辑编译一次**：一个文件每次编辑只编译一个 candidate，依次提交到它的每个挂载（同一文件挂载多次时，提交前先把持久 key 指回当前挂载的 cell）。
 - **Last-good 与 revision**：每个文件保存其挂载当前所对应的 candidate（last-good，首次编辑时由嵌入源码惰性编译）和已提交的编辑数 revision。candidate 编译失败时不改变任何挂载，last-good 与 revision 保持不变，诊断带文件位置报告。
@@ -1472,17 +1472,16 @@ restore time
 当前实现（`.vs` 单属性编辑，release）：`viso` 的 `hot_reload::tests::edit_to_pixels`
 （`#[ignore]`，`cargo test --release -p viso --features hot-reload --lib -- --ignored
 edit_to_pixels --nocapture`）测从写盘到重绘完成的延迟，分为 watcher 检测（写盘 → staged）
-与管线（reload + relayout + repaint，不含 GPU upload/submit）。Apple M4 上 60 次编辑：
+与管线（reload + relayout + repaint，不含 GPU upload/submit）。Apple M4（kqueue）上 60 次编辑：
 
 ```text
-detect          min 26 ms  median 43 ms  p95 60 ms
-pipeline        min 0.5 ms median 0.9 ms p95 1.3 ms
-edit-to-pixels  min 28 ms  median 44 ms  p95 61 ms
+detect          min 5.3 ms  median 5.8 ms  p95 5.8 ms
+pipeline        min 0.8 ms  median 0.8 ms  p95 0.9 ms
+edit-to-pixels  min 6.2 ms  median 6.6 ms  p95 6.7 ms
 ```
 
-延迟几乎全部来自 watcher 的轮询相位（POLL 25 ms）加 settle 窗口（SETTLE 25 ms，§7.1）；
-缩短它需要平台文件事件（FSEvents/kqueue、inotify、ReadDirectoryChangesW）替代轮询，
-尚未实现。GPU 上传与呈现不在测量内。
+检测延迟几乎全部是 kqueue 的 5 ms 静默窗口（§7.1）；轮询实现时中位数为 43 ms（POLL 25 ms
+加 SETTLE 25 ms）。inotify 无静默窗口；Linux 与 Windows 的数值未在此测量。GPU 上传与呈现不在测量内。
 
 ---
 
