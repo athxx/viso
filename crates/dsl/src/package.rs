@@ -16,7 +16,7 @@ use viso_behavior::native::Natives;
 
 use crate::diag::Diagnostic;
 use crate::frontend::{check_language_version, module_path};
-use crate::hir::{InputDevices, LoweredPackage, lower};
+use crate::hir::{LoweredPackage, TargetProfile, lower};
 use crate::resolve::{ModuleGraph, ModulePath, NameInterner, SourceUnit, resolve};
 use crate::syntax::grammar::{Entry, parse_entry};
 use crate::syntax::{TextRange, tokenize};
@@ -34,8 +34,8 @@ pub struct PackageManifest<'a> {
     pub name: &'a str,
     /// The pinned language version and its span in the manifest, if any.
     pub language: Option<(&'a str, TextRange)>,
-    /// The input devices its targets have.
-    pub devices: InputDevices,
+    /// What its targets are and how it is built.
+    pub profile: TargetProfile,
 }
 
 /// One loaded source file.
@@ -137,7 +137,7 @@ pub fn load_package_in(
         &resolved,
         &mut interner,
         manifest.name,
-        manifest.devices,
+        manifest.profile,
     );
     for (i, module) in graph.modules().iter().enumerate() {
         let text = module.path.display(&interner);
@@ -228,7 +228,7 @@ mod tests {
 
     fn manifest(language: Option<(&str, TextRange)>) -> PackageManifest<'_> {
         PackageManifest {
-            devices: InputDevices::default(),
+            profile: TargetProfile::default(),
             name: "app",
             language,
         }

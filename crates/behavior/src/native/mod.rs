@@ -101,6 +101,30 @@ impl ThreadDomain {
     }
 }
 
+/// How reproducible a native's result and effects are, which fixes whether a
+/// game's Simulation domain may call it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum Determinism {
+    /// It may differ between two runs: a wall clock, a random source, I/O.
+    None,
+    /// The same build on the same target reproduces it tick for tick: host
+    /// floating-point functions such as `sin`.
+    SameBinary,
+    /// Every Tier-1 target reproduces it bit for bit.
+    CrossPlatform,
+}
+
+impl Determinism {
+    /// Its manifest name.
+    pub fn name(self) -> &'static str {
+        match self {
+            Determinism::None => "none",
+            Determinism::SameBinary => "same_binary",
+            Determinism::CrossPlatform => "cross_platform",
+        }
+    }
+}
+
 /// Who may hold a native handle.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Ownership {
@@ -213,6 +237,14 @@ pub struct NativeFunction {
     /// Whether it is a property: a method without parameters besides its
     /// receiver, read as `value.name` rather than called.
     pub property: bool,
+    /// How reproducible it is.
+    pub determinism: Determinism,
+    /// Whether it belongs to the Presentation layer: particles, sound, camera
+    /// shake, debug draw. Called from a game's Simulation domain it is a
+    /// deferred command, delivered once per tick.
+    pub presentation: bool,
+    /// Whether it is a debug draw command, removed from release builds.
+    pub debug_draw: bool,
     /// The Rust implementation.
     pub call: Thunk,
 }
@@ -239,6 +271,9 @@ impl NativeFunction {
             cost: 1,
             constant: false,
             property: false,
+            determinism: Determinism::None,
+            presentation: false,
+            debug_draw: false,
             call,
         }
     }
@@ -255,10 +290,32 @@ impl NativeFunction {
         self
     }
 
-    /// Marks it deterministic, and so callable from any thread.
+    /// Marks it deterministic, and so callable from any thread and
+    /// reproducible on every target.
     pub const fn deterministic(mut self) -> NativeFunction {
         self.deterministic = true;
         self.thread = ThreadDomain::Any;
+        self.determinism = Determinism::CrossPlatform;
+        self
+    }
+
+    /// Declares how reproducible it is.
+    pub const fn reproducible(mut self, determinism: Determinism) -> NativeFunction {
+        self.determinism = determinism;
+        self
+    }
+
+    /// Makes it a Presentation command: it returns `()`.
+    pub const fn presentation(mut self) -> NativeFunction {
+        self.presentation = true;
+        self
+    }
+
+    /// Makes it a debug draw command, a Presentation command removed from
+    /// release builds.
+    pub const fn debug_draw(mut self) -> NativeFunction {
+        self.presentation = true;
+        self.debug_draw = true;
         self
     }
 
@@ -325,6 +382,9 @@ pub struct NativeType {
     pub ownership: Ownership,
     /// The thread its handles live and drop on.
     pub thread: ThreadDomain,
+    /// Whether a game state may hold it: its object can be captured in and
+    /// restored from a snapshot. A schema enum always can.
+    pub snapshot: bool,
     /// Its methods and associated functions.
     pub methods: &'static [NativeFunction],
 }
@@ -337,6 +397,7 @@ impl NativeType {
             variants: &[],
             ownership: Ownership::Shared,
             thread: ThreadDomain::Ui,
+            snapshot: false,
             methods,
         }
     }
@@ -348,6 +409,7 @@ impl NativeType {
             variants,
             ownership: Ownership::Shared,
             thread: ThreadDomain::Any,
+            snapshot: true,
             methods: &[],
         }
     }
@@ -368,6 +430,24 @@ impl NativeType {
         self.thread = thread;
         self
     }
+
+    /// Lets a game state hold it.
+    pub const fn snapshot(mut self) -> NativeType {
+        self.snapshot = true;
+        self
+    }
+}
+
+/// The state layer a scheduler hook runs in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum HookDomain {
+    /// The fixed-step simulation: deterministic, snapshotted, replayed. It and
+    /// every callable it reaches may not touch `@local` state or
+    /// non-deterministic sources.
+    Simulation,
+    /// Per-frame presentation, which reads the simulation and owns `@local`
+    /// state.
+    Presentation,
 }
 
 /// A scheduler hook a [`NativeTrait`] declares: an `action` every implementing
@@ -378,6 +458,8 @@ pub struct NativeHook {
     pub name: &'static str,
     /// Its parameters.
     pub params: &'static [Param],
+    /// The layer it runs in.
+    pub domain: HookDomain,
 }
 
 /// A trait a `system` implements to be driven by a scheduler: a set of hooks,

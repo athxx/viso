@@ -178,4 +178,8 @@ impl Clock {
     pub(crate) fn finish_tick(&mut self) {
         self.tick += 1;
     }
+
+    pub(crate) fn rewind(&mut self, tick: u64) {
+        self.tick = tick;
+    }
 }

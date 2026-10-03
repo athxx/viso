@@ -52,6 +52,8 @@ pub(crate) struct ProgramBuilder {
     field_defaults: HashMap<(SymbolId, u32), FuncId>,
     /// The import index of each native function a body calls.
     natives: HashMap<NativeId, u32>,
+    /// Whether a debug draw call lowers to nothing, as in a release build.
+    strip_debug_draw: bool,
 }
 
 /// What a lowered function is.
@@ -198,6 +200,16 @@ impl ProgramBuilder {
             component: component as u32,
             hooks,
         });
+    }
+
+    /// Makes debug draw calls lower to nothing.
+    pub(crate) fn strip_debug_draw(&mut self, strip: bool) {
+        self.strip_debug_draw = strip;
+    }
+
+    /// Whether debug draw calls lower to nothing.
+    pub(crate) fn strips_debug_draw(&self) -> bool {
+        self.strip_debug_draw
     }
 
     /// Sets the package's input schema.

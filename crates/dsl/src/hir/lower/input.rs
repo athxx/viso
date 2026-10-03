@@ -324,7 +324,7 @@ pub(super) fn lower_map(
         &actions,
         &bindings,
         map.at,
-        env.decls.devices,
+        env.decls.profile.devices,
         diagnostics,
     );
     env.behavior.borrow_mut().input(InputSchema {

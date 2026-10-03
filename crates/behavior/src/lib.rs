@@ -33,5 +33,5 @@ pub use module::{
 };
 pub use op::{Arith, ArithOp, DisplayKind, Num, Op};
 pub use value::{Aggregate, Closure, Value};
-pub use vm::{Budget, Cost, Event, Fault, FaultKind, Instance, Location, Outcome, Vm};
+pub use vm::{Budget, Cost, Deferred, Event, Fault, FaultKind, Instance, Location, Outcome, Vm};
 pub use wire::LoadError;

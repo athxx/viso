@@ -56,9 +56,11 @@ use super::view::{
 };
 
 mod input;
+mod simulation;
 mod system;
 
 pub use input::InputDevices;
+pub use simulation::TargetProfile;
 
 /// The typed HIR of a whole package: every component lowered, every free callable, and every
 /// diagnostic the type/effect/capability checks raised across all modules.
@@ -110,15 +112,17 @@ pub struct Migrator {
 /// `graph.modules()` (the resolver's output). `interner` is threaded through so the per-module
 /// environment pre-pass can intern member names to query the module's [`SymbolTable`], and
 /// `package` is the package identity (unused by lowering directly but kept for symmetry with
-/// [`crate::resolve::resolve`] and future native-schema keying). `devices` are the input
-/// devices the package's targets have, which every input action needs a binding for.
+/// [`crate::resolve::resolve`] and future native-schema keying). `profile` is what the
+/// package's targets are and how it is built: the input devices every input action needs
+/// a binding for, the determinism tier of the Simulation domain, and whether debug draw is
+/// compiled out.
 pub fn lower(
     graph: &ModuleGraph,
     units: &[SourceUnit],
     resolved: &[ResolvedModule],
     interner: &mut NameInterner,
     package: &str,
-    devices: InputDevices,
+    profile: TargetProfile,
 ) -> LoweredPackage {
     let _ = package;
     let mut components = Vec::new();
@@ -165,7 +169,7 @@ pub fn lower(
         })
         .collect();
     decls.input_action = Some(input::action_type(&decls));
-    decls.devices = devices;
+    decls.profile = profile;
 
     // Second pass: lower each module against the package table. The capability call graph
     // spans the package, so a call into an imported callable is an edge like any other.
@@ -173,6 +177,8 @@ pub fn lower(
     let mut input_flows: Vec<InputFlows> = Vec::with_capacity(modules.len());
     let mut cap = CapabilityGraphBuilder::default();
     let behavior = RefCell::new(ProgramBuilder::new());
+    behavior.borrow_mut().strip_debug_draw(profile.release);
+    let mut domains = simulation::Domains::default();
     let mut migrators = Vec::new();
     let mut systems = Vec::new();
     for (i, module) in modules.iter().enumerate() {
@@ -190,6 +196,7 @@ pub fn lower(
                 &mut module_diagnostics,
                 &mut cap,
                 &mut systems,
+                &mut domains,
             );
             collect_migrators(cu, &env, &mut module_diagnostics, &mut migrators);
         }
@@ -198,6 +205,7 @@ pub fn lower(
     }
     cap.finish(&mut components, &mut per_module);
     check_input_bases(&input_flows, &mut per_module);
+    domains.check(&decls, graph.natives(), profile, &mut per_module);
     let order = system::order(&systems, &mut per_module);
     behavior.borrow_mut().order_systems(&order);
 
@@ -273,9 +281,12 @@ fn lower_module(
     diagnostics: &mut Vec<Diagnostic>,
     cap: &mut CapabilityGraphBuilder,
     systems: &mut Vec<system::SystemNode>,
+    domains: &mut simulation::Domains,
 ) -> InputFlows {
     let mut flows = Vec::new();
     let mut percent = PercentSources::default();
+    let first_component = components.len();
+    let mut system_hooks = Vec::new();
 
     for item in cu.items() {
         let decl = match item {
@@ -303,6 +314,7 @@ fn lower_module(
                 let hooks = system::hooks(&s, env, diagnostics);
                 let symbol = component.schema.symbol;
                 env.behavior.borrow_mut().system(symbol, &hooks);
+                system_hooks.push((symbol, simulation::hook_domains(env, &hooks)));
                 systems.push(system::node(&s, symbol, env, diagnostics));
                 components.push(component);
             }
@@ -355,6 +367,15 @@ fn lower_module(
         }
         let _ = &mut *callables;
     }
+    let items: Vec<Item> = cu.items().collect();
+    domains.collect(
+        &items,
+        refs,
+        env,
+        &components[first_component..],
+        &system_hooks,
+        diagnostics,
+    );
 
     let facts = percent.solve();
     check_percent_flow(&flows, &facts, env, diagnostics)
@@ -1062,8 +1083,8 @@ struct Declarations {
     input_maps: Vec<input::MapDecl>,
     /// The type of an input action, once every module is declared.
     input_action: Option<Ty>,
-    /// The input devices the package's targets have.
-    devices: InputDevices,
+    /// What the package's targets are and how it is built.
+    profile: TargetProfile,
     /// The prelude's types by name.
     standard: HashMap<String, SymbolId>,
     /// The index of the module declaring each record, enum, event, component and
@@ -2101,7 +2122,7 @@ mod tests {
             &resolved,
             &mut interner,
             "app",
-            InputDevices::default(),
+            TargetProfile::default(),
         )
     }
 
@@ -2177,7 +2198,7 @@ mod tests {
             &resolved,
             &mut interner,
             "app",
-            InputDevices::default(),
+            TargetProfile::default(),
         );
         let mut lib_diagnostics = Vec::new();
         let mut app_diagnostics = Vec::new();

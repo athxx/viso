@@ -25,5 +25,5 @@ pub use nodes::{
     RangeExpr, RecordDecl, RecordExpr, RecordField, RenameClause, ReturnType, SlotDecl, StateDecl,
     SystemDecl, SystemOrder, TaskDecl, TryExpr, TupleExpr, TwoWayBinding, TypeAliasDecl, TypePath,
     UnaryExpr, ViewBlock, ViewDecl, ViewFor, ViewFragment, ViewIf, ViewItem, ViewMatch,
-    ViewMatchArm,
+    ViewMatchArm, decl_attributes,
 };

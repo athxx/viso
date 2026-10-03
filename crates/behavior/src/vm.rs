@@ -324,6 +324,17 @@ struct Linked {
     denied: Option<&'static str>,
 }
 
+/// A Presentation command a call issued while the interpreter defers them
+/// ([`Vm::defer_presentation`]): the native import and its arguments, run
+/// later by [`Vm::deliver`].
+#[derive(Debug, Clone)]
+pub struct Deferred {
+    /// The native import.
+    pub import: u32,
+    /// Its arguments.
+    pub args: Box<[Value]>,
+}
+
 /// A behavior interpreter over one module.
 ///
 /// It owns reusable scratch space (the register stack, call frames, undo log
@@ -351,6 +362,9 @@ pub struct Vm {
     graph: Rc<ReadGraph>,
     /// Whether the running invocation's instance caches against `graph`.
     memo: bool,
+    /// Whether a Presentation native defers instead of running.
+    deferring: bool,
+    deferred: Vec<Deferred>,
 }
 
 type Step<T> = Result<T, FaultKind>;
@@ -375,6 +389,8 @@ impl Vm {
             marks: Vec::new(),
             events: Vec::new(),
             detail: String::new(),
+            deferring: false,
+            deferred: Vec::new(),
         }
     }
 
@@ -452,6 +468,56 @@ impl Vm {
             .collect::<Result<_, _>>()?;
         self.linked = linked;
         Ok(())
+    }
+
+    /// Makes a Presentation native called from now on defer as a
+    /// [`Deferred`] command instead of running, or run again. A faulting call
+    /// discards the commands it issued.
+    pub fn defer_presentation(&mut self, on: bool) {
+        self.deferring = on;
+    }
+
+    /// The commands deferred so far, in issue order.
+    pub fn deferred_mut(&mut self) -> &mut Vec<Deferred> {
+        &mut self.deferred
+    }
+
+    /// Runs the deferred `command` now.
+    ///
+    /// # Errors
+    ///
+    /// A [`FaultKind::NativeFailure`] fault if the native fails or panics, or
+    /// [`FaultKind::Unsupported`] if its import is not linked.
+    pub fn deliver(&mut self, command: &Deferred) -> Result<(), Fault> {
+        let import = command.import as usize;
+        let module = Rc::clone(&self.module);
+        let fault = |kind: FaultKind, message: String| Fault {
+            kind,
+            at: None,
+            message,
+        };
+        let path = module.natives().get(import).map_or("?", |n| &*n.path);
+        let Some(Some(Linked { function, .. })) = self.linked.get(import).copied() else {
+            return Err(fault(
+                FaultKind::Unsupported,
+                format!("native `{path}` is not linked"),
+            ));
+        };
+        let services = &mut self.services;
+        let result = panic::catch_unwind(AssertUnwindSafe(|| {
+            (function.call)(&mut NativeCx::new(services), &command.args)
+        }));
+        match result {
+            Ok(Ok(_)) => Ok(()),
+            Ok(Err(error)) => Err(fault(
+                FaultKind::NativeFailure,
+                format!("native `{path}` failed: {error}"),
+            )),
+            Err(_) => Err(fault(
+                FaultKind::NativeFailure,
+                format!("native `{path}` panicked"),
+            )),
+        }
     }
 
     /// The host services natives use.
@@ -551,6 +617,7 @@ impl Vm {
         self.allocated = 0;
         self.native_calls = 0;
         self.detail.clear();
+        let issued = self.deferred.len();
         self.marks.clear();
         self.marks.resize(instance.states.len().div_ceil(64), 0);
         self.memo = instance
@@ -591,6 +658,7 @@ impl Vm {
                 })
             }
             Err(kind) => {
+                self.deferred.truncate(issued);
                 while let Some((slot, old)) = self.undo.pop() {
                     instance.states[slot as usize] = old;
                     instance.forget_state(slot as usize);
@@ -1121,6 +1189,21 @@ impl Vm {
             return Err(FaultKind::InstructionBudget);
         }
         self.fuel -= extra;
+        if function.debug_draw && !cfg!(debug_assertions) {
+            // Debug draw is removed from release builds.
+            return Ok(Value::Int(0));
+        }
+        if function.presentation && self.deferring {
+            let args = code.ext[at + 2..at + 2 + argc]
+                .iter()
+                .map(|&r| self.stack[base + r as usize].clone())
+                .collect();
+            self.deferred.push(Deferred {
+                import: import as u32,
+                args,
+            });
+            return Ok(Value::Int(0));
+        }
         let mut args = mem::take(&mut self.native_args);
         args.clear();
         args.extend(
