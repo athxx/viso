@@ -184,6 +184,9 @@ pub(super) fn check_derives(
                 diagnostics.push(diagnostic);
                 continue;
             }
+            if let (Some(symbol), viso_behavior::game::GAME_TAG_DERIVE) = (symbol, text.as_str()) {
+                super::tags::check(symbol, name.text_range(), env, diagnostics);
+            }
             let payload = symbol
                 .and_then(|s| env.enum_variants(s))
                 .and_then(|vs| vs.iter().find(|v| v.payload != VariantPayload::Unit));

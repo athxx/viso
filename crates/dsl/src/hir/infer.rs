@@ -41,7 +41,7 @@ use std::collections::{HashMap, HashSet};
 
 use crate::ast::{AstNode, CallExpr, CastExpr, Expr, PathExpr, TypePath};
 use crate::diag::Diagnostic;
-use crate::hir::ty::{Ty, TypeError, WidenError};
+use crate::hir::ty::{PackageTypes, Ty, TypeError, WidenError};
 use crate::resolve::{LocalSlot, Resolution, ResolvedRef, SymbolId, SymbolKind};
 use crate::syntax::{SyntaxKind, SyntaxNode, SyntaxToken, TextRange};
 use viso_behavior::native::{NativeId, Natives};
@@ -169,10 +169,14 @@ pub trait TypeEnv {
         viso_behavior::DEFAULT_TICK_RATE
     }
 
-    /// The type of an input action in the package: the enum its `InputMap`
-    /// maps, or `viso::game::InputAction`.
-    fn input_action(&self) -> Ty {
-        Ty::Native(NativeId::of(viso_behavior::game::InputAction::PATH))
+    /// The package's types of input actions and game tags: the enum its
+    /// `InputMap` maps, or `viso::game::InputAction`, and its
+    /// `@derive(GameTag)` enum, or `viso::game::GameTag`.
+    fn package_types(&self) -> PackageTypes {
+        PackageTypes {
+            action: Ty::Native(NativeId::of(viso_behavior::game::InputAction::PATH)),
+            tag: Ty::Native(NativeId::of(viso_behavior::game::GameTag::PATH)),
+        }
     }
 
     /// Notes that the call at `call` is bound to the native function `id`.

@@ -15,6 +15,16 @@ use crate::resolve::SymbolId;
 use crate::syntax::{SyntaxKind, SyntaxNode, TextRange};
 use viso_behavior::native::{NativeId, SchemaTy};
 
+/// The types a native schema leaves to the compiled package: its input
+/// actions ([`SchemaTy::Action`]) and its game tags ([`SchemaTy::Tag`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PackageTypes {
+    /// The type of an input action.
+    pub action: Ty,
+    /// The type of a game tag.
+    pub tag: Ty,
+}
+
 /// A resolved static type.
 ///
 /// The scalar and UI-dimensional variants are the doc's unique primitive list; the
@@ -255,9 +265,9 @@ impl Ty {
         }
     }
 
-    /// The type a native schema type denotes; an input action is `action`,
-    /// the compiled package's action enum.
-    pub fn from_schema(ty: &SchemaTy, action: &Ty) -> Ty {
+    /// The type a native schema type denotes; an input action or a game tag
+    /// is the compiled package's type of it.
+    pub fn from_schema(ty: &SchemaTy, package: &PackageTypes) -> Ty {
         match ty {
             SchemaTy::Unit => Ty::Unit,
             SchemaTy::Bool => Ty::Bool,
@@ -266,12 +276,13 @@ impl Ty {
             SchemaTy::F64 => Ty::F64,
             SchemaTy::Ticks => Ty::Duration,
             SchemaTy::String => Ty::String,
-            SchemaTy::List(t) => Ty::List(Box::new(Ty::from_schema(t, action))),
-            SchemaTy::Option(t) => Ty::Option(Box::new(Ty::from_schema(t, action))),
+            SchemaTy::List(t) => Ty::List(Box::new(Ty::from_schema(t, package))),
+            SchemaTy::Option(t) => Ty::Option(Box::new(Ty::from_schema(t, package))),
             SchemaTy::Handle(path) | SchemaTy::Value(path) | SchemaTy::Enum(path) => {
                 Ty::Native(NativeId::of(path))
             }
-            SchemaTy::Action => action.clone(),
+            SchemaTy::Action => package.action.clone(),
+            SchemaTy::Tag => package.tag.clone(),
         }
     }
 

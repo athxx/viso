@@ -654,10 +654,10 @@ timers (§104–§111).
         corruption, snapshot hash; build hash.
   - [x] Restore by stable ID + schema (`Restored` counts), derived recomputed, local
         kept; fresh-session load and in-memory rollback replay tick for tick.
-- [ ] `RenderFrame.alpha`, previous/current transforms, `teleport` (§106.9).
+- [x] `RenderFrame.alpha`, previous/current transforms, `teleport` (§106.9).
   - [x] `frame.alpha(): F32` in `[0, 1)` from the clock accumulator.
-  - [ ] Previous/current entity transforms and `teleport`: land with `GameWorld` and
-        `EntityId` (D5.6).
+  - [x] Previous/current entity positions; `RenderFrame.position(id)` and the host's
+        `GameWorld::extract(alpha)` interpolate; `teleport` is not interpolated.
 
 ### D5.5 — Quick Game
 
@@ -671,8 +671,8 @@ timers (§104–§111).
   - [x] Startup transaction: every start hook before tick 0 in system order on one
         budget; a fault fails `Scheduler::new`, discarding the start's writes and
         commands; a successful start's commands land before tick 0's.
-  - [ ] `QuickStart.spawn` committed before the first tick and `QuickFrame.world`:
-        land with `GameWorld` and `EntityId` (D5.6).
+  - [x] `QuickStart.spawn` committed before the first tick and `QuickFrame.world`
+        (`GameStart` / `FixedFrame` alike; `game_world.rs`).
   - [ ] Rerun on World Rebuild, not on a logic-only reload: lands with D5.7.
 - [x] QuickGame and the equivalent single system give the same result on one tape.
   - [x] Per-frame states and delivered commands equal on a key and stick tape; the
@@ -680,31 +680,31 @@ timers (§104–§111).
 
 ### D5.6 — World commands and queries
 
-- [ ] Deterministic command buffer merge and conflict policy (§108).
+- [x] Deterministic command buffer merge and conflict policy (§108).
   - [x] `viso::math` `Vec2F32` / `Vec3F32` value types (single-precision IEEE,
         `cross_platform`).
-  - [ ] `viso::game::GameWorld` (borrowed) reached as `frame.world` / `cx.world` /
+  - [x] `viso::game::GameWorld` (borrowed) reached as `frame.world` / `cx.world` /
         `event.world`; reads are `fn`s over the committed revision, writes are
         `action`s buffered per hook and rolled back with a faulting hook; writes
         outside a Simulation hook fault.
-  - [ ] Merge in `(system, sequence)` order at the tick's command points (after the
+  - [x] Merge in `(system, sequence)` order at the tick's command points (after the
         `FixedUpdate`s, after the collision listeners, after the start); `walk` /
         `jump` add, `teleport` last wins, `remove` voids later commands, `spawn`
         returns its `EntityId` at once and the body exists from the commit.
-  - [ ] Physics step between the two command points: character gravity, per-axis
+  - [x] Physics step between the two command points: character gravity, per-axis
         resolution against blocks (`on_floor`), begin-contact events between
         characters and sensors / characters in allocation order.
-- [ ] Stable query order, generational `EntityId`, `@derive(GameTag)` (§108.1).
-  - [ ] `EntityId` value (slot + generation; slot reuse bumps the generation);
+- [x] Stable query order, generational `EntityId`, `@derive(GameTag)` (§108.1).
+  - [x] `EntityId` value (slot + generation; slot reuse bumps the generation);
         `query(tag)` / `entities()` in allocation order.
-  - [ ] Tags: the package's one `@derive(GameTag)` enum (`E2202` for a second,
+  - [x] Tags: the package's one `@derive(GameTag)` enum (`E2202` for a second,
         `E2201` past 64 variants) or `viso::game::GameTag`; `SchemaTy::Tag`.
-  - [ ] `CollisionEvent.first` / `second` / `other_of` as `EntityId`.
-- [ ] `GameSnapshot` `world` and `rng_state`: Native World snapshot/restore and the
+  - [x] `CollisionEvent.first` / `second` / `other_of` as `EntityId`.
+- [x] `GameSnapshot` `world` and `rng_state`: Native World snapshot/restore and the
       injected seeded RNG (§106, §106.7).
-  - [ ] Seeded RNG (`Scheduler::with_seed`), `world.random()` /
+  - [x] Seeded RNG (`Scheduler::with_seed`), `world.random()` /
         `random_range(lo, hi)`, rolled back with a faulting hook.
-  - [ ] Snapshot `world` (shared in memory, canonical in the blob) and `rng`;
+  - [x] Snapshot `world` (shared in memory, canonical in the blob) and `rng`;
         restore resumes tick for tick, hash covers both.
 
 ### D5.7 — Game reload and tooling

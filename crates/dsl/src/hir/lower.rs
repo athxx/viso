@@ -49,7 +49,7 @@ use super::nodes::{ComponentSchema, HirCallable, HirComponent, HirSlot};
 use super::ownership::check_stored;
 use super::percent::PercentSources;
 use super::reads::ReadEnv;
-use super::ty::Ty;
+use super::ty::{PackageTypes, Ty};
 use super::view::{
     HandlerSink, InputFlows, InputProp, PercentFlow, ViewEnv, check_input_bases,
     check_percent_flow, check_view,
@@ -58,6 +58,7 @@ use super::view::{
 mod input;
 mod simulation;
 mod system;
+mod tags;
 
 pub use input::InputDevices;
 pub use simulation::TargetProfile;
@@ -169,6 +170,7 @@ pub fn lower(
         })
         .collect();
     decls.input_action = Some(input::action_type(&decls));
+    decls.tag_type = Some(tags::tag_type(&decls));
     decls.profile = profile;
 
     // Second pass: lower each module against the package table. The capability call graph
@@ -1136,6 +1138,11 @@ struct Declarations {
     input_maps: Vec<input::MapDecl>,
     /// The type of an input action, once every module is declared.
     input_action: Option<Ty>,
+    /// Every enum deriving `GameTag`, in module order; the first is the
+    /// package's tag type.
+    tag_derives: Vec<tags::TagDecl>,
+    /// The type of a game tag, once every module is declared.
+    tag_type: Option<Ty>,
     /// What the package's targets are and how it is built.
     profile: TargetProfile,
     /// The prelude's types by name.
@@ -1208,8 +1215,11 @@ impl TypeEnv for ModuleEnv<'_> {
         Some(self.natives)
     }
 
-    fn input_action(&self) -> Ty {
-        self.decls.input_action.clone().unwrap_or(Ty::Unknown)
+    fn package_types(&self) -> PackageTypes {
+        PackageTypes {
+            action: self.decls.input_action.clone().unwrap_or(Ty::Unknown),
+            tag: self.decls.tag_type.clone().unwrap_or(Ty::Unknown),
+        }
     }
 
     fn tick_rate(&self) -> u32 {
@@ -1495,11 +1505,13 @@ impl ModuleScope {
                         scope.declared.insert(e.syntax().text_range(), sym);
                         decls.types.names.insert(sym, name_of(e.name()));
                         let derives = e.derives().into_iter().flat_map(|(_, names)| names);
-                        if derives
-                            .flatten()
-                            .any(|n| n.text() == viso_behavior::game::INPUT_ACTION_DERIVE)
-                        {
-                            decls.input_derives.insert(sym);
+                        for name in derives.flatten() {
+                            let text = name.text();
+                            if text == viso_behavior::game::INPUT_ACTION_DERIVE {
+                                decls.input_derives.insert(sym);
+                            } else if text == viso_behavior::game::GAME_TAG_DERIVE {
+                                tags::collect(sym, name.text_range(), &scope, decls);
+                            }
                         }
                     }
                 }

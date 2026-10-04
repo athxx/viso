@@ -1,3 +1,4 @@
+use super::world;
 use super::*;
 use crate::native::Natives;
 use crate::value::Value;
@@ -280,4 +281,132 @@ fn timer_values_round_trip_and_are_schema_value_types() {
     assert!(fire.is_method(&natives));
     let new = natives.function("viso::game::TickTimer::every").unwrap();
     assert_eq!(new.function.params[0].ty, crate::native::SchemaTy::Ticks);
+}
+
+fn spawn_block(world: &GameWorld, system: usize, at: [f32; 3]) -> EntityId {
+    world.open(system);
+    let id = world
+        .spawn(
+            SpawnDesc::new(BodyKind::Block, Vec3F32::new(1.0, 1.0, 1.0))
+                .at(Vec3F32::from_array(at)),
+        )
+        .expect("open");
+    world.close();
+    id
+}
+
+#[test]
+fn spawns_reserve_ids_in_call_order_and_commit_in_system_order() {
+    let world = GameWorld::new(1);
+    let late = spawn_block(&world, 1, [1.0, 0.0, 0.0]);
+    let early = spawn_block(&world, 0, [2.0, 0.0, 0.0]);
+    assert_eq!((late.index(), early.index()), (0, 1));
+    assert!(!world.is_alive(late));
+    world.commit();
+    assert_eq!(world.entities(), [early, late], "system 0 commits first");
+    assert!(world.bodies().is_consistent());
+
+    world.open(0);
+    world.push(world::Command::Remove(early)).expect("open");
+    world.close();
+    world.commit();
+    let reused = spawn_block(&world, 0, [0.0; 3]);
+    world.commit();
+    assert_eq!((reused.index(), reused.generation()), (1, 1));
+    assert_eq!(world.entities(), [late, reused]);
+    assert!(world.bodies().is_consistent());
+}
+
+#[test]
+fn a_rollback_returns_reservations_and_draws() {
+    let world = GameWorld::new(9);
+    let mark = world.mark();
+    let first = spawn_block(&world, 0, [0.0; 3]);
+    world.open(0);
+    let draw = world.random().expect("open");
+    world.close();
+    world.rollback(mark);
+    let again = spawn_block(&world, 0, [0.0; 3]);
+    world.open(0);
+    assert_eq!(world.random().expect("open"), draw);
+    world.close();
+    assert_eq!(first, again);
+    world.commit();
+    assert_eq!(world.entities(), [again]);
+}
+
+#[test]
+fn writes_outside_a_hook_fail() {
+    let world = GameWorld::new(0);
+    assert!(world.spawn(SpawnDesc::player()).is_err());
+    assert!(world.random().is_err());
+    world.commit();
+    assert!(world.entities().is_empty());
+}
+
+#[test]
+fn random_ranges_cover_their_bounds_without_overflow() {
+    let world = GameWorld::new(3);
+    world.open(0);
+    for _ in 0..64 {
+        let x = world.random_range(i64::MIN, i64::MAX).expect("range");
+        assert!(x < i64::MAX);
+        assert_eq!(world.random_range(5, 6).expect("one value"), 5);
+        let unit = world.random().expect("draw");
+        assert!((0.0..1.0).contains(&unit));
+    }
+    assert!(world.random_range(2, 2).is_err());
+    world.close();
+}
+
+#[test]
+fn bodies_round_trip_canonically_and_reject_inconsistency() {
+    let world = GameWorld::new(0);
+    spawn_block(&world, 0, [1.5, -2.0, 0.25]);
+    world.open(0);
+    world.spawn(SpawnDesc::player().tag(Tag(3))).expect("open");
+    world.close();
+    world.commit();
+    world.step(1.0 / 60.0, &mut Vec::new());
+    let bodies = world.bodies();
+    let mut enc = viso_ende::Encoder::new();
+    bodies.encode(&mut enc);
+    let bytes = enc.into_bytes();
+    let mut dec = viso_ende::Decoder::new(&bytes);
+    assert_eq!(world::Bodies::decode(&mut dec).expect("decodes"), *bodies);
+
+    let mut broken = (*bodies).clone();
+    broken.order.push(0);
+    let mut enc = viso_ende::Encoder::new();
+    broken.encode(&mut enc);
+    let bytes = enc.into_bytes();
+    assert!(world::Bodies::decode(&mut viso_ende::Decoder::new(&bytes)).is_err());
+}
+
+#[test]
+fn a_character_lands_on_a_block_and_stands() {
+    let world = GameWorld::new(0);
+    world.open(0);
+    let floor = world
+        .spawn(SpawnDesc::new(
+            BodyKind::Block,
+            Vec3F32::new(10.0, 1.0, 10.0),
+        ))
+        .expect("open");
+    let player = world
+        .spawn(SpawnDesc::player().at(Vec3F32::new(0.0, 2.0, 0.0)))
+        .expect("open");
+    world.close();
+    world.commit();
+    let mut began = Vec::new();
+    for _ in 0..240 {
+        world.begin_tick();
+        world.step(1.0 / 240.0, &mut began);
+    }
+    assert_eq!(
+        world.position(player),
+        Some(Vec3F32::new(0.0, 0.5 + 0.9, 0.0))
+    );
+    assert!(world.bodies().floor[player.index() as usize]);
+    assert!(began.is_empty(), "blocks report no contacts: {floor}");
 }

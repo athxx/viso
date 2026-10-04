@@ -99,11 +99,11 @@ pub(super) fn hooks(
                 continue;
             }
             bound_names.push((hook.name, at));
-            let action = env.input_action();
+            let package = env.package_types();
             let expected: Vec<Ty> = hook
                 .params
                 .iter()
-                .map(|p| Ty::from_schema(&p.ty, &action))
+                .map(|p| Ty::from_schema(&p.ty, &package))
                 .collect();
             let cx = InferCx::new(&[], env);
             let signature = format!(
