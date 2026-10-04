@@ -20,6 +20,7 @@
 use std::fmt;
 
 pub use viso_behavior::game::DEFAULT_SEED;
+use viso_behavior::game::kit::Model;
 use viso_behavior::game::{BodyKind, InputTape, Scheduler, SystemFault, TapeError};
 use viso_behavior::native::Natives;
 use viso_behavior::{Budget, Vm};
@@ -185,6 +186,8 @@ pub struct EntityState {
     pub kind: &'static str,
     /// One bit per tag variant.
     pub tags: u64,
+    /// What it is drawn as: a `viso::game::kit::Model` variant.
+    pub model: &'static str,
     pub position: [f32; 3],
     pub half_extents: [f32; 3],
 }
@@ -286,6 +289,7 @@ pub fn run(
                 BodyKind::Sensor => "sensor",
             },
             tags: e.tags,
+            model: Model::VARIANTS[e.model.resolve(e.kind) as usize],
             position: e.position.to_array(),
             half_extents: e.half_extents.to_array(),
         })

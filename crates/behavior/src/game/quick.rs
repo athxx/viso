@@ -9,6 +9,7 @@
 //! profile's: [`QuickStart`] of `GameStart`, [`QuickFrame`] of `FixedFrame`,
 //! over the same world. What `start` spawns exists before the first tick.
 
+use super::kit::Kit;
 use super::{EntityId, FixedFrame, GameStart, GameWorld, InputSnapshot, SpawnDesc, signed};
 use crate::native::{
     Determinism, HookDomain, NativeFunction, NativeHook, NativeId, NativeLibrary, NativeObject,
@@ -42,7 +43,7 @@ impl NativeObject for QuickFrame {
     const PATH: &'static str = "viso::game::quick::QuickFrame";
 }
 
-static QUICK_START_METHODS: [NativeFunction; 3] = [
+static QUICK_START_METHODS: [NativeFunction; 4] = [
     crate::native!(fn "tick" |_cx, this: Obj<QuickStart>| -> i64 {
         Ok(signed(this.start.tick.get()))
     })
@@ -54,13 +55,17 @@ static QUICK_START_METHODS: [NativeFunction; 3] = [
     .deterministic()
     .realtime_safe()
     .property(),
+    crate::native!(fn "kit" |_cx, this: Obj<QuickStart>| -> Obj<Kit> { Ok(this.start.kit.clone()) })
+        .deterministic()
+        .realtime_safe()
+        .property(),
     crate::native!(action "spawn" |_cx, this: Obj<QuickStart>, desc: SpawnDesc| -> EntityId {
         this.start.world.spawn(desc)
     })
     .reproducible(Determinism::CrossPlatform),
 ];
 
-static QUICK_FRAME_METHODS: [NativeFunction; 5] = [
+static QUICK_FRAME_METHODS: [NativeFunction; 6] = [
     crate::native!(fn "tick" |_cx, this: Obj<QuickFrame>| -> i64 {
         Ok(signed(this.frame.tick.get()))
     })
@@ -86,6 +91,10 @@ static QUICK_FRAME_METHODS: [NativeFunction; 5] = [
     .deterministic()
     .realtime_safe()
     .property(),
+    crate::native!(fn "kit" |_cx, this: Obj<QuickFrame>| -> Obj<Kit> { Ok(this.frame.kit.clone()) })
+        .deterministic()
+        .realtime_safe()
+        .property(),
 ];
 
 /// The `QuickGame` trait and the contexts its hooks receive, borrowed for the

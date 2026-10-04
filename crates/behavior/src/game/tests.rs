@@ -439,6 +439,7 @@ fn reference_step(b: &mut world::Bodies, dt: f32, began: &mut Vec<(EntityId, Ent
             }
         }
     }
+    super::kit::steer::settle(b, &order);
     let mut now = Vec::new();
     for (i, &a) in order.iter().enumerate() {
         if b.kind[a as usize] != BodyKind::Character {
@@ -561,13 +562,16 @@ fn the_grid_step_equals_testing_every_pair() {
             }
             let descs: Vec<_> = commands
                 .iter()
-                .map(|c| c.map_or_else(|| Some(random_desc(&mut rng)), |_| None))
+                .map(|c| {
+                    c.as_ref()
+                        .map_or_else(|| Some(random_desc(&mut rng)), |_| None)
+                })
                 .collect();
             for world in [&fast, &slow] {
                 world.open(0);
                 for (command, desc) in commands.iter().zip(&descs) {
                     match (command, desc) {
-                        (Some(command), _) => world.push(*command).expect("open"),
+                        (Some(command), _) => world.push(command.clone()).expect("open"),
                         (None, Some(desc)) => drop(world.spawn(*desc).expect("open")),
                         (None, None) => unreachable!(),
                     }

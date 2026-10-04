@@ -332,6 +332,8 @@ fn game_fields(w: &mut JsonWriter, run: &GameRun) {
         w.string(entity.kind);
         w.name("tags");
         w.uint(entity.tags);
+        w.name("model");
+        w.string(entity.model);
         for (field, v) in [
             ("position", entity.position),
             ("half_extents", entity.half_extents),

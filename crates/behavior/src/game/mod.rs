@@ -43,6 +43,7 @@
 mod clock;
 mod grid;
 pub mod input;
+pub mod kit;
 pub mod quick;
 mod scheduler;
 mod snapshot;
@@ -51,6 +52,8 @@ mod timer;
 mod world;
 
 use std::cell::Cell;
+
+use kit::Kit;
 
 use crate::native::{
     HookDomain, NativeError, NativeFunction, NativeHook, NativeId, NativeLibrary, NativeObject,
@@ -85,6 +88,7 @@ pub const STARTUP: NativeId = NativeId::of("viso::game::Startup::startup");
 pub struct GameStart {
     tick: Cell<u64>,
     world: Obj<GameWorld>,
+    kit: Obj<Kit>,
 }
 
 impl NativeObject for GameStart {
@@ -99,6 +103,7 @@ pub struct FixedFrame {
     dt: f64,
     input: Obj<InputSnapshot>,
     world: Obj<GameWorld>,
+    kit: Obj<Kit>,
 }
 
 impl NativeObject for FixedFrame {
@@ -113,6 +118,7 @@ pub struct RenderFrame {
     time: Cell<f64>,
     alpha: Cell<f32>,
     world: Obj<GameWorld>,
+    kit: Obj<Kit>,
 }
 
 impl NativeObject for RenderFrame {
@@ -128,6 +134,7 @@ pub struct CollisionEvent {
     first: Cell<EntityId>,
     second: Cell<EntityId>,
     world: Obj<GameWorld>,
+    kit: Obj<Kit>,
 }
 
 impl NativeObject for CollisionEvent {
@@ -139,7 +146,7 @@ fn signed(tick: u64) -> i64 {
     i64::try_from(tick).unwrap_or(i64::MAX)
 }
 
-static FIXED_FRAME_METHODS: [NativeFunction; 5] = [
+static FIXED_FRAME_METHODS: [NativeFunction; 6] = [
     crate::native!(fn "tick" |_cx, this: Obj<FixedFrame>| -> i64 { Ok(signed(this.tick.get())) })
         .deterministic()
         .realtime_safe(),
@@ -163,9 +170,13 @@ static FIXED_FRAME_METHODS: [NativeFunction; 5] = [
     .deterministic()
     .realtime_safe()
     .property(),
+    crate::native!(fn "kit" |_cx, this: Obj<FixedFrame>| -> Obj<Kit> { Ok(this.kit.clone()) })
+        .deterministic()
+        .realtime_safe()
+        .property(),
 ];
 
-static GAME_START_METHODS: [NativeFunction; 3] = [
+static GAME_START_METHODS: [NativeFunction; 4] = [
     crate::native!(fn "tick" |_cx, this: Obj<GameStart>| -> i64 { Ok(signed(this.tick.get())) })
         .deterministic()
         .realtime_safe(),
@@ -175,13 +186,17 @@ static GAME_START_METHODS: [NativeFunction; 3] = [
     .deterministic()
     .realtime_safe()
     .property(),
+    crate::native!(fn "kit" |_cx, this: Obj<GameStart>| -> Obj<Kit> { Ok(this.kit.clone()) })
+        .deterministic()
+        .realtime_safe()
+        .property(),
     crate::native!(action "spawn" |_cx, this: Obj<GameStart>, desc: SpawnDesc| -> EntityId {
         this.world.spawn(desc)
     })
     .reproducible(crate::native::Determinism::CrossPlatform),
 ];
 
-static RENDER_FRAME_METHODS: [NativeFunction; 5] = [
+static RENDER_FRAME_METHODS: [NativeFunction; 6] = [
     crate::native!(fn "dt" |_cx, this: Obj<RenderFrame>| -> f64 { Ok(this.dt.get()) })
         .deterministic()
         .realtime_safe(),
@@ -197,6 +212,10 @@ static RENDER_FRAME_METHODS: [NativeFunction; 5] = [
     .deterministic()
     .realtime_safe()
     .property(),
+    crate::native!(fn "kit" |_cx, this: Obj<RenderFrame>| -> Obj<Kit> { Ok(this.kit.clone()) })
+        .deterministic()
+        .realtime_safe()
+        .property(),
     crate::native!(fn "position" |_cx, this: Obj<RenderFrame>, id: EntityId| -> Vec3F32 {
         this.world
             .interpolated(id, this.alpha.get())
@@ -205,7 +224,7 @@ static RENDER_FRAME_METHODS: [NativeFunction; 5] = [
     .reproducible(crate::native::Determinism::CrossPlatform),
 ];
 
-static COLLISION_EVENT_METHODS: [NativeFunction; 5] = [
+static COLLISION_EVENT_METHODS: [NativeFunction; 6] = [
     crate::native!(fn "tick" |_cx, this: Obj<CollisionEvent>| -> i64 {
         Ok(signed(this.tick.get()))
     })
@@ -241,6 +260,10 @@ static COLLISION_EVENT_METHODS: [NativeFunction; 5] = [
     .deterministic()
     .realtime_safe()
     .property(),
+    crate::native!(fn "kit" |_cx, this: Obj<CollisionEvent>| -> Obj<Kit> { Ok(this.kit.clone()) })
+        .deterministic()
+        .realtime_safe()
+        .property(),
 ];
 
 /// The scheduler traits, the frame handles their hooks receive, the world and
