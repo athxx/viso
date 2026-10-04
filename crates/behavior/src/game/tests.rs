@@ -410,3 +410,177 @@ fn a_character_lands_on_a_block_and_stands() {
     assert!(world.bodies().floor[player.index() as usize]);
     assert!(began.is_empty(), "blocks report no contacts: {floor}");
 }
+
+/// The physics step without a broadphase: every character against every
+/// block in allocation order, every pair tested for contact.
+fn reference_step(b: &mut world::Bodies, dt: f32, began: &mut Vec<(EntityId, EntityId)>) {
+    let order = b.order.clone();
+    for &slot in &order {
+        let slot = slot as usize;
+        if b.kind[slot] != BodyKind::Character {
+            continue;
+        }
+        let push = std::mem::take(&mut b.push[slot]);
+        b.vel[slot][0] = push[0];
+        b.vel[slot][2] = push[2];
+        b.vel[slot][1] += push[1] - GRAVITY * dt;
+        b.floor[slot] = false;
+        for axis in [1, 0, 2] {
+            let speed = b.vel[slot][axis];
+            if speed == 0.0 {
+                continue;
+            }
+            b.pos[slot][axis] += speed * dt;
+            for &other in &order {
+                let other = other as usize;
+                if b.kind[other] == BodyKind::Block && b.overlap(slot, other, axis) {
+                    b.resolve(slot, other, axis, speed);
+                }
+            }
+        }
+    }
+    let mut now = Vec::new();
+    for (i, &a) in order.iter().enumerate() {
+        if b.kind[a as usize] != BodyKind::Character {
+            continue;
+        }
+        for (j, &o) in order.iter().enumerate() {
+            let pairs = match b.kind[o as usize] {
+                BodyKind::Sensor => true,
+                BodyKind::Character => j > i,
+                BodyKind::Block => false,
+            };
+            if pairs && b.touch(a as usize, o as usize) {
+                now.push((i.min(j), i.max(j)));
+            }
+        }
+    }
+    now.sort_unstable();
+    let mut contacts: Vec<_> = now
+        .iter()
+        .map(|&(i, j)| (b.id(order[i] as usize), b.id(order[j] as usize)))
+        .collect();
+    for &pair in &contacts {
+        if b.contacts.binary_search(&pair).is_err() {
+            began.push(pair);
+        }
+    }
+    contacts.sort_unstable();
+    b.contacts = contacts;
+}
+
+/// A deterministic test source of numbers.
+struct Lcg(u64);
+
+impl Lcg {
+    fn next(&mut self) -> u64 {
+        self.0 = self
+            .0
+            .wrapping_mul(6_364_136_223_846_793_005)
+            .wrapping_add(1);
+        self.0 >> 33
+    }
+
+    fn range(&mut self, low: f32, high: f32) -> f32 {
+        low + (high - low) * (self.next() % 10_000) as f32 / 10_000.0
+    }
+
+    fn pick(&mut self, n: u64) -> u64 {
+        self.next() % n
+    }
+}
+
+fn random_desc(rng: &mut Lcg) -> SpawnDesc {
+    let kind = [
+        BodyKind::Character,
+        BodyKind::Block,
+        BodyKind::Block,
+        BodyKind::Sensor,
+    ][rng.pick(4) as usize];
+    let size = if rng.pick(10) == 0 {
+        Vec3F32::new(
+            rng.range(10.0, 60.0),
+            rng.range(0.5, 2.0),
+            rng.range(10.0, 60.0),
+        )
+    } else {
+        Vec3F32::new(
+            rng.range(0.2, 3.0),
+            rng.range(0.2, 3.0),
+            rng.range(0.2, 3.0),
+        )
+    };
+    let at = Vec3F32::new(
+        rng.range(-20.0, 20.0),
+        rng.range(-3.0, 6.0),
+        rng.range(-20.0, 20.0),
+    );
+    SpawnDesc::new(kind, size).at(at)
+}
+
+#[test]
+fn the_grid_step_equals_testing_every_pair() {
+    for seed in 0..12 {
+        let mut rng = Lcg(seed);
+        let fast = GameWorld::new(0);
+        let slow = GameWorld::new(0);
+        let mut began_fast = Vec::new();
+        let mut began_slow = Vec::new();
+        for tick in 0..240 {
+            // The same commands to both worlds: spawns early, then walks,
+            // jumps, teleports into the level and removals.
+            let ids = fast.entities();
+            let mut commands = Vec::new();
+            let spawns = if tick < 3 {
+                40
+            } else {
+                u64::from(rng.pick(8) == 0)
+            };
+            for _ in 0..spawns {
+                commands.push(None);
+            }
+            for &id in &ids {
+                match rng.pick(40) {
+                    0..=19 => commands.push(Some(world::Command::Walk(
+                        id,
+                        rng.range(-8.0, 8.0),
+                        rng.range(-8.0, 8.0),
+                    ))),
+                    20 => commands.push(Some(world::Command::Jump(id, rng.range(2.0, 12.0)))),
+                    21 => commands.push(Some(world::Command::Teleport(
+                        id,
+                        [
+                            rng.range(-20.0, 20.0),
+                            rng.range(-2.0, 5.0),
+                            rng.range(-20.0, 20.0),
+                        ],
+                    ))),
+                    22 => commands.push(Some(world::Command::Remove(id))),
+                    _ => {}
+                }
+            }
+            let descs: Vec<_> = commands
+                .iter()
+                .map(|c| c.map_or_else(|| Some(random_desc(&mut rng)), |_| None))
+                .collect();
+            for world in [&fast, &slow] {
+                world.open(0);
+                for (command, desc) in commands.iter().zip(&descs) {
+                    match (command, desc) {
+                        (Some(command), _) => world.push(*command).expect("open"),
+                        (None, Some(desc)) => drop(world.spawn(*desc).expect("open")),
+                        (None, None) => unreachable!(),
+                    }
+                }
+                world.close();
+                world.commit();
+                world.begin_tick();
+            }
+            fast.step(1.0 / 60.0, &mut began_fast);
+            slow.with_bodies(|b| reference_step(b, 1.0 / 60.0, &mut began_slow));
+            assert_eq!(fast.bodies(), slow.bodies(), "seed {seed}, tick {tick}");
+            assert_eq!(began_fast, began_slow, "seed {seed}, tick {tick}");
+        }
+        assert!(!began_fast.is_empty(), "seed {seed} met no contact");
+    }
+}

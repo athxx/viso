@@ -696,6 +696,13 @@ timers (§104–§111).
   - [x] Physics step between the two command points: character gravity, per-axis
         resolution against blocks (`on_floor`), begin-contact events between
         characters and sensors / characters in allocation order.
+  - [x] Uniform-grid broadphase (power-of-two cell ≥ widest character; block grid
+        rebuilt only when a block changes; one sweep query per character a tick;
+        contacts by cell runs counted once at the overlap's lowest cell), bit-identical
+        to the all-pairs step (oracle test over random scenes, bench hashes equal).
+        Release `game_world` bench, per tick, before → after: walk/large (1k
+        characters, 10k tiles, 1k sensors) 186 ms → 1.84 ms, idle/large 74 ms →
+        1.59 ms, walk/medium 4.5 ms → 134 µs, walk/small 29 µs → 11 µs.
 - [x] Stable query order, generational `EntityId`, `@derive(GameTag)` (§108.1).
   - [x] `EntityId` value (slot + generation; slot reuse bumps the generation);
         `query(tag)` / `entities()` in allocation order.
