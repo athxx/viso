@@ -6146,6 +6146,8 @@ UI Binding 对 Game Observable Handle 的读取必须通过 Schema 标记为 Rea
 - 同一 Build + Tape 的 Snapshot Hash 在所选 determinism 档位下逐字节一致；
 - `--json` 使用 §138 同一 Diagnostic Schema，AI 可以据此闭环。
 
+当前实现（Input Tape，`viso_behavior::game::InputTape`）：Tape 头部是 Seed、Build Hash（手写为 0）、determinism 档位与 Tick Rate（即 `fixed_dt = 1 / tick_rate`）及覆盖的 Tick 数；正文是按 Tick 的 InputSnapshot，存为相邻 Tick 之间的变化——动作按下（带 press 边沿）、松开（带 release 边沿）、静默置位（无边沿，如 Remap）与 Move 向量，同一 Tick 的变化按序在该 Tick 运行前生效，因此同 Tick 的按下加松开即一次 Tap。动作按名字存放，回放时按名字映射到当前 Build 的动作集，Tape 中有 Build 没有的动作、或 Tick Rate 不同，拒绝回放。二进制形式是带 `GTP1` 标记的版本化 Ende Blob，解码有界；文本形式一行一条：`30: press Jump`、`40: release Jump`、`95: tap Fire`、`hold`/`unhold`（无边沿）、`31..90: axis move = (1, 0)`，区间 `a..b` 在 `a` 生效、在 `b` 撤销（`a..=b` 在 `b` 之后撤销：按下变松开，Move 回到 `(0, 0)`），头部行 `seed`、`build`、`determinism`、`tick_rate`、`ticks`，`#` 起注释，出错报告行号。`Scheduler::record` 录制每个 Tick 实际读到的输入，`stop_recording` 取出 Tape；`Scheduler::play` 回放时设备输入不再起作用；Logic Reload 按名字重新映射，World Rebuild 让回放与录制都从 Tick 0 重新开始。同一 Seed 与 Tape 的回放得到相同 Snapshot Hash（`GameSnapshot::hash`）。
+
 ---
 
 ## 111. 游戏能力验收矩阵
