@@ -27,6 +27,11 @@
 //! another character, earlier allocation first. All of it is single-precision
 //! IEEE arithmetic without fused operations, reproducible on every target.
 //!
+//! A uniform grid ([`super::grid`]) finds each body's neighbours: the blocks
+//! a character's sweep may meet, regridded only when a block moves, and the
+//! sensors and characters it may touch, regridded every step. The outcome is
+//! bit for bit that of testing every pair in allocation order.
+//!
 //! The committed state is shared with snapshots and copied only when a commit
 //! or step changes it.
 
@@ -34,6 +39,7 @@ use std::cell::{Cell, RefCell};
 use std::fmt;
 use std::rc::Rc;
 
+use super::grid::{Bounds, Grid, bounds};
 use super::input::schema_enum;
 use crate::native::{
     Determinism, NativeError, NativeFunction, NativeObject, NativeValue, Obj, SchemaTy, Vec3F32,
@@ -284,7 +290,7 @@ pub(super) struct Bodies {
 }
 
 impl Bodies {
-    fn slots(&self) -> usize {
+    pub(super) fn slots(&self) -> usize {
         self.generation.len()
     }
 
@@ -295,7 +301,7 @@ impl Bodies {
             .then_some(slot)
     }
 
-    fn id(&self, slot: usize) -> EntityId {
+    pub(super) fn id(&self, slot: usize) -> EntityId {
         EntityId {
             index: slot as u32,
             generation: self.generation[slot],
@@ -304,7 +310,7 @@ impl Bodies {
 
     /// Whether the slots overlap by more than nothing on `axis` and more than
     /// [`SKIN`] on the others.
-    fn overlap(&self, a: usize, b: usize, axis: usize) -> bool {
+    pub(super) fn overlap(&self, a: usize, b: usize, axis: usize) -> bool {
         (0..3).all(|i| {
             let reach = self.half[a][i] + self.half[b][i];
             let reach = if i == axis { reach } else { reach - SKIN };
@@ -312,8 +318,23 @@ impl Bodies {
         })
     }
 
+    /// Stops `slot`, moving at `speed` along `axis`, at the face of block
+    /// `other`; a block below sets `on_floor`.
+    pub(super) fn resolve(&mut self, slot: usize, other: usize, axis: usize, speed: f32) {
+        let reach = self.half[slot][axis] + self.half[other][axis];
+        if speed > 0.0 {
+            self.pos[slot][axis] = self.pos[other][axis] - reach;
+        } else {
+            self.pos[slot][axis] = self.pos[other][axis] + reach;
+            if axis == 1 {
+                self.floor[slot] = true;
+            }
+        }
+        self.vel[slot][axis] = 0.0;
+    }
+
     /// Whether the slots overlap at all.
-    fn touch(&self, a: usize, b: usize) -> bool {
+    pub(super) fn touch(&self, a: usize, b: usize) -> bool {
         (0..3).all(|i| (self.pos[a][i] - self.pos[b][i]).abs() < self.half[a][i] + self.half[b][i])
     }
 
@@ -466,9 +487,87 @@ pub struct GameWorld {
     /// The system whose hook is running, while one may write.
     writer: Cell<Option<usize>>,
     skipped: Cell<u64>,
-    /// Scratch for a step's contacts, by allocation order and by identity.
-    pairs: RefCell<Vec<(usize, usize)>>,
-    contacts: RefCell<Vec<(EntityId, EntityId)>>,
+    broadphase: RefCell<Broadphase>,
+}
+
+/// What the step keeps between ticks to find a body's neighbours: derived
+/// from the bodies, never snapshotted, rebuilt when stale.
+#[derive(Debug, Default)]
+struct Broadphase {
+    /// The cell size the grids are built at.
+    cell: f32,
+    /// The blocks, valid while `fresh`.
+    blocks: Grid,
+    fresh: bool,
+    /// The sensors and characters, regridded every step.
+    movers: Grid,
+    /// Each live slot's place in allocation order.
+    rank: Vec<u32>,
+    /// Scratch: a query's slots, then their ranks.
+    found: Vec<u32>,
+    /// Each mover's lowest cell.
+    low: Vec<[i32; 3]>,
+    /// Scratch: each contact's identity and place in allocation order, and
+    /// whether it began.
+    sorted: Vec<((EntityId, EntityId), u32)>,
+    new: Vec<bool>,
+    /// Scratch: a step's contacts by allocation order.
+    pairs: Vec<(u32, u32)>,
+}
+
+impl Broadphase {
+    /// Ranks the live slots and, when the blocks moved or the cell size
+    /// changed, regrids the blocks. The cell is the smallest power of two
+    /// as wide as the widest character, so a character covers at most two
+    /// cells an axis.
+    fn prepare(&mut self, b: &Bodies, order: &[u32]) {
+        self.rank.resize(b.slots(), 0);
+        let mut widest: f32 = 0.0;
+        for (i, &slot) in order.iter().enumerate() {
+            let slot = slot as usize;
+            self.rank[slot] = i as u32;
+            if b.kind[slot] == BodyKind::Character {
+                widest = b.half[slot].iter().fold(widest, |w, &h| w.max(2.0 * h));
+            }
+        }
+        let cell = if widest.is_finite() {
+            widest.clamp(0.25, 4096.0).log2().ceil().exp2()
+        } else {
+            4096.0
+        };
+        if self.fresh && self.cell == cell {
+            return;
+        }
+        self.cell = cell;
+        self.blocks.clear(cell);
+        for &slot in order {
+            let s = slot as usize;
+            if b.kind[s] == BodyKind::Block {
+                self.blocks.insert(slot, bounds(b.pos[s], b.half[s]));
+            }
+        }
+        self.blocks.finish();
+        self.fresh = true;
+    }
+
+    /// The ranks of the blocks near `region`, every block when the region is
+    /// too large to query, ascending and once each, into `found`.
+    fn blocks_near(&mut self, b: &Bodies, order: &[u32], region: Bounds) {
+        self.found.clear();
+        if self.blocks.query(region, &mut self.found) {
+            for slot in &mut self.found {
+                *slot = self.rank[*slot as usize];
+            }
+        } else {
+            let all = order
+                .iter()
+                .enumerate()
+                .filter(|&(_, &s)| b.kind[s as usize] == BodyKind::Block);
+            self.found.extend(all.map(|(i, _)| i as u32));
+        }
+        self.found.sort_unstable();
+        self.found.dedup();
+    }
 }
 
 impl NativeObject for GameWorld {
@@ -575,9 +674,17 @@ impl GameWorld {
         self.bodies.borrow().clone()
     }
 
+    /// Runs `f` on the committed state, as a test checks it.
+    #[cfg(test)]
+    pub(super) fn with_bodies<R>(&self, f: impl FnOnce(&mut Bodies) -> R) -> R {
+        self.broadphase.borrow_mut().fresh = false;
+        f(Rc::make_mut(&mut self.bodies.borrow_mut()))
+    }
+
     /// Replaces the committed state and the random state, dropping any
     /// buffered command.
     pub(super) fn restore(&self, bodies: Rc<Bodies>, rng: u64) {
+        self.broadphase.borrow_mut().fresh = false;
         *self.bodies.borrow_mut() = bodies;
         self.rng.set(rng);
         self.commands.borrow_mut().clear();
@@ -700,10 +807,12 @@ impl GameWorld {
             }
         }
         let mut removed = false;
+        let mut blocks_moved = false;
         let mut skipped = 0;
         for &(_, command) in commands.iter() {
             let target = match command {
                 Command::Spawn(id, desc) => {
+                    blocks_moved |= desc.kind == BodyKind::Block;
                     let slot = id.index as usize;
                     debug_assert_eq!(b.generation[slot], id.generation);
                     b.alive[slot] = true;
@@ -727,6 +836,9 @@ impl GameWorld {
                 skipped += 1;
                 continue;
             };
+            if matches!(command, Command::Teleport(..) | Command::Remove(_)) {
+                blocks_moved |= b.kind[slot] == BodyKind::Block;
+            }
             match command {
                 Command::Spawn(..) => unreachable!("spawns commit above"),
                 Command::Walk(_, x, z) => {
@@ -753,18 +865,28 @@ impl GameWorld {
         }
         commands.clear();
         self.skipped.set(self.skipped.get() + skipped);
+        if blocks_moved {
+            self.broadphase.borrow_mut().fresh = false;
+        }
     }
 
     /// Steps the bodies `dt` seconds and appends the contacts that began to
     /// `began`, earlier allocation first in each pair and pairs in allocation
     /// order.
+    ///
+    /// A character meets only the blocks the grid finds near its sweep along
+    /// an axis, in allocation order; should a block push it out of that sweep,
+    /// every later block is tested, so the outcome is that of testing every
+    /// block in allocation order.
     pub(super) fn step(&self, dt: f32, began: &mut Vec<(EntityId, EntityId)>) {
         let mut bodies = self.bodies.borrow_mut();
         if bodies.order.is_empty() {
             return;
         }
         let b = Rc::make_mut(&mut bodies);
+        let bp = &mut *self.broadphase.borrow_mut();
         let order = std::mem::take(&mut b.order);
+        bp.prepare(b, &order);
         for &slot in &order {
             let slot = slot as usize;
             if b.kind[slot] != BodyKind::Character {
@@ -776,63 +898,128 @@ impl GameWorld {
             vel[2] = push[2];
             vel[1] += push[1] - GRAVITY * dt;
             b.floor[slot] = false;
+            let vel = b.vel[slot];
+            if vel == [0.0; 3] {
+                continue;
+            }
+            // One query covers the whole sweep: each axis moves within its
+            // own range unless a block pushes it out, after which the axes
+            // left test every block.
+            let (half, from) = (b.half[slot], b.pos[slot]);
+            let to: [f32; 3] = std::array::from_fn(|i| from[i] + vel[i] * dt);
+            let (start, end) = (bounds(from, half), bounds(to, half));
+            let region = (
+                std::array::from_fn(|i| start.0[i].min(end.0[i])),
+                std::array::from_fn(|i| start.1[i].max(end.1[i])),
+            );
+            bp.blocks_near(b, &order, region);
+            let mut swept = true;
             for axis in [1, 0, 2] {
-                let speed = b.vel[slot][axis];
+                let speed = vel[axis];
                 if speed == 0.0 {
                     continue;
                 }
                 b.pos[slot][axis] += speed * dt;
-                for &other in &order {
-                    let other = other as usize;
-                    if b.kind[other] != BodyKind::Block || !b.overlap(slot, other, axis) {
-                        continue;
-                    }
-                    let reach = b.half[slot][axis] + b.half[other][axis];
-                    if speed > 0.0 {
-                        b.pos[slot][axis] = b.pos[other][axis] - reach;
-                    } else {
-                        b.pos[slot][axis] = b.pos[other][axis] + reach;
-                        if axis == 1 {
-                            b.floor[slot] = true;
+                let (low, high) = (from[axis].min(to[axis]), from[axis].max(to[axis]));
+                let mut rest = 0;
+                if swept {
+                    rest = order.len();
+                    for &rank in &bp.found {
+                        let other = order[rank as usize] as usize;
+                        if b.overlap(slot, other, axis) {
+                            b.resolve(slot, other, axis, speed);
+                            if !(low..=high).contains(&b.pos[slot][axis]) {
+                                swept = false;
+                                rest = rank as usize + 1;
+                                break;
+                            }
                         }
                     }
-                    b.vel[slot][axis] = 0.0;
+                }
+                for &other in &order[rest..] {
+                    let other = other as usize;
+                    if b.kind[other] == BodyKind::Block && b.overlap(slot, other, axis) {
+                        b.resolve(slot, other, axis, speed);
+                    }
                 }
             }
         }
-        let mut now = self.pairs.borrow_mut();
-        now.clear();
-        for (i, &a) in order.iter().enumerate() {
-            let a = a as usize;
-            if b.kind[a] != BodyKind::Character {
-                continue;
+        bp.movers.clear(bp.cell);
+        bp.low.resize(b.slots(), [0; 3]);
+        for &slot in &order {
+            let s = slot as usize;
+            if b.kind[s] != BodyKind::Block {
+                let bounds = bounds(b.pos[s], b.half[s]);
+                bp.low[s] = bp.movers.cell(bounds.0);
+                bp.movers.insert(slot, bounds);
             }
-            for (j, &o) in order.iter().enumerate() {
+        }
+        bp.movers.finish();
+        bp.pairs.clear();
+        let kinds = |a: usize, o: usize| {
+            matches!(
+                (b.kind[a], b.kind[o]),
+                (BodyKind::Character, BodyKind::Character | BodyKind::Sensor)
+                    | (BodyKind::Sensor, BodyKind::Character)
+            )
+        };
+        let rank = |slot: usize| bp.rank[slot];
+        let ordered = |a: u32, o: u32| (a.min(o), a.max(o));
+        for (cell, run) in bp.movers.cells() {
+            for (i, &(_, a)) in run.iter().enumerate() {
+                let a = a as usize;
+                for &(_, o) in &run[i + 1..] {
+                    let o = o as usize;
+                    if !kinds(a, o) {
+                        continue;
+                    }
+                    // Counted in the cell of the overlap's lowest corner only.
+                    let (la, lo) = (bp.low[a], bp.low[o]);
+                    if (0..3).all(|k| la[k].max(lo[k]) == cell[k]) && b.touch(a, o) {
+                        bp.pairs.push(ordered(rank(a), rank(o)));
+                    }
+                }
+            }
+        }
+        let wide = bp.movers.wide();
+        for (i, &w) in wide.iter().enumerate() {
+            let w = w as usize;
+            for &o in &order {
                 let o = o as usize;
-                let pairs = match b.kind[o] {
-                    BodyKind::Sensor => true,
-                    BodyKind::Character => j > i,
-                    BodyKind::Block => false,
-                };
-                if pairs && b.touch(a, o) {
-                    now.push((i.min(j), i.max(j)));
+                let counted = wide[..=i].contains(&(o as u32));
+                if !counted && kinds(w, o) && b.touch(w, o) {
+                    bp.pairs.push(ordered(rank(w), rank(o)));
                 }
             }
         }
-        now.sort_unstable();
-        let mut contacts = self.contacts.borrow_mut();
-        contacts.clear();
-        contacts.extend(
-            now.iter()
-                .map(|&(i, j)| (b.id(order[i] as usize), b.id(order[j] as usize))),
+        bp.pairs.sort_unstable();
+        // The contacts by identity, merged with the last step's to mark the
+        // ones that began, which are reported in allocation order.
+        let id = |r: u32| b.id(order[r as usize] as usize);
+        bp.sorted.clear();
+        bp.sorted.extend(
+            bp.pairs
+                .iter()
+                .zip(0..)
+                .map(|(&(i, j), n)| ((id(i), id(j)), n)),
         );
-        for &pair in contacts.iter() {
-            if b.contacts.binary_search(&pair).is_err() {
-                began.push(pair);
-            }
+        bp.sorted.sort_unstable_by_key(|e| e.0);
+        bp.new.clear();
+        bp.new.resize(bp.pairs.len(), false);
+        let mut last = b.contacts.iter().peekable();
+        for &(pair, n) in &bp.sorted {
+            while last.next_if(|&&old| old < pair).is_some() {}
+            bp.new[n as usize] = last.next_if(|&&old| old == pair).is_none();
         }
-        contacts.sort_unstable();
-        std::mem::swap(&mut b.contacts, &mut *contacts);
+        began.extend(
+            bp.pairs
+                .iter()
+                .zip(&bp.new)
+                .filter(|&(_, &new)| new)
+                .map(|(&(i, j), _)| (id(i), id(j))),
+        );
+        b.contacts.clear();
+        b.contacts.extend(bp.sorted.iter().map(|&(pair, _)| pair));
         b.order = order;
     }
 }

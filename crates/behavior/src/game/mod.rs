@@ -39,6 +39,7 @@
 //! `start` and `fixed` the scheduler runs as a `Startup` and a `FixedUpdate`.
 
 mod clock;
+mod grid;
 pub mod input;
 pub mod quick;
 mod scheduler;

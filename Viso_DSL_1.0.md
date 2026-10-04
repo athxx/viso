@@ -6027,7 +6027,7 @@ then per-system sequence
 - `walk(id, x, z)` 与 `jump(id, speed)` 累加，被下一次 Physics Step 消耗；`teleport(id, to)` 最后一个获胜，使 Body 静止，本 Tick 不插值；`remove(id)` 结束 Entity，合并顺序中其后针对它的命令被跳过并计数；`spawn(desc)` 立即返回 `EntityId`，Body 自提交起存在；
 - Physics Step 在两个提交点之间：Character 的水平速度为本 Tick 的 `walk`，`jump` 加到竖直速度，重力 `9.81 m/s²` 向下；逐轴（先竖直）对 Block 求解，向下被挡设置 `on_floor`；Step 之后报告新开始的接触（Character 与 Sensor、Character 与 Character），每对中先分配者在前、按分配顺序排列，作为该 Tick 的 `CollisionEvent`（`first`、`second`、`other_of(id)`）投递，排在宿主排队的接触之后；
 - `SpawnDesc` 是值类型：`player()`、`character(size)`、`block(size)`、`sensor(size)`，`.at(pos)`、`.tag(tag)`；
-- 全部运算为单精度 IEEE、无 FMA，Schema 声明 `cross_platform`。O(Character × Body) 的求解与接触检测的开销是假设，由 Benchmark 证实或替换。
+- 全部运算为单精度 IEEE、无 FMA，Schema 声明 `cross_platform`；邻近查找用均匀网格 Broadphase（格宽取不小于最宽 Character 的 2 的幂，Block 网格只在 Block 变化时重建），结果与按分配顺序逐对测试逐位一致，开销由 `game_world` Benchmark 跟踪。
 
 ### 108.1 迭代与查询
 
