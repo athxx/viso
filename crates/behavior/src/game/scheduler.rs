@@ -3,21 +3,23 @@
 use std::mem;
 
 use super::input::InputLatch;
+use super::quick::{QUICK_FIXED, QUICK_START, QuickFrame, QuickStart};
 use super::snapshot::{GameSnapshot, Restored, SystemState, fnv};
 use super::{
-    COLLISION, Clock, CollisionEvent, FIXED_UPDATE, FRAME_UPDATE, FixedFrame, InputSchema,
-    InputSnapshot, Key, PadButton, PadStick, RenderFrame, TouchButton,
+    COLLISION, Clock, CollisionEvent, FIXED_UPDATE, FRAME_UPDATE, FixedFrame, GameStart,
+    InputSchema, InputSnapshot, Key, PadButton, PadStick, RenderFrame, STARTUP, TouchButton,
 };
 use crate::native::{NativeObject, NativeValue, Obj, Services};
 use crate::{Budget, Deferred, Fault, FaultKind, Instance, Value, Vm};
 
-/// A fault a system hook raised: its state changes were discarded.
+/// A fault a system hook raised: its state changes were discarded. A fault
+/// creating a system or starting the game leaves no scheduler.
 #[derive(Debug, Clone)]
 pub struct SystemFault {
     /// The system, an index into [`Module::systems`](crate::Module::systems).
     pub system: usize,
-    /// The tick it ran in, or the tick the frame ended at for a
-    /// `FrameUpdate`.
+    /// The tick it ran in, the tick the frame ended at for a `FrameUpdate`,
+    /// or the tick the game starts at for a `Startup`.
     pub tick: u64,
     /// The stable diagnostic code: `E9102` when the tick's shared budget ran
     /// out, otherwise the fault's own.
@@ -42,20 +44,27 @@ pub struct CommandKey {
 struct Hook {
     system: usize,
     chunk: u32,
+    /// Whether it is a `QuickGame` hook, which takes the quick context.
+    quick: bool,
 }
 
 /// Which budget a phase draws on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Phase {
+    Start,
     Tick,
     Frame,
 }
 
 /// Runs a module's systems on a fixed-step [`Clock`].
 ///
-/// Each system is one [`Instance`] created when the scheduler is. Hooks run in
-/// [`Module::systems`](crate::Module::systems) order, which the compiler sorts
-/// by `@after`/`@before`. Every hook call is its own transaction: a fault
+/// Each system is one [`Instance`] created when the scheduler is, which then
+/// runs every `Startup` hook (a `QuickGame.start` among them) once before the
+/// first tick, on one shared budget; a fault there fails the whole start, and
+/// the commands the start issued are delivered only once it succeeded,
+/// before the first tick's. A `QuickGame.fixed` runs as a `FixedUpdate`.
+/// Hooks run in [`Module::systems`](crate::Module::systems) order, which the
+/// compiler sorts by `@after`/`@before`. Every hook call is its own transaction: a fault
 /// discards that call's state writes, is recorded as a [`SystemFault`], and the
 /// next system still runs, except when the shared budget ran out, which skips
 /// the rest of the tick (`E9102`) or frame.
@@ -83,10 +92,14 @@ pub struct Scheduler {
     clock: Clock,
     budget: Budget,
     instances: Vec<Instance>,
+    start: Box<[Hook]>,
     fixed: Box<[Hook]>,
     frame: Box<[Hook]>,
     collision: Box<[Hook]>,
+    game_start: Value,
+    quick_start: Value,
     fixed_frame: Value,
+    quick_frame: Value,
     input: InputLatch,
     render_frame: Value,
     collision_event: Value,
@@ -103,31 +116,46 @@ pub struct Scheduler {
 
 impl Scheduler {
     /// A scheduler running `vm`'s module on a clock at its tick rate,
-    /// creating one instance of every system. The `vm`'s budget becomes the
-    /// budget each tick's hooks share, and each frame's: memory and depth stay
-    /// per call.
+    /// creating one instance of every system and starting the game. The
+    /// `vm`'s budget becomes the budget the start's hooks share, each tick's,
+    /// and each frame's: memory and depth stay per call.
     ///
     /// # Errors
     ///
-    /// The fault of a system whose instance could not be created.
-    pub fn new(mut vm: Vm) -> Result<Scheduler, Fault> {
+    /// The fault of a system whose instance could not be created, or of the
+    /// first `Startup` hook that faulted: the start's state writes and
+    /// commands are discarded with the scheduler.
+    pub fn new(mut vm: Vm) -> Result<Scheduler, SystemFault> {
         let module = vm.module().clone();
         let clock = Clock::at_rate(module.tick_rate());
         let mut instances = Vec::with_capacity(module.systems().len());
-        let (mut fixed, mut frame, mut collision) = (Vec::new(), Vec::new(), Vec::new());
+        let (mut start, mut fixed) = (Vec::new(), Vec::new());
+        let (mut frame, mut collision) = (Vec::new(), Vec::new());
         for (index, system) in module.systems().iter().enumerate() {
-            instances.push(vm.instantiate(system.component, [])?);
-            let bind = |hooks: &mut Vec<Hook>, id| {
+            let instance = vm
+                .instantiate(system.component, [])
+                .map_err(|fault| SystemFault {
+                    system: index,
+                    tick: clock.tick(),
+                    code: fault.kind.code(),
+                    fault,
+                })?;
+            instances.push(instance);
+            let bind = |hooks: &mut Vec<Hook>, id, quick| {
                 if let Some(chunk) = system.hook(id) {
                     hooks.push(Hook {
                         system: index,
                         chunk,
+                        quick,
                     });
                 }
             };
-            bind(&mut fixed, FIXED_UPDATE);
-            bind(&mut frame, FRAME_UPDATE);
-            bind(&mut collision, COLLISION);
+            bind(&mut start, STARTUP, false);
+            bind(&mut start, QUICK_START, true);
+            bind(&mut fixed, FIXED_UPDATE, false);
+            bind(&mut fixed, QUICK_FIXED, true);
+            bind(&mut frame, FRAME_UPDATE, false);
+            bind(&mut collision, COLLISION, false);
         }
         let fixed_dt = clock.fixed_dt();
         let standard;
@@ -138,19 +166,29 @@ impl Scheduler {
                 &standard
             }
         };
-        Ok(Scheduler {
+        let game_start = Obj::new(GameStart::default());
+        let fixed_frame = Obj::new(FixedFrame {
+            tick: 0.into(),
+            dt: fixed_dt,
+            input: Obj::new(InputSnapshot::new(schema.actions.len())),
+        });
+        let mut scheduler = Scheduler {
             budget: vm.budget(),
             build: fnv(&module.encode()),
             vm,
             clock,
+            start: start.into(),
             fixed: fixed.into(),
             frame: frame.into(),
             collision: collision.into(),
-            fixed_frame: handle(FixedFrame {
-                tick: 0.into(),
-                dt: fixed_dt,
-                input: Obj::new(InputSnapshot::new(schema.actions.len())),
+            quick_start: handle(QuickStart {
+                start: game_start.clone(),
             }),
+            game_start: game_start.into_value(),
+            quick_frame: handle(QuickFrame {
+                frame: fixed_frame.clone(),
+            }),
+            fixed_frame: fixed_frame.into_value(),
             input: InputLatch::new(schema),
             render_frame: handle(RenderFrame::default()),
             collision_event: handle(CollisionEvent::default()),
@@ -163,7 +201,40 @@ impl Scheduler {
             delivered_commands: 0,
             replayed_commands: 0,
             instances,
-        })
+        };
+        scheduler.run_start()?;
+        Ok(scheduler)
+    }
+
+    /// Runs every start hook in system order on one shared budget, then
+    /// delivers the commands they issued; the first fault ends the start.
+    fn run_start(&mut self) -> Result<(), SystemFault> {
+        if self.start.is_empty() {
+            return Ok(());
+        }
+        let tick = self.clock.tick();
+        object::<GameStart>(&self.game_start).tick.set(tick);
+        let mut left = self.budget;
+        self.vm.defer_presentation(true);
+        let faults = self.faults.len();
+        for i in 0..self.start.len() {
+            let hook = self.start[i];
+            let arg = if hook.quick {
+                self.quick_start.clone()
+            } else {
+                self.game_start.clone()
+            };
+            if !self.run_hook(hook, arg, &mut left, Phase::Start) || self.faults.len() > faults {
+                break;
+            }
+        }
+        self.vm.defer_presentation(false);
+        if let Some(fault) = self.faults.drain(faults..).next() {
+            self.commands.clear();
+            return Err(fault);
+        }
+        self.deliver_queued(tick);
+        Ok(())
     }
 
     /// The clock.
@@ -368,8 +439,13 @@ impl Scheduler {
         self.vm.defer_presentation(true);
         'tick: {
             for i in 0..self.fixed.len() {
-                let arg = self.fixed_frame.clone();
-                if !self.run_hook(self.fixed[i], arg, &mut left, Phase::Tick) {
+                let hook = self.fixed[i];
+                let arg = if hook.quick {
+                    self.quick_frame.clone()
+                } else {
+                    self.fixed_frame.clone()
+                };
+                if !self.run_hook(hook, arg, &mut left, Phase::Tick) {
                     break 'tick;
                 }
             }
@@ -405,6 +481,12 @@ impl Scheduler {
             return;
         }
         self.delivered = tick + 1;
+        self.deliver_queued(tick);
+    }
+
+    /// Delivers the queued commands, issued in `tick` or the start before
+    /// it, in key order.
+    fn deliver_queued(&mut self, tick: u64) {
         let mut commands = mem::take(&mut self.commands);
         // Hooks issue in run order, which the key order follows except across
         // collision events; a stable sort keeps each system's sequence.
@@ -433,7 +515,7 @@ impl Scheduler {
         let cost = self.vm.cost();
         left.instructions = left.instructions.saturating_sub(cost.instructions);
         left.native_calls = left.native_calls.saturating_sub(cost.native_calls);
-        if phase == Phase::Tick {
+        if phase != Phase::Frame {
             let tick = self.clock.tick();
             let sequence = &mut self.sequences[hook.system];
             for command in self.vm.deferred_mut().drain(..) {

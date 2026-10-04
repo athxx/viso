@@ -5529,6 +5529,10 @@ Viso DSL 1.0 的语言表达能力足以承载从快速原型到结构化游戏 
 标准库或独立 crate 提供：
 
 ```viso
+export trait Startup {
+    action startup(cx: GameStart);
+}
+
 export trait FixedUpdate {
     action fixed_update(frame: FixedFrame);
 }
@@ -5637,7 +5641,7 @@ export system TinyGame implements QuickGame {
 Lowering 要求：
 
 ```text
-QuickGame.start -> scheduler startup hook
+QuickGame.start -> scheduler startup hook（与 Startup.startup 同一阶段）
 QuickGame.fixed -> FixedUpdate system entry
 QuickFrame      -> typed facade over FixedFrame + GameWorld
 QuickStart.spawn -> startup transaction committed before first fixed tick
@@ -5651,6 +5655,8 @@ Quick Game **不得** 通过 UI frame callback、任意 wall clock、全局 muta
 - Logic-only Hot Reload 不重新运行 `start`；
 - `fixed` 每个固定 Tick 运行；
 - `start` 失败则回滚启动事务，不进入第一个 Tick；
+- 启动事务包含全部 System 的 `Startup.startup` 与 `QuickGame.start`：第一个 Tick 前按 `system_order` 运行，共享一份 Instruction/Native Call Budget；任一 Hook Fault 则整个启动失败，已运行 Hook 的状态写入与其发出的 Presentation Command 一并丢弃，不产生可运行的 Scheduler；成功后启动期的 Presentation Command 按 `(source_system, sequence)` 先于 Tick 0 的命令投递；
+- `QuickStart` 与 `QuickFrame` 是 `GameStart` 与 `FixedFrame` 的视图：同一时钟、输入与 Snapshot 布局，因此 Quick Game 与拆成 `Startup` + `FixedUpdate` 的等价 System 在同一输入下逐 Tick 得到相同 Simulation 状态，Snapshot 可互相 Restore；
 - `QuickStart.spawn` 的初始化命令必须在第一个 Tick 前提交，所以返回的 `EntityId` 在首次 `fixed` 时已经有效。
 
 当游戏需要独立 Physics/AI/Combat/Audio/Networking 等生命周期时，SHOULD 拆成多个标准 `system ... implements FixedUpdate/FrameUpdate/...`。
@@ -5788,11 +5794,11 @@ Game Profile 把状态分为三层：
 
 | 层         | 声明                    | 可写入方                                           | 进入 Snapshot    | 联机复制     |
 | ---------- | ----------------------- | -------------------------------------------------- | ---------------- | ------------ |
-| Simulation | System `state`（默认）  | `start`、FixedUpdate、CollisionListener            | 是               | 是           |
+| Simulation | System `state`（默认）  | `start`/Startup、FixedUpdate、CollisionListener    | 是               | 是           |
 | Derived    | `computed`              | 只读 Simulation 状态，不可写                        | 否，Restore 后重算 | 否，各端重算 |
 | Local      | `@local state`          | FrameUpdate、UI、Presentation                       | 否               | 否           |
 
-Simulation 域是 `start`、FixedUpdate、CollisionListener（Schema 中声明为 Simulation 的 Hook）以及从它们可达的 `fn`/`action`/`computed`，跨模块沿调用图计算。编译期规则：
+Simulation 域是 `start`/Startup、FixedUpdate、CollisionListener（Schema 中声明为 Simulation 的 Hook）以及从它们可达的 `fn`/`action`/`computed`，跨模块沿调用图计算。编译期规则：
 
 - `@local` 只标记 System 的 `state`，标在其他成员或 Component 上报 `E9103`；
 - Simulation 域读写 `@local` 状态，或调用返回非 `()` 的 Presentation 方法，报 `E9103`；诊断的 note 指出该 Callable 由哪个 Hook 可达；
