@@ -771,8 +771,26 @@ timers (§104–§111).
 
 ### D5.8 — Kit
 
-- [ ] `viso::game::kit` schema: camera rigs, prefabs, behaviors, particles, synthesized
+- [x] `viso::game::kit` schema: camera rigs, prefabs, behaviors, particles, synthesized
       sound; every method tagged Simulation or Presentation (§105.2).
+  - [x] `Kit` handle as `.kit` on every hook context; typed enums `Model`, `Prefab`,
+        `Particle`, `Sfx`, `Wave`; value types `CameraRig`, `Terrain`; a test pins each
+        method's layer (Simulation `cross_platform` / Presentation returning `()`).
+  - [x] Prefabs and models: `SpawnDesc::prefab`, `.model`; model, facing and control in
+        the world and its snapshot; `Extracted.model` / `facing`.
+  - [x] Terrain: seeded value-noise terraces around a flat plaza, merged block rectangles.
+  - [x] Behaviors `wander` / `chase` / `patrol` / `idle` lowered to world commands and
+        `walk` steering in the step; replay and restore reproduce the snapshot hash.
+  - [x] Vehicles: `drive(id, throttle, steer)` with polynomial (no libm) turning.
+  - [x] Camera rigs third-person / follow / top-down / fixed, easing and shake on the
+        `Stage`; `CameraView`.
+  - [x] Particles: bounded pool, burst / emit / stop_emit.
+  - [x] Synthesized sound: `Sfx` bank and `beep` as cues; realtime `Synth` (fixed voices,
+        PolyBLEP, soft clip); positional pan and gain.
+  - [x] Debug draw `debug_line` / `debug_box`, removed from release builds.
+  - [x] `E2001` for a misspelled Kit method or variant: nearest candidates by edit
+        distance, filtered by receiver and expected type.
+  - [x] Spec §105.2 / §108 and `viso test game` entity `model`.
 
 ### Done
 

@@ -10,7 +10,7 @@
 use viso_behavior::native::{NativeEntry, NativeId, NativeVariant, SchemaTy};
 
 use super::{
-    InferCx, binary_op_kind, child_exprs, parse_float_literal, parse_int_literal,
+    InferCx, binary_op_kind, child_exprs, compatible, parse_float_literal, parse_int_literal,
     split_unit_literal, unit_scale,
 };
 use crate::ast::{AstNode, Expr, FieldExpr};
@@ -72,7 +72,8 @@ impl InferCx<'_> {
 
     /// Types `receiver.method(args)` on a native handle type `ty`: the method's
     /// parameters after its receiver, recording the call. A name the type does
-    /// not declare as a method is `E2001`, with the nearest method names.
+    /// not declare as a method is `E2001`, with the nearest method names of
+    /// the type, those returning the expected type when any is near.
     pub(super) fn native_method_call(
         &mut self,
         ty: NativeId,
@@ -119,19 +120,30 @@ impl InferCx<'_> {
                     name.text_range(),
                     format!("`{short}` has no method `{text}`"),
                 );
-                let methods = owner
+                let methods: Vec<(&str, Ty)> = owner
                     .into_iter()
                     .flat_map(|t| t.ty.methods.iter())
-                    .filter(|m| {
-                        natives
-                            .method(ty, m.name)
-                            .is_some_and(|e| e.is_method(natives))
+                    .filter_map(|m| {
+                        let entry = natives.method(ty, m.name)?;
+                        entry
+                            .is_method(natives)
+                            .then(|| (m.name, self.signature(entry).1))
                     })
-                    .map(|m| Candidate {
-                        name: m.name,
-                        declared_at: None,
-                    });
-                let suggestions = nearest(&text, methods);
+                    .collect();
+                let fits = |ret: &Ty| {
+                    expected.is_some_and(|want| {
+                        *want != Ty::Unknown && (compatible(want, ret) || ret.widens_to(want))
+                    })
+                };
+                let candidate = |&(name, _): &(&'static str, Ty)| Candidate {
+                    name,
+                    declared_at: None,
+                };
+                let mut suggestions =
+                    nearest(&text, methods.iter().filter(|m| fits(&m.1)).map(candidate));
+                if suggestions.is_empty() {
+                    suggestions = nearest(&text, methods.iter().map(candidate));
+                }
                 attach(&mut diagnostic, name.text_range(), &suggestions);
                 self.diagnostics.push(diagnostic);
                 for arg in args {

@@ -1,10 +1,12 @@
 //! The fixed-step scheduler over a module's systems.
 
 use std::borrow::Cow;
+use std::cell::{Ref, RefCell, RefMut};
 use std::mem;
 use std::rc::Rc;
 
 use super::input::{Action, InputLatch};
+use super::kit::{Kit, Stage};
 use super::quick::{QUICK_FIXED, QUICK_START, QuickFrame, QuickStart};
 use super::snapshot::{GameSnapshot, Restored, SystemState, fnv};
 use super::tape::{InputTape, Playback, Recorder, TapeError};
@@ -127,6 +129,8 @@ pub struct Scheduler {
     cx: Contexts,
     input: InputLatch,
     world: Obj<GameWorld>,
+    /// What the Kit's Presentation commands produce.
+    stage: Rc<RefCell<Stage>>,
     /// The seed a World Rebuild reseeds the world with.
     seed: u64,
     collisions: Vec<(EntityId, EntityId)>,
@@ -178,15 +182,17 @@ impl Scheduler {
         let instances = instantiate(&mut vm, clock.tick())?;
         let schema = input_schema(&module);
         let world = Obj::new(GameWorld::new(seed));
+        let stage = Rc::default();
         Ok(Scheduler {
             budget: vm.budget(),
             build: fnv(&module.encode()),
             vm,
             hooks: Hooks::of(&module),
-            cx: Contexts::new(&world, schema.actions.len(), clock.fixed_dt()),
+            cx: Contexts::new(&world, &stage, schema.actions.len(), clock.fixed_dt()),
             clock,
             input: InputLatch::new(&schema),
             world,
+            stage,
             seed,
             collisions: Vec::new(),
             delivering: Vec::new(),
@@ -228,6 +234,7 @@ impl Scheduler {
         match self.prove_start(&bodies, keep) {
             Ok(carried) => {
                 self.restart_tapes();
+                self.stage.borrow_mut().reset();
                 self.deliver_queued(0);
                 Ok(carried)
             }
@@ -260,6 +267,7 @@ impl Scheduler {
         shadow.clock.rewind(0);
         shadow.cx = Contexts::new(
             &shadow.world,
+            &shadow.stage,
             input_schema(&module).actions.len(),
             shadow.clock.fixed_dt(),
         );
@@ -332,7 +340,12 @@ impl Scheduler {
         if module.tick_rate() != self.vm.module().tick_rate() {
             self.clock.set_rate(module.tick_rate());
         }
-        self.cx = Contexts::new(&self.world, schema.actions.len(), self.clock.fixed_dt());
+        self.cx = Contexts::new(
+            &self.world,
+            &self.stage,
+            schema.actions.len(),
+            self.clock.fixed_dt(),
+        );
         self.input.remap(&schema);
         self.hooks = Hooks::of(&module);
         self.build = fnv(&module.encode());
@@ -492,6 +505,17 @@ impl Scheduler {
     /// The world, to extract what the frame draws.
     pub fn world(&self) -> &GameWorld {
         &self.world
+    }
+
+    /// What the Kit's Presentation commands produced: the camera's view,
+    /// the particles, the sound cues and the debug shapes.
+    pub fn stage(&self) -> Ref<'_, Stage> {
+        self.stage.borrow()
+    }
+
+    /// The stage, to drain its sound cues.
+    pub fn stage_mut(&mut self) -> RefMut<'_, Stage> {
+        self.stage.borrow_mut()
     }
 
     /// The interpreter.
@@ -671,6 +695,8 @@ impl Scheduler {
         });
         frame.time.set(self.clock.time());
         frame.alpha.set(self.clock.alpha());
+        let (dt, alpha) = (frame.dt.get() as f32, frame.alpha.get());
+        self.stage.borrow_mut().begin_frame();
         let mut left = self.budget;
         for i in 0..self.hooks.frame.len() {
             let arg = self.cx.render_frame.clone();
@@ -678,6 +704,7 @@ impl Scheduler {
                 break;
             }
         }
+        self.stage.borrow_mut().end_frame(dt, &self.world, alpha);
         ticks
     }
 
@@ -758,6 +785,7 @@ impl Scheduler {
             return;
         }
         self.delivered = tick + 1;
+        self.stage.borrow_mut().begin_tick();
         self.deliver_queued(tick);
     }
 
@@ -883,16 +911,24 @@ struct Contexts {
 impl Contexts {
     /// Contexts over `world` for an input map of `actions` actions and a
     /// fixed step of `fixed_dt` seconds.
-    fn new(world: &Obj<GameWorld>, actions: usize, fixed_dt: f64) -> Contexts {
+    fn new(
+        world: &Obj<GameWorld>,
+        stage: &Rc<RefCell<Stage>>,
+        actions: usize,
+        fixed_dt: f64,
+    ) -> Contexts {
+        let kit = Kit::new(world, stage);
         let game_start = Obj::new(GameStart {
             tick: 0.into(),
             world: world.clone(),
+            kit: kit.clone(),
         });
         let fixed_frame = Obj::new(FixedFrame {
             tick: 0.into(),
             dt: fixed_dt,
             input: Obj::new(InputSnapshot::new(actions)),
             world: world.clone(),
+            kit: kit.clone(),
         });
         Contexts {
             quick_start: handle(QuickStart {
@@ -908,12 +944,14 @@ impl Contexts {
                 time: 0.0.into(),
                 alpha: 0.0.into(),
                 world: world.clone(),
+                kit: kit.clone(),
             }),
             collision_event: handle(CollisionEvent {
                 tick: 0.into(),
                 first: Default::default(),
                 second: Default::default(),
                 world: world.clone(),
+                kit,
             }),
         }
     }

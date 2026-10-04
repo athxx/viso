@@ -1219,7 +1219,7 @@ fn spell(
 }
 
 /// Whether two types agree once their undetermined (`Unknown`) parts are ignored.
-fn compatible(a: &Ty, b: &Ty) -> bool {
+pub(super) fn compatible(a: &Ty, b: &Ty) -> bool {
     match (a, b) {
         (Ty::Unknown, _) | (_, Ty::Unknown) => true,
         (Ty::Tuple(xs), Ty::Tuple(ys)) => {

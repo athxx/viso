@@ -5672,6 +5672,29 @@ Quick Game **不得** 通过 UI frame callback、任意 wall clock、全局 muta
 - 模型、Tag、音效与动作都是 Typed Enum 或 Resource Key，不接受任意字符串；
 - 调用未知方法或 Variant 报 `E2001`，诊断必须在 `related` 与 `fixes`（§138）中给出最近候选：按编辑距离排序，并按 Receiver 类型与期望类型过滤，使 AI 一步修正。
 
+Schema（标准实现）：每个 Hook Context（`GameStart`、`FixedFrame`、`RenderFrame`、`CollisionEvent`、`QuickStart`、`QuickFrame`）以只读属性 `.kit` 给出借用的 `viso::game::kit::Kit` Handle：
+
+| 方法 | 层 | 语义 |
+| ---- | -- | ---- |
+| `terrain(Terrain) -> List<EntityId>` | Simulation `action` | 生成地面 Block（顶面 `y = 0`）与丘陵：种子化 Value Noise 高度场按自身极值归一、向谷底压缩、原点附近留平坦广场，量化为 `step` 高的台阶；每级台阶合并为最少矩形 Block |
+| `wander(id, range, speed, pause: Duration)` | Simulation `action` | 绕提交时所在点游荡：走到 `range` 内随机点（拒绝采样，取 World 种子随机源），停 `pause` 后再选 |
+| `chase(id, tag, range, speed)` | Simulation `action` | 追 `range` 内最近的带 `tag` 实体（平面距离，同距先分配者优先） |
+| `patrol(id, route: List<Vec3F32>, speed)` | Simulation `action` | 依次循环走过航点（至多 256 个） |
+| `idle(id)` | Simulation `action` | 撤销行为或驾驶 |
+| `drive(id, throttle, steer)` | Simulation `action` | 使其成为载具：油门/转向累加后钳到 `[-1, 1]`；加速、制动、滑行、限速，转向权随速度增长、倒车反向 |
+| `facing(id) -> Vec3F32` | Simulation `fn`（Read） | 已提交的朝向 `(x, 0, z)` |
+| `camera(CameraRig)`、`shake(strength, seconds)` | Presentation | 相机 Rig 与抖动 |
+| `burst(Particle, at, count)`、`emit(id, Particle)`、`stop_emit(id)` | Presentation | 粒子 |
+| `sound(Sfx)`、`sound_at(Sfx, at)`、`beep(Wave, from_hz, to_hz, seconds)` | Presentation | 合成音效；`sound_at` 按相机定位衰减与声像 |
+| `debug_line(from, to)`、`debug_box(at, size)` | Debug Draw | Release 中移除 |
+
+- 行为与载具 Lower 为普通 World 命令：调用按发出它的 System 记入 Command Buffer（§108），提交时生效；每次 Physics Step 在任何 Body 移动前，按分配顺序从已提交位置算出每个受控 Character 的转向，作为 `walk` 加到其 System 提交的 `walk` 上，接近目标时减速落点；移动后行走者面向其水平速度方向，载具保留速度在朝向上的分量（撞墙即停）。`teleport` 使载具静止，`remove` 撤销其控制；
+- 朝向、模型与控制属于 World Revision，进入 Snapshot；全部为单精度 IEEE 运算，载具转向用多项式而非宿主超越函数，Schema 声明 `cross_platform`；
+- `SpawnDesc::prefab(Prefab)` 给出现成 Body（`hero`、`villager`、`monster`、`car`、`truck` 为 Character，`wall`、`platform`、`tree`、`rock`、`barrel` 为 Block，`coin`、`gem`、`goal` 为 Sensor），`.model(Model)` 指定绘制模型；`Model::auto` 按 Body 种类绘制；
+- `CameraRig` 是值类型：`third_person(target)`（在目标朝向后方，随其转向）、`follow(target)`（固定方向追随）、`top_down(target)`（正上方俯视）、`fixed(eye, look)`，修饰 `.distance`、`.height`、`.pitch`、`.yaw`、`.fov`（度）、`.lag`（缓动时间常数，秒）；`Terrain` 是值类型：`flat(size)`、`hills(size, height)`，修饰 `.seed`、`.cell`、`.step`、`.feature`；
+- 模型、Prefab、粒子（`spark`、`smoke`、`dust`、`trail`、`fire`、`confetti`）、音效（`viso::game::kit::Sfx`）与波形（`sine`、`square`、`saw`、`triangle`、`noise`）都是 Schema Enum；
+- Presentation 命令落到 Game 的 Stage：相机视图、粒子 Sprite（定容池，满则轮换复用）、待交付的音效 Cue（至多 64 条，宿主排空交给音频线程的实时合成器：定额 Voice、无分配、无锁、PolyBLEP 限带）与 Debug 形状（Tick 发出的保留到下个 Tick 交付，Frame 发出的保留到下一 Frame）；Scheduler 每 Frame 在 `FrameUpdate` 之后推进 Stage，World Rebuild 清空它。
+
 ---
 
 ## 106. 固定步长 Scheduler 语义
@@ -6026,7 +6049,7 @@ then per-system sequence
 - 提交点：启动事务成功后（首个 Tick 前）、一个 Tick 的全部 `FixedUpdate` 之后、该 Tick 的 `CollisionListener` 之后；每个提交点按 `(system_order, sequence)` 合并，同一 System 的命令保持发出顺序，因此结果只取决于 System 顺序；
 - `walk(id, x, z)` 与 `jump(id, speed)` 累加，被下一次 Physics Step 消耗；`teleport(id, to)` 最后一个获胜，使 Body 静止，本 Tick 不插值；`remove(id)` 结束 Entity，合并顺序中其后针对它的命令被跳过并计数；`spawn(desc)` 立即返回 `EntityId`，Body 自提交起存在；
 - Physics Step 在两个提交点之间：Character 的水平速度为本 Tick 的 `walk`，`jump` 加到竖直速度，重力 `9.81 m/s²` 向下；逐轴（先竖直）对 Block 求解，向下被挡设置 `on_floor`；Step 之后报告新开始的接触（Character 与 Sensor、Character 与 Character），每对中先分配者在前、按分配顺序排列，作为该 Tick 的 `CollisionEvent`（`first`、`second`、`other_of(id)`）投递，排在宿主排队的接触之后；
-- `SpawnDesc` 是值类型：`player()`、`character(size)`、`block(size)`、`sensor(size)`，`.at(pos)`、`.tag(tag)`；
+- `SpawnDesc` 是值类型：`player()`、`character(size)`、`block(size)`、`sensor(size)`、`prefab(prefab)`（§105.2），`.at(pos)`、`.tag(tag)`、`.model(model)`；
 - 全部运算为单精度 IEEE、无 FMA，Schema 声明 `cross_platform`；邻近查找用均匀网格 Broadphase（格宽取不小于最宽 Character 的 2 的幂，Block 网格只在 Block 变化时重建），结果与按分配顺序逐对测试逐位一致，开销由 `game_world` Benchmark 跟踪。
 
 ### 108.1 迭代与查询

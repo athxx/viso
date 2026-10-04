@@ -41,6 +41,8 @@ use std::rc::Rc;
 
 use super::grid::{Bounds, Grid, bounds};
 use super::input::schema_enum;
+use super::kit::Model;
+use super::kit::steer::{self, Control};
 use crate::native::{
     Determinism, NativeError, NativeFunction, NativeObject, NativeValue, Obj, SchemaTy, Vec3F32,
 };
@@ -124,7 +126,7 @@ impl Tag {
     /// The most variants a tag enum has.
     pub const MAX: u32 = 64;
 
-    fn bit(self) -> u64 {
+    pub(super) fn bit(self) -> u64 {
         1 << self.0
     }
 }
@@ -178,13 +180,14 @@ impl BodyKind {
     }
 }
 
-/// What to spawn: a body's kind, place, half extents and tags.
+/// What to spawn: a body's kind, place, half extents, tags and model.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct SpawnDesc {
     kind: BodyKind,
     at: [f32; 3],
     half: [f32; 3],
     tags: u64,
+    model: Model,
 }
 
 impl SpawnDesc {
@@ -200,6 +203,7 @@ impl SpawnDesc {
             at: [0.0; 3],
             half: [half(size.x), half(size.y), half(size.z)],
             tags: 0,
+            model: Model::Auto,
         }
     }
 
@@ -223,6 +227,11 @@ impl SpawnDesc {
             ..self
         }
     }
+
+    /// Drawn as `model`.
+    pub fn model(self, model: Model) -> SpawnDesc {
+        SpawnDesc { model, ..self }
+    }
 }
 
 impl NativeValue for SpawnDesc {
@@ -232,10 +241,7 @@ impl NativeValue for SpawnDesc {
         let Value::Agg(agg) = value else {
             return None;
         };
-        let [kind, fields @ .., tags] = &agg.fields[..] else {
-            return None;
-        };
-        let [ax, ay, az, hx, hy, hz] = fields else {
+        let [kind, ax, ay, az, hx, hy, hz, tags, model] = &agg.fields[..] else {
             return None;
         };
         let f = |v: &Value| v.as_float().map(|v| v as f32);
@@ -244,6 +250,7 @@ impl NativeValue for SpawnDesc {
             at: [f(ax)?, f(ay)?, f(az)?],
             half: [f(hx)?, f(hy)?, f(hz)?],
             tags: tags.as_int()? as u64,
+            model: Model::from_index(model.as_int()?)?,
         })
     }
 
@@ -262,6 +269,7 @@ impl NativeValue for SpawnDesc {
                 f(hy),
                 f(hz),
                 Value::Int(self.tags as i64),
+                Value::Int(self.model as i64),
             ]),
         }))
     }
@@ -281,6 +289,12 @@ pub(super) struct Bodies {
     /// The committed `walk` (x, z) and `jump` (y) the next step consumes.
     pub(super) push: Vec<[f32; 3]>,
     pub(super) floor: Vec<bool>,
+    /// The model each body is drawn as.
+    pub(super) model: Vec<Model>,
+    /// The horizontal direction each body faces, a unit `(x, z)`.
+    pub(super) facing: Vec<[f32; 2]>,
+    /// What steers each body besides its systems' `walk`.
+    pub(super) control: Vec<Control>,
     /// Free slots; the last is reused first.
     pub(super) free: Vec<u32>,
     /// Live slots in allocation order.
@@ -352,6 +366,9 @@ impl Bodies {
             self.vel.len(),
             self.push.len(),
             self.floor.len(),
+            self.model.len(),
+            self.facing.len(),
+            self.control.len(),
         ];
         if lengths.iter().any(|&l| l != n) {
             return false;
@@ -391,6 +408,11 @@ impl Bodies {
             f(enc, &self.vel[slot]);
             f(enc, &self.push[slot]);
             enc.write_bool(self.floor[slot]);
+            enc.write_u8(self.model[slot] as u8);
+            for c in self.facing[slot] {
+                enc.write_u32(c.to_bits());
+            }
+            self.control[slot].encode(enc);
         }
         let id = |enc: &mut Encoder, id: &EntityId| {
             enc.write_varint(u64::from(id.index));
@@ -432,6 +454,14 @@ impl Bodies {
             b.vel.push(f(dec)?);
             b.push.push(f(dec)?);
             b.floor.push(dec.read_bool()?);
+            let model = Model::from_index(i64::from(dec.read_u8()?));
+            b.model.push(model.ok_or_else(|| malformed(dec))?);
+            let facing = [
+                f32::from_bits(dec.read_u32()?),
+                f32::from_bits(dec.read_u32()?),
+            ];
+            b.facing.push(facing);
+            b.control.push(Control::decode(dec)?);
         }
         b.free = read_list(dec, read_u32_varint)?;
         b.order = read_list(dec, read_u32_varint)?;
@@ -444,13 +474,17 @@ impl Bodies {
 }
 
 /// A buffered world command.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub(super) enum Command {
     Spawn(EntityId, SpawnDesc),
     Walk(EntityId, f32, f32),
     Jump(EntityId, f32),
     Teleport(EntityId, [f32; 3]),
     Remove(EntityId),
+    /// Steers the entity by a behavior from the commit on, or stops one.
+    Control(EntityId, Control),
+    /// Adds to a vehicle's throttle and steer, making the entity one.
+    Drive(EntityId, f32, f32),
 }
 
 /// Where a hook's commands start, to discard them when it faults.
@@ -474,6 +508,10 @@ pub struct Extracted {
     pub position: Vec3F32,
     /// Its half extents.
     pub half_extents: Vec3F32,
+    /// What it is drawn as.
+    pub model: Model,
+    /// The horizontal direction it faces, a unit `(x, z)`.
+    pub facing: [f32; 2],
 }
 
 /// A game world, behind a `viso::game::GameWorld` handle.
@@ -653,6 +691,8 @@ impl GameWorld {
                 position: Vec3F32::from_array(bodies.prev[slot])
                     .lerp(Vec3F32::from_array(bodies.pos[slot]), alpha),
                 half_extents: Vec3F32::from_array(bodies.half[slot]),
+                model: bodies.model[slot],
+                facing: bodies.facing[slot],
             }
         }));
     }
@@ -734,6 +774,7 @@ impl GameWorld {
             b.prev[slot] = old.prev[at];
             b.vel[slot] = old.vel[at];
             b.floor[slot] = old.floor[at];
+            b.facing[slot] = old.facing[at];
             moved += 1;
         }
         moved
@@ -743,6 +784,18 @@ impl GameWorld {
         self.writer
             .get()
             .ok_or_else(|| NativeError::new("the world changes only in a Simulation hook"))
+    }
+
+    /// Buffers `control` for `id`: a behavior steering it from the commit
+    /// on, or none.
+    pub(super) fn control(&self, id: EntityId, control: Control) -> Result<(), NativeError> {
+        self.push(Command::Control(id, control))
+    }
+
+    /// Buffers a vehicle's throttle and steer for `id`.
+    pub(super) fn drive(&self, id: EntityId, throttle: f32, steer: f32) -> Result<(), NativeError> {
+        let finite = |v: f32| if v.is_finite() { v } else { 0.0 };
+        self.push(Command::Drive(id, finite(throttle), finite(steer)))
     }
 
     pub(super) fn push(&self, command: Command) -> Result<(), NativeError> {
@@ -781,15 +834,16 @@ impl GameWorld {
         Ok(id)
     }
 
-    /// The next random 64 bits (SplitMix64).
+    /// The next random 64 bits.
     fn next(&self) -> Result<u64, NativeError> {
         self.writer()?;
-        let state = self.rng.get().wrapping_add(0x9e37_79b9_7f4a_7c15);
-        self.rng.set(state);
-        let mut z = state;
-        z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
-        z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
-        Ok(z ^ (z >> 31))
+        Ok(draw(&self.rng))
+    }
+
+    /// The facing of `id`, if it is alive.
+    pub fn facing(&self, id: EntityId) -> Option<[f32; 2]> {
+        let bodies = self.bodies.borrow();
+        bodies.live(id).map(|slot| bodies.facing[slot])
     }
 
     /// A uniform `F64` in `[0, 1)`.
@@ -851,13 +905,16 @@ impl GameWorld {
                     b.vel.push([0.0; 3]);
                     b.push.push([0.0; 3]);
                     b.floor.push(false);
+                    b.model.push(Model::Auto);
+                    b.facing.push(FORWARD);
+                    b.control.push(Control::None);
                 }
             }
         }
         let mut removed = false;
         let mut blocks_moved = false;
         let mut skipped = 0;
-        for &(_, command) in commands.iter() {
+        for (_, command) in commands.drain(..) {
             let target = match command {
                 Command::Spawn(id, desc) => {
                     blocks_moved |= desc.kind == BodyKind::Block;
@@ -872,13 +929,18 @@ impl GameWorld {
                     b.vel[slot] = [0.0; 3];
                     b.push[slot] = [0.0; 3];
                     b.floor[slot] = false;
+                    b.model[slot] = desc.model;
+                    b.facing[slot] = FORWARD;
+                    b.control[slot] = Control::None;
                     b.order.push(id.index);
                     continue;
                 }
                 Command::Walk(id, ..)
                 | Command::Jump(id, _)
                 | Command::Teleport(id, _)
-                | Command::Remove(id) => id,
+                | Command::Remove(id)
+                | Command::Control(id, _)
+                | Command::Drive(id, ..) => id,
             };
             let Some(slot) = b.live(target) else {
                 skipped += 1;
@@ -899,19 +961,36 @@ impl GameWorld {
                     b.prev[slot] = to;
                     b.vel[slot] = [0.0; 3];
                     b.floor[slot] = false;
+                    b.control[slot].halt();
                 }
                 Command::Remove(_) => {
                     b.alive[slot] = false;
+                    b.control[slot] = Control::None;
                     b.free.push(target.index);
                     removed = true;
                 }
+                Command::Control(_, control) => {
+                    b.control[slot] = control.anchored(b.pos[slot]);
+                }
+                Command::Drive(_, throttle, steer) => match &mut b.control[slot] {
+                    Control::Vehicle(v) => {
+                        v.throttle += throttle;
+                        v.steer += steer;
+                    }
+                    other => {
+                        *other = Control::Vehicle(steer::Vehicle {
+                            speed: 0.0,
+                            throttle,
+                            steer,
+                        });
+                    }
+                },
             }
         }
         if removed {
             let Bodies { order, alive, .. } = b;
             order.retain(|&s| alive[s as usize]);
         }
-        commands.clear();
         self.skipped.set(self.skipped.get() + skipped);
         if blocks_moved {
             self.broadphase.borrow_mut().fresh = false;
@@ -934,6 +1013,7 @@ impl GameWorld {
         let b = Rc::make_mut(&mut bodies);
         let bp = &mut *self.broadphase.borrow_mut();
         let order = std::mem::take(&mut b.order);
+        steer::steer(b, &order, dt, &self.rng);
         bp.prepare(b, &order);
         for &slot in &order {
             let slot = slot as usize;
@@ -992,6 +1072,7 @@ impl GameWorld {
                 }
             }
         }
+        steer::settle(b, &order);
         bp.movers.clear(bp.cell);
         bp.low.resize(b.slots(), [0; 3]);
         for &slot in &order {
@@ -1070,6 +1151,19 @@ impl GameWorld {
         b.contacts.extend(bp.sorted.iter().map(|&(pair, _)| pair));
         b.order = order;
     }
+}
+
+/// The way a body faces until it moves: `-z`, away from a default camera.
+const FORWARD: [f32; 2] = [0.0, -1.0];
+
+/// The next 64 bits of the SplitMix64 sequence at `state`.
+pub(super) fn draw(state: &Cell<u64>) -> u64 {
+    let next = state.get().wrapping_add(0x9e37_79b9_7f4a_7c15);
+    state.set(next);
+    let mut z = next;
+    z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+    z ^ (z >> 31)
 }
 
 fn dead(id: EntityId) -> NativeError {
@@ -1169,8 +1263,12 @@ pub(super) static GAME_WORLD_METHODS: [NativeFunction; 14] = [
     ),
 ];
 
-pub(super) static SPAWN_DESC_METHODS: [NativeFunction; 6] = [
+pub(super) static SPAWN_DESC_METHODS: [NativeFunction; 8] = [
     crate::native!(fn "player" |_cx| -> SpawnDesc { Ok(SpawnDesc::player()) }).constant(),
+    crate::native!(fn "prefab" |_cx, prefab: super::kit::Prefab| -> SpawnDesc {
+        Ok(prefab.desc())
+    })
+    .constant(),
     crate::native!(fn "character" |_cx, size: Vec3F32| -> SpawnDesc {
         Ok(SpawnDesc::new(BodyKind::Character, size))
     })
@@ -1187,4 +1285,8 @@ pub(super) static SPAWN_DESC_METHODS: [NativeFunction; 6] = [
         .deterministic(),
     crate::native!(fn "tag" |_cx, this: SpawnDesc, tag: Tag| -> SpawnDesc { Ok(this.tag(tag)) })
         .deterministic(),
+    crate::native!(fn "model" |_cx, this: SpawnDesc, model: Model| -> SpawnDesc {
+        Ok(this.model(model))
+    })
+    .deterministic(),
 ];
