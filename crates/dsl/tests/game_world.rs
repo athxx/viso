@@ -691,3 +691,149 @@ export system PlayerController implements Startup + FixedUpdate + CollisionListe
     });
     assert!(respawned, "walked off the block, fell and respawned");
 }
+
+const LIFE: &str = r#"
+import viso::game::quick::{QuickGame, QuickStart, QuickFrame};
+import viso::game::SpawnDesc;
+
+export system Life implements QuickGame {
+    state ticks = 0;
+    state roll = 0;
+
+    action start(cx: QuickStart) {
+        cx.spawn(SpawnDesc::player());
+        roll = cx.world.random_range(0, 1000000);
+    }
+
+    action fixed(frame: QuickFrame) {
+        ticks += 1;
+    }
+}
+"#;
+
+fn linked(module: Rc<Module>) -> Vm {
+    let mut vm = Vm::new(module, Budget::default());
+    vm.link(&Natives::standard(), &[]).expect("link");
+    vm
+}
+
+#[test]
+fn a_logic_reload_keeps_the_running_game_and_skips_the_start() {
+    let mut game = start(LIFE);
+    let roll = state(&game, "Life", "roll");
+    game.step(5);
+    let rng = game.snapshot().rng_state();
+
+    let faster = module(&LIFE.replace("ticks += 1;", "ticks += 10;"));
+    let restored = game.reload(linked(faster)).expect("reloads");
+    assert_eq!(
+        (restored.states, restored.mismatched, restored.missing),
+        (2, 0, 0)
+    );
+    assert_eq!(game.clock().tick(), 5);
+    assert_eq!(
+        game.world().entities().len(),
+        1,
+        "the start did not run again"
+    );
+    assert_eq!(game.snapshot().rng_state(), rng);
+    assert_eq!(state(&game, "Life", "roll"), roll);
+    game.step(1);
+    assert_eq!(
+        state(&game, "Life", "ticks"),
+        Value::Int(15),
+        "the new logic runs"
+    );
+
+    let retyped = module(
+        &LIFE
+            .replace("state roll = 0;", "state roll = 0.5;")
+            .replace(
+                "roll = cx.world.random_range(0, 1000000);",
+                "roll = cx.world.random();",
+            ),
+    );
+    let restored = game.reload(linked(retyped)).expect("reloads");
+    assert_eq!((restored.states, restored.mismatched), (1, 1));
+    assert_eq!(state(&game, "Life", "roll"), Value::Float(0.5));
+
+    let slower = Rc::new((*module(LIFE)).clone().with_tick_rate(30).expect("a rate"));
+    game.reload(linked(slower)).expect("reloads");
+    assert_eq!(game.clock().fixed_dt(), 1.0 / 30.0);
+    assert_eq!(game.clock().tick(), 6);
+}
+
+#[test]
+fn a_world_rebuild_reruns_the_start_from_tick_zero() {
+    let mut game = start(LIFE);
+    let roll = state(&game, "Life", "roll");
+    game.step(5);
+    game.rebuild_world().expect("rebuilds");
+    assert_eq!(game.clock().tick(), 0);
+    assert_eq!(state(&game, "Life", "ticks"), Value::Int(0));
+    assert_eq!(
+        game.world().entities().len(),
+        1,
+        "an empty world, started once"
+    );
+    assert_eq!(
+        state(&game, "Life", "roll"),
+        roll,
+        "reseeded, so the start draws the same"
+    );
+
+    // A build whose start faults reloads, since a reload does not start, but
+    // cannot rebuild: the last good game stays.
+    let broken = module(&LIFE.replace(
+        "cx.spawn(SpawnDesc::player());",
+        "cx.spawn(SpawnDesc::player()); let xs = [1]; roll = xs[3];",
+    ));
+    game.reload(linked(broken)).expect("reloads");
+    game.step(3);
+    let before = game.snapshot();
+    let fault = game.rebuild_world().expect_err("the start faults");
+    assert_eq!(fault.tick, 0);
+    assert_eq!(game.snapshot(), before);
+    game.step(1);
+    assert_eq!(state(&game, "Life", "ticks"), Value::Int(4));
+}
+
+#[test]
+fn a_reload_maps_held_input_through_the_new_map_without_an_edge() {
+    let source = r#"
+import viso::game::{FixedUpdate, FixedFrame, InputAction};
+
+export system Pad implements FixedUpdate {
+    state held = false;
+    state presses = 0;
+
+    action fixed_update(frame: FixedFrame) {
+        held = frame.input.held(InputAction::jump);
+        if frame.input.pressed(InputAction::jump) { presses += 1; }
+    }
+}
+"#;
+    let mut game = start(source);
+    game.key(Key::Space, true);
+    game.step(1);
+    assert_eq!(state(&game, "Pad", "presses"), Value::Int(1));
+    let remapped = source
+        .replace(
+            "import viso::game::{FixedUpdate, FixedFrame, InputAction};",
+            "import viso::game::{FixedUpdate, FixedFrame, InputMap, Key};\n\
+             @derive(Eq, Hash, InputAction)\nexport enum Act { Leap; }\n\
+             export const CONTROLS: InputMap<Act> = InputMap::new().key(Key::Space, Act::Leap);",
+        )
+        .replace("InputAction::jump", "Act::Leap");
+    game.reload(linked(module(&remapped))).expect("reloads");
+    game.step(1);
+    assert_eq!(state(&game, "Pad", "held"), Value::bool(true));
+    assert_eq!(
+        state(&game, "Pad", "presses"),
+        Value::Int(1),
+        "no edge from the remap"
+    );
+    game.key(Key::Space, false);
+    game.step(1);
+    assert_eq!(state(&game, "Pad", "held"), Value::bool(false));
+}

@@ -197,6 +197,17 @@ impl Clock {
         self.tick += 1;
     }
 
+    /// Steps `1 / tick_rate` seconds from now on, at the same tick and with
+    /// the same accumulated time.
+    ///
+    /// # Panics
+    ///
+    /// If `tick_rate` is 0.
+    pub(crate) fn set_rate(&mut self, tick_rate: u32) {
+        assert!(tick_rate > 0, "a tick rate is at least 1 Hz");
+        self.fixed_dt = 1.0 / f64::from(tick_rate);
+    }
+
     /// Moves the clock to `tick`, keeping the accumulated time.
     pub(crate) fn rewind(&mut self, tick: u64) {
         self.tick = tick;

@@ -661,7 +661,7 @@ timers (§104–§111).
 
 ### D5.5 — Quick Game
 
-- [ ] `QuickGame.start` / `fixed` lowering; startup transaction before the first tick
+- [x] `QuickGame.start` / `fixed` lowering; startup transaction before the first tick
       (§105.1).
   - [x] `viso::game::quick`: `QuickGame` (`start`, `fixed`, both Simulation) and
         `QuickStart` / `QuickFrame`, views of the full profile's `GameStart` /
@@ -673,7 +673,9 @@ timers (§104–§111).
         commands; a successful start's commands land before tick 0's.
   - [x] `QuickStart.spawn` committed before the first tick and `QuickFrame.world`
         (`GameStart` / `FixedFrame` alike; `game_world.rs`).
-  - [ ] Rerun on World Rebuild, not on a logic-only reload: lands with D5.7.
+  - [x] Rerun on World Rebuild, not on a logic-only reload:
+        `Scheduler::rebuild_world` reruns the start from tick 0 over an empty reseeded
+        world; `Scheduler::reload` does not (`game_world.rs`).
 - [x] QuickGame and the equivalent single system give the same result on one tape.
   - [x] Per-frame states and delivered commands equal on a key and stick tape; the
         quick snapshot restores into the split form whole (`game_quick.rs`).
@@ -712,6 +714,15 @@ timers (§104–§111).
 - [ ] Reload-tier classifier from the Stable ID diff, reported in diagnostics (§110).
 - [ ] Logic-only reload at a tick boundary; Presentation-only at a frame boundary;
       World Rebuild with stable entity keys.
+  - [x] Scheduler primitives: `reload(vm)` swaps the build at a tick boundary,
+        keeping world, random state, tick, clock and held input (remapped without an
+        edge) and carrying Simulation states by stable ID + schema; `rebuild_world()`
+        gives fresh instances, an empty reseeded world and tick 0 and reruns the
+        start, a faulting start keeping the last good game.
+  - [ ] Carry `@local` states across a logic-only reload (the module has no stable
+        IDs for them yet; `reload` reinitializes them).
+  - [ ] Presentation-only swap at a frame boundary; stable entity keys migrating
+        entities across a rebuild; the host's hot-reload wiring.
 - [ ] `@probe` trace, input tape (binary and text forms), snapshot hash, headless sheet;
       `viso test game`, `viso game record`, `viso game peek` (§110.5, CLI §22.3).
 

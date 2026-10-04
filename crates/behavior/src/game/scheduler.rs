@@ -1,6 +1,8 @@
 //! The fixed-step scheduler over a module's systems.
 
+use std::borrow::Cow;
 use std::mem;
+use std::rc::Rc;
 
 use super::input::InputLatch;
 use super::quick::{QUICK_FIXED, QUICK_START, QuickFrame, QuickStart};
@@ -11,7 +13,7 @@ use super::{
     TouchButton,
 };
 use crate::native::{NativeObject, NativeValue, Obj, Services};
-use crate::{Budget, Deferred, Fault, FaultKind, Instance, Value, Vm};
+use crate::{Budget, Deferred, Fault, FaultKind, Instance, Module, Value, Vm};
 
 /// A fault a system hook raised: its state changes were discarded. A fault
 /// creating a system or starting the game leaves no scheduler.
@@ -94,9 +96,12 @@ enum Phase {
 ///
 /// The clock steps the module's compile-time tick rate. A
 /// [`snapshot`](Self::snapshot) captures the world, its random state and
-/// every system's Simulation states at a tick boundary; [`restore`](Self::restore) puts them back, recomputes
-/// what derives from them and keeps `@local` states, and the game then runs
-/// tick for tick as if it had never left that tick.
+/// every system's Simulation states at a tick boundary;
+/// [`restore`](Self::restore) puts them back, recomputes what derives from
+/// them and keeps `@local` states, and the game then runs tick for tick as if
+/// it had never left that tick. [`rebuild_world`](Self::rebuild_world) starts
+/// the game over; [`reload`](Self::reload) swaps in a new build and keeps
+/// the game running.
 pub struct Scheduler {
     vm: Vm,
     /// A hash of the module, identifying the build a snapshot came from.
@@ -104,18 +109,12 @@ pub struct Scheduler {
     clock: Clock,
     budget: Budget,
     instances: Vec<Instance>,
-    start: Box<[Hook]>,
-    fixed: Box<[Hook]>,
-    frame: Box<[Hook]>,
-    collision: Box<[Hook]>,
-    game_start: Value,
-    quick_start: Value,
-    fixed_frame: Value,
-    quick_frame: Value,
+    hooks: Hooks,
+    cx: Contexts,
     input: InputLatch,
-    render_frame: Value,
-    collision_event: Value,
     world: Obj<GameWorld>,
+    /// The seed a World Rebuild reseeds the world with.
+    seed: u64,
     collisions: Vec<(EntityId, EntityId)>,
     delivering: Vec<(EntityId, EntityId)>,
     faults: Vec<SystemFault>,
@@ -151,86 +150,19 @@ impl Scheduler {
     pub fn with_seed(mut vm: Vm, seed: u64) -> Result<Scheduler, SystemFault> {
         let module = vm.module().clone();
         let clock = Clock::at_rate(module.tick_rate());
-        let mut instances = Vec::with_capacity(module.systems().len());
-        let (mut start, mut fixed) = (Vec::new(), Vec::new());
-        let (mut frame, mut collision) = (Vec::new(), Vec::new());
-        for (index, system) in module.systems().iter().enumerate() {
-            let instance = vm
-                .instantiate(system.component, [])
-                .map_err(|fault| SystemFault {
-                    system: index,
-                    tick: clock.tick(),
-                    code: fault.kind.code(),
-                    fault,
-                })?;
-            instances.push(instance);
-            let bind = |hooks: &mut Vec<Hook>, id, quick| {
-                if let Some(chunk) = system.hook(id) {
-                    hooks.push(Hook {
-                        system: index,
-                        chunk,
-                        quick,
-                    });
-                }
-            };
-            bind(&mut start, STARTUP, false);
-            bind(&mut start, QUICK_START, true);
-            bind(&mut fixed, FIXED_UPDATE, false);
-            bind(&mut fixed, QUICK_FIXED, true);
-            bind(&mut frame, FRAME_UPDATE, false);
-            bind(&mut collision, COLLISION, false);
-        }
-        let fixed_dt = clock.fixed_dt();
-        let standard;
-        let schema = match module.input() {
-            Some(schema) => schema,
-            None => {
-                standard = InputSchema::standard();
-                &standard
-            }
-        };
+        let instances = instantiate(&mut vm, clock.tick())?;
+        let schema = input_schema(&module);
         let world = Obj::new(GameWorld::new(seed));
-        let game_start = Obj::new(GameStart {
-            tick: 0.into(),
-            world: world.clone(),
-        });
-        let fixed_frame = Obj::new(FixedFrame {
-            tick: 0.into(),
-            dt: fixed_dt,
-            input: Obj::new(InputSnapshot::new(schema.actions.len())),
-            world: world.clone(),
-        });
         let mut scheduler = Scheduler {
             budget: vm.budget(),
             build: fnv(&module.encode()),
             vm,
+            hooks: Hooks::of(&module),
+            cx: Contexts::new(&world, schema.actions.len(), clock.fixed_dt()),
             clock,
-            start: start.into(),
-            fixed: fixed.into(),
-            frame: frame.into(),
-            collision: collision.into(),
-            quick_start: handle(QuickStart {
-                start: game_start.clone(),
-            }),
-            game_start: game_start.into_value(),
-            quick_frame: handle(QuickFrame {
-                frame: fixed_frame.clone(),
-            }),
-            fixed_frame: fixed_frame.into_value(),
-            input: InputLatch::new(schema),
-            render_frame: handle(RenderFrame {
-                dt: 0.0.into(),
-                time: 0.0.into(),
-                alpha: 0.0.into(),
-                world: world.clone(),
-            }),
-            collision_event: handle(CollisionEvent {
-                tick: 0.into(),
-                first: Default::default(),
-                second: Default::default(),
-                world: world.clone(),
-            }),
+            input: InputLatch::new(&schema),
             world,
+            seed,
             collisions: Vec::new(),
             delivering: Vec::new(),
             faults: Vec::new(),
@@ -245,25 +177,86 @@ impl Scheduler {
         Ok(scheduler)
     }
 
+    /// Rebuilds the world, as a change to the start or the world's
+    /// construction needs: every system gets a fresh instance, the world
+    /// empties and takes its seed again, the clock returns to tick 0, and the
+    /// start runs again before the next tick. Commands of the new run deliver
+    /// from tick 0 on.
+    ///
+    /// # Errors
+    ///
+    /// The fault of a system whose instance could not be created, or of the
+    /// first start hook that faulted: the game is left as it was.
+    pub fn rebuild_world(&mut self) -> Result<(), SystemFault> {
+        let instances = instantiate(&mut self.vm, 0)?;
+        let instances = mem::replace(&mut self.instances, instances);
+        let (bodies, rng) = (self.world.bodies(), self.world.rng());
+        let (tick, delivered) = (self.clock.tick(), self.delivered);
+        let collisions = mem::take(&mut self.collisions);
+        self.world.restore(Rc::default(), self.seed);
+        self.clock.rewind(0);
+        self.delivered = 0;
+        let Err(fault) = self.run_start() else {
+            return Ok(());
+        };
+        self.instances = instances;
+        self.world.restore(bodies, rng);
+        self.clock.rewind(tick);
+        self.delivered = delivered;
+        self.collisions = collisions;
+        Err(fault)
+    }
+
+    /// Reloads the logic: `vm`'s build runs from the next tick on, over the
+    /// same world, random state, clock and input, and every Simulation state
+    /// it shares with this one by stable identity and schema keeps its value;
+    /// the rest, `@local` states among them, take their initializers. The
+    /// start does not run again. `vm` brings its own budget, hooks, input map
+    /// and tick rate.
+    ///
+    /// # Errors
+    ///
+    /// The fault of a system whose instance could not be created: the game is
+    /// left as it was.
+    pub fn reload(&mut self, mut vm: Vm) -> Result<Restored, SystemFault> {
+        let snapshot = self.snapshot();
+        let instances = instantiate(&mut vm, self.clock.tick())?;
+        let module = vm.module().clone();
+        let schema = input_schema(&module);
+        if module.tick_rate() != self.vm.module().tick_rate() {
+            self.clock.set_rate(module.tick_rate());
+        }
+        self.cx = Contexts::new(&self.world, schema.actions.len(), self.clock.fixed_dt());
+        self.input.remap(&schema);
+        self.hooks = Hooks::of(&module);
+        self.build = fnv(&module.encode());
+        self.budget = vm.budget();
+        self.sequences = vec![0; module.systems().len()].into();
+        self.instances = instances;
+        self.vm = vm;
+        Ok(self.restore_states(&snapshot))
+    }
+
     /// Runs every start hook in system order on one shared budget, then
     /// commits their world commands and delivers the Presentation commands
     /// they issued; the first fault ends the start and discards both.
     fn run_start(&mut self) -> Result<(), SystemFault> {
-        if self.start.is_empty() {
+        if self.hooks.start.is_empty() {
             return Ok(());
         }
         let tick = self.clock.tick();
         let mark = self.world.mark();
-        object::<GameStart>(&self.game_start).tick.set(tick);
+        self.sequences.fill(0);
+        object::<GameStart>(&self.cx.game_start).tick.set(tick);
         let mut left = self.budget;
         self.vm.defer_presentation(true);
         let faults = self.faults.len();
-        for i in 0..self.start.len() {
-            let hook = self.start[i];
+        for i in 0..self.hooks.start.len() {
+            let hook = self.hooks.start[i];
             let arg = if hook.quick {
-                self.quick_start.clone()
+                self.cx.quick_start.clone()
             } else {
-                self.game_start.clone()
+                self.cx.game_start.clone()
             };
             if !self.run_hook(hook, arg, &mut left, Phase::Start) || self.faults.len() > faults {
                 break;
@@ -403,6 +396,15 @@ impl Scheduler {
     /// rerun. A snapshot of another build restores the states it shares with
     /// this one.
     pub fn restore(&mut self, snapshot: &GameSnapshot) -> Restored {
+        let restored = self.restore_states(snapshot);
+        self.world.restore(snapshot.world.clone(), snapshot.rng);
+        self.clock.rewind(snapshot.tick);
+        restored
+    }
+
+    /// Sets every Simulation state `snapshot` holds under the same identity
+    /// and schema.
+    fn restore_states(&mut self, snapshot: &GameSnapshot) -> Restored {
         let mut restored = Restored::default();
         let module = self.vm.module().clone();
         for (system, instance) in module.systems().iter().zip(&mut self.instances) {
@@ -426,8 +428,6 @@ impl Scheduler {
                 }
             }
         }
-        self.world.restore(snapshot.world.clone(), snapshot.rng);
-        self.clock.rewind(snapshot.tick);
         restored
     }
 
@@ -457,7 +457,7 @@ impl Scheduler {
         for _ in 0..ticks {
             self.run_tick();
         }
-        let frame = object::<RenderFrame>(&self.render_frame);
+        let frame = object::<RenderFrame>(&self.cx.render_frame);
         frame.dt.set(if wall_dt.is_finite() && wall_dt > 0.0 {
             wall_dt
         } else {
@@ -466,9 +466,9 @@ impl Scheduler {
         frame.time.set(self.clock.time());
         frame.alpha.set(self.clock.alpha());
         let mut left = self.budget;
-        for i in 0..self.frame.len() {
-            let arg = self.render_frame.clone();
-            if !self.run_hook(self.frame[i], arg, &mut left, Phase::Frame) {
+        for i in 0..self.hooks.frame.len() {
+            let arg = self.cx.render_frame.clone();
+            if !self.run_hook(self.hooks.frame[i], arg, &mut left, Phase::Frame) {
                 break;
             }
         }
@@ -484,7 +484,7 @@ impl Scheduler {
 
     fn run_tick(&mut self) {
         let tick = self.clock.tick();
-        let frame = object::<FixedFrame>(&self.fixed_frame);
+        let frame = object::<FixedFrame>(&self.cx.fixed_frame);
         frame.tick.set(tick);
         self.input.deliver(&frame.input);
         self.world.begin_tick();
@@ -493,12 +493,12 @@ impl Scheduler {
         self.sequences.fill(0);
         self.vm.defer_presentation(true);
         let mut running = true;
-        for i in 0..self.fixed.len() {
-            let hook = self.fixed[i];
+        for i in 0..self.hooks.fixed.len() {
+            let hook = self.hooks.fixed[i];
             let arg = if hook.quick {
-                self.quick_frame.clone()
+                self.cx.quick_frame.clone()
             } else {
-                self.fixed_frame.clone()
+                self.cx.fixed_frame.clone()
             };
             if !self.run_hook(hook, arg, &mut left, Phase::Tick) {
                 running = false;
@@ -508,16 +508,16 @@ impl Scheduler {
         self.world.commit();
         self.world
             .step(self.clock.fixed_dt() as f32, &mut self.delivering);
-        if running && !self.collision.is_empty() {
+        if running && !self.hooks.collision.is_empty() {
             'events: for e in 0..self.delivering.len() {
                 let (first, second) = self.delivering[e];
-                let event = object::<CollisionEvent>(&self.collision_event);
+                let event = object::<CollisionEvent>(&self.cx.collision_event);
                 event.tick.set(tick);
                 event.first.set(first);
                 event.second.set(second);
-                for i in 0..self.collision.len() {
-                    let arg = self.collision_event.clone();
-                    if !self.run_hook(self.collision[i], arg, &mut left, Phase::Tick) {
+                for i in 0..self.hooks.collision.len() {
+                    let arg = self.cx.collision_event.clone();
+                    if !self.run_hook(self.hooks.collision[i], arg, &mut left, Phase::Tick) {
                         break 'events;
                     }
                 }
@@ -611,6 +611,119 @@ impl Scheduler {
         });
         !exhausted
     }
+}
+
+/// A module's hooks by phase, each in system order.
+struct Hooks {
+    start: Box<[Hook]>,
+    fixed: Box<[Hook]>,
+    frame: Box<[Hook]>,
+    collision: Box<[Hook]>,
+}
+
+impl Hooks {
+    fn of(module: &Module) -> Hooks {
+        let (mut start, mut fixed) = (Vec::new(), Vec::new());
+        let (mut frame, mut collision) = (Vec::new(), Vec::new());
+        for (index, system) in module.systems().iter().enumerate() {
+            let bind = |hooks: &mut Vec<Hook>, id, quick| {
+                if let Some(chunk) = system.hook(id) {
+                    hooks.push(Hook {
+                        system: index,
+                        chunk,
+                        quick,
+                    });
+                }
+            };
+            bind(&mut start, STARTUP, false);
+            bind(&mut start, QUICK_START, true);
+            bind(&mut fixed, FIXED_UPDATE, false);
+            bind(&mut fixed, QUICK_FIXED, true);
+            bind(&mut frame, FRAME_UPDATE, false);
+            bind(&mut collision, COLLISION, false);
+        }
+        Hooks {
+            start: start.into(),
+            fixed: fixed.into(),
+            frame: frame.into(),
+            collision: collision.into(),
+        }
+    }
+}
+
+/// The handles hooks receive, over one world.
+struct Contexts {
+    game_start: Value,
+    quick_start: Value,
+    fixed_frame: Value,
+    quick_frame: Value,
+    render_frame: Value,
+    collision_event: Value,
+}
+
+impl Contexts {
+    /// Contexts over `world` for an input map of `actions` actions and a
+    /// fixed step of `fixed_dt` seconds.
+    fn new(world: &Obj<GameWorld>, actions: usize, fixed_dt: f64) -> Contexts {
+        let game_start = Obj::new(GameStart {
+            tick: 0.into(),
+            world: world.clone(),
+        });
+        let fixed_frame = Obj::new(FixedFrame {
+            tick: 0.into(),
+            dt: fixed_dt,
+            input: Obj::new(InputSnapshot::new(actions)),
+            world: world.clone(),
+        });
+        Contexts {
+            quick_start: handle(QuickStart {
+                start: game_start.clone(),
+            }),
+            game_start: game_start.into_value(),
+            quick_frame: handle(QuickFrame {
+                frame: fixed_frame.clone(),
+            }),
+            fixed_frame: fixed_frame.into_value(),
+            render_frame: handle(RenderFrame {
+                dt: 0.0.into(),
+                time: 0.0.into(),
+                alpha: 0.0.into(),
+                world: world.clone(),
+            }),
+            collision_event: handle(CollisionEvent {
+                tick: 0.into(),
+                first: Default::default(),
+                second: Default::default(),
+                world: world.clone(),
+            }),
+        }
+    }
+}
+
+/// One instance of every system of `vm`'s module, at `tick`.
+fn instantiate(vm: &mut Vm, tick: u64) -> Result<Vec<Instance>, SystemFault> {
+    let module = vm.module().clone();
+    module
+        .systems()
+        .iter()
+        .enumerate()
+        .map(|(index, system)| {
+            vm.instantiate(system.component, [])
+                .map_err(|fault| SystemFault {
+                    system: index,
+                    tick,
+                    code: fault.kind.code(),
+                    fault,
+                })
+        })
+        .collect()
+}
+
+/// The module's input schema, or the default `InputAction` set's.
+fn input_schema(module: &Module) -> Cow<'_, InputSchema> {
+    module
+        .input()
+        .map_or_else(|| Cow::Owned(InputSchema::standard()), Cow::Borrowed)
 }
 
 fn handle<T: NativeObject>(object: T) -> Value {
