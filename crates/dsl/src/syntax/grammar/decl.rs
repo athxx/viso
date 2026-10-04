@@ -6,9 +6,10 @@
 //!
 //! ## Core versus Advanced
 //!
-//! Only the Core and a few Standard forms get dedicated node kinds and later
-//! resolution. Advanced declarations (`trait`/`impl`/`template`/`style`/`theme`/
-//! `shader`/`native`, and the Standard `effect`/`resource`) are parsed just enough
+//! Only the Core, the Shader Profile's `shader`, and a few Standard forms get
+//! dedicated node kinds and later resolution. Advanced declarations
+//! (`trait`/`impl`/`template`/`style`/`theme`/`native`, and the Standard
+//! `effect`/`resource`) are parsed just enough
 //! to consume their body — their brace group is skipped as a balanced run — and
 //! wrapped in a single [`SyntaxKind::AdvancedItem`] so they neither break the tree
 //! nor gate the slice. Their resolution lands when their consumer does.
@@ -142,10 +143,9 @@ fn decl_core(p: &mut Parser) {
         SyntaxKind::FnKw => fn_like_decl(p, SyntaxKind::FnDecl),
         SyntaxKind::ActionKw => fn_like_decl(p, SyntaxKind::ActionDecl),
         SyntaxKind::TaskKw => fn_like_decl(p, SyntaxKind::TaskDecl),
+        SyntaxKind::ShaderKw => shader_decl(p),
         // Standard/Advanced declarations parsed but not resolved this slice.
-        SyntaxKind::TraitKw | SyntaxKind::ImplKw | SyntaxKind::ShaderKw | SyntaxKind::NativeKw => {
-            advanced_decl(p, None)
-        }
+        SyntaxKind::TraitKw | SyntaxKind::ImplKw | SyntaxKind::NativeKw => advanced_decl(p, None),
         SyntaxKind::Ident if p.nth_is_ident(1) => match p.nth_contextual(0) {
             Some(kw @ (SyntaxKind::TemplateKw | SyntaxKind::StyleKw | SyntaxKind::ThemeKw)) => {
                 advanced_decl(p, Some(kw))
@@ -238,6 +238,54 @@ pub(super) fn member(p: &mut Parser) {
         SyntaxKind::ActionKw => fn_like_decl(p, SyntaxKind::ActionDecl),
         SyntaxKind::TaskKw => fn_like_decl(p, SyntaxKind::TaskDecl),
         SyntaxKind::NativeKw => advanced_decl(p, None),
+        _ => p.err_and_bump(ParseErrorKind::UnexpectedTokens),
+    }
+}
+
+/// `"shader" IDENT GenericParams? "{" ShaderMember* "}"` (§97).
+fn shader_decl(p: &mut Parser) {
+    let m = p.start();
+    p.bump_any(); // `shader`
+    name(p);
+    generic_params(p);
+    member_block(p, shader_member);
+    m.complete(p, SyntaxKind::ShaderDecl);
+}
+
+/// One shader member: a `uniform`/`instance`/`varying`/`texture`/`sampler`
+/// binding, a `fn`, or a `vertex`/`fragment`/`compute` entry point.
+fn shader_member(p: &mut Parser) {
+    attributes(p);
+    let named = p.nth_is_ident(1) || p.nth(1).is_keyword();
+    match p.nth_contextual(0) {
+        Some(kw) if named => {
+            let kind = match kw {
+                SyntaxKind::UniformKw => SyntaxKind::ShaderUniform,
+                SyntaxKind::InstanceKw => SyntaxKind::ShaderInstance,
+                SyntaxKind::VaryingKw => SyntaxKind::ShaderVarying,
+                SyntaxKind::TextureKw => SyntaxKind::ShaderTexture,
+                SyntaxKind::SamplerKw => SyntaxKind::ShaderSampler,
+                _ => return p.err_and_bump(ParseErrorKind::UnexpectedTokens),
+            };
+            let m = p.start();
+            p.bump_as(kw);
+            name(p);
+            p.expect(SyntaxKind::Colon);
+            super::types::type_(p);
+            p.expect(SyntaxKind::Semi);
+            m.complete(p, kind);
+        }
+        Some(kw @ (SyntaxKind::VertexKw | SyntaxKind::FragmentKw | SyntaxKind::ComputeKw))
+            if p.nth(1) == SyntaxKind::LParen =>
+        {
+            let m = p.start();
+            p.bump_as(kw);
+            param_list(p);
+            return_type(p);
+            super::stmt::block(p);
+            m.complete(p, SyntaxKind::ShaderEntry);
+        }
+        _ if p.at(SyntaxKind::FnKw) => fn_like_decl(p, SyntaxKind::ShaderFn),
         _ => p.err_and_bump(ParseErrorKind::UnexpectedTokens),
     }
 }

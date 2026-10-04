@@ -138,6 +138,89 @@ fn callable_forms_share_one_shape() {
     assert!(first(&unit("task t() { }"), SyntaxKind::TaskDecl).is_some());
 }
 
+const ROUNDED_RECT: &str = "export shader RoundedRect {
+    uniform viewport_size: Vec2F32;
+    instance rect_pos: Vec2F32;
+    instance color: ColorLinear;
+    varying local_pos: Vec2F32;
+    texture atlas: Texture2D<Vec4F32>;
+    sampler smooth: Sampler;
+
+    fn box_sdf(p: Vec2F32, half: Vec2F32) -> F32 {
+        let d = abs(p) - half;
+        return length(max(d, Vec2F32::splat(0.0f32)));
+    }
+
+    vertex(vertex_id: U32) -> VertexOutput {
+        local_pos = rect_pos;
+        return VertexOutput { clip_position: Vec4F32::new(0.0f32, 0.0f32, 0.0f32, 1.0f32) };
+    }
+
+    fragment() -> Vec4F32 {
+        return color.to_vec4();
+    }
+}
+";
+
+#[test]
+fn a_shader_declares_bindings_functions_and_entry_points() {
+    let root = unit(ROUNDED_RECT);
+    let errors = parse(&tokenize(ROUNDED_RECT), ROUNDED_RECT).errors;
+    assert!(errors.is_empty(), "{errors:?}");
+    assert_eq!(root.text(), ROUNDED_RECT, "lossless");
+    let shader = first(&root, SyntaxKind::ShaderDecl).expect("a shader");
+    assert_eq!(
+        shader.parent().map(|p| p.kind()),
+        Some(SyntaxKind::ExportDecl)
+    );
+    for (kind, n) in [
+        (SyntaxKind::ShaderUniform, 1),
+        (SyntaxKind::ShaderInstance, 2),
+        (SyntaxKind::ShaderVarying, 1),
+        (SyntaxKind::ShaderTexture, 1),
+        (SyntaxKind::ShaderSampler, 1),
+        (SyntaxKind::ShaderFn, 1),
+        (SyntaxKind::ShaderEntry, 2),
+    ] {
+        assert_eq!(count(&root, kind), n, "{kind:?}");
+    }
+    assert_eq!(count(&root, SyntaxKind::AdvancedItem), 0);
+
+    use viso_dsl::ast::{AstNode, ShaderDecl, ShaderMember, ShaderStage};
+    let decl = ShaderDecl::cast(shader).expect("typed view");
+    assert_eq!(
+        decl.name().map(|t| t.text().to_string()).as_deref(),
+        Some("RoundedRect")
+    );
+    let stages: Vec<_> = decl
+        .members()
+        .filter_map(|m| match m {
+            ShaderMember::Entry(e) => e.stage(),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(stages, [ShaderStage::Vertex, ShaderStage::Fragment]);
+}
+
+#[test]
+fn shader_member_words_stay_contextual_and_bad_members_recover() {
+    // Outside a shader, `uniform` and `vertex` are ordinary names.
+    let root = unit("fn f(uniform: F32, vertex: F32) -> F32 { uniform + vertex }");
+    assert!(first(&root, SyntaxKind::FnDecl).is_some());
+    assert!(
+        parse(
+            &tokenize("fn f(uniform: F32) -> F32 { uniform }"),
+            "fn f(uniform: F32) -> F32 { uniform }"
+        )
+        .errors
+        .is_empty()
+    );
+    // A member a shader does not have reports and the next one still parses.
+    let src = "shader S { state x = 1; uniform u: F32; }";
+    assert!(unit_has_error(src, ParseErrorKind::UnexpectedTokens));
+    assert_eq!(count(&unit(src), SyntaxKind::ShaderUniform), 1);
+}
+
 #[test]
 fn advanced_declarations_are_parsed_but_not_gated() {
     // A `trait` has no dedicated node kind this slice; it is swallowed whole as an

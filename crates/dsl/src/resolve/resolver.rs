@@ -469,6 +469,7 @@ fn decl_identity(item: &Item) -> Option<(crate::syntax::SyntaxToken, SymbolKind,
         Item::Fn(d) => (d.name()?, SymbolKind::Function, Namespace::Value),
         Item::Action(d) => (d.name()?, SymbolKind::Action, Namespace::Value),
         Item::Task(d) => (d.name()?, SymbolKind::Task, Namespace::Value),
+        Item::Shader(d) => (d.name()?, SymbolKind::Shader, Namespace::Type),
         Item::Export(_) | Item::Advanced(_) => return None,
     };
     Some(triple)

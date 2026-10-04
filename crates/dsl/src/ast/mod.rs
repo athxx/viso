@@ -22,8 +22,9 @@ pub use nodes::{
     ExportDecl, Expr, FieldExpr, FillClause, FnDecl, IfExpr, ImportDecl, ImportItem, IndexExpr,
     InputDecl, Item, ListExpr, LiteralExpr, MatchExpr, Member, ModulePath, NamedNode, NodeBody,
     NodeMember, Param, ParamList, ParenExpr, PathExpr, Pattern, PropertyBinding, PropertyPath,
-    RangeExpr, RecordDecl, RecordExpr, RecordField, RenameClause, ReturnType, SlotDecl, StateDecl,
-    SystemDecl, SystemOrder, TaskDecl, TryExpr, TupleExpr, TwoWayBinding, TypeAliasDecl, TypePath,
-    UnaryExpr, ViewBlock, ViewDecl, ViewFor, ViewFragment, ViewIf, ViewItem, ViewMatch,
-    ViewMatchArm, decl_attributes,
+    RangeExpr, RecordDecl, RecordExpr, RecordField, RenameClause, ReturnType, ShaderDecl,
+    ShaderEntry, ShaderFn, ShaderInstance, ShaderMember, ShaderSampler, ShaderStage, ShaderTexture,
+    ShaderUniform, ShaderVarying, SlotDecl, StateDecl, SystemDecl, SystemOrder, TaskDecl, TryExpr,
+    TupleExpr, TwoWayBinding, TypeAliasDecl, TypePath, UnaryExpr, ViewBlock, ViewDecl, ViewFor,
+    ViewFragment, ViewIf, ViewItem, ViewMatch, ViewMatchArm, decl_attributes,
 };
