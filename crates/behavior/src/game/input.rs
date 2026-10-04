@@ -320,7 +320,7 @@ impl Bits {
 
 /// The device state the host reports and the action edges it implies since
 /// the last tick.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub(crate) struct InputLatch {
     bindings: InputBindings,
     keys: u64,

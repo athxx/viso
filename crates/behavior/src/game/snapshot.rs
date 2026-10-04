@@ -54,6 +54,8 @@ pub struct Restored {
     /// Simulation states the snapshot does not hold, which kept their current
     /// value.
     pub missing: u32,
+    /// `@local` states a reload carried; a restore keeps them all.
+    pub locals: u32,
 }
 
 /// The tag a snapshot blob starts with after its protocol header.

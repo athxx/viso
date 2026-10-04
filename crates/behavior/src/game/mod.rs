@@ -33,7 +33,9 @@
 //! tick's `FixedUpdate`s and its `CollisionListener`s, and its seeded random
 //! source is the only randomness a Simulation hook has. A snapshot holds it
 //! too. A logic-only [`Scheduler::reload`] keeps it running under a new
-//! build; [`Scheduler::rebuild_world`] starts the game over.
+//! build; [`Scheduler::rebuild_world`] starts the game over and
+//! [`Scheduler::rebuild`] starts a new build over in a shadow game, either
+//! keeping the running characters by stable key.
 //!
 //! [`quick`] is the low-ceremony surface: one `QuickGame` system whose
 //! `start` and `fixed` the scheduler runs as a `Startup` and a `FixedUpdate`.
@@ -59,7 +61,7 @@ pub use input::{
     Action, INPUT_ACTION_DERIVE, InputAction, InputAxis, InputBindings, InputMap, InputSchema,
     InputSnapshot, Key, KeySet, MoveAxes, MoveSource, PadButton, PadStick, TouchButton,
 };
-pub use scheduler::{CommandKey, DEFAULT_SEED, Scheduler, SystemFault};
+pub use scheduler::{CommandKey, DEFAULT_SEED, Rebuild, Scheduler, SystemFault};
 pub use snapshot::{GameSnapshot, Restored};
 pub use timer::{Cooldown, TickTimer};
 pub use world::{

@@ -223,6 +223,7 @@ fn a_snapshot_restores_what_another_build_shares() {
             states: 2,
             mismatched: 1,
             missing: 1,
+            locals: 0,
         }
     );
     assert_eq!(state(&game, "extra"), Value::Int(7));
