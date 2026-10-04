@@ -736,10 +736,17 @@ timers (§104–§111).
         edge) and carrying Simulation states by stable ID + schema; `rebuild_world()`
         gives fresh instances, an empty reseeded world and tick 0 and reruns the
         start, a faulting start keeping the last good game.
-  - [ ] Carry `@local` states across a logic-only reload (the module has no stable
-        IDs for them yet; `reload` reinitializes them).
-  - [ ] Presentation-only swap at a frame boundary; stable entity keys migrating
-        entities across a rebuild; the host's hot-reload wiring.
+  - [x] Carry `@local` states across a logic-only reload: the module records each
+        system's `@local` identities and schemas; a value holding a closure takes
+        its initializer.
+  - [x] Presentation-only swap at a frame boundary: `reload` between frames, the
+        Simulation untouched.
+  - [x] `rebuild(vm, Rebuild)`: the new build starts in a shadow game, a smoke tick
+        runs on a copy, and it replaces the running game only when both ran clean;
+        `Rebuild::KeepCharacters` carries characters by stable entity key (tags and
+        rank among same-tag characters).
+  - [ ] The host's hot-reload wiring: a game host that recompiles a `.vs` edit,
+        classifies it and calls `reload`/`rebuild` (no game host yet).
 - [ ] `@probe` trace, input tape (binary and text forms), snapshot hash, headless sheet;
       `viso test game`, `viso game record`, `viso game peek` (§110.5, CLI §22.3).
 

@@ -7,7 +7,7 @@
 use std::rc::Rc;
 
 use viso_behavior::game::{
-    BodyKind, EntityId, Extracted, GameSnapshot, Key, Scheduler, SystemFault,
+    BodyKind, EntityId, Extracted, GameSnapshot, Key, Rebuild, Scheduler, SystemFault,
 };
 use viso_behavior::native::{NativeValue, Natives, Vec3F32};
 use viso_behavior::{Budget, Module, Value, Vm};
@@ -768,7 +768,7 @@ fn a_world_rebuild_reruns_the_start_from_tick_zero() {
     let mut game = start(LIFE);
     let roll = state(&game, "Life", "roll");
     game.step(5);
-    game.rebuild_world().expect("rebuilds");
+    game.rebuild_world(Rebuild::Fresh).expect("rebuilds");
     assert_eq!(game.clock().tick(), 0);
     assert_eq!(state(&game, "Life", "ticks"), Value::Int(0));
     assert_eq!(
@@ -791,11 +791,150 @@ fn a_world_rebuild_reruns_the_start_from_tick_zero() {
     game.reload(linked(broken)).expect("reloads");
     game.step(3);
     let before = game.snapshot();
-    let fault = game.rebuild_world().expect_err("the start faults");
+    let fault = game
+        .rebuild_world(Rebuild::Fresh)
+        .expect_err("the start faults");
     assert_eq!(fault.tick, 0);
     assert_eq!(game.snapshot(), before);
     game.step(1);
     assert_eq!(state(&game, "Life", "ticks"), Value::Int(4));
+}
+
+const HUD: &str = r#"
+import viso::game::{FixedUpdate, FixedFrame, FrameUpdate, RenderFrame};
+
+export system Hud implements FixedUpdate + FrameUpdate {
+    state ticks = 0;
+    @local state frames = 0;
+    @local state label = "";
+
+    action fixed_update(frame: FixedFrame) {
+        ticks += 1;
+    }
+
+    action frame_update(frame: RenderFrame) {
+        frames += 1;
+        label = "ticks";
+    }
+}
+"#;
+
+#[test]
+fn a_reload_carries_local_states_it_kept() {
+    let mut game = start(HUD);
+    for _ in 0..3 {
+        game.frame(1.0 / 60.0);
+    }
+    assert_eq!(state(&game, "Hud", "frames"), Value::Int(3));
+    let presented = HUD.replace("label = \"ticks\";", "label = \"steps\";");
+    let restored = game.reload(linked(module(&presented))).expect("reloads");
+    assert_eq!((restored.states, restored.locals), (1, 2));
+    assert_eq!(state(&game, "Hud", "frames"), Value::Int(3));
+    game.frame(1.0 / 60.0);
+    assert_eq!(state(&game, "Hud", "frames"), Value::Int(4));
+    assert_eq!(state(&game, "Hud", "label"), Value::str("steps"));
+
+    let retyped = presented
+        .replace("@local state frames = 0;", "@local state frames = 0.0;")
+        .replace("frames += 1;", "frames += 1.0;");
+    let restored = game.reload(linked(module(&retyped))).expect("reloads");
+    assert_eq!(restored.locals, 1, "the retyped local starts over");
+    assert_eq!(state(&game, "Hud", "frames"), Value::Float(0.0));
+}
+
+const ARENA: &str = r#"
+system Setup implements Startup {
+    state player: Option<EntityId> = Option::None;
+    action startup(cx: GameStart) {
+        cx.spawn(SpawnDesc::block(Vec3F32::new(40.0f32, 1.0f32, 40.0f32)).at(Vec3F32::new(0.0f32, -1.4f32, 0.0f32)));
+        player = Option::Some(cx.spawn(SpawnDesc::player().tag(GameTag::player).at(Vec3F32::new(0.0f32, 2.0f32, 0.0f32))));
+    }
+}
+
+@after(Setup)
+system Walk implements FixedUpdate {
+    state ticks = 0;
+    action fixed_update(frame: FixedFrame) {
+        ticks += 1;
+        for id in frame.world.query(GameTag::player) {
+            frame.world.walk(id, 1.0, 0.0);
+        }
+    }
+}
+"#;
+
+#[test]
+fn a_rebuild_swaps_the_build_and_keeps_characters_by_stable_key() {
+    let mut game = play(ARENA);
+    game.step(30);
+    let old = entity(&state(&game, "Setup", "player"));
+    let walked = at(&game, old);
+    assert!(walked[0] > 0.4, "{walked:?}");
+
+    // The new start spawns a coin first and the player elsewhere: the player
+    // keeps its key, the first character tagged `player`.
+    let respawned = format!(
+        "{IMPORTS}{}",
+        ARENA.replace(
+            "        player = Option::Some(",
+            "        cx.spawn(SpawnDesc::sensor(Vec3F32::new(0.5f32, 0.5f32, 0.5f32)).tag(GameTag::coin));\n        player = Option::Some(",
+        )
+        .replace("0.0f32, 2.0f32, 0.0f32", "9.0f32, 2.0f32, 0.0f32")
+    );
+    let carried = game
+        .rebuild(linked(module(&respawned)), Rebuild::KeepCharacters)
+        .expect("rebuilds");
+    assert_eq!(carried, 1);
+    assert_eq!(game.clock().tick(), 0);
+    assert_eq!(
+        state(&game, "Walk", "ticks"),
+        Value::Int(0),
+        "no smoke tick shows"
+    );
+    assert_eq!(game.world().entities().len(), 3);
+    let player = entity(&state(&game, "Setup", "player"));
+    assert_eq!(at(&game, player), walked);
+
+    game.rebuild(linked(module(&respawned)), Rebuild::Fresh)
+        .expect("rebuilds");
+    let player = entity(&state(&game, "Setup", "player"));
+    assert_eq!(at(&game, player), [9.0, 2.0, 0.0]);
+}
+
+#[test]
+fn a_rebuild_whose_smoke_tick_faults_keeps_the_last_good_game() {
+    let mut game = play(ARENA);
+    game.step(4);
+    let before = game.snapshot();
+    let broken = format!(
+        "{IMPORTS}{}",
+        ARENA.replace(
+            "ticks += 1;",
+            "ticks += 1; let xs = [1]; ticks = xs[ticks];"
+        )
+    );
+    let fault = game
+        .rebuild(linked(module(&broken)), Rebuild::KeepCharacters)
+        .expect_err("the smoke tick faults");
+    assert_eq!((fault.tick, fault.code), (0, "E7104"));
+    assert_eq!(game.snapshot(), before);
+    assert!(game.faults().is_empty());
+    game.step(1);
+    assert_eq!(
+        state(&game, "Walk", "ticks"),
+        Value::Int(5),
+        "the old build runs"
+    );
+
+    let fault = game
+        .rebuild_world(Rebuild::Fresh)
+        .map(|_| ())
+        .and_then(|()| {
+            game.reload(linked(module(&broken))).map(|_| ())?;
+            game.rebuild_world(Rebuild::Fresh).map(|_| ())
+        })
+        .expect_err("the reloaded build's smoke tick faults");
+    assert_eq!(fault.code, "E7104");
 }
 
 #[test]

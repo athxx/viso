@@ -570,6 +570,29 @@ impl Broadphase {
     }
 }
 
+/// Every live character's stable key and slot, `(tags, rank, slot)`, by
+/// key.
+fn character_keys(b: &Bodies) -> Vec<(u64, u32, usize)> {
+    let mut characters: Vec<(u64, usize)> = b
+        .order
+        .iter()
+        .map(|&slot| slot as usize)
+        .filter(|&slot| b.kind[slot] == BodyKind::Character)
+        .map(|slot| (b.tags[slot], slot))
+        .collect();
+    // A stable sort keeps allocation order among equal tags.
+    characters.sort_by_key(|c| c.0);
+    let mut keys: Vec<(u64, u32, usize)> = Vec::with_capacity(characters.len());
+    for (tags, slot) in characters {
+        let rank = match keys.last() {
+            Some(&(last, rank, _)) if last == tags => rank + 1,
+            _ => 0,
+        };
+        keys.push((tags, rank, slot));
+    }
+    keys
+}
+
 impl NativeObject for GameWorld {
     const PATH: &'static str = "viso::game::GameWorld";
 }
@@ -689,6 +712,31 @@ impl GameWorld {
         self.rng.set(rng);
         self.commands.borrow_mut().clear();
         self.reserved.set(0);
+    }
+
+    /// Puts each character with a counterpart in `old` where that one was:
+    /// its position, previous position, velocity and floor contact. A
+    /// character's stable key is its tags and its rank among the live
+    /// characters with the same tags, in allocation order. Returns the
+    /// characters moved.
+    pub(super) fn carry_characters(&self, old: &Bodies) -> u32 {
+        let from = character_keys(old);
+        let to = character_keys(&self.bodies.borrow());
+        let mut bodies = self.bodies.borrow_mut();
+        let b = Rc::make_mut(&mut bodies);
+        let mut moved = 0;
+        for (tags, rank, slot) in to {
+            let Ok(i) = from.binary_search_by_key(&(tags, rank), |k| (k.0, k.1)) else {
+                continue;
+            };
+            let at = from[i].2;
+            b.pos[slot] = old.pos[at];
+            b.prev[slot] = old.prev[at];
+            b.vel[slot] = old.vel[at];
+            b.floor[slot] = old.floor[at];
+            moved += 1;
+        }
+        moved
     }
 
     fn writer(&self) -> Result<usize, NativeError> {

@@ -64,11 +64,13 @@ impl Module {
                 enc.write_varint(u64::from(*chunk));
             });
             write_stable_id(enc, s.id);
-            write_list(enc, &s.snapshot, |enc, state| {
-                write_stable_id(enc, state.id);
-                enc.write_varint(u64::from(state.slot));
-                enc.write_u64(state.schema);
-            });
+            for states in [&s.snapshot, &s.locals] {
+                write_list(enc, states, |enc, state| {
+                    write_stable_id(enc, state.id);
+                    enc.write_varint(u64::from(state.slot));
+                    enc.write_u64(state.schema);
+                });
+            }
         });
         write_list(&mut enc, self.natives(), |enc, n| {
             enc.write_str(&n.path);
@@ -105,14 +107,8 @@ impl Module {
                 })?
                 .into(),
                 id: read_stable_id(dec)?,
-                snapshot: read_list(dec, |dec| {
-                    Ok(SnapshotSlot {
-                        id: read_stable_id(dec)?,
-                        slot: read_u32_varint(dec)?,
-                        schema: dec.read_u64()?,
-                    })
-                })?
-                .into(),
+                snapshot: read_list(dec, read_state)?.into(),
+                locals: read_list(dec, read_state)?.into(),
             })
         })?;
         let natives = read_list(&mut dec, |dec| {
@@ -181,6 +177,14 @@ pub(crate) fn read_stable_id(dec: &mut Decoder<'_>) -> Result<StableId, DecodeEr
     Ok(StableId {
         hi: dec.read_u64()?,
         lo: dec.read_u64()?,
+    })
+}
+
+fn read_state(dec: &mut Decoder<'_>) -> Result<SnapshotSlot, DecodeError> {
+    Ok(SnapshotSlot {
+        id: read_stable_id(dec)?,
+        slot: read_u32_varint(dec)?,
+        schema: dec.read_u64()?,
     })
 }
 
@@ -942,6 +946,7 @@ mod tests {
                 slot: 0,
                 schema: 0xfeed,
             }]),
+            locals: Box::new([]),
         }];
         let natives = vec![NativeImport {
             path: "viso::text::upper".into(),
@@ -970,9 +975,9 @@ mod tests {
     #[test]
     fn a_system_snapshots_its_own_states_in_identity_order() {
         let module = sample();
-        let rebuild = |snapshot: Vec<SnapshotSlot>| {
+        let rebuild = |states: Vec<SnapshotSlot>| {
             let mut systems = module.systems().to_vec();
-            systems[0].snapshot = snapshot.into();
+            systems[0].snapshot = states.into();
             Module::new(
                 module.chunks().to_vec(),
                 module.components().to_vec(),
@@ -992,6 +997,21 @@ mod tests {
             "out of order"
         );
         assert!(module.clone().with_tick_rate(0).is_err());
+        let local = |states: Vec<SnapshotSlot>| {
+            let mut systems = module.systems().to_vec();
+            systems[0].snapshot = Box::new([]);
+            systems[0].locals = states.into();
+            Module::new(
+                module.chunks().to_vec(),
+                module.components().to_vec(),
+                systems,
+                module.natives().to_vec(),
+            )
+        };
+        let carried = local(vec![slot(1, 0)]).unwrap();
+        assert_eq!(Module::decode(&carried.encode()).unwrap(), carried);
+        assert!(local(vec![slot(1, 1)]).is_err(), "a missing local");
+        assert!(local(vec![slot(2, 0), slot(1, 0)]).is_err());
     }
 
     #[test]
@@ -1035,6 +1055,7 @@ mod tests {
                     hooks,
                     id: StableId::default(),
                     snapshot: Box::new([]),
+                    locals: Box::new([]),
                 }],
                 module.natives().to_vec(),
             )

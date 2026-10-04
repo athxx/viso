@@ -169,6 +169,9 @@ pub struct System {
     /// Its Simulation states, by ascending stable identity; its `@local`
     /// states are not among them.
     pub snapshot: Box<[SnapshotSlot]>,
+    /// Its `@local` states, by ascending stable identity: no snapshot holds
+    /// them, but a logic reload carries them to the build that kept them.
+    pub locals: Box<[SnapshotSlot]>,
 }
 
 impl System {
@@ -326,22 +329,24 @@ impl Module {
                     format!("system `{}` shares a stable identity", layout.name),
                 ));
             }
-            for (n, state) in system.snapshot.iter().enumerate() {
-                if state.slot as usize >= layout.states.len() {
-                    return Err(fail(
-                        0,
-                        format!("system `{}` snapshots a missing state", layout.name),
-                    ));
-                }
-                if n > 0 && system.snapshot[n - 1].id >= state.id {
-                    return Err(fail(
-                        0,
-                        format!(
-                            "the snapshot states of system `{}` are not in ascending \
-                             identity order",
-                            layout.name
-                        ),
-                    ));
+            for states in [&system.snapshot, &system.locals] {
+                for (n, state) in states.iter().enumerate() {
+                    if state.slot as usize >= layout.states.len() {
+                        return Err(fail(
+                            0,
+                            format!("system `{}` names a missing state", layout.name),
+                        ));
+                    }
+                    if n > 0 && states[n - 1].id >= state.id {
+                        return Err(fail(
+                            0,
+                            format!(
+                                "the states of system `{}` are not in ascending \
+                                 identity order",
+                                layout.name
+                            ),
+                        ));
+                    }
                 }
             }
         }

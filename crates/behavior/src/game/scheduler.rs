@@ -7,6 +7,7 @@ use std::rc::Rc;
 use super::input::InputLatch;
 use super::quick::{QUICK_FIXED, QUICK_START, QuickFrame, QuickStart};
 use super::snapshot::{GameSnapshot, Restored, SystemState, fnv};
+use super::world::Bodies;
 use super::{
     COLLISION, Clock, CollisionEvent, EntityId, FIXED_UPDATE, FRAME_UPDATE, FixedFrame, GameStart,
     GameWorld, InputSchema, InputSnapshot, Key, PadButton, PadStick, RenderFrame, STARTUP,
@@ -14,6 +15,18 @@ use super::{
 };
 use crate::native::{NativeObject, NativeValue, Obj, Services};
 use crate::{Budget, Deferred, Fault, FaultKind, Instance, Module, Value, Vm};
+
+/// What a World Rebuild keeps of the running game.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Rebuild {
+    /// Nothing: the world as the start spawns it.
+    #[default]
+    Fresh,
+    /// The place and motion of each character the start spawns under the
+    /// stable key of a running one: its tags and its rank among the
+    /// characters with those tags, in allocation order.
+    KeepCharacters,
+}
 
 /// A fault a system hook raised: its state changes were discarded. A fault
 /// creating a system or starting the game leaves no scheduler.
@@ -147,13 +160,22 @@ impl Scheduler {
     /// # Errors
     ///
     /// As [`Scheduler::new`].
-    pub fn with_seed(mut vm: Vm, seed: u64) -> Result<Scheduler, SystemFault> {
+    pub fn with_seed(vm: Vm, seed: u64) -> Result<Scheduler, SystemFault> {
+        let mut scheduler = Scheduler::assemble(vm, seed)?;
+        scheduler.run_start()?;
+        scheduler.deliver_queued(0);
+        Ok(scheduler)
+    }
+
+    /// A scheduler over `vm` with fresh instances and an empty world seeded
+    /// with `seed`, before its start.
+    fn assemble(mut vm: Vm, seed: u64) -> Result<Scheduler, SystemFault> {
         let module = vm.module().clone();
         let clock = Clock::at_rate(module.tick_rate());
         let instances = instantiate(&mut vm, clock.tick())?;
         let schema = input_schema(&module);
         let world = Obj::new(GameWorld::new(seed));
-        let mut scheduler = Scheduler {
+        Ok(Scheduler {
             budget: vm.budget(),
             build: fnv(&module.encode()),
             vm,
@@ -172,22 +194,24 @@ impl Scheduler {
             delivered_commands: 0,
             replayed_commands: 0,
             instances,
-        };
-        scheduler.run_start()?;
-        Ok(scheduler)
+        })
     }
 
     /// Rebuilds the world, as a change to the start or the world's
     /// construction needs: every system gets a fresh instance, the world
     /// empties and takes its seed again, the clock returns to tick 0, and the
-    /// start runs again before the next tick. Commands of the new run deliver
-    /// from tick 0 on.
+    /// start runs again; with [`Rebuild::KeepCharacters`] the characters it
+    /// spawns take the place and motion of the old ones of their stable key.
+    /// One smoke tick then runs on a copy, its commands discarded: the
+    /// rebuild commits only when neither it nor the start faulted. Commands of
+    /// the new run deliver from tick 0 on. Returns the characters carried.
     ///
     /// # Errors
     ///
-    /// The fault of a system whose instance could not be created, or of the
-    /// first start hook that faulted: the game is left as it was.
-    pub fn rebuild_world(&mut self) -> Result<(), SystemFault> {
+    /// The fault of a system whose instance could not be created, of the
+    /// first start hook that faulted, or of the smoke tick: the game is left
+    /// as it was.
+    pub fn rebuild_world(&mut self, keep: Rebuild) -> Result<u32, SystemFault> {
         let instances = instantiate(&mut self.vm, 0)?;
         let instances = mem::replace(&mut self.instances, instances);
         let (bodies, rng) = (self.world.bodies(), self.world.rng());
@@ -196,23 +220,93 @@ impl Scheduler {
         self.world.restore(Rc::default(), self.seed);
         self.clock.rewind(0);
         self.delivered = 0;
-        let Err(fault) = self.run_start() else {
-            return Ok(());
+        match self.prove_start(&bodies, keep) {
+            Ok(carried) => {
+                self.deliver_queued(0);
+                Ok(carried)
+            }
+            Err(fault) => {
+                self.instances = instances;
+                self.world.restore(bodies, rng);
+                self.clock.rewind(tick);
+                self.delivered = delivered;
+                self.collisions = collisions;
+                Err(fault)
+            }
+        }
+    }
+
+    /// Swaps in `vm`'s build with a World Rebuild: the new build starts in a
+    /// shadow game, as [`rebuild_world`](Self::rebuild_world) describes, over
+    /// this game's clock, input and recorded faults, and replaces this one
+    /// only once its start and smoke tick ran clean. Returns the characters
+    /// carried.
+    ///
+    /// # Errors
+    ///
+    /// As [`rebuild_world`](Self::rebuild_world): this game, its build among
+    /// it, is left as it was.
+    pub fn rebuild(&mut self, vm: Vm, keep: Rebuild) -> Result<u32, SystemFault> {
+        let mut shadow = Scheduler::assemble(vm, self.seed)?;
+        let module = shadow.vm.module().clone();
+        shadow.clock = self.clock.clone();
+        shadow.clock.set_rate(module.tick_rate());
+        shadow.clock.rewind(0);
+        shadow.cx = Contexts::new(
+            &shadow.world,
+            input_schema(&module).actions.len(),
+            shadow.clock.fixed_dt(),
+        );
+        shadow.input = self.input.clone();
+        shadow.input.remap(&input_schema(&module));
+        let carried = shadow.prove_start(&self.world.bodies(), keep)?;
+        shadow.faults = mem::take(&mut self.faults);
+        shadow.delivered_commands = self.delivered_commands;
+        shadow.replayed_commands = self.replayed_commands;
+        shadow.deliver_queued(0);
+        *self = shadow;
+        Ok(carried)
+    }
+
+    /// Runs the start of a rebuilt world at tick 0, carries the characters
+    /// of `old` when `keep` says so, and runs one smoke tick on a copy whose
+    /// state, input and commands are then put back; the start's commands
+    /// stay queued.
+    fn prove_start(&mut self, old: &Bodies, keep: Rebuild) -> Result<u32, SystemFault> {
+        self.run_start()?;
+        let carried = match keep {
+            Rebuild::Fresh => 0,
+            Rebuild::KeepCharacters => self.world.carry_characters(old),
         };
-        self.instances = instances;
-        self.world.restore(bodies, rng);
-        self.clock.rewind(tick);
-        self.delivered = delivered;
+        let started = self.snapshot();
+        let held = mem::take(&mut self.commands);
+        let input = self.input.clone();
+        let collisions = mem::take(&mut self.collisions);
+        let (delivered, replayed) = (self.delivered, self.replayed_commands);
+        let faults = self.faults.len();
+        // A tick already delivered drops the commands it issues again.
+        self.delivered = u64::MAX;
+        self.run_tick();
+        let fault = self.faults.drain(faults..).next();
+        self.restore_states(&started);
+        self.world.restore(started.world.clone(), started.rng);
+        self.clock.rewind(started.tick);
+        self.commands = held;
+        self.input = input;
         self.collisions = collisions;
-        Err(fault)
+        self.delivered = delivered;
+        self.replayed_commands = replayed;
+        fault.map_or(Ok(carried), Err)
     }
 
     /// Reloads the logic: `vm`'s build runs from the next tick on, over the
-    /// same world, random state, clock and input, and every Simulation state
-    /// it shares with this one by stable identity and schema keeps its value;
-    /// the rest, `@local` states among them, take their initializers. The
+    /// same world, random state, clock and input. Every Simulation state it
+    /// shares with this one by stable identity and schema keeps its value, and
+    /// so does every `@local` state whose value holds no closure (a closure
+    /// names code of the old build); the rest take their initializers. The
     /// start does not run again. `vm` brings its own budget, hooks, input map
-    /// and tick rate.
+    /// and tick rate. Between frames this is also the swap of a
+    /// Presentation-only change, which leaves the Simulation as it was.
     ///
     /// # Errors
     ///
@@ -220,8 +314,9 @@ impl Scheduler {
     /// left as it was.
     pub fn reload(&mut self, mut vm: Vm) -> Result<Restored, SystemFault> {
         let snapshot = self.snapshot();
-        let instances = instantiate(&mut vm, self.clock.tick())?;
+        let mut instances = instantiate(&mut vm, self.clock.tick())?;
         let module = vm.module().clone();
+        let locals = carry_locals(self.vm.module(), &self.instances, &module, &mut instances);
         let schema = input_schema(&module);
         if module.tick_rate() != self.vm.module().tick_rate() {
             self.clock.set_rate(module.tick_rate());
@@ -234,12 +329,15 @@ impl Scheduler {
         self.sequences = vec![0; module.systems().len()].into();
         self.instances = instances;
         self.vm = vm;
-        Ok(self.restore_states(&snapshot))
+        Ok(Restored {
+            locals,
+            ..self.restore_states(&snapshot)
+        })
     }
 
     /// Runs every start hook in system order on one shared budget, then
-    /// commits their world commands and delivers the Presentation commands
-    /// they issued; the first fault ends the start and discards both.
+    /// commits their world commands, leaving the Presentation commands they
+    /// issued queued; the first fault ends the start and discards both.
     fn run_start(&mut self) -> Result<(), SystemFault> {
         if self.hooks.start.is_empty() {
             return Ok(());
@@ -269,7 +367,6 @@ impl Scheduler {
             return Err(fault);
         }
         self.world.commit();
-        self.deliver_queued(tick);
         Ok(())
     }
 
@@ -717,6 +814,39 @@ fn instantiate(vm: &mut Vm, tick: u64) -> Result<Vec<Instance>, SystemFault> {
                 })
         })
         .collect()
+}
+
+/// Sets each `@local` state of the instances `to` of build `new` that build
+/// `old` declared under the same identity and schema to its value in
+/// `from`, unless that value holds a closure. Returns the states carried.
+fn carry_locals(old: &Module, from: &[Instance], new: &Module, to: &mut [Instance]) -> u32 {
+    let mut carried = 0;
+    for (system, instance) in new.systems().iter().zip(to) {
+        let Some(i) = old.systems().iter().position(|s| s.id == system.id) else {
+            continue;
+        };
+        let before = &old.systems()[i].locals;
+        for local in system.locals.iter() {
+            let Ok(at) = before.binary_search_by_key(&local.id, |s| s.id) else {
+                continue;
+            };
+            let value = &from[i].states()[before[at].slot as usize];
+            if before[at].schema == local.schema && !holds_closure(value) {
+                instance.set_state(local.slot as usize, value.clone());
+                carried += 1;
+            }
+        }
+    }
+    carried
+}
+
+fn holds_closure(value: &Value) -> bool {
+    match value {
+        Value::Closure(_) => true,
+        Value::List(items) => items.iter().any(holds_closure),
+        Value::Agg(aggregate) => aggregate.fields.iter().any(holds_closure),
+        _ => false,
+    }
 }
 
 /// The module's input schema, or the default `InputAction` set's.

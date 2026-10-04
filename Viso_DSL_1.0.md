@@ -6111,6 +6111,8 @@ UI Binding 对 Game Observable Handle 的读取必须通过 Schema 标记为 Rea
 - 在 Tick Boundary 原子切换；
 - 当前 Tick 使用其他实现完整执行，不允许半 Tick 混用版本。
 
+当前实现：`Scheduler::reload(vm)` 在两次 `frame` 之间切换，此处既是 Tick Boundary 也是 Frame Boundary，Presentation-only 改动走同一入口，Simulation 状态、World、Tick 与 RNG 原样保留。Simulation State 按 Stable ID + Schema Hash 保留；`@local` 状态同样按 Stable ID + Schema Hash 保留（模块为每个 System 记录 `@local` 状态的身份），值中含 Closure 的除外（Closure 指向旧 Build 的代码），其余取 Initializer。
+
 ### 110.2 World Rebuild Reload
 
 - 在 Shadow World 执行新 Build Script/System；
@@ -6118,6 +6120,8 @@ UI Binding 对 Game Observable Handle 的读取必须通过 Schema 标记为 Rea
 - 成功后交换；
 - 失败保持 Last-good World；
 - 可选通过 Stable Entity Key 迁移玩家状态。
+
+当前实现：`Scheduler::rebuild(vm, Rebuild)` 用新 Build 组装 Shadow 游戏（新实例、按原 Seed 重置的空 World、沿用当前时钟配置与按新 InputMap 重映射的持有输入），在 Tick 0 运行 Start，再在副本上跑一个 Smoke Tick（其命令丢弃，状态、输入与 World 随后还原）；Start、Smoke Tick 或预算（`E9102`）任一故障都返回该故障，正在运行的游戏与其 Build 不变，成功才整体替换。`rebuild_world(Rebuild)` 对当前 Build 做同样的重建。`Rebuild::KeepCharacters` 按 Stable Entity Key 迁移角色：Key 是角色的 Tag 集合加上它在同 Tag 集合的存活角色中按分配顺序的名次，新 Start 生成的同 Key 角色取得旧角色的位置、上一 Tick 位置、速度与着地状态；Block 与 Sensor 以新 Start 为准。
 
 ### 110.3 Shader Reload
 

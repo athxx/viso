@@ -52,21 +52,24 @@ impl Program {
             .systems
             .iter()
             .map(|s| {
-                let mut snapshot: Vec<SnapshotSlot> = s
-                    .snapshot
-                    .iter()
-                    .map(|&(state, slot, schema)| SnapshotSlot {
-                        id: stable(state),
-                        slot,
-                        schema,
-                    })
-                    .collect();
-                snapshot.sort_by_key(|state| state.id);
+                let slots = |states: &[(SymbolId, u32, u64)]| {
+                    let mut slots: Vec<SnapshotSlot> = states
+                        .iter()
+                        .map(|&(state, slot, schema)| SnapshotSlot {
+                            id: stable(state),
+                            slot,
+                            schema,
+                        })
+                        .collect();
+                    slots.sort_by_key(|state| state.id);
+                    slots.into()
+                };
                 System {
                     component: s.component,
                     hooks: s.hooks.iter().map(|&(hook, f)| (hook, f.0)).collect(),
                     id: stable(s.symbol),
-                    snapshot: snapshot.into(),
+                    snapshot: slots(&s.snapshot),
+                    locals: slots(&s.locals),
                 }
             })
             .collect();
