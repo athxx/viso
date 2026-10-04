@@ -153,9 +153,9 @@ impl GameSnapshot {
         })
     }
 
-    /// The snapshot hash: 64-bit FNV-1a of its canonical blob. Two runs agree
-    /// on it exactly when their worlds, random states and Simulation states
-    /// are bit for bit equal.
+    /// The snapshot hash: 64-bit FNV-1a of its canonical blob. Two runs of
+    /// one build agree on it exactly when their worlds, random states and
+    /// Simulation states are bit for bit equal.
     pub fn hash(&self) -> u64 {
         fnv(&self.encode())
     }

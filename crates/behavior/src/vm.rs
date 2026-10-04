@@ -348,6 +348,8 @@ pub struct Vm {
     module: Rc<Module>,
     budget: Budget,
     linked: Box<[Option<Linked>]>,
+    /// The capabilities [`link`](Self::link) granted.
+    granted: Box<[Box<str>]>,
     services: Services,
     native_args: Vec<Value>,
     native_calls: u32,
@@ -378,6 +380,7 @@ impl Vm {
             memo: false,
             module,
             budget,
+            granted: Box::new([]),
             services: Services::default(),
             native_args: Vec::new(),
             native_calls: 0,
@@ -467,7 +470,13 @@ impl Vm {
             })
             .collect::<Result<_, _>>()?;
         self.linked = linked;
+        self.granted = capabilities.iter().map(|&c| c.into()).collect();
         Ok(())
+    }
+
+    /// Whether [`link`](Self::link) granted `capability`.
+    pub fn granted(&self, capability: &str) -> bool {
+        self.granted.iter().any(|c| **c == *capability)
     }
 
     /// Makes a Presentation native called from now on defer as a

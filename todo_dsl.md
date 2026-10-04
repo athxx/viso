@@ -807,7 +807,8 @@ timers (§104–§111).
         a rolled-back rerun redelivers no Presentation command.
   - [x] `cross_platform` pinned snapshot hashes, reproduced on aarch64-darwin,
         wasm32 (V8) and x86_64-linux-musl (Windows, Android, iOS not run).
-  - [ ] `@persist` across a restart and a migration.
+  - [x] `@persist` across a restart and a migration (`game_persist.rs`, a real
+        second process over a `DirStore`).
   - [ ] Shader reload keeps the current pipeline on failure (D6).
   - [ ] CPU reference vs one GPU backend golden within tolerance (D6).
 
@@ -833,6 +834,15 @@ timers (§104–§111).
 - [ ] Runtime capability denial `E6103` (§95).
 - [ ] `@persist`: load before `start`, tick-boundary writes, suspend flush, migration;
       `E9106` (§106.8).
+  - [x] System state: key, Snapshot type and `storage.persist` grant
+        (`[package] capabilities`) checked (`E9106`); key, slot, value schema and
+        spelling in the module, with the `@migrate` functions.
+  - [x] `Persist` service over a `PersistStore` (`MemoryStore`, `DirStore` with a
+        background writer, temp file + fsync + rename); loaded before the start,
+        converted by the shared retype matrix or `@migrate`; `E9111` / `E6103`
+        reports; changed values written at tick boundaries once an interval;
+        `suspend` and drop flush; carried through World Rebuild and Logic Reload.
+  - [ ] Component state `@persist` (needs a key rule for component instances).
 - [ ] `AudioProcess` real-time rules `E9108` (§108.3).
 - [ ] Dev snapshot ring and rewind-and-replay after a logic reload (§110.4).
 - [ ] Accessibility and localization checks `E3704`–`E3706`, `E3708`.

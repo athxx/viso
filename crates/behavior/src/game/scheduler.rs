@@ -7,6 +7,7 @@ use std::rc::Rc;
 
 use super::input::{Action, InputLatch};
 use super::kit::{Kit, Stage};
+use super::persist::{PERSIST_CAPABILITY, Persist, PersistReport, Persistence, Stored};
 use super::quick::{QUICK_FIXED, QUICK_START, QuickFrame, QuickStart};
 use super::snapshot::{GameSnapshot, Restored, SystemState, fnv};
 use super::tape::{InputTape, Playback, Recorder, TapeError};
@@ -144,6 +145,9 @@ pub struct Scheduler {
     replayed_commands: u64,
     playback: Option<Playback>,
     recorder: Option<Recorder>,
+    /// The store `@persist` states load from and are written to.
+    persist: Option<Persistence>,
+    persist_reports: Vec<PersistReport>,
 }
 
 impl Scheduler {
@@ -169,7 +173,12 @@ impl Scheduler {
     /// As [`Scheduler::new`].
     pub fn with_seed(vm: Vm, seed: u64) -> Result<Scheduler, SystemFault> {
         let mut scheduler = Scheduler::assemble(vm, seed)?;
-        scheduler.run_start()?;
+        scheduler.load_persisted();
+        if let Err(fault) = scheduler.run_start() {
+            // A game that never started stores nothing.
+            scheduler.persist = None;
+            return Err(fault);
+        }
         scheduler.deliver_queued(0);
         Ok(scheduler)
     }
@@ -183,6 +192,10 @@ impl Scheduler {
         let schema = input_schema(&module);
         let world = Obj::new(GameWorld::new(seed));
         let stage = Rc::default();
+        let persist = vm
+            .services_mut()
+            .remove::<Persist>()
+            .map(|p| Persistence::new(p, u64::from(module.tick_rate())));
         Ok(Scheduler {
             budget: vm.budget(),
             build: fnv(&module.encode()),
@@ -204,6 +217,8 @@ impl Scheduler {
             replayed_commands: 0,
             playback: None,
             recorder: None,
+            persist,
+            persist_reports: Vec::new(),
             instances,
         })
     }
@@ -225,6 +240,15 @@ impl Scheduler {
     pub fn rebuild_world(&mut self, keep: Rebuild) -> Result<u32, SystemFault> {
         let instances = instantiate(&mut self.vm, 0)?;
         let instances = mem::replace(&mut self.instances, instances);
+        if self.persist.is_some() {
+            let module = self.vm.module().clone();
+            carry_persisted(
+                (&module, &instances),
+                &mut self.vm,
+                &mut self.instances,
+                &mut self.persist_reports,
+            );
+        }
         let (bodies, rng) = (self.world.bodies(), self.world.rng());
         let (tick, delivered) = (self.clock.tick(), self.delivered);
         let collisions = mem::take(&mut self.collisions);
@@ -261,6 +285,16 @@ impl Scheduler {
     /// it, is left as it was.
     pub fn rebuild(&mut self, vm: Vm, keep: Rebuild) -> Result<u32, SystemFault> {
         let mut shadow = Scheduler::assemble(vm, self.seed)?;
+        // The shadow stores nothing until it replaces this game.
+        let incoming = shadow.persist.take();
+        if incoming.is_some() || self.persist.is_some() {
+            carry_persisted(
+                (self.vm.module(), &self.instances),
+                &mut shadow.vm,
+                &mut shadow.instances,
+                &mut self.persist_reports,
+            );
+        }
         let module = shadow.vm.module().clone();
         shadow.clock = self.clock.clone();
         shadow.clock.set_rate(module.tick_rate());
@@ -280,6 +314,8 @@ impl Scheduler {
         shadow.restart_tapes();
         shadow.delivered_commands = self.delivered_commands;
         shadow.replayed_commands = self.replayed_commands;
+        shadow.persist = incoming.or_else(|| self.persist.take());
+        shadow.persist_reports = mem::take(&mut self.persist_reports);
         shadow.deliver_queued(0);
         *self = shadow;
         Ok(carried)
@@ -302,10 +338,12 @@ impl Scheduler {
         let (delivered, replayed) = (self.delivered, self.replayed_commands);
         let faults = self.faults.len();
         let tapes = (self.playback.take(), self.recorder.take());
+        let persist = self.persist.take();
         // A tick already delivered drops the commands it issues again.
         self.delivered = u64::MAX;
         self.run_tick();
         (self.playback, self.recorder) = tapes;
+        self.persist = persist;
         let fault = self.faults.drain(faults..).next();
         self.restore_states(&started);
         self.world.restore(started.world.clone(), started.rng);
@@ -336,6 +374,17 @@ impl Scheduler {
         let mut instances = instantiate(&mut vm, self.clock.tick())?;
         let module = vm.module().clone();
         let locals = carry_locals(self.vm.module(), &self.instances, &module, &mut instances);
+        if let Some(persist) = vm.services_mut().remove::<Persist>() {
+            self.persist = Some(Persistence::new(persist, u64::from(module.tick_rate())));
+        }
+        if self.persist.is_some() {
+            carry_persisted(
+                (self.vm.module(), &self.instances),
+                &mut vm,
+                &mut instances,
+                &mut self.persist_reports,
+            );
+        }
         let schema = input_schema(&module);
         if module.tick_rate() != self.vm.module().tick_rate() {
             self.clock.set_rate(module.tick_rate());
@@ -794,6 +843,125 @@ impl Scheduler {
         self.delivering.clear();
         self.deliver_commands(tick);
         self.clock.finish_tick();
+        self.write_persisted(false);
+    }
+
+    /// Loads every `@persist` state from the store before the start: a
+    /// stored value of another type converts into the state's, and one that
+    /// does not load leaves the initializer's value and a report.
+    fn load_persisted(&mut self) {
+        let module = self.vm.module().clone();
+        let Some(persist) = &mut self.persist else {
+            return;
+        };
+        let slots = || module.systems().iter().flat_map(|s| s.persist.iter());
+        if slots().next().is_none() {
+            return;
+        }
+        if !self.vm.granted(PERSIST_CAPABILITY) {
+            self.persist_reports
+                .extend(slots().map(|slot| PersistReport {
+                    key: slot.key.clone(),
+                    code: "E6103",
+                    message: format!(
+                        "the game is not granted `{PERSIST_CAPABILITY}`: `{}` starts from its \
+                     initializer and is not stored",
+                        slot.key
+                    ),
+                }));
+            self.persist = None;
+            return;
+        }
+        self.vm.set_budget(self.budget);
+        for (system, instance) in module.systems().iter().zip(&mut self.instances) {
+            for slot in system.persist.iter() {
+                let loaded = persist.store.load(&slot.key).and_then(|blob| {
+                    let Some(blob) = blob else {
+                        return Ok(None);
+                    };
+                    let stored = Stored::decode(&blob)
+                        .map_err(|_| "the stored value is malformed".to_owned())?;
+                    stored
+                        .into_slot(slot, &module, &mut self.vm, instance)
+                        .map(Some)
+                });
+                let at = slot.slot as usize;
+                match loaded {
+                    Ok(Some(value)) => instance.set_state(at, value),
+                    Ok(None) => {}
+                    Err(message) => self.persist_reports.push(PersistReport {
+                        key: slot.key.clone(),
+                        code: "E9111",
+                        message: format!(
+                            "`{}` did not load, so it starts from its initializer: {message}",
+                            slot.key
+                        ),
+                    }),
+                }
+                persist
+                    .written
+                    .insert(slot.key.clone(), instance.states()[at].clone());
+            }
+        }
+    }
+
+    /// Stores each `@persist` state whose value changed since it was last
+    /// stored, once the interval since the last write is over or `now`.
+    fn write_persisted(&mut self, now: bool) {
+        let Some(persist) = &mut self.persist else {
+            return;
+        };
+        if !now && persist.wait > 0 {
+            persist.wait -= 1;
+            return;
+        }
+        persist.wait = persist.interval.saturating_sub(1);
+        if !self.vm.granted(PERSIST_CAPABILITY) {
+            return;
+        }
+        for (system, instance) in self.vm.module().systems().iter().zip(&self.instances) {
+            for slot in system.persist.iter() {
+                let value = &instance.states()[slot.slot as usize];
+                if persist.written.get(&slot.key) == Some(value) {
+                    continue;
+                }
+                persist
+                    .store
+                    .store(&slot.key, Stored::of(slot, value.clone()).encode());
+                persist.written.insert(slot.key.clone(), value.clone());
+            }
+        }
+    }
+
+    /// Stores every `@persist` state that changed and blocks until the
+    /// store has made them durable, as an app going to the background
+    /// must; dropping the scheduler does too.
+    pub fn suspend(&mut self) {
+        self.write_persisted(true);
+        if let Some(persist) = &mut self.persist
+            && let Err(message) = persist.store.flush()
+        {
+            self.persist_reports.push(PersistReport {
+                key: "".into(),
+                code: "E9111",
+                message: format!("persisted state was not stored: {message}"),
+            });
+        }
+    }
+
+    /// Writes changed `@persist` states every `ticks` ticks at most; one
+    /// second's worth by default.
+    pub fn set_persist_interval(&mut self, ticks: u64) {
+        if let Some(persist) = &mut self.persist {
+            persist.interval = ticks.max(1);
+            persist.wait = persist.wait.min(persist.interval - 1);
+        }
+    }
+
+    /// The persisted states that did not load or carry, and the writes that
+    /// failed, since the last call.
+    pub fn take_persist_reports(&mut self) -> Vec<PersistReport> {
+        mem::take(&mut self.persist_reports)
     }
 
     /// Delivers the commands `tick` issued in key order, unless an earlier
@@ -973,6 +1141,47 @@ impl Contexts {
                 world: world.clone(),
                 kit,
             }),
+        }
+    }
+}
+
+impl Drop for Scheduler {
+    fn drop(&mut self) {
+        self.suspend();
+    }
+}
+
+/// Sets each `@persist` state of the instances `to` of `vm`'s build to the
+/// value of the state the build `old` persisted under the same key in
+/// `from`, converted into its type, reporting each that does not convert.
+fn carry_persisted(
+    (old, from): (&Module, &[Instance]),
+    vm: &mut Vm,
+    to: &mut [Instance],
+    reports: &mut Vec<PersistReport>,
+) {
+    let new = vm.module().clone();
+    for (system, instance) in new.systems().iter().zip(to) {
+        for slot in system.persist.iter() {
+            let found = old.systems().iter().zip(from).find_map(|(s, instance)| {
+                let before = s.persist.iter().find(|p| p.key == slot.key)?;
+                Some((before, instance.states()[before.slot as usize].clone()))
+            });
+            let Some((before, value)) = found else {
+                continue;
+            };
+            match Stored::of(before, value).into_slot(slot, &new, vm, instance) {
+                Ok(value) => instance.set_state(slot.slot as usize, value),
+                Err(message) => reports.push(PersistReport {
+                    key: slot.key.clone(),
+                    code: "E9111",
+                    message: format!(
+                        "`{}` did not carry into the new build, so it starts from its \
+                         initializer: {message}",
+                        slot.key
+                    ),
+                }),
+            }
         }
     }
 }

@@ -17,11 +17,12 @@ use crate::game::{
     Action, InputBindings, InputSchema, Key, KeySet, MoveSource, PadButton, PadStick, TouchButton,
 };
 use crate::module::{
-    Chunk, ChunkKind, Code, Component, Module, NativeImport, SnapshotSlot, Span, StableId, System,
-    VerifyError,
+    Chunk, ChunkKind, Code, Component, Migrator, Module, NativeImport, PersistSlot, SnapshotSlot,
+    Span, StableId, System, VerifyError,
 };
 use crate::native::NativeId;
 use crate::op::{Arith, ArithOp, DisplayKind, Num, Op};
+use crate::retype::ValueSchema;
 use crate::value::{Aggregate, Value};
 
 /// Why a module blob failed to load.
@@ -71,6 +72,12 @@ impl Module {
                     enc.write_u64(state.schema);
                 });
             }
+            write_list(enc, &s.persist, |enc, state| {
+                enc.write_str(&state.key);
+                enc.write_varint(u64::from(state.slot));
+                state.schema.encode(enc);
+                enc.write_str(&state.spelling);
+            });
         });
         write_list(&mut enc, self.natives(), |enc, n| {
             enc.write_str(&n.path);
@@ -82,6 +89,12 @@ impl Module {
             write_input(&mut enc, input);
         }
         enc.write_varint(u64::from(self.tick_rate()));
+        write_list(&mut enc, self.migrators(), |enc, m| {
+            enc.write_str(&m.from);
+            m.param.encode(enc);
+            m.ret.encode(enc);
+            enc.write_varint(u64::from(m.chunk));
+        });
         enc.into_bytes()
     }
 
@@ -109,6 +122,15 @@ impl Module {
                 id: read_stable_id(dec)?,
                 snapshot: read_list(dec, read_state)?.into(),
                 locals: read_list(dec, read_state)?.into(),
+                persist: read_list(dec, |dec| {
+                    Ok(PersistSlot {
+                        key: dec.read_str()?.into(),
+                        slot: read_u32_varint(dec)?,
+                        schema: ValueSchema::decode(dec)?,
+                        spelling: dec.read_str()?.into(),
+                    })
+                })?
+                .into(),
             })
         })?;
         let natives = read_list(&mut dec, |dec| {
@@ -124,9 +146,18 @@ impl Module {
             None
         };
         let tick_rate = read_u32_varint(&mut dec)?;
+        let migrators = read_list(&mut dec, |dec| {
+            Ok(Migrator {
+                from: dec.read_str()?.into(),
+                param: ValueSchema::decode(dec)?,
+                ret: ValueSchema::decode(dec)?,
+                chunk: read_u32_varint(dec)?,
+            })
+        })?;
         dec.finish()?;
         let module = Module::new(chunks, components, systems, natives)
             .and_then(|m| m.with_tick_rate(tick_rate))
+            .and_then(|m| m.with_migrators(migrators))
             .map_err(LoadError::Verify)?;
         match input {
             Some(input) => module.with_input(input).map_err(LoadError::Verify),
@@ -947,6 +978,15 @@ mod tests {
                 schema: 0xfeed,
             }]),
             locals: Box::new([]),
+            persist: Box::new([PersistSlot {
+                key: "best".into(),
+                slot: 0,
+                schema: ValueSchema {
+                    root: crate::retype::TypeDesc::Plain("Bool".into()),
+                    decls: Box::new([]),
+                },
+                spelling: "Bool".into(),
+            }]),
         }];
         let natives = vec![NativeImport {
             path: "viso::text::upper".into(),
@@ -1038,6 +1078,7 @@ mod tests {
             natives: module.natives().to_vec().into(),
             input: None,
             tick_rate: module.tick_rate(),
+            migrators: Box::new([]),
         };
         bytes = bad.encode();
         assert!(matches!(Module::decode(&bytes), Err(LoadError::Verify(_))));
@@ -1056,6 +1097,7 @@ mod tests {
                     id: StableId::default(),
                     snapshot: Box::new([]),
                     locals: Box::new([]),
+                    persist: Box::new([]),
                 }],
                 module.natives().to_vec(),
             )

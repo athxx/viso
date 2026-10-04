@@ -15,6 +15,8 @@ use std::collections::{HashMap, HashSet};
 
 use viso_behavior::game::InputSchema;
 use viso_behavior::native::{NativeEntry, NativeId};
+use viso_behavior::retype::ValueSchema;
+use viso_behavior::{Migrator, PersistSlot};
 
 use viso_ui::adaptive::EnvField;
 
@@ -203,6 +205,7 @@ impl ProgramBuilder {
             snapshot: Vec::new(),
             locals: Vec::new(),
             probes: Vec::new(),
+            persist: Vec::new(),
         });
     }
 
@@ -247,6 +250,48 @@ impl ProgramBuilder {
                 shape,
             });
         }
+    }
+
+    /// Persists the state `state` of system `system` under `key`, its type
+    /// `schema`, spelled `spelling`.
+    pub(crate) fn persist_state(
+        &mut self,
+        system: SymbolId,
+        state: SymbolId,
+        key: &str,
+        schema: ValueSchema,
+        spelling: String,
+    ) {
+        let Some(&(_, Place::State(slot))) = self.places.get(&state) else {
+            return;
+        };
+        if let Some(layout) = self.program.systems.iter_mut().find(|s| s.symbol == system) {
+            layout.persist.push(PersistSlot {
+                key: key.into(),
+                slot,
+                schema,
+                spelling: spelling.into(),
+            });
+        }
+    }
+
+    /// Whether a system persists a state.
+    pub(crate) fn persists(&self) -> bool {
+        self.program.systems.iter().any(|s| !s.persist.is_empty())
+    }
+
+    /// Sets the `@migrate` functions a persisted value converts by.
+    pub(crate) fn migrators(&mut self, migrators: Vec<Migrator>) {
+        self.program.migrators = migrators;
+    }
+
+    /// The function of the `fn` declared as `symbol`, once it has a body.
+    pub(crate) fn fn_of(&self, symbol: SymbolId) -> Option<FuncId> {
+        self.program
+            .functions
+            .iter()
+            .position(|f| f.symbol == Some(symbol) && f.kind == FunctionKind::Fn && f.body.is_ok())
+            .map(|i| FuncId(i as u32))
     }
 
     /// Sets the ticks a second of the systems' fixed step.

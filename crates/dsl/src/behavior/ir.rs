@@ -24,6 +24,7 @@
 
 pub use viso_behavior::NativeImport;
 
+use viso_behavior::PersistSlot;
 use viso_behavior::game::InputSchema;
 use viso_behavior::native::NativeId;
 use viso_ui::adaptive::EnvField;
@@ -504,6 +505,8 @@ pub struct SystemLayout {
     pub locals: Vec<(SymbolId, u32, u64)>,
     /// Each `@probe` state, in declaration order.
     pub probes: Vec<Probe>,
+    /// Each `@persist` state, in declaration order.
+    pub persist: Vec<PersistSlot>,
 }
 
 /// A package's lowered behavior.
@@ -527,6 +530,9 @@ pub struct Program {
     /// The ticks a second of its systems' fixed step; `None` for the
     /// default.
     pub tick_rate: Option<u32>,
+    /// The `@migrate` functions a persisted value converts by; none unless a
+    /// system persists a state.
+    pub migrators: Vec<viso_behavior::Migrator>,
 }
 
 impl Program {

@@ -32,6 +32,7 @@ mod lens;
 mod native;
 pub(crate) mod pattern;
 mod record;
+mod schema;
 
 pub use native::NativeCall;
 
