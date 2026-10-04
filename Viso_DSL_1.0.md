@@ -5603,8 +5603,8 @@ export trait QuickGame {
 }
 
 // QuickStart / QuickFrame 是 viso::game::quick Native Schema 提供的 typed context。
-// QuickStart: spawn(desc) -> EntityId，以及 startup-only 资源初始化能力。
-// QuickFrame: world, input, dt, tick，以及受控 game action surface。
+// QuickStart: tick、world 与 spawn(desc) -> EntityId，以及 startup-only 资源初始化能力。
+// QuickFrame: world, input, dt, tick, time，以及受控 game action surface。
 ```
 
 最小游戏：
@@ -5706,7 +5706,7 @@ render_interpolation_policy
 
 - Fixed Tick 不使用不受控 Wall Clock；
 - `frame.dt` 是 Profile 固定值；
-- Random 必须来自注入的 Seeded RNG；
+- Random 必须来自注入的 Seeded RNG：`world.random(): F64`（`[0, 1)`）与 `world.random_range(lo, hi): I64`（`[lo, hi)`，无偏，空区间为 Native 错误）是 `action`，种子由宿主注入（`Scheduler::with_seed`），RNG 状态进入 Snapshot，发生 Fault 的 Hook 的抽取随其状态写入一起回滚；
 - Entity 迭代顺序必须稳定或显式声明无序；
 - 多线程系统必须通过 Deterministic Command Buffer 合并；
 - 每个 Tick 有 Instruction/Native Call Budget；
@@ -5867,8 +5867,8 @@ export system Gun implements FixedUpdate {
 GameSnapshot {
     build_hash
     tick
-    rng_state
-    world      // Native World 通过 Schema 声明的 snapshot/restore
+    rng_state  // 注入的 Seeded RNG 状态
+    world      // Native World 通过 Schema 声明的 snapshot/restore：GameWorld 的全部槽位、空闲表、分配顺序与接触集
     systems    // 每个 System 的 Simulation State，按 Stable ID 排序
 }
 ```
@@ -5900,7 +5900,7 @@ export system Progress implements FixedUpdate {
 ### 106.9 渲染插值
 
 - `frame.alpha(): F32` 取值 `[0, 1)`，等于累加器余量除以 `fixed_dt`；`SlowMotion` 积压超过一个 Tick 时取小于 1 的最大值；
-- World 为每个 Entity 保留上一 Tick 与当前 Tick 的 Transform，Render Extraction 默认按 `alpha` 插值；`teleport` 标记本 Tick 不插值；
+- World 为每个 Entity 保留上一 Tick 与当前 Tick 的 Transform，Render Extraction 默认按 `alpha` 插值：`RenderFrame.position(id)` 与宿主的 `GameWorld::extract(alpha)` 返回插值位置；`teleport` 把上一 Tick 的位置也设为目标，本 Tick 不插值；
 - FrameUpdate 属于 Presentation：只读 Simulation，只写 Local。
 
 ---
@@ -5909,66 +5909,75 @@ export system Progress implements FixedUpdate {
 
 ```viso
 import viso::game::{
-    GameWorld,
-    EntityId,
+    Startup,
+    GameStart,
     FixedUpdate,
     FixedFrame,
     CollisionListener,
     CollisionEvent,
+    EntityId,
     SpawnDesc,
-    InputAxis,
     InputAction,
     GameTag,
 };
+import viso::math::Vec3F32;
 
-export system PlayerController implements FixedUpdate + CollisionListener {
-    input world: Handle<GameWorld>;
-    input player: EntityId;
-
+export system PlayerController implements Startup + FixedUpdate + CollisionListener {
+    state player: Option<EntityId> = Option::None;
     state move_speed: F32 = 6.0f32;
     state jump_speed: F32 = 10.0f32;
     state score: I64 = 0;
     state respawn_point: Vec3F32 = Vec3F32::new(0.0f32, 4.0f32, 0.0f32);
 
-    computed alive: Bool = world.is_alive(player);
+    action startup(cx: GameStart) {
+        player = Option::Some(cx.spawn(SpawnDesc::player().at(respawn_point).tag(GameTag::player)));
+        cx.spawn(SpawnDesc::block(Vec3F32::new(20.0f32, 1.0f32, 20.0f32)));
+        cx.spawn(
+            SpawnDesc::sensor(Vec3F32::new(1.0f32, 1.0f32, 1.0f32))
+                .at(Vec3F32::new(3.0f32, 1.4f32, 0.0f32))
+                .tag(GameTag::coin),
+        );
+    }
 
     action fixed_update(frame: FixedFrame) {
-        if !alive {
-            return;
-        }
+        match player {
+            Option::Some(id) => {
+                let world = frame.world;
+                let movement = frame.input.move_axes();
+                world.walk(id, movement.x * move_speed, movement.y * move_speed);
 
-        let movement = Vec2F32::new(
-            frame.input.axis(InputAxis::move_x),
-            frame.input.axis(InputAxis::move_z),
-        );
+                if frame.input.pressed(InputAction::jump) && world.on_floor(id) {
+                    world.jump(id, jump_speed);
+                }
 
-        world.walk(
-            player,
-            movement.x * move_speed,
-            movement.y * move_speed,
-        );
-
-        if frame.input.pressed(InputAction::jump)
-            && world.on_floor(player) {
-            world.jump(player, jump_speed);
-        }
-
-        if world.position(player).y < -20.0f32 {
-            world.teleport(player, respawn_point);
+                if world.position(id).y < -20.0f32 {
+                    world.teleport(id, respawn_point);
+                }
+            },
+            Option::None => {},
         }
     }
 
     action collision(event: CollisionEvent) {
-        match event.other_of(player) {
-            Option::Some(other) if world.has_tag(other, GameTag::coin) => {
-                world.remove(other);
-                score += 1;
+        match player {
+            Option::Some(id) => {
+                match event.other_of(id) {
+                    Option::Some(other) => {
+                        if event.world.has_tag(other, GameTag::coin) {
+                            event.world.remove(other);
+                            score += 1;
+                        }
+                    },
+                    Option::None => {},
+                }
             },
-            _ => {},
+            Option::None => {},
         }
     }
 }
 ```
+
+World 不是 System 的 `input`：System 由 Scheduler 创建、没有调用方；World 是 Borrowed Handle，经 `frame.world`、`cx.world` 与 `event.world` 在 Hook 内取得，不能存入 State。
 
 ### 107.1 为什么适合人和 AI
 
@@ -5986,7 +5995,7 @@ export system PlayerController implements FixedUpdate + CollisionListener {
 
 ## 108. Game World 命令与确定性
 
-Native GameWorld 的 mutating Method 应被标为 `native action`。在多线程或确定性 Profile 中，这些调用可以 Lower 为 Command Buffer：
+Native GameWorld 的 mutating Method 应被标为 `native action`。在多线程或确定性 Profile 中，这些调用可以 Lower 为 Command Buffer；`viso::game::GameWorld` 的写入总是进入 Command Buffer：
 
 ```text
 world.walk(entity, x, z)
@@ -6010,11 +6019,21 @@ then per-system sequence
 
 这些是 Game Profile 语义，不污染通用 UI DSL。
 
+`viso::game::GameWorld` 的规则：
+
+- 读取（`is_alive`、`position`、`velocity`、`on_floor`、`has_tag`、`query`、`entities`）是非 `deterministic` 的 `fn`（Read），看到的是已提交的 World Revision，本 Tick 尚未提交的命令不可见；`position`/`velocity` 读取不存活的 Entity 是 Native 错误；
+- 写入（`spawn`、`walk`、`jump`、`teleport`、`remove`）是 `action`，按发出它的 System 记入 Command Buffer；Hook Fault 时与其状态写入一起丢弃；在 Simulation Hook 之外（如 `FrameUpdate`）写入是 Native 错误（`E7106`）；
+- 提交点：启动事务成功后（首个 Tick 前）、一个 Tick 的全部 `FixedUpdate` 之后、该 Tick 的 `CollisionListener` 之后；每个提交点按 `(system_order, sequence)` 合并，同一 System 的命令保持发出顺序，因此结果只取决于 System 顺序；
+- `walk(id, x, z)` 与 `jump(id, speed)` 累加，被下一次 Physics Step 消耗；`teleport(id, to)` 最后一个获胜，使 Body 静止，本 Tick 不插值；`remove(id)` 结束 Entity，合并顺序中其后针对它的命令被跳过并计数；`spawn(desc)` 立即返回 `EntityId`，Body 自提交起存在；
+- Physics Step 在两个提交点之间：Character 的水平速度为本 Tick 的 `walk`，`jump` 加到竖直速度，重力 `9.81 m/s²` 向下；逐轴（先竖直）对 Block 求解，向下被挡设置 `on_floor`；Step 之后报告新开始的接触（Character 与 Sensor、Character 与 Character），每对中先分配者在前、按分配顺序排列，作为该 Tick 的 `CollisionEvent`（`first`、`second`、`other_of(id)`）投递，排在宿主排队的接触之后；
+- `SpawnDesc` 是值类型：`player()`、`character(size)`、`block(size)`、`sensor(size)`，`.at(pos)`、`.tag(tag)`；
+- 全部运算为单精度 IEEE、无 FMA，Schema 声明 `cross_platform`。O(Character × Body) 的求解与接触检测的开销是假设，由 Benchmark 证实或替换。
+
 ### 108.1 迭代与查询
 
-- `world.query(tag)` 与 `world.entities()` 按 EntityId 分配顺序迭代；
-- 同一 Session 内 EntityId 不复用，槽位复用时 Generation 递增；
-- Tag 是 `@derive(GameTag)` 的用户 Enum 或 Schema Enum，不是字符串；
+- `world.query(tag)` 与 `world.entities()` 按 EntityId 分配（提交）顺序迭代；
+- EntityId 是槽位与 Generation：同一 Session 内 EntityId 不复用，槽位复用时 Generation 递增，过期 Id 不会指向新 Entity；
+- Tag 是 `@derive(GameTag)` 的用户 Enum 或 Schema Enum `viso::game::GameTag`（`player`、`enemy`、`ally`、`coin`、`pickup`、`hazard`、`goal`、`projectile`、`platform`、`trigger`），不是字符串：一个 Package 至多一个 Enum 派生 `GameTag`，再派生报 `E2202`；派生的 Enum 必须无 Payload 且至多 64 个 Variant，否则报 `E2201`；Package 的每个 Tag 参数都是该类型，传入其他类型报 `E2103`；
 - 迭代中的 Remove/Spawn 进入 Command Buffer，迭代结束后提交。
 
 ### 108.2 Release 执行形态

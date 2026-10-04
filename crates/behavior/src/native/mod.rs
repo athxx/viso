@@ -185,6 +185,9 @@ pub enum SchemaTy {
     /// enum its `InputMap` maps, or of `viso::game::InputAction` when it
     /// declares none.
     Action,
+    /// A game tag of the compiled package: a variant of its `@derive(GameTag)`
+    /// enum, or of `viso::game::GameTag` when it derives none.
+    Tag,
 }
 
 impl fmt::Display for SchemaTy {
@@ -203,6 +206,7 @@ impl fmt::Display for SchemaTy {
                 f.write_str(path.rsplit("::").next().unwrap_or(path))
             }
             SchemaTy::Action => f.write_str("Action"),
+            SchemaTy::Tag => f.write_str("Tag"),
         }
     }
 }

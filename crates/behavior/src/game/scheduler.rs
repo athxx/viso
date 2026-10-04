@@ -6,8 +6,9 @@ use super::input::InputLatch;
 use super::quick::{QUICK_FIXED, QUICK_START, QuickFrame, QuickStart};
 use super::snapshot::{GameSnapshot, Restored, SystemState, fnv};
 use super::{
-    COLLISION, Clock, CollisionEvent, FIXED_UPDATE, FRAME_UPDATE, FixedFrame, GameStart,
-    InputSchema, InputSnapshot, Key, PadButton, PadStick, RenderFrame, STARTUP, TouchButton,
+    COLLISION, Clock, CollisionEvent, EntityId, FIXED_UPDATE, FRAME_UPDATE, FixedFrame, GameStart,
+    GameWorld, InputSchema, InputSnapshot, Key, PadButton, PadStick, RenderFrame, STARTUP,
+    TouchButton,
 };
 use crate::native::{NativeObject, NativeValue, Obj, Services};
 use crate::{Budget, Deferred, Fault, FaultKind, Instance, Value, Vm};
@@ -48,6 +49,9 @@ struct Hook {
     quick: bool,
 }
 
+/// The seed [`Scheduler::new`] gives the world's random source.
+pub const DEFAULT_SEED: u64 = 0x5eed_5eed_5eed_5eed;
+
 /// Which budget a phase draws on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Phase {
@@ -69,6 +73,14 @@ enum Phase {
 /// next system still runs, except when the shared budget ran out, which skips
 /// the rest of the tick (`E9102`) or frame.
 ///
+/// The systems share one [`GameWorld`], which their Simulation hooks reach as
+/// `frame.world`, `cx.world` or `event.world` and write through commands. One
+/// tick freezes the input, runs every `FixedUpdate`, commits their commands,
+/// steps the world, delivers the contacts that began (after those the host
+/// queued) to every `CollisionListener` and commits theirs; the start's
+/// commands commit before the first tick. A `FrameUpdate` reads the world
+/// and cannot write it.
+///
 /// The host reports device input between frames ([`key`](Self::key),
 /// [`pad`](Self::pad), [`stick`](Self::stick), [`touch`](Self::touch)); each
 /// tick reads it frozen through `frame.input`, mapped by the module's input
@@ -81,8 +93,8 @@ enum Phase {
 /// faulting hook's commands are discarded with its state writes.
 ///
 /// The clock steps the module's compile-time tick rate. A
-/// [`snapshot`](Self::snapshot) captures every system's Simulation states at
-/// a tick boundary; [`restore`](Self::restore) puts them back, recomputes
+/// [`snapshot`](Self::snapshot) captures the world, its random state and
+/// every system's Simulation states at a tick boundary; [`restore`](Self::restore) puts them back, recomputes
 /// what derives from them and keeps `@local` states, and the game then runs
 /// tick for tick as if it had never left that tick.
 pub struct Scheduler {
@@ -103,8 +115,9 @@ pub struct Scheduler {
     input: InputLatch,
     render_frame: Value,
     collision_event: Value,
-    collisions: Vec<(i64, i64)>,
-    delivering: Vec<(i64, i64)>,
+    world: Obj<GameWorld>,
+    collisions: Vec<(EntityId, EntityId)>,
+    delivering: Vec<(EntityId, EntityId)>,
     faults: Vec<SystemFault>,
     commands: Vec<(CommandKey, Deferred)>,
     sequences: Box<[u32]>,
@@ -115,17 +128,27 @@ pub struct Scheduler {
 }
 
 impl Scheduler {
-    /// A scheduler running `vm`'s module on a clock at its tick rate,
-    /// creating one instance of every system and starting the game. The
-    /// `vm`'s budget becomes the budget the start's hooks share, each tick's,
-    /// and each frame's: memory and depth stay per call.
+    /// A scheduler running `vm`'s module on a clock at its tick rate over an
+    /// empty world seeded with [`DEFAULT_SEED`], creating one instance of
+    /// every system and starting the game. The `vm`'s budget becomes the
+    /// budget the start's hooks share, each tick's, and each frame's: memory
+    /// and depth stay per call.
     ///
     /// # Errors
     ///
     /// The fault of a system whose instance could not be created, or of the
     /// first `Startup` hook that faulted: the start's state writes and
     /// commands are discarded with the scheduler.
-    pub fn new(mut vm: Vm) -> Result<Scheduler, SystemFault> {
+    pub fn new(vm: Vm) -> Result<Scheduler, SystemFault> {
+        Scheduler::with_seed(vm, DEFAULT_SEED)
+    }
+
+    /// [`Scheduler::new`] with the world's random source seeded with `seed`.
+    ///
+    /// # Errors
+    ///
+    /// As [`Scheduler::new`].
+    pub fn with_seed(mut vm: Vm, seed: u64) -> Result<Scheduler, SystemFault> {
         let module = vm.module().clone();
         let clock = Clock::at_rate(module.tick_rate());
         let mut instances = Vec::with_capacity(module.systems().len());
@@ -166,11 +189,16 @@ impl Scheduler {
                 &standard
             }
         };
-        let game_start = Obj::new(GameStart::default());
+        let world = Obj::new(GameWorld::new(seed));
+        let game_start = Obj::new(GameStart {
+            tick: 0.into(),
+            world: world.clone(),
+        });
         let fixed_frame = Obj::new(FixedFrame {
             tick: 0.into(),
             dt: fixed_dt,
             input: Obj::new(InputSnapshot::new(schema.actions.len())),
+            world: world.clone(),
         });
         let mut scheduler = Scheduler {
             budget: vm.budget(),
@@ -190,8 +218,19 @@ impl Scheduler {
             }),
             fixed_frame: fixed_frame.into_value(),
             input: InputLatch::new(schema),
-            render_frame: handle(RenderFrame::default()),
-            collision_event: handle(CollisionEvent::default()),
+            render_frame: handle(RenderFrame {
+                dt: 0.0.into(),
+                time: 0.0.into(),
+                alpha: 0.0.into(),
+                world: world.clone(),
+            }),
+            collision_event: handle(CollisionEvent {
+                tick: 0.into(),
+                first: Default::default(),
+                second: Default::default(),
+                world: world.clone(),
+            }),
+            world,
             collisions: Vec::new(),
             delivering: Vec::new(),
             faults: Vec::new(),
@@ -207,12 +246,14 @@ impl Scheduler {
     }
 
     /// Runs every start hook in system order on one shared budget, then
-    /// delivers the commands they issued; the first fault ends the start.
+    /// commits their world commands and delivers the Presentation commands
+    /// they issued; the first fault ends the start and discards both.
     fn run_start(&mut self) -> Result<(), SystemFault> {
         if self.start.is_empty() {
             return Ok(());
         }
         let tick = self.clock.tick();
+        let mark = self.world.mark();
         object::<GameStart>(&self.game_start).tick.set(tick);
         let mut left = self.budget;
         self.vm.defer_presentation(true);
@@ -231,8 +272,10 @@ impl Scheduler {
         self.vm.defer_presentation(false);
         if let Some(fault) = self.faults.drain(faults..).next() {
             self.commands.clear();
+            self.world.rollback(mark);
             return Err(fault);
         }
+        self.world.commit();
         self.deliver_queued(tick);
         Ok(())
     }
@@ -245,6 +288,11 @@ impl Scheduler {
     /// The clock, to pause, scale, cap catch-up or change its overrun policy.
     pub fn clock_mut(&mut self) -> &mut Clock {
         &mut self.clock
+    }
+
+    /// The world, to extract what the frame draws.
+    pub fn world(&self) -> &GameWorld {
+        &self.world
     }
 
     /// The interpreter.
@@ -320,7 +368,8 @@ impl Scheduler {
         self.clock.rewind(tick);
     }
 
-    /// The Simulation state of every system now, at a tick boundary.
+    /// The world, its random state and the Simulation state of every system
+    /// now, at a tick boundary.
     pub fn snapshot(&self) -> GameSnapshot {
         let module = self.vm.module();
         let mut systems: Vec<SystemState> = module
@@ -340,12 +389,15 @@ impl Scheduler {
         GameSnapshot {
             build: self.build,
             tick: self.clock.tick(),
+            rng: self.world.rng(),
+            world: self.world.bodies(),
             systems: systems.into(),
         }
     }
 
-    /// Restores `snapshot`: the clock goes to its tick and every Simulation
-    /// state it holds under the same identity and schema takes its value;
+    /// Restores `snapshot`: the clock goes to its tick, the world and its
+    /// random state become the snapshot's, and every Simulation state it
+    /// holds under the same identity and schema takes its value;
     /// computeds reading them recompute and `@local` states keep theirs.
     /// Commands of ticks already delivered are not delivered again when they
     /// rerun. A snapshot of another build restores the states it shares with
@@ -374,6 +426,7 @@ impl Scheduler {
                 }
             }
         }
+        self.world.restore(snapshot.world.clone(), snapshot.rng);
         self.clock.rewind(snapshot.tick);
         restored
     }
@@ -389,9 +442,10 @@ impl Scheduler {
         self.replayed_commands
     }
 
-    /// Queues a contact between bodies `first` and `second` for the
-    /// `CollisionListener`s of the next tick.
-    pub fn push_collision(&mut self, first: i64, second: i64) {
+    /// Queues a contact between `first` and `second` that a host-side
+    /// simulation found, for the `CollisionListener`s of the next tick, ahead
+    /// of the world's own.
+    pub fn push_collision(&mut self, first: EntityId, second: EntityId) {
         self.collisions.push((first, second));
     }
 
@@ -433,26 +487,29 @@ impl Scheduler {
         let frame = object::<FixedFrame>(&self.fixed_frame);
         frame.tick.set(tick);
         self.input.deliver(&frame.input);
+        self.world.begin_tick();
         mem::swap(&mut self.collisions, &mut self.delivering);
         let mut left = self.budget;
         self.sequences.fill(0);
         self.vm.defer_presentation(true);
-        'tick: {
-            for i in 0..self.fixed.len() {
-                let hook = self.fixed[i];
-                let arg = if hook.quick {
-                    self.quick_frame.clone()
-                } else {
-                    self.fixed_frame.clone()
-                };
-                if !self.run_hook(hook, arg, &mut left, Phase::Tick) {
-                    break 'tick;
-                }
+        let mut running = true;
+        for i in 0..self.fixed.len() {
+            let hook = self.fixed[i];
+            let arg = if hook.quick {
+                self.quick_frame.clone()
+            } else {
+                self.fixed_frame.clone()
+            };
+            if !self.run_hook(hook, arg, &mut left, Phase::Tick) {
+                running = false;
+                break;
             }
-            if self.collision.is_empty() {
-                break 'tick;
-            }
-            for e in 0..self.delivering.len() {
+        }
+        self.world.commit();
+        self.world
+            .step(self.clock.fixed_dt() as f32, &mut self.delivering);
+        if running && !self.collision.is_empty() {
+            'events: for e in 0..self.delivering.len() {
                 let (first, second) = self.delivering[e];
                 let event = object::<CollisionEvent>(&self.collision_event);
                 event.tick.set(tick);
@@ -461,10 +518,11 @@ impl Scheduler {
                 for i in 0..self.collision.len() {
                     let arg = self.collision_event.clone();
                     if !self.run_hook(self.collision[i], arg, &mut left, Phase::Tick) {
-                        break 'tick;
+                        break 'events;
                     }
                 }
             }
+            self.world.commit();
         }
         self.vm.defer_presentation(false);
         self.delivering.clear();
@@ -509,9 +567,14 @@ impl Scheduler {
     /// budget ran out.
     fn run_hook(&mut self, hook: Hook, arg: Value, left: &mut Budget, phase: Phase) -> bool {
         self.vm.set_budget(*left);
+        let mark = self.world.mark();
+        if phase != Phase::Frame {
+            self.world.open(hook.system);
+        }
         let result = self
             .vm
             .call(&mut self.instances[hook.system], hook.chunk, &[arg]);
+        self.world.close();
         let cost = self.vm.cost();
         left.instructions = left.instructions.saturating_sub(cost.instructions);
         left.native_calls = left.native_calls.saturating_sub(cost.native_calls);
@@ -531,6 +594,7 @@ impl Scheduler {
         let Err(fault) = result else {
             return true;
         };
+        self.world.rollback(mark);
         let exhausted = matches!(
             fault.kind,
             FaultKind::InstructionBudget | FaultKind::NativeCallBudget

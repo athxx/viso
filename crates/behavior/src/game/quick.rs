@@ -6,12 +6,13 @@
 //! steps the same clock, reads the same input and snapshots the same way as
 //! the full Game Profile, and splitting it into `Startup` and `FixedUpdate`
 //! systems changes nothing it computes. Its contexts are views of the full
-//! profile's: [`QuickStart`] of `GameStart`, [`QuickFrame`] of `FixedFrame`.
+//! profile's: [`QuickStart`] of `GameStart`, [`QuickFrame`] of `FixedFrame`,
+//! over the same world. What `start` spawns exists before the first tick.
 
-use super::{FixedFrame, GameStart, InputSnapshot, signed};
+use super::{EntityId, FixedFrame, GameStart, GameWorld, InputSnapshot, SpawnDesc, signed};
 use crate::native::{
-    HookDomain, NativeFunction, NativeHook, NativeId, NativeLibrary, NativeObject, NativeTrait,
-    NativeType, Obj, Param, SchemaTy,
+    Determinism, HookDomain, NativeFunction, NativeHook, NativeId, NativeLibrary, NativeObject,
+    NativeTrait, NativeType, Obj, Param, SchemaTy,
 };
 
 /// The identity of the `QuickGame.start` hook.
@@ -41,13 +42,25 @@ impl NativeObject for QuickFrame {
     const PATH: &'static str = "viso::game::quick::QuickFrame";
 }
 
-static QUICK_START_METHODS: [NativeFunction; 1] = [crate::native!(
-    fn "tick" |_cx, this: Obj<QuickStart>| -> i64 { Ok(signed(this.start.tick.get())) }
-)
-.deterministic()
-.realtime_safe()];
+static QUICK_START_METHODS: [NativeFunction; 3] = [
+    crate::native!(fn "tick" |_cx, this: Obj<QuickStart>| -> i64 {
+        Ok(signed(this.start.tick.get()))
+    })
+    .deterministic()
+    .realtime_safe(),
+    crate::native!(fn "world" |_cx, this: Obj<QuickStart>| -> Obj<GameWorld> {
+        Ok(this.start.world.clone())
+    })
+    .deterministic()
+    .realtime_safe()
+    .property(),
+    crate::native!(action "spawn" |_cx, this: Obj<QuickStart>, desc: SpawnDesc| -> EntityId {
+        this.start.world.spawn(desc)
+    })
+    .reproducible(Determinism::CrossPlatform),
+];
 
-static QUICK_FRAME_METHODS: [NativeFunction; 4] = [
+static QUICK_FRAME_METHODS: [NativeFunction; 5] = [
     crate::native!(fn "tick" |_cx, this: Obj<QuickFrame>| -> i64 {
         Ok(signed(this.frame.tick.get()))
     })
@@ -63,6 +76,12 @@ static QUICK_FRAME_METHODS: [NativeFunction; 4] = [
     .realtime_safe(),
     crate::native!(fn "input" |_cx, this: Obj<QuickFrame>| -> Obj<InputSnapshot> {
         Ok(this.frame.input.clone())
+    })
+    .deterministic()
+    .realtime_safe()
+    .property(),
+    crate::native!(fn "world" |_cx, this: Obj<QuickFrame>| -> Obj<GameWorld> {
+        Ok(this.frame.world.clone())
     })
     .deterministic()
     .realtime_safe()

@@ -1,12 +1,18 @@
-//! Game snapshots: the Simulation state of every system at a tick boundary.
+//! Game snapshots: the world, the random state and the Simulation state of
+//! every system at a tick boundary.
 //!
 //! A [`GameSnapshot`] holds the values themselves, which are immutable and
-//! shared, so taking one in memory (for rollback or rewind debugging) copies
-//! no state, only references. [`GameSnapshot::encode`] writes it as a
-//! canonical Ende blob (systems and states in stable-identity order, floats
-//! by their bits) for saves, tapes and snapshot hashes.
+//! shared, the world's committed state among them, so taking one in memory
+//! (for rollback or rewind debugging) copies no state, only references.
+//! [`GameSnapshot::encode`] writes it as a canonical Ende blob (the world
+//! slot by slot, systems and states in stable-identity order, floats by their
+//! bits) for saves, tapes and snapshot hashes.
+
+use std::rc::Rc;
 
 use viso_ende::{Decode, DecodeError, Decoder, Encode, Encoder, ProtocolTag};
+
+use super::world::Bodies;
 
 use crate::module::StableId;
 use crate::value::Value;
@@ -18,11 +24,14 @@ use crate::wire::{
 ///
 /// Systems and their states are keyed by stable identity, each state with
 /// the hash of its type's schema, so a snapshot taken by one build restores
-/// into another that kept them, as across a logic-only reload.
+/// into another that kept them, as across a logic-only reload. The world and
+/// the random state restore whole.
 #[derive(Debug, Clone, PartialEq)]
 pub struct GameSnapshot {
     pub(super) build: u64,
     pub(super) tick: u64,
+    pub(super) rng: u64,
+    pub(super) world: Rc<Bodies>,
     pub(super) systems: Box<[SystemState]>,
 }
 
@@ -48,7 +57,7 @@ pub struct Restored {
 }
 
 /// The tag a snapshot blob starts with after its protocol header.
-const MAGIC: [u8; 4] = *b"GSNP";
+const MAGIC: [u8; 4] = *b"GSN2";
 
 impl GameSnapshot {
     /// A hash of the build that took it.
@@ -59,6 +68,16 @@ impl GameSnapshot {
     /// The tick it was taken before.
     pub fn tick(&self) -> u64 {
         self.tick
+    }
+
+    /// The state of its random source.
+    pub fn rng_state(&self) -> u64 {
+        self.rng
+    }
+
+    /// The number of live entities in its world.
+    pub fn entities(&self) -> usize {
+        self.world.order.len()
     }
 
     /// The number of Simulation states it holds.
@@ -73,6 +92,8 @@ impl GameSnapshot {
         enc.write_raw(&MAGIC);
         enc.write_u64(self.build);
         enc.write_varint(self.tick);
+        enc.write_u64(self.rng);
+        self.world.encode(&mut enc);
         write_list(&mut enc, &self.systems, |enc, system| {
             write_stable_id(enc, system.id);
             write_list(enc, &system.states, |enc, (id, schema, value)| {
@@ -102,6 +123,8 @@ impl GameSnapshot {
         }
         let build = dec.read_u64()?;
         let tick = dec.read_varint()?;
+        let rng = dec.read_u64()?;
+        let world = Rc::new(Bodies::decode(&mut dec)?);
         let systems = read_list(&mut dec, |dec| {
             let id = read_stable_id(dec)?;
             let states = read_list(dec, |dec| {
@@ -122,12 +145,15 @@ impl GameSnapshot {
         Ok(GameSnapshot {
             build,
             tick,
+            rng,
+            world,
             systems: systems.into(),
         })
     }
 
     /// The snapshot hash: 64-bit FNV-1a of its canonical blob. Two runs agree
-    /// on it exactly when their Simulation states are bit for bit equal.
+    /// on it exactly when their worlds, random states and Simulation states
+    /// are bit for bit equal.
     pub fn hash(&self) -> u64 {
         fnv(&self.encode())
     }

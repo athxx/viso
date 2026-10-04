@@ -66,6 +66,7 @@ macro_rules! schema_enum {
         }
     };
 }
+pub(super) use schema_enum;
 
 schema_enum! {
     /// A keyboard key, by its position on a US layout.

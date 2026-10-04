@@ -5,9 +5,12 @@
 use std::rc::Rc;
 use std::sync::Arc;
 
-use viso_behavior::game::{COLLISION, FIXED_UPDATE, FRAME_UPDATE, Scheduler, TickOverrun};
+use viso_behavior::game::{
+    COLLISION, EntityId, FIXED_UPDATE, FRAME_UPDATE, Scheduler, TickOverrun,
+};
 use viso_behavior::native::{
-    HookDomain, NativeHook, NativeLibrary, NativeTrait, Natives, Param, STANDARD, SchemaTy,
+    HookDomain, NativeHook, NativeLibrary, NativeTrait, NativeValue, Natives, Param, STANDARD,
+    SchemaTy,
 };
 use viso_behavior::{Budget, Module, Value, Vm};
 use viso_dsl::frontend::{Origin, compile_file, compile_file_in};
@@ -20,7 +23,7 @@ fn origin() -> Origin {
     }
 }
 
-const IMPORTS: &str = "import viso::game::{FixedUpdate, FrameUpdate, CollisionListener, FixedFrame, RenderFrame, CollisionEvent};\n";
+const IMPORTS: &str = "import viso::game::{FixedUpdate, FrameUpdate, CollisionListener, FixedFrame, RenderFrame, CollisionEvent, EntityId};\n";
 
 /// Compiles `source` after the scheduler imports; it must have no errors.
 fn module(source: &str) -> Rc<Module> {
@@ -74,7 +77,7 @@ system Scoring implements FixedUpdate + CollisionListener {
     state ticks = 0;
     state last_time = 0.0;
     state hits = 0;
-    state pair = 0;
+    state pair: Option<EntityId> = Option::None;
 
     action fixed_update(frame: FixedFrame) {
         ticks += 1;
@@ -83,7 +86,7 @@ system Scoring implements FixedUpdate + CollisionListener {
 
     action collision(event: CollisionEvent) {
         hits += 1;
-        pair = event.first() * 10 + event.second();
+        pair = event.other_of(event.first);
     }
 }
 
@@ -170,11 +173,12 @@ fn an_overrun_caps_the_frame_and_is_counted() {
 #[test]
 fn collisions_reach_the_listeners_of_the_next_tick() {
     let mut game = scheduler(module(GAME));
-    game.push_collision(1, 2);
-    game.push_collision(3, 4);
+    let id = EntityId::new;
+    game.push_collision(id(1, 0), id(2, 0));
+    game.push_collision(id(3, 0), id(4, 1));
     assert_eq!(game.frame(0.25), 1);
     assert_eq!(state(&game, "Scoring", "hits"), Value::Int(2));
-    assert_eq!(state(&game, "Scoring", "pair"), Value::Int(34));
+    assert_eq!(state(&game, "Scoring", "pair"), id(4, 1).into_value());
     assert_eq!(game.frame(0.25), 1);
     assert_eq!(state(&game, "Scoring", "hits"), Value::Int(2));
 }

@@ -49,5 +49,5 @@ pub use nodes::{
     HirInput, HirMeta, HirSlot, HirState, OwnershipMode,
 };
 pub use reads::{DerivedReads, ReadEnv, SourceSet, WithDerived, collect_reads};
-pub use ty::{Ty, TypeError, WidenError};
+pub use ty::{PackageTypes, Ty, TypeError, WidenError};
 pub use viso_behavior::native::Determinism;

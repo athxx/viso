@@ -37,12 +37,13 @@ pub mod quick;
 mod scheduler;
 mod snapshot;
 mod timer;
+mod world;
 
 use std::cell::Cell;
 
 use crate::native::{
-    HookDomain, NativeFunction, NativeHook, NativeId, NativeLibrary, NativeObject, NativeTrait,
-    NativeType, Obj, Param, SchemaTy,
+    HookDomain, NativeError, NativeFunction, NativeHook, NativeId, NativeLibrary, NativeObject,
+    NativeTrait, NativeType, Obj, Param, SchemaTy, Vec3F32,
 };
 
 pub use clock::{Clock, TickOverrun};
@@ -50,9 +51,12 @@ pub use input::{
     Action, INPUT_ACTION_DERIVE, InputAction, InputAxis, InputBindings, InputMap, InputSchema,
     InputSnapshot, Key, KeySet, MoveAxes, MoveSource, PadButton, PadStick, TouchButton,
 };
-pub use scheduler::{CommandKey, Scheduler, SystemFault};
+pub use scheduler::{CommandKey, DEFAULT_SEED, Scheduler, SystemFault};
 pub use snapshot::{GameSnapshot, Restored};
 pub use timer::{Cooldown, TickTimer};
+pub use world::{
+    BodyKind, EntityId, Extracted, GAME_TAG_DERIVE, GRAVITY, GameTag, GameWorld, SpawnDesc, Tag,
+};
 
 /// The identity of the `FixedUpdate.fixed_update` hook.
 pub const FIXED_UPDATE: NativeId = NativeId::of("viso::game::FixedUpdate::fixed_update");
@@ -65,9 +69,10 @@ pub const STARTUP: NativeId = NativeId::of("viso::game::Startup::startup");
 
 /// The start of a game a `Startup` hook runs in, behind a
 /// `viso::game::GameStart` handle.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct GameStart {
     tick: Cell<u64>,
+    world: Obj<GameWorld>,
 }
 
 impl NativeObject for GameStart {
@@ -81,6 +86,7 @@ pub struct FixedFrame {
     tick: Cell<u64>,
     dt: f64,
     input: Obj<InputSnapshot>,
+    world: Obj<GameWorld>,
 }
 
 impl NativeObject for FixedFrame {
@@ -88,37 +94,40 @@ impl NativeObject for FixedFrame {
 }
 
 /// The frame a `FrameUpdate` runs in, behind a `viso::game::RenderFrame`
-/// handle.
-#[derive(Debug, Default)]
+/// handle. Its world is read-only.
+#[derive(Debug)]
 pub struct RenderFrame {
     dt: Cell<f64>,
     time: Cell<f64>,
     alpha: Cell<f32>,
+    world: Obj<GameWorld>,
 }
 
 impl NativeObject for RenderFrame {
     const PATH: &'static str = "viso::game::RenderFrame";
 }
 
-/// A contact between two bodies, behind a `viso::game::CollisionEvent`
-/// handle.
-#[derive(Debug, Default)]
+/// A contact that began between two entities, behind a
+/// `viso::game::CollisionEvent` handle: `first` was allocated before
+/// `second`.
+#[derive(Debug)]
 pub struct CollisionEvent {
     tick: Cell<u64>,
-    first: Cell<i64>,
-    second: Cell<i64>,
+    first: Cell<EntityId>,
+    second: Cell<EntityId>,
+    world: Obj<GameWorld>,
 }
 
 impl NativeObject for CollisionEvent {
     const PATH: &'static str = "viso::game::CollisionEvent";
 }
 
-/// A tick or body key as an `I64`; ticks past `I64::MAX` saturate.
+/// A tick as an `I64`; ticks past `I64::MAX` saturate.
 fn signed(tick: u64) -> i64 {
     i64::try_from(tick).unwrap_or(i64::MAX)
 }
 
-static FIXED_FRAME_METHODS: [NativeFunction; 4] = [
+static FIXED_FRAME_METHODS: [NativeFunction; 5] = [
     crate::native!(fn "tick" |_cx, this: Obj<FixedFrame>| -> i64 { Ok(signed(this.tick.get())) })
         .deterministic()
         .realtime_safe(),
@@ -136,15 +145,31 @@ static FIXED_FRAME_METHODS: [NativeFunction; 4] = [
     .deterministic()
     .realtime_safe()
     .property(),
+    crate::native!(fn "world" |_cx, this: Obj<FixedFrame>| -> Obj<GameWorld> {
+        Ok(this.world.clone())
+    })
+    .deterministic()
+    .realtime_safe()
+    .property(),
 ];
 
-static GAME_START_METHODS: [NativeFunction; 1] = [crate::native!(
-    fn "tick" |_cx, this: Obj<GameStart>| -> i64 { Ok(signed(this.tick.get())) }
-)
-.deterministic()
-.realtime_safe()];
+static GAME_START_METHODS: [NativeFunction; 3] = [
+    crate::native!(fn "tick" |_cx, this: Obj<GameStart>| -> i64 { Ok(signed(this.tick.get())) })
+        .deterministic()
+        .realtime_safe(),
+    crate::native!(fn "world" |_cx, this: Obj<GameStart>| -> Obj<GameWorld> {
+        Ok(this.world.clone())
+    })
+    .deterministic()
+    .realtime_safe()
+    .property(),
+    crate::native!(action "spawn" |_cx, this: Obj<GameStart>, desc: SpawnDesc| -> EntityId {
+        this.world.spawn(desc)
+    })
+    .reproducible(crate::native::Determinism::CrossPlatform),
+];
 
-static RENDER_FRAME_METHODS: [NativeFunction; 3] = [
+static RENDER_FRAME_METHODS: [NativeFunction; 5] = [
     crate::native!(fn "dt" |_cx, this: Obj<RenderFrame>| -> f64 { Ok(this.dt.get()) })
         .deterministic()
         .realtime_safe(),
@@ -154,27 +179,61 @@ static RENDER_FRAME_METHODS: [NativeFunction; 3] = [
     crate::native!(fn "alpha" |_cx, this: Obj<RenderFrame>| -> f32 { Ok(this.alpha.get()) })
         .deterministic()
         .realtime_safe(),
+    crate::native!(fn "world" |_cx, this: Obj<RenderFrame>| -> Obj<GameWorld> {
+        Ok(this.world.clone())
+    })
+    .deterministic()
+    .realtime_safe()
+    .property(),
+    crate::native!(fn "position" |_cx, this: Obj<RenderFrame>, id: EntityId| -> Vec3F32 {
+        this.world
+            .interpolated(id, this.alpha.get())
+            .ok_or_else(|| NativeError::new(format!("entity {id} is not alive")))
+    })
+    .reproducible(crate::native::Determinism::CrossPlatform),
 ];
 
-static COLLISION_EVENT_METHODS: [NativeFunction; 3] = [
+static COLLISION_EVENT_METHODS: [NativeFunction; 5] = [
     crate::native!(fn "tick" |_cx, this: Obj<CollisionEvent>| -> i64 {
         Ok(signed(this.tick.get()))
     })
     .deterministic()
     .realtime_safe(),
-    crate::native!(fn "first" |_cx, this: Obj<CollisionEvent>| -> i64 { Ok(this.first.get()) })
-        .deterministic()
-        .realtime_safe(),
-    crate::native!(fn "second" |_cx, this: Obj<CollisionEvent>| -> i64 {
+    crate::native!(fn "first" |_cx, this: Obj<CollisionEvent>| -> EntityId {
+        Ok(this.first.get())
+    })
+    .deterministic()
+    .realtime_safe()
+    .property(),
+    crate::native!(fn "second" |_cx, this: Obj<CollisionEvent>| -> EntityId {
         Ok(this.second.get())
     })
     .deterministic()
+    .realtime_safe()
+    .property(),
+    crate::native!(fn "other_of" |_cx, this: Obj<CollisionEvent>, id: EntityId| -> Option<EntityId> {
+        let (first, second) = (this.first.get(), this.second.get());
+        Ok(if id == first {
+            Some(second)
+        } else if id == second {
+            Some(first)
+        } else {
+            None
+        })
+    })
+    .deterministic()
     .realtime_safe(),
+    crate::native!(fn "world" |_cx, this: Obj<CollisionEvent>| -> Obj<GameWorld> {
+        Ok(this.world.clone())
+    })
+    .deterministic()
+    .realtime_safe()
+    .property(),
 ];
 
-/// The scheduler traits, the frame handles their hooks receive and the typed
-/// input surface. The frame and input handles are borrowed: a hook reads them
-/// during its call and cannot keep them.
+/// The scheduler traits, the frame handles their hooks receive, the world and
+/// the typed input surface. The frame, world and input handles are borrowed:
+/// a hook reads them during its call and cannot keep them.
 pub(crate) static GAME: NativeLibrary = NativeLibrary {
     path: "viso::game",
     version: 1,
@@ -184,6 +243,10 @@ pub(crate) static GAME: NativeLibrary = NativeLibrary {
         NativeType::new("FixedFrame", &FIXED_FRAME_METHODS).borrowed(),
         NativeType::new("RenderFrame", &RENDER_FRAME_METHODS).borrowed(),
         NativeType::new("CollisionEvent", &COLLISION_EVENT_METHODS).borrowed(),
+        NativeType::new("GameWorld", &world::GAME_WORLD_METHODS).borrowed(),
+        NativeType::value("EntityId", &[]),
+        NativeType::value("SpawnDesc", &world::SPAWN_DESC_METHODS),
+        NativeType::enumeration("GameTag", GameTag::VARIANTS),
         NativeType::new("InputSnapshot", &input::INPUT_SNAPSHOT_METHODS).borrowed(),
         NativeType::new("MoveAxes", &input::MOVE_AXES_METHODS).borrowed(),
         NativeType::new("InputMap", &input::INPUT_MAP_METHODS),
@@ -243,7 +306,7 @@ pub(crate) static GAME: NativeLibrary = NativeLibrary {
             }],
         },
     ],
-    derives: &[input::INPUT_ACTION_DERIVE],
+    derives: &[input::INPUT_ACTION_DERIVE, world::GAME_TAG_DERIVE],
     widgets: &[],
 };
 

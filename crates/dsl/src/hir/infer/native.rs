@@ -32,14 +32,14 @@ pub struct NativeCall {
 impl InferCx<'_> {
     /// A native function's parameter and return types.
     fn signature(&self, entry: &NativeEntry) -> (Vec<Ty>, Ty) {
-        let action = self.env.input_action();
+        let package = self.env.package_types();
         let params = entry
             .function
             .params
             .iter()
-            .map(|p| Ty::from_schema(&p.ty, &action))
+            .map(|p| Ty::from_schema(&p.ty, &package))
             .collect();
-        (params, Ty::from_schema(&entry.function.ret, &action))
+        (params, Ty::from_schema(&entry.function.ret, &package))
     }
 
     /// The schema enum variant `id` names, if it names one.
