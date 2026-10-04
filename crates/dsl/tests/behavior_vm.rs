@@ -500,6 +500,42 @@ fn a_native_handle_method_takes_its_receiver_first() {
 }
 
 #[test]
+fn vectors_are_plain_values_with_f32_arithmetic() {
+    let source = r#"
+import viso::math::{Vec2F32, Vec3F32};
+component Mover {
+    state at: Vec3F32 = Vec3F32::new(1.0f32, 2.0f32, 2.0f32);
+    state len = 0.0f32;
+    state same = false;
+    state flat = 0.0f32;
+    action step() {
+        at = at.add(Vec3F32::new(0.1f32, 0.0f32, 0.0f32)).scale(2.0f32).sub(at);
+        len = Vec3F32::new(1.0f32, 2.0f32, 2.0f32).length();
+        same = at == Vec3F32::new(1.2f32, 2.0f32, 2.0f32);
+        flat = Vec2F32::new(3.0f32, 4.0f32).length() + at.x;
+    }
+    view { Text { text: "x"; } }
+}
+"#;
+    let module = module(source);
+    let index = module.component("Mover").expect("component");
+    let mut vm = Vm::new(module, Budget::default());
+    vm.link(&Natives::standard(), &[]).expect("link");
+    let mut mover = vm.instantiate(index, []).expect("instantiate");
+    call(&mut vm, &mut mover, "step", &[]).expect("step");
+    let x = (1.0f32 + 0.1f32) * 2.0f32 - 1.0f32;
+    let at = |i: usize| match &mover.states()[0] {
+        Value::Agg(agg) => agg.fields[i].clone(),
+        other => panic!("{other:?}"),
+    };
+    assert_eq!(at(0), Value::Float(f64::from(x)));
+    assert_eq!(at(1), Value::Float(2.0));
+    assert_eq!(mover.states()[1], Value::Float(3.0));
+    assert_eq!(mover.states()[2], Value::bool(x == 1.2f32));
+    assert_eq!(mover.states()[3], Value::Float(f64::from(5.0f32 + x)));
+}
+
+#[test]
 fn a_native_error_faults_the_call() {
     let (mut vm, mut tools) = linked(NATIVES, "Tools", &[]);
     let fault = call(&mut vm, &mut tools, "bad_clamp", &[]).expect_err("empty range");

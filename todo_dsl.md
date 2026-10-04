@@ -681,9 +681,31 @@ timers (§104–§111).
 ### D5.6 — World commands and queries
 
 - [ ] Deterministic command buffer merge and conflict policy (§108).
+  - [x] `viso::math` `Vec2F32` / `Vec3F32` value types (single-precision IEEE,
+        `cross_platform`).
+  - [ ] `viso::game::GameWorld` (borrowed) reached as `frame.world` / `cx.world` /
+        `event.world`; reads are `fn`s over the committed revision, writes are
+        `action`s buffered per hook and rolled back with a faulting hook; writes
+        outside a Simulation hook fault.
+  - [ ] Merge in `(system, sequence)` order at the tick's command points (after the
+        `FixedUpdate`s, after the collision listeners, after the start); `walk` /
+        `jump` add, `teleport` last wins, `remove` voids later commands, `spawn`
+        returns its `EntityId` at once and the body exists from the commit.
+  - [ ] Physics step between the two command points: character gravity, per-axis
+        resolution against blocks (`on_floor`), begin-contact events between
+        characters and sensors / characters in allocation order.
 - [ ] Stable query order, generational `EntityId`, `@derive(GameTag)` (§108.1).
+  - [ ] `EntityId` value (slot + generation; slot reuse bumps the generation);
+        `query(tag)` / `entities()` in allocation order.
+  - [ ] Tags: the package's one `@derive(GameTag)` enum (`E2202` for a second,
+        `E2201` past 64 variants) or `viso::game::GameTag`; `SchemaTy::Tag`.
+  - [ ] `CollisionEvent.first` / `second` / `other_of` as `EntityId`.
 - [ ] `GameSnapshot` `world` and `rng_state`: Native World snapshot/restore and the
       injected seeded RNG (§106, §106.7).
+  - [ ] Seeded RNG (`Scheduler::with_seed`), `world.random()` /
+        `random_range(lo, hi)`, rolled back with a faulting hook.
+  - [ ] Snapshot `world` (shared in memory, canonical in the blob) and `rng`;
+        restore resumes tick for tick, hash covers both.
 
 ### D5.7 — Game reload and tooling
 

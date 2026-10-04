@@ -1848,7 +1848,7 @@ native_type_decl     = "type", identifier,
 
 ### 47.1 生成的 Native Schema
 
-Native Schema 由 Rust 侧生成（ADR 0036）：一个 Native Library 是一条模块路径（如 `viso::text`）下带版本的函数与 Handle 类型集合；编译器与运行时共享同一个 Registry，`.vs` 不重复声明签名。标准 Registry 含 `viso::text`、`viso::math`、`viso::time`（`Stopwatch`）与 `viso::clipboard`。
+Native Schema 由 Rust 侧生成（ADR 0036）：一个 Native Library 是一条模块路径（如 `viso::text`）下带版本的函数与 Handle 类型集合；编译器与运行时共享同一个 Registry，`.vs` 不重复声明签名。标准 Registry 含 `viso::text`、`viso::math`（`F64` 函数与 `Vec2F32`/`Vec3F32` 值类型：`new`、Property `x`/`y`/`z`、`add`/`sub`/`scale`/`length`，单精度 IEEE 运算，`cross_platform`）、`viso::time`（`Stopwatch`）与 `viso::clipboard`。
 
 - 每个函数记录：名称、`fn`/`action`/`task` 分类、参数与返回的 Schema 类型、所需 Capability、线程域（`any`/`ui`/`worker`）、`deterministic`、`realtime_safe`、`@const`（编译期可求值，隐含 `deterministic`）与每次调用的预算成本；每个 Handle 类型记录方法、所有权（`shared`/`borrowed`）与线程域；
 - Schema Enum 是带 Variant 的 Native 类型，值为 Variant 序号而非 Handle：`import viso::game::Key;` 后写 `Key::Space`，未知 Variant 为 `E2001`（附最近候选）；
