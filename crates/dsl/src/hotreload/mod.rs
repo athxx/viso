@@ -23,6 +23,7 @@ pub mod commit;
 pub mod compat;
 pub mod diff;
 pub mod event;
+pub mod game;
 pub mod migrate;
 pub mod plan;
 

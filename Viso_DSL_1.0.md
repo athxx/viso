@@ -6101,6 +6101,8 @@ UI Binding 对 Game Observable Handle 的读取必须通过 Schema 标记为 Rea
 
 开发者可以强制 World Rebuild。除 World Rebuild 外，`tick`、RNG 状态与 Timer 剩余 Tick 都保留。
 
+比较对象是 Last-good 与 Candidate 的 Behavior IR：函数按声明的 Stable ID 配对，逐条比较指令；调用比较被调函数的身份，闭包比较其函数体，Native 调用比较路径与签名，状态读写比较所读写状态的名字而不是槽位，因此移动代码、改注释或在别处增删声明都不触发重载。一个 Hook 可达（经调用与闭包）的任一函数改变，即按该 Hook 的阶段定层：Start Hook 为 World Rebuild，`FixedUpdate` 与 `CollisionListener` 为 Logic-only，`FrameUpdate` 为 Presentation-only。Hook 绑定的增删与改绑同样按其阶段定层；新增或删除的 System 按它的 Hook 与状态定层；System 执行顺序或 Tick Rate 变化为 Logic-only。所有改动中最高的一层即本次重载层，以提示诊断 `E5103` 报告：主 Span 是决定层级的第一个改动，其余改动列为 Related。Shader 改动走 §110.3 自己的管线，不在这一比较之内。
+
 ### 110.1 Logic-only Reload
 
 - 替换 System Bytecode；
@@ -8489,6 +8491,7 @@ RecordPatternField
 | E4501  | 无主 Detached Task                                      |
 | E5101  | Hot Reload 状态重置：活值不可转换为新类型，或 `@migrate` 函数执行失败（警告） |
 | E5102  | Hot Reload Stable ID 冲突（拒绝 reload）                |
+| E5103  | Game Hot Reload 层级：编译器按 Stable ID Diff 选择的重载层与各项改动（提示，§110） |
 | E6101  | Native Schema 版本冲突                                  |
 | E6102  | Native Ownership/Thread Domain 违规                     |
 | E6103  | Capability Denied（运行时）                             |

@@ -718,7 +718,17 @@ timers (§104–§111).
 
 ### D5.7 — Game reload and tooling
 
-- [ ] Reload-tier classifier from the Stable ID diff, reported in diagnostics (§110).
+- [x] Reload-tier classifier from the Stable ID diff, reported in diagnostics (§110).
+  - [x] `hotreload::game::classify`: functions paired by declaration identity and
+        compared instruction by instruction (calls by callee identity, closures by
+        body, natives by path and signature, state access by state name), so moved
+        code and comments change nothing.
+  - [x] Tier by the phase of every hook reaching a change (start → World Rebuild,
+        fixed/collision → Logic, frame → Presentation); hooks and systems added or
+        removed, system order, `InputMap`, tick rate; Simulation states added,
+        removed, retyped or re-initialized → State Migration; `@local` states →
+        Presentation (the IR records their identities).
+  - [x] `E5103` note: the deciding change as primary span, the rest related.
 - [ ] Logic-only reload at a tick boundary; Presentation-only at a frame boundary;
       World Rebuild with stable entity keys.
   - [x] Scheduler primitives: `reload(vm)` swaps the build at a tick boundary,
