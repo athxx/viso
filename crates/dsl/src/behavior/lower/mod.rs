@@ -22,6 +22,7 @@ use super::ir::{
     Body, ComponentLayout, Const, EnvSlot, FuncId, Function, FunctionKind, Inst, NativeImport, Num,
     Program, Reg, Site, SystemLayout, Unsupported,
 };
+use super::probe::{Probe, ProbeShape};
 use crate::ast::{AssignablePath, AstNode, Block, Expr};
 use crate::hir::infer::InferCx;
 use crate::hir::{CallableKind, ComponentSchema, Ty, TypeEnv};
@@ -201,6 +202,7 @@ impl ProgramBuilder {
             hooks,
             snapshot: Vec::new(),
             locals: Vec::new(),
+            probes: Vec::new(),
         });
     }
 
@@ -223,6 +225,27 @@ impl ProgramBuilder {
         };
         if let Some(layout) = self.program.systems.iter_mut().find(|s| s.symbol == system) {
             layout.locals.push((state, slot, schema));
+        }
+    }
+
+    /// Traces the state `state`, named `name`, of system `system` in a game
+    /// test, its values written as `shape`.
+    pub(crate) fn probe_state(
+        &mut self,
+        system: SymbolId,
+        state: SymbolId,
+        name: &str,
+        shape: ProbeShape,
+    ) {
+        let Some(&(_, Place::State(slot))) = self.places.get(&state) else {
+            return;
+        };
+        if let Some(layout) = self.program.systems.iter_mut().find(|s| s.symbol == system) {
+            layout.probes.push(Probe {
+                name: name.to_owned(),
+                slot,
+                shape,
+            });
         }
     }
 

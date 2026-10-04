@@ -13,9 +13,10 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use viso_behavior::native::{Determinism, HookDomain, NativeId, NativeKind, SchemaTy};
 
 use crate::ast::{AstNode, Item, Member, decl_attributes};
+use crate::behavior::probe::{ProbePayload, ProbeShape, ProbeVariant};
 use crate::diag::{Diagnostic, Related};
 use crate::hir::component::MemberEnv;
-use crate::hir::infer::{TypeEnv, VariantPayload};
+use crate::hir::infer::{FieldInfo, TypeEnv, VariantPayload};
 use crate::resolve::{Resolution, ResolvedRef, SymbolId, SymbolKind};
 use crate::syntax::{SyntaxKind, SyntaxNode, TextRange};
 
@@ -153,6 +154,7 @@ impl Domains {
                     for member in system.members() {
                         let node = member.syntax().clone();
                         let local = has_attribute(&node, "local");
+                        let probe = has_attribute(&node, "probe");
                         let (name, is_body) = match &member {
                             Member::State(s) => (name_of(s.name()), false),
                             Member::Fn(f) => (name_of(f.name()), true),
@@ -166,6 +168,9 @@ impl Domains {
                             let state = states
                                 .iter()
                                 .find(|s| symbol.is_some() && s.meta.resolved_symbol == symbol);
+                            if let (Some(_), Some(attr)) = (&local, &probe) {
+                                misplaced_probe(attr, diagnostics);
+                            }
                             if local.is_some() {
                                 self.locals.extend(symbol);
                                 if let (Some(state), Some(symbol)) = (state, symbol) {
@@ -186,10 +191,24 @@ impl Domains {
                                         symbol,
                                         schema_hash(ty, env),
                                     );
+                                    if probe.is_some() {
+                                        let shape = probe_shape(ty, env, &mut Vec::new());
+                                        env.behavior.borrow_mut().probe_state(
+                                            system_symbol,
+                                            symbol,
+                                            &name,
+                                            shape,
+                                        );
+                                    }
                                 }
                             }
-                        } else if let Some(attr) = local {
-                            misplaced_local(&attr, diagnostics);
+                        } else {
+                            if let Some(attr) = local {
+                                misplaced_local(&attr, diagnostics);
+                            }
+                            if let Some(attr) = probe {
+                                misplaced_probe(&attr, diagnostics);
+                            }
                         }
                         if is_body && let Some(symbol) = symbol {
                             let qualified = format!("{system_name}.{name}");
@@ -211,6 +230,9 @@ impl Domains {
                     for member in component.members() {
                         if let Some(attr) = has_attribute(member.syntax(), "local") {
                             misplaced_local(&attr, diagnostics);
+                        }
+                        if let Some(attr) = has_attribute(member.syntax(), "probe") {
+                            misplaced_probe(&attr, diagnostics);
                         }
                     }
                 }
@@ -362,6 +384,67 @@ fn misplaced_local(attr: &SyntaxNode, diagnostics: &mut Vec<Diagnostic>) {
         attr.text_range(),
         "`@local` marks a `state` of a `system`: Presentation state the Simulation never reads",
     ));
+}
+
+fn misplaced_probe(attr: &SyntaxNode, diagnostics: &mut Vec<Diagnostic>) {
+    diagnostics.push(Diagnostic::error(
+        "E9110",
+        attr.text_range(),
+        "`@probe` marks a Simulation `state` of a `system`, which a game test traces every tick",
+    ));
+}
+
+/// How a game test writes a value of `ty`; `open` holds the nominal types
+/// being described, a recursive one written by structure.
+fn probe_shape(ty: &Ty, env: &ModuleEnv<'_>, open: &mut Vec<SymbolId>) -> ProbeShape {
+    let fields = |fields: &[FieldInfo], open: &mut Vec<SymbolId>| {
+        fields
+            .iter()
+            .map(|f| (f.name.clone(), probe_shape(&f.ty, env, open)))
+            .collect()
+    };
+    match ty {
+        Ty::Bool => ProbeShape::Bool,
+        Ty::I8 | Ty::I16 | Ty::I32 | Ty::I64 => ProbeShape::Signed,
+        Ty::U8 | Ty::U16 | Ty::U32 | Ty::U64 => ProbeShape::Unsigned,
+        Ty::F32 | Ty::F64 | Ty::Duration | Ty::Angle | Ty::Frequency => ProbeShape::Float,
+        Ty::Char => ProbeShape::Char,
+        Ty::String => ProbeShape::Str,
+        Ty::Unit => ProbeShape::Unit,
+        Ty::Tuple(items) => {
+            ProbeShape::Tuple(items.iter().map(|t| probe_shape(t, env, open)).collect())
+        }
+        Ty::List(item) => ProbeShape::List(Box::new(probe_shape(item, env, open))),
+        Ty::Option(item) => ProbeShape::Option(Box::new(probe_shape(item, env, open))),
+        Ty::Named(id) if !open.contains(id) => {
+            open.push(*id);
+            let shape = if let Some(record) = env.record_fields(*id) {
+                ProbeShape::Record(fields(record, open))
+            } else if let Some(variants) = env.enum_variants(*id) {
+                let variants = variants
+                    .iter()
+                    .map(|v| ProbeVariant {
+                        name: v.name.clone(),
+                        payload: match &v.payload {
+                            VariantPayload::Unit => ProbePayload::Unit,
+                            VariantPayload::Tuple(items) => ProbePayload::Tuple(
+                                items.iter().map(|t| probe_shape(t, env, open)).collect(),
+                            ),
+                            VariantPayload::Record(record) => {
+                                ProbePayload::Record(fields(record, open))
+                            }
+                        },
+                    })
+                    .collect();
+                ProbeShape::Enum(variants)
+            } else {
+                ProbeShape::Value
+            };
+            open.pop();
+            shape
+        }
+        _ => ProbeShape::Value,
+    }
 }
 
 /// Whether a value of `ty` can be captured in a snapshot; `E9105` if not.

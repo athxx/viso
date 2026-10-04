@@ -28,6 +28,7 @@ use viso_behavior::game::InputSchema;
 use viso_behavior::native::NativeId;
 use viso_ui::adaptive::EnvField;
 
+use super::probe::Probe;
 use crate::resolve::SymbolId;
 use crate::syntax::TextRange;
 
@@ -501,6 +502,8 @@ pub struct SystemLayout {
     pub snapshot: Vec<(SymbolId, u32, u64)>,
     /// Each `@local` state, likewise.
     pub locals: Vec<(SymbolId, u32, u64)>,
+    /// Each `@probe` state, in declaration order.
+    pub probes: Vec<Probe>,
 }
 
 /// A package's lowered behavior.

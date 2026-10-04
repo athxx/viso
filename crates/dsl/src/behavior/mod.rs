@@ -8,6 +8,7 @@
 //! reason instead, and every function that calls it inherits that reason.
 
 pub mod ir;
+pub mod probe;
 
 mod codegen;
 mod dump;
