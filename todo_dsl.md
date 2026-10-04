@@ -816,12 +816,40 @@ timers (§104–§111).
 
 ## D6 — Shader Profile (P1)
 
-- [ ] Shader declaration grammar replaces the `AdvancedItem` skip (§97).
+- [x] Shader declaration grammar replaces the `AdvancedItem` skip (§97).
+  - [x] `ShaderDecl` with `uniform`/`instance`/`varying`/`texture`/`sampler`
+        bindings, `fn`s and `vertex`/`fragment`/`compute` entries as CST nodes and
+        typed AST views; member words stay contextual; recovery per member;
+        a reparse unit; the shader names a type symbol.
 - [ ] Shader types and syntax subset; `E8101`–`E8104` (§98–§99).
+  - [ ] Closed type set (§98) and `@shader_value` records; `E8101` host-only
+        type, `E8102` `F64`.
+  - [ ] Statement/expression subset (§99): `let`, mutation of locals and
+        varyings, `if`, statically lowerable `match`, bounded `for` with
+        `@max_iterations` (`E8103`), constructors, swizzles, intrinsics, casts;
+        everything else rejected with a span.
+  - [ ] Stage rules: entry signatures and builtins from the render profile,
+        varyings written in `vertex` and read in `fragment`, derivatives only in
+        `fragment`, no recursion.
 - [ ] Lower to `viso-shader` IR; instance ABI from `@shader_value` records (§101–§102).
+  - [ ] `viso-shader` program IR: owned interface (uniform block, instance
+        fields, varyings, textures, samplers, entries) and a structured typed
+        body; validation.
+  - [ ] Viso Shader Layout Algorithm: instance and uniform descriptors with
+        stable field id, offset, size, alignment, strides, interpolation, span;
+        layout version in the pipeline key; `E8104` on an ABI mismatch.
+  - [ ] Codegen MSL (and WGSL/HLSL from the same IR); the DSL lowers checked
+        shaders into it.
 - [ ] Shader reload: background compile, swap at frame boundary, keep the current
       pipeline on failure (§110.3).
+  - [ ] Compile off the render thread; a newer edit supersedes an older one.
+  - [ ] Swap only at a frame boundary; an incompatible instance layout gets a
+        new buffer and pipeline swapped together.
+  - [ ] A failure keeps the current pipeline and reports source spans and the
+        backend log.
 - [ ] CPU reference vs one GPU backend golden within tolerance.
+  - [ ] CPU reference interpreter of the program IR with a small rasterizer.
+  - [ ] Metal renders the same program; pixels agree within a tolerance.
 
 ---
 

@@ -82,6 +82,7 @@ pub enum SymbolKind {
     Event = 12,
     Const = 13,
     TypeAlias = 14,
+    Shader = 15,
 }
 
 /// An in-progress FNV-1a-128 fold across two `u64` lanes.

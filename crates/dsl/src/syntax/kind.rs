@@ -534,10 +534,28 @@ pub enum SyntaxKind {
     /// A `"const" ConstExpression` generic argument (§26).
     ConstGenericArg,
 
+    // Shader Profile (§97).
+    /// `shader IDENT GenericParams? { ShaderMember* }`.
+    ShaderDecl,
+    /// `uniform IDENT : Type ;` in a shader.
+    ShaderUniform,
+    /// `instance IDENT : Type ;` in a shader.
+    ShaderInstance,
+    /// `varying IDENT : Type ;` in a shader.
+    ShaderVarying,
+    /// `texture IDENT : Type ;` in a shader.
+    ShaderTexture,
+    /// `sampler IDENT : Type ;` in a shader.
+    ShaderSampler,
+    /// `fn IDENT ( ParamList ) ReturnType Block` in a shader.
+    ShaderFn,
+    /// `vertex|fragment|compute ( ParamList ) ReturnType Block` in a shader.
+    ShaderEntry,
+
     // Advanced (parsed, not resolved this slice).
     /// A declaration in the Advanced tier (`trait`/`impl`/`template`/`style`/
-    /// `theme`/`shader`/`native`) parsed to a placeholder wrapper: its interior
-    /// is grouped losslessly but it gets no name resolution yet.
+    /// `theme`/`native`) parsed to a placeholder wrapper: its interior is
+    /// grouped losslessly but it gets no name resolution yet.
     AdvancedItem,
 }
 

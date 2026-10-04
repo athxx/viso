@@ -195,6 +195,38 @@ ast_node!(
     ViewDecl = ViewDecl
 );
 ast_node!(
+    /// `shader IDENT GenericParams? { ShaderMember* }` (§97).
+    ShaderDecl = ShaderDecl
+);
+ast_node!(
+    /// `uniform IDENT : Type ;` in a shader.
+    ShaderUniform = ShaderUniform
+);
+ast_node!(
+    /// `instance IDENT : Type ;` in a shader.
+    ShaderInstance = ShaderInstance
+);
+ast_node!(
+    /// `varying IDENT : Type ;` in a shader.
+    ShaderVarying = ShaderVarying
+);
+ast_node!(
+    /// `texture IDENT : Type ;` in a shader.
+    ShaderTexture = ShaderTexture
+);
+ast_node!(
+    /// `sampler IDENT : Type ;` in a shader.
+    ShaderSampler = ShaderSampler
+);
+ast_node!(
+    /// `fn IDENT ( ParamList ) ReturnType Block` in a shader.
+    ShaderFn = ShaderFn
+);
+ast_node!(
+    /// `vertex|fragment|compute ( ParamList ) ReturnType Block` in a shader.
+    ShaderEntry = ShaderEntry
+);
+ast_node!(
     /// An Advanced-tier declaration parsed to a placeholder (no resolution yet).
     AdvancedItem = AdvancedItem
 );
@@ -581,6 +613,151 @@ macro_rules! callable_accessors {
 callable_accessors!(FnDecl);
 callable_accessors!(ActionDecl);
 callable_accessors!(TaskDecl);
+callable_accessors!(ShaderFn);
+
+impl ShaderDecl {
+    /// The shader's name.
+    pub fn name(&self) -> Option<SyntaxToken> {
+        support::name_token(&self.syntax)
+    }
+
+    /// Its generic parameter list, if declared.
+    pub fn generic_params(&self) -> Option<SyntaxNode> {
+        self.syntax
+            .children()
+            .into_iter()
+            .find(|n| n.kind() == SyntaxKind::GenericParams)
+    }
+
+    /// Its members, in order.
+    pub fn members(&self) -> impl Iterator<Item = ShaderMember> {
+        support::children(&self.syntax)
+    }
+}
+
+/// Shared accessors for the five shader bindings, `kw IDENT : Type ;`.
+macro_rules! shader_binding_accessors {
+    ($name:ident) => {
+        impl $name {
+            /// The binding's name.
+            pub fn name(&self) -> Option<SyntaxToken> {
+                support::name_token(&self.syntax)
+            }
+
+            /// The binding's type.
+            pub fn ty(&self) -> Option<TypePath> {
+                support::child(&self.syntax)
+            }
+        }
+    };
+}
+
+shader_binding_accessors!(ShaderUniform);
+shader_binding_accessors!(ShaderInstance);
+shader_binding_accessors!(ShaderVarying);
+shader_binding_accessors!(ShaderTexture);
+shader_binding_accessors!(ShaderSampler);
+
+/// The stage a shader entry point runs in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ShaderStage {
+    Vertex,
+    Fragment,
+    Compute,
+}
+
+impl ShaderEntry {
+    /// The keyword naming its stage.
+    pub fn stage_token(&self) -> Option<SyntaxToken> {
+        self.syntax
+            .children_with_tokens()
+            .into_iter()
+            .filter_map(|e| e.as_token().cloned())
+            .find(|t| !t.kind().is_trivia())
+    }
+
+    /// Its stage.
+    pub fn stage(&self) -> Option<ShaderStage> {
+        Some(match self.stage_token()?.kind() {
+            SyntaxKind::VertexKw => ShaderStage::Vertex,
+            SyntaxKind::FragmentKw => ShaderStage::Fragment,
+            SyntaxKind::ComputeKw => ShaderStage::Compute,
+            _ => return None,
+        })
+    }
+
+    /// The parameter list.
+    pub fn param_list(&self) -> Option<ParamList> {
+        support::child(&self.syntax)
+    }
+
+    /// The parameters, in order.
+    pub fn params(&self) -> Vec<Param> {
+        self.param_list()
+            .map(|l| l.params().collect())
+            .unwrap_or_default()
+    }
+
+    /// The `-> Type` return type.
+    pub fn return_type(&self) -> Option<ReturnType> {
+        support::child(&self.syntax)
+    }
+
+    /// The body block.
+    pub fn body(&self) -> Option<Block> {
+        support::child(&self.syntax)
+    }
+}
+
+/// One member of a shader.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ShaderMember {
+    Uniform(ShaderUniform),
+    Instance(ShaderInstance),
+    Varying(ShaderVarying),
+    Texture(ShaderTexture),
+    Sampler(ShaderSampler),
+    Fn(ShaderFn),
+    Entry(ShaderEntry),
+}
+
+impl AstNode for ShaderMember {
+    fn can_cast(kind: SyntaxKind) -> bool {
+        matches!(
+            kind,
+            SyntaxKind::ShaderUniform
+                | SyntaxKind::ShaderInstance
+                | SyntaxKind::ShaderVarying
+                | SyntaxKind::ShaderTexture
+                | SyntaxKind::ShaderSampler
+                | SyntaxKind::ShaderFn
+                | SyntaxKind::ShaderEntry
+        )
+    }
+    fn cast(node: SyntaxNode) -> Option<Self> {
+        Some(match node.kind() {
+            SyntaxKind::ShaderUniform => ShaderMember::Uniform(ShaderUniform { syntax: node }),
+            SyntaxKind::ShaderInstance => ShaderMember::Instance(ShaderInstance { syntax: node }),
+            SyntaxKind::ShaderVarying => ShaderMember::Varying(ShaderVarying { syntax: node }),
+            SyntaxKind::ShaderTexture => ShaderMember::Texture(ShaderTexture { syntax: node }),
+            SyntaxKind::ShaderSampler => ShaderMember::Sampler(ShaderSampler { syntax: node }),
+            SyntaxKind::ShaderFn => ShaderMember::Fn(ShaderFn { syntax: node }),
+            SyntaxKind::ShaderEntry => ShaderMember::Entry(ShaderEntry { syntax: node }),
+            _ => return None,
+        })
+    }
+    fn syntax(&self) -> &SyntaxNode {
+        match self {
+            ShaderMember::Uniform(n) => n.syntax(),
+            ShaderMember::Instance(n) => n.syntax(),
+            ShaderMember::Varying(n) => n.syntax(),
+            ShaderMember::Texture(n) => n.syntax(),
+            ShaderMember::Sampler(n) => n.syntax(),
+            ShaderMember::Fn(n) => n.syntax(),
+            ShaderMember::Entry(n) => n.syntax(),
+        }
+    }
+}
 
 ast_node!(
     /// A `requires { CapabilityPath,* }` clause on a callable — its public capability
@@ -1286,6 +1463,7 @@ pub enum Item {
     Fn(FnDecl),
     Action(ActionDecl),
     Task(TaskDecl),
+    Shader(ShaderDecl),
     Advanced(AdvancedItem),
 }
 
@@ -1303,6 +1481,7 @@ impl AstNode for Item {
                 | SyntaxKind::FnDecl
                 | SyntaxKind::ActionDecl
                 | SyntaxKind::TaskDecl
+                | SyntaxKind::ShaderDecl
                 | SyntaxKind::AdvancedItem
         )
     }
@@ -1318,6 +1497,7 @@ impl AstNode for Item {
             SyntaxKind::FnDecl => Item::Fn(FnDecl { syntax: node }),
             SyntaxKind::ActionDecl => Item::Action(ActionDecl { syntax: node }),
             SyntaxKind::TaskDecl => Item::Task(TaskDecl { syntax: node }),
+            SyntaxKind::ShaderDecl => Item::Shader(ShaderDecl { syntax: node }),
             SyntaxKind::AdvancedItem => Item::Advanced(AdvancedItem { syntax: node }),
             _ => return None,
         };
@@ -1335,6 +1515,7 @@ impl AstNode for Item {
             Item::Fn(n) => n.syntax(),
             Item::Action(n) => n.syntax(),
             Item::Task(n) => n.syntax(),
+            Item::Shader(n) => n.syntax(),
             Item::Advanced(n) => n.syntax(),
         }
     }

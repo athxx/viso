@@ -57,6 +57,7 @@ const TOP_LEVEL_UNITS: &[SyntaxKind] = &[
     SyntaxKind::FnDecl,
     SyntaxKind::ActionDecl,
     SyntaxKind::TaskDecl,
+    SyntaxKind::ShaderDecl,
     SyntaxKind::AdvancedItem,
 ];
 
