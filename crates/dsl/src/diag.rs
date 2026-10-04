@@ -197,6 +197,14 @@ impl Diagnostic {
         }
     }
 
+    /// A bare note diagnostic, otherwise like [`Diagnostic::error`].
+    pub fn note(code: &'static str, primary: TextRange, message: impl Into<String>) -> Self {
+        Self {
+            severity: Severity::Note,
+            ..Self::error(code, primary, message)
+        }
+    }
+
     /// This diagnostic as a mismatch: `expected` lists what would have been
     /// accepted and `actual` names what was found.
     pub fn expecting<S: Into<String>>(

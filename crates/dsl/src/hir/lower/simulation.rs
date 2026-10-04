@@ -163,12 +163,20 @@ impl Domains {
                         };
                         let symbol = env.member_symbol(&name);
                         if let Member::State(_) = member {
+                            let state = states
+                                .iter()
+                                .find(|s| symbol.is_some() && s.meta.resolved_symbol == symbol);
                             if local.is_some() {
                                 self.locals.extend(symbol);
-                            } else if let Some(state) = states
-                                .iter()
-                                .find(|s| symbol.is_some() && s.meta.resolved_symbol == symbol)
-                            {
+                                if let (Some(state), Some(symbol)) = (state, symbol) {
+                                    let schema = schema_hash(&state.meta.inferred_type, env);
+                                    env.behavior.borrow_mut().local_state(
+                                        system_symbol,
+                                        symbol,
+                                        schema,
+                                    );
+                                }
+                            } else if let Some(state) = state {
                                 let ty = &state.meta.inferred_type;
                                 if check_snapshot(ty, &name, &node, env, diagnostics)
                                     && let Some(symbol) = symbol

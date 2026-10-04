@@ -200,6 +200,7 @@ impl ProgramBuilder {
             component: component as u32,
             hooks,
             snapshot: Vec::new(),
+            locals: Vec::new(),
         });
     }
 
@@ -211,6 +212,17 @@ impl ProgramBuilder {
         };
         if let Some(layout) = self.program.systems.iter_mut().find(|s| s.symbol == system) {
             layout.snapshot.push((state, slot, schema));
+        }
+    }
+
+    /// Adds the `@local` state `state` of system `system`, of the type with
+    /// schema hash `schema`.
+    pub(crate) fn local_state(&mut self, system: SymbolId, state: SymbolId, schema: u64) {
+        let Some(&(_, Place::State(slot))) = self.places.get(&state) else {
+            return;
+        };
+        if let Some(layout) = self.program.systems.iter_mut().find(|s| s.symbol == system) {
+            layout.locals.push((state, slot, schema));
         }
     }
 

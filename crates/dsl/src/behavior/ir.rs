@@ -304,7 +304,7 @@ pub enum Inst {
 }
 
 /// What a function lowers.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum FunctionKind {
     /// A `fn`.
     Fn,
@@ -499,6 +499,8 @@ pub struct SystemLayout {
     /// Each Simulation state a game snapshot captures: its declaration, slot
     /// and type schema hash.
     pub snapshot: Vec<(SymbolId, u32, u64)>,
+    /// Each `@local` state, likewise.
+    pub locals: Vec<(SymbolId, u32, u64)>,
 }
 
 /// A package's lowered behavior.
