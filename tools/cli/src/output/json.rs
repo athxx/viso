@@ -78,6 +78,42 @@ impl Stream {
         });
     }
 
+    /// Writes a `trace` event: the `@probe` states of `scenario` after
+    /// `tick`, `probes` an object already encoded.
+    pub(super) fn trace(&mut self, scenario: &str, tick: u64, probes: &str) {
+        self.event("trace", |w| {
+            w.begin_object();
+            w.name("scenario");
+            w.string(scenario);
+            w.name("tick");
+            w.uint(tick);
+            w.name("probes");
+            w.raw(probes);
+            w.end_object();
+        });
+    }
+
+    /// Writes a `test` event: its common fields, then those `extra` writes.
+    pub(super) fn test(&mut self, test: &super::Test<'_>, extra: impl FnOnce(&mut JsonWriter)) {
+        self.event("test", |w| {
+            w.begin_object();
+            w.name("name");
+            w.string(test.name);
+            w.name("domain");
+            w.string(test.domain);
+            w.name("status");
+            w.string(if test.passed { "pass" } else { "fail" });
+            w.name("duration_ms");
+            w.uint(test.duration_ms);
+            if let Some(message) = test.message {
+                w.name("message");
+                w.string(message);
+            }
+            extra(w);
+            w.end_object();
+        });
+    }
+
     /// Writes the `dev` event of a hot reload attempt of `file`.
     pub(super) fn dev(&mut self, file: &str, session: &str, build_id: &str, event: &ReloadEvent) {
         self.event("dev", |w| dev(w, file, session, build_id, event));

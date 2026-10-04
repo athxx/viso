@@ -149,6 +149,17 @@ struct Report<'a> {
     fixes: Vec<Suggestion<'a>>,
 }
 
+/// One test's outcome.
+pub struct Test<'a> {
+    pub name: &'a str,
+    /// `game`, `ui`, ...
+    pub domain: &'a str,
+    pub passed: bool,
+    pub duration_ms: u64,
+    /// Why it failed.
+    pub message: Option<&'a str>,
+}
+
 /// The output of one command run.
 pub struct Output {
     form: Form,
@@ -285,6 +296,37 @@ impl Output {
         match &mut self.form {
             Form::Json(stream) => stream.dev(&file.name, session, build_id, event),
             Form::Human => eprintln!("{}", human::dev(&file.name, event)),
+        }
+    }
+
+    /// Reports the `@probe` states of `scenario` after `tick`, `probes` an
+    /// encoded JSON object: a `trace` event, which human text leaves out.
+    pub fn trace(&mut self, scenario: &str, tick: u64, probes: &str) {
+        if let Form::Json(stream) = &mut self.form {
+            stream.trace(scenario, tick, probes);
+        }
+    }
+
+    /// Reports a test's outcome: a `test` event with the fields `extra`
+    /// writes after the common ones, or the human text `text` builds.
+    pub fn test(
+        &mut self,
+        test: &Test<'_>,
+        extra: impl FnOnce(&mut JsonWriter),
+        text: impl FnOnce() -> String,
+    ) {
+        match &mut self.form {
+            Form::Json(stream) => stream.test(test, extra),
+            Form::Human => print!("{}", text()),
+        }
+    }
+
+    /// Reports how many tests passed and failed: a line of human text; the
+    /// event stream has a `test` event for each.
+    pub fn tally(&mut self, passed: u64, failed: u64) {
+        if let Form::Human = self.form {
+            let status = if failed == 0 { "ok" } else { "FAILED" };
+            println!("test result: {status}. {passed} passed; {failed} failed");
         }
     }
 

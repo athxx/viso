@@ -4,6 +4,7 @@
 mod check;
 mod run;
 mod schema;
+mod test;
 
 use crate::args::{Cli, Command, Global};
 use crate::output::Output;
@@ -35,6 +36,12 @@ pub const ENV_CARGO: &str = "ENV_CARGO";
 pub const ENV_NO_EXECUTABLE: &str = "ENV_NO_EXECUTABLE";
 /// The dev channel could not be opened on the loopback interface.
 pub const ENV_DEV_CHANNEL: &str = "ENV_DEV_CHANNEL";
+/// A test scenario or tape could not be found or read.
+pub const ENV_TEST_INPUT: &str = "ENV_TEST_INPUT";
+/// A test scenario or tape does not parse or fit the build.
+pub const TEST_INPUT_INVALID: &str = "TEST_INPUT_INVALID";
+/// A game test's expectation was not met.
+pub const TEST_EXPECTATION: &str = "TEST_EXPECTATION";
 /// `cargo build` failed.
 pub const BUILD_FAILED: &str = "BUILD_FAILED";
 /// The app could not be launched, crashed, or exited with a failure.
@@ -48,6 +55,7 @@ pub fn run(cli: &Cli) -> u8 {
         Command::Check => check::run(&cli.global, &mut out),
         Command::Run(args) => run::run(&cli.global, args, &mut out),
         Command::Schema(args) => schema::run(args, &mut out),
+        Command::Test(args) => test::run(&cli.global, args, &mut out),
     };
     out.finish(code)
 }

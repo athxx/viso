@@ -115,6 +115,14 @@ impl JsonWriter {
         self.needs_comma = true;
     }
 
+    /// Writes a value another writer already encoded, as is.
+    #[inline]
+    pub fn raw(&mut self, json: &str) {
+        self.separator();
+        self.out.push_str(json);
+        self.needs_comma = true;
+    }
+
     /// Writes a JSON null.
     #[inline]
     pub fn null(&mut self) {

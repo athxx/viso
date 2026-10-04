@@ -41,6 +41,36 @@ pub enum Command {
     Run(RunArgs),
     /// Show the typed schema of a widget, native library, function or type.
     Schema(SchemaArgs),
+    /// Run the project's headless tests of a domain.
+    Test(TestArgs),
+}
+
+/// The test domains `viso test` runs (section 22).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+pub enum TestDomain {
+    /// Deterministic game scenarios under `tests/game/` (section 22.3).
+    Game,
+}
+
+/// What `viso test` runs (section 22).
+#[derive(Debug, Args)]
+pub struct TestArgs {
+    /// The test domain.
+    pub domain: TestDomain,
+    /// The scenario, `tests/game/<SCENARIO>.tape`; every scenario there when
+    /// omitted.
+    pub scenario: Option<String>,
+    /// The frames to run, one fixed tick each; by default through the tape
+    /// and the scenario's last expectation.
+    #[arg(long, value_name = "N")]
+    pub frames: Option<u64>,
+    /// The world's random seed, over the tape's.
+    #[arg(long, value_name = "SEED")]
+    pub seed: Option<u64>,
+    /// Replay the input tape at PATH, binary or text, instead of the
+    /// scenario's.
+    #[arg(long, value_name = "PATH")]
+    pub tape: Option<PathBuf>,
 }
 
 /// What `viso run` passes on (section 13.4).
@@ -71,6 +101,7 @@ impl Command {
             Command::Check => "check",
             Command::Run(_) => "run",
             Command::Schema(_) => "schema",
+            Command::Test(_) => "test",
         }
     }
 }
@@ -159,5 +190,31 @@ mod tests {
         ));
         assert!(Cli::try_parse_from(["viso", "schema"]).is_err());
         assert!(Cli::try_parse_from(["viso", "schema", "Button", "--search", "x"]).is_err());
+    }
+
+    #[test]
+    fn test_takes_a_domain_a_scenario_and_a_run_shape() {
+        let cli = Cli::try_parse_from([
+            "viso",
+            "test",
+            "game",
+            "movement",
+            "--frames",
+            "600",
+            "--seed",
+            "1234",
+            "--tape",
+            "runs/jump.tape",
+        ])
+        .unwrap();
+        let Command::Test(args) = cli.command else {
+            panic!("a test command");
+        };
+        assert_eq!(args.domain, TestDomain::Game);
+        assert_eq!(args.scenario.as_deref(), Some("movement"));
+        assert_eq!((args.frames, args.seed), (Some(600), Some(1234)));
+        assert_eq!(args.tape, Some(PathBuf::from("runs/jump.tape")));
+        assert!(Cli::try_parse_from(["viso", "test", "game"]).is_ok());
+        assert!(Cli::try_parse_from(["viso", "test", "web"]).is_err());
     }
 }
