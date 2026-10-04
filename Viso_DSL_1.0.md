@@ -6148,6 +6148,8 @@ UI Binding 对 Game Observable Handle 的读取必须通过 Schema 标记为 Rea
 
 当前实现（Input Tape，`viso_behavior::game::InputTape`）：Tape 头部是 Seed、Build Hash（手写为 0）、determinism 档位与 Tick Rate（即 `fixed_dt = 1 / tick_rate`）及覆盖的 Tick 数；正文是按 Tick 的 InputSnapshot，存为相邻 Tick 之间的变化——动作按下（带 press 边沿）、松开（带 release 边沿）、静默置位（无边沿，如 Remap）与 Move 向量，同一 Tick 的变化按序在该 Tick 运行前生效，因此同 Tick 的按下加松开即一次 Tap。动作按名字存放，回放时按名字映射到当前 Build 的动作集，Tape 中有 Build 没有的动作、或 Tick Rate 不同，拒绝回放。二进制形式是带 `GTP1` 标记的版本化 Ende Blob，解码有界；文本形式一行一条：`30: press Jump`、`40: release Jump`、`95: tap Fire`、`hold`/`unhold`（无边沿）、`31..90: axis move = (1, 0)`，区间 `a..b` 在 `a` 生效、在 `b` 撤销（`a..=b` 在 `b` 之后撤销：按下变松开，Move 回到 `(0, 0)`），头部行 `seed`、`build`、`determinism`、`tick_rate`、`ticks`，`#` 起注释，出错报告行号。`Scheduler::record` 录制每个 Tick 实际读到的输入，`stop_recording` 取出 Tape；`Scheduler::play` 回放时设备输入不再起作用；Logic Reload 按名字重新映射，World Rebuild 让回放与录制都从 Tick 0 重新开始。同一 Seed 与 Tape 的回放得到相同 Snapshot Hash（`GameSnapshot::hash`）。
 
+当前实现（`@probe`）：`@probe` 只标在 System 的 Simulation `state` 上，标在 `@local` 状态、其他成员或 Component 上报 `E9110`；它不改变运行时，也不进入 Release 模块，只由编译器连同状态类型的形状记入 Behavior IR（`SystemLayout::probes`），测试 Runner 每个 Tick 按形状把值写进 JSON Trace：`Bool` 写 `true`/`false`，无符号整数按无符号写，单元枚举变体写名字，带载荷变体写 `{"Name": 载荷}`，Record 写字段对象，`Option` 的 `None` 写 `null`；形状不描述的类型（`Vec3F32` 等 Native 值类型、递归类型）按结构写，聚合值写成字段数组。
+
 ---
 
 ## 111. 游戏能力验收矩阵
@@ -8520,6 +8522,7 @@ RecordPatternField
 | E9107  | 输入动作缺少目标平台的手柄/触屏路径（警告，§106.3）      |
 | E9108  | AudioProcess 实时域违规（§108.3）                        |
 | E9109  | System 声明 `view`、`event` 或 `slot` 成员（§105）        |
+| E9110  | `@probe` 误用：只能标在 System 的 Simulation `state` 上（§110.5） |
 
 错误码文案可以改进，但错误码语义不得在同一 Major 版本中复用。
 
