@@ -43,7 +43,7 @@ static TEXT: NativeLibrary = NativeLibrary {
     widgets: &[],
 };
 
-/// `F64` math.
+/// `F64` math and the `F32` vectors.
 static MATH: NativeLibrary = NativeLibrary {
     path: "viso::math",
     version: 1,
@@ -76,7 +76,10 @@ static MATH: NativeLibrary = NativeLibrary {
         .deterministic()
         .realtime_safe(),
     ],
-    types: &[],
+    types: &[
+        NativeType::value("Vec2F32", &super::vector::VEC2_METHODS),
+        NativeType::value("Vec3F32", &super::vector::VEC3_METHODS),
+    ],
     traits: &[],
     derives: &[],
     widgets: &[],

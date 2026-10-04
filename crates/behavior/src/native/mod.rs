@@ -38,6 +38,7 @@
 mod registry;
 mod standard;
 mod value;
+mod vector;
 mod widget;
 mod widgets;
 
@@ -53,6 +54,7 @@ pub use registry::{
 };
 pub use standard::{Clipboard, STANDARD, Stopwatch};
 pub use value::{NativeHandle, NativeObject, NativeValue, Obj, Ticks};
+pub use vector::{Vec2F32, Vec3F32};
 pub use widget::{
     FlexAxis, MigratableState, NativeWidget, PropertyGroup, SlotCardinality, WidgetEvent,
     WidgetNode, WidgetProperty, WidgetSlot,
