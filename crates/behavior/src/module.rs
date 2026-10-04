@@ -5,6 +5,7 @@ use std::fmt;
 use crate::game::InputSchema;
 use crate::native::NativeId;
 use crate::op::Op;
+use crate::retype::ValueSchema;
 use crate::value::Value;
 
 /// A byte range in a chunk's source file.
@@ -172,6 +173,34 @@ pub struct System {
     /// Its `@local` states, by ascending stable identity: no snapshot holds
     /// them, but a logic reload carries them to the build that kept them.
     pub locals: Box<[SnapshotSlot]>,
+    /// Its `@persist` states, in declaration order.
+    pub persist: Box<[PersistSlot]>,
+}
+
+/// A `@persist` state of a system: stored under its key, the value a run
+/// left loaded before the next run's start.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PersistSlot {
+    /// Its key, unique in the module.
+    pub key: Box<str>,
+    /// Its slot in the system's layout.
+    pub slot: u32,
+    /// Its type, which a value stored by a build of another type converts
+    /// into.
+    pub schema: ValueSchema,
+    /// Its type as source spells it, which a `@migrate(from:)` names.
+    pub spelling: Box<str>,
+}
+
+/// A `@migrate` function: it carries a value of the type spelled `from`, once
+/// converted into its parameter, into its return type.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Migrator {
+    pub from: Box<str>,
+    pub param: ValueSchema,
+    pub ret: ValueSchema,
+    /// The function's chunk.
+    pub chunk: u32,
 }
 
 impl System {
@@ -196,6 +225,7 @@ pub struct Module {
     pub(crate) natives: Box<[NativeImport]>,
     pub(crate) input: Option<Box<InputSchema>>,
     pub(crate) tick_rate: u32,
+    pub(crate) migrators: Box<[Migrator]>,
 }
 
 /// The tick rate of a module that declares none, 60 Hz.
@@ -239,6 +269,7 @@ impl Module {
             natives: natives.into(),
             input: None,
             tick_rate: DEFAULT_TICK_RATE,
+            migrators: Box::new([]),
         };
         let mut max_states = 0;
         let mut max_inputs = 0;
@@ -349,6 +380,22 @@ impl Module {
                     }
                 }
             }
+            for state in system.persist.iter() {
+                if state.slot as usize >= layout.states.len() {
+                    return Err(fail(
+                        0,
+                        format!("system `{}` persists a missing state", layout.name),
+                    ));
+                }
+                module.field_defaults(&state.schema)?;
+                let earlier = module.systems[..=i].iter().flat_map(|s| s.persist.iter());
+                if earlier.filter(|s| s.key == state.key).count() > 1 {
+                    return Err(fail(
+                        0,
+                        format!("two states persist under the key `{}`", state.key),
+                    ));
+                }
+            }
         }
         let limits = Limits {
             chunks: module
@@ -424,6 +471,57 @@ impl Module {
         }
         self.tick_rate = tick_rate;
         Ok(self)
+    }
+
+    /// The module with `migrators` as the `@migrate` functions a persisted
+    /// value of an older type converts by.
+    ///
+    /// # Errors
+    ///
+    /// A [`VerifyError`] if a migrator's chunk is no function of one
+    /// parameter, or a schema names a chunk that computes no field default.
+    pub fn with_migrators(mut self, migrators: Vec<Migrator>) -> Result<Module, VerifyError> {
+        for migrator in &migrators {
+            let function = self
+                .chunks
+                .get(migrator.chunk as usize)
+                .is_some_and(|c| c.kind == ChunkKind::Fn && c.params == 1);
+            if !function {
+                return Err(VerifyError {
+                    chunk: migrator.chunk,
+                    pc: None,
+                    message: format!(
+                        "the migrator from `{}` is no function of one parameter",
+                        migrator.from
+                    ),
+                });
+            }
+            self.field_defaults(&migrator.param)?;
+            self.field_defaults(&migrator.ret)?;
+        }
+        self.migrators = migrators.into();
+        Ok(self)
+    }
+
+    /// The `@migrate` functions a persisted value converts by.
+    pub fn migrators(&self) -> &[Migrator] {
+        &self.migrators
+    }
+
+    /// Checks that every chunk `schema` names computes a field default.
+    fn field_defaults(&self, schema: &ValueSchema) -> Result<(), VerifyError> {
+        match schema.chunks().find(|&chunk| {
+            self.chunks
+                .get(chunk as usize)
+                .is_none_or(|c| c.kind != ChunkKind::FieldDefault || c.params != 0)
+        }) {
+            Some(chunk) => Err(VerifyError {
+                chunk,
+                pc: None,
+                message: "a value schema names a chunk that computes no field default".to_owned(),
+            }),
+            None => Ok(()),
+        }
     }
 
     /// The ticks a second its systems step, the compile-time fixed step its

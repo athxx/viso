@@ -23,14 +23,15 @@ mod memo;
 mod module;
 pub mod native;
 mod op;
+pub mod retype;
 mod value;
 mod vm;
 mod wire;
 
 pub use memo::Reads;
 pub use module::{
-    Chunk, ChunkKind, Code, Component, DEFAULT_TICK_RATE, Module, NativeImport, SnapshotSlot, Span,
-    StableId, System, VerifyError,
+    Chunk, ChunkKind, Code, Component, DEFAULT_TICK_RATE, Migrator, Module, NativeImport,
+    PersistSlot, SnapshotSlot, Span, StableId, System, VerifyError,
 };
 pub use op::{Arith, ArithOp, DisplayKind, Num, Op};
 pub use value::{Aggregate, Closure, Value};

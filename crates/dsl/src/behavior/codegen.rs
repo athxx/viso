@@ -70,12 +70,16 @@ impl Program {
                     id: stable(s.symbol),
                     snapshot: slots(&s.snapshot),
                     locals: slots(&s.locals),
+                    persist: s.persist.clone().into(),
                 }
             })
             .collect();
         let mut module = Module::new(chunks, components, systems, self.natives.clone())?;
         if let Some(rate) = self.tick_rate {
             module = module.with_tick_rate(rate)?;
+        }
+        if !self.migrators.is_empty() {
+            module = module.with_migrators(self.migrators.clone())?;
         }
         match &self.input {
             Some(input) => module.with_input(input.clone()),

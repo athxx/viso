@@ -5,7 +5,7 @@
 use std::fs;
 use std::path::Path;
 
-use viso_dsl::hir::{Determinism, InputDevices, TargetProfile};
+use viso_dsl::hir::{CapabilitySet, Determinism, InputDevices, TargetProfile};
 use viso_dsl::package::{LoadedPackage, PackageManifest, load_package};
 use viso_dsl::{TextRange, TextSize};
 use viso_project::{ConfigDiagnostic, GameDeterminism, Project, Span};
@@ -154,6 +154,13 @@ pub(super) fn profile(project: &Project) -> TargetProfile {
             .tick_rate
             .map_or(TargetProfile::default().tick_rate, |rate| rate.value),
         release: false,
+        capabilities: {
+            let mut granted = CapabilitySet::new();
+            for capability in &project.manifest.package.capabilities {
+                granted.insert(capability.value.as_str());
+            }
+            granted
+        },
     }
 }
 

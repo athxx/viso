@@ -37,6 +37,10 @@
 //! [`Scheduler::rebuild`] starts a new build over in a shadow game, either
 //! keeping the running characters by stable key.
 //!
+//! A `@persist` state loads from the host's [`Persist`] store before the
+//! start and is written back at tick boundaries, converted across a change
+//! of its type; [`Scheduler::suspend`] makes the writes durable.
+//!
 //! [`quick`] is the low-ceremony surface: one `QuickGame` system whose
 //! `start` and `fixed` the scheduler runs as a `Startup` and a `FixedUpdate`.
 
@@ -44,6 +48,7 @@ mod clock;
 mod grid;
 pub mod input;
 pub mod kit;
+mod persist;
 pub mod quick;
 mod scheduler;
 mod snapshot;
@@ -65,6 +70,9 @@ pub use input::{
     Action, INPUT_ACTION_DERIVE, InputAction, InputAxis, InputBindings, InputMap, InputSchema,
     InputSnapshot, Key, KeySet, MoveAxes, MoveSource, PadButton, PadStick, TouchButton,
 };
+#[cfg(not(target_family = "wasm"))]
+pub use persist::DirStore;
+pub use persist::{MemoryStore, PERSIST_CAPABILITY, Persist, PersistReport, PersistStore};
 pub use scheduler::{CommandKey, DEFAULT_SEED, Rebuild, Scheduler, SystemFault};
 pub use snapshot::{GameSnapshot, Restored};
 pub use tape::{InputTape, TapeChange, TapeError, TapeEvent};

@@ -84,6 +84,8 @@ pub struct Package {
     /// under `[target.ios]` because it is delivery configuration, not a build
     /// property.
     pub ios_team_id: Option<Spanned<String>>,
+    /// The capabilities the package is granted, such as `storage.persist`.
+    pub capabilities: Vec<Spanned<String>>,
 }
 
 /// `[build]` — build-wide defaults.
@@ -395,7 +397,14 @@ impl<'a> Reader<'a> {
             Some(t) => {
                 self.deny_unknown(
                     t,
-                    &["name", "bundle_id", "version", "language", "ios"],
+                    &[
+                        "name",
+                        "bundle_id",
+                        "version",
+                        "language",
+                        "ios",
+                        "capabilities",
+                    ],
                     "package",
                 );
                 Package {
@@ -410,6 +419,7 @@ impl<'a> Reader<'a> {
                         }
                         None => None,
                     },
+                    capabilities: self.string_array(t, "capabilities", "package"),
                 }
             }
             None => Package::default(),
@@ -1021,6 +1031,7 @@ name = "app"
 bundle_id = "com.example.app"
 version = "0.2.0"
 language = "1.0"
+capabilities = ["storage.persist"]
 
 [package.ios]
 team_id = "ABCDE12345"
@@ -1102,6 +1113,7 @@ members = ["apps/one", "apps/two"]
             .map(|s| s.value.as_str())
             .collect();
         assert_eq!(members, ["apps/one", "apps/two"]);
+        assert_eq!(m.package.capabilities[0].value, "storage.persist");
     }
 
     /// Spans are the reason this module uses `toml_edit`. If they were wrong, every

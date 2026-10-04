@@ -171,7 +171,7 @@ pub fn lower(
         .collect();
     decls.input_action = Some(input::action_type(&decls));
     decls.tag_type = Some(tags::tag_type(&decls));
-    decls.profile = profile;
+    decls.profile = profile.clone();
 
     // Second pass: lower each module against the package table. The capability call graph
     // spans the package, so a call into an imported callable is an edge like any other.
@@ -210,6 +210,7 @@ pub fn lower(
     cap.finish(&mut components, &mut per_module);
     check_input_bases(&input_flows, &mut per_module);
     domains.check(&decls, graph.natives(), profile, &mut per_module);
+    domains.persist_slots(&decls, &behavior, &migrators, &mut per_module);
     let order = system::order(&systems, &mut per_module);
     behavior.borrow_mut().order_systems(&order);
 

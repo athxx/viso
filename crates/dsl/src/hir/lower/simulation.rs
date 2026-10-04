@@ -6,8 +6,11 @@
 //! (`E9103`), nor reach a non-deterministic source (`E9104`): a native below
 //! the package's determinism tier, a `task` or `await`, or the adaptive
 //! environment. Its state must snapshot (`E9105`). A Presentation command it
-//! calls is deferred by the scheduler, so it is allowed.
+//! calls is deferred by the scheduler, so it is allowed. A `@persist` state
+//! names a key unique in the package, snapshots, and needs the
+//! `storage.persist` capability (`E9106`).
 
+use std::cell::RefCell;
 use std::collections::{HashMap, HashSet, VecDeque};
 
 use viso_behavior::native::{Determinism, HookDomain, NativeId, NativeKind, SchemaTy};
@@ -15,17 +18,19 @@ use viso_behavior::native::{Determinism, HookDomain, NativeId, NativeKind, Schem
 use crate::ast::{AstNode, Item, Member, decl_attributes};
 use crate::behavior::probe::{ProbePayload, ProbeShape, ProbeVariant};
 use crate::diag::{Diagnostic, Related};
+use crate::hir::CapabilitySet;
 use crate::hir::component::MemberEnv;
 use crate::hir::infer::{FieldInfo, TypeEnv, VariantPayload};
 use crate::resolve::{Resolution, ResolvedRef, SymbolId, SymbolKind};
 use crate::syntax::{SyntaxKind, SyntaxNode, TextRange};
 
-use super::{Declarations, HirComponent, InputDevices, ModuleEnv, Ty, name_of};
+use super::{Declarations, HirComponent, InputDevices, Migrator, ModuleEnv, Ty, name_of};
+use crate::behavior::lower::ProgramBuilder;
 
 /// What the package's targets are and how it is built: what game input and
-/// determinism checks hold it to, the fixed step its games run at, and
-/// whether debug draw is compiled out.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// determinism checks hold it to, the fixed step its games run at, whether
+/// debug draw is compiled out, and the capabilities it is granted.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TargetProfile {
     /// The input devices the targets have.
     pub devices: InputDevices,
@@ -36,6 +41,8 @@ pub struct TargetProfile {
     pub tick_rate: u32,
     /// A release build, which removes debug draw.
     pub release: bool,
+    /// The capabilities the package is granted (`[package] capabilities`).
+    pub capabilities: CapabilitySet,
 }
 
 impl Default for TargetProfile {
@@ -45,6 +52,7 @@ impl Default for TargetProfile {
             determinism: Determinism::SameBinary,
             tick_rate: viso_behavior::DEFAULT_TICK_RATE,
             release: false,
+            capabilities: CapabilitySet::new(),
         }
     }
 }
@@ -72,7 +80,22 @@ pub(super) struct Domains {
     roots: Vec<(SymbolId, String)>,
     /// Every `@local` state.
     locals: HashSet<SymbolId>,
+    /// Every `@persist` state that checked, in package order.
+    persisted: Vec<Persisted>,
 }
+
+/// A `@persist` state: its system, key and type, and where it is marked.
+struct Persisted {
+    module: usize,
+    system: SymbolId,
+    state: SymbolId,
+    key: String,
+    at: TextRange,
+    ty: Ty,
+}
+
+/// The capability a `@persist` state needs.
+const PERSIST: &str = "storage.persist";
 
 /// Whether `node` carries the attribute `name`.
 fn has_attribute(node: &SyntaxNode, name: &str) -> Option<SyntaxNode> {
@@ -155,6 +178,7 @@ impl Domains {
                         let node = member.syntax().clone();
                         let local = has_attribute(&node, "local");
                         let probe = has_attribute(&node, "probe");
+                        let persist = has_attribute(&node, "persist");
                         let (name, is_body) = match &member {
                             Member::State(s) => (name_of(s.name()), false),
                             Member::Fn(f) => (name_of(f.name()), true),
@@ -170,6 +194,18 @@ impl Domains {
                                 .find(|s| symbol.is_some() && s.meta.resolved_symbol == symbol);
                             if let (Some(_), Some(attr)) = (&local, &probe) {
                                 misplaced_probe(attr, diagnostics);
+                            }
+                            if let (Some(attr), Some(state), Some(symbol)) =
+                                (&persist, state, symbol)
+                            {
+                                self.persist(
+                                    attr,
+                                    &name,
+                                    &state.meta.inferred_type,
+                                    (system_symbol, symbol),
+                                    env,
+                                    diagnostics,
+                                );
                             }
                             if local.is_some() {
                                 self.locals.extend(symbol);
@@ -209,6 +245,9 @@ impl Domains {
                             if let Some(attr) = probe {
                                 misplaced_probe(&attr, diagnostics);
                             }
+                            if let Some(attr) = persist {
+                                misplaced_persist(&attr, false, diagnostics);
+                            }
                         }
                         if is_body && let Some(symbol) = symbol {
                             let qualified = format!("{system_name}.{name}");
@@ -234,6 +273,10 @@ impl Domains {
                         if let Some(attr) = has_attribute(member.syntax(), "probe") {
                             misplaced_probe(&attr, diagnostics);
                         }
+                        if let Some(attr) = has_attribute(member.syntax(), "persist") {
+                            let state = matches!(member, Member::State(_));
+                            misplaced_persist(&attr, state, diagnostics);
+                        }
                     }
                 }
                 Some(Item::Fn(f)) => {
@@ -249,6 +292,124 @@ impl Domains {
                 _ => {}
             }
         }
+    }
+
+    /// Checks the `@persist` attribute `attr` of the state `name` of type
+    /// `ty`, `(system, state)` by symbol: it names a key, the type
+    /// snapshots and the package is granted `storage.persist` (`E9106`).
+    /// The defaults a stored value of an older type may need are kept.
+    fn persist(
+        &mut self,
+        attr: &SyntaxNode,
+        name: &str,
+        ty: &Ty,
+        (system, state): (SymbolId, SymbolId),
+        env: &ModuleEnv<'_>,
+        diagnostics: &mut Vec<Diagnostic>,
+    ) {
+        let at = attr.text_range();
+        let Some(key) = persist_key(attr) else {
+            diagnostics.push(Diagnostic::error(
+                "E9106",
+                at,
+                "`@persist` names the key its state is stored under: `@persist(\"best_score\")`",
+            ));
+            return;
+        };
+        if let Some(why) = not_snapshot(ty, env, &mut HashSet::new()) {
+            diagnostics.push(Diagnostic::error(
+                "E9106",
+                at,
+                format!("the state `{name}` cannot persist: {why}"),
+            ));
+            return;
+        }
+        if !env.decls.profile.capabilities.contains(PERSIST) {
+            let mut diagnostic = Diagnostic::error(
+                "E9106",
+                at,
+                format!("persisting the state `{name}` needs the `{PERSIST}` capability"),
+            );
+            diagnostic.notes.push(format!(
+                "grant it in `Viso.toml`: `[package] capabilities = [\"{PERSIST}\"]`"
+            ));
+            diagnostics.push(diagnostic);
+            return;
+        }
+        keep_defaults(ty, env, &mut HashSet::new());
+        self.persisted.push(Persisted {
+            module: env.module,
+            system,
+            state,
+            key,
+            at,
+            ty: ty.clone(),
+        });
+    }
+
+    /// Records each `@persist` state in its system's layout, the first of
+    /// two under one key (`E9106` for the second), with the package's
+    /// `@migrate` functions when any state persists.
+    pub(super) fn persist_slots(
+        &self,
+        decls: &Declarations,
+        behavior: &RefCell<ProgramBuilder>,
+        migrators: &[(TextRange, Migrator)],
+        per_module: &mut [Vec<Diagnostic>],
+    ) {
+        let schema = |ty: &Ty| {
+            let builder = behavior.borrow();
+            decls.types.value_schema(ty, &|record, index| {
+                builder.field_default(record, index).map(|f| f.0)
+            })
+        };
+        let mut keys: HashMap<&str, &Persisted> = HashMap::new();
+        for persisted in &self.persisted {
+            if let Some(first) = keys.get(persisted.key.as_str()) {
+                let mut diagnostic = Diagnostic::error(
+                    "E9106",
+                    persisted.at,
+                    format!("a second state persists under the key `{}`", persisted.key),
+                );
+                if first.module == persisted.module {
+                    diagnostic
+                        .related
+                        .push(Related::new(first.at, "the first is marked here"));
+                } else {
+                    diagnostic.notes.push(format!(
+                        "the first is in module `{}`",
+                        decls.module_paths[first.module]
+                    ));
+                }
+                per_module[persisted.module].push(diagnostic);
+                continue;
+            }
+            keys.insert(&persisted.key, persisted);
+            let value = schema(&persisted.ty);
+            behavior.borrow_mut().persist_state(
+                persisted.system,
+                persisted.state,
+                &persisted.key,
+                value,
+                decls.types.describe(&persisted.ty),
+            );
+        }
+        if !behavior.borrow().persists() {
+            return;
+        }
+        let migrators = migrators
+            .iter()
+            .filter_map(|(_, m)| {
+                let chunk = behavior.borrow().fn_of(m.symbol)?.0;
+                Some(viso_behavior::Migrator {
+                    from: m.from.as_str().into(),
+                    param: schema(&m.param),
+                    ret: schema(&m.ret),
+                    chunk,
+                })
+            })
+            .collect();
+        behavior.borrow_mut().migrators(migrators);
     }
 
     /// Checks every callable the Simulation roots reach, reporting into the
@@ -392,6 +553,102 @@ fn misplaced_probe(attr: &SyntaxNode, diagnostics: &mut Vec<Diagnostic>) {
         attr.text_range(),
         "`@probe` marks a Simulation `state` of a `system`, which a game test traces every tick",
     ));
+}
+
+fn misplaced_persist(attr: &SyntaxNode, component_state: bool, diagnostics: &mut Vec<Diagnostic>) {
+    let message = if component_state {
+        "a component's state does not persist yet: persist it in a `system`"
+    } else {
+        "`@persist` marks a `state` of a `system`"
+    };
+    diagnostics.push(Diagnostic::error("E9106", attr.text_range(), message));
+}
+
+/// The key of a `@persist("key")` attribute: its one unlabeled argument, a
+/// non-empty string literal.
+fn persist_key(attr: &SyntaxNode) -> Option<String> {
+    let list = attr
+        .children()
+        .into_iter()
+        .find(|c| c.kind() == SyntaxKind::ArgumentList)?;
+    let args: Vec<SyntaxNode> = list
+        .children()
+        .into_iter()
+        .filter(|c| c.kind() == SyntaxKind::Argument)
+        .collect();
+    let [arg] = args.as_slice() else {
+        return None;
+    };
+    let values = arg.children();
+    let [value] = values.as_slice() else {
+        return None;
+    };
+    let labeled = arg
+        .children_with_tokens()
+        .into_iter()
+        .any(|e| e.as_token().is_some_and(|t| t.kind() == SyntaxKind::Colon));
+    if labeled || value.kind() != SyntaxKind::LiteralExpr {
+        return None;
+    }
+    let token = value
+        .children_with_tokens()
+        .into_iter()
+        .filter_map(|e| e.as_token().cloned())
+        .find(|t| !t.kind().is_trivia())?;
+    if token.kind() != SyntaxKind::StringLiteral {
+        return None;
+    }
+    let text = token.text();
+    let body = text.strip_prefix('"')?.strip_suffix('"')?;
+    let key = crate::hir::infer::pattern::unescape(body)?;
+    (!key.is_empty() && !key.contains('{')).then_some(key)
+}
+
+/// Keeps the default of every defaulted field of each record `ty` reaches,
+/// which a stored value of an older version of the record takes.
+fn keep_defaults(ty: &Ty, env: &ModuleEnv<'_>, seen: &mut HashSet<SymbolId>) {
+    let each = |items: &[Ty], seen: &mut HashSet<SymbolId>| {
+        for item in items {
+            keep_defaults(item, env, seen);
+        }
+    };
+    match ty {
+        Ty::Tuple(items) => each(items, seen),
+        Ty::List(t) | Ty::Option(t) | Ty::Range(t) | Ty::RangeInclusive(t) => {
+            keep_defaults(t, env, seen);
+        }
+        Ty::Result(a, b) => {
+            keep_defaults(a, env, seen);
+            keep_defaults(b, env, seen);
+        }
+        Ty::Named(id) if seen.insert(*id) => {
+            if let Some(fields) = env.record_fields(*id) {
+                let record = env.type_name(*id).unwrap_or_default().to_owned();
+                for (index, field) in fields.iter().enumerate() {
+                    if field.has_default {
+                        let name = format!("{record}.{}", field.name);
+                        env.behavior
+                            .borrow_mut()
+                            .field_default_slot(*id, index as u32, &name);
+                    }
+                    keep_defaults(&field.ty, env, seen);
+                }
+            } else if let Some(variants) = env.enum_variants(*id) {
+                for variant in variants {
+                    match &variant.payload {
+                        VariantPayload::Unit => {}
+                        VariantPayload::Tuple(items) => each(items, seen),
+                        VariantPayload::Record(fields) => {
+                            for field in fields {
+                                keep_defaults(&field.ty, env, seen);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        _ => {}
+    }
 }
 
 /// How a game test writes a value of `ty`; `open` holds the nominal types

@@ -5920,6 +5920,8 @@ export system Progress implements FixedUpdate {
 - 写入在 Tick Boundary 合并，按 Profile 策略节流，并在 App Suspend 时落盘；Tick 内不做同步 IO；
 - 类型变化走 §94.1 迁移规则与 `@migrate`。
 
+当前实现：`@persist` 目前只标在 System 的 `state` 上（Component 的 `state` 报 `E9106`，待 Component 实例的键语义确定）；键为唯一的非空字符串字面量参数，包内重复报 `E9106` 并指向第一处；授权来自 `Viso.toml [package] capabilities`（CLI §38）。编译器把每个持久化状态的键、槽位、类型 Schema（Record/Enum 按 Stable ID 描述字段、变体与字段默认值 Chunk）和类型拼写写入 Module，包内有持久化状态时一并写入 `@migrate` 函数。运行时宿主在 VM 上安装 `Persist` 服务（`PersistStore`：`MemoryStore`，或目录存储 `DirStore`——后台线程写临时文件、fsync 后原子 rename）；链接时未授予 `storage.persist` 则不加载也不写入，并报 `E6103`。Scheduler 在 `start` 之前逐个加载：存储的 Blob 带类型拼写与 Schema，类型相同则直接使用，否则按 §94.1 矩阵转换，再否则用 `from` 等于旧类型拼写、返回新类型的 `@migrate` 函数；任何失败使用 Initializer 并记录 `E9111` 报告（`take_persist_reports`），原 Blob 保留到该状态首次改变。写入发生在 Tick Boundary，只写值有变化的状态，默认每秒（`tick_rate` 个 Tick）至多一次（`set_persist_interval`）；Store 不阻塞 Tick；`suspend()` 与 Scheduler 析构写入变化并阻塞到落盘。World Rebuild 与 Logic Reload 把运行中的持久化值按键带入新实例（类型变化同样转换）；启动失败或影子游戏不写入。
+
 ### 106.9 渲染插值
 
 - `frame.alpha(): F32` 取值 `[0, 1)`，等于累加器余量除以 `fixed_dt`；`SlowMotion` 积压超过一个 Tick 时取小于 1 的最大值；
@@ -8548,6 +8550,7 @@ RecordPatternField
 | E9108  | AudioProcess 实时域违规（§108.3）                        |
 | E9109  | System 声明 `view`、`event` 或 `slot` 成员（§105）        |
 | E9110  | `@probe` 误用：只能标在 System 的 Simulation `state` 上（§110.5） |
+| E9111  | 持久化状态加载、转换或写入失败（运行时，使用 Initializer，§106.8） |
 
 错误码文案可以改进，但错误码语义不得在同一 Major 版本中复用。
 

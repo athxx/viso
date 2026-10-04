@@ -28,7 +28,7 @@ pub const SOURCE_ROOT: &str = "src";
 pub const SOURCE_EXTENSION: &str = "vs";
 
 /// What the package manifest says, as far as the compiler is concerned.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct PackageManifest<'a> {
     /// The package identity (`[package] name`).
     pub name: &'a str,

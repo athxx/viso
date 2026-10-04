@@ -2396,6 +2396,8 @@ bundle_id = "com.example.hello"
 
 未知 key 报 C0004，类型错误 C0005（exit 1）。`Viso.toml` 不提供改变默认 run/build/package target 的 key（§3.5）。
 
+`[package] capabilities = ["storage.persist"]` 是包被授予的 Capability（DSL §95）：编译期检查据此判定（如 `@persist` 需要 `storage.persist`，否则 `E9106`），运行时由宿主在链接 Native Import 时授予同一集合。
+
 ### 38.1 Web
 
 ```toml
