@@ -758,8 +758,11 @@ timers (§104–§111).
   - [x] `@probe` on a System state: the compiler records each probe with the shape
         of its type (`SystemLayout::probes`, nothing in the module); `E9110` when
         misplaced; `ProbeShape::write` puts a value in the JSON trace by type.
-  - [ ] `viso test game <scenario>` with `--frames`, `--seed`, `--tape` and `--json`:
-        per-tick probe trace, expectations, snapshot hash and entity snapshot.
+  - [x] `viso test game <scenario>` with `--frames`, `--seed`, `--tape` and `--json`:
+        scenarios are text tapes plus `expect` lines under `tests/game/`; per-tick
+        `trace` events, `TEST_EXPECTATION` diagnostics at the scenario line, a
+        `test` event with the snapshot hash and entity snapshot
+        (`viso_dsl::scenario` runs it).
   - [ ] `viso game record`, `viso game peek` (need a running game session).
   - [ ] Headless frame sheet (`--sheet`; needs a game renderer).
 

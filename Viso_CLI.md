@@ -1588,6 +1588,14 @@ viso game peek <session> Player.score              # 读取运行中 System Stat
 
 输出包含每 Tick `@probe` Trace、最终 Snapshot Hash、Entity Snapshot，以及可选的 Headless 帧截图 Sheet（`--sheet <png>`）。同一 Build + Tape 在所选 determinism 档位下 Snapshot Hash 逐字节一致（DSL §110.5）。
 
+当前实现：
+
+- Scenario 是 `tests/game/<scenario>.tape`：Input Tape 的文本形式（DSL §110.5）加上期望行 `<tick>: expect <System>.<state> == <JSON 值>`，在该 Tick 运行之后检查，所指须是 `@probe` 状态；省略 `<scenario>` 时按名字顺序运行该目录下全部 `.tape`；
+- `--tape <path>` 用给定 Tape（二进制或文本）替换 Scenario 的输入、保留其期望；单独使用时以文件名为 Scenario 名、无期望；`--seed` 覆盖 Tape 的 Seed（缺省 Seed 为 `0x5eed5eed5eed5eed`）；`--frames` 缺省为 Tape 覆盖的 Tick 数与最后一个期望之后的较大者；一帧运行一个 Fixed Tick，再运行全部 `FrameUpdate`；Tick Rate 与 determinism 档位取自 `Viso.toml [game]`；
+- `--json` 下每个 Tick 输出一条 `trace`（`scenario, tick, probes{"System.state": 值}`），每个 Scenario 一条 `test`（§36，另带 `seed, frames, build, snapshot_hash`（16 位十六进制）、`entities[{id[index, generation], kind, tags, position, half_extents}], failures, faults`）；未满足的期望是指向 Scenario 行的 `TEST_EXPECTATION` 诊断，System 故障以其故障码报告；人类输出每个 Scenario 一行 `test game <name> ... ok|FAILED (<n> frames, seed <s>, snapshot <hash>)`，末行 `test result: …`；
+- 任一 Scenario 失败退出 1，Scenario 或 Tape 文件缺失或不可读退出 3；
+- `viso game record`、`viso game peek` 需要运行中的游戏 Session，`--sheet` 需要 Headless 游戏渲染，均尚未实现；`viso test` 目前只有 `game` 域。
+
 ### 22.4 Test filters
 
 ```text
@@ -2269,6 +2277,7 @@ diagnostic    Viso_DSL_1.0.md §138 JSON Diagnostic 对象（原样）
 artifact      kind, path, target, profile, build_id, size, hash
 device        platform(ios|android), id, name, state(booting|ready|installing|launched|stopped)
 test          name, domain, status(pass|fail|skip), duration_ms, message?, artifacts[]?
+trace         scenario, tick, probes（`viso test game` 每 Tick 一条，§22.3）
 profile       frames, duration_ms, metrics（§25）
 server        url, host, port, lan
 dev           见下
@@ -2298,6 +2307,9 @@ ENV_CARGO_MANIFEST      `run` 的 project root 下没有 Cargo.toml  exit 3
 ENV_CARGO               cargo 无法启动                           exit 3
 ENV_NO_EXECUTABLE       构建没有产出、或产出多个可执行文件       exit 3
 ENV_DEV_CHANNEL         loopback dev transport 无法建立          exit 3
+ENV_TEST_INPUT          测试 Scenario 或 Tape 缺失或不可读        exit 3
+TEST_INPUT_INVALID      Scenario/Tape 无法解析或与 Build 不符     exit 1
+TEST_EXPECTATION        游戏测试期望未满足                       exit 1
 BUILD_FAILED            cargo build 失败                         exit 4
 RUN_APP_FAILED          app 无法启动、crash 或非零退出           exit 5
 ```
