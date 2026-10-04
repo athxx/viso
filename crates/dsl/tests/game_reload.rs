@@ -1,13 +1,18 @@
 //! The reload tier of a game edit: the compiler compares the running build's
 //! Behavior IR with the candidate's by stable identity and picks the least
-//! disruptive layer every change allows.
+//! disruptive layer every change allows, and a swap applies it to the running
+//! game.
 
+use std::rc::Rc;
+
+use viso_behavior::game::{Rebuild, Scheduler};
 use viso_behavior::native::Natives;
+use viso_behavior::{Budget, Value, Vm};
 use viso_dsl::behavior::Program;
 use viso_dsl::diag::Severity;
 use viso_dsl::frontend::{Origin, compile_file_for};
 use viso_dsl::hir::TargetProfile;
-use viso_dsl::hotreload::game::{GameChangeKind, ReloadTier, classify};
+use viso_dsl::hotreload::game::{GameChangeKind, ReloadTier, SwapError, classify, swap};
 
 fn origin() -> Origin {
     Origin {
@@ -232,4 +237,113 @@ fn the_reload_note_names_the_deciding_change_first() {
     assert!(primary.contains("steps += 2;"), "{primary}");
     assert_eq!(note.related.len(), 1);
     assert_eq!(note.related[0].label, "presentation code changed: `glow`");
+}
+
+fn running(program: &Program) -> Scheduler {
+    let module = Rc::new(program.bytecode().expect("verified bytecode"));
+    let mut vm = Vm::new(module, Budget::default());
+    vm.link(&Natives::standard(), &[]).expect("link");
+    Scheduler::new(vm).expect("a started game")
+}
+
+fn steps(game: &Scheduler) -> Value {
+    let module = game.vm().module();
+    let index = module
+        .systems()
+        .iter()
+        .position(|s| module.components()[s.component as usize].name.as_ref() == "Mover")
+        .expect("Mover");
+    let slot = module
+        .layout(module.systems()[index].component)
+        .state("steps")
+        .expect("steps");
+    game.instance(index).states()[slot].clone()
+}
+
+#[test]
+fn a_swap_applies_each_tier_to_the_running_game() {
+    let last_good = program(GAME);
+    let mut game = running(&last_good);
+    game.step(5);
+    let build = game.build();
+
+    let same = swap(
+        &mut game,
+        &last_good,
+        &program(GAME),
+        &Natives::standard(),
+        &[],
+        Rebuild::Fresh,
+    )
+    .expect("swaps");
+    assert_eq!(
+        (same.reload.tier, same.restored, same.carried),
+        (ReloadTier::Unchanged, None, 0)
+    );
+    assert_eq!(game.build(), build, "nothing swapped");
+
+    let faster = program(&GAME.replace("steps += 1;", "steps += 2;"));
+    let swapped = swap(
+        &mut game,
+        &last_good,
+        &faster,
+        &Natives::standard(),
+        &[],
+        Rebuild::Fresh,
+    )
+    .expect("swaps");
+    assert_eq!(swapped.reload.tier, ReloadTier::Logic);
+    assert_eq!(swapped.restored.map(|r| r.states), Some(2));
+    assert_eq!(game.clock().tick(), 5);
+    game.step(1);
+    assert_eq!(
+        steps(&game),
+        Value::Int(7),
+        "the new logic runs on the kept state"
+    );
+
+    let moved = program(
+        &GAME
+            .replace("steps += 1;", "steps += 2;")
+            .replace("0.0f32, 1.0f32, 0.0f32", "0.0f32, 2.0f32, 0.0f32"),
+    );
+    let walked = game.world().entities()[0];
+    let at = game.world().position(walked).expect("alive").to_array();
+    let swapped = swap(
+        &mut game,
+        &faster,
+        &moved,
+        &Natives::standard(),
+        &[],
+        Rebuild::KeepCharacters,
+    )
+    .expect("swaps");
+    assert_eq!(
+        (swapped.reload.tier, swapped.carried),
+        (ReloadTier::WorldRebuild, 1)
+    );
+    assert_eq!(game.clock().tick(), 0);
+    let player = game.world().entities()[0];
+    assert_eq!(game.world().position(player).expect("alive").to_array(), at);
+
+    let broken = program(&GAME.replace(
+        "cx.spawn(SpawnDesc::player()",
+        "let xs = [1]; let _ = xs[2]; cx.spawn(SpawnDesc::player()",
+    ));
+    game.step(3);
+    let before = game.snapshot();
+    let error = swap(
+        &mut game,
+        &moved,
+        &broken,
+        &Natives::standard(),
+        &[],
+        Rebuild::Fresh,
+    )
+    .expect_err("the start faults");
+    assert!(
+        matches!(error, SwapError::Fault(ref f) if f.code == "E7104"),
+        "{error}"
+    );
+    assert_eq!(game.snapshot(), before, "the last good game runs on");
 }

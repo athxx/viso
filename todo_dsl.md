@@ -745,8 +745,11 @@ timers (§104–§111).
         runs on a copy, and it replaces the running game only when both ran clean;
         `Rebuild::KeepCharacters` carries characters by stable entity key (tags and
         rank among same-tag characters).
-  - [ ] The host's hot-reload wiring: a game host that recompiles a `.vs` edit,
-        classifies it and calls `reload`/`rebuild` (no game host yet).
+  - [x] `hotreload::game::swap`: classify a candidate and apply its tier to the
+        running scheduler (nothing / `reload` / shadow `rebuild`), the last good
+        game kept on any failure.
+  - [ ] The game host's hot-reload wiring: watching `.vs` edits, recompiling,
+        calling `swap` and reporting over the dev channel (no game host yet).
 - [ ] `@probe` trace, input tape (binary and text forms), snapshot hash, headless sheet;
       `viso test game`, `viso game record`, `viso game peek` (§110.5, CLI §22.3).
   - [x] `InputTape`: header (seed, build, determinism, tick rate, ticks) and per-tick

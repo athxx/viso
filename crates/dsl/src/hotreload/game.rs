@@ -19,13 +19,16 @@
 //! | the code a start hook reaches                        | World Rebuild    |
 //!
 //! The highest tier any change needs is the build's. Shader edits reload
-//! through their own pipeline, outside this comparison.
+//! through their own pipeline, outside this comparison. [`swap`] applies a
+//! candidate to a running game at its tier.
 
 use std::collections::HashMap;
+use std::rc::Rc;
 
+use viso_behavior::Vm;
 use viso_behavior::game::quick::QUICK_START;
-use viso_behavior::game::{FRAME_UPDATE, STARTUP};
-use viso_behavior::native::NativeId;
+use viso_behavior::game::{FRAME_UPDATE, Rebuild, Restored, STARTUP, Scheduler, SystemFault};
+use viso_behavior::native::{NativeId, Natives};
 
 use crate::behavior::ir::{FuncId, Function, FunctionKind, Inst, Program, SystemLayout};
 use crate::diag::{Diagnostic, Related};
@@ -216,6 +219,84 @@ pub fn classify(last_good: &Program, candidate: &Program) -> GameReload {
             .map_or(ReloadTier::Unchanged, |c| c.kind.tier()),
         changes,
     }
+}
+
+/// What [`swap`] did to the running game.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Swapped {
+    /// The tier and changes it swapped by.
+    pub reload: GameReload,
+    /// What a logic or presentation reload carried; `None` for a rebuild or
+    /// an unchanged build.
+    pub restored: Option<Restored>,
+    /// The characters a World Rebuild carried by stable key.
+    pub carried: u32,
+}
+
+/// Why [`swap`] left the running game as it was.
+#[derive(Debug)]
+pub enum SwapError {
+    /// The candidate's code does not verify or link.
+    Build(String),
+    /// The candidate's systems could not be created, or its start or smoke
+    /// tick faulted.
+    Fault(SystemFault),
+}
+
+impl std::fmt::Display for SwapError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            SwapError::Build(message) => f.write_str(message),
+            SwapError::Fault(fault) => write!(f, "{}", fault.fault),
+        }
+    }
+}
+
+impl std::error::Error for SwapError {}
+
+/// Swaps `candidate` into `game`, which runs `last_good`, at the tier its
+/// changes need: nothing for an unchanged build, a reload between frames
+/// for a Presentation or Logic change (states carried by identity and
+/// schema), and for a start change a World Rebuild in a shadow game that
+/// keeps what `keep` says. The candidate links against `natives` with
+/// `capabilities` and runs on the game's budget.
+///
+/// # Errors
+///
+/// When the candidate does not verify or link, or its systems, start or
+/// smoke tick fault: `game` is left as it was.
+pub fn swap(
+    game: &mut Scheduler,
+    last_good: &Program,
+    candidate: &Program,
+    natives: &Natives,
+    capabilities: &[&str],
+    keep: Rebuild,
+) -> Result<Swapped, SwapError> {
+    let reload = classify(last_good, candidate);
+    if reload.tier == ReloadTier::Unchanged {
+        return Ok(Swapped {
+            reload,
+            restored: None,
+            carried: 0,
+        });
+    }
+    let module = candidate
+        .bytecode()
+        .map_err(|error| SwapError::Build(format!("the candidate does not verify: {error}")))?;
+    let mut vm = Vm::new(Rc::new(module), game.budget());
+    vm.link(natives, capabilities)
+        .map_err(|error| SwapError::Build(format!("the candidate does not link: {error}")))?;
+    let (restored, carried) = if reload.tier == ReloadTier::WorldRebuild {
+        (None, game.rebuild(vm, keep).map_err(SwapError::Fault)?)
+    } else {
+        (Some(game.reload(vm).map_err(SwapError::Fault)?), 0)
+    };
+    Ok(Swapped {
+        reload,
+        restored,
+        carried,
+    })
 }
 
 /// The phase a hook runs in: a start hook, `FrameUpdate`, or Simulation
