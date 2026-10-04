@@ -663,7 +663,20 @@ timers (§104–§111).
 
 - [ ] `QuickGame.start` / `fixed` lowering; startup transaction before the first tick
       (§105.1).
-- [ ] QuickGame and the equivalent single system give the same result on one tape.
+  - [x] `viso::game::quick`: `QuickGame` (`start`, `fixed`, both Simulation) and
+        `QuickStart` / `QuickFrame`, views of the full profile's `GameStart` /
+        `FixedFrame`; `viso::game::Startup` so the split form exists.
+  - [x] The scheduler runs `QuickGame.start` as a `Startup` and `QuickGame.fixed`
+        as a `FixedUpdate`, by hook identity.
+  - [x] Startup transaction: every start hook before tick 0 in system order on one
+        budget; a fault fails `Scheduler::new`, discarding the start's writes and
+        commands; a successful start's commands land before tick 0's.
+  - [ ] `QuickStart.spawn` committed before the first tick and `QuickFrame.world`:
+        land with `GameWorld` and `EntityId` (D5.6).
+  - [ ] Rerun on World Rebuild, not on a logic-only reload: lands with D5.7.
+- [x] QuickGame and the equivalent single system give the same result on one tape.
+  - [x] Per-frame states and delivered commands equal on a key and stick tape; the
+        quick snapshot restores into the split form whole (`game_quick.rs`).
 
 ### D5.6 — World commands and queries
 

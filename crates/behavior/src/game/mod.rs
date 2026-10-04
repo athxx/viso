@@ -8,6 +8,10 @@
 //! identities of `viso::game` to its phases. Nothing in the compiler knows a
 //! hook by name.
 //!
+//! Before its first tick the scheduler runs every `Startup` hook once, in
+//! system order, as one transaction: a fault in any of them leaves no
+//! scheduler, so no tick runs on a half-started game.
+//!
 //! One frame runs every fixed tick the clock owes, then every `FrameUpdate`.
 //! One tick runs every `FixedUpdate` in system order, then delivers the
 //! collision events queued for it to every `CollisionListener`, event by event.
@@ -23,9 +27,13 @@
 //! Simulation state of every system, and restoring it resumes tick for tick
 //! as if never interrupted. `RenderFrame.alpha()` is how far the frame is
 //! into the next tick, for interpolation.
+//!
+//! [`quick`] is the low-ceremony surface: one `QuickGame` system whose
+//! `start` and `fixed` the scheduler runs as a `Startup` and a `FixedUpdate`.
 
 mod clock;
 pub mod input;
+pub mod quick;
 mod scheduler;
 mod snapshot;
 mod timer;
@@ -52,6 +60,19 @@ pub const FIXED_UPDATE: NativeId = NativeId::of("viso::game::FixedUpdate::fixed_
 pub const FRAME_UPDATE: NativeId = NativeId::of("viso::game::FrameUpdate::frame_update");
 /// The identity of the `CollisionListener.collision` hook.
 pub const COLLISION: NativeId = NativeId::of("viso::game::CollisionListener::collision");
+/// The identity of the `Startup.startup` hook.
+pub const STARTUP: NativeId = NativeId::of("viso::game::Startup::startup");
+
+/// The start of a game a `Startup` hook runs in, behind a
+/// `viso::game::GameStart` handle.
+#[derive(Debug, Default)]
+pub struct GameStart {
+    tick: Cell<u64>,
+}
+
+impl NativeObject for GameStart {
+    const PATH: &'static str = "viso::game::GameStart";
+}
 
 /// The fixed tick a `FixedUpdate` runs in, behind a `viso::game::FixedFrame`
 /// handle.
@@ -117,6 +138,12 @@ static FIXED_FRAME_METHODS: [NativeFunction; 4] = [
     .property(),
 ];
 
+static GAME_START_METHODS: [NativeFunction; 1] = [crate::native!(
+    fn "tick" |_cx, this: Obj<GameStart>| -> i64 { Ok(signed(this.tick.get())) }
+)
+.deterministic()
+.realtime_safe()];
+
 static RENDER_FRAME_METHODS: [NativeFunction; 3] = [
     crate::native!(fn "dt" |_cx, this: Obj<RenderFrame>| -> f64 { Ok(this.dt.get()) })
         .deterministic()
@@ -153,6 +180,7 @@ pub(crate) static GAME: NativeLibrary = NativeLibrary {
     version: 1,
     functions: &[],
     types: &[
+        NativeType::new("GameStart", &GAME_START_METHODS).borrowed(),
         NativeType::new("FixedFrame", &FIXED_FRAME_METHODS).borrowed(),
         NativeType::new("RenderFrame", &RENDER_FRAME_METHODS).borrowed(),
         NativeType::new("CollisionEvent", &COLLISION_EVENT_METHODS).borrowed(),
@@ -170,6 +198,17 @@ pub(crate) static GAME: NativeLibrary = NativeLibrary {
         NativeType::enumeration("InputAxis", InputAxis::VARIANTS),
     ],
     traits: &[
+        NativeTrait {
+            name: "Startup",
+            hooks: &[NativeHook {
+                name: "startup",
+                params: &[Param {
+                    name: "cx",
+                    ty: SchemaTy::Handle(GameStart::PATH),
+                }],
+                domain: HookDomain::Simulation,
+            }],
+        },
         NativeTrait {
             name: "FixedUpdate",
             hooks: &[NativeHook {

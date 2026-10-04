@@ -1,6 +1,6 @@
 //! The standard native libraries every registry holds: `viso::text`,
 //! `viso::math`, `viso::time`, `viso::clipboard`, the scheduler traits of
-//! `viso::game` and the widgets of `viso::widgets`.
+//! `viso::game` and `viso::game::quick`, and the widgets of `viso::widgets`.
 
 use std::time::Instant;
 
@@ -13,6 +13,7 @@ pub static STANDARD: &[&NativeLibrary] = &[
     &TIME,
     &CLIPBOARD,
     &crate::game::GAME,
+    &crate::game::quick::QUICK,
     &super::widgets::WIDGETS,
 ];
 
