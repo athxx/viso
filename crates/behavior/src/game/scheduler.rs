@@ -4,9 +4,10 @@ use std::borrow::Cow;
 use std::mem;
 use std::rc::Rc;
 
-use super::input::InputLatch;
+use super::input::{Action, InputLatch};
 use super::quick::{QUICK_FIXED, QUICK_START, QuickFrame, QuickStart};
 use super::snapshot::{GameSnapshot, Restored, SystemState, fnv};
+use super::tape::{InputTape, Playback, Recorder, TapeError};
 use super::world::Bodies;
 use super::{
     COLLISION, Clock, CollisionEvent, EntityId, FIXED_UPDATE, FRAME_UPDATE, FixedFrame, GameStart,
@@ -137,6 +138,8 @@ pub struct Scheduler {
     delivered: u64,
     delivered_commands: u64,
     replayed_commands: u64,
+    playback: Option<Playback>,
+    recorder: Option<Recorder>,
 }
 
 impl Scheduler {
@@ -193,6 +196,8 @@ impl Scheduler {
             delivered: 0,
             delivered_commands: 0,
             replayed_commands: 0,
+            playback: None,
+            recorder: None,
             instances,
         })
     }
@@ -222,6 +227,7 @@ impl Scheduler {
         self.delivered = 0;
         match self.prove_start(&bodies, keep) {
             Ok(carried) => {
+                self.restart_tapes();
                 self.deliver_queued(0);
                 Ok(carried)
             }
@@ -261,6 +267,9 @@ impl Scheduler {
         shadow.input.remap(&input_schema(&module));
         let carried = shadow.prove_start(&self.world.bodies(), keep)?;
         shadow.faults = mem::take(&mut self.faults);
+        shadow.playback = self.playback.take();
+        shadow.recorder = self.recorder.take();
+        shadow.restart_tapes();
         shadow.delivered_commands = self.delivered_commands;
         shadow.replayed_commands = self.replayed_commands;
         shadow.deliver_queued(0);
@@ -284,9 +293,11 @@ impl Scheduler {
         let collisions = mem::take(&mut self.collisions);
         let (delivered, replayed) = (self.delivered, self.replayed_commands);
         let faults = self.faults.len();
+        let tapes = (self.playback.take(), self.recorder.take());
         // A tick already delivered drops the commands it issues again.
         self.delivered = u64::MAX;
         self.run_tick();
+        (self.playback, self.recorder) = tapes;
         let fault = self.faults.drain(faults..).next();
         self.restore_states(&started);
         self.world.restore(started.world.clone(), started.rng);
@@ -329,6 +340,7 @@ impl Scheduler {
         self.sequences = vec![0; module.systems().len()].into();
         self.instances = instances;
         self.vm = vm;
+        self.rebind_tapes();
         Ok(Restored {
             locals,
             ..self.restore_states(&snapshot)
@@ -368,6 +380,103 @@ impl Scheduler {
         }
         self.world.commit();
         Ok(())
+    }
+
+    /// Replays `tape` from the next tick on: each tick reads the input the
+    /// tape gives it, its actions mapped to the build's by name, and device
+    /// input moves nothing. Changes of ticks already run are skipped, so a
+    /// tape replays exactly from tick 0 on a game started with its seed.
+    ///
+    /// # Errors
+    ///
+    /// When the tape names an action the build lacks, or steps another tick
+    /// rate: the game reads its devices as before.
+    pub fn play(&mut self, tape: InputTape) -> Result<(), TapeError> {
+        let module = self.vm.module().clone();
+        if tape.tick_rate != module.tick_rate() {
+            return Err(TapeError {
+                line: None,
+                message: format!(
+                    "the tape steps {} ticks a second, the build {}",
+                    tape.tick_rate,
+                    module.tick_rate()
+                ),
+            });
+        }
+        let mut playback = Playback::new(tape, &input_schema(&module).actions)?;
+        if let Some(last) = self.clock.tick().checked_sub(1) {
+            playback.changes(last);
+        }
+        for change in playback.current() {
+            self.input.apply(change);
+        }
+        self.playback = Some(playback);
+        Ok(())
+    }
+
+    /// The ticks the replayed tape covers, if one plays.
+    pub fn tape_ticks(&self) -> Option<u64> {
+        self.playback.as_ref().map(Playback::ticks)
+    }
+
+    /// Starts recording the input every tick reads into a tape, replacing
+    /// one being recorded. A tape recorded from tick 0 replays the run.
+    pub fn record(&mut self) {
+        let module = self.vm.module();
+        self.recorder = Some(Recorder::new(
+            self.seed,
+            module.tick_rate(),
+            &input_schema(module).actions,
+        ));
+    }
+
+    /// Stops recording and returns the tape, of this build and seed, through
+    /// the last tick run; `None` when not recording.
+    pub fn stop_recording(&mut self) -> Option<InputTape> {
+        Some(self.recorder.take()?.finish(self.build))
+    }
+
+    /// The hash identifying the running build, as a snapshot and a tape
+    /// record it.
+    pub fn build(&self) -> u64 {
+        self.build
+    }
+
+    /// Maps a replayed or recorded tape onto the running build's actions,
+    /// and puts the latch where a replayed tape has the input.
+    fn rebind_tapes(&mut self) {
+        let module = self.vm.module().clone();
+        let actions = &input_schema(&module).actions;
+        if let Some(recorder) = &mut self.recorder {
+            recorder.rebind(actions);
+        }
+        if let Some(playback) = &mut self.playback {
+            playback.rebind(actions);
+            for change in playback.current() {
+                self.input.apply(change);
+            }
+        }
+    }
+
+    /// Starts a replayed tape over from tick 0 and a recording afresh, as a
+    /// rebuilt world starts a new run.
+    fn restart_tapes(&mut self) {
+        let module = self.vm.module().clone();
+        let schema = input_schema(&module);
+        if self.recorder.is_some() {
+            self.recorder = Some(Recorder::new(
+                self.seed,
+                module.tick_rate(),
+                &schema.actions,
+            ));
+        }
+        if let Some(playback) = &mut self.playback {
+            playback.restart(&schema.actions);
+            self.input.remap(&schema);
+            for change in playback.current() {
+                self.input.apply(change);
+            }
+        }
     }
 
     /// The clock.
@@ -583,7 +692,20 @@ impl Scheduler {
         let tick = self.clock.tick();
         let frame = object::<FixedFrame>(&self.cx.fixed_frame);
         frame.tick.set(tick);
+        if let Some(playback) = &mut self.playback {
+            for change in playback.changes(tick) {
+                self.input.apply(change);
+            }
+        }
         self.input.deliver(&frame.input);
+        if let Some(recorder) = &mut self.recorder {
+            let input = &frame.input;
+            let bits = |a| {
+                let a = Action(a);
+                (input.held(a), input.pressed(a), input.released(a))
+            };
+            recorder.observe(tick, bits, input.move_axes());
+        }
         self.world.begin_tick();
         mem::swap(&mut self.collisions, &mut self.delivering);
         let mut left = self.budget;

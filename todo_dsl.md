@@ -749,6 +749,17 @@ timers (§104–§111).
         classifies it and calls `reload`/`rebuild` (no game host yet).
 - [ ] `@probe` trace, input tape (binary and text forms), snapshot hash, headless sheet;
       `viso test game`, `viso game record`, `viso game peek` (§110.5, CLI §22.3).
+  - [x] `InputTape`: header (seed, build, determinism, tick rate, ticks) and per-tick
+        input as changes between ticks; versioned binary blob with bounded decoding;
+        text form with ranges, taps and line-numbered errors.
+  - [x] `Scheduler::record`/`stop_recording` and `play` (device input ignored,
+        actions mapped by name, remapped across a reload, restarted by a rebuild);
+        a recorded run replays into the same snapshot hash.
+  - [ ] `@probe` on a System state: the compiler records the probes and their types.
+  - [ ] `viso test game <scenario>` with `--frames`, `--seed`, `--tape` and `--json`:
+        per-tick probe trace, expectations, snapshot hash and entity snapshot.
+  - [ ] `viso game record`, `viso game peek` (need a running game session).
+  - [ ] Headless frame sheet (`--sheet`; needs a game renderer).
 
 ### D5.8 — Kit
 

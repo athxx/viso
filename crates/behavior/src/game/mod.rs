@@ -46,6 +46,7 @@ pub mod input;
 pub mod quick;
 mod scheduler;
 mod snapshot;
+mod tape;
 mod timer;
 mod world;
 
@@ -63,6 +64,7 @@ pub use input::{
 };
 pub use scheduler::{CommandKey, DEFAULT_SEED, Rebuild, Scheduler, SystemFault};
 pub use snapshot::{GameSnapshot, Restored};
+pub use tape::{InputTape, TapeChange, TapeError, TapeEvent};
 pub use timer::{Cooldown, TickTimer};
 pub use world::{
     BodyKind, EntityId, Extracted, GAME_TAG_DERIVE, GRAVITY, GameTag, GameWorld, SpawnDesc, Tag,

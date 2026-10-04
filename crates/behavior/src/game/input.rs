@@ -17,6 +17,8 @@ use crate::native::{
 };
 use crate::value::Value;
 
+use super::tape::TapeChange;
+
 /// The derive that makes a unit-only enum an action set an `InputMap` maps.
 pub const INPUT_ACTION_DERIVE: &str = "InputAction";
 
@@ -316,6 +318,13 @@ impl Bits {
     fn clear(&mut self) {
         self.0.fill(0);
     }
+
+    fn put(&mut self, i: u32, on: bool) {
+        let i = i as usize;
+        if let Some(w) = self.0.get_mut(i / 64) {
+            set_bit(w, (i % 64) as u32, on);
+        }
+    }
 }
 
 /// The device state the host reports and the action edges it implies since
@@ -331,6 +340,9 @@ pub(crate) struct InputLatch {
     scratch: Bits,
     pressed: Bits,
     released: Bits,
+    /// The move vector a tape set, once a tape feeds the latch: device state
+    /// then moves nothing.
+    fed: Option<(f64, f64)>,
 }
 
 impl InputLatch {
@@ -347,6 +359,26 @@ impl InputLatch {
             scratch: Bits::new(len),
             pressed: Bits::new(len),
             released: Bits::new(len),
+            fed: None,
+        }
+    }
+
+    /// Applies a tape's change, its action an index of this latch's schema;
+    /// from then on the tape alone moves the latch.
+    pub(crate) fn apply(&mut self, change: TapeChange) {
+        let moved = self.fed.unwrap_or_default();
+        self.fed = Some(moved);
+        match change {
+            TapeChange::Press(a) => {
+                self.held.put(a, true);
+                self.pressed.set(a);
+            }
+            TapeChange::Release(a) => {
+                self.held.put(a, false);
+                self.released.set(a);
+            }
+            TapeChange::Set(a, on) => self.held.put(a, on),
+            TapeChange::Move(x, y) => self.fed = Some((x, y)),
         }
     }
 
@@ -395,8 +427,12 @@ impl InputLatch {
         self.update();
     }
 
-    /// Recomputes which actions are held, latching each change as an edge.
+    /// Recomputes which actions are held, latching each change as an edge;
+    /// nothing while a tape feeds the latch.
     fn update(&mut self) {
+        if self.fed.is_some() {
+            return;
+        }
         let next = &mut self.scratch;
         next.clear();
         let b = &self.bindings;
@@ -420,6 +456,9 @@ impl InputLatch {
     /// The move vector: the keys plus the stick past its dead zone, no longer
     /// than 1.
     fn move_axes(&self) -> (f64, f64) {
+        if let Some(fed) = self.fed {
+            return fed;
+        }
         let Some(source) = self.bindings.move_axes else {
             return (0.0, 0.0);
         };
