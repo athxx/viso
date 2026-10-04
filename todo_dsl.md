@@ -794,7 +794,22 @@ timers (§104–§111).
 
 ### Done
 
-- [ ] §155 game acceptance list passes headless.
+- [ ] §155 game acceptance list passes headless (`crates/dsl/tests/game_acceptance.rs`).
+  - [x] QuickGame ≡ split system; no frame callback or wall clock; seed + tape replay;
+        60 Hz independent of the display; bounded catch-up; stable order and
+        deterministic command merge.
+  - [x] Logic reload at a tick boundary keeping timers; a faulting or broken version
+        keeps the last good; World Rebuild migrates by stable key; reload tier
+        follows the §110 table.
+  - [x] Headless entity snapshot; input edges seen once across 0/many-tick frames;
+        `@local` and nondeterminism rejected at compile time; timers count ticks.
+  - [x] `restore(snapshot)` continues tick for tick (re-seeks the input tape);
+        a rolled-back rerun redelivers no Presentation command.
+  - [x] `cross_platform` pinned snapshot hashes, reproduced on aarch64-darwin,
+        wasm32 (V8) and x86_64-linux-musl (Windows, Android, iOS not run).
+  - [ ] `@persist` across a restart and a migration.
+  - [ ] Shader reload keeps the current pipeline on failure (D6).
+  - [ ] CPU reference vs one GPU backend golden within tolerance (D6).
 
 ---
 

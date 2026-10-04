@@ -586,9 +586,28 @@ impl Scheduler {
 
     /// Rewinds the clock to `tick`, to replay or roll back from there; the
     /// caller restores the systems' state. Commands of ticks already
-    /// delivered are not delivered again.
+    /// delivered are not delivered again; a replayed tape resumes at `tick`
+    /// and a recording forgets the ticks from it on.
     pub fn rewind_to(&mut self, tick: u64) {
         self.clock.rewind(tick);
+        self.seek_tapes(tick);
+    }
+
+    /// Puts a replayed tape and the input it feeds where they are before
+    /// tick `tick`, and cuts a recording back to it.
+    fn seek_tapes(&mut self, tick: u64) {
+        if let Some(recorder) = &mut self.recorder {
+            recorder.rewind(tick);
+        }
+        if let Some(playback) = &mut self.playback {
+            let module = self.vm.module().clone();
+            let schema = input_schema(&module);
+            playback.seek(tick, &schema.actions);
+            self.input.remap(&schema);
+            for change in playback.current() {
+                self.input.apply(change);
+            }
+        }
     }
 
     /// The world, its random state and the Simulation state of every system
@@ -618,7 +637,8 @@ impl Scheduler {
         }
     }
 
-    /// Restores `snapshot`: the clock goes to its tick, the world and its
+    /// Restores `snapshot`: the clock goes to its tick, a replayed tape and a
+    /// recording with it, the world and its
     /// random state become the snapshot's, and every Simulation state it
     /// holds under the same identity and schema takes its value;
     /// computeds reading them recompute and `@local` states keep theirs.
@@ -628,7 +648,7 @@ impl Scheduler {
     pub fn restore(&mut self, snapshot: &GameSnapshot) -> Restored {
         let restored = self.restore_states(snapshot);
         self.world.restore(snapshot.world.clone(), snapshot.rng);
-        self.clock.rewind(snapshot.tick);
+        self.rewind_to(snapshot.tick);
         restored
     }
 
