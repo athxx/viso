@@ -28,6 +28,13 @@
 //! as if never interrupted. `RenderFrame.alpha()` is how far the frame is
 //! into the next tick, for interpolation.
 //!
+//! The systems share one [`GameWorld`]: hooks read its committed state and
+//! write commands the scheduler commits in system order, steps it between a
+//! tick's `FixedUpdate`s and its `CollisionListener`s, and its seeded random
+//! source is the only randomness a Simulation hook has. A snapshot holds it
+//! too. A logic-only [`Scheduler::reload`] keeps it running under a new
+//! build; [`Scheduler::rebuild_world`] starts the game over.
+//!
 //! [`quick`] is the low-ceremony surface: one `QuickGame` system whose
 //! `start` and `fixed` the scheduler runs as a `Startup` and a `FixedUpdate`.
 

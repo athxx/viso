@@ -376,6 +376,16 @@ impl InputLatch {
         self.sticks[stick as usize] = (finite(x), finite(y));
     }
 
+    /// Maps the same device state through `schema` from now on: what is down
+    /// is held under the new map, without an edge.
+    pub(crate) fn remap(&mut self, schema: &InputSchema) {
+        let held = (self.keys, self.pads, self.touches, self.sticks);
+        *self = InputLatch::new(schema);
+        (self.keys, self.pads, self.touches, self.sticks) = held;
+        self.update();
+        self.pressed.clear();
+    }
+
     /// Releases every key, button and stick, as when the game loses focus.
     pub(crate) fn release_all(&mut self) {
         self.keys = 0;
