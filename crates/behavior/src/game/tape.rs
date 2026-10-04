@@ -457,6 +457,15 @@ impl Playback {
         self.moved = (0.0, 0.0);
     }
 
+    /// Puts it where it is when tick `tick` is about to run, as a restored or
+    /// rewound game resumes there.
+    pub(super) fn seek(&mut self, tick: u64, actions: &[Box<str>]) {
+        self.restart(actions);
+        if let Some(last) = tick.checked_sub(1) {
+            self.changes(last);
+        }
+    }
+
     /// The changes that put a fresh latch of the bound build where the tape
     /// has its input, without edges.
     pub(super) fn current(&self) -> impl Iterator<Item = TapeChange> + '_ {
@@ -572,6 +581,24 @@ impl Recorder {
             self.moved = moved;
         }
         self.tape.ticks = tick + 1;
+    }
+
+    /// Forgets what ticks from `tick` on read, as a restored or rewound game
+    /// runs them again.
+    pub(super) fn rewind(&mut self, tick: u64) {
+        self.tape.events.retain(|e| e.tick < tick);
+        self.tape.ticks = self.tape.ticks.min(tick);
+        self.held.fill(false);
+        self.moved = (0.0, 0.0);
+        for event in &self.tape.events {
+            match event.change {
+                TapeChange::Press(t) | TapeChange::Set(t, true) => self.held[t as usize] = true,
+                TapeChange::Release(t) | TapeChange::Set(t, false) => {
+                    self.held[t as usize] = false;
+                }
+                TapeChange::Move(x, y) => self.moved = (x, y),
+            }
+        }
     }
 
     /// The tape so far, of a run on build `build`.
