@@ -1537,7 +1537,7 @@ pub(crate) fn parse_float_literal(text: &str) -> Option<f64> {
 }
 
 /// A one-word name for a type, for diagnostic messages.
-fn ty_name(ty: &Ty) -> &'static str {
+pub(crate) fn ty_name(ty: &Ty) -> &'static str {
     match ty {
         Ty::Bool => "Bool",
         Ty::I8 => "I8",
