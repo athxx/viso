@@ -303,10 +303,10 @@ impl MetalBackend {
     /// Installs a compiled program as a pipeline. Draw it with its uniform
     /// block bound as a [`Binding::Uniform`] buffer (or inline uniforms) and
     /// its instances as the instance buffer.
-    pub fn install_program(&mut self, program: MetalProgram) -> PipelineId {
+    pub fn install_program(&mut self, program: &MetalProgram) -> PipelineId {
         self.pipelines
             .insert(MetalPipeline {
-                state: program.state,
+                state: program.state.clone(),
                 builtin: BuiltinShader::Quad,
                 vertex_textures: program.vertex_textures,
             })

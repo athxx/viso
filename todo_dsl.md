@@ -809,7 +809,7 @@ timers (§104–§111).
         wasm32 (V8) and x86_64-linux-musl (Windows, Android, iOS not run).
   - [x] `@persist` across a restart and a migration (`game_persist.rs`, a real
         second process over a `DirStore`).
-  - [ ] Shader reload keeps the current pipeline on failure (D6).
+  - [x] Shader reload keeps the current pipeline on failure (D6).
   - [ ] CPU reference vs one GPU backend golden within tolerance (D6).
 
 ---
@@ -846,12 +846,12 @@ timers (§104–§111).
   - [x] Metal backend: user programs compiled off the render thread with fast
         math off, installed as pipelines, uniform buffer and per-index sampler
         bindings.
-- [ ] Shader reload: background compile, swap at frame boundary, keep the current
+- [x] Shader reload: background compile, swap at frame boundary, keep the current
       pipeline on failure (§110.3).
-  - [ ] Compile off the render thread; a newer edit supersedes an older one.
-  - [ ] Swap only at a frame boundary; an incompatible instance layout gets a
+  - [x] Compile off the render thread; a newer edit supersedes an older one.
+  - [x] Swap only at a frame boundary; an incompatible instance layout gets a
         new buffer and pipeline swapped together.
-  - [ ] A failure keeps the current pipeline and reports source spans and the
+  - [x] A failure keeps the current pipeline and reports source spans and the
         backend log.
 - [ ] CPU reference vs one GPU backend golden within tolerance.
   - [ ] CPU reference interpreter of the program IR with a small rasterizer.

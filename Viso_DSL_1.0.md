@@ -6165,6 +6165,8 @@ UI Binding 对 Game Observable Handle 的读取必须通过 Schema 标记为 Rea
 - 失败继续使用当前可用 Pipeline；
 - 错误回传源码位置和 Backend 日志。
 
+当前实现：每个 Shader 一个后台编译线程。提交的源码依次经过前端（解析、检查、降为 Program IR）、Validation、Layout 与 Backend 编译；线程开始编译前跳到最新提交的源码，结果到达时若已有更新的提交则丢弃，因此较新的编辑取代较旧的。宿主在 Frame Boundary 轮询：成功则交换 Pipeline 与 Interface，并交回被替换的 Pipeline 供宿主在 GPU Fence 后释放；Instance 或 Uniform Layout 变化时一并交回迁移——新成员取同名同类型的旧成员，其余从零开始——宿主据此重新编码出新 Buffer，与新 Pipeline 在同一帧生效。失败时当前 Pipeline 不变，回传前端与 Validation 的诊断（代码、消息、源码 Span）或 Backend 编译日志。
+
 ### 110.4 回溯重放（Dev）
 
 - Dev Runtime 维护 Snapshot 环形缓冲（默认最近 10 s），并持续记录 Input Tape；
