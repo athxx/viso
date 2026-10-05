@@ -30,6 +30,16 @@ pub(crate) fn environment() -> SymbolId {
     })
 }
 
+/// The prelude record a view's `theme` is typed by.
+pub(crate) fn theme_record() -> SymbolId {
+    fingerprint(SymbolIdentity {
+        package: PRELUDE_MODULE,
+        module_path: PRELUDE_MODULE,
+        kind: SymbolKind::Record,
+        decl_path: "Theme",
+    })
+}
+
 /// The parsed and resolved prelude.
 pub(crate) struct Prelude {
     pub(crate) unit: CompilationUnit,

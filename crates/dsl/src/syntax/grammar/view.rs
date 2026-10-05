@@ -208,7 +208,7 @@ fn starts_anonymous_node(p: &Parser) -> bool {
 }
 
 /// `PropertyPath ":" Expression ";"` — the declarative property binding.
-fn property_binding(p: &mut Parser) {
+pub(super) fn property_binding(p: &mut Parser) {
     let m = p.start();
     property_path(p);
     p.expect(SyntaxKind::Colon);

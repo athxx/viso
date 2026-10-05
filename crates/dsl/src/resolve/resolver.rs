@@ -57,6 +57,8 @@ pub enum Resolution {
     /// The adaptive environment `env` a view reads, typed `Environment`: the View
     /// execution domain's context binding, which no declaration provides.
     Env,
+    /// The `theme` a view reads, typed `Theme`: the other context binding.
+    Theme,
 }
 
 impl Resolution {
@@ -66,7 +68,7 @@ impl Resolution {
         match self {
             Resolution::Symbol(id) => Some(Ty::Named(id)),
             Resolution::Native(id) => Some(Ty::Native(id)),
-            Resolution::Local(_) | Resolution::Env => None,
+            Resolution::Local(_) | Resolution::Env | Resolution::Theme => None,
         }
     }
 }
@@ -471,6 +473,10 @@ fn decl_identity(item: &Item) -> Option<(crate::syntax::SyntaxToken, SymbolKind,
         Item::Action(d) => (d.name()?, SymbolKind::Action, Namespace::Value),
         Item::Task(d) => (d.name()?, SymbolKind::Task, Namespace::Value),
         Item::Shader(d) => (d.name()?, SymbolKind::Shader, Namespace::Type),
+        // A theme is a constant `Theme` value; a style a constant reference
+        // a node's `styles` list names.
+        Item::Theme(d) => (d.name()?, SymbolKind::Const, Namespace::Value),
+        Item::Style(d) => (d.name()?, SymbolKind::Style, Namespace::Value),
         Item::Export(_) | Item::Advanced(_) => return None,
     };
     Some(triple)
@@ -677,7 +683,10 @@ fn ident_tokens(node: &SyntaxNode) -> Vec<crate::syntax::SyntaxToken> {
 /// The name of the adaptive environment a view reads.
 const ENV: &str = "env";
 
-/// The code of a read of `env` outside the View execution domain.
+/// The name of the theme a view reads.
+const THEME: &str = "theme";
+
+/// The code of a read of `env` or `theme` outside the View execution domain.
 const ENV_OUTSIDE_VIEW: &str = "E2111";
 
 /// The per-module resolution walk state.
@@ -740,6 +749,17 @@ impl ModulePass<'_> {
                 Item::Record(_) | Item::Enum(_) | Item::Const(_) | Item::TypeAlias(_) => {
                     self.resolve_body(decl.syntax());
                 }
+                Item::Theme(t) => {
+                    if let Some(base) = t.base() {
+                        self.resolve_named_value(&base);
+                    }
+                    for item in t.items() {
+                        if let Some(value) = item.value() {
+                            self.resolve_expr(&value);
+                        }
+                    }
+                }
+                Item::Style(s) => self.resolve_style(&s),
                 _ => {}
             }
         }
@@ -1379,6 +1399,38 @@ impl ModulePass<'_> {
         self.resolve_body(expr.syntax());
     }
 
+    /// Resolves a single-segment type path naming a value declaration: a
+    /// theme's base, a style's base. A qualified or unbound one is left for
+    /// lowering to report.
+    fn resolve_named_value(&mut self, path: &TypePath) {
+        let segments: Vec<_> = path.segments().collect();
+        if let [name] = &segments[..] {
+            self.resolve_value_token(name);
+        }
+    }
+
+    /// Resolves a style: its target as a node type, its bases as styles, and
+    /// its property values as a view's, which read `theme`. The selectors
+    /// name members of the target, which lowering checks against its schema.
+    fn resolve_style(&mut self, style: &crate::ast::StyleDecl) {
+        if let Some(target) = style.target() {
+            self.resolve_node_type(&target);
+        }
+        for base in style.bases() {
+            self.resolve_named_value(&base);
+        }
+        let in_view = std::mem::replace(&mut self.in_view, true);
+        let values = style
+            .bindings()
+            .chain(style.whens().flat_map(|w| w.bindings().collect::<Vec<_>>()));
+        for binding in values {
+            if let Some(value) = binding.value() {
+                self.resolve_expr(&value);
+            }
+        }
+        self.in_view = in_view;
+    }
+
     /// Resolves the head segment of a value/property path: local scope first, then
     /// the module value namespace, then imports.
     fn resolve_value_path(&mut self, path: &PathExpr) {
@@ -1510,6 +1562,17 @@ impl ModulePass<'_> {
                 ));
             }
             Resolution::Env
+        } else if head.text() == THEME {
+            if !self.in_view {
+                self.errors.push(Diagnostic::error(
+                    ENV_OUTSIDE_VIEW,
+                    head.text_range(),
+                    "`theme` is read only in a view and a style; pass the value a state or \
+                     function needs"
+                        .to_string(),
+                ));
+            }
+            Resolution::Theme
         } else {
             // Possibly a native/schema name; not diagnosed at this layer.
             return false;

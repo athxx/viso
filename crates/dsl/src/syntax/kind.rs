@@ -377,6 +377,20 @@ pub enum SyntaxKind {
     ResourcePolicy,
     /// `scope = Expr ;` — where a resource's cache lives.
     ResourceScope,
+    /// `theme IDENT ThemeBase? "{" ThemeItem* "}"` (§60).
+    ThemeDecl,
+    /// `":" TypePath` — the theme a theme starts from.
+    ThemeBase,
+    /// `IDENT "=" Expr ";"` — one field of a theme.
+    ThemeItem,
+    /// `style IDENT for TypePath StyleBases? "{" (PropertyBinding | StyleWhen)* "}"`
+    /// (§59).
+    StyleDecl,
+    /// `":" TypePath ("+" TypePath)*` — the styles a style applies first.
+    StyleBases,
+    /// `when Expr "{" PropertyBinding* "}"` — what a style sets while a
+    /// selector holds.
+    StyleWhen,
 
     // Generics / parameters / types.
     /// A `< ... >` list of generic parameters on a declaration (A.4).

@@ -578,6 +578,8 @@ pub struct Program {
     /// The capabilities the package is granted (`[package] capabilities`),
     /// sorted.
     pub capabilities: Vec<String>,
+    /// Every `theme` declaration, by name: the constant computing its value.
+    pub themes: Vec<(String, FuncId)>,
 }
 
 impl Program {

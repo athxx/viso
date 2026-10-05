@@ -92,13 +92,13 @@ impl ReferenceIndex {
     /// (present only when the symbol is declared in this module). For a
     /// [`Resolution::Local`] it is the first recorded span — the binding site, since
     /// the resolver records the binding occurrence before any use. A
-    /// [`Resolution::Native`] is declared in the native schema and the
-    /// [`Resolution::Env`] by the runtime, not in source.
+    /// [`Resolution::Native`] is declared in the native schema, and the
+    /// [`Resolution::Env`] and [`Resolution::Theme`] by the runtime, not in source.
     pub fn decl_of(&self, res: Resolution) -> Option<TextRange> {
         match res {
             Resolution::Symbol(id) => self.decl_span_of(id),
             Resolution::Local(_) => self.uses_of(res).first().copied(),
-            Resolution::Native(_) | Resolution::Env => None,
+            Resolution::Native(_) | Resolution::Env | Resolution::Theme => None,
         }
     }
 }

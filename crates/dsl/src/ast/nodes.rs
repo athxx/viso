@@ -182,6 +182,22 @@ ast_node!(
     /// `resource IDENT : Type { ResourceItem* }`.
     ResourceDecl = ResourceDecl
 );
+ast_node!(
+    /// `theme IDENT (: TypePath)? { ThemeItem* }`.
+    ThemeDecl = ThemeDecl
+);
+ast_node!(
+    /// `IDENT = Expr ;` in a theme.
+    ThemeItem = ThemeItem
+);
+ast_node!(
+    /// `style IDENT for TypePath (: TypePath (+ TypePath)*)? { .. }`.
+    StyleDecl = StyleDecl
+);
+ast_node!(
+    /// `when Expr { PropertyBinding* }` in a style.
+    StyleWhen = StyleWhen
+);
 /// `load = Expr ;`, `key = Expr ;`, `policy = Expr ;` or `scope = Expr ;`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResourceItem {
@@ -611,6 +627,84 @@ impl EffectDecl {
     /// The body.
     pub fn body(&self) -> Option<EffectBody> {
         support::child(&self.syntax)
+    }
+}
+
+impl ThemeDecl {
+    /// The theme's name.
+    pub fn name(&self) -> Option<SyntaxToken> {
+        support::name_token(&self.syntax)
+    }
+
+    /// The theme it starts from.
+    pub fn base(&self) -> Option<TypePath> {
+        let base = self
+            .syntax
+            .children()
+            .into_iter()
+            .find(|c| c.kind() == SyntaxKind::ThemeBase)?;
+        support::child(&base)
+    }
+
+    /// Its fields, in source order.
+    pub fn items(&self) -> impl Iterator<Item = ThemeItem> {
+        support::children(&self.syntax)
+    }
+}
+
+impl ThemeItem {
+    /// The field it sets.
+    pub fn name(&self) -> Option<SyntaxToken> {
+        support::name_token(&self.syntax)
+    }
+
+    /// The field's value.
+    pub fn value(&self) -> Option<Expr> {
+        support::child(&self.syntax)
+    }
+}
+
+impl StyleDecl {
+    /// The style's name.
+    pub fn name(&self) -> Option<SyntaxToken> {
+        support::name_token(&self.syntax)
+    }
+
+    /// The component it styles: the type after `for`.
+    pub fn target(&self) -> Option<TypePath> {
+        support::child(&self.syntax)
+    }
+
+    /// The styles it applies first, in order.
+    pub fn bases(&self) -> Vec<TypePath> {
+        self.syntax
+            .children()
+            .into_iter()
+            .find(|c| c.kind() == SyntaxKind::StyleBases)
+            .map(|bases| support::children(&bases).collect())
+            .unwrap_or_default()
+    }
+
+    /// Its unconditional property bindings, in source order.
+    pub fn bindings(&self) -> impl Iterator<Item = PropertyBinding> {
+        support::children(&self.syntax)
+    }
+
+    /// Its `when` blocks, in source order.
+    pub fn whens(&self) -> impl Iterator<Item = StyleWhen> {
+        support::children(&self.syntax)
+    }
+}
+
+impl StyleWhen {
+    /// The selector expression.
+    pub fn selector(&self) -> Option<Expr> {
+        support::child(&self.syntax)
+    }
+
+    /// The bindings it applies while the selector holds.
+    pub fn bindings(&self) -> impl Iterator<Item = PropertyBinding> {
+        support::children(&self.syntax)
     }
 }
 
@@ -1706,6 +1800,8 @@ pub enum Item {
     Action(ActionDecl),
     Task(TaskDecl),
     Shader(ShaderDecl),
+    Theme(ThemeDecl),
+    Style(StyleDecl),
     Advanced(AdvancedItem),
 }
 
@@ -1724,6 +1820,8 @@ impl AstNode for Item {
                 | SyntaxKind::ActionDecl
                 | SyntaxKind::TaskDecl
                 | SyntaxKind::ShaderDecl
+                | SyntaxKind::ThemeDecl
+                | SyntaxKind::StyleDecl
                 | SyntaxKind::AdvancedItem
         )
     }
@@ -1740,6 +1838,8 @@ impl AstNode for Item {
             SyntaxKind::ActionDecl => Item::Action(ActionDecl { syntax: node }),
             SyntaxKind::TaskDecl => Item::Task(TaskDecl { syntax: node }),
             SyntaxKind::ShaderDecl => Item::Shader(ShaderDecl { syntax: node }),
+            SyntaxKind::ThemeDecl => Item::Theme(ThemeDecl { syntax: node }),
+            SyntaxKind::StyleDecl => Item::Style(StyleDecl { syntax: node }),
             SyntaxKind::AdvancedItem => Item::Advanced(AdvancedItem { syntax: node }),
             _ => return None,
         };
@@ -1758,6 +1858,8 @@ impl AstNode for Item {
             Item::Action(n) => n.syntax(),
             Item::Task(n) => n.syntax(),
             Item::Shader(n) => n.syntax(),
+            Item::Theme(n) => n.syntax(),
+            Item::Style(n) => n.syntax(),
             Item::Advanced(n) => n.syntax(),
         }
     }

@@ -2426,6 +2426,8 @@ export theme AppTheme {
 
 Expression 中的 `theme` 是普通 identifier，由名称解析绑定到隐式注入的 Typed Reactive Context Binding（§12.6），不是 Grammar Production，也不是任意全局变量；它在 View、Style 与 Theme Expression 中可见。应用根节点或测试 Harness 必须提供一个与当前 Theme Schema 匹配的 Context Value；缺失 Context 是静态配置错误或应用启动错误。组件只能读取 `theme`，Theme 切换必须通过宿主 Context API 进行原子替换。
 
+当前实现：`theme X { .. }` 是类型为 `Theme`（U12.2）的常量：每个 Item 给出同名字段的值，未给出的字段取 Base（`theme X: B`，`B` 必须是 `Theme` 值）的对应字段，没有 Base 时取 Record 默认值。Item 名不是 `Theme` 字段报 `E2001`，同一字段给出两次或值类型不符报 `E2103`，没有 Base 时缺少无默认值的字段（`colors`、`elevation`）报 `E2103`；Base 不存在报 `E2001`、不是 `Theme` 报 `E2103`；同一模块内经 Base 或 Item 表达式互相依赖的 Theme 报 `E2003`。Item 表达式按 Initializer 检查（调用 Action 报 `E2501`），可以读取其他 Theme 与常量；Theme 表达式中读取 `theme` 目前报 `E2111`。宿主按名字切换 Theme，因此一个包内 Theme 名唯一（跨模块重名报 `E2002`）；编译结果在 Module 中记录名字到常量 Chunk 的表，随线格式进入 Release 包。`theme` 上下文是状态存储环境的一个字段：宿主以 `ViewHost::theme(name)` 求得包内 Theme 的值，以 `set_theme(states, value)` 原子替换，读取 `theme` 的 Binding 按各自 Property 的失效类别重新求值，未读取的不受影响，Handler 此后读到新值；替换前存储提供与 U12.2 默认值一致的浅色 Theme（`default_theme()`），因此不存在缺失 Context 的状态。热重载重新编译全部 Theme，已设置的值保留到宿主再次替换。
+
 ---
 
 # 第八部分：完整语法——Statement、Expression、Closure 与 Pattern
@@ -4956,6 +4958,8 @@ export record Theme {
 - `typography.*_size` 是 `Em`，用作 `font_size` 时相对父节点 Resolved Font Size（§19.4）；需要与嵌套深度无关的层级时，写成 `theme.typography.base_size` 的倍数；
 - 读取 `theme.*` 的 Binding 在 Theme 整体替换时按各自 Property 的失效类别失效，替换本身不引入额外 Dirty Class；
 - 应用自定义 Theme 字段通过扩展 Record 提供，扩展方式沿用 §60 的 Theme Base 规则。
+
+当前实现：`TypographyScale` 暂无 `family` 字段（`FontFamily` 类型随字体运行时提供）；其余 Record 与字段、默认值如上表。`Color` 值为 `0xRRGGBBAA` 整数，长度为数值，`Duration` 为秒，`Easing` 为变体序号。
 
 ---
 
@@ -8481,7 +8485,7 @@ RecordPatternField
 | E1405  | 此处需要 Expression                                     |
 | E2001  | 未解析符号                                              |
 | E2002  | Import 歧义                                             |
-| E2003  | 值初始化循环                                            |
+| E2003  | 值初始化循环（含 Theme 的 Base/Item 依赖环，§60）       |
 | E2004  | 表达式泛型缺少 Turbofish 或 Const Argument 缺少 `const` |
 | E2005  | 源文件未声明可挂载的组件                                |
 | E2006  | 源文件声明多个组件且未导出要挂载的那个                  |
@@ -8495,7 +8499,7 @@ RecordPatternField
 | E2108  | `format` 模板与实参不匹配（§17）                        |
 | E2109  | 长度族值常量除以 0（§19.8）                             |
 | E2110  | 赋值目标不可写（§62.1）                                 |
-| E2111  | `env` 用在 View 执行域之外（§96.2）                     |
+| E2111  | `env` / `theme` 用在 View 执行域之外（§96.2、§60）      |
 | E2112  | `@const` Native 或 Tick 时长参数在编译期拒绝其实参（§32、§106.6） |
 | E2201  | Trait Bound 未满足                                      |
 | E2202  | Trait Impl 重叠或歧义                                   |

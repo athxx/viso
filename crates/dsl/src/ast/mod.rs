@@ -26,7 +26,8 @@ pub use nodes::{
     RecordField, RenameClause, ResourceDecl, ResourceItem, ReturnType, ShaderDecl, ShaderEntry,
     ShaderFn, ShaderInstance, ShaderMember, ShaderSampler, ShaderStage, ShaderTexture,
     ShaderUniform, ShaderVarying, SlotDecl, StartCancelled, StartError, StartHandlers, StartPolicy,
-    StartSlot, StartStmt, StartSuccess, StateDecl, SystemDecl, SystemOrder, TaskDecl, TryExpr,
-    TupleExpr, TwoWayBinding, TypeAliasDecl, TypePath, UnaryExpr, ViewBlock, ViewDecl, ViewFor,
-    ViewFragment, ViewIf, ViewItem, ViewMatch, ViewMatchArm, decl_attributes,
+    StartSlot, StartStmt, StartSuccess, StateDecl, StyleDecl, StyleWhen, SystemDecl, SystemOrder,
+    TaskDecl, ThemeDecl, ThemeItem, TryExpr, TupleExpr, TwoWayBinding, TypeAliasDecl, TypePath,
+    UnaryExpr, ViewBlock, ViewDecl, ViewFor, ViewFragment, ViewIf, ViewItem, ViewMatch,
+    ViewMatchArm, decl_attributes,
 };

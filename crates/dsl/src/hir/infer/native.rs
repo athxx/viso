@@ -10,8 +10,8 @@
 use viso_behavior::native::{NativeEntry, NativeId, NativeVariant, SchemaTy};
 
 use super::{
-    InferCx, binary_op_kind, child_exprs, compatible, parse_float_literal, parse_int_literal,
-    split_unit_literal, unit_scale,
+    InferCx, binary_op_kind, child_exprs, compatible, in_base_unit, parse_float_literal,
+    parse_int_literal, split_unit_literal,
 };
 use crate::ast::{AstNode, Expr, FieldExpr};
 use crate::diag::Diagnostic;
@@ -313,7 +313,7 @@ fn const_number(expr: &Expr) -> Option<(f64, bool)> {
             match split_unit_literal(&text) {
                 Some((body, Ty::Duration)) => {
                     let suffix = &text[body.len()..];
-                    Some((number(body)? * unit_scale(suffix), true))
+                    Some((in_base_unit(number(body)?, suffix), true))
                 }
                 Some(_) => None,
                 None => Some((number(&text)?, false)),

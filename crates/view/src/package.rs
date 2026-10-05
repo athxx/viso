@@ -419,7 +419,7 @@ mod tests {
         bad[route] = 99;
         assert!(ViewPackage::decode_from_slice(&bad).is_err());
         let mut bad = bytes.clone();
-        bad[bytes.len() - 2] = 12;
+        bad[bytes.len() - 2] = 13;
         assert!(ViewPackage::decode_from_slice(&bad).is_err());
     }
 }

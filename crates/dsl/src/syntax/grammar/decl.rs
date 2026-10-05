@@ -147,9 +147,9 @@ fn decl_core(p: &mut Parser) {
         // Standard/Advanced declarations parsed but not resolved this slice.
         SyntaxKind::TraitKw | SyntaxKind::ImplKw | SyntaxKind::NativeKw => advanced_decl(p, None),
         SyntaxKind::Ident if p.nth_is_ident(1) => match p.nth_contextual(0) {
-            Some(kw @ (SyntaxKind::TemplateKw | SyntaxKind::StyleKw | SyntaxKind::ThemeKw)) => {
-                advanced_decl(p, Some(kw))
-            }
+            Some(SyntaxKind::ThemeKw) => theme_decl(p),
+            Some(SyntaxKind::StyleKw) => style_decl(p),
+            Some(SyntaxKind::TemplateKw) => advanced_decl(p, Some(SyntaxKind::TemplateKw)),
             _ => p.err_and_bump(ParseErrorKind::UnexpectedTokens),
         },
         _ => p.err_and_bump(ParseErrorKind::UnexpectedTokens),
@@ -412,6 +412,86 @@ fn resource_decl(p: &mut Parser) {
     }
     p.expect(SyntaxKind::RBrace);
     m.complete(p, SyntaxKind::ResourceDecl);
+}
+
+/// `"theme" IDENT (":" TypePath)? "{" (IDENT "=" Expression ";")* "}"`.
+fn theme_decl(p: &mut Parser) {
+    let m = p.start();
+    p.bump_as(SyntaxKind::ThemeKw);
+    name(p);
+    if p.at(SyntaxKind::Colon) {
+        let base = p.start();
+        p.bump_any(); // `:`
+        super::types::type_(p);
+        base.complete(p, SyntaxKind::ThemeBase);
+    }
+    p.expect(SyntaxKind::LBrace);
+    while !p.at(SyntaxKind::RBrace) && !p.at_end() {
+        let before = p.cursor();
+        if p.nth_is_ident(0) && p.nth(1) == SyntaxKind::Eq {
+            let item = p.start();
+            p.bump_any(); // the field name
+            p.bump_any(); // `=`
+            super::expr::expr(p);
+            p.expect(SyntaxKind::Semi);
+            item.complete(p, SyntaxKind::ThemeItem);
+        } else {
+            p.err_and_bump(ParseErrorKind::UnexpectedTokens);
+        }
+        p.ensure_progress(before);
+    }
+    p.expect(SyntaxKind::RBrace);
+    m.complete(p, SyntaxKind::ThemeDecl);
+}
+
+/// `"style" IDENT "for" TypePath (":" TypePath ("+" TypePath)*)? "{"
+/// (PropertyBinding | "when" Expression "{" PropertyBinding* "}")* "}"`.
+fn style_decl(p: &mut Parser) {
+    let m = p.start();
+    p.bump_as(SyntaxKind::StyleKw);
+    name(p);
+    p.expect(SyntaxKind::ForKw);
+    super::types::type_(p);
+    if p.at(SyntaxKind::Colon) {
+        let bases = p.start();
+        p.bump_any(); // `:`
+        super::types::type_(p);
+        while p.eat(SyntaxKind::Plus) {
+            super::types::type_(p);
+        }
+        bases.complete(p, SyntaxKind::StyleBases);
+    }
+    p.expect(SyntaxKind::LBrace);
+    while !p.at(SyntaxKind::RBrace) && !p.at_end() {
+        let before = p.cursor();
+        if p.at_contextual(SyntaxKind::WhenKw) && !matches!(p.nth(1), SyntaxKind::Colon) {
+            let when = p.start();
+            p.bump_as(SyntaxKind::WhenKw);
+            super::expr::head_expr(p);
+            p.expect(SyntaxKind::LBrace);
+            while !p.at(SyntaxKind::RBrace) && !p.at_end() {
+                let before = p.cursor();
+                style_binding(p);
+                p.ensure_progress(before);
+            }
+            p.expect(SyntaxKind::RBrace);
+            when.complete(p, SyntaxKind::StyleWhen);
+        } else {
+            style_binding(p);
+        }
+        p.ensure_progress(before);
+    }
+    p.expect(SyntaxKind::RBrace);
+    m.complete(p, SyntaxKind::StyleDecl);
+}
+
+/// A property binding of a style; anything else is no style item.
+fn style_binding(p: &mut Parser) {
+    if p.nth_is_ident(0) && matches!(p.nth(1), SyntaxKind::Colon | SyntaxKind::Dot) {
+        super::view::property_binding(p);
+    } else {
+        p.err_and_bump(ParseErrorKind::UnexpectedTokens);
+    }
 }
 
 /// `"computed" IDENT (":" Type)? "=" Expression ";"`.

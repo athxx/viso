@@ -14,9 +14,8 @@ use crate::hir::infer::format::{Hole, Piece, template_literal, template_pieces};
 use crate::hir::infer::pattern::unescape;
 use crate::hir::infer::{NativeCall, VariantInfo, VariantPayload, is_spread, record_spread};
 use crate::hir::infer::{
-    binary_op_kind, builtin_variant, child_exprs, first_child_expr, is_integer_ty,
+    binary_op_kind, builtin_variant, child_exprs, first_child_expr, in_base_unit, is_integer_ty,
     parse_float_literal, parse_int_literal, split_unit_literal, unary_op_kind, unify_numeric,
-    unit_scale,
 };
 use crate::resolve::{Resolution, SymbolId, SymbolKind};
 use crate::syntax::{SyntaxKind, SyntaxNode, SyntaxToken};
@@ -207,6 +206,7 @@ impl Lowerer<'_, '_> {
                 self.symbol_value(id, &head.text())
             }
             Some(Resolution::Env) if segments.len() == 1 => self.env_value(),
+            Some(Resolution::Theme) if segments.len() == 1 => self.env_field(EnvField::Theme),
             Some(Resolution::Native(id)) => {
                 match self.env.natives().and_then(|n| n.variant_by_id(id)) {
                     Some(variant) => Ok(self.constant(Const::Tag(variant.index))),
@@ -263,7 +263,7 @@ impl Lowerer<'_, '_> {
 
     /// The whole `env`, an `Environment` of every field's slot.
     pub(super) fn env_value(&mut self) -> Lower<Reg> {
-        let fields = EnvField::ALL
+        let fields = EnvField::ENVIRONMENT
             .into_iter()
             .map(|field| self.env_field(field))
             .collect::<Lower<Vec<Reg>>>()?;
@@ -460,6 +460,7 @@ impl Lowerer<'_, '_> {
                         return self.bail(format!("the shorthand `{name}` names a native"));
                     }
                     Some(Resolution::Env) => self.env_value()?,
+                    Some(Resolution::Theme) => self.env_field(EnvField::Theme)?,
                     None => return self.bail(format!("the shorthand `{name}` names nothing")),
                 },
             };
@@ -1269,7 +1270,7 @@ fn unit_literal(text: &str) -> Option<Const> {
         Some(v) => v as f64,
         None => parse_float_literal(body)?,
     };
-    Some(Const::Float(round(value * unit_scale(suffix), &ty)))
+    Some(Const::Float(round(in_base_unit(value, suffix), &ty)))
 }
 
 /// A `#rgb`, `#rgba`, `#rrggbb` or `#rrggbbaa` color as `0xRRGGBBAA`.

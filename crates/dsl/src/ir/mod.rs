@@ -98,7 +98,10 @@ impl<'a> ComponentLibrary<'a> {
             .iter()
             .filter_map(|r| match r.to {
                 Resolution::Symbol(id) => Some((r.range, id)),
-                Resolution::Local(_) | Resolution::Native(_) | Resolution::Env => None,
+                Resolution::Local(_)
+                | Resolution::Native(_)
+                | Resolution::Env
+                | Resolution::Theme => None,
             })
             .collect();
         ComponentLibrary { heads, components }

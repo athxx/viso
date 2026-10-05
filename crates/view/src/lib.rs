@@ -32,6 +32,7 @@ mod resources;
 mod route;
 mod scope;
 mod tasks;
+mod theme;
 mod values;
 
 pub use attach::{Route, attach, attach_node};
@@ -53,6 +54,7 @@ pub use regions::{
 pub use route::{EventRoute, PAYLOAD_ENUMS, PAYLOAD_RECORDS};
 pub use scope::Scope;
 pub use tasks::release_tasks;
+pub use theme::{default_theme, set_theme};
 pub use values::{__mount_values, mount_values};
 pub use viso_behavior::{Fault, Module, Value};
 

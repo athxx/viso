@@ -623,7 +623,7 @@ export system Kitted implements QuickGame {
 /// `tape()` reach: every Tier-1 target must reproduce them bit for bit. A
 /// snapshot hash covers the build, so a change to the compiled module repins
 /// them.
-const CROSS_PLATFORM_HASHES: [u64; 2] = [0x3cad_6094_191e_9f5e, 0xb7be_3cac_02f7_5e29];
+const CROSS_PLATFORM_HASHES: [u64; 2] = [0x1a1a_08c9_7fb0_1f51, 0x857f_a733_5c98_0979];
 
 #[test]
 fn cross_platform_runs_reach_the_pinned_snapshot_hashes() {

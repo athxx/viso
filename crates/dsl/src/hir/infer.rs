@@ -493,7 +493,7 @@ impl<'a> InferCx<'a> {
     pub(crate) fn resolution_ty(&self, to: &Resolution) -> Ty {
         match to {
             Resolution::Local(slot) => self.locals.get(slot).cloned().unwrap_or(Ty::Unknown),
-            Resolution::Symbol(_) | Resolution::Env => {
+            Resolution::Symbol(_) | Resolution::Env | Resolution::Theme => {
                 self.env.resolution_ty(to).unwrap_or(Ty::Unknown)
             }
             Resolution::Native(_) => Ty::Unknown,
@@ -1458,18 +1458,20 @@ pub(crate) fn split_unit_literal(text: &str) -> Option<(&str, Ty)> {
         .map(|(suffix, ty)| (&text[..text.len() - suffix.len()], ty.clone()))
 }
 
-/// The factor a dimension suffix scales its number by to the dimension's base
-/// unit (seconds, degrees, hertz); 1 for a base unit or a non-dimension suffix.
-pub(crate) fn unit_scale(suffix: &str) -> f64 {
+/// `value` with the dimension suffix `suffix` in the dimension's base unit
+/// (seconds, degrees, hertz); unchanged for a base unit or a non-dimension
+/// suffix. A smaller unit divides by its exact power of ten, so `350ms` is the
+/// float nearest 0.35 s.
+pub(crate) fn in_base_unit(value: f64, suffix: &str) -> f64 {
     match suffix {
-        "ns" => 1e-9,
-        "us" => 1e-6,
-        "ms" => 1e-3,
-        "min" => 60.0,
-        "rad" => 180.0 / std::f64::consts::PI,
-        "turn" => 360.0,
-        "khz" => 1000.0,
-        _ => 1.0,
+        "ns" => value / 1e9,
+        "us" => value / 1e6,
+        "ms" => value / 1e3,
+        "min" => value * 60.0,
+        "rad" => value * (180.0 / std::f64::consts::PI),
+        "turn" => value * 360.0,
+        "khz" => value * 1000.0,
+        _ => value,
     }
 }
 
@@ -1736,14 +1738,20 @@ mod tests {
         fn resolution_ty(&self, to: &Resolution) -> Option<Ty> {
             match to {
                 Resolution::Symbol(id) => self.tys.get(id).cloned(),
-                Resolution::Local(_) | Resolution::Native(_) | Resolution::Env => None,
+                Resolution::Local(_)
+                | Resolution::Native(_)
+                | Resolution::Env
+                | Resolution::Theme => None,
             }
         }
 
         fn callee_signature(&self, to: &Resolution) -> Option<(Vec<Ty>, Ty)> {
             match to {
                 Resolution::Symbol(id) => self.sigs.get(id).cloned(),
-                Resolution::Local(_) | Resolution::Native(_) | Resolution::Env => None,
+                Resolution::Local(_)
+                | Resolution::Native(_)
+                | Resolution::Env
+                | Resolution::Theme => None,
             }
         }
     }

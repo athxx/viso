@@ -10,6 +10,10 @@
 //! from the constraints its parent gives it and the nearest adaptive scope
 //! above it.
 
+use std::any::Any;
+use std::fmt;
+use std::rc::Rc;
+
 use crate::component::NodeStore;
 use crate::layout::{Align, Axis, Inset, LayoutInput, LayoutTree, Length};
 use crate::node::NodeId;
@@ -17,7 +21,8 @@ use crate::state::{StateId, StateStore, StateValue};
 use viso_render::Rect;
 
 /// A field of the adaptive environment, in the order the prelude's
-/// `Environment` record declares it.
+/// `Environment` record declares it, then the `theme` context, which the
+/// store publishes alongside.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[repr(u8)]
 pub enum EnvField {
@@ -46,11 +51,30 @@ pub enum EnvField {
     LayoutDirection,
     /// `env.locale`: the user's locale.
     Locale,
+    /// `theme`: the theme value views read, replaced whole.
+    Theme,
 }
 
 impl EnvField {
     /// Every field, in declaration order.
-    pub const ALL: [EnvField; 12] = [
+    pub const ALL: [EnvField; 13] = [
+        EnvField::Window,
+        EnvField::Constraints,
+        EnvField::SizeClass,
+        EnvField::SafeArea,
+        EnvField::KeyboardInset,
+        EnvField::DisplayFeatures,
+        EnvField::Input,
+        EnvField::TextScale,
+        EnvField::ReducedMotion,
+        EnvField::Orientation,
+        EnvField::LayoutDirection,
+        EnvField::Locale,
+        EnvField::Theme,
+    ];
+
+    /// The fields of the prelude's `Environment` record, in declaration order.
+    pub const ENVIRONMENT: [EnvField; 12] = [
         EnvField::Window,
         EnvField::Constraints,
         EnvField::SizeClass,
@@ -80,12 +104,13 @@ impl EnvField {
             EnvField::Orientation => "orientation",
             EnvField::LayoutDirection => "layout_direction",
             EnvField::Locale => "locale",
+            EnvField::Theme => "theme",
         }
     }
 
-    /// The field named `name`.
+    /// The `Environment` field named `name`.
     pub fn named(name: &str) -> Option<EnvField> {
-        EnvField::ALL.into_iter().find(|f| f.name() == name)
+        EnvField::ENVIRONMENT.into_iter().find(|f| f.name() == name)
     }
 
     /// The field's wire tag, its declaration index.
@@ -383,7 +408,7 @@ impl Environment {
             EnvField::Orientation => self.orientation() != other.orientation(),
             EnvField::LayoutDirection => self.layout_direction != other.layout_direction,
             EnvField::Locale => self.locale != other.locale,
-            EnvField::Constraints | EnvField::SizeClass => false,
+            EnvField::Constraints | EnvField::SizeClass | EnvField::Theme => false,
         }
     }
 }
@@ -432,9 +457,27 @@ pub struct AdaptiveEnv {
     /// Whether something the anchors resolve from changed outside a layout
     /// since the last settle.
     unsettled: bool,
+    /// The theme views read, opaque to the store.
+    theme: Option<ThemeValue>,
+}
+
+/// The theme a store publishes: a value of the behavior runtime the store does
+/// not look into.
+#[derive(Clone)]
+pub struct ThemeValue(pub Rc<dyn Any>);
+
+impl fmt::Debug for ThemeValue {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("ThemeValue(..)")
+    }
 }
 
 impl AdaptiveEnv {
+    /// The theme views read, once one was set.
+    pub fn theme(&self) -> Option<&ThemeValue> {
+        self.theme.as_ref()
+    }
+
     /// The window-wide environment.
     pub fn environment(&self) -> &Environment {
         &self.env
@@ -631,6 +674,15 @@ impl StateStore {
             self.env.unsettled = true;
         }
         changed
+    }
+
+    /// Replaces the theme views read, raising the cell of the `theme` field:
+    /// every binding that reads it re-evaluates, and nothing else.
+    pub fn set_theme(&mut self, theme: ThemeValue) {
+        self.env.theme = Some(theme);
+        if let Some(cell) = self.env.cells[EnvField::Theme.tag() as usize] {
+            self.raise(cell);
+        }
     }
 
     /// Replaces the size class policy; the anchors resolve against it when
@@ -874,10 +926,16 @@ mod tests {
         for (i, field) in EnvField::ALL.into_iter().enumerate() {
             assert_eq!(field.tag() as usize, i);
             assert_eq!(EnvField::from_tag(field.tag()), Some(field));
+        }
+        for field in EnvField::ENVIRONMENT {
             assert_eq!(EnvField::named(field.name()), Some(field));
         }
-        assert_eq!(EnvField::from_tag(12), None);
-        assert_eq!(EnvField::named("theme"), None);
+        assert_eq!(EnvField::from_tag(13), None);
+        assert_eq!(
+            EnvField::named("theme"),
+            None,
+            "`theme` is no field of `env`"
+        );
     }
 
     use crate::component::{BuildCx, FlexStyle, LeafStyle, ScrollStyle};
