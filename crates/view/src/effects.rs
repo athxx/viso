@@ -20,20 +20,26 @@ use viso_behavior::{ComponentEffect, EffectRun, Value};
 use viso_ui::adaptive::AdaptiveEnv;
 use viso_ui::{
     BuildCx, Cleanup, ComputeCx, EffectCx, EffectStore, NodeId, NodeStore, StateId, StateValue,
+    TaskFuture, TaskId,
 };
 
 use crate::host::{StateCells, ViewHost};
 use crate::scope::Scope;
 
 /// Mounts each effect of the view `host` runs on `owner`, its root node, in
-/// the empty scope. They first run in the next flush.
+/// the empty scope. They first run in the next flush. The root also owns the
+/// tasks the view starts outside region content.
 pub fn mount_effects(store: &mut NodeStore, host: &Rc<RefCell<ViewHost>>, owner: NodeId) {
     let effects = match host.try_borrow_mut() {
-        Ok(mut view) if !view.effects().is_empty() => {
+        Ok(mut view) => {
+            view.set_root(owner);
+            if view.effects().is_empty() {
+                return;
+            }
             view.own_effects(owner);
             view.effects().to_vec()
         }
-        _ => return,
+        Err(_) => return,
     };
     for effect in effects {
         mount_effect(store, host, effect, Scope::EMPTY, owner);
@@ -213,5 +219,13 @@ impl StateCells for Writes<'_, '_> {
 
     fn env(&self) -> &AdaptiveEnv {
         self.0.env()
+    }
+
+    fn spawn(&mut self, owner: NodeId, future: TaskFuture) -> Option<TaskId> {
+        Some(self.0.__spawn_for(owner, future))
+    }
+
+    fn cancel_task(&mut self, id: TaskId) {
+        self.0.cancel_task(id);
     }
 }

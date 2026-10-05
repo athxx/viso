@@ -21,6 +21,13 @@
 //! native call quota, and its result is charged against the memory budget. A
 //! native error or panic is a [`FaultKind::NativeFailure`] fault; the native's
 //! own side effects are outside the transaction and are not rolled back.
+//!
+//! A `task` runs on a [`Fiber`]: [`Vm::start_task`] runs it until it awaits a
+//! task native, which hands over the work it waits for; the fiber keeps the
+//! task's registers and frames, and [`Vm::resume_task`] continues it with the
+//! work's value. Each run between two suspensions is one invocation, with its
+//! own budget. A committed call's `start`s are handed to the caller, which
+//! starts the tasks.
 
 use std::fmt;
 use std::mem;
@@ -29,8 +36,11 @@ use std::rc::Rc;
 
 use crate::arith;
 use crate::memo::{self, Memo, ReadGraph, Reads};
-use crate::module::{Code, Module, Span};
-use crate::native::{NativeCx, NativeFunction, Natives, SchemaConflict, Services, ThreadDomain};
+use crate::module::{Code, Module, Span, TaskPolicy};
+use crate::native::{
+    NativeCx, NativeError, NativeFunction, NativeFuture, NativeKind, Natives, SchemaConflict,
+    Services, ThreadDomain,
+};
 use crate::op::{DisplayKind, Op};
 use crate::value::{Aggregate, Closure, Value};
 
@@ -92,6 +102,8 @@ pub enum FaultKind {
     Internal,
     /// A computed's evaluation reached the same computed again.
     ReactiveCycle,
+    /// A task read a state or an input after it suspended.
+    SuspendedRead,
 }
 
 impl FaultKind {
@@ -108,6 +120,7 @@ impl FaultKind {
             FaultKind::NativeFailure => "E7106",
             FaultKind::CapabilityDenied => "E6103",
             FaultKind::ReactiveCycle => "E4202",
+            FaultKind::SuspendedRead => "E4102",
         }
     }
 
@@ -128,6 +141,7 @@ impl FaultKind {
             FaultKind::MissingInput => "a required input has no value",
             FaultKind::Internal => "internal behavior fault",
             FaultKind::ReactiveCycle => "a computed depends on itself",
+            FaultKind::SuspendedRead => "a task read component state after it suspended",
         }
     }
 }
@@ -176,6 +190,27 @@ pub struct Event {
     pub args: Box<[Value]>,
 }
 
+/// A task start queued by `start`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Start {
+    /// The task's chunk.
+    pub task: u32,
+    /// Its arguments.
+    pub args: Box<[Value]>,
+    /// The closure run with the task's value once it returns: its `success`
+    /// and `error` handlers.
+    pub done: Option<Value>,
+    /// The closure run when the task is cancelled while its starter lives.
+    pub cancelled: Option<Value>,
+    /// The inlined component instance the `start` belongs to, `0` for the
+    /// mounted component's own.
+    pub instance: u32,
+    /// The instance's task slot it runs in, `None` for an unnamed start.
+    pub slot: Option<u32>,
+    /// What the slot does while an earlier task runs.
+    pub policy: TaskPolicy,
+}
+
 /// A committed invocation.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct Outcome {
@@ -183,6 +218,52 @@ pub struct Outcome {
     pub value: Value,
     /// The events it queued, in emit order.
     pub events: Vec<Event>,
+    /// The task starts it queued, in order.
+    pub starts: Vec<Start>,
+}
+
+/// A task suspended at a task native it awaits: its registers, frames and
+/// next instruction.
+pub struct Fiber {
+    stack: Vec<Value>,
+    frames: Vec<Frame>,
+    cursor: Cursor,
+    /// The register the awaited value lands in.
+    dst: u16,
+}
+
+impl fmt::Debug for Fiber {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "Fiber(chunk {}, pc {})",
+            self.cursor.chunk, self.cursor.pc
+        )
+    }
+}
+
+/// Where a task's run stopped.
+pub enum TaskStep {
+    /// It returned this value.
+    Done(Value),
+    /// It awaits the work; resume it with the work's result.
+    Awaiting(Fiber, NativeFuture),
+}
+
+impl fmt::Debug for TaskStep {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            TaskStep::Done(value) => f.debug_tuple("Done").field(value).finish(),
+            TaskStep::Awaiting(fiber, _) => f.debug_tuple("Awaiting").field(fiber).finish(),
+        }
+    }
+}
+
+/// How a run of the interpreter loop ended.
+enum Exit {
+    Return(Value),
+    /// Awaiting the work at a task native, its value due in `dst`.
+    Await(u16, NativeFuture),
 }
 
 /// What the last invocation spent.
@@ -367,6 +448,14 @@ pub struct Vm {
     /// Whether a Presentation native defers instead of running.
     deferring: bool,
     deferred: Vec<Deferred>,
+    starts: Vec<Start>,
+    /// Whether the running invocation is a task's, which may suspend.
+    fiber: bool,
+    /// Whether the running task suspended before: it sees the component as
+    /// it started, so it reads no state or input any more.
+    resumed: bool,
+    /// The work the last task native handed over.
+    awaiting: Option<NativeFuture>,
 }
 
 type Step<T> = Result<T, FaultKind>;
@@ -394,6 +483,10 @@ impl Vm {
             detail: String::new(),
             deferring: false,
             deferred: Vec::new(),
+            starts: Vec::new(),
+            fiber: false,
+            awaiting: None,
+            resumed: false,
         }
     }
 
@@ -627,24 +720,14 @@ impl Vm {
         args: &[Value],
         captures: &[Value],
     ) -> Result<Outcome, Fault> {
-        self.fuel = self.budget.instructions;
-        self.allocated = 0;
-        self.native_calls = 0;
-        self.detail.clear();
-        let issued = self.deferred.len();
-        self.marks.clear();
-        self.marks.resize(instance.states.len().div_ceil(64), 0);
-        self.memo = instance
-            .graph
-            .as_ref()
-            .is_some_and(|graph| Rc::ptr_eq(graph, &self.graph));
+        let issued = self.begin(instance);
         if self.memo
             && let Some(entry) = self.graph.entry(chunk)
         {
             if let Memo::Ready(value) = &instance.memo[entry] {
                 return Ok(Outcome {
                     value: value.clone(),
-                    events: Vec::new(),
+                    ..Outcome::default()
                 });
             }
             instance.memo[entry] = Memo::Evaluating;
@@ -659,53 +742,181 @@ impl Vm {
             .enter(&module, chunk, args, captures)
             .and_then(|code| self.exec(&module, instance, &mut cursor, code));
         match result {
-            Ok(value) => {
-                if !self.undo.is_empty() {
-                    instance.revision += 1;
-                    for (slot, _) in self.undo.drain(..) {
-                        instance.dirty[slot as usize / 64] |= 1 << (slot % 64);
-                    }
-                }
-                Ok(Outcome {
-                    value,
-                    events: mem::take(&mut self.events),
-                })
+            Ok(Exit::Return(value)) => Ok(self.commit(instance, value)),
+            Ok(Exit::Await(..)) => {
+                let fault = self.rollback(&module, instance, &cursor, FaultKind::Internal, issued);
+                Err(fault)
             }
-            Err(kind) => {
-                self.deferred.truncate(issued);
-                while let Some((slot, old)) = self.undo.pop() {
-                    instance.states[slot as usize] = old;
-                    instance.forget_state(slot as usize);
-                }
-                for memo in &mut instance.memo {
-                    if *memo == Memo::Evaluating {
-                        *memo = Memo::Empty;
-                    }
-                }
-                self.events.clear();
-                self.stack.clear();
-                self.frames.clear();
-                let at = module.chunks().get(cursor.chunk as usize).map(|c| {
-                    let pc = cursor.pc.saturating_sub(1);
-                    Location {
-                        chunk: cursor.chunk,
-                        pc: pc as u32,
-                        span: c
-                            .body
-                            .as_ref()
-                            .ok()
-                            .and_then(|code| code.spans.get(pc).copied())
-                            .unwrap_or_default(),
-                    }
-                });
-                let message = if self.detail.is_empty() {
-                    kind.describe().to_owned()
-                } else {
-                    mem::take(&mut self.detail)
+            Err(kind) => Err(self.rollback(&module, instance, &cursor, kind, issued)),
+        }
+    }
+
+    /// Runs task chunk `chunk` with `args` against `instance` until it returns
+    /// or awaits a task native. The run is one transaction, like a call.
+    pub fn start_task(
+        &mut self,
+        instance: &mut Instance,
+        chunk: u32,
+        args: &[Value],
+    ) -> Result<TaskStep, Fault> {
+        let issued = self.begin(instance);
+        let module = Rc::clone(&self.module);
+        let mut cursor = Cursor {
+            chunk,
+            pc: 0,
+            base: 0,
+        };
+        self.fiber = true;
+        let result = self
+            .enter(&module, chunk, args, &[])
+            .and_then(|code| self.exec(&module, instance, &mut cursor, code));
+        self.fiber = false;
+        self.suspend_or_finish(&module, instance, cursor, result, issued)
+    }
+
+    /// Continues `fiber` against `instance` with the result of the work it
+    /// awaited, until the task returns or awaits again; a failed work faults
+    /// at the call that handed it over.
+    pub fn resume_task(
+        &mut self,
+        instance: &mut Instance,
+        fiber: Fiber,
+        result: Result<Value, NativeError>,
+    ) -> Result<TaskStep, Fault> {
+        let issued = self.begin(instance);
+        let module = Rc::clone(&self.module);
+        let Fiber {
+            stack,
+            frames,
+            mut cursor,
+            dst,
+        } = fiber;
+        self.stack = stack;
+        self.frames = frames;
+        let result = match result {
+            Ok(value) => {
+                self.stack[cursor.base + usize::from(dst)] = value;
+                self.fiber = true;
+                self.resumed = true;
+                let run = self
+                    .body(&module, cursor.chunk)
+                    .and_then(|code| self.exec(&module, instance, &mut cursor, code));
+                self.fiber = false;
+                self.resumed = false;
+                run
+            }
+            Err(error) => self.trap(
+                FaultKind::NativeFailure,
+                format!("the work the task awaited failed: {error}"),
+            ),
+        };
+        self.suspend_or_finish(&module, instance, cursor, result, issued)
+    }
+
+    /// Packs a task run that awaits into its fiber, or commits one that
+    /// returned.
+    fn suspend_or_finish(
+        &mut self,
+        module: &Module,
+        instance: &mut Instance,
+        cursor: Cursor,
+        result: Step<Exit>,
+        issued: usize,
+    ) -> Result<TaskStep, Fault> {
+        match result {
+            Ok(Exit::Return(value)) => {
+                let outcome = self.commit(instance, value);
+                Ok(TaskStep::Done(outcome.value))
+            }
+            Ok(Exit::Await(dst, work)) => {
+                self.commit(instance, Value::Nil);
+                let fiber = Fiber {
+                    stack: mem::take(&mut self.stack),
+                    frames: mem::take(&mut self.frames),
+                    cursor,
+                    dst,
                 };
-                Err(Fault { kind, at, message })
+                Ok(TaskStep::Awaiting(fiber, work))
+            }
+            Err(kind) => Err(self.rollback(module, instance, &cursor, kind, issued)),
+        }
+    }
+
+    /// Resets the per-invocation budgets and logs for a run against
+    /// `instance`; returns how many deferred commands were issued before it.
+    fn begin(&mut self, instance: &Instance) -> usize {
+        self.fuel = self.budget.instructions;
+        self.allocated = 0;
+        self.native_calls = 0;
+        self.detail.clear();
+        self.marks.clear();
+        self.marks.resize(instance.states.len().div_ceil(64), 0);
+        self.memo = instance
+            .graph
+            .as_ref()
+            .is_some_and(|graph| Rc::ptr_eq(graph, &self.graph));
+        self.deferred.len()
+    }
+
+    /// Commits the run: marks the written slots dirty and hands over its
+    /// events and starts with `value`.
+    fn commit(&mut self, instance: &mut Instance, value: Value) -> Outcome {
+        if !self.undo.is_empty() {
+            instance.revision += 1;
+            for (slot, _) in self.undo.drain(..) {
+                instance.dirty[slot as usize / 64] |= 1 << (slot % 64);
             }
         }
+        Outcome {
+            value,
+            events: mem::take(&mut self.events),
+            starts: mem::take(&mut self.starts),
+        }
+    }
+
+    /// Rolls the run back and describes its fault `kind` at `cursor`.
+    fn rollback(
+        &mut self,
+        module: &Module,
+        instance: &mut Instance,
+        cursor: &Cursor,
+        kind: FaultKind,
+        issued: usize,
+    ) -> Fault {
+        self.deferred.truncate(issued);
+        while let Some((slot, old)) = self.undo.pop() {
+            instance.states[slot as usize] = old;
+            instance.forget_state(slot as usize);
+        }
+        for memo in &mut instance.memo {
+            if *memo == Memo::Evaluating {
+                *memo = Memo::Empty;
+            }
+        }
+        self.events.clear();
+        self.starts.clear();
+        self.awaiting = None;
+        self.stack.clear();
+        self.frames.clear();
+        let at = module.chunks().get(cursor.chunk as usize).map(|c| {
+            let pc = cursor.pc.saturating_sub(1);
+            Location {
+                chunk: cursor.chunk,
+                pc: pc as u32,
+                span: c
+                    .body
+                    .as_ref()
+                    .ok()
+                    .and_then(|code| code.spans.get(pc).copied())
+                    .unwrap_or_default(),
+            }
+        });
+        let message = if self.detail.is_empty() {
+            kind.describe().to_owned()
+        } else {
+            mem::take(&mut self.detail)
+        };
+        Fault { kind, at, message }
     }
 
     /// Sets up the entry frame of `chunk`.
@@ -793,7 +1004,7 @@ impl Vm {
         instance: &mut Instance,
         cur: &mut Cursor,
         mut code: &'m Code,
-    ) -> Step<Value> {
+    ) -> Step<Exit> {
         let mut base = cur.base;
         loop {
             if self.fuel == 0 {
@@ -808,6 +1019,9 @@ impl Vm {
                 Op::Nil { dst } => (dst, Value::Nil),
                 Op::Move { dst, src } => (dst, self.stack[base + usize::from(src)].clone()),
                 Op::LoadState { dst, slot } => {
+                    if self.resumed {
+                        return Err(FaultKind::SuspendedRead);
+                    }
                     let Some(value) = instance.states.get(slot as usize) else {
                         return Err(FaultKind::Internal);
                     };
@@ -831,6 +1045,9 @@ impl Vm {
                     continue;
                 }
                 Op::LoadInput { dst, slot } => {
+                    if self.resumed {
+                        return Err(FaultKind::SuspendedRead);
+                    }
                     let Some(value) = instance.inputs.get(slot as usize) else {
                         return Err(FaultKind::Internal);
                     };
@@ -1013,7 +1230,7 @@ impl Vm {
                         instance.memo[entry] = Memo::Ready(value.clone());
                     }
                     let Some(frame) = self.frames.pop() else {
-                        return Ok(value);
+                        return Ok(Exit::Return(value));
                     };
                     cur.chunk = frame.chunk;
                     cur.pc = frame.pc as usize;
@@ -1033,7 +1250,39 @@ impl Vm {
                     });
                     continue;
                 }
-                Op::Native { dst, ext } => (dst, self.call_native(code, base, ext as usize)?),
+                Op::Native { dst, ext } => {
+                    let value = self.call_native(code, base, ext as usize)?;
+                    if let Some(work) = self.awaiting.take() {
+                        if !self.fiber {
+                            return self.trap(
+                                FaultKind::Internal,
+                                "a task native was awaited outside a task".into(),
+                            );
+                        }
+                        return Ok(Exit::Await(dst, work));
+                    }
+                    (dst, value)
+                }
+                Op::Start { ext } => {
+                    let at = ext as usize;
+                    let argc = code.ext[at + 1] as usize;
+                    self.charge(64 + 16 * argc as u64)?;
+                    let args = self.gather(base, &code.ext[at + 2..at + 2 + argc]);
+                    let tail = &code.ext[at + 2 + argc..at + 7 + argc];
+                    let handler =
+                        |r: u32| (r != u32::MAX).then(|| self.stack[base + r as usize].clone());
+                    let start = Start {
+                        task: code.ext[at],
+                        args,
+                        done: handler(tail[0]),
+                        cancelled: handler(tail[1]),
+                        instance: tail[2],
+                        slot: (tail[3] != u32::MAX).then_some(tail[3]),
+                        policy: TaskPolicy::from_word(tail[4]),
+                    };
+                    self.starts.push(start);
+                    continue;
+                }
                 Op::Unreachable => {
                     return self.trap(FaultKind::Internal, "reached unreachable code".into());
                 }
@@ -1225,12 +1474,20 @@ impl Vm {
                 .iter()
                 .map(|&r| self.stack[base + r as usize].clone()),
         );
-        let services = &mut self.services;
-        let result = panic::catch_unwind(AssertUnwindSafe(|| {
-            (function.call)(&mut NativeCx::new(services), &args)
-        }));
+        let mut cx = NativeCx::new(&mut self.services);
+        let result = panic::catch_unwind(AssertUnwindSafe(|| (function.call)(&mut cx, &args)));
+        let pending = cx.take_pending();
         args.clear();
         self.native_args = args;
+        if pending.is_some() && function.kind != NativeKind::Task {
+            return self.trap(
+                FaultKind::Internal,
+                format!("native `{path}` suspended, but it is no task"),
+            );
+        }
+        if matches!(result, Ok(Ok(_))) {
+            self.awaiting = pending;
+        }
         match result {
             Ok(Ok(value)) => {
                 self.charge(value.heap_bytes())?;

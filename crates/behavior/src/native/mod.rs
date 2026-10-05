@@ -37,6 +37,7 @@
 
 mod registry;
 mod standard;
+mod timers;
 mod value;
 mod vector;
 mod widget;
@@ -45,6 +46,8 @@ mod widgets;
 use std::any::{Any, TypeId};
 use std::collections::HashMap;
 use std::fmt;
+use std::future::Future;
+use std::pin::Pin;
 
 use crate::value::Value;
 
@@ -53,6 +56,7 @@ pub use registry::{
     SchemaConflict,
 };
 pub use standard::{Clipboard, STANDARD, Stopwatch};
+pub use timers::Timers;
 pub use value::{NativeHandle, NativeObject, NativeValue, Obj, Ticks};
 pub use vector::{Vec2F32, Vec3F32};
 pub use widget::{
@@ -165,6 +169,8 @@ pub enum SchemaTy {
     F32,
     /// `F64`.
     F64,
+    /// A `Duration`, in seconds.
+    Duration,
     /// A `Duration` the compiler converts to whole ticks of the game's fixed
     /// step, rounding up: the argument is a compile-time constant and the
     /// native receives an `I64` tick count. A parameter type only.
@@ -198,7 +204,7 @@ impl fmt::Display for SchemaTy {
             SchemaTy::I64 => f.write_str("I64"),
             SchemaTy::F32 => f.write_str("F32"),
             SchemaTy::F64 => f.write_str("F64"),
-            SchemaTy::Ticks => f.write_str("Duration"),
+            SchemaTy::Duration | SchemaTy::Ticks => f.write_str("Duration"),
             SchemaTy::String => f.write_str("String"),
             SchemaTy::List(t) => write!(f, "List<{t}>"),
             SchemaTy::Option(t) => write!(f, "Option<{t}>"),
@@ -643,15 +649,38 @@ impl fmt::Debug for Services {
     }
 }
 
+/// The work a task native hands its caller: the task suspends until it
+/// finishes and resumes with its value, or faults with its error. Dropping it
+/// cancels the work.
+pub type NativeFuture = Pin<Box<dyn Future<Output = Result<Value, NativeError>>>>;
+
 /// What a native function sees of its host.
 pub struct NativeCx<'a> {
     services: &'a mut Services,
+    pending: Option<NativeFuture>,
 }
 
 impl<'a> NativeCx<'a> {
     /// A context over `services`.
     pub fn new(services: &'a mut Services) -> NativeCx<'a> {
-        NativeCx { services }
+        NativeCx {
+            services,
+            pending: None,
+        }
+    }
+
+    /// Suspends the task calling this task native until `work` finishes; the
+    /// call's value is then `work`'s, and what the native returns is ignored.
+    pub fn suspend<T: NativeValue>(
+        &mut self,
+        work: impl Future<Output = Result<T, NativeError>> + 'static,
+    ) {
+        self.pending = Some(Box::pin(async move { work.await.map(T::into_value) }));
+    }
+
+    /// The work [`suspend`](Self::suspend) handed over, if any.
+    pub fn take_pending(&mut self) -> Option<NativeFuture> {
+        self.pending.take()
     }
 
     /// The host service of type `T`, or an error naming the missing service.

@@ -6,7 +6,7 @@ use std::rc::Rc;
 
 use viso_behavior::Value;
 use viso_ui::adaptive::{AnchorId, EnvField};
-use viso_ui::{StateId, StateStore, StateValue};
+use viso_ui::{NodeId, StateId, StateStore, StateValue};
 
 use crate::env::env_value;
 use crate::host::StateCells;
@@ -64,6 +64,9 @@ pub(crate) struct Locals {
     pub(crate) env: Box<[LocalEnv]>,
     /// The cell raised with any of [`cells`](Self::cells) a write raises.
     pub(crate) pulse: StateId,
+    /// The root node of each instance this mount mounts that starts tasks,
+    /// which owns them, by instance.
+    pub(crate) owners: Box<[(u32, NodeId)]>,
 }
 
 /// An `env` slot a mount of region content keeps.
@@ -81,6 +84,15 @@ pub(crate) struct LocalEnv {
 }
 
 impl Locals {
+    /// The node owning the tasks instance `instance` starts, when this mount
+    /// mounts it.
+    pub(crate) fn owner_of(&self, instance: u32) -> Option<NodeId> {
+        self.owners
+            .iter()
+            .find(|&&(i, _)| i == instance)
+            .map(|&(_, node)| node)
+    }
+
     fn at(&self, slot: u32) -> Option<usize> {
         self.slots.binary_search(&slot).ok()
     }

@@ -89,11 +89,19 @@ pub struct EnvRead {
 }
 
 impl ViewBehavior {
-    /// Whether the view mounts an `effect` with its root.
-    pub fn has_effects(&self) -> bool {
-        self.module
+    /// Whether the view mounts anything on its root: an `effect`, or the
+    /// tasks a `start` runs, which the root owns.
+    pub fn mounts_on_root(&self) -> bool {
+        let effects = self
+            .module
             .component(&self.component)
-            .is_some_and(|index| !self.module.layout(index).effects.is_empty())
+            .is_some_and(|index| !self.module.layout(index).effects.is_empty());
+        effects
+            || self
+                .module
+                .chunks()
+                .iter()
+                .any(|chunk| chunk.kind == viso_behavior::ChunkKind::Task)
     }
 
     /// The routes of the node `key`.
@@ -141,8 +149,8 @@ impl ViewBehavior {
 }
 
 /// The behavior of `compiled`'s view: `None` when no node declares a handler,
-/// the view has no region and no view-driven native node of a component, so a view
-/// without behavior mounts no VM.
+/// the view has no region, no effect and no view-driven native node of a
+/// component, so a view without behavior mounts no VM.
 ///
 /// # Errors
 ///
@@ -167,7 +175,17 @@ pub fn view_behavior(compiled: &Compiled) -> Result<Option<ViewBehavior>, Vec<Mo
         ..
     } = walk;
     let regions = has_regions(&compiled.tree);
-    if sites.is_empty() && !regions && (nodes.is_empty() || compiled.component.is_none()) {
+    let effects = compiled.component.as_ref().is_some_and(|c| {
+        compiled
+            .behavior
+            .component(&c.schema.name)
+            .is_some_and(|layout| !layout.effects.is_empty())
+    });
+    if sites.is_empty()
+        && !regions
+        && !effects
+        && (nodes.is_empty() || compiled.component.is_none())
+    {
         return Ok(None);
     }
     let Some(component) = &compiled.component else {

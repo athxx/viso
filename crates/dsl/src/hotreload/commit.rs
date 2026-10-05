@@ -63,7 +63,7 @@ use crate::view_regions::{RegionKeys, StaticNodes, has_regions};
 
 use viso_view::{
     HostError, ItemKey, Scope, ViewHost, attach_node, cell_value, mount_effects, mount_regions,
-    mount_values, release_effects, vm_value,
+    mount_values, release_effects, release_tasks, vm_value,
 };
 
 use crate::diag::Diagnostic;
@@ -162,6 +162,13 @@ pub fn commit(
     migration: &MigrationPlan,
 ) -> HotReloadReport {
     let mut report = HotReloadReport::default();
+
+    // Step 0 — cancel the running tasks, each `cancelled` handler running the
+    // code that started it while its instance still lives, so what it writes
+    // migrates with the rest.
+    if let Some(host) = rt.view.as_ref() {
+        release_tasks(host, rt.store, rt.states);
+    }
 
     // Step 1 — structural patch. Reuse the live nodes in place, or rebuild the
     // view carrying each kept node's migratable state. The key-to-node map
@@ -267,7 +274,7 @@ fn mount_behavior(
                 host.borrow_mut().reload(next);
                 Some(host)
             }
-            (None, Ok(next)) => Some(Rc::new(RefCell::new(next))),
+            (None, Ok(next)) => Some(next.shared()),
             (Some(host), Err(_)) => {
                 let mut host = host.borrow_mut();
                 host.release_regions(rt.store, rt.states);

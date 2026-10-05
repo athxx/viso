@@ -87,6 +87,7 @@ fn dependent_functions(program: &Program) -> Vec<bool> {
                 | Inst::StoreState { .. }
                 | Inst::LoadInput { .. }
                 | Inst::Emit { .. }
+                | Inst::Start { .. }
         )
     };
     let mut dependent: Vec<bool> = program
@@ -116,10 +117,12 @@ fn dependent_functions(program: &Program) -> Vec<bool> {
     }
 }
 
-/// The function `inst` calls or closes over.
+/// The function `inst` calls, closes over or starts.
 fn callee(inst: &Inst) -> Option<FuncId> {
     match inst {
-        Inst::Call { func, .. } | Inst::Closure { func, .. } => Some(*func),
+        Inst::Call { func, .. } | Inst::Closure { func, .. } | Inst::Start { task: func, .. } => {
+            Some(*func)
+        }
         _ => None,
     }
 }
@@ -188,7 +191,15 @@ impl Inliner<'_> {
         );
 
         let copies: Vec<Function> = order.iter().map(|&f| self.copy(f)).collect();
+        let starts = copies.iter().any(|f| {
+            f.body
+                .as_ref()
+                .is_ok_and(|b| b.insts.iter().any(|i| matches!(i, Inst::Start { .. })))
+        });
         self.program.functions.extend(copies);
+        if starts {
+            self.program.components[self.root].starters.push(self.id);
+        }
 
         let own = |f: FuncId| self.clones.get(&f).copied().unwrap_or(f);
         let handlers: Vec<(Site, FuncId)> = self
@@ -483,6 +494,32 @@ impl Inliner<'_> {
                     span,
                 ),
             },
+            Inst::Start {
+                task,
+                args,
+                done,
+                cancelled,
+                slot,
+                policy,
+                ..
+            } => {
+                let (task, args) = match self.clones.get(&task) {
+                    Some(&copy) => (copy, with_scope(&args)),
+                    None => (task, args),
+                };
+                out.push(
+                    Inst::Start {
+                        task,
+                        args,
+                        done,
+                        cancelled,
+                        instance: self.id,
+                        slot,
+                        policy,
+                    },
+                    span,
+                );
+            }
             inst => out.push(inst, span),
         }
         Ok(())
@@ -584,6 +621,17 @@ fn regs(inst: &mut Inst, f: &impl Fn(Reg) -> Reg) {
         Inst::JumpIf { cond, .. } => *cond = f(*cond),
         Inst::Switch { src, .. } => *src = f(*src),
         Inst::Emit { args, .. } => all(args),
+        Inst::Start {
+            args,
+            done,
+            cancelled,
+            ..
+        } => {
+            all(args);
+            for r in [done, cancelled].into_iter().flatten() {
+                *r = f(*r);
+            }
+        }
         Inst::Jump { .. } | Inst::Unreachable => {}
     }
 }

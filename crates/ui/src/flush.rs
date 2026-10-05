@@ -120,6 +120,10 @@ pub fn settle_states(
         // The effects the commit mounted run first, then those it woke.
         effects.adopt(store, states);
         effects.wake(changed, states);
+        let tasks = effects.take_task_ops();
+        if !tasks.is_empty() {
+            store.apply_owned_task_ops(tasks);
+        }
     }
     changed.clear();
     Ok(rounds)

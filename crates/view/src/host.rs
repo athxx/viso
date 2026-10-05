@@ -10,14 +10,20 @@ use viso_behavior::{
     Value, Vm,
 };
 use viso_ui::adaptive::{AdaptiveEnv, AnchorId, EnvField};
-use viso_ui::{EventCx, NodeId, NodeStore, StateId, StateStore, StateValue, StructureHookId};
+use viso_ui::context::UpdateCx;
+use viso_ui::{
+    EventCx, NodeId, NodeStore, StateId, StateStore, StateValue, StructureHookId, TaskFuture,
+    TaskId,
+};
 
 use crate::env::env_value;
 use crate::regions::{LocalTemplate, Mounted, RegionNode};
 use crate::scope::{Locals, Scope};
+use crate::tasks::Tasks;
 
-/// Where a view's state cells are read and written: the [`StateStore`] outside a
-/// dispatch, the [`EventCx`] during one (whose writes are deferred to the flush).
+/// Where a view's state cells are read and written, and its tasks spawned: the
+/// [`StateStore`] outside a dispatch, the [`EventCx`] during one (whose writes
+/// are deferred to the flush), the [`UpdateCx`] of a task's continuation.
 pub trait StateCells {
     /// The current value of cell `id`, `None` for a stale id.
     fn get(&self, id: StateId) -> Option<StateValue>;
@@ -25,6 +31,16 @@ pub trait StateCells {
     fn set(&mut self, id: StateId, value: StateValue) -> bool;
     /// The adaptive environment the view's `env` reads see.
     fn env(&self) -> &AdaptiveEnv;
+    /// Runs `future` as a UI task owned by `owner`; `None` where no task can
+    /// run, or when `owner` was freed.
+    fn spawn(&mut self, owner: NodeId, future: TaskFuture) -> Option<TaskId> {
+        let _ = (owner, future);
+        None
+    }
+    /// Drops the UI task `id`.
+    fn cancel_task(&mut self, id: TaskId) {
+        let _ = id;
+    }
 }
 
 impl StateCells for StateStore {
@@ -52,6 +68,36 @@ impl StateCells for EventCx<'_> {
 
     fn env(&self) -> &AdaptiveEnv {
         EventCx::env(self)
+    }
+
+    fn spawn(&mut self, owner: NodeId, future: TaskFuture) -> Option<TaskId> {
+        Some(self.__spawn_for(owner, future))
+    }
+
+    fn cancel_task(&mut self, id: TaskId) {
+        EventCx::cancel_task(self, id);
+    }
+}
+
+impl StateCells for UpdateCx<'_> {
+    fn get(&self, id: StateId) -> Option<StateValue> {
+        UpdateCx::get(self, id)
+    }
+
+    fn set(&mut self, id: StateId, value: StateValue) -> bool {
+        UpdateCx::set(self, id, value)
+    }
+
+    fn env(&self) -> &AdaptiveEnv {
+        UpdateCx::env(self)
+    }
+
+    fn spawn(&mut self, owner: NodeId, future: TaskFuture) -> Option<TaskId> {
+        self.__spawn_for(owner, future)
+    }
+
+    fn cancel_task(&mut self, id: TaskId) {
+        UpdateCx::cancel_task(self, id);
     }
 }
 
@@ -127,8 +173,8 @@ struct EnvLink {
 /// A handler fault rolls its transaction back, is kept as
 /// [`last_fault`](Self::last_fault), and never unwinds into the event router.
 pub struct ViewHost {
-    vm: Vm,
-    instance: Instance,
+    pub(crate) vm: Vm,
+    pub(crate) instance: Instance,
     /// The instance's creation fault, if any; every dispatch then reports it
     /// instead of running against a partial instance.
     broken: Option<Fault>,
@@ -140,8 +186,8 @@ pub struct ViewHost {
     args: Vec<Value>,
     /// Reused list of slots a dispatch wrote.
     written: Vec<usize>,
-    fault: Option<Fault>,
-    events: Vec<Event>,
+    pub(crate) fault: Option<Fault>,
+    pub(crate) events: Vec<Event>,
     /// The cells the view's mounted regions allocated: each region mount's
     /// pulse cell, and the region content mounts keeping instance states.
     regions: RegionCells,
@@ -156,7 +202,14 @@ pub struct ViewHost {
     /// The nodes the view's effects are mounted on.
     effect_owners: Vec<NodeId>,
     /// The reload generation.
-    epoch: u64,
+    pub(crate) epoch: u64,
+    /// The shared host itself, which the view's tasks hand their results
+    /// back to; dangling for a host never [shared](Self::shared).
+    pub(crate) this: Weak<RefCell<ViewHost>>,
+    /// The view's root node, which owns the tasks started outside region
+    /// content.
+    pub(crate) root: Option<NodeId>,
+    pub(crate) tasks: Tasks,
 }
 
 /// The UI cells a view's regions allocate while it runs, released with the
@@ -226,6 +279,18 @@ impl ViewHost {
             anchors: Vec::new(),
             effect_owners: Vec::new(),
             epoch: 0,
+            this: Weak::new(),
+            root: None,
+            tasks: Tasks::default(),
+        })
+    }
+
+    /// The host, shared by the view's handlers, regions and tasks.
+    pub fn shared(self) -> Rc<RefCell<ViewHost>> {
+        Rc::new_cyclic(|this| {
+            let mut host = self;
+            host.this = Weak::clone(this);
+            RefCell::new(host)
         })
     }
 
@@ -412,7 +477,7 @@ impl ViewHost {
 
     /// Copies each mirrored cell, each `env` field whose revision moved, and
     /// each state `scope` keeps, into the instance.
-    fn sync(&mut self, scope: &Scope, cells: &dyn StateCells) {
+    pub(crate) fn sync(&mut self, scope: &Scope, cells: &dyn StateCells) {
         for (slot, link) in self.mirror.iter().enumerate() {
             let Some(Link::Mirror(id)) = *link else {
                 continue;
@@ -661,6 +726,7 @@ impl ViewHost {
             Ok(outcome) => {
                 self.events.extend(outcome.events);
                 self.write_back(scope, cells);
+                self.launch(outcome.starts, scope, cells);
                 true
             }
             Err(fault) => {
@@ -673,7 +739,7 @@ impl ViewHost {
     /// Writes each state slot the committed call wrote to the cell that holds
     /// it: a mirrored cell takes the value, a tracked one a new revision, and a
     /// slot `scope` keeps its mount's value.
-    fn write_back(&mut self, scope: &Scope, cells: &mut dyn StateCells) {
+    pub(crate) fn write_back(&mut self, scope: &Scope, cells: &mut dyn StateCells) {
         self.written.clear();
         self.written.extend(self.instance.dirty());
         self.instance.clear_dirty();
@@ -720,6 +786,12 @@ impl ViewHost {
         self.epoch
     }
 
+    /// Records `root` as the view's root node, which owns the tasks started
+    /// outside region content.
+    pub(crate) fn set_root(&mut self, root: NodeId) {
+        self.root = Some(root);
+    }
+
     /// Records that effects are mounted on `node`, which releasing them
     /// cancels.
     pub(crate) fn own_effects(&mut self, node: NodeId) {
@@ -755,6 +827,7 @@ impl ViewHost {
             Ok(outcome) => {
                 self.events.extend(outcome.events);
                 self.write_back(scope, cells);
+                self.launch(outcome.starts, scope, cells);
                 Some(outcome.value)
             }
             Err(fault) => {
@@ -819,6 +892,8 @@ impl ViewHost {
         next.values = self.values.take();
         next.anchors = std::mem::take(&mut self.anchors);
         next.epoch = self.epoch + 1;
+        next.this = Weak::clone(&self.this);
+        next.root = self.root;
         *self = next;
     }
 }
@@ -883,7 +958,7 @@ pub fn __embedded(bytes: &'static [u8], component: &str) -> Rc<RefCell<ViewHost>
         module
     });
     match ViewHost::new(module, component) {
-        Ok(host) => Rc::new(RefCell::new(host)),
+        Ok(host) => host.shared(),
         Err(error) => panic!("an embedded view does not mount: {error}"),
     }
 }

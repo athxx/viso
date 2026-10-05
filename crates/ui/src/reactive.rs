@@ -43,6 +43,7 @@ use crate::dirty::DirtyClass;
 use crate::node::NodeId;
 use crate::semantics::SemanticState;
 use crate::state::{StateId, StateStore, StateValue};
+use crate::task::{TaskFuture, TaskId, TaskOps};
 
 /// A compact generational handle to a stored [`Computed`] cell.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -174,6 +175,7 @@ impl<'a> ComputeCx<'a> {
 pub struct EffectCx<'a> {
     states: &'a mut StateStore,
     cursor: &'a mut DepCursor,
+    tasks: &'a mut TaskOps,
 }
 
 impl EffectCx<'_> {
@@ -201,6 +203,18 @@ impl EffectCx<'_> {
     #[inline]
     pub fn env(&self) -> &crate::adaptive::AdaptiveEnv {
         self.states.env()
+    }
+
+    /// Run `future` as a task owned by `owner`, spawned when the flush round
+    /// that runs the effect ends.
+    #[doc(hidden)]
+    pub fn __spawn_for(&mut self, owner: NodeId, future: TaskFuture) -> TaskId {
+        self.tasks.spawn(Some(owner), future)
+    }
+
+    /// Drop task `id` when the flush round ends.
+    pub fn cancel_task(&mut self, id: TaskId) {
+        self.tasks.cancels.push(id);
     }
 }
 
@@ -565,6 +579,8 @@ pub struct EffectStore {
     /// Reused buffer of effects to re-run this wake, so a wake allocates nothing
     /// on the steady path.
     wake_scratch: Vec<EffectId>,
+    /// The tasks effect bodies spawned and cancelled, for the node store.
+    tasks: TaskOps,
 }
 
 impl EffectStore {
@@ -690,7 +706,11 @@ impl EffectStore {
             } else {
                 &mut cursor
             };
-            let mut cx = EffectCx { states, cursor };
+            let mut cx = EffectCx {
+                states,
+                cursor,
+                tasks: &mut self.tasks,
+            };
             let next_cleanup = (slot.body)(&mut cx);
             self.slots[id.index as usize].cleanup = next_cleanup;
         }
@@ -705,6 +725,11 @@ impl EffectStore {
         }
         self.reindex(id);
         true
+    }
+
+    /// Takes the task spawns and cancellations effect bodies recorded.
+    pub fn take_task_ops(&mut self) -> TaskOps {
+        std::mem::take(&mut self.tasks)
     }
 
     /// Re-run every effect that read any of the `changed` states — the flush's

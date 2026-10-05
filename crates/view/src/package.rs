@@ -177,7 +177,7 @@ pub fn instantiate_view(
             host.link_env(read.slot as usize, read.field, anchor, states);
         }
     }
-    let Some(host) = host.map(|host| Rc::new(RefCell::new(host))) else {
+    let Some(host) = host.map(ViewHost::shared) else {
         return Ok(LoadedView { root, host: None });
     };
     let mut routes: Vec<Route> = Vec::new();

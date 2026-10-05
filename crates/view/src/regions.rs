@@ -162,6 +162,16 @@ pub struct EffectTemplate {
     pub anchor: u32,
 }
 
+/// A component instance region content mounts that starts tasks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StarterTemplate {
+    /// The inlined instance.
+    pub instance: u32,
+    /// The instance's root, by item index in the arm: it owns the tasks, so
+    /// freeing it cancels them.
+    pub anchor: u32,
+}
+
 /// The aggregate tag of a half-open integer range a `for` region iterates.
 pub const HALF_OPEN: u32 = 0;
 
@@ -183,6 +193,9 @@ pub struct ArmTemplate {
     /// The effects of those instances, in source order: each mount of the arm
     /// runs its own.
     pub effects: Vec<EffectTemplate>,
+    /// Those instances that start tasks: each mount of the arm owns their
+    /// tasks by the instance's root.
+    pub starters: Vec<StarterTemplate>,
     /// The arm's content, flattened in pre-order.
     pub items: Vec<ItemTemplate>,
 }
@@ -303,7 +316,8 @@ pub fn mount_regions(
             deps.push(cell);
         }
     }
-    let keeps = arms().any(|arm| !arm.locals.is_empty() || !arm.env.is_empty());
+    let keeps =
+        arms().any(|arm| !arm.locals.is_empty() || !arm.env.is_empty() || !arm.starters.is_empty());
     let pulse = keeps.then(|| {
         let pulse = cx.states.alloc(StateValue::Int(0));
         host.borrow_mut().adopt_pulse(pulse);
@@ -1053,9 +1067,9 @@ impl Patch<'_, '_> {
         extra: Option<&Value>,
         built: &[(NodeId, usize)],
     ) -> Option<Rc<Locals>> {
-        let pulse = self
-            .pulse
-            .filter(|_| !arm.locals.is_empty() || !arm.env.is_empty())?;
+        let pulse = self.pulse.filter(|_| {
+            !arm.locals.is_empty() || !arm.env.is_empty() || !arm.starters.is_empty()
+        })?;
         let Ok(mut host) = self.host.try_borrow_mut() else {
             return None;
         };
@@ -1117,12 +1131,23 @@ impl Patch<'_, '_> {
             values.push(Value::Nil);
             cells.push(cell);
         }
+        let owners = arm
+            .starters
+            .iter()
+            .filter_map(|starter| {
+                let &(node, _) = built
+                    .iter()
+                    .find(|&&(_, item)| item == starter.anchor as usize)?;
+                Some((starter.instance, node))
+            })
+            .collect();
         let kept = Rc::new(Locals {
             slots: slots.into(),
             values: RefCell::new(values.into()),
             cells: cells.into(),
             env: env.into(),
             pulse,
+            owners,
         });
         host.adopt(&kept);
         Some(kept)
@@ -1473,6 +1498,11 @@ impl Encode for ViewRegions {
                     effect.effect.encode(enc);
                     enc.write_varint(u64::from(effect.anchor));
                 }
+                enc.write_varint(arm.starters.len() as u64);
+                for starter in &arm.starters {
+                    enc.write_varint(u64::from(starter.instance));
+                    enc.write_varint(u64::from(starter.anchor));
+                }
                 enc.write_varint(arm.items.len() as u64);
                 for item in &arm.items {
                     match item {
@@ -1593,6 +1623,14 @@ impl Decode for ViewRegions {
                     });
                 }
                 let count = dec.read_varint()?;
+                let mut starters = Vec::with_capacity(bounded(count));
+                for _ in 0..count {
+                    starters.push(StarterTemplate {
+                        instance: read_u32(dec)?,
+                        anchor: read_u32(dec)?,
+                    });
+                }
+                let count = dec.read_varint()?;
                 let mut items = Vec::with_capacity(bounded(count));
                 for _ in 0..count {
                     let offset = dec.position();
@@ -1633,6 +1671,7 @@ impl Decode for ViewRegions {
                     locals,
                     env,
                     effects,
+                    starters,
                     items,
                 });
             }
@@ -1711,12 +1750,17 @@ impl ViewRegions {
                             Some(ItemTemplate::Node { .. })
                         )
                 }))?;
-                check(arm.effects.iter().all(|effect| {
-                    matches!(
-                        arm.items.get(effect.anchor as usize),
-                        Some(ItemTemplate::Node { .. })
-                    )
-                }))?;
+                let anchors = arm.effects.iter().map(|effect| effect.anchor);
+                check(
+                    anchors
+                        .chain(arm.starters.iter().map(|starter| starter.anchor))
+                        .all(|anchor| {
+                            matches!(
+                                arm.items.get(anchor as usize),
+                                Some(ItemTemplate::Node { .. })
+                            )
+                        }),
+                )?;
                 // The children still owed to the open nodes; an item owed to
                 // none is a new top-level item.
                 let mut owed = 0usize;
@@ -1785,6 +1829,10 @@ mod tests {
                             },
                             anchor: 0,
                         }],
+                        starters: vec![StarterTemplate {
+                            instance: 3,
+                            anchor: 0,
+                        }],
                         items: vec![
                             ItemTemplate::Node {
                                 node: node(AotNodeKind::Flex, 1),
@@ -1807,6 +1855,7 @@ mod tests {
                         locals: vec![],
                         env: vec![],
                         effects: vec![],
+                        starters: vec![],
                         items: vec![ItemTemplate::Node {
                             node: node(AotNodeKind::Leaf, 0),
                             edges: vec![],

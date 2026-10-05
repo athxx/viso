@@ -10,9 +10,8 @@
 //! - **View / Computed / `fn`** may only call pure/read callables (`fn`). A call that
 //!   carries an `Action` or `Task` effect is a *side effect in a reactive/pure context*
 //!   — `E2502` in a view/computed, `E2501` in a plain `fn`.
-//! - **Action / Event** may call `fn` and `action`, and may start a `task`. A direct
-//!   (non-spawned) `task` call is still `E2501` — starting one is a spawn, not an
-//!   ordinary call, and the spawn form is task-async (a placeholder this slice).
+//! - **Action / Event** may call `fn` and `action`, and may `start` a `task`. A direct
+//!   `task` call is still `E2501` — starting one is a spawn, not an ordinary call.
 //! - **Task** may call `fn` and, directly, other `task`s (it awaits them). Calling an
 //!   `action` from a task is `E2501` (a task mutates through actions it *starts*, not by
 //!   calling them synchronously mid-body).
@@ -30,15 +29,14 @@
 //! callable behind a name has*, which the environment answers. That keeps this module
 //! testable against a stub environment before component lowering exists.
 //!
-//! Task-async spawn/await (`start task` / `await task`) has no dedicated expression
-//! grammar yet (it is an advanced placeholder this slice), so the matrix is checked at
-//! the granularity the grammar exposes: ordinary call expressions resolved to a callee
-//! whose effect class is known. When the spawn/await forms land, their body-context
-//! rules extend the same matrix.
+//! `start CALL ..;` belongs in a body that may mutate — an action, an event handler,
+//! an effect — and takes a task call (`E4401`); its arguments are checked in the
+//! starting body and its `success` / `error` / `cancelled` handlers as event bodies.
+//! `await` belongs in a task (`E4101`).
 
 use std::collections::HashMap;
 
-use crate::ast::{AstNode, CallExpr, Expr, PathExpr};
+use crate::ast::{AstNode, CallExpr, Expr, PathExpr, StartStmt};
 use crate::diag::Diagnostic;
 use crate::resolve::{Resolution, ResolvedRef};
 use crate::syntax::{SyntaxKind, SyntaxNode, TextRange};
@@ -255,10 +253,103 @@ impl<'a> EffectCx<'a> {
             SyntaxKind::CleanupClause if self.context == BodyContext::Effect => {
                 return self.walk_as(node, BodyContext::Cleanup);
             }
+            SyntaxKind::StartStmt => return self.check_start(node),
+            SyntaxKind::UnaryExpr
+                if self.context != BodyContext::Task
+                    && crate::hir::infer::unary_op_kind(node) == Some(SyntaxKind::AwaitKw) =>
+            {
+                self.diagnostics.push(Diagnostic::error(
+                    "E4101",
+                    node.text_range(),
+                    format!(
+                        "`await` marks where a task suspends; a {} body runs to its end, so \
+                         start the task with `start` and take its result in `success(..)`",
+                        context_word(self.context)
+                    ),
+                ));
+                // The awaited call is reported once, as the `await`.
+                for child in node.children() {
+                    let inner = if child.kind() == SyntaxKind::CallExpr {
+                        child.children()
+                    } else {
+                        vec![child]
+                    };
+                    inner.iter().for_each(|n| self.walk(n));
+                }
+                return;
+            }
             _ => {}
         }
         for child in node.children() {
             self.walk(&child);
+        }
+    }
+
+    /// Checks a `start`: it belongs in a body that may mutate (an action, an
+    /// event handler, an effect) and starts a task call (`E4401`); the call's
+    /// arguments are evaluated here, and its handlers run as event bodies.
+    fn check_start(&mut self, node: &SyntaxNode) {
+        let Some(start) = StartStmt::cast(node.clone()) else {
+            return;
+        };
+        if !matches!(
+            self.context,
+            BodyContext::Action
+                | BodyContext::Event
+                | BodyContext::Effect
+                | BodyContext::Transaction
+        ) {
+            let code = if self.context.is_reactive() {
+                "E2502"
+            } else {
+                "E2501"
+            };
+            self.diagnostics.push(Diagnostic::error(
+                code,
+                node.text_range(),
+                format!(
+                    "a `start` belongs in an action, an event handler or an effect, not a {} \
+                     body",
+                    context_word(self.context)
+                ),
+            ));
+        }
+        let Some(call) = start.call() else {
+            return;
+        };
+        let call = call.syntax();
+        let effect = (call.kind() == SyntaxKind::CallExpr)
+            .then(|| {
+                self.env
+                    .native_call(call.text_range())
+                    .map(|n| n.0)
+                    .or_else(|| self.callee_effect(call))
+            })
+            .flatten();
+        if effect != Some(EffectClass::Task) {
+            let what = match effect {
+                Some(class) => format!("this call is a {} call", effect_word(class)),
+                None => "this is no call of a `task`".to_owned(),
+            };
+            self.diagnostics.push(Diagnostic::error(
+                "E4401",
+                call.text_range(),
+                format!("`start` takes a task call; {what}"),
+            ));
+        }
+        for child in call.children() {
+            self.walk(&child);
+        }
+        let Some(handlers) = start.handlers() else {
+            return;
+        };
+        for item in handlers.syntax().children() {
+            if matches!(
+                item.kind(),
+                SyntaxKind::StartSuccess | SyntaxKind::StartError | SyntaxKind::StartCancelled
+            ) {
+                self.walk_as(&item, BodyContext::Event);
+            }
         }
     }
 

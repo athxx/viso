@@ -16,7 +16,7 @@ use viso_behavior::ComponentEffect;
 use viso_ui::state::StateKey;
 use viso_view::{
     ArmTemplate, CellRef, Control, EffectTemplate, EnvTemplate, GroupTemplate, ItemTemplate,
-    LocalTemplate, RegionKind, RegionTemplate, Route, SlotTemplate, ViewRegions,
+    LocalTemplate, RegionKind, RegionTemplate, Route, SlotTemplate, StarterTemplate, ViewRegions,
 };
 
 use crate::aot::{aot_kind, aot_style};
@@ -432,8 +432,16 @@ impl Builder<'_> {
             let mut locals = Vec::new();
             let mut env = Vec::new();
             let mut effects = Vec::new();
+            let mut starters = Vec::new();
             for item in items {
-                self.content(item, &mut out, &mut locals, &mut env, &mut effects);
+                self.content(
+                    item,
+                    &mut out,
+                    &mut locals,
+                    &mut env,
+                    &mut effects,
+                    &mut starters,
+                );
             }
             locals.sort_unstable_by_key(|local: &LocalTemplate| local.slot);
             env.sort_unstable_by_key(|env: &EnvTemplate| env.slot);
@@ -442,6 +450,7 @@ impl Builder<'_> {
                 locals,
                 env,
                 effects,
+                starters,
                 items: out,
             });
         }
@@ -452,7 +461,8 @@ impl Builder<'_> {
     /// Flattens one item of a region arm into `out`, in pre-order, and
     /// collects into `locals` the states of the instances whose view first
     /// appears there, into `env` the `env` fields they read, anchored at the
-    /// instance's root, and into `effects` their effects, mounted on it.
+    /// instance's root, into `effects` their effects, mounted on it, and into
+    /// `starters` those that start tasks, owned by it.
     fn content(
         &mut self,
         item: &UiItem,
@@ -460,6 +470,7 @@ impl Builder<'_> {
         locals: &mut Vec<LocalTemplate>,
         env: &mut Vec<EnvTemplate>,
         effects: &mut Vec<EffectTemplate>,
+        starters: &mut Vec<StarterTemplate>,
     ) {
         let UiItem::Node(node) = item else {
             let region = self.region(item);
@@ -468,6 +479,12 @@ impl Builder<'_> {
         };
         if node.instance != 0 && self.claimed.insert(node.instance) {
             let anchor = out.len() as u32;
+            if self.layout.starters.contains(&node.instance) {
+                starters.push(StarterTemplate {
+                    instance: node.instance,
+                    anchor,
+                });
+            }
             effects.extend(
                 self.layout
                     .effects
@@ -538,7 +555,7 @@ impl Builder<'_> {
             return;
         }
         for child in &node.children {
-            self.content(child, out, locals, env, effects);
+            self.content(child, out, locals, env, effects, starters);
         }
         if let ItemTemplate::Node { node: template, .. } = &mut out[at] {
             template.child_count = node.children.len() as u32;

@@ -2,9 +2,9 @@
 //! `viso::math`, `viso::time`, `viso::clipboard`, the scheduler traits of
 //! `viso::game` and `viso::game::quick`, and the widgets of `viso::widgets`.
 
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
-use super::{NativeError, NativeFunction, NativeLibrary, NativeObject, NativeType, Obj};
+use super::{NativeError, NativeFunction, NativeLibrary, NativeObject, NativeType, Obj, Timers};
 
 /// Every standard library.
 pub static STANDARD: &[&NativeLibrary] = &[
@@ -103,11 +103,21 @@ static STOPWATCH_METHODS: [NativeFunction; 2] = [
     }),
 ];
 
-/// Clocks. Reading one is an action: two reads differ.
+/// Clocks and waits. Reading a clock is an action: two reads differ.
 static TIME: NativeLibrary = NativeLibrary {
     path: "viso::time",
     version: 1,
-    functions: &[],
+    functions: &[crate::native!(task "sleep" |cx, duration: Duration| -> () {
+        let wait = match cx.service::<Box<dyn Timers>>() {
+            Ok(timers) => timers.sleep(duration),
+            Err(_) => super::timers::sleep_on_thread(duration),
+        };
+        cx.suspend(async move {
+            wait.await;
+            Ok(())
+        });
+        Ok(())
+    })],
     types: &[NativeType::new("Stopwatch", &STOPWATCH_METHODS)],
     traits: &[],
     derives: &[],

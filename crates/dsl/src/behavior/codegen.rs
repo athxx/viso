@@ -124,6 +124,7 @@ fn chunk(function: &ir::Function) -> Chunk {
         FunctionKind::Handler => ChunkKind::Handler,
         FunctionKind::RegionEntry => ChunkKind::RegionEntry,
         FunctionKind::Effect => ChunkKind::Effect,
+        FunctionKind::Task => ChunkKind::Task,
     };
     let params = u16::try_from(function.params).unwrap_or(u16::MAX);
     let frame = match &function.body {
@@ -415,6 +416,26 @@ impl Emitter {
             Inst::Emit { event, args } => Op::Emit {
                 ext: self.operands(&[*event], args),
             },
+            Inst::Start {
+                task,
+                args,
+                done,
+                cancelled,
+                instance,
+                slot,
+                policy,
+            } => {
+                let at = self.operands(&[task.0], args);
+                let handler = |r: &Option<Reg>| r.map_or(u32::MAX, |r| r.0);
+                self.ext.extend_from_slice(&[
+                    handler(done),
+                    handler(cancelled),
+                    *instance,
+                    slot.unwrap_or(u32::MAX),
+                    policy.word(),
+                ]);
+                Op::Start { ext: at }
+            }
             Inst::Display { dst, src, kind } => {
                 let (dst, src) = (reg(*dst), reg(*src));
                 let kind = match kind {

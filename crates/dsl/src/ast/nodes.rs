@@ -191,6 +191,34 @@ ast_node!(
     CleanupClause = CleanupClause
 );
 ast_node!(
+    /// `start CallExpr (as IDENT)? StartHandlers? ;`.
+    StartStmt = StartStmt
+);
+ast_node!(
+    /// `as IDENT` — a `start`'s task slot.
+    StartSlot = StartSlot
+);
+ast_node!(
+    /// `{ policy = ..; success(p) {} error(p) {} cancelled {} }`.
+    StartHandlers = StartHandlers
+);
+ast_node!(
+    /// `policy = Expr ;`.
+    StartPolicy = StartPolicy
+);
+ast_node!(
+    /// `success ( Pattern ) Block`.
+    StartSuccess = StartSuccess
+);
+ast_node!(
+    /// `error ( Pattern ) Block`.
+    StartError = StartError
+);
+ast_node!(
+    /// `cancelled Block`.
+    StartCancelled = StartCancelled
+);
+ast_node!(
     /// `const IDENT : Type = Expr ;`.
     ConstDecl = ConstDecl
 );
@@ -582,6 +610,90 @@ impl EffectBody {
 
 impl CleanupClause {
     /// The cleanup's block.
+    pub fn block(&self) -> Option<Block> {
+        support::child(&self.syntax)
+    }
+}
+
+impl StartStmt {
+    /// The started call.
+    pub fn call(&self) -> Option<Expr> {
+        support::child(&self.syntax)
+    }
+
+    /// The `as IDENT` slot, when named.
+    pub fn slot(&self) -> Option<StartSlot> {
+        support::child(&self.syntax)
+    }
+
+    /// The handler block, when present.
+    pub fn handlers(&self) -> Option<StartHandlers> {
+        support::child(&self.syntax)
+    }
+}
+
+impl StartSlot {
+    /// The slot's name.
+    pub fn name(&self) -> Option<SyntaxToken> {
+        support::name_token(&self.syntax)
+    }
+}
+
+impl StartHandlers {
+    /// The `policy = ..;` items, in order.
+    pub fn policies(&self) -> impl Iterator<Item = StartPolicy> {
+        support::children(&self.syntax)
+    }
+
+    /// The `success` handlers, in order.
+    pub fn success(&self) -> impl Iterator<Item = StartSuccess> {
+        support::children(&self.syntax)
+    }
+
+    /// The `error` handlers, in order.
+    pub fn error(&self) -> impl Iterator<Item = StartError> {
+        support::children(&self.syntax)
+    }
+
+    /// The `cancelled` handlers, in order.
+    pub fn cancelled(&self) -> impl Iterator<Item = StartCancelled> {
+        support::children(&self.syntax)
+    }
+}
+
+impl StartPolicy {
+    /// The policy list.
+    pub fn value(&self) -> Option<Expr> {
+        support::child(&self.syntax)
+    }
+}
+
+impl StartSuccess {
+    /// The payload pattern.
+    pub fn pattern(&self) -> Option<Pattern> {
+        support::child(&self.syntax)
+    }
+
+    /// The handler's block.
+    pub fn block(&self) -> Option<Block> {
+        support::child(&self.syntax)
+    }
+}
+
+impl StartError {
+    /// The payload pattern.
+    pub fn pattern(&self) -> Option<Pattern> {
+        support::child(&self.syntax)
+    }
+
+    /// The handler's block.
+    pub fn block(&self) -> Option<Block> {
+        support::child(&self.syntax)
+    }
+}
+
+impl StartCancelled {
+    /// The handler's block.
     pub fn block(&self) -> Option<Block> {
         support::child(&self.syntax)
     }

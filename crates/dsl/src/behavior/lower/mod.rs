@@ -57,6 +57,10 @@ pub(crate) struct ProgramBuilder {
     natives: HashMap<NativeId, u32>,
     /// Whether a debug draw call lowers to nothing, as in a release build.
     strip_debug_draw: bool,
+    /// The task slot names `start .. as` uses, by slot index.
+    task_slots: Vec<String>,
+    /// The task that awaits a native task, by its import and argument count.
+    native_tasks: HashMap<(u32, usize), FuncId>,
 }
 
 /// What a lowered function is.
@@ -117,6 +121,47 @@ impl ProgramBuilder {
         id
     }
 
+    /// The index of the task slot `name`.
+    fn task_slot(&mut self, name: &str) -> u32 {
+        let at = match self.task_slots.iter().position(|s| s == name) {
+            Some(at) => at,
+            None => {
+                self.task_slots.push(name.to_owned());
+                self.task_slots.len() - 1
+            }
+        };
+        at as u32
+    }
+
+    /// The task that calls the native task `import` with its `argc`
+    /// arguments and returns what it awaited, so `start` can run it.
+    fn native_task(&mut self, import: u32, argc: usize, name: &str, module: usize) -> FuncId {
+        if let Some(&id) = self.native_tasks.get(&(import, argc)) {
+            return id;
+        }
+        let args: Vec<Reg> = (0..argc as u32).map(Reg).collect();
+        let dst = Reg(argc as u32);
+        let at = TextRange::empty(0.into());
+        let id = self.push(Function {
+            name: format!("{name}/task"),
+            kind: FunctionKind::Task,
+            symbol: None,
+            module,
+            params: argc as u32,
+            captures: Vec::new(),
+            body: Ok(Body {
+                regs: argc as u32 + 1,
+                insts: vec![
+                    Inst::Native { dst, import, args },
+                    Inst::Return { src: dst },
+                ],
+                spans: vec![at, at],
+            }),
+        });
+        self.native_tasks.insert((import, argc), id);
+        id
+    }
+
     /// Adds `function`, filling the placeholder `into` or the one of its
     /// declaration if one was reserved.
     fn define(&mut self, function: Function, into: Option<FuncId>) -> FuncId {
@@ -126,7 +171,11 @@ impl ProgramBuilder {
         }
         let named = matches!(
             function.kind,
-            FunctionKind::Fn | FunctionKind::Action | FunctionKind::Computed | FunctionKind::Const
+            FunctionKind::Fn
+                | FunctionKind::Action
+                | FunctionKind::Task
+                | FunctionKind::Computed
+                | FunctionKind::Const
         );
         match function.symbol.filter(|_| named) {
             Some(symbol) => {
@@ -186,6 +235,7 @@ impl ProgramBuilder {
             regional: Vec::new(),
             env: Vec::new(),
             effects: Vec::new(),
+            starters: Vec::new(),
         });
     }
 

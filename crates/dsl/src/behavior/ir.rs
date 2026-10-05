@@ -24,9 +24,9 @@
 
 pub use viso_behavior::NativeImport;
 
-use viso_behavior::PersistSlot;
 use viso_behavior::game::InputSchema;
 use viso_behavior::native::NativeId;
+use viso_behavior::{PersistSlot, TaskPolicy};
 use viso_ui::adaptive::EnvField;
 
 use super::probe::Probe;
@@ -292,6 +292,19 @@ pub enum Inst {
     /// Queue component event `event` with `args` in parameter order, delivered
     /// when the outermost action commits.
     Emit { event: u32, args: Vec<Reg> },
+    /// Start task `task` with `args` when the outermost action commits, in
+    /// the task slot `slot` of the instance `instance` under `policy`; `done`
+    /// is the closure its value runs (the `success` and `error` handlers),
+    /// `cancelled` the one a cancellation runs.
+    Start {
+        task: FuncId,
+        args: Vec<Reg>,
+        done: Option<Reg>,
+        cancelled: Option<Reg>,
+        instance: u32,
+        slot: Option<u32>,
+        policy: TaskPolicy,
+    },
     /// `dst` = the text of `src`.
     Display {
         dst: Reg,
@@ -330,6 +343,8 @@ pub enum FunctionKind {
     RegionEntry,
     /// An `effect` body, returning its cleanup closure or `Nil`.
     Effect,
+    /// A `task`, run as a fiber that suspends at each `await`.
+    Task,
 }
 
 impl FunctionKind {
@@ -347,6 +362,7 @@ impl FunctionKind {
             FunctionKind::Handler => "handler",
             FunctionKind::RegionEntry => "region-entry",
             FunctionKind::Effect => "effect",
+            FunctionKind::Task => "task",
         }
     }
 }
@@ -424,6 +440,8 @@ pub struct ComponentLayout {
     /// The component's effects, then those of each inlined instance, in
     /// source order.
     pub effects: Vec<EffectEntry>,
+    /// The inlined instances that start tasks, ascending.
+    pub starters: Vec<u32>,
 }
 
 /// An `effect` registered in a component layout: its entries in the handler
