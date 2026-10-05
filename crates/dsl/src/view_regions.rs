@@ -12,10 +12,11 @@
 
 use std::collections::{HashMap, HashSet};
 
+use viso_behavior::ComponentEffect;
 use viso_ui::state::StateKey;
 use viso_view::{
-    ArmTemplate, CellRef, Control, EnvTemplate, GroupTemplate, ItemTemplate, LocalTemplate,
-    RegionKind, RegionTemplate, Route, SlotTemplate, ViewRegions,
+    ArmTemplate, CellRef, Control, EffectTemplate, EnvTemplate, GroupTemplate, ItemTemplate,
+    LocalTemplate, RegionKind, RegionTemplate, Route, SlotTemplate, ViewRegions,
 };
 
 use crate::aot::{aot_kind, aot_style};
@@ -430,8 +431,9 @@ impl Builder<'_> {
             let mut out = Vec::new();
             let mut locals = Vec::new();
             let mut env = Vec::new();
+            let mut effects = Vec::new();
             for item in items {
-                self.content(item, &mut out, &mut locals, &mut env);
+                self.content(item, &mut out, &mut locals, &mut env, &mut effects);
             }
             locals.sort_unstable_by_key(|local: &LocalTemplate| local.slot);
             env.sort_unstable_by_key(|env: &EnvTemplate| env.slot);
@@ -439,6 +441,7 @@ impl Builder<'_> {
                 preserve,
                 locals,
                 env,
+                effects,
                 items: out,
             });
         }
@@ -448,14 +451,15 @@ impl Builder<'_> {
 
     /// Flattens one item of a region arm into `out`, in pre-order, and
     /// collects into `locals` the states of the instances whose view first
-    /// appears there, and into `env` the `env` fields they read, anchored at
-    /// the instance's root.
+    /// appears there, into `env` the `env` fields they read, anchored at the
+    /// instance's root, and into `effects` their effects, mounted on it.
     fn content(
         &mut self,
         item: &UiItem,
         out: &mut Vec<ItemTemplate>,
         locals: &mut Vec<LocalTemplate>,
         env: &mut Vec<EnvTemplate>,
+        effects: &mut Vec<EffectTemplate>,
     ) {
         let UiItem::Node(node) = item else {
             let region = self.region(item);
@@ -463,6 +467,21 @@ impl Builder<'_> {
             return;
         };
         if node.instance != 0 && self.claimed.insert(node.instance) {
+            let anchor = out.len() as u32;
+            effects.extend(
+                self.layout
+                    .effects
+                    .iter()
+                    .filter(|effect| effect.instance == node.instance)
+                    .map(|effect| EffectTemplate {
+                        effect: ComponentEffect {
+                            deps: effect.deps,
+                            body: effect.body,
+                            run: effect.run,
+                        },
+                        anchor,
+                    }),
+            );
             let states = self
                 .layout
                 .regional
@@ -519,7 +538,7 @@ impl Builder<'_> {
             return;
         }
         for child in &node.children {
-            self.content(child, out, locals, env);
+            self.content(child, out, locals, env, effects);
         }
         if let ItemTemplate::Node { node: template, .. } = &mut out[at] {
             template.child_count = node.children.len() as u32;

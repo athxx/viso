@@ -43,6 +43,33 @@ pub enum ChunkKind {
     /// bindings of every enclosing `for`/`match` region arrive first, then the
     /// entry's subject when it takes one.
     RegionEntry,
+    /// An `effect` body: one transaction over the bindings of every enclosing
+    /// `for`/`match` region, returning its cleanup closure, or `Nil`.
+    Effect,
+}
+
+/// When an `effect` runs, after the commit that mounts its component and the
+/// commits that change its dependencies.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum EffectRun {
+    /// Once, after the mount.
+    Mount,
+    /// After each commit that changes a dependency's value.
+    Change,
+    /// After the mount and after each commit that changes a dependency's value.
+    MountAndChange,
+}
+
+/// An `effect` of a component's view: its entries in the handler table.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ComponentEffect {
+    /// The region entry computing the dependency values as a list; `None` for
+    /// an effect without dependencies.
+    pub deps: Option<u32>,
+    /// The [`ChunkKind::Effect`] body.
+    pub body: u32,
+    /// When it runs.
+    pub run: EffectRun,
 }
 
 /// A runnable body.
@@ -99,6 +126,9 @@ pub struct Component {
     /// view node names by index, its regions' entries, and the initializers of
     /// the states region content keeps.
     pub handlers: Box<[u32]>,
+    /// The effects that mount with the view, in source order; those of an
+    /// instance region content mounts mount with that content instead.
+    pub effects: Box<[ComponentEffect]>,
 }
 
 impl Component {
@@ -300,7 +330,7 @@ impl Module {
                 let handler = &module.chunks[chunk as usize];
                 let entry = match handler.kind {
                     ChunkKind::Handler => handler.params > 0,
-                    ChunkKind::RegionEntry | ChunkKind::StateInit => true,
+                    ChunkKind::RegionEntry | ChunkKind::StateInit | ChunkKind::Effect => true,
                     _ => false,
                 };
                 if !entry {
@@ -309,7 +339,29 @@ impl Module {
                         pc: None,
                         message: format!(
                             "component `{}` names a handler-table chunk that is no event \
-                             handler taking a payload, region entry or state initializer",
+                             handler taking a payload, region entry, state initializer or \
+                             effect",
+                            component.name
+                        ),
+                    });
+                }
+            }
+            for effect in component.effects.iter() {
+                let kind = |entry: u32| {
+                    let chunk = *component.handlers.get(entry as usize)?;
+                    Some((chunk, module.chunks[chunk as usize].kind))
+                };
+                let deps = effect.deps.map(kind);
+                let body = kind(effect.body);
+                let fits = matches!(body, Some((_, ChunkKind::Effect)))
+                    && matches!(deps, None | Some(Some((_, ChunkKind::RegionEntry))));
+                if !fits {
+                    return Err(VerifyError {
+                        chunk: body.map_or(0, |b| b.0),
+                        pc: None,
+                        message: format!(
+                            "an effect of component `{}` names no effect body and region entry \
+                             in its handler table",
                             component.name
                         ),
                     });

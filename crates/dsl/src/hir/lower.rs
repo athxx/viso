@@ -55,6 +55,7 @@ use super::view::{
     check_percent_flow, check_view,
 };
 
+mod effects;
 mod input;
 mod shader;
 mod simulation;
@@ -524,6 +525,7 @@ fn lower_component_item(
         }
     }
     check_component_callables(decl, refs, env, diagnostics, cap, percent);
+    effects::lower_effects(decl, refs, env, &schema, diagnostics);
 
     HirComponent {
         schema,
@@ -1670,7 +1672,7 @@ impl ModuleScope {
                 }
                 return;
             }
-            Member::Slot(_) | Member::View(_) => return,
+            Member::Slot(_) | Member::View(_) | Member::Effect(_) => return,
         };
 
         let Some(tok) = name_tok else {

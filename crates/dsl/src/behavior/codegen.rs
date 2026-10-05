@@ -13,8 +13,8 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use viso_behavior::{
-    Arith, ArithOp, Chunk, ChunkKind, Code, Component, DisplayKind, Module, Num, Op, SnapshotSlot,
-    Span, StableId, System, Value, VerifyError,
+    Arith, ArithOp, Chunk, ChunkKind, Code, Component, ComponentEffect, DisplayKind, Module, Num,
+    Op, SnapshotSlot, Span, StableId, System, Value, VerifyError,
 };
 
 use super::ir::{self, BinaryOp, Const, FunctionKind, Inst, PathStep, Program, Reg, UnaryOp};
@@ -46,6 +46,16 @@ impl Program {
                     .map(|(n, f)| (n.as_str().into(), f.0))
                     .collect(),
                 handlers: c.handlers.iter().map(|(_, f)| f.0).collect(),
+                effects: c
+                    .effects
+                    .iter()
+                    .filter(|e| !c.regional.iter().any(|r| r.instance == e.instance))
+                    .map(|e| ComponentEffect {
+                        deps: e.deps,
+                        body: e.body,
+                        run: e.run,
+                    })
+                    .collect(),
             })
             .collect();
         let systems = self
@@ -113,6 +123,7 @@ fn chunk(function: &ir::Function) -> Chunk {
         FunctionKind::FieldDefault => ChunkKind::FieldDefault,
         FunctionKind::Handler => ChunkKind::Handler,
         FunctionKind::RegionEntry => ChunkKind::RegionEntry,
+        FunctionKind::Effect => ChunkKind::Effect,
     };
     let params = u16::try_from(function.params).unwrap_or(u16::MAX);
     let frame = match &function.body {

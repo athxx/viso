@@ -88,6 +88,13 @@ pub enum BodyContext {
     /// A state initializer, input default, `const` value or record field default. Has a
     /// `fn`'s rights.
     Initializer,
+    /// An `effect` body. May call `fn` and `action`; writes state only inside a
+    /// `transaction { }`.
+    Effect,
+    /// A `transaction { }` inside an effect body: an action's rights.
+    Transaction,
+    /// An effect's `cleanup`. May call `fn` and `action`; writes no state.
+    Cleanup,
 }
 
 impl BodyContext {
@@ -109,8 +116,13 @@ impl BodyContext {
                 matches!(callee, EffectClass::Pure | EffectClass::Read)
             }
             // Action/Event: pure/read/action. (Starting a task is a spawn form, not an
-            // ordinary call, so a direct Task call is not permitted here.)
-            BodyContext::Action | BodyContext::Event => {
+            // ordinary call, so a direct Task call is not permitted here.) An effect
+            // and its cleanup run after a commit and may call actions too.
+            BodyContext::Action
+            | BodyContext::Event
+            | BodyContext::Effect
+            | BodyContext::Transaction
+            | BodyContext::Cleanup => {
                 matches!(
                     callee,
                     EffectClass::Pure | EffectClass::Read | EffectClass::Action
@@ -128,7 +140,18 @@ impl BodyContext {
 
     /// Whether a body in this context may write a `state` or `emit` an event.
     fn mutates(self) -> bool {
-        matches!(self, BodyContext::Action | BodyContext::Event)
+        matches!(
+            self,
+            BodyContext::Action | BodyContext::Event | BodyContext::Transaction
+        )
+    }
+
+    /// Whether `untracked(..)` may appear: in an effect body and its cleanup.
+    fn untracks(self) -> bool {
+        matches!(
+            self,
+            BodyContext::Effect | BodyContext::Transaction | BodyContext::Cleanup
+        )
     }
 }
 
@@ -215,18 +238,37 @@ impl<'a> EffectCx<'a> {
             SyntaxKind::AssignStmt => self.check_write(node),
             SyntaxKind::EmitStmt => self.check_emit(node),
             SyntaxKind::EventHandler if self.context != BodyContext::Event => {
-                let outer = std::mem::replace(&mut self.context, BodyContext::Event);
-                for child in node.children() {
-                    self.walk(&child);
-                }
-                self.context = outer;
+                return self.walk_as(node, BodyContext::Event);
+            }
+            SyntaxKind::TransactionStmt if self.context == BodyContext::Effect => {
+                return self.walk_as(node, BodyContext::Transaction);
+            }
+            SyntaxKind::TransactionStmt if self.context == BodyContext::Cleanup => {
+                self.diagnostics.push(Diagnostic::error(
+                    "E2501",
+                    node.text_range(),
+                    "a `cleanup` writes no state: it runs as the effect re-runs or its \
+                     component goes away",
+                ));
                 return;
+            }
+            SyntaxKind::CleanupClause if self.context == BodyContext::Effect => {
+                return self.walk_as(node, BodyContext::Cleanup);
             }
             _ => {}
         }
         for child in node.children() {
             self.walk(&child);
         }
+    }
+
+    /// Walks the children of `node` in `context`.
+    fn walk_as(&mut self, node: &SyntaxNode, context: BodyContext) {
+        let outer = std::mem::replace(&mut self.context, context);
+        for child in node.children() {
+            self.walk(&child);
+        }
+        self.context = outer;
     }
 
     /// Reports an assignment whose target's root is a `state` in a body that does not
@@ -254,6 +296,14 @@ impl<'a> EffectCx<'a> {
             return;
         }
         let what = format!("writing the state `{}`", head.text());
+        if self.context == BodyContext::Effect {
+            self.diagnostics.push(Diagnostic::error(
+                "E2501",
+                node.text_range(),
+                format!("an effect body writes state only inside `transaction {{ }}`: {what}"),
+            ));
+            return;
+        }
         self.report_mutation(node.text_range(), &what);
     }
 
@@ -286,6 +336,19 @@ impl<'a> EffectCx<'a> {
     /// and, if the body's context does not permit it, emits `E2502` (in a reactive/pure
     /// context) or `E2501` (otherwise).
     fn check_call(&mut self, node: &SyntaxNode) {
+        if is_untracked(node, &self.refs) {
+            if !self.context.untracks() {
+                self.diagnostics.push(Diagnostic::error(
+                    "E2501",
+                    node.text_range(),
+                    format!(
+                        "`untracked(..)` belongs in an effect body or its cleanup, not a {} body",
+                        context_word(self.context)
+                    ),
+                ));
+            }
+            return;
+        }
         let native = self.env.native_call(node.text_range());
         if let Some((_, ThreadDomain::Worker)) = native
             && self.context != BodyContext::Task
@@ -304,6 +367,25 @@ impl<'a> EffectCx<'a> {
         let Some(callee_effect) = native.map(|n| n.0).or_else(|| self.callee_effect(node)) else {
             return;
         };
+        // A native action reaches the platform; a component's writes state.
+        let state_write = match self.context {
+            BodyContext::Effect => {
+                Some("an effect body calls an `action` only inside `transaction { }`")
+            }
+            BodyContext::Cleanup => Some(
+                "a `cleanup` writes no state, so it calls no `action`; move the call into the \
+                 effect body's `transaction { }`",
+            ),
+            _ => None,
+        };
+        if native.is_none()
+            && callee_effect == EffectClass::Action
+            && let Some(message) = state_write
+        {
+            self.diagnostics
+                .push(Diagnostic::error("E2501", node.text_range(), message));
+            return;
+        }
         if self.context.permits(callee_effect) {
             return;
         }
@@ -349,6 +431,25 @@ impl<'a> EffectCx<'a> {
     }
 }
 
+/// Whether the call `node` is the `untracked(..)` builtin: a callee path of the
+/// one unresolved segment `untracked`.
+pub(crate) fn is_untracked(node: &SyntaxNode, refs: &HashMap<TextRange, Resolution>) -> bool {
+    let Some(call) = CallExpr::cast(node.clone()) else {
+        return false;
+    };
+    let Some(callee) = call.callee() else {
+        return false;
+    };
+    if callee.syntax().kind() != SyntaxKind::PathExpr {
+        return false;
+    }
+    let Some(path) = PathExpr::cast(callee.syntax().clone()) else {
+        return false;
+    };
+    let segments: Vec<_> = path.segments().collect();
+    matches!(segments.as_slice(), [only] if only.text() == "untracked" && !refs.contains_key(&only.text_range()))
+}
+
 /// A one-word name for an effect class, for diagnostic messages.
 fn effect_word(effect: EffectClass) -> &'static str {
     match effect {
@@ -369,6 +470,9 @@ fn context_word(context: BodyContext) -> &'static str {
         BodyContext::Event => "event",
         BodyContext::Task => "task",
         BodyContext::Initializer => "initializer",
+        BodyContext::Effect => "effect",
+        BodyContext::Transaction => "transaction",
+        BodyContext::Cleanup => "cleanup",
     }
 }
 

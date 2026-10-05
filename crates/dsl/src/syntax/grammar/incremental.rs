@@ -36,6 +36,7 @@ const MEMBER_UNITS: &[SyntaxKind] = &[
     SyntaxKind::ComputedDecl,
     SyntaxKind::EventDecl,
     SyntaxKind::SlotDecl,
+    SyntaxKind::EffectDecl,
     SyntaxKind::ViewDecl,
     SyntaxKind::ConstDecl,
     SyntaxKind::FnDecl,

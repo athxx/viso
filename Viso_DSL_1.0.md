@@ -1406,7 +1406,11 @@ effect persist_theme when (theme_name) run EffectRun::change {
 - 若确实需要修改 State，必须显式使用 `transaction { ... }`；
 - Cleanup 在下次 Effect 重跑前、Component 销毁前或热重载替换前恰好执行一次；
 - Cleanup 禁止启动新的长生命周期 Task；
+- Cleanup 不写 State：其中的 State 赋值、`transaction` 与 Component `action` 调用报 `E2501`，Native 调用照常允许；
+- Effect Body 中的 Component `action` 调用同样只能写在 `transaction { ... }` 内（§81），Native 调用不受此限；
 - Effect Cycle 必须被检测并报告依赖链。
+
+当前实现：`when (...)` 编译为一个返回各依赖值列表的纯 Region Entry，Body 编译为一个 Effect Chunk，返回 `cleanup` 闭包（没有 `cleanup` 时返回 `None`）；二者随组件布局写入 Module（`Component::effects`），由控制流区域挂载的组件实例的 Effect 写入所在分支的模板。依赖覆盖：Body 在 `untracked(..)` 之外读取的 State、Input 与 Computed，若不被 `when` 中的表达式读取，且（对 Computed）其底层 State 与 Input 不全被 `when` 直接读取，报 `E4201`；`when` 中读取的 Computed 不覆盖其底层值，因为它可能在底层变化时保持不变。`when` 中的表达式按 Computed 的调用权检查（副作用报 `E2502`）；System 中的 `effect` 报 `E9109`。视图的 Effect 挂在视图根节点上，区域内实例的 Effect 挂在该实例的根节点上，每次挂载各自运行；运行时语义见 §91。热重载在替换代码前取消旧 Module 的全部 Effect，各 Cleanup 以创建它的旧代码运行恰好一次，替换后重新挂载新 Module 的 Effect：`mount` 与 `mount_and_change` 重新运行一次，`change` 等待下一次变化。Body 中的 `return` 发生在 `cleanup` 求值之前时，该次运行没有 Cleanup。
 
 `EffectRun` 是标准库 Enum，不是 Parser 特例；Parser 只解析 Path。
 
@@ -3360,7 +3364,7 @@ Task    Async/Cancelable
 
 静态 Effect Check 必须发生在 HIR 阶段；模块级 `fn`/`action`/`task` 的函数体与 Component 成员同样检查。
 
-写入 `state`（赋值目标的根是 `state`）与 `emit` 同属 Mutating：只有 Action/Event 函数体可以执行，View/Computed 中报 `E2502`，其他函数体报 `E2501`；Task 通过返回值交还结果。View 中的 `on` Handler 是独立的 Event 函数体，不属于 View 的 Reactive 上下文。State 初值、Input 默认值、`const` 值与 Record 字段默认值按 `fn` 的调用权检查。
+写入 `state`（赋值目标的根是 `state`）与 `emit` 同属 Mutating：只有 Action/Event 函数体与 Effect Body 的 `transaction { ... }` 可以执行，View/Computed 中报 `E2502`，其他函数体报 `E2501`；Task 通过返回值交还结果。View 中的 `on` Handler 是独立的 Event 函数体，不属于 View 的 Reactive 上下文。State 初值、Input 默认值、`const` 值与 Record 字段默认值按 `fn` 的调用权检查。
 
 ---
 
@@ -3525,7 +3529,7 @@ State 修改只能发生在：
 
 同一外层 Transaction 中对同一 State 多次写入只产生一次 Revision 和一次下游调度。
 
-一帧的 State Flush 取出该帧已提交的写集合，依次调度 Computed、直接 Binding、控制流区域与节点值、语义状态投影和 Effect；调度中产生的新写入（如区域挂载写入实例 State）在同一帧再调度一轮，直到没有待处理写入。连续 16 轮后仍有待处理写入即 Reactive Cycle：Runtime 停止本帧调度，报告 `E4202`，丢弃尚未调度的变化（已写入的值保留，只是其下游不再运行），下一帧不继承这些变化。
+一帧的 State Flush 取出该帧已提交的写集合，依次调度 Computed、直接 Binding、控制流区域与节点值、语义状态投影和 Effect；调度中产生的新写入（如区域挂载写入实例 State）在同一帧再调度一轮，直到没有待处理写入。连续 16 轮后仍有待处理写入即 Reactive Cycle：Runtime 停止本帧调度，报告 `E4202`（列出被丢弃的单元，以及它们会再次唤醒的 Effect 所在的节点），丢弃尚未调度的变化（已写入的值保留，只是其下游不再运行），下一帧不继承这些变化。
 
 写入就地发生：每个 State Slot 在一个 Transaction 内的首次写入把旧值记入 undo log。外层调用成功结束时，若有写入则 Revision 加一并标记被写 Slot 为 dirty；Action 体内不存在中途提交。嵌套调用（Action 调用 Action 或 `fn`）加入外层 Transaction。读取 Computed 是无写入的 Transaction，不增加 Revision。
 
@@ -3689,6 +3693,8 @@ Commit UI Patch
 - Effect 自身提交新 Transaction 时不会递归同步重入同一 Effect；
 - 重入被排到下一 Microtask Epoch；
 - 一个 Epoch 的 Effect 重跑次数有上限；超限报告 ReactiveCycle。
+
+当前实现：Effect 由节点存储的 Effect 调度器在每轮 State Flush 的最后运行（§86）：先运行上一轮以来挂载的 Effect，再运行依赖单元被本轮写入的 Effect，同一轮每个 Effect 至多一次。Effect 先登记 `when` 读取的单元为依赖，再求值依赖列表并与上次的值按值比较（`==`），由 Run Policy 决定是否运行 Body：`mount` 只在首次，`change` 在首次之后值变化时，`mount_and_change` 在首次与值变化时；值未变的唤醒什么都不做。Body 作为一个 Transaction 运行，读取不登记依赖，写入在下一轮生效；运行前先执行上一次运行返回的 Cleanup，节点释放时同样执行。连续 16 轮仍有待处理写入即 `E4202`。
 
 ---
 

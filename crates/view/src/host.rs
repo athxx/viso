@@ -6,7 +6,8 @@ use std::rc::{Rc, Weak};
 
 use viso_behavior::native::{Natives, SchemaConflict, Services};
 use viso_behavior::{
-    Budget, ChunkKind, Event, Fault, FaultKind, Instance, LoadError, Module, Value, Vm,
+    Budget, ChunkKind, ComponentEffect, Event, Fault, FaultKind, Instance, LoadError, Module,
+    Value, Vm,
 };
 use viso_ui::adaptive::{AdaptiveEnv, AnchorId, EnvField};
 use viso_ui::{EventCx, NodeId, NodeStore, StateId, StateStore, StateValue, StructureHookId};
@@ -152,6 +153,10 @@ pub struct ViewHost {
     /// The environment anchor of each static component root that reads an
     /// anchored field.
     anchors: Vec<(NodeId, AnchorId)>,
+    /// The nodes the view's effects are mounted on.
+    effect_owners: Vec<NodeId>,
+    /// The reload generation.
+    epoch: u64,
 }
 
 /// The UI cells a view's regions allocate while it runs, released with the
@@ -219,6 +224,8 @@ impl ViewHost {
             values: None,
             env: Vec::new(),
             anchors: Vec::new(),
+            effect_owners: Vec::new(),
+            epoch: 0,
         })
     }
 
@@ -653,42 +660,126 @@ impl ViewHost {
         match result {
             Ok(outcome) => {
                 self.events.extend(outcome.events);
-                self.written.clear();
-                self.written.extend(self.instance.dirty());
-                self.instance.clear_dirty();
-                for &slot in &self.written {
-                    match self.mirror[slot] {
-                        Some(Link::Mirror(id)) => {
-                            let Some(witness) = cells.get(id) else {
-                                continue;
-                            };
-                            if let Some(value) = cell_value(&self.instance.states()[slot], witness)
-                            {
-                                cells.set(id, value);
-                            }
-                        }
-                        Some(Link::Track(id)) => {
-                            if let Some(StateValue::Int(revision)) = cells.get(id) {
-                                cells.set(id, StateValue::Int(revision.wrapping_add(1)));
-                            }
-                        }
-                        Some(Link::Env(_)) => {}
-                        None => {
-                            let value = &self.instance.states()[slot];
-                            for locals in scope.locals.iter().rev() {
-                                if locals.store(slot as u32, value.clone(), cells) {
-                                    break;
-                                }
-                            }
-                        }
-                    }
-                }
+                self.write_back(scope, cells);
                 true
             }
             Err(fault) => {
                 self.fault = Some(fault);
                 false
             }
+        }
+    }
+
+    /// Writes each state slot the committed call wrote to the cell that holds
+    /// it: a mirrored cell takes the value, a tracked one a new revision, and a
+    /// slot `scope` keeps its mount's value.
+    fn write_back(&mut self, scope: &Scope, cells: &mut dyn StateCells) {
+        self.written.clear();
+        self.written.extend(self.instance.dirty());
+        self.instance.clear_dirty();
+        for &slot in &self.written {
+            match self.mirror[slot] {
+                Some(Link::Mirror(id)) => {
+                    let Some(witness) = cells.get(id) else {
+                        continue;
+                    };
+                    if let Some(value) = cell_value(&self.instance.states()[slot], witness) {
+                        cells.set(id, value);
+                    }
+                }
+                Some(Link::Track(id)) => {
+                    if let Some(StateValue::Int(revision)) = cells.get(id) {
+                        cells.set(id, StateValue::Int(revision.wrapping_add(1)));
+                    }
+                }
+                Some(Link::Env(_)) => {}
+                None => {
+                    let value = &self.instance.states()[slot];
+                    for locals in scope.locals.iter().rev() {
+                        if locals.store(slot as u32, value.clone(), cells) {
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// The effects that mount with the view, in source order.
+    pub fn effects(&self) -> &[ComponentEffect] {
+        match self.instance.component() {
+            Some(index) => &self.module().layout(index).effects,
+            None => &[],
+        }
+    }
+
+    /// The reload generation: a [`reload`](Self::reload) raises it, so an
+    /// effect mounted before it neither runs nor cleans up against the new
+    /// module.
+    pub(crate) fn epoch(&self) -> u64 {
+        self.epoch
+    }
+
+    /// Records that effects are mounted on `node`, which releasing them
+    /// cancels.
+    pub(crate) fn own_effects(&mut self, node: NodeId) {
+        if !self.effect_owners.contains(&node) {
+            self.effect_owners.push(node);
+        }
+    }
+
+    /// Takes the nodes effects are mounted on.
+    pub(crate) fn take_effect_owners(&mut self) -> Vec<NodeId> {
+        std::mem::take(&mut self.effect_owners)
+    }
+
+    /// Runs the effect body at handler-table entry `entry` in `scope` as one
+    /// transaction and returns its value, the cleanup closure or `Nil`. A
+    /// fault is kept as [`last_fault`](Self::last_fault) and discards the
+    /// transaction.
+    pub(crate) fn run_effect(
+        &mut self,
+        entry: u32,
+        scope: &Scope,
+        cells: &mut dyn StateCells,
+    ) -> Option<Value> {
+        let chunk = match self.chunk(entry, ChunkKind::Effect) {
+            Ok(chunk) => chunk,
+            Err(fault) => {
+                self.fault = Some(fault);
+                return None;
+            }
+        };
+        self.sync(scope, &*cells);
+        match self.vm.call(&mut self.instance, chunk, &scope.values) {
+            Ok(outcome) => {
+                self.events.extend(outcome.events);
+                self.write_back(scope, cells);
+                Some(outcome.value)
+            }
+            Err(fault) => {
+                self.fault = Some(fault);
+                None
+            }
+        }
+    }
+
+    /// Runs an effect's cleanup closure with the states `scope` keeps. It
+    /// writes no state; a fault is kept as [`last_fault`](Self::last_fault).
+    pub(crate) fn run_cleanup(&mut self, cleanup: &Value, scope: &Scope) {
+        for locals in &scope.locals {
+            let values = locals.values.borrow();
+            for (&slot, value) in locals.slots.iter().zip(values.iter()) {
+                if (slot as usize) < self.instance.states().len() {
+                    self.instance.set_state(slot as usize, value.clone());
+                }
+            }
+        }
+        let result = self.vm.call_value(&mut self.instance, cleanup, &[]);
+        self.instance.clear_dirty();
+        match result {
+            Ok(outcome) => self.events.extend(outcome.events),
+            Err(fault) => self.fault = Some(fault),
         }
     }
 
@@ -727,6 +818,7 @@ impl ViewHost {
         next.regions = std::mem::take(&mut self.regions);
         next.values = self.values.take();
         next.anchors = std::mem::take(&mut self.anchors);
+        next.epoch = self.epoch + 1;
         *self = next;
     }
 }

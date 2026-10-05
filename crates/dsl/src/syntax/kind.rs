@@ -357,6 +357,16 @@ pub enum SyntaxKind {
     EventParam,
     /// `slot IDENT ":" Type ("=" SlotDefault)? ";"` (A.6).
     SlotDecl,
+    /// `effect IDENT EffectDeps? EffectRun? EffectBody` (§37).
+    EffectDecl,
+    /// `when "(" Expr ("," Expr)* ","? ")"` — an effect's dependency list.
+    EffectDeps,
+    /// `run Path` — an effect's run policy.
+    EffectRun,
+    /// `"{" Statement* CleanupClause? "}"` — an effect's body.
+    EffectBody,
+    /// `cleanup Block` — what an effect undoes before it re-runs or ends.
+    CleanupClause,
 
     // Generics / parameters / types.
     /// A `< ... >` list of generic parameters on a declaration (A.4).

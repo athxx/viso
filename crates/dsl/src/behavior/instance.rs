@@ -27,8 +27,8 @@
 use std::collections::HashMap;
 
 use super::ir::{
-    Body, ComponentLayout, Const, EnvSlot, FuncId, Function, FunctionKind, Inst, PathStep, Program,
-    Reg, RegionalStates, Site, Unsupported,
+    Body, ComponentLayout, Const, EffectEntry, EnvSlot, FuncId, Function, FunctionKind, Inst,
+    PathStep, Program, Reg, RegionalStates, Site, Unsupported,
 };
 use super::lower::block_unsupported;
 use crate::ir::{UiInstance, UiTree};
@@ -208,7 +208,16 @@ impl Inliner<'_> {
         let inits: Vec<Option<FuncId>> =
             self.child.state_inits.iter().map(|f| f.map(own)).collect();
         let layout = &mut self.program.components[self.root];
+        let start = layout.handlers.len() as u32;
         layout.handlers.extend(handlers);
+        layout
+            .effects
+            .extend(self.child.effects.iter().map(|e| EffectEntry {
+                instance: self.id,
+                deps: e.deps.map(|d| start + d),
+                body: start + e.body,
+                run: e.run,
+            }));
         layout.env.extend(self.child.env.iter().map(|e| EnvSlot {
             slot: self.base + e.slot,
             field: e.field,

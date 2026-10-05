@@ -165,6 +165,15 @@ pub fn emit_view(
             }
         };
     }
+    if behavior.is_some_and(ViewBehavior::has_effects) {
+        root = quote! {
+            {
+                let __viso_root = #root;
+                ::viso_view::__mount_effects(cx, &__viso_host, __viso_root.id());
+                __viso_root
+            }
+        };
+    }
     if let Some(record) = record {
         root = quote! {
             {

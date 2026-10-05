@@ -19,6 +19,7 @@
 
 use crate::binding::BindingTable;
 use crate::component::NodeStore;
+use crate::node::NodeId;
 use crate::reactive::{ComputedStore, EffectStore, SemanticProjector};
 use crate::state::{StateId, StateStore};
 use crate::structure::run_structure_hooks;
@@ -31,12 +32,17 @@ pub const SETTLE_ROUNDS: u32 = 16;
 pub const ADAPTIVE_ROUNDS: u32 = 8;
 
 /// A frame whose flush did not settle within [`SETTLE_ROUNDS`] rounds.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReactiveCycle {
     /// How many written cells were still pending, and were dropped, when the
     /// flush stopped. Their values stay written; only the reactions to them
     /// do not run.
     pub dropped: usize,
+    /// The dropped cells, the chain's last writes.
+    pub cells: Vec<StateId>,
+    /// The nodes of the effects those cells would have run again: the effects
+    /// on the chain.
+    pub effects: Vec<NodeId>,
 }
 
 impl ReactiveCycle {
@@ -49,15 +55,21 @@ impl std::fmt::Display for ReactiveCycle {
         write!(
             f,
             "{}: state writes did not settle within {SETTLE_ROUNDS} rounds; \
-             dropped the changes of {} cell(s)",
+             dropped the changes of {} cell(s) {:?}",
             Self::CODE,
-            self.dropped
-        )
+            self.dropped,
+            self.cells
+        )?;
+        if !self.effects.is_empty() {
+            write!(f, ", which re-run the effects of nodes {:?}", self.effects)?;
+        }
+        Ok(())
     }
 }
 
-/// Flushes the pending state writes until they settle and returns how many
-/// rounds ran: `0` for a frame with nothing pending, which touches nothing.
+/// Flushes the pending state writes, and runs the effects builds registered,
+/// until they settle and returns how many rounds ran: `0` for a frame with
+/// nothing pending, which touches nothing.
 /// `changed` is reused scratch for each round's drained set, left empty.
 ///
 /// Each round runs, over the cells written since the last:
@@ -69,7 +81,9 @@ impl std::fmt::Display for ReactiveCycle {
 /// 3. the structure hooks, after the bindings so a node a hook frees has taken
 ///    its marks;
 /// 4. the semantic-state projections, writing each node's `semantic_state`;
-/// 5. the effects, re-running those whose dependencies changed.
+/// 5. the effects: first runs of those mounted since the last round, then
+///    re-runs of those whose dependencies changed. An effect's writes are
+///    the next round's.
 ///
 /// # Errors
 ///
@@ -85,19 +99,26 @@ pub fn settle_states(
     changed: &mut Vec<StateId>,
 ) -> Result<u32, ReactiveCycle> {
     let mut rounds = 0;
-    while states.has_pending() {
+    while states.has_pending() || store.has_pending_effects() {
         changed.clear();
         states.take_pending(changed);
         if rounds == SETTLE_ROUNDS {
-            let dropped = changed.len();
-            changed.clear();
-            return Err(ReactiveCycle { dropped });
+            let cells = std::mem::take(changed);
+            let mut chain = Vec::new();
+            effects.woken_by(&cells, &mut chain);
+            return Err(ReactiveCycle {
+                dropped: cells.len(),
+                cells,
+                effects: chain,
+            });
         }
         rounds += 1;
         computeds.wake_computed(changed, states, store);
         store.flush_state_transactions(changed, bindings);
         run_structure_hooks(store, states, bindings, effects, changed);
         projectors.wake(changed, states, store);
+        // The effects the commit mounted run first, then those it woke.
+        effects.adopt(store, states);
         effects.wake(changed, states);
     }
     changed.clear();
@@ -133,7 +154,7 @@ impl std::fmt::Display for AdaptiveCycle {
 }
 
 /// Why a frame's layout stopped before it settled.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Unsettled {
     /// A state flush inside the settle did not settle.
     Reactive(ReactiveCycle),
@@ -237,6 +258,93 @@ mod tests {
             Some(StateValue::Int(n)) => n,
             other => panic!("an int cell, not {other:?}"),
         }
+    }
+
+    #[test]
+    fn a_registered_effect_first_runs_in_the_next_settle_and_its_writes_settle_too() {
+        let mut stores = Stores::default();
+        let count = stores.states.alloc(StateValue::Int(3));
+        let doubled = stores.states.alloc(StateValue::Int(0));
+        let root = BuildCx::new(&mut stores.store)
+            .leaf(LeafStyle::default())
+            .id();
+        let mut last = None;
+        stores.store.add_effect(
+            root,
+            move |cx| {
+                let now = cx.get(count);
+                last.replace(now) != Some(now)
+            },
+            move |cx| {
+                let Some(StateValue::Int(n)) = cx.get(count) else {
+                    return None;
+                };
+                cx.set(doubled, StateValue::Int(n * 2));
+                None
+            },
+        );
+        assert!(stores.store.has_pending_effects());
+        // Nothing is written, yet the mount runs, and its write settles.
+        assert_eq!(stores.settle(), Ok(2));
+        assert_eq!(int(&stores.states, doubled), 6);
+        assert!(!stores.store.has_pending_effects());
+        stores.states.set(count, StateValue::Int(4));
+        assert_eq!(stores.settle(), Ok(2));
+        assert_eq!(int(&stores.states, doubled), 8);
+    }
+
+    #[test]
+    fn an_effect_feeding_itself_stops_at_the_settle_cap() {
+        let mut stores = Stores::default();
+        let count = stores.states.alloc(StateValue::Int(0));
+        let root = BuildCx::new(&mut stores.store)
+            .leaf(LeafStyle::default())
+            .id();
+        stores.store.add_effect(
+            root,
+            move |cx| cx.get(count).is_some(),
+            move |cx| {
+                if let Some(StateValue::Int(n)) = cx.get(count) {
+                    cx.set(count, StateValue::Int(n + 1));
+                }
+                None
+            },
+        );
+        let cycle = stores.settle().expect_err("a cycle");
+        assert_eq!(ReactiveCycle::CODE, "E4202");
+        assert_eq!(cycle.dropped, 1);
+        assert_eq!(
+            (&*cycle.cells, &*cycle.effects),
+            (&[count][..], &[root][..])
+        );
+        assert!(
+            cycle.to_string().contains("re-run the effects of nodes"),
+            "{cycle}"
+        );
+        assert_eq!(int(&stores.states, count), SETTLE_ROUNDS as i32);
+    }
+
+    #[test]
+    fn an_effect_of_a_node_freed_before_the_flush_never_runs() {
+        let mut stores = Stores::default();
+        let root = BuildCx::new(&mut stores.store)
+            .leaf(LeafStyle::default())
+            .id();
+        let ran = std::rc::Rc::new(std::cell::Cell::new(false));
+        let seen = std::rc::Rc::clone(&ran);
+        stores.store.add_effect(
+            root,
+            |_| true,
+            move |_| {
+                seen.set(true);
+                None
+            },
+        );
+        stores
+            .store
+            .free_tree(root, &mut stores.effects, &mut Vec::new());
+        assert_eq!(stores.settle(), Ok(1));
+        assert!(!ran.get());
     }
 
     /// A 1000dp row holding a filling column with an adaptive scope inside,
@@ -493,7 +601,14 @@ mod tests {
         });
         stores.states.set(cell, StateValue::Int(1));
         let cycle = stores.settle().expect_err("the hook never settles");
-        assert_eq!(cycle, ReactiveCycle { dropped: 1 });
+        assert_eq!(
+            cycle,
+            ReactiveCycle {
+                dropped: 1,
+                cells: vec![cell],
+                effects: Vec::new(),
+            }
+        );
         assert_eq!(ReactiveCycle::CODE, "E4202");
         assert_eq!(int(&stores.states, cell), 1 + SETTLE_ROUNDS as i32);
         assert!(

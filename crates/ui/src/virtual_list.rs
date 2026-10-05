@@ -1631,7 +1631,7 @@ mod tests {
             })
         };
         // Run it once so it installs its cleanup.
-        h.effects.run(effect_id, &h.states);
+        h.effects.run(effect_id, &mut h.states);
         assert!(h.effects.is_live(effect_id), "the effect is live once run");
         assert!(!cleaned.get(), "cleanup has not fired yet");
 

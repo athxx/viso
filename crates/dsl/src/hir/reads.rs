@@ -21,7 +21,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use crate::ast::{AstNode, Expr, PathExpr};
 use crate::resolve::{Resolution, ResolvedRef, SymbolId};
-use crate::syntax::{SyntaxKind, SyntaxNode, TextRange};
+use crate::syntax::{SyntaxKind, SyntaxNode, SyntaxToken, TextRange};
 
 /// What read-collection needs to know about the surrounding program: whether a resolved
 /// symbol is a reactive source (a `state`, `input`, or `computed`). Supplying this as a
@@ -187,6 +187,56 @@ impl ReadEnv for WithDerived<'_> {
             Resolution::Symbol(id) if (self.derived)(*id) => Some(*id),
             _ => self.env.reactive_source(to),
         }
+    }
+}
+
+/// The reactive reads under `node` an effect body records, each at its name: a
+/// read inside `untracked(..)` records nothing, and neither does the target of
+/// an assignment, which the body writes rather than reads.
+pub fn tracked_reads(
+    refs: &[ResolvedRef],
+    env: &dyn ReadEnv,
+    node: &SyntaxNode,
+) -> Vec<(SymbolId, SyntaxToken)> {
+    let index: HashMap<TextRange, Resolution> = refs.iter().map(|r| (r.range, r.to)).collect();
+    let mut reads = Vec::new();
+    tracked(&index, env, node, &mut reads);
+    reads
+}
+
+fn tracked(
+    index: &HashMap<TextRange, Resolution>,
+    env: &dyn ReadEnv,
+    node: &SyntaxNode,
+    reads: &mut Vec<(SymbolId, SyntaxToken)>,
+) {
+    match node.kind() {
+        SyntaxKind::CallExpr if crate::hir::effect::is_untracked(node, index) => return,
+        SyntaxKind::PathExpr => {
+            if let Some(head) = PathExpr::cast(node.clone()).and_then(|p| p.segments().next())
+                && let Some(to) = index.get(&head.text_range())
+                && let Some(source) = env.reactive_source(to)
+            {
+                reads.push((source, head));
+            }
+        }
+        SyntaxKind::AssignStmt => {
+            // The target's own index expressions are still reads.
+            let mut children = node.children().into_iter();
+            if let Some(target) = children.next() {
+                for inner in target.children() {
+                    tracked(index, env, &inner, reads);
+                }
+            }
+            for child in children {
+                tracked(index, env, &child, reads);
+            }
+            return;
+        }
+        _ => {}
+    }
+    for child in node.children() {
+        tracked(index, env, &child, reads);
     }
 }
 

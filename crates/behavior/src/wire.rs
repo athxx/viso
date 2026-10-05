@@ -17,8 +17,8 @@ use crate::game::{
     Action, InputBindings, InputSchema, Key, KeySet, MoveSource, PadButton, PadStick, TouchButton,
 };
 use crate::module::{
-    Chunk, ChunkKind, Code, Component, Migrator, Module, NativeImport, PersistSlot, SnapshotSlot,
-    Span, StableId, System, VerifyError,
+    Chunk, ChunkKind, Code, Component, ComponentEffect, EffectRun, Migrator, Module, NativeImport,
+    PersistSlot, SnapshotSlot, Span, StableId, System, VerifyError,
 };
 use crate::native::NativeId;
 use crate::op::{Arith, ArithOp, DisplayKind, Num, Op};
@@ -342,6 +342,34 @@ fn write_component(enc: &mut Encoder, c: &Component) {
     write_list(enc, &c.handlers, |enc, chunk| {
         enc.write_varint(u64::from(*chunk))
     });
+    write_list(enc, &c.effects, |enc, e| e.encode(enc));
+}
+
+impl Encode for ComponentEffect {
+    fn encode(&self, enc: &mut Encoder) {
+        enc.write_varint(self.deps.map_or(0, |d| u64::from(d) + 1));
+        enc.write_varint(u64::from(self.body));
+        enc.write_u8(match self.run {
+            EffectRun::Mount => 0,
+            EffectRun::Change => 1,
+            EffectRun::MountAndChange => 2,
+        });
+    }
+}
+
+impl Decode for ComponentEffect {
+    fn decode(dec: &mut Decoder<'_>) -> Result<Self, DecodeError> {
+        let deps = read_u32_varint(dec)?.checked_sub(1);
+        let body = read_u32_varint(dec)?;
+        let offset = dec.position();
+        let run = match dec.read_u8()? {
+            0 => EffectRun::Mount,
+            1 => EffectRun::Change,
+            2 => EffectRun::MountAndChange,
+            _ => return Err(DecodeError::Malformed { offset }),
+        };
+        Ok(ComponentEffect { deps, body, run })
+    }
 }
 
 fn read_component(dec: &mut Decoder<'_>) -> Result<Component, DecodeError> {
@@ -357,10 +385,11 @@ fn read_component(dec: &mut Decoder<'_>) -> Result<Component, DecodeError> {
         })?
         .into(),
         handlers: read_list(dec, read_u32_varint)?.into(),
+        effects: read_list(dec, ComponentEffect::decode)?.into(),
     })
 }
 
-const CHUNK_KINDS: [ChunkKind; 10] = [
+const CHUNK_KINDS: [ChunkKind; 11] = [
     ChunkKind::Fn,
     ChunkKind::Action,
     ChunkKind::Closure,
@@ -371,6 +400,7 @@ const CHUNK_KINDS: [ChunkKind; 10] = [
     ChunkKind::FieldDefault,
     ChunkKind::Handler,
     ChunkKind::RegionEntry,
+    ChunkKind::Effect,
 ];
 
 fn write_chunk(enc: &mut Encoder, c: &Chunk) {

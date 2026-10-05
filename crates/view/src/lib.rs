@@ -19,6 +19,7 @@
 
 mod attach;
 mod control;
+mod effects;
 mod env;
 mod host;
 #[cfg(feature = "hot-reload")]
@@ -31,6 +32,7 @@ mod values;
 
 pub use attach::{Route, attach, attach_node};
 pub use control::{Control, ControlInput, ControlKind, Look};
+pub use effects::{__mount_effects, mount_effects, release_effects};
 pub use env::{__link_env, env_value};
 pub use host::{__embedded, HostError, StateCells, ViewHost, cell_value, vm_value};
 #[cfg(feature = "hot-reload")]
@@ -40,9 +42,9 @@ pub use package::{
     instantiate_view, load_view,
 };
 pub use regions::{
-    __mount_embedded, ArmTemplate, CLOSED, CellRef, EnvTemplate, GroupTemplate, HALF_OPEN, ItemKey,
-    ItemTemplate, LocalTemplate, MAX_RANGE_ITEMS, RegionKind, RegionNode, RegionTemplate,
-    SlotTemplate, ViewRegions, mount_regions,
+    __mount_embedded, ArmTemplate, CLOSED, CellRef, EffectTemplate, EnvTemplate, GroupTemplate,
+    HALF_OPEN, ItemKey, ItemTemplate, LocalTemplate, MAX_RANGE_ITEMS, RegionKind, RegionNode,
+    RegionTemplate, SlotTemplate, ViewRegions, mount_regions,
 };
 pub use route::{EventRoute, PAYLOAD_ENUMS, PAYLOAD_RECORDS};
 pub use scope::Scope;
