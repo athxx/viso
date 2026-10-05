@@ -6207,6 +6207,8 @@ UI Binding 对 Game Observable Handle 的读取必须通过 Schema 标记为 Rea
 - Logic-only Reload 后可以选择“从 T−k 重放”：Restore 旧 Snapshot，用新代码重跑记录的输入，再从当前 Tick 继续；
 - 开发者由此直接看到改动对刚才那段玩法的影响，不必手动重现。
 
+当前实现：`Scheduler::keep_history(seconds)`（Dev 宿主默认 `DEFAULT_HISTORY_SECONDS` = 10）在每四分之一秒的 Tick Boundary 记一个 Snapshot，环中只留覆盖窗口所需的 Snapshot，并持续记录每个 Tick 读到的输入；窗口之前的输入折叠为窗口起点前一 Tick 的持有状态。`replay_from(tick)` Restore 不晚于 `tick` 的最近 Snapshot（另一 Build 的 Snapshot 按 Stable ID + Schema Hash 恢复共享的状态），用记录的输入在当前代码上重跑到离开时的 Tick；正在回放的 Tape 照常供给输入，期间设备输入保留到下一 Tick；已投递 Tick 的 Presentation 命令不再投递，`@local` 状态保持。Tick Rate 变化的 Reload 与 World Rebuild 清空历史。`tick` 早于最旧 Snapshot、尚未运行或未保留历史时返回 `ReplayError`，游戏不变。
+
 ### 110.5 游戏测试与 AI 工具合同
 
 命令形状由 `Viso_CLI.md` §22.3 定义：`viso test game`、`viso game record`、`viso game peek`。

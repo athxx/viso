@@ -1003,10 +1003,15 @@ timers (§104–§111).
   - [ ] The VM's call path is shown allocation-free once warm (allocation
         count test on the audio hook).
 - [ ] Dev snapshot ring and rewind-and-replay after a logic reload (§110.4).
-  - [ ] The dev scheduler keeps a ring of snapshots (default the last 10 s) and
-        records the input tape continuously.
-  - [ ] After a logic-only reload, replay from T−k: restore the snapshot, rerun
-        the recorded input on the new code, continue from the current tick.
+  - [x] The dev scheduler keeps a ring of snapshots (default the last 10 s) and
+        records the input tape continuously (`keep_history`, a snapshot every
+        quarter second, input before the window folded into held state).
+  - [x] After a logic-only reload, replay from T−k: restore the snapshot, rerun
+        the recorded input on the new code, continue from the current tick
+        (`replay_from`, `Replayed` / `ReplayError`; same code reaches the same
+        snapshot hash, new code matches a game reloaded at T−k).
+  - [ ] The dev host turns the history on and offers the replay after a
+        logic reload (with the CLI / game host).
 - [ ] Accessibility and localization checks `E3704`–`E3706`, `E3708` (U8.2, U10.3).
   - [x] An interactive non-widget node or component root without a role or name
         (`E3704`) or a keyboard path (`E3708`); warnings, errors under the

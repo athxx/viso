@@ -443,6 +443,18 @@ impl Playback {
         })
     }
 
+    /// `tape` over a build with the action names `actions`, a change of an
+    /// action it lacks skipped, as a replay over a reloaded build runs.
+    pub(super) fn lenient(tape: InputTape, actions: &[Box<str>]) -> Playback {
+        Playback {
+            held: vec![false; tape.actions.len()],
+            map: map_actions(&tape, actions),
+            next: 0,
+            moved: (0.0, 0.0),
+            tape,
+        }
+    }
+
     /// Maps the tape onto a reloaded build's `actions`; a change of an
     /// action it lacks is skipped from now on.
     pub(super) fn rebind(&mut self, actions: &[Box<str>]) {
@@ -598,6 +610,44 @@ impl Recorder {
                 }
                 TapeChange::Move(x, y) => self.moved = (x, y),
             }
+        }
+    }
+
+    /// Forgets the changes of the ticks before `tick`, keeping the input
+    /// they leave held as changes of the tick before it, so a replay from
+    /// `tick` starts with the input it had.
+    pub(super) fn forget_before(&mut self, tick: u64) {
+        let Some(last) = tick.checked_sub(1) else {
+            return;
+        };
+        let cut = self.tape.events.partition_point(|e| e.tick < tick);
+        if cut == 0 || self.tape.events[..cut].iter().all(|e| e.tick == last) {
+            return;
+        }
+        let mut held = vec![false; self.tape.actions.len()];
+        let mut moved = None;
+        for event in &self.tape.events[..cut] {
+            match event.change {
+                TapeChange::Press(t) | TapeChange::Set(t, true) => held[t as usize] = true,
+                TapeChange::Release(t) | TapeChange::Set(t, false) => held[t as usize] = false,
+                TapeChange::Move(x, y) => moved = Some((x, y)),
+            }
+        }
+        let base = held
+            .iter()
+            .enumerate()
+            .filter(|(_, on)| **on)
+            .map(|(t, _)| TapeChange::Set(t as u32, true))
+            .chain(moved.map(|(x, y)| TapeChange::Move(x, y)))
+            .map(|change| TapeEvent { tick: last, change });
+        self.tape.events.splice(..cut, base.collect::<Vec<_>>());
+    }
+
+    /// The tape so far, of a run on build `build`.
+    pub(super) fn tape(&self, build: u64) -> InputTape {
+        InputTape {
+            build,
+            ..self.tape.clone()
         }
     }
 
