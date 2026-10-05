@@ -225,6 +225,7 @@ pub fn lower(
     cap.finish(&mut components, &mut per_module);
     check_input_bases(&input_flows, &mut per_module);
     domains.check(&decls, graph.natives(), profile, &mut per_module);
+    domains.check_realtime(&decls, graph.natives(), &behavior.borrow(), &mut per_module);
     domains.persist_slots(&decls, &behavior, &migrators, &mut per_module);
     let order = system::order(&systems, &mut per_module);
     behavior.borrow_mut().order_systems(&order);

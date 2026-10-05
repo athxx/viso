@@ -6113,6 +6113,8 @@ then per-system sequence
 - 禁止堆分配、`Task`/`await`、锁、Resource 加载、未标 `realtime` 的 Native 调用以及无静态上限的循环，违反时报 `E9108`；
 - 与其他 System 只通过有界无锁队列传递 typed message。
 
+当前实现：`viso::game::AudioProcess` 的 Hook 为 `audio_process(block: AudioBlock)`，域为 `Realtime`；`AudioBlock` 是借用 Handle，按声道与帧原地读写样本（`channels`、`frames`、`sample_rate`、`input(channel, frame)`、`write(channel, frame, sample)`，均为 realtime-safe）。编译器从每个 `AudioProcess` Hook 沿调用与 Closure 遍历降低后的指令：构造 Record/Tuple/Enum Payload、List、Closure 或 `String`（拼接、格式化），原地写入 Record/List（共享时复制），`start` Task，`emit` 事件，调用 Closure 值，调用未标 realtime-safe 的 Native，以及递归，均报 `E9108`；源码中读取 Resource、`while`/`loop`，以及 `for` 不是遍历头部书写的 Range、或 Range 边界不只由字面量、`const` 与 `AudioBlock` 的方法构成时也报 `E9108`；诊断附注说明由哪个 Hook 到达。实现 `AudioProcess` 的 System 不得再实现其他 Trait（`E9108`）。头部书写的 Range 由其边界直接迭代，不构造 Range 值。Scheduler 不运行 `AudioProcess`；音频线程宿主与有界无锁队列尚未实现。
+
 ---
 
 ## 109. HUD 和游戏场景组合

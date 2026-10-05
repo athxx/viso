@@ -988,9 +988,20 @@ timers (§104–§111).
   - [ ] The app facade installs a `Persist` service (a `DirStore` in the app
         data dir) and calls `suspend` when the app goes to the background.
 - [ ] `AudioProcess` real-time rules `E9108` (§108.3).
-  - [ ] A system implementing `AudioProcess` rejects allocation, `await`/tasks,
+  - [x] A system implementing `AudioProcess` rejects allocation, `await`/tasks,
         locks, resource loads, non-`realtime` natives and unbounded loops
-        (`E9108`), through its call graph.
+        (`E9108`), through its call graph: checked over the lowered
+        instructions of every function a hook reaches (records, lists,
+        closures, strings, in-place writes, `start`, `emit`, closure calls,
+        recursion), with resource reads and loops not bounded by constants and
+        the block's size from source; an audio system implements no other
+        trait. `viso::game::AudioProcess` / `AudioBlock`; a range in a `for`
+        head builds no range value.
+  - [ ] An audio-thread host runs `AudioProcess` hooks on the platform audio
+        callback, with bounded lock-free typed message queues to other
+        systems.
+  - [ ] The VM's call path is shown allocation-free once warm (allocation
+        count test on the audio hook).
 - [ ] Dev snapshot ring and rewind-and-replay after a logic reload (§110.4).
   - [ ] The dev scheduler keeps a ring of snapshots (default the last 10 s) and
         records the input tape continuously.

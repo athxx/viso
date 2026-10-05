@@ -493,6 +493,11 @@ pub enum HookDomain {
     /// Per-frame presentation, which reads the simulation and owns `@local`
     /// state.
     Presentation,
+    /// Presentation on the audio thread, under realtime rules: it and every
+    /// callable it reaches may not allocate, start or await a task, load a
+    /// resource, call a native that is not realtime-safe or loop without a
+    /// static bound.
+    Realtime,
 }
 
 /// A scheduler hook a [`NativeTrait`] declares: an `action` every implementing

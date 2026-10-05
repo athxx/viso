@@ -639,6 +639,16 @@ impl ProgramBuilder {
         })
     }
 
+    /// The program lowered so far.
+    pub(crate) fn program(&self) -> &Program {
+        &self.program
+    }
+
+    /// The function lowering the declaration `symbol`.
+    pub(crate) fn function_of(&self, symbol: SymbolId) -> Option<FuncId> {
+        self.by_symbol.get(&symbol).copied()
+    }
+
     /// The finished program. A function that calls, or closes over, one that
     /// cannot run cannot run either.
     pub(crate) fn finish(mut self) -> Program {
