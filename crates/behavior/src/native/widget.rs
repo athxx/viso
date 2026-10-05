@@ -66,6 +66,8 @@ pub struct WidgetProperty {
     /// Whether a style may bind it: it is part of how the node looks, not of
     /// what it shows or does.
     pub styleable: bool,
+    /// Whether it shows text a user reads, which a translation replaces.
+    pub localizable: bool,
 }
 
 impl WidgetProperty {
@@ -77,7 +79,14 @@ impl WidgetProperty {
             two_way: false,
             percent_basis: false,
             styleable: false,
+            localizable: false,
         }
+    }
+
+    /// It shows text a user reads.
+    pub const fn localizable(mut self) -> WidgetProperty {
+        self.localizable = true;
+        self
     }
 
     /// A style may bind it.
@@ -260,6 +269,9 @@ pub struct NativeWidget {
     pub slots: &'static [WidgetSlot],
     /// The live state of its node a hot reload carries.
     pub migratable: MigratableState,
+    /// Whether it is a standard interactive widget, with its own role, name
+    /// and keyboard path.
+    pub interactive: bool,
 }
 
 impl NativeWidget {
@@ -274,7 +286,14 @@ impl NativeWidget {
             events: &[],
             slots: &[],
             migratable: MigratableState::NONE,
+            interactive: false,
         }
+    }
+
+    /// A standard interactive widget.
+    pub const fn interactive(mut self) -> Self {
+        self.interactive = true;
+        self
     }
 
     /// Takes `properties`.

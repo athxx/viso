@@ -43,6 +43,12 @@ pub struct TargetProfile {
     pub release: bool,
     /// The capabilities the package is granted (`[package] capabilities`).
     pub capabilities: CapabilitySet,
+    /// Whether accessibility findings (`E3704`, `E3708`) are errors
+    /// (`--a11y strict`) rather than warnings.
+    pub a11y_strict: bool,
+    /// Whether localization findings (`E3705`) are errors and cover literal
+    /// text too (`--i18n strict`).
+    pub i18n_strict: bool,
 }
 
 impl Default for TargetProfile {
@@ -53,6 +59,8 @@ impl Default for TargetProfile {
             tick_rate: viso_behavior::DEFAULT_TICK_RATE,
             release: false,
             capabilities: CapabilitySet::new(),
+            a11y_strict: false,
+            i18n_strict: false,
         }
     }
 }

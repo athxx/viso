@@ -1384,6 +1384,10 @@ impl ViewEnv for ModuleEnv<'_> {
     fn styles(&self) -> Option<&StyleBook> {
         self.styles.get()
     }
+
+    fn profile(&self) -> &TargetProfile {
+        &self.decls.profile
+    }
 }
 
 impl ReadEnv for ModuleEnv<'_> {
@@ -3310,7 +3314,9 @@ mod tests {
         );
         assert_clean(&app(
             "state b = PointerButton::primary\n  state k: Option<Key> = Option::None",
-            "Column { on pointer_up(e) { b = e.button; } on key_down(e) { k = Option::Some(e.key); } }",
+            "Column { semantics.role: Role::button; semantics.label: Option::Some(\"Keys\"); \
+             focusable: true; on click {} on pointer_up(e) { b = e.button; } \
+             on key_down(e) { k = Option::Some(e.key); } }",
         ));
         assert_clean(&app(
             "state f: F32 = 0.0",
