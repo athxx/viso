@@ -93,6 +93,8 @@ impl Program {
         if !self.migrators.is_empty() {
             module = module.with_migrators(self.migrators.clone())?;
         }
+        let themes = self.themes.iter();
+        module = module.with_themes(themes.map(|(n, f)| (n.as_str().into(), f.0)).collect())?;
         match &self.input {
             Some(input) => module.with_input(input.clone()),
             None => Ok(module),

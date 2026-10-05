@@ -377,6 +377,19 @@ impl ViewHost {
         result.map(|outcome| outcome.value)
     }
 
+    /// The value of the package's theme `name`, which
+    /// [`set_theme`](crate::set_theme) switches the views to; `None` when the
+    /// package declares no such theme.
+    pub fn theme(&mut self, name: &str) -> Option<Result<Value, Fault>> {
+        let chunk = self.module().theme(name)?;
+        if let Some(fault) = &self.broken {
+            return Some(Err(fault.clone()));
+        }
+        let result = self.vm.call(&mut self.instance, chunk, &[]);
+        self.instance.clear_dirty();
+        Some(result.map(|outcome| outcome.value))
+    }
+
     /// Mirrors state slot `slot` into UI cell `id`. Returns `false`, mirroring
     /// nothing, for a slot out of range.
     pub fn mirror(&mut self, slot: usize, id: StateId) -> bool {

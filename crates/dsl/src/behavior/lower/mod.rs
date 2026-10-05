@@ -350,6 +350,17 @@ impl ProgramBuilder {
         self.program.tick_rate = Some(tick_rate);
     }
 
+    /// Registers the theme `name`, computed by `func`; the earlier theme's
+    /// function when another one already took the name.
+    pub(crate) fn theme(&mut self, name: &str, func: FuncId) -> Result<(), FuncId> {
+        let themes = &mut self.program.themes;
+        if let Some((_, earlier)) = themes.iter().find(|(n, _)| n == name) {
+            return Err(*earlier);
+        }
+        themes.push((name.to_owned(), func));
+        Ok(())
+    }
+
     /// Sets the capabilities the package is granted.
     pub(crate) fn capabilities(&mut self, capabilities: Vec<String>) {
         self.program.capabilities = capabilities;
@@ -707,6 +718,78 @@ pub(crate) fn lower_value(
     let result = l.expr(value).map(|src| {
         l.emit(Inst::Return { src });
     });
+    let body = result.map(|()| l.frames.pop().unwrap_or_default().body);
+    b.define(
+        Function {
+            name: def.name,
+            kind: def.kind,
+            symbol: def.symbol,
+            module: def.module,
+            params: 0,
+            captures: Vec::new(),
+            body,
+        },
+        def.into,
+    )
+}
+
+/// Lowers a theme to a constant of the record `record`: each field is its
+/// item's value (`items`, by field index, in source order), else the field of
+/// the theme `base`, else its default.
+pub(crate) fn lower_theme(
+    b: &mut ProgramBuilder,
+    cx: &InferCx<'_>,
+    def: Def,
+    record: SymbolId,
+    base: Option<SymbolId>,
+    items: &[(u32, Expr)],
+    at: TextRange,
+) -> FuncId {
+    let mut l = Lowerer::new(cx, b, &def, at);
+    let result = (|| {
+        let fields = l.env.record_fields(record).unwrap_or_default().to_vec();
+        let mut values: Vec<Option<Reg>> = vec![None; fields.len()];
+        for (index, value) in items {
+            values[*index as usize] = Some(l.expr(value)?);
+        }
+        let base = match base {
+            Some(id) => Some(l.symbol_value(id, "the base theme")?),
+            None => None,
+        };
+        let mut regs = Vec::with_capacity(fields.len());
+        for (index, (value, field)) in values.into_iter().zip(&fields).enumerate() {
+            let index = index as u32;
+            let reg = match (value, base) {
+                (Some(reg), _) => reg,
+                (None, Some(src)) => {
+                    let dst = l.reg();
+                    l.emit(Inst::Field { dst, src, index });
+                    dst
+                }
+                (None, None) if field.has_default => {
+                    let name = format!("Theme.{}", field.name);
+                    let func = l.b.field_default_slot(record, index, &name);
+                    let dst = l.reg();
+                    l.emit(Inst::Call {
+                        dst,
+                        func,
+                        args: Vec::new(),
+                    });
+                    dst
+                }
+                (None, None) => return l.bail(format!("the field `{}` has no value", field.name)),
+            };
+            regs.push(reg);
+        }
+        let dst = l.reg();
+        l.emit(Inst::Make {
+            dst,
+            tag: 0,
+            fields: regs,
+        });
+        l.emit(Inst::Return { src: dst });
+        Ok(())
+    })();
     let body = result.map(|()| l.frames.pop().unwrap_or_default().body);
     b.define(
         Function {

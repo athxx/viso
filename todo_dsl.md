@@ -925,18 +925,24 @@ timers (§104–§111).
         before any work is spawned.
   - [ ] `ResourceScope` beyond `component` (shared caches across instances).
 - [ ] `style` / `theme` grammar and lowering; `@styleable`, `@selector` `E3710` (§59, §60, U2.3, U12).
-  - [ ] Grammar: `style NAME for Component : Base + Base { prop: v; when sel { } }`
-        and `theme NAME : Base { name = expr; }`.
+  - [x] Grammar: `style NAME for Component : Base + Base { prop: v; when sel { } }`
+        and `theme NAME : Base { name = expr; }`; both resolve (`theme` reads in
+        style values).
   - [ ] Checks: only Styleable properties (`@styleable` inputs of user
         components); selectors from the target schema or `@selector`
         (`E3710`); pure expressions; acyclic bases; no handlers or state.
   - [ ] Lowering and runtime: `styles: [A, B]` applies bases then styles left to
         right, explicit properties last; `when` blocks follow selector state with
         `STYLE` invalidation.
-  - [ ] Theme: the standard `Theme` schema (U12.2); `theme X { }` builds a typed
-        immutable value; the `theme` context binding in view, style and theme
-        expressions; replacing the theme invalidates exactly the bindings that
-        read it.
+  - [x] Theme: the standard `Theme` schema (U12.2); `theme X { }` builds a typed
+        immutable value from its items, its base and the record defaults
+        (`E2001`/`E2103`, base cycles `E2003`, one name per package `E2002`);
+        the `theme` context binding in views (`E2111` elsewhere); a host
+        evaluates a theme by name and replaces the store's theme atomically,
+        which re-evaluates exactly the bindings that read it; the default theme
+        before one is set; hot reload and the release package alike.
+  - [ ] `TypographyScale.family` (needs the font runtime's `FontFamily`).
+  - [ ] `theme` read in theme expressions (the base's value).
 - [ ] Runtime capability denial `E6103` (§95).
   - [x] The package grant (`[package] capabilities`) travels in the compiled
         module, through the release package and hot reload; view hosts link

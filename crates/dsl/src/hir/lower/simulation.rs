@@ -133,7 +133,7 @@ impl Domains {
             for &(at, to) in inside {
                 match to {
                     Resolution::Symbol(s) => mentions.push((s, at)),
-                    Resolution::Env => uses_env.push(at),
+                    Resolution::Env | Resolution::Theme => uses_env.push(at),
                     Resolution::Local(_) | Resolution::Native(_) => {}
                 }
             }

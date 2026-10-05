@@ -117,3 +117,52 @@ export record Environment {
     layout_direction: LayoutDirection;
     locale: Locale;
 }
+
+// The standard theme schema a view reads as `theme`.
+export record Shadow { offset_y: Dp; blur: Dp; color: Color; }
+export record ColorPalette {
+    background: Color;
+    foreground: Color;
+    surface: Color;
+    on_surface: Color;
+    primary: Color;
+    on_primary: Color;
+    primary_hover: Color;
+    accent: Color;
+    muted: Color;
+    outline: Color;
+    error: Color;
+    on_error: Color;
+    focus_ring: Color;
+    scrim: Color;
+}
+export record TypographyScale {
+    base_size: Sp = 14sp;
+    caption_size: Em = 0.85em;
+    title_size: Em = 1.25em;
+    headline_size: Em = 1.6em;
+}
+export record SpacingScale {
+    xsmall: Dp = 2dp;
+    small: Dp = 4dp;
+    medium: Dp = 8dp;
+    large: Dp = 16dp;
+    xlarge: Dp = 24dp;
+}
+export record RadiusScale { small: Dp = 4dp; medium: Dp = 8dp; large: Dp = 12dp; }
+export record ElevationScale { low: Shadow; medium: Shadow; high: Shadow; }
+export record MotionScale {
+    short: Duration = 100ms;
+    medium: Duration = 200ms;
+    long: Duration = 350ms;
+    standard: Easing = Easing::ease_out;
+    emphasized: Easing = Easing::ease_in_out;
+}
+export record Theme {
+    colors: ColorPalette;
+    typography: TypographyScale = TypographyScale {};
+    spacing: SpacingScale = SpacingScale {};
+    radius: RadiusScale = RadiusScale {};
+    elevation: ElevationScale;
+    motion: MotionScale = MotionScale {};
+}

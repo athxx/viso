@@ -97,6 +97,10 @@ impl Module {
             enc.write_varint(u64::from(m.chunk));
         });
         write_list(&mut enc, self.capabilities(), |enc, c| enc.write_str(c));
+        write_list(&mut enc, self.themes(), |enc, (name, chunk)| {
+            enc.write_str(name);
+            enc.write_varint(u64::from(*chunk));
+        });
         enc.into_bytes()
     }
 
@@ -157,10 +161,14 @@ impl Module {
             })
         })?;
         let capabilities = read_list(&mut dec, |dec| Ok(Box::<str>::from(dec.read_str()?)))?;
+        let themes = read_list(&mut dec, |dec| {
+            Ok((Box::<str>::from(dec.read_str()?), read_u32_varint(dec)?))
+        })?;
         dec.finish()?;
         let module = Module::new(chunks, components, systems, natives)
             .and_then(|m| m.with_tick_rate(tick_rate))
             .and_then(|m| m.with_migrators(migrators))
+            .and_then(|m| m.with_themes(themes))
             .map_err(LoadError::Verify)?
             .with_capabilities(capabilities);
         match input {
@@ -1046,6 +1054,11 @@ mod tests {
             kind: ChunkKind::Action,
             ..missing.clone()
         };
+        let dark = Chunk {
+            name: "Dark".into(),
+            kind: ChunkKind::Const,
+            ..missing.clone()
+        };
         let component = Component {
             name: "Counter".into(),
             states: Box::new(["count".into()]),
@@ -1080,7 +1093,7 @@ mod tests {
             params: 1,
         }];
         Module::new(
-            vec![handler, missing, tick],
+            vec![handler, missing, tick, dark],
             vec![component],
             systems,
             natives,
@@ -1089,6 +1102,8 @@ mod tests {
         .with_tick_rate(30)
         .unwrap()
         .with_capabilities(["storage.persist", "network.http"])
+        .with_themes(vec![("Dark".into(), 3)])
+        .unwrap()
     }
 
     #[test]
@@ -1100,6 +1115,8 @@ mod tests {
             decoded.capabilities(),
             [Box::from("network.http"), Box::from("storage.persist")]
         );
+        assert_eq!(decoded.theme("Dark"), Some(3));
+        assert_eq!(decoded.theme("Light"), None);
         assert_eq!(decoded, module);
     }
 
@@ -1154,6 +1171,15 @@ mod tests {
     }
 
     #[test]
+    fn a_theme_names_one_constant_chunk() {
+        let module = || sample().with_themes(Vec::new()).unwrap();
+        assert!(module().with_themes(vec![("Bad".into(), 1)]).is_err());
+        assert!(module().with_themes(vec![("Gone".into(), 9)]).is_err());
+        let twice = vec![("Dark".into(), 3), ("Dark".into(), 3)];
+        assert!(module().with_themes(twice).is_err());
+    }
+
+    #[test]
     fn a_blob_whose_code_does_not_verify_is_rejected() {
         let mut module = sample();
         let mut bytes = module.encode();
@@ -1171,6 +1197,7 @@ mod tests {
             tick_rate: module.tick_rate(),
             migrators: Box::new([]),
             capabilities: Box::new([]),
+            themes: Box::new([]),
         };
         bytes = bad.encode();
         assert!(matches!(Module::decode(&bytes), Err(LoadError::Verify(_))));

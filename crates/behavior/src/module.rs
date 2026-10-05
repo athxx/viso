@@ -317,6 +317,7 @@ pub struct Module {
     pub(crate) tick_rate: u32,
     pub(crate) migrators: Box<[Migrator]>,
     pub(crate) capabilities: Box<[Box<str>]>,
+    pub(crate) themes: Box<[(Box<str>, u32)]>,
 }
 
 /// The tick rate of a module that declares none, 60 Hz.
@@ -362,6 +363,7 @@ impl Module {
             tick_rate: DEFAULT_TICK_RATE,
             migrators: Box::new([]),
             capabilities: Box::new([]),
+            themes: Box::new([]),
         };
         let mut max_states = 0;
         let mut max_inputs = 0;
@@ -644,6 +646,50 @@ impl Module {
     /// The capabilities the package is granted, sorted.
     pub fn capabilities(&self) -> &[Box<str>] {
         &self.capabilities
+    }
+
+    /// The module with `themes`, each a declared name and the constant chunk
+    /// computing its `Theme` value, which a host switches its views to.
+    ///
+    /// # Errors
+    ///
+    /// A [`VerifyError`] if a theme's chunk is no constant, or two themes
+    /// share a name.
+    pub fn with_themes(mut self, mut themes: Vec<(Box<str>, u32)>) -> Result<Module, VerifyError> {
+        themes.sort_unstable();
+        for (at, (name, chunk)) in themes.iter().enumerate() {
+            let constant = self
+                .chunks
+                .get(*chunk as usize)
+                .is_some_and(|c| c.kind == ChunkKind::Const && c.params == 0);
+            let message = if !constant {
+                format!("the theme `{name}` names a chunk that is no constant")
+            } else if at > 0 && themes[at - 1].0 == *name {
+                format!("two themes are named `{name}`")
+            } else {
+                continue;
+            };
+            return Err(VerifyError {
+                chunk: *chunk,
+                pc: None,
+                message,
+            });
+        }
+        self.themes = themes.into();
+        Ok(self)
+    }
+
+    /// The constant chunk computing the theme `name`.
+    pub fn theme(&self, name: &str) -> Option<u32> {
+        self.themes
+            .binary_search_by(|(n, _)| (**n).cmp(name))
+            .ok()
+            .map(|at| self.themes[at].1)
+    }
+
+    /// The themes, by name.
+    pub fn themes(&self) -> &[(Box<str>, u32)] {
+        &self.themes
     }
 
     /// Checks that every chunk `schema` names computes a field default.

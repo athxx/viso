@@ -80,6 +80,7 @@ pub fn env_value(field: EnvField, env: &AdaptiveEnv, anchor: Option<AnchorId>) -
             LayoutDirection::Rtl => 1,
         }),
         EnvField::Locale => record([Value::str(e.locale.as_str())]),
+        EnvField::Theme => crate::theme::current_theme(env),
     }
 }
 

@@ -32,7 +32,7 @@ use crate::behavior::Program;
 use crate::behavior::ir::FunctionKind;
 use crate::behavior::lower::{Def, ProgramBuilder, lower_body, lower_value, unsupported};
 use crate::diag::{Diagnostic, Related, Severity};
-use crate::resolve::prelude::{Prelude, environment};
+use crate::resolve::prelude::{Prelude, environment, theme_record};
 use crate::resolve::{
     ModuleGraph, NameInterner, Namespace, Resolution, ResolvedModule, ResolvedRef, SourceUnit,
     SymbolId, SymbolKind, SymbolTable,
@@ -63,6 +63,7 @@ mod simulation;
 mod system;
 mod tags;
 mod tasks;
+mod themes;
 
 pub use input::InputDevices;
 pub use shader::CheckedShader;
@@ -287,7 +288,10 @@ fn collect_migrators(
 }
 
 /// Lowers the prelude record field defaults the package's record literals
-/// run, with no source span: the prelude is no module of the package.
+/// run, with no source span: the prelude is no module of the package. A
+/// default whose own literal runs other defaults (`Theme.typography` runs
+/// those of `TypographyScale`) wants those too, so this runs until no
+/// default is wanted.
 fn lower_prelude_defaults(
     prelude: &Prelude,
     scope: &ModuleScope,
@@ -295,10 +299,26 @@ fn lower_prelude_defaults(
     behavior: &RefCell<ProgramBuilder>,
     natives: &Natives,
 ) {
-    let wanted = behavior.borrow().unlowered_defaults();
-    if wanted.is_empty() {
-        return;
+    let mut previous = Vec::new();
+    loop {
+        let wanted = behavior.borrow().unlowered_defaults();
+        if wanted.is_empty() || wanted == previous {
+            return;
+        }
+        lower_wanted_defaults(prelude, scope, decls, behavior, natives, &wanted);
+        previous = wanted;
     }
+}
+
+/// Lowers the prelude record field defaults `wanted` names.
+fn lower_wanted_defaults(
+    prelude: &Prelude,
+    scope: &ModuleScope,
+    decls: &Declarations,
+    behavior: &RefCell<ProgramBuilder>,
+    natives: &Natives,
+    wanted: &[(SymbolId, u32)],
+) {
     let env = ModuleEnv::new(decls, scope, 0, behavior, natives);
     let mut diagnostics = Vec::new();
     let mut percent = PercentSources::default();
@@ -324,7 +344,7 @@ fn lower_prelude_defaults(
     }
     debug_assert!(diagnostics.is_empty(), "the prelude's defaults do not type");
     let mut builder = behavior.borrow_mut();
-    for &(record, index) in &wanted {
+    for &(record, index) in wanted {
         if let Some(id) = builder.field_default(record, index) {
             builder.unspan(id);
         }
@@ -351,6 +371,7 @@ fn lower_module(
     let mut percent = PercentSources::default();
     let first_component = components.len();
     let mut system_hooks = Vec::new();
+    let cyclic = themes::cyclic(&themes::themes_of(cu.items()), refs, env);
 
     for item in cu.items() {
         let decl = match item {
@@ -393,6 +414,7 @@ fn lower_module(
                 systems.push(system::node(&s, symbol, env, diagnostics));
                 components.push(component);
             }
+            Item::Theme(t) => themes::lower(&t, refs, env, &cyclic, diagnostics),
             Item::Const(c) => {
                 check_const(&c, refs, env, diagnostics, &mut percent);
                 input::lower_map(&c, refs, env, diagnostics);
@@ -1258,6 +1280,7 @@ impl TypeEnv for ModuleEnv<'_> {
                 .filter(|ty| *ty != Ty::Unknown)
                 .or_else(|| self.inferred.borrow().get(id).cloned()),
             Resolution::Env => Some(Ty::Named(environment())),
+            Resolution::Theme => Some(Ty::Named(theme_record())),
             Resolution::Local(_) | Resolution::Native(_) => None,
         }
     }
@@ -1284,7 +1307,9 @@ impl TypeEnv for ModuleEnv<'_> {
     fn callee_signature(&self, to: &Resolution) -> Option<(Vec<Ty>, Ty)> {
         match to {
             Resolution::Symbol(id) => self.decls.signatures.get(id).cloned(),
-            Resolution::Local(_) | Resolution::Native(_) | Resolution::Env => None,
+            Resolution::Local(_) | Resolution::Native(_) | Resolution::Env | Resolution::Theme => {
+                None
+            }
         }
     }
 
@@ -1351,7 +1376,9 @@ impl ReadEnv for ModuleEnv<'_> {
                     None
                 }
             }),
-            Resolution::Local(_) | Resolution::Native(_) | Resolution::Env => None,
+            Resolution::Local(_) | Resolution::Native(_) | Resolution::Env | Resolution::Theme => {
+                None
+            }
         }
     }
 }
@@ -1360,7 +1387,9 @@ impl EffectEnv for ModuleEnv<'_> {
     fn callee_effect(&self, to: &Resolution) -> Option<EffectClass> {
         match to {
             Resolution::Symbol(id) => self.decls.facts.get(id).and_then(|f| f.effect),
-            Resolution::Local(_) | Resolution::Native(_) | Resolution::Env => None,
+            Resolution::Local(_) | Resolution::Native(_) | Resolution::Env | Resolution::Theme => {
+                None
+            }
         }
     }
 
@@ -1583,6 +1612,20 @@ impl ModuleScope {
                             sym,
                             MemberFacts {
                                 ty,
+                                effect: None,
+                                is_reactive_source: false,
+                                kind: SymbolKind::Const,
+                            },
+                        );
+                    }
+                }
+                Item::Theme(t) => {
+                    if let Some(sym) = decl_symbol(table, interner, t.name(), Namespace::Value) {
+                        scope.declared.insert(t.syntax().text_range(), sym);
+                        decls.facts.insert(
+                            sym,
+                            MemberFacts {
+                                ty: Ty::Named(theme_record()),
                                 effect: None,
                                 is_reactive_source: false,
                                 kind: SymbolKind::Const,

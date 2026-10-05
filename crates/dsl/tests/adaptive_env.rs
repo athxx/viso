@@ -108,7 +108,7 @@ fn each_field_read_is_one_state_slot() {
         .iter()
         .filter_map(|s| s.strip_prefix("env."))
         .collect();
-    let all: Vec<&str> = EnvField::ALL.iter().map(|f| f.name()).collect();
+    let all: Vec<&str> = EnvField::ENVIRONMENT.iter().map(|f| f.name()).collect();
     let mut sorted = env.clone();
     sorted.sort_unstable();
     sorted.dedup();
@@ -128,7 +128,7 @@ fn each_field_read_is_one_state_slot() {
         assert_eq!(layout.state_inits[read.slot as usize], None);
     }
     let view = view_behavior(&compiled).unwrap().expect("behavior");
-    assert_eq!(view.env.len(), EnvField::ALL.len());
+    assert_eq!(view.env.len(), EnvField::ENVIRONMENT.len());
     assert!(view.env.iter().all(|read| read.anchor == NodeKey(0)));
 }
 
