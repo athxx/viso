@@ -10,6 +10,7 @@
 
 use std::fmt;
 use std::rc::Rc;
+use std::time::Duration;
 
 use viso_ende::{Decode, DecodeError, Decoder, Encode, Encoder, ProtocolTag};
 
@@ -18,7 +19,7 @@ use crate::game::{
 };
 use crate::module::{
     Chunk, ChunkKind, Code, Component, ComponentEffect, EffectRun, Migrator, Module, NativeImport,
-    PersistSlot, SnapshotSlot, Span, StableId, System, VerifyError,
+    PersistSlot, ResourceLoad, SnapshotSlot, Span, StableId, System, VerifyError,
 };
 use crate::native::NativeId;
 use crate::op::{Arith, ArithOp, DisplayKind, Num, Op};
@@ -354,7 +355,42 @@ impl Encode for ComponentEffect {
             EffectRun::Change => 1,
             EffectRun::MountAndChange => 2,
         });
+        match &self.resource {
+            None => enc.write_u8(0),
+            Some(load) => {
+                enc.write_u8(1);
+                enc.write_varint(u64::from(load.state));
+                enc.write_varint(u64::from(load.write));
+                write_duration(enc, load.debounce);
+                write_duration(enc, load.cache_for);
+                enc.write_bool(load.cache_errors);
+                enc.write_bool(load.keep_latest);
+            }
+        }
     }
+}
+
+/// An optional duration: `0` for none, else its nanoseconds plus one.
+fn write_duration(enc: &mut Encoder, duration: Option<Duration>) {
+    let nanos = duration.map_or(0, |d| {
+        u64::try_from(d.as_nanos()).unwrap_or(u64::MAX - 1) + 1
+    });
+    enc.write_varint(nanos);
+}
+
+fn read_duration(dec: &mut Decoder<'_>) -> Result<Option<Duration>, DecodeError> {
+    Ok(dec.read_varint()?.checked_sub(1).map(Duration::from_nanos))
+}
+
+fn read_resource(dec: &mut Decoder<'_>) -> Result<ResourceLoad, DecodeError> {
+    Ok(ResourceLoad {
+        state: read_u32_varint(dec)?,
+        write: read_u32_varint(dec)?,
+        debounce: read_duration(dec)?,
+        cache_for: read_duration(dec)?,
+        cache_errors: dec.read_bool()?,
+        keep_latest: dec.read_bool()?,
+    })
 }
 
 impl Decode for ComponentEffect {
@@ -368,7 +404,17 @@ impl Decode for ComponentEffect {
             2 => EffectRun::MountAndChange,
             _ => return Err(DecodeError::Malformed { offset }),
         };
-        Ok(ComponentEffect { deps, body, run })
+        let resource = match dec.read_u8()? {
+            0 => None,
+            1 => Some(read_resource(dec)?),
+            _ => return Err(DecodeError::Malformed { offset }),
+        };
+        Ok(ComponentEffect {
+            deps,
+            body,
+            run,
+            resource,
+        })
     }
 }
 

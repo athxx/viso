@@ -31,8 +31,8 @@ mod wire;
 pub use memo::Reads;
 pub use module::{
     Chunk, ChunkKind, Code, Component, ComponentEffect, DEFAULT_TICK_RATE, EffectRun, Migrator,
-    Module, NativeImport, PersistSlot, SnapshotSlot, Span, StableId, System, TaskPolicy,
-    VerifyError,
+    Module, NativeImport, PersistSlot, ResourceLoad, SnapshotSlot, Span, StableId, System,
+    TaskPolicy, VerifyError,
 };
 pub use op::{Arith, ArithOp, DisplayKind, Num, Op};
 pub use value::{Aggregate, Closure, Value};

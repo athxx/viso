@@ -42,6 +42,9 @@ pub enum Conversion {
     Fields(Box<[Conversion]>),
     /// The payload of `Ok` or of `Err` converts.
     Result(Box<Conversion>, Box<Conversion>),
+    /// A resource state's value (`ready`, `reloading`) or error payload
+    /// converts; `idle` and `loading` stay.
+    Resource(Box<Conversion>, Box<Conversion>),
     /// A record or enum converts by entry `n` of the [`Retyping`]'s table.
     Named(u32),
 }
@@ -203,6 +206,17 @@ impl Retyping {
                 let inner = self.convert(payload, agg.fields.first()?, default)?;
                 Some(aggregate(agg.tag, Box::new([inner])))
             }
+            Conversion::Resource(value_of, error_of) => {
+                let Value::Agg(agg) = value else {
+                    return Some(value.clone());
+                };
+                let payload = match agg.tag {
+                    3 => error_of,
+                    _ => value_of,
+                };
+                let inner = self.convert(payload, agg.fields.first()?, default)?;
+                Some(aggregate(agg.tag, Box::new([inner])))
+            }
             Conversion::Named(index) => match self.named.get(*index as usize)? {
                 Shape::Record(fields) => {
                     let Value::Agg(agg) = value else {
@@ -272,6 +286,8 @@ pub enum TypeDesc {
     List(Box<TypeDesc>),
     Option(Box<TypeDesc>),
     Result(Box<TypeDesc>, Box<TypeDesc>),
+    /// `ResourceState<T, E>`.
+    Resource(Box<TypeDesc>, Box<TypeDesc>),
     Range(Box<TypeDesc>),
     RangeInclusive(Box<TypeDesc>),
     Fn(Box<[TypeDesc]>, Box<TypeDesc>),
@@ -449,7 +465,7 @@ fn within(desc: &TypeDesc, n: u32) -> bool {
         | TypeDesc::Option(t)
         | TypeDesc::Range(t)
         | TypeDesc::RangeInclusive(t) => within(t, n),
-        TypeDesc::Result(a, b) => within(a, n) && within(b, n),
+        TypeDesc::Result(a, b) | TypeDesc::Resource(a, b) => within(a, n) && within(b, n),
         _ => true,
     }
 }
@@ -500,6 +516,10 @@ fn write_desc(enc: &mut Encoder, desc: &TypeDesc) {
             enc.write_u8(13);
             enc.write_varint(u64::from(*index));
         }
+        TypeDesc::Resource(a, b) => {
+            one(enc, 14, a);
+            write_desc(enc, b);
+        }
     }
 }
 
@@ -535,6 +555,7 @@ fn read_desc(dec: &mut Decoder<'_>, depth: u32) -> Result<TypeDesc, DecodeError>
             nested(dec)?,
         ),
         13 => TypeDesc::Named(read_u32_varint(dec)?),
+        14 => TypeDesc::Resource(nested(dec)?, nested(dec)?),
         _ => return Err(malformed(dec)),
     })
 }
@@ -584,7 +605,9 @@ impl Exact<'_> {
             | (Option(x), Option(y))
             | (Range(x), Range(y))
             | (RangeInclusive(x), RangeInclusive(y)) => self.equal(x, y),
-            (Result(xt, xe), Result(yt, ye)) => self.equal(xt, yt) && self.equal(xe, ye),
+            (Result(xt, xe), Result(yt, ye)) | (Resource(xt, xe), Resource(yt, ye)) => {
+                self.equal(xt, yt) && self.equal(xe, ye)
+            }
             (Int(_) | F32 | F64 | Unit | Plain(_) | Native(_), _) => x == y,
             _ => false,
         }
@@ -674,6 +697,10 @@ impl Matrix<'_> {
                 Some(Conversion::Fields(Box::new([bound.clone(), bound])))
             }
             (Result(xt, xe), Result(yt, ye)) => Some(Conversion::Result(
+                Box::new(self.convert(xt, yt)?),
+                Box::new(self.convert(xe, ye)?),
+            )),
+            (Resource(xt, xe), Resource(yt, ye)) => Some(Conversion::Resource(
                 Box::new(self.convert(xt, yt)?),
                 Box::new(self.convert(xe, ye)?),
             )),

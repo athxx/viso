@@ -367,6 +367,16 @@ pub enum SyntaxKind {
     EffectBody,
     /// `cleanup Block` — what an effect undoes before it re-runs or ends.
     CleanupClause,
+    /// `resource IDENT ":" Type "{" ResourceItem* "}"` (§38).
+    ResourceDecl,
+    /// `load = Expr ;` — the task call a resource loads by.
+    ResourceLoad,
+    /// `key = Expr ;` — the value a resource is loaded for.
+    ResourceKey,
+    /// `policy = Expr ;` — a resource's policies.
+    ResourcePolicy,
+    /// `scope = Expr ;` — where a resource's cache lives.
+    ResourceScope,
 
     // Generics / parameters / types.
     /// A `< ... >` list of generic parameters on a declaration (A.4).

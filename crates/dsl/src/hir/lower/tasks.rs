@@ -128,7 +128,7 @@ fn collect_suspensions(
     }
 }
 
-fn calls_task(
+pub(super) fn calls_task(
     index: &HashMap<TextRange, Resolution>,
     env: &ModuleEnv<'_>,
     call: &SyntaxNode,

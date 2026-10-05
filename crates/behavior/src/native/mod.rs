@@ -56,7 +56,7 @@ pub use registry::{
     SchemaConflict,
 };
 pub use standard::{Clipboard, STANDARD, Stopwatch};
-pub use timers::Timers;
+pub use timers::{Timers, sleep};
 pub use value::{NativeHandle, NativeObject, NativeValue, Obj, Ticks};
 pub use vector::{Vec2F32, Vec3F32};
 pub use widget::{

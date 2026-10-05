@@ -311,6 +311,15 @@ impl InferCx<'_> {
                 self.unknown_member(*id, name, message, &field_candidates(&fields), &fitting);
                 None
             }
+            Ty::Resource(value, error) => {
+                if text == "state" {
+                    return Some(Ty::ResourceState(value.clone(), error.clone()));
+                }
+                let message = format!("no member `{text}` on a resource; it has `.state`");
+                self.diagnostics
+                    .push(Diagnostic::error("E2001", name.text_range(), message));
+                None
+            }
             Ty::Tuple(tys) => match text.parse::<usize>().ok().and_then(|i| tys.get(i)) {
                 Some(ty) => Some(ty.clone()),
                 None => {

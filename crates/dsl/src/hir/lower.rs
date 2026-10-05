@@ -57,6 +57,7 @@ use super::view::{
 
 mod effects;
 mod input;
+mod resources;
 mod shader;
 mod simulation;
 mod system;
@@ -530,6 +531,7 @@ fn lower_component_item(
     }
     check_component_callables(decl, refs, env, diagnostics, cap, percent);
     effects::lower_effects(decl, refs, env, &schema, diagnostics);
+    resources::lower_resources(decl, refs, env, &schema, diagnostics);
     tasks::check_tasks(decl, refs, env, &schema, diagnostics);
 
     HirComponent {
@@ -1649,6 +1651,12 @@ impl ModuleScope {
                 Namespace::Value,
                 self.annotation_of(d.syntax()),
                 SymbolKind::Computed,
+            ),
+            Member::Resource(d) => (
+                d.name(),
+                Namespace::Value,
+                self.annotation_of(d.syntax()),
+                SymbolKind::Resource,
             ),
             Member::Event(d) => (d.name(), Namespace::Event, Ty::Unknown, SymbolKind::Event),
             Member::Fn(d) => {

@@ -908,16 +908,22 @@ timers (§104–§111).
         new transactions only while the instance lives; unmount cancels; a hot
         reload cancels with the prior code before the structural patch; hot
         reload, release package and macros run them alike.
-- [ ] `resource`: load/key, policy, `E4301`, `E4302` (§38, §93).
-  - [ ] Grammar: `resource NAME: Resource<T, E> { load = ..; key = ..; policy =
+- [x] `resource`: load/key, policy, `E4301`, `E4302` (§38, §93).
+  - [x] Grammar: `resource NAME: Resource<T, E> { load = ..; key = ..; policy =
         [..]; scope = ..; }`; unknown and duplicate items rejected.
-  - [ ] Checks: `load` and `key` exactly once (`E4301`); policy combinations
-        (`E4302`); `key` is `StableKey`; `load` is a task call whose result is
-        `Result<T, E>`.
-  - [ ] Runtime: `ResourceState::{idle, loading, ready, error, reloading}` as a
-        readable member; loads on mount and key change through the task
-        machinery; `keep_latest`, `debounce`, `cache_for`, error caching;
-        capability checked before the loader starts.
+  - [x] Checks: `load` and `key` exactly once (`E4301`); policy combinations
+        (`E4302`); `key` is `StableKey` (`E2701`); `load` is a task call
+        (`E4401`) whose result is `Result<T, E>` (`E2103`); no writes
+        (`E2110`); `ResourceState` matches are exhaustive (`E2301`); a system
+        declares none (`E9109`).
+  - [x] Runtime: `ResourceState::{idle, loading, ready, error, reloading}` as a
+        readable member (`.state`); loads on mount and key change through the
+        task machinery; `keep_latest`, `debounce`, `cache_for`, error caching;
+        a stale result never overwrites a newer key; unmount drops, hot reload
+        keeps the state and reloads; hot reload, release package and macros run
+        it alike; capability checked when the loader first calls a native,
+        before any work is spawned.
+  - [ ] `ResourceScope` beyond `component` (shared caches across instances).
 - [ ] `style` / `theme` grammar and lowering; `@styleable`, `@selector` `E3710` (§59, §60, U2.3, U12).
   - [ ] Grammar: `style NAME for Component : Base + Base { prop: v; when sel { } }`
         and `theme NAME : Base { name = expr; }`.

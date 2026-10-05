@@ -495,6 +495,7 @@ impl Builder<'_> {
                             deps: effect.deps,
                             body: effect.body,
                             run: effect.run,
+                            resource: effect.resource,
                         },
                         anchor,
                     }),

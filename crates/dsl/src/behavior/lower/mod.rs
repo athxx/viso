@@ -16,7 +16,7 @@ use std::collections::{HashMap, HashSet};
 use viso_behavior::game::InputSchema;
 use viso_behavior::native::{NativeEntry, NativeId};
 use viso_behavior::retype::ValueSchema;
-use viso_behavior::{Migrator, PersistSlot};
+use viso_behavior::{Migrator, PersistSlot, TaskPolicy};
 
 use viso_ui::adaptive::EnvField;
 
@@ -428,6 +428,96 @@ impl ProgramBuilder {
             deps,
             body,
             run,
+            resource: None,
+        });
+    }
+
+    /// Records the resource `resource`, named `name`, of the component
+    /// registered last: its slot starts `ResourceState::idle`, and an effect
+    /// gated on `key` (a region entry) runs `load` (an effect body starting
+    /// the loader) under `load`'s policies, with an entry reading the slot
+    /// and a handler writing it. The four entries join the handler table at
+    /// `sites`: the key's, the load's, and two more no view item has.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn resource(
+        &mut self,
+        resource: SymbolId,
+        name: &str,
+        module: usize,
+        sites: [TextRange; 4],
+        key: FuncId,
+        load: FuncId,
+        policies: viso_behavior::ResourceLoad,
+    ) {
+        let Some(&(layout, Place::State(slot))) = self.places.get(&resource) else {
+            return;
+        };
+        let at = sites[2];
+        let mut func = |kind, params, insts: Vec<Inst>| {
+            let spans = vec![at; insts.len()];
+            self.push(Function {
+                name: name.to_owned(),
+                kind,
+                symbol: None,
+                module,
+                params,
+                captures: Vec::new(),
+                body: Ok(Body {
+                    regs: 2,
+                    insts,
+                    spans,
+                }),
+            })
+        };
+        let (r0, r1) = (Reg(0), Reg(1));
+        let init = func(
+            FunctionKind::StateInit,
+            0,
+            vec![
+                Inst::Const {
+                    dst: r0,
+                    value: Const::Tag(0),
+                },
+                Inst::Return { src: r0 },
+            ],
+        );
+        let read = func(
+            FunctionKind::RegionEntry,
+            0,
+            vec![Inst::LoadState { dst: r0, slot }, Inst::Return { src: r0 }],
+        );
+        let write = func(
+            FunctionKind::Handler,
+            1,
+            vec![
+                Inst::StoreState { slot, src: r0 },
+                Inst::Const {
+                    dst: r1,
+                    value: Const::Unit,
+                },
+                Inst::Return { src: r1 },
+            ],
+        );
+        let layout = &mut self.program.components[layout];
+        layout.state_inits[slot as usize] = Some(init);
+        let mut entry = |at: TextRange, func: FuncId| {
+            layout.handlers.push((Site::own(at), func));
+            layout.handlers.len() as u32 - 1
+        };
+        let deps = entry(sites[0], key);
+        let body = entry(sites[1], load);
+        let state = entry(sites[2], read);
+        let write = entry(sites[3], write);
+        layout.effects.push(EffectEntry {
+            instance: 0,
+            deps: Some(deps),
+            body,
+            run: viso_behavior::EffectRun::MountAndChange,
+            resource: Some(viso_behavior::ResourceLoad {
+                state,
+                write,
+                ..policies
+            }),
         });
     }
 
@@ -724,6 +814,46 @@ pub(crate) fn lower_effect_body(
             Some(block) => l.cleanup_closure(block.syntax())?,
             None => l.unit(),
         };
+        l.emit(Inst::Return { src });
+        Ok(())
+    })();
+    let body = result.map(|()| l.frames.pop().unwrap_or_default().body);
+    b.define(
+        Function {
+            name: def.name,
+            kind: def.kind,
+            symbol: def.symbol,
+            module: def.module,
+            params: 0,
+            captures: Vec::new(),
+            body,
+        },
+        def.into,
+    )
+}
+
+/// Lowers a resource's `load` task call to an effect body that starts it
+/// without handlers: the view host takes the start and settles the
+/// resource's state with its result.
+pub(crate) fn lower_resource_load(
+    b: &mut ProgramBuilder,
+    cx: &InferCx<'_>,
+    def: Def,
+    load: &Expr,
+) -> FuncId {
+    let mut l = Lowerer::new(cx, b, &def, load.syntax().text_range());
+    let result = (|| {
+        let (task, args) = l.task_call(load)?;
+        l.emit(Inst::Start {
+            task,
+            args,
+            done: None,
+            cancelled: None,
+            instance: 0,
+            slot: None,
+            policy: TaskPolicy::KeepLatest,
+        });
+        let src = l.unit();
         l.emit(Inst::Return { src });
         Ok(())
     })();
@@ -1199,7 +1329,7 @@ impl<'l, 'a> Lowerer<'l, 'a> {
             Ty::Option(t) | Ty::List(t) | Ty::Range(t) | Ty::RangeInclusive(t) => {
                 self.check_parts(t)
             }
-            Ty::Result(a, b) => {
+            Ty::Result(a, b) | Ty::Resource(a, b) | Ty::ResourceState(a, b) => {
                 self.check_parts(a)?;
                 self.check_parts(b)
             }

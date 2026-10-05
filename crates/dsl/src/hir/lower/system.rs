@@ -48,6 +48,7 @@ pub(super) fn check_members(decl: &SystemDecl, diagnostics: &mut Vec<Diagnostic>
             Member::Event(_) => "an `event`",
             Member::Slot(_) => "a `slot`",
             Member::Effect(_) => "an `effect`",
+            Member::Resource(_) => "a `resource`",
             _ => continue,
         };
         diagnostics.push(Diagnostic::error(

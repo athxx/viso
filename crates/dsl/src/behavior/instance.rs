@@ -228,6 +228,11 @@ impl Inliner<'_> {
                 deps: e.deps.map(|d| start + d),
                 body: start + e.body,
                 run: e.run,
+                resource: e.resource.map(|load| viso_behavior::ResourceLoad {
+                    state: start + load.state,
+                    write: start + load.write,
+                    ..load
+                }),
             }));
         layout.env.extend(self.child.env.iter().map(|e| EnvSlot {
             slot: self.base + e.slot,

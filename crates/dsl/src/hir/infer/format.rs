@@ -307,6 +307,8 @@ fn displayable(env: &dyn TypeEnv, ty: &Ty) -> bool {
         | Ty::Result(..)
         | Ty::Range(_)
         | Ty::RangeInclusive(_)
+        | Ty::Resource(..)
+        | Ty::ResourceState(..)
         | Ty::Native(_) => false,
     }
 }

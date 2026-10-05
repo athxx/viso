@@ -25,6 +25,7 @@ use viso_ui::context::UpdateCx;
 use viso_ui::{Continuation, NodeId, NodeStore, StateStore, TaskFuture, TaskId};
 
 use crate::host::{StateCells, ViewHost};
+use crate::resources::Loading;
 use crate::scope::Scope;
 
 /// The tasks a view runs and the starts its slots hold.
@@ -44,10 +45,21 @@ struct Live {
     /// The UI task carrying it now.
     ui: Option<TaskId>,
     slot: Option<SlotKey>,
-    done: Option<Value>,
-    cancelled: Option<Value>,
+    sink: Sink,
     scope: Scope,
     owner: NodeId,
+}
+
+/// Where a task's value goes.
+pub(crate) enum Sink {
+    /// To the `start`'s handlers: `done` takes the value, `cancelled` runs on
+    /// a cancellation.
+    Handlers {
+        done: Option<Value>,
+        cancelled: Option<Value>,
+    },
+    /// To the resource that started it as its loader.
+    Resource(Loading),
 }
 
 /// A start a slot holds until it has room.
@@ -61,7 +73,7 @@ struct Queued {
 /// A task slot: an instance's named slot, in the mount of region content that
 /// keeps the instance (by address; `0` outside region content).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct SlotKey {
+pub(crate) struct SlotKey {
     mount: usize,
     instance: u32,
     slot: u32,
@@ -166,19 +178,26 @@ impl ViewHost {
                     _ => {}
                 }
             }
-            self.run_start(start, slot, scope.clone(), owner, cells);
+            let sink = Sink::Handlers {
+                done: start.done.clone(),
+                cancelled: start.cancelled.clone(),
+            };
+            self.run_start(start, slot, sink, scope.clone(), owner, cells);
         }
     }
 
-    /// Runs `start`'s task until it first awaits, then hands it to a UI task.
-    fn run_start(
+    /// Runs `start`'s task until it first awaits, then hands it to a UI task
+    /// owned by `owner`; its value goes to `sink`. Returns its token while it
+    /// runs.
+    pub(crate) fn run_start(
         &mut self,
         start: Start,
         slot: Option<SlotKey>,
+        sink: Sink,
         scope: Scope,
         owner: NodeId,
         cells: &mut dyn StateCells,
-    ) {
+    ) -> Option<u64> {
         self.sync(&scope, &*cells);
         let step = self
             .vm
@@ -189,7 +208,7 @@ impl ViewHost {
             Err(fault) => {
                 self.fault = Some(fault);
                 self.make_room(slot, cells);
-                return;
+                return None;
             }
         };
         let token = self.tasks.next;
@@ -198,12 +217,16 @@ impl ViewHost {
             token,
             ui: None,
             slot,
-            done: start.done,
-            cancelled: start.cancelled,
+            sink,
             scope,
             owner,
         });
         self.carry(token, step, cells);
+        self.tasks
+            .live
+            .iter()
+            .any(|l| l.token == token)
+            .then_some(token)
     }
 
     /// Hands `step` of task `token` to a UI task, whose continuation resumes
@@ -280,15 +303,24 @@ impl ViewHost {
             return;
         };
         let live = self.tasks.live.remove(at);
-        if let (Some(value), Some(done)) = (value, &live.done) {
-            self.transact(done, &[value], &live.scope, cells);
+        match (value, &live.sink) {
+            (
+                Some(value),
+                Sink::Handlers {
+                    done: Some(done), ..
+                },
+            ) => self.transact(done, &[value], &live.scope, cells),
+            (value, Sink::Resource(loading)) => {
+                self.settle(token, loading, value, &live.scope, live.owner, cells);
+            }
+            _ => {}
         }
         self.make_room(live.slot, cells);
     }
 
     /// Cancels task `token`: drops its UI task and runs its `cancelled`
     /// handler.
-    fn cancel(&mut self, token: u64, cells: &mut dyn StateCells) {
+    pub(crate) fn cancel(&mut self, token: u64, cells: &mut dyn StateCells) {
         let Some(at) = self.tasks.live.iter().position(|l| l.token == token) else {
             return;
         };
@@ -296,7 +328,11 @@ impl ViewHost {
         if let Some(ui) = live.ui {
             cells.cancel_task(ui);
         }
-        if let Some(cancelled) = &live.cancelled {
+        if let Sink::Handlers {
+            cancelled: Some(cancelled),
+            ..
+        } = &live.sink
+        {
             self.transact(cancelled, &[], &live.scope, cells);
         }
     }
@@ -358,9 +394,14 @@ impl ViewHost {
             return;
         };
         let queued = self.tasks.queued.remove(at);
+        let sink = Sink::Handlers {
+            done: queued.start.done.clone(),
+            cancelled: queued.start.cancelled.clone(),
+        };
         self.run_start(
             queued.start,
             Some(queued.slot),
+            sink,
             queued.scope,
             queued.owner,
             cells,

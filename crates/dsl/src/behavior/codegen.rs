@@ -54,6 +54,7 @@ impl Program {
                         deps: e.deps,
                         body: e.body,
                         run: e.run,
+                        resource: e.resource,
                     })
                     .collect(),
             })

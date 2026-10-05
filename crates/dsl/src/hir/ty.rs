@@ -85,6 +85,10 @@ pub enum Ty {
     Range(Box<Ty>),
     /// A closed range `a..=b` over `T`.
     RangeInclusive(Box<Ty>),
+    /// A `resource` loading `T` or failing with `E`: `Resource<T, E>`.
+    Resource(Box<Ty>, Box<Ty>),
+    /// Where a resource's load is: `ResourceState<T, E>`, its `.state`.
+    ResourceState(Box<Ty>, Box<Ty>),
 
     // --- inference placeholders ---------------------------------------------
     /// An undetermined integer literal (host default `I64` if no context pins it).
@@ -247,6 +251,8 @@ impl Ty {
                         ("List", 1) => return Ok(Ty::List(arg(0))),
                         ("Option", 1) => return Ok(Ty::Option(arg(0))),
                         ("Result", 2) => return Ok(Ty::Result(arg(0), arg(1))),
+                        ("Resource", 2) => return Ok(Ty::Resource(arg(0), arg(1))),
+                        ("ResourceState", 2) => return Ok(Ty::ResourceState(arg(0), arg(1))),
                         ("Range", 1) => return Ok(Ty::Range(arg(0))),
                         ("RangeInclusive", 1) => return Ok(Ty::RangeInclusive(arg(0))),
                         _ => {}
@@ -301,7 +307,9 @@ impl Ty {
             Ty::Tuple(ts) => ts.iter().any(Ty::has_unknown),
             Ty::Fn(ps, r) => ps.iter().any(Ty::has_unknown) || r.has_unknown(),
             Ty::List(t) | Ty::Option(t) | Ty::Range(t) | Ty::RangeInclusive(t) => t.has_unknown(),
-            Ty::Result(t, e) => t.has_unknown() || e.has_unknown(),
+            Ty::Result(t, e) | Ty::Resource(t, e) | Ty::ResourceState(t, e) => {
+                t.has_unknown() || e.has_unknown()
+            }
             _ => false,
         }
     }

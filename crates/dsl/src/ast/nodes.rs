@@ -179,6 +179,33 @@ ast_node!(
     EffectDeps = EffectDeps
 );
 ast_node!(
+    /// `resource IDENT : Type { ResourceItem* }`.
+    ResourceDecl = ResourceDecl
+);
+/// `load = Expr ;`, `key = Expr ;`, `policy = Expr ;` or `scope = Expr ;`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResourceItem {
+    syntax: SyntaxNode,
+}
+
+impl AstNode for ResourceItem {
+    fn can_cast(kind: SyntaxKind) -> bool {
+        matches!(
+            kind,
+            SyntaxKind::ResourceLoad
+                | SyntaxKind::ResourceKey
+                | SyntaxKind::ResourcePolicy
+                | SyntaxKind::ResourceScope
+        )
+    }
+    fn cast(node: SyntaxNode) -> Option<Self> {
+        Self::can_cast(node.kind()).then_some(ResourceItem { syntax: node })
+    }
+    fn syntax(&self) -> &SyntaxNode {
+        &self.syntax
+    }
+}
+ast_node!(
     /// `run Path` — an effect's run policy.
     EffectRun = EffectRun
 );
@@ -583,6 +610,39 @@ impl EffectDecl {
 
     /// The body.
     pub fn body(&self) -> Option<EffectBody> {
+        support::child(&self.syntax)
+    }
+}
+
+impl ResourceDecl {
+    /// The resource's name.
+    pub fn name(&self) -> Option<SyntaxToken> {
+        support::name_token(&self.syntax)
+    }
+
+    /// The declared `Resource<T, E>` type.
+    pub fn ty(&self) -> Option<TypePath> {
+        support::child(&self.syntax)
+    }
+
+    /// The configuration items, in source order.
+    pub fn items(&self) -> impl Iterator<Item = ResourceItem> {
+        self.syntax
+            .children()
+            .into_iter()
+            .filter_map(ResourceItem::cast)
+    }
+}
+
+impl ResourceItem {
+    /// Which item it is: [`SyntaxKind::ResourceLoad`], `ResourceKey`,
+    /// `ResourcePolicy` or `ResourceScope`.
+    pub fn kind(&self) -> SyntaxKind {
+        self.syntax.kind()
+    }
+
+    /// The item's value.
+    pub fn value(&self) -> Option<Expr> {
         support::child(&self.syntax)
     }
 }
@@ -1715,6 +1775,7 @@ pub enum Member {
     Action(ActionDecl),
     Task(TaskDecl),
     Effect(EffectDecl),
+    Resource(ResourceDecl),
     View(ViewDecl),
 }
 
@@ -1731,6 +1792,7 @@ impl AstNode for Member {
                 | SyntaxKind::ActionDecl
                 | SyntaxKind::TaskDecl
                 | SyntaxKind::EffectDecl
+                | SyntaxKind::ResourceDecl
                 | SyntaxKind::ViewDecl
         )
     }
@@ -1745,6 +1807,7 @@ impl AstNode for Member {
             SyntaxKind::ActionDecl => Member::Action(ActionDecl { syntax: node }),
             SyntaxKind::TaskDecl => Member::Task(TaskDecl { syntax: node }),
             SyntaxKind::EffectDecl => Member::Effect(EffectDecl { syntax: node }),
+            SyntaxKind::ResourceDecl => Member::Resource(ResourceDecl { syntax: node }),
             SyntaxKind::ViewDecl => Member::View(ViewDecl { syntax: node }),
             _ => return None,
         };
@@ -1761,6 +1824,7 @@ impl AstNode for Member {
             Member::Action(n) => n.syntax(),
             Member::Task(n) => n.syntax(),
             Member::Effect(n) => n.syntax(),
+            Member::Resource(n) => n.syntax(),
             Member::View(n) => n.syntax(),
         }
     }

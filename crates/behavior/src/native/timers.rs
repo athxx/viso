@@ -9,11 +9,22 @@ use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::task::{Context, Poll, Waker};
 use std::time::{Duration, Instant};
 
+use super::Services;
+
 /// The timers a host provides, installed on a [`Vm`](crate::Vm) as a
 /// `Box<dyn Timers>`: a headless host installs one driven by its own clock.
 pub trait Timers {
     /// Work that finishes once `duration` has passed.
     fn sleep(&mut self, duration: Duration) -> Pin<Box<dyn Future<Output = ()>>>;
+}
+
+/// Work that finishes once `duration` has passed, on the host's
+/// [`Timers`] in `services`, else on the process's timer thread.
+pub fn sleep(services: &mut Services, duration: Duration) -> Pin<Box<dyn Future<Output = ()>>> {
+    match services.get_mut::<Box<dyn Timers>>() {
+        Some(timers) => timers.sleep(duration),
+        None => sleep_on_thread(duration),
+    }
 }
 
 /// The process's timer thread, started by the first sleep that finds no host

@@ -223,7 +223,7 @@ pub(super) fn member(p: &mut Parser) {
         Some(SyntaxKind::EventKw) => return event_decl(p),
         Some(SyntaxKind::SlotKw) => return slot_decl(p),
         Some(SyntaxKind::EffectKw) => return effect_decl(p),
-        Some(SyntaxKind::ResourceKw) => return advanced_decl(p, Some(SyntaxKind::ResourceKw)),
+        Some(SyntaxKind::ResourceKw) => return resource_decl(p),
         _ => {}
     }
     match p.current() {
@@ -375,6 +375,43 @@ fn effect_decl(p: &mut Parser) {
     p.expect(SyntaxKind::RBrace);
     body.complete(p, SyntaxKind::EffectBody);
     m.complete(p, SyntaxKind::EffectDecl);
+}
+
+/// `"resource" IDENT ":" Type "{" ResourceItem* "}"` (§38), each item one of
+/// `load`, `key`, `policy`, `scope` `"=" Expression ";"`. An unknown item is
+/// an error; which items are given, and how often, the checker decides.
+fn resource_decl(p: &mut Parser) {
+    let m = p.start();
+    p.bump_as(SyntaxKind::ResourceKw);
+    name(p);
+    p.expect(SyntaxKind::Colon);
+    super::types::type_(p);
+    p.expect(SyntaxKind::LBrace);
+    while !p.at(SyntaxKind::RBrace) && !p.at_end() {
+        let before = p.cursor();
+        let item = [
+            (SyntaxKind::LoadKw, SyntaxKind::ResourceLoad),
+            (SyntaxKind::KeyKw, SyntaxKind::ResourceKey),
+            (SyntaxKind::PolicyKw, SyntaxKind::ResourcePolicy),
+            (SyntaxKind::ScopeKw, SyntaxKind::ResourceScope),
+        ]
+        .into_iter()
+        .find(|&(kw, _)| p.at_contextual(kw) && p.nth(1) == SyntaxKind::Eq);
+        match item {
+            Some((kw, kind)) => {
+                let item = p.start();
+                p.bump_as(kw);
+                p.bump_any(); // `=`
+                super::expr::expr(p);
+                p.expect(SyntaxKind::Semi);
+                item.complete(p, kind);
+            }
+            None => p.err_and_bump(ParseErrorKind::UnexpectedTokens),
+        }
+        p.ensure_progress(before);
+    }
+    p.expect(SyntaxKind::RBrace);
+    m.complete(p, SyntaxKind::ResourceDecl);
 }
 
 /// `"computed" IDENT (":" Type)? "=" Expression ";"`.

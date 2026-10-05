@@ -9,7 +9,9 @@ use super::super::ir::{BinaryOp, Const, Inst, Num, Reg};
 use super::{Lower, Lowerer, num_of};
 use crate::ast::{AstNode, Expr};
 use crate::hir::Ty;
-use crate::hir::infer::pattern::{Ctor, Lit, is_rest, literal, name_token, range_bounds};
+use crate::hir::infer::pattern::{
+    Ctor, Lit, RESOURCE_ERROR, RESOURCE_STATES, is_rest, literal, name_token, range_bounds,
+};
 use crate::hir::infer::{FieldInfo, VariantPayload};
 use crate::resolve::Resolution;
 use crate::syntax::{SyntaxKind, SyntaxNode, TextRange};
@@ -564,6 +566,18 @@ impl Lowerer<'_, '_> {
                 fails.push(self.jump_if(tag, is_ok));
                 let inner = if is_ok { ok } else { err };
                 (vec![(*inner.clone(), true)], Vec::new())
+            }
+            (Ctor::Resource(tag), Ty::ResourceState(value, error)) => {
+                let src_tag = self.reg();
+                self.emit(Inst::Tag { dst: src_tag, src });
+                let want = self.constant(Const::Int(i128::from(*tag)));
+                self.compare(BinaryOp::Eq, src_tag, want, fails);
+                let payload = match RESOURCE_STATES[*tag as usize] {
+                    (_, false) => return Ok(()),
+                    _ if *tag == RESOURCE_ERROR => error,
+                    _ => value,
+                };
+                (vec![(*payload.clone(), true)], Vec::new())
             }
             (Ctor::Variant(owner, index), _) => {
                 let Some(variant) = self

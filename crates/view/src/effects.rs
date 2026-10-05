@@ -14,7 +14,7 @@
 //! an effect it missed is inert once the swap raised the host's epoch.
 
 use std::cell::RefCell;
-use std::rc::{Rc, Weak};
+use std::rc::Rc;
 
 use viso_behavior::{ComponentEffect, EffectRun, Value};
 use viso_ui::adaptive::AdaptiveEnv;
@@ -24,6 +24,7 @@ use viso_ui::{
 };
 
 use crate::host::{StateCells, ViewHost};
+use crate::resources::Resource;
 use crate::scope::Scope;
 
 /// Mounts each effect of the view `host` runs on `owner`, its root node, in
@@ -79,7 +80,7 @@ pub(crate) fn mount_effect(
         return;
     };
     let mount = Rc::new(Mount {
-        host: Rc::downgrade(host),
+        host: Rc::clone(host),
         scope,
         epoch,
     });
@@ -90,30 +91,48 @@ pub(crate) fn mount_effect(
         mounted: false,
         last: None,
         cells: Vec::new(),
+        resource: None,
     };
     let body = effect.body;
-    store.add_effect(
-        owner,
-        move |cx| gate.open(cx),
-        move |cx| mount.run(body, cx),
-    );
+    match effect.resource {
+        Some(load) => {
+            let resource = Resource::new(mount, body, load, owner);
+            gate.resource = Some(Rc::clone(&resource));
+            store.add_effect(
+                owner,
+                move |cx| gate.open(cx),
+                move |cx| {
+                    resource.changed(&mut Writes(cx));
+                    None
+                },
+            );
+        }
+        None => store.add_effect(
+            owner,
+            move |cx| gate.open(cx),
+            move |cx| mount.run(body, cx),
+        ),
+    }
 }
 
-/// What an effect's closures share: the view and the scope it runs in.
-struct Mount {
-    host: Weak<RefCell<ViewHost>>,
-    scope: Scope,
+/// What an effect's closures share: the view and the scope it runs in. The
+/// effect keeps the view alive while the node it is mounted on lives, as a
+/// handler does.
+pub(crate) struct Mount {
+    host: Rc<RefCell<ViewHost>>,
+    pub(crate) scope: Scope,
     /// The host's epoch when it mounted.
     epoch: u64,
 }
 
 impl Mount {
     /// The host, while it still runs the module the effect was mounted from.
-    fn live(&self) -> Option<Rc<RefCell<ViewHost>>> {
-        self.host.upgrade().filter(|host| {
-            host.try_borrow()
-                .is_ok_and(|view| view.epoch() == self.epoch)
-        })
+    pub(crate) fn live(&self) -> Option<Rc<RefCell<ViewHost>>> {
+        let live = self
+            .host
+            .try_borrow()
+            .is_ok_and(|view| view.epoch() == self.epoch);
+        live.then(|| Rc::clone(&self.host))
     }
 
     /// Runs body `body`, returning its cleanup.
@@ -149,6 +168,8 @@ struct Gate {
     last: Option<Value>,
     /// Scratch for the cells the dependencies read.
     cells: Vec<StateId>,
+    /// The resource whose key the dependencies are.
+    resource: Option<Rc<Resource>>,
 }
 
 impl Gate {
@@ -177,6 +198,9 @@ impl Gate {
             }
         };
         let changed = self.last.as_ref() != Some(&value);
+        if let Some(resource) = &self.resource {
+            resource.key(&value);
+        }
         self.last = Some(value);
         match self.run {
             EffectRun::Mount => first,
@@ -206,7 +230,7 @@ impl StateCells for Reads<'_, '_> {
 
 /// The cells a body runs against: reading records nothing, and a write lands
 /// in the next round of the flush.
-struct Writes<'a, 'b>(&'a mut EffectCx<'b>);
+pub(crate) struct Writes<'a, 'b>(pub(crate) &'a mut EffectCx<'b>);
 
 impl StateCells for Writes<'_, '_> {
     fn get(&self, id: StateId) -> Option<StateValue> {

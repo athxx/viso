@@ -343,6 +343,10 @@ impl Lowerer<'_, '_> {
             return Ok(dst);
         }
         let ty = self.ty(&recv)?;
+        // A resource's slot holds its state.
+        if matches!(ty, Ty::Resource(..)) && name == "state" {
+            return self.expr(&recv);
+        }
         let index = self.field_index(&ty, name)?;
         let src = self.expr(&recv)?;
         let dst = self.reg();
