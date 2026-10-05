@@ -263,6 +263,11 @@ pub fn compile_fragment(source: &str) -> Compiled {
 /// Compiles a `component!` body: optional imports, then exactly one component,
 /// its `component` keyword optional.
 pub fn compile_component(source: &str, origin: &Origin) -> Compiled {
+    compile_component_for(source, origin, TargetProfile::default())
+}
+
+/// [`compile_component`] for the targets and build `profile` describes.
+pub fn compile_component_for(source: &str, origin: &Origin, profile: TargetProfile) -> Compiled {
     let parse = parse_entry(&tokenize(source), source, Entry::ComponentEntry);
     // The entry production only restricts what may appear; its tree has the shape
     // of a compilation unit, so the module frontend takes it as one.
@@ -273,13 +278,7 @@ pub fn compile_component(source: &str, origin: &Origin) -> Compiled {
         )),
         errors: parse.errors,
     };
-    compile_unit(
-        source,
-        unit,
-        origin,
-        Natives::standard(),
-        TargetProfile::default(),
-    )
+    compile_unit(source, unit, origin, Natives::standard(), profile)
 }
 
 /// Compiles a `.vs` file for `view!`: the unit's exported component, or its only

@@ -74,7 +74,8 @@ impl Program {
                 }
             })
             .collect();
-        let mut module = Module::new(chunks, components, systems, self.natives.clone())?;
+        let mut module = Module::new(chunks, components, systems, self.natives.clone())?
+            .with_capabilities(self.capabilities.iter().map(String::as_str));
         if let Some(rate) = self.tick_rate {
             module = module.with_tick_rate(rate)?;
         }

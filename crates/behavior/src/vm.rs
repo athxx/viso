@@ -479,6 +479,11 @@ impl Vm {
         self.granted.iter().any(|c| **c == *capability)
     }
 
+    /// The capabilities [`link`](Self::link) granted.
+    pub fn grant(&self) -> &[Box<str>] {
+        &self.granted
+    }
+
     /// Makes a Presentation native called from now on defer as a
     /// [`Deferred`] command instead of running, or run again. A faulting call
     /// discards the commands it issued.

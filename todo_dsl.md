@@ -864,11 +864,72 @@ timers (§104–§111).
 
 ## D7 — Standard surface (P2)
 
-- [ ] `effect`: run policies, dependency lists (§91).
-- [ ] `task`: structured concurrency, `E4101`, `E4102`, `E4401`, `E4501` (§92).
-- [ ] `resource`: load/key, policy, `E4301`, `E4302` (§93).
-- [ ] `style` / `theme` grammar and lowering; `@styleable`, `@selector` `E3710`.
+- [ ] `effect`: run policies, dependency lists (§37, §91).
+  - [ ] Grammar: `effect NAME when (deps) run Policy { stmts cleanup { } }`, member
+        recovery, AST views; empty `when()` is a syntax error.
+  - [ ] Checks: `when` expressions pure; policy defaults and conflicts (`E4203`);
+        a reactive read in the body not listed is `E4201` unless inside
+        `untracked(..)` (`E2501` elsewhere); no state assignment outside
+        `transaction { }`; `cleanup` starts no task.
+  - [ ] Lowering: a dependency chunk and a body chunk that returns its cleanup as a
+        closure, recorded in the component layout.
+  - [ ] Runtime: the view host runs effects after the commit — `mount`,
+        `change`, `mount_and_change` by value comparison, at most once per
+        commit; cleanup before a re-run, on unmount and before a hot reload
+        replaces the instance; a `transaction` writes in the next round; a cycle
+        stops at the settle cap (`E4202`).
+- [ ] `task`: structured concurrency, `E4101`, `E4102`, `E4401`, `E4501` (§36, §39, §92).
+  - [ ] Grammar: `start CALL as SLOT { policy = [..]; success(p) {} error(p) {}
+        cancelled {} };`; `await` in expressions.
+  - [ ] Checks: `start` takes a task call (`E4401`) and only in an action or event
+        body; `await` only in a task (`E4101` in an action); a task reads no
+        state after its first suspension (`E4102`); a start outside a component
+        or system scope is `E4501`.
+  - [ ] VM: a task runs on a fiber over an immutable snapshot of inputs, states
+        and arguments; it suspends at a task native's future and at an awaited
+        task, resumes with the result, and checks cancellation at each
+        suspension.
+  - [ ] Task natives return futures (a UI-thread task protocol, no executor of
+        our own); the standard library gains a timer task (`sleep`).
+  - [ ] Runtime: the view host spawns a started task as a UI task owned by the
+        component's node; slots by `as` name with `TaskPolicy::keep_latest`,
+        `drop_new`, `queue`, `parallel(n)`; `success`/`error`/`cancelled` run as
+        new transactions only while the instance lives; unmount cancels; a hot
+        reload cancels by default.
+- [ ] `resource`: load/key, policy, `E4301`, `E4302` (§38, §93).
+  - [ ] Grammar: `resource NAME: Resource<T, E> { load = ..; key = ..; policy =
+        [..]; scope = ..; }`; unknown and duplicate items rejected.
+  - [ ] Checks: `load` and `key` exactly once (`E4301`); policy combinations
+        (`E4302`); `key` is `StableKey`; `load` is a task call whose result is
+        `Result<T, E>`.
+  - [ ] Runtime: `ResourceState::{idle, loading, ready, error, reloading}` as a
+        readable member; loads on mount and key change through the task
+        machinery; `keep_latest`, `debounce`, `cache_for`, error caching;
+        capability checked before the loader starts.
+- [ ] `style` / `theme` grammar and lowering; `@styleable`, `@selector` `E3710` (§59, §60, U2.3, U12).
+  - [ ] Grammar: `style NAME for Component : Base + Base { prop: v; when sel { } }`
+        and `theme NAME : Base { name = expr; }`.
+  - [ ] Checks: only Styleable properties (`@styleable` inputs of user
+        components); selectors from the target schema or `@selector`
+        (`E3710`); pure expressions; acyclic bases; no handlers or state.
+  - [ ] Lowering and runtime: `styles: [A, B]` applies bases then styles left to
+        right, explicit properties last; `when` blocks follow selector state with
+        `STYLE` invalidation.
+  - [ ] Theme: the standard `Theme` schema (U12.2); `theme X { }` builds a typed
+        immutable value; the `theme` context binding in view, style and theme
+        expressions; replacing the theme invalidates exactly the bindings that
+        read it.
 - [ ] Runtime capability denial `E6103` (§95).
+  - [x] The package grant (`[package] capabilities`) travels in the compiled
+        module, through the release package and hot reload; view hosts link
+        with it.
+  - [x] A denied native call faults `E6103` naming the native and capability; the
+        handler's transaction rolls back and the view keeps running.
+  - [x] A preview host grants only `ui.basic`, `gpu.draw.sandboxed`,
+        `asset.read.package`, whatever the manifest says
+        (`ViewHost::with_capabilities`, `PREVIEW_CAPABILITIES`).
+  - [ ] The CLI's preview of generated code runs its views on the preview host
+        (with the CLI).
 - [ ] `@persist`: load before `start`, tick-boundary writes, suspend flush, migration;
       `E9106` (§106.8).
   - [x] System state: key, Snapshot type and `storage.persist` grant
@@ -881,8 +942,21 @@ timers (§104–§111).
         `suspend` and drop flush; carried through World Rebuild and Logic Reload.
   - [ ] Component state `@persist` (needs a key rule for component instances).
 - [ ] `AudioProcess` real-time rules `E9108` (§108.3).
+  - [ ] A system implementing `AudioProcess` rejects allocation, `await`/tasks,
+        locks, resource loads, non-`realtime` natives and unbounded loops
+        (`E9108`), through its call graph.
 - [ ] Dev snapshot ring and rewind-and-replay after a logic reload (§110.4).
-- [ ] Accessibility and localization checks `E3704`–`E3706`, `E3708`.
+  - [ ] The dev scheduler keeps a ring of snapshots (default the last 10 s) and
+        records the input tape continuously.
+  - [ ] After a logic-only reload, replay from T−k: restore the snapshot, rerun
+        the recorded input on the new code, continue from the current tick.
+- [ ] Accessibility and localization checks `E3704`–`E3706`, `E3708` (U8.2, U10.3).
+  - [ ] An interactive non-widget node or component root without a role or name
+        (`E3704`) or a keyboard path (`E3708`); warnings, errors under
+        `--a11y strict`.
+  - [ ] `tr` keys and arguments against the message catalog (`E3706`); text
+        concatenation or literal `format` on a Localizable property (`E3705`),
+        literals too under `--i18n strict`.
 
 ---
 

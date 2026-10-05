@@ -4,7 +4,7 @@ use std::cell::RefCell;
 use std::fmt;
 use std::rc::{Rc, Weak};
 
-use viso_behavior::native::{Natives, SchemaConflict};
+use viso_behavior::native::{Natives, SchemaConflict, Services};
 use viso_behavior::{
     Budget, ChunkKind, Event, Fault, FaultKind, Instance, LoadError, Module, Value, Vm,
 };
@@ -173,11 +173,25 @@ struct RegionCells {
 
 impl ViewHost {
     /// A host for component `component` of `module`, linked against the
-    /// standard natives with no capability granted.
+    /// standard natives with the capabilities the module's package is granted.
     ///
     /// A fault while running the state initializers does not fail creation: the
     /// host keeps it and reports it from every dispatch.
     pub fn new(module: Rc<Module>, component: &str) -> Result<ViewHost, HostError> {
+        let grant: Vec<&str> = module.capabilities().iter().map(|c| &**c).collect();
+        ViewHost::with_capabilities(Rc::clone(&module), component, &grant)
+    }
+
+    /// A host for component `component` of `module` granted exactly
+    /// `capabilities`, whatever the package asks for: a preview of generated
+    /// code runs with [`PREVIEW_CAPABILITIES`](viso_behavior::native::PREVIEW_CAPABILITIES)
+    /// plus what its user grants. A handler calling a native outside the grant
+    /// faults with `E6103` and rolls back; the host keeps running.
+    pub fn with_capabilities(
+        module: Rc<Module>,
+        component: &str,
+        capabilities: &[&str],
+    ) -> Result<ViewHost, HostError> {
         let index = module
             .component(component)
             .ok_or_else(|| HostError::NoComponent(component.to_owned()))?;
@@ -185,7 +199,7 @@ impl ViewHost {
         let handlers = layout.handlers.clone();
         let states = layout.states.len();
         let mut vm = Vm::new(Rc::clone(&module), Budget::default());
-        vm.link(&Natives::standard(), &[])
+        vm.link(&Natives::standard(), capabilities)
             .map_err(HostError::Link)?;
         let (instance, broken) = match vm.instantiate(index, []) {
             Ok(instance) => (instance, None),
@@ -217,6 +231,16 @@ impl ViewHost {
     /// The module the host runs.
     pub fn module(&self) -> &Rc<Module> {
         self.vm.module()
+    }
+
+    /// The capabilities the host's natives are linked with.
+    pub fn capabilities(&self) -> &[Box<str>] {
+        self.vm.grant()
+    }
+
+    /// The host services its natives use, such as the clipboard.
+    pub fn services_mut(&mut self) -> &mut Services {
+        self.vm.services_mut()
     }
 
     /// The component's state slot named `name`.
@@ -696,8 +720,9 @@ impl ViewHost {
     /// the environment anchors, and the cells and hooks the view's mounts
     /// registered, stay this host's, for the caller to reuse, release or
     /// replace; [`prune_env`](Self::prune_env) releases the anchors relinking
-    /// left unused.
+    /// left unused. The installed services move to `next`.
     pub fn reload(&mut self, mut next: ViewHost) {
+        *next.vm.services_mut() = std::mem::take(self.vm.services_mut());
         next.events = std::mem::take(&mut self.events);
         next.regions = std::mem::take(&mut self.regions);
         next.values = self.values.take();

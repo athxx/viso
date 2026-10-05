@@ -95,6 +95,7 @@ impl Module {
             m.ret.encode(enc);
             enc.write_varint(u64::from(m.chunk));
         });
+        write_list(&mut enc, self.capabilities(), |enc, c| enc.write_str(c));
         enc.into_bytes()
     }
 
@@ -154,11 +155,13 @@ impl Module {
                 chunk: read_u32_varint(dec)?,
             })
         })?;
+        let capabilities = read_list(&mut dec, |dec| Ok(Box::<str>::from(dec.read_str()?)))?;
         dec.finish()?;
         let module = Module::new(chunks, components, systems, natives)
             .and_then(|m| m.with_tick_rate(tick_rate))
             .and_then(|m| m.with_migrators(migrators))
-            .map_err(LoadError::Verify)?;
+            .map_err(LoadError::Verify)?
+            .with_capabilities(capabilities);
         match input {
             Some(input) => module.with_input(input).map_err(LoadError::Verify),
             None => Ok(module),
@@ -1002,6 +1005,7 @@ mod tests {
         .unwrap()
         .with_tick_rate(30)
         .unwrap()
+        .with_capabilities(["storage.persist", "network.http"])
     }
 
     #[test]
@@ -1009,6 +1013,10 @@ mod tests {
         let module = sample();
         let decoded = Module::decode(&module.encode()).unwrap();
         assert_eq!(decoded.tick_rate(), 30);
+        assert_eq!(
+            decoded.capabilities(),
+            [Box::from("network.http"), Box::from("storage.persist")]
+        );
         assert_eq!(decoded, module);
     }
 
@@ -1079,6 +1087,7 @@ mod tests {
             input: None,
             tick_rate: module.tick_rate(),
             migrators: Box::new([]),
+            capabilities: Box::new([]),
         };
         bytes = bad.encode();
         assert!(matches!(Module::decode(&bytes), Err(LoadError::Verify(_))));
