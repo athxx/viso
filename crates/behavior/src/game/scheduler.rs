@@ -5,6 +5,7 @@ use std::cell::{Ref, RefCell, RefMut};
 use std::mem;
 use std::rc::Rc;
 
+use super::history::{History, ReplayError, Replayed};
 use super::input::{Action, InputLatch};
 use super::kit::{Kit, Stage};
 use super::persist::{PERSIST_CAPABILITY, Persist, PersistReport, Persistence, Stored};
@@ -145,6 +146,8 @@ pub struct Scheduler {
     replayed_commands: u64,
     playback: Option<Playback>,
     recorder: Option<Recorder>,
+    /// The recent past a dev host can replay, when kept.
+    history: Option<History>,
     /// The store `@persist` states load from and are written to.
     persist: Option<Persistence>,
     persist_reports: Vec<PersistReport>,
@@ -217,6 +220,7 @@ impl Scheduler {
             replayed_commands: 0,
             playback: None,
             recorder: None,
+            history: None,
             persist,
             persist_reports: Vec::new(),
             instances,
@@ -388,6 +392,14 @@ impl Scheduler {
         let schema = input_schema(&module);
         if module.tick_rate() != self.vm.module().tick_rate() {
             self.clock.set_rate(module.tick_rate());
+            // The past ran at another rate, so it does not replay.
+            if let Some(history) = &mut self.history {
+                history.restart(Recorder::new(
+                    self.seed,
+                    module.tick_rate(),
+                    &input_schema(&module).actions,
+                ));
+            }
         }
         self.cx = Contexts::new(
             &self.world,
@@ -512,6 +524,9 @@ impl Scheduler {
         if let Some(recorder) = &mut self.recorder {
             recorder.rebind(actions);
         }
+        if let Some(history) = &mut self.history {
+            history.input_mut().rebind(actions);
+        }
         if let Some(playback) = &mut self.playback {
             playback.rebind(actions);
             for change in playback.current() {
@@ -527,6 +542,13 @@ impl Scheduler {
         let schema = input_schema(&module);
         if self.recorder.is_some() {
             self.recorder = Some(Recorder::new(
+                self.seed,
+                module.tick_rate(),
+                &schema.actions,
+            ));
+        }
+        if let Some(history) = &mut self.history {
+            history.restart(Recorder::new(
                 self.seed,
                 module.tick_rate(),
                 &schema.actions,
@@ -633,6 +655,79 @@ impl Scheduler {
         self.input.release_all();
     }
 
+    /// Keeps the last `seconds` of the game, as a dev host does
+    /// ([`DEFAULT_HISTORY_SECONDS`]): a snapshot at every quarter second's
+    /// tick boundary and the input every tick reads, from the next tick on,
+    /// for [`replay_from`](Self::replay_from). Replaces a history kept
+    /// before.
+    pub fn keep_history(&mut self, seconds: u32) {
+        let module = self.vm.module();
+        let rate = u64::from(module.tick_rate());
+        let input = Recorder::new(self.seed, module.tick_rate(), &input_schema(module).actions);
+        self.history = Some(History::new(u64::from(seconds) * rate, rate / 4, input));
+    }
+
+    /// Stops keeping a history and frees it.
+    pub fn drop_history(&mut self) {
+        self.history = None;
+    }
+
+    /// The earliest tick [`replay_from`](Self::replay_from) can go back to
+    /// and the snapshots kept; `None` without a history or before its first
+    /// snapshot.
+    pub fn history(&self) -> Option<(u64, usize)> {
+        let history = self.history.as_ref()?;
+        Some((history.oldest()?, history.len()))
+    }
+
+    /// Goes back to the latest snapshot kept at or before `tick` and runs the
+    /// ticks since again, each reading the input it read before, up to the
+    /// tick the game was at: after a logic reload this shows what the new
+    /// code makes of the last seconds of play. A replayed tape keeps feeding
+    /// the ticks; otherwise the recorded input does, and device input
+    /// reported meanwhile is kept for the next tick. Presentation commands of
+    /// ticks already delivered are not delivered again, and `@local` states
+    /// keep their values.
+    ///
+    /// # Errors
+    ///
+    /// Without a history, for a tick before its oldest snapshot, or for a
+    /// tick not run yet: the game is left as it was.
+    pub fn replay_from(&mut self, tick: u64) -> Result<Replayed, ReplayError> {
+        let now = self.clock.tick();
+        let history = self.history.as_ref().ok_or(ReplayError::NoHistory)?;
+        if tick > now {
+            return Err(ReplayError::Ahead);
+        }
+        let snapshot = history
+            .before(tick)
+            .ok_or(ReplayError::Forgotten {
+                oldest: history.oldest(),
+            })?
+            .clone();
+        let devices = self.input.clone();
+        let fed = self.playback.is_none();
+        if fed {
+            let module = self.vm.module().clone();
+            let actions = &input_schema(&module).actions;
+            self.playback = Some(Playback::lenient(history.tape(self.build), actions));
+        }
+        let restored = self.restore(&snapshot);
+        let ticks = now - snapshot.tick;
+        for _ in 0..ticks {
+            self.run_tick();
+        }
+        if fed {
+            self.playback = None;
+            self.input = devices;
+        }
+        Ok(Replayed {
+            from: snapshot.tick,
+            ticks,
+            restored,
+        })
+    }
+
     /// Rewinds the clock to `tick`, to replay or roll back from there; the
     /// caller restores the systems' state. Commands of ticks already
     /// delivered are not delivered again; a replayed tape resumes at `tick`
@@ -647,6 +742,9 @@ impl Scheduler {
     fn seek_tapes(&mut self, tick: u64) {
         if let Some(recorder) = &mut self.recorder {
             recorder.rewind(tick);
+        }
+        if let Some(history) = &mut self.history {
+            history.rewind(tick);
         }
         if let Some(playback) = &mut self.playback {
             let module = self.vm.module().clone();
@@ -786,6 +884,12 @@ impl Scheduler {
 
     fn run_tick(&mut self) {
         let tick = self.clock.tick();
+        if self.history.as_ref().is_some_and(|h| h.due(tick)) {
+            let snapshot = self.snapshot();
+            if let Some(history) = &mut self.history {
+                history.push(snapshot);
+            }
+        }
         let frame = object::<FixedFrame>(&self.cx.fixed_frame);
         frame.tick.set(tick);
         if let Some(playback) = &mut self.playback {
@@ -801,6 +905,14 @@ impl Scheduler {
                 (input.held(a), input.pressed(a), input.released(a))
             };
             recorder.observe(tick, bits, input.move_axes());
+        }
+        if let Some(history) = &mut self.history {
+            let input = &frame.input;
+            let bits = |a| {
+                let a = Action(a);
+                (input.held(a), input.pressed(a), input.released(a))
+            };
+            history.input_mut().observe(tick, bits, input.move_axes());
         }
         self.world.begin_tick();
         mem::swap(&mut self.collisions, &mut self.delivering);

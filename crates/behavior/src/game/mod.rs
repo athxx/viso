@@ -37,6 +37,10 @@
 //! [`Scheduler::rebuild`] starts a new build over in a shadow game, either
 //! keeping the running characters by stable key.
 //!
+//! A dev host keeps the recent past ([`Scheduler::keep_history`]): a ring of
+//! snapshots and the input each tick read, so after a logic reload
+//! [`Scheduler::replay_from`] runs the last seconds again on the new code.
+//!
 //! A `@persist` state loads from the host's [`Persist`] store before the
 //! start and is written back at tick boundaries, converted across a change
 //! of its type; [`Scheduler::suspend`] makes the writes durable.
@@ -50,6 +54,7 @@
 mod audio;
 mod clock;
 mod grid;
+mod history;
 pub mod input;
 pub mod kit;
 mod persist;
@@ -71,6 +76,7 @@ use crate::native::{
 
 pub use audio::{AUDIO_PROCESS, AudioBlock};
 pub use clock::{Clock, TickOverrun};
+pub use history::{DEFAULT_HISTORY_SECONDS, ReplayError, Replayed};
 pub use input::{
     Action, INPUT_ACTION_DERIVE, InputAction, InputAxis, InputBindings, InputMap, InputSchema,
     InputSnapshot, Key, KeySet, MoveAxes, MoveSource, PadButton, PadStick, TouchButton,
