@@ -185,6 +185,9 @@ pub fn lower(
     let behavior = RefCell::new(ProgramBuilder::new());
     behavior.borrow_mut().strip_debug_draw(profile.release);
     behavior.borrow_mut().tick_rate(profile.tick_rate);
+    behavior
+        .borrow_mut()
+        .capabilities(profile.capabilities.iter().map(str::to_owned).collect());
     let mut domains = simulation::Domains::default();
     let mut migrators = Vec::new();
     let mut systems = Vec::new();

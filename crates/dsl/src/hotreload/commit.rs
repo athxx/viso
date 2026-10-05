@@ -173,11 +173,15 @@ pub fn commit(
     // SymbolId into the live StateId it drives.
     // The recompiled behavior's host is created first, so the migration can set
     // each carried state into it while the prior host still holds the old
-    // values.
-    let mut next = plan
-        .view
-        .as_ref()
-        .map(|view| ViewHost::new(Rc::clone(&view.module), &view.component));
+    // values. It keeps the prior host's grant: an edit cannot widen it.
+    let mut next = plan.view.as_ref().map(|view| match &rt.view {
+        Some(prior) => {
+            let prior = prior.borrow();
+            let grant: Vec<&str> = prior.capabilities().iter().map(|c| &**c).collect();
+            ViewHost::with_capabilities(Rc::clone(&view.module), &view.component, &grant)
+        }
+        None => ViewHost::new(Rc::clone(&view.module), &view.component),
+    });
     let symbol_to_state = {
         let prior = rt.view.as_ref().map(|host| host.borrow());
         migrate_states(

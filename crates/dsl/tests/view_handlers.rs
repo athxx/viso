@@ -269,3 +269,53 @@ fn the_release_package_runs_the_same_handler() {
     click(&mut store, &mut states, &bindings, root);
     assert_eq!(count(), Some(viso_view::Value::Int(2)));
 }
+
+/// A clipboard the test reads back.
+struct Board(Rc<RefCell<Option<String>>>);
+
+impl viso_behavior::native::Clipboard for Board {
+    fn read_text(&mut self) -> Option<String> {
+        self.0.borrow().clone()
+    }
+
+    fn write_text(&mut self, text: &str) {
+        *self.0.borrow_mut() = Some(text.to_owned());
+    }
+}
+
+#[test]
+fn a_reload_keeps_the_hosts_grant_and_services() {
+    let copier = |text: &str| {
+        format!(
+            "import viso::clipboard;\n{}",
+            clicker(&format!(
+                "on click {{ count += 1; clipboard::write_text(\"{text}\"); }}"
+            ))
+        )
+    };
+    let mut live = Live::default();
+    live.reload(&copier("one")).expect("mounts");
+    // The running build's host, linked with its package's grant.
+    let board = Rc::new(RefCell::new(None));
+    {
+        let host = live.view.as_ref().expect("a host");
+        let module = Rc::clone(host.borrow().module());
+        let granted =
+            ViewHost::with_capabilities(module, "Clicker", &["clipboard.write"]).expect("mounts");
+        let mut host = host.borrow_mut();
+        host.reload(granted);
+        host.services_mut()
+            .insert::<Box<dyn viso_behavior::native::Clipboard>>(Box::new(Board(Rc::clone(
+                &board,
+            ))));
+    }
+    // The edit compiles without the package's manifest; the host keeps the
+    // grant it runs with, and its clipboard.
+    live.reload(&copier("two")).expect("reloads");
+    let host = Rc::clone(live.view.as_ref().expect("a host"));
+    assert_eq!(host.borrow().capabilities(), [Box::from("clipboard.write")]);
+    live.click();
+    assert_eq!(host.borrow().last_fault(), None);
+    assert_eq!(board.borrow().as_deref(), Some("two"));
+    assert_eq!(live.count(), Some(StateValue::Int(1)));
+}

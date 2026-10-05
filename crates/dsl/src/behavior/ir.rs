@@ -533,6 +533,9 @@ pub struct Program {
     /// The `@migrate` functions a persisted value converts by; none unless a
     /// system persists a state.
     pub migrators: Vec<viso_behavior::Migrator>,
+    /// The capabilities the package is granted (`[package] capabilities`),
+    /// sorted.
+    pub capabilities: Vec<String>,
 }
 
 impl Program {

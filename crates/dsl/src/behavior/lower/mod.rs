@@ -299,6 +299,11 @@ impl ProgramBuilder {
         self.program.tick_rate = Some(tick_rate);
     }
 
+    /// Sets the capabilities the package is granted.
+    pub(crate) fn capabilities(&mut self, capabilities: Vec<String>) {
+        self.program.capabilities = capabilities;
+    }
+
     /// Makes debug draw calls lower to nothing.
     pub(crate) fn strip_debug_draw(&mut self, strip: bool) {
         self.strip_debug_draw = strip;

@@ -226,6 +226,7 @@ pub struct Module {
     pub(crate) input: Option<Box<InputSchema>>,
     pub(crate) tick_rate: u32,
     pub(crate) migrators: Box<[Migrator]>,
+    pub(crate) capabilities: Box<[Box<str>]>,
 }
 
 /// The tick rate of a module that declares none, 60 Hz.
@@ -270,6 +271,7 @@ impl Module {
             input: None,
             tick_rate: DEFAULT_TICK_RATE,
             migrators: Box::new([]),
+            capabilities: Box::new([]),
         };
         let mut max_states = 0;
         let mut max_inputs = 0;
@@ -506,6 +508,24 @@ impl Module {
     /// The `@migrate` functions a persisted value converts by.
     pub fn migrators(&self) -> &[Migrator] {
         &self.migrators
+    }
+
+    /// The module granted `capabilities`, the package's grant a host links
+    /// its natives with.
+    pub fn with_capabilities<S: Into<Box<str>>>(
+        mut self,
+        capabilities: impl IntoIterator<Item = S>,
+    ) -> Module {
+        let mut capabilities: Vec<Box<str>> = capabilities.into_iter().map(Into::into).collect();
+        capabilities.sort_unstable();
+        capabilities.dedup();
+        self.capabilities = capabilities.into();
+        self
+    }
+
+    /// The capabilities the package is granted, sorted.
+    pub fn capabilities(&self) -> &[Box<str>] {
+        &self.capabilities
     }
 
     /// Checks that every chunk `schema` names computes a field default.

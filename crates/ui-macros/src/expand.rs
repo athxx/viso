@@ -25,6 +25,7 @@ use syn::{Ident, LitStr};
 use viso_dsl::frontend::{self, Compiled, Origin, Source, SourceKind};
 use viso_dsl::hir::{ConstValue, HirComponent};
 use viso_dsl::resolve::SymbolId;
+use viso_dsl::schema::Natives;
 use viso_dsl::syntax::{LineIndex, TextRange};
 use viso_dsl::view_behavior::{MountError, UNMOUNTED_HANDLER, ViewBehavior, view_behavior};
 
@@ -59,7 +60,8 @@ pub fn component(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
     let expansion = (|| {
         let root_dir = package::root()?;
         let origin = package::origin(&root_dir, package::invoking_file().as_deref())?;
-        let compiled = frontend::compile_component(&source.text, &origin);
+        let profile = package::profile(&root_dir)?;
+        let compiled = frontend::compile_component_for(&source.text, &origin, profile);
         report.check(&compiled)?;
         let Mounted {
             component,
@@ -114,7 +116,8 @@ pub fn view(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
             .to_str()
             .ok_or_else(|| syn::Error::new(span, "the `.vs` path is not UTF-8"))?;
         let origin = package::origin(&canonical(&root_dir), Some(&path))?;
-        let compiled = frontend::compile_file(&text, &origin);
+        let profile = package::profile(&root_dir)?;
+        let compiled = frontend::compile_file_for(&text, &origin, Natives::standard(), profile);
         let report = Report::File {
             path: &path,
             index: LineIndex::new(&text),

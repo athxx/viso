@@ -228,8 +228,9 @@ pub fn run(
     let module = program
         .bytecode()
         .map_err(|error| RunError::Build(format!("the package's code does not verify: {error}")))?;
+    let grant: Vec<&str> = program.capabilities.iter().map(String::as_str).collect();
     let mut vm = Vm::new(std::rc::Rc::new(module), Budget::default());
-    vm.link(&Natives::standard(), &[])
+    vm.link(&Natives::standard(), &grant)
         .map_err(|error| RunError::Build(format!("the package's natives do not link: {error}")))?;
     let mut game = Scheduler::with_seed(vm, scenario.tape.seed).map_err(RunError::Start)?;
     game.play(scenario.tape.clone()).map_err(RunError::Tape)?;
