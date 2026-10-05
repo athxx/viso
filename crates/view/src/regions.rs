@@ -304,8 +304,13 @@ pub fn mount_regions(
                 ItemTemplate::Node { control, .. } => control.as_ref(),
                 _ => None,
             });
+        let mut styled = false;
         for control in controls {
             control_cells(control, &Scope::EMPTY, &view, &mut deps);
+            styled |= control.reads_state();
+        }
+        if styled {
+            deps.push(cx.store.interaction_cell(cx.states));
         }
     }
     let arms = || regions.regions.iter().flat_map(|region| &region.arms);
@@ -803,7 +808,14 @@ impl Patch<'_, '_> {
                     routes, control, ..
                 } = &items[index as usize]
                 {
-                    attach_node(self.cx.store, self.host, id, routes, *control, &frag.scope);
+                    attach_node(
+                        self.cx.store,
+                        self.host,
+                        id,
+                        routes,
+                        control.clone(),
+                        &frag.scope,
+                    );
                 }
             }
             force = true;
@@ -1033,13 +1045,20 @@ impl Patch<'_, '_> {
                 }
             }
             if !routes.is_empty() || control.is_some() {
-                attach_node(self.cx.store, self.host, id, routes, *control, &frag_scope);
+                attach_node(
+                    self.cx.store,
+                    self.host,
+                    id,
+                    routes,
+                    control.clone(),
+                    &frag_scope,
+                );
                 routed.push((id, index as u32));
             }
-            if let Some(control) = *control
+            if let Some(control) = control
                 && let Ok(mut host) = self.host.try_borrow_mut()
             {
-                let mut node = Shown::new(id, control, frag_scope.clone(), &host);
+                let mut node = Shown::new(id, control.clone(), frag_scope.clone(), &host, self.cx);
                 node.deliver(self.cx, &mut host);
                 shown.push(node);
             }

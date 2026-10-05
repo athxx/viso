@@ -27,6 +27,7 @@ use crate::ast::{
 };
 use crate::behavior::{Program, hidden_state, inline_instances};
 use crate::diag::{Diagnostic, Severity};
+use crate::hir::style::StyleBook;
 use crate::hir::{
     CheckedShader, ConstValue, DerivedReads, HirComponent, Migrator, SourceSet, TargetProfile, Ty,
     TypeSchemas, write_backs,
@@ -378,7 +379,19 @@ fn compile_unit(
                 })
             })
             .collect(),
-    );
+    )
+    .with_styles(StyleBook::new(
+        cu.items(),
+        |style| {
+            let name = style.name()?.text_range();
+            module
+                .decls
+                .iter()
+                .find(|d| d.name_range == name)
+                .map(|d| d.id)
+        },
+        &module.refs,
+    ));
     let root_symbol = components[mounted].schema.symbol;
     let lowered_view = decl
         .view()

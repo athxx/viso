@@ -22,6 +22,7 @@ pub mod grid;
 pub mod hit_test;
 pub mod input;
 pub mod inspect;
+pub mod interaction;
 pub mod layout;
 pub mod length;
 pub mod node;
@@ -66,6 +67,7 @@ pub use inspect::{
     InspectFlags, InspectKind, InspectNode, InspectSnapshot, InspectTree, PaintRange, PaintRanges,
     paint_ranges, snapshot_ui,
 };
+pub use interaction::Interaction;
 pub use layout::{Align, Axis, Basis, Inset, Justify, Length, Size, Vec2};
 pub use length::{
     LengthDeps, LengthEnv, LengthIssue, LengthStats, LengthTerms, LengthWarning, NodeLengths,

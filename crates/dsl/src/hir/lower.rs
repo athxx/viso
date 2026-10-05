@@ -19,7 +19,7 @@
 //! pass is Viso-owned; it consumes the resolver's durable [`SymbolId`] identities and
 //! slot-based locals unchanged.
 
-use std::cell::{Cell, RefCell};
+use std::cell::{Cell, OnceCell, RefCell};
 use std::collections::{HashMap, HashSet};
 
 use viso_behavior::native::{NativeId, NativeKind, Natives, ThreadDomain};
@@ -49,6 +49,7 @@ use super::nodes::{ComponentSchema, HirCallable, HirComponent, HirSlot};
 use super::ownership::check_stored;
 use super::percent::PercentSources;
 use super::reads::ReadEnv;
+use super::style::StyleBook;
 use super::ty::{PackageTypes, Ty};
 use super::view::{
     HandlerSink, InputFlows, InputProp, PercentFlow, ViewEnv, check_input_bases,
@@ -60,6 +61,7 @@ mod input;
 mod resources;
 mod shader;
 mod simulation;
+mod styles;
 mod system;
 mod tags;
 mod tasks;
@@ -372,6 +374,14 @@ fn lower_module(
     let first_component = components.len();
     let mut system_hooks = Vec::new();
     let cyclic = themes::cyclic(&themes::themes_of(cu.items()), refs, env);
+    let book = StyleBook::new(
+        cu.items(),
+        |s| env.scope.declared.get(&s.syntax().text_range()).copied(),
+        refs,
+    );
+    let styles_cyclic = styles::cyclic(&book);
+    let _ = env.styles.set(book);
+    let book = env.styles.get().expect("set above");
 
     for item in cu.items() {
         let decl = match item {
@@ -399,6 +409,7 @@ fn lower_module(
                 env.focus_component(&c);
                 let component =
                     lower_component_item(&c, refs, env, diagnostics, cap, &mut flows, &mut percent);
+                styles::check_members(&c, env, diagnostics);
                 components.push(component);
             }
             Item::System(s) => {
@@ -415,6 +426,7 @@ fn lower_module(
                 components.push(component);
             }
             Item::Theme(t) => themes::lower(&t, refs, env, &cyclic, diagnostics),
+            Item::Style(st) => styles::check(&st, book, &styles_cyclic, refs, env, diagnostics),
             Item::Const(c) => {
                 check_const(&c, refs, env, diagnostics, &mut percent);
                 input::lower_map(&c, refs, env, diagnostics);
@@ -1201,6 +1213,8 @@ struct Declarations {
     inputs: HashMap<SymbolId, Vec<InputProp>>,
     /// The slots of every component, which its callers fill.
     slots: HashMap<SymbolId, Vec<HirSlot>>,
+    /// The members every component makes style selectors, by name.
+    selectors: HashMap<SymbolId, Vec<String>>,
     /// Every system, which `@after`/`@before` may name.
     systems: HashSet<SymbolId>,
     /// Every enum deriving `InputAction`.
@@ -1267,6 +1281,8 @@ struct ModuleEnv<'p> {
     /// Call expression range → the native function it calls, recorded as each body is
     /// typed so its effect walk sees the native's effect and thread domain.
     native_calls: RefCell<HashMap<TextRange, NativeId>>,
+    /// The styles the module declares, set before its views are walked.
+    styles: OnceCell<StyleBook>,
 }
 
 impl TypeEnv for ModuleEnv<'_> {
@@ -1364,6 +1380,10 @@ impl ViewEnv for ModuleEnv<'_> {
     fn widgets(&self) -> &Natives {
         self.natives
     }
+
+    fn styles(&self) -> Option<&StyleBook> {
+        self.styles.get()
+    }
 }
 
 impl ReadEnv for ModuleEnv<'_> {
@@ -1442,6 +1462,7 @@ impl<'p> ModuleEnv<'p> {
             behavior,
             natives,
             native_calls: RefCell::default(),
+            styles: OnceCell::new(),
         }
     }
 
@@ -1557,6 +1578,7 @@ impl ModuleScope {
                     };
                     let inputs = scope.inputs_of(c, members, interner);
                     decls.inputs.insert(sym, inputs);
+                    decls.selectors.insert(sym, styles::selectors_of(c));
                     // The component's own lowering reports what is wrong with its slots.
                     decls
                         .slots
@@ -1617,6 +1639,11 @@ impl ModuleScope {
                                 kind: SymbolKind::Const,
                             },
                         );
+                    }
+                }
+                Item::Style(st) => {
+                    if let Some(sym) = decl_symbol(table, interner, st.name(), Namespace::Value) {
+                        scope.declared.insert(st.syntax().text_range(), sym);
                     }
                 }
                 Item::Theme(t) => {
@@ -1836,15 +1863,20 @@ impl ModuleScope {
     ) -> Vec<InputProp> {
         let mut inputs = Vec::new();
         let mut bindable = false;
+        let mut styleable = false;
         for child in decl.syntax().children() {
             match child.kind() {
-                SyntaxKind::Attribute => bindable |= is_bindable(&child),
+                SyntaxKind::Attribute => {
+                    bindable |= is_bindable(&child);
+                    styleable |= attribute_is(&child, "styleable");
+                }
                 SyntaxKind::InputDecl => {
                     if let Some(name) = InputDecl::cast(child.clone()).and_then(|d| d.name()) {
                         inputs.push(InputProp {
                             name: name.text().trim_start_matches("r#").to_string(),
                             ty: self.annotation_of(&child),
                             two_way: bindable,
+                            styleable,
                             declared_at: name.text_range(),
                             symbol: decl_symbol(
                                 table,
@@ -1855,8 +1887,12 @@ impl ModuleScope {
                         });
                     }
                     bindable = false;
+                    styleable = false;
                 }
-                _ => bindable = false,
+                _ => {
+                    bindable = false;
+                    styleable = false;
+                }
             }
         }
         inputs

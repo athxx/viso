@@ -39,6 +39,10 @@ pub(super) struct Restrictions {
     /// When set, a `Path { ... }` record expression is forbidden (the `{` starts
     /// the surrounding block instead) and diagnosed as E2801 if written bare.
     no_record: bool,
+    /// When set with `no_record`, a `{` after a path always opens the block:
+    /// a style's `when` body binds properties, which a record body would
+    /// otherwise look like.
+    block_follows: bool,
 }
 
 /// Whether the token at the cursor can begin an expression. Used by the
@@ -94,13 +98,39 @@ pub(super) fn expr(p: &mut Parser) {
 /// Parses an expression in a control-flow head: a bare record expression is
 /// forbidden here (E2801) because its `{` would collide with the block.
 pub(super) fn head_expr(p: &mut Parser) {
-    expr_bp(p, 0, Restrictions { no_record: true });
+    expr_bp(
+        p,
+        0,
+        Restrictions {
+            no_record: true,
+            block_follows: false,
+        },
+    );
+}
+
+/// Parses the selector of a style's `when`: an expression whose `{` always
+/// opens the bindings after it.
+pub(super) fn selector_expr(p: &mut Parser) {
+    expr_bp(
+        p,
+        0,
+        Restrictions {
+            no_record: true,
+            block_follows: true,
+        },
+    );
 }
 
 /// Parses a call or another postfix expression, with no binary operator
 /// after it and no record body: the operand of `start`.
 pub(super) fn call_expr(p: &mut Parser) {
-    postfix_expr(p, Restrictions { no_record: true });
+    postfix_expr(
+        p,
+        Restrictions {
+            no_record: true,
+            block_follows: false,
+        },
+    );
 }
 
 /// Binding-power rungs, tightest-binding last so a larger number binds tighter.
@@ -443,7 +473,7 @@ fn path_or_record_expr(p: &mut Parser, r: Restrictions) -> CompletedMarker {
     path(p);
     if p.at(SyntaxKind::LBrace) {
         if r.no_record {
-            if !looks_like_record_body(p) {
+            if r.block_follows || !looks_like_record_body(p) {
                 // The `{` opens the surrounding block.
                 return m.complete(p, SyntaxKind::PathExpr);
             }

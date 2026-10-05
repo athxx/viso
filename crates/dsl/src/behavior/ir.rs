@@ -496,12 +496,29 @@ pub struct Site {
     pub instance: u32,
     /// The view item.
     pub at: TextRange,
+    /// Which of the item's entries: `0` for the item's own, else one of the
+    /// values its styles give it, numbered from `1`.
+    pub part: u32,
 }
 
 impl Site {
     /// The site of the item at `at` in the view's own component.
     pub fn own(at: TextRange) -> Site {
-        Site { instance: 0, at }
+        Site {
+            instance: 0,
+            at,
+            part: 0,
+        }
+    }
+
+    /// The site of style value `part` of the node whose `styles` value is at
+    /// `at`, in the view's own component.
+    pub fn styled(at: TextRange, part: u32) -> Site {
+        Site {
+            instance: 0,
+            at,
+            part,
+        }
     }
 }
 

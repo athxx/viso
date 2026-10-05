@@ -11,14 +11,14 @@ use std::rc::Rc;
 use viso_behavior::Module;
 use viso_ui::StateValue;
 use viso_ui::adaptive::EnvField;
-pub use viso_view::Control;
+pub use viso_view::{Control, ControlInput, LookArm, When};
 use viso_view::{ControlKind, EventRoute, Route, ViewHost, ViewRegions};
 
 use crate::behavior::Site;
 use crate::frontend::{Compiled, SourceKind};
 use crate::hir::ConstValue;
 use crate::ir::binding_ir::NodeKey;
-use crate::ir::ui_ir::{UiItem, UiNode};
+use crate::ir::ui_ir::{UiItem, UiNode, UiStyled, UiWhen};
 use crate::resolve::SymbolId;
 use crate::syntax::TextRange;
 use crate::view_regions::{has_regions, structure_errors, view_regions};
@@ -124,12 +124,12 @@ impl ViewBehavior {
         self.controls
             .binary_search_by_key(&key, |(k, _)| *k)
             .ok()
-            .map(|i| self.controls[i].1)
+            .map(|i| self.controls[i].1.clone())
     }
 
     /// Every view-driven native node, by ascending node key.
     pub fn controls(&self) -> impl Iterator<Item = (NodeKey, Control)> + '_ {
-        self.controls.iter().copied()
+        self.controls.iter().cloned()
     }
 
     /// The wire form of [`regions`](Self::regions), which a macro expansion
@@ -263,6 +263,7 @@ pub fn view_behavior(compiled: &Compiled) -> Result<Option<ViewBehavior>, Vec<Mo
             let site = Site {
                 instance: node.instance,
                 at: *at,
+                part: 0,
             };
             let Some(index) = layout.handler(site) else {
                 errors.push(MountError::new(
@@ -282,6 +283,17 @@ pub fn view_behavior(compiled: &Compiled) -> Result<Option<ViewBehavior>, Vec<Mo
                 continue;
             }
             control.set_entry(input, index);
+        }
+        if let Some(styled) = &node.styled {
+            styled_look(
+                compiled,
+                layout,
+                kind,
+                node.instance,
+                styled,
+                &mut control,
+                &mut errors,
+            );
         }
         controls.push((key, control));
     }
@@ -347,6 +359,78 @@ pub fn view_behavior(compiled: &Compiled) -> Result<Option<ViewBehavior>, Vec<Mo
     }))
 }
 
+/// Fills `control` (of a node of kind `kind` in instance `instance`) with the
+/// look its styles `styled` give it: each base value as the property's entry,
+/// each arm as a [`LookArm`] in priority order.
+fn styled_look(
+    compiled: &Compiled,
+    layout: &crate::behavior::ComponentLayout,
+    kind: ControlKind,
+    instance: u32,
+    styled: &UiStyled,
+    control: &mut Control,
+    errors: &mut Vec<MountError>,
+) {
+    let entry = |part: u32, errors: &mut Vec<MountError>| -> Option<u32> {
+        let site = Site {
+            instance,
+            at: styled.at,
+            part,
+        };
+        let Some(index) = layout.handler(site) else {
+            errors.push(MountError::new(
+                Some(styled.at),
+                "internal: the style's value was not lowered",
+            ));
+            return None;
+        };
+        let function = compiled
+            .behavior
+            .function(layout.handlers[index as usize].1);
+        if let Err(unsupported) = &function.body {
+            errors.push(MountError::new(
+                Some(unsupported.at),
+                format!("the style's value {}", unsupported.reason),
+            ));
+            return None;
+        }
+        Some(index)
+    };
+    let mut arms = Vec::new();
+    for look in &styled.looks {
+        let Some(input) = kind.input(&look.property) else {
+            continue;
+        };
+        if let Some(index) = look.base.and_then(|part| entry(part, errors)) {
+            control.set_entry(input, index);
+        }
+        for arm in &look.arms {
+            let mut when = Vec::with_capacity(arm.when.len());
+            for step in &arm.when {
+                when.push(match *step {
+                    UiWhen::State(state) => When::State(state),
+                    UiWhen::Part(part) => match entry(part, errors) {
+                        Some(index) => When::Entry(index),
+                        None => return,
+                    },
+                    UiWhen::Not => When::Not,
+                    UiWhen::And => When::And,
+                    UiWhen::Or => When::Or,
+                });
+            }
+            let Some(index) = entry(arm.part, errors) else {
+                return;
+            };
+            arms.push(LookArm {
+                input,
+                when: when.into(),
+                entry: index,
+            });
+        }
+    }
+    control.arms = arms.into();
+}
+
 /// The handler sites and view-driven native nodes of a view, numbered in the
 /// pre-order the Binding IR keys nodes by.
 #[derive(Default)]
@@ -392,7 +476,7 @@ impl<'a> Walk<'a> {
             self.roots.push((node.instance, own));
         }
         let kind = ControlKind::of(&node.type_name);
-        if kind.responds() || !node.control_reads.is_empty() {
+        if kind.responds() || !node.control_reads.is_empty() || node.styled.is_some() {
             self.nodes.push((own, kind, node));
         }
         for handler in &node.handlers {
@@ -404,6 +488,7 @@ impl<'a> Walk<'a> {
                 Site {
                     instance: handler.instance,
                     at: handler.origin,
+                    part: 0,
                 },
             ));
         }

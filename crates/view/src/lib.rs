@@ -36,7 +36,7 @@ mod theme;
 mod values;
 
 pub use attach::{Route, attach, attach_node};
-pub use control::{Control, ControlInput, ControlKind, Look};
+pub use control::{Control, ControlInput, ControlKind, Look, LookArm, When};
 pub use effects::{__mount_effects, mount_effects, release_effects};
 pub use env::{__link_env, env_value};
 pub use host::{__embedded, HostError, StateCells, ViewHost, cell_value, vm_value};

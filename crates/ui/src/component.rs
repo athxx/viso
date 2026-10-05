@@ -294,6 +294,8 @@ pub struct NodeStore {
     /// [`capture`]: Self::capture
     /// [`focused`]: Self::focused
     hovered: Option<NodeId>,
+    /// The interaction states a style reads, for the nodes asked for them.
+    pub(crate) interaction_states: crate::interaction::InteractionStates,
     /// Cold flag column: whether a node can hold focus. Default `false` — unlike
     /// `hittable`, a node opts *in* to focus (only interactive nodes participate
     /// in the focus ring). Maintained index-aligned with the arena.
@@ -497,6 +499,7 @@ impl NodeStore {
         self.focused = None;
         self.contacts.clear();
         self.hovered = None;
+        self.interaction_states.clear();
         self.focus_scope = None;
         self.draggable_regions.clear();
         self.tasks.clear();
@@ -1064,11 +1067,15 @@ impl NodeStore {
     ///
     /// [`set_capture`]: Self::set_capture
     pub fn set_hovered(&mut self, id: Option<NodeId>) {
-        match id {
-            Some(node) if self.arena.is_live(node) => self.hovered = Some(node),
-            Some(_) => {}
-            None => self.hovered = None,
+        let next = match id {
+            Some(node) if self.arena.is_live(node) => Some(node),
+            Some(_) => return,
+            None => None,
+        };
+        if self.hovered != next {
+            self.interaction_states.moved();
         }
+        self.hovered = next;
     }
 
     /// Add `delta` to a scroll viewport's offset, clamped per axis to
@@ -1915,7 +1922,12 @@ impl NodeStore {
     pub fn set_focused(&mut self, id: Option<NodeId>) {
         match id {
             Some(node) if !self.arena.is_live(node) => {}
-            other => self.focused = other,
+            other => {
+                if self.focused != other {
+                    self.interaction_states.moved();
+                }
+                self.focused = other;
+            }
         }
     }
 

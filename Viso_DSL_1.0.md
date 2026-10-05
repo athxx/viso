@@ -2385,6 +2385,8 @@ Button {
 
 `styles` 的精确类型由 Component Schema 定义，通常是 `List<StyleRef<Button>>`。Style 名在 Expression 中求值为编译期常量 `StyleRef<T>`，`T` 是其 `for` 目标 Component。编译器必须检查 Style 目标类型兼容性；Style 顺序按列表从左到右应用，后者覆盖前者，节点显式 Property 最后覆盖全部 Style。不存在通过字符串名称动态查找 Style 的语义。
 
+当前实现：Style 的目标是本文件可见的原生 Widget 或用户 Component（否则 `E2001`）；Base 是同一文件中同目标的 Style（名字无法解析报 `E2001`，解析为非 Style、其他文件的 Style 或目标不同报 `E2103`），Base 图有环的 Style 报 `E2003`。Style 只绑定 Widget Schema 标为 Styleable 的 Property（各节点的布局、外观、变换、`transition.*`、容器的间距与对齐、文本样式；`styles`、内容、焦点与语义属性不是）或用户 Component 的 `@styleable` Input，否则 `E3101`；同一块（顶层或同一 `when`）内重复绑定报 `E3102`；值按 Property 类型检查（`E2103`），按 View 上下文检查副作用（`E2502`），可读 `theme`。`when` 的选择器只由选择器名、`!`、`&&`、`||` 与括号组成（否则 `E2103`），名字须是目标支持的选择器（U12.1，否则 `E2001`）。节点的 `styles` 是本文件 Style 名的列表（不是列表、元素不是名字或是值报 `E2103`，Style 目标不是节点类型报 `E2103`，其他文件的 Style 报 `E3711`）。应用：每个 Style 先按顺序深度优先应用其 Base，再按源码顺序应用自身各项；对同一 Property，无条件绑定取代此前的全部值，`when` 绑定作为分支叠加，后写的优先；节点自身绑定（`:` 或 `bind`）的 Property 不取 Style 的值。`background` 与 `opacity` 编译为节点的基值入口加按优先级排列的分支（选择器的后缀式与值入口，入口注册在节点 `styles` 值的 Site 上，按确定顺序编号），运行时取第一个成立的分支，否则取基值，都没有时取属性默认值；`transition.background`/`transition.opacity` 取无条件值；其他 Property 的无条件值与节点自身的值同样折叠或成为 Binding，其上的 `when` 报 `E3711`。选择器中的 `disabled`、`checked`、`invalid` 读取节点自身的 `enabled`、`checked`、`invalid`（未绑定时取默认值并在编译期折叠：恒假的分支删除，恒真的分支成为基值）。用户 Component 节点上的 `styles` 目前报 `E3711`。热重载、Release 包与宏路径相同。
+
 ---
 
 ## 60. Theme
@@ -4376,6 +4378,8 @@ export style SelectedChip for Chip {
 - `@selector` 公开的选择器名等于成员名；成员非 `Bool`，或与 U12.1 标准选择器同名但语义不同，是 `E3710`；
 - 内部 `state` 可经 `@selector` 公开为只读选择器，外部仍不能读写该 State。
 
+当前实现：`@styleable` 只标在 `input` 上，`@selector` 只标在 `Bool` 类型的 `input`、`state` 或 `computed` 上，且名字不得是运行时判定的标准选择器（`hover`、`pressed`、`focused`、`focus_visible`、`disabled`、`dragging`）；违反者报 `E3710`。以用户 Component 为目标的 Style 可绑定其 `@styleable` Input，`when` 可用其 `@selector` 成员与交互选择器；该 Style 应用到 Component 节点尚未实现（`E3711`）。
+
 ### U2.4 用户 Component 的失效推导
 
 用户 Component **不声明**失效类别。编译器从 View 对每个 Input 的读取位置推导，并写入 Schema：
@@ -4930,6 +4934,8 @@ Widget Schema 从下表中声明它支持的选择器；Style 使用 Widget 不�
 - 选择器变化时源节点标记 `STYLE`，加上所有引用该选择器的 `when` 块中 Property 失效类别的并集（只切换颜色的 hover 是 `STYLE|PAINT`）；
 - 同一 Style 内 `when` 块按源码顺序应用，后者覆盖前者；标准 Style 按"静止 → `hover` → `pressed` → `focus_visible` → `disabled`"书写，得到 `pressed > hover > 静止` 的优先级；
 - 节点显式 Property 优先于所有 Style（§59），因此依赖选择器的外观应写在 Style 中。
+
+当前实现：带标准输入事件的原生 Widget 支持 `hover`、`pressed`、`focused`、`focus_visible`；有 `Bool` 属性 `enabled`、`checked`、`invalid` 的 Widget 分别支持 `disabled`、`checked`、`invalid`。`selected`、`expanded`、`dragging` 尚无 Widget 支持（`E2001`）。交互状态由节点存储从路由器记录的事实导出：`hover` 是悬停目标或其祖先，`pressed` 是主按钮按下的命中节点或其祖先、直到抬起（尚不考虑手势竞技场判负与指针移出），`focused` 是焦点节点，`focus_visible` 是键盘或辅助技术移入的焦点。存储维护一个修订单元，在 Flush 开始时、上述事实自上一轮变化后提升一次；读取交互选择器的节点依赖它并只重新求值自身的外观入口。
 
 ### U12.2 标准 Theme Schema
 
@@ -8543,8 +8549,8 @@ RecordPatternField
 | E3707  | `VirtualList` Item Template 误用（§U9.1）               |
 | E3708  | 交互节点缺少等价键盘路径（警告，§U8.2）                 |
 | E3709  | 标注 [Runtime 待实现] 的 Property 使用了非默认值（§U1.1） |
-| E3710  | `@selector` 误用（§U2.3）                               |
-| E3711  | Handler、控制流区域或 Component 实例未能挂载：Runtime 未投递该 Event、Behavior 未能 Lower，区域位于 View 根、`VirtualList` 内或 `ui!` Fragment 中，或实例无法内联，或 `ui!` Fragment 中的 Rust Component 带 Property、Handler 或子项，或 `bind` 带尚未挂载的 `using` Converter，或 `AdaptiveScope` 的 `basis` 不是常量、`SafeArea`/`KeyboardAvoiding` 带 `padding`（§40.1、§52、§56.1、§96.3、§96.6、§123） |
+| E3710  | `@selector` 或 `@styleable` 误用（§U2.3）               |
+| E3711  | Handler、控制流区域或 Component 实例未能挂载：Runtime 未投递该 Event、Behavior 未能 Lower，区域位于 View 根、`VirtualList` 内或 `ui!` Fragment 中，或实例无法内联，或 `ui!` Fragment 中的 Rust Component 带 Property、Handler 或子项，或 `bind` 带尚未挂载的 `using` Converter，或 `AdaptiveScope` 的 `basis` 不是常量、`SafeArea`/`KeyboardAvoiding` 带 `padding`，或 Style 应用于用户 Component 节点、来自其他文件、或以 `when` 切换 `background`/`opacity` 以外的 Property（§40.1、§59、§52、§56.1、§96.3、§96.6、§123） |
 | E3712  | `@migrate` 误用：不标记 `fn`、`from` 缺失或不是类型拼写字符串、参数不是恰好一个 `from` 类型参数、未声明返回类型，或同一 `from` 与返回类型重复（§94.1） |
 | E4101  | 非 Task 主体（Action、Event、Effect 等）中使用 Await    |
 | E4102  | Task 跨挂起访问可变 State（编译期；绕过检查时为运行时故障） |

@@ -12,14 +12,15 @@
 //! literal property values (`width: 12dp`, `axis: column`) into concrete layout
 //! inputs. A property whose value is not a compile-time constant is not folded —
 //! it is recorded as a [`PendingProperty`] for the Binding IR pass (section 3)
-//! to turn into a `StateId -> (node, DirtyClass)` edge. Nothing here depends on
-//! `viso-ui`; the length/axis mirrors below carry just enough for the emitter to
-//! construct the runtime `Size`/`Axis`/style structs.
+//! to turn into a `StateId -> (node, DirtyClass)` edge. The length/axis
+//! mirrors below carry just enough for the emitter to construct the runtime
+//! `Size`/`Axis`/style structs.
 
 use crate::ir::dirty_map::{DirtyClass, property_dirty_class};
 use crate::resolve::SymbolId;
 use crate::syntax::span::TextRange;
 use viso_behavior::native::MigratableState;
+use viso_ui::Interaction;
 pub use viso_ui::adaptive::Avoid;
 
 /// The retained-tree template a view fragment or component view lowers to.
@@ -106,6 +107,8 @@ pub struct UiNode {
     /// `step`, a label's `text`), by property name and the span of the expression or
     /// `bind` source, where its entry is registered.
     pub control_reads: Vec<(String, TextRange)>,
+    /// The look the node's styles give it, beyond what it binds itself.
+    pub styled: Option<UiStyled>,
     /// The node's children, in source order.
     pub children: Vec<UiItem>,
     /// The node declaration's source span.
@@ -116,6 +119,54 @@ pub struct UiNode {
     /// The live state of the node a hot reload carries when it keeps the node,
     /// as its widget schema marks it.
     pub migratable: MigratableState,
+}
+
+/// The look properties a node's styles give it that the runtime delivers:
+/// each value is an entry the view checker registers at a part of the node's
+/// styles (see [`crate::behavior::Site::styled`]).
+#[derive(Debug, Clone, PartialEq)]
+pub struct UiStyled {
+    /// The span of the node's `styles` value.
+    pub at: TextRange,
+    /// Each property, in the order the styles first give it.
+    pub looks: Vec<UiLook>,
+}
+
+/// One look property a node's styles give it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct UiLook {
+    /// `background`, `opacity`, `transition.background` or
+    /// `transition.opacity`.
+    pub property: String,
+    /// The part of the value it shows while no arm holds.
+    pub base: Option<u32>,
+    /// The values a `when` switches to, the first that holds winning.
+    pub arms: Vec<UiLookArm>,
+}
+
+/// A value a style's `when` switches a look property to.
+#[derive(Debug, Clone, PartialEq)]
+pub struct UiLookArm {
+    /// The selector, in postfix order.
+    pub when: Vec<UiWhen>,
+    /// The part of the value.
+    pub part: u32,
+}
+
+/// One step of a selector, in postfix order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UiWhen {
+    /// The node is in this interaction state.
+    State(Interaction),
+    /// The `Bool` value at this part holds: the node's own property a
+    /// selector reads.
+    Part(u32),
+    /// The negation of the step before.
+    Not,
+    /// Both steps before.
+    And,
+    /// Either step before.
+    Or,
 }
 
 /// Which `viso_ui::BuildCx` builder call a node maps to: the retained node its

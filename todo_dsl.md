@@ -927,13 +927,26 @@ timers (§104–§111).
 - [ ] `style` / `theme` grammar and lowering; `@styleable`, `@selector` `E3710` (§59, §60, U2.3, U12).
   - [x] Grammar: `style NAME for Component : Base + Base { prop: v; when sel { } }`
         and `theme NAME : Base { name = expr; }`; both resolve (`theme` reads in
-        style values).
-  - [ ] Checks: only Styleable properties (`@styleable` inputs of user
-        components); selectors from the target schema or `@selector`
-        (`E3710`); pure expressions; acyclic bases; no handlers or state.
-  - [ ] Lowering and runtime: `styles: [A, B]` applies bases then styles left to
-        right, explicit properties last; `when` blocks follow selector state with
-        `STYLE` invalidation.
+        style values); a `when` selector never reads its `{` as a record.
+  - [x] Checks: target (`E2001`); bases of the file for the same target
+        (`E2001`/`E2103`), acyclic (`E2003`); only Styleable properties
+        (widget schema flag, `@styleable` inputs) `E3101`, once per block
+        `E3102`, typed `E2103`, pure `E2502`; selectors the target supports
+        (`E2001`), selector form (`E2103`); a node's `styles` list (`E2103`);
+        `@styleable`/`@selector` placement, type and reserved names (`E3710`).
+  - [x] Lowering and runtime: `styles: [A, B]` applies bases then styles left to
+        right, explicit properties last; `background`/`opacity` `when` arms
+        follow hover, pressed, focused, focus-visible and the node's own
+        `enabled`/`checked`/`invalid` through one store-wide interaction cell,
+        re-evaluating only the styled nodes; constant selectors fold; other
+        properties fold like the node's own; hot reload, release package and
+        macros alike.
+  - [ ] Styles on user-component nodes (`@styleable` inputs, `@selector`
+        members) and styles imported from another file (`E3711` today).
+  - [ ] `when` on properties besides `background`/`opacity`, and runtime
+        delivery of non-constant layout/text style values.
+  - [ ] `selected`, `expanded`, `dragging`; `pressed` cancelled by the gesture
+        arena or by the pointer leaving the node.
   - [x] Theme: the standard `Theme` schema (U12.2); `theme X { }` builds a typed
         immutable value from its items, its base and the record defaults
         (`E2001`/`E2103`, base cycles `E2003`, one name per package `E2002`);
