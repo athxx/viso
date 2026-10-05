@@ -298,7 +298,7 @@ impl Intrinsic {
         let like = |t: Ty, of: Ty| t == of || t == Ty::F32;
         match (self, args) {
             (I::Abs, &[x]) => numeric(x).then_some(x),
-            (I::Sign, &[x]) => matches!(x.scalar(), Some(Scalar::F32 | Scalar::I32)).then_some(x),
+            (I::Sign, &[x]) => float(x).then_some(x),
             (
                 I::Floor
                 | I::Ceil
