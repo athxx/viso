@@ -444,6 +444,9 @@ pub struct NodeStore {
     /// re-folded into `layout` when it changes. Empty in a tree of plain `dp`
     /// and `%` lengths.
     lengths: crate::length::LengthBindings,
+    /// Cold: the effects builds registered since the last flush, which the
+    /// flush moves into its [`EffectStore`] and runs for the first time.
+    pending_effects: crate::reactive::PendingEffects,
 }
 
 impl NodeStore {
@@ -499,6 +502,30 @@ impl NodeStore {
         self.tasks.clear();
         self.structure_hooks.clear();
         self.lengths.clear();
+        self.pending_effects.clear();
+    }
+
+    /// Registers an effect scoped to `node` whose dependencies `when` declares
+    /// (see [`EffectStore::alloc_when`]). The next flush adopts it and runs it
+    /// for the first time, after the commit that mounted `node`; freeing `node`
+    /// cancels it, running its cleanup.
+    pub fn add_effect(
+        &mut self,
+        node: NodeId,
+        when: impl FnMut(&mut crate::reactive::ComputeCx<'_>) -> bool + 'static,
+        body: impl FnMut(&mut crate::reactive::EffectCx<'_>) -> Option<crate::reactive::Cleanup>
+        + 'static,
+    ) {
+        self.pending_effects.push(node, when, body);
+    }
+
+    /// Whether an effect registered since the last flush waits to run.
+    pub fn has_pending_effects(&self) -> bool {
+        !self.pending_effects.is_empty()
+    }
+
+    pub(crate) fn pending_effects_mut(&mut self) -> &mut crate::reactive::PendingEffects {
+        &mut self.pending_effects
     }
 
     /// The arena backing the tree.

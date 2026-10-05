@@ -534,6 +534,18 @@ impl<'a> InferCx<'a> {
                 let ty = self.check_format(node);
                 return self.check_against(ty, expected, node);
             }
+            // `untracked(value)` is its value, read without recording a dependency.
+            if segments.len() == 1 && segments[0].text() == "untracked" {
+                if let [only] = args.as_slice() {
+                    return self.infer_expr(only, expected);
+                }
+                self.diagnostics.push(Diagnostic::error(
+                    "E2103",
+                    node.text_range(),
+                    "`untracked` takes one value",
+                ));
+                return Ty::Unknown;
+            }
             if let Some(ctor) = builtin_variant(&segments)
                 && ctor != "None"
             {

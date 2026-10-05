@@ -15,8 +15,8 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use viso::ui::{
-    BindingTable, BuildCx, Cleanup, ComputeCx, ComputedStore, DirtyClass, EffectStore, LeafStyle,
-    NodeId, NodeStore, StateStore, StateValue,
+    BindingTable, BuildCx, Cleanup, ComputeCx, ComputedStore, DirtyClass, EffectCx, EffectStore,
+    LeafStyle, NodeId, NodeStore, StateStore, StateValue,
 };
 
 /// Build a single leaf into `store` and return its id — a real
@@ -122,14 +122,14 @@ fn state_write_reruns_effect_scoped_to_same_state() {
 
     let log: Rc<RefCell<Vec<&'static str>>> = Rc::new(RefCell::new(Vec::new()));
     let body_log = Rc::clone(&log);
-    let e = effects.alloc(owner, move |cx: &mut ComputeCx<'_>| {
+    let e = effects.alloc(owner, move |cx: &mut EffectCx<'_>| {
         cx.get(n);
         body_log.borrow_mut().push("run");
         let cl = Rc::clone(&body_log);
         let cleanup: Cleanup = Box::new(move || cl.borrow_mut().push("cleanup"));
         Some(cleanup)
     });
-    assert!(effects.run(e, &states));
+    assert!(effects.run(e, &mut states));
     assert_eq!(*log.borrow(), ["run"], "first run, no prior cleanup");
     store.clear_dirty();
 
@@ -173,12 +173,12 @@ fn unrelated_write_leaves_derivation_and_effect_untouched() {
 
     let runs = Rc::new(RefCell::new(0u32));
     let runs_body = Rc::clone(&runs);
-    let e = effects.alloc(owner, move |cx: &mut ComputeCx<'_>| {
+    let e = effects.alloc(owner, move |cx: &mut EffectCx<'_>| {
         cx.get(watched);
         *runs_body.borrow_mut() += 1;
         None
     });
-    effects.run(e, &states);
+    effects.run(e, &mut states);
     store.clear_dirty();
 
     // Writing a state that neither the derivation nor the effect reads wakes

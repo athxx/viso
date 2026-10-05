@@ -40,7 +40,7 @@ use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
-use viso_behavior::{Fault, FaultKind, Value};
+use viso_behavior::{ComponentEffect, Fault, FaultKind, Value};
 use viso_ende::{Decode, DecodeError, Decoder, Encode, Encoder, ProtocolTag};
 use viso_ui::adaptive::{AnchorId, EnvField};
 use viso_ui::aot::{AotNode, build_aot_node};
@@ -50,6 +50,7 @@ use viso_ui::{BuildCx, DirtyClass, NodeId, NodeStore, StateId, StateValue, Struc
 
 use crate::attach::{Route, attach_node};
 use crate::control::Control;
+use crate::effects::mount_effect;
 use crate::host::ViewHost;
 use crate::route::EventRoute;
 use crate::scope::{LocalEnv, Locals, Scope};
@@ -151,6 +152,16 @@ pub struct EnvTemplate {
     pub anchor: u32,
 }
 
+/// An effect of a component instance an arm mounts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EffectTemplate {
+    /// Its entries and run policy.
+    pub effect: ComponentEffect,
+    /// The node it is mounted on, the instance's root, by item index in the
+    /// arm: freeing the node cancels it.
+    pub anchor: u32,
+}
+
 /// The aggregate tag of a half-open integer range a `for` region iterates.
 pub const HALF_OPEN: u32 = 0;
 
@@ -169,6 +180,9 @@ pub struct ArmTemplate {
     /// The `env` fields those instances read, ascending by slot: each mount of
     /// the arm resolves its own anchored fields.
     pub env: Vec<EnvTemplate>,
+    /// The effects of those instances, in source order: each mount of the arm
+    /// runs its own.
+    pub effects: Vec<EffectTemplate>,
     /// The arm's content, flattened in pre-order.
     pub items: Vec<ItemTemplate>,
 }
@@ -973,6 +987,18 @@ impl Patch<'_, '_> {
         self.cx.store.mark_dirty(parent, relayout());
         let own = self.keep(template, scope, extra, &built);
         let frag_scope = frag_scope(scope, extra, own.as_ref());
+        for effect in &template.effects {
+            let anchor = effect.anchor as usize;
+            if let Some(&(id, _)) = built.iter().find(|&&(_, index)| index == anchor) {
+                mount_effect(
+                    self.cx.store,
+                    self.host,
+                    effect.effect,
+                    frag_scope.clone(),
+                    id,
+                );
+            }
+        }
         let mut routed = Vec::new();
         let mut shown = Vec::new();
         for (id, index) in built {
@@ -1442,6 +1468,11 @@ impl Encode for ViewRegions {
                     enc.write_u8(env.field.tag());
                     enc.write_varint(u64::from(env.anchor));
                 }
+                enc.write_varint(arm.effects.len() as u64);
+                for effect in &arm.effects {
+                    effect.effect.encode(enc);
+                    enc.write_varint(u64::from(effect.anchor));
+                }
                 enc.write_varint(arm.items.len() as u64);
                 for item in &arm.items {
                     match item {
@@ -1554,6 +1585,14 @@ impl Decode for ViewRegions {
                     });
                 }
                 let count = dec.read_varint()?;
+                let mut effects = Vec::with_capacity(bounded(count));
+                for _ in 0..count {
+                    effects.push(EffectTemplate {
+                        effect: ComponentEffect::decode(dec)?,
+                        anchor: read_u32(dec)?,
+                    });
+                }
+                let count = dec.read_varint()?;
                 let mut items = Vec::with_capacity(bounded(count));
                 for _ in 0..count {
                     let offset = dec.position();
@@ -1593,6 +1632,7 @@ impl Decode for ViewRegions {
                     preserve,
                     locals,
                     env,
+                    effects,
                     items,
                 });
             }
@@ -1671,6 +1711,12 @@ impl ViewRegions {
                             Some(ItemTemplate::Node { .. })
                         )
                 }))?;
+                check(arm.effects.iter().all(|effect| {
+                    matches!(
+                        arm.items.get(effect.anchor as usize),
+                        Some(ItemTemplate::Node { .. })
+                    )
+                }))?;
                 // The children still owed to the open nodes; an item owed to
                 // none is a new top-level item.
                 let mut owed = 0usize;
@@ -1731,6 +1777,14 @@ mod tests {
                             field: EnvField::SizeClass,
                             anchor: 0,
                         }],
+                        effects: vec![EffectTemplate {
+                            effect: ComponentEffect {
+                                deps: Some(8),
+                                body: 9,
+                                run: viso_behavior::EffectRun::Change,
+                            },
+                            anchor: 0,
+                        }],
                         items: vec![
                             ItemTemplate::Node {
                                 node: node(AotNodeKind::Flex, 1),
@@ -1752,6 +1806,7 @@ mod tests {
                         preserve: false,
                         locals: vec![],
                         env: vec![],
+                        effects: vec![],
                         items: vec![ItemTemplate::Node {
                             node: node(AotNodeKind::Leaf, 0),
                             edges: vec![],
@@ -1784,6 +1839,10 @@ mod tests {
 
         let mut misanchored = regions.clone();
         misanchored.regions[0].arms[0].env[0].anchor = 1;
+        assert!(ViewRegions::decode_from_slice(&misanchored.encode_to_vec()).is_err());
+
+        let mut misanchored = regions.clone();
+        misanchored.regions[0].arms[0].effects[0].anchor = 1;
         assert!(ViewRegions::decode_from_slice(&misanchored.encode_to_vec()).is_err());
 
         let mut overlapping = regions;

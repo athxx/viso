@@ -89,6 +89,13 @@ pub struct EnvRead {
 }
 
 impl ViewBehavior {
+    /// Whether the view mounts an `effect` with its root.
+    pub fn has_effects(&self) -> bool {
+        self.module
+            .component(&self.component)
+            .is_some_and(|index| !self.module.layout(index).effects.is_empty())
+    }
+
     /// The routes of the node `key`.
     pub fn routes(&self, key: NodeKey) -> &[Route] {
         self.routes

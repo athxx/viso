@@ -21,8 +21,8 @@ use viso_behavior::{Migrator, PersistSlot};
 use viso_ui::adaptive::EnvField;
 
 use super::ir::{
-    Body, ComponentLayout, Const, EnvSlot, FuncId, Function, FunctionKind, Inst, NativeImport, Num,
-    Program, Reg, Site, SystemLayout, Unsupported,
+    Body, ComponentLayout, Const, EffectEntry, EnvSlot, FuncId, Function, FunctionKind, Inst,
+    NativeImport, Num, Program, Reg, Site, SystemLayout, Unsupported,
 };
 use super::probe::{Probe, ProbeShape};
 use crate::ast::{AssignablePath, AstNode, Block, Expr};
@@ -185,6 +185,7 @@ impl ProgramBuilder {
             handlers: Vec::new(),
             regional: Vec::new(),
             env: Vec::new(),
+            effects: Vec::new(),
         });
     }
 
@@ -352,6 +353,32 @@ impl ProgramBuilder {
         if let Some(layout) = self.program.components.last_mut() {
             layout.handlers.push((Site::own(at), func));
         }
+    }
+
+    /// Records an effect of the component registered last: `deps`, lowered
+    /// from the dependency list at `deps_at`, and `body`, from the body at
+    /// `body_at`, join its handler table at those sites.
+    pub(crate) fn effect(
+        &mut self,
+        deps: Option<(TextRange, FuncId)>,
+        body: (TextRange, FuncId),
+        run: viso_behavior::EffectRun,
+    ) {
+        let Some(layout) = self.program.components.last_mut() else {
+            return;
+        };
+        let mut entry = |(at, func): (TextRange, FuncId)| {
+            layout.handlers.push((Site::own(at), func));
+            layout.handlers.len() as u32 - 1
+        };
+        let deps = deps.map(&mut entry);
+        let body = entry(body);
+        layout.effects.push(EffectEntry {
+            instance: 0,
+            deps,
+            body,
+            run,
+        });
     }
 
     /// Records `func` as the initializer of the state `state`.
@@ -590,6 +617,74 @@ pub(crate) fn lower_handler(
             symbol: def.symbol,
             module: def.module,
             params: 1 + scope.len() as u32,
+            captures: Vec::new(),
+            body,
+        },
+        def.into,
+    )
+}
+
+/// Lowers an effect's dependency list to a function returning the list of the
+/// dependency values.
+pub(crate) fn lower_effect_deps(
+    b: &mut ProgramBuilder,
+    cx: &InferCx<'_>,
+    def: Def,
+    deps: &[Expr],
+    at: TextRange,
+) -> FuncId {
+    let mut l = Lowerer::new(cx, b, &def, at);
+    let result = (|| {
+        let mut items = Vec::with_capacity(deps.len());
+        for dep in deps {
+            items.push(l.expr(dep)?);
+        }
+        let dst = l.reg();
+        l.emit(Inst::List { dst, items });
+        l.emit(Inst::Return { src: dst });
+        Ok(())
+    })();
+    let body = result.map(|()| l.frames.pop().unwrap_or_default().body);
+    b.define(
+        Function {
+            name: def.name,
+            kind: def.kind,
+            symbol: def.symbol,
+            module: def.module,
+            params: 0,
+            captures: Vec::new(),
+            body,
+        },
+        def.into,
+    )
+}
+
+/// Lowers an effect body to a function returning its `cleanup` as a closure,
+/// or unit without one.
+pub(crate) fn lower_effect_body(
+    b: &mut ProgramBuilder,
+    cx: &InferCx<'_>,
+    def: Def,
+    body: &crate::ast::EffectBody,
+) -> FuncId {
+    let mut l = Lowerer::new(cx, b, &def, body.syntax().text_range());
+    let result = (|| {
+        l.block(body.syntax(), false)?;
+        let src = match body.cleanup().and_then(|c| c.block()) {
+            Some(block) => l.cleanup_closure(block.syntax())?,
+            None => l.unit(),
+        };
+        l.emit(Inst::Return { src });
+        Ok(())
+    })();
+    let body = result.map(|()| l.frames.pop().unwrap_or_default().body);
+    b.define(
+        Function {
+            name: def.name,
+            kind: def.kind,
+            symbol: def.symbol,
+            module: def.module,
+            params: 0,
             captures: Vec::new(),
             body,
         },

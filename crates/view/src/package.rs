@@ -15,6 +15,7 @@ use viso_ui::{
 
 use crate::attach::{Route, attach_node};
 use crate::control::Control;
+use crate::effects::mount_effects;
 use crate::host::{HostError, ViewHost};
 use crate::regions::{ViewRegions, mount_regions};
 use crate::route::EventRoute;
@@ -221,6 +222,9 @@ pub fn instantiate_view(
         .filter_map(|c| Some((node_ids.get(c.node as usize).copied().flatten()?, c.control)))
         .collect();
     mount_values(&mut cx, &host, &shown);
+    if let Some(root) = root {
+        mount_effects(cx.store, &host, root);
+    }
     Ok(LoadedView {
         root,
         host: Some(host),

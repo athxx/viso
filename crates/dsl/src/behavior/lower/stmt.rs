@@ -134,6 +134,8 @@ impl Lowerer<'_, '_> {
             SyntaxKind::IfStmt => self.if_chain(stmt, false).map(|_| ()),
             SyntaxKind::MatchStmt => self.match_value(stmt, false).map(|_| ()),
             SyntaxKind::EmitStmt => self.emit_event(stmt),
+            // An effect's cleanup lowers as the closure its body returns.
+            SyntaxKind::CleanupClause => Ok(()),
             SyntaxKind::TransactionStmt => match child_of(stmt, SyntaxKind::Block) {
                 Some(block) => self.block(&block, false).map(|_| ()),
                 None => Ok(()),

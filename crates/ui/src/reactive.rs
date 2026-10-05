@@ -152,6 +152,56 @@ impl<'a> ComputeCx<'a> {
         self.cursor.record(id);
         self.states.get(id)
     }
+
+    /// Read a state value without recording a dependency.
+    #[inline]
+    pub fn peek(&self, id: StateId) -> Option<StateValue> {
+        self.states.get(id)
+    }
+
+    /// The adaptive environment; reading it records no dependency.
+    #[inline]
+    pub fn env(&self) -> &crate::adaptive::AdaptiveEnv {
+        self.states.env()
+    }
+}
+
+/// The context an [`Effect`] body runs in: it reads state like a
+/// [`ComputeCx`], recording each read as a dependency unless the effect
+/// declared its dependencies up front, and it may write state. A write is
+/// pending like any other: the flush schedules what it changes in its next
+/// round, so an effect never re-enters itself synchronously.
+pub struct EffectCx<'a> {
+    states: &'a mut StateStore,
+    cursor: &'a mut DepCursor,
+}
+
+impl EffectCx<'_> {
+    /// Read a state value, recording it as a dependency of the run of an
+    /// effect without declared dependencies.
+    #[inline]
+    pub fn get(&mut self, id: StateId) -> Option<StateValue> {
+        self.cursor.record(id);
+        self.states.get(id)
+    }
+
+    /// Read a state value without recording a dependency.
+    #[inline]
+    pub fn peek(&self, id: StateId) -> Option<StateValue> {
+        self.states.get(id)
+    }
+
+    /// Write a state value; returns whether the id was live.
+    #[inline]
+    pub fn set(&mut self, id: StateId, value: StateValue) -> bool {
+        self.states.set(id, value)
+    }
+
+    /// The adaptive environment; reading it records no dependency.
+    #[inline]
+    pub fn env(&self) -> &crate::adaptive::AdaptiveEnv {
+        self.states.env()
+    }
 }
 
 /// A cleanup closure returned by an effect body, run before the next restart or
@@ -165,7 +215,46 @@ type EvalFn = Box<dyn FnMut(&mut ComputeCx<'_>) -> StateValue>;
 
 /// The boxed body of an [`Effect`]: runs for effect and returns an optional
 /// [`Cleanup`] the next restart (or cancellation) runs first.
-type EffectFn = Box<dyn FnMut(&mut ComputeCx<'_>) -> Option<Cleanup>>;
+type EffectFn = Box<dyn FnMut(&mut EffectCx<'_>) -> Option<Cleanup>>;
+
+/// The declared dependencies of an [`Effect`]: reads state, recording each
+/// read as a dependency, and says whether the body runs this time.
+type WhenFn = Box<dyn FnMut(&mut ComputeCx<'_>) -> bool>;
+
+/// An effect a build registered on the [`NodeStore`](crate::NodeStore), which
+/// the flush moves into the [`EffectStore`] and runs for the first time.
+pub(crate) struct PendingEffect {
+    node: NodeId,
+    when: WhenFn,
+    body: EffectFn,
+}
+
+/// The effects registered since the last flush adopted them.
+#[derive(Default)]
+pub(crate) struct PendingEffects(Vec<PendingEffect>);
+
+impl PendingEffects {
+    pub(crate) fn push(
+        &mut self,
+        node: NodeId,
+        when: impl FnMut(&mut ComputeCx<'_>) -> bool + 'static,
+        body: impl FnMut(&mut EffectCx<'_>) -> Option<Cleanup> + 'static,
+    ) {
+        self.0.push(PendingEffect {
+            node,
+            when: Box::new(when),
+            body: Box::new(body),
+        });
+    }
+
+    pub(crate) fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    pub(crate) fn clear(&mut self) {
+        self.0.clear();
+    }
+}
 
 /// A pure cached derivation over state.
 ///
@@ -194,6 +283,10 @@ struct EffectSlot {
     node: NodeId,
     /// The dependency set recorded at the last run.
     deps: Vec<StateId>,
+    /// The declared dependencies, when the effect has them: their reads are
+    /// the dependency set and they decide whether the body runs. Without
+    /// them the body's own reads are.
+    when: Option<WhenFn>,
     /// The effect body. Runs for effect and returns an optional cleanup that the
     /// next restart (or the cancellation) runs first.
     body: EffectFn,
@@ -485,9 +578,43 @@ impl EffectStore {
     pub fn alloc(
         &mut self,
         node: NodeId,
-        body: impl FnMut(&mut ComputeCx<'_>) -> Option<Cleanup> + 'static,
+        body: impl FnMut(&mut EffectCx<'_>) -> Option<Cleanup> + 'static,
     ) -> EffectId {
-        let body: EffectFn = Box::new(body);
+        self.insert(node, None, Box::new(body))
+    }
+
+    /// Register an effect scoped to `node` whose dependencies `when` declares:
+    /// the states `when` reads are the dependency set, and a run whose `when`
+    /// returns `false` leaves the effect as it was — no cleanup, no body. The
+    /// body's own reads record nothing. Not run until [`EffectStore::run`].
+    pub fn alloc_when(
+        &mut self,
+        node: NodeId,
+        when: impl FnMut(&mut ComputeCx<'_>) -> bool + 'static,
+        body: impl FnMut(&mut EffectCx<'_>) -> Option<Cleanup> + 'static,
+    ) -> EffectId {
+        self.insert(node, Some(Box::new(when)), Box::new(body))
+    }
+
+    /// Moves the effects registered on `store` since the last call into the
+    /// store and runs each once, in registration order; an effect whose node
+    /// was freed meanwhile is dropped unrun. Returns how many ran.
+    pub fn adopt(&mut self, store: &mut crate::NodeStore, states: &mut StateStore) -> u32 {
+        let pending = std::mem::take(&mut store.pending_effects_mut().0);
+        let mut ran = 0;
+        for effect in pending {
+            if !store.arena().is_live(effect.node) {
+                continue;
+            }
+            let id = self.insert(effect.node, Some(effect.when), effect.body);
+            if self.run(id, states) {
+                ran += 1;
+            }
+        }
+        ran
+    }
+
+    fn insert(&mut self, node: NodeId, when: Option<WhenFn>, body: EffectFn) -> EffectId {
         if let Some(index) = self.free.pop() {
             let slot = &mut self.slots[index as usize];
             debug_assert!(!slot.occupied);
@@ -495,6 +622,7 @@ impl EffectStore {
             slot.occupied = true;
             slot.node = node;
             slot.deps.clear();
+            slot.when = when;
             slot.body = body;
             slot.cleanup = None;
             EffectId {
@@ -506,6 +634,7 @@ impl EffectStore {
             self.slots.push(EffectSlot {
                 node,
                 deps: Vec::new(),
+                when,
                 body,
                 cleanup: None,
                 generation: 0,
@@ -536,7 +665,7 @@ impl EffectStore {
     /// stops waking it and a newly read one starts.
     ///
     /// [`wake`]: EffectStore::wake
-    pub fn run(&mut self, id: EffectId, states: &StateStore) -> bool {
+    pub fn run(&mut self, id: EffectId, states: &mut StateStore) -> bool {
         let Some(slot) = self.slots.get_mut(id.index as usize) else {
             return false;
         };
@@ -544,17 +673,27 @@ impl EffectStore {
             return false;
         }
 
-        // Dependency restart: the prior run's cleanup runs before the re-run.
-        if let Some(cleanup) = slot.cleanup.take() {
-            cleanup();
-        }
-
         let mut cursor = DepCursor::new();
-        let next_cleanup = {
-            let mut cx = ComputeCx::new(states, &mut cursor);
-            (slot.body)(&mut cx)
+        let go = match &mut slot.when {
+            Some(when) => when(&mut ComputeCx::new(states, &mut cursor)),
+            None => true,
         };
-        self.slots[id.index as usize].cleanup = next_cleanup;
+        if go {
+            // Dependency restart: the prior run's cleanup runs before the re-run.
+            if let Some(cleanup) = slot.cleanup.take() {
+                cleanup();
+            }
+            // Declared dependencies stand; the body's reads record nothing.
+            let mut untracked = DepCursor::new();
+            let cursor = if slot.when.is_some() {
+                &mut untracked
+            } else {
+                &mut cursor
+            };
+            let mut cx = EffectCx { states, cursor };
+            let next_cleanup = (slot.body)(&mut cx);
+            self.slots[id.index as usize].cleanup = next_cleanup;
+        }
 
         // Drop the effect's old reverse-index entries, then record the freshly
         // observed dependency set.
@@ -577,7 +716,7 @@ impl EffectStore {
     /// [`run`]); the newly gathered set takes effect for the *next* wake, so a
     /// single wake is a fixed pass over the effects the current index names — no
     /// cascade within one flush.
-    pub fn wake(&mut self, changed: &[StateId], states: &StateStore) -> u32 {
+    pub fn wake(&mut self, changed: &[StateId], states: &mut StateStore) -> u32 {
         // Gather the affected effects into the reused scratch, deduplicating so
         // an effect reading two changed states restarts once.
         self.wake_scratch.clear();
@@ -606,6 +745,24 @@ impl EffectStore {
         targets.clear();
         self.wake_scratch = targets;
         ran
+    }
+
+    /// Appends to `out` the nodes of the effects a change of `changed` would
+    /// run again, once each in first-woken order, running none of them.
+    pub fn woken_by(&self, changed: &[StateId], out: &mut Vec<NodeId>) {
+        for &state in changed {
+            let Some(deps) = self.dep_index.get(state.index() as usize) else {
+                continue;
+            };
+            for eff in deps {
+                let Some(slot) = self.slots.get(eff.index as usize) else {
+                    continue;
+                };
+                if slot.occupied && slot.generation == eff.generation && !out.contains(&slot.node) {
+                    out.push(slot.node);
+                }
+            }
+        }
     }
 
     /// Cancel an effect: run its pending cleanup, drop its reverse-index entries,
@@ -1245,7 +1402,7 @@ mod tests {
         });
 
         // First run: body only, no prior cleanup.
-        assert!(effects.run(e, &states));
+        assert!(effects.run(e, &mut states));
         assert_eq!(*log.borrow(), ["run"]);
 
         // A dependency write, delivered through wake, restarts the effect:
@@ -1253,7 +1410,7 @@ mod tests {
         states.set(n, StateValue::Int(2));
         let mut changed = Vec::new();
         states.take_pending(&mut changed);
-        assert_eq!(effects.wake(&changed, &states), 1, "one effect re-ran");
+        assert_eq!(effects.wake(&changed, &mut states), 1, "one effect re-ran");
         assert_eq!(*log.borrow(), ["run", "cleanup", "run"]);
     }
 
@@ -1274,21 +1431,21 @@ mod tests {
             *runs_body.borrow_mut() += 1;
             None
         });
-        assert!(effects.run(e, &states));
+        assert!(effects.run(e, &mut states));
         assert_eq!(*runs.borrow(), 1);
 
         // Writing an unrelated state wakes nothing.
         states.set(other, StateValue::Int(9));
         let mut changed = Vec::new();
         states.take_pending(&mut changed);
-        assert_eq!(effects.wake(&changed, &states), 0);
+        assert_eq!(effects.wake(&changed, &mut states), 0);
         assert_eq!(*runs.borrow(), 1, "unrelated write does not re-run");
 
         // Writing the watched state does.
         states.set(watched, StateValue::Int(1));
         changed.clear();
         states.take_pending(&mut changed);
-        assert_eq!(effects.wake(&changed, &states), 1);
+        assert_eq!(effects.wake(&changed, &mut states), 1);
         assert_eq!(*runs.borrow(), 2);
     }
 
@@ -1310,7 +1467,7 @@ mod tests {
             *runs_body.borrow_mut() += 1;
             None
         });
-        effects.run(e, &states);
+        effects.run(e, &mut states);
         assert_eq!(*runs.borrow(), 1);
 
         // Both dependencies change in one transaction; the effect restarts once.
@@ -1319,7 +1476,7 @@ mod tests {
         let mut changed = Vec::new();
         states.take_pending(&mut changed);
         assert_eq!(
-            effects.wake(&changed, &states),
+            effects.wake(&changed, &mut states),
             1,
             "restarts once, not twice"
         );
@@ -1343,7 +1500,7 @@ mod tests {
             let cleanup: Cleanup = Box::new(move || *flag.borrow_mut() = true);
             Some(cleanup)
         });
-        effects.run(e, &states);
+        effects.run(e, &mut states);
         assert!(!*cleaned.borrow());
 
         // Unmount: freeing the node cancels its effects, running each cleanup.
@@ -1356,10 +1513,73 @@ mod tests {
         let mut changed = Vec::new();
         states.take_pending(&mut changed);
         assert_eq!(
-            effects.wake(&changed, &states),
+            effects.wake(&changed, &mut states),
             0,
             "a cancelled effect is out of the reverse index"
         );
+    }
+
+    #[test]
+    fn a_gated_effect_runs_only_when_its_gate_says_and_tracks_only_the_gate() {
+        let mut states = StateStore::new();
+        let mut arena = NodeArena::new();
+        let mut effects = EffectStore::new();
+        let watched = state(&mut states, StateValue::Int(1));
+        let read = state(&mut states, StateValue::Int(0));
+        let out = state(&mut states, StateValue::Int(0));
+        let owner = node(&mut arena);
+        let log: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
+        let (gate_log, body_log) = (Rc::clone(&log), Rc::clone(&log));
+        // Runs when `watched / 10` changes; the body reads `read`, untracked,
+        // and writes `out`.
+        let mut last = None;
+        let e = effects.alloc_when(
+            owner,
+            move |cx| {
+                let tens = match cx.get(watched) {
+                    Some(StateValue::Int(n)) => n / 10,
+                    _ => -1,
+                };
+                gate_log.borrow_mut().push(format!("gate {tens}"));
+                last.replace(tens) != Some(tens)
+            },
+            move |cx| {
+                let seen = cx.get(read);
+                body_log.borrow_mut().push(format!("run {seen:?}"));
+                cx.set(out, StateValue::Int(7));
+                let cl = Rc::clone(&body_log);
+                Some(Box::new(move || cl.borrow_mut().push("cleanup".into())) as Cleanup)
+            },
+        );
+        assert!(effects.run(e, &mut states));
+        assert_eq!(*log.borrow(), ["gate 0", "run Some(Int(0))"]);
+        let mut changed = Vec::new();
+        states.take_pending(&mut changed);
+        assert_eq!(changed, [out], "the body's write is pending");
+
+        // The body's read is not a dependency.
+        states.set(read, StateValue::Int(5));
+        states.take_pending(&mut changed);
+        assert_eq!(effects.wake(&changed, &mut states), 0);
+        // A change the gate rejects keeps the effect and its cleanup.
+        states.set(watched, StateValue::Int(9));
+        states.take_pending(&mut changed);
+        assert_eq!(effects.wake(&changed, &mut states), 1);
+        assert_eq!(log.borrow().len(), 3, "{:?}", log.borrow());
+        // One it accepts cleans up and re-runs.
+        states.set(watched, StateValue::Int(12));
+        states.take_pending(&mut changed);
+        effects.wake(&changed, &mut states);
+        assert_eq!(
+            log.borrow()[3..],
+            [
+                "gate 1".to_string(),
+                "cleanup".into(),
+                "run Some(Int(5))".into()
+            ]
+        );
+        assert!(effects.cancel(e));
+        assert_eq!(log.borrow().last().map(String::as_str), Some("cleanup"));
     }
 
     #[test]
@@ -1383,14 +1603,14 @@ mod tests {
             }
             None
         });
-        effects.run(e, &states); // runs=1, deps={gate, inner}
+        effects.run(e, &mut states); // runs=1, deps={gate, inner}
 
         // Flip the gate: wakes via `gate`, re-runs, and this run does NOT read
         // `inner`, so `inner` drops out of the reverse index.
         states.set(gate, StateValue::Bool(false));
         let mut changed = Vec::new();
         states.take_pending(&mut changed);
-        assert_eq!(effects.wake(&changed, &states), 1); // runs=2, deps={gate}
+        assert_eq!(effects.wake(&changed, &mut states), 1); // runs=2, deps={gate}
         assert_eq!(*runs.borrow(), 2);
 
         // Now writing `inner` must wake nothing — it is no longer a dependency.
@@ -1398,7 +1618,7 @@ mod tests {
         changed.clear();
         states.take_pending(&mut changed);
         assert_eq!(
-            effects.wake(&changed, &states),
+            effects.wake(&changed, &mut states),
             0,
             "dropped dep stops waking"
         );

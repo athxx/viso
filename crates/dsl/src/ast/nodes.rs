@@ -171,6 +171,26 @@ ast_node!(
     SlotDecl = SlotDecl
 );
 ast_node!(
+    /// `effect IDENT (when (Expr,*))? (run Path)? { Statement* (cleanup Block)? }`.
+    EffectDecl = EffectDecl
+);
+ast_node!(
+    /// `when ( Expr, ... )` — an effect's dependencies.
+    EffectDeps = EffectDeps
+);
+ast_node!(
+    /// `run Path` — an effect's run policy.
+    EffectRun = EffectRun
+);
+ast_node!(
+    /// `{ Statement* (cleanup Block)? }` — an effect's body.
+    EffectBody = EffectBody
+);
+ast_node!(
+    /// `cleanup Block`.
+    CleanupClause = CleanupClause
+);
+ast_node!(
     /// `const IDENT : Type = Expr ;`.
     ConstDecl = ConstDecl
 );
@@ -513,6 +533,56 @@ impl ComputedDecl {
 
     /// The `=` expression the computed derives.
     pub fn body(&self) -> Option<Expr> {
+        support::child(&self.syntax)
+    }
+}
+
+impl EffectDecl {
+    /// The effect's name.
+    pub fn name(&self) -> Option<SyntaxToken> {
+        support::name_token(&self.syntax)
+    }
+
+    /// The `when (..)` dependency list, when declared.
+    pub fn deps(&self) -> Option<EffectDeps> {
+        support::child(&self.syntax)
+    }
+
+    /// The `run Path` policy, when declared.
+    pub fn run(&self) -> Option<EffectRun> {
+        support::child(&self.syntax)
+    }
+
+    /// The body.
+    pub fn body(&self) -> Option<EffectBody> {
+        support::child(&self.syntax)
+    }
+}
+
+impl EffectDeps {
+    /// The dependency expressions, in order.
+    pub fn exprs(&self) -> impl Iterator<Item = Expr> {
+        support::children(&self.syntax)
+    }
+}
+
+impl EffectRun {
+    /// The policy path.
+    pub fn policy(&self) -> Option<Expr> {
+        support::child(&self.syntax)
+    }
+}
+
+impl EffectBody {
+    /// The `cleanup` clause, when present.
+    pub fn cleanup(&self) -> Option<CleanupClause> {
+        support::child(&self.syntax)
+    }
+}
+
+impl CleanupClause {
+    /// The cleanup's block.
+    pub fn block(&self) -> Option<Block> {
         support::child(&self.syntax)
     }
 }
@@ -1532,6 +1602,7 @@ pub enum Member {
     Fn(FnDecl),
     Action(ActionDecl),
     Task(TaskDecl),
+    Effect(EffectDecl),
     View(ViewDecl),
 }
 
@@ -1547,6 +1618,7 @@ impl AstNode for Member {
                 | SyntaxKind::FnDecl
                 | SyntaxKind::ActionDecl
                 | SyntaxKind::TaskDecl
+                | SyntaxKind::EffectDecl
                 | SyntaxKind::ViewDecl
         )
     }
@@ -1560,6 +1632,7 @@ impl AstNode for Member {
             SyntaxKind::FnDecl => Member::Fn(FnDecl { syntax: node }),
             SyntaxKind::ActionDecl => Member::Action(ActionDecl { syntax: node }),
             SyntaxKind::TaskDecl => Member::Task(TaskDecl { syntax: node }),
+            SyntaxKind::EffectDecl => Member::Effect(EffectDecl { syntax: node }),
             SyntaxKind::ViewDecl => Member::View(ViewDecl { syntax: node }),
             _ => return None,
         };
@@ -1575,6 +1648,7 @@ impl AstNode for Member {
             Member::Fn(n) => n.syntax(),
             Member::Action(n) => n.syntax(),
             Member::Task(n) => n.syntax(),
+            Member::Effect(n) => n.syntax(),
             Member::View(n) => n.syntax(),
         }
     }

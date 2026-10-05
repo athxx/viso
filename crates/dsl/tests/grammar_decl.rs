@@ -286,3 +286,35 @@ fn declaration_losslessness_holds_over_a_corpus() {
         assert_eq!(root.text(), src, "round-trip {src:?}");
     }
 }
+
+#[test]
+fn effect_takes_dependencies_a_run_policy_and_a_trailing_cleanup() {
+    let src =
+        "component C { effect e when (a, b.c,) run EffectRun::change { f(); cleanup { g(); } } }";
+    let root = unit(src);
+    assert_eq!(root.text(), src, "the effect round-trips");
+    let effect = first(&root, SyntaxKind::EffectDecl).expect("an effect");
+    assert!(first(&effect, SyntaxKind::EffectDeps).is_some());
+    assert!(first(&effect, SyntaxKind::EffectRun).is_some());
+    assert_eq!(count(&effect, SyntaxKind::CleanupClause), 1);
+
+    let bare = unit("component C { effect e { f(); } }");
+    let effect = first(&bare, SyntaxKind::EffectDecl).expect("an effect");
+    assert!(first(&effect, SyntaxKind::EffectDeps).is_none());
+    assert!(first(&effect, SyntaxKind::EffectRun).is_none());
+
+    assert!(
+        unit_has_error(
+            "component C { effect e when () { } }",
+            ParseErrorKind::ExpectedExpr
+        ),
+        "an empty `when ()` is a syntax error"
+    );
+    assert!(
+        unit_has_error(
+            "component C { effect e { cleanup { } f(); } }",
+            ParseErrorKind::MissingToken
+        ),
+        "the cleanup ends the body"
+    );
+}

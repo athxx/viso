@@ -450,7 +450,7 @@ fn member_identity(
         Member::Fn(d) => (d.name()?, SymbolKind::Function, Namespace::Value),
         Member::Action(d) => (d.name()?, SymbolKind::Action, Namespace::Value),
         Member::Task(d) => (d.name()?, SymbolKind::Task, Namespace::Value),
-        Member::Slot(_) | Member::View(_) => return None,
+        Member::Slot(_) | Member::View(_) | Member::Effect(_) => return None,
     };
     Some(triple)
 }
@@ -947,6 +947,19 @@ impl ModulePass<'_> {
             Member::Fn(f) => self.resolve_callable(f.params(), f.return_type(), f.body()),
             Member::Action(a) => self.resolve_callable(a.params(), a.return_type(), a.body()),
             Member::Task(t) => self.resolve_callable(t.params(), t.return_type(), t.body()),
+            Member::Effect(e) => {
+                if let Some(deps) = e.deps() {
+                    for dep in deps.exprs() {
+                        self.resolve_expr(&dep);
+                    }
+                }
+                // The run policy is a path into `EffectRun`, checked by name.
+                if let Some(body) = e.body() {
+                    self.scopes.push();
+                    self.resolve_body(body.syntax());
+                    self.scopes.pop();
+                }
+            }
             Member::Event(_) | Member::Slot(_) => {}
         }
     }

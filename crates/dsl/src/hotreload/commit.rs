@@ -31,7 +31,9 @@
 //!    each state by name, link its states to the migrated cells, reinstall every
 //!    static node's handler routes, and mount the view's control-flow regions
 //!    under the static nodes; a view with no behavior drops its host and every
-//!    handler.
+//!    handler. The prior module's effects are cancelled first, each cleanup
+//!    running against the code that created it, and the recompiled view's
+//!    effects mount on the root to run in the next flush.
 //!
 //! The commit authors the *static* nodes of a template (those outside every
 //! region) the way the `ui!` emitter does; the regions' content is mounted by
@@ -60,8 +62,8 @@ use crate::resolve::SymbolId;
 use crate::view_regions::{RegionKeys, StaticNodes, has_regions};
 
 use viso_view::{
-    HostError, ItemKey, Scope, ViewHost, attach_node, cell_value, mount_regions, mount_values,
-    vm_value,
+    HostError, ItemKey, Scope, ViewHost, attach_node, cell_value, mount_effects, mount_regions,
+    mount_values, release_effects, vm_value,
 };
 
 use crate::diag::Diagnostic;
@@ -248,6 +250,9 @@ fn mount_behavior(
     symbol_to_state: &[(SymbolId, StateId)],
     report: &mut HotReloadReport,
 ) {
+    if let Some(host) = rt.view.as_ref() {
+        release_effects(host, rt.effects);
+    }
     if plan.view.is_none()
         && let Some(host) = rt.view.take()
     {
@@ -346,6 +351,9 @@ fn mount_behavior(
             effects: rt.effects,
         };
         mount_values(&mut cx, host, &shown);
+        if let Some(root) = rt.root {
+            mount_effects(rt.store, host, root);
+        }
     }
     *rt.view = host.map(|(_, host)| host);
 }

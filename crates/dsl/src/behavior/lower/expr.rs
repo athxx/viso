@@ -535,6 +535,12 @@ impl Lowerer<'_, '_> {
             return self.format(node);
         }
         let args = emit_args(node);
+        if head.is_none() && segments.len() == 1 && segments[0].text() == "untracked" {
+            return match args.as_slice() {
+                [(None, value)] => self.expr(value),
+                _ => self.bail("`untracked` takes one value"),
+            };
+        }
         if args.iter().any(|(label, _)| label.is_some()) {
             return self.bail("named call arguments are not supported yet");
         }
@@ -981,6 +987,38 @@ impl Lowerer<'_, '_> {
             symbol: None,
             module: self.module,
             params: params.len() as u32,
+            captures: frame.captures.iter().map(|(_, reg)| *reg).collect(),
+            body: Ok(frame.body),
+        });
+        let dst = self.reg();
+        self.emit(Inst::Closure {
+            dst,
+            func,
+            captures: sources,
+        });
+        Ok(dst)
+    }
+
+    /// An effect's `cleanup` block as a closure of no parameters, capturing
+    /// the body's locals it reads.
+    pub(super) fn cleanup_closure(&mut self, block: &SyntaxNode) -> Lower<Reg> {
+        self.frames.push(Frame::default());
+        let lowered = self.block(block, false).map(|_| {
+            let src = self.unit();
+            self.emit(Inst::Return { src });
+        });
+        let frame = self.frames.pop().expect("the cleanup frame");
+        lowered?;
+        let mut sources = Vec::with_capacity(frame.captures.len());
+        for (slot, _) in &frame.captures {
+            sources.push(self.local(*slot)?);
+        }
+        let func = self.b.push(Function {
+            name: format!("{}/cleanup", self.name),
+            kind: FunctionKind::Closure,
+            symbol: None,
+            module: self.module,
+            params: 0,
             captures: frame.captures.iter().map(|(_, reg)| *reg).collect(),
             body: Ok(frame.body),
         });

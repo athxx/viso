@@ -864,25 +864,31 @@ timers (§104–§111).
 
 ## D7 — Standard surface (P2)
 
-- [ ] `effect`: run policies, dependency lists (§37, §91).
-  - [ ] Grammar: `effect NAME when (deps) run Policy { stmts cleanup { } }`, member
-        recovery, AST views; empty `when()` is a syntax error.
-  - [ ] Checks: `when` expressions pure; policy defaults and conflicts (`E4203`);
-        a reactive read in the body not listed is `E4201` unless inside
-        `untracked(..)` (`E2501` elsewhere); no state assignment outside
-        `transaction { }`; `cleanup` starts no task.
-  - [ ] Lowering: a dependency chunk and a body chunk that returns its cleanup as a
-        closure, recorded in the component layout.
-  - [ ] Runtime: the view host runs effects after the commit — `mount`,
+- [x] `effect`: run policies, dependency lists (§37, §91).
+  - [x] Grammar: `effect NAME when (deps) run Policy { stmts cleanup { } }`, member
+        recovery, AST views; empty `when()` is a syntax error; the cleanup ends
+        the body (`tests/grammar_decl.rs`).
+  - [x] Checks: `when` expressions pure (`E2502`); policy defaults and conflicts
+        (`E4203`); a reactive read in the body not listed is `E4201` unless inside
+        `untracked(..)` (`E2501` elsewhere), a listed computed covering nothing
+        beneath it; state writes and component `action` calls only inside
+        `transaction { }`, none in `cleanup` (`E2501`); `effect` in a system is
+        `E9109` (`tests/view_effects.rs`).
+  - [x] Lowering: a dependency entry and a body chunk that returns its cleanup as a
+        closure, recorded in the component layout (`Component::effects`) and, for
+        an instance region content mounts, in its arm template.
+  - [x] Runtime: the view host runs effects after the commit — `mount`,
         `change`, `mount_and_change` by value comparison, at most once per
-        commit; cleanup before a re-run, on unmount and before a hot reload
-        replaces the instance; a `transaction` writes in the next round; a cycle
-        stops at the settle cap (`E4202`).
+        round; cleanup before a re-run, on unmount and before a hot reload
+        replaces the code (run by the prior code); a `transaction` writes in the
+        next round; a cycle stops at the settle cap (`E4202`) naming the dropped
+        cells and the effects they wake; macros, release package and hot reload
+        mount them alike.
 - [ ] `task`: structured concurrency, `E4101`, `E4102`, `E4401`, `E4501` (§36, §39, §92).
   - [ ] Grammar: `start CALL as SLOT { policy = [..]; success(p) {} error(p) {}
         cancelled {} };`; `await` in expressions.
   - [ ] Checks: `start` takes a task call (`E4401`) and only in an action or event
-        body; `await` only in a task (`E4101` in an action); a task reads no
+        body, never in an effect's `cleanup`; `await` only in a task (`E4101` in an action); a task reads no
         state after its first suspension (`E4102`); a start outside a component
         or system scope is `E4501`.
   - [ ] VM: a task runs on a fiber over an immutable snapshot of inputs, states

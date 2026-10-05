@@ -328,6 +328,8 @@ pub enum FunctionKind {
     Handler,
     /// A view region's entry: an arm choice, an iterable or a key.
     RegionEntry,
+    /// An `effect` body, returning its cleanup closure or `Nil`.
+    Effect,
 }
 
 impl FunctionKind {
@@ -344,6 +346,7 @@ impl FunctionKind {
             FunctionKind::FieldDefault => "field-default",
             FunctionKind::Handler => "handler",
             FunctionKind::RegionEntry => "region-entry",
+            FunctionKind::Effect => "effect",
         }
     }
 }
@@ -418,6 +421,25 @@ pub struct ComponentLayout {
     /// Each `env` field the view reads, held in a state slot the runtime
     /// fills rather than an initializer.
     pub env: Vec<EnvSlot>,
+    /// The component's effects, then those of each inlined instance, in
+    /// source order.
+    pub effects: Vec<EffectEntry>,
+}
+
+/// An `effect` registered in a component layout: its entries in the handler
+/// table and its run policy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EffectEntry {
+    /// The component instance it belongs to (`0` for the view's own
+    /// component).
+    pub instance: u32,
+    /// The handler-table index of the region entry computing its dependency
+    /// values; `None` without dependencies.
+    pub deps: Option<u32>,
+    /// The handler-table index of its body.
+    pub body: u32,
+    /// When it runs.
+    pub run: viso_behavior::EffectRun,
 }
 
 /// An `env` field a view reads and the state slot that holds it.

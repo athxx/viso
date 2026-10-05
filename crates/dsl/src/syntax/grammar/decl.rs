@@ -222,9 +222,8 @@ pub(super) fn member(p: &mut Parser) {
         Some(SyntaxKind::ComputedKw) => return computed_decl(p),
         Some(SyntaxKind::EventKw) => return event_decl(p),
         Some(SyntaxKind::SlotKw) => return slot_decl(p),
-        Some(kw @ (SyntaxKind::EffectKw | SyntaxKind::ResourceKw)) => {
-            return advanced_decl(p, Some(kw));
-        }
+        Some(SyntaxKind::EffectKw) => return effect_decl(p),
+        Some(SyntaxKind::ResourceKw) => return advanced_decl(p, Some(SyntaxKind::ResourceKw)),
         _ => {}
     }
     match p.current() {
@@ -324,6 +323,58 @@ fn state_decl(p: &mut Parser) {
     }
     p.expect(SyntaxKind::Semi);
     m.complete(p, SyntaxKind::StateDecl);
+}
+
+/// `"effect" IDENT EffectDeps? EffectRun? EffectBody` (§37): the dependency
+/// list is `"when" "(" Expression ("," Expression)* ","? ")"`, never empty;
+/// the run policy is `"run" Path`; the body is `"{" Statement* ("cleanup"
+/// Block)? "}"`.
+fn effect_decl(p: &mut Parser) {
+    let m = p.start();
+    p.bump_as(SyntaxKind::EffectKw);
+    name(p);
+    if p.at_contextual(SyntaxKind::WhenKw) && p.nth(1) == SyntaxKind::LParen {
+        let deps = p.start();
+        p.bump_as(SyntaxKind::WhenKw);
+        p.expect(SyntaxKind::LParen);
+        if p.at(SyntaxKind::RParen) {
+            p.error(ParseErrorKind::ExpectedExpr);
+        }
+        while !p.at(SyntaxKind::RParen) && !p.at_end() {
+            let before = p.cursor();
+            super::expr::expr(p);
+            p.ensure_progress(before);
+            if !p.eat(SyntaxKind::Comma) {
+                break;
+            }
+        }
+        p.expect(SyntaxKind::RParen);
+        deps.complete(p, SyntaxKind::EffectDeps);
+    }
+    if p.at_contextual(SyntaxKind::RunKw) {
+        let run = p.start();
+        p.bump_as(SyntaxKind::RunKw);
+        super::expr::head_expr(p);
+        run.complete(p, SyntaxKind::EffectRun);
+    }
+    let body = p.start();
+    p.expect(SyntaxKind::LBrace);
+    while !p.at(SyntaxKind::RBrace) && !p.at_end() {
+        let before = p.cursor();
+        if p.at_contextual(SyntaxKind::CleanupKw) && p.nth(1) == SyntaxKind::LBrace {
+            let cleanup = p.start();
+            p.bump_as(SyntaxKind::CleanupKw);
+            super::stmt::block(p);
+            cleanup.complete(p, SyntaxKind::CleanupClause);
+            // The cleanup closes the body.
+            break;
+        }
+        super::stmt::statement(p);
+        p.ensure_progress(before);
+    }
+    p.expect(SyntaxKind::RBrace);
+    body.complete(p, SyntaxKind::EffectBody);
+    m.complete(p, SyntaxKind::EffectDecl);
 }
 
 /// `"computed" IDENT (":" Type)? "=" Expression ";"`.

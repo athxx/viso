@@ -36,9 +36,15 @@ impl InferCx<'_> {
 
     /// Type-checks an event handler body, which returns nothing.
     pub fn check_handler(&mut self, body: &Block) {
+        self.check_unit_body(body.syntax());
+    }
+
+    /// Type-checks a body that returns nothing: an event handler's, or an
+    /// effect's with its `cleanup`.
+    pub fn check_unit_body(&mut self, body: &SyntaxNode) {
         self.returns.push(Some(Ty::Unit));
         let loops = std::mem::take(&mut self.loops);
-        let _ = self.infer_block(body.syntax(), None);
+        let _ = self.infer_block(body, None);
         self.loops = loops;
         self.returns.pop();
     }
@@ -178,6 +184,12 @@ impl InferCx<'_> {
                 Some(block) => self.infer_block(&block, None) == Ty::Never,
                 None => false,
             },
+            SyntaxKind::CleanupClause => {
+                if let Some(block) = child_of(stmt, SyntaxKind::Block) {
+                    let _ = self.infer_block(&block, None);
+                }
+                false
+            }
             _ => false,
         }
     }
