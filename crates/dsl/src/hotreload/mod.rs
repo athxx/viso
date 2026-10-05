@@ -33,7 +33,7 @@ pub use diff::{InsertedNode, KeptNode, RemovedNode, ReplacedNode, StructuralPatc
 pub use migrate::{
     MigrationPlan, NodeMigration, Retype, SlotMigration, StateAction, StateMigration, migrate,
 };
-pub use plan::{CandidatePlan, MigrateFn, plan, plan_view};
+pub use plan::{CandidatePlan, MigrateFn, plan, plan_view, plan_view_for};
 
 use crate::diag::Diagnostic;
 use crate::frontend::Origin;

@@ -236,6 +236,7 @@ impl ProgramBuilder {
             env: Vec::new(),
             effects: Vec::new(),
             starters: Vec::new(),
+            persist: Vec::new(),
         });
     }
 
@@ -307,7 +308,7 @@ impl ProgramBuilder {
     /// `schema`, spelled `spelling`.
     pub(crate) fn persist_state(
         &mut self,
-        system: SymbolId,
+        owner: SymbolId,
         state: SymbolId,
         key: &str,
         schema: ValueSchema,
@@ -316,19 +317,32 @@ impl ProgramBuilder {
         let Some(&(_, Place::State(slot))) = self.places.get(&state) else {
             return;
         };
-        if let Some(layout) = self.program.systems.iter_mut().find(|s| s.symbol == system) {
-            layout.persist.push(PersistSlot {
-                key: key.into(),
-                slot,
-                schema,
-                spelling: spelling.into(),
-            });
+        let persisted = PersistSlot {
+            key: key.into(),
+            slot,
+            schema,
+            spelling: spelling.into(),
+        };
+        if let Some(layout) = self.program.systems.iter_mut().find(|s| s.symbol == owner) {
+            layout.persist.push(persisted);
+        } else if let Some(layout) = self
+            .program
+            .components
+            .iter_mut()
+            .find(|c| c.symbol == owner)
+        {
+            layout.persist.push(persisted);
         }
     }
 
-    /// Whether a system persists a state.
+    /// Whether a system or a component persists a state.
     pub(crate) fn persists(&self) -> bool {
         self.program.systems.iter().any(|s| !s.persist.is_empty())
+            || self
+                .program
+                .components
+                .iter()
+                .any(|c| !c.persist.is_empty())
     }
 
     /// Sets the `@migrate` functions a persisted value converts by.

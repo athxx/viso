@@ -5960,7 +5960,7 @@ export system Progress implements FixedUpdate {
 - 写入在 Tick Boundary 合并，按 Profile 策略节流，并在 App Suspend 时落盘；Tick 内不做同步 IO；
 - 类型变化走 §94.1 迁移规则与 `@migrate`。
 
-当前实现：`@persist` 目前只标在 System 的 `state` 上（Component 的 `state` 报 `E9106`，待 Component 实例的键语义确定）；键为唯一的非空字符串字面量参数，包内重复报 `E9106` 并指向第一处；授权来自 `Viso.toml [package] capabilities`（CLI §38）。编译器把每个持久化状态的键、槽位、类型 Schema（Record/Enum 按 Stable ID 描述字段、变体与字段默认值 Chunk）和类型拼写写入 Module，包内有持久化状态时一并写入 `@migrate` 函数。运行时宿主在 VM 上安装 `Persist` 服务（`PersistStore`：`MemoryStore`，或目录存储 `DirStore`——后台线程写临时文件、fsync 后原子 rename）；链接时未授予 `storage.persist` 则不加载也不写入，并报 `E6103`。Scheduler 在 `start` 之前逐个加载：存储的 Blob 带类型拼写与 Schema，类型相同则直接使用，否则按 §94.1 矩阵转换，再否则用 `from` 等于旧类型拼写、返回新类型的 `@migrate` 函数；任何失败使用 Initializer 并记录 `E9111` 报告（`take_persist_reports`），原 Blob 保留到该状态首次改变。写入发生在 Tick Boundary，只写值有变化的状态，默认每秒（`tick_rate` 个 Tick）至多一次（`set_persist_interval`）；Store 不阻塞 Tick；`suspend()` 与 Scheduler 析构写入变化并阻塞到落盘。World Rebuild 与 Logic Reload 把运行中的持久化值按键带入新实例（类型变化同样转换）；启动失败或影子游戏不写入。
+当前实现：`@persist` 标在 System 或 Component 的 `state` 上，标在其他成员上报 `E9106`；Component 的持久化状态只属于视图自身挂载的 Component（一个键对应一个实例），持久化状态的 Component 被嵌入另一视图时报 `E9106`；键为唯一的非空字符串字面量参数，包内重复报 `E9106` 并指向第一处；授权来自 `Viso.toml [package] capabilities`（CLI §38）。编译器把每个持久化状态的键、槽位、类型 Schema（Record/Enum 按 Stable ID 描述字段、变体与字段默认值 Chunk）和类型拼写写入 Module，包内有持久化状态时一并写入 `@migrate` 函数。运行时宿主在 VM 上安装 `Persist` 服务（`PersistStore`：`MemoryStore`，或目录存储 `DirStore`——后台线程写临时文件、fsync 后原子 rename）；链接时未授予 `storage.persist` 则不加载也不写入，并报 `E6103`。Scheduler 在 `start` 之前逐个加载：存储的 Blob 带类型拼写与 Schema，类型相同则直接使用，否则按 §94.1 矩阵转换，再否则用 `from` 等于旧类型拼写、返回新类型的 `@migrate` 函数；任何失败使用 Initializer 并记录 `E9111` 报告（`take_persist_reports`），原 Blob 保留到该状态首次改变。写入发生在 Tick Boundary，只写值有变化的状态，默认每秒（`tick_rate` 个 Tick）至多一次（`set_persist_interval`）；Store 不阻塞 Tick；`suspend()` 与 Scheduler 析构写入变化并阻塞到落盘。World Rebuild 与 Logic Reload 把运行中的持久化值按键带入新实例（类型变化同样转换）；启动失败或影子游戏不写入。视图宿主（`ViewHost`）在视图首次挂载时取走其 `Persist` 服务（`load_view_with` / `instantiate_view_with` 的 `setup` 在挂载前安装服务），在状态连到 Cell 之后、Effect 与 `start` 运行之前加载（未授予时每个状态报一次 `E6103`）；每次提交的写回之后只写值有变化的状态，未存储过的状态在首次写回时写入；`suspend()` 写入变化并阻塞到落盘；Hot Reload 带过已加载的值，编辑新标 `@persist` 的状态按键加载。
 
 ### 106.9 渲染插值
 
@@ -8589,7 +8589,7 @@ RecordPatternField
 | E9103  | Simulation 域访问 Local 状态或 Presentation 返回值，或 `@local` 误用（§106.4） |
 | E9104  | Simulation 域使用非确定性来源（§106.4、§106.5）          |
 | E9105  | Simulation 状态类型未实现 Snapshot（§106.4）             |
-| E9106  | `@persist` 键重复、类型不可持久化或缺少 Capability（§106.8） |
+| E9106  | `@persist` 键重复、类型不可持久化、缺少 Capability、不在 `state` 上，或持久化状态的 Component 不是视图自身的实例（§106.8） |
 | E9107  | 输入动作缺少目标平台的手柄/触屏路径（警告，§106.3）      |
 | E9108  | AudioProcess 实时域违规（§108.3）                        |
 | E9109  | System 声明 `view`、`event`、`slot`、`effect` 或 `resource` 成员，或执行 `start`（§105） |

@@ -57,6 +57,7 @@ impl Program {
                         resource: e.resource,
                     })
                     .collect(),
+                persist: c.persist.clone().into(),
             })
             .collect();
         let systems = self

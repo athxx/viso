@@ -189,6 +189,9 @@ pub struct Component {
     /// The effects that mount with the view, in source order; those of an
     /// instance region content mounts mount with that content instead.
     pub effects: Box<[ComponentEffect]>,
+    /// Its `@persist` states, in declaration order: those a view host of the
+    /// component loads before it mounts and stores as they change.
+    pub persist: Box<[PersistSlot]>,
 }
 
 impl Component {
@@ -510,13 +513,36 @@ impl Module {
                     ));
                 }
                 module.field_defaults(&state.schema)?;
-                let earlier = module.systems[..=i].iter().flat_map(|s| s.persist.iter());
-                if earlier.filter(|s| s.key == state.key).count() > 1 {
+            }
+        }
+        let fail = |chunk: u32, message: String| VerifyError {
+            chunk,
+            pc: None,
+            message,
+        };
+        for layout in module.components.iter() {
+            for state in layout.persist.iter() {
+                if state.slot as usize >= layout.states.len() {
                     return Err(fail(
                         0,
-                        format!("two states persist under the key `{}`", state.key),
+                        format!("component `{}` persists a missing state", layout.name),
                     ));
                 }
+                module.field_defaults(&state.schema)?;
+            }
+        }
+        let mut keys = std::collections::BTreeSet::new();
+        let persisted = module
+            .systems
+            .iter()
+            .flat_map(|s| s.persist.iter())
+            .chain(module.components.iter().flat_map(|c| c.persist.iter()));
+        for state in persisted {
+            if !keys.insert(&*state.key) {
+                return Err(fail(
+                    0,
+                    format!("two states persist under the key `{}`", state.key),
+                ));
             }
         }
         let limits = Limits {

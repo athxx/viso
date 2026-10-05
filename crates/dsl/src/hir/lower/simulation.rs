@@ -7,8 +7,8 @@
 //! the package's determinism tier, a `task` or `await`, or the adaptive
 //! environment. Its state must snapshot (`E9105`). A Presentation command it
 //! calls is deferred by the scheduler, so it is allowed. A `@persist` state
-//! names a key unique in the package, snapshots, and needs the
-//! `storage.persist` capability (`E9106`).
+//! of a system or a component names a key unique in the package, snapshots,
+//! and needs the `storage.persist` capability (`E9106`).
 
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -95,7 +95,8 @@ pub(super) struct Domains {
 /// A `@persist` state: its system, key and type, and where it is marked.
 struct Persisted {
     module: usize,
-    system: SymbolId,
+    /// The system or component that declares the state.
+    owner: SymbolId,
     state: SymbolId,
     key: String,
     at: TextRange,
@@ -254,7 +255,7 @@ impl Domains {
                                 misplaced_probe(&attr, diagnostics);
                             }
                             if let Some(attr) = persist {
-                                misplaced_persist(&attr, false, diagnostics);
+                                misplaced_persist(&attr, diagnostics);
                             }
                         }
                         if is_body && let Some(symbol) = symbol {
@@ -274,6 +275,13 @@ impl Domains {
                     }
                 }
                 Some(Item::Component(component)) => {
+                    env.focus_component(&component);
+                    let owner = env.component_symbol();
+                    let states = components
+                        .iter()
+                        .find(|c| c.source_origin == component.syntax().text_range())
+                        .map(|c| &c.schema.states[..])
+                        .unwrap_or_default();
                     for member in component.members() {
                         if let Some(attr) = has_attribute(member.syntax(), "local") {
                             misplaced_local(&attr, diagnostics);
@@ -281,9 +289,27 @@ impl Domains {
                         if let Some(attr) = has_attribute(member.syntax(), "probe") {
                             misplaced_probe(&attr, diagnostics);
                         }
-                        if let Some(attr) = has_attribute(member.syntax(), "persist") {
-                            let state = matches!(member, Member::State(_));
-                            misplaced_persist(&attr, state, diagnostics);
+                        let Some(attr) = has_attribute(member.syntax(), "persist") else {
+                            continue;
+                        };
+                        let Member::State(s) = &member else {
+                            misplaced_persist(&attr, diagnostics);
+                            continue;
+                        };
+                        let name = name_of(s.name());
+                        let symbol = env.member_symbol(&name);
+                        let state = states
+                            .iter()
+                            .find(|s| symbol.is_some() && s.meta.resolved_symbol == symbol);
+                        if let (Some(state), Some(symbol)) = (state, symbol) {
+                            self.persist(
+                                &attr,
+                                &name,
+                                &state.meta.inferred_type,
+                                (owner, symbol),
+                                env,
+                                diagnostics,
+                            );
                         }
                     }
                 }
@@ -303,7 +329,7 @@ impl Domains {
     }
 
     /// Checks the `@persist` attribute `attr` of the state `name` of type
-    /// `ty`, `(system, state)` by symbol: it names a key, the type
+    /// `ty`, `(owner, state)` by symbol (the owner a system or a component): it names a key, the type
     /// snapshots and the package is granted `storage.persist` (`E9106`).
     /// The defaults a stored value of an older type may need are kept.
     fn persist(
@@ -311,7 +337,7 @@ impl Domains {
         attr: &SyntaxNode,
         name: &str,
         ty: &Ty,
-        (system, state): (SymbolId, SymbolId),
+        (owner, state): (SymbolId, SymbolId),
         env: &ModuleEnv<'_>,
         diagnostics: &mut Vec<Diagnostic>,
     ) {
@@ -347,7 +373,7 @@ impl Domains {
         keep_defaults(ty, env, &mut HashSet::new());
         self.persisted.push(Persisted {
             module: env.module,
-            system,
+            owner,
             state,
             key,
             at,
@@ -395,7 +421,7 @@ impl Domains {
             keys.insert(&persisted.key, persisted);
             let value = schema(&persisted.ty);
             behavior.borrow_mut().persist_state(
-                persisted.system,
+                persisted.owner,
                 persisted.state,
                 &persisted.key,
                 value,
@@ -563,13 +589,12 @@ fn misplaced_probe(attr: &SyntaxNode, diagnostics: &mut Vec<Diagnostic>) {
     ));
 }
 
-fn misplaced_persist(attr: &SyntaxNode, component_state: bool, diagnostics: &mut Vec<Diagnostic>) {
-    let message = if component_state {
-        "a component's state does not persist yet: persist it in a `system`"
-    } else {
-        "`@persist` marks a `state` of a `system`"
-    };
-    diagnostics.push(Diagnostic::error("E9106", attr.text_range(), message));
+fn misplaced_persist(attr: &SyntaxNode, diagnostics: &mut Vec<Diagnostic>) {
+    diagnostics.push(Diagnostic::error(
+        "E9106",
+        attr.text_range(),
+        "`@persist` marks a `state` of a `system` or a `component`",
+    ));
 }
 
 /// The key of a `@persist("key")` attribute: its one unlabeled argument, a

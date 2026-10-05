@@ -336,15 +336,20 @@ fn persist_is_checked_at_compile_time() {
         ),
         ["E9106"]
     );
-    let component = errors(
-        "component C { @persist(\"k\") state n = 0; view { } }",
-        true,
-    );
     assert!(
-        component
-            .iter()
-            .any(|(c, m)| c == "E9106" && m.contains("component")),
-        "{component:?}"
+        errors(
+            "export component C { @persist(\"k\") state n = 0; view { } }",
+            true
+        )
+        .is_empty(),
+        "a component's state persists"
+    );
+    assert_eq!(
+        code(
+            "export component C { @persist(\"k\") action a() {} view { } }",
+            true
+        ),
+        ["E9106"]
     );
 }
 

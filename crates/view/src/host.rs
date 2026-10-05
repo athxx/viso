@@ -7,6 +7,7 @@ use std::pin::Pin;
 use std::rc::{Rc, Weak};
 use std::time::Duration;
 
+use viso_behavior::game::{PERSIST_CAPABILITY, Persist, PersistReport, Persistence};
 use viso_behavior::native::{Natives, SchemaConflict, Services};
 use viso_behavior::{
     Budget, ChunkKind, ComponentEffect, Event, Fault, FaultKind, Instance, LoadError, Module,
@@ -213,6 +214,24 @@ pub struct ViewHost {
     /// content.
     pub(crate) root: Option<NodeId>,
     pub(crate) tasks: Tasks,
+    persist: Persisting,
+    persist_reports: Vec<PersistReport>,
+}
+
+/// Where a view's `@persist` states load from and are stored, decided at the
+/// first [`ViewHost::load_persisted`].
+#[derive(Debug, Default)]
+enum Persisting {
+    /// Not mounted yet.
+    #[default]
+    Unmounted,
+    /// The host had no [`Persist`] service when it mounted.
+    Absent,
+    /// The view is not granted `storage.persist`; holds the states already
+    /// reported.
+    Denied(Vec<Box<str>>),
+    /// The store, taken from the host's [`Persist`] service.
+    Active(Persistence),
 }
 
 /// The UI cells a view's regions allocate while it runs, released with the
@@ -285,6 +304,8 @@ impl ViewHost {
             this: Weak::new(),
             root: None,
             tasks: Tasks::default(),
+            persist: Persisting::Unmounted,
+            persist_reports: Vec::new(),
         })
     }
 
@@ -760,31 +781,154 @@ impl ViewHost {
         self.written.extend(self.instance.dirty());
         self.instance.clear_dirty();
         for &slot in &self.written {
-            match self.mirror[slot] {
-                Some(Link::Mirror(id)) => {
-                    let Some(witness) = cells.get(id) else {
-                        continue;
-                    };
-                    if let Some(value) = cell_value(&self.instance.states()[slot], witness) {
-                        cells.set(id, value);
-                    }
+            self.push_slot(slot, scope, cells);
+        }
+        if !self.written.is_empty() {
+            self.store_persisted();
+        }
+    }
+
+    /// Writes state slot `slot` to the cell that holds it.
+    fn push_slot(&self, slot: usize, scope: &Scope, cells: &mut dyn StateCells) {
+        match self.mirror[slot] {
+            Some(Link::Mirror(id)) => {
+                let Some(witness) = cells.get(id) else {
+                    return;
+                };
+                if let Some(value) = cell_value(&self.instance.states()[slot], witness) {
+                    cells.set(id, value);
                 }
-                Some(Link::Track(id)) => {
-                    if let Some(StateValue::Int(revision)) = cells.get(id) {
-                        cells.set(id, StateValue::Int(revision.wrapping_add(1)));
-                    }
+            }
+            Some(Link::Track(id)) => {
+                if let Some(StateValue::Int(revision)) = cells.get(id) {
+                    cells.set(id, StateValue::Int(revision.wrapping_add(1)));
                 }
-                Some(Link::Env(_)) => {}
-                None => {
-                    let value = &self.instance.states()[slot];
-                    for locals in scope.locals.iter().rev() {
-                        if locals.store(slot as u32, value.clone(), cells) {
-                            break;
-                        }
+            }
+            Some(Link::Env(_)) => {}
+            None => {
+                let value = &self.instance.states()[slot];
+                for locals in scope.locals.iter().rev() {
+                    if locals.store(slot as u32, value.clone(), cells) {
+                        break;
                     }
                 }
             }
         }
+    }
+
+    /// Loads the component's `@persist` states once its states are linked to
+    /// their cells and before anything mounted runs, from the store of the
+    /// [`Persist`] service the host holds when it first mounts: a stored value
+    /// of another type converts into the state's, and one that does not load
+    /// leaves the initializer's value and an `E9111` report. Without the
+    /// service nothing persists; without the `storage.persist` grant nothing
+    /// loads or is stored, and each state reports `E6103`. After a reload a
+    /// state loaded before keeps its value, and one the edit newly persists
+    /// loads.
+    pub fn load_persisted(&mut self, cells: &mut dyn StateCells) {
+        if matches!(self.persist, Persisting::Unmounted) {
+            self.persist = match self.vm.services_mut().remove::<Persist>() {
+                None => Persisting::Absent,
+                Some(_) if !self.vm.granted(PERSIST_CAPABILITY) => Persisting::Denied(Vec::new()),
+                Some(persist) => Persisting::Active(Persistence::new(persist, 1)),
+            };
+        }
+        let Some(index) = self.instance.component() else {
+            return;
+        };
+        let module = Rc::clone(self.vm.module());
+        let slots = &module.layout(index).persist;
+        let persistence = match &mut self.persist {
+            Persisting::Active(persistence) => persistence,
+            Persisting::Denied(reported) => {
+                for slot in slots.iter() {
+                    if reported.contains(&slot.key) {
+                        continue;
+                    }
+                    reported.push(slot.key.clone());
+                    self.persist_reports.push(PersistReport {
+                        key: slot.key.clone(),
+                        code: "E6103",
+                        message: format!(
+                            "the view is not granted `{PERSIST_CAPABILITY}`, so `{}` starts \
+                             from its initializer and is not stored",
+                            slot.key
+                        ),
+                    });
+                }
+                return;
+            }
+            Persisting::Unmounted | Persisting::Absent => return,
+        };
+        let mut loaded = Vec::new();
+        for slot in slots.iter() {
+            if persistence.knows(&slot.key) {
+                continue;
+            }
+            let at = slot.slot as usize;
+            match persistence.load(slot, &module, &mut self.vm, &mut self.instance) {
+                Ok(Some(value)) => {
+                    self.instance.set_state(at, value);
+                    loaded.push(at);
+                }
+                // Nothing stored: the first write stores what it holds.
+                Ok(None) => continue,
+                Err(message) => self.persist_reports.push(PersistReport {
+                    key: slot.key.clone(),
+                    code: "E9111",
+                    message: format!(
+                        "`{}` did not load, so it starts from its initializer: {message}",
+                        slot.key
+                    ),
+                }),
+            }
+            persistence.loaded(slot, self.instance.states()[at].clone());
+        }
+        for slot in loaded {
+            self.push_slot(slot, &Scope::EMPTY, cells);
+        }
+    }
+
+    /// Stores each `@persist` state whose value changed since it was last
+    /// loaded or stored; the store takes it without blocking on IO.
+    fn store_persisted(&mut self) {
+        let (Persisting::Active(persistence), Some(index)) =
+            (&mut self.persist, self.instance.component())
+        else {
+            return;
+        };
+        let module = Rc::clone(self.vm.module());
+        for slot in module.layout(index).persist.iter() {
+            if let Some(value) = self.instance.states().get(slot.slot as usize) {
+                persistence.store_changed(slot, value);
+            }
+        }
+    }
+
+    /// Stores every `@persist` state that changed, its mirrored cells read
+    /// first, and blocks until the store has made them durable, as an app
+    /// going to the background must.
+    pub fn suspend(&mut self, cells: &dyn StateCells) {
+        if !matches!(self.persist, Persisting::Active(_)) {
+            return;
+        }
+        self.sync(&Scope::EMPTY, cells);
+        self.store_persisted();
+        if let Persisting::Active(persistence) = &mut self.persist
+            && let Err(message) = persistence.flush()
+        {
+            self.persist_reports.push(PersistReport {
+                key: "".into(),
+                code: "E9111",
+                message: format!("the persisted states were not stored: {message}"),
+            });
+        }
+    }
+
+    /// The persisted states that did not load and the writes that failed,
+    /// since the last call.
+    pub fn take_persist_reports(&mut self) -> Vec<PersistReport> {
+        std::mem::take(&mut self.persist_reports)
     }
 
     /// The effects that mount with the view, in source order.
@@ -946,6 +1090,8 @@ impl ViewHost {
         next.epoch = self.epoch + 1;
         next.this = Weak::clone(&self.this);
         next.root = self.root;
+        next.persist = std::mem::take(&mut self.persist);
+        next.persist_reports = std::mem::take(&mut self.persist_reports);
         *self = next;
     }
 }

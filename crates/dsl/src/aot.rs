@@ -38,7 +38,8 @@ use viso_view::{ViewControl, ViewEnv, ViewHandler, ViewPackage, ViewState};
 
 use crate::diag::Diagnostic;
 use crate::frontend::Origin;
-use crate::hotreload::plan::{CandidatePlan, plan, plan_view};
+use crate::hir::TargetProfile;
+use crate::hotreload::plan::{CandidatePlan, plan, plan_view, plan_view_for};
 use crate::ir::ui_ir::{
     AxisIr, LengthIr, LengthsIr, NodeKind, StyleIr, TermsIr, UiItem, UiNode, UiTree,
 };
@@ -63,6 +64,17 @@ pub fn build_package(source: &str) -> Result<Vec<u8>, Vec<Diagnostic>> {
 /// module and handler table — or the fatal diagnostics.
 pub fn build_view_package(source: &str, origin: &Origin) -> Result<Vec<u8>, Vec<Diagnostic>> {
     let plan = plan_view(source, origin)?;
+    Ok(emit_view_package(&plan).encode_to_vec())
+}
+
+/// [`build_view_package`] checked against `profile`, the grants of the
+/// package it belongs to among them.
+pub fn build_view_package_for(
+    source: &str,
+    origin: &Origin,
+    profile: TargetProfile,
+) -> Result<Vec<u8>, Vec<Diagnostic>> {
+    let plan = plan_view_for(source, origin, profile)?;
     Ok(emit_view_package(&plan).encode_to_vec())
 }
 

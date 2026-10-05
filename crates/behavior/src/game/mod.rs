@@ -72,7 +72,9 @@ pub use input::{
 };
 #[cfg(not(target_family = "wasm"))]
 pub use persist::DirStore;
-pub use persist::{MemoryStore, PERSIST_CAPABILITY, Persist, PersistReport, PersistStore};
+pub use persist::{
+    MemoryStore, PERSIST_CAPABILITY, Persist, PersistReport, PersistStore, Persistence,
+};
 pub use scheduler::{CommandKey, DEFAULT_SEED, Rebuild, Scheduler, SystemFault};
 pub use snapshot::{GameSnapshot, Restored};
 pub use tape::{InputTape, TapeChange, TapeError, TapeEvent};
