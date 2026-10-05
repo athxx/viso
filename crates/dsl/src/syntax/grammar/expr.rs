@@ -97,6 +97,12 @@ pub(super) fn head_expr(p: &mut Parser) {
     expr_bp(p, 0, Restrictions { no_record: true });
 }
 
+/// Parses a call or another postfix expression, with no binary operator
+/// after it and no record body: the operand of `start`.
+pub(super) fn call_expr(p: &mut Parser) {
+    postfix_expr(p, Restrictions { no_record: true });
+}
+
 /// Binding-power rungs, tightest-binding last so a larger number binds tighter.
 /// Only the binary levels need a number; unary/postfix are handled structurally.
 mod bp {

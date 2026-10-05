@@ -8,7 +8,8 @@
 //! reload commit and the release package ([`ViewPackage`]) all install handlers
 //! through it, so the three targets run a handler the same way. The values its
 //! nodes show — a label's text, a text field's seeded buffer — are delivered
-//! the same way ([`mount_values`]).
+//! the same way ([`mount_values`]). A `start` runs its task on the UI task
+//! protocol, owned by the component instance's node ([`release_tasks`]).
 //!
 //! A host is shared as `Rc<RefCell<ViewHost>>` by the `'static` handler boxes
 //! of every node of its view. The sharing is the point: the nodes of one view
@@ -28,6 +29,7 @@ mod package;
 mod regions;
 mod route;
 mod scope;
+mod tasks;
 mod values;
 
 pub use attach::{Route, attach, attach_node};
@@ -44,10 +46,11 @@ pub use package::{
 pub use regions::{
     __mount_embedded, ArmTemplate, CLOSED, CellRef, EffectTemplate, EnvTemplate, GroupTemplate,
     HALF_OPEN, ItemKey, ItemTemplate, LocalTemplate, MAX_RANGE_ITEMS, RegionKind, RegionNode,
-    RegionTemplate, SlotTemplate, ViewRegions, mount_regions,
+    RegionTemplate, SlotTemplate, StarterTemplate, ViewRegions, mount_regions,
 };
 pub use route::{EventRoute, PAYLOAD_ENUMS, PAYLOAD_RECORDS};
 pub use scope::Scope;
+pub use tasks::release_tasks;
 pub use values::{__mount_values, mount_values};
 pub use viso_behavior::{Fault, Module, Value};
 

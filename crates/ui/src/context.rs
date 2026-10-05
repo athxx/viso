@@ -19,7 +19,7 @@ use crate::component::NodeStore;
 use crate::input::{DispatchPhase, ImeEvent, KeyEvent, PointerEvent, PointerId};
 use crate::node::{NodeArena, NodeId};
 use crate::state::{StateId, StateStore, StateValue};
-use crate::task::{self, TaskId, TaskOps};
+use crate::task::{self, TaskFuture, TaskId, TaskOps};
 use crate::text_edit::EditIntent;
 use crate::timer::TimerRequest;
 use crate::window::{WindowConfig, WindowIdSlot, WindowOpenRequest};
@@ -157,7 +157,6 @@ phase_cx!(/// Async task context.
 pub struct UpdateCx<'a> {
     states: &'a mut StateStore,
     bindings: &'a BindingTable,
-    #[allow(dead_code)]
     nodes: &'a mut NodeStore,
 }
 
@@ -189,6 +188,24 @@ impl<'a> UpdateCx<'a> {
     #[inline]
     pub fn set(&mut self, id: StateId, value: StateValue) -> bool {
         self.states.set(id, value)
+    }
+
+    /// The adaptive environment the frame resolved.
+    #[inline]
+    pub fn env(&self) -> &crate::adaptive::AdaptiveEnv {
+        self.states.env()
+    }
+
+    /// Run `future` as a task owned by `owner`, first polled at the next frame
+    /// boundary; `None` when `owner` was freed.
+    #[doc(hidden)]
+    pub fn __spawn_for(&mut self, owner: NodeId, future: TaskFuture) -> Option<TaskId> {
+        self.nodes.spawn_task(owner, future)
+    }
+
+    /// Drop task `id`: its future is dropped and its continuation never runs.
+    pub fn cancel_task(&mut self, id: TaskId) {
+        self.nodes.cancel_task(id);
     }
 
     /// The binding table backing this frame — the flush reads it to turn
@@ -485,9 +502,7 @@ impl<'a> EventCx<'a> {
     /// Hold no borrow of UI state across its `.await`s; to write state when it
     /// finishes, use [`spawn_then`](Self::spawn_then).
     pub fn spawn(&mut self, future: impl Future<Output = ()> + 'static) -> TaskId {
-        let id = TaskId::fresh();
-        self.tasks.spawns.push((id, task::detached(future)));
-        id
+        self.tasks.spawn(None, task::detached(future))
     }
 
     /// Run `future` like [`spawn`](Self::spawn), then hand its output to
@@ -504,9 +519,14 @@ impl<'a> EventCx<'a> {
         future: impl Future<Output = T> + 'static,
         then: impl FnOnce(&mut UpdateCx<'_>, T) + 'static,
     ) -> TaskId {
-        let id = TaskId::fresh();
-        self.tasks.spawns.push((id, task::then(future, then)));
-        id
+        self.tasks.spawn(None, task::then(future, then))
+    }
+
+    /// Run `future` as a task owned by `owner` instead of the dispatching
+    /// node: freeing `owner` drops it.
+    #[doc(hidden)]
+    pub fn __spawn_for(&mut self, owner: NodeId, future: TaskFuture) -> TaskId {
+        self.tasks.spawn(Some(owner), future)
     }
 
     /// Drop task `id`, spawned by any handler of this tree. Its future is

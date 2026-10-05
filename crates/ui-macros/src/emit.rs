@@ -165,7 +165,7 @@ pub fn emit_view(
             }
         };
     }
-    if behavior.is_some_and(ViewBehavior::has_effects) {
+    if behavior.is_some_and(ViewBehavior::mounts_on_root) {
         root = quote! {
             {
                 let __viso_root = #root;

@@ -10,7 +10,7 @@ use crate::diag::{Diagnostic, Related};
 use crate::hir::component::MemberEnv;
 use crate::hir::infer::{InferCx, TypeEnv};
 use crate::resolve::SymbolId;
-use crate::syntax::TextRange;
+use crate::syntax::{SyntaxKind, TextRange};
 
 use super::{ModuleEnv, Ty, name_of};
 
@@ -25,10 +25,24 @@ pub(super) struct SystemNode {
     before: Vec<(SymbolId, TextRange)>,
 }
 
-/// Reports each `view`, `event` and `slot` member of a system (`E9109`): a
-/// system is driven by its hooks, not mounted.
+/// Reports each `view`, `event`, `slot` and `effect` member of a system, and
+/// each `start` in one (`E9109`): a system is driven by its hooks, not
+/// mounted.
 pub(super) fn check_members(decl: &SystemDecl, diagnostics: &mut Vec<Diagnostic>) {
     for member in decl.members() {
+        for start in member
+            .syntax()
+            .descendants()
+            .into_iter()
+            .filter(|node| node.kind() == SyntaxKind::StartStmt)
+        {
+            diagnostics.push(Diagnostic::error(
+                "E9109",
+                start.text_range(),
+                "a system starts no task: its hooks run inside the tick, which hands no task \
+                 result back",
+            ));
+        }
         let what = match member {
             Member::View(_) => "a `view`",
             Member::Event(_) => "an `event`",

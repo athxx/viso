@@ -52,6 +52,9 @@ pub(super) fn statement(p: &mut Parser) {
         {
             transaction_stmt(p)
         }
+        SyntaxKind::Ident if p.at_contextual(SyntaxKind::StartKw) && p.nth_is_ident(1) => {
+            start_stmt(p)
+        }
         SyntaxKind::LBrace => block_stmt(p),
         SyntaxKind::WhileKw => while_stmt(p),
         SyntaxKind::LoopKw => loop_stmt(p),
@@ -183,6 +186,69 @@ fn transaction_stmt(p: &mut Parser) {
     p.bump_as(SyntaxKind::TransactionKw);
     block(p);
     m.complete(p, SyntaxKind::TransactionStmt);
+}
+
+/// `"start" CallExpression ("as" IDENT)? StartHandlers? ";"` (§39). The call
+/// is a postfix expression, so `as` names the slot instead of casting.
+fn start_stmt(p: &mut Parser) {
+    let m = p.start();
+    p.bump_as(SyntaxKind::StartKw);
+    super::expr::call_expr(p);
+    if p.at(SyntaxKind::AsKw) {
+        let slot = p.start();
+        p.bump_any(); // `as`
+        super::name(p);
+        slot.complete(p, SyntaxKind::StartSlot);
+    }
+    if p.at(SyntaxKind::LBrace) {
+        start_handlers(p);
+    }
+    p.expect(SyntaxKind::Semi);
+    m.complete(p, SyntaxKind::StartStmt);
+}
+
+/// `"{" (policy "=" Expr ";" | success "(" Pattern ")" Block | error "("
+/// Pattern ")" Block | cancelled Block)* "}"`.
+fn start_handlers(p: &mut Parser) {
+    let m = p.start();
+    p.bump_any(); // `{`
+    while !p.at(SyntaxKind::RBrace) && !p.at_end() {
+        let before = p.cursor();
+        let item = p.start();
+        if p.at_contextual(SyntaxKind::PolicyKw) && p.nth(1) == SyntaxKind::Eq {
+            p.bump_as(SyntaxKind::PolicyKw);
+            p.bump_any(); // `=`
+            super::expr::expr(p);
+            p.expect(SyntaxKind::Semi);
+            item.complete(p, SyntaxKind::StartPolicy);
+        } else if p.at_contextual(SyntaxKind::SuccessKw) && p.nth(1) == SyntaxKind::LParen {
+            p.bump_as(SyntaxKind::SuccessKw);
+            payload_handler(p);
+            item.complete(p, SyntaxKind::StartSuccess);
+        } else if p.at_contextual(SyntaxKind::ErrorKw) && p.nth(1) == SyntaxKind::LParen {
+            p.bump_as(SyntaxKind::ErrorKw);
+            payload_handler(p);
+            item.complete(p, SyntaxKind::StartError);
+        } else if p.at_contextual(SyntaxKind::CancelledKw) && p.nth(1) == SyntaxKind::LBrace {
+            p.bump_as(SyntaxKind::CancelledKw);
+            block(p);
+            item.complete(p, SyntaxKind::StartCancelled);
+        } else {
+            item.abandon(p);
+            p.err_and_bump(ParseErrorKind::UnexpectedTokens);
+        }
+        p.ensure_progress(before);
+    }
+    p.expect(SyntaxKind::RBrace);
+    m.complete(p, SyntaxKind::StartHandlers);
+}
+
+/// `"(" Pattern ")" Block` — a `success` or `error` handler after its keyword.
+fn payload_handler(p: &mut Parser) {
+    p.bump_any(); // `(`
+    super::patterns::pattern(p);
+    p.expect(SyntaxKind::RParen);
+    block(p);
 }
 
 /// `"while" HeadExpression Block`.

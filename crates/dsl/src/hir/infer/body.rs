@@ -3,7 +3,7 @@
 //! value a block evaluates to.
 
 use super::{InferCx, LoopFrame, child_exprs, first_child_expr, is_numeric_ty};
-use crate::ast::{AstNode, Block, Expr};
+use crate::ast::{AstNode, Block, Expr, StartStmt};
 use crate::diag::{Diagnostic, Related};
 use crate::hir::ty::Ty;
 use crate::resolve::Resolution;
@@ -190,7 +190,65 @@ impl InferCx<'_> {
                 }
                 false
             }
+            SyntaxKind::StartStmt => {
+                self.infer_start(stmt);
+                false
+            }
             _ => false,
+        }
+    }
+
+    /// `start call as slot { .. };`: the call types as usual; `success` binds
+    /// the `Ok` payload of a task returning `Result`, else its whole value;
+    /// `error` binds the `Err` payload, and on a task that returns no `Result`
+    /// is `E2103`. Each handler is a body of its own that returns nothing. Its
+    /// policy and a handler given twice are `E4302`.
+    fn infer_start(&mut self, stmt: &SyntaxNode) {
+        let Some(start) = StartStmt::cast(stmt.clone()) else {
+            return;
+        };
+        let ty = match start.call() {
+            Some(call) => self.infer_expr(&call, None),
+            None => Ty::Unknown,
+        };
+        let (ok, err) = match ty {
+            Ty::Result(ok, err) => (*ok, Some(*err)),
+            Ty::Unknown => (Ty::Unknown, Some(Ty::Unknown)),
+            other => (other, None),
+        };
+        crate::hir::start::check_handlers(&start, &mut self.diagnostics);
+        let _ = crate::hir::start::slot_policy(&start, &mut self.diagnostics);
+        let Some(handlers) = start.handlers() else {
+            return;
+        };
+        for item in handlers.syntax().children() {
+            let payload = match item.kind() {
+                SyntaxKind::StartSuccess => Some(ok.clone()),
+                SyntaxKind::StartError => match &err {
+                    Some(err) => Some(err.clone()),
+                    None => {
+                        self.diagnostics.push(Diagnostic::error(
+                            "E2103",
+                            item.text_range(),
+                            format!(
+                                "the task returns `{}`, not a `Result`, so it has no error \
+                                 to handle",
+                                super::ty_name(&ok)
+                            ),
+                        ));
+                        Some(Ty::Unknown)
+                    }
+                },
+                SyntaxKind::StartCancelled => None,
+                _ => continue,
+            };
+            if let (Some(ty), Some(pattern)) = (payload, child_of(&item, SyntaxKind::Pattern)) {
+                self.bind_pattern(&pattern, &ty);
+                self.check_irrefutable(&pattern, "a handler pattern");
+            }
+            if let Some(block) = child_of(&item, SyntaxKind::Block) {
+                self.check_unit_body(&block);
+            }
         }
     }
 

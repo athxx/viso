@@ -4,7 +4,7 @@ use viso_behavior::native::SchemaTy;
 use viso_ui::adaptive::EnvField;
 
 use super::super::ir::{
-    BinaryOp, Const, DisplayKind, Function, FunctionKind, Inst, Num, Reg, UnaryOp,
+    BinaryOp, Const, DisplayKind, FuncId, Function, FunctionKind, Inst, Num, Reg, UnaryOp,
 };
 use super::{Frame, Lower, Lowerer, Place, assigns, num_of};
 use crate::ast::{AstNode, CallExpr, CastExpr, Expr, FieldExpr, PathExpr};
@@ -589,7 +589,12 @@ impl Lowerer<'_, '_> {
             (Some(Resolution::Symbol(id)), 1)
                 if self.env.symbol_kind(id) == Some(SymbolKind::Task) =>
             {
-                self.bail("calling a `task` is not supported yet")
+                // A task calls another on its own fiber, suspending with it.
+                let func = self.b.func_of(id, &segments[0].text());
+                let args = self.operands(&args)?;
+                let dst = self.reg();
+                self.emit(Inst::Call { dst, func, args });
+                Ok(dst)
             }
             _ if matches!(
                 callee.syntax().kind(),
@@ -620,12 +625,27 @@ impl Lowerer<'_, '_> {
     /// A call bound to a native function: the receiver of a method call, then
     /// the arguments, evaluate in source order.
     fn native(&mut self, call: &CallExpr, native: NativeCall) -> Lower<Reg> {
+        let Some((import, args)) = self.native_operands(call, native)? else {
+            // Debug draw is removed from release builds, arguments and all.
+            return Ok(self.unit());
+        };
+        let dst = self.reg();
+        self.emit(Inst::Native { dst, import, args });
+        Ok(dst)
+    }
+
+    /// The import and the evaluated arguments of a call bound to a native,
+    /// `None` for a debug draw a release build strips.
+    fn native_operands(
+        &mut self,
+        call: &CallExpr,
+        native: NativeCall,
+    ) -> Lower<Option<(u32, Vec<Reg>)>> {
         let Some(entry) = self.env.natives().and_then(|n| n.function_by_id(native.id)) else {
             return self.bail("the native this calls is not registered");
         };
         if entry.function.debug_draw && self.b.strips_debug_draw() {
-            // Debug draw is removed from release builds, arguments and all.
-            return Ok(self.unit());
+            return Ok(None);
         }
         let args = emit_args(call.syntax());
         if args.iter().any(|(label, _)| label.is_some()) {
@@ -661,9 +681,54 @@ impl Lowerer<'_, '_> {
             args.push(reg);
         }
         let import = self.b.native(entry);
-        let dst = self.reg();
-        self.emit(Inst::Native { dst, import, args });
-        Ok(dst)
+        Ok(Some((import, args)))
+    }
+
+    /// The task a `start` runs and its evaluated arguments: a `task`, or a
+    /// native task through the task that awaits it.
+    pub(super) fn task_call(&mut self, call: &Expr) -> Lower<(FuncId, Vec<Reg>)> {
+        let Some(c) = CallExpr::cast(call.syntax().clone()) else {
+            return self.bail("`start` takes a task call");
+        };
+        if let Some(native) = self.cx.native_call(call.syntax().text_range()) {
+            let Some((import, args)) = self.native_operands(&c, native)? else {
+                return self.bail("`start` takes a task call");
+            };
+            let name = self.name.clone();
+            let task = self.b.native_task(import, args.len(), &name, self.module);
+            return Ok((task, args));
+        }
+        let head = c
+            .callee()
+            .and_then(|callee| PathExpr::cast(callee.syntax().clone()))
+            .and_then(|path| {
+                let segments: Vec<SyntaxToken> = path.segments().collect();
+                match &segments[..] {
+                    [one] => Some(one.clone()),
+                    _ => None,
+                }
+            });
+        let symbol = head
+            .as_ref()
+            .and_then(|h| match self.cx.resolution_at(h.text_range()) {
+                Some(Resolution::Symbol(id))
+                    if self.env.symbol_kind(id) == Some(SymbolKind::Task) =>
+                {
+                    Some(id)
+                }
+                _ => None,
+            });
+        let (Some(symbol), Some(head)) = (symbol, head) else {
+            return self.bail("`start` takes a task call");
+        };
+        let args = emit_args(call.syntax());
+        if args.iter().any(|(label, _)| label.is_some()) {
+            return self.bail("named call arguments are not supported yet");
+        }
+        let args: Vec<Expr> = args.into_iter().map(|(_, e)| e).collect();
+        let task = self.b.func_of(symbol, &head.text());
+        let args = self.operands(&args)?;
+        Ok((task, args))
     }
 
     /// `format(template, args..)`: the arguments evaluate in source order, each
@@ -908,6 +973,10 @@ impl Lowerer<'_, '_> {
         let Some(operand) = first_child_expr(node) else {
             return self.bail("a unary expression without an operand");
         };
+        if unary_op_kind(node) == Some(SyntaxKind::AwaitKw) {
+            // A suspension point only: the task suspends inside the call.
+            return self.expr(&operand);
+        }
         let ty = self.ty(&operand)?;
         let src = self.expr(&operand)?;
         let num = num_of(&ty);
@@ -1019,6 +1088,113 @@ impl Lowerer<'_, '_> {
             symbol: None,
             module: self.module,
             params: 0,
+            captures: frame.captures.iter().map(|(_, reg)| *reg).collect(),
+            body: Ok(frame.body),
+        });
+        let dst = self.reg();
+        self.emit(Inst::Closure {
+            dst,
+            func,
+            captures: sources,
+        });
+        Ok(dst)
+    }
+
+    /// The closure a started task's value runs: the `success` handler with
+    /// the value, or its `Ok` payload and the `error` handler with the `Err`
+    /// payload of a task returning `result`. `None` without either handler.
+    pub(super) fn done_closure(
+        &mut self,
+        success: Option<(SyntaxNode, SyntaxNode)>,
+        error: Option<(SyntaxNode, SyntaxNode)>,
+        result: &Ty,
+    ) -> Lower<Option<Reg>> {
+        if success.is_none() && error.is_none() {
+            return Ok(None);
+        }
+        self.frames.push(Frame::default());
+        let lowered = self.done_body(success, error, result);
+        let frame = self.frames.pop().expect("the handler frame");
+        lowered?;
+        self.handler_closure(frame, 1, "done").map(Some)
+    }
+
+    fn done_body(
+        &mut self,
+        success: Option<(SyntaxNode, SyntaxNode)>,
+        error: Option<(SyntaxNode, SyntaxNode)>,
+        result: &Ty,
+    ) -> Lower<()> {
+        let value = self.reg();
+        let handler = |l: &mut Self, (pattern, block): (SyntaxNode, SyntaxNode), src, ty: &Ty| {
+            l.destructure(&pattern, src, ty)?;
+            l.block(&block, false).map(|_| ())
+        };
+        let Ty::Result(ok, err) = result else {
+            if let Some(success) = success {
+                handler(self, success, value, result)?;
+            }
+            let src = self.unit();
+            self.emit(Inst::Return { src });
+            return Ok(());
+        };
+        let tag = self.reg();
+        self.emit(Inst::Tag {
+            dst: tag,
+            src: value,
+        });
+        let to_error = self.jump_if(tag, true);
+        if let Some(success) = success {
+            let payload = self.reg();
+            self.emit(Inst::Field {
+                dst: payload,
+                src: value,
+                index: 0,
+            });
+            handler(self, success, payload, ok)?;
+        }
+        let src = self.unit();
+        self.emit(Inst::Return { src });
+        self.patch_here(&[to_error]);
+        if let Some(error) = error {
+            let payload = self.reg();
+            self.emit(Inst::Field {
+                dst: payload,
+                src: value,
+                index: 0,
+            });
+            handler(self, error, payload, err)?;
+        }
+        let src = self.unit();
+        self.emit(Inst::Return { src });
+        Ok(())
+    }
+
+    /// The `cancelled` handler `block` as a closure of no parameters.
+    pub(super) fn cancelled_closure(&mut self, block: &SyntaxNode) -> Lower<Reg> {
+        self.frames.push(Frame::default());
+        let lowered = self.block(block, false).map(|_| {
+            let src = self.unit();
+            self.emit(Inst::Return { src });
+        });
+        let frame = self.frames.pop().expect("the handler frame");
+        lowered?;
+        self.handler_closure(frame, 0, "cancelled")
+    }
+
+    /// The closure of the lowered handler `frame`, capturing the locals it
+    /// reads.
+    fn handler_closure(&mut self, frame: Frame, params: u32, what: &str) -> Lower<Reg> {
+        let mut sources = Vec::with_capacity(frame.captures.len());
+        for (slot, _) in &frame.captures {
+            sources.push(self.local(*slot)?);
+        }
+        let func = self.b.push(Function {
+            name: format!("{}/{what}", self.name),
+            kind: FunctionKind::Closure,
+            symbol: None,
+            module: self.module,
+            params,
             captures: frame.captures.iter().map(|(_, reg)| *reg).collect(),
             body: Ok(frame.body),
         });

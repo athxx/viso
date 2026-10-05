@@ -28,7 +28,7 @@ use crate::reactive::{ComputeCx, EffectStore, SemanticProjector};
 use crate::semantics::{Role, SemanticState, Semantics, SemanticsNode, SemanticsTree};
 use crate::state::{StateId, StateStore, StateValue};
 use crate::style::{BoxStyle, InteractionStyle, StyleId};
-use crate::task::{Continuation, TaskOps};
+use crate::task::{Continuation, TaskFuture, TaskId, TaskOps};
 use crate::timer::TimerRequest;
 use crate::token::Theme;
 use crate::window::{ChromeContext, WindowOpenRequest};
@@ -1513,14 +1513,45 @@ impl NodeStore {
     /// Apply the task spawns and cancellations `node`'s handler recorded. A
     /// spawn for a node freed since is dropped unpolled.
     pub fn apply_task_ops(&mut self, node: NodeId, ops: TaskOps) {
-        if self.arena.is_live(node) {
-            for (id, future) in ops.spawns {
-                self.tasks.spawn(id, node, future);
+        for (id, owner, future) in ops.spawns {
+            let owner = owner.unwrap_or(node);
+            if self.arena.is_live(owner) {
+                self.tasks.spawn(id, owner, future);
             }
         }
         for id in ops.cancels {
             self.tasks.cancel(id);
         }
+    }
+
+    /// Apply task spawns that each name their owner, as effect bodies record
+    /// them; one whose owner is freed is dropped unpolled.
+    pub(crate) fn apply_owned_task_ops(&mut self, ops: TaskOps) {
+        for (id, owner, future) in ops.spawns {
+            if let Some(owner) = owner.filter(|&owner| self.arena.is_live(owner)) {
+                self.tasks.spawn(id, owner, future);
+            }
+        }
+        for id in ops.cancels {
+            self.tasks.cancel(id);
+        }
+    }
+
+    /// Run `future` as a task owned by `owner`, first polled at the next
+    /// [`poll_tasks`](Self::poll_tasks); `None`, dropping it, when `owner` is
+    /// freed.
+    pub fn spawn_task(&mut self, owner: NodeId, future: TaskFuture) -> Option<TaskId> {
+        if !self.arena.is_live(owner) {
+            return None;
+        }
+        let id = TaskId::fresh();
+        self.tasks.spawn(id, owner, future);
+        Some(id)
+    }
+
+    /// Drop task `id`; a finished or unknown id is a no-op.
+    pub fn cancel_task(&mut self, id: TaskId) {
+        self.tasks.cancel(id);
     }
 
     /// Whether a task is due a poll: spawned or woken since the last

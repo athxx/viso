@@ -1652,7 +1652,12 @@ pub(crate) fn unary_op_kind(node: &SyntaxNode) -> Option<SyntaxKind> {
     node.children_with_tokens()
         .into_iter()
         .filter_map(|e| e.as_token().map(|t| t.kind()))
-        .find(|k| matches!(k, SyntaxKind::Minus | SyntaxKind::Bang | SyntaxKind::Tilde))
+        .find(|k| {
+            matches!(
+                k,
+                SyntaxKind::Minus | SyntaxKind::Bang | SyntaxKind::Tilde | SyntaxKind::AwaitKw
+            )
+        })
 }
 
 /// Whether a token kind is an assignment operator (`=` or an augmenting one).

@@ -884,24 +884,30 @@ timers (§104–§111).
         next round; a cycle stops at the settle cap (`E4202`) naming the dropped
         cells and the effects they wake; macros, release package and hot reload
         mount them alike.
-- [ ] `task`: structured concurrency, `E4101`, `E4102`, `E4401`, `E4501` (§36, §39, §92).
-  - [ ] Grammar: `start CALL as SLOT { policy = [..]; success(p) {} error(p) {}
+- [x] `task`: structured concurrency, `E4101`, `E4102`, `E4401`, `E4501` (§36, §39, §92).
+  - [x] Grammar: `start CALL as SLOT { policy = [..]; success(p) {} error(p) {}
         cancelled {} };`; `await` in expressions.
-  - [ ] Checks: `start` takes a task call (`E4401`) and only in an action or event
-        body, never in an effect's `cleanup`; `await` only in a task (`E4101` in an action); a task reads no
-        state after its first suspension (`E4102`); a start outside a component
-        or system scope is `E4501`.
-  - [ ] VM: a task runs on a fiber over an immutable snapshot of inputs, states
+  - [x] Checks: `start` takes a task call (`E4401`) and only in an action, event
+        or effect body, never in an effect's `cleanup`; `await` only in a task
+        (`E4101` elsewhere); a task reads no state after its first suspension
+        (`E4102`, through `fn` calls too); a start in a module-level action is
+        `E4501`, in a system `E9109`; one valid policy on a named slot, each
+        handler once (`E4302`); `success` / `error` payloads typed from the
+        task's `Result` (`E2103`).
+  - [x] VM: a task runs on a fiber over an immutable snapshot of inputs, states
         and arguments; it suspends at a task native's future and at an awaited
-        task, resumes with the result, and checks cancellation at each
-        suspension.
-  - [ ] Task natives return futures (a UI-thread task protocol, no executor of
-        our own); the standard library gains a timer task (`sleep`).
-  - [ ] Runtime: the view host spawns a started task as a UI task owned by the
-        component's node; slots by `as` name with `TaskPolicy::keep_latest`,
+        task, resumes with the result, and is cancelled at a suspension by
+        dropping its UI task; a read after suspension faults `E4102`.
+  - [x] Task natives return futures (a UI-thread task protocol, no executor of
+        our own); the standard library gains a timer task (`sleep`) over a host
+        `Timers` service or a shared timer thread.
+  - [x] Runtime: the view host spawns a started task as a UI task owned by the
+        component's node (the view root, or the instance root in region
+        content); slots by `as` name with `TaskPolicy::keep_latest`,
         `drop_new`, `queue`, `parallel(n)`; `success`/`error`/`cancelled` run as
         new transactions only while the instance lives; unmount cancels; a hot
-        reload cancels by default.
+        reload cancels with the prior code before the structural patch; hot
+        reload, release package and macros run them alike.
 - [ ] `resource`: load/key, policy, `E4301`, `E4302` (§38, §93).
   - [ ] Grammar: `resource NAME: Resource<T, E> { load = ..; key = ..; policy =
         [..]; scope = ..; }`; unknown and duplicate items rejected.

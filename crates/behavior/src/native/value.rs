@@ -72,6 +72,21 @@ impl NativeValue for f32 {
     }
 }
 
+/// A `Duration`: finite and never negative.
+impl NativeValue for std::time::Duration {
+    const TY: SchemaTy = SchemaTy::Duration;
+
+    fn from_value(value: &Value) -> Option<std::time::Duration> {
+        value
+            .as_float()
+            .and_then(|seconds| std::time::Duration::try_from_secs_f64(seconds).ok())
+    }
+
+    fn into_value(self) -> Value {
+        Value::Float(self.as_secs_f64())
+    }
+}
+
 /// A whole number of fixed-step ticks the compiler converted a constant
 /// `Duration` argument to ([`SchemaTy::Ticks`]); never negative.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]

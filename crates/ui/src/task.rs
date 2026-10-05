@@ -6,7 +6,9 @@
 //! so freeing that node's subtree drops the task. A finished task yields an
 //! optional [`Continuation`] that the driver runs with an
 //! [`UpdateCx`](crate::context::UpdateCx) at the next frame boundary: state is
-//! written only there, never across an `.await`.
+//! written only there, never across an `.await`. A runtime that owns its tasks
+//! by another node than the dispatching one (a component's tasks belong to the
+//! component) names that owner with each spawn.
 
 use std::future::Future;
 use std::pin::Pin;
@@ -14,18 +16,19 @@ use std::pin::Pin;
 pub use viso_runtime::TaskId;
 
 use crate::context::UpdateCx;
+use crate::node::NodeId;
 
 /// The state-writing tail of a finished task, run at a frame boundary.
 pub type Continuation = Box<dyn FnOnce(&mut UpdateCx<'_>)>;
 
 /// A task's future as the store holds it.
-pub(crate) type TaskFuture = Pin<Box<dyn Future<Output = Option<Continuation>>>>;
+pub type TaskFuture = Pin<Box<dyn Future<Output = Option<Continuation>>>>;
 
 /// The spawns and cancellations one dispatch recorded, in the order the
-/// handler made them.
+/// handler made them; a spawn naming no owner belongs to the dispatching node.
 #[derive(Default)]
 pub struct TaskOps {
-    pub(crate) spawns: Vec<(TaskId, TaskFuture)>,
+    pub(crate) spawns: Vec<(TaskId, Option<NodeId>, TaskFuture)>,
     pub(crate) cancels: Vec<TaskId>,
 }
 
@@ -33,6 +36,14 @@ impl TaskOps {
     /// Whether the dispatch spawned and cancelled nothing.
     pub fn is_empty(&self) -> bool {
         self.spawns.is_empty() && self.cancels.is_empty()
+    }
+
+    /// Records a spawn of `future` owned by `owner`, or by the dispatching
+    /// node.
+    pub(crate) fn spawn(&mut self, owner: Option<NodeId>, future: TaskFuture) -> TaskId {
+        let id = TaskId::fresh();
+        self.spawns.push((id, owner, future));
+        id
     }
 }
 

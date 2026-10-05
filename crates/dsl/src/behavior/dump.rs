@@ -162,6 +162,27 @@ fn write_inst(out: &mut String, inst: &Inst) -> fmt::Result {
         }
         Inst::Return { src } => write!(out, "return {}", reg(*src)),
         Inst::Emit { event, args } => write!(out, "emit event#{event} ({})", regs(args)),
+        Inst::Start {
+            task,
+            args,
+            done,
+            cancelled,
+            instance,
+            slot,
+            policy,
+        } => {
+            write!(out, "start fn#{} ({})", task.0, regs(args))?;
+            for (name, handler) in [("done", done), ("cancelled", cancelled)] {
+                if let Some(r) = handler {
+                    write!(out, " {name} {}", reg(*r))?;
+                }
+            }
+            write!(out, " in #{instance}")?;
+            if let Some(slot) = slot {
+                write!(out, " as slot#{slot} {policy:?}")?;
+            }
+            Ok(())
+        }
         Inst::Display { dst, src, kind } => {
             write!(
                 out,

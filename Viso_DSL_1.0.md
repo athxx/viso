@@ -1345,6 +1345,8 @@ task load_profile(id: UserId) -> Result<UserProfile, LoadError>
 }
 ```
 
+当前实现：Task 编译为 Task Chunk，在 Behavior VM 的 Fiber 上运行：Task Native（如 `viso::time::sleep`）交出一个 Future 时 Fiber 挂起，结果在帧边界交回后从原处继续；Task 直接调用另一个 Task 时在同一个 Fiber 上运行并随之挂起。`await` 只标出挂起点；Action、Event、Effect 等非 Task 主体中的 `await` 报 `E4101`。启动时的快照：第一个挂起点之前，Task 读到的就是启动那一刻的 State 与 Input；挂起点（`await` 或 Task 调用）之后直接读取 State、Input、Computed，或调用读取它们的 `fn`，以及在含挂起点的循环中读取，报 `E4102`；绕过静态检查（例如经由挂起前创建的闭包）的挂起后读取在运行时以 `E4102` 故障结束该 Task。Task 不写 State、不 `emit`（`E2501`），结果经 Start Handler 交回。`viso::time::sleep` 使用宿主安装的 `Timers` 服务，未安装时使用进程共享的计时线程。
+
 ---
 
 ## 37. Effect
@@ -1525,6 +1527,8 @@ start save_profile(profile) as save_job {
 - 同名 Task Slot 的策略由 `TaskPolicy` 决定；
 - 未命名 Task 仍归属当前生命周期 Scope，禁止成为无主任务；
 - `start` 只接受 Task Call，普通 `fn` 或 `action` Call 会报错。
+
+当前实现：`start` 只出现在 Action、Event Handler 与 Effect 主体（含其 `transaction`）中；在 `cleanup`、`fn`、Task 与初始化器中报 `E2501`，在 View 与 Computed 中报 `E2502`；目标不是 Task Call（含 Native Task）报 `E4401`；Module 级 `action` 中的 `start` 没有所属实例，报 `E4501`；System 中的 `start` 报 `E9109`。调用参数在启动它的 Transaction 中求值，Task 在该 Transaction 提交后启动。`success(p)` 绑定返回 `Result` 的 Task 的 `Ok` 载荷，否则绑定整个返回值；`error(p)` 绑定 `Err` 载荷，用在不返回 `Result` 的 Task 上报 `E2103`。三种 Handler 各自是一个新的 Transaction（Event 主体的调用权），以闭包捕获启动处读到的局部值，从不在启动它的 Transaction 内运行：`success` / `error` 在 Task 返回后的帧边界运行（即使 Task 未挂起就返回），`cancelled` 在取消它的 Transaction 提交之后运行。`policy = [..]` 恰好一个 `TaskPolicy::keep_latest`、`drop_new`、`queue` 或 `parallel(n)`（`n` 为不小于 1 的整数字面量），且只用于命名 Slot；具名 Slot 默认 `keep_latest`；未命名的 `start` 不受限并行。策略不合法、重复的 `policy` 或重复的 Handler 报 `E4302`。
 
 ---
 
@@ -3724,6 +3728,8 @@ ApplicationScope
 
 Task 不允许成为无法追踪的 Global Detached Future。确需进程级后台任务时必须显式绑定 Application System Scope。
 
+当前实现：视图宿主把每个 Task 交给 UI 任务协议（ADR 0032）运行，不自带执行器：Task 每次挂起由一个 UI Task 等待 Native 交出的 Future，其 Continuation 在帧边界恢复 Fiber。UI Task 归启动它的组件实例所有：视图自身与其静态子实例的 Task 属于视图根节点，控制流区域挂载的实例的 Task 属于该实例在此次挂载中的根节点；释放该节点即丢弃 Task，不运行任何 Handler。Task Slot 以（区域挂载、实例、Slot 名）为键，按启动时的策略处理正在运行的同名 Task：`keep_latest` 取消前序 Task 并运行其 `cancelled`；`drop_new` 丢弃新 Start；`queue` 与 `parallel(n)` 排队，直至 Slot 有空位。热重载在应用结构补丁之前取消全部 Task，各 `cancelled` 以启动它的旧代码运行，其写入随状态迁移保留；此前交出的 Continuation 在替换后失效。
+
 ---
 
 ## 93. Resource 运行时
@@ -5586,7 +5592,7 @@ collision
 
 `system` 规则：
 
-- `system` 与 `component` 共享 `input`/`state`/`computed`/`fn`/`action` 成员面，但只由 Scheduler 驱动、从不挂载，声明 `view`、`event` 或 `slot` 报 `E9109`；只声明 System 的源文件不要求可挂载组件（不报 `E2005`）；
+- `system` 与 `component` 共享 `input`/`state`/`computed`/`fn`/`action` 成员面，但只由 Scheduler 驱动、从不挂载，声明 `view`、`event`、`slot` 或 `effect`，或执行 `start`，报 `E9109`；只声明 System 的源文件不要求可挂载组件（不报 `E2005`）；
 - `implements` 的每个 Bound 必须是 Native Schema 提供的 Scheduler Trait，同一 Trait 至多出现一次，否则报 `E2201`；
 - Trait 的每个 Hook 需要同名 `action`，参数类型与 Hook 声明一致且不返回值，否则报 `E2201`；两个 Bound 声明同名 Hook 报 `E2202`；
 - Hook 按 Hook 身份（Trait 路径 + Hook 名的 Native Id）绑定到 `action`，编译器不按名字认识任何 Hook；Scheduler 将自己认识的 Hook 身份映射到阶段。
@@ -8532,14 +8538,14 @@ RecordPatternField
 | E3710  | `@selector` 误用（§U2.3）                               |
 | E3711  | Handler、控制流区域或 Component 实例未能挂载：Runtime 未投递该 Event、Behavior 未能 Lower，区域位于 View 根、`VirtualList` 内或 `ui!` Fragment 中，或实例无法内联，或 `ui!` Fragment 中的 Rust Component 带 Property、Handler 或子项，或 `bind` 带尚未挂载的 `using` Converter，或 `AdaptiveScope` 的 `basis` 不是常量、`SafeArea`/`KeyboardAvoiding` 带 `padding`（§40.1、§52、§56.1、§96.3、§96.6、§123） |
 | E3712  | `@migrate` 误用：不标记 `fn`、`from` 缺失或不是类型拼写字符串、参数不是恰好一个 `from` 类型参数、未声明返回类型，或同一 `from` 与返回类型重复（§94.1） |
-| E4101  | Action 中使用 Await                                     |
-| E4102  | Task 跨挂起访问可变 State                               |
+| E4101  | 非 Task 主体（Action、Event、Effect 等）中使用 Await    |
+| E4102  | Task 跨挂起访问可变 State（编译期；绕过检查时为运行时故障） |
 | E4201  | Effect 读取未声明依赖                                   |
 | E4202  | Reactive Cycle                                          |
 | E4203  | Effect Run Policy 与依赖列表不兼容                      |
 | E4204  | Adaptive Cycle（§96.5）                                 |
 | E4301  | Resource 缺少或重复 Load/Key                            |
-| E4302  | Resource Policy 冲突                                    |
+| E4302  | Resource Policy 冲突；`start` 的 Task Policy 不合法或无命名 Slot、重复的 `policy` 或 Handler（§39） |
 | E4401  | Start 目标不是 Task                                     |
 | E4501  | 无主 Detached Task                                      |
 | E5101  | Hot Reload 状态重置：活值不可转换为新类型，或 `@migrate` 函数执行失败（警告） |
@@ -8568,7 +8574,7 @@ RecordPatternField
 | E9106  | `@persist` 键重复、类型不可持久化或缺少 Capability（§106.8） |
 | E9107  | 输入动作缺少目标平台的手柄/触屏路径（警告，§106.3）      |
 | E9108  | AudioProcess 实时域违规（§108.3）                        |
-| E9109  | System 声明 `view`、`event` 或 `slot` 成员（§105）        |
+| E9109  | System 声明 `view`、`event`、`slot` 或 `effect` 成员，或执行 `start`（§105） |
 | E9110  | `@probe` 误用：只能标在 System 的 Simulation `state` 上（§110.5） |
 | E9111  | 持久化状态加载、转换或写入失败（运行时，使用 Initializer，§106.8） |
 

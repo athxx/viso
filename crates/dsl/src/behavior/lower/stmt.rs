@@ -1,8 +1,11 @@
-//! Blocks and statements: bindings, assignments, control flow and `emit`.
+//! Blocks and statements: bindings, assignments, control flow, `emit` and
+//! `start`.
 
 use super::super::ir::{Const, Inst, Num, PathStep, Reg};
 use super::{LoopCx, Lower, Lowerer, Place};
-use crate::ast::{AssignablePath, AstNode, Expr};
+use viso_behavior::TaskPolicy;
+
+use crate::ast::{AssignablePath, AstNode, Expr, StartStmt};
 use crate::hir::Ty;
 use crate::hir::infer::body::{child_of, emit_args, is_name};
 use crate::hir::infer::{child_exprs, first_child_expr, is_assign_op};
@@ -136,6 +139,7 @@ impl Lowerer<'_, '_> {
             SyntaxKind::EmitStmt => self.emit_event(stmt),
             // An effect's cleanup lowers as the closure its body returns.
             SyntaxKind::CleanupClause => Ok(()),
+            SyntaxKind::StartStmt => self.start(stmt),
             SyntaxKind::TransactionStmt => match child_of(stmt, SyntaxKind::Block) {
                 Some(block) => self.block(&block, false).map(|_| ()),
                 None => Ok(()),
@@ -564,6 +568,56 @@ impl Lowerer<'_, '_> {
     /// Writes `src` to the state `slot` along `path`.
     pub(super) fn write_state(&mut self, slot: u32, path: Vec<PathStep>, src: Reg) {
         self.write(Root::State(slot), path, src);
+    }
+
+    /// `start call as slot { .. };`: the arguments evaluate here; the task
+    /// starts once the transaction commits, its handlers closures over the
+    /// locals they read.
+    fn start(&mut self, stmt: &SyntaxNode) -> Lower<()> {
+        let Some(start) = StartStmt::cast(stmt.clone()) else {
+            return self.bail("a malformed `start`");
+        };
+        let Some(call) = start.call() else {
+            return self.bail("a `start` without a call");
+        };
+        let result = self.ty(&call)?;
+        let (task, args) = self.task_call(&call)?;
+        let handlers = start.handlers();
+        let payload = |pattern: Option<crate::ast::Pattern>, block: Option<crate::ast::Block>| {
+            Some((pattern?.syntax().clone(), block?.syntax().clone()))
+        };
+        let success = handlers
+            .as_ref()
+            .and_then(|h| h.success().next())
+            .and_then(|s| payload(s.pattern(), s.block()));
+        let error = handlers
+            .as_ref()
+            .and_then(|h| h.error().next())
+            .and_then(|e| payload(e.pattern(), e.block()));
+        let done = self.done_closure(success, error, &result)?;
+        let cancelled = match handlers
+            .as_ref()
+            .and_then(|h| h.cancelled().next())
+            .and_then(|c| c.block())
+        {
+            Some(block) => Some(self.cancelled_closure(block.syntax())?),
+            None => None,
+        };
+        let policy = crate::hir::start::slot_policy(&start, &mut Vec::new());
+        let slot = start
+            .slot()
+            .and_then(|s| s.name())
+            .map(|name| self.b.task_slot(name.text().trim_start_matches("r#")));
+        self.emit(Inst::Start {
+            task,
+            args,
+            done,
+            cancelled,
+            instance: 0,
+            slot,
+            policy: policy.unwrap_or(TaskPolicy::KeepLatest),
+        });
+        Ok(())
     }
 
     /// `emit event(args);`: the arguments evaluate in source order and pass in the

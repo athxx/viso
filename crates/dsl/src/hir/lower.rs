@@ -61,6 +61,7 @@ mod shader;
 mod simulation;
 mod system;
 mod tags;
+mod tasks;
 
 pub use input::InputDevices;
 pub use shader::CheckedShader;
@@ -440,11 +441,14 @@ fn lower_module(
                     clause: a.capability_clause(),
                 };
                 check_callable(&callable, refs, env, diagnostics, cap, &mut percent);
+                if let Some(body) = a.body() {
+                    detached_starts(body.syntax(), diagnostics);
+                }
             }
             Item::Task(t) => {
                 let callable = Callable {
                     name: name_of(t.name()),
-                    kind: FunctionKind::Fn,
+                    kind: FunctionKind::Task,
                     context: BodyContext::Task,
                     symbol: env.scope.declared.get(&t.syntax().text_range()).copied(),
                     params: t.params(),
@@ -526,6 +530,7 @@ fn lower_component_item(
     }
     check_component_callables(decl, refs, env, diagnostics, cap, percent);
     effects::lower_effects(decl, refs, env, &schema, diagnostics);
+    tasks::check_tasks(decl, refs, env, &schema, diagnostics);
 
     HirComponent {
         schema,
@@ -555,6 +560,21 @@ fn check_schema_ownership(
             meta.source_origin,
             diagnostics,
         );
+    }
+}
+
+/// Reports each `start` in the body of a module-level action (`E4501`): no
+/// component instance owns the task, so nothing would cancel it.
+fn detached_starts(body: &SyntaxNode, diagnostics: &mut Vec<Diagnostic>) {
+    for node in body.descendants() {
+        if node.kind() == SyntaxKind::StartStmt {
+            diagnostics.push(Diagnostic::error(
+                "E4501",
+                node.text_range(),
+                "a module-level action belongs to no component, so a task it starts would \
+                 have no owner to cancel it; start it from a component's action or handler",
+            ));
+        }
     }
 }
 
@@ -592,7 +612,7 @@ fn check_component_callables(
             },
             Member::Task(t) => Callable {
                 name: format!("{component}.{}", name_of(t.name())),
-                kind: FunctionKind::Fn,
+                kind: FunctionKind::Task,
                 context: BodyContext::Task,
                 symbol: env.member_symbol(&name_of(t.name())),
                 params: t.params(),
@@ -639,21 +659,7 @@ fn check_callable(
         module: env.module,
         into: None,
     };
-    let def = if callable.context == BodyContext::Task {
-        let at = body
-            .as_ref()
-            .map_or_else(|| TextRange::empty(0.into()), |b| b.syntax().text_range());
-        unsupported(
-            &mut env.behavior.borrow_mut(),
-            def,
-            "is a `task`, which runs on the task runtime",
-            at,
-        );
-        None
-    } else {
-        Some(def)
-    };
-    check_signature(refs, env, callable, diagnostics, percent, def);
+    check_signature(refs, env, callable, diagnostics, percent, Some(def));
     if let Some(block) = body {
         check_body(refs, callable.context, env, block.syntax(), diagnostics);
     }

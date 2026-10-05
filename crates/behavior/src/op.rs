@@ -309,6 +309,12 @@ pub enum Op {
     Return { src: u16 },
     /// Queue a component event. Operands: `event, n, args..`.
     Emit { ext: u32 },
+    /// Queue a task start, run once the transaction commits. Operands:
+    /// `func, argc, args.., done, cancelled, instance, slot, policy`: each
+    /// handler is the register of its closure and the slot the instance's
+    /// task slot, `u32::MAX` when absent; the policy is a
+    /// [`TaskPolicy::word`](crate::TaskPolicy::word).
+    Start { ext: u32 },
     /// `dst` = the text of `src`.
     Display {
         kind: DisplayKind,

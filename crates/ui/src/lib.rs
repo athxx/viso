@@ -88,7 +88,7 @@ pub use semantics::{Role, SemanticState, Semantics, SemanticsNode, SemanticsTree
 pub use state::{StateId, StateStore, StateValue};
 pub use structure::{StructureCx, StructureHookId, run_structure_hooks};
 pub use style::{BoxStyle, InteractionStyle, StyleId};
-pub use task::{Continuation, TaskId, TaskOps};
+pub use task::{Continuation, TaskFuture, TaskId, TaskOps};
 pub use text_edit::{Buffer, EditGeometry, EditIntent, EditLayout, Motion, TextEdits};
 pub use timer::{TimerId, TimerRegistry, TimerRequest};
 pub use token::{Theme, TokenId, TokenInterner, TokenNamespace};

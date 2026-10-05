@@ -1037,6 +1037,19 @@ impl ModulePass<'_> {
                 self.resolve_children(node);
                 self.scopes.pop();
             }
+            // A `start` handler's payload pattern binds for its block.
+            SyntaxKind::StartSuccess | SyntaxKind::StartError => {
+                self.scopes.push();
+                self.bind_patterns(node);
+                for child in node.children() {
+                    if child.kind() == SyntaxKind::Block {
+                        self.resolve_body(&child);
+                    }
+                }
+                self.scopes.pop();
+            }
+            // A task policy names a standard policy, not a value in scope.
+            SyntaxKind::StartPolicy => {}
             SyntaxKind::ClosureParam => {
                 for child in node.children() {
                     if child.kind() != SyntaxKind::Pattern {
@@ -1731,7 +1744,18 @@ pub fn resolve_fragment(
 /// quiet.
 fn is_user_type_name(text: &str) -> bool {
     const STRUCTURAL: &[&str] = &[
-        "Int", "Text", "Vec2", "Vec3", "Vec4", "List", "Map", "Option", "Self",
+        "Int",
+        "Text",
+        "Vec2",
+        "Vec3",
+        "Vec4",
+        "List",
+        "Map",
+        "Option",
+        "Result",
+        "Range",
+        "RangeInclusive",
+        "Self",
     ];
     let starts_upper = text.chars().next().is_some_and(|c| c.is_uppercase());
     let builtin = !matches!(Ty::from_builtin_name(text), Ok(None));

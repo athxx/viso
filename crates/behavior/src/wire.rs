@@ -389,7 +389,7 @@ fn read_component(dec: &mut Decoder<'_>) -> Result<Component, DecodeError> {
     })
 }
 
-const CHUNK_KINDS: [ChunkKind; 11] = [
+const CHUNK_KINDS: [ChunkKind; 12] = [
     ChunkKind::Fn,
     ChunkKind::Action,
     ChunkKind::Closure,
@@ -401,6 +401,7 @@ const CHUNK_KINDS: [ChunkKind; 11] = [
     ChunkKind::Handler,
     ChunkKind::RegionEntry,
     ChunkKind::Effect,
+    ChunkKind::Task,
 ];
 
 fn write_chunk(enc: &mut Encoder, c: &Chunk) {
@@ -622,6 +623,7 @@ mod opcode {
     pub const DISPLAY: u8 = 44;
     pub const DISPLAY_DIM: u8 = 45;
     pub const UNREACHABLE: u8 = 46;
+    pub const START: u8 = 47;
 }
 
 fn write_op(enc: &mut Encoder, op: &Op) {
@@ -743,6 +745,10 @@ fn write_op(enc: &mut Encoder, op: &Op) {
         Op::Return { src } => regs(enc, RETURN, &[src]),
         Op::Emit { ext } => {
             enc.write_u8(EMIT);
+            enc.write_u32(ext);
+        }
+        Op::Start { ext } => {
+            enc.write_u8(START);
             enc.write_u32(ext);
         }
         Op::Display { kind, dst, src } => {
@@ -904,6 +910,7 @@ fn read_op(dec: &mut Decoder<'_>) -> Result<Op, DecodeError> {
         },
         RETURN => Op::Return { src: r(dec)? },
         EMIT => Op::Emit { ext: w(dec)? },
+        START => Op::Start { ext: w(dec)? },
         DISPLAY => {
             let (dst, src) = (r(dec)?, r(dec)?);
             let kind = dec.read_u8()?;

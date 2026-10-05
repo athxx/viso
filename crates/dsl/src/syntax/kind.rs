@@ -447,6 +447,20 @@ pub enum SyntaxKind {
     EmitStmt,
     /// `transaction Block` (A.11).
     TransactionStmt,
+    /// `start CallExpr StartSlot? StartHandlers? ";"` (§39).
+    StartStmt,
+    /// `as IDENT` — the task slot a `start` runs in.
+    StartSlot,
+    /// `"{" (StartPolicy | StartSuccess | StartError | StartCancelled)* "}"`.
+    StartHandlers,
+    /// `policy = Expr ;`.
+    StartPolicy,
+    /// `success ( Pattern ) Block`.
+    StartSuccess,
+    /// `error ( Pattern ) Block`.
+    StartError,
+    /// `cancelled Block`.
+    StartCancelled,
     /// `while HeadExpr Block` (A.11).
     WhileStmt,
     /// `for Pattern "in" HeadExpr Block` — a behavior loop (no key) (A.11).

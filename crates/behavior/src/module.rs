@@ -46,6 +46,43 @@ pub enum ChunkKind {
     /// An `effect` body: one transaction over the bindings of every enclosing
     /// `for`/`match` region, returning its cleanup closure, or `Nil`.
     Effect,
+    /// A `task`: runs on a fiber that suspends at each task native it awaits.
+    Task,
+}
+
+/// How a named task slot treats a `start` while a task it started still runs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum TaskPolicy {
+    /// Cancels the running task and starts the new one.
+    KeepLatest,
+    /// Ignores the new start.
+    DropNew,
+    /// Starts the new task once every earlier one finished.
+    Queue,
+    /// Runs up to this many at once, queueing the rest.
+    Parallel(u32),
+}
+
+impl TaskPolicy {
+    /// The policy as one operand word; `parallel(n)` runs at least one.
+    pub fn word(self) -> u32 {
+        match self {
+            TaskPolicy::KeepLatest => 0,
+            TaskPolicy::DropNew => 1,
+            TaskPolicy::Queue => 2,
+            TaskPolicy::Parallel(n) => n.max(1).saturating_add(2),
+        }
+    }
+
+    /// The policy of operand word `word`.
+    pub fn from_word(word: u32) -> TaskPolicy {
+        match word {
+            0 => TaskPolicy::KeepLatest,
+            1 => TaskPolicy::DropNew,
+            2 => TaskPolicy::Queue,
+            n => TaskPolicy::Parallel(n - 2),
+        }
+    }
 }
 
 /// When an `effect` runs, after the commit that mounts its component and the
@@ -455,7 +492,7 @@ impl Module {
             chunks: module
                 .chunks
                 .iter()
-                .map(|c| (c.params, c.captures.len()))
+                .map(|c| (c.params, c.captures.len(), c.kind))
                 .collect(),
             natives: module.natives.iter().map(|n| n.params).collect(),
             states: max_states,
@@ -643,8 +680,8 @@ impl Module {
 
 /// What instructions may reference.
 struct Limits {
-    /// Each chunk's parameter and capture counts.
-    chunks: Vec<(u16, usize)>,
+    /// Each chunk's parameter and capture counts and kind.
+    chunks: Vec<(u16, usize, ChunkKind)>,
     /// Each native import's parameter count.
     natives: Vec<u16>,
     states: usize,
@@ -743,7 +780,7 @@ impl Verifier<'_> {
     /// Checks that chunk `func` exists and takes `argc` arguments and `captures`
     /// captured values.
     fn chunk(&self, func: u32, argc: u32, captures: usize) -> Check {
-        let Some(&(params, caps)) = self.limits.chunks.get(func as usize) else {
+        let Some(&(params, caps, _)) = self.limits.chunks.get(func as usize) else {
             return Err(format!("chunk {func} is out of range"));
         };
         if u32::from(params) != argc {
@@ -881,6 +918,20 @@ impl Verifier<'_> {
             Op::Emit { ext } => {
                 let head = self.list(ext, 1)?;
                 self.slot(head[0], self.limits.events, "event")
+            }
+            Op::Start { ext } => {
+                let head = self.list(ext, 1)?;
+                let func = head[0];
+                let argc = self.code.ext[ext as usize + 1];
+                self.chunk(func, argc, 0)?;
+                if self.limits.chunks[func as usize].2 != ChunkKind::Task {
+                    return Err(format!("chunk {func} started as a task is no task"));
+                }
+                let tail = self.words(ext as usize + 2 + argc as usize, 5)?;
+                tail[..2]
+                    .iter()
+                    .filter(|&&handler| handler != u32::MAX)
+                    .try_for_each(|&handler| self.reg16(handler))
             }
             Op::SetPath { root, ext } => {
                 self.reg(root)?;
