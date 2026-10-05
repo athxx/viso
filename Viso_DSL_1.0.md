@@ -5351,6 +5351,8 @@ for i in 0..light_count {
 
 Backend 不支持动态 Loop 时，Compiler 可以在限制内展开或拒绝，不得无界生成代码。
 
+当前实现：Shader 自己作用域内的名字——参数、`let` 局部、成员与 Shader `fn`——加上 Intrinsic；类型名取 §98 的封闭集合或 Resolver 绑定的 `@shader_value` Record（字段必须都是 Shader 值类型，不能含自身，不带默认值），其余 Host 类型（`String`、`I64`、`List`、Tuple、Enum、未标记的 Record、`Color` 字面量等）报 `E8101`，`F64` 与 `f64` 字面量报 `E8102`。无后缀整数字面量取另一操作数或实参的标量类型，无上下文为 `I32`，在 `F32` 上下文中直接定型为 `F32`；无后缀浮点字面量在整数上下文报 `E2103`；不同标量之间没有隐式转换（`E2102`，用 `as` 显式转换同 Lane 数的数值标量或向量）。运算：同类型数值标量/向量逐 Lane 运算，向量与其 Lane 标量双向广播；矩阵加减同型矩阵，乘矩阵、同维向量或 `F32`；位运算与移位只在整数上；比较只比较同类型标量，结果 `Bool`。构造写成类型调用：`Vec4F32(rgb, 1.0)` 按顺序填满 Lane（单个标量填满所有 Lane），`Mat3F32(c0, c1, c2)` 按列或按列给出全部标量，`ColorLinear(r, g, b, a)`；Record 用 Record 表达式给出全部字段（无 `..base`）。字段访问取 Record 字段，向量与 `ColorLinear` 取 `xyzw` 或 `rgba` 的一到四个 Lane；`v[i]`/`m[i]` 取 Lane/列。`a.f(b)` 即 `f(a, b)`。Intrinsic：`abs sign floor ceil round（四舍六入五成双） trunc fract sqrt inverse_sqrt exp exp2 log log2 sin cos tan asin acos atan sinh cosh tanh radians degrees atan2 pow step min max clamp mix smoothstep length distance dot normalize cross transpose`，Fragment 专用的 `dpdx dpdy fwidth sample(texture, sampler, uv)` 与 `discard()` 语句，任意阶段的 `sample_level(texture, sampler, uv, lod)`，以及 Render Profile 的 `to_vec4 quad_vertex to_clip rounded_rect_sdf`（§100）。`let` 绑定一个名字，`let mut` 可赋值（含 `+=` 等复合赋值，目标可到字段、单个 Lane 或字面量下标）；`if`/`match`/Block 作为值时降为局部变量加分支赋值；`match` 只作用于 `I32`、`U32`、`Bool`，Arm 为字面量、`|` 组合、`_` 或名字，无 Guard，必须穷尽（`E2301`）；`for` 只遍历整数区间 `a..b`/`a..=b`，两端为字面量时自身即上限，否则必须 `@max_iterations(N)`（运行时计数，超过 N 即停止），否则与 `while`/`loop` 一样报 `E8103`；`@max_iterations` 标在其他 Statement 上报 `E8105`。Shader `fn` 是纯函数，只读参数，不读成员、不用阶段专用 Intrinsic（`E8106`）；`fn` 之间不得直接或间接递归（`E8105`）。Closure、`?`、`??`、命名实参、Turbofish、`emit`、`transaction`、`await` 与泛型 Shader 报 `E8105`。
+
 ---
 
 ## 100. Shader 示例
@@ -5384,6 +5386,8 @@ export shader RoundedRect {
 ```
 
 Shader Entry 的实际 Builtin 参数、返回 Record 和可写 Varying 由 Render Profile Schema 定义。上例展示语言形态，不允许 Backend 自行改变核心表达式优先级。
+
+当前 Render Profile：一个 Shader 恰好一个 `vertex` 与一个 `fragment` Entry（缺少、重复或声明 `compute` 报 `E8106`）。`vertex` 的参数只能是 Builtin `vertex_id: U32`（实例四边形的六个顶点之一，`quad_vertex(vertex_id)` 依次给出 `(0,0) (1,0) (0,1) (1,0) (1,1) (0,1)`）与 `instance_id: U32`，返回 `VertexOutput { clip_position: Vec4F32 }`；`fragment` 的参数只能是 `frag_coord: Vec4F32`，返回 `Vec4F32` 或 `ColorLinear`（颜色目标 0）。只有 `vertex` 写 Varying，Varying 是数值标量或向量（`F32` 透视插值，整数 Flat）；Instance 字段在两个阶段都可读；Uniform 与 Instance 成员不能含 `Bool`（无 Buffer Layout，报 `E8104`），Texture 与 Sampler 只能用 `texture`/`sampler` 声明。`to_clip(position, viewport)` 把左上原点的像素坐标映射到 Clip Space；`rounded_rect_sdf(p, size, radius)` 是 `p` 到原点在左上、尺寸 `size`、圆角 `radius` 的矩形的有符号距离，内部为负。
 
 ---
 
@@ -8539,7 +8543,9 @@ RecordPatternField
 | E8101  | Shader 使用 Host-only 类型                              |
 | E8102  | Shader 使用 F64                                         |
 | E8103  | Shader Loop 无静态上限                                  |
-| E8104  | Shader ABI 不匹配                                       |
+| E8104  | Shader ABI 不匹配，或 Uniform/Instance 成员无 Buffer Layout（`Bool`） |
+| E8105  | Shader 使用 §99 子集之外的构造（Closure、递归、`?`、命名实参、泛型 Shader、误放的 `@max_iterations`/`@shader_value` 等） |
+| E8106  | 违反 Render Profile 阶段规则（Entry 签名与 Builtin、Varying 写入、阶段专用 Intrinsic、`fn` 读成员） |
 | E9101  | Game System Order 循环                                  |
 | E9102  | Fixed Tick 预算超限                                     |
 | E9103  | Simulation 域访问 Local 状态或 Presentation 返回值，或 `@local` 误用（§106.4） |

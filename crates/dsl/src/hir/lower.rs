@@ -56,11 +56,13 @@ use super::view::{
 };
 
 mod input;
+mod shader;
 mod simulation;
 mod system;
 mod tags;
 
 pub use input::InputDevices;
+pub use shader::CheckedShader;
 pub use simulation::TargetProfile;
 
 /// The typed HIR of a whole package: every component lowered, every free callable, and every
@@ -89,6 +91,8 @@ pub struct LoweredPackage {
     pub types: TypeSchemas,
     /// Every `@migrate` function, across all modules, in module then source order.
     pub migrators: Vec<Migrator>,
+    /// Every `shader`, across all modules, in module then source order.
+    pub shaders: Vec<CheckedShader>,
 }
 
 /// A `fn` marked `@migrate(from: "T")`: hot reload calls it to carry a state
@@ -184,6 +188,7 @@ pub fn lower(
     let mut domains = simulation::Domains::default();
     let mut migrators = Vec::new();
     let mut systems = Vec::new();
+    let mut shaders = Vec::new();
     for (i, module) in modules.iter().enumerate() {
         let mut module_diagnostics = Vec::new();
         let mut flows = InputFlows::default();
@@ -200,6 +205,7 @@ pub fn lower(
                 &mut cap,
                 &mut systems,
                 &mut domains,
+                &mut shaders,
             );
             collect_migrators(cu, &env, &mut module_diagnostics, &mut migrators);
         }
@@ -240,6 +246,7 @@ pub fn lower(
         behavior: behavior.into_inner().finish(),
         types: std::mem::take(&mut decls.types),
         migrators: migrators.into_iter().map(|(_, m)| m).collect(),
+        shaders,
     }
 }
 
@@ -332,6 +339,7 @@ fn lower_module(
     cap: &mut CapabilityGraphBuilder,
     systems: &mut Vec<system::SystemNode>,
     domains: &mut simulation::Domains,
+    shaders: &mut Vec<CheckedShader>,
 ) -> InputFlows {
     let mut flows = Vec::new();
     let mut percent = PercentSources::default();
@@ -346,6 +354,17 @@ fn lower_module(
             },
             other => other,
         };
+        if !matches!(decl, Item::Record(_)) {
+            for (name, attr, _) in crate::ast::decl_attributes(decl.syntax()) {
+                if name == "shader_value" {
+                    diagnostics.push(Diagnostic::error(
+                        "E8105",
+                        attr.text_range(),
+                        "`@shader_value` marks a `record`",
+                    ));
+                }
+            }
+        }
         // Module-level `fn`/`action`/`task` bodies, `const` values and record field defaults
         // are type-checked here; their HIR nodes land with their consumer slice.
         match decl {
@@ -373,8 +392,24 @@ fn lower_module(
                 input::lower_map(&c, refs, env, diagnostics);
             }
             Item::Enum(e) => input::check_derives(&e, env, diagnostics),
-            Item::Record(r) => {
-                check_field_defaults(&r, refs, env, diagnostics, &mut percent, |_| true);
+            Item::Record(r) => match env.scope.declared.get(&r.syntax().text_range()) {
+                Some(sym) if env.decls.shader_values.contains_key(sym) => {
+                    for field in r.fields() {
+                        if let Some(default) = field.default() {
+                            diagnostics.push(Diagnostic::error(
+                                "E8105",
+                                default.syntax().text_range(),
+                                "a `@shader_value` record field has no default",
+                            ));
+                        }
+                    }
+                    shader::check_record(*sym, env, diagnostics);
+                }
+                _ => check_field_defaults(&r, refs, env, diagnostics, &mut percent, |_| true),
+            },
+            Item::Shader(s) => {
+                let symbol = env.scope.declared.get(&s.syntax().text_range()).copied();
+                shaders.push(shader::check(&s, symbol, env, diagnostics));
             }
             Item::Fn(f) => {
                 let callable = Callable {
@@ -1153,6 +1188,8 @@ struct Declarations {
     homes: HashMap<SymbolId, usize>,
     /// The `::`-joined path of every module, by graph index.
     module_paths: Vec<String>,
+    /// Every `@shader_value` record.
+    shader_values: HashMap<SymbolId, shader::ShaderValueDecl>,
 }
 
 /// What one module adds to the package [`Declarations`]: its owners' member names, its
@@ -1490,6 +1527,9 @@ impl ModuleScope {
                     if let Some(sym) = decl_symbol(table, interner, r.name(), Namespace::Type) {
                         let fields = r.fields().filter_map(|f| scope.field_info(&f)).collect();
                         decls.types.records.insert(sym, fields);
+                        if let Some(shape) = shader::ShaderValueDecl::of(r, &scope.nominal) {
+                            decls.shader_values.insert(sym, shape);
+                        }
                         scope.place(decls, sym);
                         scope.declared.insert(r.syntax().text_range(), sym);
                         decls.types.names.insert(sym, name_of(r.name()));
@@ -1514,6 +1554,11 @@ impl ModuleScope {
                                 tags::collect(sym, name.text_range(), &scope, decls);
                             }
                         }
+                    }
+                }
+                Item::Shader(s) => {
+                    if let Some(sym) = decl_symbol(table, interner, s.name(), Namespace::Type) {
+                        scope.declared.insert(s.syntax().text_range(), sym);
                     }
                 }
                 Item::Const(c) => {

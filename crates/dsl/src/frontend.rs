@@ -28,8 +28,8 @@ use crate::ast::{
 use crate::behavior::{Program, hidden_state, inline_instances};
 use crate::diag::{Diagnostic, Severity};
 use crate::hir::{
-    ConstValue, DerivedReads, HirComponent, Migrator, SourceSet, TargetProfile, Ty, TypeSchemas,
-    write_backs,
+    CheckedShader, ConstValue, DerivedReads, HirComponent, Migrator, SourceSet, TargetProfile, Ty,
+    TypeSchemas, write_backs,
 };
 use crate::ir::{
     BindingIr, ComponentLibrary, InstanceSources, KeyIr, LibraryComponent, UiTree, analyze_keys,
@@ -180,6 +180,8 @@ pub struct Compiled {
     pub types: TypeSchemas,
     /// The unit's `@migrate` functions.
     pub migrators: Vec<Migrator>,
+    /// The unit's shaders, each with its program when it checked cleanly.
+    pub shaders: Vec<CheckedShader>,
 }
 
 impl Compiled {
@@ -254,6 +256,7 @@ pub fn compile_fragment(source: &str) -> Compiled {
         behavior: Program::default(),
         types: TypeSchemas::default(),
         migrators: Vec::new(),
+        shaders: Vec::new(),
     }
 }
 
@@ -339,19 +342,20 @@ fn compile_unit(
         profile,
     );
     let mut behavior = lowered.behavior;
+    let shaders = lowered.shaders;
     let Some(module) = resolved.pop() else {
-        return Compiled::empty(diagnostics, behavior);
+        return Compiled::empty(diagnostics, behavior, shaders);
     };
     diagnostics.extend(module.errors.iter().cloned());
     diagnostics.extend(lowered.diagnostics.iter().cloned());
 
     let Some(decl) = mounted_component(&cu, source, &mut diagnostics) else {
-        return Compiled::empty(diagnostics, behavior);
+        return Compiled::empty(diagnostics, behavior, shaders);
     };
     let range = decl.syntax().text_range();
     let mut components = lowered.components;
     let Some(mounted) = components.iter().position(|c| c.source_origin == range) else {
-        return Compiled::empty(diagnostics, behavior);
+        return Compiled::empty(diagnostics, behavior, shaders);
     };
 
     // Every component of the unit is one the mounted view may inline.
@@ -478,6 +482,7 @@ fn compile_unit(
         behavior,
         types: lowered.types,
         migrators: lowered.migrators,
+        shaders,
     }
 }
 
@@ -509,7 +514,7 @@ fn instance_symbols(component: &HirComponent) -> Vec<SymbolId> {
 }
 
 impl Compiled {
-    fn empty(diagnostics: Vec<Diagnostic>, behavior: Program) -> Self {
+    fn empty(diagnostics: Vec<Diagnostic>, behavior: Program, shaders: Vec<CheckedShader>) -> Self {
         Self {
             component: None,
             tree: UiTree::default(),
@@ -522,21 +527,22 @@ impl Compiled {
             behavior,
             types: TypeSchemas::default(),
             migrators: Vec::new(),
+            shaders,
         }
     }
 }
 
-/// Whether the unit declares a `system`, exported or not.
+/// Whether the unit declares a `system` or a `shader`, exported or not.
 fn declares_system(cu: &CompilationUnit) -> bool {
+    let runs = |item: Option<Item>| matches!(item, Some(Item::System(_) | Item::Shader(_)));
     cu.items().any(|item| match item {
-        Item::System(_) => true,
-        Item::Export(export) => matches!(export.declaration(), Some(Item::System(_))),
-        _ => false,
+        Item::Export(export) => runs(export.declaration()),
+        other => runs(Some(other)),
     })
 }
 
 /// The component a unit mounts: its single exported component, else its single
-/// component. A unit of systems without a component mounts nothing. Anything
+/// component. A unit of systems or shaders without a component mounts nothing. Anything
 /// else is ambiguous or empty and reported.
 fn mounted_component(
     cu: &CompilationUnit,

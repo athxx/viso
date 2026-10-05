@@ -821,18 +821,18 @@ timers (§104–§111).
         bindings, `fn`s and `vertex`/`fragment`/`compute` entries as CST nodes and
         typed AST views; member words stay contextual; recovery per member;
         a reparse unit; the shader names a type symbol.
-- [ ] Shader types and syntax subset; `E8101`–`E8104` (§98–§99).
-  - [ ] Closed type set (§98) and `@shader_value` records; `E8101` host-only
-        type, `E8102` `F64`.
-  - [ ] Statement/expression subset (§99): `let`, mutation of locals and
+- [x] Shader types and syntax subset; `E8101`–`E8104` (§98–§99).
+  - [x] Closed type set (§98) and `@shader_value` records; `E8101` host-only
+        type, `E8102` `F64`, `E8104` a `Bool` with no buffer layout.
+  - [x] Statement/expression subset (§99): `let`, mutation of locals and
         varyings, `if`, statically lowerable `match`, bounded `for` with
         `@max_iterations` (`E8103`), constructors, swizzles, intrinsics, casts;
-        everything else rejected with a span.
-  - [ ] Stage rules: entry signatures and builtins from the render profile,
-        varyings written in `vertex` and read in `fragment`, derivatives only in
-        `fragment`, no recursion.
+        everything else rejected with a span (`E8105`).
+  - [x] Stage rules (`E8106`): entry signatures and builtins from the render
+        profile, varyings written in `vertex` and read in `fragment`,
+        derivatives only in `fragment`, pure `fn`s; no recursion (`E8105`).
 - [ ] Lower to `viso-shader` IR; instance ABI from `@shader_value` records (§101–§102).
-  - [ ] `viso-shader` program IR: owned interface (uniform block, instance
+  - [x] `viso-shader` program IR: owned interface (uniform block, instance
         fields, varyings, textures, samplers, entries) and a structured typed
         body; validation.
   - [ ] Viso Shader Layout Algorithm: instance and uniform descriptors with

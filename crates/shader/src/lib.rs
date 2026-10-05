@@ -24,6 +24,7 @@ pub mod diag;
 pub mod ir;
 pub mod manifest;
 pub mod msl;
+pub mod program;
 pub mod reload;
 
 pub use code::shader_code;

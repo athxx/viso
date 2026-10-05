@@ -2456,6 +2456,7 @@ dependencies = [
  "icu_properties",
  "viso-behavior",
  "viso-ende",
+ "viso-shader",
  "viso-ui",
  "viso-view",
 ]

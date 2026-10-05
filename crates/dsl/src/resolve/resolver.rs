@@ -728,9 +728,38 @@ impl ModulePass<'_> {
                 Item::Fn(f) => self.resolve_callable(f.params(), f.return_type(), f.body()),
                 Item::Action(a) => self.resolve_callable(a.params(), a.return_type(), a.body()),
                 Item::Task(t) => self.resolve_callable(t.params(), t.return_type(), t.body()),
+                Item::Record(r)
+                    if crate::ast::decl_attributes(r.syntax())
+                        .iter()
+                        .any(|(name, ..)| name == "shader_value") =>
+                {
+                    self.resolve_shader_types(r.syntax());
+                }
+                Item::Shader(s) => self.resolve_shader_types(s.syntax()),
                 Item::Record(_) | Item::Enum(_) | Item::Const(_) | Item::TypeAlias(_) => {
                     self.resolve_body(decl.syntax());
                 }
+                _ => {}
+            }
+        }
+    }
+
+    /// Binds the type names under a shader or a `@shader_value` record, left
+    /// undiagnosed: the built-in shader types have no declaration, and the
+    /// shader checker reports a name that is neither one nor a record. Values
+    /// in a shader body are scoped by the shader checker.
+    fn resolve_shader_types(&mut self, node: &SyntaxNode) {
+        use crate::syntax::SyntaxKind;
+        for node in node.descendants() {
+            match node.kind() {
+                SyntaxKind::TypePath
+                    if node.parent().map(|p| p.kind()) != Some(SyntaxKind::GenericArgs) =>
+                {
+                    if let Some(ty) = TypePath::cast(node) {
+                        self.resolve_type_head(&ty, true);
+                    }
+                }
+                SyntaxKind::RecordExpr => self.resolve_record_head(&node),
                 _ => {}
             }
         }
