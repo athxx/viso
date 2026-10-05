@@ -442,6 +442,8 @@ pub struct ComponentLayout {
     pub effects: Vec<EffectEntry>,
     /// The inlined instances that start tasks, ascending.
     pub starters: Vec<u32>,
+    /// Each `@persist` state, in declaration order.
+    pub persist: Vec<PersistSlot>,
 }
 
 /// An `effect` registered in a component layout: its entries in the handler

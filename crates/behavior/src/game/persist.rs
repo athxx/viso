@@ -388,8 +388,9 @@ impl Stored {
     }
 }
 
-/// What a scheduler persists through and what it last stored.
-pub(crate) struct Persistence {
+/// What a scheduler or a view host persists through and what it last
+/// stored.
+pub struct Persistence {
     pub(crate) store: Box<dyn PersistStore>,
     /// The value last loaded or stored under each key.
     pub(crate) written: BTreeMap<Box<str>, Value>,
@@ -400,13 +401,76 @@ pub(crate) struct Persistence {
 }
 
 impl Persistence {
-    pub(crate) fn new(persist: Persist, interval: u64) -> Persistence {
+    /// Persists through `persist`, writing at most every `interval`
+    /// boundaries.
+    pub fn new(persist: Persist, interval: u64) -> Persistence {
         Persistence {
             store: persist.store,
             written: BTreeMap::new(),
             interval,
             wait: 0,
         }
+    }
+
+    /// The value stored for `slot`, converted into its type: `None` when
+    /// nothing is stored; defaults and `@migrate` functions run on `vm`
+    /// against `instance`.
+    ///
+    /// # Errors
+    ///
+    /// Why a stored value did not load.
+    pub fn load(
+        &mut self,
+        slot: &PersistSlot,
+        module: &Module,
+        vm: &mut Vm,
+        instance: &mut Instance,
+    ) -> Result<Option<Value>, String> {
+        let Some(blob) = self.store.load(&slot.key)? else {
+            return Ok(None);
+        };
+        let stored =
+            Stored::decode(&blob).map_err(|_| "the stored value is malformed".to_owned())?;
+        stored.into_slot(slot, module, vm, instance).map(Some)
+    }
+
+    /// Records `value` as what `slot` holds in the store.
+    pub fn loaded(&mut self, slot: &PersistSlot, value: Value) {
+        self.written.insert(slot.key.clone(), value);
+    }
+
+    /// Whether the value of `key` was loaded or stored.
+    pub fn knows(&self, key: &str) -> bool {
+        self.written.contains_key(key)
+    }
+
+    /// Stores `value` for `slot` unless it is what the store holds; returns
+    /// whether it stored.
+    pub fn store_changed(&mut self, slot: &PersistSlot, value: &Value) -> bool {
+        if self.written.get(&slot.key) == Some(value) {
+            return false;
+        }
+        self.store
+            .store(&slot.key, Stored::of(slot, value.clone()).encode());
+        self.written.insert(slot.key.clone(), value.clone());
+        true
+    }
+
+    /// Blocks until every value stored so far is durable.
+    ///
+    /// # Errors
+    ///
+    /// The first write that failed since the last flush.
+    pub fn flush(&mut self) -> Result<(), String> {
+        self.store.flush()
+    }
+}
+
+impl std::fmt::Debug for Persistence {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Persistence")
+            .field("written", &self.written.keys().collect::<Vec<_>>())
+            .finish_non_exhaustive()
     }
 }
 

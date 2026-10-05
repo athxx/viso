@@ -129,13 +129,27 @@ pub fn load_view(
     bindings: &mut BindingTable,
     lists: &mut VirtualLists,
 ) -> Result<LoadedView, ViewLoadError> {
+    load_view_with(blob, store, states, bindings, lists, &mut |_| {})
+}
+
+/// [`load_view`], `setup` given the host before the view mounts, to install
+/// the services its natives and `@persist` states use.
+pub fn load_view_with(
+    blob: &[u8],
+    store: &mut NodeStore,
+    states: &mut StateStore,
+    bindings: &mut BindingTable,
+    lists: &mut VirtualLists,
+    setup: &mut dyn FnMut(&mut ViewHost),
+) -> Result<LoadedView, ViewLoadError> {
     let package = ViewPackage::decode_from_slice(blob).map_err(ViewLoadError::Decode)?;
-    instantiate_view(&package, store, states, bindings, lists)
+    instantiate_view_with(&package, store, states, bindings, lists, setup)
 }
 
 /// Instantiates a decoded view into the runtime: its state cells first, with
 /// their initial values, then the tree, then the host, its `env` reads, its
-/// handlers, its control-flow regions and the values its nodes show.
+/// persisted states, its handlers, its control-flow regions and the values
+/// its nodes show.
 pub fn instantiate_view(
     package: &ViewPackage,
     store: &mut NodeStore,
@@ -143,11 +157,24 @@ pub fn instantiate_view(
     bindings: &mut BindingTable,
     lists: &mut VirtualLists,
 ) -> Result<LoadedView, ViewLoadError> {
+    instantiate_view_with(package, store, states, bindings, lists, &mut |_| {})
+}
+
+/// [`instantiate_view`], `setup` given the host before the view mounts.
+pub fn instantiate_view_with(
+    package: &ViewPackage,
+    store: &mut NodeStore,
+    states: &mut StateStore,
+    bindings: &mut BindingTable,
+    lists: &mut VirtualLists,
+    setup: &mut dyn FnMut(&mut ViewHost),
+) -> Result<LoadedView, ViewLoadError> {
     let mut host = if package.behavior.is_empty() {
         None
     } else {
-        let host = ViewHost::from_bytes(&package.behavior, &package.component)
+        let mut host = ViewHost::from_bytes(&package.behavior, &package.component)
             .map_err(ViewLoadError::Host)?;
+        setup(&mut host);
         Some(host)
     };
     let mut cells = Vec::with_capacity(package.states.len());
@@ -176,6 +203,7 @@ pub fn instantiate_view(
             let anchor = node_ids.get(read.anchor as usize).copied().flatten();
             host.link_env(read.slot as usize, read.field, anchor, states);
         }
+        host.load_persisted(states);
     }
     let Some(host) = host.map(ViewHost::shared) else {
         return Ok(LoadedView { root, host: None });

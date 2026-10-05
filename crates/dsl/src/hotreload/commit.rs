@@ -308,6 +308,7 @@ fn mount_behavior(
                 mirrored.link_env(read.slot as usize, read.field, anchor, rt.states);
             }
             mirrored.prune_env(rt.states);
+            mirrored.load_persisted(rt.states);
         }
         Some((view, host))
     });

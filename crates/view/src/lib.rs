@@ -44,7 +44,7 @@ pub use host::{__embedded, HostError, StateCells, ViewHost, cell_value, vm_value
 pub use mounts::{__mounted_view, __static_nodes, MountRecord, take_mounts};
 pub use package::{
     LoadedView, ViewControl, ViewEnv, ViewHandler, ViewLoadError, ViewPackage, ViewState,
-    instantiate_view, load_view,
+    instantiate_view, instantiate_view_with, load_view, load_view_with,
 };
 pub use regions::{
     __mount_embedded, ArmTemplate, CLOSED, CellRef, EffectTemplate, EnvTemplate, GroupTemplate,

@@ -30,7 +30,7 @@ use crate::diag::{Diagnostic, Severity};
 use crate::hir::style::StyleBook;
 use crate::hir::{
     CheckedShader, ConstValue, DerivedReads, HirComponent, Migrator, SourceSet, TargetProfile, Ty,
-    TypeSchemas, write_backs,
+    TypeSchemas, persists, write_backs,
 };
 use crate::ir::{
     BindingIr, ComponentLibrary, InstanceSources, KeyIr, LibraryComponent, UiTree, analyze_keys,
@@ -375,6 +375,7 @@ fn compile_unit(
                 Some(LibraryComponent {
                     schema: &c.schema,
                     write_backs: write_backs(&decl),
+                    persists: persists(&decl),
                     decl,
                 })
             })
@@ -401,6 +402,16 @@ fn compile_unit(
     // The view checker has already reported every unregistered node type.
     let tree = match lowered_view {
         Some(view) => {
+            for (at, name) in view.persisting {
+                diagnostics.push(Diagnostic::error(
+                    "E9106",
+                    at,
+                    format!(
+                        "`{name}` persists a state under one key, so it mounts only as a view's \
+                         own component, not inside another's view"
+                    ),
+                ));
+            }
             for (at, reason) in view.unmounted {
                 diagnostics.push(Diagnostic::error(
                     "E3711",

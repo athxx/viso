@@ -73,12 +73,7 @@ impl Module {
                     enc.write_u64(state.schema);
                 });
             }
-            write_list(enc, &s.persist, |enc, state| {
-                enc.write_str(&state.key);
-                enc.write_varint(u64::from(state.slot));
-                state.schema.encode(enc);
-                enc.write_str(&state.spelling);
-            });
+            write_list(enc, &s.persist, write_persist);
         });
         write_list(&mut enc, self.natives(), |enc, n| {
             enc.write_str(&n.path);
@@ -128,15 +123,7 @@ impl Module {
                 id: read_stable_id(dec)?,
                 snapshot: read_list(dec, read_state)?.into(),
                 locals: read_list(dec, read_state)?.into(),
-                persist: read_list(dec, |dec| {
-                    Ok(PersistSlot {
-                        key: dec.read_str()?.into(),
-                        slot: read_u32_varint(dec)?,
-                        schema: ValueSchema::decode(dec)?,
-                        spelling: dec.read_str()?.into(),
-                    })
-                })?
-                .into(),
+                persist: read_list(dec, read_persist)?.into(),
             })
         })?;
         let natives = read_list(&mut dec, |dec| {
@@ -352,6 +339,23 @@ fn write_component(enc: &mut Encoder, c: &Component) {
         enc.write_varint(u64::from(*chunk))
     });
     write_list(enc, &c.effects, |enc, e| e.encode(enc));
+    write_list(enc, &c.persist, write_persist);
+}
+
+fn write_persist(enc: &mut Encoder, state: &PersistSlot) {
+    enc.write_str(&state.key);
+    enc.write_varint(u64::from(state.slot));
+    state.schema.encode(enc);
+    enc.write_str(&state.spelling);
+}
+
+fn read_persist(dec: &mut Decoder<'_>) -> Result<PersistSlot, DecodeError> {
+    Ok(PersistSlot {
+        key: dec.read_str()?.into(),
+        slot: read_u32_varint(dec)?,
+        schema: ValueSchema::decode(dec)?,
+        spelling: dec.read_str()?.into(),
+    })
 }
 
 impl Encode for ComponentEffect {
@@ -440,6 +444,7 @@ fn read_component(dec: &mut Decoder<'_>) -> Result<Component, DecodeError> {
         .into(),
         handlers: read_list(dec, read_u32_varint)?.into(),
         effects: read_list(dec, ComponentEffect::decode)?.into(),
+        persist: read_list(dec, read_persist)?.into(),
     })
 }
 

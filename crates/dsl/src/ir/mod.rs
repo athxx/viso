@@ -68,6 +68,9 @@ pub struct LoweredView {
     pub unknown: Vec<(String, TextRange)>,
     /// Each component node the view cannot inline, and why.
     pub unmounted: Vec<(TextRange, String)>,
+    /// Each node of a component with `@persist` state the view inlines: such
+    /// a component persists only as a view's own.
+    pub persisting: Vec<(TextRange, String)>,
 }
 
 /// The components a view may inline: the ones declared in the same unit as
@@ -92,6 +95,8 @@ pub struct LibraryComponent<'a> {
     /// Each two-way input, by its index among the inputs, and the event that
     /// writes it back.
     pub write_backs: Vec<(usize, String)>,
+    /// Whether a state of it is `@persist`.
+    pub persists: bool,
 }
 
 impl<'a> ComponentLibrary<'a> {
@@ -192,6 +197,7 @@ struct Lowering<'a, 'l> {
     library: &'a ComponentLibrary<'l>,
     unknown: Vec<(String, TextRange)>,
     unmounted: Vec<(TextRange, String)>,
+    persisting: Vec<(TextRange, String)>,
     instances: Vec<UiInstance>,
     /// Each component view being lowered, the mounted one first.
     frames: Vec<Frame>,
@@ -231,6 +237,7 @@ impl<'a, 'l> Lowering<'a, 'l> {
             library,
             unknown: Vec::new(),
             unmounted: Vec::new(),
+            persisting: Vec::new(),
             instances: Vec::new(),
             frames: vec![Frame {
                 instance: 0,
@@ -254,6 +261,7 @@ impl<'a, 'l> Lowering<'a, 'l> {
             },
             unknown: self.unknown,
             unmounted: self.unmounted,
+            persisting: self.persisting,
         }
     }
 
@@ -614,6 +622,9 @@ impl<'a, 'l> Lowering<'a, 'l> {
             return;
         };
         let schema = component.schema;
+        if component.persists {
+            self.persisting.push((origin, type_name.clone()));
+        }
         if self.frames[self.current].chain.contains(&id) {
             self.unmounted.push((
                 origin,

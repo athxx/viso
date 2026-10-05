@@ -875,16 +875,7 @@ impl Scheduler {
         self.vm.set_budget(self.budget);
         for (system, instance) in module.systems().iter().zip(&mut self.instances) {
             for slot in system.persist.iter() {
-                let loaded = persist.store.load(&slot.key).and_then(|blob| {
-                    let Some(blob) = blob else {
-                        return Ok(None);
-                    };
-                    let stored = Stored::decode(&blob)
-                        .map_err(|_| "the stored value is malformed".to_owned())?;
-                    stored
-                        .into_slot(slot, &module, &mut self.vm, instance)
-                        .map(Some)
-                });
+                let loaded = persist.load(slot, &module, &mut self.vm, instance);
                 let at = slot.slot as usize;
                 match loaded {
                     Ok(Some(value)) => instance.set_state(at, value),
@@ -898,9 +889,7 @@ impl Scheduler {
                         ),
                     }),
                 }
-                persist
-                    .written
-                    .insert(slot.key.clone(), instance.states()[at].clone());
+                persist.loaded(slot, instance.states()[at].clone());
             }
         }
     }
@@ -921,14 +910,7 @@ impl Scheduler {
         }
         for (system, instance) in self.vm.module().systems().iter().zip(&self.instances) {
             for slot in system.persist.iter() {
-                let value = &instance.states()[slot.slot as usize];
-                if persist.written.get(&slot.key) == Some(value) {
-                    continue;
-                }
-                persist
-                    .store
-                    .store(&slot.key, Stored::of(slot, value.clone()).encode());
-                persist.written.insert(slot.key.clone(), value.clone());
+                persist.store_changed(slot, &instance.states()[slot.slot as usize]);
             }
         }
     }

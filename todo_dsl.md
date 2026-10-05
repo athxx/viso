@@ -977,7 +977,16 @@ timers (§104–§111).
         converted by the shared retype matrix or `@migrate`; `E9111` / `E6103`
         reports; changed values written at tick boundaries once an interval;
         `suspend` and drop flush; carried through World Rebuild and Logic Reload.
-  - [ ] Component state `@persist` (needs a key rule for component instances).
+  - [x] Component state `@persist`: only the view's own component persists
+        (`E9106` when one persisting state mounts inside another view); the view
+        host loads before mount (`load_view_with` / `instantiate_view_with`
+        `setup`, hot-reload mount), stores changed values after each committed
+        write-back, `suspend` flushes; `E6103` once per state when not granted;
+        a hot reload keeps loaded values and loads a newly persisted state.
+  - [ ] The embedded host of `view!` / `component!` loads and stores its
+        persisted states.
+  - [ ] The app facade installs a `Persist` service (a `DirStore` in the app
+        data dir) and calls `suspend` when the app goes to the background.
 - [ ] `AudioProcess` real-time rules `E9108` (§108.3).
   - [ ] A system implementing `AudioProcess` rejects allocation, `await`/tasks,
         locks, resource loads, non-`realtime` natives and unbounded loops

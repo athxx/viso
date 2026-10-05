@@ -2124,6 +2124,19 @@ pub(crate) fn write_backs(decl: &ComponentDecl) -> Vec<(usize, String)> {
     out
 }
 
+/// Whether a state of `decl` is marked `@persist`.
+pub(crate) fn persists(decl: &ComponentDecl) -> bool {
+    let mut marked = false;
+    for child in decl.syntax().children() {
+        match child.kind() {
+            SyntaxKind::Attribute => marked |= attribute_is(&child, "persist"),
+            SyntaxKind::StateDecl if marked => return true,
+            _ => marked = false,
+        }
+    }
+    false
+}
+
 fn is_bindable(attr: &SyntaxNode) -> bool {
     attribute_is(attr, "bindable")
 }

@@ -20,8 +20,10 @@ use viso_ui::StateValue;
 
 use crate::behavior::ir::{FuncId, FunctionKind};
 use crate::diag::{Diagnostic, Related};
-use crate::frontend::{Compiled, Origin, Source, SourceKind, compile_file, compile_fragment};
-use crate::hir::{Ty, TypeSchemas};
+use crate::frontend::{
+    Compiled, Origin, Source, SourceKind, compile_file, compile_file_for, compile_fragment,
+};
+use crate::hir::{TargetProfile, Ty, TypeSchemas};
 use crate::ir::binding_ir::BindingIr;
 use crate::ir::ui_ir::UiTree;
 use crate::resolve::SymbolId;
@@ -136,6 +138,21 @@ pub fn plan(source: &str) -> Result<CandidatePlan, Vec<Diagnostic>> {
 /// view, handlers included, or return the fatal diagnostics. Pure, like [`plan`].
 pub fn plan_view(source: &str, origin: &Origin) -> Result<CandidatePlan, Vec<Diagnostic>> {
     candidate(compile_file(source, origin))
+}
+
+/// [`plan_view`] checked against `profile`, the grants of the package it
+/// belongs to among them.
+pub fn plan_view_for(
+    source: &str,
+    origin: &Origin,
+    profile: TargetProfile,
+) -> Result<CandidatePlan, Vec<Diagnostic>> {
+    candidate(compile_file_for(
+        source,
+        origin,
+        crate::schema::Natives::standard(),
+        profile,
+    ))
 }
 
 /// The candidate for a compiled source: its fatal diagnostics, including every
