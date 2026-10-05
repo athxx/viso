@@ -4809,6 +4809,8 @@ Named Node `n` 在同一 Component 的 Action 与 Handler 中以 `n: NodeRef<T>`
 - **隐藏**：`semantics.hidden: true` 把子树从语义树移除但保留绘制，用于纯装饰；`visible: false` 同时移除绘制与语义；
 - **辅助技术动作**：Focus、Click、Increment、Decrement 走普通输入路径（ADR 0030），触发同一套 Handler。
 
+当前实现：标准交互 Widget 是 `Button`、`Toggle`、`CheckBox`、`Slider`、`TextInput`、`Tabs`、`RadioGroup`（Widget Schema 的 `interactive` 标记）。其他原生 Widget 的节点（包括用户 Component 视图的根节点）处理 `click`、`tap`、`long_press`、`drag_*` 或 `key_down` 时：未绑定 `semantics.role`、或绑定为 `Role::group`，报 `E3704`；节点及其子树中没有 `semantics.label` 或 `text` 绑定，报 `E3704`；没有 `focusable`（或其值为字面量 `false`）、或不处理 `click`，报 `E3708`。均为警告，构建配置的 `a11y_strict`（`--a11y strict`）使之成为错误。调用方在用户 Component 节点上转发的 Handler 尚不检查。
+
 ---
 
 ## U9. 列表：`for` 与 `VirtualList`
@@ -4874,6 +4876,8 @@ Text { text: tr("inbox.unread", [tr_arg("count", unread)]); }
 - Schema 把用户可见文本 Property 标记为 Localizable：`Text.text`、`Button.text`、`Toggle.label`、`TextInput.placeholder`、`semantics.label`、`semantics.hint` 以及各 Widget 的标题文本；
 - 在 Localizable Property 上用字符串拼接或含字面文字的 `format(...)` 构造文本是 `E3705`（警告），应改用带参数的 `tr`，因为语序因语言而异；只含单个占位符的 `format("{}", n)` 不受限；
 - 纯字面量默认不报错；`viso check --i18n strict` 对 Localizable Property 上的字面量也报告 `E3705`。
+
+当前实现：Widget Schema 把 `Text.text`、`Button.text`、`Toggle`/`CheckBox` 的 `label`、`TextInput.placeholder`、`semantics.label`、`semantics.hint` 标为 Localizable。其值（去掉括号后）是类型为 `String` 的 `+` 拼接，或 `format` 的模板字面量含字面文字或多于一个占位符时，报 `E3705`（警告）；构建配置的 `i18n_strict`（`--i18n strict`）使之成为错误，并对 `String` 字面量同样报告。`tr`、`MessageKey` 与消息目录尚未实现，`E3706` 因此尚不报告。
 
 ---
 

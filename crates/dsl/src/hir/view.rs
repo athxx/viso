@@ -38,7 +38,9 @@ use std::collections::HashMap;
 use viso_behavior::native::{Natives, SlotCardinality, WidgetNode};
 use viso_view::ControlKind;
 
+use super::access;
 use super::infer::{InferCx, MatchCheck, TypeEnv};
+use super::lower::TargetProfile;
 use super::nodes::HirSlot;
 use super::percent::{Carry, PercentFacts, PercentSources};
 use super::style::{self, Own, PartValue, StyleBook, StyleUse};
@@ -119,6 +121,10 @@ pub(crate) trait ViewEnv: TypeEnv {
 
     /// The styles the view's module declares.
     fn styles(&self) -> Option<&StyleBook>;
+
+    /// What the package is built for, which sets how strict the
+    /// accessibility and localization checks are.
+    fn profile(&self) -> &TargetProfile;
 }
 
 /// Where a view's event handlers lower to: the component layout registered last
@@ -471,6 +477,8 @@ struct Declared {
     ty: Option<Ty>,
     two_way: bool,
     basis: Basis,
+    /// Whether it shows text a user reads.
+    localizable: bool,
 }
 
 /// Whether a property resolves a `Percent` against a basis.
@@ -569,6 +577,18 @@ impl<'a> ViewWalk<'a> {
             && owner.component.is_none()
         {
             self.styled(owner, &body);
+            if !owner.schema.native().interactive
+                && let Some(at) = at
+            {
+                let strict = self.env.profile().a11y_strict;
+                access::check_node(
+                    owner.schema.native(),
+                    at,
+                    &body,
+                    strict,
+                    &mut self.diagnostics,
+                );
+            }
         }
     }
 
@@ -1221,6 +1241,19 @@ impl<'a> ViewWalk<'a> {
             Some(want) => self.cx.infer_promoted(&value, want),
             None => self.cx.infer_expr(&value, None),
         };
+        if let (Some(declared), Some(path)) = (&declared, binding.path())
+            && declared.localizable
+        {
+            let strict = self.env.profile().i18n_strict;
+            let cx = &self.cx;
+            access::check_text(
+                &path_text(&path),
+                &value,
+                &|e| cx.type_of(e).cloned(),
+                strict,
+                &mut self.diagnostics,
+            );
+        }
         let at = value.syntax().text_range();
         if let (Some(path), Some(_), Some(want)) = (
             &transition,
@@ -1374,6 +1407,7 @@ impl<'a> ViewWalk<'a> {
                 ty: Some(input.ty.clone()).filter(|t| !t.has_unknown()),
                 two_way: input.two_way,
                 basis,
+                localizable: false,
             });
         }
         let names: Vec<&str> = segments.iter().map(String::as_str).collect();
@@ -1382,6 +1416,7 @@ impl<'a> ViewWalk<'a> {
                 ty: value_ty(spec.ty),
                 two_way: spec.two_way,
                 basis: Basis::of(spec.percent_basis),
+                localizable: spec.localizable,
             }),
             PropLookup::Unknown if names.len() == 2 && names[0] == "transition" => {
                 let message = format!(
@@ -1452,6 +1487,7 @@ impl<'a> ViewWalk<'a> {
                         ty: value_ty(spec.ty),
                         two_way: spec.two_way,
                         basis: Basis::of(spec.percent_basis),
+                        localizable: spec.localizable,
                     });
                 }
                 let last = members.last().map_or("", String::as_str);

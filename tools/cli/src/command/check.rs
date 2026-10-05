@@ -161,6 +161,10 @@ pub(super) fn profile(project: &Project) -> TargetProfile {
             }
             granted
         },
+        // `--a11y strict` and `--i18n strict` arrive with the CLI's check
+        // options.
+        a11y_strict: false,
+        i18n_strict: false,
     }
 }
 

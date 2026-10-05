@@ -70,8 +70,8 @@ static SEMANTICS: PropertyGroup = PropertyGroup {
     prefix: "semantics",
     members: &[
         prop("role", "Role"),
-        prop("label", "Option<String>"),
-        prop("hint", "Option<String>"),
+        prop("label", "Option<String>").localizable(),
+        prop("hint", "Option<String>").localizable(),
         prop("value", "Option<String>"),
         prop("live", "LiveRegion"),
         prop("hidden", "Bool"),
@@ -136,16 +136,19 @@ const TEXT_STYLE: &[WidgetProperty] = &[
     prop("locale", "Option<Locale>"),
 ];
 
-const TEXT: &[WidgetProperty] = &[prop("text", "String")];
+const TEXT: &[WidgetProperty] = &[prop("text", "String").localizable()];
 
 const TEXT_INPUT: &[WidgetProperty] = &[
     two_way("value", "String"),
-    prop("placeholder", "String"),
+    prop("placeholder", "String").localizable(),
     prop("secure", "Bool"),
     prop("invalid", "Bool"),
 ];
 
-const CHECK: &[WidgetProperty] = &[two_way("checked", "Bool"), prop("label", "String")];
+const CHECK: &[WidgetProperty] = &[
+    two_way("checked", "Bool"),
+    prop("label", "String").localizable(),
+];
 
 const SLIDER: &[WidgetProperty] = &[
     two_way("value", "F32"),
@@ -330,36 +333,43 @@ pub(super) static WIDGETS: NativeLibrary = NativeLibrary {
             &[TEXT_INPUT, TEXT_STYLE, LAYOUT, TRANSFORM, FOCUS],
         )
         .events(&[TEXT_INPUT_EVENTS, STANDARD_EVENTS])
-        .migratable(MigratableState::SELECTION),
+        .migratable(MigratableState::SELECTION)
+        .interactive(),
         layout(
             "Button",
             WidgetNode::Leaf,
             &[TEXT, LAYOUT, TRANSFORM, FOCUS],
-        ),
+        )
+        .interactive(),
         layout(
             "Toggle",
             WidgetNode::Leaf,
             &[CHECK, LAYOUT, TRANSFORM, FOCUS],
         )
-        .events(&[TOGGLE_EVENTS, STANDARD_EVENTS]),
+        .events(&[TOGGLE_EVENTS, STANDARD_EVENTS])
+        .interactive(),
         layout(
             "CheckBox",
             WidgetNode::Leaf,
             &[CHECK, LAYOUT, TRANSFORM, FOCUS],
         )
-        .events(&[TOGGLE_EVENTS, STANDARD_EVENTS]),
+        .events(&[TOGGLE_EVENTS, STANDARD_EVENTS])
+        .interactive(),
         layout(
             "Slider",
             WidgetNode::Leaf,
             &[SLIDER, LAYOUT, TRANSFORM, FOCUS],
         )
-        .events(&[SLIDER_EVENTS, STANDARD_EVENTS]),
+        .events(&[SLIDER_EVENTS, STANDARD_EVENTS])
+        .interactive(),
         layout("Tabs", ROW, &[SELECTED, LAYOUT, TRANSFORM, FOCUS])
             .events(&[SELECTED_EVENTS, STANDARD_EVENTS])
-            .slots(CHILDREN),
+            .slots(CHILDREN)
+            .interactive(),
         layout("RadioGroup", COLUMN, &[SELECTED, LAYOUT, TRANSFORM, FOCUS])
             .events(&[SELECTED_EVENTS, STANDARD_EVENTS])
-            .slots(CHILDREN),
+            .slots(CHILDREN)
+            .interactive(),
         layout(
             "FocusScope",
             COLUMN,

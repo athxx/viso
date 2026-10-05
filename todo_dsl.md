@@ -988,12 +988,17 @@ timers (§104–§111).
   - [ ] After a logic-only reload, replay from T−k: restore the snapshot, rerun
         the recorded input on the new code, continue from the current tick.
 - [ ] Accessibility and localization checks `E3704`–`E3706`, `E3708` (U8.2, U10.3).
-  - [ ] An interactive non-widget node or component root without a role or name
-        (`E3704`) or a keyboard path (`E3708`); warnings, errors under
-        `--a11y strict`.
-  - [ ] `tr` keys and arguments against the message catalog (`E3706`); text
-        concatenation or literal `format` on a Localizable property (`E3705`),
-        literals too under `--i18n strict`.
+  - [x] An interactive non-widget node or component root without a role or name
+        (`E3704`) or a keyboard path (`E3708`); warnings, errors under the
+        profile's `a11y_strict`.
+  - [ ] The same for handlers a caller forwards onto a component node.
+  - [x] Text concatenation or literal `format` on a Localizable property
+        (`E3705`, schema `localizable` flag), literals too under the profile's
+        `i18n_strict`.
+  - [ ] `--a11y strict` / `--i18n strict` on `viso check` (with the CLI).
+  - [ ] `tr`, `tr_arg`, `MessageKey` and the project message catalog (format,
+        plural rules, locale fallback, `env.locale` dependency), then its keys
+        and arguments checked (`E3706`).
 
 ---
 

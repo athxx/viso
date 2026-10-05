@@ -25,6 +25,7 @@
 //! Viso-owned, built on the resolver's slot-based local scopes and durable symbol
 //! identities.
 
+mod access;
 mod capability;
 mod component;
 mod effect;
