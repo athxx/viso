@@ -65,6 +65,9 @@ impl Builder<'_> {
             Ty::Range(t) => TypeDesc::Range(boxed(self, t)),
             Ty::RangeInclusive(t) => TypeDesc::RangeInclusive(boxed(self, t)),
             Ty::Result(a, b) => TypeDesc::Result(boxed(self, a), boxed(self, b)),
+            Ty::Resource(a, b) | Ty::ResourceState(a, b) => {
+                TypeDesc::Resource(boxed(self, a), boxed(self, b))
+            }
             Ty::Named(id) => TypeDesc::Named(self.declaration(*id)),
             other => TypeDesc::Plain(ty_name(other).into()),
         }

@@ -1481,6 +1481,8 @@ match search_result.state {
 
 Resource 状态是标准 Enum；语法没有硬编码上述成员。
 
+当前实现：`resource` 是组件成员（System 中报 `E9109`），类型必须写作 `Resource<T, E>`（否则 `E2103`）。`load`、`key` 缺少或任一 Item 重复报 `E4301`，未知 Item 是语法错误。`policy` 是 `ResourcePolicy::keep_latest`、`debounce(d)`、`cache_for(d)`、`cache_errors` 的列表，各至多一次，`d` 为大于零的常量 Duration；`cache_errors` 需要 `cache_for`；`scope` 目前只接受 `ResourceScope::component`；违反者报 `E4302`。`key` 是纯表达式（Computed 上下文），类型须为 `StableKey`（整数、`Bool`、`Char`、`String`、`Unit`，以及由它们组成的 Tuple、Record、`Option` 与 Enum），否则报 `E2701`。`load` 必须是 Task Call（含 Native Task），否则报 `E4401`；其参数是纯表达式，结果类型须为 `Result<T, E>`（`E2103`）。Resource 只经 `.state`（`ResourceState<T, E>`）读取，可在表达式与 View `match` 中匹配并做穷尽检查（`E2301`）；对其赋值报 `E2110`；其他成员名报 `E2001`。
+
 ---
 
 ## 39. Start Statement 与 Task 生命周期
@@ -3750,6 +3752,8 @@ ResourceSymbolId + StableKeyValue + ScopeId + LoaderVersion
 - Loader Capability 在 Start 前检查；
 - LoaderVersion 变化默认使缓存失效，除非声明兼容迁移。
 
+当前实现：Resource 编译为一个 Effect：依赖是 `key`，主体启动 Loader Task（无 Handler），另有读写其状态槽的入口；状态初值 `idle`。挂载与每次 Key 值变化后：命中缓存则直接写入缓存状态；否则状态进入 `loading`（持有值时为 `reloading(value)`），再启动 Loader（有 `debounce` 时在延迟后启动，期间再变化会重新计时）。Loader 返回 `Ok(v)` 写 `ready(v)`、`Err(e)` 写 `error(e)`，各为一个新 Transaction，且仅当当前 Key 仍等于该次加载的 Key 时写入：过期结果从不覆盖新 Key 的状态。`keep_latest` 在 Key 变化时取消进行中的加载；没有它，旧加载照常完成并填充缓存。`cache_for(d)` 在结果提交时开始计时，到期移除；`cache_errors` 使错误同样缓存。缓存按挂载（`ResourceScope::component`）与 Key 值保存；加载、去抖与缓存到期都是该实例节点的 UI Task，卸载即全部丢弃。热重载以旧代码取消进行中的加载，状态按类型迁移保留，重新挂载后再次加载（新 Loader 即新 LoaderVersion，缓存不跨越热重载）。Loader 的 Capability 在其 Fiber 首次调用 Native 时检查（同步发生在启动内，早于任何异步工作）；被拒绝时报 `E6103`，状态停留在 `loading`。
+
 ---
 
 ## 94. Hot Reload 事务
@@ -5592,7 +5596,7 @@ collision
 
 `system` 规则：
 
-- `system` 与 `component` 共享 `input`/`state`/`computed`/`fn`/`action` 成员面，但只由 Scheduler 驱动、从不挂载，声明 `view`、`event`、`slot` 或 `effect`，或执行 `start`，报 `E9109`；只声明 System 的源文件不要求可挂载组件（不报 `E2005`）；
+- `system` 与 `component` 共享 `input`/`state`/`computed`/`fn`/`action` 成员面，但只由 Scheduler 驱动、从不挂载，声明 `view`、`event`、`slot`、`effect` 或 `resource`，或执行 `start`，报 `E9109`；只声明 System 的源文件不要求可挂载组件（不报 `E2005`）；
 - `implements` 的每个 Bound 必须是 Native Schema 提供的 Scheduler Trait，同一 Trait 至多出现一次，否则报 `E2201`；
 - Trait 的每个 Hook 需要同名 `action`，参数类型与 Hook 声明一致且不返回值，否则报 `E2201`；两个 Bound 声明同名 Hook 报 `E2202`；
 - Hook 按 Hook 身份（Trait 路径 + Hook 名的 Native Id）绑定到 `action`，编译器不按名字认识任何 Hook；Scheduler 将自己认识的 Hook 身份映射到阶段。
@@ -8502,7 +8506,7 @@ RecordPatternField
 | E2501  | Effect Kind 调用违规                                    |
 | E2502  | View/Computed 中存在副作用                              |
 | E2601  | 缺少 Capability                                         |
-| E2701  | 类型不能实现 StableKey                                  |
+| E2701  | 类型不能实现 StableKey（当前检查 Resource 的 `key`，§38） |
 | E2702  | 重复 Runtime Key                                        |
 | E2801  | Control Head 中的 Record Expression 必须加括号          |
 | E2802  | 非结合操作符链式使用（§63.1）                           |
@@ -8544,8 +8548,8 @@ RecordPatternField
 | E4202  | Reactive Cycle                                          |
 | E4203  | Effect Run Policy 与依赖列表不兼容                      |
 | E4204  | Adaptive Cycle（§96.5）                                 |
-| E4301  | Resource 缺少或重复 Load/Key                            |
-| E4302  | Resource Policy 冲突；`start` 的 Task Policy 不合法或无命名 Slot、重复的 `policy` 或 Handler（§39） |
+| E4301  | Resource 缺少 `load`/`key`，或任一 Item 重复（§38）       |
+| E4302  | Resource Policy 不合法、重复或冲突（`cache_errors` 需 `cache_for`），Scope 不受支持（§38）；`start` 的 Task Policy 不合法或无命名 Slot、重复的 `policy` 或 Handler（§39） |
 | E4401  | Start 目标不是 Task                                     |
 | E4501  | 无主 Detached Task                                      |
 | E5101  | Hot Reload 状态重置：活值不可转换为新类型，或 `@migrate` 函数执行失败（警告） |
@@ -8574,7 +8578,7 @@ RecordPatternField
 | E9106  | `@persist` 键重复、类型不可持久化或缺少 Capability（§106.8） |
 | E9107  | 输入动作缺少目标平台的手柄/触屏路径（警告，§106.3）      |
 | E9108  | AudioProcess 实时域违规（§108.3）                        |
-| E9109  | System 声明 `view`、`event`、`slot` 或 `effect` 成员，或执行 `start`（§105） |
+| E9109  | System 声明 `view`、`event`、`slot`、`effect` 或 `resource` 成员，或执行 `start`（§105） |
 | E9110  | `@probe` 误用：只能标在 System 的 Simulation `state` 上（§110.5） |
 | E9111  | 持久化状态加载、转换或写入失败（运行时，使用 Initializer，§106.8） |
 

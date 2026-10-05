@@ -20,7 +20,9 @@ fn borrowed_in<'n>(ty: &Ty, natives: &'n Natives) -> Option<&'n NativeTypeEntry>
         Ty::List(t) | Ty::Option(t) | Ty::Range(t) | Ty::RangeInclusive(t) => {
             borrowed_in(t, natives)
         }
-        Ty::Result(ok, err) => borrowed_in(ok, natives).or_else(|| borrowed_in(err, natives)),
+        Ty::Result(ok, err) | Ty::Resource(ok, err) | Ty::ResourceState(ok, err) => {
+            borrowed_in(ok, natives).or_else(|| borrowed_in(err, natives))
+        }
         Ty::Tuple(ts) => ts.iter().find_map(|t| borrowed_in(t, natives)),
         Ty::Fn(ps, ret) => ps
             .iter()

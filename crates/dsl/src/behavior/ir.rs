@@ -458,6 +458,8 @@ pub struct EffectEntry {
     pub body: u32,
     /// When it runs.
     pub run: viso_behavior::EffectRun,
+    /// What it loads, for a `resource`.
+    pub resource: Option<viso_behavior::ResourceLoad>,
 }
 
 /// An `env` field a view reads and the state slot that holds it.

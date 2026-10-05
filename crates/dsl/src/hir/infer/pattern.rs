@@ -43,6 +43,8 @@ pub(crate) enum Ctor {
     Err,
     /// Variant `index` of the enum `owner`.
     Variant(SymbolId, usize),
+    /// A [`ResourceState`](RESOURCE_STATES) variant, by tag.
+    Resource(u32),
     /// The one constructor of a tuple or record, with its field count.
     Single(usize),
     /// The integers (or `Char` scalar values) `lo..=hi`; empty when `lo > hi`.
@@ -84,11 +86,25 @@ impl Slice {
     }
 }
 
+/// The variants of `ResourceState<T, E>`, by tag, and whether each carries a
+/// payload: `ready` and `reloading` the value, `error` the error.
+pub(crate) const RESOURCE_STATES: [(&str, bool); 5] = [
+    ("idle", false),
+    ("loading", false),
+    ("ready", true),
+    ("error", true),
+    ("reloading", true),
+];
+
+/// The tag of the `ResourceState` variant `error`, whose payload is the error.
+pub(crate) const RESOURCE_ERROR: u32 = 3;
+
 impl Ctor {
     /// The number of sub-patterns this constructor carries.
     fn arity(&self, cx: &InferCx<'_>) -> usize {
         match self {
             Ctor::Some | Ctor::Ok | Ctor::Err => 1,
+            Ctor::Resource(tag) => usize::from(RESOURCE_STATES[*tag as usize].1),
             Ctor::Single(n) => *n,
             Ctor::Slice(slice) => slice.arity(),
             Ctor::Variant(owner, index) => cx
@@ -110,6 +126,8 @@ impl Ctor {
         let tys = match (self, ty) {
             (Ctor::Some, Ty::Option(t)) | (Ctor::Ok, Ty::Result(t, _)) => vec![(**t).clone()],
             (Ctor::Err, Ty::Result(_, e)) => vec![(**e).clone()],
+            (Ctor::Resource(RESOURCE_ERROR), Ty::ResourceState(_, e)) => vec![(**e).clone()],
+            (Ctor::Resource(_), Ty::ResourceState(t, _)) if n == 1 => vec![(**t).clone()],
             (Ctor::Single(_), Ty::Tuple(tys)) => tys.clone(),
             (Ctor::Single(_), Ty::Named(id)) => cx
                 .env
@@ -143,6 +161,10 @@ impl Ctor {
             Ctor::Some | Ctor::None => Some(Ty::Option(Box::new(Ty::Unknown))),
             Ctor::Ok | Ctor::Err => Some(Ty::Result(Box::new(Ty::Unknown), Box::new(Ty::Unknown))),
             Ctor::Variant(owner, _) => Some(Ty::Named(*owner)),
+            Ctor::Resource(_) => Some(Ty::ResourceState(
+                Box::new(Ty::Unknown),
+                Box::new(Ty::Unknown),
+            )),
             Ctor::Str(_) => Some(Ty::String),
             Ctor::Slice(_) => Some(Ty::List(Box::new(Ty::Unknown))),
             _ => None,
@@ -167,6 +189,10 @@ impl Ctor {
             Ctor::None => "None".into(),
             Ctor::Ok => "Ok(_)".into(),
             Ctor::Err => "Err(_)".into(),
+            Ctor::Resource(tag) => match RESOURCE_STATES[*tag as usize] {
+                (name, true) => format!("ResourceState::{name}(_)"),
+                (name, false) => format!("ResourceState::{name}"),
+            },
             Ctor::Variant(owner, index) => {
                 let owner_name = cx.describe(&Ty::Named(*owner));
                 match cx.env.enum_variants(*owner).and_then(|vs| vs.get(*index)) {
@@ -528,6 +554,10 @@ impl InferCx<'_> {
             ["None"] | ["Option", "None"] => return Some(Ctor::None),
             ["Ok"] | ["Result", "Ok"] => return Some(Ctor::Ok),
             ["Err"] | ["Result", "Err"] => return Some(Ctor::Err),
+            ["ResourceState", name] => {
+                let tag = RESOURCE_STATES.iter().position(|(n, _)| n == name)?;
+                return Some(Ctor::Resource(tag as u32));
+            }
             _ => {}
         }
         let first = segments.first()?;
@@ -937,6 +967,11 @@ impl InferCx<'_> {
             Ty::Bool => Some(vec![Ctor::Bool(true), Ctor::Bool(false)]),
             Ty::Option(_) => Some(vec![Ctor::None, Ctor::Some]),
             Ty::Result(_, _) => Some(vec![Ctor::Ok, Ctor::Err]),
+            Ty::ResourceState(_, _) => Some(
+                (0..RESOURCE_STATES.len() as u32)
+                    .map(Ctor::Resource)
+                    .collect(),
+            ),
             Ty::Tuple(tys) => Some(vec![Ctor::Single(tys.len())]),
             Ty::Unit => Some(vec![Ctor::Single(0)]),
             Ty::Char => Some(vec![Ctor::Range(0, 0xD7FF), Ctor::Range(0xE000, 0x10_FFFF)]),

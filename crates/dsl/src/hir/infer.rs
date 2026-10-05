@@ -35,6 +35,7 @@ mod record;
 mod schema;
 
 pub use native::NativeCall;
+pub(crate) use native::const_seconds;
 
 pub(crate) use pattern::MatchCheck;
 
@@ -1227,6 +1228,8 @@ fn spell(
         Ty::Result(t, e) => format!("Result<{}, {}>", one(t), one(e)),
         Ty::Range(t) => format!("Range<{}>", one(t)),
         Ty::RangeInclusive(t) => format!("RangeInclusive<{}>", one(t)),
+        Ty::Resource(t, e) => format!("Resource<{}, {}>", one(t), one(e)),
+        Ty::ResourceState(t, e) => format!("ResourceState<{}, {}>", one(t), one(e)),
         _ => ty_name(ty).to_string(),
     }
 }
@@ -1247,7 +1250,11 @@ pub(super) fn compatible(a: &Ty, b: &Ty) -> bool {
         | (Ty::Option(x), Ty::Option(y))
         | (Ty::Range(x), Ty::Range(y))
         | (Ty::RangeInclusive(x), Ty::RangeInclusive(y)) => compatible(x, y),
-        (Ty::Result(xt, xe), Ty::Result(yt, ye)) => compatible(xt, yt) && compatible(xe, ye),
+        (Ty::Result(xt, xe), Ty::Result(yt, ye))
+        | (Ty::Resource(xt, xe), Ty::Resource(yt, ye))
+        | (Ty::ResourceState(xt, xe), Ty::ResourceState(yt, ye)) => {
+            compatible(xt, yt) && compatible(xe, ye)
+        }
         _ => a == b,
     }
 }
@@ -1269,6 +1276,9 @@ fn merge(a: &Ty, b: &Ty) -> Ty {
         (Ty::Range(x), Ty::Range(y)) => Ty::Range(boxed(x, y)),
         (Ty::RangeInclusive(x), Ty::RangeInclusive(y)) => Ty::RangeInclusive(boxed(x, y)),
         (Ty::Result(xt, xe), Ty::Result(yt, ye)) => Ty::Result(boxed(xt, yt), boxed(xe, ye)),
+        (Ty::ResourceState(xt, xe), Ty::ResourceState(yt, ye)) => {
+            Ty::ResourceState(boxed(xt, yt), boxed(xe, ye))
+        }
         _ => a.clone(),
     }
 }
@@ -1584,6 +1594,8 @@ pub(crate) fn ty_name(ty: &Ty) -> &'static str {
         Ty::List(_) => "<list>",
         Ty::Option(_) => "<option>",
         Ty::Result(_, _) => "<result>",
+        Ty::Resource(_, _) => "<resource>",
+        Ty::ResourceState(_, _) => "<resource-state>",
         Ty::Range(_) => "<range>",
         Ty::RangeInclusive(_) => "<range-inclusive>",
         Ty::InferInt => "<int>",

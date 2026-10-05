@@ -286,7 +286,7 @@ impl InferCx<'_> {
 /// The seconds a constant `Duration` expression stands for: duration
 /// literals, parentheses, negation, sums and differences of durations, and
 /// durations scaled by or divided by a plain number.
-fn const_seconds(expr: &Expr) -> Option<f64> {
+pub(crate) fn const_seconds(expr: &Expr) -> Option<f64> {
     match const_number(expr)? {
         (seconds, true) => Some(seconds),
         (_, false) => None,

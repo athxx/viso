@@ -270,6 +270,49 @@ pub(crate) fn lower_component(
                 env.member_symbol(&token_text(t.name())),
                 t.syntax().text_range(),
             )),
+            // A resource holds its state in a slot of its own, which only its
+            // loader writes.
+            Member::Resource(resource) => {
+                let member_name = token_text(resource.name());
+                let symbol = env.member_symbol(&member_name);
+                let span = resource.syntax().text_range();
+                let ty = match resource
+                    .ty()
+                    .map(|t| resolve_annotation(&t, &nominal, span, diagnostics))
+                {
+                    Some(ty @ Ty::Resource(..)) => ty,
+                    Some(Ty::Unknown) | None => {
+                        Ty::Resource(Box::new(Ty::Unknown), Box::new(Ty::Unknown))
+                    }
+                    Some(_) => {
+                        let at = resource.ty().map_or(span, |t| t.syntax().text_range());
+                        diagnostics.push(Diagnostic::error(
+                            "E2103",
+                            at,
+                            "a `resource` is declared `Resource<T, E>`: the value it loads and \
+                             the error it can fail with",
+                        ));
+                        Ty::Resource(Box::new(Ty::Unknown), Box::new(Ty::Unknown))
+                    }
+                };
+                let meta = decl_meta(
+                    symbol,
+                    ty,
+                    super::effect::EffectClass::Read,
+                    OwnershipMode::Owned,
+                    span,
+                );
+                state_order.push(StateEntry {
+                    symbol,
+                    reads: BTreeSet::new(),
+                    span,
+                    node: HirState {
+                        name: member_name,
+                        type_was_annotated: true,
+                        meta,
+                    },
+                });
+            }
             Member::View(view) => {
                 schema.view = Some(view.syntax().text_range());
             }

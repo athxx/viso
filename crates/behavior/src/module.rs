@@ -1,6 +1,7 @@
 //! Chunks, component layouts, systems and the verified module.
 
 use std::fmt;
+use std::time::Duration;
 
 use crate::game::InputSchema;
 use crate::native::NativeId;
@@ -107,6 +108,28 @@ pub struct ComponentEffect {
     pub body: u32,
     /// When it runs.
     pub run: EffectRun,
+    /// What it loads, for a `resource`: its dependencies are then the key and
+    /// its body starts the loader.
+    pub resource: Option<ResourceLoad>,
+}
+
+/// How a `resource` loads: the effect carrying it runs on mount and on each
+/// key change, and its body starts the loader task without handlers; the view
+/// host moves the state through `loading`, `ready`, `error` and `reloading`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ResourceLoad {
+    /// The region entry reading the resource's state.
+    pub state: u32,
+    /// The [`ChunkKind::Handler`] writing its payload to the state.
+    pub write: u32,
+    /// How long a key must hold before its loader starts.
+    pub debounce: Option<Duration>,
+    /// How long a loaded value stays cached under its key.
+    pub cache_for: Option<Duration>,
+    /// Whether an error is cached as a value is.
+    pub cache_errors: bool,
+    /// Whether a key change cancels the load in flight.
+    pub keep_latest: bool,
 }
 
 /// A runnable body.
@@ -390,8 +413,14 @@ impl Module {
                 };
                 let deps = effect.deps.map(kind);
                 let body = kind(effect.body);
+                let resource = effect.resource.is_none_or(|load| {
+                    deps.is_some()
+                        && matches!(kind(load.state), Some((_, ChunkKind::RegionEntry)))
+                        && matches!(kind(load.write), Some((_, ChunkKind::Handler)))
+                });
                 let fits = matches!(body, Some((_, ChunkKind::Effect)))
-                    && matches!(deps, None | Some(Some((_, ChunkKind::RegionEntry))));
+                    && matches!(deps, None | Some(Some((_, ChunkKind::RegionEntry))))
+                    && resource;
                 if !fits {
                     return Err(VerifyError {
                         chunk: body.map_or(0, |b| b.0),

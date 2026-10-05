@@ -450,6 +450,7 @@ fn member_identity(
         Member::Fn(d) => (d.name()?, SymbolKind::Function, Namespace::Value),
         Member::Action(d) => (d.name()?, SymbolKind::Action, Namespace::Value),
         Member::Task(d) => (d.name()?, SymbolKind::Task, Namespace::Value),
+        Member::Resource(d) => (d.name()?, SymbolKind::Resource, Namespace::Value),
         Member::Slot(_) | Member::View(_) | Member::Effect(_) => return None,
     };
     Some(triple)
@@ -958,6 +959,23 @@ impl ModulePass<'_> {
                     self.scopes.push();
                     self.resolve_body(body.syntax());
                     self.scopes.pop();
+                }
+            }
+            Member::Resource(r) => {
+                if let Some(ty) = r.ty() {
+                    self.resolve_type_path(&ty);
+                }
+                // A policy and the scope are paths into `ResourcePolicy` and
+                // `ResourceScope`, checked by name.
+                for item in r.items() {
+                    use crate::syntax::SyntaxKind;
+                    if matches!(
+                        item.kind(),
+                        SyntaxKind::ResourceLoad | SyntaxKind::ResourceKey
+                    ) && let Some(value) = item.value()
+                    {
+                        self.resolve_expr(&value);
+                    }
                 }
             }
             Member::Event(_) | Member::Slot(_) => {}
@@ -1755,6 +1773,8 @@ fn is_user_type_name(text: &str) -> bool {
         "Result",
         "Range",
         "RangeInclusive",
+        "Resource",
+        "ResourceState",
         "Self",
     ];
     let starts_upper = text.chars().next().is_some_and(|c| c.is_uppercase());

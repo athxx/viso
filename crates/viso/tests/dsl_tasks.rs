@@ -122,3 +122,55 @@ fn a_component_task_hands_its_value_back_at_a_frame_boundary() {
     }
     assert_eq!(store.task_count(), 0);
 }
+
+viso::component! {
+    Picker {
+        state q = 1;
+        resource r: Resource<I64, String> { load = get(q); key = q; }
+        task get(n: I64) -> Result<I64, String> { Ok(n) }
+        view { Text { width: 10dp; height: 10dp; } }
+    }
+}
+
+#[test]
+fn a_component_resource_loads_on_its_root() {
+    let mut store = NodeStore::new();
+    let mut states = StateStore::new();
+    let mut bindings = BindingTable::new();
+    let mut lists = VirtualLists::new();
+    let mut text_edits = TextEdits::new();
+    let mut projectors = SemanticProjector::new();
+    let mut computeds = ComputedStore::new();
+    let mut effects = EffectStore::new();
+    let (_, root) = {
+        let mut cx = BuildCx::with_reactive(
+            &mut store,
+            &mut states,
+            &mut bindings,
+            &mut lists,
+            &mut text_edits,
+            &mut projectors,
+        );
+        Picker::build(&mut cx)
+    };
+    let mut changed = Vec::new();
+    assert!(store.has_pending_effects(), "the build mounts the effect");
+    settle_states(
+        &mut store,
+        &mut states,
+        &mut bindings,
+        &mut computeds,
+        &mut projectors,
+        &mut effects,
+        &mut changed,
+    )
+    .expect("settles");
+    assert_eq!(store.task_count(), 1, "the mount started the loader");
+    let mut continuations = Vec::new();
+    store.poll_tasks(&mut continuations);
+    for then in continuations.into_iter().flatten() {
+        then(&mut UpdateCx::__new(&mut states, &bindings, &mut store));
+    }
+    assert_eq!(store.task_count(), 0, "the load settled");
+    let _ = root;
+}

@@ -9,7 +9,8 @@
 //! through it, so the three targets run a handler the same way. The values its
 //! nodes show — a label's text, a text field's seeded buffer — are delivered
 //! the same way ([`mount_values`]). A `start` runs its task on the UI task
-//! protocol, owned by the component instance's node ([`release_tasks`]).
+//! protocol, owned by the component instance's node ([`release_tasks`]); a
+//! `resource` loads through the same tasks, gated on its key like an effect.
 //!
 //! A host is shared as `Rc<RefCell<ViewHost>>` by the `'static` handler boxes
 //! of every node of its view. The sharing is the point: the nodes of one view
@@ -27,6 +28,7 @@ mod host;
 mod mounts;
 mod package;
 mod regions;
+mod resources;
 mod route;
 mod scope;
 mod tasks;

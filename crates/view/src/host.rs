@@ -2,12 +2,15 @@
 
 use std::cell::RefCell;
 use std::fmt;
+use std::future::Future;
+use std::pin::Pin;
 use std::rc::{Rc, Weak};
+use std::time::Duration;
 
 use viso_behavior::native::{Natives, SchemaConflict, Services};
 use viso_behavior::{
     Budget, ChunkKind, ComponentEffect, Event, Fault, FaultKind, Instance, LoadError, Module,
-    Value, Vm,
+    Start, Value, Vm,
 };
 use viso_ui::adaptive::{AdaptiveEnv, AnchorId, EnvField};
 use viso_ui::context::UpdateCx;
@@ -835,6 +838,42 @@ impl ViewHost {
                 None
             }
         }
+    }
+
+    /// Runs a resource's loader, the effect body at handler-table entry
+    /// `entry`, in `scope`, and returns the start it queued instead of
+    /// launching it. A fault is kept as [`last_fault`](Self::last_fault).
+    pub(crate) fn run_load(
+        &mut self,
+        entry: u32,
+        scope: &Scope,
+        cells: &mut dyn StateCells,
+    ) -> Option<Start> {
+        let chunk = match self.chunk(entry, ChunkKind::Effect) {
+            Ok(chunk) => chunk,
+            Err(fault) => {
+                self.fault = Some(fault);
+                return None;
+            }
+        };
+        self.sync(scope, &*cells);
+        match self.vm.call(&mut self.instance, chunk, &scope.values) {
+            Ok(outcome) => {
+                self.events.extend(outcome.events);
+                self.write_back(scope, cells);
+                outcome.starts.into_iter().next()
+            }
+            Err(fault) => {
+                self.instance.clear_dirty();
+                self.fault = Some(fault);
+                None
+            }
+        }
+    }
+
+    /// Work that finishes once `duration` has passed, on the host's timers.
+    pub(crate) fn sleep(&mut self, duration: Duration) -> Pin<Box<dyn Future<Output = ()>>> {
+        viso_behavior::native::sleep(self.vm.services_mut(), duration)
     }
 
     /// Runs an effect's cleanup closure with the states `scope` keeps. It

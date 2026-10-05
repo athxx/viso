@@ -58,6 +58,7 @@ impl InferCx<'_> {
                 }
                 Some(SymbolKind::Computed) => "a `computed` is derived from its sources",
                 Some(SymbolKind::Const) => "it is a `const`",
+                Some(SymbolKind::Resource) => "a `resource` is written by its loader alone",
                 Some(SymbolKind::State) | None => return,
                 Some(_) => "it is not a variable",
             },
@@ -89,6 +90,7 @@ impl InferCx<'_> {
                 Some(SymbolKind::Input) => Some("an input, which its component cannot write"),
                 Some(SymbolKind::Computed) => Some("a `computed`"),
                 Some(SymbolKind::Const) => Some("a `const`"),
+                Some(SymbolKind::Resource) => Some("a `resource`, which only its loader writes"),
                 Some(_) => Some("not a value"),
             },
             Some(Resolution::Native(_)) => Some("a native"),
