@@ -14,6 +14,7 @@
 pub mod codegen;
 pub mod layout;
 pub mod ops;
+pub mod reload;
 pub mod ty;
 mod validate;
 pub mod value;
@@ -24,6 +25,7 @@ pub use layout::{
     Interpolation, LAYOUT_VERSION, ShaderInterface, VERTEX_ENTRY,
 };
 pub use ops::{BinaryOp, Intrinsic, StageUse, UnaryOp};
+pub use reload::{Live, Migration, ProgramReload, ReloadError, ReloadEvent, Swap};
 pub use ty::{Scalar, Texel, Ty};
 pub use validate::ProgramError;
 pub use value::{EncodeError, Lane, Value};
