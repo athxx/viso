@@ -12,6 +12,7 @@
 //! - [`ops`] — the operators and intrinsics, and the types they take.
 
 pub mod codegen;
+pub mod interp;
 pub mod layout;
 pub mod ops;
 pub mod reload;
@@ -20,6 +21,7 @@ mod validate;
 pub mod value;
 
 pub use codegen::{Target, emit};
+pub use interp::{Bindings, Raster, TextureData};
 pub use layout::{
     BindingDescriptor, BlockLayout, EntryDescriptor, FRAGMENT_ENTRY, FieldDescriptor,
     Interpolation, LAYOUT_VERSION, ShaderInterface, VERTEX_ENTRY,

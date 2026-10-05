@@ -5455,7 +5455,7 @@ CPU Reference Interpreter 是测试工具，不要求成为完整 UI 软件 Rend
 - Headless Golden Test；
 - AI 生成 Shader 的快速安全检查。
 
-当前实现：Shader HIR 检查后直接降为结构化带类型的 Program IR（局部变量槽、`if`、有界 `for`、`break`/`continue`/`return`/`discard`；`if`/`match` 值已降为局部变量赋值，无 SSA），经 Validation 后由同一遍历生成 MSL、WGSL 与 HLSL（Shader Model 5.1）。所有名字由编译器生成（`l3`、`fn1`、`u0`），源码名不会与目标语言关键字冲突。各后端语义对齐：`round` 四舍六入五成双，浮点 `%` 按截断取余，移位量取低 5 位，`v[i]`/`m[i]` 的下标钳到最后一个 Lane/列，Fragment 读到的 Instance 成员作为 Flat Varying 传入；HLSL 以转置形式保存矩阵（行即列），`a * b` 生成 `mul(b, a)`。Metal 以关闭 Fast Math 编译。
+当前实现：Shader HIR 检查后直接降为结构化带类型的 Program IR（局部变量槽、`if`、有界 `for`、`break`/`continue`/`return`/`discard`；`if`/`match` 值已降为局部变量赋值，无 SSA），经 Validation 后由同一遍历生成 MSL、WGSL 与 HLSL（Shader Model 5.1）。所有名字由编译器生成（`l3`、`fn1`、`u0`），源码名不会与目标语言关键字冲突。各后端语义对齐：`round` 四舍六入五成双，浮点 `%` 按截断取余，移位量取低 5 位，`v[i]`/`m[i]` 的下标钳到最后一个 Lane/列，Fragment 读到的 Instance 成员作为 Flat Varying 传入；HLSL 以转置形式保存矩阵（行即列），`a * b` 生成 `mul(b, a)`。Metal 以关闭 Fast Math 编译。CPU Reference Interpreter 按同一语义执行 Program IR（整数运算回绕，整数除以零得被除数、取余得零），Fragment 以 2×2 Quad 为单位执行，`dpdx`/`dpdy`/`fwidth` 取 Quad 内的精细差分，三角形外的 Lane 作为 Helper 只参与差分；配套的小光栅器按每个 Instance 六个顶点画两个三角形，像素中心采样、左上填充规则、`F32` Varying 透视校正插值、整数 Varying 取首顶点，混合后按 8 位通道量化。CI 用它与 Metal 渲染同一组编码后的 Buffer，逐像素比对，每通道差不超过 2/255。
 
 ---
 

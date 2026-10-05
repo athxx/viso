@@ -794,7 +794,9 @@ timers (§104–§111).
 
 ### Done
 
-- [ ] §155 game acceptance list passes headless (`crates/dsl/tests/game_acceptance.rs`).
+- [x] §155 game acceptance list passes: headless in `crates/dsl/tests/game_acceptance.rs`,
+      the two shader items on Metal (`crates/viso/tests/shader_reload.rs`,
+      `shader_golden.rs`).
   - [x] QuickGame ≡ split system; no frame callback or wall clock; seed + tape replay;
         60 Hz independent of the display; bounded catch-up; stable order and
         deterministic command merge.
@@ -809,8 +811,9 @@ timers (§104–§111).
         wasm32 (V8) and x86_64-linux-musl (Windows, Android, iOS not run).
   - [x] `@persist` across a restart and a migration (`game_persist.rs`, a real
         second process over a `DirStore`).
-  - [x] Shader reload keeps the current pipeline on failure (D6).
-  - [ ] CPU reference vs one GPU backend golden within tolerance (D6).
+  - [x] Shader reload keeps the current pipeline on failure (D6, `shader_reload.rs`).
+  - [x] CPU reference vs one GPU backend golden within tolerance (D6, Metal,
+        `shader_golden.rs`).
 
 ---
 
@@ -853,9 +856,9 @@ timers (§104–§111).
         new buffer and pipeline swapped together.
   - [x] A failure keeps the current pipeline and reports source spans and the
         backend log.
-- [ ] CPU reference vs one GPU backend golden within tolerance.
-  - [ ] CPU reference interpreter of the program IR with a small rasterizer.
-  - [ ] Metal renders the same program; pixels agree within a tolerance.
+- [x] CPU reference vs one GPU backend golden within tolerance.
+  - [x] CPU reference interpreter of the program IR with a small rasterizer.
+  - [x] Metal renders the same program; pixels agree within a tolerance.
 
 ---
 
