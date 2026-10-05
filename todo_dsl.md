@@ -831,15 +831,21 @@ timers (§104–§111).
   - [x] Stage rules (`E8106`): entry signatures and builtins from the render
         profile, varyings written in `vertex` and read in `fragment`,
         derivatives only in `fragment`, pure `fn`s; no recursion (`E8105`).
-- [ ] Lower to `viso-shader` IR; instance ABI from `@shader_value` records (§101–§102).
+- [x] Lower to `viso-shader` IR; instance ABI from `@shader_value` records (§101–§102).
   - [x] `viso-shader` program IR: owned interface (uniform block, instance
         fields, varyings, textures, samplers, entries) and a structured typed
         body; validation.
-  - [ ] Viso Shader Layout Algorithm: instance and uniform descriptors with
+  - [x] Viso Shader Layout Algorithm: instance and uniform descriptors with
         stable field id, offset, size, alignment, strides, interpolation, span;
         layout version in the pipeline key; `E8104` on an ABI mismatch.
-  - [ ] Codegen MSL (and WGSL/HLSL from the same IR); the DSL lowers checked
-        shaders into it.
+  - [x] Host encoder/decoder for uniform and instance blocks through the
+        descriptors.
+  - [x] Codegen MSL, WGSL and HLSL from the same IR; the DSL lowers checked
+        shaders into it; Metal compiles the MSL, naga validates the WGSL and
+        reflects its layout against the descriptors, glslang compiles the HLSL.
+  - [x] Metal backend: user programs compiled off the render thread with fast
+        math off, installed as pipelines, uniform buffer and per-index sampler
+        bindings.
 - [ ] Shader reload: background compile, swap at frame boundary, keep the current
       pipeline on failure (§110.3).
   - [ ] Compile off the render thread; a newer edit supersedes an older one.

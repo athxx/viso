@@ -88,6 +88,116 @@ struct MetalPipeline {
     state: Retained<ProtocolObject<dyn MTLRenderPipelineState>>,
     #[allow(dead_code)]
     builtin: BuiltinShader,
+    /// Whether the vertex stage samples the bind group's textures too.
+    vertex_textures: bool,
+}
+
+/// A user shader program for [`MetalCompiler::compile`]: MSL text with a
+/// `viso_vertex`-style vertex and fragment entry, the uniform block at
+/// `buffer(0)`, the instance array at `buffer(1)`, textures and samplers at
+/// their indices.
+#[derive(Debug, Clone, Copy)]
+pub struct ProgramDesc<'a> {
+    pub label: &'a str,
+    pub msl: &'a str,
+    pub vertex_entry: &'a str,
+    pub fragment_entry: &'a str,
+    pub color_format: TextureFormat,
+    pub blend: BlendMode,
+    /// Whether the vertex entry samples textures.
+    pub vertex_textures: bool,
+}
+
+/// A program compiled off the render thread, for
+/// [`MetalBackend::install_program`].
+pub struct MetalProgram {
+    state: Retained<ProtocolObject<dyn MTLRenderPipelineState>>,
+    vertex_textures: bool,
+}
+
+/// Compiles user programs on any thread: the device is thread-safe.
+#[derive(Clone)]
+pub struct MetalCompiler {
+    device: Retained<ProtocolObject<dyn MTLDevice>>,
+    library_compiles: Arc<AtomicU64>,
+}
+
+impl MetalCompiler {
+    /// The program `desc` describes, compiled with IEEE-preserving math, or
+    /// the Metal compiler's log.
+    ///
+    /// # Errors
+    ///
+    /// The compiler's or the pipeline builder's message.
+    pub fn compile(&self, desc: &ProgramDesc<'_>) -> Result<MetalProgram, String> {
+        let options = MTLCompileOptions::new();
+        // Programs are compared against the reference interpreter, so the
+        // compiler may not reassociate or flush; `mathMode`, its successor,
+        // needs a newer macOS than this backend supports.
+        #[allow(deprecated)]
+        options.setFastMathEnabled(false);
+        let state = build_state(
+            &self.device,
+            desc.msl,
+            desc.vertex_entry,
+            desc.fragment_entry,
+            desc.color_format,
+            desc.blend,
+            &options,
+        )?;
+        self.library_compiles.fetch_add(1, Ordering::Relaxed);
+        Ok(MetalProgram {
+            state,
+            vertex_textures: desc.vertex_textures,
+        })
+    }
+}
+
+/// A render pipeline state from MSL `msl`, or why it did not build.
+fn build_state(
+    device: &ProtocolObject<dyn MTLDevice>,
+    msl: &str,
+    vertex_entry: &str,
+    fragment_entry: &str,
+    color_format: TextureFormat,
+    blend: BlendMode,
+    options: &MTLCompileOptions,
+) -> Result<Retained<ProtocolObject<dyn MTLRenderPipelineState>>, String> {
+    let source = NSString::from_str(msl);
+    let library = device
+        .newLibraryWithSource_options_error(&source, Some(options))
+        .map_err(|e| e.localizedDescription().to_string())?;
+    let vertex_fn = library
+        .newFunctionWithName(&NSString::from_str(vertex_entry))
+        .ok_or_else(|| format!("no vertex entry `{vertex_entry}`"))?;
+    let fragment_fn = library
+        .newFunctionWithName(&NSString::from_str(fragment_entry))
+        .ok_or_else(|| format!("no fragment entry `{fragment_entry}`"))?;
+
+    let pd = MTLRenderPipelineDescriptor::new();
+    pd.setVertexFunction(Some(&vertex_fn));
+    pd.setFragmentFunction(Some(&fragment_fn));
+
+    // colorAttachments[0]: the target format + the blend.
+    let color = pd.colorAttachments();
+    // SAFETY: index 0 is a valid color-attachment slot.
+    let attach = unsafe { color.objectAtIndexedSubscript(0) };
+    attach.setPixelFormat(pixel_format(color_format));
+    match blend {
+        BlendMode::Replace => attach.setBlendingEnabled(false),
+        BlendMode::PremultipliedOver => {
+            attach.setBlendingEnabled(true);
+            attach.setSourceRGBBlendFactor(MTLBlendFactor::One);
+            attach.setDestinationRGBBlendFactor(MTLBlendFactor::OneMinusSourceAlpha);
+            attach.setRgbBlendOperation(MTLBlendOperation::Add);
+            attach.setSourceAlphaBlendFactor(MTLBlendFactor::One);
+            attach.setDestinationAlphaBlendFactor(MTLBlendFactor::OneMinusSourceAlpha);
+            attach.setAlphaBlendOperation(MTLBlendOperation::Add);
+        }
+    }
+    device
+        .newRenderPipelineStateWithDescriptor_error(&pd)
+        .map_err(|e| e.localizedDescription().to_string())
 }
 
 /// A surface: a `CAMetalLayer` hosted by the window's content view, plus
@@ -132,7 +242,7 @@ pub struct MetalBackend {
     /// standard pipeline is compiled once at device init; a well-formed frame
     /// never adds to this. A test snapshots it after prewarm and asserts a paint
     /// leaves it unchanged — the "no runtime shader compilation" contract.
-    library_compiles: u64,
+    library_compiles: Arc<AtomicU64>,
 }
 
 impl Default for MetalBackend {
@@ -178,8 +288,29 @@ impl MetalBackend {
             current_epoch: Epoch::START,
             completed: Arc::new(AtomicU64::new(0)),
             reclaim_scratch: Vec::new(),
-            library_compiles: 0,
+            library_compiles: Arc::new(AtomicU64::new(0)),
         }
+    }
+
+    /// A compiler for user programs, usable from any thread.
+    pub fn compiler(&self) -> MetalCompiler {
+        MetalCompiler {
+            device: self.device.clone(),
+            library_compiles: Arc::clone(&self.library_compiles),
+        }
+    }
+
+    /// Installs a compiled program as a pipeline. Draw it with its uniform
+    /// block bound as a [`Binding::Uniform`] buffer (or inline uniforms) and
+    /// its instances as the instance buffer.
+    pub fn install_program(&mut self, program: MetalProgram) -> PipelineId {
+        self.pipelines
+            .insert(MetalPipeline {
+                state: program.state,
+                builtin: BuiltinShader::Quad,
+                vertex_textures: program.vertex_textures,
+            })
+            .into()
     }
 
     /// Resolve a buffer handle, panicking on a stale/unknown one (an internal
@@ -244,7 +375,7 @@ impl MetalBackend {
     /// at device init (§7.1); a steady-state frame adds none. Instrumentation for
     /// the no-runtime-compile test — not a hot-path value.
     pub fn library_compiles(&self) -> u64 {
-        self.library_compiles
+        self.library_compiles.load(Ordering::Relaxed)
     }
 
     /// Free the storage slots of resources whose parking epoch the GPU has
@@ -442,55 +573,25 @@ impl GpuBackend for MetalBackend {
         let ShaderCode::Msl(msl) = desc.code else {
             panic!("the Metal backend compiles MSL, got {:?}", desc.code.lang());
         };
-        let source = NSString::from_str(msl);
         let options = MTLCompileOptions::new();
-        let library = self
-            .device
-            .newLibraryWithSource_options_error(&source, Some(&options))
-            .expect("MSL compilation failed");
-        self.library_compiles += 1;
-
-        let vfn = NSString::from_str(desc.vertex_entry);
-        let ffn = NSString::from_str(desc.fragment_entry);
-        let vertex_fn = library
-            .newFunctionWithName(&vfn)
-            .expect("vertex entry point not found in MSL");
-        let fragment_fn = library
-            .newFunctionWithName(&ffn)
-            .expect("fragment entry point not found in MSL");
-
-        let pd = MTLRenderPipelineDescriptor::new();
-        pd.setVertexFunction(Some(&vertex_fn));
-        pd.setFragmentFunction(Some(&fragment_fn));
-
-        // colorAttachments[0]: swapchain format + premultiplied over-blend.
-        let color = pd.colorAttachments();
-        // SAFETY: index 0 is a valid color-attachment slot.
-        let attach = unsafe { color.objectAtIndexedSubscript(0) };
-        attach.setPixelFormat(pixel_format(desc.color_format));
-        match desc.blend {
-            BlendMode::Replace => attach.setBlendingEnabled(false),
-            BlendMode::PremultipliedOver => {
-                attach.setBlendingEnabled(true);
-                attach.setSourceRGBBlendFactor(MTLBlendFactor::One);
-                attach.setDestinationRGBBlendFactor(MTLBlendFactor::OneMinusSourceAlpha);
-                attach.setRgbBlendOperation(MTLBlendOperation::Add);
-                attach.setSourceAlphaBlendFactor(MTLBlendFactor::One);
-                attach.setDestinationAlphaBlendFactor(MTLBlendFactor::OneMinusSourceAlpha);
-                attach.setAlphaBlendOperation(MTLBlendOperation::Add);
-            }
-        }
-
-        let state = self
-            .device
-            .newRenderPipelineStateWithDescriptor_error(&pd)
-            .expect("failed to create Metal render pipeline state");
+        let state = build_state(
+            &self.device,
+            msl,
+            desc.vertex_entry,
+            desc.fragment_entry,
+            desc.color_format,
+            desc.blend,
+            &options,
+        )
+        .unwrap_or_else(|e| panic!("the standard pipeline `{}` does not build: {e}", desc.label));
+        self.library_compiles.fetch_add(1, Ordering::Relaxed);
 
         Ok(self
             .pipelines
             .insert(MetalPipeline {
                 state,
                 builtin: desc.builtin,
+                vertex_textures: false,
             })
             .into())
     }
@@ -921,34 +1022,51 @@ impl MetalBackend {
             height: sh as usize,
         });
 
-        encoder.setRenderPipelineState(&self.pipeline(c.pipeline).state);
+        let pipeline = self.pipeline(c.pipeline);
+        encoder.setRenderPipelineState(&pipeline.state);
 
-        // Bind the bind group's textures in order at `texture(0)`, `texture(1)`
-        // and its sampler at `sampler(0)`, as the MSL declares them.
+        // Bind the bind group's textures in order at `texture(0)`, `texture(1)`,
+        // its samplers at `sampler(0)`, `sampler(1)`, as the MSL declares them,
+        // and a uniform buffer at `buffer(0)` of both stages.
         if let Some(bg) = c.bind_group {
-            let mut texture_index = 0;
+            let (mut texture_index, mut sampler_index) = (0, 0);
             for binding in &self.bind_group(bg).bindings {
                 match binding {
                     Binding::Texture(tid) => {
                         let t = self.texture(*tid);
                         // SAFETY: `t.texture` is a live texture and the index is
-                        // one of the fragment slots the program declares.
+                        // one of the slots the program declares.
                         unsafe {
                             encoder.setFragmentTexture_atIndex(Some(&t.texture), texture_index);
+                            if pipeline.vertex_textures {
+                                encoder.setVertexTexture_atIndex(Some(&t.texture), texture_index);
+                            }
                         }
                         texture_index += 1;
                     }
                     Binding::Sampler(sid) => {
                         let s = self.sampler(*sid);
-                        // SAFETY: `s.state` is a live sampler state; slot 0 is the
-                        // shared sampler every program declares.
+                        // SAFETY: `s.state` is a live sampler state at a slot the
+                        // program declares.
                         unsafe {
-                            encoder.setFragmentSamplerState_atIndex(Some(&s.state), 0);
+                            encoder.setFragmentSamplerState_atIndex(Some(&s.state), sampler_index);
+                            if pipeline.vertex_textures {
+                                encoder
+                                    .setVertexSamplerState_atIndex(Some(&s.state), sampler_index);
+                            }
+                        }
+                        sampler_index += 1;
+                    }
+                    Binding::Uniform(bid) => {
+                        let b = self.buffer(*bid);
+                        // SAFETY: `b.buffer` is a live buffer; index 0 is the
+                        // uniform block of a program drawn with no inline
+                        // uniforms (the built-ins bind none).
+                        unsafe {
+                            encoder.setVertexBuffer_offset_atIndex(Some(&b.buffer), 0, 0);
+                            encoder.setFragmentBuffer_offset_atIndex(Some(&b.buffer), 0, 0);
                         }
                     }
-                    // Uniform buffers in a bind group carry no data for the
-                    // inline-uniform built-ins; ignore.
-                    Binding::Uniform(_) => {}
                 }
             }
         }

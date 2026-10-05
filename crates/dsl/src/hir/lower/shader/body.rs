@@ -2013,11 +2013,7 @@ impl<'s, 'e, 'p> Body<'s, 'e, 'p> {
         }
         let default = match intrinsic {
             Intrinsic::QuadVertex => Some(Ty::U32),
-            Intrinsic::Abs
-            | Intrinsic::Sign
-            | Intrinsic::Min
-            | Intrinsic::Max
-            | Intrinsic::Clamp => hint
+            Intrinsic::Abs | Intrinsic::Min | Intrinsic::Max | Intrinsic::Clamp => hint
                 .or_else(|| {
                     args.iter()
                         .all(|a| int_literal(a).is_some())

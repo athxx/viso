@@ -5431,6 +5431,8 @@ source_span
 - Hot Reload 若 Instance Layout 不兼容，创建新 Buffer/Pipeline 后原子交换；
 - 不再使用的 Buffer 在 GPU Fence 后释放。
 
+当前实现（Layout Version 1）：Instance 数据按声明顺序紧密排列，每个 Leaf 4 字节对齐（向量占 `4 × Lane` 字节，矩阵逐列，`ColorLinear` 16 字节），Stride 为总和；Uniform Block 按 WGSL Uniform 地址空间规则：标量对齐 4，二元向量对齐 8，三/四元向量与 `ColorLinear` 对齐 16（三元向量仍占 12 字节，其后标量可放进末 4 字节），矩阵按列对齐并以列对齐为 `matrix_stride`，Block 大小向上取整到 16。`@shader_value` Record 成员按字段顺序展开为 Leaf，按所在 Block 的规则放置，Descriptor 以点分路径命名（`light.position`）。Varying 按声明顺序取 Location，`F32` 透视插值，整数 Flat。`stable_field_id` 是 Shader 名、Block 与点分名的 FNV-1a；`ShaderId` 是 Shader 名的 FNV-1a；Layout Version 与全部 Descriptor 进入 Pipeline Cache Key 的 Layout 部分。Host 端用 Encoder 按 Descriptor 写入（值的形状或 Lane 类型不符即报错），Rust `#[derive(GpuPod)]` 结构的 `InstanceLayout` 与 Instance Descriptor 逐字段比对名字、格式、Offset 与 Stride，不符报 `E8104`。Backend 读取同一 Layout：MSL 以显式填充的 Packed 结构声明并由编译器断言大小；WGSL 的 Uniform 结构以 `@size` 固定每个 Offset，Instance 为 4 字节标量 Leaf 的只读 Storage Buffer；HLSL 的 `cbuffer` 每个 Leaf 带 `packoffset`，Instance 为标量 Leaf 的 `StructuredBuffer`。CI 用 naga 反射 WGSL 结构与 Descriptor 逐 Offset 比对。
+
 ---
 
 ## 102. Shader Lowering
@@ -5452,6 +5454,8 @@ CPU Reference Interpreter 是测试工具，不要求成为完整 UI 软件 Rend
 - Backend 差异检测；
 - Headless Golden Test；
 - AI 生成 Shader 的快速安全检查。
+
+当前实现：Shader HIR 检查后直接降为结构化带类型的 Program IR（局部变量槽、`if`、有界 `for`、`break`/`continue`/`return`/`discard`；`if`/`match` 值已降为局部变量赋值，无 SSA），经 Validation 后由同一遍历生成 MSL、WGSL 与 HLSL（Shader Model 5.1）。所有名字由编译器生成（`l3`、`fn1`、`u0`），源码名不会与目标语言关键字冲突。各后端语义对齐：`round` 四舍六入五成双，浮点 `%` 按截断取余，移位量取低 5 位，`v[i]`/`m[i]` 的下标钳到最后一个 Lane/列，Fragment 读到的 Instance 成员作为 Flat Varying 传入；HLSL 以转置形式保存矩阵（行即列），`a * b` 生成 `mul(b, a)`。Metal 以关闭 Fast Math 编译。
 
 ---
 

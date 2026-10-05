@@ -80,6 +80,9 @@ ttf-parser = { workspace = true }
 rustybuzz = { workspace = true }
 # The DSL macros' diagnostics are checked against the spans rustc reports.
 trybuild = "1"
+# The reference WGSL front end + validator: checks the WGSL shader programs
+# lower to, and reflects their uniform and instance layouts.
+naga = { version = "30", features = ["wgsl-in"] }
 
 # Web: the WebGPU device opens asynchronously before the scheduler starts.
 [target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dependencies]

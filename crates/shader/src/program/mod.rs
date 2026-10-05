@@ -11,13 +11,22 @@
 //! - [`ty`] — the closed type set;
 //! - [`ops`] — the operators and intrinsics, and the types they take.
 
+pub mod codegen;
+pub mod layout;
 pub mod ops;
 pub mod ty;
 mod validate;
+pub mod value;
 
+pub use codegen::{Target, emit};
+pub use layout::{
+    BindingDescriptor, BlockLayout, EntryDescriptor, FRAGMENT_ENTRY, FieldDescriptor,
+    Interpolation, LAYOUT_VERSION, ShaderInterface, VERTEX_ENTRY,
+};
 pub use ops::{BinaryOp, Intrinsic, StageUse, UnaryOp};
 pub use ty::{Scalar, Texel, Ty};
 pub use validate::ProgramError;
+pub use value::{EncodeError, Lane, Value};
 
 /// A byte range of the source a program was built from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
@@ -234,6 +243,51 @@ pub enum ExprKind {
 impl Expr {
     pub fn new(ty: Ty, kind: ExprKind) -> Expr {
         Expr { ty, kind }
+    }
+
+    /// Calls `f` on this expression and every expression inside it.
+    pub fn visit(&self, f: &mut impl FnMut(&Expr)) {
+        f(self);
+        match &self.kind {
+            ExprKind::Unary(_, a)
+            | ExprKind::Swizzle(a, _)
+            | ExprKind::Member(a, _)
+            | ExprKind::Convert(a) => a.visit(f),
+            ExprKind::Binary(_, a, b) | ExprKind::Index(a, b) => {
+                a.visit(f);
+                b.visit(f);
+            }
+            ExprKind::Construct(args) | ExprKind::Call(_, args) | ExprKind::Intrinsic(_, args) => {
+                args.iter().for_each(|a| a.visit(f));
+            }
+            _ => {}
+        }
+    }
+}
+
+impl Block {
+    /// Calls `f` on every expression the block's statements hold.
+    pub fn visit(&self, f: &mut impl FnMut(&Expr)) {
+        for stmt in &self.0 {
+            match stmt {
+                Stmt::Let(_, e) | Stmt::Assign(_, e) | Stmt::Return(Some(e)) => e.visit(f),
+                Stmt::If(c, a, b) => {
+                    c.visit(f);
+                    a.visit(f);
+                    b.visit(f);
+                }
+                Stmt::For(l) => {
+                    l.start.visit(f);
+                    l.end.visit(f);
+                    l.body.visit(f);
+                }
+                Stmt::Declare(_)
+                | Stmt::Break
+                | Stmt::Continue
+                | Stmt::Return(None)
+                | Stmt::Discard => {}
+            }
+        }
     }
 }
 
