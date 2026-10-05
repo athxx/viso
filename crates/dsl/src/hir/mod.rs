@@ -35,6 +35,7 @@ mod ownership;
 mod percent;
 mod reads;
 pub(crate) mod start;
+pub(crate) mod style;
 mod ty;
 mod view;
 pub(crate) mod widget;

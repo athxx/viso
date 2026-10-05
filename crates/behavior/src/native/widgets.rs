@@ -21,31 +21,41 @@ const fn two_way(name: &'static str, ty: &'static str) -> WidgetProperty {
     WidgetProperty::new(name, ty).two_way()
 }
 
+/// A property a style may bind.
+const fn look(name: &'static str, ty: &'static str) -> WidgetProperty {
+    WidgetProperty::new(name, ty).styleable()
+}
+
+/// A property a style may bind that resolves a `Percent` against a basis.
+const fn based_look(name: &'static str, ty: &'static str) -> WidgetProperty {
+    WidgetProperty::new(name, ty).based().styleable()
+}
+
 /// Layout properties every node but `Fragment` takes.
 const LAYOUT: &[WidgetProperty] = &[
-    based("width", "Sizing"),
-    based("height", "Sizing"),
-    based("min_width", "MixedLength"),
-    based("min_height", "MixedLength"),
-    based("max_width", "Option<MixedLength>"),
-    based("max_height", "Option<MixedLength>"),
-    based("padding", "EdgeInsets"),
-    based("margin", "EdgeInsets"),
-    based("corner_radius", "MixedLength"),
-    prop("background", "Option<Color>"),
-    prop("border", "Option<Border>"),
+    based_look("width", "Sizing"),
+    based_look("height", "Sizing"),
+    based_look("min_width", "MixedLength"),
+    based_look("min_height", "MixedLength"),
+    based_look("max_width", "Option<MixedLength>"),
+    based_look("max_height", "Option<MixedLength>"),
+    based_look("padding", "EdgeInsets"),
+    based_look("margin", "EdgeInsets"),
+    based_look("corner_radius", "MixedLength"),
+    look("background", "Option<Color>"),
+    look("border", "Option<Border>"),
     prop("styles", "List<StyleRef<T>>"),
 ];
 
 /// Transform, opacity and clip properties every node but `Fragment` takes.
 const TRANSFORM: &[WidgetProperty] = &[
-    prop("translate", "Offset"),
-    prop("scale", "F32"),
-    prop("rotation", "Angle"),
-    prop("transform_origin", "Alignment2D"),
-    prop("opacity", "F32"),
-    prop("clip", "Bool"),
-    prop("visible", "Bool"),
+    look("translate", "Offset"),
+    look("scale", "F32"),
+    look("rotation", "Angle"),
+    look("transform_origin", "Alignment2D"),
+    look("opacity", "F32"),
+    look("clip", "Bool"),
+    look("visible", "Bool"),
 ];
 
 /// Focus properties every node but `Fragment` takes.
@@ -73,15 +83,15 @@ static SEMANTICS: PropertyGroup = PropertyGroup {
 static TRANSITION: PropertyGroup = PropertyGroup {
     prefix: "transition",
     members: &[
-        prop("translate", "Transition"),
-        prop("scale", "Transition"),
-        prop("rotation", "Transition"),
-        prop("opacity", "Transition"),
-        prop("background", "Transition"),
-        prop("color", "Transition"),
-        prop("corner_radius", "Transition"),
-        prop("width", "Transition"),
-        prop("height", "Transition"),
+        look("translate", "Transition"),
+        look("scale", "Transition"),
+        look("rotation", "Transition"),
+        look("opacity", "Transition"),
+        look("background", "Transition"),
+        look("color", "Transition"),
+        look("corner_radius", "Transition"),
+        look("width", "Transition"),
+        look("height", "Transition"),
     ],
 };
 
@@ -89,9 +99,9 @@ static TRANSITION: PropertyGroup = PropertyGroup {
 const GROUPS: &[&PropertyGroup] = &[&SEMANTICS, &TRANSITION];
 
 const FLEX: &[WidgetProperty] = &[
-    based("gap", "MixedLength"),
-    prop("justify", "Justify"),
-    prop("align", "Align"),
+    based_look("gap", "MixedLength"),
+    look("justify", "Justify"),
+    look("align", "Align"),
 ];
 
 const FLEX_AXIS: &[WidgetProperty] = &[prop("axis", "Axis")];
@@ -100,28 +110,28 @@ const GRID: &[WidgetProperty] = &[
     based("columns", "List<Track>"),
     based("rows", "List<Track>"),
     based("auto_rows", "Track"),
-    based("column_gap", "MixedLength"),
-    based("row_gap", "MixedLength"),
-    prop("align_items", "GridAlign"),
+    based_look("column_gap", "MixedLength"),
+    based_look("row_gap", "MixedLength"),
+    look("align_items", "GridAlign"),
     prop("areas", "List<String>"),
     based("adaptive_columns", "Option<AdaptiveColumns>"),
 ];
 
-const STACK: &[WidgetProperty] = &[prop("content_align", "Alignment2D")];
+const STACK: &[WidgetProperty] = &[look("content_align", "Alignment2D")];
 
 const SCROLL: &[WidgetProperty] = &[prop("axis", "Axis")];
 
 /// Text style properties `Text` and `TextInput` share.
 const TEXT_STYLE: &[WidgetProperty] = &[
-    based("font_size", "MixedLength"),
-    prop("font_weight", "FontWeight"),
-    prop("font_family", "Option<FontFamily>"),
-    based("line_height", "Option<MixedLength>"),
-    prop("color", "Color"),
-    prop("soft_wrap", "Bool"),
-    prop("max_lines", "Option<U32>"),
-    prop("overflow", "TextOverflow"),
-    prop("align", "TextAlign"),
+    based_look("font_size", "MixedLength"),
+    look("font_weight", "FontWeight"),
+    look("font_family", "Option<FontFamily>"),
+    based_look("line_height", "Option<MixedLength>"),
+    look("color", "Color"),
+    look("soft_wrap", "Bool"),
+    look("max_lines", "Option<U32>"),
+    look("overflow", "TextOverflow"),
+    look("align", "TextAlign"),
     prop("selectable", "Bool"),
     prop("locale", "Option<Locale>"),
 ];

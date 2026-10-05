@@ -41,6 +41,7 @@ use viso_view::ControlKind;
 use super::infer::{InferCx, MatchCheck, TypeEnv};
 use super::nodes::HirSlot;
 use super::percent::{Carry, PercentFacts, PercentSources};
+use super::style::{self, Own, PartValue, StyleBook, StyleUse};
 use super::ty::Ty;
 use super::widget::{self, ChildProps, PropLookup, WidgetSchema, value_ty};
 use crate::ast::{
@@ -48,11 +49,11 @@ use crate::ast::{
     PropertyBinding, PropertyPath, TwoWayBinding, TypePath, ViewBlock, ViewFor, ViewIf, ViewItem,
     ViewMatch,
 };
-use crate::behavior::FunctionKind;
 use crate::behavior::lower::{
     Def, ProgramBuilder, RegionEntry, lower_handler, lower_region_entry, lower_write_back,
     unsupported_with,
 };
+use crate::behavior::{FunctionKind, Site};
 use crate::diag::{Diagnostic, Related, Severity};
 use crate::resolve::suggest::{Candidate, attach, nearest};
 use crate::resolve::{Resolution, ResolvedRef, SymbolId};
@@ -65,6 +66,8 @@ pub(crate) struct InputProp {
     pub(crate) ty: Ty,
     /// Whether `@bindable(..)` pairs the input with an event, making it two-way.
     pub(crate) two_way: bool,
+    /// Whether `@styleable` lets a style bind it.
+    pub(crate) styleable: bool,
     pub(crate) declared_at: TextRange,
     /// The input's member symbol, which references to it in its component resolve to.
     pub(crate) symbol: Option<SymbolId>,
@@ -113,6 +116,9 @@ pub(crate) trait ViewEnv: TypeEnv {
 
     /// The native registry the view's widgets are declared in.
     fn widgets(&self) -> &Natives;
+
+    /// The styles the view's module declares.
+    fn styles(&self) -> Option<&StyleBook>;
 }
 
 /// Where a view's event handlers lower to: the component layout registered last
@@ -559,6 +565,127 @@ impl<'a> ViewWalk<'a> {
             inner,
         };
         self.items(body.members(), scope);
+        if let Some(owner) = &owner
+            && owner.component.is_none()
+        {
+            self.styled(owner, &body);
+        }
+    }
+
+    /// Lowers each value the styles of a native node of `owner` (whose body is
+    /// `body`) have the runtime evaluate, at its part of the node's styles.
+    /// The style declaration reports what is wrong with a value; typing it
+    /// here again only decides whether it lowers.
+    fn styled(&mut self, owner: &Owner<'a>, body: &NodeBody) {
+        let Some(book) = self.env.styles() else {
+            return;
+        };
+        let members: Vec<ViewItem> = body.members().collect();
+        let Some(value) = members.iter().find_map(|m| match m {
+            ViewItem::Property(p) if p.path().is_some_and(|path| path_text(&path) == "styles") => {
+                p.value()
+            }
+            _ => None,
+        }) else {
+            return;
+        };
+        let Ok(uses) = style::uses(book, &value) else {
+            return;
+        };
+        let list = style::applying(&uses, &owner.name);
+        if list.is_empty() {
+            return;
+        }
+        let plan = style::plan(book, &list, &style::own_bindings(&members));
+        let at = value.syntax().text_range();
+        for part in &plan.parts {
+            let site = Site::styled(at, part.part);
+            match &part.value {
+                PartValue::Look { property, value } => {
+                    let segments: Vec<&str> = property.split('.').collect();
+                    let want = match owner.schema.lookup(&segments) {
+                        PropLookup::Known(spec) => value_ty(spec.ty),
+                        PropLookup::Unknown => None,
+                    };
+                    let mark = self.cx.diagnostics().len();
+                    let _ = match &want {
+                        Some(want) => self.cx.infer_promoted(value, want),
+                        None => self.cx.infer_expr(value, None),
+                    };
+                    let failed = self.cx.rewind_diagnostics(mark);
+                    let entry = RegionEntry::Value(value);
+                    self.entry_at(failed, "style", site, &entry, value.syntax().text_range());
+                }
+                PartValue::Own(Own::Value(value)) => {
+                    let entry = RegionEntry::Value(value);
+                    self.entry_at(false, "style", site, &entry, value.syntax().text_range());
+                }
+                PartValue::Own(Own::Lens(source)) => {
+                    let entry = RegionEntry::Lens(source);
+                    self.entry_at(false, "style", site, &entry, source.syntax().text_range());
+                }
+            }
+        }
+    }
+
+    /// Checks a node's `styles` value: a list of the styles of the module,
+    /// each for the node's type `owner`.
+    fn check_styles(&mut self, value: &Expr, owner: &Owner<'a>) {
+        let Some(book) = self.env.styles() else {
+            return;
+        };
+        let uses = match style::uses(book, value) {
+            Ok(uses) => uses,
+            Err(at) => {
+                self.diagnostics.push(Diagnostic::error(
+                    "E2103",
+                    at,
+                    "`styles` takes a list of styles: `[A, B]`",
+                ));
+                return;
+            }
+        };
+        for item in uses {
+            match item {
+                StyleUse::Local(_, decl, at) => {
+                    let target = style::target_name(&decl);
+                    if target.as_deref() != Some(owner.name.as_str()) {
+                        let name = decl.name().map(|t| t.text()).unwrap_or_default();
+                        self.diagnostics.push(Diagnostic::error(
+                            "E2103",
+                            at,
+                            format!(
+                                "the style `{name}` is for `{}`, not `{}`",
+                                target.unwrap_or_default(),
+                                owner.name
+                            ),
+                        ));
+                    }
+                }
+                StyleUse::Other(at) => {
+                    let Some(id) = self.symbols.get(&at) else {
+                        // The resolver reports a name that resolves to nothing.
+                        continue;
+                    };
+                    let diagnostic = if self.env.resolution_ty(&Resolution::Symbol(*id)).is_some() {
+                        Diagnostic::error("E2103", at, "`styles` names styles, and this is a value")
+                    } else {
+                        Diagnostic::error(
+                            "E3711",
+                            at,
+                            "a node applies the styles its own file declares; this one is \
+                             declared in another file",
+                        )
+                    };
+                    self.diagnostics.push(diagnostic);
+                }
+                StyleUse::NotAName(at) => self.diagnostics.push(Diagnostic::error(
+                    "E2103",
+                    at,
+                    "`styles` names styles: each item is a style's name",
+                )),
+            }
+        }
     }
 
     /// The schema of a node type: a component of the package, else a registered
@@ -1079,6 +1206,15 @@ impl<'a> ViewWalk<'a> {
             // `slot:` names a slot, checked by `outlet`; it is no value.
             return;
         }
+        if let (Some(owner), Some(_)) = (scope.owner, &declared)
+            && binding
+                .path()
+                .is_some_and(|path| path_text(&path) == "styles")
+        {
+            // Style names are no values: they name what the node applies.
+            self.check_styles(&value, owner);
+            return;
+        }
         let transition = binding.path().filter(is_transition);
         let have = match declared.as_ref().and_then(|d| d.ty.as_ref()) {
             Some(want) if is_text(want) => self.cx.infer_text_value(&value, want),
@@ -1545,6 +1681,20 @@ impl<'a> ViewWalk<'a> {
     }
 
     fn region_entry(&mut self, errors: usize, what: &str, at: TextRange, entry: &RegionEntry<'_>) {
+        let failed = self.error_count() > errors;
+        self.entry_at(failed, what, Site::own(at), entry, at);
+    }
+
+    /// Lowers `entry`, whose source is at `at`, at `site`; one that `failed`
+    /// to type lowers as unsupported.
+    fn entry_at(
+        &mut self,
+        failed: bool,
+        what: &str,
+        site: Site,
+        entry: &RegionEntry<'_>,
+        at: TextRange,
+    ) {
         let Some(sink) = &self.sink else {
             return;
         };
@@ -1556,13 +1706,13 @@ impl<'a> ViewWalk<'a> {
             into: None,
         };
         let mut b = sink.builder.borrow_mut();
-        let func = if self.error_count() > errors {
+        let func = if failed {
             let params = self.regions.len() as u32 + u32::from(entry.takes_subject());
             unsupported_with(&mut b, def, params, "has type errors", at)
         } else {
             lower_region_entry(&mut b, &self.cx, def, &self.regions, entry, at)
         };
-        b.handler(at, func);
+        b.handler_at(site, func);
     }
 }
 

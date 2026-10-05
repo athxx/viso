@@ -411,8 +411,14 @@ impl ProgramBuilder {
     /// Records `func` as the handler of the `on` item at `at` in the view of
     /// the component registered last.
     pub(crate) fn handler(&mut self, at: TextRange, func: FuncId) {
+        self.handler_at(Site::own(at), func);
+    }
+
+    /// Registers `func` in the handler table of the component registered
+    /// last at `site`.
+    pub(crate) fn handler_at(&mut self, site: Site, func: FuncId) {
         if let Some(layout) = self.program.components.last_mut() {
-            layout.handlers.push((Site::own(at), func));
+            layout.handlers.push((site, func));
         }
     }
 

@@ -9,11 +9,11 @@
 
 use std::rc::Rc;
 
-use viso_behavior::{Aggregate, Value};
+use viso_behavior::{Aggregate, Fault, FaultKind, Value};
 use viso_ende::{Decode, DecodeError, Decoder, Encode, Encoder};
 use viso_ui::{
-    DispatchPhase, EditIntent, EventCx, ImeEvent, Key, KeyEvent, Motion, PointerButtons,
-    PointerPhase, TextOffset,
+    DispatchPhase, EditIntent, EventCx, ImeEvent, Interaction, Key, KeyEvent, Motion, NodeId,
+    NodeStore, PointerButtons, PointerPhase, TextOffset,
 };
 
 use crate::host::ViewHost;
@@ -157,7 +157,7 @@ pub enum ControlInput {
 /// A view-driven native node: its kind and the handler-table entries that
 /// evaluate its current value and range. An absent entry reads the property's
 /// default: `false`, `0`, an empty text, a `0..1` range and no step.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Control {
     /// Which control it is.
     pub kind: ControlKind,
@@ -171,6 +171,98 @@ pub struct Control {
     pub step: Option<u32>,
     /// The entries of the look it shows.
     pub look: Look,
+    /// The look values its styles' `when` blocks select, the first that holds
+    /// winning over the others and over [`look`](Self::look).
+    pub arms: Box<[LookArm]>,
+}
+
+/// A look value a style's `when` selects: while `when` holds, `input` shows
+/// the value of entry `entry`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LookArm {
+    /// [`ControlInput::Background`] or [`ControlInput::Opacity`].
+    pub input: ControlInput,
+    /// The condition, in postfix order.
+    pub when: Box<[When]>,
+    /// The entry of the value.
+    pub entry: u32,
+}
+
+/// One step of a [`LookArm`]'s condition, in postfix order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum When {
+    /// The node is in this interaction state.
+    State(Interaction),
+    /// The `Bool` entry holds.
+    Entry(u32),
+    /// The negation of the condition before.
+    Not,
+    /// Both conditions before.
+    And,
+    /// Either condition before.
+    Or,
+}
+
+/// The deepest condition a [`LookArm`] evaluates.
+const WHEN_DEPTH: u32 = 64;
+
+impl LookArm {
+    /// Whether its condition holds for `node`: its entries evaluated in
+    /// `scope`, its states read from `store`.
+    pub(crate) fn holds(
+        &self,
+        node: NodeId,
+        store: &NodeStore,
+        host: &mut ViewHost,
+        scope: &Scope,
+        cells: &dyn crate::host::StateCells,
+    ) -> Result<bool, Fault> {
+        // A stack of booleans, one bit each.
+        let (mut stack, mut depth) = (0u64, 0u32);
+        let malformed = || Fault {
+            kind: FaultKind::Internal,
+            at: None,
+            message: "a style condition is malformed".to_owned(),
+        };
+        for step in self.when.iter() {
+            let value = match *step {
+                When::State(state) => store.in_state(node, state),
+                When::Entry(entry) => {
+                    let value = host.evaluate(entry, scope, None, cells)?;
+                    value.as_int().is_some_and(|v| v != 0)
+                }
+                When::Not | When::And | When::Or => {
+                    let arity = if *step == When::Not { 1 } else { 2 };
+                    if depth < arity {
+                        return Err(malformed());
+                    }
+                    let top = stack & 1 != 0;
+                    let value = match step {
+                        When::Not => !top,
+                        When::And => top && (stack >> 1) & 1 != 0,
+                        _ => top || (stack >> 1) & 1 != 0,
+                    };
+                    stack >>= arity;
+                    depth -= arity;
+                    value
+                }
+            };
+            if depth == WHEN_DEPTH {
+                return Err(malformed());
+            }
+            stack = (stack << 1) | u64::from(value);
+            depth += 1;
+        }
+        if depth != 1 {
+            return Err(malformed());
+        }
+        Ok(stack & 1 != 0)
+    }
+
+    /// Whether its condition reads an interaction state.
+    pub(crate) fn reads_state(&self) -> bool {
+        self.when.iter().any(|w| matches!(w, When::State(_)))
+    }
 }
 
 /// The handler-table entries of the look a node shows: an absent entry leaves
@@ -204,7 +296,13 @@ impl Control {
             max: None,
             step: None,
             look: Look::default(),
+            arms: Box::new([]),
         }
+    }
+
+    /// Whether a `when` of its arms reads an interaction state.
+    pub(crate) fn reads_state(&self) -> bool {
+        self.arms.iter().any(LookArm::reads_state)
     }
 
     /// The entry `input` reads.
@@ -389,6 +487,27 @@ impl Encode for Control {
         ] {
             enc.write_varint(entry.map_or(0, |e| u64::from(e) + 1));
         }
+        enc.write_varint(self.arms.len() as u64);
+        for arm in self.arms.iter() {
+            enc.write_u8(u8::from(arm.input == ControlInput::Opacity));
+            enc.write_varint(arm.when.len() as u64);
+            for step in arm.when.iter() {
+                match *step {
+                    When::State(state) => {
+                        enc.write_u8(0);
+                        enc.write_u8(state.tag());
+                    }
+                    When::Entry(entry) => {
+                        enc.write_u8(1);
+                        enc.write_varint(u64::from(entry));
+                    }
+                    When::Not => enc.write_u8(2),
+                    When::And => enc.write_u8(3),
+                    When::Or => enc.write_u8(4),
+                }
+            }
+            enc.write_varint(u64::from(arm.entry));
+        }
     }
 }
 
@@ -402,7 +521,7 @@ impl Decode for Control {
                 u32::try_from(dec.read_varint()?).map_err(|_| DecodeError::Malformed { offset })?;
             Ok(raw.checked_sub(1))
         };
-        Ok(Control {
+        let mut control = Control {
             kind,
             value: entry()?,
             min: entry()?,
@@ -414,7 +533,48 @@ impl Decode for Control {
                 background_transition: entry()?,
                 opacity_transition: entry()?,
             },
-        })
+            arms: Box::new([]),
+        };
+        let index = |dec: &mut Decoder<'_>| -> Result<u32, DecodeError> {
+            let offset = dec.position();
+            u32::try_from(dec.read_varint()?).map_err(|_| DecodeError::Malformed { offset })
+        };
+        let arms = index(dec)?;
+        let mut decoded = Vec::new();
+        for _ in 0..arms {
+            let offset = dec.position();
+            let input = match dec.read_u8()? {
+                0 => ControlInput::Background,
+                1 => ControlInput::Opacity,
+                _ => return Err(DecodeError::Malformed { offset }),
+            };
+            let steps = index(dec)?;
+            let mut when = Vec::new();
+            for _ in 0..steps {
+                let offset = dec.position();
+                when.push(match dec.read_u8()? {
+                    0 => {
+                        let offset = dec.position();
+                        When::State(
+                            Interaction::from_tag(dec.read_u8()?)
+                                .ok_or(DecodeError::Malformed { offset })?,
+                        )
+                    }
+                    1 => When::Entry(index(dec)?),
+                    2 => When::Not,
+                    3 => When::And,
+                    4 => When::Or,
+                    _ => return Err(DecodeError::Malformed { offset }),
+                });
+            }
+            decoded.push(LookArm {
+                input,
+                when: when.into(),
+                entry: index(dec)?,
+            });
+        }
+        control.arms = decoded.into();
+        Ok(control)
     }
 }
 
@@ -590,11 +750,28 @@ mod tests {
                 background_transition: None,
                 opacity_transition: Some(4),
             },
+            arms: Box::new([LookArm {
+                input: ControlInput::Opacity,
+                when: Box::new([
+                    When::State(Interaction::Hovered),
+                    When::Entry(5),
+                    When::Not,
+                    When::And,
+                ]),
+                entry: 6,
+            }]),
         };
         let bytes = control.encode_to_vec();
         assert_eq!(Control::decode_from_slice(&bytes), Ok(control));
-        let mut bad = bytes;
+        let mut bad = bytes.clone();
         bad[0] = 9;
         assert!(Control::decode_from_slice(&bad).is_err());
+        let mut bad = bytes;
+        let state = bad.len() - 6;
+        bad[state] = 9;
+        assert!(
+            Control::decode_from_slice(&bad).is_err(),
+            "no such interaction state"
+        );
     }
 }

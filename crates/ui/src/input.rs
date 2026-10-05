@@ -462,6 +462,13 @@ fn route_sample(
             hit
         }
     };
+    match ev.phase {
+        PointerPhase::Down if ev.buttons.contains(PointerButtons::PRIMARY) => {
+            store.set_pressed(Some(target));
+        }
+        PointerPhase::Up => store.set_pressed(None),
+        _ => {}
+    }
     dispatch_chain(store, root, target, chain, |s, n, hop| {
         pointer_dispatch(s, states, bindings, n, hop, pointer, ev)
     })
@@ -978,7 +985,7 @@ fn apply_pointer_side_effects(
     // on a text field or button focuses it. Applied the same deferred way as the
     // key route's, so the focus-ring/semantics invalidation is shared.
     if let Some(target) = focus {
-        apply_focus(store, store.focused(), target);
+        apply_focus(store, store.focused(), target, false);
     }
     // A focus-scope request installs or releases the focus trap (an opening or
     // closing modal): `Some(id)` confines Tab to `id`'s subtree, `None` releases.
@@ -1080,7 +1087,7 @@ pub fn focus_next(store: &mut NodeStore, root: NodeId, forward: bool) -> Option<
         }
     };
 
-    apply_focus(store, old, Some(new));
+    apply_focus(store, old, Some(new), true);
     Some(new)
 }
 
@@ -1092,7 +1099,7 @@ pub fn focus_node(store: &mut NodeStore, node: NodeId) -> bool {
         return false;
     }
     let old = store.focused();
-    apply_focus(store, old, Some(node));
+    apply_focus(store, old, Some(node), true);
     true
 }
 
@@ -1121,7 +1128,7 @@ pub fn park_focus(store: &mut NodeStore, attached: NodeId) -> ParkedFocus {
         store.set_focus_scope(None);
     }
     if parked.focus.is_some() {
-        apply_focus(store, parked.focus, None);
+        apply_focus(store, parked.focus, None, false);
         store.mark_dirty(attached, DirtyClass::SEMANTICS);
     }
     parked
@@ -1155,7 +1162,10 @@ fn topmost(store: &NodeStore, mut node: NodeId) -> NodeId {
 /// changed (a focus move is a semantic event, so the derived accessibility tree
 /// re-folds). Either may be `None`. Shared by the focus ring and by a handler's
 /// deferred focus request. SEMANTICS bubbles to the root; PAINT stays local.
-fn apply_focus(store: &mut NodeStore, old: Option<NodeId>, new: Option<NodeId>) {
+/// `visible` is whether the keyboard or an assistive technology moved it
+/// rather than a pointer, which the `focus_visible` interaction state follows.
+fn apply_focus(store: &mut NodeStore, old: Option<NodeId>, new: Option<NodeId>, visible: bool) {
+    store.set_focus_visible(visible);
     if old == new {
         return;
     }
@@ -1289,7 +1299,7 @@ fn key_dispatch(
     store.apply_task_ops(node, tasks);
     queue_edits(edits, node, recorded);
     if let Some(target) = request {
-        apply_focus(store, store.focused(), target);
+        apply_focus(store, store.focused(), target, true);
     }
     if let Some(scope_req) = scope {
         store.set_focus_scope(scope_req);
@@ -1381,7 +1391,7 @@ fn key_handler_dispatch(
     store.apply_task_ops(node, tasks);
     queue_edits(edits, node, recorded);
     if let Some(target) = request {
-        apply_focus(store, store.focused(), target);
+        apply_focus(store, store.focused(), target, true);
     }
     if let Some(scope_req) = scope {
         store.set_focus_scope(scope_req);

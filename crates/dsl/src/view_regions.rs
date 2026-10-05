@@ -543,7 +543,7 @@ impl Builder<'_> {
             .controls
             .binary_search_by_key(&key, |(k, _)| *k)
             .ok()
-            .map(|i| self.controls[i].1);
+            .map(|i| self.controls[i].1.clone());
         let at = out.len();
         out.push(ItemTemplate::Node {
             node: node_template(node),
@@ -566,7 +566,13 @@ impl Builder<'_> {
     /// The handler-table index of the entry registered at `at` in the view of
     /// `instance`, reported at `origin` when it is missing or does not run.
     fn entry(&mut self, instance: u32, at: Option<TextRange>, origin: TextRange) -> u32 {
-        let Some(index) = at.and_then(|at| self.layout.handler(Site { instance, at })) else {
+        let Some(index) = at.and_then(|at| {
+            self.layout.handler(Site {
+                instance,
+                at,
+                part: 0,
+            })
+        }) else {
             self.errors.push(MountError::new(
                 Some(at.unwrap_or(origin)),
                 "internal: the region entry was not lowered",

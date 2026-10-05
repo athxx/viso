@@ -292,6 +292,16 @@ impl<'a> InferCx<'a> {
         &self.diagnostics
     }
 
+    /// Drops the diagnostics gathered after the first `mark` (a value typed
+    /// again where another walk reports it); returns whether an error was
+    /// among them.
+    pub(crate) fn rewind_diagnostics(&mut self, mark: usize) -> bool {
+        let dropped = self.diagnostics.split_off(mark.min(self.diagnostics.len()));
+        dropped
+            .iter()
+            .any(|d| d.severity == crate::diag::Severity::Error)
+    }
+
     /// Infers the type of `expr`, using `expected` to type numeric literals and to check
     /// implicit conversions where the surrounding context demands a specific type. When
     /// `expected` is `None`, numeric literals take the host default and no conversion is

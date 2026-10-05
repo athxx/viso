@@ -99,6 +99,7 @@ pub fn settle_states(
     changed: &mut Vec<StateId>,
 ) -> Result<u32, ReactiveCycle> {
     let mut rounds = 0;
+    store.sync_interactions(states);
     while states.has_pending() || store.has_pending_effects() {
         changed.clear();
         states.take_pending(changed);

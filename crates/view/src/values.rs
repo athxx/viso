@@ -25,7 +25,7 @@ use viso_ui::{
     TextRequest, Timing,
 };
 
-use crate::control::{Control, ControlKind};
+use crate::control::{Control, ControlInput, ControlKind, When};
 use crate::host::ViewHost;
 use crate::scope::Scope;
 
@@ -57,7 +57,7 @@ pub fn mount_values(
     };
     let mut shown: Vec<Shown> = nodes
         .iter()
-        .map(|&(node, control)| Shown::new(node, control, Scope::EMPTY, &view))
+        .map(|(node, control)| Shown::new(*node, control.clone(), Scope::EMPTY, &view, cx))
         .collect();
     for node in &mut shown {
         node.deliver(cx, &mut view);
@@ -101,12 +101,14 @@ pub fn __mount_values(
     let nodes: Vec<(NodeId, Control)> = nodes
         .iter()
         .zip(controls)
-        .filter_map(|(node, &control)| Some(((*node)?, control)))
+        .filter_map(|(node, control)| Some(((*node)?, control.clone())))
         .collect();
     cx.structure(|cx| mount_values(cx, host, &nodes));
 }
 
 /// Appends the cells the entries `control` delivers read in `scope` to `out`.
+/// A control whose styles follow interaction states reads the store's
+/// interaction cell besides, which the caller adds.
 pub(crate) fn control_cells(
     control: &Control,
     scope: &Scope,
@@ -114,6 +116,13 @@ pub(crate) fn control_cells(
     out: &mut Vec<StateId>,
 ) {
     let look = control.look;
+    let arms = control.arms.iter().flat_map(|arm| {
+        let when = arm.when.iter().filter_map(|w| match *w {
+            When::Entry(entry) => Some(entry),
+            _ => None,
+        });
+        when.chain([arm.entry])
+    });
     for entry in [
         control.value,
         control.min,
@@ -123,6 +132,7 @@ pub(crate) fn control_cells(
     ]
     .into_iter()
     .flatten()
+    .chain(arms)
     {
         host.entry_cells(entry, scope, out);
     }
@@ -135,6 +145,9 @@ const SHOWN: usize = 5;
 pub(crate) struct Shown {
     node: NodeId,
     control: Control,
+    /// The store's interaction cell, when its styles follow interaction
+    /// states.
+    interaction: Option<StateId>,
     /// The scope its entries run in.
     scope: Scope,
     /// The cells its entries read, ascending.
@@ -146,10 +159,20 @@ pub(crate) struct Shown {
 
 impl Shown {
     /// Node `node`, showing the values of `control`'s entries in `scope`.
-    pub(crate) fn new(node: NodeId, control: Control, scope: Scope, host: &ViewHost) -> Shown {
+    pub(crate) fn new(
+        node: NodeId,
+        control: Control,
+        scope: Scope,
+        host: &ViewHost,
+        cx: &mut StructureCx<'_>,
+    ) -> Shown {
+        let interaction = control
+            .reads_state()
+            .then(|| cx.store.interaction_cell(cx.states));
         let mut shown = Shown {
             node,
             control,
+            interaction,
             scope: Scope::EMPTY,
             deps: Box::default(),
             shows: None,
@@ -163,6 +186,7 @@ impl Shown {
     pub(crate) fn rescope(&mut self, scope: Scope, host: &ViewHost) {
         let mut deps = Vec::new();
         control_cells(&self.control, &scope, host, &mut deps);
+        deps.extend(self.interaction);
         deps.sort_unstable_by_key(|id| (id.index(), id.generation()));
         deps.dedup();
         self.scope = scope;
@@ -184,15 +208,20 @@ impl Shown {
     /// them unless the node already shows them. A fault is kept as the host's
     /// [`last_fault`](ViewHost::last_fault) and leaves the node as it is.
     pub(crate) fn deliver(&mut self, cx: &mut StructureCx<'_>, host: &mut ViewHost) {
-        let control = self.control;
+        let control = &self.control;
+        let look = control.look;
+        let (Ok(background), Ok(opacity)) = (
+            self.pick(ControlInput::Background, look.background, cx, host),
+            self.pick(ControlInput::Opacity, look.opacity, cx, host),
+        ) else {
+            return;
+        };
         let mut shows: [Value; SHOWN] = Default::default();
-        for (value, entry) in shows.iter_mut().zip([
-            control.value,
-            control.min,
-            control.max,
-            control.look.background,
-            control.look.opacity,
-        ]) {
+        for (value, entry) in
+            shows
+                .iter_mut()
+                .zip([control.value, control.min, control.max, background, opacity])
+        {
             let Some(entry) = entry else { continue };
             match host.evaluate(entry, &self.scope, None, &*cx.states) {
                 Ok(evaluated) => *value = evaluated,
@@ -206,13 +235,18 @@ impl Shown {
         if prior == Some(&shows) {
             return;
         }
+        // A look value shows when an entry or an arm gives it; with arms and no
+        // entry, no arm holding shows the property's default.
+        let styled = |input: ControlInput| control.arms.iter().any(|a| a.input == input);
+        let shown_background =
+            (background.is_some() || styled(ControlInput::Background)).then_some(());
+        let shown_opacity = (opacity.is_some() || styled(ControlInput::Opacity)).then_some(());
         let [value, min, max, background, opacity] = &shows;
         let changed = |at: usize| prior.is_none_or(|prior| prior[at] != shows[at]);
-        let look = control.look;
         let mut moves: [Option<Timing>; 2] = [None; 2];
         for (at, (shown, transition)) in [
-            (3, (look.background, look.background_transition)),
-            (4, (look.opacity, look.opacity_transition)),
+            (3, (shown_background, look.background_transition)),
+            (4, (shown_opacity, look.opacity_transition)),
         ] {
             let (Some(_), Some(transition), Some(_)) = (shown, transition, prior) else {
                 continue;
@@ -230,8 +264,8 @@ impl Shown {
         }
         let store = &mut *cx.store;
         for (at, entry, value) in [
-            (3, look.background, LookValue::Fill(color(background))),
-            (4, look.opacity, LookValue::Opacity(float(opacity, 1.0))),
+            (3, shown_background, LookValue::Fill(color(background))),
+            (4, shown_opacity, LookValue::Opacity(float(opacity, 1.0))),
         ] {
             if entry.is_none() || !changed(at) {
                 continue;
@@ -257,7 +291,7 @@ impl Shown {
         match control.kind {
             ControlKind::Plain => {}
             ControlKind::Label => store.set_text_request(self.node, text()),
-            ControlKind::TextInput if self.control.value.is_some() => {
+            ControlKind::TextInput if control.value.is_some() => {
                 store.seed_text(self.node, text());
             }
             ControlKind::TextInput => {}
@@ -277,6 +311,31 @@ impl Shown {
             ControlKind::Select => select(store, self.node, value.as_int().unwrap_or(0)),
         }
         self.shows = Some(shows);
+    }
+}
+
+impl Shown {
+    /// The entry `input` shows now: that of the first of its arms whose
+    /// condition holds, else `base`. `Err` after a fault, which the host
+    /// keeps.
+    fn pick(
+        &self,
+        input: ControlInput,
+        base: Option<u32>,
+        cx: &StructureCx<'_>,
+        host: &mut ViewHost,
+    ) -> Result<Option<u32>, ()> {
+        for arm in self.control.arms.iter().filter(|arm| arm.input == input) {
+            match arm.holds(self.node, cx.store, host, &self.scope, &*cx.states) {
+                Ok(true) => return Ok(Some(arm.entry)),
+                Ok(false) => {}
+                Err(fault) => {
+                    host.record_fault(fault);
+                    return Err(());
+                }
+            }
+        }
+        Ok(base)
     }
 }
 

@@ -210,7 +210,7 @@ impl Inliner<'_> {
                 (
                     Site {
                         instance: self.id,
-                        at: site.at,
+                        ..*site
                     },
                     own(*f),
                 )
@@ -257,6 +257,7 @@ impl Inliner<'_> {
                     Site {
                         instance: self.id,
                         at,
+                        part: 0,
                     },
                     func,
                 ));
@@ -276,6 +277,7 @@ impl Inliner<'_> {
         let site = Site {
             instance: self.instance.parent,
             at,
+            part: 0,
         };
         let layout = &self.program.components[self.root];
         layout

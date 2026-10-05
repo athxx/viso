@@ -25,9 +25,9 @@ pub fn attach(
     control: Option<Control>,
     scope: &Scope,
 ) -> Handle {
-    let (keys, pointers) = split(routes, control);
+    let (keys, pointers) = split(routes, control.as_ref());
     if let Some(pointers) = pointers {
-        cx.on_pointer(node, handler(host, pointers, control, scope));
+        cx.on_pointer(node, handler(host, pointers, control.clone(), scope));
     }
     if let Some(keys) = keys {
         cx.on_key(node, handler(host, keys, control, scope));
@@ -50,9 +50,12 @@ pub fn attach_node(
     scope: &Scope,
 ) {
     store.clear_event_handlers(id);
-    let (keys, pointers) = split(routes, control);
+    let (keys, pointers) = split(routes, control.as_ref());
     if let Some(pointers) = pointers {
-        store.set_pointer_handler(id, Box::new(handler(host, pointers, control, scope)));
+        store.set_pointer_handler(
+            id,
+            Box::new(handler(host, pointers, control.clone(), scope)),
+        );
     }
     if let Some(keys) = keys {
         store.set_key_handler(id, Box::new(handler(host, keys, control, scope)));
@@ -63,7 +66,7 @@ pub fn attach_node(
 /// The routes a key handler runs and the routes a pointer handler runs, `None`
 /// for a kind of handler the node needs none of. A control drives both, and the
 /// routes it reports run from either; a label responds to nothing.
-fn split(routes: &[Route], control: Option<Control>) -> (Option<Vec<Route>>, Option<Vec<Route>>) {
+fn split(routes: &[Route], control: Option<&Control>) -> (Option<Vec<Route>>, Option<Vec<Route>>) {
     let control = control.filter(|control| control.kind.responds());
     let pick = |key: bool| {
         let picked: Vec<Route> = routes
@@ -97,7 +100,9 @@ fn handler(
         let Ok(mut host) = host.try_borrow_mut() else {
             return;
         };
-        let change = control.and_then(|control| control.drive(&mut host, &scope, cx));
+        let change = control
+            .as_ref()
+            .and_then(|control| control.drive(&mut host, &scope, cx));
         let bubbles = cx.phase() != DispatchPhase::Capture;
         for &(route, index) in &routes {
             let payload = match &change {

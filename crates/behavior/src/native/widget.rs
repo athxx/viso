@@ -63,6 +63,9 @@ pub struct WidgetProperty {
     pub two_way: bool,
     /// Whether it resolves a `Percent` against a basis.
     pub percent_basis: bool,
+    /// Whether a style may bind it: it is part of how the node looks, not of
+    /// what it shows or does.
+    pub styleable: bool,
 }
 
 impl WidgetProperty {
@@ -73,7 +76,14 @@ impl WidgetProperty {
             ty,
             two_way: false,
             percent_basis: false,
+            styleable: false,
         }
+    }
+
+    /// A style may bind it.
+    pub const fn styleable(mut self) -> WidgetProperty {
+        self.styleable = true;
+        self
     }
 
     /// Resolves a `Percent` against a basis.

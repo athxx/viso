@@ -33,7 +33,7 @@ use viso_dsl::ir::ui_ir::{
     Avoid, AxisIr, LengthIr, LengthsIr, NodeKind, StyleIr, TermsIr, UiItem, UiNode, UiTree,
 };
 use viso_dsl::resolve::SymbolId;
-use viso_dsl::view_behavior::{Control, ViewBehavior};
+use viso_dsl::view_behavior::{Control, ControlInput, ViewBehavior, When};
 
 /// Lowers a view's [`UiTree`] + [`BindingIr`] to the builder expression.
 ///
@@ -504,6 +504,30 @@ fn control_tokens(control: Control) -> TokenStream {
         entry(look.background_transition),
         entry(look.opacity_transition),
     );
+    let arms = control.arms.iter().map(|arm| {
+        let input = match arm.input {
+            ControlInput::Opacity => quote! { Opacity },
+            _ => quote! { Background },
+        };
+        let when = arm.when.iter().map(|step| match *step {
+            When::State(state) => {
+                let state = Ident::new(&format!("{state:?}"), Span::call_site());
+                quote! { ::viso_view::When::State(::viso_ui::Interaction::#state) }
+            }
+            When::Entry(entry) => quote! { ::viso_view::When::Entry(#entry) },
+            When::Not => quote! { ::viso_view::When::Not },
+            When::And => quote! { ::viso_view::When::And },
+            When::Or => quote! { ::viso_view::When::Or },
+        });
+        let entry = arm.entry;
+        quote! {
+            ::viso_view::LookArm {
+                input: ::viso_view::ControlInput::#input,
+                when: ::std::boxed::Box::new([#(#when),*]),
+                entry: #entry,
+            }
+        }
+    });
     quote! {
         ::viso_view::Control {
             kind: ::viso_view::ControlKind::#kind,
@@ -517,6 +541,7 @@ fn control_tokens(control: Control) -> TokenStream {
                 background_transition: #background_transition,
                 opacity_transition: #opacity_transition,
             },
+            arms: ::std::boxed::Box::new([#(#arms),*]),
         }
     }
 }

@@ -58,7 +58,7 @@ pub struct ViewEnv {
 }
 
 /// A native control node of [`ViewPackage::ui`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ViewControl {
     /// The pre-order index of the node in [`ViewPackage::ui`].
     pub node: u32,
@@ -199,7 +199,9 @@ pub fn instantiate_view(
             let group = groups.next().unwrap_or_default();
             routes.extend(group.iter().map(|h| (h.route, h.handler)));
         }
-        let control = controls.next_if(|c| c.node == node).map(|c| c.control);
+        let control = controls
+            .next_if(|c| c.node == node)
+            .map(|c| c.control.clone());
         if let Some(Some(id)) = node_ids.get(node as usize).copied() {
             attach_node(store, &host, id, &routes, control, &Scope::EMPTY);
         }
@@ -219,7 +221,12 @@ pub fn instantiate_view(
     let shown: Vec<(NodeId, Control)> = package
         .controls
         .iter()
-        .filter_map(|c| Some((node_ids.get(c.node as usize).copied().flatten()?, c.control)))
+        .filter_map(|c| {
+            Some((
+                node_ids.get(c.node as usize).copied().flatten()?,
+                c.control.clone(),
+            ))
+        })
         .collect();
     mount_values(&mut cx, &host, &shown);
     if let Some(root) = root {

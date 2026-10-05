@@ -37,7 +37,8 @@ pub use dirty_map::{DirtyClass, property_dirty_class};
 pub use keys::{KEYLESS_STATEFUL_FOR, KeyIr, KeyedFor, analyze_keys};
 pub use ui_ir::{
     Avoid, AxisIr, LengthIr, LengthsIr, NodeKind, PendingProperty, ScopeIr, StyleIr, TermsIr,
-    UiFor, UiHandler, UiIf, UiIfArm, UiInstance, UiItem, UiMatch, UiMatchArm, UiNode, UiTree,
+    UiFor, UiHandler, UiIf, UiIfArm, UiInstance, UiItem, UiLook, UiLookArm, UiMatch, UiMatchArm,
+    UiNode, UiStyled, UiTree, UiWhen,
 };
 
 use std::collections::HashMap;
@@ -50,6 +51,7 @@ use crate::ast::{
     ViewBlock, ViewFor, ViewIf, ViewItem, ViewMatch,
 };
 use crate::hir::ComponentSchema;
+use crate::hir::style::{self, StyleBook};
 use crate::resolve::{Resolution, ResolvedRef, SymbolId};
 use crate::syntax::span::TextRange;
 use length::Lowered;
@@ -76,6 +78,8 @@ pub struct ComponentLibrary<'a> {
     /// component of a node-type head.
     heads: HashMap<TextRange, SymbolId>,
     components: Vec<LibraryComponent<'a>>,
+    /// The styles of the unit, which its nodes apply.
+    styles: StyleBook,
 }
 
 /// One component of a [`ComponentLibrary`].
@@ -104,7 +108,17 @@ impl<'a> ComponentLibrary<'a> {
                 | Resolution::Theme => None,
             })
             .collect();
-        ComponentLibrary { heads, components }
+        ComponentLibrary {
+            heads,
+            components,
+            styles: StyleBook::default(),
+        }
+    }
+
+    /// The library with the unit's styles `styles`.
+    pub(crate) fn with_styles(mut self, styles: StyleBook) -> Self {
+        self.styles = styles;
+        self
     }
 
     /// The component `id`.
@@ -387,8 +401,11 @@ impl<'a, 'l> Lowering<'a, 'l> {
         let mut write_backs = 0;
         let mut control_reads = Vec::new();
         let mut children = Vec::new();
-        for member in body.iter().flat_map(|b| b.members()) {
+        let members: Vec<ViewItem> = body.iter().flat_map(|b| b.members()).collect();
+        let styled = self.styled(&type_name, &members, instance, &mut style, &mut pending);
+        for member in members {
             match member {
+                ViewItem::Property(prop) if dotted(prop.path()).as_deref() == Some("styles") => {}
                 ViewItem::Property(prop) => {
                     if let (Some(name), Some(value)) = (dotted(prop.path()), prop.value()) {
                         let at = value.syntax().text_range();
@@ -467,11 +484,41 @@ impl<'a, 'l> Lowering<'a, 'l> {
             pending,
             handlers,
             control_reads,
+            styled,
             children,
             origin,
             instance,
             migratable: widget.migratable,
         }));
+    }
+
+    /// What the styles of a native node of type `type_name`, whose body holds
+    /// `members`, give it: their constant bindings folded into `style` (or
+    /// left `pending`, as the node's own are), and the look the runtime
+    /// delivers.
+    fn styled(
+        &mut self,
+        type_name: &str,
+        members: &[ViewItem],
+        instance: u32,
+        style: &mut StyleIr,
+        pending: &mut Vec<PendingProperty>,
+    ) -> Option<UiStyled> {
+        let value = styles_value(members)?;
+        let uses = style::uses(&self.library.styles, &value).ok()?;
+        let list = style::applying(&uses, type_name);
+        if list.is_empty() {
+            return None;
+        }
+        let plan = style::plan(&self.library.styles, &list, &style::own_bindings(members));
+        for binding in &plan.constants {
+            fold_property(binding, instance, style, pending);
+        }
+        self.unmounted.extend(plan.unmounted);
+        (!plan.looks.is_empty()).then(|| UiStyled {
+            at: value.syntax().text_range(),
+            looks: plan.looks,
+        })
     }
 
     /// A node of the Rust-scope component `ty`, which mounts through its own
@@ -499,6 +546,7 @@ impl<'a, 'l> Lowering<'a, 'l> {
             pending: Vec::new(),
             handlers: Vec::new(),
             control_reads: Vec::new(),
+            styled: None,
             children: Vec::new(),
             origin,
             instance: self.instance(),
@@ -592,6 +640,15 @@ impl<'a, 'l> Lowering<'a, 'l> {
                         .path()
                         .map(|p| p.segments().map(|t| t.text()).collect())
                         .unwrap_or_default();
+                    if segments == ["styles"] {
+                        self.unmounted.push((
+                            prop.syntax().text_range(),
+                            "a style does not apply to a component node yet; style the \
+                             widgets of its view"
+                                .to_string(),
+                        ));
+                        continue;
+                    }
                     let slot = match segments.as_slice() {
                         [name] => input_slot(name.trim_start_matches("r#")),
                         _ => None,
@@ -766,6 +823,14 @@ fn fold_property(
         value.syntax().text_range(),
         instance,
     ));
+}
+
+/// The value of the `styles` property among a node's `members`.
+fn styles_value(members: &[ViewItem]) -> Option<Expr> {
+    members.iter().find_map(|m| match m {
+        ViewItem::Property(p) if dotted(p.path()).as_deref() == Some("styles") => p.value(),
+        _ => None,
+    })
 }
 
 /// Attempts to fold a property value into static style. Returns `true` when the

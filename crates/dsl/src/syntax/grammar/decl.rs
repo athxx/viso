@@ -467,7 +467,7 @@ fn style_decl(p: &mut Parser) {
         if p.at_contextual(SyntaxKind::WhenKw) && !matches!(p.nth(1), SyntaxKind::Colon) {
             let when = p.start();
             p.bump_as(SyntaxKind::WhenKw);
-            super::expr::head_expr(p);
+            super::expr::selector_expr(p);
             p.expect(SyntaxKind::LBrace);
             while !p.at(SyntaxKind::RBrace) && !p.at_end() {
                 let before = p.cursor();
