@@ -43,7 +43,11 @@
 //!
 //! [`quick`] is the low-ceremony surface: one `QuickGame` system whose
 //! `start` and `fixed` the scheduler runs as a `Startup` and a `FixedUpdate`.
+//!
+//! An `AudioProcess` hook fills an [`AudioBlock`] on the audio thread, held
+//! by the compiler to realtime rules; the scheduler does not run it.
 
+mod audio;
 mod clock;
 mod grid;
 pub mod input;
@@ -65,6 +69,7 @@ use crate::native::{
     NativeTrait, NativeType, Obj, Param, SchemaTy, Vec3F32,
 };
 
+pub use audio::{AUDIO_PROCESS, AudioBlock};
 pub use clock::{Clock, TickOverrun};
 pub use input::{
     Action, INPUT_ACTION_DERIVE, InputAction, InputAxis, InputBindings, InputMap, InputSchema,
@@ -288,6 +293,7 @@ pub(crate) static GAME: NativeLibrary = NativeLibrary {
         NativeType::new("FixedFrame", &FIXED_FRAME_METHODS).borrowed(),
         NativeType::new("RenderFrame", &RENDER_FRAME_METHODS).borrowed(),
         NativeType::new("CollisionEvent", &COLLISION_EVENT_METHODS).borrowed(),
+        NativeType::new("AudioBlock", &audio::AUDIO_BLOCK_METHODS).borrowed(),
         NativeType::new("GameWorld", &world::GAME_WORLD_METHODS).borrowed(),
         NativeType::value("EntityId", &[]),
         NativeType::value("SpawnDesc", &world::SPAWN_DESC_METHODS),
@@ -348,6 +354,17 @@ pub(crate) static GAME: NativeLibrary = NativeLibrary {
                     ty: SchemaTy::Handle(CollisionEvent::PATH),
                 }],
                 domain: HookDomain::Simulation,
+            }],
+        },
+        NativeTrait {
+            name: "AudioProcess",
+            hooks: &[NativeHook {
+                name: "audio_process",
+                params: &[Param {
+                    name: "block",
+                    ty: SchemaTy::Handle(AudioBlock::PATH),
+                }],
+                domain: HookDomain::Realtime,
             }],
         },
     ],

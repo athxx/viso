@@ -9,13 +9,22 @@
 //! calls is deferred by the scheduler, so it is allowed. A `@persist` state
 //! of a system or a component names a key unique in the package, snapshots,
 //! and needs the `storage.persist` capability (`E9106`).
+//!
+//! An `AudioProcess` hook runs on the audio thread: it and every callable it
+//! reaches may not allocate, start a task, emit an event, load a resource,
+//! call a closure value or a native that is not realtime-safe, recurse, or
+//! loop without a static bound (`E9108`), checked over their lowered
+//! instructions; an `AudioProcess` system implements no other trait.
 
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet, VecDeque};
 
-use viso_behavior::native::{Determinism, HookDomain, NativeId, NativeKind, SchemaTy};
+use viso_behavior::game::AudioBlock;
+use viso_behavior::native::{
+    Determinism, HookDomain, NativeId, NativeKind, NativeObject, SchemaTy,
+};
 
-use crate::ast::{AstNode, Item, Member, decl_attributes};
+use crate::ast::{AstNode, Expr, Item, Member, decl_attributes};
 use crate::behavior::probe::{ProbePayload, ProbeShape, ProbeVariant};
 use crate::diag::{Diagnostic, Related};
 use crate::hir::CapabilitySet;
@@ -25,6 +34,7 @@ use crate::resolve::{Resolution, ResolvedRef, SymbolId, SymbolKind};
 use crate::syntax::{SyntaxKind, SyntaxNode, TextRange};
 
 use super::{Declarations, HirComponent, InputDevices, Migrator, ModuleEnv, Ty, name_of};
+use crate::behavior::ir::{BinaryOp, FuncId, Inst};
 use crate::behavior::lower::ProgramBuilder;
 
 /// What the package's targets are and how it is built: what game input and
@@ -78,6 +88,22 @@ struct Body {
     natives: Vec<(NativeId, TextRange)>,
     env: Vec<TextRange>,
     awaits: Vec<TextRange>,
+    loops: Vec<Loop>,
+}
+
+/// A loop of a body, by its keyword: `None` bounds for a `while`, a `loop`
+/// or a `for` over anything but a range written in its head, otherwise what
+/// its bounds name.
+struct Loop {
+    at: TextRange,
+    bounds: Option<Vec<Bound>>,
+}
+
+/// A name a range bound reads: a static bound reads only `const`s and the
+/// size of the audio block.
+enum Bound {
+    Symbol(SymbolId),
+    Native(NativeId),
 }
 
 /// The package's callables and Simulation roots, gathered module by module.
@@ -86,6 +112,8 @@ pub(super) struct Domains {
     bodies: HashMap<SymbolId, Body>,
     /// Each Simulation hook action and the `System.hook` it implements.
     roots: Vec<(SymbolId, String)>,
+    /// Each `AudioProcess` hook action and the `System.hook` it implements.
+    realtime: Vec<(SymbolId, String)>,
     /// Every `@local` state.
     locals: HashSet<SymbolId>,
     /// Every `@persist` state that checked, in package order.
@@ -158,6 +186,32 @@ impl Domains {
                 .filter(|t| t.kind() == SyntaxKind::AwaitKw)
                 .map(|t| t.text_range())
                 .collect();
+            let loops = node
+                .descendants()
+                .into_iter()
+                .filter_map(|n| {
+                    let keyword = n
+                        .children_with_tokens()
+                        .into_iter()
+                        .filter_map(|e| e.as_token().cloned())
+                        .find(|t| {
+                            matches!(
+                                t.kind(),
+                                SyntaxKind::WhileKw | SyntaxKind::ForKw | SyntaxKind::LoopKw
+                            )
+                        })?
+                        .text_range();
+                    let bounds = match n.kind() {
+                        SyntaxKind::WhileStmt | SyntaxKind::LoopStmt => None,
+                        SyntaxKind::ForStmt => static_bounds(&n, &index, &natives),
+                        _ => return None,
+                    };
+                    Some(Loop {
+                        at: keyword,
+                        bounds,
+                    })
+                })
+                .collect();
             Body {
                 module: env.module,
                 name,
@@ -165,6 +219,7 @@ impl Domains {
                 natives: calls,
                 env: uses_env,
                 awaits,
+                loops,
             }
         };
         for item in items {
@@ -268,9 +323,27 @@ impl Domains {
                             continue;
                         }
                         for (action, hook, domain) in bound {
-                            if *domain == HookDomain::Simulation {
-                                self.roots.push((*action, format!("{system_name}.{hook}")));
+                            let root = (*action, format!("{system_name}.{hook}"));
+                            match domain {
+                                HookDomain::Simulation => self.roots.push(root),
+                                HookDomain::Realtime => self.realtime.push(root),
+                                HookDomain::Presentation => {}
                             }
+                        }
+                        let realtime = bound.iter().filter(|(_, _, d)| *d == HookDomain::Realtime);
+                        if realtime.clone().next().is_some()
+                            && bound.iter().any(|(_, _, d)| *d != HookDomain::Realtime)
+                            && let Some(name) = system.name()
+                        {
+                            diagnostics.push(Diagnostic::error(
+                                "E9108",
+                                name.text_range(),
+                                format!(
+                                    "`{system_name}` implements `AudioProcess`, so its state \
+                                     lives on the audio thread and it implements no other trait; \
+                                     pass data to it through a bounded lock-free queue"
+                                ),
+                            ));
                         }
                     }
                 }
@@ -571,6 +644,255 @@ impl Domains {
             }
         }
     }
+}
+
+impl Domains {
+    /// Checks every function the `AudioProcess` roots reach, over the
+    /// instructions `behavior` lowered for it and its source, reporting into
+    /// the module that declares each (`E9108`).
+    pub(super) fn check_realtime(
+        &self,
+        decls: &Declarations,
+        natives: &viso_behavior::native::Natives,
+        behavior: &ProgramBuilder,
+        per_module: &mut [Vec<Diagnostic>],
+    ) {
+        if self.realtime.is_empty() {
+            return;
+        }
+        let program = behavior.program();
+        let body_of = |f: FuncId| {
+            program
+                .functions
+                .get(f.0 as usize)
+                .and_then(|f| f.body.as_ref().ok())
+        };
+        // Breadth-first over calls and closures from the roots, each
+        // function reached once with the root it was first reached from.
+        let mut reached: HashMap<FuncId, &str> = HashMap::new();
+        let mut queue: VecDeque<FuncId> = VecDeque::new();
+        let mut roots = Vec::new();
+        for (action, root) in &self.realtime {
+            if let Some(f) = behavior.function_of(*action)
+                && reached.insert(f, root).is_none()
+            {
+                roots.push(f);
+                queue.push_back(f);
+            }
+        }
+        let mut order = Vec::new();
+        while let Some(f) = queue.pop_front() {
+            order.push(f);
+            let root = reached[&f];
+            for inst in body_of(f).map_or(&[][..], |b| &b.insts[..]) {
+                if let Inst::Call { func, .. } | Inst::Closure { func, .. } = inst
+                    && !reached.contains_key(func)
+                {
+                    reached.insert(*func, root);
+                    queue.push_back(*func);
+                }
+            }
+        }
+        let recursive = recursive_calls(&roots, &body_of);
+        let mut reported: HashSet<TextRange> = HashSet::new();
+        for f in order {
+            let (Some(function), Some(body)) = (program.functions.get(f.0 as usize), body_of(f))
+            else {
+                continue;
+            };
+            let root = reached[&f];
+            let mut found: Vec<(TextRange, String)> = Vec::new();
+            for (pc, inst) in body.insts.iter().enumerate() {
+                let at = body.spans[pc];
+                let message = match inst {
+                    Inst::Make { .. } => "builds a record, tuple or enum payload, which allocates",
+                    Inst::List { .. } => "builds a list, which allocates",
+                    Inst::Closure { .. } => "creates a closure, which allocates",
+                    Inst::Concat { .. }
+                    | Inst::Display { .. }
+                    | Inst::Binary {
+                        op: BinaryOp::Concat,
+                        ..
+                    } => "builds a `String`, which allocates",
+                    Inst::SetPath { .. } => {
+                        "writes into a record or list in place, which copies it while it is shared"
+                    }
+                    Inst::Start { .. } => "starts a task",
+                    Inst::Emit { .. } => {
+                        "emits an event; the audio thread passes data only through a bounded \
+                         lock-free queue"
+                    }
+                    Inst::CallValue { .. } => {
+                        "calls a closure value, which the check cannot follow"
+                    }
+                    Inst::Call { .. } if recursive.contains(&(f, pc)) => {
+                        "recurses, which has no static bound"
+                    }
+                    Inst::Native { import, .. } => {
+                        let Some(import) = program.natives.get(*import as usize) else {
+                            continue;
+                        };
+                        let Some(entry) = natives.function_by_id(NativeId::of(&import.path)) else {
+                            continue;
+                        };
+                        if entry.function.realtime_safe {
+                            continue;
+                        }
+                        let name = import.path.rsplit("::").next().unwrap_or(&import.path);
+                        found.push((at, format!("`{name}` is not realtime-safe")));
+                        continue;
+                    }
+                    _ => continue,
+                };
+                found.push((at, format!("the audio thread {message}")));
+            }
+            if let Some(source) = function.symbol.and_then(|s| self.bodies.get(&s)) {
+                for &(mention, at) in &source.mentions {
+                    if decls.facts.get(&mention).map(|f| f.kind) == Some(SymbolKind::Resource) {
+                        found.push((at, "the audio thread does not load a resource".to_owned()));
+                    }
+                }
+                let fixed = |bound: &Bound| match bound {
+                    Bound::Symbol(s) => {
+                        decls.facts.get(s).map(|f| f.kind) == Some(SymbolKind::Const)
+                    }
+                    Bound::Native(id) => natives.function_by_id(*id).is_some_and(|entry| {
+                        entry
+                            .path
+                            .strip_prefix(AudioBlock::PATH)
+                            .is_some_and(|method| method.starts_with("::"))
+                    }),
+                };
+                for l in &source.loops {
+                    if !l.bounds.as_ref().is_some_and(|b| b.iter().all(fixed)) {
+                        found.push((
+                            l.at,
+                            "the audio thread loops only over a range bounded by constants and \
+                             the block's size"
+                                .to_owned(),
+                        ));
+                    }
+                }
+            }
+            for (at, message) in found {
+                if !reported.insert(at) {
+                    continue;
+                }
+                let mut diagnostic = Diagnostic::error("E9108", at, message);
+                diagnostic.notes.push(if function.name == root {
+                    format!("`{root}` is an `AudioProcess` hook")
+                } else {
+                    format!(
+                        "`{}` runs on the audio thread: `{root}` reaches it",
+                        function.name
+                    )
+                });
+                if let Some(module) = per_module.get_mut(function.module) {
+                    module.push(diagnostic);
+                }
+            }
+        }
+    }
+}
+
+/// The calls, by function and instruction, that close a cycle of calls
+/// reachable from `roots`.
+fn recursive_calls<'p>(
+    roots: &[FuncId],
+    body_of: &dyn Fn(FuncId) -> Option<&'p crate::behavior::ir::Body>,
+) -> HashSet<(FuncId, usize)> {
+    #[derive(Clone, Copy, PartialEq)]
+    enum Mark {
+        Open,
+        Done,
+    }
+    let mut marks: HashMap<FuncId, Mark> = HashMap::new();
+    let mut closing = HashSet::new();
+    for &root in roots {
+        if marks.contains_key(&root) {
+            continue;
+        }
+        // Depth-first, each frame a function and the next instruction to
+        // visit.
+        let mut stack = vec![(root, 0usize)];
+        marks.insert(root, Mark::Open);
+        while let Some(top) = stack.last_mut() {
+            let (f, pc) = *top;
+            let insts = body_of(f).map_or(&[][..], |b| &b.insts[..]);
+            let Some(inst) = insts.get(pc) else {
+                marks.insert(f, Mark::Done);
+                stack.pop();
+                continue;
+            };
+            top.1 += 1;
+            if let Inst::Call { func, .. } = inst {
+                match marks.get(func) {
+                    Some(Mark::Open) => {
+                        closing.insert((f, pc));
+                    }
+                    Some(Mark::Done) => {}
+                    None => {
+                        marks.insert(*func, Mark::Open);
+                        stack.push((*func, 0));
+                    }
+                }
+            }
+        }
+    }
+    closing
+}
+
+/// What the bounds of the `for` loop `node` name, when it iterates a range
+/// written in its head whose bounds are built of literals, names and native
+/// calls.
+fn static_bounds(
+    node: &SyntaxNode,
+    index: &[(TextRange, Resolution)],
+    natives: &HashMap<TextRange, NativeId>,
+) -> Option<Vec<Bound>> {
+    let exprs = |n: &SyntaxNode| -> Vec<SyntaxNode> {
+        n.children()
+            .into_iter()
+            .filter(|c| Expr::cast(c.clone()).is_some())
+            .collect()
+    };
+    let mut iterable = exprs(node).into_iter().next()?;
+    while iterable.kind() == SyntaxKind::ParenExpr {
+        iterable = exprs(&iterable).into_iter().next()?;
+    }
+    if iterable.kind() != SyntaxKind::RangeExpr {
+        return None;
+    }
+    let bounds = exprs(&iterable);
+    if bounds.len() != 2 {
+        return None;
+    }
+    let mut out = Vec::new();
+    let mut open = bounds;
+    while let Some(n) = open.pop() {
+        match n.kind() {
+            SyntaxKind::LiteralExpr => {}
+            SyntaxKind::UnaryExpr | SyntaxKind::BinaryExpr | SyntaxKind::ParenExpr => {
+                open.extend(exprs(&n));
+            }
+            SyntaxKind::PathExpr => {
+                let at = n.text_range();
+                let start = index.partition_point(|(r, _)| r.start() < at.start());
+                let (_, to) = index[start..]
+                    .first()
+                    .filter(|(r, _)| at.contains_range(*r))?;
+                let Resolution::Symbol(s) = to else {
+                    return None;
+                };
+                out.push(Bound::Symbol(*s));
+            }
+            SyntaxKind::CallExpr | SyntaxKind::FieldExpr => {
+                out.push(Bound::Native(*natives.get(&n.text_range())?));
+            }
+            _ => return None,
+        }
+    }
+    Some(out)
 }
 
 fn misplaced_local(attr: &SyntaxNode, diagnostics: &mut Vec<Diagnostic>) {

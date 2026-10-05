@@ -25,43 +25,42 @@ fn#0 Loops.sum fn params=1 regs=14
    20: jump @4
    21: return r1
 
-fn#1 Loops.count fn params=1 regs=22
+fn#1 Loops.count fn params=1 regs=21
     0: r1 = const 0
     1: r2 = const 0
-    2: r3 = make #0 (r2, r0)
-    3: r4 = r3.0
-    4: r5 = r3.1
-    5: r6 = le.i64 r4, r5
-    6: jump @23 unless r6
-    7: r7 = r4
-    8: r8 = const 3
-    9: r9 = rem.i64 r7, r8
-   10: r10 = const 0
-   11: r11 = eq r9, r10
-   12: jump @15 unless r11
-   13: jump @18
-   14: jump @15
-   15: r12 = const 1
-   16: r13 = add.i64 r1, r12
-   17: r1 = r13
-   18: r14 = eq r4, r5
-   19: jump @23 if r14
-   20: r15 = const 1
-   21: r4 = add.i64 r4, r15
-   22: jump @5
-   23: r16 = const 0
-   24: r17 = const true
-   25: jump @34 unless r17
-   26: r18 = const 1
-   27: r19 = add.i64 r16, r18
-   28: r16 = r19
-   29: r20 = gt.i64 r16, r0
-   30: jump @33 unless r20
-   31: jump @34
-   32: jump @33
-   33: jump @24
-   34: r21 = add.i64 r1, r16
-   35: return r21
+    2: r3 = r2
+    3: r4 = r0
+    4: r5 = le.i64 r3, r4
+    5: jump @22 unless r5
+    6: r6 = r3
+    7: r7 = const 3
+    8: r8 = rem.i64 r6, r7
+    9: r9 = const 0
+   10: r10 = eq r8, r9
+   11: jump @14 unless r10
+   12: jump @17
+   13: jump @14
+   14: r11 = const 1
+   15: r12 = add.i64 r1, r11
+   16: r1 = r12
+   17: r13 = eq r3, r4
+   18: jump @22 if r13
+   19: r14 = const 1
+   20: r3 = add.i64 r3, r14
+   21: jump @4
+   22: r15 = const 0
+   23: r16 = const true
+   24: jump @33 unless r16
+   25: r17 = const 1
+   26: r18 = add.i64 r15, r17
+   27: r15 = r18
+   28: r19 = gt.i64 r15, r0
+   29: jump @32 unless r19
+   30: jump @33
+   31: jump @32
+   32: jump @23
+   33: r20 = add.i64 r1, r15
+   34: return r20
 
 fn#2 Loops.apply fn params=1 regs=4
     0: r1 = closure fn#5 [r0]

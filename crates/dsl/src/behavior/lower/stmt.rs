@@ -179,9 +179,9 @@ impl Lowerer<'_, '_> {
             return self.bail("a `for` without a pattern");
         };
         let ty = self.ty(&iterable)?;
-        let src = self.expr(&iterable)?;
         match ty {
             Ty::List(elem) => {
+                let src = self.expr(&iterable)?;
                 let list = self.copy(src);
                 let len = self.reg();
                 self.emit(Inst::Len {
@@ -217,18 +217,28 @@ impl Lowerer<'_, '_> {
                 let Some(num) = super::num_of(&elem).filter(|n| !n.is_float()) else {
                     return self.bail("only an integer range can be iterated");
                 };
-                let i = self.reg();
-                self.emit(Inst::Field {
-                    dst: i,
-                    src,
-                    index: 0,
-                });
-                let hi = self.reg();
-                self.emit(Inst::Field {
-                    dst: hi,
-                    src,
-                    index: 1,
-                });
+                // A range written in the head is iterated from its bounds, so
+                // the loop builds no range value.
+                let bounds = range_bounds(&iterable);
+                let (i, hi) = if let [lo, hi] = &bounds[..] {
+                    let fields = self.operands(&[lo.clone(), hi.clone()])?;
+                    (self.copy(fields[0]), self.copy(fields[1]))
+                } else {
+                    let src = self.expr(&iterable)?;
+                    let i = self.reg();
+                    self.emit(Inst::Field {
+                        dst: i,
+                        src,
+                        index: 0,
+                    });
+                    let hi = self.reg();
+                    self.emit(Inst::Field {
+                        dst: hi,
+                        src,
+                        index: 1,
+                    });
+                    (i, hi)
+                };
                 let top = self.here();
                 let more = self.reg();
                 let op = if inclusive {
@@ -687,4 +697,20 @@ fn compound_op(op: SyntaxKind) -> Option<SyntaxKind> {
         SyntaxKind::ShrEq => SyntaxKind::Shr,
         _ => return None,
     })
+}
+
+/// The bounds of `iterable` when it is a closed range expression, through
+/// parentheses.
+fn range_bounds(iterable: &Expr) -> Vec<Expr> {
+    let mut node = iterable.syntax().clone();
+    while node.kind() == SyntaxKind::ParenExpr {
+        let Some(inner) = first_child_expr(&node) else {
+            return Vec::new();
+        };
+        node = inner.syntax().clone();
+    }
+    if node.kind() != SyntaxKind::RangeExpr {
+        return Vec::new();
+    }
+    child_exprs(&node)
 }
