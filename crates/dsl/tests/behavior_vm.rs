@@ -770,3 +770,27 @@ component C {
     assert_eq!(fault.kind.code(), "E4202");
     assert!(!c.is_cached(member(&vm, &c, "x")));
 }
+
+#[test]
+fn float_arithmetic_rounds_every_operation() {
+    // `a * b` rounds before `- c`: a fused multiply-add would keep 2^-60.
+    let source = "component F {\n\
+                      fn madd(a: F64, b: F64, c: F64) -> F64 { a * b - c }\n\
+                      fn sum(a: F64, b: F64, c: F64) -> F64 { a + b + c }\n\
+                      view { Text { text: \"a\"; } }\n\
+                  }";
+    let (mut vm, mut f) = instance(source, "F");
+    let a = 1.0 + 2f64.powi(-30);
+    let c = 1.0 + 2f64.powi(-29);
+    let args = [Value::Float(a), Value::Float(a), Value::Float(c)];
+    assert_eq!(
+        call(&mut vm, &mut f, "madd", &args).unwrap(),
+        Value::Float(0.0)
+    );
+    // Left to right, never reassociated: `(1e16 + 1) + -1e16` loses the 1.
+    let args = [Value::Float(1e16), Value::Float(1.0), Value::Float(-1e16)];
+    assert_eq!(
+        call(&mut vm, &mut f, "sum", &args).unwrap(),
+        Value::Float(0.0)
+    );
+}

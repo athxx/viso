@@ -45,7 +45,10 @@ static TEXT: NativeLibrary = NativeLibrary {
     widgets: &[],
 };
 
-/// `F64` math and the `F32` vectors.
+/// `F64` math and the `F32` vectors. Every function is `cross_platform`:
+/// the basic operations and `sqrt` round as IEEE 754 says, and the
+/// transcendentals are computed by [`libm`]'s software implementations, never
+/// the host's, so each Tier-1 target returns the same bits.
 static MATH: NativeLibrary = NativeLibrary {
     path: "viso::math",
     version: 1,
@@ -77,6 +80,33 @@ static MATH: NativeLibrary = NativeLibrary {
         })
         .deterministic()
         .realtime_safe(),
+        crate::native!(fn "sin" |_cx, x: f64| -> f64 { Ok(libm::sin(x)) })
+            .deterministic()
+            .realtime_safe(),
+        crate::native!(fn "cos" |_cx, x: f64| -> f64 { Ok(libm::cos(x)) })
+            .deterministic()
+            .realtime_safe(),
+        crate::native!(fn "tan" |_cx, x: f64| -> f64 { Ok(libm::tan(x)) })
+            .deterministic()
+            .realtime_safe(),
+        crate::native!(fn "atan" |_cx, x: f64| -> f64 { Ok(libm::atan(x)) })
+            .deterministic()
+            .realtime_safe(),
+        crate::native!(fn "atan2" |_cx, y: f64, x: f64| -> f64 { Ok(libm::atan2(y, x)) })
+            .deterministic()
+            .realtime_safe(),
+        crate::native!(fn "exp" |_cx, x: f64| -> f64 { Ok(libm::exp(x)) })
+            .deterministic()
+            .realtime_safe(),
+        crate::native!(fn "log" |_cx, x: f64| -> f64 { Ok(libm::log(x)) })
+            .deterministic()
+            .realtime_safe(),
+        crate::native!(fn "pow" |_cx, x: f64, y: f64| -> f64 { Ok(libm::pow(x, y)) })
+            .deterministic()
+            .realtime_safe(),
+        crate::native!(fn "hypot" |_cx, x: f64, y: f64| -> f64 { Ok(libm::hypot(x, y)) })
+            .deterministic()
+            .realtime_safe(),
     ],
     types: &[
         NativeType::value("Vec2F32", &super::vector::VEC2_METHODS),

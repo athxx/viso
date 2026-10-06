@@ -113,7 +113,7 @@ impl Control {
     }
 
     pub(in crate::game) fn encode(&self, enc: &mut Encoder) {
-        let f = |enc: &mut Encoder, v: f32| enc.write_u32(v.to_bits());
+        let f = |enc: &mut Encoder, v: f32| enc.write_u32(crate::wire::canonical_f32_bits(v));
         let v3 = |enc: &mut Encoder, v: &[f32; 3]| v.iter().for_each(|&c| f(enc, c));
         match self {
             Control::None => enc.write_u8(0),

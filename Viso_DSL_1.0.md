@@ -1858,7 +1858,7 @@ native_type_decl     = "type", identifier,
 
 ### 47.1 生成的 Native Schema
 
-Native Schema 由 Rust 侧生成（ADR 0036）：一个 Native Library 是一条模块路径（如 `viso::text`）下带版本的函数与 Handle 类型集合；编译器与运行时共享同一个 Registry，`.vs` 不重复声明签名。标准 Registry 含 `viso::text`、`viso::math`（`F64` 函数与 `Vec2F32`/`Vec3F32` 值类型：`new`、Property `x`/`y`/`z`、`add`/`sub`/`scale`/`length`，单精度 IEEE 运算，`cross_platform`）、`viso::time`（`Stopwatch`）与 `viso::clipboard`。
+Native Schema 由 Rust 侧生成（ADR 0036）：一个 Native Library 是一条模块路径（如 `viso::text`）下带版本的函数与 Handle 类型集合；编译器与运行时共享同一个 Registry，`.vs` 不重复声明签名。标准 Registry 含 `viso::text`、`viso::math`（`F64` 函数——`sqrt`/`abs`/`floor`/`round`/`min`/`max`/`clamp` 与 `sin`/`cos`/`tan`/`atan`/`atan2`/`exp`/`log`/`pow`/`hypot`，均为 `cross_platform`（§106.5）——与 `Vec2F32`/`Vec3F32` 值类型：`new`、Property `x`/`y`/`z`、`add`/`sub`/`scale`/`length`，单精度 IEEE 运算，`cross_platform`）、`viso::time`（`Stopwatch`）与 `viso::clipboard`。
 
 - 每个函数记录：名称、`fn`/`action`/`task` 分类、参数与返回的 Schema 类型、所需 Capability、线程域（`any`/`ui`/`worker`）、`deterministic`、`realtime_safe`、`@const`（编译期可求值，隐含 `deterministic`）与每次调用的预算成本；每个 Handle 类型记录方法、所有权（`shared`/`borrowed`）与线程域；
 - Schema Enum 是带 Variant 的 Native 类型，值为 Variant 序号而非 Handle：`import viso::game::Key;` 后写 `Key::Space`，未知 Variant 为 `E2001`（附最近候选）；
@@ -5910,9 +5910,10 @@ cross_platform   所有 Tier-1 目标上 Snapshot Hash 逐字节一致；联机�
 
 `cross_platform` 要求：
 
-- 禁止 FMA 收缩、fast-math、浮点重结合，禁止平台间不一致的 denormal 处理；
-- `sin`/`cos`/`atan2`/`exp`/`log`/`pow` 使用 `viso::math` 的确定性实现，不调用宿主 libm；
+- 禁止 FMA 收缩、fast-math、浮点重结合，禁止平台间不一致的 denormal 处理：解释器逐个运算舍入（`a * b - c` 先舍入乘积），表达式严格从左到右求值，`F32` 运算在 `F64` 中计算后舍入到 `F32`（对四则运算与 `sqrt` 与直接单精度运算逐位相同）；
+- `sin`/`cos`/`tan`/`atan`/`atan2`/`exp`/`log`/`pow`/`hypot` 使用 `viso::math` 的确定性实现（只由 IEEE 基本运算与位操作构成的软件实现），不调用宿主 libm；结果按版本逐位固定，改变即破坏跨版本回放；
 - `sqrt` 与四则运算按 IEEE 754 最近偶数舍入；
+- Snapshot 与 Hash 中所有 NaN 编码为同一个 quiet NaN（x86 与 Arm 产生的 NaN 符号与 Payload 不同）；`-0.0` 与 `0.0` 保持区分；
 - 归约与迭代顺序固定；并行浮点归约按固定分块顺序合并；
 - Physics 等 Native World 在 Schema 中声明自己满足哪一档，不满足时报 `E9104`。
 

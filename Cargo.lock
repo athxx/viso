@@ -2501,6 +2501,7 @@ dependencies = [
  "icu_locale_core",
  "icu_locale_fallback",
  "icu_plurals",
+ "libm",
  "viso-ende",
 ]
 

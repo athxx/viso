@@ -19,3 +19,4 @@ icu_decimal = { workspace = true }
 icu_locale_core = { workspace = true }
 icu_locale_fallback = { workspace = true }
 fixed_decimal = { workspace = true }
+libm = { workspace = true }

@@ -114,6 +114,12 @@ icu_plurals = "2.3"
 icu_decimal = "2.3"
 icu_locale_fallback = "2.3"
 fixed_decimal = { version = "0.7", features = ["ryu"] }
+# `cross_platform` game math (`viso::math` transcendentals, input lengths): the
+# musl/FreeBSD algorithms ported to Rust, built from IEEE basic operations and
+# bit manipulation only, so every Tier-1 target computes the same bits; the
+# `arch` feature (exact instructions only: sqrt, floor, fma) is left off.
+# Already a transitive dep.
+libm = { version = "0.2.16", default-features = false }
 # Message catalogs and `Viso.toml`, read with their spans for diagnostics.
 toml_edit = "0.25"
 # NFC for DSL identifiers: two spellings that normalize alike are one name in the
