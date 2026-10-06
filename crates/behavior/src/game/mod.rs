@@ -68,6 +68,7 @@ mod grid;
 mod history;
 pub mod input;
 pub mod kit;
+mod net;
 mod persist;
 mod physics;
 pub mod quick;
@@ -97,8 +98,9 @@ pub use clock::{Clock, TickOverrun};
 pub use history::{DEFAULT_HISTORY_SECONDS, ReplayError, Replayed};
 pub use input::{
     Action, INPUT_ACTION_DERIVE, InputAction, InputAxis, InputBindings, InputMap, InputSchema,
-    InputSnapshot, Key, KeySet, MoveAxes, MoveSource, PadButton, PadStick, TouchButton,
+    InputSnapshot, Key, KeySet, MoveAxes, MoveSource, PadButton, PadStick, TickInput, TouchButton,
 };
+pub use net::{Desync, PacketError, RollbackSession, SessionConfig, SessionError, SessionStats};
 #[cfg(not(target_family = "wasm"))]
 pub use persist::DirStore;
 pub use persist::{
@@ -146,7 +148,12 @@ impl NativeObject for GameStart {
 pub struct FixedFrame {
     tick: Cell<u64>,
     dt: f64,
+    /// Player 0's input, `players[0]`.
     input: Obj<InputSnapshot>,
+    /// Every player's input, [`MAX_PLAYERS`] of them, the first `count` in
+    /// play.
+    players: Box<[Obj<InputSnapshot>]>,
+    count: Cell<u32>,
     world: Obj<GameWorld>,
     kit: Obj<Kit>,
 }
@@ -191,7 +198,22 @@ fn signed(tick: u64) -> i64 {
     i64::try_from(tick).unwrap_or(i64::MAX)
 }
 
-static FIXED_FRAME_METHODS: [NativeFunction; 6] = [
+/// The most players a game takes.
+pub const MAX_PLAYERS: u32 = 8;
+
+/// Player `player`'s input of the tick.
+fn input_of(frame: &FixedFrame, player: i64) -> Result<Obj<InputSnapshot>, NativeError> {
+    let count = frame.count.get();
+    match u32::try_from(player).ok().filter(|&p| p < count) {
+        Some(p) => Ok(frame.players[p as usize].clone()),
+        None => Err(NativeError::new(format!(
+            "player {player} is not in the game: its players are 0 to {}",
+            count - 1
+        ))),
+    }
+}
+
+static FIXED_FRAME_METHODS: [NativeFunction; 8] = [
     crate::native!(fn "tick" |_cx, this: Obj<FixedFrame>| -> i64 { Ok(signed(this.tick.get())) })
         .deterministic()
         .realtime_safe(),
@@ -209,6 +231,16 @@ static FIXED_FRAME_METHODS: [NativeFunction; 6] = [
     .deterministic()
     .realtime_safe()
     .property(),
+    crate::native!(fn "players" |_cx, this: Obj<FixedFrame>| -> i64 {
+        Ok(i64::from(this.count.get()))
+    })
+    .deterministic()
+    .realtime_safe(),
+    crate::native!(fn "input_of" |_cx, this: Obj<FixedFrame>, player: i64| -> Obj<InputSnapshot> {
+        input_of(&this, player)
+    })
+    .deterministic()
+    .realtime_safe(),
     crate::native!(fn "world" |_cx, this: Obj<FixedFrame>| -> Obj<GameWorld> {
         Ok(this.world.clone())
     })
