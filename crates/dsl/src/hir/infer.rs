@@ -184,6 +184,8 @@ pub trait TypeEnv {
         PackageTypes {
             action: Ty::Native(NativeId::of(viso_behavior::game::InputAction::PATH)),
             tag: Ty::Native(NativeId::of(viso_behavior::game::GameTag::PATH)),
+            audio_command: Ty::Unit,
+            audio_event: Ty::Unit,
         }
     }
 

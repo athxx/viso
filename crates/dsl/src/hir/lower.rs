@@ -56,6 +56,7 @@ use super::view::{
     check_percent_flow, check_view,
 };
 
+mod audio;
 mod effects;
 mod input;
 mod resources;
@@ -181,6 +182,8 @@ pub fn lower(
         .collect();
     decls.input_action = Some(input::action_type(&decls));
     decls.tag_type = Some(tags::tag_type(&decls));
+    decls.audio_command = Some(audio::message_type(&decls.audio_commands));
+    decls.audio_event = Some(audio::message_type(&decls.audio_events));
     decls.profile = profile.clone();
 
     // Second pass: lower each module against the package table. The capability call graph
@@ -1232,6 +1235,16 @@ struct Declarations {
     tag_derives: Vec<tags::TagDecl>,
     /// The type of a game tag, once every module is declared.
     tag_type: Option<Ty>,
+    /// Every enum deriving `AudioCommand`, in module order; the first is the
+    /// package's.
+    audio_commands: Vec<audio::AudioDecl>,
+    /// Every enum deriving `AudioEvent`, in module order; the first is the
+    /// package's.
+    audio_events: Vec<audio::AudioDecl>,
+    /// The type of an audio command, once every module is declared.
+    audio_command: Option<Ty>,
+    /// The type of an audio event, once every module is declared.
+    audio_event: Option<Ty>,
     /// What the package's targets are and how it is built.
     profile: TargetProfile,
     /// The prelude's types by name.
@@ -1313,6 +1326,8 @@ impl TypeEnv for ModuleEnv<'_> {
         PackageTypes {
             action: self.decls.input_action.clone().unwrap_or(Ty::Unknown),
             tag: self.decls.tag_type.clone().unwrap_or(Ty::Unknown),
+            audio_command: self.decls.audio_command.clone().unwrap_or(Ty::Unknown),
+            audio_event: self.decls.audio_event.clone().unwrap_or(Ty::Unknown),
         }
     }
 
@@ -1628,6 +1643,10 @@ impl ModuleScope {
                                 decls.input_derives.insert(sym);
                             } else if text == viso_behavior::game::GAME_TAG_DERIVE {
                                 tags::collect(sym, name.text_range(), &scope, decls);
+                            } else if text == viso_behavior::game::AUDIO_COMMAND_DERIVE
+                                || text == viso_behavior::game::AUDIO_EVENT_DERIVE
+                            {
+                                audio::collect(&text, sym, name.text_range(), &scope, decls);
                             }
                         }
                     }

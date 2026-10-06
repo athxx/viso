@@ -16,13 +16,18 @@ use crate::syntax::{SyntaxKind, SyntaxNode, TextRange};
 use viso_behavior::native::{NativeId, SchemaTy};
 
 /// The types a native schema leaves to the compiled package: its input
-/// actions ([`SchemaTy::Action`]) and its game tags ([`SchemaTy::Tag`]).
+/// actions ([`SchemaTy::Action`]), its game tags ([`SchemaTy::Tag`]) and its
+/// audio messages ([`SchemaTy::AudioCommand`], [`SchemaTy::AudioEvent`]).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PackageTypes {
     /// The type of an input action.
     pub action: Ty,
     /// The type of a game tag.
     pub tag: Ty,
+    /// The type of a message to the audio thread.
+    pub audio_command: Ty,
+    /// The type of a message from the audio thread.
+    pub audio_event: Ty,
 }
 
 /// A resolved static type.
@@ -289,6 +294,8 @@ impl Ty {
             }
             SchemaTy::Action => package.action.clone(),
             SchemaTy::Tag => package.tag.clone(),
+            SchemaTy::AudioCommand => package.audio_command.clone(),
+            SchemaTy::AudioEvent => package.audio_event.clone(),
         }
     }
 

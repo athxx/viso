@@ -14,7 +14,8 @@
 //! reaches may not allocate, start a task, emit an event, load a resource,
 //! call a closure value or a native that is not realtime-safe, recurse, or
 //! loop without a static bound (`E9108`), checked over their lowered
-//! instructions; an `AudioProcess` system implements no other trait.
+//! instructions; an `AudioProcess` system implements no trait whose hooks
+//! run off the audio thread.
 
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -344,8 +345,10 @@ impl Domains {
                                 name.text_range(),
                                 format!(
                                     "`{system_name}` implements `AudioProcess`, so its state \
-                                     lives on the audio thread and it implements no other trait; \
-                                     pass data to it through a bounded lock-free queue"
+                                     lives on the audio thread and it implements no trait run \
+                                     elsewhere; pass data to it with `send_audio` and \
+                                     `AudioCommands`, and back with `block.send` and \
+                                     `AudioListener`"
                                 ),
                             ));
                         }

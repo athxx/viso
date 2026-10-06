@@ -49,7 +49,11 @@
 //! `start` and `fixed` the scheduler runs as a `Startup` and a `FixedUpdate`.
 //!
 //! An `AudioProcess` hook fills an [`AudioBlock`] on the audio thread, held
-//! by the compiler to realtime rules; the scheduler does not run it.
+//! by the compiler to realtime rules; an [`AudioHost`] runs it there, not the
+//! scheduler. The audio systems trade typed messages with the rest through
+//! bounded lock-free queues: [`Scheduler::attach_audio`] lets `send_audio`
+//! reach the `AudioCommands` hooks and delivers the audio thread's events to
+//! the `AudioListener` hooks each frame.
 
 mod audio;
 mod clock;
@@ -74,7 +78,12 @@ use crate::native::{
     NativeTrait, NativeType, Obj, Param, SchemaTy, Vec3F32,
 };
 
-pub use audio::{AUDIO_PROCESS, AudioBlock};
+pub use audio::{
+    AUDIO_COMMAND, AUDIO_COMMAND_DERIVE, AUDIO_EVENT, AUDIO_EVENT_DERIVE, AUDIO_PROCESS,
+    AudioBlock, AudioCommandValue, AudioEventValue, AudioFault, AudioHost, AudioLink, AudioMessage,
+    AudioStatus, COMMAND_CAPACITY, EVENT_CAPACITY, MESSAGE_TOKENS, MessageSlot, RealtimeReceiver,
+    RealtimeSender, realtime_queue,
+};
 pub use clock::{Clock, TickOverrun};
 pub use history::{DEFAULT_HISTORY_SECONDS, ReplayError, Replayed};
 pub use input::{
@@ -294,7 +303,7 @@ static COLLISION_EVENT_METHODS: [NativeFunction; 6] = [
 pub(crate) static GAME: NativeLibrary = NativeLibrary {
     path: "viso::game",
     version: 1,
-    functions: &[],
+    functions: &audio::AUDIO_FUNCTIONS,
     types: &[
         NativeType::new("GameStart", &GAME_START_METHODS).borrowed(),
         NativeType::new("FixedFrame", &FIXED_FRAME_METHODS).borrowed(),
@@ -374,8 +383,35 @@ pub(crate) static GAME: NativeLibrary = NativeLibrary {
                 domain: HookDomain::Realtime,
             }],
         },
+        NativeTrait {
+            name: "AudioCommands",
+            hooks: &[NativeHook {
+                name: "audio_command",
+                params: &[Param {
+                    name: "command",
+                    ty: SchemaTy::AudioCommand,
+                }],
+                domain: HookDomain::Realtime,
+            }],
+        },
+        NativeTrait {
+            name: "AudioListener",
+            hooks: &[NativeHook {
+                name: "audio_event",
+                params: &[Param {
+                    name: "event",
+                    ty: SchemaTy::AudioEvent,
+                }],
+                domain: HookDomain::Presentation,
+            }],
+        },
     ],
-    derives: &[input::INPUT_ACTION_DERIVE, world::GAME_TAG_DERIVE],
+    derives: &[
+        input::INPUT_ACTION_DERIVE,
+        world::GAME_TAG_DERIVE,
+        audio::AUDIO_COMMAND_DERIVE,
+        audio::AUDIO_EVENT_DERIVE,
+    ],
     widgets: &[],
 };
 

@@ -111,7 +111,7 @@ fn an_audio_system_implements_no_other_trait() {
 }",
     );
     assert_eq!(found.len(), 1, "{found:#?}");
-    assert!(found[0].0.contains("implements no other trait"));
+    assert!(found[0].0.contains("implements no trait run elsewhere"));
 }
 
 #[test]

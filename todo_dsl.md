@@ -1016,9 +1016,32 @@ timers (§104–§111).
         the block's size from source; an audio system implements no other
         trait. `viso::game::AudioProcess` / `AudioBlock`; a range in a `for`
         head builds no range value.
-  - [ ] An audio-thread host runs `AudioProcess` hooks on the platform audio
+  - [x] An audio-thread host runs `AudioProcess` hooks on the platform audio
         callback, with bounded lock-free typed message queues to other
         systems.
+    - [x] Typed messages: the package's `@derive(AudioCommand)` enum (plain
+          payloads, at most 16 tokens, `E2201`) and `@derive(AudioEvent)` enum
+          (unit-only), one each (`E2202`); `SchemaTy::AudioCommand` /
+          `AudioEvent`; `send_audio`, `AudioCommands.audio_command`,
+          `block.send`, `AudioListener.audio_event`; an audio system
+          implements only audio-thread traits (`E9108`).
+    - [x] `realtime_queue`: a bounded SPSC ring (power-of-two slots, acquire
+          / release counters, drop-and-count when full); `AudioMessage`
+          flattens a command, `MessageSlot` decodes it in place per variant.
+    - [x] `AudioHost`: its own module, VM and instances decoded from bytes,
+          `Send`; commands then `AudioProcess` per block, a budget scaled to
+          the block, a faulting system silenced and its fault kept;
+          `Scheduler::attach_audio` delivers events before `FrameUpdate`
+          and survives rebuilds and reloads (`game_audio_link.rs`).
+    - [x] `viso_platform::audio::AudioOutput`: macOS / iOS output Audio
+          Unit (rendered on this Mac's default device), WASAPI, ALSA and
+          AAudio (compile-checked only); `viso::audio::GameAudio` connects a
+          module's audio systems to the default device.
+    - [ ] Verified on a device: Windows WASAPI, Linux ALSA, Android AAudio,
+          iOS RemoteIO.
+    - [ ] Web audio output (an AudioWorklet over a shared-memory wasm build).
+    - [ ] A logic reload swaps the audio host on the running device without
+          a gap (hand-off through a lock-free slot).
   - [ ] The VM's call path is shown allocation-free once warm (allocation
         count test on the audio hook).
 - [ ] Dev snapshot ring and rewind-and-replay after a logic reload (§110.4).

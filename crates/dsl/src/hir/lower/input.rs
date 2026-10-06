@@ -187,6 +187,19 @@ pub(super) fn check_derives(
             if let (Some(symbol), viso_behavior::game::GAME_TAG_DERIVE) = (symbol, text.as_str()) {
                 super::tags::check(symbol, name.text_range(), env, diagnostics);
             }
+            let audio = [
+                viso_behavior::game::AUDIO_COMMAND_DERIVE,
+                viso_behavior::game::AUDIO_EVENT_DERIVE,
+            ];
+            if let Some(symbol) = symbol
+                && audio.contains(&text.as_str())
+            {
+                super::audio::check(&text, symbol, name.text_range(), env, diagnostics);
+            }
+            if text == viso_behavior::game::AUDIO_COMMAND_DERIVE {
+                // A command's payloads are checked as message data above.
+                continue;
+            }
             let payload = symbol
                 .and_then(|s| env.enum_variants(s))
                 .and_then(|vs| vs.iter().find(|v| v.payload != VariantPayload::Unit));

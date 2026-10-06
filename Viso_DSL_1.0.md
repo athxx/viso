@@ -5586,6 +5586,18 @@ export trait FrameUpdate {
 export trait CollisionListener {
     action collision(event: CollisionEvent);
 }
+
+export trait AudioProcess {
+    action audio_process(block: AudioBlock);
+}
+
+export trait AudioCommands {
+    action audio_command(command: AudioCommand);
+}
+
+export trait AudioListener {
+    action audio_event(event: AudioEvent);
+}
 ```
 
 Parser 只认识：
@@ -6115,7 +6127,11 @@ then per-system sequence
 - 禁止堆分配、`Task`/`await`、锁、Resource 加载、未标 `realtime` 的 Native 调用以及无静态上限的循环，违反时报 `E9108`；
 - 与其他 System 只通过有界无锁队列传递 typed message。
 
-当前实现：`viso::game::AudioProcess` 的 Hook 为 `audio_process(block: AudioBlock)`，域为 `Realtime`；`AudioBlock` 是借用 Handle，按声道与帧原地读写样本（`channels`、`frames`、`sample_rate`、`input(channel, frame)`、`write(channel, frame, sample)`，均为 realtime-safe）。编译器从每个 `AudioProcess` Hook 沿调用与 Closure 遍历降低后的指令：构造 Record/Tuple/Enum Payload、List、Closure 或 `String`（拼接、格式化），原地写入 Record/List（共享时复制），`start` Task，`emit` 事件，调用 Closure 值，调用未标 realtime-safe 的 Native，以及递归，均报 `E9108`；源码中读取 Resource、`while`/`loop`，以及 `for` 不是遍历头部书写的 Range、或 Range 边界不只由字面量、`const` 与 `AudioBlock` 的方法构成时也报 `E9108`；诊断附注说明由哪个 Hook 到达。实现 `AudioProcess` 的 System 不得再实现其他 Trait（`E9108`）。头部书写的 Range 由其边界直接迭代，不构造 Range 值。Scheduler 不运行 `AudioProcess`；音频线程宿主与有界无锁队列尚未实现。
+当前实现：`viso::game::AudioProcess` 的 Hook 为 `audio_process(block: AudioBlock)`，域为 `Realtime`；`AudioBlock` 是借用 Handle，按声道与帧原地读写样本（`channels`、`frames`、`sample_rate`、`input(channel, frame)`、`write(channel, frame, sample)`，均为 realtime-safe）。编译器从每个 `AudioProcess` Hook 沿调用与 Closure 遍历降低后的指令：构造 Record/Tuple/Enum Payload、List、Closure 或 `String`（拼接、格式化），原地写入 Record/List（共享时复制），`start` Task，`emit` 事件，调用 Closure 值，调用未标 realtime-safe 的 Native，以及递归，均报 `E9108`；源码中读取 Resource、`while`/`loop`，以及 `for` 不是遍历头部书写的 Range、或 Range 边界不只由字面量、`const` 与 `AudioBlock` 的方法构成时也报 `E9108`；诊断附注说明由哪个 Hook 到达。实现 `AudioProcess` 的 System 只能再实现 Hook 同在音频线程的 Trait（`AudioCommands`），否则报 `E9108`。头部书写的 Range 由其边界直接迭代，不构造 Range 值。
+
+Typed Message：包内唯一的 `@derive(AudioCommand)` Enum 是发往音频线程的消息类型，唯一的 `@derive(AudioEvent)` Enum 是音频线程发回的消息类型（未派生时为 `()`；再派生报 `E2202`）。Command 按值复制跨线程，Payload 只能是数值、`Bool`、`Char`、无 Payload 的 Enum 及由它们组成的 Record/Tuple，展平后至多 16 个 Token（Variant 本身与每个 Record/Tuple 各算一个），否则报 `E2201`；Event 在音频线程构造，不得分配，因此只能是无 Payload 的 Enum（`E2201`）。`viso::game::send_audio(command) -> Bool` 是 Presentation `action`（Simulation Hook 中调用按 Tick 延迟交付，回放不重发），队满或未连接音频线程时返回 `false`；`AudioCommands.audio_command(command)` 在音频线程、下一个 Block 之前按发送顺序收到每条 Command（Realtime 域，同受上述规则约束）；`block.send(event) -> Bool`（realtime-safe）把 Event 交给下一 Frame 中、`FrameUpdate` 之前运行的 `AudioListener.audio_event(event)`（Presentation 域）。两个方向各是一条有界（256 条）单生产者单消费者无锁环形队列，满时丢弃并计数（`dropped_commands` / `dropped_events`）。
+
+音频线程宿主：`AudioHost::new(module_bytes, natives, channels, max_frames, sample_rate)` 从 Module 的字节解码出独占的 Module、VM 与实例（因此可整体移到音频线程），返回宿主与 `AudioLink`；`Scheduler::attach_audio(link)` 让 `send_audio` 与 `AudioListener` 生效，World Rebuild 与 Logic Reload 保留连接。每个 Block：Block 输出清零，解码队列中的 Command（每个 Variant 复用上一条的值，原地覆盖），依 System 顺序调用 `audio_command`，再调用 `audio_process`，最后把 Block 复制到设备缓冲区。每次调用的预算按 Block 缩放（每个 Sample 16 次 Native 调用）。Hook Fault 使该 System 静音直到宿主重建，Fault 以非阻塞方式留给 App（`AudioStatus::take_fault`）。设备输出：`viso_platform::audio::AudioOutput`（macOS/iOS 为 Output Audio Unit，Windows 为 WASAPI 共享模式事件驱动，Linux 为 ALSA，Android 为 AAudio；后两者运行时加载；Web 与 BSD 返回 `Unsupported`），以 float32、声道主序回调渲染；`viso::audio::GameAudio::start(module, natives)` 把宿主接到默认输出设备。
 
 ---
 
