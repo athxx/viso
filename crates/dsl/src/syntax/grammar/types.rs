@@ -118,7 +118,7 @@ fn trait_object_type(p: &mut Parser) {
     let m = p.start();
     p.bump_any(); // `dyn`
     trait_bounds(p);
-    m.complete(p, SyntaxKind::TypePath);
+    m.complete(p, SyntaxKind::DynType);
 }
 
 /// A `TypePath ("+" TypePath)*` list of trait bounds (A.3).

@@ -61,6 +61,25 @@ pub(crate) struct ProgramBuilder {
     task_slots: Vec<String>,
     /// The task that awaits a native task, by its import and argument count.
     native_tasks: HashMap<(u32, usize), FuncId>,
+    /// Each instantiation of a generic callable, by the callable and the
+    /// arguments of its parameters.
+    instances: HashMap<(SymbolId, Vec<Ty>), FuncId>,
+    /// The instantiations reserved but not yet lowered, in reservation order.
+    pending: Vec<Instance>,
+    /// How deep the instantiation being lowered is: the chain of
+    /// instantiations that reserved it.
+    depth: u32,
+    /// The function building each trait-object vtable, by its slots.
+    vtables: HashMap<Vec<FuncId>, FuncId>,
+}
+
+/// An instantiation of a generic callable to lower.
+#[derive(Debug, Clone)]
+pub(crate) struct Instance {
+    pub symbol: SymbolId,
+    pub args: Vec<Ty>,
+    pub func: FuncId,
+    pub depth: u32,
 }
 
 /// What a lowered function is.
@@ -113,6 +132,90 @@ impl ProgramBuilder {
         });
         self.by_symbol.insert(symbol, id);
         id
+    }
+
+    /// The function of the instantiation of `symbol` at `args`, reserving it
+    /// (to lower once every body is typed) the first time; the declaration's
+    /// own function when it takes no arguments.
+    pub(crate) fn instance(&mut self, symbol: SymbolId, args: &[Ty], name: &str) -> FuncId {
+        if args.is_empty() {
+            return self.func_of(symbol, name);
+        }
+        let key = (symbol, args.to_vec());
+        if let Some(&id) = self.instances.get(&key) {
+            return id;
+        }
+        let id = self.push(Function {
+            name: name.to_string(),
+            kind: FunctionKind::Fn,
+            symbol: None,
+            module: 0,
+            params: 0,
+            captures: Vec::new(),
+            body: Err(Unsupported {
+                reason: NO_BODY.to_string(),
+                at: TextRange::empty(0.into()),
+            }),
+        });
+        self.pending.push(Instance {
+            symbol,
+            args: key.1.clone(),
+            func: id,
+            depth: self.depth + 1,
+        });
+        self.instances.insert(key, id);
+        id
+    }
+
+    /// The function building the vtable whose slots call `methods`, one per
+    /// distinct table.
+    pub(crate) fn vtable(&mut self, methods: &[FuncId]) -> FuncId {
+        if let Some(&id) = self.vtables.get(methods) {
+            return id;
+        }
+        let n = methods.len() as u32;
+        let at = TextRange::empty(0.into());
+        let mut insts: Vec<Inst> = methods
+            .iter()
+            .enumerate()
+            .map(|(i, &func)| Inst::Closure {
+                dst: Reg(i as u32),
+                func,
+                captures: Vec::new(),
+            })
+            .collect();
+        insts.push(Inst::Make {
+            dst: Reg(n),
+            tag: 0,
+            fields: (0..n).map(Reg).collect(),
+        });
+        insts.push(Inst::Return { src: Reg(n) });
+        let spans = vec![at; insts.len()];
+        let id = self.push(Function {
+            name: format!("vtable#{}", self.vtables.len()),
+            kind: FunctionKind::Const,
+            symbol: None,
+            module: 0,
+            params: 0,
+            captures: Vec::new(),
+            body: Ok(Body {
+                regs: n + 1,
+                insts,
+                spans,
+            }),
+        });
+        self.vtables.insert(methods.to_vec(), id);
+        id
+    }
+
+    /// The instantiations reserved since the last call.
+    pub(crate) fn take_pending(&mut self) -> Vec<Instance> {
+        std::mem::take(&mut self.pending)
+    }
+
+    /// Sets the depth of the instantiation about to be lowered.
+    pub(crate) fn set_depth(&mut self, depth: u32) {
+        self.depth = depth;
     }
 
     fn push(&mut self, function: Function) -> FuncId {
@@ -1020,7 +1123,10 @@ pub(crate) enum RegionEntry<'e> {
         ty: &'e Ty,
     },
     /// The current value of a `bind` source, the value its two-way input reads.
-    Lens(&'e AssignablePath),
+    Lens(
+        &'e AssignablePath,
+        Option<&'e crate::hir::generic::CallTarget>,
+    ),
 }
 
 impl RegionEntry<'_> {
@@ -1081,9 +1187,12 @@ pub(crate) fn lower_region_entry(
                 let src = l.expr(value)?;
                 l.emit(Inst::Return { src });
             }
-            RegionEntry::Lens(source) => {
+            RegionEntry::Lens(source, convert) => {
                 let (slot, path) = l.lens(source)?;
-                let src = l.read_state(slot, &path);
+                let mut src = l.read_state(slot, &path);
+                if let Some(to_view) = convert {
+                    src = l.convert(to_view, src);
+                }
                 l.emit(Inst::Return { src });
             }
             RegionEntry::Items(items) => {
@@ -1165,6 +1274,7 @@ pub(crate) fn lower_write_back(
     def: Def,
     scope: &[(SyntaxNode, Ty)],
     source: &AssignablePath,
+    convert: Option<&crate::hir::generic::CallTarget>,
     at: TextRange,
 ) -> FuncId {
     let mut l = Lowerer::new(cx, b, &def, at);
@@ -1175,13 +1285,27 @@ pub(crate) fn lower_write_back(
             l.bind_matched(pattern, src, ty)?;
         }
         let (slot, path) = l.lens(source)?;
-        let value = l.reg();
+        let mut value = l.reg();
         l.emit(Inst::Field {
             dst: value,
             src: event,
             index: 0,
         });
+        // A converter's `None` rejects the update: the state keeps its value.
+        let mut rejected = None;
+        if let Some(to_model) = convert {
+            value = l.convert(to_model, value);
+            let none = l.reg();
+            l.emit(Inst::IsNil {
+                dst: none,
+                src: value,
+            });
+            rejected = Some(l.jump_if(none, true));
+        }
         l.write_state(slot, path, value);
+        if let Some(jump) = rejected {
+            l.patch_here(&[jump]);
+        }
         let src = l.unit();
         l.emit(Inst::Return { src });
         Ok(())
@@ -1321,6 +1445,18 @@ impl<'l, 'a> Lowerer<'l, 'a> {
     }
 
     /// `dst = value` into a fresh register.
+    /// The result of the converter function `target` applied to `value`.
+    fn convert(&mut self, target: &crate::hir::generic::CallTarget, value: Reg) -> Reg {
+        let func = self.b.instance(target.symbol, &target.args, "convert");
+        let dst = self.reg();
+        self.emit(Inst::Call {
+            dst,
+            func,
+            args: vec![value],
+        });
+        dst
+    }
+
     fn constant(&mut self, value: Const) -> Reg {
         let dst = self.reg();
         self.emit(Inst::Const { dst, value });

@@ -166,3 +166,18 @@ export record Theme {
     elevation: ElevationScale;
     motion: MotionScale = MotionScale {};
 }
+
+// The traits the compiler implements for every type its rule admits (§79):
+// every value is `Clone`; every value but a function or a trait object is
+// `Eq`; what is `Eq` and holds no float is `Hash`.
+export trait Clone {}
+export trait Eq {}
+export trait Hash {}
+
+// What `bind .. using C` converts through (§51): `to_view` shows the model's
+// value, and `to_model` reads back what the view holds, rejecting the update
+// with `None`.
+export trait TwoWayConverter<Model, View> {
+    fn to_view(model: Model) -> View;
+    fn to_model(view: View) -> Option<Model>;
+}

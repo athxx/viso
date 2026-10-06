@@ -289,7 +289,9 @@ impl InferCx<'_> {
             (Ty::Unknown | Ty::Never, _) => Some(ArgPass::Raw),
             (Ty::String, ArgKind::Text | ArgKind::Select) => Some(ArgPass::Raw),
             (_, ArgKind::Text | ArgKind::Number) if number => Some(ArgPass::Raw),
-            (Ty::Named(id), ArgKind::Select) if self.unit_enum(*id) => Some(ArgPass::Variant(*id)),
+            (Ty::Named(id, ..), ArgKind::Select) if self.unit_enum(*id) => {
+                Some(ArgPass::Variant(*id))
+            }
             (_, ArgKind::Text) if displayable(self.env, &ty) => Some(ArgPass::Shown(ty.clone())),
             _ => None,
         };

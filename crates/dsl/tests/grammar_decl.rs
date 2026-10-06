@@ -222,17 +222,53 @@ fn shader_member_words_stay_contextual_and_bad_members_recover() {
 }
 
 #[test]
-fn advanced_declarations_are_parsed_but_not_gated() {
-    // A `trait` has no dedicated node kind this slice; it is swallowed whole as an
-    // AdvancedItem, so it neither breaks the tree nor gates the slice.
-    let root = unit("trait Drawable { fn draw(); }\ncomponent C { }");
-    assert!(first(&root, SyntaxKind::AdvancedItem).is_some());
-    // The component after it still parses to its real kind.
-    assert!(first(&root, SyntaxKind::ComponentDecl).is_some());
-    assert_eq!(
-        root.text(),
-        "trait Drawable { fn draw(); }\ncomponent C { }"
+fn traits_and_impls_parse_to_typed_declarations() {
+    use viso_dsl::ast::{AssocItem, AstNode, ImplDecl, TraitDecl};
+    let src = "trait Shape: Eq + Clone { type Unit: Clone; const SIDES: I64; fn area(self) -> F64; action grow(mut self, by: F64) -> Self; }\n\
+               impl<T> Shape for Boxed<T> where T: Clone { type Unit = I64; const SIDES: I64 = 4; fn area(self) -> F64 { 1.0 } action grow(mut self, by: F64) -> Self { self } }\n\
+               impl Point { fn new(x: F64) -> Self { Point { x } } }\n\
+               component C { }";
+    let root = unit(src);
+    assert!(
+        parse(&tokenize(src), src).errors.is_empty(),
+        "{:?}",
+        parse(&tokenize(src), src).errors
     );
+    assert_eq!(root.text(), src, "lossless");
+    assert_eq!(count(&root, SyntaxKind::AdvancedItem), 0);
+    let shape = TraitDecl::cast(first(&root, SyntaxKind::TraitDecl).unwrap()).unwrap();
+    assert_eq!(shape.supertraits().count(), 2);
+    let members: Vec<AssocItem> = shape.members().collect();
+    assert_eq!(members.len(), 4);
+    assert!(matches!(&members[0], AssocItem::Type(t) if t.bounds().len() == 1));
+    let AssocItem::Fn(area) = &members[2] else {
+        panic!("{members:?}")
+    };
+    assert!(area.body().is_none(), "a required method has no body");
+    assert!(area.params()[0].self_token().is_some());
+
+    let impls: Vec<ImplDecl> = root
+        .descendants()
+        .into_iter()
+        .filter_map(ImplDecl::cast)
+        .collect();
+    assert_eq!(impls.len(), 2);
+    assert_eq!(
+        impls[0].trait_path().map(|t| t.syntax().text().to_string()),
+        Some("Shape".into())
+    );
+    assert_eq!(
+        impls[0].target().map(|t| t.text().to_string()),
+        Some("Boxed<T>".into())
+    );
+    assert!(impls[0].generic_params().is_some() && impls[0].where_clause().is_some());
+    assert!(impls[1].trait_path().is_none());
+    assert_eq!(
+        impls[1].target().map(|t| t.text().to_string()),
+        Some("Point".into())
+    );
+    // The component after them still parses to its real kind.
+    assert!(first(&root, SyntaxKind::ComponentDecl).is_some());
 }
 
 #[test]

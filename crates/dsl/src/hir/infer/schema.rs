@@ -68,7 +68,7 @@ impl Builder<'_> {
             Ty::Resource(a, b) | Ty::ResourceState(a, b) => {
                 TypeDesc::Resource(boxed(self, a), boxed(self, b))
             }
-            Ty::Named(id) => TypeDesc::Named(self.declaration(*id)),
+            Ty::Named(id, ..) => TypeDesc::Named(self.declaration(*id)),
             other => TypeDesc::Plain(ty_name(other).into()),
         }
     }

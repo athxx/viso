@@ -323,6 +323,18 @@ ast_node!(
     NativeDecl = NativeDecl
 );
 ast_node!(
+    /// `trait IDENT GenericParams? (: TraitBounds)? WhereClause? { TraitMember* }`.
+    TraitDecl = TraitDecl
+);
+ast_node!(
+    /// `impl GenericParams? Type (for Type)? WhereClause? { ImplMember* }`.
+    ImplDecl = ImplDecl
+);
+ast_node!(
+    /// `type IDENT (: TraitBounds)? ;` in a trait, `type IDENT = Type ;` in an impl.
+    AssocTypeDecl = AssocTypeDecl
+);
+ast_node!(
     /// An Advanced-tier declaration parsed to a placeholder (no resolution yet).
     AdvancedItem = AdvancedItem
 );
@@ -1017,6 +1029,164 @@ impl NativeDecl {
     }
 }
 
+/// A member of a trait or an impl.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AssocItem {
+    Fn(FnDecl),
+    Action(ActionDecl),
+    Task(TaskDecl),
+    Type(AssocTypeDecl),
+    Const(ConstDecl),
+}
+
+impl AssocItem {
+    fn cast(node: SyntaxNode) -> Option<Self> {
+        Some(match node.kind() {
+            SyntaxKind::FnDecl => AssocItem::Fn(FnDecl { syntax: node }),
+            SyntaxKind::ActionDecl => AssocItem::Action(ActionDecl { syntax: node }),
+            SyntaxKind::TaskDecl => AssocItem::Task(TaskDecl { syntax: node }),
+            SyntaxKind::AssocTypeDecl => AssocItem::Type(AssocTypeDecl { syntax: node }),
+            SyntaxKind::ConstDecl => AssocItem::Const(ConstDecl { syntax: node }),
+            _ => return None,
+        })
+    }
+
+    /// Its syntax node.
+    pub fn syntax(&self) -> &SyntaxNode {
+        match self {
+            AssocItem::Fn(n) => n.syntax(),
+            AssocItem::Action(n) => n.syntax(),
+            AssocItem::Task(n) => n.syntax(),
+            AssocItem::Type(n) => n.syntax(),
+            AssocItem::Const(n) => n.syntax(),
+        }
+    }
+
+    /// Its name.
+    pub fn name(&self) -> Option<SyntaxToken> {
+        support::name_token(self.syntax())
+    }
+}
+
+/// The first child node of `node` of `kind`.
+fn child_node(node: &SyntaxNode, kind: SyntaxKind) -> Option<SyntaxNode> {
+    node.children().into_iter().find(|n| n.kind() == kind)
+}
+
+/// The type nodes directly under `node`.
+fn type_children(node: &SyntaxNode) -> Vec<SyntaxNode> {
+    node.children()
+        .into_iter()
+        .filter(|n| n.kind().is_type())
+        .collect()
+}
+
+impl TraitDecl {
+    /// The trait's name.
+    pub fn name(&self) -> Option<SyntaxToken> {
+        support::name_token(&self.syntax)
+    }
+
+    /// Its generic parameter list, if declared.
+    pub fn generic_params(&self) -> Option<SyntaxNode> {
+        child_node(&self.syntax, SyntaxKind::GenericParams)
+    }
+
+    /// Its supertraits, the bounds after `:`.
+    pub fn supertraits(&self) -> impl Iterator<Item = TypePath> {
+        support::children(&self.syntax)
+    }
+
+    /// Its `where` clause, if declared.
+    pub fn where_clause(&self) -> Option<SyntaxNode> {
+        child_node(&self.syntax, SyntaxKind::WhereClause)
+    }
+
+    /// Its members, in order.
+    pub fn members(&self) -> impl Iterator<Item = AssocItem> {
+        self.syntax
+            .children()
+            .into_iter()
+            .filter_map(AssocItem::cast)
+    }
+}
+
+impl ImplDecl {
+    /// Its generic parameter list, if declared.
+    pub fn generic_params(&self) -> Option<SyntaxNode> {
+        child_node(&self.syntax, SyntaxKind::GenericParams)
+    }
+
+    /// The trait an `impl Trait for Type` implements.
+    pub fn trait_path(&self) -> Option<TypePath> {
+        let types = type_children(&self.syntax);
+        match &types[..] {
+            [first, _] => TypePath::cast(first.clone()),
+            _ => None,
+        }
+    }
+
+    /// The type it adds members to: the type after `for`, or its only type.
+    pub fn target(&self) -> Option<SyntaxNode> {
+        type_children(&self.syntax).pop()
+    }
+
+    /// Its `where` clause, if declared.
+    pub fn where_clause(&self) -> Option<SyntaxNode> {
+        child_node(&self.syntax, SyntaxKind::WhereClause)
+    }
+
+    /// Its members, in order.
+    pub fn members(&self) -> impl Iterator<Item = AssocItem> {
+        self.syntax
+            .children()
+            .into_iter()
+            .filter_map(AssocItem::cast)
+    }
+}
+
+impl AssocTypeDecl {
+    /// The associated type's name.
+    pub fn name(&self) -> Option<SyntaxToken> {
+        support::name_token(&self.syntax)
+    }
+
+    /// The bounds a trait's associated type declares, after `:`.
+    pub fn bounds(&self) -> Vec<TypePath> {
+        let Some(colon) = self
+            .syntax
+            .children_with_tokens()
+            .into_iter()
+            .position(|e| e.kind() == SyntaxKind::Colon)
+        else {
+            return Vec::new();
+        };
+        self.syntax
+            .children_with_tokens()
+            .into_iter()
+            .skip(colon)
+            .take_while(|e| e.kind() != SyntaxKind::Eq)
+            .filter_map(|e| e.as_node().cloned())
+            .filter_map(TypePath::cast)
+            .collect()
+    }
+
+    /// The type an impl's associated type is, after `=`.
+    pub fn value(&self) -> Option<SyntaxNode> {
+        let eq = self
+            .syntax
+            .children_with_tokens()
+            .into_iter()
+            .position(|e| e.kind() == SyntaxKind::Eq)?;
+        self.syntax
+            .children_with_tokens()
+            .into_iter()
+            .skip(eq)
+            .filter_map(|e| e.as_node().cloned())
+            .find(|n| n.kind().is_type())
+    }
+}
+
 impl ShaderDecl {
     /// The shader's name.
     pub fn name(&self) -> Option<SyntaxToken> {
@@ -1206,6 +1376,15 @@ impl Param {
     /// The parameter's name.
     pub fn name(&self) -> Option<SyntaxToken> {
         support::name_token(&self.syntax)
+    }
+
+    /// The `self` of a method's receiver parameter.
+    pub fn self_token(&self) -> Option<SyntaxToken> {
+        self.syntax
+            .children_with_tokens()
+            .into_iter()
+            .filter_map(|e| e.as_token().cloned())
+            .find(|t| t.kind() == SyntaxKind::SelfValueKw)
     }
 
     /// The parameter's declared type.
@@ -1788,7 +1967,14 @@ impl TypePath {
             .children()
             .into_iter()
             .filter(|n| n.kind() == SyntaxKind::TypePathSegment)
-            .filter_map(|seg| support::name_token(&seg))
+            .filter_map(|seg| {
+                support::name_token(&seg).or_else(|| {
+                    seg.children_with_tokens()
+                        .into_iter()
+                        .filter_map(|e| e.as_token().cloned())
+                        .find(|t| t.kind() == SyntaxKind::SelfTypeKw)
+                })
+            })
     }
 }
 
@@ -1869,6 +2055,8 @@ pub enum Item {
     Theme(ThemeDecl),
     Style(StyleDecl),
     Native(NativeDecl),
+    Trait(TraitDecl),
+    Impl(ImplDecl),
     Advanced(AdvancedItem),
 }
 
@@ -1890,6 +2078,8 @@ impl AstNode for Item {
                 | SyntaxKind::ThemeDecl
                 | SyntaxKind::StyleDecl
                 | SyntaxKind::NativeDecl
+                | SyntaxKind::TraitDecl
+                | SyntaxKind::ImplDecl
                 | SyntaxKind::AdvancedItem
         )
     }
@@ -1909,6 +2099,8 @@ impl AstNode for Item {
             SyntaxKind::ThemeDecl => Item::Theme(ThemeDecl { syntax: node }),
             SyntaxKind::StyleDecl => Item::Style(StyleDecl { syntax: node }),
             SyntaxKind::NativeDecl => Item::Native(NativeDecl { syntax: node }),
+            SyntaxKind::TraitDecl => Item::Trait(TraitDecl { syntax: node }),
+            SyntaxKind::ImplDecl => Item::Impl(ImplDecl { syntax: node }),
             SyntaxKind::AdvancedItem => Item::Advanced(AdvancedItem { syntax: node }),
             _ => return None,
         };
@@ -1930,6 +2122,8 @@ impl AstNode for Item {
             Item::Theme(n) => n.syntax(),
             Item::Style(n) => n.syntax(),
             Item::Native(n) => n.syntax(),
+            Item::Trait(n) => n.syntax(),
+            Item::Impl(n) => n.syntax(),
             Item::Advanced(n) => n.syntax(),
         }
     }

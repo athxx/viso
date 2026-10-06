@@ -8,7 +8,7 @@
 //!
 //! Only the Core, the Shader Profile's `shader`, and a few Standard forms get
 //! dedicated node kinds and later resolution. Advanced declarations
-//! (`trait`/`impl`/`template`) are parsed just enough
+//! (`template`) are parsed just enough
 //! to consume their body — their brace group is skipped as a balanced run — and
 //! wrapped in a single [`SyntaxKind::AdvancedItem`] so they neither break the tree
 //! nor gate the slice. Their resolution lands when their consumer does.
@@ -145,7 +145,8 @@ fn decl_core(p: &mut Parser) {
         SyntaxKind::ShaderKw => shader_decl(p),
         // Standard/Advanced declarations parsed but not resolved this slice.
         SyntaxKind::NativeKw => native_decl(p),
-        SyntaxKind::TraitKw | SyntaxKind::ImplKw => advanced_decl(p, None),
+        SyntaxKind::TraitKw => trait_decl(p),
+        SyntaxKind::ImplKw => impl_decl(p),
         SyntaxKind::Ident if p.nth_is_ident(1) => match p.nth_contextual(0) {
             Some(SyntaxKind::ThemeKw) => theme_decl(p),
             Some(SyntaxKind::StyleKw) => style_decl(p),
@@ -691,6 +692,12 @@ fn const_decl(p: &mut Parser) {
 /// ReturnType WhereClause? CapabilityClause? Block`, completed as `kind`. The three
 /// callable forms share one shape.
 fn fn_like_decl(p: &mut Parser, kind: SyntaxKind) {
+    fn_like(p, kind, false);
+}
+
+/// A callable declaration, whose body may be a `;` when `signature` (a trait's
+/// required method).
+fn fn_like(p: &mut Parser, kind: SyntaxKind, signature: bool) {
     let m = p.start();
     p.bump_any(); // `fn` / `action` / `task`
     name(p);
@@ -699,8 +706,79 @@ fn fn_like_decl(p: &mut Parser, kind: SyntaxKind) {
     return_type(p);
     where_clause(p);
     capability_clause(p);
-    super::stmt::block(p);
+    if !(signature && p.eat(SyntaxKind::Semi)) {
+        super::stmt::block(p);
+    }
     m.complete(p, kind);
+}
+
+/// `"trait" IDENT GenericParams? (":" TraitBounds)? WhereClause? "{" TraitMember*
+/// "}"` (§30). A member is a callable signature (or one with a default body), an
+/// associated `type IDENT (":" TraitBounds)? ";"`, or `const IDENT ":" Type ";"`.
+fn trait_decl(p: &mut Parser) {
+    let m = p.start();
+    p.bump_any(); // `trait`
+    name(p);
+    generic_params(p);
+    if p.eat(SyntaxKind::Colon) {
+        super::types::trait_bounds(p);
+    }
+    where_clause(p);
+    member_block(p, |p| assoc_member(p, true));
+    m.complete(p, SyntaxKind::TraitDecl);
+}
+
+/// `"impl" GenericParams? Type ("for" Type)? WhereClause? "{" ImplMember* "}"`
+/// (§31): `impl Trait for Type` implements a trait, `impl Type` adds inherent
+/// members. A member is a callable, `type IDENT "=" Type ";"` or a `const`.
+fn impl_decl(p: &mut Parser) {
+    let m = p.start();
+    p.bump_any(); // `impl`
+    generic_params(p);
+    super::types::type_(p);
+    if p.eat(SyntaxKind::ForKw) {
+        super::types::type_(p);
+    }
+    where_clause(p);
+    member_block(p, |p| assoc_member(p, false));
+    m.complete(p, SyntaxKind::ImplDecl);
+}
+
+/// One member of a trait (`in_trait`) or an impl.
+fn assoc_member(p: &mut Parser, in_trait: bool) {
+    attributes(p);
+    match p.current() {
+        SyntaxKind::FnKw => fn_like(p, SyntaxKind::FnDecl, in_trait),
+        SyntaxKind::ActionKw => fn_like(p, SyntaxKind::ActionDecl, in_trait),
+        SyntaxKind::TaskKw => fn_like(p, SyntaxKind::TaskDecl, in_trait),
+        SyntaxKind::TypeKw => {
+            let m = p.start();
+            p.bump_any(); // `type`
+            name(p);
+            if p.eat(SyntaxKind::Colon) {
+                super::types::trait_bounds(p);
+            }
+            if p.eat(SyntaxKind::Eq) {
+                super::types::type_(p);
+            }
+            p.expect(SyntaxKind::Semi);
+            m.complete(p, SyntaxKind::AssocTypeDecl);
+        }
+        SyntaxKind::ConstKw if in_trait => {
+            let m = p.start();
+            p.bump_any(); // `const`
+            name(p);
+            p.expect(SyntaxKind::Colon);
+            super::types::type_(p);
+            if p.eat(SyntaxKind::Eq) {
+                super::expr::expr(p);
+            }
+            p.expect(SyntaxKind::Semi);
+            m.complete(p, SyntaxKind::ConstDecl);
+        }
+        SyntaxKind::ConstKw => const_decl(p),
+        _ => p.err_and_bump(ParseErrorKind::UnexpectedTokens),
+    }
 }
 
 /// `"native" ("fn" | "action" | "task") IDENT GenericParams? "(" ParameterList
@@ -756,10 +834,18 @@ fn param_list(p: &mut Parser) {
     m.complete(p, SyntaxKind::ParamList);
 }
 
-/// `"mut"? IDENT ":" Type ("=" DefaultExpression)?` — one parameter.
+/// `"mut"? IDENT ":" Type ("=" DefaultExpression)?` — one parameter, or the
+/// receiver `"mut"? "self" (":" Type)?` of a method.
 fn param(p: &mut Parser) {
     let m = p.start();
     p.eat(SyntaxKind::MutKw);
+    if p.eat(SyntaxKind::SelfValueKw) {
+        if p.eat(SyntaxKind::Colon) {
+            super::types::type_(p);
+        }
+        m.complete(p, SyntaxKind::Param);
+        return;
+    }
     name(p);
     p.expect(SyntaxKind::Colon);
     super::types::type_(p);

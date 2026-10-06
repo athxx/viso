@@ -216,6 +216,12 @@ impl Diagnostic {
         self.actual = Some(actual.into());
         self
     }
+
+    /// This diagnostic with the secondary span `related`.
+    pub fn with_related(mut self, related: Related) -> Self {
+        self.related.push(related);
+        self
+    }
 }
 
 #[cfg(test)]

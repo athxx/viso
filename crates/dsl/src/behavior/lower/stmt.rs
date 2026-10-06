@@ -541,7 +541,7 @@ impl Lowerer<'_, '_> {
                         let text = token.text();
                         let index = self.field_index(&ty, text.trim_start_matches("r#"))?;
                         ty = match &ty {
-                            Ty::Named(id) => self
+                            Ty::Named(id, ..) => self
                                 .env
                                 .record_fields(*id)
                                 .and_then(|fields| fields.get(index as usize))

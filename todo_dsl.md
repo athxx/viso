@@ -1112,25 +1112,27 @@ timers (§104–§111).
   - [x] No FMA contraction or reassociation in the VM's float paths (a test
         pins `a * b - c` rounding twice and left-to-right sums); every NaN
         snapshots as one quiet NaN; evaluation order documented.
-- [ ] User traits, impls, general generics, const generics, `dyn` (`E2201`,
+- [x] User traits, impls, general generics, const generics, `dyn` (`E2201`,
       `E2202`); `bind … using C` checks `C: TwoWayConverter<Model, View>`.
-  - [ ] Generic parameters in scope (records, enums, aliases, fns, actions,
-        components, systems); `Ty::Param`; generic record / enum
+  - [x] Generic parameters in scope (records, enums, aliases, fns, actions,
+        components — a generic component lowers once, shared; systems take
+        none); `Ty::Param`; generic record / enum
         construction and patterns; turbofish and inference at calls.
-  - [ ] Inherent `impl Type { .. }`: methods and associated consts; method
+  - [x] Inherent `impl Type { .. }`: methods and associated consts; method
         calls on user types.
-  - [ ] `trait` declarations (methods, associated types and consts,
+  - [x] `trait` declarations (methods, associated types and consts,
         supertraits) and `impl Trait for Type`; bounds and `where`; unmet
         bound `E2201`; overlapping or ambiguous impls `E2202`; method
         resolution order inherent → imported trait → ambiguity error.
-  - [ ] Generic callables monomorphized per instantiation (static calls),
+  - [x] Generic callables monomorphized per instantiation (static calls),
         deterministic instance order; recursion through instantiation
-        bounded.
-  - [ ] Const generics: integer, `Bool`, `Char` and unit-enum arguments,
+        bounded (`E2203`).
+  - [x] Const generics: integer, `Bool`, `Char` and unit-enum arguments,
         usable as constants in the body.
-  - [ ] `dyn Trait`: controlled erasure of an implementing type, a VTable
-        schema in the module, dispatch without string lookup.
-  - [ ] `bind … using C`: `C: TwoWayConverter<Model, View>`
+  - [x] `dyn Trait`: controlled erasure of an implementing type, a VTable
+        schema in the module, dispatch without string lookup;
+        dyn-incompatible traits `E2201`.
+  - [x] `bind … using C`: `C: TwoWayConverter<Model, View>`
         (`to_view` / `to_model`), lowered on both directions; `E3711` gone
         for converters.
 - [ ] `template` / `part` (`E3601`).

@@ -85,6 +85,11 @@ pub enum SymbolKind {
     Shader = 15,
     Resource = 16,
     Style = 17,
+    Trait = 18,
+    /// A generic parameter, or the `Self` of a trait or an impl.
+    TypeParam = 19,
+    /// A trait's or an impl's associated type.
+    AssocType = 20,
 }
 
 /// An in-progress FNV-1a-128 fold across two `u64` lanes.

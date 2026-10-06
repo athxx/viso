@@ -432,7 +432,50 @@ export component Checks {
 }
 
 #[test]
-fn a_converted_bind_to_a_native_property_is_e3711() {
+fn a_converted_bind_shows_and_writes_back_through_its_converter() {
+    const CONVERTED: &str = r#"
+record Tenths {}
+impl TwoWayConverter<I64, F32> for Tenths {
+    fn to_view(model: I64) -> F32 { return (model as F32) / 10.0; }
+    fn to_model(view: F32) -> Option<I64> {
+        if view > 8.0 { return None; }
+        return Some((view * 10.0) as I64);
+    }
+}
+export component Dial {
+    state level = 0;
+    view {
+        Column {
+            width: 400dp;
+            height: 300dp;
+            Slider {
+                width: 200dp;
+                height: 20dp;
+                min: 0.0;
+                max: 10.0;
+                step: 1.0;
+                bind value <=> level using Tenths;
+            }
+        }
+    }
+}
+"#;
+    for mut rt in [Rt::reloaded(CONVERTED), Rt::packaged(CONVERTED)] {
+        rt.pointer(60.0, 10.0, PointerPhase::Down);
+        assert_eq!(rt.int("level"), 30, "to_model of the slider's 3.0");
+        rt.pointer(200.0, 10.0, PointerPhase::Move);
+        assert_eq!(rt.int("level"), 30, "a `None` rejects the update");
+        rt.pointer(200.0, 10.0, PointerPhase::Up);
+        rt.store.set_focused(rt.children_of_root()[0].into());
+        rt.key(Key::Left);
+        assert_eq!(
+            rt.int("level"),
+            20,
+            "the slider reads to_view(30) and steps down"
+        );
+        assert!(!rt.faulted());
+    }
+
     let codes: Vec<String> = build_view_package(
         "export component Field {
             state amount = 5;
@@ -444,5 +487,5 @@ fn a_converted_bind_to_a_native_property_is_e3711() {
     .into_iter()
     .map(|d| d.code.to_string())
     .collect();
-    assert!(codes.contains(&"E3711".to_string()), "{codes:?}");
+    assert!(codes.contains(&"E2201".to_string()), "{codes:?}");
 }

@@ -129,7 +129,7 @@ impl Ctor {
             (Ctor::Resource(RESOURCE_ERROR), Ty::ResourceState(_, e)) => vec![(**e).clone()],
             (Ctor::Resource(_), Ty::ResourceState(t, _)) if n == 1 => vec![(**t).clone()],
             (Ctor::Single(_), Ty::Tuple(tys)) => tys.clone(),
-            (Ctor::Single(_), Ty::Named(id)) => cx
+            (Ctor::Single(_), Ty::Named(id, ..)) => cx
                 .env
                 .record_fields(*id)
                 .map(|fs| fs.iter().map(|f| f.ty.clone()).collect())
@@ -148,7 +148,10 @@ impl Ctor {
             _ => Vec::new(),
         };
         if tys.len() == n {
-            tys
+            let subst = cx.args_subst(ty);
+            tys.iter()
+                .map(|t| cx.settle(&crate::hir::generic::apply(t, &subst)))
+                .collect()
         } else {
             vec![Ty::Unknown; n]
         }
@@ -160,7 +163,7 @@ impl Ctor {
             Ctor::Bool(_) => Some(Ty::Bool),
             Ctor::Some | Ctor::None => Some(Ty::Option(Box::new(Ty::Unknown))),
             Ctor::Ok | Ctor::Err => Some(Ty::Result(Box::new(Ty::Unknown), Box::new(Ty::Unknown))),
-            Ctor::Variant(owner, _) => Some(Ty::Named(*owner)),
+            Ctor::Variant(owner, _) => Some(Ty::named(*owner)),
             Ctor::Resource(_) => Some(Ty::ResourceState(
                 Box::new(Ty::Unknown),
                 Box::new(Ty::Unknown),
@@ -194,7 +197,7 @@ impl Ctor {
                 (name, false) => format!("ResourceState::{name}"),
             },
             Ctor::Variant(owner, index) => {
-                let owner_name = cx.describe(&Ty::Named(*owner));
+                let owner_name = cx.describe(&Ty::named(*owner));
                 match cx.env.enum_variants(*owner).and_then(|vs| vs.get(*index)) {
                     Some(v) => match &v.payload {
                         VariantPayload::Unit => format!("{owner_name}::{}", v.name),
@@ -487,7 +490,7 @@ impl InferCx<'_> {
             }
             Some(Ctor::Single(_)) => {
                 let fields = match ty {
-                    Ty::Named(id) => self.env.record_fields(*id).map(<[FieldInfo]>::to_vec),
+                    Ty::Named(id, ..) => self.env.record_fields(*id).map(<[FieldInfo]>::to_vec),
                     _ => None,
                 };
                 (Vec::new(), fields)
@@ -505,7 +508,10 @@ impl InferCx<'_> {
                     let field_ty = fields
                         .as_ref()
                         .and_then(|fs| fs.iter().find(|f| f.name == label.text()))
-                        .map_or(Ty::Unknown, |f| f.ty.clone());
+                        .map_or(Ty::Unknown, |f| {
+                            let subst = self.args_subst(ty);
+                            self.settle(&crate::hir::generic::apply(&f.ty, &subst))
+                        });
                     if let Some(fs) = &fields
                         && !fs.iter().any(|f| f.name == label.text())
                     {
@@ -976,7 +982,7 @@ impl InferCx<'_> {
             Ty::Unit => Some(vec![Ctor::Single(0)]),
             Ty::Char => Some(vec![Ctor::Range(0, 0xD7FF), Ctor::Range(0xE000, 0x10_FFFF)]),
             Ty::List(_) => Some(vec![Ctor::Slice(Slice::Var(0, 0))]),
-            Ty::Named(id) => {
+            Ty::Named(id, ..) => {
                 if let Some(variants) = self.env.enum_variants(*id) {
                     Some((0..variants.len()).map(|i| Ctor::Variant(*id, i)).collect())
                 } else {
@@ -1188,14 +1194,7 @@ pub(crate) fn literal(node: &SyntaxNode) -> Option<Lit> {
             let value = super::parse_int_literal(text);
             Lit::Int(if negative { value.map(|v| -v) } else { value })
         }
-        SyntaxKind::CharLiteral => {
-            let body = text.strip_prefix('\'')?.strip_suffix('\'')?;
-            Lit::Char(unescape(body).and_then(|s| {
-                let mut chars = s.chars();
-                let c = chars.next()?;
-                chars.next().is_none().then_some(c)
-            }))
-        }
+        SyntaxKind::CharLiteral => Lit::Char(char_value(text)),
         SyntaxKind::StringLiteral => {
             Lit::Str(text.strip_prefix('"')?.strip_suffix('"').and_then(unescape))
         }
@@ -1301,4 +1300,13 @@ pub(crate) fn is_rest(node: &SyntaxNode) -> bool {
             && node
                 .first_child()
                 .is_some_and(|c| c.kind() == SyntaxKind::RestPattern))
+}
+
+/// The character a char literal's source text `'c'` denotes.
+pub(crate) fn char_value(text: &str) -> Option<char> {
+    let body = text.strip_prefix('\'')?.strip_suffix('\'')?;
+    let s = unescape(body)?;
+    let mut chars = s.chars();
+    let c = chars.next()?;
+    chars.next().is_none().then_some(c)
 }

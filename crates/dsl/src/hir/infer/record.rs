@@ -3,11 +3,13 @@
 
 use std::collections::HashSet;
 
+use super::generic::mentions;
 use super::{
     FieldInfo, InferCx, TypeEnv, VariantPayload, compatible, first_child_expr, record_spread,
 };
 use crate::ast::{AstNode, Expr, FieldExpr};
 use crate::diag::{Applicability, Diagnostic, Fix, TextEdit};
+use crate::hir::generic::{Subst, apply};
 use crate::hir::ty::Ty;
 use crate::resolve::SymbolId;
 use crate::resolve::suggest::{Candidate, attach, nearest};
@@ -30,22 +32,73 @@ impl InferCx<'_> {
             return Ty::Unknown;
         };
         let text = name.text();
+        let this = self.applied(owner, Ty::Param);
         match variants.iter().find(|v| v.name == text) {
             Some(variant) => match &variant.payload {
-                VariantPayload::Tuple(tys) => Ty::Fn(tys.clone(), Box::new(Ty::Named(owner))),
-                VariantPayload::Unit | VariantPayload::Record(_) => Ty::Named(owner),
+                VariantPayload::Tuple(tys) => Ty::Fn(tys.clone(), Box::new(this)),
+                VariantPayload::Unit | VariantPayload::Record(_) => this,
             },
             None => {
                 let candidates: Vec<(String, TextRange)> = variants
                     .iter()
                     .map(|v| (v.name.clone(), v.declared_at))
                     .collect();
-                let owner_name = self.describe(&Ty::Named(owner));
+                let owner_name = self.describe(&Ty::named(owner));
                 let message = format!("no variant `{text}` on `{owner_name}`");
                 self.unknown_member(owner, name, message, &candidates, &[]);
                 Ty::Unknown
             }
         }
+    }
+
+    /// Types a call of a tuple variant of `owner`, solving the enum's
+    /// generic parameters from the arguments and the expected type.
+    pub(super) fn variant_call(
+        &mut self,
+        owner: SymbolId,
+        sig: (Vec<Ty>, Ty),
+        args: &[Expr],
+        expected: Option<&Ty>,
+        node: &SyntaxNode,
+    ) -> Ty {
+        let open = self.type_params(owner);
+        if open.is_empty() {
+            return self.apply_signature(args, sig, expected, node);
+        }
+        let explicit = self.explicit_args(node);
+        let (ret, _) = self.solve(
+            &open,
+            &mut Vec::new(),
+            explicit,
+            sig,
+            None,
+            args,
+            expected,
+            node.text_range(),
+        );
+        self.check_against(ret, expected, node)
+    }
+
+    /// A payload-free or record variant of `owner` named as a value: a
+    /// generic enum's arguments are the expected type's, else undetermined.
+    pub(super) fn generic_variant_value(
+        &mut self,
+        owner: SymbolId,
+        ty: Ty,
+        expected: Option<&Ty>,
+        _node: &SyntaxNode,
+    ) -> Ty {
+        let open = self.type_params(owner);
+        if open.is_empty() {
+            return ty;
+        }
+        let solved: crate::hir::generic::Subst = match expected {
+            Some(Ty::Named(id, args)) if *id == owner => {
+                open.iter().copied().zip(args.iter().cloned()).collect()
+            }
+            _ => open.iter().map(|p| (*p, Ty::Unknown)).collect(),
+        };
+        crate::hir::generic::apply(&ty, &solved)
     }
 
     /// Types a record literal `P { .. }` or `S::variant { .. }` against its
@@ -64,7 +117,7 @@ impl InferCx<'_> {
         let (owner, fields, owner_name) = match head {
             Some(RecordHead::Record(id)) => {
                 let fields = self.env.record_fields(id).map(<[FieldInfo]>::to_vec);
-                (Some(id), fields, self.describe(&Ty::Named(id)))
+                (Some(id), fields, self.describe(&Ty::named(id)))
             }
             Some(RecordHead::Variant(id, index)) => {
                 let variant = self.env.enum_variants(id).and_then(|vs| vs.get(index));
@@ -74,7 +127,7 @@ impl InferCx<'_> {
                 });
                 let name = format!(
                     "{}::{}",
-                    self.describe(&Ty::Named(id)),
+                    self.describe(&Ty::named(id)),
                     variant.map_or("", |v| v.name.as_str())
                 );
                 if fields.is_none() {
@@ -87,6 +140,27 @@ impl InferCx<'_> {
             None => (None, None, String::new()),
         };
 
+        // A generic record's (or enum's) arguments: given, expected, or solved
+        // from the fields.
+        let open = owner.map(|id| self.type_params(id)).unwrap_or_default();
+        let mut solved: Subst = Vec::new();
+        if let Some(id) = owner
+            && !open.is_empty()
+        {
+            let explicit = self.explicit_args(node);
+            if explicit.len() == open.len() {
+                solved.extend(open.iter().copied().zip(explicit));
+            } else if let Some(Ty::Named(e, args)) = expected
+                && *e == id
+            {
+                solved.extend(
+                    open.iter()
+                        .copied()
+                        .zip(args.iter().cloned())
+                        .filter(|(_, t)| *t != Ty::Unknown),
+                );
+            }
+        }
         let mut seen: HashSet<String> = HashSet::new();
         for field in node
             .children()
@@ -115,18 +189,35 @@ impl InferCx<'_> {
                     .push(Diagnostic::error("E2103", label.text_range(), message));
             }
             match fields.iter().find(|f| f.name == name) {
-                Some(info) => match &value {
-                    Some(value) => {
-                        let _ = self.infer_promoted(value, &info.ty);
+                Some(info) => {
+                    let want = self.settle(&apply(&info.ty, &solved));
+                    let open_here = open
+                        .iter()
+                        .any(|p| !solved.iter().any(|(q, _)| q == p) && mentions(&want, *p));
+                    let is_var = |p: SymbolId| open.contains(&p);
+                    match &value {
+                        Some(value) if open_here => {
+                            let got = self.infer_expr(value, None);
+                            if !want.bind(&got, &is_var, &mut solved) {
+                                self.emit_mismatch(&got, &want, value.syntax().text_range());
+                            }
+                        }
+                        Some(value) => {
+                            let _ = self.infer_promoted(value, &want);
+                        }
+                        None => {
+                            let ty = match self.refs.get(&label.text_range()).copied() {
+                                Some(to) => self.resolution_ty(&to),
+                                None => Ty::Unknown,
+                            };
+                            if open_here {
+                                let _ = want.bind(&ty, &is_var, &mut solved);
+                            } else {
+                                self.check_promoted(ty, &want, &field);
+                            }
+                        }
                     }
-                    None => {
-                        let ty = match self.refs.get(&label.text_range()).copied() {
-                            Some(to) => self.resolution_ty(&to),
-                            None => Ty::Unknown,
-                        };
-                        self.check_promoted(ty, &info.ty, &field);
-                    }
-                },
+                }
                 None => {
                     let found = match &value {
                         Some(value) => self.infer_expr(value, None),
@@ -142,9 +233,17 @@ impl InferCx<'_> {
             }
         }
 
+        let this = owner.map(|id| {
+            self.applied(id, |p| {
+                solved
+                    .iter()
+                    .find(|(q, _)| *q == p)
+                    .map_or(Ty::Unknown, |(_, t)| t.clone())
+            })
+        });
         let base = record_spread(node);
         if let Some(base) = &base {
-            let want = owner.map(Ty::Named);
+            let want = this.clone();
             let _ = self.infer_expr(base, want.as_ref());
         }
         if let Some(fields) = &fields
@@ -161,8 +260,8 @@ impl InferCx<'_> {
                     .push(Diagnostic::error("E2103", node.text_range(), message));
             }
         }
-        match owner {
-            Some(id) => self.check_against(Ty::Named(id), expected, node),
+        match this {
+            Some(this) => self.check_against(this, expected, node),
             None => Ty::Unknown,
         }
     }
@@ -189,7 +288,7 @@ impl InferCx<'_> {
                 let message = format!(
                     "no variant `{}` on `{}`",
                     last.text(),
-                    self.describe(&Ty::Named(id))
+                    self.describe(&Ty::named(id))
                 );
                 self.unknown_member(id, last, message, &candidates, &[]);
                 None
@@ -298,12 +397,13 @@ impl InferCx<'_> {
     ) -> Option<Ty> {
         let text = name.text();
         match recv {
-            Ty::Named(id) => {
+            Ty::Named(id, ..) => {
                 let fields = self.env.record_fields(*id)?.to_vec();
                 if let Some(info) = fields.iter().find(|f| f.name == text) {
-                    return Some(info.ty.clone());
+                    let subst = self.args_subst(recv);
+                    return Some(self.settle(&crate::hir::generic::apply(&info.ty, &subst)));
                 }
-                let message = format!("no field `{text}` on `{}`", self.describe(&Ty::Named(*id)));
+                let message = format!("no field `{text}` on `{}`", self.describe(&Ty::named(*id)));
                 let fitting = match expected {
                     Some(want) => fitting_names(&fields, want),
                     None => Vec::new(),

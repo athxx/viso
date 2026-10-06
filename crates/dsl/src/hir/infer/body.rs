@@ -384,7 +384,7 @@ impl InferCx<'_> {
         let annotation = stmt
             .children()
             .into_iter()
-            .find(|c| matches!(c.kind(), SyntaxKind::TypePath | SyntaxKind::TupleType))
+            .find(|c| c.kind().is_type())
             .map(|node| self.annotation_ty(&node, node.text_range()));
         let init = match first_child_expr(stmt) {
             Some(init) => self.infer_expr(&init, annotation.as_ref()),
@@ -586,10 +586,7 @@ impl InferCx<'_> {
             if super::lens::has_mut(param) {
                 self.mark_mutable_in(param);
             }
-            let annotation = param
-                .children()
-                .into_iter()
-                .find(|c| matches!(c.kind(), SyntaxKind::TypePath | SyntaxKind::TupleType));
+            let annotation = param.children().into_iter().find(|c| c.kind().is_type());
             let ty = match (annotation, expected_params.and_then(|ps| ps.get(i))) {
                 (Some(node), _) => self.annotation_ty(&node, node.text_range()),
                 (None, Some(ty)) if *ty != Ty::Unknown => ty.clone(),
@@ -619,7 +616,7 @@ impl InferCx<'_> {
         let annotated_ret = node
             .children()
             .into_iter()
-            .find(|c| matches!(c.kind(), SyntaxKind::TypePath | SyntaxKind::TupleType))
+            .find(|c| c.kind().is_type())
             .map(|ret| self.annotation_ty(&ret, ret.text_range()));
         let ret = annotated_ret.or_else(|| expected_ret.filter(|t| **t != Ty::Unknown).cloned());
 

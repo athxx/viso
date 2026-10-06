@@ -331,7 +331,7 @@ fn stable_key(
         }
         Ty::Tuple(items) => items.iter().try_for_each(|t| stable_key(env, t, visiting)),
         Ty::Option(t) => stable_key(env, t, visiting),
-        Ty::Named(id) => {
+        Ty::Named(id, ..) => {
             if !visiting.insert(*id) {
                 return Ok(());
             }
