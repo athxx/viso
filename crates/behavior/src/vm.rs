@@ -28,6 +28,13 @@
 //! work's value. Each run between two suspensions is one invocation, with its
 //! own budget. A committed call's `start`s are handed to the caller, which
 //! starts the tasks.
+//!
+//! A release build may also run chunks as Rust compiled with the app
+//! ([`Vm::install_native`], [`crate::aot`]): the code lowered from a chunk's
+//! bytecode op for op, which an invocation of that chunk runs instead of
+//! interpreting it, with the same budgets, transactions and faults.
+
+pub(crate) mod native_code;
 
 use std::fmt;
 use std::mem;
@@ -44,6 +51,7 @@ use crate::native::{
 };
 use crate::op::{DisplayKind, Op};
 use crate::value::{Aggregate, Closure, Value};
+use native_code::{NativeCode, NativeCodeMismatch, NativeFn};
 
 /// The limits of one outermost invocation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -460,6 +468,12 @@ pub struct Vm {
     /// The catalog tables and readers translating has decoded, made on the
     /// first `Translate`.
     translator: Option<Box<Translator>>,
+    /// The compiled code of each chunk [`install_native`](Self::install_native)
+    /// installed, by chunk.
+    native: Box<[Option<NativeFn>]>,
+    /// Where the running compiled code faulted: the chunk and the
+    /// interpreter's cursor there.
+    native_at: Option<(u32, usize)>,
 }
 
 type Step<T> = Result<T, FaultKind>;
@@ -492,7 +506,44 @@ impl Vm {
             awaiting: None,
             resumed: false,
             translator: None,
+            native: Box::new([]),
+            native_at: None,
         }
+    }
+
+    /// Runs the chunks `code` compiled to Rust as that code from now on,
+    /// instead of interpreting them; the rest stay interpreted. Returns how
+    /// many chunks it covers.
+    ///
+    /// # Errors
+    ///
+    /// A [`NativeCodeMismatch`] when `code` was lowered from another build
+    /// than this module: nothing is installed.
+    pub fn install_native(&mut self, code: &'static NativeCode) -> Result<u32, NativeCodeMismatch> {
+        let build = native_code::build_hash(&self.module);
+        if code.build != build {
+            return Err(NativeCodeMismatch {
+                expected: build,
+                found: code.build,
+            });
+        }
+        let mut table = vec![None; self.module.chunks().len()];
+        for &(chunk, function) in code.chunks {
+            let Some(slot) = table.get_mut(chunk as usize) else {
+                return Err(NativeCodeMismatch {
+                    expected: build,
+                    found: code.build,
+                });
+            };
+            *slot = Some(function);
+        }
+        self.native = table.into();
+        Ok(code.chunks.len() as u32)
+    }
+
+    /// Whether chunk `chunk` runs as installed compiled code.
+    pub fn is_native(&self, chunk: u32) -> bool {
+        self.native.get(chunk as usize).is_some_and(Option::is_some)
     }
 
     /// The module it runs.
@@ -743,6 +794,25 @@ impl Vm {
             pc: 0,
             base: 0,
         };
+        if let Some(Some(function)) = self.native.get(chunk as usize).copied() {
+            let c = module.chunk(chunk);
+            if args.len() != usize::from(c.params) || captures.len() != c.captures.len() {
+                let detail = format!("`{}` called with the wrong number of values", c.name);
+                self.detail = detail;
+                return Err(self.rollback(&module, instance, &cursor, FaultKind::Internal, issued));
+            }
+            self.native_at = None;
+            return match function(self, instance, 0, args, captures) {
+                Ok(value) => Ok(self.commit(instance, value)),
+                Err(kind) => {
+                    if let Some((chunk, pc)) = self.native_at.take() {
+                        cursor.chunk = chunk;
+                        cursor.pc = pc;
+                    }
+                    Err(self.rollback(&module, instance, &cursor, kind, issued))
+                }
+            };
+        }
         let result = self
             .enter(&module, chunk, args, captures)
             .and_then(|code| self.exec(&module, instance, &mut cursor, code));
@@ -1373,9 +1443,6 @@ impl Vm {
             Op::Translate { ext, .. } => {
                 let at = ext as usize;
                 let n = code.ext[at + 2] as usize;
-                let Some(catalog) = self.module.catalog.clone() else {
-                    return self.trap(FaultKind::Internal, "no message catalog".into());
-                };
                 // The arguments gather into the native call scratch, so a
                 // warm translation allocates only its text.
                 let mut args = mem::take(&mut self.native_args);
@@ -1385,20 +1452,9 @@ impl Vm {
                         .iter()
                         .map(|&r| self.stack[base + r as usize].clone()),
                 );
-                let message = &self.stack[base + code.ext[at] as usize];
-                let locale = &self.stack[base + code.ext[at + 1] as usize];
-                let translator = self.translator.get_or_insert_default();
-                let translated = translator.translate(&catalog, message, locale, &args);
-                self.native_args = args;
-                match translated {
-                    Ok(value) => {
-                        if let Value::Str(text) = &value {
-                            self.charge(16 + text.len() as u64)?;
-                        }
-                        value
-                    }
-                    Err(detail) => return self.trap(FaultKind::Internal, detail),
-                }
+                let message = self.stack[base + code.ext[at] as usize].clone();
+                let locale = self.stack[base + code.ext[at + 1] as usize].clone();
+                self.translate(&message, &locale, args)?
             }
             Op::Index { list, index, .. } => {
                 let i = self.int(base, index)?;
@@ -1452,11 +1508,45 @@ impl Vm {
         })
     }
 
+    /// Formats `message` for the reader of `locale` with `args`, gathered
+    /// into the native call scratch, which it gives back.
+    fn translate(&mut self, message: &Value, locale: &Value, args: Vec<Value>) -> Step<Value> {
+        let Some(catalog) = self.module.catalog.clone() else {
+            self.native_args = args;
+            return self.trap(FaultKind::Internal, "no message catalog".into());
+        };
+        let translator = self.translator.get_or_insert_default();
+        let translated = translator.translate(&catalog, message, locale, &args);
+        self.native_args = args;
+        match translated {
+            Ok(value) => {
+                if let Value::Str(text) = &value {
+                    self.charge(16 + text.len() as u64)?;
+                }
+                Ok(value)
+            }
+            Err(detail) => self.trap(FaultKind::Internal, detail),
+        }
+    }
+
     /// Runs the [`Op::Native`] whose operands start at `ext[at]`.
     #[inline(never)]
     fn call_native(&mut self, code: &Code, base: usize, at: usize) -> Step<Value> {
         let import = code.ext[at] as usize;
         let argc = code.ext[at + 1] as usize;
+        let mut args = mem::take(&mut self.native_args);
+        args.clear();
+        args.extend(
+            code.ext[at + 2..at + 2 + argc]
+                .iter()
+                .map(|&r| self.stack[base + r as usize].clone()),
+        );
+        self.call_import(import, args)
+    }
+
+    /// Calls native import `import` with `args`, gathered into the native
+    /// call scratch, which it gives back.
+    fn call_import(&mut self, import: usize, mut args: Vec<Value>) -> Step<Value> {
         let module = Rc::clone(&self.module);
         let path = &module.natives()[import].path;
         let Some(Linked { function, denied }) = self.linked[import] else {
@@ -1490,26 +1580,18 @@ impl Vm {
         self.fuel -= extra;
         if function.debug_draw && !cfg!(debug_assertions) {
             // Debug draw is removed from release builds.
+            args.clear();
+            self.native_args = args;
             return Ok(Value::Int(0));
         }
         if function.presentation && self.deferring {
-            let args = code.ext[at + 2..at + 2 + argc]
-                .iter()
-                .map(|&r| self.stack[base + r as usize].clone())
-                .collect();
             self.deferred.push(Deferred {
                 import: import as u32,
-                args,
+                args: args.drain(..).collect(),
             });
+            self.native_args = args;
             return Ok(Value::Int(0));
         }
-        let mut args = mem::take(&mut self.native_args);
-        args.clear();
-        args.extend(
-            code.ext[at + 2..at + 2 + argc]
-                .iter()
-                .map(|&r| self.stack[base + r as usize].clone()),
-        );
         let mut cx = NativeCx::new(&mut self.services);
         let result = panic::catch_unwind(AssertUnwindSafe(|| (function.call)(&mut cx, &args)));
         let pending = cx.take_pending();
