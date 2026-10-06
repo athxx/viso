@@ -5,6 +5,7 @@ use std::cell::{Ref, RefCell, RefMut};
 use std::mem;
 use std::rc::Rc;
 
+use super::audio::{AUDIO_EVENT, AudioLink};
 use super::history::{History, ReplayError, Replayed};
 use super::input::{Action, InputLatch};
 use super::kit::{Kit, Stage};
@@ -321,6 +322,9 @@ impl Scheduler {
         shadow.persist = incoming.or_else(|| self.persist.take());
         shadow.persist_reports = mem::take(&mut self.persist_reports);
         shadow.deliver_queued(0);
+        if let Some(link) = self.vm.services_mut().remove::<AudioLink>() {
+            shadow.vm.services_mut().insert(link);
+        }
         *self = shadow;
         Ok(carried)
     }
@@ -413,7 +417,11 @@ impl Scheduler {
         self.budget = vm.budget();
         self.sequences = vec![0; module.systems().len()].into();
         self.instances = instances;
+        let audio = self.vm.services_mut().remove::<AudioLink>();
         self.vm = vm;
+        if let Some(link) = audio {
+            self.vm.services_mut().insert(link);
+        }
         self.rebind_tapes();
         Ok(Restored {
             locals,
@@ -865,6 +873,10 @@ impl Scheduler {
         let (dt, alpha) = (frame.dt.get() as f32, frame.alpha.get());
         self.stage.borrow_mut().begin_frame();
         let mut left = self.budget;
+        if !self.deliver_audio_events(&mut left) {
+            self.stage.borrow_mut().end_frame(dt, &self.world, alpha);
+            return ticks;
+        }
         for i in 0..self.hooks.frame.len() {
             let arg = self.cx.render_frame.clone();
             if !self.run_hook(self.hooks.frame[i], arg, &mut left, Phase::Frame) {
@@ -873,6 +885,45 @@ impl Scheduler {
         }
         self.stage.borrow_mut().end_frame(dt, &self.world, alpha);
         ticks
+    }
+
+    /// Lets the game's systems talk to the audio systems `link` reaches:
+    /// `send_audio` queues for them, and each frame hands the events they
+    /// sent to every `AudioListener`, before the `FrameUpdate`s. Replaces
+    /// the link attached before; a World Rebuild and a Logic Reload keep it.
+    pub fn attach_audio(&mut self, link: AudioLink) {
+        self.vm.services_mut().insert(link);
+    }
+
+    /// The link [`attach_audio`](Self::attach_audio) attached.
+    pub fn audio(&mut self) -> Option<&AudioLink> {
+        self.vm
+            .services_mut()
+            .get_mut::<AudioLink>()
+            .map(|link| &*link)
+    }
+
+    /// Hands every event the audio thread sent to the `AudioListener`s, in
+    /// the order sent and then system order; false when the frame's budget
+    /// ran out.
+    fn deliver_audio_events(&mut self, left: &mut Budget) -> bool {
+        if self.hooks.listen.is_empty() {
+            return true;
+        }
+        loop {
+            let event = match self.vm.services_mut().get_mut::<AudioLink>() {
+                Some(link) => link.receive(),
+                None => None,
+            };
+            let Some(event) = event else {
+                return true;
+            };
+            for i in 0..self.hooks.listen.len() {
+                if !self.run_hook(self.hooks.listen[i], Value::Int(event), left, Phase::Frame) {
+                    return false;
+                }
+            }
+        }
     }
 
     /// Runs `ticks` ticks now, paused or not, on the path frames run them on.
@@ -1148,12 +1199,15 @@ struct Hooks {
     fixed: Box<[Hook]>,
     frame: Box<[Hook]>,
     collision: Box<[Hook]>,
+    /// The `AudioListener` hooks, run each frame for each audio event.
+    listen: Box<[Hook]>,
 }
 
 impl Hooks {
     fn of(module: &Module) -> Hooks {
         let (mut start, mut fixed) = (Vec::new(), Vec::new());
         let (mut frame, mut collision) = (Vec::new(), Vec::new());
+        let mut listen = Vec::new();
         for (index, system) in module.systems().iter().enumerate() {
             let bind = |hooks: &mut Vec<Hook>, id, quick| {
                 if let Some(chunk) = system.hook(id) {
@@ -1170,12 +1224,14 @@ impl Hooks {
             bind(&mut fixed, QUICK_FIXED, true);
             bind(&mut frame, FRAME_UPDATE, false);
             bind(&mut collision, COLLISION, false);
+            bind(&mut listen, AUDIO_EVENT, false);
         }
         Hooks {
             start: start.into(),
             fixed: fixed.into(),
             frame: frame.into(),
             collision: collision.into(),
+            listen: listen.into(),
         }
     }
 }

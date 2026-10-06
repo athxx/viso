@@ -56,6 +56,7 @@ use viso_ui::{
 use viso_widgets::caption_bar;
 
 mod accessibility;
+pub mod audio;
 mod environment;
 mod persist;
 pub mod services;

@@ -194,6 +194,12 @@ pub enum SchemaTy {
     /// A game tag of the compiled package: a variant of its `@derive(GameTag)`
     /// enum, or of `viso::game::GameTag` when it derives none.
     Tag,
+    /// A message to the audio thread: a value of the compiled package's
+    /// `@derive(AudioCommand)` enum, or `()` when it derives none.
+    AudioCommand,
+    /// A message from the audio thread: a variant of the compiled package's
+    /// `@derive(AudioEvent)` enum, or `()` when it derives none.
+    AudioEvent,
 }
 
 impl fmt::Display for SchemaTy {
@@ -213,6 +219,8 @@ impl fmt::Display for SchemaTy {
             }
             SchemaTy::Action => f.write_str("Action"),
             SchemaTy::Tag => f.write_str("Tag"),
+            SchemaTy::AudioCommand => f.write_str("AudioCommand"),
+            SchemaTy::AudioEvent => f.write_str("AudioEvent"),
         }
     }
 }
