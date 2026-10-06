@@ -505,7 +505,10 @@ impl RollbackSession {
             self.saved.pop_front();
             self.used.pop_front();
             self.confirmed += 1;
-            if self.confirmed.is_multiple_of(u64::from(self.config.hash_interval)) {
+            if self
+                .confirmed
+                .is_multiple_of(u64::from(self.config.hash_interval))
+            {
                 let hash = self.confirmed_snapshot().hash();
                 self.hashes.push_back((self.confirmed, hash));
                 if self.hashes.len() > HASHES_KEPT {
