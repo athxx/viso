@@ -96,6 +96,27 @@ pub(crate) fn lower_component(
         .collect();
     let mut computed_order: Vec<ComputedEntry> = Vec::new();
 
+    // A template's parameters are its inputs.
+    for param in decl.template_params() {
+        let member_name = token_text(param.name());
+        let symbol = env.member_symbol(&member_name);
+        let ty = param
+            .ty()
+            .map(|t| resolve_annotation(&t, &nominal, param.syntax().text_range(), diagnostics))
+            .unwrap_or(Ty::Unknown);
+        let meta = decl_meta(
+            symbol,
+            ty,
+            super::effect::EffectClass::Read,
+            OwnershipMode::Borrowed,
+            param.syntax().text_range(),
+        );
+        schema.inputs.push(HirInput {
+            name: member_name,
+            meta,
+        });
+    }
+
     for member in decl.members() {
         match member {
             Member::Input(input) => {
@@ -316,7 +337,7 @@ pub(crate) fn lower_component(
             Member::View(view) => {
                 schema.view = Some(view.syntax().text_range());
             }
-            Member::Slot(_) | Member::Effect(_) | Member::Native(_) => {}
+            Member::Slot(_) | Member::Effect(_) | Member::Native(_) | Member::Const(_) => {}
         }
     }
 

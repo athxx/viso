@@ -53,7 +53,7 @@ fn view_block(p: &mut Parser) {
 }
 
 /// One structure item at the top of a view block: a node, a control-flow form, or
-/// a `template` use (parsed as an advanced item). Leading attributes are absorbed
+/// a `template` use. Leading attributes are absorbed
 /// into the item they decorate.
 fn view_structure_item(p: &mut Parser) {
     attributes(p);
@@ -377,7 +377,7 @@ fn view_match_arm(p: &mut Parser) {
 }
 
 /// `"override" "part" IDENT "{" (PropertyBinding | TwoWayBinding | EventHandler)*
-/// "}"`. Parsed as an advanced item until part metaprogramming resolution lands.
+/// "}"`.
 fn part_override(p: &mut Parser) {
     let m = p.start();
     p.bump_as(SyntaxKind::OverrideKw);
@@ -393,33 +393,34 @@ fn part_override(p: &mut Parser) {
         }
     }
     p.expect(SyntaxKind::RBrace);
-    m.complete(p, SyntaxKind::AdvancedItem);
+    m.complete(p, SyntaxKind::PartOverride);
 }
 
-/// `"replace" "part" IDENT ViewBlock`. Parsed as an advanced item for now.
+/// `"replace" "part" IDENT ViewBlock`.
 fn part_replace(p: &mut Parser) {
     let m = p.start();
     p.bump_as(SyntaxKind::ReplaceKw);
     p.bump_as(SyntaxKind::PartKw);
     name(p);
     view_block(p);
-    m.complete(p, SyntaxKind::AdvancedItem);
+    m.complete(p, SyntaxKind::PartReplace);
 }
 
-/// A `use` template instantiation. Parsed to an advanced item until template
-/// resolution lands; the whole construct is consumed up to its terminator so
-/// recovery is clean.
+/// `"use" TypePath "(" ArgumentList ")" ("{" (FillClause | PartOverride |
+/// PartReplace)* "}")? ";"` (§58). The body parses as a node body; HIR admits
+/// only the three forms.
 fn template_use(p: &mut Parser) {
     let m = p.start();
     p.bump_as(SyntaxKind::UseKw);
     super::types::type_(p);
     if p.at(SyntaxKind::LParen) {
         super::expr::arg_list(p);
+    } else {
+        p.expect(SyntaxKind::LParen);
     }
     if p.at(SyntaxKind::LBrace) {
         node_body(p);
-    } else {
-        p.eat(SyntaxKind::Semi);
     }
-    m.complete(p, SyntaxKind::AdvancedItem);
+    p.expect(SyntaxKind::Semi);
+    m.complete(p, SyntaxKind::TemplateUse);
 }

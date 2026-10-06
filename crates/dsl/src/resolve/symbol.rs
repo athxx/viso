@@ -90,6 +90,7 @@ pub enum SymbolKind {
     TypeParam = 19,
     /// A trait's or an impl's associated type.
     AssocType = 20,
+    Template = 21,
 }
 
 /// An in-progress FNV-1a-128 fold across two `u64` lanes.

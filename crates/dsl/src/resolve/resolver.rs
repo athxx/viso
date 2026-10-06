@@ -338,7 +338,7 @@ fn build_symbol_table(
         // A component's/system's members (state, computed, input, event, and the
         // callables) go in the owner's own member table, fingerprinted under the
         // owner's name: two components may each declare a `count`.
-        if let Item::Component(_) | Item::System(_) = decl {
+        if let Item::Component(_) | Item::System(_) | Item::Template(_) = decl {
             define_members(&decl, id, &text, package, module_text, interner, &mut out);
         }
         if let Item::Trait(t) = &decl {
@@ -477,7 +477,7 @@ fn mint_unnamed(
                 generics(&format!("{path}::{}", member_name.text()), &member, out);
             }
         }
-        Item::Component(_) | Item::System(_) => {
+        Item::Component(_) | Item::System(_) | Item::Template(_) => {
             let Some(name) = ident_tokens(syntax).into_iter().next() else {
                 return;
             };
@@ -636,9 +636,31 @@ fn define_members(
     let members: Vec<crate::ast::Member> = match decl {
         Item::Component(c) => c.members().collect(),
         Item::System(s) => s.members().collect(),
+        Item::Template(t) => t.as_component().members().collect(),
         _ => return,
     };
     out.table.members_mut(owner_id);
+    // A template's parameters are its inputs.
+    let params = match decl {
+        Item::Template(t) => t.params(),
+        _ => Vec::new(),
+    };
+    for name_tok in params.iter().filter_map(|p| p.name()) {
+        let name = interner.intern(&name_tok.text());
+        let member_text = interner.text(name).unwrap_or_default();
+        let decl_path = format!("{owner}::{member_text}");
+        let id = fingerprint(SymbolIdentity {
+            package,
+            module_path: module_text,
+            kind: SymbolKind::Input,
+            decl_path: &decl_path,
+        });
+        let symbol = ModuleSymbol {
+            id,
+            exported: false,
+        };
+        out.define(Some(owner_id), name, Namespace::Value, symbol, &name_tok);
+    }
     for member in members {
         let Some((name_tok, kind, ns)) = member_identity(&member) else {
             continue;
@@ -676,6 +698,7 @@ fn member_identity(
         Member::Action(d) => (d.name()?, SymbolKind::Action, Namespace::Value),
         Member::Task(d) => (d.name()?, SymbolKind::Task, Namespace::Value),
         Member::Resource(d) => (d.name()?, SymbolKind::Resource, Namespace::Value),
+        Member::Const(d) => (d.name()?, SymbolKind::Const, Namespace::Value),
         // A native declaration binds a native path, not a module symbol.
         Member::Slot(_) | Member::View(_) | Member::Effect(_) | Member::Native(_) => return None,
     };
@@ -688,6 +711,7 @@ fn member_identity(
 fn decl_identity(item: &Item) -> Option<(crate::syntax::SyntaxToken, SymbolKind, Namespace)> {
     let triple = match item {
         Item::Component(d) => (d.name()?, SymbolKind::Component, Namespace::Type),
+        Item::Template(d) => (d.name()?, SymbolKind::Template, Namespace::Type),
         Item::System(d) => (d.name()?, SymbolKind::System, Namespace::Type),
         Item::Record(d) => (d.name()?, SymbolKind::Record, Namespace::Type),
         Item::Enum(d) => (d.name()?, SymbolKind::Enum, Namespace::Type),
@@ -702,7 +726,7 @@ fn decl_identity(item: &Item) -> Option<(crate::syntax::SyntaxToken, SymbolKind,
         Item::Theme(d) => (d.name()?, SymbolKind::Const, Namespace::Value),
         Item::Style(d) => (d.name()?, SymbolKind::Style, Namespace::Value),
         Item::Trait(d) => (d.name()?, SymbolKind::Trait, Namespace::Type),
-        Item::Export(_) | Item::Native(_) | Item::Impl(_) | Item::Advanced(_) => return None,
+        Item::Export(_) | Item::Native(_) | Item::Impl(_) => return None,
     };
     Some(triple)
 }
@@ -976,6 +1000,7 @@ impl<'a> ModulePass<'a> {
                 && self.push_generics(decl.syntax(), None);
             match decl {
                 Item::Component(c) => self.resolve_component(&c),
+                Item::Template(t) => self.resolve_template(&t),
                 Item::System(s) => self.resolve_system(&s),
                 Item::Fn(f) => self.resolve_callable(f.params(), f.return_type(), f.body()),
                 Item::Action(a) => self.resolve_callable(a.params(), a.return_type(), a.body()),
@@ -1170,6 +1195,20 @@ impl<'a> ModulePass<'a> {
 
     fn resolve_component(&mut self, decl: &ComponentDecl) {
         self.resolve_owner(decl.name(), decl.members());
+    }
+
+    /// A template: its parameters' types and defaults, then its members as
+    /// a component's, the parameters being its inputs.
+    fn resolve_template(&mut self, decl: &crate::ast::TemplateDecl) {
+        for param in decl.params() {
+            if let Some(ty) = param.ty() {
+                self.resolve_type_path(&ty);
+            }
+            if let Some(default) = param.default() {
+                self.resolve_expr(&default);
+            }
+        }
+        self.resolve_owner(decl.name(), decl.as_component().members());
     }
 
     fn resolve_system(&mut self, decl: &SystemDecl) {
@@ -1409,6 +1448,14 @@ impl<'a> ModulePass<'a> {
                     {
                         self.resolve_expr(&value);
                     }
+                }
+            }
+            Member::Const(c) => {
+                if let Some(ty) = c.ty() {
+                    self.resolve_type_path(&ty);
+                }
+                if let Some(value) = c.value() {
+                    self.resolve_expr(&value);
                 }
             }
             Member::Event(_) | Member::Slot(_) => {}
@@ -1708,6 +1755,52 @@ impl<'a> ModulePass<'a> {
                 // Fill content belongs to the view that writes it, not to the node
                 // whose slot it fills.
                 if let Some(body) = fill.body() {
+                    let node = self.node.take();
+                    self.resolve_view_block(&body);
+                    self.node = node;
+                }
+            }
+            ViewItem::Part(part) => {
+                // Like a named node's, a part's name binds a slot for later
+                // siblings; callers name it in `override`/`replace part`.
+                if let Some(tok) = part.name() {
+                    let name = self.interner.intern(&tok.text());
+                    let slot = self.scopes.bind(name);
+                    self.refs.push(ResolvedRef {
+                        range: tok.text_range(),
+                        to: Resolution::Local(slot),
+                    });
+                }
+                if let Some(ty) = part.ty() {
+                    self.resolve_node_type(&ty);
+                }
+                if let Some(body) = part.body() {
+                    let instantiated = self.instantiated(part.ty());
+                    self.resolve_node_body(&body, instantiated);
+                }
+            }
+            ViewItem::Use(u) => {
+                if let Some(ty) = u.ty() {
+                    self.resolve_node_type(&ty);
+                }
+                for (_, value) in u.args() {
+                    self.resolve_expr(&value);
+                }
+                if let Some(body) = u.body() {
+                    let instantiated = self.instantiated(u.ty());
+                    self.resolve_node_body(&body, instantiated);
+                }
+            }
+            ViewItem::Override(o) => {
+                // The bindings are the caller's, on a node of the callee.
+                let node = self.node.take();
+                for member in o.members() {
+                    self.resolve_view_item(member);
+                }
+                self.node = node;
+            }
+            ViewItem::Replace(r) => {
+                if let Some(body) = r.body() {
                     let node = self.node.take();
                     self.resolve_view_block(&body);
                     self.node = node;

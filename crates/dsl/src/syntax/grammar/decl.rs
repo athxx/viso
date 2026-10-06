@@ -3,15 +3,6 @@
 //! of typed members. This is the declarative surface of the `:` vs `=` split — a
 //! `:` separates a name from its type (`input x: T`, `field: T`, `name: Type`),
 //! while `=` gives an initializer or default (`state x = e`, `const C: T = e`).
-//!
-//! ## Core versus Advanced
-//!
-//! Only the Core, the Shader Profile's `shader`, and a few Standard forms get
-//! dedicated node kinds and later resolution. Advanced declarations
-//! (`template`) are parsed just enough
-//! to consume their body — their brace group is skipped as a balanced run — and
-//! wrapped in a single [`SyntaxKind::AdvancedItem`] so they neither break the tree
-//! nor gate the slice. Their resolution lands when their consumer does.
 
 use super::super::kind::SyntaxKind;
 use super::{ParseErrorKind, Parser, attributes, label, name};
@@ -129,8 +120,8 @@ pub(super) fn top_level_decl(p: &mut Parser) {
     }
 }
 
-/// One declaration core: dispatched on the leading keyword. Core and a few
-/// Standard forms get real nodes; everything else becomes an advanced item.
+/// One declaration core, dispatched on the leading keyword; anything else is
+/// an error.
 fn decl_core(p: &mut Parser) {
     match p.current() {
         SyntaxKind::ComponentKw => component_decl(p),
@@ -150,7 +141,7 @@ fn decl_core(p: &mut Parser) {
         SyntaxKind::Ident if p.nth_is_ident(1) => match p.nth_contextual(0) {
             Some(SyntaxKind::ThemeKw) => theme_decl(p),
             Some(SyntaxKind::StyleKw) => style_decl(p),
-            Some(SyntaxKind::TemplateKw) => advanced_decl(p, Some(SyntaxKind::TemplateKw)),
+            Some(SyntaxKind::TemplateKw) => template_decl(p),
             _ => p.err_and_bump(ParseErrorKind::UnexpectedTokens),
         },
         _ => p.err_and_bump(ParseErrorKind::UnexpectedTokens),
@@ -180,6 +171,20 @@ fn component_rest(p: &mut Parser) {
     implements_clause(p);
     where_clause(p);
     member_block(p, member);
+}
+
+/// `"template" IDENT GenericParams? "(" ParameterList ")" WhereClause? "{"
+/// TemplateMember+ "}"` (§58). Members parse as a component's; HIR admits only
+/// `slot`, `const`, `fn` and `view`.
+fn template_decl(p: &mut Parser) {
+    let m = p.start();
+    p.bump_as(SyntaxKind::TemplateKw);
+    name(p);
+    generic_params(p);
+    param_list(p);
+    where_clause(p);
+    member_block(p, member);
+    m.complete(p, SyntaxKind::TemplateDecl);
 }
 
 /// `"system" IDENT GenericParams? ImplementsClause? WhereClause? "{"
@@ -945,33 +950,6 @@ fn where_clause(p: &mut Parser) {
         }
         m.complete(p, SyntaxKind::WhereClause);
     }
-}
-
-/// A Standard/Advanced declaration whose full grammar has no dedicated node kind
-/// this slice. It is consumed up to and including its brace group (or terminating
-/// `;`) as a balanced run and wrapped in an [`SyntaxKind::AdvancedItem`], so it
-/// parses losslessly without contributing to resolution.
-fn advanced_decl(p: &mut Parser, contextual: Option<SyntaxKind>) {
-    let m = p.start();
-    match contextual {
-        Some(kw) => p.bump_as(kw),
-        None => p.bump_any(), // the leading strict keyword
-    }
-    loop {
-        match p.current() {
-            SyntaxKind::LBrace => {
-                skip_braced_group(p);
-                break;
-            }
-            SyntaxKind::Semi => {
-                p.bump_any();
-                break;
-            }
-            _ if p.at_end() => break,
-            _ => p.bump_any(),
-        }
-    }
-    m.complete(p, SyntaxKind::AdvancedItem);
 }
 
 /// Consumes a balanced `{ ... }` group, tracking brace depth so nested groups are

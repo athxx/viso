@@ -223,12 +223,8 @@ pub fn compile_fragment(source: &str) -> Compiled {
     diagnostics.extend(resolved.errors.iter().cloned());
 
     let lowered = lower_fragment_items(fragment.items(), &Natives::standard());
-    for (at, reason) in &lowered.unmounted {
-        diagnostics.push(Diagnostic::error(
-            "E3711",
-            *at,
-            format!("the component cannot be mounted here: {reason}"),
-        ));
+    for unmounted in &lowered.unmounted {
+        diagnostics.push(unmounted_diagnostic(unmounted));
     }
     let tree = lowered.tree;
     let env = SourceSet::new(resolved.sources.iter().copied());
@@ -412,12 +408,8 @@ fn compile_unit(
                     ),
                 ));
             }
-            for (at, reason) in view.unmounted {
-                diagnostics.push(Diagnostic::error(
-                    "E3711",
-                    at,
-                    format!("the component cannot be mounted here: {reason}"),
-                ));
+            for unmounted in &view.unmounted {
+                diagnostics.push(unmounted_diagnostic(unmounted));
             }
             view.tree
         }
@@ -509,15 +501,32 @@ fn compile_unit(
     }
 }
 
-/// Every component the unit declares, exported or not.
+/// The `E3711` of what a view cannot mount, related to the node or `use`
+/// placing the view it is in.
+fn unmounted_diagnostic(unmounted: &crate::ir::Unmounted) -> Diagnostic {
+    let mut diagnostic = Diagnostic::error(
+        "E3711",
+        unmounted.at,
+        format!("the component cannot be mounted here: {}", unmounted.reason),
+    );
+    if let Some(placed) = unmounted.placed_at {
+        diagnostic
+            .related
+            .push(crate::diag::Related::new(placed, "placed here"));
+    }
+    diagnostic
+}
+
+/// Every component and template the unit declares, exported or not.
 fn component_decls(cu: &CompilationUnit) -> Vec<ComponentDecl> {
     cu.items()
         .filter_map(|item| match item {
+            Item::Export(export) => export.declaration(),
+            other => Some(other),
+        })
+        .filter_map(|item| match item {
             Item::Component(decl) => Some(decl),
-            Item::Export(export) => match export.declaration() {
-                Some(Item::Component(decl)) => Some(decl),
-                _ => None,
-            },
+            Item::Template(decl) => Some(decl.as_component()),
             _ => None,
         })
         .collect()

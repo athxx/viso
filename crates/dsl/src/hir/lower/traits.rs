@@ -582,7 +582,7 @@ pub(super) fn collect(
                 );
                 record_generics(decls, *symbol, generics);
             }
-            Item::Component(_) | Item::System(_) => {
+            Item::Component(_) | Item::System(_) | Item::Template(_) => {
                 let outer = params_of(&node, decl_at, scope);
                 for member in node.children() {
                     if let Some(name) = crate::resolve::ident_tokens(&member).into_iter().next()

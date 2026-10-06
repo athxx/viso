@@ -433,6 +433,12 @@ pub enum SyntaxKind {
     AnonymousNode,
     /// `part IDENT ":" ComponentType NodeBody` (A.8).
     PartNode,
+    /// `use TypePath "(" ArgumentList ")" NodeBody? ";"` — a template use (§58).
+    TemplateUse,
+    /// `override part IDENT "{" PartOverrideItem* "}"` (§57).
+    PartOverride,
+    /// `replace part IDENT ViewBlock` (§57).
+    PartReplace,
     /// A `"{" NodeMember* "}"` node body (A.8).
     NodeBody,
     /// `PropertyPath ":" Expr ";"` — a property binding (A.8).
@@ -615,11 +621,9 @@ pub enum SyntaxKind {
     /// impl (§30, §31).
     AssocTypeDecl,
 
-    // Advanced (parsed, not resolved this slice).
-    /// A declaration in the Advanced tier (`trait`/`impl`/`template`) parsed
-    /// to a placeholder wrapper: its interior is
-    /// grouped losslessly but it gets no name resolution yet.
-    AdvancedItem,
+    /// `template IDENT GenericParams? ParamList WhereClause? "{" TemplateMember+
+    /// "}"` (§58).
+    TemplateDecl,
 }
 
 impl SyntaxKind {
@@ -660,7 +664,7 @@ impl SyntaxKind {
     ///
     /// The node kinds occupy the tail of the enum: the coarse skeleton set
     /// (`Root`..=`Block`) followed by the grammar node kinds
-    /// (`CompilationUnit`..=`AdvancedItem`). Everything below `CompilationUnit`
+    /// (`CompilationUnit`..=`TemplateDecl`). Everything below `CompilationUnit`
     /// is a token kind. A single lower-bound comparison covers the whole tail
     /// because no token kind is appended after the nodes.
     #[inline]

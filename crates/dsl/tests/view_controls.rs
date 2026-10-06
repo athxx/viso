@@ -489,3 +489,58 @@ export component Dial {
     .collect();
     assert!(codes.contains(&"E2201".to_string()), "{codes:?}");
 }
+
+#[test]
+fn a_template_part_reads_its_parameter_and_runs_its_callers_override() {
+    const TEMPLATED: &str = r#"
+template Dial(level: F32, label: String = "dial") {
+    view {
+        Column {
+            width: 400dp;
+            height: 300dp;
+            part knob: Slider {
+                width: 200dp;
+                height: 20dp;
+                min: 0.0;
+                max: 10.0;
+                step: 1.0;
+                value: level;
+            }
+            part caption: Text { width: 100dp; height: 20dp; text: label; }
+        }
+    }
+}
+export component Mixer {
+    state amount: F32 = 5.0;
+    state taps = 0;
+    view {
+        Column {
+            use Dial(amount) {
+                override part knob {
+                    on changed(event) { amount = event.value; }
+                }
+                override part caption {
+                    on click { taps += 1; }
+                }
+            };
+        }
+    }
+}
+"#;
+    for mut rt in [Rt::reloaded(TEMPLATED), Rt::packaged(TEMPLATED)] {
+        let dial = rt.children_of_root()[0];
+        let knob = rt.children(dial)[0];
+        rt.store.set_focused(knob.into());
+        rt.key(Key::Left);
+        assert_eq!(
+            rt.float("amount"),
+            4.0,
+            "the knob reads `level`, which is `amount`"
+        );
+        rt.key(Key::Left);
+        assert_eq!(rt.float("amount"), 3.0);
+        rt.click(10.0, 30.0);
+        assert_eq!(rt.int("taps"), 1, "the caller's handler on the caption");
+        assert!(!rt.faulted());
+    }
+}
