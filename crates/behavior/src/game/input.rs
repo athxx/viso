@@ -504,6 +504,56 @@ impl InputLatch {
     }
 }
 
+impl InputLatch {
+    /// The state frozen for one tick as one player's [`TickInput`] (the
+    /// first 64 actions), handing it the edges latched since the last.
+    pub(crate) fn take(&mut self) -> TickInput {
+        let word = |b: &Bits| b.0.first().copied().unwrap_or(0);
+        let (x, y) = self.move_axes();
+        let input = TickInput {
+            held: word(&self.held),
+            pressed: word(&self.pressed),
+            released: word(&self.released),
+            axes: [x.to_bits(), y.to_bits()],
+        };
+        self.pressed.clear();
+        self.released.clear();
+        input
+    }
+}
+
+/// One player's input in one tick, as a rollback session exchanges it: the
+/// actions held, pressed and released, one bit per action of the package's
+/// input schema (at most 64), and the move vector by its bits.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub struct TickInput {
+    /// The actions held.
+    pub held: u64,
+    /// The actions that went down since the previous tick.
+    pub pressed: u64,
+    /// The actions that went up since the previous tick.
+    pub released: u64,
+    /// The move vector's x and y, by their bits.
+    pub axes: [u64; 2],
+}
+
+impl TickInput {
+    /// The move vector.
+    pub fn move_axes(&self) -> (f64, f64) {
+        (f64::from_bits(self.axes[0]), f64::from_bits(self.axes[1]))
+    }
+
+    /// What the next tick most likely sees: the same actions held and the
+    /// same move vector, without edges.
+    pub fn held_on(self) -> TickInput {
+        TickInput {
+            pressed: 0,
+            released: 0,
+            ..self
+        }
+    }
+}
+
 fn set_bit<T>(bits: &mut T, i: u32, on: bool)
 where
     T: Copy + From<u8> + std::ops::Shl<u32, Output = T> + std::ops::BitOrAssign,
@@ -564,6 +614,34 @@ impl InputSnapshot {
     /// The move vector.
     pub fn move_axes(&self) -> (f64, f64) {
         (self.axes.x.get(), self.axes.y.get())
+    }
+
+    /// Sets it to `input`: the first 64 actions, nothing beyond.
+    pub(crate) fn set(&self, input: &TickInput) {
+        let words = [input.held, input.pressed, input.released];
+        for (bits, word) in [&self.held, &self.pressed, &self.released]
+            .into_iter()
+            .zip(words)
+        {
+            for (i, w) in bits.iter().enumerate() {
+                w.set(if i == 0 { word } else { 0 });
+            }
+        }
+        let (x, y) = input.move_axes();
+        self.axes.x.set(x);
+        self.axes.y.set(y);
+    }
+
+    /// What it holds, as one player's [`TickInput`] (the first 64 actions).
+    pub fn read(&self) -> TickInput {
+        let word = |bits: &[Cell<u64>]| bits.first().map_or(0, Cell::get);
+        let (x, y) = self.move_axes();
+        TickInput {
+            held: word(&self.held),
+            pressed: word(&self.pressed),
+            released: word(&self.released),
+            axes: [x.to_bits(), y.to_bits()],
+        }
     }
 }
 

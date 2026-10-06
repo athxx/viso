@@ -65,7 +65,7 @@ static QUICK_START_METHODS: [NativeFunction; 4] = [
     .reproducible(Determinism::CrossPlatform),
 ];
 
-static QUICK_FRAME_METHODS: [NativeFunction; 6] = [
+static QUICK_FRAME_METHODS: [NativeFunction; 8] = [
     crate::native!(fn "tick" |_cx, this: Obj<QuickFrame>| -> i64 {
         Ok(signed(this.frame.tick.get()))
     })
@@ -85,6 +85,16 @@ static QUICK_FRAME_METHODS: [NativeFunction; 6] = [
     .deterministic()
     .realtime_safe()
     .property(),
+    crate::native!(fn "players" |_cx, this: Obj<QuickFrame>| -> i64 {
+        Ok(i64::from(this.frame.count.get()))
+    })
+    .deterministic()
+    .realtime_safe(),
+    crate::native!(fn "input_of" |_cx, this: Obj<QuickFrame>, player: i64| -> Obj<InputSnapshot> {
+        super::input_of(&this.frame, player)
+    })
+    .deterministic()
+    .realtime_safe(),
     crate::native!(fn "world" |_cx, this: Obj<QuickFrame>| -> Obj<GameWorld> {
         Ok(this.frame.world.clone())
     })

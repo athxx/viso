@@ -6024,6 +6024,20 @@ export system Progress implements FixedUpdate {
 - World 为每个 Entity 保留上一 Tick 与当前 Tick 的 Transform，Render Extraction 默认按 `alpha` 插值：`RenderFrame.position(id)` 与宿主的 `GameWorld::extract(alpha)` 返回插值位置；`teleport` 把上一 Tick 的位置也设为目标，本 Tick 不插值；
 - FrameUpdate 属于 Presentation：只读 Simulation，只写 Local。
 
+### 106.10 联机复制与回滚
+
+Simulation 层即复制集（§106.4）：每个 Peer 运行整个游戏，只交换输入，不交换状态。
+
+- 每个 Tick 有每个玩家的输入：`frame.players(): I64` 是玩家数，`frame.input_of(player: I64): InputSnapshot` 是该玩家的冻结输入（越界为 Native 错误），`frame.input` 是玩家 0 的；`QuickFrame` 相同。单机游戏只有玩家 0，宿主的设备输入就是它；
+- 宿主 API：`Scheduler::set_players(n)`（1..=8）、`step_with(&[TickInput])` 用给定的每玩家输入运行一个 Tick、`sample_input()` 把设备输入冻结为本玩家的 `TickInput`（动作的 held/pressed/released 位，至多 64 个动作，与 Move 向量的位）、`present(wall_dt)` 只运行一帧的 Presentation 部分；
+- `RollbackSession::new(scheduler, SessionConfig { players, local, input_delay, max_prediction, hash_interval })` 从游戏当前 Tick 开始；各 Peer 以同一 Build、同一 Seed、同一 Tick 启动，所有玩家的前 `input_delay` 个 Tick 输入为空。每个 Tick 采样本地输入作为 `input_delay` 个 Tick 之后的输入，对已知的玩家输入直接使用、未知的预测（该玩家最新已知输入保持按住、不带边沿），并保存 Tick 前的 Snapshot；
+- 传输无关：`packet_for(peer)` 产出字节、`receive(bytes)` 接收，链路可以丢包、延迟、乱序。每个包重复对方尚未确认的全部本地输入（至多 128 个），确认已收到的对方输入，并携带最近的已确认 Snapshot Hash；包带 Build Hash，来自其他 Build、非本局远端玩家或格式错误的包被拒绝（`PacketError`），会话不变；
+- 远端输入与该 Tick 使用的预测不同时，恢复该 Tick 的 Snapshot 并用当前已知的最佳输入重算到当前 Tick；更早的 Tick 使用的输入未变，因此结果与从最后确认的 Snapshot 重算相同；
+- 一个 Tick 的全部玩家输入都已知即为确认；最后确认 Tick 边界的 Snapshot 是回滚基线（`confirmed_snapshot`），每 `hash_interval` 个确认 Tick 交换一次其 Hash，与对方同一 Tick 的 Hash 不同即记录 `Desync { tick, peer, local, remote }`；
+- 运行超过最后确认 Tick `max_prediction` 个 Tick 时停顿等待远端输入，欠下的 Tick 至多保留 `max_prediction` 个；
+- 重算走同一 Scheduler：已交付 Tick 的 Presentation 命令不重复交付（§106.4），预测错误的 Tick 已交付的命令不撤回；只回滚 Simulation 状态。
+- 验收（`crates/dsl/tests/game_netplay.rs`）：两个进程内 Peer 经丢包 1/4、延迟 1–6 步并乱序的链路运行 220 个 Tick，发生回滚并收敛：双方同一确认 Tick 的 Hash 相同，且等于用双方真实输入单机运行的结果；每 Tick 一条的 Presentation 命令每条只交付一次。
+
 ---
 
 ## 107. 完整游戏 System 示例

@@ -1162,13 +1162,13 @@ timers (§104–§111).
   - [x] Release benchmark of both (this Mac: bytecode-bound 1.7×, world-bound
         1.1×).
   - [ ] `viso build` lowering a release package's systems (CLI).
-- [ ] Replication and rollback netcode on the Simulation tier.
-  - [ ] Per-player input in a tick; input of a past tick replaced and the
+- [x] Replication and rollback netcode on the Simulation tier.
+  - [x] Per-player input in a tick; input of a past tick replaced and the
         game re-simulated from the last confirmed snapshot.
-  - [ ] A rollback session over a transport-agnostic message stream:
+  - [x] A rollback session over a transport-agnostic message stream:
         input delay, prediction, confirmation, desync detection by snapshot
         hash; Presentation commands never redelivered.
-  - [ ] Two in-process peers over a lossy, delayed link converge.
+  - [x] Two in-process peers over a lossy, delayed link converge.
 - [ ] AI structured edit; cross-backend validation.
   - [ ] Structured edits by Syntax ID and Symbol ID (`AddImport`,
         `CreateComponent`, `AddInput`, `AddState`, `AddAction`, `InsertNode`,

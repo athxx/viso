@@ -17,8 +17,8 @@ use super::tape::{InputTape, Playback, Recorder, TapeError};
 use super::world::Bodies;
 use super::{
     COLLISION, Clock, CollisionDelivery, CollisionEvent, EntityId, FIXED_UPDATE, FRAME_UPDATE,
-    FixedFrame, GameStart, GameWorld, InputSchema, InputSnapshot, Key, POST_PHYSICS, PRE_PHYSICS,
-    PadButton, PadStick, RenderFrame, STARTUP, TouchButton,
+    FixedFrame, GameStart, GameWorld, InputSchema, InputSnapshot, Key, MAX_PLAYERS, POST_PHYSICS,
+    PRE_PHYSICS, PadButton, PadStick, RenderFrame, STARTUP, TickInput, TouchButton,
 };
 use crate::native::{NativeObject, NativeValue, Obj, Services};
 use crate::{Budget, Deferred, Fault, FaultKind, Instance, Module, Value, Vm};
@@ -198,6 +198,8 @@ pub struct Scheduler {
     /// The store `@persist` states load from and are written to.
     persist: Option<Persistence>,
     persist_reports: Vec<PersistReport>,
+    /// The players in the game, `frame.players()`.
+    players: u32,
 }
 
 impl Scheduler {
@@ -295,6 +297,7 @@ impl Scheduler {
             history: None,
             persist,
             persist_reports: Vec::new(),
+            players: 1,
             instances,
         })
     }
@@ -388,6 +391,7 @@ impl Scheduler {
             input_schema(&module).actions.len(),
             shadow.clock.fixed_dt(),
         );
+        shadow.set_players(self.players);
         shadow.input = self.input.clone();
         shadow.input.remap(&input_schema(&module));
         let carried = shadow.prove_start(&self.world.bodies(), keep)?;
@@ -495,6 +499,7 @@ impl Scheduler {
             schema.actions.len(),
             self.clock.fixed_dt(),
         );
+        self.set_players(self.players);
         self.input.remap(&schema);
         self.hooks = Hooks::of(&module);
         self.build = fnv(&module.encode());
@@ -946,6 +951,48 @@ impl Scheduler {
         self.collisions.push((first, second));
     }
 
+    /// Puts `players` players in the game, 1 to [`MAX_PLAYERS`]: each tick
+    /// reads player `p`'s input through `frame.input_of(p)`, player 0's also
+    /// through `frame.input`. The device input the host reports is player
+    /// 0's; [`step_with`](Self::step_with) gives every player's.
+    ///
+    /// # Panics
+    ///
+    /// If `players` is 0 or above [`MAX_PLAYERS`].
+    pub fn set_players(&mut self, players: u32) {
+        assert!(
+            (1..=MAX_PLAYERS).contains(&players),
+            "a game has 1 to {MAX_PLAYERS} players, not {players}"
+        );
+        self.players = players;
+        object::<FixedFrame>(&self.cx.fixed_frame)
+            .count
+            .set(players);
+    }
+
+    /// The players in the game.
+    pub fn players(&self) -> u32 {
+        self.players
+    }
+
+    /// Runs one tick on the path frames run them on, every player's input
+    /// given: `inputs[p]` is player `p`'s, and the device input waits for a
+    /// later tick.
+    ///
+    /// # Panics
+    ///
+    /// If `inputs` does not hold one input per player.
+    pub fn step_with(&mut self, inputs: &[TickInput]) {
+        assert_eq!(inputs.len(), self.players as usize, "one input per player");
+        self.run_tick_with(Some(inputs));
+    }
+
+    /// The device input the host reported, frozen for one tick as player
+    /// 0's [`TickInput`]: the edges since the last sample or tick go to it.
+    pub fn sample_input(&mut self) -> TickInput {
+        self.input.take()
+    }
+
     /// Runs one frame of `wall_dt` seconds: every tick the clock owes, then
     /// every `FrameUpdate`, which runs while paused too. Returns the ticks
     /// run.
@@ -954,6 +1001,14 @@ impl Scheduler {
         for _ in 0..ticks {
             self.run_tick();
         }
+        self.present(wall_dt);
+        ticks
+    }
+
+    /// The presentation half of a [`frame`](Self::frame): the audio events
+    /// and every `FrameUpdate`, at the clock's time and interpolation, with
+    /// no tick run.
+    pub fn present(&mut self, wall_dt: f64) {
         let frame = object::<RenderFrame>(&self.cx.render_frame);
         frame.dt.set(if wall_dt.is_finite() && wall_dt > 0.0 {
             wall_dt
@@ -967,7 +1022,7 @@ impl Scheduler {
         let mut left = self.budget;
         if !self.deliver_audio_events(&mut left) {
             self.stage.borrow_mut().end_frame(dt, &self.world, alpha);
-            return ticks;
+            return;
         }
         for i in 0..self.hooks.frame.len() {
             let arg = self.cx.render_frame.clone();
@@ -976,7 +1031,6 @@ impl Scheduler {
             }
         }
         self.stage.borrow_mut().end_frame(dt, &self.world, alpha);
-        ticks
     }
 
     /// Lets the game's systems talk to the audio systems `link` reaches:
@@ -1026,6 +1080,12 @@ impl Scheduler {
     }
 
     fn run_tick(&mut self) {
+        self.run_tick_with(None);
+    }
+
+    /// Runs one tick, each player's input `inputs` gives or, without, player
+    /// 0's from the device or a replayed tape and nothing from the rest.
+    fn run_tick_with(&mut self, inputs: Option<&[TickInput]>) {
         let tick = self.clock.tick();
         if self.history.as_ref().is_some_and(|h| h.due(tick)) {
             let snapshot = self.snapshot();
@@ -1035,12 +1095,24 @@ impl Scheduler {
         }
         let frame = object::<FixedFrame>(&self.cx.fixed_frame);
         frame.tick.set(tick);
-        if let Some(playback) = &mut self.playback {
-            for change in playback.changes(tick) {
-                self.input.apply(change);
+        match inputs {
+            Some(inputs) => {
+                for (player, input) in frame.players.iter().zip(inputs) {
+                    player.set(input);
+                }
+            }
+            None => {
+                if let Some(playback) = &mut self.playback {
+                    for change in playback.changes(tick) {
+                        self.input.apply(change);
+                    }
+                }
+                self.input.deliver(&frame.input);
+                for player in &frame.players[1..self.players as usize] {
+                    player.set(&TickInput::default());
+                }
             }
         }
-        self.input.deliver(&frame.input);
         if let Some(recorder) = &mut self.recorder {
             let input = &frame.input;
             let bits = |a| {
@@ -1338,6 +1410,11 @@ enum Around {
     Post,
 }
 
+/// The actions of `game`'s input schema.
+pub(super) fn actions(game: &Scheduler) -> usize {
+    input_schema(game.vm.module()).actions.len()
+}
+
 /// A module's hooks by phase, each in system order.
 struct Hooks {
     start: Box<[Hook]>,
@@ -1413,10 +1490,15 @@ impl Contexts {
             world: world.clone(),
             kit: kit.clone(),
         });
+        let players: Box<[Obj<InputSnapshot>]> = (0..MAX_PLAYERS)
+            .map(|_| Obj::new(InputSnapshot::new(actions)))
+            .collect();
         let fixed_frame = Obj::new(FixedFrame {
             tick: 0.into(),
             dt: fixed_dt,
-            input: Obj::new(InputSnapshot::new(actions)),
+            input: players[0].clone(),
+            players,
+            count: 1.into(),
             world: world.clone(),
             kit: kit.clone(),
         });
