@@ -611,6 +611,17 @@ fn regs(inst: &mut Inst, f: &impl Fn(Reg) -> Reg) {
             *dst = f(*dst);
             all(parts);
         }
+        Inst::Translate {
+            dst,
+            message,
+            locale,
+            args,
+        } => {
+            *dst = f(*dst);
+            *message = f(*message);
+            *locale = f(*locale);
+            all(args);
+        }
         Inst::Index { dst, list, index } => {
             *dst = f(*dst);
             *list = f(*list);

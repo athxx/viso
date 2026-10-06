@@ -1,9 +1,11 @@
 //! Chunks, component layouts, systems and the verified module.
 
 use std::fmt;
+use std::rc::Rc;
 use std::time::Duration;
 
 use crate::game::InputSchema;
+use crate::i18n::Catalog;
 use crate::native::NativeId;
 use crate::op::Op;
 use crate::retype::ValueSchema;
@@ -321,6 +323,7 @@ pub struct Module {
     pub(crate) migrators: Box<[Migrator]>,
     pub(crate) capabilities: Box<[Box<str>]>,
     pub(crate) themes: Box<[(Box<str>, u32)]>,
+    pub(crate) catalog: Option<Rc<Catalog>>,
 }
 
 /// The tick rate of a module that declares none, 60 Hz.
@@ -367,6 +370,7 @@ impl Module {
             migrators: Box::new([]),
             capabilities: Box::new([]),
             themes: Box::new([]),
+            catalog: None,
         };
         let mut max_states = 0;
         let mut max_inputs = 0;
@@ -718,6 +722,38 @@ impl Module {
         &self.themes
     }
 
+    /// Adds the package's message catalog, which every `Translate` needs.
+    ///
+    /// # Errors
+    ///
+    /// A [`VerifyError`] when a chunk translates and there is no catalog.
+    pub fn with_catalog(mut self, catalog: Option<Catalog>) -> Result<Module, VerifyError> {
+        if catalog.is_none()
+            && let Some((chunk, pc)) = self.chunks.iter().enumerate().find_map(|(i, c)| {
+                c.body
+                    .as_ref()
+                    .ok()?
+                    .ops
+                    .iter()
+                    .position(|op| matches!(op, Op::Translate { .. }))
+                    .map(|pc| (i, pc))
+            })
+        {
+            return Err(VerifyError {
+                chunk: chunk as u32,
+                pc: Some(pc as u32),
+                message: "a message is translated but the module has no catalog".into(),
+            });
+        }
+        self.catalog = catalog.map(Rc::new);
+        Ok(self)
+    }
+
+    /// The package's message catalog.
+    pub fn catalog(&self) -> Option<&Catalog> {
+        self.catalog.as_deref()
+    }
+
     /// Checks that every chunk `schema` names computes a field default.
     fn field_defaults(&self, schema: &ValueSchema) -> Result<(), VerifyError> {
         match schema.chunks().find(|&chunk| {
@@ -1015,6 +1051,12 @@ impl Verifier<'_> {
             Op::List { dst, ext } | Op::Concat { dst, ext } => {
                 self.reg(dst)?;
                 self.list(ext, 0).map(drop)
+            }
+            Op::Translate { dst, ext } => {
+                self.reg(dst)?;
+                let head = self.list(ext, 2)?;
+                self.reg16(head[0])?;
+                self.reg16(head[1])
             }
             Op::Emit { ext } => {
                 let head = self.list(ext, 1)?;

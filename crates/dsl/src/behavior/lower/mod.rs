@@ -375,6 +375,11 @@ impl ProgramBuilder {
         Ok(())
     }
 
+    /// Sets the package's message catalog.
+    pub(crate) fn catalog(&mut self, catalog: Option<viso_behavior::i18n::Catalog>) {
+        self.program.catalog = catalog;
+    }
+
     /// Sets the capabilities the package is granted.
     pub(crate) fn capabilities(&mut self, capabilities: Vec<String>) {
         self.program.capabilities = capabilities;

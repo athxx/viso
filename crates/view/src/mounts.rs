@@ -30,6 +30,9 @@ pub struct MountRecord {
     pub module: &'static [&'static str],
     /// The language edition the package declares.
     pub language: Option<&'static str>,
+    /// The package's message catalogs, its source locale and the directory
+    /// holding them, when it has any.
+    pub catalog: Option<(&'static str, &'static str)>,
     /// The mounted view's root.
     pub root: NodeId,
     /// Each source the view reads, by its durable key, and the cell holding it.
@@ -81,6 +84,7 @@ macro_rules! __record_mount {
         package: $package:expr,
         module: [$($module:expr),* $(,)?],
         language: $language:expr,
+        catalog: $catalog:expr,
         cells: [$($cell:expr),* $(,)?],
         host: $host:expr,
         nodes: $nodes:expr $(,)?
@@ -91,6 +95,7 @@ macro_rules! __record_mount {
             package: $package,
             module: &[$($module),*],
             language: $language,
+            catalog: $catalog,
             root: $root,
             cells: ::std::vec![$($cell),*],
             host: $host,

@@ -1,0 +1,4 @@
+[inbox]
+title = "Posteingang"
+unread = "{count, plural, =0 {Keine ungelesenen Nachrichten} one {# ungelesene Nachricht} other {# ungelesene Nachrichten}}"
+mark = "Eine als gelesen markieren"

@@ -352,3 +352,34 @@ fn a_manifest_syntax_error_shows_its_line() {
         "{err}"
     );
 }
+
+#[test]
+fn tr_checks_against_the_catalogs_and_a_catalog_error_points_into_its_file() {
+    let s = Scratch::new("i18n");
+    s.write("Viso.toml", &format!("{MANIFEST}[i18n]\nsource = \"en\"\n"))
+        .write("i18n/en.toml", "[inbox]\ntitle = \"Inbox\"\n")
+        .write(
+            "src/app.vs",
+            "import viso::i18n::tr;\ncomponent App { view { Text { text: tr(\"inbox.title\"); } } }",
+        );
+    let out = viso(&s.0, &["check"]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+
+    s.write(
+        "src/app.vs",
+        "import viso::i18n::tr;\ncomponent App { view { Text { text: tr(\"inbox.titel\"); } } }",
+    );
+    let out = viso(&s.0, &["check"]);
+    assert_eq!(code(&out), 1);
+    assert!(stderr(&out).contains("E3706"), "{}", stderr(&out));
+    assert!(stderr(&out).contains("inbox.title"), "{}", stderr(&out));
+
+    s.write(
+        "i18n/de.toml",
+        "[inbox]\ntitle = \"{n, plural, one {x}}\"\n",
+    );
+    let out = viso(&s.0, &["check"]);
+    let err = stderr(&out);
+    assert!(err.contains("i18n/de.toml:2:9"), "{err}");
+    assert!(err.contains("`other`"), "{err}");
+}

@@ -23,6 +23,11 @@ viso-shader = { workspace = true }
 # XID_Start/XID_Continue for identifier lexing and NFC for symbol-table entry.
 icu_properties = { workspace = true }
 icu_normalizer = { workspace = true }
+# Message catalogs: `i18n/<locale>.toml` files, their BCP 47 locale tags and
+# the CLDR fallback chain a translation leaves untranslated messages to.
+toml_edit = { workspace = true }
+icu_locale_core = { workspace = true }
+icu_locale_fallback = { workspace = true }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 criterion = "0.7"

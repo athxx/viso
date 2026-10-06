@@ -27,6 +27,7 @@ members = [
     "libs/woff2",
     "examples/hello_world",
     "examples/01-counter",
+    "examples/i18n",
 ]
 
 # viso-ext/ is a user-maintained plugin library and is intentionally NOT a
@@ -103,6 +104,17 @@ icu_properties = "2.3"
 # internally (language ∈ {ja, zh}), so the public locale choice and the table
 # icu selects never disagree. Already a transitive icu dep; declared direct here.
 icu_locale_core = "2.3"
+# Messages (`viso::i18n`): CLDR plural rules choose a `plural`/`selectordinal`
+# case, the decimal formatter writes numbers in the reader's locale, and the
+# fallback chain (zh-TW → zh-Hant → und) picks the catalog a locale reads.
+# Same ICU4X 2.3 family; with their compiled data they add ~130 KB to a release
+# binary (measured on aarch64-apple-darwin, all CLDR locales).
+icu_plurals = "2.3"
+icu_decimal = "2.3"
+icu_locale_fallback = "2.3"
+fixed_decimal = { version = "0.7", features = ["ryu"] }
+# Message catalogs and `Viso.toml`, read with their spans for diagnostics.
+toml_edit = "0.25"
 # NFC for DSL identifiers: two spellings that normalize alike are one name in the
 # symbol table, and a distinct raw spelling of a declared name is reported.
 icu_normalizer = "2.3"

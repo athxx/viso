@@ -313,6 +313,15 @@ pub enum Inst {
     },
     /// `dst` = the concatenation of the `String` parts.
     Concat { dst: Reg, parts: Vec<Reg> },
+    /// `dst` = the text of the catalog message `message` (its id, or a
+    /// `MessageKey`) for the reader of `locale` (`env.locale`), with `args` in
+    /// the message's argument order.
+    Translate {
+        dst: Reg,
+        message: Reg,
+        locale: Reg,
+        args: Vec<Reg>,
+    },
     /// A point no execution reaches (after an exhaustive `match`); reaching it
     /// is an internal fault.
     Unreachable,
@@ -599,6 +608,9 @@ pub struct Program {
     pub capabilities: Vec<String>,
     /// Every `theme` declaration, by name: the constant computing its value.
     pub themes: Vec<(String, FuncId)>,
+    /// The package's compiled message catalog, which the module carries when
+    /// a body translates.
+    pub catalog: Option<viso_behavior::i18n::Catalog>,
 }
 
 impl Program {

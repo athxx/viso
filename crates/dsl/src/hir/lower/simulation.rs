@@ -59,6 +59,9 @@ pub struct TargetProfile {
     /// Whether localization findings (`E3705`) are errors and cover literal
     /// text too (`--i18n strict`).
     pub i18n_strict: bool,
+    /// The package's message catalogs (`i18n/`), compiled: what `tr` and a
+    /// `MessageKey` literal check against and the module carries.
+    pub messages: Option<std::rc::Rc<crate::i18n::Messages>>,
 }
 
 impl Default for TargetProfile {
@@ -71,6 +74,7 @@ impl Default for TargetProfile {
             capabilities: CapabilitySet::new(),
             a11y_strict: false,
             i18n_strict: false,
+            messages: None,
         }
     }
 }
@@ -710,6 +714,7 @@ impl Domains {
                     Inst::Closure { .. } => "creates a closure, which allocates",
                     Inst::Concat { .. }
                     | Inst::Display { .. }
+                    | Inst::Translate { .. }
                     | Inst::Binary {
                         op: BinaryOp::Concat,
                         ..

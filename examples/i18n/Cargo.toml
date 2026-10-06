@@ -1,0 +1,15 @@
+[package]
+name = "viso-example-i18n"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+# A localized view: its labels come from the message catalogs in `i18n/`,
+# checked against them at compile time and shown in the reader's locale.
+[dependencies]
+viso = { workspace = true }
+# `view!` expands to paths in these crates; the facade does not re-export
+# them under the names the expansion uses yet.
+viso-ui = { workspace = true }
+viso-view = { workspace = true }
