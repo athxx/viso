@@ -7278,6 +7278,14 @@ AddTraitImpl
 
 结构化编辑基于 Syntax ID 和 Symbol ID，避免 AI 因行号漂移改错位置。
 
+当前实现：`viso_dsl::edit::Document` 对一个文件提供上述 11 种编辑（`StructuredEdit`），代码字段（类型、表达式、语句、节点）是源码文本：
+
+- Symbol ID 的文本形式是 32 位小写十六进制；`Document::symbol(&["Counter", "count"])` 按声明路径取得，`symbol_at(offset)` 取包含该位置的最内层声明；
+- Syntax ID 指向 View 结构节点、Property Binding 与 Event Handler：所属声明的 Symbol ID 加从声明向下的路径，每步是节点种类与它在父节点同种类子项中的序号，文本形式 `<symbol>/ViewDecl.0/AnonymousNode.1/PropertyBinding.0`。它在所属声明之外的任何编辑、以及声明内不在其路径前方增加同种类兄弟的编辑后仍然有效；`syntax_id_at(offset)` 取包含该位置的最内层节点；
+- 插入位置按规范成员顺序：`AddInput` 在最后一个 `input`/`slot`/`event` 之后，`AddState` 在最后一个 `state` 之后，`AddAction` 在 `view` 之前；`InsertNode` 是父节点的第 `index` 个结构子项（越界为最后一个）；`SetPropertyBinding` 只替换已有绑定的值，否则在最后一个绑定之后新增；`AttachEventHandler` 在绑定与 Handler 之后；`WrapInKeyedFor` 以 `for item in list key k { .. }` 包住节点；`ConvertTaskToResource` 要求组件成员 Task 返回 `Result<T, E>`，在 Task 之后声明 `resource name: Resource<T, E> { load = task(args); key = k; }`，并删除该组件中不带 Slot 与 Handler 的 `start task(..);`；`AddImport` 在最后一个 Import 之后（已存在时拒绝）；`CreateComponent`、`AddTraitImpl` 追加到文件末尾。插入文本按四空格缩进放在兄弟成员所在的缩进上，空的 `{}` 展开为多行；
+- `apply` 返回不重叠、按源码顺序排列的 Text Edit 与编辑后的源码，以及新建的声明或节点的 ID 以便链式编辑。编辑后重新编译：出现源码原本没有的错误（按错误码与消息计数）时拒绝并返回这些诊断；不存在的 Symbol/Syntax ID 与种类不符的目标在改动文本前拒绝；
+- LSP 声明 `codeActionProvider`：`textDocument/codeAction` 返回与范围相交的诊断所带的同文件 Fix（`quickfix`，`machine-applicable` 的标为首选）与由光标处声明完全确定的结构化编辑（`refactor.rewrite`，目前是把返回 `Result` 的 Task 按其参数转为 Resource，名称去掉 `fetch_`/`load_`/`get_` 前缀），均已检查。`viso/syntaxId` 返回某位置的 Symbol ID 与 Syntax ID；`viso/structuredEdit` 接受 `{textDocument, edit: {kind, ..字段}}`，返回 `{edit: WorkspaceEdit, created}`，被拒绝时返回 `-32602` 错误与原因。
+
 ---
 
 # 第十六部分：实现阶段与验收

@@ -34,6 +34,16 @@ pub enum Json {
 }
 
 impl Json {
+    /// An object of `members`.
+    pub fn object<const N: usize>(members: [(&str, Json); N]) -> Json {
+        Json::Obj(
+            members
+                .into_iter()
+                .map(|(k, v)| (k.to_string(), v))
+                .collect(),
+        )
+    }
+
     /// The object member `key`, if this is an object that has it.
     pub fn get(&self, key: &str) -> Option<&Json> {
         match self {

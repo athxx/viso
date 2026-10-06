@@ -59,6 +59,27 @@ impl SymbolId {
     }
 }
 
+/// The 32 lowercase hex digits of the fingerprint, high lane first: the text
+/// form tooling exchanges (structured edits, the language server).
+impl std::fmt::Display for SymbolId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{:016x}{:016x}", self.hi, self.lo)
+    }
+}
+
+impl std::str::FromStr for SymbolId {
+    type Err = ();
+
+    /// Parses the [`Display`](std::fmt::Display) form: exactly 32 hex digits.
+    fn from_str(text: &str) -> Result<Self, ()> {
+        if text.len() != 32 || !text.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return Err(());
+        }
+        let lane = |t: &str| u64::from_str_radix(t, 16).map_err(|_| ());
+        Ok(Self::from_parts(lane(&text[..16])?, lane(&text[16..])?))
+    }
+}
+
 /// The declaration kind a `SymbolId` is minted for, mixed into the fingerprint so a
 /// `record R` and an `enum R` in the same module never share an id.
 ///
