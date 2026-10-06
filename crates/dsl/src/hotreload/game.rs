@@ -27,7 +27,9 @@ use std::rc::Rc;
 
 use viso_behavior::Vm;
 use viso_behavior::game::quick::QUICK_START;
-use viso_behavior::game::{FRAME_UPDATE, Rebuild, Restored, STARTUP, Scheduler, SystemFault};
+use viso_behavior::game::{
+    FRAME_UPDATE, GameError, PhysicsTier, Rebuild, Restored, STARTUP, Scheduler, SystemFault,
+};
 use viso_behavior::native::{NativeId, Natives};
 
 use crate::behavior::ir::{FuncId, Function, FunctionKind, Inst, Program, SystemLayout};
@@ -241,6 +243,18 @@ pub enum SwapError {
     /// The candidate's systems could not be created, or its start or smoke
     /// tick faulted.
     Fault(SystemFault),
+    /// The game's physics engine does not reach the candidate's determinism
+    /// tier (`E9104`).
+    Physics(PhysicsTier),
+}
+
+impl From<GameError> for SwapError {
+    fn from(error: GameError) -> SwapError {
+        match error {
+            GameError::Fault(fault) => SwapError::Fault(fault),
+            GameError::Physics(tier) => SwapError::Physics(tier),
+        }
+    }
 }
 
 impl std::fmt::Display for SwapError {
@@ -248,6 +262,7 @@ impl std::fmt::Display for SwapError {
         match self {
             SwapError::Build(message) => f.write_str(message),
             SwapError::Fault(fault) => write!(f, "{}", fault.fault),
+            SwapError::Physics(tier) => write!(f, "{tier}"),
         }
     }
 }
@@ -288,9 +303,9 @@ pub fn swap(
     vm.link(natives, capabilities)
         .map_err(|error| SwapError::Build(format!("the candidate does not link: {error}")))?;
     let (restored, carried) = if reload.tier == ReloadTier::WorldRebuild {
-        (None, game.rebuild(vm, keep).map_err(SwapError::Fault)?)
+        (None, game.rebuild(vm, keep)?)
     } else {
-        (Some(game.reload(vm).map_err(SwapError::Fault)?), 0)
+        (Some(game.reload(vm)?), 0)
     };
     Ok(Swapped {
         reload,

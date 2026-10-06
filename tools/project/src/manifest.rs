@@ -158,6 +158,17 @@ pub enum GameDeterminism {
     CrossPlatform,
 }
 
+/// `[game] collision_delivery`: the order a tick hands its contacts to the
+/// `CollisionListener`s.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum CollisionDelivery {
+    /// Each contact to every listener before the next contact.
+    #[default]
+    EventMajor,
+    /// Every contact to one listener before the next listener.
+    ListenerMajor,
+}
+
 /// `[game]` (DSL sections 106.1, 106.5).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Game {
@@ -166,6 +177,8 @@ pub struct Game {
     /// `tick_rate`: the fixed step's ticks a second, 1 to 1000; 60 when
     /// absent.
     pub tick_rate: Option<Spanned<u32>>,
+    /// `collision_delivery`; `event_major` when absent.
+    pub collision_delivery: Option<Spanned<CollisionDelivery>>,
 }
 
 /// `[i18n]` (DSL section U10.3).
@@ -564,10 +577,15 @@ impl<'a> Reader<'a> {
 
         let game = match self.table(root, "game") {
             Some(t) => {
-                self.deny_unknown(t, &["determinism", "tick_rate"], "game");
+                self.deny_unknown(
+                    t,
+                    &["determinism", "tick_rate", "collision_delivery"],
+                    "game",
+                );
                 Game {
                     determinism: self.determinism(t, "determinism", "game"),
                     tick_rate: self.tick_rate(t, "tick_rate", "game"),
+                    collision_delivery: self.collision_delivery(t, "collision_delivery", "game"),
                 }
             }
             None => Game::default(),
@@ -767,6 +785,33 @@ impl<'a> Reader<'a> {
                         ConfigCode::InvalidValue,
                         format!(
                             "`{path}.{key}` is `same_binary` or `cross_platform`, not `{other}`"
+                        ),
+                    )
+                    .at(self.path)
+                    .span(raw.span),
+                );
+                return None;
+            }
+        };
+        Some(Spanned::new(value, raw.span))
+    }
+
+    fn collision_delivery(
+        &mut self,
+        t: &dyn TableLike,
+        key: &str,
+        path: &str,
+    ) -> Option<Spanned<CollisionDelivery>> {
+        let raw = self.string(t, key, path)?;
+        let value = match raw.value.as_str() {
+            "event_major" => CollisionDelivery::EventMajor,
+            "listener_major" => CollisionDelivery::ListenerMajor,
+            other => {
+                self.diags.push(
+                    ConfigDiagnostic::error(
+                        ConfigCode::InvalidValue,
+                        format!(
+                            "`{path}.{key}` is `event_major` or `listener_major`, not `{other}`"
                         ),
                     )
                     .at(self.path)
@@ -1335,6 +1380,19 @@ members = ["apps/one", "apps/two"]
         let (m, _) = parse("[package]\nname = \"g\"\n");
         assert!(m.game.determinism.is_none());
         let diags = errors("[package]\nname = \"g\"\n[game]\ndeterminism = \"exact\"\n");
+        assert_eq!(diags[0].code, ConfigCode::InvalidValue);
+    }
+
+    #[test]
+    fn game_collision_delivery_is_event_or_listener_major() {
+        let (m, warnings) =
+            parse("[package]\nname = \"g\"\n[game]\ncollision_delivery = \"listener_major\"\n");
+        assert!(warnings.is_empty(), "{warnings:?}");
+        assert_eq!(
+            m.game.collision_delivery.unwrap().value,
+            CollisionDelivery::ListenerMajor
+        );
+        let diags = errors("[package]\nname = \"g\"\n[game]\ncollision_delivery = \"random\"\n");
         assert_eq!(diags[0].code, ConfigCode::InvalidValue);
     }
 

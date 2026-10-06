@@ -13,10 +13,17 @@
 //! scheduler, so no tick runs on a half-started game.
 //!
 //! One frame runs every fixed tick the clock owes, then every `FrameUpdate`.
-//! One tick runs every `FixedUpdate` in system order, then delivers the
-//! collision events queued for it to every `CollisionListener`, event by event.
-//! Ticks share one instruction and native call budget each; frames share
-//! another.
+//! One tick runs, each phase in system order and committing its world
+//! commands before the next: every `FixedUpdate`, every `PrePhysics`, the
+//! physics step, the delivery of the contacts that began to every
+//! `CollisionListener` (event by event, or listener by listener as the
+//! module's `collision_delivery` says), and every `PostPhysics`. Ticks share
+//! one instruction and native call budget each; frames share another.
+//!
+//! The physics step is a [`Physics`] engine's: the built-in [`Kinematic`]
+//! unless the host installs another ([`Scheduler::with_physics`]), which must
+//! reach the module's determinism tier (`E9104`). An engine that cannot save
+//! its state makes every snapshot degraded.
 //!
 //! Each tick reads a frozen [`InputSnapshot`] through `frame.input`: the
 //! actions of the package's `InputMap` (or the default [`InputAction`] set)
@@ -62,6 +69,7 @@ mod history;
 pub mod input;
 pub mod kit;
 mod persist;
+mod physics;
 pub mod quick;
 mod scheduler;
 mod snapshot;
@@ -78,6 +86,7 @@ use crate::native::{
     NativeTrait, NativeType, Obj, Param, SchemaTy, Vec3F32,
 };
 
+pub use crate::module::CollisionDelivery;
 pub use audio::{
     AUDIO_COMMAND, AUDIO_COMMAND_DERIVE, AUDIO_EVENT, AUDIO_EVENT_DERIVE, AUDIO_PROCESS,
     AudioBlock, AudioCommandValue, AudioEventValue, AudioFault, AudioHost, AudioLink, AudioMessage,
@@ -96,7 +105,8 @@ pub use persist::{
     LazyStore, MemoryStore, PERSIST_CAPABILITY, Persist, PersistReport, PersistStore, Persistence,
     SharedStore,
 };
-pub use scheduler::{CommandKey, DEFAULT_SEED, Rebuild, Scheduler, SystemFault};
+pub use physics::{Kinematic, Physics, PhysicsError, PhysicsTier, StepBodies};
+pub use scheduler::{CommandKey, DEFAULT_SEED, GameError, Rebuild, Scheduler, SystemFault};
 pub use snapshot::{GameSnapshot, Restored};
 pub use tape::{InputTape, TapeChange, TapeError, TapeEvent};
 pub use timer::{Cooldown, TickTimer};
@@ -108,6 +118,10 @@ pub use world::{
 pub const FIXED_UPDATE: NativeId = NativeId::of("viso::game::FixedUpdate::fixed_update");
 /// The identity of the `FrameUpdate.frame_update` hook.
 pub const FRAME_UPDATE: NativeId = NativeId::of("viso::game::FrameUpdate::frame_update");
+/// The identity of the `PrePhysics.pre_physics` hook.
+pub const PRE_PHYSICS: NativeId = NativeId::of("viso::game::PrePhysics::pre_physics");
+/// The identity of the `PostPhysics.post_physics` hook.
+pub const POST_PHYSICS: NativeId = NativeId::of("viso::game::PostPhysics::post_physics");
 /// The identity of the `CollisionListener.collision` hook.
 pub const COLLISION: NativeId = NativeId::of("viso::game::CollisionListener::collision");
 /// The identity of the `Startup.startup` hook.
@@ -343,6 +357,28 @@ pub(crate) static GAME: NativeLibrary = NativeLibrary {
             name: "FixedUpdate",
             hooks: &[NativeHook {
                 name: "fixed_update",
+                params: &[Param {
+                    name: "frame",
+                    ty: SchemaTy::Handle(FixedFrame::PATH),
+                }],
+                domain: HookDomain::Simulation,
+            }],
+        },
+        NativeTrait {
+            name: "PrePhysics",
+            hooks: &[NativeHook {
+                name: "pre_physics",
+                params: &[Param {
+                    name: "frame",
+                    ty: SchemaTy::Handle(FixedFrame::PATH),
+                }],
+                domain: HookDomain::Simulation,
+            }],
+        },
+        NativeTrait {
+            name: "PostPhysics",
+            hooks: &[NativeHook {
+                name: "post_physics",
                 params: &[Param {
                     name: "frame",
                     ty: SchemaTy::Handle(FixedFrame::PATH),

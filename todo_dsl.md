@@ -1144,14 +1144,15 @@ timers (§104–§111).
   - [x] Recursion proven finite or `E3601`; no state, effect, task or
         resource in a template.
   - [x] Member `const` in components and templates.
-- [ ] Multi-system game profile and physics integration contract.
-  - [ ] `PrePhysics` / `PostPhysics` phases around the physics step; the
-        profile's `physics_order` and `collision_delivery_order`.
-  - [ ] A physics world contract a Rust engine implements (step over
+- [x] Multi-system game profile and physics integration contract.
+  - [x] `PrePhysics` / `PostPhysics` phases around the physics step; the
+        profile's `physics_order` and `collision_delivery_order`
+        (`[game] collision_delivery`, carried in the Module).
+  - [x] A physics world contract a Rust engine implements (step over
         commands, contacts, snapshot / restore, a determinism tier); the
         built-in world is one implementation; `E9104` for a tier below the
         game's; snapshots of a world without restore are reported degraded.
-  - [ ] A multi-system acceptance game (input, AI, physics, combat, audio).
+  - [x] A multi-system acceptance game (input, AI, physics, combat, audio).
 - [ ] Release native lowering of System IR with bytecode differential tests
       (§108.2); speedup is a hypothesis until a release benchmark shows it.
   - [ ] System IR → Rust source, the generated systems run by the same

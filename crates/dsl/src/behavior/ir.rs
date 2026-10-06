@@ -600,6 +600,12 @@ pub struct Program {
     /// The ticks a second of its systems' fixed step; `None` for the
     /// default.
     pub tick_rate: Option<u32>,
+    /// The determinism tier its Simulation domain was checked against and
+    /// the order its ticks deliver contacts in; `None` for the defaults.
+    pub game_profile: Option<(
+        viso_behavior::native::Determinism,
+        viso_behavior::CollisionDelivery,
+    )>,
     /// The `@migrate` functions a persisted value converts by; none unless a
     /// system persists a state.
     pub migrators: Vec<viso_behavior::Migrator>,
