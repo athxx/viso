@@ -115,6 +115,113 @@ impl PersistStore for MemoryStore {
     }
 }
 
+/// One [`PersistStore`] several hosts persist through, as every view of an
+/// app does; a clone is another handle to the same store.
+#[derive(Clone)]
+pub struct SharedStore {
+    store: Rc<RefCell<Box<dyn PersistStore>>>,
+}
+
+impl SharedStore {
+    /// Shares `store`.
+    pub fn new(store: impl PersistStore + 'static) -> SharedStore {
+        SharedStore {
+            store: Rc::new(RefCell::new(Box::new(store))),
+        }
+    }
+}
+
+impl std::fmt::Debug for SharedStore {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("SharedStore")
+    }
+}
+
+impl PersistStore for SharedStore {
+    fn load(&mut self, key: &str) -> Result<Option<Vec<u8>>, String> {
+        self.store.borrow_mut().load(key)
+    }
+
+    fn store(&mut self, key: &str, blob: Vec<u8>) {
+        self.store.borrow_mut().store(key, blob);
+    }
+
+    fn flush(&mut self) -> Result<(), String> {
+        self.store.borrow_mut().flush()
+    }
+}
+
+/// What opens a [`LazyStore`].
+type Opener = Box<dyn FnOnce() -> Result<Box<dyn PersistStore>, String>>;
+
+/// A [`PersistStore`] opened the first time something is loaded or stored:
+/// a host that persists nothing never opens it, so an app's store directory
+/// exists only once a state was persisted.
+pub struct LazyStore {
+    open: Option<Opener>,
+    store: Result<Option<Box<dyn PersistStore>>, String>,
+}
+
+impl LazyStore {
+    /// A store `open` opens on first use.
+    pub fn new<S: PersistStore + 'static>(
+        open: impl FnOnce() -> Result<S, String> + 'static,
+    ) -> LazyStore {
+        LazyStore {
+            open: Some(Box::new(move || {
+                open().map(|s| Box::new(s) as Box<dyn PersistStore>)
+            })),
+            store: Ok(None),
+        }
+    }
+
+    /// Whether it was opened.
+    pub fn is_open(&self) -> bool {
+        matches!(self.store, Ok(Some(_)))
+    }
+
+    fn opened(&mut self) -> Result<&mut dyn PersistStore, String> {
+        if let Some(open) = self.open.take() {
+            self.store = open().map(Some);
+        }
+        match &mut self.store {
+            Ok(Some(store)) => Ok(&mut **store),
+            Ok(None) => Err("the store was not opened".into()),
+            Err(why) => Err(why.clone()),
+        }
+    }
+}
+
+impl PersistStore for LazyStore {
+    fn load(&mut self, key: &str) -> Result<Option<Vec<u8>>, String> {
+        self.opened()?.load(key)
+    }
+
+    fn store(&mut self, key: &str, blob: Vec<u8>) {
+        // A store that did not open reports at the next flush.
+        if let Ok(store) = self.opened() {
+            store.store(key, blob);
+        }
+    }
+
+    fn flush(&mut self) -> Result<(), String> {
+        if self.open.is_some() {
+            return Ok(());
+        }
+        self.opened()?.flush()
+    }
+}
+
+impl std::fmt::Debug for LazyStore {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(if self.is_open() {
+            "LazyStore(open)"
+        } else {
+            "LazyStore"
+        })
+    }
+}
+
 #[cfg(not(target_family = "wasm"))]
 pub use dir::DirStore;
 
@@ -497,5 +604,36 @@ mod tests {
         let mut other = blob.clone();
         other[0] = b'X';
         assert!(Stored::decode(&other).is_err());
+    }
+
+    #[test]
+    fn a_lazy_store_opens_at_its_first_use_and_shares_through_its_handles() {
+        let opened = Rc::new(std::cell::Cell::new(0));
+        let memory = MemoryStore::default();
+        let lazy = {
+            let (opened, memory) = (Rc::clone(&opened), memory.clone());
+            LazyStore::new(move || {
+                opened.set(opened.get() + 1);
+                Ok(memory)
+            })
+        };
+        let mut shared = SharedStore::new(lazy);
+        let mut other = shared.clone();
+        assert_eq!(shared.flush(), Ok(()), "a flush opens nothing");
+        assert_eq!(opened.get(), 0);
+        assert_eq!(shared.load("a"), Ok(None));
+        other.store("a", vec![1]);
+        assert_eq!(shared.load("a"), Ok(Some(vec![1])));
+        assert_eq!(opened.get(), 1, "opened once, for every handle");
+        assert_eq!(memory.get("a"), Some(vec![1]));
+
+        let mut failed = LazyStore::new(|| Err::<MemoryStore, _>("no disk".to_owned()));
+        failed.store("a", vec![1]);
+        assert_eq!(failed.load("a"), Err("no disk".to_owned()));
+        assert_eq!(
+            failed.flush(),
+            Err("no disk".to_owned()),
+            "reported at the flush"
+        );
     }
 }

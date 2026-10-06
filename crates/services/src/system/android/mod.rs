@@ -37,6 +37,8 @@ pub(crate) fn services(_app: &str) -> Services {
 
 struct Android;
 
+pub(super) use self::bridge::files_dir;
+
 impl FileDialogs for Android {
     fn open(&self, options: OpenOptions) -> Reply<Vec<PickedFile>> {
         // A filter without extensions admits any file, and so the picker.

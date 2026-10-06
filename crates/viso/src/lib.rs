@@ -57,6 +57,7 @@ use viso_widgets::caption_bar;
 
 mod accessibility;
 mod environment;
+mod persist;
 pub mod services;
 pub mod system_fonts;
 mod text_content;
@@ -677,6 +678,17 @@ struct GpuState {
     surface: Option<SurfaceId>,
     /// Current surface size in physical pixels `(width, height)`.
     size: (u32, u32),
+}
+
+/// The loop ended — the last window closed, or a quit broke the pump with
+/// windows still open: what those views persisted is made durable before
+/// their stores go.
+impl<A: Application> Drop for AppDriver<A> {
+    fn drop(&mut self) {
+        for ws in &mut self.windows {
+            persist::suspend(&mut ws.store, &ws.states);
+        }
+    }
 }
 
 impl<A: Application> AppDriver<A> {
@@ -1495,8 +1507,13 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
         // The OS services, created once on the loop thread now that the
         // platform is up; every window's handlers share them.
         if self.services.is_none() {
-            let system = services::Services::system(&services::app_name());
+            let app = services::app_name();
+            let system = services::Services::system(&app);
             self.services = Some(Rc::new(system));
+            // The views' `@persist` states persist where the OS keeps the
+            // app's data; a session handed its services (a headless test)
+            // persists nothing unless it installs a store itself.
+            persist::install(&app);
         }
         // Open the initial window with the app's declared configuration
         // (`window_config`, defaulting to a self-drawn, captioned window). Later
@@ -1801,7 +1818,12 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
                     cx.request_redraw(ws.window);
                 }
             }
-            viso_runtime::Lifecycle::Suspended => {}
+            // The app may not come back: make the persisted writes durable.
+            viso_runtime::Lifecycle::Suspended => {
+                for ws in &mut self.windows {
+                    persist::suspend(&mut ws.store, &ws.states);
+                }
+            }
         }
     }
 
@@ -2396,6 +2418,7 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
         // `GpuState`'s drop releases the surface/device. A hook for an unknown
         // window (already gone) finds nothing to retain and is a no-op.
         if let Some(ws) = self.window_mut(window) {
+            persist::suspend(&mut ws.store, &ws.states);
             ws.effects.cancel_all();
         }
         #[cfg(feature = "hot-reload")]

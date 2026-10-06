@@ -449,6 +449,9 @@ pub struct NodeStore {
     /// Cold: the effects builds registered since the last flush, which the
     /// flush moves into its [`EffectStore`] and runs for the first time.
     pending_effects: crate::reactive::PendingEffects,
+    /// Cold: what runs when the app goes to the background or the window
+    /// closes. Empty in a tree that persists nothing.
+    suspend_hooks: crate::suspend::SuspendHooks,
 }
 
 impl NodeStore {
@@ -506,6 +509,7 @@ impl NodeStore {
         self.structure_hooks.clear();
         self.lengths.clear();
         self.pending_effects.clear();
+        self.suspend_hooks.clear();
     }
 
     /// Registers an effect scoped to `node` whose dependencies `when` declares
@@ -743,6 +747,14 @@ impl NodeStore {
 
     pub(crate) fn structure_hooks(&self) -> &crate::structure::StructureHooks {
         &self.structure_hooks
+    }
+
+    pub(crate) fn suspend_hooks(&self) -> &crate::suspend::SuspendHooks {
+        &self.suspend_hooks
+    }
+
+    pub(crate) fn suspend_hooks_mut(&mut self) -> &mut crate::suspend::SuspendHooks {
+        &mut self.suspend_hooks
     }
 
     pub(crate) fn structure_hooks_mut(&mut self) -> &mut crate::structure::StructureHooks {

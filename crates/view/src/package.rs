@@ -203,11 +203,11 @@ pub fn instantiate_view_with(
             let anchor = node_ids.get(read.anchor as usize).copied().flatten();
             host.link_env(read.slot as usize, read.field, anchor, states);
         }
-        host.load_persisted(states);
     }
     let Some(host) = host.map(ViewHost::shared) else {
         return Ok(LoadedView { root, host: None });
     };
+    crate::__mount_persisted(&host, store, states);
     let mut routes: Vec<Route> = Vec::new();
     let mut groups = package
         .handlers

@@ -32,6 +32,7 @@ pub mod semantics;
 pub mod state;
 pub mod structure;
 pub mod style;
+pub mod suspend;
 pub mod task;
 pub mod text_edit;
 pub mod timer;

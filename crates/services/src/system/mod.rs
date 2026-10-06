@@ -79,6 +79,42 @@ pub(crate) fn services(_app: &str) -> Services {
     Services::unsupported()
 }
 
+/// The directory an app keeps its data in; see [`crate::app_data_dir`].
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn app_data_dir(app: &str) -> Option<std::path::PathBuf> {
+    use std::path::PathBuf;
+    let env = |name: &str| {
+        std::env::var_os(name)
+            .filter(|v| !v.is_empty())
+            .map(PathBuf::from)
+    };
+    if cfg!(target_os = "macos") {
+        Some(env("HOME")?.join("Library/Application Support").join(app))
+    } else if cfg!(target_os = "ios") {
+        // The sandbox's home is the app's own container.
+        Some(env("HOME")?.join("Library/Application Support"))
+    } else if cfg!(target_os = "windows") {
+        Some(env("LOCALAPPDATA").or_else(|| env("APPDATA"))?.join(app))
+    } else if cfg!(target_os = "android") {
+        android_files_dir()
+    } else if cfg!(unix) {
+        let state = env("XDG_STATE_HOME").or_else(|| Some(env("HOME")?.join(".local/state")))?;
+        Some(state.join(app))
+    } else {
+        None
+    }
+}
+
+#[cfg(target_os = "android")]
+fn android_files_dir() -> Option<std::path::PathBuf> {
+    android::files_dir()
+}
+
+#[cfg(not(any(target_os = "android", target_arch = "wasm32")))]
+fn android_files_dir() -> Option<std::path::PathBuf> {
+    None
+}
+
 /// Read a picked file in full.
 #[cfg(any(
     target_vendor = "apple",

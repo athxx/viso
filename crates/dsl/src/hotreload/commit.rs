@@ -308,8 +308,8 @@ fn mount_behavior(
                 mirrored.link_env(read.slot as usize, read.field, anchor, rt.states);
             }
             mirrored.prune_env(rt.states);
-            mirrored.load_persisted(rt.states);
         }
+        viso_view::__mount_persisted(&host, rt.store, rt.states);
         Some((view, host))
     });
     for &(key, node) in key_to_node {

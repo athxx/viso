@@ -11,6 +11,8 @@
 //! the same way ([`mount_values`]). A `start` runs its task on the UI task
 //! protocol, owned by the component instance's node ([`release_tasks`]); a
 //! `resource` loads through the same tasks, gated on its key like an effect.
+//! A component's `@persist` states load and store through the store the app
+//! installs ([`install_persistence`]).
 //!
 //! A host is shared as `Rc<RefCell<ViewHost>>` by the `'static` handler boxes
 //! of every node of its view. The sharing is the point: the nodes of one view
@@ -27,6 +29,7 @@ mod host;
 #[cfg(feature = "hot-reload")]
 mod mounts;
 mod package;
+mod persistence;
 mod regions;
 mod resources;
 mod route;
@@ -46,6 +49,9 @@ pub use package::{
     LoadedView, ViewControl, ViewEnv, ViewHandler, ViewLoadError, ViewPackage, ViewState,
     instantiate_view, instantiate_view_with, load_view, load_view_with,
 };
+pub use persistence::{
+    __load_persisted, __mount_persisted, install_persistence, take_persist_reports,
+};
 pub use regions::{
     __mount_embedded, ArmTemplate, CLOSED, CellRef, EffectTemplate, EnvTemplate, GroupTemplate,
     HALF_OPEN, ItemKey, ItemTemplate, LocalTemplate, MAX_RANGE_ITEMS, RegionKind, RegionNode,
@@ -57,6 +63,14 @@ pub use tasks::release_tasks;
 pub use theme::{default_theme, set_theme};
 pub use values::{__mount_values, mount_values};
 pub use viso_behavior::{Fault, Module, Value};
+/// The stores a view's `@persist` states persist through.
+pub mod persist {
+    #[cfg(not(target_family = "wasm"))]
+    pub use viso_behavior::game::DirStore;
+    pub use viso_behavior::game::{
+        LazyStore, MemoryStore, PersistReport, PersistStore, SharedStore,
+    };
+}
 
 /// Records nothing: the build has no development session to hand mounts to.
 #[cfg(not(feature = "hot-reload"))]
