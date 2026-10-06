@@ -1153,13 +1153,15 @@ timers (§104–§111).
         built-in world is one implementation; `E9104` for a tier below the
         game's; snapshots of a world without restore are reported degraded.
   - [x] A multi-system acceptance game (input, AI, physics, combat, audio).
-- [ ] Release native lowering of System IR with bytecode differential tests
+- [x] Release native lowering of System IR with bytecode differential tests
       (§108.2); speedup is a hypothesis until a release benchmark shows it.
-  - [ ] System IR → Rust source, the generated systems run by the same
+  - [x] System IR → Rust source, the generated systems run by the same
         scheduler.
-  - [ ] Differential test: one input tape, the same snapshot hashes per tick
+  - [x] Differential test: one input tape, the same snapshot hashes per tick
         under bytecode and native code.
-  - [ ] Release benchmark of both.
+  - [x] Release benchmark of both (this Mac: bytecode-bound 1.7×, world-bound
+        1.1×).
+  - [ ] `viso build` lowering a release package's systems (CLI).
 - [ ] Replication and rollback netcode on the Simulation tier.
   - [ ] Per-player input in a tick; input of a past tick replaced and the
         game re-simulated from the last confirmed snapshot.

@@ -6163,6 +6163,8 @@ then per-system sequence
 - Release 可以把 System IR 降低为 Rust，与 App 一起编译。语义以 Bytecode 为准，两者对同一 Input Tape 做差分测试，Snapshot Hash 必须一致；
 - Native Lowering 的性能收益是假设，由 Release Benchmark 证实后才能成为默认。
 
+当前实现（`viso_behavior::aot`）：System IR 即 System 运行的已验证 Bytecode——各 System 的 Hook、State Initializer 及它们调用或闭包引用的全部 Chunk。`lower_systems(module, crate_path)` 把它逐 Op 写成一个 Rust 模块：每个 Chunk 一个函数，寄存器是局部变量，基本块是块状态机的分支，另有 `NATIVE` 表（带 Module 的 Build Hash）；输出是确定的。App 把该模块与自身一起编译，`Vm::install_native(&NATIVE)` 之后同一 Scheduler 调用这些 Chunk 时运行编译后的代码，其余 Chunk 仍解释执行；Build Hash 不符时拒绝安装（`NativeCodeMismatch`）。编译后的代码每个 Op 先消耗一单位 Fuel，经同一路径调用 Native、计入同样的内存与调用深度、写入同一 Undo Log，Fault 时记录解释器 Cursor 应在的位置，因此预算、事务、Fault 的种类、消息与源位置都与 Bytecode 一致。差分测试（`crates/dsl/tests/game_native.rs`）用同一 Input Tape 在两种形态下逐 Tick 比较 Snapshot Hash 与每个 Fault（含受限预算下的 `E9102`），并检查仓库中的生成代码与当前 Lowering 输出逐字节相同。Release Benchmark（`benches/game_native.rs`，本机 macOS，一个 Fixed Tick）：Bytecode 密集的 `crowd` 为 145.6 µs → 84.6 µs（约 1.7×），大部分时间在 World、Physics 与 Native 中的 `colony` 为 29.2 µs → 26.9 µs（约 1.1×）；收益只在本机测得，其他目标未测，Native Lowering 仍不是默认，`viso build` 尚未调用它。
+
 ### 108.3 AudioProcess 实时域
 
 - `AudioProcess` System 在音频线程运行，属于 Presentation 层；

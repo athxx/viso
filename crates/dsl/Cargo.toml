@@ -43,3 +43,7 @@ harness = false
 [[bench]]
 name = "game_world"
 harness = false
+
+[[bench]]
+name = "game_native"
+harness = false

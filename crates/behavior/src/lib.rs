@@ -17,6 +17,7 @@
 //! `Bool`, `Char`, `Color`, `()` and unit enum variants are `Int`; floats and
 //! dimensional scalars are `Float`; `None` is `Nil` and `Some(x)` is `x`.
 
+pub mod aot;
 mod arith;
 pub mod game;
 pub mod i18n;
