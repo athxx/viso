@@ -1021,9 +1021,30 @@ timers (§104–§111).
         (`E3705`, schema `localizable` flag), literals too under the profile's
         `i18n_strict`.
   - [ ] `--a11y strict` / `--i18n strict` on `viso check` (with the CLI).
-  - [ ] `tr`, `tr_arg`, `MessageKey` and the project message catalog (format,
-        plural rules, locale fallback, `env.locale` dependency), then its keys
-        and arguments checked (`E3706`).
+  - [x] `tr`, `MessageKey` and the project message catalog, its keys and
+        arguments checked (`E3706`):
+    - [x] Catalog format: `i18n/<locale>.toml` beside `Viso.toml`, nested
+          tables / dotted keys, ICU MessageFormat values (`plural`,
+          `selectordinal`, `select`, `number`, `#`, quoting); `[i18n] source`.
+    - [x] Catalog checks: malformed messages, translations using undeclared
+          or incompatible arguments, bad or duplicate locales, no source
+          catalog (errors), stray keys (warnings).
+    - [x] `tr(key, name: value..)` named arguments by placeholder, each kind
+          checked; `MessageKey` literals name argument-free messages; a
+          dynamic key takes none; nearest-key suggestions.
+    - [x] Context: component view, style, computed, action, effect; `E2111`
+          in `fn`, task, initializers and module-level code, `E9109` in a
+          system.
+    - [x] Runtime: flat per-locale pattern tables in the module (wire,
+          release package), compile-time CLDR fallback, lazily decoded tables,
+          plural rules of the message's locale, the reader's digits,
+          `env.locale` dependency for bindings and computeds; a `MessageKey`
+          value is its key text.
+    - [x] `viso check` reports catalog issues in the catalog file; the macros
+          track the catalog files and fail on a catalog error; the dev session
+          watches the catalogs and recompiles the package's views.
+    - [ ] A compile-fail test of a catalog error through `view!` (trybuild),
+          and the dev session's catalog reload under a real watcher.
 
 ---
 

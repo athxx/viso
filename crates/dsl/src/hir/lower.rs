@@ -194,6 +194,9 @@ pub fn lower(
     behavior
         .borrow_mut()
         .capabilities(profile.capabilities.iter().map(str::to_owned).collect());
+    behavior
+        .borrow_mut()
+        .catalog(profile.messages.as_ref().map(|m| m.catalog().clone()));
     let mut domains = simulation::Domains::default();
     let mut migrators = Vec::new();
     let mut systems = Vec::new();
@@ -1315,6 +1318,10 @@ impl TypeEnv for ModuleEnv<'_> {
 
     fn tick_rate(&self) -> u32 {
         self.decls.profile.tick_rate
+    }
+
+    fn messages(&self) -> Option<&crate::i18n::Messages> {
+        self.decls.profile.messages.as_deref()
     }
 
     fn record_native(&self, call: TextRange, id: NativeId) {

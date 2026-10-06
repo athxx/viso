@@ -17,6 +17,7 @@ use viso_ende::{Decode, DecodeError, Decoder, Encode, Encoder, ProtocolTag};
 use crate::game::{
     Action, InputBindings, InputSchema, Key, KeySet, MoveSource, PadButton, PadStick, TouchButton,
 };
+use crate::i18n::Catalog;
 use crate::module::{
     Chunk, ChunkKind, Code, Component, ComponentEffect, EffectRun, Migrator, Module, NativeImport,
     PersistSlot, ResourceLoad, SnapshotSlot, Span, StableId, System, VerifyError,
@@ -96,6 +97,10 @@ impl Module {
             enc.write_str(name);
             enc.write_varint(u64::from(*chunk));
         });
+        enc.write_bool(self.catalog().is_some());
+        if let Some(catalog) = self.catalog() {
+            catalog.encode(&mut enc);
+        }
         enc.into_bytes()
     }
 
@@ -151,11 +156,17 @@ impl Module {
         let themes = read_list(&mut dec, |dec| {
             Ok((Box::<str>::from(dec.read_str()?), read_u32_varint(dec)?))
         })?;
+        let catalog = if dec.read_bool()? {
+            Some(Catalog::decode(&mut dec)?)
+        } else {
+            None
+        };
         dec.finish()?;
         let module = Module::new(chunks, components, systems, natives)
             .and_then(|m| m.with_tick_rate(tick_rate))
             .and_then(|m| m.with_migrators(migrators))
             .and_then(|m| m.with_themes(themes))
+            .and_then(|m| m.with_catalog(catalog))
             .map_err(LoadError::Verify)?
             .with_capabilities(capabilities);
         match input {
@@ -683,6 +694,7 @@ mod opcode {
     pub const DISPLAY_DIM: u8 = 45;
     pub const UNREACHABLE: u8 = 46;
     pub const START: u8 = 47;
+    pub const TRANSLATE: u8 = 48;
 }
 
 fn write_op(enc: &mut Encoder, op: &Op) {
@@ -774,6 +786,10 @@ fn write_op(enc: &mut Encoder, op: &Op) {
         }
         Op::Concat { dst, ext } => {
             regs(enc, CONCAT, &[dst]);
+            enc.write_u32(ext);
+        }
+        Op::Translate { dst, ext } => {
+            regs(enc, TRANSLATE, &[dst]);
             enc.write_u32(ext);
         }
         Op::Field { dst, src, index } => regs(enc, FIELD, &[dst, src, index]),
@@ -925,6 +941,10 @@ fn read_op(dec: &mut Decoder<'_>) -> Result<Op, DecodeError> {
             ext: w(dec)?,
         },
         CONCAT => Op::Concat {
+            dst: r(dec)?,
+            ext: w(dec)?,
+        },
+        TRANSLATE => Op::Translate {
             dst: r(dec)?,
             ext: w(dec)?,
         },
@@ -1203,6 +1223,7 @@ mod tests {
             migrators: Box::new([]),
             capabilities: Box::new([]),
             themes: Box::new([]),
+            catalog: None,
         };
         bytes = bad.encode();
         assert!(matches!(Module::decode(&bytes), Err(LoadError::Verify(_))));

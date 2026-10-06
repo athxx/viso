@@ -96,6 +96,12 @@ impl Program {
         }
         let themes = self.themes.iter();
         module = module.with_themes(themes.map(|(n, f)| (n.as_str().into(), f.0)).collect())?;
+        let translates = self.functions.iter().any(|f| {
+            f.body
+                .as_ref()
+                .is_ok_and(|b| b.insts.iter().any(|i| matches!(i, Inst::Translate { .. })))
+        });
+        module = module.with_catalog(self.catalog.clone().filter(|_| translates))?;
         match &self.input {
             Some(input) => module.with_input(input.clone()),
             None => Ok(module),
@@ -465,6 +471,15 @@ impl Emitter {
             Inst::Concat { dst, parts } => Op::Concat {
                 dst: reg(*dst),
                 ext: self.operands(&[], parts),
+            },
+            Inst::Translate {
+                dst,
+                message,
+                locale,
+                args,
+            } => Op::Translate {
+                dst: reg(*dst),
+                ext: self.operands(&[message.0, locale.0], args),
             },
             Inst::Unreachable => Op::Unreachable,
         })

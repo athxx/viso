@@ -1,0 +1,4 @@
+[inbox]
+title = "Inbox"
+unread = "{count, plural, =0 {No unread messages} one {# unread message} other {# unread messages}}"
+mark = "Mark one read"

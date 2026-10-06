@@ -12,3 +12,10 @@ rust-version.workspace = true
 # it, so a pure Rust app never links a VM.
 [dependencies]
 viso-ende = { path = "../ende" }
+# Formatting translated messages: plural rules, locale numbers and the
+# locale fallback chain.
+icu_plurals = { workspace = true }
+icu_decimal = { workspace = true }
+icu_locale_core = { workspace = true }
+icu_locale_fallback = { workspace = true }
+fixed_decimal = { workspace = true }

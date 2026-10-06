@@ -4864,12 +4864,12 @@ Named Node `n` 在同一 Component 的 Action 与 Handler 中以 `n: NodeRef<T>`
 `tr` 是库 API（`viso::i18n`），不是语法：
 
 ```viso
-// fn tr(key: MessageKey, args: List<TrArg> = []) -> String;
-// fn tr_arg<T: TrValue>(name: String, value: T) -> TrArg;
+// fn tr(key: MessageKey, name: value, ..) -> String;
 
-Text { text: tr("inbox.unread", [tr_arg("count", unread)]); }
+Text { text: tr("inbox.unread", count: unread); }
 ```
 
+- 消息参数以 Named Argument 按消息占位符的名字传入，每个恰好一次；
 - 字符串字面量在期望 `MessageKey` 处于编译期转换为 `MessageKey` 并与项目消息目录核对；键不存在或参数名/类型与目录不符是 `E3706`；
 - 复数、性别与数字格式由目录的消息格式决定；`tr` 对 `env.locale` 建立响应式依赖；
 - `tr` 可在 View、Computed、Style、Action 中使用；它读取 Context，因此不能在纯 `fn` 中使用。需要在 `fn` 中选择文案时让 `fn` 返回 `MessageKey`，由 View 调用 `tr`（U13.3）；
@@ -4877,7 +4877,9 @@ Text { text: tr("inbox.unread", [tr_arg("count", unread)]); }
 - 在 Localizable Property 上用字符串拼接或含字面文字的 `format(...)` 构造文本是 `E3705`（警告），应改用带参数的 `tr`，因为语序因语言而异；只含单个占位符的 `format("{}", n)` 不受限；
 - 纯字面量默认不报错；`viso check --i18n strict` 对 Localizable Property 上的字面量也报告 `E3705`。
 
-当前实现：Widget Schema 把 `Text.text`、`Button.text`、`Toggle`/`CheckBox` 的 `label`、`TextInput.placeholder`、`semantics.label`、`semantics.hint` 标为 Localizable。其值（去掉括号后）是类型为 `String` 的 `+` 拼接，或 `format` 的模板字面量含字面文字或多于一个占位符时，报 `E3705`（警告）；构建配置的 `i18n_strict`（`--i18n strict`）使之成为错误，并对 `String` 字面量同样报告。`tr`、`MessageKey` 与消息目录尚未实现，`E3706` 因此尚不报告。
+当前实现：Widget Schema 把 `Text.text`、`Button.text`、`Toggle`/`CheckBox` 的 `label`、`TextInput.placeholder`、`semantics.label`、`semantics.hint` 标为 Localizable。其值（去掉括号后）是类型为 `String` 的 `+` 拼接，或 `format` 的模板字面量含字面文字或多于一个占位符时，报 `E3705`（警告）；构建配置的 `i18n_strict`（`--i18n strict`）使之成为错误，并对 `String` 字面量同样报告。
+
+当前实现（消息目录）：目录是 `Viso.toml` 旁 `i18n/` 下每个 Locale 一个 TOML 文件（`i18n/en.toml`、`i18n/zh-Hant.toml`，文件名为 BCP 47 Tag，按规范形式比较），嵌套表与点分键组成消息键（`[inbox] unread = ".."` 即 `inbox.unread`），值是 ICU MessageFormat 字符串：`{name}`（文本，数字按读者 Locale 格式化）、`{name, number}`（可写 `integer` 样式）、`{name, plural, ..}` 与 `{name, selectordinal, ..}`（`offset:n`、`=n` 精确匹配、`zero`/`one`/`two`/`few`/`many` 类别，必须有 `other`；`#` 是本 Case 的数减去 Offset）、`{name, select, ..}`（必须有 `other`），`''` 是撇号，`'` 后接 `{`、`}`、`#`、`|` 开始引用文字。源 Locale 由 `Viso.toml [i18n] source` 给出，缺省 `en`；源目录声明全部消息与其参数，参数的种类由用法推出：只出现在 `{name}` 的是文本（`String`、数字，或任一有 `Display` 的类型，按 `format` 的显示转为文本），出现在 `number`/`plural`/`selectordinal` 的是数字（整数或浮点），出现在 `select` 的是选择值（`String`，或无 Payload 的 Enum，按 Variant 名匹配）；同一参数既是数字又是选择值报 `E3706`。翻译可省略消息（沿 CLDR 回退链取最近的已翻译 Locale，最终取源 Locale，如 `zh-TW` → `zh-Hant` → 源），只能使用源消息声明的参数且种类须被源的种类满足（数字与选择值可作文本用）；违反者、格式错误、非字符串值、非法或重复的 Locale、缺少源目录报 `E3706`（错误，该翻译的这条消息回退），源目录没有的键报 `E3706`（警告）。`tr(key, name: value, ..)` 恰有一个位置实参（键）：键是字符串字面量时须为源目录的消息（否则 `E3706`，附最接近的键），每个参数恰好按名给出一次、种类相符；键是其他 `MessageKey` 表达式时不得带参数。期望 `MessageKey` 处的字符串字面量须是不带参数的消息（`E3706`），其他 `String` 表达式不转换（`E2103`）；`MessageKey` 值在运行时就是键文本，可存入 State、比较与持久化，热重载后仍指向同一消息。`tr` 读取 `env.locale`，因此只用在 Component 的 View、Style、Computed、Action 与 Effect 中：`fn`、Task、State/Input 初始化器、Const、Theme 与 Module 级声明中报 `E2111`，System 中报 `E9109`。包没有消息目录而使用 `tr` 或 `MessageKey` 字面量报 `E3706`。编译器把每个 Locale 的消息编译为扁平的 Pattern 表并随 Module 进入线格式与 Release 包（只在有 `tr` 时）；未翻译的消息在编译期指向回退 Locale 的 Pattern，字面量键编译为消息序号，运行时一次索引，不按名字查找参数；读者 Locale 第一次出现时沿 CLDR 链解析一次并缓存，表在首次使用时解码，纯文本消息共享同一字符串。复数类别按消息所在 Locale 的规则、数字按读者 Locale 的符号与分组（`de-AT` 的 `1 234 567`、`ar-EG` 的 `٤`）。`env.locale` 改变时读取它的 Binding 与 Computed 重新求值。`viso check` 报告目录问题并指向目录文件的行列；`view!`/`component!` 把目录文件列为编译依赖，目录错误是编译错误；开发会话监视目录文件，编辑后以新目录重新编译该包的全部视图，目录有错误时保持原状。`MessageKey` 值找不到消息（热重载删除了它）时显示键文本本身。
 
 ---
 
@@ -8513,7 +8515,7 @@ RecordPatternField
 | E2108  | `format` 模板与实参不匹配（§17）                        |
 | E2109  | 长度族值常量除以 0（§19.8）                             |
 | E2110  | 赋值目标不可写（§62.1）                                 |
-| E2111  | `env` / `theme` 用在 View 执行域之外（§96.2、§60）      |
+| E2111  | `env` / `theme` 用在 View 执行域之外，`tr` 用在组件实例之外（§96.2、§60、§U10.3） |
 | E2112  | `@const` Native 或 Tick 时长参数在编译期拒绝其实参（§32、§106.6） |
 | E2201  | Trait Bound 未满足                                      |
 | E2202  | Trait Impl 重叠或歧义                                   |
@@ -8553,7 +8555,7 @@ RecordPatternField
 | E3703  | `transition` 用于不可动画 Property 或类型不符（§U6.1）  |
 | E3704  | 交互节点缺少 Role 或可访问名称（警告，§U8.2）           |
 | E3705  | Localizable Property 上的文本拼接/字面格式化（警告，§U10.3） |
-| E3706  | `tr` 键或参数与消息目录不符（§U10.3）                   |
+| E3706  | `tr` 键或参数与消息目录不符；消息目录本身的错误（§U10.3） |
 | E3707  | `VirtualList` Item Template 误用（§U9.1）               |
 | E3708  | 交互节点缺少等价键盘路径（警告，§U8.2）                 |
 | E3709  | 标注 [Runtime 待实现] 的 Property 使用了非默认值（§U1.1） |
@@ -8596,7 +8598,7 @@ RecordPatternField
 | E9106  | `@persist` 键重复、类型不可持久化、缺少 Capability、不在 `state` 上，或持久化状态的 Component 不是视图自身的实例（§106.8） |
 | E9107  | 输入动作缺少目标平台的手柄/触屏路径（警告，§106.3）      |
 | E9108  | AudioProcess 实时域违规（§108.3）                        |
-| E9109  | System 声明 `view`、`event`、`slot`、`effect` 或 `resource` 成员，或执行 `start`（§105） |
+| E9109  | System 声明 `view`、`event`、`slot`、`effect` 或 `resource` 成员，执行 `start` 或调用 `tr`（§105） |
 | E9110  | `@probe` 误用：只能标在 System 的 Simulation `state` 上（§110.5） |
 | E9111  | 持久化状态加载、转换或写入失败（运行时，使用 Initializer，§106.8） |
 

@@ -12,6 +12,7 @@ use crate::hir::Ty;
 use crate::hir::infer::body::{child_of, emit_args};
 use crate::hir::infer::format::{Hole, Piece, template_literal, template_pieces};
 use crate::hir::infer::pattern::unescape;
+use crate::hir::infer::translate::{ArgPass, TrCall};
 use crate::hir::infer::{NativeCall, VariantInfo, VariantPayload, is_spread, record_spread};
 use crate::hir::infer::{
     binary_op_kind, builtin_variant, child_exprs, first_child_expr, in_base_unit, is_integer_ty,
@@ -524,6 +525,9 @@ impl Lowerer<'_, '_> {
         if let Some(native) = self.cx.native_call(node.text_range()) {
             return self.native(&call, native);
         }
+        if let Some(tr) = self.cx.tr_call(node.text_range()) {
+            return self.translate(node, &tr.clone());
+        }
         let Some(callee) = call.callee() else {
             return self.bail("a call without a callee");
         };
@@ -786,6 +790,87 @@ impl Lowerer<'_, '_> {
         }
         let dst = self.reg();
         self.emit(Inst::Concat { dst, parts });
+        Ok(dst)
+    }
+
+    /// `tr(key, name: value..)`: the message, by id when the key is written in
+    /// the call, each argument in the message's order, and `env.locale`.
+    fn translate(&mut self, node: &SyntaxNode, call: &TrCall) -> Lower<Reg> {
+        let args = emit_args(node);
+        let message = match call.key {
+            Some(id) => self.constant(Const::Int(i128::from(id))),
+            None => match args.iter().find(|(label, _)| label.is_none()) {
+                Some((_, key)) => self.expr(key)?,
+                None => return self.bail("`tr` without a key"),
+            },
+        };
+        let mut regs = Vec::with_capacity(call.args.len());
+        for (name, pass) in &call.args {
+            let value = args.iter().find(|(label, _)| {
+                label
+                    .as_ref()
+                    .is_some_and(|l| l.text().trim_start_matches("r#") == name)
+            });
+            let Some((_, value)) = value else {
+                return self.bail(format!("`tr` without `{name}:`"));
+            };
+            let reg = self.expr(value)?;
+            regs.push(match pass {
+                ArgPass::Raw => reg,
+                ArgPass::Shown(ty) => self.display(reg, ty)?,
+                ArgPass::Variant(owner) => self.variant_name(reg, *owner)?,
+            });
+        }
+        let locale = self.env_field(EnvField::Locale)?;
+        let dst = self.reg();
+        self.emit(Inst::Translate {
+            dst,
+            message,
+            locale,
+            args: regs,
+        });
+        Ok(dst)
+    }
+
+    /// The name of the variant of `src`, a value of the unit-only enum
+    /// `owner`.
+    fn variant_name(&mut self, src: Reg, owner: SymbolId) -> Lower<Reg> {
+        let Some(names) = self
+            .env
+            .enum_variants(owner)
+            .map(|vs| vs.iter().map(|v| v.name.clone()).collect::<Vec<_>>())
+        else {
+            return self.bail("this value names no enum");
+        };
+        let tag = self.reg();
+        self.emit(Inst::Tag { dst: tag, src });
+        let dst = self.reg();
+        let switch = self.emit(Inst::Switch {
+            src: tag,
+            base: 0,
+            targets: Vec::new(),
+            default: 0,
+        });
+        let mut starts = Vec::with_capacity(names.len());
+        let mut ends = Vec::with_capacity(names.len());
+        for name in names {
+            starts.push(self.here());
+            self.emit(Inst::Const {
+                dst,
+                value: Const::Str(name),
+            });
+            ends.push(self.jump());
+        }
+        let fallback = self.here();
+        self.emit(Inst::Unreachable);
+        if let Inst::Switch {
+            targets, default, ..
+        } = &mut self.frame().body.insts[switch]
+        {
+            *targets = starts;
+            *default = fallback;
+        }
+        self.patch_here(&ends);
         Ok(dst)
     }
 

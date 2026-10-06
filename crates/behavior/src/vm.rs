@@ -35,6 +35,7 @@ use std::panic::{self, AssertUnwindSafe};
 use std::rc::Rc;
 
 use crate::arith;
+use crate::i18n::Translator;
 use crate::memo::{self, Memo, ReadGraph, Reads};
 use crate::module::{Code, Module, Span, TaskPolicy};
 use crate::native::{
@@ -456,6 +457,9 @@ pub struct Vm {
     resumed: bool,
     /// The work the last task native handed over.
     awaiting: Option<NativeFuture>,
+    /// The catalog tables and readers translating has decoded, made on the
+    /// first `Translate`.
+    translator: Option<Box<Translator>>,
 }
 
 type Step<T> = Result<T, FaultKind>;
@@ -487,6 +491,7 @@ impl Vm {
             fiber: false,
             awaiting: None,
             resumed: false,
+            translator: None,
         }
     }
 
@@ -1294,6 +1299,7 @@ impl Vm {
                 | Op::Make { dst, .. }
                 | Op::List { dst, .. }
                 | Op::Concat { dst, .. }
+                | Op::Translate { dst, .. }
                 | Op::Index { dst, .. }
                 | Op::Len { dst, .. }
                 | Op::Tag { dst, .. }
@@ -1363,6 +1369,36 @@ impl Vm {
                     text.push_str(self.stack[base + r as usize].as_str().unwrap_or_default());
                 }
                 Value::Str(Rc::new(text))
+            }
+            Op::Translate { ext, .. } => {
+                let at = ext as usize;
+                let n = code.ext[at + 2] as usize;
+                let Some(catalog) = self.module.catalog.clone() else {
+                    return self.trap(FaultKind::Internal, "no message catalog".into());
+                };
+                // The arguments gather into the native call scratch, so a
+                // warm translation allocates only its text.
+                let mut args = mem::take(&mut self.native_args);
+                args.clear();
+                args.extend(
+                    code.ext[at + 3..at + 3 + n]
+                        .iter()
+                        .map(|&r| self.stack[base + r as usize].clone()),
+                );
+                let message = &self.stack[base + code.ext[at] as usize];
+                let locale = &self.stack[base + code.ext[at + 1] as usize];
+                let translator = self.translator.get_or_insert_default();
+                let translated = translator.translate(&catalog, message, locale, &args);
+                self.native_args = args;
+                match translated {
+                    Ok(value) => {
+                        if let Value::Str(text) = &value {
+                            self.charge(16 + text.len() as u64)?;
+                        }
+                        value
+                    }
+                    Err(detail) => return self.trap(FaultKind::Internal, detail),
+                }
             }
             Op::Index { list, index, .. } => {
                 let i = self.int(base, index)?;

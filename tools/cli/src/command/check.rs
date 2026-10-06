@@ -4,10 +4,12 @@
 
 use std::fs;
 use std::path::Path;
+use std::rc::Rc;
 
 use viso_dsl::hir::{CapabilitySet, Determinism, InputDevices, TargetProfile};
+use viso_dsl::i18n::{CatalogIssue, Messages};
 use viso_dsl::package::{LoadedPackage, PackageManifest, load_package};
-use viso_dsl::{TextRange, TextSize};
+use viso_dsl::{Diagnostic, TextRange, TextSize};
 use viso_project::{ConfigDiagnostic, GameDeterminism, Project, Span};
 
 use super::{DIAGNOSTICS, ENV_CURRENT_DIR, ENV_SOURCE_UNREADABLE, ENVIRONMENT, SUCCESS};
@@ -87,11 +89,56 @@ pub(super) fn load(global: &Global, out: &mut Output) -> Result<Checked, u8> {
         }
     };
 
+    // The message catalogs, which `tr` and `MessageKey` check against.
+    let source_locale = project
+        .manifest
+        .i18n
+        .source
+        .as_ref()
+        .map_or(viso_dsl::i18n::DEFAULT_SOURCE, |source| {
+            source.value.as_str()
+        });
+    let catalog_dir = project.root.join(viso_dsl::i18n::CATALOG_DIR);
+    let catalogs = match Messages::read_dir(&catalog_dir) {
+        Ok(files) => files,
+        Err(error) => {
+            out.failure(
+                ENV_SOURCE_UNREADABLE,
+                &format!(
+                    "cannot read `{}`: {error}",
+                    relative(&project.root, &catalog_dir).display()
+                ),
+                &[],
+            );
+            return Err(ENVIRONMENT);
+        }
+    };
+    let messages = (!catalogs.is_empty()).then(|| Messages::compile(source_locale, &catalogs));
+    if let Some(messages) = &messages {
+        for issue in messages.issues() {
+            let file = &catalogs[issue.file];
+            let path = Path::new(&file.path);
+            let source = Source::new(path, &project.root, &file.text);
+            let range = TextRange::new(
+                TextSize::from(issue.range.start as u32),
+                TextSize::from(issue.range.end as u32),
+            );
+            let diagnostic = if issue.error {
+                Diagnostic::error(CatalogIssue::CODE, range, issue.message.clone())
+            } else {
+                Diagnostic::warning(CatalogIssue::CODE, range, issue.message.clone())
+            };
+            out.source(Some(&source), &[], &diagnostic);
+        }
+    }
+    let mut profile = profile(&project);
+    profile.messages = messages.map(Rc::new);
+
     let package = load_package(
         &project.root,
         PackageManifest {
             name: &name,
-            profile: profile(&project),
+            profile,
             language: project
                 .manifest
                 .package
@@ -165,6 +212,7 @@ pub(super) fn profile(project: &Project) -> TargetProfile {
         // options.
         a11y_strict: false,
         i18n_strict: false,
+        messages: None,
     }
 }
 

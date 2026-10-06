@@ -193,6 +193,19 @@ fn write_inst(out: &mut String, inst: &Inst) -> fmt::Result {
             )
         }
         Inst::Concat { dst, parts } => write!(out, "{} = concat ({})", reg(*dst), regs(parts)),
+        Inst::Translate {
+            dst,
+            message,
+            locale,
+            args,
+        } => write!(
+            out,
+            "{} = translate {} in {} ({})",
+            reg(*dst),
+            reg(*message),
+            reg(*locale),
+            regs(args)
+        ),
         Inst::Unreachable => write!(out, "unreachable"),
     }
 }

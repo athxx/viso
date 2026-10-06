@@ -168,6 +168,14 @@ pub struct Game {
     pub tick_rate: Option<Spanned<u32>>,
 }
 
+/// `[i18n]` (DSL section U10.3).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct I18n {
+    /// `source`: the BCP 47 locale whose catalog (`i18n/<source>.toml`)
+    /// declares every message; `en` when absent.
+    pub source: Option<Spanned<String>>,
+}
+
 /// `[web]` (section 38.1). Parsed now, honored by a deferred phase.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Web {
@@ -260,6 +268,8 @@ pub struct Manifest {
     pub workspace: Workspace,
     /// `[game]`.
     pub game: Game,
+    /// `[i18n]`.
+    pub i18n: I18n,
 }
 
 impl Manifest {
@@ -389,6 +399,7 @@ impl<'a> Reader<'a> {
                 "export",
                 "workspace",
                 "game",
+                "i18n",
             ],
             "",
         );
@@ -562,6 +573,16 @@ impl<'a> Reader<'a> {
             None => Game::default(),
         };
 
+        let i18n = match self.table(root, "i18n") {
+            Some(t) => {
+                self.deny_unknown(t, &["source"], "i18n");
+                I18n {
+                    source: self.string(t, "source", "i18n"),
+                }
+            }
+            None => I18n::default(),
+        };
+
         Manifest {
             path: path.to_path_buf(),
             package,
@@ -572,6 +593,7 @@ impl<'a> Reader<'a> {
             export,
             workspace,
             game,
+            i18n,
         }
     }
 

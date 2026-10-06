@@ -19,6 +19,7 @@
 
 mod arith;
 pub mod game;
+pub mod i18n;
 mod memo;
 mod module;
 pub mod native;

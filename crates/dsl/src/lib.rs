@@ -23,6 +23,7 @@ pub mod diag;
 pub mod frontend;
 pub mod hir;
 pub mod hotreload;
+pub mod i18n;
 pub mod ir;
 pub mod package;
 pub mod resolve;

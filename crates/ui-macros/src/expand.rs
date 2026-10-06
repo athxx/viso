@@ -61,7 +61,8 @@ pub fn component(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
         let root_dir = package::root()?;
         let origin = package::origin(&root_dir, package::invoking_file().as_deref())?;
         let profile = package::profile(&root_dir)?;
-        let compiled = frontend::compile_component_for(&source.text, &origin, profile);
+        let catalogs = catalog_dependencies(profile.catalogs.as_ref());
+        let compiled = frontend::compile_component_for(&source.text, &origin, profile.target);
         report.check(&compiled)?;
         let Mounted {
             component,
@@ -79,6 +80,7 @@ pub fn component(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
             .iter()
             .map(|(field, local)| quote! { #field: #local });
         Ok(quote! {
+            #catalogs
             #[doc = #doc]
             #[derive(Debug, Clone, Copy, PartialEq, Eq)]
             pub struct #name {
@@ -117,7 +119,16 @@ pub fn view(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
             .ok_or_else(|| syn::Error::new(span, "the `.vs` path is not UTF-8"))?;
         let origin = package::origin(&canonical(&root_dir), Some(&path))?;
         let profile = package::profile(&root_dir)?;
-        let compiled = frontend::compile_file_for(&text, &origin, Natives::standard(), profile);
+        let catalogs = catalog_dependencies(profile.catalogs.as_ref());
+        let catalog = match &profile.catalogs {
+            Some(c) => {
+                let (source, dir) = (&c.source, &c.dir);
+                quote! { ::core::option::Option::Some((#source, #dir)) }
+            }
+            None => quote! { ::core::option::Option::None },
+        };
+        let compiled =
+            frontend::compile_file_for(&text, &origin, Natives::standard(), profile.target);
         let report = Report::File {
             path: &path,
             index: LineIndex::new(&text),
@@ -126,10 +137,11 @@ pub fn view(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
         report.check(&compiled)?;
         let Mounted {
             allocations, root, ..
-        } = mount(&compiled, &report, Some((dependency, &origin)))?;
+        } = mount(&compiled, &report, Some((dependency, &origin, catalog)))?;
         Ok(quote! {
             {
                 const _: &str = ::core::include_str!(#dependency);
+                #catalogs
                 |cx: &mut ::viso_ui::BuildCx<'_>| -> ::viso_ui::Handle {
                     #allocations
                     #root
@@ -138,6 +150,13 @@ pub fn view(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
         })
     })();
     finish(expansion, true)
+}
+
+/// Makes each catalog file a compile dependency of the expansion, so an edit
+/// to a message recompiles the forms that check against it.
+fn catalog_dependencies(catalogs: Option<&package::Catalogs>) -> TokenStream {
+    let files = catalogs.map_or(&[][..], |c| &c.files[..]);
+    quote! { #(const _: &str = ::core::include_str!(#files);)* }
 }
 
 /// Where a form's diagnostics are reported.
@@ -207,7 +226,7 @@ struct Mounted<'a> {
 fn mount<'a>(
     compiled: &'a Compiled,
     report: &Report<'_>,
-    record: Option<(&str, &Origin)>,
+    record: Option<(&str, &Origin, TokenStream)>,
 ) -> syn::Result<Mounted<'a>> {
     let Some(component) = &compiled.component else {
         return Err(report.at(None, "the frontend produced no component to mount"));
@@ -276,8 +295,9 @@ fn mount<'a>(
     if let Some(behavior) = &behavior {
         allocations.extend(host_tokens(behavior, &idents, &tracked));
     }
-    let record =
-        record.map(|(file, origin)| record_tokens(file, origin, &idents, behavior.is_some()));
+    let record = record.map(|(file, origin, catalog)| {
+        record_tokens(file, origin, catalog, &idents, behavior.is_some())
+    });
     let root = emit_view(
         &compiled.tree,
         &compiled.bindings,
@@ -329,6 +349,7 @@ fn host_tokens(
 fn record_tokens(
     file: &str,
     origin: &Origin,
+    catalog: TokenStream,
     idents: &HashMap<SymbolId, Ident>,
     behavior: bool,
 ) -> TokenStream {
@@ -355,6 +376,7 @@ fn record_tokens(
         package: #package,
         module: [#(#module),*],
         language: #language,
+        catalog: #catalog,
         cells: [#(#cells),*],
         host: #host,
     }

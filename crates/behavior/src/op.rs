@@ -282,6 +282,10 @@ pub enum Op {
     List { dst: u16, ext: u32 },
     /// Concatenate strings. Operands: `n, parts..`.
     Concat { dst: u16, ext: u32 },
+    /// Format a message of the module's catalog for a reader. Operands:
+    /// `message, locale, n, args..`: the registers holding the message id and
+    /// the reader's `env.locale`, then its arguments in its order.
+    Translate { dst: u16, ext: u32 },
     /// `dst = src.index` of an aggregate.
     Field { dst: u16, src: u16, index: u16 },
     /// `dst = list[index]`, faulting out of bounds.

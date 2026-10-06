@@ -9,21 +9,25 @@
 //! [`ReloadEvent`], sent to `viso run` over the dev channel when the app was
 //! launched by it and printed to stderr otherwise; while a file's latest edit
 //! is rejected, each window mounting it shows the failure over its last-good
-//! UI. Without the feature this module is not compiled and a `view!` records
-//! nothing.
+//! UI. A file checks against its package's message catalogs as of the
+//! session; an edit to a catalog recompiles every file of the package against
+//! it, and a catalog with an error changes nothing. Without the feature this
+//! module is not compiled and a `view!` records nothing.
 
 mod link;
 pub(crate) mod overlay;
 mod watch;
 
 use std::cell::RefCell;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::time::Instant;
 
 use viso_dsl::frontend::Origin;
+use viso_dsl::hir::TargetProfile;
 use viso_dsl::hotreload::event::{ReloadEvent, ReloadOutcome, ReloadStage};
-use viso_dsl::hotreload::{CandidatePlan, LiveRuntime, plan_view, static_nodes, transact};
+use viso_dsl::hotreload::{CandidatePlan, LiveRuntime, plan_view_for, static_nodes, transact};
+use viso_dsl::i18n::Messages;
 use viso_dsl::ir::binding_ir::NodeKey;
 use viso_dsl::{Diagnostic, LineIndex};
 use viso_platform::{LoopWaker, WindowId};
@@ -45,11 +49,50 @@ pub(crate) struct HotReloadSession {
     /// environment names one.
     link: Option<DevLink>,
     files: Vec<ViewFile>,
+    catalogs: Vec<CatalogDir>,
     views: Vec<LiveView>,
     /// Scratch the mount queue drains into.
     records: Vec<MountRecord>,
     /// Scratch a commit frees subtrees with.
     scratch: Vec<NodeId>,
+}
+
+/// The watcher index of the catalog files of directory `n` is `CATALOG | n`.
+const CATALOG: usize = 1 << (usize::BITS - 1);
+
+/// A package's message catalogs, watched.
+struct CatalogDir {
+    source: &'static str,
+    dir: &'static str,
+    /// The catalogs as last compiled without an error.
+    messages: Option<Rc<Messages>>,
+}
+
+impl CatalogDir {
+    /// The catalogs on disk, compiled; `Err` with what to report when they
+    /// cannot be read or have an error.
+    fn compile(&self) -> Result<(Vec<PathBuf>, Option<Rc<Messages>>), String> {
+        let files = Messages::read_dir(Path::new(self.dir))
+            .map_err(|error| format!("cannot read `{}`: {error}", self.dir))?;
+        let paths = files.iter().map(|f| PathBuf::from(&f.path)).collect();
+        if files.is_empty() {
+            return Ok((paths, None));
+        }
+        let messages = Messages::compile(self.source, &files);
+        if let Some(issue) = messages.issues().iter().find(|i| i.error) {
+            let file = &files[issue.file];
+            let at = LineIndex::new(&file.text).line_col_utf8((issue.range.start as u32).into());
+            return Err(format!(
+                "{}:{}:{}: {} {}",
+                file.path,
+                at.line + 1,
+                at.column + 1,
+                viso_dsl::i18n::CatalogIssue::CODE,
+                issue.message
+            ));
+        }
+        Ok((paths, Some(Rc::new(messages))))
+    }
 }
 
 /// A watched `.vs` file and the candidate its mounts currently match.
@@ -58,6 +101,8 @@ struct ViewFile {
     /// The source the running build embedded.
     embedded: &'static str,
     origin: Origin,
+    /// The package's catalogs, by index into the session's.
+    catalog: Option<usize>,
     /// The candidate the mounts match, compiled from `embedded` on the first
     /// edit.
     last_good: Option<CandidatePlan>,
@@ -106,6 +151,29 @@ impl HotReloadSession {
                         PathBuf::from(record.file),
                         content_hash(record.source),
                     );
+                    let catalog = record.catalog.map(|(source, dir)| {
+                        if let Some(at) = self.catalogs.iter().position(|c| c.dir == dir) {
+                            return at;
+                        }
+                        let mut catalog = CatalogDir {
+                            source,
+                            dir,
+                            messages: None,
+                        };
+                        match catalog.compile() {
+                            Ok((paths, messages)) => {
+                                catalog.messages = messages;
+                                for path in paths {
+                                    let hash = std::fs::read_to_string(&path)
+                                        .map_or(0, |text| content_hash(&text));
+                                    watcher.watch(CATALOG | self.catalogs.len(), path, hash);
+                                }
+                            }
+                            Err(message) => eprintln!("[viso] hot reload: {message}"),
+                        }
+                        self.catalogs.push(catalog);
+                        self.catalogs.len() - 1
+                    });
                     self.files.push(ViewFile {
                         path: record.file,
                         embedded: record.source,
@@ -114,6 +182,7 @@ impl HotReloadSession {
                             module: record.module.iter().map(|&m| m.into()).collect(),
                             language: record.language.map(Into::into),
                         },
+                        catalog,
                         last_good: None,
                         revision: 0,
                         candidates: 0,
@@ -164,8 +233,30 @@ impl HotReloadSession {
         };
         let mut staged = false;
         while let Some(change) = watcher.try_recv() {
-            self.files[change.file].staged = Some(change.source);
-            staged = true;
+            if change.file & CATALOG == 0 {
+                self.files[change.file].staged = Some(change.source);
+                staged = true;
+                continue;
+            }
+            // A catalog edit recompiles every file of its package, each
+            // from its latest source.
+            let index = change.file & !CATALOG;
+            let catalog = &mut self.catalogs[index];
+            match catalog.compile() {
+                Ok((_, messages)) => catalog.messages = messages,
+                Err(message) => {
+                    eprintln!("[viso] hot reload: {message}");
+                    continue;
+                }
+            }
+            for file in self.files.iter_mut().filter(|f| f.catalog == Some(index)) {
+                if file.staged.is_none() {
+                    let source = std::fs::read_to_string(file.path)
+                        .unwrap_or_else(|_| file.embedded.to_owned());
+                    file.staged = Some(source);
+                }
+                staged = true;
+            }
         }
         staged
     }
@@ -186,6 +277,7 @@ impl HotReloadSession {
         }
         let Self {
             files,
+            catalogs,
             views,
             scratch,
             link,
@@ -202,9 +294,13 @@ impl HotReloadSession {
                 continue;
             };
             let started = Instant::now();
+            let profile = TargetProfile {
+                messages: file.catalog.and_then(|c| catalogs[c].messages.clone()),
+                ..TargetProfile::default()
+            };
             let last_good = match file.last_good.take() {
                 Some(plan) => plan,
-                None => match plan_view(file.embedded, &file.origin) {
+                None => match plan_view_for(file.embedded, &file.origin, profile.clone()) {
                     Ok(plan) => plan,
                     Err(diagnostics) => {
                         report(file.path, file.embedded, &diagnostics);
@@ -230,7 +326,7 @@ impl HotReloadSession {
                 handlers_lost: 0,
                 diagnostics: Vec::new(),
             };
-            match plan_view(&source, &file.origin) {
+            match plan_view_for(&source, &file.origin, profile) {
                 Ok(mut candidate) => {
                     for view in views.iter_mut().filter(|view| view.file == index) {
                         let Some(ws) = windows.iter_mut().find(|ws| ws.window == view.window)

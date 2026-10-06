@@ -268,7 +268,7 @@ fn is_ident(text: &str) -> bool {
 /// the single-unit length family and the other dimensional scalars do; a record
 /// or enum does not. A nominal type this module does not declare as a record or
 /// enum, and an undetermined type, are not reported.
-fn displayable(env: &dyn TypeEnv, ty: &Ty) -> bool {
+pub(crate) fn displayable(env: &dyn TypeEnv, ty: &Ty) -> bool {
     match ty {
         Ty::Bool
         | Ty::I8

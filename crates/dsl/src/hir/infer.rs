@@ -33,6 +33,7 @@ mod native;
 pub(crate) mod pattern;
 mod record;
 mod schema;
+pub(crate) mod translate;
 
 pub use native::NativeCall;
 pub(crate) use native::const_seconds;
@@ -165,6 +166,11 @@ pub trait TypeEnv {
         None
     }
 
+    /// The package's compiled message catalogs, when it has any.
+    fn messages(&self) -> Option<&crate::i18n::Messages> {
+        None
+    }
+
     /// The ticks a second of the game's fixed step, which a tick duration
     /// argument is converted with.
     fn tick_rate(&self) -> u32 {
@@ -241,6 +247,8 @@ pub struct InferCx<'a> {
     /// The whole ticks each tick duration argument of a native call converts
     /// to, keyed by the argument's span.
     ticks: HashMap<TextRange, i64>,
+    /// Every checked `tr` call, keyed by the call's span.
+    tr_calls: HashMap<TextRange, translate::TrCall>,
 }
 
 impl<'a> InferCx<'a> {
@@ -263,6 +271,7 @@ impl<'a> InferCx<'a> {
             types: HashMap::new(),
             native_calls: HashMap::new(),
             ticks: HashMap::new(),
+            tr_calls: HashMap::new(),
         }
     }
 
@@ -368,6 +377,11 @@ impl<'a> InferCx<'a> {
                 self.check_against(Ty::Bool, expected, node)
             }
             SyntaxKind::CharLiteral => self.check_against(Ty::Char, expected, node),
+            SyntaxKind::StringLiteral | SyntaxKind::RawStringLiteral
+                if expected == Some(&translate::message_key_ty()) =>
+            {
+                self.infer_message_key(node)
+            }
             SyntaxKind::StringLiteral | SyntaxKind::RawStringLiteral => {
                 self.check_against(Ty::String, expected, node)
             }
@@ -579,6 +593,13 @@ impl<'a> InferCx<'a> {
                     Ty::Fn(params, ret) => Some((params, *ret)),
                     _ => None,
                 }
+            }
+            (Some(Resolution::Native(id)), _) if translate::is_tr(id) => {
+                let at = callee
+                    .as_ref()
+                    .map_or(node.text_range(), |c| c.syntax().text_range());
+                let ty = self.check_tr(node, at);
+                return self.check_against(ty, expected, node);
             }
             (Some(Resolution::Native(id)), _) => {
                 let at = callee

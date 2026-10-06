@@ -2398,6 +2398,8 @@ bundle_id = "com.example.hello"
 
 `[package] capabilities = ["storage.persist"]` 是包被授予的 Capability（DSL §95）：编译期检查据此判定（如 `@persist` 需要 `storage.persist`，否则 `E9106`），运行时由宿主在链接 Native Import 时授予同一集合。
 
+`[i18n] source = "en"` 是声明全部消息的源 Locale（缺省 `en`）；消息目录是 `Viso.toml` 旁的 `i18n/<locale>.toml`（DSL §U10.3）。`viso check` 编译目录并报告其问题（`E3706`，指向目录文件的行列），`tr` 与 `MessageKey` 字面量据此检查；`i18n/` 无法读取是环境错误。
+
 ### 38.1 Web
 
 ```toml
