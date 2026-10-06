@@ -330,7 +330,7 @@ fn compile_unit(
     let segments: Vec<&str> = origin.module.iter().map(String::as_str).collect();
     let path = ModulePath::intern(&mut interner, &segments);
     let units = vec![SourceUnit::new(path.clone(), parse)];
-    let graph = ModuleGraph::build_with(&units, &interner, natives);
+    let graph = ModuleGraph::build_with(&units, &interner, natives, &origin.package);
     diagnostics.extend(graph.errors().iter().cloned());
     let mut resolved = resolve(&graph, &units, &mut interner, &origin.package);
     let lowered = crate::hir::lower(

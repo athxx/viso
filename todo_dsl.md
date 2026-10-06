@@ -1094,17 +1094,82 @@ timers (§104–§111).
 
 ## D8 — Advanced surface (P3)
 
-- [ ] User traits, impls, general generics, const generics, `dyn` (`E2201`, `E2202`);
-      `bind … using C` checks `C: TwoWayConverter<Source, Target>`.
+- [x] Handwritten `native` declarations (§47).
+  - [x] Parse `native fn|action|task|type` at top level and as component /
+        system members into typed AST nodes (no opaque `AdvancedItem`).
+  - [x] Resolve and type them: explicit schema types, no defaults, no
+        generics, `requires` capabilities; calls lower to native imports by
+        path and signature.
+  - [x] Checked against the registry at compile time when the schema has the
+        library (`E6101` on a signature mismatch or a missing path), at link
+        otherwise; a declared `type` names a native handle type.
+- [ ] `cross_platform` float determinism (§106.5).
+  - [ ] `viso::math` `sin` `cos` `tan` `atan` `atan2` `exp` `log` `pow`
+        `hypot`: software implementations from IEEE basic operations only,
+        `cross_platform`, bit-identical across targets (pinned results).
+  - [ ] Host-libm users declare `same_binary` (`MoveAxes.length` and input
+        normalization use the deterministic `hypot`).
+  - [ ] No FMA contraction or reassociation in the VM's float paths (a test
+        pins `a * b + c` rounding twice); fixed reduction order documented.
+- [ ] User traits, impls, general generics, const generics, `dyn` (`E2201`,
+      `E2202`); `bind … using C` checks `C: TwoWayConverter<Model, View>`.
+  - [ ] Generic parameters in scope (records, enums, aliases, fns, actions,
+        components, systems); `Ty::Param`; generic record / enum
+        construction and patterns; turbofish and inference at calls.
+  - [ ] Inherent `impl Type { .. }`: methods and associated consts; method
+        calls on user types.
+  - [ ] `trait` declarations (methods, associated types and consts,
+        supertraits) and `impl Trait for Type`; bounds and `where`; unmet
+        bound `E2201`; overlapping or ambiguous impls `E2202`; method
+        resolution order inherent → imported trait → ambiguity error.
+  - [ ] Generic callables monomorphized per instantiation (static calls),
+        deterministic instance order; recursion through instantiation
+        bounded.
+  - [ ] Const generics: integer, `Bool`, `Char` and unit-enum arguments,
+        usable as constants in the body.
+  - [ ] `dyn Trait`: controlled erasure of an implementing type, a VTable
+        schema in the module, dispatch without string lookup.
+  - [ ] `bind … using C`: `C: TwoWayConverter<Model, View>`
+        (`to_view` / `to_model`), lowered on both directions; `E3711` gone
+        for converters.
 - [ ] `template` / `part` (`E3601`).
-- [ ] Handwritten `native` declarations.
+  - [ ] `part` nodes in views and components; `override part` (bindings and
+        handlers) and `replace part` (a view block) at use sites.
+  - [ ] `template` declarations (params, slots, consts, fns, view) and
+        `use T(args) { .. };`, expanded at compile time into the UI IR with
+        Source Origins of both definition and call site.
+  - [ ] Recursion proven finite or `E3601`; no state, effect, task or
+        resource in a template.
 - [ ] Multi-system game profile and physics integration contract.
-- [ ] `cross_platform` float determinism: `viso::math` transcendentals, no FMA
-      contraction, fixed reductions (§106.5).
-- [ ] Release native lowering of System IR with bytecode differential tests (§108.2);
-      speedup is a hypothesis until a release benchmark shows it.
+  - [ ] `PrePhysics` / `PostPhysics` phases around the physics step; the
+        profile's `physics_order` and `collision_delivery_order`.
+  - [ ] A physics world contract a Rust engine implements (step over
+        commands, contacts, snapshot / restore, a determinism tier); the
+        built-in world is one implementation; `E9104` for a tier below the
+        game's; snapshots of a world without restore are reported degraded.
+  - [ ] A multi-system acceptance game (input, AI, physics, combat, audio).
+- [ ] Release native lowering of System IR with bytecode differential tests
+      (§108.2); speedup is a hypothesis until a release benchmark shows it.
+  - [ ] System IR → Rust source, the generated systems run by the same
+        scheduler.
+  - [ ] Differential test: one input tape, the same snapshot hashes per tick
+        under bytecode and native code.
+  - [ ] Release benchmark of both.
 - [ ] Replication and rollback netcode on the Simulation tier.
+  - [ ] Per-player input in a tick; input of a past tick replaced and the
+        game re-simulated from the last confirmed snapshot.
+  - [ ] A rollback session over a transport-agnostic message stream:
+        input delay, prediction, confirmation, desync detection by snapshot
+        hash; Presentation commands never redelivered.
+  - [ ] Two in-process peers over a lossy, delayed link converge.
 - [ ] AI structured edit; cross-backend validation.
+  - [ ] Structured edits by Syntax ID and Symbol ID (`AddImport`,
+        `CreateComponent`, `AddInput`, `AddState`, `AddAction`, `InsertNode`,
+        `SetPropertyBinding`, `AttachEventHandler`, `WrapInKeyedFor`,
+        `ConvertTaskToResource`, `AddTraitImpl`) producing checked text
+        edits; LSP code actions for them and for diagnostic fixes.
+  - [ ] Cross-backend validation: a DSL shader through the safe ABI on two
+        backends compared against the CPU reference.
 
 ---
 

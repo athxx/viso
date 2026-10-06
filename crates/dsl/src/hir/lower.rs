@@ -1787,7 +1787,7 @@ impl ModuleScope {
                 }
                 return;
             }
-            Member::Slot(_) | Member::View(_) | Member::Effect(_) => return,
+            Member::Slot(_) | Member::View(_) | Member::Effect(_) | Member::Native(_) => return,
         };
 
         let Some(tok) = name_tok else {

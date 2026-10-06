@@ -122,7 +122,7 @@ pub fn load_package_in(
         });
     }
 
-    let graph = ModuleGraph::build_with(&units, &interner, natives);
+    let graph = ModuleGraph::build_with(&units, &interner, natives, manifest.name);
     let manifest_diagnostics: Vec<Diagnostic> = manifest
         .language
         .and_then(|(version, at)| check_language_version(version, at))

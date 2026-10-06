@@ -42,6 +42,7 @@ const MEMBER_UNITS: &[SyntaxKind] = &[
     SyntaxKind::FnDecl,
     SyntaxKind::ActionDecl,
     SyntaxKind::TaskDecl,
+    SyntaxKind::NativeDecl,
     SyntaxKind::AdvancedItem,
 ];
 
@@ -59,6 +60,7 @@ const TOP_LEVEL_UNITS: &[SyntaxKind] = &[
     SyntaxKind::ActionDecl,
     SyntaxKind::TaskDecl,
     SyntaxKind::ShaderDecl,
+    SyntaxKind::NativeDecl,
     SyntaxKind::AdvancedItem,
 ];
 
@@ -455,6 +457,7 @@ mod tests {
         "component C { state a = x < B; state b = 1; fn g() { let v = make::<T>(1); } }\n",
         "component C { state a = 1 state b = 2; event e(x: I64); }\nsystem Tick { fn run() { } }\n",
         "// lead\ncomponent C { /* c */ state s = \"a}b\"; @inline fn h() { } }\n",
+        "native fn f(a: I64) -> I64;\nnative type T;\ncomponent C { native action g() requires { x::y }; }\n",
     ];
 
     const INSERTS: &[&str] = &["x", " ", "{", "}", ";", "\"", "1", "(", "//", "<", "\n"];
