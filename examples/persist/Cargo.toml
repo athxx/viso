@@ -1,0 +1,15 @@
+[package]
+name = "viso-example-persist"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+# A view whose `@persist` states outlive the app: `Viso.toml` grants
+# `storage.persist`, and the facade keeps them in the app's data directory.
+[dependencies]
+viso = { workspace = true }
+# `view!` and `component!` expand to paths in these crates; the facade does
+# not re-export them under the names the expansion uses yet.
+viso-ui = { workspace = true }
+viso-view = { workspace = true }

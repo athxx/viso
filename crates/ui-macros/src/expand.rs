@@ -340,6 +340,7 @@ fn host_tokens(
             let mut __viso_view = __viso_host.borrow_mut();
             #(#mirrors)*
         }
+        ::viso_view::__load_persisted(cx, &__viso_host);
     }
 }
 

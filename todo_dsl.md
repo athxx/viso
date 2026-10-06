@@ -983,10 +983,29 @@ timers (§104–§111).
         `setup`, hot-reload mount), stores changed values after each committed
         write-back, `suspend` flushes; `E6103` once per state when not granted;
         a hot reload keeps loaded values and loads a newly persisted state.
-  - [ ] The embedded host of `view!` / `component!` loads and stores its
-        persisted states.
-  - [ ] The app facade installs a `Persist` service (a `DirStore` in the app
+  - [x] The embedded host of `view!` / `component!` loads and stores its
+        persisted states: a host without a `Persist` service of its own
+        persists through the app's store (`install_persistence`), loading
+        before the tree is built; the package, hot-reload and macro mounts
+        share one path (`__mount_persisted`).
+    - [x] A suspend hook on the window's `NodeStore` (`NodeStore::suspend`)
+          per persisting host, holding it weakly, registered once across hot
+          reloads; reports queue app-wide (`take_persist_reports`).
+    - [x] `LazyStore` opens the store at its first load or store;
+          `SharedStore` shares one store between hosts.
+    - [x] `examples/persist`: `view!` and `component!` load, store and
+          suspend through an installed store.
+  - [x] The app facade installs a `Persist` service (a `DirStore` in the app
         data dir) and calls `suspend` when the app goes to the background.
+    - [x] `viso_services::app_data_dir`: Application Support (macOS, iOS),
+          `$XDG_STATE_HOME` / `~/.local/state` (Linux, BSD),
+          `%LOCALAPPDATA%` (Windows), `getFilesDir()` (Android); the page
+          origin's `localStorage` on the web (`LocalStorage`).
+    - [x] `persist/` under it, opened lazily; suspended on
+          `Lifecycle::Suspended`, a window closing and the loop ending; reports
+          printed to stderr.
+    - [ ] Verified on a device: Android `getFilesDir`, iOS sandbox path, the
+          web's `localStorage` (only compile-checked).
 - [ ] `AudioProcess` real-time rules `E9108` (§108.3).
   - [x] A system implementing `AudioProcess` rejects allocation, `await`/tasks,
         locks, resource loads, non-`realtime` natives and unbounded loops

@@ -925,6 +925,17 @@ impl ViewHost {
         }
     }
 
+    /// Whether [`ViewHost::load_persisted`] has run, deciding where the
+    /// states persist.
+    pub fn persist_decided(&self) -> bool {
+        !matches!(self.persist, Persisting::Unmounted)
+    }
+
+    /// Whether the states persist through a [`Persist`] service.
+    pub fn persisting(&self) -> bool {
+        matches!(self.persist, Persisting::Active(_))
+    }
+
     /// The persisted states that did not load and the writes that failed,
     /// since the last call.
     pub fn take_persist_reports(&mut self) -> Vec<PersistReport> {

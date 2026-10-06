@@ -28,6 +28,7 @@ members = [
     "examples/hello_world",
     "examples/01-counter",
     "examples/i18n",
+    "examples/persist",
 ]
 
 # viso-ext/ is a user-maintained plugin library and is intentionally NOT a

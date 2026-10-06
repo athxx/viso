@@ -1,0 +1,3 @@
+[package]
+name = "tally"
+capabilities = ["storage.persist"]

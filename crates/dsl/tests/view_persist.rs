@@ -2,7 +2,8 @@
 //! the view mounts, stored when a committed write changes it, made durable
 //! on suspend, kept across a hot reload, and in the release package;
 //! `E9106` when a component persisting state mounts inside another's view,
-//! `E6103` at run time when the view is not granted `storage.persist`.
+//! `E6103` at run time when the view is not granted `storage.persist`; a
+//! host with no store of its own persisting through the one the app installed.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -19,6 +20,7 @@ use viso_ui::{
     BindingTable, ComputedStore, EffectStore, NodeId, NodeStore, PointerButtons, PointerEvent,
     PointerPhase, PointerRouter, Rect, SemanticProjector, StateStore, TextEdits, settle_states,
 };
+use viso_view::persist::SharedStore;
 use viso_view::{Value, ViewHost, load_view_with};
 
 const SOURCE: &str = r#"
@@ -114,6 +116,27 @@ impl Rt {
         rt
     }
 
+    /// `source` mounted by a hot reload into a host with no store of its
+    /// own, granted `storage.persist`.
+    fn reloaded_from_installed(source: &str) -> Self {
+        let compiled = compile_file_for(source, &origin(), Natives::standard(), profile(true));
+        let view = view_behavior(&compiled)
+            .expect("mounts")
+            .expect("has behavior");
+        let host = ViewHost::with_capabilities(
+            Rc::clone(&view.module),
+            &view.component,
+            &[PERSIST_CAPABILITY],
+        )
+        .expect("links");
+        let mut rt = Rt {
+            view: Some(host.shared()),
+            ..Rt::default()
+        };
+        rt.reload(source);
+        rt
+    }
+
     fn reload(&mut self, source: &str) {
         let candidate = plan_view_for(source, &origin(), profile(true)).expect("compiles");
         let mut live = LiveRuntime {
@@ -196,8 +219,12 @@ impl Rt {
         host.borrow_mut().suspend(&self.states);
     }
 
+    /// What did not load or store: queued app-wide at the mount, held by
+    /// the host after a direct suspend.
     fn reports(&self) -> Vec<PersistReport> {
-        self.host().take_persist_reports()
+        let mut reports = viso_view::take_persist_reports();
+        reports.extend(self.host().take_persist_reports());
+        reports
     }
 }
 
@@ -218,6 +245,49 @@ fn a_packaged_view_loads_and_stores_its_persisted_state() {
     assert_eq!(rt.state("clicks"), Value::Int(2), "loaded before mount");
     assert_eq!(rt.state("title"), Value::str("aaa"));
     assert_eq!(rt.state("taps"), Value::Int(0), "not persisted");
+}
+
+#[test]
+fn a_view_without_a_store_of_its_own_persists_through_the_installed_one() {
+    let store = MemoryStore::default();
+    viso_view::install_persistence(Some(SharedStore::new(store.clone())));
+    let blob = build_view_package_for(SOURCE, &origin(), profile(true)).expect("packages");
+    let load = |rt: &mut Rt| {
+        let view = load_view_with(
+            &blob,
+            &mut rt.store,
+            &mut rt.states,
+            &mut rt.bindings,
+            &mut rt.lists,
+            &mut |_| {},
+        )
+        .expect("loads");
+        rt.root = view.root;
+        rt.view = view.host;
+        rt.settle();
+    };
+    let mut rt = Rt::default();
+    load(&mut rt);
+    assert_eq!(rt.store.suspend_hook_count(), 1);
+    rt.click();
+    assert_eq!(store.keys(), ["clicks", "title"], "stored at the commit");
+    rt.store.suspend(&rt.states);
+    assert!(rt.reports().is_empty());
+    assert_eq!(
+        rt.store.suspend_hook_count(),
+        1,
+        "kept while the view lives"
+    );
+
+    let mut reloaded = Rt::reloaded_from_installed(SOURCE);
+    assert_eq!(reloaded.state("clicks"), Value::Int(1));
+    reloaded.reload(SOURCE);
+    assert_eq!(
+        reloaded.store.suspend_hook_count(),
+        1,
+        "a reload registers no second hook"
+    );
+    viso_view::install_persistence(None);
 }
 
 #[test]

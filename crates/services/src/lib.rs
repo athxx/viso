@@ -9,9 +9,12 @@
 //!
 //! Calls return at once; an answer that needs the user or the OS arrives
 //! later through a [`Reply`].
+//!
+//! [`app_data_dir`] names where an app keeps what it carries between runs.
 
 #![forbid(unsafe_op_in_unsafe_fn)]
 
+mod app_data;
 mod files;
 mod haptics;
 mod mock;
@@ -24,6 +27,10 @@ mod share;
 mod system;
 mod unsupported;
 
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+pub use app_data::LocalStorage;
+#[cfg(not(target_arch = "wasm32"))]
+pub use app_data::app_data_dir;
 pub use files::{FileDialogs, FileFilter, OpenOptions, PickedFile, SaveOptions};
 pub use haptics::{Haptic, Haptics};
 pub use mock::{Call, Mock};

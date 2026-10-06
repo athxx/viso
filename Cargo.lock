@@ -2558,6 +2558,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "viso-example-persist"
+version = "0.0.0"
+dependencies = [
+ "viso",
+ "viso-ui",
+ "viso-view",
+]
+
+[[package]]
 name = "viso-gpu"
 version = "0.0.0"
 dependencies = [
